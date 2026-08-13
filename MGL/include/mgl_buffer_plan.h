@@ -73,7 +73,7 @@ typedef struct MGLBufferPlanStructMember {
 typedef struct MGLBufferPlanEntry {
     /* Resource identity */
     uint16_t resource_type;          /* MGL resource type (UBO/UNIFORM_CONSTANT/SSBO/ATOMIC_COUNTER) */
-    uint16_t resource_index;          /* index in spirv_resources_list[stage][type].list */
+    uint16_t resource_index;          /* index in shader_resources_list[stage][type].list */
     uint16_t element_count;           /* mglStageBufferResourceElementCount */
     uint16_t struct_member_count;     /* 0 unless MGL_BP_FLAG_STRUCT_PACKED */
     uint32_t flags;                   /* MGL_BP_FLAG_* bitmask */
@@ -108,7 +108,7 @@ typedef struct MGLBufferBindingPlan {
 /* Lifecycle                                                           */
 /* ------------------------------------------------------------------ */
 
-/* Build the plan for `program` from its current spirv_resources_list.
+/* Build the plan for `program` from its current shader_resources_list.
  * Frees any previously built plan first.  No-op if program is NULL.
  * Safe to call at the end of mglLinkProgram. */
 void mglBufferBindingPlanBuild(Program *program);
@@ -141,7 +141,7 @@ const MGLStageBufferPlan *mglStageBufferPlan(const MGLBufferBindingPlan *plan,
  * glUniformBlockBinding mutations are visible without plan invalidation.
  * For all other cases, returns client_binding_base + element. */
 GLuint mglBufferPlanClientBindingForElement(const MGLBufferPlanEntry *entry,
-                                            const SpirvResource *resource,
+                                            const MGLShaderResource *resource,
                                             GLuint element);
 
 /* Resolve the Metal argument slot for `element` of `entry`.
@@ -159,7 +159,7 @@ static inline GLuint mglBufferPlanMetalBindingForElement(const MGLBufferPlanEntr
 /* Compute the uniform-location step between array elements of a plain
  * struct uniform resource (mirrors the logic in mapGLBuffersToMTLBufferMap).
  * Returns 1 when the resource has no UBO members. */
-static inline GLuint mglPlainStructLocStep(const SpirvResource *res)
+static inline GLuint mglPlainStructLocStep(const MGLShaderResource *res)
 {
     if (!res || !res->ubo_members || res->ubo_member_count == 0) {
         return 1;

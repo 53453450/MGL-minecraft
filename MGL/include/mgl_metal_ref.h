@@ -6,13 +6,13 @@
  *
  * Unified release helpers for Metal objects stored as `void *` (ARC-bridged)
  * in C structs (Texture::mtl_data, Buffer::data.mtl_data, Shader::mtl_data.*,
- * Sampler::mtl_data, Program::mtl_data, Spirv::mtl_function / mtl_library,
+ * Sampler::mtl_data, Program::mtl_data, MGLShaderModule::mtl_function / mtl_library,
  * Sync::mtl_event / mtl_command_buffer, etc.).
  *
  * Problem: the codebase had three parallel release paths:
  *   1. ctx->mtl_funcs.mtlDeleteMTLObj(ctx, ptr)  — C files (22 call sites)
  *   2. CFBridgingRelease(ptr); ptr = NULL;        — MGLRenderer.m (24 sites)
- *   3. CFRelease(ptr); ptr = NULL;                — program.c Spirv + 3-way
+ *   3. CFRelease(ptr); ptr = NULL;                — program.c MGLShaderModule + 3-way
  *                                                   if/else fallbacks (9 sites)
  * All three ultimately do the same CFBridgingRelease.  The function-pointer
  * indirection in path 1 exists only because C files cannot message ObjC
@@ -22,7 +22,7 @@
  * CFBridgingRelease, and nulls the slot.  This:
  *   - Eliminates the forgotten-`= NULL` class of bugs (22 sites were missing it)
  *   - Removes the dead `else CFRelease` fallback branches (3 sites)
- *   - Unifies program.c's raw CFRelease on Spirv fields (4 sites)
+ *   - Unifies program.c's raw CFRelease on MGLShaderModule fields (4 sites)
  *   - Is a pure C function (no ObjC messaging), so it works in both .c and .m TUs
  *
  * Scope: this header ONLY covers the generic `void *` slot pattern.

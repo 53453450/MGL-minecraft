@@ -5,8 +5,8 @@
  * Implementation of the Legacy GLSL Compatibility Subsystem.
  *
  * See mgl_legacy_compat.h for the architectural rationale.  This module
- * performs source-level translation of pre-GLSL-3.30 constructs so that
- * glslang can parse them under the core profile and emit SPIR-V.
+ * performs source-level translation of pre-GLSL-3.30 constructs before the
+ * source reaches the frontend (which parses core-profile GLSL 4.50).
  *
  * Reference: GLSLangSpec.1.10.pdf ~ GLSLangSpec.1.50.pdf
  */
@@ -469,7 +469,7 @@ int mgl_translate_legacy_glsl(char *src,
             const char *new_name = is_vertex ? b->vs_name : b->fs_name;
             if (!new_name) {
                 /* This builtin is not valid in the current stage.
-                 * Rename anyway to avoid glslang rejecting the gl_ name,
+                 * Rename anyway to avoid the frontend rejecting the gl_ name,
                  * using the available name (vs_name or fs_name). */
                 new_name = b->vs_name ? b->vs_name : b->fs_name;
                 if (!new_name) continue;
@@ -498,7 +498,7 @@ int mgl_translate_legacy_glsl(char *src,
 
     off += (size_t)snprintf(preamble + off, sizeof(preamble) - off,
         "/* MGL legacy GLSL translation: renamed builtins declared as\n"
-        " * user variables so glslang core-profile can parse them. */\n");
+        " * user variables so the frontend can parse them. */\n");
 
     /* gl_TexCoord declaration (array, both VS out and FS in) */
     if (features->has_gl_TexCoord) {

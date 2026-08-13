@@ -3,8 +3,9 @@
  * MGL
  *
  * Reflection export from the self-hosted GLSL frontend's MGLIRModule.
- * Produces the SpirvResource tables the GL query layer and the per-draw
- * binding paths consume, replacing the SPIRV-Cross reflection step.
+ * Produces the MGLShaderResource tables the GL query layer and the per-draw
+ * binding paths consume, replacing the historical reflection step (which
+ * delegated to the old SPIRV-Cross reflection step).
  */
 
 #include "mgl_air_reflect.h"
@@ -169,11 +170,11 @@ GLint mglAirGLArraySizeFromIR(const MGLIRType *t)
     return 1;
 }
 
-static void push_resource(SpirvResourceList *list, const MGLIRSymbol *s,
+static void push_resource(MGLShaderResourceList *list, const MGLIRSymbol *s,
                           const MGLIRType *type, GLuint location,
                           GLuint binding, int stage)
 {
-    SpirvResource r;
+    MGLShaderResource r;
     memset(&r, 0, sizeof(r));
     r.name = strdup(s->name);
     r.location = location;
@@ -268,8 +269,8 @@ static void push_resource(SpirvResourceList *list, const MGLIRSymbol *s,
         }
     }
 
-    SpirvResource *nl = (SpirvResource *)realloc(
-        list->list, (list->count + 1) * sizeof(SpirvResource));
+    MGLShaderResource *nl = (MGLShaderResource *)realloc(
+        list->list, (list->count + 1) * sizeof(MGLShaderResource));
     if (!nl) {
         return;
     }
@@ -277,10 +278,10 @@ static void push_resource(SpirvResourceList *list, const MGLIRSymbol *s,
     list->list[list->count++] = r;
 }
 
-static void destroy_list(SpirvResourceList *list)
+static void destroy_list(MGLShaderResourceList *list)
 {
     for (GLuint i = 0; i < list->count; i++) {
-        SpirvResource *r = &list->list[i];
+        MGLShaderResource *r = &list->list[i];
         free((void *)r->name);
         free(r->ubo_instance_name);
         if (r->ubo_members) {
@@ -323,7 +324,7 @@ static uint32_t air_reflect_attrib_location(const char *name,
 
 int mglAirReflectModule(const MGLIRModule *mod, int stage,
                         const char *const *attrib_names,
-                        SpirvResourceList lists[_MAX_SPIRV_RES],
+                        MGLShaderResourceList lists[MGL_MAX_SHADER_RESOURCES],
                         char *err, size_t errCap)
 {
     if (!mod || !lists) {
@@ -334,7 +335,7 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
      * single std140 struct buffer, so the exporter mirrors that: members
      * are collected here and emitted as one struct-packed resource the
      * renderer's STRUCT_PACKED path consumes. */
-    SpirvResource agg;
+    MGLShaderResource agg;
     memset(&agg, 0, sizeof(agg));
     MGLIRType **agg_types = NULL;
     const char **agg_names = NULL;
@@ -342,7 +343,7 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
     uint32_t agg_size = 0;
 
     /* The AIR backend assigns buffer argument locations independently of
-     * the SPIRV-style binding decorations: vertex stages start SSBOs at
+     * any legacy SPIR-V binding decoration: vertex stages start SSBOs at
      * hasBuffer + attrCount (plain-uniform pack first, then attributes),
      * UBOs after the SSBOs; fragment stages start both from 0.  The
      * exporter must mirror that so the renderer's Metal slots match the
@@ -394,7 +395,7 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
             if (t->kind == MGLIR_TYPE_SAMPLER) {
                 push_resource(&lists[_SAMPLED_IMAGE_RES], s, t, location,
                               texture_binding, stage);
-                SpirvResource *last =
+                MGLShaderResource *last =
                     &lists[_SAMPLED_IMAGE_RES].list[
                         lists[_SAMPLED_IMAGE_RES].count - 1];
                 if (s->binding != UINT32_MAX) {
@@ -404,7 +405,7 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                 last->has_combined_sampler = GL_TRUE;
                 last->combined_sampler_binding = sampler_binding;
                 /* Sampler GL uniform locations live in the synthetic
-                 * namespace (mirrors the SPIRV-Cross path in
+                 * namespace (mirrors the SPIRV-Cross-era path in
                  * mglSamplerUniformLocationFromReflection) unless the GLSL
                  * declares an explicit layout(location=N); otherwise MC's
                  * glGetUniformLocation/glUniform1i sampler-unit setup
@@ -421,7 +422,7 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
             if (t->kind == MGLIR_TYPE_IMAGE) {
                 push_resource(&lists[_STORAGE_IMAGE_RES], s, t, location,
                               texture_binding, stage);
-                SpirvResource *last =
+                MGLShaderResource *last =
                     &lists[_STORAGE_IMAGE_RES].list[
                         lists[_STORAGE_IMAGE_RES].count - 1];
                 last->sampler_unit = -1;
@@ -471,7 +472,7 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
             }
         } else if (q & MGL_AST_Q_IN) {
             /* Desired location: explicit bindings, stable names, then
-             * declaration order (glslang AUTO_MAP_LOCATIONS). */
+             * declaration order (CLI-style auto-mapped locations). */
             uint32_t want = air_reflect_attrib_location(s->name,
                                                         attrib_names);
             if (want != UINT32_MAX) {
@@ -538,9 +539,9 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
         agg.location = UINT32_MAX;   /* let the link pass assign locations */
         agg.gl_binding = 0;
         agg.binding = user_buffer_base;
-        SpirvResourceList *l = &lists[_UNIFORM_CONSTANT_RES];
-        SpirvResource *nl = (SpirvResource *)realloc(
-            l->list, (l->count + 1) * sizeof(SpirvResource));
+        MGLShaderResourceList *l = &lists[_UNIFORM_CONSTANT_RES];
+        MGLShaderResource *nl = (MGLShaderResource *)realloc(
+            l->list, (l->count + 1) * sizeof(MGLShaderResource));
         if (nl) {
             l->list = nl;
             l->list[l->count++] = agg;
@@ -551,12 +552,12 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
     return 0;
 }
 
-void mglAirReflectDestroy(SpirvResourceList lists[_MAX_SPIRV_RES])
+void mglAirReflectDestroy(MGLShaderResourceList lists[MGL_MAX_SHADER_RESOURCES])
 {
     if (!lists) {
         return;
     }
-    for (int i = 0; i < _MAX_SPIRV_RES; i++) {
+    for (int i = 0; i < MGL_MAX_SHADER_RESOURCES; i++) {
         destroy_list(&lists[i]);
     }
 }

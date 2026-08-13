@@ -7,13 +7,13 @@
  * Bridges the semantic gap between OpenGL sampler/resource semantics and
  * Metal sampler binding.  Covers several spec-compliance areas:
  *
- *   - Program SPIR-V resource queries (by name, by image dim, by Metal
- *     binding).  These are pure queries over Program->spirv_resources_list
+ *   - Program shader resource queries (by name, by image dim, by Metal
+ *     binding).  These are pure queries over Program->shader_resources_list
  *     and have no dependency on the renderer instance.
  *   - Sampler-like resource classification: GL sampler/uniform-constant
  *     resources that must be bound to Metal texture+sampler pairs, including
- *     heuristics for resources that SPIRV-Cross lowers to non-obvious MSL
- *     (e.g. Minecraft CloudFaces texel buffer → texture2d<int>).
+ *     heuristics for resources lowered to non-obvious MSL by the AIR
+ *     backend (e.g. Minecraft CloudFaces texel buffer → texture2d<int>).
  *   - Binding-trace gating: identify programs whose bind-time state changes
  *     are worth tracing for debugging (ChunkSection/Sampler1/Sampler2).
  *
@@ -31,10 +31,10 @@
 extern "C" {
 #endif
 
-/* === Program SPIR-V resource queries === */
+/* === Program shader resource queries === */
 
 /* Returns true if `program` has any sampled/separate/storage image resource
- * whose SPIR-V image_dim equals `imageDim` (e.g. SpvDimCube = 3). */
+ * whose image_dim equals `imageDim` (cube = 3). */
 bool mglProgramHasImageDim(Program *program, GLuint imageDim);
 
 /* Returns true if `program` has a resource of the given stage/type whose
@@ -68,27 +68,27 @@ bool mglProgramNeedsBindingTrace(Program *program);
 /* === Sampler-like resource classification === */
 
 /* Heuristic: does the resource name look like a GL sampler uniform that
- * SPIRV-Cross will lower to a Metal texture+sampler pair?  Covers names
+ * the AIR backend lowers to a Metal texture+sampler pair?  Covers names
  * containing "Sampler" and the Minecraft "CloudFaces" texel-buffer
  * workaround. */
 bool mglRendererSamplerNameLooksSamplerLike(const char *name);
 
-/* Heuristic: does the SPIR-V resource look like a sampler that must be
+/* Heuristic: does the shader resource look like a sampler that must be
  * bound to a Metal texture+sampler pair?  Considers resource type and,
  * for _UNIFORM_CONSTANT_RES, image_dim / uniform_location
  * / name heuristics. */
-bool mglRendererResourceLooksSamplerLike(const SpirvResource *res, int resType);
+bool mglRendererResourceLooksSamplerLike(const MGLShaderResource *res, int resType);
 
-/* Finds the SpirvResource for a given Metal binding in a stage, considering
+/* Finds the MGLShaderResource for a given Metal binding in a stage, considering
  * only sampler-like resources.  Returns NULL if not found.  Used by the
  * texture-unit resolution path. */
-SpirvResource *mglFindSamplerResourceForMetalBinding(Program *program,
+MGLShaderResource *mglFindSamplerResourceForMetalBinding(Program *program,
                                                      int stage,
                                                      GLuint metalBinding);
 
 /* Resolves a sampler-like reflected resource to its GL texture unit. */
 GLint mglResolveSamplerResourceUnit(Program *program,
-                                    SpirvResource *res,
+                                    MGLShaderResource *res,
                                     int stage,
                                     int resType);
 

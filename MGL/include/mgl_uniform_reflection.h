@@ -1,8 +1,8 @@
 /*
  * AIR-backed program reflection helpers.
  *
- * The legacy implementation mixed GL-facing reflection with SPIRV-Cross
- * type handles and raw SPIR-V analysis.  AIR reflection now populates the
+ * The legacy implementation mixed GL-facing reflection with backend
+ * type handles and raw bytecode analysis.  AIR reflection now populates the
  * program resource tables directly, so this interface only exposes the
  * runtime queries and location reconciliation used by the GL API.
  */
@@ -20,9 +20,9 @@ GLint mglActiveUniformBlockCount(Program *program);
 GLint mglActiveAtomicCounterBufferCount(Program *program);
 GLint mglActiveUniformBlockMaxNameLength(Program *program);
 GLint mglProgramActiveAttribCount(Program *program);
-SpirvResource *mglProgramActiveAttribAt(Program *program, GLuint index);
+MGLShaderResource *mglProgramActiveAttribAt(Program *program, GLuint index);
 GLint mglProgramActiveAttribMaxNameLength(Program *program);
-GLenum mglProgramActiveAttribType(const SpirvResource *res);
+GLenum mglProgramActiveAttribType(const MGLShaderResource *res);
 
 GLint mglSyntheticSamplerUniformLocation(int stage, int resource_type,
                                          GLuint index);
@@ -37,7 +37,7 @@ void mglUnifySamplerUniformLocations(Program *program);
 
 void mglAssignPlainUniformLocations(Program *program);
 void mglAssignAggregateMemberLocations(Program *program);
-void mglFreeSpirvResourceOwnedFields(SpirvResource *res);
+void mglFreeMGLShaderResourceOwnedFields(MGLShaderResource *res);
 
 #ifdef __cplusplus
 }

@@ -18,7 +18,7 @@
  *
  * Private method declarations for the ProgramBinding category
  * (MGLRenderer+ProgramBinding.m).  All methods are read-only queries over
- * the active program's spirv_resources_list.  Imports MGLRenderer_Private.h
+ * the active program's shader_resources_list.  Imports MGLRenderer_Private.h
  * for ivar access and shared types.
  */
 
@@ -29,7 +29,7 @@
 
 @interface MGLRenderer (ProgramBinding)
 
-/* === SPIR-V resource list queries === */
+/* === shader resource list queries === */
 - (int)getProgramBindingCount:(int)stage type:(int)type;
 - (int)getProgramBinding:(int)stage type:(int)type index:(int)index;
 - (int)getProgramGLBinding:(int)stage type:(int)type index:(int)index;
@@ -52,13 +52,13 @@
 /* === program-resolved texture type / data kind helpers ===
  *
  * These C helpers accept an already-resolved Program pointer and a
- * SpirvResource pointer, skipping the per-call mglResolveProgramForStageFromState
+ * MGLShaderResource pointer, skipping the per-call mglResolveProgramForStageFromState
  * that the ObjC query methods perform.  Used by the hot sampled-texture binding
  * loops in MGLRenderer+Draw.m to eliminate 3-5 redundant program re-resolves per
  * resource.  Behavior matches the ObjC query methods (caching + MSL fallback +
  * rate-limited override logging). */
-MTLTextureType mglDeclaredTextureTypeFromResource(const SpirvResource *res);
-MTLTextureType mglExpectedTextureTypeForResource(Program *program, int stage, SpirvResource *res);
-MGLTextureDataKind mglExpectedTextureDataKindForResource(Program *program, int stage, SpirvResource *res);
+MTLTextureType mglDeclaredTextureTypeFromResource(const MGLShaderResource *res);
+MTLTextureType mglExpectedTextureTypeForResource(Program *program, int stage, MGLShaderResource *res);
+MGLTextureDataKind mglExpectedTextureDataKindForResource(Program *program, int stage, MGLShaderResource *res);
 
 #endif /* MGLRenderer_ProgramBinding_Private_h */

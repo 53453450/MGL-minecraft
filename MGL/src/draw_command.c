@@ -1385,7 +1385,7 @@ static Program *mglSamplerSnapshotProgramForStage(GLMContext ctx, int stage)
     return ctx->active_state->program_pipeline->stage_programs[stage];
 }
 
-static int mglSamplerSnapshotTargetIndex(const SpirvResource *resource)
+static int mglSamplerSnapshotTargetIndex(const MGLShaderResource *resource)
 {
     if (!resource) return -1;
 
@@ -1518,16 +1518,16 @@ static bool mglCaptureProgramSamplerSnapshots(GLMContext ctx,
 {
     if (!program) return true;
 
-    SpirvResourceList *separate =
-        &program->spirv_resources_list[stage][_SEPARATE_SAMPLERS_RES];
+    MGLShaderResourceList *separate =
+        &program->shader_resources_list[stage][_SEPARATE_SAMPLERS_RES];
     for (GLuint i = 0; separate->list && i < separate->count; i++) {
         if (separate->list[i].resource_active) return false;
     }
 
-    SpirvResourceList *sampled =
-        &program->spirv_resources_list[stage][_SAMPLED_IMAGE_RES];
+    MGLShaderResourceList *sampled =
+        &program->shader_resources_list[stage][_SAMPLED_IMAGE_RES];
     for (GLuint i = 0; sampled->list && i < sampled->count; i++) {
-        SpirvResource *resource = &sampled->list[i];
+        MGLShaderResource *resource = &sampled->list[i];
         if (!resource->resource_active || !resource->has_combined_sampler) continue;
         if (resource->is_array || resource->gl_array_size > 1 ||
             resource->combined_sampler_binding == (GLuint)-1) {
@@ -1582,7 +1582,7 @@ static bool mglProgramHasUnsupportedStageSamplers(Program *program, int stage)
         _SEPARATE_SAMPLERS_RES,
     };
     for (size_t t = 0; t < sizeof(types) / sizeof(types[0]); t++) {
-        SpirvResourceList *list = &program->spirv_resources_list[stage][types[t]];
+        MGLShaderResourceList *list = &program->shader_resources_list[stage][types[t]];
         for (GLuint i = 0; list->list && i < list->count; i++) {
             if (list->list[i].resource_active) return true;
         }

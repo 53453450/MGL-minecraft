@@ -301,10 +301,10 @@ void mglFreeProgram(GLMContext ctx, Program *ptr)
 
     /* Free the buffer binding plan cache before releasing the spirv
      * resources it was built from.  The plan copies reflection values
-     * (not pointers to SpirvResource), so order doesn't strictly matter,
+     * (not pointers to MGLShaderResource), so order doesn't strictly matter,
      * but freeing here keeps the cleanup grouped with other caches. */
     mglBufferBindingPlanDestroy(ptr);
-    /* Free the active-uniform cache (pointers into spirv_resources_list,
+    /* Free the active-uniform cache (pointers into shader_resources_list,
      * so no owned allocations beyond the array itself). */
     mglFreeActiveUniformCache(ptr);
 
@@ -316,40 +316,40 @@ void mglFreeProgram(GLMContext ctx, Program *ptr)
     for(int i=0; i<_MAX_SHADER_TYPES; i++)
     {
         // CRITICAL FIX: Add NULL checks before all free/release operations to prevent double-frees
-        if (ptr->spirv[i].metallib_bytes) {
-            free(ptr->spirv[i].metallib_bytes);
-            ptr->spirv[i].metallib_bytes = NULL;
-            ptr->spirv[i].metallib_size = 0;
+        if (ptr->modules[i].metallib_bytes) {
+            free(ptr->modules[i].metallib_bytes);
+            ptr->modules[i].metallib_bytes = NULL;
+            ptr->modules[i].metallib_size = 0;
         }
-        if (ptr->spirv[i].metallib_tess_capture_bytes) {
-            free(ptr->spirv[i].metallib_tess_capture_bytes);
-            ptr->spirv[i].metallib_tess_capture_bytes = NULL;
-            ptr->spirv[i].metallib_tess_capture_size = 0;
+        if (ptr->modules[i].metallib_tess_capture_bytes) {
+            free(ptr->modules[i].metallib_tess_capture_bytes);
+            ptr->modules[i].metallib_tess_capture_bytes = NULL;
+            ptr->modules[i].metallib_tess_capture_size = 0;
         }
-        if (ptr->spirv[i].metallib_cull_capture_bytes) {
-            free(ptr->spirv[i].metallib_cull_capture_bytes);
-            ptr->spirv[i].metallib_cull_capture_bytes = NULL;
-            ptr->spirv[i].metallib_cull_capture_size = 0;
+        if (ptr->modules[i].metallib_cull_capture_bytes) {
+            free(ptr->modules[i].metallib_cull_capture_bytes);
+            ptr->modules[i].metallib_cull_capture_bytes = NULL;
+            ptr->modules[i].metallib_cull_capture_size = 0;
         }
-        if (ptr->spirv[i].entry_point) {
-            free(ptr->spirv[i].entry_point);
-            ptr->spirv[i].entry_point = NULL;
+        if (ptr->modules[i].entry_point) {
+            free(ptr->modules[i].entry_point);
+            ptr->modules[i].entry_point = NULL;
         }
-        mglSafeReleaseMetalObj((void **)&ptr->spirv[i].mtl_compute_pipeline);
-        mglSafeReleaseMetalObj((void **)&ptr->spirv[i].mtl_function);
-        mglSafeReleaseMetalObj((void **)&ptr->spirv[i].mtl_library);
-        mglSafeReleaseMetalObj((void **)&ptr->spirv[i].mtl_tess_capture_function);
-        mglSafeReleaseMetalObj((void **)&ptr->spirv[i].mtl_tess_capture_library);
-        mglSafeReleaseMetalObj((void **)&ptr->spirv[i].mtl_cull_capture_function);
-        mglSafeReleaseMetalObj((void **)&ptr->spirv[i].mtl_cull_capture_library);
+        mglSafeReleaseMetalObj((void **)&ptr->modules[i].mtl_compute_pipeline);
+        mglSafeReleaseMetalObj((void **)&ptr->modules[i].mtl_function);
+        mglSafeReleaseMetalObj((void **)&ptr->modules[i].mtl_library);
+        mglSafeReleaseMetalObj((void **)&ptr->modules[i].mtl_tess_capture_function);
+        mglSafeReleaseMetalObj((void **)&ptr->modules[i].mtl_tess_capture_library);
+        mglSafeReleaseMetalObj((void **)&ptr->modules[i].mtl_cull_capture_function);
+        mglSafeReleaseMetalObj((void **)&ptr->modules[i].mtl_cull_capture_library);
         
-        for(int j=0; j<_MAX_SPIRV_RES; j++)
+        for(int j=0; j<MGL_MAX_SHADER_RESOURCES; j++)
         {
             // CRITICAL FIX: Add NULL checks and clear pointers to prevent double-frees
-            SpirvResourceList *rl = &ptr->spirv_resources_list[i][j];
+            MGLShaderResourceList *rl = &ptr->shader_resources_list[i][j];
             if (rl->list) {
                 for (GLuint k = 0; k < rl->count; k++) {
-                    mglFreeSpirvResourceOwnedFields(&rl->list[k]);
+                    mglFreeMGLShaderResourceOwnedFields(&rl->list[k]);
                 }
                 free(rl->list);
                 rl->list = NULL;
@@ -765,8 +765,8 @@ static bool mglValidateTransformFeedbackVaryings(Program *pptr)
         return false;
     }
 
-    SpirvResourceList *outputs =
-        &pptr->spirv_resources_list[feedback_stage][_STAGE_OUTPUT_RES];
+    MGLShaderResourceList *outputs =
+        &pptr->shader_resources_list[feedback_stage][_STAGE_OUTPUT_RES];
 
     for (GLsizei i = 0; i < pptr->transform_feedback_varying_count; i++)
     {
@@ -864,7 +864,7 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
     }
     int air_rc = mglAirCompileGLSLWithReflectInfo(
         shader->src, air_stage, attrib_snapshot, &bytes, &size,
-        pptr->spirv_resources_list[stage], &stage_info, err, sizeof err);
+        pptr->shader_resources_list[stage], &stage_info, err, sizeof err);
     for (int ai = 0; ai < MAX_ATTRIBS; ai++) {
         free((void *)attrib_snapshot[ai]);
     }
@@ -874,10 +874,10 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
                 pptr->name, stage, err);
         return 0;
     }
-    pptr->spirv[stage].metallib_bytes = bytes;
-    pptr->spirv[stage].metallib_size = size;
-    pptr->spirv[stage].needs_buffer_size_buffer =
-        stage_info.needs_buffer_size_buffer ? GL_TRUE : GL_FALSE;
+    pptr->modules[stage].metallib_bytes = bytes;
+    pptr->modules[stage].metallib_size = size;
+    pptr->modules[stage].needs_runtime_array_size_buffer =
+        stage_info.needs_runtime_array_size_buffer ? GL_TRUE : GL_FALSE;
     if (stage == _VERTEX_SHADER) {
         pptr->uses_cull_distance = stage_info.uses_cull_distance
             ? GL_TRUE : GL_FALSE;
@@ -889,8 +889,8 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
         if (mglShaderCompileGLSLTessCapture(
                 shader->src, &capture_bytes, &capture_size,
                 capture_err, sizeof capture_err) == 0) {
-            pptr->spirv[stage].metallib_tess_capture_bytes = capture_bytes;
-            pptr->spirv[stage].metallib_tess_capture_size = capture_size;
+            pptr->modules[stage].metallib_tess_capture_bytes = capture_bytes;
+            pptr->modules[stage].metallib_tess_capture_size = capture_size;
         } else {
             fprintf(stderr,
                     "MGL WARNING: AIR tess VS capture compile failed "
@@ -904,9 +904,9 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
             if (mglShaderCompileGLSLCullDistanceCapture(
                     shader->src, &cull_capture_bytes, &cull_capture_size,
                     cull_capture_err, sizeof cull_capture_err) == 0) {
-                pptr->spirv[stage].metallib_cull_capture_bytes =
+                pptr->modules[stage].metallib_cull_capture_bytes =
                     cull_capture_bytes;
-                pptr->spirv[stage].metallib_cull_capture_size =
+                pptr->modules[stage].metallib_cull_capture_size =
                     cull_capture_size;
             } else {
                 fprintf(stderr,
@@ -916,10 +916,10 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
             }
         }
     }
-    if (pptr->spirv[stage].entry_point) {
-        free(pptr->spirv[stage].entry_point);
+    if (pptr->modules[stage].entry_point) {
+        free(pptr->modules[stage].entry_point);
     }
-    pptr->spirv[stage].entry_point = strdup("main");
+    pptr->modules[stage].entry_point = strdup("main");
     if (stage == _TESS_CONTROL_SHADER) {
         pptr->tess_control_output_vertices =
             stage_info.tess_control_output_vertices;
@@ -985,16 +985,16 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
     memset(pptr->validated_resource_list_counts, 0, sizeof(pptr->validated_resource_list_counts));
     /* Invalidate the buffer binding plan cache: the old plan reflects the
      * pre-link resource list and must not be reused.  The new plan is built
-     * from the freshly reflected spirv_resources_list at the end of a
+     * from the freshly reflected shader_resources_list at the end of a
      * successful link.  Destroy (rather than just mark invalid) so the
      * stale entries don't linger through a failed link. */
     mglBufferBindingPlanDestroy(pptr);
-    /* Invalidate the sampled-texture-unit bitmap: the SPIR-V resource list
+    /* Invalidate the sampled-texture-unit bitmap: the shader resource list
      * is rebuilt below, so the cached mapping from texture units to sampled
      * resources is stale until the next query rebuilds it. */
     pptr->sampled_texture_unit_mask_valid = 0u;
     /* Invalidate the sampler-binding-shared table; rebuilt from the
-     * freshly reflected spirv_resources_list after a successful link. */
+     * freshly reflected shader_resources_list after a successful link. */
     pptr->sampler_binding_shared_valid = 0u;
     memset(pptr->sampler_binding_shared, 0, sizeof(pptr->sampler_binding_shared));
     /* Invalidate the sampler-location bitmap; rebuilt at link end. */
@@ -1002,7 +1002,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
     pptr->sampler_location_bitmap[0] = 0u;
     pptr->sampler_location_bitmap[1] = 0u;
     /* Invalidate the active-uniform cache; rebuilt from the freshly
-     * reflected spirv_resources_list after a successful link. */
+     * reflected shader_resources_list after a successful link. */
     mglFreeActiveUniformCache(pptr);
     /* Invalidate the IR-level reflection cache for buffer slot
      * conflict detection.  Lazily recomputed on first
@@ -1098,7 +1098,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
     alignFragmentInputLocationsToVertexOutputs(pptr);
     mglBridgeSkippedGeometryShaderVaryings(pptr);
     mglAssignPlainUniformLocations(pptr);
-    if (pptr->spirv[_VERTEX_SHADER].metallib_bytes) {
+    if (pptr->modules[_VERTEX_SHADER].metallib_bytes) {
         mglAssignAggregateMemberLocations(pptr);
     }
     mglUnifySamplerUniformLocations(pptr);
@@ -1108,7 +1108,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
      * expands point/line/triangle strips to Metal list primitives. */
     if (pptr->attached_shader_mask & GEOMETRY_SHADER_MASK_BIT) {
         bool computeRoute =
-            pptr->spirv[_GEOMETRY_SHADER].metallib_bytes != NULL &&
+            pptr->modules[_GEOMETRY_SHADER].metallib_bytes != NULL &&
             (pptr->geometry_input_type == GL_POINTS ||
              pptr->geometry_input_type == GL_LINES ||
              pptr->geometry_input_type == GL_LINES_ADJACENCY ||
@@ -1142,7 +1142,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
                         "the AIR compute-expansion subset "
                         "(air=%d in=0x%x out=0x%x max=%u inv=%u xfb=%d)\n",
                         pptr->name,
-                        pptr->spirv[_GEOMETRY_SHADER].metallib_bytes != NULL,
+                        pptr->modules[_GEOMETRY_SHADER].metallib_bytes != NULL,
                         pptr->geometry_input_type,
                         pptr->geometry_output_type,
                         pptr->geometry_vertices_out,
@@ -1176,8 +1176,8 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
 
             /* Uniform blocks: GL_MAX_UNIFORM_BUFFER_BINDINGS */
             {
-                SpirvResourceList *rl =
-                    &pptr->spirv_resources_list[stage][_UNIFORM_BUFFER_RES];
+                MGLShaderResourceList *rl =
+                    &pptr->shader_resources_list[stage][_UNIFORM_BUFFER_RES];
                 for (GLuint i = 0; i < rl->count; i++) {
                     GLuint b = rl->list[i].gl_binding;
                     GLuint n = rl->list[i].ubo_array_size > 0
@@ -1198,8 +1198,8 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
 
             /* Shader storage buffers: GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS */
             if (!binding_error) {
-                SpirvResourceList *rl =
-                    &pptr->spirv_resources_list[stage][_STORAGE_BUFFER_RES];
+                MGLShaderResourceList *rl =
+                    &pptr->shader_resources_list[stage][_STORAGE_BUFFER_RES];
                 for (GLuint i = 0; i < rl->count; i++) {
                     GLuint b = rl->list[i].gl_binding;
                     if (b >= ctx->state.var.max_shader_storage_buffer_bindings) {
@@ -1218,8 +1218,8 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
 
             /* Storage images: GL_MAX_IMAGE_UNITS */
             if (!binding_error) {
-                SpirvResourceList *rl =
-                    &pptr->spirv_resources_list[stage][_STORAGE_IMAGE_RES];
+                MGLShaderResourceList *rl =
+                    &pptr->shader_resources_list[stage][_STORAGE_IMAGE_RES];
                 for (GLuint i = 0; i < rl->count; i++) {
                     GLuint b = rl->list[i].gl_binding;
                     if (b >= ctx->state.var.max_image_units) {
@@ -1238,8 +1238,8 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
 
             /* Atomic counters: GL_MAX_ATOMIC_COUNTER_BUFFER_BINDINGS */
             if (!binding_error) {
-                SpirvResourceList *rl =
-                    &pptr->spirv_resources_list[stage][_ATOMIC_COUNTER_RES];
+                MGLShaderResourceList *rl =
+                    &pptr->shader_resources_list[stage][_ATOMIC_COUNTER_RES];
                 for (GLuint i = 0; i < rl->count; i++) {
                     GLuint b = rl->list[i].gl_binding;
                     if (b >= ctx->state.var.max_atomic_counter_buffer_bindings) {
@@ -1264,7 +1264,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
 
     pptr->link_success = GL_TRUE;
     pptr->dirty_bits |= DIRTY_PROGRAM;
-    /* Relink rebuilds the SPIR-V resource list, so the program-level
+    /* Relink rebuilds the shader resource list, so the program-level
      * sampled-texture-unit bitmap is stale (mglLinkProgram invalidated it
      * earlier) and the merged state-level mask must follow.  glLinkProgram
      * only sets the renderer dirty bit directly, so the state-level cache
@@ -1277,9 +1277,9 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
     /* Populate renderer feature caches from AIR reflection. */
     {
         uint32_t attr_mask = 0u;
-        if (pptr->spirv[_VERTEX_SHADER].metallib_bytes) {
-            SpirvResourceList *ins =
-                &pptr->spirv_resources_list[_VERTEX_SHADER]
+        if (pptr->modules[_VERTEX_SHADER].metallib_bytes) {
+            MGLShaderResourceList *ins =
+                &pptr->shader_resources_list[_VERTEX_SHADER]
                                            [_STAGE_INPUT_RES];
             for (GLuint i = 0; i < ins->count; i++) {
                 GLuint loc = ins->list[i].location;
@@ -1314,15 +1314,15 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
             for (size_t rt = 0; rt < sizeof(sampler_res_types) / sizeof(sampler_res_types[0]); rt++) {
                 int res_type = sampler_res_types[rt];
-                if (res_type < 0 || res_type >= _MAX_SPIRV_RES) {
+                if (res_type < 0 || res_type >= MGL_MAX_SHADER_RESOURCES) {
                     continue;
                 }
-                SpirvResourceList *resources = &pptr->spirv_resources_list[stage][res_type];
+                MGLShaderResourceList *resources = &pptr->shader_resources_list[stage][res_type];
                 if (!resources) {
                     continue;
                 }
                 for (GLuint i = 0; i < resources->count; i++) {
-                    SpirvResource *res = &resources->list[i];
+                    MGLShaderResource *res = &resources->list[i];
                     if (!mglRendererResourceLooksSamplerLike(res, res_type)) {
                         continue;
                     }
@@ -1352,7 +1352,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         pptr->sampler_location_bitmap_valid = 1u;
     }
 
-    /* Build the buffer binding plan from the finalized spirv_resources_list.
+    /* Build the buffer binding plan from the finalized shader_resources_list.
      * The plan caches reflection-derived data (metal slots, client bindings,
      * struct packing metadata) so per-draw mapGLBuffersToMTLBufferMap paths
      * can skip repeated name lookups and program resolution.  See
@@ -1360,7 +1360,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
     mglBufferBindingPlanBuild(pptr);
 
     /* Build the deduplicated active-uniform cache from the finalized
-     * spirv_resources_list.  Eliminates O(N^3) dedup-on-every-query in
+     * shader_resources_list.  Eliminates O(N^3) dedup-on-every-query in
      * mglProgramActiveUniformCount / At / IndexByName / MaxNameLength. */
     mglBuildActiveUniformCache(pptr);
 
@@ -1553,7 +1553,7 @@ void mglGetActiveAttrib(GLMContext ctx, GLuint program, GLuint index, GLsizei bu
         return;
     }
 
-    SpirvResource *res = mglProgramActiveAttribAt(ptr, index);
+    MGLShaderResource *res = mglProgramActiveAttribAt(ptr, index);
     if (!res) {
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
@@ -1615,7 +1615,7 @@ void mglGetActiveUniform(GLMContext ctx, GLuint program, GLuint index, GLsizei b
 
     int stage = -1;
     int res_type = -1;
-    SpirvResource *res = mglProgramActiveUniformAt(ptr, index, &stage, &res_type);
+    MGLShaderResource *res = mglProgramActiveUniformAt(ptr, index, &stage, &res_type);
     (void)stage;
     if (!res) {
         ERROR_RETURN(GL_INVALID_VALUE);
@@ -1701,8 +1701,8 @@ GLint  mglGetAttribLocation(GLMContext ctx, GLuint program, const GLchar *name)
 		return -1;
 	}
 
-    SpirvResourceList *vertex_inputs =
-        &ptr->spirv_resources_list[_VERTEX_SHADER][_STAGE_INPUT_RES];
+    MGLShaderResourceList *vertex_inputs =
+        &ptr->shader_resources_list[_VERTEX_SHADER][_STAGE_INPUT_RES];
 
     /* Fast path: exact name match. */
     for (GLuint i = 0; vertex_inputs->list && i < vertex_inputs->count; i++)
@@ -1843,7 +1843,7 @@ void mglGetProgramiv(GLMContext ctx, GLuint program, GLenum pname, GLint *params
         case GL_TESS_GEN_VERTEX_ORDER:     /* 0x8E78 */
         case GL_TESS_GEN_POINT_MODE:       /* 0x8E79 */
             /* TES execution-mode reflection.  Returns the layout(...) values
-             * captured from SPIR-V OpExecutionMode at link time.  0 when no
+             * captured from AIR tessellation metadata at link time.  0 when no
              * TES is attached. */
             if (!pptr->link_success) {
                 ERROR_RETURN(GL_INVALID_OPERATION);

@@ -1,14 +1,14 @@
 // MGLRenderer+ProgramBinding.m
-// Program SPIR-V resource binding queries (count, binding, GL binding,
+// Program shader resource binding queries (count, binding, GL binding,
 // required size, Metal slot, texture type/location) extracted from
 // MGLRenderer.m.  All methods are read-only queries over the active
-// program's spirv_resources_list; they hold no Metal state of their own.
+// program's shader_resources_list; they hold no Metal state of their own.
 
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+ProgramBinding_Private.h"
 
 /* === AIR-reflected texture type / data kind helpers === */
-MTLTextureType mglDeclaredTextureTypeFromResource(const SpirvResource *res)
+MTLTextureType mglDeclaredTextureTypeFromResource(const MGLShaderResource *res)
 {
     if (!res) {
         return 0;
@@ -32,7 +32,7 @@ MTLTextureType mglDeclaredTextureTypeFromResource(const SpirvResource *res)
     }
 }
 
-MTLTextureType mglExpectedTextureTypeForResource(Program *program, int stage, SpirvResource *res)
+MTLTextureType mglExpectedTextureTypeForResource(Program *program, int stage, MGLShaderResource *res)
 {
     if (!program || !res || stage < 0 || stage >= _MAX_SHADER_TYPES) {
         return 0;
@@ -41,7 +41,7 @@ MTLTextureType mglExpectedTextureTypeForResource(Program *program, int stage, Sp
     return mglDeclaredTextureTypeFromResource(res);
 }
 
-MGLTextureDataKind mglExpectedTextureDataKindForResource(Program *program, int stage, SpirvResource *res)
+MGLTextureDataKind mglExpectedTextureDataKindForResource(Program *program, int stage, MGLShaderResource *res)
 {
     if (!program || !res || stage < 0 || stage >= _MAX_SHADER_TYPES) {
         return MGLTextureDataKindUnknown;
@@ -87,7 +87,7 @@ MGLTextureDataKind mglExpectedTextureDataKindForResource(Program *program, int s
     if (ptr == NULL)
         return 0;
 
-    return ptr->spirv_resources_list[stage][type].count;
+    return ptr->shader_resources_list[stage][type].count;
 }
 
 - (int) getProgramBinding: (int) stage type: (int) type index: (int) index
@@ -127,21 +127,21 @@ MGLTextureDataKind mglExpectedTextureDataKindForResource(Program *program, int s
         return 0;
     }
 
-    int count = ptr->spirv_resources_list[stage][type].count;
+    int count = ptr->shader_resources_list[stage][type].count;
     if (index < 0 || index >= count) {
         NSLog(@"MGL WARNING: getProgramBinding index out of range index=%d count=%d stage=%d type=%d",
               index, count, stage, type);
         return 0;
     }
 
-    return ptr->spirv_resources_list[stage][type].list[index].binding;
+    return ptr->shader_resources_list[stage][type].list[index].binding;
 }
 
 - (int)getProgramGLBinding:(int)stage type:(int)type index:(int)index
 {
     Program *ptr;
 
-    if (stage < 0 || stage >= _MAX_SHADER_TYPES || type < 0 || type >= _MAX_SPIRV_RES) {
+    if (stage < 0 || stage >= _MAX_SHADER_TYPES || type < 0 || type >= MGL_MAX_SHADER_RESOURCES) {
         return 0;
     }
 
@@ -150,12 +150,12 @@ MGLTextureDataKind mglExpectedTextureDataKindForResource(Program *program, int s
         return 0;
     }
 
-    int count = ptr->spirv_resources_list[stage][type].count;
+    int count = ptr->shader_resources_list[stage][type].count;
     if (index < 0 || index >= count) {
         return 0;
     }
 
-    return (int)ptr->spirv_resources_list[stage][type].list[index].gl_binding;
+    return (int)ptr->shader_resources_list[stage][type].list[index].gl_binding;
 }
 
 - (NSUInteger)getProgramBindingRequiredSize:(int)stage type:(int)type index:(int)index
@@ -165,7 +165,7 @@ MGLTextureDataKind mglExpectedTextureDataKindForResource(Program *program, int s
     if (stage < 0 || stage >= _MAX_SHADER_TYPES) {
         return 0;
     }
-    if (type < 0 || type >= _MAX_SPIRV_RES) {
+    if (type < 0 || type >= MGL_MAX_SHADER_RESOURCES) {
         return 0;
     }
 
@@ -174,11 +174,11 @@ MGLTextureDataKind mglExpectedTextureDataKindForResource(Program *program, int s
         return 0;
     }
 
-    if (index < 0 || index >= (int)ptr->spirv_resources_list[stage][type].count) {
+    if (index < 0 || index >= (int)ptr->shader_resources_list[stage][type].count) {
         return 0;
     }
 
-    return (NSUInteger)ptr->spirv_resources_list[stage][type].list[index].required_size;
+    return (NSUInteger)ptr->shader_resources_list[stage][type].list[index].required_size;
 }
 
 - (NSInteger)getProgramMetalBufferIndexForStage:(int)stage clientBinding:(GLuint)clientBinding
@@ -198,13 +198,13 @@ MGLTextureDataKind mglExpectedTextureDataKindForResource(Program *program, int s
 
     for (size_t t = 0; t < (sizeof(resourceTypes) / sizeof(resourceTypes[0])); t++) {
         int type = resourceTypes[t];
-        if (type < 0 || type >= _MAX_SPIRV_RES) {
+        if (type < 0 || type >= MGL_MAX_SHADER_RESOURCES) {
             continue;
         }
 
-        SpirvResourceList *list = &ptr->spirv_resources_list[stage][type];
+        MGLShaderResourceList *list = &ptr->shader_resources_list[stage][type];
         for (GLuint i = 0; i < list->count; i++) {
-            SpirvResource *res = &list->list[i];
+            MGLShaderResource *res = &list->list[i];
             if (mglShouldSkipStageBufferResource(ptr, stage, type, res)) {
                 continue;
             }
@@ -225,7 +225,7 @@ MGLTextureDataKind mglExpectedTextureDataKindForResource(Program *program, int s
     if (stage < 0 || stage >= _MAX_SHADER_TYPES) {
         return 0;
     }
-    if (type < 0 || type >= _MAX_SPIRV_RES) {
+    if (type < 0 || type >= MGL_MAX_SHADER_RESOURCES) {
         return 0;
     }
 
@@ -233,11 +233,11 @@ MGLTextureDataKind mglExpectedTextureDataKindForResource(Program *program, int s
     if (!ptr) {
         return 0;
     }
-    if (index < 0 || index >= (int)ptr->spirv_resources_list[stage][type].count) {
+    if (index < 0 || index >= (int)ptr->shader_resources_list[stage][type].count) {
         return 0;
     }
 
-    SpirvResource *res = &ptr->spirv_resources_list[stage][type].list[index];
+    MGLShaderResource *res = &ptr->shader_resources_list[stage][type].list[index];
     return mglDeclaredTextureTypeFromResource(res);
 }
 
@@ -248,7 +248,7 @@ MGLTextureDataKind mglExpectedTextureDataKindForResource(Program *program, int s
     if (stage < 0 || stage >= _MAX_SHADER_TYPES) {
         return 0;
     }
-    if (type < 0 || type >= _MAX_SPIRV_RES) {
+    if (type < 0 || type >= MGL_MAX_SHADER_RESOURCES) {
         return 0;
     }
 
@@ -256,11 +256,11 @@ MGLTextureDataKind mglExpectedTextureDataKindForResource(Program *program, int s
     if (!ptr) {
         return 0;
     }
-    if (index < 0 || index >= (int)ptr->spirv_resources_list[stage][type].count) {
+    if (index < 0 || index >= (int)ptr->shader_resources_list[stage][type].count) {
         return 0;
     }
 
-    SpirvResource *res = &ptr->spirv_resources_list[stage][type].list[index];
+    MGLShaderResource *res = &ptr->shader_resources_list[stage][type].list[index];
     return mglExpectedTextureTypeForResource(ptr, stage, res);
 }
 
@@ -269,7 +269,7 @@ MGLTextureDataKind mglExpectedTextureDataKindForResource(Program *program, int s
     if (stage < 0 || stage >= _MAX_SHADER_TYPES) {
         return MGLTextureDataKindUnknown;
     }
-    if (type < 0 || type >= _MAX_SPIRV_RES) {
+    if (type < 0 || type >= MGL_MAX_SHADER_RESOURCES) {
         return MGLTextureDataKindUnknown;
     }
 
@@ -277,11 +277,11 @@ MGLTextureDataKind mglExpectedTextureDataKindForResource(Program *program, int s
     if (!ptr) {
         return MGLTextureDataKindUnknown;
     }
-    if (index < 0 || index >= (int)ptr->spirv_resources_list[stage][type].count) {
+    if (index < 0 || index >= (int)ptr->shader_resources_list[stage][type].count) {
         return MGLTextureDataKindUnknown;
     }
 
-    SpirvResource *res = &ptr->spirv_resources_list[stage][type].list[index];
+    MGLShaderResource *res = &ptr->shader_resources_list[stage][type].list[index];
     return mglExpectedTextureDataKindForResource(ptr, stage, res);
 }
 
@@ -299,7 +299,7 @@ MGLTextureDataKind mglExpectedTextureDataKindForResource(Program *program, int s
         return 0;
     }
 
-    /* Resolve the program once and read spirv_resources_list directly. */
+    /* Resolve the program once and read shader_resources_list directly. */
     Program *program = mglResolveProgramForStageFromState(ctx, stage);
     if (!program) {
         return 0;
@@ -308,13 +308,13 @@ MGLTextureDataKind mglExpectedTextureDataKindForResource(Program *program, int s
     NSUInteger required = 0;
     for (size_t t = 0; t < (sizeof(resourceTypes) / sizeof(resourceTypes[0])); t++) {
         int type = resourceTypes[t];
-        if (type < 0 || type >= _MAX_SPIRV_RES) {
+        if (type < 0 || type >= MGL_MAX_SHADER_RESOURCES) {
             continue;
         }
 
-        SpirvResourceList *list = &program->spirv_resources_list[stage][type];
+        MGLShaderResourceList *list = &program->shader_resources_list[stage][type];
         for (GLuint i = 0; i < list->count; i++) {
-            SpirvResource *resource = &list->list[i];
+            MGLShaderResource *resource = &list->list[i];
             if (mglShouldSkipStageBufferResource(program, stage, type, resource)) {
                 continue;
             }
@@ -356,7 +356,7 @@ MGLTextureDataKind mglExpectedTextureDataKindForResource(Program *program, int s
            break;
 
        default:
-            NSLog(@"MGL WARNING: unsupported SPIRV-Cross resource type %d in getProgramLocation", type);
+            NSLog(@"MGL WARNING: unsupported shader resource type %d in getProgramLocation", type);
             return 0;
     }
 
@@ -369,14 +369,14 @@ MGLTextureDataKind mglExpectedTextureDataKindForResource(Program *program, int s
         return 0;
     }
 
-    int count = ptr->spirv_resources_list[stage][type].count;
+    int count = ptr->shader_resources_list[stage][type].count;
     if (index < 0 || index >= count) {
         NSLog(@"MGL WARNING: getProgramLocation index out of range index=%d count=%d stage=%d type=%d",
               index, count, stage, type);
         return 0;
     }
 
-    return ptr->spirv_resources_list[stage][type].list[index].location;
+    return ptr->shader_resources_list[stage][type].list[index].location;
 }
 
 @end

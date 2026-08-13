@@ -4,15 +4,15 @@
  *
  * Vertex Attrib Query Subsystem.
  *
- * Read-only queries over a Program's SPIR-V stage-input resources and
+ * Read-only queries over a Program's shader stage-input resources and
  * VertexArray attribute state.  Used by the per-draw attribute-binding path
  * to decide which vertex attributes need binding, which are color inputs,
  * and which use current-value fallbacks.
  *
  * All functions are pure (take Program* and VertexArray* params, no self/ivar).
  *
- * Dependencies: glm_context.h (Program, SpirvResource, SpirvResourceList,
- * VertexArray, MAX_ATTRIBS, _VERTEX_SHADER) + spirv_cross_c.h
+ * Dependencies: glm_context.h (Program, MGLShaderResource, MGLShaderResourceList,
+ * VertexArray, MAX_ATTRIBS, _VERTEX_SHADER)
  * (_STAGE_INPUT_RES) + <strings.h> (strcasecmp).
  */
 
@@ -38,9 +38,9 @@ extern "C" {
  * matching `attribIndex`. */
 BOOL mglRendererProgramUsesVertexAttrib(Program *program, GLuint attribute);
 
-/* Returns the SpirvResource for `attribIndex` in `program`'s vertex stage,
+/* Returns the MGLShaderResource for `attribIndex` in `program`'s vertex stage,
  * or NULL if not found. */
-SpirvResource *mglRendererProgramVertexAttribResource(Program *program,
+MGLShaderResource *mglRendererProgramVertexAttribResource(Program *program,
                                                        GLuint attribute);
 
 /* Returns true if the vertex attrib at `attribIndex` is a color input

@@ -439,7 +439,7 @@ static void mgl_finish_query_result(QueryObject *q)
 
 /* Check if a program interface token is valid per the GL spec.
  * Subroutine and transform-feedback interfaces are valid but not
- * backed by SPIRV-Cross resource types, so they need separate handling. */
+ * backed by shader resource types, so they need separate handling. */
 static GLboolean mgl_program_interface_is_valid(GLenum programInterface)
 {
 	switch (programInterface)
@@ -510,7 +510,7 @@ static int mgl_program_interface_to_spvc_list(GLenum programInterface, int *type
 	return 1;
 }
 
-static GLboolean mgl_program_uniform_block_identity_matches(const SpirvResource *a, const SpirvResource *b)
+static GLboolean mgl_program_uniform_block_identity_matches(const MGLShaderResource *a, const MGLShaderResource *b)
 {
 	if (!a || !b)
 		return GL_FALSE;
@@ -524,12 +524,12 @@ static GLboolean mgl_program_uniform_block_identity_matches(const SpirvResource 
 	return a->gl_binding == b->gl_binding ? GL_TRUE : GL_FALSE;
 }
 
-static GLuint mgl_program_uniform_block_array_size(const SpirvResource *block)
+static GLuint mgl_program_uniform_block_array_size(const MGLShaderResource *block)
 {
 	return (block && block->ubo_array_size > 0) ? block->ubo_array_size : 1u;
 }
 
-static GLuint mgl_program_uniform_block_element_binding(const SpirvResource *block, GLuint element)
+static GLuint mgl_program_uniform_block_element_binding(const MGLShaderResource *block, GLuint element)
 {
 	if (!block)
 		return 0;
@@ -538,7 +538,7 @@ static GLuint mgl_program_uniform_block_element_binding(const SpirvResource *blo
 	return block->gl_binding + element;
 }
 
-static GLsizei mgl_program_uniform_block_element_name(const SpirvResource *block,
+static GLsizei mgl_program_uniform_block_element_name(const MGLShaderResource *block,
                                                       GLuint element,
                                                       GLsizei bufSize,
                                                       GLchar *name)
@@ -562,7 +562,7 @@ static GLsizei mgl_program_uniform_block_element_name(const SpirvResource *block
 	return len;
 }
 
-static GLboolean mgl_program_uniform_block_name_matches(const SpirvResource *block,
+static GLboolean mgl_program_uniform_block_name_matches(const MGLShaderResource *block,
                                                         const GLchar *name,
                                                         GLuint *out_element)
 {
@@ -597,7 +597,7 @@ static GLboolean mgl_program_uniform_block_name_matches(const SpirvResource *blo
 	return GL_TRUE;
 }
 
-static GLboolean mgl_program_resource_name_with_array_matches(const SpirvResource *res,
+static GLboolean mgl_program_resource_name_with_array_matches(const MGLShaderResource *res,
                                                               const GLchar *name,
                                                               GLuint *out_element)
 {
@@ -639,7 +639,7 @@ static GLboolean mgl_program_resource_name_with_array_matches(const SpirvResourc
 	return GL_TRUE;
 }
 
-static GLuint mgl_program_resource_location_span(const SpirvResource *res)
+static GLuint mgl_program_resource_location_span(const MGLShaderResource *res)
 {
 	if (!res)
 		return 1;
@@ -663,7 +663,7 @@ static GLuint mgl_program_resource_location_span(const SpirvResource *res)
 	}
 }
 
-static GLsizei mgl_program_resource_name_with_array(const SpirvResource *res,
+static GLsizei mgl_program_resource_name_with_array(const MGLShaderResource *res,
                                                     GLsizei bufSize,
                                                     GLchar *name)
 {
@@ -687,16 +687,16 @@ static GLboolean mgl_program_block_seen_before(Program *pptr, int res_type, int 
 	if (!pptr || target_stage < 0 || target_stage >= _MAX_SHADER_TYPES)
 		return GL_FALSE;
 
-	SpirvResourceList *target_resources =
-		&pptr->spirv_resources_list[target_stage][res_type];
+	MGLShaderResourceList *target_resources =
+		&pptr->shader_resources_list[target_stage][res_type];
 	if (!target_resources->list || target_index >= target_resources->count)
 		return GL_FALSE;
 
-	SpirvResource *target = &target_resources->list[target_index];
+	MGLShaderResource *target = &target_resources->list[target_index];
 	for (int stage = 0; stage <= target_stage && stage < _MAX_SHADER_TYPES; stage++)
 	{
-		SpirvResourceList *resources =
-			&pptr->spirv_resources_list[stage][res_type];
+		MGLShaderResourceList *resources =
+			&pptr->shader_resources_list[stage][res_type];
 		GLuint limit = (stage == target_stage) ? target_index : resources->count;
 		for (GLuint i = 0; resources->list && i < limit; i++)
 		{
@@ -708,13 +708,13 @@ static GLboolean mgl_program_block_seen_before(Program *pptr, int res_type, int 
 	return GL_FALSE;
 }
 
-static GLboolean mgl_program_block_referenced_by_stage(Program *pptr, int res_type, const SpirvResource *block, int query_stage)
+static GLboolean mgl_program_block_referenced_by_stage(Program *pptr, int res_type, const MGLShaderResource *block, int query_stage)
 {
 	if (!pptr || !block || query_stage < 0 || query_stage >= _MAX_SHADER_TYPES)
 		return GL_FALSE;
 
-	SpirvResourceList *resources =
-		&pptr->spirv_resources_list[query_stage][res_type];
+	MGLShaderResourceList *resources =
+		&pptr->shader_resources_list[query_stage][res_type];
 	for (GLuint i = 0; resources->list && i < resources->count; i++)
 	{
 		if (mgl_program_uniform_block_identity_matches(block, &resources->list[i]))
@@ -724,7 +724,7 @@ static GLboolean mgl_program_block_referenced_by_stage(Program *pptr, int res_ty
 	return GL_FALSE;
 }
 
-static size_t mgl_program_block_required_size(Program *pptr, int res_type, const SpirvResource *block)
+static size_t mgl_program_block_required_size(Program *pptr, int res_type, const MGLShaderResource *block)
 {
 	size_t required_size = 0;
 
@@ -733,8 +733,8 @@ static size_t mgl_program_block_required_size(Program *pptr, int res_type, const
 
 	for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++)
 	{
-		SpirvResourceList *resources =
-			&pptr->spirv_resources_list[stage][res_type];
+		MGLShaderResourceList *resources =
+			&pptr->shader_resources_list[stage][res_type];
 		for (GLuint i = 0; resources->list && i < resources->count; i++)
 		{
 			if (mgl_program_uniform_block_identity_matches(block, &resources->list[i]) &&
@@ -751,7 +751,7 @@ static size_t mgl_program_block_required_size(Program *pptr, int res_type, const
 static int mgl_program_input_stage(Program *pptr);
 static int mgl_program_output_stage(Program *pptr);
 static GLboolean mgl_program_resource_should_include_stage(Program *pptr, int res_type, int stage);
-static SpirvResource *mgl_program_builtin_list(Program *pptr, int res_type,
+static MGLShaderResource *mgl_program_builtin_list(Program *pptr, int res_type,
                                                GLuint *out_count, int *out_stage);
 
 static GLsizei mgl_program_resource_count_for_type(Program *pptr, int res_type)
@@ -762,7 +762,7 @@ static GLsizei mgl_program_resource_count_for_type(Program *pptr, int res_type)
 	for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
 		if (!mgl_program_resource_should_include_stage(pptr, res_type, stage))
 			continue;
-		GLuint count = pptr->spirv_resources_list[stage][res_type].count;
+		GLuint count = pptr->shader_resources_list[stage][res_type].count;
 		if (!is_block_type) {
 			total += (GLsizei)count;
 			continue;
@@ -770,7 +770,7 @@ static GLsizei mgl_program_resource_count_for_type(Program *pptr, int res_type)
 		for (GLuint i = 0; i < count; i++) {
 			if (!mgl_program_block_seen_before(pptr, res_type, stage, i))
 				total += (GLsizei)mgl_program_uniform_block_array_size(
-					&pptr->spirv_resources_list[stage][res_type].list[i]);
+					&pptr->shader_resources_list[stage][res_type].list[i]);
 		}
 	}
 	/* Add built-in resources for PROGRAM_INPUT / PROGRAM_OUTPUT. */
@@ -822,10 +822,10 @@ static GLboolean mgl_program_resource_should_include_stage(Program *pptr, int re
 	return GL_TRUE;
 }
 
-static GLboolean mgl_program_resource_sort_before(const SpirvResource *a,
+static GLboolean mgl_program_resource_sort_before(const MGLShaderResource *a,
                                                   int a_stage,
                                                   GLuint a_index,
-                                                  const SpirvResource *b,
+                                                  const MGLShaderResource *b,
                                                   int b_stage,
                                                   GLuint b_index)
 {
@@ -844,7 +844,7 @@ static GLboolean mgl_program_resource_sort_before(const SpirvResource *a,
 }
 
 /* Returns the built-in list and stage for PROGRAM_INPUT / PROGRAM_OUTPUT. */
-static SpirvResource *mgl_program_builtin_list(Program *pptr, int res_type,
+static MGLShaderResource *mgl_program_builtin_list(Program *pptr, int res_type,
                                                GLuint *out_count, int *out_stage)
 {
 	if (!pptr || !out_count || !out_stage)
@@ -870,17 +870,17 @@ static GLuint mgl_program_location_ordered_resource_rank(Program *pptr,
                                                          int res_type,
                                                          int stage,
                                                          GLuint index,
-                                                         const SpirvResource *res)
+                                                         const MGLShaderResource *res)
 {
 	GLuint rank = 0;
 	for (int rank_stage = 0; rank_stage < _MAX_SHADER_TYPES; rank_stage++)
 	{
 		if (!mgl_program_resource_should_include_stage(pptr, res_type, rank_stage))
 			continue;
-		SpirvResourceList *rank_resources = &pptr->spirv_resources_list[rank_stage][res_type];
+		MGLShaderResourceList *rank_resources = &pptr->shader_resources_list[rank_stage][res_type];
 		for (GLuint r = 0; rank_resources->list && r < rank_resources->count; r++)
 		{
-			SpirvResource *candidate = &rank_resources->list[r];
+			MGLShaderResource *candidate = &rank_resources->list[r];
 			if (!candidate->name)
 				continue;
 			if (mgl_program_resource_sort_before(candidate, rank_stage, r, res, stage, index))
@@ -890,10 +890,10 @@ static GLuint mgl_program_location_ordered_resource_rank(Program *pptr,
 	/* Also count built-in resources that sort before the given resource. */
 	GLuint builtin_count = 0;
 	int builtin_stage = -1;
-	SpirvResource *builtins = mgl_program_builtin_list(pptr, res_type, &builtin_count, &builtin_stage);
+	MGLShaderResource *builtins = mgl_program_builtin_list(pptr, res_type, &builtin_count, &builtin_stage);
 	for (GLuint r = 0; builtins && r < builtin_count; r++)
 	{
-		SpirvResource *candidate = &builtins[r];
+		MGLShaderResource *candidate = &builtins[r];
 		if (!candidate->name)
 			continue;
 		if (mgl_program_resource_sort_before(candidate, builtin_stage, r, res, stage, index))
@@ -902,7 +902,7 @@ static GLuint mgl_program_location_ordered_resource_rank(Program *pptr,
 	return rank;
 }
 
-static SpirvResource *mgl_program_location_ordered_resource_at_index_for_type(Program *pptr,
+static MGLShaderResource *mgl_program_location_ordered_resource_at_index_for_type(Program *pptr,
                                                                               int res_type,
                                                                               GLuint index,
                                                                               int *out_stage)
@@ -912,10 +912,10 @@ static SpirvResource *mgl_program_location_ordered_resource_at_index_for_type(Pr
 		if (!mgl_program_resource_should_include_stage(pptr, res_type, stage))
 			continue;
 
-		SpirvResourceList *resources = &pptr->spirv_resources_list[stage][res_type];
+		MGLShaderResourceList *resources = &pptr->shader_resources_list[stage][res_type];
 		for (GLuint i = 0; resources->list && i < resources->count; i++)
 		{
-			SpirvResource *res = &resources->list[i];
+			MGLShaderResource *res = &resources->list[i];
 			if (!res->name)
 				continue;
 			if (mgl_program_location_ordered_resource_rank(pptr, res_type, stage, i, res) == index)
@@ -930,10 +930,10 @@ static SpirvResource *mgl_program_location_ordered_resource_at_index_for_type(Pr
 	/* Also check built-in resources. */
 	GLuint builtin_count = 0;
 	int builtin_stage = -1;
-	SpirvResource *builtins = mgl_program_builtin_list(pptr, res_type, &builtin_count, &builtin_stage);
+	MGLShaderResource *builtins = mgl_program_builtin_list(pptr, res_type, &builtin_count, &builtin_stage);
 	for (GLuint i = 0; builtins && i < builtin_count; i++)
 	{
-		SpirvResource *res = &builtins[i];
+		MGLShaderResource *res = &builtins[i];
 		if (!res->name)
 			continue;
 		if (mgl_program_location_ordered_resource_rank(pptr, res_type, builtin_stage, i, res) == index)
@@ -955,7 +955,7 @@ static GLsizei mgl_program_resource_count(Program *pptr, const int *types, int t
 	return total;
 }
 
-static SpirvResource *mgl_program_resource_at_index_for_type(Program *pptr, int res_type, GLuint index, int *out_stage)
+static MGLShaderResource *mgl_program_resource_at_index_for_type(Program *pptr, int res_type, GLuint index, int *out_stage)
 {
 	if (mgl_program_resource_type_is_location_ordered(res_type))
 		return mgl_program_location_ordered_resource_at_index_for_type(pptr, res_type, index, out_stage);
@@ -968,14 +968,14 @@ static SpirvResource *mgl_program_resource_at_index_for_type(Program *pptr, int 
 	{
 		if (!mgl_program_resource_should_include_stage(pptr, res_type, stage))
 			continue;
-		GLuint count = pptr->spirv_resources_list[stage][res_type].count;
+		GLuint count = pptr->shader_resources_list[stage][res_type].count;
 		for (GLuint i = 0; i < count; i++)
 		{
 			if (is_block_type &&
 			    mgl_program_block_seen_before(pptr, res_type, stage, i))
 				continue;
 			GLuint element_count = is_block_type
-				? mgl_program_uniform_block_array_size(&pptr->spirv_resources_list[stage][res_type].list[i])
+				? mgl_program_uniform_block_array_size(&pptr->shader_resources_list[stage][res_type].list[i])
 				: 1u;
 			for (GLuint element = 0; element < element_count; element++)
 			{
@@ -983,7 +983,7 @@ static SpirvResource *mgl_program_resource_at_index_for_type(Program *pptr, int 
 			{
 				if (out_stage)
 					*out_stage = stage;
-				SpirvResource *res = &pptr->spirv_resources_list[stage][res_type].list[i];
+				MGLShaderResource *res = &pptr->shader_resources_list[stage][res_type].list[i];
 				res->ubo_array_element = element;
 				return res;
 			}
@@ -994,7 +994,7 @@ static SpirvResource *mgl_program_resource_at_index_for_type(Program *pptr, int 
 	return NULL;
 }
 
-static SpirvResource *mgl_program_resource_at_index(Program *pptr, const int *types, int type_count, GLuint index, int *out_stage, int *out_res_type)
+static MGLShaderResource *mgl_program_resource_at_index(Program *pptr, const int *types, int type_count, GLuint index, int *out_stage, int *out_res_type)
 {
 	GLuint offset = 0;
 	for (int t = 0; t < type_count; t++)
@@ -1002,7 +1002,7 @@ static SpirvResource *mgl_program_resource_at_index(Program *pptr, const int *ty
 		GLsizei count = mgl_program_resource_count_for_type(pptr, types[t]);
 		if (index < offset + (GLuint)count)
 		{
-			SpirvResource *res = mgl_program_resource_at_index_for_type(pptr, types[t], index - offset, out_stage);
+			MGLShaderResource *res = mgl_program_resource_at_index_for_type(pptr, types[t], index - offset, out_stage);
 			if (res && out_res_type)
 				*out_res_type = types[t];
 			return res;
@@ -1012,7 +1012,7 @@ static SpirvResource *mgl_program_resource_at_index(Program *pptr, const int *ty
 	return NULL;
 }
 
-static SpirvResource *mgl_program_resource_find_by_name_for_type(Program *pptr, int res_type, const GLchar *name, GLuint *out_index, int *out_stage)
+static MGLShaderResource *mgl_program_resource_find_by_name_for_type(Program *pptr, int res_type, const GLchar *name, GLuint *out_index, int *out_stage)
 {
 	bool is_block_type = (res_type == _UNIFORM_BUFFER_RES ||
 	                      res_type == _STORAGE_BUFFER_RES);
@@ -1020,10 +1020,10 @@ static SpirvResource *mgl_program_resource_find_by_name_for_type(Program *pptr, 
 	{
 		if (!mgl_program_resource_should_include_stage(pptr, res_type, stage))
 			continue;
-		GLuint count = pptr->spirv_resources_list[stage][res_type].count;
+		GLuint count = pptr->shader_resources_list[stage][res_type].count;
 		for (GLuint i = 0; i < count; i++)
 		{
-			SpirvResource *res = &pptr->spirv_resources_list[stage][res_type].list[i];
+			MGLShaderResource *res = &pptr->shader_resources_list[stage][res_type].list[i];
 			if (is_block_type &&
 			    mgl_program_block_seen_before(pptr, res_type, stage, i))
 				continue;
@@ -1053,7 +1053,7 @@ static SpirvResource *mgl_program_resource_find_by_name_for_type(Program *pptr, 
 						{
 							if (!mgl_program_resource_should_include_stage(pptr, res_type, rank_stage))
 								continue;
-							SpirvResourceList *rank_resources = &pptr->spirv_resources_list[rank_stage][res_type];
+							MGLShaderResourceList *rank_resources = &pptr->shader_resources_list[rank_stage][res_type];
 							GLuint limit = (rank_stage == stage) ? i : rank_resources->count;
 							for (GLuint r = 0; rank_resources->list && r < limit; r++)
 							{
@@ -1081,10 +1081,10 @@ static SpirvResource *mgl_program_resource_find_by_name_for_type(Program *pptr, 
 	{
 		GLuint builtin_count = 0;
 		int builtin_stage = -1;
-		SpirvResource *builtins = mgl_program_builtin_list(pptr, res_type, &builtin_count, &builtin_stage);
+		MGLShaderResource *builtins = mgl_program_builtin_list(pptr, res_type, &builtin_count, &builtin_stage);
 		for (GLuint i = 0; builtins && i < builtin_count; i++)
 		{
-			SpirvResource *res = &builtins[i];
+			MGLShaderResource *res = &builtins[i];
 			GLuint element = 0;
 			GLboolean name_matches =
 				mgl_program_resource_name_with_array_matches(res, name, &element) ||
@@ -1109,13 +1109,13 @@ static SpirvResource *mgl_program_resource_find_by_name_for_type(Program *pptr, 
 	return NULL;
 }
 
-static SpirvResource *mgl_program_resource_find_by_name(Program *pptr, const int *types, int type_count, const GLchar *name, GLuint *out_index, int *out_stage, int *out_res_type)
+static MGLShaderResource *mgl_program_resource_find_by_name(Program *pptr, const int *types, int type_count, const GLchar *name, GLuint *out_index, int *out_stage, int *out_res_type)
 {
 	GLuint offset = 0;
 	for (int t = 0; t < type_count; t++)
 	{
 		GLuint local_index = 0;
-		SpirvResource *res = mgl_program_resource_find_by_name_for_type(pptr, types[t], name, &local_index, out_stage);
+		MGLShaderResource *res = mgl_program_resource_find_by_name_for_type(pptr, types[t], name, &local_index, out_stage);
 		if (res)
 		{
 			if (out_index)
@@ -1129,7 +1129,7 @@ static SpirvResource *mgl_program_resource_find_by_name(Program *pptr, const int
 	return NULL;
 }
 
-static GLint mgl_program_resource_gl_type(const SpirvResource *res, int res_type)
+static GLint mgl_program_resource_gl_type(const MGLShaderResource *res, int res_type)
 {
 	if (!res)
 		return 0;
@@ -1233,7 +1233,7 @@ static GLboolean mgl_program_uniform_referenced_by_stage(Program *pptr, const ch
 	for (size_t t = 0; t < sizeof(uniform_resource_types) / sizeof(uniform_resource_types[0]); t++)
 	{
 		int res_type = uniform_resource_types[t];
-		SpirvResourceList *resources = &pptr->spirv_resources_list[target_stage][res_type];
+		MGLShaderResourceList *resources = &pptr->shader_resources_list[target_stage][res_type];
 		for (GLuint i = 0; resources->list && i < resources->count; i++)
 		{
 			if (mgl_program_resource_names_match(resources->list[i].name, name))
@@ -1244,7 +1244,7 @@ static GLboolean mgl_program_uniform_referenced_by_stage(Program *pptr, const ch
 	return GL_FALSE;
 }
 
-static GLboolean mgl_program_active_uniform_referenced_by_stage(const SpirvResource *res,
+static GLboolean mgl_program_active_uniform_referenced_by_stage(const MGLShaderResource *res,
                                                                 int res_stage,
                                                                 int target_stage)
 {
@@ -1255,7 +1255,7 @@ static GLboolean mgl_program_active_uniform_referenced_by_stage(const SpirvResou
 	return GL_FALSE;
 }
 
-static GLint mgl_program_uniform_array_size_for_query(const SpirvResource *res)
+static GLint mgl_program_uniform_array_size_for_query(const MGLShaderResource *res)
 {
 	if (!res || !res->ubo_member)
 		return 1;
@@ -1272,7 +1272,7 @@ static GLint mgl_program_uniform_array_size_for_query(const SpirvResource *res)
 }
 
 static GLsizei mgl_program_uniform_block_active_variables(Program *pptr,
-                                                          const SpirvResource *block,
+                                                          const MGLShaderResource *block,
                                                           GLint *params,
                                                           GLsizei max_count)
 {
@@ -1283,7 +1283,7 @@ static GLsizei mgl_program_uniform_block_active_variables(Program *pptr,
 	GLint total = mglProgramActiveUniformCount(pptr);
 	for (GLint ui = 0; ui < total && written < max_count; ui++)
 	{
-		SpirvResource *res = mglProgramActiveUniformAt(pptr, (GLuint)ui, NULL, NULL);
+		MGLShaderResource *res = mglProgramActiveUniformAt(pptr, (GLuint)ui, NULL, NULL);
 		if (!res || !res->ubo_member)
 			continue;
 		for (GLuint m = 0; m < block->ubo_member_count; m++)
@@ -1298,7 +1298,7 @@ static GLsizei mgl_program_uniform_block_active_variables(Program *pptr,
 	return written;
 }
 
-static GLint mgl_program_uniform_resource_location(GLMContext ctx, GLuint program, const SpirvResource *res)
+static GLint mgl_program_uniform_resource_location(GLMContext ctx, GLuint program, const MGLShaderResource *res)
 {
 	if (!ctx || !res || !res->name)
 		return -1;
@@ -1336,7 +1336,7 @@ static GLboolean mgl_get_program_uniform_resourceiv(GLMContext ctx,
 {
 	int stage = -1;
 	int res_type = -1;
-	SpirvResource *res = mglProgramActiveUniformAt(pptr, index, &stage, &res_type);
+	MGLShaderResource *res = mglProgramActiveUniformAt(pptr, index, &stage, &res_type);
 	if (!res)
 	{
 		STATE(error) = GL_INVALID_VALUE;
@@ -2789,13 +2789,13 @@ static GLsizei mgl_program_buffer_variable_count(Program *pptr)
 	GLsizei total = 0;
 	for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++)
 	{
-		SpirvResourceList *list =
-			&pptr->spirv_resources_list[stage][_STORAGE_BUFFER_RES];
+		MGLShaderResourceList *list =
+			&pptr->shader_resources_list[stage][_STORAGE_BUFFER_RES];
 		for (GLuint i = 0; list->list && i < list->count; i++)
 		{
 			if (mgl_program_block_seen_before(pptr, _STORAGE_BUFFER_RES, stage, i))
 				continue;
-			SpirvResource *block = &list->list[i];
+			MGLShaderResource *block = &list->list[i];
 			if (block->ubo_members)
 				total += (GLsizei)block->ubo_member_count;
 		}
@@ -2804,7 +2804,7 @@ static GLsizei mgl_program_buffer_variable_count(Program *pptr)
 }
 
 /* Returns the owning SSBO block and member index for the Nth buffer variable. */
-static SpirvResource *mgl_program_buffer_variable_at(Program *pptr, GLuint index,
+static MGLShaderResource *mgl_program_buffer_variable_at(Program *pptr, GLuint index,
                                                       GLuint *out_member_idx)
 {
 	if (!pptr)
@@ -2812,13 +2812,13 @@ static SpirvResource *mgl_program_buffer_variable_at(Program *pptr, GLuint index
 	GLuint ordinal = 0;
 	for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++)
 	{
-		SpirvResourceList *list =
-			&pptr->spirv_resources_list[stage][_STORAGE_BUFFER_RES];
+		MGLShaderResourceList *list =
+			&pptr->shader_resources_list[stage][_STORAGE_BUFFER_RES];
 		for (GLuint i = 0; list->list && i < list->count; i++)
 		{
 			if (mgl_program_block_seen_before(pptr, _STORAGE_BUFFER_RES, stage, i))
 				continue;
-			SpirvResource *block = &list->list[i];
+			MGLShaderResource *block = &list->list[i];
 			if (!block->ubo_members)
 				continue;
 			for (GLuint m = 0; m < block->ubo_member_count; m++)
@@ -2847,13 +2847,13 @@ static GLint mgl_program_buffer_variable_find_by_name(Program *pptr, const char 
 	GLuint ordinal = 0;
 	for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++)
 	{
-		SpirvResourceList *list =
-			&pptr->spirv_resources_list[stage][_STORAGE_BUFFER_RES];
+		MGLShaderResourceList *list =
+			&pptr->shader_resources_list[stage][_STORAGE_BUFFER_RES];
 		for (GLuint i = 0; list->list && i < list->count; i++)
 		{
 			if (mgl_program_block_seen_before(pptr, _STORAGE_BUFFER_RES, stage, i))
 				continue;
-			SpirvResource *block = &list->list[i];
+			MGLShaderResource *block = &list->list[i];
 			if (!block->ubo_members)
 				continue;
 			for (GLuint m = 0; m < block->ubo_member_count; m++)
@@ -2898,7 +2898,7 @@ static GLint mgl_program_buffer_variable_find_by_name(Program *pptr, const char 
 /* For a given SSBO block, return the buffer variable indices (into the
  * GL_BUFFER_VARIABLE interface) of its members. */
 static GLsizei mgl_program_ssbo_buffer_variable_indices(Program *pptr,
-                                                         const SpirvResource *target_block,
+                                                         const MGLShaderResource *target_block,
                                                          GLint *params,
                                                          GLsizei max_count)
 {
@@ -2908,13 +2908,13 @@ static GLsizei mgl_program_ssbo_buffer_variable_indices(Program *pptr,
 	GLuint ordinal = 0;
 	for (int stage = 0; stage < _MAX_SHADER_TYPES && written < max_count; stage++)
 	{
-		SpirvResourceList *list =
-			&pptr->spirv_resources_list[stage][_STORAGE_BUFFER_RES];
+		MGLShaderResourceList *list =
+			&pptr->shader_resources_list[stage][_STORAGE_BUFFER_RES];
 		for (GLuint i = 0; list->list && i < list->count && written < max_count; i++)
 		{
 			if (mgl_program_block_seen_before(pptr, _STORAGE_BUFFER_RES, stage, i))
 				continue;
-			SpirvResource *block = &list->list[i];
+			MGLShaderResource *block = &list->list[i];
 			if (!block->ubo_members)
 				continue;
 			for (GLuint m = 0; m < block->ubo_member_count && written < max_count; m++)
@@ -2945,8 +2945,8 @@ static GLuint mgl_program_atomic_counter_buffer_bindings(Program *pptr,
 	GLuint count = 0;
 	for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++)
 	{
-		SpirvResourceList *list =
-			&pptr->spirv_resources_list[stage][_ATOMIC_COUNTER_RES];
+		MGLShaderResourceList *list =
+			&pptr->shader_resources_list[stage][_ATOMIC_COUNTER_RES];
 		for (GLuint i = 0; i < list->count; i++)
 		{
 			GLuint b = list->list[i].gl_binding;
@@ -2991,10 +2991,10 @@ void mglGetActiveAtomicCounterBufferiv(GLMContext ctx, GLuint program, GLuint bu
 	GLboolean referenced_by_stage[_MAX_SHADER_TYPES] = {0};
 
 	for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
-		SpirvResourceList *list =
-			&pptr->spirv_resources_list[stage][_ATOMIC_COUNTER_RES];
+		MGLShaderResourceList *list =
+			&pptr->shader_resources_list[stage][_ATOMIC_COUNTER_RES];
 		for (GLuint i = 0; i < list->count; i++) {
-			SpirvResource *res = &list->list[i];
+			MGLShaderResource *res = &list->list[i];
 			if (res->gl_binding != bufferIndex) {
 				continue;
 			}
@@ -3021,8 +3021,8 @@ void mglGetActiveAtomicCounterBufferiv(GLMContext ctx, GLuint program, GLuint bu
 			break;
 		case GL_ATOMIC_COUNTER_BUFFER_ACTIVE_ATOMIC_COUNTER_INDICES:
 			for (GLuint stage = 0, out = 0; stage < _MAX_SHADER_TYPES; stage++) {
-				SpirvResourceList *list =
-					&pptr->spirv_resources_list[stage][_ATOMIC_COUNTER_RES];
+				MGLShaderResourceList *list =
+					&pptr->shader_resources_list[stage][_ATOMIC_COUNTER_RES];
 				for (GLuint i = 0; i < list->count; i++) {
 					if (list->list[i].gl_binding == bufferIndex) {
 						params[out++] = (GLint)i;
@@ -3198,7 +3198,7 @@ GLint  mglGetFragDataIndex(GLMContext ctx, GLuint program, const GLchar *name)
 GLint  mglGetFragDataLocation(GLMContext ctx, GLuint program, const GLchar *name)
 {
 	Program *pptr;
-	SpirvResource *res;
+	MGLShaderResource *res;
 
 	if (!name)
 		return -1;
@@ -3361,7 +3361,7 @@ static GLuint mgl_tf_builtin_array_size(const char *name)
  * ("a"), a whole array ("e"), or an array element ("b[0]").  Returns the
  * matching resource or NULL.  When the name includes "[N]", *out_is_element
  * is set to GL_TRUE so the caller can report array_size=1. */
-static SpirvResource *mgl_tf_find_varying_output(Program *pptr,
+static MGLShaderResource *mgl_tf_find_varying_output(Program *pptr,
                                                   const char *name,
                                                   GLboolean *out_is_element)
 {
@@ -3395,11 +3395,11 @@ static SpirvResource *mgl_tf_find_varying_output(Program *pptr,
 		int stage = stages[si];
 		if (!(pptr->attached_shader_mask & SHADER_MASK_BIT(stage)))
 			continue;
-		SpirvResourceList *list =
-			&pptr->spirv_resources_list[stage][_STAGE_OUTPUT_RES];
+		MGLShaderResourceList *list =
+			&pptr->shader_resources_list[stage][_STAGE_OUTPUT_RES];
 		for (GLuint i = 0; list->list && i < list->count; i++)
 		{
-			SpirvResource *res = &list->list[i];
+			MGLShaderResource *res = &list->list[i];
 			if (!res->name)
 				continue;
 			if (is_element)
@@ -3446,7 +3446,7 @@ void mglGetProgramInterfaceiv(GLMContext ctx, GLuint program, GLenum programInte
 	}
 
 	/* Subroutine and transform-feedback interfaces are valid per the GL
-	 * spec but not backed by SPIRV-Cross resource types.  Return 0 for
+	 * spec but not backed by shader resource types.  Return 0 for
 	 * all valid pnames without generating an error. */
 	if (!mgl_program_interface_is_valid(programInterface))
 	{
@@ -3458,7 +3458,7 @@ void mglGetProgramInterfaceiv(GLMContext ctx, GLuint program, GLenum programInte
 	if (res_type_count <= 0)
 	{
 		/* GL_TRANSFORM_FEEDBACK_VARYING is backed by the varyings array
-		 * set via glTransformFeedbackVaryings, not SPIRV-Cross. */
+		 * set via glTransformFeedbackVaryings. */
 		if (programInterface == GL_TRANSFORM_FEEDBACK_VARYING)
 		{
 			if (pname == GL_ACTIVE_RESOURCES)
@@ -3485,7 +3485,7 @@ void mglGetProgramInterfaceiv(GLMContext ctx, GLuint program, GLenum programInte
 			STATE(error) = GL_INVALID_ENUM;
 			return;
 		}
-		/* Valid interface (subroutine) with no SPIRV-Cross backing —
+		/* Valid interface (subroutine) with no shader resource backing —
 		 * return 0 for all valid pnames. */
 		if (pname == GL_ACTIVE_RESOURCES ||
 		    pname == GL_MAX_NAME_LENGTH ||
@@ -3547,13 +3547,13 @@ void mglGetProgramInterfaceiv(GLMContext ctx, GLuint program, GLenum programInte
 				GLint max_len = 0;
 				for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++)
 				{
-					SpirvResourceList *list =
-						&pptr->spirv_resources_list[stage][_STORAGE_BUFFER_RES];
+					MGLShaderResourceList *list =
+						&pptr->shader_resources_list[stage][_STORAGE_BUFFER_RES];
 					for (GLuint i = 0; list->list && i < list->count; i++)
 					{
 						if (mgl_program_block_seen_before(pptr, _STORAGE_BUFFER_RES, stage, i))
 							continue;
-						SpirvResource *block = &list->list[i];
+						MGLShaderResource *block = &list->list[i];
 						if (!block->ubo_members)
 							continue;
 						for (GLuint m = 0; m < block->ubo_member_count; m++)
@@ -3582,13 +3582,13 @@ void mglGetProgramInterfaceiv(GLMContext ctx, GLuint program, GLenum programInte
 				{
 					if (!mgl_program_resource_should_include_stage(pptr, res_type, stage))
 						continue;
-					GLuint count = pptr->spirv_resources_list[stage][res_type].count;
+					GLuint count = pptr->shader_resources_list[stage][res_type].count;
 					for (GLuint i = 0; i < count; i++)
 					{
 						if (is_block_type &&
 						    mgl_program_block_seen_before(pptr, res_type, stage, i))
 							continue;
-						SpirvResource *res = &pptr->spirv_resources_list[stage][res_type].list[i];
+						MGLShaderResource *res = &pptr->shader_resources_list[stage][res_type].list[i];
 						GLint len = (GLint)(res->name ? strlen(res->name) + 1 : 1);
 						if (is_block_type &&
 						    mgl_program_uniform_block_array_size(res) > 1)
@@ -3620,10 +3620,10 @@ void mglGetProgramInterfaceiv(GLMContext ctx, GLuint program, GLenum programInte
 					continue;
 				GLuint builtin_count = 0;
 				int builtin_stage = -1;
-				SpirvResource *builtins = mgl_program_builtin_list(pptr, res_type, &builtin_count, &builtin_stage);
+				MGLShaderResource *builtins = mgl_program_builtin_list(pptr, res_type, &builtin_count, &builtin_stage);
 				for (GLuint i = 0; builtins && i < builtin_count; i++)
 				{
-					SpirvResource *res = &builtins[i];
+					MGLShaderResource *res = &builtins[i];
 					char tmp_name[256];
 					GLint len = mgl_program_resource_name_with_array(res,
 					                                           (GLsizei)sizeof(tmp_name),
@@ -3651,7 +3651,7 @@ void mglGetProgramInterfaceiv(GLMContext ctx, GLuint program, GLenum programInte
 					for (GLint ui = 0; ui < total; ui++)
 					{
 						int ui_stage = 0, ui_type = 0;
-						SpirvResource *ures = mglProgramActiveUniformAt(
+						MGLShaderResource *ures = mglProgramActiveUniformAt(
 							pptr, (GLuint)ui, &ui_stage, &ui_type);
 						if (ures && ui_type == _ATOMIC_COUNTER_RES &&
 						    ures->gl_binding == bindings[bi])
@@ -3671,10 +3671,10 @@ void mglGetProgramInterfaceiv(GLMContext ctx, GLuint program, GLenum programInte
 					continue;
 				for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++)
 				{
-					SpirvResourceList *resources = &pptr->spirv_resources_list[stage][res_type];
+					MGLShaderResourceList *resources = &pptr->shader_resources_list[stage][res_type];
 					for (GLuint i = 0; resources->list && i < resources->count; i++)
 					{
-						SpirvResource *res = &resources->list[i];
+						MGLShaderResource *res = &resources->list[i];
 						if (mgl_program_block_seen_before(pptr, res_type, stage, i))
 							continue;
 						if ((GLint)res->ubo_member_count > max_vars)
@@ -3804,7 +3804,7 @@ GLuint  mglGetProgramResourceIndex(GLMContext ctx, GLuint program, GLenum progra
 			}
 			return GL_INVALID_INDEX;
 		}
-		/* Valid interface (subroutine) with no SPIRV-Cross backing —
+		/* Valid interface (subroutine) with no shader resource backing —
 		 * return GL_INVALID_INDEX without error. */
 		if (mgl_program_interface_is_valid(programInterface))
 			return GL_INVALID_INDEX;
@@ -3834,7 +3834,7 @@ GLuint  mglGetProgramResourceIndex(GLMContext ctx, GLuint program, GLenum progra
 GLint  mglGetProgramResourceLocation(GLMContext ctx, GLuint program, GLenum programInterface, const GLchar *name)
 {
 	Program *pptr;
-	SpirvResource *res;
+	MGLShaderResource *res;
 	int res_types[6];
 	int res_type_count;
 	int found_type = -1;
@@ -3895,7 +3895,7 @@ GLint  mglGetProgramResourceLocation(GLMContext ctx, GLuint program, GLenum prog
 GLint  mglGetProgramResourceLocationIndex(GLMContext ctx, GLuint program, GLenum programInterface, const GLchar *name)
 {
 	Program *pptr;
-	SpirvResource *res;
+	MGLShaderResource *res;
 	int res_types[6];
 	int res_type_count;
 
@@ -3939,7 +3939,7 @@ GLint  mglGetProgramResourceLocationIndex(GLMContext ctx, GLuint program, GLenum
 void mglGetProgramResourceName(GLMContext ctx, GLuint program, GLenum programInterface, GLuint index, GLsizei bufSize, GLsizei *length, GLchar *name)
 {
 	Program *pptr;
-	SpirvResource *res;
+	MGLShaderResource *res;
 	int res_types[6];
 	int res_type_count;
 	const char *src;
@@ -4019,7 +4019,7 @@ void mglGetProgramResourceName(GLMContext ctx, GLuint program, GLenum programInt
 	if (programInterface == GL_BUFFER_VARIABLE)
 	{
 		GLuint member_idx = 0;
-		SpirvResource *block = mgl_program_buffer_variable_at(pptr, index, &member_idx);
+		MGLShaderResource *block = mgl_program_buffer_variable_at(pptr, index, &member_idx);
 		if (!block || !block->ubo_members || member_idx >= block->ubo_member_count)
 		{
 			STATE(error) = GL_INVALID_VALUE;
@@ -4155,7 +4155,7 @@ static GLenum mglValidateProgramResourceProp(GLenum prop, GLenum programInterfac
 void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInterface, GLuint index, GLsizei propCount, const GLenum *props, GLsizei count, GLsizei *length, GLint *params)
 {
 	Program *pptr;
-	SpirvResource *res;
+	MGLShaderResource *res;
 	int stage = 0;
 	int res_type = -1;
 	int res_types[6];
@@ -4217,7 +4217,7 @@ void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInter
 			}
 
 			GLboolean is_builtin = mgl_tf_is_builtin_name(vname);
-			SpirvResource *varying = is_builtin ? NULL :
+			MGLShaderResource *varying = is_builtin ? NULL :
 				mgl_tf_find_varying_output(pptr, vname, NULL);
 
 			GLsizei out_idx = 0;
@@ -4331,8 +4331,8 @@ void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInter
 					GLuint data_size = 0;
 					for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++)
 					{
-						SpirvResourceList *list =
-							&pptr->spirv_resources_list[stage][_ATOMIC_COUNTER_RES];
+						MGLShaderResourceList *list =
+							&pptr->shader_resources_list[stage][_ATOMIC_COUNTER_RES];
 						for (GLuint j = 0; j < list->count; j++)
 						{
 							if (list->list[j].gl_binding == target_binding)
@@ -4355,7 +4355,7 @@ void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInter
 					{
 						int ui_stage = 0;
 						int ui_type = 0;
-						SpirvResource *ures = mglProgramActiveUniformAt(pptr, (GLuint)ui, &ui_stage, &ui_type);
+						MGLShaderResource *ures = mglProgramActiveUniformAt(pptr, (GLuint)ui, &ui_stage, &ui_type);
 						if (ures && ui_type == _ATOMIC_COUNTER_RES &&
 						    ures->gl_binding == target_binding)
 							active++;
@@ -4384,8 +4384,8 @@ void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInter
 					GLboolean referenced = GL_FALSE;
 					if (query_stage >= 0)
 					{
-						SpirvResourceList *list =
-							&pptr->spirv_resources_list[query_stage][_ATOMIC_COUNTER_RES];
+						MGLShaderResourceList *list =
+							&pptr->shader_resources_list[query_stage][_ATOMIC_COUNTER_RES];
 						for (GLuint j = 0; j < list->count; j++)
 						{
 							if (list->list[j].gl_binding == target_binding)
@@ -4405,7 +4405,7 @@ void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInter
 					{
 						int ui_stage = 0;
 						int ui_type = 0;
-						SpirvResource *ures = mglProgramActiveUniformAt(pptr, (GLuint)ui, &ui_stage, &ui_type);
+						MGLShaderResource *ures = mglProgramActiveUniformAt(pptr, (GLuint)ui, &ui_stage, &ui_type);
 						if (ures && ui_type == _ATOMIC_COUNTER_RES &&
 						    ures->gl_binding == target_binding)
 							params[out_idx++] = ui;
@@ -4436,7 +4436,7 @@ void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInter
 		}
 
 		GLuint member_idx = 0;
-		SpirvResource *block = mgl_program_buffer_variable_at(pptr, index, &member_idx);
+		MGLShaderResource *block = mgl_program_buffer_variable_at(pptr, index, &member_idx);
 		if (!block || !block->ubo_members || member_idx >= block->ubo_member_count)
 		{
 			STATE(error) = GL_INVALID_VALUE;
@@ -4451,13 +4451,13 @@ void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInter
 			GLuint ordinal = 0;
 			for (int s = 0; s < _MAX_SHADER_TYPES && block_index < 0; s++)
 			{
-				SpirvResourceList *list =
-					&pptr->spirv_resources_list[s][_STORAGE_BUFFER_RES];
+				MGLShaderResourceList *list =
+					&pptr->shader_resources_list[s][_STORAGE_BUFFER_RES];
 				for (GLuint i = 0; list->list && i < list->count && block_index < 0; i++)
 				{
 					if (mgl_program_block_seen_before(pptr, _STORAGE_BUFFER_RES, s, i))
 						continue;
-					SpirvResource *blk = &list->list[i];
+					MGLShaderResource *blk = &list->list[i];
 					GLuint array_size = mgl_program_uniform_block_array_size(blk);
 					GLuint element_count = array_size > 1 ? array_size : 1;
 					for (GLuint elem = 0; elem < element_count; elem++)
@@ -5891,7 +5891,7 @@ void mglShaderStorageBlockBinding(GLMContext ctx, GLuint program, GLuint storage
 	int stage = 0;
 	int res_type = _STORAGE_BUFFER_RES;
 	int types[] = { res_type };
-	SpirvResource *res = mgl_program_resource_at_index(pptr, types, 1, storageBlockIndex, &stage, &res_type);
+	MGLShaderResource *res = mgl_program_resource_at_index(pptr, types, 1, storageBlockIndex, &stage, &res_type);
 	if (!res) {
 		ERROR_RETURN(GL_INVALID_VALUE);
 		return;
@@ -5904,9 +5904,9 @@ void mglShaderStorageBlockBinding(GLMContext ctx, GLuint program, GLuint storage
 	GLuint block_element = res->ubo_array_element;
 
 	for (int s = 0; s < _MAX_SHADER_TYPES; s++) {
-		SpirvResourceList *resources = &pptr->spirv_resources_list[s][_STORAGE_BUFFER_RES];
+		MGLShaderResourceList *resources = &pptr->shader_resources_list[s][_STORAGE_BUFFER_RES];
 		for (GLuint i = 0; i < resources->count; i++) {
-			SpirvResource *r = &resources->list[i];
+			MGLShaderResource *r = &resources->list[i];
 			GLboolean match = GL_FALSE;
 			if (block_name && r->name && strcmp(block_name, r->name) == 0)
 				match = GL_TRUE;

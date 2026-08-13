@@ -676,16 +676,16 @@ static void mglCPUFeedbackReadAttrib(GLMContext ctx,
     }
 }
 
-static SpirvResource *mglCPUFeedbackFindVertexOutput(Program *program, const char *name)
+static MGLShaderResource *mglCPUFeedbackFindVertexOutput(Program *program, const char *name)
 {
     if (!program || !name) {
         return NULL;
     }
 
-    SpirvResourceList *outputs =
-        &program->spirv_resources_list[_VERTEX_SHADER][_STAGE_OUTPUT_RES];
+    MGLShaderResourceList *outputs =
+        &program->shader_resources_list[_VERTEX_SHADER][_STAGE_OUTPUT_RES];
     for (GLuint i = 0; outputs->list && i < outputs->count; i++) {
-        SpirvResource *output = &outputs->list[i];
+        MGLShaderResource *output = &outputs->list[i];
         if (output->name && strcmp(output->name, name) == 0) {
             return output;
         }
@@ -693,14 +693,14 @@ static SpirvResource *mglCPUFeedbackFindVertexOutput(Program *program, const cha
     return NULL;
 }
 
-static SpirvResource *mglCPUFeedbackFindVertexInputAtLocation(Program *program, GLuint location)
+static MGLShaderResource *mglCPUFeedbackFindVertexInputAtLocation(Program *program, GLuint location)
 {
     if (!program) {
         return NULL;
     }
 
-    SpirvResourceList *inputs =
-        &program->spirv_resources_list[_VERTEX_SHADER][_STAGE_INPUT_RES];
+    MGLShaderResourceList *inputs =
+        &program->shader_resources_list[_VERTEX_SHADER][_STAGE_INPUT_RES];
     for (GLuint i = 0; inputs->list && i < inputs->count; i++) {
         if (inputs->list[i].location == location) {
             return &inputs->list[i];
@@ -709,14 +709,14 @@ static SpirvResource *mglCPUFeedbackFindVertexInputAtLocation(Program *program, 
     return NULL;
 }
 
-static SpirvResource *mglCPUFeedbackFindVertexInputByName(Program *program, const char *name)
+static MGLShaderResource *mglCPUFeedbackFindVertexInputByName(Program *program, const char *name)
 {
     if (!program || !name) {
         return NULL;
     }
 
-    SpirvResourceList *inputs =
-        &program->spirv_resources_list[_VERTEX_SHADER][_STAGE_INPUT_RES];
+    MGLShaderResourceList *inputs =
+        &program->shader_resources_list[_VERTEX_SHADER][_STAGE_INPUT_RES];
     for (GLuint i = 0; inputs->list && i < inputs->count; i++) {
         if (inputs->list[i].name && strcmp(inputs->list[i].name, name) == 0) {
             return &inputs->list[i];
@@ -947,14 +947,14 @@ static bool mglCPUFeedbackIsPassthroughProgram(Program *program)
             *bracket = '\0';
         }
 
-        SpirvResource *output = mglCPUFeedbackFindVertexOutput(program, base_name);
+        MGLShaderResource *output = mglCPUFeedbackFindVertexOutput(program, base_name);
         if (!output) {
             return false;
         }
 
         /* The captured output must trace to a VS input at the same location
          * and with the same GL type. Try location first, then name. */
-        SpirvResource *input =
+        MGLShaderResource *input =
             mglCPUFeedbackFindVertexInputAtLocation(program, output->location);
         if (!input) {
             input = mglCPUFeedbackFindVertexInputByName(program, base_name);
@@ -1076,7 +1076,7 @@ static bool mglCPUFeedbackLayoutVaryings(Program *program,
             *bracket = '\0';
         }
 
-        SpirvResource *output = mglCPUFeedbackFindVertexOutput(program, base_name);
+        MGLShaderResource *output = mglCPUFeedbackFindVertexOutput(program, base_name);
         GLenum type = output ? output->gl_type : GL_FLOAT_VEC4;
         GLuint components = mglCPUFeedbackGLTypeComponents(type);
 
@@ -1159,8 +1159,8 @@ static void mglCPUFeedbackCaptureVertex(GLMContext ctx,
             *bracket = '\0';
         }
 
-        SpirvResource *output = mglCPUFeedbackFindVertexOutput(program, base_name);
-        SpirvResource *input =
+        MGLShaderResource *output = mglCPUFeedbackFindVertexOutput(program, base_name);
+        MGLShaderResource *input =
             output ? mglCPUFeedbackFindVertexInputAtLocation(program, output->location) : NULL;
         if (!input && output) {
             input = mglCPUFeedbackFindVertexInputByName(program, base_name);

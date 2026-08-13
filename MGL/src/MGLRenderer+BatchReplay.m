@@ -176,7 +176,7 @@ static bool mglDynamicVertexAttribCanBindDirectly(Program *active_program,
         return true;
     }
 
-    SpirvResource *resource =
+    MGLShaderResource *resource =
         mglRendererProgramVertexAttribResource(active_program, attrib_index);
     GLuint shader_type = resource ? resource->gl_type : 0u;
     return !mglIntegerAttribNeedsConversion(attrib->type,
@@ -624,11 +624,11 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                                                    index:(int)resource_index];
             if (metal_slot >= TEXTURE_UNITS) continue;
 
-            SpirvResource *resource = NULL;
+            MGLShaderResource *resource = NULL;
             if (program &&
-                resource_index < program->spirv_resources_list[stage]
+                resource_index < program->shader_resources_list[stage]
                                            [_SAMPLED_IMAGE_RES].count) {
-                resource = &program->spirv_resources_list[stage]
+                resource = &program->shader_resources_list[stage]
                                    [_SAMPLED_IMAGE_RES]
                                    .list[resource_index];
             }

@@ -3,9 +3,10 @@
  * MGL
  *
  * Reflection export for the self-hosted GLSL frontend (MGLIRModule ->
- * SpirvResourceList).  The AIR backend produces metallib bitcode with no
+ * MGLShaderResourceList).  The AIR backend produces metallib bitcode with no
  * reflection payload, so the GL query layer and per-draw binding paths
- * get their resource tables from this exporter instead of SPIRV-Cross.
+ * get their resource tables from this exporter instead of the historical
+ * SPIRV-Cross lowering.)
  */
 
 #ifndef MGL_AIR_REFLECT_H
@@ -31,15 +32,15 @@ GLint mglAirGLArraySizeFromIR(const MGLIRType *t);
 
 /* Export the symbols of `mod` into the per-type resource lists. `stage` uses
  * the public MGL_STAGE_* values from mgl_shader_abi.h. Lists
- * must point at zeroed SpirvResourceList arrays sized [_MAX_SPIRV_RES].
+ * must point at zeroed MGLShaderResourceList arrays sized [MGL_MAX_SHADER_RESOURCES].
  * Returns 0 on success, -1 on failure (err filled when provided). */
 int mglAirReflectModule(const MGLIRModule *mod, int stage,
                         const char *const *attrib_names,
-                        SpirvResourceList lists[_MAX_SPIRV_RES],
+                        MGLShaderResourceList lists[MGL_MAX_SHADER_RESOURCES],
                         char *err, size_t errCap);
 
 /* Free the resource lists produced by mglAirReflectModule. */
-void mglAirReflectDestroy(SpirvResourceList lists[_MAX_SPIRV_RES]);
+void mglAirReflectDestroy(MGLShaderResourceList lists[MGL_MAX_SHADER_RESOURCES]);
 
 #ifdef __cplusplus
 }

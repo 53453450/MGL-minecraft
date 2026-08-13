@@ -37,7 +37,7 @@ void clearStageCompileState(Program *program, int stage)
         return;
     }
 
-    Spirv *compiled = &program->spirv[stage];
+    MGLShaderModule *compiled = &program->modules[stage];
     free(compiled->metallib_bytes);
     compiled->metallib_bytes = NULL;
     compiled->metallib_size = 0;
@@ -49,7 +49,7 @@ void clearStageCompileState(Program *program, int stage)
     compiled->metallib_cull_capture_size = 0;
     free(compiled->entry_point);
     compiled->entry_point = NULL;
-    compiled->needs_buffer_size_buffer = GL_FALSE;
+    compiled->needs_runtime_array_size_buffer = GL_FALSE;
 
     mglSafeReleaseMetalObj(&compiled->mtl_compute_pipeline);
     mglSafeReleaseMetalObj(&compiled->mtl_function);
@@ -59,10 +59,10 @@ void clearStageCompileState(Program *program, int stage)
     mglSafeReleaseMetalObj(&compiled->mtl_cull_capture_function);
     mglSafeReleaseMetalObj(&compiled->mtl_cull_capture_library);
 
-    for (int type = 0; type < _MAX_SPIRV_RES; type++) {
-        SpirvResourceList *list = &program->spirv_resources_list[stage][type];
+    for (int type = 0; type < MGL_MAX_SHADER_RESOURCES; type++) {
+        MGLShaderResourceList *list = &program->shader_resources_list[stage][type];
         for (GLuint i = 0; i < list->count; i++) {
-            mglFreeSpirvResourceOwnedFields(&list->list[i]);
+            mglFreeMGLShaderResourceOwnedFields(&list->list[i]);
         }
         free(list->list);
         list->list = NULL;
@@ -174,8 +174,8 @@ GLint mglDefaultAttribLocationForName(const char *name)
 GLint mglProgramVertexInputOrdinal(Program *program, const char *name)
 {
     if (!program || !name) return -1;
-    SpirvResourceList *inputs =
-        &program->spirv_resources_list[_VERTEX_SHADER][_STAGE_INPUT_RES];
+    MGLShaderResourceList *inputs =
+        &program->shader_resources_list[_VERTEX_SHADER][_STAGE_INPUT_RES];
     for (GLuint i = 0; i < inputs->count; i++) {
         if (inputs->list[i].name && strcmp(inputs->list[i].name, name) == 0) {
             return (GLint)i;
@@ -233,8 +233,8 @@ GLint mglDesiredAttribLocationForName(Program *program, const char *name)
 void applyVertexInputLocations(Program *program)
 {
     if (!program) return;
-    SpirvResourceList *inputs =
-        &program->spirv_resources_list[_VERTEX_SHADER][_STAGE_INPUT_RES];
+    MGLShaderResourceList *inputs =
+        &program->shader_resources_list[_VERTEX_SHADER][_STAGE_INPUT_RES];
     for (GLuint i = 0; i < inputs->count; i++) {
         GLint desired = mglDesiredAttribLocationForName(program,
                                                         inputs->list[i].name);
@@ -252,10 +252,10 @@ void applyMultiDimArrayUniformNames(Program *program)
 void applyFragmentOutputLocationIndices(Program *program)
 {
     if (!program || program->frag_data_location_count == 0) return;
-    SpirvResourceList *outputs =
-        &program->spirv_resources_list[_FRAGMENT_SHADER][_STAGE_OUTPUT_RES];
+    MGLShaderResourceList *outputs =
+        &program->shader_resources_list[_FRAGMENT_SHADER][_STAGE_OUTPUT_RES];
     for (GLuint i = 0; i < outputs->count; i++) {
-        SpirvResource *output = &outputs->list[i];
+        MGLShaderResource *output = &outputs->list[i];
         if (!output->name) continue;
         for (GLuint j = 0; j < program->frag_data_location_count; j++) {
             if (program->frag_data_location_names[j] &&
@@ -268,8 +268,8 @@ void applyFragmentOutputLocationIndices(Program *program)
     }
 }
 
-GLboolean mglProgramVaryingTypesCompatible(const SpirvResource *a,
-                                           const SpirvResource *b)
+GLboolean mglProgramVaryingTypesCompatible(const MGLShaderResource *a,
+                                           const MGLShaderResource *b)
 {
     if (!a || !b) return GL_FALSE;
     if (a->gl_type && b->gl_type && a->gl_type != b->gl_type) {
@@ -282,13 +282,13 @@ GLboolean mglProgramVaryingTypesCompatible(const SpirvResource *a,
     return GL_TRUE;
 }
 
-SpirvResource *mglFindVaryingByName(SpirvResourceList *list,
+MGLShaderResource *mglFindVaryingByName(MGLShaderResourceList *list,
                                     const char *name,
-                                    const SpirvResource *type_peer)
+                                    const MGLShaderResource *type_peer)
 {
     if (!list || !name) return NULL;
     for (GLuint i = 0; i < list->count; i++) {
-        SpirvResource *candidate = &list->list[i];
+        MGLShaderResource *candidate = &list->list[i];
         if (candidate->name && strcmp(candidate->name, name) == 0 &&
             (!type_peer || mglProgramVaryingTypesCompatible(candidate,
                                                             type_peer))) {
@@ -298,13 +298,13 @@ SpirvResource *mglFindVaryingByName(SpirvResourceList *list,
     return NULL;
 }
 
-SpirvResource *mglFindVaryingByLocation(SpirvResourceList *list,
+MGLShaderResource *mglFindVaryingByLocation(MGLShaderResourceList *list,
                                         GLuint location,
-                                        const SpirvResource *type_peer)
+                                        const MGLShaderResource *type_peer)
 {
     if (!list) return NULL;
     for (GLuint i = 0; i < list->count; i++) {
-        SpirvResource *candidate = &list->list[i];
+        MGLShaderResource *candidate = &list->list[i];
         if (candidate->location == location &&
             (!type_peer || mglProgramVaryingTypesCompatible(candidate,
                                                             type_peer))) {
@@ -314,13 +314,13 @@ SpirvResource *mglFindVaryingByLocation(SpirvResourceList *list,
     return NULL;
 }
 
-static void mglAlignInputsToOutputs(SpirvResourceList *outputs,
-                                    SpirvResourceList *inputs)
+static void mglAlignInputsToOutputs(MGLShaderResourceList *outputs,
+                                    MGLShaderResourceList *inputs)
 {
     if (!outputs || !inputs) return;
     for (GLuint i = 0; i < inputs->count; i++) {
-        SpirvResource *input = &inputs->list[i];
-        SpirvResource *output = mglFindVaryingByName(outputs, input->name,
+        MGLShaderResource *input = &inputs->list[i];
+        MGLShaderResource *output = mglFindVaryingByName(outputs, input->name,
                                                      input);
         if (!output) {
             output = mglFindVaryingByLocation(outputs, input->location, input);
@@ -335,16 +335,16 @@ void alignFragmentInputLocationsToVertexOutputs(Program *program)
 {
     if (!program) return;
     mglAlignInputsToOutputs(
-        &program->spirv_resources_list[_VERTEX_SHADER][_STAGE_OUTPUT_RES],
-        &program->spirv_resources_list[_FRAGMENT_SHADER][_STAGE_INPUT_RES]);
+        &program->shader_resources_list[_VERTEX_SHADER][_STAGE_OUTPUT_RES],
+        &program->shader_resources_list[_FRAGMENT_SHADER][_STAGE_INPUT_RES]);
 }
 
 void mglBridgeSkippedGeometryShaderVaryings(Program *program)
 {
     if (!program || !program->shader_slots[_GEOMETRY_SHADER]) return;
     mglAlignInputsToOutputs(
-        &program->spirv_resources_list[_GEOMETRY_SHADER][_STAGE_OUTPUT_RES],
-        &program->spirv_resources_list[_FRAGMENT_SHADER][_STAGE_INPUT_RES]);
+        &program->shader_resources_list[_GEOMETRY_SHADER][_STAGE_OUTPUT_RES],
+        &program->shader_resources_list[_FRAGMENT_SHADER][_STAGE_INPUT_RES]);
 }
 
 GLboolean mglProgramHasPassthroughGeometryShader(Program *program)

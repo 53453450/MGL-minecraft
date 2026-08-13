@@ -457,7 +457,7 @@ TEST(Metallib, TessEvaluationResources) {
         "}\n";
     unsigned char *bytes = nullptr;
     size_t size = 0;
-    SpirvResourceList lists[_MAX_SPIRV_RES] = {{0}};
+    MGLShaderResourceList lists[MGL_MAX_SHADER_RESOURCES] = {{0}};
     char err[512] = {0};
     ASSERT_EQ(0, mglAirCompileGLSLWithReflect(
         src, MGL_STAGE_TESS_EVALUATION, nullptr, &bytes, &size, lists,
@@ -503,7 +503,7 @@ TEST(Metallib, RuntimeSSBOArrayLengthAcrossStages) {
         ASSERT_EQ(0, mglAirCompileGLSLWithReflectInfo(
             sources[i], stages[i], nullptr, &bytes, &size, nullptr,
             &info, err, sizeof(err))) << "stage " << stages[i] << ": " << err;
-        EXPECT_EQ(1u, info.needs_buffer_size_buffer);
+        EXPECT_EQ(1u, info.needs_runtime_array_size_buffer);
         ASSERT_NE(nullptr, bytes);
         ASSERT_GE(size, 4u);
         EXPECT_EQ(0, memcmp(bytes, "MTLB", 4));
@@ -538,7 +538,7 @@ TEST(Metallib, FixedArrayLengthDoesNotNeedSizeBuffer) {
     ASSERT_EQ(0, mglAirCompileGLSLWithReflectInfo(
         src, MGL_STAGE_COMPUTE, nullptr, &bytes, &size, nullptr,
         &info, err, sizeof(err))) << err;
-    EXPECT_EQ(0u, info.needs_buffer_size_buffer);
+    EXPECT_EQ(0u, info.needs_runtime_array_size_buffer);
     mglShaderFree(bytes);
 }
 
@@ -754,7 +754,7 @@ TEST(Reflect, VertexResources) {
     MGLTranslationUnit *tu = nullptr;
     MGLIRModule *mod = semacheck(src, MGL_STAGE_VERTEX, &tu);
     ASSERT_NE(nullptr, mod);
-    SpirvResourceList lists[_MAX_SPIRV_RES] = {{0}};
+    MGLShaderResourceList lists[MGL_MAX_SHADER_RESOURCES] = {{0}};
     ASSERT_EQ(0, mglAirReflectModule(mod, MGL_STAGE_VERTEX, nullptr,
                                      lists, nullptr, 0));
 
@@ -797,7 +797,7 @@ TEST(Reflect, ComputeResources) {
     MGLTranslationUnit *tu = nullptr;
     MGLIRModule *mod = semacheck(src, MGL_STAGE_COMPUTE, &tu);
     ASSERT_NE(nullptr, mod);
-    SpirvResourceList lists[_MAX_SPIRV_RES] = {{0}};
+    MGLShaderResourceList lists[MGL_MAX_SHADER_RESOURCES] = {{0}};
     ASSERT_EQ(0, mglAirReflectModule(mod, MGL_STAGE_COMPUTE, nullptr,
                                      lists, nullptr, 0));
 

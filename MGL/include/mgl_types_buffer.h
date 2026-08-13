@@ -245,7 +245,7 @@ typedef struct BufferBaseTarget_t {
 
 #define MAX_BINDABLE_BUFFERS    84
 #define MGL_MAX_VERTEX_ATTRIB_BINDINGS MAX_VERTEX_BUFFER_BINDINGS
-#define MGL_BUFFER_SIZE_BUFFER_INDEX 25u  /* Metal buffer slot for spvBufferSizeConstants */
+#define MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX 25u  /* Metal buffer slot for spvBufferSizeConstants */
 
 /* Active-binding bitmap: 84 bits fit in 2 × uint64_t.  Bit i is set iff
  * buffers[i].buf != NULL.  Maintained at bind/unbind/delete time so that

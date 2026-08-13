@@ -246,7 +246,7 @@ void getMacOSDefaults(GLMContext glm_ctx)
     glm_ctx->state.var.max_vertex_uniform_components = 4096;
     glm_ctx->state.var.max_varying_floats = 64;
     glm_ctx->state.var.max_vertex_texture_image_units = 16;
-    /* Keep the advertised limit aligned with glslang's compile-time resource
+    /* Keep the advertised limit aligned with the compile-time resource
      * limit. Metal argument slots are remapped independently from GL units. */
     glm_ctx->state.var.max_combined_texture_image_units = TEXTURE_UNITS < 80 ? TEXTURE_UNITS : 80;
     glGetIntegerv(GL_STENCIL_BACK_REF,&glm_ctx->state.var.stencil_back_ref);
@@ -608,7 +608,7 @@ void getMacOSDefaults(GLMContext glm_ctx)
 
     /* GL_MAX_VARYING_FLOATS and GL_MAX_VARYING_COMPONENTS are aliases
      * (both 0x8B4B).  Keep the two fields in sync so the value reported
-     * by glGetIntegerv matches glslang's gl_MaxVaryingComponents builtin. */
+     * by glGetIntegerv matches the gl_MaxVaryingComponents builtin. */
     glm_ctx->state.var.max_varying_components = glm_ctx->state.var.max_varying_floats;
 
     /* Ensure max_uniform_buffer_bindings meets minimum */

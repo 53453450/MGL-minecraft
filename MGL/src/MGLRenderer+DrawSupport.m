@@ -465,16 +465,16 @@ static BOOL mglNativeTESInterfaceSupported(Program *tcsProgram,
                                            Program *tesProgram)
 {
     if (!tesProgram ||
-        !tesProgram->spirv[_TESS_EVALUATION_SHADER].metallib_bytes ||
-        !tesProgram->spirv[_TESS_EVALUATION_SHADER].mtl_function ||
+        !tesProgram->modules[_TESS_EVALUATION_SHADER].metallib_bytes ||
+        !tesProgram->modules[_TESS_EVALUATION_SHADER].mtl_function ||
         tesProgram->tess_gen_point_mode ||
         tesProgram->transform_feedback_varying_count > 0) {
         return NO;
     }
 
     if (tcsProgram &&
-        (!tcsProgram->spirv[_TESS_CONTROL_SHADER].metallib_bytes ||
-         !tcsProgram->spirv[_TESS_CONTROL_SHADER].mtl_function ||
+        (!tcsProgram->modules[_TESS_CONTROL_SHADER].metallib_bytes ||
+         !tcsProgram->modules[_TESS_CONTROL_SHADER].mtl_function ||
          tcsProgram->tess_control_output_vertices == 0u ||
          tcsProgram->tess_control_output_vertices > 32u)) {
         return NO;
@@ -486,7 +486,7 @@ static BOOL mglNativeTESInterfaceSupported(Program *tcsProgram,
     }
 
     id<MTLFunction> function = (__bridge id<MTLFunction>)
-        tesProgram->spirv[_TESS_EVALUATION_SHADER].mtl_function;
+        tesProgram->modules[_TESS_EVALUATION_SHADER].mtl_function;
     MTLPatchType expected = tesProgram->tess_gen_mode == GL_QUADS
         ? MTLPatchTypeQuad : MTLPatchTypeTriangle;
     if (function.patchType != expected) {
@@ -608,7 +608,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
         mglResolveProgramForStageFromState(drawCtx, _VERTEX_SHADER);
     if (!vertexProgram || !vertexProgram->uses_cull_distance ||
         ![self bindMTLProgram:vertexProgram] ||
-        !vertexProgram->spirv[_VERTEX_SHADER].mtl_cull_capture_function) {
+        !vertexProgram->modules[_VERTEX_SHADER].mtl_cull_capture_function) {
         return NO;
     }
     const uint64_t endVertex = (uint64_t)(uint32_t)first +
@@ -705,7 +705,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     if (!activeProgram || !activeProgram->uses_cull_distance) return NO;
     if (!indexBytes || count <= 0 || instanceCount <= 0) return YES;
 
-    if (activeProgram->spirv[_VERTEX_SHADER].mtl_cull_capture_function) {
+    if (activeProgram->modules[_VERTEX_SHADER].mtl_cull_capture_function) {
         if (![self captureAIRCullDistancesForElementDraw:ctx
                                              indexBytes:indexBytes
                                               indexType:indexType
@@ -860,7 +860,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     Program *activeProgram =
         ctx ? mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER) : NULL;
     if (!activeProgram || !activeProgram->uses_cull_distance) return NO;
-    if (activeProgram->spirv[_VERTEX_SHADER].mtl_cull_capture_function &&
+    if (activeProgram->modules[_VERTEX_SHADER].mtl_cull_capture_function &&
         !_tessellation.cullDistanceCaptureBuffer) {
         return YES;
     }
@@ -928,14 +928,14 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     Program *vertexProgram =
         mglResolveProgramForStageFromState(drawCtx, _VERTEX_SHADER);
     if (!vertexProgram || ![self bindMTLProgram:vertexProgram] ||
-        !vertexProgram->spirv[_VERTEX_SHADER].mtl_tess_capture_function) {
+        !vertexProgram->modules[_VERTEX_SHADER].mtl_tess_capture_function) {
         return nil;
     }
 
     NSUInteger captureSize = 0u;
     NSUInteger captureOffset = 0u;
     NSUInteger captureStride = mglAIRPerVertexStrideForResources(
-        &vertexProgram->spirv_resources_list[_VERTEX_SHADER][_STAGE_OUTPUT_RES]);
+        &vertexProgram->shader_resources_list[_VERTEX_SHADER][_STAGE_OUTPUT_RES]);
     const NSUInteger recordsPerInstance = (NSUInteger)count;
     if (!mglCheckedTessCaptureSize(recordsPerInstance, instanceCount,
                                    captureStride, &captureSize,
@@ -999,14 +999,14 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     Program *vertexProgram =
         mglResolveProgramForStageFromState(drawCtx, _VERTEX_SHADER);
     if (!vertexProgram || ![self bindMTLProgram:vertexProgram] ||
-        !vertexProgram->spirv[_VERTEX_SHADER].mtl_tess_capture_function) {
+        !vertexProgram->modules[_VERTEX_SHADER].mtl_tess_capture_function) {
         return nil;
     }
 
     NSUInteger captureSize = 0u;
     NSUInteger captureOffset = 0u;
     NSUInteger captureStride = mglAIRPerVertexStrideForResources(
-        &vertexProgram->spirv_resources_list[_VERTEX_SHADER][_STAGE_OUTPUT_RES]);
+        &vertexProgram->shader_resources_list[_VERTEX_SHADER][_STAGE_OUTPUT_RES]);
     const NSUInteger recordsPerInstance = (NSUInteger)maxIndex + 1u;
     if (!mglCheckedTessCaptureSize(recordsPerInstance, instanceCount,
                                    captureStride, &captureSize,
@@ -1169,7 +1169,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
         return YES;
     }
     if (program->gs_route != MGL_GS_ROUTE_COMPUTE ||
-        !program->spirv[_GEOMETRY_SHADER].metallib_bytes ||
+        !program->modules[_GEOMETRY_SHADER].metallib_bytes ||
         program->geometry_vertices_out == 0u ||
         program->geometry_vertices_out > 1024u) {
         static uint64_t unsupportedCount = 0;
@@ -1184,7 +1184,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
         return YES;
     }
     if (![self bindMTLProgram:program] ||
-        !program->spirv[_GEOMETRY_SHADER].mtl_function) {
+        !program->modules[_GEOMETRY_SHADER].mtl_function) {
         NSLog(@"MGL GS ERROR: failed to load AIR kernel program=%u",
               (unsigned)program->name);
         mglDispatchError(drawCtx, label ? label : "geometryDraw",
@@ -1278,7 +1278,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     }
     const GLuint workItemCount = drawPrimitiveCount * invocationCount;
     const NSUInteger outputStride = mglAIRPerVertexStrideForResources(
-        &program->spirv_resources_list[_GEOMETRY_SHADER][_STAGE_OUTPUT_RES]);
+        &program->shader_resources_list[_GEOMETRY_SHADER][_STAGE_OUTPUT_RES]);
     const uint32_t maxVertices = program->geometry_vertices_out;
     /* Fixed ABI layout (mgl_air_gs_abi.h §2): 2 header records + the
      * expanded primitive vertices per work item. */
@@ -2435,7 +2435,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
 
     /* Scan enabled attributes for cull distance entries. The GLSL source
      * uses "culldistance_data" as the attribute name. We identify them
-     * via the SPIRV-Cross resource list (which preserves the name) or
+     * via the shader resource list (which preserves the name) or
      * by checking the MSL source for [[attribute(N)]] with that name. */
     id<MTLBuffer> cullMtlBuffer = nil;
     GLintptr cullBindingOffset = 0;
@@ -2443,8 +2443,8 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     GLuint cullDistSize = 0;
     GLintptr cullFirstRelativeOffset = -1;
 
-    SpirvResourceList *vsInputs =
-        &activeProgram->spirv_resources_list[_VERTEX_SHADER][_STAGE_INPUT_RES];
+    MGLShaderResourceList *vsInputs =
+        &activeProgram->shader_resources_list[_VERTEX_SHADER][_STAGE_INPUT_RES];
 
     for (GLuint attrib = 0; attrib < MAX_ATTRIBS; attrib++) {
         if (!mglRendererProgramUsesVertexAttrib(activeProgram, attrib)) {
@@ -2454,7 +2454,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
         const char *attrName = NULL;
         if (vsInputs && vsInputs->list) {
             for (GLuint r = 0; r < vsInputs->count; r++) {
-                SpirvResource *res = &vsInputs->list[r];
+                MGLShaderResource *res = &vsInputs->list[r];
                 if (res->location == attrib) {
                     attrName = res->name;
                     break;
@@ -2599,7 +2599,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     }
 
     const BOOL airTES = tesProgram &&
-        tesProgram->spirv[_TESS_EVALUATION_SHADER].metallib_bytes != NULL;
+        tesProgram->modules[_TESS_EVALUATION_SHADER].metallib_bytes != NULL;
     const BOOL forceComputeTES = mglEnvFlagEnabled("MGL_TESS_COMPUTE_FALLBACK");
     BOOL nativeTES = !forceComputeTES &&
         mglNativeTESInterfaceSupported(tcsProgram, tesProgram);
@@ -2646,7 +2646,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
             ? tcsProgram->tess_control_output_vertices : patchVertices;
     contract.per_vertex_out_stride = vertexProgram
         ? mglAIRPerVertexStrideForResources(
-              &vertexProgram->spirv_resources_list[_VERTEX_SHADER]
+              &vertexProgram->shader_resources_list[_VERTEX_SHADER]
                                                    [_STAGE_OUTPUT_RES])
         : MGL_AIR_PER_VERTEX_STRIDE;
     contract.patch_out_stride = 16u; /* refined by the TCS dispatcher */

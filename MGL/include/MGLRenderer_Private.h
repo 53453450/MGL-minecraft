@@ -55,7 +55,7 @@
 #import "mgl_buffer_slots.h"
 #import "mgl_vertex_attrib_query.h"
 #import "mgl_coordinate.h"
-#import "mgl_spirv_resource.h"
+#import "mgl_shader_resource.h"
 #import "mgl_buffer_query.h"
 #import "mgl_focus_program.h"
 #import "mgl_draw_mode.h"
@@ -234,7 +234,7 @@ static inline double mglTraceNowSeconds(void)
     BOOL          _currentAttribCacheValid[MAX_ATTRIBS];
     /* Cached spvBufferSizeConstants MTLBuffers.
      * Each stage's size-constants buffer is a fixed 124-byte (31×uint32)
-     * buffer bound at MGL_BUFFER_SIZE_BUFFER_INDEX when a shader uses
+     * buffer bound at MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX when a shader uses
      * .length() on unsized SSBO arrays.  Cache the last buffer + its
      * contents and reuse it when the size constants are unchanged (the
      * common case — buffer sizes rarely change between draws in the same

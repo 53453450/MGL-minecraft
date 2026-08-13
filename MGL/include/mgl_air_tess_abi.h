@@ -25,7 +25,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "mgl_shader_abi.h" /* MGL_AIR_PER_VERTEX_*, SpirvResourceList */
+#include "mgl_shader_abi.h" /* MGL_AIR_PER_VERTEX_*, MGLShaderResourceList */
 
 #if defined(__cplusplus)
 #define MGL_AIR_TESS_STATIC_ASSERT(c, m) static_assert((c), m)
@@ -91,12 +91,12 @@ typedef struct MGLAIRTessDrawContract {
  * `is_per_patch` resources of the given list (caller passes the stage
  * output list of the writer stage, e.g. TCS _STAGE_OUTPUT_RES).
  * ===================================================================== */
-static inline uint32_t mglAIRPatchVaryingStride(const SpirvResourceList *resources)
+static inline uint32_t mglAIRPatchVaryingStride(const MGLShaderResourceList *resources)
 {
     uint32_t stride = 16u;
     if (!resources || !resources->list) return stride;
     for (uint32_t i = 0; i < resources->count; i++) {
-        const SpirvResource *resource = &resources->list[i];
+        const MGLShaderResource *resource = &resources->list[i];
         if (!resource->is_per_patch) continue;
         if (resource->location >= 0x0fffffffu) continue;
         uint32_t end = (resource->location + 1u) * 16u;

@@ -493,7 +493,7 @@ static void mglBindingStateSetFragmentBytes(
                       (unsigned)bindProgram->name,
                       (unsigned)glBindingIndex,
                       (unsigned long)bindingIndex,
-                      mglSpirvResourceTypeName((int)map->resource_type),
+                      mglMGLShaderResourceTypeName((int)map->resource_type),
                       (unsigned)map->resource_index,
                       (unsigned)ptr->name,
                       (unsigned long)bindOffset,
@@ -509,7 +509,7 @@ static void mglBindingStateSetFragmentBytes(
                         (unsigned)bindProgram->name,
                         (unsigned)glBindingIndex,
                         (unsigned long)bindingIndex,
-                        mglSpirvResourceTypeName((int)map->resource_type),
+                        mglMGLShaderResourceTypeName((int)map->resource_type),
                         (unsigned)map->resource_index,
                         (unsigned)ptr->name,
                         (unsigned long)bindOffset,
@@ -703,7 +703,7 @@ static void mglBindingStateSetFragmentBytes(
             static uint64_t s_traceFileCurrentAttribBindLogs = 0;
             if (mglProgramNeedsTraceLog(activeProgram) &&
                 mglShouldLogTraceFileBindingForProgram(activeProgram, &s_traceFileCurrentAttribBindLogs)) {
-                SpirvResource *resource = mglRendererProgramVertexAttribResource(activeProgram, attrib);
+                MGLShaderResource *resource = mglRendererProgramVertexAttribResource(activeProgram, attrib);
                 mglTraceLog("VATTR_BIND_CURRENT program=%u attrib=%u resource=%s loc=%u metalSlot=%lu stride=%lu size=%u type=0x%x valueI=(%d,%d,%d,%d) valueF=(%.6f,%.6f,%.6f,%.6f)",
                             activeProgram ? (unsigned)activeProgram->name : 0u,
                             (unsigned)attrib,
@@ -834,7 +834,7 @@ static void mglBindingStateSetFragmentBytes(
         bool needsIntegerConversion = false;
         BOOL integerConvDstIsInt = NO;
         if (attribState->integer == 1 && attribState->type != GL_DOUBLE) {
-            SpirvResource *attrRes = mglRendererProgramVertexAttribResource(activeProgram, attrib);
+            MGLShaderResource *attrRes = mglRendererProgramVertexAttribResource(activeProgram, attrib);
             GLuint shaderGlType = attrRes ? attrRes->gl_type : 0u;
             MTLVertexFormat ignored = MTLVertexFormatInvalid;
             if (mglIntegerAttribNeedsConversion(attribState->type,
@@ -1041,7 +1041,7 @@ static void mglBindingStateSetFragmentBytes(
             static uint64_t s_traceFileVertexAttribBindLogs = 0;
             if (mglProgramNeedsTraceLog(activeProgram) &&
                 mglShouldLogTraceFileBindingForProgram(activeProgram, &s_traceFileVertexAttribBindLogs)) {
-                SpirvResource *resource = mglRendererProgramVertexAttribResource(activeProgram, attrib);
+                MGLShaderResource *resource = mglRendererProgramVertexAttribResource(activeProgram, attrib);
                 GLboolean effectiveNormalized = attribState->normalized;
                 if (!effectiveNormalized &&
                     attribState->type == GL_UNSIGNED_BYTE &&
@@ -1122,11 +1122,11 @@ static void mglBindingStateSetFragmentBytes(
         int count = [self getProgramBindingCount:vertexStage type:resourceType];
         Program *program = activeProgram;
         for (int i = 0; i < count; i++) {
-            if (!program || resourceType < 0 || resourceType >= _MAX_SPIRV_RES ||
-                i >= (int)program->spirv_resources_list[vertexStage][resourceType].count) {
+            if (!program || resourceType < 0 || resourceType >= MGL_MAX_SHADER_RESOURCES ||
+                i >= (int)program->shader_resources_list[vertexStage][resourceType].count) {
                 continue;
             }
-            SpirvResource *resource = &program->spirv_resources_list[vertexStage][resourceType].list[i];
+            MGLShaderResource *resource = &program->shader_resources_list[vertexStage][resourceType].list[i];
             if (mglShouldSkipStageBufferResource(program, vertexStage, resourceType, resource)) {
                 continue;
             }
@@ -1579,7 +1579,7 @@ static void mglBindingStateSetFragmentBytes(
                           (unsigned)bindProgram->name,
                           (unsigned)glBindingIndex,
                           (unsigned long)bindingIndex,
-                          mglSpirvResourceTypeName((int)map->resource_type),
+                          mglMGLShaderResourceTypeName((int)map->resource_type),
                           (unsigned)map->resource_index,
                           (unsigned)ptr->name,
                           (unsigned long)bindOffset,
@@ -1595,7 +1595,7 @@ static void mglBindingStateSetFragmentBytes(
                             (unsigned)bindProgram->name,
                             (unsigned)glBindingIndex,
                             (unsigned long)bindingIndex,
-                            mglSpirvResourceTypeName((int)map->resource_type),
+                            mglMGLShaderResourceTypeName((int)map->resource_type),
                             (unsigned)map->resource_index,
                             (unsigned)ptr->name,
                             (unsigned long)bindOffset,
@@ -1704,11 +1704,11 @@ static void mglBindingStateSetFragmentBytes(
         int count = [self getProgramBindingCount:_FRAGMENT_SHADER type:resourceType];
         Program *program = activeProgram;
         for (int i = 0; i < count; i++) {
-            if (!program || resourceType < 0 || resourceType >= _MAX_SPIRV_RES ||
-                i >= (int)program->spirv_resources_list[_FRAGMENT_SHADER][resourceType].count) {
+            if (!program || resourceType < 0 || resourceType >= MGL_MAX_SHADER_RESOURCES ||
+                i >= (int)program->shader_resources_list[_FRAGMENT_SHADER][resourceType].count) {
                 continue;
             }
-            SpirvResource *resource = &program->spirv_resources_list[_FRAGMENT_SHADER][resourceType].list[i];
+            MGLShaderResource *resource = &program->shader_resources_list[_FRAGMENT_SHADER][resourceType].list[i];
             if (mglShouldSkipStageBufferResource(program, _FRAGMENT_SHADER, resourceType, resource)) {
                 continue;
             }
@@ -1977,15 +1977,15 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     for (GLuint i = 0; i < vertexSampledCount; i++)
     {
         Program *currentProgram = vertexProgram;
-        SpirvResource *sampledResource = NULL;
+        MGLShaderResource *sampledResource = NULL;
         const char *sampledName = "";
         if (currentProgram &&
-            i < currentProgram->spirv_resources_list[vertexStage][_SAMPLED_IMAGE_RES].count) {
-            sampledResource = &currentProgram->spirv_resources_list[vertexStage][_SAMPLED_IMAGE_RES].list[i];
+            i < currentProgram->shader_resources_list[vertexStage][_SAMPLED_IMAGE_RES].count) {
+            sampledResource = &currentProgram->shader_resources_list[vertexStage][_SAMPLED_IMAGE_RES].list[i];
             sampledName = sampledResource->name;
         }
         /* read binding/gl_binding directly from the already-resolved
-         * SpirvResource instead of re-resolving the program per query. When
+         * MGLShaderResource instead of re-resolving the program per query. When
          * sampledResource is NULL (no program / index OOR), mirror the
          * query-method semantics of returning 0. */
         GLuint spirvBinding = sampledResource ? sampledResource->binding : 0u;
@@ -2447,15 +2447,15 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     for (GLuint i = 0; i < *sampledCount; i++)
     {
         Program *sampleProgram = fragmentProgram;
-        SpirvResource *sampledResource = NULL;
+        MGLShaderResource *sampledResource = NULL;
         const char *sampledName = "";
         if (sampleProgram &&
-            i < sampleProgram->spirv_resources_list[_FRAGMENT_SHADER][_SAMPLED_IMAGE_RES].count) {
-            sampledResource = &sampleProgram->spirv_resources_list[_FRAGMENT_SHADER][_SAMPLED_IMAGE_RES].list[i];
+            i < sampleProgram->shader_resources_list[_FRAGMENT_SHADER][_SAMPLED_IMAGE_RES].count) {
+            sampledResource = &sampleProgram->shader_resources_list[_FRAGMENT_SHADER][_SAMPLED_IMAGE_RES].list[i];
             sampledName = sampledResource->name;
         }
         /* read binding/gl_binding directly from the already-resolved
-         * SpirvResource instead of re-resolving the program per query. */
+         * MGLShaderResource instead of re-resolving the program per query. */
         GLuint spirvBinding = sampledResource ? sampledResource->binding : 0u;
         GLuint glBinding = sampledResource ? sampledResource->gl_binding : 0u;
         if (spirvBinding >= TEXTURE_UNITS || glBinding >= TEXTURE_UNITS) {
@@ -3614,10 +3614,10 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                                             type:_STORAGE_IMAGE_RES];
     for (GLuint i = 0; i < vertexStorageImageCount; i++)
     {
-        SpirvResource *resource = NULL;
+        MGLShaderResource *resource = NULL;
         if (vertexProgram &&
-            i < vertexProgram->spirv_resources_list[vertexStage][_STORAGE_IMAGE_RES].count) {
-            resource = &vertexProgram->spirv_resources_list[vertexStage][_STORAGE_IMAGE_RES].list[i];
+            i < vertexProgram->shader_resources_list[vertexStage][_STORAGE_IMAGE_RES].count) {
+            resource = &vertexProgram->shader_resources_list[vertexStage][_STORAGE_IMAGE_RES].list[i];
         }
         if (mglShouldSkipStageTextureResource(vertexProgram,
                                               vertexStage,
@@ -3642,10 +3642,10 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     }
     for (GLuint i = 0; i < vertexStorageImageCount; i++)
     {
-        SpirvResource *resource = NULL;
+        MGLShaderResource *resource = NULL;
         if (vertexProgram &&
-            i < vertexProgram->spirv_resources_list[vertexStage][_STORAGE_IMAGE_RES].count) {
-            resource = &vertexProgram->spirv_resources_list[vertexStage][_STORAGE_IMAGE_RES].list[i];
+            i < vertexProgram->shader_resources_list[vertexStage][_STORAGE_IMAGE_RES].count) {
+            resource = &vertexProgram->shader_resources_list[vertexStage][_STORAGE_IMAGE_RES].list[i];
         }
         if (mglShouldSkipStageTextureResource(vertexProgram,
                                               vertexStage,
@@ -3707,10 +3707,10 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
      * default data. */
     for (GLuint i = 0; i < fragmentStorageImageCount; i++)
     {
-        SpirvResource *resource = NULL;
+        MGLShaderResource *resource = NULL;
         if (fragmentProgram &&
-            i < fragmentProgram->spirv_resources_list[_FRAGMENT_SHADER][_STORAGE_IMAGE_RES].count) {
-            resource = &fragmentProgram->spirv_resources_list[_FRAGMENT_SHADER][_STORAGE_IMAGE_RES].list[i];
+            i < fragmentProgram->shader_resources_list[_FRAGMENT_SHADER][_STORAGE_IMAGE_RES].count) {
+            resource = &fragmentProgram->shader_resources_list[_FRAGMENT_SHADER][_STORAGE_IMAGE_RES].list[i];
         }
         if (mglShouldSkipStageTextureResource(fragmentProgram,
                                               _FRAGMENT_SHADER,
@@ -3740,10 +3740,10 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
 
     for (GLuint i = 0; i < fragmentStorageImageCount; i++)
     {
-        SpirvResource *resource = NULL;
+        MGLShaderResource *resource = NULL;
         if (fragmentProgram &&
-            i < fragmentProgram->spirv_resources_list[_FRAGMENT_SHADER][_STORAGE_IMAGE_RES].count) {
-            resource = &fragmentProgram->spirv_resources_list[_FRAGMENT_SHADER][_STORAGE_IMAGE_RES].list[i];
+            i < fragmentProgram->shader_resources_list[_FRAGMENT_SHADER][_STORAGE_IMAGE_RES].count) {
+            resource = &fragmentProgram->shader_resources_list[_FRAGMENT_SHADER][_STORAGE_IMAGE_RES].list[i];
         }
         if (mglShouldSkipStageTextureResource(fragmentProgram,
                                               _FRAGMENT_SHADER,
@@ -3822,10 +3822,10 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             continue;
         }
         Program *sampleProgram = fragmentProgram;
-        SpirvResource *samplerResource = NULL;
+        MGLShaderResource *samplerResource = NULL;
         if (sampleProgram &&
-            i < sampleProgram->spirv_resources_list[_FRAGMENT_SHADER][_SEPARATE_SAMPLERS_RES].count) {
-            samplerResource = &sampleProgram->spirv_resources_list[_FRAGMENT_SHADER][_SEPARATE_SAMPLERS_RES].list[i];
+            i < sampleProgram->shader_resources_list[_FRAGMENT_SHADER][_SEPARATE_SAMPLERS_RES].count) {
+            samplerResource = &sampleProgram->shader_resources_list[_FRAGMENT_SHADER][_SEPARATE_SAMPLERS_RES].list[i];
         }
         if (mglShouldSkipStageSamplerResource(sampleProgram,
                                               _FRAGMENT_SHADER,
@@ -3881,10 +3881,10 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             continue;
         }
 
-        SpirvResourceList *arrayResources =
-            &arrayProgram->spirv_resources_list[arrayStage][_SAMPLED_IMAGE_RES];
+        MGLShaderResourceList *arrayResources =
+            &arrayProgram->shader_resources_list[arrayStage][_SAMPLED_IMAGE_RES];
         for (GLuint resourceIndex = 0; arrayResources->list && resourceIndex < arrayResources->count; resourceIndex++) {
-            SpirvResource *resource = &arrayResources->list[resourceIndex];
+            MGLShaderResource *resource = &arrayResources->list[resourceIndex];
             if (resource->gl_array_size <= 1) {
                 continue;
             }

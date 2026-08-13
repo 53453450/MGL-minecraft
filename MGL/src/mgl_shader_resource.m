@@ -1,18 +1,18 @@
 /*
- * mgl_spirv_resource.m
+ * mgl_shader_resource.m
  * MGL
  *
- * Implementation of the SPIR-V Resource Helper Subsystem.
- * See mgl_spirv_resource.h for the API contract.
+ * Implementation of the Shader Resource Helper Subsystem.
+ * See mgl_shader_resource.h for the API contract.
  */
 
-#import "mgl_spirv_resource.h"
+#import "mgl_shader_resource.h"
 
 #import <Foundation/Foundation.h>
 
 #include <string.h>
 
-GLuint mglClientBufferBindingForResource(int resourceType, const SpirvResource *res)
+GLuint mglClientBufferBindingForResource(int resourceType, const MGLShaderResource *res)
 {
     if (!res) {
         return 0u;
@@ -74,7 +74,7 @@ GLuint mglClientBufferBindingForResource(int resourceType, const SpirvResource *
 
     /*
      * Plain uniforms are represented internally as one tiny GL buffer per
-     * uniform location. SPIRV-Cross usually reports descriptor binding 0 for
+     * uniform location. The resource binding starts at descriptor binding 0 for
      * all of them, while the generated MSL assigns distinct [[buffer(n)]]
      * slots. Use the GL uniform location to find the client-side buffer, then
      * map that location to the reflected Metal slot later.
@@ -97,12 +97,12 @@ GLuint mglClientBufferBindingForResource(int resourceType, const SpirvResource *
     return res->gl_binding;
 }
 
-GLuint mglMetalResourceSlot(const SpirvResource *res)
+GLuint mglMetalResourceSlot(const MGLShaderResource *res)
 {
     return res ? res->binding : 0u;
 }
 
-GLuint mglStageBufferResourceElementCount(int resourceType, const SpirvResource *res)
+GLuint mglStageBufferResourceElementCount(int resourceType, const MGLShaderResource *res)
 {
     if (resourceType == _UNIFORM_BUFFER_RES &&
         res &&
@@ -125,7 +125,7 @@ GLuint mglStageBufferResourceElementCount(int resourceType, const SpirvResource 
 }
 
 GLuint mglClientBufferBindingForResourceElement(int resourceType,
-                                                const SpirvResource *res,
+                                                const MGLShaderResource *res,
                                                 GLuint element)
 {
     GLuint baseBinding = mglClientBufferBindingForResource(resourceType, res);
@@ -140,12 +140,12 @@ GLuint mglClientBufferBindingForResourceElement(int resourceType,
     return baseBinding + element;
 }
 
-GLuint mglMetalResourceSlotForElement(const SpirvResource *res, GLuint element)
+GLuint mglMetalResourceSlotForElement(const MGLShaderResource *res, GLuint element)
 {
     return mglMetalResourceSlot(res) + element;
 }
 
-GLuint mglMetalCombinedSamplerSlot(const SpirvResource *res)
+GLuint mglMetalCombinedSamplerSlot(const MGLShaderResource *res)
 {
     if (!res || !res->has_combined_sampler) {
         return 0u;
@@ -153,13 +153,13 @@ GLuint mglMetalCombinedSamplerSlot(const SpirvResource *res)
     return res->combined_sampler_binding;
 }
 
-GLuint mglMetalCombinedSamplerSlotForElement(const SpirvResource *res,
+GLuint mglMetalCombinedSamplerSlotForElement(const MGLShaderResource *res,
                                              GLuint element)
 {
     return mglMetalCombinedSamplerSlot(res) + element;
 }
 
-bool mglPlainUniformAllowsGlobalFallback(const SpirvResource *res)
+bool mglPlainUniformAllowsGlobalFallback(const MGLShaderResource *res)
 {
     if (!res || !res->name) {
         return true;
@@ -185,7 +185,7 @@ bool mglPlainUniformAllowsGlobalFallback(const SpirvResource *res)
     return true;
 }
 
-const char *mglSpirvResourceTypeName(int type)
+const char *mglMGLShaderResourceTypeName(int type)
 {
     switch (type) {
         case _UNIFORM_BUFFER_RES: return "uniform_buffer";

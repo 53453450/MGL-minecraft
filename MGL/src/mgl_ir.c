@@ -115,8 +115,8 @@ static int layout_type(MGLIRType *type, MGLIRLayoutStd layout, uint32_t depth,
         }
         uint32_t base = vector_align(vec_comps, s);
         uint32_t stride = is_std140(layout) ? round_align16(base) : base;
-        /* glslang (SPIR-V MatrixStride) stores every vector at the full
-         * stride in both std140 and std430: mat3 std430 = 48. */
+        /* The layout pass stores every vector at the full stride in both
+         * std140 and std430: mat3 std430 = 48. */
         r.size = count * stride;
         r.alignment = base;
         r.matrix_stride = stride;
@@ -147,8 +147,8 @@ static int layout_type(MGLIRType *type, MGLIRLayoutStd layout, uint32_t depth,
              * enclosing struct; callers must size it via array_stride */
             r.size = 0;
         } else {
-            /* glslang (SPIR-V ArrayStride) stores every element at the full
-             * stride: float[3] std140 = 48 (=3*16), vec3[2] std430 = 32. */
+            /* The layout pass stores every element at the full stride:
+             * float[3] std140 = 48 (=3*16), vec3[2] std430 = 32. */
             r.size = type->array_size * stride;
         }
         break;

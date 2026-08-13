@@ -24,8 +24,8 @@ BOOL mglRendererProgramUsesVertexAttrib(Program *program, GLuint attribute)
         return NO;
     }
 
-    SpirvResourceList *inputs =
-        &program->spirv_resources_list[_VERTEX_SHADER][_STAGE_INPUT_RES];
+    MGLShaderResourceList *inputs =
+        &program->shader_resources_list[_VERTEX_SHADER][_STAGE_INPUT_RES];
     if (!inputs->list || inputs->count == 0) {
         return NO;
     }
@@ -36,7 +36,7 @@ BOOL mglRendererProgramUsesVertexAttrib(Program *program, GLuint attribute)
             return YES;
         }
 
-        /* Array stage inputs occupy consecutive locations.  SPIRV-Cross
+        /* Array stage inputs occupy consecutive locations.  The AIR frontend
          * reflects only the base location, but the generated MSL flattens
          * the array into individual [[attribute(N)]] inputs at locations
          * [base, base + array_size - 1]. */
@@ -54,14 +54,14 @@ BOOL mglRendererProgramUsesVertexAttrib(Program *program, GLuint attribute)
     return NO;
 }
 
-SpirvResource *mglRendererProgramVertexAttribResource(Program *program, GLuint attribute)
+MGLShaderResource *mglRendererProgramVertexAttribResource(Program *program, GLuint attribute)
 {
     if (!program || attribute >= MAX_ATTRIBS) {
         return NULL;
     }
 
-    SpirvResourceList *inputs =
-        &program->spirv_resources_list[_VERTEX_SHADER][_STAGE_INPUT_RES];
+    MGLShaderResourceList *inputs =
+        &program->shader_resources_list[_VERTEX_SHADER][_STAGE_INPUT_RES];
     if (!inputs->list || inputs->count == 0) {
         return NULL;
     }
@@ -90,7 +90,7 @@ SpirvResource *mglRendererProgramVertexAttribResource(Program *program, GLuint a
 
 bool mglRendererVertexAttribIsColorInput(Program *program, GLuint attribute)
 {
-    SpirvResource *resource = mglRendererProgramVertexAttribResource(program, attribute);
+    MGLShaderResource *resource = mglRendererProgramVertexAttribResource(program, attribute);
     const char *name = resource ? resource->name : NULL;
     return name &&
            (strcasecmp(name, "Color") == 0 ||

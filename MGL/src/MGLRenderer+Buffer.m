@@ -982,7 +982,7 @@ static float mglFloat10ToFloat(uint32_t val) {
 
 /* ---- Plain struct uniform buffer packing ----
  *
- * SPIRV-Cross translates `layout(location=N) uniform S u[K]` into separate
+ * The AIR backend translates `layout(location=N) uniform S u[K]` into separate
  * Metal buffer arguments (`constant S* u_0 [[buffer(B)]]`, etc.), each
  * expecting a full struct's worth of data.  MGL stores individual uniform
  * member data per location in plain_uniform_buffers[location].  This
@@ -1179,12 +1179,12 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
 
         /* Validate the resource is still in range (plan was built from the
          * same list, but guard against any unexpected reallocation). */
-        if (spvc_type < 0 || spvc_type >= _MAX_SPIRV_RES ||
-            entry->resource_index >= program->spirv_resources_list[stage][spvc_type].count) {
+        if (spvc_type < 0 || spvc_type >= MGL_MAX_SHADER_RESOURCES ||
+            entry->resource_index >= program->shader_resources_list[stage][spvc_type].count) {
             return false;  /* fall back to original path */
         }
-        SpirvResource *resource =
-            &program->spirv_resources_list[stage][spvc_type].list[entry->resource_index];
+        MGLShaderResource *resource =
+            &program->shader_resources_list[stage][spvc_type].list[entry->resource_index];
 
         /* Resolve buffer arrays (same logic as the original path). */
         int gl_buffer_type = -1;
@@ -1455,7 +1455,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                         NSLog(@"MGL BINDMAP focused program=%u stage=%s type=%s resource=%s resourceIndex=%d clientBinding=%u metalSlot=%u buffer=%u offset=%lld range=%lld reflected=%lu (plan)",
                               (unsigned)program->name,
                               mglShaderStageName(stage),
-                              mglSpirvResourceTypeName(spvc_type),
+                              mglMGLShaderResourceTypeName(spvc_type),
                               resource->name ? resource->name : "(null)",
                               entry->resource_index,
                               (unsigned)spirv_binding,
@@ -1473,7 +1473,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                     mglTraceLog("BINDMAP program=%u stage=%s type=%s resource=%s resourceIndex=%d clientBinding=%u metalSlot=%u buffer=%u offset=%lld range=%lld reflected=%lu fallback=%d (plan)",
                                 (unsigned)program->name,
                                 mglShaderStageName(stage),
-                                mglSpirvResourceTypeName(spvc_type),
+                                mglMGLShaderResourceTypeName(spvc_type),
                                 resource->name ? resource->name : "(null)",
                                 entry->resource_index,
                                 (unsigned)spirv_binding,
@@ -1512,7 +1512,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                         NSLog(@"MGL BINDMISS focused program=%u stage=%s type=%s resource=%s resourceIndex=%d clientBinding=%u metalSlot=%u baseBuffer=%u basePtr=%p offset=%lld range=%lld reflected=%lu usedFallback=%d (plan)",
                               (unsigned)program->name,
                               mglShaderStageName(stage),
-                              mglSpirvResourceTypeName(spvc_type),
+                              mglMGLShaderResourceTypeName(spvc_type),
                               resource->name ? resource->name : "(null)",
                               entry->resource_index,
                               (unsigned)spirv_binding,
@@ -1531,7 +1531,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                     mglTraceLog("BINDMISS program=%u stage=%s type=%s resource=%s resourceIndex=%d clientBinding=%u metalSlot=%u baseBuffer=%u basePtr=%p offset=%lld range=%lld reflected=%lu fallback=%d (plan)",
                                 (unsigned)program->name,
                                 mglShaderStageName(stage),
-                                mglSpirvResourceTypeName(spvc_type),
+                                mglMGLShaderResourceTypeName(spvc_type),
                                 resource->name ? resource->name : "(null)",
                                 entry->resource_index,
                                 (unsigned)spirv_binding,
@@ -1616,8 +1616,8 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
 
         /* Read count directly from the already-resolved program instead of
          * getProgramBindingCount:, which would re-resolve the program. */
-        count = (program && spvc_type >= 0 && spvc_type < _MAX_SPIRV_RES)
-                  ? (int)program->spirv_resources_list[stage][spvc_type].count
+        count = (program && spvc_type >= 0 && spvc_type < MGL_MAX_SHADER_RESOURCES)
+                  ? (int)program->shader_resources_list[stage][spvc_type].count
                   : 0;
 
 #if DEBUG_MAPPED_TYPES
@@ -1645,11 +1645,11 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                 // Use the GL binding point to locate the client's buffer base.
                 // The resource's `binding` may already have been rewritten to the
                 // Metal [[buffer(n)]] slot parsed from generated MSL.
-                if (!program || spvc_type < 0 || spvc_type >= _MAX_SPIRV_RES ||
-                    i >= (int)program->spirv_resources_list[stage][spvc_type].count) {
+                if (!program || spvc_type < 0 || spvc_type >= MGL_MAX_SHADER_RESOURCES ||
+                    i >= (int)program->shader_resources_list[stage][spvc_type].count) {
                     continue;
                 }
-                SpirvResource *resource = &program->spirv_resources_list[stage][spvc_type].list[i];
+                MGLShaderResource *resource = &program->shader_resources_list[stage][spvc_type].list[i];
                 if (mglShouldSkipStageBufferResource(program, stage, spvc_type, resource)) {
                     continue;
                 }
@@ -1668,7 +1668,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
 
                 /* Plain struct uniform packing.
                  *
-                 * SPIRV-Cross translates `layout(location=N) uniform S u[K]`
+                 * The AIR backend translates `layout(location=N) uniform S u[K]`
                  * into separate Metal buffer arguments (`constant S* u_0
                  * [[buffer(B)]]`, etc.), each expecting a full struct's
                  * worth of data.  MGL stores individual uniform member data
@@ -1937,7 +1937,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                             NSLog(@"MGL BINDMAP focused program=%u stage=%s type=%s resource=%s resourceIndex=%d clientBinding=%u metalSlot=%u buffer=%u offset=%lld range=%lld reflected=%lu",
                                   (unsigned)program->name,
                                   mglShaderStageName(stage),
-                                  mglSpirvResourceTypeName(spvc_type),
+                                  mglMGLShaderResourceTypeName(spvc_type),
                                   resource->name ? resource->name : "(null)",
                                   i,
                                   (unsigned)spirv_binding,
@@ -1956,7 +1956,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                         mglTraceLog("BINDMAP program=%u stage=%s type=%s resource=%s resourceIndex=%d clientBinding=%u metalSlot=%u buffer=%u offset=%lld range=%lld reflected=%lu fallback=%d",
                                     (unsigned)program->name,
                                     mglShaderStageName(stage),
-                                    mglSpirvResourceTypeName(spvc_type),
+                                    mglMGLShaderResourceTypeName(spvc_type),
                                     resource->name ? resource->name : "(null)",
                                     i,
                                     (unsigned)spirv_binding,
@@ -1999,7 +1999,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                             NSLog(@"MGL BINDMISS focused program=%u stage=%s type=%s resource=%s resourceIndex=%d clientBinding=%u metalSlot=%u baseBuffer=%u basePtr=%p offset=%lld range=%lld reflected=%lu usedFallback=%d",
                                   (unsigned)program->name,
                                   mglShaderStageName(stage),
-                                  mglSpirvResourceTypeName(spvc_type),
+                                  mglMGLShaderResourceTypeName(spvc_type),
                                   resource->name ? resource->name : "(null)",
                                   i,
                                   (unsigned)spirv_binding,
@@ -2018,7 +2018,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                         mglTraceLog("BINDMISS program=%u stage=%s type=%s resource=%s resourceIndex=%d clientBinding=%u metalSlot=%u baseBuffer=%u basePtr=%p offset=%lld range=%lld reflected=%lu fallback=%d",
                                     (unsigned)program->name,
                                     mglShaderStageName(stage),
-                                    mglSpirvResourceTypeName(spvc_type),
+                                    mglMGLShaderResourceTypeName(spvc_type),
                                     resource->name ? resource->name : "(null)",
                                     i,
                                     (unsigned)spirv_binding,

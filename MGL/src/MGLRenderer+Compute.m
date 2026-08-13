@@ -309,12 +309,12 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
     }
 
     /* Bind spvBufferSizeConstants for runtime-sized SSBO arrays.
-     * SPIRV-Cross emits code that reads uint32 byte-sizes from a
-     * constant uint* buffer at MGL_BUFFER_SIZE_BUFFER_INDEX when a
+     * The AIR backend emits code that reads uint32 byte-sizes from a
+     * constant uint* buffer at MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX when a
      * shader uses .length() on unsized SSBO arrays. */
     {
         Program *computeProgram = mglResolveProgramForStageFromState(ctx, stage);
-        if (computeProgram && computeProgram->spirv[stage].needs_buffer_size_buffer)
+        if (computeProgram && computeProgram->modules[stage].needs_runtime_array_size_buffer)
         {
             uint32_t sizeConstants[31];
             memset(sizeConstants, 0, sizeof(sizeConstants));
@@ -327,7 +327,7 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
                 NSUInteger metalSlot = map->has_metal_binding
                     ? (NSUInteger)map->metal_binding_index
                     : (NSUInteger)map->buffer_base_index;
-                if (metalSlot >= 31 || metalSlot == MGL_BUFFER_SIZE_BUFFER_INDEX)
+                if (metalSlot >= 31 || metalSlot == MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX)
                     continue;
                 GLsizeiptr visibleSize = mglBufferMapVisibleSize(map);
                 sizeConstants[metalSlot] = (uint32_t)visibleSize;
@@ -338,7 +338,7 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
                 MTLResourceStorageModeShared);
             if (sizeBuffer) {
                 mglComputeSetBuffer(computeCommandEncoder, sizeBuffer, 0,
-                                    MGL_BUFFER_SIZE_BUFFER_INDEX);
+                                    MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX);
             }
         }
     }
@@ -390,16 +390,16 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
 
             for (int i=0; i < (int)count && textures_to_be_mapped > 0; i++)
             {
-                SpirvResource *resource = NULL;
+                MGLShaderResource *resource = NULL;
                 GLuint metalBinding = [self getProgramBinding:stage type:spvc_type index:i];
                 GLuint glUnit = 0u;
                 Texture *ptr = NULL;
 
                 if (computeProgram &&
-                    spvc_type >= 0 && spvc_type < _MAX_SPIRV_RES &&
+                    spvc_type >= 0 && spvc_type < MGL_MAX_SHADER_RESOURCES &&
                     i >= 0 &&
-                    i < (int)computeProgram->spirv_resources_list[stage][spvc_type].count) {
-                    resource = &computeProgram->spirv_resources_list[stage][spvc_type].list[i];
+                    i < (int)computeProgram->shader_resources_list[stage][spvc_type].count) {
+                    resource = &computeProgram->shader_resources_list[stage][spvc_type].list[i];
                     metalBinding = mglMetalResourceSlot(resource);
                 }
 
@@ -544,10 +544,10 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
     }
 
     if (computeProgram) {
-        SpirvResourceList *arrayResources =
-            &computeProgram->spirv_resources_list[stage][_SAMPLED_IMAGE_RES];
+        MGLShaderResourceList *arrayResources =
+            &computeProgram->shader_resources_list[stage][_SAMPLED_IMAGE_RES];
         for (GLuint resourceIndex = 0; arrayResources->list && resourceIndex < arrayResources->count; resourceIndex++) {
-            SpirvResource *resource = &arrayResources->list[resourceIndex];
+            MGLShaderResource *resource = &arrayResources->list[resourceIndex];
             if (resource->gl_array_size <= 1) {
                 continue;
             }
@@ -604,14 +604,14 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
     }
 
     /* Bind additional array elements for storage image arrays.
-     * SPIRV-Cross emits `array<texture2d<T, access::read_write>, N> image [[texture(B)]]`
+     * The AIR backend emits `array<texture2d<T, access::read_write>, N> image [[texture(B)]]`
      * which occupies consecutive Metal texture slots B..B+N-1.  The main
      * loop above only binds element 0; bind elements 1..N-1 here. */
     if (computeProgram) {
-        SpirvResourceList *storageArrayResources =
-            &computeProgram->spirv_resources_list[stage][_STORAGE_IMAGE_RES];
+        MGLShaderResourceList *storageArrayResources =
+            &computeProgram->shader_resources_list[stage][_STORAGE_IMAGE_RES];
         for (GLuint resourceIndex = 0; storageArrayResources->list && resourceIndex < storageArrayResources->count; resourceIndex++) {
-            SpirvResource *resource = &storageArrayResources->list[resourceIndex];
+            MGLShaderResource *resource = &storageArrayResources->list[resourceIndex];
             if (resource->gl_array_size <= 1) {
                 continue;
             }
@@ -700,7 +700,7 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
     }
 
     id <MTLFunction> func;
-    func = (__bridge id<MTLFunction>)(program->spirv[_COMPUTE_SHADER].mtl_function);
+    func = (__bridge id<MTLFunction>)(program->modules[_COMPUTE_SHADER].mtl_function);
     if (!func) {
         NSLog(@"MGL COMPUTE ERROR: compute shader for program %u has no Metal function", program->name);
         return false;

@@ -324,7 +324,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
         Program *renderingProgram = mglResolveProgramFromState(ctx);
         BOOL framebufferYFlipWrite =
             renderingProgram &&
-            renderingProgram->spirv[_VERTEX_SHADER].mgl_injected_framebuffer_yflip == GL_TRUE &&
+            renderingProgram->modules[_VERTEX_SHADER].mgl_injected_framebuffer_yflip == GL_TRUE &&
             !mglRendererProgramHasSampledResourceNamed(renderingProgram, "InSampler") &&
             !mglRendererProgramHasSampledResourceNamed(renderingProgram, "DiffuseSampler");
 

@@ -5164,7 +5164,7 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
             tex_type = tex->samples > 1u ? MTLTextureType2DMultisample : MTLTextureType2D;
             break;
         case GL_TEXTURE_1D_ARRAY:
-            /* SPIRV-Cross lowers sampler1DArray to texture2d_array in MSL, and
+            /* The AIR backend lowers sampler1DArray to texture2d_array, and
              * Metal does not allow texture views from MTLTextureType1DArray to
              * MTLTextureType2DArray.  Always back GL_TEXTURE_1D_ARRAY with
              * MTLTextureType2DArray (height=1), mirroring how GL_TEXTURE_1D is
@@ -5634,13 +5634,13 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
         return nil;
     }
 
-    // SPIRV-Cross currently emits Minecraft's CloudFaces texel buffer as a
+    // The AIR backend emits Minecraft's CloudFaces texel buffer as a
     // texture2d<int>. Keep GL lookup semantics as GL_TEXTURE_BUFFER, but
     // create a Metal 2D backing so the generated MSL argument type matches.
     // A texel buffer can be much wider than Metal's max 2D texture width,
     // so pack it into rows instead of creating texelCount x 1.
     /*
-     * SPIRV-Cross lowers GL texture buffers to 2D Metal textures and emits
+     * The AIR backend lowers GL texture buffers to 2D Metal textures and emits
      * spvTexelBufferCoord(tc) using its MSL texel_buffer_texture_width
      * option. Keep this packing width in lockstep with program.c.
      */
@@ -6721,7 +6721,7 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
     }
 }
 
-- (GLuint)textureUnitForSampledResource:(SpirvResource *)sampledResource
+- (GLuint)textureUnitForSampledResource:(MGLShaderResource *)sampledResource
                                 program:(Program *)program
                            metalBinding:(GLuint)metalBinding
                                   stage:(int)stage
@@ -6806,7 +6806,7 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
     return 0u;
 }
 
-- (GLuint)textureUnitForSampledResource:(SpirvResource *)sampledResource metalBinding:(GLuint)metalBinding stage:(int)stage
+- (GLuint)textureUnitForSampledResource:(MGLShaderResource *)sampledResource metalBinding:(GLuint)metalBinding stage:(int)stage
 {
     Program *program = mglResolveProgramForStageFromState(ctx, stage);
     return [self textureUnitForSampledResource:sampledResource
@@ -6820,7 +6820,7 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
     return [self textureUnitForSampledResource:NULL metalBinding:metalBinding stage:stage];
 }
 
-- (Texture *)textureForSampledResource:(SpirvResource *)sampledResource
+- (Texture *)textureForSampledResource:(MGLShaderResource *)sampledResource
                           metalBinding:(GLuint)metalBinding
                                   stage:(int)stage
                            expectedType:(MTLTextureType)expectedType
@@ -6841,7 +6841,7 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
     int textureIndex = [self textureIndexForExpectedMetalType:expectedType];
     if (textureIndex >= 0 && textureIndex < _MAX_TEXTURE_TYPES) {
         Texture *typedTexture = MGL_STATE(ctx)->texture_units[textureUnit].textures[textureIndex];
-        /* SPIRV-Cross lowers sampler1D to texture2d in MSL, so expectedType is
+        /* The AIR backend lowers sampler1D to texture2d, so expectedType is
          * MTLTextureType2D even for GL_TEXTURE_1D bindings. If the _TEXTURE_2D
          * slot only contains an auto-created default texture (name ==
          * TEX_OBJ_RES_NAME) while the unit's active texture is a real
@@ -6866,7 +6866,7 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
         }
 
         // Texel-buffer resources must not silently fall back to GL_TEXTURE_2D.
-        // Minecraft's CloudFaces is declared as SpvDimBuffer but SPIRV-Cross
+        // Minecraft's CloudFaces is declared with buffer image_dim, and the lowerer
         // lowers it to a 1-row texture2d<int> in MSL. If no GL_TEXTURE_BUFFER
         // is bound, using the active 2D atlas here feeds float/RGBA data into a
         // signed integer vertex resource and corrupts the whole frame.
@@ -6912,7 +6912,7 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
     return MGL_STATE(ctx)->active_textures[textureUnit];
 }
 
-- (Texture *)textureForSampledResource:(SpirvResource *)sampledResource
+- (Texture *)textureForSampledResource:(MGLShaderResource *)sampledResource
                           metalBinding:(GLuint)metalBinding
                                   stage:(int)stage
                            expectedType:(MTLTextureType)expectedType

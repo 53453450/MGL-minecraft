@@ -78,7 +78,7 @@ static const char *kFS =
     "    fragColor = vec4(color.rgb * FogColor.rgb, color.a);\n"
     "}\n";
 
-static const char *kResName[_MAX_SPIRV_RES] = {
+static const char *kResName[MGL_MAX_SHADER_RESOURCES] = {
     "UNKNOWN", "UNIFORM_BUFFER", "UNIFORM_CONSTANT", "STORAGE_BUFFER",
     "STAGE_INPUT", "STAGE_OUTPUT", "SUBPASS_INPUT", "STORAGE_IMAGE",
     "SAMPLED_IMAGE", "ATOMIC_COUNTER", "PUSH_CONSTANT", "SEPARATE_IMAGE",
@@ -89,7 +89,7 @@ static int dumpStage(const char *label, const char *src, int stage)
 {
     unsigned char *lib = NULL;
     size_t libSize = 0;
-    SpirvResourceList lists[_MAX_SPIRV_RES];
+    MGLShaderResourceList lists[MGL_MAX_SHADER_RESOURCES];
     memset(lists, 0, sizeof(lists));
     char err[1024] = {0};
 
@@ -102,9 +102,9 @@ static int dumpStage(const char *label, const char *src, int stage)
     }
     printf("metallib: %zu bytes\n", libSize);
 
-    for (int t = 0; t < _MAX_SPIRV_RES; t++) {
+    for (int t = 0; t < MGL_MAX_SHADER_RESOURCES; t++) {
         for (GLuint i = 0; i < lists[t].count; i++) {
-            SpirvResource *r = &lists[t].list[i];
+            MGLShaderResource *r = &lists[t].list[i];
             printf("  [%-16s] name=%-20s binding=%-3u location=%-11u uniform_location=%d\n",
                    kResName[t], r->name ? r->name : "?", r->binding,
                    r->location, r->uniform_location);

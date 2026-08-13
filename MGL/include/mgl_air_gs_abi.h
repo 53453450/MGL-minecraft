@@ -303,7 +303,7 @@ enum {
     MGL_AIR_GS_SLOT_GATHER = 30,
 
     /* GS indexed gather params (setBytes constant), compute encoder only.
-     * Numerically the same slot as MGL_BUFFER_SIZE_BUFFER_INDEX (25); the
+     * Numerically the same slot as MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX (25); the
      * size buffer is only bound when the GS uses runtime-sized SSBOs, which
      * is not supported together with indexed gathers (P1). */
     MGL_AIR_GS_SLOT_GATHER_PARAMS = 25,

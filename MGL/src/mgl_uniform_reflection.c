@@ -16,11 +16,11 @@ static GLboolean mglUniformBlockNameSeen(Program *program,
     for (int stage = _VERTEX_SHADER;
          stage <= max_stage && stage < _MAX_SHADER_TYPES;
          stage++) {
-        SpirvResourceList *resources =
-            &program->spirv_resources_list[stage][_UNIFORM_BUFFER_RES];
+        MGLShaderResourceList *resources =
+            &program->shader_resources_list[stage][_UNIFORM_BUFFER_RES];
         GLuint limit = stage == max_stage ? max_index : resources->count;
         for (GLuint index = 0; index < limit; index++) {
-            SpirvResource *resource = &resources->list[index];
+            MGLShaderResource *resource = &resources->list[index];
             if (name && name[0] != '\0') {
                 if (resource->name && strcmp(name, resource->name) == 0) {
                     return GL_TRUE;
@@ -34,7 +34,7 @@ static GLboolean mglUniformBlockNameSeen(Program *program,
     return GL_FALSE;
 }
 
-static GLuint mglProgramUniformBlockArraySize(const SpirvResource *block)
+static GLuint mglProgramUniformBlockArraySize(const MGLShaderResource *block)
 {
     return block && block->ubo_array_size > 0 ? block->ubo_array_size : 1u;
 }
@@ -47,10 +47,10 @@ GLint mglActiveUniformBlockCount(Program *program)
     }
 
     for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
-        SpirvResourceList *resources =
-            &program->spirv_resources_list[stage][_UNIFORM_BUFFER_RES];
+        MGLShaderResourceList *resources =
+            &program->shader_resources_list[stage][_UNIFORM_BUFFER_RES];
         for (GLuint index = 0; index < resources->count; index++) {
-            SpirvResource *resource = &resources->list[index];
+            MGLShaderResource *resource = &resources->list[index];
             if (!mglUniformBlockNameSeen(program, stage, index,
                                          resource->name,
                                          resource->gl_binding)) {
@@ -70,8 +70,8 @@ GLint mglActiveAtomicCounterBufferCount(Program *program)
     }
 
     for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
-        SpirvResourceList *resources =
-            &program->spirv_resources_list[stage][_ATOMIC_COUNTER_RES];
+        MGLShaderResourceList *resources =
+            &program->shader_resources_list[stage][_ATOMIC_COUNTER_RES];
         for (GLuint index = 0; index < resources->count; index++) {
             GLuint binding = resources->list[index].gl_binding;
             if (binding < MAX_BINDABLE_BUFFERS && !seen[binding]) {
@@ -91,10 +91,10 @@ GLint mglActiveUniformBlockMaxNameLength(Program *program)
     }
 
     for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
-        SpirvResourceList *resources =
-            &program->spirv_resources_list[stage][_UNIFORM_BUFFER_RES];
+        MGLShaderResourceList *resources =
+            &program->shader_resources_list[stage][_UNIFORM_BUFFER_RES];
         for (GLuint index = 0; index < resources->count; index++) {
-            SpirvResource *resource = &resources->list[index];
+            MGLShaderResource *resource = &resources->list[index];
             if (mglUniformBlockNameSeen(program, stage, index,
                                         resource->name,
                                         resource->gl_binding)) {
@@ -121,21 +121,21 @@ GLint mglActiveUniformBlockMaxNameLength(Program *program)
     return max_length;
 }
 
-static SpirvResourceList *mglProgramActiveAttribList(Program *program)
+static MGLShaderResourceList *mglProgramActiveAttribList(Program *program)
 {
     return program
-        ? &program->spirv_resources_list[_VERTEX_SHADER][_STAGE_INPUT_RES]
+        ? &program->shader_resources_list[_VERTEX_SHADER][_STAGE_INPUT_RES]
         : NULL;
 }
 
-static GLboolean mglProgramActiveAttribHasName(const SpirvResource *resource)
+static GLboolean mglProgramActiveAttribHasName(const MGLShaderResource *resource)
 {
     return resource && resource->name && resource->name[0] != '\0';
 }
 
 GLint mglProgramActiveAttribCount(Program *program)
 {
-    SpirvResourceList *resources = mglProgramActiveAttribList(program);
+    MGLShaderResourceList *resources = mglProgramActiveAttribList(program);
     GLint count = 0;
     if (!resources || !resources->list) {
         return 0;
@@ -146,9 +146,9 @@ GLint mglProgramActiveAttribCount(Program *program)
     return count;
 }
 
-SpirvResource *mglProgramActiveAttribAt(Program *program, GLuint index)
+MGLShaderResource *mglProgramActiveAttribAt(Program *program, GLuint index)
 {
-    SpirvResourceList *resources = mglProgramActiveAttribList(program);
+    MGLShaderResourceList *resources = mglProgramActiveAttribList(program);
     GLuint ordinal = 0;
     if (!resources || !resources->list) {
         return NULL;
@@ -157,7 +157,7 @@ SpirvResource *mglProgramActiveAttribAt(Program *program, GLuint index)
     for (GLuint resource_index = 0;
          resource_index < resources->count;
          resource_index++) {
-        SpirvResource *resource = &resources->list[resource_index];
+        MGLShaderResource *resource = &resources->list[resource_index];
         if (!mglProgramActiveAttribHasName(resource)) {
             continue;
         }
@@ -173,7 +173,7 @@ GLint mglProgramActiveAttribMaxNameLength(Program *program)
     GLint max_length = 0;
     GLint count = mglProgramActiveAttribCount(program);
     for (GLint index = 0; index < count; index++) {
-        SpirvResource *resource =
+        MGLShaderResource *resource =
             mglProgramActiveAttribAt(program, (GLuint)index);
         GLint length = (GLint)(resource && resource->name
             ? strlen(resource->name) + 1u : 1u);
@@ -184,7 +184,7 @@ GLint mglProgramActiveAttribMaxNameLength(Program *program)
     return max_length;
 }
 
-GLenum mglProgramActiveAttribType(const SpirvResource *resource)
+GLenum mglProgramActiveAttribType(const MGLShaderResource *resource)
 {
     if (resource && resource->gl_type != 0u) {
         return resource->gl_type;
@@ -335,7 +335,7 @@ bool mglUniformNameLooksSamplerLike(const char *name)
             strcmp(name, "CloudFaces") == 0);
 }
 
-static bool mglProgramResourceLooksSamplerLike(const SpirvResource *resource,
+static bool mglProgramResourceLooksSamplerLike(const MGLShaderResource *resource,
                                                int resource_type)
 {
     if (!resource) {
@@ -399,12 +399,12 @@ void mglUnifySamplerUniformLocations(Program *program)
              leader_type_index < sizeof(resource_types) / sizeof(resource_types[0]);
              leader_type_index++) {
             int leader_type = resource_types[leader_type_index];
-            SpirvResourceList *leaders =
-                &program->spirv_resources_list[leader_stage][leader_type];
+            MGLShaderResourceList *leaders =
+                &program->shader_resources_list[leader_stage][leader_type];
             for (GLuint leader_index = 0;
                  leaders->list && leader_index < leaders->count;
                  leader_index++) {
-                SpirvResource *leader = &leaders->list[leader_index];
+                MGLShaderResource *leader = &leaders->list[leader_index];
                 if (!mglProgramResourceLooksSamplerLike(leader, leader_type) ||
                     !leader->name || leader->uniform_location < 0) {
                     continue;
@@ -418,12 +418,12 @@ void mglUnifySamplerUniformLocations(Program *program)
                          type_index < sizeof(resource_types) / sizeof(resource_types[0]);
                          type_index++) {
                         int resource_type = resource_types[type_index];
-                        SpirvResourceList *resources =
-                            &program->spirv_resources_list[stage][resource_type];
+                        MGLShaderResourceList *resources =
+                            &program->shader_resources_list[stage][resource_type];
                         for (GLuint index = 0;
                              resources->list && index < resources->count;
                              index++) {
-                            SpirvResource *resource = &resources->list[index];
+                            MGLShaderResource *resource = &resources->list[index];
                             if (mglProgramResourceLooksSamplerLike(resource,
                                                                    resource_type) &&
                                 resource->name &&
@@ -444,12 +444,12 @@ void mglUnifySamplerUniformLocations(Program *program)
                          type_index < sizeof(resource_types) / sizeof(resource_types[0]);
                          type_index++) {
                         int resource_type = resource_types[type_index];
-                        SpirvResourceList *resources =
-                            &program->spirv_resources_list[stage][resource_type];
+                        MGLShaderResourceList *resources =
+                            &program->shader_resources_list[stage][resource_type];
                         for (GLuint index = 0;
                              resources->list && index < resources->count;
                              index++) {
-                            SpirvResource *resource = &resources->list[index];
+                            MGLShaderResource *resource = &resources->list[index];
                             if (resource == leader ||
                                 !mglProgramResourceLooksSamplerLike(resource,
                                                                     resource_type) ||
@@ -468,19 +468,19 @@ void mglUnifySamplerUniformLocations(Program *program)
     }
 }
 
-static SpirvResource *mglFindAssignedPlainUniformResource(Program *program,
+static MGLShaderResource *mglFindAssignedPlainUniformResource(Program *program,
                                                           const char *name)
 {
     if (!program || !name || !name[0]) {
         return NULL;
     }
     for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
-        SpirvResourceList *resources =
-            &program->spirv_resources_list[stage][_UNIFORM_CONSTANT_RES];
+        MGLShaderResourceList *resources =
+            &program->shader_resources_list[stage][_UNIFORM_CONSTANT_RES];
         for (GLuint index = 0;
              resources->list && index < resources->count;
              index++) {
-            SpirvResource *resource = &resources->list[index];
+            MGLShaderResource *resource = &resources->list[index];
             if (resource->uniform_location >= 0 && resource->name &&
                 !mglProgramResourceLooksSamplerLike(resource,
                                                     _UNIFORM_CONSTANT_RES) &&
@@ -512,12 +512,12 @@ void mglAssignPlainUniformLocations(Program *program)
     }
 
     for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
-        SpirvResourceList *resources =
-            &program->spirv_resources_list[stage][_UNIFORM_CONSTANT_RES];
+        MGLShaderResourceList *resources =
+            &program->shader_resources_list[stage][_UNIFORM_CONSTANT_RES];
         for (GLuint index = 0;
              resources->list && index < resources->count;
              index++) {
-            SpirvResource *resource = &resources->list[index];
+            MGLShaderResource *resource = &resources->list[index];
             if (mglProgramResourceLooksSamplerLike(resource,
                                                    _UNIFORM_CONSTANT_RES)) {
                 continue;
@@ -551,19 +551,19 @@ void mglAssignPlainUniformLocations(Program *program)
     }
 
     for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
-        SpirvResourceList *resources =
-            &program->spirv_resources_list[stage][_UNIFORM_CONSTANT_RES];
+        MGLShaderResourceList *resources =
+            &program->shader_resources_list[stage][_UNIFORM_CONSTANT_RES];
         for (GLuint index = 0;
              resources->list && index < resources->count;
              index++) {
-            SpirvResource *resource = &resources->list[index];
+            MGLShaderResource *resource = &resources->list[index];
             if (mglProgramResourceLooksSamplerLike(resource,
                                                    _UNIFORM_CONSTANT_RES) ||
                 resource->uniform_location >= 0) {
                 continue;
             }
 
-            SpirvResource *assigned =
+            MGLShaderResource *assigned =
                 mglFindAssignedPlainUniformResource(program, resource->name);
             if (assigned && assigned->uniform_location >= 0 &&
                 assigned->uniform_location < MAX_BINDABLE_BUFFERS) {
@@ -612,12 +612,12 @@ void mglAssignAggregateMemberLocations(Program *program)
     }
 
     for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
-        SpirvResourceList *resources =
-            &program->spirv_resources_list[stage][_UNIFORM_CONSTANT_RES];
+        MGLShaderResourceList *resources =
+            &program->shader_resources_list[stage][_UNIFORM_CONSTANT_RES];
         for (GLuint index = 0;
              resources->list && index < resources->count;
              index++) {
-            SpirvResource *resource = &resources->list[index];
+            MGLShaderResource *resource = &resources->list[index];
             if (!resource->ubo_members || resource->ubo_member_count == 0u) {
                 continue;
             }
@@ -665,7 +665,7 @@ cleanup:
     free(assigned);
 }
 
-void mglFreeSpirvResourceOwnedFields(SpirvResource *resource)
+void mglFreeMGLShaderResourceOwnedFields(MGLShaderResource *resource)
 {
     if (!resource) {
         return;

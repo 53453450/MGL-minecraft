@@ -5,12 +5,12 @@
  * Legacy GLSL Compatibility Subsystem.
  *
  * Translates pre-GLSL-3.30 (GLSL 1.10 ~ 1.50) source-level constructs to
- * core-profile-compatible forms so glslang can parse them and emit SPIR-V.
+ * core-profile-compatible forms so the frontend can parse them.
  *
  * Reference: GLSLangSpec.1.10.pdf ~ GLSLangSpec.1.50.pdf
  *
- * glslang REJECTS the compatibility profile for SPIR-V output, so legacy
- * syntax must be rewritten at the source level before glslang sees it.
+ * The frontend parses core-profile GLSL, so legacy
+ * syntax must be rewritten at the source level before the frontend sees it.
  * This module covers the syntactic translation layer:
  *
  *   - attribute / varying keywords        -> in / out  (§4.3, §4.4)

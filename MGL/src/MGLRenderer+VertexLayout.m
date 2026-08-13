@@ -48,12 +48,12 @@ static MTLVertexFormat mglTessControlPointFormat(GLenum type)
             MTLVertexStepFunctionPerPatchControlPoint;
         vertexDescriptor.layouts[0].stepRate = 1u;
         Program *tesProgram = _tessellation.nativeTESProgram;
-        SpirvResourceList *inputs = tesProgram
-            ? &tesProgram->spirv_resources_list[_TESS_EVALUATION_SHADER]
+        MGLShaderResourceList *inputs = tesProgram
+            ? &tesProgram->shader_resources_list[_TESS_EVALUATION_SHADER]
                                                       [_STAGE_INPUT_RES]
             : NULL;
         for (GLuint i = 0; inputs && inputs->list && i < inputs->count; i++) {
-            SpirvResource *input = &inputs->list[i];
+            MGLShaderResource *input = &inputs->list[i];
             if (input->is_per_patch || input->location >= 30u) continue;
             MTLVertexFormat format = mglTessControlPointFormat(input->gl_type);
             if (format == MTLVertexFormatInvalid) {
@@ -149,7 +149,7 @@ static MTLVertexFormat mglTessControlPointFormat(GLenum type)
                  * CPU in bindVertexBuffersToCurrentRenderEncoder. */
                 needsConversion = true;
             } else if (vao->attrib[i].integer == 1) {
-                SpirvResource *attrRes = mglRendererProgramVertexAttribResource(activeProgram, i);
+                MGLShaderResource *attrRes = mglRendererProgramVertexAttribResource(activeProgram, i);
                 GLuint shaderGlType = attrRes ? attrRes->gl_type : 0u;
                 if (mglIntegerAttribNeedsConversion(vao->attrib[i].type,
                                                     shaderGlType,
@@ -191,7 +191,7 @@ static MTLVertexFormat mglTessControlPointFormat(GLenum type)
                  * integer type on the CPU side in
                  * bindVertexBuffersToCurrentRenderEncoder. */
                 MTLVertexFormat convertedFormat = MTLVertexFormatInvalid;
-                SpirvResource *attrRes = mglRendererProgramVertexAttribResource(activeProgram, i);
+                MGLShaderResource *attrRes = mglRendererProgramVertexAttribResource(activeProgram, i);
                 GLuint shaderGlType = attrRes ? attrRes->gl_type : 0u;
                 if (mglIntegerAttribNeedsConversion(vao->attrib[i].type,
                                                     shaderGlType,
@@ -297,7 +297,7 @@ static MTLVertexFormat mglTessControlPointFormat(GLenum type)
                  * stride must match the converted stride (componentCount * 4).
                  * Directly-compatible integer attribs keep their source stride. */
                 MTLVertexFormat convertedFormat = MTLVertexFormatInvalid;
-                SpirvResource *attrRes = mglRendererProgramVertexAttribResource(activeProgram, i);
+                MGLShaderResource *attrRes = mglRendererProgramVertexAttribResource(activeProgram, i);
                 GLuint shaderGlType = attrRes ? attrRes->gl_type : 0u;
                 if (mglIntegerAttribNeedsConversion(vao->attrib[i].type,
                                                     shaderGlType,
@@ -328,7 +328,7 @@ static MTLVertexFormat mglTessControlPointFormat(GLenum type)
             static uint64_t s_traceFileVertexDescriptorAttribLogs = 0;
             if (mglProgramNeedsTraceLog(activeProgram) &&
                 mglShouldLogTraceFileBindingForProgram(activeProgram, &s_traceFileVertexDescriptorAttribLogs)) {
-                SpirvResource *resource = mglRendererProgramVertexAttribResource(activeProgram, i);
+                MGLShaderResource *resource = mglRendererProgramVertexAttribResource(activeProgram, i);
                 mglTraceLog("VATTR_DESC program=%u attrib=%u resource=%s loc=%u metalSlot=%d glBuffer=%u bindingIndex=%u bindingOffset=%lld relOffset=%lld stride=%u size=%u type=0x%x normalized=%u/%u divisor=%u table=%d format=%lu(%s)",
                             (unsigned)activeProgramName,
                             (unsigned)i,

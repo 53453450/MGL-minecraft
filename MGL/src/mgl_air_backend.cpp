@@ -7322,7 +7322,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             llvm::MDString::get(ctx, "air.buffer"),
             llvm::MDString::get(ctx, "air.location_index"),
             llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                i32, MGL_BUFFER_SIZE_BUFFER_INDEX)),
+                i32, MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX)),
             llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(i32, 1)),
             llvm::MDString::get(ctx, "air.read"),
             llvm::MDString::get(ctx, "air.address_space"),
@@ -7936,8 +7936,8 @@ extern "C" int mglShaderCompileGLSL(const char *src, int stage,
 
 /* XFB capture variant: the vertex stage writes its full output record
  * (position + varyings) into a device buffer at location 29 with
- * rasterization disabled, mirroring the legacy mglCompileMSLCaptureVariant
- * path. */
+ * rasterization disabled (the capture variant of the mglShaderCompileGLSL
+ * compile entry). */
 extern "C" int mglShaderCompileGLSLCapture(const char *src,
                                            unsigned char **metallib_out,
                                            size_t *size_out, char *err_buf,
@@ -7993,7 +7993,7 @@ static void fillStageInfo(const MGLTranslationUnit *tu,
                           const MGLIRModule *mod, int stage,
                           const char *src, MGLAIRStageInfo *stage_info) {
     memset(stage_info, 0, sizeof(*stage_info));
-    stage_info->needs_buffer_size_buffer =
+    stage_info->needs_runtime_array_size_buffer =
         translationUnitUsesRuntimeArrayLength(tu, mod) ? 1u : 0u;
     if (stage != MGL_STAGE_FRAGMENT && stage != MGL_STAGE_COMPUTE && src &&
         strstr(src, "gl_CullDistance") != nullptr) {
@@ -8119,7 +8119,7 @@ extern "C" int mglAirReflectGLSLStageInfo(
 extern "C" int mglAirCompileGLSLWithReflectInfo(
     const char *src, int stage, const char *const *attrib_names,
     unsigned char **metallib_out, size_t *size_out,
-    SpirvResourceList lists[_MAX_SPIRV_RES], MGLAIRStageInfo *stage_info,
+    MGLShaderResourceList lists[MGL_MAX_SHADER_RESOURCES], MGLAIRStageInfo *stage_info,
     char *err_buf, size_t err_cap) {
     if (!src || !metallib_out || !size_out) {
         if (err_buf && err_cap) snprintf(err_buf, err_cap, "bad args");
@@ -8171,7 +8171,7 @@ extern "C" int mglAirCompileGLSLWithReflectInfo(
 extern "C" int mglAirCompileGLSLWithReflect(
     const char *src, int stage, const char *const *attrib_names,
     unsigned char **metallib_out, size_t *size_out,
-    SpirvResourceList lists[_MAX_SPIRV_RES], char *err_buf,
+    MGLShaderResourceList lists[MGL_MAX_SHADER_RESOURCES], char *err_buf,
     size_t err_cap) {
     return mglAirCompileGLSLWithReflectInfo(
         src, stage, attrib_names, metallib_out, size_out, lists, nullptr,

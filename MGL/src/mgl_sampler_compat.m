@@ -7,19 +7,19 @@
  * See mgl_sampler_compat.h for the architectural rationale.  This module
  * owns the pure spec-compliance helpers for translating OpenGL sampler /
  * resource semantics to Metal binding:
- *   - Program SPIR-V resource queries (by name, image dim, Metal binding).
+ *   - Program shader resource queries (by name, image dim, Metal binding).
  *   - Sampler-like resource classification heuristics.
  *   - Binding-trace gating for debugging.
  *
  * The helpers here are pure: they do not touch the renderer ivar, the
  * command buffer, or the render encoder.  They operate only on the
- * Program / SpirvResource structures passed in as arguments.
+ * Program / MGLShaderResource structures passed in as arguments.
  *
  * External dependencies:
- *   - Program / SpirvResource / SpirvResourceList types (glm_context.h).
- *   - MGL resource type constants (spirv_cross_c.h, pulled through
- *     MGLRenderer.m's include chain).
- *   - _MAX_SHADER_TYPES / _MAX_SPIRV_RES / _VERTEX_SHADER (glm_context.h).
+ *   - Program / MGLShaderResource / MGLShaderResourceList types (glm_context.h).
+ *   - MGL resource type constants (incl. MGL_MAX_SHADER_RESOURCES and
+ *     the image-dim encoding) from the program reflection headers.
+ *   - _MAX_SHADER_TYPES / MGL_MAX_SHADER_RESOURCES / _VERTEX_SHADER (glm_context.h).
  *   - TEXTURE_UNITS (glm_limits.h).
  */
 
@@ -28,7 +28,7 @@
 #import "mgl_trace_log.h"
 #include <string.h>
 
-/* === Program SPIR-V resource queries === */
+/* === Program shader resource queries === */
 
 bool mglProgramHasImageDim(Program *program, GLuint imageDim)
 {
@@ -45,10 +45,10 @@ bool mglProgramHasImageDim(Program *program, GLuint imageDim)
     for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
         for (size_t t = 0; t < sizeof(resourceTypes) / sizeof(resourceTypes[0]); t++) {
             int type = resourceTypes[t];
-            if (type < 0 || type >= _MAX_SPIRV_RES) {
+            if (type < 0 || type >= MGL_MAX_SHADER_RESOURCES) {
                 continue;
             }
-            SpirvResourceList *resources = &program->spirv_resources_list[stage][type];
+            MGLShaderResourceList *resources = &program->shader_resources_list[stage][type];
             for (GLuint i = 0; i < resources->count; i++) {
                 if (resources->list[i].image_dim == imageDim) {
                     return true;
@@ -66,11 +66,11 @@ bool mglProgramHasResourceName(Program *program,
                                const char *name)
 {
     if (!program || stage < 0 || stage >= _MAX_SHADER_TYPES ||
-        type < 0 || type >= _MAX_SPIRV_RES || !name) {
+        type < 0 || type >= MGL_MAX_SHADER_RESOURCES || !name) {
         return false;
     }
 
-    SpirvResourceList *resources = &program->spirv_resources_list[stage][type];
+    MGLShaderResourceList *resources = &program->shader_resources_list[stage][type];
     for (GLuint i = 0; resources->list && i < resources->count; i++) {
         if (resources->list[i].name && strcmp(resources->list[i].name, name) == 0) {
             return true;
@@ -87,7 +87,7 @@ bool mglProgramHasAnyResourceName(Program *program, const char *name)
     }
 
     for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
-        for (int type = 0; type < _MAX_SPIRV_RES; type++) {
+        for (int type = 0; type < MGL_MAX_SHADER_RESOURCES; type++) {
             if (mglProgramHasResourceName(program, stage, type, name)) {
                 return true;
             }
@@ -103,13 +103,13 @@ bool mglProgramHasResourceNamed(Program *program,
                                 const char *name)
 {
     if (!program || !name || stage < 0 || stage >= _MAX_SHADER_TYPES ||
-        type < 0 || type >= _MAX_SPIRV_RES) {
+        type < 0 || type >= MGL_MAX_SHADER_RESOURCES) {
         return false;
     }
 
-    SpirvResourceList *resources = &program->spirv_resources_list[stage][type];
+    MGLShaderResourceList *resources = &program->shader_resources_list[stage][type];
     for (GLuint i = 0; i < resources->count; i++) {
-        SpirvResource *res = &resources->list[i];
+        MGLShaderResource *res = &resources->list[i];
         if (res->name && strcmp(res->name, name) == 0) {
             return true;
         }
@@ -140,7 +140,7 @@ bool mglRendererSamplerNameLooksSamplerLike(const char *name)
             !strcmp(name, "CloudFaces"));
 }
 
-bool mglRendererResourceLooksSamplerLike(const SpirvResource *res, int resType)
+bool mglRendererResourceLooksSamplerLike(const MGLShaderResource *res, int resType)
 {
     if (!res) {
         return false;
@@ -161,7 +161,7 @@ bool mglRendererResourceLooksSamplerLike(const SpirvResource *res, int resType)
     }
 }
 
-SpirvResource *mglFindSamplerResourceForMetalBinding(Program *program,
+MGLShaderResource *mglFindSamplerResourceForMetalBinding(Program *program,
                                                      int stage,
                                                      GLuint metalBinding)
 {
@@ -179,9 +179,9 @@ SpirvResource *mglFindSamplerResourceForMetalBinding(Program *program,
 
     for (size_t rt = 0; rt < sizeof(samplerResourceTypes) / sizeof(samplerResourceTypes[0]); rt++) {
         int resType = samplerResourceTypes[rt];
-        SpirvResourceList *resources = &program->spirv_resources_list[stage][resType];
+        MGLShaderResourceList *resources = &program->shader_resources_list[stage][resType];
         for (GLuint i = 0; resources->list && i < resources->count; i++) {
-            SpirvResource *res = &resources->list[i];
+            MGLShaderResource *res = &resources->list[i];
             if (res->binding == metalBinding &&
                 mglRendererResourceLooksSamplerLike(res, resType)) {
                 return res;
@@ -197,7 +197,7 @@ SpirvResource *mglFindSamplerResourceForMetalBinding(Program *program,
  * but operating purely on the Program struct.  Returns the resolved unit
  * (0-based), or -1 if the resource is not sampler-like. */
 GLint mglResolveSamplerResourceUnit(Program *program,
-                                    SpirvResource *res,
+                                    MGLShaderResource *res,
                                     int stage,
                                     int resType)
 {
@@ -284,8 +284,8 @@ bool mglProgramSamplesTextureUnit(Program *program, GLuint unit)
         for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
             for (size_t rt = 0; rt < sizeof(samplerResourceTypes) / sizeof(samplerResourceTypes[0]); rt++) {
                 int resType = samplerResourceTypes[rt];
-                if (resType < 0 || resType >= _MAX_SPIRV_RES) continue;
-                SpirvResourceList *resources = &program->spirv_resources_list[stage][resType];
+                if (resType < 0 || resType >= MGL_MAX_SHADER_RESOURCES) continue;
+                MGLShaderResourceList *resources = &program->shader_resources_list[stage][resType];
                 for (GLuint i = 0; resources->list && i < resources->count; i++) {
                     GLint resolved = mglResolveSamplerResourceUnit(program,
                                                                    &resources->list[i],

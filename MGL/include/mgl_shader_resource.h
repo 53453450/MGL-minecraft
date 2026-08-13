@@ -1,20 +1,20 @@
 /*
- * mgl_spirv_resource.h
+ * mgl_shader_resource.h
  * MGL
  *
- * SPIR-V Resource Helper Subsystem: pure helpers for mapping SPIR-V
- * reflected resources (SpirvResource) to GL client buffer bindings and
+ * Shader Resource Helper Subsystem: pure helpers for mapping shader
+ * reflected resources (MGLShaderResource) to GL client buffer bindings and
  * Metal argument slots.  These helpers encode the Minecraft-specific
  * plain-uniform binding table and the UBO/SSBO array element expansion
  * rules shared across the vertex/fragment/compute binding paths.
  *
- * All functions here are pure: they operate only on the SpirvResource
+ * All functions here are pure: they operate only on the MGLShaderResource
  * pointer passed in and have no dependency on the renderer instance,
  * command buffer, or encoder.
  */
 
-#ifndef MGL_SPIRV_RESOURCE_H
-#define MGL_SPIRV_RESOURCE_H
+#ifndef MGL_SHADER_RESOURCE_H
+#define MGL_SHADER_RESOURCE_H
 
 #include "glm_context.h"
 
@@ -23,42 +23,42 @@ extern "C" {
 #endif
 
 /* Resolve the GL client buffer binding (UBO/SSBO/plain-uniform index) for
- * a SPIR-V reflected resource.  For plain uniforms (resource type
+ * a reflected resource.  For plain uniforms (resource type
  * UNIFORM_CONSTANT) this consults the Minecraft plain-uniform binding
  * table (ModelViewMat=0, ProjMat=1, ...) and falls back to
  * uniform_location / location / gl_binding.  For UBOs/SSBOs this returns
  * res->gl_binding. */
 GLuint mglClientBufferBindingForResource(int resourceType,
-                                         const SpirvResource *res);
+                                         const MGLShaderResource *res);
 
 /* Returns the Metal argument slot assigned to `res` (res->binding), or 0
  * if res is NULL. */
-GLuint mglMetalResourceSlot(const SpirvResource *res);
+GLuint mglMetalResourceSlot(const MGLShaderResource *res);
 
 /* Number of Metal buffer elements occupied by this resource.  UBOs with
  * ubo_array_size > 1 expand to that many elements; plain uniforms and
  * SSBOs with gl_array_size > 1 expand to gl_array_size elements.
  * Otherwise 1. */
 GLuint mglStageBufferResourceElementCount(int resourceType,
-                                          const SpirvResource *res);
+                                          const MGLShaderResource *res);
 
 /* Resolve the GL client buffer binding for a specific element of an
  * arrayed UBO.  For UBOs with ubo_array_bindings, returns the per-element
  * binding; otherwise returns base + element. */
 GLuint mglClientBufferBindingForResourceElement(int resourceType,
-                                                const SpirvResource *res,
+                                                const MGLShaderResource *res,
                                                 GLuint element);
 
 /* Returns the Metal argument slot for `element` of `res`
  * (mglMetalResourceSlot(res) + element). */
-GLuint mglMetalResourceSlotForElement(const SpirvResource *res,
+GLuint mglMetalResourceSlotForElement(const MGLShaderResource *res,
                                       GLuint element);
 
 /* Returns the independently allocated Metal sampler slot for a combined
  * sampled image. Metal texture and sampler argument namespaces can diverge
  * (for example when a samplerBuffer consumes a texture slot only). */
-GLuint mglMetalCombinedSamplerSlot(const SpirvResource *res);
-GLuint mglMetalCombinedSamplerSlotForElement(const SpirvResource *res,
+GLuint mglMetalCombinedSamplerSlot(const MGLShaderResource *res);
+GLuint mglMetalCombinedSamplerSlotForElement(const MGLShaderResource *res,
                                              GLuint element);
 
 /* Returns true if a plain uniform resource may fall back to the global
@@ -66,14 +66,14 @@ GLuint mglMetalCombinedSamplerSlotForElement(const SpirvResource *res,
  * excluded because their numeric locations collide with legacy slots
  * but mean different things — falling back corrupts first-person items
  * and inventory icons. */
-bool mglPlainUniformAllowsGlobalFallback(const SpirvResource *res);
+bool mglPlainUniformAllowsGlobalFallback(const MGLShaderResource *res);
 
 /* Human-readable name for a MGL resource type constant, or "resource"
  * for unknown types.  Used by diagnostic/logging paths. */
-const char *mglSpirvResourceTypeName(int type);
+const char *mglMGLShaderResourceTypeName(int type);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* MGL_SPIRV_RESOURCE_H */
+#endif /* MGL_SHADER_RESOURCE_H */

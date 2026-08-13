@@ -56,13 +56,15 @@ enum {
     _SEPARATE_SAMPLERS_RES,
     _ACCEL_STRUCT_RES,
     _RAY_QUERY,
-    _MAX_SPIRV_RES
+    MGL_MAX_SHADER_RESOURCES
 };
+/* Compatibility alias for the historical SPIR-V-era enumerator name. */
+#define _MAX_SPIRV_RES MGL_MAX_SHADER_RESOURCES
 
-/* Texture dimensionality stored in SpirvResource::image_dim.  The numeric
- * values intentionally match the historical SPIR-V Dim encoding so existing
- * serialized/reflected resource data remains compatible without importing
- * SPIR-V headers. */
+/* Texture dimensionality stored in MGLShaderResource::image_dim.  The
+ * numeric values intentionally match the historical SPIR-V Dim encoding so
+ * existing serialized/reflected resource data remains compatible without
+ * importing SPIR-V headers. */
 typedef enum MGLImageDimension {
     MGL_IMAGE_DIM_NONE = 0,
     MGL_IMAGE_DIM_1D = 0,
@@ -115,7 +117,9 @@ typedef struct Shader_t {
     GLboolean delete_status;
 } Shader;
 
-typedef struct Spirv_t {
+/* Per-shader backend module state: AIR serialized metallib bytes + the
+ * renderer-owned Metal objects built from them. */
+typedef struct MGLShaderModule_t {
     GLuint stage;
     char *entry_point;
     /* AIR backend output: serialized metallib (bitcode container). */
@@ -135,8 +139,10 @@ typedef struct Spirv_t {
     GLboolean mgl_injected_framebuffer_yflip; /* true if MGL injected a
                                                * texCoord Y-flip for sampled
                                                * framebuffer in this shader */
-    GLboolean needs_buffer_size_buffer;
-} Spirv;
+    GLboolean needs_runtime_array_size_buffer;
+} MGLShaderModule;
+/* Compatibility aliases for the historical SPIR-V-era names. */
+typedef MGLShaderModule Spirv;
 
 typedef struct SpirvUBOMember_t {
     const char *name;        /* e.g. "var" inside Block { bool var; }            */
@@ -152,7 +158,7 @@ typedef struct SpirvUBOMember_t {
     GLint       top_level_array_stride; /* GL_TOP_LEVEL_ARRAY_STRIDE for buffer variables */
 } SpirvUBOMember;
 
-typedef struct SpirvResource_t {
+typedef struct MGLShaderResource_t {
     GLuint  _id;
     GLuint  base_type_id;
     GLuint  type_id;
@@ -176,8 +182,8 @@ typedef struct SpirvResource_t {
     GLuint  location_index; /* dual-source blending index (SpvDecorationIndex) */
     GLuint  gl_type;
     GLint   gl_array_size;
-    GLboolean is_array; /* true if the underlying SPIR-V type is an array */
-    GLuint  num_array_dims; /* number of SPIR-V array dimensions (0 if not array) */
+    GLboolean is_array; /* true if the underlying shader type is an array */
+    GLuint  num_array_dims; /* number of array dimensions (0 if not array) */
     GLint   uniform_location;
     GLint   sampler_unit;
     GLboolean sampler_unit_explicit;
@@ -198,18 +204,22 @@ typedef struct SpirvResource_t {
     /* When this resource is used as a placeholder during active-uniform
      * enumeration of UBO members, this points to the specific member. */
     const SpirvUBOMember *ubo_member;
-} SpirvResource;
+} MGLShaderResource;
+/* Compatibility alias for the historical SPIR-V-era name. */
+typedef MGLShaderResource SpirvResource;
 
-typedef struct SpirvResourceList_t {
+typedef struct MGLShaderResourceList_t {
     GLuint  count;
-    SpirvResource   *list;
-} SpirvResourceList;
+    MGLShaderResource   *list;
+} MGLShaderResourceList;
+/* Compatibility alias for the historical SPIR-V-era name. */
+typedef MGLShaderResourceList SpirvResourceList;
 
 /* Entry in the cached active-uniform list.  Pointers are into the Program's
- * own spirv_resources_list and are valid for the program's link lifetime.
+ * own shader_resources_list and are valid for the program's link lifetime.
  * Defined here (before Program) because Program holds a pointer to it. */
 typedef struct MGLActiveUniformEntry_t {
-    SpirvResource *res;
+    MGLShaderResource *res;
     int stage;
     int res_type;
     const SpirvUBOMember *ubo_member;  /* NULL for non-member uniforms */
@@ -233,8 +243,8 @@ typedef struct Program_t {
     GLuint attached_shader_counts[_MAX_SHADER_TYPES];
     GLbitfield attached_shader_mask;
     GLboolean link_success;
-    Spirv spirv[_MAX_SHADER_TYPES];
-    SpirvResourceList spirv_resources_list[_MAX_SHADER_TYPES][_MAX_SPIRV_RES];
+    MGLShaderModule modules[_MAX_SHADER_TYPES];
+    MGLShaderResourceList shader_resources_list[_MAX_SHADER_TYPES][MGL_MAX_SHADER_RESOURCES];
     struct {
         unsigned x, y, z;
     } local_workgroup_size;
@@ -297,16 +307,16 @@ typedef struct Program_t {
     GLboolean ir_cache_valid;
     GLboolean ir_uses_cull_distance;
     GLboolean ir_uses_frag_coord;
-    SpirvResourceList *validated_resource_lists[_MAX_SHADER_TYPES][_MAX_SPIRV_RES];
-    SpirvResource *validated_resource_list_storage[_MAX_SHADER_TYPES][_MAX_SPIRV_RES];
-    GLuint validated_resource_list_counts[_MAX_SHADER_TYPES][_MAX_SPIRV_RES];
+    MGLShaderResourceList *validated_resource_lists[_MAX_SHADER_TYPES][MGL_MAX_SHADER_RESOURCES];
+    MGLShaderResource *validated_resource_list_storage[_MAX_SHADER_TYPES][MGL_MAX_SHADER_RESOURCES];
+    GLuint validated_resource_list_counts[_MAX_SHADER_TYPES][MGL_MAX_SHADER_RESOURCES];
     uint64_t pipeline_cache_instance_id;
     uint64_t pipeline_cache_generation;
     GLboolean program_separable;
     BufferBaseTarget plain_uniform_buffers[MAX_BINDABLE_BUFFERS];
     /* Active-binding bitmap for plain_uniform_buffers: bit i is set iff
      * plain_uniform_buffers[i].buf != NULL.  Maintained at uniform upload
-     * (uniforms.c) and link-time reflection (mgl_spirv_compile.c) so
+     * (uniforms.c) and link-time reflection (program.c / mgl_program_reflection.c) so
      * mglComputeDrawBufferBindingHashScan and mglTrackPendingBaseBufferReads
      * can skip the ~84-slot linear scan.  84 bits fit in 2 × uint64_t. */
     uint64_t plain_uniform_active_mask[2];
@@ -327,9 +337,9 @@ typedef struct Program_t {
      * their own stage's built-ins.  Kept separate from the main
      * STAGE_INPUT/STAGE_OUTPUT lists so the rendering code (vertex descriptor
      * setup, varyings linking) is unaffected. */
-    SpirvResource builtin_program_inputs[_MAX_SHADER_TYPES][16];
+    MGLShaderResource builtin_program_inputs[_MAX_SHADER_TYPES][16];
     GLuint builtin_program_input_count[_MAX_SHADER_TYPES];
-    SpirvResource builtin_program_outputs[_MAX_SHADER_TYPES][16];
+    MGLShaderResource builtin_program_outputs[_MAX_SHADER_TYPES][16];
     GLuint builtin_program_output_count[_MAX_SHADER_TYPES];
     /* Cached buffer binding plan (per-stage).  NULL until first build.
      * See mgl_buffer_plan.h for the lifecycle and cache contract. */
@@ -349,7 +359,7 @@ typedef struct Program_t {
 
 GLint mglProgramActiveUniformCount(Program *program);
 GLint mglProgramActiveUniformMaxNameLength(Program *program);
-SpirvResource *mglProgramActiveUniformAt(Program *program, GLuint index, int *stage_out, int *res_type_out);
+MGLShaderResource *mglProgramActiveUniformAt(Program *program, GLuint index, int *stage_out, int *res_type_out);
 /* Build the deduplicated active-uniform cache.  Called at link end.
  * Frees any previous cache.  After this, mglProgramActiveUniformCount /
  * mglProgramActiveUniformAt / mglProgramActiveUniformIndexByName /
@@ -358,11 +368,11 @@ void mglBuildActiveUniformCache(Program *program);
 /* Free the active-uniform cache.  Called at link start and program free. */
 void mglFreeActiveUniformCache(Program *program);
 GLint mglProgramActiveUniformIndexByName(Program *program, const GLchar *name);
-GLint mglProgramActiveUniformGLType(const SpirvResource *res, int res_type);
-GLint mglProgramActiveUniformSize(const SpirvResource *res, int res_type);
-GLsizei mglProgramActiveUniformNameLength(const SpirvResource *res);
-GLint mglProgramActiveUniformBlockIndex(Program *program, const SpirvResource *res);
-void mglProgramCopyActiveUniformName(const SpirvResource *res, GLsizei bufSize, GLsizei *length, GLchar *name);
+GLint mglProgramActiveUniformGLType(const MGLShaderResource *res, int res_type);
+GLint mglProgramActiveUniformSize(const MGLShaderResource *res, int res_type);
+GLsizei mglProgramActiveUniformNameLength(const MGLShaderResource *res);
+GLint mglProgramActiveUniformBlockIndex(Program *program, const MGLShaderResource *res);
+void mglProgramCopyActiveUniformName(const MGLShaderResource *res, GLsizei bufSize, GLsizei *length, GLchar *name);
 GLboolean mglProgramPointerUsableForName(GLMContext ctx, Program *program, GLuint expectedName);
 void mglRetainProgramReference(GLMContext ctx, Program *program);
 void mglReleaseProgramReference(GLMContext ctx, Program *program);

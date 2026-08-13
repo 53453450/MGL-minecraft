@@ -18,7 +18,7 @@ const char *mglShaderStageName(int stage)
 bool mglShouldSkipStageBufferResource(Program *program,
                                       int stage,
                                       int resource_type,
-                                      const SpirvResource *resource)
+                                      const MGLShaderResource *resource)
 {
     (void)program;
     (void)stage;
@@ -29,7 +29,7 @@ bool mglShouldSkipStageBufferResource(Program *program,
 bool mglShouldSkipStageTextureResource(Program *program,
                                        int stage,
                                        int resource_type,
-                                       const SpirvResource *resource)
+                                       const MGLShaderResource *resource)
 {
     (void)program;
     (void)stage;
@@ -41,7 +41,7 @@ bool mglShouldSkipStageTextureResource(Program *program,
 bool mglShouldSkipStageSamplerResource(Program *program,
                                        int stage,
                                        int resource_type,
-                                       const SpirvResource *resource)
+                                       const MGLShaderResource *resource)
 {
     (void)program;
     (void)stage;

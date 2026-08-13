@@ -15,7 +15,7 @@
  *     in the same code path).
  *   - Generating or releasing Y-flipped copies (owned by RT Sync).
  *   - VS/FS Y-flip injection (owned by the Shader Translation Layer in
- *     program.c, which sets Program::spirv[_VERTEX_SHADER].mgl_injected_framebuffer_yflip).
+ *     program.c, which sets Program::modules[_VERTEX_SHADER].mgl_injected_framebuffer_yflip).
  *
  * Keeping the decision logic here lets the VS/FS sampler-binding paths in
  * MGLRenderer.m call a single unified query instead of duplicating the
@@ -35,7 +35,7 @@ bool mglProgramHasExistingFramebufferSampleYFlip(Program *program)
      * Y-flip for fullscreen sampled-framebuffer shaders.  This avoids false
      * negatives when the shader uses a different Y-flip expression that
      * wasn't in the hardcoded string list. */
-    return program->spirv[_VERTEX_SHADER].mgl_injected_framebuffer_yflip == GL_TRUE;
+    return program->modules[_VERTEX_SHADER].mgl_injected_framebuffer_yflip == GL_TRUE;
 }
 
 MGLYFlipDecision mglDecideYFlipForSampledRT(Texture *tex, Program *samplingProgram)
@@ -56,7 +56,7 @@ MGLYFlipDecision mglDecideYFlipForSampledRT(Texture *tex, Program *samplingProgr
     }
 
     bool sample_yflip_injected = samplingProgram &&
-        samplingProgram->spirv[_VERTEX_SHADER].mgl_injected_framebuffer_yflip == GL_TRUE;
+        samplingProgram->modules[_VERTEX_SHADER].mgl_injected_framebuffer_yflip == GL_TRUE;
 
     if (render_uses_original && !sample_yflip_injected) {
         return MGL_YFLIP_USE_ORIGINAL;

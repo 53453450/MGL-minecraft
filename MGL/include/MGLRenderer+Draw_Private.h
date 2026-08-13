@@ -261,21 +261,21 @@ typedef struct {
 // getProgramDeclaredTextureType: are now declared in
 // MGLRenderer+ProgramBinding_Private.h (implemented in +ProgramBinding.m).
 - (id<MTLSamplerState>)fallbackSamplerState;
-- (GLuint)textureUnitForSampledResource:(SpirvResource *)sampledResource
+- (GLuint)textureUnitForSampledResource:(MGLShaderResource *)sampledResource
                             metalBinding:(GLuint)metalBinding
                                   stage:(int)stage;
 /* program-resolved variant — skips mglResolveProgramForStageFromState. */
-- (GLuint)textureUnitForSampledResource:(SpirvResource *)sampledResource
+- (GLuint)textureUnitForSampledResource:(MGLShaderResource *)sampledResource
                                 program:(Program *)program
                            metalBinding:(GLuint)metalBinding
                                   stage:(int)stage;
-- (Texture *)textureForSampledResource:(SpirvResource *)sampledResource
+- (Texture *)textureForSampledResource:(MGLShaderResource *)sampledResource
                           metalBinding:(GLuint)metalBinding
                                   stage:(int)stage
                            expectedType:(MTLTextureType)expectedType;
 /* textureUnit-resolved variant — caller passes the already-computed
  * texture unit, skipping the internal textureUnitForSampledResource: call. */
-- (Texture *)textureForSampledResource:(SpirvResource *)sampledResource
+- (Texture *)textureForSampledResource:(MGLShaderResource *)sampledResource
                           metalBinding:(GLuint)metalBinding
                                   stage:(int)stage
                            expectedType:(MTLTextureType)expectedType

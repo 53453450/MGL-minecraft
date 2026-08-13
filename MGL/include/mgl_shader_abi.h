@@ -61,7 +61,7 @@ typedef struct MGLAIRStageInfo {
     uint32_t geometry_invocations;
     uint32_t uses_cull_distance;
     uint32_t cull_distance_count;
-    uint32_t needs_buffer_size_buffer;
+    uint32_t needs_runtime_array_size_buffer;
     /* GS multi-stream (GL 4.6 §11.1.3.4): stream 0 is rasterized; streams
      * 1..3 feed transform feedback only and require points output.  The
      * per-stream XFB capture record is position (16B) + that stream's
@@ -97,12 +97,12 @@ typedef struct MGLAIRPerVertexRecord {
 } MGLAIRPerVertexRecord;
 
 static inline uint32_t mglAIRPerVertexStrideForResources(
-    const SpirvResourceList *resources)
+    const MGLShaderResourceList *resources)
 {
     uint32_t stride = MGL_AIR_PER_VERTEX_STRIDE;
     if (!resources || !resources->list) return stride;
     for (uint32_t i = 0; i < resources->count; i++) {
-        const SpirvResource *resource = &resources->list[i];
+        const MGLShaderResource *resource = &resources->list[i];
         if (resource->is_per_patch || resource->location >= 0x0fffffffu)
             continue;
         uint32_t end = MGL_AIR_PER_VERTEX_STRIDE +
@@ -152,7 +152,7 @@ int mglShaderCompileGLSLCullDistanceCapture(
     char *err_buf, size_t err_cap);
 
 /* Compile one stage through the self-hosted frontend + AIR backend and
- * export its resource tables: metallib bytes + SpirvResourceList.
+ * export its resource tables: metallib bytes + MGLShaderResourceList.
  * attrib_names is an optional MAX_ATTRIBS-sized array of glBindAttribLocation
  * names (index = desired location); pass NULL for no explicit bindings.
  * Returns 0 on success; lists may be NULL to skip reflection. */
@@ -160,13 +160,13 @@ int mglAirCompileGLSLWithReflect(const char *src, int stage,
                                  const char *const *attrib_names,
                                  unsigned char **metallib_out,
                                  size_t *size_out,
-                                 SpirvResourceList lists[_MAX_SPIRV_RES],
+                                 MGLShaderResourceList lists[MGL_MAX_SHADER_RESOURCES],
                                  char *err_buf, size_t err_cap);
 
 int mglAirCompileGLSLWithReflectInfo(
     const char *src, int stage, const char *const *attrib_names,
     unsigned char **metallib_out, size_t *size_out,
-    SpirvResourceList lists[_MAX_SPIRV_RES], MGLAIRStageInfo *stage_info,
+    MGLShaderResourceList lists[MGL_MAX_SHADER_RESOURCES], MGLAIRStageInfo *stage_info,
     char *err_buf, size_t err_cap);
 
 /* Free bytes returned by mglShaderCompileGLSL. */

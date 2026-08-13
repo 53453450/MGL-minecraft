@@ -112,10 +112,10 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     }
 
     for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
-        for (int resType = 0; resType < _MAX_SPIRV_RES; resType++) {
-            SpirvResourceList *resources = &program->spirv_resources_list[stage][resType];
+        for (int resType = 0; resType < MGL_MAX_SHADER_RESOURCES; resType++) {
+            MGLShaderResourceList *resources = &program->shader_resources_list[stage][resType];
             for (GLuint i = 0; resources->list && i < resources->count; i++) {
-                SpirvResource *res = &resources->list[i];
+                MGLShaderResource *res = &resources->list[i];
                 if (res->name &&
                     strcmp(res->name, name) == 0 &&
                     mglRendererResourceLooksSamplerLike(res, resType)) {
@@ -832,8 +832,8 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
 
         mglObserveProgramDrawForFocus(activeProgramName, count, enabledAttribMask);
 
-        // SPIR-V image dimension enum values: Cube is 3. Keep this literal here to avoid
-        // depending on which SPIR-V enum header variant is pulled through spirv_cross_c.h.
+        // MGLImageDimension cube encoding is 3 (mgl_types_program.h). Keep
+        // this literal here so the focus profile does not depend on a header.
         if (mglProgramHasImageDim(drawProgram, 3u)) {
             mglFocusLoadingProgram(activeProgramName, "cube-sampled-image", drawCall);
         }

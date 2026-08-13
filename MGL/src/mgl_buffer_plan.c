@@ -8,14 +8,14 @@
 
 #include "mgl_buffer_plan.h"
 
-#include "mgl_spirv_resource.h"
+#include "mgl_shader_resource.h"
 #include "mgl_sampler_compat.h"
 #include "mgl_program_resource.h"
 
 #include <stdlib.h>
 #include <string.h>
 
-/* The four SPIR-V resource types whose bindings are resolved each draw
+/* The four shader resource types whose bindings are resolved each draw
  * in mapShaderBufferResourcesToBufferMap.  Matches the mapped_types[]
  * table in that function. */
 static const int kMappedSpvcTypes[4] = {
@@ -55,26 +55,26 @@ static uint32_t mglCountStageEntries(Program *program, int stage)
     uint32_t total = 0;
     for (int t = 0; t < 4; t++) {
         int spvc_type = kMappedSpvcTypes[t];
-        if (spvc_type < 0 || spvc_type >= _MAX_SPIRV_RES) {
+        if (spvc_type < 0 || spvc_type >= MGL_MAX_SHADER_RESOURCES) {
             continue;
         }
         if (stage < 0 || stage >= _MAX_SHADER_TYPES) {
             continue;
         }
-        total += program->spirv_resources_list[stage][spvc_type].count;
+        total += program->shader_resources_list[stage][spvc_type].count;
     }
     return total;
 }
 
 /* ------------------------------------------------------------------ */
-/* Internal: populate one plan entry from a SpirvResource              */
+/* Internal: populate one plan entry from a MGLShaderResource              */
 /* ------------------------------------------------------------------ */
 static void mglBuildPlanEntry(MGLBufferPlanEntry *entry,
                              Program *program,
                              int stage,
                              int spvc_type,
                              GLuint resource_index,
-                             const SpirvResource *resource)
+                             const MGLShaderResource *resource)
 {
     memset(entry, 0, sizeof(*entry));
 
@@ -218,10 +218,10 @@ void mglBufferBindingPlanBuild(Program *program)
         uint32_t idx = 0;
         for (int t = 0; t < 4; t++) {
             int spvc_type = kMappedSpvcTypes[t];
-            if (spvc_type < 0 || spvc_type >= _MAX_SPIRV_RES) {
+            if (spvc_type < 0 || spvc_type >= MGL_MAX_SHADER_RESOURCES) {
                 continue;
             }
-            SpirvResourceList *rl = &program->spirv_resources_list[stage][spvc_type];
+            MGLShaderResourceList *rl = &program->shader_resources_list[stage][spvc_type];
             for (GLuint i = 0; i < rl->count; i++) {
                 if (idx >= total) {
                     break;
@@ -282,7 +282,7 @@ const MGLStageBufferPlan *mglStageBufferPlan(const MGLBufferBindingPlan *plan,
 }
 
 GLuint mglBufferPlanClientBindingForElement(const MGLBufferPlanEntry *entry,
-                                            const SpirvResource *resource,
+                                            const MGLShaderResource *resource,
                                             GLuint element)
 {
     if (!entry) {

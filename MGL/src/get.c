@@ -57,13 +57,13 @@ static const char *kMglExtensions[] = {
      * Each was a pure CTS extension-string gate that produced not_supported
      * results; the underlying code paths were already present. */
     "GL_ARB_clip_control",                 /* glClipControl + viewport/Y-flip + depth-range wiring in MGLRenderer.m */
-    "GL_ARB_gpu_shader5",                  /* glslang lowers implicit conversions / floatBitsToInt; core since 150 */
+    "GL_ARB_gpu_shader5",                  /* AIR lowers implicit conversions / floatBitsToInt; core since 150 */
     "GL_ARB_depth_texture",                /* DEPTH_COMPONENT* -> MTLPixelFormatDepth* already mapped */
     "GL_ARB_texture_float",                /* R/RG/RGBA 16F/32F -> Metal float formats already mapped */
     "GL_EXT_texture_shared_exponent",      /* RGB9_E5 -> MTLPixelFormatRGB9E5Float already mapped */
     "GL_ARB_texture_rgb10_a2ui",           /* RGB10_A2UI -> MTLPixelFormatRGB10A2Uint already mapped */
     "GL_EXT_texture_integer",              /* RGB/RGBA integer formats already mapped */
-    "GL_EXT_texture_shadow_lod",           /* glslang + SPIRV-Cross lower Dref+LOD shadow sampling */
+    "GL_EXT_texture_shadow_lod",      /* AIR lowers Dref+LOD shadow sampling */
     "GL_ARB_parallel_shader_compile",      /* no-op hint; mglMaxShaderCompilerThreadsKHR stores value */
     "GL_KHR_parallel_shader_compile",      /* alias */
     "GL_EXT_texture_compression_s3tc",     /* MGL maps compressed S3TC internal formats in textures.c */

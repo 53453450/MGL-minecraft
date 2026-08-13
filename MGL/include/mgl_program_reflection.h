@@ -27,14 +27,14 @@ void applyMultiDimArrayUniformNames(Program *program);
 void applyFragmentOutputLocationIndices(Program *program);
 void alignFragmentInputLocationsToVertexOutputs(Program *program);
 
-GLboolean mglProgramVaryingTypesCompatible(const SpirvResource *a,
-                                           const SpirvResource *b);
-SpirvResource *mglFindVaryingByName(SpirvResourceList *list,
+GLboolean mglProgramVaryingTypesCompatible(const MGLShaderResource *a,
+                                           const MGLShaderResource *b);
+MGLShaderResource *mglFindVaryingByName(MGLShaderResourceList *list,
                                     const char *name,
-                                    const SpirvResource *type_peer);
-SpirvResource *mglFindVaryingByLocation(SpirvResourceList *list,
+                                    const MGLShaderResource *type_peer);
+MGLShaderResource *mglFindVaryingByLocation(MGLShaderResourceList *list,
                                         GLuint location,
-                                        const SpirvResource *type_peer);
+                                        const MGLShaderResource *type_peer);
 void mglBridgeSkippedGeometryShaderVaryings(Program *program);
 GLboolean mglProgramHasPassthroughGeometryShader(Program *program);
 

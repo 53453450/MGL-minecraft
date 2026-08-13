@@ -6,7 +6,7 @@
  *
  * Metal vertex/compute pipelines expose 31 buffer slots (0..30).  MGL reserves
  * the high end of this range for internal use (tessellation, transform
- * feedback, gl_FragCoord fixup, cull-distance emulation, SPIRV-Cross runtime
+ * feedback, gl_FragCoord fixup, cull-distance emulation, runtime
  * sizing).  A low vertex-stage slot is also reserved for fixed-function point
  * size emulation.  GL user buffer bindings (UBO/SSBO/atomic-counter) MUST NOT
  * land in the reserved range — `mglBufferSlotIsReservedForStage` is the
@@ -37,10 +37,10 @@
 extern "C" {
 #endif
 
-/* SPIRV-Cross spvBufferSizeConstants slot for runtime-sized SSBO arrays.
+/* spvBufferSizeConstants slot for runtime-sized SSBO arrays.
  * Set via SPVC_COMPILER_OPTION_MSL_BUFFER_SIZE_BUFFER_INDEX.  Bound in all
- * stages that have `needs_buffer_size_buffer`. */
-#define MGL_BUFFER_SIZE_BUFFER_INDEX 25u
+ * stages that have `needs_runtime_array_size_buffer`. */
+#define MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX 25u
 
 typedef enum {
     /* Fixed-function point size parameter for vertex shaders.  Vertex attribute
@@ -80,7 +80,7 @@ typedef enum {
     kMGLBufferSlot_TESGlIn          = 30,
 
     /* TCS [[stage_in]] replacement buffer.  TCS compute kernel only.
-     * Keep this below 25 so it cannot collide with SPIRV-Cross's
+     * Keep this below 25 so it cannot collide with
      * spvBufferSizeConstants at slot 25 or tessellation helper slots 26-30. */
     kMGLBufferSlot_TCSStageInRepl   = 24,
 
@@ -134,11 +134,11 @@ typedef enum {
  * `stage` is a _MAX_SHADER_TYPES index (see glm_context.h).  Pass -1 to check
  * against all stages conservatively.
  *
- * NOTE: slot 25 (MGL_BUFFER_SIZE_BUFFER_INDEX) is NOT considered reserved
- * here — SPIRV-Cross manages its own binding and it is intentionally
+ * NOTE: slot 25 (MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX) is NOT considered reserved
+ * here — the backend manages its own binding and it is intentionally
  * assignable to user SSBOs that need runtime-sized array sizing.  The
  * renderer binds the size buffer at slot 25 only when
- * `spirv[stage].needs_buffer_size_buffer` is true, and SPIRV-Cross's own
+ * `modules[stage].needs_runtime_array_size_buffer` is true, and the backend's own
  * decoration logic avoids collisions with user bindings. */
 GLboolean mglBufferSlotIsReservedForStage(GLuint slot, int stage);
 

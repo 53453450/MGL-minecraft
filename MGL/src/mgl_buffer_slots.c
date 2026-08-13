@@ -136,7 +136,7 @@ const char *mglBufferSlotReservedName(GLuint slot)
         case 24:
             return "kMGLBufferSlot_TCSStageInRepl (TCS [[stage_in]] replacement) / MGL_AIR_GS_SLOT_INPUT (GS compute expansion)";
         case 25:
-            return "MGL_BUFFER_SIZE_BUFFER_INDEX (SPIRV-Cross runtime-sized SSBO sizing)";
+            return "MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX (runtime-sized SSBO sizing)";
         case 26:
             return "kMGLBufferSlot_TessFactor (TCS/TES compute path)";
         case 27:
