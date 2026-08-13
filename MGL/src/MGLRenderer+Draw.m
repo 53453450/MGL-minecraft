@@ -6,12 +6,7 @@
 #import "mgl_frame_activity.h"
 #include "mgl_env_flag.h"
 #include "mgl_render_cpp.h"
-
-static BOOL mglDrawUsesMetalCpp(void)
-{
-    return mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
-           mglRenderCppGetDevice() != NULL;
-}
+#include "mgl_render_cpp_objc.h"   /* P4.3a: mglRenderCppTryEncodeDraw */
 
 static void mglDrawPrimitives(id<MTLRenderCommandEncoder> encoder,
                               MTLPrimitiveType primitiveType,
@@ -20,10 +15,15 @@ static void mglDrawPrimitives(id<MTLRenderCommandEncoder> encoder,
                               NSUInteger instanceCount,
                               NSUInteger baseInstance)
 {
-    if (mglDrawUsesMetalCpp() &&
-        mglRenderCppDrawPrimitives(
-            (__bridge void *)encoder, (uint32_t)primitiveType,
-            vertexStart, vertexCount, instanceCount, baseInstance) == 0) {
+    /* P4.3a: 统一 draw plan 提交（gate-on 走 C++ EncodeDraw）。 */
+    if (mglRenderCppTryEncodeDraw(encoder, &(MGLRenderCppDrawPlan){
+            .kind = MGL_RENDER_CPP_DRAW_ARRAY,
+            .primitive_type = (uint32_t)primitiveType,
+            .vertex_start = vertexStart,
+            .vertex_count = vertexCount,
+            .instance_count = instanceCount,
+            .base_instance = baseInstance,
+        })) {
         return;
     }
     [encoder drawPrimitives:primitiveType
@@ -43,11 +43,17 @@ static void mglDrawIndexedPrimitives(id<MTLRenderCommandEncoder> encoder,
                                      NSInteger baseVertex,
                                      NSUInteger baseInstance)
 {
-    if (mglDrawUsesMetalCpp() &&
-        mglRenderCppDrawIndexedPrimitives(
-            (__bridge void *)encoder, (uint32_t)primitiveType, indexCount,
-            (uint32_t)indexType, (__bridge void *)indexBuffer,
-            indexBufferOffset, instanceCount, baseVertex, baseInstance) == 0) {
+    if (mglRenderCppTryEncodeDraw(encoder, &(MGLRenderCppDrawPlan){
+            .kind = MGL_RENDER_CPP_DRAW_INDEXED,
+            .primitive_type = (uint32_t)primitiveType,
+            .index_count = indexCount,
+            .index_type = (uint32_t)indexType,
+            .index_buffer = (__bridge void *)indexBuffer,
+            .index_buffer_offset = indexBufferOffset,
+            .instance_count = instanceCount,
+            .base_vertex = baseVertex,
+            .base_instance = baseInstance,
+        })) {
         return;
     }
     [encoder drawIndexedPrimitives:primitiveType
@@ -65,10 +71,12 @@ static void mglDrawPrimitivesIndirect(id<MTLRenderCommandEncoder> encoder,
                                       id<MTLBuffer> indirectBuffer,
                                       NSUInteger indirectBufferOffset)
 {
-    if (mglDrawUsesMetalCpp() &&
-        mglRenderCppDrawPrimitivesIndirect(
-            (__bridge void *)encoder, (uint32_t)primitiveType,
-            (__bridge void *)indirectBuffer, indirectBufferOffset) == 0) {
+    if (mglRenderCppTryEncodeDraw(encoder, &(MGLRenderCppDrawPlan){
+            .kind = MGL_RENDER_CPP_DRAW_ARRAY_INDIRECT,
+            .primitive_type = (uint32_t)primitiveType,
+            .indirect_buffer = (__bridge void *)indirectBuffer,
+            .indirect_buffer_offset = indirectBufferOffset,
+        })) {
         return;
     }
     [encoder drawPrimitives:primitiveType
@@ -85,12 +93,15 @@ static void mglDrawIndexedPrimitivesIndirect(
     id<MTLBuffer> indirectBuffer,
     NSUInteger indirectBufferOffset)
 {
-    if (mglDrawUsesMetalCpp() &&
-        mglRenderCppDrawIndexedPrimitivesIndirect(
-            (__bridge void *)encoder, (uint32_t)primitiveType,
-            (uint32_t)indexType, (__bridge void *)indexBuffer,
-            indexBufferOffset, (__bridge void *)indirectBuffer,
-            indirectBufferOffset) == 0) {
+    if (mglRenderCppTryEncodeDraw(encoder, &(MGLRenderCppDrawPlan){
+            .kind = MGL_RENDER_CPP_DRAW_INDEXED_INDIRECT,
+            .primitive_type = (uint32_t)primitiveType,
+            .index_type = (uint32_t)indexType,
+            .index_buffer = (__bridge void *)indexBuffer,
+            .index_buffer_offset = indexBufferOffset,
+            .indirect_buffer = (__bridge void *)indirectBuffer,
+            .indirect_buffer_offset = indirectBufferOffset,
+        })) {
         return;
     }
     [encoder drawIndexedPrimitives:primitiveType

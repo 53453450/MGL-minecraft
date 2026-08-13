@@ -196,10 +196,15 @@ static void mglTessDrawPrimitives(id<MTLRenderCommandEncoder> encoder,
                                   NSUInteger instanceCount,
                                   NSUInteger baseInstance)
 {
-    if (mglTessUsesMetalCpp() &&
-        mglRenderCppDrawPrimitives((__bridge void *)encoder,
-                                   (uint32_t)type, vertexStart, vertexCount,
-                                   instanceCount, baseInstance) == 0) {
+    /* P4.3a: TES compute 展开的 passthrough raster draw 走统一 draw plan。 */
+    if (mglRenderCppTryEncodeDraw(encoder, &(MGLRenderCppDrawPlan){
+            .kind = MGL_RENDER_CPP_DRAW_ARRAY,
+            .primitive_type = (uint32_t)type,
+            .vertex_start = vertexStart,
+            .vertex_count = vertexCount,
+            .instance_count = instanceCount,
+            .base_instance = baseInstance,
+        })) {
         return;
     }
     [encoder drawPrimitives:type

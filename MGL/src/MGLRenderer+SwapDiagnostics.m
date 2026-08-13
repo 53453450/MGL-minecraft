@@ -148,10 +148,15 @@ static void mglSwapDiagnosticsSetScissor(
 static void mglSwapDiagnosticsDrawTriangleStrip(
     id<MTLRenderCommandEncoder> encoder)
 {
-    if (mglSwapDiagnosticsUsesMetalCpp() &&
-        mglRenderCppDrawPrimitives(
-            (__bridge void *)encoder, (uint32_t)MTLPrimitiveTypeTriangleStrip,
-            0, 4, 1, 0) == 0) {
+    /* P4.3a: 统一 draw plan 提交（gate-on 走 C++ EncodeDraw）。 */
+    if (mglRenderCppTryEncodeDraw(encoder, &(MGLRenderCppDrawPlan){
+            .kind = MGL_RENDER_CPP_DRAW_ARRAY,
+            .primitive_type = (uint32_t)MTLPrimitiveTypeTriangleStrip,
+            .vertex_start = 0,
+            .vertex_count = 4,
+            .instance_count = 1u,
+            .base_instance = 0u,
+        })) {
         return;
     }
     [encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip

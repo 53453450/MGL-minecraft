@@ -1168,6 +1168,55 @@ int mglRenderCppDrawIndexedPrimitivesIndirect(
     void *indirect_buffer,
     uint64_t indirect_buffer_offset);
 
+/* P4.3a: draw 提交的统一 value-state plan。ObjC draw 入口（Draw/Batch/
+ * BatchReplay/draw_encode/DrawSupport/Tessellation/Blit/swap-diagnostics）
+ * 只构造 plan，然后单次调用 mglRenderCppEncodeDraw；最终 draw 提交全部由
+ * C++ 完成。资源为 +0 borrowed。 */
+typedef struct MGLRenderCppDrawPlan_t {
+    uint32_t kind;              /* MGL_RENDER_CPP_DRAW_* */
+    uint32_t primitive_type;    /* MTLPrimitiveType 以 uint 传 */
+    /* ARRAY: */
+    uint64_t vertex_start;
+    uint64_t vertex_count;
+    /* INDEXED: */
+    uint64_t index_count;
+    uint32_t index_type;        /* MTLIndexType 以 uint 传 */
+    void *index_buffer;         /* +0 borrowed MTL::Buffer* */
+    uint64_t index_buffer_offset;
+    int64_t base_vertex;
+    /* INDIRECT: */
+    void *indirect_buffer;      /* +0 borrowed MTL::Buffer* */
+    uint64_t indirect_buffer_offset;
+    /* PATCHES（native TES）: */
+    uint64_t control_point_count;
+    uint64_t patch_start;
+    uint64_t patch_count;
+    void *patch_index_buffer;           /* +0 borrowed */
+    uint64_t patch_index_buffer_offset;
+    void *control_point_index_buffer;   /* +0 borrowed */
+    uint64_t control_point_index_buffer_offset;
+    /* 通用: */
+    uint64_t instance_count;
+    uint64_t base_instance;
+} MGLRenderCppDrawPlan;
+
+enum {
+    MGL_RENDER_CPP_DRAW_ARRAY = 1,
+    MGL_RENDER_CPP_DRAW_INDEXED = 2,
+    MGL_RENDER_CPP_DRAW_ARRAY_INDIRECT = 3,
+    MGL_RENDER_CPP_DRAW_INDEXED_INDIRECT = 4,
+    MGL_RENDER_CPP_DRAW_PATCHES = 5,
+    MGL_RENDER_CPP_DRAW_INDEXED_PATCHES = 6,
+};
+
+/* P4.3a: 单一 draw 提交入口。render_encoder 为 +0 borrowed
+ * MTL::RenderCommandEncoder*。plan 校验失败（非法 kind/空 encoder/缺 buffer
+ * 等）返回 -1 并写 err，调用方回退 ObjC 直接编码。 */
+int mglRenderCppEncodeDraw(void *render_encoder,
+                           const MGLRenderCppDrawPlan *plan,
+                           char *err,
+                           size_t errcap);
+
 typedef struct MGLRenderCppCullDistancePrimitive_t {
     uint32_t vertices[4];
     uint32_t vertex_count;

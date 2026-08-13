@@ -11,12 +11,7 @@
 #include <stdlib.h>
 #include "mgl_env_flag.h"
 #include "mgl_render_cpp.h"
-
-static BOOL mglDrawEncodeUsesMetalCpp(void)
-{
-    return mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
-           mglRenderCppGetDevice() != NULL;
-}
+#include "mgl_render_cpp_objc.h"   /* P4.3a: mglRenderCppTryEncodeDraw */
 
 static void mglDrawEncodePrimitives(id<MTLRenderCommandEncoder> encoder,
                                     MTLPrimitiveType primitiveType,
@@ -25,10 +20,15 @@ static void mglDrawEncodePrimitives(id<MTLRenderCommandEncoder> encoder,
                                     NSUInteger instanceCount,
                                     NSUInteger baseInstance)
 {
-    if (mglDrawEncodeUsesMetalCpp() &&
-        mglRenderCppDrawPrimitives(
-            (__bridge void *)encoder, (uint32_t)primitiveType, vertexStart,
-            vertexCount, instanceCount, baseInstance) == 0) {
+    /* P4.3a: 统一 draw plan 提交（gate-on 走 C++ EncodeDraw）。 */
+    if (mglRenderCppTryEncodeDraw(encoder, &(MGLRenderCppDrawPlan){
+            .kind = MGL_RENDER_CPP_DRAW_ARRAY,
+            .primitive_type = (uint32_t)primitiveType,
+            .vertex_start = vertexStart,
+            .vertex_count = vertexCount,
+            .instance_count = instanceCount,
+            .base_instance = baseInstance,
+        })) {
         return;
     }
     [encoder drawPrimitives:primitiveType vertexStart:vertexStart
@@ -46,11 +46,17 @@ static void mglDrawEncodeIndexed(id<MTLRenderCommandEncoder> encoder,
                                  NSInteger baseVertex,
                                  NSUInteger baseInstance)
 {
-    if (mglDrawEncodeUsesMetalCpp() &&
-        mglRenderCppDrawIndexedPrimitives(
-            (__bridge void *)encoder, (uint32_t)primitiveType, indexCount,
-            (uint32_t)indexType, (__bridge void *)indexBuffer,
-            indexBufferOffset, instanceCount, baseVertex, baseInstance) == 0) {
+    if (mglRenderCppTryEncodeDraw(encoder, &(MGLRenderCppDrawPlan){
+            .kind = MGL_RENDER_CPP_DRAW_INDEXED,
+            .primitive_type = (uint32_t)primitiveType,
+            .index_count = indexCount,
+            .index_type = (uint32_t)indexType,
+            .index_buffer = (__bridge void *)indexBuffer,
+            .index_buffer_offset = indexBufferOffset,
+            .instance_count = instanceCount,
+            .base_vertex = baseVertex,
+            .base_instance = baseInstance,
+        })) {
         return;
     }
     [encoder drawIndexedPrimitives:primitiveType indexCount:indexCount

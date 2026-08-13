@@ -2375,9 +2375,74 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
             (__bridge void *)commandBuffer, stateOwner, &stateEncoder) != 0 ||
         !stateEncoder || mglRenderCppCreateRenderEncoderOwner(
             stateEncoder, &adoptedStateEncoderOwner) != 0 ||
-        !adoptedStateEncoderOwner ||
-        mglRenderCppEndRenderEncoderOwner(adoptedStateEncoderOwner) != 0) {
+        !adoptedStateEncoderOwner) {
         fprintf(stderr, "FAIL: render-pass state owner encoder\n");
+        mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
+        mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
+        return 1;
+    }
+
+    /* P4.3a: unified draw-plan encode.  Valid array draw encodes; invalid
+     * plan kinds and NULL encoder are rejected. */
+    {
+        id<MTLLibrary> drawLibrary = smokeLoadAssetLibrary(device, "scaled_blit");
+        id<MTLFunction> drawVS = drawLibrary
+            ? [drawLibrary newFunctionWithName:@"mgl_scaled_blit_vs"] : nil;
+        id<MTLFunction> drawFS = drawLibrary
+            ? [drawLibrary newFunctionWithName:@"mgl_scaled_blit_fs"] : nil;
+        MTLRenderPipelineDescriptor *drawPipelineDesc =
+            [MTLRenderPipelineDescriptor new];
+        drawPipelineDesc.vertexFunction = drawVS;
+        drawPipelineDesc.fragmentFunction = drawFS;
+        drawPipelineDesc.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA8Unorm;
+        NSError *drawPipelineError = nil;
+        id<MTLRenderPipelineState> drawPipeline =
+            [device newRenderPipelineStateWithDescriptor:drawPipelineDesc
+                                                   error:&drawPipelineError];
+        if (!drawVS || !drawFS || !drawPipeline) {
+            fprintf(stderr, "FAIL: draw plan pipeline: %s\n",
+                    drawPipelineError.localizedDescription.UTF8String
+                        ?: "unknown");
+            mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
+            mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
+            return 1;
+        }
+        if (mglRenderCppSetRenderPipelineState(
+                stateEncoder, (__bridge void *)drawPipeline) != 0) {
+            fprintf(stderr, "FAIL: draw plan pipeline bind\n");
+            mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
+            mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
+            return 1;
+        }
+        MGLRenderCppDrawPlan draw = {
+            .kind = MGL_RENDER_CPP_DRAW_ARRAY,
+            .primitive_type = (uint32_t)MTLPrimitiveTypeTriangleStrip,
+            .vertex_start = 0,
+            .vertex_count = 4,
+            .instance_count = 1,
+            .base_instance = 0,
+        };
+        MGLRenderCppDrawPlan badKind = draw;
+        badKind.kind = 0xdead;
+        MGLRenderCppDrawPlan noInstance = draw;
+        noInstance.instance_count = 0;
+        char drawError[128] = {0};
+        if (mglRenderCppEncodeDraw(stateEncoder, &draw,
+                                   drawError, sizeof(drawError)) != 0 ||
+            mglRenderCppEncodeDraw(NULL, &draw, NULL, 0) != -1 ||
+            mglRenderCppEncodeDraw(stateEncoder, &badKind,
+                                   drawError, sizeof(drawError)) != -1 ||
+            mglRenderCppEncodeDraw(stateEncoder, &noInstance, NULL, 0) != -1) {
+            fprintf(stderr, "FAIL: draw plan encode\n");
+            mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
+            mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
+            return 1;
+        }
+        printf("DRAW_PLAN_ENCODE_OK\n");
+    }
+
+    if (mglRenderCppEndRenderEncoderOwner(adoptedStateEncoderOwner) != 0) {
+        fprintf(stderr, "FAIL: render-pass state owner encoder end\n");
         mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
         mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
         return 1;

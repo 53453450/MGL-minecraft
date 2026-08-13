@@ -6386,6 +6386,61 @@ int mglRenderCppDrawIndexedPrimitivesIndirect(
     return 0;
 }
 
+/* P4.3a: draw 提交的统一入口。按 plan.kind 分派到上面 6 个 per-call 实现；
+ * 校验失败返回 -1（调用方回退 ObjC 直接编码，保持 gate-off 语义）。 */
+int mglRenderCppEncodeDraw(void* render_encoder,
+                           const MGLRenderCppDrawPlan* plan,
+                           char* err,
+                           size_t errcap) {
+    if (err && errcap) err[0] = '\0';
+    if (!render_encoder || !plan) {
+        if (err && errcap) snprintf(err, errcap, "bad args");
+        return -1;
+    }
+    switch (plan->kind) {
+        case MGL_RENDER_CPP_DRAW_ARRAY:
+            return mglRenderCppDrawPrimitives(
+                render_encoder, plan->primitive_type,
+                plan->vertex_start, plan->vertex_count,
+                plan->instance_count, plan->base_instance);
+        case MGL_RENDER_CPP_DRAW_INDEXED:
+            return mglRenderCppDrawIndexedPrimitives(
+                render_encoder, plan->primitive_type,
+                plan->index_count, plan->index_type, plan->index_buffer,
+                plan->index_buffer_offset, plan->instance_count,
+                plan->base_vertex, plan->base_instance);
+        case MGL_RENDER_CPP_DRAW_ARRAY_INDIRECT:
+            return mglRenderCppDrawPrimitivesIndirect(
+                render_encoder, plan->primitive_type,
+                plan->indirect_buffer, plan->indirect_buffer_offset);
+        case MGL_RENDER_CPP_DRAW_INDEXED_INDIRECT:
+            return mglRenderCppDrawIndexedPrimitivesIndirect(
+                render_encoder, plan->primitive_type, plan->index_type,
+                plan->index_buffer, plan->index_buffer_offset,
+                plan->indirect_buffer, plan->indirect_buffer_offset);
+        case MGL_RENDER_CPP_DRAW_PATCHES:
+            return mglRenderCppDrawPatches(
+                render_encoder, plan->control_point_count, plan->patch_start,
+                plan->patch_count, plan->patch_index_buffer,
+                plan->patch_index_buffer_offset, plan->instance_count,
+                plan->base_instance);
+        case MGL_RENDER_CPP_DRAW_INDEXED_PATCHES:
+            return mglRenderCppDrawIndexedPatches(
+                render_encoder, plan->control_point_count, plan->patch_start,
+                plan->patch_count, plan->patch_index_buffer,
+                plan->patch_index_buffer_offset,
+                plan->control_point_index_buffer,
+                plan->control_point_index_buffer_offset,
+                plan->instance_count, plan->base_instance);
+        default:
+            if (err && errcap) {
+                snprintf(err, errcap, "unknown draw plan kind %u",
+                         (unsigned)plan->kind);
+            }
+            return -1;
+    }
+}
+
 int mglRenderCppCreateCullDistanceIndexPlan(
     void* device,
     const void* source_indices,
