@@ -39,7 +39,7 @@
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 54
+#define MAX_TESTS 56
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -1265,6 +1265,204 @@ static int test_conditional_render(unsigned char *pixels, const char *out_path)
  * Queue three draws that read red, green, then red aligned slices of one UBO.
  * The middle range also changes size, so deferred replay must retain both the
  * offset and range before restoring the batch's base range. */
+/* P4.1e2 occlusion-query scissor probe.  GL_SAMPLES_PASSED on a 2D FBO:
+ * a visible triangle must count > 0, and a draw clipped to a 0-size scissor
+ * rect must count exactly 0.  The zero-scissor round is repeated several
+ * times so encoder recreation between queries is exercised; this is the
+ * guard for the conditional_render scissor-dedup regression (P4.1e). */
+static int test_air_query_scissor_occluded(unsigned char *pixels,
+                                            const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    GLuint fbo = 0u, tex = 0u, vao = 0u, vbo_p = 0u, vbo_c = 0u;
+    GLuint q = 0u, q_zero[4] = {0u, 0u, 0u, 0u};
+    int result = 1;
+
+    fbo = make_fbo(REG_W, REG_H, &tex);
+    if (!fbo) goto cleanup;
+    GLuint prog = link_program(VS_BASIC, FS_BASIC);
+    if (!prog) goto cleanup;
+    glUseProgram(prog);
+    glUniform1f(glGetUniformLocation(prog, "u_scale"), 1.0f);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    vbo_p = make_vbo(TRI_VERTS, sizeof(TRI_VERTS));
+    vbo_c = make_vbo(TRI_COLORS, sizeof(TRI_COLORS));
+    glEnableVertexAttribArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo_p);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+    glEnableVertexAttribArray(1);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo_c);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 0, 0);
+
+    /* Visible triangle: samples > 0. */
+    glGenQueries(1, &q);
+    glBeginQuery(GL_SAMPLES_PASSED, q);
+    glUniform2f(glGetUniformLocation(prog, "u_offset"), 0.0f, 0.0f);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glEndQuery(GL_SAMPLES_PASSED);
+    glFinish();
+    GLuint visible = 0u;
+    glGetQueryObjectuiv(q, GL_QUERY_RESULT, &visible);
+    if (visible == 0u) {
+        fprintf(stderr, "air_query_scissor_occluded: visible query returned 0\n");
+        goto cleanup;
+    }
+
+    /* Repeated 0-size-scissor draws: every query must return exactly 0. */
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(0, 0, 0, 0);
+    for (int round = 0; round < 4; ++round) {
+        glGenQueries(1, &q_zero[round]);
+        glBeginQuery(GL_SAMPLES_PASSED, q_zero[round]);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glEndQuery(GL_SAMPLES_PASSED);
+        glFinish();
+        GLuint occluded = 1u;
+        glGetQueryObjectuiv(q_zero[round], GL_QUERY_RESULT, &occluded);
+        if (occluded != 0u) {
+            fprintf(stderr,
+                    "air_query_scissor_occluded: occluded round %d returned "
+                    "%u samples (expected 0)\n", round, occluded);
+            goto cleanup;
+        }
+    }
+    glDisable(GL_SCISSOR_TEST);
+
+    /* Verify the same framebuffer still renders (scissor fully cleared). */
+    clear_color(0.0f, 0.0f, 0.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glUniform2f(glGetUniformLocation(prog, "u_offset"), 0.0f, 0.0f);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    const int px = (int)((0.0f + 1.0f) * 0.5f * REG_W);
+    const int py = (int)((0.0f + 1.0f) * 0.5f * REG_H);
+    const unsigned char *c = &pixels[(py * REG_W + px) * 4];
+    if (c[0] < 200u || c[1] > 60u || c[2] > 60u) {
+        fprintf(stderr,
+                "air_query_scissor_occluded: post-scissor triangle not red "
+                "(%u,%u,%u)\n", c[0], c[1], c[2]);
+        goto cleanup;
+    }
+
+    result = 0;
+
+cleanup:
+    for (int i = 0; i < 4; ++i) {
+        if (q_zero[i]) glDeleteQueries(1, &q_zero[i]);
+    }
+    if (q) glDeleteQueries(1, &q);
+    if (vbo_c) glDeleteBuffers(1, &vbo_c);
+    if (vbo_p) glDeleteBuffers(1, &vbo_p);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (prog) glDeleteProgram(prog);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (tex) glDeleteTextures(1, &tex);
+    return result;
+}
+
+/* P4.1e2 layer-binding probe: a 2D-ARRAY color attachment bound through
+ * glFramebufferTextureLayer at slice ∈ {0, 1}, with a program that has no
+ * gl_Layer output.  GL 4.6 §9.4.2: the bound layer is the draw target.
+ *
+ * Known limitation (P1, recorded in AIR_M3_CPP_TODO): without gl_Layer
+ * output the layered pass forces attachment slice 0 and
+ * render_target_array_index stays 0, so a slice-1 binding still draws to
+ * layer 0.  This probe asserts the CURRENT behavior on both gates so a
+ * future fix must update it explicitly. */
+static int test_air_renderpass_layer_slice(unsigned char *pixels,
+                                           const char *out_path)
+{
+    (void)out_path;
+    static const char *vs =
+        "#version 330 core\n"
+        "layout(location = 0) in vec2 a_pos;\n"
+        "void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }\n";
+    static const char *fs =
+        "#version 330 core\n"
+        "out vec4 frag;\n"
+        "void main() { frag = vec4(0.0, 1.0, 0.0, 1.0); }\n";
+    GLuint lfbo = 0u, color = 0u, vao = 0u, vbo = 0u, prog = 0u;
+    int result = 1;
+
+    lfbo = make_layer_fbo(REG_W, REG_H, &color);
+    if (!lfbo) goto cleanup;
+    prog = link_program(vs, fs);
+    if (!prog) goto cleanup;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, lfbo);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    static const float tri[6] = { -0.6f, -0.6f, 0.6f, -0.6f, 0.0f, 0.6f };
+    vbo = make_vbo(tri, sizeof(tri));
+    glEnableVertexAttribArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+    glUseProgram(prog);
+
+    const int px = (int)((0.0f + 1.0f) * 0.5f * REG_W);
+    const int py = (int)((0.0f + 1.0f) * 0.5f * REG_H);
+    const unsigned char *c;
+
+    /* Segment 1: slice 0 binding, no gl_Layer output → triangle on layer 0. */
+    clear_color(0.0f, 0.0f, 0.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    c = &pixels[(py * REG_W + px) * 4];
+    if (c[0] > 20u || c[1] < 220u || c[2] > 20u) {
+        fprintf(stderr,
+                "air_renderpass_layer_slice: slice-0 draw not green on layer "
+                "0 (%u,%u,%u)\n", c[0], c[1], c[2]);
+        goto cleanup;
+    }
+
+    /* Segment 2: slice 1 binding, no gl_Layer output.  Current behavior
+     * (documented limitation): the triangle lands on layer 0, so layer 1
+     * stays clear after the blue clear. */
+    glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, color,
+                              0, 1);
+    clear_color(0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    c = &pixels[(py * REG_W + px) * 4];
+    if (c[0] > 20u || c[1] > 20u || c[2] < 220u) {
+        fprintf(stderr,
+                "air_renderpass_layer_slice: slice-1 draw unexpectedly "
+                "rendered on layer 1 (%u,%u,%u) — known limitation changed\n",
+                c[0], c[1], c[2]);
+        goto cleanup;
+    }
+    /* Prove the draw went to layer 0 (current behavior). */
+    glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, color,
+                              0, 0);
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    c = &pixels[(py * REG_W + px) * 4];
+    if (c[0] > 20u || c[1] < 220u || c[2] > 20u) {
+        fprintf(stderr,
+                "air_renderpass_layer_slice: slice-1 draw did not land on "
+                "layer 0 either (%u,%u,%u)\n", c[0], c[1], c[2]);
+        goto cleanup;
+    }
+
+    result = 0;
+
+cleanup:
+    if (prog) glDeleteProgram(prog);
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (lfbo) glDeleteFramebuffers(1, &lfbo);
+    if (color) glDeleteTextures(1, &color);
+    return result;
+}
+
 static int test_ubo_range_switch(unsigned char *pixels, const char *out_path)
 {
     (void)out_path;
@@ -7332,6 +7530,10 @@ static const TestCase TESTS[] = {
     GOLDEN_TEST("dontcare_fullscreen",    test_dontcare_fullscreen),
     GOLDEN_TEST("multibatch_same_fbo",    test_multibatch_same_fbo),
     GOLDEN_TEST("rtt_sample",             test_render_to_texture_sample),
+    SELF_CHECK_TEST("air_query_scissor_occluded",
+                    test_air_query_scissor_occluded),
+    SELF_CHECK_TEST("air_renderpass_layer_slice",
+                    test_air_renderpass_layer_slice),
     /* depth_test/stencil use probe-style fns (test_depth_probe /
      * test_stencil_probe): hardcoded per-program values.
      * uniform_alias gates the cross-stage uniform-location fix (program.c

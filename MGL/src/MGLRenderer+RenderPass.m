@@ -2369,10 +2369,13 @@ output->name, (unsigned)i,
                 }
 
                 if (sx >= (GLint)passWidth || sy >= (GLint)passHeight) {
+                    /* GL 4.6 §14.6.1: a scissor box that starts entirely
+                     * outside the viewport clips every fragment.  Keep an
+                     * empty (0-size) box instead of resetting to full pass. */
                     sx = 0;
                     sy = 0;
-                    sw = (GLint)passWidth;
-                    sh = (GLint)passHeight;
+                    sw = 0;
+                    sh = 0;
                 } else {
                     GLint maxWidth = (GLint)passWidth - sx;
                     GLint maxHeight = (GLint)passHeight - sy;
@@ -2385,10 +2388,12 @@ output->name, (unsigned)i,
                     }
 
                     if (sw <= 0 || sh <= 0) {
+                        /* GL allows 0-size scissor rects; they produce no
+                         * fragments.  Do not reset to the full pass. */
                         sx = 0;
                         sy = 0;
-                        sw = (GLint)passWidth;
-                        sh = (GLint)passHeight;
+                        sw = 0;
+                        sh = 0;
                     }
                 }
             }
