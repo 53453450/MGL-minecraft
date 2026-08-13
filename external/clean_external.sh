@@ -1,20 +1,9 @@
-cd SPIRV-Tools
-cd build
-make clean
-cd ../..
-cd SPIRV-Cross
-cd build
-make clean
-cd ../..
-cd SPIRV-Headers
-cd build
-make clean
-cd ../..
-cd glslang
-./update_glslang_sources.py
-cd build
-make clean
-cd ../..
+#!/bin/bash
+# Clean the remaining external dependency build outputs.  The old
+# GLSL->SPIR-V->MSL toolchain (SPIRV-Tools / SPIRV-Cross / SPIRV-Headers /
+# glslang) is no longer built or linked by MGL.
+set -e
+
 cd glfw
 cd build
 make clean

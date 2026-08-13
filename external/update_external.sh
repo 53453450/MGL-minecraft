@@ -1,15 +1,9 @@
-cd SPIRV-Cross
-git pull
-cd ..
-cd SPIRV-Headers
-git pull
-cd ..
-cd SPIRV-Tools
-git pull
-cd ..
-cd glslang
-git pull
-cd ..
+#!/bin/bash
+# Update the remaining external dependencies.  The old GLSL->SPIR-V->MSL
+# toolchain (SPIRV-Tools / SPIRV-Cross / SPIRV-Headers / glslang) is no longer
+# built or linked by MGL.
+set -e
+
 cd glfw
 git pull
 cd ..

@@ -3,15 +3,8 @@ build/
 libmgl.dylib
 libmgl_es.dylib
 external/OpenGL-Registry/
-external/SPIRV-Cross/
-external/SPIRV-Cross.r58bak/
-external/SPIRV-Headers/
-external/SPIRV-Tools/
 external/ezxml/
-external/glslang/
 *.DS_Store
-/SPIRV-Headers
-/SPIRV-Cross
 /MGL.gputrace
 /Info.plist
 *.dylib

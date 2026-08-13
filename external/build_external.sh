@@ -1,38 +1,16 @@
-set SDKROOT=`xcrun --show-sdk-path`
+#!/bin/bash
+# Build the remaining external dependencies.  The old GLSL->SPIR-V->MSL toolchain
+# (SPIRV-Tools / SPIRV-Cross / SPIRV-Headers / glslang) is no longer built or
+# linked by MGL; only GLFW and ezxml are still needed.  See the top-level
+# Makefile for the aux-shader metallib generation (Apple SDK only).
+set -e
+
+SDKROOT=$(xcrun --show-sdk-path)
+export SDKROOT
 
 # GLFW keeps its own thin facades in glfw/src/{MGLContext,MGLRenderer}.h.
-# Do NOT copy MGL/include/MGLRenderer.h into glfw — that header pulls
-# mgl_metal_bridge.h → glcorearb.h and redefines GLFW internal.h's GL_* macros
-# (-Wmacro-redefined). Context enums/API live in glfw's MGLContext.h already.
-# cp ../MGL/include/MGLContext.h glfw/src
-# cp ../MGL/include/MGLRenderer.h glfw/src
-cd SPIRV-Tools
-mkdir build
-cd build
-cmake .. -DCMAKE_POLICY_VERSION_MINIMUM=3.5
-make -j 4
-cd ../..
-cd SPIRV-Cross
-mkdir build
-cd build
-cmake .. -DCMAKE_POLICY_VERSION_MINIMUM=3.5
-make -j 4
-cd ../..
-cd SPIRV-Headers
-mkdir build
-cd build
-cmake .. -DCMAKE_POLICY_VERSION_MINIMUM=3.5
-make -j 4
-cd ../..
-cd glslang
-./update_glslang_sources.py
-mkdir build
-cd build
-cmake .. -DCMAKE_POLICY_VERSION_MINIMUM=3.5
-make -j 4
-cd ../..
 cd glfw
-mkdir build
+mkdir -p build
 cd build
 cmake .. -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 make -j 4 glfw
