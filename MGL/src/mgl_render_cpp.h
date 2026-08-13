@@ -855,6 +855,33 @@ int mglRenderCppCommitCommandBuffer(void *command_buffer);
 int mglRenderCppWaitCommandBuffer(void *command_buffer);
 int mglRenderCppPresentDrawable(void *command_buffer, void *drawable);
 
+/* P4.3b: per-draw binding snapshot。ObjC 侧保留「判定哪些绑定需要 emit」
+ * 的 GL 逻辑（dedup 检查、统计、COW 记账），把通过判定的绑定序列收集进
+ * snapshot，单次交给 mglRenderCppEncodeBindingSnapshot 在 C++ 内重放
+ * （setter 序列在 C++；与直接 draw 路径的 mglRenderCppSetRenderBuffer 等价）。 */
+#define MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_BUFFERS 31u
+
+typedef struct MGLRenderCppBindingBufferEntry_t {
+    void *buffer;   /* +0 borrowed MTL::Buffer* */
+    uint64_t offset;
+    uint32_t index; /* Metal slot */
+} MGLRenderCppBindingBufferEntry;
+
+typedef struct MGLRenderCppBindingSnapshot_t {
+    uint32_t vertex_buffer_count;
+    MGLRenderCppBindingBufferEntry
+        vertex_buffers[MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_BUFFERS];
+    uint32_t fragment_buffer_count;
+    MGLRenderCppBindingBufferEntry
+        fragment_buffers[MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_BUFFERS];
+} MGLRenderCppBindingSnapshot;
+
+int mglRenderCppEncodeBindingSnapshot(
+    void *render_encoder,
+    const MGLRenderCppBindingSnapshot *snapshot,
+    char *err,
+    size_t errcap);
+
 enum {
     MGL_RENDER_CPP_MAX_COLOR_ATTACHMENTS = 8,
     MGL_RENDER_CPP_MAX_SAMPLE_POSITIONS = 32,

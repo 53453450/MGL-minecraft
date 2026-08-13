@@ -491,6 +491,11 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             return false;
         }
 
+        /* P4.3b: gate-on 下把通过 dedup 判定、需要真正 emit 的绑定收集进
+         * snapshot，一次交给 C++ 重放（setter 序列在 C++）；gate-off 保持
+         * 逐条 ObjC 调用作为 A/B 对照。判定/统计/COW 记账两路完全一致。 */
+        const BOOL useBindingSnapshot = mglBatchReplayUsesMetalCpp();
+        MGLRenderCppBindingSnapshot snapshot = {0};
         for (GLuint stream = 0; stream < resolved_slot_count; stream++) {
             NSUInteger metal_slot = (NSUInteger)resolved_slots[stream];
             if (!mglBindingStateIsValid(_bindingStateOwner) ||
@@ -498,17 +503,31 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                     _bindingStateOwner, MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
                     (__bridge void *)metal_buffer, dynamic_offset,
                     (uint32_t)metal_slot)) {
-                mglBatchReplaySetRenderBuffer(
-                    encCtx->encoder, metal_buffer, dynamic_offset,
-                    MGL_RENDER_CPP_BINDING_STAGE_VERTEX, metal_slot);
                 mglRenderCppBindingUpdateVertexBuffer(
                     _bindingStateOwner, (__bridge void *)metal_buffer,
                     dynamic_offset, (uint32_t)metal_slot);
                 MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
                 mglNoteBufferEncoded(draw_buffer);
+                if (useBindingSnapshot) {
+                    if (snapshot.vertex_buffer_count <
+                        MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_BUFFERS) {
+                        snapshot.vertex_buffers[snapshot.vertex_buffer_count++] =
+                            (MGLRenderCppBindingBufferEntry){
+                                (__bridge void *)metal_buffer,
+                                dynamic_offset, (uint32_t)metal_slot};
+                    }
+                } else {
+                    mglBatchReplaySetRenderBuffer(
+                        encCtx->encoder, metal_buffer, dynamic_offset,
+                        MGL_RENDER_CPP_BINDING_STAGE_VERTEX, metal_slot);
+                }
             } else {
                 MGL_PERF_INC(g_mglSetVertexBufferSkipsSinceSwap);
             }
+        }
+        if (useBindingSnapshot && snapshot.vertex_buffer_count > 0) {
+            mglRenderCppEncodeBindingSnapshot(
+                (__bridge void *)encCtx->encoder, &snapshot, NULL, 0);
         }
     }
     return true;
@@ -523,6 +542,11 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         &MGL_STATE(glm_ctx)->fragment_buffer_map_list,
     };
     const int stages[2] = { _VERTEX_SHADER, _FRAGMENT_SHADER };
+
+    /* P4.3b: gate-on 下收集绑定进 snapshot 一次交给 C++ 重放；gate-off 保持
+     * 逐条 ObjC 调用。判定/统计/COW 记账两路一致。 */
+    const BOOL useBindingSnapshot = mglBatchReplayUsesMetalCpp();
+    MGLRenderCppBindingSnapshot snapshot = {0};
 
     for (uint8_t dynamic_index = 0;
          dynamic_index < cmd->dynamic_uniform_binding_count;
@@ -586,14 +610,27 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                             MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
                             (__bridge void *)metal_buffer, start,
                             (uint32_t)metal_slot)) {
-                        mglBatchReplaySetRenderBuffer(
-                            encCtx->encoder, metal_buffer, (NSUInteger)start,
-                            MGL_RENDER_CPP_BINDING_STAGE_VERTEX, metal_slot);
                         mglRenderCppBindingUpdateVertexBuffer(
                             _bindingStateOwner, (__bridge void *)metal_buffer,
                             start, (uint32_t)metal_slot);
                         MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
                         mglNoteBufferEncoded(slot->buf);
+                        if (useBindingSnapshot) {
+                            if (snapshot.vertex_buffer_count <
+                                MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_BUFFERS) {
+                                snapshot.vertex_buffers[
+                                    snapshot.vertex_buffer_count++] =
+                                    (MGLRenderCppBindingBufferEntry){
+                                        (__bridge void *)metal_buffer,
+                                        start, (uint32_t)metal_slot};
+                            }
+                        } else {
+                            mglBatchReplaySetRenderBuffer(
+                                encCtx->encoder, metal_buffer,
+                                (NSUInteger)start,
+                                MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
+                                metal_slot);
+                        }
                     } else {
                         MGL_PERF_INC(g_mglSetVertexBufferSkipsSinceSwap);
                     }
@@ -604,20 +641,39 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                             MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT,
                             (__bridge void *)metal_buffer, start,
                             (uint32_t)metal_slot)) {
-                        mglBatchReplaySetRenderBuffer(
-                            encCtx->encoder, metal_buffer, (NSUInteger)start,
-                            MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT, metal_slot);
                         mglRenderCppBindingUpdateFragmentBuffer(
                             _bindingStateOwner, (__bridge void *)metal_buffer,
                             start, (uint32_t)metal_slot);
                         MGL_PERF_INC(g_mglSetFragmentBufferCallsSinceSwap);
                         mglNoteBufferEncoded(slot->buf);
+                        if (useBindingSnapshot) {
+                            if (snapshot.fragment_buffer_count <
+                                MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_BUFFERS) {
+                                snapshot.fragment_buffers[
+                                    snapshot.fragment_buffer_count++] =
+                                    (MGLRenderCppBindingBufferEntry){
+                                        (__bridge void *)metal_buffer,
+                                        start, (uint32_t)metal_slot};
+                            }
+                        } else {
+                            mglBatchReplaySetRenderBuffer(
+                                encCtx->encoder, metal_buffer,
+                                (NSUInteger)start,
+                                MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT,
+                                metal_slot);
+                        }
                     } else {
                         MGL_PERF_INC(g_mglSetFragmentBufferSkipsSinceSwap);
                     }
                 }
             }
         }
+    }
+    if (useBindingSnapshot &&
+        (snapshot.vertex_buffer_count > 0 ||
+         snapshot.fragment_buffer_count > 0)) {
+        mglRenderCppEncodeBindingSnapshot(
+            (__bridge void *)encCtx->encoder, &snapshot, NULL, 0);
     }
     return true;
 }

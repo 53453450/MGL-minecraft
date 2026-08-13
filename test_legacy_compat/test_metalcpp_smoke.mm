@@ -2441,6 +2441,45 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
         printf("DRAW_PLAN_ENCODE_OK\n");
     }
 
+    /* P4.3b: binding snapshot replay.  Valid snapshot encodes; NULL encoder,
+     * count overflow and NULL buffer entries are rejected. */
+    {
+        id<MTLBuffer> snapshotBuffer =
+            [device newBufferWithLength:64 options:MTLResourceStorageModeShared];
+        if (!snapshotBuffer) {
+            fprintf(stderr, "FAIL: binding snapshot buffer\n");
+            mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
+            mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
+            return 1;
+        }
+        MGLRenderCppBindingSnapshot snap = {};
+        snap.vertex_buffers[snap.vertex_buffer_count++] =
+            (MGLRenderCppBindingBufferEntry){
+                (__bridge void *)snapshotBuffer, 0, 0};
+        snap.fragment_buffers[snap.fragment_buffer_count++] =
+            (MGLRenderCppBindingBufferEntry){
+                (__bridge void *)snapshotBuffer, 16, 1};
+        MGLRenderCppBindingSnapshot overflow = snap;
+        overflow.vertex_buffer_count =
+            MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_BUFFERS + 1;
+        MGLRenderCppBindingSnapshot nullEntry = snap;
+        nullEntry.vertex_buffers[0].buffer = NULL;
+        char snapError[128] = {0};
+        if (mglRenderCppEncodeBindingSnapshot(
+                stateEncoder, &snap, snapError, sizeof(snapError)) != 0 ||
+            mglRenderCppEncodeBindingSnapshot(NULL, &snap, NULL, 0) != -1 ||
+            mglRenderCppEncodeBindingSnapshot(
+                stateEncoder, &overflow, snapError, sizeof(snapError)) != -1 ||
+            mglRenderCppEncodeBindingSnapshot(
+                stateEncoder, &nullEntry, snapError, sizeof(snapError)) != -1) {
+            fprintf(stderr, "FAIL: binding snapshot encode\n");
+            mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
+            mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
+            return 1;
+        }
+        printf("BINDING_SNAPSHOT_OK\n");
+    }
+
     if (mglRenderCppEndRenderEncoderOwner(adoptedStateEncoderOwner) != 0) {
         fprintf(stderr, "FAIL: render-pass state owner encoder end\n");
         mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);

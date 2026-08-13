@@ -6567,6 +6567,56 @@ int mglRenderCppSetRenderBuffer(void* render_encoder,
     return 0;
 }
 
+/* P4.3b: 重放 per-draw binding snapshot。与逐条调用 mglRenderCppSetRenderBuffer
+ * 完全等价（同一 encoder、同一顺序），但一次 C ABI 调用完成整个序列。 */
+int mglRenderCppEncodeBindingSnapshot(
+    void* render_encoder,
+    const MGLRenderCppBindingSnapshot* snapshot,
+    char* err,
+    size_t errcap) {
+    if (err && errcap) err[0] = '\0';
+    if (!render_encoder || !snapshot) {
+        if (err && errcap) snprintf(err, errcap, "bad args");
+        return -1;
+    }
+    MTL::RenderCommandEncoder* encoder =
+        static_cast<MTL::RenderCommandEncoder*>(render_encoder);
+    if (snapshot->vertex_buffer_count >
+        MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_BUFFERS ||
+        snapshot->fragment_buffer_count >
+        MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_BUFFERS) {
+        if (err && errcap) snprintf(err, errcap, "snapshot count overflow");
+        return -1;
+    }
+    for (uint32_t i = 0; i < snapshot->vertex_buffer_count; i++) {
+        const MGLRenderCppBindingBufferEntry* entry =
+            &snapshot->vertex_buffers[i];
+        if (!entry->buffer) {
+            if (err && errcap) {
+                snprintf(err, errcap, "null vertex buffer entry %u", i);
+            }
+            return -1;
+        }
+        encoder->setVertexBuffer(
+            static_cast<MTL::Buffer*>(entry->buffer),
+            static_cast<NS::UInteger>(entry->offset), entry->index);
+    }
+    for (uint32_t i = 0; i < snapshot->fragment_buffer_count; i++) {
+        const MGLRenderCppBindingBufferEntry* entry =
+            &snapshot->fragment_buffers[i];
+        if (!entry->buffer) {
+            if (err && errcap) {
+                snprintf(err, errcap, "null fragment buffer entry %u", i);
+            }
+            return -1;
+        }
+        encoder->setFragmentBuffer(
+            static_cast<MTL::Buffer*>(entry->buffer),
+            static_cast<NS::UInteger>(entry->offset), entry->index);
+    }
+    return 0;
+}
+
 int mglRenderCppSetRenderBytes(void* render_encoder,
                                const void* bytes,
                                size_t length,
