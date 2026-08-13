@@ -185,3 +185,278 @@ mglRenderCppTextureDescriptorStateFromObjC(MTLTextureDescriptor *descriptor)
     state.swizzle_alpha = (uint32_t)swizzle.alpha;
     return state;
 }
+
+/* === P4.1f: owner-first render-pass state readers ===
+ *
+ * Gate-on render-pass state lives in the C++ RenderPassStateOwner; the ObjC
+ * MTLRenderPassDescriptor mirror is nil under gate-on.  These single gate
+ * check and owner-first readers are the one shared source of truth for
+ * category files (RenderPass/Batch/Draw/DrawSupport/BindingState/QuerySync/
+ * MGLRenderer.m).  They consult the C++ owner first and fall back to the
+ * descriptor mirror for the gate-off A/B baseline. */
+static inline BOOL mglRenderPassUsesMetalCpp(void)
+{
+    return mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
+           mglRenderCppGetDevice() != NULL;
+}
+
+static inline BOOL mglRenderCppGetRenderPassState(
+    void *renderPassStateOwner,
+    MGLRenderCppRenderPassState *stateOut)
+{
+    return renderPassStateOwner && stateOut &&
+           mglRenderCppGetRenderPassStateOwner(
+               renderPassStateOwner, stateOut) == 0;
+}
+
+/* Attachment texture — C++ owner first, ObjC mirror fallback. */
+static inline id<MTLTexture> mglRenderPassAttachmentTextureForState(
+    MTLRenderPassDescriptor *descriptor,
+    void *renderPassStateOwner,
+    uint32_t attachmentKind,
+    NSUInteger colorIndex)
+{
+    MGLRenderCppRenderPassState state = {0};
+    if (mglRenderCppGetRenderPassState(renderPassStateOwner, &state)) {
+        const MGLRenderCppRenderPassAttachmentState *att = NULL;
+        switch (attachmentKind) {
+            case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR:
+                if (colorIndex < MGL_RENDER_CPP_MAX_COLOR_ATTACHMENTS) {
+                    att = &state.color[colorIndex].attachment;
+                }
+                break;
+            case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH:
+                att = &state.depth.attachment;
+                break;
+            case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL:
+                att = &state.stencil.attachment;
+                break;
+            default:
+                break;
+        }
+        if (att && att->texture) {
+            return (__bridge id<MTLTexture>)att->texture;
+        }
+    }
+    if (!descriptor) return nil;
+    switch (attachmentKind) {
+        case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR:
+            if (colorIndex >= MGL_RENDER_CPP_MAX_COLOR_ATTACHMENTS) {
+                return nil;
+            }
+            return descriptor.colorAttachments[colorIndex].texture;
+        case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH:
+            return descriptor.depthAttachment.texture;
+        case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL:
+            return descriptor.stencilAttachment.texture;
+        default:
+            return nil;
+    }
+}
+
+/* Attachment subresource (level/slice/depthPlane) — owner first, mirror
+ * fallback.  Returns NO when neither source has the attachment. */
+static inline BOOL mglRenderPassAttachmentSubresourceForState(
+    MTLRenderPassDescriptor *descriptor,
+    void *renderPassStateOwner,
+    uint32_t attachmentKind,
+    NSUInteger colorIndex,
+    NSUInteger *levelOut,
+    NSUInteger *sliceOut,
+    NSUInteger *depthPlaneOut)
+{
+    MGLRenderCppRenderPassState state = {0};
+    if (mglRenderCppGetRenderPassState(renderPassStateOwner, &state)) {
+        const MGLRenderCppRenderPassAttachmentState *att = NULL;
+        switch (attachmentKind) {
+            case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR:
+                if (colorIndex < MGL_RENDER_CPP_MAX_COLOR_ATTACHMENTS) {
+                    att = &state.color[colorIndex].attachment;
+                }
+                break;
+            case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH:
+                att = &state.depth.attachment;
+                break;
+            case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL:
+                att = &state.stencil.attachment;
+                break;
+            default:
+                break;
+        }
+        if (att) {
+            if (levelOut) *levelOut = (NSUInteger)att->level;
+            if (sliceOut) *sliceOut = (NSUInteger)att->slice;
+            if (depthPlaneOut) *depthPlaneOut = (NSUInteger)att->depth_plane;
+            return YES;
+        }
+    }
+    if (!descriptor) return NO;
+    MTLRenderPassAttachmentDescriptor *att = nil;
+    switch (attachmentKind) {
+        case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR:
+            if (colorIndex >= MGL_RENDER_CPP_MAX_COLOR_ATTACHMENTS) {
+                return NO;
+            }
+            att = descriptor.colorAttachments[colorIndex];
+            break;
+        case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH:
+            att = descriptor.depthAttachment;
+            break;
+        case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL:
+            att = descriptor.stencilAttachment;
+            break;
+        default:
+            return NO;
+    }
+    if (!att) return NO;
+    if (levelOut) *levelOut = att.level;
+    if (sliceOut) *sliceOut = att.slice;
+    if (depthPlaneOut) *depthPlaneOut = att.depthPlane;
+    return YES;
+}
+
+/* Render-target size — owner first, mirror fallback. */
+static inline BOOL mglRenderPassRenderTargetSizeForState(
+    MTLRenderPassDescriptor *descriptor,
+    void *renderPassStateOwner,
+    NSUInteger *widthOut,
+    NSUInteger *heightOut)
+{
+    MGLRenderCppRenderPassState state = {0};
+    if (mglRenderCppGetRenderPassState(renderPassStateOwner, &state)) {
+        if (widthOut) *widthOut = (NSUInteger)state.render_target_width;
+        if (heightOut) *heightOut = (NSUInteger)state.render_target_height;
+        return YES;
+    }
+    if (!descriptor) return NO;
+    if (widthOut) *widthOut = descriptor.renderTargetWidth;
+    if (heightOut) *heightOut = descriptor.renderTargetHeight;
+    return YES;
+}
+
+/* Whether the active render pass uses the given texture as a color
+ * attachment — owner first, mirror fallback. */
+static inline BOOL mglRenderPassUsesColorTextureForState(
+    MTLRenderPassDescriptor *descriptor,
+    void *renderPassStateOwner,
+    id<MTLTexture> texture,
+    NSUInteger *attachmentIndexOut)
+{
+    if (!texture) return NO;
+    MGLRenderCppRenderPassState state = {0};
+    if (mglRenderCppGetRenderPassState(renderPassStateOwner, &state)) {
+        for (NSUInteger i = 0; i < MGL_RENDER_CPP_MAX_COLOR_ATTACHMENTS; i++) {
+            if (state.color[i].attachment.texture == (__bridge void *)texture) {
+                if (attachmentIndexOut) *attachmentIndexOut = i;
+                return YES;
+            }
+        }
+        return NO;
+    }
+    if (!descriptor) return NO;
+    for (NSUInteger i = 0; i < MGL_RENDER_CPP_MAX_COLOR_ATTACHMENTS; i++) {
+        if (descriptor.colorAttachments[i].texture == texture) {
+            if (attachmentIndexOut) *attachmentIndexOut = i;
+            return YES;
+        }
+    }
+    return NO;
+}
+
+/* Load/store action of one attachment — owner first, mirror fallback. */
+static inline BOOL mglRenderPassActionsForState(
+    MTLRenderPassDescriptor *descriptor,
+    void *renderPassStateOwner,
+    uint32_t attachmentKind,
+    NSUInteger colorIndex,
+    uint32_t *loadActionOut,
+    uint32_t *storeActionOut,
+    uint64_t *storeActionOptionsOut)
+{
+    MGLRenderCppRenderPassState state = {0};
+    if (mglRenderCppGetRenderPassState(renderPassStateOwner, &state)) {
+        const MGLRenderCppRenderPassAttachmentState *att = NULL;
+        switch (attachmentKind) {
+            case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR:
+                if (colorIndex < MGL_RENDER_CPP_MAX_COLOR_ATTACHMENTS) {
+                    att = &state.color[colorIndex].attachment;
+                }
+                break;
+            case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH:
+                att = &state.depth.attachment;
+                break;
+            case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL:
+                att = &state.stencil.attachment;
+                break;
+            default:
+                break;
+        }
+        if (att) {
+            if (loadActionOut) *loadActionOut = (uint32_t)att->load_action;
+            if (storeActionOut) *storeActionOut = (uint32_t)att->store_action;
+            if (storeActionOptionsOut) {
+                *storeActionOptionsOut = att->store_action_options;
+            }
+            return YES;
+        }
+    }
+    if (!descriptor) return NO;
+    MTLRenderPassAttachmentDescriptor *att = nil;
+    switch (attachmentKind) {
+        case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR:
+            if (colorIndex >= MGL_RENDER_CPP_MAX_COLOR_ATTACHMENTS) {
+                return NO;
+            }
+            att = descriptor.colorAttachments[colorIndex];
+            break;
+        case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH:
+            att = descriptor.depthAttachment;
+            break;
+        case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL:
+            att = descriptor.stencilAttachment;
+            break;
+        default:
+            return NO;
+    }
+    if (!att) return NO;
+    if (loadActionOut) *loadActionOut = (uint32_t)att.loadAction;
+    if (storeActionOut) *storeActionOut = (uint32_t)att.storeAction;
+    if (storeActionOptionsOut) {
+        *storeActionOptionsOut = att.storeActionOptions;
+    }
+    return YES;
+}
+
+/* Load/store action of one attachment with a caller default — owner first,
+ * mirror fallback, then default.  Used by trace/log call sites. */
+static inline uint32_t mglRenderPassLoadActionForTrace(
+    MTLRenderPassDescriptor *descriptor,
+    void *renderPassStateOwner,
+    uint32_t attachmentKind,
+    NSUInteger colorIndex,
+    MTLLoadAction defaultLoadAction)
+{
+    uint32_t loadAction = 0u;
+    if (mglRenderPassActionsForState(
+            descriptor, renderPassStateOwner, attachmentKind, colorIndex,
+            &loadAction, NULL, NULL)) {
+        return loadAction;
+    }
+    return (uint32_t)defaultLoadAction;
+}
+
+static inline uint32_t mglRenderPassStoreActionForTrace(
+    MTLRenderPassDescriptor *descriptor,
+    void *renderPassStateOwner,
+    uint32_t attachmentKind,
+    NSUInteger colorIndex,
+    MTLStoreAction defaultStoreAction)
+{
+    uint32_t storeAction = 0u;
+    if (mglRenderPassActionsForState(
+            descriptor, renderPassStateOwner, attachmentKind, colorIndex,
+            NULL, &storeAction, NULL)) {
+        return storeAction;
+    }
+    return (uint32_t)defaultStoreAction;
+}

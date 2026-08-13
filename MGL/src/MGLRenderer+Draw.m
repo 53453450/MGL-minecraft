@@ -303,14 +303,21 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         MTLPixelFormat rpColor0Format = MTLPixelFormatInvalid;
         MTLPixelFormat rpDepthFormat = MTLPixelFormatInvalid;
         MTLPixelFormat rpStencilFormat = MTLPixelFormatInvalid;
-        if (_renderPassManager.state->renderPassDescriptor) {
-            id<MTLTexture> rpColor0 = _renderPassManager.state->renderPassDescriptor.colorAttachments[0].texture;
-            id<MTLTexture> rpDepth = _renderPassManager.state->renderPassDescriptor.depthAttachment.texture;
-            id<MTLTexture> rpStencil = _renderPassManager.state->renderPassDescriptor.stencilAttachment.texture;
-            if (rpColor0) rpColor0Format = rpColor0.pixelFormat;
-            if (rpDepth) rpDepthFormat = rpDepth.pixelFormat;
-            if (rpStencil) rpStencilFormat = rpStencil.pixelFormat;
-        }
+        id<MTLTexture> rpColor0 = mglRenderPassAttachmentTextureForState(
+            _renderPassManager.state->renderPassDescriptor,
+            _renderPassManager.state->renderPassStateOwner,
+            MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0);
+        id<MTLTexture> rpDepth = mglRenderPassAttachmentTextureForState(
+            _renderPassManager.state->renderPassDescriptor,
+            _renderPassManager.state->renderPassStateOwner,
+            MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0);
+        id<MTLTexture> rpStencil = mglRenderPassAttachmentTextureForState(
+            _renderPassManager.state->renderPassDescriptor,
+            _renderPassManager.state->renderPassStateOwner,
+            MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0);
+        if (rpColor0) rpColor0Format = rpColor0.pixelFormat;
+        if (rpDepth) rpDepthFormat = rpDepth.pixelFormat;
+        if (rpStencil) rpStencilFormat = rpStencil.pixelFormat;
 
         BOOL colorMismatch = (_pipelineCache.state->pipelineColor0Format != MTLPixelFormatInvalid &&
                               rpColor0Format != MTLPixelFormatInvalid &&

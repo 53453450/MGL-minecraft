@@ -2339,24 +2339,43 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
         return YES;
     }
 
-    NSUInteger passWidth = _renderPassManager.state->renderPassDescriptor ? _renderPassManager.state->renderPassDescriptor.renderTargetWidth : 0;
-    NSUInteger passHeight = _renderPassManager.state->renderPassDescriptor ? _renderPassManager.state->renderPassDescriptor.renderTargetHeight : 0;
-    if ((passWidth == 0 || passHeight == 0) && _renderPassManager.state->renderPassDescriptor) {
+    NSUInteger passWidth = 0;
+    NSUInteger passHeight = 0;
+    mglRenderPassRenderTargetSizeForState(
+        _renderPassManager.state->renderPassDescriptor,
+        _renderPassManager.state->renderPassStateOwner,
+        &passWidth, &passHeight);
+    if (passWidth == 0 || passHeight == 0) {
         for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
-            id<MTLTexture> color = _renderPassManager.state->renderPassDescriptor.colorAttachments[i].texture;
+            id<MTLTexture> color = mglRenderPassAttachmentTextureForState(
+                _renderPassManager.state->renderPassDescriptor,
+                _renderPassManager.state->renderPassStateOwner,
+                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, i);
             if (color) {
                 passWidth = color.width;
                 passHeight = color.height;
                 break;
             }
         }
-        if ((passWidth == 0 || passHeight == 0) && _renderPassManager.state->renderPassDescriptor.depthAttachment.texture) {
-            passWidth = _renderPassManager.state->renderPassDescriptor.depthAttachment.texture.width;
-            passHeight = _renderPassManager.state->renderPassDescriptor.depthAttachment.texture.height;
+        if (passWidth == 0 || passHeight == 0) {
+            id<MTLTexture> depth = mglRenderPassAttachmentTextureForState(
+                _renderPassManager.state->renderPassDescriptor,
+                _renderPassManager.state->renderPassStateOwner,
+                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0);
+            if (depth) {
+                passWidth = depth.width;
+                passHeight = depth.height;
+            }
         }
-        if ((passWidth == 0 || passHeight == 0) && _renderPassManager.state->renderPassDescriptor.stencilAttachment.texture) {
-            passWidth = _renderPassManager.state->renderPassDescriptor.stencilAttachment.texture.width;
-            passHeight = _renderPassManager.state->renderPassDescriptor.stencilAttachment.texture.height;
+        if (passWidth == 0 || passHeight == 0) {
+            id<MTLTexture> stencil = mglRenderPassAttachmentTextureForState(
+                _renderPassManager.state->renderPassDescriptor,
+                _renderPassManager.state->renderPassStateOwner,
+                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0);
+            if (stencil) {
+                passWidth = stencil.width;
+                passHeight = stencil.height;
+            }
         }
     }
 

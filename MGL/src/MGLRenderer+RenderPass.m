@@ -33,11 +33,8 @@ static id<MTLLibrary> mglRenderPassLoadAuxLibrary(id<MTLDevice> device,
     return [device newLibraryWithData:data error:error];
 }
 
-static BOOL mglRenderPassUsesMetalCpp(void)
-{
-    return mglEnvFlagEnabledDefaultOn("MGL_USE_METALCPP") &&
-           mglRenderCppGetDevice() != NULL;
-}
+/* mglRenderPassUsesMetalCpp: P4.1f 统一 gate 定义移入
+ * mgl_render_cpp_objc.h（owner-first reader 需要跨 category 共享）。 */
 
 static MGLRenderCppRenderPassIdentityState mglRenderPassIdentitySnapshot(
     const MGLCommandState *commandState)
@@ -601,15 +598,21 @@ static void mglRenderPassSetPersistentAttachment(
     NSUInteger depthPlane)
 {
 
+    /* Gate-on: the C++ RenderPassStateOwner is the writer of record; the
+     * ObjC descriptor mirror does not exist (P4.1f). */
+    if (mglRenderPassUsesMetalCpp()) {
+        if (commandState->renderPassStateOwner) {
+            mglRenderCppSetRenderPassStateAttachmentTexture(
+                commandState->renderPassStateOwner, attachmentKind,
+                (uint32_t)colorIndex, (__bridge void *)texture,
+                level, slice, depthPlane);
+        }
+        return;
+    }
+
     /* Gate-off A/B baseline: the ObjC descriptor mirror is the writer. */
     if (!commandState->renderPassDescriptor) return;
     MTLRenderPassAttachmentDescriptor *attachment = nil;
-    if (mglRenderPassUsesMetalCpp() && commandState->renderPassStateOwner) {
-        mglRenderCppSetRenderPassStateAttachmentTexture(
-            commandState->renderPassStateOwner, attachmentKind,
-            (uint32_t)colorIndex, (__bridge void *)texture,
-            level, slice, depthPlane);
-    }
     switch (attachmentKind) {
         case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR:
             if (colorIndex >= MAX_COLOR_ATTACHMENTS) return;
@@ -1494,7 +1497,7 @@ output->name, (unsigned)i,
     uint64_t hit = ++s_fboPassMismatchCount;
     if (hit <= 32ull || (hit % 256ull) == 0ull) {
         Framebuffer *fbo = MGL_STATE(ctx)->framebuffer;
-        id<MTLTexture> color0 = _renderPassManager.state->renderPassDescriptor ? mglRenderPassColorTextureFor(_renderPassManager.state, 0) : nil;
+        id<MTLTexture> color0 = mglRenderPassColorTextureFor(_renderPassManager.state, 0);
         GLuint mglDefaultDrawbuffer = fbo ? 0u : mglDefaultDrawBufferIndexForGL(MGL_STATE(ctx)->draw_buffer);
         id<MTLTexture> expectedDefaultColor0 = nil;
         if (!fbo) {
@@ -1889,11 +1892,15 @@ output->name, (unsigned)i,
 - (void) updateCurrentRenderEncoder
 {
     GLMState *state = MGL_STATE(ctx);
+    /* P4.1f: gate-on 下 pass 附件在 C++ owner（descriptor 镜像为 nil）。 */
+    BOOL hasConfiguredRenderPass = mglRenderPassUsesMetalCpp()
+        ? (_renderPassManager.state->renderPassStateOwner != NULL)
+        : (_renderPassManager.state->renderPassDescriptor != nil);
     BOOL passHasDepthAttachment =
-        (_renderPassManager.state->renderPassDescriptor != nil &&
+        (hasConfiguredRenderPass &&
          mglRenderPassDepthTextureFor(_renderPassManager.state) != nil);
     BOOL passHasStencilAttachment =
-        (_renderPassManager.state->renderPassDescriptor != nil &&
+        (hasConfiguredRenderPass &&
          mglRenderPassStencilTextureFor(_renderPassManager.state) != nil);
     BOOL useDepthState = state->caps.depth_test && passHasDepthAttachment;
     BOOL useStencilState = state->caps.stencil_test && passHasStencilAttachment;
@@ -2180,7 +2187,14 @@ output->name, (unsigned)i,
         NSUInteger passHeight = 0;
         id<MTLTexture> passTexture = nil;
 
-        if (_renderPassManager.state->renderPassDescriptor) {
+        /* P4.1f: gate-on 下 pass 尺寸在 C++ owner（descriptor 镜像为 nil），
+         * 用 owner 存在性作为「pass 已配置」信号，否则会回退到 drawable
+         * 尺寸（200x200）做 GL→Metal 视口换算，viewport 落在 128x128
+         * render target 之外 → 所有 draw 静默空转。 */
+        BOOL hasConfiguredRenderPass = mglRenderPassUsesMetalCpp()
+            ? (_renderPassManager.state->renderPassStateOwner != NULL)
+            : (_renderPassManager.state->renderPassDescriptor != nil);
+        if (hasConfiguredRenderPass) {
             passWidth = mglRenderPassRenderTargetWidthFor(_renderPassManager.state);
             passHeight = mglRenderPassRenderTargetHeightFor(_renderPassManager.state);
 
@@ -2400,8 +2414,8 @@ output->name, (unsigned)i,
                 uint64_t hit = ++s_guiRTEncoderStateLogCount;
                 if (hit <= 128ull || (hit % 256ull) == 0ull) {
                     Program *program = mglResolveProgramFromState(ctx);
-                    id<MTLTexture> c0 = _renderPassManager.state->renderPassDescriptor ? mglRenderPassColorTextureFor(_renderPassManager.state, 0) : nil;
-                    id<MTLTexture> d0 = _renderPassManager.state->renderPassDescriptor ? mglRenderPassDepthTextureFor(_renderPassManager.state) : nil;
+                    id<MTLTexture> c0 = mglRenderPassColorTextureFor(_renderPassManager.state, 0);
+                    id<MTLTexture> d0 = mglRenderPassDepthTextureFor(_renderPassManager.state);
                     mglTraceLog("RT_SAMPLE_COPY_ENCODER hit=%llu fbo=%u rpFbo=%u program=%u rtTex=%u label=\"%s\" depthTex=%u depthLabel=\"%s\" "
                           "pass=%lux%lu c0=%p fmt=%lu depth=%p fmt=%lu "
                           "loadStore(c=%s/%s d=%s/%s) clipOrigin=0x%x "
@@ -3385,8 +3399,14 @@ output->name, (unsigned)i,
 
     // create a render encoder from the renderpass descriptor
     // CRITICAL SAFETY: Validate inputs before creating render encoder
-    if (!_renderPassManager.state->renderPassDescriptor) {
-        NSLog(@"MGL ERROR: Cannot create render encoder - render pass descriptor is NULL");
+    // P4.1f: under gate-on the C++ RenderPassStateOwner is the validity
+    // signal (the ObjC descriptor mirror is nil by design).
+    BOOL hasRenderPassState = mglRenderPassUsesMetalCpp()
+        ? (_renderPassManager.state->renderPassStateOwner != NULL)
+        : (_renderPassManager.state->renderPassDescriptor != nil);
+    if (!hasRenderPassState) {
+        NSLog(@"MGL ERROR: Cannot create render encoder - render pass %s is NULL",
+              mglRenderPassUsesMetalCpp() ? "state owner" : "descriptor");
         [self recordGPUError];
         return false;
     }
@@ -3444,14 +3464,16 @@ output->name, (unsigned)i,
         if (attTex && ((attTex.usage & MTLTextureUsageRenderTarget) == 0)) {
             NSLog(@"MGL WARNING: colorAttachment[%d] usage=0x%lx lacks RenderTarget; clearing attachment to avoid Metal assert",
                   i, (unsigned long)attTex.usage);
-            MTLRenderPassColorAttachmentDescriptor *attachment =
-                _renderPassManager.state->renderPassDescriptor
-                    .colorAttachments[i];
+            NSUInteger clearLevel = 0u, clearSlice = 0u, clearDepthPlane = 0u;
+            mglRenderPassAttachmentSubresourceForState(
+                _renderPassManager.state->renderPassDescriptor,
+                _renderPassManager.state->renderPassStateOwner,
+                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, i,
+                &clearLevel, &clearSlice, &clearDepthPlane);
             mglRenderPassSetPersistentAttachment(
                 _renderPassManager.state,
                 MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, i,
-                nil, attachment.level, attachment.slice,
-                attachment.depthPlane);
+                nil, clearLevel, clearSlice, clearDepthPlane);
         }
     }
 
@@ -3461,19 +3483,28 @@ output->name, (unsigned)i,
         for (int i = 1; i < MAX_COLOR_ATTACHMENTS; i++) {
             if (mglRenderPassColorTextureFor(_renderPassManager.state, i)) {
                 NSLog(@"MGL WARNING: colorAttachment[0] missing; remapping colorAttachment[%d] -> [0]", i);
-                MTLRenderPassColorAttachmentDescriptor *sourceAttachment =
-                    _renderPassManager.state->renderPassDescriptor
-                        .colorAttachments[i];
+                NSUInteger srcLevel = 0u, srcSlice = 0u, srcDepthPlane = 0u;
+                mglRenderPassAttachmentSubresourceForState(
+                    _renderPassManager.state->renderPassDescriptor,
+                    _renderPassManager.state->renderPassStateOwner,
+                    MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, i,
+                    &srcLevel, &srcSlice, &srcDepthPlane);
                 mglRenderPassSetPersistentAttachment(
                     _renderPassManager.state,
                     MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0,
-                    sourceAttachment.texture, sourceAttachment.level,
-                    sourceAttachment.slice, sourceAttachment.depthPlane);
+                    mglRenderPassColorTextureFor(_renderPassManager.state, i),
+                    srcLevel, srcSlice, srcDepthPlane);
                 mglRenderPassSetPersistentActions(
                     _renderPassManager.state,
                     MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0,
-                    sourceAttachment.loadAction,
-                    sourceAttachment.storeAction);
+                    (MTLLoadAction)mglRenderPassLoadActionFor(
+                        _renderPassManager.state,
+                        MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, i,
+                        MTLLoadActionLoad),
+                    (MTLStoreAction)mglRenderPassStoreActionFor(
+                        _renderPassManager.state,
+                        MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, i,
+                        MTLStoreActionStore));
                 break;
             }
         }
@@ -3615,8 +3646,8 @@ output->name, (unsigned)i,
 	                                      _renderPassManager.state->renderPassDrawBuffer,
 	                                      _renderPassManager.state->renderPassDrawBufferCount);
 	            if (mglTraceLogIsEnabled()) {
-	                id<MTLTexture> c0 = _renderPassManager.state->renderPassDescriptor ? mglRenderPassColorTextureFor(_renderPassManager.state, 0) : nil;
-	                id<MTLTexture> depth = _renderPassManager.state->renderPassDescriptor ? mglRenderPassDepthTextureFor(_renderPassManager.state) : nil;
+	                id<MTLTexture> c0 = mglRenderPassColorTextureFor(_renderPassManager.state, 0);
+	                id<MTLTexture> depth = mglRenderPassDepthTextureFor(_renderPassManager.state);
 	                mglTraceLog("RENDERPASS_PRE_CREATE hit=%llu call=%llu program=%u fbo=%u drawBuf=0x%x readBuf=0x%x "
 	                            "viewport=%d,%d,%d,%d scissor(test=%d box=%d,%d,%d,%d) "
 	                            "c0=%p fmt=%lu size=%lux%lu la/sa=%s/%s depth=%p fmt=%lu size=%lux%lu la/sa=%s/%s clearDepth=%.6f "
@@ -3745,8 +3776,8 @@ output->name, (unsigned)i,
 	                                      _renderPassManager.state->renderPassDrawBuffer,
 	                                      _renderPassManager.state->renderPassDrawBufferCount);
 	            if (mglTraceLogIsEnabled()) {
-	                id<MTLTexture> c0 = _renderPassManager.state->renderPassDescriptor ? mglRenderPassColorTextureFor(_renderPassManager.state, 0) : nil;
-	                id<MTLTexture> depth = _renderPassManager.state->renderPassDescriptor ? mglRenderPassDepthTextureFor(_renderPassManager.state) : nil;
+	                id<MTLTexture> c0 = mglRenderPassColorTextureFor(_renderPassManager.state, 0);
+	                id<MTLTexture> depth = mglRenderPassDepthTextureFor(_renderPassManager.state);
 	                mglTraceLog("RENDERPASS_CREATED hit=%llu call=%llu program=%u fbo=%u rpFbo=%u drawBuf=0x%x readBuf=0x%x "
 	                            "viewport=%d,%d,%d,%d scissor(test=%d box=%d,%d,%d,%d) "
 	                            "c0=%p fmt=%lu size=%lux%lu la/sa=%s/%s depth=%p fmt=%lu size=%lux%lu la/sa=%s/%s clearDepth=%.6f "
@@ -3865,7 +3896,13 @@ output->name, (unsigned)i,
     }
 
     [_renderPassManager installNewRenderPassDescriptor];
-    if (!_renderPassManager.state->renderPassDescriptor) {
+    if (mglRenderPassUsesMetalCpp()) {
+        /* P4.1f: gate-on 不再创建 ObjC descriptor —— 校验 C++ owner。 */
+        if (!_renderPassManager.state->renderPassStateOwner) {
+            NSLog(@"MGL RENDERPASS ERROR: failed to allocate render pass state owner");
+            return false;
+        }
+    } else if (!_renderPassManager.state->renderPassDescriptor) {
         NSLog(@"MGL RENDERPASS ERROR: failed to allocate render pass descriptor");
         return false;
     }
@@ -4487,7 +4524,7 @@ output->name, (unsigned)i,
         }
     } else {
         MTLPixelFormat preferredColor0 = MTLPixelFormatInvalid;
-        if (_renderPassManager.state->renderPassDescriptor && mglRenderPassColorTextureFor(_renderPassManager.state, 0)) {
+        if (_renderPassManager.state && mglRenderPassColorTextureFor(_renderPassManager.state, 0)) {
             preferredColor0 = mglRenderPassColorTextureFor(_renderPassManager.state, 0).pixelFormat;
         } else if (_drawable && _drawable.texture) {
             preferredColor0 = _drawable.texture.pixelFormat;
@@ -4538,7 +4575,7 @@ output->name, (unsigned)i,
         (pipelineStateDescriptor.colorAttachments[0].pixelFormat == MTLPixelFormatInvalid ||
          pipelineStateDescriptor.colorAttachments[0].pixelFormat == 0)) {
         MTLPixelFormat fallbackColor0 = MTLPixelFormatInvalid;
-        if (_renderPassManager.state->renderPassDescriptor && mglRenderPassColorTextureFor(_renderPassManager.state, 0)) {
+        if (_renderPassManager.state && mglRenderPassColorTextureFor(_renderPassManager.state, 0)) {
             fallbackColor0 = mglRenderPassColorTextureFor(_renderPassManager.state, 0).pixelFormat;
         } else if (_drawable && _drawable.texture) {
             fallbackColor0 = _drawable.texture.pixelFormat;
@@ -4887,7 +4924,7 @@ output->name, (unsigned)i,
         }
     } else {
         MTLPixelFormat preferredColor0 = MTLPixelFormatInvalid;
-        if (_renderPassManager.state->renderPassDescriptor && mglRenderPassColorTextureFor(_renderPassManager.state, 0)) {
+        if (_renderPassManager.state && mglRenderPassColorTextureFor(_renderPassManager.state, 0)) {
             preferredColor0 = mglRenderPassColorTextureFor(_renderPassManager.state, 0).pixelFormat;
         } else if (_drawable && _drawable.texture) {
             preferredColor0 = _drawable.texture.pixelFormat;
@@ -4914,7 +4951,14 @@ output->name, (unsigned)i,
         }
     }
 
-    if (_renderPassManager.state->renderPassDescriptor) {
+    /* P4.1f: gate-on 下 pass 状态在 C++ owner，descriptor 镜像为 nil ——
+     * 用 owner 存在性作为「pass 已配置」的信号，否则 pipeline 会用
+     * FBO/context 推导的格式构建，与真实 pass（如 sRGB 变体、transient
+     * depth）不匹配，Metal 会静默丢弃所有 draw。 */
+    BOOL hasConfiguredRenderPass = mglRenderPassUsesMetalCpp()
+        ? (_renderPassManager.state->renderPassStateOwner != NULL)
+        : (_renderPassManager.state->renderPassDescriptor != nil);
+    if (hasConfiguredRenderPass) {
         for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
             id<MTLTexture> rpColor = mglRenderPassColorTextureFor(_renderPassManager.state, i);
             if (rpColor) {
@@ -4938,7 +4982,7 @@ output->name, (unsigned)i,
         (state->color_format[0] == (uint32_t)MTLPixelFormatInvalid ||
          state->color_format[0] == 0u)) {
         MTLPixelFormat fallbackColor0 = MTLPixelFormatInvalid;
-        if (_renderPassManager.state->renderPassDescriptor && mglRenderPassColorTextureFor(_renderPassManager.state, 0)) {
+        if (_renderPassManager.state && mglRenderPassColorTextureFor(_renderPassManager.state, 0)) {
             fallbackColor0 = mglRenderPassColorTextureFor(_renderPassManager.state, 0).pixelFormat;
         } else if (_drawable && _drawable.texture) {
             fallbackColor0 = _drawable.texture.pixelFormat;
@@ -5260,7 +5304,15 @@ output->name, (unsigned)i,
 
 - (BOOL)currentRenderPassUsesTexture:(id<MTLTexture>)texture
 {
-    if (!texture || !_renderPassManager.state->currentRenderEncoder || !_renderPassManager.state->renderPassDescriptor) {
+    if (!texture || !_renderPassManager.state->currentRenderEncoder) {
+        return NO;
+    }
+    /* P4.1f: gate-on validity comes from the C++ owner. */
+    if (mglRenderPassUsesMetalCpp()) {
+        if (!_renderPassManager.state->renderPassStateOwner) {
+            return NO;
+        }
+    } else if (!_renderPassManager.state->renderPassDescriptor) {
         return NO;
     }
 
@@ -6023,8 +6075,13 @@ output->name, (unsigned)i,
 {
     // Guard against invalid render pass state before binding pipeline.
     // Metal debug validation can abort the process if the encoder/render pass is incompatible.
-    if (!_renderPassManager.state->renderPassDescriptor) {
-        NSLog(@"MGL ERROR: processGLState - renderPassDescriptor is nil before pipeline bind");
+    // P4.1f: under gate-on the C++ RenderPassStateOwner is the validity signal.
+    BOOL hasRenderPassState = mglRenderPassUsesMetalCpp()
+        ? (_renderPassManager.state->renderPassStateOwner != NULL)
+        : (_renderPassManager.state->renderPassDescriptor != nil);
+    if (!hasRenderPassState) {
+        NSLog(@"MGL ERROR: processGLState - render pass %s is nil before pipeline bind",
+              mglRenderPassUsesMetalCpp() ? "state owner" : "descriptor");
         if (traceProcess) {
             mglLogStateSnapshot("processGLState.fail.nil_rpd",
                                 ctx,
@@ -6825,7 +6882,7 @@ stencil_format_ok:;
             safeState.color_count = MAX_COLOR_ATTACHMENTS;
             safeState.rasterization_enabled = 1;   /* safeDescriptor 未设置，默认 YES */
             MTLPixelFormat safeColor0Format = (MTLPixelFormat)finalState.color_format[0];
-            if (_renderPassManager.state->renderPassDescriptor && mglRenderPassColorTextureFor(_renderPassManager.state, 0)) {
+            if (_renderPassManager.state && mglRenderPassColorTextureFor(_renderPassManager.state, 0)) {
                 safeColor0Format = mglRenderPassColorTextureFor(_renderPassManager.state, 0).pixelFormat;
             } else if (_drawable && _drawable.texture) {
                 safeColor0Format = _drawable.texture.pixelFormat;
@@ -7280,7 +7337,7 @@ stencil_format_ok:;
         @try {
             MTLRenderPipelineDescriptor *safeDescriptor = [[MTLRenderPipelineDescriptor alloc] init];
             MTLPixelFormat safeColor0Format = pipelineStateDescriptor.colorAttachments[0].pixelFormat;
-            if (_renderPassManager.state->renderPassDescriptor && mglRenderPassColorTextureFor(_renderPassManager.state, 0)) {
+            if (_renderPassManager.state && mglRenderPassColorTextureFor(_renderPassManager.state, 0)) {
                 safeColor0Format = mglRenderPassColorTextureFor(_renderPassManager.state, 0).pixelFormat;
             } else if (_drawable && _drawable.texture) {
                 safeColor0Format = _drawable.texture.pixelFormat;

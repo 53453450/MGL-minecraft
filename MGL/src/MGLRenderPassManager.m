@@ -471,39 +471,53 @@ static void mglRenderPassManagerStoreIdentity(
     [self clearFboMatchCache];
     mglRenderCppDestroyRenderPassStateOwner(
         &_state.renderPassStateOwner);
-    MTLRenderPassDescriptor *descriptor =
-        [MTLRenderPassDescriptor renderPassDescriptor];
-    _state.renderPassDescriptor = descriptor;
-    if (mglRenderPassManagerUsesMetalCpp() && descriptor) {
+    if (mglRenderPassManagerUsesMetalCpp()) {
+        /* P4.1f: gate-on 下 C++ render pass state owner 是唯一权威 —— 不再
+         * 创建 ObjC MTLRenderPassDescriptor（encoder 从 state owner 创建）。
+         * renderPassDescriptor 保持 nil；owner-first 读取 helper 在 owner
+         * 可用时不触达镜像。 */
         if (mglRenderCppCreateDefaultRenderPassStateOwner(
                 &_state.renderPassStateOwner) != 0) {
             _state.renderPassStateOwner = NULL;
         }
+        _state.renderPassDescriptor = nil;
+        return;
     }
+    MTLRenderPassDescriptor *descriptor =
+        [MTLRenderPassDescriptor renderPassDescriptor];
+    _state.renderPassDescriptor = descriptor;
 }
 
 - (void)setFboMatchCacheResult:(BOOL)result
                        fboName:(GLuint)fboName
                      generation:(uint64_t)generation
 {
+    /* P4.1f: gate-on 下 C++ identity owner 是 FBO-match 缓存的唯一权威，
+     * 镜像不再写（gate-off 的 A/B 基线仍用镜像）。 */
+    if (mglRenderPassManagerUsesMetalCpp()) {
+        if (_state.renderPassIdentityOwner && fboName != 0u) {
+            MGLRenderCppFboMatchCacheState cache = {
+                .fbo_name = fboName,
+                .generation = generation,
+                .result = result,
+            };
+            mglRenderCppSetFboMatchCache(
+                _state.renderPassIdentityOwner, &cache);
+        }
+        return;
+    }
     _state.lastFboMatchFboName = fboName;
     _state.lastFboMatchFboGeneration = generation;
     _state.lastFboMatchResult = result;
-    if (_state.renderPassIdentityOwner && fboName != 0u) {
-        MGLRenderCppFboMatchCacheState cache = {
-            .fbo_name = fboName,
-            .generation = generation,
-            .result = result,
-        };
-        mglRenderCppSetFboMatchCache(
-            _state.renderPassIdentityOwner, &cache);
-    }
 }
 
 - (void)clearFboMatchCache
 {
+    if (mglRenderPassManagerUsesMetalCpp()) {
+        mglRenderCppClearFboMatchCache(_state.renderPassIdentityOwner);
+        return;
+    }
     _state.lastFboMatchFboName = 0u;
-    mglRenderCppClearFboMatchCache(_state.renderPassIdentityOwner);
 }
 
 - (void)setTraceReplayFlushId:(uint64_t)flushId batchIndex:(uint32_t)batchIndex

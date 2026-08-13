@@ -7,6 +7,7 @@
 #import "mgl_frame_activity.h"
 #include "mgl_env_flag.h"
 #include "mgl_render_cpp.h"
+#include "mgl_render_cpp_objc.h"   /* P4.1f: owner-first render-pass readers */
 
 static BOOL mglBindingStateUsesMetalCpp(void)
 {
@@ -2644,8 +2645,14 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                 : NULL;
                             Texture *atlasUnit2D = textureUnit < TEXTURE_UNITS ? MGL_STATE(ctx)->texture_units[textureUnit].textures[_TEXTURE_2D] : NULL;
                             Texture *atlasUnitCube = textureUnit < TEXTURE_UNITS ? MGL_STATE(ctx)->texture_units[textureUnit].textures[_TEXTURE_CUBE_MAP] : NULL;
-	                        id<MTLTexture> rpColor0 = _renderPassManager.state->renderPassDescriptor ? _renderPassManager.state->renderPassDescriptor.colorAttachments[0].texture : nil;
-	                        id<MTLTexture> rpDepth = _renderPassManager.state->renderPassDescriptor ? _renderPassManager.state->renderPassDescriptor.depthAttachment.texture : nil;
+	                        id<MTLTexture> rpColor0 = mglRenderPassAttachmentTextureForState(
+                                _renderPassManager.state->renderPassDescriptor,
+                                _renderPassManager.state->renderPassStateOwner,
+                                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0);
+	                        id<MTLTexture> rpDepth = mglRenderPassAttachmentTextureForState(
+                                _renderPassManager.state->renderPassDescriptor,
+                                _renderPassManager.state->renderPassStateOwner,
+                                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0);
                         mglTraceLog("RT_SAMPLE_COPY_SAMPLE hit=%llu bindCall=%llu program=%u stateProgram=%u current=%u pipeline=%u vs=%u fs=%u pipelineProgram=%u name=%s binding=%u unit=%u "
                                     "rtTex=%u label=\"%s\" fallback=%d useCopy=%d ptr=%p mtl=%p direct=%p copy=%p fmt=%lu type=%lu size=%lux%lu "
                                     "unit(active=%u expected=%u tex2D=%u cube=%u) "
@@ -2918,9 +2925,11 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 : nil;
             if (!pairedColorIsCurrentDrawTarget && pairedMTL) {
                 pairedColorIsCurrentDrawTarget =
-                    mglRenderPassUsesColorTexture(_renderPassManager.state->renderPassDescriptor,
-                                                  pairedMTL,
-                                                  &currentAttachmentIndex);
+                    mglRenderPassUsesColorTextureForState(
+                        _renderPassManager.state->renderPassDescriptor,
+                        _renderPassManager.state->renderPassStateOwner,
+                        pairedMTL,
+                        &currentAttachmentIndex);
             }
         }
 
@@ -3017,9 +3026,11 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                                               candidate,
                                                               0u,
                                                               &candidateAttachmentIndex) ||
-                    mglRenderPassUsesColorTexture(_renderPassManager.state->renderPassDescriptor,
-                                                  candidateMTL,
-                                                  &candidateAttachmentIndex);
+                    mglRenderPassUsesColorTextureForState(
+                        _renderPassManager.state->renderPassDescriptor,
+                        _renderPassManager.state->renderPassStateOwner,
+                        candidateMTL,
+                        &candidateAttachmentIndex);
 
                 if (!candidateIsCurrentDrawTarget &&
                     (!candidate->mtl_data || candidate->dirty_bits)) {
@@ -3034,9 +3045,11 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                                                   candidate,
                                                                   0u,
                                                                   &candidateAttachmentIndex) ||
-                        mglRenderPassUsesColorTexture(_renderPassManager.state->renderPassDescriptor,
-                                                      candidateMTL,
-                                                      &candidateAttachmentIndex);
+                        mglRenderPassUsesColorTextureForState(
+                            _renderPassManager.state->renderPassDescriptor,
+                            _renderPassManager.state->renderPassStateOwner,
+                            candidateMTL,
+                            &candidateAttachmentIndex);
                 }
 
                 id<MTLTexture> candidateCopy = nil;
@@ -3144,8 +3157,10 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 : nil;
             NSUInteger drawAttachmentIndex = MAX_COLOR_ATTACHMENTS;
             BOOL pairedColorIsCurrentDrawTarget =
-                mglRenderPassUsesColorTexture(_renderPassManager.state->renderPassDescriptor,
-                                              pairedMTL,
+                mglRenderPassUsesColorTextureForState(
+                    _renderPassManager.state->renderPassDescriptor,
+                    _renderPassManager.state->renderPassStateOwner,
+                    pairedMTL,
                                               &drawAttachmentIndex);
             if (pairedMTL &&
                 !pairedColorIsCurrentDrawTarget &&

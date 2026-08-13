@@ -66,8 +66,21 @@ static void *mglQueryVisibilityBuffer(void *queryStateOwner)
     METAL_LOCK();
     @try {
         id<MTLRenderCommandEncoder> encoder = _renderPassManager.state->currentRenderEncoder;
-        MTLRenderPassDescriptor *rpDesc = _renderPassManager.state->renderPassDescriptor;
-        if (encoder && rpDesc && rpDesc.visibilityResultBuffer) {
+        /* P4.1f: under gate-on the visibility buffer lives in the C++
+         * RenderPassStateOwner; the ObjC descriptor mirror is nil. */
+        BOOL hasVisibilityBuffer = NO;
+        MGLRenderCppRenderPassState cppPassState = {0};
+        if (mglRenderCppGetRenderPassState(
+                _renderPassManager.state->renderPassStateOwner,
+                &cppPassState)) {
+            hasVisibilityBuffer =
+                cppPassState.visibility_result_buffer != NULL;
+        } else if (_renderPassManager.state->renderPassDescriptor) {
+            hasVisibilityBuffer =
+                _renderPassManager.state->renderPassDescriptor
+                    .visibilityResultBuffer != nil;
+        }
+        if (encoder && hasVisibilityBuffer) {
             uint32_t mode = 0;
             uint64_t offset = 0;
             if (mglRenderCppAcquireSampleQuerySlot(

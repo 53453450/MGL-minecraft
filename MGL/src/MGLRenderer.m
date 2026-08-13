@@ -3596,7 +3596,10 @@ void logDirtyBits(GLMContext ctx)
             }
         }
 
-        id<MTLTexture> rpColor0 = _renderPassManager.state->renderPassDescriptor ? _renderPassManager.state->renderPassDescriptor.colorAttachments[0].texture : nil;
+        id<MTLTexture> rpColor0 = mglRenderPassAttachmentTextureForState(
+            _renderPassManager.state->renderPassDescriptor,
+            _renderPassManager.state->renderPassStateOwner,
+            MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0);
         id<MTLTexture> drawableTexture = _drawable ? _drawable.texture : nil;
         [self copyRenderPassColorToDrawableIfNeeded:rpColor0 drawableTexture:drawableTexture swapCall:swapCall traceSwap:traceSwap];
 
@@ -4041,19 +4044,39 @@ void logDirtyBits(GLMContext ctx)
     if (_renderPassManager.state->currentRenderEncoder &&
         [self currentRenderPassMatchesCurrentFramebuffer] &&
         !sampleQueryActive) {
-        MTLRenderPassDescriptor *rpDesc = _renderPassManager.state->renderPassDescriptor;
-        if (rpDesc) {
+        if (_renderPassManager.state->renderPassStateOwner ||
+            _renderPassManager.state->renderPassDescriptor) {
             BOOL colorMatches = !wantsColor;
             if (wantsColor) {
-                colorMatches = (rpDesc.colorAttachments[0].texture == colorTexture &&
-                                rpDesc.colorAttachments[0].level == colorSubresource.level &&
-                                rpDesc.colorAttachments[0].slice == colorSubresource.slice);
+                id<MTLTexture> rpColor0 = mglRenderPassAttachmentTextureForState(
+                    _renderPassManager.state->renderPassDescriptor,
+                    _renderPassManager.state->renderPassStateOwner,
+                    MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0);
+                NSUInteger rpLevel = 0u, rpSlice = 0u, rpDepthPlane = 0u;
+                mglRenderPassAttachmentSubresourceForState(
+                    _renderPassManager.state->renderPassDescriptor,
+                    _renderPassManager.state->renderPassStateOwner,
+                    MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0,
+                    &rpLevel, &rpSlice, &rpDepthPlane);
+                colorMatches = (rpColor0 == colorTexture &&
+                                rpLevel == colorSubresource.level &&
+                                rpSlice == colorSubresource.slice);
             }
             BOOL depthMatches = !wantsDepth;
             if (wantsDepth) {
-                depthMatches = (rpDesc.depthAttachment.texture == depthTexture &&
-                                rpDesc.depthAttachment.level == depthSubresource.level &&
-                                rpDesc.depthAttachment.slice == depthSubresource.slice);
+                id<MTLTexture> rpDepth = mglRenderPassAttachmentTextureForState(
+                    _renderPassManager.state->renderPassDescriptor,
+                    _renderPassManager.state->renderPassStateOwner,
+                    MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0);
+                NSUInteger rpLevel = 0u, rpSlice = 0u, rpDepthPlane = 0u;
+                mglRenderPassAttachmentSubresourceForState(
+                    _renderPassManager.state->renderPassDescriptor,
+                    _renderPassManager.state->renderPassStateOwner,
+                    MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0,
+                    &rpLevel, &rpSlice, &rpDepthPlane);
+                depthMatches = (rpDepth == depthTexture &&
+                                rpLevel == depthSubresource.level &&
+                                rpSlice == depthSubresource.slice);
             }
             canReuseCurrentEncoder = colorMatches && depthMatches;
         }
