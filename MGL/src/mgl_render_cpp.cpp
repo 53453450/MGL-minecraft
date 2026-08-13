@@ -5219,6 +5219,86 @@ int mglRenderCppDispatchComputeThreads(void* compute_encoder,
     return 0;
 }
 
+/* P4.3e: GS/TES compute dispatch 编排。与逐条 SetCompute* / DispatchCompute /
+ * EndComputeEncoder 完全等价（同一 encoder、同一顺序），一次 C ABI 调用完成
+ * begin（建 encoder + pipeline + 槽位绑定）或 end（dispatch + endEncoding）。 */
+int mglRenderCppBeginComputeDispatch(
+    void* command_buffer,
+    const MGLRenderCppComputeDispatchSetup* setup,
+    void** compute_encoder_out,
+    char* err,
+    size_t errcap) {
+    if (err && errcap) err[0] = '\0';
+    if (compute_encoder_out) *compute_encoder_out = nullptr;
+    if (!command_buffer || !setup || !compute_encoder_out) {
+        if (err && errcap) snprintf(err, errcap, "bad args");
+        return -1;
+    }
+    if (setup->buffer_count > MGL_RENDER_CPP_COMPUTE_DISPATCH_MAX_BUFFERS ||
+        setup->bytes_count > MGL_RENDER_CPP_COMPUTE_DISPATCH_MAX_BYTES) {
+        if (err && errcap) snprintf(err, errcap, "setup count overflow");
+        return -1;
+    }
+    MTL::CommandBuffer* command =
+        static_cast<MTL::CommandBuffer*>(command_buffer);
+    MTL::ComputeCommandEncoder* encoder = command->computeCommandEncoder();
+    if (!encoder) {
+        if (err && errcap) snprintf(err, errcap, "compute encoder failed");
+        return -1;
+    }
+    if (setup->pipeline) {
+        encoder->setComputePipelineState(
+            static_cast<MTL::ComputePipelineState*>(setup->pipeline));
+    }
+    for (uint32_t i = 0; i < setup->buffer_count; i++) {
+        const MGLRenderCppComputeBufferEntry* entry = &setup->buffers[i];
+        if (!entry->buffer) {
+            encoder->endEncoding();
+            if (err && errcap) {
+                snprintf(err, errcap, "null compute buffer entry %u", i);
+            }
+            return -1;
+        }
+        encoder->setBuffer(
+            static_cast<MTL::Buffer*>(entry->buffer),
+            static_cast<NS::UInteger>(entry->offset), entry->index);
+    }
+    for (uint32_t i = 0; i < setup->bytes_count; i++) {
+        const MGLRenderCppComputeBytesEntry* entry = &setup->bytes[i];
+        if (!entry->bytes || entry->length == 0) {
+            encoder->endEncoding();
+            if (err && errcap) {
+                snprintf(err, errcap, "null compute bytes entry %u", i);
+            }
+            return -1;
+        }
+        encoder->setBytes(entry->bytes, entry->length, entry->index);
+    }
+    *compute_encoder_out = encoder;
+    return 0;
+}
+
+int mglRenderCppEndComputeDispatch(void* compute_encoder,
+                                   const uint32_t groups[3],
+                                   const uint32_t threads[3],
+                                   char* err,
+                                   size_t errcap) {
+    if (err && errcap) err[0] = '\0';
+    MTL::ComputeCommandEncoder* encoder =
+        static_cast<MTL::ComputeCommandEncoder*>(compute_encoder);
+    if (!encoder || !groups || !threads) {
+        if (err && errcap) snprintf(err, errcap, "bad args");
+        return -1;
+    }
+    MTL::Size groupsSize =
+        MTL::Size(groups[0], groups[1], groups[2]);
+    MTL::Size threadsSize =
+        MTL::Size(threads[0], threads[1], threads[2]);
+    encoder->dispatchThreadgroups(groupsSize, threadsSize);
+    encoder->endEncoding();
+    return 0;
+}
+
 int mglRenderCppCreateComputeEncoder(void* command_buffer,
                                      void** compute_encoder_out) {
     if (compute_encoder_out) *compute_encoder_out = nullptr;

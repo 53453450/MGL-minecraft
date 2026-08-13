@@ -1594,38 +1594,83 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
                          GL_OUT_OF_MEMORY);
         return YES;
     }
-    id<MTLComputeCommandEncoder> compute =
-        mglDrawSupportCreateComputeEncoder(
-            _renderPassManager.state->currentCommandBuffer);
+    id<MTLComputeCommandEncoder> compute = nil;
+    const BOOL cppDispatch = mglDrawSupportUsesMetalCpp();
+    if (cppDispatch) {
+        /* P4.3e: GS compute dispatch 编排的固定序列（encoder + pipeline +
+         * ABI 槽位 buffer/bytes）一次交给 C++；GL 资源绑定在 begin/end 之间
+         * 由本方法完成（只经 C++ facade）。 */
+        MGLRenderCppComputeDispatchSetup setup = {
+            .pipeline = (__bridge void *)pipeline,
+            .bytes_count = 1u,
+            .bytes = { { &gparams, (uint32_t)sizeof(gparams),
+                         MGL_AIR_GS_SLOT_GATHER_PARAMS } },
+        };
+        uint32_t setupBuffers = 0u;
+        setup.buffers[setupBuffers++] =
+            (MGLRenderCppComputeBufferEntry){
+                (__bridge void *)input, (uint64_t)inputOffset,
+                MGL_AIR_GS_SLOT_INPUT };
+        setup.buffers[setupBuffers++] =
+            (MGLRenderCppComputeBufferEntry){
+                (__bridge void *)output, 0u, MGL_AIR_GS_SLOT_OUTPUT };
+        setup.buffers[setupBuffers++] =
+            (MGLRenderCppComputeBufferEntry){
+                (__bridge void *)counts, 0u, MGL_AIR_GS_SLOT_COUNTS };
+        setup.buffers[setupBuffers++] =
+            (MGLRenderCppComputeBufferEntry){
+                (__bridge void *)(indexedDraw ? gatherBuf : counts), 0u,
+                MGL_AIR_GS_SLOT_GATHER };
+        if (xfbCaptureBuffer) {
+            setup.buffers[setupBuffers++] =
+                (MGLRenderCppComputeBufferEntry){
+                    (__bridge void *)xfbCaptureBuffer,
+                    (uint64_t)xfbDestinationOffset, MGL_AIR_GS_SLOT_XFB };
+        }
+        setup.buffers[setupBuffers++] =
+            (MGLRenderCppComputeBufferEntry){
+                (__bridge void *)xfbMetaBuf, 0u, MGL_AIR_GS_SLOT_XFB_META };
+        setup.buffer_count = setupBuffers;
+        void *computeHandle = NULL;
+        if (mglRenderCppBeginComputeDispatch(
+                (__bridge void *)_renderPassManager.state->currentCommandBuffer,
+                &setup, &computeHandle, NULL, 0) == 0 && computeHandle) {
+            compute = (__bridge id<MTLComputeCommandEncoder>)computeHandle;
+        }
+    }
     if (!compute) {
-        drawCtx->state.dirty_bits = DIRTY_ALL;
-        return YES;
+        compute = mglDrawSupportCreateComputeEncoder(
+            _renderPassManager.state->currentCommandBuffer);
+        if (!compute) {
+            drawCtx->state.dirty_bits = DIRTY_ALL;
+            return YES;
+        }
+        mglDrawSupportSetComputePipeline(compute, pipeline);
+        mglDrawSupportSetComputeBuffer(compute, input, inputOffset,
+                                       MGL_AIR_GS_SLOT_INPUT);
+        mglDrawSupportSetComputeBuffer(compute, output, 0u,
+                                       MGL_AIR_GS_SLOT_OUTPUT);
+        mglDrawSupportSetComputeBuffer(compute, counts, 0u,
+                                       MGL_AIR_GS_SLOT_COUNTS);
+        /* Gather ABI (mgl_air_gs_abi.h §7): the kernel always receives a
+         * gather slot + params; array draws bind gather_enabled=0 and a dummy
+         * gather buffer (counts works — the kernel never reads it). */
+        mglDrawSupportSetComputeBuffer(compute,
+                                       indexedDraw ? gatherBuf : counts, 0u,
+                                       MGL_AIR_GS_SLOT_GATHER);
+        mglDrawSupportSetComputeBytes(compute, &gparams, sizeof(gparams),
+                                      MGL_AIR_GS_SLOT_GATHER_PARAMS);
+        /* XFB slots (mgl_air_gs_abi.h §5): the meta record is always bound
+         * (stride 0 disables capture in the kernel); the stream is bound only
+         * when capture is active. */
+        if (xfbCaptureBuffer) {
+            mglDrawSupportSetComputeBuffer(compute, xfbCaptureBuffer,
+                                           xfbDestinationOffset,
+                                           MGL_AIR_GS_SLOT_XFB);
+        }
+        mglDrawSupportSetComputeBuffer(compute, xfbMetaBuf, 0u,
+                                       MGL_AIR_GS_SLOT_XFB_META);
     }
-    mglDrawSupportSetComputePipeline(compute, pipeline);
-    mglDrawSupportSetComputeBuffer(compute, input, inputOffset,
-                                   MGL_AIR_GS_SLOT_INPUT);
-    mglDrawSupportSetComputeBuffer(compute, output, 0u,
-                                   MGL_AIR_GS_SLOT_OUTPUT);
-    mglDrawSupportSetComputeBuffer(compute, counts, 0u,
-                                   MGL_AIR_GS_SLOT_COUNTS);
-    /* Gather ABI (mgl_air_gs_abi.h §7): the kernel always receives a
-     * gather slot + params; array draws bind gather_enabled=0 and a dummy
-     * gather buffer (counts works — the kernel never reads it). */
-    mglDrawSupportSetComputeBuffer(compute,
-                                   indexedDraw ? gatherBuf : counts, 0u,
-                                   MGL_AIR_GS_SLOT_GATHER);
-    mglDrawSupportSetComputeBytes(compute, &gparams, sizeof(gparams),
-                                  MGL_AIR_GS_SLOT_GATHER_PARAMS);
-    /* XFB slots (mgl_air_gs_abi.h §5): the meta record is always bound
-     * (stride 0 disables capture in the kernel); the stream is bound only
-     * when capture is active. */
-    if (xfbCaptureBuffer) {
-        mglDrawSupportSetComputeBuffer(compute, xfbCaptureBuffer,
-                                       xfbDestinationOffset,
-                                       MGL_AIR_GS_SLOT_XFB);
-    }
-    mglDrawSupportSetComputeBuffer(compute, xfbMetaBuf, 0u,
-                                   MGL_AIR_GS_SLOT_XFB_META);
     bool buffersOK = [self bindBuffersToComputeEncoder:compute
                                                    stage:_GEOMETRY_SHADER
                                                copyBacks:&stageCopyBacks];
@@ -1637,10 +1682,19 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
         drawCtx->state.dirty_bits = DIRTY_ALL;
         return YES;
     }
-    mglDrawSupportDispatchCompute(
-        compute, MTLSizeMake(workItemCount, 1u, 1u),
-        MTLSizeMake(1u, 1u, 1u));
-    mglDrawSupportEndComputeEncoder(compute);
+    if (cppDispatch) {
+        const uint32_t groups[3] = { (uint32_t)workItemCount, 1u, 1u };
+        const uint32_t threads[3] = { 1u, 1u, 1u };
+        if (mglRenderCppEndComputeDispatch(
+                (__bridge void *)compute, groups, threads, NULL, 0) != 0) {
+            mglDrawSupportEndComputeEncoder(compute);
+        }
+    } else {
+        mglDrawSupportDispatchCompute(
+            compute, MTLSizeMake(workItemCount, 1u, 1u),
+            MTLSizeMake(1u, 1u, 1u));
+        mglDrawSupportEndComputeEncoder(compute);
+    }
     if (![self flushStageBindingCopyBacks:&stageCopyBacks
                      requireCPUVisibility:xfbActive ? YES : NO]) {
         drawCtx->state.dirty_bits = DIRTY_ALL;

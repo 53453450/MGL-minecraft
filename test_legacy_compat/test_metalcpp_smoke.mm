@@ -2541,6 +2541,74 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
         printf("REPLAY_BATCH_OK\n");
     }
 
+    /* P4.3e: compute dispatch setup (begin/end).  Uses a private command
+     * buffer so the still-active render encoder above is not disturbed. */
+    {
+        const MGLAuxShaderAsset *cs = mglAuxShaderAssetFind("scaled_blit_cs");
+        void *csPipeline = NULL;
+        char csMessage[512] = {0};
+        if (!cs ||
+            mglRenderCppGetOrCreateAuxComputePipelineFromMetallib(
+                cs->data, cs->size, cs->hash, "mgl_scaled_blit_cs",
+                MGL_RENDER_CPP_AUX_COMPUTE_SCALED_BLIT, 1u,
+                &csPipeline, csMessage, sizeof(csMessage)) != 0 ||
+            !csPipeline) {
+            fprintf(stderr, "FAIL: compute dispatch PSO: %s\n",
+                    csMessage[0] ? csMessage : "?");
+            mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
+            mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
+            return 1;
+        }
+        id<MTLCommandQueue> cdQueue = [device newCommandQueue];
+        id<MTLCommandBuffer> cdCommandBuffer = [cdQueue commandBuffer];
+        id<MTLBuffer> computeScratch =
+            [device newBufferWithLength:256
+                                options:MTLResourceStorageModeShared];
+        if (!cdQueue || !cdCommandBuffer || !computeScratch) {
+            fprintf(stderr, "FAIL: compute dispatch resources\n");
+            CFRelease(csPipeline);
+            mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
+            mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
+            return 1;
+        }
+        MGLRenderCppComputeDispatchSetup setup = {
+            .pipeline = csPipeline,
+            .buffer_count = 1,
+            .buffers = { { (__bridge void *)computeScratch, 0, 0 } },
+            .bytes_count = 1,
+            .bytes = { { (const void *)"ABCD", 4, 1 } },
+        };
+        void *computeEncoder = NULL;
+        char cdError[128] = {0};
+        const uint32_t groups[3] = { 1, 1, 1 };
+        const uint32_t threads[3] = { 1, 1, 1 };
+        if (mglRenderCppBeginComputeDispatch(
+                (__bridge void *)cdCommandBuffer, &setup, &computeEncoder,
+                cdError, sizeof(cdError)) != 0 || !computeEncoder ||
+            mglRenderCppEndComputeDispatch(
+                computeEncoder, groups, threads, cdError, sizeof(cdError)) != 0 ||
+            mglRenderCppBeginComputeDispatch(
+                NULL, &setup, &computeEncoder, NULL, 0) != -1 ||
+            mglRenderCppEndComputeDispatch(
+                NULL, groups, threads, NULL, 0) != -1) {
+            fprintf(stderr, "FAIL: compute dispatch begin/end\n");
+            CFRelease(csPipeline);
+            mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
+            mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
+            return 1;
+        }
+        CFRelease(csPipeline);
+        [cdCommandBuffer commit];
+        [cdCommandBuffer waitUntilCompleted];
+        if (cdCommandBuffer.status == MTLCommandBufferStatusError) {
+            fprintf(stderr, "FAIL: compute dispatch command buffer\n");
+            mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
+            mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
+            return 1;
+        }
+        printf("COMPUTE_DISPATCH_OK\n");
+    }
+
     if (mglRenderCppEndRenderEncoderOwner(adoptedStateEncoderOwner) != 0) {
         fprintf(stderr, "FAIL: render-pass state owner encoder end\n");
         mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);

@@ -767,6 +767,52 @@ int mglRenderCppDispatchComputeIndirect(void *compute_encoder,
                                         uint32_t threads_x,
                                         uint32_t threads_y,
                                         uint32_t threads_z);
+
+/* P4.3e: GS/TES compute dispatch 编排的固定序列（建 encoder → pipeline →
+ * ABI 槽位 buffer/bytes）一次交给 C++；GL 资源绑定（stage buffers/textures）
+ * 在 begin/end 之间由 ObjC 完成（只经 C++ facade）。与逐条
+ * mglRenderCppSetCompute* / DispatchCompute / EndComputeEncoder 完全等价。 */
+#define MGL_RENDER_CPP_COMPUTE_DISPATCH_MAX_BUFFERS 16u
+#define MGL_RENDER_CPP_COMPUTE_DISPATCH_MAX_BYTES 4u
+
+typedef struct MGLRenderCppComputeBufferEntry_t {
+    void *buffer;   /* +0 borrowed MTL::Buffer* */
+    uint64_t offset;
+    uint32_t index;
+} MGLRenderCppComputeBufferEntry;
+
+typedef struct MGLRenderCppComputeBytesEntry_t {
+    const void *bytes;
+    uint32_t length;
+    uint32_t index;
+} MGLRenderCppComputeBytesEntry;
+
+typedef struct MGLRenderCppComputeDispatchSetup_t {
+    void *pipeline;             /* +0 borrowed MTL::ComputePipelineState* */
+    uint32_t buffer_count;
+    MGLRenderCppComputeBufferEntry
+        buffers[MGL_RENDER_CPP_COMPUTE_DISPATCH_MAX_BUFFERS];
+    uint32_t bytes_count;
+    MGLRenderCppComputeBytesEntry
+        bytes[MGL_RENDER_CPP_COMPUTE_DISPATCH_MAX_BYTES];
+} MGLRenderCppComputeDispatchSetup;
+
+/* begin：创建 compute encoder（command_buffer 当前 CB）+ setComputePipelineState
+ * + 绑定 setup 内全部 buffer/bytes。*compute_encoder_out 为 +0 borrowed
+ * （command buffer 持有 encoder）。失败返回 -1。 */
+int mglRenderCppBeginComputeDispatch(
+    void *command_buffer,
+    const MGLRenderCppComputeDispatchSetup *setup,
+    void **compute_encoder_out,
+    char *err,
+    size_t errcap);
+
+/* end：dispatchThreadgroups + endEncoding。encoder 为 begin 返回的同一句柄。 */
+int mglRenderCppEndComputeDispatch(void *compute_encoder,
+                                   const uint32_t groups[3],
+                                   const uint32_t threads[3],
+                                   char *err,
+                                   size_t errcap);
 int mglRenderCppDispatchComputeThreads(void *compute_encoder,
                                        uint32_t threads_x,
                                        uint32_t threads_y,
