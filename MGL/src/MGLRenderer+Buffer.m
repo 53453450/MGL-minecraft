@@ -2257,7 +2257,10 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
 
 - (bool) mapBuffersToMTL
 {
-    if ([self mapGLBuffersToMTLBufferMap: &MGL_STATE(ctx)->vertex_buffer_map_list stage:_VERTEX_SHADER] == false)
+    const int vertexStage = _tessellation.nativeTESActive
+        ? _TESS_EVALUATION_SHADER : _VERTEX_SHADER;
+    if ([self mapGLBuffersToMTLBufferMap:
+            &MGL_STATE(ctx)->vertex_buffer_map_list stage:vertexStage] == false)
         return false;
 
     if ([self mapGLBuffersToMTLBufferMap: &MGL_STATE(ctx)->fragment_buffer_map_list stage:_FRAGMENT_SHADER] == false)
@@ -2675,7 +2678,7 @@ BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
                 }
             }
 
-            if (ptr->access & GL_MAP_COHERENT_BIT) {
+            if (ptr->access_flags & GL_MAP_COHERENT_BIT) {
                 ptr->data.dirty_bits = DIRTY_BUFFER_DATA;
             } else {
                 ptr->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
@@ -2768,8 +2771,7 @@ BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
         // this will cause us to keep loading the buffer and keep the GPU
         // contents in check for EVERY drawing operation
         BOOL coherentMapped =
-            ((ptr->access_flags & GL_MAP_COHERENT_BIT) != 0) ||
-            ((ptr->access & GL_MAP_COHERENT_BIT) != 0);
+            (ptr->access_flags & GL_MAP_COHERENT_BIT) != 0;
         if (coherentMapped)
         {
             NSUInteger modifyOffset = 0;

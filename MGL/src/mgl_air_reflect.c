@@ -236,6 +236,14 @@ static void push_resource(SpirvResourceList *list, const MGLIRSymbol *s,
     (void)stage;
 
     if (type->kind == MGLIR_TYPE_STRUCT && type->member_count > 0) {
+        /* Semantic analysis computes interface-block layout before reflection.
+         * Preserve the full block size so the renderer can isolate an indexed
+         * range that is shorter than the shader's statically addressable data.
+         * Without this, a short writable SSBO is bound directly and a later
+         * CPU shadow upload can overwrite GPU-written bytes. */
+        if (type->layout_valid) {
+            r.required_size = type->layout.size;
+        }
         r.ubo_member_count = type->member_count;
         r.ubo_members = (SpirvUBOMember *)calloc(
             type->member_count, sizeof(SpirvUBOMember));
@@ -339,7 +347,9 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
      * UBOs after the SSBOs; fragment stages start both from 0.  The
      * exporter must mirror that so the renderer's Metal slots match the
      * air.location_index values the metallib actually declares. */
-    int isVS = (stage == _VERTEX_SHADER);
+    int isVS = (stage == MGL_STAGE_VERTEX);
+    uint32_t user_buffer_base =
+        (stage == MGL_STAGE_TESS_EVALUATION) ? 1u : 0u;
     uint32_t attrCount = 0, ssboCount = 0, hasPlain = 0;
     for (uint32_t i = 0; i < mod->symbol_count; i++) {
         const MGLIRSymbol *s = mod->symbols[i];
@@ -360,8 +370,10 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
             hasPlain = 1;
         }
     }
-    uint32_t ssbo_binding = isVS ? (hasPlain + attrCount)
-                                 : ((stage == _COMPUTE_SHADER) ? hasPlain : 0);
+    uint32_t ssbo_binding = user_buffer_base +
+        (isVS ? (hasPlain + attrCount)
+              : ((stage == MGL_STAGE_COMPUTE ||
+                  stage == MGL_STAGE_TESS_EVALUATION) ? hasPlain : 0));
     uint32_t ubo_binding = ssbo_binding + ssboCount;
 
     /* Sampler bindings increment per sampler, matching the AIR metadata
@@ -525,7 +537,7 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
         agg.uniform_location = -1;   /* assigned by the link pass per stage */
         agg.location = UINT32_MAX;   /* let the link pass assign locations */
         agg.gl_binding = 0;
-        agg.binding = 0;
+        agg.binding = user_buffer_base;
         SpirvResourceList *l = &lists[_UNIFORM_CONSTANT_RES];
         SpirvResource *nl = (SpirvResource *)realloc(
             l->list, (l->count + 1) * sizeof(SpirvResource));

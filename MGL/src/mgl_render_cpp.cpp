@@ -1762,7 +1762,7 @@ int mglRenderCppUpdateDirtyBuffer(Buffer* buffer,
             }
         }
 
-        if ((buffer->access & GL_MAP_COHERENT_BIT) != 0) {
+        if ((buffer->access_flags & GL_MAP_COHERENT_BIT) != 0) {
             buffer->data.dirty_bits = DIRTY_BUFFER_DATA;
         } else {
             buffer->data.dirty_bits &=
@@ -1809,8 +1809,7 @@ int mglRenderCppUpdateDirtyBuffer(Buffer* buffer,
 
     const size_t metalLength = static_cast<size_t>(metalBuffer->length());
     const bool coherentMapped =
-        ((buffer->access_flags & GL_MAP_COHERENT_BIT) != 0) ||
-        ((buffer->access & GL_MAP_COHERENT_BIT) != 0);
+        (buffer->access_flags & GL_MAP_COHERENT_BIT) != 0;
     if (coherentMapped) {
         size_t modifyOffset = 0;
         size_t modifyLength = metalLength;

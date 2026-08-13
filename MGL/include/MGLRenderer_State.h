@@ -162,6 +162,7 @@ typedef struct MGLTessellationState_t {
     GLuint tcsOutVertices;
     BOOL nativeTESActive;
     Program *nativeTESProgram;
+    MGLStageBindingCopyBackList nativeTESCopyBacks;
     /* Indexed native TES: sparse VS capture records [vertex_id] +
      * CPU gather buffer fed as Metal controlPointIndexBuffer. */
     id<MTLBuffer> __strong tessControlPointIndexBuffer;

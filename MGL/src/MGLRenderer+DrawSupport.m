@@ -2816,6 +2816,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
         _tessellation.nativeTessFactorBuffer = nativeFactors;
         _tessellation.nativeTESProgram = tesProgram;
         _tessellation.nativeTESActive = YES;
+        [self clearStageBindingCopyBacks:&_tessellation.nativeTESCopyBacks];
         drawCtx->state.dirty_bits = DIRTY_ALL;
 
         BOOL stateReady = [self processGLState:true];
@@ -2904,6 +2905,16 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
                 _tessellation.tessFactorBuffer, tesProgram, patchCount,
                 (GLuint)instanceCount);
             mglRecordActivePrimitiveQueryDraw(drawCtx, primitives, primitives);
+        }
+
+        [self endRenderEncoding];
+        if (![self flushStageBindingCopyBacks:
+                      &_tessellation.nativeTESCopyBacks
+                               requireCPUVisibility:NO]) {
+            NSLog(@"MGL TESS ERROR: failed to copy isolated native TES "
+                  "writable buffer prefixes");
+            mglDispatchError(drawCtx, label ? label : "tessellationDraw",
+                             GL_OUT_OF_MEMORY);
         }
 
         _tessellation.nativeTESActive = NO;

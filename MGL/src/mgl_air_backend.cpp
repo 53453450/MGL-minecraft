@@ -145,6 +145,7 @@ struct Codegen {
     llvm::Value *bufferPtr = nullptr;    /* i8 addrspace(1)* */
     llvm::Value *bufferSizePtr = nullptr; /* constant uint*, buffer(25) */
     llvm::Value *threadPos = nullptr;    /* compute: <3 x i32> grid position */
+    llvm::Value *workGroupPos = nullptr; /* compute: <3 x i32> group position */
     llvm::Value *invocationPos = nullptr; /* TCS: <3 x i32> threadgroup position */
     llvm::Value *patchPos = nullptr;      /* TCS: <3 x i32> threadgroup grid position */
     llvm::Value *stageInPtr = nullptr;   /* TCS gl_in replacement, buffer(24) */
@@ -2616,6 +2617,15 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 return nullptr;
             }
             return cg.threadPos;
+        }
+        if (strcmp(e->u.var_ref.name, "gl_WorkGroupID") == 0) {
+            if (!cg.workGroupPos) {
+                cg.err = 1;
+                cg.errmsg = "codegen: gl_WorkGroupID requires a compute "
+                            "stage";
+                return nullptr;
+            }
+            return cg.workGroupPos;
         }
         if (strcmp(e->u.var_ref.name, "gl_VertexID") == 0) {
             if (!cg.vertexId) {
@@ -5981,11 +5991,14 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
      * output member). */
     const bool usesFragCoord =
         !isVS && !isTES && !isKernel && strstr(src, "gl_FragCoord") != nullptr;
+    const bool usesWorkGroupID =
+        isCompute && strstr(src, "gl_WorkGroupID") != nullptr;
     const bool usesPointSize =
         (isVS || isTES) && strstr(src, "gl_PointSize") != nullptr;
     const bool usesLayerViewport =
         isVS && (strstr(src, "gl_Layer") != nullptr ||
                  strstr(src, "gl_ViewportIndex") != nullptr);
+    const uint32_t userBufferLocationBase = isTES ? 1u : 0u;
     if (isVS || isTES) {
         /* retElems always carries the output record (capture variants
          * write it to the XFB buffer). */
@@ -6157,9 +6170,13 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         paramTys.push_back(llvm::Type::getInt32Ty(ctx));
         paramTys.push_back(llvm::Type::getInt32Ty(ctx));
     }
-    else if (isKernel)
+    else if (isKernel) {
         paramTys.push_back(llvm::FixedVectorType::get(
             llvm::Type::getInt32Ty(ctx), 3));
+        if (usesWorkGroupID)
+            paramTys.push_back(llvm::FixedVectorType::get(
+                llvm::Type::getInt32Ty(ctx), 3));
+    }
     else if (isTES && !isTESCompute) {
         paramTys.push_back(patchControlTy->getPointerTo());
         paramTys.push_back(llvm::FixedVectorType::get(
@@ -6374,6 +6391,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         llvm::Value *pos = fn->getArg(argSlot++);
         if (isTCS) cg.invocationPos = pos;
         else cg.threadPos = pos;
+        if (usesWorkGroupID)
+            cg.workGroupPos = fn->getArg(argSlot++);
     }
     else if (isTES && !isTESCompute) {
         cg.patchControlPtr = fn->getArg(argSlot++);
@@ -6512,6 +6531,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         fc.isGeometry = cg.isGeometry;
         fc.bufferPtr = cg.bufferPtr;
         fc.threadPos = cg.threadPos;
+        fc.workGroupPos = cg.workGroupPos;
         fc.invocationPos = cg.invocationPos;
         fc.patchPos = cg.patchPos;
         fc.stageInPtr = cg.stageInPtr;
@@ -7203,7 +7223,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             llvm::MDString::get(ctx, "air.buffer_size"),
             llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(i32, bufferSize)),
             llvm::MDString::get(ctx, "air.location_index"),
-            llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(i32, 0)),
+            llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                i32, userBufferLocationBase)),
             llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(i32, 1)),
             llvm::MDString::get(ctx, "air.read"),
             llvm::MDString::get(ctx, "air.address_space"),
@@ -7224,7 +7245,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     {
         uint32_t loc = (isCapture ? 1 : 0) +
                        ((isVS || isTES || isKernel) ? (hasBuffer ? 1 : 0) : 0) +
-                       (isCapture ? 0 : attrCount);
+                       (isCapture ? 0 : attrCount) + userBufferLocationBase;
         uint32_t ssboArg = (isCapture ? 1 : 0) +
                            ((isVS || isTES || isKernel) ? (hasBuffer ? 1 : 0) : 0) +
                            (isCapture ? 0 : attrCount);
@@ -7261,7 +7282,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     {
         uint32_t loc = (isCapture ? 1 : 0) +
                        ((isVS || isTES || isKernel) ? (hasBuffer ? 1 : 0) : 0) +
-                       ssboCount + (isCapture ? 0 : attrCount);
+                       ssboCount + (isCapture ? 0 : attrCount) +
+                       userBufferLocationBase;
         uint32_t uboArg = loc;
         for (VarSym &v : syms) {
             if (v.kind != VarSym::UBO) continue;
@@ -7632,7 +7654,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             llvm::MDString::get(ctx, "air.arg_name"),
             llvm::MDString::get(ctx, isTCS ? "thread_position_in_threadgroup"
                                            : "thread_position_in_grid")}));
-        if (isTCS || isTESCompute) {
+        if (isTCS || isTESCompute || usesWorkGroupID) {
             argNodes.push_back(llvm::MDNode::get(ctx, {
                 llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                     llvm::Type::getInt32Ty(ctx), mArgSlot + 1)),
@@ -8128,7 +8150,12 @@ extern "C" int mglAirCompileGLSLWithReflectInfo(
     }
     mglGLSLSemanticCheckDestroy(errors, error_count);
 
-    if (stage_info) fillStageInfo(tu, &mod, stage, src, stage_info);
+    uint32_t tessPatchVertices = 0u;
+    if (stage_info) {
+        tessPatchVertices = stage_info->tess_patch_vertices;
+        fillStageInfo(tu, &mod, stage, src, stage_info);
+        stage_info->tess_patch_vertices = tessPatchVertices;
+    }
 
     if (lists)
         mglAirReflectModule(&mod, stage, attrib_names, lists, err_buf,
@@ -8137,7 +8164,7 @@ extern "C" int mglAirCompileGLSLWithReflectInfo(
     mglGLSLTranslationUnitDestroy(tu);
 
     return compileGLSLImpl(src, stage, 0, attrib_names,
-                           stage_info ? stage_info->tess_patch_vertices : 0u,
+                           tessPatchVertices,
                            metallib_out, size_out, err_buf, err_cap);
 }
 

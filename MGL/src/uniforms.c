@@ -1991,9 +1991,10 @@ static GLuint mglPlainUniformTypeInfo(GLuint gl_type, GLboolean *is_float)
 }
 
 /* mat3 CPU slots are either Metal-packed (3x float4 = 12 words) or tightly
- * packed GL layout (9 words).  Packed UniformMatrix3fv uploads are multiples
- * of 12; detect stride from the backing buffer length.  When length is a
- * multiple of both (e.g. 36), prefer 12 — that is the valid-mat3 upload path. */
+ * packed GL layout (9 words). Packed UniformMatrix3fv uploads are multiples
+ * of 12; detect stride from the slot's logical upload size, not Buffer.size,
+ * which may include allocation padding. When the size is a multiple of both
+ * (e.g. 36 words), prefer 12 -- that is the valid packed-mat3 upload path. */
 static GLuint mglMat3ElementStrideWords(size_t avail_words)
 {
     if (avail_words >= 12u && (avail_words % 12u) == 0u) {
@@ -2083,7 +2084,10 @@ static GLuint mglReadPlainUniform(Program *ptr, GLint location,
         buf = direct;
         first = 0;
         if (gl_type == GL_FLOAT_MAT3) {
-            size_t avail = (size_t)direct->size / sizeof(uint32_t);
+            GLsizeiptr logical_size =
+                ptr->plain_uniform_buffers[location].size;
+            size_t avail = logical_size > 0
+                ? (size_t)logical_size / sizeof(uint32_t) : 0u;
             stored_words = mglMat3ElementStrideWords(avail);
         }
     } else if (element > 0 && base_loc < MAX_BINDABLE_BUFFERS) {
@@ -2091,7 +2095,10 @@ static GLuint mglReadPlainUniform(Program *ptr, GLint location,
         if (base_buf && base_buf->data.buffer_data && base_buf->size > 0) {
             buf = base_buf;
             if (gl_type == GL_FLOAT_MAT3) {
-                size_t avail = (size_t)base_buf->size / sizeof(uint32_t);
+                GLsizeiptr logical_size =
+                    ptr->plain_uniform_buffers[base_loc].size;
+                size_t avail = logical_size > 0
+                    ? (size_t)logical_size / sizeof(uint32_t) : 0u;
                 stored_words = mglMat3ElementStrideWords(avail);
             }
             first = (size_t)element * stored_words;
@@ -2767,10 +2774,10 @@ static bool checkUniformUploadParams(GLMContext ctx, GLint location, const void 
     return true;
 }
 
-static SpirvResource *mglFindPlainUniformResource(Program *program, GLint location)
+static GLuint mglPlainUniformTypeAtLocation(Program *program, GLint location)
 {
     if (!program || location < 0) {
-        return NULL;
+        return 0u;
     }
 
     for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
@@ -2785,22 +2792,38 @@ static SpirvResource *mglFindPlainUniformResource(Program *program, GLint locati
             if (mglUniformResourceLooksSamplerLike(res, _UNIFORM_CONSTANT_RES)) {
                 continue;
             }
-            if (mglUniformLocationMatchesResource(res,
-                                                  _UNIFORM_CONSTANT_RES,
-                                                  location)) {
-                return res;
+            GLint base = mglPlainUniformResourceLocation(res);
+            if (base < 0) {
+                continue;
+            }
+            if (res->ubo_members && res->ubo_member_count > 0u) {
+                for (GLuint m = 0u; m < res->ubo_member_count; m++) {
+                    const SpirvUBOMember *member = &res->ubo_members[m];
+                    GLint memberBase = base + member->location_offset;
+                    GLint memberSize = member->size > 1 ? member->size : 1;
+                    if (location >= memberBase &&
+                        location < memberBase + memberSize) {
+                        return member->gl_type;
+                    }
+                }
+            } else {
+                GLint arraySize = res->gl_array_size > 1
+                    ? res->gl_array_size : 1;
+                if (location >= base && location < base + arraySize) {
+                    return res->gl_type;
+                }
             }
         }
     }
 
-    return NULL;
+    return 0u;
 }
 
 static GLboolean mglPlainUniformNeedsMetalMat3Packing(GLMContext ctx, GLint location)
 {
     Program *program = mglUniformGetCurrentProgram(ctx, __FUNCTION__);
-    SpirvResource *res = mglFindPlainUniformResource(program, location);
-    return (res && res->gl_type == GL_FLOAT_MAT3) ? GL_TRUE : GL_FALSE;
+    return mglPlainUniformTypeAtLocation(program, location) == GL_FLOAT_MAT3
+        ? GL_TRUE : GL_FALSE;
 }
 
 static void mglUploadPlainUniformMat3fv(GLMContext ctx,

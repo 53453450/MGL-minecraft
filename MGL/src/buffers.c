@@ -182,6 +182,31 @@ static void mglBufferMarkWrite(Buffer *ptr,
     ptr->last_write_src_hash = src_hash;
 }
 
+/* Merge shader-written Metal contents into the CPU shadow before a partial
+ * CPU update. The following write then becomes authoritative until the dirty
+ * shadow is uploaded; readback must not overwrite it with the pre-update
+ * Metal bytes in that interval. */
+static void mglPrepareGpuWrittenBufferForCpuShadowWrite(GLMContext ctx,
+                                                        Buffer *ptr)
+{
+    if (!ctx || !ptr || !ptr->gpu_write_target || ptr->cpu_shadow_pending ||
+        !ptr->data.buffer_data || !ptr->data.mtl_data) {
+        return;
+    }
+
+    mglFlushCommandBuffer(ctx);
+    if (ctx->mtl_funcs.mtlFlush) {
+        ctx->mtl_funcs.mtlFlush(ctx, true);
+    }
+    if (ctx->mtl_funcs.mtlReadBackBuffer && ptr->size > 0) {
+        size_t readback_size = (size_t)ptr->size;
+        if (ptr->data.buffer_size > 0 && readback_size > ptr->data.buffer_size) {
+            readback_size = ptr->data.buffer_size;
+        }
+        ctx->mtl_funcs.mtlReadBackBuffer(ctx, ptr, 0, readback_size);
+    }
+}
+
 static void mglBufferMarkAllocatedUninitialized(Buffer *ptr, MGLBufferInitSource source)
 {
     if (!ptr) {
@@ -2187,8 +2212,10 @@ void mglBufferSubData(GLMContext ctx, GLenum target, GLintptr offset, GLsizeiptr
                                 dst_before_preview,
                                 ptr->data.dirty_bits);
         }
-        
+
+        mglPrepareGpuWrittenBufferForCpuShadowWrite(ctx, ptr);
         memcpy((char*)ptr->data.buffer_data + offset, data, size);
+        ptr->cpu_shadow_pending = GL_TRUE;
         ptr->data.dirty_bits |= DIRTY_BUFFER_DATA;
         mglMarkStateDirtyBits(&ctx->state, DIRTY_BUFFER);
         mglBufferMarkWrite(ptr,
@@ -2348,7 +2375,9 @@ void mglNamedBufferSubData(GLMContext ctx, GLuint buffer, GLintptr offset, GLsiz
         }
         
         // copy it to the backing and use processGLState to upload new data
+        mglPrepareGpuWrittenBufferForCpuShadowWrite(ctx, ptr);
         memcpy((char*)ptr->data.buffer_data + offset, data, size);
+        ptr->cpu_shadow_pending = GL_TRUE;
         mglBufferMarkWrite(ptr,
                            kInitBufferSubData,
                            offset,
@@ -2360,6 +2389,7 @@ void mglNamedBufferSubData(GLMContext ctx, GLuint buffer, GLintptr offset, GLsiz
         {
             // use use metal to do the subdata call
             ctx->mtl_funcs.mtlBufferSubData(ctx, ptr, offset, size, data);
+            ptr->cpu_shadow_pending = GL_FALSE;
         }
         else
         {

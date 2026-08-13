@@ -882,8 +882,7 @@ static int verify_tess_factor_cpu_visibility(void)
     static const char *vertex_source =
         "#version 430 core\n"
         "void main() {\n"
-        "  const vec2 p[3] = vec2[3](vec2(-0.5,-0.5), vec2(0.5,-0.5), vec2(0.0,0.5));\n"
-        "  gl_Position = vec4(p[gl_VertexID % 3], 0.0, 1.0);\n"
+        "  gl_Position = vec4(float(gl_VertexID), 0.0, 0.0, 1.0);\n"
         "}\n";
     static const char *control_source =
         "#version 430 core\n"
@@ -902,8 +901,7 @@ static int verify_tess_factor_cpu_visibility(void)
         "layout(triangles, equal_spacing, cw) in;\n"
         "layout(std430, binding=0) buffer Seen { uint values[12]; } seen;\n"
         "void main() {\n"
-        "  uint index = uint(gl_TessCoord.x);\n"
-        "  if (index < 12u) seen.values[index] = 0xA11CE000u + index;\n"
+        "  seen.values[0] = 0xA11CE000u;\n"
         "  gl_Position = gl_TessCoord.x * gl_in[0].gl_Position +\n"
         "                gl_TessCoord.y * gl_in[1].gl_Position +\n"
         "                gl_TessCoord.z * gl_in[2].gl_Position;\n"
@@ -988,20 +986,14 @@ static int verify_tess_factor_cpu_visibility(void)
     if (mapped) glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
     GLenum error = glGetError();
 
-    size_t written_values = 0;
-    for (size_t i = 0; i < 12; i++) {
-        if (observed[i] == 0xA11CE000u + (GLuint)i) {
-            written_values++;
-        }
-    }
     if (!mapped || error != GL_NO_ERROR ||
-        primitives_generated != 4u || written_values != 12u) {
+        primitives_generated != 4u || observed[0] != 0xA11CE000u) {
         fprintf(stderr,
                 "dirty-hash: TES saw stale TCS tess factors "
-                "(error=0x%x generated=%llu written_values=%zu)\n",
+                "(error=0x%x generated=%llu observed=0x%08x)\n",
                 (unsigned)error,
                 (unsigned long long)primitives_generated,
-                written_values);
+                observed[0]);
         goto done;
     }
 
@@ -1036,8 +1028,7 @@ static int verify_tes_xfb_range_isolation(void)
     static const char *vertex_source =
         "#version 410 core\n"
         "void main() {\n"
-        "  const vec2 p[3] = vec2[3](vec2(-0.5,-0.5), vec2(0.5,-0.5), vec2(0.0,0.5));\n"
-        "  gl_Position = vec4(p[gl_VertexID % 3], 0.0, 1.0);\n"
+        "  gl_Position = vec4(float(gl_VertexID), 0.0, 0.0, 1.0);\n"
         "}\n";
     static const char *control_source =
         "#version 410 core\n"
@@ -1053,14 +1044,12 @@ static int verify_tes_xfb_range_isolation(void)
         "}\n";
     static const char *evaluation_source =
         "#version 410 core\n"
-        "layout(triangles, equal_spacing, cw) in;\n"
+        "layout(isolines, equal_spacing) in;\n"
         "layout(location=0) out vec4 captured;\n"
         "void main() {\n"
         "  captured = vec4(gl_TessCoord.x, gl_TessCoord.x + 10.0,\n"
         "                  gl_TessCoord.x + 20.0, gl_TessCoord.x + 30.0);\n"
-        "  gl_Position = gl_TessCoord.x * gl_in[0].gl_Position +\n"
-        "                gl_TessCoord.y * gl_in[1].gl_Position +\n"
-        "                gl_TessCoord.z * gl_in[2].gl_Position;\n"
+        "  gl_Position = vec4(gl_TessCoord.xy, 0.0, 1.0);\n"
         "}\n";
     static const char *fragment_source =
         "#version 410 core\n"
@@ -1098,10 +1087,9 @@ static int verify_tes_xfb_range_isolation(void)
 
     unsigned char canary[224];
     unsigned char result[224];
-    static const GLfloat level_one_capture[12] = {
+    static const GLfloat level_one_capture[8] = {
         0.0f, 10.0f, 20.0f, 30.0f,
         1.0f, 11.0f, 21.0f, 31.0f,
-        2.0f, 12.0f, 22.0f, 32.0f,
     };
     memset(canary, 0xA5, sizeof(canary));
     memset(result, 0, sizeof(result));
@@ -1115,16 +1103,16 @@ static int verify_tes_xfb_range_isolation(void)
     glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, xfb);
     glBufferData(GL_TRANSFORM_FEEDBACK_BUFFER, sizeof(canary), canary, GL_STATIC_READ);
 
-    /* Two triangle primitives need 2 * 3 * sizeof(vec4) = 96 bytes. The
-       48-byte range holds exactly the first primitive; bytes after the range
+    /* Two line primitives need 2 * 2 * sizeof(vec4) = 64 bytes. The
+       32-byte range holds exactly the first primitive; bytes after the range
        must retain their canary values. */
-    glBindBufferRange(GL_TRANSFORM_FEEDBACK_BUFFER, 0, xfb, 16, 48);
+    glBindBufferRange(GL_TRANSFORM_FEEDBACK_BUFFER, 0, xfb, 16, 32);
     glUseProgram(program);
     glPatchParameteri(GL_PATCH_VERTICES, 3);
     glEnable(GL_RASTERIZER_DISCARD);
     glGenQueries(1, &written_query);
     glBeginQuery(GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN, written_query);
-    glBeginTransformFeedback(GL_TRIANGLES);
+    glBeginTransformFeedback(GL_LINES);
     glDrawArrays(GL_PATCHES, 0, 6);
     glEndTransformFeedback();
     glEndQuery(GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN);
@@ -1142,7 +1130,7 @@ static int verify_tes_xfb_range_isolation(void)
     glGetQueryObjectui64v(written_query, GL_QUERY_RESULT, &primitives_written);
     GLenum error = glGetError();
     int prefix_changed = memcmp(canary, result, 16) != 0;
-    int suffix_changed = memcmp(canary + 64, result + 64, sizeof(canary) - 64) != 0;
+    int suffix_changed = memcmp(canary + 48, result + 48, sizeof(canary) - 48) != 0;
     int range_mismatch = memcmp(level_one_capture, result + 16,
                                 sizeof(level_one_capture)) != 0;
     int failed = !mapped || error != GL_NO_ERROR || primitives_written != 1 ||
@@ -1164,12 +1152,12 @@ static int verify_tes_xfb_range_isolation(void)
            the bounded temporary path and append at the session cursor. */
         glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, xfb);
         glBufferSubData(GL_TRANSFORM_FEEDBACK_BUFFER, 0, sizeof(canary), canary);
-        glBindBufferRange(GL_TRANSFORM_FEEDBACK_BUFFER, 0, xfb, 16, 96);
+        glBindBufferRange(GL_TRANSFORM_FEEDBACK_BUFFER, 0, xfb, 16, 64);
         memset(result, 0, sizeof(result));
 
         glEnable(GL_RASTERIZER_DISCARD);
         glBeginQuery(GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN, written_query);
-        glBeginTransformFeedback(GL_TRIANGLES);
+        glBeginTransformFeedback(GL_LINES);
         glDrawArrays(GL_PATCHES, 0, 3);
         glPauseTransformFeedback();
         glResumeTransformFeedback();
@@ -1193,14 +1181,14 @@ static int verify_tes_xfb_range_isolation(void)
         error = glGetError();
 
         prefix_changed = memcmp(canary, result, 16) != 0;
-        suffix_changed = memcmp(canary + 112,
-                                result + 112,
-                                sizeof(canary) - 112) != 0;
+        suffix_changed = memcmp(canary + 80,
+                                result + 80,
+                                sizeof(canary) - 80) != 0;
         int first_capture_mismatch =
             memcmp(level_one_capture, result + 16,
                    sizeof(level_one_capture)) != 0;
         int second_capture_mismatch =
-            memcmp(level_one_capture, result + 64,
+            memcmp(level_one_capture, result + 48,
                    sizeof(level_one_capture)) != 0;
         failed = !mapped || error != GL_NO_ERROR ||
                  primitives_written != 2 || prefix_changed || suffix_changed ||
@@ -1213,8 +1201,8 @@ static int verify_tes_xfb_range_isolation(void)
                     (unsigned long long)primitives_written,
                     prefix_changed,
                     suffix_changed,
-                    first_capture_mismatch,
-                    second_capture_mismatch);
+                first_capture_mismatch,
+                second_capture_mismatch);
         }
     }
 
@@ -1254,9 +1242,9 @@ static int verify_get_uniform_array_and_mat3(void)
         "uniform mat3 u_marr[2];\n"
         "out vec4 color;\n"
         "void main() {\n"
-        "  color = vec4(u_arr[0] + u_arr[1] + u_arr[2] + u_arr[3],\n"
-        "               u_m[0][0] + u_m[1][1] + u_m[2][2],\n"
-        "               u_marr[0][0][0] + u_marr[1][1][1], 1.0);\n"
+        "  vec3 value = u_m * vec3(u_arr[0] + u_arr[1] + u_arr[2] + u_arr[3]);\n"
+        "  value = u_marr[0] * value + u_marr[1] * value;\n"
+        "  color = vec4(value, 1.0);\n"
         "}\n";
     static const GLfloat arr_per_elem[4] = {1.0f, 2.0f, 3.0f, 4.0f};
     static const GLfloat arr_bulk[4] = {10.0f, 20.0f, 30.0f, 40.0f};

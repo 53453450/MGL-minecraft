@@ -6085,9 +6085,10 @@ static int test_air_tessellation_isolines_xfb(unsigned char *pixels,
      * generator emits n=outer[0] isolines at v = {0, 1/n, ..., (n-1)/n},
      * each subdivided into m=outer[1] segments; each segment is one line
      * primitive of two vertices, so 2*n*m = 16 expanded vertices per
-     * patch.  The kernel writes the XFB stream (slot 31) with one
-     * complete stage-out record per work item; the test reads back the
-     * buffer and verifies all 32 expected tf_pos values are present, plus
+     * patch.  The kernel writes a complete stage-out record per work item
+     * into a temporary stream; the renderer gathers the requested varying
+     * into the compact GL XFB buffer.  The test verifies all 32 expected
+     * tf_pos values are present, plus
      * PRIMITIVES_GENERATED (n*m*2 = 16 lines) / PRIMITIVES_WRITTEN
      * (32 vertices / 2 = 16 lines) query counts. */
     (void)out_path;
@@ -6120,12 +6121,13 @@ static int test_air_tessellation_isolines_xfb(unsigned char *pixels,
     static const char *tf_varying = "tf_pos";
 
     GLuint fbo = 0u, color = 0u, vao = 0u, vbo = 0u, tbo = 0u;
+    GLuint program = 0u;
     GLuint gen_q = 0u, wr_q = 0u;
     int result = 1;
     fbo = make_fbo(REG_W, REG_H, &color);
     if (!fbo) goto cleanup;
 
-    GLuint program = glCreateProgram();
+    program = glCreateProgram();
     GLuint shaders[3] = {
         compile_shader(GL_VERTEX_SHADER, vs),
         compile_shader(GL_TESS_EVALUATION_SHADER, iso_tes),
@@ -6223,9 +6225,8 @@ static int test_air_tessellation_isolines_xfb(unsigned char *pixels,
         /* Expected records: per patch, 4 isolines at v={0,1/4,1/2,3/4}
          * (y=-0.3,-0.15,0,0.15), each with 2 segments = 4 vertices at
          * u={0,1/2,1/2,1} (x=-0.7,-0.35,-0.35,0 for patch A, +0.9 for
-         * patch B) -> 16 records per patch, 32 in total.  Each record is
-         * a full stage-out record (stride 20 floats); its position and
-         * tf_pos must both match the expected tessellated vertex. */
+         * patch B) -> 16 records per patch, 32 in total.  Each compact
+         * record contains only the requested vec2 tf_pos varying. */
         GLfloat data[4096 / 4];
         GLenum err = GL_NO_ERROR;
         while ((err = glGetError()) != GL_NO_ERROR) { }
@@ -6238,10 +6239,8 @@ static int test_air_tessellation_isolines_xfb(unsigned char *pixels,
             goto cleanup;
         }
         for (int r = 0; r < 32; r++) {
-            const float rx = data[r * 20 + 0];
-            const float ry = data[r * 20 + 1];
-            const float tx = data[r * 20 + 16];
-            const float ty = data[r * 20 + 17];
+            const float tx = data[r * 2 + 0];
+            const float ty = data[r * 2 + 1];
             int found = 0;
             for (int p = 0; p < 2 && !found; p++) {
                 const float dx = p == 1 ? 0.9f : 0.0f;
@@ -6253,9 +6252,7 @@ static int test_air_tessellation_isolines_xfb(unsigned char *pixels,
                             const float u =
                                 ((float)seg + (float)vtx) / 2.0f;
                             const float ex = -0.7f + 1.4f * u + dx;
-                            if (rx - ex > -1e-3f && rx - ex < 1e-3f &&
-                                ry - exp_y > -1e-3f && ry - exp_y < 1e-3f &&
-                                tx - ex > -1e-3f && tx - ex < 1e-3f &&
+                            if (tx - ex > -1e-3f && tx - ex < 1e-3f &&
                                 ty - exp_y > -1e-3f &&
                                 ty - exp_y < 1e-3f) {
                                 found = 1;
@@ -6267,8 +6264,8 @@ static int test_air_tessellation_isolines_xfb(unsigned char *pixels,
             if (!found) {
                 fprintf(stderr,
                         "air_tessellation_isolines_xfb: record %d "
-                        "pos=(%g,%g) tf=(%g,%g) not an expected vertex\n",
-                        r, rx, ry, tx, ty);
+                        "tf=(%g,%g) not an expected vertex\n",
+                        r, tx, ty);
                 goto cleanup;
             }
         }
@@ -6914,9 +6911,11 @@ static int test_air_geometry_layer_viewport(unsigned char *pixels,
     static const float centroid[2] = {-0.2f, -0.2333f};
     GLuint color = 0u;
     GLuint vao = 0u, vbo = 0u;
+    GLuint lfbo = 0u, vfbo = 0u;
+    GLuint layerProgram = 0u, viewportProgram = 0u;
     int result = 1;
 
-    GLuint lfbo = make_layer_fbo(REG_W, REG_H, &color);
+    lfbo = make_layer_fbo(REG_W, REG_H, &color);
     if (!lfbo) goto cleanup;
     /* Isolation probe: a plain VS writing gl_Layer=1 (no GS) must also land
      * on layer 1; this splits backend [[layer]] output from the GS chain. */
@@ -6978,7 +6977,7 @@ static int test_air_geometry_layer_viewport(unsigned char *pixels,
      * non-zero slice here (a Metal layered pass must select the layer via
      * the [render_target_array_index] output, ignoring the attachment
      * slice). */
-    GLuint layerProgram = link_program_with_geometry(vs, gs_layer, fs);
+    layerProgram = link_program_with_geometry(vs, gs_layer, fs);
     if (!layerProgram) goto cleanup;
     glBindFramebuffer(GL_FRAMEBUFFER, lfbo);
     glGenVertexArrays(1, &vao);
@@ -7054,8 +7053,8 @@ static int test_air_geometry_layer_viewport(unsigned char *pixels,
         }
     }
 
-    GLuint viewportProgram = link_program_with_geometry(vs, gs_viewport, fs);
-    GLuint vfbo = make_fbo(REG_W, REG_H, &color);
+    viewportProgram = link_program_with_geometry(vs, gs_viewport, fs);
+    vfbo = make_fbo(REG_W, REG_H, &color);
     if (!vfbo || !viewportProgram) goto cleanup;
     glBindFramebuffer(GL_FRAMEBUFFER, vfbo);
     glUseProgram(viewportProgram);

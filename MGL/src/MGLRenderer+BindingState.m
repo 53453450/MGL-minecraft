@@ -173,6 +173,8 @@ static void mglBindingStateSetFragmentBytes(
     activeProgram = _tessellation.nativeTESActive
         ? _tessellation.nativeTESProgram
         : mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
+    const int vertexStage = _tessellation.nativeTESActive
+        ? _TESS_EVALUATION_SHADER : _VERTEX_SHADER;
 
     if (kMGLVerboseBindLogs) {
         NSLog(@"MGL VBIND vao=%p magic=0x%x", vao, vao->magic);
@@ -270,7 +272,7 @@ static void mglBindingStateSetFragmentBytes(
         if (isBaseBinding) {
             NSInteger metalBindingIndex = map->has_metal_binding
                 ? (NSInteger)map->metal_binding_index
-                : [self getProgramMetalBufferIndexForStage:_VERTEX_SHADER
+                : [self getProgramMetalBufferIndexForStage:vertexStage
                                              clientBinding:glBindingIndex];
             if (metalBindingIndex < 0) {
                 continue;
@@ -334,10 +336,10 @@ static void mglBindingStateSetFragmentBytes(
         NSUInteger requiredBindingBytes = kMGLMinimumStageBindingSize;
         if (isBaseBinding && glBindingIndex < MAX_BINDABLE_BUFFERS) {
             reflectedRequiredBytes = map->has_metal_binding
-                ? [self getProgramBindingRequiredSize:_VERTEX_SHADER
+                ? [self getProgramBindingRequiredSize:vertexStage
                                                  type:(int)map->resource_type
                                                 index:(int)map->resource_index]
-                : [self getProgramBindingRequiredSizeForStage:_VERTEX_SHADER
+                : [self getProgramBindingRequiredSizeForStage:vertexStage
                                                 clientBinding:glBindingIndex];
             if (reflectedRequiredBytes > requiredBindingBytes) {
                 requiredBindingBytes = reflectedRequiredBytes;
@@ -411,9 +413,11 @@ static void mglBindingStateSetFragmentBytes(
             ? mglBufferMapVisibleBackingBytes(map, metalLen)
             : 0u;
 
-        if (!ptr->gpu_write_target &&
-            (!buffer || bindOffset >= metalLen ||
-             availableBytes < requiredBindingBytes)) {
+        BOOL needsIsolatedBinding =
+            !buffer || bindOffset >= metalLen ||
+            availableBytes < requiredBindingBytes;
+        if (needsIsolatedBinding &&
+            (!ptr->gpu_write_target || _tessellation.nativeTESActive)) {
             id<MTLBuffer> isolated =
                 [self isolatedStageBindingBufferForMap:map
                                                  source:buffer
@@ -429,6 +433,22 @@ static void mglBindingStateSetFragmentBytes(
                 mglRenderCppBindingClearVertexBuffer(_bindingStateOwner,
                                                       (uint32_t)bindingIndex);
                 continue;
+            }
+
+            BOOL writableResource =
+                map->resource_type == _STORAGE_BUFFER_RES ||
+                map->resource_type == _ATOMIC_COUNTER_RES;
+            if (_tessellation.nativeTESActive && writableResource && buffer &&
+                availableBytes > 0 &&
+                ![self recordStageBindingCopyBack:
+                           &_tessellation.nativeTESCopyBacks
+                                             atIndex:bindingIndex
+                                           temporary:isolated
+                                         destination:buffer
+                                   destinationBuffer:ptr
+                                  destinationOffset:bindOffset
+                                              length:availableBytes]) {
+                return false;
             }
 
             mglBindingStateSetVertexBuffer(encCtx->encoder, isolated, 0,

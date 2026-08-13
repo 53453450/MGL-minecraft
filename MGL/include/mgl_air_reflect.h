@@ -14,6 +14,7 @@
 typedef struct GLMContextRec_t *GLMContext;
 
 #include "mgl_glsl_sema.h"
+#include "mgl_shader_abi.h"
 #include "mgl_types_program.h"
 
 #ifdef __cplusplus
@@ -28,7 +29,8 @@ GLuint mglAirGLTypeFromIR(const MGLIRType *t);
  * arrays (0 for runtime arrays). */
 GLint mglAirGLArraySizeFromIR(const MGLIRType *t);
 
-/* Export the symbols of `mod` into the per-type resource lists.  Lists
+/* Export the symbols of `mod` into the per-type resource lists. `stage` uses
+ * the public MGL_STAGE_* values from mgl_shader_abi.h. Lists
  * must point at zeroed SpirvResourceList arrays sized [_MAX_SPIRV_RES].
  * Returns 0 on success, -1 on failure (err filled when provided). */
 int mglAirReflectModule(const MGLIRModule *mod, int stage,

@@ -15,6 +15,17 @@
 #include "mgl_shader_abi.h"
 #include "mgl_types_program.h"
 
+/* This standalone reflection diagnostic intentionally avoids the product
+ * uniform-reflection dependency tree. Sampler locations are not part of the
+ * slot dump, so use the same self-contained stub as the AIR smoke tests. */
+extern "C" GLint mglSyntheticSamplerUniformLocation(int stage, int res_type,
+                                                     GLuint index) {
+    (void)stage;
+    (void)res_type;
+    (void)index;
+    return -1;
+}
+
 static const char *kVS =
     "#version 150 core\n"
     "in vec3 Position;\n"
@@ -74,7 +85,7 @@ static const char *kResName[_MAX_SPIRV_RES] = {
     "SEPARATE_SAMPLERS", "ACCEL_STRUCT", "RAY_QUERY",
 };
 
-static void dumpStage(const char *label, const char *src, int stage)
+static int dumpStage(const char *label, const char *src, int stage)
 {
     unsigned char *lib = NULL;
     size_t libSize = 0;
@@ -86,8 +97,8 @@ static void dumpStage(const char *label, const char *src, int stage)
     int rc = mglAirCompileGLSLWithReflect(src, stage, NULL, &lib, &libSize,
                                           lists, err, sizeof(err));
     if (rc != 0) {
-        printf("COMPILE FAILED: %s\n", err);
-        return;
+        fprintf(stderr, "COMPILE FAILED: %s\n", err);
+        return 1;
     }
     printf("metallib: %zu bytes\n", libSize);
 
@@ -100,13 +111,15 @@ static void dumpStage(const char *label, const char *src, int stage)
         }
     }
     mglShaderFree(lib);
+    return 0;
 }
 
 int main(void)
 {
     /* MGL_DUMP_IR makes the backend print the module to stderr; run with
      * MGL_DUMP_IR=1 to diff air.location_index against the table above. */
-    dumpStage("VERTEX", kVS, _VERTEX_SHADER);
-    dumpStage("FRAGMENT", kFS, _FRAGMENT_SHADER);
-    return 0;
+    int failed = 0;
+    failed |= dumpStage("VERTEX", kVS, MGL_STAGE_VERTEX);
+    failed |= dumpStage("FRAGMENT", kFS, MGL_STAGE_FRAGMENT);
+    return failed ? 1 : 0;
 }

@@ -4200,7 +4200,12 @@ output->name, (unsigned)i,
         pipelineStateDescriptor.rasterizationEnabled = NO;
     } else if (rasterizerDiscard) {
         GLuint vsOutputCount = vertexProgram->spirv_resources_list[vertexStage][_STAGE_OUTPUT_RES].count;
-        pipelineStateDescriptor.rasterizationEnabled = (vsOutputCount > 0) ? YES : NO;
+        /* Native AIR TES always returns its post-tessellation output record,
+         * including the built-in position.  Built-ins are intentionally not
+         * present in the reflected user stage-output list, so a zero count
+         * does not mean the TES function returns void. */
+        pipelineStateDescriptor.rasterizationEnabled =
+            (nativeTES || vsOutputCount > 0) ? YES : NO;
     } else {
         pipelineStateDescriptor.rasterizationEnabled = YES;
     }

@@ -35,8 +35,8 @@ cd "$PROJECT_DIR"
 if [[ "$DO_BUILD" -eq 1 ]]; then
   echo "==> Building libmgl (make lib)..."
   make lib >/dev/null 2>&1 || { echo "make lib FAILED" >&2; exit 1; }
-  echo "==> Building regression suite (make test-regression)..."
-  make test-regression >/dev/null 2>&1 || { echo "make test-regression FAILED" >&2; exit 1; }
+  echo "==> Building regression suite (make build-test-regression)..."
+  make build-test-regression >/dev/null 2>&1 || { echo "make build-test-regression FAILED" >&2; exit 1; }
 fi
 
 if [[ ! -x "$BINARY" ]]; then

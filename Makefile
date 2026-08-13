@@ -104,8 +104,10 @@ help:
 		'  make es               Build only the OpenGL ES MGL dylib.' \
 		'  make bench            Build the MGL benchmark.' \
 		'  make test-benchmark   Run the benchmark smoke gate.' \
-		'  make test-regression  Build the headless regression suite.' \
+		'  make test-all         Run the complete non-interactive local test gate.' \
+		'  make test-regression  Build and run the headless regression suite.' \
 		'  make test-dirty-hash  Run the minimal dirty-hash batch regression.' \
+		'  make test             Run the interactive GLFW test application.' \
 		'  make clean            Remove local build outputs.'
 
 # mgl
@@ -418,7 +420,7 @@ bench-system: benchmark/mgl_benchmark.c
 # Non-interactive, headless, FBO-offscreen. Covers array/element/instanced/
 # multidraw/indirect + FBO switch + XFB + conditional render. Produces TGA
 # snapshots compared against MGL_Golden_Images/Reg_*.tga.
-test-regression: $(build_dir)/libmgl.dylib $(build_dir)/libglfw.dylib
+$(build_dir)/test_regression: test_regression/main.c $(build_dir)/libmgl.dylib $(build_dir)/libglfw.dylib
 	$(APPLE_CLANG) -Wall -gfull -O2 -arch $(HOST_ARCH) \
 		$(CFLAGS) \
 		-I./external/glfw/include \
@@ -430,8 +432,14 @@ test-regression: $(build_dir)/libmgl.dylib $(build_dir)/libglfw.dylib
 		-framework Cocoa -framework CoreFoundation -framework CoreGraphics \
 		-framework IOKit -framework Foundation -framework QuartzCore \
 		-framework Metal -framework OpenGL \
-		-o $(build_dir)/test_regression
-	@echo "✅ Regression suite built: $(build_dir)/test_regression"
+		-o $@
+	@echo "✅ Regression suite built: $@"
+
+build-test-regression: $(build_dir)/test_regression
+
+test-regression: build-test-regression
+	DYLD_LIBRARY_PATH=$(abspath $(build_dir)) $(build_dir)/test_regression \
+		--golden-dir $(abspath MGL_Golden_Images)
 
 $(build_dir)/test_dirty_hash: test_dirty_hash/main.c $(build_dir)/libmgl.dylib
 	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O2 -arch $(HOST_ARCH) \
@@ -451,6 +459,16 @@ test-dirty-hash: $(build_dir)/test_dirty_hash
 
 test-benchmark: bench
 	scripts/run_benchmark_smoke.sh --no-build
+
+$(build_dir)/test_legacy_compat: test_legacy_compat/main.c \
+	MGL/src/mgl_legacy_compat.c MGL/include/mgl_legacy_compat.h
+	$(APPLE_CLANG) -isysroot $(SDK_ROOT) -Wall -Wextra -Werror -gfull -O0 \
+		-IMGL/include -IMGL/include/GL \
+		test_legacy_compat/main.c MGL/src/mgl_legacy_compat.c \
+		-o $@
+
+test-legacy-compat: $(build_dir)/test_legacy_compat
+	$(build_dir)/test_legacy_compat
 
 $(build_dir)/test_mglir: test_legacy_compat/test_mglir.c MGL/src/mgl_ir.c
 	$(APPLE_CLANG) -isysroot $(SDK_ROOT) -Wall -Wextra -Werror -gfull -O0 \
@@ -585,6 +603,31 @@ $(build_dir)/test_mglair_gtest: test_legacy_compat/test_mglair_gtest.cpp \
 test-mglair-gtest: $(build_dir)/test_mglair_gtest
 	$(build_dir)/test_mglair_gtest
 
-.PHONY: default help test dbg core es lib clean install-pkgdeps test-make bench bench-system test-regression test-dirty-hash test-benchmark test-mglir test-mgllex test-mglparse test-mglsema test-mglair test-mglair-gtest
+test-frontends:
+	$(MAKE) test-legacy-compat
+	$(MAKE) test-mglir
+	$(MAKE) test-mgllex
+	$(MAKE) test-mglparse
+	$(MAKE) test-mglsema
+
+test-air:
+	$(MAKE) test-mglair
+	$(MAKE) test-mglair-gtest
+	$(MAKE) test-mcrepro
+	$(MAKE) test-metalcpp
+
+# Keep the local gate serial: the GPU suites share Metal compiler/archive state.
+# The interactive GLFW application and performance benchmark remain explicit.
+test-all:
+	$(MAKE) test-frontends
+	$(MAKE) test-air
+	$(MAKE) test-dirty-hash
+	$(MAKE) test-regression
+
+.PHONY: default help test dbg core es lib clean install-pkgdeps test-make bench bench-system \
+	build-test-regression test-regression test-dirty-hash test-benchmark \
+	test-legacy-compat test-mglir test-mgllex test-mglparse test-mglsema \
+	test-mglair test-mglair-gtest test-mcrepro test-metalcpp test-frontends \
+	test-air test-all
 
 -include $(deps)

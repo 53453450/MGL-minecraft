@@ -455,10 +455,26 @@ TEST(Metallib, TessEvaluationResources) {
         "  vec4 sampled = texture(tex, gl_TessCoord.xy);\n"
         "  gl_Position = gl_in[0].gl_Position * scale + offset + dataBuffer.values[0] + sampled;\n"
         "}\n";
-    CompileResult r = compile(src, MGL_STAGE_TESS_EVALUATION);
-    EXPECT_EQ(0, r.rc) << r.err;
-    ASSERT_FALSE(r.bytes.empty());
-    EXPECT_EQ(0, memcmp(r.bytes.data(), "MTLB", 4));
+    unsigned char *bytes = nullptr;
+    size_t size = 0;
+    SpirvResourceList lists[_MAX_SPIRV_RES] = {{0}};
+    char err[512] = {0};
+    ASSERT_EQ(0, mglAirCompileGLSLWithReflect(
+        src, MGL_STAGE_TESS_EVALUATION, nullptr, &bytes, &size, lists,
+        err, sizeof(err))) << err;
+    ASSERT_NE(nullptr, bytes);
+    ASSERT_GE(size, 4u);
+    EXPECT_EQ(0, memcmp(bytes, "MTLB", 4));
+
+    ASSERT_EQ(1u, lists[_UNIFORM_CONSTANT_RES].count);
+    EXPECT_EQ(1u, lists[_UNIFORM_CONSTANT_RES].list[0].binding);
+    ASSERT_EQ(1u, lists[_STORAGE_BUFFER_RES].count);
+    EXPECT_EQ(2u, lists[_STORAGE_BUFFER_RES].list[0].binding);
+    ASSERT_EQ(1u, lists[_UNIFORM_BUFFER_RES].count);
+    EXPECT_EQ(3u, lists[_UNIFORM_BUFFER_RES].list[0].binding);
+
+    mglAirReflectDestroy(lists);
+    mglShaderFree(bytes);
 }
 
 TEST(Metallib, RuntimeSSBOArrayLengthAcrossStages) {
@@ -493,6 +509,20 @@ TEST(Metallib, RuntimeSSBOArrayLengthAcrossStages) {
         EXPECT_EQ(0, memcmp(bytes, "MTLB", 4));
         mglShaderFree(bytes);
     }
+}
+
+TEST(Metallib, ComputeWorkGroupID) {
+    static const char *src =
+        "#version 460 core\n"
+        "layout(local_size_x=1) in;\n"
+        "layout(std430, binding=0) buffer Data { uint values[4]; } data;\n"
+        "void main() {\n"
+        "  data.values[gl_WorkGroupID.x] = gl_WorkGroupID.x;\n"
+        "}\n";
+    CompileResult r = compile(src, MGL_STAGE_COMPUTE);
+    EXPECT_EQ(0, r.rc) << r.err;
+    ASSERT_FALSE(r.bytes.empty());
+    EXPECT_EQ(0, memcmp(r.bytes.data(), "MTLB", 4));
 }
 
 TEST(Metallib, FixedArrayLengthDoesNotNeedSizeBuffer) {
@@ -574,9 +604,11 @@ TEST(Metallib, TessellationStageInfo) {
     bytes = nullptr;
     size = 0;
     info = {};
+    info.tess_patch_vertices = 1u;
     ASSERT_EQ(0, mglAirCompileGLSLWithReflectInfo(
         kTES, MGL_STAGE_TESS_EVALUATION, nullptr, &bytes, &size, nullptr,
         &info, err, sizeof(err))) << err;
+    EXPECT_EQ(1u, info.tess_patch_vertices);
     EXPECT_EQ((uint32_t)GL_TRIANGLES, info.tess_gen_mode);
     EXPECT_EQ((uint32_t)GL_EQUAL, info.tess_gen_spacing);
     EXPECT_EQ((uint32_t)GL_CW, info.tess_gen_vertex_order);
@@ -723,7 +755,7 @@ TEST(Reflect, VertexResources) {
     MGLIRModule *mod = semacheck(src, MGL_STAGE_VERTEX, &tu);
     ASSERT_NE(nullptr, mod);
     SpirvResourceList lists[_MAX_SPIRV_RES] = {{0}};
-    ASSERT_EQ(0, mglAirReflectModule(mod, _VERTEX_SHADER, nullptr,
+    ASSERT_EQ(0, mglAirReflectModule(mod, MGL_STAGE_VERTEX, nullptr,
                                      lists, nullptr, 0));
 
     /* two vertex inputs with explicit locations */
@@ -766,7 +798,7 @@ TEST(Reflect, ComputeResources) {
     MGLIRModule *mod = semacheck(src, MGL_STAGE_COMPUTE, &tu);
     ASSERT_NE(nullptr, mod);
     SpirvResourceList lists[_MAX_SPIRV_RES] = {{0}};
-    ASSERT_EQ(0, mglAirReflectModule(mod, _COMPUTE_SHADER, nullptr,
+    ASSERT_EQ(0, mglAirReflectModule(mod, MGL_STAGE_COMPUTE, nullptr,
                                      lists, nullptr, 0));
 
     ASSERT_EQ(1u, lists[_STORAGE_BUFFER_RES].count);
@@ -780,6 +812,8 @@ TEST(Reflect, ComputeResources) {
     EXPECT_EQ(GL_FLOAT, lists[_STORAGE_BUFFER_RES].list[0].ubo_members[0].gl_type);
     EXPECT_EQ(4, lists[_STORAGE_BUFFER_RES].list[0].ubo_members[0].size);
     EXPECT_EQ(0u, lists[_STORAGE_BUFFER_RES].list[0].ubo_members[0].offset);
+    EXPECT_EQ(16u, lists[_STORAGE_BUFFER_RES].list[0].required_size);
+    EXPECT_EQ(1u, lists[_STORAGE_BUFFER_RES].list[0].binding);
 
     ASSERT_EQ(1u, lists[_SAMPLED_IMAGE_RES].count);
     EXPECT_STREQ("tex", lists[_SAMPLED_IMAGE_RES].list[0].name);

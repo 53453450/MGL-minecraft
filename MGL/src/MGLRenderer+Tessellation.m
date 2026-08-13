@@ -389,6 +389,18 @@ typedef struct {
         id<MTLBuffer> buffer = ptr->data.mtl_data
             ? (__bridge id<MTLBuffer>)(ptr->data.mtl_data)
             : nil;
+        if (buffer &&
+            (ptr->data.dirty_bits & (DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR))) {
+            /* Consume the CPU-side initialization before a tessellation
+             * stage can write the same Metal backing. Otherwise a later
+             * stage bind would upload the stale shadow over the GPU result. */
+            if (![self updateDirtyBuffer:ptr]) {
+                return false;
+            }
+            buffer = ptr->data.mtl_data
+                ? (__bridge id<MTLBuffer>)(ptr->data.mtl_data)
+                : nil;
+        }
         NSUInteger requiredBytes =
             [self getProgramBindingRequiredSize:stage
                                            type:(int)map->resource_type
@@ -1478,7 +1490,9 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     }
 
     /* Bind sampled textures + combined samplers for the TES stage. */
-    for (GLuint i = 0; i < TEXTURE_UNITS; i++) {
+    GLuint tesSampledCount = [self getProgramBindingCount:_TESS_EVALUATION_SHADER
+                                                   type:_SAMPLED_IMAGE_RES];
+    for (GLuint i = 0; i < tesSampledCount; i++) {
         SpirvResource *resource = NULL;
         if (i <
             tesProgram->spirv_resources_list[_TESS_EVALUATION_SHADER][_SAMPLED_IMAGE_RES].count) {
@@ -1562,11 +1576,9 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     mglTessSetComputeBuffer(computeEncoder, outBuffer, 0u,
                             MGL_AIR_TESS_SLOT_TCS_OUTPUT);
 
-    /* Transform-feedback stream (slot 31): when GL feedback is active the
-     * kernel additionally writes one complete stage-out record per work
-     * item.  Direct binding is safe only when every write fits in the
-     * requested GL range; otherwise capture into a full-size temporary and
-     * copy back only the prefix containing complete primitives. */
+    /* Transform-feedback stream (slot 31): the kernel writes complete stage
+     * records. The renderer gathers selected varyings into the compact GL XFB
+     * layout and copies only the prefix containing complete primitives. */
     TransformFeedback *xfbState = MGL_STATE(glm_ctx)->transform_feedback;
     const bool xfbActive =
         xfbState && xfbState->active && !xfbState->paused;
@@ -1574,7 +1586,8 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     id<MTLBuffer> xfbCopyDestination = nil;
     Buffer *xfbDestination = NULL;
     NSUInteger xfbCopyDestinationOffset = 0u;
-    NSUInteger xfbCopyBytes = 0u;
+    NSUInteger xfbCompactStride = 0u;
+    NSUInteger xfbCopiedVertices = 0u;
     NSUInteger xfbWrittenBytes = 0u;
     if (xfbActive) {
         BufferBaseTarget *xfbSlot =
@@ -1587,7 +1600,8 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
             xfbState->buffer_write_offsets[0] <= (GLuint64)NSUIntegerMax;
         const NSUInteger xfbSessionOffset =
             sessionOffsetOK ? (NSUInteger)xfbState->buffer_write_offsets[0] : 0u;
-        const bool sizeOK =
+        xfbCompactStride = mglTESXFBVertexStride(tesProgram);
+        const bool sizeOK = xfbCompactStride > 0u &&
             mglCheckedNSUIntegerProduct((NSUInteger)itemsPerInstanceU,
                                         (NSUInteger)instanceCountU,
                                         &captureVertices) &&
@@ -1601,6 +1615,17 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
         NSUInteger destinationOffset = 0u;
         bool destinationOffsetOK = false;
         if (xfbSlot->buf) {
+            if (xfbSlot->buf->data.dirty_bits &
+                (DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR)) {
+                /* Consume CPU initialization before the XFB blit writes the
+                 * same backing. Otherwise a later map can upload the stale
+                 * shadow over the captured GPU data. */
+                if (![self updateDirtyBuffer:xfbSlot->buf]) {
+                    mglTessEndComputeEncoder(computeEncoder);
+                    [self clearStageBindingCopyBacks:&stageCopyBacks];
+                    return false;
+                }
+            }
             if (!xfbSlot->buf->data.mtl_data) {
                 [self bindMTLBuffer:xfbSlot->buf];
             }
@@ -1630,38 +1655,32 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
             NSUInteger primitiveBytes = 0u;
             const bool primitiveLayoutOK =
                 mglCheckedNSUIntegerProduct((NSUInteger)verticesPerPrimitive,
-                                            outStride, &primitiveBytes) &&
+                                            xfbCompactStride, &primitiveBytes) &&
                 primitiveBytes > 0u;
             const NSUInteger capturePrimitives = primitiveLayoutOK
                 ? captureVertices / (NSUInteger)verticesPerPrimitive : 0u;
-            if (primitiveLayoutOK && xfbMTL && destinationOffsetOK &&
-                requiredBytes <= remainingVisibleBytes) {
-                mglTessSetComputeBuffer(computeEncoder, xfbMTL,
-                                        destinationOffset,
-                                        MGL_AIR_TESS_SLOT_XFB_OUT);
-                xfbSlot->buf->ever_written = GL_TRUE;
-                xfbWrittenBytes = capturePrimitives * primitiveBytes;
-            } else {
-                xfbTemporary = mglTessCreateBuffer(
-                    _device, requiredBytes, MTLResourceStorageModeShared);
-                if (!xfbTemporary) {
-                    mglTessEndComputeEncoder(computeEncoder);
-                    [self clearStageBindingCopyBacks:&stageCopyBacks];
-                    return false;
-                }
-                mglTessSetComputeBuffer(computeEncoder, xfbTemporary, 0u,
-                                        MGL_AIR_TESS_SLOT_XFB_OUT);
-                if (primitiveLayoutOK && xfbMTL && destinationOffsetOK &&
-                    remainingVisibleBytes >= primitiveBytes) {
-                    xfbCopyBytes =
-                        MIN(capturePrimitives,
-                            remainingVisibleBytes / primitiveBytes) *
-                        primitiveBytes;
-                    xfbWrittenBytes = xfbCopyBytes;
-                    xfbCopyDestination = xfbMTL;
-                    xfbCopyDestinationOffset = destinationOffset;
-                    xfbDestination = xfbSlot->buf;
-                }
+            /* The AIR kernel writes full stage records (built-ins followed by
+             * location-based user outputs). GL XFB is a compact stream of only
+             * the selected varyings, so it can never target the GL range
+             * directly. Gather the selected fields after the dispatch. */
+            xfbTemporary = mglTessCreateBuffer(
+                _device, requiredBytes, MTLResourceStorageModeShared);
+            if (!xfbTemporary) {
+                mglTessEndComputeEncoder(computeEncoder);
+                [self clearStageBindingCopyBacks:&stageCopyBacks];
+                return false;
+            }
+            mglTessSetComputeBuffer(computeEncoder, xfbTemporary, 0u,
+                                    MGL_AIR_TESS_SLOT_XFB_OUT);
+            if (primitiveLayoutOK && xfbMTL && destinationOffsetOK) {
+                NSUInteger copiedPrimitives = MIN(
+                    capturePrimitives, remainingVisibleBytes / primitiveBytes);
+                xfbCopiedVertices =
+                    copiedPrimitives * (NSUInteger)verticesPerPrimitive;
+                xfbWrittenBytes = copiedPrimitives * primitiveBytes;
+                xfbCopyDestination = xfbMTL;
+                xfbCopyDestinationOffset = destinationOffset;
+                xfbDestination = xfbSlot->buf;
             }
         }
     } else {
@@ -1760,16 +1779,48 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
         return false;
     }
 
-    if (xfbCopyBytes > 0u) {
+    if (xfbWrittenBytes > 0u && xfbTemporary && xfbCopyDestination) {
         id<MTLBlitCommandEncoder> xfbBlit =
             mglTessCreateBlitEncoder(_renderPassManager.state->currentCommandBuffer);
         if (!xfbBlit) {
             NSLog(@"MGL TESS XFB: failed to create bounded copy encoder");
             return false;
         }
-        mglTessBlitCopyBuffer(xfbBlit, xfbTemporary, 0u,
-                              xfbCopyDestination, xfbCopyDestinationOffset,
-                              xfbCopyBytes);
+        const SpirvResourceList *outputs =
+            &tesProgram->spirv_resources_list[_TESS_EVALUATION_SHADER]
+                                                [_STAGE_OUTPUT_RES];
+        for (NSUInteger vertex = 0u; vertex < xfbCopiedVertices; vertex++) {
+            NSUInteger compactOffset = 0u;
+            for (GLsizei varying = 0;
+                 varying < tesProgram->transform_feedback_varying_count;
+                 varying++) {
+                const char *name =
+                    tesProgram->transform_feedback_varying_names[varying];
+                const SpirvResource *output = NULL;
+                for (GLuint i = 0u; name && outputs->list && i < outputs->count;
+                     i++) {
+                    if (outputs->list[i].name &&
+                        strcmp(outputs->list[i].name, name) == 0) {
+                        output = &outputs->list[i];
+                        break;
+                    }
+                }
+                NSUInteger fieldBytes =
+                    output ? mglTESXFBFieldByteSize(output->gl_type) : 0u;
+                if (!output || fieldBytes == 0u) {
+                    continue;
+                }
+                NSUInteger sourceOffset = vertex * outStride +
+                    MGL_AIR_PER_VERTEX_STRIDE +
+                    (NSUInteger)output->location * 16u;
+                NSUInteger destinationOffset = xfbCopyDestinationOffset +
+                    vertex * xfbCompactStride + compactOffset;
+                mglTessBlitCopyBuffer(xfbBlit, xfbTemporary, sourceOffset,
+                                      xfbCopyDestination, destinationOffset,
+                                      fieldBytes);
+                compactOffset += fieldBytes;
+            }
+        }
         mglTessEndBlitEncoder(xfbBlit);
         if (xfbDestination) {
             xfbDestination->ever_written = GL_TRUE;
@@ -1797,11 +1848,11 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
          * primitives (persistent query semantics). */
         GLuint64 prims = (GLuint64)instanceCount * primitivesPerInstance;
         GLuint64 written = prims;
-        if (xfbActive && xfbWrittenBytes > 0u) {
+        if (xfbActive) {
             const GLuint64 vpp = pointMode ? 1u
                 : (genMode == GL_ISOLINES ? 2u : 3u);
             const GLuint64 xfbPrims =
-                xfbWrittenBytes / ((GLuint64)outStride * vpp);
+                xfbWrittenBytes / ((GLuint64)xfbCompactStride * vpp);
             written = MIN(written, xfbPrims);
         }
         _currentCBHasWork = YES;
@@ -1829,12 +1880,12 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
         _tessellation.tessComputeActive = NO;
         _tessellation.tessComputeOutputBuffer = nil;
         _tessellation.tessComputeProgram = NULL;
-        if (xfbActive && xfbWrittenBytes > 0u) {
+        if (xfbActive) {
             const GLuint64 vpp = pointMode ? 1u
                 : (genMode == GL_ISOLINES ? 2u : 3u);
             GLuint64 prims = (GLuint64)instanceCount * primitivesPerInstance;
             GLuint64 written = MIN(prims,
-                xfbWrittenBytes / ((GLuint64)outStride * vpp));
+                xfbWrittenBytes / ((GLuint64)xfbCompactStride * vpp));
             mglRecordActivePrimitiveQueryDraw(glm_ctx, prims, written);
         }
         return NO;
@@ -1856,11 +1907,11 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     _currentCBHasWork = YES;
     GLuint64 prims = (GLuint64)instanceCount * primitivesPerInstance;
     GLuint64 written = prims;
-    if (xfbActive && xfbWrittenBytes > 0u) {
+    if (xfbActive) {
         const GLuint64 vpp = pointMode ? 1u
             : (genMode == GL_ISOLINES ? 2u : 3u);
         written = MIN(written, xfbWrittenBytes /
-                               ((GLuint64)outStride * vpp));
+                               ((GLuint64)xfbCompactStride * vpp));
     }
     mglRecordActivePrimitiveQueryDraw(glm_ctx, prims, written);
     _tessellation.tessComputeActive = NO;

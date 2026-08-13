@@ -266,7 +266,7 @@ static int verifyBufferBinding(void) {
         fprintf(stderr, "FAIL: C++ small dirty contents\n");
         return 1;
     }
-    smallDirty.access = GL_MAP_COHERENT_BIT;
+    smallDirty.access_flags = GL_MAP_COHERENT_BIT;
     smallDirty.data.dirty_bits = DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR;
     smallSource[0] = 115u;
     if (mglRenderCppUpdateDirtyBuffer(

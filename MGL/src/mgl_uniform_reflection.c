@@ -646,7 +646,10 @@ void mglAssignAggregateMemberLocations(Program *program)
                     if (!assigned[assigned_count].name) {
                         goto cleanup;
                     }
-                    location = next_location++;
+                    GLint location_span = member->size > 1
+                        ? member->size : 1;
+                    location = next_location;
+                    next_location += location_span;
                     assigned[assigned_count].location = location;
                     assigned_count++;
                 }
