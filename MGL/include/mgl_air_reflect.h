@@ -5,8 +5,7 @@
  * Reflection export for the self-hosted GLSL frontend (MGLIRModule ->
  * MGLShaderResourceList).  The AIR backend produces metallib bitcode with no
  * reflection payload, so the GL query layer and per-draw binding paths
- * get their resource tables from this exporter instead of the historical
- * SPIRV-Cross lowering.)
+ * get their resource tables from this exporter.)
  */
 
 #ifndef MGL_AIR_REFLECT_H

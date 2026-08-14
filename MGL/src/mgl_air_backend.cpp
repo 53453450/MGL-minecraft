@@ -63,6 +63,7 @@
 #include "mgl_air_reflect.h"
 #include "mgl_buffer_slots.h"
 #include "mgl_shader_abi.h"
+#include "glm_limits.h" /* MAX_ATTRIBS: attrib_names contract size */
 #include "mgl_air_gs_abi.h"
 #include "mgl_air_tess_abi.h"
 
@@ -5523,7 +5524,7 @@ void addModuleFlags(llvm::Module *m) {
 static uint32_t airAttribLocation(const char *name,
                                   const char *const *attrib_names) {
     if (name && attrib_names) {
-        for (int i = 0; i < 32; i++) {
+        for (int i = 0; i < MAX_ATTRIBS; i++) {
             if (attrib_names[i] && strcmp(attrib_names[i], name) == 0) {
                 return (uint32_t)i;
             }

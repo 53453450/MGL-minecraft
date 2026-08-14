@@ -17,6 +17,7 @@
 #include <string.h>
 
 #include "mgl_uniform_reflection.h"
+#include "glm_limits.h" /* MAX_ATTRIBS: attrib_names contract size */
 
 GLuint mglAirGLTypeFromIR(const MGLIRType *t)
 {
@@ -302,7 +303,7 @@ static uint32_t air_reflect_attrib_location(const char *name,
                                              const char *const *attrib_names)
 {
     if (name && attrib_names) {
-        for (int i = 0; i < 32; i++) {
+        for (int i = 0; i < MAX_ATTRIBS; i++) {
             if (attrib_names[i] && strcmp(attrib_names[i], name) == 0) {
                 return (uint32_t)i;
             }

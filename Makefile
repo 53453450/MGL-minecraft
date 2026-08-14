@@ -21,9 +21,13 @@ CFLAGS += -Wall #-Wunused-parameter #-Wextra
 CFLAGS += -gfull
 CFLAGS += -O2
 #CFLAGS += -00
-# Disable AddressSanitizer for production - causes crashes when loaded via dlopen()
-#CFLAGS += -fsanitize=address
-#LIBS += -fsanitize=address
+# Sanitizer builds: `make SANITIZE=address lib` (or =thread).  Production
+# builds stay unsanitized; ASan-loaded dylibs are known to crash under
+# dlopen() so sanitized runs use the standalone regression binary.
+ifdef SANITIZE
+CFLAGS += -fsanitize=$(SANITIZE) -fno-omit-frame-pointer
+LIBS += -fsanitize=$(SANITIZE)
+endif
 CFLAGS += -arch $(HOST_ARCH)
 LIBS += -arch $(HOST_ARCH)
 
