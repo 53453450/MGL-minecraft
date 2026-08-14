@@ -3129,6 +3129,16 @@ static id<MTLRenderPipelineState> mglLookupCppAuxRenderPipeline(
 
     ctx = glm_ctx;
 
+    /* Replay pending deferred draw batches BEFORE the blit reads the source
+     * attachment: draws are queued into the batch buffer and encoded only at
+     * flush points (draw/FBO-switch/swap/finish).  FBO bind switches skip
+     * this flush while deferFboRotation is active (batches carry their own
+     * FBO snapshot), so glBlitFramebuffer right after a draw would otherwise
+     * copy stale pre-draw content.  Mirrors mtlInvalidateRenderPass (flush +
+     * end encoding); no-op when the batch buffer is empty. */
+    [self flushDrawBuffer:glm_ctx];
+    [self endRenderEncoding];
+
     mask = [self blitFramebufferDepthStencil:glm_ctx
                                        srcX0:srcX0 srcY0:srcY0 srcX1:srcX1 srcY1:srcY1
                                        dstX0:dstX0 dstY0:dstY0 dstX1:dstX1 dstY1:dstY1

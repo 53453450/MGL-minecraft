@@ -4637,18 +4637,22 @@ output->name, (unsigned)i,
         pipelineStateDescriptor.colorAttachments[0].pixelFormat = fallbackColor0;
     }
 
+    /* Owner-first attachment readers (gate-on: C++ owner; gate-off: ObjC
+     * descriptor mirror).  The old guard required the ObjC descriptor to
+     * exist, which skipped MSAA alignment entirely under gate-on
+     * (renderPassDescriptor == nil) and left rasterSampleCount = 1 in a
+     * 4x pass -> draws wrote a single sample of four, so resolves came
+     * back at 25% coverage. */
     NSUInteger resolvedSampleCount = 1;
-    if (_renderPassManager.state->renderPassDescriptor) {
-        id<MTLTexture> rpColor0 = mglRenderPassColorTextureFor(_renderPassManager.state, 0);
-        id<MTLTexture> rpDepth = mglRenderPassDepthTextureFor(_renderPassManager.state);
-        id<MTLTexture> rpStencil = mglRenderPassStencilTextureFor(_renderPassManager.state);
-        if (rpColor0 && rpColor0.sampleCount > 0) {
-            resolvedSampleCount = rpColor0.sampleCount;
-        } else if (rpDepth && rpDepth.sampleCount > 0) {
-            resolvedSampleCount = rpDepth.sampleCount;
-        } else if (rpStencil && rpStencil.sampleCount > 0) {
-            resolvedSampleCount = rpStencil.sampleCount;
-        }
+    id<MTLTexture> rpColor0 = mglRenderPassColorTextureFor(_renderPassManager.state, 0);
+    id<MTLTexture> rpDepth = mglRenderPassDepthTextureFor(_renderPassManager.state);
+    id<MTLTexture> rpStencil = mglRenderPassStencilTextureFor(_renderPassManager.state);
+    if (rpColor0 && rpColor0.sampleCount > 0) {
+        resolvedSampleCount = rpColor0.sampleCount;
+    } else if (rpDepth && rpDepth.sampleCount > 0) {
+        resolvedSampleCount = rpDepth.sampleCount;
+    } else if (rpStencil && rpStencil.sampleCount > 0) {
+        resolvedSampleCount = rpStencil.sampleCount;
     }
     if (resolvedSampleCount == 0) {
         resolvedSampleCount = 1;
@@ -5046,18 +5050,22 @@ output->name, (unsigned)i,
 
     /* rasterSampleCount：与 render pass attachment 的 sample count 对齐
      * （默认 1）。 */
+    /* Owner-first attachment readers (gate-on: C++ owner; gate-off: ObjC
+     * descriptor mirror).  The old guard required the ObjC descriptor to
+     * exist, which skipped MSAA alignment entirely under gate-on
+     * (renderPassDescriptor == nil) and left rasterSampleCount = 1 in a
+     * 4x pass -> draws wrote a single sample of four, so resolves came
+     * back at 25% coverage. */
     NSUInteger resolvedSampleCount = 1;
-    if (_renderPassManager.state->renderPassDescriptor) {
-        id<MTLTexture> rpColor0 = mglRenderPassColorTextureFor(_renderPassManager.state, 0);
-        id<MTLTexture> rpDepth = mglRenderPassDepthTextureFor(_renderPassManager.state);
-        id<MTLTexture> rpStencil = mglRenderPassStencilTextureFor(_renderPassManager.state);
-        if (rpColor0 && rpColor0.sampleCount > 0) {
-            resolvedSampleCount = rpColor0.sampleCount;
-        } else if (rpDepth && rpDepth.sampleCount > 0) {
-            resolvedSampleCount = rpDepth.sampleCount;
-        } else if (rpStencil && rpStencil.sampleCount > 0) {
-            resolvedSampleCount = rpStencil.sampleCount;
-        }
+    id<MTLTexture> rpColor0 = mglRenderPassColorTextureFor(_renderPassManager.state, 0);
+    id<MTLTexture> rpDepth = mglRenderPassDepthTextureFor(_renderPassManager.state);
+    id<MTLTexture> rpStencil = mglRenderPassStencilTextureFor(_renderPassManager.state);
+    if (rpColor0 && rpColor0.sampleCount > 0) {
+        resolvedSampleCount = rpColor0.sampleCount;
+    } else if (rpDepth && rpDepth.sampleCount > 0) {
+        resolvedSampleCount = rpDepth.sampleCount;
+    } else if (rpStencil && rpStencil.sampleCount > 0) {
+        resolvedSampleCount = rpStencil.sampleCount;
     }
     if (resolvedSampleCount == 0) {
         resolvedSampleCount = 1;

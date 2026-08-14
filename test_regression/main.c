@@ -39,7 +39,7 @@
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 63
+#define MAX_TESTS 64
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -3465,6 +3465,188 @@ static int test_multibatch_same_fbo(unsigned char *pixels, const char *out_path)
     glDeleteProgram(pR); glDeleteProgram(pG); glDeleteProgram(pB);
     glDeleteFramebuffers(1, &fbo);
     glDeleteTextures(1, &tex);
+    return 0;
+}
+
+/* ---- MSAA resolve + FBO switch (P4.4 coverage) ----
+ * Render into a 4x multisample FBO, glBlitFramebuffer the MSAA color
+ * attachment into a single-sample FBO (GL's multisample->single-sample
+ * resolve path), and verify the resolved pixels.  Segment B re-renders the
+ * MSAA FBO after the resolve blit and FBO switch, proving the multisample
+ * target stays renderable. */
+static int test_air_msaa_resolve(unsigned char *pixels, const char *out_path)
+{
+    (void)out_path;
+    const int SAMPLES = 4;
+
+    /* MSAA source FBO: 4x color + 4x depth renderbuffers. */
+    GLuint msaaFbo = 0, msaaColor = 0, msaaDepth = 0;
+    glGenFramebuffers(1, &msaaFbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, msaaFbo);
+    glGenRenderbuffers(1, &msaaColor);
+    glBindRenderbuffer(GL_RENDERBUFFER, msaaColor);
+    glRenderbufferStorageMultisample(GL_RENDERBUFFER, SAMPLES, GL_RGBA8,
+                                     REG_W, REG_H);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                              GL_RENDERBUFFER, msaaColor);
+    glGenRenderbuffers(1, &msaaDepth);
+    glBindRenderbuffer(GL_RENDERBUFFER, msaaDepth);
+    glRenderbufferStorageMultisample(GL_RENDERBUFFER, SAMPLES,
+                                     GL_DEPTH_COMPONENT24, REG_W, REG_H);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                              GL_RENDERBUFFER, msaaDepth);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        fprintf(stderr, "air_msaa_resolve: MSAA FBO incomplete\n");
+        return 1;
+    }
+
+    /* Single-sample destination FBOs (resolved images). */
+    GLuint dstA = 0, dstATex = 0, dstB = 0, dstBTex = 0;
+    dstA = make_fbo(REG_W, REG_H, &dstATex);
+    dstB = make_fbo(REG_W, REG_H, &dstBTex);
+    if (!dstA || !dstB) return 1;
+
+    GLuint progRed = link_program(
+        "#version 330 core\n"
+        "layout(location = 0) in vec2 a_pos;\n"
+        "void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }\n",
+        "#version 330 core\n"
+        "out vec4 frag;\n"
+        "void main() { frag = vec4(1.0, 0.0, 0.0, 1.0); }\n");
+    GLuint progGreen = link_program(
+        "#version 330 core\n"
+        "layout(location = 0) in vec2 a_pos;\n"
+        "void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }\n",
+        "#version 330 core\n"
+        "out vec4 frag;\n"
+        "void main() { frag = vec4(0.0, 1.0, 0.0, 1.0); }\n");
+    if (!progRed || !progGreen) return 2;
+
+    GLuint vao;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    GLuint vbo = make_vbo(TRI_VERTS, sizeof(TRI_VERTS));
+    glEnableVertexAttribArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+
+    glViewport(0, 0, REG_W, REG_H);
+    glDisable(GL_SCISSOR_TEST);
+
+    /* Segment A: red triangle into the MSAA FBO, then resolve-blit to dstA. */
+    glBindFramebuffer(GL_FRAMEBUFFER, msaaFbo);
+    clear_color(0.05f, 0.05f, 0.3f); /* dark blue background */
+    glUseProgram(progRed);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, msaaFbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, dstA);
+    glBlitFramebuffer(0, 0, REG_W, REG_H, 0, 0, REG_W, REG_H,
+                      GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    glFinish();
+    glBindFramebuffer(GL_FRAMEBUFFER, dstA);
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        /* Triangle (-0.6,-0.6) (0.6,-0.6) (0,0.6): interior probes. */
+        static const float probes[3][2] = {
+            { -0.35f, -0.35f }, { 0.35f, -0.35f }, { 0.0f, 0.35f },
+        };
+        for (int i = 0; i < 3; i++) {
+            const int sx = (int)((probes[i][0] + 1.0f) * 0.5f * REG_W);
+            const int sy = (int)((probes[i][1] + 1.0f) * 0.5f * REG_H);
+            int found = 0;
+            for (int dy = -2; dy <= 2 && !found; dy++) {
+                for (int dx = -2; dx <= 2; dx++) {
+                    const int px = sx + dx, py = sy + dy;
+                    if (px < 0 || px >= REG_W || py < 0 || py >= REG_H) continue;
+                    const unsigned char *c = &pixels[(py * REG_W + px) * 4];
+                    if (c[0] >= 200u && c[1] <= 60u && c[2] <= 60u) {
+                        found = 1;
+                        break;
+                    }
+                }
+            }
+            if (!found) {
+                fprintf(stderr,
+                        "air_msaa_resolve: seg A probe %d not red at (%d,%d)\n",
+                        i, sx, sy);
+                return 3;
+            }
+        }
+        /* Exterior probe must stay the clear color (resolve did not smear). */
+        const int ex = (int)((-0.8f + 1.0f) * 0.5f * REG_W);
+        const int ey = (int)((0.0f + 1.0f) * 0.5f * REG_H);
+        const unsigned char *c = &pixels[(ey * REG_W + ex) * 4];
+        if (!(c[0] <= 60u && c[1] <= 60u && c[2] >= 50u)) {
+            fprintf(stderr,
+                    "air_msaa_resolve: seg A exterior not clear at (%d,%d) "
+                    "rgb=(%u,%u,%u)\n",
+                    ex, ey, c[0], c[1], c[2]);
+            return 4;
+        }
+    }
+
+    /* Segment B: re-render the MSAA FBO (green triangle) after the resolve
+     * blit + FBO switch, resolve to dstB, verify green interior + clear
+     * exterior.  Proves the multisample target stays renderable. */
+    glBindFramebuffer(GL_FRAMEBUFFER, msaaFbo);
+    clear_color(0.3f, 0.05f, 0.05f); /* dark red background */
+    glUseProgram(progGreen);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, msaaFbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, dstB);
+    glBlitFramebuffer(0, 0, REG_W, REG_H, 0, 0, REG_W, REG_H,
+                      GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    glFinish();
+    glBindFramebuffer(GL_FRAMEBUFFER, dstB);
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        static const float probes[3][2] = {
+            { -0.35f, -0.35f }, { 0.35f, -0.35f }, { 0.0f, 0.35f },
+        };
+        for (int i = 0; i < 3; i++) {
+            const int sx = (int)((probes[i][0] + 1.0f) * 0.5f * REG_W);
+            const int sy = (int)((probes[i][1] + 1.0f) * 0.5f * REG_H);
+            int found = 0;
+            for (int dy = -2; dy <= 2 && !found; dy++) {
+                for (int dx = -2; dx <= 2; dx++) {
+                    const int px = sx + dx, py = sy + dy;
+                    if (px < 0 || px >= REG_W || py < 0 || py >= REG_H) continue;
+                    const unsigned char *c = &pixels[(py * REG_W + px) * 4];
+                    if (c[0] <= 60u && c[1] >= 200u && c[2] <= 60u) {
+                        found = 1;
+                        break;
+                    }
+                }
+            }
+            if (!found) {
+                fprintf(stderr,
+                        "air_msaa_resolve: seg B probe %d not green at (%d,%d)\n",
+                        i, sx, sy);
+                return 5;
+            }
+        }
+        const int ex = (int)((-0.8f + 1.0f) * 0.5f * REG_W);
+        const int ey = (int)((0.0f + 1.0f) * 0.5f * REG_H);
+        const unsigned char *c = &pixels[(ey * REG_W + ex) * 4];
+        if (!(c[0] >= 50u && c[1] <= 60u && c[2] <= 60u)) {
+            fprintf(stderr,
+                    "air_msaa_resolve: seg B exterior not clear at (%d,%d)\n",
+                    ex, ey);
+            return 6;
+        }
+    }
+
+    glDeleteVertexArrays(1, &vao);
+    glDeleteBuffers(1, &vbo);
+    glDeleteProgram(progRed);
+    glDeleteProgram(progGreen);
+    glDeleteFramebuffers(1, &msaaFbo);
+    glDeleteRenderbuffers(1, &msaaColor);
+    glDeleteRenderbuffers(1, &msaaDepth);
+    glDeleteFramebuffers(1, &dstA);
+    glDeleteFramebuffers(1, &dstB);
+    glDeleteTextures(1, &dstATex);
+    glDeleteTextures(1, &dstBTex);
     return 0;
 }
 
@@ -8885,6 +9067,7 @@ static const TestCase TESTS[] = {
     GOLDEN_TEST("multipass_resume",       test_multipass_resume),
     GOLDEN_TEST("dontcare_fullscreen",    test_dontcare_fullscreen),
     GOLDEN_TEST("multibatch_same_fbo",    test_multibatch_same_fbo),
+    SELF_CHECK_TEST("air_msaa_resolve",   test_air_msaa_resolve),
     GOLDEN_TEST("rtt_sample",             test_render_to_texture_sample),
     SELF_CHECK_TEST("air_query_scissor_occluded",
                     test_air_query_scissor_occluded),
