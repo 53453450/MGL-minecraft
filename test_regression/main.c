@@ -4078,6 +4078,41 @@ static int test_legacy_glsl_frontend(unsigned char *pixels, const char *out_path
         }
     }
 
+    /* Segment J: gl_FragData[0]-only fragment shader.  The common legacy
+     * single-buffer pattern must map to the scalar color output (the
+     * translator rewrites index-0 writes to _mglFragColor) and render to
+     * the single color attachment. */
+    {
+        const char *vs110d =
+            "#version 110\n"
+            "void main() {\n"
+            "    gl_Position = ftransform();\n"
+            "}\n";
+        const char *fs110d =
+            "#version 110\n"
+            "void main() {\n"
+            "    gl_FragData[0] = vec4(1.0, 0.0, 0.0, 1.0);\n"
+            "}\n";
+        GLuint progJ = link_program(vs110d, fs110d);
+        if (!progJ) {
+            fprintf(stderr, "legacy_glsl_frontend: link failed (segment J)\n");
+            return 27;
+        }
+        glUseProgram(progJ);
+        clear_color(0.0f, 0.0f, 0.0f);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glFinish();
+        glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        const unsigned char *j =
+            &pixels[((REG_H/2) * REG_W + REG_W/2) * 4];
+        if (j[0] < 200u || j[1] > 60u || j[2] > 60u) {
+            fprintf(stderr,
+                    "legacy_glsl_frontend: seg J probe not red "
+                    "rgb=(%u,%u,%u)\n", j[0], j[1], j[2]);
+            return 28;
+        }
+    }
+
     glDeleteTextures(1, &redTex);
     glDeleteFramebuffers(1, &fbo);
     glDeleteTextures(1, &tex);

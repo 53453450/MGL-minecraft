@@ -211,6 +211,53 @@ static void test_translate_fragdata_120(void)
     check(not_contains(buf, "gl_FragData"), "no gl_FragData left", NULL);
 }
 
+static void test_translate_fragdata_index0_110(void)
+{
+    printf("\n=== test_translate_fragdata_index0_110 ===\n");
+    /* The common legacy pattern: every gl_FragData write is at index 0
+     * (maps to the single color attachment).  The translator rewrites the
+     * index-0 writes to the scalar _mglFragColor output so the single
+     * render-target path works end to end. */
+    const char *src =
+        "#version 110\n"
+        "void main() {\n"
+        "    gl_FragData[0] = vec4(1.0, 0.0, 0.0, 1.0);\n"
+        "}\n";
+
+    char buf[BUF_SIZE];
+    copy_to_buf(src, buf, BUF_SIZE);
+
+    int ret = mgl_translate_legacy_glsl(buf, BUF_SIZE, GL_FRAGMENT_SHADER, 110, NULL);
+    check(ret == 1, "translate returns 1", NULL);
+    check(contains(buf, "_mglFragColor = vec4(1.0, 0.0, 0.0, 1.0);"), "gl_FragData[0] rewritten to _mglFragColor", NULL);
+    check(contains(buf, "layout(location = 0) out vec4 _mglFragColor;"), "scalar frag color decl injected", NULL);
+    check(not_contains(buf, "_mglFragData"), "no _mglFragData array left", NULL);
+    check(not_contains(buf, "gl_FragData"), "no gl_FragData left", NULL);
+}
+
+static void test_translate_fragdata_mixed_index_110(void)
+{
+    printf("\n=== test_translate_fragdata_mixed_index_110 ===\n");
+    /* Any non-zero index keeps the array form (real MRT is a later
+     * concern; the array path must stay intact for index > 0). */
+    const char *src =
+        "#version 110\n"
+        "void main() {\n"
+        "    gl_FragData[0] = vec4(1.0);\n"
+        "    gl_FragData[1] = vec4(0.0, 1.0, 0.0, 1.0);\n"
+        "}\n";
+
+    char buf[BUF_SIZE];
+    copy_to_buf(src, buf, BUF_SIZE);
+
+    int ret = mgl_translate_legacy_glsl(buf, BUF_SIZE, GL_FRAGMENT_SHADER, 110, NULL);
+    check(ret == 1, "translate returns 1", NULL);
+    check(contains(buf, "_mglFragData[0]"), "gl_FragData[0] renamed", NULL);
+    check(contains(buf, "_mglFragData[1]"), "gl_FragData[1] renamed", NULL);
+    check(contains(buf, "layout(location = 0) out vec4 _mglFragData["), "array decl kept", NULL);
+    check(not_contains(buf, "_mglFragColor ="), "no scalar rewrite for mixed index", NULL);
+}
+
 static void test_translate_texcoord_110(void)
 {
     printf("\n=== test_translate_texcoord_110 ===\n");
@@ -814,6 +861,8 @@ int main(void)
     test_translate_vertex_110();
     test_translate_fragment_110();
     test_translate_fragdata_120();
+    test_translate_fragdata_index0_110();
+    test_translate_fragdata_mixed_index_110();
     test_translate_texcoord_110();
     test_translate_texture_funcs();
     test_translate_texture2DProj();

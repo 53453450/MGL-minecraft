@@ -145,6 +145,41 @@ static bool code_contains(const char *src, const char *needle)
 
 /* ---- Identifier-aware replacement ---- */
 
+static void replace_literal(char *src, size_t src_capacity,
+                            const char *needle, const char *replacement)
+{
+    /* Literal substring replacement (no identifier-boundary check) — for
+     * rewriting bracketed forms such as "_mglFragData[0]". */
+    if (!src || !needle || !replacement || src_capacity == 0) return;
+
+    size_t needle_len = strlen(needle);
+    size_t replacement_len = strlen(replacement);
+    if (needle_len == 0) return;
+
+    long diff = (long)replacement_len - (long)needle_len;
+    char *cursor = src;
+
+    while ((cursor = strstr(cursor, needle)) != NULL) {
+        if (diff > 0) {
+            size_t tail_len = strlen(cursor + needle_len);
+            size_t used = (size_t)(cursor - src) + needle_len + tail_len + 1;
+            if (used + (size_t)diff > src_capacity) {
+                cursor += needle_len;
+                continue;
+            }
+            memmove(cursor + replacement_len,
+                    cursor + needle_len,
+                    tail_len + 1);
+        } else if (diff < 0) {
+            memmove(cursor + replacement_len,
+                    cursor + needle_len,
+                    strlen(cursor + needle_len) + 1);
+        }
+        memcpy(cursor, replacement, replacement_len);
+        cursor += replacement_len;
+    }
+}
+
 static void replace_identifier(char *src, size_t src_capacity,
                                const char *needle, const char *replacement)
 {
@@ -461,6 +496,9 @@ int mgl_translate_legacy_glsl(char *src,
     if (!features->needs_translation) return 0;
 
     int modified = 0;
+    /* gl_FragData[0]-only rewrite state (see Step 3); consumed by the
+     * fragment-output declaration injection in Step 4. */
+    bool fragdataOnlyIndex0 = false;
     bool is_vertex = (shader_type == GL_VERTEX_SHADER);
     bool is_fragment = (shader_type == GL_FRAGMENT_SHADER);
 
@@ -539,6 +577,30 @@ int mgl_translate_legacy_glsl(char *src,
         replace_identifier(src, src_capacity,
                            "gl_FragData", "_mglFragData");
         modified = 1;
+
+        /* gl_FragData[0]-only shaders (the common legacy pattern, incl.
+         * "#define gl_FragColor gl_FragData[0]" ports): rewrite index-0
+         * writes to the scalar color output so the single color-attachment
+         * path works end to end.  Any non-zero or dynamic index keeps the
+         * array form — the AIR backend cannot codegen array fragment
+         * outputs (index > 0 needs real MRT, a later concern). */
+        fragdataOnlyIndex0 = true;
+        {
+            const char *p = src;
+            while ((p = strstr(p, "_mglFragData[")) != NULL) {
+                const char *idx = p + 13; /* strlen("_mglFragData[") */
+                if (*idx != '0' || idx[1] != ']') {
+                    fragdataOnlyIndex0 = false;
+                    break;
+                }
+                p = idx + 2;
+            }
+        }
+        if (fragdataOnlyIndex0) {
+            replace_literal(src, src_capacity,
+                            "_mglFragData[0]", "_mglFragColor");
+            modified = 1;
+        }
     }
 
     /* Other builtin variables (table-driven) */
@@ -630,9 +692,16 @@ int mgl_translate_legacy_glsl(char *src,
 
     /* gl_FragColor / gl_FragData (fragment outputs, mutually exclusive) */
     if (features->has_gl_FragData && is_fragment) {
-        off += (size_t)snprintf(preamble + off, sizeof(preamble) - off,
-            "layout(location = 0) out vec4 _mglFragData[%d];\n",
-            MGL_LEGACY_MAX_DRAW_BUFFERS);
+        if (fragdataOnlyIndex0) {
+            /* All gl_FragData writes were at index 0 and were rewritten to
+             * the scalar _mglFragColor in Step 3. */
+            off += (size_t)snprintf(preamble + off, sizeof(preamble) - off,
+                "layout(location = 0) out vec4 _mglFragColor;\n");
+        } else {
+            off += (size_t)snprintf(preamble + off, sizeof(preamble) - off,
+                "layout(location = 0) out vec4 _mglFragData[%d];\n",
+                MGL_LEGACY_MAX_DRAW_BUFFERS);
+        }
     } else if (features->has_gl_FragColor && is_fragment) {
         off += (size_t)snprintf(preamble + off, sizeof(preamble) - off,
             "layout(location = 0) out vec4 _mglFragColor;\n");
