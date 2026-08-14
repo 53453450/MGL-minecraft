@@ -3916,6 +3916,59 @@ static int test_legacy_glsl_frontend(unsigned char *pixels, const char *out_path
         }
     }
 
+    /* Segment F: classic legacy texture flow.  VS feeds the builtin varying
+     * gl_TexCoord[0] from the implicit gl_MultiTexCoord0 attribute; the FS
+     * samples texture2D() with gl_TexCoord[0].xy.  Exercises the
+     * gl_MultiTexCoord0/gl_TexCoord renames + declarations in both stages
+     * and the texture2D -> texture rewrite, end to end. */
+    {
+        const char *vs110t =
+            "#version 110\n"
+            "void main() {\n"
+            "    gl_TexCoord[0] = gl_MultiTexCoord0;\n"
+            "    gl_Position = ftransform();\n"
+            "}\n";
+        const char *fs110t =
+            "#version 110\n"
+            "uniform sampler2D u_tex;\n"
+            "void main() {\n"
+            "    gl_FragColor = texture2D(u_tex, gl_TexCoord[0].xy);\n"
+            "}\n";
+        GLuint progF = link_program(vs110t, fs110t);
+        if (!progF) {
+            fprintf(stderr, "legacy_glsl_frontend: link failed (segment F)\n");
+            return 18;
+        }
+        GLint texLocF = glGetUniformLocation(progF, "u_tex");
+        /* Bind the red 1x1 texture; texcoords come from the legacy
+         * fixed-function slot 8 (gl_MultiTexCoord0) — a tiny UV stream. */
+        static const float uvsF[6] = {
+            0.0f, 0.0f,  1.0f, 0.0f,  0.0f, 1.0f,
+        };
+        GLuint uvVBO = 0;
+        glGenBuffers(1, &uvVBO);
+        glBindBuffer(GL_ARRAY_BUFFER, uvVBO);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(uvsF), uvsF, GL_STATIC_DRAW);
+        glEnableVertexAttribArray(8);
+        glVertexAttribPointer(8, 2, GL_FLOAT, GL_FALSE, 0, NULL);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, redTex);
+        glUseProgram(progF);
+        if (texLocF >= 0) glUniform1i(texLocF, 0);
+        clear_color(0.0f, 0.0f, 0.0f);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glFinish();
+        glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        const unsigned char *f =
+            &pixels[((REG_H/2) * REG_W + REG_W/2) * 4];
+        if (f[0] < 200u || f[1] > 60u || f[2] > 60u) {
+            fprintf(stderr,
+                    "legacy_glsl_frontend: seg F probe not red "
+                    "rgb=(%u,%u,%u)\n", f[0], f[1], f[2]);
+            return 20;
+        }
+    }
+
     glDeleteTextures(1, &redTex);
     glDeleteFramebuffers(1, &fbo);
     glDeleteTextures(1, &tex);

@@ -4858,10 +4858,23 @@ llvm::Value *assembleReturn(Codegen &cg) {
                 ret = cg.b->CreateInsertValue(ret, viewportIndex, ri++);
             }
             for (uint32_t i = 0; i < cg.varyings.size(); i++) {
-                llvm::Value *vv = cg.lvalues.count(cg.varyings[i]->name)
-                                      ? cg.lvalues[cg.varyings[i]->name]
-                                      : llvm::UndefValue::get(cg.retElems[ri]);
-                ret = cg.b->CreateInsertValue(ret, vv, ri++);
+                VarSym *var = cg.varyings[i];
+                llvm::Value *base = cg.lvalues.count(var->name)
+                    ? cg.lvalues[var->name]
+                    : llvm::UndefValue::get(llvmType(var->type, *cg.ctx));
+                if (var->type.isArray()) {
+                    /* Flattened: one return field per element. */
+                    uint32_t n = (uint32_t)var->type.arr;
+                    for (uint32_t k = 0; k < n; k++) {
+                        llvm::Value *el = base;
+                        if (base->getType()->isArrayTy()) {
+                            el = cg.b->CreateExtractValue(base, k);
+                        }
+                        ret = cg.b->CreateInsertValue(ret, el, ri++);
+                    }
+                } else {
+                    ret = cg.b->CreateInsertValue(ret, base, ri++);
+                }
             }
             return ret;
         }
@@ -6100,8 +6113,22 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         }
         for (VarSym &v : syms) {
             if (v.kind == VarSym::VARYING) {
-                if (!isTessCapture)
-                    retElems.push_back(llvmType(v.type, ctx));
+                if (!isTessCapture) {
+                    /* Metal stage-out structs forbid array members
+                     * ("field of illegal type 'float4[N]'"), so array
+                     * varyings are flattened into per-element scalar
+                     * fields; assembleReturn and the metadata emit one
+                     * entry per element with element-specific interface
+                     * names (name_elmN) on both stages. */
+                    if (v.type.isArray()) {
+                        MType el = v.type;
+                        el.arr = 0;
+                        for (uint32_t i = 0; i < (uint32_t)v.type.arr; i++)
+                            retElems.push_back(llvmType(el, ctx));
+                    } else {
+                        retElems.push_back(llvmType(v.type, ctx));
+                    }
+                }
                 varyings.push_back(&v);
             }
         }
@@ -6196,8 +6223,18 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         paramTys.push_back(tt->getPointerTo(1));
     }
     for (VarSym &v : syms) {
-        if (!isVS && !isTES && !isKernel && v.kind == VarSym::VARYING)
-            paramTys.push_back(llvmType(v.type, ctx));
+        if (!isVS && !isTES && !isKernel && v.kind == VarSym::VARYING) {
+            if (v.type.isArray()) {
+                /* Flattened stage-in: N scalar params (Metal forbids array
+                 * stage-in members; the setup binds one arg per element). */
+                MType el = v.type;
+                el.arr = 0;
+                for (uint32_t k = 0; k < (uint32_t)v.type.arr; k++)
+                    paramTys.push_back(llvmType(el, ctx));
+            } else {
+                paramTys.push_back(llvmType(v.type, ctx));
+            }
+        }
     }
     if (isVS && isCapture) {
         /* XFB capture variant: attributes trail all buffers (see above). */
@@ -6417,8 +6454,39 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     }
     for (VarSym &v : syms) {
         if ((isVS && isCapture && v.kind == VarSym::ATTR) ||
-            (!isVS && !isTES && !isKernel && v.kind == VarSym::VARYING))
-            cg.lvalues[v.name] = fn->getArg(argSlot++);
+            (!isVS && !isTES && !isKernel && v.kind == VarSym::VARYING)) {
+            if (v.kind == VarSym::VARYING && v.type.isArray()) {
+                /* Flattened (FS stage-in): N scalar args assembled into a
+                 * single aggregate lvalue so the read paths (readIndexChain
+                 * / swizzles) keep working unchanged. */
+                MType el = v.type;
+                el.arr = 0;
+                llvm::Type *aggTy = llvmType(v.type, ctx);
+                llvm::Value *agg = llvm::UndefValue::get(aggTy);
+                uint32_t n = (uint32_t)v.type.arr;
+                for (uint32_t k = 0; k < n; k++) {
+                    llvm::Value *arg = fn->getArg(argSlot++);
+                    agg = cg.b->CreateInsertValue(agg, arg, k);
+                }
+                cg.lvalues[v.name] = agg;
+                (void)el;
+            } else {
+                cg.lvalues[v.name] = fn->getArg(argSlot++);
+            }
+        }
+    }
+    if (isVS && !isCapture) {
+        /* VS varyings (out) have no parameter backing; plain writes
+         * auto-create their lvalues, but indexed writes (e.g. legacy
+         * gl_TexCoord[i] -> out vec4 _mglTexCoord[8]) require a
+         * pre-registered aggregate.  Register an undef aggregate so the
+         * indexed-assign path can build into it; assembleReturn picks up
+         * the final value. */
+        for (VarSym &v : syms) {
+            if (v.kind != VarSym::VARYING) continue;
+            cg.lvalues[v.name] =
+                llvm::UndefValue::get(llvmType(v.type, ctx));
+        }
     }
     if (isTES && !isTESCompute) {
         cg.stageInPtr = fn->getArg(argSlot++);
@@ -7222,18 +7290,32 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         /* Vertex attributes are the first value arguments (Metal ABI:
          * stage_in value args precede buffers/textures). */
         uint32_t mArgSlot = 0;
-        uint32_t attrLoc = 0;
+        uint32_t nextFreeAttrLoc = 0;
         for (VarSym &v : syms) {
             if (v.kind != VarSym::ATTR) continue;
-            uint32_t want = airAttribLocation(v.name.c_str(), attrib_names);
-            if (want != UINT32_MAX) attrLoc = want;
+            /* The air.location_index must equal the location the reflector
+             * reports (mglAirReflectModule) — the renderer's vertex
+             * descriptor and draw-time bindings are driven by the reflected
+             * locations.  Priority: explicit layout(location=N) from the
+             * sema, then glBindAttribLocation/stable-name preferences, then
+             * the running declaration-order counter.  The previous code
+             * ignored explicit locations entirely (running counter only),
+             * which silently misaligned any shader with non-contiguous
+             * explicit attribute locations (the reflector said N, the
+             * metallib read [[attribute(k)]]). */
+            uint32_t attrLoc = v.location;
+            if (attrLoc == UINT32_MAX) {
+                uint32_t want = airAttribLocation(v.name.c_str(),
+                                                  attrib_names);
+                attrLoc = (want != UINT32_MAX) ? want : nextFreeAttrLoc;
+            }
             std::vector<llvm::Metadata *> elems = {
                 llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                     llvm::Type::getInt32Ty(ctx), mArgSlot++)),
                 llvm::MDString::get(ctx, "air.vertex_input"),
                 llvm::MDString::get(ctx, "air.location_index"),
                 llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(ctx), attrLoc++)),
+                    llvm::Type::getInt32Ty(ctx), attrLoc)),
                 llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                     llvm::Type::getInt32Ty(ctx), 1)),
                 llvm::MDString::get(ctx, "air.arg_type_name"),
@@ -7241,6 +7323,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 llvm::MDString::get(ctx, "air.arg_name"),
                 llvm::MDString::get(ctx, v.name)};
             argNodes.push_back(llvm::MDNode::get(ctx, elems));
+            nextFreeAttrLoc = std::max(nextFreeAttrLoc, attrLoc + 1u);
         }
     }
     if (isCapture) {
@@ -7732,20 +7815,39 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             llvm::MDString::get(ctx, "air.arg_name"),
             llvm::MDString::get(ctx, "patchId")}));
     } else if (!isKernel) {
-        for (VarSym &v : syms) {
-            if (v.kind != VarSym::VARYING) continue;
+        auto emitFSVarying = [&](const std::string &tagName,
+                                 const MType &mt, uint32_t argIdx) {
             std::vector<llvm::Metadata *> elems = {
                 llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(ctx), mArgSlot++)),
+                    llvm::Type::getInt32Ty(ctx), argIdx)),
                 llvm::MDString::get(ctx, "air.fragment_input"),
-                llvm::MDString::get(ctx, airGenerated(v.name, v.type)),
+                llvm::MDString::get(ctx,
+                                    airGenerated(tagName, mt)),
                 llvm::MDString::get(ctx, "air.center"),
                 llvm::MDString::get(ctx, "air.perspective"),
                 llvm::MDString::get(ctx, "air.arg_type_name"),
-                llvm::MDString::get(ctx, mslTypeName(v.type)),
+                llvm::MDString::get(ctx, mslTypeName(mt)),
                 llvm::MDString::get(ctx, "air.arg_name"),
-                llvm::MDString::get(ctx, v.name)};
+                llvm::MDString::get(ctx, tagName)};
             argNodes.push_back(llvm::MDNode::get(ctx, elems));
+        };
+        for (VarSym &v : syms) {
+            if (v.kind != VarSym::VARYING) continue;
+            if (v.type.isArray()) {
+                /* Flattened: one fragment_input per element, each with the
+                 * element-specific interface name (matches the VS side). */
+                MType el = v.type;
+                el.arr = 0;
+                uint32_t n = (uint32_t)v.type.arr;
+                std::string base = v.name;
+                for (uint32_t k = 0; k < n; k++) {
+                    std::string elName =
+                        base + "_elm" + std::to_string(k);
+                    emitFSVarying(elName, el, mArgSlot++);
+                }
+            } else {
+                emitFSVarying(v.name, v.type, mArgSlot++);
+            }
         }
         if (usesFragCoord) {
             if (hasBuffer) mArgSlot++;
@@ -7816,13 +7918,35 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 llvm::MDString::get(ctx, "mgl_viewport_index")}));
         }
         for (VarSym *v : varyings) {
-            outNodes.push_back(llvm::MDNode::get(ctx, {
-                llvm::MDString::get(ctx, "air.vertex_output"),
-                llvm::MDString::get(ctx, airGenerated(v->name, v->type)),
-                llvm::MDString::get(ctx, "air.arg_type_name"),
-                llvm::MDString::get(ctx, mslTypeName(v->type)),
-                llvm::MDString::get(ctx, "air.arg_name"),
-                llvm::MDString::get(ctx, v->name)}));
+            if (v->type.isArray()) {
+                /* Flattened (Metal forbids array stage-out members): one
+                 * vertex_output per element with the element-specific
+                 * interface name; the FS side emits the identical tags. */
+                MType el = v->type;
+                el.arr = 0;
+                std::string base = v->name;
+                uint32_t n = (uint32_t)v->type.arr;
+                for (uint32_t k = 0; k < n; k++) {
+                    std::string elName =
+                        base + "_elm" + std::to_string(k);
+                    outNodes.push_back(llvm::MDNode::get(ctx, {
+                        llvm::MDString::get(ctx, "air.vertex_output"),
+                        llvm::MDString::get(ctx,
+                                            airGenerated(elName, el)),
+                        llvm::MDString::get(ctx, "air.arg_type_name"),
+                        llvm::MDString::get(ctx, mslTypeName(el)),
+                        llvm::MDString::get(ctx, "air.arg_name"),
+                        llvm::MDString::get(ctx, elName)}));
+                }
+            } else {
+                outNodes.push_back(llvm::MDNode::get(ctx, {
+                    llvm::MDString::get(ctx, "air.vertex_output"),
+                    llvm::MDString::get(ctx, airGenerated(v->name, v->type)),
+                    llvm::MDString::get(ctx, "air.arg_type_name"),
+                    llvm::MDString::get(ctx, mslTypeName(v->type)),
+                    llvm::MDString::get(ctx, "air.arg_name"),
+                    llvm::MDString::get(ctx, v->name)}));
+            }
         }
     } else if (!isKernel) {
         VarSym *out = nullptr;

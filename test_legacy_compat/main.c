@@ -587,8 +587,8 @@ static void test_translate_gl_MultiTexCoord(void)
     check(ret == 1, "translate returns 1", NULL);
     check(contains(buf, "_mglMultiTexCoord0"), "gl_MultiTexCoord0 renamed", NULL);
     check(contains(buf, "_mglMultiTexCoord1"), "gl_MultiTexCoord1 renamed", NULL);
-    check(contains(buf, "in vec4 _mglMultiTexCoord0;"), "gl_MultiTexCoord0 decl injected", NULL);
-    check(contains(buf, "in vec4 _mglMultiTexCoord1;"), "gl_MultiTexCoord1 decl injected", NULL);
+    check(contains(buf, "layout(location = 8) in vec4 _mglMultiTexCoord0;"), "gl_MultiTexCoord0 decl at legacy slot 8", NULL);
+    check(contains(buf, "layout(location = 9) in vec4 _mglMultiTexCoord1;"), "gl_MultiTexCoord1 decl at slot 9", NULL);
     check(not_contains(buf, "gl_MultiTexCoord0"), "no gl_MultiTexCoord0 left", NULL);
     check(not_contains(buf, "gl_MultiTexCoord1"), "no gl_MultiTexCoord1 left", NULL);
 }
@@ -798,8 +798,8 @@ static void test_translate_ftransform(void)
           "MVP injected (source-guarded)", NULL);
     check(contains(buf, "layout(location = 0) in vec4 gl_Vertex;"),
           "gl_Vertex injected (source-guarded)", NULL);
-    check(contains(buf, "in vec4 _mglMultiTexCoord0;"),
-          "gl_MultiTexCoord0 declaration", NULL);
+    check(contains(buf, "layout(location = 8) in vec4 _mglMultiTexCoord0;"),
+          "gl_MultiTexCoord0 at legacy slot 8", NULL);
     check(contains(buf, "out vec4 _mglTexCoord["),
           "gl_TexCoord declaration (VS out)", NULL);
 }

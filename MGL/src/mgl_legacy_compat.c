@@ -652,7 +652,10 @@ int mgl_translate_legacy_glsl(char *src,
                 "%s %s %s;\n", dir, b->type, name);
         }
 
-        /* gl_MultiTexCoord0..7 declarations (VS attribute inputs only) */
+        /* gl_MultiTexCoord0..7 declarations (VS attribute inputs only).
+         * Legacy fixed-function slots: texcoord i binds at attribute
+         * location 8 + i, so legacy apps can bind texture data at the
+         * conventional slot without querying the (renamed) attribute. */
         if (is_vertex) {
             for (int i = 0; i < MGL_NUM_MULTITEXCOORD; i++) {
                 char modern[32];
@@ -662,9 +665,15 @@ int mgl_translate_legacy_glsl(char *src,
                 snprintf(legacy, sizeof(legacy), "gl_MultiTexCoord%d", i);
                 if (code_uses_identifier(src, legacy) ||
                     strstr(src, modern)) {
-                    off += (size_t)snprintf(preamble + off,
-                        sizeof(preamble) - off,
-                        "in vec4 %s;\n", modern);
+                    char located[64];
+                    snprintf(located, sizeof(located),
+                             "layout(location = %d) in vec4 %s;\n",
+                             8 + i, modern);
+                    if (!strstr(src, located)) {
+                        off += (size_t)snprintf(preamble + off,
+                            sizeof(preamble) - off,
+                            "%s", located);
+                    }
                 }
             }
         }
