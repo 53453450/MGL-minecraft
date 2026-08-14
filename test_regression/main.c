@@ -39,7 +39,7 @@
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 56
+#define MAX_TESTS 59
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -3893,6 +3893,160 @@ cleanup:
     return result;
 }
 
+/* GS writes gl_CullDistance per emitted vertex.  Primitive culling rule:
+ * a primitive is discarded only when EVERY vertex's cull distance for the
+ * same index is negative; any non-negative vertex keeps the primitive.
+ * Covers the array path (glDrawArrays(GL_POINTS)) and the element path
+ * (glDrawElements(GL_POINTS)) through the GS cull-distance capture in the
+ * batch replay (direct + deferred). */
+static int test_air_geometry_cull_distance(unsigned char *pixels,
+                                           const char *out_path)
+{
+    (void)out_path;
+    static const char *vs =
+        "#version 460 core\n"
+        "layout(location=0) in vec2 pos;\n"
+        "layout(location=1) in float cdsel;\n"
+        "layout(location=0) out float v_cdsel;\n"
+        "void main() {\n"
+        "  gl_Position = vec4(pos, 0.0, 1.0);\n"
+        "  v_cdsel = cdsel;\n"
+        "}\n";
+    static const char *gs =
+        "#version 460 core\n"
+        "layout(points) in;\n"
+        "layout(triangle_strip, max_vertices=3) out;\n"
+        "layout(location=0) in float v_cdsel[];\n"
+        "void main() {\n"
+        "  float sel = v_cdsel[0];\n"
+        "  float cd0 = (sel == 0.0) ? -1.0 : 1.0;\n"
+        "  float cd1 = (sel == 0.0) ? -1.0 : ((sel == 1.0) ? 1.0 : -1.0);\n"
+        "  float cd2 = (sel == 0.0) ? -1.0 : 1.0;\n"
+        "  gl_CullDistance[0] = cd0;\n"
+        "  gl_Position = vec4(gl_in[0].gl_Position.x - 0.28, -0.55, 0.0, 1.0); EmitVertex();\n"
+        "  gl_CullDistance[0] = cd1;\n"
+        "  gl_Position = vec4(gl_in[0].gl_Position.x + 0.28, -0.55, 0.0, 1.0); EmitVertex();\n"
+        "  gl_CullDistance[0] = cd2;\n"
+        "  gl_Position = vec4(gl_in[0].gl_Position.x, 0.5, 0.0, 1.0); EmitVertex();\n"
+        "  EndPrimitive();\n"
+        "}\n";
+    static const char *fs =
+        "#version 460 core\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(0.0, 1.0, 0.0, 1.0); }\n";
+
+    GLuint color = 0u;
+    GLuint fbo = make_fbo(REG_W, REG_H, &color);
+    GLuint program = link_program_with_geometry(vs, gs, fs);
+    GLuint vao = 0u, vbo = 0u, selbo = 0u, ebo = 0u;
+    int result = 1;
+    if (!fbo || !program) goto cleanup;
+
+    /* Three input points: x = -0.6 (sel 0 → all-negative → culled),
+     * x = 0.0 (sel 1 → all-positive → visible), x = 0.6 (sel 2 →
+     * mixed +1/-1/+1 → visible because not ALL vertices are negative). */
+    static const float positions[] = {
+        -0.6f, 0.0f,
+         0.0f, 0.0f,
+         0.6f, 0.0f,
+    };
+    static const float sels[] = {0.0f, 1.0f, 2.0f};
+    static const unsigned short elements[] = {0u, 1u, 2u};
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(positions), positions,
+                 GL_STATIC_DRAW);
+    glGenBuffers(1, &selbo);
+    glBindBuffer(GL_ARRAY_BUFFER, selbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(sels), sels, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+    glEnableVertexAttribArray(1);
+    glBindBuffer(GL_ARRAY_BUFFER, selbo);
+    glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, 0, 0);
+    glUseProgram(program);
+
+    glDrawArrays(GL_POINTS, 0, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    if (glGetError() != GL_NO_ERROR) {
+        fprintf(stderr, "air_geometry_cull_distance: arrays draw failed\n");
+        goto cleanup;
+    }
+    {
+const unsigned char *culled =
+            &pixels[(51 * REG_W + 26) * 4];
+        const unsigned char *visA =
+            &pixels[(51 * REG_W + 64) * 4];
+        const unsigned char *visB =
+            &pixels[(51 * REG_W + 102) * 4];
+        if (culled[0] > 20u || culled[1] > 20u || culled[2] > 20u ||
+            visA[0] > 20u || visA[1] < 220u || visA[2] > 20u ||
+            visB[0] > 20u || visB[1] < 220u || visB[2] > 20u) {
+            fprintf(stderr,
+                    "air_geometry_cull_distance: arrays expected culled "
+                    "black/visible green/visible green, got (%u,%u,%u)/"
+                    "(%u,%u,%u)/(%u,%u,%u)\n",
+                    culled[0], culled[1], culled[2],
+                    visA[0], visA[1], visA[2],
+                    visB[0], visB[1], visB[2]);
+            goto cleanup;
+        }
+    }
+
+    /* Element path: same 3 points through an index buffer. */
+    glGenBuffers(1, &ebo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(elements), elements,
+                 GL_STATIC_DRAW);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glDrawElements(GL_POINTS, 3, GL_UNSIGNED_SHORT, 0);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    if (glGetError() != GL_NO_ERROR) {
+        fprintf(stderr, "air_geometry_cull_distance: elements draw failed\n");
+        goto cleanup;
+    }
+    {
+const unsigned char *culled =
+            &pixels[(51 * REG_W + 26) * 4];
+        const unsigned char *visA =
+            &pixels[(51 * REG_W + 64) * 4];
+        const unsigned char *visB =
+            &pixels[(51 * REG_W + 102) * 4];
+        if (culled[0] > 20u || culled[1] > 20u || culled[2] > 20u ||
+            visA[0] > 20u || visA[1] < 220u || visA[2] > 20u ||
+            visB[0] > 20u || visB[1] < 220u || visB[2] > 20u) {
+            fprintf(stderr,
+                    "air_geometry_cull_distance: elements expected culled "
+                    "black/visible green/visible green, got (%u,%u,%u)/"
+                    "(%u,%u,%u)/(%u,%u,%u)\n",
+                    culled[0], culled[1], culled[2],
+                    visA[0], visA[1], visA[2],
+                    visB[0], visB[1], visB[2]);
+            goto cleanup;
+        }
+    }
+
+    result = 0;
+
+cleanup:
+    if (ebo) glDeleteBuffers(1, &ebo);
+    if (selbo) glDeleteBuffers(1, &selbo);
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (program) glDeleteProgram(program);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    return result;
+}
+
 static int test_air_geometry_resources(unsigned char *pixels,
                                        const char *out_path)
 {
@@ -5213,6 +5367,284 @@ static int test_air_tessellation_varying(unsigned char *pixels,
 cleanup:
     if (vao) glDeleteVertexArrays(1, &vao);
     if (vbo) glDeleteBuffers(1, &vbo);
+    if (program) glDeleteProgram(program);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    return result;
+}
+
+/* TCS per-patch input/output: TCS reads the full patch control-point stream
+ * (per-patch input) and derives a patch-qualified varying, which the TES
+ * consumes via `patch in`.  Also covers a subdivided triangle (outer=3,
+ * inner=2, fractional_odd spacing, ccw winding) across two patches, each
+ * routed to a different patch color — verifying per-patch output does not
+ * leak across patches. */
+static int test_air_tessellation_patch_varying(unsigned char *pixels,
+                                               const char *out_path)
+{
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "layout(location=0) out vec2 v_uv;\n"
+        "void main() {\n"
+        "  gl_Position = vec4(position, 0.0, 1.0);\n"
+        "  v_uv = position;\n"
+        "}\n";
+    static const char *tcs =
+        "#version 450 core\n"
+        "layout(vertices=3) out;\n"
+        "layout(location=0) in vec2 v_uv[];\n"
+        "layout(location=0) out vec2 tc_uv[];\n"
+        "layout(location=1) patch out vec3 patch_color;\n"
+        "void main() {\n"
+        "  gl_out[gl_InvocationID].gl_Position = "
+        "gl_in[gl_InvocationID].gl_Position;\n"
+        "  tc_uv[gl_InvocationID] = v_uv[gl_InvocationID];\n"
+        "  if (gl_InvocationID == 0) {\n"
+        "    float x = gl_in[0].gl_Position.x;\n"
+        "    patch_color = (x < 0.0) ? vec3(0.0, 1.0, 0.0) : "
+        "vec3(0.0, 0.0, 1.0);\n"
+        "    gl_TessLevelOuter[0] = 3.0;\n"
+        "    gl_TessLevelOuter[1] = 3.0;\n"
+        "    gl_TessLevelOuter[2] = 3.0;\n"
+        "    gl_TessLevelInner[0] = 2.0;\n"
+        "  }\n"
+        "}\n";
+    static const char *tes =
+        "#version 450 core\n"
+        "layout(triangles, fractional_odd_spacing, ccw) in;\n"
+        "layout(location=0) in vec2 tc_uv[];\n"
+        "layout(location=1) patch in vec3 patch_color;\n"
+        "layout(location=0) out vec3 te_color;\n"
+        "void main() {\n"
+        "  gl_Position = gl_in[0].gl_Position * gl_TessCoord.x + "
+        "gl_in[1].gl_Position * gl_TessCoord.y + "
+        "gl_in[2].gl_Position * gl_TessCoord.z;\n"
+        "  te_color = patch_color;\n"
+        "}\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(location=0) in vec3 te_color;\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(te_color, 1.0); }\n";
+
+    /* Two patches: left (x<0 → green), right (x>0 → blue). */
+    static const float verts[] = {
+        -1.0f, -1.0f,
+         0.0f, -1.0f,
+        -0.5f,  0.9f,
+         0.0f, -1.0f,
+         1.0f, -1.0f,
+         0.5f,  0.9f,
+    };
+
+    GLuint color = 0u;
+    GLuint fbo = make_fbo(REG_W, REG_H, &color);
+    GLuint program = link_program_with_tessellation(vs, tcs, tes, fs);
+    GLuint vao = 0u, vbo = 0u;
+    int result = 1;
+    if (!fbo || !program) goto cleanup;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    clear_color(0.0f, 0.0f, 0.0f);
+    make_pos2_vao(verts, sizeof(verts), &vao, &vbo);
+    glUseProgram(program);
+    glPatchParameteri(GL_PATCH_VERTICES, 3);
+    glDrawArrays(GL_PATCHES, 0, 6);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    if (glGetError() != GL_NO_ERROR) {
+        fprintf(stderr, "air_tessellation_patch_varying: draw failed\n");
+        goto cleanup;
+    }
+    {
+        const unsigned char *left =
+            &pixels[((REG_H / 2) * REG_W + REG_W / 4) * 4];
+        const unsigned char *right =
+            &pixels[((REG_H / 2) * REG_W + 3 * REG_W / 4) * 4];
+        if (left[0] > 20u || left[1] < 220u || left[2] > 20u ||
+            right[0] > 20u || right[1] > 20u || right[2] < 220u) {
+            fprintf(stderr,
+                    "air_tessellation_patch_varying: expected green/blue "
+                    "patches, got (%u,%u,%u)/(%u,%u,%u)\n",
+                    left[0], left[1], left[2],
+                    right[0], right[1], right[2]);
+            goto cleanup;
+        }
+    }
+    result = 0;
+
+cleanup:
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (program) glDeleteProgram(program);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    return result;
+}
+
+/* TES resource binding: sampler2D + std140 UBO + std430 SSBO read inside
+ * the evaluation shader (native TES path).  Each resource is re-bound /
+ * mutated between draws to prove the TES stage actually re-reads it:
+ * 1) white tex × green tint × white factor → green
+ * 2) tint flipped to blue → blue   (UBO re-read)
+ * 3) factor flipped to red → red    (SSBO re-read) */
+static int test_air_tessellation_resources(unsigned char *pixels,
+                                           const char *out_path)
+{
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "layout(location=0) out vec2 v_uv;\n"
+        "void main() {\n"
+        "  gl_Position = vec4(position, 0.0, 1.0);\n"
+        "  v_uv = position;\n"
+        "}\n";
+    static const char *tes =
+        "#version 450 core\n"
+        "layout(triangles, equal_spacing, cw) in;\n"
+        "layout(location=0) in vec2 v_uv[];\n"
+        "layout(location=0) out vec3 te_color;\n"
+        "layout(binding=0) uniform sampler2D sampleTex;\n"
+        "layout(std140, binding=1) uniform Params { vec4 tint; };\n"
+        "layout(std430, binding=2) buffer Data { vec4 factor; } dataBuffer;\n"
+        "void main() {\n"
+        "  gl_Position = gl_in[0].gl_Position * gl_TessCoord.x + "
+        "gl_in[1].gl_Position * gl_TessCoord.y + "
+        "gl_in[2].gl_Position * gl_TessCoord.z;\n"
+        "  vec4 f = dataBuffer.factor;\n"
+        "  te_color = texture(sampleTex, vec2(0.5, 0.5)).rgb * "
+        "tint.rgb * f.rgb;\n"
+        "}\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(location=0) in vec3 te_color;\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(te_color, 1.0); }\n";
+
+    GLuint color = 0u;
+    GLuint fbo = make_fbo(REG_W, REG_H, &color);
+    GLuint program = link_program_tess_eval_only(vs, tes, fs);
+    GLuint vao = 0u, vbo = 0u;
+    GLuint ubo = 0u, ssbo = 0u, sampled = 0u;
+    const float white[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    const float green[4] = {0.0f, 1.0f, 0.0f, 1.0f};
+    const float blue[4] = {0.0f, 0.0f, 1.0f, 1.0f};
+    const float red[4] = {1.0f, 0.0f, 0.0f, 1.0f};
+    const unsigned char texel[4] = {255u, 255u, 255u, 255u};
+    int result = 1;
+    if (!fbo || !program) goto cleanup;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(TRI_VERTS), TRI_VERTS,
+                 GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+
+    glGenBuffers(1, &ubo);
+    glBindBuffer(GL_UNIFORM_BUFFER, ubo);
+    glBufferData(GL_UNIFORM_BUFFER, sizeof(green), green, GL_DYNAMIC_DRAW);
+    glBindBufferBase(GL_UNIFORM_BUFFER, 1, ubo);
+
+    glGenBuffers(1, &ssbo);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(white), white,
+                 GL_DYNAMIC_DRAW);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ssbo);
+
+    glGenTextures(1, &sampled);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, sampled);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, texel);
+
+    glUseProgram(program);
+    glPatchParameteri(GL_PATCH_VERTICES, 3);
+
+    /* Segment 1: green (white × green × white). */
+    clear_color(0.0f, 0.0f, 0.0f);
+    glDrawArrays(GL_PATCHES, 0, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        const unsigned char *center =
+            &pixels[((REG_H / 2) * REG_W + REG_W / 2) * 4];
+        if (center[0] > 20u || center[1] < 220u || center[2] > 20u) {
+            fprintf(stderr,
+                    "air_tessellation_resources: segment 1 expected green, "
+                    "got (%u,%u,%u,%u)\n",
+                    center[0], center[1], center[2], center[3]);
+            goto cleanup;
+        }
+    }
+
+    /* Segment 2: tint → blue via UBO re-read. */
+    glBindBuffer(GL_UNIFORM_BUFFER, ubo);
+    glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(blue), blue);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glDrawArrays(GL_PATCHES, 0, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        const unsigned char *center =
+            &pixels[((REG_H / 2) * REG_W + REG_W / 2) * 4];
+        if (center[0] > 20u || center[1] > 20u || center[2] < 220u) {
+            fprintf(stderr,
+                    "air_tessellation_resources: segment 2 expected blue, "
+                    "got (%u,%u,%u,%u)\n",
+                    center[0], center[1], center[2], center[3]);
+            goto cleanup;
+        }
+    }
+
+    /* Segment 3: tint back to white, factor → red via SSBO re-read.
+     * (green tint × red factor would multiply to black, so tint is white
+     * here to isolate the SSBO re-read.) */
+    glBindBuffer(GL_UNIFORM_BUFFER, ubo);
+    glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(white), white);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(red), red);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glDrawArrays(GL_PATCHES, 0, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    if (glGetError() != GL_NO_ERROR) {
+        fprintf(stderr, "air_tessellation_resources: segment 3 GL error\n");
+        goto cleanup;
+    }
+    {
+        const unsigned char *center =
+            &pixels[((REG_H / 2) * REG_W + REG_W / 2) * 4];
+        if (center[0] < 220u || center[1] > 20u || center[2] > 20u) {
+            fprintf(stderr,
+                    "air_tessellation_resources: segment 3 expected red, "
+                    "got (%u,%u,%u,%u)\n",
+                    center[0], center[1], center[2], center[3]);
+            goto cleanup;
+        }
+    }
+    result = 0;
+
+cleanup:
+    /* Unbind base bindings so later suite tests (single shared context)
+     * do not observe stale UBO/SSBO/sampler references to deleted objects. */
+    glBindBufferBase(GL_UNIFORM_BUFFER, 1, 0);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, 0);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    if (sampled) glDeleteTextures(1, &sampled);
+    if (ssbo) glDeleteBuffers(1, &ssbo);
+    if (ubo) glDeleteBuffers(1, &ubo);
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (vao) glDeleteVertexArrays(1, &vao);
     if (program) glDeleteProgram(program);
     if (fbo) glDeleteFramebuffers(1, &fbo);
     if (color) glDeleteTextures(1, &color);
@@ -7500,11 +7932,17 @@ static const TestCase TESTS[] = {
                     test_air_tessellation_isolines_tripoint_instanced),
     SELF_CHECK_TEST("air_tessellation_isolines_xfb",
                     test_air_tessellation_isolines_xfb),
+    SELF_CHECK_TEST("air_tessellation_patch_varying",
+                    test_air_tessellation_patch_varying),
+    SELF_CHECK_TEST("air_tessellation_resources",
+                    test_air_tessellation_resources),
     SELF_CHECK_TEST("air_geometry_xfb", test_air_geometry_xfb),
     SELF_CHECK_TEST("air_geometry_multi_stream_xfb",
                     test_air_geometry_multi_stream_xfb),
     SELF_CHECK_TEST("air_geometry_layer_viewport",
                     test_air_geometry_layer_viewport),
+    SELF_CHECK_TEST("air_geometry_cull_distance",
+                    test_air_geometry_cull_distance),
     SELF_CHECK_TEST("air_pipeline_safe_fallback",
                     test_air_pipeline_safe_fallback),
     GOLDEN_TEST("texture_binding_switch", test_texture_binding_switch),
