@@ -2121,7 +2121,6 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
         id<MTLTexture> texture = (__bridge id<MTLTexture>)(readTextureObject->mtl_data);
         MGLMetalAttachmentSubresource subresource =
             mglMetalAttachmentSubresourceForAttachment(attachment);
-
         [self endRenderEncoding];
         if (![self ensureWritableCommandBuffer:"mtlReadDrawable.fbo"]) {
             mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);

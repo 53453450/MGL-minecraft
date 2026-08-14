@@ -4479,6 +4479,91 @@ static int test_legacy_glsl_frontend(unsigned char *pixels, const char *out_path
         }
     }
 
+    /* Segment Q: gl_FragData MRT.  An FBO with two color attachments +
+     * glDrawBuffers(0|1): gl_FragData[0] -> red on attachment 0,
+     * gl_FragData[1] -> green on attachment 1.  Read each attachment back
+     * via glReadBuffer. */
+    {
+        GLuint qfbo, qtex0, qtex1, qrbo;
+        glGenFramebuffers(1, &qfbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, qfbo);
+        glGenTextures(1, &qtex0);
+        glBindTexture(GL_TEXTURE_2D, qtex0);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, REG_W, REG_H, 0, GL_RGBA,
+                     GL_UNSIGNED_BYTE, NULL);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                               GL_TEXTURE_2D, qtex0, 0);
+        glGenTextures(1, &qtex1);
+        glBindTexture(GL_TEXTURE_2D, qtex1);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, REG_W, REG_H, 0, GL_RGBA,
+                     GL_UNSIGNED_BYTE, NULL);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1,
+                               GL_TEXTURE_2D, qtex1, 0);
+        glGenRenderbuffers(1, &qrbo);
+        glBindRenderbuffer(GL_RENDERBUFFER, qrbo);
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24,
+                              REG_W, REG_H);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                                  GL_RENDERBUFFER, qrbo);
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+            fprintf(stderr, "legacy_glsl_frontend: seg Q fbo incomplete\n");
+            return 46;
+        }
+        const GLenum qbufs[2] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1 };
+        glDrawBuffers(2, qbufs);
+        (void)qbufs;
+
+        const char *vs110q =
+            "#version 110\n"
+            "void main() { gl_Position = ftransform(); }\n";
+        const char *fs110q =
+            "#version 110\n"
+            "void main() {\n"
+            "    gl_FragData[0] = vec4(1.0, 0.0, 0.0, 1.0);\n"
+            "    gl_FragData[1] = vec4(0.0, 1.0, 0.0, 1.0);\n"
+            "}\n";
+        GLuint progQ = link_program(vs110q, fs110q);
+        if (!progQ) {
+            fprintf(stderr, "legacy_glsl_frontend: link failed (segment Q)\n");
+            return 47;
+        }
+        glUseProgram(progQ);
+        clear_color(0.0f, 0.0f, 0.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glFinish();
+        unsigned char q0px[4], q1px[4];
+        glReadBuffer(GL_COLOR_ATTACHMENT0);
+        glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        memcpy(q0px, &pixels[((REG_H/2) * REG_W + REG_W/2) * 4], 4u);
+        glReadBuffer(GL_COLOR_ATTACHMENT1);
+        glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        memcpy(q1px, &pixels[((REG_H/2) * REG_W + REG_W/2) * 4], 4u);
+        const unsigned char *q0 = q0px;
+        const unsigned char *q1 = q1px;
+        if (q0[0] < 200u || q0[1] > 60u || q0[2] > 60u) {
+            fprintf(stderr,
+                    "legacy_glsl_frontend: seg Q attachment0 not red "
+                    "rgb=(%u,%u,%u)\n", q0[0], q0[1], q0[2]);
+            return 48;
+        }
+        if (q1[1] < 200u || q1[0] > 60u || q1[2] > 60u) {
+            fprintf(stderr,
+                    "legacy_glsl_frontend: seg Q attachment1 not green "
+                    "rgb=(%u,%u,%u)\n", q1[0], q1[1], q1[2]);
+            return 49;
+        }
+        /* Restore the harness state for any later segments. */
+        const GLenum oneBuf[1] = { GL_COLOR_ATTACHMENT0 };
+        glDrawBuffers(1, oneBuf);
+        glReadBuffer(GL_COLOR_ATTACHMENT0);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    }
+
     glDeleteTextures(1, &redTex);
     glDeleteFramebuffers(1, &fbo);
     glDeleteTextures(1, &tex);

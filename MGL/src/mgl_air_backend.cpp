@@ -4976,6 +4976,20 @@ llvm::Value *assembleReturn(Codegen &cg) {
         if (v.kind == VarSym::OUTPUT) { out = &v; break; }
     llvm::Value *color = (out && cg.lvalues.count(out->name))
         ? cg.lvalues[out->name] : llvm::UndefValue::get(cg.retTy);
+    if (out && out->type.isArray()) {
+        /* gl_FragData[i]: extract each element into the struct return. */
+        llvm::Value *ret = llvm::UndefValue::get(cg.retTy);
+        for (uint32_t i = 0; i < (uint32_t)out->type.arr; i++)
+            ret = cg.b->CreateInsertValue(
+                ret, cg.b->CreateExtractValue(color, i), i);
+        if (cg.hasFragDepth) {
+            llvm::Value *depth = cg.lvalues.count("gl_FragDepth")
+                ? cg.lvalues["gl_FragDepth"]
+                : llvm::ConstantFP::get(llvm::Type::getFloatTy(*cg.ctx), 1.0);
+            ret = cg.b->CreateInsertValue(ret, depth, out->type.arr);
+        }
+        return ret;
+    }
     if (cg.hasFragDepth) {
         /* Struct return: color + [[depth(any)]] member.  An unwritten
          * gl_FragDepth keeps 1.0 (the depth(any) contract: shaders that
@@ -6271,7 +6285,19 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         for (VarSym &v : syms) {
             if (v.kind == VarSym::OUTPUT) { out = &v; break; }
         }
-        if (usesFragDepth) {
+        if (out && out->type.isArray()) {
+            /* gl_FragData[i]: array fragment outputs are flattened into
+             * per-element color outputs (MSL forbids array members in
+             * render-target structs — same constraint as array varyings).
+             * Each element becomes a float4 [[color(i)]] member. */
+            std::vector<llvm::Type *> fields;
+            for (uint32_t i = 0; i < (uint32_t)out->type.arr; i++)
+                fields.push_back(llvm::FixedVectorType::get(
+                    llvm::Type::getFloatTy(ctx), 4));
+            if (usesFragDepth)
+                fields.push_back(llvm::Type::getFloatTy(ctx));
+            retTy = llvm::StructType::get(ctx, fields);
+        } else if (usesFragDepth) {
             /* Fragment functions write depth through the [[depth(any)]]
              * member of a struct return (see aux_shaders/scaled_depth_blit
              * for the reference MSL shape). */
@@ -6713,6 +6739,20 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         /* Indexed writes (gl_ClipDistance[i] = v) need the aggregate
          * lvalue pre-registered (see the array-varying fix). */
         cg.lvalues["gl_ClipDistance"] = defaultClipDistances(cg);
+    }
+    if (!isVS && !isTES && !isKernel) {
+        /* gl_FragData[i]: indexed writes need the aggregate lvalue
+         * pre-registered (same fix as the array-varying aggregates). */
+        for (VarSym &v : syms) {
+            if (v.kind == VarSym::OUTPUT && v.type.isArray()) {
+                cg.lvalues[v.name] = llvm::UndefValue::get(
+                    llvm::ArrayType::get(
+                        llvm::FixedVectorType::get(
+                            llvm::Type::getFloatTy(ctx), 4),
+                        v.type.arr));
+                break;
+            }
+        }
     }
     if (isTCS)
         cg.patchPos = fn->getArg(argSlot++);
@@ -8171,14 +8211,33 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         for (VarSym &v : syms)
             if (v.kind == VarSym::OUTPUT) { out = &v; break; }
         if (out) {
-            outNodes.push_back(llvm::MDNode::get(ctx, {
-                llvm::MDString::get(ctx, "air.render_target"),
-                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(ctx), 0)),
-                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(ctx), 0)),
-                llvm::MDString::get(ctx, "air.arg_type_name"),
-                llvm::MDString::get(ctx, mslTypeName(out->type))}));
+            if (out->type.isArray()) {
+                /* gl_FragData[i]: one render_target node per element with
+                 * (member index, color index) constants. */
+                for (uint32_t i = 0; i < (uint32_t)out->type.arr; i++) {
+                    std::string elName = std::string(out->name) + "_" +
+                                         std::to_string(i);
+                    outNodes.push_back(llvm::MDNode::get(ctx, {
+                        llvm::MDString::get(ctx, "air.render_target"),
+                        llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                            llvm::Type::getInt32Ty(ctx), i)),
+                        llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                            llvm::Type::getInt32Ty(ctx), 0)),
+                        llvm::MDString::get(ctx, "air.arg_type_name"),
+                        llvm::MDString::get(ctx, "float4"),
+                        llvm::MDString::get(ctx, "air.arg_name"),
+                        llvm::MDString::get(ctx, elName.c_str())}));
+                }
+            } else {
+                outNodes.push_back(llvm::MDNode::get(ctx, {
+                    llvm::MDString::get(ctx, "air.render_target"),
+                    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(ctx), 0)),
+                    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(ctx), 0)),
+                    llvm::MDString::get(ctx, "air.arg_type_name"),
+                    llvm::MDString::get(ctx, mslTypeName(out->type))}));
+            }
         }
         if (usesFragDepth) {
             /* Reference shape from aux_shaders/scaled_depth_blit.metal:
