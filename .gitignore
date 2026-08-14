@@ -1,5 +1,7 @@
 config.mk
 build/
+build-asan/
+build-tsan/
 libmgl.dylib
 libmgl_es.dylib
 external/OpenGL-Registry/
