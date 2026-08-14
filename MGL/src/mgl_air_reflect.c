@@ -356,14 +356,21 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
     for (uint32_t i = 0; i < mod->symbol_count; i++) {
         const MGLIRSymbol *s = mod->symbols[i];
         /* gl_-prefixed symbols are backend builtins (stage I/O like
-         * gl_Position / gl_in) and are skipped — EXCEPT uniform-qualified
-         * ones: the legacy-GLSL frontend injects the fixed-function matrix
-         * uniforms (gl_ModelViewProjectionMatrix etc.) verbatim as regular
-         * uniforms so the GL-side uniform contract survives, and those must
-         * flow through reflection. */
+         * gl_Position / gl_in) and are skipped — EXCEPT:
+         *  - uniform-qualified ones: the legacy-GLSL frontend injects the
+         *    fixed-function matrix uniforms (gl_ModelViewProjectionMatrix
+         *    etc.) verbatim as regular uniforms, and
+         *  - explicitly-located ones (location != UINT32_MAX): the legacy
+         *    frontend injects gl_Vertex with layout(location = 0) so the
+         *    implicit position attribute is bindable at the legacy slot.
+         * Both must flow through reflection so the GL uniform/attribute
+         * contract and the attrCount-driven slot math stay consistent with
+         * the metallib the AIR backend emits (which counts every
+         * VarSym::ATTR, gl_-prefixed or not). */
         if (s->is_function ||
             (s->name && strncmp(s->name, "gl_", 3) == 0 &&
-             !(s->qualifiers & MGL_AST_Q_UNIFORM))) {
+             !(s->qualifiers & MGL_AST_Q_UNIFORM) &&
+             s->location == UINT32_MAX)) {
             continue;
         }
         uint32_t q = s->qualifiers;
@@ -392,14 +399,21 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
     for (uint32_t i = 0; i < mod->symbol_count; i++) {
         const MGLIRSymbol *s = mod->symbols[i];
         /* gl_-prefixed symbols are backend builtins (stage I/O like
-         * gl_Position / gl_in) and are skipped — EXCEPT uniform-qualified
-         * ones: the legacy-GLSL frontend injects the fixed-function matrix
-         * uniforms (gl_ModelViewProjectionMatrix etc.) verbatim as regular
-         * uniforms so the GL-side uniform contract survives, and those must
-         * flow through reflection. */
+         * gl_Position / gl_in) and are skipped — EXCEPT:
+         *  - uniform-qualified ones: the legacy-GLSL frontend injects the
+         *    fixed-function matrix uniforms (gl_ModelViewProjectionMatrix
+         *    etc.) verbatim as regular uniforms, and
+         *  - explicitly-located ones (location != UINT32_MAX): the legacy
+         *    frontend injects gl_Vertex with layout(location = 0) so the
+         *    implicit position attribute is bindable at the legacy slot.
+         * Both must flow through reflection so the GL uniform/attribute
+         * contract and the attrCount-driven slot math stay consistent with
+         * the metallib the AIR backend emits (which counts every
+         * VarSym::ATTR, gl_-prefixed or not). */
         if (s->is_function ||
             (s->name && strncmp(s->name, "gl_", 3) == 0 &&
-             !(s->qualifiers & MGL_AST_Q_UNIFORM))) {
+             !(s->qualifiers & MGL_AST_Q_UNIFORM) &&
+             s->location == UINT32_MAX)) {
             continue;
         }
         const MGLIRType *t = s->type;

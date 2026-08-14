@@ -3813,6 +3813,58 @@ static int test_legacy_glsl_frontend(unsigned char *pixels, const char *out_path
         }
     }
 
+    /* Segment D: gl_Vertex end-to-end.  The translator injects
+     * 'layout(location = 0) in vec4 gl_Vertex;' and the reflector now admits
+     * explicitly-located gl_-prefixed stage inputs, so the implicit legacy
+     * position attribute is bindable at the conventional slot 0: the harness
+     * VAO's attrib-0 stream (TRI_VERTS) feeds gl_Vertex directly. */
+    {
+        const char *vs110v =
+            "#version 110\n"
+            "void main() {\n"
+            "    gl_Position = gl_ModelViewProjectionMatrix * gl_Vertex;\n"
+            "    gl_FrontColor = vec4(1.0, 0.0, 0.0, 1.0);\n"
+            "}\n";
+        const char *fs110v =
+            "#version 110\n"
+            "void main() { gl_FragColor = gl_FrontColor; }\n";
+        GLuint progD = link_program(vs110v, fs110v);
+        if (!progD) {
+            fprintf(stderr, "legacy_glsl_frontend: link failed (segment D)\n");
+            return 10;
+        }
+        GLint vLoc = glGetAttribLocation(progD, "gl_Vertex");
+        if (vLoc != 0) {
+            fprintf(stderr,
+                    "legacy_glsl_frontend: seg D gl_Vertex location=%d "
+                    "(expected 0)\n", (int)vLoc);
+            return 11;
+        }
+        GLint mvpLocD = glGetUniformLocation(progD, "gl_ModelViewProjectionMatrix");
+        if (mvpLocD < 0) {
+            fprintf(stderr,
+                    "legacy_glsl_frontend: seg D MVP uniform not found\n");
+            return 12;
+        }
+        const float identityD[16] = {
+            1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1,
+        };
+        glUseProgram(progD);
+        glUniformMatrix4fv(mvpLocD, 1, GL_FALSE, identityD);
+        clear_color(0.0f, 0.0f, 0.0f);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glFinish();
+        glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        const unsigned char *d =
+            &pixels[((REG_H/2) * REG_W + REG_W/2) * 4];
+        if (d[0] < 200u || d[1] > 60u || d[2] > 60u) {
+            fprintf(stderr,
+                    "legacy_glsl_frontend: seg D probe not red "
+                    "rgb=(%u,%u,%u)\n", d[0], d[1], d[2]);
+            return 13;
+        }
+    }
+
     glDeleteTextures(1, &redTex);
     glDeleteFramebuffers(1, &fbo);
     glDeleteTextures(1, &tex);

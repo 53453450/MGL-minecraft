@@ -5894,8 +5894,14 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         }
         /* Builtin interface-block shells/members are lowered through the
          * dedicated gl_Position/gl_PointSize/gl_CullDistance paths below,
-         * never as user varyings. */
-        if (s->name && strncmp(s->name, "gl_", 3) == 0) {
+         * never as user varyings.  EXCEPTIONS (must become real kernel
+         * parameters, mirroring mgl_air_reflect.c's refined skip):
+         * uniform-qualified gl_ symbols (legacy fixed-function matrix
+         * uniforms injected verbatim) and explicitly-located gl_ symbols
+         * (legacy gl_Vertex injected with layout(location = 0)). */
+        if (s->name && strncmp(s->name, "gl_", 3) == 0 &&
+            !(s->qualifiers & MGL_AST_Q_UNIFORM) &&
+            s->location == UINT32_MAX) {
             continue;
         }
         VarSym v;

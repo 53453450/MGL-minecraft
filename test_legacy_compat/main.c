@@ -738,8 +738,8 @@ static void test_translate_gl_Vertex_and_matrices(void)
           "TextureMatrix array declared", NULL);
     check(contains(buf, "uniform mat3 gl_NormalMatrix;"),
           "NormalMatrix declared", NULL);
-    check(contains(buf, "in vec4 gl_Vertex;"),
-          "gl_Vertex declared as in attribute", NULL);
+    check(contains(buf, "layout(location = 0) in vec4 gl_Vertex;"),
+          "gl_Vertex declared at legacy location 0", NULL);
     check(contains(buf, "gl_ModelViewProjectionMatrix * gl_Vertex"),
           "usage preserved", NULL);
 }

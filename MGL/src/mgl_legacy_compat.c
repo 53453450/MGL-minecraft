@@ -297,7 +297,6 @@ typedef struct {
 
 static const legacy_builtin_t s_builtins[] = {
     /* --- VS attribute inputs (§7.1) --- */
-    {"gl_Vertex",            "gl_Vertex",             NULL,                       "vec4",  "in",  NULL},
     {"gl_Normal",            "_mglNormal",            NULL,                       "vec3",  "in",  NULL},
     {"gl_Color",             "_mglColor",             "_mglFrontColor",           "vec4",  "in",  "in"},
     {"gl_SecondaryColor",    "_mglSecondaryColor",    "_mglFrontSecondaryColor",  "vec4",  "in",  "in"},
@@ -387,6 +386,12 @@ void mgl_legacy_detect(const char *src, mgl_legacy_features_t *features)
         if (code_uses_identifier(src, s_builtins[i].legacy_name)) {
             features->has_legacy_builtins = GL_TRUE;
             break;
+        }
+    }
+    /* gl_Vertex (implicit legacy position attribute) */
+    if (!features->has_legacy_builtins) {
+        if (code_uses_identifier(src, "gl_Vertex")) {
+            features->has_legacy_builtins = GL_TRUE;
         }
     }
     /* gl_MultiTexCoord0..7 */
@@ -601,6 +606,19 @@ int mgl_translate_legacy_glsl(char *src,
             }
             off += (size_t)snprintf(preamble + off, sizeof(preamble) - off,
                 "%s %s %s;\n", dir, b->type, name);
+        }
+
+        /* gl_Vertex: the legacy implicit position attribute, injected with
+         * layout(location = 0) (the legacy fixed-function attribute slot) so
+         * the app can bind vertex data at the conventional location 0; the
+         * name is kept verbatim (the frontend accepts gl_-prefixed user
+         * declarations) and the GL attribute contract survives. */
+        if (is_vertex && code_uses_identifier(src, "gl_Vertex")) {
+            if (!strstr(src, "layout(location = 0) in vec4 gl_Vertex;")) {
+                off += (size_t)snprintf(preamble + off,
+                    sizeof(preamble) - off,
+                    "layout(location = 0) in vec4 gl_Vertex;\n");
+            }
         }
 
         /* gl_MultiTexCoord0..7 declarations (VS attribute inputs only) */
