@@ -293,24 +293,28 @@ typedef struct {
     const char *type;
     const char *vs_dir;   /* "in", "out", or NULL */
     const char *fs_dir;   /* "in", "out", or NULL */
+    int vs_location;      /* fixed-function attribute slot for VS attribute
+                           * inputs (gl_Vertex=0, gl_Normal=2, gl_Color=3,
+                           * gl_SecondaryColor=4, gl_FogCoord=5);
+                           * -1 = linker-assigned */
 } legacy_builtin_t;
 
 static const legacy_builtin_t s_builtins[] = {
     /* --- VS attribute inputs (§7.1) --- */
-    {"gl_Normal",            "_mglNormal",            NULL,                       "vec3",  "in",  NULL},
-    {"gl_Color",             "_mglColor",             "_mglFrontColor",           "vec4",  "in",  "in"},
-    {"gl_SecondaryColor",    "_mglSecondaryColor",    "_mglFrontSecondaryColor",  "vec4",  "in",  "in"},
-    {"gl_FogCoord",          "_mglFogCoord",          NULL,                       "float", "in",  NULL},
+    {"gl_Normal",            "_mglNormal",            NULL,                       "vec3",  "in",  NULL,  2},
+    {"gl_Color",             "_mglColor",             "_mglFrontColor",           "vec4",  "in",  "in",  3},
+    {"gl_SecondaryColor",    "_mglSecondaryColor",    "_mglFrontSecondaryColor",  "vec4",  "in",  "in",  4},
+    {"gl_FogCoord",          "_mglFogCoord",          NULL,                       "float", "in",  NULL,  5},
 
     /* --- VS varying outputs (§7.1) --- */
-    {"gl_FrontColor",          "_mglFrontColor",          NULL, "vec4",  "out", NULL},
-    {"gl_BackColor",           "_mglBackColor",           NULL, "vec4",  "out", NULL},
-    {"gl_FrontSecondaryColor", "_mglFrontSecondaryColor", NULL, "vec4",  "out", NULL},
-    {"gl_BackSecondaryColor",  "_mglBackSecondaryColor",  NULL, "vec4",  "out", NULL},
-    {"gl_ClipVertex",          "_mglClipVertex",          NULL, "vec4",  "out", NULL},
-    {"gl_FogFragCoord",        "_mglFogFragCoord",        "_mglFogFragCoord", "float", "out", "in"},
+    {"gl_FrontColor",          "_mglFrontColor",          NULL, "vec4",  "out", NULL, -1},
+    {"gl_BackColor",           "_mglBackColor",           NULL, "vec4",  "out", NULL, -1},
+    {"gl_FrontSecondaryColor", "_mglFrontSecondaryColor", NULL, "vec4",  "out", NULL, -1},
+    {"gl_BackSecondaryColor",  "_mglBackSecondaryColor",  NULL, "vec4",  "out", NULL, -1},
+    {"gl_ClipVertex",          "_mglClipVertex",          NULL, "vec4",  "out", NULL, -1},
+    {"gl_FogFragCoord",        "_mglFogFragCoord",        "_mglFogFragCoord", "float", "out", "in", -1},
 
-    {NULL, NULL, NULL, NULL, NULL, NULL}
+    {NULL, NULL, NULL, NULL, NULL, NULL, -1}
 };
 
 /* Legacy matrix built-in uniforms (§7.4).  These are injected with their
@@ -543,6 +547,13 @@ int mgl_translate_legacy_glsl(char *src,
             const legacy_builtin_t *b = &s_builtins[i];
             if (!code_uses_identifier(src, b->legacy_name)) continue;
 
+            /* Fixed-function attribute inputs (VS) keep their ORIGINAL
+             * gl_ names, like gl_Vertex: the explicit
+             * layout(location = N) declaration below carries the name, so
+             * applications can keep calling glGetAttribLocation with the
+             * legacy name and bind at the conventional slot. */
+            if (is_vertex && b->vs_location >= 0) continue;
+
             /* Pick the stage-appropriate replacement name. */
             const char *new_name = is_vertex ? b->vs_name : b->fs_name;
             if (!new_name) {
@@ -648,8 +659,19 @@ int mgl_translate_legacy_glsl(char *src,
                  * skip declaration injection in that case. */
                 continue;
             }
-            off += (size_t)snprintf(preamble + off, sizeof(preamble) - off,
-                "%s %s %s;\n", dir, b->type, name);
+            if (is_vertex && b->vs_location >= 0) {
+                /* Fixed-function attribute slots so legacy apps bind data
+                 * at the conventional locations (gl_Vertex=0, gl_Normal=2,
+                 * gl_Color=3, gl_SecondaryColor=4, gl_FogCoord=5) without
+                 * querying renamed names.  The ORIGINAL gl_ name is kept
+                 * (Step 3 skipped the rename), matching gl_Vertex. */
+                off += (size_t)snprintf(preamble + off, sizeof(preamble) - off,
+                    "layout(location = %d) %s %s %s;\n",
+                    b->vs_location, dir, b->type, b->legacy_name);
+            } else {
+                off += (size_t)snprintf(preamble + off, sizeof(preamble) - off,
+                    "%s %s %s;\n", dir, b->type, name);
+            }
         }
 
         /* gl_MultiTexCoord0..7 declarations (VS attribute inputs only).

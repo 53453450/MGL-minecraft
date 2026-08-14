@@ -521,9 +521,9 @@ static void test_translate_gl_Normal(void)
 
     int ret = mgl_translate_legacy_glsl(buf, BUF_SIZE, GL_VERTEX_SHADER, 110, NULL);
     check(ret == 1, "translate returns 1", NULL);
-    check(contains(buf, "_mglNormal"), "gl_Normal -> _mglNormal", NULL);
-    check(not_contains(buf, "gl_Normal"), "no gl_Normal left", NULL);
-    check(contains(buf, "in vec3 _mglNormal;"), "gl_Normal declaration injected", NULL);
+    check(contains(buf, "layout(location = 2) in vec3 gl_Normal;"), "gl_Normal at fixed-function slot 2, name kept", NULL);
+    check(contains(buf, "vec3 n = gl_Normal;"), "gl_Normal use kept (name preserved)", NULL);
+    check(not_contains(buf, "_mglNormal"), "no renamed gl_Normal", NULL);
 }
 
 static void test_translate_gl_Color_VS(void)
@@ -541,10 +541,10 @@ static void test_translate_gl_Color_VS(void)
 
     int ret = mgl_translate_legacy_glsl(buf, BUF_SIZE, GL_VERTEX_SHADER, 110, NULL);
     check(ret == 1, "translate returns 1", NULL);
-    check(contains(buf, "_mglFrontColor = _mglColor;"), "gl_FrontColor->out, gl_Color->in (VS)", NULL);
-    check(contains(buf, "in vec4 _mglColor;"), "gl_Color VS decl injected (in)", NULL);
+    check(contains(buf, "_mglFrontColor = gl_Color;"), "gl_FrontColor->out, gl_Color kept (VS)", NULL);
+    check(contains(buf, "layout(location = 3) in vec4 gl_Color;"), "gl_Color at fixed-function slot 3, name kept", NULL);
     check(contains(buf, "out vec4 _mglFrontColor;"), "gl_FrontColor VS decl injected (out)", NULL);
-    check(not_contains(buf, "gl_Color"), "no gl_Color left", NULL);
+    check(contains(buf, "gl_Color"), "gl_Color name kept for app-side query", NULL);
     check(not_contains(buf, "gl_FrontColor"), "no gl_FrontColor left", NULL);
 }
 

@@ -3969,6 +3969,63 @@ static int test_legacy_glsl_frontend(unsigned char *pixels, const char *out_path
         }
     }
 
+    /* Segment G: legacy color chain.  The VS passes the gl_Color
+     * attribute (fixed-function slot 3) through gl_FrontColor; the FS
+     * colors directly from gl_FrontColor.  Exercises the gl_Color /
+     * gl_FrontColor renames + declarations (VS out / FS in) and the
+     * fixed-function attribute slot 3 end to end, including the
+     * glGetAttribLocation("gl_Color") == 3 contract. */
+    {
+        const char *vs110c =
+            "#version 110\n"
+            "void main() {\n"
+            "    gl_FrontColor = gl_Color;\n"
+            "    gl_Position = ftransform();\n"
+            "}\n";
+        const char *fs110c =
+            "#version 110\n"
+            "void main() {\n"
+            "    gl_FragColor = gl_FrontColor;\n"
+            "}\n";
+        GLuint progG = link_program(vs110c, fs110c);
+        if (!progG) {
+            fprintf(stderr, "legacy_glsl_frontend: link failed (segment G)\n");
+            return 21;
+        }
+        GLint colorLoc = glGetAttribLocation(progG, "gl_Color");
+        if (colorLoc != 3) {
+            fprintf(stderr,
+                    "legacy_glsl_frontend: seg G gl_Color at %d, want 3\n",
+                    colorLoc);
+            return 22;
+        }
+        /* Red color stream at fixed-function slot 3. */
+        static const float colorsG[12] = {
+            1.0f, 0.0f, 0.0f, 1.0f,  1.0f, 0.0f, 0.0f, 1.0f,
+            1.0f, 0.0f, 0.0f, 1.0f,
+        };
+        GLuint colorVBO = 0;
+        glGenBuffers(1, &colorVBO);
+        glBindBuffer(GL_ARRAY_BUFFER, colorVBO);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(colorsG), colorsG,
+                     GL_STATIC_DRAW);
+        glEnableVertexAttribArray(3);
+        glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, 0, NULL);
+        glUseProgram(progG);
+        clear_color(0.0f, 0.0f, 0.0f);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glFinish();
+        glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        const unsigned char *g =
+            &pixels[((REG_H/2) * REG_W + REG_W/2) * 4];
+        if (g[0] < 200u || g[1] > 60u || g[2] > 60u) {
+            fprintf(stderr,
+                    "legacy_glsl_frontend: seg G probe not red "
+                    "rgb=(%u,%u,%u)\n", g[0], g[1], g[2]);
+            return 23;
+        }
+    }
+
     glDeleteTextures(1, &redTex);
     glDeleteFramebuffers(1, &fbo);
     glDeleteTextures(1, &tex);
