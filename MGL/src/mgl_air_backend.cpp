@@ -2805,6 +2805,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                             mod);
         const MGLIRSymbol *s = findSymbol(mod, e->u.var_ref.name);
         if (!s) { cg.err = 1; return nullptr; }
+        if ((s->qualifiers & MGL_AST_Q_CONST) &&
+            cg.lvalues.count(e->u.var_ref.name)) {
+            return cg.lvalues[e->u.var_ref.name];
+        }
         if (cg.isTessEval && (s->qualifiers & MGL_AST_Q_PATCH)) {
             VarSym *patch = codegenStageSymbol(
                 cg, e->u.var_ref.name, VarSym::CONTROL_POINT_INPUT);
@@ -6971,15 +6975,19 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
 
     cg.userFns = &userFns;
     std::map<std::string, MType> locals;
-    /* Global const array initializers (e.g. Mojang's `const vec3[]
-     * vertices = vec3[](...)`): evaluate into cg.lvalues before main. */
+    /* Global const initializers (e.g. Mojang's `const vec3[]
+     * vertices = vec3[](...)` and GLSL 1.10 builtin constants like
+     * `const int gl_MaxDrawBuffers = 8;`): evaluate into cg.lvalues
+     * before main so references fold to the SSA constant instead of
+     * loading an unbound uniform slot. */
     for (uint32_t i = 0; i < tu->decl_count; i++) {
         MGLDecl *d = tu->decls[i];
         if (!d || !d->name || d->body || !d->init) continue;
         const MGLIRSymbol *gs = findSymbol(&mod, d->name);
         if (!gs || gs->is_function) continue;
         MType gt = typeFromIR(gs->type);
-        if (!gt.isArray()) continue;
+        if (!gt.isArray() &&
+            !(gs->qualifiers & MGL_AST_Q_CONST)) continue;
         llvm::Value *gv = emitExpr(cg, d->init, &mod, locals);
         if (!gv) break;
         cg.lvalues[d->name] = gv;

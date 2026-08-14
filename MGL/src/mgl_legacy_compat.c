@@ -97,6 +97,29 @@ static scan_state_t scan_step(const char **pp, scan_state_t state)
     return SCAN_NORMAL;
 }
 
+static bool code_has_const_decl(const char *src, const char *name)
+{
+    /* True if the source already declares "const <type> <name>" (any
+     * value); used to source-guard builtin-constant injection so a shader
+     * that supplies its own constant (e.g. for testing) is left alone. */
+    if (!src || !name) return false;
+    char needle[96];
+    snprintf(needle, sizeof(needle), "const int %s", name);
+    size_t needle_len = strlen(needle);
+    scan_state_t state = SCAN_NORMAL;
+    const char *p = src;
+    while (*p) {
+        if (state == SCAN_NORMAL) {
+            if (strncmp(p, needle, needle_len) == 0) {
+                int after = (unsigned char)p[needle_len];
+                if (!is_ident_char(after)) return true;
+            }
+        }
+        state = scan_step(&p, state);
+    }
+    return false;
+}
+
 static bool code_uses_identifier(const char *src, const char *name)
 {
     if (!src || !name) return false;
@@ -381,6 +404,32 @@ static const legacy_matrix_t s_legacy_matrices[] = {
     { "gl_TextureMatrixTranspose",              "mat4", MGL_LEGACY_MAX_TEX_COORDS },
     { "gl_TextureMatrixInverseTranspose",       "mat4", MGL_LEGACY_MAX_TEX_COORDS },
     { NULL, NULL, 0 }
+};
+
+/* GLSL 1.10 built-in compile-time constants (§7.4): injected as const
+ * declarations with their ORIGINAL gl_ names (the AIR frontend folds
+ * global const initializers) so legacy shaders that size loops/arrays
+ * from them keep working.  Values are MGL's actual limits where the
+ * engine has a matching cap, else the GLSL 1.10 spec minimum. */
+typedef struct legacy_const_t {
+    const char *name;  /* builtin constant name (kept verbatim) */
+    int         value;
+} legacy_const_t;
+
+static const legacy_const_t s_legacy_constants[] = {
+    { "gl_MaxLights",                 8 },
+    { "gl_MaxClipPlanes",             6 },
+    { "gl_MaxTextureUnits",           8 },
+    { "gl_MaxTextureCoords",          MGL_LEGACY_MAX_TEX_COORDS },
+    { "gl_MaxVertexAttribs",          16 },
+    { "gl_MaxVertexUniformComponents", 512 },
+    { "gl_MaxVaryingFloats",          32 },
+    { "gl_MaxVertexTextureImageUnits", 8 },
+    { "gl_MaxCombinedTextureImageUnits", 8 },
+    { "gl_MaxTextureImageUnits",      8 },
+    { "gl_MaxFragmentUniformComponents", 512 },
+    { "gl_MaxDrawBuffers",            MGL_LEGACY_MAX_DRAW_BUFFERS },
+    { NULL, 0 }
 };
 
 /* gl_MultiTexCoord0..7 generated dynamically (8 entries). */
@@ -674,6 +723,18 @@ int mgl_translate_legacy_glsl(char *src,
                 sizeof(preamble) - off,
                 "uniform %s %s;\n", m->type, m->name);
         }
+    }
+
+    /* GLSL 1.10 built-in constants (§7.4): injected verbatim (const int)
+     * so the frontend folds them at use sites; source-guarded against
+     * shaders that already declare them. */
+    for (int i = 0; s_legacy_constants[i].name; i++) {
+        const legacy_const_t *c = &s_legacy_constants[i];
+        if (!code_uses_identifier(src, c->name)) continue;
+        if (code_has_const_decl(src, c->name)) continue;
+        off += (size_t)snprintf(preamble + off,
+            sizeof(preamble) - off,
+            "const int %s = %d;\n", c->name, c->value);
     }
 
     /* gl_Vertex: the legacy implicit position attribute, injected with

@@ -4564,6 +4564,45 @@ static int test_legacy_glsl_frontend(unsigned char *pixels, const char *out_path
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     }
 
+    /* ---- Segment R: GLSL 1.10 built-in compile-time constants ---- */
+    {
+        const char *vs110r =
+            "#version 110\n"
+            "void main() { gl_Position = ftransform(); }\n";
+        const char *fs110r =
+            "#version 110\n"
+            "void main() {\n"
+            "    gl_FragColor = vec4(float(gl_MaxDrawBuffers) / 8.0,\n"
+            "                        float(gl_MaxClipPlanes) / 8.0,\n"
+            "                        float(gl_MaxTextureUnits) / 8.0, 1.0);\n"
+            "}\n";
+        GLuint progR = link_program(vs110r, fs110r);
+        if (!progR) {
+            fprintf(stderr, "legacy_glsl_frontend: link failed (segment R)\n");
+            return 50;
+        }
+        glUseProgram(progR);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glViewport(0, 0, REG_W, REG_H);
+        clear_color(0.0f, 0.0f, 0.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glFinish();
+        glReadBuffer(GL_COLOR_ATTACHMENT0);
+        glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        const unsigned char *rpx =
+            &pixels[((REG_H/2) * REG_W + REG_W/2) * 4];
+        /* (255, 191, 255) = (8/8, 6/8, 8/8) — the injected builtin
+         * constants must fold to their literal values at runtime. */
+        if (rpx[0] < 200u || rpx[1] < 150u || rpx[1] > 230u ||
+            rpx[2] < 200u) {
+            fprintf(stderr,
+                    "legacy_glsl_frontend: seg R constants wrong "
+                    "rgb=(%u,%u,%u)\n", rpx[0], rpx[1], rpx[2]);
+            return 50;
+        }
+    }
+
     glDeleteTextures(1, &redTex);
     glDeleteFramebuffers(1, &fbo);
     glDeleteTextures(1, &tex);

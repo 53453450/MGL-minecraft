@@ -45,6 +45,19 @@ static int not_contains(const char *haystack, const char *needle)
     return strstr(haystack, needle) == NULL;
 }
 
+static int count_occurrences(const char *haystack, const char *needle)
+{
+    int n = 0;
+    const char *p = haystack;
+    size_t len = strlen(needle);
+    if (!haystack || !needle || len == 0u) return 0;
+    while ((p = strstr(p, needle)) != NULL) {
+        n++;
+        p += len;
+    }
+    return n;
+}
+
 static void copy_to_buf(const char *src, char *buf, size_t cap)
 {
     memset(buf, 0, cap);
@@ -303,6 +316,46 @@ static void test_translate_pointcoord_fragdepth_110(void)
     check(contains(buf, "gl_FragDepth"), "gl_FragDepth kept", NULL);
     check(not_contains(buf, "_mglPointCoord"), "no point-coord rename", NULL);
     check(not_contains(buf, "_mglFragDepth"), "no frag-depth rename", NULL);
+}
+
+static void test_translate_builtin_constants_110(void)
+{
+    printf("\n=== test_translate_builtin_constants_110 ===\n");
+    /* GLSL 1.10 built-in compile-time constants (§7.4) are not understood
+     * by the frontend's identifier table; the translator must inject them
+     * as const int declarations with their original gl_ names (verbatim,
+     * matching the matrix-uniform pattern). */
+    const char *fs =
+        "#version 110\n"
+        "void main() {\n"
+        "    gl_FragColor = vec4(float(gl_MaxDrawBuffers) / 8.0,\n"
+        "                        float(gl_MaxClipPlanes) / 8.0,\n"
+        "                        float(gl_MaxTextureUnits) / 8.0, 1.0);\n"
+        "}\n";
+    char buf[BUF_SIZE];
+    copy_to_buf(fs, buf, BUF_SIZE);
+    int ret = mgl_translate_legacy_glsl(buf, BUF_SIZE, GL_FRAGMENT_SHADER, 110, NULL);
+    check(ret == 1, "translate returns 1", NULL);
+    check(contains(buf, "const int gl_MaxDrawBuffers = 8;"),
+          "gl_MaxDrawBuffers injected", NULL);
+    check(contains(buf, "const int gl_MaxClipPlanes = 6;"),
+          "gl_MaxClipPlanes injected", NULL);
+    check(contains(buf, "const int gl_MaxTextureUnits = 8;"),
+          "gl_MaxTextureUnits injected", NULL);
+    check(not_contains(buf, "gl_MaxLights"), "unused constant not injected", NULL);
+
+    /* Source-guarded: a shader that already declares a constant must not
+     * get a duplicate injection. */
+    const char *selfdecl =
+        "#version 110\n"
+        "const int gl_MaxDrawBuffers = 4;\n"
+        "void main() { gl_FragColor = vec4(float(gl_MaxDrawBuffers) / 4.0); }\n";
+    char buf2[BUF_SIZE];
+    copy_to_buf(selfdecl, buf2, BUF_SIZE);
+    ret = mgl_translate_legacy_glsl(buf2, BUF_SIZE, GL_FRAGMENT_SHADER, 110, NULL);
+    check(ret == 1, "self-declared translate returns 1", NULL);
+    check(count_occurrences(buf2, "const int gl_MaxDrawBuffers") == 1,
+          "self-declared constant not duplicated", NULL);
 }
 
 static void test_translate_twosided_110(void)
@@ -948,6 +1001,7 @@ int main(void)
     test_translate_fragdata_120();
     test_translate_frontfacing_110();
     test_translate_pointcoord_fragdepth_110();
+    test_translate_builtin_constants_110();
     test_translate_twosided_110();
     test_translate_fragdata_index0_110();
     test_translate_fragdata_mixed_index_110();
