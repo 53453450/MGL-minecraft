@@ -712,10 +712,13 @@ int mgl_translate_legacy_glsl(char *src,
         for (int i = 0; s_builtins[i].legacy_name; i++) {
             const legacy_builtin_t *b = &s_builtins[i];
             if (!code_uses_identifier(src, b->legacy_name)) {
-                /* Already renamed — check if the renamed name is present. */
+                /* Already renamed — check if the renamed name is present.
+                 * Mirrors Step 3's fallback: a stage-inapplicable builtin
+                 * is renamed with the available vs_name/fs_name. */
                 const char *vs = b->vs_name;
                 const char *fs = b->fs_name;
                 const char *check = is_vertex ? vs : fs;
+                if (!check) check = vs ? vs : fs;
                 if (!check || !strstr(src, check)) continue;
                 /* Fall through to inject declaration for renamed var. */
             }
@@ -723,9 +726,21 @@ int mgl_translate_legacy_glsl(char *src,
             const char *dir  = is_vertex ? b->vs_dir : b->fs_dir;
             const char *name = is_vertex ? b->vs_name : b->fs_name;
             if (!dir || !name) {
-                /* Not applicable to this stage.  But the identifier may
-                 * still have been renamed using the other stage's name;
-                 * skip declaration injection in that case. */
+                /* Stage-inapplicable builtin renamed with the other
+                 * stage's name (Step 3 fallback): declare it as a varying
+                 * in this stage so the linkage resolves — e.g. the FS
+                 * gl_BackColor input in two-sided lighting
+                 * (gl_FrontFacing ? gl_Color : gl_BackColor) links to the
+                 * VS gl_BackColor output of the same name. */
+                const char *fb = b->vs_name ? b->vs_name : b->fs_name;
+                if (fb && strstr(src, fb)) {
+                    char decl[160];
+                    snprintf(decl, sizeof(decl), "%s %s %s;\n",
+                             is_vertex ? "out" : "in", b->type, fb);
+                    if (!strstr(preamble, decl))
+                        off += (size_t)snprintf(preamble + off,
+                            sizeof(preamble) - off, "%s", decl);
+                }
                 continue;
             }
             if (is_vertex && b->vs_location >= 0) {
@@ -738,8 +753,14 @@ int mgl_translate_legacy_glsl(char *src,
                     "layout(location = %d) %s %s %s;\n",
                     b->vs_location, dir, b->type, b->legacy_name);
             } else {
-                off += (size_t)snprintf(preamble + off, sizeof(preamble) - off,
-                    "%s %s %s;\n", dir, b->type, name);
+                char decl[160];
+                snprintf(decl, sizeof(decl), "%s %s %s;\n", dir, b->type, name);
+                /* Dedup: several table entries can share a renamed name in
+                 * this stage (e.g. FS gl_Color and gl_FrontColor both
+                 * become _mglFrontColor); never declare it twice. */
+                if (!strstr(preamble, decl))
+                    off += (size_t)snprintf(preamble + off,
+                        sizeof(preamble) - off, "%s", decl);
             }
         }
 

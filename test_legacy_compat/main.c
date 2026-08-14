@@ -305,6 +305,44 @@ static void test_translate_pointcoord_fragdepth_110(void)
     check(not_contains(buf, "_mglFragDepth"), "no frag-depth rename", NULL);
 }
 
+static void test_translate_twosided_110(void)
+{
+    printf("\n=== test_translate_twosided_110 ===\n");
+    /* Two-sided lighting: the VS emits gl_FrontColor + gl_BackColor; the
+     * FS selects between them with gl_FrontFacing.  The FS gl_BackColor
+     * input is renamed to _mglBackColor (Step 3 fallback) and must get an
+     * `in vec4 _mglBackColor;` declaration (Step 4) to link against the
+     * VS output of the same name. */
+    const char *fs =
+        "#version 110\n"
+        "void main() {\n"
+        "    gl_FragColor = gl_FrontFacing ? gl_Color : gl_BackColor;\n"
+        "}\n";
+    char buf[BUF_SIZE];
+    copy_to_buf(fs, buf, BUF_SIZE);
+    int ret = mgl_translate_legacy_glsl(buf, BUF_SIZE, GL_FRAGMENT_SHADER, 110, NULL);
+    check(ret == 1, "translate returns 1", NULL);
+    check(contains(buf, "in vec4 _mglFrontColor;"), "FS front-color input declared", NULL);
+    check(contains(buf, "in vec4 _mglBackColor;"), "FS back-color input declared", NULL);
+    check(not_contains(buf, "_mglFragColor = gl_FrontFacing ? gl_Color"), "no un-renamed gl_Color", NULL);
+
+    /* gl_Color + gl_FrontColor in one FS both rename to _mglFrontColor:
+     * the declaration must appear exactly once. */
+    const char *fs2 =
+        "#version 110\n"
+        "void main() {\n"
+        "    gl_FragColor = gl_Color + gl_FrontColor;\n"
+        "}\n";
+    char buf2[BUF_SIZE];
+    copy_to_buf(fs2, buf2, BUF_SIZE);
+    int ret2 = mgl_translate_legacy_glsl(buf2, BUF_SIZE, GL_FRAGMENT_SHADER, 110, NULL);
+    check(ret2 == 1, "translate returns 1 (dedup)", NULL);
+    int n = 0;
+    for (const char *q = buf2; (q = strstr(q, "in vec4 _mglFrontColor;")) != NULL; q += 5)
+        n++;
+    check(n == 1, "front-color declared exactly once", NULL);
+}
+
 static void test_translate_texcoord_110(void)
 {
     printf("\n=== test_translate_texcoord_110 ===\n");
@@ -910,6 +948,7 @@ int main(void)
     test_translate_fragdata_120();
     test_translate_frontfacing_110();
     test_translate_pointcoord_fragdepth_110();
+    test_translate_twosided_110();
     test_translate_fragdata_index0_110();
     test_translate_fragdata_mixed_index_110();
     test_translate_texcoord_110();

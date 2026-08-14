@@ -4304,6 +4304,57 @@ static int test_legacy_glsl_frontend(unsigned char *pixels, const char *out_path
         }
     }
 
+    /* Segment N: two-sided lighting.  The VS emits gl_FrontColor (red)
+     * and gl_BackColor (blue); the FS selects between them with
+     * gl_FrontFacing (classic GLSL 1.10 pattern).  CCW (front) -> red;
+     * glFrontFace(GL_CW) flips the convention -> blue. */
+    {
+        const char *vs110ts =
+            "#version 110\n"
+            "void main() {\n"
+            "    gl_Position = ftransform();\n"
+            "    gl_FrontColor = vec4(1.0, 0.0, 0.0, 1.0);\n"
+            "    gl_BackColor = vec4(0.0, 0.0, 1.0, 1.0);\n"
+            "}\n";
+        const char *fs110ts =
+            "#version 110\n"
+            "void main() {\n"
+            "    gl_FragColor = gl_FrontFacing ? gl_Color : gl_BackColor;\n"
+            "}\n";
+        GLuint progN = link_program(vs110ts, fs110ts);
+        if (!progN) {
+            fprintf(stderr, "legacy_glsl_frontend: link failed (segment N)\n");
+            return 36;
+        }
+        glUseProgram(progN);
+        clear_color(0.0f, 0.0f, 0.0f);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glFinish();
+        glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        const unsigned char *nf =
+            &pixels[((REG_H/2) * REG_W + REG_W/2) * 4];
+        if (nf[0] < 200u || nf[1] > 60u || nf[2] > 60u) {
+            fprintf(stderr,
+                    "legacy_glsl_frontend: seg N front probe not red "
+                    "rgb=(%u,%u,%u)\n", nf[0], nf[1], nf[2]);
+            return 37;
+        }
+        clear_color(0.0f, 0.0f, 0.0f);
+        glFrontFace(GL_CW);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glFinish();
+        glFrontFace(GL_CCW);
+        glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        const unsigned char *nb =
+            &pixels[((REG_H/2) * REG_W + REG_W/2) * 4];
+        if (nb[2] < 200u || nb[0] > 60u || nb[1] > 60u) {
+            fprintf(stderr,
+                    "legacy_glsl_frontend: seg N back probe not blue "
+                    "rgb=(%u,%u,%u)\n", nb[0], nb[1], nb[2]);
+            return 38;
+        }
+    }
+
     glDeleteTextures(1, &redTex);
     glDeleteFramebuffers(1, &fbo);
     glDeleteTextures(1, &tex);
