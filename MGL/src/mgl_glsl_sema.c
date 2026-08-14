@@ -1486,6 +1486,11 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                 return scratch_type(s,
                                     mglIRTypeVector(MGLIR_SCALAR_FLOAT, 4));
             }
+            if (strcmp(e->u.var_ref.name, "gl_FrontFacing") == 0) {
+                /* Fragment built-in front/back facing flag; the AIR
+                 * backend maps it to the front_facing fragment argument. */
+                return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_BOOL));
+            }
             if (strcmp(e->u.var_ref.name, "gl_PointSize") == 0) {
                 /* Vertex built-in point size; the AIR backend maps it to
                  * the air.point_size output member. */

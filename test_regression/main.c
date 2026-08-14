@@ -4113,6 +4113,57 @@ static int test_legacy_glsl_frontend(unsigned char *pixels, const char *out_path
         }
     }
 
+    /* Segment K: gl_FrontFacing (front/back flag).  The FS colors by the
+     * facing flag; glFrontFace flips the convention so BOTH branches are
+     * verified: CCW (front) -> red, CW (back) -> blue. */
+    {
+        const char *vs110ff =
+            "#version 110\n"
+            "void main() {\n"
+            "    gl_Position = ftransform();\n"
+            "}\n";
+        const char *fs110ff =
+            "#version 110\n"
+            "void main() {\n"
+            "    gl_FragColor = gl_FrontFacing\n"
+            "        ? vec4(1.0, 0.0, 0.0, 1.0)\n"
+            "        : vec4(0.0, 0.0, 1.0, 1.0);\n"
+            "}\n";
+        GLuint progK = link_program(vs110ff, fs110ff);
+        if (!progK) {
+            fprintf(stderr, "legacy_glsl_frontend: link failed (segment K)\n");
+            return 29;
+        }
+        glUseProgram(progK);
+        clear_color(0.0f, 0.0f, 0.0f);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glFinish();
+        glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        const unsigned char *kf =
+            &pixels[((REG_H/2) * REG_W + REG_W/2) * 4];
+        if (kf[0] < 200u || kf[1] > 60u || kf[2] > 60u) {
+            fprintf(stderr,
+                    "legacy_glsl_frontend: seg K front probe not red "
+                    "rgb=(%u,%u,%u)\n", kf[0], kf[1], kf[2]);
+            return 30;
+        }
+        /* Back-facing: same triangle, CW convention. */
+        clear_color(0.0f, 0.0f, 0.0f);
+        glFrontFace(GL_CW);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glFinish();
+        glFrontFace(GL_CCW);
+        glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        const unsigned char *kb =
+            &pixels[((REG_H/2) * REG_W + REG_W/2) * 4];
+        if (kb[2] < 200u || kb[0] > 60u || kb[1] > 60u) {
+            fprintf(stderr,
+                    "legacy_glsl_frontend: seg K back probe not blue "
+                    "rgb=(%u,%u,%u)\n", kb[0], kb[1], kb[2]);
+            return 31;
+        }
+    }
+
     glDeleteTextures(1, &redTex);
     glDeleteFramebuffers(1, &fbo);
     glDeleteTextures(1, &tex);

@@ -2661,6 +2661,14 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             }
             return cg.fragPos;
         }
+        if (strcmp(e->u.var_ref.name, "gl_FrontFacing") == 0) {
+            if (!cg.lvalues.count("gl_FrontFacing")) {
+                cg.err = 1;
+                cg.errmsg = "codegen: gl_FrontFacing requires a fragment stage";
+                return nullptr;
+            }
+            return cg.lvalues["gl_FrontFacing"];
+        }
         if (strcmp(e->u.var_ref.name, "gl_PointSize") == 0) {
             if (!cg.pointSize) {
                 /* read-before-write: an unwritten point size is 1.0 */
@@ -6087,6 +6095,9 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
      * output member). */
     const bool usesFragCoord =
         !isVS && !isTES && !isKernel && strstr(esrc, "gl_FragCoord") != nullptr;
+    const bool usesFrontFacing =
+        !isVS && !isTES && !isKernel &&
+        strstr(esrc, "gl_FrontFacing") != nullptr;
     const bool usesWorkGroupID =
         isCompute && strstr(esrc, "gl_WorkGroupID") != nullptr;
     const bool usesPointSize =
@@ -6308,6 +6319,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         if (usesFragCoord)
             paramTys.push_back(llvm::FixedVectorType::get(
                 llvm::Type::getFloatTy(ctx), 4));
+        if (usesFrontFacing)
+            paramTys.push_back(llvm::Type::getInt1Ty(ctx));
     }
     if (isTCS || isTESCompute)
         paramTys.push_back(llvm::FixedVectorType::get(
@@ -6553,7 +6566,9 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         if (hasBuffer)
             cg.bufferPtr = fn->getArg(argSlot++);
         if (usesFragCoord)
-            cg.fragPos = fn->getArg(argSlot);
+            cg.fragPos = fn->getArg(argSlot++);
+        if (usesFrontFacing)
+            cg.lvalues["gl_FrontFacing"] = fn->getArg(argSlot++);
     }
     if (isTCS)
         cg.patchPos = fn->getArg(argSlot++);
@@ -7849,11 +7864,15 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 emitFSVarying(v.name, v.type, mArgSlot++);
             }
         }
-        if (usesFragCoord) {
+        if (usesFragCoord || usesFrontFacing) {
+            /* The fragment builtins sit after the varyings and the
+             * optional buffer in the arg order; skip that slot once. */
             if (hasBuffer) mArgSlot++;
+        }
+        if (usesFragCoord) {
             argNodes.push_back(llvm::MDNode::get(ctx, {
                 llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(ctx), mArgSlot)),
+                    llvm::Type::getInt32Ty(ctx), mArgSlot++)),
                 llvm::MDString::get(ctx, "air.position"),
                 llvm::MDString::get(ctx, "air.center"),
                 llvm::MDString::get(ctx, "air.no_perspective"),
@@ -7861,6 +7880,16 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 llvm::MDString::get(ctx, "float4"),
                 llvm::MDString::get(ctx, "air.arg_name"),
                 llvm::MDString::get(ctx, "gl_FragCoord")}));
+        }
+        if (usesFrontFacing) {
+            argNodes.push_back(llvm::MDNode::get(ctx, {
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), mArgSlot++)),
+                llvm::MDString::get(ctx, "air.front_facing"),
+                llvm::MDString::get(ctx, "air.arg_type_name"),
+                llvm::MDString::get(ctx, "bool"),
+                llvm::MDString::get(ctx, "air.arg_name"),
+                llvm::MDString::get(ctx, "gl_FrontFacing")}));
         }
     }
     if (isKernel) {
