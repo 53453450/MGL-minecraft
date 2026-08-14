@@ -217,6 +217,19 @@ void mglVertex4i(GLMContext ctx, GLint x, GLint y, GLint z, GLint w);
 void mglVertex4iv(GLMContext ctx, const GLint *v);
 void mglVertex4s(GLMContext ctx, GLshort x, GLshort y, GLshort z, GLshort w);
 void mglVertex4sv(GLMContext ctx, const GLshort *v);
+/* Legacy GL 1.1 clip planes share GL 3.2's GL_CLIP_DISTANCEi values
+ * (0x3000 + i); expose the legacy names for source compatibility. */
+#ifndef GL_CLIP_PLANE0
+#define GL_CLIP_PLANE0  GL_CLIP_DISTANCE0
+#define GL_CLIP_PLANE1  GL_CLIP_DISTANCE1
+#define GL_CLIP_PLANE2  GL_CLIP_DISTANCE2
+#define GL_CLIP_PLANE3  GL_CLIP_DISTANCE3
+#define GL_CLIP_PLANE4  GL_CLIP_DISTANCE4
+#define GL_CLIP_PLANE5  GL_CLIP_DISTANCE5
+#define GL_CLIP_PLANE6  GL_CLIP_DISTANCE6
+#define GL_CLIP_PLANE7  GL_CLIP_DISTANCE7
+#endif
+
 void mglClipPlane(GLMContext ctx, GLenum plane, const GLdouble *equation);
 void mglColorMaterial(GLMContext ctx, GLenum face, GLenum mode);
 void mglFogf(GLMContext ctx, GLenum pname, GLfloat param);

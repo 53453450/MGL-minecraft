@@ -33,13 +33,29 @@
 #include "glm_context.h"
 #include "MGLRenderer.h"
 
+/* Legacy GL 1.1 clip-plane surface: glClipPlane/glGetClipPlane are not
+ * declared by glcorearb.h, and GL_CLIP_PLANE0..5 share the GL_CLIP_DISTANCE
+ * values (0x3000 + i). */
+#ifndef GL_CLIP_PLANE0
+#define GL_CLIP_PLANE0 GL_CLIP_DISTANCE0
+#define GL_CLIP_PLANE1 GL_CLIP_DISTANCE1
+#define GL_CLIP_PLANE2 GL_CLIP_DISTANCE2
+#define GL_CLIP_PLANE3 GL_CLIP_DISTANCE3
+#define GL_CLIP_PLANE4 GL_CLIP_DISTANCE4
+#define GL_CLIP_PLANE5 GL_CLIP_DISTANCE5
+#define GL_CLIP_PLANE6 GL_CLIP_DISTANCE6
+#define GL_CLIP_PLANE7 GL_CLIP_DISTANCE7
+#endif
+GLAPI void APIENTRY glClipPlane(GLenum plane, const GLdouble *equation);
+GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
+
 /* ------------------------------------------------------------------ */
 /* Constants                                                          */
 /* ------------------------------------------------------------------ */
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 65
+#define MAX_TESTS 66
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -3657,6 +3673,102 @@ static int test_air_msaa_resolve(unsigned char *pixels, const char *out_path)
  * constructs BEFORE parsing (mgl_legacy_compat wiring in mgl_air_backend.cpp).
  * Segment A: legacy VS/FS with gl_FragColor -> red triangle interior.
  * Segment B: legacy texture2D() sampling a red 1x1 texture -> red interior. */
+/* ---- Legacy clip planes (GL 1.1 glClipPlane / glGetClipPlane) ----
+ * The legacy clip-plane GL surface: equations are stored as given
+ * (MGL's fixed-function matrix stack is unimplemented, so the GL 1.1
+ * eye-space transform is identity), glGetClipPlane returns them, and
+ * GL_CLIP_PLANE0..5 share the GL_CLIP_DISTANCE0..5 values so
+ * glEnable/glIsEnabled already route through the clip-distance caps.
+ * The shader-side derivation (gl_ClipVertex -> clip distances) is
+ * covered separately. */
+static int test_gl_clip_planes(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+
+    const GLdouble eq0[4] = { 1.0, 0.0, 0.0, 0.5 };
+    const GLdouble eq1[4] = { 0.0, 1.0, 0.0, -0.25 };
+    const GLdouble eq5[4] = { 0.0, 0.0, 1.0, 2.0 };
+    GLdouble got[4];
+
+    /* Default state: planes are zero, disabled. */
+    memset(got, 0x7f, sizeof(got));
+    glGetClipPlane(GL_CLIP_PLANE0, got);
+    if (got[0] != 0.0 || got[1] != 0.0 || got[2] != 0.0 || got[3] != 0.0) {
+        fprintf(stderr, "gl_clip_planes: default plane0 not zero "
+                "(%g,%g,%g,%g)\n", got[0], got[1], got[2], got[3]);
+        return 1;
+    }
+    if (glIsEnabled(GL_CLIP_PLANE0) || glIsEnabled(GL_CLIP_PLANE5)) {
+        fprintf(stderr, "gl_clip_planes: clip planes enabled by default\n");
+        return 2;
+    }
+
+    /* Set/get roundtrip on planes 0, 1 and 5. */
+    glClipPlane(GL_CLIP_PLANE0, eq0);
+    glClipPlane(GL_CLIP_PLANE1, eq1);
+    glClipPlane(GL_CLIP_PLANE5, eq5);
+    memset(got, 0x7f, sizeof(got));
+    glGetClipPlane(GL_CLIP_PLANE0, got);
+    if (memcmp(got, eq0, sizeof(eq0)) != 0) {
+        fprintf(stderr, "gl_clip_planes: plane0 mismatch "
+                "(%g,%g,%g,%g)\n", got[0], got[1], got[2], got[3]);
+        return 3;
+    }
+    memset(got, 0x7f, sizeof(got));
+    glGetClipPlane(GL_CLIP_PLANE1, got);
+    if (memcmp(got, eq1, sizeof(eq1)) != 0) {
+        fprintf(stderr, "gl_clip_planes: plane1 mismatch "
+                "(%g,%g,%g,%g)\n", got[0], got[1], got[2], got[3]);
+        return 4;
+    }
+    memset(got, 0x7f, sizeof(got));
+    glGetClipPlane(GL_CLIP_PLANE5, got);
+    if (memcmp(got, eq5, sizeof(eq5)) != 0) {
+        fprintf(stderr, "gl_clip_planes: plane5 mismatch "
+                "(%g,%g,%g,%g)\n", got[0], got[1], got[2], got[3]);
+        return 5;
+    }
+
+    /* glClipPlane must not disturb the other planes. */
+    memset(got, 0x7f, sizeof(got));
+    glGetClipPlane(GL_CLIP_PLANE2, got);
+    if (got[0] != 0.0 || got[3] != 0.0) {
+        fprintf(stderr, "gl_clip_planes: plane2 disturbed "
+                "(%g,%g,%g,%g)\n", got[0], got[1], got[2], got[3]);
+        return 6;
+    }
+
+    /* Enable/disable routing through the shared clip caps. */
+    glEnable(GL_CLIP_PLANE1);
+    if (!glIsEnabled(GL_CLIP_PLANE1)) {
+        fprintf(stderr, "gl_clip_planes: enable plane1 not reflected\n");
+        return 7;
+    }
+    glDisable(GL_CLIP_PLANE1);
+    if (glIsEnabled(GL_CLIP_PLANE1)) {
+        fprintf(stderr, "gl_clip_planes: disable plane1 not reflected\n");
+        return 8;
+    }
+
+    /* Out-of-range plane is GL_INVALID_ENUM. */
+    GLenum err = glGetError();
+    if (err != GL_NO_ERROR) {
+        fprintf(stderr, "gl_clip_planes: stray GL error 0x%x\n",
+                (unsigned)err);
+        return 9;
+    }
+    glClipPlane(0x3008, eq0);   /* beyond GL_CLIP_PLANE7/GL_CLIP_DISTANCE7 */
+    err = glGetError();
+    if (err != GL_INVALID_ENUM) {
+        fprintf(stderr, "gl_clip_planes: out-of-range plane not rejected "
+                "(0x%x)\n", (unsigned)err);
+        return 10;
+    }
+
+    return 0;
+}
+
 static int test_legacy_glsl_frontend(unsigned char *pixels, const char *out_path)
 {
     (void)out_path;
@@ -9939,6 +10051,7 @@ typedef struct {
 #define EXPLICIT_SELF_CHECK_TEST(name, fn) { name, fn, 1, 1 }
 
 static const TestCase TESTS[] = {
+    SELF_CHECK_TEST("gl_clip_planes",     test_gl_clip_planes),
     GOLDEN_TEST("draw_arrays",            test_draw_arrays),
     GOLDEN_TEST("draw_elements",          test_draw_elements),
     GOLDEN_TEST("draw_arrays_instanced",  test_draw_arrays_instanced),

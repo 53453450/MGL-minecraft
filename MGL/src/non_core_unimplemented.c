@@ -970,8 +970,32 @@ void mglVertex4sv(GLMContext ctx, const GLshort *v)
 
 void mglClipPlane(GLMContext ctx, GLenum plane, const GLdouble *equation)
 {
-    // Unimplemented function — deprecated GL function
-    MGL_UNIMPLEMENTED();
+    if (!ctx || !equation)
+        return;
+
+    if (plane < GL_CLIP_DISTANCE0 ||
+        plane > GL_CLIP_DISTANCE0 + MAX_CLIP_DISTANCES - 1) {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+    GLuint index = (GLuint)(plane - GL_CLIP_DISTANCE0);
+    GLuint limit = ctx->state.var.max_clip_distances;
+    if (limit == 0 || limit > MAX_CLIP_DISTANCES)
+        limit = MAX_CLIP_DISTANCES;
+    if (index >= limit) {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+
+    /* GL 1.1 semantics: the equation is transformed to eye coordinates by
+     * the inverse-transpose of the current modelview.  MGL's fixed-function
+     * matrix stack is unimplemented (the matrices are app-set uniforms), so
+     * the effective transform is identity and the equation is stored as
+     * given.  A shader deriving clip distances must dot the plane against
+     * gl_ClipVertex in the same (eye) space. */
+    memcpy(ctx->state.var.clip_planes[index], equation,
+           sizeof(ctx->state.var.clip_planes[index]));
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_STATE | DIRTY_RENDER_STATE);
 }
 
 void mglColorMaterial(GLMContext ctx, GLenum face, GLenum mode)
@@ -1206,8 +1230,25 @@ void mglDrawPixels(GLMContext ctx, GLsizei width, GLsizei height, GLenum format,
 
 void mglGetClipPlane(GLMContext ctx, GLenum plane, GLdouble *equation)
 {
-    // Unimplemented function — deprecated GL function
-    MGL_UNIMPLEMENTED();
+    if (!ctx || !equation)
+        return;
+
+    if (plane < GL_CLIP_DISTANCE0 ||
+        plane > GL_CLIP_DISTANCE0 + MAX_CLIP_DISTANCES - 1) {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+    GLuint index = (GLuint)(plane - GL_CLIP_DISTANCE0);
+    GLuint limit = ctx->state.var.max_clip_distances;
+    if (limit == 0 || limit > MAX_CLIP_DISTANCES)
+        limit = MAX_CLIP_DISTANCES;
+    if (index >= limit) {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+
+    memcpy(equation, ctx->state.var.clip_planes[index],
+           sizeof(ctx->state.var.clip_planes[index]));
 }
 
 void mglGetLightfv(GLMContext ctx, GLenum light, GLenum pname, GLfloat *params)

@@ -156,6 +156,12 @@ typedef struct GLMCaps_t {
 } GLMCaps;
 
 typedef struct GLMParams_t {
+    /* Legacy glClipPlane equations (GL_CLIP_PLANE0..5, stored as given:
+     * MGL has no fixed-function matrix stack, so the GL 1.1 eye-space
+     * transform is the identity; a shader deriving clip distances from
+     * these must apply the app's own modelview to gl_ClipVertex the same
+     * way the equation was transformed). */
+    GLdouble clip_planes[MAX_CLIP_DISTANCES][4];
     GLfloat point_size;
     GLfloat point_size_range[2];
     GLuint point_size_granularity;
