@@ -281,6 +281,30 @@ static void test_translate_frontfacing_110(void)
     check(not_contains(buf, "_mglFrontFacing"), "no rename applied", NULL);
 }
 
+static void test_translate_pointcoord_fragdepth_110(void)
+{
+    printf("\n=== test_translate_pointcoord_fragdepth_110 ===\n");
+    /* gl_PointCoord and gl_FragDepth are legacy FS builtins with the same
+     * names in modern GLSL — the translator passes them through untouched
+     * and the frontend/AIR backend resolve them. */
+    const char *src =
+        "#version 110\n"
+        "void main() {\n"
+        "    gl_FragColor = vec4(gl_PointCoord, 0.0, 1.0);\n"
+        "    gl_FragDepth = 0.5;\n"
+        "}\n";
+
+    char buf[BUF_SIZE];
+    copy_to_buf(src, buf, BUF_SIZE);
+
+    int ret = mgl_translate_legacy_glsl(buf, BUF_SIZE, GL_FRAGMENT_SHADER, 110, NULL);
+    check(ret == 1, "translate returns 1", NULL);
+    check(contains(buf, "gl_PointCoord"), "gl_PointCoord kept", NULL);
+    check(contains(buf, "gl_FragDepth"), "gl_FragDepth kept", NULL);
+    check(not_contains(buf, "_mglPointCoord"), "no point-coord rename", NULL);
+    check(not_contains(buf, "_mglFragDepth"), "no frag-depth rename", NULL);
+}
+
 static void test_translate_texcoord_110(void)
 {
     printf("\n=== test_translate_texcoord_110 ===\n");
@@ -885,6 +909,7 @@ int main(void)
     test_translate_fragment_110();
     test_translate_fragdata_120();
     test_translate_frontfacing_110();
+    test_translate_pointcoord_fragdepth_110();
     test_translate_fragdata_index0_110();
     test_translate_fragdata_mixed_index_110();
     test_translate_texcoord_110();

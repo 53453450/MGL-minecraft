@@ -4164,6 +4164,146 @@ static int test_legacy_glsl_frontend(unsigned char *pixels, const char *out_path
         }
     }
 
+    /* Segment L: point sprite.  The VS writes gl_PointSize and positions a
+     * point at the center; the FS colors by gl_PointCoord (the
+     * point_coord fragment argument).  At the point center gl_PointCoord.x
+     * is 0.5, so the probe must read red. */
+    {
+        const char *vs110ps =
+            "#version 110\n"
+            "void main() {\n"
+            "    gl_PointSize = 96.0;\n"
+            "    gl_Position = vec4(0.0, 0.0, 0.0, 1.0);\n"
+            "}\n";
+        const char *fs110ps =
+            "#version 110\n"
+            "void main() {\n"
+            "    gl_FragColor = vec4(gl_PointCoord.x < 2.0 ? 1.0 : 0.0,\n"
+            "                        0.0, 0.0, 1.0);\n"
+            "}\n";
+        GLuint progL = link_program(vs110ps, fs110ps);
+        if (!progL) {
+            fprintf(stderr, "legacy_glsl_frontend: link failed (segment L)\n");
+            return 32;
+        }
+        glUseProgram(progL);
+        clear_color(0.0f, 0.0f, 0.0f);
+        glDrawArrays(GL_POINTS, 0, 1);
+        glFinish();
+        glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        const unsigned char *l =
+            &pixels[((REG_H/2) * REG_W + REG_W/2) * 4];
+        if (l[0] < 200u || l[1] > 60u || l[2] > 60u) {
+            fprintf(stderr,
+                    "legacy_glsl_frontend: seg L point probe not red "
+                    "rgb=(%u,%u,%u)\n", l[0], l[1], l[2]);
+            return 33;
+        }
+    }
+
+    /* Segment M: gl_FragDepth.  Pass 1 writes depth 0.25 (red); pass 2
+     * writes depth 0.75 (blue) with GL_DEPTH_TEST + GL_LEQUAL over the
+     * same triangle.  If gl_FragDepth flows into the depth attachment,
+     * pass 2 fails the test (0.75 > 0.25) and the probe stays red.  If
+     * the depth write were ignored, both passes write the interpolated
+     * depth (0.5) and pass 2 passes LEQUAL, turning the probe blue.
+     * Uses the depth-TEXTURE FBO (make_fbo_depth_tex): the renderer's
+     * depth path is texture-based (make_fbo's depth renderbuffer is not
+     * attached; verified by the pure-z control below which fails there
+     * and passes here). */
+    {
+        GLuint mfbo, mtex, mdtex;
+        mfbo = make_fbo_depth_tex(REG_W, REG_H, &mtex, &mdtex);
+        if (!mfbo) {
+            fprintf(stderr, "legacy_glsl_frontend: seg M fbo failed\n");
+            return 34;
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER, mfbo);
+        const char *vs110d =
+            "#version 110\n"
+            "void main() { gl_Position = ftransform(); }\n";
+        const char *fs110d1d =
+            "#version 110\n"
+            "void main() {\n"
+            "    gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0);\n"
+            "    gl_FragDepth = 0.25;\n"
+            "}\n";
+        const char *fs110d2d =
+            "#version 110\n"
+            "void main() {\n"
+            "    gl_FragColor = vec4(0.0, 0.0, 1.0, 1.0);\n"
+            "    gl_FragDepth = 0.75;\n"
+            "}\n";
+        /* CONTROL: pure z positions (no gl_FragDepth) with this FBO.
+         * Pass 1 z=-0.5 (depth 0.25), pass 2 z=+0.5 (depth 0.75). */
+        const char *vs110dzc =
+            "#version 110\n"
+            "attribute vec2 a_pos;\n"
+            "void main() { gl_Position = vec4(a_pos, -0.5, 1.0); }\n";
+        const char *vs110dzc2 =
+            "#version 110\n"
+            "attribute vec2 a_pos;\n"
+            "void main() { gl_Position = vec4(a_pos, 0.5, 1.0); }\n";
+        const char *fs110dc =
+            "#version 110\n"
+            "void main() { gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0); }\n";
+        const char *fs110dc2 =
+            "#version 110\n"
+            "void main() { gl_FragColor = vec4(0.0, 0.0, 1.0, 1.0); }\n";
+        GLuint progC1 = link_program(vs110dzc, fs110dc);
+        GLuint progC2 = link_program(vs110dzc2, fs110dc2);
+        if (!progC1 || !progC2) {
+            fprintf(stderr, "legacy_glsl_frontend: link failed (seg M control)\n");
+            return 34;
+        }
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LEQUAL);
+        glUseProgram(progC1);
+        clear_color(0.0f, 0.0f, 0.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glUseProgram(progC2);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glDisable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LESS);
+        glFinish();
+        glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        const unsigned char *mc =
+            &pixels[((REG_H/2) * REG_W + REG_W/2) * 4];
+        if (mc[0] < 200u || mc[1] > 60u || mc[2] > 60u) {
+            fprintf(stderr,
+                    "legacy_glsl_frontend: seg M z-control not red "
+                    "rgb=(%u,%u,%u) — plumbing broken\n", mc[0], mc[1], mc[2]);
+            return 35;
+        }
+        GLuint progM1 = link_program(vs110d, fs110d1d);
+        GLuint progM2 = link_program(vs110d, fs110d2d);
+        if (!progM1 || !progM2) {
+            fprintf(stderr, "legacy_glsl_frontend: link failed (segment M)\n");
+            return 34;
+        }
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LEQUAL);
+        glUseProgram(progM1);
+        clear_color(0.0f, 0.0f, 0.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glUseProgram(progM2);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glDisable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LESS);
+        glFinish();
+        glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        const unsigned char *m =
+            &pixels[((REG_H/2) * REG_W + REG_W/2) * 4];
+        if (m[0] < 200u || m[1] > 60u || m[2] > 60u) {
+            fprintf(stderr,
+                    "legacy_glsl_frontend: seg M depth-write probe not red "
+                    "rgb=(%u,%u,%u)\n", m[0], m[1], m[2]);
+            return 35;
+        }
+    }
+
     glDeleteTextures(1, &redTex);
     glDeleteFramebuffers(1, &fbo);
     glDeleteTextures(1, &tex);

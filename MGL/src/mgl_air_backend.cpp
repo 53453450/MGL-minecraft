@@ -193,6 +193,8 @@ struct Codegen {
     llvm::Value *cullParams = nullptr;   /* VS cull-distance emu parameters */
     bool usesCullDistance = false;
     llvm::Value *fragPos = nullptr;      /* fragment: [[position]] (gl_FragCoord) */
+    bool hasFragDepth = false;           /* fragment writes gl_FragDepth */
+    bool fragDepthInit = false;          /* gl_FragDepth lvalue initialized */
     bool pointSize = false;              /* vertex: writes gl_PointSize */
     bool layerViewport = false;          /* writes gl_Layer / gl_ViewportIndex */
     std::map<std::string, llvm::Value *> ssboPtrs;  /* SSBO instance -> buffer */
@@ -2669,6 +2671,20 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             }
             return cg.lvalues["gl_FrontFacing"];
         }
+        if (strcmp(e->u.var_ref.name, "gl_PointCoord") == 0) {
+            if (!cg.lvalues.count("gl_PointCoord")) {
+                cg.err = 1;
+                cg.errmsg = "codegen: gl_PointCoord requires a fragment stage";
+                return nullptr;
+            }
+            return cg.lvalues["gl_PointCoord"];
+        }
+        if (strcmp(e->u.var_ref.name, "gl_FragDepth") == 0) {
+            if (!cg.lvalues.count("gl_FragDepth"))
+                cg.lvalues["gl_FragDepth"] = llvm::ConstantFP::get(
+                    llvm::Type::getFloatTy(*cg.ctx), 1.0);
+            return cg.lvalues["gl_FragDepth"];
+        }
         if (strcmp(e->u.var_ref.name, "gl_PointSize") == 0) {
             if (!cg.pointSize) {
                 /* read-before-write: an unwritten point size is 1.0 */
@@ -4084,6 +4100,12 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             cg.lvalues[name] = coerceScalar(cg, v, MGLIR_SCALAR_INT);
             return v;
         }
+        if (strcmp(name, "gl_FragDepth") == 0) {
+            /* Fragment depth output; carried in the struct return (see
+             * assembleReturn).  Unwritten paths keep 1.0. */
+            cg.lvalues[name] = coerceScalar(cg, v, MGLIR_SCALAR_FLOAT);
+            return v;
+        }
         auto lit = locals.find(name);
         if (lit != locals.end()) {
             v = coerceScalar(cg, v, lit->second.scalar);
@@ -4152,6 +4174,12 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         }
         if (strcmp(e->u.var_ref.name, "gl_TessLevelInner") == 0) {
             t.scalar = MGLIR_SCALAR_FLOAT; t.arr = 2; break;
+        }
+        if (strcmp(e->u.var_ref.name, "gl_FragDepth") == 0) {
+            t.scalar = MGLIR_SCALAR_FLOAT; break;
+        }
+        if (strcmp(e->u.var_ref.name, "gl_PointCoord") == 0) {
+            t.scalar = MGLIR_SCALAR_FLOAT; t.vec = 2; break;
         }
         auto lit = locals.find(e->u.var_ref.name);
         if (lit != locals.end()) { t = lit->second; break; }
@@ -4894,9 +4922,20 @@ llvm::Value *assembleReturn(Codegen &cg) {
     VarSym *out = nullptr;
     for (VarSym &v : *cg.auxSyms)
         if (v.kind == VarSym::OUTPUT) { out = &v; break; }
-    return (out && cg.lvalues.count(out->name))
-               ? cg.lvalues[out->name]
-               : llvm::UndefValue::get(cg.retTy);
+    llvm::Value *color = (out && cg.lvalues.count(out->name))
+        ? cg.lvalues[out->name] : llvm::UndefValue::get(cg.retTy);
+    if (cg.hasFragDepth) {
+        /* Struct return: color + [[depth(any)]] member.  An unwritten
+         * gl_FragDepth keeps 1.0 (the depth(any) contract: shaders that
+         * reference the builtin control the depth). */
+        llvm::Value *ret = llvm::UndefValue::get(cg.retTy);
+        ret = cg.b->CreateInsertValue(ret, color, 0);
+        llvm::Value *depth = cg.lvalues.count("gl_FragDepth")
+            ? cg.lvalues["gl_FragDepth"]
+            : llvm::ConstantFP::get(llvm::Type::getFloatTy(*cg.ctx), 1.0);
+        return cg.b->CreateInsertValue(ret, depth, 1);
+    }
+    return color;
 }
 
 void emitCompound(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
@@ -6098,6 +6137,12 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     const bool usesFrontFacing =
         !isVS && !isTES && !isKernel &&
         strstr(esrc, "gl_FrontFacing") != nullptr;
+    const bool usesPointCoord =
+        !isVS && !isTES && !isKernel &&
+        strstr(esrc, "gl_PointCoord") != nullptr;
+    const bool usesFragDepth =
+        !isVS && !isTES && !isKernel &&
+        strstr(esrc, "gl_FragDepth") != nullptr;
     const bool usesWorkGroupID =
         isCompute && strstr(esrc, "gl_WorkGroupID") != nullptr;
     const bool usesPointSize =
@@ -6161,8 +6206,21 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         for (VarSym &v : syms) {
             if (v.kind == VarSym::OUTPUT) { out = &v; break; }
         }
-        retTy = out ? llvmType(out->type, ctx)
-                    : llvm::FixedVectorType::get(llvm::Type::getFloatTy(ctx), 4);
+        if (usesFragDepth) {
+            /* Fragment functions write depth through the [[depth(any)]]
+             * member of a struct return (see aux_shaders/scaled_depth_blit
+             * for the reference MSL shape). */
+            std::vector<llvm::Type *> fields;
+            fields.push_back(out ? llvmType(out->type, ctx)
+                                 : llvm::FixedVectorType::get(
+                                       llvm::Type::getFloatTy(ctx), 4));
+            fields.push_back(llvm::Type::getFloatTy(ctx));
+            retTy = llvm::StructType::get(ctx, fields);
+        } else {
+            retTy = out ? llvmType(out->type, ctx)
+                        : llvm::FixedVectorType::get(
+                              llvm::Type::getFloatTy(ctx), 4);
+        }
     }
 
     auto captureRecordType = [&]() -> llvm::Type * {
@@ -6321,6 +6379,9 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 llvm::Type::getFloatTy(ctx), 4));
         if (usesFrontFacing)
             paramTys.push_back(llvm::Type::getInt1Ty(ctx));
+        if (usesPointCoord)
+            paramTys.push_back(llvm::FixedVectorType::get(
+                llvm::Type::getFloatTy(ctx), 2));
     }
     if (isTCS || isTESCompute)
         paramTys.push_back(llvm::FixedVectorType::get(
@@ -6569,7 +6630,11 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             cg.fragPos = fn->getArg(argSlot++);
         if (usesFrontFacing)
             cg.lvalues["gl_FrontFacing"] = fn->getArg(argSlot++);
+        if (usesPointCoord)
+            cg.lvalues["gl_PointCoord"] = fn->getArg(argSlot++);
     }
+    if (usesFragDepth)
+        cg.hasFragDepth = true;
     if (isTCS)
         cg.patchPos = fn->getArg(argSlot++);
     if (isGS) {
@@ -7891,6 +7956,18 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 llvm::MDString::get(ctx, "air.arg_name"),
                 llvm::MDString::get(ctx, "gl_FrontFacing")}));
         }
+        if (usesPointCoord) {
+            argNodes.push_back(llvm::MDNode::get(ctx, {
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), mArgSlot++)),
+                llvm::MDString::get(ctx, "air.point_coord"),
+                llvm::MDString::get(ctx, "air.center"),
+                llvm::MDString::get(ctx, "air.no_perspective"),
+                llvm::MDString::get(ctx, "air.arg_type_name"),
+                llvm::MDString::get(ctx, "float2"),
+                llvm::MDString::get(ctx, "air.arg_name"),
+                llvm::MDString::get(ctx, "gl_PointCoord")}));
+        }
     }
     if (isKernel) {
         /* Kernel thread position: [[thread_position_in_grid]] as uint3. */
@@ -7990,6 +8067,20 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     llvm::Type::getInt32Ty(ctx), 0)),
                 llvm::MDString::get(ctx, "air.arg_type_name"),
                 llvm::MDString::get(ctx, mslTypeName(out->type))}));
+        }
+        if (usesFragDepth) {
+            /* Reference shape from aux_shaders/scaled_depth_blit.metal:
+             * the depth output is air.depth + air.depth_qualifier air.any
+             * in the fragment output list, matched to the struct member by
+             * position (second member, after the render target). */
+            outNodes.push_back(llvm::MDNode::get(ctx, {
+                llvm::MDString::get(ctx, "air.depth"),
+                llvm::MDString::get(ctx, "air.depth_qualifier"),
+                llvm::MDString::get(ctx, "air.any"),
+                llvm::MDString::get(ctx, "air.arg_type_name"),
+                llvm::MDString::get(ctx, "float"),
+                llvm::MDString::get(ctx, "air.arg_name"),
+                llvm::MDString::get(ctx, "depth")}));
         }
     }
 

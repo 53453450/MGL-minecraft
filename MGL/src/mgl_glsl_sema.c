@@ -1491,6 +1491,17 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                  * backend maps it to the front_facing fragment argument. */
                 return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_BOOL));
             }
+            if (strcmp(e->u.var_ref.name, "gl_PointCoord") == 0) {
+                /* Fragment built-in point-sprite coordinate; the AIR
+                 * backend maps it to the point_coord fragment argument. */
+                return scratch_type(s,
+                                    mglIRTypeVector(MGLIR_SCALAR_FLOAT, 2));
+            }
+            if (strcmp(e->u.var_ref.name, "gl_FragDepth") == 0) {
+                /* Fragment built-in depth output; the AIR backend emits it
+                 * as the frag_depth member of the fragment return. */
+                return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_FLOAT));
+            }
             if (strcmp(e->u.var_ref.name, "gl_PointSize") == 0) {
                 /* Vertex built-in point size; the AIR backend maps it to
                  * the air.point_size output member. */
