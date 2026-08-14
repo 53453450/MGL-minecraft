@@ -762,6 +762,47 @@ static void test_translate_matrices_unused(void)
           "no matrix uniform at all", NULL);
 }
 
+
+static void test_translate_ftransform(void)
+{
+    printf("\n=== test_translate_ftransform ===\n");
+    /* ftransform() = gl_ModelViewProjectionMatrix * gl_Vertex.  Detection
+     * flags has_ftransform on the ORIGINAL source; the expansion must
+     * introduce both names, and Step 4 must inject the matrix uniform +
+     * gl_Vertex layout-0 declaration even though detection did not see
+     * them (source-guarded injection). */
+    const char *src =
+        "#version 110\n"
+        "void main() {\n"
+        "    gl_TexCoord[0] = gl_MultiTexCoord0;\n"
+        "    gl_Position = ftransform();\n"
+        "}\n";
+
+    mgl_legacy_features_t feat;
+    mgl_legacy_detect(src, &feat);
+    check(feat.has_ftransform == GL_TRUE, "detect: has_ftransform", NULL);
+    check(feat.has_legacy_matrices == GL_FALSE,
+          "detect: matrices NOT flagged on original source", NULL);
+    check(feat.has_legacy_builtins == GL_TRUE,
+          "detect: builtins (gl_MultiTexCoord0)", NULL);
+    check(feat.needs_translation == GL_TRUE, "detect: needs_translation", NULL);
+
+    char buf[BUF_SIZE];
+    copy_to_buf(src, buf, BUF_SIZE);
+    int ret = mgl_translate_legacy_glsl(buf, BUF_SIZE, GL_VERTEX_SHADER, 110, &feat);
+    check(ret == 1, "translate returns 1", NULL);
+    check(not_contains(buf, "ftransform()"), "ftransform() expanded", NULL);
+    check(contains(buf, "gl_ModelViewProjectionMatrix * gl_Vertex"),
+          "expansion text present", NULL);
+    check(contains(buf, "uniform mat4 gl_ModelViewProjectionMatrix;"),
+          "MVP injected (source-guarded)", NULL);
+    check(contains(buf, "layout(location = 0) in vec4 gl_Vertex;"),
+          "gl_Vertex injected (source-guarded)", NULL);
+    check(contains(buf, "in vec4 _mglMultiTexCoord0;"),
+          "gl_MultiTexCoord0 declaration", NULL);
+    check(contains(buf, "out vec4 _mglTexCoord["),
+          "gl_TexCoord declaration (VS out)", NULL);
+}
 int main(void)
 {
     printf("=== mgl_legacy_compat tests ===\n");
@@ -797,6 +838,7 @@ int main(void)
     test_full_legacy_vertex_110();
     test_translate_gl_Vertex_and_matrices();
     test_translate_matrices_unused();
+    test_translate_ftransform();
 
     printf("\n=== Summary ===\n");
     printf("Total: %d, Passed: %d, Failed: %d\n",

@@ -3865,6 +3865,57 @@ static int test_legacy_glsl_frontend(unsigned char *pixels, const char *out_path
         }
     }
 
+    /* Segment E: ftransform() end-to-end.  The translator expands
+     * ftransform() to gl_ModelViewProjectionMatrix * gl_Vertex and the
+     * source-guarded injection declares both, so a shader that only ever
+     * calls ftransform() renders through the fixed-function transform. */
+    {
+        const char *vs110f =
+            "#version 110\n"
+            "void main() {\n"
+            "    gl_Position = ftransform();\n"
+            "    gl_FrontColor = vec4(1.0, 0.0, 0.0, 1.0);\n"
+            "}\n";
+        const char *fs110f =
+            "#version 110\n"
+            "void main() { gl_FragColor = gl_FrontColor; }\n";
+        GLuint progE = link_program(vs110f, fs110f);
+        if (!progE) {
+            fprintf(stderr, "legacy_glsl_frontend: link failed (segment E)\n");
+            return 14;
+        }
+        GLint vLocE = glGetAttribLocation(progE, "gl_Vertex");
+        if (vLocE != 0) {
+            fprintf(stderr,
+                    "legacy_glsl_frontend: seg E gl_Vertex location=%d "
+                    "(expected 0)\n", (int)vLocE);
+            return 15;
+        }
+        GLint mvpLocE = glGetUniformLocation(progE, "gl_ModelViewProjectionMatrix");
+        if (mvpLocE < 0) {
+            fprintf(stderr,
+                    "legacy_glsl_frontend: seg E MVP uniform not found\n");
+            return 16;
+        }
+        const float identityE[16] = {
+            1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1,
+        };
+        glUseProgram(progE);
+        glUniformMatrix4fv(mvpLocE, 1, GL_FALSE, identityE);
+        clear_color(0.0f, 0.0f, 0.0f);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glFinish();
+        glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        const unsigned char *e =
+            &pixels[((REG_H/2) * REG_W + REG_W/2) * 4];
+        if (e[0] < 200u || e[1] > 60u || e[2] > 60u) {
+            fprintf(stderr,
+                    "legacy_glsl_frontend: seg E probe not red "
+                    "rgb=(%u,%u,%u)\n", e[0], e[1], e[2]);
+            return 17;
+        }
+    }
+
     glDeleteTextures(1, &redTex);
     glDeleteFramebuffers(1, &fbo);
     glDeleteTextures(1, &tex);

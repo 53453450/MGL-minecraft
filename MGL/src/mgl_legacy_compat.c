@@ -484,6 +484,38 @@ int mgl_translate_legacy_glsl(char *src,
         }
     }
 
+    /* --- Step 2.5: ftransform() expansion (§7.4) --- */
+    /* ftransform() is the fixed-function vertex transform
+     * gl_ModelViewProjectionMatrix * gl_Vertex.  Both names are injected by
+     * Step 4 (matrix table + gl_Vertex layout-0 declaration), so expanding
+     * the call makes ftransform-only shaders compile and render. */
+    if (features->has_ftransform && is_vertex) {
+        const char *call = "ftransform()";
+        const char *expansion = "gl_ModelViewProjectionMatrix * gl_Vertex";
+        size_t call_len = strlen(call);
+        size_t exp_len = strlen(expansion);
+        char *p = src;
+        while ((p = strstr(p, call)) != NULL) {
+            /* Verify this is a true ftransform() token (identifier
+             * boundary on the left) and not e.g. a comment/string
+             * (the detector's code_contains has the same leniency;
+             * matching its semantics is sufficient here). */
+            if (p == src || !is_ident_char((unsigned char)p[-1])) {
+                long diff = (long)exp_len - (long)call_len;
+                size_t used = strlen(p);
+                if ((size_t)((p - src) + used + diff) + 1 > src_capacity) {
+                    break;
+                }
+                memmove(p + exp_len, p + call_len, used - call_len + 1);
+                memcpy(p, expansion, exp_len);
+                p += exp_len;
+                modified = 1;
+                continue;
+            }
+            p += call_len;
+        }
+    }
+
     /* --- Step 3: Builtin variable rewrites (§7.1, §7.2) --- */
 
     /* gl_FragColor / gl_TexCoord / gl_FragData (fragment-specific) */
@@ -556,20 +588,32 @@ int mgl_translate_legacy_glsl(char *src,
     /* Legacy matrix built-in uniforms (§7.4): injected verbatim so the
      * GL-side uniform names survive (app keeps glGetUniformLocation on the
      * original gl_ names). */
-    if (features->has_legacy_matrices) {
-        for (int i = 0; s_legacy_matrices[i].name; i++) {
-            const legacy_matrix_t *m = &s_legacy_matrices[i];
-            if (!code_uses_identifier(src, m->name)) continue;
-            if (m->array_size > 0) {
-                off += (size_t)snprintf(preamble + off,
-                    sizeof(preamble) - off,
-                    "uniform %s %s[%d];\n",
-                    m->type, m->name, m->array_size);
-            } else {
-                off += (size_t)snprintf(preamble + off,
-                    sizeof(preamble) - off,
-                    "uniform %s %s;\n", m->type, m->name);
-            }
+    for (int i = 0; s_legacy_matrices[i].name; i++) {
+        const legacy_matrix_t *m = &s_legacy_matrices[i];
+        if (!code_uses_identifier(src, m->name)) continue;
+        if (m->array_size > 0) {
+            off += (size_t)snprintf(preamble + off,
+                sizeof(preamble) - off,
+                "uniform %s %s[%d];\n",
+                m->type, m->name, m->array_size);
+        } else {
+            off += (size_t)snprintf(preamble + off,
+                sizeof(preamble) - off,
+                "uniform %s %s;\n", m->type, m->name);
+        }
+    }
+
+    /* gl_Vertex: the legacy implicit position attribute, injected with
+     * layout(location = 0) (the legacy fixed-function attribute slot) so
+     * the app can bind vertex data at the conventional location 0; the
+     * name is kept verbatim (the frontend accepts gl_-prefixed user
+     * declarations) and the GL attribute contract survives.  Source-guarded
+     * (ftransform() expansion may have introduced it after detection). */
+    if (is_vertex && code_uses_identifier(src, "gl_Vertex")) {
+        if (!strstr(src, "layout(location = 0) in vec4 gl_Vertex;")) {
+            off += (size_t)snprintf(preamble + off,
+                sizeof(preamble) - off,
+                "layout(location = 0) in vec4 gl_Vertex;\n");
         }
     }
 
@@ -606,19 +650,6 @@ int mgl_translate_legacy_glsl(char *src,
             }
             off += (size_t)snprintf(preamble + off, sizeof(preamble) - off,
                 "%s %s %s;\n", dir, b->type, name);
-        }
-
-        /* gl_Vertex: the legacy implicit position attribute, injected with
-         * layout(location = 0) (the legacy fixed-function attribute slot) so
-         * the app can bind vertex data at the conventional location 0; the
-         * name is kept verbatim (the frontend accepts gl_-prefixed user
-         * declarations) and the GL attribute contract survives. */
-        if (is_vertex && code_uses_identifier(src, "gl_Vertex")) {
-            if (!strstr(src, "layout(location = 0) in vec4 gl_Vertex;")) {
-                off += (size_t)snprintf(preamble + off,
-                    sizeof(preamble) - off,
-                    "layout(location = 0) in vec4 gl_Vertex;\n");
-            }
         }
 
         /* gl_MultiTexCoord0..7 declarations (VS attribute inputs only) */
