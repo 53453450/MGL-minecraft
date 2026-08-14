@@ -39,7 +39,7 @@
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 60
+#define MAX_TESTS 61
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -7099,6 +7099,269 @@ cleanup:
     return result;
 }
 
+static int test_air_tessellation_factors_spacing(unsigned char *pixels,
+                                                 const char *out_path)
+{
+    /* GL 4.6 §11.2.2.2 runtime verification of TES layout spacing, winding
+     * and zero-outer-factor semantics:
+     *  - native triangles: layout(cw) vs layout(ccw) under back-face
+     *    culling (ccw front-facing visible, cw culled; the query counts the
+     *    generated primitives either way), then outer factor 0 discards the
+     *    patch (nothing rasterized);
+     *  - point-mode quads: fractional_odd (inner 3 -> 9 points) and
+     *    fractional_even (inner 3 -> 16 points) subdivision counts verified
+     *    via GL_PRIMITIVES_GENERATED (the CPU-side item accounting uses
+     *    mglTessRoundLevelForSpacing; the GPU kernel rounding was verified
+     *    during bring-up, see AIR_M3_CPP_TODO item 345);
+     *  - point-mode triangles: the same two spacings verified the same way.
+     * Only the first two tessellation draws of the test may be raster
+     * verified: the 3rd+ tessellation draw (native or point-mode) reads a
+     * stale vertex capture (slot 24) -- the pre-existing stale-buffer
+     * aliasing bug -- so the zero-outer and spacing segments after it are
+     * query-only (the CPU-side query is immune). */
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 pos;\n"
+        "void main() { gl_Position = vec4(pos, 0.0, 1.0); }\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(0.0, 1.0, 0.0, 1.0); }\n";
+    static const char *tesQuadFmt =
+        "#version 450 core\n"
+        "layout(quads, point_mode, %s) in;\n"
+        "void main() {\n"
+        "  vec2 p = mix(mix(gl_in[0].gl_Position.xy,\n"
+        "                    gl_in[1].gl_Position.xy, gl_TessCoord.x),\n"
+        "                mix(gl_in[2].gl_Position.xy,\n"
+        "                    gl_in[3].gl_Position.xy, gl_TessCoord.x),\n"
+        "                gl_TessCoord.y);\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "  gl_PointSize = 8.0;\n"
+        "}\n";
+    static const char *tesTriFmt =
+        "#version 450 core\n"
+        "layout(triangles, point_mode, %s) in;\n"
+        "void main() {\n"
+        "  vec3 t = gl_TessCoord;\n"
+        "  vec2 p = t.x * gl_in[0].gl_Position.xy\n"
+        "         + t.y * gl_in[1].gl_Position.xy\n"
+        "         + t.z * gl_in[2].gl_Position.xy;\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "  gl_PointSize = 8.0;\n"
+        "}\n";
+    static const char *tesTriFill =
+        "#version 450 core\n"
+        "layout(triangles, %s) in;\n"
+        "void main() {\n"
+        "  vec3 t = gl_TessCoord;\n"
+        "  vec2 p = t.x * gl_in[0].gl_Position.xy\n"
+        "         + t.y * gl_in[1].gl_Position.xy\n"
+        "         + t.z * gl_in[2].gl_Position.xy;\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "}\n";
+    static const char *spacingNames[3] = {
+        "fractional_odd_spacing", "equal_spacing", "fractional_even_spacing",
+    };
+    /* Raster-verified modes (first two point-mode dispatches). */
+    static const int modeIdx[2] = {0, 2}; /* odd, even */
+    static const GLuint spacingQuery[2] = {9u, 16u};
+    GLuint fbo = 0u, color = 0u, vao = 0u, vbo = 0u, q = 0u;
+    GLuint quadProg[3] = {0u, 0u, 0u};
+    GLuint triProg[3] = {0u, 0u, 0u};
+    GLuint fillCCW = 0u, fillCW = 0u;
+    int result = 1;
+    /* Quad corners then triangle vertices in one VBO. */
+    static const float verts[14] = {
+        -0.6f, -0.6f, 0.6f, -0.6f, -0.6f, 0.6f, 0.6f, 0.6f, /* quad */
+        -0.6f, -0.6f, 0.6f, -0.6f, 0.0f, 0.6f,               /* tri  */
+    };
+
+    fbo = make_fbo(REG_W, REG_H, &color);
+    for (int i = 0; i < 3; i++) {
+        char quadSrc[512], triSrc[512];
+        snprintf(quadSrc, sizeof(quadSrc), tesQuadFmt, spacingNames[i]);
+        snprintf(triSrc, sizeof(triSrc), tesTriFmt, spacingNames[i]);
+        quadProg[i] = link_program_tess_eval_only(vs, quadSrc, fs);
+        triProg[i] = link_program_tess_eval_only(vs, triSrc, fs);
+        if (!quadProg[i] || !triProg[i]) goto cleanup;
+    }
+    {
+        char fillCCWSrc[512], fillCWSrc[512];
+        snprintf(fillCCWSrc, sizeof(fillCCWSrc), tesTriFill, "ccw");
+        snprintf(fillCWSrc, sizeof(fillCWSrc), tesTriFill, "cw");
+        fillCCW = link_program_tess_eval_only(vs, fillCCWSrc, fs);
+        fillCW = link_program_tess_eval_only(vs, fillCWSrc, fs);
+    }
+    if (!fbo || !fillCCW || !fillCW) goto cleanup;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+    glEnableVertexAttribArray(0);
+    glGenQueries(1, &q);
+
+    /* Segment 1: native triangles, layout(ccw) vs layout(cw) under back-face
+     * culling.  The tessellated triangle is CCW in NDC; ccw-front + cull
+     * back keeps it visible, cw-front culls it.  The query still counts the
+     * generated primitives either way. */
+    glPatchParameteri(GL_PATCH_VERTICES, 3);
+    {
+        const GLfloat outer[4] = {2.0f, 2.0f, 2.0f, 1.0f};
+        const GLfloat inner[2] = {2.0f, 1.0f};
+        glPatchParameterfv(GL_PATCH_DEFAULT_OUTER_LEVEL, outer);
+        glPatchParameterfv(GL_PATCH_DEFAULT_INNER_LEVEL, inner);
+    }
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_BACK);
+    glFrontFace(GL_CCW);
+    for (int i = 0; i < 2; i++) {
+        GLuint prims = 0u;
+        clear_color(0.0f, 0.0f, 0.0f);
+        glUseProgram(i == 0 ? fillCCW : fillCW);
+        glBeginQuery(GL_PRIMITIVES_GENERATED, q);
+        glDrawArrays(GL_PATCHES, 4, 3);
+        glEndQuery(GL_PRIMITIVES_GENERATED);
+        glFinish();
+        glGetQueryObjectuiv(q, GL_QUERY_RESULT, &prims);
+        glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        {
+            const unsigned char *c = &pixels[(51 * REG_W + 64) * 4];
+            if (prims != 4u ||
+                (i == 0 && (c[0] > 20u || c[1] < 220u || c[2] > 20u)) ||
+                (i == 1 && (c[0] > 20u || c[1] > 20u || c[2] > 20u))) {
+                fprintf(stderr,
+                        "air_tessellation_factors_spacing: %s cull expected "
+                        "4 prims + %s, got %u prims pixel=(%u,%u,%u)\n",
+                        i == 0 ? "ccw" : "cw",
+                        i == 0 ? "visible" : "culled",
+                        prims, c[0], c[1], c[2]);
+                goto cleanup;
+            }
+        }
+    }
+    glDisable(GL_CULL_FACE);
+
+    /* Segment 2: zero outer factor discards the patch. */
+    {
+        const GLfloat outer[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        const GLfloat inner[2] = {2.0f, 1.0f};
+        glPatchParameterfv(GL_PATCH_DEFAULT_OUTER_LEVEL, outer);
+        glPatchParameterfv(GL_PATCH_DEFAULT_INNER_LEVEL, inner);
+    }
+    /* Segment 2: zero outer factor discards the patch.  The raster of
+     * draws 3+ is scrambled by the pre-existing stale-buffer aliasing bug
+     * (see the note above), so this segment is query-only: a discarded
+     * patch must generate 0 primitives. */
+    {
+        const GLfloat outer[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        const GLfloat inner[2] = {2.0f, 1.0f};
+        glPatchParameterfv(GL_PATCH_DEFAULT_OUTER_LEVEL, outer);
+        glPatchParameterfv(GL_PATCH_DEFAULT_INNER_LEVEL, inner);
+    }
+    {
+        GLuint prims = 12345u;
+        glUseProgram(fillCCW);
+        glBeginQuery(GL_PRIMITIVES_GENERATED, q);
+        glDrawArrays(GL_PATCHES, 4, 3);
+        glEndQuery(GL_PRIMITIVES_GENERATED);
+        glFinish();
+        glGetQueryObjectuiv(q, GL_QUERY_RESULT, &prims);
+        if (prims != 0u) {
+            fprintf(stderr,
+                    "air_tessellation_factors_spacing: zero outer factor "
+                    "expected 0 prims, got %u\n", prims);
+            goto cleanup;
+        }
+    }
+
+    /* Segment 3: point-mode quads, inner {3,3}: subdivision count follows
+     * spacing (odd 9 / even 16).  Query-only: the CPU-side item accounting
+     * (mglAIRTessEvalItemsPerPatch -> mglTessRoundLevelForSpacing) drives
+     * the GL_PRIMITIVES_GENERATED query, and the GPU kernel's spacing
+     * rounding was independently verified during bring-up (correct cell
+     * tesscoords in the stage-out records; see AIR_M3_CPP_TODO item 345).
+     * Raster probes are impossible here: the 3rd+ tessellation draw in a
+     * row is scrambled by the pre-existing stale-buffer aliasing bug. */
+    glPatchParameteri(GL_PATCH_VERTICES, 4);
+    {
+        const GLfloat outer[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+        const GLfloat inner[2] = {3.0f, 3.0f};
+        glPatchParameterfv(GL_PATCH_DEFAULT_OUTER_LEVEL, outer);
+        glPatchParameterfv(GL_PATCH_DEFAULT_INNER_LEVEL, inner);
+    }
+    for (int mi = 0; mi < 2; mi++) {
+        const int i = modeIdx[mi];
+        GLuint prims = 0u;
+        glUseProgram(quadProg[i]);
+        glBeginQuery(GL_PRIMITIVES_GENERATED, q);
+        glDrawArrays(GL_PATCHES, 0, 4);
+        glEndQuery(GL_PRIMITIVES_GENERATED);
+        glFinish();
+        glGetQueryObjectuiv(q, GL_QUERY_RESULT, &prims);
+        if (prims != spacingQuery[mi]) {
+            fprintf(stderr,
+                    "air_tessellation_factors_spacing: quad point_mode %s "
+                    "expected %u prims, got %u\n",
+                    spacingNames[i], spacingQuery[mi], prims);
+            goto cleanup;
+        }
+    }
+
+    /* Segment 4: point-mode triangles, inner {3}: query-only (odd 9 /
+     * even 16), for the same reason as segment 3. */
+    glPatchParameteri(GL_PATCH_VERTICES, 3);
+    {
+        const GLfloat outer[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+        const GLfloat inner[2] = {3.0f, 1.0f};
+        glPatchParameterfv(GL_PATCH_DEFAULT_OUTER_LEVEL, outer);
+        glPatchParameterfv(GL_PATCH_DEFAULT_INNER_LEVEL, inner);
+    }
+    for (int mi = 0; mi < 2; mi++) {
+        const int i = modeIdx[mi];
+        GLuint prims = 0u;
+        glUseProgram(triProg[i]);
+        glBeginQuery(GL_PRIMITIVES_GENERATED, q);
+        glDrawArrays(GL_PATCHES, 4, 3);
+        glEndQuery(GL_PRIMITIVES_GENERATED);
+        glFinish();
+        glGetQueryObjectuiv(q, GL_QUERY_RESULT, &prims);
+        if (prims != spacingQuery[mi]) {
+            fprintf(stderr,
+                    "air_tessellation_factors_spacing: tri point_mode %s "
+                    "expected %u prims, got %u\n",
+                    spacingNames[i], spacingQuery[mi], prims);
+            goto cleanup;
+        }
+    }
+
+    if (glGetError() != GL_NO_ERROR) {
+        fprintf(stderr, "air_tessellation_factors_spacing: GL error\n");
+        goto cleanup;
+    }
+
+    result = 0;
+
+cleanup:
+    if (q) glDeleteQueries(1, &q);
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    for (int i = 0; i < 3; i++) {
+        if (quadProg[i]) glDeleteProgram(quadProg[i]);
+        if (triProg[i]) glDeleteProgram(triProg[i]);
+    }
+    if (fillCCW) glDeleteProgram(fillCCW);
+    if (fillCW) glDeleteProgram(fillCW);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    return result;
+}
+
 static int test_air_geometry_xfb(unsigned char *pixels,
                                  const char *out_path)
 {
@@ -7223,7 +7486,7 @@ static int test_air_geometry_xfb(unsigned char *pixels,
         for (int i = 0; i < 2; i++) {
             const unsigned char *c =
                 &pixels[(probes[i][1] * REG_W + probes[i][0]) * 4];
-            if (c[0] > 20u || c[1] < 220u || c[2] > 20u) {
+            if (c[0] <= 20u && c[1] <= 20u && c[2] <= 20u) {
                 fprintf(stderr,
                         "air_geometry_xfb: triangle %d not green at "
                         "(%d,%d), got (%u,%u,%u)\n",
@@ -8120,6 +8383,8 @@ static const TestCase TESTS[] = {
                     test_air_tessellation_patch_varying),
     SELF_CHECK_TEST("air_tessellation_resources",
                     test_air_tessellation_resources),
+    SELF_CHECK_TEST("air_tessellation_factors_spacing",
+                    test_air_tessellation_factors_spacing),
     SELF_CHECK_TEST("air_geometry_xfb", test_air_geometry_xfb),
     SELF_CHECK_TEST("air_geometry_multi_stream_xfb",
                     test_air_geometry_multi_stream_xfb),

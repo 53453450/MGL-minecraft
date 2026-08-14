@@ -1218,10 +1218,54 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
     return true;
 }
 
+/* GL 4.6 §11.2.2.2 subdivision count rounding: fractional_even rounds up
+ * to the next even (min 2), fractional_odd to the next odd; integer (and
+ * the default) keep ceil(level).  Must match the AIR TES compute generator
+ * and the native-tess query accounting. */
+static GLuint mglTessRoundLevelForSpacing(GLenum spacing, GLuint ceilLevel)
+{
+    if (spacing == GL_FRACTIONAL_EVEN) {
+        const GLuint r = (ceilLevel & 1u) ? ceilLevel + 1u : ceilLevel;
+        return MAX(2u, r);
+    }
+    if (spacing == GL_FRACTIONAL_ODD) {
+        return (ceilLevel & 1u) ? ceilLevel : ceilLevel + 1u;
+    }
+    return ceilLevel;
+}
+
 /* Per-patch expanded item count for the isolines/point-mode TES kernel.
  * Must stay in lockstep with the u/v decomposition injected by
  * mgl_air_backend.cpp (isTESCompute pre-main block).  Returns 0 when the
  * factor record is missing (caller falls back to 1). */
+
+/* GL 4.6 §11.2.2.2: a patch is discarded when any applicable tessellation
+ * level (outer, or inner for quads) is <= 0 or NaN.  Mirrors the AIR TES
+ * compute generator's discard condition and must be applied BEFORE any
+ * clamp-to-min-1. */
+bool mglTessFactorsDiscardPatch(GLenum genMode,
+                                const float edge[4],
+                                const float inside[2])
+{
+    switch (genMode) {
+        case GL_ISOLINES:
+            return edge[0] <= 0.0f || edge[1] <= 0.0f ||
+                   isnan(edge[0]) || isnan(edge[1]);
+        case GL_QUADS:
+            return edge[0] <= 0.0f || edge[1] <= 0.0f ||
+                   edge[2] <= 0.0f || edge[3] <= 0.0f ||
+                   inside[0] <= 0.0f || inside[1] <= 0.0f ||
+                   isnan(edge[0]) || isnan(edge[1]) ||
+                   isnan(edge[2]) || isnan(edge[3]) ||
+                   isnan(inside[0]) || isnan(inside[1]);
+        default: /* GL_TRIANGLES */
+            return edge[0] <= 0.0f || edge[1] <= 0.0f ||
+                   edge[2] <= 0.0f || inside[0] <= 0.0f ||
+                   isnan(edge[0]) || isnan(edge[1]) ||
+                   isnan(edge[2]) || isnan(inside[0]);
+    }
+}
+
 static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
                                           const void *factorRecord)
 {
@@ -1232,6 +1276,18 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
         uint16_t inside[2];
     } __attribute__((packed)) *tf = (const void *)factorRecord;
     if (!tf) return 0u;
+    {
+        float edge[4], inside[2];
+        for (int i = 0; i < 4; i++) {
+            edge[i] = *(const __fp16 *)&tf->edge[i];
+        }
+        for (int i = 0; i < 2; i++) {
+            inside[i] = *(const __fp16 *)&tf->inside[i];
+        }
+        if (mglTessFactorsDiscardPatch(genMode, edge, inside)) {
+            return 0u;
+        }
+    }
     if (genMode == GL_ISOLINES) {
         float e0 = *(const __fp16 *)&tf->edge[0];
         float e1 = *(const __fp16 *)&tf->edge[1];
@@ -1241,13 +1297,17 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     }
     float i0 = *(const __fp16 *)&tf->inside[0];
     if (i0 < 1.0f) i0 = 1.0f;
+    const GLenum spacing = tesProgram ? tesProgram->tess_gen_spacing : 0;
     if (pointMode && genMode == GL_QUADS) {
         float i1 = *(const __fp16 *)&tf->inside[1];
         if (i1 < 1.0f) i1 = 1.0f;
-        return (GLuint)ceilf(i0) * (GLuint)ceilf(i1);
+        return mglTessRoundLevelForSpacing(spacing, (GLuint)ceilf(i0)) *
+               mglTessRoundLevelForSpacing(spacing, (GLuint)ceilf(i1));
     }
     if (pointMode) { /* triangles */
-        return (GLuint)ceilf(i0) * (GLuint)ceilf(i0);
+        const GLuint n =
+            mglTessRoundLevelForSpacing(spacing, (GLuint)ceilf(i0));
+        return n * n;
     }
     return 0u;
 }
@@ -2407,6 +2467,8 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
 
         GLenum genMode = tesProgram ? tesProgram->tess_gen_mode : GL_TRIANGLES;
         GLboolean pointMode = tesProgram ? tesProgram->tess_gen_point_mode : GL_FALSE;
+        const GLenum spacing =
+            tesProgram ? tesProgram->tess_gen_spacing : 0;
 
         GLuint64 totalPrimitives = 0;
         for (GLuint p = 0; p < patchCount; p++) {
@@ -2414,10 +2476,19 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
             float edge[4], inside[2];
             for (int i = 0; i < 4; i++) {
                 edge[i] = *(const __fp16 *)&tessFactors[p].edge[i];
-                if (edge[i] < 1.0f) edge[i] = 1.0f;
             }
             for (int i = 0; i < 2; i++) {
                 inside[i] = *(const __fp16 *)&tessFactors[p].inside[i];
+            }
+            /* Zero/NaN factor: the patch is discarded and generates no
+             * primitives (GL 4.6 §11.2.2.2). */
+            if (mglTessFactorsDiscardPatch(genMode, edge, inside)) {
+                continue;
+            }
+            for (int i = 0; i < 4; i++) {
+                if (edge[i] < 1.0f) edge[i] = 1.0f;
+            }
+            for (int i = 0; i < 2; i++) {
                 if (inside[i] < 1.0f) inside[i] = 1.0f;
             }
 
@@ -2425,18 +2496,30 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
             if (pointMode) {
                 /* Point mode: 1 primitive per tessellated point. */
                 if (genMode == GL_QUADS) {
-                    perPatch = (GLuint)(ceilf(inside[0]) * ceilf(inside[1]));
+                    perPatch =
+                        mglTessRoundLevelForSpacing(
+                            spacing, (GLuint)ceilf(inside[0])) *
+                        mglTessRoundLevelForSpacing(
+                            spacing, (GLuint)ceilf(inside[1]));
                 } else if (genMode == GL_TRIANGLES) {
-                    perPatch = (GLuint)(ceilf(inside[0]) * ceilf(inside[0]));
+                    const GLuint n = mglTessRoundLevelForSpacing(
+                        spacing, (GLuint)ceilf(inside[0]));
+                    perPatch = n * n;
                 } else { /* GL_ISOLINES */
                     perPatch = (GLuint)ceilf(edge[0]);
                 }
             } else {
                 if (genMode == GL_QUADS) {
                     /* Each quad splits into 2 triangles. */
-                    perPatch = 2u * (GLuint)(ceilf(inside[0]) * ceilf(inside[1]));
+                    perPatch =
+                        2u * mglTessRoundLevelForSpacing(
+                                 spacing, (GLuint)ceilf(inside[0])) *
+                        mglTessRoundLevelForSpacing(
+                            spacing, (GLuint)ceilf(inside[1]));
                 } else if (genMode == GL_TRIANGLES) {
-                    perPatch = (GLuint)(ceilf(inside[0]) * ceilf(inside[0]));
+                    const GLuint n = mglTessRoundLevelForSpacing(
+                        spacing, (GLuint)ceilf(inside[0]));
+                    perPatch = n * n;
                 } else { /* GL_ISOLINES */
                     /* Each isoline segment is 1 line primitive (2 vertices). */
                     perPatch = (GLuint)ceilf(edge[0]);

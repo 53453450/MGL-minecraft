@@ -478,6 +478,9 @@ static void mglDrawSupportDrawIndexedPatches(
 extern void mglRecordActivePrimitiveQueryDraw(GLMContext ctx,
                                                GLuint64 generated,
                                                GLuint64 written);
+extern bool mglTessFactorsDiscardPatch(GLenum genMode,
+                                       const float edge[4],
+                                       const float inside[2]);
 
 static BOOL mglCheckedTessCaptureSize(GLsizei count, GLsizei instanceCount,
                                       NSUInteger stride,
@@ -613,10 +616,21 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     GLuint64 total = 0u;
     for (GLuint patch = 0u; patch < patchCount; patch++) {
         const uint16_t *record = factors + patch * 6u;
-        float inside0 = *(const __fp16 *)&record[4];
-        float inside1 = *(const __fp16 *)&record[5];
-        inside0 = MAX(inside0, 1.0f);
-        inside1 = MAX(inside1, 1.0f);
+        float edge[4], inside[2];
+        for (int i = 0; i < 4; i++) {
+            edge[i] = *(const __fp16 *)&record[i];
+        }
+        for (int i = 0; i < 2; i++) {
+            inside[i] = *(const __fp16 *)&record[4 + i];
+        }
+        /* Zero/NaN factor: the patch is discarded and generates no
+         * primitives (GL 4.6 §11.2.2.2). */
+        if (mglTessFactorsDiscardPatch(tesProgram->tess_gen_mode,
+                                       edge, inside)) {
+            continue;
+        }
+        float inside0 = MAX(inside[0], 1.0f);
+        float inside1 = MAX(inside[1], 1.0f);
         GLuint64 perPatch = tesProgram->tess_gen_mode == GL_QUADS
             ? 2ull * (GLuint64)ceilf(inside0) * (GLuint64)ceilf(inside1)
             : (GLuint64)ceilf(inside0) * (GLuint64)ceilf(inside0);

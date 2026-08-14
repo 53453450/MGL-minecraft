@@ -6702,6 +6702,31 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         auto toF = [&](llvm::Value *i) -> llvm::Value * {
             return b.CreateSIToFP(i, f32);
         };
+        /* GL 4.6 §11.2.2.2: the subdivision count honours the TES layout
+         * spacing declaration — integer keeps ceil(level), fractional_even
+         * rounds up to the next even (min 2), fractional_odd to the next
+         * odd.  isolines are exempt (spacing applies only to triangles and
+         * quads). */
+        auto roundLevel = [&](llvm::Value *ceilVal) -> llvm::Value * {
+            if (tu->layout_spacing == MGL_AST_SPACING_FRACTIONAL_EVEN) {
+                llvm::Value *odd = b.CreateAnd(ceilVal, b.getInt32(1));
+                llvm::Value *even = b.CreateAdd(
+                    ceilVal,
+                    b.CreateSelect(b.CreateICmpNE(odd, b.getInt32(0)),
+                                   b.getInt32(1), b.getInt32(0)));
+                return b.CreateSelect(
+                    b.CreateICmpULT(even, b.getInt32(2)), b.getInt32(2),
+                    even);
+            }
+            if (tu->layout_spacing == MGL_AST_SPACING_FRACTIONAL_ODD) {
+                llvm::Value *odd = b.CreateAnd(ceilVal, b.getInt32(1));
+                return b.CreateAdd(
+                    ceilVal,
+                    b.CreateSelect(b.CreateICmpEQ(odd, b.getInt32(0)),
+                                   b.getInt32(1), b.getInt32(0)));
+            }
+            return ceilVal; /* integer / default */
+        };
         llvm::Value *u = nullptr, *v = nullptr;
         if (tu->layout_primitive == MGL_AST_TES_ISOLINES) {
             /* GL 4.6 §11.2.2.3: outer[0] selects the number of isolines n
@@ -6720,8 +6745,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             v = b.CreateFDiv(toF(lineIdx), toF(n));
         } else if (tu->layout_primitive == MGL_AST_TES_QUADS) {
             /* point_mode quads: one point at each inner grid cell centre. */
-            llvm::Value *nx = ceilClamp(loadHalf(4), 1.0f);
-            llvm::Value *ny = ceilClamp(loadHalf(5), 1.0f);
+            llvm::Value *nx = roundLevel(ceilClamp(loadHalf(4), 1.0f));
+            llvm::Value *ny = roundLevel(ceilClamp(loadHalf(5), 1.0f));
             llvm::Value *i = b.CreateURem(innerId, nx);
             llvm::Value *j = b.CreateUDiv(innerId, nx);
             u = b.CreateFDiv(
@@ -6733,7 +6758,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         } else {
             /* point_mode triangles: one point per inner grid cell (n*n
              * cells), at the up-triangle centroid. */
-            llvm::Value *n = ceilClamp(loadHalf(4), 1.0f);
+            llvm::Value *n = roundLevel(ceilClamp(loadHalf(4), 1.0f));
             llvm::Value *i = b.CreateURem(innerId, n);
             llvm::Value *j = b.CreateUDiv(innerId, n);
             llvm::Value *three = b.getInt32(3);
