@@ -39,7 +39,7 @@
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 59
+#define MAX_TESTS 60
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -4180,6 +4180,190 @@ cleanup:
     return result;
 }
 
+static int test_air_geometry_ssbo_visibility(unsigned char *pixels,
+                                             const char *out_path)
+{
+    /* GPU->GPU write visibility through glMemoryBarrier:
+     * segment 1 = GS writes an SSBO, a LATER draw's GS reads it back
+     * (shader-storage barrier); segment 2 = GS imageStore into a texture, a
+     * later draw's GS samples it (texture-fetch barrier).  The reader emits
+     * the barriered value at a DIFFERENT position than the writer, so a
+     * stale/unordered read shows up as a wrong probe color. */
+    (void)out_path;
+    static const char *vs =
+        "#version 460 core\n"
+        "layout(location=0) in vec2 pos;\n"
+        "void main() { gl_Position = vec4(pos, 0.0, 1.0); }\n";
+    static const char *gsWriter =
+        "#version 460 core\n"
+        "layout(points) in;\n"
+        "layout(triangle_strip, max_vertices=3) out;\n"
+        "layout(location=0) out vec3 g_color;\n"
+        "layout(std430, binding=0) buffer Data { vec4 color; } dataBuffer;\n"
+        "layout(rgba8, binding=1) uniform image2D outputImage;\n"
+        "void main() {\n"
+        "  dataBuffer.color = vec4(0.0, 0.0, 1.0, 1.0);\n"
+        "  imageStore(outputImage, ivec2(0), vec4(1.0, 0.0, 0.0, 1.0));\n"
+        "  g_color = vec3(0.0, 1.0, 0.0);\n"
+        "  gl_Position = vec4(-0.90, -0.55, 0.0, 1.0); EmitVertex();\n"
+        "  gl_Position = vec4(-0.30, -0.55, 0.0, 1.0); EmitVertex();\n"
+        "  gl_Position = vec4(-0.60,  0.50, 0.0, 1.0); EmitVertex();\n"
+        "  EndPrimitive();\n"
+        "}\n";
+    static const char *gsReaderSSBO =
+        "#version 460 core\n"
+        "layout(points) in;\n"
+        "layout(triangle_strip, max_vertices=3) out;\n"
+        "layout(location=0) out vec3 g_color;\n"
+        "layout(std430, binding=0) buffer Data { vec4 color; } dataBuffer;\n"
+        "void main() {\n"
+        "  vec4 c = dataBuffer.color;\n"
+        "  g_color = c.rgb;\n"
+        "  gl_Position = vec4(0.30, -0.55, 0.0, 1.0); EmitVertex();\n"
+        "  gl_Position = vec4(0.90, -0.55, 0.0, 1.0); EmitVertex();\n"
+        "  gl_Position = vec4(0.60,  0.50, 0.0, 1.0); EmitVertex();\n"
+        "  EndPrimitive();\n"
+        "}\n";
+    static const char *gsReaderTex =
+        "#version 460 core\n"
+        "layout(points) in;\n"
+        "layout(triangle_strip, max_vertices=3) out;\n"
+        "layout(location=0) out vec3 g_color;\n"
+        "layout(binding=0) uniform sampler2D resultTex;\n"
+        "void main() {\n"
+        "  g_color = texture(resultTex, vec2(0.5)).rgb;\n"
+        "  gl_Position = vec4(0.30, -0.55, 0.0, 1.0); EmitVertex();\n"
+        "  gl_Position = vec4(0.90, -0.55, 0.0, 1.0); EmitVertex();\n"
+        "  gl_Position = vec4(0.60,  0.50, 0.0, 1.0); EmitVertex();\n"
+        "  EndPrimitive();\n"
+        "}\n";
+    static const char *fs =
+        "#version 460 core\n"
+        "layout(location=0) in vec3 g_color;\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(g_color, 1.0); }\n";
+
+    GLuint color = 0u, fbo = 0u, vao = 0u, vbo = 0u;
+    GLuint ssbo = 0u, image = 0u;
+    GLuint writer = 0u, readerSSBO = 0u, readerTex = 0u;
+    int result = 1;
+    const float black[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    const float points[6] = {-1.0f, -1.0f, 0.0f, 0.0f, 1.0f, 1.0f};
+    float ssboReadback[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+
+    fbo = make_fbo(REG_W, REG_H, &color);
+    writer = link_program_with_geometry(vs, gsWriter, fs);
+    readerSSBO = link_program_with_geometry(vs, gsReaderSSBO, fs);
+    readerTex = link_program_with_geometry(vs, gsReaderTex, fs);
+    if (!fbo || !writer || !readerSSBO || !readerTex) goto cleanup;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(points), points, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+    glEnableVertexAttribArray(0);
+
+    glGenBuffers(1, &ssbo);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(black), black,
+                 GL_DYNAMIC_COPY);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
+
+    glGenTextures(1, &image);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, image);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, black);
+    glBindImageTexture(1, image, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA8);
+    glActiveTexture(GL_TEXTURE0);
+
+    /* Segment 1: GS SSBO write -> later GS read (same SSBO) across a
+     * shader-storage barrier.  Writer emits green on the left, the value
+     * carried in the SSBO is blue and must surface on the right. */
+    clear_color(0.0f, 0.0f, 0.0f);
+    glUseProgram(writer);
+    glDrawArrays(GL_POINTS, 0, 3);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    glUseProgram(readerSSBO);
+    glDrawArrays(GL_POINTS, 0, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
+    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(ssboReadback),
+                       ssboReadback);
+    if (glGetError() != GL_NO_ERROR) {
+        fprintf(stderr, "air_geometry_ssbo_visibility: seg1 GL failed\n");
+        goto cleanup;
+    }
+    {
+        const unsigned char *left = &pixels[(51 * REG_W + 25) * 4];
+        const unsigned char *right = &pixels[(51 * REG_W + 102) * 4];
+        if (left[0] > 20u || left[1] < 220u || left[2] > 20u ||
+            right[0] > 20u || right[1] > 20u || right[2] < 220u ||
+            ssboReadback[2] < 0.9f || ssboReadback[0] > 0.1f) {
+            fprintf(stderr,
+                    "air_geometry_ssbo_visibility: seg1 expected left green / "
+                    "right blue (SSBO read), got left=(%u,%u,%u) "
+                    "right=(%u,%u,%u) ssbo=(%.2f,%.2f,%.2f)\n",
+                    left[0], left[1], left[2], right[0], right[1], right[2],
+                    ssboReadback[0], ssboReadback[1], ssboReadback[2]);
+            goto cleanup;
+        }
+    }
+
+    /* Segment 2: GS imageStore -> later GS texture fetch across a
+     * texture-fetch barrier.  The image (red) is sampled by the reader. */
+    clear_color(0.0f, 0.0f, 0.0f);
+    glUseProgram(writer);
+    glDrawArrays(GL_POINTS, 0, 3);
+    glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT |
+                    GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, image);
+    glUseProgram(readerTex);
+    GLint texLocation = glGetUniformLocation(readerTex, "resultTex");
+    if (texLocation >= 0) glUniform1i(texLocation, 0);
+    glDrawArrays(GL_POINTS, 0, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    if (glGetError() != GL_NO_ERROR) {
+        fprintf(stderr, "air_geometry_ssbo_visibility: seg2 GL failed\n");
+        goto cleanup;
+    }
+    {
+        const unsigned char *left = &pixels[(51 * REG_W + 25) * 4];
+        const unsigned char *right = &pixels[(51 * REG_W + 102) * 4];
+        if (left[0] > 20u || left[1] < 220u || left[2] > 20u ||
+            right[0] < 220u || right[1] > 20u || right[2] > 20u) {
+            fprintf(stderr,
+                    "air_geometry_ssbo_visibility: seg2 expected left green / "
+                    "right red (image fetch), got left=(%u,%u,%u) "
+                    "right=(%u,%u,%u)\n",
+                    left[0], left[1], left[2], right[0], right[1], right[2]);
+            goto cleanup;
+        }
+    }
+
+    result = 0;
+
+cleanup:
+    if (ssbo) glDeleteBuffers(1, &ssbo);
+    if (image) glDeleteTextures(1, &image);
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (writer) glDeleteProgram(writer);
+    if (readerSSBO) glDeleteProgram(readerSSBO);
+    if (readerTex) glDeleteProgram(readerTex);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    return result;
+}
+
 static int test_air_geometry_instancing(unsigned char *pixels,
                                         const char *out_path)
 {
@@ -7943,6 +8127,8 @@ static const TestCase TESTS[] = {
                     test_air_geometry_layer_viewport),
     SELF_CHECK_TEST("air_geometry_cull_distance",
                     test_air_geometry_cull_distance),
+    SELF_CHECK_TEST("air_geometry_ssbo_visibility",
+                    test_air_geometry_ssbo_visibility),
     SELF_CHECK_TEST("air_pipeline_safe_fallback",
                     test_air_pipeline_safe_fallback),
     GOLDEN_TEST("texture_binding_switch", test_texture_binding_switch),
