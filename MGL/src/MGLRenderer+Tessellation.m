@@ -1510,15 +1510,55 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
         return false;
     }
 
-    id<MTLComputeCommandEncoder> computeEncoder =
-        mglTessCreateComputeEncoder(
-            _renderPassManager.state->currentCommandBuffer);
-    if (!computeEncoder) {
-        NSLog(@"MGL TESS ERROR: failed to create compute encoder for TES compute");
-        [self clearStageBindingCopyBacks:&stageCopyBacks];
-        return false;
+    /* P4.5: TES compute dispatch 编排的固定序列（encoder + pipeline + ABI
+     * 槽位 buffer）一次交给 C++（与 P4.3e GS 的
+     * mglRenderCppBeginComputeDispatch 模式一致，P4.1e3 修复后落地）。
+     * GL 资源绑定（storage/sampled 纹理、stage 缓冲、XFB 槽位）在
+     * begin/end 之间经 C++ facade 完成。 */
+    id<MTLComputeCommandEncoder> computeEncoder = nil;
+    if (mglTessUsesMetalCpp()) {
+        MGLRenderCppComputeDispatchSetup setup = {
+            .pipeline = (__bridge void *)tesPipeline,
+        };
+        setup.buffers[setup.buffer_count++] =
+            (MGLRenderCppComputeBufferEntry){
+                (__bridge void *)_tessellation.tessFactorBuffer, 0u,
+                MGL_AIR_TESS_SLOT_TESS_FACTOR };
+        id<MTLBuffer> patchInputs = _tessellation.tcsPatchOutBuffer;
+        setup.buffers[setup.buffer_count++] =
+            (MGLRenderCppComputeBufferEntry){
+                (__bridge void *)(patchInputs ? patchInputs : outBuffer), 0u,
+                MGL_AIR_TESS_SLOT_PATCH_OUT };
+        setup.buffers[setup.buffer_count++] =
+            (MGLRenderCppComputeBufferEntry){
+                (__bridge void *)outBuffer, 0u,
+                MGL_AIR_TESS_SLOT_TCS_OUTPUT };
+        void *computeHandle = NULL;
+        if (mglRenderCppBeginComputeDispatch(
+                (__bridge void *)_renderPassManager.state->currentCommandBuffer,
+                &setup, &computeHandle, NULL, 0) == 0 && computeHandle) {
+            computeEncoder =
+                (__bridge id<MTLComputeCommandEncoder>)computeHandle;
+        }
     }
-    mglTessSetComputePipeline(computeEncoder, tesPipeline);
+    if (!computeEncoder) {
+        computeEncoder = mglTessCreateComputeEncoder(
+            _renderPassManager.state->currentCommandBuffer);
+        if (!computeEncoder) {
+            NSLog(@"MGL TESS ERROR: failed to create compute encoder for TES compute");
+            [self clearStageBindingCopyBacks:&stageCopyBacks];
+            return false;
+        }
+        mglTessSetComputePipeline(computeEncoder, tesPipeline);
+        mglTessSetComputeBuffer(computeEncoder, _tessellation.tessFactorBuffer,
+                                0u, MGL_AIR_TESS_SLOT_TESS_FACTOR);
+        id<MTLBuffer> patchInputs = _tessellation.tcsPatchOutBuffer;
+        mglTessSetComputeBuffer(computeEncoder,
+                                patchInputs ? patchInputs : outBuffer, 0u,
+                                MGL_AIR_TESS_SLOT_PATCH_OUT);
+        mglTessSetComputeBuffer(computeEncoder, outBuffer, 0u,
+                                MGL_AIR_TESS_SLOT_TCS_OUTPUT);
+    }
 
     /* PASS 2: bind storage images for the TES stage. */
     for (GLuint i = 0; i < tesImgCount; i++) {
@@ -1632,14 +1672,6 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
      * offset is rebased per instance (TES-only captures lay out
      * [instance][vertex]); the remaining ABI buffers are instance
      * invariant. */
-    mglTessSetComputeBuffer(computeEncoder, _tessellation.tessFactorBuffer,
-                            0u, MGL_AIR_TESS_SLOT_TESS_FACTOR);
-    id<MTLBuffer> patchInputs = _tessellation.tcsPatchOutBuffer;
-    mglTessSetComputeBuffer(computeEncoder, patchInputs ? patchInputs : outBuffer,
-                            0u, MGL_AIR_TESS_SLOT_PATCH_OUT);
-    mglTessSetComputeBuffer(computeEncoder, outBuffer, 0u,
-                            MGL_AIR_TESS_SLOT_TCS_OUTPUT);
-
     /* Transform-feedback stream (slot 31): the kernel writes complete stage
      * records. The renderer gathers selected varyings into the compact GL XFB
      * layout and copies only the prefix containing complete primitives. */
