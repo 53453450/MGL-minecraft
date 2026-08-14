@@ -1091,6 +1091,51 @@ output->name, (unsigned)i,
          "mgl_tes_output.records[mgl_base + 1];\n"
          "    gl_PointSize = mgl_point_size.x;\n",
          (unsigned long)vec4Stride];
+    if (program->tess_cull_distance_count > 0u) {
+        /* Post-tess gl_CullDistance culling (GL 4.6 §13.6.1): the record
+         * carries 8 distances at bytes 20..51 (vec4 base+1 .yzw, base+2
+         * .xyzw, base+3 .x).  A point is culled when any distance < 0; an
+         * isoline segment when both endpoints' distance < 0 for the same
+         * axis (the partner record index is gl_VertexID^1 — every patch
+         * span holds an even item count).  Culled vertices are pushed out
+         * of the clip volume so no fragment is produced. */
+        if (program->tess_gen_mode == GL_ISOLINES) {
+            /* Both endpoints of an isoline segment share the same v, so the
+             * cull condition needs the partner record's distances.  The
+             * partner record index is (gl_VertexID ^ 1) -- every patch span
+             * holds an even item count. */
+            [source appendFormat:
+                @"    int mgl_partner = (gl_VertexID ^ 1) * %lu;\n"
+                 "    vec4 mgl_p0 = mgl_tes_output.records[mgl_partner + 1];\n"
+                 "    vec4 mgl_p1 = mgl_tes_output.records[mgl_partner + 2];\n"
+                 "    vec4 mgl_p2 = mgl_tes_output.records[mgl_partner + 3];\n",
+                 (unsigned long)vec4Stride];
+        }
+        [source appendFormat:
+            @"    vec4 mgl_c0 = mgl_tes_output.records[mgl_base + 1];\n"
+             "    vec4 mgl_c1 = mgl_tes_output.records[mgl_base + 2];\n"
+             "    vec4 mgl_c2 = mgl_tes_output.records[mgl_base + 3];\n"
+             "    bool mgl_culled = false\n"
+             "%s"
+             "    if (mgl_culled) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);\n",
+            program->tess_gen_mode == GL_ISOLINES
+                ? "        || (mgl_c0.y < 0.0 && mgl_p0.y < 0.0)\n"
+                  "        || (mgl_c0.z < 0.0 && mgl_p0.z < 0.0)\n"
+                  "        || (mgl_c0.w < 0.0 && mgl_p0.w < 0.0)\n"
+                  "        || (mgl_c1.x < 0.0 && mgl_p1.x < 0.0)\n"
+                  "        || (mgl_c1.y < 0.0 && mgl_p1.y < 0.0)\n"
+                  "        || (mgl_c1.z < 0.0 && mgl_p1.z < 0.0)\n"
+                  "        || (mgl_c1.w < 0.0 && mgl_p1.w < 0.0)\n"
+                  "        || (mgl_c2.x < 0.0 && mgl_p2.x < 0.0);\n"
+                : "        || mgl_c0.y < 0.0\n"
+                  "        || mgl_c0.z < 0.0\n"
+                  "        || mgl_c0.w < 0.0\n"
+                  "        || mgl_c1.x < 0.0\n"
+                  "        || mgl_c1.y < 0.0\n"
+                  "        || mgl_c1.z < 0.0\n"
+                  "        || mgl_c1.w < 0.0\n"
+                  "        || mgl_c2.x < 0.0;\n"];
+    }
     for (GLuint i = 0; outputs->list && i < outputs->count; i++) {
         MGLShaderResource *output = &outputs->list[i];
         if (output->is_per_patch) continue;
@@ -1112,8 +1157,8 @@ output->name, (unsigned)i,
     if (mglShaderCompileGLSL(source.UTF8String, MGL_STAGE_VERTEX, &bytes, &size,
                              errorText, sizeof(errorText)) != 0 ||
         !bytes || size == 0u) {
-        NSLog(@"MGL TESS ERROR: failed to compile AIR TES passthrough vertex: %s",
-              errorText[0] ? errorText : "?");
+        NSLog(@"MGL TESS ERROR: failed to compile AIR TES passthrough vertex: %s\nSOURCE:\n%@",
+              errorText[0] ? errorText : "?", source);
         mglShaderFree(bytes);
         return NO;
     }

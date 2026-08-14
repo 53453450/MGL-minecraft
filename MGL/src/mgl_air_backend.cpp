@@ -6855,6 +6855,17 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 llvm::Type::getFloatTy(ctx));
         storeGeometryPointSize(cg, b.getInt32(0), pointSize);
         storeTessComputeVaryings(cg, b.getInt32(0));
+        /* Post-tess cull distances (GL 4.6 §13.6.1): the TES-written
+         * gl_CullDistance of each expanded vertex lands in the shared
+         * per-vertex record slot; the passthrough vertex stage applies the
+         * point/line cull rule (a point is culled when any distance < 0; a
+         * line when both endpoints' distance < 0 for the same axis).  When
+         * the TES never touches gl_CullDistance the slot keeps its zero
+         * fill (nothing culled). */
+        if (cg.lvalues.count("gl_CullDistance")) {
+            storeGeometryCullDistances(cg, b.getInt32(0),
+                                       cg.lvalues["gl_CullDistance"]);
+        }
         if (cg.xfbOutPtr) {
             /* Transform-feedback stream (slot 31): one complete stage-out
              * record per work item, same layout/stride as slot 28.  The

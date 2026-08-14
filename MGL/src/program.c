@@ -929,6 +929,9 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
         pptr->tess_gen_vertex_order = stage_info.tess_gen_vertex_order;
         pptr->tess_gen_point_mode =
             stage_info.tess_gen_point_mode ? GL_TRUE : GL_FALSE;
+        pptr->tess_uses_cull_distance =
+            stage_info.uses_cull_distance ? GL_TRUE : GL_FALSE;
+        pptr->tess_cull_distance_count = stage_info.cull_distance_count;
     } else if (stage == _GEOMETRY_SHADER) {
         pptr->geometry_input_type = stage_info.geometry_input_type;
         pptr->geometry_output_type = stage_info.geometry_output_type;
@@ -980,6 +983,8 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
     pptr->uses_point_size_params = GL_FALSE;
     pptr->uses_cull_distance = GL_FALSE;
     pptr->cull_distance_count = 0u;
+    pptr->tess_uses_cull_distance = GL_FALSE;
+    pptr->tess_cull_distance_count = 0u;
     memset(pptr->validated_resource_lists, 0, sizeof(pptr->validated_resource_lists));
     memset(pptr->validated_resource_list_storage, 0, sizeof(pptr->validated_resource_list_storage));
     memset(pptr->validated_resource_list_counts, 0, sizeof(pptr->validated_resource_list_counts));

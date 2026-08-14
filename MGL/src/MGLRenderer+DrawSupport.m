@@ -2721,9 +2721,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
 
     const BOOL airTES = tesProgram &&
         tesProgram->modules[_TESS_EVALUATION_SHADER].metallib_bytes != NULL;
-    const BOOL forceComputeTES = mglEnvFlagEnabled("MGL_TESS_COMPUTE_FALLBACK");
-    BOOL nativeTES = !forceComputeTES &&
-        mglNativeTESInterfaceSupported(tcsProgram, tesProgram);
+    BOOL nativeTES = mglNativeTESInterfaceSupported(tcsProgram, tesProgram);
 
     GLuint patchVertices = MAX(1u, (GLuint)MGL_STATE(drawCtx)->var.patch_vertices);
     GLuint patchCount = (GLuint)count / patchVertices;
@@ -3072,9 +3070,8 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
             _tessellation.tessVertexCaptureOffset = 0u;
             return YES;
         }
-        NSLog(@"MGL TESS ERROR: native AIR TES interface unsupported for program %u%s",
-              (unsigned)tesProgram->name,
-              forceComputeTES ? " (AIR has no compute fallback variant)" : "");
+        NSLog(@"MGL TESS ERROR: native AIR TES interface unsupported for program %u",
+              (unsigned)tesProgram->name);
         /* P0 contract: an unsupported tessellation draw must surface a GL
          * error, not silently drop the patch stream. */
         mglDispatchError(drawCtx, label ? label : "tessellationDraw",

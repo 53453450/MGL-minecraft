@@ -300,6 +300,11 @@ typedef struct Program_t {
     GLboolean uses_point_size_params;
     GLboolean uses_cull_distance;
     uint32_t cull_distance_count;
+    /* TES-stage cull distance usage (the TES-written gl_CullDistance drives
+     * post-tess culling of isolines/point-mode expansions; the VS-side
+     * fields above drive the pre-tess capture path). */
+    GLboolean tess_uses_cull_distance;
+    uint32_t tess_cull_distance_count;
     GLboolean uses_lod_bias;
     /* IR-level reflection cache for mglBufferSlotConflictsForProgram.
      * Computed lazily on first call during link-time resource binding, then

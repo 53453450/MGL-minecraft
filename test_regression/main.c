@@ -39,7 +39,7 @@
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 61
+#define MAX_TESTS 62
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -7362,6 +7362,233 @@ cleanup:
     return result;
 }
 
+static int test_air_tessellation_cull_distance(unsigned char *pixels,
+                                               const char *out_path)
+{
+    /* TES-written gl_CullDistance post-tess culling (GL 4.6 §13.6.1) on
+     * the AIR TES compute expansion:
+     *  - point_mode quad: d[0] = 0.75 - u culls the u > 0.75 cell column
+     *    (the rightmost 3x3 column is absent, the rest rasterizes);
+     *  - isolines: d[0] = 0.5 - v culls the v > 0.5 isoline rows (the
+     *    v = 0.75 row is absent, v <= 0.5 rows rasterize; both endpoints
+     *    of a segment share v, so the two-endpoint rule is exercised).
+     * The GL_PRIMITIVES_GENERATED query still counts the generated
+     * primitives (culling happens after primitive generation).  Only two
+     * tessellation draws run (both raster-verified): the 3rd+ tessellation
+     * draw reads a stale vertex capture (slot 24) -- the pre-existing
+     * stale-buffer aliasing bug documented in
+     * air_tessellation_factors_spacing. */
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 pos;\n"
+        "void main() { gl_Position = vec4(pos, 0.0, 1.0); }\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(0.0, 1.0, 0.0, 1.0); }\n";
+    static const char *tesQuad =
+        "#version 450 core\n"
+        "layout(quads, point_mode, equal_spacing) in;\n"
+        "void main() {\n"
+        "  vec2 p = mix(mix(gl_in[0].gl_Position.xy,\n"
+        "                    gl_in[1].gl_Position.xy, gl_TessCoord.x),\n"
+        "                mix(gl_in[2].gl_Position.xy,\n"
+        "                    gl_in[3].gl_Position.xy, gl_TessCoord.x),\n"
+        "                gl_TessCoord.y);\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "  gl_PointSize = 8.0;\n"
+        "  gl_CullDistance[0] = 0.75 - gl_TessCoord.x;\n"
+        "}\n";
+    static const char *tesIso =
+        "#version 450 core\n"
+        "layout(isolines) in;\n"
+        "void main() {\n"
+        "  vec2 p = mix(mix(gl_in[0].gl_Position.xy,\n"
+        "                    gl_in[1].gl_Position.xy, gl_TessCoord.x),\n"
+        "                mix(gl_in[2].gl_Position.xy,\n"
+        "                    gl_in[3].gl_Position.xy, gl_TessCoord.x),\n"
+        "                gl_TessCoord.y);\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "  gl_CullDistance[0] = 0.5 - gl_TessCoord.y;\n"
+        "}\n";
+    GLuint fbo = 0u, color = 0u, vao = 0u, vbo = 0u, q = 0u;
+    GLuint quadProg = 0u, isoProg = 0u;
+    int result = 1;
+    /* Quad corners (-0.6,-0.6) (0.6,-0.6) (-0.6,0.6) (0.6,0.6). */
+    static const float verts[8] = {
+        -0.6f, -0.6f, 0.6f, -0.6f, -0.6f, 0.6f, 0.6f, 0.6f,
+    };
+
+    fbo = make_fbo(REG_W, REG_H, &color);
+    quadProg = link_program_tess_eval_only(vs, tesQuad, fs);
+    isoProg = link_program_tess_eval_only(vs, tesIso, fs);
+    if (!fbo || !quadProg || !isoProg) goto cleanup;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+    glEnableVertexAttribArray(0);
+    glGenQueries(1, &q);
+    glPatchParameteri(GL_PATCH_VERTICES, 4);
+
+    /* Draw 1: point-mode quad, inner {3,3} -> 9 points at u,v in
+     * {1/6, 3/6, 5/6}.  d[0] = 0.75 - u culls the u = 5/6 column (px 90);
+     * the u = 1/6 (px 38) and u = 3/6 (px 64) columns rasterize. */
+    {
+        const GLfloat outer[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+        const GLfloat inner[2] = {3.0f, 3.0f};
+        GLuint prims = 0u;
+        glPatchParameterfv(GL_PATCH_DEFAULT_OUTER_LEVEL, outer);
+        glPatchParameterfv(GL_PATCH_DEFAULT_INNER_LEVEL, inner);
+        clear_color(0.0f, 0.0f, 0.0f);
+        glUseProgram(quadProg);
+        glBeginQuery(GL_PRIMITIVES_GENERATED, q);
+        glDrawArrays(GL_PATCHES, 0, 4);
+        glEndQuery(GL_PRIMITIVES_GENERATED);
+        glFinish();
+        glGetQueryObjectuiv(q, GL_QUERY_RESULT, &prims);
+        glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        if (prims != 9u) {
+            fprintf(stderr,
+                    "air_tessellation_cull_distance: quad point_mode query "
+                    "expected 9 prims, got %u\n", prims);
+            goto cleanup;
+        }
+        /* u = 1/6 column at (38, 38): green; u = 3/6 at (64, 38): green;
+         * u = 5/6 at (90, 38): culled -> black. */
+        {
+            static const float vis[2][2] = {{-0.4f, -0.4f}, {0.0f, -0.4f}};
+            for (int i = 0; i < 2; i++) {
+                const int sx = (int)((vis[i][0] + 1.0f) * 0.5f * REG_W);
+                const int sy = (int)((vis[i][1] + 1.0f) * 0.5f * REG_H);
+                int found = 0;
+                for (int dy = -2; dy <= 2 && !found; dy++) {
+                    for (int dx = -2; dx <= 2; dx++) {
+                        const int px = sx + dx, py = sy + dy;
+                        if (px < 0 || px >= REG_W || py < 0 || py >= REG_H)
+                            continue;
+                        const unsigned char *c =
+                            &pixels[(py * REG_W + px) * 4];
+                        if (c[0] <= 20u && c[1] >= 220u && c[2] <= 20u)
+                            found = 1;
+                    }
+                }
+                if (!found) {
+                    fprintf(stderr,
+                            "air_tessellation_cull_distance: quad visible "
+                            "point %d missing at (%d,%d)\n", i, sx, sy);
+                    goto cleanup;
+                }
+            }
+        }
+        {
+            const int sx = (int)((0.4f + 1.0f) * 0.5f * REG_W);
+            const int sy = (int)((-0.4f + 1.0f) * 0.5f * REG_H);
+            for (int dy = -2; dy <= 2; dy++) {
+                for (int dx = -2; dx <= 2; dx++) {
+                    const int px = sx + dx, py = sy + dy;
+                    if (px < 0 || px >= REG_W || py < 0 || py >= REG_H)
+                        continue;
+                    const unsigned char *c = &pixels[(py * REG_W + px) * 4];
+                    if (c[0] > 20u || c[1] > 20u || c[2] > 20u) {
+                        fprintf(stderr,
+                                "air_tessellation_cull_distance: quad culled "
+                                "point visible at (%d,%d)\n", px, py);
+                        goto cleanup;
+                    }
+                }
+            }
+        }
+    }
+
+    /* Draw 2: isolines, outer {4,2} -> 8 line primitives at v in
+     * {0, 1/4, 1/2, 3/4}.  d[0] = 0.5 - v culls the v = 3/4 row (px 83);
+     * the v = 1/2 row (px 64) rasterizes. */
+    {
+        const GLfloat outer[4] = {4.0f, 2.0f, 1.0f, 1.0f};
+        const GLfloat inner[2] = {2.0f, 1.0f};
+        GLuint prims = 0u;
+        glPatchParameterfv(GL_PATCH_DEFAULT_OUTER_LEVEL, outer);
+        glPatchParameterfv(GL_PATCH_DEFAULT_INNER_LEVEL, inner);
+        clear_color(0.0f, 0.0f, 0.0f);
+        glUseProgram(isoProg);
+        glBeginQuery(GL_PRIMITIVES_GENERATED, q);
+        glDrawArrays(GL_PATCHES, 0, 4);
+        glEndQuery(GL_PRIMITIVES_GENERATED);
+        glFinish();
+        glGetQueryObjectuiv(q, GL_QUERY_RESULT, &prims);
+        glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        if (prims != 8u) {
+            fprintf(stderr,
+                    "air_tessellation_cull_distance: isolines query expected "
+                    "8 prims, got %u\n", prims);
+            goto cleanup;
+        }
+        /* v = 1/2 row at y = 0 (px 64): green through the centre. */
+        {
+            int found = 0;
+            for (int dy = -2; dy <= 2 && !found; dy++) {
+                for (int dx = -2; dx <= 2; dx++) {
+                    const int px = 64 + dx, py = 64 + dy;
+                    if (px < 0 || px >= REG_W || py < 0 || py >= REG_H)
+                        continue;
+                    const unsigned char *c =
+                        &pixels[(py * REG_W + px) * 4];
+                    if (c[0] <= 20u && c[1] >= 220u && c[2] <= 20u)
+                        found = 1;
+                }
+            }
+            if (!found) {
+                fprintf(stderr,
+                        "air_tessellation_cull_distance: isoline v=1/2 row "
+                        "missing\n");
+                goto cleanup;
+            }
+        }
+        /* v = 3/4 row at y = 0.3 (px 83): culled -> black. */
+        {
+            const int sy = (int)((0.3f + 1.0f) * 0.5f * REG_H);
+            for (int dy = -2; dy <= 2; dy++) {
+                for (int dx = -2; dx <= 2; dx++) {
+                    const int px = 64 + dx, py = sy + dy;
+                    if (px < 0 || px >= REG_W || py < 0 || py >= REG_H)
+                        continue;
+                    const unsigned char *c = &pixels[(py * REG_W + px) * 4];
+                    if (c[0] > 20u || c[1] > 20u || c[2] > 20u) {
+                        fprintf(stderr,
+                                "air_tessellation_cull_distance: culled "
+                                "isoline v=3/4 visible at (%d,%d)\n",
+                                px, py);
+                        goto cleanup;
+                    }
+                }
+            }
+        }
+    }
+
+    if (glGetError() != GL_NO_ERROR) {
+        fprintf(stderr, "air_tessellation_cull_distance: GL error\n");
+        goto cleanup;
+    }
+
+    result = 0;
+
+cleanup:
+    if (q) glDeleteQueries(1, &q);
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (quadProg) glDeleteProgram(quadProg);
+    if (isoProg) glDeleteProgram(isoProg);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    return result;
+}
+
 static int test_air_geometry_xfb(unsigned char *pixels,
                                  const char *out_path)
 {
@@ -8385,6 +8612,8 @@ static const TestCase TESTS[] = {
                     test_air_tessellation_resources),
     SELF_CHECK_TEST("air_tessellation_factors_spacing",
                     test_air_tessellation_factors_spacing),
+    SELF_CHECK_TEST("air_tessellation_cull_distance",
+                    test_air_tessellation_cull_distance),
     SELF_CHECK_TEST("air_geometry_xfb", test_air_geometry_xfb),
     SELF_CHECK_TEST("air_geometry_multi_stream_xfb",
                     test_air_geometry_multi_stream_xfb),
