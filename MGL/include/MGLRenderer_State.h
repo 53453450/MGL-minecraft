@@ -147,6 +147,15 @@ typedef struct MGLBlitState_t {
 
 typedef struct MGLTessellationState_t {
     id<MTLBuffer> __strong tessFactorBuffer;
+    /* Stable cached default-levels buffer (TES-only path): rebuilt only when
+     * the patch default levels change, so consecutive tess draws share one
+     * allocation instead of churning a fresh 12-byte buffer per draw (which
+     * recycled previous draws' released blocks and could alias live
+     * capture/output memory while queued GPU work still referenced it —
+     * the accumulation-bug vector). */
+    id<MTLBuffer> __strong tessFactorCacheBuffer;
+    GLuint tessFactorCachePatchCount;
+    float tessFactorCacheLevels[6];
     id<MTLBuffer> __strong nativeTessFactorBuffer;
     id<MTLBuffer> __strong tcsOutputBuffer;
     id<MTLBuffer> __strong tcsPatchOutBuffer;

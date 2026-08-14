@@ -39,7 +39,7 @@
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 62
+#define MAX_TESTS 63
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -7589,6 +7589,242 @@ cleanup:
     return result;
 }
 
+/* TEMP accumulation-bug probe: remove before commit. */
+static int test_air_tessellation_accumulation(unsigned char *pixels,
+                                              const char *out_path)
+{
+    /* Accumulation-bug regression: the pre-existing stale vertex-capture
+     * bug (documented in AIR_M3_CPP_TODO) deterministically scrambled the
+     * 3rd+ consecutive tessellation draw (native or point-mode) and broke
+     * air_tessellation_isolines_indexed whenever any extra test ran before
+     * the isolines block.  The bug is no longer reproducible (fixed by the
+     * spacing/zero-factor and compute-fallback work of 2026-08-14); this
+     * test pins the two failure modes:
+     *  - a third consecutive point-mode quad draw (n=4 after n=2, n=3)
+     *    must rasterize all 16 cells at their correct positions (the
+     *    stale-capture failure produced huge gl_in positions -> empty
+     *    raster), and
+     *  - an interleaved isolines sequence + a fifth/sixth quad draw must
+     *    rasterize too (the accumulation counter was global across draws).
+     * Registered before the isolines block so the suite-position breakage
+     * (any pre-isolines tess test) is covered by the full suite run. */
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "void main() { gl_Position = vec4(position, 0.0, 1.0); }\n";
+    static const char *tes =
+        "#version 450 core\n"
+        "layout(quads, point_mode, equal_spacing) in;\n"
+        "void main() {\n"
+        "  vec2 p = mix(mix(gl_in[0].gl_Position.xy,\n"
+        "                    gl_in[1].gl_Position.xy, gl_TessCoord.x),\n"
+        "                mix(gl_in[2].gl_Position.xy,\n"
+        "                    gl_in[3].gl_Position.xy, gl_TessCoord.x),\n"
+        "                gl_TessCoord.y);\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "  gl_PointSize = 8.0;\n"
+        "}\n";
+    static const char *tesIso =
+        "#version 450 core\n"
+        "layout(isolines) in;\n"
+        "void main() {\n"
+        "  vec2 p = mix(mix(gl_in[0].gl_Position.xy,\n"
+        "                    gl_in[1].gl_Position.xy, gl_TessCoord.x),\n"
+        "                mix(gl_in[2].gl_Position.xy,\n"
+        "                    gl_in[3].gl_Position.xy, gl_TessCoord.x),\n"
+        "                gl_TessCoord.y);\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "}\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(0.0, 1.0, 0.0, 1.0); }\n";
+    static const float verts[8] = {
+        -0.6f, -0.6f, 0.6f, -0.6f, -0.6f, 0.6f, 0.6f, 0.6f,
+    };
+    GLuint fbo = 0u, color = 0u, vao = 0u, vbo = 0u;
+    GLuint quadProg = 0u, isoProg = 0u;
+    int result = 1;
+
+    fbo = make_fbo(REG_W, REG_H, &color);
+    if (!fbo) goto cleanup;
+    quadProg = link_program_tess_eval_only(vs, tes, fs);
+    isoProg = link_program_tess_eval_only(vs, tesIso, fs);
+    if (!quadProg || !isoProg) goto cleanup;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
+    glPatchParameteri(GL_PATCH_VERTICES, 4);
+
+    /* Draws 1-3: quad point-mode n=2, n=3, n=4.  The n=4 draw (3rd
+     * consecutive) is the historical failure case. */
+    for (int d = 0; d < 3; d++) {
+        const GLfloat outer[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+        const float levels[3] = {2.0f, 3.0f, 4.0f};
+        const GLfloat inner[2] = {levels[d], levels[d]};
+        glPatchParameterfv(GL_PATCH_DEFAULT_OUTER_LEVEL, outer);
+        glPatchParameterfv(GL_PATCH_DEFAULT_INNER_LEVEL, inner);
+        clear_color(0.0f, 0.0f, 0.0f);
+        glUseProgram(quadProg);
+        glDrawArrays(GL_PATCHES, 0, 4);
+        glFinish();
+        if (d == 2) {
+            glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE,
+                         pixels);
+            fprintf(stderr, "ACCUM n=4 green map:\n");
+            for (int yy = 0; yy < REG_H; yy++) {
+                for (int xx = 0; xx < REG_W; xx++) {
+                    const unsigned char *cc = &pixels[(yy * REG_W + xx) * 4];
+                    if (cc[0] <= 20u && cc[1] >= 200u && cc[2] <= 20u)
+                        fprintf(stderr, "  g@(%d,%d)\n", xx, yy);
+                }
+            }
+            for (int j = 0; j < 4; j++) {
+                for (int i = 0; i < 4; i++) {
+                    const float u = ((float)i + 0.5f) / 4.0f;
+                    const float v = ((float)j + 0.5f) / 4.0f;
+                    const float x = -0.6f + 1.2f * u;
+                    const float y = -0.6f + 1.2f * v;
+                    const int sx = (int)((x + 1.0f) * 0.5f * REG_W);
+                    const int sy = (int)((y + 1.0f) * 0.5f * REG_H);
+                    int found = 0;
+                    for (int dy = -2; dy <= 2 && !found; dy++) {
+                        for (int dx = -2; dx <= 2; dx++) {
+                            const int px = sx + dx, py = sy + dy;
+                            if (px < 0 || px >= REG_W || py < 0 ||
+                                py >= REG_H) continue;
+                            const unsigned char *c =
+                                &pixels[(py * REG_W + px) * 4];
+                            if (c[0] <= 20u && c[1] >= 220u && c[2] <= 20u)
+                                found = 1;
+                        }
+                    }
+                    if (!found) {
+                        fprintf(stderr,
+                                "air_tessellation_accumulation: 3rd quad "
+                                "draw cell (%d,%d) missing at (%d,%d)\n",
+                                i, j, sx, sy);
+                        goto cleanup;
+                    }
+                }
+            }
+        }
+    }
+
+    /* Draws 4-6: isolines outer {4,2}, {3,2}, {4,3}. */
+    {
+        static const float isoOuter[3][4] = {
+            {4.0f, 2.0f, 1.0f, 1.0f}, {3.0f, 2.0f, 1.0f, 1.0f},
+            {4.0f, 3.0f, 1.0f, 1.0f},
+        };
+        static const float rowProbes[4] = {-0.6f, -0.3f, 0.0f, 0.3f};
+        for (int d = 0; d < 3; d++) {
+            const GLfloat inner[2] = {2.0f, 1.0f};
+            glPatchParameterfv(GL_PATCH_DEFAULT_OUTER_LEVEL, isoOuter[d]);
+            glPatchParameterfv(GL_PATCH_DEFAULT_INNER_LEVEL, inner);
+            clear_color(0.0f, 0.0f, 0.0f);
+            glUseProgram(isoProg);
+            glDrawArrays(GL_PATCHES, 0, 4);
+            glFinish();
+            if (d == 2) {
+                glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE,
+                             pixels);
+                for (int r = 0; r < 4; r++) {
+                    const int sx = (int)((0.0f + 1.0f) * 0.5f * REG_W);
+                    const int sy = (int)((rowProbes[r] + 1.0f) * 0.5f *
+                                         REG_H);
+                    int found = 0;
+                    for (int dy = -2; dy <= 2 && !found; dy++) {
+                        for (int dx = -2; dx <= 2; dx++) {
+                            const int px = sx + dx, py = sy + dy;
+                            if (px < 0 || px >= REG_W || py < 0 ||
+                                py >= REG_H) continue;
+                            const unsigned char *c =
+                                &pixels[(py * REG_W + px) * 4];
+                            if (c[0] <= 20u && c[1] >= 220u && c[2] <= 20u)
+                                found = 1;
+                        }
+                    }
+                    if (!found) {
+                        fprintf(stderr,
+                                "air_tessellation_accumulation: 3rd isoline "
+                                "draw row v=%g missing at (%d,%d)\n",
+                                (double)rowProbes[r], sx, sy);
+                        goto cleanup;
+                    }
+                }
+            }
+        }
+    }
+
+    /* Draws 7-8: quad point-mode n=5, n=6 -- the accumulation counter was
+     * global across draws; later draws must still rasterize. */
+    for (int d = 0; d < 2; d++) {
+        const GLfloat outer[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+        const float levels[2] = {5.0f, 6.0f};
+        const GLfloat inner[2] = {levels[d], levels[d]};
+        glPatchParameterfv(GL_PATCH_DEFAULT_OUTER_LEVEL, outer);
+        glPatchParameterfv(GL_PATCH_DEFAULT_INNER_LEVEL, inner);
+        clear_color(0.0f, 0.0f, 0.0f);
+        glUseProgram(quadProg);
+        glDrawArrays(GL_PATCHES, 0, 4);
+        glFinish();
+        if (d == 1) {
+            glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE,
+                         pixels);
+            static const float probes[4][2] = {
+                {-0.6f + 1.2f * 1.5f / 6.0f, -0.6f + 1.2f * 1.5f / 6.0f},
+                {-0.6f + 1.2f * 4.5f / 6.0f, -0.6f + 1.2f * 2.5f / 6.0f},
+                {-0.6f + 1.2f * 2.5f / 6.0f, -0.6f + 1.2f * 4.5f / 6.0f},
+                {-0.6f + 1.2f * 5.5f / 6.0f, -0.6f + 1.2f * 5.5f / 6.0f},
+            };
+            for (int p = 0; p < 4; p++) {
+                const int sx = (int)((probes[p][0] + 1.0f) * 0.5f * REG_W);
+                const int sy = (int)((probes[p][1] + 1.0f) * 0.5f * REG_H);
+                int found = 0;
+                for (int dy = -2; dy <= 2 && !found; dy++) {
+                    for (int dx = -2; dx <= 2; dx++) {
+                        const int px = sx + dx, py = sy + dy;
+                        if (px < 0 || px >= REG_W || py < 0 || py >= REG_H)
+                            continue;
+                        const unsigned char *c =
+                            &pixels[(py * REG_W + px) * 4];
+                        if (c[0] <= 20u && c[1] >= 220u && c[2] <= 20u)
+                            found = 1;
+                    }
+                }
+                if (!found) {
+                    fprintf(stderr,
+                            "air_tessellation_accumulation: 6th quad draw "
+                            "probe %d missing at (%d,%d)\n", p, sx, sy);
+                    goto cleanup;
+                }
+            }
+        }
+    }
+
+    if (glGetError() != GL_NO_ERROR) {
+        fprintf(stderr, "air_tessellation_accumulation: GL error\n");
+        goto cleanup;
+    }
+
+    result = 0;
+
+cleanup:
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (quadProg) glDeleteProgram(quadProg);
+    if (isoProg) glDeleteProgram(isoProg);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    return result;
+}
 static int test_air_geometry_xfb(unsigned char *pixels,
                                  const char *out_path)
 {
@@ -8592,6 +8828,8 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("air_tessellation_multipatch",
                     test_air_tessellation_multipatch),
     SELF_CHECK_TEST("air_tessellation_varying", test_air_tessellation_varying),
+    SELF_CHECK_TEST("air_tessellation_accumulation",
+                    test_air_tessellation_accumulation),
     SELF_CHECK_TEST("air_tessellation_isolines_point_mode",
                     test_air_tessellation_isolines_point_mode),
     SELF_CHECK_TEST("air_tessellation_isolines_variants",

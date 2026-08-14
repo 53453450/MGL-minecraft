@@ -1751,9 +1751,11 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
         /* The TES compute kernel always declares and writes the XFB stream
          * slot (31); bind a 1-byte dummy so the slot is never dangling when
          * GL feedback is inactive. */
-        if (!_tessellation.tessXfbDummyBuffer) {
+        if (!_tessellation.tessXfbDummyBuffer ||
+            _tessellation.tessXfbDummyBuffer.length < outSize) {
             _tessellation.tessXfbDummyBuffer =
-                mglTessCreateBuffer(_device, 1u, MTLResourceStorageModeShared);
+                mglTessCreateBuffer(_device, MAX(outSize, 1u),
+                                    MTLResourceStorageModeShared);
         }
         if (_tessellation.tessXfbDummyBuffer) {
             mglTessSetComputeBuffer(computeEncoder,

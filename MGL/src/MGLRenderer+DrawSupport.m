@@ -567,6 +567,43 @@ static id<MTLBuffer> mglDefaultTessFactorBuffer(id<MTLDevice> device,
     return buffer;
 }
 
+/* Cached variant of the default factor buffer for the TES-only path:
+ * consecutive tess draws reuse one stable allocation unless the default
+ * patch levels or patch count actually changed. */
+static id<MTLBuffer> mglCachedDefaultTessFactorBuffer(
+    id<MTLDevice> device, MGLTessellationState *tess, GLMState *state,
+    GLuint patchCount)
+{
+    if (!device || !tess || !state || patchCount == 0u) return nil;
+    BOOL levelsChanged = (tess->tessFactorCachePatchCount != patchCount);
+    for (int i = 0; i < 4 && !levelsChanged; i++) {
+        if (tess->tessFactorCacheLevels[i] !=
+            state->var.patch_default_outer_level[i]) {
+            levelsChanged = YES;
+        }
+    }
+    for (int i = 0; i < 2 && !levelsChanged; i++) {
+        if (tess->tessFactorCacheLevels[4 + i] !=
+            state->var.patch_default_inner_level[i]) {
+            levelsChanged = YES;
+        }
+    }
+    if (!levelsChanged && tess->tessFactorCacheBuffer) {
+        return tess->tessFactorCacheBuffer;
+    }
+    id<MTLBuffer> fresh = mglDefaultTessFactorBuffer(device, state, patchCount);
+    if (!fresh) return nil;
+    tess->tessFactorCacheBuffer = fresh;
+    tess->tessFactorCachePatchCount = patchCount;
+    for (int i = 0; i < 4; i++) {
+        tess->tessFactorCacheLevels[i] = state->var.patch_default_outer_level[i];
+    }
+    for (int i = 0; i < 2; i++) {
+        tess->tessFactorCacheLevels[4 + i] = state->var.patch_default_inner_level[i];
+    }
+    return fresh;
+}
+
 static id<MTLBuffer> mglNativeTessFactorBuffer(id<MTLDevice> device,
                                                 id<MTLBuffer> canonical,
                                                 GLenum mode,
@@ -2889,8 +2926,8 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
             _tessellation.tessVertexCaptureOffset;
         _tessellation.tcsOutputStride = contract.per_vertex_out_stride;
         _tessellation.tcsOutVertices = patchVertices;
-        _tessellation.tessFactorBuffer = mglDefaultTessFactorBuffer(
-            _device, MGL_STATE(drawCtx), patchCount);
+        _tessellation.tessFactorBuffer = mglCachedDefaultTessFactorBuffer(
+            _device, &_tessellation, MGL_STATE(drawCtx), patchCount);
         if (!_tessellation.tcsOutputBuffer ||
             !_tessellation.tessFactorBuffer) {
             nativeTES = NO;
@@ -2898,11 +2935,11 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     }
 
     if (airTES && !tcsProgram) {
-        /* TES-only compute expansion also needs the default levels, and the
-         * buffer is rebuilt per draw because glPatchParameterfv can change
-         * between draws. */
-        _tessellation.tessFactorBuffer = mglDefaultTessFactorBuffer(
-            _device, MGL_STATE(drawCtx), patchCount);
+        /* TES-only compute expansion also needs the default levels; the
+         * cached buffer is rebuilt only when glPatchParameterfv levels
+         * (or the patch count) change between draws. */
+        _tessellation.tessFactorBuffer = mglCachedDefaultTessFactorBuffer(
+            _device, &_tessellation, MGL_STATE(drawCtx), patchCount);
     }
 
     if (tcsProgram) {
