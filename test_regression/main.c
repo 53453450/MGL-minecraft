@@ -3765,6 +3765,54 @@ static int test_legacy_glsl_frontend(unsigned char *pixels, const char *out_path
             return 6;
         }
     }
+    /* Segment C: classic fixed-function-style GLSL 1.10 VS using the implicit
+     * gl_Vertex attribute + built-in matrix uniforms.  The translator injects
+     * the matrices with their ORIGINAL gl_ names, so the GL-side uniform
+     * contract is unchanged: resolve "gl_ModelViewProjectionMatrix" directly
+     * and set an identity matrix -> same red triangle. */
+    {
+        const char *vs110m =
+            "#version 110\n"
+            "attribute vec2 a_pos;\n"
+            "void main() {\n"
+            "    gl_Position = gl_ModelViewProjectionMatrix * vec4(a_pos, 0.0, 1.0);\n"
+            "    gl_FrontColor = vec4(1.0, 0.0, 0.0, 1.0);\n"
+            "}\n";
+        const char *fs110m =
+            "#version 110\n"
+            "void main() { gl_FragColor = gl_FrontColor; }\n";
+        GLuint progC = link_program(vs110m, fs110m);
+        if (!progC) {
+            fprintf(stderr,
+                    "legacy_glsl_frontend: link failed (segment C)\n");
+            return 7;
+        }
+        GLint mvpLoc = glGetUniformLocation(progC, "gl_ModelViewProjectionMatrix");
+        if (mvpLoc < 0) {
+            fprintf(stderr,
+                    "legacy_glsl_frontend: seg C uniform "
+                    "gl_ModelViewProjectionMatrix not found\n");
+            return 8;
+        }
+        const float identity[16] = {
+            1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1,
+        };
+        glUseProgram(progC);
+        glUniformMatrix4fv(mvpLoc, 1, GL_FALSE, identity);
+        clear_color(0.0f, 0.0f, 0.0f);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glFinish();
+        glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        const unsigned char *c =
+            &pixels[((REG_H/2) * REG_W + REG_W/2) * 4];
+        if (c[0] < 200u || c[1] > 60u || c[2] > 60u) {
+            fprintf(stderr,
+                    "legacy_glsl_frontend: seg C probe not red "
+                    "rgb=(%u,%u,%u)\n", c[0], c[1], c[2]);
+            return 9;
+        }
+    }
+
     glDeleteTextures(1, &redTex);
     glDeleteFramebuffers(1, &fbo);
     glDeleteTextures(1, &tex);

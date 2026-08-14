@@ -297,6 +297,7 @@ typedef struct {
 
 static const legacy_builtin_t s_builtins[] = {
     /* --- VS attribute inputs (§7.1) --- */
+    {"gl_Vertex",            "gl_Vertex",             NULL,                       "vec4",  "in",  NULL},
     {"gl_Normal",            "_mglNormal",            NULL,                       "vec3",  "in",  NULL},
     {"gl_Color",             "_mglColor",             "_mglFrontColor",           "vec4",  "in",  "in"},
     {"gl_SecondaryColor",    "_mglSecondaryColor",    "_mglFrontSecondaryColor",  "vec4",  "in",  "in"},
@@ -311,6 +312,37 @@ static const legacy_builtin_t s_builtins[] = {
     {"gl_FogFragCoord",        "_mglFogFragCoord",        "_mglFogFragCoord", "float", "out", "in"},
 
     {NULL, NULL, NULL, NULL, NULL, NULL}
+};
+
+/* Legacy matrix built-in uniforms (§7.4).  These are injected with their
+ * ORIGINAL gl_ names (the AIR frontend accepts gl_-prefixed user-declared
+ * uniforms), so the GL-side uniform contract is unchanged: applications keep
+ * resolving e.g. "gl_ModelViewProjectionMatrix" and setting it directly. */
+typedef struct legacy_matrix_t {
+    const char *name;       /* builtin uniform name (kept verbatim) */
+    const char *type;       /* mat3 / mat4 */
+    int         array_size; /* 0 = scalar, >0 = array of this size */
+} legacy_matrix_t;
+
+static const legacy_matrix_t s_legacy_matrices[] = {
+    { "gl_ModelViewMatrix",                     "mat4", 0 },
+    { "gl_ProjectionMatrix",                    "mat4", 0 },
+    { "gl_ModelViewProjectionMatrix",           "mat4", 0 },
+    { "gl_TextureMatrix",                       "mat4", MGL_LEGACY_MAX_TEX_COORDS },
+    { "gl_NormalMatrix",                        "mat3", 0 },
+    { "gl_ModelViewMatrixInverse",              "mat4", 0 },
+    { "gl_ModelViewMatrixTranspose",            "mat4", 0 },
+    { "gl_ModelViewMatrixInverseTranspose",     "mat4", 0 },
+    { "gl_ProjectionMatrixInverse",             "mat4", 0 },
+    { "gl_ProjectionMatrixTranspose",           "mat4", 0 },
+    { "gl_ProjectionMatrixInverseTranspose",    "mat4", 0 },
+    { "gl_ModelViewProjectionMatrixInverse",    "mat4", 0 },
+    { "gl_ModelViewProjectionMatrixTranspose",  "mat4", 0 },
+    { "gl_ModelViewProjectionMatrixInverseTranspose", "mat4", 0 },
+    { "gl_TextureMatrixInverse",                "mat4", MGL_LEGACY_MAX_TEX_COORDS },
+    { "gl_TextureMatrixTranspose",              "mat4", MGL_LEGACY_MAX_TEX_COORDS },
+    { "gl_TextureMatrixInverseTranspose",       "mat4", MGL_LEGACY_MAX_TEX_COORDS },
+    { NULL, NULL, 0 }
 };
 
 /* gl_MultiTexCoord0..7 generated dynamically (8 entries). */
@@ -369,6 +401,14 @@ void mgl_legacy_detect(const char *src, mgl_legacy_features_t *features)
         }
     }
 
+    /* Legacy matrix built-in uniforms (§7.4) */
+    for (int i = 0; s_legacy_matrices[i].name; i++) {
+        if (code_uses_identifier(src, s_legacy_matrices[i].name)) {
+            features->has_legacy_matrices = GL_TRUE;
+            break;
+        }
+    }
+
     /* ftransform() */
     features->has_ftransform = code_contains(src, "ftransform()");
 
@@ -388,6 +428,7 @@ void mgl_legacy_detect(const char *src, mgl_legacy_features_t *features)
         features->has_textureCube      ||
         features->has_texture2DRect    ||
         features->has_legacy_builtins  ||
+        features->has_legacy_matrices ||
         features->has_ftransform;
 }
 
@@ -507,6 +548,26 @@ int mgl_translate_legacy_glsl(char *src,
             "%s vec4 _mglTexCoord[%d];\n", dir, MGL_LEGACY_MAX_TEX_COORDS);
     }
 
+    /* Legacy matrix built-in uniforms (§7.4): injected verbatim so the
+     * GL-side uniform names survive (app keeps glGetUniformLocation on the
+     * original gl_ names). */
+    if (features->has_legacy_matrices) {
+        for (int i = 0; s_legacy_matrices[i].name; i++) {
+            const legacy_matrix_t *m = &s_legacy_matrices[i];
+            if (!code_uses_identifier(src, m->name)) continue;
+            if (m->array_size > 0) {
+                off += (size_t)snprintf(preamble + off,
+                    sizeof(preamble) - off,
+                    "uniform %s %s[%d];\n",
+                    m->type, m->name, m->array_size);
+            } else {
+                off += (size_t)snprintf(preamble + off,
+                    sizeof(preamble) - off,
+                    "uniform %s %s;\n", m->type, m->name);
+            }
+        }
+    }
+
     /* gl_FragColor / gl_FragData (fragment outputs, mutually exclusive) */
     if (features->has_gl_FragData && is_fragment) {
         off += (size_t)snprintf(preamble + off, sizeof(preamble) - off,
@@ -568,7 +629,7 @@ int mgl_translate_legacy_glsl(char *src,
     if (modified) {
         fprintf(stderr,
                 "[MGL] Legacy GLSL %d (%s): translated (attr=%d vary=%d "
-                "fragColor=%d texCoord=%d fragData=%d texFn=%d builtins=%d)\n",
+                "fragColor=%d texCoord=%d fragData=%d texFn=%d builtins=%d matrices=%d)\n",
                 version,
                 is_vertex ? "VS" : (is_fragment ? "FS" : "other"),
                 features->has_attribute,
@@ -580,7 +641,8 @@ int mgl_translate_legacy_glsl(char *src,
                 features->has_texture2D || features->has_texture2DProj ||
                 features->has_texture3D || features->has_texture3DProj ||
                 features->has_textureCube || features->has_texture2DRect,
-                features->has_legacy_builtins);
+                features->has_legacy_builtins,
+                features->has_legacy_matrices);
     }
 
     return modified;

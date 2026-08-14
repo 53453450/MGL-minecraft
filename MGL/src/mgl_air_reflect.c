@@ -355,8 +355,15 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
     uint32_t attrCount = 0, ssboCount = 0, hasPlain = 0;
     for (uint32_t i = 0; i < mod->symbol_count; i++) {
         const MGLIRSymbol *s = mod->symbols[i];
+        /* gl_-prefixed symbols are backend builtins (stage I/O like
+         * gl_Position / gl_in) and are skipped — EXCEPT uniform-qualified
+         * ones: the legacy-GLSL frontend injects the fixed-function matrix
+         * uniforms (gl_ModelViewProjectionMatrix etc.) verbatim as regular
+         * uniforms so the GL-side uniform contract survives, and those must
+         * flow through reflection. */
         if (s->is_function ||
-            (s->name && strncmp(s->name, "gl_", 3) == 0)) {
+            (s->name && strncmp(s->name, "gl_", 3) == 0 &&
+             !(s->qualifiers & MGL_AST_Q_UNIFORM))) {
             continue;
         }
         uint32_t q = s->qualifiers;
@@ -384,8 +391,15 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
     uint32_t sampler_binding = 0;
     for (uint32_t i = 0; i < mod->symbol_count; i++) {
         const MGLIRSymbol *s = mod->symbols[i];
+        /* gl_-prefixed symbols are backend builtins (stage I/O like
+         * gl_Position / gl_in) and are skipped — EXCEPT uniform-qualified
+         * ones: the legacy-GLSL frontend injects the fixed-function matrix
+         * uniforms (gl_ModelViewProjectionMatrix etc.) verbatim as regular
+         * uniforms so the GL-side uniform contract survives, and those must
+         * flow through reflection. */
         if (s->is_function ||
-            (s->name && strncmp(s->name, "gl_", 3) == 0)) {
+            (s->name && strncmp(s->name, "gl_", 3) == 0 &&
+             !(s->qualifiers & MGL_AST_Q_UNIFORM))) {
             continue;
         }
         const MGLIRType *t = s->type;

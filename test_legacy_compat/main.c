@@ -703,6 +703,65 @@ static void test_full_legacy_vertex_110(void)
     check(not_contains(buf, "varying "), "no varying keyword", NULL);
 }
 
+
+static void test_translate_gl_Vertex_and_matrices(void)
+{
+    printf("\n=== test_translate_gl_Vertex_and_matrices ===\n");
+    /* Classic GLSL 1.10 fixed-function-style vertex shader: the implicit
+     * gl_Vertex attribute and the built-in matrix uniforms.  The matrices
+     * must be injected with their ORIGINAL gl_ names so the GL-side uniform
+     * contract (glGetUniformLocation("gl_ModelViewProjectionMatrix")) is
+     * unchanged; gl_Vertex must be declared as an in attribute. */
+    const char *src =
+        "#version 110\n"
+        "void main() {\n"
+        "    gl_Position = gl_ModelViewProjectionMatrix * gl_Vertex;\n"
+        "    gl_TexCoord[0] = gl_TextureMatrix[0] * vec4(0.0, 0.0, 0.0, 1.0);\n"
+        "    vec3 n = gl_NormalMatrix * vec3(1.0);\n"
+        "    gl_FrontColor = vec4(n, 1.0);\n"
+        "}\n";
+
+    char buf[BUF_SIZE];
+    copy_to_buf(src, buf, BUF_SIZE);
+
+    mgl_legacy_features_t feat;
+    mgl_legacy_detect(src, &feat);
+    check(feat.has_legacy_matrices == GL_TRUE, "detect: has_legacy_matrices", NULL);
+    check(feat.has_legacy_builtins == GL_TRUE, "detect: has_legacy_builtins (gl_Vertex)", NULL);
+    check(feat.needs_translation == GL_TRUE, "detect: needs_translation", NULL);
+
+    int ret = mgl_translate_legacy_glsl(buf, BUF_SIZE, GL_VERTEX_SHADER, 110, &feat);
+    check(ret == 1, "translate returns 1 (modified)", NULL);
+    check(contains(buf, "uniform mat4 gl_ModelViewProjectionMatrix;"),
+          "MVP matrix declared with original name", NULL);
+    check(contains(buf, "uniform mat4 gl_TextureMatrix[8];"),
+          "TextureMatrix array declared", NULL);
+    check(contains(buf, "uniform mat3 gl_NormalMatrix;"),
+          "NormalMatrix declared", NULL);
+    check(contains(buf, "in vec4 gl_Vertex;"),
+          "gl_Vertex declared as in attribute", NULL);
+    check(contains(buf, "gl_ModelViewProjectionMatrix * gl_Vertex"),
+          "usage preserved", NULL);
+}
+
+static void test_translate_matrices_unused(void)
+{
+    printf("\n=== test_translate_matrices_unused ===\n");
+    /* Only used matrices are injected (no unconditional clutter). */
+    const char *src =
+        "#version 110\n"
+        "attribute vec2 a_pos;\n"
+        "void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }\n";
+    char buf[BUF_SIZE];
+    copy_to_buf(src, buf, BUF_SIZE);
+    int ret = mgl_translate_legacy_glsl(buf, BUF_SIZE, GL_VERTEX_SHADER, 110, NULL);
+    check(ret == 1, "translate returns 1 (attribute rewrite)", NULL);
+    check(not_contains(buf, "gl_ModelViewProjectionMatrix;"),
+          "unused matrix not injected", NULL);
+    check(not_contains(buf, "uniform mat4 "),
+          "no matrix uniform at all", NULL);
+}
+
 int main(void)
 {
     printf("=== mgl_legacy_compat tests ===\n");
@@ -736,6 +795,8 @@ int main(void)
     test_translate_gl_ClipVertex();
     test_translate_gl_BackColor();
     test_full_legacy_vertex_110();
+    test_translate_gl_Vertex_and_matrices();
+    test_translate_matrices_unused();
 
     printf("\n=== Summary ===\n");
     printf("Total: %d, Passed: %d, Failed: %d\n",

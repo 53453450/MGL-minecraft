@@ -78,6 +78,12 @@ typedef struct {
      * the builtin table; callers only need this aggregate. */
     GLboolean has_legacy_builtins;
 
+    /* Legacy matrix built-in uniforms (§7.4): gl_ModelViewMatrix,
+     * gl_ProjectionMatrix, gl_ModelViewProjectionMatrix, gl_TextureMatrix[],
+     * gl_NormalMatrix + inverse/transpose variants.  Injected verbatim
+     * (original gl_ names) so the GL-side uniform contract is unchanged. */
+    GLboolean has_legacy_matrices;
+
     GLboolean has_ftransform;    /* ftransform() fixed-function vertex      */
 
     /* Aggregate: true if any legacy feature was detected.  Set by

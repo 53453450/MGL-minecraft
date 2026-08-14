@@ -5701,6 +5701,15 @@ static int airGLSLVersionOf(const char *src) {
  * falls back to the original source on NULL. */
 static char *airPrepareLegacySource(const char *src, int air_stage) {
     if (!src) return NULL;
+    /* The compile entry re-parses the translated source produced by the
+     * reflect entry (and vice versa).  Matrix uniforms and gl_Vertex keep
+     * their ORIGINAL names after translation (the AIR frontend accepts gl_
+     * prefixed user declarations), so detecting them again would double-
+     * inject the declarations.  The preamble marker identifies an
+     * already-translated source. */
+    if (strstr(src, "/* MGL legacy GLSL translation: renamed builtins declared as")) {
+        return NULL;
+    }
     mgl_legacy_features_t features;
     memset(&features, 0, sizeof(features));
     mgl_legacy_detect(src, &features);
