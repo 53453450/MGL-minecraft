@@ -1502,6 +1502,11 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                  * as the frag_depth member of the fragment return. */
                 return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_FLOAT));
             }
+            if (strcmp(e->u.var_ref.name, "gl_SampleID") == 0) {
+                /* Fragment built-in sample index; the AIR backend maps it
+                 * to the sample_id fragment argument. */
+                return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_INT));
+            }
             if (strcmp(e->u.var_ref.name, "gl_PointSize") == 0) {
                 /* Vertex built-in point size; the AIR backend maps it to
                  * the air.point_size output member. */

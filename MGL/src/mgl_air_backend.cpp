@@ -2685,6 +2685,15 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     llvm::Type::getFloatTy(*cg.ctx), 1.0);
             return cg.lvalues["gl_FragDepth"];
         }
+        if (strcmp(e->u.var_ref.name, "gl_SampleID") == 0) {
+            if (!cg.lvalues.count("gl_SampleID")) {
+                cg.err = 1;
+                cg.errmsg = "codegen: gl_SampleID requires a fragment stage";
+                return nullptr;
+            }
+            return cg.lvalues["gl_SampleID"];
+        }
+
         if (strcmp(e->u.var_ref.name, "gl_PointSize") == 0) {
             if (!cg.pointSize) {
                 /* read-before-write: an unwritten point size is 1.0 */
@@ -2723,6 +2732,8 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                             llvm::Align(4));
         }
         if (strcmp(e->u.var_ref.name, "gl_PrimitiveID") == 0) {
+            if (cg.lvalues.count("gl_PrimitiveID"))
+                return cg.lvalues["gl_PrimitiveID"];
             if (cg.patchId)
                 return cg.patchId;
             if (!cg.patchPos) {
@@ -4180,6 +4191,9 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         }
         if (strcmp(e->u.var_ref.name, "gl_PointCoord") == 0) {
             t.scalar = MGLIR_SCALAR_FLOAT; t.vec = 2; break;
+        }
+        if (strcmp(e->u.var_ref.name, "gl_SampleID") == 0) {
+            t.scalar = MGLIR_SCALAR_INT; break;
         }
         auto lit = locals.find(e->u.var_ref.name);
         if (lit != locals.end()) { t = lit->second; break; }
@@ -6143,6 +6157,12 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     const bool usesFragDepth =
         !isVS && !isTES && !isKernel &&
         strstr(esrc, "gl_FragDepth") != nullptr;
+    const bool usesPrimitiveId =
+        !isVS && !isTES && !isKernel &&
+        strstr(esrc, "gl_PrimitiveID") != nullptr;
+    const bool usesSampleID =
+        !isVS && !isTES && !isKernel &&
+        strstr(esrc, "gl_SampleID") != nullptr;
     const bool usesWorkGroupID =
         isCompute && strstr(esrc, "gl_WorkGroupID") != nullptr;
     const bool usesPointSize =
@@ -6382,6 +6402,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         if (usesPointCoord)
             paramTys.push_back(llvm::FixedVectorType::get(
                 llvm::Type::getFloatTy(ctx), 2));
+        if (usesPrimitiveId)
+            paramTys.push_back(llvm::Type::getInt32Ty(ctx));
+        if (usesSampleID)
+            paramTys.push_back(llvm::Type::getInt32Ty(ctx));
     }
     if (isTCS || isTESCompute)
         paramTys.push_back(llvm::FixedVectorType::get(
@@ -6632,6 +6656,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             cg.lvalues["gl_FrontFacing"] = fn->getArg(argSlot++);
         if (usesPointCoord)
             cg.lvalues["gl_PointCoord"] = fn->getArg(argSlot++);
+        if (usesPrimitiveId)
+            cg.lvalues["gl_PrimitiveID"] = fn->getArg(argSlot++);
+        if (usesSampleID)
+            cg.lvalues["gl_SampleID"] = fn->getArg(argSlot++);
     }
     if (usesFragDepth)
         cg.hasFragDepth = true;
@@ -7967,6 +7995,26 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 llvm::MDString::get(ctx, "float2"),
                 llvm::MDString::get(ctx, "air.arg_name"),
                 llvm::MDString::get(ctx, "gl_PointCoord")}));
+        }
+        if (usesPrimitiveId) {
+            argNodes.push_back(llvm::MDNode::get(ctx, {
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), mArgSlot++)),
+                llvm::MDString::get(ctx, "air.primitive_id"),
+                llvm::MDString::get(ctx, "air.arg_type_name"),
+                llvm::MDString::get(ctx, "uint"),
+                llvm::MDString::get(ctx, "air.arg_name"),
+                llvm::MDString::get(ctx, "gl_PrimitiveID")}));
+        }
+        if (usesSampleID) {
+            argNodes.push_back(llvm::MDNode::get(ctx, {
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), mArgSlot++)),
+                llvm::MDString::get(ctx, "air.sample_id"),
+                llvm::MDString::get(ctx, "air.arg_type_name"),
+                llvm::MDString::get(ctx, "uint"),
+                llvm::MDString::get(ctx, "air.arg_name"),
+                llvm::MDString::get(ctx, "gl_SampleID")}));
         }
     }
     if (isKernel) {

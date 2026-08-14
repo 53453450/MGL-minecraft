@@ -4355,6 +4355,62 @@ static int test_legacy_glsl_frontend(unsigned char *pixels, const char *out_path
         }
     }
 
+    /* Segment O: per-fragment primitive/sample builtins.  A single
+     * 6-vertex draw (two triangles side by side) gives gl_PrimitiveID
+     * 0 and 1; with the default 1-sample target gl_SampleID is 0 and
+     * gl_SamplePosition is (0.5, 0.5).  Left probe (pid 0) must read
+     * red, right probe (pid 1) blue. */
+    {
+        static const float two_tri_verts[12] = {
+            -0.6f, -0.6f,   0.0f, -0.6f,   -0.3f,  0.6f,
+             0.0f, -0.6f,   0.6f, -0.6f,    0.3f,  0.6f,
+        };
+        GLuint vboO = make_vbo(two_tri_verts, sizeof two_tri_verts);
+        glEnableVertexAttribArray(0);
+        glBindBuffer(GL_ARRAY_BUFFER, vboO);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+        const char *vs110o =
+            "#version 110\n"
+            "attribute vec2 a_pos;\n"
+            "void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }\n";
+        const char *fs110o =
+            "#version 110\n"
+            "void main() {\n"
+            "    bool ok = gl_PrimitiveID == 0 && gl_SampleID == 0;\n"
+            "    gl_FragColor = ok ? vec4(1.0, 0.0, 0.0, 1.0)\n"
+            "                      : vec4(0.0, 0.0, 1.0, 1.0);\n"
+            "}\n";
+        GLuint progO = link_program(vs110o, fs110o);
+        if (!progO) {
+            fprintf(stderr, "legacy_glsl_frontend: link failed (segment O)\n");
+            return 39;
+        }
+        glUseProgram(progO);
+        clear_color(0.0f, 0.0f, 0.0f);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+        glFinish();
+        glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        const unsigned char *ol =
+            &pixels[((REG_H/2) * REG_W + 44) * 4];
+        const unsigned char *or_ =
+            &pixels[((REG_H/2) * REG_W + 84) * 4];
+        if (ol[0] < 200u || ol[1] > 60u || ol[2] > 60u) {
+            fprintf(stderr,
+                    "legacy_glsl_frontend: seg O pid0 probe not red "
+                    "rgb=(%u,%u,%u)\n", ol[0], ol[1], ol[2]);
+            return 40;
+        }
+        if (or_[2] < 200u || or_[0] > 60u || or_[1] > 60u) {
+            fprintf(stderr,
+                    "legacy_glsl_frontend: seg O pid1 probe not blue "
+                    "rgb=(%u,%u,%u)\n", or_[0], or_[1], or_[2]);
+            return 41;
+        }
+        /* Restore the harness triangle for any later segments. */
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+    }
+
     glDeleteTextures(1, &redTex);
     glDeleteFramebuffers(1, &fbo);
     glDeleteTextures(1, &tex);
