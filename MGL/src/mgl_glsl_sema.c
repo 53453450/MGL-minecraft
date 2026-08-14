@@ -1519,6 +1519,13 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                 return scratch_type(s, mglIRTypeArray(
                     mglIRTypeScalar(MGLIR_SCALAR_FLOAT), 8));
             }
+            if (strcmp(e->u.var_ref.name, "gl_ClipDistance") == 0) {
+                /* Vertex clip-distance array; the AIR backend emits it as
+                 * the clip_distance output member (Metal clips where any
+                 * element is negative). */
+                return scratch_type(s, mglIRTypeArray(
+                    mglIRTypeScalar(MGLIR_SCALAR_FLOAT), 8));
+            }
             /* ---- M3 tessellation/geometry builtins ---- */
             if (strcmp(e->u.var_ref.name, "gl_TessCoord") == 0) {
                 /* TES: barycentric/parametric coordinates. */

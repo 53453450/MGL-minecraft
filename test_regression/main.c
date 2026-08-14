@@ -4411,6 +4411,74 @@ static int test_legacy_glsl_frontend(unsigned char *pixels, const char *out_path
         glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
     }
 
+    /* Segment P: gl_ClipDistance.  P1 clips where y > 0 (clip_distance[0]
+     * = -a_pos.y; Metal clips fragments with a negative clip distance):
+     * the probe below center stays red, the one above center is clipped
+     * to the clear color.  P2 (control) writes a constant positive clip
+     * distance — nothing clipped, both probes red. */
+    {
+        const char *vs110p =
+            "#version 330 core\n"
+            "layout(location = 0) in vec2 a_pos;\n"
+            "void main() {\n"
+            "    gl_Position = vec4(a_pos, 0.0, 1.0);\n"
+            "    gl_ClipDistance[0] = -a_pos.y;\n"
+            "}\n";
+        const char *vs110p2 =
+            "#version 330 core\n"
+            "layout(location = 0) in vec2 a_pos;\n"
+            "void main() {\n"
+            "    gl_Position = vec4(a_pos, 0.0, 1.0);\n"
+            "    gl_ClipDistance[0] = 1.0;\n"
+            "}\n";
+        const char *fs110p =
+            "#version 330 core\n"
+            "out vec4 f; void main() { f = vec4(1.0, 0.0, 0.0, 1.0); }\n";
+        GLuint progP1 = link_program(vs110p, fs110p);
+        GLuint progP2 = link_program(vs110p2, fs110p);
+        if (!progP1 || !progP2) {
+            fprintf(stderr, "legacy_glsl_frontend: link failed (segment P)\n");
+            return 42;
+        }
+        glUseProgram(progP1);
+        clear_color(0.0f, 0.0f, 0.0f);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glFinish();
+        glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        const unsigned char *pbot =
+            &pixels[((REG_H/4) * REG_W + REG_W/2) * 4];
+        const unsigned char *ptop =
+            &pixels[((3*REG_H/4) * REG_W + REG_W/2) * 4];
+        if (pbot[0] < 200u || pbot[1] > 60u || pbot[2] > 60u) {
+            fprintf(stderr,
+                    "legacy_glsl_frontend: seg P clipped probe not red "
+                    "rgb=(%u,%u,%u)\n", pbot[0], pbot[1], pbot[2]);
+            return 43;
+        }
+        if (ptop[0] > 60u || ptop[1] > 60u || ptop[2] > 60u) {
+            fprintf(stderr,
+                    "legacy_glsl_frontend: seg P top probe not clipped "
+                    "rgb=(%u,%u,%u)\n", ptop[0], ptop[1], ptop[2]);
+            return 44;
+        }
+        glUseProgram(progP2);
+        clear_color(0.0f, 0.0f, 0.0f);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glFinish();
+        glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        const unsigned char *p2b =
+            &pixels[((REG_H/4) * REG_W + REG_W/2) * 4];
+        const unsigned char *p2t =
+            &pixels[((3*REG_H/4) * REG_W + REG_W/2) * 4];
+        if (p2b[0] < 200u || p2t[0] < 200u) {
+            fprintf(stderr,
+                    "legacy_glsl_frontend: seg P control not red both "
+                    "rgb=(%u,%u,%u)/(%u,%u,%u)\n",
+                    p2b[0], p2b[1], p2b[2], p2t[0], p2t[1], p2t[2]);
+            return 45;
+        }
+    }
+
     glDeleteTextures(1, &redTex);
     glDeleteFramebuffers(1, &fbo);
     glDeleteTextures(1, &tex);

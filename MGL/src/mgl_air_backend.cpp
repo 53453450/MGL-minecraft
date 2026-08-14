@@ -195,6 +195,7 @@ struct Codegen {
     llvm::Value *fragPos = nullptr;      /* fragment: [[position]] (gl_FragCoord) */
     bool hasFragDepth = false;           /* fragment writes gl_FragDepth */
     bool fragDepthInit = false;          /* gl_FragDepth lvalue initialized */
+    bool usesClipDistance = false;       /* vertex writes gl_ClipDistance */
     bool pointSize = false;              /* vertex: writes gl_PointSize */
     bool layerViewport = false;          /* writes gl_Layer / gl_ViewportIndex */
     std::map<std::string, llvm::Value *> ssboPtrs;  /* SSBO instance -> buffer */
@@ -1988,6 +1989,18 @@ static llvm::Value *defaultCullDistances(Codegen &cg)
     return result;
 }
 
+static llvm::Value *defaultClipDistances(Codegen &cg)
+{
+    llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+    llvm::Value *result = llvm::UndefValue::get(llvm::ArrayType::get(
+        f32, MGL_MAX_CLIP_DISTANCES));
+    for (uint32_t i = 0; i < MGL_MAX_CLIP_DISTANCES; i++) {
+        result = cg.b->CreateInsertValue(
+            result, llvm::ConstantFP::get(f32, 1.0), i);
+    }
+    return result;
+}
+
 static void storeGeometryCullDistances(Codegen &cg, llvm::Value *record,
                                        llvm::Value *distances)
 {
@@ -2708,6 +2721,20 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 cg.lvalues["gl_CullDistance"] = defaultCullDistances(cg);
             }
             return cg.lvalues["gl_CullDistance"];
+        }
+        if (strcmp(e->u.var_ref.name, "gl_ClipDistance") == 0) {
+            if (!cg.lvalues.count("gl_ClipDistance")) {
+                /* Unwritten elements stay +1.0: Metal clips where an
+                 * element is negative, so the default must not clip. */
+                llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+                llvm::Value *arr = llvm::UndefValue::get(
+                    llvm::ArrayType::get(f32, MGL_MAX_CLIP_DISTANCES));
+                for (uint32_t i = 0; i < MGL_MAX_CLIP_DISTANCES; i++)
+                    arr = cg.b->CreateInsertValue(
+                        arr, llvm::ConstantFP::get(f32, 1.0), i);
+                cg.lvalues["gl_ClipDistance"] = arr;
+            }
+            return cg.lvalues["gl_ClipDistance"];
         }
         if (strcmp(e->u.var_ref.name, "gl_InvocationID") == 0) {
             if (cg.isGeometry && cg.geometryInvocationId)
@@ -4172,6 +4199,9 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         if (strcmp(e->u.var_ref.name, "gl_CullDistance") == 0) {
             t.scalar = MGLIR_SCALAR_FLOAT; t.arr = 8; break;
         }
+        if (strcmp(e->u.var_ref.name, "gl_ClipDistance") == 0) {
+            t.scalar = MGLIR_SCALAR_FLOAT; t.arr = 8; break;
+        }
         if (strcmp(e->u.var_ref.name, "gl_InvocationID") == 0 ||
             strcmp(e->u.var_ref.name, "gl_PatchVerticesIn") == 0 ||
             strcmp(e->u.var_ref.name, "gl_PrimitiveID") == 0) {
@@ -4891,6 +4921,14 @@ llvm::Value *assembleReturn(Codegen &cg) {
                     cg.lvalues.count("gl_PointSize")
                         ? cg.lvalues["gl_PointSize"]
                         : llvm::ConstantFP::get(llvm::Type::getFloatTy(*cg.ctx), 1.0),
+                    ri++);
+            }
+            if (cg.usesClipDistance) {
+                ret = cg.b->CreateInsertValue(
+                    ret,
+                    cg.lvalues.count("gl_ClipDistance")
+                        ? cg.lvalues["gl_ClipDistance"]
+                        : defaultClipDistances(cg),
                     ri++);
             }
             if (cg.layerViewport) {
@@ -6167,6 +6205,9 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         isCompute && strstr(esrc, "gl_WorkGroupID") != nullptr;
     const bool usesPointSize =
         (isVS || isTES) && strstr(esrc, "gl_PointSize") != nullptr;
+    const bool usesClipDistance =
+        isVS && !isCapture && !isKernel &&
+        strstr(esrc, "gl_ClipDistance") != nullptr;
     const bool usesLayerViewport =
         isVS && (strstr(esrc, "gl_Layer") != nullptr ||
                  strstr(esrc, "gl_ViewportIndex") != nullptr);
@@ -6182,6 +6223,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 MGL_AIR_PER_VERTEX_CULL_DISTANCE_COUNT));
         } else if (usesPointSize) {
             retElems.push_back(llvm::Type::getFloatTy(ctx));
+        }
+        if (usesClipDistance) {
+            retElems.push_back(llvm::ArrayType::get(
+                llvm::Type::getFloatTy(ctx), MGL_MAX_CLIP_DISTANCES));
         }
         if (usesLayerViewport) {
             retElems.push_back(llvm::Type::getInt32Ty(ctx));
@@ -6663,6 +6708,12 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     }
     if (usesFragDepth)
         cg.hasFragDepth = true;
+    if (usesClipDistance) {
+        cg.usesClipDistance = true;
+        /* Indexed writes (gl_ClipDistance[i] = v) need the aggregate
+         * lvalue pre-registered (see the array-varying fix). */
+        cg.lvalues["gl_ClipDistance"] = defaultClipDistances(cg);
+    }
     if (isTCS)
         cg.patchPos = fn->getArg(argSlot++);
     if (isGS) {
@@ -8056,6 +8107,19 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 llvm::MDString::get(ctx, "float"),
                 llvm::MDString::get(ctx, "air.arg_name"),
                 llvm::MDString::get(ctx, "psize")}));
+        }
+        if (usesClipDistance) {
+            /* Reference shape from MSL 'float cd [[clip_distance]] [N]':
+             * air.clip_distance + air.clip_distance_array_size. */
+            outNodes.push_back(llvm::MDNode::get(ctx, {
+                llvm::MDString::get(ctx, "air.clip_distance"),
+                llvm::MDString::get(ctx, "air.clip_distance_array_size"),
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), MGL_MAX_CLIP_DISTANCES)),
+                llvm::MDString::get(ctx, "air.arg_type_name"),
+                llvm::MDString::get(ctx, "float"),
+                llvm::MDString::get(ctx, "air.arg_name"),
+                llvm::MDString::get(ctx, "gl_ClipDistance")}));
         }
         if (usesLayerViewport) {
             outNodes.push_back(llvm::MDNode::get(ctx, {

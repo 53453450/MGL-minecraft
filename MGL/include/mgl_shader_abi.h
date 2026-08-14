@@ -79,6 +79,8 @@ enum {
     MGL_AIR_PER_VERTEX_POINT_SIZE_OFFSET = 16,
     MGL_AIR_PER_VERTEX_CULL_DISTANCE_OFFSET = 20,
     MGL_AIR_PER_VERTEX_CULL_DISTANCE_COUNT = 8,
+    /* gl_ClipDistance (GL_MAX_CLIP_DISTANCES): plain-VS output array. */
+    MGL_MAX_CLIP_DISTANCES = 8,
     /* gl_Layer / gl_ViewportIndex outputs (GS expansion): one int per
      * vertex; the rasterizing vertex stage re-emits both (GL 4.6
      * §11.1.3.5/§11.1.3.6 tie them to the same value). */
