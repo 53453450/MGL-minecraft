@@ -5,6 +5,9 @@
 # Makefile for the aux-shader metallib generation (Apple SDK only).
 set -e
 
+# Run from any cwd: the script resolves its own directory.
+cd "$(dirname "$0")"
+
 SDKROOT=$(xcrun --show-sdk-path)
 export SDKROOT
 

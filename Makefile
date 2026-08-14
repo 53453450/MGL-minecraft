@@ -286,6 +286,11 @@ $(mgl_es_lib): $(mgl_es_link_objs) $(es_link_stamp)
 	ln -fs $(mgl_es_lib) .
 
 
+# Configure + build GLFW on demand so a clean clone builds with plain
+# `make` (no glslang/SPIRV-* trees involved; see external/build_external.sh).
+external/glfw/build/src/libglfw3.a:
+	@bash external/build_external.sh
+
 # Build GLFW shared library from pre-built static library
 $(build_dir)/libglfw.dylib: external/glfw/build/src/libglfw3.a $(mgl_lib)
 	@echo "Creating GLFW shared library from static library..."
