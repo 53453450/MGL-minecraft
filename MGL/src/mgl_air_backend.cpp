@@ -66,6 +66,7 @@
 #include "glm_limits.h" /* MAX_ATTRIBS: attrib_names contract size */
 #include "mgl_air_gs_abi.h"
 #include "mgl_air_tess_abi.h"
+#include "mgl_legacy_compat.h"
 
 namespace {
 
@@ -5660,6 +5661,68 @@ static bool translationUnitUsesRuntimeArrayLength(
     return false;
 }
 
+/* ---- legacy GLSL frontend wiring (item 753 follow-up) ----------------------
+ *
+ * The AIR frontend parses core-profile GLSL 4.50 only (mgl_glsl_lexer/parser/
+ * sema have no legacy tokens such as gl_TexCoord / texture2D / gl_FragData).
+ * Pre-3.30 sources (GLSL 1.10/1.20/1.50 style) are translated source-level
+ * BEFORE parsing via mgl_legacy_compat (pure C, no glslang/SPIRV).  The
+ * translation is applied at every source entry point below so the reflect
+ * pass, the MSL compile pass and the interface check all observe the same
+ * translated source.  A no-op when the source needs no translation. */
+
+static GLuint airStageToGLShaderType(int air_stage) {
+    switch (air_stage) {
+        case MGL_STAGE_VERTEX: return GL_VERTEX_SHADER;
+        case MGL_STAGE_FRAGMENT: return GL_FRAGMENT_SHADER;
+        case MGL_STAGE_TESS_CONTROL: return GL_TESS_CONTROL_SHADER;
+        case MGL_STAGE_TESS_EVALUATION: return GL_TESS_EVALUATION_SHADER;
+        case MGL_STAGE_GEOMETRY: return GL_GEOMETRY_SHADER;
+        case MGL_STAGE_COMPUTE: return GL_COMPUTE_SHADER;
+        default: return 0;
+    }
+}
+
+/* GLSL version number from the #version directive; legacy default 110. */
+static int airGLSLVersionOf(const char *src) {
+    if (!src) return 110;
+    const char *v = strstr(src, "#version");
+    if (!v) return 110;
+    int ver = 0;
+    char prof[32] = {0};
+    if (sscanf(v + 8, "%d %31s", &ver, prof) >= 1 && ver > 0) {
+        return ver;
+    }
+    return 110;
+}
+
+/* Detect + translate legacy GLSL.  Returns a malloc'd translated copy (caller
+ * frees via free()) or NULL when the source needs no translation.  The caller
+ * falls back to the original source on NULL. */
+static char *airPrepareLegacySource(const char *src, int air_stage) {
+    if (!src) return NULL;
+    mgl_legacy_features_t features;
+    memset(&features, 0, sizeof(features));
+    mgl_legacy_detect(src, &features);
+    if (!features.needs_translation) return NULL;
+    const GLuint shader_type = airStageToGLShaderType(air_stage);
+    const int version = airGLSLVersionOf(src);
+    const size_t len = strlen(src);
+    /* The translator needs +2048 growth headroom (same convention the
+     * standalone test harness uses). */
+    char *translated = (char *)malloc(len + 2048);
+    if (!translated) return NULL;
+    memcpy(translated, src, len + 1);
+    const int ret = mgl_translate_legacy_glsl(
+        translated, len + 2048, shader_type, version, &features);
+    if (ret != 1) {
+        /* Not modified (or error): keep the original source. */
+        free(translated);
+        return NULL;
+    }
+    return translated;
+}
+
 static int compileGLSLImpl(const char *src, int stage, int capture,
                            const char *const *attrib_names,
                            uint32_t tessPatchVertices,
@@ -5677,6 +5740,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         if (err_buf && err_cap) snprintf(err_buf, err_cap, "unsupported stage");
         return -1;
     }
+    /* Legacy GLSL frontend wiring: translate pre-3.30 constructs before
+     * parsing so the reflect + MSL passes see core-profile source. */
+    std::unique_ptr<char[]> legacy_holder(airPrepareLegacySource(src, stage));
+    const char *esrc = legacy_holder ? legacy_holder.get() : src;
     const bool isVS = (stage == MGL_STAGE_VERTEX);
     const bool isCompute = (stage == MGL_STAGE_COMPUTE);
     const bool isTCS = (stage == MGL_STAGE_TESS_CONTROL);
@@ -5689,10 +5756,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
      * builtin as an SSA array and append two hidden vertex arguments so the
      * return path can reproduce the legacy primitive-cull emulation. */
     const bool sourceUsesCullDistance =
-        strstr(src, "gl_CullDistance") != nullptr;
+        strstr(esrc, "gl_CullDistance") != nullptr;
     const bool usesCullDistance = isVS && !isCapture &&
                                   sourceUsesCullDistance;
-    MGLTranslationUnit *tu = mglGLSLParse(src, strlen(src));
+    MGLTranslationUnit *tu = mglGLSLParse(esrc, strlen(esrc));
     if (!tu) {
         if (err_buf && err_cap) snprintf(err_buf, err_cap, "parse: out of memory");
         return -1;
@@ -5991,14 +6058,14 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
      * (gl_FragCoord -> fragment position arg; gl_PointSize -> point_size
      * output member). */
     const bool usesFragCoord =
-        !isVS && !isTES && !isKernel && strstr(src, "gl_FragCoord") != nullptr;
+        !isVS && !isTES && !isKernel && strstr(esrc, "gl_FragCoord") != nullptr;
     const bool usesWorkGroupID =
-        isCompute && strstr(src, "gl_WorkGroupID") != nullptr;
+        isCompute && strstr(esrc, "gl_WorkGroupID") != nullptr;
     const bool usesPointSize =
-        (isVS || isTES) && strstr(src, "gl_PointSize") != nullptr;
+        (isVS || isTES) && strstr(esrc, "gl_PointSize") != nullptr;
     const bool usesLayerViewport =
-        isVS && (strstr(src, "gl_Layer") != nullptr ||
-                 strstr(src, "gl_ViewportIndex") != nullptr);
+        isVS && (strstr(esrc, "gl_Layer") != nullptr ||
+                 strstr(esrc, "gl_ViewportIndex") != nullptr);
     const uint32_t userBufferLocationBase = isTES ? 1u : 0u;
     if (isVS || isTES) {
         /* retElems always carries the output record (capture variants
@@ -8123,7 +8190,11 @@ extern "C" int mglAirReflectGLSLStageInfo(
         if (err_buf && err_cap) snprintf(err_buf, err_cap, "bad args");
         return -1;
     }
-    MGLTranslationUnit *tu = mglGLSLParse(src, strlen(src));
+    /* Legacy GLSL frontend wiring: translate pre-3.30 constructs before
+     * parsing (mglShaderInterfaceCheck/compileGLSLImpl do the same). */
+    std::unique_ptr<char[]> legacy_holder(airPrepareLegacySource(src, stage));
+    const char *esrc = legacy_holder ? legacy_holder.get() : src;
+    MGLTranslationUnit *tu = mglGLSLParse(esrc, strlen(esrc));
     if (!tu || tu->error) {
         if (err_buf && err_cap) {
             snprintf(err_buf, err_cap, "%s",
@@ -8147,7 +8218,7 @@ extern "C" int mglAirReflectGLSLStageInfo(
         return -1;
     }
     mglGLSLSemanticCheckDestroy(errors, error_count);
-    fillStageInfo(tu, &mod, stage, src, stage_info);
+    fillStageInfo(tu, &mod, stage, esrc, stage_info);
     mglIRModuleDestroy(&mod);
     mglGLSLTranslationUnitDestroy(tu);
     return 0;
@@ -8162,7 +8233,11 @@ extern "C" int mglAirCompileGLSLWithReflectInfo(
         if (err_buf && err_cap) snprintf(err_buf, err_cap, "bad args");
         return -1;
     }
-    MGLTranslationUnit *tu = mglGLSLParse(src, strlen(src));
+    /* Legacy GLSL frontend wiring: translate pre-3.30 constructs before
+     * parsing (compileGLSLImpl re-parses the same translated source). */
+    std::unique_ptr<char[]> legacy_holder(airPrepareLegacySource(src, stage));
+    const char *esrc = legacy_holder ? legacy_holder.get() : src;
+    MGLTranslationUnit *tu = mglGLSLParse(esrc, strlen(esrc));
     if (!tu || tu->error) {
         if (err_buf && err_cap) {
             snprintf(err_buf, err_cap, "%s",
@@ -8190,7 +8265,7 @@ extern "C" int mglAirCompileGLSLWithReflectInfo(
     uint32_t tessPatchVertices = 0u;
     if (stage_info) {
         tessPatchVertices = stage_info->tess_patch_vertices;
-        fillStageInfo(tu, &mod, stage, src, stage_info);
+        fillStageInfo(tu, &mod, stage, esrc, stage_info);
         stage_info->tess_patch_vertices = tessPatchVertices;
     }
 
@@ -8200,7 +8275,7 @@ extern "C" int mglAirCompileGLSLWithReflectInfo(
     mglIRModuleDestroy(&mod);
     mglGLSLTranslationUnitDestroy(tu);
 
-    return compileGLSLImpl(src, stage, 0, attrib_names,
+    return compileGLSLImpl(esrc, stage, 0, attrib_names,
                            tessPatchVertices,
                            metallib_out, size_out, err_buf, err_cap);
 }
@@ -8222,8 +8297,14 @@ extern "C" void mglShaderFree(void *bytes) {
 extern "C" int mglShaderInterfaceCheck(const char *vs_src, const char *fs_src,
                                        char *err_buf, size_t err_cap) {
     if (!vs_src || !fs_src) return -1;
-    MGLTranslationUnit *vtu = mglGLSLParse(vs_src, strlen(vs_src));
-    MGLTranslationUnit *ftu = mglGLSLParse(fs_src, strlen(fs_src));
+    /* Legacy GLSL frontend wiring: translate pre-3.30 constructs before
+     * parsing (VS/FS only — the interface check compares the two stages). */
+    std::unique_ptr<char[]> vs_legacy(airPrepareLegacySource(vs_src, MGL_STAGE_VERTEX));
+    std::unique_ptr<char[]> fs_legacy(airPrepareLegacySource(fs_src, MGL_STAGE_FRAGMENT));
+    const char *vesrc = vs_legacy ? vs_legacy.get() : vs_src;
+    const char *fesrc = fs_legacy ? fs_legacy.get() : fs_src;
+    MGLTranslationUnit *vtu = mglGLSLParse(vesrc, strlen(vesrc));
+    MGLTranslationUnit *ftu = mglGLSLParse(fesrc, strlen(fesrc));
     if (!vtu || !ftu) {
         if (err_buf && err_cap) snprintf(err_buf, err_cap, "parse failed");
         mglGLSLTranslationUnitDestroy(vtu);

@@ -39,7 +39,7 @@
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 64
+#define MAX_TESTS 65
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -3647,6 +3647,127 @@ static int test_air_msaa_resolve(unsigned char *pixels, const char *out_path)
     glDeleteFramebuffers(1, &dstB);
     glDeleteTextures(1, &dstATex);
     glDeleteTextures(1, &dstBTex);
+    return 0;
+}
+
+/* ---- Legacy GLSL frontend wiring (item 753 follow-up) ----
+ * Compile GLSL 1.10-style sources (attribute/varying/gl_FragColor) through
+ * the product path: glShaderSource stores the raw source, mglAirCompileStage
+ * feeds it to the AIR frontend, which must detect + translate pre-3.30
+ * constructs BEFORE parsing (mgl_legacy_compat wiring in mgl_air_backend.cpp).
+ * Segment A: legacy VS/FS with gl_FragColor -> red triangle interior.
+ * Segment B: legacy texture2D() sampling a red 1x1 texture -> red interior. */
+static int test_legacy_glsl_frontend(unsigned char *pixels, const char *out_path)
+{
+    (void)out_path;
+    /* GLSL 1.10 vertex shader: attribute/varying style. */
+    const char *vs110 =
+        "#version 110\n"
+        "attribute vec2 a_pos;\n"
+        "varying vec2 v_uv;\n"
+        "void main() { gl_Position = vec4(a_pos, 0.0, 1.0); v_uv = a_pos; }\n";
+    /* GLSL 1.10 fragment shader: gl_FragColor output. */
+    const char *fs110 =
+        "#version 110\n"
+        "varying vec2 v_uv;\n"
+        "void main() { gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0); }\n";
+
+    GLuint progA = link_program(vs110, fs110);
+    if (!progA) {
+        fprintf(stderr, "legacy_glsl_frontend: link failed (segment A)\n");
+        return 1;
+    }
+    /* GLSL 1.10 fragment shader using the legacy texture2D() builtin. */
+    const char *fs110tex =
+        "#version 110\n"
+        "uniform sampler2D tex;\n"
+        "varying vec2 v_uv;\n"
+        "void main() { gl_FragColor = texture2D(tex, v_uv); }\n";
+    GLuint progB = link_program(vs110, fs110tex);
+    if (!progB) {
+        fprintf(stderr, "legacy_glsl_frontend: link failed (segment B)\n");
+        return 2;
+    }
+
+    GLuint fbo = 0, tex = 0;
+    fbo = make_fbo(REG_W, REG_H, &tex);
+    if (!fbo) return 3;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+
+    GLuint vao;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    GLuint vbo = make_vbo(TRI_VERTS, sizeof(TRI_VERTS));
+    glEnableVertexAttribArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+
+    glViewport(0, 0, REG_W, REG_H);
+    glDisable(GL_SCISSOR_TEST);
+
+    /* Segment A: legacy gl_FragColor path. */
+    clear_color(0.0f, 0.0f, 0.0f);
+    glUseProgram(progA);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        const int px[3][2] = {
+            { REG_W/2, REG_H/2 }, { REG_W/2 - 8, REG_H/2 },
+            { REG_W/2, REG_H/2 - 8 },
+        };
+        for (int i = 0; i < 3; i++) {
+            const unsigned char *c =
+                &pixels[(px[i][1] * REG_W + px[i][0]) * 4];
+            if (c[0] < 200u || c[1] > 60u || c[2] > 60u) {
+                fprintf(stderr,
+                        "legacy_glsl_frontend: seg A probe %d not red at "
+                        "(%d,%d) rgb=(%u,%u,%u)\n",
+                        i, px[i][0], px[i][1], c[0], c[1], c[2]);
+                return 4;
+            }
+        }
+        const unsigned char *e =
+            &pixels[((3 * REG_H / 4) * REG_W + REG_W / 4) * 4];
+        if (e[0] > 20u || e[1] > 20u || e[2] > 20u) {
+            fprintf(stderr,
+                    "legacy_glsl_frontend: seg A exterior not black "
+                    "rgb=(%u,%u,%u)\n", e[0], e[1], e[2]);
+            return 5;
+        }
+    }
+
+    /* Segment B: legacy texture2D() path with a red 1x1 texture. */
+    GLuint texUnit = 0, redTex = 0;
+    glGenTextures(1, &redTex);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, redTex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    const unsigned char redPx[4] = { 255, 0, 0, 255 };
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, redPx);
+    glUseProgram(progB);
+    glUniform1i(glGetUniformLocation(progB, "tex"), 0);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        const unsigned char *c =
+            &pixels[((REG_H/2) * REG_W + REG_W/2) * 4];
+        if (c[0] < 200u || c[1] > 60u || c[2] > 60u) {
+            fprintf(stderr,
+                    "legacy_glsl_frontend: seg B probe not red rgb=(%u,%u,%u)\n",
+                    c[0], c[1], c[2]);
+            return 6;
+        }
+    }
+    glDeleteTextures(1, &redTex);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &tex);
     return 0;
 }
 
@@ -9068,6 +9189,7 @@ static const TestCase TESTS[] = {
     GOLDEN_TEST("dontcare_fullscreen",    test_dontcare_fullscreen),
     GOLDEN_TEST("multibatch_same_fbo",    test_multibatch_same_fbo),
     SELF_CHECK_TEST("air_msaa_resolve",   test_air_msaa_resolve),
+    SELF_CHECK_TEST("legacy_glsl_frontend", test_legacy_glsl_frontend),
     GOLDEN_TEST("rtt_sample",             test_render_to_texture_sample),
     SELF_CHECK_TEST("air_query_scissor_occluded",
                     test_air_query_scissor_occluded),
