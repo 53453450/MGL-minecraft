@@ -4026,6 +4026,58 @@ static int test_legacy_glsl_frontend(unsigned char *pixels, const char *out_path
         }
     }
 
+    /* Segment H: legacy fog-coordinate chain.  The VS passes the gl_FogCoord
+     * float attribute (fixed-function slot 5) through the gl_FogFragCoord
+     * varying; the FS colors from gl_FogFragCoord.  Exercises the float
+     * attribute / float varying paths and the slot-5 bound stream. */
+    {
+        const char *vs110f =
+            "#version 110\n"
+            "void main() {\n"
+            "    gl_FogFragCoord = gl_FogCoord;\n"
+            "    gl_Position = ftransform();\n"
+            "}\n";
+        const char *fs110f =
+            "#version 110\n"
+            "void main() {\n"
+            "    gl_FragColor = vec4(gl_FogFragCoord, 0.0, 0.0, 1.0);\n"
+            "}\n";
+        GLuint progH = link_program(vs110f, fs110f);
+        if (!progH) {
+            fprintf(stderr, "legacy_glsl_frontend: link failed (segment H)\n");
+            return 24;
+        }
+        GLint fogLoc = glGetAttribLocation(progH, "gl_FogCoord");
+        if (fogLoc != 5) {
+            fprintf(stderr,
+                    "legacy_glsl_frontend: seg H gl_FogCoord at %d, want 5\n",
+                    fogLoc);
+            return 25;
+        }
+        /* Constant fog coord 1.0 (vec3 stride to exercise float layout). */
+        static const float fogVals[3] = { 1.0f, 1.0f, 1.0f };
+        GLuint fogVBO = 0;
+        glGenBuffers(1, &fogVBO);
+        glBindBuffer(GL_ARRAY_BUFFER, fogVBO);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(fogVals), fogVals,
+                     GL_STATIC_DRAW);
+        glEnableVertexAttribArray(5);
+        glVertexAttribPointer(5, 1, GL_FLOAT, GL_FALSE, 0, NULL);
+        glUseProgram(progH);
+        clear_color(0.0f, 0.0f, 0.0f);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glFinish();
+        glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        const unsigned char *h =
+            &pixels[((REG_H/2) * REG_W + REG_W/2) * 4];
+        if (h[0] < 200u || h[1] > 60u || h[2] > 60u) {
+            fprintf(stderr,
+                    "legacy_glsl_frontend: seg H probe not red "
+                    "rgb=(%u,%u,%u)\n", h[0], h[1], h[2]);
+            return 26;
+        }
+    }
+
     glDeleteTextures(1, &redTex);
     glDeleteFramebuffers(1, &fbo);
     glDeleteTextures(1, &tex);
