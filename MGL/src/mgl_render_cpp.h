@@ -702,6 +702,8 @@ int mglRenderCppPrimitiveModeHasDrawableSegment(uint64_t gl_mode,
 uint64_t mglRenderCppQuadTriangleIndexCount(uint64_t source_vertex_count);
 /* Align vertex stride to 4; matches mglAlignVertexStrideForMetal. */
 uint64_t mglRenderCppAlignVertexStrideForMetal(uint64_t stride);
+/* double-attrib size -> MTLVertexFormat value; matches mglDoubleVertexAttribFloatFormat. */
+uint32_t mglRenderCppDoubleVertexAttribFloatFormat(uint32_t size);
 
 typedef struct MGLRenderCppGeometryGatherResult_t {
     uint32_t *gather;          /* malloc'd raw gather (vertex_ids) */

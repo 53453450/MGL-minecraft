@@ -58,6 +58,7 @@ uint32_t mglRenderCppReadGLIndexValue(const uint8_t *bytes, uint32_t elem_width,
 uint32_t mglRenderCppVertexAttribComponentSize(uint64_t gl_type);
 uint64_t mglRenderCppVertexAttribElementBytes(uint64_t gl_type, uint32_t size);
 uint64_t mglRenderCppAlignVertexStrideForMetal(uint64_t stride);
+uint32_t mglRenderCppDoubleVertexAttribFloatFormat(uint32_t size);
 
 /* === Vertex format mapping (static inline, hot-path) === */
 
@@ -96,13 +97,7 @@ static inline size_t mglVertexAttribElementBytes(GLenum type, GLuint size)
  * variants, since Metal has no double vertex formats). */
 static inline MTLVertexFormat mglDoubleVertexAttribFloatFormat(GLuint size)
 {
-    switch (size) {
-        case 1: return MTLVertexFormatFloat;
-        case 2: return MTLVertexFormatFloat2;
-        case 3: return MTLVertexFormatFloat3;
-        case 4: return MTLVertexFormatFloat4;
-        default: return MTLVertexFormatInvalid;
-    }
+    return (MTLVertexFormat)mglRenderCppDoubleVertexAttribFloatFormat((uint32_t)size);
 }
 
 /* Aligns a vertex stride to Metal's 4-byte minimum alignment. */

@@ -2505,6 +2505,20 @@ static int verifyGLIndexValueRead(void) {
     return 0;
 }
 
+static int verifyDoubleAttribFormat(void) {
+    /* P4.5 (item 1141): double-attrib size -> MTL Fmt value. */
+    if (mglRenderCppDoubleVertexAttribFloatFormat(1) != 28 ||
+        mglRenderCppDoubleVertexAttribFloatFormat(2) != 29 ||
+        mglRenderCppDoubleVertexAttribFloatFormat(3) != 30 ||
+        mglRenderCppDoubleVertexAttribFloatFormat(4) != 31 ||
+        mglRenderCppDoubleVertexAttribFloatFormat(5) != 0) {
+        fprintf(stderr, "FAIL: double attrib fmt\\n");
+        return 1;
+    }
+    printf("DOUBLE_ATTRIB_FORMAT_OK\\n");
+    return 0;
+}
+
 static int verifyAlignStride(void) {
     /* P4.5 (item 1141): vertex stride aligned to 4. */
     if (mglRenderCppAlignVertexStrideForMetal(0) != 0 ||
@@ -5219,6 +5233,7 @@ int main(void) {
         if (verifyDrawModePredicates() != 0) return 1;
         if (verifyQuadTriangleCount() != 0) return 1;
         if (verifyAlignStride() != 0) return 1;
+        if (verifyDoubleAttribFormat() != 0) return 1;
         if (verifyMDIScratchOwner() != 0) return 1;
         if (verifyRenderEncoderGetter() != 0) return 1;
         if (verifyCommandBufferGetterAndAdopt() != 0) return 1;

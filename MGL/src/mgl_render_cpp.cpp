@@ -4028,6 +4028,18 @@ uint64_t mglRenderCppAlignVertexStrideForMetal(uint64_t stride) {
 }
 
 extern "C"
+uint32_t mglRenderCppDoubleVertexAttribFloatFormat(uint32_t size) {
+    /* MTLVertexFormat Float/Float2/Float3/Float4 = 28/29/30/31. */
+    switch (size) {
+        case 1u: return 28u;
+        case 2u: return 29u;
+        case 3u: return 30u;
+        case 4u: return 31u;
+        default: return 0u; /* MTLVertexFormatInvalid */
+    }
+}
+
+extern "C"
 int mglRenderCppScanIndexRangeIgnoringRestart(
     const uint8_t* bytes, uint32_t elem_width, uint32_t count,
     int restart_enabled, uint32_t restart_index,
