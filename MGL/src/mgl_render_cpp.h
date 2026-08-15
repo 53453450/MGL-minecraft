@@ -605,6 +605,12 @@ int mglRenderCppExpandQuadElementIndices(
     const uint8_t *bytes, uint32_t elem_width, uint32_t quad_count,
     uint32_t **out_indices, uint64_t *out_count);
 
+/* P4.5 (item 1141/887): GL_UNSIGNED_BYTE element buffer -> UInt16
+ * expansion — write each byte as uint16.  Pure CPU; caller frees. */
+int mglRenderCppExpandUInt8ToUInt16(
+    const uint8_t *bytes, uint32_t byte_count,
+    uint16_t **out_indices, uint64_t *out_count);
+
 /* P4.5 (item 1141/887): triangle-fan ARRAY emulation — vertexCount-2
  * triangles `(0, tri+1, tri+2)`, all uint32.  Pure CPU; caller frees. */
 int mglRenderCppExpandTriangleFanArrayIndices(

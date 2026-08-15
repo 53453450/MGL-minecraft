@@ -3907,6 +3907,27 @@ static inline uint32_t MGLRenderReadIndexBytes(const uint8_t* bytes, int w, uint
 }
 
 extern "C"
+int mglRenderCppExpandUInt8ToUInt16(
+    const uint8_t* bytes, uint32_t byte_count, uint16_t** out, uint64_t* out_count) {
+    if (!bytes || byte_count == 0u || !out || !out_count) {
+        return -1;
+    }
+    if ((uint64_t)byte_count > (uint64_t)(SIZE_MAX / sizeof(uint16_t))) {
+        return -1;
+    }
+    uint16_t* const dst = (uint16_t*)malloc((size_t)byte_count * sizeof(uint16_t));
+    if (!dst) {
+        return -1;
+    }
+    for (uint32_t i = 0u; i < byte_count; i++) {
+        dst[i] = (uint16_t)bytes[i];
+    }
+    *out = dst;
+    *out_count = byte_count;
+    return 0;
+}
+
+extern "C"
 int mglRenderCppExpandTriangleFanArrayIndices(
     uint32_t vertex_count, uint32_t** out_indices, uint64_t* out_count) {
     if (vertex_count < 3u || !out_indices || !out_count) {

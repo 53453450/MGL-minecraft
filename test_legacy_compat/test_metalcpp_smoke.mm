@@ -2304,6 +2304,25 @@ static int verifyMDIScratchOwner(void) {
     return 0;
 }
 
+static int verifyUInt8ToUInt16(void) {
+    /* P.5 (item 1141): GL_UNSIGNED_BYTE -> UInt16 element expansion. */
+    const uint8_t b[] = {0, 1, 0xff, 250, 5};
+    uint16_t *idx = NULL; uint64_t n = 0;
+    if (mglRenderCppExpandUInt8ToUInt16(NULL, 3, &idx, &n) != -1 ||
+        mglRenderCppExpandUInt8ToUInt16(b, 0, &idx, &n) != -1) {
+        fprintf(stderr, "FAIL: u16 bad args\n");
+        return 1;
+    }
+    if (mglRenderCppExpandUInt8ToUInt16(b, 5, &idx, &n) != 0 ||
+        n != 5 || idx[0]!=0 || idx[1]!=1 || idx[2]!=0xff || idx[3]!=250 || idx[4]!=5) {
+        fprintf(stderr, "FAIL: u16 content\n");
+        return 1;
+    }
+    free(idx);
+    printf("EXPAND_U16_OK\n");
+    return 0;
+}
+
 static int verifyArrayVariants(void) {
     /* P4.5 (item 1141/887): fan/strip/line-loop ARRAY emulations. */
     uint32_t *idx = NULL; uint64_t n = 0;
@@ -5017,6 +5036,7 @@ int main(void) {
         if (verifyExpandQuad() != 0) return 1;
         if (verifyQuadLine() != 0) return 1;
         if (verifyArrayVariants() != 0) return 1;
+        if (verifyUInt8ToUInt16() != 0) return 1;
         if (verifyMDIScratchOwner() != 0) return 1;
         if (verifyRenderEncoderGetter() != 0) return 1;
         if (verifyCommandBufferGetterAndAdopt() != 0) return 1;

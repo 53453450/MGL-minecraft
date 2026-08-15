@@ -603,16 +603,22 @@ MGLMetalBufferRef mglNewUInt16IndexBufferFromUInt8(MGLMetalDeviceRef device,
         return nil;
     }
 
-    uint16_t *indices = NULL;
-    MGLMetalBufferRef buffer = mglNewUninitializedIndexBuffer(device,
-                                                          sourceIndexCount * sizeof(uint16_t),
-                                                          (void **)&indices);
-    if (!buffer) {
+    uint16_t *expanded = NULL;
+    uint64_t count64 = 0u;
+    if (mglRenderCppExpandUInt8ToUInt16(
+            sourceIndexBytes, (uint32_t)sourceIndexCount,
+            &expanded, &count64) != 0) {
         return nil;
     }
-    for (NSUInteger i = 0; i < sourceIndexCount; i++) {
-        indices[i] = (uint16_t)sourceIndexBytes[i];
+    uint16_t *indices = NULL;
+    MGLMetalBufferRef buffer = mglNewUninitializedIndexBuffer(
+        device, (NSUInteger)count64 * sizeof(uint16_t), (void **)&indices);
+    if (!buffer) {
+        free(expanded);
+        return nil;
     }
+    memcpy(indices, expanded, (size_t)count64 * sizeof(uint16_t));
+    free(expanded);
 
     return buffer;
 }
