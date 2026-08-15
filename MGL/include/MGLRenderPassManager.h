@@ -34,8 +34,7 @@ typedef struct MGLCommandState_t {
     NSUInteger transientDepthTextureHeight;
     BOOL currentDrawUsesRTSampledCopy;
     GLuint blitOperationComplete;
-    id<MTLEvent> __strong _Nullable currentEvent;
-    GLsizei currentSyncName;
+    void *_Nullable pendingEventOwner;
     BOOL isCommittingCommandBuffer;
     /* Cache for currentRenderPassMatchesCurrentFramebuffer.
      * lastFboMatchFboName == 0 means "invalid cache, recompute".

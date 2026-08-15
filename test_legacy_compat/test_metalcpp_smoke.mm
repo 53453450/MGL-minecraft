@@ -2081,6 +2081,91 @@ static int verifyCommandBufferOwner(void) {
     return 0;
 }
 
+static int verifyPendingEventOwner(void) {
+    /* P4.5 (item 1141): pending shared-event slot inside the C++ owner. */
+    void *owner = NULL;
+    if (mglRenderCppCreatePendingEventOwner(&owner) != 0 || !owner) {
+        fprintf(stderr, "FAIL: create pending-event owner\n");
+        return 1;
+    }
+    void *first = NULL;
+    if (mglRenderCppPendingEventPrepare(owner, 7, &first) != 0 || !first) {
+        fprintf(stderr, "FAIL: prepare event\n");
+        mglRenderCppDestroyPendingEventOwner(&owner);
+        return 1;
+    }
+    /* Re-prepare reuses the same event and updates the name. */
+    void *second = NULL;
+    if (mglRenderCppPendingEventPrepare(owner, 9, &second) != 0 ||
+        second != first) {
+        fprintf(stderr, "FAIL: prepare reuse\n");
+        mglRenderCppDestroyPendingEventOwner(&owner);
+        return 1;
+    }
+    /* Detach transfers ownership; the slot empties. */
+    int name = 0;
+    void *detached = NULL;
+    if (mglRenderCppPendingEventDetach(owner, &name, &detached) != 0 ||
+        !detached || detached != first || name != 9) {
+        fprintf(stderr, "FAIL: detach (name=%d event=%p first=%p)\n",
+                name, detached, first);
+        mglRenderCppDestroyPendingEventOwner(&owner);
+        return 1;
+    }
+    detached = NULL;
+    name = 0;
+    if (mglRenderCppPendingEventDetach(owner, &name, &detached) != 0 ||
+        detached != NULL || name != 0) {
+        fprintf(stderr, "FAIL: detach after empty\n");
+        mglRenderCppDestroyPendingEventOwner(&owner);
+        return 1;
+    }
+    /* After clear, prepare creates a fresh event. */
+    if (mglRenderCppPendingEventPrepare(owner, 1, &first) != 0 || !first) {
+        fprintf(stderr, "FAIL: prepare after detach\n");
+        mglRenderCppDestroyPendingEventOwner(&owner);
+        return 1;
+    }
+    mglRenderCppPendingEventClear(owner);
+    /* The slot must be empty after clear (detach returns nothing). */
+    void *post_clear = NULL;
+    int post_name = 123;
+    if (mglRenderCppPendingEventDetach(owner, &post_name, &post_clear) != 0 ||
+        post_clear != NULL || post_name != 0) {
+        fprintf(stderr, "FAIL: slot not empty after clear\n");
+        mglRenderCppDestroyPendingEventOwner(&owner);
+        return 1;
+    }
+    /* Prepare after clear works and records the new name. */
+    if (mglRenderCppPendingEventPrepare(owner, 2, &post_clear) != 0 ||
+        !post_clear) {
+        fprintf(stderr, "FAIL: fresh event after clear\n");
+        mglRenderCppDestroyPendingEventOwner(&owner);
+        return 1;
+    }
+    if (mglRenderCppPendingEventDetach(owner, &post_name, &post_clear) != 0 ||
+        !post_clear || post_name != 2) {
+        fprintf(stderr, "FAIL: detach name after clear\n");
+        mglRenderCppDestroyPendingEventOwner(&owner);
+        return 1;
+    }
+    /* Bad-arg rejections. */
+    if (mglRenderCppPendingEventPrepare(NULL, 1, &post_clear) != -1 ||
+        mglRenderCppPendingEventDetach(NULL, &name, &post_clear) != -1 ||
+        mglRenderCppCreatePendingEventOwner(NULL) != -1) {
+        fprintf(stderr, "FAIL: bad-arg rejections\n");
+        mglRenderCppDestroyPendingEventOwner(&owner);
+        return 1;
+    }
+    mglRenderCppDestroyPendingEventOwner(&owner);
+    if (owner != NULL) {
+        fprintf(stderr, "FAIL: owner not cleared\n");
+        return 1;
+    }
+    printf("PENDING_EVENT_OWNER_OK\n");
+    return 0;
+}
+
 static int verifyRenderPassIdentityOwner(void) {
     void *owner = NULL;
     if (mglRenderCppCreateRenderPassIdentityOwner(&owner) != 0 || !owner) {
@@ -3312,6 +3397,7 @@ int main(void) {
         if (verifySyncCallbacks(device) != 0) return 1;
         if (verifyCommandQueueOwner() != 0) return 1;
         if (verifyCommandBufferOwner() != 0) return 1;
+        if (verifyPendingEventOwner() != 0) return 1;
         if (verifyRenderPassIdentityOwner() != 0) return 1;
         if (verifyRenderPassStateOwner(device) != 0) return 1;
         if (verifyTextureStagingOwner() != 0) return 1;

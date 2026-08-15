@@ -10,17 +10,6 @@ static BOOL mglRenderPassManagerUsesMetalCpp(void)
            mglRenderCppGetDevice() != NULL;
 }
 
-static id<MTLEvent> mglRenderPassManagerCreateEvent(id<MTLDevice> device)
-{
-    if (mglRenderPassManagerUsesMetalCpp()) {
-        void *event = NULL;
-        if (mglRenderCppCreateEvent(&event) == 0 && event) {
-            return (__bridge_transfer id<MTLEvent>)event;
-        }
-    }
-    return [device newEvent];
-}
-
 static id<MTLBuffer> mglRenderPassManagerCreateBuffer(
     id<MTLDevice> device,
     NSUInteger length,
@@ -224,34 +213,46 @@ static void mglRenderPassManagerStoreIdentity(
     mglRenderCppCommandBufferOwnerClearSyncs(_state.currentCommandBufferOwner);
 }
 
-- (id<MTLEvent>)preparePendingEventWithDevice:(id<MTLDevice>)device
+- (id<MTLEvent>)preparePendingEventWithDevice:(__unused id<MTLDevice>)device
                                      syncName:(GLsizei)syncName
 {
-    if (!_state.currentEvent) {
-        _state.currentEvent = mglRenderPassManagerCreateEvent(device);
-    }
-    if (!_state.currentEvent) {
+    /* P4.5 (item 1141): the pending event slot lives inside the C++
+     * PendingEventOwner; this method is a thin adapter. */
+    if (!_state.pendingEventOwner &&
+        mglRenderCppCreatePendingEventOwner(&_state.pendingEventOwner) != 0) {
+        _state.pendingEventOwner = NULL;
         return nil;
     }
-    _state.currentSyncName = syncName;
-    return _state.currentEvent;
+    void *event = NULL;
+    if (mglRenderCppPendingEventPrepare(
+            _state.pendingEventOwner, syncName, &event) != 0 || !event) {
+        return nil;
+    }
+    return (__bridge id<MTLEvent>)event;
 }
 
 - (id<MTLEvent>)detachPendingEventWithSyncName:(GLuint *)syncNameOut
 {
-    id<MTLEvent> event = _state.currentEvent;
+    /* P4.5 (item 1141): transfers the owner's reference via __bridge_transfer. */
+    GLsizei syncName = 0;
+    void *event = NULL;
+    mglRenderCppPendingEventDetach(
+        _state.pendingEventOwner, &syncName, &event);
     if (syncNameOut) {
-        *syncNameOut = (GLuint)_state.currentSyncName;
+        *syncNameOut = (GLuint)syncName;
     }
-    _state.currentEvent = nil;
-    _state.currentSyncName = 0;
-    return event;
+    if (!event) {
+        return nil;
+    }
+    return (__bridge_transfer id<MTLEvent>)event;
 }
 
 - (void)clearPendingEvent
 {
-    _state.currentEvent = nil;
-    _state.currentSyncName = 0;
+    /* P4.5 (item 1141): discard the pending event; the owner stays. */
+    if (_state.pendingEventOwner) {
+        mglRenderCppPendingEventClear(_state.pendingEventOwner);
+    }
 }
 
 - (void)installRenderEncoder:(id<MTLRenderCommandEncoder>)renderEncoder
@@ -530,7 +531,7 @@ static void mglRenderPassManagerStoreIdentity(
      * the owner destructor frees it. */
     _state.fallbackRenderTargetTexture = nil;
     _state.transientDepthTexture = nil;
-    [self clearPendingEvent];
+    mglRenderCppDestroyPendingEventOwner(&_state.pendingEventOwner);
     _state.currentDrawUsesRTSampledCopy = NO;
     [self endCommandBufferCommit];
 }

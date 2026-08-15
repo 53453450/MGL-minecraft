@@ -698,6 +698,17 @@ struct CommandBufferOwner {
     CommandBufferSyncList syncs;
 };
 
+/* P4.5 (item 1141): the pending shared-event slot (event + GL sync name)
+ * lives inside this owner; the ObjC MGLCommandState.currentEvent /
+ * currentSyncName mirrors are deleted.  The event is created lazily through
+ * the singleton renderer device (both gates — mglRenderCppInit always runs). */
+struct PendingEventOwner {
+    ~PendingEventOwner() { if (event) event->release(); }
+
+    MTL::Event* event = nullptr;
+    GLsizei sync_name = 0;
+};
+
 struct CommandBufferSubmission {
     ~CommandBufferSubmission() {
         if (buffer) buffer->release();
@@ -3840,6 +3851,76 @@ int mglRenderCppStorePipelineDescriptorState(
     } catch (...) {
         return -1;
     }
+}
+
+int mglRenderCppCreatePendingEventOwner(void** owner_out) {
+    if (owner_out) *owner_out = nullptr;
+    if (!owner_out) return -1;
+    mgl::PendingEventOwner* owner = new (std::nothrow) mgl::PendingEventOwner();
+    if (!owner) return -1;
+    *owner_out = owner;
+    return 0;
+}
+
+/* Prepare: create-or-reuse the pending event and record the GL sync name.
+ * Returns a BORROWED event pointer (the owner keeps its reference). */
+int mglRenderCppPendingEventPrepare(void* owner_handle,
+                                    GLsizei sync_name,
+                                    void** event_out) {
+    if (event_out) *event_out = nullptr;
+    mgl::PendingEventOwner* owner =
+        static_cast<mgl::PendingEventOwner*>(owner_handle);
+    if (!owner || !event_out) return -1;
+    if (!owner->event) {
+        mgl::RendererCpp& renderer = mgl::renderer();
+        std::lock_guard<std::mutex> lock(renderer.mutex);
+        if (!renderer.device) return -1;
+        MTL::Event* event = renderer.device->newEvent();
+        if (!event) return -1;
+        owner->event = event;
+    }
+    owner->sync_name = sync_name;
+    *event_out = owner->event;
+    return 0;
+}
+
+/* Detach: transfer the owner's reference to the caller
+ * (the ObjC side bridges it with __bridge_transfer) and clear the slot. */
+int mglRenderCppPendingEventDetach(void* owner_handle,
+                                   GLsizei* sync_name_out,
+                                   void** event_out) {
+    if (event_out) *event_out = nullptr;
+    if (sync_name_out) *sync_name_out = 0;
+    mgl::PendingEventOwner* owner =
+        static_cast<mgl::PendingEventOwner*>(owner_handle);
+    if (!owner || !event_out) return -1;
+    if (owner->event) {
+        *event_out = owner->event;
+        owner->event = nullptr;
+    }
+    if (sync_name_out) *sync_name_out = owner->sync_name;
+    owner->sync_name = 0;
+    return 0;
+}
+
+/* Clear: discard the pending event (owner keeps its allocation). */
+void mglRenderCppPendingEventClear(void* owner_handle) {
+    mgl::PendingEventOwner* owner =
+        static_cast<mgl::PendingEventOwner*>(owner_handle);
+    if (!owner) return;
+    if (owner->event) {
+        owner->event->release();
+        owner->event = nullptr;
+    }
+    owner->sync_name = 0;
+}
+
+void mglRenderCppDestroyPendingEventOwner(void** owner_handle) {
+    if (!owner_handle || !*owner_handle) return;
+    mgl::PendingEventOwner* owner =
+        static_cast<mgl::PendingEventOwner*>(*owner_handle);
+    *owner_handle = nullptr;
+    delete owner;
 }
 
 int mglRenderCppCreateEvent(void** event_out) {

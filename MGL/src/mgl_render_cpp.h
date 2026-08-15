@@ -1237,6 +1237,15 @@ int mglRenderCppSetRenderPassStateDimensions(
 int mglRenderCppRenderPassUsesColorTexture(void *render_pass_descriptor,
                                            void *texture,
                                            size_t *attachment_index_out);
+/* P4.5 (item 1141): pending shared-event slot inside the C++ owner.
+ * `int` in these decls is GLsizei (GL signed 32-bit) — the C ABI matches. */
+int mglRenderCppCreatePendingEventOwner(void **owner_out);
+int mglRenderCppPendingEventPrepare(void *owner_handle, int sync_name,
+                                    void **event_out);
+int mglRenderCppPendingEventDetach(void *owner_handle,
+                                   int *sync_name_out, void **event_out);
+void mglRenderCppPendingEventClear(void *owner_handle);
+void mglRenderCppDestroyPendingEventOwner(void **owner_handle);
 /* P4.5 (item 1141): current-CB sync tracking list inside the C++ owner. */
 int mglRenderCppCommandBufferOwnerAppendSync(void *owner_handle, Sync *sync);
 void mglRenderCppCommandBufferOwnerClearSyncs(void *owner_handle);
