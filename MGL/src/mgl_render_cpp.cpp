@@ -3933,6 +3933,25 @@ int mglRenderCppScanIndexRangeIgnoringRestart(
 }
 
 extern "C"
+int mglRenderCppComputePreparedIndexByteOffset(
+    uint64_t gl_index_type, uint64_t gl_byte_offset,
+    uint64_t* out_prepared_offset) {
+    if (!out_prepared_offset) {
+        return -1;
+    }
+    if (gl_index_type == GL_UNSIGNED_BYTE) {
+        // GL_UNSIGNED_BYTE indices expand to UInt16 (2 bytes each).
+        if (gl_byte_offset > (uint64_t)(SIZE_MAX / sizeof(uint16_t))) {
+            return -1;
+        }
+        *out_prepared_offset = gl_byte_offset * sizeof(uint16_t);
+        return 0;
+    }
+    *out_prepared_offset = gl_byte_offset;
+    return 0;
+}
+
+extern "C"
 int mglRenderCppExpandUInt8ToUInt16(
     const uint8_t* bytes, uint32_t byte_count, uint16_t** out, uint64_t* out_count) {
     if (!bytes || byte_count == 0u || !out || !out_count) {

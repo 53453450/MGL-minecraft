@@ -2484,6 +2484,33 @@ static int verifyExpandTriangleFan(void) {
     return 0;
 }
 
+static int verifyComputePreparedByteOffset(void) {
+    /* P4.5 (item 1141/887): prepared (Metal-side) byte-offset math.
+     * GL_UNSIGNED_BYTE doubles; other types pass through; overflow caught. */
+    uint64_t out = 0u;
+    if (mglRenderCppComputePreparedIndexByteOffset(GL_UNSIGNED_SHORT, 100, &out) != 0 ||
+        out != 100) {
+        fprintf(stderr, "FAIL: prepared short pass-through\\n");
+        return 1;
+    }
+    if (mglRenderCppComputePreparedIndexByteOffset(GL_UNSIGNED_BYTE, 100, &out) != 0 ||
+        out != 200) {
+        fprintf(stderr, "FAIL: prepared byte doubled\\n");
+        return 1;
+    }
+    if (mglRenderCppComputePreparedIndexByteOffset(GL_UNSIGNED_BYTE, 0, &out) != 0 ||
+        out != 0) {
+        fprintf(stderr, "FAIL: prepared byte zero\\n");
+        return 1;
+    }
+    if (mglRenderCppComputePreparedIndexByteOffset(GL_UNSIGNED_SHORT, 100, NULL) != -1) {
+        fprintf(stderr, "FAIL: prepared null out\\n");
+        return 1;
+    }
+    printf("COMPUTE_PREPARED_BYTE_OFFSET_OK\\n");
+    return 0;
+}
+
 static int verifyScanIndexRange(void) {
     /* P4.5 (item 1141/887): index-range scan ignoring restart (scalar outs). */
     const uint8_t b[] = {3, 1, 0xff, 4, 9};   /* elem width 1; no restart */
@@ -5070,6 +5097,7 @@ int main(void) {
         if (verifyArrayVariants() != 0) return 1;
         if (verifyUInt8ToUInt16() != 0) return 1;
         if (verifyScanIndexRange() != 0) return 1;
+        if (verifyComputePreparedByteOffset() != 0) return 1;
         if (verifyMDIScratchOwner() != 0) return 1;
         if (verifyRenderEncoderGetter() != 0) return 1;
         if (verifyCommandBufferGetterAndAdopt() != 0) return 1;

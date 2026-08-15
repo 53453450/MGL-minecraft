@@ -650,6 +650,14 @@ int mglRenderCppScanIndexRangeIgnoringRestart(
     int restart_enabled, uint32_t restart_index,
     uint32_t *out_min, uint32_t *out_max, int *out_valid);
 
+/* P4.5 (item 1141/887): prepared (Metal-side) byte offset for a GL element
+ * buffer — GL_UNSIGNED_BYTE indices are expanded to UInt16 so the offset
+ * doubles, other types pass through.  Matches mglComputePreparedIndexByteOffset.
+ * Returns 0 on success, -1 on overflow / bad args. */
+int mglRenderCppComputePreparedIndexByteOffset(uint64_t gl_index_type,
+                                               uint64_t gl_byte_offset,
+                                               uint64_t *out_prepared_offset);
+
 typedef struct MGLRenderCppGeometryGatherResult_t {
     uint32_t *gather;          /* malloc'd raw gather (vertex_ids) */
     uint32_t gather_count;

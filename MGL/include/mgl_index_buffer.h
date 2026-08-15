@@ -51,6 +51,10 @@ int mglRenderCppScanIndexRangeIgnoringRestart(
     int restart_enabled, uint32_t restart_index,
     uint32_t *out_min, uint32_t *out_max, int *out_valid);
 
+int mglRenderCppComputePreparedIndexByteOffset(uint64_t gl_index_type,
+                                               uint64_t gl_byte_offset,
+                                               uint64_t *out_prepared_offset);
+
 /* === Inline helpers (hot-path) === */
 
 /* Scans `count` indices of `indexBytes` (type `indexType`), skipping entries
@@ -154,23 +158,22 @@ static inline bool mglComputeIndexByteOffset(NSUInteger baseByteOffset,
 
 /* Computes the prepared (Metal-side) byte offset for a GL element buffer.
  * GL_UNSIGNED_BYTE indices are expanded to UInt16, so the byte offset is
- * doubled; other index types pass through unchanged. */
+ * doubled; other index types pass through unchanged.  Pure arithmetic; the
+ * logic lives in mgl_render_cpp.cpp and this inline is a thin delegating
+ * shim. */
 static inline bool mglComputePreparedIndexByteOffset(GLenum glIndexType,
                                                     NSUInteger glByteOffset,
                                                     NSUInteger *outPreparedByteOffset)
 {
-    if (!outPreparedByteOffset) {
+    uint64_t out = 0u;
+    uint64_t type = glIndexType;
+    uint64_t off = (uint64_t)glByteOffset;
+    int ok = mglRenderCppComputePreparedIndexByteOffset(type, off, &out);
+    if (ok != 0 || !outPreparedByteOffset) {
         return false;
     }
-    if (glIndexType == GL_UNSIGNED_BYTE) {
-        if (glByteOffset > (NSUIntegerMax / sizeof(uint16_t))) {
-            return false;
-        }
-        *outPreparedByteOffset = glByteOffset * sizeof(uint16_t);
-        return true;
-    }
-
-    *outPreparedByteOffset = glByteOffset;
+    *outPreparedByteOffset =
+        (NSUInteger)(out > (uint64_t)NSUIntegerMax ? (uint64_t)NSUIntegerMax : out);
     return true;
 }
 
