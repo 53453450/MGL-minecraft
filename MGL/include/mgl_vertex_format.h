@@ -57,6 +57,7 @@ uint32_t mglRenderCppReadGLIndexValue(const uint8_t *bytes, uint32_t elem_width,
                                       uint64_t element_index);
 uint32_t mglRenderCppVertexAttribComponentSize(uint64_t gl_type);
 uint64_t mglRenderCppVertexAttribElementBytes(uint64_t gl_type, uint32_t size);
+uint64_t mglRenderCppAlignVertexStrideForMetal(uint64_t stride);
 
 /* === Vertex format mapping (static inline, hot-path) === */
 
@@ -107,7 +108,7 @@ static inline MTLVertexFormat mglDoubleVertexAttribFloatFormat(GLuint size)
 /* Aligns a vertex stride to Metal's 4-byte minimum alignment. */
 static inline NSUInteger mglAlignVertexStrideForMetal(NSUInteger stride)
 {
-    return (stride + 3u) & ~(NSUInteger)3u;
+    return (NSUInteger)mglRenderCppAlignVertexStrideForMetal((uint64_t)stride);
 }
 
 /* === Vertex format mapping (extern) === */

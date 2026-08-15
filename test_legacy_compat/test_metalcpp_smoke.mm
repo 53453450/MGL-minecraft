@@ -2505,6 +2505,19 @@ static int verifyGLIndexValueRead(void) {
     return 0;
 }
 
+static int verifyAlignStride(void) {
+    /* P4.5 (item 1141): vertex stride aligned to 4. */
+    if (mglRenderCppAlignVertexStrideForMetal(0) != 0 ||
+        mglRenderCppAlignVertexStrideForMetal(4) != 4 ||
+        mglRenderCppAlignVertexStrideForMetal(2) != 4 ||
+        mglRenderCppAlignVertexStrideForMetal(9) != 12) {
+        fprintf(stderr, "FAIL: align stride\\n");
+        return 1;
+    }
+    printf("ALIGN_STRIDE_OK\\n");
+    return 0;
+}
+
 static int verifyQuadTriangleCount(void) {
     /* P4.5 (item 1141): quad -> triangle index count arithmetic. */
     if (mglRenderCppQuadTriangleIndexCount(0) != 0 ||
@@ -5205,6 +5218,7 @@ int main(void) {
         if (verifyVertexAttribBytes() != 0) return 1;
         if (verifyDrawModePredicates() != 0) return 1;
         if (verifyQuadTriangleCount() != 0) return 1;
+        if (verifyAlignStride() != 0) return 1;
         if (verifyMDIScratchOwner() != 0) return 1;
         if (verifyRenderEncoderGetter() != 0) return 1;
         if (verifyCommandBufferGetterAndAdopt() != 0) return 1;
