@@ -3302,6 +3302,99 @@ uint32_t mglRenderCppReadbackBytesPerPixel(uint32_t pixel_format) {
     }
 }
 
+/* Readback format classification — mirror mglMetalReadbackFormatIsBGRA8Compatible
+ * (formats whose contents can be converted to BGRA8 for glReadPixels). */
+extern "C"
+int mglRenderCppReadbackFormatIsBGRA8Compatible(uint32_t pixel_format) {
+    switch (static_cast<MTL::PixelFormat>(pixel_format)) {
+        case MTL::PixelFormatBGRA8Unorm:
+        case MTL::PixelFormatBGRA8Unorm_sRGB:
+        case MTL::PixelFormatRGBA8Unorm:
+        case MTL::PixelFormatRGBA8Unorm_sRGB:
+        case MTL::PixelFormatRGBA32Float:
+        case MTL::PixelFormatR8Unorm:
+        case MTL::PixelFormatRG8Unorm:
+        case MTL::PixelFormatR16Unorm:
+        case MTL::PixelFormatR16Snorm:
+        case MTL::PixelFormatRG16Unorm:
+        case MTL::PixelFormatRG16Snorm:
+        case MTL::PixelFormatRGBA16Unorm:
+        case MTL::PixelFormatRGBA16Snorm:
+        case MTL::PixelFormatABGR4Unorm:
+        case MTL::PixelFormatBGR5A1Unorm:
+        case MTL::PixelFormatRG11B10Float:
+        case MTL::PixelFormatR32Float:
+        case MTL::PixelFormatRG32Float:
+        case MTL::PixelFormatRG16Float:
+        case MTL::PixelFormatR16Float:
+        case MTL::PixelFormatRGBA16Float:
+        case MTL::PixelFormatBGR10A2Unorm:
+        case MTL::PixelFormatRGB10A2Unorm:
+        case MTL::PixelFormatR8Snorm:
+        case MTL::PixelFormatRG8Snorm:
+        case MTL::PixelFormatRGBA8Snorm:
+        case MTL::PixelFormatR8Uint:
+        case MTL::PixelFormatR8Sint:
+        case MTL::PixelFormatRG8Uint:
+        case MTL::PixelFormatRG8Sint:
+        case MTL::PixelFormatRGBA8Uint:
+        case MTL::PixelFormatRGBA8Sint:
+        case MTL::PixelFormatRGB9E5Float:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+/* Integer-color classification — mirror mglMetalPixelFormatIsIntegerColor. */
+extern "C"
+int mglRenderCppPixelFormatIsIntegerColor(uint32_t pixel_format) {
+    switch (static_cast<MTL::PixelFormat>(pixel_format)) {
+        case MTL::PixelFormatR8Uint:
+        case MTL::PixelFormatR8Sint:
+        case MTL::PixelFormatR16Uint:
+        case MTL::PixelFormatR16Sint:
+        case MTL::PixelFormatR32Uint:
+        case MTL::PixelFormatR32Sint:
+        case MTL::PixelFormatRG8Uint:
+        case MTL::PixelFormatRG8Sint:
+        case MTL::PixelFormatRG16Uint:
+        case MTL::PixelFormatRG16Sint:
+        case MTL::PixelFormatRG32Uint:
+        case MTL::PixelFormatRG32Sint:
+        case MTL::PixelFormatRGBA8Uint:
+        case MTL::PixelFormatRGBA8Sint:
+        case MTL::PixelFormatRGBA16Uint:
+        case MTL::PixelFormatRGBA16Sint:
+        case MTL::PixelFormatRGBA32Uint:
+        case MTL::PixelFormatRGBA32Sint:
+        case MTL::PixelFormatRGB10A2Uint:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+/* Signed-integer-color classification — mirror
+ * mglMetalPixelFormatIsSignedIntegerColor. */
+extern "C"
+int mglRenderCppPixelFormatIsSignedIntegerColor(uint32_t pixel_format) {
+    switch (static_cast<MTL::PixelFormat>(pixel_format)) {
+        case MTL::PixelFormatR8Sint:
+        case MTL::PixelFormatR16Sint:
+        case MTL::PixelFormatR32Sint:
+        case MTL::PixelFormatRG8Sint:
+        case MTL::PixelFormatRG16Sint:
+        case MTL::PixelFormatRG32Sint:
+        case MTL::PixelFormatRGBA8Sint:
+        case MTL::PixelFormatRGBA16Sint:
+        case MTL::PixelFormatRGBA32Sint:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
 /* P4.4: CPU→GPU 上传路径选路（纯决策，无 Metal 对象）。与
  * uploadTextureSliceViaBlit 的既有内联判定逐条件一致，见头文件契约。 */
 int mglRenderCppTextureUploadRoute(uint32_t texture_type,

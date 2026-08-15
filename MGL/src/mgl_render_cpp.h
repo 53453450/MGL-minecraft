@@ -373,6 +373,14 @@ uint32_t mglRenderCppTextureDataKindForPixelFormat(uint32_t pixel_format);
  * enum), matching mglRenderCppTextureDataKindForPixelFormat. */
 uint32_t mglRenderCppReadbackBytesPerPixel(uint32_t pixel_format);
 
+/* P4.5 (item 1171): readback pixel-format classification (MTLPixelFormat ABI
+ * value -> boolean).  Pure CPU tables shared by both gates — mirror the ObjC
+ * mglMetalReadbackFormatIsBGRA8Compatible / mglMetalPixelFormatIsIntegerColor /
+ * mglMetalPixelFormatIsSignedIntegerColor exactly.  Returns 1/0. */
+int mglRenderCppReadbackFormatIsBGRA8Compatible(uint32_t pixel_format);
+int mglRenderCppPixelFormatIsIntegerColor(uint32_t pixel_format);
+int mglRenderCppPixelFormatIsSignedIntegerColor(uint32_t pixel_format);
+
 /* P4.4: CPU→GPU 上传路径选路。纯决策函数（无 Metal 对象参与），把
  * MGLRenderer+Texture.m uploadTextureSliceViaBlit 的「storage mode /
  * 纹理类型 / AGX 能力位 → replaceRegion 或 blit 或 reject」判定迁入 C++，

@@ -31,90 +31,26 @@
 
 BOOL mglMetalReadbackFormatIsBGRA8Compatible(MTLPixelFormat pixelFormat)
 {
-    switch (pixelFormat) {
-        case MTLPixelFormatBGRA8Unorm:
-        case MTLPixelFormatBGRA8Unorm_sRGB:
-        case MTLPixelFormatRGBA8Unorm:
-        case MTLPixelFormatRGBA8Unorm_sRGB:
-        case MTLPixelFormatRGBA32Float:
-        case MTLPixelFormatR8Unorm:
-        case MTLPixelFormatRG8Unorm:
-        case MTLPixelFormatR16Unorm:
-        case MTLPixelFormatR16Snorm:
-        case MTLPixelFormatRG16Unorm:
-        case MTLPixelFormatRG16Snorm:
-        case MTLPixelFormatRGBA16Unorm:
-        case MTLPixelFormatRGBA16Snorm:
-        case MTLPixelFormatABGR4Unorm:
-        case MTLPixelFormatBGR5A1Unorm:
-        case MTLPixelFormatRG11B10Float:
-        case MTLPixelFormatR32Float:
-        case MTLPixelFormatRG32Float:
-        case MTLPixelFormatRG16Float:
-        case MTLPixelFormatR16Float:
-        case MTLPixelFormatRGBA16Float:
-        case MTLPixelFormatBGR10A2Unorm:
-        case MTLPixelFormatRGB10A2Unorm:
-        case MTLPixelFormatR8Snorm:
-        case MTLPixelFormatRG8Snorm:
-        case MTLPixelFormatRGBA8Snorm:
-        case MTLPixelFormatR8Uint:
-        case MTLPixelFormatR8Sint:
-        case MTLPixelFormatRG8Uint:
-        case MTLPixelFormatRG8Sint:
-        case MTLPixelFormatRGBA8Uint:
-        case MTLPixelFormatRGBA8Sint:
-        case MTLPixelFormatRGB9E5Float:
-            return YES;
-        default:
-            return NO;
-    }
+    /* P4.5 (item 1171): thin delegate — single source of truth in C++
+     * (mglRenderCppReadbackFormatIsBGRA8Compatible), shared by both gates. */
+    return mglRenderCppReadbackFormatIsBGRA8Compatible(
+               (uint32_t)pixelFormat) ? YES : NO;
 }
 
 BOOL mglMetalPixelFormatIsIntegerColor(MTLPixelFormat pixelFormat)
 {
-    switch (pixelFormat) {
-        case MTLPixelFormatR8Uint:
-        case MTLPixelFormatR8Sint:
-        case MTLPixelFormatR16Uint:
-        case MTLPixelFormatR16Sint:
-        case MTLPixelFormatR32Uint:
-        case MTLPixelFormatR32Sint:
-        case MTLPixelFormatRG8Uint:
-        case MTLPixelFormatRG8Sint:
-        case MTLPixelFormatRG16Uint:
-        case MTLPixelFormatRG16Sint:
-        case MTLPixelFormatRG32Uint:
-        case MTLPixelFormatRG32Sint:
-        case MTLPixelFormatRGBA8Uint:
-        case MTLPixelFormatRGBA8Sint:
-        case MTLPixelFormatRGBA16Uint:
-        case MTLPixelFormatRGBA16Sint:
-        case MTLPixelFormatRGBA32Uint:
-        case MTLPixelFormatRGBA32Sint:
-        case MTLPixelFormatRGB10A2Uint:
-            return YES;
-        default:
-            return NO;
-    }
+    /* P4.5 (item 1171): thin delegate — single source of truth in C++
+     * (mglRenderCppPixelFormatIsIntegerColor), shared by both gates. */
+    return mglRenderCppPixelFormatIsIntegerColor(
+               (uint32_t)pixelFormat) ? YES : NO;
 }
 
 BOOL mglMetalPixelFormatIsSignedIntegerColor(MTLPixelFormat pixelFormat)
 {
-    switch (pixelFormat) {
-        case MTLPixelFormatR8Sint:
-        case MTLPixelFormatR16Sint:
-        case MTLPixelFormatR32Sint:
-        case MTLPixelFormatRG8Sint:
-        case MTLPixelFormatRG16Sint:
-        case MTLPixelFormatRG32Sint:
-        case MTLPixelFormatRGBA8Sint:
-        case MTLPixelFormatRGBA16Sint:
-        case MTLPixelFormatRGBA32Sint:
-            return YES;
-        default:
-            return NO;
-    }
+    /* P4.5 (item 1171): thin delegate — single source of truth in C++
+     * (mglRenderCppPixelFormatIsSignedIntegerColor), shared by both gates. */
+    return mglRenderCppPixelFormatIsSignedIntegerColor(
+               (uint32_t)pixelFormat) ? YES : NO;
 }
 
 NSUInteger mglMetalReadbackBytesPerPixel(MTLPixelFormat pixelFormat)

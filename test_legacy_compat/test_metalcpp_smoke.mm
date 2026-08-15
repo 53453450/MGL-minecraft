@@ -4086,6 +4086,30 @@ static int verifyReadbackScalarConvert(void) {
         fprintf(stderr, "FAIL: readback bpp table\n");
         return 1;
     }
+    /* Format classification tables. */
+    if (!mglRenderCppReadbackFormatIsBGRA8Compatible((uint32_t)MTLPixelFormatRGBA8Unorm) ||
+        !mglRenderCppReadbackFormatIsBGRA8Compatible((uint32_t)MTLPixelFormatRGBA32Float) ||
+        !mglRenderCppReadbackFormatIsBGRA8Compatible((uint32_t)MTLPixelFormatRGBA8Uint) ||
+        mglRenderCppReadbackFormatIsBGRA8Compatible((uint32_t)MTLPixelFormatDepth32Float) ||
+        mglRenderCppReadbackFormatIsBGRA8Compatible((uint32_t)0x7FFFFFFFu)) {
+        fprintf(stderr, "FAIL: bgra8-compatible table\n");
+        return 1;
+    }
+    if (!mglRenderCppPixelFormatIsIntegerColor((uint32_t)MTLPixelFormatRGBA8Uint) ||
+        !mglRenderCppPixelFormatIsIntegerColor((uint32_t)MTLPixelFormatR32Sint) ||
+        !mglRenderCppPixelFormatIsIntegerColor((uint32_t)MTLPixelFormatRGB10A2Uint) ||
+        mglRenderCppPixelFormatIsIntegerColor((uint32_t)MTLPixelFormatRGBA8Unorm) ||
+        mglRenderCppPixelFormatIsIntegerColor((uint32_t)MTLPixelFormatDepth32Float)) {
+        fprintf(stderr, "FAIL: integer-color table\n");
+        return 1;
+    }
+    if (!mglRenderCppPixelFormatIsSignedIntegerColor((uint32_t)MTLPixelFormatRGBA32Sint) ||
+        !mglRenderCppPixelFormatIsSignedIntegerColor((uint32_t)MTLPixelFormatR8Sint) ||
+        mglRenderCppPixelFormatIsSignedIntegerColor((uint32_t)MTLPixelFormatRGBA8Uint) ||
+        mglRenderCppPixelFormatIsSignedIntegerColor((uint32_t)MTLPixelFormatRGBA8Unorm)) {
+        fprintf(stderr, "FAIL: signed-integer-color table\n");
+        return 1;
+    }
     printf("READBACK_SCALAR_CONVERT_OK\n");
     return 0;
 }
