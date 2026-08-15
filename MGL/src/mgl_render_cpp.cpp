@@ -3261,6 +3261,47 @@ uint32_t mglRenderCppTextureDataKindForPixelFormat(uint32_t pixel_format) {
     }
 }
 
+/* Readback bytes-per-pixel table — mirrors mglMetalReadbackBytesPerPixel
+ * (default 4 bytes).  Pixel format comes across the C ABI as its Apple
+ * MTLPixelFormat numeric value. */
+extern "C"
+uint32_t mglRenderCppReadbackBytesPerPixel(uint32_t pixel_format) {
+    switch (static_cast<MTL::PixelFormat>(pixel_format)) {
+        case MTL::PixelFormatRGBA32Float:
+            return (uint32_t)(sizeof(float) * 4u);
+        case MTL::PixelFormatR8Unorm:
+            return 1u;
+        case MTL::PixelFormatR16Unorm:
+        case MTL::PixelFormatR16Snorm:
+        case MTL::PixelFormatRG8Unorm:
+        case MTL::PixelFormatABGR4Unorm:
+        case MTL::PixelFormatBGR5A1Unorm:
+        case MTL::PixelFormatR16Float:
+            return 2u;
+        case MTL::PixelFormatRG32Float:
+        case MTL::PixelFormatRGBA16Float:
+        case MTL::PixelFormatRGBA16Unorm:
+        case MTL::PixelFormatRGBA16Snorm:
+            return 8u;
+        case MTL::PixelFormatR8Snorm:
+        case MTL::PixelFormatR8Uint:
+        case MTL::PixelFormatR8Sint:
+            return 1u;
+        case MTL::PixelFormatRG8Snorm:
+        case MTL::PixelFormatRG8Uint:
+        case MTL::PixelFormatRG8Sint:
+            return 2u;
+        case MTL::PixelFormatRG16Unorm:
+        case MTL::PixelFormatRG16Snorm:
+        case MTL::PixelFormatRG16Float:
+        case MTL::PixelFormatRGBA8Snorm:
+        case MTL::PixelFormatRGBA8Uint:
+        case MTL::PixelFormatRGBA8Sint:
+        default:
+            return 4u;
+    }
+}
+
 /* P4.4: CPU→GPU 上传路径选路（纯决策，无 Metal 对象）。与
  * uploadTextureSliceViaBlit 的既有内联判定逐条件一致，见头文件契约。 */
 int mglRenderCppTextureUploadRoute(uint32_t texture_type,

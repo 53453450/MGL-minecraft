@@ -4070,6 +4070,22 @@ static int verifyReadbackScalarConvert(void) {
         fprintf(stderr, "FAIL: snorm8\n");
         return 1;
     }
+    /* Readback bytes-per-pixel table (MTLPixelFormat ABI values). */
+    if (mglRenderCppReadbackBytesPerPixel((uint32_t)MTLPixelFormatRGBA32Float) != 16u ||
+        mglRenderCppReadbackBytesPerPixel((uint32_t)MTLPixelFormatR8Unorm) != 1u ||
+        mglRenderCppReadbackBytesPerPixel((uint32_t)MTLPixelFormatR16Unorm) != 2u ||
+        mglRenderCppReadbackBytesPerPixel((uint32_t)MTLPixelFormatRG8Unorm) != 2u ||
+        mglRenderCppReadbackBytesPerPixel((uint32_t)MTLPixelFormatABGR4Unorm) != 2u ||
+        mglRenderCppReadbackBytesPerPixel((uint32_t)MTLPixelFormatRG32Float) != 8u ||
+        mglRenderCppReadbackBytesPerPixel((uint32_t)MTLPixelFormatRGBA16Unorm) != 8u ||
+        mglRenderCppReadbackBytesPerPixel((uint32_t)MTLPixelFormatR8Sint) != 1u ||
+        mglRenderCppReadbackBytesPerPixel((uint32_t)MTLPixelFormatRG8Uint) != 2u ||
+        mglRenderCppReadbackBytesPerPixel((uint32_t)MTLPixelFormatRGBA8Snorm) != 4u ||
+        mglRenderCppReadbackBytesPerPixel((uint32_t)MTLPixelFormatRGBA8Unorm) != 4u ||
+        mglRenderCppReadbackBytesPerPixel((uint32_t)0x7FFFFFFFu) != 4u) { /* unknown -> 4 */
+        fprintf(stderr, "FAIL: readback bpp table\n");
+        return 1;
+    }
     printf("READBACK_SCALAR_CONVERT_OK\n");
     return 0;
 }

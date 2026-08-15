@@ -119,40 +119,11 @@ BOOL mglMetalPixelFormatIsSignedIntegerColor(MTLPixelFormat pixelFormat)
 
 NSUInteger mglMetalReadbackBytesPerPixel(MTLPixelFormat pixelFormat)
 {
-    switch (pixelFormat) {
-        case MTLPixelFormatRGBA32Float:
-            return sizeof(float) * 4u;
-        case MTLPixelFormatR8Unorm:
-            return 1u;
-        case MTLPixelFormatR16Unorm:
-        case MTLPixelFormatR16Snorm:
-        case MTLPixelFormatRG8Unorm:
-        case MTLPixelFormatABGR4Unorm:
-        case MTLPixelFormatBGR5A1Unorm:
-        case MTLPixelFormatR16Float:
-            return 2u;
-        case MTLPixelFormatRG32Float:
-        case MTLPixelFormatRGBA16Float:
-        case MTLPixelFormatRGBA16Unorm:
-        case MTLPixelFormatRGBA16Snorm:
-            return 8u;
-        case MTLPixelFormatR8Snorm:
-        case MTLPixelFormatR8Uint:
-        case MTLPixelFormatR8Sint:
-            return 1u;
-        case MTLPixelFormatRG8Snorm:
-        case MTLPixelFormatRG8Uint:
-        case MTLPixelFormatRG8Sint:
-            return 2u;
-        case MTLPixelFormatRG16Unorm:
-        case MTLPixelFormatRG16Snorm:
-        case MTLPixelFormatRG16Float:
-        case MTLPixelFormatRGBA8Snorm:
-        case MTLPixelFormatRGBA8Uint:
-        case MTLPixelFormatRGBA8Sint:
-        default:
-            return 4u;
-    }
+    /* P4.5 (item 1171): thin delegate — single source of truth in C++
+     * (mglRenderCppReadbackBytesPerPixel, pixel format as its Apple ABI
+     * value), shared by both gates. */
+    return (NSUInteger)mglRenderCppReadbackBytesPerPixel(
+        (uint32_t)pixelFormat);
 }
 
 uint8_t mglMetalFloatToUnorm8(float value)

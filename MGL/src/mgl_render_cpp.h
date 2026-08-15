@@ -366,6 +366,13 @@ int32_t mglRenderCppTextureIndexForMetalType(uint32_t texture_type);
 
 uint32_t mglRenderCppTextureDataKindForPixelFormat(uint32_t pixel_format);
 
+/* P4.5 (item 1171): readback bytes-per-pixel table (MTLPixelFormat ABI value
+ * -> bytes).  Pure CPU table shared by both gates — mirrors the ObjC
+ * mglMetalReadbackBytesPerPixel exactly (default 4 bytes for unlisted
+ * formats).  The C ABI carries the pixel format as uint32_t (Apple stable
+ * enum), matching mglRenderCppTextureDataKindForPixelFormat. */
+uint32_t mglRenderCppReadbackBytesPerPixel(uint32_t pixel_format);
+
 /* P4.4: CPU→GPU 上传路径选路。纯决策函数（无 Metal 对象参与），把
  * MGLRenderer+Texture.m uploadTextureSliceViaBlit 的「storage mode /
  * 纹理类型 / AGX 能力位 → replaceRegion 或 blit 或 reject」判定迁入 C++，
