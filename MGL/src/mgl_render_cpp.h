@@ -704,6 +704,8 @@ uint64_t mglRenderCppQuadTriangleIndexCount(uint64_t source_vertex_count);
 uint64_t mglRenderCppAlignVertexStrideForMetal(uint64_t stride);
 /* double-attrib size -> MTLVertexFormat value; matches mglDoubleVertexAttribFloatFormat. */
 uint32_t mglRenderCppDoubleVertexAttribFloatFormat(uint32_t size);
+/* FNV-1a single hash step; matches mglHashStepU64. */
+uint64_t mglRenderCppHashStepU64(uint64_t hash, uint64_t value);
 
 typedef struct MGLRenderCppGeometryGatherResult_t {
     uint32_t *gather;          /* malloc'd raw gather (vertex_ids) */

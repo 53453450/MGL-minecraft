@@ -27,15 +27,15 @@
 extern "C" {
 #endif
 
+/* Forward decl: FNV-1a hash step logic lives in mgl_render_cpp.cpp. */
+uint64_t mglRenderCppHashStepU64(uint64_t hash, uint64_t value);
+
 /* Single FNV-1a hash step.  Used by pipeline/vertex-descriptor signature
  * computation in MGLRenderer.m.  Kept as static inline for hot-path
  * callers that accumulate hashes in loops. */
 static inline uint64_t mglHashStepU64(uint64_t hash, uint64_t value)
 {
-    /* 64-bit FNV-1a */
-    hash ^= value;
-    hash *= 1099511628211ull;
-    return hash;
+    return mglRenderCppHashStepU64(hash, value);
 }
 
 /* FNV-1a hash of a byte buffer, sampling head and tail (up to 1024 bytes

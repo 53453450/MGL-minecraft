@@ -4040,6 +4040,11 @@ uint32_t mglRenderCppDoubleVertexAttribFloatFormat(uint32_t size) {
 }
 
 extern "C"
+uint64_t mglRenderCppHashStepU64(uint64_t hash, uint64_t value) {
+    return (hash ^ value) * 1099511628211ull;
+}
+
+extern "C"
 int mglRenderCppScanIndexRangeIgnoringRestart(
     const uint8_t* bytes, uint32_t elem_width, uint32_t count,
     int restart_enabled, uint32_t restart_index,

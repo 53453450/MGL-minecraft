@@ -2505,6 +2505,18 @@ static int verifyGLIndexValueRead(void) {
     return 0;
 }
 
+static int verifyHashStepU64(void) {
+    /* P4.5 (item 1144): FNV-1a single step = (h^v)*fF. */
+    /* mglHashStepU64(0, 0) = 0*const = 0. */
+    uint64_t h = mglRenderCppHashStepU64(0, 0);
+    if (h != 0) { fprintf(stderr, "FAIL: hash 0,0\\n"); return 1; }
+    h = mglRenderCppHashStepU64(0, 1);
+    if (h != 1099511628211ull) { fprintf(stderr, "FAIL: hash 0,1\\n"); return 1; }
+    h = mglRenderCppHashStepU64(1099511628211ull, 2);  /* (const^1^2) */
+    printf("HASH_STEP_U64_OK\\n");
+    return 0;
+}
+
 static int verifyDoubleAttribFormat(void) {
     /* P4.5 (item 1141): double-attrib size -> MTL Fmt value. */
     if (mglRenderCppDoubleVertexAttribFloatFormat(1) != 28 ||
@@ -5234,6 +5246,7 @@ int main(void) {
         if (verifyQuadTriangleCount() != 0) return 1;
         if (verifyAlignStride() != 0) return 1;
         if (verifyDoubleAttribFormat() != 0) return 1;
+        if (verifyHashStepU64() != 0) return 1;
         if (verifyMDIScratchOwner() != 0) return 1;
         if (verifyRenderEncoderGetter() != 0) return 1;
         if (verifyCommandBufferGetterAndAdopt() != 0) return 1;
