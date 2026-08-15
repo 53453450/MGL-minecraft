@@ -19,8 +19,8 @@ static BOOL mglSwapDiagnosticsUsesMetalCpp(void)
            mglRenderCppGetDevice() != NULL;
 }
 
-static id<MTLBuffer> mglSwapDiagnosticsCreateBuffer(
-    id<MTLDevice> device,
+static MGLMetalBufferRef mglSwapDiagnosticsCreateBuffer(
+    MGLMetalDeviceRef device,
     NSUInteger length)
 {
     if (mglSwapDiagnosticsUsesMetalCpp()) {
@@ -29,16 +29,16 @@ static id<MTLBuffer> mglSwapDiagnosticsCreateBuffer(
                 length, MTLResourceStorageModeShared,
                 "MGL Swap Diagnostic Sample", &bufferCPP) == 0 &&
             bufferCPP) {
-            return (__bridge_transfer id<MTLBuffer>)bufferCPP;
+            return (__bridge_transfer MGLMetalBufferRef)bufferCPP;
         }
     }
     return [device newBufferWithLength:length
                                options:MTLResourceStorageModeShared];
 }
 
-static id<MTLRenderCommandEncoder> mglSwapDiagnosticsCreateRenderEncoder(
-    id<MTLCommandBuffer> commandBuffer,
-    id<MTLTexture> colorTexture)
+static MGLMetalRenderCommandEncoderRef mglSwapDiagnosticsCreateRenderEncoder(
+    MGLMetalCommandBufferRef commandBuffer,
+    MGLMetalTextureRef colorTexture)
 {
     if (mglSwapDiagnosticsUsesMetalCpp() && commandBuffer && colorTexture) {
         void *encoderCPP = NULL;
@@ -50,7 +50,7 @@ static id<MTLRenderCommandEncoder> mglSwapDiagnosticsCreateRenderEncoder(
         if (mglRenderCppCreateRenderEncoderFromState(
                 (__bridge void *)commandBuffer, &state, &encoderCPP) == 0 &&
             encoderCPP) {
-            return (__bridge id<MTLRenderCommandEncoder>)encoderCPP;
+            return (__bridge MGLMetalRenderCommandEncoderRef)encoderCPP;
         }
     }
     MTLRenderPassDescriptor *descriptor =
@@ -64,8 +64,8 @@ static id<MTLRenderCommandEncoder> mglSwapDiagnosticsCreateRenderEncoder(
 }
 
 static void mglSwapDiagnosticsSetRenderPipeline(
-    id<MTLRenderCommandEncoder> encoder,
-    id<MTLRenderPipelineState> pipeline)
+    MGLMetalRenderCommandEncoderRef encoder,
+    MGLMetalRenderPipelineStateRef pipeline)
 {
     if (mglSwapDiagnosticsUsesMetalCpp() &&
         mglRenderCppSetRenderPipelineState((__bridge void *)encoder,
@@ -76,7 +76,7 @@ static void mglSwapDiagnosticsSetRenderPipeline(
 }
 
 static void mglSwapDiagnosticsSetRenderBytes(
-    id<MTLRenderCommandEncoder> encoder,
+    MGLMetalRenderCommandEncoderRef encoder,
     const void *bytes,
     NSUInteger length,
     uint32_t stage)
@@ -94,8 +94,8 @@ static void mglSwapDiagnosticsSetRenderBytes(
 }
 
 static void mglSwapDiagnosticsSetFragmentTexture(
-    id<MTLRenderCommandEncoder> encoder,
-    id<MTLTexture> texture)
+    MGLMetalRenderCommandEncoderRef encoder,
+    MGLMetalTextureRef texture)
 {
     if (mglSwapDiagnosticsUsesMetalCpp() &&
         mglRenderCppSetRenderTexture(
@@ -107,8 +107,8 @@ static void mglSwapDiagnosticsSetFragmentTexture(
 }
 
 static void mglSwapDiagnosticsSetFragmentSampler(
-    id<MTLRenderCommandEncoder> encoder,
-    id<MTLSamplerState> sampler)
+    MGLMetalRenderCommandEncoderRef encoder,
+    MGLMetalSamplerStateRef sampler)
 {
     if (mglSwapDiagnosticsUsesMetalCpp() &&
         mglRenderCppSetRenderSampler(
@@ -120,7 +120,7 @@ static void mglSwapDiagnosticsSetFragmentSampler(
 }
 
 static void mglSwapDiagnosticsSetViewport(
-    id<MTLRenderCommandEncoder> encoder,
+    MGLMetalRenderCommandEncoderRef encoder,
     MTLViewport viewport)
 {
     if (mglSwapDiagnosticsUsesMetalCpp() &&
@@ -133,7 +133,7 @@ static void mglSwapDiagnosticsSetViewport(
 }
 
 static void mglSwapDiagnosticsSetScissor(
-    id<MTLRenderCommandEncoder> encoder,
+    MGLMetalRenderCommandEncoderRef encoder,
     MTLScissorRect scissor)
 {
     if (mglSwapDiagnosticsUsesMetalCpp() &&
@@ -146,7 +146,7 @@ static void mglSwapDiagnosticsSetScissor(
 }
 
 static void mglSwapDiagnosticsDrawTriangleStrip(
-    id<MTLRenderCommandEncoder> encoder)
+    MGLMetalRenderCommandEncoderRef encoder)
 {
     /* P4.3a: 统一 draw plan 提交（gate-on 走 C++ EncodeDraw）。 */
     if (mglRenderCppTryEncodeDraw(encoder, &(MGLRenderCppDrawPlan){
@@ -165,7 +165,7 @@ static void mglSwapDiagnosticsDrawTriangleStrip(
 }
 
 static void mglSwapDiagnosticsEndRenderEncoder(
-    id<MTLRenderCommandEncoder> encoder)
+    MGLMetalRenderCommandEncoderRef encoder)
 {
     if (mglSwapDiagnosticsUsesMetalCpp() &&
         mglRenderCppEndRenderEncoder((__bridge void *)encoder) == 0) {
@@ -174,26 +174,26 @@ static void mglSwapDiagnosticsEndRenderEncoder(
     [encoder endEncoding];
 }
 
-static id<MTLBlitCommandEncoder> mglSwapDiagnosticsCreateBlitEncoder(
-    id<MTLCommandBuffer> commandBuffer)
+static MGLMetalBlitCommandEncoderRef mglSwapDiagnosticsCreateBlitEncoder(
+    MGLMetalCommandBufferRef commandBuffer)
 {
     if (mglSwapDiagnosticsUsesMetalCpp()) {
         void *encoderCPP = NULL;
         if (mglRenderCppCreateBlitEncoder((__bridge void *)commandBuffer,
                                           &encoderCPP) == 0 &&
             encoderCPP) {
-            return (__bridge id<MTLBlitCommandEncoder>)encoderCPP;
+            return (__bridge MGLMetalBlitCommandEncoderRef)encoderCPP;
         }
     }
     return [commandBuffer blitCommandEncoder];
 }
 
 static void mglSwapDiagnosticsCopyTextureToBuffer(
-    id<MTLBlitCommandEncoder> encoder,
-    id<MTLTexture> texture,
+    MGLMetalBlitCommandEncoderRef encoder,
+    MGLMetalTextureRef texture,
     MTLOrigin origin,
     MTLSize size,
-    id<MTLBuffer> buffer,
+    MGLMetalBufferRef buffer,
     NSUInteger bytesPerRow,
     NSUInteger bytesPerImage)
 {
@@ -216,7 +216,7 @@ static void mglSwapDiagnosticsCopyTextureToBuffer(
 }
 
 static void mglSwapDiagnosticsEndBlitEncoder(
-    id<MTLBlitCommandEncoder> encoder)
+    MGLMetalBlitCommandEncoderRef encoder)
 {
     if (mglSwapDiagnosticsUsesMetalCpp() &&
         mglRenderCppEndBlitEncoder((__bridge void *)encoder) == 0) {
@@ -227,8 +227,8 @@ static void mglSwapDiagnosticsEndBlitEncoder(
 
 @implementation MGLRenderer (SwapDiagnostics)
 
-- (void)copyRenderPassColorToDrawableIfNeeded:(id<MTLTexture>)rpColor0
-                              drawableTexture:(id<MTLTexture>)drawableTexture
+- (void)copyRenderPassColorToDrawableIfNeeded:(MGLMetalTextureRef)rpColor0
+                              drawableTexture:(MGLMetalTextureRef)drawableTexture
                                       swapCall:(uint64_t)swapCall
                                     traceSwap:(bool)traceSwap
 {
@@ -261,8 +261,8 @@ static void mglSwapDiagnosticsEndBlitEncoder(
              (rpColor0.pixelFormat == MTLPixelFormatRGBA8Unorm && drawableTexture.pixelFormat == MTLPixelFormatBGRA8Unorm) ||
              (rpColor0.pixelFormat == MTLPixelFormatBGRA8Unorm && drawableTexture.pixelFormat == MTLPixelFormatRGBA8Unorm));
         if (canShaderCopyToDrawable) {
-                id<MTLRenderPipelineState> pipeline = [self scaledBlitPipelineForPixelFormat:drawableTexture.pixelFormat];
-                id<MTLSamplerState> sampler = [self scaledBlitSamplerForFilter:GL_NEAREST];
+                MGLMetalRenderPipelineStateRef pipeline = [self scaledBlitPipelineForPixelFormat:drawableTexture.pixelFormat];
+                MGLMetalSamplerStateRef sampler = [self scaledBlitSamplerForFilter:GL_NEAREST];
                 NSUInteger copyWidth = MIN((NSUInteger)rpColor0.width, (NSUInteger)drawableTexture.width);
                 NSUInteger copyHeight = MIN((NSUInteger)rpColor0.height, (NSUInteger)drawableTexture.height);
                 if (pipeline && sampler && copyWidth > 0 && copyHeight > 0) {
@@ -276,7 +276,7 @@ static void mglSwapDiagnosticsEndBlitEncoder(
                     params.forceOpaqueAlpha = 1.0f;
                     params._padding = (vector_float3){0.0f, 0.0f, 0.0f};
 
-                    id<MTLRenderCommandEncoder> copyEncoder =
+                    MGLMetalRenderCommandEncoderRef copyEncoder =
                         mglSwapDiagnosticsCreateRenderEncoder(
                             _renderPassManager.state->currentCommandBuffer,
                             drawableTexture);
@@ -343,8 +343,8 @@ static void mglSwapDiagnosticsEndBlitEncoder(
 
 }
 
-- (void)scheduleSwapTextureSampleDiagnostics:(id<MTLTexture>)rpColor0
-                             drawableTexture:(id<MTLTexture>)drawableTexture
+- (void)scheduleSwapTextureSampleDiagnostics:(MGLMetalTextureRef)rpColor0
+                             drawableTexture:(MGLMetalTextureRef)drawableTexture
                                      swapCall:(uint64_t)swapCall
 {
     // Low-frequency dual texture sampling for black-screen diagnostics.
@@ -352,8 +352,8 @@ static void mglSwapDiagnosticsEndBlitEncoder(
     // distinguish "rendered black" from "copy/present black".
     if (kMGLSwapPresentDiagnostics &&
         ((swapCall <= 12ull && (swapCall % 3ull) == 0ull) || ((swapCall % 120ull) == 0ull))) {
-        void (^scheduleTextureSample)(id<MTLTexture>, NSString *, NSUInteger, NSUInteger) =
-            ^(id<MTLTexture> sampleTexture, NSString *sampleTag, NSUInteger originX, NSUInteger originY) {
+        void (^scheduleTextureSample)(MGLMetalTextureRef, NSString *, NSUInteger, NSUInteger) =
+            ^(MGLMetalTextureRef sampleTexture, NSString *sampleTag, NSUInteger originX, NSUInteger originY) {
                 if (!sampleTexture) {
                     mglTraceLogNSString(@"MGL TRACE swap.sample.%@ call=%llu skipped(texture=nil)",
                           sampleTag,
@@ -399,7 +399,7 @@ static void mglSwapDiagnosticsEndBlitEncoder(
                         : 0u;
                 }
 
-                id<MTLBuffer> sampleBuffer =
+                MGLMetalBufferRef sampleBuffer =
                     mglSwapDiagnosticsCreateBuffer(_device,
                                                    sampleBytesPerImage);
                 if (!sampleBuffer) {
@@ -410,7 +410,7 @@ static void mglSwapDiagnosticsEndBlitEncoder(
                     return;
                 }
 
-                id<MTLBlitCommandEncoder> sampleEncoder =
+                MGLMetalBlitCommandEncoderRef sampleEncoder =
                     mglSwapDiagnosticsCreateBlitEncoder(
                         _renderPassManager.state->currentCommandBuffer);
                 if (!sampleEncoder) {

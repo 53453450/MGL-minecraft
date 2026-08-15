@@ -24,6 +24,7 @@ typedef id<MTLRenderPipelineState> MGLMetalRenderPipelineStateRef;
 typedef id<MTLComputePipelineState> MGLMetalComputePipelineStateRef;
 typedef id<MTLDepthStencilState> MGLMetalDepthStencilStateRef;
 typedef id<MTLSamplerState> MGLMetalSamplerStateRef;
+typedef id<MTLEvent> MGLMetalEventRef;
 
 /* Snapshot command-buffer state through Metal-cpp when enabled while keeping
  * the direct Objective-C path as the A/B baseline. */

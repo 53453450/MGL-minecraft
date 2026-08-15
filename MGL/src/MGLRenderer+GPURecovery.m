@@ -114,7 +114,7 @@
         }
 
         if (_renderPassManager.state->currentRenderEncoder) {
-            id<MTLRenderCommandEncoder> encoder =
+            MGLMetalRenderCommandEncoderRef encoder =
                 _renderPassManager.state->currentRenderEncoder;
             if (!(mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
                   mglRenderCppGetDevice() &&
@@ -169,7 +169,7 @@
 }
 
 // AGX Driver Compatibility: Specialized command buffer commit with recovery
-- (void)commitCommandBufferWithAGXRecovery:(id<MTLCommandBuffer>)commandBuffer
+- (void)commitCommandBufferWithAGXRecovery:(MGLMetalCommandBufferRef)commandBuffer
 {
     /* s_commitCallCount is owned by the GL calling thread: commit paths are
      * reached on the GL thread and never run on the completion-handler

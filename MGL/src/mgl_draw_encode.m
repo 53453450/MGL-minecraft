@@ -13,7 +13,7 @@
 #include "mgl_render_cpp.h"
 #include "mgl_render_cpp_objc.h"   /* P4.3a: mglRenderCppTryEncodeDraw */
 
-static void mglDrawEncodePrimitives(id<MTLRenderCommandEncoder> encoder,
+static void mglDrawEncodePrimitives(MGLMetalRenderCommandEncoderRef encoder,
                                     MTLPrimitiveType primitiveType,
                                     NSUInteger vertexStart,
                                     NSUInteger vertexCount,
@@ -36,11 +36,11 @@ static void mglDrawEncodePrimitives(id<MTLRenderCommandEncoder> encoder,
                baseInstance:baseInstance];
 }
 
-static void mglDrawEncodeIndexed(id<MTLRenderCommandEncoder> encoder,
+static void mglDrawEncodeIndexed(MGLMetalRenderCommandEncoderRef encoder,
                                  MTLPrimitiveType primitiveType,
                                  NSUInteger indexCount,
                                  MTLIndexType indexType,
-                                 id<MTLBuffer> indexBuffer,
+                                 MGLMetalBufferRef indexBuffer,
                                  NSUInteger indexBufferOffset,
                                  NSUInteger instanceCount,
                                  NSInteger baseVertex,
@@ -66,9 +66,9 @@ static void mglDrawEncodeIndexed(id<MTLRenderCommandEncoder> encoder,
                       baseInstance:baseInstance];
 }
 
-BOOL mglEncodeArrayLineLoop(id<MTLRenderCommandEncoder> encoder,
+BOOL mglEncodeArrayLineLoop(MGLMetalRenderCommandEncoderRef encoder,
                             GLMContext drawCtx,
-                            id<MTLDevice> device,
+                            MGLMetalDeviceRef device,
                             GLsizei count,
                             GLint firstVertex,
                             NSUInteger instanceCount,
@@ -89,7 +89,7 @@ BOOL mglEncodeArrayLineLoop(id<MTLRenderCommandEncoder> encoder,
     }
 
     NSUInteger loopIndexCount = 0u;
-    id<MTLBuffer> loopIndexBuffer = mglNewLineLoopArrayIndexBuffer(device,
+    MGLMetalBufferRef loopIndexBuffer = mglNewLineLoopArrayIndexBuffer(device,
                                                                    (NSUInteger)firstVertex,
                                                                    (NSUInteger)count,
                                                                    &loopIndexCount);
@@ -107,8 +107,8 @@ BOOL mglEncodeArrayLineLoop(id<MTLRenderCommandEncoder> encoder,
     return YES;
 }
 
-BOOL mglEncodeArrayTriangleFan(id<MTLRenderCommandEncoder> encoder,
-                                      id<MTLDevice> device,
+BOOL mglEncodeArrayTriangleFan(MGLMetalRenderCommandEncoderRef encoder,
+                                      MGLMetalDeviceRef device,
                                       GLsizei count,
                                       GLint baseVertex,
                                       NSUInteger instanceCount,
@@ -120,7 +120,7 @@ BOOL mglEncodeArrayTriangleFan(id<MTLRenderCommandEncoder> encoder,
     }
 
     NSUInteger fanIndexCount = 0u;
-    id<MTLBuffer> fanIndexBuffer = mglNewTriangleFanArrayIndexBuffer(device,
+    MGLMetalBufferRef fanIndexBuffer = mglNewTriangleFanArrayIndexBuffer(device,
                                                                      (NSUInteger)count,
                                                                      &fanIndexCount);
     if (!fanIndexBuffer || fanIndexCount == 0u) {
@@ -137,10 +137,10 @@ BOOL mglEncodeArrayTriangleFan(id<MTLRenderCommandEncoder> encoder,
     return YES;
 }
 
-BOOL mglEncodeElementLineLoop(id<MTLRenderCommandEncoder> encoder,
-                                     id<MTLDevice> device,
+BOOL mglEncodeElementLineLoop(MGLMetalRenderCommandEncoderRef encoder,
+                                     MGLMetalDeviceRef device,
                                      Buffer *glElementBuffer,
-                                     id<MTLBuffer> metalElementBuffer,
+                                     MGLMetalBufferRef metalElementBuffer,
                                      GLenum glIndexType,
                                      NSUInteger indexOffset,
                                      GLsizei count,
@@ -159,7 +159,7 @@ BOOL mglEncodeElementLineLoop(id<MTLRenderCommandEncoder> encoder,
                                                              indexOffset,
                                                              count);
     NSUInteger loopIndexCount = 0u;
-    id<MTLBuffer> loopIndexBuffer = mglNewLineLoopElementIndexBuffer(device,
+    MGLMetalBufferRef loopIndexBuffer = mglNewLineLoopElementIndexBuffer(device,
                                                                      loopSource,
                                                                      glIndexType,
                                                                      (NSUInteger)count,
@@ -180,10 +180,10 @@ BOOL mglEncodeElementLineLoop(id<MTLRenderCommandEncoder> encoder,
     return YES;
 }
 
-BOOL mglEncodeElementTriangleFan(id<MTLRenderCommandEncoder> encoder,
-                                        id<MTLDevice> device,
+BOOL mglEncodeElementTriangleFan(MGLMetalRenderCommandEncoderRef encoder,
+                                        MGLMetalDeviceRef device,
                                         Buffer *glElementBuffer,
-                                        id<MTLBuffer> metalElementBuffer,
+                                        MGLMetalBufferRef metalElementBuffer,
                                         GLenum glIndexType,
                                         NSUInteger indexOffset,
                                         GLsizei count,
@@ -202,7 +202,7 @@ BOOL mglEncodeElementTriangleFan(id<MTLRenderCommandEncoder> encoder,
                                                             indexOffset,
                                                             count);
     NSUInteger fanIndexCount = 0u;
-    id<MTLBuffer> fanIndexBuffer = mglNewTriangleFanElementIndexBuffer(device,
+    MGLMetalBufferRef fanIndexBuffer = mglNewTriangleFanElementIndexBuffer(device,
                                                                        fanSource,
                                                                        glIndexType,
                                                                        (NSUInteger)count,
@@ -223,8 +223,8 @@ BOOL mglEncodeElementTriangleFan(id<MTLRenderCommandEncoder> encoder,
     return YES;
 }
 
-BOOL mglEncodeArrayQuads(id<MTLRenderCommandEncoder> encoder,
-                                id<MTLDevice> device,
+BOOL mglEncodeArrayQuads(MGLMetalRenderCommandEncoderRef encoder,
+                                MGLMetalDeviceRef device,
                                 GLsizei count,
                                 GLint baseVertex,
                                 NSUInteger instanceCount,
@@ -237,7 +237,7 @@ BOOL mglEncodeArrayQuads(id<MTLRenderCommandEncoder> encoder,
     }
 
     NSUInteger quadIndexCount = 0u;
-    id<MTLBuffer> quadIndexBuffer = lineMode
+    MGLMetalBufferRef quadIndexBuffer = lineMode
         ? mglNewQuadArrayLineIndexBuffer(device, (NSUInteger)count, &quadIndexCount)
         : mglNewQuadArrayIndexBuffer(device, (NSUInteger)count, &quadIndexCount);
     if (!quadIndexBuffer || quadIndexCount == 0u) {
@@ -255,10 +255,10 @@ BOOL mglEncodeArrayQuads(id<MTLRenderCommandEncoder> encoder,
     return YES;
 }
 
-BOOL mglEncodeElementQuads(id<MTLRenderCommandEncoder> encoder,
-                                  id<MTLDevice> device,
+BOOL mglEncodeElementQuads(MGLMetalRenderCommandEncoderRef encoder,
+                                  MGLMetalDeviceRef device,
                                   Buffer *glElementBuffer,
-                                  id<MTLBuffer> metalElementBuffer,
+                                  MGLMetalBufferRef metalElementBuffer,
                                   GLenum glIndexType,
                                   NSUInteger indexOffset,
                                   GLsizei count,
@@ -278,7 +278,7 @@ BOOL mglEncodeElementQuads(id<MTLRenderCommandEncoder> encoder,
                                                              indexOffset,
                                                              count);
     NSUInteger quadIndexCount = 0u;
-    id<MTLBuffer> quadIndexBuffer = lineMode
+    MGLMetalBufferRef quadIndexBuffer = lineMode
         ? mglNewQuadElementLineIndexBuffer(device, quadSource, glIndexType, (NSUInteger)count, &quadIndexCount)
         : mglNewQuadElementIndexBuffer(device, quadSource, glIndexType, (NSUInteger)count, &quadIndexCount);
     if (!quadIndexBuffer || quadIndexCount == 0u) {
@@ -298,8 +298,8 @@ BOOL mglEncodeElementQuads(id<MTLRenderCommandEncoder> encoder,
     return YES;
 }
 
-BOOL mglEncodeArrayPolygonPoint(id<MTLRenderCommandEncoder> encoder,
-                                       id<MTLDevice> device,
+BOOL mglEncodeArrayPolygonPoint(MGLMetalRenderCommandEncoderRef encoder,
+                                       MGLMetalDeviceRef device,
                                        GLenum mode,
                                        GLint first,
                                        GLsizei count,
@@ -325,7 +325,7 @@ BOOL mglEncodeArrayPolygonPoint(id<MTLRenderCommandEncoder> encoder,
     }
 
     NSUInteger pointIndexCount = 0u;
-    id<MTLBuffer> pointIndexBuffer = nil;
+    MGLMetalBufferRef pointIndexBuffer = nil;
     if (mode == GL_TRIANGLE_FAN) {
         pointIndexBuffer = mglNewTriangleFanArrayIndexBuffer(device,
                                                              (NSUInteger)count,
@@ -357,10 +357,10 @@ BOOL mglEncodeArrayPolygonPoint(id<MTLRenderCommandEncoder> encoder,
     return YES;
 }
 
-BOOL mglEncodeElementPolygonPoint(id<MTLRenderCommandEncoder> encoder,
-                                         id<MTLDevice> device,
+BOOL mglEncodeElementPolygonPoint(MGLMetalRenderCommandEncoderRef encoder,
+                                         MGLMetalDeviceRef device,
                                          Buffer *glElementBuffer,
-                                         id<MTLBuffer> metalElementBuffer,
+                                         MGLMetalBufferRef metalElementBuffer,
                                          GLenum mode,
                                          GLenum glIndexType,
                                          MTLIndexType metalIndexType,
@@ -386,7 +386,7 @@ BOOL mglEncodeElementPolygonPoint(id<MTLRenderCommandEncoder> encoder,
 
         NSUInteger drawIndexOffset = indexOffset;
         MTLIndexType drawIndexType = metalIndexType;
-        id<MTLBuffer> drawIndexBuffer = mglPreparedElementIndexBuffer(device,
+        MGLMetalBufferRef drawIndexBuffer = mglPreparedElementIndexBuffer(device,
                                                                       glElementBuffer,
                                                                       metalElementBuffer,
                                                                       glIndexType,
@@ -409,7 +409,7 @@ BOOL mglEncodeElementPolygonPoint(id<MTLRenderCommandEncoder> encoder,
                                                          indexOffset,
                                                          count);
     NSUInteger pointIndexCount = 0u;
-    id<MTLBuffer> pointIndexBuffer = nil;
+    MGLMetalBufferRef pointIndexBuffer = nil;
     if (mode == GL_TRIANGLE_FAN) {
         pointIndexBuffer = mglNewTriangleFanElementIndexBuffer(device,
                                                                source,
@@ -449,11 +449,11 @@ BOOL mglEncodeElementPolygonPoint(id<MTLRenderCommandEncoder> encoder,
     return YES;
 }
 
-BOOL mglEncodeRestartSegment(id<MTLRenderCommandEncoder> encoder,
-                                    id<MTLDevice> device,
+BOOL mglEncodeRestartSegment(MGLMetalRenderCommandEncoderRef encoder,
+                                    MGLMetalDeviceRef device,
                                     Buffer *glElementBuffer,
-                                    id<MTLBuffer> metalElementBuffer,
-                                    id<MTLBuffer> preparedIndexBuffer,
+                                    MGLMetalBufferRef metalElementBuffer,
+                                    MGLMetalBufferRef preparedIndexBuffer,
                                     GLenum mode,
                                     MTLPrimitiveType primitiveType,
                                     GLenum glIndexType,
@@ -564,11 +564,11 @@ BOOL mglEncodeRestartSegment(id<MTLRenderCommandEncoder> encoder,
     return YES;
 }
 
-MGLPrimitiveRestartEncodeResult mglEncodePrimitiveRestartedElementDraw(id<MTLRenderCommandEncoder> encoder,
-                                                                              id<MTLDevice> device,
+MGLPrimitiveRestartEncodeResult mglEncodePrimitiveRestartedElementDraw(MGLMetalRenderCommandEncoderRef encoder,
+                                                                              MGLMetalDeviceRef device,
                                                                               GLMContext ctx,
                                                                               Buffer *glElementBuffer,
-                                                                              id<MTLBuffer> metalElementBuffer,
+                                                                              MGLMetalBufferRef metalElementBuffer,
                                                                               GLenum mode,
                                                                               MTLPrimitiveType primitiveType,
                                                                               GLenum glIndexType,
@@ -663,7 +663,7 @@ MGLPrimitiveRestartEncodeResult mglEncodePrimitiveRestartedElementDraw(id<MTLRen
                          mode == GL_QUADS ||
                          (primitiveType == MTLPrimitiveTypePoint &&
                           (mode == GL_TRIANGLES || mode == GL_TRIANGLE_STRIP)));
-    id<MTLBuffer> preparedIndexBuffer = metalElementBuffer;
+    MGLMetalBufferRef preparedIndexBuffer = metalElementBuffer;
     MTLIndexType preparedIndexType = metalIndexType;
     if (!emulatedMode) {
         preparedIndexBuffer = mglPreparedElementIndexBuffer(device,

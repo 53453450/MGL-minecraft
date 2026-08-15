@@ -6,7 +6,7 @@
 #include "mgl_env_flag.h"
 #include "mgl_render_cpp_objc.h"
 
-static void mglQuerySyncWaitCommandBuffer(id<MTLCommandBuffer> commandBuffer)
+static void mglQuerySyncWaitCommandBuffer(MGLMetalCommandBufferRef commandBuffer)
 {
     if (mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
         mglRenderCppGetDevice() != NULL &&
@@ -65,7 +65,7 @@ static void *mglQueryVisibilityBuffer(void *queryStateOwner)
      * they were encoded), matching GL semantics. */
     METAL_LOCK();
     @try {
-        id<MTLRenderCommandEncoder> encoder = _renderPassManager.state->currentRenderEncoder;
+        MGLMetalRenderCommandEncoderRef encoder = _renderPassManager.state->currentRenderEncoder;
         /* P4.1f: under gate-on the visibility buffer lives in the C++
          * RenderPassStateOwner; the ObjC descriptor mirror is nil. */
         BOOL hasVisibilityBuffer = NO;
@@ -231,14 +231,14 @@ static void *mglQueryVisibilityBuffer(void *queryStateOwner)
     // is stored in sync->mtl_command_buffer so mtlWaitForSync can block on its
     // completion via waitUntilCompleted. This runs regardless of
     // kMGLDisableSharedEventSync (which only gates the legacy shared-event path).
-    id<MTLCommandBuffer> currentCommandBuffer =
+    MGLMetalCommandBufferRef currentCommandBuffer =
         _renderPassManager.state->currentCommandBuffer;
     MGLRenderCppCommandBufferState currentState =
         mglRenderCommandBufferState(currentCommandBuffer);
     if (currentCommandBuffer &&
         currentState.status == MTLCommandBufferStatusNotEnqueued &&
         !currentState.has_error) {
-        id<MTLCommandBuffer> cbToCommit =
+        MGLMetalCommandBufferRef cbToCommit =
             [_renderPassManager detachCurrentCommandBufferForSubmission];
         sync->mtl_command_buffer = (void *)CFBridgingRetain(cbToCommit);
 
@@ -274,7 +274,7 @@ static void *mglQueryVisibilityBuffer(void *queryStateOwner)
         return;
     }
 
-    id<MTLEvent> pendingEvent = nil;
+    MGLMetalEventRef pendingEvent = nil;
     @try {
         pendingEvent = [_renderPassManager preparePendingEventWithDevice:_device
                                                                 syncName:sync->name];
@@ -330,7 +330,7 @@ static void *mglQueryVisibilityBuffer(void *queryStateOwner)
     // completes on the GPU. This is the real wait mechanism and runs regardless
     // of kMGLDisableSharedEventSync.
     if (sync->mtl_command_buffer) {
-        id<MTLCommandBuffer> cb = (__bridge id<MTLCommandBuffer>)sync->mtl_command_buffer;
+        MGLMetalCommandBufferRef cb = (__bridge MGLMetalCommandBufferRef)sync->mtl_command_buffer;
         @try {
             if (mglRenderCommandBufferStatus(cb) !=
                 MTLCommandBufferStatusCompleted) {
@@ -376,7 +376,7 @@ static void *mglQueryVisibilityBuffer(void *queryStateOwner)
         return GL_SIGNALED;
     }
 
-    id<MTLCommandBuffer> cb = (__bridge id<MTLCommandBuffer>)sync->mtl_command_buffer;
+    MGLMetalCommandBufferRef cb = (__bridge MGLMetalCommandBufferRef)sync->mtl_command_buffer;
     @try {
         if (mglRenderCommandBufferStatus(cb) ==
             MTLCommandBufferStatusCompleted) {
