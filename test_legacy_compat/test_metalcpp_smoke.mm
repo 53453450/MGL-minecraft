@@ -11,6 +11,7 @@
 #include "mgl_render_cpp_objc.h"
 #include "mgl_air_loader.h"
 #include "mgl_aux_assets.h"
+#include "mgl_buffer_slots.h"
 #include "mgl_types_texture.h"
 #include "mgl_types_buffer.h"
 #include "mgl_types_program.h"
@@ -4490,6 +4491,87 @@ static int verifyRuntimeArraySizes(void) {
     return 0;
 }
 
+static int verifyBufferSlotRegistry(void) {
+    /* P0 (2026-08-16 audit): the GS reserved-set must cover the real
+     * mgl_air_gs_abi.h slots — INPUT=24, GATHER_PARAMS=25, OUTPUT=28,
+     * COUNTS=29, GATHER=30, XFB=31, XFB_META=27 (plus the shared
+     * tessellation factor slot 26).  Previously {24,28,29,30} missed 27/31
+     * and mislabeled 30 as "GS XFB". */
+    const GLuint geometryReserved[] = {24u, 25u, 26u, 27u, 28u, 29u, 30u, 31u};
+    for (size_t i = 0; i < sizeof(geometryReserved) / sizeof(geometryReserved[0]); ++i) {
+        if (!mglBufferSlotIsReservedForGeometry(geometryReserved[i])) {
+            fprintf(stderr, "FAIL: buffer-slot geometry reserved %u\n",
+                    geometryReserved[i]);
+            return 1;
+        }
+    }
+    /* Slots outside the GS reserved domain must NOT be reserved. */
+    const GLuint geometryFree[] = {0u, 3u, 14u, 15u, 22u};
+    for (size_t i = 0; i < sizeof(geometryFree) / sizeof(geometryFree[0]); ++i) {
+        if (mglBufferSlotIsReservedForGeometry(geometryFree[i])) {
+            fprintf(stderr, "FAIL: buffer-slot geometry false-positive %u\n",
+                    geometryFree[i]);
+            return 1;
+        }
+    }
+
+    /* Tessellation slots 26-30 (factors / patch output / patch info /
+     * indirect / TES gl_in) — unchanged. */
+    const GLuint tessReserved[] = {26u, 27u, 28u, 29u, 30u};
+    for (size_t i = 0; i < sizeof(tessReserved) / sizeof(tessReserved[0]); ++i) {
+        if (!mglBufferSlotIsReservedForTessellation(tessReserved[i])) {
+            fprintf(stderr, "FAIL: buffer-slot tessellation reserved %u\n",
+                    tessReserved[i]);
+            return 1;
+        }
+    }
+    if (mglBufferSlotIsReservedForTessellation(31u) ||
+        mglBufferSlotIsReservedForTessellation(3u)) {
+        fprintf(stderr, "FAIL: buffer-slot tessellation false-positive\n");
+        return 1;
+    }
+
+    /* Cull-distance 28/29, FragCoord fixup 30. */
+    if (!mglBufferSlotIsReservedForCullDistance(28u) ||
+        !mglBufferSlotIsReservedForCullDistance(29u) ||
+        mglBufferSlotIsReservedForCullDistance(30u)) {
+        fprintf(stderr, "FAIL: buffer-slot cull-distance set\n");
+        return 1;
+    }
+    if (!mglBufferSlotIsReservedForFragCoordFixup(30u) ||
+        mglBufferSlotIsReservedForFragCoordFixup(29u)) {
+        fprintf(stderr, "FAIL: buffer-slot fragcoord set\n");
+        return 1;
+    }
+
+    /* Stage-specific: slot 15 is point-size (vertex only); slot 24 is
+     * TCS stage_in (tess-control only) AND GS input (MGL_AIR_GS_SLOT_INPUT) —
+     * the TCS early-return must not shadow the geometry reservation. */
+    if (!mglBufferSlotIsReservedForStage(15, 0) ||   /* vertex */
+        mglBufferSlotIsReservedForStage(15, 4) ||    /* fragment: no */
+        !mglBufferSlotIsReservedForStage(24, 1) ||   /* TCS */
+        !mglBufferSlotIsReservedForStage(24, 3) ||   /* GS (shared slot 24) */
+        mglBufferSlotIsReservedForStage(24, 4)) {    /* fragment: no */
+        fprintf(stderr, "FAIL: buffer-slot stage set\n");
+        return 1;
+    }
+
+    /* Reserved-name labels: slot 25 must mention GATHER_PARAMS; 27/31 must
+     * mention the GS XFB roles. */
+    const char *n25 = mglBufferSlotReservedName(25);
+    const char *n27 = mglBufferSlotReservedName(27);
+    const char *n31 = mglBufferSlotReservedName(31);
+    if (!n25 || !strstr(n25, "GATHER_PARAMS") ||
+        !n27 || !strstr(n27, "XFB_META") ||
+        !n31 || !strstr(n31, "XFB")) {
+        fprintf(stderr, "FAIL: buffer-slot reserved-name labels\n");
+        return 1;
+    }
+
+    printf("BUFFER_SLOT_REGISTRY_OK\n");
+    return 0;
+}
+
 static int verifyLevelUploadPrep(void) {
     /* P4.5 (item 1111): per-level CPU upload data preparation. */
     /* 2D geometry: 4x4, pitch 16, 64 bytes -> copy_depth 1, bpi 16. */
@@ -6028,6 +6110,7 @@ int main(void) {
         if (verifyLevelUploadPrep() != 0) return 1;
         if (verifyCopyBackEncode() != 0) return 1;
         if (verifyRuntimeArraySizes() != 0) return 1;
+        if (verifyBufferSlotRegistry() != 0) return 1;
         if (verifyLevelUploadOps() != 0) return 1;
         if (verifyIntegerReadbackConvert() != 0) return 1;
         if (verifyTessFactorDiscardPredicate() != 0) return 1;

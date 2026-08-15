@@ -28,9 +28,13 @@ GLboolean mglBufferSlotIsReservedForStage(GLuint slot, int stage)
         return (stage == MGL_STAGE_VERTEX || stage < 0) ? GL_TRUE : GL_FALSE;
     }
 
-    /* TCS stage_in replacement, TCS compute kernel only. */
-    if (slot == kMGLBufferSlot_TCSStageInRepl) {
-        return (stage == MGL_STAGE_TESS_CONTROL || stage < 0) ? GL_TRUE : GL_FALSE;
+    /* TCS stage_in replacement, TCS compute kernel only.  Note: slot 24 is
+     * also the GS compute-expansion input slot (MGL_AIR_GS_SLOT_INPUT), so
+     * the TCS-only early return must NOT shadow the GEOMETRY case below —
+     * only TESS_CONTROL (or the generic stage < 0) claims it here. */
+    if (slot == kMGLBufferSlot_TCSStageInRepl &&
+        (stage == MGL_STAGE_TESS_CONTROL || stage < 0)) {
+        return GL_TRUE;
     }
 
     /* GS compute-expansion path (mgl_air_gs_abi.h §1): the GS kernel owns

@@ -615,12 +615,14 @@ test-mcrepro: $(build_dir)/test_mcrepro
 $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
 	MGL/src/mgl_render_cpp.cpp MGL/src/mgl_render_cpp.h \
 	MGL/src/mgl_render_cpp_objc.h MGL/src/mgl_aux_assets.c \
+	MGL/src/mgl_buffer_slots.c \
 	MGL/src/mgl_sync.m
 	$(LLVM_CXX) -x objective-c++ -fobjc-arc -g -O0 $(LLVM_CXXFLAGS) $(LLVM_LDFLAGS) \
 		-framework Cocoa -framework Foundation -framework Metal \
 		test_legacy_compat/test_metalcpp_smoke.mm \
 		MGL/src/mgl_render_cpp.cpp \
 		MGL/src/mgl_aux_assets.c \
+		MGL/src/mgl_buffer_slots.c \
 		MGL/src/mgl_sync.m \
 		-o $@
 

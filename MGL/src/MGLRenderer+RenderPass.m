@@ -868,7 +868,7 @@ static void mglRenderPassSetPersistentStencilClear(
     uint32_t clearStencil)
 {
     if (!commandState) return;
-    if (commandState->renderPassDescriptor) {
+    if (!mglRenderPassUsesMetalCpp() && commandState->renderPassDescriptor) {
         commandState->renderPassDescriptor.stencilAttachment.clearStencil =
             clearStencil;
     }
