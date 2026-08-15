@@ -3384,6 +3384,93 @@ int mglRenderCppConvertIntegerReadback(
     return 0;
 }
 
+/* P4.5 (item 1141/887): tess-factor CPU transforms.  The discard check is
+ * the C function from MGLRenderer+Tessellation.m (C linkage; the smoke
+ * stubs it). */
+extern "C" bool mglTessFactorsDiscardPatch(uint32_t gen_mode,
+                                           const float *edge,
+                                           const float *inside);
+
+extern "C"
+int mglRenderCppFillDefaultTessFactorBuffer(
+    void* dst, uint64_t dst_bytes,
+    const float* outer_levels, const float* inner_levels,
+    uint32_t patch_count) {
+    const uint64_t stride = 12u;
+    if (!dst || !outer_levels || !inner_levels || patch_count == 0u ||
+        dst_bytes < (uint64_t)patch_count * stride) {
+        return -1;
+    }
+    __fp16* out = (__fp16*)dst;
+    for (uint32_t patch = 0u; patch < patch_count; patch++) {
+        for (uint32_t i = 0u; i < 4u; i++) {
+            out[patch * 6u + i] = (__fp16)outer_levels[i];
+        }
+        for (uint32_t i = 0u; i < 2u; i++) {
+            out[patch * 6u + 4u + i] = (__fp16)inner_levels[i];
+        }
+    }
+    return 0;
+}
+
+extern "C"
+int mglRenderCppRepackTessFactorTriangles(
+    const void* src, uint64_t src_bytes,
+    void* dst, uint64_t dst_bytes,
+    uint32_t patch_count) {
+    const uint64_t canonical_stride = 12u;
+    const uint64_t triangle_stride = 8u;
+    if (!src || !dst || patch_count == 0u ||
+        src_bytes < (uint64_t)patch_count * canonical_stride ||
+        dst_bytes < (uint64_t)patch_count * triangle_stride) {
+        return -1;
+    }
+    const uint16_t* in_all = (const uint16_t*)src;
+    uint16_t* out_all = (uint16_t*)dst;
+    for (uint32_t patch = 0u; patch < patch_count; patch++) {
+        const uint16_t* in = in_all + patch * 6u;
+        uint16_t* out = out_all + patch * 4u;
+        out[0] = in[0];
+        out[1] = in[1];
+        out[2] = in[2];
+        out[3] = in[4];
+    }
+    return 0;
+}
+
+extern "C"
+uint64_t mglRenderCppTessPrimitiveCount(
+    const void* factors, uint64_t bytes,
+    uint32_t patch_count, uint32_t tess_gen_mode,
+    uint32_t instance_count) {
+    if (!factors || patch_count == 0u ||
+        bytes < (uint64_t)patch_count * 12u) {
+        return 0u;
+    }
+    const uint16_t* recs = (const uint16_t*)factors;
+    uint64_t total = 0u;
+    for (uint32_t patch = 0u; patch < patch_count; patch++) {
+        const uint16_t* record = recs + patch * 6u;
+        float edge[4], inside[2];
+        for (int i = 0; i < 4; i++) {
+            edge[i] = *(const __fp16*)&record[i];
+        }
+        for (int i = 0; i < 2; i++) {
+            inside[i] = *(const __fp16*)&record[4 + i];
+        }
+        if (mglTessFactorsDiscardPatch(tess_gen_mode, edge, inside)) {
+            continue;
+        }
+        float inside0 = fmaxf(inside[0], 1.0f);
+        float inside1 = fmaxf(inside[1], 1.0f);
+        uint64_t per_patch = tess_gen_mode == GL_QUADS
+            ? 2ull * (uint64_t)ceilf(inside0) * (uint64_t)ceilf(inside1)
+            : (uint64_t)ceilf(inside0) * (uint64_t)ceilf(inside0);
+        total += per_patch > 1ull ? per_patch : 1ull;
+    }
+    return total * (uint64_t)instance_count;
+}
+
 extern "C"
 int mglRenderCppBuildLevelUploadOps(
     const TextureLevel* levels, uint32_t level_count,

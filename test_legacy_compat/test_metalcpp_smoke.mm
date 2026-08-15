@@ -2102,6 +2102,26 @@ GLuint sizeForInternalFormat(GLenum internalformat, GLenum, GLenum) {
         default: return 0;
     }
 }
+extern "C" bool mglTessFactorsDiscardPatch(uint32_t gen_mode,
+                                             const float *edge,
+                                             const float *inside)
+{
+    switch (gen_mode) {
+        case GL_QUADS:
+            return edge[0] <= 0.0f || edge[1] <= 0.0f ||
+                   edge[2] <= 0.0f || edge[3] <= 0.0f ||
+                   inside[0] <= 0.0f || inside[1] <= 0.0f ||
+                   isnan(edge[0]) || isnan(edge[1]) ||
+                   isnan(edge[2]) || isnan(edge[3]) ||
+                   isnan(inside[0]) || isnan(inside[1]);
+        default: /* GL_TRIANGLES */
+            return edge[0] <= 0.0f || edge[1] <= 0.0f ||
+                   edge[2] <= 0.0f || inside[0] <= 0.0f ||
+                   isnan(edge[0]) || isnan(edge[1]) ||
+                   isnan(edge[2]) || isnan(inside[0]);
+    }
+}
+
 bool mglTextureInternalFormatNeedsRGBA8Expansion(
     GLenum internalformat, uint32_t pixelFormat) {
     bool isRGBA8 = (pixelFormat == (uint32_t)MTLPixelFormatRGBA8Unorm ||
@@ -2278,6 +2298,95 @@ static int verifyMDIScratchOwner(void) {
         return 1;
     }
     printf("MDI_SCRATCH_OK\n");
+    return 0;
+}
+
+static int verifyTessFactorTransforms(void) {
+    /* P4.5 (item 1141/887): tess-factor CPU transforms. */
+    float outer[4] = {1.0f, 2.0f, 3.0f, 4.0f};
+    float inner[2] = {5.0f, 6.0f};
+
+    /* Fill: 2 patches x 12B canonical records. */
+    uint8_t fill[24];
+    memset(fill, 0xAA, sizeof(fill));
+    if (mglRenderCppFillDefaultTessFactorBuffer(
+            fill, sizeof(fill), outer, inner, 2) != 0) {
+        fprintf(stderr, "FAIL: tess fill rc\n");
+        return 1;
+    }
+    const __fp16 *hf = (const __fp16 *)fill;
+    for (int p = 0; p < 2; p++) {
+        for (int i = 0; i < 4; i++) {
+            if (hf[p * 6 + i] != (__fp16)outer[i]) {
+                fprintf(stderr, "FAIL: tess fill outer p=%d i=%d\n", p, i);
+                return 1;
+            }
+        }
+        for (int i = 0; i < 2; i++) {
+            if (hf[p * 6 + 4 + i] != (__fp16)inner[i]) {
+                fprintf(stderr, "FAIL: tess fill inner p=%d i=%d\n", p, i);
+                return 1;
+            }
+        }
+    }
+    if (mglRenderCppFillDefaultTessFactorBuffer(
+            fill, 11, outer, inner, 2) != -1 ||
+        mglRenderCppFillDefaultTessFactorBuffer(
+            NULL, sizeof(fill), outer, inner, 2) != -1) {
+        fprintf(stderr, "FAIL: tess fill bad args\n");
+        return 1;
+    }
+
+    /* Repack: canonical -> triangle (out = in0..2 + in4). */
+    uint16_t canon[12] = {100, 200, 300, 400, 500, 600,
+                          700, 800, 900, 1000, 1100, 1200};
+    uint8_t tri[16];
+    memset(tri, 0xBB, sizeof(tri));
+    if (mglRenderCppRepackTessFactorTriangles(
+            canon, sizeof(canon), tri, sizeof(tri), 2) != 0) {
+        fprintf(stderr, "FAIL: tess repack rc\n");
+        return 1;
+    }
+    const uint16_t *tr = (const uint16_t *)tri;
+    if (tr[0] != 100 || tr[1] != 200 || tr[2] != 300 || tr[3] != 500 ||
+        tr[4] != 700 || tr[5] != 800 || tr[6] != 900 || tr[7] != 1100) {
+        fprintf(stderr, "FAIL: tess repack values\n");
+        return 1;
+    }
+    if (mglRenderCppRepackTessFactorTriangles(
+            canon, sizeof(canon), tri, 7, 2) != -1 ||
+        mglRenderCppRepackTessFactorTriangles(
+            NULL, sizeof(canon), tri, sizeof(tri), 2) != -1) {
+        fprintf(stderr, "FAIL: tess repack bad args\n");
+        return 1;
+    }
+
+    /* Primitive count: patch0 inside {0.5, 0.5} -> clamp to 1 -> TRI 1x1=1,
+     * QUADS 2x1x1=2; patch1 edge0=0 -> discarded.  Instances x3. */
+    uint16_t factors[12];
+    memset(factors, 0, sizeof(factors));
+    /* patch0: edges all 1.0, inside {0.5, 0.5}; patch1: all zero (discarded). */
+    for (int i = 0; i < 4; i++) factors[i] = 0x3C00; /* __fp16 1.0 */
+    factors[4] = 0x3800; /* __fp16 0.5 */
+    factors[5] = 0x3800;
+    if (mglRenderCppTessPrimitiveCount(
+            factors, sizeof(factors), 2, GL_TRIANGLES, 3) != 3) {
+        fprintf(stderr, "FAIL: tess primcount triangles\n");
+        return 1;
+    }
+    if (mglRenderCppTessPrimitiveCount(
+            factors, sizeof(factors), 2, GL_QUADS, 1) != 2) {
+        fprintf(stderr, "FAIL: tess primcount quads\n");
+        return 1;
+    }
+    if (mglRenderCppTessPrimitiveCount(
+            NULL, sizeof(factors), 2, GL_TRIANGLES, 1) != 0 ||
+        mglRenderCppTessPrimitiveCount(
+            factors, 7, 2, GL_TRIANGLES, 1) != 0) {
+        fprintf(stderr, "FAIL: tess primcount bad args\n");
+        return 1;
+    }
+    printf("TESS_FACTOR_TRANSFORMS_OK\n");
     return 0;
 }
 
@@ -3953,6 +4062,7 @@ int main(void) {
         if (verifyCopyBackEncode() != 0) return 1;
         if (verifyLevelUploadOps() != 0) return 1;
         if (verifyIntegerReadbackConvert() != 0) return 1;
+        if (verifyTessFactorTransforms() != 0) return 1;
         if (verifyMDIScratchOwner() != 0) return 1;
         if (verifyRenderEncoderGetter() != 0) return 1;
         if (verifyCommandBufferGetterAndAdopt() != 0) return 1;

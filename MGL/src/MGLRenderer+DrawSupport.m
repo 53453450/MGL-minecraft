@@ -553,16 +553,15 @@ static id<MTLBuffer> mglDefaultTessFactorBuffer(id<MTLDevice> device,
         device, (NSUInteger)patchCount * stride,
         MTLResourceStorageModeShared);
     if (!buffer || !buffer.contents) return nil;
-    __fp16 *dst = (__fp16 *)buffer.contents;
-    for (GLuint patch = 0u; patch < patchCount; patch++) {
-        for (GLuint i = 0u; i < 4u; i++) {
-            dst[patch * 6u + i] =
-                (__fp16)state->var.patch_default_outer_level[i];
-        }
-        for (GLuint i = 0u; i < 2u; i++) {
-            dst[patch * 6u + 4u + i] =
-                (__fp16)state->var.patch_default_inner_level[i];
-        }
+    /* P4.5 (item 1141/887): 默认 factor 填充在 C++（__fp16 打包，纯数据
+     * 变换，两门共用）。 */
+    if (mglRenderCppFillDefaultTessFactorBuffer(
+            (void *)buffer.contents,
+            (uint64_t)((NSUInteger)patchCount * stride),
+            state->var.patch_default_outer_level,
+            state->var.patch_default_inner_level,
+            patchCount) != 0) {
+        return nil;
     }
     return buffer;
 }
@@ -628,15 +627,14 @@ static id<MTLBuffer> mglNativeTessFactorBuffer(id<MTLDevice> device,
     if (!result || !result.contents) {
         return nil;
     }
-    const uint16_t *src = (const uint16_t *)canonical.contents;
-    uint16_t *dst = (uint16_t *)result.contents;
-    for (GLuint patch = 0u; patch < patchCount; patch++) {
-        const uint16_t *in = src + patch * 6u;
-        uint16_t *out = dst + patch * 4u;
-        out[0] = in[0];
-        out[1] = in[1];
-        out[2] = in[2];
-        out[3] = in[4];
+    /* P4.5 (item 1141/887): canonical->triangle 重打包在 C++
+     * （12B/patch -> 8B/patch，纯数据变换，两门共用）。 */
+    if (mglRenderCppRepackTessFactorTriangles(
+            (const void *)canonical.contents, (uint64_t)canonical.length,
+            (void *)result.contents,
+            (uint64_t)((NSUInteger)patchCount * triangleStride),
+            patchCount) != 0) {
+        return nil;
     }
     return result;
 }
@@ -649,31 +647,13 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     if (!canonical || !canonical.contents || !tesProgram || patchCount == 0u) {
         return 0u;
     }
-    const uint16_t *factors = (const uint16_t *)canonical.contents;
-    GLuint64 total = 0u;
-    for (GLuint patch = 0u; patch < patchCount; patch++) {
-        const uint16_t *record = factors + patch * 6u;
-        float edge[4], inside[2];
-        for (int i = 0; i < 4; i++) {
-            edge[i] = *(const __fp16 *)&record[i];
-        }
-        for (int i = 0; i < 2; i++) {
-            inside[i] = *(const __fp16 *)&record[4 + i];
-        }
-        /* Zero/NaN factor: the patch is discarded and generates no
-         * primitives (GL 4.6 §11.2.2.2). */
-        if (mglTessFactorsDiscardPatch(tesProgram->tess_gen_mode,
-                                       edge, inside)) {
-            continue;
-        }
-        float inside0 = MAX(inside[0], 1.0f);
-        float inside1 = MAX(inside[1], 1.0f);
-        GLuint64 perPatch = tesProgram->tess_gen_mode == GL_QUADS
-            ? 2ull * (GLuint64)ceilf(inside0) * (GLuint64)ceilf(inside1)
-            : (GLuint64)ceilf(inside0) * (GLuint64)ceilf(inside0);
-        total += MAX(perPatch, 1ull);
-    }
-    return total * (GLuint64)instanceCount;
+    /* P4.5 (item 1141/887): 原生 primitive count（GL 4.6 §11.2.2.2 ceil
+     * 规则 + discard 判定）在 C++（mglRenderCppTessPrimitiveCount，纯数据
+     * 变换，两门共用；discard 经 mglTessFactorsDiscardPatch C 函数）。 */
+    return (GLuint64)mglRenderCppTessPrimitiveCount(
+        (const void *)canonical.contents, (uint64_t)canonical.length,
+        patchCount, (uint32_t)tesProgram->tess_gen_mode,
+        instanceCount);
 }
 
 @implementation MGLRenderer (Draw)

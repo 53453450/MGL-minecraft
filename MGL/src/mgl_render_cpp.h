@@ -402,6 +402,31 @@ typedef struct MGLRenderCppIntegerReadbackConvertParams_t {
 int mglRenderCppConvertIntegerReadback(
     const MGLRenderCppIntegerReadbackConvertParams *params);
 
+/* P4.5 (item 1141/887): tess-factor buffer CPU transforms — the default
+ * canonical factor fill (12B/patch: 4x outer + 2x inner __fp16), the
+ * canonical->triangle repack (12B -> 8B/patch) and the native primitive
+ * count (GL 4.6 11.2.2.2 ceil rules; discard via
+ * mglTessFactorsDiscardPatch).  Pure data transforms shared by both gates.
+ * Return 0 on success, -1 on bad args (count entry returns 0). */
+int mglRenderCppFillDefaultTessFactorBuffer(
+    void *dst,
+    uint64_t dst_bytes,
+    const float *outer_levels,
+    const float *inner_levels,
+    uint32_t patch_count);
+int mglRenderCppRepackTessFactorTriangles(
+    const void *src,
+    uint64_t src_bytes,
+    void *dst,
+    uint64_t dst_bytes,
+    uint32_t patch_count);
+uint64_t mglRenderCppTessPrimitiveCount(
+    const void *factors,
+    uint64_t bytes,
+    uint32_t patch_count,
+    uint32_t tess_gen_mode,
+    uint32_t instance_count);
+
 typedef struct MGLRenderCppLevelUploadOp_t {
     uint32_t level;
     uint32_t kind;          /* 0 = upload op, 1 = short-backing (skip) */
