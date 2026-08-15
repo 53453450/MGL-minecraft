@@ -448,6 +448,21 @@ int mglRenderCppCheckedTessCaptureSize(
     uint64_t *size_out,
     uint64_t *offset_out);
 
+/* P4.5 (item 1141/887): native TES interface support decision — module /
+ * function presence, point-mode / XFB exclusion, TRI/QUADS gen-mode gate,
+ * and the MTL::Function patchType + patchControlPointCount consistency
+ * checks (zero control-point count = legacy encoding, tolerated).  Shared
+ * by both gates; the ObjC caller passes __bridge'd MTL::Function pointers. */
+int mglRenderCppNativeTESInterfaceSupported(
+    void *tes_function,
+    uint64_t tes_metallib_bytes,
+    uint32_t tes_gen_point_mode,
+    uint32_t tes_xfb_varying_count,
+    uint32_t tes_gen_mode,
+    void *tcs_function,
+    uint64_t tcs_metallib_bytes,
+    uint32_t tcs_output_vertices);
+
 typedef struct MGLRenderCppLevelUploadOp_t {
     uint32_t level;
     uint32_t kind;          /* 0 = upload op, 1 = short-backing (skip) */

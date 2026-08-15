@@ -2304,6 +2304,55 @@ static int verifyMDIScratchOwner(void) {
     return 0;
 }
 
+static int verifyNativeTESInterfaceGuards(void) {
+    /* P4.5 (item 1141/887): the native-TES support decision's guard paths
+     * (all return before the MTL::Function patchType read, which cannot be
+     * constructed in the smoke). */
+    void *fn = (void *)(uintptr_t)0x1;
+    if (mglRenderCppNativeTESInterfaceSupported(
+            NULL, 64, 0, 0, GL_TRIANGLES, NULL, 0, 0) != 0) {
+        fprintf(stderr, "FAIL: TES iface null function\n");
+        return 1;
+    }
+    if (mglRenderCppNativeTESInterfaceSupported(
+            fn, 0, 0, 0, GL_TRIANGLES, NULL, 0, 0) != 0) {
+        fprintf(stderr, "FAIL: TES iface no metallib\n");
+        return 1;
+    }
+    if (mglRenderCppNativeTESInterfaceSupported(
+            fn, 64, 1, 0, GL_TRIANGLES, NULL, 0, 0) != 0) {
+        fprintf(stderr, "FAIL: TES iface point mode\n");
+        return 1;
+    }
+    if (mglRenderCppNativeTESInterfaceSupported(
+            fn, 64, 0, 1, GL_TRIANGLES, NULL, 0, 0) != 0) {
+        fprintf(stderr, "FAIL: TES iface xfb\n");
+        return 1;
+    }
+    if (mglRenderCppNativeTESInterfaceSupported(
+            fn, 64, 0, 0, GL_ISOLINES, NULL, 0, 0) != 0) {
+        fprintf(stderr, "FAIL: TES iface gen mode\n");
+        return 1;
+    }
+    if (mglRenderCppNativeTESInterfaceSupported(
+            fn, 64, 0, 0, GL_TRIANGLES, fn, 0, 4) != 0) {
+        fprintf(stderr, "FAIL: TES iface tcs no metallib\n");
+        return 1;
+    }
+    if (mglRenderCppNativeTESInterfaceSupported(
+            fn, 64, 0, 0, GL_TRIANGLES, fn, 64, 0) != 0) {
+        fprintf(stderr, "FAIL: TES iface tcs zero vertices\n");
+        return 1;
+    }
+    if (mglRenderCppNativeTESInterfaceSupported(
+            fn, 64, 0, 0, GL_TRIANGLES, fn, 64, 33) != 0) {
+        fprintf(stderr, "FAIL: TES iface tcs vertices > 32\n");
+        return 1;
+    }
+    printf("NATIVE_TES_INTERFACE_GUARDS_OK\n");
+    return 0;
+}
+
 static int verifyTessEvalItemsAndCaptureSize(void) {
     /* P4.5 (item 1141/887): per-patch eval items + checked capture size. */
     /* patch record: edge {1,2,0,0} inside {0.5, 0.5} — 0.5=0x3800, 1.0=0x3C00,
@@ -4118,6 +4167,7 @@ int main(void) {
         if (verifyIntegerReadbackConvert() != 0) return 1;
         if (verifyTessFactorTransforms() != 0) return 1;
         if (verifyTessEvalItemsAndCaptureSize() != 0) return 1;
+        if (verifyNativeTESInterfaceGuards() != 0) return 1;
         if (verifyMDIScratchOwner() != 0) return 1;
         if (verifyRenderEncoderGetter() != 0) return 1;
         if (verifyCommandBufferGetterAndAdopt() != 0) return 1;

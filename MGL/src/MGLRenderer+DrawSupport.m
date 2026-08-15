@@ -504,45 +504,22 @@ static BOOL mglCheckedTessCaptureSize(GLsizei count, GLsizei instanceCount,
 static BOOL mglNativeTESInterfaceSupported(Program *tcsProgram,
                                            Program *tesProgram)
 {
-    if (!tesProgram ||
-        !tesProgram->modules[_TESS_EVALUATION_SHADER].metallib_bytes ||
-        !tesProgram->modules[_TESS_EVALUATION_SHADER].mtl_function ||
-        tesProgram->tess_gen_point_mode ||
-        tesProgram->transform_feedback_varying_count > 0) {
+    if (!tesProgram) {
         return NO;
     }
-
-    if (tcsProgram &&
-        (!tcsProgram->modules[_TESS_CONTROL_SHADER].metallib_bytes ||
-         !tcsProgram->modules[_TESS_CONTROL_SHADER].mtl_function ||
-         tcsProgram->tess_control_output_vertices == 0u ||
-         tcsProgram->tess_control_output_vertices > 32u)) {
-        return NO;
-    }
-
-    if (tesProgram->tess_gen_mode != GL_TRIANGLES &&
-        tesProgram->tess_gen_mode != GL_QUADS) {
-        return NO;
-    }
-
-    id<MTLFunction> function = (__bridge id<MTLFunction>)
-        tesProgram->modules[_TESS_EVALUATION_SHADER].mtl_function;
-    MTLPatchType expected = tesProgram->tess_gen_mode == GL_QUADS
-        ? MTLPatchTypeQuad : MTLPatchTypeTriangle;
-    if (function.patchType != expected) {
-        return NO;
-    }
-    /* The metallib TESS tag now carries 4*controlPointCount + patchKind;
-     * a non-zero patchControlPointCount is the real per-patch control
-     * point count and must agree with the TCS output vertices.  Zero
-     * (legacy encoding) is also tolerated. */
-    if (function.patchControlPointCount > 0 &&
-        tcsProgram &&
-        (NSInteger)tcsProgram->tess_control_output_vertices !=
-            function.patchControlPointCount) {
-        return NO;
-    }
-    return YES;
+    /* P4.5 (item 1141/887): 模块/函数存在性 + point-mode/XFB 排除 +
+     * TRI/QUADS 门 + MTL::Function patchType/patchControlPointCount 一致
+     * 性判定在 C++（mglRenderCppNativeTESInterfaceSupported，经 bridge
+     * 读取 MTL::Function，两门共用）。 */
+    return mglRenderCppNativeTESInterfaceSupported(
+        tesProgram->modules[_TESS_EVALUATION_SHADER].mtl_function,
+        (uint64_t)tesProgram->modules[_TESS_EVALUATION_SHADER].metallib_bytes,
+        (uint32_t)tesProgram->tess_gen_point_mode,
+        (uint32_t)tesProgram->transform_feedback_varying_count,
+        (uint32_t)tesProgram->tess_gen_mode,
+        tcsProgram ? tcsProgram->modules[_TESS_CONTROL_SHADER].mtl_function : NULL,
+        tcsProgram ? (uint64_t)tcsProgram->modules[_TESS_CONTROL_SHADER].metallib_bytes : 0u,
+        tcsProgram ? (uint32_t)tcsProgram->tess_control_output_vertices : 0u) != 0;
 }
 
 static id<MTLBuffer> mglDefaultTessFactorBuffer(id<MTLDevice> device,

@@ -3471,6 +3471,42 @@ uint64_t mglRenderCppTessPrimitiveCount(
     return total * (uint64_t)instance_count;
 }
 
+extern "C"
+int mglRenderCppNativeTESInterfaceSupported(
+    void* tes_function, uint64_t tes_metallib_bytes,
+    uint32_t tes_gen_point_mode, uint32_t tes_xfb_varying_count,
+    uint32_t tes_gen_mode,
+    void* tcs_function, uint64_t tcs_metallib_bytes,
+    uint32_t tcs_output_vertices) {
+    if (!tes_function || tes_metallib_bytes == 0u ||
+        tes_gen_point_mode != 0u || tes_xfb_varying_count > 0u) {
+        return 0;
+    }
+    if (tcs_function && (tcs_metallib_bytes == 0u ||
+                         tcs_output_vertices == 0u ||
+                         tcs_output_vertices > 32u)) {
+        return 0;
+    }
+    if (tes_gen_mode != GL_TRIANGLES && tes_gen_mode != GL_QUADS) {
+        return 0;
+    }
+    MTL::Function* fn = static_cast<MTL::Function*>(tes_function);
+    MTL::PatchType expected = tes_gen_mode == GL_QUADS
+        ? MTL::PatchTypeQuad : MTL::PatchTypeTriangle;
+    if (fn->patchType() != expected) {
+        return 0;
+    }
+    /* The metallib TESS tag now carries 4*controlPointCount + patchKind;
+     * a non-zero patchControlPointCount is the real per-patch control
+     * point count and must agree with the TCS output vertices.  Zero
+     * (legacy encoding) is also tolerated. */
+    if (fn->patchControlPointCount() > 0 && tcs_function &&
+        tcs_output_vertices != (uint32_t)fn->patchControlPointCount()) {
+        return 0;
+    }
+    return 1;
+}
+
 static uint32_t mglTessRoundLevelForSpacing(uint32_t spacing,
                                               uint32_t ceil_level) {
     if (spacing == GL_FRACTIONAL_EVEN) {
