@@ -472,6 +472,14 @@ float mglRenderCppFloat10ToFloat(uint32_t val);
  * macOS SDK enum (Float=28 ... UInt4=39).  Shared by both gates. */
 uint32_t mglRenderCppTessControlPointFormat(uint64_t gl_type);
 
+/* P4.5 (item 1141/887): TES XFB compact vertex stride — sum of the byte
+ * sizes of the transform-feedback varyings resolved by name against the
+ * TES stage-output resource list (lockstep with the packed writes injected
+ * by mglFixMSLTesAsComputeKernel).  0 when the stride cannot be proven
+ * (no varyings / unknown field type / overflow).  Matches the ObjC
+ * mglTESXFBVertexStride.  Shared by both gates. */
+uint64_t mglRenderCppTESXFBVertexStride(const void *program);
+
 /* Overflow-checked tess capture size (records x stride, min_stride floor).
  * Returns 0 with size_out/offset_out set, -1 on bad args / overflow. */
 int mglRenderCppCheckedTessCaptureSize(

@@ -3620,6 +3620,51 @@ static int verifyTessControlPointFormat(void) {
     return 0;
 }
 
+static int verifyTESXFBVertexStride(void) {
+    /* P4.5 (item 1141/887): TES XFB compact vertex stride (varyings resolved
+     * by name against the TES stage-output resource list). */
+    MGLShaderResource res[2] = {};
+    res[0].name = "pos";
+    res[0].gl_type = GL_FLOAT_VEC4; /* 16B */
+    res[1].name = "col";
+    res[1].gl_type = GL_FLOAT_VEC3; /* 12B */
+    MGLShaderResourceList outputs;
+    outputs.count = 2;
+    outputs.list = res;
+
+    Program p = {};
+    p.transform_feedback_varying_count = 2;
+    p.shader_resources_list[_TESS_EVALUATION_SHADER][_STAGE_OUTPUT_RES] = outputs;
+    strcpy(p.transform_feedback_varying_names[0], "pos");
+    strcpy(p.transform_feedback_varying_names[1], "col");
+    if (mglRenderCppTESXFBVertexStride(&p) != 28) {
+        fprintf(stderr, "FAIL: xfb stride basic\n");
+        return 1;
+    }
+    /* Unknown varying name -> cannot prove stride -> 0. */
+    strcpy(p.transform_feedback_varying_names[1], "nope");
+    if (mglRenderCppTESXFBVertexStride(&p) != 0) {
+        fprintf(stderr, "FAIL: xfb stride unknown field\n");
+        return 1;
+    }
+    /* Unsupported field type (matrix) -> 0. */
+    strcpy(p.transform_feedback_varying_names[1], "col");
+    res[1].gl_type = GL_FLOAT_MAT4;
+    if (mglRenderCppTESXFBVertexStride(&p) != 0) {
+        fprintf(stderr, "FAIL: xfb stride unsupported type\n");
+        return 1;
+    }
+    /* No varyings / NULL program -> 0. */
+    p.transform_feedback_varying_count = 0;
+    if (mglRenderCppTESXFBVertexStride(&p) != 0 ||
+        mglRenderCppTESXFBVertexStride(NULL) != 0) {
+        fprintf(stderr, "FAIL: xfb stride empty/null\n");
+        return 1;
+    }
+    printf("TES_XFB_STRIDE_OK\n");
+    return 0;
+}
+
 static int verifyTessFactorTransforms(void) {
     /* P4.5 (item 1141/887): tess-factor CPU transforms. */
     float outer[4] = {1.0f, 2.0f, 3.0f, 4.0f};
@@ -5387,6 +5432,7 @@ int main(void) {
         if (verifyCheckedProductAndXFBFieldByteSize() != 0) return 1;
         if (verifyFloatUnpack() != 0) return 1;
         if (verifyTessControlPointFormat() != 0) return 1;
+        if (verifyTESXFBVertexStride() != 0) return 1;
         if (verifyNativeTESInterfaceGuards() != 0) return 1;
         if (verifyRasterizationIsEmpty() != 0) return 1;
         if (verifyIntegerReadbackClassify() != 0) return 1;

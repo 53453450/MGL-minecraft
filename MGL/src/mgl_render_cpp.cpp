@@ -4910,6 +4910,42 @@ uint32_t mglRenderCppTessControlPointFormat(uint64_t gl_type) {
     }
 }
 
+/* TES XFB compact vertex stride: sum of the transform-feedback varyings'
+ * byte sizes, each resolved by name against the TES stage-output resource
+ * list.  0 when the stride cannot be proven (no varyings, unknown field
+ * type, or overflow) — mirrors the ObjC mglTESXFBVertexStride and the
+ * packed-write lockstep with mglFixMSLTesAsComputeKernel. */
+extern "C"
+uint64_t mglRenderCppTESXFBVertexStride(const void* program_v) {
+    const Program* program = (const Program*)program_v;
+    if (!program || program->transform_feedback_varying_count <= 0) {
+        return 0u;
+    }
+    const MGLShaderResourceList* outputs =
+        &program->shader_resources_list[_TESS_EVALUATION_SHADER]
+                                        [_STAGE_OUTPUT_RES];
+    uint64_t stride = 0u;
+    for (GLsizei varying = 0;
+         varying < program->transform_feedback_varying_count;
+         varying++) {
+        const char* name = program->transform_feedback_varying_names[varying];
+        const MGLShaderResource* output = NULL;
+        for (GLuint i = 0; name && outputs->list && i < outputs->count; i++) {
+            if (outputs->list[i].name && strcmp(outputs->list[i].name, name) == 0) {
+                output = &outputs->list[i];
+                break;
+            }
+        }
+        const uint64_t field_bytes =
+            output ? mglRenderCppTESXFBFieldByteSize(output->gl_type) : 0u;
+        if (field_bytes == 0u || stride > UINT64_MAX - field_bytes) {
+            return 0u;
+        }
+        stride += field_bytes;
+    }
+    return stride;
+}
+
 extern "C"
 uint32_t mglRenderCppTessEvalItemsPerPatch(
     const void* factor_record, uint32_t gen_mode, uint32_t spacing,

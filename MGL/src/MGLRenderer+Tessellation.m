@@ -1162,35 +1162,13 @@ static NSUInteger mglTESXFBFieldByteSize(GLenum glType)
 
 /* Keep this layout calculation in lockstep with the packed writes injected by
  * mglFixMSLTesAsComputeKernel.  A zero result means the renderer cannot prove
- * the write stride and must not copy temporary capture data into the GL store. */
+ * the write stride and must not copy temporary capture data into the GL store.
+ * P4.5 (item 1141/887): single source of truth is
+ * mglRenderCppTESXFBVertexStride (mgl_render_cpp.cpp) — this shell keeps
+ * the two XFB stride call sites unchanged. */
 static NSUInteger mglTESXFBVertexStride(const Program *program)
 {
-    if (!program || program->transform_feedback_varying_count <= 0) {
-        return 0u;
-    }
-
-    const MGLShaderResourceList *outputs =
-        &program->shader_resources_list[_TESS_EVALUATION_SHADER][_STAGE_OUTPUT_RES];
-    NSUInteger stride = 0u;
-    for (GLsizei varying = 0;
-         varying < program->transform_feedback_varying_count;
-         varying++) {
-        const char *name = program->transform_feedback_varying_names[varying];
-        const MGLShaderResource *output = NULL;
-        for (GLuint i = 0; name && outputs->list && i < outputs->count; i++) {
-            if (outputs->list[i].name && strcmp(outputs->list[i].name, name) == 0) {
-                output = &outputs->list[i];
-                break;
-            }
-        }
-
-        NSUInteger fieldBytes = output ? mglTESXFBFieldByteSize(output->gl_type) : 0u;
-        if (fieldBytes == 0u || stride > NSUIntegerMax - fieldBytes) {
-            return 0u;
-        }
-        stride += fieldBytes;
-    }
-    return stride;
+    return (NSUInteger)mglRenderCppTESXFBVertexStride((const void *)program);
 }
 
 /* P4.5 (item 1141/887): overflow-checked product for tessellation size
