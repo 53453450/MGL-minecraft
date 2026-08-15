@@ -3250,6 +3250,84 @@ uint8_t* mglRenderCppCreateChannelExpandedUpload(
     return dst;
 }
 
+extern "C"
+int mglRenderCppBuildLevelUploadOps(
+    const TextureLevel* levels, uint32_t level_count,
+    uint32_t texture_type, uint32_t internal_format, uint32_t pixel_format,
+    MGLRenderCppLevelUploadOp* ops, uint32_t ops_capacity,
+    uint32_t* op_count_out, uint32_t* short_backing_out, uint32_t* bad_out) {
+    if (op_count_out) *op_count_out = 0;
+    if (short_backing_out) *short_backing_out = 0;
+    if (bad_out) *bad_out = 0;
+    if (!levels || !ops || !op_count_out || !short_backing_out || !bad_out ||
+        level_count == 0 || ops_capacity < level_count) {
+        return -1;
+    }
+    uint32_t op_count = 0, short_count = 0, bad_count = 0;
+    for (uint32_t level = 0; level < level_count; level++) {
+        const TextureLevel* l = &levels[level];
+        /* mglTextureLevelHasUploadableCPUData, inlined (the compat header is
+         * ObjC-typed and cannot be included from this TU). */
+        if (!l->complete || !l->data || l->data_size == 0u || l->pitch == 0u) {
+            continue;
+        }
+        switch (l->last_init_source) {
+            case kTexImageCopy:
+            case kTexImagePBO:
+            case kTexSubImageCPU:
+            case kTexSubImagePBO:
+            case kTexMetalFill:
+                break;
+            case kTexInitNone:
+            case kTexImageNull:
+            case kTexRenderTargetWrite:
+            default:
+                continue;
+        }
+        if (!(l->has_initialized_data || l->ever_written)) continue;
+
+        MGLRenderCppLevelUploadPrep prep = {0};
+        int prepResult = mglRenderCppTexturePrepareLevelUpload(
+            l, texture_type, internal_format, pixel_format, &prep);
+        if (prepResult == -2) {
+            MGLRenderCppLevelUploadOp& op = ops[op_count++];
+            op.level = level;
+            op.kind = 1u;
+            op.width = 0;
+            op.height = 0;
+            op.bytes_per_row = 0;
+            op.bytes_per_image = prep.bytes_per_image;
+            op.copy_depth = prep.copy_depth;
+            op.available_bytes = prep.available_bytes;
+            op.needed_bytes = prep.bytes_per_image * prep.copy_depth;
+            op.data = nullptr;
+            op.owns_data = 0;
+            short_count++;
+            continue;
+        }
+        if (prepResult != 0) {
+            bad_count++;
+            continue;
+        }
+        MGLRenderCppLevelUploadOp& op = ops[op_count++];
+        op.level = level;
+        op.kind = 0u;
+        op.width = MAX((uint32_t)1u, (uint32_t)l->width);
+        op.height = MAX((uint32_t)1u, (uint32_t)l->height);
+        op.bytes_per_row = prep.bytes_per_row;
+        op.bytes_per_image = prep.bytes_per_image;
+        op.copy_depth = prep.copy_depth;
+        op.available_bytes = prep.available_bytes;
+        op.needed_bytes = 0;
+        op.data = prep.data;
+        op.owns_data = prep.owns_data;
+    }
+    *op_count_out = op_count;
+    *short_backing_out = short_count;
+    *bad_out = bad_count;
+    return 0;
+}
+
 /* P4.5 (item 1111): per-level CPU upload data preparation. */
 extern "C"
 int mglRenderCppTexturePrepareLevelUpload(

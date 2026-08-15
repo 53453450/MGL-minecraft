@@ -371,6 +371,40 @@ int mglRenderCppCopyBackCPUPrefix(
  *  -1  bad args / rejected level
  *  -2  short backing store (level data smaller than the image needs;
  *      *out still carries the computed geometry for diagnostics) */
+typedef struct MGLRenderCppLevelUploadOp_t {
+    uint32_t level;
+    uint32_t kind;          /* 0 = upload op, 1 = short-backing (skip) */
+    uint32_t width;
+    uint32_t height;
+    uint64_t bytes_per_row;
+    uint64_t bytes_per_image;
+    uint64_t copy_depth;
+    uint64_t available_bytes; /* short-backing: bytes available */
+    uint64_t needed_bytes;    /* short-backing: bytes_per_image * copy_depth */
+    const void *data;         /* upload op: borrowed or owned (owns_data) */
+    int owns_data;
+} MGLRenderCppLevelUploadOp;
+
+/* P4.5 (item 1116): build the level-upload op list for a single-face
+ * (2D) CPU upload — inlines the has-uploadable CPU-data check, runs
+ * mglRenderCppTexturePrepareLevelUpload per level and classifies each as
+ * upload op / short-backing / bad.  levels must have level_count entries.
+ * Returns 0 with *op_count_out ops (capacity must hold level_count), or -1
+ * on bad args / capacity overflow.  short-backing ops carry kind=1 with the
+ * have/need bytes; bad levels are counted in *bad_out (skipped silently,
+ * matching the ObjC baseline). */
+int mglRenderCppBuildLevelUploadOps(
+    const TextureLevel *levels,
+    uint32_t level_count,
+    uint32_t texture_type,
+    uint32_t internal_format,
+    uint32_t pixel_format,
+    MGLRenderCppLevelUploadOp *ops,
+    uint32_t ops_capacity,
+    uint32_t *op_count_out,
+    uint32_t *short_backing_out,
+    uint32_t *bad_out);
+
 typedef struct MGLRenderCppLevelUploadPrep_t {
     const void *data;         /* borrowed or owned */
     uint64_t bytes_per_row;

@@ -2281,6 +2281,65 @@ static int verifyMDIScratchOwner(void) {
     return 0;
 }
 
+static int verifyLevelUploadOps(void) {
+    /* P4.5 (item 1116): the dirty-level loop's iteration + classification
+     * moved to mglRenderCppBuildLevelUploadOps. */
+    uint8_t backingA[64];
+    for (size_t i = 0; i < sizeof(backingA); i++) backingA[i] = (uint8_t)(i + 1);
+    TextureLevel levels[3] = {0};
+    levels[0].complete = GL_TRUE;
+    levels[0].width = 4;
+    levels[0].height = 4;
+    levels[0].depth = 1;
+    levels[0].pitch = 16;
+    levels[0].data_size = sizeof(backingA);
+    levels[0].data = (vm_address_t)(uintptr_t)backingA;
+    levels[0].last_init_source = kTexImageCopy;
+    levels[0].has_initialized_data = GL_TRUE;
+    levels[0].ever_written = GL_TRUE;
+    levels[1] = levels[0]; /* stale: no init, never written */
+    levels[1].last_init_source = kTexImageNull;
+    levels[1].has_initialized_data = GL_FALSE;
+    levels[1].ever_written = GL_FALSE;
+    levels[2] = levels[0]; /* incomplete: no pitch -> silently skipped */
+    levels[2].pitch = 0;
+
+    MGLRenderCppLevelUploadOp ops[3];
+    uint32_t opCount = 99, shortCount = 99, badCount = 99;
+    if (mglRenderCppBuildLevelUploadOps(
+            levels, 3, (uint32_t)MTLTextureType2D,
+            GL_RGBA8, (uint32_t)MTLPixelFormatRGBA8Unorm,
+            ops, 3, &opCount, &shortCount, &badCount) != 0 ||
+        opCount != 1 || shortCount != 0 || badCount != 0) {
+        fprintf(stderr, "FAIL: upload ops counts (%u/%u/%u)\n",
+                opCount, shortCount, badCount);
+        return 1;
+    }
+    if (ops[0].kind != 0u || ops[0].level != 0 ||
+        ops[0].data != backingA || ops[0].owns_data != 0 ||
+        ops[0].bytes_per_row != 16 || ops[0].bytes_per_image != 64 ||
+        ops[0].copy_depth != 1 || ops[0].width != 4 || ops[0].height != 4) {
+        fprintf(stderr, "FAIL: upload op fields\n");
+        return 1;
+    }
+    if (mglRenderCppBuildLevelUploadOps(
+            levels, 3, (uint32_t)MTLTextureType2D,
+            GL_RGBA8, (uint32_t)MTLPixelFormatRGBA8Unorm,
+            ops, 2, &opCount, &shortCount, &badCount) != -1) {
+        fprintf(stderr, "FAIL: upload ops capacity\n");
+        return 1;
+    }
+    if (mglRenderCppBuildLevelUploadOps(
+            NULL, 0, (uint32_t)MTLTextureType2D,
+            GL_RGBA8, (uint32_t)MTLPixelFormatRGBA8Unorm,
+            ops, 3, &opCount, &shortCount, &badCount) != -1) {
+        fprintf(stderr, "FAIL: upload ops bad args\n");
+        return 1;
+    }
+    printf("LEVEL_UPLOAD_OPS_OK\n");
+    return 0;
+}
+
 static int verifyCopyBackEncode(void) {
     /* P4.5 (item 1138): stage-binding copy-back validation / encode. */
     /* Validation only (NULL encoder). */
@@ -3809,6 +3868,7 @@ int main(void) {
         if (verifyPendingEventOwner() != 0) return 1;
         if (verifyLevelUploadPrep() != 0) return 1;
         if (verifyCopyBackEncode() != 0) return 1;
+        if (verifyLevelUploadOps() != 0) return 1;
         if (verifyMDIScratchOwner() != 0) return 1;
         if (verifyRenderEncoderGetter() != 0) return 1;
         if (verifyCommandBufferGetterAndAdopt() != 0) return 1;

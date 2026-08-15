@@ -794,74 +794,61 @@ static void mglTextureCopyTextureToBuffer(
         return false;
     }
 
+    /* P4.5 (item 1111/1116): 逐 level 迭代 + 可上传判定 + 数据准备 + 短后备
+     * 分类在 C++（mglRenderCppBuildLevelUploadOps——纯数据变换，两门共用）；
+     * ObjC 只负责上传每个 op + 诊断日志 + 释放自有数据。单面（2D）专用。 */
+    MGLRenderCppLevelUploadOp uploadOps[levelCount ? levelCount : 1u];
+    uint32_t opCount = 0;
+    uint32_t shortCount = 0;
+    uint32_t badCount = 0;
+    if (mglRenderCppBuildLevelUploadOps(
+            tex->faces[0].levels, levelCount,
+            (uint32_t)texture.textureType,
+            (uint32_t)tex->internalformat,
+            (uint32_t)texture.pixelFormat,
+            uploadOps, levelCount,
+            &opCount, &shortCount, &badCount) != 0) {
+        return false;
+    }
+
     bool uploadedAny = false;
-    bool failedAny = false;
-    for (int face = 0; face < numFaces; face++) {
-        if (!tex->faces[face].levels) {
-            failedAny = true;
+    bool failedAny = (shortCount + badCount) > 0;
+    for (uint32_t i = 0; i < opCount; i++) {
+        MGLRenderCppLevelUploadOp *op = &uploadOps[i];
+        if (op->kind == 1u) {
+            static uint64_t s_shortBackingLogs = 0;
+            uint64_t hit = ++s_shortBackingLogs;
+            if (kMGLDiagnosticStateLogs &&
+                (hit <= 32ull || (hit % 512ull) == 0ull)) {
+                mglTraceLogNSString(@"MGL TEXTURE CPU-REFRESH skip short backing tex=%u level=%u face=0 have=%llu need=%llu reason=%s hit=%llu",
+                              (unsigned)tex->name,
+                              (unsigned)op->level,
+                              (unsigned long long)op->available_bytes,
+                              (unsigned long long)op->needed_bytes,
+                              reason ? reason : "(null)",
+                              (unsigned long long)hit);
+            }
             continue;
         }
 
-        for (GLuint level = 0; level < levelCount; level++) {
-            TextureLevel *uploadLevel = &tex->faces[face].levels[level];
-            if (!mglTextureLevelHasUploadableCPUData(uploadLevel)) {
-                continue;
-            }
-
-            /* P4.5 (item 1111): 逐 level 的 CPU 数据准备（几何计算 + 短后备
-             * 判定 + RGBA8/通道展开选择与执行）在 C++
-             * （mglRenderCppTexturePrepareLevelUpload，纯数据变换，两门共用）。
-             * 返回 -2 表示短后备（level 数据不足一个图像），-1 坏参/拒绝。 */
-            MGLRenderCppLevelUploadPrep prep = {0};
-            int prepResult = mglRenderCppTexturePrepareLevelUpload(
-                uploadLevel,
-                (uint32_t)texture.textureType,
-                (uint32_t)tex->internalformat,
-                (uint32_t)texture.pixelFormat,
-                &prep);
-            if (prepResult == -2) {
-                static uint64_t s_shortBackingLogs = 0;
-                uint64_t hit = ++s_shortBackingLogs;
-                if (kMGLDiagnosticStateLogs &&
-                    (hit <= 32ull || (hit % 512ull) == 0ull)) {
-                    mglTraceLogNSString(@"MGL TEXTURE CPU-REFRESH skip short backing tex=%u level=%u face=%d have=%llu need=%llu reason=%s hit=%llu",
-                                  (unsigned)tex->name,
-                                  (unsigned)level,
-                                  face,
-                                  (unsigned long long)prep.available_bytes,
-                                  (unsigned long long)(prep.bytes_per_image * prep.copy_depth),
-                                  reason ? reason : "(null)",
-                                  (unsigned long long)hit);
-                }
-                failedAny = true;
-                continue;
-            }
-            if (prepResult != 0) {
-                failedAny = true;
-                continue;
-            }
-
-            NSUInteger width = MAX((NSUInteger)uploadLevel->width, 1UL);
-            NSUInteger height = MAX((NSUInteger)uploadLevel->height, 1UL);
-            bool uploaded = [self uploadTextureSliceViaBlit:texture
-                                                    texName:tex->name
-                                                 texTarget:tex->target
-                                                     bytes:prep.data
-                                               bytesPerRow:(NSUInteger)prep.bytes_per_row
-                                             bytesPerImage:(NSUInteger)prep.bytes_per_image
-                                                     width:width
-                                                    height:height
-                                                     depth:(NSUInteger)prep.copy_depth
-                                                     level:level
-                                                     slice:0];
-            if (prep.owns_data) {
-                free((void *)prep.data);
-            }
-            if (uploaded) {
-                uploadedAny = true;
-            } else {
-                failedAny = true;
-            }
+        bool uploaded = [self uploadTextureSliceViaBlit:texture
+                                                texName:tex->name
+                                             texTarget:tex->target
+                                                 bytes:op->data
+                                           bytesPerRow:(NSUInteger)op->bytes_per_row
+                                         bytesPerImage:(NSUInteger)op->bytes_per_image
+                                                 width:(NSUInteger)op->width
+                                                height:(NSUInteger)op->height
+                                                 depth:(NSUInteger)op->copy_depth
+                                                 level:op->level
+                                                 slice:0];
+        if (op->owns_data) {
+            free((void *)op->data);
+        }
+        if (uploaded) {
+            uploadedAny = true;
+        } else {
+            failedAny = true;
         }
     }
 
