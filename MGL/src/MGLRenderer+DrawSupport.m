@@ -2346,9 +2346,6 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     GLint vy = MGL_STATE(ctx)->viewport[1];
     GLint vw = MGL_STATE(ctx)->viewport[2];
     GLint vh = MGL_STATE(ctx)->viewport[3];
-    if (vw <= 0 || vh <= 0) {
-        return YES;
-    }
 
     NSUInteger passWidth = 0;
     NSUInteger passHeight = 0;
@@ -2390,39 +2387,16 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
         }
     }
 
-    if (passWidth == 0 || passHeight == 0) {
-        return NO;
-    }
-
-    int64_t fbW = (int64_t)passWidth;
-    int64_t fbH = (int64_t)passHeight;
-    int64_t vx0 = (int64_t)vx;
-    int64_t vy0 = (int64_t)vy;
-    int64_t vx1 = vx0 + (int64_t)vw;
-    int64_t vy1 = vy0 + (int64_t)vh;
-    if (vx1 <= 0 || vy1 <= 0 || vx0 >= fbW || vy0 >= fbH) {
-        return YES;
-    }
-
-    if (MGL_STATE(ctx)->caps.scissor_test) {
-        GLint sx = MGL_STATE(ctx)->var.scissor_box[0];
-        GLint sy = MGL_STATE(ctx)->var.scissor_box[1];
-        GLint sw = MGL_STATE(ctx)->var.scissor_box[2];
-        GLint sh = MGL_STATE(ctx)->var.scissor_box[3];
-        if (sw <= 0 || sh <= 0) {
-            return YES;
-        }
-
-        int64_t sx0 = (int64_t)sx;
-        int64_t sy0 = (int64_t)sy;
-        int64_t sx1 = sx0 + (int64_t)sw;
-        int64_t sy1 = sy0 + (int64_t)sh;
-        if (sx1 <= 0 || sy1 <= 0 || sx0 >= fbW || sy0 >= fbH) {
-            return YES;
-        }
-    }
-
-    return NO;
+    /* P4.5 (item 1141/887): viewport/scissor/framebuffer 交集判定（纯 CPU
+     * 数学，逐点等价）在 C++（mglRenderCppRasterizationIsEmpty，两门共用）。 */
+    return mglRenderCppRasterizationIsEmpty(
+               vx, vy, vw, vh,
+               (uint32_t)passWidth, (uint32_t)passHeight,
+               MGL_STATE(ctx)->caps.scissor_test ? 1 : 0,
+               MGL_STATE(ctx)->var.scissor_box[0],
+               MGL_STATE(ctx)->var.scissor_box[1],
+               MGL_STATE(ctx)->var.scissor_box[2],
+               MGL_STATE(ctx)->var.scissor_box[3]) != 0;
 }
 
 - (void)applyPolygonOffsetForDrawMode:(GLenum)mode

@@ -463,6 +463,24 @@ int mglRenderCppNativeTESInterfaceSupported(
     uint64_t tcs_metallib_bytes,
     uint32_t tcs_output_vertices);
 
+/* P4.5 (item 1141/887): pure viewport/scissor/framebuffer intersection
+ * decision for the per-draw rasterization-empty early-out.  Returns 1 when
+ * the draw cannot rasterize any pixel, 0 otherwise (a zero pass size is
+ * "not empty" — the caller resolves the pass size first).  Shared by both
+ * gates. */
+int mglRenderCppRasterizationIsEmpty(
+    int32_t vx,
+    int32_t vy,
+    int32_t vw,
+    int32_t vh,
+    uint32_t pass_width,
+    uint32_t pass_height,
+    int32_t scissor_enabled,
+    int32_t sx,
+    int32_t sy,
+    int32_t sw,
+    int32_t sh);
+
 typedef struct MGLRenderCppLevelUploadOp_t {
     uint32_t level;
     uint32_t kind;          /* 0 = upload op, 1 = short-backing (skip) */

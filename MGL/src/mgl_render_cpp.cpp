@@ -3507,6 +3507,42 @@ int mglRenderCppNativeTESInterfaceSupported(
     return 1;
 }
 
+extern "C"
+int mglRenderCppRasterizationIsEmpty(
+    int32_t vx, int32_t vy, int32_t vw, int32_t vh,
+    uint32_t pass_width, uint32_t pass_height,
+    int32_t scissor_enabled,
+    int32_t sx, int32_t sy, int32_t sw, int32_t sh) {
+    if (vw <= 0 || vh <= 0) {
+        return 1;
+    }
+    if (pass_width == 0 || pass_height == 0) {
+        return 0;
+    }
+    const int64_t fbW = (int64_t)pass_width;
+    const int64_t fbH = (int64_t)pass_height;
+    const int64_t vx0 = (int64_t)vx;
+    const int64_t vy0 = (int64_t)vy;
+    const int64_t vx1 = vx0 + (int64_t)vw;
+    const int64_t vy1 = vy0 + (int64_t)vh;
+    if (vx1 <= 0 || vy1 <= 0 || vx0 >= fbW || vy0 >= fbH) {
+        return 1;
+    }
+    if (scissor_enabled) {
+        if (sw <= 0 || sh <= 0) {
+            return 1;
+        }
+        const int64_t sx0 = (int64_t)sx;
+        const int64_t sy0 = (int64_t)sy;
+        const int64_t sx1 = sx0 + (int64_t)sw;
+        const int64_t sy1 = sy0 + (int64_t)sh;
+        if (sx1 <= 0 || sy1 <= 0 || sx0 >= fbW || sy0 >= fbH) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static uint32_t mglTessRoundLevelForSpacing(uint32_t spacing,
                                               uint32_t ceil_level) {
     if (spacing == GL_FRACTIONAL_EVEN) {

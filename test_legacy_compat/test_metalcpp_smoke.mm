@@ -2304,6 +2304,50 @@ static int verifyMDIScratchOwner(void) {
     return 0;
 }
 
+static int verifyRasterizationIsEmpty(void) {
+    /* P4.5 (item 1141/887): viewport/scissor/framebuffer intersection. */
+    if (mglRenderCppRasterizationIsEmpty(0, 0, 0, 10, 100, 100, 0, 0, 0, 0, 0) != 1) {
+        fprintf(stderr, "FAIL: raster empty zero viewport\n");
+        return 1;
+    }
+    if (mglRenderCppRasterizationIsEmpty(0, 0, 10, 10, 0, 0, 0, 0, 0, 0, 0) != 0) {
+        fprintf(stderr, "FAIL: raster empty zero pass\n");
+        return 1;
+    }
+    if (mglRenderCppRasterizationIsEmpty(200, 0, 10, 10, 100, 100, 0, 0, 0, 0, 0) != 1) {
+        fprintf(stderr, "FAIL: raster empty viewport outside\n");
+        return 1;
+    }
+    /* Partially outside: [-5,5) x [-5,5) does intersect [0,100)^2 -> not empty. */
+    if (mglRenderCppRasterizationIsEmpty(-5, -5, 10, 10, 100, 100, 0, 0, 0, 0, 0) != 0) {
+        fprintf(stderr, "FAIL: raster empty viewport partial\n");
+        return 1;
+    }
+    /* Fully negative: [-15,-5) -> vx1 <= 0 -> empty. */
+    if (mglRenderCppRasterizationIsEmpty(-15, -5, 10, 10, 100, 100, 0, 0, 0, 0, 0) != 1) {
+        fprintf(stderr, "FAIL: raster empty viewport negative\n");
+        return 1;
+    }
+    if (mglRenderCppRasterizationIsEmpty(10, 10, 50, 50, 100, 100, 0, 0, 0, 0, 0) != 0) {
+        fprintf(stderr, "FAIL: raster empty viewport inside\n");
+        return 1;
+    }
+    if (mglRenderCppRasterizationIsEmpty(10, 10, 50, 50, 100, 100, 1, 0, 0, 0, 0) != 1) {
+        fprintf(stderr, "FAIL: raster empty zero scissor\n");
+        return 1;
+    }
+    if (mglRenderCppRasterizationIsEmpty(10, 10, 50, 50, 100, 100, 1, 200, 200, 10, 10) != 1) {
+        fprintf(stderr, "FAIL: raster empty scissor outside\n");
+        return 1;
+    }
+    if (mglRenderCppRasterizationIsEmpty(10, 10, 50, 50, 100, 100, 1, 5, 5, 20, 20) != 0) {
+        fprintf(stderr, "FAIL: raster empty scissor inside\n");
+        return 1;
+    }
+    printf("RASTERIZATION_EMPTY_OK\n");
+    return 0;
+}
+
 static int verifyNativeTESInterfaceGuards(void) {
     /* P4.5 (item 1141/887): the native-TES support decision's guard paths
      * (all return before the MTL::Function patchType read, which cannot be
@@ -4168,6 +4212,7 @@ int main(void) {
         if (verifyTessFactorTransforms() != 0) return 1;
         if (verifyTessEvalItemsAndCaptureSize() != 0) return 1;
         if (verifyNativeTESInterfaceGuards() != 0) return 1;
+        if (verifyRasterizationIsEmpty() != 0) return 1;
         if (verifyMDIScratchOwner() != 0) return 1;
         if (verifyRenderEncoderGetter() != 0) return 1;
         if (verifyCommandBufferGetterAndAdopt() != 0) return 1;
