@@ -316,6 +316,19 @@ void *mglRenderCppTextureRepackDepthPlanes(const void *bytes,
                                            size_t bytes_per_image,
                                            size_t expected_bytes_per_image,
                                            size_t copy_depth);
+/* P4.4: RGB→RGBA 通道扩展（texel buffer 2D fallback 的 CloudFaces 路径）。
+ * src 每 texel = src_comp_bytes×3，dst 每 texel = dst_comp_bytes×4（输出
+ * tex_width×tex_height 网格，行优先）；alpha 取 alpha_default 的低
+ * dst_comp_bytes 字节；超出 texel_count 的尾 texel 置零。返回 0 成功，
+ * 坏参返回 -1。dst 由调用方提供（ObjC 用 NSMutableData 管生命周期）。 */
+int mglRenderCppTextureExpandRGBToRGBA(const void *src,
+                                       void *dst,
+                                       size_t texel_count,
+                                       size_t tex_width,
+                                       size_t tex_height,
+                                       size_t src_comp_bytes,
+                                       size_t dst_comp_bytes,
+                                       uint64_t alpha_default);
 int mglRenderCppCreateSampler(void *sampler_descriptor,
                               void **sampler_out);
 /* Translate GL texture parameters into a Metal-cpp sampler descriptor and

@@ -2673,6 +2673,61 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
         printf("TEXTURE_REPACK_OK\n");
     }
 
+    /* P4.4: RGB->RGBA channel expansion (CloudFaces texel-buffer 2D
+     * fallback).  8-bit case: 3 texels -> 2x2 grid, texel 3 zeroed, alpha
+     * 255 injected; 16-bit case exercises the alpha default bytes. */
+    {
+        const uint8_t src8[] = {10, 20, 30, 40, 50, 60, 70, 80, 90};
+        uint8_t dst8[4 * 4];
+        memset(dst8, 0xAA, sizeof(dst8));
+        if (mglRenderCppTextureExpandRGBToRGBA(
+                src8, dst8, 3, 2, 2, 1, 1, 255) != 0) {
+            fprintf(stderr, "FAIL: texture expand 8-bit returned error\n");
+            return 1;
+        }
+        const uint8_t want8[16] = {
+            10, 20, 30, 255,
+            40, 50, 60, 255,
+            70, 80, 90, 255,
+            0, 0, 0, 0
+        };
+        if (memcmp(dst8, want8, sizeof(want8)) != 0) {
+            fprintf(stderr, "FAIL: texture expand 8-bit layout mismatch\n");
+            return 1;
+        }
+        /* 16-bit case: alpha default 65535 occupies the low 2 bytes. */
+        const uint8_t src16[] = {
+            1, 2, 3, 4, 5, 6,
+            7, 8, 9, 10, 11, 12
+        };
+        uint8_t dst16[2 * 8];
+        if (mglRenderCppTextureExpandRGBToRGBA(
+                src16, dst16, 2, 2, 1, 2, 2, 65535) != 0) {
+            fprintf(stderr, "FAIL: texture expand 16-bit returned error\n");
+            return 1;
+        }
+        const uint8_t want16[16] = {
+            1, 2, 3, 4, 5, 6, 0xFF, 0xFF,
+            7, 8, 9, 10, 11, 12, 0xFF, 0xFF
+        };
+        if (memcmp(dst16, want16, sizeof(want16)) != 0) {
+            fprintf(stderr, "FAIL: texture expand 16-bit layout mismatch\n");
+            return 1;
+        }
+        if (mglRenderCppTextureExpandRGBToRGBA(
+                NULL, dst8, 3, 2, 2, 1, 1, 255) != -1 ||
+            mglRenderCppTextureExpandRGBToRGBA(
+                src8, NULL, 3, 2, 2, 1, 1, 255) != -1 ||
+            mglRenderCppTextureExpandRGBToRGBA(
+                src8, dst8, 3, 0, 2, 1, 1, 255) != -1 ||
+            mglRenderCppTextureExpandRGBToRGBA(
+                src8, dst8, 3, 2, 2, 0, 1, 255) != -1) {
+            fprintf(stderr, "FAIL: texture expand bad-arg rejection\n");
+            return 1;
+        }
+        printf("TEXTURE_EXPAND_OK\n");
+    }
+
     /* P4.3c: whole-batch simple replay.  Valid batch encodes; unknown command
      * type falls back to NEEDS_OBJC; bad args are rejected. */
     {

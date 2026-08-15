@@ -5716,21 +5716,17 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
             NSUInteger expandedPackedBytes = expandedBytesPerRow * texHeight;
             expandedData = [NSMutableData dataWithLength:expandedPackedBytes];
             if (expandedData && expandedData.mutableBytes) {
-                const uint8_t *src = sourceBytes;
-                uint8_t *dst = (uint8_t *)expandedData.mutableBytes;
-                for (NSUInteger row = 0; row < texHeight; row++) {
-                    for (NSUInteger col = 0; col < texWidth; col++) {
-                        NSUInteger srcTexelIdx = row * texWidth + col;
-                        if (srcTexelIdx >= texelCount) {
-                            memset(dst + (row * expandedBytesPerRow + col * dstPixelBytes),
-                                   0, dstPixelBytes);
-                            continue;
-                        }
-                        const uint8_t *srcPixel = src + srcTexelIdx * srcPixelBytes;
-                        uint8_t *dstPixel = dst + row * expandedBytesPerRow + col * dstPixelBytes;
-                        memcpy(dstPixel, srcPixel, srcPixelBytes);
-                        memcpy(dstPixel + srcPixelBytes, &alphaDefault, dstCompBytes);
-                    }
+                /* P4.4: 通道扩展在 C++（mglRenderCppTextureExpandRGBToRGBA，
+                 * 纯数据变换，两门共用）。dst 由 NSMutableData 持有，生命周期
+                 * 仍 ARC 管理；与内联版逐 texel 等价。 */
+                if (mglRenderCppTextureExpandRGBToRGBA(
+                        sourceBytes, expandedData.mutableBytes, texelCount,
+                        texWidth, texHeight, srcCompBytes, dstCompBytes,
+                        alphaDefault) != 0) {
+                    NSLog(@"MGL TEXBUFFER ERROR: channel expansion failed tex=%u buffer=%u",
+                          tex->name,
+                          sourceBuffer->name);
+                    return nil;
                 }
                 uploadBytes = (const uint8_t *)expandedData.bytes;
                 bytesPerRow = expandedBytesPerRow;

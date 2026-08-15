@@ -3012,6 +3012,39 @@ int mglRenderCppTextureUploadRoute(uint32_t texture_type,
 }
 
 
+/* P4.4: RGB->RGBA channel expansion into a caller-provided buffer. */
+int mglRenderCppTextureExpandRGBToRGBA(const void* src, void* dst,
+                                       size_t texel_count, size_t tex_width,
+                                       size_t tex_height,
+                                       size_t src_comp_bytes,
+                                       size_t dst_comp_bytes,
+                                       uint64_t alpha_default) {
+    if (!src || !dst || tex_width == 0 || tex_height == 0 ||
+        src_comp_bytes == 0 || dst_comp_bytes == 0) {
+        return -1;
+    }
+    const size_t src_pixel = src_comp_bytes * 3;
+    const size_t dst_pixel = dst_comp_bytes * 4;
+    if (src_pixel == 0 || dst_pixel == 0) {
+        return -1;
+    }
+    uint8_t* out = (uint8_t*)dst;
+    for (size_t row = 0; row < tex_height; row++) {
+        for (size_t col = 0; col < tex_width; col++) {
+            const size_t idx = row * tex_width + col;
+            uint8_t* dp = out + (row * tex_width + col) * dst_pixel;
+            if (idx >= texel_count) {
+                memset(dp, 0, dst_pixel);
+                continue;
+            }
+            const uint8_t* sp = (const uint8_t*)src + idx * src_pixel;
+            memcpy(dp, sp, src_pixel);
+            memcpy(dp + src_pixel, &alpha_default, dst_comp_bytes);
+        }
+    }
+    return 0;
+}
+
 /* P4.4: tight-pack the 3D depth planes (pure data transform). */
 void* mglRenderCppTextureRepackDepthPlanes(const void* bytes,
                                            size_t bytes_per_image,
