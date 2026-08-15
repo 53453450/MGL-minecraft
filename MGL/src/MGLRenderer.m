@@ -4945,20 +4945,32 @@ Buffer *getIndirectBuffer(GLMContext ctx)
         return true;
     }
 
+    /* P4.5 (item 1138): 把 copy-back 条目桥接成 C-ABI 数组；校验 + blit
+     * 编码 + CPU 前缀同步在 C++（mglRenderCppEncodeStageBindingCopyBacks /
+     * mglRenderCppCopyBackCPUPrefix——纯数据/编码，两门共用；CB 排序
+     * （detach/commit/wait/AGX 恢复）仍在本方法）。 */
+    MGLRenderCppCopyBackEntry entries[kMGLMaxBufferSlots];
+    memset(entries, 0, sizeof(entries));
+    uint32_t entryCount = 0;
     BOOL hasCopies = NO;
     for (NSUInteger i = 0; i < kMGLMaxBufferSlots; i++) {
         MGLStageBindingCopyBack *entry = &copyBacks->slots[i];
         if (entry->length == 0) {
             continue;
         }
-        if (!entry->temporary || !entry->destination ||
-            entry->length > entry->temporary.length ||
-            entry->destination_offset > entry->destination.length ||
-            entry->length > entry->destination.length - entry->destination_offset) {
-            [self clearStageBindingCopyBacks:copyBacks];
-            return false;
-        }
+        entries[entryCount].temporary = (__bridge void *)entry->temporary;
+        entries[entryCount].destination = (__bridge void *)entry->destination;
+        entries[entryCount].destination_buffer = entry->destination_buffer;
+        entries[entryCount].destination_offset = entry->destination_offset;
+        entries[entryCount].length = entry->length;
+        entryCount++;
         hasCopies = YES;
+    }
+
+    if (mglRenderCppEncodeStageBindingCopyBacks(
+            entries, entryCount, NULL) != 0) {
+        [self clearStageBindingCopyBacks:copyBacks];
+        return false;
     }
 
     if (!hasCopies && !requireCPUVisibility) {
@@ -4981,15 +4993,11 @@ Buffer *getIndirectBuffer(GLMContext ctx)
             [self clearStageBindingCopyBacks:copyBacks];
             return false;
         }
-        for (NSUInteger i = 0; i < kMGLMaxBufferSlots; i++) {
-            MGLStageBindingCopyBack *entry = &copyBacks->slots[i];
-            if (entry->length == 0) {
-                continue;
-            }
-            mglRendererBlitCopyBuffer(blit, entry->temporary, 0,
-                                      entry->destination,
-                                      entry->destination_offset,
-                                      entry->length);
+        if (mglRenderCppEncodeStageBindingCopyBacks(
+                entries, entryCount, (__bridge void *)blit) != 0) {
+            mglRendererEndBlitEncoder(blit);
+            [self clearStageBindingCopyBacks:copyBacks];
+            return false;
         }
         mglRendererEndBlitEncoder(blit);
     }
@@ -5020,39 +5028,23 @@ Buffer *getIndirectBuffer(GLMContext ctx)
         return false;
     }
 
-    for (NSUInteger i = 0; i < kMGLMaxBufferSlots; i++) {
-        MGLStageBindingCopyBack *entry = &copyBacks->slots[i];
-        if (entry->length > 0 && entry->destination_buffer) {
-            Buffer *buffer = entry->destination_buffer;
-            buffer->ever_written = GL_TRUE;
-
-            /* BufferSubData updates the CPU snapshot and may later upload the
-             * whole store. Keep that snapshot authoritative for the legal
-             * prefix written through the isolated Metal binding. */
-            if (buffer->data.buffer_data) {
-                if (!entry->destination.contents ||
-                    entry->destination_offset > buffer->data.buffer_size ||
-                    entry->length > buffer->data.buffer_size - entry->destination_offset) {
-                    NSLog(@"MGL BUFFER RANGE: cannot synchronize copied-back prefix to CPU buffer=%u offset=%lu length=%lu cpuSize=%zu",
-                          (unsigned)buffer->name,
-                          (unsigned long)entry->destination_offset,
-                          (unsigned long)entry->length,
-                          buffer->data.buffer_size);
-                    [self clearStageBindingCopyBacks:copyBacks];
-                    [self newCommandBufferLocked];
-                    return false;
-                }
-
-                uint8_t *cpuBytes = (uint8_t *)(uintptr_t)buffer->data.buffer_data;
-                const uint8_t *metalBytes = (const uint8_t *)entry->destination.contents;
-                if (cpuBytes != metalBytes) {
-                    memmove(cpuBytes + entry->destination_offset,
-                            metalBytes + entry->destination_offset,
-                            entry->length);
-                }
-                buffer->cpu_shadow_pending = GL_FALSE;
-            }
-        }
+    /* CPU 前缀同步（BufferSubData 的 CPU 快照保真 + 边界守卫 + memmove）
+     * 在 C++。失败时 entries[failedIndex] 携带诊断所需字段。 */
+    uint32_t failedIndex = entryCount;
+    if (mglRenderCppCopyBackCPUPrefix(entries, entryCount, &failedIndex) != 0) {
+        const MGLRenderCppCopyBackEntry *failed =
+            failedIndex < entryCount ? &entries[failedIndex] : NULL;
+        Buffer *failedBuffer = failed
+            ? (Buffer *)(uintptr_t)failed->destination_buffer
+            : NULL;
+        NSLog(@"MGL BUFFER RANGE: cannot synchronize copied-back prefix to CPU buffer=%u offset=%llu length=%llu cpuSize=%llu",
+              failedBuffer ? (unsigned)failedBuffer->name : 0u,
+              (unsigned long long)(failed ? failed->destination_offset : 0ull),
+              (unsigned long long)(failed ? failed->length : 0ull),
+              (unsigned long long)(failedBuffer ? failedBuffer->data.buffer_size : 0ull));
+        [self clearStageBindingCopyBacks:copyBacks];
+        [self newCommandBufferLocked];
+        return false;
     }
     [self clearStageBindingCopyBacks:copyBacks];
     return [self newCommandBufferLocked];

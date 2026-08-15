@@ -3062,6 +3062,75 @@ static uint8_t mglCppExpandUNormBitsTo8(uint32_t value, uint32_t bits) {
 }
 
 /* P4.4: legacy packed GL formats -> RGBA8 (pure data transform). */
+/* P4.5 (item 1138): stage-binding copy-back encode + CPU-prefix sync.
+ * Pure validation/encode over the caller-bridged entries; the CB
+ * sequencing (detach/commit/wait/AGX recovery) stays in the renderer. */
+extern "C"
+int mglRenderCppEncodeStageBindingCopyBacks(
+    const MGLRenderCppCopyBackEntry* entries, uint32_t count,
+    void* blit_encoder) {
+    if (!entries && count) return -1;
+    for (uint32_t i = 0; i < count; i++) {
+        const MGLRenderCppCopyBackEntry& entry = entries[i];
+        if (entry.length == 0) continue;
+        MTL::Buffer* temporary =
+            static_cast<MTL::Buffer*>(const_cast<void*>(entry.temporary));
+        MTL::Buffer* destination =
+            static_cast<MTL::Buffer*>(const_cast<void*>(entry.destination));
+        if (!temporary || !destination ||
+            entry.length > temporary->length() ||
+            entry.destination_offset > destination->length() ||
+            entry.length >
+                destination->length() - entry.destination_offset) {
+            return -1;
+        }
+        if (blit_encoder &&
+            mglRenderCppBlitCopyBuffer(
+                blit_encoder, const_cast<void*>(entry.temporary), 0,
+                const_cast<void*>(entry.destination),
+                entry.destination_offset, entry.length) != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+extern "C"
+int mglRenderCppCopyBackCPUPrefix(
+    const MGLRenderCppCopyBackEntry* entries, uint32_t count,
+    uint32_t* failed_index_out) {
+    if (failed_index_out) *failed_index_out = count;
+    if (!entries && count) return -1;
+    for (uint32_t i = 0; i < count; i++) {
+        const MGLRenderCppCopyBackEntry& entry = entries[i];
+        if (entry.length == 0 || !entry.destination_buffer) continue;
+        Buffer* buffer =
+            static_cast<Buffer*>(const_cast<void*>(entry.destination_buffer));
+        if (!buffer->data.buffer_data) continue;
+        MTL::Buffer* destination =
+            static_cast<MTL::Buffer*>(const_cast<void*>(entry.destination));
+        if (!destination || !destination->contents() ||
+            entry.destination_offset > buffer->data.buffer_size ||
+            entry.length >
+                buffer->data.buffer_size - entry.destination_offset) {
+            if (failed_index_out) *failed_index_out = i;
+            return -1;
+        }
+        buffer->ever_written = GL_TRUE;
+        uint8_t* cpu_bytes =
+            (uint8_t*)(uintptr_t)buffer->data.buffer_data;
+        const uint8_t* metal_bytes =
+            (const uint8_t*)destination->contents();
+        if (cpu_bytes != metal_bytes) {
+            memmove(cpu_bytes + entry.destination_offset,
+                    metal_bytes + entry.destination_offset,
+                    entry.length);
+        }
+        buffer->cpu_shadow_pending = GL_FALSE;
+    }
+    return 0;
+}
+
 /* P4.5 (item 1111): the compat-subsystem helpers the upload-prep path
  * calls.  mgl_texture_compat.h cannot be included here (its inline helpers
  * use ObjC-typed MTLPixelFormat), so declare the needed C API locally —

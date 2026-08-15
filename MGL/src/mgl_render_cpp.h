@@ -336,6 +336,33 @@ int mglRenderCppTextureExpandRGBToRGBA(const void *src,
  * 枚举（R3_G3_B2 / RGB4/5/565 / RGB10/12 / RGBA2/4 / RGB5_A1 / RGB8 变体），
  * 按位展开为 8-bit RGBA（unorm 取整，snorm 1.0=0x7f，整型 a=1）。返回
  * malloc 的 dst（调用方 free），坏参 / 未知格式 / 尺寸超限返回 NULL。 */
+/* P4.5 (item 1138): stage-binding copy-back entry (C-ABI mirror of the
+ * ObjC MGLStageBindingCopyBack — the ObjC side bridges the buffer refs). */
+typedef struct MGLRenderCppCopyBackEntry_t {
+    const void *temporary;        /* MTL::Buffer* */
+    const void *destination;      /* MTL::Buffer* */
+    const void *destination_buffer; /* GL Buffer* (CPU prefix sync) */
+    uint64_t destination_offset;
+    uint64_t length;
+} MGLRenderCppCopyBackEntry;
+
+/* Validate every non-empty entry (bounds vs the Metal buffer lengths) and,
+ * when blit_encoder is non-NULL, encode each copy via
+ * mglRenderCppBlitCopyBuffer.  Returns 0 on success, -1 on the first
+ * invalid entry / encode failure. */
+int mglRenderCppEncodeStageBindingCopyBacks(
+    const MGLRenderCppCopyBackEntry *entries,
+    uint32_t count,
+    void *blit_encoder);
+
+/* Synchronize the written CPU prefix of each entry's GL destination buffer
+ * (guards + memmove; the Metal contents pointer is read via the
+ * destination buffer).  Returns 0, or -1 with *failed_index_out set. */
+int mglRenderCppCopyBackCPUPrefix(
+    const MGLRenderCppCopyBackEntry *entries,
+    uint32_t count,
+    uint32_t *failed_index_out);
+
 /* P4.5 (item 1111): per-level CPU upload data preparation — pure CPU
  * transform shared by both gates (the expansion entries it calls are the
  * same both gates use).  Computes the copy geometry and applies any required

@@ -12,6 +12,7 @@
 #include "mgl_air_loader.h"
 #include "mgl_aux_assets.h"
 #include "mgl_types_texture.h"
+#include "mgl_types_buffer.h"
 #include "mgl_types_program.h"
 #include "mgl_types_state.h"
 #include "mgl_types_sync.h"
@@ -2125,6 +2126,104 @@ bool mglTextureNeedsChannelExpansion(
 }
 }
 
+static int verifyCopyBackEncode(void) {
+    /* P4.5 (item 1138): stage-binding copy-back validation / encode. */
+    /* Validation only (NULL encoder). */
+    MGLRenderCppCopyBackEntry bad[1];
+    bad[0].temporary = (void *)(uintptr_t)0x1;
+    bad[0].destination = (void *)(uintptr_t)0x2;
+    bad[0].destination_offset = 0;
+    bad[0].length = 0; /* empty -> skipped */
+    if (mglRenderCppEncodeStageBindingCopyBacks(bad, 1, NULL) != 0) {
+        fprintf(stderr, "FAIL: copy-back empty entry\n");
+        return 1;
+    }
+    if (mglRenderCppEncodeStageBindingCopyBacks(NULL, 1, NULL) != -1 ||
+        mglRenderCppEncodeStageBindingCopyBacks(NULL, 0, NULL) != 0) {
+        fprintf(stderr, "FAIL: copy-back bad args\n");
+        return 1;
+    }
+    id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
+    if (!dev) return 0; /* covered by main's guard */
+    id<MTLCommandQueue> queue = [dev newCommandQueue];
+    id<MTLCommandBuffer> cb = [queue commandBuffer];
+    id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+    if (!cb || !blit) {
+        fprintf(stderr, "FAIL: copy-back encoder setup\n");
+        return 1;
+    }
+    id<MTLBuffer> temp = [dev newBufferWithLength:64 options:MTLResourceStorageModeShared];
+    id<MTLBuffer> dest = [dev newBufferWithLength:64 options:MTLResourceStorageModeShared];
+    if (!temp || !dest) {
+        fprintf(stderr, "FAIL: copy-back buffers\n");
+        return 1;
+    }
+    MGLRenderCppCopyBackEntry good[2];
+    good[0].temporary = (__bridge void *)temp;
+    good[0].destination = (__bridge void *)dest;
+    good[0].destination_buffer = NULL;
+    good[0].destination_offset = 0;
+    good[0].length = 16;
+    good[1].temporary = (__bridge void *)temp;
+    good[1].destination = (__bridge void *)dest;
+    good[1].destination_buffer = NULL;
+    good[1].destination_offset = 32;
+    good[1].length = 16;
+    if (mglRenderCppEncodeStageBindingCopyBacks(good, 2, (__bridge void *)blit) != 0) {
+        fprintf(stderr, "FAIL: copy-back encode\n");
+        return 1;
+    }
+    /* Out-of-bounds: length exceeds the destination remaining space. */
+    MGLRenderCppCopyBackEntry oob = good[0];
+    oob.destination_offset = 48;
+    oob.length = 32; /* 48+32 > 64 */
+    if (mglRenderCppEncodeStageBindingCopyBacks(&oob, 1, (__bridge void *)blit) != -1) {
+        fprintf(stderr, "FAIL: copy-back OOB not rejected\n");
+        return 1;
+    }
+    [blit endEncoding];
+    [cb commit];
+    [cb waitUntilCompleted];
+
+    /* CPU prefix sync: a fake GL Buffer whose CPU snapshot must receive the
+     * Metal destination's contents. */
+    uint8_t metalBytes[64];
+    memset(metalBytes, 0xAB, sizeof(metalBytes));
+    memcpy(dest.contents, metalBytes, sizeof(metalBytes));
+    Buffer glBuffer = {0};
+    uint8_t cpuShadow[64];
+    memset(cpuShadow, 0x11, sizeof(cpuShadow));
+    glBuffer.data.buffer_size = 64;
+    glBuffer.data.buffer_data = (vm_address_t)(uintptr_t)cpuShadow;
+    glBuffer.ever_written = GL_FALSE;
+    glBuffer.cpu_shadow_pending = GL_TRUE;
+    MGLRenderCppCopyBackEntry sync = good[0];
+    sync.destination_buffer = &glBuffer;
+    uint32_t failedIndex = 99;
+    if (mglRenderCppCopyBackCPUPrefix(&sync, 1, &failedIndex) != 0 ||
+        failedIndex != 1) {
+        fprintf(stderr, "FAIL: copy-back cpu prefix rc (idx=%u)\n", failedIndex);
+        return 1;
+    }
+    if (glBuffer.ever_written != GL_TRUE ||
+        glBuffer.cpu_shadow_pending != GL_FALSE ||
+        cpuShadow[0] != 0xAB || cpuShadow[15] != 0xAB ||
+        cpuShadow[16] != 0x11) {
+        fprintf(stderr, "FAIL: copy-back cpu prefix contents\n");
+        return 1;
+    }
+    /* CPU prefix failure: offset beyond the GL snapshot. */
+    MGLRenderCppCopyBackEntry badSync = sync;
+    badSync.destination_offset = 100;
+    if (mglRenderCppCopyBackCPUPrefix(&badSync, 1, &failedIndex) != -1 ||
+        failedIndex != 0) {
+        fprintf(stderr, "FAIL: copy-back cpu prefix OOB not rejected\n");
+        return 1;
+    }
+    printf("COPY_BACK_OK\n");
+    return 0;
+}
+
 static int verifyLevelUploadPrep(void) {
     /* P4.5 (item 1111): per-level CPU upload data preparation. */
     /* 2D geometry: 4x4, pitch 16, 64 bytes -> copy_depth 1, bpi 16. */
@@ -3554,6 +3653,7 @@ int main(void) {
         if (verifyCommandBufferOwner() != 0) return 1;
         if (verifyPendingEventOwner() != 0) return 1;
         if (verifyLevelUploadPrep() != 0) return 1;
+        if (verifyCopyBackEncode() != 0) return 1;
         if (verifyRenderPassIdentityOwner() != 0) return 1;
         if (verifyRenderPassStateOwner(device) != 0) return 1;
         if (verifyTextureStagingOwner() != 0) return 1;
