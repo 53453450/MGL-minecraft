@@ -14,3 +14,4 @@ external/ezxml/
 /docs
 /.workbuddy
 /mgl-ssbo-20260805b/
+build_asan/
