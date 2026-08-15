@@ -4849,6 +4849,41 @@ int mglRenderCppCheckedProduct(uint64_t a, uint64_t b, uint64_t* result) {
     return 0;
 }
 
+/* 11-bit unsigned float unpack (GL_UNSIGNED_INT_10F_11F_11F_REV CPU decode):
+ * 5-bit exponent, 6-bit mantissa, no sign; exponent bias 15.  Denormalized
+ * values use 2^(1-15) * mant/64, exp==31 is inf (mant==0) or NaN. */
+extern "C"
+float mglRenderCppFloat11ToFloat(uint32_t val) {
+    if (val == 0u) {
+        return 0.0f;
+    }
+    const uint32_t exp = (val >> 6) & 0x1Fu;
+    const uint32_t mant = val & 0x3Fu;
+    if (exp == 0u) {
+        return (float)((double)mant / 64.0) * (1.0 / 16384.0);
+    } else if (exp == 31u) {
+        return mant ? NAN : INFINITY;
+    }
+    return ldexpf((float)(1.0 + (double)mant / 64.0), (int)exp - 15);
+}
+
+/* 10-bit unsigned float unpack: 5-bit exponent, 5-bit mantissa, no sign;
+ * exponent bias 15.  Denormalized values use 2^(1-15) * mant/32. */
+extern "C"
+float mglRenderCppFloat10ToFloat(uint32_t val) {
+    if (val == 0u) {
+        return 0.0f;
+    }
+    const uint32_t exp = (val >> 5) & 0x1Fu;
+    const uint32_t mant = val & 0x1Fu;
+    if (exp == 0u) {
+        return (float)((double)mant / 32.0) * (1.0 / 16384.0);
+    } else if (exp == 31u) {
+        return mant ? NAN : INFINITY;
+    }
+    return ldexpf((float)(1.0 + (double)mant / 32.0), (int)exp - 15);
+}
+
 extern "C"
 uint32_t mglRenderCppTessEvalItemsPerPatch(
     const void* factor_record, uint32_t gen_mode, uint32_t spacing,

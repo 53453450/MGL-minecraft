@@ -458,6 +458,14 @@ uint64_t mglRenderCppTESXFBFieldByteSize(uint64_t gl_type);
  * *result set, -1 on bad args / overflow.  Shared by both gates. */
 int mglRenderCppCheckedProduct(uint64_t a, uint64_t b, uint64_t *result);
 
+/* P4.5 (item 1141/887): unpack an 11-bit (6-bit mantissa) / 10-bit
+ * (5-bit mantissa) unsigned float — CPU decode for
+ * GL_UNSIGNED_INT_10F_11F_11F_REV vertex data.  5-bit exponent bias 15,
+ * no sign bit; matches the ObjC mglFloat11ToFloat / mglFloat10ToFloat
+ * exactly (denormal, inf, NaN and ldexpf paths).  Shared by both gates. */
+float mglRenderCppFloat11ToFloat(uint32_t val);
+float mglRenderCppFloat10ToFloat(uint32_t val);
+
 /* Overflow-checked tess capture size (records x stride, min_stride floor).
  * Returns 0 with size_out/offset_out set, -1 on bad args / overflow. */
 int mglRenderCppCheckedTessCaptureSize(

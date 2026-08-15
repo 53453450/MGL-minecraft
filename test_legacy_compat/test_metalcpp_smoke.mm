@@ -3543,6 +3543,45 @@ static int verifyCheckedProductAndXFBFieldByteSize(void) {
     return 0;
 }
 
+static int verifyFloatUnpack(void) {
+    /* P4.5 (item 1141/887): 11-bit / 10-bit unsigned float unpacking
+     * (GL_UNSIGNED_INT_10F_11F_11F_REV CPU decode). */
+    if (mglRenderCppFloat11ToFloat(0u) != 0.0f ||
+        mglRenderCppFloat11ToFloat(0x3C0u) != 1.0f ||
+        mglRenderCppFloat11ToFloat(0x440u) != 4.0f) {
+        fprintf(stderr, "FAIL: float11 normalized\n");
+        return 1;
+    }
+    if (fabsf(mglRenderCppFloat11ToFloat(0x0001u) -
+              (float)(1.0 / 64.0) * (float)(1.0 / 16384.0)) > 1e-12f) {
+        fprintf(stderr, "FAIL: float11 denormal\n");
+        return 1;
+    }
+    if (!isinf(mglRenderCppFloat11ToFloat(0x7C0u)) ||
+        !isnan(mglRenderCppFloat11ToFloat(0x7FFu))) {
+        fprintf(stderr, "FAIL: float11 inf/nan\n");
+        return 1;
+    }
+    if (mglRenderCppFloat10ToFloat(0u) != 0.0f ||
+        mglRenderCppFloat10ToFloat(0x1E0u) != 1.0f ||
+        mglRenderCppFloat10ToFloat(0x260u) != 16.0f) {
+        fprintf(stderr, "FAIL: float10 normalized\n");
+        return 1;
+    }
+    if (fabsf(mglRenderCppFloat10ToFloat(0x0001u) -
+              (float)(1.0 / 32.0) * (float)(1.0 / 16384.0)) > 1e-12f) {
+        fprintf(stderr, "FAIL: float10 denormal\n");
+        return 1;
+    }
+    if (!isinf(mglRenderCppFloat10ToFloat(0x3E0u)) ||
+        !isnan(mglRenderCppFloat10ToFloat(0x3FFu))) {
+        fprintf(stderr, "FAIL: float10 inf/nan\n");
+        return 1;
+    }
+    printf("FLOAT_UNPACK_OK\n");
+    return 0;
+}
+
 static int verifyTessFactorTransforms(void) {
     /* P4.5 (item 1141/887): tess-factor CPU transforms. */
     float outer[4] = {1.0f, 2.0f, 3.0f, 4.0f};
@@ -5308,6 +5347,7 @@ int main(void) {
         if (verifyTessEvalItemsAndCaptureSize() != 0) return 1;
         if (verifyTessRoundLevelForSpacing() != 0) return 1;
         if (verifyCheckedProductAndXFBFieldByteSize() != 0) return 1;
+        if (verifyFloatUnpack() != 0) return 1;
         if (verifyNativeTESInterfaceGuards() != 0) return 1;
         if (verifyRasterizationIsEmpty() != 0) return 1;
         if (verifyIntegerReadbackClassify() != 0) return 1;

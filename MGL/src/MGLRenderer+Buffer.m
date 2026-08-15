@@ -109,40 +109,18 @@ static inline id<NSObject> SafeMetalBridge(void *ptr, Class expectedClass, const
 /* ---- 11-bit / 10-bit unsigned float unpacking ----
  * Used to decode GL_UNSIGNED_INT_10F_11F_11F_REV vertex data on the CPU.
  * These are unsigned floating-point formats (no sign bit) sharing the same
- * 5-bit exponent bias (15) as half-float, with 6 or 5 mantissa bits. */
+ * 5-bit exponent bias (15) as half-float, with 6 or 5 mantissa bits.
+ * P4.5 (item 1141/887): single source of truth is
+ * mglRenderCppFloat11ToFloat / mglRenderCppFloat10ToFloat
+ * (mgl_render_cpp.cpp) — these shells keep the three packed-conversion
+ * call sites unchanged. */
 
 static float mglFloat11ToFloat(uint32_t val) {
-    /* 11-bit float: 5-bit exponent, 6-bit mantissa, no sign */
-    if (val == 0u) {
-        return 0.0f;
-    }
-    uint32_t exp = (val >> 6) & 0x1Fu;
-    uint32_t mant = val & 0x3Fu;
-    if (exp == 0u) {
-        /* Denormalized: 2^(1-15) * (mant/64) */
-        return (float)((double)mant / 64.0) * (1.0 / 16384.0);
-    } else if (exp == 31u) {
-        return mant ? NAN : INFINITY;
-    }
-    /* Normalized: 2^(exp-15) * (1 + mant/64) */
-    return ldexpf((float)(1.0 + (double)mant / 64.0), (int)exp - 15);
+    return mglRenderCppFloat11ToFloat(val);
 }
 
 static float mglFloat10ToFloat(uint32_t val) {
-    /* 10-bit float: 5-bit exponent, 5-bit mantissa, no sign */
-    if (val == 0u) {
-        return 0.0f;
-    }
-    uint32_t exp = (val >> 5) & 0x1Fu;
-    uint32_t mant = val & 0x1Fu;
-    if (exp == 0u) {
-        /* Denormalized: 2^(1-15) * (mant/32) */
-        return (float)((double)mant / 32.0) * (1.0 / 16384.0);
-    } else if (exp == 31u) {
-        return mant ? NAN : INFINITY;
-    }
-    /* Normalized: 2^(exp-15) * (1 + mant/32) */
-    return ldexpf((float)(1.0 + (double)mant / 32.0), (int)exp - 15);
+    return mglRenderCppFloat10ToFloat(val);
 }
 
 @interface MGLBufferSnapshotPoolEntry : NSObject
