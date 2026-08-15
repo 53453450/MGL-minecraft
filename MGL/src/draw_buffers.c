@@ -1562,6 +1562,10 @@ static void mglDrawDispatch(GLMContext ctx, const MGLDrawCommand *cmd)
         return;
     }
 
+    /* S7.5: refresh state-derived uniforms (legacy clip planes) from the
+     * GL state — the only GL-state → uniform mechanism in MGL. */
+    mglRefreshLegacyStateUniforms(ctx);
+
     /* S8: active query draw recording */
     mglRecordActiveSampleQueryDraw(ctx);
 

@@ -146,6 +146,58 @@ static bool code_uses_identifier(const char *src, const char *name)
     return false;
 }
 
+/* Rename the first `void main(...)` in the source to `void <replacement>`.
+ * Comment/string-aware; tolerant of whitespace between tokens and of the
+ * `(void)` parameter spelling.  Returns 1 on success, 0 when no main is
+ * found or the buffer would overflow. */
+static int rename_first_main(char *src, size_t src_capacity,
+                             const char *replacement)
+{
+    if (!src) return 0;
+    const char *needle = "void";
+    size_t needle_len = strlen(needle);
+    scan_state_t state = SCAN_NORMAL;
+    char *p = src;
+    while (*p) {
+        if (state == SCAN_NORMAL) {
+            if (strncmp(p, needle, needle_len) == 0) {
+                /* token boundary before "void" */
+                int before = (p == src) ? 0 : (unsigned char)p[-1];
+                if (!is_ident_char(before)) {
+                    /* optional whitespace, then "main" */
+                    const char *q = p + needle_len;
+                    while (*q == ' ' || *q == '\t' || *q == '\r' ||
+                           *q == '\n') q++;
+                    if (strncmp(q, "main", 4) == 0 &&
+                        !is_ident_char((unsigned char)q[4])) {
+                        const char *r = q + 4;
+                        while (*r == ' ' || *r == '\t' || *r == '\r' ||
+                               *r == '\n') r++;
+                        if (*r == '(') {
+                            size_t repl_len = strlen(replacement);
+                            size_t name_len = (size_t)(q - p) + 4;
+                            size_t used = strlen(p);
+                            if ((size_t)((p - src) + used +
+                                         (repl_len - name_len)) + 1 >
+                                src_capacity) {
+                                return 0;
+                            }
+                            memmove(p + repl_len, p + name_len,
+                                    used - name_len + 1);
+                            memcpy(p, replacement, repl_len);
+                            return 1;
+                        }
+                    }
+                }
+            }
+        }
+        const char *cp = p;
+        state = scan_step(&cp, state);
+        p = (char *)cp;
+    }
+    return 0;
+}
+
 static bool code_contains(const char *src, const char *needle)
 {
     if (!src || !needle) return false;
@@ -476,6 +528,8 @@ void mgl_legacy_detect(const char *src, mgl_legacy_features_t *features)
             break;
         }
     }
+    /* gl_ClipVertex: the legacy eye-space clip-vertex output (VS). */
+    features->has_gl_ClipVertex = code_uses_identifier(src, "gl_ClipVertex");
     /* gl_Vertex (implicit legacy position attribute) */
     if (!features->has_legacy_builtins) {
         if (code_uses_identifier(src, "gl_Vertex")) {
@@ -855,6 +909,40 @@ int mgl_translate_legacy_glsl(char *src,
     if (off > 0 && off < sizeof(preamble)) {
         inject_after_version(src, src_capacity, preamble);
         modified = 1;
+    }
+
+    /* --- Step 5: legacy clip-plane derivation wrapper (VS only) ---
+     * gl_ClipVertex is the legacy eye-space clip vertex; the fixed-function
+     * runtime derives per-plane clip distances from the GL clip-plane state
+     * (_mglClipPlane/_mglClipPlaneEnabled, refreshed by MGL per draw).
+     * The user's main is renamed and a wrapper main computes
+     * gl_ClipDistance[i] = mix(1, dot(plane_i, clipVertex), enabled_i)
+     * after it, so disabled planes (or zero planes) never clip. */
+    if (is_vertex && features->has_gl_ClipVertex &&
+        !strstr(src, "_mglLegacyUserMain")) {
+        if (rename_first_main(src, src_capacity, "void _mglLegacyUserMain")) {
+            static const char s_clip_wrapper[] =
+                "\n"
+                "uniform vec4 _mglClipPlane[8];\n"
+                "uniform float _mglClipPlaneEnabled[8];\n"
+                "void main() {\n"
+                "    _mglLegacyUserMain();\n"
+                "    gl_ClipDistance[0] = mix(1.0, dot(_mglClipPlane[0], _mglClipVertex), _mglClipPlaneEnabled[0]);\n"
+                "    gl_ClipDistance[1] = mix(1.0, dot(_mglClipPlane[1], _mglClipVertex), _mglClipPlaneEnabled[1]);\n"
+                "    gl_ClipDistance[2] = mix(1.0, dot(_mglClipPlane[2], _mglClipVertex), _mglClipPlaneEnabled[2]);\n"
+                "    gl_ClipDistance[3] = mix(1.0, dot(_mglClipPlane[3], _mglClipVertex), _mglClipPlaneEnabled[3]);\n"
+                "    gl_ClipDistance[4] = mix(1.0, dot(_mglClipPlane[4], _mglClipVertex), _mglClipPlaneEnabled[4]);\n"
+                "    gl_ClipDistance[5] = mix(1.0, dot(_mglClipPlane[5], _mglClipVertex), _mglClipPlaneEnabled[5]);\n"
+                "    gl_ClipDistance[6] = mix(1.0, dot(_mglClipPlane[6], _mglClipVertex), _mglClipPlaneEnabled[6]);\n"
+                "    gl_ClipDistance[7] = mix(1.0, dot(_mglClipPlane[7], _mglClipVertex), _mglClipPlaneEnabled[7]);\n"
+                "}\n";
+            size_t used = strlen(src);
+            if (used + sizeof(s_clip_wrapper) <= src_capacity) {
+                memcpy(src + used, s_clip_wrapper,
+                       sizeof(s_clip_wrapper));
+                modified = 1;
+            }
+        }
     }
 
     if (modified) {

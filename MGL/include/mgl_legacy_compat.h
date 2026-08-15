@@ -78,6 +78,8 @@ typedef struct {
      * the builtin table; callers only need this aggregate. */
     GLboolean has_legacy_builtins;
 
+    GLboolean has_gl_ClipVertex; /* gl_ClipVertex VS builtin output      */
+
     /* Legacy matrix built-in uniforms (§7.4): gl_ModelViewMatrix,
      * gl_ProjectionMatrix, gl_ModelViewProjectionMatrix, gl_TextureMatrix[],
      * gl_NormalMatrix + inverse/transpose variants.  Injected verbatim

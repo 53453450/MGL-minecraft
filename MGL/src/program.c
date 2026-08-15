@@ -27,6 +27,7 @@
 #include <malloc/malloc.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include "mgl_shader_abi.h"
+#include "mgl.h"
 
 #include "glm_context.h"
 #include "shaders.h"
@@ -202,6 +203,8 @@ Program *newProgram(GLMContext ctx, GLuint program)
         atomic_fetch_add_explicit(&mglNextMSLTextureCacheInstanceID,
                                   1u,
                                   memory_order_relaxed);
+    ptr->legacy_clip_plane_loc = -1;
+    ptr->legacy_clip_plane_enabled_loc = -1;
     for (GLuint i = 0; i < TEXTURE_UNITS; i++) {
         ptr->sampler_units[i] = -1;
     }
@@ -1269,6 +1272,12 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
 
     pptr->link_success = GL_TRUE;
     pptr->dirty_bits |= DIRTY_PROGRAM;
+    /* Cache the legacy clip-plane uniform locations (the translator injects
+     * them only for VS stages that use gl_ClipVertex). */
+    pptr->legacy_clip_plane_loc =
+        mglGetUniformLocation(ctx, pptr->name, "_mglClipPlane");
+    pptr->legacy_clip_plane_enabled_loc =
+        mglGetUniformLocation(ctx, pptr->name, "_mglClipPlaneEnabled");
     /* Relink rebuilds the shader resource list, so the program-level
      * sampled-texture-unit bitmap is stale (mglLinkProgram invalidated it
      * earlier) and the merged state-level mask must follow.  glLinkProgram

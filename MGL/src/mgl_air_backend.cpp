@@ -2825,8 +2825,16 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         v.name = s->name;
         v.type = typeFromIR(s->type);
         if (v.type.isArray()) {
-            /* const array variables are SSA values in cg.lvalues. */
-            return varValue(cg, VarSym{s->name, v.type, VarSym::LOCAL}, mod);
+            /* const array variables are SSA values in cg.lvalues; array
+             * varyings (gl_FragData, gl_TexCoord) are pre-registered
+             * aggregates in cg.lvalues too.  Uniform arrays (e.g. the
+             * legacy gl_TextureMatrix[] / _mglClipPlane[]) fall through to
+             * the BUFFER read below, which loads them from the plain
+             * uniform blob at their reflection offset. */
+            if (!(s->qualifiers & MGL_AST_Q_UNIFORM)) {
+                return varValue(cg, VarSym{s->name, v.type,
+                                           VarSym::LOCAL}, mod);
+            }
         }
         if (s->qualifiers & MGL_AST_Q_UNIFORM) {
             v.kind = VarSym::BUFFER;

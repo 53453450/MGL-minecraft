@@ -826,6 +826,15 @@ static void test_translate_gl_ClipVertex(void)
     check(contains(buf, "_mglClipVertex"), "gl_ClipVertex -> _mglClipVertex", NULL);
     check(contains(buf, "out vec4 _mglClipVertex;"), "gl_ClipVertex decl injected (out)", NULL);
     check(not_contains(buf, "gl_ClipVertex"), "no gl_ClipVertex left", NULL);
+    /* Clip-plane derivation wrapper (Step 5): user main renamed, wrapper
+     * main injected with the state uniforms and 8 gl_ClipDistance writes. */
+    check(contains(buf, "void _mglLegacyUserMain"), "user main renamed", NULL);
+    check(contains(buf, "_mglLegacyUserMain();"), "wrapper calls user main", NULL);
+    check(contains(buf, "uniform vec4 _mglClipPlane[8];"), "plane uniform injected", NULL);
+    check(contains(buf, "uniform float _mglClipPlaneEnabled[8];"),
+          "enabled uniform injected", NULL);
+    check(contains(buf, "mix(1.0, dot(_mglClipPlane[5], _mglClipVertex), _mglClipPlaneEnabled[5])"),
+          "clip-distance derivation for plane 5", NULL);
 }
 
 static void test_translate_gl_BackColor(void)

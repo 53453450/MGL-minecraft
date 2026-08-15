@@ -509,6 +509,7 @@ void mglGetShaderiv(GLMContext ctx, GLuint shader, GLenum pname, GLint *params);
 void mglGetShaderInfoLog(GLMContext ctx, GLuint shader, GLsizei bufSize, GLsizei *length, GLchar *infoLog);
 void mglGetShaderSource(GLMContext ctx, GLuint shader, GLsizei bufSize, GLsizei *length, GLchar *source);
 GLint  mglGetUniformLocation(GLMContext ctx, GLuint program, const GLchar *name);
+void   mglRefreshLegacyStateUniforms(GLMContext ctx);
 void mglGetUniformfv(GLMContext ctx, GLuint program, GLint location, GLfloat *params);
 void mglGetUniformiv(GLMContext ctx, GLuint program, GLint location, GLint *params);
 void mglGetVertexAttribdv(GLMContext ctx, GLuint index, GLenum pname, GLdouble *params);

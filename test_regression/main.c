@@ -55,7 +55,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 66
+#define MAX_TESTS 67
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -3766,6 +3766,167 @@ static int test_gl_clip_planes(unsigned char *pixels, const char *out_path)
         return 10;
     }
 
+    return 0;
+}
+
+/* ---- Legacy clip-plane shader derivation (gl_ClipVertex) ----
+ * A GLSL 1.10 VS writing gl_ClipVertex gets a wrapper main injected by the
+ * translator that derives gl_ClipDistance[i] = mix(1, dot(plane_i, clipVtx),
+ * enabled_i) from the _mglClipPlane/_mglClipPlaneEnabled uniforms, which
+ * mglDrawDispatch refreshes per draw from the glClipPlane + enable caps.
+ * The clip vertex here is a constant eye-space point (identity modelview),
+ * so plane (0,0,-1,0) gives distance -0.5 and clips everywhere. */
+static int test_legacy_clip_vertex(unsigned char *pixels, const char *out_path)
+{
+    (void)out_path;
+    const char *vs330 =
+        "#version 330 core\n"
+        "layout(location = 0) in vec2 a_pos;\n"
+        "uniform vec4 _mglClipPlane[8];\n"
+        "uniform float _mglClipPlaneEnabled[8];\n"
+        "void main() {\n"
+        "    gl_Position = vec4(a_pos, 0.0, 1.0);\n"
+        "    gl_ClipDistance[0] = mix(1.0, dot(_mglClipPlane[0], vec4(0.0,0.0,0.5,1.0)), _mglClipPlaneEnabled[0]);\n"
+        "    gl_ClipDistance[1] = mix(1.0, dot(_mglClipPlane[1], vec4(0.0,0.0,0.5,1.0)), _mglClipPlaneEnabled[1]);\n"
+        "    gl_ClipDistance[2] = mix(1.0, dot(_mglClipPlane[2], vec4(0.0,0.0,0.5,1.0)), _mglClipPlaneEnabled[2]);\n"
+        "    gl_ClipDistance[3] = mix(1.0, dot(_mglClipPlane[3], vec4(0.0,0.0,0.5,1.0)), _mglClipPlaneEnabled[3]);\n"
+        "    gl_ClipDistance[4] = mix(1.0, dot(_mglClipPlane[4], vec4(0.0,0.0,0.5,1.0)), _mglClipPlaneEnabled[4]);\n"
+        "    gl_ClipDistance[5] = mix(1.0, dot(_mglClipPlane[5], vec4(0.0,0.0,0.5,1.0)), _mglClipPlaneEnabled[5]);\n"
+        "    gl_ClipDistance[6] = mix(1.0, dot(_mglClipPlane[6], vec4(0.0,0.0,0.5,1.0)), _mglClipPlaneEnabled[6]);\n"
+        "    gl_ClipDistance[7] = mix(1.0, dot(_mglClipPlane[7], vec4(0.0,0.0,0.5,1.0)), _mglClipPlaneEnabled[7]);\n"
+        "}\n";
+    /* Solid red: clipped fragments leave the clear color. */
+    const char *fs330 =
+        "#version 330 core\n"
+        "out vec4 f;\n"
+        "void main() { f = vec4(1.0, 0.0, 0.0, 1.0); }\n";
+
+    GLuint prog = link_program(vs330, fs330);
+    if (!prog) {
+        fprintf(stderr, "legacy_clip_vertex: link failed\n");
+        return 1;
+    }
+
+    GLuint fbo = 0, tex = 0;
+    fbo = make_fbo(REG_W, REG_H, &tex);
+    if (!fbo) return 2;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+
+    GLuint vao;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    GLuint vbo = make_vbo(TRI_VERTS, sizeof(TRI_VERTS));
+    glEnableVertexAttribArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+
+    glViewport(0, 0, REG_W, REG_H);
+    glDisable(GL_SCISSOR_TEST);
+    glUseProgram(prog);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+
+    const size_t mid = ((size_t)(REG_H / 2) * (size_t)REG_W + (size_t)(REG_W / 2)) * 4u;
+
+    /* Draw 1: default state, no planes enabled — red everywhere. */
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    if (pixels[mid + 0] < 200u || pixels[mid + 1] >= 50u || pixels[mid + 2] >= 50u) {
+        fprintf(stderr, "legacy_clip_vertex: draw1 default expected red, got "
+                        "(%u,%u,%u,%u)\n",
+                (unsigned)pixels[mid + 0], (unsigned)pixels[mid + 1],
+                (unsigned)pixels[mid + 2], (unsigned)pixels[mid + 3]);
+        return 3;
+    }
+
+    /* Draw 2: clip plane 0 (0,0,-1,0) enabled — eye-space clip vertex
+     * (0,0,0.5,1) gives distance -0.5 < 0, the fragment is clipped and the
+     * pixel stays black. */
+    {
+        const GLdouble eq[4] = { 0.0, 0.0, -1.0, 0.0 };
+        glClipPlane(GL_CLIP_PLANE0, eq);
+    }
+    glEnable(GL_CLIP_PLANE0);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    if (pixels[mid + 0] >= 50u || pixels[mid + 1] >= 50u || pixels[mid + 2] >= 50u) {
+        fprintf(stderr, "legacy_clip_vertex: draw2 plane0=(0,0,-1,0) should "
+                        "clip, got (%u,%u,%u,%u)\n",
+                (unsigned)pixels[mid + 0], (unsigned)pixels[mid + 1],
+                (unsigned)pixels[mid + 2], (unsigned)pixels[mid + 3]);
+        return 4;
+    }
+
+    /* Draw 3: plane 0 disabled again — red restored. */
+    glDisable(GL_CLIP_PLANE0);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    if (pixels[mid + 0] < 200u || pixels[mid + 1] >= 50u || pixels[mid + 2] >= 50u) {
+        fprintf(stderr, "legacy_clip_vertex: draw3 after disable expected red, "
+                        "got (%u,%u,%u,%u)\n",
+                (unsigned)pixels[mid + 0], (unsigned)pixels[mid + 1],
+                (unsigned)pixels[mid + 2], (unsigned)pixels[mid + 3]);
+        return 5;
+    }
+
+    /* Draw 4: plane 0 flipped to (0,0,1,0) — distance +0.5, no clip. */
+    {
+        const GLdouble eq[4] = { 0.0, 0.0, 1.0, 0.0 };
+        glClipPlane(GL_CLIP_PLANE0, eq);
+    }
+    glEnable(GL_CLIP_PLANE0);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    if (pixels[mid + 0] < 200u || pixels[mid + 1] >= 50u || pixels[mid + 2] >= 50u) {
+        fprintf(stderr, "legacy_clip_vertex: draw4 positive plane should not "
+                        "clip, got (%u,%u,%u,%u)\n",
+                (unsigned)pixels[mid + 0], (unsigned)pixels[mid + 1],
+                (unsigned)pixels[mid + 2], (unsigned)pixels[mid + 3]);
+        return 6;
+    }
+
+    /* Draw 5: plane 5 (0,0,-1,0) enabled — clips via gl_ClipDistance[5]. */
+    {
+        const GLdouble eq[4] = { 0.0, 0.0, -1.0, 0.0 };
+        glClipPlane(GL_CLIP_PLANE5, eq);
+    }
+    glEnable(GL_CLIP_PLANE5);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    if (pixels[mid + 0] >= 50u || pixels[mid + 1] >= 50u || pixels[mid + 2] >= 50u) {
+        fprintf(stderr, "legacy_clip_vertex: draw5 plane5=(0,0,-1,0) should "
+                        "clip, got (%u,%u,%u,%u)\n",
+                (unsigned)pixels[mid + 0], (unsigned)pixels[mid + 1],
+                (unsigned)pixels[mid + 2], (unsigned)pixels[mid + 3]);
+        return 7;
+    }
+
+    /* Stray error: an out-of-range plane index must raise GL_INVALID_ENUM
+     * and leave state untouched (plane 5 stays enabled and still clips). */
+    {
+        const GLdouble eq[4] = { 0.0, 0.0, -1.0, 0.0 };
+        glClipPlane(0x3000 + 100, eq);
+        if (glGetError() != GL_INVALID_ENUM) {
+            fprintf(stderr, "legacy_clip_vertex: out-of-range glClipPlane "
+                            "not rejected\n");
+            return 8;
+        }
+    }
+
+    glDeleteProgram(prog);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteBuffers(1, &vbo);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &tex);
     return 0;
 }
 
@@ -10052,6 +10213,7 @@ typedef struct {
 
 static const TestCase TESTS[] = {
     SELF_CHECK_TEST("gl_clip_planes",     test_gl_clip_planes),
+    SELF_CHECK_TEST("legacy_clip_vertex", test_legacy_clip_vertex),
     GOLDEN_TEST("draw_arrays",            test_draw_arrays),
     GOLDEN_TEST("draw_elements",          test_draw_elements),
     GOLDEN_TEST("draw_arrays_instanced",  test_draw_arrays_instanced),

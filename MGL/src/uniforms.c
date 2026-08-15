@@ -3616,3 +3616,48 @@ void mglUniformMatrix4x3fv(GLMContext ctx, GLint location, GLsizei count, GLbool
                             Mat4x3fvTranspose  // Transpose function
         );
 }
+
+/* Legacy fixed-function clip-plane derivation state (glClipPlane +
+ * gl_ClipVertex): refresh the _mglClipPlane/_mglClipPlaneEnabled uniforms
+ * of the current program from the GL clip-plane state.  Called per draw
+ * (mglDrawDispatch) so any ordering of glClipPlane/glEnable/glUseProgram
+ * works; initBufferData's internal memcmp skips the upload when the values
+ * are unchanged, so idle draws cost nothing. */
+void mglRefreshLegacyStateUniforms(GLMContext ctx)
+{
+    if (!ctx) return;
+    Program *program =
+        mglUniformGetCurrentProgram(ctx, "mglRefreshLegacyStateUniforms");
+    if (!program) return;
+    if (program->legacy_clip_plane_loc < 0 &&
+        program->legacy_clip_plane_enabled_loc < 0) {
+        return;
+    }
+    GLfloat planes[8][4];
+    for (int i = 0; i < MAX_CLIP_DISTANCES; i++) {
+        for (int k = 0; k < 4; k++) {
+            planes[i][k] = (GLfloat)ctx->state.var.clip_planes[i][k];
+        }
+    }
+    GLfloat enabled[8];
+    for (int i = 0; i < MAX_CLIP_DISTANCES; i++) {
+        enabled[i] = (ctx->state.caps.clip_distances[i] != 0) ? 1.0f : 0.0f;
+    }
+    /* Deliver each element at its own leaf location: the renderer's struct
+     * packing path reads one plain-uniform slot per array element (CTS
+     * convention, 1 location per leaf), so writing the whole array at the
+     * base location would leave every leaf beyond the first stale.  The
+     * plane leaves are 16 bytes (vec4), the enabled leaves 4 bytes. */
+    if (program->legacy_clip_plane_loc >= 0) {
+        for (int i = 0; i < MAX_CLIP_DISTANCES; i++) {
+            mglUniform(ctx, program->legacy_clip_plane_loc + i,
+                       planes[i], sizeof(planes[i]));
+        }
+    }
+    if (program->legacy_clip_plane_enabled_loc >= 0) {
+        for (int i = 0; i < MAX_CLIP_DISTANCES; i++) {
+            mglUniform(ctx, program->legacy_clip_plane_enabled_loc + i,
+                       &enabled[i], sizeof(enabled[i]));
+        }
+    }
+}

@@ -1736,13 +1736,18 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                             if (member->size > 1) {
                                 /* Array member: each element stored at a
                                  * separate location (CTS convention: 1
-                                 * location per leaf element). */
-                                GLuint elem_stride = (GLuint)member->array_stride;
+                                 * location per leaf element).  The AIR
+                                 * backend packs plain-uniform arrays at the
+                                 * element byte size (LLVM whole-array loads,
+                                 * e.g. a float[8] member is read at
+                                 * base + 4*i), so the per-leaf stride must be
+                                 * the element size — the std140 ArrayStride
+                                 * (16 for float) would scatter the leaves and
+                                 * the shader would read stale bytes. */
+                                GLuint elem_stride =
+                                    mglGLTypeElementByteSize(member->gl_type);
                                 if (elem_stride == 0) {
-                                    /* Plain struct uniforms lack ArrayStride
-                                     * decorations; derive stride from the
-                                     * member's GL type (per-element byte size). */
-                                    elem_stride = mglGLTypeElementByteSize(member->gl_type);
+                                    elem_stride = (GLuint)member->array_stride;
                                 }
                                 for (GLint ai = 0; ai < member->size; ai++) {
                                     GLint elem_loc = member_loc + ai;

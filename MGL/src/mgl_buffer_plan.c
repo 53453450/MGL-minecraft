@@ -153,11 +153,15 @@ static void mglBuildPlanEntry(MGLBufferPlanEntry *entry,
                     dst->member_offset_in_elem = member_offset;
 
                     dst->member_size = (GLuint)src->size;
-                    if (src->array_stride > 0) {
+                    /* The AIR backend packs plain-uniform arrays at the
+                     * element byte size (LLVM whole-array loads), so the
+                     * per-leaf stride must be the element size; the std140
+                     * ArrayStride (16 for float) would scatter the leaves
+                     * and the shader would read stale bytes. */
+                    dst->member_array_stride =
+                        mglGLTypeElementByteSize(src->gl_type);
+                    if (dst->member_array_stride == 0) {
                         dst->member_array_stride = (GLuint)src->array_stride;
-                    } else {
-                        dst->member_array_stride =
-                            mglGLTypeElementByteSize(src->gl_type);
                     }
                     dst->member_loc = base_loc + (GLint)src->location_offset;
                     dst->is_array_member = (src->size > 1) ? GL_TRUE : GL_FALSE;

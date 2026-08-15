@@ -325,6 +325,12 @@ typedef struct Program_t {
      * mglComputeDrawBufferBindingHashScan and mglTrackPendingBaseBufferReads
      * can skip the ~84-slot linear scan.  84 bits fit in 2 × uint64_t. */
     uint64_t plain_uniform_active_mask[2];
+    /* Cached uniform locations for the legacy clip-plane derivation
+     * uniforms (_mglClipPlane / _mglClipPlaneEnabled); -1 when the program
+     * does not use gl_ClipVertex.  Looked up at link end, refreshed per
+     * draw from the GL clip-plane state (glClipPlane/glEnable). */
+    GLint legacy_clip_plane_loc;
+    GLint legacy_clip_plane_enabled_loc;
     char *attrib_location_names[MAX_ATTRIBS];
     GLboolean attrib_location_name_owned[MAX_ATTRIBS];
     /* Pre-link fragment output bindings set via glBindFragDataLocation(Indexed).
