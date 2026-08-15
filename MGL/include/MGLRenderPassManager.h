@@ -20,7 +20,6 @@ typedef struct MGLCommandState_t {
     GLuint dontCareFrameGeneration;
     void *_Nullable currentCommandBufferOwner;
     void *_Nullable detachedCommandBufferSubmission;
-    id<MTLCommandBuffer> __strong _Nullable currentCommandBuffer;
     void *_Nullable mdiArgsScratchOwner;
     void *_Nullable currentRenderEncoderOwner;
     id<MTLRenderCommandEncoder> __strong _Nullable currentRenderEncoder;

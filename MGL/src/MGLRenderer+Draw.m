@@ -670,7 +670,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     mglLogDrawWithoutSwapWatchdog("arrays",
                                   drawCall,
                                   ctx,
-                                  _renderPassManager.state->currentCommandBuffer,
+                                  (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
                                   _renderPassManager.state->currentRenderEncoder,
                                   _renderPassManager.state->renderPassDescriptor);
 
@@ -1169,7 +1169,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     mglLogDrawWithoutSwapWatchdog("elements",
                                   drawCall,
                                   ctx,
-                                  _renderPassManager.state->currentCommandBuffer,
+                                  (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
                                   _renderPassManager.state->currentRenderEncoder,
                                   _renderPassManager.state->renderPassDescriptor);
 

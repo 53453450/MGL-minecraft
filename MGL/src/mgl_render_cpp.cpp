@@ -6108,6 +6108,28 @@ int mglRenderCppResetCommandBufferOwner(void* owner_handle,
     return 0;
 }
 
+extern "C"
+int mglRenderCppCreateCommandBufferOwnerAdopt(void* command_buffer,
+                                              void** owner_out) {
+    if (owner_out) *owner_out = nullptr;
+    MTL::CommandBuffer* commandBuffer =
+        static_cast<MTL::CommandBuffer*>(command_buffer);
+    if (!commandBuffer || !owner_out) return -1;
+    mgl::CommandBufferOwner* owner = new (std::nothrow) mgl::CommandBufferOwner();
+    if (!owner) return -1;
+    commandBuffer->retain();
+    owner->current = commandBuffer;
+    *owner_out = owner;
+    return 0;
+}
+
+extern "C"
+void* mglRenderCppCommandBufferOwnerGetCurrent(void* owner_handle) {
+    mgl::CommandBufferOwner* owner =
+        static_cast<mgl::CommandBufferOwner*>(owner_handle);
+    return owner ? static_cast<void*>(owner->current) : nullptr;
+}
+
 void mglRenderCppDiscardCommandBufferOwnerCurrent(void* owner_handle) {
     mgl::CommandBufferOwner* owner =
         static_cast<mgl::CommandBufferOwner*>(owner_handle);

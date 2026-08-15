@@ -34,8 +34,8 @@
         // Get current error tracking from command buffer if available
         MGLRenderCppCommandBufferState currentState =
             mglRenderCommandBufferState(
-                _renderPassManager.state->currentCommandBuffer);
-        if (_renderPassManager.state->currentCommandBuffer &&
+                (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
+        if ((__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner) &&
             currentState.has_error) {
             NSTimeInterval currentTime = [[NSDate date] timeIntervalSince1970];
 
@@ -100,9 +100,9 @@
 {
     // PROPER FIX: Safe command buffer cleanup
     @try {
-        if (_renderPassManager.state->currentCommandBuffer) {
+        if ((__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner)) {
             if (mglRenderCommandBufferStatus(
-                    _renderPassManager.state->currentCommandBuffer) ==
+                    (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner)) ==
                 MTLCommandBufferStatusCommitted) {
                 // Do not block indefinitely here; cleanup can be invoked on the render thread.
                 // Command buffers retain resources until completion, so dropping the reference is safe.
@@ -404,7 +404,7 @@
     NSLog(@"MGL AGX: Clearing problematic GPU state for recovery");
 
     // Clear current problematic resources
-    if (_renderPassManager.state->currentCommandBuffer) {
+    if ((__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner)) {
         [_renderPassManager discardCurrentCommandBuffer];
     }
 

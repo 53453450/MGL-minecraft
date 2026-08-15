@@ -447,7 +447,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     // Create initial command buffer for AGX safety
     @try {
         [_renderPassManager installNewCommandBufferFromQueue:_commandQueue];
-        if (!_renderPassManager.state->currentCommandBuffer) {
+        if (!(__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner)) {
             NSLog(@"MGL ERROR: Failed to create initial Metal command buffer");
         }
     } @catch (NSException *exception) {
@@ -683,7 +683,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         _bindingStateOwner = NULL;
 
         // Cleanup command buffer and encoder
-        if (_renderPassManager.state->currentCommandBuffer) {
+        if ((__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner)) {
             NSLog(@"MGL INFO: Releasing current command buffer");
             [_renderPassManager discardCurrentCommandBuffer];
         }

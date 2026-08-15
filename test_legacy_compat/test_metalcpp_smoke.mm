@@ -2126,6 +2126,52 @@ bool mglTextureNeedsChannelExpansion(
 }
 }
 
+static int verifyCommandBufferGetterAndAdopt(void) {
+    /* P4.5 (item 1141): owner getter + adopt — the gate-off fallback keeps
+     * the owner as the single source on both gates. */
+    if (mglRenderCppCommandBufferOwnerGetCurrent(NULL) != NULL) {
+        fprintf(stderr, "FAIL: cb getter null owner\n");
+        return 1;
+    }
+    if (mglRenderCppCreateCommandBufferOwnerAdopt(NULL, NULL) != -1) {
+        fprintf(stderr, "FAIL: cb adopt bad args\n");
+        return 1;
+    }
+    id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
+    if (!dev) return 0; /* covered by main's guard */
+    id<MTLCommandQueue> queue = [dev newCommandQueue];
+    id<MTLCommandBuffer> objcCB = [queue commandBuffer];
+    if (!objcCB) {
+        fprintf(stderr, "FAIL: cb adopt setup\n");
+        return 1;
+    }
+    void *owner = NULL;
+    if (mglRenderCppCreateCommandBufferOwnerAdopt(
+            (__bridge void *)objcCB, &owner) != 0 || !owner) {
+        fprintf(stderr, "FAIL: cb adopt create\n");
+        return 1;
+    }
+    id<MTLCommandBuffer> readBack =
+        (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(
+            owner);
+    if (readBack != objcCB) {
+        fprintf(stderr, "FAIL: cb adopt identity\n");
+        return 1;
+    }
+    mglRenderCppDiscardCommandBufferOwnerCurrent(owner);
+    if (mglRenderCppCommandBufferOwnerGetCurrent(owner) != NULL) {
+        fprintf(stderr, "FAIL: cb getter after discard\n");
+        return 1;
+    }
+    mglRenderCppDestroyCommandBufferOwner(&owner);
+    if (owner != NULL) {
+        fprintf(stderr, "FAIL: cb owner not cleared\n");
+        return 1;
+    }
+    printf("CB_GETTER_ADOPT_OK\n");
+    return 0;
+}
+
 static int verifyMDIScratchOwner(void) {
     /* P4.5 (item 1155): MDI scratch allocator — the ObjC gate-off allocator
      * now delegates to the same C++ owner. */
@@ -3705,6 +3751,7 @@ int main(void) {
         if (verifyLevelUploadPrep() != 0) return 1;
         if (verifyCopyBackEncode() != 0) return 1;
         if (verifyMDIScratchOwner() != 0) return 1;
+        if (verifyCommandBufferGetterAndAdopt() != 0) return 1;
         if (verifyRenderPassIdentityOwner() != 0) return 1;
         if (verifyRenderPassStateOwner(device) != 0) return 1;
         if (verifyTextureStagingOwner() != 0) return 1;

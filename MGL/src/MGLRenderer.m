@@ -3434,7 +3434,7 @@ void logDirtyBits(GLMContext ctx)
               (unsigned long long)swapCall, shouldPresent ? 1 : 0, (unsigned)drawBuffer);
         mglLogStateSnapshot("swap.enter",
                             activeCtx,
-                            _renderPassManager.state->currentCommandBuffer,
+                            (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
                             _renderPassManager.state->currentRenderEncoder,
                             _renderPassManager.state->renderPassDescriptor,
                             _drawable);
@@ -3460,7 +3460,7 @@ void logDirtyBits(GLMContext ctx)
                 if (traceSwap || (swapCall % 120ull) == 0ull) {
                     mglLogStateSnapshot("mainthread.stall.snapshot",
                                         activeCtx,
-                                        _renderPassManager.state->currentCommandBuffer,
+                                        (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
                                         _renderPassManager.state->currentRenderEncoder,
                                         _renderPassManager.state->renderPassDescriptor,
                                         _drawable);
@@ -3610,14 +3610,14 @@ void logDirtyBits(GLMContext ctx)
             return;
         }
 
-        if (!_renderPassManager.state->currentCommandBuffer) {
+        if (!(__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner)) {
             NSLog(@"MGL ERROR: No command buffer available for presentation");
             return;
         }
 
         MTLCommandBufferStatus bufferStatus =
             mglRenderCommandBufferStatus(
-                _renderPassManager.state->currentCommandBuffer);
+                (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
         if (bufferStatus != MTLCommandBufferStatusNotEnqueued) {
             static uint64_t s_swapFinalizedBufferCount = 0;
             uint64_t swapFinHit = ++s_swapFinalizedBufferCount;
@@ -3627,7 +3627,7 @@ void logDirtyBits(GLMContext ctx)
             }
             [self endRenderEncodingLocked];
             [self newCommandBufferLocked];
-            if (!_renderPassManager.state->currentCommandBuffer) {
+            if (!(__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner)) {
                 NSLog(@"MGL ERROR: Failed to create new command buffer for presentation");
                 return;
             }
@@ -3654,13 +3654,13 @@ void logDirtyBits(GLMContext ctx)
             if (!(mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
                   mglRenderCppGetDevice() &&
                   mglRenderCppPresentDrawable(
-                      (__bridge void *)_renderPassManager.state->currentCommandBuffer,
+                      mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
                       (__bridge void *)_drawable) == 0)) {
-                [_renderPassManager.state->currentCommandBuffer presentDrawable: _drawable];
+                [(__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner) presentDrawable: _drawable];
             }
             if (traceSwap) {
                 mglTraceLogNSString(@"MGL TRACE swap.present call=%llu cb=%p drawable=%p",
-                      (unsigned long long)swapCall, _renderPassManager.state->currentCommandBuffer, _drawable);
+                      (unsigned long long)swapCall, (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner), _drawable);
             }
 
         } @catch (NSException *exception) {
@@ -3759,7 +3759,7 @@ void logDirtyBits(GLMContext ctx)
                   swapElapsedUs);
             mglLogStateSnapshot("swap.exit.ok",
                                 ctx,
-                                _renderPassManager.state->currentCommandBuffer,
+                                (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
                                 _renderPassManager.state->currentRenderEncoder,
                                 _renderPassManager.state->renderPassDescriptor,
                                 _drawable);
@@ -3808,7 +3808,7 @@ void logDirtyBits(GLMContext ctx)
     if (!MGL_STATE(glm_ctx)->caps.scissor_test) {
         [self endRenderEncoding];
 
-        if (!_renderPassManager.state->currentCommandBuffer && ![self newCommandBuffer]) {
+        if (!(__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner) && ![self newCommandBuffer]) {
             NSLog(@"MGL ERROR: immediate clear failed to create command buffer");
             return;
         }
@@ -4139,7 +4139,7 @@ void logDirtyBits(GLMContext ctx)
      * Used when no encoder is active, the FBO doesn't match, a visibility
      * query is active, or the attachment textures don't match. */
     [self endRenderEncoding];
-    if (!_renderPassManager.state->currentCommandBuffer && ![self newCommandBuffer]) {
+    if (!(__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner) && ![self newCommandBuffer]) {
         NSLog(@"MGL ERROR: scissored clear failed to create command buffer");
         return;
     }
@@ -4184,7 +4184,7 @@ void logDirtyBits(GLMContext ctx)
     clearState.render_target_height = passHeight;
 
     id<MTLRenderCommandEncoder> clearEncoder = mglRendererCreateRenderEncoder(
-        _renderPassManager.state->currentCommandBuffer, clearPass,
+        (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner), clearPass,
         &clearState);
     if (!clearEncoder) {
         NSLog(@"MGL ERROR: scissored clear failed to create render encoder");
@@ -4977,9 +4977,9 @@ Buffer *getIndirectBuffer(GLMContext ctx)
         [self clearStageBindingCopyBacks:copyBacks];
         return true;
     }
-    if (!_renderPassManager.state->currentCommandBuffer ||
+    if (!(__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner) ||
         mglRenderCommandBufferStatus(
-            _renderPassManager.state->currentCommandBuffer) !=
+            (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner)) !=
             MTLCommandBufferStatusNotEnqueued) {
         [self clearStageBindingCopyBacks:copyBacks];
         return false;
@@ -4988,7 +4988,7 @@ Buffer *getIndirectBuffer(GLMContext ctx)
     if (hasCopies) {
         id<MTLBlitCommandEncoder> blit =
             mglRendererCreateBlitEncoder(
-                _renderPassManager.state->currentCommandBuffer);
+                (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
         if (!blit) {
             [self clearStageBindingCopyBacks:copyBacks];
             return false;

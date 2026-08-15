@@ -938,7 +938,7 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
 
     MGLStageBindingCopyBackList copyBacks = {0};
     id <MTLComputeCommandEncoder> computeCommandEncoder =
-        mglComputeCreateEncoder(_renderPassManager.state->currentCommandBuffer);
+        mglComputeCreateEncoder((__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
     if (!computeCommandEncoder) {
         NSLog(@"MGL ERROR: Failed to create compute command encoder");
         return;
@@ -1116,7 +1116,7 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
 
     MGLStageBindingCopyBackList copyBacks = {0};
     id<MTLComputeCommandEncoder> computeCommandEncoder =
-        mglComputeCreateEncoder(_renderPassManager.state->currentCommandBuffer);
+        mglComputeCreateEncoder((__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
     if (!computeCommandEncoder) {
         NSLog(@"MGL ERROR: Failed to create compute command encoder for indirect dispatch");
         return;

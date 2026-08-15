@@ -1039,6 +1039,14 @@ int mglRenderCppAddCommandBufferCompletion(
 int mglRenderCppCreateCommandBufferOwner(void *command_queue,
                                          void **owner_out,
                                          void **command_buffer_out);
+/* Adopt an existing (ObjC-created) command buffer as the owner's current —
+ * gate-off fallback so the owner stays the single source on both gates.
+ * Returns 0 with *owner_out set (the owner retains the buffer). */
+int mglRenderCppCreateCommandBufferOwnerAdopt(void *command_buffer,
+                                              void **owner_out);
+/* Borrowed pointer to the owner's current command buffer (NULL when the
+ * owner has none / owner is NULL). */
+void *mglRenderCppCommandBufferOwnerGetCurrent(void *owner);
 int mglRenderCppResetCommandBufferOwner(void *owner,
                                         void *command_queue,
                                         void **command_buffer_out);

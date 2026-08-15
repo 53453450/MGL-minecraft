@@ -1429,9 +1429,9 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
         return YES;
     }
 
-    if (!_renderPassManager.state->currentCommandBuffer ||
+    if (!(__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner) ||
         mglRenderCommandBufferStatus(
-            _renderPassManager.state->currentCommandBuffer) >=
+            (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner)) >=
             MTLCommandBufferStatusCommitted) {
         if (![self newCommandBuffer]) {
             drawCtx->state.dirty_bits = DIRTY_ALL;
@@ -1684,14 +1684,14 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
         setup.buffer_count = setupBuffers;
         void *computeHandle = NULL;
         if (mglRenderCppBeginComputeDispatch(
-                (__bridge void *)_renderPassManager.state->currentCommandBuffer,
+                mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
                 &setup, &computeHandle, NULL, 0) == 0 && computeHandle) {
             compute = (__bridge id<MTLComputeCommandEncoder>)computeHandle;
         }
     }
     if (!compute) {
         compute = mglDrawSupportCreateComputeEncoder(
-            _renderPassManager.state->currentCommandBuffer);
+            (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
         if (!compute) {
             drawCtx->state.dirty_bits = DIRTY_ALL;
             return YES;
@@ -1816,7 +1816,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
                 if (copyBytes == 0u) continue;
                 if (!xfbBlit) {
                     xfbBlit = mglDrawSupportCreateBlitEncoder(
-                        _renderPassManager.state->currentCommandBuffer);
+                        (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
                     if (!xfbBlit) {
                         _geometry.expansionActive = NO;
                         _geometry.program = NULL;

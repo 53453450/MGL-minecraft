@@ -347,7 +347,7 @@ static void mglBindingEndBlitEncoder(id<MTLBlitCommandEncoder> encoder)
                 if ([self ensureWritableCommandBufferLocked:"is_render_target_blit"]) {
                     id<MTLBlitCommandEncoder> blit =
                         mglBindingCreateBlitEncoder(
-                            _renderPassManager.state->currentCommandBuffer);
+                            (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
                     if (blit) {
                         NSUInteger copySlices = MIN(oldTexture.arrayLength, newTexture.arrayLength);
                         NSUInteger copyLevels = MIN(oldTexture.mipmapLevelCount, newTexture.mipmapLevelCount);

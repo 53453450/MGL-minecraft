@@ -510,15 +510,15 @@ typedef struct {
     if (!needsInitializationBlit) {
         return true;
     }
-    if (!_renderPassManager.state->currentCommandBuffer ||
+    if (!(__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner) ||
         mglRenderCommandBufferStatus(
-            _renderPassManager.state->currentCommandBuffer) !=
+            (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner)) !=
             MTLCommandBufferStatusNotEnqueued) {
         return false;
     }
 
     id<MTLBlitCommandEncoder> blit =
-        mglTessCreateBlitEncoder(_renderPassManager.state->currentCommandBuffer);
+        mglTessCreateBlitEncoder((__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
     if (!blit) {
         return false;
     }
@@ -835,9 +835,9 @@ typedef struct {
      * before processGLState() (which normally creates the command buffer),
      * and prior operations (glBufferData, glEndQuery, etc.) may have
      * committed the previous command buffer. */
-    if (!_renderPassManager.state->currentCommandBuffer ||
+    if (!(__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner) ||
         mglRenderCommandBufferStatus(
-            _renderPassManager.state->currentCommandBuffer) >=
+            (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner)) >=
             MTLCommandBufferStatusCommitted) {
         if (![self newCommandBuffer]) {
             NSLog(@"MGL TESS ERROR: failed to create command buffer for TCS dispatch");
@@ -882,7 +882,7 @@ typedef struct {
     }
 
     id<MTLComputeCommandEncoder> computeEncoder =
-        mglTessCreateComputeEncoder(_renderPassManager.state->currentCommandBuffer);
+        mglTessCreateComputeEncoder((__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
     if (!computeEncoder) {
         NSLog(@"MGL TESS ERROR: failed to create compute encoder for TCS dispatch");
         [self clearStageBindingCopyBacks:&stageCopyBacks];
@@ -1463,9 +1463,9 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     if (_renderPassManager.state->currentRenderEncoder) {
         [self endRenderEncoding];
     }
-    if (!_renderPassManager.state->currentCommandBuffer ||
+    if (!(__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner) ||
         mglRenderCommandBufferStatus(
-            _renderPassManager.state->currentCommandBuffer) >=
+            (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner)) >=
             MTLCommandBufferStatusCommitted) {
         if (![self newCommandBuffer]) {
             NSLog(@"MGL TESS ERROR: failed to create command buffer for TES compute");
@@ -1535,7 +1535,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
                 MGL_AIR_TESS_SLOT_TCS_OUTPUT };
         void *computeHandle = NULL;
         if (mglRenderCppBeginComputeDispatch(
-                (__bridge void *)_renderPassManager.state->currentCommandBuffer,
+                mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
                 &setup, &computeHandle, NULL, 0) == 0 && computeHandle) {
             computeEncoder =
                 (__bridge id<MTLComputeCommandEncoder>)computeHandle;
@@ -1543,7 +1543,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     }
     if (!computeEncoder) {
         computeEncoder = mglTessCreateComputeEncoder(
-            _renderPassManager.state->currentCommandBuffer);
+            (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
         if (!computeEncoder) {
             NSLog(@"MGL TESS ERROR: failed to create compute encoder for TES compute");
             [self clearStageBindingCopyBacks:&stageCopyBacks];
@@ -1879,7 +1879,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
 
     if (xfbWrittenBytes > 0u && xfbTemporary && xfbCopyDestination) {
         id<MTLBlitCommandEncoder> xfbBlit =
-            mglTessCreateBlitEncoder(_renderPassManager.state->currentCommandBuffer);
+            mglTessCreateBlitEncoder((__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
         if (!xfbBlit) {
             NSLog(@"MGL TESS XFB: failed to create bounded copy encoder");
             return false;
@@ -2067,9 +2067,9 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     }
 
     /* Ensure a writable command buffer exists (same reason as TCS). */
-    if (!_renderPassManager.state->currentCommandBuffer ||
+    if (!(__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner) ||
         mglRenderCommandBufferStatus(
-            _renderPassManager.state->currentCommandBuffer) >=
+            (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner)) >=
             MTLCommandBufferStatusCommitted) {
         if (![self newCommandBuffer]) {
             NSLog(@"MGL TESS ERROR: failed to create command buffer for TES dispatch");
@@ -2114,7 +2114,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     }
 
     id<MTLComputeCommandEncoder> computeEncoder =
-        mglTessCreateComputeEncoder(_renderPassManager.state->currentCommandBuffer);
+        mglTessCreateComputeEncoder((__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
     if (!computeEncoder) {
         NSLog(@"MGL TESS ERROR: failed to create compute encoder for TES dispatch");
         [self clearStageBindingCopyBacks:&stageCopyBacks];
@@ -2458,7 +2458,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
 
     if (xfbCopyBytes > 0u) {
         id<MTLBlitCommandEncoder> xfbBlit =
-            mglTessCreateBlitEncoder(_renderPassManager.state->currentCommandBuffer);
+            mglTessCreateBlitEncoder((__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
         if (!xfbBlit) {
             NSLog(@"MGL TESS XFB: failed to create bounded copy encoder");
             return false;
