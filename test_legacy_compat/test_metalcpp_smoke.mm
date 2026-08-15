@@ -2304,6 +2304,44 @@ static int verifyMDIScratchOwner(void) {
     return 0;
 }
 
+static int verifyReadTextureRegionClip(void) {
+    /* P4.5 (item 1141/887): readPixels region-vs-level clip. */
+    MGLRenderCppReadTextureRegionClip c = {0};
+    if (mglRenderCppReadTextureRegionClip(0, 0, 10, 10, 100, 100, NULL) != -1) {
+        fprintf(stderr, "FAIL: clip bad args\n");
+        return 1;
+    }
+    /* Fully inside. */
+    if (mglRenderCppReadTextureRegionClip(2, 3, 10, 10, 100, 100, &c) != 0 ||
+        c.copy_w != 10 || c.copy_h != 10 || c.dst_x != 0 || c.dst_y != 0 ||
+        c.metal_src_x != 2 || c.metal_src_y != 87 || c.empty) {
+        fprintf(stderr, "FAIL: clip inside\n");
+        return 1;
+    }
+    /* Partially outside right/top. */
+    if (mglRenderCppReadTextureRegionClip(90, 90, 20, 20, 100, 100, &c) != 0 ||
+        c.copy_w != 10 || c.copy_h != 10 || c.dst_x != 0 || c.dst_y != 0 ||
+        c.metal_src_x != 90 || c.metal_src_y != 0 || c.empty) {
+        fprintf(stderr, "FAIL: clip partial\n");
+        return 1;
+    }
+    /* Negative origin clips to zero. */
+    if (mglRenderCppReadTextureRegionClip(-5, -5, 10, 10, 100, 100, &c) != 0 ||
+        c.copy_w != 5 || c.copy_h != 5 || c.dst_x != 5 || c.dst_y != 5 ||
+        c.metal_src_x != 0 || c.metal_src_y != 95 || c.empty) {
+        fprintf(stderr, "FAIL: clip negative\n");
+        return 1;
+    }
+    /* Fully outside -> empty. */
+    if (mglRenderCppReadTextureRegionClip(200, 200, 10, 10, 100, 100, &c) != 0 ||
+        !c.empty) {
+        fprintf(stderr, "FAIL: clip empty\n");
+        return 1;
+    }
+    printf("READ_TEXTURE_REGION_CLIP_OK\n");
+    return 0;
+}
+
 static int verifyLevelDimension(void) {
     /* P4.5 (item 1141/887): mip level -> level dimension halving. */
     if (mglRenderCppMetalTextureLevelDimension(1024, 0) != 1024 ||
@@ -4764,6 +4802,7 @@ int main(void) {
         if (verifyMetalTypeTables() != 0) return 1;
         if (verifyComputeThreadgroupSize() != 0) return 1;
         if (verifyLevelDimension() != 0) return 1;
+        if (verifyReadTextureRegionClip() != 0) return 1;
         if (verifyMDIScratchOwner() != 0) return 1;
         if (verifyRenderEncoderGetter() != 0) return 1;
         if (verifyCommandBufferGetterAndAdopt() != 0) return 1;

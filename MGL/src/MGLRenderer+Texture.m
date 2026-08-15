@@ -1145,22 +1145,21 @@ static void mglTextureCopyTextureToBuffer(
         levelHeight = MAX((NSUInteger)1u, sourceTexture.height >> sourceLevel);
     }
 
-    NSInteger requestX = (NSInteger)region.origin.x;
-    NSInteger requestY = (NSInteger)region.origin.y;
-    NSInteger requestW = (NSInteger)region.size.width;
-    NSInteger requestH = (NSInteger)region.size.height;
-    NSInteger glMinX = MAX((NSInteger)0, requestX);
-    NSInteger glMinY = MAX((NSInteger)0, requestY);
-    NSInteger glMaxX = MIN((NSInteger)levelWidth, requestX + requestW);
-    NSInteger glMaxY = MIN((NSInteger)levelHeight, requestY + requestH);
-    NSInteger copyW = glMaxX - glMinX;
-    NSInteger copyH = glMaxY - glMinY;
-    NSInteger dstX = glMinX - requestX;
-    NSInteger dstY = glMinY - requestY;
-    NSInteger metalSrcX = glMinX;
-    NSInteger metalSrcY = (NSInteger)levelHeight - glMaxY;
-
-    if (copyW <= 0 || copyH <= 0) {
+    /* P4.5 (item 1141/887): readPixels 区域对 level 尺寸的裁剪（含空
+     * 判断与 Metal 源 Y 翻转）在 C++
+     * （mglRenderCppReadTextureRegionClip，两门共用）。 */
+    MGLRenderCppReadTextureRegionClip clip = {0};
+    mglRenderCppReadTextureRegionClip(
+        (int64_t)region.origin.x, (int64_t)region.origin.y,
+        (int64_t)region.size.width, (int64_t)region.size.height,
+        (int64_t)levelWidth, (int64_t)levelHeight, &clip);
+    NSInteger copyW = (NSInteger)clip.copy_w;
+    NSInteger copyH = (NSInteger)clip.copy_h;
+    NSInteger dstX = (NSInteger)clip.dst_x;
+    NSInteger dstY = (NSInteger)clip.dst_y;
+    NSInteger metalSrcX = (NSInteger)clip.metal_src_x;
+    NSInteger metalSrcY = (NSInteger)clip.metal_src_y;
+    if (clip.empty) {
         return YES;
     }
 
@@ -1315,22 +1314,21 @@ static void mglTextureCopyTextureToBuffer(
         levelHeight = MAX((NSUInteger)1u, sourceTexture.height >> sourceLevel);
     }
 
-    NSInteger requestX = (NSInteger)region.origin.x;
-    NSInteger requestY = (NSInteger)region.origin.y;
-    NSInteger requestW = (NSInteger)region.size.width;
-    NSInteger requestH = (NSInteger)region.size.height;
-    NSInteger glMinX = MAX((NSInteger)0, requestX);
-    NSInteger glMinY = MAX((NSInteger)0, requestY);
-    NSInteger glMaxX = MIN((NSInteger)levelWidth, requestX + requestW);
-    NSInteger glMaxY = MIN((NSInteger)levelHeight, requestY + requestH);
-    NSInteger copyW = glMaxX - glMinX;
-    NSInteger copyH = glMaxY - glMinY;
-    NSInteger dstX = glMinX - requestX;
-    NSInteger dstY = glMinY - requestY;
-    NSInteger metalSrcX = glMinX;
-    NSInteger metalSrcY = (NSInteger)levelHeight - glMaxY;
-
-    if (copyW <= 0 || copyH <= 0) {
+    /* P4.5 (item 1141/887): readPixels 区域对 level 尺寸的裁剪（含空
+     * 判断与 Metal 源 Y 翻转）在 C++
+     * （mglRenderCppReadTextureRegionClip，两门共用）。 */
+    MGLRenderCppReadTextureRegionClip clip = {0};
+    mglRenderCppReadTextureRegionClip(
+        (int64_t)region.origin.x, (int64_t)region.origin.y,
+        (int64_t)region.size.width, (int64_t)region.size.height,
+        (int64_t)levelWidth, (int64_t)levelHeight, &clip);
+    NSInteger copyW = (NSInteger)clip.copy_w;
+    NSInteger copyH = (NSInteger)clip.copy_h;
+    NSInteger dstX = (NSInteger)clip.dst_x;
+    NSInteger dstY = (NSInteger)clip.dst_y;
+    NSInteger metalSrcX = (NSInteger)clip.metal_src_x;
+    NSInteger metalSrcY = (NSInteger)clip.metal_src_y;
+    if (clip.empty) {
         return YES;
     }
 

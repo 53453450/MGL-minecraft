@@ -3901,6 +3901,31 @@ int mglRenderCppGetTexImagePlan(
 }
 
 extern "C"
+int mglRenderCppReadTextureRegionClip(
+    int64_t region_x, int64_t region_y,
+    int64_t region_w, int64_t region_h,
+    int64_t level_width, int64_t level_h,
+    MGLRenderCppReadTextureRegionClip* out) {
+    if (!out) return -1;
+    const int64_t max_x = region_x + region_w;
+    const int64_t max_y = region_y + region_h;
+    const int64_t min_x = region_x > 0 ? region_x : 0;
+    const int64_t min_y = region_y > 0 ? region_y : 0;
+    const int64_t clip_x = max_x < level_width ? max_x : level_width;
+    const int64_t clip_y = max_y < level_h ? max_y : level_h;
+    const int64_t copy_w = clip_x - min_x;
+    const int64_t copy_h = clip_y - min_y;
+    out->copy_w = copy_w;
+    out->copy_h = copy_h;
+    out->dst_x = min_x - region_x;
+    out->dst_y = min_y - region_y;
+    out->metal_src_x = min_x;
+    out->metal_src_y = level_h - clip_y;
+    out->empty = (copy_w <= 0 || copy_h <= 0) ? 1 : 0;
+    return 0;
+}
+
+extern "C"
 int mglRenderCppThreadgroupSize(
     uint32_t local_x, uint32_t local_y, uint32_t local_z,
     MGLRenderCppThreadgroupSize* out) {

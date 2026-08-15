@@ -565,6 +565,27 @@ uint32_t mglRenderCppMTLIndexTypeForGLType(uint32_t gl_type);
  * extern linkage its many callers use). */
 uint64_t mglRenderCppMetalTextureLevelDimension(uint64_t base, uint64_t level);
 
+typedef struct MGLRenderCppReadTextureRegionClip_t {
+    int32_t copy_w;
+    int32_t copy_h;
+    int32_t dst_x;
+    int32_t dst_y;
+    int32_t metal_src_x;
+    int32_t metal_src_y;
+    int empty;   /* copyW <= 0 || copyH <= 0 (nothing to copy) */
+} MGLRenderCppReadTextureRegionClip;
+
+/* P4.5 (item 1141/887): readPixels region-vs-level clip — clamps a source
+ * read region against the level extents and computes the destination
+ * offset-origin for the clipped copy and the Metal source Y (flipped).
+ * Pure computation shared by both gates; the empty flag matches the
+ * original `copyW <= 0 || copyH <= 0`. */
+int mglRenderCppReadTextureRegionClip(
+    int64_t region_x, int64_t region_y,
+    int64_t region_w, int64_t region_h,
+    int64_t level_w, int64_t level_h,
+    MGLRenderCppReadTextureRegionClip *out);
+
 typedef struct MGLRenderCppThreadgroupSize_t {
     uint32_t x;   /* local workgroup size with 0 resolved to 1 */
     uint32_t y;
