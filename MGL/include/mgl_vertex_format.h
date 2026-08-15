@@ -50,6 +50,12 @@
 extern "C" {
 #endif
 
+/* Forward decls: the GL index element-size / read-index-value logic lives in
+ * mgl_render_cpp.cpp (both gates); the inlines below delegate to it. */
+uint32_t mglRenderCppGLIndexElementSize(uint64_t gl_index_type);
+uint32_t mglRenderCppReadGLIndexValue(const uint8_t *bytes, uint32_t elem_width,
+                                      uint64_t element_index);
+
 /* === Vertex format mapping (static inline, hot-path) === */
 
 /* GL vertex attribute component size in bytes (1/2/4/8).  Returns 0 for
@@ -82,43 +88,17 @@ static inline size_t mglVertexAttribComponentSize(GLenum type)
 /* GL index element size in bytes (1/2/4).  Returns 0 for unknown types. */
 static inline NSUInteger mglGLIndexElementSize(GLenum type)
 {
-    switch (type) {
-        case GL_UNSIGNED_BYTE: return 1u;
-        case GL_UNSIGNED_SHORT: return 2u;
-        case GL_UNSIGNED_INT: return 4u;
-        default: return 0u;
-    }
+    return (NSUInteger)mglRenderCppGLIndexElementSize((uint64_t)type);
 }
 
 /* Reads a single GL index value from a byte buffer.  Returns 0 for NULL
- * buffer or unknown type. */
+ * buffer or unknown type.  Pure logic lives in mgl_render_cpp.cpp. */
 static inline uint32_t mglReadGLIndexValue(const uint8_t *indexBytes,
                                            GLenum type,
                                            NSUInteger elementIndex)
 {
-    if (!indexBytes) {
-        return 0u;
-    }
-
-    switch (type) {
-        case GL_UNSIGNED_BYTE: {
-            uint8_t v = 0;
-            memcpy(&v, indexBytes + elementIndex, sizeof(v));
-            return (uint32_t)v;
-        }
-        case GL_UNSIGNED_SHORT: {
-            uint16_t v = 0;
-            memcpy(&v, indexBytes + (elementIndex * 2u), sizeof(v));
-            return (uint32_t)v;
-        }
-        case GL_UNSIGNED_INT: {
-            uint32_t v = 0;
-            memcpy(&v, indexBytes + (elementIndex * 4u), sizeof(v));
-            return v;
-        }
-        default:
-            return 0u;
-    }
+    return mglRenderCppReadGLIndexValue(
+        indexBytes, (uint32_t)mglGLIndexElementSize(type), (uint64_t)elementIndex);
 }
 
 /* Total bytes for a vertex attrib element (type × size), with special

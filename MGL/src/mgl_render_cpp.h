@@ -666,6 +666,16 @@ int mglRenderCppComputeIndexByteOffset(uint64_t base_byte_offset,
                                        uint64_t index_stride,
                                        uint64_t *out_byte_offset);
 
+/* P4.5 (item 1141/887): GL index element byte size (BYTE=1, SHORT=2, INT=4).
+ * Matches mglGLIndexElementSize.  Returns 0 for unknown type. */
+uint32_t mglRenderCppGLIndexElementSize(uint64_t gl_index_type);
+
+/* P4.5 (item 1141/887): read a single GL index value from a byte buffer at
+ * `element_index` (elem_width 1/2/4).  Matches mglReadGLIndexValue; returns 0
+ * for NULL buffer or unknown width. */
+uint32_t mglRenderCppReadGLIndexValue(const uint8_t *bytes, uint32_t elem_width,
+                                      uint64_t element_index);
+
 typedef struct MGLRenderCppGeometryGatherResult_t {
     uint32_t *gather;          /* malloc'd raw gather (vertex_ids) */
     uint32_t gather_count;

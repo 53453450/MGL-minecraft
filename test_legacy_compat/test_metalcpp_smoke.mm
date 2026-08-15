@@ -2484,6 +2484,27 @@ static int verifyExpandTriangleFan(void) {
     return 0;
 }
 
+static int verifyGLIndexValueRead(void) {
+    /* P4.5 (item 1141): GL index element size + index-value read. */
+    if (mglRenderCppGLIndexElementSize(GL_UNSIGNED_BYTE) != 1 ||
+        mglRenderCppGLIndexElementSize(GL_UNSIGNED_SHORT) != 2 ||
+        mglRenderCppGLIndexElementSize(GL_UNSIGNED_INT) != 4 ||
+        mglRenderCppGLIndexElementSize(0xbad) != 0) {
+        fprintf(stderr, "FAIL: index elem size\\n");
+        return 1;
+    }
+    const uint8_t b[] = {3, 0, 1, 0}; /* UInt16 values: 3 then 1 */
+    if (mglRenderCppReadGLIndexValue(b, 1, 0) != 3 ||
+        mglRenderCppReadGLIndexValue(b, 2, 1) != 1 ||
+        mglRenderCppReadGLIndexValue(NULL, 1, 0) != 0 ||
+        mglRenderCppReadGLIndexValue(b, 0, 0) != 0) {
+        fprintf(stderr, "FAIL: read index value\\n");
+        return 1;
+    }
+    printf("GL_INDEX_VALUE_READ_OK\\n");
+    return 0;
+}
+
 static int verifyComputeIndexByteOffset(void) {
     /* P.5 (item 1141): base + first*stride with overflow checks. */
     uint64_t out = 0u;
@@ -5122,6 +5143,7 @@ int main(void) {
         if (verifyScanIndexRange() != 0) return 1;
         if (verifyComputePreparedByteOffset() != 0) return 1;
         if (verifyComputeIndexByteOffset() != 0) return 1;
+        if (verifyGLIndexValueRead() != 0) return 1;
         if (verifyMDIScratchOwner() != 0) return 1;
         if (verifyRenderEncoderGetter() != 0) return 1;
         if (verifyCommandBufferGetterAndAdopt() != 0) return 1;

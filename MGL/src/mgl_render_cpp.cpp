@@ -3907,6 +3907,38 @@ static inline uint32_t MGLRenderReadIndexBytes(const uint8_t* bytes, int w, uint
 }
 
 extern "C"
+uint32_t mglRenderCppGLIndexElementSize(uint64_t gl_index_type) {
+    if (gl_index_type == GL_UNSIGNED_BYTE) return 1u;
+    if (gl_index_type == GL_UNSIGNED_SHORT) return 2u;
+    if (gl_index_type == GL_UNSIGNED_INT) return 4u;
+    return 0u;
+}
+
+extern "C"
+uint32_t mglRenderCppReadGLIndexValue(const uint8_t* bytes, uint32_t elem_width,
+                                      uint64_t element_index) {
+    if (!bytes || elem_width == 0u) {
+        return 0u;
+    }
+    if (elem_width == 1u) {
+        uint8_t v = 0u;
+        memcpy(&v, bytes + element_index, sizeof(v));
+        return (uint32_t)v;
+    }
+    if (elem_width == 2u) {
+        uint16_t v = 0u;
+        memcpy(&v, bytes + (element_index * 2u), sizeof(v));
+        return (uint32_t)v;
+    }
+    if (elem_width == 4u) {
+        uint32_t v = 0u;
+        memcpy(&v, bytes + (element_index * 4u), sizeof(v));
+        return v;
+    }
+    return 0u;
+}
+
+extern "C"
 int mglRenderCppScanIndexRangeIgnoringRestart(
     const uint8_t* bytes, uint32_t elem_width, uint32_t count,
     int restart_enabled, uint32_t restart_index,
