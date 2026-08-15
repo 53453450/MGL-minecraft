@@ -362,15 +362,21 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
     /* Bind spvBufferSizeConstants for runtime-sized SSBO arrays.
      * The AIR backend emits code that reads uint32 byte-sizes from a
      * constant uint* buffer at MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX when a
-     * shader uses .length() on unsized SSBO arrays. */
+     * shader uses .length() on unsized SSBO arrays.  The pure fill (slot
+     * cap / self-slot exclusion / uint32 truncation) lives in the C++
+     * facade mglRenderCppBuildRuntimeArraySizes (P4.5, item 1138); the
+     * ObjC side only extracts the per-buffer {slot, visible-size} pairs
+     * from the GL buffer map. */
     {
         Program *computeProgram = mglResolveProgramForStageFromState(ctx, stage);
         if (computeProgram && computeProgram->modules[stage].needs_runtime_array_size_buffer)
         {
-            uint32_t sizeConstants[31];
+            uint32_t sizeConstants[kMGLMaxMetalVertexBufferCount];
             memset(sizeConstants, 0, sizeof(sizeConstants));
 
-            for (int i = 0; i < bufferMap->count; i++)
+            MGLRenderCppBufferSizeEntry entries[32]; /* MAX_MAPPED_BUFFERS */
+            uint32_t entryCount = 0;
+            for (int i = 0; i < bufferMap->count && entryCount < 32; i++)
             {
                 BufferMap *map = &bufferMap->buffers[i];
                 if (!map->buf)
@@ -378,10 +384,20 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
                 NSUInteger metalSlot = map->has_metal_binding
                     ? (NSUInteger)map->metal_binding_index
                     : (NSUInteger)map->buffer_base_index;
-                if (metalSlot >= 31 || metalSlot == MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX)
-                    continue;
                 GLsizeiptr visibleSize = mglBufferMapVisibleSize(map);
-                sizeConstants[metalSlot] = (uint32_t)visibleSize;
+                entries[entryCount].metal_slot = (uint32_t)metalSlot;
+                entries[entryCount].visible_size = (uint64_t)visibleSize;
+                entryCount++;
+            }
+
+            if (mglRenderCppBuildRuntimeArraySizes(
+                    entries, entryCount,
+                    MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX,
+                    kMGLMaxMetalVertexBufferCount,
+                    sizeConstants, kMGLMaxMetalVertexBufferCount) != 0) {
+                NSLog(@"MGL COMPUTE ERROR: runtime-array-size constants build failed");
+                MGL_CBIND_FLUSH_SNAPSHOT();
+                return false;
             }
 
             id<MTLBuffer> sizeBuffer = mglComputeCreateBufferWithBytes(

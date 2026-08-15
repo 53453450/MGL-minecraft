@@ -3381,6 +3381,33 @@ int mglRenderCppCopyBackCPUPrefix(
     return 0;
 }
 
+extern "C"
+int mglRenderCppBuildRuntimeArraySizes(
+    const MGLRenderCppBufferSizeEntry* entries, uint32_t entry_count,
+    uint32_t runtime_buffer_index, uint32_t max_slot,
+    uint32_t* out_sizes, uint32_t out_capacity) {
+    if (!out_sizes || out_capacity < max_slot ||
+        (!entries && entry_count != 0)) {
+        return -1;
+    }
+    for (uint32_t i = 0; i < entry_count; i++) {
+        const MGLRenderCppBufferSizeEntry& entry = entries[i];
+        /* Skip the runtime-array-size buffer slot itself and any slot at or
+         * beyond the Metal buffer-count cap (kMGLMaxMetalVertexBufferCount).
+         * The size is truncated to uint32 exactly like the original ObjC
+         * cast — the AIR backend reads a uint32; sizes >= 2^32 wrap. */
+        if (entry.metal_slot >= max_slot ||
+            entry.metal_slot == runtime_buffer_index) {
+            continue;
+        }
+        if (entry.metal_slot >= out_capacity) {
+            continue;
+        }
+        out_sizes[entry.metal_slot] = (uint32_t)entry.visible_size;
+    }
+    return 0;
+}
+
 /* P4.5 (item 1111): the compat-subsystem helpers the upload-prep path
  * calls.  mgl_texture_compat.h cannot be included here (its inline helpers
  * use ObjC-typed MTLPixelFormat), so declare the needed C API locally —

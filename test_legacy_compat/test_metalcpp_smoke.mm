@@ -4454,6 +4454,42 @@ static int verifyCopyBackEncode(void) {
     return 0;
 }
 
+static int verifyRuntimeArraySizes(void) {
+    /* P4.5 (item 1138): runtime-array-size SSBO sizing constants fill. */
+    MGLRenderCppBufferSizeEntry entries[5];
+    uint32_t sizes[32];
+    memset(sizes, 0xA5, sizeof(sizes));
+
+    /* Bad args. */
+    if (mglRenderCppBuildRuntimeArraySizes(NULL, 1, 25u, 31u, sizes, 32) != -1 ||
+        mglRenderCppBuildRuntimeArraySizes(entries, 0, 25u, 31u, NULL, 32) != -1 ||
+        mglRenderCppBuildRuntimeArraySizes(entries, 0, 25u, 31u, sizes, 30) != -1) {
+        fprintf(stderr, "FAIL: runtime-array-size bad args\n");
+        return 1;
+    }
+    /* NULL entries with count 0 is fine. */
+    if (mglRenderCppBuildRuntimeArraySizes(NULL, 0, 25u, 31u, sizes, 32) != 0) {
+        fprintf(stderr, "FAIL: runtime-array-size null-empty\n");
+        return 1;
+    }
+
+    memset(sizes, 0, sizeof(sizes));
+    entries[0].metal_slot = 3;   entries[0].visible_size = 4096;
+    entries[1].metal_slot = 25;  entries[1].visible_size = 999;   /* self-slot -> skip */
+    entries[2].metal_slot = 31;  entries[2].visible_size = 777;   /* cap -> skip */
+    entries[3].metal_slot = 8;   entries[3].visible_size = 0x100000000ULL; /* truncates to 0 */
+    entries[4].metal_slot = 16;  entries[4].visible_size = 64;
+    if (mglRenderCppBuildRuntimeArraySizes(entries, 5, 25u, 31u, sizes, 32) != 0 ||
+        sizes[3] != 4096 || sizes[8] != 0 || sizes[16] != 64 ||
+        sizes[25] != 0 || sizes[31] != 0 || sizes[0] != 0 || sizes[30] != 0) {
+        fprintf(stderr, "FAIL: runtime-array-size fill\n");
+        return 1;
+    }
+
+    printf("RUNTIME_ARRAY_SIZES_OK\n");
+    return 0;
+}
+
 static int verifyLevelUploadPrep(void) {
     /* P4.5 (item 1111): per-level CPU upload data preparation. */
     /* 2D geometry: 4x4, pitch 16, 64 bytes -> copy_depth 1, bpi 16. */
@@ -5991,6 +6027,7 @@ int main(void) {
         if (verifyPendingEventOwner() != 0) return 1;
         if (verifyLevelUploadPrep() != 0) return 1;
         if (verifyCopyBackEncode() != 0) return 1;
+        if (verifyRuntimeArraySizes() != 0) return 1;
         if (verifyLevelUploadOps() != 0) return 1;
         if (verifyIntegerReadbackConvert() != 0) return 1;
         if (verifyTessFactorDiscardPredicate() != 0) return 1;

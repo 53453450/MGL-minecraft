@@ -437,6 +437,29 @@ int mglRenderCppCopyBackCPUPrefix(
     uint32_t count,
     uint32_t *failed_index_out);
 
+/* P4.5 (item 1138): runtime-array-size SSBO sizing constants.  The AIR
+ * backend emits code that reads uint32 byte-sizes from
+ * MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX when a compute shader uses .length()
+ * on an unsized SSBO array.  This fills `out_sizes[out_capacity]` from the
+ * per-buffer {metal_slot, visible_size} pairs, skipping the runtime-size
+ * buffer slot itself and any slot >= max_slot (the Metal buffer-count cap,
+ * kMGLMaxMetalVertexBufferCount=31).  `out_sizes` is expected to be
+ * zero-initialized by the caller; only claimed slots are written.  Returns
+ * 0 on success, -1 on bad args (NULL out, NULL entries with nonzero count,
+ * out_capacity < max_slot). */
+typedef struct MGLRenderCppBufferSizeEntry_t {
+    uint32_t metal_slot;      /* Metal buffer argument index */
+    uint64_t visible_size;    /* byte size, truncated to uint32 by the facade */
+} MGLRenderCppBufferSizeEntry;
+
+int mglRenderCppBuildRuntimeArraySizes(
+    const MGLRenderCppBufferSizeEntry *entries,
+    uint32_t entry_count,
+    uint32_t runtime_buffer_index,
+    uint32_t max_slot,
+    uint32_t *out_sizes,
+    uint32_t out_capacity);
+
 /* P4.5 (item 1111): per-level CPU upload data preparation — pure CPU
  * transform shared by both gates (the expansion entries it calls are the
  * same both gates use).  Computes the copy geometry and applies any required
