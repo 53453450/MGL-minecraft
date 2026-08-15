@@ -3012,6 +3012,161 @@ int mglRenderCppTextureUploadRoute(uint32_t texture_type,
 }
 
 
+/* P4.4: little-endian packed read + unorm bit expansion (RGBA8 path). */
+static uint32_t mglCppReadPackedUploadLE(const uint8_t* src, size_t bytes) {
+    uint32_t value = 0u;
+    if (!src) return 0u;
+    if (bytes > sizeof(value)) bytes = sizeof(value);
+    for (size_t i = 0; i < bytes; i++) {
+        value |= ((uint32_t)src[i]) << (i * 8u);
+    }
+    return value;
+}
+
+static uint8_t mglCppExpandUNormBitsTo8(uint32_t value, uint32_t bits) {
+    if (bits == 0u) return 0u;
+    if (bits >= 8u) return (uint8_t)(value >> (bits - 8u));
+    uint32_t maxv = (1u << bits) - 1u;
+    return (uint8_t)((value * 255u + (maxv / 2u)) / maxv);
+}
+
+/* P4.4: legacy packed GL formats -> RGBA8 (pure data transform). */
+uint8_t* mglRenderCppCreateRGBA8ExpandedUpload(
+    const void* src_data, size_t width, size_t height,
+    size_t src_bytes_per_row, uint32_t internal_format,
+    size_t* out_bytes_per_row, size_t* out_bytes_per_image) {
+    if (out_bytes_per_row) *out_bytes_per_row = 0;
+    if (out_bytes_per_image) *out_bytes_per_image = 0;
+    if (!src_data || width == 0 || height == 0 ||
+        src_bytes_per_row == 0 || !out_bytes_per_row || !out_bytes_per_image) {
+        return NULL;
+    }
+
+    size_t src_pixel_bytes = 0u;
+    switch (internal_format) {
+        case GL_R3_G3_B2:
+            src_pixel_bytes = 1u;
+            break;
+        case GL_RGBA2:
+        case GL_RGB4:
+        case GL_RGB5:
+        case GL_RGB565:
+        case GL_RGBA4:
+        case GL_RGB5_A1:
+            src_pixel_bytes = 2u;
+            break;
+        case GL_RGB10:
+        case GL_RGB12:
+            src_pixel_bytes = 4u;
+            break;
+        case GL_RGB8:
+        case GL_SRGB8:
+        case GL_RGB8_SNORM:
+        case GL_RGB8I:
+        case GL_RGB8UI:
+            src_pixel_bytes = 3u;
+            break;
+        default:
+            return NULL;
+    }
+    if (src_bytes_per_row < width * src_pixel_bytes) {
+        return NULL;
+    }
+
+    size_t dst_bytes_per_row = width * 4u;
+    size_t dst_bytes_per_image = dst_bytes_per_row * height;
+    if (dst_bytes_per_image == 0 ||
+        dst_bytes_per_image > (512u * 1024u * 1024u)) {
+        return NULL;
+    }
+
+    uint8_t* dst = (uint8_t*)malloc(dst_bytes_per_image);
+    if (!dst) {
+        return NULL;
+    }
+
+    const uint8_t* src = (const uint8_t*)src_data;
+    for (size_t row = 0; row < height; row++) {
+        const uint8_t* src_row = src + row * src_bytes_per_row;
+        uint8_t* dst_row = dst + row * dst_bytes_per_row;
+        for (size_t x = 0; x < width; x++) {
+            const uint8_t* src_pixel = src_row + x * src_pixel_bytes;
+            uint32_t packed = mglCppReadPackedUploadLE(src_pixel,
+                                                       src_pixel_bytes);
+            uint8_t r = 0u, g = 0u, b = 0u, a = 0xffu;
+            switch (internal_format) {
+                case GL_RGB8:
+                case GL_SRGB8:
+                case GL_RGB:
+                    r = src_pixel[0];
+                    g = src_pixel[1];
+                    b = src_pixel[2];
+                    a = 0xffu;
+                    break;
+                case GL_RGB8_SNORM:
+                    r = src_pixel[0];
+                    g = src_pixel[1];
+                    b = src_pixel[2];
+                    a = 0x7fu; /* 1.0 in snorm */
+                    break;
+                case GL_RGB8I:
+                case GL_RGB8UI:
+                    r = src_pixel[0];
+                    g = src_pixel[1];
+                    b = src_pixel[2];
+                    a = 1u; /* 1 in integer */
+                    break;
+                case GL_R3_G3_B2:
+                    r = mglCppExpandUNormBitsTo8((packed >> 5u) & 0x7u, 3u);
+                    g = mglCppExpandUNormBitsTo8((packed >> 2u) & 0x7u, 3u);
+                    b = mglCppExpandUNormBitsTo8(packed & 0x3u, 2u);
+                    break;
+                case GL_RGB4:
+                case GL_RGB5:
+                case GL_RGB565:
+                    r = mglCppExpandUNormBitsTo8((packed >> 11u) & 0x1fu, 5u);
+                    g = mglCppExpandUNormBitsTo8((packed >> 5u) & 0x3fu, 6u);
+                    b = mglCppExpandUNormBitsTo8(packed & 0x1fu, 5u);
+                    break;
+                case GL_RGB10:
+                    r = mglCppExpandUNormBitsTo8(packed & 0x3ffu, 10u);
+                    g = mglCppExpandUNormBitsTo8((packed >> 10u) & 0x3ffu, 10u);
+                    b = mglCppExpandUNormBitsTo8((packed >> 20u) & 0x3ffu, 10u);
+                    break;
+                case GL_RGB12:
+                    r = mglCppExpandUNormBitsTo8(packed & 0xfffu, 12u);
+                    g = mglCppExpandUNormBitsTo8((packed >> 12u) & 0xfffu, 12u);
+                    b = mglCppExpandUNormBitsTo8((packed >> 24u) & 0xfffu, 12u);
+                    break;
+                case GL_RGBA2:
+                case GL_RGBA4:
+                    r = mglCppExpandUNormBitsTo8((packed >> 12u) & 0xfu, 4u);
+                    g = mglCppExpandUNormBitsTo8((packed >> 8u) & 0xfu, 4u);
+                    b = mglCppExpandUNormBitsTo8((packed >> 4u) & 0xfu, 4u);
+                    a = mglCppExpandUNormBitsTo8(packed & 0xfu, 4u);
+                    break;
+                case GL_RGB5_A1:
+                    r = mglCppExpandUNormBitsTo8((packed >> 11u) & 0x1fu, 5u);
+                    g = mglCppExpandUNormBitsTo8((packed >> 6u) & 0x1fu, 5u);
+                    b = mglCppExpandUNormBitsTo8((packed >> 1u) & 0x1fu, 5u);
+                    a = (packed & 0x1u) ? 0xffu : 0x00u;
+                    break;
+                default:
+                    break;
+            }
+            uint8_t* out = dst_row + x * 4u;
+            out[0] = r;
+            out[1] = g;
+            out[2] = b;
+            out[3] = a;
+        }
+    }
+
+    *out_bytes_per_row = dst_bytes_per_row;
+    *out_bytes_per_image = dst_bytes_per_image;
+    return dst;
+}
+
 /* P4.4: RGB->RGBA channel expansion into a caller-provided buffer. */
 int mglRenderCppTextureExpandRGBToRGBA(const void* src, void* dst,
                                        size_t texel_count, size_t tex_width,

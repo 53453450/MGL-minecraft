@@ -2728,6 +2728,82 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
         printf("TEXTURE_EXPAND_OK\n");
     }
 
+    /* P4.4: legacy packed format -> RGBA8 expansion.  RGB565 (2 bytes/texel
+     * little-endian), RGB8 (3 bytes), RGBA4 and bad-arg rejections. */
+    {
+        /* RGB565: R=0x1F -> 255, G=0x3F -> 255, B=0x1F -> 255 (white). */
+        const uint8_t src565[] = {0xFF, 0xFF};
+        uint8_t dst565[4];
+        size_t bpr = 0, bpi = 0;
+        uint8_t *out = mglRenderCppCreateRGBA8ExpandedUpload(
+            src565, 1, 1, 2, GL_RGB565, &bpr, &bpi);
+        if (!out || bpr != 4 || bpi != 4) {
+            fprintf(stderr, "FAIL: rgba8 expand RGB565 alloc\n");
+            free(out);
+            return 1;
+        }
+        const uint8_t want565[4] = {255, 255, 255, 255};
+        if (memcmp(out, want565, 4) != 0) {
+            fprintf(stderr,
+                    "FAIL: rgba8 expand RGB565 got %u %u %u %u\n",
+                    out[0], out[1], out[2], out[3]);
+            free(out);
+            return 1;
+        }
+        free(out);
+
+        /* RGB8 3 texels 1x3: alpha 255. */
+        const uint8_t src8[] = {1, 2, 3, 4, 5, 6, 7, 8, 9};
+        out = mglRenderCppCreateRGBA8ExpandedUpload(
+            src8, 3, 1, 3 * 3, GL_RGB8, &bpr, &bpi);
+        if (!out || bpi != 12) {
+            fprintf(stderr, "FAIL: rgba8 expand RGB8 alloc\n");
+            free(out);
+            return 1;
+        }
+        const uint8_t want8[12] = {
+            1, 2, 3, 255,
+            4, 5, 6, 255,
+            7, 8, 9, 255
+        };
+        if (memcmp(out, want8, sizeof(want8)) != 0) {
+            fprintf(stderr, "FAIL: rgba8 expand RGB8 mismatch\n");
+            free(out);
+            return 1;
+        }
+        free(out);
+
+        /* RGBA4: packed 4_4_4_4 (R bits 12-15): 0xFFFF -> all 255. */
+        const uint8_t src444[] = {0xFF, 0xFF};
+        out = mglRenderCppCreateRGBA8ExpandedUpload(
+            src444, 1, 1, 2, GL_RGBA4, &bpr, &bpi);
+        if (!out) {
+            fprintf(stderr, "FAIL: rgba8 expand RGBA4 alloc\n");
+            return 1;
+        }
+        const uint8_t want444[4] = {255, 255, 255, 255};
+        if (memcmp(out, want444, 4) != 0) {
+            fprintf(stderr, "FAIL: rgba8 expand RGBA4 got %u %u %u %u\n",
+                    out[0], out[1], out[2], out[3]);
+            free(out);
+            return 1;
+        }
+        free(out);
+
+        if (mglRenderCppCreateRGBA8ExpandedUpload(
+                NULL, 1, 1, 2, GL_RGB565, &bpr, &bpi) != NULL ||
+            mglRenderCppCreateRGBA8ExpandedUpload(
+                src565, 0, 1, 2, GL_RGB565, &bpr, &bpi) != NULL ||
+            mglRenderCppCreateRGBA8ExpandedUpload(
+                src565, 1, 1, 1, GL_RGB565, &bpr, &bpi) != NULL ||
+            mglRenderCppCreateRGBA8ExpandedUpload(
+                src565, 1, 1, 2, 0xdeadbeefu, &bpr, &bpi) != NULL) {
+            fprintf(stderr, "FAIL: rgba8 expand bad-arg rejection\n");
+            return 1;
+        }
+        printf("RGBA8_EXPAND_OK\n");
+    }
+
     /* P4.3c: whole-batch simple replay.  Valid batch encodes; unknown command
      * type falls back to NEEDS_OBJC; bad args are rejected. */
     {

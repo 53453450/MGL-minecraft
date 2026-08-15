@@ -451,33 +451,6 @@ bool mglTextureInternalFormatNeedsRGBA8Expansion(GLenum internalformat,
     }
 }
 
-uint32_t mglReadPackedUploadLE(const uint8_t *src, NSUInteger bytes)
-{
-    uint32_t value = 0u;
-    if (!src) {
-        return 0u;
-    }
-    if (bytes > sizeof(value)) {
-        bytes = sizeof(value);
-    }
-    for (NSUInteger i = 0; i < bytes; i++) {
-        value |= ((uint32_t)src[i]) << (i * 8u);
-    }
-    return value;
-}
-
-uint8_t mglExpandUNormBitsTo8(uint32_t value, uint32_t bits)
-{
-    if (bits == 0u) {
-        return 0u;
-    }
-    if (bits >= 8u) {
-        return (uint8_t)(value >> (bits - 8u));
-    }
-    uint32_t maxv = (1u << bits) - 1u;
-    return (uint8_t)((value * 255u + (maxv / 2u)) / maxv);
-}
-
 bool mglTextureNeedsChannelExpansion(GLenum internalformat,
                                      MTLPixelFormat pixelFormat)
 {
@@ -639,140 +612,14 @@ uint8_t *mglCreateRGBA8ExpandedUpload(Texture *tex,
         return NULL;
     }
 
-    NSUInteger srcPixelBytes = 0u;
-    switch (tex->internalformat) {
-        case GL_R3_G3_B2:
-            srcPixelBytes = 1u;
-            break;
-        case GL_RGBA2:
-        case GL_RGB4:
-        case GL_RGB5:
-        case GL_RGB565:
-        case GL_RGBA4:
-        case GL_RGB5_A1:
-            srcPixelBytes = 2u;
-            break;
-        case GL_RGB10:
-        case GL_RGB12:
-            srcPixelBytes = 4u;
-            break;
-        case GL_RGB8:
-        case GL_SRGB8:
-        case GL_RGB8_SNORM:
-        case GL_RGB8I:
-        case GL_RGB8UI:
-            srcPixelBytes = 3u;
-            break;
-        default:
-            return NULL;
-    }
-    if (srcBytesPerRow < width * srcPixelBytes) {
-        return NULL;
-    }
-
-    NSUInteger dstBytesPerRow = width * 4u;
-    NSUInteger dstBytesPerImage = dstBytesPerRow * height;
-    if (dstBytesPerImage == 0 || dstBytesPerImage > (512 * 1024 * 1024)) {
-        return NULL;
-    }
-
-    uint8_t *dst = (uint8_t *)malloc(dstBytesPerImage);
-    if (!dst) {
-        return NULL;
-    }
-
-    for (NSUInteger row = 0; row < height; row++) {
-        const uint8_t *srcRow = srcData + row * srcBytesPerRow;
-        uint8_t *dstRow = dst + row * dstBytesPerRow;
-        for (NSUInteger x = 0; x < width; x++) {
-            const uint8_t *srcPixel = srcRow + x * srcPixelBytes;
-            uint32_t packed = mglReadPackedUploadLE(srcPixel, srcPixelBytes);
-            uint8_t r = 0u;
-            uint8_t g = 0u;
-            uint8_t b = 0u;
-            uint8_t a = 0xffu;
-
-            switch (tex->internalformat) {
-                case GL_RGB8:
-                case GL_SRGB8:
-                case GL_RGB:
-                    r = srcPixel[0];
-                    g = srcPixel[1];
-                    b = srcPixel[2];
-                    a = 0xffu;
-                    break;
-                case GL_RGB8_SNORM:
-                    r = srcPixel[0];
-                    g = srcPixel[1];
-                    b = srcPixel[2];
-                    a = 0x7fu;  /* 1.0 in snorm */
-                    break;
-                case GL_RGB8I:
-                case GL_RGB8UI:
-                    r = srcPixel[0];
-                    g = srcPixel[1];
-                    b = srcPixel[2];
-                    a = 1u;  /* 1 in integer */
-                    break;
-                case GL_R3_G3_B2:
-                    r = mglExpandUNormBitsTo8((packed >> 5u) & 0x7u, 3u);
-                    g = mglExpandUNormBitsTo8((packed >> 2u) & 0x7u, 3u);
-                    b = mglExpandUNormBitsTo8(packed & 0x3u, 2u);
-                    break;
-                case GL_RGB4:
-                case GL_RGB5:
-                case GL_RGB565:
-                    /* CPU data is raw GL_UNSIGNED_SHORT_5_6_5 (unpackTexture
-                     * memcpy fallback when mglBuildCPUPixelLayout fails).
-                     * R at bits 11-15, G at bits 5-10, B at bits 0-4. */
-                    r = mglExpandUNormBitsTo8((packed >> 11u) & 0x1fu, 5u);
-                    g = mglExpandUNormBitsTo8((packed >> 5u) & 0x3fu, 6u);
-                    b = mglExpandUNormBitsTo8(packed & 0x1fu, 5u);
-                    break;
-                case GL_RGB10:
-                    r = mglExpandUNormBitsTo8(packed & 0x3ffu, 10u);
-                    g = mglExpandUNormBitsTo8((packed >> 10u) & 0x3ffu, 10u);
-                    b = mglExpandUNormBitsTo8((packed >> 20u) & 0x3ffu, 10u);
-                    break;
-                case GL_RGB12:
-                    r = mglExpandUNormBitsTo8(packed & 0xfffu, 12u);
-                    g = mglExpandUNormBitsTo8((packed >> 12u) & 0xfffu, 12u);
-                    b = mglExpandUNormBitsTo8((packed >> 24u) & 0xfffu, 12u);
-                    break;
-                case GL_RGBA2:
-                    /* GL_RGBA2 stored as 4 bits/component (same as GL_RGBA4)
-                     * to preserve precision when CTS uses 4_4_4_4 type.
-                     * CPU layout stores R at bit_offset 12, G at 8, B at 4, A at 0. */
-                case GL_RGBA4:
-                    /* CPU layout stores R at bit_offset 12, G at 8, B at 4, A at 0. */
-                    r = mglExpandUNormBitsTo8((packed >> 12u) & 0xfu, 4u);
-                    g = mglExpandUNormBitsTo8((packed >> 8u) & 0xfu, 4u);
-                    b = mglExpandUNormBitsTo8((packed >> 4u) & 0xfu, 4u);
-                    a = mglExpandUNormBitsTo8(packed & 0xfu, 4u);
-                    break;
-                case GL_RGB5_A1:
-                    /* CPU layout stores R at bit_offset 11, G at 6, B at 1, A at 0. */
-                    r = mglExpandUNormBitsTo8((packed >> 11u) & 0x1fu, 5u);
-                    g = mglExpandUNormBitsTo8((packed >> 6u) & 0x1fu, 5u);
-                    b = mglExpandUNormBitsTo8((packed >> 1u) & 0x1fu, 5u);
-                    a = (packed & 0x1u) ? 0xffu : 0x00u;
-                    break;
-                default:
-                    break;
-            }
-
-            uint8_t *out = dstRow + x * 4u;
-            out[0] = r;
-            out[1] = g;
-            out[2] = b;
-            out[3] = a;
-        }
-    }
-
-    *outBytesPerRow = dstBytesPerRow;
-    *outBytesPerImage = dstBytesPerImage;
-    return dst;
+    /* P4.4: 旧式 packed 格式 → RGBA8 的展开体在 C++
+     * （mglRenderCppCreateRGBA8ExpandedUpload，纯数据变换，两门共用；
+     * 逐格式位布局与内联版逐字节一致）。 */
+    return mglRenderCppCreateRGBA8ExpandedUpload(
+        srcData, width, height, srcBytesPerRow,
+        (uint32_t)tex->internalformat, outBytesPerRow, outBytesPerImage);
 }
+
 
 /* === Layer pixel format helpers === */
 

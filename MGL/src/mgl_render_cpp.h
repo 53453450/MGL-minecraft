@@ -329,6 +329,17 @@ int mglRenderCppTextureExpandRGBToRGBA(const void *src,
                                        size_t src_comp_bytes,
                                        size_t dst_comp_bytes,
                                        uint64_t alpha_default);
+/* P4.4: RGBA8 通道扩展（旧式 packed 格式 → RGBA8）。internal_format 为 GL
+ * 枚举（R3_G3_B2 / RGB4/5/565 / RGB10/12 / RGBA2/4 / RGB5_A1 / RGB8 变体），
+ * 按位展开为 8-bit RGBA（unorm 取整，snorm 1.0=0x7f，整型 a=1）。返回
+ * malloc 的 dst（调用方 free），坏参 / 未知格式 / 尺寸超限返回 NULL。 */
+uint8_t *mglRenderCppCreateRGBA8ExpandedUpload(const void *src_data,
+                                               size_t width,
+                                               size_t height,
+                                               size_t src_bytes_per_row,
+                                               uint32_t internal_format,
+                                               size_t *out_bytes_per_row,
+                                               size_t *out_bytes_per_image);
 int mglRenderCppCreateSampler(void *sampler_descriptor,
                               void **sampler_out);
 /* Translate GL texture parameters into a Metal-cpp sampler descriptor and
