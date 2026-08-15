@@ -658,6 +658,14 @@ int mglRenderCppComputePreparedIndexByteOffset(uint64_t gl_index_type,
                                                uint64_t gl_byte_offset,
                                                uint64_t *out_prepared_offset);
 
+/* P4.5 (item 1141/887): baseByteOffset + firstElement * indexStride with
+ * overflow checks.  Matches mglComputeIndexByteOffset.  Returns 0 on success,
+ * -1 on bad args / overflow. */
+int mglRenderCppComputeIndexByteOffset(uint64_t base_byte_offset,
+                                       uint64_t first_element,
+                                       uint64_t index_stride,
+                                       uint64_t *out_byte_offset);
+
 typedef struct MGLRenderCppGeometryGatherResult_t {
     uint32_t *gather;          /* malloc'd raw gather (vertex_ids) */
     uint32_t gather_count;

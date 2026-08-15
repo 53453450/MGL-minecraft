@@ -2484,6 +2484,29 @@ static int verifyExpandTriangleFan(void) {
     return 0;
 }
 
+static int verifyComputeIndexByteOffset(void) {
+    /* P.5 (item 1141): base + first*stride with overflow checks. */
+    uint64_t out = 0u;
+    if (mglRenderCppComputeIndexByteOffset(10, 3, 4, &out) != 0 || out != 22) {
+        fprintf(stderr, "FAIL: idx offset\\n");
+        return 1;
+    }
+    if (mglRenderCppComputeIndexByteOffset(0, 0, 7, &out) != 0 || out != 0) {
+        fprintf(stderr, "FAIL: idx offset zero\\n");
+        return 1;
+    }
+    if (mglRenderCppComputeIndexByteOffset(0, 100, 0, &out) != -1) {
+        fprintf(stderr, "FAIL: idx stride zero\\n");
+        return 1;
+    }
+    if (mglRenderCppComputeIndexByteOffset(0, 3, 4, NULL) != -1) {
+        fprintf(stderr, "FAIL: idx null out\\n");
+        return 1;
+    }
+    printf("COMPUTE_INDEX_BYTE_OFFSET_OK\\n");
+    return 0;
+}
+
 static int verifyComputePreparedByteOffset(void) {
     /* P4.5 (item 1141/887): prepared (Metal-side) byte-offset math.
      * GL_UNSIGNED_BYTE doubles; other types pass through; overflow caught. */
@@ -5098,6 +5121,7 @@ int main(void) {
         if (verifyUInt8ToUInt16() != 0) return 1;
         if (verifyScanIndexRange() != 0) return 1;
         if (verifyComputePreparedByteOffset() != 0) return 1;
+        if (verifyComputeIndexByteOffset() != 0) return 1;
         if (verifyMDIScratchOwner() != 0) return 1;
         if (verifyRenderEncoderGetter() != 0) return 1;
         if (verifyCommandBufferGetterAndAdopt() != 0) return 1;

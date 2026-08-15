@@ -3952,6 +3952,24 @@ int mglRenderCppComputePreparedIndexByteOffset(
 }
 
 extern "C"
+int mglRenderCppComputeIndexByteOffset(
+    uint64_t base_byte_offset, uint64_t first_element, uint64_t index_stride,
+    uint64_t* out_byte_offset) {
+    if (!out_byte_offset || index_stride == 0u) {
+        return -1;
+    }
+    if (first_element > (uint64_t)SIZE_MAX / index_stride) {
+        return -1;
+    }
+    const uint64_t relative = first_element * index_stride;
+    if (base_byte_offset > (uint64_t)SIZE_MAX - relative) {
+        return -1;
+    }
+    *out_byte_offset = base_byte_offset + relative;
+    return 0;
+}
+
+extern "C"
 int mglRenderCppExpandUInt8ToUInt16(
     const uint8_t* bytes, uint32_t byte_count, uint16_t** out, uint64_t* out_count) {
     if (!bytes || byte_count == 0u || !out || !out_count) {

@@ -55,6 +55,11 @@ int mglRenderCppComputePreparedIndexByteOffset(uint64_t gl_index_type,
                                                uint64_t gl_byte_offset,
                                                uint64_t *out_prepared_offset);
 
+int mglRenderCppComputeIndexByteOffset(uint64_t base_byte_offset,
+                                       uint64_t first_element,
+                                       uint64_t index_stride,
+                                       uint64_t *out_byte_offset);
+
 /* === Inline helpers (hot-path) === */
 
 /* Scans `count` indices of `indexBytes` (type `indexType`), skipping entries
@@ -134,25 +139,25 @@ static inline NSUInteger mglQuadTriangleIndexCount(NSUInteger sourceIndexCount)
     return quadCount * 6u;
 }
 
-/* Computes baseByteOffset + firstElement * indexStride with overflow checks. */
+/* Computes baseByteOffset + firstElement * indexStride with overflow checks.
+ * Pure arithmetic; the logic lives in mgl_render_cpp.cpp and this inline is a
+ * thin delegating shim. */
 static inline bool mglComputeIndexByteOffset(NSUInteger baseByteOffset,
                                              NSUInteger firstElement,
                                              NSUInteger indexStride,
                                              NSUInteger *outByteOffset)
 {
-    if (!outByteOffset || indexStride == 0u) {
+    if (!outByteOffset) {
         return false;
     }
-    if (firstElement > (NSUIntegerMax / indexStride)) {
+    uint64_t out = 0u;
+    int r = mglRenderCppComputeIndexByteOffset(
+        (uint64_t)baseByteOffset, (uint64_t)firstElement, (uint64_t)indexStride, &out);
+    if (r != 0) {
         return false;
     }
-
-    NSUInteger relativeByteOffset = firstElement * indexStride;
-    if (baseByteOffset > (NSUIntegerMax - relativeByteOffset)) {
-        return false;
-    }
-
-    *outByteOffset = baseByteOffset + relativeByteOffset;
+    *outByteOffset =
+        (NSUInteger)(out > (uint64_t)NSUIntegerMax ? (uint64_t)NSUIntegerMax : out);
     return true;
 }
 
