@@ -1230,6 +1230,13 @@ int mglRenderCppSetRenderPassStateVisibility(
     uint32_t visibility_result_type);
 int mglRenderCppSetRenderPassStateDimensions(
     void *owner, uint64_t width, uint64_t height);
+/* P4.5: mirror-fallback color-attachment query（ObjC
+ * mglRenderPassUsesColorTexture 迁入）。descriptor 为 MTL::RenderPassDescriptor*，
+ * texture 为 MTL::Texture*；命中返回 1 并写 attachment_index_out，未命中 0；
+ * 坏参返回 -1。 */
+int mglRenderCppRenderPassUsesColorTexture(void *render_pass_descriptor,
+                                           void *texture,
+                                           size_t *attachment_index_out);
 int mglRenderCppGetRenderPassStateOwner(
     void *owner, MGLRenderCppRenderPassState *state_out);
 int mglRenderCppCreateRenderEncoderFromStateOwner(

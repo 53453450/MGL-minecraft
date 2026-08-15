@@ -148,29 +148,3 @@ const char *mglStoreActionName(MTLStoreAction action)
         default: return "Other";
     }
 }
-
-/* === Render-pass color-texture usage query === */
-
-BOOL mglRenderPassUsesColorTexture(MTLRenderPassDescriptor *renderPassDescriptor,
-                                   id<MTLTexture> texture,
-                                   NSUInteger *attachmentIndexOut)
-{
-    if (attachmentIndexOut) {
-        *attachmentIndexOut = MAX_COLOR_ATTACHMENTS;
-    }
-    if (!renderPassDescriptor || !texture) {
-        return NO;
-    }
-
-    for (NSUInteger i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
-        id<MTLTexture> colorTexture = renderPassDescriptor.colorAttachments[i].texture;
-        if (colorTexture == texture) {
-            if (attachmentIndexOut) {
-                *attachmentIndexOut = i;
-            }
-            return YES;
-        }
-    }
-
-    return NO;
-}

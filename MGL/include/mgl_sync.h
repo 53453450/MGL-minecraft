@@ -71,15 +71,6 @@ const char *mglCommandBufferStatusName(MTLCommandBufferStatus status);
 const char *mglLoadActionName(MTLLoadAction action);
 const char *mglStoreActionName(MTLStoreAction action);
 
-/* === Render-pass color-texture usage query ===
- *
- * Returns YES if `texture` is bound as any color attachment in
- * `renderPassDescriptor`.  When YES, `*attachmentIndexOut` is set to the
- * attachment index; otherwise it is set to MAX_COLOR_ATTACHMENTS. */
-BOOL mglRenderPassUsesColorTexture(MTLRenderPassDescriptor *renderPassDescriptor,
-                                   id<MTLTexture> texture,
-                                   NSUInteger *attachmentIndexOut);
-
 #ifdef __cplusplus
 }
 #endif

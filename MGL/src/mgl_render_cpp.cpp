@@ -6483,6 +6483,35 @@ int mglRenderCppSetRenderPassStateDimensions(
     return 0;
 }
 
+/* P4.5: mirror-fallback color-attachment query. */
+int mglRenderCppRenderPassUsesColorTexture(void* render_pass_descriptor,
+                                           void* texture,
+                                           size_t* attachment_index_out) {
+    if (attachment_index_out) {
+        *attachment_index_out = MGL_RENDER_CPP_MAX_COLOR_ATTACHMENTS;
+    }
+    if (!render_pass_descriptor || !texture) {
+        return -1;
+    }
+    MTL::RenderPassDescriptor* descriptor =
+        static_cast<MTL::RenderPassDescriptor*>(render_pass_descriptor);
+    MTL::Texture* want = static_cast<MTL::Texture*>(texture);
+    MTL::RenderPassColorAttachmentDescriptorArray* attachments =
+        descriptor->colorAttachments();
+    for (NS::UInteger i = 0;
+         i < (NS::UInteger)MGL_RENDER_CPP_MAX_COLOR_ATTACHMENTS; i++) {
+        MTL::RenderPassColorAttachmentDescriptor* attachment =
+            attachments->object(i);
+        if (attachment && attachment->texture() == want) {
+            if (attachment_index_out) {
+                *attachment_index_out = (size_t)i;
+            }
+            return 1;
+        }
+    }
+    return 0;
+}
+
 int mglRenderCppGetRenderPassStateOwner(
     void* owner_handle,
     MGLRenderCppRenderPassState* state_out) {

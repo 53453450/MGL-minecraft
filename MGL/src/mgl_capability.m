@@ -10,9 +10,10 @@
 #import <Metal/Metal.h>
 #import <string.h>
 
-void MGLCapabilityInit(MGLCapability *cap, id<MTLDevice> device)
+void MGLCapabilityInit(MGLCapability *cap, void *deviceRef)
 {
     memset(cap, 0, sizeof(*cap));
+    MGLMetalDeviceRef device = mglCapabilityDeviceRef(deviceRef);
     cap->device = device;
 
     NSString *name = [device name] ?: @"Unknown Metal Device";

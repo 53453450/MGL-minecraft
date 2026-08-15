@@ -354,11 +354,13 @@ static inline BOOL mglRenderPassUsesColorTextureForState(
         return NO;
     }
     if (!descriptor) return NO;
-    for (NSUInteger i = 0; i < MGL_RENDER_CPP_MAX_COLOR_ATTACHMENTS; i++) {
-        if (descriptor.colorAttachments[i].texture == texture) {
-            if (attachmentIndexOut) *attachmentIndexOut = i;
-            return YES;
-        }
+    /* P4.5: mirror fallback 迁入 C++（mglRenderCppRenderPassUsesColorTexture）。 */
+    size_t index = MGL_RENDER_CPP_MAX_COLOR_ATTACHMENTS;
+    int hit = mglRenderCppRenderPassUsesColorTexture(
+        (__bridge void *)descriptor, (__bridge void *)texture, &index);
+    if (hit == 1) {
+        if (attachmentIndexOut) *attachmentIndexOut = (NSUInteger)index;
+        return YES;
     }
     return NO;
 }

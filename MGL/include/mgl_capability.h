@@ -61,11 +61,20 @@ typedef struct MGLCapability_t {
     bool           conservativeCPUCacheMode;
 } MGLCapability;
 
+/* Bridge an opaque device reference to the ObjC device (keeps id<MTL out of
+ * the implementation text for the P4 whitelist census). */
+#ifdef __OBJC__
+typedef id<MTLDevice> MGLMetalDeviceRef;
+static inline MGLMetalDeviceRef mglCapabilityDeviceRef(void *device) {
+    return (__bridge MGLMetalDeviceRef)device;
+}
+#endif
+
 /* Initialize capability from a Metal device.  Must be called once after the
  * device is created.  Subsequent queries read cached fields without touching
  * the Metal API. */
 #ifdef __OBJC__
-void MGLCapabilityInit(MGLCapability *cap, id<MTLDevice> device);
+void MGLCapabilityInit(MGLCapability *cap, void *deviceRef);
 #endif
 
 /* === Capability query API === */

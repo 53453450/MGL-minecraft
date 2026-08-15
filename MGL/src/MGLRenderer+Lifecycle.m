@@ -305,7 +305,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     /* Initialize AGX Capability Layer (centralized device detection +
      * capability queries + driver bug markers).  Replaces scattered
      * `containsString:@"AGX"` checks and hardcoded constants. */
-    MGLCapabilityInit(&_capability, _device);
+    MGLCapabilityInit(&_capability, (__bridge void *)_device);
 
     // PROPER AGX VIRTUALIZATION DETECTION: Maintain Metal functionality with virtualization compatibility
     BOOL isVirtualized = _capability.isVirtualized;
