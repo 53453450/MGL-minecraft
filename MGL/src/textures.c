@@ -4500,6 +4500,8 @@ void mglTexStorage1D(GLMContext ctx, GLenum target, GLsizei levels, GLenum inter
 
     ERROR_CHECK_RETURN(levels > 0, GL_INVALID_VALUE);
 
+    ERROR_CHECK_RETURN(mglTexStorageInternalFormatValid(internalformat), GL_INVALID_ENUM);
+
     ERROR_CHECK_RETURN(checkInternalFormatForMetal(ctx, internalformat), GL_INVALID_OPERATION);
 
     ERROR_CHECK_RETURN(width > 0, GL_INVALID_VALUE);
@@ -4586,6 +4588,8 @@ void mglTexStorage2D(GLMContext ctx, GLenum target, GLsizei levels, GLenum inter
     }
 
     ERROR_CHECK_RETURN(levels > 0, GL_INVALID_VALUE);
+
+    ERROR_CHECK_RETURN(mglTexStorageInternalFormatValid(internalformat), GL_INVALID_ENUM);
 
     ERROR_CHECK_RETURN(checkInternalFormatForMetal(ctx, internalformat), GL_INVALID_OPERATION);
 
@@ -4732,6 +4736,8 @@ void mglTexStorage3D(GLMContext ctx, GLenum target, GLsizei levels, GLenum inter
     }
 
     ERROR_CHECK_RETURN(levels > 0, GL_INVALID_VALUE);
+
+    ERROR_CHECK_RETURN(mglTexStorageInternalFormatValid(internalformat), GL_INVALID_ENUM);
 
     ERROR_CHECK_RETURN(checkInternalFormatForMetal(ctx, internalformat), GL_INVALID_OPERATION);
 

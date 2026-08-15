@@ -55,7 +55,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 72
+#define MAX_TESTS 73
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -712,6 +712,283 @@ static int test_texture_mip_dimensions(unsigned char *pixels,
 
 cleanup:
     glDeleteTextures(10, textures);
+    drain_gl_errors();
+    return result;
+}
+
+static int expect_texture_storage_unallocated(const char *label, GLenum target)
+{
+    GLint immutable = -1;
+    GLint width = -1;
+    GLint internalformat = -1;
+
+    glGetTexParameteriv(target, GL_TEXTURE_IMMUTABLE_FORMAT, &immutable);
+    glGetTexLevelParameteriv(target, 0, GL_TEXTURE_WIDTH, &width);
+    glGetTexLevelParameteriv(target, 0, GL_TEXTURE_INTERNAL_FORMAT,
+                             &internalformat);
+    GLenum error = glGetError();
+    if (error == GL_NO_ERROR && immutable == GL_FALSE && width == 0 &&
+        internalformat == 0) {
+        return 0;
+    }
+
+    fprintf(stderr,
+            "%s: error=0x%x immutable=%d width=%d internalformat=0x%x\n",
+            label, error, immutable, width, internalformat);
+    drain_gl_errors();
+    return 1;
+}
+
+static int expect_texture_storage_allocated(const char *label, GLenum target,
+                                            GLint expected_width)
+{
+    GLint immutable = -1;
+    GLint width = -1;
+    GLint internalformat = -1;
+
+    glGetTexParameteriv(target, GL_TEXTURE_IMMUTABLE_FORMAT, &immutable);
+    glGetTexLevelParameteriv(target, 0, GL_TEXTURE_WIDTH, &width);
+    glGetTexLevelParameteriv(target, 0, GL_TEXTURE_INTERNAL_FORMAT,
+                             &internalformat);
+    GLenum error = glGetError();
+    if (error == GL_NO_ERROR && immutable == GL_TRUE &&
+        width == expected_width && internalformat == GL_RGBA8) {
+        return 0;
+    }
+
+    fprintf(stderr,
+            "%s: error=0x%x immutable=%d width=%d internalformat=0x%x "
+            "expectedWidth=%d\n",
+            label, error, immutable, width, internalformat, expected_width);
+    drain_gl_errors();
+    return 1;
+}
+
+static int test_texture_storage_internalformat_validation(
+    unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+
+    enum StorageEntry {
+        STORAGE_BOUND_1D,
+        STORAGE_BOUND_2D,
+        STORAGE_BOUND_3D,
+        STORAGE_DSA_1D,
+        STORAGE_DSA_2D,
+        STORAGE_DSA_3D,
+        STORAGE_DSA_2D_MS,
+        STORAGE_DSA_2D_MS_ARRAY,
+    };
+    static const struct StorageCase {
+        const char *label;
+        enum StorageEntry entry;
+        GLenum target;
+        GLenum invalid_format;
+    } cases[] = {
+        {"bound 1D unsized", STORAGE_BOUND_1D, GL_TEXTURE_1D, GL_RGBA},
+        {"bound 2D generic compressed", STORAGE_BOUND_2D, GL_TEXTURE_2D,
+         GL_COMPRESSED_RGBA},
+        {"DSA 1D unsized", STORAGE_DSA_1D, GL_TEXTURE_1D, GL_RED},
+        {"DSA 2D generic compressed", STORAGE_DSA_2D, GL_TEXTURE_2D,
+         GL_COMPRESSED_RGB},
+        {"DSA 3D stencil1", STORAGE_DSA_3D, GL_TEXTURE_3D,
+         GL_STENCIL_INDEX1},
+        {"DSA 2D multisample unsized", STORAGE_DSA_2D_MS,
+         GL_TEXTURE_2D_MULTISAMPLE, GL_RGBA},
+        {"DSA 2D multisample array unsized", STORAGE_DSA_2D_MS_ARRAY,
+         GL_TEXTURE_2D_MULTISAMPLE_ARRAY, GL_DEPTH_STENCIL},
+    };
+    int result = 1;
+
+    for (size_t i = 0u; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        const struct StorageCase *test = &cases[i];
+        GLuint texture = 0u;
+        char error_label[160];
+        char state_label[160];
+        char success_label[160];
+        GLboolean dsa = test->entry >= STORAGE_DSA_1D;
+
+        if (dsa) {
+            glCreateTextures(test->target, 1, &texture);
+        } else {
+            glGenTextures(1, &texture);
+            glBindTexture(test->target, texture);
+        }
+        if (!texture || glGetError() != GL_NO_ERROR) {
+            fprintf(stderr,
+                    "texture_storage_internalformat_validation: setup failed "
+                    "for %s\n",
+                    test->label);
+            goto cleanup;
+        }
+
+        drain_gl_errors();
+        switch (test->entry) {
+            case STORAGE_BOUND_1D:
+                glTexStorage1D(test->target, 1, test->invalid_format, 4);
+                break;
+            case STORAGE_BOUND_2D:
+                glTexStorage2D(test->target, 1, test->invalid_format, 4, 4);
+                break;
+            case STORAGE_BOUND_3D:
+                glTexStorage3D(test->target, 1, test->invalid_format, 4, 4, 4);
+                break;
+            case STORAGE_DSA_1D:
+                glTextureStorage1D(texture, 1, test->invalid_format, 4);
+                break;
+            case STORAGE_DSA_2D:
+                glTextureStorage2D(texture, 1, test->invalid_format, 4, 4);
+                break;
+            case STORAGE_DSA_3D:
+                glTextureStorage3D(texture, 1, test->invalid_format, 4, 4, 4);
+                break;
+            case STORAGE_DSA_2D_MS:
+                glTextureStorage2DMultisample(texture, 1,
+                                              test->invalid_format, 4, 4,
+                                              GL_TRUE);
+                break;
+            case STORAGE_DSA_2D_MS_ARRAY:
+                glTextureStorage3DMultisample(texture, 1,
+                                              test->invalid_format, 4, 4, 2,
+                                              GL_TRUE);
+                break;
+        }
+
+        snprintf(error_label, sizeof(error_label),
+                 "texture_storage_internalformat_validation: %s error",
+                 test->label);
+        if (expect_single_gl_error(error_label, GL_INVALID_ENUM)) {
+            glDeleteTextures(1, &texture);
+            goto cleanup;
+        }
+
+        glBindTexture(test->target, texture);
+        snprintf(state_label, sizeof(state_label),
+                 "texture_storage_internalformat_validation: %s state",
+                 test->label);
+        if (expect_texture_storage_unallocated(state_label, test->target)) {
+            glDeleteTextures(1, &texture);
+            goto cleanup;
+        }
+
+        switch (test->entry) {
+            case STORAGE_BOUND_1D:
+            case STORAGE_DSA_1D:
+                if (dsa) glTextureStorage1D(texture, 1, GL_RGBA8, 4);
+                else glTexStorage1D(test->target, 1, GL_RGBA8, 4);
+                break;
+            case STORAGE_BOUND_2D:
+            case STORAGE_DSA_2D:
+                if (dsa) glTextureStorage2D(texture, 1, GL_RGBA8, 4, 4);
+                else glTexStorage2D(test->target, 1, GL_RGBA8, 4, 4);
+                break;
+            case STORAGE_BOUND_3D:
+            case STORAGE_DSA_3D:
+                if (dsa) glTextureStorage3D(texture, 1, GL_RGBA8, 4, 4, 4);
+                else glTexStorage3D(test->target, 1, GL_RGBA8, 4, 4, 4);
+                break;
+            case STORAGE_DSA_2D_MS:
+                glTextureStorage2DMultisample(texture, 1, GL_RGBA8, 4, 4,
+                                              GL_TRUE);
+                break;
+            case STORAGE_DSA_2D_MS_ARRAY:
+                glTextureStorage3DMultisample(texture, 1, GL_RGBA8, 4, 4, 2,
+                                              GL_TRUE);
+                break;
+        }
+        if (glGetError() != GL_NO_ERROR) {
+            fprintf(stderr,
+                    "texture_storage_internalformat_validation: positive "
+                    "allocation failed for %s\n",
+                    test->label);
+            glDeleteTextures(1, &texture);
+            goto cleanup;
+        }
+
+        snprintf(success_label, sizeof(success_label),
+                 "texture_storage_internalformat_validation: %s success",
+                 test->label);
+        if (expect_texture_storage_allocated(success_label, test->target, 4)) {
+            glDeleteTextures(1, &texture);
+            goto cleanup;
+        }
+        glDeleteTextures(1, &texture);
+    }
+
+    drain_gl_errors();
+    glTexStorage2DMultisample(GL_PROXY_TEXTURE_2D_MULTISAMPLE, 1, GL_RGBA,
+                             4, 4, GL_TRUE);
+    if (expect_single_gl_error(
+            "texture_storage_internalformat_validation: proxy 2D MS",
+            GL_INVALID_ENUM)) {
+        goto cleanup;
+    }
+    glTexStorage3DMultisample(GL_PROXY_TEXTURE_2D_MULTISAMPLE_ARRAY, 1,
+                             GL_COMPRESSED_RGBA, 4, 4, 2, GL_TRUE);
+    if (expect_single_gl_error(
+            "texture_storage_internalformat_validation: proxy 2D MS array",
+            GL_INVALID_ENUM)) {
+        goto cleanup;
+    }
+
+    {
+        GLuint compressed = 0u;
+        glGenTextures(1, &compressed);
+        glBindTexture(GL_TEXTURE_2D, compressed);
+        glTexStorage2D(GL_TEXTURE_2D, 1,
+                       GL_COMPRESSED_RGBA_S3TC_DXT5_EXT, 4, 4);
+        if (expect_single_gl_error(
+                "texture_storage_internalformat_validation: concrete compressed",
+                GL_NO_ERROR)) {
+            glDeleteTextures(1, &compressed);
+            goto cleanup;
+        }
+        glDeleteTextures(1, &compressed);
+    }
+
+    /* GL_DEPTH_COMPONENT32 is a valid sized depth format and must be accepted
+     * by glTexStorage*; only a genuinely invalid internal format may raise
+     * GL_INVALID_ENUM.  (Historically the internal-format validation switch
+     * omitted GL_DEPTH_COMPONENT32 and erroneously rejected it; this locks the
+     * acceptance.)  A depth format is exercised on GL_TEXTURE_2D (Metal
+     * requires depth/stencil pixel formats to use a 2D/cube target, not 3D). */
+    {
+        GLuint depth32 = 0u;
+        glGenTextures(1, &depth32);
+        glBindTexture(GL_TEXTURE_2D, depth32);
+        glTexStorage2D(GL_TEXTURE_2D, 1, GL_DEPTH_COMPONENT32, 4, 4);
+        if (expect_single_gl_error(
+                "texture_storage_internalformat_validation: depth32 storage",
+                GL_NO_ERROR)) {
+            glDeleteTextures(1, &depth32);
+            goto cleanup;
+        }
+        GLint immutable = -1;
+        GLint depth_width = -1;
+        GLint depth_fmt = -1;
+        glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_IMMUTABLE_FORMAT,
+                            &immutable);
+        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH,
+                                 &depth_width);
+        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_INTERNAL_FORMAT,
+                                 &depth_fmt);
+        if (glGetError() != GL_NO_ERROR || immutable != GL_TRUE ||
+            depth_width != 4 || depth_fmt != (GLint)GL_DEPTH_COMPONENT32) {
+            fprintf(stderr,
+                    "texture_storage_internalformat_validation: depth32 state "
+                    "immutable=%d width=%d fmt=0x%x\n",
+                    immutable, depth_width, depth_fmt);
+            drain_gl_errors();
+            glDeleteTextures(1, &depth32);
+            goto cleanup;
+        }
+        glDeleteTextures(1, &depth32);
+    }
+
+    result = 0;
+
+cleanup:
     drain_gl_errors();
     return result;
 }
@@ -11447,6 +11724,8 @@ static const TestCase TESTS[] = {
                     test_air_renderpass_layer_slice),
     SELF_CHECK_TEST("texture_mip_dimensions",
                     test_texture_mip_dimensions),
+    SELF_CHECK_TEST("texture_storage_internalformat_validation",
+                    test_texture_storage_internalformat_validation),
     SELF_CHECK_TEST("framebuffer_layer_targets",
                     test_framebuffer_layer_targets),
     SELF_CHECK_TEST("framebuffer_texture_layer_validation",

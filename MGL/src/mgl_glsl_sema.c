@@ -2251,6 +2251,15 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
             sema_error(s, d->line, "initializer type mismatch in declaration of '%s'",
                        d->name);
         }
+        /* GLSL: an unsized array declared with an initializer infers its
+         * size from the initializer (e.g. `const vec2[] p = vec2[](...)`).
+         * Without this the symbol keeps array_size == 0, so the codegen
+         * type model reports it as a non-array and dynamic indexing fails
+         * with "codegen: indexing this type is not implemented in M1". */
+        if (t->kind == MGLIR_TYPE_ARRAY && t->array_size == 0 &&
+            it && it->kind == MGLIR_TYPE_ARRAY && it->array_size > 0) {
+            t->array_size = it->array_size;
+        }
     }
 }
 

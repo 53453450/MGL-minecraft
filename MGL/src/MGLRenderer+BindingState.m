@@ -1906,6 +1906,13 @@ static void mglBindingStateSetFragmentBytes(
 
                 MGL_FBIND_EMIT_BUFFER(bindingIndex,
                                       (__bridge void *)isolated, 0);
+                /* Isolated buffers are owned only by this loop local (created
+                 * via isolatedStageBindingBufferForMap:, no other owner):
+                 * flush immediately so the encoder retains the buffer while it
+                 * is still alive, instead of holding a dangling pointer in the
+                 * snapshot until the end-of-loop replay.  Same lifetime hazard
+                 * as the vertex/compute isolated paths. */
+                MGL_FBIND_FLUSH_SNAPSHOT();
                 mglRenderCppBindingUpdateFragmentBuffer(
                     _bindingStateOwner, (__bridge void *)isolated, 0,
                     (uint32_t)bindingIndex);

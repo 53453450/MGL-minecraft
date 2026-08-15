@@ -34,12 +34,15 @@ GLboolean mglBufferSlotIsReservedForStage(GLuint slot, int stage)
     }
 
     /* GS compute-expansion path (mgl_air_gs_abi.h §1): the GS kernel owns
-     * slot 24 (VS capture input), 28 (expanded output), 29 (counts) and
-     * 30 (XFB, reserved).  Slots 28-30 overlap the tessellation / VS/FS
-     * emulation paths but the encoders are disjoint; a UBO/SSBO bound for
-     * the geometry stage at any of these would corrupt the expansion. */
+     * slot 24 (VS capture input), 25 (index-gather params), 28 (expanded
+     * output), 29 (counts/indirect), 30 (index gather), 31 (XFB stream) and
+     * 27 (XFB meta/atomic cursor).  Slots 27-30 also overlap the
+     * tessellation / VS/FS emulation paths but the encoders are disjoint;
+     * a UBO/SSBO bound for the geometry stage at any of these would corrupt
+     * the expansion or the transform-feedback output. */
     if (stage == MGL_STAGE_GEOMETRY || stage < 0) {
-        if (slot == 24u || slot == 28u || slot == 29u || slot == 30u) {
+        if (slot == 24u || slot == 25u || slot == 26u || slot == 27u ||
+            slot == 28u || slot == 29u || slot == 30u || slot == 31u) {
             return GL_TRUE;
         }
     }
@@ -89,16 +92,22 @@ GLboolean mglBufferSlotIsReservedForTessellation(GLuint slot)
 GLboolean mglBufferSlotIsReservedForGeometry(GLuint slot)
 {
     /* GS compute-expansion path (mgl_air_gs_abi.h §1): the GS kernel
-     * reserves slot 24 (VS capture input), 28 (expanded output), 29
-     * (counts / indirect args) and 30 (GS XFB, reserved for P1).  A
-     * UBO/SSBO bound at any of these slots in a geometry program would
-     * silently corrupt the expansion.  The stage-specific check is also
-     * handled by mglBufferSlotIsReservedForStage. */
+     * reserves slot 24 (VS capture input), 25 (index-gather params),
+     * 26 (reserved with tessellation factors), 28 (expanded output),
+     * 29 (counts / indirect args), 30 (index gather), 31 (GS XFB stream) and
+     * 27 (GS XFB meta / atomic cursor).  A UBO/SSBO bound at any of these
+     * slots in a geometry program would silently corrupt the expansion, the
+     * gather, or the transform-feedback output.  The stage-specific check is
+     * also handled by mglBufferSlotIsReservedForStage. */
     switch (slot) {
         case 24u:  /* GS input records */
+        case 25u:  /* GS gather params */
+        case 26u:  /* TCS/TES factors (shared domain) */
+        case 27u:  /* GS XFB meta / atomic cursor */
         case 28u:  /* GS output records */
         case 29u:  /* GS counts / indirect args */
-        case 30u:  /* GS XFB output */
+        case 30u:  /* GS index gather */
+        case 31u:  /* GS XFB stream output */
             return GL_TRUE;
         default:
             return GL_FALSE;
@@ -136,7 +145,7 @@ const char *mglBufferSlotReservedName(GLuint slot)
         case 24:
             return "kMGLBufferSlot_TCSStageInRepl (TCS [[stage_in]] replacement) / MGL_AIR_GS_SLOT_INPUT (GS compute expansion)";
         case 25:
-            return "MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX (runtime-sized SSBO sizing)";
+            return "MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX (runtime-sized SSBO sizing) / MGL_AIR_GS_SLOT_GATHER_PARAMS (GS index-gather params)";
         case 26:
             return "kMGLBufferSlot_TessFactor (TCS/TES compute path)";
         case 27:

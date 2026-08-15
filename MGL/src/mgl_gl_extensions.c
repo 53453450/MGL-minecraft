@@ -12,6 +12,7 @@
 
 #include "mgl.h"
 #include "draw_command.h"
+#include "mgl_pixel_format.h"
 #include "pixel_utils.h"
 
 #include "mgl_trace_log.h"
@@ -6003,6 +6004,10 @@ void mglTexStorage2DMultisample(GLMContext ctx, GLenum target, GLsizei samples, 
         ERROR_RETURN(GL_INVALID_ENUM);
         return;
     }
+    if (!mglTexStorageInternalFormatValid(internalformat)) {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
     if (samples < 1 || width <= 0 || height <= 0) {
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
@@ -6025,6 +6030,10 @@ void mglTexStorage3DMultisample(GLMContext ctx, GLenum target, GLsizei samples, 
 
     if (target != GL_TEXTURE_2D_MULTISAMPLE_ARRAY &&
         target != GL_PROXY_TEXTURE_2D_MULTISAMPLE_ARRAY) {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+    if (!mglTexStorageInternalFormatValid(internalformat)) {
         ERROR_RETURN(GL_INVALID_ENUM);
         return;
     }

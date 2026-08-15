@@ -3893,6 +3893,8 @@ static id<MTLRenderPipelineState> mglLookupCppAuxRenderPipeline(
                                                          sourceOffset:0u
                                                     sourceBytesPerRow:bgraRowBytes
                                                   sourceBytesPerImage:bgraSize
+                                                   sourceLayerStride:0u
+                                                           layerCount:1u
                                                             sourceSize:MTLSizeMake(width, height, copyDepth)
                                                              toTexture:texture
                                                       destinationSlice:destinationSlice

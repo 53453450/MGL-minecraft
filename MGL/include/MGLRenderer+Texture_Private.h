@@ -47,6 +47,8 @@ void mglMetalCopyRows(const uint8_t *src,
                                         sourceOffset:(NSUInteger)sourceOffset
                                    sourceBytesPerRow:(NSUInteger)sourceBytesPerRow
                                  sourceBytesPerImage:(NSUInteger)sourceBytesPerImage
+                                  sourceLayerStride:(NSUInteger)sourceLayerStride
+                                          layerCount:(NSUInteger)layerCount
                                            sourceSize:(MTLSize)sourceSize
                                             toTexture:(id<MTLTexture>)texture
                                      destinationSlice:(NSUInteger)destinationSlice

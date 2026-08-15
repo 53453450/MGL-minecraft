@@ -3110,7 +3110,81 @@ static int verifyTextureCreationTargetPlans(void) {
         return 1;
     }
 
+    MGLRenderCppTextureSubUploadPlan sub = {};
+    if (mglRenderCppTextureSubUploadPlan(
+            GL_TEXTURE_1D_ARRAY, (uint32_t)MTLTextureType2DArray, 9u,
+            1u, 3u, 7u, 4u, 2u, 1u, 16u, 16u, &sub) != 0 ||
+        sub.destination_base_slice != 3u || sub.destination_x != 1u ||
+        sub.destination_y != 0u || sub.destination_z != 0u ||
+        sub.copy_width != 4u || sub.copy_height != 1u ||
+        sub.copy_depth != 1u || sub.layer_count != 2u ||
+        sub.source_layer_stride != 16u) {
+        fprintf(stderr, "FAIL: 1D-array texture sub-upload plan\n");
+        return 1;
+    }
+    if (mglRenderCppTextureSubUploadPlan(
+            GL_TEXTURE_3D, (uint32_t)MTLTextureType3D, 9u,
+            1u, 2u, 3u, 4u, 5u, 6u, 16u, 80u, &sub) != 0 ||
+        sub.destination_base_slice != 0u || sub.destination_x != 1u ||
+        sub.destination_y != 2u || sub.destination_z != 3u ||
+        sub.copy_width != 4u || sub.copy_height != 5u ||
+        sub.copy_depth != 6u || sub.layer_count != 1u ||
+        sub.source_layer_stride != 0u) {
+        fprintf(stderr, "FAIL: 3D texture sub-upload plan\n");
+        return 1;
+    }
+    if (mglRenderCppTextureSubUploadPlan(
+            GL_TEXTURE_2D_ARRAY, (uint32_t)MTLTextureType2DArray, 9u,
+            1u, 2u, 3u, 4u, 5u, 2u, 16u, 80u, &sub) != 0 ||
+        sub.destination_base_slice != 3u || sub.destination_x != 1u ||
+        sub.destination_y != 2u || sub.destination_z != 0u ||
+        sub.copy_width != 4u || sub.copy_height != 5u ||
+        sub.copy_depth != 1u || sub.layer_count != 2u ||
+        sub.source_layer_stride != 80u) {
+        fprintf(stderr, "FAIL: 2D-array texture sub-upload plan\n");
+        return 1;
+    }
+    if (mglRenderCppTextureSubUploadPlan(
+            GL_TEXTURE_CUBE_MAP, (uint32_t)MTLTextureTypeCube, 5u,
+            1u, 2u, 0u, 4u, 5u, 1u, 16u, 80u, &sub) != 0 ||
+        sub.destination_base_slice != 5u || sub.destination_y != 2u ||
+        sub.layer_count != 1u || sub.source_layer_stride != 0u) {
+        fprintf(stderr, "FAIL: cube texture sub-upload plan\n");
+        return 1;
+    }
+    MGLRenderCppTextureSubUploadPlan rejected = {
+        UINT64_MAX, UINT64_MAX, UINT64_MAX, UINT64_MAX, UINT64_MAX,
+        UINT64_MAX, UINT64_MAX, UINT64_MAX, UINT64_MAX};
+    if (mglRenderCppTextureSubUploadPlan(
+            GL_TEXTURE_2D, (uint32_t)MTLTextureType2D, 0u,
+            0u, 0u, 0u, 1u, 1u, 1u, 4u, 4u, NULL) != -1 ||
+        mglRenderCppTextureSubUploadPlan(
+            GL_TEXTURE_2D, (uint32_t)MTLTextureType2D, 0u,
+            0u, 0u, 0u, 0u, 1u, 1u, 4u, 4u, &rejected) != -1 ||
+        mglRenderCppTextureSubUploadPlan(
+            GL_TEXTURE_2D, (uint32_t)MTLTextureType2D, 0u,
+            0u, 0u, 0u, 1u, 0u, 1u, 4u, 4u, &rejected) != -1 ||
+        mglRenderCppTextureSubUploadPlan(
+            GL_TEXTURE_2D, (uint32_t)MTLTextureType2D, 0u,
+            0u, 0u, 0u, 1u, 1u, 0u, 4u, 4u, &rejected) != -1 ||
+        mglRenderCppTextureSubUploadPlan(
+            GL_TEXTURE_2D, (uint32_t)MTLTextureType2D, 0u,
+            0u, 0u, 0u, 1u, 1u, 1u, 0u, 4u, &rejected) != -1 ||
+        mglRenderCppTextureSubUploadPlan(
+            GL_TEXTURE_2D, (uint32_t)MTLTextureType2D, 0u,
+            0u, 0u, 0u, 1u, 1u, 1u, 4u, 0u, &rejected) != -1 ||
+        mglRenderCppTextureSubUploadPlan(
+            GL_TEXTURE_1D_ARRAY, (uint32_t)MTLTextureType2DArray, 0u,
+            0u, UINT64_MAX, 0u, 1u, 2u, 1u, 4u, 4u,
+            &rejected) != -1 ||
+        rejected.destination_base_slice != 0u || rejected.copy_width != 0u ||
+        rejected.layer_count != 0u) {
+        fprintf(stderr, "FAIL: texture sub-upload plan invalid arguments\n");
+        return 1;
+    }
+
     printf("TEXTURE_CREATION_TARGET_PLAN_OK\n");
+    printf("TEXTURE_SUB_UPLOAD_PLAN_OK\n");
     return 0;
 }
 

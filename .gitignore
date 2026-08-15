@@ -15,3 +15,4 @@ external/ezxml/
 /.workbuddy
 /mgl-ssbo-20260805b/
 build_asan/
+build-asan-residual/

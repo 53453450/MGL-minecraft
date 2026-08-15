@@ -1404,9 +1404,9 @@ bool mglIsBGRByteSwapFormat(GLenum internalformat, GLenum format, GLenum type)
     return true;
 }
 
-bool mglClearTexInternalFormatIsColor(GLenum internalformat)
+static bool mglSizedColorInternalFormatValid(GLenum internalformat)
 {
-    switch (mglTexLevelCanonicalInternalFormat((GLint)internalformat)) {
+    switch (internalformat) {
         case GL_R8: case GL_R8_SNORM: case GL_R16: case GL_R16_SNORM:
         case GL_R16F: case GL_R32F:
         case GL_R8I: case GL_R16I: case GL_R32I:
@@ -1435,6 +1435,12 @@ bool mglClearTexInternalFormatIsColor(GLenum internalformat)
         default:
             return false;
     }
+}
+
+bool mglClearTexInternalFormatIsColor(GLenum internalformat)
+{
+    return mglSizedColorInternalFormatValid(
+        (GLenum)mglTexLevelCanonicalInternalFormat((GLint)internalformat));
 }
 
 GLenum mglClearTexFormatCompatibilityError(GLenum internalformat, GLenum format)
@@ -1576,8 +1582,25 @@ bool mglTextureFormatLooksDepthOrStencil(GLenum internalformat)
 
 bool mglTexStorageInternalFormatValid(GLenum internalformat)
 {
-    return mglTexLevelInternalFormatCompressed(internalformat) ||
-           mtlFormatForGLInternalFormat(internalformat) != MTLPixelFormatInvalid;
+    if (mglSizedColorInternalFormatValid(internalformat)) {
+        return true;
+    }
+
+    switch (internalformat) {
+        case GL_DEPTH_COMPONENT16:
+        case GL_DEPTH_COMPONENT24:
+        case GL_DEPTH_COMPONENT32:
+        case GL_DEPTH_COMPONENT32F:
+        case GL_DEPTH24_STENCIL8:
+        case GL_DEPTH32F_STENCIL8:
+        case GL_STENCIL_INDEX8:
+            return true;
+        default:
+            break;
+    }
+
+    return !mglIsGenericCompressedFormat(internalformat) &&
+           mglTexLevelInternalFormatCompressed(internalformat);
 }
 
 /*

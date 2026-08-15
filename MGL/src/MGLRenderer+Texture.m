@@ -351,6 +351,8 @@ static void mglTextureCopyTextureToBuffer(
                                         sourceOffset:(NSUInteger)sourceOffset
                                    sourceBytesPerRow:(NSUInteger)sourceBytesPerRow
                                  sourceBytesPerImage:(NSUInteger)sourceBytesPerImage
+                                  sourceLayerStride:(NSUInteger)sourceLayerStride
+                                          layerCount:(NSUInteger)layerCount
                                            sourceSize:(MTLSize)sourceSize
                                             toTexture:(id<MTLTexture>)texture
                                      destinationSlice:(NSUInteger)destinationSlice
@@ -359,9 +361,29 @@ static void mglTextureCopyTextureToBuffer(
                                                reason:(const char *)reason
 {
     MGL_ASSERT_GL_THREAD();
-    if (!sourceBuffer || !texture || !_commandQueue) {
+    NSUInteger sourceLayerSpan = 0u;
+    NSUInteger lastSourceOffset = 0u;
+    if (!sourceBuffer || !texture || !_commandQueue || layerCount == 0u ||
+        sourceBytesPerRow == 0u || sourceBytesPerImage == 0u ||
+        sourceSize.width == 0u || sourceSize.height == 0u ||
+        sourceSize.depth == 0u ||
+        (layerCount > 1u && sourceLayerStride == 0u) ||
+        (sourceLayerStride != 0u &&
+         layerCount - 1u > (NSUIntegerMax - sourceOffset) / sourceLayerStride) ||
+        layerCount - 1u > NSUIntegerMax - destinationSlice ||
+        sourceSize.depth > NSUIntegerMax / sourceBytesPerImage) {
         NSLog(@"MGL ERROR: dedicated texture upload prerequisites missing (source=%p texture=%p queue=%p)",
               sourceBuffer, texture, _commandQueue);
+        return false;
+    }
+    sourceLayerSpan = sourceBytesPerImage * sourceSize.depth;
+    lastSourceOffset = sourceOffset + (layerCount - 1u) * sourceLayerStride;
+    if (lastSourceOffset > sourceBuffer.length ||
+        sourceLayerSpan > sourceBuffer.length - lastSourceOffset) {
+        NSLog(@"MGL ERROR: texture upload source range exceeds buffer (offset=%lu span=%lu length=%lu)",
+              (unsigned long)lastSourceOffset,
+              (unsigned long)sourceLayerSpan,
+              (unsigned long)sourceBuffer.length);
         return false;
     }
 
@@ -381,12 +403,12 @@ static void mglTextureCopyTextureToBuffer(
         }
 
         if (mglTextureUsesMetalCpp()) {
-            if (mglRenderCppEncodeTextureUpload(
+            if (mglRenderCppEncodeTextureUploadLayers(
                     mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
                     (__bridge void *)sourceBuffer, sourceOffset,
-                    sourceBytesPerRow, sourceBytesPerImage,
+                    sourceBytesPerRow, sourceBytesPerImage, sourceLayerStride,
                     sourceSize.width, sourceSize.height, sourceSize.depth,
-                    (__bridge void *)texture, destinationSlice,
+                    (__bridge void *)texture, destinationSlice, layerCount,
                     destinationLevel, destinationOrigin.x,
                     destinationOrigin.y, destinationOrigin.z) != 0) {
                 NSLog(@"MGL ERROR: C++ ordered upload encode failed (%s)",
@@ -406,11 +428,14 @@ static void mglTextureCopyTextureToBuffer(
             }
 
             @try {
-                mglTextureCopyBufferToTexture(
-                    blitEncoder, sourceBuffer, sourceOffset,
-                    sourceBytesPerRow, sourceBytesPerImage, sourceSize,
-                    texture, destinationSlice, destinationLevel,
-                    destinationOrigin);
+                for (NSUInteger layer = 0u; layer < layerCount; ++layer) {
+                    mglTextureCopyBufferToTexture(
+                        blitEncoder, sourceBuffer,
+                        sourceOffset + layer * sourceLayerStride,
+                        sourceBytesPerRow, sourceBytesPerImage, sourceSize,
+                        texture, destinationSlice + layer, destinationLevel,
+                        destinationOrigin);
+                }
                 mglTextureEndBlitEncoder(blitEncoder);
             } @catch (NSException *exception) {
                 NSLog(@"MGL ERROR: ordered upload encode failed (%s): %@",
@@ -445,11 +470,12 @@ static void mglTextureCopyTextureToBuffer(
     }
 
     if (mglTextureUsesMetalCpp()) {
-        if (mglRenderCppEncodeTextureUpload(
+        if (mglRenderCppEncodeTextureUploadLayers(
                 (__bridge void *)uploadCB, (__bridge void *)sourceBuffer,
                 sourceOffset, sourceBytesPerRow, sourceBytesPerImage,
+                sourceLayerStride,
                 sourceSize.width, sourceSize.height, sourceSize.depth,
-                (__bridge void *)texture, destinationSlice,
+                (__bridge void *)texture, destinationSlice, layerCount,
                 destinationLevel, destinationOrigin.x,
                 destinationOrigin.y, destinationOrigin.z) != 0) {
             NSLog(@"MGL ERROR: C++ dedicated upload encode failed (%s)",
@@ -468,10 +494,14 @@ static void mglTextureCopyTextureToBuffer(
         }
 
         @try {
-            mglTextureCopyBufferToTexture(
-                blitEncoder, sourceBuffer, sourceOffset, sourceBytesPerRow,
-                sourceBytesPerImage, sourceSize, texture, destinationSlice,
-                destinationLevel, destinationOrigin);
+            for (NSUInteger layer = 0u; layer < layerCount; ++layer) {
+                mglTextureCopyBufferToTexture(
+                    blitEncoder, sourceBuffer,
+                    sourceOffset + layer * sourceLayerStride,
+                    sourceBytesPerRow, sourceBytesPerImage, sourceSize,
+                    texture, destinationSlice + layer, destinationLevel,
+                    destinationOrigin);
+            }
             mglTextureEndBlitEncoder(blitEncoder);
         } @catch (NSException *exception) {
             NSLog(@"MGL ERROR: dedicated upload encode failed (%s): %@",
@@ -758,6 +788,8 @@ static void mglTextureCopyTextureToBuffer(
                                                          sourceOffset:0
                                                     sourceBytesPerRow:bytesPerRow
                                                   sourceBytesPerImage:safeBytesPerImage
+                                                   sourceLayerStride:0
+                                                           layerCount:1
                                                             sourceSize:MTLSizeMake(width, safeHeight, copyDepth)
                                                              toTexture:texture
                                                       destinationSlice:slice
@@ -2380,28 +2412,28 @@ static void mglTextureCopyTextureToBuffer(
     }
 
     MTLTextureType textureType = texture.textureType;
-    NSUInteger destinationSlice = 0;
-    MTLOrigin destinationOrigin = MTLOriginMake(xoffset, yoffset, 0);
-    NSUInteger copyDepth = 1;
-
-    if (textureType == MTLTextureType3D) {
-        destinationSlice = 0;
-        destinationOrigin = MTLOriginMake(xoffset, yoffset, zoffset);
-        copyDepth = MAX(depth, (NSUInteger)1);
-    } else if (textureType == MTLTextureTypeCube ||
-               textureType == MTLTextureTypeCubeArray ||
-               textureType == MTLTextureType2DArray ||
-               textureType == MTLTextureType1DArray ||
-               textureType == MTLTextureType2DMultisampleArray) {
-        destinationSlice = slice;
-        destinationOrigin = MTLOriginMake(xoffset, yoffset, 0);
-        copyDepth = 1;
+    MGLRenderCppTextureSubUploadPlan uploadPlan = {0};
+    if (mglRenderCppTextureSubUploadPlan(
+            (uint32_t)tex->target, (uint32_t)textureType, (uint64_t)slice,
+            (uint64_t)xoffset, (uint64_t)yoffset, (uint64_t)zoffset,
+            (uint64_t)width, (uint64_t)height, (uint64_t)depth,
+            (uint64_t)sourceBytesPerRow, (uint64_t)sourceBytesPerImage,
+            &uploadPlan) != 0) {
+        return false;
     }
-
-    NSUInteger copyHeight = (textureType == MTLTextureType1DArray ||
-                             tex->target == GL_TEXTURE_1D_ARRAY)
-        ? 1UL
-        : MAX(height, (NSUInteger)1);
+    NSUInteger destinationSlice = (NSUInteger)uploadPlan.destination_base_slice;
+    MTLOrigin destinationOrigin = MTLOriginMake(
+        (NSUInteger)uploadPlan.destination_x,
+        (NSUInteger)uploadPlan.destination_y,
+        (NSUInteger)uploadPlan.destination_z);
+    NSUInteger copyHeight = (NSUInteger)uploadPlan.copy_height;
+    NSUInteger copyDepth = (NSUInteger)uploadPlan.copy_depth;
+    NSUInteger layerCount = (NSUInteger)uploadPlan.layer_count;
+    NSUInteger sourceLayerStride =
+        (NSUInteger)uploadPlan.source_layer_stride;
+    if (copyHeight > NSUIntegerMax / sourceBytesPerRow) {
+        return false;
+    }
     NSUInteger expectedBytesPerImage = sourceBytesPerRow * copyHeight;
     NSUInteger copyBytesPerImage = sourceBytesPerImage;
     if (textureType == MTLTextureTypeCube ||
@@ -2427,10 +2459,13 @@ static void mglTextureCopyTextureToBuffer(
 
     if (level >= texture.mipmapLevelCount ||
         destinationSlice >= maxDestinationSlices ||
+        layerCount > maxDestinationSlices - destinationSlice ||
         destinationOrigin.x > texture.width ||
         destinationOrigin.y > texture.height ||
+        destinationOrigin.z > texture.depth ||
         width > texture.width - destinationOrigin.x ||
-        copyHeight > texture.height - destinationOrigin.y) {
+        copyHeight > texture.height - destinationOrigin.y ||
+        copyDepth > texture.depth - destinationOrigin.z) {
         NSLog(@"MGL ERROR: texture sub upload out of bounds tex=%u level=%lu slice=%lu origin=(%lu,%lu,%lu) size=%lux%lux%lu texture=%lux%lux%lu",
               tex->name,
               (unsigned long)level,
@@ -2451,7 +2486,11 @@ static void mglTextureCopyTextureToBuffer(
                                                 sourceOffset:sourceOffset
                                            sourceBytesPerRow:sourceBytesPerRow
                                          sourceBytesPerImage:copyBytesPerImage
-                                                   sourceSize:MTLSizeMake(width, copyHeight, copyDepth)
+                                          sourceLayerStride:sourceLayerStride
+                                                  layerCount:layerCount
+                                                   sourceSize:MTLSizeMake(
+                                                       (NSUInteger)uploadPlan.copy_width,
+                                                       copyHeight, copyDepth)
                                                     toTexture:texture
                                              destinationSlice:destinationSlice
                                              destinationLevel:level
@@ -3494,6 +3533,10 @@ static void mglTextureCopyTextureToBuffer(
                                                                                          sourceBytesPerRow:properBytesPerRow
 
                                                                                        sourceBytesPerImage:fillSize
+
+                                                                                        sourceLayerStride:0
+
+                                                                                                layerCount:1
 
                                                                                                  sourceSize:MTLSizeMake(properRegion.size.width, properRegion.size.height, 1)
 

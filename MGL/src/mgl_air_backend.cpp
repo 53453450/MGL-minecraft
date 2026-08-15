@@ -165,7 +165,7 @@ struct Codegen {
     llvm::Value *geometryGatherPtr = nullptr; /* GS indexed gather stream */
     llvm::Value *geometryGatherParamsPtr = nullptr; /* GS gather params    */
     llvm::Value *geometryXfbPtr = nullptr;  /* GS XFB stream, buffer(31)   */
-    llvm::Value *geometryXfbMetaPtr = nullptr; /* GS XFB meta, buffer(32)  */
+    llvm::Value *geometryXfbMetaPtr = nullptr; /* GS XFB meta, buffer(27)  */
     llvm::Value *tessGatherPtr = nullptr;     /* TES compute gather stream */
     llvm::Value *tessGatherParamsPtr = nullptr; /* TES compute gather params*/
     llvm::Value *xfbOutPtr = nullptr;   /* TES compute XFB stream, buffer(31) */
@@ -1043,7 +1043,7 @@ static llvm::Value *emitIndexValue(Codegen &cg, llvm::Value *obj,
         }
         return res;
     }
-    if (bt.isArray()) {
+    if (bt.isArray() || obj->getType()->isArrayTy()) {
         auto *arr = llvm::dyn_cast<llvm::ArrayType>(obj->getType());
         if (!arr) return nullptr;
         uint32_t C = (uint32_t)arr->getNumElements();
@@ -1079,7 +1079,7 @@ static llvm::Value *insertIndexValue(Codegen &cg, llvm::Value *obj,
         }
         return out;
     }
-    if (bt.isArray()) {
+    if (bt.isArray() || obj->getType()->isArrayTy()) {
         auto *arr = llvm::dyn_cast<llvm::ArrayType>(obj->getType());
         if (!arr) return nullptr;
         uint32_t n = (uint32_t)arr->getNumElements();

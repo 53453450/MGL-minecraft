@@ -3083,6 +3083,85 @@ int mglRenderCppTextureTargetPlan(
 }
 
 extern "C"
+int mglRenderCppTextureSubUploadPlan(
+    uint32_t gl_target,
+    uint32_t texture_type,
+    uint64_t requested_slice,
+    uint64_t xoffset,
+    uint64_t yoffset,
+    uint64_t zoffset,
+    uint64_t width,
+    uint64_t height,
+    uint64_t depth,
+    uint64_t source_bytes_per_row,
+    uint64_t source_bytes_per_image,
+    MGLRenderCppTextureSubUploadPlan* plan_out) {
+    if (!plan_out || width == 0u || height == 0u || depth == 0u ||
+        source_bytes_per_row == 0u || source_bytes_per_image == 0u) {
+        return -1;
+    }
+
+    *plan_out = {};
+    plan_out->destination_x = xoffset;
+    plan_out->copy_width = width;
+    plan_out->copy_height = height;
+    plan_out->copy_depth = 1u;
+    plan_out->layer_count = 1u;
+
+    if (gl_target == GL_TEXTURE_1D_ARRAY) {
+        if (yoffset > std::numeric_limits<uint64_t>::max() - (height - 1u)) {
+            *plan_out = {};
+            return -1;
+        }
+        plan_out->destination_base_slice = yoffset;
+        plan_out->destination_y = 0u;
+        plan_out->destination_z = 0u;
+        plan_out->copy_height = 1u;
+        plan_out->copy_depth = 1u;
+        plan_out->layer_count = height;
+        plan_out->source_layer_stride = source_bytes_per_row;
+        return 0;
+    }
+
+    if (gl_target == GL_TEXTURE_2D_ARRAY ||
+        gl_target == GL_TEXTURE_CUBE_MAP_ARRAY) {
+        if (zoffset > std::numeric_limits<uint64_t>::max() - (depth - 1u)) {
+            *plan_out = {};
+            return -1;
+        }
+        plan_out->destination_base_slice = zoffset;
+        plan_out->destination_y = yoffset;
+        plan_out->destination_z = 0u;
+        plan_out->copy_depth = 1u;
+        plan_out->layer_count = depth;
+        plan_out->source_layer_stride = source_bytes_per_image;
+        return 0;
+    }
+
+    switch (static_cast<MTL::TextureType>(texture_type)) {
+        case MTL::TextureType3D:
+            plan_out->destination_y = yoffset;
+            plan_out->destination_z = zoffset;
+            plan_out->copy_depth = depth;
+            return 0;
+        case MTL::TextureTypeCube:
+        case MTL::TextureTypeCubeArray:
+        case MTL::TextureType2DArray:
+        case MTL::TextureType1DArray:
+        case MTL::TextureType2DMultisampleArray:
+            plan_out->destination_base_slice = requested_slice;
+            plan_out->destination_y = yoffset;
+            return 0;
+        default:
+            plan_out->destination_y =
+                gl_target == GL_TEXTURE_1D ? 0u : yoffset;
+            plan_out->copy_height =
+                gl_target == GL_TEXTURE_1D ? 1u : height;
+            return 0;
+    }
+}
+
+extern "C"
 uint32_t mglRenderCppTextureTypeForShaderResource(
     uint32_t has_resource,
     uint32_t image_dim,
@@ -9124,6 +9203,111 @@ int mglRenderCppEndBlitEncoder(void* blit_encoder) {
     return 0;
 }
 
+int mglRenderCppEncodeTextureUploadLayers(
+    void* command_buffer,
+    void* source_buffer,
+    uint64_t source_offset,
+    uint64_t source_bytes_per_row,
+    uint64_t source_bytes_per_image,
+    uint64_t source_layer_stride,
+    uint64_t source_width,
+    uint64_t source_height,
+    uint64_t source_depth,
+    void* destination_texture,
+    uint64_t destination_base_slice,
+    uint64_t layer_count,
+    uint64_t destination_level,
+    uint64_t destination_x,
+    uint64_t destination_y,
+    uint64_t destination_z) {
+    MTL::CommandBuffer* command =
+        static_cast<MTL::CommandBuffer*>(command_buffer);
+    MTL::Buffer* source = static_cast<MTL::Buffer*>(source_buffer);
+    MTL::Texture* destination =
+        static_cast<MTL::Texture*>(destination_texture);
+    if (!command || !source || !destination || source_width == 0 ||
+        source_height == 0 || source_depth == 0 ||
+        source_bytes_per_row == 0 || source_bytes_per_image == 0 ||
+        layer_count == 0 || (layer_count > 1u && source_layer_stride == 0u)) {
+        return -1;
+    }
+
+    const uint64_t last_layer = layer_count - 1u;
+    if ((source_layer_stride != 0u &&
+         last_layer > (std::numeric_limits<uint64_t>::max() - source_offset) /
+                          source_layer_stride) ||
+        last_layer > std::numeric_limits<uint64_t>::max() -
+                         destination_base_slice) {
+        return -1;
+    }
+
+    uint64_t source_layer_span = 0u;
+    if (source_depth > std::numeric_limits<uint64_t>::max() /
+                           source_bytes_per_image) {
+        return -1;
+    }
+    source_layer_span = source_bytes_per_image * source_depth;
+    const uint64_t last_source_offset =
+        source_offset + last_layer * source_layer_stride;
+    if (last_source_offset > source->length() ||
+        source_layer_span > source->length() - last_source_offset) {
+        return -1;
+    }
+
+    if (destination_level >= destination->mipmapLevelCount()) {
+        return -1;
+    }
+    uint64_t destination_slice_count = destination->arrayLength();
+    switch (destination->textureType()) {
+        case MTL::TextureTypeCube:
+            destination_slice_count = 6u;
+            break;
+        case MTL::TextureTypeCubeArray:
+            if (destination_slice_count >
+                std::numeric_limits<uint64_t>::max() / 6u) {
+                return -1;
+            }
+            destination_slice_count *= 6u;
+            break;
+        default:
+            break;
+    }
+    if (destination_base_slice >= destination_slice_count ||
+        layer_count > destination_slice_count - destination_base_slice) {
+        return -1;
+    }
+
+    const uint64_t mip_width =
+        std::max<uint64_t>(1u, destination->width() >> destination_level);
+    const uint64_t mip_height =
+        std::max<uint64_t>(1u, destination->height() >> destination_level);
+    const uint64_t mip_depth =
+        std::max<uint64_t>(1u, destination->depth() >> destination_level);
+    if (destination_x > mip_width || source_width > mip_width - destination_x ||
+        destination_y > mip_height ||
+        source_height > mip_height - destination_y ||
+        destination_z > mip_depth || source_depth > mip_depth - destination_z) {
+        return -1;
+    }
+
+    MTL::BlitCommandEncoder* encoder = command->blitCommandEncoder();
+    if (!encoder) return -1;
+    for (uint64_t layer = 0u; layer < layer_count; ++layer) {
+        encoder->copyFromBuffer(
+            source,
+            static_cast<NS::UInteger>(source_offset +
+                                      layer * source_layer_stride),
+            static_cast<NS::UInteger>(source_bytes_per_row),
+            static_cast<NS::UInteger>(source_bytes_per_image),
+            MTL::Size(source_width, source_height, source_depth), destination,
+            static_cast<NS::UInteger>(destination_base_slice + layer),
+            static_cast<NS::UInteger>(destination_level),
+            MTL::Origin(destination_x, destination_y, destination_z));
+    }
+    encoder->endEncoding();
+    return 0;
+}
+
 int mglRenderCppEncodeTextureUpload(void* command_buffer,
                                     void* source_buffer,
                                     uint64_t source_offset,
@@ -9138,29 +9322,11 @@ int mglRenderCppEncodeTextureUpload(void* command_buffer,
                                     uint64_t destination_x,
                                     uint64_t destination_y,
                                     uint64_t destination_z) {
-    MTL::CommandBuffer* command =
-        static_cast<MTL::CommandBuffer*>(command_buffer);
-    MTL::Buffer* source = static_cast<MTL::Buffer*>(source_buffer);
-    MTL::Texture* destination =
-        static_cast<MTL::Texture*>(destination_texture);
-    if (!command || !source || !destination || source_width == 0 ||
-        source_height == 0 || source_depth == 0 ||
-        source_bytes_per_row == 0 || source_bytes_per_image == 0) {
-        return -1;
-    }
-
-    MTL::BlitCommandEncoder* encoder = command->blitCommandEncoder();
-    if (!encoder) return -1;
-    encoder->copyFromBuffer(
-        source, static_cast<NS::UInteger>(source_offset),
-        static_cast<NS::UInteger>(source_bytes_per_row),
-        static_cast<NS::UInteger>(source_bytes_per_image),
-        MTL::Size(source_width, source_height, source_depth), destination,
-        static_cast<NS::UInteger>(destination_slice),
-        static_cast<NS::UInteger>(destination_level),
-        MTL::Origin(destination_x, destination_y, destination_z));
-    encoder->endEncoding();
-    return 0;
+    return mglRenderCppEncodeTextureUploadLayers(
+        command_buffer, source_buffer, source_offset, source_bytes_per_row,
+        source_bytes_per_image, 0u, source_width, source_height, source_depth,
+        destination_texture, destination_slice, 1u, destination_level,
+        destination_x, destination_y, destination_z);
 }
 
 int mglRenderCppBlitCopyBuffer(void* blit_encoder,

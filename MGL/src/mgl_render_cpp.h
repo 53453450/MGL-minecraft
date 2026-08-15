@@ -310,6 +310,37 @@ int mglRenderCppTextureTargetPlan(
     uint32_t sample_count,
     MGLRenderCppTextureTargetPlan *plan_out);
 
+/* P4.4: GL subimage coordinates -> Metal upload subresource plan.  In
+ * particular, GL_TEXTURE_1D_ARRAY stores its first layer/count in
+ * yoffset/height, while the Metal 2D-array backing needs slice/arrayLength
+ * with origin.y=0 and height=1.  The result is pure value state; no MTL type
+ * crosses the C ABI. */
+typedef struct MGLRenderCppTextureSubUploadPlan_t {
+    uint64_t destination_base_slice;
+    uint64_t destination_x;
+    uint64_t destination_y;
+    uint64_t destination_z;
+    uint64_t copy_width;
+    uint64_t copy_height;
+    uint64_t copy_depth;
+    uint64_t layer_count;
+    uint64_t source_layer_stride;
+} MGLRenderCppTextureSubUploadPlan;
+
+int mglRenderCppTextureSubUploadPlan(
+    uint32_t gl_target,
+    uint32_t texture_type,
+    uint64_t requested_slice,
+    uint64_t xoffset,
+    uint64_t yoffset,
+    uint64_t zoffset,
+    uint64_t width,
+    uint64_t height,
+    uint64_t depth,
+    uint64_t source_bytes_per_row,
+    uint64_t source_bytes_per_image,
+    MGLRenderCppTextureSubUploadPlan *plan_out);
+
 /* P4.5 (item 1014/887): reflected shader-resource image shape ->
  * MTLTextureType ABI value.  The C ABI stays backend-neutral: all inputs and
  * the result are uint32_t values, and has_resource preserves the historical
@@ -2116,6 +2147,26 @@ int mglRenderCppEncodeTextureUpload(void *command_buffer,
                                     uint64_t destination_x,
                                     uint64_t destination_y,
                                     uint64_t destination_z);
+/* Multi-slice form used by array-texture subimages.  Arithmetic and resource
+ * extents are validated before a single blit encoder is opened, so a bad
+ * range cannot leave a partially encoded layer prefix. */
+int mglRenderCppEncodeTextureUploadLayers(
+    void *command_buffer,
+    void *source_buffer,
+    uint64_t source_offset,
+    uint64_t source_bytes_per_row,
+    uint64_t source_bytes_per_image,
+    uint64_t source_layer_stride,
+    uint64_t source_width,
+    uint64_t source_height,
+    uint64_t source_depth,
+    void *destination_texture,
+    uint64_t destination_base_slice,
+    uint64_t layer_count,
+    uint64_t destination_level,
+    uint64_t destination_x,
+    uint64_t destination_y,
+    uint64_t destination_z);
 int mglRenderCppBlitCopyBuffer(void *blit_encoder,
                                void *source_buffer,
                                uint64_t source_offset,
