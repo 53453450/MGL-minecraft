@@ -2304,6 +2304,61 @@ static int verifyMDIScratchOwner(void) {
     return 0;
 }
 
+static int verifyScaledBlitUVsAndScissor(void) {
+    /* P4.5 (item 1069/1141): scaled-blit UVs + destination scissor base. */
+    MGLRenderCppScaledBlitUVs u = {0};
+    if (mglRenderCppScaledBlitUVs(0, 0, 0, 0, 0, 0, 1, 1, 1, 1, NULL) != -1) {
+        fprintf(stderr, "FAIL: uvs bad args\n");
+        return 1;
+    }
+    /* 100x100 tex, src 10..30 x 10..30, all forward -> uv 0.1..0.3,
+     * uvTop (metal) = (100-30)/100 = 0.7, bottom = 0.9. */
+    if (mglRenderCppScaledBlitUVs(100, 100, 10, 30, 10, 30, 1, 1, 1, 1, &u) != 0 ||
+        fabs(u.uv_left - 0.1f) > 1e-6 || fabs(u.uv_right - 0.3f) > 1e-6 ||
+        fabs(u.uv_top - 0.7f) > 1e-6 || fabs(u.uv_bottom - 0.9f) > 1e-6) {
+        fprintf(stderr, "FAIL: uvs basic\n");
+        return 1;
+    }
+    /* Source X flipped vs destination -> uvLeft/uvRight swap. */
+    if (mglRenderCppScaledBlitUVs(100, 100, 10, 30, 10, 30, 0, 1, 1, 1, &u) != 0 ||
+        fabs(u.uv_left - 0.3f) > 1e-6 || fabs(u.uv_right - 0.1f) > 1e-6) {
+        fprintf(stderr, "FAIL: uvs x swap\n");
+        return 1;
+    }
+    /* Source Y flipped -> uvTop/uvBottom swap. */
+    if (mglRenderCppScaledBlitUVs(100, 100, 10, 30, 10, 30, 1, 0, 1, 1, &u) != 0 ||
+        fabs(u.uv_top - 0.9f) > 1e-6 || fabs(u.uv_bottom - 0.7f) > 1e-6) {
+        fprintf(stderr, "FAIL: uvs y swap\n");
+        return 1;
+    }
+    /* Out-of-range source clamps to [0,1]. */
+    if (mglRenderCppScaledBlitUVs(100, 100, -50, 150, 0, 10, 1, 1, 1, 1, &u) != 0 ||
+        fabs(u.uv_left - 0.0f) > 1e-6 || fabs(u.uv_right - 1.0f) > 1e-6) {
+        fprintf(stderr, "FAIL: uvs clamp\n");
+        return 1;
+    }
+
+    MGLRenderCppBlitScissorRect s = {0};
+    if (mglRenderCppBlitScissorRect(0, 0, 0, 0, 0, 0, NULL) != -1) {
+        fprintf(stderr, "FAIL: scissor bad args\n");
+        return 1;
+    }
+    /* dst 10..30, metalY 70, h 20 -> 10..30 x 70..90 on 100x100. */
+    if (mglRenderCppBlitScissorRect(10, 30, 70, 20, 100, 100, &s) != 0 ||
+        s.x0 != 10 || s.x1 != 30 || s.y0 != 70 || s.y1 != 90) {
+        fprintf(stderr, "FAIL: scissor basic\n");
+        return 1;
+    }
+    /* Out-of-range clamps: dst -5..105 on 100 wide -> 0..100. */
+    if (mglRenderCppBlitScissorRect(-5, 105, -10, 120, 100, 100, &s) != 0 ||
+        s.x0 != 0 || s.x1 != 100 || s.y0 != 0 || s.y1 != 100) {
+        fprintf(stderr, "FAIL: scissor clamp\n");
+        return 1;
+    }
+    printf("SCALED_BLIT_UVS_AND_SCISSOR_OK\n");
+    return 0;
+}
+
 static int verifyBlitFramebufferPlan(void) {
     /* P4.5 (item 1069/1141): glBlitFramebuffer region math + decisions. */
     MGLRenderCppBlitFramebufferPlan p = {0};
@@ -4495,6 +4550,7 @@ int main(void) {
         if (verifyIntegerReadbackSourceClassify() != 0) return 1;
         if (verifyPackedTypeClassify() != 0) return 1;
         if (verifyBlitFramebufferPlan() != 0) return 1;
+        if (verifyScaledBlitUVsAndScissor() != 0) return 1;
         if (verifyMDIScratchOwner() != 0) return 1;
         if (verifyRenderEncoderGetter() != 0) return 1;
         if (verifyCommandBufferGetterAndAdopt() != 0) return 1;

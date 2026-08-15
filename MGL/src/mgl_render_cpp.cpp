@@ -3901,6 +3901,60 @@ int mglRenderCppGetTexImagePlan(
 }
 
 extern "C"
+int mglRenderCppScaledBlitUVs(
+    uint32_t src_tex_w, uint32_t src_tex_h,
+    double src_min_x, double src_max_x, double src_min_y, double src_max_y,
+    int src_x_forward, int src_y_forward,
+    int dst_x_forward, int dst_y_forward,
+    MGLRenderCppScaledBlitUVs* out) {
+    if (!out) return -1;
+    const float invSrcW = src_tex_w ? (1.0f / (float)src_tex_w) : 0.0f;
+    const float invSrcH = src_tex_h ? (1.0f / (float)src_tex_h) : 0.0f;
+    float uvLeft = fmaxf(0.0f, fminf(1.0f, (float)src_min_x * invSrcW));
+    float uvRight = fmaxf(0.0f, fminf(1.0f, (float)src_max_x * invSrcW));
+    float uvTop = fmaxf(0.0f, fminf(1.0f, (float)((double)src_tex_h - src_max_y) * invSrcH));
+    float uvBottom = fmaxf(0.0f, fminf(1.0f, (float)((double)src_tex_h - src_min_y) * invSrcH));
+    if (src_x_forward != dst_x_forward) {
+        const float tmp = uvLeft;
+        uvLeft = uvRight;
+        uvRight = tmp;
+    }
+    if (src_y_forward != dst_y_forward) {
+        const float tmp = uvTop;
+        uvTop = uvBottom;
+        uvBottom = tmp;
+    }
+    out->uv_left = uvLeft;
+    out->uv_top = uvTop;
+    out->uv_right = uvRight;
+    out->uv_bottom = uvBottom;
+    return 0;
+}
+
+extern "C"
+int mglRenderCppBlitScissorRect(
+    double dst_min_x, double dst_max_x,
+    double scaled_dst_metal_y, double dst_h,
+    uint32_t dst_tex_w, uint32_t dst_tex_h,
+    MGLRenderCppBlitScissorRect* out) {
+    if (!out) return -1;
+    const double scaledDstMetalBottom = scaled_dst_metal_y + dst_h;
+    int64_t x0 = (int64_t)floor(dst_min_x + 0.00001);
+    int64_t x1 = (int64_t)ceil(dst_max_x - 0.00001);
+    int64_t y0 = (int64_t)floor(scaled_dst_metal_y + 0.00001);
+    int64_t y1 = (int64_t)ceil(scaledDstMetalBottom - 0.00001);
+    x0 = fmax((int64_t)0, fmin(x0, (int64_t)dst_tex_w));
+    x1 = fmax((int64_t)0, fmin(x1, (int64_t)dst_tex_w));
+    y0 = fmax((int64_t)0, fmin(y0, (int64_t)dst_tex_h));
+    y1 = fmax((int64_t)0, fmin(y1, (int64_t)dst_tex_h));
+    out->x0 = x0;
+    out->x1 = x1;
+    out->y0 = y0;
+    out->y1 = y1;
+    return 0;
+}
+
+extern "C"
 int mglRenderCppBlitFramebufferPlan(
     double src_x0, double src_x1, double src_y0, double src_y1,
     double dst_x0, double dst_x1, double dst_y0, double dst_y1,

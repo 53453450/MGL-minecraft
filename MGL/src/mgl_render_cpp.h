@@ -535,6 +535,49 @@ int mglRenderCppIntegerReadbackSourceClassify(
     uint32_t pixel_format,
     MGLRenderCppIntegerReadbackSource *out);
 
+typedef struct MGLRenderCppScaledBlitUVs_t {
+    float uv_left;
+    float uv_top;
+    float uv_right;
+    float uv_bottom;
+} MGLRenderCppScaledBlitUVs;
+
+typedef struct MGLRenderCppBlitScissorRect_t {
+    int64_t x0;
+    int64_t x1;
+    int64_t y0;
+    int64_t y1;
+} MGLRenderCppBlitScissorRect;
+
+/* P4.5 (item 1069/1141): scaled-blit UV computation (normalized source
+ * rect with the Metal Y-flip, clamped, direction-swapped per the forward
+ * flags).  Pure CPU, shared by both gates. */
+int mglRenderCppScaledBlitUVs(
+    uint32_t src_tex_w,
+    uint32_t src_tex_h,
+    double src_min_x,
+    double src_max_x,
+    double src_min_y,
+    double src_max_y,
+    int src_x_forward,
+    int src_y_forward,
+    int dst_x_forward,
+    int dst_y_forward,
+    MGLRenderCppScaledBlitUVs *out);
+
+/* P4.5 (item 1069/1141): scaled-blit destination scissor base — floor/ceil
+ * of the destination rect in Metal Y, clamped to the destination texture.
+ * The caller intersects the GL scissor box on top.  Pure CPU, shared by
+ * both gates. */
+int mglRenderCppBlitScissorRect(
+    double dst_min_x,
+    double dst_max_x,
+    double scaled_dst_metal_y,
+    double dst_h,
+    uint32_t dst_tex_w,
+    uint32_t dst_tex_h,
+    MGLRenderCppBlitScissorRect *out);
+
 typedef struct MGLRenderCppBlitFramebufferPlan_t {
     int src_x_forward;
     int src_y_forward;

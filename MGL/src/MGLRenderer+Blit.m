@@ -2894,28 +2894,21 @@ static id<MTLRenderPipelineState> mglLookupCppAuxRenderPipeline(
             return YES;
         }
 
-        float invSrcW = srcTexW ? (1.0f / (float)srcTexW) : 0.0f;
-        float invSrcH = srcTexH ? (1.0f / (float)srcTexH) : 0.0f;
-        float uvLeft = MAX(0.0f, MIN(1.0f, (float)srcMinX * invSrcW));
-        float uvRight = MAX(0.0f, MIN(1.0f, (float)srcMaxX * invSrcW));
-        float uvTop = MAX(0.0f, MIN(1.0f, (float)((double)srcTexH - srcMaxY) * invSrcH));
-        float uvBottom = MAX(0.0f, MIN(1.0f, (float)((double)srcTexH - srcMinY) * invSrcH));
-        if (srcXForward != dstXForward) {
-            float tmp = uvLeft;
-            uvLeft = uvRight;
-            uvRight = tmp;
-        }
-        if (srcYForward != dstYForward) {
-            float tmp = uvTop;
-            uvTop = uvBottom;
-            uvBottom = tmp;
-        }
+        /* P4.5 (item 1069/1141): 归一化源 UV（Metal Y-flip + 钳制 +
+         * 按方向标志交换）在 C++（mglRenderCppScaledBlitUVs，两门共用）。 */
+        MGLRenderCppScaledBlitUVs uvs = {0};
+        mglRenderCppScaledBlitUVs(
+            (uint32_t)srcTexW, (uint32_t)srcTexH,
+            srcMinX, srcMaxX, srcMinY, srcMaxY,
+            srcXForward ? 1 : 0, srcYForward ? 1 : 0,
+            dstXForward ? 1 : 0, dstYForward ? 1 : 0,
+            &uvs);
         MGLScaledBlitParams params;
         params.uvRect = (vector_float4){
-            uvLeft,
-            uvTop,
-            uvRight,
-            uvBottom
+            uvs.uv_left,
+            uvs.uv_top,
+            uvs.uv_right,
+            uvs.uv_bottom
         };
         params.forceOpaqueAlpha = (drawfbo == NULL && drawtexid == (_drawable ? _drawable.texture : nil)) ? 1.0f : 0.0f;
         params._padding = (vector_float3){0.0f, 0.0f, 0.0f};
@@ -2953,15 +2946,17 @@ static id<MTLRenderPipelineState> mglLookupCppAuxRenderPipeline(
         mglBlitSetRenderSampler(encoder, sampler,
                                 MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT, 0);
 
-        double scaledDstMetalBottom = scaledDstMetalY + dstH;
-        NSInteger scissorX0 = (NSInteger)floor(dstMinX + 0.00001);
-        NSInteger scissorX1 = (NSInteger)ceil(dstMaxX - 0.00001);
-        NSInteger scissorY0 = (NSInteger)floor(scaledDstMetalY + 0.00001);
-        NSInteger scissorY1 = (NSInteger)ceil(scaledDstMetalBottom - 0.00001);
-        scissorX0 = MAX((NSInteger)0, MIN(scissorX0, (NSInteger)dstTexW));
-        scissorX1 = MAX((NSInteger)0, MIN(scissorX1, (NSInteger)dstTexW));
-        scissorY0 = MAX((NSInteger)0, MIN(scissorY0, (NSInteger)dstTexH));
-        scissorY1 = MAX((NSInteger)0, MIN(scissorY1, (NSInteger)dstTexH));
+        /* P4.5 (item 1069/1141): 目标 scissor 基数（floor/ceil + 钳制）
+         * 在 C++（mglRenderCppBlitScissorRect，两门共用；GL scissor 交集
+         * 保持内联）。 */
+        MGLRenderCppBlitScissorRect scissorBase = {0};
+        mglRenderCppBlitScissorRect(
+            dstMinX, dstMaxX, scaledDstMetalY, dstH,
+            (uint32_t)dstTexW, (uint32_t)dstTexH, &scissorBase);
+        NSInteger scissorX0 = (NSInteger)scissorBase.x0;
+        NSInteger scissorX1 = (NSInteger)scissorBase.x1;
+        NSInteger scissorY0 = (NSInteger)scissorBase.y0;
+        NSInteger scissorY1 = (NSInteger)scissorBase.y1;
         if (glm_ctx && glm_ctx->state.caps.scissor_test) {
             NSInteger glScissorX0 = glm_ctx->state.var.scissor_box[0];
             NSInteger glScissorY0 = glm_ctx->state.var.scissor_box[1];
