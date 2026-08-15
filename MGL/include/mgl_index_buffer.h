@@ -55,6 +55,8 @@ int mglRenderCppComputePreparedIndexByteOffset(uint64_t gl_index_type,
                                                uint64_t gl_byte_offset,
                                                uint64_t *out_prepared_offset);
 
+uint64_t mglRenderCppQuadTriangleIndexCount(uint64_t source_vertex_count);
+
 int mglRenderCppComputeIndexByteOffset(uint64_t base_byte_offset,
                                        uint64_t first_element,
                                        uint64_t index_stride,
@@ -132,11 +134,11 @@ static inline bool mglPrimitiveRestartIndexForType(GLMContext ctx,
  * Returns 0 on overflow. */
 static inline NSUInteger mglQuadTriangleIndexCount(NSUInteger sourceIndexCount)
 {
-    NSUInteger quadCount = sourceIndexCount / 4u;
-    if (quadCount > (NSUIntegerMax / 6u)) {
+    uint64_t c = mglRenderCppQuadTriangleIndexCount((uint64_t)sourceIndexCount);
+    if (c > (uint64_t)NSUIntegerMax) {
         return 0u;
     }
-    return quadCount * 6u;
+    return (NSUInteger)c;
 }
 
 /* Computes baseByteOffset + firstElement * indexStride with overflow checks.

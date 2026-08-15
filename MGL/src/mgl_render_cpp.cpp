@@ -4014,6 +4014,15 @@ int mglRenderCppPrimitiveModeHasDrawableSegment(uint64_t gl_mode,
 }
 
 extern "C"
+uint64_t mglRenderCppQuadTriangleIndexCount(uint64_t source_vertex_count) {
+    const uint64_t quad_count = source_vertex_count / 4u;
+    if (quad_count > (uint64_t)(SIZE_MAX / 6u)) {
+        return 0u;
+    }
+    return quad_count * 6u;
+}
+
+extern "C"
 int mglRenderCppScanIndexRangeIgnoringRestart(
     const uint8_t* bytes, uint32_t elem_width, uint32_t count,
     int restart_enabled, uint32_t restart_index,

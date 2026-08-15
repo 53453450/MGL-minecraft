@@ -696,6 +696,11 @@ int mglRenderCppDrawModeProducesPolygons(uint64_t gl_mode);
 int mglRenderCppPrimitiveModeHasDrawableSegment(uint64_t gl_mode,
                                                 uint64_t index_count);
 
+/* P4.5 (item 1141/887): total triangle index count for `source_vertex_count`
+ * vertices arranged as quads (4/quad -> 6 indices).  Matches
+ * mglQuadTriangleIndexCount; returns 0 on overflow. */
+uint64_t mglRenderCppQuadTriangleIndexCount(uint64_t source_vertex_count);
+
 typedef struct MGLRenderCppGeometryGatherResult_t {
     uint32_t *gather;          /* malloc'd raw gather (vertex_ids) */
     uint32_t gather_count;

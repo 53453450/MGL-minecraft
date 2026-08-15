@@ -2505,6 +2505,20 @@ static int verifyGLIndexValueRead(void) {
     return 0;
 }
 
+static int verifyQuadTriangleCount(void) {
+    /* P4.5 (item 1141): quad -> triangle index count arithmetic. */
+    if (mglRenderCppQuadTriangleIndexCount(0) != 0 ||
+        mglRenderCppQuadTriangleIndexCount(4) != 6 ||
+        mglRenderCppQuadTriangleIndexCount(8) != 12 ||
+        mglRenderCppQuadTriangleIndexCount(3) != 0 ||
+        mglRenderCppQuadTriangleIndexCount(1) != 0) {
+        fprintf(stderr, "FAIL: quad tri count\\n");
+        return 1;
+    }
+    printf("QUAD_TRIANGLE_COUNT_OK\\n");
+    return 0;
+}
+
 static int verifyDrawModePredicates(void) {
     /* P4.5 (item 1141): draw-mode classification predicates. */
     if (mglRenderCppDrawModeProducesPolygons(GL_TRIANGLES) != 1 ||
@@ -5190,6 +5204,7 @@ int main(void) {
         if (verifyGLIndexValueRead() != 0) return 1;
         if (verifyVertexAttribBytes() != 0) return 1;
         if (verifyDrawModePredicates() != 0) return 1;
+        if (verifyQuadTriangleCount() != 0) return 1;
         if (verifyMDIScratchOwner() != 0) return 1;
         if (verifyRenderEncoderGetter() != 0) return 1;
         if (verifyCommandBufferGetterAndAdopt() != 0) return 1;
