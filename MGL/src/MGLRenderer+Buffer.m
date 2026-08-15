@@ -2286,23 +2286,21 @@ static BOOL mglBufferShadowUploadRange(const Buffer *ptr,
                                        NSUInteger *outOffset,
                                        NSUInteger *outLength)
 {
-    NSUInteger offset = 0;
-    NSUInteger length = limit;
-
-    if (ptr->gpu_write_target) {
-        if (ptr->written_min < 0 || ptr->written_max <= ptr->written_min) {
-            return NO;
-        }
-        offset = MIN((NSUInteger)ptr->written_min, limit);
-        length = MIN((NSUInteger)ptr->written_max, limit) - offset;
-    }
-
-    if (length == 0) {
+    /* P4.5 (item 1141/887): 影子上传范围数学（gpu_write_target 时按记录的
+     * written_min/max 跨度钳制到 limit，否则整个 limit；空跨度/零长拒绝）
+     * 在 C++（mglRenderCppBufferShadowUploadRange，两门共用）。 */
+    uint64_t offset = 0;
+    uint64_t length = 0;
+    if (mglRenderCppBufferShadowUploadRange(
+            ptr->gpu_write_target ? 1 : 0,
+            (int64_t)ptr->written_min,
+            (int64_t)ptr->written_max,
+            (uint64_t)limit,
+            &offset, &length) != 0) {
         return NO;
     }
-
-    *outOffset = offset;
-    *outLength = length;
+    *outOffset = (NSUInteger)offset;
+    *outLength = (NSUInteger)length;
     return YES;
 }
 

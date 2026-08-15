@@ -535,6 +535,19 @@ int mglRenderCppIntegerReadbackSourceClassify(
     uint32_t pixel_format,
     MGLRenderCppIntegerReadbackSource *out);
 
+/* P4.5 (item 1141/887): shadow-upload range math — for gpu_write_target
+ * buffers, clamps the recorded written_min/written_max span to the limit;
+ * otherwise the whole limit.  Returns 0 with offset/length set, -1 when
+ * there is nothing to upload (no written span / zero length).  Pure range
+ * computation shared by both gates. */
+int mglRenderCppBufferShadowUploadRange(
+    int gpu_write_target,
+    int64_t written_min,
+    int64_t written_max,
+    uint64_t limit,
+    uint64_t *out_offset,
+    uint64_t *out_length);
+
 typedef struct MGLRenderCppPolygonOffsetDecision_t {
     int triangle_fill_mode;      /* 0 = fill, 1 = lines */
     int needs_polygon_mode_repair;

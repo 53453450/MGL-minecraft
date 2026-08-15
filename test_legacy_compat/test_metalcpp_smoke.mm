@@ -2304,6 +2304,40 @@ static int verifyMDIScratchOwner(void) {
     return 0;
 }
 
+static int verifyBufferShadowUploadRange(void) {
+    /* P4.5 (item 1141/887): shadow-upload range math. */
+    uint64_t off = 0, len = 0;
+    /* Not a GPU write target -> whole limit. */
+    if (mglRenderCppBufferShadowUploadRange(0, 0, 0, 4096, &off, &len) != 0 ||
+        off != 0 || len != 4096) {
+        fprintf(stderr, "FAIL: shadow whole\n");
+        return 1;
+    }
+    /* GPU write target, span inside the limit. */
+    if (mglRenderCppBufferShadowUploadRange(1, 128, 512, 4096, &off, &len) != 0 ||
+        off != 128 || len != 384) {
+        fprintf(stderr, "FAIL: shadow span\n");
+        return 1;
+    }
+    /* Span exceeding the limit clamps. */
+    if (mglRenderCppBufferShadowUploadRange(1, 128, 8192, 4096, &off, &len) != 0 ||
+        off != 128 || len != 3968) {
+        fprintf(stderr, "FAIL: shadow clamp\n");
+        return 1;
+    }
+    /* Empty / invalid spans reject. */
+    if (mglRenderCppBufferShadowUploadRange(1, -1, 512, 4096, &off, &len) != -1 ||
+        mglRenderCppBufferShadowUploadRange(1, 512, 512, 4096, &off, &len) != -1 ||
+        mglRenderCppBufferShadowUploadRange(1, 128, 64, 4096, &off, &len) != -1 ||
+        mglRenderCppBufferShadowUploadRange(0, 0, 0, 0, &off, &len) != -1 ||
+        mglRenderCppBufferShadowUploadRange(0, 0, 0, 4096, NULL, NULL) != -1) {
+        fprintf(stderr, "FAIL: shadow reject\n");
+        return 1;
+    }
+    printf("BUFFER_SHADOW_UPLOAD_RANGE_OK\n");
+    return 0;
+}
+
 static int verifyPolygonOffsetAndPrimCount(void) {
     /* P4.5 (item 1141/887): polygon-offset decision + prim vertex counts. */
     MGLRenderCppPolygonOffsetDecision d = {0};
@@ -4618,6 +4652,7 @@ int main(void) {
         if (verifyBlitFramebufferPlan() != 0) return 1;
         if (verifyScaledBlitUVsAndScissor() != 0) return 1;
         if (verifyPolygonOffsetAndPrimCount() != 0) return 1;
+        if (verifyBufferShadowUploadRange() != 0) return 1;
         if (verifyMDIScratchOwner() != 0) return 1;
         if (verifyRenderEncoderGetter() != 0) return 1;
         if (verifyCommandBufferGetterAndAdopt() != 0) return 1;

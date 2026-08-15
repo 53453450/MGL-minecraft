@@ -3901,6 +3901,31 @@ int mglRenderCppGetTexImagePlan(
 }
 
 extern "C"
+int mglRenderCppBufferShadowUploadRange(
+    int gpu_write_target, int64_t written_min, int64_t written_max,
+    uint64_t limit, uint64_t* out_offset, uint64_t* out_length) {
+    if (!out_offset || !out_length) return -1;
+    uint64_t offset = 0;
+    uint64_t length = limit;
+    if (gpu_write_target) {
+        if (written_min < 0 || written_max <= written_min) {
+            return -1;
+        }
+        const uint64_t min = (uint64_t)written_min;
+        const uint64_t max = (uint64_t)written_max;
+        offset = min < limit ? min : limit;
+        const uint64_t clampedMax = max < limit ? max : limit;
+        length = clampedMax - offset;
+    }
+    if (length == 0) {
+        return -1;
+    }
+    *out_offset = offset;
+    *out_length = length;
+    return 0;
+}
+
+extern "C"
 int mglRenderCppPolygonOffsetDecision(
     uint32_t mode, int has_ctx, int produces_polygons,
     uint32_t polygon_mode,
