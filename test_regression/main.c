@@ -55,7 +55,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 67
+#define MAX_TESTS 68
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -381,6 +381,26 @@ static GLuint link_program_with_geometry(const char *vs_src,
         char log[2048];
         glGetProgramInfoLog(program, sizeof(log), NULL, log);
         fprintf(stderr, "  [geometry program link FAIL] %s\n", log);
+        glDeleteProgram(program);
+        return 0;
+    }
+    return program;
+}
+
+static GLuint link_compute_program(const char *cs_src)
+{
+    GLuint cs = compile_shader(GL_COMPUTE_SHADER, cs_src);
+    if (!cs) return 0;
+    GLuint program = glCreateProgram();
+    glAttachShader(program, cs);
+    glLinkProgram(program);
+    glDeleteShader(cs);
+    GLint ok = 0;
+    glGetProgramiv(program, GL_LINK_STATUS, &ok);
+    if (!ok) {
+        char log[2048];
+        glGetProgramInfoLog(program, sizeof(log), NULL, log);
+        fprintf(stderr, "  [compute program link FAIL] %s\n", log);
         glDeleteProgram(program);
         return 0;
     }
@@ -5778,6 +5798,101 @@ cleanup:
     return result;
 }
 
+/* P4.5 compute dispatch plan: user glDispatchCompute through the C++ value-
+ * state plan (gate-on) or the per-dims ObjC path (gate-off).  The legacy
+ * frontend does not parse layout(local_size_*), so Program::local_workgroup_size
+ * is always 0 and both paths resolve it to (1,1,1) — one thread per group.
+ * Pass 1 dispatches 8 groups (8 invocations, data[i] = i*2+1); pass 2
+ * dispatches 4 groups (4 invocations, data[i] = i+100).  SSBO readback
+ * verifies both, and gate-on/gate-off must produce identical results. */
+static int test_compute_dispatch_ssbo(unsigned char *pixels,
+                                      const char *out_path)
+{
+    (void)out_path;
+    memset(pixels, 0, REG_W * REG_H * 4);
+    int result = 1;
+    GLuint ssbo = 0u, program = 0u;
+    int data[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+
+    static const char *cs_odd =
+        "#version 430 core\n"
+        "layout(std430, binding = 0) buffer Out { int data[8]; };\n"
+        "void main() {\n"
+        "    uint i = gl_GlobalInvocationID.x;\n"
+        "    if (i < 8u) data[i] = int(i) * 2 + 1;\n"
+        "}\n";
+    static const char *cs_shift =
+        "#version 430 core\n"
+        "layout(std430, binding = 0) buffer Out { int data[8]; };\n"
+        "void main() {\n"
+        "    uint i = gl_GlobalInvocationID.x;\n"
+        "    if (i < 8u) data[i] = int(i) + 100;\n"
+        "}\n";
+
+    glGenBuffers(1, &ssbo);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(data), data,
+                 GL_DYNAMIC_COPY);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
+
+    /* Pass 1: 8 groups x 1 thread = 8 invocations, data[i] = i*2+1. */
+    program = link_compute_program(cs_odd);
+    if (!program) {
+        fprintf(stderr, "compute_dispatch_ssbo: pass 1 link failed\n");
+        goto cleanup;
+    }
+    glUseProgram(program);
+    glDispatchCompute(8, 1, 1);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    glFinish();
+    memset(data, 0, sizeof(data));
+    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(data), data);
+    for (int i = 0; i < 8; i++) {
+        if (data[i] != i * 2 + 1) {
+            fprintf(stderr,
+                    "compute_dispatch_ssbo: pass 1 data[%d]=%d want %d\n",
+                    i, data[i], i * 2 + 1);
+            goto cleanup;
+        }
+    }
+    glDeleteProgram(program);
+    program = 0;
+
+    /* Pass 2: 4 groups x 1 thread = 4 invocations, data[i] = i+100. */
+    program = link_compute_program(cs_shift);
+    if (!program) {
+        fprintf(stderr, "compute_dispatch_ssbo: pass 2 link failed\n");
+        goto cleanup;
+    }
+    glUseProgram(program);
+    memset(data, 0, sizeof(data));
+    glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(data), data,
+                 GL_DYNAMIC_COPY);
+    glDispatchCompute(4, 1, 1);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    glFinish();
+    memset(data, 0, sizeof(data));
+    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(data), data);
+    for (int i = 0; i < 4; i++) {
+        if (data[i] != i + 100) {
+            fprintf(stderr,
+                    "compute_dispatch_ssbo: pass 2 data[%d]=%d want %d\n",
+                    i, data[i], i + 100);
+            goto cleanup;
+        }
+    }
+    if (glGetError() != GL_NO_ERROR) {
+        fprintf(stderr, "compute_dispatch_ssbo: GL operation failed\n");
+        goto cleanup;
+    }
+    result = 0;
+
+cleanup:
+    if (program) glDeleteProgram(program);
+    if (ssbo) glDeleteBuffers(1, &ssbo);
+    return result;
+}
+
 static int test_air_geometry_instancing(unsigned char *pixels,
                                         const char *out_path)
 {
@@ -10277,6 +10392,7 @@ static const TestCase TESTS[] = {
                     test_air_geometry_cull_distance),
     SELF_CHECK_TEST("air_geometry_ssbo_visibility",
                     test_air_geometry_ssbo_visibility),
+    SELF_CHECK_TEST("compute_dispatch_ssbo", test_compute_dispatch_ssbo),
     SELF_CHECK_TEST("air_pipeline_safe_fallback",
                     test_air_pipeline_safe_fallback),
     GOLDEN_TEST("texture_binding_switch", test_texture_binding_switch),

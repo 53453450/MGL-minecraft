@@ -817,23 +817,37 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
         return;
     }
 
-    GLuint local_x = ptr->local_workgroup_size.x ? ptr->local_workgroup_size.x : 1u;
-    GLuint local_y = ptr->local_workgroup_size.y ? ptr->local_workgroup_size.y : 1u;
-    GLuint local_z = ptr->local_workgroup_size.z ? ptr->local_workgroup_size.z : 1u;
-
-    if (ptr->local_workgroup_size.x || ptr->local_workgroup_size.y || ptr->local_workgroup_size.z)
-    {
+    /* P4.5: dispatch 参数 value-state plan —— ObjC 只传 groups + 未解析的
+     * local size（0 由 C++ 解析为 1，与 `x ? x : 1` 默认一致），gate-on
+     * 一次 C ABI 调用在 C++ 内完成 dispatchThreadgroups 编码；gate-off 走
+     * 原逐条 ObjC 路径作 A/B 对照。 */
+    if (mglComputeUsesMetalCpp()) {
+        MGLRenderCppComputePlan computePlan = {
+            .dispatch_kind = MGL_RENDER_CPP_COMPUTE_DISPATCH_DIRECT,
+            .groups_x = groups_x,
+            .groups_y = groups_y,
+            .groups_z = groups_z,
+            .local_x = ptr->local_workgroup_size.x,
+            .local_y = ptr->local_workgroup_size.y,
+            .local_z = ptr->local_workgroup_size.z,
+            .indirect_buffer = NULL,
+            .indirect_offset = 0,
+        };
+        if (mglRenderCppDispatchComputePlan(
+                (__bridge void *)computeCommandEncoder, &computePlan,
+                NULL, 0) != 0) {
+            NSLog(@"MGL COMPUTE ERROR: C++ dispatch plan encode failed");
+            mglComputeEndEncoder(computeCommandEncoder);
+            [self clearStageBindingCopyBacks:&copyBacks];
+            mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+            return;
+        }
+    } else {
         numThreadgroups = MTLSizeMake(groups_x, groups_y, groups_z);
-        threadsPerThreadgroup = MTLSizeMake(local_x, local_y, local_z);
-
-        mglComputeDispatch(computeCommandEncoder, numThreadgroups,
-                           threadsPerThreadgroup);
-    }
-    else
-    {
-        numThreadgroups = MTLSizeMake(groups_x, groups_y, groups_z);
-        threadsPerThreadgroup = MTLSizeMake(1, 1, 1);
-
+        threadsPerThreadgroup = MTLSizeMake(
+            ptr->local_workgroup_size.x ? ptr->local_workgroup_size.x : 1u,
+            ptr->local_workgroup_size.y ? ptr->local_workgroup_size.y : 1u,
+            ptr->local_workgroup_size.z ? ptr->local_workgroup_size.z : 1u);
         mglComputeDispatch(computeCommandEncoder, numThreadgroups,
                            threadsPerThreadgroup);
     }
@@ -977,13 +991,38 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
         return;
     }
 
-    GLuint local_x = ptr->local_workgroup_size.x ? ptr->local_workgroup_size.x : 1u;
-    GLuint local_y = ptr->local_workgroup_size.y ? ptr->local_workgroup_size.y : 1u;
-    GLuint local_z = ptr->local_workgroup_size.z ? ptr->local_workgroup_size.z : 1u;
-    MTLSize threadsPerThreadgroup = MTLSizeMake(local_x, local_y, local_z);
-
-    mglComputeDispatchIndirect(computeCommandEncoder, indirectBuffer,
-                               indirectOffset, threadsPerThreadgroup);
+    /* P4.5: 与 mtlDispatchCompute 同构的 value-state plan；INDIRECT 携带
+     * indirect buffer + offset，local size 0 由 C++ 解析为 1。gate-off 走
+     * 原逐条 ObjC 路径作 A/B 对照。 */
+    if (mglComputeUsesMetalCpp()) {
+        MGLRenderCppComputePlan computePlan = {
+            .dispatch_kind = MGL_RENDER_CPP_COMPUTE_DISPATCH_INDIRECT,
+            .groups_x = 0,
+            .groups_y = 0,
+            .groups_z = 0,
+            .local_x = ptr->local_workgroup_size.x,
+            .local_y = ptr->local_workgroup_size.y,
+            .local_z = ptr->local_workgroup_size.z,
+            .indirect_buffer = (__bridge void *)indirectBuffer,
+            .indirect_offset = indirectOffset,
+        };
+        if (mglRenderCppDispatchComputePlan(
+                (__bridge void *)computeCommandEncoder, &computePlan,
+                NULL, 0) != 0) {
+            NSLog(@"MGL COMPUTE ERROR: C++ indirect dispatch plan encode failed");
+            mglComputeEndEncoder(computeCommandEncoder);
+            [self clearStageBindingCopyBacks:&copyBacks];
+            mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+            return;
+        }
+    } else {
+        MTLSize threadsPerThreadgroup = MTLSizeMake(
+            ptr->local_workgroup_size.x ? ptr->local_workgroup_size.x : 1u,
+            ptr->local_workgroup_size.y ? ptr->local_workgroup_size.y : 1u,
+            ptr->local_workgroup_size.z ? ptr->local_workgroup_size.z : 1u);
+        mglComputeDispatchIndirect(computeCommandEncoder, indirectBuffer,
+                                   indirectOffset, threadsPerThreadgroup);
+    }
 
     mglComputeEndEncoder(computeCommandEncoder);
     /* See mtlDispatchCompute — the empty-CB commit skip must not drop this

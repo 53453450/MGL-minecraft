@@ -787,6 +787,32 @@ int mglRenderCppDispatchComputeIndirect(void *compute_encoder,
                                         uint32_t threads_y,
                                         uint32_t threads_z);
 
+/* P4.5 compute 首切片：dispatch 参数 value-state plan。ObjC 只组装纯值
+ * （groups + 未解析的 local size），C++ 内把 local size 0 解析为 1（与
+ * mtlDispatchCompute 的 `x ? x : 1` 默认一致）并一次完成
+ * dispatchThreadgroups / dispatchThreadgroupsWithIndirectBuffer 编码。
+ * 为 item 1138 的「ObjC 只传 MGLRenderCppComputePlan value-state」定型。 */
+#define MGL_RENDER_CPP_COMPUTE_DISPATCH_DIRECT   0
+#define MGL_RENDER_CPP_COMPUTE_DISPATCH_INDIRECT 1
+
+typedef struct MGLRenderCppComputePlan_t {
+    uint32_t dispatch_kind;   /* DIRECT / INDIRECT */
+    uint32_t groups_x;
+    uint32_t groups_y;
+    uint32_t groups_z;
+    uint32_t local_x;         /* 0 → C++ 解析为 1 */
+    uint32_t local_y;
+    uint32_t local_z;
+    void *indirect_buffer;    /* INDIRECT: borrowed MTL::Buffer* */
+    uint64_t indirect_offset; /* INDIRECT: 参数块字节偏移 */
+} MGLRenderCppComputePlan;
+
+int mglRenderCppDispatchComputePlan(
+    void *compute_encoder,
+    const MGLRenderCppComputePlan *plan,
+    char *err,
+    size_t errcap);
+
 /* P4.3e: GS/TES compute dispatch 编排的固定序列（建 encoder → pipeline →
  * ABI 槽位 buffer/bytes）一次交给 C++；GL 资源绑定（stage buffers/textures）
  * 在 begin/end 之间由 ObjC 完成（只经 C++ facade）。与逐条

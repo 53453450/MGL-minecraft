@@ -1795,6 +1795,44 @@ static int verifyComputeSetters(id<MTLDevice> device) {
         return 1;
     }
     printf("COMPUTE_SETTERS_OK\n");
+
+    /* P4.5: compute dispatch plan argument validation.  Encoding a real
+     * dispatch requires a compute pipeline (AGX crashes at encode without
+     * one), so the success-path encode is exercised by test_regression's
+     * compute_dispatch_ssbo on both gates; here only the rejection paths are
+     * asserted (all fail before touching the encoder). */
+    {
+        MGLRenderCppComputePlan directPlan = {
+            .dispatch_kind = MGL_RENDER_CPP_COMPUTE_DISPATCH_DIRECT,
+            .groups_x = 2, .groups_y = 1, .groups_z = 1,
+            .local_x = 4, .local_y = 1, .local_z = 1,
+            .indirect_buffer = NULL, .indirect_offset = 0,
+        };
+        MGLRenderCppComputePlan indirectPlan = {
+            .dispatch_kind = MGL_RENDER_CPP_COMPUTE_DISPATCH_INDIRECT,
+            .groups_x = 0, .groups_y = 0, .groups_z = 0,
+            .local_x = 8, .local_y = 1, .local_z = 1,
+            .indirect_buffer = (__bridge void *)buffer,
+            .indirect_offset = 0,
+        };
+        MGLRenderCppComputePlan badKind = directPlan;
+        badKind.dispatch_kind = 0xdead;
+        MGLRenderCppComputePlan badIndirect = indirectPlan;
+        badIndirect.indirect_buffer = NULL;
+        char planErr[64] = {0};
+        if (mglRenderCppDispatchComputePlan(
+                NULL, &directPlan, planErr, sizeof(planErr)) != -1 ||
+            mglRenderCppDispatchComputePlan(
+                NULL, NULL, planErr, sizeof(planErr)) != -1 ||
+            mglRenderCppDispatchComputePlan(
+                NULL, &badKind, planErr, sizeof(planErr)) != -1 ||
+            mglRenderCppDispatchComputePlan(
+                NULL, &badIndirect, planErr, sizeof(planErr)) != -1) {
+            fprintf(stderr, "FAIL: compute dispatch plan rejection\n");
+            return 1;
+        }
+        printf("COMPUTE_DISPATCH_PLAN_ERR_OK\n");
+    }
     return 0;
 }
 
@@ -2473,7 +2511,7 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
         overflow.vertex_op_count =
             MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_OPS + 1;
         MGLRenderCppBindingSnapshot nullBytes = snap;
-        nullBytes.fragment_ops[2].bytes = NULL;
+        nullBytes.fragment_ops[1].bytes = NULL;
         MGLRenderCppBindingSnapshot badKind = snap;
         badKind.vertex_ops[0].kind = 0xdead;
         MGLRenderCppBindingSnapshot nullClear = snap;
@@ -2490,7 +2528,8 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
                 stateEncoder, &badKind, snapError, sizeof(snapError)) != -1 ||
             mglRenderCppEncodeBindingSnapshot(
                 stateEncoder, &nullClear, snapError, sizeof(snapError)) != 0) {
-            fprintf(stderr, "FAIL: binding snapshot encode\n");
+            fprintf(stderr, "FAIL: binding snapshot encode err='%s'\n",
+                    snapError);
             mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
             mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
             return 1;

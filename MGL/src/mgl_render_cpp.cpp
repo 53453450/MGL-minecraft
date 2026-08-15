@@ -2985,12 +2985,12 @@ int mglRenderCppTextureGetBytes(void* texture,
 int mglRenderCppTextureUploadRoute(uint32_t texture_type,
                                    uint32_t storage_mode,
                                    int has_agx_3d_copy_bug) {
-    /* MTLTextureType ABI 数值（Apple 稳定）：Type1D=0，Type1DArray=3，
-     * Type3D=5。MTLStorageMode：Private=0，Shared=2。 */
+    /* MTLTextureType ABI 数值（Apple 稳定）：Type1D=0，Type1DArray=1，
+     * Type3D=7。MTLStorageMode：Shared=0，Managed=1，Private=2。 */
     const uint32_t kMTLTextureType1D = 0u;
-    const uint32_t kMTLTextureType1DArray = 3u;
-    const uint32_t kMTLTextureType3D = 5u;
-    const uint32_t kMTLStorageModePrivate = 0u;
+    const uint32_t kMTLTextureType1DArray = 1u;
+    const uint32_t kMTLTextureType3D = 7u;
+    const uint32_t kMTLStorageModePrivate = 2u;
 
     /* 1D/1DArray 且非 Private：低频率路径，replaceRegion 安全。 */
     if ((texture_type == kMTLTextureType1D ||
@@ -5229,6 +5229,49 @@ int mglRenderCppDispatchComputeIndirect(void* compute_encoder,
                                   static_cast<NS::UInteger>(indirect_offset),
                                   threads);
     return 0;
+}
+
+/* P4.5: dispatch 参数 value-state plan。local size 0 解析为 1（与
+ * mtlDispatchCompute 的 `x ? x : 1` 默认一致），一次 C ABI 调用完成
+ * dispatchThreadgroups / dispatchThreadgroupsWithIndirectBuffer 编码。 */
+int mglRenderCppDispatchComputePlan(
+    void* compute_encoder,
+    const MGLRenderCppComputePlan* plan,
+    char* err,
+    size_t errcap) {
+    if (err && errcap) err[0] = '\0';
+    if (!compute_encoder || !plan) {
+        if (err && errcap) snprintf(err, errcap, "bad args");
+        return -1;
+    }
+    MTL::ComputeCommandEncoder* encoder =
+        static_cast<MTL::ComputeCommandEncoder*>(compute_encoder);
+    const uint32_t local_x = plan->local_x ? plan->local_x : 1u;
+    const uint32_t local_y = plan->local_y ? plan->local_y : 1u;
+    const uint32_t local_z = plan->local_z ? plan->local_z : 1u;
+    MTL::Size threads = MTL::Size(local_x, local_y, local_z);
+
+    if (plan->dispatch_kind == MGL_RENDER_CPP_COMPUTE_DISPATCH_DIRECT) {
+        encoder->dispatchThreadgroups(
+            MTL::Size(plan->groups_x, plan->groups_y, plan->groups_z),
+            threads);
+        return 0;
+    }
+    if (plan->dispatch_kind == MGL_RENDER_CPP_COMPUTE_DISPATCH_INDIRECT) {
+        MTL::Buffer* buffer = static_cast<MTL::Buffer*>(plan->indirect_buffer);
+        if (!buffer) {
+            if (err && errcap) {
+                snprintf(err, errcap, "null indirect buffer");
+            }
+            return -1;
+        }
+        encoder->dispatchThreadgroups(
+            buffer, static_cast<NS::UInteger>(plan->indirect_offset), threads);
+        return 0;
+    }
+    if (err && errcap) snprintf(err, errcap, "bad dispatch kind %u",
+                                (unsigned)plan->dispatch_kind);
+    return -1;
 }
 
 int mglRenderCppDispatchComputeThreads(void* compute_encoder,
