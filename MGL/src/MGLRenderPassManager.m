@@ -10,21 +10,6 @@ static BOOL mglRenderPassManagerUsesMetalCpp(void)
            mglRenderCppGetDevice() != NULL;
 }
 
-static id<MTLBuffer> mglRenderPassManagerCreateBuffer(
-    id<MTLDevice> device,
-    NSUInteger length,
-    MTLResourceOptions options)
-{
-    if (mglRenderPassManagerUsesMetalCpp()) {
-        void *buffer = NULL;
-        if (mglRenderCppCreateBuffer(length, options, NULL, &buffer) == 0 &&
-            buffer) {
-            return (__bridge_transfer id<MTLBuffer>)buffer;
-        }
-    }
-    return [device newBufferWithLength:length options:options];
-}
-
 static void mglRenderPassManagerSyncIdentityView(
     MGLCommandState *commandState,
     const MGLRenderCppRenderPassIdentityState *identity)
@@ -351,75 +336,30 @@ static void mglRenderPassManagerStoreIdentity(
         return nil;
     }
 
-    if (mglRenderPassManagerUsesMetalCpp()) {
-        if (!_state.mdiArgsScratchOwner &&
-            mglRenderCppCreateMDIScratchOwner(
-                &_state.mdiArgsScratchOwner) != 0) {
-            return nil;
-        }
-        void *buffer = NULL;
-        uint64_t offset = 0;
-        uint64_t capacity = 0;
-        if (mglRenderCppAllocateMDIScratch(
-                _state.mdiArgsScratchOwner, (uint64_t)length, 256u,
-                &buffer, &offset, &capacity) != 0 || !buffer ||
-            offset > NSUIntegerMax || capacity > NSUIntegerMax) {
-            return nil;
-        }
-        _state.mdiArgsScratchBuffer = (__bridge id<MTLBuffer>)buffer;
-        _state.mdiArgsScratchOffset = (NSUInteger)(offset + length);
-        _state.mdiArgsScratchCapacity = (NSUInteger)capacity;
-        if (offsetOut) *offsetOut = (NSUInteger)offset;
-        return _state.mdiArgsScratchBuffer;
-    }
-
-    const NSUInteger alignment = 256u;
-    NSUInteger alignedOffset =
-        (_state.mdiArgsScratchOffset + (alignment - 1u)) & ~(alignment - 1u);
-    if (alignedOffset < _state.mdiArgsScratchOffset ||
-        length > NSUIntegerMax - alignedOffset) {
+    /* P4.5 (item 1155): both gates share the C++ MDIScratchOwner — the ObjC
+     * gate-off allocator and the mirror fields are gone.  The returned buffer
+     * is a borrowed reference (the owner keeps it alive and may swap it on
+     * growth, same lifetime contract as the old mirror). */
+    if (!_state.mdiArgsScratchOwner &&
+        mglRenderCppCreateMDIScratchOwner(&_state.mdiArgsScratchOwner) != 0) {
         return nil;
     }
-
-    NSUInteger requiredBytes = alignedOffset + length;
-    if (!_state.mdiArgsScratchBuffer || requiredBytes > _state.mdiArgsScratchCapacity) {
-        NSUInteger newCapacity = _state.mdiArgsScratchCapacity
-            ? _state.mdiArgsScratchCapacity * 2u
-            : 64u * 1024u;
-        if (newCapacity < length) {
-            newCapacity = length;
-        }
-        if (newCapacity < requiredBytes) {
-            newCapacity = requiredBytes;
-        }
-        if (newCapacity < _state.mdiArgsScratchCapacity) {
-            return nil;
-        }
-
-        id<MTLBuffer> newBuffer = mglRenderPassManagerCreateBuffer(
-            device, newCapacity, MTLResourceStorageModeShared);
-        if (!newBuffer) {
-            return nil;
-        }
-        _state.mdiArgsScratchBuffer = newBuffer;
-        _state.mdiArgsScratchCapacity = newCapacity;
-        alignedOffset = 0;
-        requiredBytes = length;
+    void *buffer = NULL;
+    uint64_t offset = 0;
+    uint64_t capacity = 0;
+    if (mglRenderCppAllocateMDIScratch(
+            _state.mdiArgsScratchOwner, (uint64_t)length, 256u,
+            &buffer, &offset, &capacity) != 0 || !buffer ||
+        offset > NSUIntegerMax) {
+        return nil;
     }
-
-    _state.mdiArgsScratchOffset = requiredBytes;
-    if (offsetOut) {
-        *offsetOut = alignedOffset;
-    }
-    return _state.mdiArgsScratchBuffer;
+    if (offsetOut) *offsetOut = (NSUInteger)offset;
+    return (__bridge id<MTLBuffer>)buffer;
 }
 
 - (void)resetMDIScratch
 {
     mglRenderCppDestroyMDIScratchOwner(&_state.mdiArgsScratchOwner);
-    _state.mdiArgsScratchBuffer = nil;
-    _state.mdiArgsScratchCapacity = 0;
-    _state.mdiArgsScratchOffset = 0;
 }
 
 - (void)installNewRenderPassDescriptor

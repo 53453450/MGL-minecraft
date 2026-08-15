@@ -2126,6 +2126,56 @@ bool mglTextureNeedsChannelExpansion(
 }
 }
 
+static int verifyMDIScratchOwner(void) {
+    /* P4.5 (item 1155): MDI scratch allocator — the ObjC gate-off allocator
+     * now delegates to the same C++ owner. */
+    void *owner = NULL;
+    if (mglRenderCppCreateMDIScratchOwner(&owner) != 0 || !owner) {
+        fprintf(stderr, "FAIL: mdi owner create\n");
+        return 1;
+    }
+    if (mglRenderCppAllocateMDIScratch(NULL, 16, 256, NULL, NULL, NULL) != -1 ||
+        mglRenderCppAllocateMDIScratch(owner, 0, 256, NULL, NULL, NULL) != -1 ||
+        mglRenderCppAllocateMDIScratch(owner, 16, 3, NULL, NULL, NULL) != -1) {
+        fprintf(stderr, "FAIL: mdi bad args\n");
+        return 1;
+    }
+    void *buffer = NULL;
+    uint64_t offset = 0, capacity = 0;
+    if (mglRenderCppAllocateMDIScratch(
+            owner, 128, 256, &buffer, &offset, &capacity) != 0 ||
+        !buffer || offset != 0 || capacity < 65536) {
+        fprintf(stderr, "FAIL: mdi first alloc (off=%llu cap=%llu)\n",
+                (unsigned long long)offset, (unsigned long long)capacity);
+        return 1;
+    }
+    void *sameBuffer = NULL;
+    uint64_t offset2 = 0;
+    if (mglRenderCppAllocateMDIScratch(
+            owner, 128, 256, &sameBuffer, &offset2, &capacity) != 0 ||
+        sameBuffer != buffer || offset2 != 256) {
+        fprintf(stderr, "FAIL: mdi second alloc (off=%llu)\n",
+                (unsigned long long)offset2);
+        return 1;
+    }
+    void *grownBuffer = NULL;
+    uint64_t offset3 = 0;
+    if (mglRenderCppAllocateMDIScratch(
+            owner, 200000, 256, &grownBuffer, &offset3, &capacity) != 0 ||
+        !grownBuffer || offset3 != 0 || capacity < 200000) {
+        fprintf(stderr, "FAIL: mdi grow (off=%llu cap=%llu)\n",
+                (unsigned long long)offset3, (unsigned long long)capacity);
+        return 1;
+    }
+    mglRenderCppDestroyMDIScratchOwner(&owner);
+    if (owner != NULL) {
+        fprintf(stderr, "FAIL: mdi owner not cleared\n");
+        return 1;
+    }
+    printf("MDI_SCRATCH_OK\n");
+    return 0;
+}
+
 static int verifyCopyBackEncode(void) {
     /* P4.5 (item 1138): stage-binding copy-back validation / encode. */
     /* Validation only (NULL encoder). */
@@ -3654,6 +3704,7 @@ int main(void) {
         if (verifyPendingEventOwner() != 0) return 1;
         if (verifyLevelUploadPrep() != 0) return 1;
         if (verifyCopyBackEncode() != 0) return 1;
+        if (verifyMDIScratchOwner() != 0) return 1;
         if (verifyRenderPassIdentityOwner() != 0) return 1;
         if (verifyRenderPassStateOwner(device) != 0) return 1;
         if (verifyTextureStagingOwner() != 0) return 1;

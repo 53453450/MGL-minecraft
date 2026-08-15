@@ -22,9 +22,6 @@ typedef struct MGLCommandState_t {
     void *_Nullable detachedCommandBufferSubmission;
     id<MTLCommandBuffer> __strong _Nullable currentCommandBuffer;
     void *_Nullable mdiArgsScratchOwner;
-    id<MTLBuffer> __strong _Nullable mdiArgsScratchBuffer;
-    NSUInteger mdiArgsScratchCapacity;
-    NSUInteger mdiArgsScratchOffset;
     void *_Nullable currentRenderEncoderOwner;
     id<MTLRenderCommandEncoder> __strong _Nullable currentRenderEncoder;
     id<MTLTexture> __strong _Nullable fallbackRenderTargetTexture;
