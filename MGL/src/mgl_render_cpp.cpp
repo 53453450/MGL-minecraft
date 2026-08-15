@@ -5227,6 +5227,14 @@ int mglRenderCppEncodeComputeBindingSnapshot(
                 return -1;
             }
             encoder->setBytes(op->bytes, op->length, op->index);
+        } else if (op->kind == 2) {
+            /* kind 2: set texture; NULL clears the slot. */
+            encoder->setTexture(static_cast<MTL::Texture*>(op->buffer),
+                                op->index);
+        } else if (op->kind == 3) {
+            /* kind 3: set sampler state; NULL clears the slot. */
+            encoder->setSamplerState(
+                static_cast<MTL::SamplerState*>(op->buffer), op->index);
         } else {
             if (err && errcap) {
                 snprintf(err, errcap, "bad compute op kind %u", op->kind);

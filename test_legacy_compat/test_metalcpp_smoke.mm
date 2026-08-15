@@ -1790,6 +1790,14 @@ static int verifyComputeSetters(id<MTLDevice> device) {
             (MGLRenderCppComputeBindingOp){/* kind */ 1u, /* index */ 2,
                 /* offset */ 0, /* buffer */ NULL,
                 /* bytes */ "ABCD", /* length */ 4u};
+        cbsnap.ops[cbsnap.op_count++] =
+            (MGLRenderCppComputeBindingOp){/* kind */ 2u, /* index */ 3,
+                /* offset */ 0, /* buffer */ (__bridge void *)texture,
+                /* bytes */ NULL, /* length */ 0u};
+        cbsnap.ops[cbsnap.op_count++] =
+            (MGLRenderCppComputeBindingOp){/* kind */ 3u, /* index */ 4,
+                /* offset */ 0, /* buffer */ (__bridge void *)sampler,
+                /* bytes */ NULL, /* length */ 0u};
         MGLRenderCppComputeBindingSnapshot cboverflow = cbsnap;
         cboverflow.op_count =
             MGL_RENDER_CPP_COMPUTE_BINDING_SNAPSHOT_MAX_OPS + 1;
@@ -1797,9 +1805,13 @@ static int verifyComputeSetters(id<MTLDevice> device) {
         cbnullBytes.ops[2].bytes = NULL;
         MGLRenderCppComputeBindingSnapshot cbbadKind = cbsnap;
         cbbadKind.ops[0].kind = 0xdead;
+        MGLRenderCppComputeBindingSnapshot cbnullTex = cbsnap;
+        cbnullTex.ops[3].buffer = NULL; /* NULL texture = slot clear */
         char cbError[128] = {0};
         if (mglRenderCppEncodeComputeBindingSnapshot(
                 encoderPtr, &cbsnap, cbError, sizeof(cbError)) != 0 ||
+            mglRenderCppEncodeComputeBindingSnapshot(
+                encoderPtr, &cbnullTex, cbError, sizeof(cbError)) != 0 ||
             mglRenderCppEncodeComputeBindingSnapshot(
                 NULL, &cbsnap, NULL, 0) != -1 ||
             mglRenderCppEncodeComputeBindingSnapshot(

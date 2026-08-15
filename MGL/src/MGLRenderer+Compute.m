@@ -428,6 +428,73 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
         return false;
     }
 
+    /* P4.5（round 36）：compute 纹理/sampler 绑定并入同一 binding snapshot
+     * （kind 2 = texture / 3 = sampler），gate-on 收集后一次重放；gate-off
+     * 直接 mglComputeSetTexture/mglComputeSetSampler（A/B 对照）。临时对象
+     * （level view / fallback sampler，gate-on __bridge_transfer 局部）经
+     * ctexTemporaries 强持有至末尾重放后才释放——禁止悬垂进延迟重放。 */
+    const BOOL useComputeTextureSnapshot = mglComputeUsesMetalCpp();
+    MGLRenderCppComputeBindingSnapshot ctexSnapshot = {0};
+    NSMutableArray *ctexTemporaries = nil;
+#define MGL_CTEX_RETAIN_TEMP(obj)                                               \
+    do {                                                                        \
+        if (useComputeTextureSnapshot && (obj)) {                               \
+            if (!ctexTemporaries) ctexTemporaries = [NSMutableArray array];     \
+            [ctexTemporaries addObject:(obj)];                                  \
+        }                                                                       \
+    } while (0)
+
+#define MGL_CTEX_FLUSH_SNAPSHOT()                                               \
+    do {                                                                        \
+        if (useComputeTextureSnapshot && ctexSnapshot.op_count > 0) {           \
+            mglRenderCppEncodeComputeBindingSnapshot(                           \
+                (__bridge void *)computeCommandEncoder, &ctexSnapshot,          \
+                NULL, 0);                                                       \
+            ctexSnapshot = (MGLRenderCppComputeBindingSnapshot){0};             \
+        }                                                                       \
+    } while (0)
+
+#define MGL_CTEX_EMIT_TEXTURE(slot, texPtr)                                     \
+    do {                                                                        \
+        if (useComputeTextureSnapshot) {                                        \
+            if (ctexSnapshot.op_count >=                                        \
+                MGL_RENDER_CPP_COMPUTE_BINDING_SNAPSHOT_MAX_OPS) {              \
+                MGL_CTEX_FLUSH_SNAPSHOT();                                      \
+            }                                                                   \
+            ctexSnapshot.ops[ctexSnapshot.op_count++] =                         \
+                (MGLRenderCppComputeBindingOp){/* kind */ 2u,                   \
+                                               /* index */ (uint32_t)(slot),    \
+                                               /* offset */ 0,                  \
+                                               /* buffer */ (void *)(texPtr),   \
+                                               /* bytes */ NULL,                \
+                                               /* length */ 0u};                \
+        } else {                                                                \
+            mglComputeSetTexture(computeCommandEncoder,                         \
+                                 (__bridge id<MTLTexture>)(texPtr), (slot));    \
+        }                                                                       \
+    } while (0)
+
+#define MGL_CTEX_EMIT_SAMPLER(slot, smpPtr)                                     \
+    do {                                                                        \
+        if (useComputeTextureSnapshot) {                                        \
+            if (ctexSnapshot.op_count >=                                        \
+                MGL_RENDER_CPP_COMPUTE_BINDING_SNAPSHOT_MAX_OPS) {              \
+                MGL_CTEX_FLUSH_SNAPSHOT();                                      \
+            }                                                                   \
+            ctexSnapshot.ops[ctexSnapshot.op_count++] =                         \
+                (MGLRenderCppComputeBindingOp){/* kind */ 3u,                   \
+                                               /* index */ (uint32_t)(slot),    \
+                                               /* offset */ 0,                  \
+                                               /* buffer */ (void *)(smpPtr),   \
+                                               /* bytes */ NULL,                \
+                                               /* length */ 0u};                \
+        } else {                                                                \
+            mglComputeSetSampler(computeCommandEncoder,                         \
+                                 (__bridge id<MTLSamplerState>)(smpPtr),        \
+                                 (slot));                                       \
+        }                                                                       \
+    } while (0)
+
     Program *computeProgram = mglResolveProgramForStageFromState(ctx, stage);
 
     for(int type=0; mapped_types[type].spvc_type; type++)
@@ -500,6 +567,7 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
                     default:
                         ptr = NULL;
                         NSLog(@"MGL COMPUTE ERROR: unknown compute texture binding class %d", gl_texture_type);
+                        MGL_CTEX_FLUSH_SNAPSHOT();
                         return false;
                 }
 
@@ -533,6 +601,8 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
                                     texture, imgLevel, sliceCount);
                             if (levelView) {
                                 texture = levelView;
+                                /* Keep the view alive until the end replay. */
+                                MGL_CTEX_RETAIN_TEMP(levelView);
                             }
                         }
                     }
@@ -573,20 +643,22 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
                             mglComputeCreateSampler(_device,
                                                     [MTLSamplerDescriptor new]);
                         sampler = fallbackSampler;
+                        /* Keep the fallback alive until the end replay. */
+                        MGL_CTEX_RETAIN_TEMP(sampler);
                         if (!sampler) {
                             continue;
                         }
                     }
 
-                    mglComputeSetTexture(computeCommandEncoder, texture,
-                                         metalBinding);
+                    MGL_CTEX_EMIT_TEXTURE(metalBinding,
+                                          (__bridge void *)texture);
                     if (gl_texture_type == _TEXTURE &&
                         (!resource || resource->has_combined_sampler)) {
                         GLuint samplerBinding = resource
                             ? mglMetalCombinedSamplerSlot(resource)
                             : metalBinding;
-                        mglComputeSetSampler(computeCommandEncoder, sampler,
-                                             samplerBinding);
+                        MGL_CTEX_EMIT_SAMPLER(samplerBinding,
+                                              (__bridge void *)sampler);
                     }
 
                     textures_to_be_mapped--;
@@ -597,7 +669,7 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
             if (textures_to_be_mapped)
             {
                 DEBUG_PRINT("No texture bound for fragment shader location\n");
-
+                MGL_CTEX_FLUSH_SNAPSHOT();
                 return false;
             }
         }
@@ -652,12 +724,15 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
                 if (!sampler) {
                     sampler = mglComputeCreateSampler(
                         _device, [MTLSamplerDescriptor new]);
+                    /* Keep the fallback alive until the end replay. */
+                    MGL_CTEX_RETAIN_TEMP(sampler);
                 }
 
-                mglComputeSetTexture(computeCommandEncoder, texture, metalSlot);
+                MGL_CTEX_EMIT_TEXTURE(metalSlot,
+                                      (__bridge void *)texture);
                 if (resource->has_combined_sampler && sampler) {
-                    mglComputeSetSampler(computeCommandEncoder, sampler,
-                                         samplerSlot);
+                    MGL_CTEX_EMIT_SAMPLER(samplerSlot,
+                                          (__bridge void *)sampler);
                 }
             }
         }
@@ -708,14 +783,25 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
                             texture, imgLevel, sliceCount);
                     if (levelView) {
                         texture = levelView;
+                        /* Keep the view alive until the end replay. */
+                        MGL_CTEX_RETAIN_TEMP(levelView);
                     }
                 }
 
-                mglComputeSetTexture(computeCommandEncoder, texture,
-                                     metalSlot);
+                MGL_CTEX_EMIT_TEXTURE(metalSlot,
+                                      (__bridge void *)texture);
             }
         }
     }
+
+    /* Flush any collected texture/sampler ops — the replay position (after
+     * the array passes) matches the direct path's encoder order. */
+    MGL_CTEX_FLUSH_SNAPSHOT();
+#undef MGL_CTEX_EMIT_TEXTURE
+#undef MGL_CTEX_EMIT_SAMPLER
+#undef MGL_CTEX_FLUSH_SNAPSHOT
+#undef MGL_CTEX_RETAIN_TEMP
+    ctexTemporaries = nil;
 
     MGL_STATE(ctx)->dirty_bits &= ~(DIRTY_TEX_BINDING | DIRTY_SAMPLER | DIRTY_IMAGE_UNIT_STATE);
 

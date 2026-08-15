@@ -775,17 +775,19 @@ int mglRenderCppSetComputeThreadgroupMemoryLength(void *compute_encoder,
                                                   uint32_t index);
 
 /* P4.5 compute 绑定 snapshot：与 render binding snapshot 同构的 op 列表，
- * 专用于 compute encoder（setComputeBuffer / setComputeBytes）。GL 计算路径
- * 只有 buffer op（kind 0，NULL buffer = 槽位清除）；kind 1 bytes 为对称性
- * 提供（bytes 借用至重放返回）。契约与 mglRenderCppEncodeBindingSnapshot
- * 一致：调用方预校验，本函数对坏 kind / NULL bytes / 越界计数返回 -1。 */
+ * 专用于 compute encoder。kind 0 = setBuffer（NULL = 槽位清除）、
+ * 1 = setBytes（对称性提供）、2 = setTexture、3 = setSamplerState；
+ * texture/sampler op 的对象指针放 buffer 字段。契约与
+ * mglRenderCppEncodeBindingSnapshot 一致：调用方预校验，本函数对坏 kind /
+ * NULL bytes / 越界计数返回 -1。临时对象（__bridge_transfer 局部）必须在
+ * emit 后立即 flush（编码器当场 retain），禁止悬垂进延迟重放。 */
 #define MGL_RENDER_CPP_COMPUTE_BINDING_SNAPSHOT_MAX_OPS 32u
 
 typedef struct MGLRenderCppComputeBindingOp_t {
-    uint32_t kind;      /* 0 = set buffer (NULL = clear), 1 = set bytes */
+    uint32_t kind;      /* 0 = buffer, 1 = bytes, 2 = texture, 3 = sampler */
     uint32_t index;     /* Metal slot */
     uint64_t offset;    /* kind 0: byte offset */
-    void *buffer;       /* kind 0: borrowed MTL::Buffer* (NULL = clear) */
+    void *buffer;       /* kind 0/2/3: borrowed MTL object (NULL = clear) */
     const void *bytes;  /* kind 1: borrowed byte pointer */
     uint32_t length;    /* kind 1: byte length */
 } MGLRenderCppComputeBindingOp;
