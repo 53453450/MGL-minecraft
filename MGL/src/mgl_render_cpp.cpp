@@ -3907,6 +3907,81 @@ static inline uint32_t MGLRenderReadIndexBytes(const uint8_t* bytes, int w, uint
 }
 
 extern "C"
+int mglRenderCppExpandTriangleFanArrayIndices(
+    uint32_t vertex_count, uint32_t** out_indices, uint64_t* out_count) {
+    if (vertex_count < 3u || !out_indices || !out_count) {
+        return -1;
+    }
+    const uint32_t n = vertex_count - 2u;
+    const uint64_t need = (uint64_t)n * 3u;
+    if (need > (uint64_t)(UINT32_MAX / sizeof(uint32_t))) {
+        return -1;
+    }
+    uint32_t* const dst = (uint32_t*)malloc((size_t)need * sizeof(uint32_t));
+    if (!dst) {
+        return -1;
+    }
+    for (uint32_t t = 0u; t < n; t++) {
+        dst[t*3u+0u] = 0u;
+        dst[t*3u+1u] = t + 1u;
+        dst[t*3u+2u] = t + 2u;
+    }
+    *out_indices = dst;
+    *out_count = need;
+    return 0;
+}
+
+extern "C"
+int mglRenderCppExpandTriangleStripArrayIndices(
+    uint32_t vertex_count, uint32_t** out_indices, uint64_t* out_count) {
+    if (vertex_count < 3u || !out_indices || !out_count) {
+        return -1;
+    }
+    const uint32_t n = vertex_count - 2u;
+    const uint64_t need = (uint64_t)n * 3u;
+    if (need > (uint64_t)(UINT32_MAX / sizeof(uint32_t))) {
+        return -1;
+    }
+    uint32_t* const dst = (uint32_t*)malloc((size_t)need * sizeof(uint32_t));
+    if (!dst) {
+        return -1;
+    }
+    for (uint32_t t = 0u; t < n; t++) {
+        dst[t*3u+0u] = t + (t & 1u);
+        dst[t*3u+1u] = t + ((t & 1u) ? 0u : 1u);
+        dst[t*3u+2u] = t + 2u;
+    }
+    *out_indices = dst;
+    *out_count = need;
+    return 0;
+}
+
+extern "C"
+int mglRenderCppExpandLineLoopArrayIndices(
+    uint32_t first_vertex, uint32_t vertex_count,
+    uint32_t** out_indices, uint64_t* out_count) {
+    if (vertex_count < 2u || !out_indices || !out_count) {
+        return -1;
+    }
+    if ((uint64_t)first_vertex + (uint64_t)vertex_count >
+        (uint64_t)UINT32_MAX + 1u) {
+        return -1;
+    }
+    const uint64_t need = (uint64_t)vertex_count + 1u;
+    uint32_t* const dst = (uint32_t*)malloc((size_t)need * sizeof(uint32_t));
+    if (!dst) {
+        return -1;
+    }
+    for (uint32_t i = 0u; i < vertex_count; i++) {
+        dst[i] = first_vertex + i;
+    }
+    dst[vertex_count] = first_vertex;
+    *out_indices = dst;
+    *out_count = need;
+    return 0;
+}
+
+extern "C"
 int mglRenderCppExpandQuadArrayLineIndices(
     uint32_t quad_count, uint32_t** out_indices, uint64_t* out_count) {
     if (quad_count == 0u || !out_indices || !out_count) {

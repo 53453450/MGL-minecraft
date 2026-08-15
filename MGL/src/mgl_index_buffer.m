@@ -110,19 +110,21 @@ MGLMetalBufferRef mglNewTriangleFanArrayIndexBuffer(MGLMetalDeviceRef device,
     }
     os_unfair_lock_unlock(&s_arrayIndexCacheLock);
 
-    uint32_t *indices = NULL;
-    MGLMetalBufferRef buffer = mglNewUninitializedIndexBuffer(device,
-                                                          indexCount * sizeof(uint32_t),
-                                                          (void **)&indices);
-    if (!buffer) {
+    uint32_t *expanded = NULL;
+    uint64_t indexCount64 = 0u;
+    if (mglRenderCppExpandTriangleFanArrayIndices(
+            (uint32_t)vertexCount, &expanded, &indexCount64) != 0) {
         return nil;
     }
-
-    for (NSUInteger tri = 0; tri < triangleCount; tri++) {
-        indices[(tri * 3u) + 0u] = 0u;
-        indices[(tri * 3u) + 1u] = (uint32_t)(tri + 1u);
-        indices[(tri * 3u) + 2u] = (uint32_t)(tri + 2u);
+    uint32_t *indices = NULL;
+    MGLMetalBufferRef buffer = mglNewUninitializedIndexBuffer(
+        device, (NSUInteger)indexCount64 * sizeof(uint32_t), (void **)&indices);
+    if (!buffer) {
+        free(expanded);
+        return nil;
     }
+    memcpy(indices, expanded, (size_t)indexCount64 * sizeof(uint32_t));
+    free(expanded);
 
     os_unfair_lock_lock(&s_arrayIndexCacheLock);
     s_cachedFanArrayBuffer = buffer;
@@ -171,21 +173,22 @@ MGLMetalBufferRef mglNewLineLoopArrayIndexBuffer(MGLMetalDeviceRef device,
     }
     os_unfair_lock_unlock(&s_arrayIndexCacheLock);
 
-    uint32_t *indices = NULL;
-    MGLMetalBufferRef buffer = mglNewUninitializedIndexBuffer(device,
-                                                          indexCount * sizeof(uint32_t),
-                                                          (void **)&indices);
-    if (!buffer) {
+    uint32_t *expanded = NULL;
+    uint64_t indexCount64 = 0u;
+    if (mglRenderCppExpandLineLoopArrayIndices(
+            (uint32_t)firstVertex, (uint32_t)vertexCount,
+            &expanded, &indexCount64) != 0) {
         return nil;
     }
-
-    for (NSUInteger i = 0; i < vertexCount; i++) {
-        if (i > UINT32_MAX) {
-            return nil;
-        }
-        indices[i] = (uint32_t)(firstVertex + i);
+    uint32_t *indices = NULL;
+    MGLMetalBufferRef buffer = mglNewUninitializedIndexBuffer(
+        device, (NSUInteger)indexCount64 * sizeof(uint32_t), (void **)&indices);
+    if (!buffer) {
+        free(expanded);
+        return nil;
     }
-    indices[vertexCount] = (uint32_t)firstVertex;
+    memcpy(indices, expanded, (size_t)indexCount64 * sizeof(uint32_t));
+    free(expanded);
 
     os_unfair_lock_lock(&s_arrayIndexCacheLock);
     for (NSUInteger slot = 0u; slot < MGL_LINE_LOOP_ARRAY_CACHE_SLOTS; slot++) {
@@ -243,11 +246,15 @@ MGLMetalBufferRef mglNewTriangleStripArrayIndexBuffer(MGLMetalDeviceRef device,
         return nil;
     }
 
-    for (NSUInteger tri = 0; tri < triangleCount; tri++) {
-        indices[(tri * 3u) + 0u] = (uint32_t)(tri + (tri & 1u));
-        indices[(tri * 3u) + 1u] = (uint32_t)(tri + ((tri & 1u) ? 0u : 1u));
-        indices[(tri * 3u) + 2u] = (uint32_t)(tri + 2u);
+    uint32_t *expanded = NULL;
+    uint64_t indexCount64 = 0u;
+    if (mglRenderCppExpandTriangleStripArrayIndices(
+            (uint32_t)vertexCount, &expanded, &indexCount64) != 0) {
+        return nil;
     }
+    /* NOTE: indices was already allocated by the strip builder above. */
+    memcpy(indices, expanded, (size_t)indexCount64 * sizeof(uint32_t));
+    free(expanded);
 
     os_unfair_lock_lock(&s_arrayIndexCacheLock);
     s_cachedStripArrayBuffer = buffer;

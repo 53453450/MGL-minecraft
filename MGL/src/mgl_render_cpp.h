@@ -605,7 +605,23 @@ int mglRenderCppExpandQuadElementIndices(
     const uint8_t *bytes, uint32_t elem_width, uint32_t quad_count,
     uint32_t **out_indices, uint64_t *out_count);
 
-/* P4.5 (item 1141/887): quad-array LINE_LOOP emulation — for each group of
+/* P4.5 (item 1141/887): triangle-fan ARRAY emulation — vertexCount-2
+ * triangles `(0, tri+1, tri+2)`, all uint32.  Pure CPU; caller frees. */
+int mglRenderCppExpandTriangleFanArrayIndices(
+    uint32_t vertex_count, uint32_t **out_indices, uint64_t *out_count);
+
+/* P4.5 (item 1141/887): triangle-strip ARRAY emulation — vertexCount-2
+ * triangles with alternating offset `(tri&1)`.  Pure CPU; caller frees. */
+int mglRenderCppExpandTriangleStripArrayIndices(
+    uint32_t vertex_count, uint32_t **out_indices, uint64_t *out_count);
+
+/* P4.5 (item 1141/887): LINE_LOOP ARRAY emulation — copy `firstVertex+i`
+ * for count vertices then append `firstVertex`.  Pure CPU; caller frees. */
+int mglRenderCppExpandLineLoopArrayIndices(
+    uint32_t first_vertex, uint32_t vertex_count,
+    uint32_t **out_indices, uint64_t *out_count);
+
+/* P4.5 (item 1141/887: quad-array LINE_LOOP emulation — for each group of
  * 4 array vertices emit `(a,a+1,a+1,a+2,a+2,a+3,a+3,a)` (a 4-edge closed
  * loop), quad_count*8 uint32 total.  Pure CPU; caller frees. */
 int mglRenderCppExpandQuadArrayLineIndices(

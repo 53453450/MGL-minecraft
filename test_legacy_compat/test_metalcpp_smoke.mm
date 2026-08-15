@@ -2304,6 +2304,43 @@ static int verifyMDIScratchOwner(void) {
     return 0;
 }
 
+static int verifyArrayVariants(void) {
+    /* P4.5 (item 1141/887): fan/strip/line-loop ARRAY emulations. */
+    uint32_t *idx = NULL; uint64_t n = 0;
+    if (mglRenderCppExpandTriangleFanArrayIndices(5, &idx, &n) != 0 ||
+        n != 9 || idx[0]!=0 || idx[1]!=1 || idx[2]!=2 ||
+        idx[3]!=0 || idx[4]!=2 || idx[5]!=3 ||
+        idx[6]!=0 || idx[7]!=3 || idx[8]!=4) {
+        fprintf(stderr, "FAIL: fan array\n");
+        return 1;
+    }
+    free(idx);
+    if (mglRenderCppExpandTriangleStripArrayIndices(5, &idx, &n) != 0 ||
+        n != 9 ||
+        idx[0]!=0||idx[1]!=1||idx[2]!=2 ||
+        idx[3]!=2||idx[4]!=1||idx[5]!=3 ||
+        idx[6]!=2||idx[7]!=3||idx[8]!=4) {
+        fprintf(stderr, "FAIL: strip array\n");
+        return 1;
+    }
+    free(idx);
+    /* Line loop array firstVertex-relative. */
+    if (mglRenderCppExpandLineLoopArrayIndices(100, 3, &idx, &n) != 0 ||
+        n != 4 || idx[0]!=100||idx[1]!=101||idx[2]!=102||idx[3]!=100) {
+        fprintf(stderr, "FAIL: line loop array\n");
+        return 1;
+    }
+    free(idx);
+    if (mglRenderCppExpandTriangleFanArrayIndices(2, &idx, &n) != -1 ||
+        mglRenderCppExpandTriangleStripArrayIndices(2, &idx, &n) != -1 ||
+        mglRenderCppExpandLineLoopArrayIndices(0, 1, &idx, &n) != -1) {
+        fprintf(stderr, "FAIL: array bad args\n");
+        return 1;
+    }
+    printf("EXPAND_ARRAY_VARIANTS_OK\n");
+    return 0;
+}
+
 static int verifyQuadLine(void) {
     /* P4.5 (item 1141/887): quad-array/element line-loop emulation (8/quad). */
     uint32_t *idx = NULL; uint64_t n = 0;
@@ -4979,6 +5016,7 @@ int main(void) {
         if (verifyExpandStripAndLineLoop() != 0) return 1;
         if (verifyExpandQuad() != 0) return 1;
         if (verifyQuadLine() != 0) return 1;
+        if (verifyArrayVariants() != 0) return 1;
         if (verifyMDIScratchOwner() != 0) return 1;
         if (verifyRenderEncoderGetter() != 0) return 1;
         if (verifyCommandBufferGetterAndAdopt() != 0) return 1;
