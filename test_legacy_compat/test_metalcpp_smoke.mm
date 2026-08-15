@@ -2304,6 +2304,43 @@ static int verifyMDIScratchOwner(void) {
     return 0;
 }
 
+static int verifyExpandStripAndLineLoop(void) {
+    /* P4.5 (item 1141/887): triangle-strip + LINE_LOOP element expansion. */
+    const uint16_t s16[] = {0,1,2,3,4};  /* count-2 = 3 strips */
+    uint32_t *idx = NULL; uint64_t n = 0;
+    if (mglRenderCppExpandTriangleStripIndices((const uint8_t*)s16, 2, 5, &idx, &n) != 0 ||
+        n != 9 ||
+        idx[0]!=0||idx[1]!=1||idx[2]!=2 ||
+        idx[3]!=2||idx[4]!=1||idx[5]!=3 ||
+        idx[6]!=2||idx[7]!=3||idx[8]!=4) {
+        fprintf(stderr, "FAIL: strip\n");
+        return 1;
+    }
+    free(idx);
+    const uint8_t l8[] = {7,8,9};
+    if (mglRenderCppExpandLineLoopIndices(l8, 1, 3, &idx, &n) != 0 ||
+        n != 4 || idx[0]!=7||idx[1]!=8||idx[2]!=9||idx[3]!=7) {
+        fprintf(stderr, "FAIL: loop\n");
+        return 1;
+    }
+    free(idx);
+    const uint8_t l8b[] = {5,6};
+    if (mglRenderCppExpandLineLoopIndices(l8b, 1, 2, &idx, &n) != 0 ||
+        n != 3 || idx[0]!=5||idx[1]!=6||idx[2]!=5) {
+        fprintf(stderr, "FAIL: loop2\n");
+        return 1;
+    }
+    free(idx);
+    if (mglRenderCppExpandTriangleStripIndices(NULL, 2, 5, &idx, &n) != -1 ||
+        mglRenderCppExpandLineLoopIndices(l8, 1, 1, &idx, &n) != -1) {
+        fprintf(stderr, "FAIL: strip/loop bad args\n");
+        return 1;
+    }
+    printf("EXPAND_STRIP_AND_LINE_LOOP_OK\n");
+    return 0;
+}
+
+
 static int verifyExpandTriangleFan(void) {
     /* P4.5 (item 1141/887): triangle-fan element emulation expansion. */
     uint32_t *idx = NULL; uint64_t n = 0;
@@ -4883,6 +4920,7 @@ int main(void) {
         if (verifyReadTextureRegionClip() != 0) return 1;
         if (verifyGeometryGather() != 0) return 1;
         if (verifyExpandTriangleFan() != 0) return 1;
+        if (verifyExpandStripAndLineLoop() != 0) return 1;
         if (verifyMDIScratchOwner() != 0) return 1;
         if (verifyRenderEncoderGetter() != 0) return 1;
         if (verifyCommandBufferGetterAndAdopt() != 0) return 1;

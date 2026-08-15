@@ -576,6 +576,21 @@ int mglRenderCppExpandTriangleFanIndices(
     uint32_t **out_indices,     /* malloc'd, count*3 entries */
     uint64_t *out_count);
 
+/* P4.5 (item 1141/887): triangle-strip element emulation — expand a raw
+ * element stream into `(first, second, tri+2)` triplets with alternating
+ * first/second offset (tri strips), count-2 triangles, all uint32.
+ * Pure CPU; caller frees.  Returns 0 with *out_count set, -1 on error. */
+int mglRenderCppExpandTriangleStripIndices(
+    const uint8_t *bytes, uint32_t elem_width, uint32_t source_count,
+    uint32_t **out_indices, uint64_t *out_count);
+
+/* P4.5 (item 1141/887): LINE_LOOP element emulation — copy the raw index
+ * stream and append the first index to close the loop (count+1).  Pure CPU;
+ * caller frees. */
+int mglRenderCppExpandLineLoopIndices(
+    const uint8_t *bytes, uint32_t elem_width, uint32_t source_count,
+    uint32_t **out_indices, uint64_t *out_count);
+
 typedef struct MGLRenderCppGeometryGatherResult_t {
     uint32_t *gather;          /* malloc'd raw gather (vertex_ids) */
     uint32_t gather_count;

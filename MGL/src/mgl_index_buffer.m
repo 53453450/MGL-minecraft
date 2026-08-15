@@ -317,30 +317,28 @@ MGLMetalBufferRef mglNewTriangleStripElementIndexBuffer(MGLMetalDeviceRef device
         return nil;
     }
 
-    NSUInteger triangleCount = sourceIndexCount - 2u;
-    if (triangleCount > (NSUIntegerMax / (3u * sizeof(uint32_t)))) {
+    const uint32_t elemWidth = sourceIndexType == GL_UNSIGNED_BYTE ? 1u
+        : sourceIndexType == GL_UNSIGNED_SHORT ? 2u : 4u;
+    uint32_t *expanded = NULL;
+    uint64_t indexCount = 0u;
+    if (mglRenderCppExpandTriangleStripIndices(
+            sourceIndexBytes, elemWidth, (uint32_t)sourceIndexCount,
+            &expanded, &indexCount) != 0 || indexCount == 0u) {
+        if (expanded) free(expanded);
         return nil;
     }
-
-    NSUInteger indexCount = triangleCount * 3u;
+    NSUInteger byteCount = (NSUInteger)indexCount * sizeof(uint32_t);
     uint32_t *indices = NULL;
-    MGLMetalBufferRef buffer = mglNewUninitializedIndexBuffer(device,
-                                                          indexCount * sizeof(uint32_t),
-                                                          (void **)&indices);
+    MGLMetalBufferRef buffer = mglNewUninitializedIndexBuffer(
+        device, byteCount, (void **)&indices);
     if (!buffer) {
+        free(expanded);
         return nil;
     }
-
-    for (NSUInteger tri = 0; tri < triangleCount; tri++) {
-        NSUInteger first = tri + (tri & 1u);
-        NSUInteger second = tri + ((tri & 1u) ? 0u : 1u);
-        indices[(tri * 3u) + 0u] = mglReadGLIndexValue(sourceIndexBytes, sourceIndexType, first);
-        indices[(tri * 3u) + 1u] = mglReadGLIndexValue(sourceIndexBytes, sourceIndexType, second);
-        indices[(tri * 3u) + 2u] = mglReadGLIndexValue(sourceIndexBytes, sourceIndexType, tri + 2u);
-    }
-
+    memcpy(indices, expanded, (size_t)byteCount);
+    free(expanded);
     if (outIndexCount) {
-        *outIndexCount = indexCount;
+        *outIndexCount = (NSUInteger)indexCount;
     }
 
     return buffer;
@@ -359,26 +357,30 @@ MGLMetalBufferRef mglNewLineLoopElementIndexBuffer(MGLMetalDeviceRef device,
     if (!device || !sourceIndexBytes || sourceIndexCount < 2u) {
         return nil;
     }
-    if (sourceIndexCount > (NSUIntegerMax - 1u)) {
+    const uint32_t elemWidth = sourceIndexType == GL_UNSIGNED_BYTE ? 1u
+        : sourceIndexType == GL_UNSIGNED_SHORT ? 2u : 4u;
+    uint32_t *expanded = NULL;
+    uint64_t indexCount = 0u;
+    /* P4.5 (item 1141/887): 条带/线环元素展开在 C++
+     * （mglRenderCppExpandTriangleStripIndices / ExpandLineLoopIndices）。 */
+    if (mglRenderCppExpandLineLoopIndices(
+            sourceIndexBytes, elemWidth, (uint32_t)sourceIndexCount,
+            &expanded, &indexCount) != 0 || indexCount == 0u) {
+        if (expanded) free(expanded);
         return nil;
     }
-
-    NSUInteger indexCount = sourceIndexCount + 1u;
+    NSUInteger loopIndexCount = (NSUInteger)indexCount;
     uint32_t *indices = NULL;
-    MGLMetalBufferRef buffer = mglNewUninitializedIndexBuffer(device,
-                                                          indexCount * sizeof(uint32_t),
-                                                          (void **)&indices);
+    MGLMetalBufferRef buffer = mglNewUninitializedIndexBuffer(
+        device, loopIndexCount * sizeof(uint32_t), (void **)&indices);
     if (!buffer) {
+        free(expanded);
         return nil;
     }
-
-    for (NSUInteger i = 0; i < sourceIndexCount; i++) {
-        indices[i] = mglReadGLIndexValue(sourceIndexBytes, sourceIndexType, i);
-    }
-    indices[sourceIndexCount] = indices[0];
-
+    memcpy(indices, expanded, (size_t)loopIndexCount * sizeof(uint32_t));
+    free(expanded);
     if (outIndexCount) {
-        *outIndexCount = indexCount;
+        *outIndexCount = loopIndexCount;
     }
 
     return buffer;

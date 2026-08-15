@@ -3900,6 +3900,63 @@ int mglRenderCppGetTexImagePlan(
     return 0;
 }
 
+static inline uint32_t MGLRenderReadIndexBytes(const uint8_t* bytes, int w, uint32_t i) {
+    return (w == 1) ? (uint32_t)bytes[i]
+        : (w == 2) ? (uint32_t)((const uint16_t*)bytes)[i]
+        : (uint32_t)((const uint32_t*)bytes)[i];
+}
+
+extern "C"
+int mglRenderCppExpandTriangleStripIndices(
+    const uint8_t* bytes, uint32_t elem_width, uint32_t count,
+    uint32_t** out_indices, uint64_t* out_count) {
+    if (!bytes || count < 3u || !out_indices || !out_count) {
+        return -1;
+    }
+    const int w = (elem_width == 1u) ? 1 : (elem_width == 2u ? 2 : 4);
+    const uint32_t n = count - 2u;
+    const uint64_t need = (uint64_t)n * 3u;
+    if (need > (uint64_t)(UINT32_MAX / sizeof(uint32_t))) {
+        return -1;
+    }
+    uint32_t* const dst = (uint32_t*)malloc((size_t)need * sizeof(uint32_t));
+    if (!dst) {
+        return -1;
+    }
+    for (uint32_t t = 0u; t < n; t++) {
+        const uint32_t first = t + (t & 1u);
+        const uint32_t second = t + ((t & 1u) ? 0u : 1u);
+        dst[t*3u+0u] = MGLRenderReadIndexBytes(bytes, w, first);
+        dst[t*3u+1u] = MGLRenderReadIndexBytes(bytes, w, second);
+        dst[t*3u+2u] = MGLRenderReadIndexBytes(bytes, w, t + 2u);
+    }
+    *out_indices = dst;
+    *out_count = need;
+    return 0;
+}
+
+extern "C"
+int mglRenderCppExpandLineLoopIndices(
+    const uint8_t* bytes, uint32_t elem_width, uint32_t count,
+    uint32_t** out_indices, uint64_t* out_count) {
+    if (!bytes || count < 2u || !out_indices || !out_count) {
+        return -1;
+    }
+    const uint64_t need = (uint64_t)count + 1u;
+    uint32_t* const dst = (uint32_t*)malloc((size_t)need * sizeof(uint32_t));
+    if (!dst) {
+        return -1;
+    }
+    const int w = (elem_width == 1u) ? 1 : (elem_width == 2u ? 2 : 4);
+    for (uint32_t i = 0u; i < count; i++) {
+        dst[i] = MGLRenderReadIndexBytes(bytes, w, i);
+    }
+    dst[count] = dst[0];
+    *out_indices = dst;
+    *out_count = need;
+    return 0;
+}
+
 extern "C"
 int mglRenderCppExpandTriangleFanIndices(
     const uint8_t* bytes, uint32_t elem_width, uint32_t count,
