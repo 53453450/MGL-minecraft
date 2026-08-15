@@ -3636,6 +3636,120 @@ int mglRenderCppIntegerReadbackSourceClassify(
 }
 
 extern "C"
+int mglRenderCppIntegerReadbackPackedTypeClassify(
+    uint32_t packed_type, MGLRenderCppIntegerPackedType* out) {
+    if (!out) return -1;
+    out->is_packed = 0;
+    for (int i = 0; i < 4; i++) {
+        out->bit_widths[i] = 0;
+        out->shifts[i] = 0;
+    }
+    out->output_bytes = 0;
+    out->output_components = 0;
+    switch (packed_type) {
+        case 0x8032: /* GL_UNSIGNED_BYTE_3_3_2 */
+            out->is_packed = 1;
+            out->bit_widths[0] = 3; out->bit_widths[1] = 3;
+            out->bit_widths[2] = 2; out->bit_widths[3] = 0;
+            out->shifts[0] = 5; out->shifts[1] = 2;
+            out->shifts[2] = 0; out->shifts[3] = 0;
+            out->output_bytes = 1; out->output_components = 3;
+            break;
+        case 0x8362: /* GL_UNSIGNED_BYTE_2_3_3_REV */
+            out->is_packed = 1;
+            out->bit_widths[0] = 3; out->bit_widths[1] = 3;
+            out->bit_widths[2] = 2; out->bit_widths[3] = 0;
+            out->shifts[0] = 0; out->shifts[1] = 3;
+            out->shifts[2] = 6; out->shifts[3] = 0;
+            out->output_bytes = 1; out->output_components = 3;
+            break;
+        case 0x8363: /* GL_UNSIGNED_SHORT_5_6_5 */
+            out->is_packed = 1;
+            out->bit_widths[0] = 5; out->bit_widths[1] = 6;
+            out->bit_widths[2] = 5; out->bit_widths[3] = 0;
+            out->shifts[0] = 11; out->shifts[1] = 5;
+            out->shifts[2] = 0; out->shifts[3] = 0;
+            out->output_bytes = 2; out->output_components = 3;
+            break;
+        case 0x8364: /* GL_UNSIGNED_SHORT_5_6_5_REV */
+            out->is_packed = 1;
+            out->bit_widths[0] = 5; out->bit_widths[1] = 6;
+            out->bit_widths[2] = 5; out->bit_widths[3] = 0;
+            out->shifts[0] = 0; out->shifts[1] = 5;
+            out->shifts[2] = 11; out->shifts[3] = 0;
+            out->output_bytes = 2; out->output_components = 3;
+            break;
+        case 0x8033: /* GL_UNSIGNED_SHORT_4_4_4_4 */
+            out->is_packed = 1;
+            out->bit_widths[0] = 4; out->bit_widths[1] = 4;
+            out->bit_widths[2] = 4; out->bit_widths[3] = 4;
+            out->shifts[0] = 12; out->shifts[1] = 8;
+            out->shifts[2] = 4; out->shifts[3] = 0;
+            out->output_bytes = 2; out->output_components = 4;
+            break;
+        case 0x8365: /* GL_UNSIGNED_SHORT_4_4_4_4_REV */
+            out->is_packed = 1;
+            out->bit_widths[0] = 4; out->bit_widths[1] = 4;
+            out->bit_widths[2] = 4; out->bit_widths[3] = 4;
+            out->shifts[0] = 0; out->shifts[1] = 4;
+            out->shifts[2] = 8; out->shifts[3] = 12;
+            out->output_bytes = 2; out->output_components = 4;
+            break;
+        case 0x8034: /* GL_UNSIGNED_SHORT_5_5_5_1 */
+            out->is_packed = 1;
+            out->bit_widths[0] = 5; out->bit_widths[1] = 5;
+            out->bit_widths[2] = 5; out->bit_widths[3] = 1;
+            out->shifts[0] = 11; out->shifts[1] = 6;
+            out->shifts[2] = 1; out->shifts[3] = 0;
+            out->output_bytes = 2; out->output_components = 4;
+            break;
+        case 0x8366: /* GL_UNSIGNED_SHORT_1_5_5_5_REV */
+            out->is_packed = 1;
+            out->bit_widths[0] = 5; out->bit_widths[1] = 5;
+            out->bit_widths[2] = 5; out->bit_widths[3] = 1;
+            out->shifts[0] = 0; out->shifts[1] = 5;
+            out->shifts[2] = 10; out->shifts[3] = 15;
+            out->output_bytes = 2; out->output_components = 4;
+            break;
+        case 0x8035: /* GL_UNSIGNED_INT_8_8_8_8 */
+            out->is_packed = 1;
+            out->bit_widths[0] = 8; out->bit_widths[1] = 8;
+            out->bit_widths[2] = 8; out->bit_widths[3] = 8;
+            out->shifts[0] = 24; out->shifts[1] = 16;
+            out->shifts[2] = 8; out->shifts[3] = 0;
+            out->output_bytes = 4; out->output_components = 4;
+            break;
+        case 0x8367: /* GL_UNSIGNED_INT_8_8_8_8_REV */
+            out->is_packed = 1;
+            out->bit_widths[0] = 8; out->bit_widths[1] = 8;
+            out->bit_widths[2] = 8; out->bit_widths[3] = 8;
+            out->shifts[0] = 0; out->shifts[1] = 8;
+            out->shifts[2] = 16; out->shifts[3] = 24;
+            out->output_bytes = 4; out->output_components = 4;
+            break;
+        case 0x8036: /* GL_UNSIGNED_INT_10_10_10_2 */
+            out->is_packed = 1;
+            out->bit_widths[0] = 10; out->bit_widths[1] = 10;
+            out->bit_widths[2] = 10; out->bit_widths[3] = 2;
+            out->shifts[0] = 22; out->shifts[1] = 12;
+            out->shifts[2] = 2; out->shifts[3] = 0;
+            out->output_bytes = 4; out->output_components = 4;
+            break;
+        case 0x8368: /* GL_UNSIGNED_INT_2_10_10_10_REV */
+            out->is_packed = 1;
+            out->bit_widths[0] = 10; out->bit_widths[1] = 10;
+            out->bit_widths[2] = 10; out->bit_widths[3] = 2;
+            out->shifts[0] = 0; out->shifts[1] = 10;
+            out->shifts[2] = 20; out->shifts[3] = 30;
+            out->output_bytes = 4; out->output_components = 4;
+            break;
+        default:
+            break;
+    }
+    return 0;
+}
+
+extern "C"
 int mglRenderCppIntegerReadbackClassify(
     uint32_t pixel_format, uint32_t gl_format, uint32_t gl_type,
     MGLRenderCppIntegerReadbackClassify* out) {

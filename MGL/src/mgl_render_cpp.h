@@ -501,6 +501,23 @@ int mglRenderCppIntegerReadbackClassify(
     uint32_t gl_type,
     MGLRenderCppIntegerReadbackClassify *out);
 
+typedef struct MGLRenderCppIntegerPackedType_t {
+    int is_packed;
+    uint32_t bit_widths[4];
+    uint32_t shifts[4];
+    uint32_t output_bytes;
+    uint32_t output_components;
+} MGLRenderCppIntegerPackedType;
+
+/* P4.5 (item 1171/1116): integer-readback packed-type classification —
+ * the 10-entry GL packed-type table (3_3_2 / 2_3_3_REV / 5_6_5(+REV) /
+ * 4_4_4_4(+REV) / 5_5_5_1 / 1_5_5_5_REV / 8_8_8_8(+REV) /
+ * 10_10_10_2 / 2_10_10_10_REV).  Pure classification shared by both
+ * gates.  Returns 0 on success, -1 on bad args. */
+int mglRenderCppIntegerReadbackPackedTypeClassify(
+    uint32_t packed_type,
+    MGLRenderCppIntegerPackedType *out);
+
 typedef struct MGLRenderCppIntegerReadbackSource_t {
     uint32_t component_count;
     uint32_t component_bytes;

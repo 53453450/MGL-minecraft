@@ -2304,6 +2304,53 @@ static int verifyMDIScratchOwner(void) {
     return 0;
 }
 
+static int verifyPackedTypeClassify(void) {
+    /* P4.5 (item 1171/1116): packed-type classification. */
+    MGLRenderCppIntegerPackedType p = {0};
+    if (mglRenderCppIntegerReadbackPackedTypeClassify(0, NULL) != -1) {
+        fprintf(stderr, "FAIL: packed bad args\n");
+        return 1;
+    }
+    /* GL_UNSIGNED_BYTE_3_3_2 (0x8032) -> 1B, 3 comps, widths 3/3/2,
+     * shifts 5/2/0. */
+    if (mglRenderCppIntegerReadbackPackedTypeClassify(0x8032, &p) != 0 ||
+        !p.is_packed || p.output_bytes != 1u || p.output_components != 3u ||
+        p.bit_widths[0] != 3 || p.bit_widths[2] != 2 ||
+        p.shifts[0] != 5 || p.shifts[2] != 0) {
+        fprintf(stderr, "FAIL: packed 3_3_2\n");
+        return 1;
+    }
+    /* GL_UNSIGNED_INT_2_10_10_10_REV (0x8368) -> 4B, 4 comps, rev order. */
+    if (mglRenderCppIntegerReadbackPackedTypeClassify(0x8368, &p) != 0 ||
+        p.output_bytes != 4u || p.output_components != 4u ||
+        p.shifts[0] != 0 || p.shifts[1] != 10 ||
+        p.shifts[2] != 20 || p.shifts[3] != 30) {
+        fprintf(stderr, "FAIL: packed 2_10_10_10_rev\n");
+        return 1;
+    }
+    /* GL_UNSIGNED_SHORT_5_6_5 (0x8363) -> 2B, 3 comps. */
+    if (mglRenderCppIntegerReadbackPackedTypeClassify(0x8363, &p) != 0 ||
+        p.output_bytes != 2u || p.output_components != 3u ||
+        p.bit_widths[1] != 6 || p.shifts[0] != 11) {
+        fprintf(stderr, "FAIL: packed 5_6_5\n");
+        return 1;
+    }
+    /* GL_UNSIGNED_INT_8_8_8_8_REV (0x8367) -> 4B, little-endian order. */
+    if (mglRenderCppIntegerReadbackPackedTypeClassify(0x8367, &p) != 0 ||
+        p.output_bytes != 4u || p.shifts[0] != 0 || p.shifts[3] != 24) {
+        fprintf(stderr, "FAIL: packed 8_8_8_8_rev\n");
+        return 1;
+    }
+    /* Unknown type -> not packed. */
+    if (mglRenderCppIntegerReadbackPackedTypeClassify(0x1234, &p) != 0 ||
+        p.is_packed) {
+        fprintf(stderr, "FAIL: packed unknown\n");
+        return 1;
+    }
+    printf("PACKED_TYPE_CLASSIFY_OK\n");
+    return 0;
+}
+
 static int verifyIntegerReadbackSourceClassify(void) {
     /* P4.5 (item 1171/1116): integer-readback source classification. */
     MGLRenderCppIntegerReadbackSource s = {0};
@@ -4381,6 +4428,7 @@ int main(void) {
         if (verifyIntegerReadbackClassify() != 0) return 1;
         if (verifyGetTexImagePlan() != 0) return 1;
         if (verifyIntegerReadbackSourceClassify() != 0) return 1;
+        if (verifyPackedTypeClassify() != 0) return 1;
         if (verifyMDIScratchOwner() != 0) return 1;
         if (verifyRenderEncoderGetter() != 0) return 1;
         if (verifyCommandBufferGetterAndAdopt() != 0) return 1;

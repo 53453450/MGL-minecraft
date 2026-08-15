@@ -1453,88 +1453,22 @@ static void mglTextureCopyTextureToBuffer(
         mtlSlice = 0u;
     }
 
-    /* Determine output pixel bytes for packed types. */
-    BOOL isPackedType = NO;
-    uint32_t packedBitWidths[4] = {0, 0, 0, 0};
-    uint32_t packedShifts[4] = {0, 0, 0, 0};
-    NSUInteger packedTotalBits = 0u;
-    NSUInteger packedOutputBytes = 0u;
-
-    switch (packedType) {
-        case 0x8032: /* GL_UNSIGNED_BYTE_3_3_2 */
-            isPackedType = YES;
-            packedBitWidths[0]=3; packedBitWidths[1]=3; packedBitWidths[2]=2; packedBitWidths[3]=0;
-            packedShifts[0]=5;  packedShifts[1]=2;  packedShifts[2]=0;  packedShifts[3]=0;
-            packedTotalBits=8; packedOutputBytes=1; outputComponents=3;
-            break;
-        case 0x8362: /* GL_UNSIGNED_BYTE_2_3_3_REV */
-            isPackedType = YES;
-            packedBitWidths[0]=3; packedBitWidths[1]=3; packedBitWidths[2]=2; packedBitWidths[3]=0;
-            packedShifts[0]=0;  packedShifts[1]=3;  packedShifts[2]=6;  packedShifts[3]=0;
-            packedTotalBits=8; packedOutputBytes=1; outputComponents=3;
-            break;
-        case 0x8363: /* GL_UNSIGNED_SHORT_5_6_5 */
-            isPackedType = YES;
-            packedBitWidths[0]=5; packedBitWidths[1]=6; packedBitWidths[2]=5; packedBitWidths[3]=0;
-            packedShifts[0]=11; packedShifts[1]=5;  packedShifts[2]=0;  packedShifts[3]=0;
-            packedTotalBits=16; packedOutputBytes=2; outputComponents=3;
-            break;
-        case 0x8364: /* GL_UNSIGNED_SHORT_5_6_5_REV */
-            isPackedType = YES;
-            packedBitWidths[0]=5; packedBitWidths[1]=6; packedBitWidths[2]=5; packedBitWidths[3]=0;
-            packedShifts[0]=0;  packedShifts[1]=5;  packedShifts[2]=11; packedShifts[3]=0;
-            packedTotalBits=16; packedOutputBytes=2; outputComponents=3;
-            break;
-        case 0x8033: /* GL_UNSIGNED_SHORT_4_4_4_4 */
-            isPackedType = YES;
-            packedBitWidths[0]=4; packedBitWidths[1]=4; packedBitWidths[2]=4; packedBitWidths[3]=4;
-            packedShifts[0]=12; packedShifts[1]=8;  packedShifts[2]=4;  packedShifts[3]=0;
-            packedTotalBits=16; packedOutputBytes=2; outputComponents=4;
-            break;
-        case 0x8365: /* GL_UNSIGNED_SHORT_4_4_4_4_REV */
-            isPackedType = YES;
-            packedBitWidths[0]=4; packedBitWidths[1]=4; packedBitWidths[2]=4; packedBitWidths[3]=4;
-            packedShifts[0]=0;  packedShifts[1]=4;  packedShifts[2]=8;  packedShifts[3]=12;
-            packedTotalBits=16; packedOutputBytes=2; outputComponents=4;
-            break;
-        case 0x8034: /* GL_UNSIGNED_SHORT_5_5_5_1 */
-            isPackedType = YES;
-            packedBitWidths[0]=5; packedBitWidths[1]=5; packedBitWidths[2]=5; packedBitWidths[3]=1;
-            packedShifts[0]=11; packedShifts[1]=6;  packedShifts[2]=1;  packedShifts[3]=0;
-            packedTotalBits=16; packedOutputBytes=2; outputComponents=4;
-            break;
-        case 0x8366: /* GL_UNSIGNED_SHORT_1_5_5_5_REV */
-            isPackedType = YES;
-            packedBitWidths[0]=5; packedBitWidths[1]=5; packedBitWidths[2]=5; packedBitWidths[3]=1;
-            packedShifts[0]=0;  packedShifts[1]=5;  packedShifts[2]=10; packedShifts[3]=15;
-            packedTotalBits=16; packedOutputBytes=2; outputComponents=4;
-            break;
-        case 0x8035: /* GL_UNSIGNED_INT_8_8_8_8 */
-            isPackedType = YES;
-            packedBitWidths[0]=8; packedBitWidths[1]=8; packedBitWidths[2]=8; packedBitWidths[3]=8;
-            packedShifts[0]=24; packedShifts[1]=16; packedShifts[2]=8;  packedShifts[3]=0;
-            packedTotalBits=32; packedOutputBytes=4; outputComponents=4;
-            break;
-        case 0x8367: /* GL_UNSIGNED_INT_8_8_8_8_REV */
-            isPackedType = YES;
-            packedBitWidths[0]=8; packedBitWidths[1]=8; packedBitWidths[2]=8; packedBitWidths[3]=8;
-            packedShifts[0]=0;  packedShifts[1]=8;  packedShifts[2]=16; packedShifts[3]=24;
-            packedTotalBits=32; packedOutputBytes=4; outputComponents=4;
-            break;
-        case 0x8036: /* GL_UNSIGNED_INT_10_10_10_2 */
-            isPackedType = YES;
-            packedBitWidths[0]=10; packedBitWidths[1]=10; packedBitWidths[2]=10; packedBitWidths[3]=2;
-            packedShifts[0]=22; packedShifts[1]=12; packedShifts[2]=2;  packedShifts[3]=0;
-            packedTotalBits=32; packedOutputBytes=4; outputComponents=4;
-            break;
-        case 0x8368: /* GL_UNSIGNED_INT_2_10_10_10_REV */
-            isPackedType = YES;
-            packedBitWidths[0]=10; packedBitWidths[1]=10; packedBitWidths[2]=10; packedBitWidths[3]=2;
-            packedShifts[0]=0;  packedShifts[1]=10; packedShifts[2]=20; packedShifts[3]=30;
-            packedTotalBits=32; packedOutputBytes=4; outputComponents=4;
-            break;
-        default:
-            break;
+    /* P4.5 (item 1171/1116): packed 类型表（10 项 GL packed type ->
+     * {位宽, 移位, 输出字节, 输出分量}）在 C++
+     * （mglRenderCppIntegerReadbackPackedTypeClassify，纯分类，两门共用）。
+     * packedTotalBits 已无读取方（round-54 转换迁移后为死变量），不迁移。 */
+    MGLRenderCppIntegerPackedType packed = {0};
+    mglRenderCppIntegerReadbackPackedTypeClassify((uint32_t)packedType, &packed);
+    BOOL isPackedType = packed.is_packed != 0;
+    uint32_t packedBitWidths[4] = {
+        packed.bit_widths[0], packed.bit_widths[1],
+        packed.bit_widths[2], packed.bit_widths[3]};
+    uint32_t packedShifts[4] = {
+        packed.shifts[0], packed.shifts[1],
+        packed.shifts[2], packed.shifts[3]};
+    NSUInteger packedOutputBytes = (NSUInteger)packed.output_bytes;
+    if (packed.output_components > 0u) {
+        outputComponents = (NSUInteger)packed.output_components;
     }
 
     NSUInteger dstPixelBytes = isPackedType ? packedOutputBytes : (outputComponentBytes * outputComponents);
