@@ -438,6 +438,15 @@ uint32_t mglRenderCppTessEvalItemsPerPatch(
     uint32_t spacing,
     uint32_t point_mode);
 
+/* P4.5 (item 1141/887): GL 4.6 §11.2.2.2 subdivision-count rounding —
+ * fractional_even -> next even (min 2), fractional_odd -> next odd,
+ * otherwise ceil(level).  Single source of truth shared by the TES
+ * eval-item accounting and the ObjC native per-patch primitive counting
+ * (mglTessRoundLevelForSpacing shell in MGLRenderer+Tessellation.m). */
+uint32_t mglRenderCppTessRoundLevelForSpacing(
+    uint32_t spacing,
+    uint32_t ceil_level);
+
 /* Overflow-checked tess capture size (records x stride, min_stride floor).
  * Returns 0 with size_out/offset_out set, -1 on bad args / overflow. */
 int mglRenderCppCheckedTessCaptureSize(

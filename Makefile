@@ -570,6 +570,7 @@ LIBS += $(LLVM_LDFLAGS) -lobjc
 
 $(build_dir)/test_mglair: test_legacy_compat/test_mglair.mm \
 	MGL/src/mgl_air_backend.cpp MGL/src/mgl_metallib_writer.cpp \
+	MGL/src/mgl_legacy_compat.c MGL/include/mgl_legacy_compat.h \
 	MGL/src/mgl_air_reflect.c MGL/src/mgl_glsl_sema.c \
 	MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c \
 	MGL/src/mgl_ir.c
@@ -577,6 +578,7 @@ $(build_dir)/test_mglair: test_legacy_compat/test_mglair.mm \
 		-framework Cocoa -framework Foundation -framework Metal \
 		test_legacy_compat/test_mglair.mm \
 		MGL/src/mgl_air_backend.cpp MGL/src/mgl_metallib_writer.cpp \
+		MGL/src/mgl_legacy_compat.c \
 		MGL/src/mgl_air_reflect.c MGL/src/mgl_glsl_sema.c \
 		MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c \
 		MGL/src/mgl_ir.c \
@@ -632,12 +634,14 @@ GTEST_LIBS := $(GTEST_ROOT)/build-mgl/lib/libgtest.a \
 
 $(build_dir)/test_mglair_gtest: test_legacy_compat/test_mglair_gtest.cpp \
 	MGL/src/mgl_air_backend.cpp MGL/src/mgl_metallib_writer.cpp \
+	MGL/src/mgl_legacy_compat.c MGL/include/mgl_legacy_compat.h \
 	MGL/src/mgl_air_reflect.c MGL/src/mgl_glsl_sema.c \
 	MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c \
 	MGL/src/mgl_ir.c
 	$(LLVM_CXX) -x c++ $(LLVM_CXXFLAGS) $(GTEST_CXXFLAGS) $(LLVM_LDFLAGS) \
 		test_legacy_compat/test_mglair_gtest.cpp \
 		MGL/src/mgl_air_backend.cpp MGL/src/mgl_metallib_writer.cpp \
+		MGL/src/mgl_legacy_compat.c \
 		MGL/src/mgl_air_reflect.c MGL/src/mgl_glsl_sema.c \
 		MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c \
 		MGL/src/mgl_ir.c \

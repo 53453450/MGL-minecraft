@@ -3485,6 +3485,34 @@ static int verifyTessEvalItemsAndCaptureSize(void) {
     return 0;
 }
 
+static int verifyTessRoundLevelForSpacing(void) {
+    /* P4.5 (item 1141/887): GL 4.6 §11.2.2.2 subdivision-count rounding.
+     * fractional_even -> next even, min 2; fractional_odd -> next odd;
+     * integer/other spacing keeps ceil(level). */
+    if (mglRenderCppTessRoundLevelForSpacing(GL_FRACTIONAL_EVEN, 1) != 2 ||
+        mglRenderCppTessRoundLevelForSpacing(GL_FRACTIONAL_EVEN, 2) != 2 ||
+        mglRenderCppTessRoundLevelForSpacing(GL_FRACTIONAL_EVEN, 3) != 4 ||
+        mglRenderCppTessRoundLevelForSpacing(GL_FRACTIONAL_EVEN, 4) != 4 ||
+        mglRenderCppTessRoundLevelForSpacing(GL_FRACTIONAL_EVEN, 5) != 6) {
+        fprintf(stderr, "FAIL: round level even\n");
+        return 1;
+    }
+    if (mglRenderCppTessRoundLevelForSpacing(GL_FRACTIONAL_ODD, 1) != 1 ||
+        mglRenderCppTessRoundLevelForSpacing(GL_FRACTIONAL_ODD, 2) != 3 ||
+        mglRenderCppTessRoundLevelForSpacing(GL_FRACTIONAL_ODD, 3) != 3 ||
+        mglRenderCppTessRoundLevelForSpacing(GL_FRACTIONAL_ODD, 4) != 5) {
+        fprintf(stderr, "FAIL: round level odd\n");
+        return 1;
+    }
+    if (mglRenderCppTessRoundLevelForSpacing(GL_EQUAL, 5) != 5 ||
+        mglRenderCppTessRoundLevelForSpacing(0xfeed, 7) != 7) {
+        fprintf(stderr, "FAIL: round level passthrough\n");
+        return 1;
+    }
+    printf("TESS_ROUND_LEVEL_OK\n");
+    return 0;
+}
+
 static int verifyTessFactorTransforms(void) {
     /* P4.5 (item 1141/887): tess-factor CPU transforms. */
     float outer[4] = {1.0f, 2.0f, 3.0f, 4.0f};
@@ -5248,6 +5276,7 @@ int main(void) {
         if (verifyIntegerReadbackConvert() != 0) return 1;
         if (verifyTessFactorTransforms() != 0) return 1;
         if (verifyTessEvalItemsAndCaptureSize() != 0) return 1;
+        if (verifyTessRoundLevelForSpacing() != 0) return 1;
         if (verifyNativeTESInterfaceGuards() != 0) return 1;
         if (verifyRasterizationIsEmpty() != 0) return 1;
         if (verifyIntegerReadbackClassify() != 0) return 1;

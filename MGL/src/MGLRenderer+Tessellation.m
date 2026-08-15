@@ -1254,16 +1254,14 @@ bool mglTessFactorsDiscardPatch(GLenum genMode,
     }
 }
 
+/* P4.5 (item 1141/887): GL 4.6 §11.2.2.2 subdivision-count rounding.
+ * Single source of truth is mglRenderCppTessRoundLevelForSpacing
+ * (mgl_render_cpp.cpp) — this shell keeps the six native per-patch counting
+ * call sites unchanged. */
 static GLuint mglTessRoundLevelForSpacing(GLenum spacing, GLuint ceilLevel)
 {
-    if (spacing == GL_FRACTIONAL_EVEN) {
-        const GLuint r = (ceilLevel & 1u) ? ceilLevel + 1u : ceilLevel;
-        return MAX(2u, r);
-    }
-    if (spacing == GL_FRACTIONAL_ODD) {
-        return (ceilLevel & 1u) ? ceilLevel : ceilLevel + 1u;
-    }
-    return ceilLevel;
+    return (GLuint)mglRenderCppTessRoundLevelForSpacing(
+        (uint32_t)spacing, (uint32_t)ceilLevel);
 }
 
 static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,

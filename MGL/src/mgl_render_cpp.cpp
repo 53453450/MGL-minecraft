@@ -4790,7 +4790,14 @@ int mglRenderCppBlitFramebufferPlan(
     return 0;
 }
 
-static uint32_t mglTessRoundLevelForSpacing(uint32_t spacing,
+/* GL 4.6 §11.2.2.2 subdivision-count rounding shared by both gates: the
+ * isolines/point-mode TES eval-item accounting (mglRenderCppTessEvalItemsPerPatch)
+ * and the ObjC native per-patch primitive counting (mglTessRoundLevelForSpacing
+ * thin shell in MGLRenderer+Tessellation.m).  fractional_even rounds up to the
+ * next even level (min 2), fractional_odd to the next odd; integer (and any
+ * other spacing) keeps ceil(level). */
+extern "C"
+uint32_t mglRenderCppTessRoundLevelForSpacing(uint32_t spacing,
                                               uint32_t ceil_level) {
     if (spacing == GL_FRACTIONAL_EVEN) {
         const uint32_t r = (ceil_level & 1u) ? ceil_level + 1u : ceil_level;
@@ -4836,12 +4843,12 @@ uint32_t mglRenderCppTessEvalItemsPerPatch(
     if (point_mode && gen_mode == GL_QUADS) {
         float i1 = *(const __fp16*)&tf->inside[1];
         if (i1 < 1.0f) i1 = 1.0f;
-        return mglTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(i0)) *
-               mglTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(i1));
+        return mglRenderCppTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(i0)) *
+               mglRenderCppTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(i1));
     }
     if (point_mode) {
         const uint32_t n =
-            mglTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(i0));
+            mglRenderCppTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(i0));
         return n * n;
     }
     return 0u;
