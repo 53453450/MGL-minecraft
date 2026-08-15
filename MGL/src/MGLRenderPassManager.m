@@ -96,13 +96,13 @@ static void mglRenderPassManagerStoreIdentity(
     mglRenderPassManagerStoreIdentity(&_state, &identity);
 }
 
-- (id<MTLCommandBuffer>)installNewCommandBufferFromQueue:(id<MTLCommandQueue>)commandQueue
+- (MGLMetalCommandBufferRef)installNewCommandBufferFromQueue:(MGLMetalCommandQueueRef)commandQueue
 {
     /* P4.5 (item 1141): the C++ CommandBufferOwner is the single source on
      * BOTH gates — the ObjC mirror is gone.  If owner creation fails, the
      * fallback adopts the ObjC-created buffer so reads via the getter stay
      * correct. */
-    id<MTLCommandBuffer> commandBuffer = nil;
+    MGLMetalCommandBufferRef commandBuffer = nil;
     if (commandQueue) {
         commandBuffer = mglRenderCppCreateOrResetCommandBufferOwner(
             &_state.currentCommandBufferOwner, commandQueue);
@@ -122,10 +122,10 @@ static void mglRenderPassManagerStoreIdentity(
     return commandBuffer;
 }
 
-- (id<MTLCommandBuffer>)detachCurrentCommandBufferForSubmission
+- (MGLMetalCommandBufferRef)detachCurrentCommandBufferForSubmission
 {
-    id<MTLCommandBuffer> commandBuffer =
-        (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(
+    MGLMetalCommandBufferRef commandBuffer =
+        (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(
             _state.currentCommandBufferOwner);
     if (commandBuffer && _state.currentCommandBufferOwner) {
         mglRenderCppDestroyCommandBufferSubmission(
@@ -135,7 +135,7 @@ static void mglRenderPassManagerStoreIdentity(
                 _state.currentCommandBufferOwner,
                 &_state.detachedCommandBufferSubmission,
                 &detachedBuffer) == 0 && detachedBuffer) {
-            commandBuffer = (__bridge id<MTLCommandBuffer>)detachedBuffer;
+            commandBuffer = (__bridge MGLMetalCommandBufferRef)detachedBuffer;
         } else {
             /* Preserve the old ARC handoff if allocation of the submission
              * handle fails. commandBuffer is already a strong local. */
@@ -153,7 +153,7 @@ static void mglRenderPassManagerStoreIdentity(
     [self resetMDIScratch];
 }
 
-- (BOOL)commitDetachedCommandBufferIfOwned:(id<MTLCommandBuffer>)commandBuffer
+- (BOOL)commitDetachedCommandBufferIfOwned:(MGLMetalCommandBufferRef)commandBuffer
 {
     /* P4.5 (item 1141): ownership guard via the C++ submission. */
     if (!commandBuffer || !_state.detachedCommandBufferSubmission ||
@@ -169,7 +169,7 @@ static void mglRenderPassManagerStoreIdentity(
     return YES;
 }
 
-- (void)releaseDetachedCommandBufferIfOwned:(id<MTLCommandBuffer>)commandBuffer
+- (void)releaseDetachedCommandBufferIfOwned:(MGLMetalCommandBufferRef)commandBuffer
 {
     /* P4.5 (item 1141): ownership guard via the C++ submission. */
     if (!_state.detachedCommandBufferSubmission ||
@@ -209,7 +209,7 @@ static void mglRenderPassManagerStoreIdentity(
     mglRenderCppCommandBufferOwnerClearSyncs(_state.currentCommandBufferOwner);
 }
 
-- (id<MTLEvent>)preparePendingEventWithDevice:(__unused id<MTLDevice>)device
+- (MGLMetalEventRef)preparePendingEventWithDevice:(__unused MGLMetalDeviceRef)device
                                      syncName:(GLsizei)syncName
 {
     /* P4.5 (item 1141): the pending event slot lives inside the C++
@@ -224,10 +224,10 @@ static void mglRenderPassManagerStoreIdentity(
             _state.pendingEventOwner, syncName, &event) != 0 || !event) {
         return nil;
     }
-    return (__bridge id<MTLEvent>)event;
+    return (__bridge MGLMetalEventRef)event;
 }
 
-- (id<MTLEvent>)detachPendingEventWithSyncName:(GLuint *)syncNameOut
+- (MGLMetalEventRef)detachPendingEventWithSyncName:(GLuint *)syncNameOut
 {
     /* P4.5 (item 1141): transfers the owner's reference via __bridge_transfer. */
     GLsizei syncName = 0;
@@ -240,7 +240,7 @@ static void mglRenderPassManagerStoreIdentity(
     if (!event) {
         return nil;
     }
-    return (__bridge_transfer id<MTLEvent>)event;
+    return (__bridge_transfer MGLMetalEventRef)event;
 }
 
 - (void)clearPendingEvent
@@ -251,7 +251,7 @@ static void mglRenderPassManagerStoreIdentity(
     }
 }
 
-- (void)installRenderEncoder:(id<MTLRenderCommandEncoder>)renderEncoder
+- (void)installRenderEncoder:(MGLMetalRenderCommandEncoderRef)renderEncoder
 {
     /* P4.5 (item 1141): the C++ RenderEncoderOwner is the single source on
      * BOTH gates — the ObjC mirror is gone; reads go through the getter. */
@@ -275,11 +275,11 @@ static void mglRenderPassManagerStoreIdentity(
     }
 }
 
-- (id<MTLRenderCommandEncoder>)createRenderEncoderWithDescriptor:(MTLRenderPassDescriptor *)descriptor
+- (MGLMetalRenderCommandEncoderRef)createRenderEncoderWithDescriptor:(MTLRenderPassDescriptor *)descriptor
 {
-    id<MTLRenderCommandEncoder> renderEncoder = nil;
-    id<MTLCommandBuffer> currentCommandBuffer =
-        (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(
+    MGLMetalRenderCommandEncoderRef renderEncoder = nil;
+    MGLMetalCommandBufferRef currentCommandBuffer =
+        (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(
             _state.currentCommandBufferOwner);
     if (mglRenderPassManagerUsesMetalCpp() &&
         currentCommandBuffer && _state.renderPassStateOwner &&
@@ -289,7 +289,7 @@ static void mglRenderPassManagerStoreIdentity(
                 (__bridge void *)currentCommandBuffer,
                 _state.renderPassStateOwner, &encoderCPP) == 0 &&
             encoderCPP) {
-            renderEncoder = (__bridge id<MTLRenderCommandEncoder>)encoderCPP;
+            renderEncoder = (__bridge MGLMetalRenderCommandEncoderRef)encoderCPP;
         }
     }
     if (!renderEncoder && currentCommandBuffer && descriptor) {
@@ -301,8 +301,8 @@ static void mglRenderPassManagerStoreIdentity(
 
 - (void)endCurrentRenderEncoder
 {
-    id<MTLRenderCommandEncoder> currentRenderEncoder =
-        (__bridge id<MTLRenderCommandEncoder>)
+    MGLMetalRenderCommandEncoderRef currentRenderEncoder =
+        (__bridge MGLMetalRenderCommandEncoderRef)
             mglRenderCppRenderEncoderOwnerGetCurrent(
                 _state.currentRenderEncoderOwner);
     if (!currentRenderEncoder) return;
@@ -341,7 +341,7 @@ static void mglRenderPassManagerStoreIdentity(
     _state.isCommittingCommandBuffer = NO;
 }
 
-- (id<MTLBuffer>)mdiArgumentScratchBufferWithDevice:(id<MTLDevice>)device
+- (MGLMetalBufferRef)mdiArgumentScratchBufferWithDevice:(MGLMetalDeviceRef)device
                                               length:(NSUInteger)length
                                               offset:(NSUInteger *)offsetOut
 {
@@ -373,7 +373,7 @@ static void mglRenderPassManagerStoreIdentity(
         return nil;
     }
     if (offsetOut) *offsetOut = (NSUInteger)offset;
-    return (__bridge id<MTLBuffer>)buffer;
+    return (__bridge MGLMetalBufferRef)buffer;
 }
 
 - (void)resetMDIScratch
@@ -442,7 +442,7 @@ static void mglRenderPassManagerStoreIdentity(
     _state.traceReplayBatchIndex = batchIndex;
 }
 
-- (void)setTransientDepthTexture:(nullable id<MTLTexture>)texture
+- (void)setTransientDepthTexture:(nullable MGLMetalTextureRef)texture
                            width:(NSUInteger)width
                           height:(NSUInteger)height
 {
@@ -451,7 +451,7 @@ static void mglRenderPassManagerStoreIdentity(
     _state.transientDepthTextureHeight = height;
 }
 
-- (void)setFallbackRenderTargetTexture:(nullable id<MTLTexture>)texture
+- (void)setFallbackRenderTargetTexture:(nullable MGLMetalTextureRef)texture
 {
     _state.fallbackRenderTargetTexture = texture;
 }

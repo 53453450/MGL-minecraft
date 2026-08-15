@@ -19,6 +19,7 @@ typedef id<MTLRenderCommandEncoder> MGLMetalRenderCommandEncoderRef;
 typedef id<MTLComputeCommandEncoder> MGLMetalComputeCommandEncoderRef;
 typedef id<MTLBlitCommandEncoder> MGLMetalBlitCommandEncoderRef;
 typedef id<MTLCommandBuffer> MGLMetalCommandBufferRef;
+typedef id<MTLCommandQueue> MGLMetalCommandQueueRef;
 typedef id<MTLFunction> MGLMetalFunctionRef;
 typedef id<MTLRenderPipelineState> MGLMetalRenderPipelineStateRef;
 typedef id<MTLComputePipelineState> MGLMetalComputePipelineStateRef;

@@ -65,7 +65,7 @@ static void *mglQueryVisibilityBuffer(void *queryStateOwner)
      * they were encoded), matching GL semantics. */
     METAL_LOCK();
     @try {
-        MGLMetalRenderCommandEncoderRef encoder = (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner);
+        MGLMetalRenderCommandEncoderRef encoder = (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner);
         /* P4.1f: under gate-on the visibility buffer lives in the C++
          * RenderPassStateOwner; the ObjC descriptor mirror is nil. */
         BOOL hasVisibilityBuffer = NO;
@@ -232,7 +232,7 @@ static void *mglQueryVisibilityBuffer(void *queryStateOwner)
     // completion via waitUntilCompleted. This runs regardless of
     // kMGLDisableSharedEventSync (which only gates the legacy shared-event path).
     MGLMetalCommandBufferRef currentCommandBuffer =
-        (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner);
+        (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner);
     MGLRenderCppCommandBufferState currentState =
         mglRenderCommandBufferState(currentCommandBuffer);
     if (currentCommandBuffer &&

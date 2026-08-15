@@ -34,8 +34,8 @@
         // Get current error tracking from command buffer if available
         MGLRenderCppCommandBufferState currentState =
             mglRenderCommandBufferState(
-                (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
-        if ((__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner) &&
+                (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
+        if ((__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner) &&
             currentState.has_error) {
             NSTimeInterval currentTime = [[NSDate date] timeIntervalSince1970];
 
@@ -100,9 +100,9 @@
 {
     // PROPER FIX: Safe command buffer cleanup
     @try {
-        if ((__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner)) {
+        if ((__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner)) {
             if (mglRenderCommandBufferStatus(
-                    (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner)) ==
+                    (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner)) ==
                 MTLCommandBufferStatusCommitted) {
                 // Do not block indefinitely here; cleanup can be invoked on the render thread.
                 // Command buffers retain resources until completion, so dropping the reference is safe.
@@ -113,9 +113,9 @@
             [_renderPassManager discardCurrentCommandBuffer];
         }
 
-        if ((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
+        if ((__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
             MGLMetalRenderCommandEncoderRef encoder =
-                (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner);
+                (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner);
             if (!(mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
                   mglRenderCppGetDevice() &&
                   mglRenderCppEndRenderEncoder((__bridge void *)encoder) == 0)) {
@@ -404,7 +404,7 @@
     NSLog(@"MGL AGX: Clearing problematic GPU state for recovery");
 
     // Clear current problematic resources
-    if ((__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner)) {
+    if ((__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner)) {
         [_renderPassManager discardCurrentCommandBuffer];
     }
 

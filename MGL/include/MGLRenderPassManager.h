@@ -5,6 +5,7 @@
 #import <Metal/Metal.h>
 
 #include "glm_context.h"
+#include "mgl_render_cpp_objc.h"
 
 typedef struct MGLCommandState_t {
     void *_Nullable renderPassIdentityOwner;
@@ -22,8 +23,8 @@ typedef struct MGLCommandState_t {
     void *_Nullable detachedCommandBufferSubmission;
     void *_Nullable mdiArgsScratchOwner;
     void *_Nullable currentRenderEncoderOwner;
-    id<MTLTexture> __strong _Nullable fallbackRenderTargetTexture;
-    id<MTLTexture> __strong _Nullable transientDepthTexture;
+    MGLMetalTextureRef __strong _Nullable fallbackRenderTargetTexture;
+    MGLMetalTextureRef __strong _Nullable transientDepthTexture;
     NSUInteger transientDepthTextureWidth;
     NSUInteger transientDepthTextureHeight;
     BOOL currentDrawUsesRTSampledCopy;
@@ -55,24 +56,24 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (void)updateRenderPassIdentityForContext:(GLMContext)context;
 - (void)clearRenderPassIdentity;
-- (nullable id<MTLCommandBuffer>)installNewCommandBufferFromQueue:(nullable id<MTLCommandQueue>)commandQueue;
-- (nullable id<MTLCommandBuffer>)detachCurrentCommandBufferForSubmission;
+- (nullable MGLMetalCommandBufferRef)installNewCommandBufferFromQueue:(nullable MGLMetalCommandQueueRef)commandQueue;
+- (nullable MGLMetalCommandBufferRef)detachCurrentCommandBufferForSubmission;
 - (void)discardCurrentCommandBuffer;
-- (BOOL)commitDetachedCommandBufferIfOwned:(nullable id<MTLCommandBuffer>)commandBuffer;
-- (void)releaseDetachedCommandBufferIfOwned:(nullable id<MTLCommandBuffer>)commandBuffer;
+- (BOOL)commitDetachedCommandBufferIfOwned:(nullable MGLMetalCommandBufferRef)commandBuffer;
+- (void)releaseDetachedCommandBufferIfOwned:(nullable MGLMetalCommandBufferRef)commandBuffer;
 - (BOOL)appendSyncToCurrentCommandBuffer:(Sync *)sync;
 - (void)clearCurrentCommandBufferSyncListEntries;
-- (nullable id<MTLEvent>)preparePendingEventWithDevice:(id<MTLDevice>)device
+- (nullable MGLMetalEventRef)preparePendingEventWithDevice:(MGLMetalDeviceRef)device
                                              syncName:(GLsizei)syncName;
-- (nullable id<MTLEvent>)detachPendingEventWithSyncName:(nullable GLuint *)syncNameOut;
+- (nullable MGLMetalEventRef)detachPendingEventWithSyncName:(nullable GLuint *)syncNameOut;
 - (void)clearPendingEvent;
-- (void)installRenderEncoder:(nullable id<MTLRenderCommandEncoder>)renderEncoder;
-- (nullable id<MTLRenderCommandEncoder>)createRenderEncoderWithDescriptor:(nullable MTLRenderPassDescriptor *)descriptor;
+- (void)installRenderEncoder:(nullable MGLMetalRenderCommandEncoderRef)renderEncoder;
+- (nullable MGLMetalRenderCommandEncoderRef)createRenderEncoderWithDescriptor:(nullable MTLRenderPassDescriptor *)descriptor;
 - (void)endCurrentRenderEncoder;
 - (void)clearCurrentRenderEncoder;
 - (BOOL)beginCommandBufferCommit;
 - (void)endCommandBufferCommit;
-- (nullable id<MTLBuffer>)mdiArgumentScratchBufferWithDevice:(id<MTLDevice>)device
+- (nullable MGLMetalBufferRef)mdiArgumentScratchBufferWithDevice:(MGLMetalDeviceRef)device
                                                       length:(NSUInteger)length
                                                       offset:(nullable NSUInteger *)offsetOut;
 - (void)resetMDIScratch;
@@ -85,10 +86,10 @@ NS_ASSUME_NONNULL_BEGIN
                      generation:(uint64_t)generation;
 - (void)clearFboMatchCache;
 - (void)setTraceReplayFlushId:(uint64_t)flushId batchIndex:(uint32_t)batchIndex;
-- (void)setTransientDepthTexture:(nullable id<MTLTexture>)texture
+- (void)setTransientDepthTexture:(nullable MGLMetalTextureRef)texture
                            width:(NSUInteger)width
                           height:(NSUInteger)height;
-- (void)setFallbackRenderTargetTexture:(nullable id<MTLTexture>)texture;
+- (void)setFallbackRenderTargetTexture:(nullable MGLMetalTextureRef)texture;
 - (void)setCurrentDrawUsesRTSampledCopy:(BOOL)usesRTSampledCopy;
 - (void)setDontCareFrameGeneration:(GLuint)generation;
 - (void)incrementDontCareFrameGenerationWithWrap;
