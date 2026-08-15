@@ -565,6 +565,17 @@ uint32_t mglRenderCppMTLIndexTypeForGLType(uint32_t gl_type);
  * extern linkage its many callers use). */
 uint64_t mglRenderCppMetalTextureLevelDimension(uint64_t base, uint64_t level);
 
+/* P4.5 (item 1141/887): triangle-fan element emulation — expand a raw
+ * element index stream into `(center, i+1, i+2)` triplets (count-2
+ * triangles x 3, all uint32).  Pure CPU; caller frees the returned array.
+ * Returns 0 on success with *out_count set, -1 on bad args / overflow. */
+int mglRenderCppExpandTriangleFanIndices(
+    const uint8_t *bytes,
+    uint32_t elem_width,        /* 1, 2 or 4 */
+    uint32_t source_count,
+    uint32_t **out_indices,     /* malloc'd, count*3 entries */
+    uint64_t *out_count);
+
 typedef struct MGLRenderCppGeometryGatherResult_t {
     uint32_t *gather;          /* malloc'd raw gather (vertex_ids) */
     uint32_t gather_count;

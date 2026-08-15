@@ -2304,6 +2304,37 @@ static int verifyMDIScratchOwner(void) {
     return 0;
 }
 
+static int verifyExpandTriangleFan(void) {
+    /* P4.5 (item 1141/887): triangle-fan element emulation expansion. */
+    uint32_t *idx = NULL; uint64_t n = 0;
+    if (mglRenderCppExpandTriangleFanIndices(NULL, 2, 4, &idx, &n) != -1) {
+        fprintf(stderr, "FAIL: fan bad args\n");
+        return 1;
+    }
+    /* center=7; triangles (7,10,11),(7,11,12),(7,12,13) -> 9 indices. */
+    const uint16_t u16[] = {7, 10, 11, 12, 13};
+    if (mglRenderCppExpandTriangleFanIndices((const uint8_t*)u16, 2, 5, &idx, &n) != 0 ||
+        n != 9 || idx[0]!=7 || idx[1]!=10 || idx[2]!=11 || idx[3]!=7 ||
+        idx[4]!=11 || idx[5]!=12 || idx[6]!=7 || idx[7]!=12 || idx[8]!=13) {
+        fprintf(stderr, "FAIL: fan content n=%llu\n", (unsigned long long)n);
+        return 1;
+    }
+    free(idx);
+    const uint8_t u8[] = {0,1,2,3};
+    if (mglRenderCppExpandTriangleFanIndices(u8, 1, 4, &idx, &n) != 0 ||
+        n != 6 || idx[1]!=1 || idx[2]!=2 || idx[4]!=2) {
+        fprintf(stderr, "FAIL: fan u8\n");
+        return 1;
+    }
+    free(idx);
+    if (mglRenderCppExpandTriangleFanIndices(u8, 1, 2, &idx, &n) != -1) {
+        fprintf(stderr, "FAIL: fan too short\n");
+        return 1;
+    }
+    printf("EXPAND_TRIANGLE_FAN_OK\n");
+    return 0;
+}
+
 static int verifyGeometryGather(void) {
     /* P4.4 (item 1141/887): geometry gather indices. */
     MGLRenderCppGeometryGatherResult r = {0};
@@ -4851,6 +4882,7 @@ int main(void) {
         if (verifyLevelDimension() != 0) return 1;
         if (verifyReadTextureRegionClip() != 0) return 1;
         if (verifyGeometryGather() != 0) return 1;
+        if (verifyExpandTriangleFan() != 0) return 1;
         if (verifyMDIScratchOwner() != 0) return 1;
         if (verifyRenderEncoderGetter() != 0) return 1;
         if (verifyCommandBufferGetterAndAdopt() != 0) return 1;

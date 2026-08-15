@@ -3901,6 +3901,36 @@ int mglRenderCppGetTexImagePlan(
 }
 
 extern "C"
+int mglRenderCppExpandTriangleFanIndices(
+    const uint8_t* bytes, uint32_t elem_width, uint32_t count,
+    uint32_t** out_indices, uint64_t* out_count) {
+    if (!bytes || count < 3u || !out_indices || !out_count) {
+        return -1;
+    }
+    const uint32_t n = count - 2u;
+    const uint64_t need = (uint64_t)n * 3u;
+    if (need > (uint64_t)(UINT32_MAX / sizeof(uint32_t))) {
+        return -1;
+    }
+    uint32_t* const dst = (uint32_t*)malloc((size_t)need * sizeof(uint32_t));
+    if (!dst) {
+        return -1;
+    }
+    const int w = (elem_width == 1u) ? 1 : (elem_width == 2u ? 2 : 4);
+    #define RDX(i) ((w == 1) ? (uint32_t)bytes[i]         : (w == 2) ? (uint32_t)((const uint16_t*)bytes)[i]         : (uint32_t)((const uint32_t*)bytes)[i])
+    const uint32_t c = RDX(0u);
+    for (uint32_t t = 0u; t < n; t++) {
+        dst[t*3u+0u] = c;
+        dst[t*3u+1u] = RDX(t + 1u);
+        dst[t*3u+2u] = RDX(t + 2u);
+    }
+#undef RDX
+    *out_indices = dst;
+    *out_count = need;
+    return 0;
+}
+
+extern "C"
 int mglRenderCppGeometryGatherIndices(
     const uint8_t* bytes,
     uint32_t elem_width,
