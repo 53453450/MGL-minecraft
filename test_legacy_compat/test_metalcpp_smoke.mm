@@ -2304,6 +2304,33 @@ static int verifyMDIScratchOwner(void) {
     return 0;
 }
 
+static int verifyQuadLine(void) {
+    /* P4.5 (item 1141/887): quad-array/element line-loop emulation (8/quad). */
+    uint32_t *idx = NULL; uint64_t n = 0;
+    if (mglRenderCppExpandQuadArrayLineIndices(1, &idx, &n) != 0 ||
+        n != 8 ||
+        idx[0]!=0||idx[1]!=1||idx[2]!=1||idx[3]!=2||idx[4]!=2||idx[5]!=3||idx[6]!=3||idx[7]!=0) {
+        fprintf(stderr, "FAIL: quad array line\n");
+        return 1;
+    }
+    free(idx);
+    const uint16_t q[] = {10,20,30,40};
+    if (mglRenderCppExpandQuadElementLineIndices((const uint8_t*)q, 2, 1, &idx, &n) != 0 ||
+        n != 8 ||
+        idx[0]!=10||idx[1]!=20||idx[2]!=20||idx[3]!=30||idx[4]!=30||idx[5]!=40||idx[6]!=40||idx[7]!=10) {
+        fprintf(stderr, "FAIL: quad elem line\n");
+        return 1;
+    }
+    free(idx);
+    if (mglRenderCppExpandQuadArrayLineIndices(0, &idx, &n) != -1 ||
+        mglRenderCppExpandQuadElementLineIndices(NULL, 2, 1, &idx, &n) != -1) {
+        fprintf(stderr, "FAIL: quad line bad args\n");
+        return 1;
+    }
+    printf("EXPAND_QUAD_LINE_OK\n");
+    return 0;
+}
+
 static int verifyExpandQuad(void) {
     /* P4.5 (item 1141/887): quad-array/quad-element emulation. */
     uint32_t *idx = NULL; uint64_t n = 0;
@@ -4951,6 +4978,7 @@ int main(void) {
         if (verifyExpandTriangleFan() != 0) return 1;
         if (verifyExpandStripAndLineLoop() != 0) return 1;
         if (verifyExpandQuad() != 0) return 1;
+        if (verifyQuadLine() != 0) return 1;
         if (verifyMDIScratchOwner() != 0) return 1;
         if (verifyRenderEncoderGetter() != 0) return 1;
         if (verifyCommandBufferGetterAndAdopt() != 0) return 1;

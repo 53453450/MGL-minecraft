@@ -3907,7 +3907,68 @@ static inline uint32_t MGLRenderReadIndexBytes(const uint8_t* bytes, int w, uint
 }
 
 extern "C"
-int mglRenderCppExpandQuadArrayIndices(
+int mglRenderCppExpandQuadArrayLineIndices(
+    uint32_t quad_count, uint32_t** out_indices, uint64_t* out_count) {
+    if (quad_count == 0u || !out_indices || !out_count) {
+        return -1;
+    }
+    const uint64_t need = (uint64_t)quad_count * 8u;
+    if (need > (uint64_t)(UINT32_MAX / sizeof(uint32_t))) {
+        return -1;
+    }
+    uint32_t* const dst = (uint32_t*)malloc((size_t)need * sizeof(uint32_t));
+    if (!dst) {
+        return -1;
+    }
+    for (uint32_t q = 0u; q < quad_count; q++) {
+        const uint32_t b = q * 4u;
+        const uint32_t d = q * 8u;
+        if (b + 3u > UINT32_MAX) {
+            free(dst);
+            return -1;
+        }
+        dst[d+0]=b+0; dst[d+1]=b+1; dst[d+2]=b+1; dst[d+3]=b+2;
+        dst[d+4]=b+2; dst[d+5]=b+3; dst[d+6]=b+3; dst[d+7]=b+0;
+    }
+    *out_indices = dst;
+    *out_count = need;
+    return 0;
+}
+
+extern "C"
+int mglRenderCppExpandQuadElementLineIndices(
+    const uint8_t* bytes, uint32_t elem_width, uint32_t quad_count,
+    uint32_t** out_indices, uint64_t* out_count) {
+    if (!bytes || quad_count == 0u || !out_indices || !out_count) {
+        return -1;
+    }
+    const uint64_t need = (uint64_t)quad_count * 8u;
+    if (need > (uint64_t)(UINT32_MAX / sizeof(uint32_t))) {
+        return -1;
+    }
+    uint32_t* const dst = (uint32_t*)malloc((size_t)need * sizeof(uint32_t));
+    if (!dst) {
+        return -1;
+    }
+    const int w = (elem_width == 1u) ? 1 : (elem_width == 2u ? 2 : 4);
+    for (uint32_t q = 0u; q < quad_count; q++) {
+        const uint32_t src = q * 4u;
+        const uint32_t d = q * 8u;
+        const uint32_t i0 = MGLRenderReadIndexBytes(bytes, w, src + 0u);
+        const uint32_t i1 = MGLRenderReadIndexBytes(bytes, w, src + 1u);
+        const uint32_t i2 = MGLRenderReadIndexBytes(bytes, w, src + 2u);
+        const uint32_t i3 = MGLRenderReadIndexBytes(bytes, w, src + 3u);
+        dst[d+0]=i0; dst[d+1]=i1; dst[d+2]=i1; dst[d+3]=i2;
+        dst[d+4]=i2; dst[d+5]=i3; dst[d+6]=i3; dst[d+7]=i0;
+    }
+    *out_indices = dst;
+    *out_count = need;
+    return 0;
+}
+
+extern "C"
+int
+mglRenderCppExpandQuadArrayIndices(
     uint32_t quad_count, uint32_t** out_indices, uint64_t* out_count) {
     if (quad_count == 0u || !out_indices || !out_count) {
         return -1;

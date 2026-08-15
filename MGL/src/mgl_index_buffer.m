@@ -513,29 +513,21 @@ MGLMetalBufferRef mglNewQuadArrayLineIndexBuffer(MGLMetalDeviceRef device,
     }
     os_unfair_lock_unlock(&s_arrayIndexCacheLock);
 
-    uint32_t *indices = NULL;
-    MGLMetalBufferRef buffer = mglNewUninitializedIndexBuffer(device,
-                                                          indexCount * sizeof(uint32_t),
-                                                          (void **)&indices);
-    if (!buffer) {
+    uint32_t *expanded = NULL;
+    uint64_t indexCount64 = 0u;
+    if (mglRenderCppExpandQuadArrayLineIndices(
+            (uint32_t)quadCount, &expanded, &indexCount64) != 0) {
         return nil;
     }
-
-    for (NSUInteger quad = 0; quad < quadCount; quad++) {
-        NSUInteger src = quad * 4u;
-        NSUInteger dst = quad * 8u;
-        if ((src + 3u) > UINT32_MAX) {
-            return nil;
-        }
-        indices[dst + 0u] = (uint32_t)(src + 0u);
-        indices[dst + 1u] = (uint32_t)(src + 1u);
-        indices[dst + 2u] = (uint32_t)(src + 1u);
-        indices[dst + 3u] = (uint32_t)(src + 2u);
-        indices[dst + 4u] = (uint32_t)(src + 2u);
-        indices[dst + 5u] = (uint32_t)(src + 3u);
-        indices[dst + 6u] = (uint32_t)(src + 3u);
-        indices[dst + 7u] = (uint32_t)(src + 0u);
+    uint32_t *indices = NULL;
+    MGLMetalBufferRef buffer = mglNewUninitializedIndexBuffer(
+        device, (NSUInteger)indexCount64 * sizeof(uint32_t), (void **)&indices);
+    if (!buffer) {
+        free(expanded);
+        return nil;
     }
+    memcpy(indices, expanded, (size_t)indexCount64 * sizeof(uint32_t));
+    free(expanded);
 
     os_unfair_lock_lock(&s_arrayIndexCacheLock);
     s_cachedQuadLineArrayBuffer = buffer;
@@ -564,34 +556,27 @@ MGLMetalBufferRef mglNewQuadElementLineIndexBuffer(MGLMetalDeviceRef device,
         return nil;
     }
 
-    NSUInteger indexCount = quadCount * 8u;
-    uint32_t *indices = NULL;
-    MGLMetalBufferRef buffer = mglNewUninitializedIndexBuffer(device,
-                                                          indexCount * sizeof(uint32_t),
-                                                          (void **)&indices);
-    if (!buffer) {
+    const uint32_t elemWidth = sourceIndexType == GL_UNSIGNED_BYTE ? 1u
+        : sourceIndexType == GL_UNSIGNED_SHORT ? 2u : 4u;
+    uint32_t *expanded = NULL;
+    uint64_t indexCount64 = 0u;
+    if (mglRenderCppExpandQuadElementLineIndices(
+            sourceIndexBytes, elemWidth, (uint32_t)quadCount,
+            &expanded, &indexCount64) != 0) {
         return nil;
     }
-
-    for (NSUInteger quad = 0; quad < quadCount; quad++) {
-        NSUInteger src = quad * 4u;
-        NSUInteger dst = quad * 8u;
-        uint32_t i0 = mglReadGLIndexValue(sourceIndexBytes, sourceIndexType, src + 0u);
-        uint32_t i1 = mglReadGLIndexValue(sourceIndexBytes, sourceIndexType, src + 1u);
-        uint32_t i2 = mglReadGLIndexValue(sourceIndexBytes, sourceIndexType, src + 2u);
-        uint32_t i3 = mglReadGLIndexValue(sourceIndexBytes, sourceIndexType, src + 3u);
-        indices[dst + 0u] = i0;
-        indices[dst + 1u] = i1;
-        indices[dst + 2u] = i1;
-        indices[dst + 3u] = i2;
-        indices[dst + 4u] = i2;
-        indices[dst + 5u] = i3;
-        indices[dst + 6u] = i3;
-        indices[dst + 7u] = i0;
+    uint32_t *indices = NULL;
+    MGLMetalBufferRef buffer = mglNewUninitializedIndexBuffer(
+        device, (NSUInteger)indexCount64 * sizeof(uint32_t), (void **)&indices);
+    if (!buffer) {
+        free(expanded);
+        return nil;
     }
+    memcpy(indices, expanded, (size_t)indexCount64 * sizeof(uint32_t));
+    free(expanded);
 
     if (outIndexCount) {
-        *outIndexCount = indexCount;
+        *outIndexCount = (NSUInteger)indexCount64;
     }
 
     return buffer;

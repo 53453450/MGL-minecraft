@@ -605,6 +605,19 @@ int mglRenderCppExpandQuadElementIndices(
     const uint8_t *bytes, uint32_t elem_width, uint32_t quad_count,
     uint32_t **out_indices, uint64_t *out_count);
 
+/* P4.5 (item 1141/887): quad-array LINE_LOOP emulation — for each group of
+ * 4 array vertices emit `(a,a+1,a+1,a+2,a+2,a+3,a+3,a)` (a 4-edge closed
+ * loop), quad_count*8 uint32 total.  Pure CPU; caller frees. */
+int mglRenderCppExpandQuadArrayLineIndices(
+    uint32_t quad_count, uint32_t **out_indices, uint64_t *out_count);
+
+/* P4.5 (item 1141/887): quad-element LINE_LOOP emulation — read 4 source
+ * indexes per quad and emit `(i0,i1,i1,i2,i2,i3,i3,i0)`.  Pure CPU;
+ * caller frees. */
+int mglRenderCppExpandQuadElementLineIndices(
+    const uint8_t *bytes, uint32_t elem_width, uint32_t quad_count,
+    uint32_t **out_indices, uint64_t *out_count);
+
 typedef struct MGLRenderCppGeometryGatherResult_t {
     uint32_t *gather;          /* malloc'd raw gather (vertex_ids) */
     uint32_t gather_count;
