@@ -1772,6 +1772,50 @@ static int verifyComputeSetters(id<MTLDevice> device) {
     id<MTLComputeCommandEncoder> encoder =
         (__bridge id<MTLComputeCommandEncoder>)encoderPtr;
 
+    /* P4.5: compute binding snapshot replay.  Valid buffer+bytes ops encode;
+     * NULL encoder / count overflow / NULL bytes / bad kind are rejected;
+     * NULL buffer ops are legal slot clears.  No compute pipeline is needed
+     * for setBuffer/setBytes encoding (only dispatch requires one). */
+    {
+        MGLRenderCppComputeBindingSnapshot cbsnap = {};
+        cbsnap.ops[cbsnap.op_count++] =
+            (MGLRenderCppComputeBindingOp){/* kind */ 0u, /* index */ 0,
+                /* offset */ 16, /* buffer */ (__bridge void *)buffer,
+                /* bytes */ NULL, /* length */ 0u};
+        cbsnap.ops[cbsnap.op_count++] =
+            (MGLRenderCppComputeBindingOp){/* kind */ 0u, /* index */ 1,
+                /* offset */ 0, /* buffer */ NULL, /* bytes */ NULL,
+                /* length */ 0u}; /* NULL buffer = slot clear */
+        cbsnap.ops[cbsnap.op_count++] =
+            (MGLRenderCppComputeBindingOp){/* kind */ 1u, /* index */ 2,
+                /* offset */ 0, /* buffer */ NULL,
+                /* bytes */ "ABCD", /* length */ 4u};
+        MGLRenderCppComputeBindingSnapshot cboverflow = cbsnap;
+        cboverflow.op_count =
+            MGL_RENDER_CPP_COMPUTE_BINDING_SNAPSHOT_MAX_OPS + 1;
+        MGLRenderCppComputeBindingSnapshot cbnullBytes = cbsnap;
+        cbnullBytes.ops[2].bytes = NULL;
+        MGLRenderCppComputeBindingSnapshot cbbadKind = cbsnap;
+        cbbadKind.ops[0].kind = 0xdead;
+        char cbError[128] = {0};
+        if (mglRenderCppEncodeComputeBindingSnapshot(
+                encoderPtr, &cbsnap, cbError, sizeof(cbError)) != 0 ||
+            mglRenderCppEncodeComputeBindingSnapshot(
+                NULL, &cbsnap, NULL, 0) != -1 ||
+            mglRenderCppEncodeComputeBindingSnapshot(
+                encoderPtr, &cboverflow, cbError, sizeof(cbError)) != -1 ||
+            mglRenderCppEncodeComputeBindingSnapshot(
+                encoderPtr, &cbnullBytes, cbError, sizeof(cbError)) != -1 ||
+            mglRenderCppEncodeComputeBindingSnapshot(
+                encoderPtr, &cbbadKind, cbError, sizeof(cbError)) != -1) {
+            fprintf(stderr, "FAIL: compute binding snapshot err='%s'\n",
+                    cbError);
+            mglRenderCppEndComputeEncoder(encoderPtr);
+            return 1;
+        }
+        printf("COMPUTE_BINDING_SNAPSHOT_OK\n");
+    }
+
     if (mglRenderCppSetComputeBuffer(encoderPtr, (__bridge void *)buffer,
                                      16, 0) != 0 ||
         mglRenderCppSetComputeTexture(encoderPtr, (__bridge void *)texture,

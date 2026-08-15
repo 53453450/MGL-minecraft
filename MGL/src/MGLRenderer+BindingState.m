@@ -544,6 +544,12 @@ static void mglBindingStateSetFragmentBytes(
             }
 
             MGL_VBIND_EMIT_BUFFER(bindingIndex, (__bridge void *)isolated, 0);
+            /* Isolated buffers are owned only by this loop local (created via
+             * __bridge_transfer on gate-on): flush immediately so the encoder
+             * retains the buffer while it is still alive, instead of holding a
+             * dangling pointer in the snapshot until the end-of-loop replay.
+             * (Same lifetime hazard as the compute isolated path.) */
+            MGL_VBIND_FLUSH_SNAPSHOT();
             mglRenderCppBindingUpdateVertexBuffer(
                 _bindingStateOwner, (__bridge void *)isolated, 0,
                 (uint32_t)bindingIndex);
@@ -1027,6 +1033,10 @@ static void mglBindingStateSetFragmentBytes(
                     (__bridge void *)convertedBuffer, 0, (uint32_t)bindingIndex)) {
                 MGL_VATTR_EMIT_BUFFER(bindingIndex,
                                       (__bridge void *)convertedBuffer, 0);
+                /* Converted buffers are fresh per call on gate-on
+                 * (__bridge_transfer, no cache): flush immediately so the
+                 * encoder retains the buffer while the loop local is alive. */
+                MGL_VATTR_FLUSH_SNAPSHOT();
                 mglRenderCppBindingUpdateVertexBuffer(
                     _bindingStateOwner, (__bridge void *)convertedBuffer, 0,
                     (uint32_t)bindingIndex);
@@ -1058,6 +1068,10 @@ static void mglBindingStateSetFragmentBytes(
                     (__bridge void *)convertedBuffer, 0, (uint32_t)bindingIndex)) {
                 MGL_VATTR_EMIT_BUFFER(bindingIndex,
                                       (__bridge void *)convertedBuffer, 0);
+                /* Converted buffers are fresh per call on gate-on
+                 * (__bridge_transfer, no cache): flush immediately so the
+                 * encoder retains the buffer while the loop local is alive. */
+                MGL_VATTR_FLUSH_SNAPSHOT();
                 mglRenderCppBindingUpdateVertexBuffer(
                     _bindingStateOwner, (__bridge void *)convertedBuffer, 0,
                     (uint32_t)bindingIndex);
@@ -1097,6 +1111,10 @@ static void mglBindingStateSetFragmentBytes(
                     (__bridge void *)convertedBuffer, 0, (uint32_t)bindingIndex)) {
                 MGL_VATTR_EMIT_BUFFER(bindingIndex,
                                       (__bridge void *)convertedBuffer, 0);
+                /* Converted buffers are fresh per call on gate-on
+                 * (__bridge_transfer, no cache): flush immediately so the
+                 * encoder retains the buffer while the loop local is alive. */
+                MGL_VATTR_FLUSH_SNAPSHOT();
                 mglRenderCppBindingUpdateVertexBuffer(
                     _bindingStateOwner, (__bridge void *)convertedBuffer, 0,
                     (uint32_t)bindingIndex);
@@ -1130,6 +1148,10 @@ static void mglBindingStateSetFragmentBytes(
                     (__bridge void *)convertedBuffer, 0, (uint32_t)bindingIndex)) {
                 MGL_VATTR_EMIT_BUFFER(bindingIndex,
                                       (__bridge void *)convertedBuffer, 0);
+                /* Converted buffers are fresh per call on gate-on
+                 * (__bridge_transfer, no cache): flush immediately so the
+                 * encoder retains the buffer while the loop local is alive. */
+                MGL_VATTR_FLUSH_SNAPSHOT();
                 mglRenderCppBindingUpdateVertexBuffer(
                     _bindingStateOwner, (__bridge void *)convertedBuffer, 0,
                     (uint32_t)bindingIndex);

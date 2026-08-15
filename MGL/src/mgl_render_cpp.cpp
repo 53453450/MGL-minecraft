@@ -5192,6 +5192,51 @@ int mglRenderCppSetComputeThreadgroupMemoryLength(void* compute_encoder,
     return 0;
 }
 
+/* P4.5: compute 绑定 snapshot 重放（逐条 setComputeBuffer/setComputeBytes，
+ * 与 mglRenderCppEncodeBindingSnapshot 的 render 版同构）。NULL buffer =
+ * 槽位清除；NULL bytes / 坏 kind / 越界计数拒绝。 */
+int mglRenderCppEncodeComputeBindingSnapshot(
+    void* compute_encoder,
+    const MGLRenderCppComputeBindingSnapshot* snapshot,
+    char* err,
+    size_t errcap) {
+    if (err && errcap) err[0] = '\0';
+    if (!compute_encoder || !snapshot) {
+        if (err && errcap) snprintf(err, errcap, "bad args");
+        return -1;
+    }
+    MTL::ComputeCommandEncoder* encoder =
+        static_cast<MTL::ComputeCommandEncoder*>(compute_encoder);
+    if (snapshot->op_count >
+        MGL_RENDER_CPP_COMPUTE_BINDING_SNAPSHOT_MAX_OPS) {
+        if (err && errcap) snprintf(err, errcap, "snapshot count overflow");
+        return -1;
+    }
+    for (uint32_t i = 0; i < snapshot->op_count; i++) {
+        const MGLRenderCppComputeBindingOp* op = &snapshot->ops[i];
+        if (op->kind == 0) {
+            /* kind 0: set buffer; NULL buffer clears the slot. */
+            encoder->setBuffer(static_cast<MTL::Buffer*>(op->buffer),
+                               static_cast<NS::UInteger>(op->offset),
+                               op->index);
+        } else if (op->kind == 1) {
+            if (!op->bytes) {
+                if (err && errcap) {
+                    snprintf(err, errcap, "null compute bytes op %u", i);
+                }
+                return -1;
+            }
+            encoder->setBytes(op->bytes, op->length, op->index);
+        } else {
+            if (err && errcap) {
+                snprintf(err, errcap, "bad compute op kind %u", op->kind);
+            }
+            return -1;
+        }
+    }
+    return 0;
+}
+
 int mglRenderCppDispatchCompute(void* compute_encoder,
                                 uint32_t groups_x,
                                 uint32_t groups_y,

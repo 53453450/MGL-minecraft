@@ -193,6 +193,45 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
         return false;
     }
 
+    /* P4.5（round 35）：compute 绑定 setter 序列 snapshot 化 —— 与 render
+     * binding snapshot 同构的 op 列表，gate-on 收集后一次 C ABI 重放（位置在
+     * 本函数末尾，保持「map 循环 emit → runtime-size buffer emit」顺序）；
+     * 任一校验失败路径先 flush 已收集 op 再 return false，与直接路径「已发生
+     * emit」对齐。gate-off 直接 mglComputeSetBuffer（A/B 对照）。copy-back
+     * 登记等书keeping 保持内联、两门一致。 */
+    const BOOL useComputeBindingSnapshot = mglComputeUsesMetalCpp();
+    MGLRenderCppComputeBindingSnapshot cbindSnapshot = {0};
+#define MGL_CBIND_FLUSH_SNAPSHOT()                                              \
+    do {                                                                        \
+        if (useComputeBindingSnapshot && cbindSnapshot.op_count > 0) {          \
+            mglRenderCppEncodeComputeBindingSnapshot(                           \
+                (__bridge void *)computeCommandEncoder, &cbindSnapshot,         \
+                NULL, 0);                                                       \
+            cbindSnapshot = (MGLRenderCppComputeBindingSnapshot){0};            \
+        }                                                                       \
+    } while (0)
+
+#define MGL_CBIND_EMIT_BUFFER(slot, bufPtr, off)                                \
+    do {                                                                        \
+        if (useComputeBindingSnapshot) {                                        \
+            if (cbindSnapshot.op_count >=                                       \
+                MGL_RENDER_CPP_COMPUTE_BINDING_SNAPSHOT_MAX_OPS) {              \
+                MGL_CBIND_FLUSH_SNAPSHOT();                                     \
+            }                                                                   \
+            cbindSnapshot.ops[cbindSnapshot.op_count++] =                       \
+                (MGLRenderCppComputeBindingOp){/* kind */ 0u,                   \
+                                               /* index */ (uint32_t)(slot),    \
+                                               /* offset */ (uint64_t)(off),    \
+                                               /* buffer */ (void *)(bufPtr),   \
+                                               /* bytes */ NULL,                \
+                                               /* length */ 0u};                \
+        } else {                                                                \
+            mglComputeSetBuffer(computeCommandEncoder,                          \
+                                (__bridge id<MTLBuffer>)(bufPtr), (off),        \
+                                (slot));                                        \
+        }                                                                       \
+    } while (0)
+
     BufferMapList localBufferMap = {0};
     BufferMapList *bufferMap = stage == _COMPUTE_SHADER
         ? &MGL_STATE(ctx)->compute_buffer_map_list : &localBufferMap;
@@ -217,7 +256,11 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
 
         ptr = map->buf;
 
-        RETURN_FALSE_ON_NULL(ptr);
+        if (!ptr) {
+            MGL_CBIND_FLUSH_SNAPSHOT();
+            NSLog(@"MGL COMPUTE ERROR: buffer map[%d] NULL buffer", i);
+            return false;
+        }
 
         metalBindingIndex = map->has_metal_binding
             ? (NSUInteger)map->metal_binding_index
@@ -233,6 +276,7 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
             NSLog(@"MGL COMPUTE WARNING: buffer map[%d] negative offset=%lld, skipping",
                   i,
                   (long long)map->offset);
+            MGL_CBIND_FLUSH_SNAPSHOT();
             return false;
         }
         bindOffset = (NSUInteger)map->offset;
@@ -279,6 +323,7 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
                       (unsigned)ptr->name,
                       (unsigned long)fallbackLength,
                       (unsigned long)availableBytes);
+                MGL_CBIND_FLUSH_SNAPSHOT();
                 return false;
             }
 
@@ -298,13 +343,19 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
 
             /* Isolate the undefined suffix from page-alignment bytes. A
              * post-dispatch blit preserves writes to the legal prefix. */
-            mglComputeSetBuffer(computeCommandEncoder, isolated, 0,
-                                metalBindingIndex);
+            MGL_CBIND_EMIT_BUFFER(metalBindingIndex,
+                                 (__bridge void *)isolated, 0);
+            /* Isolated buffers are owned only by this loop local (created via
+             * __bridge_transfer on gate-on): flush immediately so the encoder
+             * retains the buffer while it is still alive, instead of holding a
+             * dangling pointer in the snapshot until the end-of-function
+             * replay. */
+            MGL_CBIND_FLUSH_SNAPSHOT();
             continue;
         }
 
-        mglComputeSetBuffer(computeCommandEncoder, buffer, bindOffset,
-                            metalBindingIndex);
+        MGL_CBIND_EMIT_BUFFER(metalBindingIndex,
+                             (__bridge void *)buffer, bindOffset);
         mglNoteBufferEncoded(ptr);
     }
 
@@ -337,12 +388,21 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
                 _device, sizeConstants, sizeof(sizeConstants),
                 MTLResourceStorageModeShared);
             if (sizeBuffer) {
-                mglComputeSetBuffer(computeCommandEncoder, sizeBuffer, 0,
-                                    MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX);
+                MGL_CBIND_EMIT_BUFFER(MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX,
+                                      (__bridge void *)sizeBuffer, 0);
+                /* sizeBuffer is a block-local (__bridge_transfer on gate-on):
+                 * flush before the block ends so the encoder retains it. */
+                MGL_CBIND_FLUSH_SNAPSHOT();
             }
         }
     }
 
+    /* Flush any collected compute binding ops — the replay position (after
+     * the map loop and the runtime-size buffer emit) matches the direct
+     * path's encoder order exactly. */
+    MGL_CBIND_FLUSH_SNAPSHOT();
+#undef MGL_CBIND_EMIT_BUFFER
+#undef MGL_CBIND_FLUSH_SNAPSHOT
     return true;
 }
 
