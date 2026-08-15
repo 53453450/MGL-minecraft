@@ -619,7 +619,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
 {
     mglRenderCppBindingSetTexture(
         _bindingStateOwner,
-        (__bridge void *)_renderPassManager.state->currentRenderEncoder,
+        mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
         (__bridge void *)texture, MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
         (uint32_t)index);
 }
@@ -628,7 +628,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
 {
     mglRenderCppBindingSetTexture(
         _bindingStateOwner,
-        (__bridge void *)_renderPassManager.state->currentRenderEncoder,
+        mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
         (__bridge void *)texture, MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT,
         (uint32_t)index);
 }
@@ -637,7 +637,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
 {
     mglRenderCppBindingSetSampler(
         _bindingStateOwner,
-        (__bridge void *)_renderPassManager.state->currentRenderEncoder,
+        mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
         (__bridge void *)sampler, MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
         (uint32_t)index);
 }
@@ -646,7 +646,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
 {
     mglRenderCppBindingSetSampler(
         _bindingStateOwner,
-        (__bridge void *)_renderPassManager.state->currentRenderEncoder,
+        mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
         (__bridge void *)sampler, MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT,
         (uint32_t)index);
 }
@@ -655,7 +655,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
 {
     mglRenderCppBindingSetViewport(
         _bindingStateOwner,
-        (__bridge void *)_renderPassManager.state->currentRenderEncoder,
+        mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
         viewport.originX, viewport.originY, viewport.width, viewport.height,
         viewport.znear, viewport.zfar);
 }
@@ -664,7 +664,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
 {
     mglRenderCppBindingSetScissor(
         _bindingStateOwner,
-        (__bridge void *)_renderPassManager.state->currentRenderEncoder,
+        mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
         rect.x, rect.y, rect.width, rect.height);
 }
 
@@ -672,7 +672,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
 {
     mglRenderCppBindingSetTriangleFill(
         _bindingStateOwner,
-        (__bridge void *)_renderPassManager.state->currentRenderEncoder,
+        mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
         (uint32_t)mode);
 }
 
@@ -687,7 +687,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
         RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList:&state->vertex_buffer_map_list]);
         RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList:&state->fragment_buffer_map_list]);
     }
-    MGLEncodeContext encCtx = { .encoder = _renderPassManager.state->currentRenderEncoder };
+    MGLEncodeContext encCtx = { .encoder = (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner) };
     RETURN_FALSE_ON_FAILURE([self bindVertexBuffersToCurrentRenderEncoder:&encCtx]);
     RETURN_FALSE_ON_FAILURE([self bindFragmentBuffersToCurrentRenderEncoder:&encCtx]);
     RETURN_FALSE_ON_FAILURE([self bindBufferSizeConstantsForRenderEncoder]);
@@ -695,10 +695,10 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
         RETURN_FALSE_ON_FAILURE([self bindActiveTexturesToMTL]);
     }
     RETURN_FALSE_ON_FAILURE([self restoreRenderEncoderAfterTextureUploadForDraw:"final-active-texture-bind"]);
-    encCtx.encoder = _renderPassManager.state->currentRenderEncoder;
+    encCtx.encoder = (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner);
     if (![self bindTexturesToCurrentRenderEncoder:&encCtx]) {
         RETURN_FALSE_ON_FAILURE([self restoreRenderEncoderAfterTextureUploadForDraw:"final-sampled-texture-bind"]);
-        encCtx.encoder = _renderPassManager.state->currentRenderEncoder;
+        encCtx.encoder = (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner);
         RETURN_FALSE_ON_FAILURE([self bindTexturesToCurrentRenderEncoder:&encCtx]);
     }
     return true;
@@ -873,7 +873,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
                 (unsigned)MGL_STATE(glm_ctx)->var.cull_face_mode,
                 (unsigned)MGL_STATE(glm_ctx)->var.front_face,
                 (unsigned)MGL_STATE(glm_ctx)->dirty_bits,
-                _renderPassManager.state->currentRenderEncoder,
+                (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                 _pipelineCache.state->pipelineState,
                 (unsigned)_renderPassManager.state->renderPassFramebufferName,
                 rpColor0,
@@ -1008,7 +1008,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
                 (unsigned)cmd->baseInstance,
                 (unsigned)eboName,
                 ebo,
-                _renderPassManager.state->currentRenderEncoder,
+                (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                 _pipelineCache.state->pipelineState,
                 (unsigned)fboName,
                 (unsigned)_renderPassManager.state->renderPassFramebufferName,
@@ -1274,7 +1274,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
                 lastKeyValid &&
                 lastExecuteOk &&
                 !lastWasStreamBatch &&
-                _renderPassManager.state->currentRenderEncoder != nil &&
+                (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner) != nil &&
                 mglBindingStateIsValid(_bindingStateOwner) &&
                 mglStateKeysEqual(&batch->key, &lastKey) &&
                 wantAbsoluteVertexOffsets == _batching.absoluteVertexBindingOffsets &&
@@ -1284,7 +1284,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
                        lastKeyValid && lastExecuteOk && !lastWasStreamBatch) {
                 /* Attribute the skip failure to its first breaking condition
                  * (in evaluation order) so Plan-B can target the real cause. */
-                if (_renderPassManager.state->currentRenderEncoder == nil) {
+                if ((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner) == nil) {
                     MGL_PERF_INC(g_mglSkipFailNoEncoderSinceSwap);
                 } else if (!mglBindingStateIsValid(_bindingStateOwner)) {
                     MGL_PERF_INC(g_mglSkipFailBindInvalidSinceSwap);
@@ -1354,7 +1354,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
             MGL_PERF_INC(g_mglBatchesReplayedSinceSwap);
 
             MGLBatchPath scheduledPath = [self scheduleDrawBatch:batch context:glm_ctx];
-            MGLEncodeContext encCtx = { .encoder = _renderPassManager.state->currentRenderEncoder };
+            MGLEncodeContext encCtx = { .encoder = (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner) };
             switch (scheduledPath) {
                 case MGL_BATCH_PATH_STREAM_MERGE:
                     streamMergedBatchCount++;
@@ -1554,7 +1554,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
     BOOL prevKeyValid = (prevKey != NULL);
     BOOL canDelta = _batching.dirtyKeyDeltaEnabled &&
                     prevKeyValid &&
-                    _renderPassManager.state->currentRenderEncoder != nil &&
+                    (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner) != nil &&
                     mglBindingStateIsValid(_bindingStateOwner);
 
     if (canDelta) {
@@ -1609,16 +1609,16 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
     Framebuffer *replayFBO = MGL_STATE(glm_ctx)->framebuffer;
     if ((replayFBO && (replayFBO->dirty_bits & DIRTY_FBO_BINDING)) ||
         (prevKeyValid && prevKey->fbo_name != batch->key.fbo_name) ||
-        (_renderPassManager.state->currentRenderEncoder &&
+        ((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner) &&
          ![self currentRenderPassMatchesCurrentFramebuffer])) {
         replayDirtyBits |= DIRTY_FBO;
     }
     /* Empty encoder cannot delta-bind — force full domains. */
-    if (_renderPassManager.state->currentRenderEncoder == nil || !mglBindingStateIsValid(_bindingStateOwner)) {
+    if ((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner) == nil || !mglBindingStateIsValid(_bindingStateOwner)) {
         replayDirtyBits = kMGLFullReplayDirtyBits |
                           ((replayDirtyBits & DIRTY_FBO) ? DIRTY_FBO : 0);
         if ((replayFBO && (replayFBO->dirty_bits & DIRTY_FBO_BINDING)) ||
-            (_renderPassManager.state->currentRenderEncoder &&
+            ((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner) &&
              ![self currentRenderPassMatchesCurrentFramebuffer])) {
             replayDirtyBits |= DIRTY_FBO;
         } else if (prevKeyValid && prevKey->fbo_name != batch->key.fbo_name) {
@@ -1712,7 +1712,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
     /* A stable sampler snapshot is batch state, not per-draw state. Apply it
      * once after texture binding so stream-merge, MDI and ICB paths remain
      * available. Only genuinely mixed batches rebind per command. */
-    MGLEncodeContext samplerEncCtx = { .encoder = _renderPassManager.state->currentRenderEncoder };
+    MGLEncodeContext samplerEncCtx = { .encoder = (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner) };
     if (!batch->sampler_snapshots_mixed &&
         batch->sampler_snapshot_id != MGL_INVALID_SAMPLER_SNAPSHOT_ID &&
         ![self applySamplerSnapshotForCommand:&batch->commands[0]

@@ -253,9 +253,11 @@ static void mglRenderPassManagerStoreIdentity(
 
 - (void)installRenderEncoder:(id<MTLRenderCommandEncoder>)renderEncoder
 {
+    /* P4.5 (item 1141): the C++ RenderEncoderOwner is the single source on
+     * BOTH gates — the ObjC mirror is gone; reads go through the getter. */
     /* new encoder — invalidate FBO match cache. */
     [self clearFboMatchCache];
-    if (mglRenderPassManagerUsesMetalCpp() && renderEncoder) {
+    if (renderEncoder) {
         int result = _state.currentRenderEncoderOwner
             ? mglRenderCppResetRenderEncoderOwner(
                   _state.currentRenderEncoderOwner,
@@ -271,7 +273,6 @@ static void mglRenderPassManagerStoreIdentity(
         mglRenderCppDestroyRenderEncoderOwner(
             &_state.currentRenderEncoderOwner);
     }
-    _state.currentRenderEncoder = renderEncoder;
 }
 
 - (id<MTLRenderCommandEncoder>)createRenderEncoderWithDescriptor:(MTLRenderPassDescriptor *)descriptor
@@ -300,7 +301,11 @@ static void mglRenderPassManagerStoreIdentity(
 
 - (void)endCurrentRenderEncoder
 {
-    if (!_state.currentRenderEncoder) return;
+    id<MTLRenderCommandEncoder> currentRenderEncoder =
+        (__bridge id<MTLRenderCommandEncoder>)
+            mglRenderCppRenderEncoderOwnerGetCurrent(
+                _state.currentRenderEncoderOwner);
+    if (!currentRenderEncoder) return;
     if (_state.currentRenderEncoderOwner &&
         mglRenderCppEndRenderEncoderOwner(
             _state.currentRenderEncoderOwner) == 0) {
@@ -308,17 +313,16 @@ static void mglRenderPassManagerStoreIdentity(
     }
     if (mglRenderPassManagerUsesMetalCpp() &&
         mglRenderCppEndRenderEncoder(
-            (__bridge void *)_state.currentRenderEncoder) == 0) {
+            (__bridge void *)currentRenderEncoder) == 0) {
         return;
     }
-    [_state.currentRenderEncoder endEncoding];
+    [currentRenderEncoder endEncoding];
 }
 
 - (void)clearCurrentRenderEncoder
 {
     /* encoder ended — invalidate FBO match cache. */
     [self clearFboMatchCache];
-    _state.currentRenderEncoder = nil;
     mglRenderCppDestroyRenderEncoderOwner(
         &_state.currentRenderEncoderOwner);
 }

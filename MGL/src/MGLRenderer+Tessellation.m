@@ -827,7 +827,7 @@ typedef struct {
      * encoder on the command buffer, and Metal forbids two encoders
      * on the same command buffer simultaneously.  End any active render
      * encoder first for the same reason. */
-    if (_renderPassManager.state->currentRenderEncoder) {
+    if ((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
         [self endRenderEncoding];
     }
 
@@ -1460,7 +1460,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     memset(outBuffer.contents, 0, outSize);
 
     /* PASS 1: pre-resolve textures before opening the compute encoder. */
-    if (_renderPassManager.state->currentRenderEncoder) {
+    if ((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
         [self endRenderEncoding];
     }
     if (!(__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner) ||
@@ -1973,7 +1973,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     _tessellation.tessComputePrimitiveType = primType;
     _tessellation.tessComputeProgram = tesProgram;
     BOOL stateReady = [self processGLState:true];
-    if (!stateReady || !_renderPassManager.state->currentRenderEncoder ||
+    if (!stateReady || !(__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner) ||
         [self currentDrawRasterizationIsEmpty]) {
         _tessellation.tessComputeActive = NO;
         _tessellation.tessComputeOutputBuffer = nil;
@@ -1993,7 +1993,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
                                             ? GL_LINES
                                             : GL_POINTS];
     id<MTLRenderCommandEncoder> encoder =
-        _renderPassManager.state->currentRenderEncoder;
+        (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner);
     for (GLsizei i = 0; i < instanceCount; i++) {
         NSUInteger instanceOffset =
             (NSUInteger)i * (NSUInteger)itemsPerInstanceU * outStride;
@@ -2062,7 +2062,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
 
     /* PASS 1: Pre-resolve all Metal textures that the TES kernel needs.
      * Must happen before opening any encoder (same reason as TCS). */
-    if (_renderPassManager.state->currentRenderEncoder) {
+    if ((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
         [self endRenderEncoding];
     }
 

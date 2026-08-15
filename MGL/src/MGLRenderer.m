@@ -3435,7 +3435,7 @@ void logDirtyBits(GLMContext ctx)
         mglLogStateSnapshot("swap.enter",
                             activeCtx,
                             (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
-                            _renderPassManager.state->currentRenderEncoder,
+                            (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                             _renderPassManager.state->renderPassDescriptor,
                             _drawable);
     }
@@ -3461,7 +3461,7 @@ void logDirtyBits(GLMContext ctx)
                     mglLogStateSnapshot("mainthread.stall.snapshot",
                                         activeCtx,
                                         (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
-                                        _renderPassManager.state->currentRenderEncoder,
+                                        (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                         _renderPassManager.state->renderPassDescriptor,
                                         _drawable);
                 }
@@ -3760,7 +3760,7 @@ void logDirtyBits(GLMContext ctx)
             mglLogStateSnapshot("swap.exit.ok",
                                 ctx,
                                 (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
-                                _renderPassManager.state->currentRenderEncoder,
+                                (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                 _renderPassManager.state->renderPassDescriptor,
                                 _drawable);
         } else if (swapElapsedUs >= 25000.0) {
@@ -4041,7 +4041,7 @@ void logDirtyBits(GLMContext ctx)
         mglRenderCppIsSampleQueryActive(
             _queryStateOwner, &sampleQueryActive);
     }
-    if (_renderPassManager.state->currentRenderEncoder &&
+    if ((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner) &&
         [self currentRenderPassMatchesCurrentFramebuffer] &&
         !sampleQueryActive) {
         if (_renderPassManager.state->renderPassStateOwner ||
@@ -4091,7 +4091,7 @@ void logDirtyBits(GLMContext ctx)
          * record those real values / invalidate those slots in the bind
          * cache instead of invalidating everything, so textures, samplers
          * and the other buffer slots keep their dedup state. */
-        id<MTLRenderCommandEncoder> encoder = _renderPassManager.state->currentRenderEncoder;
+        id<MTLRenderCommandEncoder> encoder = (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner);
 
         mglRenderCppBindingSetViewport(
             _bindingStateOwner, (__bridge void *)encoder,

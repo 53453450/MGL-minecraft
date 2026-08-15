@@ -688,7 +688,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
             [_renderPassManager discardCurrentCommandBuffer];
         }
 
-        if (_renderPassManager.state->currentRenderEncoder) {
+        if ((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
             NSLog(@"MGL INFO: Releasing current render encoder");
             [_renderPassManager clearCurrentRenderEncoder];
         }

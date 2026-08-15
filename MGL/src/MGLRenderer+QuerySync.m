@@ -65,7 +65,7 @@ static void *mglQueryVisibilityBuffer(void *queryStateOwner)
      * they were encoded), matching GL semantics. */
     METAL_LOCK();
     @try {
-        MGLMetalRenderCommandEncoderRef encoder = _renderPassManager.state->currentRenderEncoder;
+        MGLMetalRenderCommandEncoderRef encoder = (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner);
         /* P4.1f: under gate-on the visibility buffer lives in the C++
          * RenderPassStateOwner; the ObjC descriptor mirror is nil. */
         BOOL hasVisibilityBuffer = NO;

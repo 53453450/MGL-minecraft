@@ -1027,7 +1027,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     /* Texture materialization may have ended and recreated the render encoder
      * (RT-sampled-copy path). The cached encoder is now stale; refresh it so
      * per-draw buffer overrides and the draw itself target the live encoder. */
-    encCtx->encoder = _renderPassManager.state->currentRenderEncoder;
+    encCtx->encoder = (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner);
 
     bool direct_vertex_ok = cmd->dynamic_vertex_binding_count == 0 ||
         [self bindDynamicVertexArrayBuffersDirectly:draw_vao
@@ -1214,7 +1214,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         }
         if (capturedCullDistances) {
             if (![self processGLState:true] ||
-                !_renderPassManager.state->currentRenderEncoder) {
+                !(__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
                 [self traceReplayCommand:batch
                                  command:cmd
                                  context:glm_ctx
@@ -1226,7 +1226,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 continue;
             }
             liveEncCtx.encoder =
-                _renderPassManager.state->currentRenderEncoder;
+                (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner);
         }
         if (![self applyDynamicBindingsForCommand:cmd context:glm_ctx encodeContext:&liveEncCtx]) {
             [self traceReplayCommand:batch

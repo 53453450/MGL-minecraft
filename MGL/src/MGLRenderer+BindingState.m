@@ -2151,7 +2151,7 @@ static void mglBindingStateSetFragmentBytes(
 static const NSUInteger kMaxFragmentSamplerSlots = 16;
 
 #define MGL_ABORT_TBIND_IF_ENCODER_CLOSED() do { \
-    if (!_renderPassManager.state->currentRenderEncoder) { \
+    if (!(__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) { \
         if (ctx) { \
             mglMarkRendererDirtyBits(ctx->active_state, (DIRTY_TEX | DIRTY_TEX_BINDING | DIRTY_RENDER_STATE)); \
         } \
@@ -4086,9 +4086,9 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
      *
      * Pass 1: Pre-resolve every storage image's Metal texture via
      * bindMTLTexture.  This may trigger texture (re)creation and CPU→GPU
-     * blit uploads, which close _renderPassManager.state->currentRenderEncoder (Metal does not allow
+     * blit uploads, which close (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner) (Metal does not allow
      * a render encoder and a blit encoder on the same command buffer
-     * simultaneously).  We do NOT touch _renderPassManager.state->currentRenderEncoder here.
+     * simultaneously).  We do NOT touch (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner) here.
      *
      * Pass 2: Bind the now-resolved Metal textures to the (possibly
      * restored) render encoder.  If pass 1 closed the encoder, restore it

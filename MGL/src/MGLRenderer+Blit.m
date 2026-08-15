@@ -1484,7 +1484,7 @@ static id<MTLRenderPipelineState> mglLookupCppAuxRenderPipeline(
         }
     }
 
-    BOOL hadRenderEncoder = (_renderPassManager.state->currentRenderEncoder != nil);
+    BOOL hadRenderEncoder = ((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner) != nil);
     if (hadRenderEncoder) {
         [self endRenderEncodingLocked];
     }
@@ -1507,7 +1507,7 @@ static id<MTLRenderPipelineState> mglLookupCppAuxRenderPipeline(
             : nil;
     }
 
-    if (hadRenderEncoder && !_renderPassManager.state->currentRenderEncoder) {
+    if (hadRenderEncoder && !(__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
         if (![self restoreRenderEncoderAfterTextureUploadForDraw:"sample_gate_miss_repair"]) {
             return nil;
         }

@@ -712,13 +712,13 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     _tessellation.cullDistanceCaptureActive = YES;
     drawCtx->state.dirty_bits = DIRTY_ALL;
     if (![self processGLState:true] ||
-        !_renderPassManager.state->currentRenderEncoder) {
+        !(__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
         _tessellation.cullDistanceCaptureActive = NO;
         drawCtx->state.dirty_bits = DIRTY_ALL;
         return NO;
     }
     id<MTLRenderCommandEncoder> encoder =
-        _renderPassManager.state->currentRenderEncoder;
+        (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner);
     MGLCullDistanceEmuParams params = {
         .prim_vertex_count = 1u,
         .culldist_offset = 0u,
@@ -799,13 +799,13 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
                                           instanceCount:instanceCount
                                            baseInstance:baseInstance] ||
             ![self processGLState:true] ||
-            !_renderPassManager.state->currentRenderEncoder) {
+            !(__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
             return YES;
         }
     }
 
     MGLEncodeContext encCtx = {
-        .encoder = _renderPassManager.state->currentRenderEncoder,
+        .encoder = (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
     };
     return [self encodeCullDistanceElementDraw:mode
                                     indexBytes:indexBytes
@@ -1035,13 +1035,13 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     _tessellation.tessVertexCaptureActive = YES;
     drawCtx->state.dirty_bits = DIRTY_ALL;
     if (![self processGLState:true] ||
-        !_renderPassManager.state->currentRenderEncoder) {
+        !(__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
         _tessellation.tessVertexCaptureActive = NO;
         return nil;
     }
 
     id<MTLRenderCommandEncoder> encoder =
-        _renderPassManager.state->currentRenderEncoder;
+        (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner);
     mglDrawSupportSetVertexBuffer(encoder, capture, 0u, 29u);
     const uint32_t captureParams[3] = {
         (uint32_t)first, (uint32_t)recordsPerInstance, baseInstance,
@@ -1105,13 +1105,13 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     _tessellation.tessVertexCaptureActive = YES;
     drawCtx->state.dirty_bits = DIRTY_ALL;
     if (![self processGLState:true] ||
-        !_renderPassManager.state->currentRenderEncoder) {
+        !(__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
         _tessellation.tessVertexCaptureActive = NO;
         return nil;
     }
 
     id<MTLRenderCommandEncoder> encoder =
-        _renderPassManager.state->currentRenderEncoder;
+        (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner);
     mglDrawSupportSetVertexBuffer(encoder, capture, 0u, 29u);
     const uint32_t captureParams[3] = {
         0u, (uint32_t)recordsPerInstance, baseInstance,
@@ -1891,13 +1891,13 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
         return YES;
     }
     if (![self processGLState:true] ||
-        !_renderPassManager.state->currentRenderEncoder ||
+        !(__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner) ||
         [self currentDrawRasterizationIsEmpty] ||
         [self currentDrawModeIsFullyCulled:gsOutputMode]) {
         if (getenv("MGL_GS_DIAG")) {
             NSLog(@"MGL GS DIAG raster-skip: pgl=%d enc=%d empty=%d cull=%d",
                   [self processGLState:true] ? 1 : 0,
-                  _renderPassManager.state->currentRenderEncoder ? 1 : 0,
+                  (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner) ? 1 : 0,
                   [self currentDrawRasterizationIsEmpty] ? 1 : 0,
                   [self currentDrawModeIsFullyCulled:gsOutputMode] ? 1 : 0);
         }
@@ -1914,7 +1914,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
 
     [self applyPolygonOffsetForDrawMode:gsOutputMode];
     id<MTLRenderCommandEncoder> encoder =
-        _renderPassManager.state->currentRenderEncoder;
+        (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner);
     if (getenv("MGL_GS_DIAG")) {
         const uint32_t *cw = (const uint32_t *)counts.contents;
         const float *ow = (const float *)output.contents;
@@ -2358,7 +2358,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
      * dispatching into these Metal entry points. If processGLState has just
      * rebuilt a render encoder, keep it; a second flush can discard the fresh
      * pass and make state restoration fail for CPU-emulated indirect modes. */
-    if (_renderPassManager.state->currentRenderEncoder) {
+    if ((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
         return YES;
     }
 
@@ -2368,7 +2368,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
               label ? label : "indirect emulation");
         return NO;
     }
-    if (!_renderPassManager.state->currentRenderEncoder) {
+    if (!(__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
         NSLog(@"MGL WARNING: %s skipped because CPU-read synchronization left no render encoder",
               label ? label : "indirect emulation");
         return NO;
@@ -2467,7 +2467,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
 
 - (void)applyPolygonOffsetForDrawMode:(GLenum)mode
 {
-    if (!_renderPassManager.state->currentRenderEncoder) {
+    if (!(__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
         return;
     }
 
@@ -2507,12 +2507,12 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
         float _clamp = 0.0f;
         mglRenderCppBindingSetDepthBiasIfNeeded(
             _bindingStateOwner,
-            (__bridge void *)_renderPassManager.state->currentRenderEncoder,
+            mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
             _bias, _clamp, _slope);
     } else {
         mglRenderCppBindingSetDepthBiasIfNeeded(
             _bindingStateOwner,
-            (__bridge void *)_renderPassManager.state->currentRenderEncoder,
+            mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
             0.0f, 0.0f, 0.0f);
     }
 }
@@ -2976,7 +2976,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
         drawCtx->state.dirty_bits = DIRTY_ALL;
 
         BOOL stateReady = [self processGLState:true];
-        if (!stateReady || !_renderPassManager.state->currentRenderEncoder) {
+        if (!stateReady || !(__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
             _tessellation.nativeTESActive = NO;
             _tessellation.nativeTESProgram = NULL;
             _tessellation.tessVertexCaptureBuffer = nil;
@@ -2989,7 +2989,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
             ![self currentDrawModeIsFullyCulled:GL_TRIANGLES]) {
             [self applyPolygonOffsetForDrawMode:GL_TRIANGLES];
             id<MTLRenderCommandEncoder> encoder =
-                _renderPassManager.state->currentRenderEncoder;
+                (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner);
             /* Metal does not advance the post-tessellation control-point
              * pointer correctly for patchStart. Draw each patch separately:
              * slot 0 is rebased to the patch, while slot 30 stays at the

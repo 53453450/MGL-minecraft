@@ -113,9 +113,9 @@
             [_renderPassManager discardCurrentCommandBuffer];
         }
 
-        if (_renderPassManager.state->currentRenderEncoder) {
+        if ((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
             MGLMetalRenderCommandEncoderRef encoder =
-                _renderPassManager.state->currentRenderEncoder;
+                (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner);
             if (!(mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
                   mglRenderCppGetDevice() &&
                   mglRenderCppEndRenderEncoder((__bridge void *)encoder) == 0)) {

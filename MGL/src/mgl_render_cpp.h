@@ -1383,6 +1383,9 @@ int mglRenderCppResetRenderEncoderOwner(
     void *owner,
     void *render_encoder);
 int mglRenderCppEndRenderEncoderOwner(void *owner);
+/* Borrowed pointer to the owner's current render encoder (NULL when the
+ * owner has none / owner is NULL). */
+void *mglRenderCppRenderEncoderOwnerGetCurrent(void *owner);
 void mglRenderCppDestroyRenderEncoderOwner(void **owner);
 int mglRenderCppEndRenderEncoder(void *render_encoder);
 int mglRenderCppCreateBlitEncoder(void *command_buffer,

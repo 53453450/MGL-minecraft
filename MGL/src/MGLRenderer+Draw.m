@@ -271,10 +271,10 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     }
     [self applyPolygonOffsetForDrawMode:mode];
     // Additional safety check after processGLState
-    if (!_renderPassManager.state->currentRenderEncoder) {
+    if (!(__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
         // One recovery attempt to avoid persistent "No current render encoder" failure loops.
         [self newRenderEncoderLockedWithReason:MGL_ENC_REASON_DRAW];
-        if (!_renderPassManager.state->currentRenderEncoder) {
+        if (!(__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
             no_render_encoder_count++;
             if (no_render_encoder_count <= 8 || (no_render_encoder_count % 1000) == 0) {
                 NSLog(@"MGL ERROR: mtlDrawArrays - No current render encoder, aborting (occurrence=%llu)",
@@ -348,7 +348,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         }
 
         @try {
-            [_renderPassManager.state->currentRenderEncoder setRenderPipelineState:_pipelineCache.state->pipelineState];
+            [(__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner) setRenderPipelineState:_pipelineCache.state->pipelineState];
             mglRenderCppBindingSetPipelineState(
                 _bindingStateOwner,
                 (__bridge void *)_pipelineCache.state->pipelineState);
@@ -391,13 +391,13 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                                     instanceCount:1
                                      baseInstance:0u]) {
         if (![self processGLState:true] ||
-            !_renderPassManager.state->currentRenderEncoder) {
+            !(__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
             MGL_FRAME_INC(g_mglDrawArraysSkippedSinceSwap);
             return;
         }
     }
     if (polygonModePoint) {
-        if (!mglEncodeArrayPolygonPoint(_renderPassManager.state->currentRenderEncoder,
+        if (!mglEncodeArrayPolygonPoint((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                         _device,
                                         mode,
                                         first,
@@ -451,7 +451,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                         (GLuint)first + (GLuint)primitive + 2u,
                     };
                     MGLEncodeContext encCtx = {
-                        .encoder = _renderPassManager.state->currentRenderEncoder
+                        .encoder = (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)
                     };
                     [self bindCullDistanceEmulationBuffers:mode
                                                 firstVertex:(GLuint)first
@@ -465,7 +465,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                 }
             } else {
                 mglDrawIndexedPrimitives(
-                    _renderPassManager.state->currentRenderEncoder,
+                    (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                     MTLPrimitiveTypeTriangle, fanIndexCount, MTLIndexTypeUInt32,
                     fanIndexBuffer, 0, 1, first, 0);
             }
@@ -516,7 +516,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                             (GLuint)((primitive + 1u) % (NSUInteger)count),
                     };
                     MGLEncodeContext encCtx = {
-                        .encoder = _renderPassManager.state->currentRenderEncoder
+                        .encoder = (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)
                     };
                     [self bindCullDistanceEmulationBuffers:mode
                                                 firstVertex:(GLuint)first
@@ -530,7 +530,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                 }
             } else {
                 mglDrawIndexedPrimitives(
-                    _renderPassManager.state->currentRenderEncoder,
+                    (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                     MTLPrimitiveTypeLineStrip, loopIndexCount,
                     MTLIndexTypeUInt32, loopIndexBuffer, 0, 1, 0, 0);
             }
@@ -546,7 +546,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     } else if (emulateQuads) {
         if (usesCullDistance) {
             MGLEncodeContext encCtx = {
-                .encoder = _renderPassManager.state->currentRenderEncoder
+                .encoder = (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)
             };
             [self bindCullDistanceEmulationBuffers:mode
                                         firstVertex:(GLuint)first
@@ -554,7 +554,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                                  explicitVertexCount:0u
                                       encodeContext:&encCtx];
         }
-        if (!mglEncodeArrayQuads(_renderPassManager.state->currentRenderEncoder,
+        if (!mglEncodeArrayQuads((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                  _device,
                                  count,
                                  first,
@@ -588,7 +588,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
      * shader code can read sibling-vertex cull distance values. */
     if (usesCullDistance && mode != GL_TRIANGLE_STRIP &&
         mode != GL_LINE_STRIP) {
-        MGLEncodeContext encCtx = { .encoder = _renderPassManager.state->currentRenderEncoder };
+        MGLEncodeContext encCtx = { .encoder = (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner) };
         [self bindCullDistanceEmulationBuffers:mode
                                     firstVertex:(GLuint)first
                                explicitVertices:NULL
@@ -603,7 +603,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                     (unsigned)mode,
                     (int)first,
                     (int)count,
-                    _renderPassManager.state->currentRenderEncoder,
+                    (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                     _pipelineCache.state->pipelineState);
         if (usesCullDistance && mode == GL_TRIANGLE_STRIP && count >= 3) {
             NSUInteger stripIndexCount = 0u;
@@ -624,7 +624,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                     (GLuint)first + (GLuint)primitive + 2u,
                 };
                 MGLEncodeContext encCtx = {
-                    .encoder = _renderPassManager.state->currentRenderEncoder
+                    .encoder = (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)
                 };
                 [self bindCullDistanceEmulationBuffers:mode
                                             firstVertex:(GLuint)first
@@ -639,7 +639,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         } else if (usesCullDistance && mode == GL_LINE_STRIP && count >= 2) {
             for (GLsizei primitive = 0; primitive + 1 < count; primitive++) {
                 MGLEncodeContext encCtx = {
-                    .encoder = _renderPassManager.state->currentRenderEncoder
+                    .encoder = (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)
                 };
                 [self bindCullDistanceEmulationBuffers:mode
                                             firstVertex:(GLuint)(first + primitive)
@@ -650,7 +650,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                                   first + primitive, 2u, 1u, 0u);
             }
         } else {
-            mglDrawPrimitives(_renderPassManager.state->currentRenderEncoder,
+            mglDrawPrimitives((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                               primitiveType, first, count, 1, 0);
         }
     } @catch (NSException *exception) {
@@ -671,7 +671,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                                   drawCall,
                                   ctx,
                                   (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
-                                  _renderPassManager.state->currentRenderEncoder,
+                                  (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                   _renderPassManager.state->renderPassDescriptor);
 
     double drawElapsedUs = (mglTraceClockNS() - drawStartNS) / 1000.0;
@@ -682,7 +682,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
               (int)first,
               (int)count,
               drawElapsedUs,
-              _renderPassManager.state->currentRenderEncoder);
+              (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner));
     }
 }
 
@@ -1102,7 +1102,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                                       instanceCount:1
                                        baseInstance:0u]) {
         if (![self processGLStateLocked:true] ||
-            !_renderPassManager.state->currentRenderEncoder) {
+            !(__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
             MGL_FRAME_INC(g_mglDrawElementsSkippedSinceSwap);
             return;
         }
@@ -1160,7 +1160,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                     haveIndexRange ? 1 : 0,
                     (unsigned)minIndexForDraw,
                     (unsigned)maxIndexForDraw,
-                    _renderPassManager.state->currentRenderEncoder,
+                    (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                     _pipelineCache.state->pipelineState);
     }
 
@@ -1170,7 +1170,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                                   drawCall,
                                   ctx,
                                   (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
-                                  _renderPassManager.state->currentRenderEncoder,
+                                  (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                   _renderPassManager.state->renderPassDescriptor);
 
     double drawElapsedUs = (mglTraceClockNS() - drawStartNS) / 1000.0;
@@ -1180,7 +1180,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
               drawElapsedUs,
               gl_element_buffer->name,
               (unsigned long)indexBuffer.length,
-              _renderPassManager.state->currentRenderEncoder);
+              (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner));
     }
 }
 
@@ -1695,7 +1695,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
               (unsigned)maxIndexForDraw,
               submitVAO,
               submitVAO ? (unsigned)submitVAO->enabled_attribs : 0u,
-              _renderPassManager.state->currentRenderEncoder,
+              (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
               drawProgramUsesCloudFaces ? 1 : 0);
     }
 }
@@ -1732,13 +1732,12 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                                  polygonLineMode:mglPolygonModeLineForDrawMode(
                                                      ctx, mode)
                                    encodeContext:&(MGLEncodeContext){
-                                       .encoder = _renderPassManager.state
-                                                      ->currentRenderEncoder
+                                       .encoder = (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)
                                    }]) {
             return YES;
         }
         MGLPrimitiveRestartEncodeResult restartResult =
-            mglEncodePrimitiveRestartedElementDraw(_renderPassManager.state->currentRenderEncoder,
+            mglEncodePrimitiveRestartedElementDraw((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                                    _device,
                                                    ctx,
                                                    gl_element_buffer,
@@ -1767,7 +1766,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         if (restartHandled) {
             // Already emitted as restart-separated Metal draws.
         } else if (polygonModePoint) {
-            if (!mglEncodeElementPolygonPoint(_renderPassManager.state->currentRenderEncoder,
+            if (!mglEncodeElementPolygonPoint((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                               _device,
                                               gl_element_buffer,
                                               indexBuffer,
@@ -1823,7 +1822,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
             }
 
             mglDrawIndexedPrimitives(
-                _renderPassManager.state->currentRenderEncoder,
+                (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                 MTLPrimitiveTypeTriangle, fanIndexCount, MTLIndexTypeUInt32,
                 fanIndexBuffer, 0, 1, 0, 0);
         } else if (emulateLineLoop) {
@@ -1861,11 +1860,11 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
             }
 
             mglDrawIndexedPrimitives(
-                _renderPassManager.state->currentRenderEncoder,
+                (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                 MTLPrimitiveTypeLineStrip, loopIndexCount,
                 MTLIndexTypeUInt32, loopIndexBuffer, 0, 1, 0, 0);
         } else if (emulateQuads) {
-            if (!mglEncodeElementQuads(_renderPassManager.state->currentRenderEncoder,
+            if (!mglEncodeElementQuads((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                        _device,
                                        gl_element_buffer,
                                        indexBuffer,
@@ -1906,7 +1905,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                 return NO;
             }
             mglDrawIndexedPrimitives(
-                _renderPassManager.state->currentRenderEncoder,
+                (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                 primitiveType, count, drawIndexType, drawIndexBuffer,
                 drawIndexOffset, 1, 0, 0);
         }
@@ -1998,7 +1997,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
     MGLPrimitiveRestartEncodeResult restartResult =
-        mglEncodePrimitiveRestartedElementDraw(_renderPassManager.state->currentRenderEncoder,
+        mglEncodePrimitiveRestartedElementDraw((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                                _device,
                                                ctx,
                                                gl_element_buffer,
@@ -2021,7 +2020,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     }
 
     if (polygonModePoint) {
-        if (!mglEncodeElementPolygonPoint(_renderPassManager.state->currentRenderEncoder,
+        if (!mglEncodeElementPolygonPoint((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                           _device,
                                           gl_element_buffer,
                                           indexBuffer,
@@ -2041,7 +2040,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     }
 
     if (emulateTriangleFan) {
-        if (!mglEncodeElementTriangleFan(_renderPassManager.state->currentRenderEncoder,
+        if (!mglEncodeElementTriangleFan((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                          _device,
                                          gl_element_buffer,
                                          indexBuffer,
@@ -2058,7 +2057,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
     if (emulateLineLoop) {
-        if (!mglEncodeElementLineLoop(_renderPassManager.state->currentRenderEncoder,
+        if (!mglEncodeElementLineLoop((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                       _device,
                                       gl_element_buffer,
                                       indexBuffer,
@@ -2075,7 +2074,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
     if (emulateQuads) {
-        if (!mglEncodeElementQuads(_renderPassManager.state->currentRenderEncoder,
+        if (!mglEncodeElementQuads((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                    _device,
                                    gl_element_buffer,
                                    indexBuffer,
@@ -2104,7 +2103,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
 
-    mglDrawIndexedPrimitives(_renderPassManager.state->currentRenderEncoder,
+    mglDrawIndexedPrimitives((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                              primitiveType, count, drawIndexType,
                              drawIndexBuffer, offset, 1, 0, 0);
     [self recordElementDrawSubmittedMode:mode indexCount:(uint64_t)MAX(count, 0)];
@@ -2164,8 +2163,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                             instanceCount:instancecount
                              baseInstance:0u
                             encodeContext:&(MGLEncodeContext){
-                                .encoder = _renderPassManager.state
-                                               ->currentRenderEncoder,
+                                .encoder = (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                             }]) {
         [self recordArrayDrawSubmittedMode:mode
                                vertexCount:(uint64_t)MAX(count, 0) *
@@ -2173,7 +2171,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
     if (polygonModePoint) {
-        if (mglEncodeArrayPolygonPoint(_renderPassManager.state->currentRenderEncoder,
+        if (mglEncodeArrayPolygonPoint((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                        _device,
                                        mode,
                                        first,
@@ -2187,7 +2185,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     }
 
     if (mode == GL_TRIANGLE_FAN) {
-        if (mglEncodeArrayTriangleFan(_renderPassManager.state->currentRenderEncoder,
+        if (mglEncodeArrayTriangleFan((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                       _device,
                                       count,
                                       first,
@@ -2199,7 +2197,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
     if (mode == GL_LINE_LOOP) {
-        if (mglEncodeArrayLineLoop(_renderPassManager.state->currentRenderEncoder,
+        if (mglEncodeArrayLineLoop((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                    glm_ctx,
                                    _device,
                                    count,
@@ -2212,7 +2210,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
     if (mode == GL_QUADS) {
-        if (mglEncodeArrayQuads(_renderPassManager.state->currentRenderEncoder,
+        if (mglEncodeArrayQuads((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                 _device,
                                 count,
                                 first,
@@ -2228,7 +2226,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     primitiveType = mglPolygonModePointForDrawMode(ctx, mode) ? MTLPrimitiveTypePoint : getMTLPrimitiveType(mode);
     if ((GLuint)primitiveType == 0xFFFFFFFF) { NSLog(@"MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call", mode); return; }
 
-    mglDrawPrimitives(_renderPassManager.state->currentRenderEncoder,
+    mglDrawPrimitives((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                       primitiveType, first, count, instancecount, 0);
     [self recordArrayDrawSubmittedMode:mode vertexCount:(uint64_t)MAX(count, 0) * (uint64_t)MAX(instancecount, 0)];
 }
@@ -2308,7 +2306,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
     MGLPrimitiveRestartEncodeResult restartResult =
-        mglEncodePrimitiveRestartedElementDraw(_renderPassManager.state->currentRenderEncoder,
+        mglEncodePrimitiveRestartedElementDraw((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                                _device,
                                                ctx,
                                                gl_element_buffer,
@@ -2331,7 +2329,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     }
 
     if (polygonModePoint) {
-        if (!mglEncodeElementPolygonPoint(_renderPassManager.state->currentRenderEncoder,
+        if (!mglEncodeElementPolygonPoint((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                           _device,
                                           gl_element_buffer,
                                           indexBuffer,
@@ -2351,7 +2349,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     }
 
     if (emulateTriangleFan) {
-        if (!mglEncodeElementTriangleFan(_renderPassManager.state->currentRenderEncoder,
+        if (!mglEncodeElementTriangleFan((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                          _device,
                                          gl_element_buffer,
                                          indexBuffer,
@@ -2368,7 +2366,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
     if (emulateLineLoop) {
-        if (!mglEncodeElementLineLoop(_renderPassManager.state->currentRenderEncoder,
+        if (!mglEncodeElementLineLoop((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                       _device,
                                       gl_element_buffer,
                                       indexBuffer,
@@ -2385,7 +2383,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
     if (emulateQuads) {
-        if (!mglEncodeElementQuads(_renderPassManager.state->currentRenderEncoder,
+        if (!mglEncodeElementQuads((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                    _device,
                                    gl_element_buffer,
                                    indexBuffer,
@@ -2419,7 +2417,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     // in the future it would be an idea to use temp buffers for large buffers that would wire
     // to much memory down.. like a million point galaxy drawing
     //
-    mglDrawIndexedPrimitives(_renderPassManager.state->currentRenderEncoder,
+    mglDrawIndexedPrimitives((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                              primitiveType, count, drawIndexType,
                              drawIndexBuffer, offset, instancecount, 0, 0);
     [self recordElementDrawSubmittedMode:mode indexCount:(uint64_t)MAX(count, 0) * (uint64_t)MAX(instancecount, 0)];
@@ -2498,7 +2496,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
     MGLPrimitiveRestartEncodeResult restartResult =
-        mglEncodePrimitiveRestartedElementDraw(_renderPassManager.state->currentRenderEncoder,
+        mglEncodePrimitiveRestartedElementDraw((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                                _device,
                                                ctx,
                                                gl_element_buffer,
@@ -2521,7 +2519,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     }
 
     if (polygonModePoint) {
-        if (!mglEncodeElementPolygonPoint(_renderPassManager.state->currentRenderEncoder,
+        if (!mglEncodeElementPolygonPoint((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                           _device,
                                           gl_element_buffer,
                                           indexBuffer,
@@ -2541,7 +2539,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     }
 
     if (emulateTriangleFan) {
-        if (!mglEncodeElementTriangleFan(_renderPassManager.state->currentRenderEncoder,
+        if (!mglEncodeElementTriangleFan((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                          _device,
                                          gl_element_buffer,
                                          indexBuffer,
@@ -2558,7 +2556,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
     if (emulateLineLoop) {
-        if (!mglEncodeElementLineLoop(_renderPassManager.state->currentRenderEncoder,
+        if (!mglEncodeElementLineLoop((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                       _device,
                                       gl_element_buffer,
                                       indexBuffer,
@@ -2575,7 +2573,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
     if (emulateQuads) {
-        if (!mglEncodeElementQuads(_renderPassManager.state->currentRenderEncoder,
+        if (!mglEncodeElementQuads((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                    _device,
                                    gl_element_buffer,
                                    indexBuffer,
@@ -2604,7 +2602,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
 
-    mglDrawIndexedPrimitives(_renderPassManager.state->currentRenderEncoder,
+    mglDrawIndexedPrimitives((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                              primitiveType, count, drawIndexType,
                              drawIndexBuffer, offset, 1, basevertex, 0);
     [self recordElementDrawSubmittedMode:mode indexCount:(uint64_t)MAX(count, 0)];
@@ -2685,7 +2683,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
     MGLPrimitiveRestartEncodeResult restartResult =
-        mglEncodePrimitiveRestartedElementDraw(_renderPassManager.state->currentRenderEncoder,
+        mglEncodePrimitiveRestartedElementDraw((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                                _device,
                                                ctx,
                                                gl_element_buffer,
@@ -2708,7 +2706,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     }
 
     if (polygonModePoint) {
-        if (!mglEncodeElementPolygonPoint(_renderPassManager.state->currentRenderEncoder,
+        if (!mglEncodeElementPolygonPoint((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                           _device,
                                           gl_element_buffer,
                                           indexBuffer,
@@ -2728,7 +2726,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     }
 
     if (emulateTriangleFan) {
-        if (!mglEncodeElementTriangleFan(_renderPassManager.state->currentRenderEncoder,
+        if (!mglEncodeElementTriangleFan((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                          _device,
                                          gl_element_buffer,
                                          indexBuffer,
@@ -2745,7 +2743,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
     if (emulateLineLoop) {
-        if (!mglEncodeElementLineLoop(_renderPassManager.state->currentRenderEncoder,
+        if (!mglEncodeElementLineLoop((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                       _device,
                                       gl_element_buffer,
                                       indexBuffer,
@@ -2762,7 +2760,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
     if (emulateQuads) {
-        if (!mglEncodeElementQuads(_renderPassManager.state->currentRenderEncoder,
+        if (!mglEncodeElementQuads((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                    _device,
                                    gl_element_buffer,
                                    indexBuffer,
@@ -2791,7 +2789,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
 
-    mglDrawIndexedPrimitives(_renderPassManager.state->currentRenderEncoder,
+    mglDrawIndexedPrimitives((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                              primitiveType, count, drawIndexType,
                              drawIndexBuffer, offset, 1, basevertex, 0);
     [self recordElementDrawSubmittedMode:mode indexCount:(uint64_t)MAX(count, 0)];
@@ -2873,7 +2871,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
     MGLPrimitiveRestartEncodeResult restartResult =
-        mglEncodePrimitiveRestartedElementDraw(_renderPassManager.state->currentRenderEncoder,
+        mglEncodePrimitiveRestartedElementDraw((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                                _device,
                                                ctx,
                                                gl_element_buffer,
@@ -2896,7 +2894,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     }
 
     if (polygonModePoint) {
-        if (!mglEncodeElementPolygonPoint(_renderPassManager.state->currentRenderEncoder,
+        if (!mglEncodeElementPolygonPoint((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                           _device,
                                           gl_element_buffer,
                                           indexBuffer,
@@ -2916,7 +2914,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     }
 
     if (emulateTriangleFan) {
-        if (!mglEncodeElementTriangleFan(_renderPassManager.state->currentRenderEncoder,
+        if (!mglEncodeElementTriangleFan((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                          _device,
                                          gl_element_buffer,
                                          indexBuffer,
@@ -2933,7 +2931,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
     if (emulateLineLoop) {
-        if (!mglEncodeElementLineLoop(_renderPassManager.state->currentRenderEncoder,
+        if (!mglEncodeElementLineLoop((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                       _device,
                                       gl_element_buffer,
                                       indexBuffer,
@@ -2950,7 +2948,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
     if (emulateQuads) {
-        if (!mglEncodeElementQuads(_renderPassManager.state->currentRenderEncoder,
+        if (!mglEncodeElementQuads((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                    _device,
                                    gl_element_buffer,
                                    indexBuffer,
@@ -2979,7 +2977,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
 
-    mglDrawIndexedPrimitives(_renderPassManager.state->currentRenderEncoder,
+    mglDrawIndexedPrimitives((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                              primitiveType, count, drawIndexType,
                              drawIndexBuffer, offset, instancecount,
                              basevertex, 0);
@@ -3121,7 +3119,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
 
         BOOL ok = NO;
         if (mode == GL_LINE_LOOP) {
-            ok = mglEncodeArrayLineLoop(_renderPassManager.state->currentRenderEncoder,
+            ok = mglEncodeArrayLineLoop((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                         glm_ctx,
                                         _device,
                                         (GLsizei)cmd.count,
@@ -3130,7 +3128,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                                         (NSUInteger)cmd.baseInstance,
                                         "drawArraysIndirect");
         } else if (polygonModePoint) {
-            ok = mglEncodeArrayPolygonPoint(_renderPassManager.state->currentRenderEncoder,
+            ok = mglEncodeArrayPolygonPoint((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                             _device,
                                             mode,
                                             (GLint)cmd.first,
@@ -3139,7 +3137,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                                             (NSUInteger)cmd.baseInstance,
                                             "drawArraysIndirect");
         } else {
-            ok = mglEncodeArrayQuads(_renderPassManager.state->currentRenderEncoder,
+            ok = mglEncodeArrayQuads((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                      _device,
                                      (GLsizei)cmd.count,
                                      (GLint)cmd.first,
@@ -3197,7 +3195,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     }
 
     mglDrawPrimitivesIndirect(
-        _renderPassManager.state->currentRenderEncoder, primitiveType,
+        (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner), primitiveType,
         indirectBuffer, (NSUInteger)(uintptr_t)indirect);
     [self recordArrayDrawSubmittedMode:mode vertexCount:0u];
     mglTraceLog("DRAW_ARRAYS_INDIRECT_MTL_SUBMIT path=native mode=0x%x indirect=%p offset=%lu program=%u",
@@ -3387,7 +3385,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         NSUInteger elementOffset = (NSUInteger)cmd.first * indexStride;
         BOOL ok = NO;
         if (mode == GL_LINE_LOOP) {
-            ok = mglEncodeElementLineLoop(_renderPassManager.state->currentRenderEncoder,
+            ok = mglEncodeElementLineLoop((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                           _device,
                                           gl_element_buffer,
                                           indexBuffer,
@@ -3399,7 +3397,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                                           (NSUInteger)cmd.baseInstance,
                                           "drawElementsIndirect");
         } else if (polygonModePoint) {
-            ok = mglEncodeElementPolygonPoint(_renderPassManager.state->currentRenderEncoder,
+            ok = mglEncodeElementPolygonPoint((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                               _device,
                                               gl_element_buffer,
                                               indexBuffer,
@@ -3413,7 +3411,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                                               (NSUInteger)cmd.baseInstance,
                                               "drawElementsIndirect");
         } else {
-            ok = mglEncodeElementQuads(_renderPassManager.state->currentRenderEncoder,
+            ok = mglEncodeElementQuads((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                        _device,
                                        gl_element_buffer,
                                        indexBuffer,
@@ -3499,7 +3497,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
 
     // draw indexed primitive
     mglDrawIndexedPrimitivesIndirect(
-        _renderPassManager.state->currentRenderEncoder, primitiveType,
+        (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner), primitiveType,
         drawIndexType, drawIndexBuffer, indexBufferOffset, indirectBuffer,
         (NSUInteger)(uintptr_t)indirect);
     [self recordElementDrawSubmittedMode:mode indexCount:0u];
@@ -3563,8 +3561,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                             instanceCount:instancecount
                              baseInstance:baseinstance
                             encodeContext:&(MGLEncodeContext){
-                                .encoder = _renderPassManager.state
-                                               ->currentRenderEncoder,
+                                .encoder = (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                             }]) {
         [self recordArrayDrawSubmittedMode:mode
                                vertexCount:(uint64_t)MAX(count, 0) *
@@ -3572,7 +3569,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
     if (polygonModePoint) {
-        if (mglEncodeArrayPolygonPoint(_renderPassManager.state->currentRenderEncoder,
+        if (mglEncodeArrayPolygonPoint((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                        _device,
                                        mode,
                                        first,
@@ -3586,7 +3583,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     }
 
     if (mode == GL_TRIANGLE_FAN) {
-        if (mglEncodeArrayTriangleFan(_renderPassManager.state->currentRenderEncoder,
+        if (mglEncodeArrayTriangleFan((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                       _device,
                                       count,
                                       first,
@@ -3598,7 +3595,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
     if (mode == GL_LINE_LOOP) {
-        if (mglEncodeArrayLineLoop(_renderPassManager.state->currentRenderEncoder,
+        if (mglEncodeArrayLineLoop((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                    glm_ctx,
                                    _device,
                                    count,
@@ -3611,7 +3608,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
     if (mode == GL_QUADS) {
-        if (mglEncodeArrayQuads(_renderPassManager.state->currentRenderEncoder,
+        if (mglEncodeArrayQuads((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                 _device,
                                 count,
                                 first,
@@ -3627,7 +3624,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     primitiveType = mglPolygonModePointForDrawMode(ctx, mode) ? MTLPrimitiveTypePoint : getMTLPrimitiveType(mode);
     if ((GLuint)primitiveType == 0xFFFFFFFF) { NSLog(@"MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call", mode); return; }
 
-    mglDrawPrimitives(_renderPassManager.state->currentRenderEncoder,
+    mglDrawPrimitives((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                       primitiveType, first, count, instancecount,
                       baseinstance);
     [self recordArrayDrawSubmittedMode:mode vertexCount:(uint64_t)MAX(count, 0) * (uint64_t)MAX(instancecount, 0)];
@@ -3708,7 +3705,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
     MGLPrimitiveRestartEncodeResult restartResult =
-        mglEncodePrimitiveRestartedElementDraw(_renderPassManager.state->currentRenderEncoder,
+        mglEncodePrimitiveRestartedElementDraw((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                                _device,
                                                ctx,
                                                gl_element_buffer,
@@ -3731,7 +3728,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     }
 
     if (polygonModePoint) {
-        if (!mglEncodeElementPolygonPoint(_renderPassManager.state->currentRenderEncoder,
+        if (!mglEncodeElementPolygonPoint((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                           _device,
                                           gl_element_buffer,
                                           indexBuffer,
@@ -3751,7 +3748,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     }
 
     if (emulateTriangleFan) {
-        if (!mglEncodeElementTriangleFan(_renderPassManager.state->currentRenderEncoder,
+        if (!mglEncodeElementTriangleFan((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                          _device,
                                          gl_element_buffer,
                                          indexBuffer,
@@ -3768,7 +3765,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
     if (emulateLineLoop) {
-        if (!mglEncodeElementLineLoop(_renderPassManager.state->currentRenderEncoder,
+        if (!mglEncodeElementLineLoop((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                       _device,
                                       gl_element_buffer,
                                       indexBuffer,
@@ -3785,7 +3782,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
     if (emulateQuads) {
-        if (!mglEncodeElementQuads(_renderPassManager.state->currentRenderEncoder,
+        if (!mglEncodeElementQuads((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                    _device,
                                    gl_element_buffer,
                                    indexBuffer,
@@ -3819,7 +3816,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     // in the future it would be an idea to use temp buffers for large buffers that would wire
     // to much memory down.. like a million point galaxy drawing
     //
-    mglDrawIndexedPrimitives(_renderPassManager.state->currentRenderEncoder,
+    mglDrawIndexedPrimitives((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                              primitiveType, count, drawIndexType,
                              drawIndexBuffer, offset, instancecount, 0,
                              baseinstance);
@@ -3902,7 +3899,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
     MGLPrimitiveRestartEncodeResult restartResult =
-        mglEncodePrimitiveRestartedElementDraw(_renderPassManager.state->currentRenderEncoder,
+        mglEncodePrimitiveRestartedElementDraw((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                                _device,
                                                ctx,
                                                gl_element_buffer,
@@ -3925,7 +3922,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     }
 
     if (polygonModePoint) {
-        if (!mglEncodeElementPolygonPoint(_renderPassManager.state->currentRenderEncoder,
+        if (!mglEncodeElementPolygonPoint((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                           _device,
                                           gl_element_buffer,
                                           indexBuffer,
@@ -3945,7 +3942,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     }
 
     if (emulateTriangleFan) {
-        if (!mglEncodeElementTriangleFan(_renderPassManager.state->currentRenderEncoder,
+        if (!mglEncodeElementTriangleFan((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                          _device,
                                          gl_element_buffer,
                                          indexBuffer,
@@ -3962,7 +3959,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
     if (emulateLineLoop) {
-        if (!mglEncodeElementLineLoop(_renderPassManager.state->currentRenderEncoder,
+        if (!mglEncodeElementLineLoop((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                       _device,
                                       gl_element_buffer,
                                       indexBuffer,
@@ -3979,7 +3976,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
     if (emulateQuads) {
-        if (!mglEncodeElementQuads(_renderPassManager.state->currentRenderEncoder,
+        if (!mglEncodeElementQuads((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                    _device,
                                    gl_element_buffer,
                                    indexBuffer,
@@ -4013,7 +4010,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     // in the future it would be an idea to use temp buffers for large buffers that would wire
     // to much memory down.. like a million point galaxy drawing
     //
-    mglDrawIndexedPrimitives(_renderPassManager.state->currentRenderEncoder,
+    mglDrawIndexedPrimitives((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                              primitiveType, count, drawIndexType,
                              drawIndexBuffer, offset, instancecount,
                              basevertex, baseinstance);
@@ -4105,7 +4102,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     if (polygonModePoint) {
         uint64_t submittedVertices = 0u;
         for (int i = 0; i < drawcount; i++) {
-            if (mglEncodeArrayPolygonPoint(_renderPassManager.state->currentRenderEncoder,
+            if (mglEncodeArrayPolygonPoint((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                            _device,
                                            mode,
                                            first[i],
@@ -4125,7 +4122,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     if (mode == GL_TRIANGLE_FAN) {
         uint64_t submittedVertices = 0u;
         for (int i = 0; i < drawcount; i++) {
-            if (mglEncodeArrayTriangleFan(_renderPassManager.state->currentRenderEncoder,
+            if (mglEncodeArrayTriangleFan((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                           _device,
                                           count[i],
                                           first[i],
@@ -4143,7 +4140,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     if (mode == GL_LINE_LOOP) {
         uint64_t submittedVertices = 0u;
         for (int i = 0; i < drawcount; i++) {
-            if (mglEncodeArrayLineLoop(_renderPassManager.state->currentRenderEncoder,
+            if (mglEncodeArrayLineLoop((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                        glm_ctx,
                                        _device,
                                        count[i],
@@ -4162,7 +4159,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     if (mode == GL_QUADS) {
         uint64_t submittedVertices = 0u;
         for (int i = 0; i < drawcount; i++) {
-            if (mglEncodeArrayQuads(_renderPassManager.state->currentRenderEncoder,
+            if (mglEncodeArrayQuads((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                     _device,
                                     count[i],
                                     first[i],
@@ -4185,7 +4182,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     uint64_t submittedVertices = 0u;
     for(int i=0; i<drawcount; i++)
     {
-         mglDrawPrimitives(_renderPassManager.state->currentRenderEncoder,
+         mglDrawPrimitives((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                            primitiveType, first[i], count[i], 1, 0);
          submittedVertices += (uint64_t)MAX(count[i], 0);
     }
@@ -4300,7 +4297,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     {
         NSUInteger offset = (NSUInteger)(uintptr_t)indices[i];
         MGLPrimitiveRestartEncodeResult restartResult =
-            mglEncodePrimitiveRestartedElementDraw(_renderPassManager.state->currentRenderEncoder,
+            mglEncodePrimitiveRestartedElementDraw((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                                    _device,
                                                    ctx,
                                                    gl_element_buffer,
@@ -4323,7 +4320,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         }
 
         if (polygonModePoint) {
-            if (mglEncodeElementPolygonPoint(_renderPassManager.state->currentRenderEncoder,
+            if (mglEncodeElementPolygonPoint((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                              _device,
                                              gl_element_buffer,
                                              indexBuffer,
@@ -4342,7 +4339,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         }
 
         if (emulateTriangleFan) {
-            if (mglEncodeElementTriangleFan(_renderPassManager.state->currentRenderEncoder,
+            if (mglEncodeElementTriangleFan((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                             _device,
                                             gl_element_buffer,
                                             indexBuffer,
@@ -4358,7 +4355,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
             continue;
         }
         if (emulateLineLoop) {
-            if (mglEncodeElementLineLoop(_renderPassManager.state->currentRenderEncoder,
+            if (mglEncodeElementLineLoop((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                          _device,
                                          gl_element_buffer,
                                          indexBuffer,
@@ -4374,7 +4371,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
             continue;
         }
         if (emulateQuads) {
-            if (mglEncodeElementQuads(_renderPassManager.state->currentRenderEncoder,
+            if (mglEncodeElementQuads((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                       _device,
                                       gl_element_buffer,
                                       indexBuffer,
@@ -4402,7 +4399,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
             continue;
         }
 
-        mglDrawIndexedPrimitives(_renderPassManager.state->currentRenderEncoder,
+        mglDrawIndexedPrimitives((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                  primitiveType, count[i], drawIndexType,
                                  drawIndexBuffer, offset, 1, 0, 0);
         submittedIndices += (uint64_t)MAX(count[i], 0);
@@ -4521,7 +4518,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     {
         NSUInteger offset = (NSUInteger)(uintptr_t)indices[i];
         MGLPrimitiveRestartEncodeResult restartResult =
-            mglEncodePrimitiveRestartedElementDraw(_renderPassManager.state->currentRenderEncoder,
+            mglEncodePrimitiveRestartedElementDraw((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                                    _device,
                                                    ctx,
                                                    gl_element_buffer,
@@ -4544,7 +4541,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         }
 
         if (polygonModePoint) {
-            if (mglEncodeElementPolygonPoint(_renderPassManager.state->currentRenderEncoder,
+            if (mglEncodeElementPolygonPoint((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                              _device,
                                              gl_element_buffer,
                                              indexBuffer,
@@ -4563,7 +4560,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         }
 
         if (emulateTriangleFan) {
-            if (mglEncodeElementTriangleFan(_renderPassManager.state->currentRenderEncoder,
+            if (mglEncodeElementTriangleFan((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                             _device,
                                             gl_element_buffer,
                                             indexBuffer,
@@ -4579,7 +4576,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
             continue;
         }
         if (emulateLineLoop) {
-            if (mglEncodeElementLineLoop(_renderPassManager.state->currentRenderEncoder,
+            if (mglEncodeElementLineLoop((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                          _device,
                                          gl_element_buffer,
                                          indexBuffer,
@@ -4595,7 +4592,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
             continue;
         }
         if (emulateQuads) {
-            if (mglEncodeElementQuads(_renderPassManager.state->currentRenderEncoder,
+            if (mglEncodeElementQuads((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                       _device,
                                       gl_element_buffer,
                                       indexBuffer,
@@ -4623,7 +4620,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
             continue;
         }
 
-        mglDrawIndexedPrimitives(_renderPassManager.state->currentRenderEncoder,
+        mglDrawIndexedPrimitives((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                  primitiveType, count[i], drawIndexType,
                                  drawIndexBuffer, offset, 1, basevertex[i], 0);
         submittedIndices += (uint64_t)MAX(count[i], 0);
@@ -4799,7 +4796,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
 
             BOOL ok = NO;
             if (mode == GL_LINE_LOOP) {
-                ok = mglEncodeArrayLineLoop(_renderPassManager.state->currentRenderEncoder,
+                ok = mglEncodeArrayLineLoop((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                             glm_ctx,
                                             _device,
                                             (GLsizei)cmd.count,
@@ -4808,7 +4805,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                                             (NSUInteger)cmd.baseInstance,
                                             "multiDrawArraysIndirect");
             } else if (polygonModePoint) {
-                ok = mglEncodeArrayPolygonPoint(_renderPassManager.state->currentRenderEncoder,
+                ok = mglEncodeArrayPolygonPoint((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                                 _device,
                                                 mode,
                                                 (GLint)cmd.first,
@@ -4817,7 +4814,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                                                 (NSUInteger)cmd.baseInstance,
                                                 "multiDrawArraysIndirect");
             } else {
-                ok = mglEncodeArrayQuads(_renderPassManager.state->currentRenderEncoder,
+                ok = mglEncodeArrayQuads((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                          _device,
                                          (GLsizei)cmd.count,
                                          (GLint)cmd.first,
@@ -4895,7 +4892,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         }
 
         mglDrawPrimitivesIndirect(
-            _renderPassManager.state->currentRenderEncoder, primitiveType,
+            (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner), primitiveType,
             indirectBuffer, offset);
     }
     if (drawcount > 0) {
@@ -5118,7 +5115,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
             NSUInteger elementOffset = (NSUInteger)cmd.first * indexStride;
             BOOL ok = NO;
             if (mode == GL_LINE_LOOP) {
-                ok = mglEncodeElementLineLoop(_renderPassManager.state->currentRenderEncoder,
+                ok = mglEncodeElementLineLoop((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                               _device,
                                               gl_element_buffer,
                                               indexBuffer,
@@ -5130,7 +5127,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                                               (NSUInteger)cmd.baseInstance,
                                               "multiDrawElementsIndirect");
             } else if (polygonModePoint) {
-                ok = mglEncodeElementPolygonPoint(_renderPassManager.state->currentRenderEncoder,
+                ok = mglEncodeElementPolygonPoint((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                                   _device,
                                                   gl_element_buffer,
                                                   indexBuffer,
@@ -5144,7 +5141,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                                                   (NSUInteger)cmd.baseInstance,
                                                   "multiDrawElementsIndirect");
             } else {
-                ok = mglEncodeElementQuads(_renderPassManager.state->currentRenderEncoder,
+                ok = mglEncodeElementQuads((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
                                            _device,
                                            gl_element_buffer,
                                            indexBuffer,
@@ -5246,7 +5243,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
 
         // draw indexed primitive
         mglDrawIndexedPrimitivesIndirect(
-            _renderPassManager.state->currentRenderEncoder, primitiveType,
+            (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner), primitiveType,
             drawIndexType, drawIndexBuffer, indexBufferOffset,
             indirectBuffer, offset);
     }

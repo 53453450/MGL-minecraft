@@ -2172,6 +2172,65 @@ static int verifyCommandBufferGetterAndAdopt(void) {
     return 0;
 }
 
+static int verifyRenderEncoderGetter(void) {
+    /* P4.5 (item 1141): render-encoder owner getter — the ObjC mirror is
+     * gone and reads borrow through the C++ owner on both gates. */
+    if (mglRenderCppRenderEncoderOwnerGetCurrent(NULL) != NULL) {
+        fprintf(stderr, "FAIL: re getter null owner\n");
+        return 1;
+    }
+    id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
+    if (!dev) return 0; /* covered by main's guard */
+    id<MTLCommandQueue> queue = [dev newCommandQueue];
+    id<MTLCommandBuffer> cb = [queue commandBuffer];
+    MTLTextureDescriptor *desc =
+        [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+                                                           width:4 height:4 mipmapped:NO];
+    desc.usage = MTLTextureUsageRenderTarget;
+    id<MTLTexture> texture = [dev newTextureWithDescriptor:desc];
+    MTLRenderPassDescriptor *rpd = [MTLRenderPassDescriptor new];
+    rpd.colorAttachments[0].texture = texture;
+    rpd.colorAttachments[0].loadAction = MTLLoadActionClear;
+    rpd.colorAttachments[0].storeAction = MTLStoreActionStore;
+    id<MTLRenderCommandEncoder> encoder = [cb renderCommandEncoderWithDescriptor:rpd];
+    if (!cb || !texture || !encoder) {
+        fprintf(stderr, "FAIL: re getter setup\n");
+        return 1;
+    }
+    void *owner = NULL;
+    if (mglRenderCppCreateRenderEncoderOwner(
+            (__bridge void *)encoder, &owner) != 0 || !owner) {
+        fprintf(stderr, "FAIL: re owner create\n");
+        return 1;
+    }
+    id<MTLRenderCommandEncoder> readBack =
+        (__bridge id<MTLRenderCommandEncoder>)
+            mglRenderCppRenderEncoderOwnerGetCurrent(owner);
+    if (readBack != encoder) {
+        fprintf(stderr, "FAIL: re getter identity\n");
+        return 1;
+    }
+    if (mglRenderCppEndRenderEncoderOwner(owner) != 0) {
+        fprintf(stderr, "FAIL: re owner end\n");
+        return 1;
+    }
+    /* The owner keeps the (ended) encoder pointer until destroy — matches
+     * the mirror's end semantics (clear is a separate step). */
+    if (mglRenderCppRenderEncoderOwnerGetCurrent(owner) !=
+        (__bridge void *)encoder) {
+        fprintf(stderr, "FAIL: re getter after end\n");
+        return 1;
+    }
+    mglRenderCppDestroyRenderEncoderOwner(&owner);
+    if (owner != NULL) {
+        fprintf(stderr, "FAIL: re owner not cleared\n");
+        return 1;
+    }
+    /* The owner already called endEncoding via EndRenderEncoderOwner. */
+    printf("RE_GETTER_OK\n");
+    return 0;
+}
+
 static int verifyMDIScratchOwner(void) {
     /* P4.5 (item 1155): MDI scratch allocator — the ObjC gate-off allocator
      * now delegates to the same C++ owner. */
@@ -3751,6 +3810,7 @@ int main(void) {
         if (verifyLevelUploadPrep() != 0) return 1;
         if (verifyCopyBackEncode() != 0) return 1;
         if (verifyMDIScratchOwner() != 0) return 1;
+        if (verifyRenderEncoderGetter() != 0) return 1;
         if (verifyCommandBufferGetterAndAdopt() != 0) return 1;
         if (verifyRenderPassIdentityOwner() != 0) return 1;
         if (verifyRenderPassStateOwner(device) != 0) return 1;

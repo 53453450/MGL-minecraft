@@ -6619,6 +6619,13 @@ int mglRenderCppEndRenderEncoderOwner(void* owner_handle) {
     return 0;
 }
 
+extern "C"
+void* mglRenderCppRenderEncoderOwnerGetCurrent(void* owner_handle) {
+    mgl::RenderEncoderOwner* owner =
+        static_cast<mgl::RenderEncoderOwner*>(owner_handle);
+    return owner ? static_cast<void*>(owner->encoder) : nullptr;
+}
+
 void mglRenderCppDestroyRenderEncoderOwner(void** owner_handle) {
     if (!owner_handle || !*owner_handle) return;
     mgl::RenderEncoderOwner* owner =
