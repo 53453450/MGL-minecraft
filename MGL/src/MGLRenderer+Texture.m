@@ -964,6 +964,102 @@ static void mglTextureCopyTextureToBuffer(
     }
 }
 
+/* P4.5 (item 1171): readback 共享序列——staging buffer 创建 + blit encoder +
+ * copy + end（带异常清理）+ completion-wait（0.25s 超时 + error 状态）+ commit
+ * + newCommandBuffer。颜色/深度两条 readPixels 路径的编排逐点一致，仅日志
+ * 主语（logKind）与转换不同。返回共享 staging buffer（等待后 contents 可用）；
+ * 失败返回 nil（已按调用点语义置 GL 错误）。outSuccess 为 NO 表示等待超时/
+ * CB 错误（buffer 仍有效但内容不可信，调用方跳过转换）。 */
+- (id<MTLBuffer>)readbackStageAndWaitTexture:(id<MTLTexture>)sourceTexture
+                                 sourceLevel:(NSUInteger)sourceLevel
+                                 sourceSlice:(NSUInteger)sourceSlice
+                             sourceDepthPlane:(NSUInteger)sourceDepthPlane
+                                   copyOrigin:(MTLOrigin)copyOrigin
+                                     copySize:(MTLSize)copySize
+                         stagingBytesPerRow:(NSUInteger)stagingBytesPerRow
+                                stagingSize:(NSUInteger)stagingSize
+                                     reason:(const char *)reason
+                                    logKind:(const char *)logKind
+                                     success:(BOOL *)outSuccess
+{
+    if (outSuccess) {
+        *outSuccess = YES;
+    }
+
+    id<MTLBuffer> readBuffer = mglTextureCreateBuffer(
+        _device, stagingSize, MTLResourceStorageModeShared);
+    id<MTLBlitCommandEncoder> blitEncoder = readBuffer
+        ? mglTextureCreateBlitEncoder((__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner))
+        : nil;
+    if (!readBuffer || !blitEncoder) {
+        NSLog(@"MGL WARNING: readPixels failed to create %s resources for %s",
+              logKind ? logKind : "readback",
+              reason ? reason : "unknown");
+        mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
+        return nil;
+    }
+
+    BOOL blitEncoderEnded = NO;
+    @try {
+        mglTextureCopyTextureToBuffer(
+            blitEncoder, sourceTexture, sourceSlice, sourceLevel,
+            copyOrigin, copySize,
+            readBuffer, 0u, stagingBytesPerRow, stagingSize);
+        mglTextureEndBlitEncoder(blitEncoder);
+        blitEncoderEnded = YES;
+    } @catch (NSException *exception) {
+        if (!blitEncoderEnded) {
+            @try {
+                mglTextureEndBlitEncoder(blitEncoder);
+            } @catch (NSException *endException) {
+                NSLog(@"MGL WARNING: readPixels failed to end %s blit encoder after copy exception for %s: %@",
+                      logKind ? logKind : "readback",
+                      reason ? reason : "unknown",
+                      endException);
+            }
+        }
+        NSLog(@"MGL WARNING: readPixels %s texture copy failed for %s: %@",
+              logKind ? logKind : "readback",
+              reason ? reason : "unknown",
+              exception);
+        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        return nil;
+    }
+
+    dispatch_semaphore_t readbackDone = dispatch_semaphore_create(0);
+    MGLTextureCompletionWaitContext *readbackContext =
+        mglTextureAddCompletionWait(
+        (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
+        readbackDone);
+    mglTextureCommitCommandBuffer((__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
+    _lastCommittedCB = (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner);
+
+    dispatch_time_t readbackDeadline = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC));
+    if (!readbackContext ||
+        dispatch_semaphore_wait(readbackDone, readbackDeadline) != 0) {
+        NSLog(@"MGL WARNING: readPixels %s command buffer timed out for %s; returning zeroed data",
+              logKind ? logKind : "readback",
+              reason ? reason : "unknown");
+        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        if (outSuccess) {
+            *outSuccess = NO;
+        }
+    } else if (readbackContext->state.has_error) {
+        NSLog(@"MGL WARNING: readPixels %s command buffer failed for %s: %@; returning zeroed data",
+              logKind ? logKind : "readback",
+              reason ? reason : "unknown",
+              mglRenderCommandBufferErrorString(&readbackContext->state));
+        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        if (outSuccess) {
+            *outSuccess = NO;
+        }
+    }
+
+    [self newCommandBuffer];
+    mglTextureReleaseCompletionWaitContext(readbackContext);
+    return readBuffer;
+}
+
 - (BOOL)mglReadColorTextureAsBGRA8:(id<MTLTexture>)sourceTexture
                        sourceLevel:(NSUInteger)sourceLevel
                        sourceSlice:(NSUInteger)sourceSlice
@@ -1092,70 +1188,29 @@ static void mglTextureCopyTextureToBuffer(
         return NO;
     }
 
-    id<MTLBuffer> readBuffer = mglTextureCreateBuffer(
-        _device, stagingSize, MTLResourceStorageModeShared);
-    id<MTLBlitCommandEncoder> blitEncoder = readBuffer
-        ? mglTextureCreateBlitEncoder((__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner))
-        : nil;
-    if (!readBuffer || !blitEncoder) {
-        NSLog(@"MGL WARNING: readPixels failed to create readback resources for %s",
-              reason ? reason : "unknown");
-        mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
+    BOOL readbackSuccess = YES;
+    id<MTLBuffer> readBuffer = [self readbackStageAndWaitTexture:sourceTexture
+                                                     sourceLevel:sourceLevel
+                                                     sourceSlice:sourceSlice
+                                                 sourceDepthPlane:sourceDepthPlane
+                                                       copyOrigin:MTLOriginMake((NSUInteger)metalSrcX,
+                                                                                (NSUInteger)metalSrcY,
+                                                                                sourceDepthPlane)
+                                                         copySize:MTLSizeMake((NSUInteger)copyW,
+                                                                              (NSUInteger)copyH,
+                                                                              1u)
+                                             stagingBytesPerRow:stagingBytesPerRow
+                                                    stagingSize:stagingSize
+                                                         reason:reason
+                                                        logKind:"readback"
+                                                         success:&readbackSuccess];
+    if (!readBuffer) {
         return NO;
     }
 
-    BOOL blitEncoderEnded = NO;
-    @try {
-        mglTextureCopyTextureToBuffer(
-            blitEncoder, sourceTexture, sourceSlice, sourceLevel,
-            MTLOriginMake((NSUInteger)metalSrcX, (NSUInteger)metalSrcY,
-                          sourceDepthPlane),
-            MTLSizeMake((NSUInteger)copyW, (NSUInteger)copyH, 1u),
-            readBuffer, 0u, stagingBytesPerRow, stagingSize);
-        mglTextureEndBlitEncoder(blitEncoder);
-        blitEncoderEnded = YES;
-    } @catch (NSException *exception) {
-        if (!blitEncoderEnded) {
-            @try {
-                mglTextureEndBlitEncoder(blitEncoder);
-            } @catch (NSException *endException) {
-                NSLog(@"MGL WARNING: readPixels failed to end blit encoder after copy exception for %s: %@",
-                      reason ? reason : "unknown",
-                      endException);
-            }
-        }
-        NSLog(@"MGL WARNING: readPixels texture copy failed for %s: %@",
-              reason ? reason : "unknown",
-              exception);
-        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
-        return NO;
-    }
-
-    dispatch_semaphore_t readbackDone = dispatch_semaphore_create(0);
-    MGLTextureCompletionWaitContext *readbackContext =
-        mglTextureAddCompletionWait(
-        (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
-        readbackDone);
-    mglTextureCommitCommandBuffer((__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
-    _lastCommittedCB = (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner);
-
-    dispatch_time_t readbackDeadline = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC));
-    BOOL success = YES;
-    if (!readbackContext ||
-        dispatch_semaphore_wait(readbackDone, readbackDeadline) != 0) {
-        NSLog(@"MGL WARNING: readPixels command buffer timed out for %s; returning zeroed data",
-              reason ? reason : "unknown");
-        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
-        success = NO;
-    } else if (readbackContext->state.has_error) {
-        NSLog(@"MGL WARNING: readPixels command buffer failed for %s: %@; returning zeroed data",
-              reason ? reason : "unknown",
-              mglRenderCommandBufferErrorString(&readbackContext->state));
-        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
-        success = NO;
-    } else {
+    if (readbackSuccess) {
         uint8_t *dst = ((uint8_t *)pixelBytes) + dstOffset;
-mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
+        mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
                                         stagingBytesPerRow,
                                         dst,
                                         bytesPerRow,
@@ -1165,9 +1220,7 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
                                         YES);
     }
 
-    [self newCommandBuffer];
-    mglTextureReleaseCompletionWaitContext(readbackContext);
-    return success;
+    return readbackSuccess;
 }
 
 - (BOOL)mglReadDepthTextureAsFloat:(id<MTLTexture>)sourceTexture
@@ -1308,68 +1361,27 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
         return NO;
     }
 
-    id<MTLBuffer> readBuffer = mglTextureCreateBuffer(
-        _device, stagingSize, MTLResourceStorageModeShared);
-    id<MTLBlitCommandEncoder> blitEncoder = readBuffer
-        ? mglTextureCreateBlitEncoder((__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner))
-        : nil;
-    if (!readBuffer || !blitEncoder) {
-        NSLog(@"MGL WARNING: readPixels failed to create depth readback resources for %s",
-              reason ? reason : "unknown");
-        mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
+    BOOL readbackSuccess = YES;
+    id<MTLBuffer> readBuffer = [self readbackStageAndWaitTexture:sourceTexture
+                                                     sourceLevel:sourceLevel
+                                                     sourceSlice:sourceSlice
+                                                 sourceDepthPlane:sourceDepthPlane
+                                                       copyOrigin:MTLOriginMake((NSUInteger)metalSrcX,
+                                                                                (NSUInteger)metalSrcY,
+                                                                                sourceDepthPlane)
+                                                         copySize:MTLSizeMake((NSUInteger)copyW,
+                                                                              (NSUInteger)copyH,
+                                                                              1u)
+                                             stagingBytesPerRow:stagingBytesPerRow
+                                                    stagingSize:stagingSize
+                                                         reason:reason
+                                                        logKind:"depth readback"
+                                                         success:&readbackSuccess];
+    if (!readBuffer) {
         return NO;
     }
 
-    BOOL blitEncoderEnded = NO;
-    @try {
-        mglTextureCopyTextureToBuffer(
-            blitEncoder, sourceTexture, sourceSlice, sourceLevel,
-            MTLOriginMake((NSUInteger)metalSrcX, (NSUInteger)metalSrcY,
-                          sourceDepthPlane),
-            MTLSizeMake((NSUInteger)copyW, (NSUInteger)copyH, 1u),
-            readBuffer, 0u, stagingBytesPerRow, stagingSize);
-        mglTextureEndBlitEncoder(blitEncoder);
-        blitEncoderEnded = YES;
-    } @catch (NSException *exception) {
-        if (!blitEncoderEnded) {
-            @try {
-                mglTextureEndBlitEncoder(blitEncoder);
-            } @catch (NSException *endException) {
-                NSLog(@"MGL WARNING: readPixels failed to end depth blit encoder after copy exception for %s: %@",
-                      reason ? reason : "unknown",
-                      endException);
-            }
-        }
-        NSLog(@"MGL WARNING: readPixels depth texture copy failed for %s: %@",
-              reason ? reason : "unknown",
-              exception);
-        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
-        return NO;
-    }
-
-    dispatch_semaphore_t readbackDone = dispatch_semaphore_create(0);
-    MGLTextureCompletionWaitContext *readbackContext =
-        mglTextureAddCompletionWait(
-        (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
-        readbackDone);
-    mglTextureCommitCommandBuffer((__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
-    _lastCommittedCB = (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner);
-
-    dispatch_time_t readbackDeadline = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC));
-    BOOL success = YES;
-    if (!readbackContext ||
-        dispatch_semaphore_wait(readbackDone, readbackDeadline) != 0) {
-        NSLog(@"MGL WARNING: readPixels depth command buffer timed out for %s",
-              reason ? reason : "unknown");
-        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
-        success = NO;
-    } else if (readbackContext->state.has_error) {
-        NSLog(@"MGL WARNING: readPixels depth command buffer failed for %s: %@",
-              reason ? reason : "unknown",
-              mglRenderCommandBufferErrorString(&readbackContext->state));
-        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
-        success = NO;
-    } else {
+    if (readbackSuccess) {
         uint8_t *dst = ((uint8_t *)pixelBytes) + dstOffset;
         if (sourceIsDepthStencil || sourceIsDepth16) {
             const uint8_t *src = (const uint8_t *)readBuffer.contents;
@@ -1397,9 +1409,7 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
         }
     }
 
-    [self newCommandBuffer];
-    mglTextureReleaseCompletionWaitContext(readbackContext);
-    return success;
+    return readbackSuccess;
 }
 
 - (BOOL)mglReadIntegerTextureAsRGBA32:(id<MTLTexture>)sourceTexture
