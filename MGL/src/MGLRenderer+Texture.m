@@ -606,14 +606,22 @@ static void mglTextureCopyTextureToBuffer(
         }
     }
 
+    /* P4.4: 上传路径选路在 C++（mglRenderCppTextureUploadRoute）——storage
+     * mode / 纹理类型 / AGX 能力位 → REPLACE_1D / REPLACE_3D / REJECT / BLIT。
+     * ObjC 只剩按路由执行对应分支体；判定语义与既有内联条件逐条一致。 */
+    const int uploadRoute = mglRenderCppTextureUploadRoute(
+        (uint32_t)textureType,
+        (uint32_t)texture.storageMode,
+        MGLCapabilityHasBug(&_capability,
+                            MGL_BUG_3D_COPY_FROM_BUFFER_SLICE_OOB) ? 1 : 0);
+
     /* 1D texture upload via replaceRegion branch:
      * - 1D textures are a low-frequency update path; replaceRegion is safe in this scenario;
      * - Before entering this function, the caller has already flushed CPU-side deferred
      *   draws via mglFlushPendingDrawsBeforeTextureWrite, avoiding ordering races between
      *   the upload and uncommitted render command buffers;
      * - Only available for shared storage; Private storage (e.g. MSAA) must fall back to the blit path. */
-    if ((textureType == MTLTextureType1D || textureType == MTLTextureType1DArray) &&
-        texture.storageMode != MTLStorageModePrivate) {
+    if (uploadRoute == MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_REPLACE_1D) {
         @try {
             MTLRegion region = MTLRegionMake1D(0, width);
             if (textureType == MTLTextureType1DArray) {
@@ -655,15 +663,11 @@ static void mglTextureCopyTextureToBuffer(
      * - Metal requires bytesPerImage for 3D replaceRegion uploads, so padded
      *   depth planes are repacked and uploaded with the tight image stride.
      * - Only shared storage supports replaceRegion.  Do not fall back to the
-     *   known-bad copyFromBuffer path while the AGX bug marker is active. */
-    if (is3DTexture &&
-        MGLCapabilityHasBug(&_capability, MGL_BUG_3D_COPY_FROM_BUFFER_SLICE_OOB)) {
-        if (texture.storageMode == MTLStorageModePrivate) {
-            NSLog(@"MGL WARNING: Rejecting private 3D upload while AGX copyFromBuffer workaround is required (tex=%u level=%lu)",
-                  (unsigned)texName, (unsigned long)level);
-            return false;
-        }
-
+     *   known-bad copyFromBuffer path while the AGX bug marker is active.
+     * - The route already rejects private storage while the bug marker is up;
+     *   reaching this branch means the upload is shared and must use
+     *   replaceRegion (never the known-bad blit). */
+    if (uploadRoute == MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_REPLACE_3D) {
         const void *replaceBytes = bytes;
         void *tightlyPackedBytes = NULL;
         if (safeBytesPerImage != expectedBytesPerImage) {
@@ -697,6 +701,15 @@ static void mglTextureCopyTextureToBuffer(
                   exception.reason);
             return false;
         }
+    }
+
+    /* 3D + Private while the AGX copyFromBuffer workaround is required:
+     * rejected by the C++ route (blit is known-bad and replaceRegion does
+     * not support private storage). */
+    if (uploadRoute == MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_REJECT) {
+        NSLog(@"MGL WARNING: Rejecting private 3D upload while AGX copyFromBuffer workaround is required (tex=%u level=%lu)",
+              (unsigned)texName, (unsigned long)level);
+        return false;
     }
 
     /* 2D / 2DArray / Cube texture upload via blit path (dedicated CB + completion handler):

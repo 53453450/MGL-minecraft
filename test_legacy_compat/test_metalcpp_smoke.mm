@@ -2498,6 +2498,45 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
         printf("BINDING_SNAPSHOT_OK\n");
     }
 
+    /* P4.4: texture upload route selection.  Pure decision logic; assert the
+     * exact same routing table as uploadTextureSliceViaBlit's inline
+     * conditions: 1D/1DArray + non-private → REPLACE_1D; 3D + AGX bug +
+     * private → REJECT; 3D + AGX bug + shared → REPLACE_3D; everything else
+     * → BLIT. */
+    {
+        if (mglRenderCppTextureUploadRoute(
+                (uint32_t)MTLTextureType1D, (uint32_t)MTLStorageModeShared, 0) !=
+                MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_REPLACE_1D ||
+            mglRenderCppTextureUploadRoute(
+                (uint32_t)MTLTextureType1DArray,
+                (uint32_t)MTLStorageModeManaged, 0) !=
+                MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_REPLACE_1D ||
+            mglRenderCppTextureUploadRoute(
+                (uint32_t)MTLTextureType1D, (uint32_t)MTLStorageModePrivate, 0) !=
+                MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_BLIT ||
+            mglRenderCppTextureUploadRoute(
+                (uint32_t)MTLTextureType3D, (uint32_t)MTLStorageModePrivate, 1) !=
+                MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_REJECT ||
+            mglRenderCppTextureUploadRoute(
+                (uint32_t)MTLTextureType3D, (uint32_t)MTLStorageModeShared, 1) !=
+                MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_REPLACE_3D ||
+            mglRenderCppTextureUploadRoute(
+                (uint32_t)MTLTextureType3D, (uint32_t)MTLStorageModeShared, 0) !=
+                MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_BLIT ||
+            mglRenderCppTextureUploadRoute(
+                (uint32_t)MTLTextureType2D, (uint32_t)MTLStorageModeShared, 0) !=
+                MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_BLIT ||
+            mglRenderCppTextureUploadRoute(
+                (uint32_t)MTLTextureTypeCube, (uint32_t)MTLStorageModePrivate, 1) !=
+                MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_BLIT) {
+            fprintf(stderr, "FAIL: texture upload route\n");
+            mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
+            mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
+            return 1;
+        }
+        printf("TEXTURE_UPLOAD_ROUTE_OK\n");
+    }
+
     /* P4.3c: whole-batch simple replay.  Valid batch encodes; unknown command
      * type falls back to NEEDS_OBJC; bad args are rejected. */
     {

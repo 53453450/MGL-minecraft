@@ -2980,6 +2980,37 @@ int mglRenderCppTextureGetBytes(void* texture,
     return 0;
 }
 
+/* P4.4: CPU→GPU 上传路径选路（纯决策，无 Metal 对象）。与
+ * uploadTextureSliceViaBlit 的既有内联判定逐条件一致，见头文件契约。 */
+int mglRenderCppTextureUploadRoute(uint32_t texture_type,
+                                   uint32_t storage_mode,
+                                   int has_agx_3d_copy_bug) {
+    /* MTLTextureType ABI 数值（Apple 稳定）：Type1D=0，Type1DArray=3，
+     * Type3D=5。MTLStorageMode：Private=0，Shared=2。 */
+    const uint32_t kMTLTextureType1D = 0u;
+    const uint32_t kMTLTextureType1DArray = 3u;
+    const uint32_t kMTLTextureType3D = 5u;
+    const uint32_t kMTLStorageModePrivate = 0u;
+
+    /* 1D/1DArray 且非 Private：低频率路径，replaceRegion 安全。 */
+    if ((texture_type == kMTLTextureType1D ||
+         texture_type == kMTLTextureType1DArray) &&
+        storage_mode != kMTLStorageModePrivate) {
+        return MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_REPLACE_1D;
+    }
+
+    /* 3D + AGX copyFromBuffer slice OOB bug：Private 拒绝（blit 已知坏），
+     * 其余走 replaceRegion（需紧凑重打包）。 */
+    if (texture_type == kMTLTextureType3D && has_agx_3d_copy_bug) {
+        if (storage_mode == kMTLStorageModePrivate) {
+            return MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_REJECT;
+        }
+        return MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_REPLACE_3D;
+    }
+
+    return MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_BLIT;
+}
+
 int mglRenderCppCreateSampler(void* sampler_descriptor,
                               void** sampler_out) {
     if (sampler_out) *sampler_out = nullptr;

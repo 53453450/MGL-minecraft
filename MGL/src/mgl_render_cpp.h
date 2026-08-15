@@ -288,6 +288,25 @@ int mglRenderCppTextureGetBytes(void *texture,
                                 uint64_t level,
                                 uint64_t slice,
                                 int use_slice);
+
+/* P4.4: CPU→GPU 上传路径选路。纯决策函数（无 Metal 对象参与），把
+ * MGLRenderer+Texture.m uploadTextureSliceViaBlit 的「storage mode /
+ * 纹理类型 / AGX 能力位 → replaceRegion 或 blit 或 reject」判定迁入 C++，
+ * ObjC 只剩按返回路由执行对应分支体。texture_type / storage_mode 直接传
+ * MTLTextureType / MTLStorageMode 的 ABI 数值（Apple 稳定枚举）。
+ * 路由语义与既有内联判定完全一致：
+ *   - 1D/1DArray 且非 Private → REPLACE_1D（低频率路径，replaceRegion 安全）
+ *   - 3D 且 AGX copyFromBuffer slice OOB bug 生效 → Private 拒绝（REJECT），
+ *     否则 REPLACE_3D（需紧凑重打包 + bytesPerImage）
+ *   - 其余（2D/2DArray/Cube/1D-Private…）→ BLIT（dedicated CB 保 GPU 顺序） */
+#define MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_BLIT          0
+#define MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_REPLACE_1D    1
+#define MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_REPLACE_3D    2
+#define MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_REJECT        3
+
+int mglRenderCppTextureUploadRoute(uint32_t texture_type,
+                                   uint32_t storage_mode,
+                                   int has_agx_3d_copy_bug);
 int mglRenderCppCreateSampler(void *sampler_descriptor,
                               void **sampler_out);
 /* Translate GL texture parameters into a Metal-cpp sampler descriptor and
