@@ -177,6 +177,98 @@ static void mglBindingStateSetFragmentBytes(
     const int vertexStage = _tessellation.nativeTESActive
         ? _TESS_EVALUATION_SHADER : _VERTEX_SHADER;
 
+    /* P4.3b main-path extension (vertex counterpart of the fragment loop):
+     * gate-on 下把 vertex 主绑定循环的每个 emit 按原始顺序收集进 snapshot，
+     * 循环结束后一次交给 C++ 重放（setVertexBuffer / setVertexBytes /
+     * nil-clear 交错保序）；gate-off 保持逐条 ObjC 调用作 A/B 对照。
+     * 判定/统计/COW 记账/owner 更新/last-bound 失效两路一致，只有 encoder
+     * 调用被推迟。重放位置在 map 循环后、bindVertexAttributesFromVAO 前，
+     * 保持「map 循环 emit → VAO attrib emit」的原始顺序。bytes 统一拷贝进
+     * 本函数作用域 scratch；scratch 或 op 数组满则先 flush 再继续。 */
+    const BOOL useVertexBindingSnapshot = mglBindingStateUsesMetalCpp();
+    MGLRenderCppBindingSnapshot vbindSnapshot = {0};
+    uint8_t vbindByteScratch[4096];
+    size_t vbindByteScratchUsed = 0;
+
+#define MGL_VBIND_FLUSH_SNAPSHOT()                                              \
+    do {                                                                        \
+        if (vbindSnapshot.vertex_op_count > 0) {                                \
+            mglRenderCppEncodeBindingSnapshot(                                  \
+                (__bridge void *)encCtx->encoder, &vbindSnapshot, NULL, 0);     \
+            vbindSnapshot = (MGLRenderCppBindingSnapshot){0};                   \
+            vbindByteScratchUsed = 0;                                           \
+        }                                                                       \
+    } while (0)
+
+#define MGL_VBIND_COLLECT_BUFFER(slot, bufPtr, off)                             \
+    do {                                                                        \
+        if (vbindSnapshot.vertex_op_count >=                                    \
+            MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_OPS) {                          \
+            MGL_VBIND_FLUSH_SNAPSHOT();                                         \
+        }                                                                       \
+        vbindSnapshot.vertex_ops[vbindSnapshot.vertex_op_count++] =             \
+            (MGLRenderCppBindingOp){/* kind */ 0u,                              \
+                                    /* index */ (uint32_t)(slot),               \
+                                    /* offset */ (uint64_t)(off),               \
+                                    /* buffer */ (void *)(bufPtr),              \
+                                    /* bytes */ NULL,                           \
+                                    /* length */ 0u};                           \
+    } while (0)
+
+#define MGL_VBIND_COLLECT_BYTES(slot, src, len)                                 \
+    do {                                                                        \
+        const void *src_ = (src);                                               \
+        size_t len_ = (len);                                                    \
+        if (vbindByteScratchUsed + len_ > sizeof(vbindByteScratch)) {           \
+            MGL_VBIND_FLUSH_SNAPSHOT();                                         \
+        }                                                                       \
+        if (vbindSnapshot.vertex_op_count >=                                    \
+            MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_OPS) {                          \
+            MGL_VBIND_FLUSH_SNAPSHOT();                                         \
+        }                                                                       \
+        uint8_t *dst_ = vbindByteScratch + vbindByteScratchUsed;                \
+        memcpy(dst_, src_, len_);                                               \
+        vbindByteScratchUsed += len_;                                           \
+        vbindSnapshot.vertex_ops[vbindSnapshot.vertex_op_count++] =             \
+            (MGLRenderCppBindingOp){/* kind */ 1u,                              \
+                                    /* index */ (uint32_t)(slot),               \
+                                    /* offset */ 0,                             \
+                                    /* buffer */ NULL,                          \
+                                    /* bytes */ dst_,                           \
+                                    /* length */ (uint32_t)len_};               \
+    } while (0)
+
+#define MGL_VBIND_EMIT_BUFFER(slot, bufPtr, off)                                \
+    do {                                                                        \
+        if (useVertexBindingSnapshot) {                                         \
+            MGL_VBIND_COLLECT_BUFFER(slot, bufPtr, off);                        \
+        } else {                                                                \
+            mglBindingStateSetVertexBuffer(                                     \
+                encCtx->encoder, (__bridge id<MTLBuffer>)(bufPtr),              \
+                (off), (slot));                                                 \
+        }                                                                       \
+    } while (0)
+
+#define MGL_VBIND_EMIT_BYTES(slot, src, len)                                    \
+    do {                                                                        \
+        if (useVertexBindingSnapshot) {                                         \
+            MGL_VBIND_COLLECT_BYTES(slot, src, len);                            \
+        } else {                                                                \
+            mglBindingStateSetVertexBytes(                                      \
+                encCtx->encoder, (src), (len), (slot));                         \
+        }                                                                       \
+    } while (0)
+
+#define MGL_VBIND_EMIT_CLEAR(slot)                                              \
+    do {                                                                        \
+        if (useVertexBindingSnapshot) {                                         \
+            MGL_VBIND_COLLECT_BUFFER(slot, NULL, 0);                            \
+        } else {                                                                \
+            mglBindingStateSetVertexBuffer(                                     \
+                encCtx->encoder, nil, 0, (slot));                               \
+        }                                                                       \
+    } while (0)
+
     if (kMGLVerboseBindLogs) {
         NSLog(@"MGL VBIND vao=%p magic=0x%x", vao, vao->magic);
     }
@@ -308,7 +400,7 @@ static void mglBindingStateSetFragmentBytes(
 
         if (!ptr) {
             NSLog(@"MGL WARNING: Vertex buffer map[%d] has invalid/NULL buffer pointer, skipping", i);
-            mglBindingStateSetVertexBuffer(encCtx->encoder, nil, 0, bindingIndex);
+            MGL_VBIND_EMIT_CLEAR(bindingIndex);
             mglRenderCppBindingClearVertexBuffer(_bindingStateOwner,
                                                   (uint32_t)bindingIndex);
             continue;
@@ -317,7 +409,7 @@ static void mglBindingStateSetFragmentBytes(
         if (offset < 0) {
             NSLog(@"MGL WARNING: Vertex buffer map[%d] has negative offset=%lld, skipping",
                   i, (long long)offset);
-            mglBindingStateSetVertexBuffer(encCtx->encoder, nil, 0, bindingIndex);
+            MGL_VBIND_EMIT_CLEAR(bindingIndex);
             mglRenderCppBindingClearVertexBuffer(_bindingStateOwner,
                                                   (uint32_t)bindingIndex);
             continue;
@@ -326,7 +418,7 @@ static void mglBindingStateSetFragmentBytes(
         if (ptr->size < 0) {
             NSLog(@"MGL WARNING: Vertex buffer %u has invalid size=%lld, skipping",
                   ptr->name, (long long)ptr->size);
-            mglBindingStateSetVertexBuffer(encCtx->encoder, nil, 0, bindingIndex);
+            MGL_VBIND_EMIT_CLEAR(bindingIndex);
             mglRenderCppBindingClearVertexBuffer(_bindingStateOwner,
                                                   (uint32_t)bindingIndex);
             continue;
@@ -374,8 +466,8 @@ static void mglBindingStateSetFragmentBytes(
                     memset(padded + visibleBytes, 0, inlineLength - visibleBytes);
                     inlineBytes = padded;
                 }
-                mglBindingStateSetVertexBytes(encCtx->encoder, inlineBytes,
-                                              inlineLength, bindingIndex);
+                MGL_VBIND_EMIT_BYTES(bindingIndex, inlineBytes,
+                                     inlineLength);
                 [self invalidateLastBoundVertexBufferAtIndex:bindingIndex];
                 anyBindingPresent[bindingIndex] = true;
                 /* Only clear while no MTLBuffer exists: an existing one would
@@ -429,8 +521,7 @@ static void mglBindingStateSetFragmentBytes(
                       (unsigned long)bindingIndex,
                       (unsigned long)requiredBindingBytes,
                       (unsigned long)availableBytes);
-                mglBindingStateSetVertexBuffer(encCtx->encoder, nil, 0,
-                                               bindingIndex);
+                MGL_VBIND_EMIT_CLEAR(bindingIndex);
                 mglRenderCppBindingClearVertexBuffer(_bindingStateOwner,
                                                       (uint32_t)bindingIndex);
                 continue;
@@ -452,8 +543,7 @@ static void mglBindingStateSetFragmentBytes(
                 return false;
             }
 
-            mglBindingStateSetVertexBuffer(encCtx->encoder, isolated, 0,
-                                           bindingIndex);
+            MGL_VBIND_EMIT_BUFFER(bindingIndex, (__bridge void *)isolated, 0);
             mglRenderCppBindingUpdateVertexBuffer(
                 _bindingStateOwner, (__bridge void *)isolated, 0,
                 (uint32_t)bindingIndex);
@@ -476,8 +566,8 @@ static void mglBindingStateSetFragmentBytes(
                 _bindingStateOwner, MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
                 (__bridge void *)buffer, (NSUInteger)offset,
                 (uint32_t)bindingIndex)) {
-            mglBindingStateSetVertexBuffer(encCtx->encoder, buffer,
-                                           (NSUInteger)offset, bindingIndex);
+            MGL_VBIND_EMIT_BUFFER(bindingIndex, (__bridge void *)buffer,
+                                  (NSUInteger)offset);
             mglRenderCppBindingUpdateVertexBuffer(
                 _bindingStateOwner, (__bridge void *)buffer,
                 (NSUInteger)offset, (uint32_t)bindingIndex);
@@ -526,6 +616,17 @@ static void mglBindingStateSetFragmentBytes(
                   (unsigned long)metalLen);
         }
         anyBindingPresent[bindingIndex] = true;
+    }
+
+    /* One-shot replay of the collected vertex binding ops.  Must happen here —
+     * after the map loop and before bindVertexAttributesFromVAO — so the
+     * encoder-side order matches the direct path (map-loop emits, then VAO
+     * attrib emits).  Gate-off path never collects, so this is a no-op. */
+    if (useVertexBindingSnapshot && vbindSnapshot.vertex_op_count > 0) {
+        mglRenderCppEncodeBindingSnapshot(
+            (__bridge void *)encCtx->encoder, &vbindSnapshot, NULL, 0);
+        vbindSnapshot = (MGLRenderCppBindingSnapshot){0};
+        vbindByteScratchUsed = 0;
     }
 
     if (![self bindVertexAttributesFromVAO:vao
@@ -1258,6 +1359,99 @@ static void mglBindingStateSetFragmentBytes(
     }
     activeProgram = mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
 
+    /* P4.3b main-path extension: gate-on 下把 fragment 主绑定循环的每个 emit
+     * （setFragmentBuffer / setFragmentBytes / nil-clear）按原始顺序收集进
+     * snapshot，循环结束后一次交给 mglRenderCppEncodeBindingSnapshot 在 C++
+     * 重放；gate-off 保持逐条 ObjC 调用作为 A/B 对照。判定（match-check）、
+     * 统计（perf counters）、COW 记账（mglNoteBufferEncoded）、owner 更新与
+     * last-bound 失效两路完全一致 —— 只有 encoder 调用被推迟到循环后。
+     * bytes 数据：CPU 影子内存本身稳定，但统一拷贝进本函数作用域的 scratch，
+     * 保证重放时存活；scratch 或 op 数组满则先 flush 已收集 op 再继续，
+     * 保持全局 emit 顺序。 */
+    const BOOL useBindingSnapshot = mglBindingStateUsesMetalCpp();
+    MGLRenderCppBindingSnapshot snapshot = {0};
+    uint8_t fbindByteScratch[4096];
+    size_t fbindByteScratchUsed = 0;
+
+#define MGL_FBIND_FLUSH_SNAPSHOT()                                              \
+    do {                                                                        \
+        if (snapshot.fragment_op_count > 0) {                                   \
+            mglRenderCppEncodeBindingSnapshot(                                  \
+                (__bridge void *)encCtx->encoder, &snapshot, NULL, 0);          \
+            snapshot = (MGLRenderCppBindingSnapshot){0};                        \
+            fbindByteScratchUsed = 0;                                           \
+        }                                                                       \
+    } while (0)
+
+#define MGL_FBIND_COLLECT_BUFFER(slot, bufPtr, off)                             \
+    do {                                                                        \
+        if (snapshot.fragment_op_count >=                                       \
+            MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_OPS) {                          \
+            MGL_FBIND_FLUSH_SNAPSHOT();                                         \
+        }                                                                       \
+        snapshot.fragment_ops[snapshot.fragment_op_count++] =                   \
+            (MGLRenderCppBindingOp){/* kind */ 0u,                              \
+                                    /* index */ (uint32_t)(slot),               \
+                                    /* offset */ (uint64_t)(off),               \
+                                    /* buffer */ (void *)(bufPtr),              \
+                                    /* bytes */ NULL,                           \
+                                    /* length */ 0u};                           \
+    } while (0)
+
+#define MGL_FBIND_COLLECT_BYTES(slot, src, len)                                 \
+    do {                                                                        \
+        const void *src_ = (src);                                               \
+        size_t len_ = (len);                                                    \
+        if (fbindByteScratchUsed + len_ > sizeof(fbindByteScratch)) {           \
+            MGL_FBIND_FLUSH_SNAPSHOT();                                         \
+        }                                                                       \
+        if (snapshot.fragment_op_count >=                                       \
+            MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_OPS) {                          \
+            MGL_FBIND_FLUSH_SNAPSHOT();                                         \
+        }                                                                       \
+        uint8_t *dst_ = fbindByteScratch + fbindByteScratchUsed;                \
+        memcpy(dst_, src_, len_);                                               \
+        fbindByteScratchUsed += len_;                                           \
+        snapshot.fragment_ops[snapshot.fragment_op_count++] =                   \
+            (MGLRenderCppBindingOp){/* kind */ 1u,                              \
+                                    /* index */ (uint32_t)(slot),               \
+                                    /* offset */ 0,                             \
+                                    /* buffer */ NULL,                          \
+                                    /* bytes */ dst_,                           \
+                                    /* length */ (uint32_t)len_};               \
+    } while (0)
+
+#define MGL_FBIND_EMIT_BUFFER(slot, bufPtr, off)                                \
+    do {                                                                        \
+        if (useBindingSnapshot) {                                               \
+            MGL_FBIND_COLLECT_BUFFER(slot, bufPtr, off);                        \
+        } else {                                                                \
+            mglBindingStateSetFragmentBuffer(                                   \
+                encCtx->encoder, (__bridge id<MTLBuffer>)(bufPtr),              \
+                (off), (slot));                                                 \
+        }                                                                       \
+    } while (0)
+
+#define MGL_FBIND_EMIT_BYTES(slot, src, len)                                    \
+    do {                                                                        \
+        if (useBindingSnapshot) {                                               \
+            MGL_FBIND_COLLECT_BYTES(slot, src, len);                            \
+        } else {                                                                \
+            mglBindingStateSetFragmentBytes(                                    \
+                encCtx->encoder, (src), (len), (slot));                         \
+        }                                                                       \
+    } while (0)
+
+#define MGL_FBIND_EMIT_CLEAR(slot)                                              \
+    do {                                                                        \
+        if (useBindingSnapshot) {                                               \
+            MGL_FBIND_COLLECT_BUFFER(slot, NULL, 0);                            \
+        } else {                                                                \
+            mglBindingStateSetFragmentBuffer(                                   \
+                encCtx->encoder, nil, 0, (slot));                               \
+        }                                                                       \
+    } while (0)
+
     mapCount = MGL_STATE(ctx)->fragment_buffer_map_list.count;
     if (mapCount > MAX_MAPPED_BUFFERS) {
         static uint64_t s_fbindMapCountOverflow = 0;
@@ -1311,8 +1505,7 @@ static void mglBindingStateSetFragmentBytes(
         if (!ptr) {
             NSLog(@"MGL FBIND skip slot=%u: invalid/NULL candidate=%p", i, map->buf);
             map->buf = NULL;
-            mglBindingStateSetFragmentBuffer(encCtx->encoder, nil, 0,
-                                             bindingIndex);
+            MGL_FBIND_EMIT_CLEAR(bindingIndex);
             mglRenderCppBindingClearFragmentBuffer(_bindingStateOwner,
                                                          (uint32_t)bindingIndex);
             continue;
@@ -1321,8 +1514,7 @@ static void mglBindingStateSetFragmentBytes(
         if (offset < 0) {
             NSLog(@"MGL FBIND skip slot=%u buffer=%u: negative offset=%lld",
                   i, ptr->name, (long long)offset);
-            mglBindingStateSetFragmentBuffer(encCtx->encoder, nil, 0,
-                                             bindingIndex);
+            MGL_FBIND_EMIT_CLEAR(bindingIndex);
             mglRenderCppBindingClearFragmentBuffer(_bindingStateOwner,
                                                          (uint32_t)bindingIndex);
             continue;
@@ -1341,11 +1533,8 @@ static void mglBindingStateSetFragmentBytes(
                 if (cpuData < 0x100000000ULL) {
                     NSLog(@"MGL FBIND skip small buffer=%u slot=%u: suspicious CPU pointer=%p",
                           ptr->name, i, (void *)ptr->data.buffer_data);
-                    mglBindingStateSetFragmentBuffer(encCtx->encoder, nil, 0,
-                                                     bindingIndex);
+                    MGL_FBIND_EMIT_CLEAR(bindingIndex);
                     mglRenderCppBindingClearFragmentBuffer(_bindingStateOwner,
-                                                         (uint32_t)bindingIndex);
-            mglRenderCppBindingClearFragmentBuffer(_bindingStateOwner,
                                                          (uint32_t)bindingIndex);
                     continue;
                 }
@@ -1355,19 +1544,15 @@ static void mglBindingStateSetFragmentBytes(
                 if (bindOffset >= bufferSize) {
                     NSLog(@"MGL FBIND skip small buffer=%u slot=%u: offset=%lu bufferSize=%lu",
                           ptr->name, i, (unsigned long)bindOffset, (unsigned long)bufferSize);
-                    mglBindingStateSetFragmentBuffer(encCtx->encoder, nil, 0,
-                                                     bindingIndex);
+                    MGL_FBIND_EMIT_CLEAR(bindingIndex);
                     mglRenderCppBindingClearFragmentBuffer(_bindingStateOwner,
-                                                         (uint32_t)bindingIndex);
-            mglRenderCppBindingClearFragmentBuffer(_bindingStateOwner,
                                                          (uint32_t)bindingIndex);
                     continue;
                 }
 
                 size_t bindLength = bufferSize - bindOffset;
                 const uint8_t *bindPtr = ((const uint8_t *)ptr->data.buffer_data) + bindOffset;
-                mglBindingStateSetFragmentBytes(encCtx->encoder, bindPtr,
-                                                bindLength, bindingIndex);
+                MGL_FBIND_EMIT_BYTES(bindingIndex, bindPtr, bindLength);
                 [self invalidateLastBoundFragmentBufferAtIndex:bindingIndex];
                 if (kMGLVerboseBindLogs) {
                     NSLog(@"MGL FBIND ok(slot=%lu) setFragmentBytes buffer=%u len=%lu offset=%lu",
@@ -1396,11 +1581,8 @@ static void mglBindingStateSetFragmentBytes(
                     if (bindOffset >= metalLen) {
                         NSLog(@"MGL FBIND skip small MTL buffer=%u slot=%u: offset=%lu length=%lu",
                               ptr->name, i, (unsigned long)bindOffset, (unsigned long)metalLen);
-                        mglBindingStateSetFragmentBuffer(encCtx->encoder, nil, 0,
-                                                         bindingIndex);
-                    mglRenderCppBindingClearFragmentBuffer(_bindingStateOwner,
-                                                         (uint32_t)bindingIndex);
-            mglRenderCppBindingClearFragmentBuffer(_bindingStateOwner,
+                        MGL_FBIND_EMIT_CLEAR(bindingIndex);
+                        mglRenderCppBindingClearFragmentBuffer(_bindingStateOwner,
                                                          (uint32_t)bindingIndex);
                         continue;
                     }
@@ -1409,9 +1591,9 @@ static void mglBindingStateSetFragmentBytes(
                 !mglBindingStateBufferMatches(
                     _bindingStateOwner, MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT,
                     (__bridge void *)fallbackBuffer, (NSUInteger)offset, (uint32_t)bindingIndex)) {
-                        mglBindingStateSetFragmentBuffer(
-                            encCtx->encoder, fallbackBuffer,
-                            (NSUInteger)offset, bindingIndex);
+                        MGL_FBIND_EMIT_BUFFER(
+                            bindingIndex, (__bridge void *)fallbackBuffer,
+                            (NSUInteger)offset);
                         mglRenderCppBindingUpdateFragmentBuffer(
                     _bindingStateOwner, (__bridge void *)fallbackBuffer, (NSUInteger)offset,
                     (uint32_t)bindingIndex);
@@ -1430,9 +1612,8 @@ static void mglBindingStateSetFragmentBytes(
                     anyBindingPresent[bindingIndex] = true;
                 }
             } else {
-                mglBindingStateSetFragmentBuffer(encCtx->encoder, nil, 0,
-                                                 bindingIndex);
-            mglRenderCppBindingClearFragmentBuffer(_bindingStateOwner,
+                MGL_FBIND_EMIT_CLEAR(bindingIndex);
+                mglRenderCppBindingClearFragmentBuffer(_bindingStateOwner,
                                                          (uint32_t)bindingIndex);
             }
             
@@ -1482,9 +1663,8 @@ static void mglBindingStateSetFragmentBytes(
                         memset(padded + visibleBytes, 0, inlineLength - visibleBytes);
                         inlineBytes = padded;
                     }
-                    mglBindingStateSetFragmentBytes(encCtx->encoder,
-                                                    inlineBytes, inlineLength,
-                                                    bindingIndex);
+                    MGL_FBIND_EMIT_BYTES(bindingIndex, inlineBytes,
+                                         inlineLength);
                     [self invalidateLastBoundFragmentBufferAtIndex:bindingIndex];
                     anyBindingPresent[bindingIndex] = true;
                     if (!ptr->data.mtl_data) {
@@ -1531,15 +1711,14 @@ static void mglBindingStateSetFragmentBytes(
                           (unsigned long)bindingIndex,
                           (unsigned long)requiredBindingBytes,
                           (unsigned long)availableBytes);
-                    mglBindingStateSetFragmentBuffer(encCtx->encoder, nil, 0,
-                                                     bindingIndex);
+                    MGL_FBIND_EMIT_CLEAR(bindingIndex);
                     mglRenderCppBindingClearFragmentBuffer(_bindingStateOwner,
                                                          (uint32_t)bindingIndex);
                     continue;
                 }
 
-                mglBindingStateSetFragmentBuffer(encCtx->encoder, isolated, 0,
-                                                 bindingIndex);
+                MGL_FBIND_EMIT_BUFFER(bindingIndex,
+                                      (__bridge void *)isolated, 0);
                 mglRenderCppBindingUpdateFragmentBuffer(
                     _bindingStateOwner, (__bridge void *)isolated, 0,
                     (uint32_t)bindingIndex);
@@ -1561,9 +1740,9 @@ static void mglBindingStateSetFragmentBytes(
                 !mglBindingStateBufferMatches(
                     _bindingStateOwner, MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT,
                     (__bridge void *)buffer, (NSUInteger)offset, (uint32_t)bindingIndex)) {
-                mglBindingStateSetFragmentBuffer(encCtx->encoder, buffer,
-                                                 (NSUInteger)offset,
-                                                 bindingIndex);
+                MGL_FBIND_EMIT_BUFFER(bindingIndex,
+                                      (__bridge void *)buffer,
+                                      (NSUInteger)offset);
                 mglRenderCppBindingUpdateFragmentBuffer(
                     _bindingStateOwner, (__bridge void *)buffer, (NSUInteger)offset,
                     (uint32_t)bindingIndex);
@@ -1622,6 +1801,18 @@ static void mglBindingStateSetFragmentBytes(
             }
             anyBindingPresent[bindingIndex] = true;
         }
+    }
+
+    /* One-shot replay of the collected fragment binding ops.  The replay must
+     * happen here — after the map loop and before the fallback bindings —
+     * so the encoder-side order matches the direct path (map-loop emits,
+     * then fallback emits).  Gate-off path never collects (all emits were
+     * direct), so this is a no-op there. */
+    if (useBindingSnapshot && snapshot.fragment_op_count > 0) {
+        mglRenderCppEncodeBindingSnapshot(
+            (__bridge void *)encCtx->encoder, &snapshot, NULL, 0);
+        snapshot = (MGLRenderCppBindingSnapshot){0};
+        fbindByteScratchUsed = 0;
     }
 
     [self bindFragmentFallbackBuffersToCurrentRenderEncoder:activeProgram

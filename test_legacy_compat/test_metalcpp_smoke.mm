@@ -2442,7 +2442,8 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
     }
 
     /* P4.3b: binding snapshot replay.  Valid snapshot encodes; NULL encoder,
-     * count overflow and NULL buffer entries are rejected. */
+     * count overflow, NULL bytes op and bad op kind are rejected.  NULL
+     * buffer ops are legal slot clears (P4.3b main-path extension). */
     {
         id<MTLBuffer> snapshotBuffer =
             [device newBufferWithLength:64 options:MTLResourceStorageModeShared];
@@ -2453,17 +2454,30 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
             return 1;
         }
         MGLRenderCppBindingSnapshot snap = {};
-        snap.vertex_buffers[snap.vertex_buffer_count++] =
-            (MGLRenderCppBindingBufferEntry){
-                (__bridge void *)snapshotBuffer, 0, 0};
-        snap.fragment_buffers[snap.fragment_buffer_count++] =
-            (MGLRenderCppBindingBufferEntry){
-                (__bridge void *)snapshotBuffer, 16, 1};
+        snap.vertex_ops[snap.vertex_op_count++] =
+            (MGLRenderCppBindingOp){
+                /* kind */ 0u, /* index */ 0, /* offset */ 0,
+                /* buffer */ (__bridge void *)snapshotBuffer,
+                /* bytes */ NULL, /* length */ 0u};
+        snap.fragment_ops[snap.fragment_op_count++] =
+            (MGLRenderCppBindingOp){
+                /* kind */ 0u, /* index */ 1, /* offset */ 16,
+                /* buffer */ (__bridge void *)snapshotBuffer,
+                /* bytes */ NULL, /* length */ 0u};
+        snap.fragment_ops[snap.fragment_op_count++] =
+            (MGLRenderCppBindingOp){
+                /* kind */ 1u, /* index */ 2, /* offset */ 0,
+                /* buffer */ NULL,
+                /* bytes */ "abcd", /* length */ 4u};
         MGLRenderCppBindingSnapshot overflow = snap;
-        overflow.vertex_buffer_count =
-            MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_BUFFERS + 1;
-        MGLRenderCppBindingSnapshot nullEntry = snap;
-        nullEntry.vertex_buffers[0].buffer = NULL;
+        overflow.vertex_op_count =
+            MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_OPS + 1;
+        MGLRenderCppBindingSnapshot nullBytes = snap;
+        nullBytes.fragment_ops[2].bytes = NULL;
+        MGLRenderCppBindingSnapshot badKind = snap;
+        badKind.vertex_ops[0].kind = 0xdead;
+        MGLRenderCppBindingSnapshot nullClear = snap;
+        nullClear.vertex_ops[0].buffer = NULL;
         char snapError[128] = {0};
         if (mglRenderCppEncodeBindingSnapshot(
                 stateEncoder, &snap, snapError, sizeof(snapError)) != 0 ||
@@ -2471,7 +2485,11 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
             mglRenderCppEncodeBindingSnapshot(
                 stateEncoder, &overflow, snapError, sizeof(snapError)) != -1 ||
             mglRenderCppEncodeBindingSnapshot(
-                stateEncoder, &nullEntry, snapError, sizeof(snapError)) != -1) {
+                stateEncoder, &nullBytes, snapError, sizeof(snapError)) != -1 ||
+            mglRenderCppEncodeBindingSnapshot(
+                stateEncoder, &badKind, snapError, sizeof(snapError)) != -1 ||
+            mglRenderCppEncodeBindingSnapshot(
+                stateEncoder, &nullClear, snapError, sizeof(snapError)) != 0) {
             fprintf(stderr, "FAIL: binding snapshot encode\n");
             mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
             mglRenderCppDestroyRenderPassStateOwner(&stateOwner);

@@ -6648,7 +6648,9 @@ int mglRenderCppSetRenderBuffer(void* render_encoder,
 }
 
 /* P4.3b: 重放 per-draw binding snapshot。与逐条调用 mglRenderCppSetRenderBuffer
- * 完全等价（同一 encoder、同一顺序），但一次 C ABI 调用完成整个序列。 */
+ * 完全等价（同一 encoder、同一顺序），但一次 C ABI 调用完成整个序列。
+ * op 列表保留每个 stage 的精确 emit 顺序（buffer / bytes / nil-clear 交错，
+ * 见 mgl_render_cpp.h 的 MGLRenderCppBindingOp 契约）。 */
 int mglRenderCppEncodeBindingSnapshot(
     void* render_encoder,
     const MGLRenderCppBindingSnapshot* snapshot,
@@ -6661,38 +6663,56 @@ int mglRenderCppEncodeBindingSnapshot(
     }
     MTL::RenderCommandEncoder* encoder =
         static_cast<MTL::RenderCommandEncoder*>(render_encoder);
-    if (snapshot->vertex_buffer_count >
-        MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_BUFFERS ||
-        snapshot->fragment_buffer_count >
-        MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_BUFFERS) {
+    if (snapshot->vertex_op_count >
+            MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_OPS ||
+        snapshot->fragment_op_count >
+            MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_OPS) {
         if (err && errcap) snprintf(err, errcap, "snapshot count overflow");
         return -1;
     }
-    for (uint32_t i = 0; i < snapshot->vertex_buffer_count; i++) {
-        const MGLRenderCppBindingBufferEntry* entry =
-            &snapshot->vertex_buffers[i];
-        if (!entry->buffer) {
+    for (uint32_t i = 0; i < snapshot->vertex_op_count; i++) {
+        const MGLRenderCppBindingOp* op = &snapshot->vertex_ops[i];
+        if (op->kind == 0) {
+            /* kind 0: set buffer; NULL buffer clears the slot (the ObjC
+             * skip paths emit nil clears through the same op). */
+            encoder->setVertexBuffer(
+                static_cast<MTL::Buffer*>(op->buffer),
+                static_cast<NS::UInteger>(op->offset), op->index);
+        } else if (op->kind == 1) {
+            if (!op->bytes) {
+                if (err && errcap) {
+                    snprintf(err, errcap, "null vertex bytes op %u", i);
+                }
+                return -1;
+            }
+            encoder->setVertexBytes(op->bytes, op->length, op->index);
+        } else {
             if (err && errcap) {
-                snprintf(err, errcap, "null vertex buffer entry %u", i);
+                snprintf(err, errcap, "bad vertex op kind %u", op->kind);
             }
             return -1;
         }
-        encoder->setVertexBuffer(
-            static_cast<MTL::Buffer*>(entry->buffer),
-            static_cast<NS::UInteger>(entry->offset), entry->index);
     }
-    for (uint32_t i = 0; i < snapshot->fragment_buffer_count; i++) {
-        const MGLRenderCppBindingBufferEntry* entry =
-            &snapshot->fragment_buffers[i];
-        if (!entry->buffer) {
+    for (uint32_t i = 0; i < snapshot->fragment_op_count; i++) {
+        const MGLRenderCppBindingOp* op = &snapshot->fragment_ops[i];
+        if (op->kind == 0) {
+            encoder->setFragmentBuffer(
+                static_cast<MTL::Buffer*>(op->buffer),
+                static_cast<NS::UInteger>(op->offset), op->index);
+        } else if (op->kind == 1) {
+            if (!op->bytes) {
+                if (err && errcap) {
+                    snprintf(err, errcap, "null fragment bytes op %u", i);
+                }
+                return -1;
+            }
+            encoder->setFragmentBytes(op->bytes, op->length, op->index);
+        } else {
             if (err && errcap) {
-                snprintf(err, errcap, "null fragment buffer entry %u", i);
+                snprintf(err, errcap, "bad fragment op kind %u", op->kind);
             }
             return -1;
         }
-        encoder->setFragmentBuffer(
-            static_cast<MTL::Buffer*>(entry->buffer),
-            static_cast<NS::UInteger>(entry->offset), entry->index);
     }
     return 0;
 }

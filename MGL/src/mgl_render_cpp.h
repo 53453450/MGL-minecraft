@@ -905,21 +905,29 @@ int mglRenderCppPresentDrawable(void *command_buffer, void *drawable);
  * 的 GL 逻辑（dedup 检查、统计、COW 记账），把通过判定的绑定序列收集进
  * snapshot，单次交给 mglRenderCppEncodeBindingSnapshot 在 C++ 内重放
  * （setter 序列在 C++；与直接 draw 路径的 mglRenderCppSetRenderBuffer 等价）。 */
-#define MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_BUFFERS 31u
+#define MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_OPS 32u
 
-typedef struct MGLRenderCppBindingBufferEntry_t {
-    void *buffer;   /* +0 borrowed MTL::Buffer* */
-    uint64_t offset;
-    uint32_t index; /* Metal slot */
-} MGLRenderCppBindingBufferEntry;
+/* One per-draw binding op: kind 0 = set buffer (buffer == NULL clears the
+ * slot, matching mglRenderCppSetRenderBuffer with a nil resource), kind 1 =
+ * set bytes (bytes borrowed — valid until EncodeBindingSnapshot returns).
+ * The op list keeps the exact per-stage emit order, including interleaved
+ * buffer/bytes/clear ops on the same slot. */
+typedef struct MGLRenderCppBindingOp_t {
+    uint32_t kind;      /* 0 = buffer, 1 = bytes */
+    uint32_t index;     /* Metal slot */
+    uint64_t offset;    /* kind 0: byte offset */
+    void *buffer;       /* kind 0: borrowed MTL::Buffer* (NULL = clear) */
+    const void *bytes;  /* kind 1: borrowed byte pointer */
+    uint32_t length;    /* kind 1: byte length */
+} MGLRenderCppBindingOp;
 
 typedef struct MGLRenderCppBindingSnapshot_t {
-    uint32_t vertex_buffer_count;
-    MGLRenderCppBindingBufferEntry
-        vertex_buffers[MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_BUFFERS];
-    uint32_t fragment_buffer_count;
-    MGLRenderCppBindingBufferEntry
-        fragment_buffers[MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_BUFFERS];
+    uint32_t vertex_op_count;
+    MGLRenderCppBindingOp
+        vertex_ops[MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_OPS];
+    uint32_t fragment_op_count;
+    MGLRenderCppBindingOp
+        fragment_ops[MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_OPS];
 } MGLRenderCppBindingSnapshot;
 
 int mglRenderCppEncodeBindingSnapshot(

@@ -509,12 +509,16 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
                 mglNoteBufferEncoded(draw_buffer);
                 if (useBindingSnapshot) {
-                    if (snapshot.vertex_buffer_count <
-                        MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_BUFFERS) {
-                        snapshot.vertex_buffers[snapshot.vertex_buffer_count++] =
-                            (MGLRenderCppBindingBufferEntry){
-                                (__bridge void *)metal_buffer,
-                                dynamic_offset, (uint32_t)metal_slot};
+                    if (snapshot.vertex_op_count <
+                        MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_OPS) {
+                        snapshot.vertex_ops[snapshot.vertex_op_count++] =
+                            (MGLRenderCppBindingOp){
+                                /* kind */ 0u,
+                                /* index */ (uint32_t)metal_slot,
+                                /* offset */ dynamic_offset,
+                                /* buffer */ (__bridge void *)metal_buffer,
+                                /* bytes */ NULL,
+                                /* length */ 0u};
                     }
                 } else {
                     mglBatchReplaySetRenderBuffer(
@@ -525,7 +529,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 MGL_PERF_INC(g_mglSetVertexBufferSkipsSinceSwap);
             }
         }
-        if (useBindingSnapshot && snapshot.vertex_buffer_count > 0) {
+        if (useBindingSnapshot && snapshot.vertex_op_count > 0) {
             mglRenderCppEncodeBindingSnapshot(
                 (__bridge void *)encCtx->encoder, &snapshot, NULL, 0);
         }
@@ -616,13 +620,17 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                         MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
                         mglNoteBufferEncoded(slot->buf);
                         if (useBindingSnapshot) {
-                            if (snapshot.vertex_buffer_count <
-                                MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_BUFFERS) {
-                                snapshot.vertex_buffers[
-                                    snapshot.vertex_buffer_count++] =
-                                    (MGLRenderCppBindingBufferEntry){
-                                        (__bridge void *)metal_buffer,
-                                        start, (uint32_t)metal_slot};
+                            if (snapshot.vertex_op_count <
+                                MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_OPS) {
+                                snapshot.vertex_ops[
+                                    snapshot.vertex_op_count++] =
+                                    (MGLRenderCppBindingOp){
+                                        /* kind */ 0u,
+                                        /* index */ (uint32_t)metal_slot,
+                                        /* offset */ start,
+                                        /* buffer */ (__bridge void *)metal_buffer,
+                                        /* bytes */ NULL,
+                                        /* length */ 0u};
                             }
                         } else {
                             mglBatchReplaySetRenderBuffer(
@@ -647,13 +655,17 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                         MGL_PERF_INC(g_mglSetFragmentBufferCallsSinceSwap);
                         mglNoteBufferEncoded(slot->buf);
                         if (useBindingSnapshot) {
-                            if (snapshot.fragment_buffer_count <
-                                MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_BUFFERS) {
-                                snapshot.fragment_buffers[
-                                    snapshot.fragment_buffer_count++] =
-                                    (MGLRenderCppBindingBufferEntry){
-                                        (__bridge void *)metal_buffer,
-                                        start, (uint32_t)metal_slot};
+                            if (snapshot.fragment_op_count <
+                                MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_OPS) {
+                                snapshot.fragment_ops[
+                                    snapshot.fragment_op_count++] =
+                                    (MGLRenderCppBindingOp){
+                                        /* kind */ 0u,
+                                        /* index */ (uint32_t)metal_slot,
+                                        /* offset */ start,
+                                        /* buffer */ (__bridge void *)metal_buffer,
+                                        /* bytes */ NULL,
+                                        /* length */ 0u};
                             }
                         } else {
                             mglBatchReplaySetRenderBuffer(
@@ -670,8 +682,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         }
     }
     if (useBindingSnapshot &&
-        (snapshot.vertex_buffer_count > 0 ||
-         snapshot.fragment_buffer_count > 0)) {
+        (snapshot.vertex_op_count > 0 ||
+         snapshot.fragment_op_count > 0)) {
         mglRenderCppEncodeBindingSnapshot(
             (__bridge void *)encCtx->encoder, &snapshot, NULL, 0);
     }
