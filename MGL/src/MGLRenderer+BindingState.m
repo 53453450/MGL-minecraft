@@ -634,7 +634,9 @@ static void mglBindingStateSetFragmentBytes(
                         attribsEnabledByApp:attribsEnabledByApp
                         attribBindingIndex:attribBindingIndex
                           anyBindingPresent:anyBindingPresent
-                              encodeContext:encCtx]) {
+                              encodeContext:encCtx
+                             bindingSnapshot:&vbindSnapshot
+                                 useSnapshot:useVertexBindingSnapshot]) {
         return false;
     }
 
@@ -708,8 +710,48 @@ static void mglBindingStateSetFragmentBytes(
                 attribBindingIndex:(int *)attribBindingIndex
                   anyBindingPresent:(bool *)anyBindingPresent
                       encodeContext:(const MGLEncodeContext *)encCtx
+                     bindingSnapshot:(MGLRenderCppBindingSnapshot *)bindingSnapshot
+                         useSnapshot:(BOOL)useSnapshot
 {
     NSUInteger bindingIndex;
+
+    /* P4.3b 扩展（round 33）：VAO attrib 段与主 map 循环共用调用方传入的
+     * binding snapshot —— 本方法内只收集 buffer op（attrib 段无 bytes op，
+     * 无需 scratch），结束或任一校验失败路径先 flush 已收集 op 再返回，与
+     * 直接路径「已发生 emit」逐点对齐；重放发生在 attrib 段结束（fallback
+     * 之前），保持「map 循环 emit → attrib emit → fallback → point-size」
+     * 的原始顺序。gate-off 直接 setVertexBuffer（A/B 对照）。 */
+    MGLRenderCppBindingSnapshot *vattrSnapshot = bindingSnapshot;
+    const BOOL vattrUseSnapshot = useSnapshot && vattrSnapshot != NULL;
+#define MGL_VATTR_FLUSH_SNAPSHOT()                                              \
+    do {                                                                        \
+        if (vattrUseSnapshot && vattrSnapshot->vertex_op_count > 0) {           \
+            mglRenderCppEncodeBindingSnapshot(                                  \
+                (__bridge void *)encCtx->encoder, vattrSnapshot, NULL, 0);      \
+            *vattrSnapshot = (MGLRenderCppBindingSnapshot){0};                  \
+        }                                                                       \
+    } while (0)
+
+#define MGL_VATTR_EMIT_BUFFER(slot, bufPtr, off)                                \
+    do {                                                                        \
+        if (vattrUseSnapshot) {                                                 \
+            if (vattrSnapshot->vertex_op_count >=                               \
+                MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_OPS) {                      \
+                MGL_VATTR_FLUSH_SNAPSHOT();                                     \
+            }                                                                   \
+            vattrSnapshot->vertex_ops[vattrSnapshot->vertex_op_count++] =       \
+                (MGLRenderCppBindingOp){/* kind */ 0u,                          \
+                                        /* index */ (uint32_t)(slot),           \
+                                        /* offset */ (uint64_t)(off),           \
+                                        /* buffer */ (void *)(bufPtr),          \
+                                        /* bytes */ NULL,                       \
+                                        /* length */ 0u};                       \
+        } else {                                                                \
+            mglBindingStateSetVertexBuffer(                                     \
+                encCtx->encoder, (__bridge id<MTLBuffer>)(bufPtr),              \
+                (off), (slot));                                                 \
+        }                                                                       \
+    } while (0)
 
     // Attribute bindings must use the exact same index mapping as generateVertexDescriptor.
     // Do this pass directly from the VAO so pipeline creation does not depend on map list timing.
@@ -791,9 +833,8 @@ static void mglBindingStateSetFragmentBytes(
                 !mglBindingStateBufferMatches(
                     _bindingStateOwner, MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
                     (__bridge void *)currentAttribBuffer, 0, (uint32_t)bindingIndex)) {
-                mglBindingStateSetVertexBuffer(encCtx->encoder,
-                                               currentAttribBuffer, 0,
-                                               bindingIndex);
+                MGL_VATTR_EMIT_BUFFER(bindingIndex,
+                                      (__bridge void *)currentAttribBuffer, 0);
                 mglRenderCppBindingUpdateVertexBuffer(
                     _bindingStateOwner, (__bridge void *)currentAttribBuffer, 0,
                     (uint32_t)bindingIndex);
@@ -849,6 +890,7 @@ static void mglBindingStateSetFragmentBytes(
                   (long long)attribBuffer->last_write_size,
                   attribBuffer->last_write_src_ptr,
                   (unsigned long long)attribBuffer->last_write_src_hash);
+            MGL_VATTR_FLUSH_SNAPSHOT();
             return false;
         }
 
@@ -857,6 +899,7 @@ static void mglBindingStateSetFragmentBytes(
                   attrib,
                   attribBuffer->name,
                   (long long)resolved.binding_offset);
+            MGL_VATTR_FLUSH_SNAPSHOT();
             return false;
         }
         if (resolved.relativeoffset < 0) {
@@ -864,6 +907,7 @@ static void mglBindingStateSetFragmentBytes(
                   attrib,
                   attribBuffer->name,
                   (long long)resolved.relativeoffset);
+            MGL_VATTR_FLUSH_SNAPSHOT();
             return false;
         }
         GLintptr attrOffset = resolved.binding_offset +
@@ -879,6 +923,7 @@ static void mglBindingStateSetFragmentBytes(
                       attribBuffer->name,
                       compSize,
                       compCount);
+                MGL_VATTR_FLUSH_SNAPSHOT();
                 return false;
             }
             attrSpan = (GLintptr)total;
@@ -972,8 +1017,8 @@ static void mglBindingStateSetFragmentBytes(
                 !mglBindingStateBufferMatches(
                     _bindingStateOwner, MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
                     (__bridge void *)convertedBuffer, 0, (uint32_t)bindingIndex)) {
-                mglBindingStateSetVertexBuffer(encCtx->encoder, convertedBuffer,
-                                               0, bindingIndex);
+                MGL_VATTR_EMIT_BUFFER(bindingIndex,
+                                      (__bridge void *)convertedBuffer, 0);
                 mglRenderCppBindingUpdateVertexBuffer(
                     _bindingStateOwner, (__bridge void *)convertedBuffer, 0,
                     (uint32_t)bindingIndex);
@@ -1003,8 +1048,8 @@ static void mglBindingStateSetFragmentBytes(
                 !mglBindingStateBufferMatches(
                     _bindingStateOwner, MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
                     (__bridge void *)convertedBuffer, 0, (uint32_t)bindingIndex)) {
-                mglBindingStateSetVertexBuffer(encCtx->encoder, convertedBuffer,
-                                               0, bindingIndex);
+                MGL_VATTR_EMIT_BUFFER(bindingIndex,
+                                      (__bridge void *)convertedBuffer, 0);
                 mglRenderCppBindingUpdateVertexBuffer(
                     _bindingStateOwner, (__bridge void *)convertedBuffer, 0,
                     (uint32_t)bindingIndex);
@@ -1042,8 +1087,8 @@ static void mglBindingStateSetFragmentBytes(
                 !mglBindingStateBufferMatches(
                     _bindingStateOwner, MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
                     (__bridge void *)convertedBuffer, 0, (uint32_t)bindingIndex)) {
-                mglBindingStateSetVertexBuffer(encCtx->encoder, convertedBuffer,
-                                               0, bindingIndex);
+                MGL_VATTR_EMIT_BUFFER(bindingIndex,
+                                      (__bridge void *)convertedBuffer, 0);
                 mglRenderCppBindingUpdateVertexBuffer(
                     _bindingStateOwner, (__bridge void *)convertedBuffer, 0,
                     (uint32_t)bindingIndex);
@@ -1075,8 +1120,8 @@ static void mglBindingStateSetFragmentBytes(
                 !mglBindingStateBufferMatches(
                     _bindingStateOwner, MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
                     (__bridge void *)convertedBuffer, 0, (uint32_t)bindingIndex)) {
-                mglBindingStateSetVertexBuffer(encCtx->encoder, convertedBuffer,
-                                               0, bindingIndex);
+                MGL_VATTR_EMIT_BUFFER(bindingIndex,
+                                      (__bridge void *)convertedBuffer, 0);
                 mglRenderCppBindingUpdateVertexBuffer(
                     _bindingStateOwner, (__bridge void *)convertedBuffer, 0,
                     (uint32_t)bindingIndex);
@@ -1129,8 +1174,9 @@ static void mglBindingStateSetFragmentBytes(
                 !mglBindingStateBufferMatches(
                     _bindingStateOwner, MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
                     (__bridge void *)attribMetalBuffer, metalBindOffset, (uint32_t)bindingIndex)) {
-	        mglBindingStateSetVertexBuffer(encCtx->encoder, attribMetalBuffer,
-	                                       metalBindOffset, bindingIndex);
+	        MGL_VATTR_EMIT_BUFFER(bindingIndex,
+	                              (__bridge void *)attribMetalBuffer,
+	                              metalBindOffset);
 	        mglRenderCppBindingUpdateVertexBuffer(
                     _bindingStateOwner, (__bridge void *)attribMetalBuffer, metalBindOffset,
                     (uint32_t)bindingIndex);
@@ -1188,6 +1234,12 @@ static void mglBindingStateSetFragmentBytes(
         }
     }
 
+    /* Flush any collected attrib ops (the replay position is here — after
+     * the attrib pass, before the fallback/point-size direct emits — which
+     * matches the direct path's encoder order exactly). */
+    MGL_VATTR_FLUSH_SNAPSHOT();
+#undef MGL_VATTR_EMIT_BUFFER
+#undef MGL_VATTR_FLUSH_SNAPSHOT
     return true;
 }
 
