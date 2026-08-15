@@ -565,6 +565,27 @@ uint32_t mglRenderCppMTLIndexTypeForGLType(uint32_t gl_type);
  * extern linkage its many callers use). */
 uint64_t mglRenderCppMetalTextureLevelDimension(uint64_t base, uint64_t level);
 
+typedef struct MGLRenderCppGeometryGatherResult_t {
+    uint32_t *gather;          /* malloc'd raw gather (vertex_ids) */
+    uint32_t gather_count;
+    uint32_t primitive_count;
+    uint32_t max_index;
+} MGLRenderCppGeometryGatherResult;
+
+/* P4.5 (item 1141/887): the indexed-PATCHES geometry gather — expand a raw
+ * index stream (BYTE/SHORT/INT element size) into a flat vertex-id gather,
+ * counting complete primitives of `last` vertices and dropping primitive
+ * restarts / trailing incomplete groups.  Pure CPU; caller frees
+ * result.gather.  Returns 0 on success, -1 on bad args / no valid gather. */
+int mglRenderCppGeometryGatherIndices(
+    const uint8_t *index_bytes,
+    uint32_t index_type_byte_width,   /* 1, 2 or 4 */
+    uint32_t count,
+    int restart_enabled,
+    uint32_t restart_index,
+    uint32_t input_vertices,
+    MGLRenderCppGeometryGatherResult *out);
+
 typedef struct MGLRenderCppReadTextureRegionClip_t {
     int32_t copy_w;
     int32_t copy_h;

@@ -3901,6 +3901,64 @@ int mglRenderCppGetTexImagePlan(
 }
 
 extern "C"
+int mglRenderCppGeometryGatherIndices(
+    const uint8_t* bytes,
+    uint32_t elem_width,
+    uint32_t count,
+    int restart_enabled,
+    uint32_t restart_index,
+    uint32_t input_vertices,
+    MGLRenderCppGeometryGatherResult* out) {
+    if (!bytes || count == 0u || input_vertices == 0u || !out) {
+        return -1;
+    }
+    const int has_restart = restart_enabled ? 1 : 0;
+    const int w = (elem_width == 1u) ? 1 : (elem_width == 2u ? 2 : 4);
+    uint32_t* const gather = (uint32_t*)malloc((size_t)count * sizeof(uint32_t));
+    if (!gather) {
+        return -1;
+    }
+    uint32_t gathered = 0u;
+    uint32_t primitives = 0u;
+    uint32_t max_index = 0u;
+    uint32_t in_prim = 0u;
+    for (uint32_t i = 0u; i < count; i++) {
+        uint32_t index = 0u;
+        if (w == 1) {
+            index = bytes[i];
+        } else if (w == 2) {
+            index = ((const uint16_t*)bytes)[i];
+        } else {
+            index = ((const uint32_t*)bytes)[i];
+        }
+        if (has_restart && index == restart_index) {
+            in_prim = 0u;
+            continue;
+        }
+        gather[gathered++] = index;
+        if (index > max_index) {
+            max_index = index;
+        }
+        if (++in_prim == input_vertices) {
+            primitives++;
+            in_prim = 0u;
+        }
+    }
+    if (gathered == 0u || primitives == 0u) {
+        free(gather);
+        return -1;
+    }
+    if (in_prim != 0u) {
+        gathered -= in_prim;
+    }
+    out->gather = gather;
+    out->gather_count = gathered;
+    out->primitive_count = primitives;
+    out->max_index = max_index;
+    return 0;
+}
+
+extern "C"
 int mglRenderCppReadTextureRegionClip(
     int64_t region_x, int64_t region_y,
     int64_t region_w, int64_t region_h,

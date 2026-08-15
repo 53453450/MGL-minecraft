@@ -39,53 +39,26 @@ static bool mglGeometryGatherIndices(const uint8_t *indexBytes,
                                      uint32_t *outPrimitiveCount,
                                      uint32_t *outMaxIndex)
 {
-    if (!indexBytes || count <= 0 || inputVertices == 0u || !outGather ||
-        !outGatherCount || !outPrimitiveCount || !outMaxIndex) {
+    /* P4.5 (item 1141/887): 索引流 gather（BYTE/SHORT/INT 元素宽度、原始
+     * 重启、完整图元计数、尾不完整组丢弃）迁入 C++
+     * （mglRenderCppGeometryGatherIndices，两门共用；调用方释放 gather）。 */
+    (void)baseVertex; /* gather stores raw index values (vertex_id) */
+    if (!outGather || !outGatherCount || !outPrimitiveCount || !outMaxIndex) {
         return false;
     }
-    (void)baseVertex; /* gather stores raw index values (vertex_id) */
     const uint32_t elemBytes = indexType == GL_UNSIGNED_BYTE ? 1u
         : indexType == GL_UNSIGNED_SHORT ? 2u : 4u;
-    uint32_t *gather = malloc((size_t)count * sizeof(uint32_t));
-    if (!gather) return false;
-    uint32_t gathered = 0u;
-    uint32_t primitives = 0u;
-    uint32_t maxIndex = 0u;
-    uint32_t inPrimitive = 0u;
-    for (GLsizei i = 0; i < count; i++) {
-        uint32_t index = 0u;
-        if (elemBytes == 1u) {
-            index = ((const uint8_t *)indexBytes)[i];
-        } else if (elemBytes == 2u) {
-            index = ((const uint16_t *)indexBytes)[i];
-        } else {
-            index = ((const uint32_t *)indexBytes)[i];
-        }
-        if (restartEnabled && index == restartIndex) {
-            /* Primitive restart: drop the partial primitive and start a
-             * fresh group. */
-            inPrimitive = 0u;
-            continue;
-        }
-        gather[gathered++] = index;
-        if (index > maxIndex) maxIndex = index;
-        if (++inPrimitive == inputVertices) {
-            primitives++;
-            inPrimitive = 0u;
-        }
-    }
-    if (gathered == 0u || primitives == 0u) {
-        free(gather);
+    MGLRenderCppGeometryGatherResult result = {0};
+    if (mglRenderCppGeometryGatherIndices(
+            indexBytes, elemBytes, (uint32_t)count,
+            restartEnabled ? 1 : 0, restartIndex, inputVertices,
+            &result) != 0) {
         return false;
     }
-    /* Drop the trailing incomplete group. */
-    if (inPrimitive != 0u) {
-        gathered -= inPrimitive;
-    }
-    *outGather = gather;
-    *outGatherCount = gathered;
-    *outPrimitiveCount = primitives;
-    *outMaxIndex = maxIndex;
+    *outGather = result.gather;
+    *outGatherCount = result.gather_count;
+    *outPrimitiveCount = result.primitive_count;
+    *outMaxIndex = result.max_index;
     return true;
 }
 

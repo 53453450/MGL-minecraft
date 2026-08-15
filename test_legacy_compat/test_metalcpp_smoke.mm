@@ -2304,6 +2304,53 @@ static int verifyMDIScratchOwner(void) {
     return 0;
 }
 
+static int verifyGeometryGather(void) {
+    /* P4.4 (item 1141/887): geometry gather indices. */
+    MGLRenderCppGeometryGatherResult r = {0};
+    if (mglRenderCppGeometryGatherIndices(NULL, 2, 4, 0, 0, 3, &r) != -1) {
+        fprintf(stderr, "FAIL: gather bad args\n");
+        return 1;
+    }
+    const uint16_t u16[] = {0,1,2, 3,4,5};  /* two tris (patch 3) */
+    if (mglRenderCppGeometryGatherIndices((const uint8_t*)u16, 2, 6, 0, 0, 3, &r) != 0 ||
+        r.gather_count != 6 || r.primitive_count != 2 || r.max_index != 5) {
+        fprintf(stderr, "FAIL: gather 2x tri\n");
+        return 1;
+    }
+    free(r.gather);
+    const uint16_t u16r[] = {0,1, 0xFFFF, 2,3,4, 5}; /* restart + trailing partial */
+    /* Full tri [0,1] + restart (not stored) + tri [2,3,4]; trailing 5 is a
+       partial group and gets dropped -> gather [0,1,2,3,4]. */
+    if (mglRenderCppGeometryGatherIndices((const uint8_t*)u16r, 2, 7, 1, 0xFFFF, 3, &r) != 0 ||
+        r.primitive_count != 1 || r.gather_count != 5 || r.max_index != 5) {
+        fprintf(stderr, "FAIL: gather restart gc=%u prim=%u max=%u\n",
+                (unsigned)r.gather_count, (unsigned)r.primitive_count,
+                (unsigned)r.max_index);
+        return 1;
+    }
+    if (r.gather[0] != 0 || r.gather[4] != 4) {
+        fprintf(stderr, "FAIL: gather restart content gc=%u\n", (unsigned)r.gather_count);
+        return 1;
+    }
+    free(r.gather);
+    const uint32_t u32[] = {10,11,12, 13,14}; /* trailing partial dropped */
+    if (mglRenderCppGeometryGatherIndices((const uint8_t*)u32, 4, 5, 0, 0, 3, &r) != 0 ||
+        r.gather_count != 3 || r.primitive_count != 1 || r.max_index != 14) {
+        fprintf(stderr, "FAIL: gather trailing gc=%u prim=%u max=%u\n",
+                (unsigned)r.gather_count, (unsigned)r.primitive_count,
+                (unsigned)r.max_index);
+        return 1;
+    }
+    free(r.gather);
+    const uint8_t u8[] = {0,1}; /* too short for a patch -> no primitives replace */
+    if (mglRenderCppGeometryGatherIndices(u8, 1, 2, 0, 0, 3, &r) != -1) {
+        fprintf(stderr, "FAIL: gather incomplete reject\n");
+        return 1;
+    }
+    printf("GEOMETRY_GATHER_INDICES_OK\n");
+    return 0;
+}
+
 static int verifyReadTextureRegionClip(void) {
     /* P4.5 (item 1141/887): readPixels region-vs-level clip. */
     MGLRenderCppReadTextureRegionClip c = {0};
@@ -4803,6 +4850,7 @@ int main(void) {
         if (verifyComputeThreadgroupSize() != 0) return 1;
         if (verifyLevelDimension() != 0) return 1;
         if (verifyReadTextureRegionClip() != 0) return 1;
+        if (verifyGeometryGather() != 0) return 1;
         if (verifyMDIScratchOwner() != 0) return 1;
         if (verifyRenderEncoderGetter() != 0) return 1;
         if (verifyCommandBufferGetterAndAdopt() != 0) return 1;
