@@ -690,13 +690,17 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     uint32_t restartIndex = 0u;
     const bool restartEnabled =
         mglPrimitiveRestartIndexForType(drawCtx, indexType, &restartIndex);
-    uint32_t minIndex = 0u;
-    uint32_t maxIndex = 0u;
-    if (!mglScanIndexRangeIgnoringRestart(
-            indexBytes, indexType, count, restartEnabled, restartIndex,
-            &minIndex, &maxIndex)) {
+    const uint32_t elemWidth = indexType == GL_UNSIGNED_BYTE ? 1u
+        : indexType == GL_UNSIGNED_SHORT ? 2u : 4u;
+    uint32_t scanMin = 0u, scanMax = 0u, scanValid = 0;
+    if (mglRenderCppScanIndexRangeIgnoringRestart(
+            indexBytes, elemWidth, (uint32_t)count,
+            restartEnabled ? 1 : 0, restartIndex,
+            &scanMin, &scanMax, &scanValid) != 0 || !scanValid) {
         return NO;
     }
+    uint32_t minIndex = scanMin;
+    uint32_t maxIndex = scanMax;
     const int64_t first = (int64_t)minIndex + (int64_t)baseVertex;
     const int64_t last = (int64_t)maxIndex + (int64_t)baseVertex;
     if (first < 0 || last < first || last > INT32_MAX) return NO;

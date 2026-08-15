@@ -42,6 +42,15 @@
 extern "C" {
 #endif
 
+/* Forward decl: the pure scan lives in mgl_render_cpp.cpp (both gates); the
+ * inline helper below is a thin gate-agnostic shim so every caller — the
+ * element draw validation in Draw.m and the DrawSupport cull-distance path —
+ * exercises the same C++ implementation. */
+int mglRenderCppScanIndexRangeIgnoringRestart(
+    const uint8_t *bytes, uint32_t elem_width, uint32_t count,
+    int restart_enabled, uint32_t restart_index,
+    uint32_t *out_min, uint32_t *out_max, int *out_valid);
+
 /* === Inline helpers (hot-path) === */
 
 /* Scans `count` indices of `indexBytes` (type `indexType`), skipping entries
@@ -55,31 +64,20 @@ static inline bool mglScanIndexRangeIgnoringRestart(const uint8_t *indexBytes,
                                                     uint32_t *outMin,
                                                     uint32_t *outMax)
 {
-    if (!indexBytes || count <= 0 || !outMin || !outMax) {
+    if (!indexBytes || !outMin || !outMax) {
         return false;
     }
-
-    uint32_t minIndex = UINT32_MAX;
-    uint32_t maxIndex = 0u;
-    for (GLsizei i = 0; i < count; i++) {
-        uint32_t idxValue = mglReadGLIndexValue(indexBytes, indexType, (NSUInteger)i);
-        if (primitiveRestartEnabled && idxValue == restartIndex) {
-            continue;
-        }
-        if (idxValue < minIndex) {
-            minIndex = idxValue;
-        }
-        if (idxValue > maxIndex) {
-            maxIndex = idxValue;
-        }
-    }
-
-    if (minIndex > maxIndex) {
+    const uint32_t elemWidth = indexType == GL_UNSIGNED_BYTE ? 1u
+        : indexType == GL_UNSIGNED_SHORT ? 2u : 4u;
+    uint32_t lo = 0u, hi = 0u, valid = 0;
+    if (mglRenderCppScanIndexRangeIgnoringRestart(
+            indexBytes, elemWidth, (uint32_t)(count > 0 ? count : 0),
+            primitiveRestartEnabled ? 1 : 0, restartIndex,
+            &lo, &hi, &valid) != 0 || !valid) {
         return false;
     }
-
-    *outMin = minIndex;
-    *outMax = maxIndex;
+    *outMin = lo;
+    *outMax = hi;
     return true;
 }
 

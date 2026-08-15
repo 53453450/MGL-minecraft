@@ -3907,6 +3907,32 @@ static inline uint32_t MGLRenderReadIndexBytes(const uint8_t* bytes, int w, uint
 }
 
 extern "C"
+int mglRenderCppScanIndexRangeIgnoringRestart(
+    const uint8_t* bytes, uint32_t elem_width, uint32_t count,
+    int restart_enabled, uint32_t restart_index,
+    uint32_t* out_min, uint32_t* out_max, int* out_valid) {
+    if (!bytes || count == 0u || !out_min || !out_max || !out_valid) {
+        return -1;
+    }
+    const int w = (elem_width == 1u) ? 1 : (elem_width == 2u ? 2 : 4);
+    uint32_t min_index = UINT32_MAX;
+    uint32_t max_index = 0u;
+    const int has_restart = restart_enabled ? 1 : 0;
+    for (uint32_t i = 0u; i < count; i++) {
+        const uint32_t v = MGLRenderReadIndexBytes(bytes, w, i);
+        if (has_restart && v == restart_index) {
+            continue;
+        }
+        if (v < min_index) min_index = v;
+        if (v > max_index) max_index = v;
+    }
+    *out_min = min_index;
+    *out_max = max_index;
+    *out_valid = (min_index <= max_index) ? 1 : 0;
+    return 0;
+}
+
+extern "C"
 int mglRenderCppExpandUInt8ToUInt16(
     const uint8_t* bytes, uint32_t byte_count, uint16_t** out, uint64_t* out_count) {
     if (!bytes || byte_count == 0u || !out || !out_count) {

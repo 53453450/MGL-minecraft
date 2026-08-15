@@ -2484,6 +2484,38 @@ static int verifyExpandTriangleFan(void) {
     return 0;
 }
 
+static int verifyScanIndexRange(void) {
+    /* P4.5 (item 1141/887): index-range scan ignoring restart (scalar outs). */
+    const uint8_t b[] = {3, 1, 0xff, 4, 9};   /* elem width 1; no restart */
+    uint32_t lo = 0, hi = 0; int valid = 0;
+    if (mglRenderCppScanIndexRangeIgnoringRestart(b, 1, 5, 0, 0, &lo, &hi, &valid) != 0 ||
+        !valid || lo != 1 || hi != 0xff) {
+        fprintf(stderr, "FAIL: scan no-restart\\n");
+        return 1;
+    }
+    /* Restart 0xff skipped -> hi=9. */
+    if (mglRenderCppScanIndexRangeIgnoringRestart(b, 1, 5, 1, 0xff, &lo, &hi, &valid) != 0 ||
+        !valid || lo != 1 || hi != 9) {
+        fprintf(stderr, "FAIL: scan restart\\n");
+        return 1;
+    }
+    /* All-restart -> invalid. */
+    const uint8_t all[] = {0xff, 0xff};
+    if (mglRenderCppScanIndexRangeIgnoringRestart(all, 1, 2, 1, 0xff, &lo, &hi, &valid) != 0 ||
+        valid != 0) {
+        fprintf(stderr, "FAIL: scan all-restart\\n");
+        return 1;
+    }
+    /* Bad args. */
+    if (mglRenderCppScanIndexRangeIgnoringRestart(NULL, 1, 5, 0, 0, &lo, &hi, &valid) != -1 ||
+        mglRenderCppScanIndexRangeIgnoringRestart(b, 1, 5, 0, 0, NULL, &hi, &valid) != -1) {
+        fprintf(stderr, "FAIL: scan bad args\\n");
+        return 1;
+    }
+    printf("SCAN_INDEX_RANGE_OK\\n");
+    return 0;
+}
+
 static int verifyGeometryGather(void) {
     /* P4.4 (item 1141/887): geometry gather indices. */
     MGLRenderCppGeometryGatherResult r = {0};
@@ -5037,6 +5069,7 @@ int main(void) {
         if (verifyQuadLine() != 0) return 1;
         if (verifyArrayVariants() != 0) return 1;
         if (verifyUInt8ToUInt16() != 0) return 1;
+        if (verifyScanIndexRange() != 0) return 1;
         if (verifyMDIScratchOwner() != 0) return 1;
         if (verifyRenderEncoderGetter() != 0) return 1;
         if (verifyCommandBufferGetterAndAdopt() != 0) return 1;

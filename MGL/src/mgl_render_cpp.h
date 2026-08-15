@@ -640,6 +640,16 @@ int mglRenderCppExpandQuadElementLineIndices(
     const uint8_t *bytes, uint32_t elem_width, uint32_t quad_count,
     uint32_t **out_indices, uint64_t *out_count);
 
+/* P4.5 (item 1141/887): index-range scan ignoring primitive-restart markers
+ * — computes min/max over the byte stream (BYTE/SHORT/INT width), skipping
+ * the restart value.  Pure CPU; matches mglScanIndexRangeIgnoringRestart.
+ * Returns 0 on success (with *out_valid = 1 if at least one non-restart
+ * index was seen), -1 on bad args. */
+int mglRenderCppScanIndexRangeIgnoringRestart(
+    const uint8_t *bytes, uint32_t elem_width, uint32_t count,
+    int restart_enabled, uint32_t restart_index,
+    uint32_t *out_min, uint32_t *out_max, int *out_valid);
+
 typedef struct MGLRenderCppGeometryGatherResult_t {
     uint32_t *gather;          /* malloc'd raw gather (vertex_ids) */
     uint32_t gather_count;
