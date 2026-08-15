@@ -2505,6 +2505,29 @@ static int verifyGLIndexValueRead(void) {
     return 0;
 }
 
+static int verifyDrawModePredicates(void) {
+    /* P4.5 (item 1141): draw-mode classification predicates. */
+    if (mglRenderCppDrawModeProducesPolygons(GL_TRIANGLES) != 1 ||
+        mglRenderCppDrawModeProducesPolygons(GL_QUADS) != 1 ||
+        mglRenderCppDrawModeProducesPolygons(GL_LINES) != 0 ||
+        mglRenderCppDrawModeProducesPolygons(GL_POINTS) != 0) {
+        fprintf(stderr, "FAIL: draws polygons\\n");
+        return 1;
+    }
+    if (mglRenderCppPrimitiveModeHasDrawableSegment(GL_LINES, 1) != 0 ||
+        mglRenderCppPrimitiveModeHasDrawableSegment(GL_LINES, 2) != 1 ||
+        mglRenderCppPrimitiveModeHasDrawableSegment(GL_TRIANGLES, 2) != 0 ||
+        mglRenderCppPrimitiveModeHasDrawableSegment(GL_TRIANGLES, 3) != 1 ||
+        mglRenderCppPrimitiveModeHasDrawableSegment(GL_QUADS, 4) != 1 ||
+        mglRenderCppPrimitiveModeHasDrawableSegment(GL_POINTS, 0) != 0 ||
+        mglRenderCppPrimitiveModeHasDrawableSegment(GL_POINTS, 1) != 1) {
+        fprintf(stderr, "FAIL: has drawable segment\\n");
+        return 1;
+    }
+    printf("DRAW_MODE_PREDICATES_OK\\n");
+    return 0;
+}
+
 static int verifyVertexAttribBytes(void) {
     /* P4.5 (item 1141): vertex-attribute component size + element bytes. */
     uint32_t comp = mglRenderCppVertexAttribComponentSize(GL_UNSIGNED_BYTE);
@@ -5166,6 +5189,7 @@ int main(void) {
         if (verifyComputeIndexByteOffset() != 0) return 1;
         if (verifyGLIndexValueRead() != 0) return 1;
         if (verifyVertexAttribBytes() != 0) return 1;
+        if (verifyDrawModePredicates() != 0) return 1;
         if (verifyMDIScratchOwner() != 0) return 1;
         if (verifyRenderEncoderGetter() != 0) return 1;
         if (verifyCommandBufferGetterAndAdopt() != 0) return 1;

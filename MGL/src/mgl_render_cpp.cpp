@@ -3980,6 +3980,40 @@ uint64_t mglRenderCppVertexAttribElementBytes(uint64_t gl_type, uint32_t size) {
 }
 
 extern "C"
+int mglRenderCppDrawModeProducesPolygons(uint64_t gl_mode) {
+    switch (gl_mode) {
+        case GL_TRIANGLES:
+        case GL_TRIANGLE_STRIP:
+        case GL_TRIANGLE_FAN:
+        case GL_QUADS:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+extern "C"
+int mglRenderCppPrimitiveModeHasDrawableSegment(uint64_t gl_mode,
+                                                uint64_t index_count) {
+    switch (gl_mode) {
+        case GL_POINTS:
+            return index_count >= 1u ? 1 : 0;
+        case GL_LINES:
+        case GL_LINE_STRIP:
+        case GL_LINE_LOOP:
+            return index_count >= 2u ? 1 : 0;
+        case GL_TRIANGLES:
+        case GL_TRIANGLE_STRIP:
+        case GL_TRIANGLE_FAN:
+            return index_count >= 3u ? 1 : 0;
+        case GL_QUADS:
+            return index_count >= 4u ? 1 : 0;
+        default:
+            return index_count > 0u ? 1 : 0;
+    }
+}
+
+extern "C"
 int mglRenderCppScanIndexRangeIgnoringRestart(
     const uint8_t* bytes, uint32_t elem_width, uint32_t count,
     int restart_enabled, uint32_t restart_index,

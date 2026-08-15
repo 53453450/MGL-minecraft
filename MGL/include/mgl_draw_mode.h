@@ -36,42 +36,27 @@
 extern "C" {
 #endif
 
+/* Forward decls: the draw-mode classification logic lives in
+ * mgl_render_cpp.cpp (both gates); the inlines below delegate to it. */
+int mglRenderCppDrawModeProducesPolygons(uint64_t gl_mode);
+int mglRenderCppPrimitiveModeHasDrawableSegment(uint64_t gl_mode,
+                                                uint64_t index_count);
+
 /* Returns true if `mode` with `indexCount` vertices produces at least one
  * drawable segment (point/line/triangle/quad).  Used to skip degenerate
  * draws early. */
-static inline bool mglPrimitiveModeHasDrawableSegment(GLenum mode, NSUInteger indexCount)
+static inline bool mglPrimitiveModeHasDrawableSegment(
+    GLenum mode, NSUInteger indexCount)
 {
-    switch (mode) {
-        case GL_POINTS:
-            return indexCount >= 1u;
-        case GL_LINES:
-        case GL_LINE_STRIP:
-        case GL_LINE_LOOP:
-            return indexCount >= 2u;
-        case GL_TRIANGLES:
-        case GL_TRIANGLE_STRIP:
-        case GL_TRIANGLE_FAN:
-            return indexCount >= 3u;
-        case GL_QUADS:
-            return indexCount >= 4u;
-        default:
-            return indexCount > 0u;
-    }
+    return mglRenderCppPrimitiveModeHasDrawableSegment((uint64_t)mode,
+                                                       (uint64_t)indexCount) != 0;
 }
 
 /* Returns true if `mode` produces polygonal primitives (triangles/quads)
  * that are subject to glPolygonMode point/line emulation. */
 static inline BOOL mglDrawModeProducesPolygons(GLenum mode)
 {
-    switch (mode) {
-        case GL_TRIANGLES:
-        case GL_TRIANGLE_STRIP:
-        case GL_TRIANGLE_FAN:
-        case GL_QUADS:
-            return YES;
-        default:
-            return NO;
-    }
+    return mglRenderCppDrawModeProducesPolygons((uint64_t)mode) != 0;
 }
 
 /* Returns YES if the context's polygon_mode is GL_POINT and `mode` produces

@@ -685,6 +685,17 @@ uint32_t mglRenderCppVertexAttribComponentSize(uint64_t gl_type);
  * mglVertexAttribElementBytes.  Returns 0 for unknown / zero size. */
 uint64_t mglRenderCppVertexAttribElementBytes(uint64_t gl_type, uint32_t size);
 
+/* P4.5 (item 1141/887): does GL primitive mode produce polygonal primitives
+ * (triangles/quads) subject to glPolygonMode point/line emulation?  Matches
+ * mglDrawModeProducesPolygons.  Returns 1/0. */
+int mglRenderCppDrawModeProducesPolygons(uint64_t gl_mode);
+
+/* P4.5 (item 1141/887): does `mode` with `indexCount` vertices produce at
+ * least one drawable segment (point/line/triangle/quad)?  Matches
+ * mglPrimitiveModeHasDrawableSegment.  Returns 1/0. */
+int mglRenderCppPrimitiveModeHasDrawableSegment(uint64_t gl_mode,
+                                                uint64_t index_count);
+
 typedef struct MGLRenderCppGeometryGatherResult_t {
     uint32_t *gather;          /* malloc'd raw gather (vertex_ids) */
     uint32_t gather_count;
