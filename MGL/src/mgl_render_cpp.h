@@ -559,6 +559,19 @@ uint32_t mglRenderCppMTLPrimitiveTypeForGLMode(uint32_t mode);
  * gates; the caller casts to MTLIndexType. */
 uint32_t mglRenderCppMTLIndexTypeForGLType(uint32_t gl_type);
 
+typedef struct MGLRenderCppThreadgroupSize_t {
+    uint32_t x;   /* local workgroup size with 0 resolved to 1 */
+    uint32_t y;
+    uint32_t z;
+} MGLRenderCppThreadgroupSize;
+
+/* P4.5 (item 1147/887): compute dispatch threadgroup size — resolves a
+ * zero local workgroup component to 1 (the `x ? x : 1` default used by the
+ * ObjC dispatch fallback).  Pure computation shared by both gates. */
+int mglRenderCppThreadgroupSize(
+    uint32_t local_x, uint32_t local_y, uint32_t local_z,
+    MGLRenderCppThreadgroupSize *out);
+
 typedef struct MGLRenderCppVertexAttribResolve_t {
     int use_binding_table;   /* bindingIndex < limit && binding has buffer */
     int64_t binding_offset;  /* table offset, or attrib binding_offset */

@@ -3901,6 +3901,17 @@ int mglRenderCppGetTexImagePlan(
 }
 
 extern "C"
+int mglRenderCppThreadgroupSize(
+    uint32_t local_x, uint32_t local_y, uint32_t local_z,
+    MGLRenderCppThreadgroupSize* out) {
+    if (!out) return -1;
+    out->x = local_x ? local_x : 1u;
+    out->y = local_y ? local_y : 1u;
+    out->z = local_z ? local_z : 1u;
+    return 0;
+}
+
+extern "C"
 uint32_t mglRenderCppMTLPrimitiveTypeForGLMode(uint32_t mode) {
     switch (mode) {
         case GL_POINTS: return 0u;          /* MTLPrimitiveTypePoint */

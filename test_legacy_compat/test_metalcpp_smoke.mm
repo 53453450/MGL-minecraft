@@ -2304,6 +2304,34 @@ static int verifyMDIScratchOwner(void) {
     return 0;
 }
 
+static int verifyComputeThreadgroupSize(void) {
+    /* P4.5 (item 1147/887): compute threadgroup 0->1 fallback. */
+    MGLRenderCppThreadgroupSize t = {0};
+    if (mglRenderCppThreadgroupSize(16, 8, 1, NULL) != -1) {
+        fprintf(stderr, "FAIL: tg bad args\n");
+        return 1;
+    }
+    if (mglRenderCppThreadgroupSize(16, 8, 1, &t) != 0 ||
+        t.x != 16 || t.y != 8 || t.z != 1) {
+        fprintf(stderr, "FAIL: tg passthrough\n");
+        return 1;
+    }
+    /* Zero components resolve to 1. */
+    if (mglRenderCppThreadgroupSize(0, 0, 0, &t) != 0 ||
+        t.x != 1 || t.y != 1 || t.z != 1) {
+        fprintf(stderr, "FAIL: tg zeros\n");
+        return 1;
+    }
+    /* Mixed. */
+    if (mglRenderCppThreadgroupSize(32, 0, 4, &t) != 0 ||
+        t.x != 32 || t.y != 1 || t.z != 4) {
+        fprintf(stderr, "FAIL: tg mixed\n");
+        return 1;
+    }
+    printf("COMPUTE_THREADGROUP_SIZE_OK\n");
+    return 0;
+}
+
 static int verifyMetalTypeTables(void) {
     /* P4.5 (item 1141/887): GL mode/index -> Metal type numbering. */
     if (mglRenderCppMTLPrimitiveTypeForGLMode(GL_POINTS) != 0 ||
@@ -4717,6 +4745,7 @@ int main(void) {
         if (verifyBufferShadowUploadRange() != 0) return 1;
         if (verifyVertexAttribResolve() != 0) return 1;
         if (verifyMetalTypeTables() != 0) return 1;
+        if (verifyComputeThreadgroupSize() != 0) return 1;
         if (verifyMDIScratchOwner() != 0) return 1;
         if (verifyRenderEncoderGetter() != 0) return 1;
         if (verifyCommandBufferGetterAndAdopt() != 0) return 1;

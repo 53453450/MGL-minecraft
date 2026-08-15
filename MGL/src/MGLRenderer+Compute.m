@@ -1000,10 +1000,13 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
         } else {
             numThreadgroups = MTLSizeMake(0, 0, 0);
         }
-        threadsPerThreadgroup = MTLSizeMake(
-            ptr->local_workgroup_size.x ? ptr->local_workgroup_size.x : 1u,
-            ptr->local_workgroup_size.y ? ptr->local_workgroup_size.y : 1u,
-            ptr->local_workgroup_size.z ? ptr->local_workgroup_size.z : 1u);
+        /* P4.5 (item 1141/887): 线程组尺寸 0->1 默认在 C++
+         * （mglRenderCppThreadgroupSize，两门共用）。 */
+        MGLRenderCppThreadgroupSize tg = {0};
+        mglRenderCppThreadgroupSize(
+            ptr->local_workgroup_size.x, ptr->local_workgroup_size.y,
+            ptr->local_workgroup_size.z, &tg);
+        threadsPerThreadgroup = MTLSizeMake(tg.x, tg.y, tg.z);
         if (dispatchKind == MGL_RENDER_CPP_COMPUTE_DISPATCH_DIRECT) {
             mglComputeDispatch(computeCommandEncoder, numThreadgroups,
                                threadsPerThreadgroup);
