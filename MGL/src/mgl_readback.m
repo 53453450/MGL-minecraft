@@ -1404,79 +1404,13 @@ BOOL mglMetalCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(const uint8_t *src,
                                                                  MTLPixelFormat pixelFormat,
                                                                  BOOL flipY)
 {
-    if (!src || !dst || width == 0u || height == 0u) {
-        return NO;
-    }
-    if (srcBytesPerRow < width * 4u || dstBytesPerRow < width * 4u) {
-        return NO;
-    }
-
-    BOOL destinationIsRGBA =
-        (pixelFormat == MTLPixelFormatRGBA8Unorm ||
-         pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB);
-    BOOL destinationIsBGRA =
-        (pixelFormat == MTLPixelFormatBGRA8Unorm ||
-         pixelFormat == MTLPixelFormatBGRA8Unorm_sRGB);
-    BOOL destinationIsRGB9E5 = (pixelFormat == MTLPixelFormatRGB9E5Float);
-    BOOL destinationIsRGB10A2 = (pixelFormat == MTLPixelFormatRGB10A2Unorm ||
-                                 pixelFormat == MTLPixelFormatBGR10A2Unorm);
-    if (!destinationIsRGBA && !destinationIsBGRA && !destinationIsRGB9E5 && !destinationIsRGB10A2) {
-        return NO;
-    }
-
-    for (NSUInteger y = 0; y < height; y++) {
-        const uint8_t *srcRow = src + (y * srcBytesPerRow);
-        NSUInteger dstY = flipY ? (height - 1u - y) : y;
-        uint8_t *dstRow = dst + (dstY * dstBytesPerRow);
-
-        for (NSUInteger x = 0; x < width; x++) {
-            const uint8_t *s = srcRow + (x * 4u);
-            uint8_t *d = dstRow + (x * 4u);
-            uint8_t b = s[0];
-            uint8_t g = s[1];
-            uint8_t r = s[2];
-            uint8_t a = s[3];
-
-            if (destinationIsBGRA) {
-                d[0] = b;
-                d[1] = g;
-                d[2] = r;
-                d[3] = a;
-            } else if (destinationIsRGB10A2) {
-                /* RGB10A2Unorm: bits [0:9]=R, [10:19]=G, [20:29]=B, [30:31]=A.
-                 * BGR10A2Unorm: bits [0:9]=B, [10:19]=G, [20:29]=R, [30:31]=A. */
-                uint32_t r10 = ((uint32_t)r * 1023u + 127u) / 255u;
-                uint32_t g10 = ((uint32_t)g * 1023u + 127u) / 255u;
-                uint32_t b10 = ((uint32_t)b * 1023u + 127u) / 255u;
-                uint32_t a2 = ((uint32_t)a * 3u + 127u) / 255u;
-                uint32_t packed;
-                if (pixelFormat == MTLPixelFormatBGR10A2Unorm) {
-                    packed = b10 | (g10 << 10) | (r10 << 20) | (a2 << 30);
-                } else {
-                    packed = r10 | (g10 << 10) | (b10 << 20) | (a2 << 30);
-                }
-                d[0] = (uint8_t)(packed & 0xFF);
-                d[1] = (uint8_t)((packed >> 8) & 0xFF);
-                d[2] = (uint8_t)((packed >> 16) & 0xFF);
-                d[3] = (uint8_t)((packed >> 24) & 0xFF);
-            } else if (destinationIsRGB9E5) {
-                /* GL_RGB9_E5 packs three 9-bit mantissas and a 5-bit
-                 * shared exponent into a 32-bit word. Source is BGRA8. */
-                uint32_t packed = mglPackRGBToSharedExp((double)r / 255.0,
-                                                        (double)g / 255.0,
-                                                        (double)b / 255.0);
-                d[0] = (uint8_t)(packed & 0xFF);
-                d[1] = (uint8_t)((packed >> 8) & 0xFF);
-                d[2] = (uint8_t)((packed >> 16) & 0xFF);
-                d[3] = (uint8_t)((packed >> 24) & 0xFF);
-            } else {
-                d[0] = r;
-                d[1] = g;
-                d[2] = b;
-                d[3] = a;
-            }
-        }
-    }
-
-    return YES;
+    /* P4.5 (item 1171): thin delegate — single source of truth in C++
+     * (mglRenderCppCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes), shared by
+     * both gates.  Returns 0 on bad args / unsupported format. */
+    return mglRenderCppCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(
+               src, (uint64_t)srcBytesPerRow,
+               dst, (uint64_t)dstBytesPerRow,
+               (uint64_t)width, (uint64_t)height,
+               (uint32_t)pixelFormat, flipY ? 1 : 0)
+        ? YES : NO;
 }

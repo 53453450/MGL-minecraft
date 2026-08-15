@@ -4110,6 +4110,74 @@ static int verifyReadbackScalarConvert(void) {
         fprintf(stderr, "FAIL: signed-integer-color table\n");
         return 1;
     }
+    /* GL BGRA8 -> BGRA8-compatible format row copy (incl. flipY). */
+    {
+        uint8_t src[2][4] = {{10, 20, 30, 40}, {50, 60, 70, 80}};
+        uint8_t dst[2][4] = {{0, 0, 0, 0}, {0, 0, 0, 0}};
+        /* RGBA8Unorm: BGRA8 source maps to RGBA order (B,G,R,A -> R,G,B,A). */
+        if (mglRenderCppCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(
+                src, 4u, dst, 4u, 1u, 2u,
+                (uint32_t)MTLPixelFormatRGBA8Unorm, 0) != 1 ||
+            dst[0][0] != 30 || dst[0][1] != 20 || dst[0][2] != 10 ||
+            dst[0][3] != 40 ||
+            dst[1][0] != 70 || dst[1][1] != 60 || dst[1][2] != 50 ||
+            dst[1][3] != 80) {
+            fprintf(stderr, "FAIL: bgra8->rgba8 rows\n");
+            return 1;
+        }
+        /* flipY reverses the row order. */
+        memset(dst, 0, sizeof(dst));
+        if (mglRenderCppCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(
+                src, 4u, dst, 4u, 1u, 2u,
+                (uint32_t)MTLPixelFormatRGBA8Unorm, 1) != 1 ||
+            dst[0][0] != 70 || dst[1][0] != 30) {
+            fprintf(stderr, "FAIL: bgra8->rgba8 flipY\n");
+            return 1;
+        }
+        /* BGRA8Unorm keeps the byte order. */
+        memset(dst, 0, sizeof(dst));
+        if (mglRenderCppCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(
+                src, 4u, dst, 4u, 1u, 2u,
+                (uint32_t)MTLPixelFormatBGRA8Unorm, 0) != 1 ||
+            dst[0][0] != 10 || dst[0][1] != 20 || dst[0][2] != 30 ||
+            dst[0][3] != 40) {
+            fprintf(stderr, "FAIL: bgra8->bgra8 rows\n");
+            return 1;
+        }
+        /* RGB10A2Unorm: 8-bit values expand to 10/2-bit packed little-endian. */
+        memset(dst, 0, sizeof(dst));
+        if (mglRenderCppCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(
+                src, 4u, dst, 4u, 1u, 1u,
+                (uint32_t)MTLPixelFormatRGB10A2Unorm, 0) != 1) {
+            fprintf(stderr, "FAIL: bgra8->rgb10a2 rc\n");
+            return 1;
+        }
+        /* r=30 -> 30*1023/255 = 120.3 -> 120; g=20 -> 80; b=10 -> 40;
+         * a=40 -> 40*3/255 = 0.47 -> 0.  Packed = 120 | 80<<10 | 40<<20. */
+        uint32_t packedExpected =
+            120u | (80u << 10) | (40u << 20) | (0u << 30);
+        uint32_t packedGot =
+            (uint32_t)dst[0][0] | ((uint32_t)dst[0][1] << 8) |
+            ((uint32_t)dst[0][2] << 16) | ((uint32_t)dst[0][3] << 24);
+        if (packedGot != packedExpected) {
+            fprintf(stderr, "FAIL: bgra8->rgb10a2 packed 0x%x != 0x%x\n",
+                    packedGot, packedExpected);
+            return 1;
+        }
+        /* Bad args / unsupported format. */
+        if (mglRenderCppCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(
+                NULL, 4u, dst, 4u, 1u, 1u,
+                (uint32_t)MTLPixelFormatRGBA8Unorm, 0) != 0 ||
+            mglRenderCppCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(
+                src, 3u, dst, 4u, 1u, 1u,     /* srcBytesPerRow too small */
+                (uint32_t)MTLPixelFormatRGBA8Unorm, 0) != 0 ||
+            mglRenderCppCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(
+                src, 4u, dst, 4u, 1u, 1u,
+                (uint32_t)MTLPixelFormatDepth32Float, 0) != 0) {
+            fprintf(stderr, "FAIL: bgra8 rows bad args\n");
+            return 1;
+        }
+    }
     printf("READBACK_SCALAR_CONVERT_OK\n");
     return 0;
 }

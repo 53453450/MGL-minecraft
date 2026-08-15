@@ -3426,6 +3426,145 @@ int mglRenderCppTextureUploadRoute(uint32_t texture_type,
     return MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_BLIT;
 }
 
+/* GL_RGB9_E5 shared-exponent packing — faithful copy of the pure-C
+ * mglPackRGBToSharedExp (pixel_utils.c); kept TU-local so this facade does
+ * not need pixel_utils.h (ObjC-only header, not C++-clean). */
+static uint32_t mglCppPackRGBToSharedExp(double red, double green, double blue)
+{
+    const int N     = 9;   /* mantissa bits */
+    const int B     = 15;  /* exponent bias */
+    const int E_max = 31;  /* max exponent */
+
+    double shared_exp_max = ((double)((1 << N) - 1) / (double)(1 << N)) *
+                            ldexp(1.0, E_max - B);
+
+    double red_c   = fmax(0.0, fmin(shared_exp_max, red));
+    double green_c = fmax(0.0, fmin(shared_exp_max, green));
+    double blue_c  = fmax(0.0, fmin(shared_exp_max, blue));
+
+    double max_c = fmax(fmax(red_c, green_c), blue_c);
+
+    double exp_p;
+    if (max_c <= 0.0) {
+        exp_p = 0.0;
+    } else {
+        exp_p = fmax((double)(-B - 1), floor(log2(max_c))) + 1.0 + (double)B;
+    }
+
+    double scale_p = ldexp(1.0, (int)exp_p - B - N);
+    double max_s = floor(max_c / scale_p + 0.5);
+
+    int exp_s;
+    if (max_s >= (double)(1 << N)) {
+        exp_s = (int)exp_p + 1;
+    } else {
+        exp_s = (int)exp_p;
+    }
+    if (exp_s < 0) exp_s = 0;
+    if (exp_s > E_max) exp_s = E_max;
+
+    double scale = ldexp(1.0, exp_s - B - N);
+
+    uint32_t red_s   = (uint32_t)floor(red_c   / scale + 0.5);
+    uint32_t green_s = (uint32_t)floor(green_c / scale + 0.5);
+    uint32_t blue_s  = (uint32_t)floor(blue_c  / scale + 0.5);
+
+    if (red_s > 511u) red_s = 511u;
+    if (green_s > 511u) green_s = 511u;
+    if (blue_s > 511u) blue_s = 511u;
+
+    return red_s | (green_s << 9) | (blue_s << 18) | ((uint32_t)exp_s << 27);
+}
+
+/* Copy GL BGRA8 rows into a BGRA8-compatible Metal pixel format with
+ * optional Y-flip — mirrors mglMetalCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes. */
+extern "C"
+int mglRenderCppCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(
+    const void* src, uint64_t src_bytes_per_row,
+    void* dst, uint64_t dst_bytes_per_row,
+    uint64_t width, uint64_t height,
+    uint32_t pixel_format, int flip_y) {
+    if (!src || !dst || width == 0u || height == 0u) {
+        return 0;
+    }
+    if (src_bytes_per_row < width * 4u ||
+        dst_bytes_per_row < width * 4u) {
+        return 0;
+    }
+
+    const MTL::PixelFormat pf = static_cast<MTL::PixelFormat>(pixel_format);
+    bool destinationIsRGBA = (pf == MTL::PixelFormatRGBA8Unorm ||
+                              pf == MTL::PixelFormatRGBA8Unorm_sRGB);
+    bool destinationIsBGRA = (pf == MTL::PixelFormatBGRA8Unorm ||
+                              pf == MTL::PixelFormatBGRA8Unorm_sRGB);
+    bool destinationIsRGB9E5 = (pf == MTL::PixelFormatRGB9E5Float);
+    bool destinationIsRGB10A2 = (pf == MTL::PixelFormatRGB10A2Unorm ||
+                                 pf == MTL::PixelFormatBGR10A2Unorm);
+    if (!destinationIsRGBA && !destinationIsBGRA &&
+        !destinationIsRGB9E5 && !destinationIsRGB10A2) {
+        return 0;
+    }
+
+    const uint8_t* srcBytes = static_cast<const uint8_t*>(src);
+    uint8_t* dstBytes = static_cast<uint8_t*>(dst);
+    for (uint64_t y = 0; y < height; y++) {
+        const uint8_t* srcRow = srcBytes + (y * src_bytes_per_row);
+        uint64_t dstY = flip_y ? (height - 1u - y) : y;
+        uint8_t* dstRow = dstBytes + (dstY * dst_bytes_per_row);
+
+        for (uint64_t x = 0; x < width; x++) {
+            const uint8_t* s = srcRow + (x * 4u);
+            uint8_t* d = dstRow + (x * 4u);
+            uint8_t b = s[0];
+            uint8_t g = s[1];
+            uint8_t r = s[2];
+            uint8_t a = s[3];
+
+            if (destinationIsBGRA) {
+                d[0] = b;
+                d[1] = g;
+                d[2] = r;
+                d[3] = a;
+            } else if (destinationIsRGB10A2) {
+                /* RGB10A2Unorm: bits [0:9]=R, [10:19]=G, [20:29]=B,
+                 * [30:31]=A.  BGR10A2Unorm: bits [0:9]=B, [10:19]=G,
+                 * [20:29]=R, [30:31]=A. */
+                uint32_t r10 = ((uint32_t)r * 1023u + 127u) / 255u;
+                uint32_t g10 = ((uint32_t)g * 1023u + 127u) / 255u;
+                uint32_t b10 = ((uint32_t)b * 1023u + 127u) / 255u;
+                uint32_t a2 = ((uint32_t)a * 3u + 127u) / 255u;
+                uint32_t packed;
+                if (pf == MTL::PixelFormatBGR10A2Unorm) {
+                    packed = b10 | (g10 << 10) | (r10 << 20) | (a2 << 30);
+                } else {
+                    packed = r10 | (g10 << 10) | (b10 << 20) | (a2 << 30);
+                }
+                d[0] = (uint8_t)(packed & 0xFF);
+                d[1] = (uint8_t)((packed >> 8) & 0xFF);
+                d[2] = (uint8_t)((packed >> 16) & 0xFF);
+                d[3] = (uint8_t)((packed >> 24) & 0xFF);
+            } else if (destinationIsRGB9E5) {
+                /* GL_RGB9_E5 packs three 9-bit mantissas and a 5-bit shared
+                 * exponent into a 32-bit word.  Source is BGRA8. */
+                uint32_t packed = mglCppPackRGBToSharedExp(
+                    (double)r / 255.0, (double)g / 255.0,
+                    (double)b / 255.0);
+                d[0] = (uint8_t)(packed & 0xFF);
+                d[1] = (uint8_t)((packed >> 8) & 0xFF);
+                d[2] = (uint8_t)((packed >> 16) & 0xFF);
+                d[3] = (uint8_t)((packed >> 24) & 0xFF);
+            } else {
+                d[0] = r;
+                d[1] = g;
+                d[2] = b;
+                d[3] = a;
+            }
+        }
+    }
+
+    return 1;
+}
+
 
 /* P4.4: little-endian packed read + unorm bit expansion (RGBA8 path). */
 static uint32_t mglCppReadPackedUploadLE(const uint8_t* src, size_t bytes) {

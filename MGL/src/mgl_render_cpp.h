@@ -381,6 +381,18 @@ int mglRenderCppReadbackFormatIsBGRA8Compatible(uint32_t pixel_format);
 int mglRenderCppPixelFormatIsIntegerColor(uint32_t pixel_format);
 int mglRenderCppPixelFormatIsSignedIntegerColor(uint32_t pixel_format);
 
+/* P4.5 (item 1171): copy GL BGRA8 rows into a BGRA8-compatible Metal pixel
+ * format (RGBA8Unorm / BGRA8Unorm / RGB9E5Float / RGB10A2Unorm /
+ * BGR10A2Unorm) with optional Y-flip.  Pure CPU data transform shared by
+ * both gates — mirrors the ObjC
+ * mglMetalCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes exactly (1 on
+ * success, 0 on bad args / unsupported format). */
+int mglRenderCppCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(
+    const void *src, uint64_t src_bytes_per_row,
+    void *dst, uint64_t dst_bytes_per_row,
+    uint64_t width, uint64_t height,
+    uint32_t pixel_format, int flip_y);
+
 /* P4.4: CPU→GPU 上传路径选路。纯决策函数（无 Metal 对象参与），把
  * MGLRenderer+Texture.m uploadTextureSliceViaBlit 的「storage mode /
  * 纹理类型 / AGX 能力位 → replaceRegion 或 blit 或 reject」判定迁入 C++，
