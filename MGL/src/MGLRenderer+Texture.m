@@ -2173,54 +2173,17 @@ static void mglTextureCopyTextureToBuffer(
     /* Integer texture readback path: when the source texture is an integer
      * format and the output format is GL_*_INTEGER, use the dedicated integer
      * readback function that handles packed types and component mapping. */
-    BOOL sourceIsIntegerTexture =
-        (texture.pixelFormat == MTLPixelFormatR8Uint   ||
-         texture.pixelFormat == MTLPixelFormatR8Sint   ||
-         texture.pixelFormat == MTLPixelFormatR16Uint  ||
-         texture.pixelFormat == MTLPixelFormatR16Sint  ||
-         texture.pixelFormat == MTLPixelFormatR32Uint  ||
-         texture.pixelFormat == MTLPixelFormatR32Sint  ||
-         texture.pixelFormat == MTLPixelFormatRG8Uint  ||
-         texture.pixelFormat == MTLPixelFormatRG8Sint  ||
-         texture.pixelFormat == MTLPixelFormatRG16Uint ||
-         texture.pixelFormat == MTLPixelFormatRG16Sint ||
-         texture.pixelFormat == MTLPixelFormatRG32Uint ||
-         texture.pixelFormat == MTLPixelFormatRG32Sint ||
-         texture.pixelFormat == MTLPixelFormatRGBA8Uint  ||
-         texture.pixelFormat == MTLPixelFormatRGBA8Sint  ||
-         texture.pixelFormat == MTLPixelFormatRGBA16Uint ||
-         texture.pixelFormat == MTLPixelFormatRGBA16Sint ||
-         texture.pixelFormat == MTLPixelFormatRGBA32Uint ||
-         texture.pixelFormat == MTLPixelFormatRGBA32Sint ||
-         texture.pixelFormat == MTLPixelFormatRGB10A2Uint);
+    /* P4.5 (item 1171/1116): integer-readback 分类（源整数格式表 +
+     * GL_*_INTEGER 输出判定 + 分量映射（BGR/BGRA 序 + GREEN/BLUE/ALPHA
+     * 单分量兼容枚举）+ 按类型的分量字节数）在 C++
+     * （mglRenderCppIntegerReadbackClassify，纯分类，两门共用）。 */
+    MGLRenderCppIntegerReadbackClassify classify = {0};
+    mglRenderCppIntegerReadbackClassify(
+        (uint32_t)texture.pixelFormat, (uint32_t)format, (uint32_t)type,
+        &classify);
 
-    BOOL outputIsIntegerFormat =
-        (format == GL_RED_INTEGER   || format == GL_RG_INTEGER    ||
-         format == GL_RGB_INTEGER   || format == GL_BGR_INTEGER   ||
-         format == GL_RGBA_INTEGER  || format == GL_BGRA_INTEGER  ||
-         format == 0x8d95 /*GL_GREEN_INTEGER*/ ||
-         format == 0x8d96 /*GL_BLUE_INTEGER*/  ||
-         format == 0x8d97 /*GL_ALPHA_INTEGER*/);
-
-    if (sourceIsIntegerTexture && outputIsIntegerFormat) {
-        NSUInteger intOutputComponents = 4u;
-        int intComponentMap[4] = {0, 1, 2, 3};
-        switch (format) {
-            case GL_RED_INTEGER:    intOutputComponents = 1u; intComponentMap[0]=0; intComponentMap[1]=-1; intComponentMap[2]=-1; intComponentMap[3]=-1; break;
-            case GL_RG_INTEGER:     intOutputComponents = 2u; intComponentMap[0]=0; intComponentMap[1]=1; intComponentMap[2]=-1; intComponentMap[3]=-1; break;
-            case GL_RGB_INTEGER:    intOutputComponents = 3u; intComponentMap[0]=0; intComponentMap[1]=1; intComponentMap[2]=2;  intComponentMap[3]=-1; break;
-            case GL_BGR_INTEGER:    intOutputComponents = 3u; intComponentMap[0]=2; intComponentMap[1]=1; intComponentMap[2]=0;  intComponentMap[3]=-1; break;
-            case GL_RGBA_INTEGER:   intOutputComponents = 4u; intComponentMap[0]=0; intComponentMap[1]=1; intComponentMap[2]=2;  intComponentMap[3]=3;  break;
-            case GL_BGRA_INTEGER:   intOutputComponents = 4u; intComponentMap[0]=2; intComponentMap[1]=1; intComponentMap[2]=0;  intComponentMap[3]=3;  break;
-            case 0x8d95: intOutputComponents = 1u; intComponentMap[0]=1; intComponentMap[1]=-1; intComponentMap[2]=-1; intComponentMap[3]=-1; break;
-            case 0x8d96: intOutputComponents = 1u; intComponentMap[0]=2; intComponentMap[1]=-1; intComponentMap[2]=-1; intComponentMap[3]=-1; break;
-            case 0x8d97: intOutputComponents = 1u; intComponentMap[0]=3; intComponentMap[1]=-1; intComponentMap[2]=-1; intComponentMap[3]=-1; break;
-            default: break;
-        }
-
-        NSUInteger intOutputComponentBytes = (type == GL_BYTE || type == GL_UNSIGNED_BYTE) ? 1u :
-                                             (type == GL_SHORT || type == GL_UNSIGNED_SHORT) ? 2u : 4u;
-
+    if (classify.source_is_integer_texture &&
+        classify.output_is_integer_format) {
         /* Pass the original (non-Y-flipped) region. mglReadIntegerTextureAsRGBA32
          * does its own Y-flip on the blit source origin AND Y-flips the output
          * rows, so passing a pre-Y-flipped readRegion here would double-flip. */
@@ -2229,9 +2192,9 @@ static void mglTextureCopyTextureToBuffer(
                                bytesPerRow:bytesPerRow
                              bytesPerImage:bytesPerImage
                                 fromRegion:region
-                          outputComponents:intOutputComponents
-                       outputComponentBytes:intOutputComponentBytes
-                              componentMap:intComponentMap
+                          outputComponents:(NSUInteger)classify.output_components
+                       outputComponentBytes:(NSUInteger)classify.output_component_bytes
+                              componentMap:classify.component_map
                                packedType:type
                               mipmapLevel:level
                                     slice:slice

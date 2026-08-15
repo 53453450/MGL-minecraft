@@ -2304,6 +2304,68 @@ static int verifyMDIScratchOwner(void) {
     return 0;
 }
 
+static int verifyIntegerReadbackClassify(void) {
+    /* P4.5 (item 1171/1116): integer-readback classification. */
+    MGLRenderCppIntegerReadbackClassify c = {0};
+    if (mglRenderCppIntegerReadbackClassify(0, 0, 0, NULL) != -1) {
+        fprintf(stderr, "FAIL: classify bad args\n");
+        return 1;
+    }
+    /* RGBA8Uint (MTLPixelFormatRGBA8Uint = 73) + RGBA_INTEGER + UNSIGNED_INT
+     * -> 4 comps, identity map, 4B. */
+    c.output_components = 0;
+    if (mglRenderCppIntegerReadbackClassify(
+            73u, GL_RGBA_INTEGER, GL_UNSIGNED_INT, &c) != 0 ||
+        !c.source_is_integer_texture || !c.output_is_integer_format ||
+        c.output_components != 4u || c.output_component_bytes != 4u ||
+        c.component_map[0] != 0 || c.component_map[1] != 1 ||
+        c.component_map[2] != 2 || c.component_map[3] != 3) {
+        fprintf(stderr, "FAIL: classify rgba8uint\n");
+        return 1;
+    }
+    /* RG8Sint (34) + RG_INTEGER + BYTE -> 2 comps, 1B, map {0,1,-1,-1}. */
+    if (mglRenderCppIntegerReadbackClassify(
+            34u, GL_RG_INTEGER, GL_BYTE, &c) != 0 ||
+        c.output_components != 2u || c.output_component_bytes != 1u ||
+        c.component_map[1] != 1 || c.component_map[2] != -1) {
+        fprintf(stderr, "FAIL: classify rg8sint\n");
+        return 1;
+    }
+    /* BGRA_INTEGER -> {2,1,0,3}.  RGBA8Sint = 74. */
+    if (mglRenderCppIntegerReadbackClassify(
+            74u, GL_BGRA_INTEGER, GL_UNSIGNED_SHORT, &c) != 0 ||
+        c.output_components != 4u || c.output_component_bytes != 2u ||
+        c.component_map[0] != 2 || c.component_map[1] != 1 ||
+        c.component_map[2] != 0 || c.component_map[3] != 3) {
+        fprintf(stderr, "FAIL: classify bgra\n");
+        return 1;
+    }
+    /* GREEN_INTEGER compat enum (0x8d95) -> 1 comp from channel 1.
+     * RGBA16Sint = 114. */
+    if (mglRenderCppIntegerReadbackClassify(
+            114u, 0x8d95, GL_UNSIGNED_BYTE, &c) != 0 ||
+        c.output_components != 1u || c.output_component_bytes != 1u ||
+        c.component_map[0] != 1) {
+        fprintf(stderr, "FAIL: classify green\n");
+        return 1;
+    }
+    /* R32Float (55) + RED + FLOAT -> not a source integer texture. */
+    if (mglRenderCppIntegerReadbackClassify(
+            55u, GL_RED, GL_FLOAT, &c) != 0 || c.source_is_integer_texture) {
+        fprintf(stderr, "FAIL: classify r32float\n");
+        return 1;
+    }
+    /* RGBA8Uint + RGBA (non-integer output) -> output flag clear. */
+    if (mglRenderCppIntegerReadbackClassify(
+            73u, GL_RGBA, GL_UNSIGNED_BYTE, &c) != 0 ||
+        c.output_is_integer_format) {
+        fprintf(stderr, "FAIL: classify non-integer output\n");
+        return 1;
+    }
+    printf("INTEGER_READBACK_CLASSIFY_OK\n");
+    return 0;
+}
+
 static int verifyRasterizationIsEmpty(void) {
     /* P4.5 (item 1141/887): viewport/scissor/framebuffer intersection. */
     if (mglRenderCppRasterizationIsEmpty(0, 0, 0, 10, 100, 100, 0, 0, 0, 0, 0) != 1) {
@@ -4213,6 +4275,7 @@ int main(void) {
         if (verifyTessEvalItemsAndCaptureSize() != 0) return 1;
         if (verifyNativeTESInterfaceGuards() != 0) return 1;
         if (verifyRasterizationIsEmpty() != 0) return 1;
+        if (verifyIntegerReadbackClassify() != 0) return 1;
         if (verifyMDIScratchOwner() != 0) return 1;
         if (verifyRenderEncoderGetter() != 0) return 1;
         if (verifyCommandBufferGetterAndAdopt() != 0) return 1;

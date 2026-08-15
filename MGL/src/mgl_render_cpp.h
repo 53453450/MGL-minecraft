@@ -439,7 +439,7 @@ uint32_t mglRenderCppTessEvalItemsPerPatch(
     uint32_t point_mode);
 
 /* Overflow-checked tess capture size (records x stride, min_stride floor).
- * Returns 0 with *size_out/*offset_out set, -1 on bad args / overflow. */
+ * Returns 0 with size_out/offset_out set, -1 on bad args / overflow. */
 int mglRenderCppCheckedTessCaptureSize(
     int64_t count,
     int64_t instance_count,
@@ -480,6 +480,26 @@ int mglRenderCppRasterizationIsEmpty(
     int32_t sy,
     int32_t sw,
     int32_t sh);
+
+typedef struct MGLRenderCppIntegerReadbackClassify_t {
+    int source_is_integer_texture;
+    int output_is_integer_format;
+    uint32_t output_components;
+    int component_map[4];
+    uint32_t output_component_bytes;
+} MGLRenderCppIntegerReadbackClassify;
+
+/* P4.5 (item 1171/1116): integer-readback classification — the 19-format
+ * source-integer table, the GL_*_INTEGER output check, the per-format
+ * component map (incl. BGR/BGRA orderings and the GREEN/BLUE/ALPHA
+ * single-component compat enums) and the per-type output component bytes.
+ * Pure classification shared by both gates.  Returns 0 on success, -1 on
+ * bad args. */
+int mglRenderCppIntegerReadbackClassify(
+    uint32_t pixel_format,
+    uint32_t gl_format,
+    uint32_t gl_type,
+    MGLRenderCppIntegerReadbackClassify *out);
 
 typedef struct MGLRenderCppLevelUploadOp_t {
     uint32_t level;

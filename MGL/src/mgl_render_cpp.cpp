@@ -3543,6 +3543,114 @@ int mglRenderCppRasterizationIsEmpty(
     return 0;
 }
 
+extern "C"
+int mglRenderCppIntegerReadbackClassify(
+    uint32_t pixel_format, uint32_t gl_format, uint32_t gl_type,
+    MGLRenderCppIntegerReadbackClassify* out) {
+    if (!out) return -1;
+    out->source_is_integer_texture = 0;
+    out->output_is_integer_format = 0;
+    out->output_components = 0;
+    out->component_map[0] = 0; out->component_map[1] = 1;
+    out->component_map[2] = 2; out->component_map[3] = 3;
+    out->output_component_bytes = 0;
+    switch (pixel_format) {
+        case MTL::PixelFormatR8Uint:
+        case MTL::PixelFormatR8Sint:
+        case MTL::PixelFormatR16Uint:
+        case MTL::PixelFormatR16Sint:
+        case MTL::PixelFormatR32Uint:
+        case MTL::PixelFormatR32Sint:
+        case MTL::PixelFormatRG8Uint:
+        case MTL::PixelFormatRG8Sint:
+        case MTL::PixelFormatRG16Uint:
+        case MTL::PixelFormatRG16Sint:
+        case MTL::PixelFormatRG32Uint:
+        case MTL::PixelFormatRG32Sint:
+        case MTL::PixelFormatRGBA8Uint:
+        case MTL::PixelFormatRGBA8Sint:
+        case MTL::PixelFormatRGBA16Uint:
+        case MTL::PixelFormatRGBA16Sint:
+        case MTL::PixelFormatRGBA32Uint:
+        case MTL::PixelFormatRGBA32Sint:
+        case MTL::PixelFormatRGB10A2Uint:
+            out->source_is_integer_texture = 1;
+            break;
+        default:
+            break;
+    }
+    switch (gl_format) {
+        case GL_RED_INTEGER:
+        case GL_RG_INTEGER:
+        case GL_RGB_INTEGER:
+        case GL_BGR_INTEGER:
+        case GL_RGBA_INTEGER:
+        case GL_BGRA_INTEGER:
+        case 0x8d95: /* GL_GREEN_INTEGER */
+        case 0x8d96: /* GL_BLUE_INTEGER */
+        case 0x8d97: /* GL_ALPHA_INTEGER */
+            out->output_is_integer_format = 1;
+            break;
+        default:
+            break;
+    }
+    if (out->source_is_integer_texture && out->output_is_integer_format) {
+        switch (gl_format) {
+            case GL_RED_INTEGER:
+                out->output_components = 1u;
+                out->component_map[0] = 0; out->component_map[1] = -1;
+                out->component_map[2] = -1; out->component_map[3] = -1;
+                break;
+            case GL_RG_INTEGER:
+                out->output_components = 2u;
+                out->component_map[0] = 0; out->component_map[1] = 1;
+                out->component_map[2] = -1; out->component_map[3] = -1;
+                break;
+            case GL_RGB_INTEGER:
+                out->output_components = 3u;
+                out->component_map[0] = 0; out->component_map[1] = 1;
+                out->component_map[2] = 2; out->component_map[3] = -1;
+                break;
+            case GL_BGR_INTEGER:
+                out->output_components = 3u;
+                out->component_map[0] = 2; out->component_map[1] = 1;
+                out->component_map[2] = 0; out->component_map[3] = -1;
+                break;
+            case GL_RGBA_INTEGER:
+                out->output_components = 4u;
+                out->component_map[0] = 0; out->component_map[1] = 1;
+                out->component_map[2] = 2; out->component_map[3] = 3;
+                break;
+            case GL_BGRA_INTEGER:
+                out->output_components = 4u;
+                out->component_map[0] = 2; out->component_map[1] = 1;
+                out->component_map[2] = 0; out->component_map[3] = 3;
+                break;
+            case 0x8d95:
+                out->output_components = 1u;
+                out->component_map[0] = 1; out->component_map[1] = -1;
+                out->component_map[2] = -1; out->component_map[3] = -1;
+                break;
+            case 0x8d96:
+                out->output_components = 1u;
+                out->component_map[0] = 2; out->component_map[1] = -1;
+                out->component_map[2] = -1; out->component_map[3] = -1;
+                break;
+            case 0x8d97:
+                out->output_components = 1u;
+                out->component_map[0] = 3; out->component_map[1] = -1;
+                out->component_map[2] = -1; out->component_map[3] = -1;
+                break;
+            default:
+                break;
+        }
+        out->output_component_bytes =
+            (gl_type == GL_BYTE || gl_type == GL_UNSIGNED_BYTE) ? 1u :
+            (gl_type == GL_SHORT || gl_type == GL_UNSIGNED_SHORT) ? 2u : 4u;
+    }
+    return 0;
+}
+
 static uint32_t mglTessRoundLevelForSpacing(uint32_t spacing,
                                               uint32_t ceil_level) {
     if (spacing == GL_FRACTIONAL_EVEN) {
