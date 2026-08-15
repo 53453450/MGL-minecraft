@@ -643,9 +643,17 @@ static void mglBindingStateSetFragmentBytes(
     [self bindVertexFallbackBuffersToCurrentRenderEncoder:activeProgram
                                       anyBindingPresent:anyBindingPresent
                                       baseBindingPresent:baseBindingPresent
-                                          encodeContext:encCtx];
+                                          encodeContext:encCtx
+                                       bindingSnapshot:&vbindSnapshot
+                                           useSnapshot:useVertexBindingSnapshot];
 
-    [self bindPointSizeParamsIfNeeded:anyBindingPresent encodeContext:encCtx];
+    [self bindPointSizeParamsIfNeeded:anyBindingPresent
+                        encodeContext:encCtx
+                      bindingSnapshot:&vbindSnapshot
+                          byteScratch:vbindByteScratch
+                        byteScratchUsed:&vbindByteScratchUsed
+                    byteScratchCapacity:sizeof(vbindByteScratch)
+                           useSnapshot:useVertexBindingSnapshot];
 
     /* Snapshot the final Metal slot set only after VAO, fallback, and
      * generated point-size bindings have all updated anyBindingPresent.  The
@@ -1252,8 +1260,50 @@ static void mglBindingStateSetFragmentBytes(
                                      anyBindingPresent:(bool *)anyBindingPresent
                                      baseBindingPresent:(bool *)baseBindingPresent
                                          encodeContext:(const MGLEncodeContext *)encCtx
+                                     bindingSnapshot:(MGLRenderCppBindingSnapshot *)bindingSnapshot
+                                         useSnapshot:(BOOL)useSnapshot
 {
     static id<MTLBuffer> fallbackBindingBuffer = nil;
+
+    /* P4.3b 扩展（round 34）：fallback 段与主 map 循环/VAO attrib 段共用
+     * 同一个 binding snapshot（调用方传入）——本方法只收集 buffer op（无
+     * bytes op，无需 scratch），结束处一次性重放；重放位置在 attrib 段之后、
+     * point-size 段之前，与直接路径「attrib emit → fallback emit」顺序一致。
+     * gate-off 直接 setVertexBuffer（A/B 对照）。 */
+    MGLRenderCppBindingSnapshot *vfallbackSnapshot = bindingSnapshot;
+    const BOOL vfallbackUseSnapshot =
+        useSnapshot && vfallbackSnapshot != NULL;
+#define MGL_VFB_FLUSH_SNAPSHOT()                                                \
+    do {                                                                        \
+        if (vfallbackUseSnapshot &&                                             \
+            vfallbackSnapshot->vertex_op_count > 0) {                           \
+            mglRenderCppEncodeBindingSnapshot(                                  \
+                (__bridge void *)encCtx->encoder, vfallbackSnapshot, NULL, 0);  \
+            *vfallbackSnapshot = (MGLRenderCppBindingSnapshot){0};              \
+        }                                                                       \
+    } while (0)
+
+#define MGL_VFB_EMIT_BUFFER(slot, bufPtr, off)                                  \
+    do {                                                                        \
+        if (vfallbackUseSnapshot) {                                             \
+            if (vfallbackSnapshot->vertex_op_count >=                           \
+                MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_OPS) {                      \
+                MGL_VFB_FLUSH_SNAPSHOT();                                       \
+            }                                                                   \
+            vfallbackSnapshot                                                     \
+                ->vertex_ops[vfallbackSnapshot->vertex_op_count++] =            \
+                (MGLRenderCppBindingOp){/* kind */ 0u,                          \
+                                        /* index */ (uint32_t)(slot),           \
+                                        /* offset */ (uint64_t)(off),           \
+                                        /* buffer */ (void *)(bufPtr),          \
+                                        /* bytes */ NULL,                       \
+                                        /* length */ 0u};                       \
+        } else {                                                                \
+            mglBindingStateSetVertexBuffer(                                     \
+                encCtx->encoder, (__bridge id<MTLBuffer>)(bufPtr),              \
+                (off), (slot));                                                 \
+        }                                                                       \
+    } while (0)
     const int vertexStage = _tessellation.nativeTESActive
         ? _TESS_EVALUATION_SHADER : _VERTEX_SHADER;
 
@@ -1302,9 +1352,9 @@ static void mglBindingStateSetFragmentBytes(
                 !mglBindingStateBufferMatches(
                     _bindingStateOwner, MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
                     (__bridge void *)fallbackBindingBuffer, 0, (uint32_t)_slot)) {
-                        mglBindingStateSetVertexBuffer(encCtx->encoder,
-                                                       fallbackBindingBuffer,
-                                                       0, _slot);
+                        MGL_VFB_EMIT_BUFFER(_slot,
+                                            (__bridge void *)fallbackBindingBuffer,
+                                            0);
                         mglRenderCppBindingUpdateVertexBuffer(
                     _bindingStateOwner, (__bridge void *)fallbackBindingBuffer, 0,
                     (uint32_t)_slot);
@@ -1329,8 +1379,8 @@ static void mglBindingStateSetFragmentBytes(
                 !mglBindingStateBufferMatches(
                     _bindingStateOwner, MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
                     (__bridge void *)fallbackBindingBuffer, 0, (uint32_t)s)) {
-                    mglBindingStateSetVertexBuffer(encCtx->encoder,
-                                                   fallbackBindingBuffer, 0, s);
+                    MGL_VFB_EMIT_BUFFER(s, (__bridge void *)fallbackBindingBuffer,
+                                         0);
                     mglRenderCppBindingUpdateVertexBuffer(
                     _bindingStateOwner, (__bridge void *)fallbackBindingBuffer, 0,
                     (uint32_t)s);
@@ -1343,6 +1393,11 @@ static void mglBindingStateSetFragmentBytes(
         }
     }
 
+    /* Flush any collected fallback ops (replay position: after the attrib
+     * pass, before the point-size emit — matches the direct path order). */
+    MGL_VFB_FLUSH_SNAPSHOT();
+#undef MGL_VFB_EMIT_BUFFER
+#undef MGL_VFB_FLUSH_SNAPSHOT
 }
 
 
@@ -1350,8 +1405,62 @@ static void mglBindingStateSetFragmentBytes(
  * Extracted from bindVertexBuffersToCurrentRenderEncoder. */
 - (void)bindPointSizeParamsIfNeeded:(bool *)anyBindingPresent
                       encodeContext:(const MGLEncodeContext *)encCtx
+                    bindingSnapshot:(MGLRenderCppBindingSnapshot *)bindingSnapshot
+                        byteScratch:(uint8_t *)byteScratch
+                      byteScratchUsed:(size_t *)byteScratchUsed
+                  byteScratchCapacity:(size_t)byteScratchCapacity
+                         useSnapshot:(BOOL)useSnapshot
 {
     BOOL needsPointSizeParams = NO;
+
+    /* P4.3b 扩展（round 34）：point-size 段共用同一 binding snapshot——单个
+     * bytes op（2×float）收集进调用方 scratch，结束处一次性重放；重放位置在
+     * fallback 段之后（主绑定 pass 的最后一个 emit），顺序与直接路径一致。
+     * gate-off 直接 setVertexBytes（A/B 对照）。 */
+    MGLRenderCppBindingSnapshot *vpointSnapshot = bindingSnapshot;
+    uint8_t *vpointByteScratch = byteScratch;
+    size_t *vpointByteScratchUsed = byteScratchUsed;
+    const BOOL vpointUseSnapshot =
+        useSnapshot && vpointSnapshot != NULL && vpointByteScratch != NULL &&
+        vpointByteScratchUsed != NULL;
+#define MGL_VPS_FLUSH_SNAPSHOT()                                                \
+    do {                                                                        \
+        if (vpointUseSnapshot &&                                                \
+            vpointSnapshot->vertex_op_count > 0) {                              \
+            mglRenderCppEncodeBindingSnapshot(                                  \
+                (__bridge void *)encCtx->encoder, vpointSnapshot, NULL, 0);     \
+            *vpointSnapshot = (MGLRenderCppBindingSnapshot){0};                 \
+            *vpointByteScratchUsed = 0;                                         \
+        }                                                                       \
+    } while (0)
+
+#define MGL_VPS_EMIT_BYTES(slot, src, len)                                      \
+    do {                                                                        \
+        const void *src_ = (src);                                               \
+        size_t len_ = (len);                                                    \
+        if (vpointUseSnapshot) {                                                \
+            if (*vpointByteScratchUsed + len_ > byteScratchCapacity) {          \
+                MGL_VPS_FLUSH_SNAPSHOT();                                       \
+            }                                                                   \
+            if (vpointSnapshot->vertex_op_count >=                              \
+                MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_OPS) {                      \
+                MGL_VPS_FLUSH_SNAPSHOT();                                       \
+            }                                                                   \
+            uint8_t *dst_ = vpointByteScratch + *vpointByteScratchUsed;         \
+            memcpy(dst_, src_, len_);                                           \
+            *vpointByteScratchUsed += len_;                                     \
+            vpointSnapshot->vertex_ops[vpointSnapshot->vertex_op_count++] =     \
+                (MGLRenderCppBindingOp){/* kind */ 1u,                          \
+                                        /* index */ (uint32_t)(slot),           \
+                                        /* offset */ 0,                         \
+                                        /* buffer */ NULL,                      \
+                                        /* bytes */ dst_,                       \
+                                        /* length */ (uint32_t)len_};           \
+        } else {                                                                \
+            mglBindingStateSetVertexBytes(                                      \
+                encCtx->encoder, (src), (len), (slot));                         \
+        }                                                                       \
+    } while (0)
     int pointSizeStages[] = { _VERTEX_SHADER, _TESS_EVALUATION_SHADER, _GEOMETRY_SHADER };
     for (NSUInteger ps = 0; ps < sizeof(pointSizeStages) / sizeof(pointSizeStages[0]); ps++) {
         Program *pointProgram = mglResolveProgramForStageFromState(ctx, pointSizeStages[ps]);
@@ -1366,13 +1475,17 @@ static void mglBindingStateSetFragmentBytes(
             ctx && MGL_STATE(ctx)->var.point_size > 0.0f ? MGL_STATE(ctx)->var.point_size : 1.0f,
             ctx && MGL_STATE(ctx)->caps.program_point_size ? 1.0f : 0.0f
         };
-        mglBindingStateSetVertexBytes(encCtx->encoder, pointSizeParams,
-                                      sizeof(pointSizeParams),
-                                      kMGLPointSizeParamBufferIndex);
+        MGL_VPS_EMIT_BYTES(kMGLPointSizeParamBufferIndex, pointSizeParams,
+                          sizeof(pointSizeParams));
         [self invalidateLastBoundVertexBufferAtIndex:kMGLPointSizeParamBufferIndex];
         anyBindingPresent[kMGLPointSizeParamBufferIndex] = true;
     }
 
+    /* Flush any collected point-size op — the final replay of the main
+     * vertex binding pass (map → attrib → fallback → point-size). */
+    MGL_VPS_FLUSH_SNAPSHOT();
+#undef MGL_VPS_EMIT_BYTES
+#undef MGL_VPS_FLUSH_SNAPSHOT
 }
 
 
