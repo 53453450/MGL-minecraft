@@ -2216,29 +2216,29 @@ static void mglTextureCopyTextureToBuffer(
     // MTLStorageModePrivate textures cannot be read directly with getBytes:.
     // Use a blit-to-buffer path to convert GPU-private tiled memory to linear CPU memory.
     if (texture.storageMode == MTLStorageModePrivate) {
-        /* When useBGRA8Conversion is set but the source texture is not actually
-         * 4 bytes-per-pixel (e.g. RGBA32Float is 16 bpp), the staging buffer
-         * must be sized for the *source* pixel format, not the BGRA8 intermediate.
-         * The blit copies raw source data into staging; conversion happens afterwards. */
-        NSUInteger sourceBpp = mglMetalReadbackBytesPerPixel(texture.pixelFormat);
-        BOOL sourceIsBGRA8 =
-            (texture.pixelFormat == MTLPixelFormatBGRA8Unorm ||
-             texture.pixelFormat == MTLPixelFormatBGRA8Unorm_sRGB ||
-             texture.pixelFormat == MTLPixelFormatRGBA8Unorm ||
-             texture.pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB);
-        NSUInteger rowBytes;
-        if (useBGRA8Conversion && !sourceIsBGRA8 && sourceBpp > 0u) {
-            rowBytes = readRegion.size.width * sourceBpp;
-        } else if (useBGRA8Conversion) {
-            rowBytes = readRegion.size.width * 4u;
-        } else {
-            rowBytes = (bytesPerRow > 0 ? bytesPerRow : readRegion.size.width * MAX(dstPixelBytes, (NSUInteger)1u));
-        }
-        NSUInteger imageBytes = rowBytes * readRegion.size.height;
-        NSUInteger totalBytes = imageBytes;
-        if (!useBGRA8Conversion && bytesPerImage > 0 && readRegion.size.depth > 1) {
-            totalBytes = bytesPerImage * readRegion.size.depth;
-        }
+        /* P4.5 (item 1171/1116): 直接 R32F 判定 + BGRA8 转换资格 + 源
+         * BGRA8 族判定 + row/image/total 字节计算（含非 BGRA8 源按源 bpp
+         * 计 pitch、depth>1 + bytesPerImage 情形）在 C++
+         * （mglRenderCppGetTexImagePlan，两门共用）。 */
+        MGLRenderCppGetTexImagePlan plan = {0};
+        mglRenderCppGetTexImagePlan(
+            (uint32_t)texture.pixelFormat,
+            (uint32_t)format,
+            (uint32_t)type,
+            (uint32_t)readRegion.size.width,
+            (uint32_t)readRegion.size.height,
+            (uint32_t)readRegion.size.depth,
+            (uint32_t)dstPixelBytes,
+            (uint32_t)mglMetalReadbackBytesPerPixel(texture.pixelFormat),
+            mglMetalReadbackFormatIsBGRA8Compatible(texture.pixelFormat) ? 1 : 0,
+            (uint32_t)bytesPerRow,
+            (uint32_t)bytesPerImage,
+            1,
+            &plan);
+        useBGRA8Conversion = plan.use_bgra8_conversion;
+        NSUInteger rowBytes = (NSUInteger)plan.row_bytes;
+        NSUInteger imageBytes = (NSUInteger)plan.image_bytes;
+        NSUInteger totalBytes = (NSUInteger)plan.total_bytes;
 
         id<MTLBuffer> stagingBuffer = mglTextureCreateBuffer(
             _device, totalBytes, MTLResourceStorageModeShared);
@@ -2337,23 +2337,26 @@ static void mglTextureCopyTextureToBuffer(
 
 	    @try {
 	        if (useBGRA8Conversion || (flipRenderTargetRows && readRegion.size.depth == 1u)) {
-	            NSUInteger rowBytes;
-	            if (useBGRA8Conversion) {
-                    NSUInteger sourceBpp = mglMetalReadbackBytesPerPixel(texture.pixelFormat);
-                    BOOL sourceIsBGRA8 =
-                        (texture.pixelFormat == MTLPixelFormatBGRA8Unorm ||
-                         texture.pixelFormat == MTLPixelFormatBGRA8Unorm_sRGB ||
-                         texture.pixelFormat == MTLPixelFormatRGBA8Unorm ||
-                         texture.pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB);
-                    if (!sourceIsBGRA8 && sourceBpp > 0u) {
-                        rowBytes = readRegion.size.width * sourceBpp;
-                    } else {
-                        rowBytes = readRegion.size.width * 4u;
-                    }
-                } else {
-                    rowBytes = (bytesPerRow > 0 ? bytesPerRow : readRegion.size.width * MAX(dstPixelBytes, (NSUInteger)1u));
-                }
-            NSUInteger totalBytes = rowBytes * readRegion.size.height;
+	            /* P4.5 (item 1171/1116): row pitch（转换路径：非 BGRA8 源按
+	             * 源 bpp，BGRA8 源 4B；否则 bytesPerRow 或 width*max(dst,1)）
+	             * 在 C++（mglRenderCppGetTexImagePlan，与 private 路径共用）。 */
+	            MGLRenderCppGetTexImagePlan plan = {0};
+	            mglRenderCppGetTexImagePlan(
+	                (uint32_t)texture.pixelFormat,
+	                (uint32_t)format,
+	                (uint32_t)type,
+	                (uint32_t)readRegion.size.width,
+	                (uint32_t)readRegion.size.height,
+	                (uint32_t)readRegion.size.depth,
+	                (uint32_t)dstPixelBytes,
+	                (uint32_t)mglMetalReadbackBytesPerPixel(texture.pixelFormat),
+	                mglMetalReadbackFormatIsBGRA8Compatible(texture.pixelFormat) ? 1 : 0,
+	                (uint32_t)bytesPerRow,
+	                (uint32_t)bytesPerImage,
+	                0,
+	                &plan);
+	            NSUInteger rowBytes = (NSUInteger)plan.row_bytes;
+	            NSUInteger totalBytes = (NSUInteger)plan.image_bytes;
             NSMutableData *readback = [NSMutableData dataWithLength:totalBytes];
             if (!readback) {
                 mglDispatchError(glm_ctx, __FUNCTION__, GL_OUT_OF_MEMORY);

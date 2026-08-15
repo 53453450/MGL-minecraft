@@ -501,6 +501,39 @@ int mglRenderCppIntegerReadbackClassify(
     uint32_t gl_type,
     MGLRenderCppIntegerReadbackClassify *out);
 
+typedef struct MGLRenderCppGetTexImagePlan_t {
+    int direct_r32_float_read;
+    int use_bgra8_conversion;
+    int source_is_bgra8;
+    uint64_t row_bytes;
+    uint64_t image_bytes;
+    uint64_t total_bytes;
+} MGLRenderCppGetTexImagePlan;
+
+/* P4.5 (item 1171/1116): mtlGetTexImage staging plan — direct R32F read
+ * detection, the BGRA8 conversion eligibility (dst bytes + single depth
+ * layer + non-direct + compatible source), the source-is-BGRA8-family
+ * check, and the row/image/total byte computation (conversion pitch:
+ * width*sourceBpp for non-BGRA8 sources, width*4 for BGRA8 sources;
+ * otherwise bytesPerRow or width*max(dst,1); the depth>1 + bytesPerImage
+ * case applies to private storage only).  Shared by both gates; the caller
+ * resolves sizeForFormatType / readback bytes-per-pixel / format
+ * compatibility through the existing C helpers. */
+int mglRenderCppGetTexImagePlan(
+    uint32_t pixel_format,
+    uint32_t gl_format,
+    uint32_t gl_type,
+    uint32_t width,
+    uint32_t height,
+    uint32_t depth,
+    uint32_t dst_pixel_bytes,
+    uint32_t source_bpp,
+    int bgra8_format_compatible,
+    uint32_t bytes_per_row,
+    uint32_t bytes_per_image,
+    int storage_private,
+    MGLRenderCppGetTexImagePlan *out);
+
 typedef struct MGLRenderCppLevelUploadOp_t {
     uint32_t level;
     uint32_t kind;          /* 0 = upload op, 1 = short-backing (skip) */

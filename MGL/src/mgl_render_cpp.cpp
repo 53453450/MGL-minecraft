@@ -3651,6 +3651,49 @@ int mglRenderCppIntegerReadbackClassify(
     return 0;
 }
 
+extern "C"
+int mglRenderCppGetTexImagePlan(
+    uint32_t pixel_format, uint32_t gl_format, uint32_t gl_type,
+    uint32_t width, uint32_t height, uint32_t depth,
+    uint32_t dst_pixel_bytes, uint32_t source_bpp,
+    int bgra8_format_compatible,
+    uint32_t bytes_per_row, uint32_t bytes_per_image,
+    int storage_private,
+    MGLRenderCppGetTexImagePlan* out) {
+    if (!out) return -1;
+    out->direct_r32_float_read =
+        (pixel_format == MTL::PixelFormatR32Float &&
+         gl_format == GL_RED && gl_type == GL_FLOAT) ? 1 : 0;
+    out->use_bgra8_conversion =
+        (dst_pixel_bytes > 0u && depth == 1u &&
+         !out->direct_r32_float_read && bgra8_format_compatible) ? 1 : 0;
+    out->source_is_bgra8 =
+        (pixel_format == MTL::PixelFormatBGRA8Unorm ||
+         pixel_format == MTL::PixelFormatBGRA8Unorm_sRGB ||
+         pixel_format == MTL::PixelFormatRGBA8Unorm ||
+         pixel_format == MTL::PixelFormatRGBA8Unorm_sRGB) ? 1 : 0;
+    uint64_t row_bytes;
+    if (out->use_bgra8_conversion && !out->source_is_bgra8 &&
+        source_bpp > 0u) {
+        row_bytes = (uint64_t)width * (uint64_t)source_bpp;
+    } else if (out->use_bgra8_conversion) {
+        row_bytes = (uint64_t)width * 4u;
+    } else {
+        row_bytes = bytes_per_row > 0
+            ? (uint64_t)bytes_per_row
+            : (uint64_t)width * (dst_pixel_bytes > 0
+                                     ? (uint64_t)dst_pixel_bytes : 1u);
+    }
+    out->row_bytes = row_bytes;
+    out->image_bytes = row_bytes * (uint64_t)height;
+    out->total_bytes = out->image_bytes;
+    if (!out->use_bgra8_conversion && storage_private &&
+        bytes_per_image > 0 && depth > 1) {
+        out->total_bytes = (uint64_t)bytes_per_image * (uint64_t)depth;
+    }
+    return 0;
+}
+
 static uint32_t mglTessRoundLevelForSpacing(uint32_t spacing,
                                               uint32_t ceil_level) {
     if (spacing == GL_FRACTIONAL_EVEN) {

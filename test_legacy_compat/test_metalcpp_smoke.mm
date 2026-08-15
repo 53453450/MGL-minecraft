@@ -2304,6 +2304,57 @@ static int verifyMDIScratchOwner(void) {
     return 0;
 }
 
+static int verifyGetTexImagePlan(void) {
+    /* P4.5 (item 1171/1116): mtlGetTexImage staging plan. */
+    MGLRenderCppGetTexImagePlan p = {0};
+    if (mglRenderCppGetTexImagePlan(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL) != -1) {
+        fprintf(stderr, "FAIL: plan bad args\n");
+        return 1;
+    }
+    /* R32Float (55) + RED + FLOAT -> direct read; row = width*max(dst,1). */
+    if (mglRenderCppGetTexImagePlan(55u, GL_RED, GL_FLOAT, 8, 4, 1, 4, 4,
+                                    1, 0, 0, 0, &p) != 0 ||
+        !p.direct_r32_float_read || p.use_bgra8_conversion ||
+        p.row_bytes != 32 || p.image_bytes != 128 || p.total_bytes != 128) {
+        fprintf(stderr, "FAIL: plan direct r32f\n");
+        return 1;
+    }
+    /* RGBA8Unorm (70) + RGBA + UNSIGNED_BYTE -> bgra8 conv, source is
+     * bgra8 family -> row = width*4. */
+    if (mglRenderCppGetTexImagePlan(70u, GL_RGBA, GL_UNSIGNED_BYTE, 8, 4, 1,
+                                    4, 4, 1, 0, 0, 0, &p) != 0 ||
+        !p.use_bgra8_conversion || !p.source_is_bgra8 ||
+        p.row_bytes != 32) {
+        fprintf(stderr, "FAIL: plan rgba8unorm\n");
+        return 1;
+    }
+    /* RGBA32Float (125) + RGBA + FLOAT -> bgra8 conv but NOT bgra8 family:
+     * row = width*sourceBpp(16). */
+    if (mglRenderCppGetTexImagePlan(125u, GL_RGBA, GL_FLOAT, 8, 4, 1, 16, 16,
+                                    1, 0, 0, 0, &p) != 0 ||
+        !p.use_bgra8_conversion || p.source_is_bgra8 ||
+        p.row_bytes != 128 || p.image_bytes != 512) {
+        fprintf(stderr, "FAIL: plan rgba32f pitch\n");
+        return 1;
+    }
+    /* bytesPerRow fallback when not converting. */
+    if (mglRenderCppGetTexImagePlan(125u, GL_RGBA, GL_FLOAT, 8, 4, 1, 16, 16,
+                                    0, 64, 0, 0, &p) != 0 ||
+        p.use_bgra8_conversion || p.row_bytes != 64) {
+        fprintf(stderr, "FAIL: plan bpr fallback\n");
+        return 1;
+    }
+    /* Private storage + depth>1 + bytesPerImage -> total = bpi*depth. */
+    if (mglRenderCppGetTexImagePlan(70u, GL_RGBA, GL_UNSIGNED_BYTE, 8, 4, 6,
+                                    4, 4, 0, 64, 1024, 1, &p) != 0 ||
+        p.use_bgra8_conversion || p.total_bytes != 6144) {
+        fprintf(stderr, "FAIL: plan private depth\n");
+        return 1;
+    }
+    printf("GET_TEX_IMAGE_PLAN_OK\n");
+    return 0;
+}
+
 static int verifyIntegerReadbackClassify(void) {
     /* P4.5 (item 1171/1116): integer-readback classification. */
     MGLRenderCppIntegerReadbackClassify c = {0};
@@ -4276,6 +4327,7 @@ int main(void) {
         if (verifyNativeTESInterfaceGuards() != 0) return 1;
         if (verifyRasterizationIsEmpty() != 0) return 1;
         if (verifyIntegerReadbackClassify() != 0) return 1;
+        if (verifyGetTexImagePlan() != 0) return 1;
         if (verifyMDIScratchOwner() != 0) return 1;
         if (verifyRenderEncoderGetter() != 0) return 1;
         if (verifyCommandBufferGetterAndAdopt() != 0) return 1;
