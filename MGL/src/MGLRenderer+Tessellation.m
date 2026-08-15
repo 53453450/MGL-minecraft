@@ -1222,18 +1222,6 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
  * to the next even (min 2), fractional_odd to the next odd; integer (and
  * the default) keep ceil(level).  Must match the AIR TES compute generator
  * and the native-tess query accounting. */
-static GLuint mglTessRoundLevelForSpacing(GLenum spacing, GLuint ceilLevel)
-{
-    if (spacing == GL_FRACTIONAL_EVEN) {
-        const GLuint r = (ceilLevel & 1u) ? ceilLevel + 1u : ceilLevel;
-        return MAX(2u, r);
-    }
-    if (spacing == GL_FRACTIONAL_ODD) {
-        return (ceilLevel & 1u) ? ceilLevel : ceilLevel + 1u;
-    }
-    return ceilLevel;
-}
-
 /* Per-patch expanded item count for the isolines/point-mode TES kernel.
  * Must stay in lockstep with the u/v decomposition injected by
  * mgl_air_backend.cpp (isTESCompute pre-main block).  Returns 0 when the
@@ -1266,50 +1254,29 @@ bool mglTessFactorsDiscardPatch(GLenum genMode,
     }
 }
 
+static GLuint mglTessRoundLevelForSpacing(GLenum spacing, GLuint ceilLevel)
+{
+    if (spacing == GL_FRACTIONAL_EVEN) {
+        const GLuint r = (ceilLevel & 1u) ? ceilLevel + 1u : ceilLevel;
+        return MAX(2u, r);
+    }
+    if (spacing == GL_FRACTIONAL_ODD) {
+        return (ceilLevel & 1u) ? ceilLevel : ceilLevel + 1u;
+    }
+    return ceilLevel;
+}
+
 static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
                                           const void *factorRecord)
 {
-    GLenum genMode = tesProgram ? tesProgram->tess_gen_mode : GL_TRIANGLES;
-    GLboolean pointMode = tesProgram ? tesProgram->tess_gen_point_mode : GL_FALSE;
-    const struct {
-        uint16_t edge[4];
-        uint16_t inside[2];
-    } __attribute__((packed)) *tf = (const void *)factorRecord;
-    if (!tf) return 0u;
-    {
-        float edge[4], inside[2];
-        for (int i = 0; i < 4; i++) {
-            edge[i] = *(const __fp16 *)&tf->edge[i];
-        }
-        for (int i = 0; i < 2; i++) {
-            inside[i] = *(const __fp16 *)&tf->inside[i];
-        }
-        if (mglTessFactorsDiscardPatch(genMode, edge, inside)) {
-            return 0u;
-        }
-    }
-    if (genMode == GL_ISOLINES) {
-        float e0 = *(const __fp16 *)&tf->edge[0];
-        float e1 = *(const __fp16 *)&tf->edge[1];
-        if (e0 < 1.0f) e0 = 1.0f;
-        if (e1 < 1.0f) e1 = 1.0f;
-        return (GLuint)ceilf(e0) * (GLuint)ceilf(e1) * 2u;
-    }
-    float i0 = *(const __fp16 *)&tf->inside[0];
-    if (i0 < 1.0f) i0 = 1.0f;
-    const GLenum spacing = tesProgram ? tesProgram->tess_gen_spacing : 0;
-    if (pointMode && genMode == GL_QUADS) {
-        float i1 = *(const __fp16 *)&tf->inside[1];
-        if (i1 < 1.0f) i1 = 1.0f;
-        return mglTessRoundLevelForSpacing(spacing, (GLuint)ceilf(i0)) *
-               mglTessRoundLevelForSpacing(spacing, (GLuint)ceilf(i1));
-    }
-    if (pointMode) { /* triangles */
-        const GLuint n =
-            mglTessRoundLevelForSpacing(spacing, (GLuint)ceilf(i0));
-        return n * n;
-    }
-    return 0u;
+    /* P4.5 (item 1141/887): 逐 patch 展开 item 计数（isolines/point-mode
+     * TES 核的 u/v 分解 lockstep + discard 判定 + spacing 取整）在 C++
+     * （mglRenderCppTessEvalItemsPerPatch，纯数据变换，两门共用）。 */
+    return (GLuint)mglRenderCppTessEvalItemsPerPatch(
+        factorRecord,
+        (uint32_t)(tesProgram ? tesProgram->tess_gen_mode : GL_TRIANGLES),
+        (uint32_t)(tesProgram ? tesProgram->tess_gen_spacing : 0),
+        (uint32_t)(tesProgram ? tesProgram->tess_gen_point_mode : 0));
 }
 
 /* Isolines / point-mode TES: expand one vertex record per work item with

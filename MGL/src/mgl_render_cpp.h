@@ -427,6 +427,27 @@ uint64_t mglRenderCppTessPrimitiveCount(
     uint32_t tess_gen_mode,
     uint32_t instance_count);
 
+/* P4.5 (item 1141/887): per-patch expanded item count for the isolines /
+ * point-mode TES kernel (lockstep with mgl_air_backend.cpp's u/v
+ * decomposition) — returns 0 when the factor record is missing or the patch
+ * is discarded (caller falls back to 1).  Pure data transform shared by
+ * both gates. */
+uint32_t mglRenderCppTessEvalItemsPerPatch(
+    const void *factor_record,
+    uint32_t gen_mode,
+    uint32_t spacing,
+    uint32_t point_mode);
+
+/* Overflow-checked tess capture size (records x stride, min_stride floor).
+ * Returns 0 with *size_out/*offset_out set, -1 on bad args / overflow. */
+int mglRenderCppCheckedTessCaptureSize(
+    int64_t count,
+    int64_t instance_count,
+    uint64_t stride,
+    uint64_t min_stride,
+    uint64_t *size_out,
+    uint64_t *offset_out);
+
 typedef struct MGLRenderCppLevelUploadOp_t {
     uint32_t level;
     uint32_t kind;          /* 0 = upload op, 1 = short-backing (skip) */

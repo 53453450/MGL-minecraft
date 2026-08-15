@@ -2107,6 +2107,9 @@ extern "C" bool mglTessFactorsDiscardPatch(uint32_t gen_mode,
                                              const float *inside)
 {
     switch (gen_mode) {
+        case GL_ISOLINES:
+            return edge[0] <= 0.0f || edge[1] <= 0.0f ||
+                   isnan(edge[0]) || isnan(edge[1]);
         case GL_QUADS:
             return edge[0] <= 0.0f || edge[1] <= 0.0f ||
                    edge[2] <= 0.0f || edge[3] <= 0.0f ||
@@ -2298,6 +2301,57 @@ static int verifyMDIScratchOwner(void) {
         return 1;
     }
     printf("MDI_SCRATCH_OK\n");
+    return 0;
+}
+
+static int verifyTessEvalItemsAndCaptureSize(void) {
+    /* P4.5 (item 1141/887): per-patch eval items + checked capture size. */
+    /* patch record: edge {1,2,0,0} inside {0.5, 0.5} — 0.5=0x3800, 1.0=0x3C00,
+     * 2.0=0x4000, 2.5=0x4100. */
+    uint16_t rec[6] = {0x3C00, 0x4000, 0x4200, 0x4400, 0x3800, 0x3800};
+    if (mglRenderCppTessEvalItemsPerPatch(rec, GL_ISOLINES, 0, 0) != 4) {
+        fprintf(stderr, "FAIL: eval items isolines\n");
+        return 1;
+    }
+    /* quad point-mode: i0=0.5->1, i1=2.5->3, spacing 0 (passthrough) -> 3. */
+    rec[5] = 0x4100;
+    if (mglRenderCppTessEvalItemsPerPatch(rec, GL_QUADS, 0, 1) != 3) {
+        fprintf(stderr, "FAIL: eval items quad point\n");
+        return 1;
+    }
+    /* triangle point-mode: i0=2.5 -> n=3 -> 9. */
+    rec[4] = 0x4100;
+    if (mglRenderCppTessEvalItemsPerPatch(rec, GL_TRIANGLES, 0, 1) != 9) {
+        fprintf(stderr, "FAIL: eval items tri point\n");
+        return 1;
+    }
+    /* non-point quad -> 0. */
+    if (mglRenderCppTessEvalItemsPerPatch(rec, GL_QUADS, 0, 0) != 0) {
+        fprintf(stderr, "FAIL: eval items non-point\n");
+        return 1;
+    }
+    /* discarded (edge0 = 0) -> 0. */
+    rec[0] = 0;
+    if (mglRenderCppTessEvalItemsPerPatch(rec, GL_TRIANGLES, 0, 1) != 0 ||
+        mglRenderCppTessEvalItemsPerPatch(NULL, GL_TRIANGLES, 0, 1) != 0) {
+        fprintf(stderr, "FAIL: eval items discard/null\n");
+        return 1;
+    }
+
+    uint64_t size = 0, offset = 0;
+    if (mglRenderCppCheckedTessCaptureSize(3, 5, 32, 16, &size, &offset) != 0 ||
+        size != 480 || offset != 0) {
+        fprintf(stderr, "FAIL: capture size basic\n");
+        return 1;
+    }
+    if (mglRenderCppCheckedTessCaptureSize(0, 5, 32, 16, &size, &offset) != -1 ||
+        mglRenderCppCheckedTessCaptureSize(3, 5, 8, 16, &size, &offset) != -1 ||
+        mglRenderCppCheckedTessCaptureSize(INT64_MAX, 2, 32, 16, &size, &offset) != -1 ||
+        mglRenderCppCheckedTessCaptureSize(3, 5, 32, 16, NULL, NULL) != -1) {
+        fprintf(stderr, "FAIL: capture size bad args\n");
+        return 1;
+    }
+    printf("TESS_EVAL_ITEMS_AND_SIZE_OK\n");
     return 0;
 }
 
@@ -4063,6 +4117,7 @@ int main(void) {
         if (verifyLevelUploadOps() != 0) return 1;
         if (verifyIntegerReadbackConvert() != 0) return 1;
         if (verifyTessFactorTransforms() != 0) return 1;
+        if (verifyTessEvalItemsAndCaptureSize() != 0) return 1;
         if (verifyMDIScratchOwner() != 0) return 1;
         if (verifyRenderEncoderGetter() != 0) return 1;
         if (verifyCommandBufferGetterAndAdopt() != 0) return 1;

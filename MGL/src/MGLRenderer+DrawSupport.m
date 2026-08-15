@@ -487,14 +487,17 @@ static BOOL mglCheckedTessCaptureSize(GLsizei count, GLsizei instanceCount,
                                       NSUInteger *sizeOut,
                                       NSUInteger *offsetOut)
 {
-    if (count <= 0 || instanceCount <= 0 ||
-        stride < MGL_AIR_PER_VERTEX_STRIDE ||
-        !sizeOut || !offsetOut) return NO;
-    NSUInteger records = (NSUInteger)count * (NSUInteger)instanceCount;
-    if (records / (NSUInteger)count != (NSUInteger)instanceCount ||
-        records > NSUIntegerMax / stride) return NO;
-    *sizeOut = records * stride;
-    *offsetOut = 0u;
+    /* P4.5 (item 1141/887): 溢出检查的 capture size 数学在 C++
+     * （mglRenderCppCheckedTessCaptureSize，纯数据变换，两门共用）。 */
+    uint64_t size = 0u;
+    uint64_t offset = 0u;
+    if (mglRenderCppCheckedTessCaptureSize(
+            (int64_t)count, (int64_t)instanceCount, (uint64_t)stride,
+            (uint64_t)MGL_AIR_PER_VERTEX_STRIDE, &size, &offset) != 0) {
+        return NO;
+    }
+    *sizeOut = (NSUInteger)size;
+    *offsetOut = (NSUInteger)offset;
     return YES;
 }
 

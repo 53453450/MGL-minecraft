@@ -3471,6 +3471,83 @@ uint64_t mglRenderCppTessPrimitiveCount(
     return total * (uint64_t)instance_count;
 }
 
+static uint32_t mglTessRoundLevelForSpacing(uint32_t spacing,
+                                              uint32_t ceil_level) {
+    if (spacing == GL_FRACTIONAL_EVEN) {
+        const uint32_t r = (ceil_level & 1u) ? ceil_level + 1u : ceil_level;
+        return r > 2u ? r : 2u;
+    }
+    if (spacing == GL_FRACTIONAL_ODD) {
+        return (ceil_level & 1u) ? ceil_level : ceil_level + 1u;
+    }
+    return ceil_level;
+}
+
+extern "C"
+uint32_t mglRenderCppTessEvalItemsPerPatch(
+    const void* factor_record, uint32_t gen_mode, uint32_t spacing,
+    uint32_t point_mode) {
+    if (!factor_record) return 0u;
+    typedef struct __attribute__((packed)) {
+        uint16_t edge[4];
+        uint16_t inside[2];
+    } MGLTessFactorRecord;
+    const MGLTessFactorRecord* tf = (const MGLTessFactorRecord*)factor_record;
+    {
+        float edge[4], inside[2];
+        for (int i = 0; i < 4; i++) {
+            edge[i] = *(const __fp16*)&tf->edge[i];
+        }
+        for (int i = 0; i < 2; i++) {
+            inside[i] = *(const __fp16*)&tf->inside[i];
+        }
+        if (mglTessFactorsDiscardPatch(gen_mode, edge, inside)) {
+            return 0u;
+        }
+    }
+    if (gen_mode == GL_ISOLINES) {
+        float e0 = *(const __fp16*)&tf->edge[0];
+        float e1 = *(const __fp16*)&tf->edge[1];
+        if (e0 < 1.0f) e0 = 1.0f;
+        if (e1 < 1.0f) e1 = 1.0f;
+        return (uint32_t)ceilf(e0) * (uint32_t)ceilf(e1) * 2u;
+    }
+    float i0 = *(const __fp16*)&tf->inside[0];
+    if (i0 < 1.0f) i0 = 1.0f;
+    if (point_mode && gen_mode == GL_QUADS) {
+        float i1 = *(const __fp16*)&tf->inside[1];
+        if (i1 < 1.0f) i1 = 1.0f;
+        return mglTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(i0)) *
+               mglTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(i1));
+    }
+    if (point_mode) {
+        const uint32_t n =
+            mglTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(i0));
+        return n * n;
+    }
+    return 0u;
+}
+
+extern "C"
+int mglRenderCppCheckedTessCaptureSize(
+    int64_t count, int64_t instance_count, uint64_t stride,
+    uint64_t min_stride, uint64_t* size_out, uint64_t* offset_out) {
+    if (count <= 0 || instance_count <= 0 || stride < min_stride ||
+        !size_out || !offset_out) {
+        return -1;
+    }
+    const uint64_t c = (uint64_t)count;
+    const uint64_t ic = (uint64_t)instance_count;
+    uint64_t records;
+    if (__builtin_mul_overflow(c, ic, &records) ||
+        records > UINT64_MAX / stride) {
+        return -1;
+    }
+    *size_out = records * stride;
+    *offset_out = 0u;
+    return 0;
+}
+
 extern "C"
 int mglRenderCppBuildLevelUploadOps(
     const TextureLevel* levels, uint32_t level_count,
