@@ -447,6 +447,17 @@ uint32_t mglRenderCppTessRoundLevelForSpacing(
     uint32_t spacing,
     uint32_t ceil_level);
 
+/* P4.5 (item 1141/887): TES XFB field byte size for a GL type (FLOAT/INT/
+ * UINT + vec2/3/4; 0 for unsupported).  Matches mglTESXFBFieldByteSize and
+ * the packed-write stride contract in mglFixMSLTesAsComputeKernel.  Shared
+ * by both gates. */
+uint64_t mglRenderCppTESXFBFieldByteSize(uint64_t gl_type);
+
+/* P4.5 (item 1141/887): overflow-checked product (a * b) for tessellation
+ * size math; matches the ObjC mglCheckedNSUIntegerProduct.  Returns 0 with
+ * *result set, -1 on bad args / overflow.  Shared by both gates. */
+int mglRenderCppCheckedProduct(uint64_t a, uint64_t b, uint64_t *result);
+
 /* Overflow-checked tess capture size (records x stride, min_stride floor).
  * Returns 0 with size_out/offset_out set, -1 on bad args / overflow. */
 int mglRenderCppCheckedTessCaptureSize(

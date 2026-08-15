@@ -3513,6 +3513,36 @@ static int verifyTessRoundLevelForSpacing(void) {
     return 0;
 }
 
+static int verifyCheckedProductAndXFBFieldByteSize(void) {
+    /* P4.5 (item 1141/887): overflow-checked product + TES XFB field size. */
+    uint64_t out = 0;
+    if (mglRenderCppCheckedProduct(0, 5, &out) != 0 || out != 0) {
+        fprintf(stderr, "FAIL: checked product zero\n");
+        return 1;
+    }
+    if (mglRenderCppCheckedProduct(3, 5, &out) != 0 || out != 15) {
+        fprintf(stderr, "FAIL: checked product basic\n");
+        return 1;
+    }
+    if (mglRenderCppCheckedProduct(UINT64_MAX, 2, &out) != -1 ||
+        mglRenderCppCheckedProduct(1, 0, NULL) != -1) {
+        fprintf(stderr, "FAIL: checked product overflow/bad args\n");
+        return 1;
+    }
+    if (mglRenderCppTESXFBFieldByteSize(GL_FLOAT) != 4 ||
+        mglRenderCppTESXFBFieldByteSize(GL_INT) != 4 ||
+        mglRenderCppTESXFBFieldByteSize(GL_UNSIGNED_INT_VEC2) != 8 ||
+        mglRenderCppTESXFBFieldByteSize(GL_FLOAT_VEC3) != 12 ||
+        mglRenderCppTESXFBFieldByteSize(GL_INT_VEC4) != 16 ||
+        mglRenderCppTESXFBFieldByteSize(GL_FLOAT_MAT4) != 0 ||
+        mglRenderCppTESXFBFieldByteSize(0xfeed) != 0) {
+        fprintf(stderr, "FAIL: xfb field byte size\n");
+        return 1;
+    }
+    printf("CHECKED_PRODUCT_XFB_FIELD_OK\n");
+    return 0;
+}
+
 static int verifyTessFactorTransforms(void) {
     /* P4.5 (item 1141/887): tess-factor CPU transforms. */
     float outer[4] = {1.0f, 2.0f, 3.0f, 4.0f};
@@ -5277,6 +5307,7 @@ int main(void) {
         if (verifyTessFactorTransforms() != 0) return 1;
         if (verifyTessEvalItemsAndCaptureSize() != 0) return 1;
         if (verifyTessRoundLevelForSpacing() != 0) return 1;
+        if (verifyCheckedProductAndXFBFieldByteSize() != 0) return 1;
         if (verifyNativeTESInterfaceGuards() != 0) return 1;
         if (verifyRasterizationIsEmpty() != 0) return 1;
         if (verifyIntegerReadbackClassify() != 0) return 1;

@@ -1150,28 +1150,14 @@ typedef struct {
     return true;
 }
 
+/* P4.5 (item 1141/887): TES XFB field byte size for a GL type (FLOAT/INT/
+ * UINT + vec2/3/4; 0 for unsupported).  Single source of truth is
+ * mglRenderCppTESXFBFieldByteSize (mgl_render_cpp.cpp) — kept in lockstep
+ * with the packed writes injected by mglFixMSLTesAsComputeKernel; a zero
+ * result means the renderer cannot prove the write stride. */
 static NSUInteger mglTESXFBFieldByteSize(GLenum glType)
 {
-    switch (glType) {
-        case GL_FLOAT:
-        case GL_INT:
-        case GL_UNSIGNED_INT:
-            return 4u;
-        case GL_FLOAT_VEC2:
-        case GL_INT_VEC2:
-        case GL_UNSIGNED_INT_VEC2:
-            return 8u;
-        case GL_FLOAT_VEC3:
-        case GL_INT_VEC3:
-        case GL_UNSIGNED_INT_VEC3:
-            return 12u;
-        case GL_FLOAT_VEC4:
-        case GL_INT_VEC4:
-        case GL_UNSIGNED_INT_VEC4:
-            return 16u;
-        default:
-            return 0u;
-    }
+    return (NSUInteger)mglRenderCppTESXFBFieldByteSize((uint64_t)glType);
 }
 
 /* Keep this layout calculation in lockstep with the packed writes injected by
@@ -1207,14 +1193,18 @@ static NSUInteger mglTESXFBVertexStride(const Program *program)
     return stride;
 }
 
+/* P4.5 (item 1141/887): overflow-checked product for tessellation size
+ * math.  Single source of truth is mglRenderCppCheckedProduct
+ * (mgl_render_cpp.cpp) — this shell keeps the eight call sites unchanged. */
 static bool mglCheckedNSUIntegerProduct(NSUInteger a,
                                         NSUInteger b,
                                         NSUInteger *result)
 {
-    if (!result || (a != 0u && b > NSUIntegerMax / a)) {
+    uint64_t out = 0u;
+    if (mglRenderCppCheckedProduct((uint64_t)a, (uint64_t)b, &out) != 0) {
         return false;
     }
-    *result = a * b;
+    *result = (NSUInteger)out;
     return true;
 }
 

@@ -4809,6 +4809,46 @@ uint32_t mglRenderCppTessRoundLevelForSpacing(uint32_t spacing,
     return ceil_level;
 }
 
+/* TES XFB field byte size for a GL type (FLOAT/INT/UINT + vec2/3/4; 0 for
+ * unsupported).  Matches the ObjC mglTESXFBFieldByteSize and the packed-write
+ * stride contract injected by mglFixMSLTesAsComputeKernel: a zero result
+ * means the renderer cannot prove the write stride.  Shared by both gates. */
+extern "C"
+uint64_t mglRenderCppTESXFBFieldByteSize(uint64_t gl_type) {
+    switch (gl_type) {
+        case GL_FLOAT:
+        case GL_INT:
+        case GL_UNSIGNED_INT:
+            return 4u;
+        case GL_FLOAT_VEC2:
+        case GL_INT_VEC2:
+        case GL_UNSIGNED_INT_VEC2:
+            return 8u;
+        case GL_FLOAT_VEC3:
+        case GL_INT_VEC3:
+        case GL_UNSIGNED_INT_VEC3:
+            return 12u;
+        case GL_FLOAT_VEC4:
+        case GL_INT_VEC4:
+        case GL_UNSIGNED_INT_VEC4:
+            return 16u;
+        default:
+            return 0u;
+    }
+}
+
+/* Overflow-checked product for tessellation size math; matches the ObjC
+ * mglCheckedNSUIntegerProduct ((a != 0 && b > UINT64_MAX / a) rejects).
+ * Returns 0 with *result set on success, -1 on bad args / overflow. */
+extern "C"
+int mglRenderCppCheckedProduct(uint64_t a, uint64_t b, uint64_t* result) {
+    if (!result || (a != 0u && b > UINT64_MAX / a)) {
+        return -1;
+    }
+    *result = a * b;
+    return 0;
+}
+
 extern "C"
 uint32_t mglRenderCppTessEvalItemsPerPatch(
     const void* factor_record, uint32_t gen_mode, uint32_t spacing,
