@@ -2304,6 +2304,35 @@ static int verifyMDIScratchOwner(void) {
     return 0;
 }
 
+static int verifyExpandQuad(void) {
+    /* P4.5 (item 1141/887): quad-array/quad-element emulation. */
+    uint32_t *idx = NULL; uint64_t n = 0;
+    if (mglRenderCppExpandQuadArrayIndices(2, &idx, &n) != 0 ||
+        n != 12 ||
+        idx[0]!=0||idx[1]!=1||idx[2]!=2||idx[3]!=0||idx[4]!=2||idx[5]!=3 ||
+        idx[6]!=4||idx[7]!=5||idx[8]!=6||idx[9]!=4||idx[10]!=6||idx[11]!=7) {
+        fprintf(stderr, "FAIL: quad array\n");
+        return 1;
+    }
+    free(idx);
+    const uint16_t q[] = {10,11,12,13, 20,21,22,23};
+    if (mglRenderCppExpandQuadElementIndices((const uint8_t*)q, 2, 2, &idx, &n) != 0 ||
+        n != 12 ||
+        idx[0]!=10||idx[1]!=11||idx[2]!=12||idx[3]!=10||idx[4]!=12||idx[5]!=13 ||
+        idx[6]!=20||idx[7]!=21||idx[8]!=22||idx[9]!=20||idx[10]!=22||idx[11]!=23) {
+        fprintf(stderr, "FAIL: quad element\n");
+        return 1;
+    }
+    free(idx);
+    if (mglRenderCppExpandQuadArrayIndices(0, &idx, &n) != -1 ||
+        mglRenderCppExpandQuadElementIndices(NULL, 2, 1, &idx, &n) != -1) {
+        fprintf(stderr, "FAIL: quad bad args\n");
+        return 1;
+    }
+    printf("EXPAND_QUAD_OK\n");
+    return 0;
+}
+
 static int verifyExpandStripAndLineLoop(void) {
     /* P4.5 (item 1141/887): triangle-strip + LINE_LOOP element expansion. */
     const uint16_t s16[] = {0,1,2,3,4};  /* count-2 = 3 strips */
@@ -4921,6 +4950,7 @@ int main(void) {
         if (verifyGeometryGather() != 0) return 1;
         if (verifyExpandTriangleFan() != 0) return 1;
         if (verifyExpandStripAndLineLoop() != 0) return 1;
+        if (verifyExpandQuad() != 0) return 1;
         if (verifyMDIScratchOwner() != 0) return 1;
         if (verifyRenderEncoderGetter() != 0) return 1;
         if (verifyCommandBufferGetterAndAdopt() != 0) return 1;
