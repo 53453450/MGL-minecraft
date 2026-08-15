@@ -3901,6 +3901,29 @@ int mglRenderCppGetTexImagePlan(
 }
 
 extern "C"
+int mglRenderCppResolveVertexAttribBinding(
+    uint32_t binding_index, int binding_has_buffer,
+    int64_t binding_offset, uint32_t binding_stride,
+    int64_t attrib_binding_offset, uint32_t attrib_stride,
+    uint32_t binding_divisor, uint32_t attrib_divisor,
+    MGLRenderCppVertexAttribResolve* out) {
+    if (!out) return -1;
+    if (binding_index < MGL_MAX_VERTEX_ATTRIB_BINDINGS &&
+        binding_has_buffer) {
+        out->use_binding_table = 1;
+        out->binding_offset = binding_offset;
+        out->stride = (binding_stride > 0) ? binding_stride : attrib_stride;
+        out->divisor = binding_divisor;
+    } else {
+        out->use_binding_table = 0;
+        out->binding_offset = attrib_binding_offset;
+        out->stride = attrib_stride;
+        out->divisor = attrib_divisor;
+    }
+    return 0;
+}
+
+extern "C"
 int mglRenderCppBufferShadowUploadRange(
     int gpu_write_target, int64_t written_min, int64_t written_max,
     uint64_t limit, uint64_t* out_offset, uint64_t* out_length) {

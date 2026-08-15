@@ -1824,22 +1824,35 @@ bool mglRendererResolveVertexAttribBinding(GLMContext ctx,
 
     const VertexAttrib *attrib = &vao->attrib[attribute];
     Buffer *buffer = attrib->buffer;
-    GLintptr bindingOffset = attrib->binding_offset;
-    GLuint stride = attrib->stride;
-    GLuint divisor = attrib->divisor;
     GLuint bindingIndex = attrib->buffer_bindingindex;
-    bool usesBindingTable = false;
-
-    if (bindingIndex < MGL_MAX_VERTEX_ATTRIB_BINDINGS) {
-        const BufferBinding *binding = &vao->bindings[bindingIndex];
-        if (binding->buffer) {
-            buffer = binding->buffer;
-            bindingOffset = binding->offset;
-            stride = (binding->stride > 0) ? (GLuint)binding->stride : attrib->stride;
-            divisor = binding->divisor;
-            usesBindingTable = true;
-        }
+    /* P4.5 (item 1141/887): ARB_vertex_attrib_binding 的 binding-table
+     * 覆盖决策（offset/stride/divisor）在 C++
+     * （mglRenderCppResolveVertexAttribBinding，两门共用；GL buffer
+     * 校验留在 ObjC）。 */
+    const BufferBinding *tableBinding =
+        (bindingIndex < MGL_MAX_VERTEX_ATTRIB_BINDINGS)
+            ? &vao->bindings[bindingIndex] : NULL;
+    const BOOL tableActive = (tableBinding != NULL && tableBinding->buffer);
+    if (tableActive) {
+        buffer = tableBinding->buffer;
     }
+    MGLRenderCppVertexAttribResolve resolve = {0};
+    if (mglRenderCppResolveVertexAttribBinding(
+            bindingIndex,
+            tableActive ? 1 : 0,
+            tableActive ? (int64_t)tableBinding->offset : 0,
+            tableActive ? (uint32_t)tableBinding->stride : 0u,
+            (int64_t)attrib->binding_offset,
+            (uint32_t)attrib->stride,
+            tableActive ? (uint32_t)tableBinding->divisor : 0u,
+            (uint32_t)attrib->divisor,
+            &resolve) != 0) {
+        return false;
+    }
+    GLintptr bindingOffset = (GLintptr)resolve.binding_offset;
+    GLuint stride = (GLuint)resolve.stride;
+    GLuint divisor = (GLuint)resolve.divisor;
+    bool usesBindingTable = resolve.use_binding_table != 0;
 
     Buffer *validated = mglRendererGetValidatedBuffer(ctx, buffer, where, attribute);
     if (!validated) {

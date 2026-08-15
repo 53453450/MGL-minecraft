@@ -548,6 +548,28 @@ int mglRenderCppBufferShadowUploadRange(
     uint64_t *out_offset,
     uint64_t *out_length);
 
+typedef struct MGLRenderCppVertexAttribResolve_t {
+    int use_binding_table;   /* bindingIndex < limit && binding has buffer */
+    int64_t binding_offset;  /* table offset, or attrib binding_offset */
+    uint32_t stride;         /* table stride, or attrib stride */
+    uint32_t divisor;
+} MGLRenderCppVertexAttribResolve;
+
+/* P4.5 (item 1141/887): ARB_vertex_attrib_binding resolve — the
+ * binding-table override (offset/stride/divisor) vs the legacy per-attrib
+ * values.  Pure decision shared by both gates; the GL buffer validation
+ * stays on the ObjC side. */
+int mglRenderCppResolveVertexAttribBinding(
+    uint32_t binding_index,
+    int binding_has_buffer,
+    int64_t binding_offset,
+    uint32_t binding_stride,
+    int64_t attrib_binding_offset,
+    uint32_t attrib_stride,
+    uint32_t binding_divisor,
+    uint32_t attrib_divisor,
+    MGLRenderCppVertexAttribResolve *out);
+
 typedef struct MGLRenderCppPolygonOffsetDecision_t {
     int triangle_fill_mode;      /* 0 = fill, 1 = lines */
     int needs_polygon_mode_repair;

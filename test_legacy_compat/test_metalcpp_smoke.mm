@@ -2304,6 +2304,43 @@ static int verifyMDIScratchOwner(void) {
     return 0;
 }
 
+static int verifyVertexAttribResolve(void) {
+    /* P4.5 (item 1141/887): ARB_vertex_attrib_binding resolve. */
+    MGLRenderCppVertexAttribResolve r = {0};
+    if (mglRenderCppResolveVertexAttribBinding(0, 0, 0, 0, 0, 0, 0, 0, NULL) != -1) {
+        fprintf(stderr, "FAIL: vattrib bad args\n");
+        return 1;
+    }
+    /* No table buffer -> legacy attrib values (including -1 offset). */
+    if (mglRenderCppResolveVertexAttribBinding(0, 0, 0, 0, -1, 12, 0, 1, &r) != 0 ||
+        r.use_binding_table || r.binding_offset != -1 || r.stride != 12 ||
+        r.divisor != 1) {
+        fprintf(stderr, "FAIL: vattrib legacy\n");
+        return 1;
+    }
+    /* Table buffer with stride -> table values. */
+    if (mglRenderCppResolveVertexAttribBinding(3, 1, 512, 32, -1, 12, 2, 1, &r) != 0 ||
+        !r.use_binding_table || r.binding_offset != 512 || r.stride != 32 ||
+        r.divisor != 2) {
+        fprintf(stderr, "FAIL: vattrib table\n");
+        return 1;
+    }
+    /* Table buffer with zero stride -> falls back to the attrib stride. */
+    if (mglRenderCppResolveVertexAttribBinding(3, 1, 512, 0, -1, 12, 2, 1, &r) != 0 ||
+        r.stride != 12 || r.divisor != 2) {
+        fprintf(stderr, "FAIL: vattrib zero stride\n");
+        return 1;
+    }
+    /* Out-of-range binding index -> legacy. */
+    if (mglRenderCppResolveVertexAttribBinding(64, 1, 512, 32, -1, 12, 2, 1, &r) != 0 ||
+        r.use_binding_table || r.binding_offset != -1 || r.stride != 12) {
+        fprintf(stderr, "FAIL: vattrib oob\n");
+        return 1;
+    }
+    printf("VERTEX_ATTRIB_RESOLVE_OK\n");
+    return 0;
+}
+
 static int verifyBufferShadowUploadRange(void) {
     /* P4.5 (item 1141/887): shadow-upload range math. */
     uint64_t off = 0, len = 0;
@@ -4653,6 +4690,7 @@ int main(void) {
         if (verifyScaledBlitUVsAndScissor() != 0) return 1;
         if (verifyPolygonOffsetAndPrimCount() != 0) return 1;
         if (verifyBufferShadowUploadRange() != 0) return 1;
+        if (verifyVertexAttribResolve() != 0) return 1;
         if (verifyMDIScratchOwner() != 0) return 1;
         if (verifyRenderEncoderGetter() != 0) return 1;
         if (verifyCommandBufferGetterAndAdopt() != 0) return 1;
