@@ -3582,6 +3582,44 @@ static int verifyFloatUnpack(void) {
     return 0;
 }
 
+static int verifyTessControlPointFormat(void) {
+    /* P4.5 (item 1141/887): GL type -> MTLVertexFormat for TES control
+     * points.  Assert against the ObjC SDK constants (no magic numbers). */
+    if (mglRenderCppTessControlPointFormat(GL_FLOAT) !=
+            (uint32_t)MTLVertexFormatFloat ||
+        mglRenderCppTessControlPointFormat(GL_FLOAT_VEC2) !=
+            (uint32_t)MTLVertexFormatFloat2 ||
+        mglRenderCppTessControlPointFormat(GL_FLOAT_VEC3) !=
+            (uint32_t)MTLVertexFormatFloat3 ||
+        mglRenderCppTessControlPointFormat(GL_FLOAT_VEC4) !=
+            (uint32_t)MTLVertexFormatFloat4 ||
+        mglRenderCppTessControlPointFormat(GL_INT) !=
+            (uint32_t)MTLVertexFormatInt ||
+        mglRenderCppTessControlPointFormat(GL_INT_VEC2) !=
+            (uint32_t)MTLVertexFormatInt2 ||
+        mglRenderCppTessControlPointFormat(GL_INT_VEC3) !=
+            (uint32_t)MTLVertexFormatInt3 ||
+        mglRenderCppTessControlPointFormat(GL_INT_VEC4) !=
+            (uint32_t)MTLVertexFormatInt4 ||
+        mglRenderCppTessControlPointFormat(GL_UNSIGNED_INT) !=
+            (uint32_t)MTLVertexFormatUInt ||
+        mglRenderCppTessControlPointFormat(GL_BOOL_VEC2) !=
+            (uint32_t)MTLVertexFormatUInt2 ||
+        mglRenderCppTessControlPointFormat(GL_UNSIGNED_INT_VEC3) !=
+            (uint32_t)MTLVertexFormatUInt3 ||
+        mglRenderCppTessControlPointFormat(GL_BOOL_VEC4) !=
+            (uint32_t)MTLVertexFormatUInt4 ||
+        mglRenderCppTessControlPointFormat(GL_FLOAT_MAT4) !=
+            (uint32_t)MTLVertexFormatInvalid ||
+        mglRenderCppTessControlPointFormat(0xfeed) !=
+            (uint32_t)MTLVertexFormatInvalid) {
+        fprintf(stderr, "FAIL: tess control point format\n");
+        return 1;
+    }
+    printf("TESS_CP_FORMAT_OK\n");
+    return 0;
+}
+
 static int verifyTessFactorTransforms(void) {
     /* P4.5 (item 1141/887): tess-factor CPU transforms. */
     float outer[4] = {1.0f, 2.0f, 3.0f, 4.0f};
@@ -5348,6 +5386,7 @@ int main(void) {
         if (verifyTessRoundLevelForSpacing() != 0) return 1;
         if (verifyCheckedProductAndXFBFieldByteSize() != 0) return 1;
         if (verifyFloatUnpack() != 0) return 1;
+        if (verifyTessControlPointFormat() != 0) return 1;
         if (verifyNativeTESInterfaceGuards() != 0) return 1;
         if (verifyRasterizationIsEmpty() != 0) return 1;
         if (verifyIntegerReadbackClassify() != 0) return 1;

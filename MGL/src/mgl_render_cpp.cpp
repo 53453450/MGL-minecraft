@@ -4884,6 +4884,32 @@ float mglRenderCppFloat10ToFloat(uint32_t val) {
     return ldexpf((float)(1.0 + (double)mant / 32.0), (int)exp - 15);
 }
 
+/* GL type -> MTLVertexFormat for TES control-point stage inputs; matches the
+ * ObjC mglTessControlPointFormat (MTLVertexFormatFloat=28 ... UInt4=39,
+ * Invalid=0 — verified against the macOS SDK MTLVertexDescriptor.h). */
+extern "C"
+uint32_t mglRenderCppTessControlPointFormat(uint64_t gl_type) {
+    switch (gl_type) {
+        case GL_FLOAT: return (uint32_t)MTL::VertexFormatFloat;
+        case GL_FLOAT_VEC2: return (uint32_t)MTL::VertexFormatFloat2;
+        case GL_FLOAT_VEC3: return (uint32_t)MTL::VertexFormatFloat3;
+        case GL_FLOAT_VEC4: return (uint32_t)MTL::VertexFormatFloat4;
+        case GL_INT: return (uint32_t)MTL::VertexFormatInt;
+        case GL_INT_VEC2: return (uint32_t)MTL::VertexFormatInt2;
+        case GL_INT_VEC3: return (uint32_t)MTL::VertexFormatInt3;
+        case GL_INT_VEC4: return (uint32_t)MTL::VertexFormatInt4;
+        case GL_UNSIGNED_INT:
+        case GL_BOOL: return (uint32_t)MTL::VertexFormatUInt;
+        case GL_UNSIGNED_INT_VEC2:
+        case GL_BOOL_VEC2: return (uint32_t)MTL::VertexFormatUInt2;
+        case GL_UNSIGNED_INT_VEC3:
+        case GL_BOOL_VEC3: return (uint32_t)MTL::VertexFormatUInt3;
+        case GL_UNSIGNED_INT_VEC4:
+        case GL_BOOL_VEC4: return (uint32_t)MTL::VertexFormatUInt4;
+        default: return (uint32_t)MTL::VertexFormatInvalid;
+    }
+}
+
 extern "C"
 uint32_t mglRenderCppTessEvalItemsPerPatch(
     const void* factor_record, uint32_t gen_mode, uint32_t spacing,

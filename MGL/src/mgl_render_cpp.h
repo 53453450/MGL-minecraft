@@ -466,6 +466,12 @@ int mglRenderCppCheckedProduct(uint64_t a, uint64_t b, uint64_t *result);
 float mglRenderCppFloat11ToFloat(uint32_t val);
 float mglRenderCppFloat10ToFloat(uint32_t val);
 
+/* P4.5 (item 1141/887): GL type -> MTLVertexFormat ABI value for TES
+ * control-point stage inputs (Float/Float2/3/4, Int/Int2/3/4,
+ * UInt/UInt2/3/4, else 0 = MTLVertexFormatInvalid).  Values match the
+ * macOS SDK enum (Float=28 ... UInt4=39).  Shared by both gates. */
+uint32_t mglRenderCppTessControlPointFormat(uint64_t gl_type);
+
 /* Overflow-checked tess capture size (records x stride, min_stride floor).
  * Returns 0 with size_out/offset_out set, -1 on bad args / overflow. */
 int mglRenderCppCheckedTessCaptureSize(

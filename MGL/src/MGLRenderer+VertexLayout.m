@@ -7,27 +7,14 @@
 
 #import <objc/message.h>
 
+/* P4.5 (item 1141/887): GL type -> MTLVertexFormat for TES control-point
+ * stage inputs.  Single source of truth is
+ * mglRenderCppTessControlPointFormat (mgl_render_cpp.cpp) — this shell
+ * keeps the two descriptor-generation call sites unchanged. */
 static MTLVertexFormat mglTessControlPointFormat(GLenum type)
 {
-    switch (type) {
-        case GL_FLOAT: return MTLVertexFormatFloat;
-        case GL_FLOAT_VEC2: return MTLVertexFormatFloat2;
-        case GL_FLOAT_VEC3: return MTLVertexFormatFloat3;
-        case GL_FLOAT_VEC4: return MTLVertexFormatFloat4;
-        case GL_INT: return MTLVertexFormatInt;
-        case GL_INT_VEC2: return MTLVertexFormatInt2;
-        case GL_INT_VEC3: return MTLVertexFormatInt3;
-        case GL_INT_VEC4: return MTLVertexFormatInt4;
-        case GL_UNSIGNED_INT:
-        case GL_BOOL: return MTLVertexFormatUInt;
-        case GL_UNSIGNED_INT_VEC2:
-        case GL_BOOL_VEC2: return MTLVertexFormatUInt2;
-        case GL_UNSIGNED_INT_VEC3:
-        case GL_BOOL_VEC3: return MTLVertexFormatUInt3;
-        case GL_UNSIGNED_INT_VEC4:
-        case GL_BOOL_VEC4: return MTLVertexFormatUInt4;
-        default: return MTLVertexFormatInvalid;
-    }
+    return (MTLVertexFormat)mglRenderCppTessControlPointFormat(
+        (uint64_t)type);
 }
 
 @implementation MGLRenderer (VertexLayout)
