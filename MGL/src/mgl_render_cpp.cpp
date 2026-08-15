@@ -5235,6 +5235,39 @@ float mglRenderCppFloat10ToFloat(uint32_t val) {
     return ldexpf((float)(1.0 + (double)mant / 32.0), (int)exp - 15);
 }
 
+/* Float -> unorm8 with round-to-nearest (0.5 rounds up); matches
+ * mglMetalFloatToUnorm8 exactly. */
+extern "C"
+uint8_t mglRenderCppFloatToUnorm8(float value) {
+    if (!(value > 0.0f)) {
+        return 0u;
+    }
+    if (value >= 1.0f) {
+        return 255u;
+    }
+    return (uint8_t)(value * 255.0f + 0.5f);
+}
+
+/* Snorm16 decode: INT16_MIN maps to -1.0 exactly; matches
+ * mglMetalSnorm16ToFloat. */
+extern "C"
+float mglRenderCppSnorm16ToFloat(int16_t value) {
+    if (value == INT16_MIN) {
+        return -1.0f;
+    }
+    return (float)value / 32767.0f;
+}
+
+/* Snorm8 decode: INT8_MIN maps to -1.0 exactly; matches
+ * mglMetalSnorm8ToFloat. */
+extern "C"
+float mglRenderCppSnorm8ToFloat(int8_t value) {
+    if (value == INT8_MIN) {
+        return -1.0f;
+    }
+    return (float)value / 127.0f;
+}
+
 /* GL type -> MTLVertexFormat for TES control-point stage inputs; matches the
  * ObjC mglTessControlPointFormat (MTLVertexFormatFloat=28 ... UInt4=39,
  * Invalid=0 — verified against the macOS SDK MTLVertexDescriptor.h). */

@@ -572,6 +572,15 @@ int mglRenderCppCheckedProduct(uint64_t a, uint64_t b, uint64_t *result);
 float mglRenderCppFloat11ToFloat(uint32_t val);
 float mglRenderCppFloat10ToFloat(uint32_t val);
 
+/* P4.5 (item 1171): CPU pixel-format scalar converters shared by the
+ * readback path (mgl_readback.m's mglMetalFloatToUnorm8 /
+ * mglMetalSnorm16ToFloat / mglMetalSnorm8ToFloat — pure data transforms,
+ * both gates).  Float->unorm8 rounds to nearest (0.5 rounds up); snorm
+ * decode maps INT_MIN to -1.0 exactly. */
+uint8_t mglRenderCppFloatToUnorm8(float value);
+float mglRenderCppSnorm16ToFloat(int16_t value);
+float mglRenderCppSnorm8ToFloat(int8_t value);
+
 /* P4.5 (item 1141/887): GL type -> MTLVertexFormat ABI value for TES
  * control-point stage inputs (Float/Float2/3/4, Int/Int2/3/4,
  * UInt/UInt2/3/4, else 0 = MTLVertexFormatInvalid).  Values match the

@@ -4043,6 +4043,37 @@ static int verifyFloatUnpack(void) {
     return 0;
 }
 
+static int verifyReadbackScalarConvert(void) {
+    /* P4.5 (item 1171): CPU readback scalar converters — float->unorm8
+     * round-to-nearest (0.5 up), snorm16/8 decode with INT_MIN -> -1.0. */
+    if (mglRenderCppFloatToUnorm8(-0.1f) != 0u ||
+        mglRenderCppFloatToUnorm8(0.0f) != 0u ||
+        mglRenderCppFloatToUnorm8(0.5f) != 128u ||   /* 127.5 + 0.5 = 128 */
+        mglRenderCppFloatToUnorm8(0.75f) != 191u ||  /* 191.25 + 0.5 = 191 */
+        mglRenderCppFloatToUnorm8(1.0f) != 255u ||
+        mglRenderCppFloatToUnorm8(2.0f) != 255u ||
+        mglRenderCppFloatToUnorm8(NAN) != 0u) {
+        fprintf(stderr, "FAIL: float->unorm8\n");
+        return 1;
+    }
+    if (mglRenderCppSnorm16ToFloat(0) != 0.0f ||
+        fabsf(mglRenderCppSnorm16ToFloat(32767) - 1.0f) > 1e-6f ||
+        mglRenderCppSnorm16ToFloat(INT16_MIN) != -1.0f ||
+        fabsf(mglRenderCppSnorm16ToFloat(-16384) - (-16384.0f / 32767.0f)) > 1e-6f) {
+        fprintf(stderr, "FAIL: snorm16\n");
+        return 1;
+    }
+    if (mglRenderCppSnorm8ToFloat(0) != 0.0f ||
+        fabsf(mglRenderCppSnorm8ToFloat(127) - 1.0f) > 1e-6f ||
+        mglRenderCppSnorm8ToFloat(INT8_MIN) != -1.0f ||
+        fabsf(mglRenderCppSnorm8ToFloat(-64) - (-64.0f / 127.0f)) > 1e-6f) {
+        fprintf(stderr, "FAIL: snorm8\n");
+        return 1;
+    }
+    printf("READBACK_SCALAR_CONVERT_OK\n");
+    return 0;
+}
+
 static int verifyTessControlPointFormat(void) {
     /* P4.5 (item 1141/887): GL type -> MTLVertexFormat for TES control
      * points.  Assert against the ObjC SDK constants (no magic numbers). */
@@ -6119,6 +6150,7 @@ int main(void) {
         if (verifyTessRoundLevelForSpacing() != 0) return 1;
         if (verifyCheckedProductAndXFBFieldByteSize() != 0) return 1;
         if (verifyFloatUnpack() != 0) return 1;
+        if (verifyReadbackScalarConvert() != 0) return 1;
         if (verifyTessControlPointFormat() != 0) return 1;
         if (verifyTESXFBVertexStride() != 0) return 1;
         if (verifyNativeTESInterfaceGuards() != 0) return 1;

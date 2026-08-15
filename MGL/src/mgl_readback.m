@@ -26,6 +26,7 @@
 #define MGL_NO_MTL_PIXEL_FORMAT
 #import "pixel_utils.h"
 #import "mgl_readback.h"
+#include "mgl_render_cpp.h"
 #include <stdint.h>
 
 BOOL mglMetalReadbackFormatIsBGRA8Compatible(MTLPixelFormat pixelFormat)
@@ -156,29 +157,23 @@ NSUInteger mglMetalReadbackBytesPerPixel(MTLPixelFormat pixelFormat)
 
 uint8_t mglMetalFloatToUnorm8(float value)
 {
-    if (!(value > 0.0f)) {
-        return 0u;
-    }
-    if (value >= 1.0f) {
-        return 255u;
-    }
-    return (uint8_t)(value * 255.0f + 0.5f);
+    /* P4.5 (item 1171): thin delegate — single source of truth in C++
+     * (mglRenderCppFloatToUnorm8), shared by both gates. */
+    return mglRenderCppFloatToUnorm8(value);
 }
 
 float mglMetalSnorm16ToFloat(int16_t value)
 {
-    if (value == INT16_MIN) {
-        return -1.0f;
-    }
-    return (float)value / 32767.0f;
+    /* P4.5 (item 1171): thin delegate — single source of truth in C++
+     * (mglRenderCppSnorm16ToFloat), shared by both gates. */
+    return mglRenderCppSnorm16ToFloat(value);
 }
 
 float mglMetalSnorm8ToFloat(int8_t value)
 {
-    if (value == INT8_MIN) {
-        return -1.0f;
-    }
-    return (float)value / 127.0f;
+    /* P4.5 (item 1171): thin delegate — single source of truth in C++
+     * (mglRenderCppSnorm8ToFloat), shared by both gates. */
+    return mglRenderCppSnorm8ToFloat(value);
 }
 
 void mglMetalCopyTextureBytesToBGRA8(const uint8_t *src,
