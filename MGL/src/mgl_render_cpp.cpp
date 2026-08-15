@@ -5892,6 +5892,20 @@ int mglRenderCppCommitCommandBufferSubmission(void** submission_handle) {
     return 0;
 }
 
+/* P4.5 (item 1141): does the submission own exactly this command buffer?
+ * Replaces the ObjC MGLCommandState.detachedCommandBuffer mirror used to
+ * guard commit/release of a detached submission. */
+int mglRenderCppCommandBufferSubmissionMatchesBuffer(
+    void* submission_handle, void* command_buffer) {
+    mgl::CommandBufferSubmission* submission =
+        static_cast<mgl::CommandBufferSubmission*>(submission_handle);
+    if (!submission || !command_buffer) return -1;
+    return submission->buffer ==
+                   static_cast<MTL::CommandBuffer*>(command_buffer)
+               ? 1
+               : 0;
+}
+
 void mglRenderCppDestroyCommandBufferSubmission(void** submission_handle) {
     if (!submission_handle || !*submission_handle) return;
     mgl::CommandBufferSubmission* submission =

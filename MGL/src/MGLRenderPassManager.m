@@ -134,14 +134,12 @@ static void mglRenderPassManagerStoreIdentity(
     if (commandBuffer && _state.currentCommandBufferOwner) {
         mglRenderCppDestroyCommandBufferSubmission(
             &_state.detachedCommandBufferSubmission);
-        _state.detachedCommandBuffer = NULL;
         void *detachedBuffer = NULL;
         if (mglRenderCppTakeCommandBufferSubmission(
                 _state.currentCommandBufferOwner,
                 &_state.detachedCommandBufferSubmission,
                 &detachedBuffer) == 0 && detachedBuffer) {
             commandBuffer = (__bridge id<MTLCommandBuffer>)detachedBuffer;
-            _state.detachedCommandBuffer = detachedBuffer;
         } else {
             /* Preserve the old ARC handoff if allocation of the submission
              * handle fails. commandBuffer is already a strong local. */
@@ -163,28 +161,32 @@ static void mglRenderPassManagerStoreIdentity(
 
 - (BOOL)commitDetachedCommandBufferIfOwned:(id<MTLCommandBuffer>)commandBuffer
 {
+    /* P4.5 (item 1141): ownership guard via the C++ submission. */
     if (!commandBuffer || !_state.detachedCommandBufferSubmission ||
-        _state.detachedCommandBuffer != (__bridge void *)commandBuffer) {
+        mglRenderCppCommandBufferSubmissionMatchesBuffer(
+            _state.detachedCommandBufferSubmission,
+            (__bridge void *)commandBuffer) != 1) {
         return NO;
     }
     if (mglRenderCppCommitCommandBufferSubmission(
             &_state.detachedCommandBufferSubmission) != 0) {
         return NO;
     }
-    _state.detachedCommandBuffer = NULL;
     return YES;
 }
 
 - (void)releaseDetachedCommandBufferIfOwned:(id<MTLCommandBuffer>)commandBuffer
 {
+    /* P4.5 (item 1141): ownership guard via the C++ submission. */
     if (!_state.detachedCommandBufferSubmission ||
         (commandBuffer &&
-         _state.detachedCommandBuffer != (__bridge void *)commandBuffer)) {
+         mglRenderCppCommandBufferSubmissionMatchesBuffer(
+             _state.detachedCommandBufferSubmission,
+             (__bridge void *)commandBuffer) != 1)) {
         return;
     }
     mglRenderCppDestroyCommandBufferSubmission(
         &_state.detachedCommandBufferSubmission);
-    _state.detachedCommandBuffer = NULL;
 }
 
 - (BOOL)appendSyncToCurrentCommandBuffer:(Sync *)sync

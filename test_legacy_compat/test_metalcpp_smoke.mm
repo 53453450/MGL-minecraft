@@ -2009,6 +2009,12 @@ static int verifyCommandBufferOwner(void) {
     if (mglRenderCppTakeCommandBufferSubmission(
             owner, &submission, &detached) != 0 || !submission ||
         detached != commandBuffer ||
+        mglRenderCppCommandBufferSubmissionMatchesBuffer(
+            submission, detached) != 1 ||
+        mglRenderCppCommandBufferSubmissionMatchesBuffer(
+            submission, NULL) != -1 ||
+        mglRenderCppCommandBufferSubmissionMatchesBuffer(
+            submission, (void *)(uintptr_t)0xdeadbeef) != 0 ||
         mglRenderCppCommitCommandBufferSubmission(&submission) != 0 ||
         submission || mglRenderCppWaitCommandBuffer(detached) != 0 ||
         submitted.status == MTLCommandBufferStatusError) {
@@ -2046,7 +2052,9 @@ static int verifyCommandBufferOwner(void) {
     detached = NULL;
     if (mglRenderCppTakeCommandBufferSubmission(
             owner, &submission, &detached) != 0 || !submission ||
-        !detached) {
+        !detached ||
+        mglRenderCppCommandBufferSubmissionMatchesBuffer(
+            submission, detached) != 1) {
         fprintf(stderr, "FAIL: command buffer submission detach\n");
         mglRenderCppDestroyCommandBufferSubmission(&submission);
         mglRenderCppDestroyCommandBufferOwner(&owner);
