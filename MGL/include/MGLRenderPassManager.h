@@ -28,7 +28,6 @@ typedef struct MGLCommandState_t {
     NSUInteger transientDepthTextureWidth;
     NSUInteger transientDepthTextureHeight;
     BOOL currentDrawUsesRTSampledCopy;
-    GLuint blitOperationComplete;
     void *_Nullable pendingEventOwner;
     BOOL isCommittingCommandBuffer;
     /* Cache for currentRenderPassMatchesCurrentFramebuffer.

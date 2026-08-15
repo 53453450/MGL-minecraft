@@ -902,6 +902,147 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
     METAL_UNLOCK();
 }
 
+/* P4.5 (item 1147): 两条 compute dispatch 入口（direct/indirect）共享的
+ * 编排主体——endRenderEncoding → ensureWritableCommandBuffer → 纹理绑定 →
+ * compute encoder 创建 → processCompute → 程序解析 → 按 dispatch 类型编码
+ * → encoder 结束 → copy-back flush → dirty bits。错误路径按调用点语义清理
+ * 中间态（encoder 结束、copy-backs 清空）。返回 YES 成功 / NO 失败。 */
+- (BOOL)runComputeDispatchOrchestrationLocked:(GLMContext)glm_ctx
+                                  dispatchKind:(uint32_t)dispatchKind
+                                     groupsX:(GLuint)groups_x
+                                     groupsY:(GLuint)groups_y
+                                     groupsZ:(GLuint)groups_z
+                              indirectBuffer:(id<MTLBuffer>)indirectBuffer
+                              indirectOffset:(NSUInteger)indirectOffset
+                                      reason:(const char *)reason
+{
+    // end encoding on current render encoder
+    [self endRenderEncoding];
+
+    if (![self ensureWritableCommandBuffer:reason]) {
+        return NO;
+    }
+
+    for (NSUInteger unit = 0; unit < TEXTURE_UNITS; unit++) {
+        Texture *imageTexture = MGL_STATE(glm_ctx)->image_units[unit].tex;
+        if (imageTexture) {
+            if (![self bindMTLTexture:imageTexture]) {
+                return NO;
+            }
+        }
+
+        Texture *sampledTexture = MGL_STATE(glm_ctx)->active_textures[unit];
+        if (sampledTexture) {
+            if (![self bindMTLTexture:sampledTexture]) {
+                return NO;
+            }
+        }
+    }
+
+    MGLStageBindingCopyBackList copyBacks = {0};
+    id<MTLComputeCommandEncoder> computeCommandEncoder =
+        mglComputeCreateEncoder((__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
+    if (!computeCommandEncoder) {
+        NSLog(@"MGL ERROR: Failed to create compute command encoder for %s",
+              reason ? reason : "dispatch");
+        return NO;
+    }
+
+    if (![self processCompute:computeCommandEncoder copyBacks:&copyBacks]) {
+        mglComputeEndEncoder(computeCommandEncoder);
+        [self clearStageBindingCopyBacks:&copyBacks];
+        return NO;
+    }
+
+    Program *ptr;
+    ptr = mglResolveProgramForStageFromState(glm_ctx, _COMPUTE_SHADER);
+    if (!ptr) {
+        NSLog(@"MGL COMPUTE ERROR: %s with no current compute program after binding",
+              reason ? reason : "glDispatchCompute");
+        mglComputeEndEncoder(computeCommandEncoder);
+        [self clearStageBindingCopyBacks:&copyBacks];
+        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        return NO;
+    }
+
+    /* P4.5: dispatch 参数 value-state plan —— ObjC 只传 groups + 未解析的
+     * local size（0 由 C++ 解析为 1，与 `x ? x : 1` 默认一致），gate-on
+     * 一次 C ABI 调用在 C++ 内完成 dispatchThreadgroups 编码；gate-off 走
+     * 原逐条 ObjC 路径作 A/B 对照。 */
+    if (mglComputeUsesMetalCpp()) {
+        MGLRenderCppComputePlan computePlan = {
+            .dispatch_kind = dispatchKind,
+            .groups_x = groups_x,
+            .groups_y = groups_y,
+            .groups_z = groups_z,
+            .local_x = ptr->local_workgroup_size.x,
+            .local_y = ptr->local_workgroup_size.y,
+            .local_z = ptr->local_workgroup_size.z,
+            .indirect_buffer = indirectBuffer
+                ? (__bridge void *)indirectBuffer : NULL,
+            .indirect_offset = indirectOffset,
+        };
+        if (mglRenderCppDispatchComputePlan(
+                (__bridge void *)computeCommandEncoder, &computePlan,
+                NULL, 0) != 0) {
+            NSLog(@"MGL COMPUTE ERROR: C++ %s plan encode failed",
+                  reason ? reason : "dispatch");
+            mglComputeEndEncoder(computeCommandEncoder);
+            [self clearStageBindingCopyBacks:&copyBacks];
+            mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+            return NO;
+        }
+    } else {
+        MTLSize numThreadgroups;
+        MTLSize threadsPerThreadgroup;
+        if (dispatchKind == MGL_RENDER_CPP_COMPUTE_DISPATCH_DIRECT) {
+            numThreadgroups = MTLSizeMake(groups_x, groups_y, groups_z);
+        } else {
+            numThreadgroups = MTLSizeMake(0, 0, 0);
+        }
+        threadsPerThreadgroup = MTLSizeMake(
+            ptr->local_workgroup_size.x ? ptr->local_workgroup_size.x : 1u,
+            ptr->local_workgroup_size.y ? ptr->local_workgroup_size.y : 1u,
+            ptr->local_workgroup_size.z ? ptr->local_workgroup_size.z : 1u);
+        if (dispatchKind == MGL_RENDER_CPP_COMPUTE_DISPATCH_DIRECT) {
+            mglComputeDispatch(computeCommandEncoder, numThreadgroups,
+                               threadsPerThreadgroup);
+        } else {
+            mglComputeDispatchIndirect(computeCommandEncoder, indirectBuffer,
+                                       indirectOffset, threadsPerThreadgroup);
+        }
+    }
+
+    mglComputeEndEncoder(computeCommandEncoder);
+    /* Without this, a dispatch with no copy-backs stays in the current
+     * command buffer and flushCommandBufferLocked's empty-CB skip drops it:
+     * glFinish then never executes the compute writes (SSBO stores vanish). */
+    _currentCBHasWork = YES;
+
+    if (![self flushStageBindingCopyBacks:&copyBacks
+                     requireCPUVisibility:NO]) {
+        NSLog(@"MGL COMPUTE ERROR: failed to copy isolated writable buffer prefixes after %s",
+              reason ? reason : "dispatch");
+        mglDispatchError(glm_ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
+        return NO;
+    }
+
+    /* Fine-grained dirty bits instead of DIRTY_ALL.  Compute dispatch
+     * ends the render encoder, so the next draw must rebuild it.  DIRTY_STATE
+     * triggers newRenderEncoderLocked; DIRTY_FBO re-syncs the render pass;
+     * the remaining bits (matching kMGLFullReplayDirtyBits in MGLRenderer+Draw.m)
+     * re-bind all GL resources that the render encoder needs.  DIRTY_SHADER and
+     * DIRTY_DRAWABLE are intentionally excluded — DIRTY_SHADER is a per-program
+     * bit, and DIRTY_DRAWABLE only applies at context init. */
+    mglMarkRendererDirtyBits(
+        glm_ctx->active_state,
+        DIRTY_STATE | DIRTY_FBO | DIRTY_PROGRAM | DIRTY_VAO |
+        DIRTY_RENDER_STATE | DIRTY_TEX_BINDING | DIRTY_TEX |
+        DIRTY_TEX_PARAM | DIRTY_SAMPLER | DIRTY_ALPHA_STATE |
+        DIRTY_BUFFER | DIRTY_BUFFER_BASE_STATE | DIRTY_IMAGE_UNIT_STATE);
+    return YES;
+}
+
 -(void)mtlDispatchComputeLocked:(GLMContext)glm_ctx groupsX:(GLuint)groups_x groupsY:(GLuint)groups_y groupsZ:(GLuint)groups_z
 {
     if (!glm_ctx) {
@@ -919,95 +1060,16 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
         return;
     }
 
-    // end encoding on current render encoder
-    [self endRenderEncoding];
-
-    RETURN_ON_FAILURE([self ensureWritableCommandBuffer:"mtlDispatchCompute"]);
-
-    for (NSUInteger unit = 0; unit < TEXTURE_UNITS; unit++) {
-        Texture *imageTexture = MGL_STATE(glm_ctx)->image_units[unit].tex;
-        if (imageTexture) {
-            RETURN_ON_FAILURE([self bindMTLTexture:imageTexture]);
-        }
-
-        Texture *sampledTexture = MGL_STATE(glm_ctx)->active_textures[unit];
-        if (sampledTexture) {
-            RETURN_ON_FAILURE([self bindMTLTexture:sampledTexture]);
-        }
-    }
-
-    MGLStageBindingCopyBackList copyBacks = {0};
-    id <MTLComputeCommandEncoder> computeCommandEncoder =
-        mglComputeCreateEncoder((__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
-    if (!computeCommandEncoder) {
-        NSLog(@"MGL ERROR: Failed to create compute command encoder");
-        return;
-    }
-
-    if (![self processCompute:computeCommandEncoder copyBacks:&copyBacks]) {
-        mglComputeEndEncoder(computeCommandEncoder);
-        [self clearStageBindingCopyBacks:&copyBacks];
-        return;
-    }
-
-    MTLSize numThreadgroups;
-    MTLSize threadsPerThreadgroup;
-
-    Program *ptr;
-    ptr = mglResolveProgramForStageFromState(glm_ctx, _COMPUTE_SHADER);
-    if (!ptr) {
-        NSLog(@"MGL COMPUTE ERROR: glDispatchCompute with no current compute program after binding");
-        mglComputeEndEncoder(computeCommandEncoder);
-        [self clearStageBindingCopyBacks:&copyBacks];
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
-        return;
-    }
-
-    /* P4.5: dispatch 参数 value-state plan —— ObjC 只传 groups + 未解析的
-     * local size（0 由 C++ 解析为 1，与 `x ? x : 1` 默认一致），gate-on
-     * 一次 C ABI 调用在 C++ 内完成 dispatchThreadgroups 编码；gate-off 走
-     * 原逐条 ObjC 路径作 A/B 对照。 */
-    if (mglComputeUsesMetalCpp()) {
-        MGLRenderCppComputePlan computePlan = {
-            .dispatch_kind = MGL_RENDER_CPP_COMPUTE_DISPATCH_DIRECT,
-            .groups_x = groups_x,
-            .groups_y = groups_y,
-            .groups_z = groups_z,
-            .local_x = ptr->local_workgroup_size.x,
-            .local_y = ptr->local_workgroup_size.y,
-            .local_z = ptr->local_workgroup_size.z,
-            .indirect_buffer = NULL,
-            .indirect_offset = 0,
-        };
-        if (mglRenderCppDispatchComputePlan(
-                (__bridge void *)computeCommandEncoder, &computePlan,
-                NULL, 0) != 0) {
-            NSLog(@"MGL COMPUTE ERROR: C++ dispatch plan encode failed");
-            mglComputeEndEncoder(computeCommandEncoder);
-            [self clearStageBindingCopyBacks:&copyBacks];
-            mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
-            return;
-        }
-    } else {
-        numThreadgroups = MTLSizeMake(groups_x, groups_y, groups_z);
-        threadsPerThreadgroup = MTLSizeMake(
-            ptr->local_workgroup_size.x ? ptr->local_workgroup_size.x : 1u,
-            ptr->local_workgroup_size.y ? ptr->local_workgroup_size.y : 1u,
-            ptr->local_workgroup_size.z ? ptr->local_workgroup_size.z : 1u);
-        mglComputeDispatch(computeCommandEncoder, numThreadgroups,
-                           threadsPerThreadgroup);
-    }
-
-    mglComputeEndEncoder(computeCommandEncoder);
-    /* Without this, a dispatch with no copy-backs stays in the current
-     * command buffer and flushCommandBufferLocked's empty-CB skip drops it:
-     * glFinish then never executes the compute writes (SSBO stores vanish). */
-    _currentCBHasWork = YES;
-
-    if (![self flushStageBindingCopyBacks:&copyBacks
-                     requireCPUVisibility:NO]) {
-        NSLog(@"MGL COMPUTE ERROR: failed to copy isolated writable buffer prefixes after dispatch");
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
+    /* P4.5 (item 1147): 共享编排主体在
+     * runComputeDispatchOrchestrationLocked:。 */
+    if (![self runComputeDispatchOrchestrationLocked:glm_ctx
+                                        dispatchKind:MGL_RENDER_CPP_COMPUTE_DISPATCH_DIRECT
+                                           groupsX:groups_x
+                                           groupsY:groups_y
+                                           groupsZ:groups_z
+                                    indirectBuffer:nil
+                                    indirectOffset:0
+                                            reason:"glDispatchCompute"]) {
         return;
     }
 
@@ -1025,20 +1087,6 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
             imageTexture->faces[0].levels[imageUnit->level].metal_data_authoritative = GL_TRUE;
         }
     }
-
-    /* Fine-grained dirty bits instead of DIRTY_ALL.  Compute dispatch
-     * ends the render encoder, so the next draw must rebuild it.  DIRTY_STATE
-     * triggers newRenderEncoderLocked; DIRTY_FBO re-syncs the render pass;
-     * the remaining bits (matching kMGLFullReplayDirtyBits in MGLRenderer+Draw.m)
-     * re-bind all GL resources that the render encoder needs.  DIRTY_SHADER and
-     * DIRTY_DRAWABLE are intentionally excluded — DIRTY_SHADER is a per-program
-     * bit, and DIRTY_DRAWABLE only applies at context init. */
-    mglMarkRendererDirtyBits(
-        glm_ctx->active_state,
-        DIRTY_STATE | DIRTY_FBO | DIRTY_PROGRAM | DIRTY_VAO |
-        DIRTY_RENDER_STATE | DIRTY_TEX_BINDING | DIRTY_TEX |
-        DIRTY_TEX_PARAM | DIRTY_SAMPLER | DIRTY_ALPHA_STATE |
-        DIRTY_BUFFER | DIRTY_BUFFER_BASE_STATE | DIRTY_IMAGE_UNIT_STATE);
 
     //[self newRenderEncoder];
 }
@@ -1098,97 +1146,18 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
         return;
     }
 
-    [self endRenderEncoding];
-
-    RETURN_ON_FAILURE([self ensureWritableCommandBuffer:"mtlDispatchComputeIndirect"]);
-
-    for (NSUInteger unit = 0; unit < TEXTURE_UNITS; unit++) {
-        Texture *imageTexture = MGL_STATE(glm_ctx)->image_units[unit].tex;
-        if (imageTexture) {
-            RETURN_ON_FAILURE([self bindMTLTexture:imageTexture]);
-        }
-
-        Texture *sampledTexture = MGL_STATE(glm_ctx)->active_textures[unit];
-        if (sampledTexture) {
-            RETURN_ON_FAILURE([self bindMTLTexture:sampledTexture]);
-        }
-    }
-
-    MGLStageBindingCopyBackList copyBacks = {0};
-    id<MTLComputeCommandEncoder> computeCommandEncoder =
-        mglComputeCreateEncoder((__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
-    if (!computeCommandEncoder) {
-        NSLog(@"MGL ERROR: Failed to create compute command encoder for indirect dispatch");
+    /* P4.5 (item 1147): 共享编排主体在
+     * runComputeDispatchOrchestrationLocked:。 */
+    if (![self runComputeDispatchOrchestrationLocked:glm_ctx
+                                        dispatchKind:MGL_RENDER_CPP_COMPUTE_DISPATCH_INDIRECT
+                                           groupsX:0
+                                           groupsY:0
+                                           groupsZ:0
+                                    indirectBuffer:indirectBuffer
+                                    indirectOffset:indirectOffset
+                                            reason:"glDispatchComputeIndirect"]) {
         return;
     }
-
-    if (![self processCompute:computeCommandEncoder copyBacks:&copyBacks]) {
-        mglComputeEndEncoder(computeCommandEncoder);
-        [self clearStageBindingCopyBacks:&copyBacks];
-        return;
-    }
-
-    Program *ptr = mglResolveProgramForStageFromState(glm_ctx, _COMPUTE_SHADER);
-    if (!ptr) {
-        NSLog(@"MGL COMPUTE ERROR: glDispatchComputeIndirect with no current compute program after binding");
-        mglComputeEndEncoder(computeCommandEncoder);
-        [self clearStageBindingCopyBacks:&copyBacks];
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
-        return;
-    }
-
-    /* P4.5: 与 mtlDispatchCompute 同构的 value-state plan；INDIRECT 携带
-     * indirect buffer + offset，local size 0 由 C++ 解析为 1。gate-off 走
-     * 原逐条 ObjC 路径作 A/B 对照。 */
-    if (mglComputeUsesMetalCpp()) {
-        MGLRenderCppComputePlan computePlan = {
-            .dispatch_kind = MGL_RENDER_CPP_COMPUTE_DISPATCH_INDIRECT,
-            .groups_x = 0,
-            .groups_y = 0,
-            .groups_z = 0,
-            .local_x = ptr->local_workgroup_size.x,
-            .local_y = ptr->local_workgroup_size.y,
-            .local_z = ptr->local_workgroup_size.z,
-            .indirect_buffer = (__bridge void *)indirectBuffer,
-            .indirect_offset = indirectOffset,
-        };
-        if (mglRenderCppDispatchComputePlan(
-                (__bridge void *)computeCommandEncoder, &computePlan,
-                NULL, 0) != 0) {
-            NSLog(@"MGL COMPUTE ERROR: C++ indirect dispatch plan encode failed");
-            mglComputeEndEncoder(computeCommandEncoder);
-            [self clearStageBindingCopyBacks:&copyBacks];
-            mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
-            return;
-        }
-    } else {
-        MTLSize threadsPerThreadgroup = MTLSizeMake(
-            ptr->local_workgroup_size.x ? ptr->local_workgroup_size.x : 1u,
-            ptr->local_workgroup_size.y ? ptr->local_workgroup_size.y : 1u,
-            ptr->local_workgroup_size.z ? ptr->local_workgroup_size.z : 1u);
-        mglComputeDispatchIndirect(computeCommandEncoder, indirectBuffer,
-                                   indirectOffset, threadsPerThreadgroup);
-    }
-
-    mglComputeEndEncoder(computeCommandEncoder);
-    /* See mtlDispatchCompute — the empty-CB commit skip must not drop this
-     * dispatch when it is the only work in the current command buffer. */
-    _currentCBHasWork = YES;
-
-    if (![self flushStageBindingCopyBacks:&copyBacks
-                     requireCPUVisibility:NO]) {
-        NSLog(@"MGL COMPUTE ERROR: failed to copy isolated writable buffer prefixes after indirect dispatch");
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
-        return;
-    }
-
-    /* Fine-grained dirty bits — see mtlDispatchCompute for rationale. */
-    mglMarkRendererDirtyBits(
-        glm_ctx->active_state,
-        DIRTY_STATE | DIRTY_FBO | DIRTY_PROGRAM | DIRTY_VAO |
-        DIRTY_RENDER_STATE | DIRTY_TEX_BINDING | DIRTY_TEX |
-        DIRTY_TEX_PARAM | DIRTY_SAMPLER | DIRTY_ALPHA_STATE |
-        DIRTY_BUFFER | DIRTY_BUFFER_BASE_STATE | DIRTY_IMAGE_UNIT_STATE);
 }
 
 @end
