@@ -4058,6 +4058,34 @@ int mglRenderCppPrimitiveRestartFixedIndex(uint64_t gl_index_type, uint32_t* out
 }
 
 extern "C"
+uint32_t mglRenderCppGLTypeElementByteSize(uint64_t gl_type) {
+    switch (gl_type) {
+        case GL_FLOAT: case GL_INT: case GL_UNSIGNED_INT: case GL_BOOL:
+            return 4u;
+        case GL_FLOAT_VEC2: case GL_INT_VEC2: case GL_UNSIGNED_INT_VEC2: case GL_BOOL_VEC2:
+            return 8u;
+        case GL_FLOAT_VEC3: case GL_INT_VEC3: case GL_UNSIGNED_INT_VEC3: case GL_BOOL_VEC3:
+            return 12u;
+        case GL_FLOAT_VEC4: case GL_INT_VEC4: case GL_UNSIGNED_INT_VEC4: case GL_BOOL_VEC4:
+            return 16u;
+        case GL_FLOAT_MAT2:
+            return 8u;   /* one column = vec2 */
+        case GL_FLOAT_MAT3:
+            return 12u;  /* one column = vec3 */
+        case GL_FLOAT_MAT4:
+            return 16u;  /* one column = vec4 */
+        case GL_FLOAT_MAT2x3: return 12u;
+        case GL_FLOAT_MAT2x4: return 16u;
+        case GL_FLOAT_MAT3x2: return 8u;
+        case GL_FLOAT_MAT3x4: return 16u;
+        case GL_FLOAT_MAT4x2: return 8u;
+        case GL_FLOAT_MAT4x3: return 12u;
+        case GL_DOUBLE: return 8u;
+        default: return 4u;
+    }
+}
+
+extern "C"
 int mglRenderCppScanIndexRangeIgnoringRestart(
     const uint8_t* bytes, uint32_t elem_width, uint32_t count,
     int restart_enabled, uint32_t restart_index,

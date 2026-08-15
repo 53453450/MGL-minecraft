@@ -47,6 +47,9 @@
 extern "C" {
 #endif
 
+/* Forward decl: GL type -> element byte size mapping lives in mgl_render_cpp.cpp. */
+uint32_t mglRenderCppGLTypeElementByteSize(uint64_t gl_type);
+
 /* ------------------------------------------------------------------ */
 /* Plan entry flags                                                    */
 /* ------------------------------------------------------------------ */
@@ -182,50 +185,7 @@ static inline GLuint mglPlainStructLocStep(const MGLShaderResource *res)
  * stride for plain struct uniform members lacking ArrayStride decorations. */
 static inline GLuint mglGLTypeElementByteSize(GLuint gl_type)
 {
-    switch (gl_type) {
-        case GL_FLOAT:
-        case GL_INT:
-        case GL_UNSIGNED_INT:
-        case GL_BOOL:
-            return 4;
-        case GL_FLOAT_VEC2:
-        case GL_INT_VEC2:
-        case GL_UNSIGNED_INT_VEC2:
-        case GL_BOOL_VEC2:
-            return 8;
-        case GL_FLOAT_VEC3:
-        case GL_INT_VEC3:
-        case GL_UNSIGNED_INT_VEC3:
-        case GL_BOOL_VEC3:
-            return 12;
-        case GL_FLOAT_VEC4:
-        case GL_INT_VEC4:
-        case GL_UNSIGNED_INT_VEC4:
-        case GL_BOOL_VEC4:
-            return 16;
-        case GL_FLOAT_MAT2:
-            return 8;   /* one column = vec2 */
-        case GL_FLOAT_MAT3:
-            return 12;  /* one column = vec3 */
-        case GL_FLOAT_MAT4:
-            return 16;  /* one column = vec4 */
-        case GL_FLOAT_MAT2x3:
-            return 12;
-        case GL_FLOAT_MAT2x4:
-            return 16;
-        case GL_FLOAT_MAT3x2:
-            return 8;
-        case GL_FLOAT_MAT3x4:
-            return 16;
-        case GL_FLOAT_MAT4x2:
-            return 8;
-        case GL_FLOAT_MAT4x3:
-            return 12;
-        case GL_DOUBLE:
-            return 8;
-        default:
-            return 4;
-    }
+    return (GLuint)mglRenderCppGLTypeElementByteSize((uint64_t)gl_type);
 }
 
 #ifdef __cplusplus

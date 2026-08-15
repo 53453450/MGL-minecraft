@@ -2505,6 +2505,24 @@ static int verifyGLIndexValueRead(void) {
     return 0;
 }
 
+static int verifyGLTypeElementByteSize(void) {
+    /* P4.5 (item 1144): GL type -> element byte size. */
+    if (mglRenderCppGLTypeElementByteSize(GL_FLOAT) != 4 ||
+        mglRenderCppGLTypeElementByteSize(GL_FLOAT_VEC2) != 8 ||
+        mglRenderCppGLTypeElementByteSize(GL_FLOAT_VEC3) != 12 ||
+        mglRenderCppGLTypeElementByteSize(GL_FLOAT_VEC4) != 16 ||
+        mglRenderCppGLTypeElementByteSize(GL_FLOAT_MAT2) != 8 ||
+        mglRenderCppGLTypeElementByteSize(GL_FLOAT_MAT3) != 12 ||
+        mglRenderCppGLTypeElementByteSize(GL_FLOAT_MAT4) != 16 ||
+        mglRenderCppGLTypeElementByteSize(GL_DOUBLE) != 8 ||
+        mglRenderCppGLTypeElementByteSize(0xfeed) != 4) {
+        fprintf(stderr, "FAIL: gl type element byte size\\n");
+        return 1;
+    }
+    printf("GL_TYPE_ELEM_SIZE_OK\\n");
+    return 0;
+}
+
 static int verifyPrimitiveRestartFixedIndex(void) {
     /* P4.5 (item 1141): fixed restart index by GL type. */
     uint32_t idx = 0;
@@ -5263,6 +5281,7 @@ int main(void) {
         if (verifyDoubleAttribFormat() != 0) return 1;
         if (verifyHashStepU64() != 0) return 1;
         if (verifyPrimitiveRestartFixedIndex() != 0) return 1;
+        if (verifyGLTypeElementByteSize() != 0) return 1;
         if (verifyMDIScratchOwner() != 0) return 1;
         if (verifyRenderEncoderGetter() != 0) return 1;
         if (verifyCommandBufferGetterAndAdopt() != 0) return 1;

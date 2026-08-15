@@ -709,6 +709,8 @@ uint64_t mglRenderCppHashStepU64(uint64_t hash, uint64_t value);
 /* Fixed restart-index for a type; matches the fixed branch of
  * mglPrimitiveRestartIndexForType.  1 if defined; *out set. */
 int mglRenderCppPrimitiveRestartFixedIndex(uint64_t gl_index_type, uint32_t *out);
+/* GL uniform/attrib type -> element byte size; matches mglGLTypeElementByteSize. */
+uint32_t mglRenderCppGLTypeElementByteSize(uint64_t gl_type);
 
 typedef struct MGLRenderCppGeometryGatherResult_t {
     uint32_t *gather;          /* malloc'd raw gather (vertex_ids) */
