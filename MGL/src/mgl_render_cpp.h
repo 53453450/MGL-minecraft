@@ -535,6 +535,31 @@ int mglRenderCppIntegerReadbackSourceClassify(
     uint32_t pixel_format,
     MGLRenderCppIntegerReadbackSource *out);
 
+typedef struct MGLRenderCppPolygonOffsetDecision_t {
+    int triangle_fill_mode;      /* 0 = fill, 1 = lines */
+    int needs_polygon_mode_repair;
+    int enable_depth_bias;
+} MGLRenderCppPolygonOffsetDecision;
+
+/* P4.5 (item 1141/887): polygon-offset draw decision — the triangle fill
+ * mode (GL_LINE -> lines), the invalid polygon-mode repair condition and
+ * the depth-bias enablement per polygon mode with the three capability
+ * flags.  Pure decision shared by both gates. */
+int mglRenderCppPolygonOffsetDecision(
+    uint32_t mode,
+    int has_ctx,
+    int produces_polygons,
+    uint32_t polygon_mode,
+    int cap_point,
+    int cap_line,
+    int cap_fill,
+    MGLRenderCppPolygonOffsetDecision *out);
+
+/* P4.5 (item 1141/887): GL draw mode -> primitive vertex count (for the
+ * cull-distance emulation params; 1 for unknown modes).  Pure table shared
+ * by both gates. */
+uint32_t mglRenderCppPrimitiveVertexCountForMode(uint32_t mode);
+
 typedef struct MGLRenderCppScaledBlitUVs_t {
     float uv_left;
     float uv_top;

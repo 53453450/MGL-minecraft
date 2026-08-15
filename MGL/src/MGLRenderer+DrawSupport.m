@@ -2405,35 +2405,29 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
         return;
     }
 
-    MTLTriangleFillMode triangleFillMode = MTLTriangleFillModeFill;
-    if (ctx && mglDrawModeProducesPolygons(mode)) {
-        if (MGL_STATE(ctx)->var.polygon_mode == GL_LINE) {
-            triangleFillMode = MTLTriangleFillModeLines;
-        } else if (MGL_STATE(ctx)->var.polygon_mode != GL_FILL &&
-                   MGL_STATE(ctx)->var.polygon_mode != GL_POINT) {
-            mglLogRenderStateRepair("polygon_mode", MGL_STATE(ctx)->var.polygon_mode, GL_FILL);
-            MGL_STATE(ctx)->var.polygon_mode = GL_FILL;
-            mglMarkStateDirtyBits(ctx->active_state, DIRTY_RENDER_STATE);
-        }
+    /* P4.5 (item 1141/887): 三角填充模式（GL_LINE -> lines）+ 非法
+     * polygon_mode 修复条件 + 按 polygon 模式的 depth-bias 使能判定在 C++
+     * （mglRenderCppPolygonOffsetDecision，纯决策，两门共用）。 */
+    MGLRenderCppPolygonOffsetDecision decision = {0};
+    mglRenderCppPolygonOffsetDecision(
+        (uint32_t)mode,
+        ctx ? 1 : 0,
+        mglDrawModeProducesPolygons(mode) ? 1 : 0,
+        (uint32_t)(ctx ? MGL_STATE(ctx)->var.polygon_mode : 0u),
+        (ctx && MGL_STATE(ctx)->caps.polygon_offset_point) ? 1 : 0,
+        (ctx && MGL_STATE(ctx)->caps.polygon_offset_line) ? 1 : 0,
+        (ctx && MGL_STATE(ctx)->caps.polygon_offset_fill) ? 1 : 0,
+        &decision);
+    MTLTriangleFillMode triangleFillMode = decision.triangle_fill_mode
+        ? MTLTriangleFillModeLines : MTLTriangleFillModeFill;
+    if (decision.needs_polygon_mode_repair) {
+        mglLogRenderStateRepair("polygon_mode", MGL_STATE(ctx)->var.polygon_mode, GL_FILL);
+        MGL_STATE(ctx)->var.polygon_mode = GL_FILL;
+        mglMarkStateDirtyBits(ctx->active_state, DIRTY_RENDER_STATE);
     }
     [self setTriangleFillModeIfNeeded:triangleFillMode];
 
-    BOOL enableDepthBias = NO;
-
-    if (ctx && mglDrawModeProducesPolygons(mode)) {
-        switch (MGL_STATE(ctx)->var.polygon_mode) {
-            case GL_POINT:
-                enableDepthBias = MGL_STATE(ctx)->caps.polygon_offset_point;
-                break;
-            case GL_LINE:
-                enableDepthBias = MGL_STATE(ctx)->caps.polygon_offset_line;
-                break;
-            case GL_FILL:
-            default:
-                enableDepthBias = MGL_STATE(ctx)->caps.polygon_offset_fill;
-                break;
-        }
-    }
+    BOOL enableDepthBias = decision.enable_depth_bias != 0;
 
     if (enableDepthBias) {
         float _bias = MGL_STATE(ctx)->var.polygon_offset_units;
@@ -2478,19 +2472,10 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     }
     explicitVertexCount = MIN(explicitVertexCount, 4u);
 
-    /* Determine primitive vertex count from the draw mode. */
-    uint32_t prim_vertex_count = 0;
-    switch (mode) {
-        case GL_TRIANGLES: prim_vertex_count = 3; break;
-        case GL_TRIANGLE_STRIP: prim_vertex_count = 3; break;
-        case GL_TRIANGLE_FAN: prim_vertex_count = 3; break;
-        case GL_LINES: prim_vertex_count = 2; break;
-        case GL_LINE_STRIP: prim_vertex_count = 2; break;
-        case GL_LINE_LOOP: prim_vertex_count = 2; break;
-        case GL_POINTS: prim_vertex_count = 1; break;
-        case GL_QUADS: prim_vertex_count = 4; break;
-        default: prim_vertex_count = 1; break;
-    }
+    /* P4.5 (item 1141/887): 绘制模式 -> 图元顶点数表在 C++
+     * （mglRenderCppPrimitiveVertexCountForMode，两门共用）。 */
+    uint32_t prim_vertex_count =
+        mglRenderCppPrimitiveVertexCountForMode((uint32_t)mode);
 
     if (_tessellation.cullDistanceCaptureBuffer) {
         MGLCullDistanceEmuParams params = {

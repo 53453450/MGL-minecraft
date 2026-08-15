@@ -2304,6 +2304,72 @@ static int verifyMDIScratchOwner(void) {
     return 0;
 }
 
+static int verifyPolygonOffsetAndPrimCount(void) {
+    /* P4.5 (item 1141/887): polygon-offset decision + prim vertex counts. */
+    MGLRenderCppPolygonOffsetDecision d = {0};
+    if (mglRenderCppPolygonOffsetDecision(0, 0, 0, 0, 0, 0, 0, NULL) != -1) {
+        fprintf(stderr, "FAIL: poloff bad args\n");
+        return 1;
+    }
+    /* No ctx -> all off. */
+    if (mglRenderCppPolygonOffsetDecision(0, 0, 1, GL_FILL, 1, 1, 1, &d) != 0 ||
+        d.triangle_fill_mode || d.needs_polygon_mode_repair ||
+        d.enable_depth_bias) {
+        fprintf(stderr, "FAIL: poloff no ctx\n");
+        return 1;
+    }
+    /* FILL + cap_fill -> bias on, no repair, fill mode. */
+    if (mglRenderCppPolygonOffsetDecision(0, 1, 1, GL_FILL, 0, 0, 1, &d) != 0 ||
+        d.triangle_fill_mode || d.needs_polygon_mode_repair ||
+        !d.enable_depth_bias) {
+        fprintf(stderr, "FAIL: poloff fill\n");
+        return 1;
+    }
+    /* LINE -> lines fill mode + cap_line bias. */
+    if (mglRenderCppPolygonOffsetDecision(0, 1, 1, GL_LINE, 0, 1, 0, &d) != 0 ||
+        !d.triangle_fill_mode || d.needs_polygon_mode_repair ||
+        !d.enable_depth_bias) {
+        fprintf(stderr, "FAIL: poloff line\n");
+        return 1;
+    }
+    /* POINT -> cap_point bias, no repair. */
+    if (mglRenderCppPolygonOffsetDecision(0, 1, 1, GL_POINT, 1, 0, 0, &d) != 0 ||
+        d.triangle_fill_mode || d.needs_polygon_mode_repair ||
+        !d.enable_depth_bias) {
+        fprintf(stderr, "FAIL: poloff point\n");
+        return 1;
+    }
+    /* Invalid mode 0x9999 -> repair; the bias switch's default falls
+     * through to cap_fill (the original repairs to GL_FILL first, so the
+     * enable result is the same). */
+    if (mglRenderCppPolygonOffsetDecision(0, 1, 1, 0x9999, 0, 0, 1, &d) != 0 ||
+        !d.needs_polygon_mode_repair || !d.enable_depth_bias) {
+        fprintf(stderr, "FAIL: poloff repair\n");
+        return 1;
+    }
+    /* Non-polygon mode (GL_POINTS) -> all off even with caps. */
+    if (mglRenderCppPolygonOffsetDecision(GL_POINTS, 1, 0, GL_FILL, 0, 0, 1, &d) != 0 ||
+        d.enable_depth_bias || d.triangle_fill_mode) {
+        fprintf(stderr, "FAIL: poloff non-polygon\n");
+        return 1;
+    }
+
+    if (mglRenderCppPrimitiveVertexCountForMode(GL_TRIANGLES) != 3 ||
+        mglRenderCppPrimitiveVertexCountForMode(GL_TRIANGLE_STRIP) != 3 ||
+        mglRenderCppPrimitiveVertexCountForMode(GL_TRIANGLE_FAN) != 3 ||
+        mglRenderCppPrimitiveVertexCountForMode(GL_LINES) != 2 ||
+        mglRenderCppPrimitiveVertexCountForMode(GL_LINE_STRIP) != 2 ||
+        mglRenderCppPrimitiveVertexCountForMode(GL_LINE_LOOP) != 2 ||
+        mglRenderCppPrimitiveVertexCountForMode(GL_QUADS) != 4 ||
+        mglRenderCppPrimitiveVertexCountForMode(GL_POINTS) != 1 ||
+        mglRenderCppPrimitiveVertexCountForMode(0x1234) != 1) {
+        fprintf(stderr, "FAIL: prim count table\n");
+        return 1;
+    }
+    printf("POLYGON_OFFSET_AND_PRIM_COUNT_OK\n");
+    return 0;
+}
+
 static int verifyScaledBlitUVsAndScissor(void) {
     /* P4.5 (item 1069/1141): scaled-blit UVs + destination scissor base. */
     MGLRenderCppScaledBlitUVs u = {0};
@@ -4551,6 +4617,7 @@ int main(void) {
         if (verifyPackedTypeClassify() != 0) return 1;
         if (verifyBlitFramebufferPlan() != 0) return 1;
         if (verifyScaledBlitUVsAndScissor() != 0) return 1;
+        if (verifyPolygonOffsetAndPrimCount() != 0) return 1;
         if (verifyMDIScratchOwner() != 0) return 1;
         if (verifyRenderEncoderGetter() != 0) return 1;
         if (verifyCommandBufferGetterAndAdopt() != 0) return 1;

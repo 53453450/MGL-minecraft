@@ -3901,6 +3901,60 @@ int mglRenderCppGetTexImagePlan(
 }
 
 extern "C"
+int mglRenderCppPolygonOffsetDecision(
+    uint32_t mode, int has_ctx, int produces_polygons,
+    uint32_t polygon_mode,
+    int cap_point, int cap_line, int cap_fill,
+    MGLRenderCppPolygonOffsetDecision* out) {
+    if (!out) return -1;
+    const int polygons = (has_ctx && produces_polygons) ? 1 : 0;
+    out->triangle_fill_mode =
+        (polygons && polygon_mode == GL_LINE) ? 1 : 0;
+    /* The repair is the original's else-if AFTER the GL_LINE branch, so a
+     * valid GL_LINE mode must not trigger it. */
+    out->needs_polygon_mode_repair =
+        (polygons && polygon_mode != GL_LINE &&
+         polygon_mode != GL_FILL && polygon_mode != GL_POINT)
+            ? 1 : 0;
+    out->enable_depth_bias = 0;
+    if (polygons) {
+        switch (polygon_mode) {
+            case GL_POINT:
+                out->enable_depth_bias = cap_point ? 1 : 0;
+                break;
+            case GL_LINE:
+                out->enable_depth_bias = cap_line ? 1 : 0;
+                break;
+            case GL_FILL:
+            default:
+                out->enable_depth_bias = cap_fill ? 1 : 0;
+                break;
+        }
+    }
+    (void)mode;
+    return 0;
+}
+
+extern "C"
+uint32_t mglRenderCppPrimitiveVertexCountForMode(uint32_t mode) {
+    switch (mode) {
+        case GL_TRIANGLES:
+        case GL_TRIANGLE_STRIP:
+        case GL_TRIANGLE_FAN:
+            return 3u;
+        case GL_LINES:
+        case GL_LINE_STRIP:
+        case GL_LINE_LOOP:
+            return 2u;
+        case GL_QUADS:
+            return 4u;
+        case GL_POINTS:
+        default:
+            return 1u;
+    }
+}
+
+extern "C"
 int mglRenderCppScaledBlitUVs(
     uint32_t src_tex_w, uint32_t src_tex_h,
     double src_min_x, double src_max_x, double src_min_y, double src_max_y,
