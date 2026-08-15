@@ -3544,6 +3544,98 @@ int mglRenderCppRasterizationIsEmpty(
 }
 
 extern "C"
+int mglRenderCppIntegerReadbackSourceClassify(
+    uint32_t pixel_format, MGLRenderCppIntegerReadbackSource* out) {
+    if (!out) return -1;
+    out->component_count = 0;
+    out->component_bytes = 0;
+    out->source_signed = 0;
+    out->source_rgb10a2_uint = 0;
+    out->recognized = 0;
+    switch (pixel_format) {
+        case MTL::PixelFormatR8Uint:
+            out->component_count = 1u; out->component_bytes = 1u;
+            out->recognized = 1;
+            break;
+        case MTL::PixelFormatR8Sint:
+            out->component_count = 1u; out->component_bytes = 1u;
+            out->source_signed = 1; out->recognized = 1;
+            break;
+        case MTL::PixelFormatR16Uint:
+            out->component_count = 1u; out->component_bytes = 2u;
+            out->recognized = 1;
+            break;
+        case MTL::PixelFormatR16Sint:
+            out->component_count = 1u; out->component_bytes = 2u;
+            out->source_signed = 1; out->recognized = 1;
+            break;
+        case MTL::PixelFormatR32Uint:
+            out->component_count = 1u; out->component_bytes = 4u;
+            out->recognized = 1;
+            break;
+        case MTL::PixelFormatR32Sint:
+            out->component_count = 1u; out->component_bytes = 4u;
+            out->source_signed = 1; out->recognized = 1;
+            break;
+        case MTL::PixelFormatRG8Uint:
+            out->component_count = 2u; out->component_bytes = 1u;
+            out->recognized = 1;
+            break;
+        case MTL::PixelFormatRG8Sint:
+            out->component_count = 2u; out->component_bytes = 1u;
+            out->source_signed = 1; out->recognized = 1;
+            break;
+        case MTL::PixelFormatRG16Uint:
+            out->component_count = 2u; out->component_bytes = 2u;
+            out->recognized = 1;
+            break;
+        case MTL::PixelFormatRG16Sint:
+            out->component_count = 2u; out->component_bytes = 2u;
+            out->source_signed = 1; out->recognized = 1;
+            break;
+        case MTL::PixelFormatRG32Uint:
+            out->component_count = 2u; out->component_bytes = 4u;
+            out->recognized = 1;
+            break;
+        case MTL::PixelFormatRG32Sint:
+            out->component_count = 2u; out->component_bytes = 4u;
+            out->source_signed = 1; out->recognized = 1;
+            break;
+        case MTL::PixelFormatRGBA8Uint:
+            out->component_count = 4u; out->component_bytes = 1u;
+            out->recognized = 1;
+            break;
+        case MTL::PixelFormatRGBA8Sint:
+            out->component_count = 4u; out->component_bytes = 1u;
+            out->source_signed = 1; out->recognized = 1;
+            break;
+        case MTL::PixelFormatRGBA16Uint:
+            out->component_count = 4u; out->component_bytes = 2u;
+            out->recognized = 1;
+            break;
+        case MTL::PixelFormatRGBA16Sint:
+            out->component_count = 4u; out->component_bytes = 2u;
+            out->source_signed = 1; out->recognized = 1;
+            break;
+        case MTL::PixelFormatRGBA32Uint:
+            out->component_count = 4u; out->component_bytes = 4u;
+            out->recognized = 1;
+            break;
+        case MTL::PixelFormatRGBA32Sint:
+            out->component_count = 4u; out->component_bytes = 4u;
+            out->source_signed = 1; out->recognized = 1;
+            break;
+        case MTL::PixelFormatRGB10A2Uint:
+            out->component_count = 4u; out->component_bytes = 4u;
+            out->source_rgb10a2_uint = 1; out->recognized = 1;
+            break;
+        default:
+            break;
+    }
+    return 0;
+}
+
+extern "C"
 int mglRenderCppIntegerReadbackClassify(
     uint32_t pixel_format, uint32_t gl_format, uint32_t gl_type,
     MGLRenderCppIntegerReadbackClassify* out) {

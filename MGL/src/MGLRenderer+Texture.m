@@ -1425,72 +1425,20 @@ static void mglTextureCopyTextureToBuffer(
                               slice:(NSUInteger)mtlSlice
                      isRenderTarget:(BOOL)isRenderTarget
 {
-    NSUInteger componentCount = 0u;
-    NSUInteger sourceComponentBytes = 0u;
-    BOOL sourceSigned = NO;
-    BOOL sourceRGB10A2Uint = NO;
-    switch (sourceTexture.pixelFormat) {
-        case MTLPixelFormatR8Uint:
-            componentCount = 1u; sourceComponentBytes = 1u;
-            break;
-        case MTLPixelFormatR8Sint:
-            componentCount = 1u; sourceComponentBytes = 1u; sourceSigned = YES;
-            break;
-        case MTLPixelFormatR16Uint:
-            componentCount = 1u; sourceComponentBytes = 2u;
-            break;
-        case MTLPixelFormatR16Sint:
-            componentCount = 1u; sourceComponentBytes = 2u; sourceSigned = YES;
-            break;
-        case MTLPixelFormatR32Sint:
-            componentCount = 1u; sourceComponentBytes = 4u; sourceSigned = YES;
-            break;
-        case MTLPixelFormatRG8Uint:
-            componentCount = 2u; sourceComponentBytes = 1u;
-            break;
-        case MTLPixelFormatRG8Sint:
-            componentCount = 2u; sourceComponentBytes = 1u; sourceSigned = YES;
-            break;
-        case MTLPixelFormatRG16Uint:
-            componentCount = 2u; sourceComponentBytes = 2u;
-            break;
-        case MTLPixelFormatRG16Sint:
-            componentCount = 2u; sourceComponentBytes = 2u; sourceSigned = YES;
-            break;
-        case MTLPixelFormatRG32Sint:
-            componentCount = 2u; sourceComponentBytes = 4u; sourceSigned = YES;
-            break;
-        case MTLPixelFormatRGBA8Uint:
-            componentCount = 4u; sourceComponentBytes = 1u;
-            break;
-        case MTLPixelFormatRGBA8Sint:
-            componentCount = 4u; sourceComponentBytes = 1u; sourceSigned = YES;
-            break;
-        case MTLPixelFormatRGBA16Uint:
-            componentCount = 4u; sourceComponentBytes = 2u;
-            break;
-        case MTLPixelFormatRGBA16Sint:
-            componentCount = 4u; sourceComponentBytes = 2u; sourceSigned = YES;
-            break;
-        case MTLPixelFormatRGBA32Sint:
-            componentCount = 4u; sourceComponentBytes = 4u; sourceSigned = YES;
-            break;
-        case MTLPixelFormatR32Uint:
-            componentCount = 1u; sourceComponentBytes = 4u;
-            break;
-        case MTLPixelFormatRG32Uint:
-            componentCount = 2u; sourceComponentBytes = 4u;
-            break;
-        case MTLPixelFormatRGBA32Uint:
-            componentCount = 4u; sourceComponentBytes = 4u;
-            break;
-        case MTLPixelFormatRGB10A2Uint:
-            componentCount = 4u; sourceComponentBytes = 4u; sourceRGB10A2Uint = YES;
-            break;
-        default:
-            mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
-            return NO;
+    /* P4.5 (item 1171/1116): 源格式分类（19 项 MTLPixelFormat ->
+     * {分量数, 分量字节, 有符号, RGB10A2} 表）在 C++
+     * （mglRenderCppIntegerReadbackSourceClassify，纯分类，两门共用）。 */
+    MGLRenderCppIntegerReadbackSource src = {0};
+    mglRenderCppIntegerReadbackSourceClassify(
+        (uint32_t)sourceTexture.pixelFormat, &src);
+    if (!src.recognized) {
+        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        return NO;
     }
+    NSUInteger componentCount = (NSUInteger)src.component_count;
+    NSUInteger sourceComponentBytes = (NSUInteger)src.component_bytes;
+    BOOL sourceSigned = src.source_signed != 0;
+    BOOL sourceRGB10A2Uint = src.source_rgb10a2_uint != 0;
 
     if (sourceTexture.sampleCount > 1u) {
         sourceTexture = [self resolvedReadbackTextureForMultisampleTexture:sourceTexture

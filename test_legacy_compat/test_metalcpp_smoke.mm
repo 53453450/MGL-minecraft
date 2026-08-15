@@ -2304,6 +2304,58 @@ static int verifyMDIScratchOwner(void) {
     return 0;
 }
 
+static int verifyIntegerReadbackSourceClassify(void) {
+    /* P4.5 (item 1171/1116): integer-readback source classification. */
+    MGLRenderCppIntegerReadbackSource s = {0};
+    if (mglRenderCppIntegerReadbackSourceClassify(0, NULL) != -1) {
+        fprintf(stderr, "FAIL: src classify bad args\n");
+        return 1;
+    }
+    /* R8Uint = 13 -> 1 comp, 1B, unsigned. */
+    if (mglRenderCppIntegerReadbackSourceClassify(13u, &s) != 0 ||
+        !s.recognized || s.component_count != 1u || s.component_bytes != 1u ||
+        s.source_signed) {
+        fprintf(stderr, "FAIL: src r8uint\n");
+        return 1;
+    }
+    /* RG8Sint = 34 -> 2 comps, 1B, signed. */
+    if (mglRenderCppIntegerReadbackSourceClassify(34u, &s) != 0 ||
+        s.component_count != 2u || s.component_bytes != 1u ||
+        !s.source_signed) {
+        fprintf(stderr, "FAIL: src rg8sint\n");
+        return 1;
+    }
+    /* RGBA32Uint = 123 -> 4 comps, 4B, unsigned. */
+    if (mglRenderCppIntegerReadbackSourceClassify(123u, &s) != 0 ||
+        s.component_count != 4u || s.component_bytes != 4u ||
+        s.source_signed || s.source_rgb10a2_uint) {
+        fprintf(stderr, "FAIL: src rgba32uint\n");
+        return 1;
+    }
+    /* RGBA16Sint = 114 -> 4 comps, 2B, signed. */
+    if (mglRenderCppIntegerReadbackSourceClassify(114u, &s) != 0 ||
+        s.component_count != 4u || s.component_bytes != 2u ||
+        !s.source_signed) {
+        fprintf(stderr, "FAIL: src rgba16sint\n");
+        return 1;
+    }
+    /* RGB10A2Uint = 91 -> 4 comps, 4B, rgb10a2. */
+    if (mglRenderCppIntegerReadbackSourceClassify(91u, &s) != 0 ||
+        s.component_count != 4u || s.component_bytes != 4u ||
+        !s.source_rgb10a2_uint) {
+        fprintf(stderr, "FAIL: src rgb10a2\n");
+        return 1;
+    }
+    /* R32Float = 55 -> not recognized. */
+    if (mglRenderCppIntegerReadbackSourceClassify(55u, &s) != 0 ||
+        s.recognized) {
+        fprintf(stderr, "FAIL: src unknown\n");
+        return 1;
+    }
+    printf("INTEGER_READBACK_SOURCE_OK\n");
+    return 0;
+}
+
 static int verifyGetTexImagePlan(void) {
     /* P4.5 (item 1171/1116): mtlGetTexImage staging plan. */
     MGLRenderCppGetTexImagePlan p = {0};
@@ -4328,6 +4380,7 @@ int main(void) {
         if (verifyRasterizationIsEmpty() != 0) return 1;
         if (verifyIntegerReadbackClassify() != 0) return 1;
         if (verifyGetTexImagePlan() != 0) return 1;
+        if (verifyIntegerReadbackSourceClassify() != 0) return 1;
         if (verifyMDIScratchOwner() != 0) return 1;
         if (verifyRenderEncoderGetter() != 0) return 1;
         if (verifyCommandBufferGetterAndAdopt() != 0) return 1;

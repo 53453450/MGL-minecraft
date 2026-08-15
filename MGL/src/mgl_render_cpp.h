@@ -501,6 +501,23 @@ int mglRenderCppIntegerReadbackClassify(
     uint32_t gl_type,
     MGLRenderCppIntegerReadbackClassify *out);
 
+typedef struct MGLRenderCppIntegerReadbackSource_t {
+    uint32_t component_count;
+    uint32_t component_bytes;
+    int source_signed;
+    int source_rgb10a2_uint;
+    int recognized;
+} MGLRenderCppIntegerReadbackSource;
+
+/* P4.5 (item 1171/1116): integer-readback SOURCE format classification —
+ * the 19-entry MTLPixelFormat -> {components, component bytes, signed,
+ * RGB10A2} table.  Pure classification shared by both gates.  Returns 0
+ * with recognized=1 on a known format, 0 with recognized=0 on unknown,
+ * -1 on bad args. */
+int mglRenderCppIntegerReadbackSourceClassify(
+    uint32_t pixel_format,
+    MGLRenderCppIntegerReadbackSource *out);
+
 typedef struct MGLRenderCppGetTexImagePlan_t {
     int direct_r32_float_read;
     int use_bgra8_conversion;
