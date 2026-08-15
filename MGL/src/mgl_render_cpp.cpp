@@ -3900,6 +3900,56 @@ int mglRenderCppGetTexImagePlan(
     return 0;
 }
 
+extern "C"
+int mglRenderCppBlitFramebufferPlan(
+    double src_x0, double src_x1, double src_y0, double src_y1,
+    double dst_x0, double dst_x1, double dst_y0, double dst_y1,
+    uint32_t src_tex_w, uint32_t src_tex_h,
+    uint32_t dst_tex_w, uint32_t dst_tex_h,
+    int needs_format_conversion_blit, int needs_render_target_sync_blit,
+    int scissor_test_enabled,
+    MGLRenderCppBlitFramebufferPlan* out) {
+    if (!out) return -1;
+    out->src_x_forward = src_x1 >= src_x0 ? 1 : 0;
+    out->src_y_forward = src_y1 >= src_y0 ? 1 : 0;
+    out->dst_x_forward = dst_x1 >= dst_x0 ? 1 : 0;
+    out->dst_y_forward = dst_y1 >= dst_y0 ? 1 : 0;
+    out->blit_needs_flip =
+        (out->src_x_forward != out->dst_x_forward ||
+         out->src_y_forward != out->dst_y_forward) ? 1 : 0;
+    out->src_min_x = fmin(src_x0, src_x1);
+    out->src_max_x = fmax(src_x0, src_x1);
+    out->src_min_y = fmin(src_y0, src_y1);
+    out->src_max_y = fmax(src_y0, src_y1);
+    out->dst_min_x = fmin(dst_x0, dst_x1);
+    out->dst_max_x = fmax(dst_x0, dst_x1);
+    out->dst_min_y = fmin(dst_y0, dst_y1);
+    out->dst_max_y = fmax(dst_y0, dst_y1);
+    out->src_w = fabs(src_x1 - src_x0);
+    out->src_h = fabs(src_y1 - src_y0);
+    out->dst_w = fabs(dst_x1 - dst_x0);
+    out->dst_h = fabs(dst_y1 - dst_y0);
+    if (out->src_w <= 0.0 || out->src_h <= 0.0 ||
+        out->dst_w <= 0.0 || out->dst_h <= 0.0) {
+        return -1;
+    }
+    out->needs_scaled_blit =
+        (needs_format_conversion_blit || needs_render_target_sync_blit ||
+         scissor_test_enabled || out->blit_needs_flip ||
+         fabs(out->src_w - out->dst_w) > 0.00001 ||
+         fabs(out->src_h - out->dst_h) > 0.00001) ? 1 : 0;
+    out->copy_src_x = (int64_t)floor(out->src_min_x + 0.00001);
+    out->copy_src_y = (int64_t)floor(out->src_min_y + 0.00001);
+    out->copy_dst_x = (int64_t)floor(out->dst_min_x + 0.00001);
+    out->copy_dst_y = (int64_t)floor(out->dst_min_y + 0.00001);
+    out->copy_w = (int64_t)ceil(out->src_max_x - 0.00001) - out->copy_src_x;
+    out->copy_h = (int64_t)ceil(out->src_max_y - 0.00001) - out->copy_src_y;
+    out->src_metal_y = (int64_t)src_tex_h - (out->copy_src_y + out->copy_h);
+    out->dst_metal_y = (int64_t)dst_tex_h - (out->copy_dst_y + out->copy_h);
+    out->scaled_dst_metal_y = (double)dst_tex_h - out->dst_max_y;
+    return 0;
+}
+
 static uint32_t mglTessRoundLevelForSpacing(uint32_t spacing,
                                               uint32_t ceil_level) {
     if (spacing == GL_FRACTIONAL_EVEN) {

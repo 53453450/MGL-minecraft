@@ -3373,49 +3373,55 @@ static id<MTLRenderPipelineState> mglLookupCppAuxRenderPipeline(
         return;
     }
 
-    BOOL srcXForward = axisX.src1 >= axisX.src0;
-    BOOL srcYForward = axisY.src1 >= axisY.src0;
-    BOOL dstXForward = axisX.dst1 >= axisX.dst0;
-    BOOL dstYForward = axisY.dst1 >= axisY.dst0;
-    BOOL blitNeedsFlip = (srcXForward != dstXForward) || (srcYForward != dstYForward);
-
-    double srcMinX = fmin(axisX.src0, axisX.src1);
-    double srcMaxX = fmax(axisX.src0, axisX.src1);
-    double srcMinY = fmin(axisY.src0, axisY.src1);
-    double srcMaxY = fmax(axisY.src0, axisY.src1);
-    double dstMinX = fmin(axisX.dst0, axisX.dst1);
-    double dstMaxX = fmax(axisX.dst0, axisX.dst1);
-    double dstMinY = fmin(axisY.dst0, axisY.dst1);
-    double dstMaxY = fmax(axisY.dst0, axisY.dst1);
-    double srcW = fabs(axisX.src1 - axisX.src0);
-    double srcH = fabs(axisY.src1 - axisY.src0);
-    double dstW = fabs(axisX.dst1 - axisX.dst0);
-    double dstH = fabs(axisY.dst1 - axisY.dst0);
-
-    if (srcW <= 0.0 || srcH <= 0.0 || dstW <= 0.0 || dstH <= 0.0) {
+    /* P4.5 (item 1069/1141): 裁剪后的区域数学 + 决策（方向/flip 标志、
+     * min/max/abs 范围、scaled 判定（格式转换/RT 同步/scissor/flip/尺寸
+     * 不匹配，1e-5 阈值同 mglNearlyEqual）、整数拷贝矩形、Metal Y-flip、
+     * scaled 路径目标 Y）在 C++（mglRenderCppBlitFramebufferPlan，两门
+     * 共用；-1 = 空区域）。 */
+    MGLRenderCppBlitFramebufferPlan plan = {0};
+    if (mglRenderCppBlitFramebufferPlan(
+            axisX.src0, axisX.src1, axisY.src0, axisY.src1,
+            axisX.dst0, axisX.dst1, axisY.dst0, axisY.dst1,
+            (uint32_t)srcTexW, (uint32_t)srcTexH,
+            (uint32_t)dstTexW, (uint32_t)dstTexH,
+            needsFormatConversionBlit ? 1 : 0,
+            needsRenderTargetSyncBlit ? 1 : 0,
+            (glm_ctx && glm_ctx->state.caps.scissor_test) ? 1 : 0,
+            &plan) != 0) {
         NSLog(@"MGL WARN: mtlBlitFramebuffer empty clipped region src=%.3fx%.3f dst=%.3fx%.3f, skipping",
-              srcW, srcH, dstW, dstH);
+              fabs(axisX.src1 - axisX.src0),
+              fabs(axisY.src1 - axisY.src0),
+              fabs(axisX.dst1 - axisX.dst0),
+              fabs(axisY.dst1 - axisY.dst0));
         return;
     }
-
-    BOOL needsScaledBlit =
-        (needsFormatConversionBlit ||
-         needsRenderTargetSyncBlit ||
-         (glm_ctx && glm_ctx->state.caps.scissor_test) ||
-         blitNeedsFlip ||
-         !mglNearlyEqual(srcW, dstW) ||
-         !mglNearlyEqual(srcH, dstH));
-
-    NSInteger copySrcX = (NSInteger)floor(srcMinX + 0.00001);
-    NSInteger copySrcY = (NSInteger)floor(srcMinY + 0.00001);
-    NSInteger copyDstX = (NSInteger)floor(dstMinX + 0.00001);
-    NSInteger copyDstY = (NSInteger)floor(dstMinY + 0.00001);
-    NSInteger copyW = (NSInteger)ceil(srcMaxX - 0.00001) - copySrcX;
-    NSInteger copyH = (NSInteger)ceil(srcMaxY - 0.00001) - copySrcY;
-    NSInteger srcMetalY = (NSInteger)srcTexH - (copySrcY + copyH);
-    NSInteger dstMetalY = (NSInteger)dstTexH - (copyDstY + copyH);
-
-    double scaledDstMetalY = (double)dstTexH - dstMaxY;
+    BOOL srcXForward = plan.src_x_forward;
+    BOOL srcYForward = plan.src_y_forward;
+    BOOL dstXForward = plan.dst_x_forward;
+    BOOL dstYForward = plan.dst_y_forward;
+    BOOL blitNeedsFlip = plan.blit_needs_flip;
+    double srcMinX = plan.src_min_x;
+    double srcMaxX = plan.src_max_x;
+    double srcMinY = plan.src_min_y;
+    double srcMaxY = plan.src_max_y;
+    double dstMinX = plan.dst_min_x;
+    double dstMaxX = plan.dst_max_x;
+    double dstMinY = plan.dst_min_y;
+    double dstMaxY = plan.dst_max_y;
+    double srcW = plan.src_w;
+    double srcH = plan.src_h;
+    double dstW = plan.dst_w;
+    double dstH = plan.dst_h;
+    BOOL needsScaledBlit = plan.needs_scaled_blit;
+    NSInteger copySrcX = (NSInteger)plan.copy_src_x;
+    NSInteger copySrcY = (NSInteger)plan.copy_src_y;
+    NSInteger copyDstX = (NSInteger)plan.copy_dst_x;
+    NSInteger copyDstY = (NSInteger)plan.copy_dst_y;
+    NSInteger copyW = (NSInteger)plan.copy_w;
+    NSInteger copyH = (NSInteger)plan.copy_h;
+    NSInteger srcMetalY = (NSInteger)plan.src_metal_y;
+    NSInteger dstMetalY = (NSInteger)plan.dst_metal_y;
+    double scaledDstMetalY = plan.scaled_dst_metal_y;
 
     static uint64_t s_blitDiagCount = 0;
     uint64_t blitDiag = ++s_blitDiagCount;

@@ -535,6 +535,61 @@ int mglRenderCppIntegerReadbackSourceClassify(
     uint32_t pixel_format,
     MGLRenderCppIntegerReadbackSource *out);
 
+typedef struct MGLRenderCppBlitFramebufferPlan_t {
+    int src_x_forward;
+    int src_y_forward;
+    int dst_x_forward;
+    int dst_y_forward;
+    int blit_needs_flip;
+    int needs_scaled_blit;
+    double src_min_x;
+    double src_max_x;
+    double src_min_y;
+    double src_max_y;
+    double dst_min_x;
+    double dst_max_x;
+    double dst_min_y;
+    double dst_max_y;
+    double src_w;
+    double src_h;
+    double dst_w;
+    double dst_h;
+    int64_t copy_src_x;
+    int64_t copy_src_y;
+    int64_t copy_dst_x;
+    int64_t copy_dst_y;
+    int64_t copy_w;
+    int64_t copy_h;
+    int64_t src_metal_y;
+    int64_t dst_metal_y;
+    double scaled_dst_metal_y;
+} MGLRenderCppBlitFramebufferPlan;
+
+/* P4.5 (item 1069/1141): glBlitFramebuffer region math + decisions after
+ * the axis clip — direction/flip flags, min/max/abs extents, the scaled-
+ * blit decision (format conversion / RT sync / scissor / flip / size
+ * mismatch with the 1e-5 epsilon of mglNearlyEqual), the integer copy
+ * rect, the Metal Y-flips and the scaled-path destination Y.  Pure CPU
+ * plan shared by both gates.  Returns 0 with the plan filled, -1 when the
+ * clipped region has zero extent (caller logs and skips). */
+int mglRenderCppBlitFramebufferPlan(
+    double src_x0,
+    double src_x1,
+    double src_y0,
+    double src_y1,
+    double dst_x0,
+    double dst_x1,
+    double dst_y0,
+    double dst_y1,
+    uint32_t src_tex_w,
+    uint32_t src_tex_h,
+    uint32_t dst_tex_w,
+    uint32_t dst_tex_h,
+    int needs_format_conversion_blit,
+    int needs_render_target_sync_blit,
+    int scissor_test_enabled,
+    MGLRenderCppBlitFramebufferPlan *out);
+
 typedef struct MGLRenderCppGetTexImagePlan_t {
     int direct_r32_float_read;
     int use_bgra8_conversion;

@@ -2304,6 +2304,71 @@ static int verifyMDIScratchOwner(void) {
     return 0;
 }
 
+static int verifyBlitFramebufferPlan(void) {
+    /* P4.5 (item 1069/1141): glBlitFramebuffer region math + decisions. */
+    MGLRenderCppBlitFramebufferPlan p = {0};
+    if (mglRenderCppBlitFramebufferPlan(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                                        0, 0, 0, NULL) != -1) {
+        fprintf(stderr, "FAIL: blit plan bad args\n");
+        return 1;
+    }
+    /* Identity blit 0..10 -> 0..10 on 100x100 tex, no conversions. */
+    if (mglRenderCppBlitFramebufferPlan(
+            0, 10, 0, 10, 0, 10, 0, 10, 100, 100, 100, 100,
+            0, 0, 0, &p) != 0 ||
+        p.src_x_forward != 1 || p.dst_x_forward != 1 ||
+        p.blit_needs_flip != 0 || p.needs_scaled_blit != 0 ||
+        p.copy_src_x != 0 || p.copy_src_y != 0 ||
+        p.copy_w != 10 || p.copy_h != 10 ||
+        p.src_metal_y != 90 || p.dst_metal_y != 90 ||
+        p.scaled_dst_metal_y != 90.0) {
+        fprintf(stderr, "FAIL: blit plan identity\n");
+        return 1;
+    }
+    /* Y-flipped source (src 10..0) -> needs scaled. */
+    if (mglRenderCppBlitFramebufferPlan(
+            0, 10, 10, 0, 0, 10, 0, 10, 100, 100, 100, 100,
+            0, 0, 0, &p) != 0 ||
+        p.src_y_forward != 0 || p.blit_needs_flip != 1 ||
+        p.needs_scaled_blit != 1 || p.src_min_y != 0.0 ||
+        p.src_max_y != 10.0) {
+        fprintf(stderr, "FAIL: blit plan flip\n");
+        return 1;
+    }
+    /* Size mismatch 10 -> 20 (scaled) with epsilon edge: 10 vs 10.000005
+     * stays direct. */
+    if (mglRenderCppBlitFramebufferPlan(
+            0, 10, 0, 10, 0, 20, 0, 20, 100, 100, 100, 100,
+            0, 0, 0, &p) != 0 ||
+        p.needs_scaled_blit != 1 || p.copy_w != 10) {
+        fprintf(stderr, "FAIL: blit plan scaled\n");
+        return 1;
+    }
+    if (mglRenderCppBlitFramebufferPlan(
+            0, 10, 0, 10, 0, 10.000005, 0, 10, 100, 100, 100, 100,
+            0, 0, 0, &p) != 0 ||
+        p.needs_scaled_blit != 0) {
+        fprintf(stderr, "FAIL: blit plan epsilon\n");
+        return 1;
+    }
+    /* Scissor forces scaled. */
+    if (mglRenderCppBlitFramebufferPlan(
+            0, 10, 0, 10, 0, 10, 0, 10, 100, 100, 100, 100,
+            0, 0, 1, &p) != 0 || p.needs_scaled_blit != 1) {
+        fprintf(stderr, "FAIL: blit plan scissor\n");
+        return 1;
+    }
+    /* Zero-extent clipped region -> -1. */
+    if (mglRenderCppBlitFramebufferPlan(
+            5, 5, 0, 10, 0, 10, 0, 10, 100, 100, 100, 100,
+            0, 0, 0, &p) != -1) {
+        fprintf(stderr, "FAIL: blit plan empty\n");
+        return 1;
+    }
+    printf("BLIT_FRAMEBUFFER_PLAN_OK\n");
+    return 0;
+}
+
 static int verifyPackedTypeClassify(void) {
     /* P4.5 (item 1171/1116): packed-type classification. */
     MGLRenderCppIntegerPackedType p = {0};
@@ -4429,6 +4494,7 @@ int main(void) {
         if (verifyGetTexImagePlan() != 0) return 1;
         if (verifyIntegerReadbackSourceClassify() != 0) return 1;
         if (verifyPackedTypeClassify() != 0) return 1;
+        if (verifyBlitFramebufferPlan() != 0) return 1;
         if (verifyMDIScratchOwner() != 0) return 1;
         if (verifyRenderEncoderGetter() != 0) return 1;
         if (verifyCommandBufferGetterAndAdopt() != 0) return 1;
