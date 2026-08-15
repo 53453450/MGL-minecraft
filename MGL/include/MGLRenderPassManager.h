@@ -6,12 +6,6 @@
 
 #include "glm_context.h"
 
-typedef struct SyncList_t {
-    GLuint count;
-    GLuint size;
-    Sync * _Nullable * _Nullable list;
-} SyncList;
-
 typedef struct MGLCommandState_t {
     void *_Nullable renderPassIdentityOwner;
     void *_Nullable renderPassStateOwner;
@@ -28,7 +22,6 @@ typedef struct MGLCommandState_t {
     void *_Nullable detachedCommandBufferSubmission;
     void *_Nullable detachedCommandBuffer;
     id<MTLCommandBuffer> __strong _Nullable currentCommandBuffer;
-    SyncList *_Nullable currentCommandBufferSyncList;
     void *_Nullable mdiArgsScratchOwner;
     id<MTLBuffer> __strong _Nullable mdiArgsScratchBuffer;
     NSUInteger mdiArgsScratchCapacity;

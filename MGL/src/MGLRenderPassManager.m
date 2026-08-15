@@ -200,74 +200,28 @@ static void mglRenderPassManagerStoreIdentity(
 
 - (BOOL)appendSyncToCurrentCommandBuffer:(Sync *)sync
 {
+    /* P4.5 (item 1141): the tracking list now lives inside the C++
+     * command-buffer owner; this method is a thin adapter.  The list is
+     * advisory only (never read by the wait paths), so the gate-off path
+     * without an owner reports success as before. */
     if (!sync) {
         return NO;
     }
-
-    SyncList *syncList = _state.currentCommandBufferSyncList;
-    if (!syncList) {
-        syncList = (SyncList *)malloc(sizeof(SyncList));
-        if (!syncList) {
-            NSLog(@"MGL SECURITY ERROR: Failed to allocate SyncList");
-            return NO;
-        }
-        syncList->count = 0;
-        syncList->size = 8;
-        syncList->list = (Sync **)malloc(sizeof(Sync *) * syncList->size);
-        if (!syncList->list) {
-            NSLog(@"MGL SECURITY ERROR: Failed to allocate SyncList array");
-            free(syncList);
-            return NO;
-        }
-        _state.currentCommandBufferSyncList = syncList;
+    if (!_state.currentCommandBufferOwner) {
+        return YES;
     }
-
-    if (syncList->count >= syncList->size) {
-        size_t currentSize = (size_t)syncList->size;
-        if (currentSize > SIZE_MAX / 2 / sizeof(Sync *)) {
-            NSLog(@"MGL SECURITY ERROR: SyncList size would overflow, preventing expansion");
-            return NO;
-        }
-
-        size_t newSize = currentSize * 2;
-        Sync **newList = (Sync **)realloc(syncList->list, sizeof(Sync *) * newSize);
-        if (!newList) {
-            NSLog(@"MGL SECURITY ERROR: Failed to reallocate SyncList array");
-            return NO;
-        }
-        syncList->size = (GLuint)newSize;
-        syncList->list = newList;
-    }
-
-    syncList->list[syncList->count++] = sync;
-    return YES;
+    return mglRenderCppCommandBufferOwnerAppendSync(
+               _state.currentCommandBufferOwner, sync) == 0;
 }
 
 - (void)clearCurrentCommandBufferSyncListEntries
 {
-    SyncList *syncList = _state.currentCommandBufferSyncList;
-    if (!syncList) {
+    /* P4.5 (item 1141): entries are never dereferenced — Sync objects are
+     * owned by the GL sync lifecycle. */
+    if (!_state.currentCommandBufferOwner) {
         return;
     }
-
-    GLuint count = syncList->count;
-    GLuint size = syncList->size;
-    if (!syncList->list || size == 0) {
-        NSLog(@"MGL WARNING: Sync list storage invalid (list=%p size=%u), resetting",
-              syncList->list, size);
-        syncList->count = 0;
-        return;
-    }
-
-    if (count > size) {
-        NSLog(@"MGL WARNING: Sync list count overflow (count=%u size=%u), clamping",
-              count, size);
-        count = size;
-    }
-    for (GLuint index = 0; index < count; index++) {
-        syncList->list[index] = NULL;
-    }
-    syncList->count = 0;
+    mglRenderCppCommandBufferOwnerClearSyncs(_state.currentCommandBufferOwner);
 }
 
 - (id<MTLEvent>)preparePendingEventWithDevice:(id<MTLDevice>)device
@@ -572,12 +526,8 @@ static void mglRenderPassManagerStoreIdentity(
     mglRenderCppDestroyRenderPassIdentityOwner(
         &_state.renderPassIdentityOwner);
 
-    if (_state.currentCommandBufferSyncList) {
-        free(_state.currentCommandBufferSyncList->list);
-        free(_state.currentCommandBufferSyncList);
-        _state.currentCommandBufferSyncList = NULL;
-    }
-
+    /* P4.5 (item 1141): sync tracking list lives inside the C++ owner;
+     * the owner destructor frees it. */
     _state.fallbackRenderTargetTexture = nil;
     _state.transientDepthTexture = nil;
     [self clearPendingEvent];

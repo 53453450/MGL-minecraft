@@ -670,12 +670,32 @@ struct CommandQueueOwner {
     MTL::CommandQueue* queue = nullptr;
 };
 
+/* P4.5 (item 1141): the current-CB sync tracking list lives inside the
+ * command-buffer owner (the ObjC MGLCommandState.currentCommandBufferSyncList
+ * mirror is deleted).  Entries are never dereferenced here — Sync objects are
+ * owned by the GL sync lifecycle. */
+struct CommandBufferSyncList {
+    ~CommandBufferSyncList() { free(list); }
+
+    Sync** list = nullptr;
+    uint32_t count = 0;
+    uint32_t size = 0;
+
+    void reset() {
+        if (list && count) {
+            memset(list, 0, sizeof(Sync*) * count);
+        }
+        count = 0;
+    }
+};
+
 struct CommandBufferOwner {
     ~CommandBufferOwner() {
         if (current) current->release();
     }
 
     MTL::CommandBuffer* current = nullptr;
+    CommandBufferSyncList syncs;
 };
 
 struct CommandBufferSubmission {
@@ -5745,6 +5765,7 @@ int mglRenderCppResetCommandBufferOwner(void* owner_handle,
     commandBuffer->retain();
     if (owner->current) owner->current->release();
     owner->current = commandBuffer;
+    owner->syncs.reset();
     *command_buffer_out = commandBuffer;
     return 0;
 }
@@ -5755,6 +5776,7 @@ void mglRenderCppDiscardCommandBufferOwnerCurrent(void* owner_handle) {
     if (!owner || !owner->current) return;
     owner->current->release();
     owner->current = nullptr;
+    owner->syncs.reset();
 }
 
 int mglRenderCppTakeCommandBufferSubmission(void* owner_handle,
@@ -5795,6 +5817,37 @@ void mglRenderCppDestroyCommandBufferSubmission(void** submission_handle) {
         static_cast<mgl::CommandBufferSubmission*>(*submission_handle);
     *submission_handle = nullptr;
     delete submission;
+}
+
+int mglRenderCppCommandBufferOwnerAppendSync(void* owner_handle,
+                                                 Sync* sync) {
+    mgl::CommandBufferOwner* owner =
+        static_cast<mgl::CommandBufferOwner*>(owner_handle);
+    if (!owner || !sync) return -1;
+    mgl::CommandBufferSyncList& list = owner->syncs;
+    if (list.count >= list.size) {
+        const uint32_t old_size = list.size;
+        const uint32_t new_size =
+            old_size ? (old_size > (UINT32_MAX / 2) ? 0u : old_size * 2u) : 8u;
+        if (new_size == 0u ||
+            new_size > (UINT32_MAX / sizeof(Sync*))) {
+            return -1;
+        }
+        Sync** new_list = (Sync**)realloc(
+            list.list, sizeof(Sync*) * (size_t)new_size);
+        if (!new_list) return -1;
+        list.list = new_list;
+        list.size = new_size;
+    }
+    list.list[list.count++] = sync;
+    return 0;
+}
+
+void mglRenderCppCommandBufferOwnerClearSyncs(void* owner_handle) {
+    mgl::CommandBufferOwner* owner =
+        static_cast<mgl::CommandBufferOwner*>(owner_handle);
+    if (!owner) return;
+    owner->syncs.reset();
 }
 
 void mglRenderCppDestroyCommandBufferOwner(void** owner_handle) {

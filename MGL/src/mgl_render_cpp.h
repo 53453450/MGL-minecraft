@@ -1237,6 +1237,9 @@ int mglRenderCppSetRenderPassStateDimensions(
 int mglRenderCppRenderPassUsesColorTexture(void *render_pass_descriptor,
                                            void *texture,
                                            size_t *attachment_index_out);
+/* P4.5 (item 1141): current-CB sync tracking list inside the C++ owner. */
+int mglRenderCppCommandBufferOwnerAppendSync(void *owner_handle, Sync *sync);
+void mglRenderCppCommandBufferOwnerClearSyncs(void *owner_handle);
 int mglRenderCppGetRenderPassStateOwner(
     void *owner, MGLRenderCppRenderPassState *state_out);
 int mglRenderCppCreateRenderEncoderFromStateOwner(
