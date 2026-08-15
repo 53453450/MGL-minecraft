@@ -3062,6 +3062,194 @@ static uint8_t mglCppExpandUNormBitsTo8(uint32_t value, uint32_t bits) {
 }
 
 /* P4.4: legacy packed GL formats -> RGBA8 (pure data transform). */
+/* P4.5 (item 1111): the compat-subsystem helpers the upload-prep path
+ * calls.  mgl_texture_compat.h cannot be included here (its inline helpers
+ * use ObjC-typed MTLPixelFormat), so declare the needed C API locally —
+ * the signatures below are ABI-identical to the ObjC-side definitions. */
+extern "C" {
+GLuint sizeForInternalFormat(GLenum internalformat, GLenum format,
+                             GLenum type);
+bool mglTextureInternalFormatNeedsRGBA8Expansion(GLenum internalformat,
+                                                 uint32_t pixelFormat);
+bool mglTextureNeedsChannelExpansion(GLenum internalformat,
+                                     uint32_t pixelFormat);
+}
+
+/* P4.5 (item 1111): RGB -> RGBA channel expansion (RGBA16/RGBA32 family
+ * backed by RGBA variants).  Table + verification moved verbatim from
+ * mgl_texture_compat.m's mglCreateChannelExpandedUpload (single source of
+ * truth — the ObjC wrapper now delegates here).  malloc'd result; NULL on
+ * bad args / unknown format.  C ABI (the mgl_render_cpp.h decls are inside
+ * extern "C"). */
+extern "C"
+uint8_t* mglRenderCppCreateChannelExpandedUpload(
+    uint32_t internal_format, uint32_t pixel_format, const void* src_data,
+    size_t width, size_t height, size_t src_bytes_per_row,
+    size_t* out_bytes_per_row, size_t* out_bytes_per_image) {
+    if (out_bytes_per_row) *out_bytes_per_row = 0;
+    if (out_bytes_per_image) *out_bytes_per_image = 0;
+    if (!src_data || width == 0 || height == 0 || src_bytes_per_row == 0 ||
+        !out_bytes_per_row || !out_bytes_per_image) {
+        return nullptr;
+    }
+
+    /* Source and destination parameters (bytes per component / pixel). */
+    size_t src_comp_bytes = 0;
+    size_t dst_comp_bytes = 0;
+    size_t src_pixel_bytes = 0;
+    size_t dst_pixel_bytes = 0;
+    uint64_t alpha_default = 0;
+
+    switch ((MTL::PixelFormat)pixel_format) {
+        case MTL::PixelFormatRGBA16Unorm:
+            src_comp_bytes = 2; dst_comp_bytes = 2;
+            src_pixel_bytes = 6; dst_pixel_bytes = 8;
+            alpha_default = 65535; /* 1.0 in unorm16 */
+            break;
+        case MTL::PixelFormatRGBA16Snorm:
+            src_comp_bytes = 2; dst_comp_bytes = 2;
+            src_pixel_bytes = 6; dst_pixel_bytes = 8;
+            alpha_default = 32767; /* 1.0 in snorm16 */
+            break;
+        case MTL::PixelFormatRGBA16Float:
+            src_comp_bytes = 2; dst_comp_bytes = 2;
+            src_pixel_bytes = 6; dst_pixel_bytes = 8;
+            alpha_default = 0x3C00; /* 1.0 in half float */
+            break;
+        case MTL::PixelFormatRGBA16Sint:
+        case MTL::PixelFormatRGBA16Uint:
+            src_comp_bytes = 2; dst_comp_bytes = 2;
+            src_pixel_bytes = 6; dst_pixel_bytes = 8;
+            alpha_default = 1;
+            break;
+        case MTL::PixelFormatRGBA32Float:
+            src_comp_bytes = 4; dst_comp_bytes = 4;
+            src_pixel_bytes = 12; dst_pixel_bytes = 16;
+            { float f = 1.0f; memcpy(&alpha_default, &f, sizeof(f)); }
+            break;
+        case MTL::PixelFormatRGBA32Sint:
+        case MTL::PixelFormatRGBA32Uint:
+            src_comp_bytes = 4; dst_comp_bytes = 4;
+            src_pixel_bytes = 12; dst_pixel_bytes = 16;
+            alpha_default = 1;
+            break;
+        default:
+            return nullptr;
+    }
+
+    /* Verify source pixel bytes match the internal format. */
+    size_t expected_src_bytes =
+        sizeForInternalFormat((GLenum)internal_format, 0, 0);
+    if (expected_src_bytes > 0 && expected_src_bytes != src_pixel_bytes) {
+        /* GL_RGB12: sizeForInternalFormat may differ; stored as 3x16-bit. */
+        if (internal_format != GL_RGB12 || expected_src_bytes != 6) {
+            return nullptr;
+        }
+    }
+
+    if (src_bytes_per_row < width * src_pixel_bytes) {
+        return nullptr;
+    }
+
+    const size_t dst_bytes_per_row = width * dst_pixel_bytes;
+    const size_t dst_bytes_per_image = dst_bytes_per_row * height;
+    if (dst_bytes_per_image == 0 ||
+        dst_bytes_per_image > (512 * 1024 * 1024)) {
+        return nullptr;
+    }
+
+    uint8_t* dst = (uint8_t*)malloc(dst_bytes_per_image);
+    if (!dst) {
+        return nullptr;
+    }
+
+    for (size_t row = 0; row < height; row++) {
+        const uint8_t* src_row =
+            (const uint8_t*)src_data + row * src_bytes_per_row;
+        uint8_t* dst_row = dst + row * dst_bytes_per_row;
+        for (size_t x = 0; x < width; x++) {
+            const uint8_t* src_pixel = src_row + x * src_pixel_bytes;
+            uint8_t* dst_pixel = dst_row + x * dst_pixel_bytes;
+            memcpy(dst_pixel, src_pixel, src_pixel_bytes);
+            memcpy(dst_pixel + src_pixel_bytes, &alpha_default,
+                   dst_comp_bytes);
+        }
+    }
+
+    *out_bytes_per_row = dst_bytes_per_row;
+    *out_bytes_per_image = dst_bytes_per_image;
+    return dst;
+}
+
+/* P4.5 (item 1111): per-level CPU upload data preparation. */
+extern "C"
+int mglRenderCppTexturePrepareLevelUpload(
+    const TextureLevel* level, uint32_t texture_type,
+    uint32_t internal_format, uint32_t pixel_format,
+    MGLRenderCppLevelUploadPrep* out) {
+    if (out) {
+        memset(out, 0, sizeof(*out));
+    }
+    if (!level || !out) {
+        return -1;
+    }
+    const uint64_t width = level->width;
+    const uint64_t height = level->height ? level->height : 1;
+    const uint64_t depth = level->depth ? level->depth : 1;
+    const uint64_t bytes_per_row = level->pitch;
+    const void* src_data = (const void*)(uintptr_t)level->data;
+    if (!src_data || width == 0 || height == 0 || bytes_per_row == 0) {
+        return -1;
+    }
+    const uint64_t copy_depth =
+        ((MTL::TextureType)texture_type == MTL::TextureType3D) ? depth : 1;
+    const uint64_t available_bytes = level->data_size;
+    const uint64_t bytes_per_image =
+        MIN(available_bytes / copy_depth, bytes_per_row * height);
+    out->bytes_per_row = bytes_per_row;
+    out->bytes_per_image = bytes_per_image;
+    out->copy_depth = copy_depth;
+    out->available_bytes = available_bytes;
+    if (available_bytes < bytes_per_image * copy_depth) {
+        return -2;
+    }
+
+    const void* data = src_data;
+    uint64_t bpr = bytes_per_row;
+    uint64_t bpi = bytes_per_image;
+    void* expanded = nullptr;
+    if (mglTextureInternalFormatNeedsRGBA8Expansion(
+            (GLenum)internal_format, pixel_format)) {
+        size_t ebpr = 0;
+        size_t ebpi = 0;
+        expanded = mglRenderCppCreateRGBA8ExpandedUpload(
+            src_data, (size_t)width, (size_t)height,
+            (size_t)bytes_per_row, internal_format, &ebpr, &ebpi);
+        if (expanded) {
+            data = expanded;
+            bpr = ebpr;
+            bpi = ebpi;
+        }
+    } else if (mglTextureNeedsChannelExpansion(
+                   (GLenum)internal_format, pixel_format)) {
+        size_t ebpr = 0;
+        size_t ebpi = 0;
+        expanded = mglRenderCppCreateChannelExpandedUpload(
+            internal_format, pixel_format, src_data, (size_t)width,
+            (size_t)height, (size_t)bytes_per_row, &ebpr, &ebpi);
+        if (expanded) {
+            data = expanded;
+            bpr = ebpr;
+            bpi = ebpi;
+        }
+    }
+    out->data = data;
+    out->bytes_per_row = bpr;
+    out->bytes_per_image = bpi;
+    out->owns_data = expanded ? 1 : 0;
+    return 0;
+}
+
 uint8_t* mglRenderCppCreateRGBA8ExpandedUpload(
     const void* src_data, size_t width, size_t height,
     size_t src_bytes_per_row, uint32_t internal_format,

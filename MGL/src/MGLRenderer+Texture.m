@@ -808,90 +808,55 @@ static void mglTextureCopyTextureToBuffer(
                 continue;
             }
 
-            NSUInteger width = uploadLevel->width;
-            NSUInteger height = MAX((NSUInteger)uploadLevel->height, 1UL);
-            NSUInteger depth = MAX((NSUInteger)uploadLevel->depth, 1UL);
-            NSUInteger bytesPerRow = uploadLevel->pitch;
-            const uint8_t *srcData = (const uint8_t *)(uintptr_t)uploadLevel->data;
-            if (!srcData || width == 0 || height == 0 || bytesPerRow == 0) {
-                failedAny = true;
-                continue;
-            }
-
-            NSUInteger copyDepth = (texture.textureType == MTLTextureType3D) ? depth : 1UL;
-            NSUInteger availableBytes = uploadLevel->data_size;
-            /* For block-compressed formats, `data_size` is the actual byte
-             * count of one block-aligned image (e.g. BC1 32x32 = 512 B), not
-             * bytesPerRow * pixel_height (which would over-count by block_h).
-             * Use the smaller of availableBytes/copyDepth and the linear
-             * stride so neither compressed nor uncompressed uploads overflow. */
-            NSUInteger bytesPerImage = MIN(availableBytes / copyDepth, bytesPerRow * height);
-            void *expandedUploadData = NULL;
-            if (availableBytes < bytesPerImage * copyDepth) {
+            /* P4.5 (item 1111): 逐 level 的 CPU 数据准备（几何计算 + 短后备
+             * 判定 + RGBA8/通道展开选择与执行）在 C++
+             * （mglRenderCppTexturePrepareLevelUpload，纯数据变换，两门共用）。
+             * 返回 -2 表示短后备（level 数据不足一个图像），-1 坏参/拒绝。 */
+            MGLRenderCppLevelUploadPrep prep = {0};
+            int prepResult = mglRenderCppTexturePrepareLevelUpload(
+                uploadLevel,
+                (uint32_t)texture.textureType,
+                (uint32_t)tex->internalformat,
+                (uint32_t)texture.pixelFormat,
+                &prep);
+            if (prepResult == -2) {
                 static uint64_t s_shortBackingLogs = 0;
                 uint64_t hit = ++s_shortBackingLogs;
                 if (kMGLDiagnosticStateLogs &&
                     (hit <= 32ull || (hit % 512ull) == 0ull)) {
-                    mglTraceLogNSString(@"MGL TEXTURE CPU-REFRESH skip short backing tex=%u level=%u face=%d have=%lu need=%lu reason=%s hit=%llu",
+                    mglTraceLogNSString(@"MGL TEXTURE CPU-REFRESH skip short backing tex=%u level=%u face=%d have=%llu need=%llu reason=%s hit=%llu",
                                   (unsigned)tex->name,
                                   (unsigned)level,
                                   face,
-                                  (unsigned long)availableBytes,
-                                  (unsigned long)(bytesPerImage * copyDepth),
+                                  (unsigned long long)prep.available_bytes,
+                                  (unsigned long long)(prep.bytes_per_image * prep.copy_depth),
                                   reason ? reason : "(null)",
                                   (unsigned long long)hit);
                 }
                 failedAny = true;
                 continue;
             }
-
-            if (mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, texture.pixelFormat)) {
-                NSUInteger expandedBytesPerRow = 0;
-                NSUInteger expandedBytesPerImage = 0;
-                expandedUploadData = mglCreateRGBA8ExpandedUpload(tex,
-                                                                  srcData,
-                                                                  width,
-                                                                  height,
-                                                                  bytesPerRow,
-                                                                  &expandedBytesPerRow,
-                                                                  &expandedBytesPerImage);
-                if (expandedUploadData) {
-                    srcData = expandedUploadData;
-                    bytesPerRow = expandedBytesPerRow;
-                    bytesPerImage = expandedBytesPerImage;
-                    availableBytes = expandedBytesPerImage * copyDepth;
-                }
-            } else if (mglTextureNeedsChannelExpansion(tex->internalformat, texture.pixelFormat)) {
-                NSUInteger expandedBytesPerRow = 0;
-                NSUInteger expandedBytesPerImage = 0;
-                expandedUploadData = mglCreateChannelExpandedUpload(tex,
-                                                                     texture.pixelFormat,
-                                                                     srcData,
-                                                                     width,
-                                                                     height,
-                                                                     bytesPerRow,
-                                                                     &expandedBytesPerRow,
-                                                                     &expandedBytesPerImage);
-                if (expandedUploadData) {
-                    srcData = expandedUploadData;
-                    bytesPerRow = expandedBytesPerRow;
-                    bytesPerImage = expandedBytesPerImage;
-                    availableBytes = expandedBytesPerImage * copyDepth;
-                }
+            if (prepResult != 0) {
+                failedAny = true;
+                continue;
             }
 
+            NSUInteger width = MAX((NSUInteger)uploadLevel->width, 1UL);
+            NSUInteger height = MAX((NSUInteger)uploadLevel->height, 1UL);
             bool uploaded = [self uploadTextureSliceViaBlit:texture
                                                     texName:tex->name
                                                  texTarget:tex->target
-                                                     bytes:srcData
-                                               bytesPerRow:bytesPerRow
-                                             bytesPerImage:bytesPerImage
+                                                     bytes:prep.data
+                                               bytesPerRow:(NSUInteger)prep.bytes_per_row
+                                             bytesPerImage:(NSUInteger)prep.bytes_per_image
                                                      width:width
                                                     height:height
-                                                     depth:copyDepth
+                                                     depth:(NSUInteger)prep.copy_depth
                                                      level:level
                                                      slice:0];
-            free(expandedUploadData);
+            if (prep.owns_data) {
+                free((void *)prep.data);
+            }
             if (uploaded) {
                 uploadedAny = true;
             } else {

@@ -10,6 +10,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* Forward decl (mgl_types_texture.h pulls in GLMContext-typed state). */
+typedef struct TextureLevel_t TextureLevel;
+
 typedef struct GLMContextRec_t *GLMContext;
 typedef struct Buffer_t Buffer;
 typedef struct TextureParameter_t TextureParameter;
@@ -333,6 +336,41 @@ int mglRenderCppTextureExpandRGBToRGBA(const void *src,
  * 枚举（R3_G3_B2 / RGB4/5/565 / RGB10/12 / RGBA2/4 / RGB5_A1 / RGB8 变体），
  * 按位展开为 8-bit RGBA（unorm 取整，snorm 1.0=0x7f，整型 a=1）。返回
  * malloc 的 dst（调用方 free），坏参 / 未知格式 / 尺寸超限返回 NULL。 */
+/* P4.5 (item 1111): per-level CPU upload data preparation — pure CPU
+ * transform shared by both gates (the expansion entries it calls are the
+ * same both gates use).  Computes the copy geometry and applies any required
+ * format expansion (RGBA8 / channel) to the level bytes.  Returns:
+ *   0  success (*out filled; data may be owned — free when owns_data=1)
+ *  -1  bad args / rejected level
+ *  -2  short backing store (level data smaller than the image needs;
+ *      *out still carries the computed geometry for diagnostics) */
+typedef struct MGLRenderCppLevelUploadPrep_t {
+    const void *data;         /* borrowed or owned */
+    uint64_t bytes_per_row;
+    uint64_t bytes_per_image;
+    uint64_t copy_depth;
+    uint64_t available_bytes;
+    int owns_data;            /* 1: caller must free((void *)data) */
+} MGLRenderCppLevelUploadPrep;
+
+int mglRenderCppTexturePrepareLevelUpload(
+    const TextureLevel *level,
+    uint32_t texture_type,
+    uint32_t internal_format,
+    uint32_t pixel_format,
+    MGLRenderCppLevelUploadPrep *out);
+
+/* P4.5 (item 1111): RGB → RGBA channel expansion (RGBA16/RGBA32 family
+ * backed by RGBA variants) — the table + verification moved from
+ * mgl_texture_compat.m; malloc'd result, NULL on bad args / unknown format. */
+uint8_t *mglRenderCppCreateChannelExpandedUpload(uint32_t internal_format,
+                                                 uint32_t pixel_format,
+                                                 const void *src_data,
+                                                 size_t width,
+                                                 size_t height,
+                                                 size_t src_bytes_per_row,
+                                                 size_t *out_bytes_per_row,
+                                                 size_t *out_bytes_per_image);
 uint8_t *mglRenderCppCreateRGBA8ExpandedUpload(const void *src_data,
                                                size_t width,
                                                size_t height,

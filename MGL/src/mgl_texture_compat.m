@@ -411,7 +411,7 @@ uint8_t *mglCreateSingleChannelSwizzledUpload(Texture *tex,
 }
 
 bool mglTextureInternalFormatNeedsRGBA8Expansion(GLenum internalformat,
-                                                 MTLPixelFormat pixelFormat)
+                                                 uint32_t pixelFormat)
 {
     /* Metal has no RGB8 pixel format, so GL_RGB8-family internal formats are
      * backed by RGBA8 variants.  The CPU data is 3 bytes/pixel (RGB) but Metal
@@ -453,7 +453,7 @@ bool mglTextureInternalFormatNeedsRGBA8Expansion(GLenum internalformat,
 }
 
 bool mglTextureNeedsChannelExpansion(GLenum internalformat,
-                                     MTLPixelFormat pixelFormat)
+                                     uint32_t pixelFormat)
 {
     /* Only handle non-RGBA8 Metal pixel formats */
     bool isRGBA16Variant =
@@ -496,107 +496,26 @@ uint8_t *mglCreateChannelExpandedUpload(Texture *tex,
                                         NSUInteger *outBytesPerImage)
 {
     if (!tex || !srcData || width == 0 || height == 0 ||
-        srcBytesPerRow == 0 || !outBytesPerRow || !outBytesPerImage) {
+        srcBytesPerRow == 0 || !outBytesPerRow || !outBytesPerImage ||
+        !mglTextureNeedsChannelExpansion(tex->internalformat,
+                                         (uint32_t)pixelFormat)) {
         return NULL;
     }
 
-    /* Determine source and destination parameters */
-    NSUInteger srcCompBytes = 0;  /* bytes per component in source */
-    NSUInteger dstCompBytes = 0;  /* bytes per component in destination */
-    NSUInteger srcPixelBytes = 0; /* bytes per pixel in source (3 channels) */
-    NSUInteger dstPixelBytes = 0; /* bytes per pixel in destination (4 channels) */
-
-    /* Alpha default value as uint64_t to handle all sizes */
-    uint64_t alphaDefault = 0;
-
-    switch (pixelFormat) {
-        case MTLPixelFormatRGBA16Unorm:
-            srcCompBytes = 2; dstCompBytes = 2;
-            srcPixelBytes = 6; dstPixelBytes = 8;
-            alphaDefault = 65535; /* 1.0 in unorm16 */
-            break;
-        case MTLPixelFormatRGBA16Snorm:
-            srcCompBytes = 2; dstCompBytes = 2;
-            srcPixelBytes = 6; dstPixelBytes = 8;
-            alphaDefault = 32767; /* 1.0 in snorm16 */
-            break;
-        case MTLPixelFormatRGBA16Float:
-            srcCompBytes = 2; dstCompBytes = 2;
-            srcPixelBytes = 6; dstPixelBytes = 8;
-            alphaDefault = 0x3C00; /* 1.0 in half float */
-            break;
-        case MTLPixelFormatRGBA16Sint:
-            srcCompBytes = 2; dstCompBytes = 2;
-            srcPixelBytes = 6; dstPixelBytes = 8;
-            alphaDefault = 1;
-            break;
-        case MTLPixelFormatRGBA16Uint:
-            srcCompBytes = 2; dstCompBytes = 2;
-            srcPixelBytes = 6; dstPixelBytes = 8;
-            alphaDefault = 1;
-            break;
-        case MTLPixelFormatRGBA32Float:
-            srcCompBytes = 4; dstCompBytes = 4;
-            srcPixelBytes = 12; dstPixelBytes = 16;
-            { float f = 1.0f; memcpy(&alphaDefault, &f, sizeof(f)); }
-            break;
-        case MTLPixelFormatRGBA32Sint:
-            srcCompBytes = 4; dstCompBytes = 4;
-            srcPixelBytes = 12; dstPixelBytes = 16;
-            alphaDefault = 1;
-            break;
-        case MTLPixelFormatRGBA32Uint:
-            srcCompBytes = 4; dstCompBytes = 4;
-            srcPixelBytes = 12; dstPixelBytes = 16;
-            alphaDefault = 1;
-            break;
-        default:
-            return NULL;
+    /* P4.5 (item 1111): 表格 + 校验 + 展开体在 C++
+     * （mglRenderCppCreateChannelExpandedUpload，纯数据变换，两门共用；
+     * 逐格式位布局与内联版逐字节一致）。 */
+    size_t outBPR = 0;
+    size_t outBPI = 0;
+    uint8_t *result = mglRenderCppCreateChannelExpandedUpload(
+        (uint32_t)tex->internalformat, (uint32_t)pixelFormat,
+        srcData, (size_t)width, (size_t)height, (size_t)srcBytesPerRow,
+        &outBPR, &outBPI);
+    if (result) {
+        *outBytesPerRow = (NSUInteger)outBPR;
+        *outBytesPerImage = (NSUInteger)outBPI;
     }
-
-    /* Verify source pixel bytes match internal format */
-    size_t expectedSrcBytes = sizeForInternalFormat(tex->internalformat, 0, 0);
-    if (expectedSrcBytes > 0 && expectedSrcBytes != srcPixelBytes) {
-        /* For GL_RGB12, sizeForInternalFormat might return a different value.
-         * Use the expected value if it's reasonable. */
-        if (tex->internalformat == GL_RGB12 && expectedSrcBytes == 6) {
-            /* OK - RGB12 is stored as 3x16-bit = 6 bytes */
-        } else if (expectedSrcBytes != srcPixelBytes) {
-            return NULL;
-        }
-    }
-
-    if (srcBytesPerRow < width * srcPixelBytes) {
-        return NULL;
-    }
-
-    NSUInteger dstBytesPerRow = width * dstPixelBytes;
-    NSUInteger dstBytesPerImage = dstBytesPerRow * height;
-    if (dstBytesPerImage == 0 || dstBytesPerImage > (512 * 1024 * 1024)) {
-        return NULL;
-    }
-
-    uint8_t *dst = (uint8_t *)malloc(dstBytesPerImage);
-    if (!dst) {
-        return NULL;
-    }
-
-    for (NSUInteger row = 0; row < height; row++) {
-        const uint8_t *srcRow = srcData + row * srcBytesPerRow;
-        uint8_t *dstRow = dst + row * dstBytesPerRow;
-        for (NSUInteger x = 0; x < width; x++) {
-            const uint8_t *srcPixel = srcRow + x * srcPixelBytes;
-            uint8_t *dstPixel = dstRow + x * dstPixelBytes;
-            /* Copy 3 channels (R, G, B) from source to destination */
-            memcpy(dstPixel, srcPixel, srcPixelBytes);
-            /* Set alpha channel to default value */
-            memcpy(dstPixel + srcPixelBytes, &alphaDefault, dstCompBytes);
-        }
-    }
-
-    *outBytesPerRow = dstBytesPerRow;
-    *outBytesPerImage = dstBytesPerImage;
-    return dst;
+    return result;
 }
 
 uint8_t *mglCreateRGBA8ExpandedUpload(Texture *tex,

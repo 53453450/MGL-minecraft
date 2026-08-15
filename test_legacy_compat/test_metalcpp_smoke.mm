@@ -2089,6 +2089,153 @@ static int verifyCommandBufferOwner(void) {
     return 0;
 }
 
+/* Stub definitions of the compat-subsystem helpers the upload-prep path
+ * calls (the standalone smoke binary does not link mgl_texture_compat.m).
+ * Only the cases exercised by LEVEL_UPLOAD_PREP_OK are implemented; the
+ * production A/B parity is covered by the regression suite. */
+extern "C" {
+GLuint sizeForInternalFormat(GLenum internalformat, GLenum, GLenum) {
+    switch (internalformat) {
+        case GL_RGB16: return 6; /* 3 x 16-bit */
+        case GL_RGB8: return 3;
+        default: return 0;
+    }
+}
+bool mglTextureInternalFormatNeedsRGBA8Expansion(
+    GLenum internalformat, uint32_t pixelFormat) {
+    bool isRGBA8 = (pixelFormat == (uint32_t)MTLPixelFormatRGBA8Unorm ||
+                    pixelFormat == (uint32_t)MTLPixelFormatRGBA8Unorm_sRGB);
+    if (!isRGBA8) return false;
+    switch (internalformat) {
+        case GL_RGB8:
+        case GL_SRGB8:
+        case GL_RGB565:
+            return true;
+        default:
+            return false;
+    }
+}
+bool mglTextureNeedsChannelExpansion(
+    GLenum internalformat, uint32_t pixelFormat) {
+    bool isRGBA16 =
+        (pixelFormat == (uint32_t)MTLPixelFormatRGBA16Unorm ||
+         pixelFormat == (uint32_t)MTLPixelFormatRGBA16Snorm ||
+         pixelFormat == (uint32_t)MTLPixelFormatRGBA16Float);
+    return isRGBA16 && internalformat == GL_RGB16;
+}
+}
+
+static int verifyLevelUploadPrep(void) {
+    /* P4.5 (item 1111): per-level CPU upload data preparation. */
+    /* 2D geometry: 4x4, pitch 16, 64 bytes -> copy_depth 1, bpi 16. */
+    TextureLevel level2d = {0};
+    level2d.complete = GL_TRUE;
+    level2d.width = 4;
+    level2d.height = 4;
+    level2d.depth = 1;
+    level2d.pitch = 16;
+    level2d.data_size = 64;
+    uint8_t backing2d[64] = {0};
+    level2d.data = (vm_address_t)(uintptr_t)backing2d;
+    MGLRenderCppLevelUploadPrep prep = {0};
+    if (mglRenderCppTexturePrepareLevelUpload(
+            &level2d, (uint32_t)MTLTextureType2D,
+            GL_RGBA8, (uint32_t)MTLPixelFormatRGBA8Unorm, &prep) != 0 ||
+        prep.data != backing2d || prep.bytes_per_row != 16 ||
+        prep.bytes_per_image != 64 || prep.copy_depth != 1 ||
+        prep.available_bytes != 64 || prep.owns_data != 0) {
+        fprintf(stderr, "FAIL: prep 2D geometry\n");
+        return 1;
+    }
+    /* 3D geometry: depth 3 -> copy_depth 3, bpi = pitch*height = 64. */
+    TextureLevel level3d = level2d;
+    level3d.depth = 3;
+    level3d.data_size = 192;
+    if (mglRenderCppTexturePrepareLevelUpload(
+            &level3d, (uint32_t)MTLTextureType3D,
+            GL_RGBA8, (uint32_t)MTLPixelFormatRGBA8Unorm, &prep) != 0 ||
+        prep.copy_depth != 3 || prep.bytes_per_image != 64 ||
+        prep.available_bytes != 192) {
+        fprintf(stderr, "FAIL: prep 3D geometry\n");
+        return 1;
+    }
+    /* RGBA8 expansion: GL_RGB8 4x4 pitch 12 (3 B/px) -> 16 B/row, owned. */
+    uint8_t rgb[4 * 4 * 3];
+    for (int i = 0; i < 4 * 4 * 3; i++) rgb[i] = (uint8_t)(i + 1);
+    TextureLevel levelRgb = level2d;
+    levelRgb.pitch = 12;
+    levelRgb.data_size = sizeof(rgb);
+    levelRgb.data = (vm_address_t)(uintptr_t)rgb;
+    if (mglRenderCppTexturePrepareLevelUpload(
+            &levelRgb, (uint32_t)MTLTextureType2D,
+            GL_RGB8, (uint32_t)MTLPixelFormatRGBA8Unorm, &prep) != 0 ||
+        prep.owns_data != 1 || prep.bytes_per_row != 16 ||
+        prep.bytes_per_image != 64) {
+        fprintf(stderr, "FAIL: prep RGBA8 expansion (bpr=%llu bpi=%llu owns=%d)\n",
+                (unsigned long long)prep.bytes_per_row,
+                (unsigned long long)prep.bytes_per_image, prep.owns_data);
+        free((void *)prep.data);
+        return 1;
+    }
+    const uint8_t *expanded = (const uint8_t *)prep.data;
+    if (expanded[0] != 1 || expanded[1] != 2 || expanded[2] != 3 ||
+        expanded[3] != 255) {
+        fprintf(stderr, "FAIL: prep RGBA8 expansion bytes\n");
+        free((void *)prep.data);
+        return 1;
+    }
+    free((void *)prep.data);
+    /* Channel expansion: RGBA16Unorm 2x2 pitch 12 (6 B/px) -> 16 B/row. */
+    uint8_t rgb16[2 * 2 * 6];
+    for (int i = 0; i < 2 * 2 * 6; i++) rgb16[i] = (uint8_t)(i + 1);
+    TextureLevel level16 = level2d;
+    level16.width = 2;
+    level16.height = 2;
+    level16.pitch = 12;
+    level16.data_size = sizeof(rgb16);
+    level16.data = (vm_address_t)(uintptr_t)rgb16;
+    if (mglRenderCppTexturePrepareLevelUpload(
+            &level16, (uint32_t)MTLTextureType2D,
+            GL_RGB16, (uint32_t)MTLPixelFormatRGBA16Unorm, &prep) != 0 ||
+        prep.owns_data != 1 || prep.bytes_per_row != 16) {
+        fprintf(stderr, "FAIL: prep channel expansion\n");
+        free((void *)prep.data);
+        return 1;
+    }
+    expanded = (const uint8_t *)prep.data;
+    /* alpha (bytes 6-7 of the first pixel) = 0xFFFF. */
+    if (expanded[6] != 0xFF || expanded[7] != 0xFF) {
+        fprintf(stderr, "FAIL: prep channel alpha (%02x %02x)\n",
+                expanded[6], expanded[7]);
+        free((void *)prep.data);
+        return 1;
+    }
+    free((void *)prep.data);
+    /* Small backing: the MIN clamp makes bpi <= available (the -2 short-
+     * backing branch is mathematically unreachable in 2D/3D — defensive
+     * parity with the ObjC guard), so the level uploads clamped. */
+    TextureLevel shortLevel = level2d;
+    shortLevel.data_size = 16;
+    int rc = mglRenderCppTexturePrepareLevelUpload(
+        &shortLevel, (uint32_t)MTLTextureType2D,
+        GL_RGBA8, (uint32_t)MTLPixelFormatRGBA8Unorm, &prep);
+    if (rc != 0 || prep.bytes_per_image != 16 || prep.copy_depth != 1 ||
+        prep.available_bytes != 16) {
+        fprintf(stderr, "FAIL: prep small backing (rc=%d)\n", rc);
+        return 1;
+    }
+    /* Bad args. */
+    if (mglRenderCppTexturePrepareLevelUpload(
+            NULL, 0, GL_RGBA8, 0, &prep) != -1 ||
+        mglRenderCppTexturePrepareLevelUpload(
+            &level2d, 0, GL_RGBA8, 0, NULL) != -1) {
+        fprintf(stderr, "FAIL: prep bad args\n");
+        return 1;
+    }
+    printf("LEVEL_UPLOAD_PREP_OK\n");
+    return 0;
+}
+
 static int verifyPendingEventOwner(void) {
     /* P4.5 (item 1141): pending shared-event slot inside the C++ owner. */
     void *owner = NULL;
@@ -3406,6 +3553,7 @@ int main(void) {
         if (verifyCommandQueueOwner() != 0) return 1;
         if (verifyCommandBufferOwner() != 0) return 1;
         if (verifyPendingEventOwner() != 0) return 1;
+        if (verifyLevelUploadPrep() != 0) return 1;
         if (verifyRenderPassIdentityOwner() != 0) return 1;
         if (verifyRenderPassStateOwner(device) != 0) return 1;
         if (verifyTextureStagingOwner() != 0) return 1;

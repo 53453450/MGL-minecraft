@@ -157,10 +157,12 @@ uint8_t *mglCreateSingleChannelSwizzledUpload(Texture *tex,
  * Metal has no RGB8 / RGB16F / RGB32F pixel format — GL RGB-family formats
  * are backed by RGBA variants.  CPU upload data is 3 channels but Metal
  * expects 4, so expansion is required. */
+/* pixelFormat is uint32_t (MTLPixelFormat value) so the C++ TU can call
+ * these; the ABI is unchanged. */
 bool mglTextureInternalFormatNeedsRGBA8Expansion(GLenum internalformat,
-                                                 MTLPixelFormat pixelFormat);
+                                                 uint32_t pixelFormat);
 bool mglTextureNeedsChannelExpansion(GLenum internalformat,
-                                     MTLPixelFormat pixelFormat);
+                                     uint32_t pixelFormat);
 uint32_t mglReadPackedUploadLE(const uint8_t *src, NSUInteger bytes);
 uint8_t mglExpandUNormBitsTo8(uint32_t value, uint32_t bits);
 uint8_t *mglCreateChannelExpandedUpload(Texture *tex,
