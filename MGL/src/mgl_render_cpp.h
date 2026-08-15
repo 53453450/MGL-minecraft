@@ -559,6 +559,12 @@ uint32_t mglRenderCppMTLPrimitiveTypeForGLMode(uint32_t mode);
  * gates; the caller casts to MTLIndexType. */
 uint32_t mglRenderCppMTLIndexTypeForGLType(uint32_t gl_type);
 
+/* P4.5 (item 1141/887): Metal mipmap level dimension — the greatest
+ * 2^(level) divisor of base (base>>level, clamped to 1).  Pure computation
+ * shared by both gates (the ObjC mglMetalTextureLevelDimension keeps the
+ * extern linkage its many callers use). */
+uint64_t mglRenderCppMetalTextureLevelDimension(uint64_t base, uint64_t level);
+
 typedef struct MGLRenderCppThreadgroupSize_t {
     uint32_t x;   /* local workgroup size with 0 resolved to 1 */
     uint32_t y;

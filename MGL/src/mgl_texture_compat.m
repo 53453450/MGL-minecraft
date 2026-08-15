@@ -146,11 +146,10 @@ const char *mglTextureDataKindName(MGLTextureDataKind kind)
 
 NSUInteger mglMetalTextureLevelDimension(NSUInteger base, NSUInteger level)
 {
-    NSUInteger value = MAX((NSUInteger)1u, base);
-    while (level-- > 0u && value > 1u) {
-        value >>= 1u;
-    }
-    return MAX((NSUInteger)1u, value);
+    /* P4.5 (item 1141/887): mip 级维度循环在 C++
+     * （mglRenderCppMetalTextureLevelDimension，两门共用）。 */
+    return (NSUInteger)mglRenderCppMetalTextureLevelDimension(
+        (uint64_t)base, (uint64_t)level);
 }
 
 MGLMetalTextureRef mglSampledTextureViewForBaseLevel(Texture *ptr,

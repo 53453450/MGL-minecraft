@@ -2304,6 +2304,23 @@ static int verifyMDIScratchOwner(void) {
     return 0;
 }
 
+static int verifyLevelDimension(void) {
+    /* P4.5 (item 1141/887): mip level -> level dimension halving. */
+    if (mglRenderCppMetalTextureLevelDimension(1024, 0) != 1024 ||
+        mglRenderCppMetalTextureLevelDimension(1024, 1) != 512 ||
+        mglRenderCppMetalTextureLevelDimension(1024, 10) != 1 ||
+        mglRenderCppMetalTextureLevelDimension(1024, 99) != 1 ||
+        mglRenderCppMetalTextureLevelDimension(1, 0) != 1 ||
+        mglRenderCppMetalTextureLevelDimension(0, 0) != 1 ||
+        mglRenderCppMetalTextureLevelDimension(64, 2) != 16 ||
+        mglRenderCppMetalTextureLevelDimension(65, 1) != 32) {
+        fprintf(stderr, "FAIL: level dimension\n");
+        return 1;
+    }
+    printf("LEVEL_DIMENSION_OK\n");
+    return 0;
+}
+
 static int verifyComputeThreadgroupSize(void) {
     /* P4.5 (item 1147/887): compute threadgroup 0->1 fallback. */
     MGLRenderCppThreadgroupSize t = {0};
@@ -4746,6 +4763,7 @@ int main(void) {
         if (verifyVertexAttribResolve() != 0) return 1;
         if (verifyMetalTypeTables() != 0) return 1;
         if (verifyComputeThreadgroupSize() != 0) return 1;
+        if (verifyLevelDimension() != 0) return 1;
         if (verifyMDIScratchOwner() != 0) return 1;
         if (verifyRenderEncoderGetter() != 0) return 1;
         if (verifyCommandBufferGetterAndAdopt() != 0) return 1;

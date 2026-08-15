@@ -3938,6 +3938,16 @@ uint32_t mglRenderCppMTLIndexTypeForGLType(uint32_t gl_type) {
 }
 
 extern "C"
+uint64_t mglRenderCppMetalTextureLevelDimension(uint64_t base, uint64_t level) {
+    const uint64_t one = 1u;
+    uint64_t value = base > one ? base : one;
+    while (level-- > 0u && value > one) {
+        value >>= 1u;
+    }
+    return value > one ? value : one;
+}
+
+extern "C"
 int mglRenderCppResolveVertexAttribBinding(
     uint32_t binding_index, int binding_has_buffer,
     int64_t binding_offset, uint32_t binding_stride,
