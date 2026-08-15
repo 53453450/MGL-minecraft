@@ -371,6 +371,37 @@ int mglRenderCppCopyBackCPUPrefix(
  *  -1  bad args / rejected level
  *  -2  short backing store (level data smaller than the image needs;
  *      *out still carries the computed geometry for diagnostics) */
+typedef struct MGLRenderCppIntegerReadbackConvertParams_t {
+    const uint8_t *src;
+    uint64_t src_bytes_per_row;
+    uint32_t source_component_count;
+    uint32_t source_component_bytes;
+    int source_signed;
+    int source_rgb10a2_uint;
+    uint32_t copy_w;
+    uint32_t copy_h;
+    uint8_t *dst;
+    uint64_t dst_bytes_per_row;
+    uint64_t dst_pixel_bytes;
+    uint64_t dst_x;
+    uint64_t dst_y;
+    uint32_t output_components;
+    const int *component_map;
+    uint32_t output_component_bytes;
+    uint32_t packed_type;
+    int is_packed_type;
+    const uint32_t *packed_bit_widths;
+    const uint32_t *packed_shifts;
+    uint32_t packed_output_bytes;
+} MGLRenderCppIntegerReadbackConvertParams;
+
+/* P4.5 (item 1171/1116): integer texture readback CPU conversion — the
+ * per-pixel component extraction + GL_INTEGER packing/clamping loop of
+ * mglReadIntegerTextureAsRGBA32, as a pure data transformation shared by
+ * both gates.  Returns 0 on success, -1 on bad args. */
+int mglRenderCppConvertIntegerReadback(
+    const MGLRenderCppIntegerReadbackConvertParams *params);
+
 typedef struct MGLRenderCppLevelUploadOp_t {
     uint32_t level;
     uint32_t kind;          /* 0 = upload op, 1 = short-backing (skip) */

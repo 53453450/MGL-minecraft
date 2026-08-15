@@ -3250,6 +3250,140 @@ uint8_t* mglRenderCppCreateChannelExpandedUpload(
     return dst;
 }
 
+/* P4.5 (item 1171/1116): integer readback CPU conversion — pure data
+ * transformation shared by both gates.  Semantics copied verbatim from
+ * mglReadIntegerTextureAsRGBA32 (clamping per GL_INTEGER packing rules). */
+extern "C"
+int mglRenderCppConvertIntegerReadback(
+    const MGLRenderCppIntegerReadbackConvertParams* p) {
+    if (!p || !p->src || !p->dst || !p->component_map ||
+        !p->packed_bit_widths || !p->packed_shifts) {
+        return -1;
+    }
+    const uint32_t src_pixel_bytes =
+        p->source_rgb10a2_uint ? 4u :
+        p->source_component_count * p->source_component_bytes;
+    for (uint32_t y = 0; y < p->copy_h; y++) {
+        const uint8_t* srcRow = p->src + (uint64_t)y * p->src_bytes_per_row;
+        uint64_t outputY = p->dst_y + y;
+        uint8_t* dstRow = (uint8_t *)p->dst + outputY * p->dst_bytes_per_row;
+        for (uint32_t x = 0; x < p->copy_w; x++) {
+            const uint8_t* s = srcRow + x * src_pixel_bytes;
+            uint8_t* d = dstRow + (p->dst_x + x) * p->dst_pixel_bytes;
+
+            /* Extract source component values (up to 4). */
+            uint32_t srcValues[4] = {0, 0, 0, 0};
+            for (uint32_t sc = 0; sc < p->source_component_count && sc < 4u; sc++) {
+                if (p->source_rgb10a2_uint) {
+                    uint32_t packed = *(const uint32_t *)(const void *)s;
+                    static const uint8_t rgb10a2_shifts[4] = {0u, 10u, 20u, 30u};
+                    static const uint32_t rgb10a2_masks[4] = {0x3ffu, 0x3ffu, 0x3ffu, 0x3u};
+                    srcValues[sc] = (packed >> rgb10a2_shifts[sc]) & rgb10a2_masks[sc];
+                } else if (p->source_component_bytes == 1u) {
+                    srcValues[sc] = p->source_signed
+                        ? (uint32_t)(int32_t)*(const int8_t *)(const void *)(s + sc)
+                        : (uint32_t)s[sc];
+                } else if (p->source_component_bytes == 2u) {
+                    srcValues[sc] = p->source_signed
+                        ? (uint32_t)(int32_t)*(const int16_t *)(const void *)(s + sc * 2u)
+                        : (uint32_t)*(const uint16_t *)(const void *)(s + sc * 2u);
+                } else {
+                    srcValues[sc] = *(const uint32_t *)(const void *)(s + sc * 4u);
+                }
+            }
+
+            if (p->is_packed_type) {
+                /* Pack values into the packed format.
+                 * Per OpenGL spec, integer values are CLAMPED to the bit width, not masked. */
+                uint32_t packed = 0u;
+                for (uint32_t c = 0; c < p->output_components && c < 4u; c++) {
+                    int srcIdx = (c < 4u) ? p->component_map[c] : -1;
+                    uint32_t val = 0u;
+                    if (srcIdx >= 0 && (uint32_t)srcIdx < p->source_component_count) {
+                        val = srcValues[srcIdx];
+                    }
+                    /* Clamp to bit width (not mask). */
+                    uint32_t maxVal = (p->packed_bit_widths[c] >= 32u) ? 0xFFFFFFFFu : ((1u << p->packed_bit_widths[c]) - 1u);
+                    if (val > maxVal) val = maxVal;
+                    packed |= val << p->packed_shifts[c];
+                }
+                if (p->packed_output_bytes == 1u) {
+                    d[0] = (uint8_t)packed;
+                } else if (p->packed_output_bytes == 2u) {
+                    ((uint16_t *)(void *)d)[0] = (uint16_t)packed;
+                } else {
+                    ((uint32_t *)(void *)d)[0] = packed;
+                }
+            } else {
+                /* Non-packed: write each component individually.
+                 * Per OpenGL spec, integer values are CLAMPED to the output type range. */
+                for (uint32_t c = 0; c < p->output_components; c++) {
+                    int srcIdx = (c < 4u) ? p->component_map[c] : -1;
+                    uint32_t value = 0u;
+                    if (srcIdx >= 0 && (uint32_t)srcIdx < p->source_component_count) {
+                        value = srcValues[srcIdx];
+                    }
+                    if (p->output_component_bytes == 1u) {
+                        if (p->packed_type == GL_BYTE) {
+                            /* Signed byte: clamp to [-128, 127].
+                             * If source is unsigned, values > 127 must clamp
+                             * to 127 (not wrap to negative via int32_t cast). */
+                            if (p->source_signed) {
+                                int32_t sv = (int32_t)value;
+                                if (sv > 127) sv = 127;
+                                if (sv < -128) sv = -128;
+                                d[c] = (uint8_t)(int8_t)sv;
+                            } else {
+                                if (value > 127u) value = 127u;
+                                d[c] = (uint8_t)value;
+                            }
+                        } else {
+                            /* Unsigned byte: clamp to [0, 255] */
+                            if (value > 255u) value = 255u;
+                            d[c] = (uint8_t)value;
+                        }
+                    } else if (p->output_component_bytes == 2u) {
+                        if (p->packed_type == GL_SHORT) {
+                            /* Signed short: clamp to [-32768, 32767].
+                             * See comment above re: unsigned source. */
+                            if (p->source_signed) {
+                                int32_t sv = (int32_t)value;
+                                if (sv > 32767) sv = 32767;
+                                if (sv < -32768) sv = -32768;
+                                ((uint16_t *)(void *)d)[c] = (uint16_t)(int16_t)sv;
+                            } else {
+                                if (value > 32767u) value = 32767u;
+                                ((uint16_t *)(void *)d)[c] = (uint16_t)value;
+                            }
+                        } else {
+                            /* Unsigned short: clamp to [0, 65535] */
+                            if (value > 65535u) value = 65535u;
+                            ((uint16_t *)(void *)d)[c] = (uint16_t)value;
+                        }
+                    } else {
+                        if (p->packed_type == GL_INT) {
+                            /* Signed int: if source is unsigned, clamp to
+                             * [0, INT32_MAX] to avoid wrap. */
+                            if (p->source_signed) {
+                                ((uint32_t *)(void *)d)[c] = value;
+                            } else {
+                                if (value > 0x7FFFFFFFu) value = 0x7FFFFFFFu;
+                                ((uint32_t *)(void *)d)[c] = value;
+                            }
+                        } else {
+                            /* Unsigned int: clamp to [0, 4294967295] */
+                            ((uint32_t *)(void *)d)[c] = value;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+
+    return 0;
+}
+
 extern "C"
 int mglRenderCppBuildLevelUploadOps(
     const TextureLevel* levels, uint32_t level_count,

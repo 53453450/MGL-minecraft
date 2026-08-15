@@ -2281,6 +2281,89 @@ static int verifyMDIScratchOwner(void) {
     return 0;
 }
 
+static int verifyIntegerReadbackConvert(void) {
+    /* P4.5 (item 1171/1116): integer readback CPU conversion in C++. */
+    const uint32_t packed_bit_widths[4] = {10u, 10u, 10u, 2u};
+    const uint32_t packed_shifts[4] = {0u, 10u, 20u, 30u};
+
+    /* Case 1: non-packed RGBA8Uint -> GL_RGBA_INTEGER/GL_UNSIGNED_INT. */
+    uint8_t src1[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+    uint32_t dst1[8] = {0};
+    int map1[4] = {0, 1, 2, 3};
+    MGLRenderCppIntegerReadbackConvertParams p1 = {
+        .src = src1, .src_bytes_per_row = 8,
+        .source_component_count = 4, .source_component_bytes = 1,
+        .source_signed = 0, .source_rgb10a2_uint = 0,
+        .copy_w = 2, .copy_h = 1,
+        .dst = (uint8_t *)dst1, .dst_bytes_per_row = 16,
+        .dst_pixel_bytes = 16, .dst_x = 0, .dst_y = 0,
+        .output_components = 4, .component_map = map1,
+        .output_component_bytes = 4, .packed_type = GL_UNSIGNED_INT,
+        .is_packed_type = 0, .packed_bit_widths = packed_bit_widths,
+        .packed_shifts = packed_shifts, .packed_output_bytes = 4,
+    };
+    if (mglRenderCppConvertIntegerReadback(&p1) != 0 ||
+        dst1[0] != 1 || dst1[1] != 2 || dst1[2] != 3 || dst1[3] != 4 ||
+        dst1[4] != 5 || dst1[5] != 6 || dst1[6] != 7 || dst1[7] != 8) {
+        fprintf(stderr, "FAIL: integer readback non-packed\n");
+        return 1;
+    }
+
+    /* Case 2: packed 2_10_10_10_REV. */
+    uint32_t dst2 = 0;
+    MGLRenderCppIntegerReadbackConvertParams p2 = p1;
+    p2.copy_w = 1;
+    p2.dst = (uint8_t *)&dst2;
+    p2.dst_bytes_per_row = 4;
+    p2.dst_pixel_bytes = 4;
+    p2.packed_type = GL_UNSIGNED_INT_2_10_10_10_REV;
+    p2.is_packed_type = 1;
+    p2.packed_output_bytes = 4;
+    if (mglRenderCppConvertIntegerReadback(&p2) != 0 ||
+        dst2 != (1u | (2u << 10) | (3u << 20) | (3u << 30))) {
+        fprintf(stderr, "FAIL: integer readback packed (got 0x%x)\n", dst2);
+        return 1;
+    }
+
+    /* Case 3: unsigned-source clamp — R8Uint value 255 -> GL_BYTE clamps to
+     * 127 (unsigned source must not wrap via int32_t cast).  A signed source
+     * value 200 (= -56 as int8) is in-range and passes through unchanged. */
+    uint8_t src3[1] = {255};
+    uint8_t dst3 = 0;
+    int map3[1] = {0};
+    MGLRenderCppIntegerReadbackConvertParams p3 = {
+        .src = src3, .src_bytes_per_row = 1,
+        .source_component_count = 1, .source_component_bytes = 1,
+        .source_signed = 0, .source_rgb10a2_uint = 0,
+        .copy_w = 1, .copy_h = 1,
+        .dst = &dst3, .dst_bytes_per_row = 1,
+        .dst_pixel_bytes = 1, .dst_x = 0, .dst_y = 0,
+        .output_components = 1, .component_map = map3,
+        .output_component_bytes = 1, .packed_type = GL_BYTE,
+        .is_packed_type = 0, .packed_bit_widths = packed_bit_widths,
+        .packed_shifts = packed_shifts, .packed_output_bytes = 1,
+    };
+    if (mglRenderCppConvertIntegerReadback(&p3) != 0 || dst3 != 127) {
+        fprintf(stderr, "FAIL: integer readback unsigned clamp (got %u)\n", dst3);
+        return 1;
+    }
+    src3[0] = 200;
+    p3.source_signed = 1;
+    if (mglRenderCppConvertIntegerReadback(&p3) != 0 || dst3 != 200) {
+        fprintf(stderr, "FAIL: integer readback signed in-range (got %u)\n", dst3);
+        return 1;
+    }
+
+    /* Case 4: bad args. */
+    if (mglRenderCppConvertIntegerReadback(NULL) != -1 ||
+        mglRenderCppConvertIntegerReadback(&p1) != 0) {
+        fprintf(stderr, "FAIL: integer readback bad args\n");
+        return 1;
+    }
+    printf("INTEGER_READBACK_CONVERT_OK\n");
+    return 0;
+}
+
 static int verifyLevelUploadOps(void) {
     /* P4.5 (item 1116): the dirty-level loop's iteration + classification
      * moved to mglRenderCppBuildLevelUploadOps. */
@@ -3869,6 +3952,7 @@ int main(void) {
         if (verifyLevelUploadPrep() != 0) return 1;
         if (verifyCopyBackEncode() != 0) return 1;
         if (verifyLevelUploadOps() != 0) return 1;
+        if (verifyIntegerReadbackConvert() != 0) return 1;
         if (verifyMDIScratchOwner() != 0) return 1;
         if (verifyRenderEncoderGetter() != 0) return 1;
         if (verifyCommandBufferGetterAndAdopt() != 0) return 1;

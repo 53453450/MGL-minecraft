@@ -1497,8 +1497,8 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
 
     /* Determine output pixel bytes for packed types. */
     BOOL isPackedType = NO;
-    NSUInteger packedBitWidths[4] = {0, 0, 0, 0};
-    NSUInteger packedShifts[4] = {0, 0, 0, 0};
+    uint32_t packedBitWidths[4] = {0, 0, 0, 0};
+    uint32_t packedShifts[4] = {0, 0, 0, 0};
     NSUInteger packedTotalBits = 0u;
     NSUInteger packedOutputBytes = 0u;
 
@@ -1645,130 +1645,38 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
     _lastCommittedCB = (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner);
     mglTextureWaitCommandBuffer((__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
 
-    const uint8_t *src = (const uint8_t *)readBuffer.contents;
     NSUInteger dstX = (NSUInteger)(minX - (NSInteger)region.origin.x);
     NSUInteger dstY = (NSUInteger)(minY - (NSInteger)region.origin.y);
-    /* No output Y-flip: the source Y-flip above (conditional on isRenderTarget)
-     * already ensures the staging buffer rows are in the correct order for GL.
-     * The original behavior (before the isRenderTarget parameter was added) did
-     * not Y-flip the output, and adding an output Y-flip for render targets
-     * reverses the row order and breaks tests that read back render-target
-     * textures via glGetTexImage (e.g. direct_state_access.textures_storage_multisample). */
-    for (NSUInteger y = 0; y < (NSUInteger)copyH; y++) {
-        const uint8_t *srcRow = src + y * srcBytesPerRow;
-        NSUInteger outputY = dstY + y;
-        uint8_t *dstRow = (uint8_t *)pixelBytes + outputY * bytesPerRow;
-        for (NSUInteger x = 0; x < (NSUInteger)copyW; x++) {
-            const uint8_t *s = srcRow + x * srcPixelBytes;
-            uint8_t *d = dstRow + (dstX + x) * dstPixelBytes;
-
-            /* Extract source component values (up to 4). */
-            uint32_t srcValues[4] = {0, 0, 0, 0};
-            for (NSUInteger sc = 0; sc < componentCount && sc < 4u; sc++) {
-                if (sourceRGB10A2Uint) {
-                    uint32_t packed = *(const uint32_t *)(const void *)s;
-                    static const uint8_t rgb10a2_shifts[4] = {0u, 10u, 20u, 30u};
-                    static const uint32_t rgb10a2_masks[4] = {0x3ffu, 0x3ffu, 0x3ffu, 0x3u};
-                    srcValues[sc] = (packed >> rgb10a2_shifts[sc]) & rgb10a2_masks[sc];
-                } else if (sourceComponentBytes == 1u) {
-                    srcValues[sc] = sourceSigned
-                        ? (uint32_t)(int32_t)*(const int8_t *)(const void *)(s + sc)
-                        : (uint32_t)s[sc];
-                } else if (sourceComponentBytes == 2u) {
-                    srcValues[sc] = sourceSigned
-                        ? (uint32_t)(int32_t)*(const int16_t *)(const void *)(s + sc * 2u)
-                        : (uint32_t)*(const uint16_t *)(const void *)(s + sc * 2u);
-                } else {
-                    srcValues[sc] = *(const uint32_t *)(const void *)(s + sc * 4u);
-                }
-            }
-
-            if (isPackedType) {
-                /* Pack values into the packed format.
-                 * Per OpenGL spec, integer values are CLAMPED to the bit width, not masked. */
-                uint32_t packed = 0u;
-                for (NSUInteger c = 0; c < outputComponents && c < 4u; c++) {
-                    int srcIdx = (c < 4u) ? componentMap[c] : -1;
-                    uint32_t val = 0u;
-                    if (srcIdx >= 0 && (NSUInteger)srcIdx < componentCount) {
-                        val = srcValues[srcIdx];
-                    }
-                    /* Clamp to bit width (not mask). */
-                    uint32_t maxVal = (packedBitWidths[c] >= 32u) ? 0xFFFFFFFFu : ((1u << packedBitWidths[c]) - 1u);
-                    if (val > maxVal) val = maxVal;
-                    packed |= val << packedShifts[c];
-                }
-                if (packedOutputBytes == 1u) {
-                    d[0] = (uint8_t)packed;
-                } else if (packedOutputBytes == 2u) {
-                    ((uint16_t *)(void *)d)[0] = (uint16_t)packed;
-                } else {
-                    ((uint32_t *)(void *)d)[0] = packed;
-                }
-            } else {
-                /* Non-packed: write each component individually.
-                 * Per OpenGL spec, integer values are CLAMPED to the output type range. */
-                for (NSUInteger c = 0; c < outputComponents; c++) {
-                    int srcIdx = (c < 4u) ? componentMap[c] : -1;
-                    uint32_t value = 0u;
-                    if (srcIdx >= 0 && (NSUInteger)srcIdx < componentCount) {
-                        value = srcValues[srcIdx];
-                    }
-                    if (outputComponentBytes == 1u) {
-                        if (packedType == GL_BYTE) {
-                            /* Signed byte: clamp to [-128, 127].
-                             * If source is unsigned, values > 127 must clamp
-                             * to 127 (not wrap to negative via int32_t cast). */
-                            if (sourceSigned) {
-                                int32_t sv = (int32_t)value;
-                                if (sv > 127) sv = 127;
-                                if (sv < -128) sv = -128;
-                                d[c] = (uint8_t)(int8_t)sv;
-                            } else {
-                                if (value > 127u) value = 127u;
-                                d[c] = (uint8_t)value;
-                            }
-                        } else {
-                            /* Unsigned byte: clamp to [0, 255] */
-                            if (value > 255u) value = 255u;
-                            d[c] = (uint8_t)value;
-                        }
-                    } else if (outputComponentBytes == 2u) {
-                        if (packedType == GL_SHORT) {
-                            /* Signed short: clamp to [-32768, 32767].
-                             * See comment above re: unsigned source. */
-                            if (sourceSigned) {
-                                int32_t sv = (int32_t)value;
-                                if (sv > 32767) sv = 32767;
-                                if (sv < -32768) sv = -32768;
-                                ((uint16_t *)(void *)d)[c] = (uint16_t)(int16_t)sv;
-                            } else {
-                                if (value > 32767u) value = 32767u;
-                                ((uint16_t *)(void *)d)[c] = (uint16_t)value;
-                            }
-                        } else {
-                            /* Unsigned short: clamp to [0, 65535] */
-                            if (value > 65535u) value = 65535u;
-                            ((uint16_t *)(void *)d)[c] = (uint16_t)value;
-                        }
-                    } else {
-                        if (packedType == GL_INT) {
-                            /* Signed int: if source is unsigned, clamp to
-                             * [0, INT32_MAX] to avoid wrap. */
-                            if (sourceSigned) {
-                                ((uint32_t *)(void *)d)[c] = value;
-                            } else {
-                                if (value > 0x7FFFFFFFu) value = 0x7FFFFFFFu;
-                                ((uint32_t *)(void *)d)[c] = value;
-                            }
-                        } else {
-                            /* Unsigned int: clamp to [0, 4294967295] */
-                            ((uint32_t *)(void *)d)[c] = value;
-                        }
-                    }
-                }
-            }
-        }
+    /* P4.5 (item 1171/1116): 像素级转换（分量提取 + GL_INTEGER 打包/钳制 +
+     * 行拷贝）在 C++（mglRenderCppConvertIntegerReadback——纯数据变换，两门
+     * 共用，语义与内联版逐点等价）。src/dst 参数与上面的 staging/等待逻辑
+     * 一致；blit 源 Y-flip 逻辑保持不变（isRenderTarget 条件）。 */
+    MGLRenderCppIntegerReadbackConvertParams convert = {
+        .src = (const uint8_t *)readBuffer.contents,
+        .src_bytes_per_row = srcBytesPerRow,
+        .source_component_count = (uint32_t)componentCount,
+        .source_component_bytes = (uint32_t)sourceComponentBytes,
+        .source_signed = sourceSigned ? 1 : 0,
+        .source_rgb10a2_uint = sourceRGB10A2Uint ? 1 : 0,
+        .copy_w = (uint32_t)copyW,
+        .copy_h = (uint32_t)copyH,
+        .dst = (uint8_t *)pixelBytes,
+        .dst_bytes_per_row = bytesPerRow,
+        .dst_pixel_bytes = dstPixelBytes,
+        .dst_x = (uint64_t)dstX,
+        .dst_y = (uint64_t)dstY,
+        .output_components = (uint32_t)outputComponents,
+        .component_map = componentMap,
+        .output_component_bytes = (uint32_t)outputComponentBytes,
+        .packed_type = (uint32_t)packedType,
+        .is_packed_type = isPackedType ? 1 : 0,
+        .packed_bit_widths = packedBitWidths,
+        .packed_shifts = packedShifts,
+        .packed_output_bytes = (uint32_t)packedOutputBytes,
+    };
+    if (mglRenderCppConvertIntegerReadback(&convert) != 0) {
+        [self newCommandBuffer];
+        return NO;
     }
 
     [self newCommandBuffer];
