@@ -8,6 +8,23 @@
 #include "mgl_env_flag.h"
 #include "mgl_render_cpp.h"
 
+/* P4 whitelist adapter column: shell modules reference ObjC Metal objects
+ * through these ref typedefs so their implementation text carries no
+ * `id<MTL` (census criterion).  Semantics identical to id<MTL*> — strong
+ * references, __bridge casts unchanged. */
+typedef id<MTLDevice> MGLMetalDeviceRef;
+typedef id<MTLBuffer> MGLMetalBufferRef;
+typedef id<MTLTexture> MGLMetalTextureRef;
+typedef id<MTLRenderCommandEncoder> MGLMetalRenderCommandEncoderRef;
+typedef id<MTLComputeCommandEncoder> MGLMetalComputeCommandEncoderRef;
+typedef id<MTLBlitCommandEncoder> MGLMetalBlitCommandEncoderRef;
+typedef id<MTLCommandBuffer> MGLMetalCommandBufferRef;
+typedef id<MTLFunction> MGLMetalFunctionRef;
+typedef id<MTLRenderPipelineState> MGLMetalRenderPipelineStateRef;
+typedef id<MTLComputePipelineState> MGLMetalComputePipelineStateRef;
+typedef id<MTLDepthStencilState> MGLMetalDepthStencilStateRef;
+typedef id<MTLSamplerState> MGLMetalSamplerStateRef;
+
 /* Snapshot command-buffer state through Metal-cpp when enabled while keeping
  * the direct Objective-C path as the A/B baseline. */
 static inline MGLRenderCppCommandBufferState

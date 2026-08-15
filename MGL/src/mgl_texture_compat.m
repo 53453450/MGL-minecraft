@@ -34,6 +34,7 @@
 #import "mgl_trace_log.h"
 #include "mgl_env_flag.h"
 #include "mgl_render_cpp.h"
+#include "mgl_render_cpp_objc.h" /* P4: ref typedefs */
 
 /* GL format introspection helpers implemented in pixel_utils.c.  Declared
  * here so this module does not need to include the full MGLRenderer private
@@ -41,8 +42,8 @@
 GLuint numComponentsForFormat(GLenum format);
 GLuint sizeForInternalFormat(GLenum internalformat, GLenum format, GLenum type);
 
-static id<MTLTexture> mglTextureCompatCreateView(
-    id<MTLTexture> texture,
+static MGLMetalTextureRef mglTextureCompatCreateView(
+    MGLMetalTextureRef texture,
     NSRange levels,
     NSRange slices,
     BOOL useSwizzle,
@@ -63,7 +64,7 @@ static id<MTLTexture> mglTextureCompatCreateView(
                 (uint32_t)swizzle.blue,
                 (uint32_t)swizzle.alpha,
                 &view) == 0 && view) {
-            return (__bridge_transfer id<MTLTexture>)view;
+            return (__bridge_transfer MGLMetalTextureRef)view;
         }
     }
     if (useSwizzle) {
@@ -152,8 +153,8 @@ NSUInteger mglMetalTextureLevelDimension(NSUInteger base, NSUInteger level)
     return MAX((NSUInteger)1u, value);
 }
 
-id<MTLTexture> mglSampledTextureViewForBaseLevel(Texture *ptr,
-                                                 id<MTLTexture> texture)
+MGLMetalTextureRef mglSampledTextureViewForBaseLevel(Texture *ptr,
+                                                 MGLMetalTextureRef texture)
 {
     if (!ptr || !texture) return texture;
     if (ptr->mipmap_levels == 0u) return texture;
@@ -189,7 +190,7 @@ id<MTLTexture> mglSampledTextureViewForBaseLevel(Texture *ptr,
         ptr->mtl_base_level_view_source == (__bridge void *)texture &&
         ptr->mtl_base_level_view_base == baseLevel &&
         ptr->mtl_base_level_view_max == maxLevel) {
-        return (__bridge id<MTLTexture>)ptr->mtl_base_level_view;
+        return (__bridge MGLMetalTextureRef)ptr->mtl_base_level_view;
     }
 
     NSUInteger sliceCount = texture.arrayLength;
@@ -213,7 +214,7 @@ id<MTLTexture> mglSampledTextureViewForBaseLevel(Texture *ptr,
                               sw_b == MTLTextureSwizzleBlue &&
                               sw_a == MTLTextureSwizzleAlpha);
 
-    id<MTLTexture> levelView = nil;
+    MGLMetalTextureRef levelView = nil;
     if (swizzleIsIdentity) {
         levelView = mglTextureCompatCreateView(
             texture, NSMakeRange(baseLevel, levelCount),

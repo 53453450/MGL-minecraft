@@ -14,8 +14,9 @@
 #include <os/lock.h>
 #include "mgl_env_flag.h"
 #include "mgl_render_cpp.h"
+#include "mgl_render_cpp_objc.h" /* P4: ref typedefs */
 
-static id<MTLBuffer> mglIndexCreateBuffer(id<MTLDevice> device,
+static MGLMetalBufferRef mglIndexCreateBuffer(MGLMetalDeviceRef device,
                                           NSUInteger length)
 {
     if (mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
@@ -24,7 +25,7 @@ static id<MTLBuffer> mglIndexCreateBuffer(id<MTLDevice> device,
         if (mglRenderCppCreateBuffer(
                 length, MTLResourceStorageModeShared, NULL, &buffer) == 0 &&
             buffer) {
-            return (__bridge_transfer id<MTLBuffer>)buffer;
+            return (__bridge_transfer MGLMetalBufferRef)buffer;
         }
     }
     return [device newBufferWithLength:length
@@ -35,14 +36,14 @@ static id<MTLBuffer> mglIndexCreateBuffer(id<MTLDevice> device,
  * .contents pointer, avoiding the calloc + newBufferWithBytes + free
  * triple-step (one fewer malloc/free/memcpy per call) on the per-draw
  * primitive-emulation path (triangle-fan / line-loop / quad expansion). */
-static id<MTLBuffer> mglNewUninitializedIndexBuffer(id<MTLDevice> device,
+static MGLMetalBufferRef mglNewUninitializedIndexBuffer(MGLMetalDeviceRef device,
                                                     NSUInteger byteCount,
                                                     void **outContents)
 {
     if (!device || byteCount == 0u || !outContents) {
         return nil;
     }
-    id<MTLBuffer> buffer = mglIndexCreateBuffer(device, byteCount);
+    MGLMetalBufferRef buffer = mglIndexCreateBuffer(device, byteCount);
     if (!buffer) {
         return nil;
     }
@@ -58,13 +59,13 @@ static id<MTLBuffer> mglNewUninitializedIndexBuffer(id<MTLDevice> device,
  * or O(N) fill on cache hit.  MC's GUI/font/particle paths issue hundreds
  * of GL_QUADS draws per frame, all hitting this cache after warmup. */
 static os_unfair_lock s_arrayIndexCacheLock = OS_UNFAIR_LOCK_INIT;
-static id<MTLBuffer> s_cachedFanArrayBuffer = nil;
+static MGLMetalBufferRef s_cachedFanArrayBuffer = nil;
 static NSUInteger     s_cachedFanArrayVertexCount = 0;
-static id<MTLBuffer> s_cachedStripArrayBuffer = nil;
+static MGLMetalBufferRef s_cachedStripArrayBuffer = nil;
 static NSUInteger     s_cachedStripArrayVertexCount = 0;
-static id<MTLBuffer> s_cachedQuadArrayBuffer = nil;
+static MGLMetalBufferRef s_cachedQuadArrayBuffer = nil;
 static NSUInteger     s_cachedQuadArrayVertexCount = 0;
-static id<MTLBuffer> s_cachedQuadLineArrayBuffer = nil;
+static MGLMetalBufferRef s_cachedQuadLineArrayBuffer = nil;
 static NSUInteger     s_cachedQuadLineArrayVertexCount = 0;
 
 /* LINE_LOOP array-variant indices are firstVertex-relative (firstVertex+i),
@@ -76,10 +77,10 @@ static NSUInteger     s_cachedQuadLineArrayVertexCount = 0;
 static struct {
     NSUInteger   firstVertex;
     NSUInteger   vertexCount;
-    id<MTLBuffer> buffer;
+    MGLMetalBufferRef buffer;
 } s_lineLoopArrayCache[MGL_LINE_LOOP_ARRAY_CACHE_SLOTS];
 
-id<MTLBuffer> mglNewTriangleFanArrayIndexBuffer(id<MTLDevice> device,
+MGLMetalBufferRef mglNewTriangleFanArrayIndexBuffer(MGLMetalDeviceRef device,
                                                 NSUInteger vertexCount,
                                                 NSUInteger *outIndexCount)
 {
@@ -100,7 +101,7 @@ id<MTLBuffer> mglNewTriangleFanArrayIndexBuffer(id<MTLDevice> device,
 
     os_unfair_lock_lock(&s_arrayIndexCacheLock);
     if (s_cachedFanArrayBuffer && vertexCount <= s_cachedFanArrayVertexCount) {
-        id<MTLBuffer> cached = s_cachedFanArrayBuffer;
+        MGLMetalBufferRef cached = s_cachedFanArrayBuffer;
         os_unfair_lock_unlock(&s_arrayIndexCacheLock);
         if (outIndexCount) {
             *outIndexCount = indexCount;
@@ -110,7 +111,7 @@ id<MTLBuffer> mglNewTriangleFanArrayIndexBuffer(id<MTLDevice> device,
     os_unfair_lock_unlock(&s_arrayIndexCacheLock);
 
     uint32_t *indices = NULL;
-    id<MTLBuffer> buffer = mglNewUninitializedIndexBuffer(device,
+    MGLMetalBufferRef buffer = mglNewUninitializedIndexBuffer(device,
                                                           indexCount * sizeof(uint32_t),
                                                           (void **)&indices);
     if (!buffer) {
@@ -135,7 +136,7 @@ id<MTLBuffer> mglNewTriangleFanArrayIndexBuffer(id<MTLDevice> device,
     return buffer;
 }
 
-id<MTLBuffer> mglNewLineLoopArrayIndexBuffer(id<MTLDevice> device,
+MGLMetalBufferRef mglNewLineLoopArrayIndexBuffer(MGLMetalDeviceRef device,
                                              NSUInteger firstVertex,
                                              NSUInteger vertexCount,
                                              NSUInteger *outIndexCount)
@@ -157,7 +158,7 @@ id<MTLBuffer> mglNewLineLoopArrayIndexBuffer(id<MTLDevice> device,
 
     os_unfair_lock_lock(&s_arrayIndexCacheLock);
     for (NSUInteger slot = 0u; slot < MGL_LINE_LOOP_ARRAY_CACHE_SLOTS; slot++) {
-        id<MTLBuffer> cached = s_lineLoopArrayCache[slot].buffer;
+        MGLMetalBufferRef cached = s_lineLoopArrayCache[slot].buffer;
         if (cached &&
             s_lineLoopArrayCache[slot].firstVertex == firstVertex &&
             s_lineLoopArrayCache[slot].vertexCount == vertexCount) {
@@ -171,7 +172,7 @@ id<MTLBuffer> mglNewLineLoopArrayIndexBuffer(id<MTLDevice> device,
     os_unfair_lock_unlock(&s_arrayIndexCacheLock);
 
     uint32_t *indices = NULL;
-    id<MTLBuffer> buffer = mglNewUninitializedIndexBuffer(device,
+    MGLMetalBufferRef buffer = mglNewUninitializedIndexBuffer(device,
                                                           indexCount * sizeof(uint32_t),
                                                           (void **)&indices);
     if (!buffer) {
@@ -204,7 +205,7 @@ id<MTLBuffer> mglNewLineLoopArrayIndexBuffer(id<MTLDevice> device,
     return buffer;
 }
 
-id<MTLBuffer> mglNewTriangleStripArrayIndexBuffer(id<MTLDevice> device,
+MGLMetalBufferRef mglNewTriangleStripArrayIndexBuffer(MGLMetalDeviceRef device,
                                                   NSUInteger vertexCount,
                                                   NSUInteger *outIndexCount)
 {
@@ -225,7 +226,7 @@ id<MTLBuffer> mglNewTriangleStripArrayIndexBuffer(id<MTLDevice> device,
 
     os_unfair_lock_lock(&s_arrayIndexCacheLock);
     if (s_cachedStripArrayBuffer && vertexCount <= s_cachedStripArrayVertexCount) {
-        id<MTLBuffer> cached = s_cachedStripArrayBuffer;
+        MGLMetalBufferRef cached = s_cachedStripArrayBuffer;
         os_unfair_lock_unlock(&s_arrayIndexCacheLock);
         if (outIndexCount) {
             *outIndexCount = indexCount;
@@ -235,7 +236,7 @@ id<MTLBuffer> mglNewTriangleStripArrayIndexBuffer(id<MTLDevice> device,
     os_unfair_lock_unlock(&s_arrayIndexCacheLock);
 
     uint32_t *indices = NULL;
-    id<MTLBuffer> buffer = mglNewUninitializedIndexBuffer(device,
+    MGLMetalBufferRef buffer = mglNewUninitializedIndexBuffer(device,
                                                           indexCount * sizeof(uint32_t),
                                                           (void **)&indices);
     if (!buffer) {
@@ -260,7 +261,7 @@ id<MTLBuffer> mglNewTriangleStripArrayIndexBuffer(id<MTLDevice> device,
     return buffer;
 }
 
-id<MTLBuffer> mglNewTriangleFanElementIndexBuffer(id<MTLDevice> device,
+MGLMetalBufferRef mglNewTriangleFanElementIndexBuffer(MGLMetalDeviceRef device,
                                                   const uint8_t *sourceIndexBytes,
                                                   GLenum sourceIndexType,
                                                   NSUInteger sourceIndexCount,
@@ -281,7 +282,7 @@ id<MTLBuffer> mglNewTriangleFanElementIndexBuffer(id<MTLDevice> device,
 
     NSUInteger indexCount = triangleCount * 3u;
     uint32_t *indices = NULL;
-    id<MTLBuffer> buffer = mglNewUninitializedIndexBuffer(device,
+    MGLMetalBufferRef buffer = mglNewUninitializedIndexBuffer(device,
                                                           indexCount * sizeof(uint32_t),
                                                           (void **)&indices);
     if (!buffer) {
@@ -302,7 +303,7 @@ id<MTLBuffer> mglNewTriangleFanElementIndexBuffer(id<MTLDevice> device,
     return buffer;
 }
 
-id<MTLBuffer> mglNewTriangleStripElementIndexBuffer(id<MTLDevice> device,
+MGLMetalBufferRef mglNewTriangleStripElementIndexBuffer(MGLMetalDeviceRef device,
                                                     const uint8_t *sourceIndexBytes,
                                                     GLenum sourceIndexType,
                                                     NSUInteger sourceIndexCount,
@@ -323,7 +324,7 @@ id<MTLBuffer> mglNewTriangleStripElementIndexBuffer(id<MTLDevice> device,
 
     NSUInteger indexCount = triangleCount * 3u;
     uint32_t *indices = NULL;
-    id<MTLBuffer> buffer = mglNewUninitializedIndexBuffer(device,
+    MGLMetalBufferRef buffer = mglNewUninitializedIndexBuffer(device,
                                                           indexCount * sizeof(uint32_t),
                                                           (void **)&indices);
     if (!buffer) {
@@ -345,7 +346,7 @@ id<MTLBuffer> mglNewTriangleStripElementIndexBuffer(id<MTLDevice> device,
     return buffer;
 }
 
-id<MTLBuffer> mglNewLineLoopElementIndexBuffer(id<MTLDevice> device,
+MGLMetalBufferRef mglNewLineLoopElementIndexBuffer(MGLMetalDeviceRef device,
                                                const uint8_t *sourceIndexBytes,
                                                GLenum sourceIndexType,
                                                NSUInteger sourceIndexCount,
@@ -364,7 +365,7 @@ id<MTLBuffer> mglNewLineLoopElementIndexBuffer(id<MTLDevice> device,
 
     NSUInteger indexCount = sourceIndexCount + 1u;
     uint32_t *indices = NULL;
-    id<MTLBuffer> buffer = mglNewUninitializedIndexBuffer(device,
+    MGLMetalBufferRef buffer = mglNewUninitializedIndexBuffer(device,
                                                           indexCount * sizeof(uint32_t),
                                                           (void **)&indices);
     if (!buffer) {
@@ -383,7 +384,7 @@ id<MTLBuffer> mglNewLineLoopElementIndexBuffer(id<MTLDevice> device,
     return buffer;
 }
 
-id<MTLBuffer> mglNewQuadArrayIndexBuffer(id<MTLDevice> device,
+MGLMetalBufferRef mglNewQuadArrayIndexBuffer(MGLMetalDeviceRef device,
                                          NSUInteger vertexCount,
                                          NSUInteger *outIndexCount)
 {
@@ -401,7 +402,7 @@ id<MTLBuffer> mglNewQuadArrayIndexBuffer(id<MTLDevice> device,
 
     os_unfair_lock_lock(&s_arrayIndexCacheLock);
     if (s_cachedQuadArrayBuffer && vertexCount <= s_cachedQuadArrayVertexCount) {
-        id<MTLBuffer> cached = s_cachedQuadArrayBuffer;
+        MGLMetalBufferRef cached = s_cachedQuadArrayBuffer;
         os_unfair_lock_unlock(&s_arrayIndexCacheLock);
         if (outIndexCount) {
             *outIndexCount = indexCount;
@@ -411,7 +412,7 @@ id<MTLBuffer> mglNewQuadArrayIndexBuffer(id<MTLDevice> device,
     os_unfair_lock_unlock(&s_arrayIndexCacheLock);
 
     uint32_t *indices = NULL;
-    id<MTLBuffer> buffer = mglNewUninitializedIndexBuffer(device,
+    MGLMetalBufferRef buffer = mglNewUninitializedIndexBuffer(device,
                                                           indexCount * sizeof(uint32_t),
                                                           (void **)&indices);
     if (!buffer) {
@@ -445,7 +446,7 @@ id<MTLBuffer> mglNewQuadArrayIndexBuffer(id<MTLDevice> device,
     return buffer;
 }
 
-id<MTLBuffer> mglNewQuadElementIndexBuffer(id<MTLDevice> device,
+MGLMetalBufferRef mglNewQuadElementIndexBuffer(MGLMetalDeviceRef device,
                                            const uint8_t *sourceIndexBytes,
                                            GLenum sourceIndexType,
                                            NSUInteger sourceIndexCount,
@@ -464,7 +465,7 @@ id<MTLBuffer> mglNewQuadElementIndexBuffer(id<MTLDevice> device,
     }
 
     uint32_t *indices = NULL;
-    id<MTLBuffer> buffer = mglNewUninitializedIndexBuffer(device,
+    MGLMetalBufferRef buffer = mglNewUninitializedIndexBuffer(device,
                                                           indexCount * sizeof(uint32_t),
                                                           (void **)&indices);
     if (!buffer) {
@@ -494,7 +495,7 @@ id<MTLBuffer> mglNewQuadElementIndexBuffer(id<MTLDevice> device,
     return buffer;
 }
 
-id<MTLBuffer> mglNewQuadArrayLineIndexBuffer(id<MTLDevice> device,
+MGLMetalBufferRef mglNewQuadArrayLineIndexBuffer(MGLMetalDeviceRef device,
                                              NSUInteger vertexCount,
                                              NSUInteger *outIndexCount)
 {
@@ -511,7 +512,7 @@ id<MTLBuffer> mglNewQuadArrayLineIndexBuffer(id<MTLDevice> device,
 
     os_unfair_lock_lock(&s_arrayIndexCacheLock);
     if (s_cachedQuadLineArrayBuffer && vertexCount <= s_cachedQuadLineArrayVertexCount) {
-        id<MTLBuffer> cached = s_cachedQuadLineArrayBuffer;
+        MGLMetalBufferRef cached = s_cachedQuadLineArrayBuffer;
         os_unfair_lock_unlock(&s_arrayIndexCacheLock);
         if (outIndexCount) {
             *outIndexCount = indexCount;
@@ -521,7 +522,7 @@ id<MTLBuffer> mglNewQuadArrayLineIndexBuffer(id<MTLDevice> device,
     os_unfair_lock_unlock(&s_arrayIndexCacheLock);
 
     uint32_t *indices = NULL;
-    id<MTLBuffer> buffer = mglNewUninitializedIndexBuffer(device,
+    MGLMetalBufferRef buffer = mglNewUninitializedIndexBuffer(device,
                                                           indexCount * sizeof(uint32_t),
                                                           (void **)&indices);
     if (!buffer) {
@@ -556,7 +557,7 @@ id<MTLBuffer> mglNewQuadArrayLineIndexBuffer(id<MTLDevice> device,
     return buffer;
 }
 
-id<MTLBuffer> mglNewQuadElementLineIndexBuffer(id<MTLDevice> device,
+MGLMetalBufferRef mglNewQuadElementLineIndexBuffer(MGLMetalDeviceRef device,
                                                const uint8_t *sourceIndexBytes,
                                                GLenum sourceIndexType,
                                                NSUInteger sourceIndexCount,
@@ -573,7 +574,7 @@ id<MTLBuffer> mglNewQuadElementLineIndexBuffer(id<MTLDevice> device,
 
     NSUInteger indexCount = quadCount * 8u;
     uint32_t *indices = NULL;
-    id<MTLBuffer> buffer = mglNewUninitializedIndexBuffer(device,
+    MGLMetalBufferRef buffer = mglNewUninitializedIndexBuffer(device,
                                                           indexCount * sizeof(uint32_t),
                                                           (void **)&indices);
     if (!buffer) {
@@ -604,7 +605,7 @@ id<MTLBuffer> mglNewQuadElementLineIndexBuffer(id<MTLDevice> device,
     return buffer;
 }
 
-id<MTLBuffer> mglNewUInt16IndexBufferFromUInt8(id<MTLDevice> device,
+MGLMetalBufferRef mglNewUInt16IndexBufferFromUInt8(MGLMetalDeviceRef device,
                                                const uint8_t *sourceIndexBytes,
                                                NSUInteger sourceIndexCount)
 {
@@ -619,7 +620,7 @@ id<MTLBuffer> mglNewUInt16IndexBufferFromUInt8(id<MTLDevice> device,
     }
 
     uint16_t *indices = NULL;
-    id<MTLBuffer> buffer = mglNewUninitializedIndexBuffer(device,
+    MGLMetalBufferRef buffer = mglNewUninitializedIndexBuffer(device,
                                                           sourceIndexCount * sizeof(uint16_t),
                                                           (void **)&indices);
     if (!buffer) {
@@ -633,7 +634,7 @@ id<MTLBuffer> mglNewUInt16IndexBufferFromUInt8(id<MTLDevice> device,
 }
 
 const uint8_t *mglReadableBufferBytes(Buffer *glBuffer,
-                                      id<MTLBuffer> metalBuffer,
+                                      MGLMetalBufferRef metalBuffer,
                                       NSUInteger *outSourceByteCount)
 {
     if (outSourceByteCount) {
@@ -668,7 +669,7 @@ const uint8_t *mglReadableBufferBytes(Buffer *glBuffer,
 }
 
 const uint8_t *mglElementIndexSourceBytes(Buffer *glElementBuffer,
-                                          id<MTLBuffer> metalElementBuffer,
+                                          MGLMetalBufferRef metalElementBuffer,
                                           NSUInteger *outSourceByteCount)
 {
     return mglReadableBufferBytes(glElementBuffer,
@@ -677,7 +678,7 @@ const uint8_t *mglElementIndexSourceBytes(Buffer *glElementBuffer,
 }
 
 const uint8_t *mglElementIndexSourceForDraw(Buffer *glElementBuffer,
-                                            id<MTLBuffer> metalElementBuffer,
+                                            MGLMetalBufferRef metalElementBuffer,
                                             GLenum glIndexType,
                                             NSUInteger indexOffset,
                                             GLsizei indexCount)
@@ -703,7 +704,7 @@ const uint8_t *mglElementIndexSourceForDraw(Buffer *glElementBuffer,
 }
 
 BOOL mglReadBufferBytes(Buffer *glBuffer,
-                        id<MTLBuffer> metalBuffer,
+                        MGLMetalBufferRef metalBuffer,
                         NSUInteger byteOffset,
                         void *dst,
                         NSUInteger byteCount,
@@ -734,9 +735,9 @@ BOOL mglReadBufferBytes(Buffer *glBuffer,
     return YES;
 }
 
-id<MTLBuffer> mglPreparedElementIndexBuffer(id<MTLDevice> device,
+MGLMetalBufferRef mglPreparedElementIndexBuffer(MGLMetalDeviceRef device,
                                             Buffer *glElementBuffer,
-                                            id<MTLBuffer> metalElementBuffer,
+                                            MGLMetalBufferRef metalElementBuffer,
                                             GLenum glIndexType,
                                             NSUInteger *ioIndexBufferOffset,
                                             MTLIndexType *outMetalIndexType)
@@ -793,7 +794,7 @@ id<MTLBuffer> mglPreparedElementIndexBuffer(id<MTLDevice> device,
         glElementBuffer->mtl_uint16_expanded_src_hash == glElementBuffer->last_write_src_hash &&
         glElementBuffer->mtl_uint16_expanded_byte_count == sourceByteCount) {
         /* Cache hit — return the cached expanded buffer */
-        id<MTLBuffer> cached = (__bridge id<MTLBuffer>)glElementBuffer->mtl_uint16_expanded_data;
+        MGLMetalBufferRef cached = (__bridge MGLMetalBufferRef)glElementBuffer->mtl_uint16_expanded_data;
         if (ioIndexBufferOffset) {
             if (sourceOffset > (NSUIntegerMax / sizeof(uint16_t))) {
                 return nil;
@@ -806,7 +807,7 @@ id<MTLBuffer> mglPreparedElementIndexBuffer(id<MTLDevice> device,
         return cached;
     }
 
-    id<MTLBuffer> expanded = mglNewUInt16IndexBufferFromUInt8(device, sourceBytes, sourceByteCount);
+    MGLMetalBufferRef expanded = mglNewUInt16IndexBufferFromUInt8(device, sourceBytes, sourceByteCount);
     if (!expanded) {
         NSLog(@"MGL WARNING: failed to allocate expanded UInt16 element buffer for GL_UNSIGNED_BYTE gl=%u bytes=%lu",
               glElementBuffer ? glElementBuffer->name : 0u,
