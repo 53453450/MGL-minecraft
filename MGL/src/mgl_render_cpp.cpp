@@ -4045,6 +4045,19 @@ uint64_t mglRenderCppHashStepU64(uint64_t hash, uint64_t value) {
 }
 
 extern "C"
+int mglRenderCppPrimitiveRestartFixedIndex(uint64_t gl_index_type, uint32_t* out) {
+    if (!out) {
+        return -1;
+    }
+    switch (gl_index_type) {
+        case GL_UNSIGNED_BYTE: *out = 0xffu; return 1;
+        case GL_UNSIGNED_SHORT: *out = 0xffffu; return 1;
+        case GL_UNSIGNED_INT: *out = 0xffffffffu; return 1;
+        default: return 0;
+    }
+}
+
+extern "C"
 int mglRenderCppScanIndexRangeIgnoringRestart(
     const uint8_t* bytes, uint32_t elem_width, uint32_t count,
     int restart_enabled, uint32_t restart_index,

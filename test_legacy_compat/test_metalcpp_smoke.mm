@@ -2505,6 +2505,21 @@ static int verifyGLIndexValueRead(void) {
     return 0;
 }
 
+static int verifyPrimitiveRestartFixedIndex(void) {
+    /* P4.5 (item 1141): fixed restart index by GL type. */
+    uint32_t idx = 0;
+    if (mglRenderCppPrimitiveRestartFixedIndex(GL_UNSIGNED_BYTE, &idx) != 1 || idx != 0xffu ||
+        mglRenderCppPrimitiveRestartFixedIndex(GL_UNSIGNED_SHORT, &idx) != 1 || idx != 0xffffu ||
+        mglRenderCppPrimitiveRestartFixedIndex(GL_UNSIGNED_INT, &idx) != 1 || idx != 0xffffffffu ||
+        mglRenderCppPrimitiveRestartFixedIndex(0xdead, &idx) != 0 ||
+        mglRenderCppPrimitiveRestartFixedIndex(GL_UNSIGNED_BYTE, NULL) != -1) {
+        fprintf(stderr, "FAIL: fixed restart index\\n");
+        return 1;
+    }
+    printf("RESTART_FIXED_INDEX_OK\\n");
+    return 0;
+}
+
 static int verifyHashStepU64(void) {
     /* P4.5 (item 1144): FNV-1a single step = (h^v)*fF. */
     /* mglHashStepU64(0, 0) = 0*const = 0. */
@@ -5247,6 +5262,7 @@ int main(void) {
         if (verifyAlignStride() != 0) return 1;
         if (verifyDoubleAttribFormat() != 0) return 1;
         if (verifyHashStepU64() != 0) return 1;
+        if (verifyPrimitiveRestartFixedIndex() != 0) return 1;
         if (verifyMDIScratchOwner() != 0) return 1;
         if (verifyRenderEncoderGetter() != 0) return 1;
         if (verifyCommandBufferGetterAndAdopt() != 0) return 1;

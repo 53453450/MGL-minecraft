@@ -706,6 +706,9 @@ uint64_t mglRenderCppAlignVertexStrideForMetal(uint64_t stride);
 uint32_t mglRenderCppDoubleVertexAttribFloatFormat(uint32_t size);
 /* FNV-1a single hash step; matches mglHashStepU64. */
 uint64_t mglRenderCppHashStepU64(uint64_t hash, uint64_t value);
+/* Fixed restart-index for a type; matches the fixed branch of
+ * mglPrimitiveRestartIndexForType.  1 if defined; *out set. */
+int mglRenderCppPrimitiveRestartFixedIndex(uint64_t gl_index_type, uint32_t *out);
 
 typedef struct MGLRenderCppGeometryGatherResult_t {
     uint32_t *gather;          /* malloc'd raw gather (vertex_ids) */

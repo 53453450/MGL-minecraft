@@ -51,6 +51,8 @@ int mglRenderCppScanIndexRangeIgnoringRestart(
     int restart_enabled, uint32_t restart_index,
     uint32_t *out_min, uint32_t *out_max, int *out_valid);
 
+int mglRenderCppPrimitiveRestartFixedIndex(uint64_t gl_index_type, uint32_t *out);
+
 int mglRenderCppComputePreparedIndexByteOffset(uint64_t gl_index_type,
                                                uint64_t gl_byte_offset,
                                                uint64_t *out_prepared_offset);
@@ -106,18 +108,9 @@ static inline bool mglPrimitiveRestartIndexForType(GLMContext ctx,
 
     uint32_t restartIndex = 0u;
     if (ctx->active_state->caps.primitive_restart_fixed_index) {
-        switch (indexType) {
-            case GL_UNSIGNED_BYTE:
-                restartIndex = 0xffu;
-                break;
-            case GL_UNSIGNED_SHORT:
-                restartIndex = 0xffffu;
-                break;
-            case GL_UNSIGNED_INT:
-                restartIndex = 0xffffffffu;
-                break;
-            default:
-                return false;
+        if (mglRenderCppPrimitiveRestartFixedIndex((uint64_t)indexType,
+                                                   &restartIndex) != 1) {
+            return false;
         }
     } else {
         restartIndex = ctx->active_state->var.primitive_restart_index;
