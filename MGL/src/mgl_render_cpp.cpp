@@ -3939,6 +3939,47 @@ uint32_t mglRenderCppReadGLIndexValue(const uint8_t* bytes, uint32_t elem_width,
 }
 
 extern "C"
+uint32_t mglRenderCppVertexAttribComponentSize(uint64_t gl_type) {
+    switch (gl_type) {
+        case GL_BYTE:
+        case GL_UNSIGNED_BYTE:
+            return 1u;
+        case GL_SHORT:
+        case GL_UNSIGNED_SHORT:
+        case GL_HALF_FLOAT:
+            return 2u;
+        case GL_INT:
+        case GL_UNSIGNED_INT:
+        case GL_FLOAT:
+        case GL_FIXED:
+        case GL_INT_2_10_10_10_REV:
+        case GL_UNSIGNED_INT_2_10_10_10_REV:
+            return 4u;
+        case GL_DOUBLE:
+            return 8u;
+        default:
+            return 0u;
+    }
+}
+
+extern "C"
+uint64_t mglRenderCppVertexAttribElementBytes(uint64_t gl_type, uint32_t size) {
+    switch (gl_type) {
+        case GL_INT_2_10_10_10_REV:
+        case GL_UNSIGNED_INT_2_10_10_10_REV:
+        case GL_UNSIGNED_INT_10_10_10_2:
+            return 4u;
+        default: {
+            const uint32_t comp = mglRenderCppVertexAttribComponentSize(gl_type);
+            if (comp == 0u || size == 0u) {
+                return 0u;
+            }
+            return (uint64_t)comp * (uint64_t)size;
+        }
+    }
+}
+
+extern "C"
 int mglRenderCppScanIndexRangeIgnoringRestart(
     const uint8_t* bytes, uint32_t elem_width, uint32_t count,
     int restart_enabled, uint32_t restart_index,

@@ -55,34 +55,16 @@ extern "C" {
 uint32_t mglRenderCppGLIndexElementSize(uint64_t gl_index_type);
 uint32_t mglRenderCppReadGLIndexValue(const uint8_t *bytes, uint32_t elem_width,
                                       uint64_t element_index);
+uint32_t mglRenderCppVertexAttribComponentSize(uint64_t gl_type);
+uint64_t mglRenderCppVertexAttribElementBytes(uint64_t gl_type, uint32_t size);
 
 /* === Vertex format mapping (static inline, hot-path) === */
 
 /* GL vertex attribute component size in bytes (1/2/4/8).  Returns 0 for
- * unknown types. */
+ * unknown types.  Pure logic lives in mgl_render_cpp.cpp. */
 static inline size_t mglVertexAttribComponentSize(GLenum type)
 {
-    switch (type)
-    {
-        case GL_BYTE:
-        case GL_UNSIGNED_BYTE:
-            return 1u;
-        case GL_SHORT:
-        case GL_UNSIGNED_SHORT:
-        case GL_HALF_FLOAT:
-            return 2u;
-        case GL_INT:
-        case GL_UNSIGNED_INT:
-        case GL_FLOAT:
-        case GL_FIXED:
-        case GL_INT_2_10_10_10_REV:
-        case GL_UNSIGNED_INT_2_10_10_10_REV:
-            return 4u;
-        case GL_DOUBLE:
-            return 8u;
-        default:
-            return 0u;
-    }
+    return (size_t)mglRenderCppVertexAttribComponentSize((uint64_t)type);
 }
 
 /* GL index element size in bytes (1/2/4).  Returns 0 for unknown types. */
@@ -102,22 +84,11 @@ static inline uint32_t mglReadGLIndexValue(const uint8_t *indexBytes,
 }
 
 /* Total bytes for a vertex attrib element (type × size), with special
- * handling for packed 10_10_10_2 formats.  Returns 0 for unknown. */
+ * handling for packed 10_10_10_2 formats.  Returns 0 for unknown.
+ * Pure logic lives in mgl_render_cpp.cpp. */
 static inline size_t mglVertexAttribElementBytes(GLenum type, GLuint size)
 {
-    switch (type) {
-        case GL_INT_2_10_10_10_REV:
-        case GL_UNSIGNED_INT_2_10_10_10_REV:
-        case GL_UNSIGNED_INT_10_10_10_2:
-            return 4u;
-        default: {
-            size_t comp = mglVertexAttribComponentSize(type);
-            if (comp == 0u || size == 0u) {
-                return 0u;
-            }
-            return comp * (size_t)size;
-        }
-    }
+    return (size_t)mglRenderCppVertexAttribElementBytes((uint64_t)type, (uint32_t)size);
 }
 
 /* Maps a GL double attrib size to the corresponding MTLVertexFormat (Float

@@ -2505,6 +2505,27 @@ static int verifyGLIndexValueRead(void) {
     return 0;
 }
 
+static int verifyVertexAttribBytes(void) {
+    /* P4.5 (item 1141): vertex-attribute component size + element bytes. */
+    uint32_t comp = mglRenderCppVertexAttribComponentSize(GL_UNSIGNED_BYTE);
+    uint32_t compf = mglRenderCppVertexAttribComponentSize(GL_FLOAT);
+    uint32_t compd = mglRenderCppVertexAttribComponentSize(GL_DOUBLE);
+    if (comp != 1 || compf != 4 || compd != 8 ||
+        mglRenderCppVertexAttribComponentSize(0xbad) != 0) {
+        fprintf(stderr, "FAIL: attrib comp size\\n");
+        return 1;
+    }
+    if (mglRenderCppVertexAttribElementBytes(GL_FLOAT, 3) != 12 ||
+        mglRenderCppVertexAttribElementBytes(GL_UNSIGNED_INT_2_10_10_10_REV, 4) != 4 ||
+        mglRenderCppVertexAttribElementBytes(GL_FLOAT, 0) != 0 ||
+        mglRenderCppVertexAttribElementBytes(0xbad, 3) != 0) {
+        fprintf(stderr, "FAIL: attrib element bytes\\n");
+        return 1;
+    }
+    printf("VERTEX_ATTRIB_BYTES_OK\\n");
+    return 0;
+}
+
 static int verifyComputeIndexByteOffset(void) {
     /* P.5 (item 1141): base + first*stride with overflow checks. */
     uint64_t out = 0u;
@@ -5144,6 +5165,7 @@ int main(void) {
         if (verifyComputePreparedByteOffset() != 0) return 1;
         if (verifyComputeIndexByteOffset() != 0) return 1;
         if (verifyGLIndexValueRead() != 0) return 1;
+        if (verifyVertexAttribBytes() != 0) return 1;
         if (verifyMDIScratchOwner() != 0) return 1;
         if (verifyRenderEncoderGetter() != 0) return 1;
         if (verifyCommandBufferGetterAndAdopt() != 0) return 1;

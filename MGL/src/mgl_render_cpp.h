@@ -676,6 +676,15 @@ uint32_t mglRenderCppGLIndexElementSize(uint64_t gl_index_type);
 uint32_t mglRenderCppReadGLIndexValue(const uint8_t *bytes, uint32_t elem_width,
                                       uint64_t element_index);
 
+/* P4.5 (item 1141/887): GL vertex-attribute component size in bytes (1/2/4/8).
+ * Matches mglVertexAttribComponentSize.  Returns 0 for unknown. */
+uint32_t mglRenderCppVertexAttribComponentSize(uint64_t gl_type);
+
+/* P4.5 (item 1141/887): total bytes for a vertex-attribute element (type x
+ * size), with special handling for packed 10_10_10_2 formats.  Matches
+ * mglVertexAttribElementBytes.  Returns 0 for unknown / zero size. */
+uint64_t mglRenderCppVertexAttribElementBytes(uint64_t gl_type, uint32_t size);
+
 typedef struct MGLRenderCppGeometryGatherResult_t {
     uint32_t *gather;          /* malloc'd raw gather (vertex_ids) */
     uint32_t gather_count;
