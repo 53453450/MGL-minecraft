@@ -1195,33 +1195,6 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
  * mgl_air_backend.cpp (isTESCompute pre-main block).  Returns 0 when the
  * factor record is missing (caller falls back to 1). */
 
-/* GL 4.6 §11.2.2.2: a patch is discarded when any applicable tessellation
- * level (outer, or inner for quads) is <= 0 or NaN.  Mirrors the AIR TES
- * compute generator's discard condition and must be applied BEFORE any
- * clamp-to-min-1. */
-bool mglTessFactorsDiscardPatch(GLenum genMode,
-                                const float edge[4],
-                                const float inside[2])
-{
-    switch (genMode) {
-        case GL_ISOLINES:
-            return edge[0] <= 0.0f || edge[1] <= 0.0f ||
-                   isnan(edge[0]) || isnan(edge[1]);
-        case GL_QUADS:
-            return edge[0] <= 0.0f || edge[1] <= 0.0f ||
-                   edge[2] <= 0.0f || edge[3] <= 0.0f ||
-                   inside[0] <= 0.0f || inside[1] <= 0.0f ||
-                   isnan(edge[0]) || isnan(edge[1]) ||
-                   isnan(edge[2]) || isnan(edge[3]) ||
-                   isnan(inside[0]) || isnan(inside[1]);
-        default: /* GL_TRIANGLES */
-            return edge[0] <= 0.0f || edge[1] <= 0.0f ||
-                   edge[2] <= 0.0f || inside[0] <= 0.0f ||
-                   isnan(edge[0]) || isnan(edge[1]) ||
-                   isnan(edge[2]) || isnan(inside[0]);
-    }
-}
-
 /* P4.5 (item 1141/887): GL 4.6 §11.2.2.2 subdivision-count rounding.
  * Single source of truth is mglRenderCppTessRoundLevelForSpacing
  * (mgl_render_cpp.cpp) — this shell keeps the six native per-patch counting
@@ -2449,7 +2422,8 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
             }
             /* Zero/NaN factor: the patch is discarded and generates no
              * primitives (GL 4.6 §11.2.2.2). */
-            if (mglTessFactorsDiscardPatch(genMode, edge, inside)) {
+            if (mglRenderCppTessFactorsDiscardPatch(
+                    (uint32_t)genMode, edge, inside)) {
                 continue;
             }
             for (int i = 0; i < 4; i++) {

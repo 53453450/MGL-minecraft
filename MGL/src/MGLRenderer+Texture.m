@@ -4872,68 +4872,26 @@ static void mglTextureCopyTextureToBuffer(
     BOOL texture1DBackedBy2D;
     BOOL texture1DArrayBackedBy2DArray;
 
-    num_faces = 1;
-    is_array = false;
-    texture1DBackedBy2D = false;
-    texture1DArrayBackedBy2DArray = false;
     effective_mipmap_levels = 0;
     upload_level_count = 0;
     storageMipmapped = NO;
 
-    switch(tex->target)
-    {
-        case GL_TEXTURE_1D:
-            tex_type = MTLTextureType2D;
-            texture1DBackedBy2D = true;
-            break;
-        case GL_RENDERBUFFER:
-            tex_type = tex->samples > 1u ? MTLTextureType2DMultisample : MTLTextureType2D;
-            break;
-        case GL_TEXTURE_1D_ARRAY:
-            /* The AIR backend lowers sampler1DArray to texture2d_array, and
-             * Metal does not allow texture views from MTLTextureType1DArray to
-             * MTLTextureType2DArray.  Always back GL_TEXTURE_1D_ARRAY with
-             * MTLTextureType2DArray (height=1), mirroring how GL_TEXTURE_1D is
-             * backed by MTLTextureType2D and how mipmapped/depth 1D arrays are
-             * already promoted below. */
-            tex_type = MTLTextureType2DArray;
-            is_array = true;
-            texture1DArrayBackedBy2DArray = true;
-            break;
-        case GL_TEXTURE_2D:
-        case GL_TEXTURE_RECTANGLE:
-            tex_type = MTLTextureType2D;
-            break;
-        case GL_TEXTURE_2D_ARRAY: tex_type = MTLTextureType2DArray; is_array = true; break;
-        case GL_TEXTURE_2D_MULTISAMPLE: tex_type = MTLTextureType2DMultisample; break;
-
-        case GL_TEXTURE_CUBE_MAP:
-        case GL_TEXTURE_CUBE_MAP_POSITIVE_X:
-        case GL_TEXTURE_CUBE_MAP_NEGATIVE_X:
-        case GL_TEXTURE_CUBE_MAP_POSITIVE_Y:
-        case GL_TEXTURE_CUBE_MAP_NEGATIVE_Y:
-        case GL_TEXTURE_CUBE_MAP_POSITIVE_Z:
-        case GL_TEXTURE_CUBE_MAP_NEGATIVE_Z:
-            num_faces = 6;
-            tex_type = MTLTextureTypeCube;
-            break;
-
-        case GL_TEXTURE_CUBE_MAP_ARRAY:
-            num_faces = 6;
-            tex_type = MTLTextureTypeCubeArray;
-            is_array = true;
-            break;
-
-        case GL_TEXTURE_3D: tex_type = MTLTextureType3D; break;
-        case GL_TEXTURE_2D_MULTISAMPLE_ARRAY: tex_type = MTLTextureType2DMultisampleArray;  is_array = true; break;
-        // case GL_TEXTURE_BUFFER: tex_type = MTLTextureTypeTextureBuffer; break;
-
-        default:
-            NSLog(@"MGL TEXTURE ERROR: unsupported texture target 0x%x for Metal texture creation tex=%u",
-                  tex->target,
-                  tex->name);
-            return nil;
+    MGLRenderCppTextureTargetPlan targetPlan = {0};
+    if (mglRenderCppTextureTargetPlan(
+            (uint32_t)tex->target,
+            (uint32_t)tex->samples,
+            &targetPlan) != 0) {
+        NSLog(@"MGL TEXTURE ERROR: unsupported texture target 0x%x for Metal texture creation tex=%u",
+              tex->target,
+              tex->name);
+        return nil;
     }
+    tex_type = (MTLTextureType)targetPlan.texture_type;
+    num_faces = (uint)targetPlan.num_faces;
+    is_array = targetPlan.is_array != 0u;
+    texture1DBackedBy2D = targetPlan.texture_1d_backed_by_2d != 0u;
+    texture1DArrayBackedBy2DArray =
+        targetPlan.texture_1d_array_backed_by_2d_array != 0u;
 
     if (![self checkTextureCompleteness:tex
                                texType:tex_type
@@ -6417,30 +6375,7 @@ static void mglTextureCopyTextureToBuffer(
 
 - (int)textureIndexForExpectedMetalType:(MTLTextureType)expectedType
 {
-    switch (expectedType) {
-        case MTLTextureType1D:
-            return _TEXTURE_1D;
-        case MTLTextureType1DArray:
-            return _TEXTURE_1D_ARRAY;
-        case MTLTextureType2D:
-            return _TEXTURE_2D;
-        case MTLTextureType2DMultisample:
-            return _TEXTURE_2D_MULTISAMPLE;
-        case MTLTextureType2DArray:
-            return _TEXTURE_2D_ARRAY;
-        case MTLTextureType2DMultisampleArray:
-            return _TEXTURE_2D_MULTISAMPLE_ARRAY;
-        case MTLTextureType3D:
-            return _TEXTURE_3D;
-        case MTLTextureTypeCube:
-            return _TEXTURE_CUBE_MAP;
-        case MTLTextureTypeCubeArray:
-            return _TEXTURE_CUBE_MAP_ARRAY;
-        case MTLTextureTypeTextureBuffer:
-            return _TEXTURE_BUFFER;
-        default:
-            return -1;
-    }
+    return (int)mglRenderCppTextureIndexForMetalType((uint32_t)expectedType);
 }
 
 - (GLuint)textureUnitForSampledResource:(MGLShaderResource *)sampledResource

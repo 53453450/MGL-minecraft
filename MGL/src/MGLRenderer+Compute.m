@@ -550,9 +550,10 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
                         ptr = [self textureForSampledResource:resource
                                                  metalBinding:metalBinding
                                                          stage:stage
-                                                  expectedType:[self getProgramDeclaredTextureType:stage
-                                                                                              type:spvc_type
-                                                                                             index:i]];
+                                                  expectedType:(MTLTextureType)
+                                                      [self getProgramDeclaredTextureType:stage
+                                                                                   type:spvc_type
+                                                                                  index:i]];
                         break;
                     case _IMAGE_TEXTURE:
                         glUnit = resource ? (resource->sampler_unit >= 0 ? (GLuint)resource->sampler_unit : resource->gl_binding)
@@ -684,7 +685,7 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
                 continue;
             }
 
-            MTLTextureType expectedType =
+            MTLTextureType expectedType = (MTLTextureType)
                 [self getProgramDeclaredTextureType:stage
                                                type:_SAMPLED_IMAGE_RES
                                               index:(int)resourceIndex];

@@ -16,6 +16,7 @@
 #include "mgl_types_program.h"
 #include "mgl_types_state.h"
 #include "mgl_types_sync.h"
+#include "mgl_sync.h"
 
 /* This target exercises the renderer facade without constructing AIR loader
  * objects. Product builds link the real implementation. */
@@ -103,6 +104,74 @@ static void destroyCommandBufferCompletionContext(void *context) {
     delete static_cast<int *>(context);
     s_commandBufferContextDestroyCount.fetch_add(
         1, std::memory_order_relaxed);
+}
+
+static int verifyAttachmentSubresource(void) {
+    FBOAttachment attachment = {};
+    attachment.level = 3u;
+    attachment.textarget = GL_TEXTURE_CUBE_MAP;
+    for (GLuint layer = 0u; layer < _CUBE_MAP_MAX_FACE; ++layer) {
+        attachment.layer = layer;
+        MGLMetalAttachmentSubresource subresource =
+            mglMetalAttachmentSubresourceForAttachment(&attachment);
+        if (subresource.level != 3u || subresource.slice != layer ||
+            subresource.depthPlane != 0u) {
+            fprintf(stderr,
+                    "FAIL: cube attachment layer=%u level=%lu slice=%lu depth=%lu\n",
+                    layer, (unsigned long)subresource.level,
+                    (unsigned long)subresource.slice,
+                    (unsigned long)subresource.depthPlane);
+            return 1;
+        }
+    }
+
+    const GLuint invalidCubeLayers[] = {6u, UINT32_MAX};
+    for (GLuint layer : invalidCubeLayers) {
+        attachment.layer = layer;
+        MGLMetalAttachmentSubresource subresource =
+            mglMetalAttachmentSubresourceForAttachment(&attachment);
+        if (subresource.level != 3u || subresource.slice != 0u ||
+            subresource.depthPlane != 0u) {
+            fprintf(stderr,
+                    "FAIL: invalid cube attachment layer=%u slice=%lu\n",
+                    layer, (unsigned long)subresource.slice);
+            return 1;
+        }
+    }
+
+    attachment.textarget = GL_TEXTURE_CUBE_MAP_NEGATIVE_Z;
+    attachment.layer = UINT32_MAX;
+    MGLMetalAttachmentSubresource subresource =
+        mglMetalAttachmentSubresourceForAttachment(&attachment);
+    if (subresource.level != 3u || subresource.slice != 5u ||
+        subresource.depthPlane != 0u) {
+        fprintf(stderr, "FAIL: cube negative-Z attachment slice=%lu\n",
+                (unsigned long)subresource.slice);
+        return 1;
+    }
+
+    attachment.textarget = GL_TEXTURE_CUBE_MAP_ARRAY;
+    attachment.layer = 11u;
+    subresource = mglMetalAttachmentSubresourceForAttachment(&attachment);
+    if (subresource.level != 3u || subresource.slice != 11u ||
+        subresource.depthPlane != 0u) {
+        fprintf(stderr, "FAIL: cube-array attachment slice=%lu\n",
+                (unsigned long)subresource.slice);
+        return 1;
+    }
+
+    attachment.textarget = GL_TEXTURE_3D;
+    attachment.layer = 4u;
+    subresource = mglMetalAttachmentSubresourceForAttachment(&attachment);
+    if (subresource.level != 3u || subresource.slice != 0u ||
+        subresource.depthPlane != 4u) {
+        fprintf(stderr, "FAIL: 3D attachment depth=%lu\n",
+                (unsigned long)subresource.depthPlane);
+        return 1;
+    }
+
+    printf("ATTACHMENT_SUBRESOURCE_OK\n");
+    return 0;
 }
 
 static int verifyBufferBinding(void) {
@@ -2102,29 +2171,6 @@ GLuint sizeForInternalFormat(GLenum internalformat, GLenum, GLenum) {
         default: return 0;
     }
 }
-extern "C" bool mglTessFactorsDiscardPatch(uint32_t gen_mode,
-                                             const float *edge,
-                                             const float *inside)
-{
-    switch (gen_mode) {
-        case GL_ISOLINES:
-            return edge[0] <= 0.0f || edge[1] <= 0.0f ||
-                   isnan(edge[0]) || isnan(edge[1]);
-        case GL_QUADS:
-            return edge[0] <= 0.0f || edge[1] <= 0.0f ||
-                   edge[2] <= 0.0f || edge[3] <= 0.0f ||
-                   inside[0] <= 0.0f || inside[1] <= 0.0f ||
-                   isnan(edge[0]) || isnan(edge[1]) ||
-                   isnan(edge[2]) || isnan(edge[3]) ||
-                   isnan(inside[0]) || isnan(inside[1]);
-        default: /* GL_TRIANGLES */
-            return edge[0] <= 0.0f || edge[1] <= 0.0f ||
-                   edge[2] <= 0.0f || inside[0] <= 0.0f ||
-                   isnan(edge[0]) || isnan(edge[1]) ||
-                   isnan(edge[2]) || isnan(inside[0]);
-    }
-}
-
 bool mglTextureInternalFormatNeedsRGBA8Expansion(
     GLenum internalformat, uint32_t pixelFormat) {
     bool isRGBA8 = (pixelFormat == (uint32_t)MTLPixelFormatRGBA8Unorm ||
@@ -2564,6 +2610,59 @@ static int verifyDoubleAttribFormat(void) {
     return 0;
 }
 
+static int verifyIntegerAttribConversionFormat(void) {
+    struct IntegerAttribFormatCase {
+        const char *label;
+        uint64_t source_type;
+        uint64_t shader_type;
+        uint32_t size;
+        MTLVertexFormat expected;
+    } cases[] = {
+        {"ubyte-int-1", GL_UNSIGNED_BYTE, GL_INT, 1u,
+         MTLVertexFormatInt},
+        {"ushort-ivec2-2", GL_UNSIGNED_SHORT, GL_INT_VEC2, 2u,
+         MTLVertexFormatInt2},
+        {"uint-ivec3-3", GL_UNSIGNED_INT, GL_INT_VEC3, 3u,
+         MTLVertexFormatInt3},
+        {"ubyte-ivec4-4", GL_UNSIGNED_BYTE, GL_INT_VEC4, 4u,
+         MTLVertexFormatInt4},
+        {"byte-uint-1", GL_BYTE, GL_UNSIGNED_INT, 1u,
+         MTLVertexFormatUInt},
+        {"short-uvec2-2", GL_SHORT, GL_UNSIGNED_INT_VEC2, 2u,
+         MTLVertexFormatUInt2},
+        {"int-uvec3-3", GL_INT, GL_UNSIGNED_INT_VEC3, 3u,
+         MTLVertexFormatUInt3},
+        {"byte-uvec4-4", GL_BYTE, GL_UNSIGNED_INT_VEC4, 4u,
+         MTLVertexFormatUInt4},
+        {"signed-compatible", GL_SHORT, GL_INT_VEC4, 4u,
+         MTLVertexFormatInvalid},
+        {"unsigned-compatible", GL_UNSIGNED_SHORT, GL_UNSIGNED_INT_VEC4, 4u,
+         MTLVertexFormatInvalid},
+        {"float-shader", GL_UNSIGNED_BYTE, GL_FLOAT_VEC4, 4u,
+         MTLVertexFormatInvalid},
+        {"unknown-source", 0xfeedu, GL_INT_VEC4, 4u,
+         MTLVertexFormatInvalid},
+        {"unknown-shader", GL_UNSIGNED_BYTE, 0xfeedu, 4u,
+         MTLVertexFormatInvalid},
+        {"zero-size", GL_UNSIGNED_BYTE, GL_INT, 0u,
+         MTLVertexFormatInvalid},
+        {"oversized", GL_BYTE, GL_UNSIGNED_INT_VEC4, 5u,
+         MTLVertexFormatInvalid},
+    };
+    for (const IntegerAttribFormatCase &test : cases) {
+        uint32_t actual = mglRenderCppIntegerAttribConversionFormat(
+            test.source_type, test.shader_type, test.size);
+        if (actual != (uint32_t)test.expected) {
+            fprintf(stderr,
+                    "FAIL: integer attrib format %s expected=%u actual=%u\n",
+                    test.label, (uint32_t)test.expected, actual);
+            return 1;
+        }
+    }
+    printf("INTEGER_ATTRIB_FORMAT_OK\n");
+    return 0;
+}
+
 static int verifyAlignStride(void) {
     /* P4.5 (item 1141): vertex stride aligned to 4. */
     if (mglRenderCppAlignVertexStrideForMetal(0) != 0 ||
@@ -2724,37 +2823,79 @@ static int verifyGeometryGather(void) {
         fprintf(stderr, "FAIL: gather bad args\n");
         return 1;
     }
-    const uint16_t u16[] = {0,1,2, 3,4,5};  /* two tris (patch 3) */
-    if (mglRenderCppGeometryGatherIndices((const uint8_t*)u16, 2, 6, 0, 0, 3, &r) != 0 ||
-        r.gather_count != 6 || r.primitive_count != 2 || r.max_index != 5) {
-        fprintf(stderr, "FAIL: gather 2x tri\n");
+
+    auto verifyCase = [](
+        const char *label, const void *indices, uint32_t elemWidth,
+        uint32_t count, int restartEnabled, uint32_t restartIndex,
+        const uint32_t *expected, uint32_t expectedCount,
+        uint32_t expectedPrimitives, uint32_t expectedMax) -> int {
+        MGLRenderCppGeometryGatherResult result = {0};
+        int rc = mglRenderCppGeometryGatherIndices(
+            (const uint8_t *)indices, elemWidth, count, restartEnabled,
+            restartIndex, 3u, &result);
+        bool matches = rc == 0 && result.gather &&
+            result.gather_count == expectedCount &&
+            result.primitive_count == expectedPrimitives &&
+            result.max_index == expectedMax;
+        if (matches) {
+            for (uint32_t i = 0u; i < expectedCount; ++i) {
+                if (result.gather[i] != expected[i]) {
+                    matches = false;
+                    break;
+                }
+            }
+        }
+        if (!matches) {
+            fprintf(stderr,
+                    "FAIL: gather %s rc=%d gc=%u prim=%u max=%u\n",
+                    label, rc, (unsigned)result.gather_count,
+                    (unsigned)result.primitive_count,
+                    (unsigned)result.max_index);
+        }
+        free(result.gather);
+        return matches ? 0 : 1;
+    };
+
+    const uint16_t noRestart[] = {0, 1, 2, 3, 4, 5};
+    const uint32_t noRestartExpected[] = {0, 1, 2, 3, 4, 5};
+    if (verifyCase("no restart", noRestart, 2u, 6u, 0, 0u,
+                   noRestartExpected, 6u, 2u, 5u) != 0) {
         return 1;
     }
-    free(r.gather);
-    const uint16_t u16r[] = {0,1, 0xFFFF, 2,3,4, 5}; /* restart + trailing partial */
-    /* Full tri [0,1] + restart (not stored) + tri [2,3,4]; trailing 5 is a
-       partial group and gets dropped -> gather [0,1,2,3,4]. */
-    if (mglRenderCppGeometryGatherIndices((const uint8_t*)u16r, 2, 7, 1, 0xFFFF, 3, &r) != 0 ||
-        r.primitive_count != 1 || r.gather_count != 5 || r.max_index != 5) {
-        fprintf(stderr, "FAIL: gather restart gc=%u prim=%u max=%u\n",
-                (unsigned)r.gather_count, (unsigned)r.primitive_count,
-                (unsigned)r.max_index);
+
+    const uint16_t midPrimitiveRestart[] = {
+        0, 1, 0xFFFF, 2, 3, 4,
+    };
+    const uint32_t midPrimitiveExpected[] = {2, 3, 4};
+    if (verifyCase("mid-primitive restart", midPrimitiveRestart, 2u, 6u,
+                   1, 0xFFFFu, midPrimitiveExpected, 3u, 1u, 4u) != 0) {
         return 1;
     }
-    if (r.gather[0] != 0 || r.gather[4] != 4) {
-        fprintf(stderr, "FAIL: gather restart content gc=%u\n", (unsigned)r.gather_count);
+
+    const uint16_t boundaryRestarts[] = {
+        0xFFFF, 0xFFFF, 0, 1, 2, 0xFFFF, 0xFFFF,
+    };
+    const uint32_t boundaryExpected[] = {0, 1, 2};
+    if (verifyCase("leading/consecutive/trailing restart", boundaryRestarts,
+                   2u, 7u, 1, 0xFFFFu, boundaryExpected, 3u, 1u, 2u) != 0) {
         return 1;
     }
-    free(r.gather);
+
+    const uint16_t completeThenRestart[] = {
+        0, 1, 2, 0xFFFF, 3, 4, 5,
+    };
+    const uint32_t completeExpected[] = {0, 1, 2, 3, 4, 5};
+    if (verifyCase("complete primitive then restart", completeThenRestart,
+                   2u, 7u, 1, 0xFFFFu, completeExpected, 6u, 2u, 5u) != 0) {
+        return 1;
+    }
+
     const uint32_t u32[] = {10,11,12, 13,14}; /* trailing partial dropped */
-    if (mglRenderCppGeometryGatherIndices((const uint8_t*)u32, 4, 5, 0, 0, 3, &r) != 0 ||
-        r.gather_count != 3 || r.primitive_count != 1 || r.max_index != 14) {
-        fprintf(stderr, "FAIL: gather trailing gc=%u prim=%u max=%u\n",
-                (unsigned)r.gather_count, (unsigned)r.primitive_count,
-                (unsigned)r.max_index);
+    const uint32_t u32Expected[] = {10, 11, 12};
+    if (verifyCase("trailing partial", u32, 4u, 5u, 0, 0u,
+                   u32Expected, 3u, 1u, 14u) != 0) {
         return 1;
     }
-    free(r.gather);
     const uint8_t u8[] = {0,1}; /* too short for a patch -> no primitives replace */
     if (mglRenderCppGeometryGatherIndices(u8, 1, 2, 0, 0, 3, &r) != -1) {
         fprintf(stderr, "FAIL: gather incomplete reject\n");
@@ -2869,6 +3010,200 @@ static int verifyMetalTypeTables(void) {
         return 1;
     }
     printf("METAL_TYPE_TABLES_OK\n");
+    return 0;
+}
+
+static int verifyShaderResourceTextureTypes(void) {
+    struct TextureTypeCase {
+        const char *label;
+        uint32_t present;
+        uint32_t dimension;
+        uint32_t arrayed;
+        uint32_t multisampled;
+        uint32_t expected;
+    } cases[] = {
+        {"1D", 1u, MGL_IMAGE_DIM_1D, 0u, 0u, (uint32_t)MTLTextureType1D},
+        {"1DArray", 1u, MGL_IMAGE_DIM_1D, 1u, 0u, (uint32_t)MTLTextureType1DArray},
+        {"2D", 1u, MGL_IMAGE_DIM_2D, 0u, 0u, (uint32_t)MTLTextureType2D},
+        {"2DArray", 1u, MGL_IMAGE_DIM_2D, 1u, 0u, (uint32_t)MTLTextureType2DArray},
+        {"2DMS", 1u, MGL_IMAGE_DIM_2D, 0u, 1u, (uint32_t)MTLTextureType2DMultisample},
+        {"2DMSArray", 1u, MGL_IMAGE_DIM_2D, 1u, 1u, (uint32_t)MTLTextureType2DMultisampleArray},
+        {"3D", 1u, MGL_IMAGE_DIM_3D, 0u, 0u, (uint32_t)MTLTextureType3D},
+        {"Cube", 1u, MGL_IMAGE_DIM_CUBE, 0u, 0u, (uint32_t)MTLTextureTypeCube},
+        {"CubeArray", 1u, MGL_IMAGE_DIM_CUBE, 1u, 0u, (uint32_t)MTLTextureTypeCubeArray},
+        {"Buffer", 1u, MGL_IMAGE_DIM_BUFFER, 0u, 0u, (uint32_t)MTLTextureTypeTextureBuffer},
+        {"invalid", 1u, UINT32_MAX, 0u, 0u, 0u},
+        {"null", 0u, MGL_IMAGE_DIM_2D, 1u, 1u, 0u},
+    };
+    for (const TextureTypeCase &test : cases) {
+        uint32_t actual = mglRenderCppTextureTypeForShaderResource(
+            test.present, test.dimension, test.arrayed, test.multisampled);
+        if (actual != test.expected) {
+            fprintf(stderr,
+                    "FAIL: shader resource texture type %s expected=%u actual=%u\n",
+                    test.label, test.expected, actual);
+            return 1;
+        }
+    }
+    printf("SHADER_RESOURCE_TEXTURE_TYPE_OK\n");
+    return 0;
+}
+
+static int verifyTextureCreationTargetPlans(void) {
+    struct TextureTargetPlanCase {
+        const char *label;
+        GLenum target;
+        uint32_t samples;
+        MTLTextureType expected_type;
+        uint32_t expected_faces;
+        uint32_t expected_array;
+        uint32_t expected_1d_2d;
+        uint32_t expected_1d_array_2d_array;
+    } cases[] = {
+        {"1D", GL_TEXTURE_1D, 1u, MTLTextureType2D, 1u, 0u, 1u, 0u},
+        {"renderbuffer", GL_RENDERBUFFER, 1u, MTLTextureType2D, 1u, 0u, 0u, 0u},
+        {"renderbuffer MS", GL_RENDERBUFFER, 4u, MTLTextureType2DMultisample, 1u, 0u, 0u, 0u},
+        {"1D array", GL_TEXTURE_1D_ARRAY, 1u, MTLTextureType2DArray, 1u, 1u, 0u, 1u},
+        {"2D", GL_TEXTURE_2D, 1u, MTLTextureType2D, 1u, 0u, 0u, 0u},
+        {"rectangle", GL_TEXTURE_RECTANGLE, 1u, MTLTextureType2D, 1u, 0u, 0u, 0u},
+        {"2D array", GL_TEXTURE_2D_ARRAY, 1u, MTLTextureType2DArray, 1u, 1u, 0u, 0u},
+        {"2D MS", GL_TEXTURE_2D_MULTISAMPLE, 4u, MTLTextureType2DMultisample, 1u, 0u, 0u, 0u},
+        {"cube", GL_TEXTURE_CUBE_MAP, 1u, MTLTextureTypeCube, 6u, 0u, 0u, 0u},
+        {"cube +X", GL_TEXTURE_CUBE_MAP_POSITIVE_X, 1u, MTLTextureTypeCube, 6u, 0u, 0u, 0u},
+        {"cube -X", GL_TEXTURE_CUBE_MAP_NEGATIVE_X, 1u, MTLTextureTypeCube, 6u, 0u, 0u, 0u},
+        {"cube +Y", GL_TEXTURE_CUBE_MAP_POSITIVE_Y, 1u, MTLTextureTypeCube, 6u, 0u, 0u, 0u},
+        {"cube -Y", GL_TEXTURE_CUBE_MAP_NEGATIVE_Y, 1u, MTLTextureTypeCube, 6u, 0u, 0u, 0u},
+        {"cube +Z", GL_TEXTURE_CUBE_MAP_POSITIVE_Z, 1u, MTLTextureTypeCube, 6u, 0u, 0u, 0u},
+        {"cube -Z", GL_TEXTURE_CUBE_MAP_NEGATIVE_Z, 1u, MTLTextureTypeCube, 6u, 0u, 0u, 0u},
+        {"cube array", GL_TEXTURE_CUBE_MAP_ARRAY, 1u, MTLTextureTypeCubeArray, 6u, 1u, 0u, 0u},
+        {"3D", GL_TEXTURE_3D, 1u, MTLTextureType3D, 1u, 0u, 0u, 0u},
+        {"2D MS array", GL_TEXTURE_2D_MULTISAMPLE_ARRAY, 4u, MTLTextureType2DMultisampleArray, 1u, 1u, 0u, 0u},
+    };
+
+    for (const TextureTargetPlanCase &test : cases) {
+        MGLRenderCppTextureTargetPlan plan = {};
+        if (mglRenderCppTextureTargetPlan(
+                (uint32_t)test.target, test.samples, &plan) != 0 ||
+            plan.texture_type != (uint32_t)test.expected_type ||
+            plan.num_faces != test.expected_faces ||
+            plan.is_array != test.expected_array ||
+            plan.texture_1d_backed_by_2d != test.expected_1d_2d ||
+            plan.texture_1d_array_backed_by_2d_array !=
+                test.expected_1d_array_2d_array) {
+            fprintf(stderr,
+                    "FAIL: texture target plan %s type=%u faces=%u array=%u 1d2d=%u 1da2da=%u\n",
+                    test.label, plan.texture_type, plan.num_faces,
+                    plan.is_array, plan.texture_1d_backed_by_2d,
+                    plan.texture_1d_array_backed_by_2d_array);
+            return 1;
+        }
+    }
+
+    MGLRenderCppTextureTargetPlan invalid = {
+        UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX};
+    if (mglRenderCppTextureTargetPlan(UINT32_MAX, 1u, &invalid) != -1 ||
+        invalid.texture_type != 0u || invalid.num_faces != 0u ||
+        invalid.is_array != 0u || invalid.texture_1d_backed_by_2d != 0u ||
+        invalid.texture_1d_array_backed_by_2d_array != 0u ||
+        mglRenderCppTextureTargetPlan(GL_TEXTURE_2D, 1u, NULL) != -1) {
+        fprintf(stderr, "FAIL: texture target plan invalid arguments\n");
+        return 1;
+    }
+
+    printf("TEXTURE_CREATION_TARGET_PLAN_OK\n");
+    return 0;
+}
+
+static int verifyTextureTargetIndices(void) {
+    struct TextureTargetIndexCase {
+        const char *label;
+        MTLTextureType type;
+        int32_t expected;
+    } cases[] = {
+        {"1D", MTLTextureType1D, _TEXTURE_1D},
+        {"1DArray", MTLTextureType1DArray, _TEXTURE_1D_ARRAY},
+        {"2D", MTLTextureType2D, _TEXTURE_2D},
+        {"2DMS", MTLTextureType2DMultisample, _TEXTURE_2D_MULTISAMPLE},
+        {"2DArray", MTLTextureType2DArray, _TEXTURE_2D_ARRAY},
+        {"2DMSArray", MTLTextureType2DMultisampleArray,
+         _TEXTURE_2D_MULTISAMPLE_ARRAY},
+        {"3D", MTLTextureType3D, _TEXTURE_3D},
+        {"Cube", MTLTextureTypeCube, _TEXTURE_CUBE_MAP},
+        {"CubeArray", MTLTextureTypeCubeArray, _TEXTURE_CUBE_MAP_ARRAY},
+        {"Buffer", MTLTextureTypeTextureBuffer, _TEXTURE_BUFFER},
+    };
+    for (const TextureTargetIndexCase &test : cases) {
+        int32_t actual = mglRenderCppTextureIndexForMetalType(
+            (uint32_t)test.type);
+        if (actual != test.expected) {
+            fprintf(stderr,
+                    "FAIL: texture target index %s expected=%d actual=%d\n",
+                    test.label, test.expected, actual);
+            return 1;
+        }
+    }
+    if (mglRenderCppTextureIndexForMetalType(UINT32_MAX) != -1) {
+        fprintf(stderr, "FAIL: texture target index invalid type\n");
+        return 1;
+    }
+    printf("TEXTURE_TARGET_INDEX_OK\n");
+    return 0;
+}
+
+static int verifyTextureDataKinds(void) {
+    struct TextureDataKindCase {
+        const char *label;
+        MTLPixelFormat format;
+        uint32_t expected;
+    } cases[] = {
+        {"R8Sint", MTLPixelFormatR8Sint, MGL_RENDER_CPP_TEXTURE_DATA_KIND_SINT},
+        {"RG8Sint", MTLPixelFormatRG8Sint, MGL_RENDER_CPP_TEXTURE_DATA_KIND_SINT},
+        {"RGBA8Sint", MTLPixelFormatRGBA8Sint, MGL_RENDER_CPP_TEXTURE_DATA_KIND_SINT},
+        {"R16Sint", MTLPixelFormatR16Sint, MGL_RENDER_CPP_TEXTURE_DATA_KIND_SINT},
+        {"RG16Sint", MTLPixelFormatRG16Sint, MGL_RENDER_CPP_TEXTURE_DATA_KIND_SINT},
+        {"RGBA16Sint", MTLPixelFormatRGBA16Sint, MGL_RENDER_CPP_TEXTURE_DATA_KIND_SINT},
+        {"R32Sint", MTLPixelFormatR32Sint, MGL_RENDER_CPP_TEXTURE_DATA_KIND_SINT},
+        {"RG32Sint", MTLPixelFormatRG32Sint, MGL_RENDER_CPP_TEXTURE_DATA_KIND_SINT},
+        {"RGBA32Sint", MTLPixelFormatRGBA32Sint, MGL_RENDER_CPP_TEXTURE_DATA_KIND_SINT},
+        {"R8Uint", MTLPixelFormatR8Uint, MGL_RENDER_CPP_TEXTURE_DATA_KIND_UINT},
+        {"RG8Uint", MTLPixelFormatRG8Uint, MGL_RENDER_CPP_TEXTURE_DATA_KIND_UINT},
+        {"RGBA8Uint", MTLPixelFormatRGBA8Uint, MGL_RENDER_CPP_TEXTURE_DATA_KIND_UINT},
+        {"R16Uint", MTLPixelFormatR16Uint, MGL_RENDER_CPP_TEXTURE_DATA_KIND_UINT},
+        {"RG16Uint", MTLPixelFormatRG16Uint, MGL_RENDER_CPP_TEXTURE_DATA_KIND_UINT},
+        {"RGBA16Uint", MTLPixelFormatRGBA16Uint, MGL_RENDER_CPP_TEXTURE_DATA_KIND_UINT},
+        {"R32Uint", MTLPixelFormatR32Uint, MGL_RENDER_CPP_TEXTURE_DATA_KIND_UINT},
+        {"RG32Uint", MTLPixelFormatRG32Uint, MGL_RENDER_CPP_TEXTURE_DATA_KIND_UINT},
+        {"RGBA32Uint", MTLPixelFormatRGBA32Uint, MGL_RENDER_CPP_TEXTURE_DATA_KIND_UINT},
+        {"RGB10A2Uint", MTLPixelFormatRGB10A2Uint, MGL_RENDER_CPP_TEXTURE_DATA_KIND_UINT},
+        {"Invalid", MTLPixelFormatInvalid, MGL_RENDER_CPP_TEXTURE_DATA_KIND_UNKNOWN},
+        {"Depth16", MTLPixelFormatDepth16Unorm, MGL_RENDER_CPP_TEXTURE_DATA_KIND_DEPTH},
+        {"Depth32", MTLPixelFormatDepth32Float, MGL_RENDER_CPP_TEXTURE_DATA_KIND_DEPTH},
+        {"Depth24Stencil8", MTLPixelFormatDepth24Unorm_Stencil8,
+         MGL_RENDER_CPP_TEXTURE_DATA_KIND_DEPTH},
+        {"Depth32Stencil8", MTLPixelFormatDepth32Float_Stencil8,
+         MGL_RENDER_CPP_TEXTURE_DATA_KIND_DEPTH},
+        {"Stencil8", MTLPixelFormatStencil8, MGL_RENDER_CPP_TEXTURE_DATA_KIND_FLOAT},
+        {"RGBA8Unorm", MTLPixelFormatRGBA8Unorm,
+         MGL_RENDER_CPP_TEXTURE_DATA_KIND_FLOAT},
+        {"RGBA16Float", MTLPixelFormatRGBA16Float,
+         MGL_RENDER_CPP_TEXTURE_DATA_KIND_FLOAT},
+    };
+    for (const TextureDataKindCase &test : cases) {
+        uint32_t actual = mglRenderCppTextureDataKindForPixelFormat(
+            (uint32_t)test.format);
+        if (actual != test.expected) {
+            fprintf(stderr,
+                    "FAIL: texture data kind %s expected=%u actual=%u\n",
+                    test.label, test.expected, actual);
+            return 1;
+        }
+    }
+    if (mglRenderCppTextureDataKindForPixelFormat(UINT32_MAX) !=
+        MGL_RENDER_CPP_TEXTURE_DATA_KIND_FLOAT) {
+        fprintf(stderr, "FAIL: texture data kind unknown default\n");
+        return 1;
+    }
+    printf("TEXTURE_DATA_KIND_OK\n");
     return 0;
 }
 
@@ -3482,6 +3817,57 @@ static int verifyTessEvalItemsAndCaptureSize(void) {
         return 1;
     }
     printf("TESS_EVAL_ITEMS_AND_SIZE_OK\n");
+    return 0;
+}
+
+static int verifyTessFactorDiscardPredicate(void) {
+    /* P4.5 (item 1141/887): patch discard is a C++ single source shared by
+     * native primitive accounting and TES compute eval-item accounting. */
+    float edge[4] = {1.0f, 2.0f, 3.0f, 4.0f};
+    float inside[2] = {1.0f, 2.0f};
+    if (mglRenderCppTessFactorsDiscardPatch(
+            GL_TRIANGLES, edge, inside)) {
+        fprintf(stderr, "FAIL: tess discard triangle valid\n");
+        return 1;
+    }
+    edge[2] = 0.0f;
+    if (!mglRenderCppTessFactorsDiscardPatch(
+            GL_TRIANGLES, edge, inside)) {
+        fprintf(stderr, "FAIL: tess discard triangle edge\n");
+        return 1;
+    }
+    edge[2] = 3.0f;
+    inside[0] = NAN;
+    if (!mglRenderCppTessFactorsDiscardPatch(
+            GL_TRIANGLES, edge, inside)) {
+        fprintf(stderr, "FAIL: tess discard triangle nan\n");
+        return 1;
+    }
+    inside[0] = 1.0f;
+    inside[1] = 0.0f;
+    if (!mglRenderCppTessFactorsDiscardPatch(GL_QUADS, edge, inside)) {
+        fprintf(stderr, "FAIL: tess discard quad inside\n");
+        return 1;
+    }
+    /* Isolines only consume edge[0:2]; unrelated levels must not discard. */
+    edge[2] = 0.0f;
+    edge[3] = NAN;
+    inside[0] = 0.0f;
+    inside[1] = NAN;
+    if (mglRenderCppTessFactorsDiscardPatch(GL_ISOLINES, edge, inside)) {
+        fprintf(stderr, "FAIL: tess discard isolines unrelated levels\n");
+        return 1;
+    }
+    edge[1] = -1.0f;
+    if (!mglRenderCppTessFactorsDiscardPatch(GL_ISOLINES, edge, inside) ||
+        !mglRenderCppTessFactorsDiscardPatch(
+            GL_TRIANGLES, NULL, inside) ||
+        !mglRenderCppTessFactorsDiscardPatch(
+            GL_TRIANGLES, edge, NULL)) {
+        fprintf(stderr, "FAIL: tess discard isolines/null\n");
+        return 1;
+    }
+    printf("TESS_FACTOR_DISCARD_OK\n");
     return 0;
 }
 
@@ -4321,7 +4707,7 @@ static int verifyRenderPassStateOwner(id<MTLDevice> device) {
     __weak id<MTLBuffer> weakVisibility = visibility;
     if (mglRenderCppSetRenderPassStateAttachmentTexture(
             owner, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR,
-            0u, NULL, 3u, 0u, 0u) != 0 ||
+            0u, NULL, 3u, 0u, 0u, 0u) != 0 ||
         mglRenderCppSetRenderPassStateAttachmentActions(
             owner, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0u,
             MTLLoadActionDontCare, MTLStoreActionDontCare, 7u) != 0 ||
@@ -4357,6 +4743,112 @@ static int verifyRenderPassStateOwner(id<MTLDevice> device) {
         mglRenderCppDestroyRenderPassStateOwner(&owner);
         return 1;
     }
+
+    auto verifyLayeredAttachment = [&] (
+        const char *label,
+        MTLTextureDescriptor *textureDescriptor,
+        uint64_t level,
+        uint64_t expectedArrayLength) -> int {
+        textureDescriptor.usage = MTLTextureUsageRenderTarget;
+        id<MTLTexture> layeredTexture =
+            [device newTextureWithDescriptor:textureDescriptor];
+        if (!layeredTexture ||
+            mglRenderCppSetRenderPassStateAttachmentTexture(
+                owner, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0u,
+                (__bridge void *)layeredTexture, level, 5u, 7u, 1u) != 0 ||
+            mglRenderCppGetRenderPassStateOwner(owner, &snapshot) != 0 ||
+            snapshot.color[0].attachment.texture !=
+                (__bridge void *)layeredTexture ||
+            snapshot.color[0].attachment.level != level ||
+            snapshot.color[0].attachment.slice != 0u ||
+            snapshot.color[0].attachment.depth_plane != 0u ||
+            snapshot.render_target_array_length != expectedArrayLength) {
+            fprintf(stderr,
+                    "FAIL: render-pass layered attachment %s expected=%llu actual=%llu\n",
+                    label,
+                    (unsigned long long)expectedArrayLength,
+                    (unsigned long long)snapshot.render_target_array_length);
+            return 1;
+        }
+        if (mglRenderCppSetRenderPassStateAttachmentTexture(
+                owner, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0u,
+                (__bridge void *)layeredTexture, level, 2u, 3u, 0u) != 0 ||
+            mglRenderCppGetRenderPassStateOwner(owner, &snapshot) != 0 ||
+            snapshot.color[0].attachment.slice != 2u ||
+            snapshot.color[0].attachment.depth_plane != 3u ||
+            snapshot.render_target_array_length != 0u) {
+            fprintf(stderr,
+                    "FAIL: render-pass non-layered attachment %s did not preserve subresource\n",
+                    label);
+            return 1;
+        }
+        return 0;
+    };
+
+    MTLTextureDescriptor *arrayDescriptor = [MTLTextureDescriptor
+        texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+        width:4 height:4 mipmapped:NO];
+    arrayDescriptor.textureType = MTLTextureType2DArray;
+    arrayDescriptor.arrayLength = 3u;
+    MTLTextureDescriptor *cubeDescriptor = [MTLTextureDescriptor
+        textureCubeDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+        size:4 mipmapped:NO];
+    MTLTextureDescriptor *cubeArrayDescriptor = [MTLTextureDescriptor
+        textureCubeDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+        size:4 mipmapped:NO];
+    cubeArrayDescriptor.textureType = MTLTextureTypeCubeArray;
+    cubeArrayDescriptor.arrayLength = 2u;
+    MTLTextureDescriptor *volumeDescriptor = [MTLTextureDescriptor new];
+    volumeDescriptor.textureType = MTLTextureType3D;
+    volumeDescriptor.pixelFormat = MTLPixelFormatRGBA8Unorm;
+    volumeDescriptor.width = 4u;
+    volumeDescriptor.height = 4u;
+    volumeDescriptor.depth = 4u;
+    volumeDescriptor.mipmapLevelCount = 3u;
+    if (verifyLayeredAttachment("2d-array", arrayDescriptor, 0u, 3u) != 0 ||
+        verifyLayeredAttachment("cube", cubeDescriptor, 0u, 6u) != 0 ||
+        verifyLayeredAttachment("cube-array", cubeArrayDescriptor, 0u, 12u) != 0 ||
+        verifyLayeredAttachment("3d-mip", volumeDescriptor, 1u, 2u) != 0) {
+        mglRenderCppDestroyRenderPassStateOwner(&owner);
+        return 1;
+    }
+
+    MTLTextureDescriptor *shortArrayDescriptor = [MTLTextureDescriptor
+        texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+        width:4 height:4 mipmapped:NO];
+    shortArrayDescriptor.textureType = MTLTextureType2DArray;
+    shortArrayDescriptor.arrayLength = 2u;
+    shortArrayDescriptor.usage = MTLTextureUsageRenderTarget;
+    id<MTLTexture> longArrayTexture =
+        [device newTextureWithDescriptor:arrayDescriptor];
+    id<MTLTexture> shortArrayTexture =
+        [device newTextureWithDescriptor:shortArrayDescriptor];
+    if (!longArrayTexture || !shortArrayTexture ||
+        mglRenderCppSetRenderPassStateAttachmentTexture(
+            owner, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0u,
+            (__bridge void *)longArrayTexture, 0u, 0u, 0u, 1u) != 0 ||
+        mglRenderCppSetRenderPassStateAttachmentTexture(
+            owner, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0u,
+            (__bridge void *)shortArrayTexture, 0u, 0u, 0u, 1u) != 0 ||
+        mglRenderCppGetRenderPassStateOwner(owner, &snapshot) != 0 ||
+        snapshot.render_target_array_length != 2u ||
+        snapshot.color[0].attachment.slice != 0u ||
+        snapshot.depth.attachment.slice != 0u) {
+        fprintf(stderr, "FAIL: render-pass layered common array length\n");
+        mglRenderCppDestroyRenderPassStateOwner(&owner);
+        return 1;
+    }
+    if (mglRenderCppSetRenderPassStateAttachmentTexture(
+            owner, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0u,
+            NULL, 0u, 0u, 0u, 0u) != 0 ||
+        mglRenderCppSetRenderPassStateAttachmentTexture(
+            owner, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0u,
+            NULL, 0u, 0u, 0u, 0u) != 0) {
+        fprintf(stderr, "FAIL: render-pass layered attachment cleanup\n");
+        mglRenderCppDestroyRenderPassStateOwner(&owner);
+        return 1;
+    }
+
     visibility = nil;
     if (!weakVisibility ||
         mglRenderCppSetRenderPassStateVisibility(owner, NULL, 0u) != 0 ||
@@ -4374,9 +4866,9 @@ static int verifyRenderPassStateOwner(id<MTLDevice> device) {
             owner, 0xffffffffu, 0u, &attachment) == 0 ||
         mglRenderCppSetRenderPassStateAttachmentTexture(
             owner, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR,
-            MGL_RENDER_CPP_MAX_COLOR_ATTACHMENTS, NULL, 0u, 0u, 0u) == 0 ||
+            MGL_RENDER_CPP_MAX_COLOR_ATTACHMENTS, NULL, 0u, 0u, 0u, 0u) == 0 ||
         mglRenderCppSetRenderPassStateAttachmentTexture(
-            owner, 0xffffffffu, 0u, NULL, 0u, 0u, 0u) == 0) {
+            owner, 0xffffffffu, 0u, NULL, 0u, 0u, 0u, 0u) == 0) {
         fprintf(stderr, "FAIL: render-pass state owner accepted invalid attachment\n");
         mglRenderCppDestroyRenderPassStateOwner(&owner);
         return 1;
@@ -5405,6 +5897,7 @@ int main(void) {
         }
         printf("SMOKE_OK device=%p\n", dev);
 
+        if (verifyAttachmentSubresource() != 0) return 1;
         if (verifyBufferBinding() != 0) return 1;
         if (verifyPackedStructBufferRing() != 0) return 1;
         if (verifyVertexConversions() != 0) return 1;
@@ -5426,6 +5919,7 @@ int main(void) {
         if (verifyCopyBackEncode() != 0) return 1;
         if (verifyLevelUploadOps() != 0) return 1;
         if (verifyIntegerReadbackConvert() != 0) return 1;
+        if (verifyTessFactorDiscardPredicate() != 0) return 1;
         if (verifyTessFactorTransforms() != 0) return 1;
         if (verifyTessEvalItemsAndCaptureSize() != 0) return 1;
         if (verifyTessRoundLevelForSpacing() != 0) return 1;
@@ -5445,6 +5939,10 @@ int main(void) {
         if (verifyBufferShadowUploadRange() != 0) return 1;
         if (verifyVertexAttribResolve() != 0) return 1;
         if (verifyMetalTypeTables() != 0) return 1;
+        if (verifyShaderResourceTextureTypes() != 0) return 1;
+        if (verifyTextureCreationTargetPlans() != 0) return 1;
+        if (verifyTextureTargetIndices() != 0) return 1;
+        if (verifyTextureDataKinds() != 0) return 1;
         if (verifyComputeThreadgroupSize() != 0) return 1;
         if (verifyLevelDimension() != 0) return 1;
         if (verifyReadTextureRegionClip() != 0) return 1;
@@ -5464,6 +5962,7 @@ int main(void) {
         if (verifyQuadTriangleCount() != 0) return 1;
         if (verifyAlignStride() != 0) return 1;
         if (verifyDoubleAttribFormat() != 0) return 1;
+        if (verifyIntegerAttribConversionFormat() != 0) return 1;
         if (verifyHashStepU64() != 0) return 1;
         if (verifyPrimitiveRestartFixedIndex() != 0) return 1;
         if (verifyGLTypeElementByteSize() != 0) return 1;

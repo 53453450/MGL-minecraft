@@ -6,33 +6,19 @@
 
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+ProgramBinding_Private.h"
+#include "mgl_render_cpp.h"
 
 /* === AIR-reflected texture type / data kind helpers === */
-MTLTextureType mglDeclaredTextureTypeFromResource(const MGLShaderResource *res)
+uint32_t mglDeclaredTextureTypeFromResource(const MGLShaderResource *res)
 {
-    if (!res) {
-        return 0;
-    }
-    switch ((MGLImageDimension)res->image_dim) {
-        case MGL_IMAGE_DIM_1D:
-            return res->image_arrayed ? MTLTextureType1DArray : MTLTextureType1D;
-        case MGL_IMAGE_DIM_2D:
-            if (res->image_multisampled) {
-                return res->image_arrayed ? MTLTextureType2DMultisampleArray : MTLTextureType2DMultisample;
-            }
-            return res->image_arrayed ? MTLTextureType2DArray : MTLTextureType2D;
-        case MGL_IMAGE_DIM_3D:
-            return MTLTextureType3D;
-        case MGL_IMAGE_DIM_CUBE:
-            return res->image_arrayed ? MTLTextureTypeCubeArray : MTLTextureTypeCube;
-        case MGL_IMAGE_DIM_BUFFER:
-            return MTLTextureTypeTextureBuffer;
-        default:
-            return 0;
-    }
+    return mglRenderCppTextureTypeForShaderResource(
+        res != NULL,
+        res ? (uint32_t)res->image_dim : 0u,
+        res ? (uint32_t)res->image_arrayed : 0u,
+        res ? (uint32_t)res->image_multisampled : 0u);
 }
 
-MTLTextureType mglExpectedTextureTypeForResource(Program *program, int stage, MGLShaderResource *res)
+uint32_t mglExpectedTextureTypeForResource(Program *program, int stage, MGLShaderResource *res)
 {
     if (!program || !res || stage < 0 || stage >= _MAX_SHADER_TYPES) {
         return 0;
@@ -218,7 +204,7 @@ MGLTextureDataKind mglExpectedTextureDataKindForResource(Program *program, int s
     return -1;
 }
 
-- (MTLTextureType)getProgramDeclaredTextureType:(int)stage type:(int)type index:(int)index
+- (uint32_t)getProgramDeclaredTextureType:(int)stage type:(int)type index:(int)index
 {
     Program *ptr;
 
@@ -241,7 +227,7 @@ MGLTextureDataKind mglExpectedTextureDataKindForResource(Program *program, int s
     return mglDeclaredTextureTypeFromResource(res);
 }
 
-- (MTLTextureType)getProgramExpectedTextureType:(int)stage type:(int)type index:(int)index
+- (uint32_t)getProgramExpectedTextureType:(int)stage type:(int)type index:(int)index
 {
     Program *ptr;
 

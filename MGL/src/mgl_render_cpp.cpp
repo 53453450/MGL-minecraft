@@ -3011,6 +3011,177 @@ int mglRenderCppTextureGetBytes(void* texture,
     return 0;
 }
 
+extern "C"
+int mglRenderCppTextureTargetPlan(
+    uint32_t gl_target,
+    uint32_t sample_count,
+    MGLRenderCppTextureTargetPlan* plan_out) {
+    if (!plan_out) return -1;
+    *plan_out = {};
+    plan_out->num_faces = 1u;
+
+    switch (gl_target) {
+        case GL_TEXTURE_1D:
+            plan_out->texture_type = static_cast<uint32_t>(MTL::TextureType2D);
+            plan_out->texture_1d_backed_by_2d = 1u;
+            return 0;
+        case GL_RENDERBUFFER:
+            plan_out->texture_type = static_cast<uint32_t>(
+                sample_count > 1u ? MTL::TextureType2DMultisample
+                                  : MTL::TextureType2D);
+            return 0;
+        case GL_TEXTURE_1D_ARRAY:
+            /* AIR lowers sampler1DArray to texture2d_array, and Metal cannot
+             * view a Texture1DArray as Texture2DArray. */
+            plan_out->texture_type =
+                static_cast<uint32_t>(MTL::TextureType2DArray);
+            plan_out->is_array = 1u;
+            plan_out->texture_1d_array_backed_by_2d_array = 1u;
+            return 0;
+        case GL_TEXTURE_2D:
+        case GL_TEXTURE_RECTANGLE:
+            plan_out->texture_type = static_cast<uint32_t>(MTL::TextureType2D);
+            return 0;
+        case GL_TEXTURE_2D_ARRAY:
+            plan_out->texture_type =
+                static_cast<uint32_t>(MTL::TextureType2DArray);
+            plan_out->is_array = 1u;
+            return 0;
+        case GL_TEXTURE_2D_MULTISAMPLE:
+            plan_out->texture_type =
+                static_cast<uint32_t>(MTL::TextureType2DMultisample);
+            return 0;
+        case GL_TEXTURE_CUBE_MAP:
+        case GL_TEXTURE_CUBE_MAP_POSITIVE_X:
+        case GL_TEXTURE_CUBE_MAP_NEGATIVE_X:
+        case GL_TEXTURE_CUBE_MAP_POSITIVE_Y:
+        case GL_TEXTURE_CUBE_MAP_NEGATIVE_Y:
+        case GL_TEXTURE_CUBE_MAP_POSITIVE_Z:
+        case GL_TEXTURE_CUBE_MAP_NEGATIVE_Z:
+            plan_out->texture_type =
+                static_cast<uint32_t>(MTL::TextureTypeCube);
+            plan_out->num_faces = 6u;
+            return 0;
+        case GL_TEXTURE_CUBE_MAP_ARRAY:
+            plan_out->texture_type =
+                static_cast<uint32_t>(MTL::TextureTypeCubeArray);
+            plan_out->num_faces = 6u;
+            plan_out->is_array = 1u;
+            return 0;
+        case GL_TEXTURE_3D:
+            plan_out->texture_type = static_cast<uint32_t>(MTL::TextureType3D);
+            return 0;
+        case GL_TEXTURE_2D_MULTISAMPLE_ARRAY:
+            plan_out->texture_type =
+                static_cast<uint32_t>(MTL::TextureType2DMultisampleArray);
+            plan_out->is_array = 1u;
+            return 0;
+        default:
+            *plan_out = {};
+            return -1;
+    }
+}
+
+extern "C"
+uint32_t mglRenderCppTextureTypeForShaderResource(
+    uint32_t has_resource,
+    uint32_t image_dim,
+    uint32_t image_arrayed,
+    uint32_t image_multisampled) {
+    if (!has_resource) return 0u;
+    switch (image_dim) {
+        case MGL_IMAGE_DIM_1D:
+            return static_cast<uint32_t>(
+                image_arrayed ? MTL::TextureType1DArray : MTL::TextureType1D);
+        case MGL_IMAGE_DIM_2D:
+            if (image_multisampled) {
+                return static_cast<uint32_t>(
+                    image_arrayed ? MTL::TextureType2DMultisampleArray
+                                  : MTL::TextureType2DMultisample);
+            }
+            return static_cast<uint32_t>(
+                image_arrayed ? MTL::TextureType2DArray : MTL::TextureType2D);
+        case MGL_IMAGE_DIM_3D:
+            return static_cast<uint32_t>(MTL::TextureType3D);
+        case MGL_IMAGE_DIM_CUBE:
+            return static_cast<uint32_t>(
+                image_arrayed ? MTL::TextureTypeCubeArray
+                              : MTL::TextureTypeCube);
+        case MGL_IMAGE_DIM_BUFFER:
+            return static_cast<uint32_t>(MTL::TextureTypeTextureBuffer);
+        default:
+            return 0u;
+    }
+}
+
+extern "C"
+int32_t mglRenderCppTextureIndexForMetalType(uint32_t texture_type) {
+    switch (static_cast<MTL::TextureType>(texture_type)) {
+        case MTL::TextureType1D:
+            return _TEXTURE_1D;
+        case MTL::TextureType1DArray:
+            return _TEXTURE_1D_ARRAY;
+        case MTL::TextureType2D:
+            return _TEXTURE_2D;
+        case MTL::TextureType2DMultisample:
+            return _TEXTURE_2D_MULTISAMPLE;
+        case MTL::TextureType2DArray:
+            return _TEXTURE_2D_ARRAY;
+        case MTL::TextureType2DMultisampleArray:
+            return _TEXTURE_2D_MULTISAMPLE_ARRAY;
+        case MTL::TextureType3D:
+            return _TEXTURE_3D;
+        case MTL::TextureTypeCube:
+            return _TEXTURE_CUBE_MAP;
+        case MTL::TextureTypeCubeArray:
+            return _TEXTURE_CUBE_MAP_ARRAY;
+        case MTL::TextureTypeTextureBuffer:
+            return _TEXTURE_BUFFER;
+        default:
+            return -1;
+    }
+}
+
+extern "C"
+uint32_t mglRenderCppTextureDataKindForPixelFormat(uint32_t pixel_format) {
+    switch (static_cast<MTL::PixelFormat>(pixel_format)) {
+        case MTL::PixelFormatR8Sint:
+        case MTL::PixelFormatRG8Sint:
+        case MTL::PixelFormatRGBA8Sint:
+        case MTL::PixelFormatR16Sint:
+        case MTL::PixelFormatRG16Sint:
+        case MTL::PixelFormatRGBA16Sint:
+        case MTL::PixelFormatR32Sint:
+        case MTL::PixelFormatRG32Sint:
+        case MTL::PixelFormatRGBA32Sint:
+            return MGL_RENDER_CPP_TEXTURE_DATA_KIND_SINT;
+
+        case MTL::PixelFormatR8Uint:
+        case MTL::PixelFormatRG8Uint:
+        case MTL::PixelFormatRGBA8Uint:
+        case MTL::PixelFormatR16Uint:
+        case MTL::PixelFormatRG16Uint:
+        case MTL::PixelFormatRGBA16Uint:
+        case MTL::PixelFormatR32Uint:
+        case MTL::PixelFormatRG32Uint:
+        case MTL::PixelFormatRGBA32Uint:
+        case MTL::PixelFormatRGB10A2Uint:
+            return MGL_RENDER_CPP_TEXTURE_DATA_KIND_UINT;
+
+        case MTL::PixelFormatInvalid:
+            return MGL_RENDER_CPP_TEXTURE_DATA_KIND_UNKNOWN;
+
+        case MTL::PixelFormatDepth16Unorm:
+        case MTL::PixelFormatDepth32Float:
+        case MTL::PixelFormatDepth24Unorm_Stencil8:
+        case MTL::PixelFormatDepth32Float_Stencil8:
+            return MGL_RENDER_CPP_TEXTURE_DATA_KIND_DEPTH;
+
+        default:
+            return MGL_RENDER_CPP_TEXTURE_DATA_KIND_FLOAT;
+    }
+}
+
 /* P4.4: CPU→GPU 上传路径选路（纯决策，无 Metal 对象）。与
  * uploadTextureSliceViaBlit 的既有内联判定逐条件一致，见头文件契约。 */
 int mglRenderCppTextureUploadRoute(uint32_t texture_type,
@@ -3384,12 +3555,33 @@ int mglRenderCppConvertIntegerReadback(
     return 0;
 }
 
-/* P4.5 (item 1141/887): tess-factor CPU transforms.  The discard check is
- * the C function from MGLRenderer+Tessellation.m (C linkage; the smoke
- * stubs it). */
-extern "C" bool mglTessFactorsDiscardPatch(uint32_t gen_mode,
-                                           const float *edge,
-                                           const float *inside);
+/* P4.5 (item 1141/887): GL 4.6 section 11.2.2.2 patch discard predicate.
+ * This is evaluated before any tessellation level is clamped to one. */
+extern "C"
+bool mglRenderCppTessFactorsDiscardPatch(uint32_t gen_mode,
+                                         const float* edge,
+                                         const float* inside) {
+    if (!edge || !inside) {
+        return true;
+    }
+    switch (gen_mode) {
+        case GL_ISOLINES:
+            return edge[0] <= 0.0f || edge[1] <= 0.0f ||
+                   isnan(edge[0]) || isnan(edge[1]);
+        case GL_QUADS:
+            return edge[0] <= 0.0f || edge[1] <= 0.0f ||
+                   edge[2] <= 0.0f || edge[3] <= 0.0f ||
+                   inside[0] <= 0.0f || inside[1] <= 0.0f ||
+                   isnan(edge[0]) || isnan(edge[1]) ||
+                   isnan(edge[2]) || isnan(edge[3]) ||
+                   isnan(inside[0]) || isnan(inside[1]);
+        default: /* GL_TRIANGLES */
+            return edge[0] <= 0.0f || edge[1] <= 0.0f ||
+                   edge[2] <= 0.0f || inside[0] <= 0.0f ||
+                   isnan(edge[0]) || isnan(edge[1]) ||
+                   isnan(edge[2]) || isnan(inside[0]);
+    }
+}
 
 extern "C"
 int mglRenderCppFillDefaultTessFactorBuffer(
@@ -3458,7 +3650,7 @@ uint64_t mglRenderCppTessPrimitiveCount(
         for (int i = 0; i < 2; i++) {
             inside[i] = *(const __fp16*)&record[4 + i];
         }
-        if (mglTessFactorsDiscardPatch(tess_gen_mode, edge, inside)) {
+        if (mglRenderCppTessFactorsDiscardPatch(tess_gen_mode, edge, inside)) {
             continue;
         }
         float inside0 = fmaxf(inside[0], 1.0f);
@@ -4040,6 +4232,55 @@ uint32_t mglRenderCppDoubleVertexAttribFloatFormat(uint32_t size) {
 }
 
 extern "C"
+uint32_t mglRenderCppIntegerAttribConversionFormat(
+    uint64_t src_type,
+    uint64_t shader_gl_type,
+    uint32_t size) {
+    if (size < 1u || size > 4u) {
+        return static_cast<uint32_t>(MTL::VertexFormatInvalid);
+    }
+
+    const bool shader_is_int =
+        shader_gl_type == GL_INT || shader_gl_type == GL_INT_VEC2 ||
+        shader_gl_type == GL_INT_VEC3 || shader_gl_type == GL_INT_VEC4;
+    const bool shader_is_uint =
+        shader_gl_type == GL_UNSIGNED_INT ||
+        shader_gl_type == GL_UNSIGNED_INT_VEC2 ||
+        shader_gl_type == GL_UNSIGNED_INT_VEC3 ||
+        shader_gl_type == GL_UNSIGNED_INT_VEC4;
+    if (!shader_is_int && !shader_is_uint) {
+        return static_cast<uint32_t>(MTL::VertexFormatInvalid);
+    }
+
+    const bool src_is_unsigned =
+        src_type == GL_UNSIGNED_BYTE || src_type == GL_UNSIGNED_SHORT ||
+        src_type == GL_UNSIGNED_INT;
+    const bool src_is_signed =
+        src_type == GL_BYTE || src_type == GL_SHORT || src_type == GL_INT;
+    if (!((shader_is_int && src_is_unsigned) ||
+          (shader_is_uint && src_is_signed))) {
+        return static_cast<uint32_t>(MTL::VertexFormatInvalid);
+    }
+
+    if (shader_is_int) {
+        switch (size) {
+            case 1u: return static_cast<uint32_t>(MTL::VertexFormatInt);
+            case 2u: return static_cast<uint32_t>(MTL::VertexFormatInt2);
+            case 3u: return static_cast<uint32_t>(MTL::VertexFormatInt3);
+            case 4u: return static_cast<uint32_t>(MTL::VertexFormatInt4);
+        }
+    } else {
+        switch (size) {
+            case 1u: return static_cast<uint32_t>(MTL::VertexFormatUInt);
+            case 2u: return static_cast<uint32_t>(MTL::VertexFormatUInt2);
+            case 3u: return static_cast<uint32_t>(MTL::VertexFormatUInt3);
+            case 4u: return static_cast<uint32_t>(MTL::VertexFormatUInt4);
+        }
+    }
+    return static_cast<uint32_t>(MTL::VertexFormatInvalid);
+}
+
+extern "C"
 uint64_t mglRenderCppHashStepU64(uint64_t hash, uint64_t value) {
     return (hash ^ value) * 1099511628211ull;
 }
@@ -4486,6 +4727,10 @@ int mglRenderCppGeometryGatherIndices(
             index = ((const uint32_t*)bytes)[i];
         }
         if (has_restart && index == restart_index) {
+            /* A restart terminates the current primitive.  Any indices since
+             * the last complete primitive form an incomplete fragment and
+             * must not become the prefix of the next primitive. */
+            gathered -= in_prim;
             in_prim = 0u;
             continue;
         }
@@ -4964,7 +5209,7 @@ uint32_t mglRenderCppTessEvalItemsPerPatch(
         for (int i = 0; i < 2; i++) {
             inside[i] = *(const __fp16*)&tf->inside[i];
         }
-        if (mglTessFactorsDiscardPatch(gen_mode, edge, inside)) {
+        if (mglRenderCppTessFactorsDiscardPatch(gen_mode, edge, inside)) {
             return 0u;
         }
     }
@@ -8602,6 +8847,48 @@ int mglRenderCppSetRenderPassStateAttachment(
     return 0;
 }
 
+static uint64_t mglRenderCppRenderTargetLayerCount(
+    MTL::Texture* texture,
+    uint64_t level) {
+    if (!texture) return 0u;
+    switch (texture->textureType()) {
+    case MTL::TextureType1DArray:
+    case MTL::TextureType2DArray:
+    case MTL::TextureType2DMultisampleArray:
+        return static_cast<uint64_t>(texture->arrayLength());
+    case MTL::TextureTypeCube:
+        return 6u;
+    case MTL::TextureTypeCubeArray:
+        return static_cast<uint64_t>(texture->arrayLength()) * 6u;
+    case MTL::TextureType3D:
+        return mglRenderCppMetalTextureLevelDimension(
+            static_cast<uint64_t>(texture->depth()), level);
+    default:
+        return 1u;
+    }
+}
+
+static uint64_t mglRenderCppRenderPassArrayLength(
+    const MGLRenderCppRenderPassState& state) {
+    uint64_t commonArrayLength = 0u;
+    auto accumulate = [&commonArrayLength](
+                          const MGLRenderCppRenderPassAttachmentState& attachment) {
+        MTL::Texture* texture = static_cast<MTL::Texture*>(attachment.texture);
+        uint64_t layerCount =
+            mglRenderCppRenderTargetLayerCount(texture, attachment.level);
+        if (layerCount == 0u) return;
+        commonArrayLength = commonArrayLength == 0u
+            ? layerCount
+            : std::min(commonArrayLength, layerCount);
+    };
+    for (uint32_t i = 0u; i < MGL_RENDER_CPP_MAX_COLOR_ATTACHMENTS; ++i) {
+        accumulate(state.color[i].attachment);
+    }
+    accumulate(state.depth.attachment);
+    accumulate(state.stencil.attachment);
+    return commonArrayLength;
+}
+
 int mglRenderCppSetRenderPassStateAttachmentTexture(
     void* owner_handle,
     uint32_t attachment_kind,
@@ -8609,7 +8896,8 @@ int mglRenderCppSetRenderPassStateAttachmentTexture(
     void* texture,
     uint64_t level,
     uint64_t slice,
-    uint64_t depth_plane) {
+    uint64_t depth_plane,
+    uint32_t layered) {
     mgl::RenderPassStateOwner* owner =
         static_cast<mgl::RenderPassStateOwner*>(owner_handle);
     if (!owner) return -1;
@@ -8637,22 +8925,13 @@ int mglRenderCppSetRenderPassStateAttachmentTexture(
     destination->slice = slice;
     destination->depth_plane = depth_plane;
 
-    /* Layered rendering: keep renderTargetArrayLength capped at the largest
-     * arrayLength among attached color textures (>= 1). */
-    uint64_t maxArrayLength = 1u;
-    for (uint32_t i = 0u; i < MGL_RENDER_CPP_MAX_COLOR_ATTACHMENTS; ++i) {
-        MTL::Texture* t = static_cast<MTL::Texture*>(
-            owner->state.color[i].attachment.texture);
-        if (t && t->arrayLength() > maxArrayLength) {
-            maxArrayLength = t->arrayLength();
-        }
-    }
-    owner->state.render_target_array_length = maxArrayLength;
-    /* Layered pass: the layer comes from the VS
-     * [[render_target_array_index]] output; a non-zero attachment slice is
-     * ignored (or dropped) by Metal, so keep it at 0. */
-    if (maxArrayLength > 0u && destination) {
+    if (layered) {
+        owner->state.render_target_array_length =
+            mglRenderCppRenderPassArrayLength(owner->state);
         destination->slice = 0u;
+        destination->depth_plane = 0u;
+    } else {
+        owner->state.render_target_array_length = 0u;
     }
     return 0;
 }

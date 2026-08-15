@@ -55,7 +55,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 68
+#define MAX_TESTS 72
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -530,6 +530,924 @@ static GLuint make_layer_fbo(int w, int h, GLuint *out_tex)
     }
     if (out_tex) *out_tex = tex;
     return fbo;
+}
+
+static void drain_gl_errors(void)
+{
+    while (glGetError() != GL_NO_ERROR) { }
+}
+
+static int expect_single_gl_error(const char *label, GLenum expected)
+{
+    GLenum actual = glGetError();
+    GLenum extra = glGetError();
+    if (actual == expected && extra == GL_NO_ERROR) {
+        return 0;
+    }
+
+    fprintf(stderr,
+            "%s: error=0x%x extra=0x%x expected=0x%x\n",
+            label, actual, extra, expected);
+    drain_gl_errors();
+    return 1;
+}
+
+static int expect_bound_texture_level_dimensions(const char *label,
+                                                 GLenum target,
+                                                 GLint level,
+                                                 GLint expected_width,
+                                                 GLint expected_height,
+                                                 GLint expected_depth)
+{
+    GLint width = -1;
+    GLint height = -1;
+    GLint depth = -1;
+    glGetTexLevelParameteriv(target, level, GL_TEXTURE_WIDTH, &width);
+    glGetTexLevelParameteriv(target, level, GL_TEXTURE_HEIGHT, &height);
+    glGetTexLevelParameteriv(target, level, GL_TEXTURE_DEPTH, &depth);
+    if (glGetError() != GL_NO_ERROR ||
+        width != expected_width ||
+        height != expected_height ||
+        depth != expected_depth) {
+        fprintf(stderr,
+                "%s: level=%d size=%dx%dx%d expected=%dx%dx%d\n",
+                label, level, width, height, depth,
+                expected_width, expected_height, expected_depth);
+        drain_gl_errors();
+        return 1;
+    }
+    return 0;
+}
+
+static int test_texture_mip_dimensions(unsigned char *pixels,
+                                       const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    GLuint textures[10] = {0u};
+    int result = 1;
+
+    glGenTextures(10, textures);
+
+    glBindTexture(GL_TEXTURE_1D_ARRAY, textures[0]);
+    glTexStorage2D(GL_TEXTURE_1D_ARRAY, 3, GL_RGBA8, 16, 5);
+    if (expect_bound_texture_level_dimensions("texture_mip_dimensions: 1D array",
+                                              GL_TEXTURE_1D_ARRAY, 2, 4, 5, 1)) {
+        goto cleanup;
+    }
+    glBindTexture(GL_TEXTURE_3D, textures[1]);
+    glTexStorage3D(GL_TEXTURE_3D, 3, GL_RGBA8, 16, 8, 4);
+    if (expect_bound_texture_level_dimensions("texture_mip_dimensions: 3D",
+                                              GL_TEXTURE_3D, 2, 4, 2, 1)) {
+        goto cleanup;
+    }
+    {
+        GLubyte data[4 * 2 * 4] = {0u};
+        glTexSubImage3D(GL_TEXTURE_3D, 2, 0, 0, 0, 4, 2, 1,
+                        GL_RGBA, GL_UNSIGNED_BYTE, data);
+        if (expect_single_gl_error("texture_mip_dimensions: 3D last slice",
+                                   GL_NO_ERROR)) {
+            goto cleanup;
+        }
+        glTexSubImage3D(GL_TEXTURE_3D, 2, 0, 0, 1, 4, 2, 1,
+                        GL_RGBA, GL_UNSIGNED_BYTE, data);
+        if (expect_single_gl_error("texture_mip_dimensions: 3D overflow",
+                                   GL_INVALID_VALUE)) {
+            goto cleanup;
+        }
+    }
+
+    glBindTexture(GL_TEXTURE_2D_ARRAY, textures[2]);
+    glTexStorage3D(GL_TEXTURE_2D_ARRAY, 3, GL_RGBA8, 16, 8, 5);
+    if (expect_bound_texture_level_dimensions("texture_mip_dimensions: 2D array",
+                                              GL_TEXTURE_2D_ARRAY, 2, 4, 2, 5)) {
+        goto cleanup;
+    }
+
+    glBindTexture(GL_TEXTURE_CUBE_MAP_ARRAY, textures[3]);
+    glTexStorage3D(GL_TEXTURE_CUBE_MAP_ARRAY, 3, GL_RGBA8, 16, 16, 12);
+    if (expect_bound_texture_level_dimensions("texture_mip_dimensions: cube array",
+                                              GL_TEXTURE_CUBE_MAP_ARRAY, 2, 4, 4, 12)) {
+        goto cleanup;
+    }
+
+    glBindTexture(GL_TEXTURE_2D_ARRAY, textures[4]);
+    glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA8, 4, 4, 2, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glGenerateMipmap(GL_TEXTURE_2D_ARRAY);
+    if (expect_single_gl_error("texture_mip_dimensions: generate 2D array",
+                               GL_NO_ERROR) ||
+        expect_bound_texture_level_dimensions("texture_mip_dimensions: generated 2D array",
+                                              GL_TEXTURE_2D_ARRAY, 1, 2, 2, 2)) {
+        goto cleanup;
+    }
+
+    glBindTexture(GL_TEXTURE_CUBE_MAP_ARRAY, textures[5]);
+    glTexImage3D(GL_TEXTURE_CUBE_MAP_ARRAY, 0, GL_RGBA8, 4, 4, 6, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glGenerateMipmap(GL_TEXTURE_CUBE_MAP_ARRAY);
+    if (expect_single_gl_error("texture_mip_dimensions: generate cube array",
+                               GL_NO_ERROR) ||
+        expect_bound_texture_level_dimensions("texture_mip_dimensions: generated cube array",
+                                              GL_TEXTURE_CUBE_MAP_ARRAY, 1, 2, 2, 6)) {
+        goto cleanup;
+    }
+
+    glBindTexture(GL_TEXTURE_2D, textures[6]);
+    glTexStorage2D(GL_TEXTURE_2D, 2, GL_RGBA8, 16, 16);
+    GLint immutable_levels = 0;
+    glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_IMMUTABLE_LEVELS,
+                        &immutable_levels);
+    if (glGetError() != GL_NO_ERROR || immutable_levels != 2) {
+        fprintf(stderr,
+                "texture_mip_dimensions: immutable levels before generate=%d\n",
+                immutable_levels);
+        goto cleanup;
+    }
+    glGenerateMipmap(GL_TEXTURE_2D);
+    glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_IMMUTABLE_LEVELS,
+                        &immutable_levels);
+    if (glGetError() != GL_NO_ERROR || immutable_levels != 2) {
+        fprintf(stderr,
+                "texture_mip_dimensions: immutable levels after generate=%d\n",
+                immutable_levels);
+        goto cleanup;
+    }
+
+    drain_gl_errors();
+    glTexStorage2D(GL_TEXTURE_2D, 2, GL_RGBA8, 16, 16);
+    if (expect_single_gl_error("texture_mip_dimensions: repeated storage",
+                               GL_INVALID_OPERATION)) {
+        goto cleanup;
+    }
+
+    glBindTexture(GL_TEXTURE_RECTANGLE, textures[7]);
+    drain_gl_errors();
+    glTexStorage2D(GL_TEXTURE_RECTANGLE, 2, GL_RGBA8, 16, 16);
+    if (expect_single_gl_error("texture_mip_dimensions: rectangle levels",
+                               GL_INVALID_OPERATION)) {
+        goto cleanup;
+    }
+
+    glBindTexture(GL_TEXTURE_1D_ARRAY, textures[8]);
+    glTexImage2D(GL_TEXTURE_1D_ARRAY, 0, GL_RGBA8, 4, 5, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glGenerateMipmap(GL_TEXTURE_1D_ARRAY);
+    if (expect_single_gl_error("texture_mip_dimensions: generate 1D array",
+                               GL_NO_ERROR) ||
+        expect_bound_texture_level_dimensions("texture_mip_dimensions: generated 1D array",
+                                              GL_TEXTURE_1D_ARRAY, 1, 2, 5, 1)) {
+        goto cleanup;
+    }
+
+    glBindTexture(GL_TEXTURE_2D, textures[9]);
+    drain_gl_errors();
+    glGenerateMipmap(GL_TEXTURE_2D);
+    if (expect_single_gl_error("texture_mip_dimensions: undefined base level",
+                               GL_INVALID_OPERATION)) {
+        goto cleanup;
+    }
+
+    result = 0;
+
+cleanup:
+    glDeleteTextures(10, textures);
+    drain_gl_errors();
+    return result;
+}
+
+struct FramebufferAttachmentState {
+    GLint object;
+    GLint level;
+    GLint layer;
+    GLint layered;
+};
+
+static int capture_framebuffer_attachment_state(
+    const char *label,
+    struct FramebufferAttachmentState *state)
+{
+    state->object = -1;
+    state->level = -1;
+    state->layer = -1;
+    state->layered = -1;
+    glGetFramebufferAttachmentParameteriv(
+        GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+        GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &state->object);
+    glGetFramebufferAttachmentParameteriv(
+        GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+        GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_LEVEL, &state->level);
+    glGetFramebufferAttachmentParameteriv(
+        GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+        GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_LAYER, &state->layer);
+    glGetFramebufferAttachmentParameteriv(
+        GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+        GL_FRAMEBUFFER_ATTACHMENT_LAYERED, &state->layered);
+    GLenum error = glGetError();
+    GLenum extra = glGetError();
+    if (error != GL_NO_ERROR || extra != GL_NO_ERROR) {
+        fprintf(stderr,
+                "%s: attachment query error=0x%x extra=0x%x\n",
+                label, error, extra);
+        drain_gl_errors();
+        return 1;
+    }
+    return 0;
+}
+
+static int expect_framebuffer_attachment_state(
+    const char *label,
+    const struct FramebufferAttachmentState *expected)
+{
+    struct FramebufferAttachmentState actual;
+    if (capture_framebuffer_attachment_state(label, &actual)) {
+        return 1;
+    }
+    if (actual.object != expected->object ||
+        actual.level != expected->level ||
+        actual.layer != expected->layer ||
+        actual.layered != expected->layered) {
+        fprintf(stderr,
+                "%s: attachment=(object=%d level=%d layer=%d layered=%d) "
+                "expected=(object=%d level=%d layer=%d layered=%d)\n",
+                label,
+                actual.object, actual.level, actual.layer, actual.layered,
+                expected->object, expected->level, expected->layer,
+                expected->layered);
+        return 1;
+    }
+    return 0;
+}
+
+static GLint framebuffer_test_max_mip_level(GLint max_size)
+{
+    GLint level = 0;
+    while (max_size > 1) {
+        max_size >>= 1;
+        level++;
+    }
+    return level;
+}
+
+static int expect_framebuffer_layer_status(const char *label,
+                                           GLuint fbo,
+                                           GLuint texture,
+                                           GLint level,
+                                           GLint layer,
+                                           GLboolean named,
+                                           GLenum expected_status)
+{
+    drain_gl_errors();
+    if (named) {
+        glNamedFramebufferTextureLayer(fbo, GL_COLOR_ATTACHMENT0,
+                                       texture, level, layer);
+    } else {
+        glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                  texture, level, layer);
+    }
+    if (expect_single_gl_error(label, GL_NO_ERROR)) {
+        return 1;
+    }
+
+    GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (status != expected_status) {
+        fprintf(stderr,
+                "%s: status=0x%x expected=0x%x\n",
+                label, status, expected_status);
+        return 1;
+    }
+    return 0;
+}
+
+static int test_framebuffer_texture_layer_validation(unsigned char *pixels,
+                                                     const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    GLuint fbo = 0u;
+    GLuint old_array = 0u;
+    GLuint texture_2d = 0u;
+    GLuint cube = 0u;
+    GLuint unrealized = 0u;
+    GLuint layered[4] = {0u};
+    GLuint no_storage[5] = {0u};
+    struct FramebufferAttachmentState preserved_state;
+    int result = 1;
+
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glDrawBuffer(GL_COLOR_ATTACHMENT0);
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+
+    glGenTextures(1, &old_array);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, old_array);
+    glTexStorage3D(GL_TEXTURE_2D_ARRAY, 2, GL_RGBA8, 4, 4, 2);
+    glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, old_array, 1);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        fprintf(stderr,
+                "framebuffer_texture_layer_validation: initial FBO incomplete\n");
+        goto cleanup;
+    }
+    if (capture_framebuffer_attachment_state(
+            "framebuffer_texture_layer_validation: initial attachment",
+            &preserved_state)) {
+        goto cleanup;
+    }
+
+    glGenTextures(1, &texture_2d);
+    glBindTexture(GL_TEXTURE_2D, texture_2d);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 4, 4, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+
+    drain_gl_errors();
+    glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                              texture_2d, 2, 1);
+    if (expect_single_gl_error("framebuffer_texture_layer_validation: bound 2D",
+                               GL_INVALID_OPERATION) ||
+        expect_framebuffer_attachment_state(
+            "framebuffer_texture_layer_validation: bound unchanged",
+            &preserved_state)) {
+        goto cleanup;
+    }
+
+    drain_gl_errors();
+    glNamedFramebufferTextureLayer(fbo, GL_COLOR_ATTACHMENT0,
+                                   texture_2d, 2, 1);
+    if (expect_single_gl_error("framebuffer_texture_layer_validation: named 2D",
+                               GL_INVALID_OPERATION) ||
+        expect_framebuffer_attachment_state(
+            "framebuffer_texture_layer_validation: named unchanged",
+            &preserved_state)) {
+        goto cleanup;
+    }
+
+    drain_gl_errors();
+    glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                              old_array, 0, -1);
+    if (expect_single_gl_error("framebuffer_texture_layer_validation: negative layer",
+                               GL_INVALID_VALUE) ||
+        expect_framebuffer_attachment_state(
+            "framebuffer_texture_layer_validation: negative unchanged",
+            &preserved_state)) {
+        goto cleanup;
+    }
+
+    glGenTextures(1, &cube);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, cube);
+    for (GLuint face = 0u; face < 6u; ++face) {
+        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 0, GL_RGBA8,
+                     4, 4, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    }
+    drain_gl_errors();
+    glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                              cube, 0, 6);
+    if (expect_single_gl_error("framebuffer_texture_layer_validation: cube layer 6",
+                               GL_INVALID_VALUE) ||
+        expect_framebuffer_attachment_state(
+            "framebuffer_texture_layer_validation: cube unchanged",
+            &preserved_state)) {
+        goto cleanup;
+    }
+
+    glGenTextures(1, &unrealized);
+    drain_gl_errors();
+    glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                              unrealized, 0, 0);
+    if (expect_single_gl_error("framebuffer_texture_layer_validation: unrealized texture",
+                               GL_INVALID_OPERATION) ||
+        expect_framebuffer_attachment_state(
+            "framebuffer_texture_layer_validation: unrealized unchanged",
+            &preserved_state)) {
+        goto cleanup;
+    }
+
+    drain_gl_errors();
+    glFramebufferTextureLayer(GL_TEXTURE_2D, GL_COLOR_ATTACHMENT0,
+                              old_array, 0, 0);
+    if (expect_single_gl_error("framebuffer_texture_layer_validation: invalid framebuffer target",
+                               GL_INVALID_ENUM) ||
+        expect_framebuffer_attachment_state(
+            "framebuffer_texture_layer_validation: target unchanged",
+            &preserved_state)) {
+        goto cleanup;
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0u);
+    drain_gl_errors();
+    glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                              old_array, 0, 0);
+    if (expect_single_gl_error("framebuffer_texture_layer_validation: default framebuffer",
+                               GL_INVALID_OPERATION)) {
+        goto cleanup;
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    if (expect_framebuffer_attachment_state(
+            "framebuffer_texture_layer_validation: default unchanged",
+            &preserved_state)) {
+        goto cleanup;
+    }
+
+    GLint max_texture_size = 0;
+    GLint max_3d_texture_size = 0;
+    GLint max_cube_map_texture_size = 0;
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &max_texture_size);
+    glGetIntegerv(GL_MAX_3D_TEXTURE_SIZE, &max_3d_texture_size);
+    glGetIntegerv(GL_MAX_CUBE_MAP_TEXTURE_SIZE, &max_cube_map_texture_size);
+    if (glGetError() != GL_NO_ERROR ||
+        max_texture_size <= 0 || max_3d_texture_size <= 0 ||
+        max_cube_map_texture_size <= 0) {
+        fprintf(stderr,
+                "framebuffer_texture_layer_validation: invalid texture limits "
+                "2D=%d 3D=%d cube=%d\n",
+                max_texture_size, max_3d_texture_size,
+                max_cube_map_texture_size);
+        goto cleanup;
+    }
+
+    glGenTextures(5, no_storage);
+    struct MipLimitCase {
+        const char *label;
+        GLenum target;
+        GLint max_size;
+        GLint legal_layer;
+        GLboolean named;
+    } mip_cases[] = {
+        {"framebuffer_texture_layer_validation: no-storage 3D",
+         GL_TEXTURE_3D, max_3d_texture_size, 1, GL_FALSE},
+        {"framebuffer_texture_layer_validation: no-storage 1D array",
+         GL_TEXTURE_1D_ARRAY, max_texture_size, 1, GL_TRUE},
+        {"framebuffer_texture_layer_validation: no-storage 2D array",
+         GL_TEXTURE_2D_ARRAY, max_texture_size, 1, GL_FALSE},
+        {"framebuffer_texture_layer_validation: no-storage cube",
+         GL_TEXTURE_CUBE_MAP, max_cube_map_texture_size, 2, GL_TRUE},
+        {"framebuffer_texture_layer_validation: no-storage cube array",
+         GL_TEXTURE_CUBE_MAP_ARRAY, max_cube_map_texture_size, 1, GL_FALSE},
+    };
+
+    for (size_t i = 0u; i < sizeof(mip_cases) / sizeof(mip_cases[0]); ++i) {
+        char top_label[192];
+        char overflow_label[192];
+        char unchanged_label[192];
+        struct FramebufferAttachmentState top_state;
+        GLint top_level = framebuffer_test_max_mip_level(mip_cases[i].max_size);
+
+        glBindTexture(mip_cases[i].target, no_storage[i]);
+        drain_gl_errors();
+        if (mip_cases[i].named) {
+            glNamedFramebufferTextureLayer(fbo, GL_COLOR_ATTACHMENT0,
+                                           no_storage[i], top_level,
+                                           mip_cases[i].legal_layer);
+        } else {
+            glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                      no_storage[i], top_level,
+                                      mip_cases[i].legal_layer);
+        }
+        snprintf(top_label, sizeof(top_label), "%s top", mip_cases[i].label);
+        if (expect_single_gl_error(top_label, GL_NO_ERROR)) {
+            goto cleanup;
+        }
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) !=
+            GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT) {
+            fprintf(stderr, "%s: top level unexpectedly complete\n",
+                    mip_cases[i].label);
+            goto cleanup;
+        }
+        if (capture_framebuffer_attachment_state(top_label, &top_state) ||
+            top_state.object != (GLint)no_storage[i] ||
+            top_state.level != top_level ||
+            top_state.layer != (mip_cases[i].target == GL_TEXTURE_CUBE_MAP
+                                    ? 0 : mip_cases[i].legal_layer) ||
+            top_state.layered != GL_FALSE) {
+            fprintf(stderr,
+                    "%s: top attachment=(object=%d level=%d layer=%d layered=%d)\n",
+                    mip_cases[i].label,
+                    top_state.object, top_state.level, top_state.layer,
+                    top_state.layered);
+            goto cleanup;
+        }
+
+        drain_gl_errors();
+        if (mip_cases[i].named) {
+            glNamedFramebufferTextureLayer(fbo, GL_COLOR_ATTACHMENT0,
+                                           no_storage[i], top_level + 1,
+                                           mip_cases[i].legal_layer + 1);
+        } else {
+            glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                      no_storage[i], top_level + 1,
+                                      mip_cases[i].legal_layer + 1);
+        }
+        snprintf(overflow_label, sizeof(overflow_label), "%s top+1",
+                 mip_cases[i].label);
+        snprintf(unchanged_label, sizeof(unchanged_label), "%s unchanged",
+                 mip_cases[i].label);
+        if (expect_single_gl_error(overflow_label, GL_INVALID_VALUE) ||
+            expect_framebuffer_attachment_state(unchanged_label, &top_state)) {
+            goto cleanup;
+        }
+
+        if (mip_cases[i].target == GL_TEXTURE_CUBE_MAP) {
+            glBindTexture(GL_TEXTURE_CUBE_MAP, no_storage[i]);
+            glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X +
+                             mip_cases[i].legal_layer,
+                         top_level, GL_RGBA8, 1, 1, 0,
+                         GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+            if (expect_single_gl_error(
+                    "framebuffer_texture_layer_validation: cube layer preserved",
+                    GL_NO_ERROR) ||
+                glCheckFramebufferStatus(GL_FRAMEBUFFER) !=
+                    GL_FRAMEBUFFER_COMPLETE) {
+                fprintf(stderr,
+                        "framebuffer_texture_layer_validation: cube layer changed "
+                        "after top+1 failure\n");
+                goto cleanup;
+            }
+        }
+    }
+
+    drain_gl_errors();
+    glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                              0u, -1, -1);
+    if (expect_single_gl_error("framebuffer_texture_layer_validation: detach ignores level/layer",
+                               GL_NO_ERROR)) {
+        goto cleanup;
+    }
+    GLint object_type = -1;
+    glGetFramebufferAttachmentParameteriv(
+        GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+        GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &object_type);
+    if (glGetError() != GL_NO_ERROR || object_type != GL_NONE) {
+        fprintf(stderr,
+                "framebuffer_texture_layer_validation: detach object type=0x%x\n",
+                object_type);
+        goto cleanup;
+    }
+
+    glGenTextures(4, layered);
+    glBindTexture(GL_TEXTURE_3D, layered[0]);
+    glTexStorage3D(GL_TEXTURE_3D, 2, GL_RGBA8, 4, 4, 4);
+
+    glBindTexture(GL_TEXTURE_1D_ARRAY, layered[1]);
+    glTexStorage2D(GL_TEXTURE_1D_ARRAY, 2, GL_RGBA8, 4, 2);
+
+    glBindTexture(GL_TEXTURE_2D_MULTISAMPLE_ARRAY, layered[2]);
+    glTexImage3DMultisample(GL_TEXTURE_2D_MULTISAMPLE_ARRAY, 2,
+                            GL_RGBA8, 4, 4, 2, GL_TRUE);
+
+    glBindTexture(GL_TEXTURE_CUBE_MAP_ARRAY, layered[3]);
+    glTexStorage3D(GL_TEXTURE_CUBE_MAP_ARRAY, 1, GL_RGBA8, 4, 4, 6);
+    if (glGetError() != GL_NO_ERROR) {
+        fprintf(stderr,
+                "framebuffer_texture_layer_validation: layered texture setup failed\n");
+        goto cleanup;
+    }
+
+    struct LayerCase {
+        const char *label;
+        GLuint texture;
+        GLint level;
+        GLint valid_layer;
+        GLint missing_layer;
+        GLboolean named;
+    } cases[] = {
+        {"framebuffer_texture_layer_validation: 3D", layered[0], 1, 1, 2, GL_FALSE},
+        {"framebuffer_texture_layer_validation: 1D array", layered[1], 1, 1, 2, GL_FALSE},
+        {"framebuffer_texture_layer_validation: 2D array DSA", old_array, 0, 1, 2, GL_TRUE},
+        {"framebuffer_texture_layer_validation: 2D MS array", layered[2], 0, 1, 2, GL_FALSE},
+        {"framebuffer_texture_layer_validation: cube array", layered[3], 0, 5, 6, GL_FALSE},
+    };
+
+    for (size_t i = 0u; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        char valid_label[160];
+        char missing_label[160];
+        snprintf(valid_label, sizeof(valid_label), "%s valid", cases[i].label);
+        snprintf(missing_label, sizeof(missing_label), "%s missing", cases[i].label);
+        if (expect_framebuffer_layer_status(valid_label, fbo,
+                                            cases[i].texture,
+                                            cases[i].level,
+                                            cases[i].valid_layer,
+                                            cases[i].named,
+                                            GL_FRAMEBUFFER_COMPLETE) ||
+            expect_framebuffer_layer_status(missing_label, fbo,
+                                            cases[i].texture,
+                                            cases[i].level,
+                                            cases[i].missing_layer,
+                                            cases[i].named,
+                                            GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT)) {
+            goto cleanup;
+        }
+    }
+
+    result = 0;
+
+cleanup:
+    glBindFramebuffer(GL_FRAMEBUFFER, 0u);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (old_array) glDeleteTextures(1, &old_array);
+    if (texture_2d) glDeleteTextures(1, &texture_2d);
+    if (cube) glDeleteTextures(1, &cube);
+    if (unrealized) glDeleteTextures(1, &unrealized);
+    glDeleteTextures(4, layered);
+    glDeleteTextures(5, no_storage);
+    drain_gl_errors();
+    return result;
+}
+
+/* GL 4.6 section 9.4.2 layered completeness: populated layered color
+ * attachments must have the same texture target.  Their layer counts may
+ * differ; rendering is limited to the smallest attachment layer count. */
+static int test_framebuffer_layer_targets(unsigned char *pixels,
+                                          const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    GLuint fbo = 0u;
+    GLuint array_textures[2] = {0u, 0u};
+    GLuint texture_3d = 0u;
+    int result = 1;
+
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+
+    glGenTextures(2, array_textures);
+    for (GLuint i = 0u; i < 2u; ++i) {
+        glBindTexture(GL_TEXTURE_2D_ARRAY, array_textures[i]);
+        glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA8, 8, 8,
+                     i == 0u ? 2 : 4, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    }
+
+    glGenTextures(1, &texture_3d);
+    glBindTexture(GL_TEXTURE_3D, texture_3d);
+    glTexImage3D(GL_TEXTURE_3D, 0, GL_RGBA8, 8, 8, 4, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+    /* Same target with different layer counts remains framebuffer-complete. */
+    glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                         array_textures[0], 0);
+    glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1,
+                         array_textures[1], 0);
+    GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (status != GL_FRAMEBUFFER_COMPLETE) {
+        fprintf(stderr,
+                "framebuffer_layer_targets: same-target layered FBO status=0x%x\n",
+                status);
+        goto cleanup;
+    }
+
+    /* Both attachments are layered, but their texture targets differ. */
+    glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, texture_3d, 0);
+    status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (status != GL_FRAMEBUFFER_INCOMPLETE_LAYER_TARGETS) {
+        fprintf(stderr,
+                "framebuffer_layer_targets: target mismatch status=0x%x\n",
+                status);
+        goto cleanup;
+    }
+
+    /* Preserve the existing layered/non-layered attachment mismatch rule. */
+    glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1,
+                              array_textures[1], 0, 0);
+    status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (status != GL_FRAMEBUFFER_INCOMPLETE_LAYER_TARGETS) {
+        fprintf(stderr,
+                "framebuffer_layer_targets: layered mix status=0x%x\n",
+                status);
+        goto cleanup;
+    }
+
+    result = 0;
+
+cleanup:
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (array_textures[0] || array_textures[1]) {
+        glDeleteTextures(2, array_textures);
+    }
+    if (texture_3d) glDeleteTextures(1, &texture_3d);
+    return result;
+}
+
+/* glFramebufferTextureLayer addresses cube-map faces through layer 0..5.
+ * Writing a non-zero face must not alias face 0 in the Metal slice mapping. */
+static int test_framebuffer_cube_layer_slice(unsigned char *pixels,
+                                             const char *out_path)
+{
+    (void)out_path;
+    GLuint fbo = 0u;
+    GLuint cube = 0u;
+    GLuint sparse_cube = 0u;
+    int result = 1;
+    const int width = 8;
+    const int height = 8;
+    const unsigned char *center;
+
+    glGenTextures(1, &cube);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, cube);
+    for (GLuint face = 0u; face < 6u; ++face) {
+        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 0, GL_RGBA8,
+                     width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    }
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glDrawBuffer(GL_COLOR_ATTACHMENT0);
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+
+    /* A cube layer attachment references exactly the selected face for
+     * completeness, even when the other five faces have no storage. */
+    glGenTextures(1, &sparse_cube);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, sparse_cube);
+    glTexImage2D(GL_TEXTURE_CUBE_MAP_NEGATIVE_Y, 0, GL_RGBA8,
+                 width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+    glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                              sparse_cube, 0, 3);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        fprintf(stderr,
+                "framebuffer_cube_layer_slice: sparse face-3 layer incomplete\n");
+        goto cleanup;
+    }
+    {
+        GLint layer = -1;
+        glGetFramebufferAttachmentParameteriv(
+            GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+            GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_LAYER, &layer);
+        if (layer != 0) {
+            fprintf(stderr,
+                    "framebuffer_cube_layer_slice: cube layer query=%d expected=0\n",
+                    layer);
+            goto cleanup;
+        }
+    }
+
+    glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                              sparse_cube, 0, 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) !=
+        GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT) {
+        fprintf(stderr,
+                "framebuffer_cube_layer_slice: missing face-0 layer complete\n");
+        goto cleanup;
+    }
+
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_CUBE_MAP_NEGATIVE_Y, sparse_cube, 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        fprintf(stderr,
+                "framebuffer_cube_layer_slice: sparse face-enum incomplete\n");
+        goto cleanup;
+    }
+
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_CUBE_MAP_POSITIVE_X, sparse_cube, 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) !=
+        GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT) {
+        fprintf(stderr,
+                "framebuffer_cube_layer_slice: missing face-enum complete\n");
+        goto cleanup;
+    }
+
+    glBindTexture(GL_TEXTURE_CUBE_MAP, sparse_cube);
+    glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X, 0, GL_RGBA8,
+                 width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+
+    glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                              sparse_cube, 0, 4);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) !=
+        GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT) {
+        fprintf(stderr,
+                "framebuffer_cube_layer_slice: missing face-4 layer complete\n");
+        goto cleanup;
+    }
+
+    glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, sparse_cube, 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) !=
+        GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT) {
+        fprintf(stderr,
+                "framebuffer_cube_layer_slice: sparse whole cube complete\n");
+        goto cleanup;
+    }
+
+    for (GLuint face = 1u; face < 6u; ++face) {
+        if (face == 3u) continue;
+        GLsizei face_width = face == 5u ? width / 2 : width;
+        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 0, GL_RGBA8,
+                     face_width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    }
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) !=
+        GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT) {
+        fprintf(stderr,
+                "framebuffer_cube_layer_slice: non-square whole cube complete\n");
+        goto cleanup;
+    }
+
+    for (GLuint face = 0u; face < 6u; ++face) {
+        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 0, GL_RGBA8,
+                     width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    }
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        fprintf(stderr,
+                "framebuffer_cube_layer_slice: complete whole cube incomplete\n");
+        goto cleanup;
+    }
+    {
+        GLint layered = GL_FALSE;
+        GLint layer = -1;
+        glGetFramebufferAttachmentParameteriv(
+            GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+            GL_FRAMEBUFFER_ATTACHMENT_LAYERED, &layered);
+        glGetFramebufferAttachmentParameteriv(
+            GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+            GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_LAYER, &layer);
+        if (layered != GL_TRUE || layer != 0) {
+            fprintf(stderr,
+                    "framebuffer_cube_layer_slice: whole cube layered=%d layer=%d\n",
+                    layered, layer);
+            goto cleanup;
+        }
+    }
+
+    /* Keep a whole-cube clear pending while changing the attachment so the
+     * CPU fallback must materialize all six faces before consuming it. */
+    {
+        const GLfloat blue[4] = {0.0f, 0.0f, 1.0f, 1.0f};
+        glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, cube, 0);
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+            fprintf(stderr,
+                    "framebuffer_cube_layer_slice: fallback whole cube incomplete\n");
+            goto cleanup;
+        }
+        glEnable(GL_SCISSOR_TEST);
+        glScissor(0, 0, width, height);
+        glClearBufferfv(GL_COLOR, 0, blue);
+        glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                  cube, 0, 0);
+        glDisable(GL_SCISSOR_TEST);
+
+        for (GLuint face = 0u; face < 6u; ++face) {
+            glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                      cube, 0, (GLint)face);
+            glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+            center = &pixels[((height / 2) * width + width / 2) * 4];
+            if (center[0] > 20u || center[1] > 20u || center[2] < 220u) {
+                fprintf(stderr,
+                        "framebuffer_cube_layer_slice: face %u fallback clear=(%u,%u,%u)\n",
+                        face, center[0], center[1], center[2]);
+                goto cleanup;
+            }
+        }
+    }
+
+    glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, cube, 0, 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        fprintf(stderr,
+                "framebuffer_cube_layer_slice: face-0 FBO incomplete\n");
+        goto cleanup;
+    }
+    glClearColor(1.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, cube, 0, 3);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        fprintf(stderr,
+                "framebuffer_cube_layer_slice: face-3 FBO incomplete\n");
+        goto cleanup;
+    }
+    glClearColor(0.0f, 1.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glFinish();
+    glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    center = &pixels[((height / 2) * width + width / 2) * 4];
+    if (center[0] > 20u || center[1] < 220u || center[2] > 20u) {
+        fprintf(stderr,
+                "framebuffer_cube_layer_slice: face 3 not green (%u,%u,%u)\n",
+                center[0], center[1], center[2]);
+        goto cleanup;
+    }
+
+    glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, cube, 0, 0);
+    glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    center = &pixels[((height / 2) * width + width / 2) * 4];
+    if (center[0] < 220u || center[1] > 20u || center[2] > 20u) {
+        fprintf(stderr,
+                "framebuffer_cube_layer_slice: face 0 changed (%u,%u,%u)\n",
+                center[0], center[1], center[2]);
+        goto cleanup;
+    }
+
+    result = 0;
+
+cleanup:
+    glBindFramebuffer(GL_FRAMEBUFFER, 0u);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (sparse_cube) glDeleteTextures(1, &sparse_cube);
+    if (cube) glDeleteTextures(1, &cube);
+    return result;
 }
 
 static void clear_color(float r, float g, float b)
@@ -1404,12 +2322,8 @@ cleanup:
 /* P4.1e2 layer-binding probe: a 2D-ARRAY color attachment bound through
  * glFramebufferTextureLayer at slice ∈ {0, 1}, with a program that has no
  * gl_Layer output.  GL 4.6 §9.4.2: the bound layer is the draw target.
- *
- * Known limitation (P1, recorded in AIR_M3_CPP_TODO): without gl_Layer
- * output the layered pass forces attachment slice 0 and
- * render_target_array_index stays 0, so a slice-1 binding still draws to
- * layer 0.  This probe asserts the CURRENT behavior on both gates so a
- * future fix must update it explicitly. */
+ * The Metal render pass must remain non-layered, preserve the selected
+ * attachment slice, and ignore render_target_array_index. */
 static int test_air_renderpass_layer_slice(unsigned char *pixels,
                                            const char *out_path)
 {
@@ -1442,6 +2356,8 @@ static int test_air_renderpass_layer_slice(unsigned char *pixels,
 
     const int px = (int)((0.0f + 1.0f) * 0.5f * REG_W);
     const int py = (int)((0.0f + 1.0f) * 0.5f * REG_H);
+    const int bgx = REG_W / 8;
+    const int bgy = REG_H / 8;
     const unsigned char *c;
 
     /* Segment 1: slice 0 binding, no gl_Layer output → triangle on layer 0. */
@@ -1457,10 +2373,16 @@ static int test_air_renderpass_layer_slice(unsigned char *pixels,
                 "0 (%u,%u,%u)\n", c[0], c[1], c[2]);
         goto cleanup;
     }
+    c = &pixels[(bgy * REG_W + bgx) * 4];
+    if (c[0] > 20u || c[1] > 20u || c[2] > 20u) {
+        fprintf(stderr,
+                "air_renderpass_layer_slice: slice-0 background not black "
+                "(%u,%u,%u)\n", c[0], c[1], c[2]);
+        goto cleanup;
+    }
 
-    /* Segment 2: slice 1 binding, no gl_Layer output.  Current behavior
-     * (documented limitation): the triangle lands on layer 0, so layer 1
-     * stays clear after the blue clear. */
+    /* Segment 2: slice 1 binding, no gl_Layer output.  The clear and draw
+     * must affect only layer 1. */
     glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, color,
                               0, 1);
     clear_color(0.0f, 0.0f, 1.0f);
@@ -1469,22 +2391,37 @@ static int test_air_renderpass_layer_slice(unsigned char *pixels,
     glFinish();
     glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
     c = &pixels[(py * REG_W + px) * 4];
-    if (c[0] > 20u || c[1] > 20u || c[2] < 220u) {
+    if (c[0] > 20u || c[1] < 220u || c[2] > 20u) {
         fprintf(stderr,
-                "air_renderpass_layer_slice: slice-1 draw unexpectedly "
-                "rendered on layer 1 (%u,%u,%u) — known limitation changed\n",
+                "air_renderpass_layer_slice: slice-1 draw not green on layer "
+                "1 (%u,%u,%u)\n",
                 c[0], c[1], c[2]);
         goto cleanup;
     }
-    /* Prove the draw went to layer 0 (current behavior). */
+    c = &pixels[(bgy * REG_W + bgx) * 4];
+    if (c[0] > 20u || c[1] > 20u || c[2] < 220u) {
+        fprintf(stderr,
+                "air_renderpass_layer_slice: slice-1 background not blue "
+                "(%u,%u,%u)\n", c[0], c[1], c[2]);
+        goto cleanup;
+    }
+
+    /* Layer 0 must retain the image produced by segment 1. */
     glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, color,
                               0, 0);
     glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
     c = &pixels[(py * REG_W + px) * 4];
     if (c[0] > 20u || c[1] < 220u || c[2] > 20u) {
         fprintf(stderr,
-                "air_renderpass_layer_slice: slice-1 draw did not land on "
-                "layer 0 either (%u,%u,%u)\n", c[0], c[1], c[2]);
+                "air_renderpass_layer_slice: slice-0 image changed at center "
+                "(%u,%u,%u)\n", c[0], c[1], c[2]);
+        goto cleanup;
+    }
+    c = &pixels[(bgy * REG_W + bgx) * 4];
+    if (c[0] > 20u || c[1] > 20u || c[2] > 20u) {
+        fprintf(stderr,
+                "air_renderpass_layer_slice: slice-0 background changed "
+                "(%u,%u,%u)\n", c[0], c[1], c[2]);
         goto cleanup;
     }
 
@@ -6031,8 +6968,8 @@ cleanup:
 }
 
 /* P1 regression (docs/AIR_M3_CPP_TODO.md §3 P1): direct indexed GS draws.
- * GS points-in expands each indexed input vertex into a triangle.  Covers
- * plain glDrawElements, glDrawElementsBaseVertex and primitive restart. */
+ * Covers points-in plain/base-vertex/restart draws plus triangles-in restart
+ * in the middle of an incomplete input primitive. */
 static int test_air_geometry_indexed(unsigned char *pixels,
                                      const char *out_path)
 {
@@ -6056,6 +6993,16 @@ static int test_air_geometry_indexed(unsigned char *pixels,
         "#version 450 core\n"
         "layout(location=0) out vec4 frag;\n"
         "void main() { frag = vec4(0.0, 1.0, 0.0, 1.0); }\n";
+    static const char *triGs =
+        "#version 450 core\n"
+        "layout(triangles) in;\n"
+        "layout(triangle_strip, max_vertices=3) out;\n"
+        "void main() {\n"
+        "  for (int i = 0; i < 3; ++i) {\n"
+        "    gl_Position = gl_in[i].gl_Position; EmitVertex();\n"
+        "  }\n"
+        "  EndPrimitive();\n"
+        "}\n";
     static const float positions[8] = {
         -0.5f, -0.5f,  /* 0: lower-left  */
          0.5f, -0.5f,  /* 1: lower-right */
@@ -6065,6 +7012,16 @@ static int test_air_geometry_indexed(unsigned char *pixels,
     static const uint32_t indices[4] = {0u, 1u, 2u, 3u};
     static const uint32_t restartIndices[5] = {
         0u, 3u, 0xFFFFFFFFu, 1u, 2u,
+    };
+    static const float triPositions[10] = {
+        -0.9f, -0.9f,  /* 0: discarded partial primitive */
+        -0.9f, -0.5f,  /* 1: discarded partial primitive */
+         0.2f, -0.3f,  /* 2: valid triangle */
+         0.8f, -0.3f,  /* 3: valid triangle */
+         0.5f,  0.5f,  /* 4: valid triangle */
+    };
+    static const uint32_t triRestartIndices[6] = {
+        0u, 1u, 0xFFFFFFFFu, 2u, 3u, 4u,
     };
     /* Triangle centroid for input point p: (p.x, p.y - 1/15) because the GS
      * expands to p+(-0.3,-0.4),(0.3,-0.4),(0,0.4) — centroid (p.x, p.y-0.1333). */
@@ -6077,9 +7034,10 @@ static int test_air_geometry_indexed(unsigned char *pixels,
     GLuint color = 0u;
     GLuint fbo = make_fbo(REG_W, REG_H, &color);
     GLuint program = link_program_with_geometry(vs, gs, fs);
+    GLuint triangleProgram = link_program_with_geometry(vs, triGs, fs);
     GLuint vao = 0u, vbo = 0u, ebo = 0u;
     int result = 1;
-    if (!fbo || !program) goto cleanup;
+    if (!fbo || !program || !triangleProgram) goto cleanup;
 
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     glGenVertexArrays(1, &vao);
@@ -6173,12 +7131,55 @@ static int test_air_geometry_indexed(unsigned char *pixels,
         }
     }
 
+    /* 4) Triangles-in restart inside an incomplete primitive.  [0,1] must
+     * be discarded at the restart and only [2,3,4] may reach the GS.  The
+     * old gather bug formed [0,1,2], producing the lower-left decoy. */
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(triPositions), triPositions,
+                 GL_STATIC_DRAW);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(triRestartIndices),
+                 triRestartIndices, GL_STATIC_DRAW);
+    glUseProgram(triangleProgram);
+    glEnable(GL_PRIMITIVE_RESTART);
+    glPrimitiveRestartIndex(0xFFFFFFFFu);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, (void *)0);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    glDisable(GL_PRIMITIVE_RESTART);
+    {
+        const float expectedCenter[2] = {0.5f, -0.0333f};
+        const float staleCenter[2] = {-0.5333f, -0.5667f};
+        int sx = (int)((expectedCenter[0] + 1.0f) * 0.5f * REG_W);
+        int sy = (int)((expectedCenter[1] + 1.0f) * 0.5f * REG_H);
+        const unsigned char *px = &pixels[(sy * REG_W + sx) * 4];
+        if (px[0] > 20u || px[1] < 220u || px[2] > 20u) {
+            fprintf(stderr,
+                    "air_geometry_indexed: mid-restart valid triangle missing "
+                    "at (%d,%d), got (%u,%u,%u)\n",
+                    sx, sy, px[0], px[1], px[2]);
+            goto cleanup;
+        }
+        sx = (int)((staleCenter[0] + 1.0f) * 0.5f * REG_W);
+        sy = (int)((staleCenter[1] + 1.0f) * 0.5f * REG_H);
+        px = &pixels[(sy * REG_W + sx) * 4];
+        if (px[0] > 20u || px[1] > 20u || px[2] > 20u) {
+            fprintf(stderr,
+                    "air_geometry_indexed: mid-restart leaked discarded "
+                    "fragment at (%d,%d), got (%u,%u,%u)\n",
+                    sx, sy, px[0], px[1], px[2]);
+            goto cleanup;
+        }
+    }
+
     result = 0;
 
 cleanup:
     if (vao) glDeleteVertexArrays(1, &vao);
     if (vbo) glDeleteBuffers(1, &vbo);
     if (ebo) glDeleteBuffers(1, &ebo);
+    if (triangleProgram) glDeleteProgram(triangleProgram);
     if (program) glDeleteProgram(program);
     if (fbo) glDeleteFramebuffers(1, &fbo);
     if (color) glDeleteTextures(1, &color);
@@ -9932,9 +10933,9 @@ cleanup:
 }
 
 /* GS gl_Layer / gl_ViewportIndex output (P1): a points-in/triangle-strip-out
- * GS writes gl_Layer=1 (layer scene) or gl_ViewportIndex=1 (viewport scene);
- * the expanded triangle must land on framebuffer layer 1 / the second
- * viewport respectively. */
+ * GS writes gl_Layer=1 into a whole-level layered framebuffer, or
+ * gl_ViewportIndex=1 into a regular framebuffer.  The expanded triangle must
+ * land on framebuffer layer 1 / the second viewport respectively. */
 static int test_air_geometry_layer_viewport(unsigned char *pixels,
                                             const char *out_path)
 {
@@ -9986,6 +10987,15 @@ static int test_air_geometry_layer_viewport(unsigned char *pixels,
 
     lfbo = make_layer_fbo(REG_W, REG_H, &color);
     if (!lfbo) goto cleanup;
+    glBindFramebuffer(GL_FRAMEBUFFER, lfbo);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                              GL_RENDERBUFFER, 0u);
+    glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, color, 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        fprintf(stderr,
+                "air_geometry_layer_viewport: whole-level probe FBO incomplete\n");
+        goto cleanup;
+    }
     /* Isolation probe: a plain VS writing gl_Layer=1 (no GS) must also land
      * on layer 1; this splits backend [[layer]] output from the GS chain. */
     {
@@ -10022,6 +11032,7 @@ static int test_air_geometry_layer_viewport(unsigned char *pixels,
                 fprintf(stderr,
                         "air_geometry_layer_viewport: probe layer 0 got "
                         "(%d,%d,%d); expected untouched\n", pp[0], pp[1], pp[2]);
+                goto cleanup;
             }
         }
         glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, color, 0, 1);
@@ -10039,16 +11050,18 @@ static int test_air_geometry_layer_viewport(unsigned char *pixels,
     }
     glBindFramebuffer(GL_FRAMEBUFFER, 0u);
 
-    /* Scene 1: gl_Layer=1 must land the triangle on framebuffer layer 1 and
-     * leave layer 0 untouched, regardless of the attachment slice the
-     * glFramebufferTextureLayer single-slice binding is currently on.  The
-     * probe above left the slice at 1, so the GS chain draws onto a
-     * non-zero slice here (a Metal layered pass must select the layer via
-     * the [render_target_array_index] output, ignoring the attachment
-     * slice). */
+    /* Scene 1: restore the whole-level layered attachment after the probe's
+     * per-layer readback bindings.  gl_Layer=1 must land the triangle on
+     * framebuffer layer 1 and leave layer 0 untouched. */
     layerProgram = link_program_with_geometry(vs, gs_layer, fs);
     if (!layerProgram) goto cleanup;
     glBindFramebuffer(GL_FRAMEBUFFER, lfbo);
+    glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, color, 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        fprintf(stderr,
+                "air_geometry_layer_viewport: layered GS FBO incomplete\n");
+        goto cleanup;
+    }
     glGenVertexArrays(1, &vao);
     glBindVertexArray(vao);
     glGenBuffers(1, &vbo);
@@ -10071,6 +11084,7 @@ static int test_air_geometry_layer_viewport(unsigned char *pixels,
                     "air_geometry_layer_viewport: layer 0 got color "
                     "(%d,%d,%d) at centroid; expected untouched\n",
                     pp[0], pp[1], pp[2]);
+            goto cleanup;
         }
     }
     glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, color, 0, 1);
@@ -10088,8 +11102,15 @@ static int test_air_geometry_layer_viewport(unsigned char *pixels,
         }
     }
 
-    /* Scene 1b: same GS chain while the single-slice binding sits on
-     * layer 0 (the default path before this fix's slice handling). */
+    /* Scene 1b: per-layer readback above changed the attachment back to a
+     * single slice.  Reattaching the whole level must restore layered
+     * rendering for the next draw. */
+    glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, color, 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        fprintf(stderr,
+                "air_geometry_layer_viewport: layered GS repeat FBO incomplete\n");
+        goto cleanup;
+    }
     clear_color(0.0f, 0.0f, 0.0f);
     glDrawArrays(GL_POINTS, 0, 1);
     glFinish();
@@ -10424,6 +11445,14 @@ static const TestCase TESTS[] = {
                     test_air_query_scissor_occluded),
     SELF_CHECK_TEST("air_renderpass_layer_slice",
                     test_air_renderpass_layer_slice),
+    SELF_CHECK_TEST("texture_mip_dimensions",
+                    test_texture_mip_dimensions),
+    SELF_CHECK_TEST("framebuffer_layer_targets",
+                    test_framebuffer_layer_targets),
+    SELF_CHECK_TEST("framebuffer_texture_layer_validation",
+                    test_framebuffer_texture_layer_validation),
+    SELF_CHECK_TEST("framebuffer_cube_layer_slice",
+                    test_framebuffer_cube_layer_slice),
     /* depth_test/stencil use probe-style fns (test_depth_probe /
      * test_stencil_probe): hardcoded per-program values.
      * uniform_alias gates the cross-stage uniform-location fix (program.c

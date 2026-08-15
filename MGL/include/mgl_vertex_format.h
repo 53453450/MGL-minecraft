@@ -59,6 +59,8 @@ uint32_t mglRenderCppVertexAttribComponentSize(uint64_t gl_type);
 uint64_t mglRenderCppVertexAttribElementBytes(uint64_t gl_type, uint32_t size);
 uint64_t mglRenderCppAlignVertexStrideForMetal(uint64_t stride);
 uint32_t mglRenderCppDoubleVertexAttribFloatFormat(uint32_t size);
+uint32_t mglRenderCppIntegerAttribConversionFormat(
+    uint64_t src_type, uint64_t shader_gl_type, uint32_t size);
 
 /* === Vertex format mapping (static inline, hot-path) === */
 

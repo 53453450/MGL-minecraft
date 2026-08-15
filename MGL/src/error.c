@@ -84,6 +84,14 @@ static int mgl_is_ignorable_texture_error(const char *func, GLenum error)
         strcmp(func, "mglTextureBufferRangeImpl") == 0)
         return 0;
 
+    /* Immutable texture-storage entry points have required validation errors
+     * (for example repeated allocation and invalid mip counts). */
+    if (strstr(func, "TexStorage") != NULL ||
+        strstr(func, "TextureStorage") != NULL)
+        return 0;
+    if (strcmp(func, "generateMipmaps") == 0)
+        return 0;
+
     /* Minecraft startup performs a lot of texture probing/update patterns.
      * Treat transient INVALID_OPERATION from texture functions as non-fatal
      * compatibility warnings so createTexture() does not abort startup.
@@ -98,7 +106,6 @@ static int mgl_is_ignorable_texture_error(const char *func, GLenum error)
         return 1;      /* transient error - swallow it */
     }
     if (strstr(func, "texSubImage") != NULL) return 1;
-    if (strstr(func, "generateMipmaps") != NULL) return 1;
     if (strstr(func, "createTextureLevel") != NULL) return 1;
 
     return 0;

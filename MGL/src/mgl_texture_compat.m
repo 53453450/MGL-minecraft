@@ -95,42 +95,8 @@ static bool mglTextureMinFilterUsesMipmaps(GLenum minFilter)
 
 MGLTextureDataKind mglTextureDataKindForPixelFormat(MTLPixelFormat pixelFormat)
 {
-    switch (pixelFormat) {
-        case MTLPixelFormatR8Sint:
-        case MTLPixelFormatRG8Sint:
-        case MTLPixelFormatRGBA8Sint:
-        case MTLPixelFormatR16Sint:
-        case MTLPixelFormatRG16Sint:
-        case MTLPixelFormatRGBA16Sint:
-        case MTLPixelFormatR32Sint:
-        case MTLPixelFormatRG32Sint:
-        case MTLPixelFormatRGBA32Sint:
-            return MGLTextureDataKindSint;
-
-        case MTLPixelFormatR8Uint:
-        case MTLPixelFormatRG8Uint:
-        case MTLPixelFormatRGBA8Uint:
-        case MTLPixelFormatR16Uint:
-        case MTLPixelFormatRG16Uint:
-        case MTLPixelFormatRGBA16Uint:
-        case MTLPixelFormatR32Uint:
-        case MTLPixelFormatRG32Uint:
-        case MTLPixelFormatRGBA32Uint:
-        case MTLPixelFormatRGB10A2Uint:
-            return MGLTextureDataKindUint;
-
-        case MTLPixelFormatInvalid:
-            return MGLTextureDataKindUnknown;
-
-        case MTLPixelFormatDepth16Unorm:
-        case MTLPixelFormatDepth32Float:
-        case MTLPixelFormatDepth24Unorm_Stencil8:
-        case MTLPixelFormatDepth32Float_Stencil8:
-            return MGLTextureDataKindDepth;
-
-        default:
-            return MGLTextureDataKindFloat;
-    }
+    return (MGLTextureDataKind)mglRenderCppTextureDataKindForPixelFormat(
+        (uint32_t)pixelFormat);
 }
 
 const char *mglTextureDataKindName(MGLTextureDataKind kind)

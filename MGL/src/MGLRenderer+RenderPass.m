@@ -588,6 +588,57 @@ static uint32_t mglRenderPassVisibilityResultTypeFor(
     return 0u;
 }
 
+static NSUInteger mglRenderPassTextureLayerCount(
+    id<MTLTexture> texture,
+    NSUInteger level)
+{
+    if (!texture) return 0u;
+    switch (texture.textureType) {
+        case MTLTextureType1DArray:
+        case MTLTextureType2DArray:
+        case MTLTextureType2DMultisampleArray:
+            return texture.arrayLength;
+        case MTLTextureTypeCube:
+            return 6u;
+        case MTLTextureTypeCubeArray:
+            return texture.arrayLength * 6u;
+        case MTLTextureType3D:
+            return mglMetalTextureLevelDimension(texture.depth, level);
+        default:
+            return 1u;
+    }
+}
+
+static void mglRenderPassAccumulateLayerCount(
+    NSUInteger *commonArrayLength,
+    MTLRenderPassAttachmentDescriptor *attachment)
+{
+    if (!commonArrayLength || !attachment) return;
+    NSUInteger layerCount = mglRenderPassTextureLayerCount(
+        attachment.texture, attachment.level);
+    if (layerCount == 0u) return;
+    *commonArrayLength = *commonArrayLength == 0u
+        ? layerCount
+        : MIN(*commonArrayLength, layerCount);
+}
+
+static NSUInteger mglRenderPassDescriptorArrayLength(
+    MTLRenderPassDescriptor *descriptor)
+{
+    if (!descriptor) return 0u;
+    NSUInteger commonArrayLength = 0u;
+    MTLRenderPassColorAttachmentDescriptorArray *colors =
+        descriptor.colorAttachments;
+    for (NSUInteger i = 0u; i < MAX_COLOR_ATTACHMENTS; i++) {
+        mglRenderPassAccumulateLayerCount(&commonArrayLength, colors[i]);
+    }
+    mglRenderPassAccumulateLayerCount(
+        &commonArrayLength, descriptor.depthAttachment);
+    mglRenderPassAccumulateLayerCount(
+        &commonArrayLength, descriptor.stencilAttachment);
+    return commonArrayLength;
+}
+
 static void mglRenderPassSetPersistentAttachment(
     const MGLCommandState *commandState,
     uint32_t attachmentKind,
@@ -595,7 +646,8 @@ static void mglRenderPassSetPersistentAttachment(
     id<MTLTexture> texture,
     NSUInteger level,
     NSUInteger slice,
-    NSUInteger depthPlane)
+    NSUInteger depthPlane,
+    BOOL layered)
 {
 
     /* Gate-on: the C++ RenderPassStateOwner is the writer of record; the
@@ -605,7 +657,7 @@ static void mglRenderPassSetPersistentAttachment(
             mglRenderCppSetRenderPassStateAttachmentTexture(
                 commandState->renderPassStateOwner, attachmentKind,
                 (uint32_t)colorIndex, (__bridge void *)texture,
-                level, slice, depthPlane);
+                level, slice, depthPlane, layered ? 1u : 0u);
         }
         return;
     }
@@ -633,28 +685,14 @@ static void mglRenderPassSetPersistentAttachment(
     attachment.slice = slice;
     attachment.depthPlane = depthPlane;
 
-    /* Layered rendering: cap the number of arrays the VS
-     * [[render_target_array_index]] output may select.  Keep it at most
-     * the largest arrayLength among currently attached color textures, so
-     * switching between layered and plain targets stays valid. */
-    NSUInteger maxArrayLength = 1u;
-    MTLRenderPassColorAttachmentDescriptorArray *colors =
-        commandState->renderPassDescriptor.colorAttachments;
-    for (NSUInteger i = 0u; i < MAX_COLOR_ATTACHMENTS; i++) {
-        id<MTLTexture> t = colors[i].texture;
-        if (t && t.arrayLength > maxArrayLength) {
-            maxArrayLength = t.arrayLength;
-        }
-    }
-    commandState->renderPassDescriptor.renderTargetArrayLength =
-        maxArrayLength;
-    /* Layered pass: the layer comes from the VS
-     * [[render_target_array_index]] output, so a non-zero attachment
-     * slice would be ignored (or dropped) by Metal.  GL's
-     * glFramebufferTextureLayer slice is honored via the array index
-     * instead, keeping the descriptor slice at 0. */
-    if (attachment && maxArrayLength > 0u) {
+    if (layered) {
+        commandState->renderPassDescriptor.renderTargetArrayLength =
+            mglRenderPassDescriptorArrayLength(
+                commandState->renderPassDescriptor);
         attachment.slice = 0u;
+        attachment.depthPlane = 0u;
+    } else {
+        commandState->renderPassDescriptor.renderTargetArrayLength = 0u;
     }
 }
 
@@ -2757,7 +2795,8 @@ output->name, (unsigned)i,
                 mglApplySRGBStateToRenderTarget(
                     (__bridge id<MTLTexture> _Nullable)(tex->mtl_data), ctx),
                 subresource.level, subresource.slice,
-                subresource.depthPlane);
+                subresource.depthPlane,
+                fbo->color_attachments[attachmentIndex].layered);
 
             if (tex->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY ||
                 tex->target == GL_TEXTURE_2D_MULTISAMPLE ||
@@ -2818,7 +2857,7 @@ output->name, (unsigned)i,
                 MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0,
                 (__bridge id<MTLTexture> _Nullable)(tex->mtl_data),
                 subresource.level, subresource.slice,
-                subresource.depthPlane);
+                subresource.depthPlane, fbo->depth.layered);
         }
     }
 
@@ -2840,7 +2879,7 @@ output->name, (unsigned)i,
                 MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0,
                 (__bridge id<MTLTexture> _Nullable)(tex->mtl_data),
                 subresource.level, subresource.slice,
-                subresource.depthPlane);
+                subresource.depthPlane, fbo->stencil.layered);
         }
     }
     return true;
@@ -2982,15 +3021,15 @@ output->name, (unsigned)i,
     mglRenderPassSetPersistentAttachment(
         _renderPassManager.state,
         MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0,
-        mglApplySRGBStateToRenderTarget(texture, ctx), 0, 0, 0);
+        mglApplySRGBStateToRenderTarget(texture, ctx), 0, 0, 0, NO);
     mglRenderPassSetPersistentAttachment(
         _renderPassManager.state,
         MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0,
-        depth_texture, 0, 0, 0);
+        depth_texture, 0, 0, 0, NO);
     mglRenderPassSetPersistentAttachment(
         _renderPassManager.state,
         MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0,
-        stencil_texture, 0, 0, 0);
+        stencil_texture, 0, 0, 0, NO);
 
     mglRenderPassSetPersistentDimensions(
         _renderPassManager.state, texture.width, texture.height);
@@ -3053,7 +3092,7 @@ output->name, (unsigned)i,
                     _renderPassManager.state,
                     MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0,
                     _renderPassManager.state->transientDepthTexture,
-                    0, 0, 0);
+                    0, 0, 0, NO);
                 mglRenderPassSetPersistentActions(
                     _renderPassManager.state,
                     MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0,
@@ -3493,7 +3532,7 @@ output->name, (unsigned)i,
                 _renderPassManager.state,
                 MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0,
                 _renderPassManager.state->fallbackRenderTargetTexture,
-                0, 0, 0);
+                0, 0, 0, NO);
             mglRenderPassSetPersistentActions(
                 _renderPassManager.state,
                 MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0,
@@ -3522,7 +3561,7 @@ output->name, (unsigned)i,
             mglRenderPassSetPersistentAttachment(
                 _renderPassManager.state,
                 MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, i,
-                nil, clearLevel, clearSlice, clearDepthPlane);
+                nil, clearLevel, clearSlice, clearDepthPlane, NO);
         }
     }
 
@@ -3542,7 +3581,7 @@ output->name, (unsigned)i,
                     _renderPassManager.state,
                     MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0,
                     mglRenderPassColorTextureFor(_renderPassManager.state, i),
-                    srcLevel, srcSlice, srcDepthPlane);
+                    srcLevel, srcSlice, srcDepthPlane, NO);
                 mglRenderPassSetPersistentActions(
                     _renderPassManager.state,
                     MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0,
@@ -3578,7 +3617,7 @@ output->name, (unsigned)i,
                 _renderPassManager.state,
                 MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0,
                 _renderPassManager.state->fallbackRenderTargetTexture,
-                0, 0, 0);
+                0, 0, 0, NO);
             mglRenderPassSetPersistentActions(
                 _renderPassManager.state,
                 MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0,

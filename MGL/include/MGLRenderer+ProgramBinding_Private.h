@@ -43,8 +43,8 @@
                                    clientBinding:(GLuint)clientBinding;
 
 /* === Texture type / data kind queries === */
-- (MTLTextureType)getProgramDeclaredTextureType:(int)stage type:(int)type index:(int)index;
-- (MTLTextureType)getProgramExpectedTextureType:(int)stage type:(int)type index:(int)index;
+- (uint32_t)getProgramDeclaredTextureType:(int)stage type:(int)type index:(int)index;
+- (uint32_t)getProgramExpectedTextureType:(int)stage type:(int)type index:(int)index;
 - (MGLTextureDataKind)getProgramExpectedTextureDataKind:(int)stage type:(int)type index:(int)index;
 
 @end
@@ -57,8 +57,8 @@
  * loops in MGLRenderer+Draw.m to eliminate 3-5 redundant program re-resolves per
  * resource.  Behavior matches the ObjC query methods (caching + MSL fallback +
  * rate-limited override logging). */
-MTLTextureType mglDeclaredTextureTypeFromResource(const MGLShaderResource *res);
-MTLTextureType mglExpectedTextureTypeForResource(Program *program, int stage, MGLShaderResource *res);
+uint32_t mglDeclaredTextureTypeFromResource(const MGLShaderResource *res);
+uint32_t mglExpectedTextureTypeForResource(Program *program, int stage, MGLShaderResource *res);
 MGLTextureDataKind mglExpectedTextureDataKindForResource(Program *program, int stage, MGLShaderResource *res);
 
 #endif /* MGLRenderer_ProgramBinding_Private_h */

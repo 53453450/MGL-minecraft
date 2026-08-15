@@ -44,6 +44,7 @@
 #include "draw_command.h"
 #include "mgl_frame_activity.h"
 #include "mgl_pixel_format.h"
+#include "mgl_render_cpp.h"
 #include "mgl_texture_debug.h"
 #include "mgl_texture_transfer.h"
 
@@ -1423,6 +1424,77 @@ void mglBindTextureUnit(GLMContext ctx, GLuint unit, GLuint texture)
     mglTraceTextureUnitState(ctx, "BindTextureUnit", unit, ptr->target, texture, ptr);
 }
 
+static GLuint mglTextureTargetMaxLevels(GLenum target,
+                                        GLuint width,
+                                        GLuint height,
+                                        GLuint depth)
+{
+    switch (target) {
+        case GL_TEXTURE_1D:
+        case GL_PROXY_TEXTURE_1D:
+        case GL_TEXTURE_1D_ARRAY:
+        case GL_PROXY_TEXTURE_1D_ARRAY:
+            return maxLevels(width, 1u, 1u);
+        case GL_TEXTURE_3D:
+        case GL_PROXY_TEXTURE_3D:
+            return maxLevels(width, height, depth);
+        case GL_TEXTURE_RECTANGLE:
+        case GL_PROXY_TEXTURE_RECTANGLE:
+        case GL_TEXTURE_2D_MULTISAMPLE:
+        case GL_PROXY_TEXTURE_2D_MULTISAMPLE:
+        case GL_TEXTURE_2D_MULTISAMPLE_ARRAY:
+        case GL_PROXY_TEXTURE_2D_MULTISAMPLE_ARRAY:
+            return 1u;
+        default:
+            return maxLevels(width, height, 1u);
+    }
+}
+
+static void mglTextureTargetLevelDimensions(GLenum target,
+                                            GLuint base_width,
+                                            GLuint base_height,
+                                            GLuint base_depth,
+                                            GLuint level,
+                                            GLuint *out_width,
+                                            GLuint *out_height,
+                                            GLuint *out_depth)
+{
+    GLuint width = (GLuint)mglRenderCppMetalTextureLevelDimension(base_width, level);
+    GLuint height = (GLuint)mglRenderCppMetalTextureLevelDimension(base_height, level);
+    GLuint depth = (GLuint)mglRenderCppMetalTextureLevelDimension(base_depth, level);
+
+    switch (target) {
+        case GL_TEXTURE_1D:
+        case GL_PROXY_TEXTURE_1D:
+            height = 1u;
+            depth = 1u;
+            break;
+        case GL_TEXTURE_1D_ARRAY:
+        case GL_PROXY_TEXTURE_1D_ARRAY:
+            height = MAX(base_height, 1u);
+            depth = 1u;
+            break;
+        case GL_TEXTURE_3D:
+        case GL_PROXY_TEXTURE_3D:
+            break;
+        case GL_TEXTURE_2D_ARRAY:
+        case GL_PROXY_TEXTURE_2D_ARRAY:
+        case GL_TEXTURE_CUBE_MAP_ARRAY:
+        case GL_PROXY_TEXTURE_CUBE_MAP_ARRAY:
+        case GL_TEXTURE_2D_MULTISAMPLE_ARRAY:
+        case GL_PROXY_TEXTURE_2D_MULTISAMPLE_ARRAY:
+            depth = MAX(base_depth, 1u);
+            break;
+        default:
+            depth = 1u;
+            break;
+    }
+
+    if (out_width) *out_width = width;
+    if (out_height) *out_height = height;
+    if (out_depth) *out_depth = depth;
+}
+
 void generateMipmaps(GLMContext ctx, GLuint texture, GLenum target)
 {
     Texture *ptr;
@@ -1438,10 +1510,13 @@ void generateMipmaps(GLMContext ctx, GLuint texture, GLenum target)
 
     ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
 
-    // level 0 needs to be filled out for mipmap geneation
-    ERROR_CHECK_RETURN(ptr->faces[0].levels[0].complete, GL_INVALID_OPERATION);
+    // Level 0 must exist before mipmap generation can derive the chain.
+    ERROR_CHECK_RETURN(ptr->num_levels > 0u &&
+                       ptr->faces[0].levels != NULL &&
+                       ptr->faces[0].levels[0].complete,
+                       GL_INVALID_OPERATION);
 
-    if (ptr->target == GL_TEXTURE_CUBE_MAP || ptr->target == GL_TEXTURE_CUBE_MAP_ARRAY) {
+    if (ptr->target == GL_TEXTURE_CUBE_MAP) {
         GLuint cube_width = ptr->faces[0].levels[0].width;
         GLuint cube_height = ptr->faces[0].levels[0].height;
         if (cube_width != cube_height) {
@@ -1457,6 +1532,12 @@ void generateMipmaps(GLMContext ctx, GLuint texture, GLenum target)
                 return;
             }
         }
+    } else if (ptr->target == GL_TEXTURE_CUBE_MAP_ARRAY) {
+        TextureLevel *base = &ptr->faces[0].levels[0];
+        if (base->width != base->height || base->depth == 0u || (base->depth % 6u) != 0u) {
+            STATE(error) = GL_INVALID_OPERATION;
+            return;
+        }
     }
 
     mglFlushPendingDraws(ctx);
@@ -1464,9 +1545,14 @@ void generateMipmaps(GLMContext ctx, GLuint texture, GLenum target)
     base_width = MAX(ptr->faces[0].levels[0].width, 1u);
     base_height = MAX(ptr->faces[0].levels[0].height, 1u);
     base_depth = MAX(ptr->faces[0].levels[0].depth, 1u);
-    level_count = ilog2(MAX(MAX(base_width, base_height), base_depth)) + 1u;
-    face_count = (ptr->target == GL_TEXTURE_CUBE_MAP ||
-                  ptr->target == GL_TEXTURE_CUBE_MAP_ARRAY) ? _CUBE_MAP_MAX_FACE : 1u;
+    level_count = mglTextureTargetMaxLevels(ptr->target,
+                                           base_width,
+                                           base_height,
+                                           base_depth);
+    if (ptr->immutable_storage && ptr->mipmap_levels > 0u) {
+        level_count = MIN(level_count, ptr->mipmap_levels);
+    }
+    face_count = ptr->target == GL_TEXTURE_CUBE_MAP ? _CUBE_MAP_MAX_FACE : 1u;
     pixel_size = (ptr->faces[0].levels[0].width > 0u)
         ? (ptr->faces[0].levels[0].pitch / ptr->faces[0].levels[0].width)
         : 0u;
@@ -1480,16 +1566,21 @@ void generateMipmaps(GLMContext ctx, GLuint texture, GLenum target)
             continue;
         for (GLuint level = 1; level < level_count; level++) {
             TextureLevel *lvl = &ptr->faces[face].levels[level];
-            GLuint w = MAX(base_width >> level, 1u);
-            GLuint h = MAX(base_height >> level, 1u);
-            GLuint d = MAX(base_depth >> level, 1u);
+            GLuint w = 1u;
+            GLuint h = 1u;
+            GLuint d = 1u;
+            mglTextureTargetLevelDimensions(ptr->target,
+                                            base_width,
+                                            base_height,
+                                            base_depth,
+                                            level,
+                                            &w,
+                                            &h,
+                                            &d);
 
             lvl->width = w;
-            lvl->height = (ptr->target == GL_TEXTURE_1D) ? 1u : h;
-            lvl->depth = (ptr->target == GL_TEXTURE_1D ||
-                          ptr->target == GL_TEXTURE_2D ||
-                          ptr->target == GL_TEXTURE_RECTANGLE ||
-                          ptr->target == GL_TEXTURE_CUBE_MAP) ? 1u : d;
+            lvl->height = h;
+            lvl->depth = d;
             lvl->pitch = pixel_size * lvl->width;
             lvl->mtl_format = ptr->faces[face].levels[0].mtl_format;
             lvl->data_size = lvl->pitch * MAX(lvl->height, 1u) * MAX(lvl->depth, 1u);
@@ -1726,7 +1817,10 @@ void invalidateTexture(GLMContext ctx, Texture *tex)
 void initBaseTexLevel(GLMContext ctx, Texture *tex, GLint internalformat, GLsizei width, GLsizei height, GLsizei depth)
 {
     tex->mipmapped = 0;
-    tex->mipmap_levels = ilog2(MAX(width, height)) + 1;
+    tex->mipmap_levels = mglTextureTargetMaxLevels(tex->target,
+                                                   MAX(width, 1),
+                                                   MAX(height, 1),
+                                                   MAX(depth, 1));
 
     for(int face=0; face<_CUBE_MAP_MAX_FACE; face++)
     {
@@ -3406,6 +3500,10 @@ void mglTexImage3D(GLMContext ctx, GLenum target, GLint level, GLint internalfor
     ERROR_CHECK_RETURN(width >= 0, GL_INVALID_VALUE);
     ERROR_CHECK_RETURN(height >= 0, GL_INVALID_VALUE);
     ERROR_CHECK_RETURN(depth >= 0, GL_INVALID_VALUE);
+    if (target == GL_TEXTURE_CUBE_MAP_ARRAY ||
+        target == GL_PROXY_TEXTURE_CUBE_MAP_ARRAY) {
+        ERROR_CHECK_RETURN((depth % 6) == 0, GL_INVALID_VALUE);
+    }
 
     ERROR_CHECK_RETURN(border == 0, GL_INVALID_VALUE);
 
@@ -4340,21 +4438,22 @@ void texStorage(GLMContext ctx, Texture *tex, GLuint faces, GLsizei levels, GLbo
 
     for(int face=0; face<faces; face++)
     {
-        GLuint level_width, level_height;
-
-        level_width = width;
-        level_height = height;
-
         for(int level=0; level<levels; level++)
         {
-            createTextureLevel(ctx, tex, face, level, is_array, internalformat, level_width, level_height, depth, 0, 0, NULL, proxy);
-
-            level_width >>= 1;
-            level_height >>= 1;
-            
-            // Mipmap dimensions must be at least 1
-            if (level_width == 0) level_width = 1;
-            if (level_height == 0) level_height = 1;
+            GLuint level_width = 1u;
+            GLuint level_height = 1u;
+            GLuint level_depth = 1u;
+            mglTextureTargetLevelDimensions(tex->target,
+                                            (GLuint)width,
+                                            (GLuint)height,
+                                            (GLuint)depth,
+                                            (GLuint)level,
+                                            &level_width,
+                                            &level_height,
+                                            &level_depth);
+            createTextureLevel(ctx, tex, face, level, is_array, internalformat,
+                               level_width, level_height, level_depth,
+                               0, 0, NULL, proxy);
         }
     }
 
@@ -4404,6 +4503,7 @@ void mglTexStorage1D(GLMContext ctx, GLenum target, GLsizei levels, GLenum inter
     ERROR_CHECK_RETURN(checkInternalFormatForMetal(ctx, internalformat), GL_INVALID_OPERATION);
 
     ERROR_CHECK_RETURN(width > 0, GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(checkMaxLevels(levels, width, 1, 1), GL_INVALID_OPERATION);
 
     if (proxy)
     {
@@ -4414,6 +4514,7 @@ void mglTexStorage1D(GLMContext ctx, GLenum target, GLsizei levels, GLenum inter
     tex = getTex(ctx, 0, target);
 
     ERROR_CHECK_RETURN(tex != NULL, GL_INVALID_OPERATION);
+    ERROR_CHECK_RETURN(!tex->immutable_storage, GL_INVALID_OPERATION);
 
     texStorage(ctx, tex, 1, levels, false, internalformat, width, 1, 1, proxy);
 }
@@ -4491,6 +4592,14 @@ void mglTexStorage2D(GLMContext ctx, GLenum target, GLsizei levels, GLenum inter
     ERROR_CHECK_RETURN(width > 0, GL_INVALID_VALUE);
     ERROR_CHECK_RETURN(height > 0, GL_INVALID_VALUE);
 
+    if (target == GL_TEXTURE_RECTANGLE || target == GL_PROXY_TEXTURE_RECTANGLE) {
+        ERROR_CHECK_RETURN(levels == 1, GL_INVALID_OPERATION);
+    } else if (target == GL_TEXTURE_1D_ARRAY || target == GL_PROXY_TEXTURE_1D_ARRAY) {
+        ERROR_CHECK_RETURN(checkMaxLevels(levels, width, 1, 1), GL_INVALID_OPERATION);
+    } else {
+        ERROR_CHECK_RETURN(checkMaxLevels(levels, width, height, 1), GL_INVALID_OPERATION);
+    }
+
     if (proxy)
     {
         mglHandleProxyTexImageQuery(ctx, target, 0, internalformat, width, height, 1, 0);
@@ -4498,10 +4607,9 @@ void mglTexStorage2D(GLMContext ctx, GLenum target, GLsizei levels, GLenum inter
     }
 
     tex = getTex(ctx, 0, target);
-    
-    fprintf(stderr, "MGL: mglTexStorage2D target=0x%x levels=%d internalformat=0x%x %dx%d tex=%p\n",
-            target, levels, internalformat, width, height, tex);
-    fflush(stderr);
+
+    ERROR_CHECK_RETURN(tex != NULL, GL_INVALID_OPERATION);
+    ERROR_CHECK_RETURN(!tex->immutable_storage, GL_INVALID_OPERATION);
 
     texStorage(ctx, tex, num_faces, levels, is_array, internalformat, width, height, 1, proxy);
 }
@@ -4539,7 +4647,11 @@ void mglTextureStorage2D(GLMContext ctx, GLuint texture, GLsizei levels, GLenum 
             return;
     }
     if (tex->target != GL_TEXTURE_1D_ARRAY) {
-        ERROR_CHECK_RETURN(checkMaxLevels(levels, width, height, 1), GL_INVALID_OPERATION);
+        if (tex->target == GL_TEXTURE_RECTANGLE) {
+            ERROR_CHECK_RETURN(levels == 1, GL_INVALID_OPERATION);
+        } else {
+            ERROR_CHECK_RETURN(checkMaxLevels(levels, width, height, 1), GL_INVALID_OPERATION);
+        }
     }
     ERROR_CHECK_RETURN(!tex->immutable_storage, GL_INVALID_OPERATION);
     ERROR_CHECK_RETURN(checkInternalFormatForMetal(ctx, internalformat), GL_INVALID_OPERATION);
@@ -4619,7 +4731,6 @@ void mglTexStorage3D(GLMContext ctx, GLenum target, GLsizei levels, GLenum inter
             ERROR_RETURN(GL_INVALID_ENUM);
     }
 
-    ERROR_CHECK_RETURN(checkMaxLevels(levels, width, height, depth), GL_INVALID_OPERATION);
     ERROR_CHECK_RETURN(levels > 0, GL_INVALID_VALUE);
 
     ERROR_CHECK_RETURN(checkInternalFormatForMetal(ctx, internalformat), GL_INVALID_OPERATION);
@@ -4627,6 +4738,19 @@ void mglTexStorage3D(GLMContext ctx, GLenum target, GLsizei levels, GLenum inter
     ERROR_CHECK_RETURN(width > 0, GL_INVALID_VALUE);
     ERROR_CHECK_RETURN(height > 0, GL_INVALID_VALUE);
     ERROR_CHECK_RETURN(depth > 0, GL_INVALID_VALUE);
+    if (target == GL_TEXTURE_CUBE_MAP_ARRAY ||
+        target == GL_PROXY_TEXTURE_CUBE_MAP_ARRAY) {
+        ERROR_CHECK_RETURN((depth % 6) == 0, GL_INVALID_VALUE);
+    }
+
+    if (target == GL_TEXTURE_2D_ARRAY ||
+        target == GL_TEXTURE_CUBE_MAP_ARRAY ||
+        target == GL_PROXY_TEXTURE_2D_ARRAY ||
+        target == GL_PROXY_TEXTURE_CUBE_MAP_ARRAY) {
+        ERROR_CHECK_RETURN(checkMaxLevels(levels, width, height, 1), GL_INVALID_OPERATION);
+    } else {
+        ERROR_CHECK_RETURN(checkMaxLevels(levels, width, height, depth), GL_INVALID_OPERATION);
+    }
 
     if (proxy)
     {
@@ -4637,6 +4761,7 @@ void mglTexStorage3D(GLMContext ctx, GLenum target, GLsizei levels, GLenum inter
     tex = getTex(ctx, 0, target);
 
     ERROR_CHECK_RETURN(tex, GL_INVALID_OPERATION);
+    ERROR_CHECK_RETURN(!tex->immutable_storage, GL_INVALID_OPERATION);
 
     texStorage(ctx, tex, 1, levels, is_array, internalformat, width, height, depth, proxy);
 }
@@ -4662,8 +4787,12 @@ void mglTextureStorage3D(GLMContext ctx, GLuint texture, GLsizei levels, GLenum 
             ERROR_CHECK_RETURN(checkMaxLevels(levels, width, height, depth), GL_INVALID_OPERATION);
             break;
         case GL_TEXTURE_2D_ARRAY:
+            is_array = GL_TRUE;
+            ERROR_CHECK_RETURN(checkMaxLevels(levels, width, height, 1), GL_INVALID_OPERATION);
+            break;
         case GL_TEXTURE_CUBE_MAP_ARRAY:
             is_array = GL_TRUE;
+            ERROR_CHECK_RETURN((depth % 6) == 0, GL_INVALID_VALUE);
             ERROR_CHECK_RETURN(checkMaxLevels(levels, width, height, 1), GL_INVALID_OPERATION);
             break;
         default:

@@ -58,6 +58,16 @@ MGLMetalAttachmentSubresource mglMetalAttachmentSubresourceForAttachment(const F
             subresource.slice = 5u;
             break;
 
+        case GL_TEXTURE_CUBE_MAP:
+            /* glFramebufferTextureLayer stores the texture object's cube
+             * target plus the selected face in layer.  Whole-level layered
+             * cube attachments also use this target, but always carry layer
+             * zero and are normalized again when the pass is configured. */
+            if (attachment->layer < _CUBE_MAP_MAX_FACE) {
+                subresource.slice = attachment->layer;
+            }
+            break;
+
         case GL_TEXTURE_1D_ARRAY:
         case GL_TEXTURE_2D_ARRAY:
         case GL_TEXTURE_2D_MULTISAMPLE_ARRAY:

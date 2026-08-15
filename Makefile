@@ -614,12 +614,14 @@ test-mcrepro: $(build_dir)/test_mcrepro
 # 桥接现有 id<MTLDevice> -> MTL::Device*，init/shutdown 幂等无崩溃。
 $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
 	MGL/src/mgl_render_cpp.cpp MGL/src/mgl_render_cpp.h \
-	MGL/src/mgl_render_cpp_objc.h MGL/src/mgl_aux_assets.c
+	MGL/src/mgl_render_cpp_objc.h MGL/src/mgl_aux_assets.c \
+	MGL/src/mgl_sync.m
 	$(LLVM_CXX) -x objective-c++ -fobjc-arc -g -O0 $(LLVM_CXXFLAGS) $(LLVM_LDFLAGS) \
 		-framework Cocoa -framework Foundation -framework Metal \
 		test_legacy_compat/test_metalcpp_smoke.mm \
 		MGL/src/mgl_render_cpp.cpp \
 		MGL/src/mgl_aux_assets.c \
+		MGL/src/mgl_sync.m \
 		-o $@
 
 test-metalcpp: $(build_dir)/test_metalcpp_smoke

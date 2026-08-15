@@ -451,9 +451,6 @@ static void mglDrawSupportDrawIndexedPatches(
 extern void mglRecordActivePrimitiveQueryDraw(GLMContext ctx,
                                                GLuint64 generated,
                                                GLuint64 written);
-extern bool mglTessFactorsDiscardPatch(GLenum genMode,
-                                       const float edge[4],
-                                       const float inside[2]);
 
 static BOOL mglCheckedTessCaptureSize(GLsizei count, GLsizei instanceCount,
                                       NSUInteger stride,
@@ -602,7 +599,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     }
     /* P4.5 (item 1141/887): 原生 primitive count（GL 4.6 §11.2.2.2 ceil
      * 规则 + discard 判定）在 C++（mglRenderCppTessPrimitiveCount，纯数据
-     * 变换，两门共用；discard 经 mglTessFactorsDiscardPatch C 函数）。 */
+     * 变换，两门共用）。 */
     return (GLuint64)mglRenderCppTessPrimitiveCount(
         (const void *)canonical.contents, (uint64_t)canonical.length,
         patchCount, (uint32_t)tesProgram->tess_gen_mode,

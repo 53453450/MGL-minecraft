@@ -140,7 +140,8 @@ static GLboolean mglAttachmentChangeNeedsPendingClearFlush(FBOAttachment *att,
                                                            GLuint texture,
                                                            GLenum textarget,
                                                            GLint level,
-                                                           GLint layer)
+                                                           GLint layer,
+                                                           GLboolean layered)
 {
     if (!att ||
         !(att->clear_bitmask & (GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT)) ||
@@ -151,7 +152,40 @@ static GLboolean mglAttachmentChangeNeedsPendingClearFlush(FBOAttachment *att,
     return att->texture != texture ||
            att->textarget != textarget ||
            att->level != (GLuint)level ||
-           att->layer != (GLuint)layer;
+           att->layer != (GLuint)layer ||
+           att->layered != layered;
+}
+
+static GLboolean mglFramebufferAttachmentFaceRange(
+    const FBOAttachment *att,
+    GLuint *first_face,
+    GLuint *face_count)
+{
+    if (!att || !first_face || !face_count) {
+        return GL_FALSE;
+    }
+
+    *first_face = 0u;
+    *face_count = 1u;
+    if (att->textarget >= GL_TEXTURE_CUBE_MAP_POSITIVE_X &&
+        att->textarget <= GL_TEXTURE_CUBE_MAP_NEGATIVE_Z) {
+        *first_face = att->textarget - GL_TEXTURE_CUBE_MAP_POSITIVE_X;
+        return GL_TRUE;
+    }
+
+    if (att->textarget == GL_TEXTURE_CUBE_MAP) {
+        if (att->layered) {
+            *face_count = _CUBE_MAP_MAX_FACE;
+            return GL_TRUE;
+        }
+        if (att->layer >= _CUBE_MAP_MAX_FACE) {
+            *face_count = 0u;
+            return GL_FALSE;
+        }
+        *first_face = att->layer;
+    }
+
+    return GL_TRUE;
 }
 
 static GLboolean mglEnsureTextureLevelStorage(TextureLevel *level, size_t required_size, size_t row_pitch)
@@ -183,7 +217,8 @@ static GLboolean mglFlushPendingColorClearToTexture(GLMContext ctx, FBOAttachmen
 {
     Texture *tex;
     TextureLevel *level;
-    GLuint face;
+    GLuint first_face;
+    GLuint face_count;
     size_t row_bytes;
     size_t row_pitch;
     size_t required_size;
@@ -221,46 +256,59 @@ static GLboolean mglFlushPendingColorClearToTexture(GLMContext ctx, FBOAttachmen
     }
 
     tex = attachedTexture;
-    face = isCubeMapTarget(ctx, att->textarget) ? textureIndexFromTarget(ctx, att->textarget) : 0u;
-    if (face >= _CUBE_MAP_MAX_FACE ||
+    if (!mglFramebufferAttachmentFaceRange(att, &first_face, &face_count) ||
         att->level >= tex->mipmap_levels ||
-        !tex->faces[face].levels) {
+        att->level >= tex->num_levels) {
         fprintf(stderr,
-                "MGL WARNING: fbo.clear.flush skipped invalid target tex=%u face=%u level=%u mipLevels=%u reason=%s\n",
+                "MGL WARNING: fbo.clear.flush skipped invalid target tex=%u firstFace=%u faceCount=%u level=%u mipLevels=%u reason=%s\n",
                 tex->name,
-                face,
+                first_face,
+                face_count,
                 att->level,
                 tex->mipmap_levels,
                 reason ? reason : "unknown");
         return GL_FALSE;
     }
 
-    level = &tex->faces[face].levels[att->level];
-    if (!level->complete || level->width == 0u || level->height == 0u) {
-        fprintf(stderr,
-                "MGL WARNING: fbo.clear.flush skipped incomplete level tex=%u face=%u level=%u complete=%d size=%ux%u reason=%s\n",
-                tex->name,
-                face,
-                att->level,
-                level->complete,
-                level->width,
-                level->height,
-                reason ? reason : "unknown");
-        return GL_FALSE;
-    }
+    for (GLuint face_offset = 0u; face_offset < face_count; ++face_offset) {
+        GLuint face = first_face + face_offset;
+        if (face >= _CUBE_MAP_MAX_FACE || !tex->faces[face].levels) {
+            fprintf(stderr,
+                    "MGL WARNING: fbo.clear.flush skipped missing face tex=%u face=%u level=%u reason=%s\n",
+                    tex->name,
+                    face,
+                    att->level,
+                    reason ? reason : "unknown");
+            return GL_FALSE;
+        }
 
-    row_bytes = (size_t)level->width * 4u;
-    row_pitch = level->pitch >= row_bytes ? level->pitch : row_bytes;
-    required_size = row_pitch * (size_t)level->height;
-    if (!mglEnsureTextureLevelStorage(level, required_size, row_pitch)) {
-        fprintf(stderr,
-                "MGL WARNING: fbo.clear.flush could not allocate tex=%u face=%u level=%u bytes=%zu reason=%s\n",
-                tex->name,
-                face,
-                att->level,
-                required_size,
-                reason ? reason : "unknown");
-        return GL_FALSE;
+        level = &tex->faces[face].levels[att->level];
+        if (!level->complete || level->width == 0u || level->height == 0u) {
+            fprintf(stderr,
+                    "MGL WARNING: fbo.clear.flush skipped incomplete level tex=%u face=%u level=%u complete=%d size=%ux%u reason=%s\n",
+                    tex->name,
+                    face,
+                    att->level,
+                    level->complete,
+                    level->width,
+                    level->height,
+                    reason ? reason : "unknown");
+            return GL_FALSE;
+        }
+
+        row_bytes = (size_t)level->width * 4u;
+        row_pitch = level->pitch >= row_bytes ? level->pitch : row_bytes;
+        required_size = row_pitch * (size_t)level->height;
+        if (!mglEnsureTextureLevelStorage(level, required_size, row_pitch)) {
+            fprintf(stderr,
+                    "MGL WARNING: fbo.clear.flush could not allocate tex=%u face=%u level=%u bytes=%zu reason=%s\n",
+                    tex->name,
+                    face,
+                    att->level,
+                    required_size,
+                    reason ? reason : "unknown");
+            return GL_FALSE;
+        }
     }
 
     r = mglClampClearComponentToByte(att->clear_color[0]);
@@ -277,42 +325,50 @@ static GLboolean mglFlushPendingColorClearToTexture(GLMContext ctx, FBOAttachmen
     pixel[2] = bgra ? r : b;
     pixel[3] = a;
 
-    for (GLuint y = 0; y < level->height; y++) {
-        GLubyte *row = (GLubyte *)level->data + ((size_t)y * level->pitch);
-        for (GLuint x = 0; x < level->width; x++) {
-            memcpy(row + ((size_t)x * 4u), pixel, sizeof(pixel));
+    for (GLuint face_offset = 0u; face_offset < face_count; ++face_offset) {
+        GLuint face = first_face + face_offset;
+        level = &tex->faces[face].levels[att->level];
+        row_bytes = (size_t)level->width * 4u;
+        row_pitch = level->pitch >= row_bytes ? level->pitch : row_bytes;
+        required_size = row_pitch * (size_t)level->height;
+
+        for (GLuint y = 0; y < level->height; y++) {
+            GLubyte *row = (GLubyte *)level->data + ((size_t)y * level->pitch);
+            for (GLuint x = 0; x < level->width; x++) {
+                memcpy(row + ((size_t)x * 4u), pixel, sizeof(pixel));
+            }
+        }
+
+        level->has_initialized_data = GL_TRUE;
+        level->ever_written = GL_TRUE;
+        level->suspicious_zero_upload = GL_FALSE;
+        level->last_init_source = kTexMetalFill;
+        level->last_upload_size = required_size;
+        level->last_src_ptr = NULL;
+        level->last_src_hash = 0ull;
+
+        static unsigned s_flush_logs = 0u;
+        if (s_flush_logs < 64u) {
+            fprintf(stderr,
+                    "MGL TRACE fbo.clear.flush tex=%u face=%u level=%u size=%ux%u rgba=(%.3f,%.3f,%.3f,%.3f) byteOrder=%s reason=%s\n",
+                    tex->name,
+                    face,
+                    att->level,
+                    level->width,
+                    level->height,
+                    att->clear_color[0],
+                    att->clear_color[1],
+                    att->clear_color[2],
+                    att->clear_color[3],
+                    bgra ? "BGRA" : "RGBA",
+                    reason ? reason : "unknown");
+            s_flush_logs++;
         }
     }
-
-    level->has_initialized_data = GL_TRUE;
-    level->ever_written = GL_TRUE;
-    level->suspicious_zero_upload = GL_FALSE;
-    level->last_init_source = kTexMetalFill;
-    level->last_upload_size = required_size;
-    level->last_src_ptr = NULL;
-    level->last_src_hash = 0ull;
 
     tex->dirty_bits |= DIRTY_TEXTURE_DATA;
     mglMarkStateDirtyBits(ctx->active_state, DIRTY_TEX | DIRTY_FBO);
     att->clear_bitmask &= ~GL_COLOR_BUFFER_BIT;
-
-    static unsigned s_flush_logs = 0u;
-    if (s_flush_logs < 64u) {
-        fprintf(stderr,
-                "MGL TRACE fbo.clear.flush tex=%u face=%u level=%u size=%ux%u rgba=(%.3f,%.3f,%.3f,%.3f) byteOrder=%s reason=%s\n",
-                tex->name,
-                face,
-                att->level,
-                level->width,
-                level->height,
-                att->clear_color[0],
-                att->clear_color[1],
-                att->clear_color[2],
-                att->clear_color[3],
-                bgra ? "BGRA" : "RGBA",
-                reason ? reason : "unknown");
-        s_flush_logs++;
-    }
 
     return GL_TRUE;
 }
@@ -1093,31 +1149,71 @@ static Texture *mglFramebufferAttachmentTextureObject(GLMContext ctx, FBOAttachm
     return att->buf.tex;
 }
 
+static GLboolean mglFramebufferAttachmentLayerHasStorage(const Texture *tex,
+                                                         const FBOAttachment *att,
+                                                         const TextureLevel *level)
+{
+    if (!tex || !att || !level || att->layered || att->textarget == GL_RENDERBUFFER) {
+        return GL_TRUE;
+    }
+
+    switch (tex->target) {
+        case GL_TEXTURE_1D_ARRAY:
+            return att->layer < level->height;
+        case GL_TEXTURE_3D:
+        case GL_TEXTURE_2D_ARRAY:
+        case GL_TEXTURE_2D_MULTISAMPLE_ARRAY:
+        case GL_TEXTURE_CUBE_MAP_ARRAY:
+            return att->layer < level->depth;
+        default:
+            return GL_TRUE;
+    }
+}
+
 static GLboolean mglFramebufferAttachmentHasStorage(GLMContext ctx, FBOAttachment *att)
 {
     Texture *tex = mglFramebufferAttachmentTextureObject(ctx, att);
-    GLuint face = 0u;
+    GLuint first_face = 0u;
+    GLuint face_count = 0u;
+    GLuint reference_width = 0u;
+    GLuint reference_height = 0u;
 
-    if (!tex) {
-        return GL_FALSE;
-    }
-
-    if (isCubeMapTarget(ctx, att->textarget)) {
-        face = textureIndexFromTarget(ctx, att->textarget);
-    }
-
-    if (face >= _CUBE_MAP_MAX_FACE ||
-        !tex->faces[face].levels ||
+    if (!tex ||
+        !mglFramebufferAttachmentFaceRange(att, &first_face, &face_count) ||
         att->level >= tex->mipmap_levels ||
         att->level >= tex->num_levels) {
         return GL_FALSE;
     }
 
-    TextureLevel *level = &tex->faces[face].levels[att->level];
-    return level->complete &&
-           level->width > 0u &&
-           level->height > 0u &&
-           level->depth > 0u;
+    for (GLuint face_offset = 0u; face_offset < face_count; ++face_offset) {
+        GLuint face = first_face + face_offset;
+        if (face >= _CUBE_MAP_MAX_FACE || !tex->faces[face].levels) {
+            return GL_FALSE;
+        }
+        TextureLevel *level = &tex->faces[face].levels[att->level];
+        if (!level->complete ||
+            level->width == 0u ||
+            level->height == 0u ||
+            level->depth == 0u ||
+            !mglFramebufferAttachmentLayerHasStorage(tex, att, level)) {
+            return GL_FALSE;
+        }
+
+        if (face_count > 1u) {
+            if (level->width != level->height) {
+                return GL_FALSE;
+            }
+            if (face_offset == 0u) {
+                reference_width = level->width;
+                reference_height = level->height;
+            } else if (level->width != reference_width ||
+                       level->height != reference_height) {
+                return GL_FALSE;
+            }
+        }
+    }
+
+    return GL_TRUE;
 }
 
 /* Returns the GL internalformat of the texture level backing `att`, or 0 if
@@ -1125,20 +1221,8 @@ static GLboolean mglFramebufferAttachmentHasStorage(GLMContext ctx, FBOAttachmen
 static GLint mglFramebufferAttachmentInternalFormat(GLMContext ctx, FBOAttachment *att)
 {
     Texture *tex = mglFramebufferAttachmentTextureObject(ctx, att);
-    GLuint face = 0u;
 
-    if (!tex) {
-        return 0;
-    }
-
-    if (isCubeMapTarget(ctx, att->textarget)) {
-        face = textureIndexFromTarget(ctx, att->textarget);
-    }
-
-    if (face >= _CUBE_MAP_MAX_FACE ||
-        !tex->faces[face].levels ||
-        att->level >= tex->mipmap_levels ||
-        att->level >= tex->num_levels) {
+    if (!tex || !mglFramebufferAttachmentHasStorage(ctx, att)) {
         return 0;
     }
 
@@ -1302,6 +1386,7 @@ static GLboolean mglFramebufferHasLayerTargetMismatch(Framebuffer *fbo)
 {
     GLboolean any_layered = GL_FALSE;
     GLboolean any_non_layered = GL_FALSE;
+    GLenum layered_color_target = GL_NONE;
 
     if (!fbo) {
         return GL_FALSE;
@@ -1319,6 +1404,11 @@ static GLboolean mglFramebufferHasLayerTargetMismatch(Framebuffer *fbo)
 
         if (att->layered) {
             any_layered = GL_TRUE;
+            if (layered_color_target == GL_NONE) {
+                layered_color_target = att->textarget;
+            } else if (att->textarget != layered_color_target) {
+                return GL_TRUE;
+            }
         } else {
             any_non_layered = GL_TRUE;
         }
@@ -1355,9 +1445,8 @@ static void mglFramebufferAttachmentDimensions(GLMContext ctx, FBOAttachment *at
     }
 
     GLuint face = 0u;
-    if (isCubeMapTarget(ctx, att->textarget)) {
-        face = textureIndexFromTarget(ctx, att->textarget);
-    }
+    GLuint face_count = 0u;
+    if (!mglFramebufferAttachmentFaceRange(att, &face, &face_count)) return;
     if (face >= _CUBE_MAP_MAX_FACE ||
         !tex->faces[face].levels ||
         att->level >= tex->mipmap_levels ||
@@ -1833,6 +1922,22 @@ bool isCubeMapTarget(GLMContext ctx, GLuint textarget)
             (textarget <= GL_TEXTURE_CUBE_MAP_NEGATIVE_Z));
 }
 
+static GLuint mglFramebufferTextureMaxMipLevel(GLMContext ctx,
+                                               GLenum textarget)
+{
+    GLuint max_size = STATE_VAR(max_texture_size);
+
+    if (textarget == GL_TEXTURE_3D) {
+        max_size = STATE_VAR(max_3d_texture_size);
+    } else if (textarget == GL_TEXTURE_CUBE_MAP ||
+               textarget == GL_TEXTURE_CUBE_MAP_ARRAY ||
+               isCubeMapTarget(ctx, textarget)) {
+        max_size = STATE_VAR(max_cube_map_texture_size);
+    }
+
+    return max_size > 0u ? ilog2(max_size) : 0u;
+}
+
 static GLboolean mglFramebufferWholeTextureAttachmentIsLayered(GLenum textarget)
 {
     switch (textarget) {
@@ -1848,12 +1953,100 @@ static GLboolean mglFramebufferWholeTextureAttachmentIsLayered(GLenum textarget)
     }
 }
 
+static GLenum mglFramebufferTextureLayerBoundTargetError(GLMContext ctx,
+                                                         GLenum target)
+{
+    Framebuffer *fbo = NULL;
+
+    switch (target) {
+        case GL_FRAMEBUFFER:
+        case GL_DRAW_FRAMEBUFFER:
+            fbo = ctx ? ctx->state.framebuffer : NULL;
+            break;
+        case GL_READ_FRAMEBUFFER:
+            fbo = ctx ? ctx->state.readbuffer : NULL;
+            break;
+        default:
+            return GL_INVALID_ENUM;
+    }
+
+    return fbo ? GL_NO_ERROR : GL_INVALID_OPERATION;
+}
+
+static GLenum mglFramebufferTextureLayerObjectError(GLMContext ctx,
+                                                    GLuint texture,
+                                                    GLint level,
+                                                    GLint layer,
+                                                    Texture **out_texture)
+{
+    Texture *tex = NULL;
+
+    if (out_texture) {
+        *out_texture = NULL;
+    }
+    if (texture == 0u) {
+        return GL_NO_ERROR;
+    }
+
+    tex = findTexture(ctx, texture);
+    if (!tex) {
+        return GL_INVALID_OPERATION;
+    }
+
+    switch (tex->target) {
+        case GL_TEXTURE_3D:
+        case GL_TEXTURE_1D_ARRAY:
+        case GL_TEXTURE_2D_ARRAY:
+        case GL_TEXTURE_2D_MULTISAMPLE_ARRAY:
+        case GL_TEXTURE_CUBE_MAP:
+        case GL_TEXTURE_CUBE_MAP_ARRAY:
+            break;
+        default:
+            return GL_INVALID_OPERATION;
+    }
+
+    if (layer < 0) {
+        return GL_INVALID_VALUE;
+    }
+
+    if (level < 0 ||
+        (tex->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY && level != 0) ||
+        (tex->target != GL_TEXTURE_2D_MULTISAMPLE_ARRAY &&
+         (GLuint)level > mglFramebufferTextureMaxMipLevel(ctx, tex->target))) {
+        return GL_INVALID_VALUE;
+    }
+
+    switch (tex->target) {
+        case GL_TEXTURE_3D:
+            if ((GLuint)layer >= STATE_VAR(max_3d_texture_size)) {
+                return GL_INVALID_VALUE;
+            }
+            break;
+        case GL_TEXTURE_CUBE_MAP:
+            if ((GLuint)layer >= _CUBE_MAP_MAX_FACE) {
+                return GL_INVALID_VALUE;
+            }
+            break;
+        default:
+            if ((GLuint)layer >= STATE_VAR(max_array_texture_layers)) {
+                return GL_INVALID_VALUE;
+            }
+            break;
+    }
+
+    if (out_texture) {
+        *out_texture = tex;
+    }
+    return GL_NO_ERROR;
+}
+
 void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, GLenum attachment, GLenum textarget, GLuint texture, GLint level, GLint layer)
 {
     Framebuffer *fbo;
     Texture *tex;
     FBOAttachment *fbo_attachment_ptr;
     GLenum effective_textarget = textarget;
+    GLboolean new_layered = GL_FALSE;
     GLboolean is_color_attachment = GL_FALSE;
     GLuint color_attachment_index = 0u;
 
@@ -1990,12 +2183,13 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
 
                 // if textarget is GL_TEXTURE_3D, then level must be greater than or equal to zero and less than or equal to $log_2$ of the value of GL_MAX_3D_TEXTURE_SIZE.
                 case GL_TEXTURE_3D:
-                    if (level >= ilog2(STATE_VAR(max_texture_size)))
+                    if ((GLuint)level > mglFramebufferTextureMaxMipLevel(ctx,
+                                                                        effective_textarget))
                     {
                         fprintf(stderr,
                                 "MGL ERROR: framebufferTexture invalid 3D mip level=%d maxTex=%u target=0x%x attachment=0x%x texture=%u textarget=0x%x\n",
                                 level,
-                                STATE_VAR(max_texture_size),
+                                STATE_VAR(max_3d_texture_size),
                                 target,
                                 attachment,
                                 texture,
@@ -2013,7 +2207,8 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
                         if (isCubeMapTarget(ctx, effective_textarget) ||
                             effective_textarget == GL_TEXTURE_CUBE_MAP)
                         {
-                            if (level >=0 && level <= ilog2(STATE_VAR(max_texture_size)))
+                            if ((GLuint)level <= mglFramebufferTextureMaxMipLevel(ctx,
+                                                                                effective_textarget))
                             {
                                 break;
                             }
@@ -2021,7 +2216,7 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
                             fprintf(stderr,
                                     "MGL ERROR: framebufferTexture invalid cube mip level=%d maxTex=%u target=0x%x attachment=0x%x texture=%u textarget=0x%x\n",
                                     level,
-                                    STATE_VAR(max_texture_size),
+                                    STATE_VAR(max_cube_map_texture_size),
                                     target,
                                     attachment,
                                     texture,
@@ -2030,7 +2225,9 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
                             return;
                         }
                     }
-                    else if (level >= ilog2(STATE_VAR(max_texture_size)))
+                    else if ((GLuint)level >
+                             mglFramebufferTextureMaxMipLevel(ctx,
+                                                             effective_textarget))
                     {
                         // For all other values of textarget, level must be greater than or equal to zero and less than or equal to $log_2$ of the value of GL_MAX_TEXTURE_SIZE.
 
@@ -2068,7 +2265,15 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
         return;
     }
 
-    if (mglAttachmentChangeNeedsPendingClearFlush(fbo_attachment_ptr, texture, effective_textarget, level, layer)) {
+    new_layered = (texture != 0u &&
+                   attachment_type == GL_NONE &&
+                   mglFramebufferWholeTextureAttachmentIsLayered(effective_textarget));
+    if (mglAttachmentChangeNeedsPendingClearFlush(fbo_attachment_ptr,
+                                                  texture,
+                                                  effective_textarget,
+                                                  level,
+                                                  layer,
+                                                  new_layered)) {
         mglFlushPendingColorClearToTexture(ctx, fbo_attachment_ptr, "framebufferTexture attachment change");
     }
 
@@ -2084,9 +2289,7 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
     fbo_attachment_ptr->textarget = effective_textarget;
     fbo_attachment_ptr->level = level;
     fbo_attachment_ptr->layer = layer;
-    fbo_attachment_ptr->layered = (texture != 0u &&
-                                   attachment_type == GL_NONE &&
-                                   mglFramebufferWholeTextureAttachmentIsLayered(effective_textarget));
+    fbo_attachment_ptr->layered = new_layered;
     fbo_attachment_ptr->clear_bitmask = 0;
     fbo_attachment_ptr->clear_color[0] = 0.f;
     fbo_attachment_ptr->clear_color[1] = 0.f;
@@ -2202,7 +2405,20 @@ void mglFramebufferTexture3D(GLMContext ctx, GLenum target, GLenum attachment, G
 
 void mglFramebufferTextureLayer(GLMContext ctx, GLenum target, GLenum attachment, GLuint texture, GLint level, GLint layer)
 {
-    Texture *tex = texture ? findTexture(ctx, texture) : NULL;
+    GLenum validation_error = mglFramebufferTextureLayerBoundTargetError(ctx, target);
+    if (validation_error != GL_NO_ERROR) {
+        ERROR_RETURN(validation_error);
+        return;
+    }
+
+    Texture *tex = NULL;
+    validation_error = mglFramebufferTextureLayerObjectError(ctx, texture, level,
+                                                             layer, &tex);
+    if (validation_error != GL_NO_ERROR) {
+        ERROR_RETURN(validation_error);
+        return;
+    }
+
     GLenum textarget = tex ? tex->target : GL_TEXTURE_3D;
     framebufferTexture(ctx, target, GL_TEXTURE_3D, attachment, textarget, texture, level, layer);
 }
@@ -3288,6 +3504,14 @@ void mglNamedFramebufferTextureLayer(GLMContext ctx, GLuint framebuffer, GLenum 
 
     if (framebuffer == 0u || !fbo) {
         ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    GLenum validation_error = mglFramebufferTextureLayerObjectError(ctx, texture,
+                                                                    level, layer,
+                                                                    NULL);
+    if (validation_error != GL_NO_ERROR) {
+        ERROR_RETURN(validation_error);
         return;
     }
 

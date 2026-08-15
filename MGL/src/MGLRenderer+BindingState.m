@@ -2384,8 +2384,10 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                                            stage:vertexStage];
         /* derive texture types/data kind directly from sampledResource
          * via C helpers, skipping per-resource mglResolveProgramForStageFromState. */
-        MTLTextureType expectedType = mglExpectedTextureTypeForResource(currentProgram, vertexStage, sampledResource);
-        MTLTextureType lookupType = mglDeclaredTextureTypeFromResource(sampledResource);
+        MTLTextureType expectedType = (MTLTextureType)
+            mglExpectedTextureTypeForResource(currentProgram, vertexStage, sampledResource);
+        MTLTextureType lookupType = (MTLTextureType)
+            mglDeclaredTextureTypeFromResource(sampledResource);
         MGLTextureDataKind expectedKind = mglExpectedTextureDataKindForResource(currentProgram, vertexStage, sampledResource);
         Texture *ptr = [self textureForSampledResource:sampledResource
                                           metalBinding:spirvBinding
@@ -2853,8 +2855,10 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
 
         /* derive texture types/data kind directly from sampledResource
          * via C helpers, skipping per-resource mglResolveProgramForStageFromState. */
-        MTLTextureType expectedType = mglExpectedTextureTypeForResource(sampleProgram, _FRAGMENT_SHADER, sampledResource);
-        MTLTextureType lookupType = mglDeclaredTextureTypeFromResource(sampledResource);
+        MTLTextureType expectedType = (MTLTextureType)
+            mglExpectedTextureTypeForResource(sampleProgram, _FRAGMENT_SHADER, sampledResource);
+        MTLTextureType lookupType = (MTLTextureType)
+            mglDeclaredTextureTypeFromResource(sampledResource);
         MGLTextureDataKind expectedKind = mglExpectedTextureDataKindForResource(sampleProgram, _FRAGMENT_SHADER, sampledResource);
         Texture *ptr = [self textureForSampledResource:sampledResource
                                           metalBinding:spirvBinding
@@ -4282,9 +4286,10 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 continue;
             }
 
-            MTLTextureType expectedType = [self getProgramExpectedTextureType:arrayStage
-                                                                         type:_SAMPLED_IMAGE_RES
-                                                                        index:(int)resourceIndex];
+            MTLTextureType expectedType = (MTLTextureType)
+                [self getProgramExpectedTextureType:arrayStage
+                                              type:_SAMPLED_IMAGE_RES
+                                             index:(int)resourceIndex];
             for (GLint element = 1; element < resource->gl_array_size; element++) {
                 GLuint metalSlot = resource->binding + (GLuint)element;
                 GLuint samplerSlot =

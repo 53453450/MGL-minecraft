@@ -731,11 +731,11 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 continue;
             }
 
-            MTLTextureType expected_type =
+            MTLTextureType expected_type = (MTLTextureType)
                 [self getProgramExpectedTextureType:stage
                                                 type:_SAMPLED_IMAGE_RES
                                                index:(int)resource_index];
-            MTLTextureType lookup_type =
+            MTLTextureType lookup_type = (MTLTextureType)
                 [self getProgramDeclaredTextureType:stage
                                                 type:_SAMPLED_IMAGE_RES
                                                index:(int)resource_index];

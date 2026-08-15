@@ -292,6 +292,49 @@ int mglRenderCppTextureGetBytes(void *texture,
                                 uint64_t slice,
                                 int use_slice);
 
+/* P4.5: GL texture creation target + sample count -> Metal descriptor shape.
+ * The value result keeps Metal enums behind uint32_t and carries the legacy
+ * upload/completeness flags that must stay consistent with the chosen type.
+ * GL_TEXTURE_BUFFER is handled by its dedicated buffer-texture path before
+ * this helper is called. */
+typedef struct MGLRenderCppTextureTargetPlan_t {
+    uint32_t texture_type;
+    uint32_t num_faces;
+    uint32_t is_array;
+    uint32_t texture_1d_backed_by_2d;
+    uint32_t texture_1d_array_backed_by_2d_array;
+} MGLRenderCppTextureTargetPlan;
+
+int mglRenderCppTextureTargetPlan(
+    uint32_t gl_target,
+    uint32_t sample_count,
+    MGLRenderCppTextureTargetPlan *plan_out);
+
+/* P4.5 (item 1014/887): reflected shader-resource image shape ->
+ * MTLTextureType ABI value.  The C ABI stays backend-neutral: all inputs and
+ * the result are uint32_t values, and has_resource preserves the historical
+ * NULL-resource result.  Unsupported dimensions return 0. */
+uint32_t mglRenderCppTextureTypeForShaderResource(
+    uint32_t has_resource,
+    uint32_t image_dim,
+    uint32_t image_arrayed,
+    uint32_t image_multisampled);
+
+/* P4.5 (item 1116/887): MTLTextureType ABI value -> per-target OpenGL
+ * texture-unit slot. Unsupported Metal texture types return -1. */
+int32_t mglRenderCppTextureIndexForMetalType(uint32_t texture_type);
+
+/* P4.5 (item 1014/887): MTLPixelFormat ABI value -> shader-visible texture
+ * data kind.  Keep the C ABI backend-neutral; the numeric results mirror
+ * MGLTextureDataKind without exposing that ObjC enum here. */
+#define MGL_RENDER_CPP_TEXTURE_DATA_KIND_UNKNOWN 0u
+#define MGL_RENDER_CPP_TEXTURE_DATA_KIND_FLOAT   1u
+#define MGL_RENDER_CPP_TEXTURE_DATA_KIND_SINT    2u
+#define MGL_RENDER_CPP_TEXTURE_DATA_KIND_UINT    3u
+#define MGL_RENDER_CPP_TEXTURE_DATA_KIND_DEPTH   4u
+
+uint32_t mglRenderCppTextureDataKindForPixelFormat(uint32_t pixel_format);
+
 /* P4.4: CPU→GPU 上传路径选路。纯决策函数（无 Metal 对象参与），把
  * MGLRenderer+Texture.m uploadTextureSliceViaBlit 的「storage mode /
  * 纹理类型 / AGX 能力位 → replaceRegion 或 blit 或 reject」判定迁入 C++，
@@ -405,8 +448,8 @@ int mglRenderCppConvertIntegerReadback(
 /* P4.5 (item 1141/887): tess-factor buffer CPU transforms — the default
  * canonical factor fill (12B/patch: 4x outer + 2x inner __fp16), the
  * canonical->triangle repack (12B -> 8B/patch) and the native primitive
- * count (GL 4.6 11.2.2.2 ceil rules; discard via
- * mglTessFactorsDiscardPatch).  Pure data transforms shared by both gates.
+ * count (GL 4.6 11.2.2.2 ceil rules).  Pure data transforms shared by both
+ * gates.
  * Return 0 on success, -1 on bad args (count entry returns 0). */
 int mglRenderCppFillDefaultTessFactorBuffer(
     void *dst,
@@ -426,6 +469,15 @@ uint64_t mglRenderCppTessPrimitiveCount(
     uint32_t patch_count,
     uint32_t tess_gen_mode,
     uint32_t instance_count);
+
+/* P4.5 (item 1141/887): GL 4.6 section 11.2.2.2 patch discard predicate.
+ * Tests the applicable outer/inner tessellation levels before any clamp to
+ * one; non-positive or NaN levels discard the patch.  NULL inputs are
+ * conservatively treated as discarded.  Shared by both gates. */
+bool mglRenderCppTessFactorsDiscardPatch(
+    uint32_t gen_mode,
+    const float *edge,
+    const float *inside);
 
 /* P4.5 (item 1141/887): per-patch expanded item count for the isolines /
  * point-mode TES kernel (lockstep with mgl_air_backend.cpp's u/v
@@ -746,6 +798,12 @@ uint64_t mglRenderCppQuadTriangleIndexCount(uint64_t source_vertex_count);
 uint64_t mglRenderCppAlignVertexStrideForMetal(uint64_t stride);
 /* double-attrib size -> MTLVertexFormat value; matches mglDoubleVertexAttribFloatFormat. */
 uint32_t mglRenderCppDoubleVertexAttribFloatFormat(uint32_t size);
+/* Integer attrib signedness mismatch -> Int/UInt MTLVertexFormat ABI value.
+ * Returns MTLVertexFormatInvalid when no CPU conversion is required. */
+uint32_t mglRenderCppIntegerAttribConversionFormat(
+    uint64_t src_type,
+    uint64_t shader_gl_type,
+    uint32_t size);
 /* FNV-1a single hash step; matches mglHashStepU64. */
 uint64_t mglRenderCppHashStepU64(uint64_t hash, uint64_t value);
 /* Fixed restart-index for a type; matches the fixed branch of
@@ -1929,7 +1987,8 @@ int mglRenderCppSetRenderPassStateAttachmentTexture(
     void *texture,
     uint64_t level,
     uint64_t slice,
-    uint64_t depth_plane);
+    uint64_t depth_plane,
+    uint32_t layered);
 int mglRenderCppSetRenderPassStateAttachmentActions(
     void *owner,
     uint32_t attachment_kind,

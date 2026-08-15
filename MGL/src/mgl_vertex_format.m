@@ -59,53 +59,12 @@ bool mglIntegerAttribNeedsConversion(GLenum srcType,
                                      GLuint size,
                                      MTLVertexFormat *outFormat)
 {
+    uint32_t format = mglRenderCppIntegerAttribConversionFormat(
+        (uint64_t)srcType, (uint64_t)shaderGlType, (uint32_t)size);
     if (outFormat) {
-        *outFormat = MTLVertexFormatInvalid;
+        *outFormat = (MTLVertexFormat)format;
     }
-    if (size < 1u || size > 4u) {
-        return false;
-    }
-
-    bool shaderIsInt = (shaderGlType == GL_INT || shaderGlType == GL_INT_VEC2 ||
-                        shaderGlType == GL_INT_VEC3 || shaderGlType == GL_INT_VEC4);
-    bool shaderIsUint = (shaderGlType == GL_UNSIGNED_INT ||
-                         shaderGlType == GL_UNSIGNED_INT_VEC2 ||
-                         shaderGlType == GL_UNSIGNED_INT_VEC3 ||
-                         shaderGlType == GL_UNSIGNED_INT_VEC4);
-    if (!shaderIsInt && !shaderIsUint) {
-        return false;
-    }
-
-    bool srcUnsigned = (srcType == GL_UNSIGNED_BYTE ||
-                        srcType == GL_UNSIGNED_SHORT ||
-                        srcType == GL_UNSIGNED_INT);
-    bool srcSigned = (srcType == GL_BYTE || srcType == GL_SHORT || srcType == GL_INT);
-
-    bool needConv = (shaderIsInt && srcUnsigned) || (shaderIsUint && srcSigned);
-    if (!needConv) {
-        return false;
-    }
-
-    MTLVertexFormat f = MTLVertexFormatInvalid;
-    if (shaderIsInt) {
-        switch (size) {
-            case 1: f = MTLVertexFormatInt; break;
-            case 2: f = MTLVertexFormatInt2; break;
-            case 3: f = MTLVertexFormatInt3; break;
-            case 4: f = MTLVertexFormatInt4; break;
-        }
-    } else {
-        switch (size) {
-            case 1: f = MTLVertexFormatUInt; break;
-            case 2: f = MTLVertexFormatUInt2; break;
-            case 3: f = MTLVertexFormatUInt3; break;
-            case 4: f = MTLVertexFormatUInt4; break;
-        }
-    }
-    if (outFormat) {
-        *outFormat = f;
-    }
-    return f != MTLVertexFormatInvalid;
+    return format != (uint32_t)MTLVertexFormatInvalid;
 }
 
 double mglDecodeVertexAttribComponent(const uint8_t *src,
