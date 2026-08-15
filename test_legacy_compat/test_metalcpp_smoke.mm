@@ -2304,6 +2304,31 @@ static int verifyMDIScratchOwner(void) {
     return 0;
 }
 
+static int verifyMetalTypeTables(void) {
+    /* P4.5 (item 1141/887): GL mode/index -> Metal type numbering. */
+    if (mglRenderCppMTLPrimitiveTypeForGLMode(GL_POINTS) != 0 ||
+        mglRenderCppMTLPrimitiveTypeForGLMode(GL_LINES) != 1 ||
+        mglRenderCppMTLPrimitiveTypeForGLMode(GL_LINE_STRIP) != 2 ||
+        mglRenderCppMTLPrimitiveTypeForGLMode(GL_TRIANGLES) != 3 ||
+        mglRenderCppMTLPrimitiveTypeForGLMode(GL_TRIANGLE_STRIP) != 4 ||
+        mglRenderCppMTLPrimitiveTypeForGLMode(GL_LINE_LOOP) != 0xFFFFFFFFu ||
+        mglRenderCppMTLPrimitiveTypeForGLMode(GL_QUADS) != 0xFFFFFFFFu ||
+        mglRenderCppMTLPrimitiveTypeForGLMode(GL_PATCHES) != 0xFFFFFFFFu ||
+        mglRenderCppMTLPrimitiveTypeForGLMode(0x1234) != 0xFFFFFFFFu) {
+        fprintf(stderr, "FAIL: prim type table\n");
+        return 1;
+    }
+    if (mglRenderCppMTLIndexTypeForGLType(GL_UNSIGNED_BYTE) != 0 ||
+        mglRenderCppMTLIndexTypeForGLType(GL_UNSIGNED_SHORT) != 0 ||
+        mglRenderCppMTLIndexTypeForGLType(GL_UNSIGNED_INT) != 1 ||
+        mglRenderCppMTLIndexTypeForGLType(0x1234) != 0xFFFFFFFFu) {
+        fprintf(stderr, "FAIL: index type table\n");
+        return 1;
+    }
+    printf("METAL_TYPE_TABLES_OK\n");
+    return 0;
+}
+
 static int verifyVertexAttribResolve(void) {
     /* P4.5 (item 1141/887): ARB_vertex_attrib_binding resolve. */
     MGLRenderCppVertexAttribResolve r = {0};
@@ -4691,6 +4716,7 @@ int main(void) {
         if (verifyPolygonOffsetAndPrimCount() != 0) return 1;
         if (verifyBufferShadowUploadRange() != 0) return 1;
         if (verifyVertexAttribResolve() != 0) return 1;
+        if (verifyMetalTypeTables() != 0) return 1;
         if (verifyMDIScratchOwner() != 0) return 1;
         if (verifyRenderEncoderGetter() != 0) return 1;
         if (verifyCommandBufferGetterAndAdopt() != 0) return 1;

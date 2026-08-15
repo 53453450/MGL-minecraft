@@ -548,6 +548,17 @@ int mglRenderCppBufferShadowUploadRange(
     uint64_t *out_offset,
     uint64_t *out_length);
 
+/* P4.5 (item 1141/887): GL draw mode -> MTLPrimitiveType numbering
+ * (0=Point, 1=Line, 2=LineStrip, 3=Triangle, 4=TriangleStrip;
+ * 0xFFFFFFFF for modes the renderer routes elsewhere).  Pure table shared
+ * by both gates; the caller casts to MTLPrimitiveType. */
+uint32_t mglRenderCppMTLPrimitiveTypeForGLMode(uint32_t mode);
+
+/* P4.5 (item 1141/887): GL element index type -> MTLIndexType numbering
+ * (0=UInt16, 1=UInt32; 0xFFFFFFFF otherwise).  Pure table shared by both
+ * gates; the caller casts to MTLIndexType. */
+uint32_t mglRenderCppMTLIndexTypeForGLType(uint32_t gl_type);
+
 typedef struct MGLRenderCppVertexAttribResolve_t {
     int use_binding_table;   /* bindingIndex < limit && binding has buffer */
     int64_t binding_offset;  /* table offset, or attrib binding_offset */

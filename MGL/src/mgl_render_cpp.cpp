@@ -3901,6 +3901,32 @@ int mglRenderCppGetTexImagePlan(
 }
 
 extern "C"
+uint32_t mglRenderCppMTLPrimitiveTypeForGLMode(uint32_t mode) {
+    switch (mode) {
+        case GL_POINTS: return 0u;          /* MTLPrimitiveTypePoint */
+        case GL_LINES: return 1u;           /* MTLPrimitiveTypeLine */
+        case GL_LINE_STRIP: return 2u;      /* MTLPrimitiveTypeLineStrip */
+        case GL_TRIANGLES: return 3u;       /* MTLPrimitiveTypeTriangle */
+        case GL_TRIANGLE_STRIP: return 4u;  /* MTLPrimitiveTypeTriangleStrip */
+        /* LINE_LOOP / adjacency / fan / quads / patches route elsewhere */
+        default: return 0xFFFFFFFFu;        /* err */
+    }
+}
+
+extern "C"
+uint32_t mglRenderCppMTLIndexTypeForGLType(uint32_t gl_type) {
+    switch (gl_type) {
+        case GL_UNSIGNED_BYTE:
+        case GL_UNSIGNED_SHORT:
+            return 0u;                      /* MTLIndexTypeUInt16 */
+        case GL_UNSIGNED_INT:
+            return 1u;                      /* MTLIndexTypeUInt32 */
+        default:
+            return 0xFFFFFFFFu;             /* err */
+    }
+}
+
+extern "C"
 int mglRenderCppResolveVertexAttribBinding(
     uint32_t binding_index, int binding_has_buffer,
     int64_t binding_offset, uint32_t binding_stride,

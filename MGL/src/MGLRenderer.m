@@ -4760,56 +4760,17 @@ GLboolean mglGetCPUFormatTypeForInternalFormat(GLenum internalformat,
 #pragma mark utility functions for draw commands
 MTLPrimitiveType getMTLPrimitiveType(GLenum mode)
 {
-    const GLuint err = 0xFFFFFFFF;
-
-    switch(mode)
-    {
-        case GL_POINTS:
-            return MTLPrimitiveTypePoint;
-
-        case GL_LINES:
-            return MTLPrimitiveTypeLine;
-
-        case GL_LINE_STRIP:
-            return MTLPrimitiveTypeLineStrip;
-
-        case GL_TRIANGLES:
-            return MTLPrimitiveTypeTriangle;
-
-        case GL_TRIANGLE_STRIP:
-            return MTLPrimitiveTypeTriangleStrip;
-
-        case GL_LINE_LOOP:
-        case GL_LINE_STRIP_ADJACENCY:
-        case GL_LINES_ADJACENCY:
-        case GL_TRIANGLE_FAN:
-        case GL_QUADS:
-        case GL_TRIANGLE_STRIP_ADJACENCY:
-        case GL_PATCHES:
-            return (MTLPrimitiveType)0xFFFFFFFF;
-            break;
-    }
-
-    return err;
+    /* P4.5 (item 1141/887): 模式 -> MTLPrimitiveType 数值表在 C++
+     * （mglRenderCppMTLPrimitiveTypeForGLMode，两门共用）。 */
+    return (MTLPrimitiveType)mglRenderCppMTLPrimitiveTypeForGLMode(
+        (uint32_t)mode);
 }
 
 MTLIndexType getMTLIndexType(GLenum type)
 {
-    const GLuint err = 0xFFFFFFFF;
-
-    switch(type)
-    {
-        case GL_UNSIGNED_BYTE:
-            return MTLIndexTypeUInt16;
-
-        case GL_UNSIGNED_SHORT:
-            return MTLIndexTypeUInt16;
-
-        case GL_UNSIGNED_INT:
-            return MTLIndexTypeUInt32;
-    }
-
-    return err;
+    /* P4.5 (item 1141/887): GL 索引类型 -> MTLIndexType 数值表在 C++
+     * （mglRenderCppMTLIndexTypeForGLType，两门共用）。 */
+    return (MTLIndexType)mglRenderCppMTLIndexTypeForGLType((uint32_t)type);
 }
 
 Buffer *getElementBuffer(GLMContext ctx)
