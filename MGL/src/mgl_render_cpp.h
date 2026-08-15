@@ -307,6 +307,15 @@ int mglRenderCppTextureGetBytes(void *texture,
 int mglRenderCppTextureUploadRoute(uint32_t texture_type,
                                    uint32_t storage_mode,
                                    int has_agx_3d_copy_bug);
+/* P4.4: 3D 纹理 depth-plane 重打包（tight image stride）。把 strided
+ * (bytes_per_image > expected) 的 depth planes 压成 tight
+ * (expected_bytes_per_image) 布局，供 replaceRegion 上传（Metal 要求
+ * bytesPerImage = bpr*height，padded 的 plane stride 必须重打包）。
+ * 返回 malloc 的 buffer（调用方 free）；参数非法 / 分配失败返回 NULL。 */
+void *mglRenderCppTextureRepackDepthPlanes(const void *bytes,
+                                           size_t bytes_per_image,
+                                           size_t expected_bytes_per_image,
+                                           size_t copy_depth);
 int mglRenderCppCreateSampler(void *sampler_descriptor,
                               void **sampler_out);
 /* Translate GL texture parameters into a Metal-cpp sampler descriptor and

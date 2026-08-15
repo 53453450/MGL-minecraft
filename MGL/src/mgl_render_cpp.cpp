@@ -3011,6 +3011,33 @@ int mglRenderCppTextureUploadRoute(uint32_t texture_type,
     return MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_BLIT;
 }
 
+
+/* P4.4: tight-pack the 3D depth planes (pure data transform). */
+void* mglRenderCppTextureRepackDepthPlanes(const void* bytes,
+                                           size_t bytes_per_image,
+                                           size_t expected_bytes_per_image,
+                                           size_t copy_depth) {
+    if (!bytes || expected_bytes_per_image == 0 ||
+        bytes_per_image < expected_bytes_per_image || copy_depth == 0) {
+        return NULL;
+    }
+    if (expected_bytes_per_image > SIZE_MAX / copy_depth) {
+        return NULL;
+    }
+    size_t packed_size = expected_bytes_per_image * copy_depth;
+    void* packed = malloc(packed_size);
+    if (!packed) {
+        return NULL;
+    }
+    const uint8_t* src = (const uint8_t*)bytes;
+    uint8_t* dst = (uint8_t*)packed;
+    for (size_t z = 0; z < copy_depth; z++) {
+        memcpy(dst + z * expected_bytes_per_image,
+               src + z * bytes_per_image, expected_bytes_per_image);
+    }
+    return packed;
+}
+
 int mglRenderCppCreateSampler(void* sampler_descriptor,
                               void** sampler_out) {
     if (sampler_out) *sampler_out = nullptr;

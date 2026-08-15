@@ -2632,6 +2632,47 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
         printf("TEXTURE_UPLOAD_ROUTE_OK\n");
     }
 
+    /* P4.4: 3D depth-plane repack — tight-pack a strided multi-plane buffer
+     * and verify the output layout byte-for-byte; bad args return NULL. */
+    {
+        const size_t kBPI = 20;   /* padded plane stride */
+        const size_t kTight = 16; /* tight plane stride (bpr*height) */
+        const size_t kDepth = 3;
+        uint8_t src[kDepth * kBPI];
+        for (size_t z = 0; z < kDepth; z++) {
+            for (size_t i = 0; i < kBPI; i++) {
+                src[z * kBPI + i] = (uint8_t)(z * 40u + i);
+            }
+        }
+        void *packed = mglRenderCppTextureRepackDepthPlanes(
+            src, kBPI, kTight, kDepth);
+        if (!packed) {
+            fprintf(stderr, "FAIL: texture repack returned NULL\n");
+            return 1;
+        }
+        const uint8_t *out = (const uint8_t *)packed;
+        for (size_t z = 0; z < kDepth; z++) {
+            for (size_t i = 0; i < kTight; i++) {
+                if (out[z * kTight + i] != src[z * kBPI + i]) {
+                    fprintf(stderr,
+                            "FAIL: texture repack plane %zu byte %zu got %u want %u\n",
+                            z, i, out[z * kTight + i], src[z * kBPI + i]);
+                    free(packed);
+                    return 1;
+                }
+            }
+        }
+        free(packed);
+        if (mglRenderCppTextureRepackDepthPlanes(NULL, kBPI, kTight, 1) != NULL ||
+            mglRenderCppTextureRepackDepthPlanes(src, kBPI, kTight, 0) != NULL ||
+            mglRenderCppTextureRepackDepthPlanes(src, kTight - 1, kTight, 1) != NULL ||
+            mglRenderCppTextureRepackDepthPlanes(src, kBPI, 0, 1) != NULL) {
+            fprintf(stderr, "FAIL: texture repack bad-arg rejection\n");
+            return 1;
+        }
+        printf("TEXTURE_REPACK_OK\n");
+    }
+
     /* P4.3c: whole-batch simple replay.  Valid batch encodes; unknown command
      * type falls back to NEEDS_OBJC; bad args are rejected. */
     {

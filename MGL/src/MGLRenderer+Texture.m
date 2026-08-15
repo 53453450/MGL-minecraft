@@ -671,18 +671,16 @@ static void mglTextureCopyTextureToBuffer(
         const void *replaceBytes = bytes;
         void *tightlyPackedBytes = NULL;
         if (safeBytesPerImage != expectedBytesPerImage) {
+            /* P4.4: depth-plane repack 在 C++（mglRenderCppTextureRepackDepthPlanes
+             * —— 纯数据变换，两门共用，无 A/B 分歧）。溢出/分配失败返回 NULL，
+             * 与内联版逐点等价。 */
             if (copyDepth > NSUIntegerMax / expectedBytesPerImage) {
                 return false;
             }
-            NSUInteger packedSize = expectedBytesPerImage * copyDepth;
-            tightlyPackedBytes = malloc(packedSize);
+            tightlyPackedBytes = mglRenderCppTextureRepackDepthPlanes(
+                bytes, safeBytesPerImage, expectedBytesPerImage, copyDepth);
             if (!tightlyPackedBytes) {
                 return false;
-            }
-            for (NSUInteger z = 0; z < copyDepth; z++) {
-                memcpy((uint8_t *)tightlyPackedBytes + z * expectedBytesPerImage,
-                       (const uint8_t *)bytes + z * safeBytesPerImage,
-                       expectedBytesPerImage);
             }
             replaceBytes = tightlyPackedBytes;
         }
