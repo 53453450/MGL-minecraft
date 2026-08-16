@@ -451,6 +451,37 @@ static void mglDrawSupportDrawIndexedPatches(
 extern void mglRecordActivePrimitiveQueryDraw(GLMContext ctx,
                                                GLuint64 generated,
                                                GLuint64 written);
+extern void mglRecordActivePrimitiveQueryDrawIndexed(GLMContext ctx,
+                                                      GLuint index,
+                                                      GLuint64 generated,
+                                                      GLuint64 written);
+extern GLboolean mglHasActiveIndexedPrimitiveQuery(void);
+
+static void mglRecordGeometryPrimitiveQueries(
+    GLMContext ctx,
+    GLuint64 generatedStream0,
+    GLuint64 writtenStream0,
+    BOOL xfbActive,
+    const MGLAIRGSXFBMeta *meta,
+    uint32_t streamCount,
+    const NSUInteger *streamStride)
+{
+    mglRecordActivePrimitiveQueryDraw(
+        ctx, generatedStream0, xfbActive ? writtenStream0 : 0u);
+    if (!meta || !streamStride) return;
+    if (streamCount > MGL_AIR_GS_MAX_STREAMS) {
+        streamCount = MGL_AIR_GS_MAX_STREAMS;
+    }
+    for (uint32_t s = 1u; s < streamCount; s++) {
+        GLuint64 written = 0u;
+        if (xfbActive && streamStride[s] > 0u) {
+            written = meta->stream[s].written /
+                      (GLuint64)streamStride[s];
+        }
+        mglRecordActivePrimitiveQueryDrawIndexed(
+            ctx, s, (GLuint64)meta->stream[s].generated, written);
+    }
+}
 
 static BOOL mglCheckedTessCaptureSize(GLsizei count, GLsizei instanceCount,
                                       NSUInteger stride,
@@ -1681,7 +1712,8 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
         mglDrawSupportEndComputeEncoder(compute);
     }
     if (![self flushStageBindingCopyBacks:&stageCopyBacks
-                     requireCPUVisibility:xfbActive ? YES : NO]) {
+                     requireCPUVisibility:(xfbActive ||
+                                           mglHasActiveIndexedPrimitiveQuery())]) {
         drawCtx->state.dirty_bits = DIRTY_ALL;
         return YES;
     }
@@ -1711,7 +1743,8 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     const GLuint64 vpp = outputPrimitive == MTLPrimitiveTypePoint
         ? 1u
         : (outputPrimitive == MTLPrimitiveTypeLine ? 2u : 3u);
-    GLuint64 queryWritten = queryGenerated;
+    GLuint64 queryWritten = 0u;
+    const MGLAIRGSXFBMeta *queryMeta = NULL;
     if (xfbActive && xfbMetaBuf && xfbMetaBuf.contents) {
         /* The stage synchronization above made the atomic counters CPU
          * visible; the written counter counts exactly the bytes the
@@ -1726,6 +1759,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
          * GL 4.6 §13.2.4). */
         const MGLAIRGSXFBMeta *meta =
             (const MGLAIRGSXFBMeta *)xfbMetaBuf.contents;
+        queryMeta = meta;
         NSUInteger writtenBytesStream0 = (NSUInteger)meta->stream[0].written;
         if (xfbTemporary) {
             /* Slow path (single- or multi-stream): the kernel captured into
@@ -1787,17 +1821,13 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
         queryWritten = (outputStride > 0u && vpp > 0u)
             ? (GLuint64)writtenBytesStream0 /
                   ((GLuint64)outputStride * vpp) : 0u;
-        /* Multi-stream (GL 4.6 §13.2.4.2): TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN
-         * counts primitives written to ALL transform feedback buffers, so
-         * add streams 1..3's written primitives.  Each stream > 0 is
-         * points-only (vpp=1) with streamStride[s] bytes per primitive. */
-        if (multiStream) {
-            for (uint32_t s = 1u; s < gsStreamCount; s++) {
-                if (streamStride[s] == 0u) continue;
-                GLuint64 sw = (GLuint64)meta->stream[s].written;
-                queryWritten += sw / (GLuint64)streamStride[s];
-            }
-        }
+        /* A non-indexed primitive query addresses stream 0.  Indexed query
+         * results for streams 1..3 are recorded from each stream's counters
+         * below, after the common stream-0 result is finalized. */
+    }
+    if (!queryMeta && xfbMetaBuf && xfbMetaBuf.contents &&
+        mglHasActiveIndexedPrimitiveQuery()) {
+        queryMeta = (const MGLAIRGSXFBMeta *)xfbMetaBuf.contents;
     }
     /* Multi-stream (GL 4.6 §13.2.4.1): PRIMITIVES_GENERATED counts only
      * stream 0 primitives (emitted to the rasterizer).  The static
@@ -1817,8 +1847,9 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
          * expansion already ran and the primitive query must still count
          * the generated/written primitives (persistent query semantics). */
         _currentCBHasWork = YES;
-        mglRecordActivePrimitiveQueryDraw(drawCtx, queryGenerated,
-                                          queryWritten);
+        mglRecordGeometryPrimitiveQueries(
+            drawCtx, queryGenerated, queryWritten, xfbActive, queryMeta,
+            gsStreamCount, streamStride);
         _geometry.expansionActive = NO;
         _geometry.program = NULL;
         drawCtx->state.dirty_bits = DIRTY_ALL;
@@ -1835,10 +1866,11 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
                   [self currentDrawRasterizationIsEmpty] ? 1 : 0,
                   [self currentDrawModeIsFullyCulled:gsOutputMode] ? 1 : 0);
         }
-        if (xfbActive) {
+        if (xfbActive || mglHasActiveIndexedPrimitiveQuery()) {
             _currentCBHasWork = YES;
-            mglRecordActivePrimitiveQueryDraw(drawCtx, queryGenerated,
-                                              queryWritten);
+            mglRecordGeometryPrimitiveQueries(
+                drawCtx, queryGenerated, queryWritten, xfbActive, queryMeta,
+                gsStreamCount, streamStride);
         }
         _geometry.expansionActive = NO;
         _geometry.program = NULL;
@@ -1881,9 +1913,9 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
             (NSUInteger)primitive * countsRecordBytes);
     }
     _currentCBHasWork = YES;
-    mglRecordActivePrimitiveQueryDraw(drawCtx, queryGenerated,
-                                      xfbActive ? queryWritten
-                                                : queryGenerated);
+    mglRecordGeometryPrimitiveQueries(
+        drawCtx, queryGenerated, queryWritten, xfbActive, queryMeta,
+        gsStreamCount, streamStride);
     _geometry.expansionActive = NO;
     _geometry.program = NULL;
     drawCtx->state.dirty_bits = DIRTY_ALL;

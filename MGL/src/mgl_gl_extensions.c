@@ -169,12 +169,18 @@ typedef struct QueryObject_t {
 	GLuint64 result;
 } QueryObject;
 
+/* Primitive queries are indexed by output stream (GL 4.6 §13.2.4).
+ * Other query targets only accept index zero, but keeping a fixed-width
+ * second dimension makes the active-query lookup unambiguous and preserves
+ * the existing target-slot numbering. */
+#define MGL_QUERY_MAX_INDEX 4u
+
 static HashTable s_query_table;
 /* Single-threaded access only — MGL assumes one GL context per thread.
  * If multi-threaded access is ever needed, add a module-level
  * os_unfair_lock around all reads and writes. */
 static GLboolean s_query_table_initialized = GL_FALSE;
-static GLuint s_active_query_by_target[18];
+static GLuint s_active_query_by_target[18][MGL_QUERY_MAX_INDEX];
 static GLuint64 s_fake_timestamp_counter = 1;
 
 static QueryObject *mgl_find_query(GLuint id);
@@ -235,6 +241,15 @@ static int mgl_query_target_slot(GLenum target)
 		case GL_CLIPPING_OUTPUT_PRIMITIVES: return 16;
 		default: return -1;
 	}
+}
+
+static GLboolean mgl_query_index_is_valid(GLenum target, GLuint index)
+{
+	if (index == 0u)
+		return GL_TRUE;
+	return (target == GL_PRIMITIVES_GENERATED ||
+		target == GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN) &&
+		index < MGL_QUERY_MAX_INDEX;
 }
 
 static GLboolean mgl_is_query_create_target(GLenum target)
@@ -300,7 +315,7 @@ void mglRecordActiveSampleQueryDraw(GLMContext ctx)
 	mgl_init_query_table_if_needed();
 	for (int slot = 0; slot < 3; slot++)
 	{
-		QueryObject *q = mgl_find_query(s_active_query_by_target[slot]);
+		QueryObject *q = mgl_find_query(s_active_query_by_target[slot][0]);
 		if (!q || !q->active || !mgl_query_target_is_sample(q->target))
 			continue;
 
@@ -310,13 +325,19 @@ void mglRecordActiveSampleQueryDraw(GLMContext ctx)
 	}
 }
 
-void mglRecordActivePrimitiveQueryDraw(GLMContext ctx, GLuint64 generated, GLuint64 written)
+void mglRecordActivePrimitiveQueryDrawIndexed(GLMContext ctx,
+                                               GLuint index,
+                                               GLuint64 generated,
+                                               GLuint64 written)
 {
 	(void)ctx;
+	if (index >= MGL_QUERY_MAX_INDEX)
+		return;
 
 	mgl_init_query_table_if_needed();
 
-	QueryObject *generated_query = mgl_find_query(s_active_query_by_target[3]);
+	QueryObject *generated_query =
+		mgl_find_query(s_active_query_by_target[3][index]);
 	if (generated_query && generated_query->active &&
 	    generated_query->target == GL_PRIMITIVES_GENERATED)
 	{
@@ -325,7 +346,8 @@ void mglRecordActivePrimitiveQueryDraw(GLMContext ctx, GLuint64 generated, GLuin
 		generated_query->result += generated;
 	}
 
-	QueryObject *written_query = mgl_find_query(s_active_query_by_target[4]);
+	QueryObject *written_query =
+		mgl_find_query(s_active_query_by_target[4][index]);
 	if (written_query && written_query->active &&
 	    written_query->target == GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN)
 	{
@@ -333,6 +355,24 @@ void mglRecordActivePrimitiveQueryDraw(GLMContext ctx, GLuint64 generated, GLuin
 		written_query->primitive_result_known = GL_TRUE;
 		written_query->result += written;
 	}
+}
+
+void mglRecordActivePrimitiveQueryDraw(GLMContext ctx,
+                                       GLuint64 generated,
+                                       GLuint64 written)
+{
+	mglRecordActivePrimitiveQueryDrawIndexed(ctx, 0u, generated, written);
+}
+
+GLboolean mglHasActiveIndexedPrimitiveQuery(void)
+{
+	mgl_init_query_table_if_needed();
+	for (GLuint index = 1u; index < MGL_QUERY_MAX_INDEX; index++) {
+		if (s_active_query_by_target[3][index] != 0u ||
+			s_active_query_by_target[4][index] != 0u)
+			return GL_TRUE;
+	}
+	return GL_FALSE;
 }
 
 GLboolean mglShouldSkipConditionalRender(GLMContext ctx)
@@ -1504,7 +1544,8 @@ void mglBeginConditionalRender(GLMContext ctx, GLuint id, GLenum mode)
 	STATE(conditional_render_mode) = mode;
 }
 
-void mglBeginQuery(GLMContext ctx, GLenum target, GLuint id)
+static void mglBeginQueryAtIndex(GLMContext ctx, GLenum target,
+                                 GLuint index, GLuint id)
 {
 	int slot;
 	QueryObject *q;
@@ -1513,6 +1554,11 @@ void mglBeginQuery(GLMContext ctx, GLenum target, GLuint id)
 	if (slot < 0)
 	{
 		STATE(error) = GL_INVALID_ENUM;
+		return;
+	}
+	if (!mgl_query_index_is_valid(target, index))
+	{
+		STATE(error) = GL_INVALID_VALUE;
 		return;
 	}
 	if (id == 0)
@@ -1528,7 +1574,8 @@ void mglBeginQuery(GLMContext ctx, GLenum target, GLuint id)
 		return;
 	}
 
-	if (q->active || (q->target != 0 && q->target != target) || s_active_query_by_target[slot] != 0)
+	if (q->active || (q->target != 0 && q->target != target) ||
+		s_active_query_by_target[slot][index] != 0)
 	{
 		STATE(error) = GL_INVALID_OPERATION;
 		return;
@@ -1542,7 +1589,7 @@ void mglBeginQuery(GLMContext ctx, GLenum target, GLuint id)
 	q->primitive_result_known = GL_FALSE;
 	q->timer_result_known = GL_FALSE;
 	q->result = 0;
-	s_active_query_by_target[slot] = id;
+	s_active_query_by_target[slot][index] = id;
 
 	/* For sample queries, activate the Metal visibility result buffer so
 	 * the GPU accurately reports whether any fragments passed per-fragment
@@ -1565,14 +1612,14 @@ void mglBeginQuery(GLMContext ctx, GLenum target, GLuint id)
 	}
 }
 
+void mglBeginQuery(GLMContext ctx, GLenum target, GLuint id)
+{
+	mglBeginQueryAtIndex(ctx, target, 0u, id);
+}
+
 void mglBeginQueryIndexed(GLMContext ctx, GLenum target, GLuint index, GLuint id)
 {
-	if (index != 0)
-	{
-		STATE(error) = GL_INVALID_VALUE;
-		return;
-	}
-	mglBeginQuery(ctx, target, id);
+	mglBeginQueryAtIndex(ctx, target, index, id);
 }
 
 void mglBeginTransformFeedback(GLMContext ctx, GLenum primitiveMode)
@@ -2521,8 +2568,12 @@ void mglDeleteQueries(GLMContext ctx, GLsizei n, const GLuint *ids)
 			continue;
 		}
 		slot = mgl_query_target_slot(q->target);
-		if (slot >= 0 && s_active_query_by_target[slot] == q->name)
-			s_active_query_by_target[slot] = 0;
+		if (slot >= 0) {
+			for (GLuint index = 0u; index < MGL_QUERY_MAX_INDEX; index++) {
+				if (s_active_query_by_target[slot][index] == q->name)
+					s_active_query_by_target[slot][index] = 0;
+			}
+		}
 		deleteHashElement(&s_query_table, q->name);
 		free(q);
 	}
@@ -2656,7 +2707,7 @@ void mglEndConditionalRender(GLMContext ctx)
 	STATE(conditional_render_mode) = 0;
 }
 
-void mglEndQuery(GLMContext ctx, GLenum target)
+static void mglEndQueryAtIndex(GLMContext ctx, GLenum target, GLuint index)
 {
 	int slot;
 	QueryObject *q;
@@ -2668,7 +2719,12 @@ void mglEndQuery(GLMContext ctx, GLenum target)
 		STATE(error) = GL_INVALID_ENUM;
 		return;
 	}
-	id = s_active_query_by_target[slot];
+	if (!mgl_query_index_is_valid(target, index))
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return;
+	}
+	id = s_active_query_by_target[slot][index];
 	if (id == 0)
 	{
 		STATE(error) = GL_INVALID_OPERATION;
@@ -2709,17 +2765,17 @@ void mglEndQuery(GLMContext ctx, GLenum target)
 	}
 
 	mgl_finish_query_result(q);
-	s_active_query_by_target[slot] = 0;
+	s_active_query_by_target[slot][index] = 0;
+}
+
+void mglEndQuery(GLMContext ctx, GLenum target)
+{
+	mglEndQueryAtIndex(ctx, target, 0u);
 }
 
 void mglEndQueryIndexed(GLMContext ctx, GLenum target, GLuint index)
 {
-	if (index != 0)
-	{
-		STATE(error) = GL_INVALID_VALUE;
-		return;
-	}
-	mglEndQuery(ctx, target);
+	mglEndQueryAtIndex(ctx, target, index);
 }
 
 void mglEndTransformFeedback(GLMContext ctx)
@@ -4892,12 +4948,29 @@ void mglGetQueryBufferObjectuiv(GLMContext ctx, GLuint id, GLuint buffer, GLenum
 
 void mglGetQueryIndexediv(GLMContext ctx, GLenum target, GLuint index, GLenum pname, GLint *params)
 {
-	if (index != 0)
+	int slot = mgl_query_target_slot(target);
+	(void)ctx;
+	if (!params)
+		return;
+	if (slot < 0)
+	{
+		STATE(error) = GL_INVALID_ENUM;
+		return;
+	}
+	if (!mgl_query_index_is_valid(target, index))
 	{
 		STATE(error) = GL_INVALID_VALUE;
 		return;
 	}
-	mglGetQueryiv(ctx, target, pname, params);
+	if (pname == GL_CURRENT_QUERY) {
+		*params = (GLint)s_active_query_by_target[slot][index];
+		return;
+	}
+	if (pname == GL_QUERY_COUNTER_BITS) {
+		*params = (target == GL_TIME_ELAPSED) ? 64 : 32;
+		return;
+	}
+	STATE(error) = GL_INVALID_ENUM;
 }
 
 void mglGetQueryObjecti64v(GLMContext ctx, GLuint id, GLenum pname, GLint64 *params)
@@ -4966,7 +5039,7 @@ void mglGetQueryiv(GLMContext ctx, GLenum target, GLenum pname, GLint *params)
 	switch (pname)
 	{
 		case GL_CURRENT_QUERY:
-			*params = (GLint)s_active_query_by_target[slot];
+			*params = (GLint)s_active_query_by_target[slot][0];
 			break;
 		case GL_QUERY_COUNTER_BITS:
 			*params = (target == GL_TIME_ELAPSED) ? 64 : 32;
@@ -6132,9 +6205,39 @@ void mglTransformFeedbackVaryings(GLMContext ctx, GLuint program, GLsizei count,
 
 	Program *pptr = findProgram(ctx, program);
 	ERROR_CHECK_RETURN(pptr, GL_INVALID_VALUE);
+	if (bufferMode == GL_SEPARATE_ATTRIBS &&
+	    (GLuint)count > ctx->state.var.max_transform_feedback_separate_attribs) {
+		STATE(error) = GL_INVALID_VALUE;
+		return;
+	}
+	GLuint nextBufferCount = 0u;
+	for (GLsizei i = 0; i < count; i++) {
+		if (!varyings || !varyings[i]) {
+			STATE(error) = GL_INVALID_VALUE;
+			return;
+		}
+		if (!mgl_tf_is_builtin_name(varyings[i]))
+			continue;
+		if (bufferMode != GL_INTERLEAVED_ATTRIBS) {
+			STATE(error) = GL_INVALID_OPERATION;
+			return;
+		}
+		if (strcmp(varyings[i], "gl_NextBuffer") == 0) {
+			nextBufferCount++;
+			if (nextBufferCount >= ctx->state.var.max_transform_feedback_buffers) {
+				STATE(error) = GL_INVALID_OPERATION;
+				return;
+			}
+		}
+	}
 
 	pptr->transform_feedback_varying_count = count;
 	pptr->transform_feedback_buffer_mode = bufferMode;
+	pptr->transform_feedback_layout_valid = GL_FALSE;
+	pptr->transform_feedback_layout_buffer_count = 0u;
+	pptr->transform_feedback_layout_component_count = 0u;
+	bzero(pptr->transform_feedback_layout,
+	      sizeof(pptr->transform_feedback_layout));
 	for (GLsizei i = 0; i < count; i++) {
 		pptr->transform_feedback_varying_names[i][0] = '\0';
 		if (varyings && varyings[i]) {

@@ -341,6 +341,7 @@ typedef struct {
 typedef struct {
     MGLTessStageBufferBinding slots[kMGLMaxBufferSlots];
     id<MTLBuffer> __strong size_buffer;
+    GLuint size_buffer_index;
 } MGLTessStageBufferBindingList;
 
 /* Tessellation shaders run as consecutive compute encoders. Prepare their
@@ -475,6 +476,8 @@ typedef struct {
     Program *stageProgram = mglResolveProgramForStageFromState(ctx, stage);
     if (stageProgram &&
         stageProgram->modules[stage].needs_runtime_array_size_buffer) {
+        bindings->size_buffer_index =
+            mglRuntimeArraySizeBufferIndexForProgram(stageProgram, stage);
         uint32_t sizeConstants[kMGLMaxBufferSlots] = {0};
         for (GLuint i = 0; i < stageBufferMap.count; i++) {
             BufferMap *map = &stageBufferMap.buffers[i];
@@ -483,7 +486,7 @@ typedef struct {
                 ? (NSUInteger)map->metal_binding_index
                 : (NSUInteger)map->buffer_base_index;
             if (metalSlot >= kMGLMaxBufferSlots ||
-                metalSlot == MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX) {
+                metalSlot == bindings->size_buffer_index) {
                 continue;
             }
             GLsizeiptr visibleSize = mglBufferMapVisibleSize(map);
@@ -552,7 +555,7 @@ typedef struct {
     }
     if (bindings->size_buffer) {
         mglTessSetComputeBuffer(computeCommandEncoder, bindings->size_buffer,
-                                0, MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX);
+                                0, bindings->size_buffer_index);
     }
     return true;
 }

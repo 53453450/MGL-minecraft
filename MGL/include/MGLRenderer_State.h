@@ -98,11 +98,7 @@ typedef struct MGLRendererCoreState_t {
 } MGLRendererCoreState;
 
 typedef struct MGLGPURecoveryState_t {
-    os_unfair_lock gpuErrorLock;
-    NSUInteger consecutiveGPUErrors;
-    NSUInteger consecutiveGPUSuccesses;
-    NSTimeInterval lastGPUErrorTime;
-    BOOL gpuErrorRecoveryMode;
+    void *commandRecoveryOwner;
     GLuint interfaceMismatchBlockedProgram;
     CFTimeInterval interfaceMismatchBlockedUntil;
     uint32_t interfaceMismatchBlockedStreak;

@@ -29,7 +29,6 @@ typedef struct MGLCommandState_t {
     NSUInteger transientDepthTextureHeight;
     BOOL currentDrawUsesRTSampledCopy;
     void *_Nullable pendingEventOwner;
-    BOOL isCommittingCommandBuffer;
     /* Cache for currentRenderPassMatchesCurrentFramebuffer.
      * lastFboMatchFboName == 0 means "invalid cache, recompute".
      * Valid only for non-default FBOs (fbo != NULL && fboName != 0);

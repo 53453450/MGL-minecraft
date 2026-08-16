@@ -92,9 +92,10 @@ static void mglLifecycleReplaceTextureRegion(id<MTLTexture> texture,
     MGL_MTL_FUNC_LIST(MGL_MTL_FUNC_ASSIGN)
 #undef MGL_MTL_FUNC_ASSIGN
 
-    /* These callbacks release bridge-owned Metal objects directly through
-     * Metal-cpp and do not need the ObjC renderer target.  Owner-dependent
-     * callbacks remain on mgl_metal_bridge until their state moves to C++. */
+    /* These callbacks can enter Metal-cpp directly.  Some retain a narrow
+     * legacy fallback/ordering adapter (for example timestamp -> mtlFlush),
+     * while owner-dependent callbacks remain on mgl_metal_bridge until their
+     * state moves to C++. */
     if (mglEnvFlagEnabledDefaultOn("MGL_USE_METALCPP")) {
         if (mglRenderCppGetDevice() != NULL) {
             glm_ctx->mtl_funcs.mtlBindBuffer = mglRenderCppBindBuffer;
@@ -107,6 +108,12 @@ static void mglLifecycleReplaceTextureRegion(id<MTLTexture> texture,
             glm_ctx->mtl_funcs.mtlFlushBufferRange =
                 mglRenderCppFlushBufferRange;
             glm_ctx->mtl_funcs.mtlBindProgram = mglRenderCppBindProgram;
+            glm_ctx->mtl_funcs.mtlGetGPUTimestamp =
+                mglRenderCppGetGPUTimestamp;
+            glm_ctx->mtl_funcs.mtlBeginTimerQuery =
+                mglRenderCppBeginTimerQueryCallback;
+            glm_ctx->mtl_funcs.mtlEndTimerQuery =
+                mglRenderCppEndTimerQueryCallback;
         }
         glm_ctx->mtl_funcs.mtlDeleteMTLObj = mglRenderCppDeleteMTLObj;
         glm_ctx->mtl_funcs.release_buffer_metal_data =
@@ -218,10 +225,11 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     [_renderPassManager setDontCareFrameGeneration:1u];
 
     // Initialize AGX GPU error tracking
-    _gpuRecovery.gpuErrorLock = OS_UNFAIR_LOCK_INIT;
-    _gpuRecovery.consecutiveGPUErrors = 0;
-    _gpuRecovery.lastGPUErrorTime = 0;
-    _gpuRecovery.gpuErrorRecoveryMode = NO;
+    if (mglRenderCppCreateCommandRecoveryOwner(
+            &_gpuRecovery.commandRecoveryOwner) != 0) {
+        _gpuRecovery.commandRecoveryOwner = NULL;
+        NSLog(@"MGL ERROR: failed to create command recovery owner");
+    }
     BOOL psoDedupEnabled = mglEnvFlagEnabledDefaultOn("MGL_PSO_DEDUP");
     BOOL depthStencilCacheEnabled = mglEnvFlagEnabledDefaultOn("MGL_DS_CACHE");
     BOOL binaryArchiveEnabled = mglEnvFlagEnabledDefaultOn("MGL_BINARY_ARCHIVE");
@@ -272,8 +280,8 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         // Intentional early return on critical Metal initialization failure.
         // The renderer is left in a PARTIALLY INITIALIZED state:
         //   SET: ctx, AGX GPU error tracking
-        //        fields (_gpuRecovery.consecutiveGPUErrors/_gpuRecovery.lastGPUErrorTime/
-        //        _gpuRecovery.gpuErrorRecoveryMode), _pipeline*Format/_pipelineCache.state->pipelineProgramName,
+        //        command recovery owner, _pipeline*Format/
+        //        _pipelineCache.state->pipelineProgramName,
         //        _pipelineCache.state->pipelineStateCache, and glm_ctx->mtl_funcs (bound via
         //        bindObjFuncsToGLMContext, with mtlObj retained).
         //   NIL: _device, _commandQueue, _view.
@@ -298,6 +306,9 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         if (mglRenderCppCreateQueryStateOwner(256u, &_queryStateOwner) != 0) {
             _queryStateOwner = NULL;
             NSLog(@"MGL ERROR: failed to create Metal-cpp query state owner");
+        } else if (mglRenderCppRegisterContextQueryStateOwner(
+                       glm_ctx, _queryStateOwner) != 0) {
+            NSLog(@"MGL ERROR: failed to register context query state owner");
         }
     }
     _pipelineCache.device = _device;
@@ -447,7 +458,10 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     // Create initial command buffer for AGX safety
     @try {
         [_renderPassManager installNewCommandBufferFromQueue:_commandQueue];
-        if (!(__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner)) {
+        MGLRenderCppCommandBufferState commandState = {0};
+        if (!mglRenderCommandBufferOwnerState(
+                _renderPassManager.state->currentCommandBufferOwner,
+                &commandState)) {
             NSLog(@"MGL ERROR: Failed to create initial Metal command buffer");
         }
     } @catch (NSException *exception) {
@@ -683,7 +697,10 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         _bindingStateOwner = NULL;
 
         // Cleanup command buffer and encoder
-        if ((__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner)) {
+        MGLRenderCppCommandBufferState commandState = {0};
+        if (mglRenderCommandBufferOwnerState(
+                _renderPassManager.state->currentCommandBufferOwner,
+                &commandState)) {
             NSLog(@"MGL INFO: Releasing current command buffer");
             [_renderPassManager discardCurrentCommandBuffer];
         }
@@ -696,7 +713,10 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         [_renderPassManager shutdown];
         _renderPassManager = nil;
 
+        mglRenderCppUnregisterContextQueryStateOwner(ctx, _queryStateOwner);
         mglRenderCppDestroyQueryStateOwner(&_queryStateOwner);
+        mglRenderCppDestroyCommandRecoveryOwner(
+            &_gpuRecovery.commandRecoveryOwner);
 
         if (_pipelineCache) {
             if (_pipelineCache.state->pipelineState) {

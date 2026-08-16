@@ -32,10 +32,11 @@
         static NSUInteger maxErrorsPerWindow = 3;
 
         // Get current error tracking from command buffer if available
-        MGLRenderCppCommandBufferState currentState =
-            mglRenderCommandBufferState(
-                (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
-        if ((__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner) &&
+        MGLRenderCppCommandBufferState currentState = {0};
+        BOOL hasCurrentCommandBuffer = mglRenderCommandBufferOwnerState(
+            _renderPassManager.state->currentCommandBufferOwner,
+            &currentState);
+        if (hasCurrentCommandBuffer &&
             currentState.has_error) {
             NSTimeInterval currentTime = [[NSDate date] timeIntervalSince1970];
 
@@ -100,10 +101,11 @@
 {
     // PROPER FIX: Safe command buffer cleanup
     @try {
-        if ((__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner)) {
-            if (mglRenderCommandBufferStatus(
-                    (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner)) ==
-                MTLCommandBufferStatusCommitted) {
+        MGLRenderCppCommandBufferState currentState = {0};
+        if (mglRenderCommandBufferOwnerState(
+                _renderPassManager.state->currentCommandBufferOwner,
+                &currentState)) {
+            if (currentState.status == MTLCommandBufferStatusCommitted) {
                 // Do not block indefinitely here; cleanup can be invoked on the render thread.
                 // Command buffers retain resources until completion, so dropping the reference is safe.
                 if (kMGLVerboseFrameLoopLogs) {
@@ -213,65 +215,75 @@
     mglRenderAddCommandBufferCompletion(
         commandBuffer,
         ^(const MGLRenderCppCommandBufferState *completionState) {
+            MGLRenderCppCommandBufferCompletionResult completionResult = {0};
+            if (mglRenderCppProcessCommandBufferCompletion(
+                    blockSelf->_gpuRecovery.commandRecoveryOwner,
+                    completionState,
+                    [[NSDate date] timeIntervalSince1970],
+                    &completionResult) != 0) {
+                completionResult.decision.has_error =
+                    completionState->has_error;
+            }
             double completeElapsedUs =
                 (mglTraceClockNS() - commitQueuedAtNS) / 1000.0;
-            if (traceCommitForBlock || completionState->has_error ||
+            if (traceCommitForBlock || completionResult.decision.has_error ||
                 completeElapsedUs >= 50000.0) {
                 mglTraceLogNSString(@"MGL TRACE commit.completed call=%llu status=%s elapsed=%.1fus error=%@",
                       (unsigned long long)commitCallForBlock,
                       mglCommandBufferStatusName(
                           (MTLCommandBufferStatus)completionState->status),
                       completeElapsedUs,
-                      completionState->has_error
+                      completionResult.decision.has_error
                           ? [NSString stringWithFormat:@"%s (domain=%s code=%lld)",
                                completionState->error_description,
                                completionState->error_domain,
                                (long long)completionState->error_code]
                           : nil);
             }
-            if (completionState->has_error) {
+            if (completionResult.decision.has_error) {
                 NSLog(@"MGL AGX ERROR: Command buffer completed with error: %s (domain=%s code=%lld)",
                       completionState->error_description,
                       completionState->error_domain,
                       (long long)completionState->error_code);
-                [blockSelf recordGPUError];
+                if (completionResult.state.consecutive_errors > 0) {
+                    NSLog(@"MGL AGX: Recorded GPU error (%llu consecutive)",
+                          (unsigned long long)completionResult.state.consecutive_errors);
+                }
 
                 // Specific handling for AGX driver rejection
-                if (strcmp(completionState->error_domain,
-                           "MTLCommandBufferErrorDomain") == 0 &&
-                    completionState->error_code == 4) { // "Ignored (for causing prior/excessive GPU errors)"
-                /* Owned by the Metal completion-handler thread (this block):
-                 * never touched from the GL thread or the main queue. */
-                static NSTimeInterval s_lastDriverRejectionReset = 0.0;
-                NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-                if (now - s_lastDriverRejectionReset > 2.0) {
-                    s_lastDriverRejectionReset = now;
-                    NSLog(@"MGL AGX RECOVERY: Driver rejection detected; throttled reset scheduled");
-                    /* Deferred reset: hand the request to the GL thread across
-                     * the frame boundary instead of dispatching to the main
-                     * queue.  The reset runs at the next safe point (after
-                     * endRenderEncoding in mtlSwapBuffersLocked). */
-                    atomic_store_explicit(&blockSelf->_deviceResetRequested, true, memory_order_release);
-                } else {
-                    NSLog(@"MGL AGX RECOVERY: Driver rejection detected; skipping immediate reset (throttled)");
-                }
+                if (completionResult.decision.is_driver_rejection) {
+                    /* "Ignored (for causing prior/excessive GPU errors)" */
+                    /* Owned by the Metal completion-handler thread (this block):
+                     * never touched from the GL thread or the main queue. */
+                    static NSTimeInterval s_lastDriverRejectionReset = 0.0;
+                    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+                    if (now - s_lastDriverRejectionReset > 2.0) {
+                        s_lastDriverRejectionReset = now;
+                        NSLog(@"MGL AGX RECOVERY: Driver rejection detected; throttled reset scheduled");
+                        /* Deferred reset: hand the request to the GL thread across
+                         * the frame boundary instead of dispatching to the main
+                         * queue.  The reset runs at the next safe point (after
+                         * endRenderEncoding in mtlSwapBuffersLocked). */
+                        atomic_store_explicit(
+                            &blockSelf->_deviceResetRequested, true,
+                            memory_order_release);
+                    } else {
+                        NSLog(@"MGL AGX RECOVERY: Driver rejection detected; skipping immediate reset (throttled)");
+                    }
                 }
             } else {
-            [blockSelf recordGPUSuccess];
+                if (completionResult.sustained_recovery) {
+                    NSLog(@"MGL AGX: Sustained GPU recovery (%llu successes), resetting error count (was %llu)",
+                          (unsigned long long)completionResult.recovered_successes,
+                          (unsigned long long)completionResult.previous_errors);
+                }
 
-            // AGX Recovery: Clear recovery mode on success
-            /* guard the ivar read/write with _gpuRecovery.gpuErrorLock
-             * (NOT METAL_LOCK) to avoid cross-thread contention — the
-             * completion handler runs on a Metal worker thread while the
-             * render thread may be inside waitUntilCompleted. */
-            os_unfair_lock_lock(&blockSelf->_gpuRecovery.gpuErrorLock);
-            if (blockSelf->_gpuRecovery.gpuErrorRecoveryMode) {
-                NSLog(@"MGL AGX RECOVERY: Exiting GPU recovery mode after successful completion");
-                blockSelf->_gpuRecovery.gpuErrorRecoveryMode = NO;
+                // AGX Recovery: Clear recovery mode on success
+                if (completionResult.cleared_recovery_mode) {
+                    NSLog(@"MGL AGX RECOVERY: Exiting GPU recovery mode after successful completion");
+                }
             }
-            os_unfair_lock_unlock(&blockSelf->_gpuRecovery.gpuErrorLock);
-        }
-    });
+        });
 
     // CRITICAL FIX: Enhanced command buffer validation before commit
     // Prevents MTLReleaseAssertionFailure in AGX driver
@@ -281,22 +293,20 @@
     }
 
     // Check command buffer status before commit
-    MTLCommandBufferStatus status = mglRenderCommandBufferStatus(commandBuffer);
-    if (status >= MTLCommandBufferStatusCommitted) {
+    MGLRenderCppCommandBufferState commitState =
+        mglRenderCommandBufferState(commandBuffer);
+    MGLRenderCppCommandBufferCommitDecision commitDecision = {0};
+    if (mglRenderCppClassifyCommandBufferCommit(
+            &commitState, &commitDecision) != 0) {
+        commitDecision.action = MGL_RENDER_CPP_COMMAND_BUFFER_COMMIT_PROCEED;
+    }
+    MTLCommandBufferStatus status = (MTLCommandBufferStatus)commitState.status;
+    if (commitDecision.action ==
+        MGL_RENDER_CPP_COMMAND_BUFFER_COMMIT_SKIP_ALREADY_COMMITTED) {
         NSLog(@"MGL AGX WARNING: Command buffer already committed (status: %ld) - skipping commit", (long)status);
         if (traceCommit) {
             mglTraceLogNSString(@"MGL TRACE commit.skip.already_committed call=%llu status=%s",
                   (unsigned long long)commitCall, mglCommandBufferStatusName(status));
-        }
-        return;
-    }
-
-    // Validate command buffer is in a valid state for commit
-    if (status == MTLCommandBufferStatusError) {
-        NSLog(@"MGL AGX ERROR: Command buffer in error state - skipping commit");
-        [self recordGPUError];
-        if (traceCommit) {
-            mglTraceLogNSString(@"MGL TRACE commit.skip.error_state call=%llu", (unsigned long long)commitCall);
         }
         return;
     }
@@ -362,40 +372,21 @@
 - (BOOL)shouldSkipGPUOperations
 {
     NSTimeInterval currentTime = [[NSDate date] timeIntervalSince1970];
-    BOOL needsClear = NO;
-
-    /* protect error-tracking ivars with _gpuRecovery.gpuErrorLock
-     * (same lock as recordGPUError/recordGPUSuccess) to avoid racing with
-     * the completion handler thread. */
-    os_unfair_lock_lock(&_gpuRecovery.gpuErrorLock);
-
-    // Recovery window: shorter timeout so essential operations can resume sooner
-    if (currentTime - _gpuRecovery.lastGPUErrorTime > 3.0) {
-        if (_gpuRecovery.consecutiveGPUErrors > 0) {
-            NSLog(@"MGL AGX: Recovery timeout - attempting GPU operations (had %lu errors)", (unsigned long)_gpuRecovery.consecutiveGPUErrors);
-        }
-        _gpuRecovery.consecutiveGPUErrors = 0;
-        _gpuRecovery.gpuErrorRecoveryMode = NO;
-        os_unfair_lock_unlock(&_gpuRecovery.gpuErrorLock);
+    MGLRenderCppCommandRecoverySkipDecision decision = {0};
+    if (mglRenderCppCommandRecoveryShouldSkip(
+            _gpuRecovery.commandRecoveryOwner, currentTime, &decision) != 0) {
         return NO;
     }
-
-    // Enter recovery mode after fewer errors to prevent AGX driver from crashing
-    if (_gpuRecovery.consecutiveGPUErrors >= 8 || _gpuRecovery.gpuErrorRecoveryMode) {
-        if (!_gpuRecovery.gpuErrorRecoveryMode) {
-            NSLog(@"MGL AGX: Entering recovery mode after %lu consecutive errors", (unsigned long)_gpuRecovery.consecutiveGPUErrors);
-            _gpuRecovery.gpuErrorRecoveryMode = YES;
-            needsClear = YES;
-        }
-        os_unfair_lock_unlock(&_gpuRecovery.gpuErrorLock);
-        if (needsClear) {
-            [self clearProblematicGPUState];
-        }
-        return YES;
+    if (decision.recovery_timed_out && decision.previous_errors > 0) {
+        NSLog(@"MGL AGX: Recovery timeout - attempting GPU operations (had %llu errors)",
+              (unsigned long long)decision.previous_errors);
     }
-
-    os_unfair_lock_unlock(&_gpuRecovery.gpuErrorLock);
-    return NO;
+    if (decision.entered_recovery_mode) {
+        NSLog(@"MGL AGX: Entering recovery mode after %llu consecutive errors",
+              (unsigned long long)decision.state.consecutive_errors);
+        [self clearProblematicGPUState];
+    }
+    return decision.should_skip != 0;
 }
 
 // PROPER FIX: Clear problematic state without giving up on GPU operations entirely
@@ -404,7 +395,10 @@
     NSLog(@"MGL AGX: Clearing problematic GPU state for recovery");
 
     // Clear current problematic resources
-    if ((__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner)) {
+    MGLRenderCppCommandBufferState currentState = {0};
+    if (mglRenderCommandBufferOwnerState(
+            _renderPassManager.state->currentCommandBufferOwner,
+            &currentState)) {
         [_renderPassManager discardCurrentCommandBuffer];
     }
 
@@ -414,38 +408,26 @@
 
 - (void)recordGPUError
 {
-    /* Use _gpuRecovery.gpuErrorLock (not METAL_LOCK): addCompletedHandler
-     * runs on a Metal worker thread; MGL_ASSERT_GL_THREAD would abort there
-     * and a real lock would contend with the render thread inside
-     * waitUntilCompleted. */
-    os_unfair_lock_lock(&_gpuRecovery.gpuErrorLock);
-    _gpuRecovery.consecutiveGPUErrors++;
-    _gpuRecovery.consecutiveGPUSuccesses = 0;
-    _gpuRecovery.lastGPUErrorTime = [[NSDate date] timeIntervalSince1970];
-    NSLog(@"MGL AGX: Recorded GPU error (%lu consecutive)", (unsigned long)_gpuRecovery.consecutiveGPUErrors);
-    os_unfair_lock_unlock(&_gpuRecovery.gpuErrorLock);
+    MGLRenderCppCommandRecoverySnapshot state = {0};
+    if (mglRenderCppCommandRecoveryRecordError(
+            _gpuRecovery.commandRecoveryOwner,
+            [[NSDate date] timeIntervalSince1970], &state) == 0) {
+        NSLog(@"MGL AGX: Recorded GPU error (%llu consecutive)",
+              (unsigned long long)state.consecutive_errors);
+    }
 }
 
 - (void)recordGPUSuccess
 {
-    /* use _gpuRecovery.gpuErrorLock (see recordGPUError comment). */
-    os_unfair_lock_lock(&_gpuRecovery.gpuErrorLock);
-    if (_gpuRecovery.consecutiveGPUErrors > 0 || _gpuRecovery.gpuErrorRecoveryMode) {
-        _gpuRecovery.consecutiveGPUSuccesses++;
-        NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-        NSTimeInterval sinceLastError = now - _gpuRecovery.lastGPUErrorTime;
-        // Require multiple consecutive successful completions before clearing
-        // recovery, otherwise mixed success/error callbacks can flap the state.
-        if (_gpuRecovery.consecutiveGPUSuccesses >= 4 && sinceLastError > 0.25) {
-            NSLog(@"MGL AGX: Sustained GPU recovery (%lu successes), resetting error count (was %lu)",
-                  (unsigned long)_gpuRecovery.consecutiveGPUSuccesses,
-                  (unsigned long)_gpuRecovery.consecutiveGPUErrors);
-            _gpuRecovery.consecutiveGPUErrors = 0;
-            _gpuRecovery.gpuErrorRecoveryMode = NO;
-            _gpuRecovery.consecutiveGPUSuccesses = 0;
-        }
+    MGLRenderCppCommandRecoverySuccess result = {0};
+    if (mglRenderCppCommandRecoveryRecordSuccess(
+            _gpuRecovery.commandRecoveryOwner,
+            [[NSDate date] timeIntervalSince1970], &result) == 0 &&
+        result.sustained_recovery) {
+        NSLog(@"MGL AGX: Sustained GPU recovery (%llu successes), resetting error count (was %llu)",
+              (unsigned long long)result.recovered_successes,
+              (unsigned long long)result.previous_errors);
     }
-    os_unfair_lock_unlock(&_gpuRecovery.gpuErrorLock);
 }
 
 #pragma mark - Metal Optimization Methods

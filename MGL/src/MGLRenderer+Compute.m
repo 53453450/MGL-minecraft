@@ -371,6 +371,8 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
         Program *computeProgram = mglResolveProgramForStageFromState(ctx, stage);
         if (computeProgram && computeProgram->modules[stage].needs_runtime_array_size_buffer)
         {
+            const GLuint runtimeSizeSlot =
+                mglRuntimeArraySizeBufferIndexForProgram(computeProgram, stage);
             uint32_t sizeConstants[kMGLMaxMetalVertexBufferCount];
             memset(sizeConstants, 0, sizeof(sizeConstants));
 
@@ -392,7 +394,7 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
 
             if (mglRenderCppBuildRuntimeArraySizes(
                     entries, entryCount,
-                    MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX,
+                    runtimeSizeSlot,
                     kMGLMaxMetalVertexBufferCount,
                     sizeConstants, kMGLMaxMetalVertexBufferCount) != 0) {
                 NSLog(@"MGL COMPUTE ERROR: runtime-array-size constants build failed");
@@ -404,7 +406,7 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
                 _device, sizeConstants, sizeof(sizeConstants),
                 MTLResourceStorageModeShared);
             if (sizeBuffer) {
-                MGL_CBIND_EMIT_BUFFER(MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX,
+                MGL_CBIND_EMIT_BUFFER(runtimeSizeSlot,
                                       (__bridge void *)sizeBuffer, 0);
                 /* sizeBuffer is a block-local (__bridge_transfer on gate-on):
                  * flush before the block ends so the encoder retains it. */

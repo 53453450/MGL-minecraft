@@ -231,11 +231,11 @@ static void *mglQueryVisibilityBuffer(void *queryStateOwner)
     // is stored in sync->mtl_command_buffer so mtlWaitForSync can block on its
     // completion via waitUntilCompleted. This runs regardless of
     // kMGLDisableSharedEventSync (which only gates the legacy shared-event path).
-    MGLMetalCommandBufferRef currentCommandBuffer =
-        (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner);
-    MGLRenderCppCommandBufferState currentState =
-        mglRenderCommandBufferState(currentCommandBuffer);
-    if (currentCommandBuffer &&
+    MGLRenderCppCommandBufferState currentState = {0};
+    BOOL hasCurrentCommandBuffer = mglRenderCommandBufferOwnerState(
+        _renderPassManager.state->currentCommandBufferOwner,
+        &currentState);
+    if (hasCurrentCommandBuffer &&
         currentState.status == MTLCommandBufferStatusNotEnqueued &&
         !currentState.has_error) {
         MGLMetalCommandBufferRef cbToCommit =

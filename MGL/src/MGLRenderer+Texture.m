@@ -239,6 +239,16 @@ static id<MTLBlitCommandEncoder> mglTextureCreateBlitEncoder(
     return commandBuffer ? [commandBuffer blitCommandEncoder] : nil;
 }
 
+/* Owner-first adapter for work that is encoded on the renderer's current
+ * command buffer. Dedicated command buffers continue to use the raw helper
+ * above because they are not owned by MGLRenderPassManager. */
+static id<MTLBlitCommandEncoder> mglTextureCreateCurrentBlitEncoder(
+    void *commandBufferOwner)
+{
+    return mglRenderCreateBlitEncoderForCommandBufferOwner(
+        commandBufferOwner);
+}
+
 static void mglTextureEndBlitEncoder(id<MTLBlitCommandEncoder> encoder)
 {
     if (!encoder) return;
@@ -915,8 +925,8 @@ static void mglTextureCopyTextureToBuffer(
     }
 
     if (mglTextureUsesMetalCpp() &&
-        mglRenderCppEncodeColorClear(
-            mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
+        mglRenderCppEncodeColorClearForCommandBufferOwner(
+            _renderPassManager.state->currentCommandBufferOwner,
             (__bridge void *)texture, 0, 0, 0,
             ctx->state.default_clear_color[0],
             ctx->state.default_clear_color[1],
@@ -959,8 +969,8 @@ static void mglTextureCopyTextureToBuffer(
     MGLMetalAttachmentSubresource subresource =
         mglMetalAttachmentSubresourceForAttachment(attachment);
     if (mglTextureUsesMetalCpp() &&
-        mglRenderCppEncodeColorClear(
-            mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
+        mglRenderCppEncodeColorClearForCommandBufferOwner(
+            _renderPassManager.state->currentCommandBufferOwner,
             (__bridge void *)texture, subresource.level,
             subresource.slice, subresource.depthPlane,
             attachment->clear_color[0], attachment->clear_color[1],
@@ -1611,8 +1621,8 @@ static void mglTextureCopyTextureToBuffer(
     MGLMetalAttachmentSubresource subresource =
         mglMetalAttachmentSubresourceForAttachment(attachment);
     if (mglTextureUsesMetalCpp() &&
-        mglRenderCppEncodeDepthClear(
-            mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
+        mglRenderCppEncodeDepthClearForCommandBufferOwner(
+            _renderPassManager.state->currentCommandBufferOwner,
             (__bridge void *)texture, subresource.level,
             subresource.slice, subresource.depthPlane,
             attachment->clear_color[0]) == 0) {
@@ -1649,8 +1659,8 @@ static void mglTextureCopyTextureToBuffer(
     }
 
     if (mglTextureUsesMetalCpp() &&
-        mglRenderCppEncodeDepthClear(
-            mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
+        mglRenderCppEncodeDepthClearForCommandBufferOwner(
+            _renderPassManager.state->currentCommandBufferOwner,
             (__bridge void *)texture, 0, 0, 0,
             ctx->state.var.depth_clear_value) == 0) {
         ctx->state.default_fbo_clear_bitmask &= ~GL_DEPTH_BUFFER_BIT;
@@ -2345,8 +2355,8 @@ static void mglTextureCopyTextureToBuffer(
 
     // start blit encoder
     id<MTLBlitCommandEncoder> blitCommandEncoder;
-    blitCommandEncoder =
-        mglTextureCreateBlitEncoder((__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
+    blitCommandEncoder = mglTextureCreateCurrentBlitEncoder(
+        _renderPassManager.state->currentCommandBufferOwner);
     if (!blitCommandEncoder) {
         NSLog(@"MGL ERROR: Failed to create blit encoder for mipmap generation");
         return;

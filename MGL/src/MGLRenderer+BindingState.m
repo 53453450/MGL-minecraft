@@ -2012,7 +2012,9 @@ static void mglBindingStateSetFragmentBytes(
     [self bindFragmentFallbackBuffersToCurrentRenderEncoder:activeProgram
                                          anyBindingPresent:anyBindingPresent
                                          baseBindingPresent:baseBindingPresent
-                                             encodeContext:encCtx];
+                                             encodeContext:encCtx
+                                         bindingSnapshot:&snapshot
+                                             useSnapshot:useBindingSnapshot];
 
     /* Fallback bindings are real Metal slots and must be included in the
      * worker snapshot. */
@@ -2069,8 +2071,47 @@ static void mglBindingStateSetFragmentBytes(
                                        anyBindingPresent:(bool *)anyBindingPresent
                                        baseBindingPresent:(bool *)baseBindingPresent
                                            encodeContext:(const MGLEncodeContext *)encCtx
+                                       bindingSnapshot:(MGLRenderCppBindingSnapshot *)bindingSnapshot
+                                           useSnapshot:(BOOL)useSnapshot
 {
     static id<MTLBuffer> fallbackBindingBuffer = nil;
+
+    /* Keep fallback emits in the same per-draw snapshot as the main fragment
+     * binding loop.  This is the final fragment binding segment, so replaying
+     * at method exit preserves the direct path's ordering while removing the
+     * last fragment-stage ObjC setter body from the gate-on path. */
+    MGLRenderCppBindingSnapshot *ffallbackSnapshot = bindingSnapshot;
+    const BOOL ffallbackUseSnapshot = useSnapshot && ffallbackSnapshot != NULL;
+#define MGL_FFB_FLUSH_SNAPSHOT()                                               \
+    do {                                                                        \
+        if (ffallbackUseSnapshot &&                                             \
+            ffallbackSnapshot->fragment_op_count > 0) {                        \
+            mglRenderCppEncodeBindingSnapshot(                                 \
+                (__bridge void *)encCtx->encoder, ffallbackSnapshot, NULL, 0); \
+            *ffallbackSnapshot = (MGLRenderCppBindingSnapshot){0};              \
+        }                                                                       \
+    } while (0)
+#define MGL_FFB_EMIT_BUFFER(slot, bufPtr, off)                                  \
+    do {                                                                        \
+        if (ffallbackUseSnapshot) {                                             \
+            if (ffallbackSnapshot->fragment_op_count >=                        \
+                MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_OPS) {                     \
+                MGL_FFB_FLUSH_SNAPSHOT();                                      \
+            }                                                                   \
+            ffallbackSnapshot->fragment_ops[                                   \
+                ffallbackSnapshot->fragment_op_count++] =                      \
+                (MGLRenderCppBindingOp){/* kind */ 0u,                         \
+                                        /* index */ (uint32_t)(slot),            \
+                                        /* offset */ (uint64_t)(off),            \
+                                        /* buffer */ (void *)(bufPtr),           \
+                                        /* bytes */ NULL,                        \
+                                        /* length */ 0u};                        \
+        } else {                                                                \
+            mglBindingStateSetFragmentBuffer(                                   \
+                encCtx->encoder, (__bridge id<MTLBuffer>)(bufPtr),              \
+                (off), (slot));                                                 \
+        }                                                                       \
+    } while (0)
 
     if (!fallbackBindingBuffer) {
         fallbackBindingBuffer = mglBindingStateCreateBuffer(
@@ -2116,8 +2157,9 @@ static void mglBindingStateSetFragmentBytes(
                 !mglBindingStateBufferMatches(
                     _bindingStateOwner, MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT,
                     (__bridge void *)fallbackBindingBuffer, 0, (uint32_t)_slot)) {
-                        mglBindingStateSetFragmentBuffer(
-                            encCtx->encoder, fallbackBindingBuffer, 0, _slot);
+                        MGL_FFB_EMIT_BUFFER(_slot,
+                                           (__bridge void *)fallbackBindingBuffer,
+                                           0);
                         mglRenderCppBindingUpdateFragmentBuffer(
                     _bindingStateOwner, (__bridge void *)fallbackBindingBuffer, 0,
                     (uint32_t)_slot);
@@ -2139,8 +2181,8 @@ static void mglBindingStateSetFragmentBytes(
                 !mglBindingStateBufferMatches(
                     _bindingStateOwner, MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT,
                     (__bridge void *)fallbackBindingBuffer, 0, (uint32_t)s)) {
-                    mglBindingStateSetFragmentBuffer(
-                        encCtx->encoder, fallbackBindingBuffer, 0, s);
+                    MGL_FFB_EMIT_BUFFER(s, (__bridge void *)fallbackBindingBuffer,
+                                        0);
                     mglRenderCppBindingUpdateFragmentBuffer(
                     _bindingStateOwner, (__bridge void *)fallbackBindingBuffer, 0,
                     (uint32_t)s);
@@ -2152,6 +2194,10 @@ static void mglBindingStateSetFragmentBytes(
             }
         }
     }
+
+    MGL_FFB_FLUSH_SNAPSHOT();
+#undef MGL_FFB_EMIT_BUFFER
+#undef MGL_FFB_FLUSH_SNAPSHOT
 }
 
 

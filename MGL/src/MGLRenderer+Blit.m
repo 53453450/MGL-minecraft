@@ -789,16 +789,14 @@ static id<MTLRenderPipelineState> mglLookupCppAuxRenderPipeline(
     desc.rasterSampleCount = 1;
     mglEnableIndirectCommandBuffersForPipeline(desc);
 
-    [_pipelineCache applyBinaryArchiveToDescriptor:desc];
-    id<MTLRenderPipelineState> pipeline = [_device newRenderPipelineStateWithDescriptor:desc error:&error];
+    id<MTLRenderPipelineState> pipeline = [_pipelineCache
+        createRenderPipelineStateWithDescriptor:desc error:&error];
     if (!pipeline) {
         NSLog(@"MGL ERROR: scaled blit pipeline create failed pixelFormat=%lu error=%@",
               (unsigned long)pixelFormat,
               error);
         return nil;
     }
-    [_pipelineCache addPipelineToBinaryArchive:desc];
-
     _blit.scaledBlitPipelineCache[key] = pipeline;
     [self mglCapAuxCache:_blit.scaledBlitPipelineCache limit:16];
     NSLog(@"MGL INFO: created scaled blit pipeline pixelFormat=%lu", (unsigned long)pixelFormat);
@@ -960,16 +958,14 @@ static id<MTLRenderPipelineState> mglLookupCppAuxRenderPipeline(
     desc.rasterSampleCount = 1;
     mglEnableIndirectCommandBuffersForPipeline(desc);
 
-    [_pipelineCache applyBinaryArchiveToDescriptor:desc];
-    id<MTLRenderPipelineState> pipeline = [_device newRenderPipelineStateWithDescriptor:desc error:&error];
+    id<MTLRenderPipelineState> pipeline = [_pipelineCache
+        createRenderPipelineStateWithDescriptor:desc error:&error];
     if (!pipeline) {
         NSLog(@"MGL ERROR: scaled depth blit pipeline create failed depthPixelFormat=%lu error=%@",
               (unsigned long)pixelFormat,
               error);
         return nil;
     }
-    [_pipelineCache addPipelineToBinaryArchive:desc];
-
     _blit.scaledDepthBlitPipelineCache[key] = pipeline;
     [self mglCapAuxCache:_blit.scaledDepthBlitPipelineCache limit:16];
     NSLog(@"MGL INFO: created scaled depth blit pipeline depthPixelFormat=%lu", (unsigned long)pixelFormat);
@@ -2007,8 +2003,8 @@ static id<MTLRenderPipelineState> mglLookupCppAuxRenderPipeline(
     }
     mglEnableIndirectCommandBuffersForPipeline(desc);
 
-    [_pipelineCache applyBinaryArchiveToDescriptor:desc];
-    id<MTLRenderPipelineState> pipeline = [_device newRenderPipelineStateWithDescriptor:desc error:&error];
+    id<MTLRenderPipelineState> pipeline = [_pipelineCache
+        createRenderPipelineStateWithDescriptor:desc error:&error];
     if (!pipeline) {
         NSLog(@"MGL ERROR: scissored clear pipeline create failed color=%lu depth=%lu writesColor=%d writesDepth=%d error=%@",
               (unsigned long)colorFormat,
@@ -2018,8 +2014,6 @@ static id<MTLRenderPipelineState> mglLookupCppAuxRenderPipeline(
               error);
         return nil;
     }
-    [_pipelineCache addPipelineToBinaryArchive:desc];
-
     _blit.clearRectPipelineCache[key] = pipeline;
     [self mglCapAuxCache:_blit.clearRectPipelineCache limit:16];
     return pipeline;
@@ -3203,8 +3197,8 @@ static id<MTLRenderPipelineState> mglLookupCppAuxRenderPipeline(
         isColorAttachment(glm_ctx, readAttachment) &&
         (readFBOAttachment->clear_bitmask & GL_COLOR_BUFFER_BIT)) {
         BOOL clearEncoded = mglBlitUsesMetalCpp() &&
-            mglRenderCppEncodeColorClear(
-                mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
+            mglRenderCppEncodeColorClearForCommandBufferOwner(
+                _renderPassManager.state->currentCommandBufferOwner,
                 (__bridge void *)readtexid, readSubresource.level,
                 readSubresource.slice, readSubresource.depthPlane,
                 readFBOAttachment->clear_color[0],

@@ -118,34 +118,6 @@ static id<MTLFunction> mglRenderPassCreateFunction(
     return [library newFunctionWithName:name];
 }
 
-static id<MTLRenderPipelineState> mglRenderPassCreatePipeline(
-    id<MTLDevice> device,
-    MTLRenderPipelineDescriptor *descriptor,
-    NSError **error)
-{
-    if (mglRenderPassUsesMetalCpp()) {
-        void *pipeline = NULL;
-        char message[512] = {0};
-        if (mglRenderCppCreateRenderPipelineState(
-                (__bridge void *)descriptor, &pipeline,
-                message, sizeof(message)) == 0 && pipeline) {
-            if (error) *error = nil;
-            return (__bridge_transfer id<MTLRenderPipelineState>)pipeline;
-        }
-        if (error) {
-            NSString *description = message[0]
-                ? [NSString stringWithUTF8String:message]
-                : @"Metal-cpp render pipeline creation failed";
-            *error = [NSError errorWithDomain:@"MGLRenderPipeline"
-                                         code:1
-                                     userInfo:@{NSLocalizedDescriptionKey:
-                                                    description}];
-        }
-        return nil;
-    }
-    return [device newRenderPipelineStateWithDescriptor:descriptor error:error];
-}
-
 static void mglRenderPassSetDepthClipMode(
     id<MTLRenderCommandEncoder> encoder,
     MTLDepthClipMode mode)
@@ -7228,11 +7200,11 @@ stencil_format_ok:;
             NSLog(@"MGL INFO: AGX virtualization detected - using safe synchronous compilation");
         }
 
-        [_pipelineCache applyBinaryArchiveToDescriptor:finalDescriptor];
         /* P4.2: gate-on 走 buildPipelineStateOnCacheMissWithState:（value-state
          * builder）；本方法只服务 gate-off 的 ObjC descriptor 路径。 */
-        compiledPSO = mglRenderPassCreatePipeline(
-            _device, finalDescriptor, &error);
+        compiledPSO = [_pipelineCache
+            createRenderPipelineStateWithDescriptor:finalDescriptor
+                                              error:&error];
         if (compiledPSO) {
             mglMetalCountCreate(MGLMetalKindPSO);
             successfulDescriptor = finalDescriptor;
@@ -7400,9 +7372,9 @@ stencil_format_ok:;
                     mglNormalizePipelineDepthStencilFormats(simpleDescriptor, "simple-fallback");
                     mglEnableIndirectCommandBuffersForPipeline(simpleDescriptor);
 
-                    [_pipelineCache applyBinaryArchiveToDescriptor:simpleDescriptor];
-                    compiledPSO = mglRenderPassCreatePipeline(
-                        _device, simpleDescriptor, &error);
+                    compiledPSO = [_pipelineCache
+                        createRenderPipelineStateWithDescriptor:simpleDescriptor
+                                                          error:&error];
                     if (compiledPSO) {
                         mglMetalCountCreate(MGLMetalKindPSO);
                         successfulDescriptor = simpleDescriptor;
@@ -7478,9 +7450,9 @@ stencil_format_ok:;
                         (__bridge_transfer id<MTLFunction>)safeVS;
                     safeDescriptor.fragmentFunction =
                         safeFS ? (__bridge_transfer id<MTLFunction>)safeFS : nil;
-                    [_pipelineCache applyBinaryArchiveToDescriptor:safeDescriptor];
-                    compiledPSO = mglRenderPassCreatePipeline(
-                        _device, safeDescriptor, &error);
+                    compiledPSO = [_pipelineCache
+                        createRenderPipelineStateWithDescriptor:safeDescriptor
+                                                          error:&error];
                 }
             } else {
                 NSError *libraryError = nil;
@@ -7500,9 +7472,9 @@ stencil_format_ok:;
                         mglRenderPassCreateFunction(
                             safeLibrary, @"mgl_safe_fallback_fs", NULL, 0);
                     if (safeDescriptor.vertexFunction && safeDescriptor.fragmentFunction) {
-                        [_pipelineCache applyBinaryArchiveToDescriptor:safeDescriptor];
-                        compiledPSO = mglRenderPassCreatePipeline(
-                            _device, safeDescriptor, &error);
+                        compiledPSO = [_pipelineCache
+                            createRenderPipelineStateWithDescriptor:safeDescriptor
+                                                              error:&error];
                     }
                 }
             }
@@ -7562,7 +7534,6 @@ stencil_format_ok:;
             programName:currentProgramName
             vertexFunction:successfulDescriptor.vertexFunction
             fragmentFunction:successfulDescriptor.fragmentFunction];
-            [_pipelineCache addPipelineToBinaryArchive:successfulDescriptor];
             if (_gpuRecovery.programMismatchProgramName == currentProgramName) {
                 _gpuRecovery.programMismatchProgramName = 0;
                 _gpuRecovery.programMismatchRetryAfter = 0.0;
