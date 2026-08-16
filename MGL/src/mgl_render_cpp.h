@@ -365,6 +365,9 @@ int32_t mglRenderCppTextureIndexForMetalType(uint32_t texture_type);
 #define MGL_RENDER_CPP_TEXTURE_DATA_KIND_DEPTH   4u
 
 uint32_t mglRenderCppTextureDataKindForPixelFormat(uint32_t pixel_format);
+/* P4.5 (item 1111): data-kind → debug name string (static literals).
+ * kind uses MGL_RENDER_CPP_TEXTURE_DATA_KIND_*. */
+const char *mglRenderCppTextureDataKindName(uint32_t kind);
 /* P4.5 (item 1111): min-filter → uses-mipmaps.  Returns 1/0. */
 int mglRenderCppTextureMinFilterUsesMipmaps(uint32_t min_filter);
 

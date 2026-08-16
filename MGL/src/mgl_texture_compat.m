@@ -92,13 +92,7 @@ MGLTextureDataKind mglTextureDataKindForPixelFormat(MTLPixelFormat pixelFormat)
 
 const char *mglTextureDataKindName(MGLTextureDataKind kind)
 {
-    switch (kind) {
-        case MGLTextureDataKindFloat: return "float";
-        case MGLTextureDataKindSint:  return "sint";
-        case MGLTextureDataKindUint:  return "uint";
-        case MGLTextureDataKindDepth: return "depth";
-        default:                      return "unknown";
-    }
+    return mglRenderCppTextureDataKindName((uint32_t)kind);
 }
 
 NSUInteger mglMetalTextureLevelDimension(NSUInteger base, NSUInteger level)

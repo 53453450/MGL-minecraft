@@ -3302,6 +3302,25 @@ static int verifyTextureDataKinds(void) {
         fprintf(stderr, "FAIL: texture data kind unknown default\n");
         return 1;
     }
+    if (strcmp(mglRenderCppTextureDataKindName(
+                   MGL_RENDER_CPP_TEXTURE_DATA_KIND_FLOAT),
+               "float") != 0 ||
+        strcmp(mglRenderCppTextureDataKindName(
+                   MGL_RENDER_CPP_TEXTURE_DATA_KIND_SINT),
+               "sint") != 0 ||
+        strcmp(mglRenderCppTextureDataKindName(
+                   MGL_RENDER_CPP_TEXTURE_DATA_KIND_UINT),
+               "uint") != 0 ||
+        strcmp(mglRenderCppTextureDataKindName(
+                   MGL_RENDER_CPP_TEXTURE_DATA_KIND_DEPTH),
+               "depth") != 0 ||
+        strcmp(mglRenderCppTextureDataKindName(
+                   MGL_RENDER_CPP_TEXTURE_DATA_KIND_UNKNOWN),
+               "unknown") != 0 ||
+        strcmp(mglRenderCppTextureDataKindName(0xdeadbeefu), "unknown") != 0) {
+        fprintf(stderr, "FAIL: texture data kind name\n");
+        return 1;
+    }
     printf("TEXTURE_DATA_KIND_OK\n");
     return 0;
 }

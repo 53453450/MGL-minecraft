@@ -3262,6 +3262,22 @@ uint32_t mglRenderCppTextureDataKindForPixelFormat(uint32_t pixel_format) {
 }
 
 extern "C"
+const char* mglRenderCppTextureDataKindName(uint32_t kind) {
+    switch (kind) {
+        case MGL_RENDER_CPP_TEXTURE_DATA_KIND_FLOAT:
+            return "float";
+        case MGL_RENDER_CPP_TEXTURE_DATA_KIND_SINT:
+            return "sint";
+        case MGL_RENDER_CPP_TEXTURE_DATA_KIND_UINT:
+            return "uint";
+        case MGL_RENDER_CPP_TEXTURE_DATA_KIND_DEPTH:
+            return "depth";
+        default:
+            return "unknown";
+    }
+}
+
+extern "C"
 int mglRenderCppTextureMinFilterUsesMipmaps(uint32_t min_filter) {
     switch (min_filter) {
         case GL_NEAREST_MIPMAP_NEAREST:
