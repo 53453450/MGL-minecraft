@@ -6802,6 +6802,62 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
         printf("BINDING_SNAPSHOT_OK\n");
     }
 
+    /* P4.3 binding resource snapshot: the C++ binding owner consumes ordered
+     * texture/sampler ops and rejects malformed snapshots before draw. */
+    {
+        void *bindingOwner = mglRenderCppBindingCreate(8);
+        MTLTextureDescriptor *resourceTextureDesc =
+            [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:
+                MTLPixelFormatRGBA8Unorm width:1 height:1 mipmapped:NO];
+        id<MTLTexture> resourceTexture =
+            [device newTextureWithDescriptor:resourceTextureDesc];
+        MTLSamplerDescriptor *resourceSamplerDesc = [MTLSamplerDescriptor new];
+        id<MTLSamplerState> resourceSampler =
+            [device newSamplerStateWithDescriptor:resourceSamplerDesc];
+        MGLRenderCppResourceBindingSnapshot resourceSnap = {};
+        resourceSnap.vertex_ops[resourceSnap.vertex_op_count++] =
+            (MGLRenderCppResourceBindingOp){
+                MGL_RENDER_CPP_RESOURCE_BINDING_TEXTURE, 0u,
+                (__bridge void *)resourceTexture};
+        resourceSnap.vertex_ops[resourceSnap.vertex_op_count++] =
+            (MGLRenderCppResourceBindingOp){
+                MGL_RENDER_CPP_RESOURCE_BINDING_SAMPLER, 0u,
+                (__bridge void *)resourceSampler};
+        resourceSnap.fragment_ops[resourceSnap.fragment_op_count++] =
+            (MGLRenderCppResourceBindingOp){
+                MGL_RENDER_CPP_RESOURCE_BINDING_TEXTURE, 1u,
+                (__bridge void *)resourceTexture};
+        MGLRenderCppResourceBindingSnapshot overflow = resourceSnap;
+        overflow.vertex_op_count =
+            MGL_RENDER_CPP_RESOURCE_BINDING_SNAPSHOT_MAX_OPS + 1u;
+        MGLRenderCppResourceBindingSnapshot badKind = resourceSnap;
+        badKind.vertex_ops[0].kind = 0xdead;
+        char resourceError[128] = {0};
+        if (!bindingOwner || !resourceTexture || !resourceSampler ||
+            mglRenderCppEncodeResourceBindingSnapshot(
+                bindingOwner, stateEncoder, &resourceSnap,
+                resourceError, sizeof(resourceError)) != 0 ||
+            mglRenderCppEncodeResourceBindingSnapshot(
+                NULL, stateEncoder, &resourceSnap, NULL, 0) != -1 ||
+            mglRenderCppEncodeResourceBindingSnapshot(
+                bindingOwner, NULL, &resourceSnap, NULL, 0) != -1 ||
+            mglRenderCppEncodeResourceBindingSnapshot(
+                bindingOwner, stateEncoder, &overflow,
+                resourceError, sizeof(resourceError)) != -1 ||
+            mglRenderCppEncodeResourceBindingSnapshot(
+                bindingOwner, stateEncoder, &badKind,
+                resourceError, sizeof(resourceError)) != -1) {
+            fprintf(stderr, "FAIL: resource binding snapshot err='%s'\n",
+                    resourceError);
+            mglRenderCppBindingDestroy(bindingOwner);
+            mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
+            mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
+            return 1;
+        }
+        mglRenderCppBindingDestroy(bindingOwner);
+        printf("RESOURCE_BINDING_SNAPSHOT_OK\n");
+    }
+
     /* P4.4: texture upload route selection.  Pure decision logic; assert the
      * exact same routing table as uploadTextureSliceViaBlit's inline
      * conditions: 1D/1DArray + non-private → REPLACE_1D; 3D + AGX bug +

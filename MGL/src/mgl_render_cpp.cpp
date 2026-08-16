@@ -12822,6 +12822,66 @@ int mglRenderCppEncodeBindingSnapshot(
     return 0;
 }
 
+int mglRenderCppEncodeResourceBindingSnapshot(
+    void* binding_state,
+    void* render_encoder,
+    const MGLRenderCppResourceBindingSnapshot* snapshot,
+    char* err,
+    size_t errcap) {
+    if (err && errcap) err[0] = '\0';
+    if (!binding_state || !render_encoder || !snapshot) {
+        if (err && errcap) snprintf(err, errcap, "bad args");
+        return -1;
+    }
+    if (snapshot->vertex_op_count >
+            MGL_RENDER_CPP_RESOURCE_BINDING_SNAPSHOT_MAX_OPS ||
+        snapshot->fragment_op_count >
+            MGL_RENDER_CPP_RESOURCE_BINDING_SNAPSHOT_MAX_OPS) {
+        if (err && errcap) snprintf(err, errcap, "snapshot count overflow");
+        return -1;
+    }
+
+    const auto encodeStage = [&](const MGLRenderCppResourceBindingOp* ops,
+                                 uint32_t count,
+                                 uint32_t stage) -> int {
+        for (uint32_t i = 0; i < count; ++i) {
+            const MGLRenderCppResourceBindingOp& op = ops[i];
+            int result = -1;
+            if (op.kind == MGL_RENDER_CPP_RESOURCE_BINDING_TEXTURE) {
+                result = mglRenderCppBindingSetTexture(
+                    binding_state, render_encoder, op.resource, stage,
+                    op.index);
+            } else if (op.kind == MGL_RENDER_CPP_RESOURCE_BINDING_SAMPLER) {
+                result = mglRenderCppBindingSetSampler(
+                    binding_state, render_encoder, op.resource, stage,
+                    op.index);
+            } else {
+                if (err && errcap) {
+                    snprintf(err, errcap, "bad resource op kind %u at %u",
+                             op.kind, i);
+                }
+                return -1;
+            }
+            if (result < 0) {
+                if (err && errcap) {
+                    snprintf(err, errcap,
+                             "resource op failed stage=%u kind=%u index=%u",
+                             stage, op.kind, op.index);
+                }
+                return -1;
+            }
+        }
+        return 0;
+    };
+
+    if (encodeStage(snapshot->vertex_ops, snapshot->vertex_op_count,
+                    MGL_RENDER_CPP_BINDING_STAGE_VERTEX) != 0) {
+        return -1;
+    }
+    return encodeStage(snapshot->fragment_ops, snapshot->fragment_op_count,
+                       MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT);
+}
+
 /* P4.3c: whole-batch simple replay。命令类型数值与 draw_command.h 的
  * MGLDrawCommandType 一致（GL 头不进入 C++ include 链，这里硬编码稳定
  * ABI 常量）。契约见 mgl_render_cpp.h —— 调用方已预校验，本函数只对

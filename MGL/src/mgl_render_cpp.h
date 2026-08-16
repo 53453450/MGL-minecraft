@@ -2181,6 +2181,40 @@ int mglRenderCppEncodeBindingSnapshot(
     char *err,
     size_t errcap);
 
+/* Texture/sampler bindings are collected separately from buffer/bytes ops.
+ * Resource resolution may rotate the render encoder while uploading a
+ * texture, so ObjC submits this snapshot in ordered segments at those
+ * boundaries.  The C++ binding owner remains authoritative for dedup state
+ * and retains every resource that becomes current. */
+#define MGL_RENDER_CPP_RESOURCE_BINDING_SNAPSHOT_MAX_OPS 512u
+
+enum {
+    MGL_RENDER_CPP_RESOURCE_BINDING_TEXTURE = 0,
+    MGL_RENDER_CPP_RESOURCE_BINDING_SAMPLER = 1,
+};
+
+typedef struct MGLRenderCppResourceBindingOp_t {
+    uint32_t kind;
+    uint32_t index;
+    void *resource; /* borrowed MTL::Texture* or MTL::SamplerState* */
+} MGLRenderCppResourceBindingOp;
+
+typedef struct MGLRenderCppResourceBindingSnapshot_t {
+    uint32_t vertex_op_count;
+    MGLRenderCppResourceBindingOp
+        vertex_ops[MGL_RENDER_CPP_RESOURCE_BINDING_SNAPSHOT_MAX_OPS];
+    uint32_t fragment_op_count;
+    MGLRenderCppResourceBindingOp
+        fragment_ops[MGL_RENDER_CPP_RESOURCE_BINDING_SNAPSHOT_MAX_OPS];
+} MGLRenderCppResourceBindingSnapshot;
+
+int mglRenderCppEncodeResourceBindingSnapshot(
+    void *binding_state,
+    void *render_encoder,
+    const MGLRenderCppResourceBindingSnapshot *snapshot,
+    char *err,
+    size_t errcap);
+
 /* P4.3c: whole-batch simple replay（最小 surgery 版）。满足「简单批」条件的
  * batch（无 dynamic binding / sampler 快照 / cull-distance / 多边形模拟 /
  * primitive restart，元素命令已 prepare 索引缓冲）由 ObjC 把命令解析成纯 C
