@@ -4348,6 +4348,82 @@ static int verifyReadbackScalarConvert(void) {
             return 1;
         }
     }
+    /* RGB10A2Unorm direct path (bypass BGRA8). */
+    {
+        uint32_t src = 1023u | (3u << 30); /* R=1023, G=0, B=0, A=3 */
+        float rgba[4] = {0, 0, 0, 0};
+        if (mglRenderCppCopyRGB10A2TextureBytesToGL(
+                &src, 4u, rgba, 16u, 1u, 1u,
+                (uint32_t)MTLPixelFormatRGB10A2Unorm,
+                (uint32_t)GL_RGBA, (uint32_t)GL_FLOAT, 0) != 1 ||
+            fabsf(rgba[0] - 1.0f) > 1e-6f || fabsf(rgba[1]) > 1e-6f ||
+            fabsf(rgba[2]) > 1e-6f || fabsf(rgba[3] - 1.0f) > 1e-6f) {
+            fprintf(stderr, "FAIL: rgb10a2 -> rgba float\n");
+            return 1;
+        }
+        float bgra[4] = {0, 0, 0, 0};
+        if (mglRenderCppCopyRGB10A2TextureBytesToGL(
+                &src, 4u, bgra, 16u, 1u, 1u,
+                (uint32_t)MTLPixelFormatRGB10A2Unorm,
+                (uint32_t)GL_BGRA, (uint32_t)GL_FLOAT, 0) != 1 ||
+            fabsf(bgra[0]) > 1e-6f || fabsf(bgra[1]) > 1e-6f ||
+            fabsf(bgra[2] - 1.0f) > 1e-6f || fabsf(bgra[3] - 1.0f) > 1e-6f) {
+            fprintf(stderr, "FAIL: rgb10a2 -> bgra float\n");
+            return 1;
+        }
+        uint32_t rev = 0;
+        if (mglRenderCppCopyRGB10A2TextureBytesToGL(
+                &src, 4u, &rev, 4u, 1u, 1u,
+                (uint32_t)MTLPixelFormatRGB10A2Unorm,
+                (uint32_t)GL_RGBA, (uint32_t)GL_UNSIGNED_INT_2_10_10_10_REV,
+                0) != 1 ||
+            rev != src) {
+            fprintf(stderr, "FAIL: rgb10a2 -> 2_10_10_10_REV 0x%x\n", rev);
+            return 1;
+        }
+        uint32_t msb = 0;
+        if (mglRenderCppCopyRGB10A2TextureBytesToGL(
+                &src, 4u, &msb, 4u, 1u, 1u,
+                (uint32_t)MTLPixelFormatRGB10A2Unorm,
+                (uint32_t)GL_RGBA, (uint32_t)GL_UNSIGNED_INT_10_10_10_2,
+                0) != 1 ||
+            msb != ((1023u << 22) | 3u)) {
+            fprintf(stderr, "FAIL: rgb10a2 -> 10_10_10_2 0x%x\n", msb);
+            return 1;
+        }
+        uint8_t ub[4] = {0, 0, 0, 0};
+        if (mglRenderCppCopyRGB10A2TextureBytesToGL(
+                &src, 4u, ub, 4u, 1u, 1u,
+                (uint32_t)MTLPixelFormatRGB10A2Unorm,
+                (uint32_t)GL_RGBA, (uint32_t)GL_UNSIGNED_BYTE, 0) != 1 ||
+            ub[0] != 255 || ub[1] != 0 || ub[2] != 0 || ub[3] != 255) {
+            fprintf(stderr, "FAIL: rgb10a2 -> rgba8\n");
+            return 1;
+        }
+        uint32_t rows[2] = {1023u | (3u << 30), 0u};
+        float flip[2][4];
+        memset(flip, 0, sizeof(flip));
+        if (mglRenderCppCopyRGB10A2TextureBytesToGL(
+                rows, 4u, flip, 16u, 1u, 2u,
+                (uint32_t)MTLPixelFormatRGB10A2Unorm,
+                (uint32_t)GL_RGBA, (uint32_t)GL_FLOAT, 1) != 1 ||
+            fabsf(flip[0][0]) > 1e-6f ||
+            fabsf(flip[1][0] - 1.0f) > 1e-6f) {
+            fprintf(stderr, "FAIL: rgb10a2 flipY\n");
+            return 1;
+        }
+        if (mglRenderCppCopyRGB10A2TextureBytesToGL(
+                &src, 4u, rgba, 16u, 1u, 1u,
+                (uint32_t)MTLPixelFormatRGBA8Unorm,
+                (uint32_t)GL_RGBA, (uint32_t)GL_FLOAT, 0) != 0 ||
+            mglRenderCppCopyRGB10A2TextureBytesToGL(
+                NULL, 4u, rgba, 16u, 1u, 1u,
+                (uint32_t)MTLPixelFormatRGB10A2Unorm,
+                (uint32_t)GL_RGBA, (uint32_t)GL_FLOAT, 0) != 0) {
+            fprintf(stderr, "FAIL: rgb10a2 bad args\n");
+            return 1;
+        }
+    }
     printf("READBACK_SCALAR_CONVERT_OK\n");
     return 0;
 }
