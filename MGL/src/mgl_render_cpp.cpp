@@ -3261,6 +3261,50 @@ uint32_t mglRenderCppTextureDataKindForPixelFormat(uint32_t pixel_format) {
     }
 }
 
+extern "C"
+int mglRenderCppMetalLayerPixelFormatIsSupported(uint32_t pixel_format) {
+    switch (static_cast<MTL::PixelFormat>(pixel_format)) {
+        case MTL::PixelFormatBGRA8Unorm:
+        case MTL::PixelFormatBGRA8Unorm_sRGB:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+extern "C"
+uint32_t mglRenderCppSRGBPixelFormat(uint32_t pixel_format) {
+    switch (static_cast<MTL::PixelFormat>(pixel_format)) {
+        case MTL::PixelFormatRGBA8Unorm:
+            return (uint32_t)MTL::PixelFormatRGBA8Unorm_sRGB;
+        case MTL::PixelFormatBGRA8Unorm:
+            return (uint32_t)MTL::PixelFormatBGRA8Unorm_sRGB;
+        default:
+            return pixel_format;
+    }
+}
+
+extern "C"
+uint32_t mglRenderCppLinearPixelFormat(uint32_t pixel_format) {
+    switch (static_cast<MTL::PixelFormat>(pixel_format)) {
+        case MTL::PixelFormatRGBA8Unorm_sRGB:
+            return (uint32_t)MTL::PixelFormatRGBA8Unorm;
+        case MTL::PixelFormatBGRA8Unorm_sRGB:
+            return (uint32_t)MTL::PixelFormatBGRA8Unorm;
+        default:
+            return pixel_format;
+    }
+}
+
+extern "C"
+uint32_t mglRenderCppEffectiveMTLPixelFormat(uint32_t pixel_format,
+                                            uint32_t srgb_decode_ext) {
+    if (srgb_decode_ext == GL_SKIP_DECODE_EXT) {
+        return mglRenderCppLinearPixelFormat(pixel_format);
+    }
+    return pixel_format;
+}
+
 /* Readback bytes-per-pixel table — mirrors mglMetalReadbackBytesPerPixel
  * (default 4 bytes).  Pixel format comes across the C ABI as its Apple
  * MTLPixelFormat numeric value. */

@@ -381,6 +381,15 @@ int mglRenderCppReadbackFormatIsBGRA8Compatible(uint32_t pixel_format);
 int mglRenderCppPixelFormatIsIntegerColor(uint32_t pixel_format);
 int mglRenderCppPixelFormatIsSignedIntegerColor(uint32_t pixel_format);
 
+/* P4.5 (item 1111/887): layer / sRGB pixel-format tables.  Pixel format
+ * is the Apple MTLPixelFormat numeric value.  Effective honors
+ * GL_EXT_texture_sRGB_decode via the raw srgb_decode_ext enum. */
+int mglRenderCppMetalLayerPixelFormatIsSupported(uint32_t pixel_format);
+uint32_t mglRenderCppSRGBPixelFormat(uint32_t pixel_format);
+uint32_t mglRenderCppLinearPixelFormat(uint32_t pixel_format);
+uint32_t mglRenderCppEffectiveMTLPixelFormat(uint32_t pixel_format,
+                                             uint32_t srgb_decode_ext);
+
 /* P4.5 (item 1171): copy packed rows with optional Y-flip.  Pure CPU
  * memcpy of `row_bytes` per row — mirrors mglMetalCopyRows (void). */
 void mglRenderCppCopyRows(

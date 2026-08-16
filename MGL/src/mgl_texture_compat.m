@@ -477,45 +477,23 @@ uint8_t *mglCreateRGBA8ExpandedUpload(Texture *tex,
 
 BOOL mglMetalLayerPixelFormatIsSupported(MTLPixelFormat pixelFormat)
 {
-    switch (pixelFormat) {
-        case MTLPixelFormatBGRA8Unorm:
-        case MTLPixelFormatBGRA8Unorm_sRGB:
-            return YES;
-        default:
-            return NO;
-    }
+    return mglRenderCppMetalLayerPixelFormatIsSupported((uint32_t)pixelFormat)
+        ? YES : NO;
 }
 
 MTLPixelFormat mglSRGBPixelFormat(MTLPixelFormat fmt)
 {
-    switch (fmt) {
-        case MTLPixelFormatRGBA8Unorm:   return MTLPixelFormatRGBA8Unorm_sRGB;
-        case MTLPixelFormatBGRA8Unorm:   return MTLPixelFormatBGRA8Unorm_sRGB;
-        default: return fmt;
-    }
+    return (MTLPixelFormat)mglRenderCppSRGBPixelFormat((uint32_t)fmt);
 }
 
 MTLPixelFormat mglLinearPixelFormat(MTLPixelFormat fmt)
 {
-    switch (fmt) {
-        case MTLPixelFormatRGBA8Unorm_sRGB: return MTLPixelFormatRGBA8Unorm;
-        case MTLPixelFormatBGRA8Unorm_sRGB: return MTLPixelFormatBGRA8Unorm;
-        default: return fmt;
-    }
+    return (MTLPixelFormat)mglRenderCppLinearPixelFormat((uint32_t)fmt);
 }
 
 MTLPixelFormat mglEffectiveMTLPixelFormatForTexture(MTLPixelFormat fmt, Texture *tex)
 {
-    /* GL_EXT_texture_sRGB_decode: GL_SKIP_DECODE_EXT requests that sRGB-backed
-     * texture data be sampled as linear, bypassing the automatic sRGB decode
-     * that the *_sRGB Metal pixel formats apply.  Downgrade the sRGB pixel
-     * format to its linear variant in that case.  An unset (0) field — the
-     * bzero default at texture creation — or GL_DECODE_EXT leaves the format
-     * unchanged so the sRGB pipeline decodes normally.  Intended to be called
-     * from the texture-creation path (MGLRenderer+Texture.m) when selecting
-     * the Metal pixel format for an sRGB internal format. */
-    if (tex && tex->params.srgb_decode_ext == GL_SKIP_DECODE_EXT) {
-        return mglLinearPixelFormat(fmt);
-    }
-    return fmt;
+    uint32_t decode = tex ? (uint32_t)tex->params.srgb_decode_ext : 0u;
+    return (MTLPixelFormat)mglRenderCppEffectiveMTLPixelFormat(
+        (uint32_t)fmt, decode);
 }

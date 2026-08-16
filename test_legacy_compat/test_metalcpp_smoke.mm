@@ -2961,6 +2961,54 @@ static int verifyLevelDimension(void) {
     return 0;
 }
 
+static int verifyLayerPixelFormat(void) {
+    if (!mglRenderCppMetalLayerPixelFormatIsSupported(
+            (uint32_t)MTLPixelFormatBGRA8Unorm) ||
+        !mglRenderCppMetalLayerPixelFormatIsSupported(
+            (uint32_t)MTLPixelFormatBGRA8Unorm_sRGB) ||
+        mglRenderCppMetalLayerPixelFormatIsSupported(
+            (uint32_t)MTLPixelFormatRGBA8Unorm) ||
+        mglRenderCppMetalLayerPixelFormatIsSupported(
+            (uint32_t)MTLPixelFormatInvalid)) {
+        fprintf(stderr, "FAIL: layer pixel format support\n");
+        return 1;
+    }
+    if (mglRenderCppSRGBPixelFormat((uint32_t)MTLPixelFormatRGBA8Unorm) !=
+            (uint32_t)MTLPixelFormatRGBA8Unorm_sRGB ||
+        mglRenderCppSRGBPixelFormat((uint32_t)MTLPixelFormatBGRA8Unorm) !=
+            (uint32_t)MTLPixelFormatBGRA8Unorm_sRGB ||
+        mglRenderCppSRGBPixelFormat((uint32_t)MTLPixelFormatRGBA8Unorm_sRGB) !=
+            (uint32_t)MTLPixelFormatRGBA8Unorm_sRGB ||
+        mglRenderCppSRGBPixelFormat((uint32_t)MTLPixelFormatR8Unorm) !=
+            (uint32_t)MTLPixelFormatR8Unorm) {
+        fprintf(stderr, "FAIL: sRGB pixel format map\n");
+        return 1;
+    }
+    if (mglRenderCppLinearPixelFormat((uint32_t)MTLPixelFormatRGBA8Unorm_sRGB) !=
+            (uint32_t)MTLPixelFormatRGBA8Unorm ||
+        mglRenderCppLinearPixelFormat((uint32_t)MTLPixelFormatBGRA8Unorm_sRGB) !=
+            (uint32_t)MTLPixelFormatBGRA8Unorm ||
+        mglRenderCppLinearPixelFormat((uint32_t)MTLPixelFormatRGBA8Unorm) !=
+            (uint32_t)MTLPixelFormatRGBA8Unorm) {
+        fprintf(stderr, "FAIL: linear pixel format map\n");
+        return 1;
+    }
+    if (mglRenderCppEffectiveMTLPixelFormat(
+            (uint32_t)MTLPixelFormatBGRA8Unorm_sRGB, GL_SKIP_DECODE_EXT) !=
+            (uint32_t)MTLPixelFormatBGRA8Unorm ||
+        mglRenderCppEffectiveMTLPixelFormat(
+            (uint32_t)MTLPixelFormatBGRA8Unorm_sRGB, GL_DECODE_EXT) !=
+            (uint32_t)MTLPixelFormatBGRA8Unorm_sRGB ||
+        mglRenderCppEffectiveMTLPixelFormat(
+            (uint32_t)MTLPixelFormatBGRA8Unorm_sRGB, 0u) !=
+            (uint32_t)MTLPixelFormatBGRA8Unorm_sRGB) {
+        fprintf(stderr, "FAIL: effective sRGB decode\n");
+        return 1;
+    }
+    printf("LAYER_PIXEL_FORMAT_OK\n");
+    return 0;
+}
+
 static int verifyComputeThreadgroupSize(void) {
     /* P4.5 (item 1147/887): compute threadgroup 0->1 fallback. */
     MGLRenderCppThreadgroupSize t = {0};
@@ -7068,6 +7116,7 @@ int main(void) {
         if (verifyTextureDataKinds() != 0) return 1;
         if (verifyComputeThreadgroupSize() != 0) return 1;
         if (verifyLevelDimension() != 0) return 1;
+        if (verifyLayerPixelFormat() != 0) return 1;
         if (verifyReadTextureRegionClip() != 0) return 1;
         if (verifyGeometryGather() != 0) return 1;
         if (verifyExpandTriangleFan() != 0) return 1;
