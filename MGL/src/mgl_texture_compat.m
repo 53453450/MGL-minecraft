@@ -307,18 +307,8 @@ bool mglTextureUploadNeedsSingleChannelSwizzle(Texture *tex)
 uint8_t mglResolveR8SwizzledComponent(Texture *tex, GLenum swizzle, uint8_t red)
 {
     (void)tex;
-
-    switch (swizzle)
-    {
-        case GL_RED: return red;
-        case GL_ALPHA:
-        case GL_ONE: return 0xff;
-        case GL_GREEN:
-        case GL_BLUE:
-        case GL_ZERO:
-        default:
-            return 0x00;
-    }
+    /* P4.5 (item 1111): thin delegate — single source of truth in C++. */
+    return mglRenderCppResolveR8SwizzledComponent((uint32_t)swizzle, red);
 }
 
 uint8_t *mglCreateSingleChannelSwizzledUpload(Texture *tex,
@@ -333,46 +323,23 @@ uint8_t *mglCreateSingleChannelSwizzledUpload(Texture *tex,
         return NULL;
     }
 
-    /* mglTextureUploadNeedsSingleChannelSwizzle gates all R-only formats into
-     * this path, but the byte-level expansion below is only correct for R8
-     * (1 byte/pixel source → RGBA8 4 bytes/pixel destination).  Multi-byte
-     * single-channel formats (R16F/R32F/R16/R32I/...) require a matching
-     * RGBA variant destination and per-format zero/one constants, plus a
-     * corresponding texture-format promotion at creation time (handled
-     * elsewhere).  Return NULL here so the caller falls back to the original
-     * upload data and relies on MTLTextureDescriptor.swizzle, preserving the
-     * prior behavior for those formats. */
-    if (tex->internalformat != GL_R8) {
-        return NULL;
+    /* P4.5 (item 1111): R8 1B/px → RGBA8 expand in C++.  Non-R8 still
+     * returns NULL so callers fall back to MTLTextureDescriptor.swizzle. */
+    size_t outBPR = 0;
+    size_t outBPI = 0;
+    uint8_t *result = mglRenderCppCreateSingleChannelSwizzledUpload(
+        (uint32_t)tex->internalformat,
+        (uint32_t)tex->params.swizzle_r,
+        (uint32_t)tex->params.swizzle_g,
+        (uint32_t)tex->params.swizzle_b,
+        (uint32_t)tex->params.swizzle_a,
+        srcData, (size_t)width, (size_t)height, (size_t)srcBytesPerRow,
+        &outBPR, &outBPI);
+    if (result) {
+        *outBytesPerRow = (NSUInteger)outBPR;
+        *outBytesPerImage = (NSUInteger)outBPI;
     }
-
-    NSUInteger dstBytesPerRow = width * 4u;
-    NSUInteger dstBytesPerImage = dstBytesPerRow * height;
-    if (dstBytesPerImage == 0 || dstBytesPerImage > (512 * 1024 * 1024)) {
-        return NULL;
-    }
-
-    uint8_t *dst = (uint8_t *)malloc(dstBytesPerImage);
-    if (!dst) {
-        return NULL;
-    }
-
-    for (NSUInteger row = 0; row < height; row++) {
-        uint8_t *dstRow = dst + row * dstBytesPerRow;
-        const uint8_t *srcRow = srcData + row * srcBytesPerRow;
-        for (NSUInteger x = 0; x < width; x++) {
-            uint8_t red = srcRow[x];
-            uint8_t *out = dstRow + (x * 4u);
-            out[0] = mglResolveR8SwizzledComponent(tex, tex->params.swizzle_r, red);
-            out[1] = mglResolveR8SwizzledComponent(tex, tex->params.swizzle_g, red);
-            out[2] = mglResolveR8SwizzledComponent(tex, tex->params.swizzle_b, red);
-            out[3] = mglResolveR8SwizzledComponent(tex, tex->params.swizzle_a, red);
-        }
-    }
-
-    *outBytesPerRow = dstBytesPerRow;
-    *outBytesPerImage = dstBytesPerImage;
-    return dst;
+    return result;
 }
 
 bool mglTextureInternalFormatNeedsRGBA8Expansion(GLenum internalformat,

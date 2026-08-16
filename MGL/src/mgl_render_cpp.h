@@ -1302,6 +1302,19 @@ uint8_t *mglRenderCppCreateRGBA8ExpandedUpload(const void *src_data,
                                                uint32_t internal_format,
                                                size_t *out_bytes_per_row,
                                                size_t *out_bytes_per_image);
+
+/* P4.5 (item 1111): R8 swizzle component + single-channel upload expand.
+ * Resolve mirrors mglResolveR8SwizzledComponent (tex unused).  Create
+ * expands GL_R8 1B/px → RGBA8 via the four swizzle enums; malloc'd
+ * result, NULL on bad args / non-R8 / size cap. */
+uint8_t mglRenderCppResolveR8SwizzledComponent(uint32_t swizzle, uint8_t red);
+uint8_t *mglRenderCppCreateSingleChannelSwizzledUpload(
+    uint32_t internal_format,
+    uint32_t swizzle_r, uint32_t swizzle_g,
+    uint32_t swizzle_b, uint32_t swizzle_a,
+    const void *src_data, size_t width, size_t height,
+    size_t src_bytes_per_row,
+    size_t *out_bytes_per_row, size_t *out_bytes_per_image);
 int mglRenderCppCreateSampler(void *sampler_descriptor,
                               void **sampler_out);
 /* Translate GL texture parameters into a Metal-cpp sampler descriptor and

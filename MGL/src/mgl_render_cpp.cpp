@@ -7590,6 +7590,69 @@ int mglRenderCppTexturePrepareLevelUpload(
     return 0;
 }
 
+extern "C"
+uint8_t mglRenderCppResolveR8SwizzledComponent(uint32_t swizzle, uint8_t red) {
+    switch (swizzle) {
+        case GL_RED: return red;
+        case GL_ALPHA:
+        case GL_ONE: return 0xffu;
+        case GL_GREEN:
+        case GL_BLUE:
+        case GL_ZERO:
+        default:
+            return 0x00u;
+    }
+}
+
+extern "C"
+uint8_t* mglRenderCppCreateSingleChannelSwizzledUpload(
+    uint32_t internal_format,
+    uint32_t swizzle_r, uint32_t swizzle_g,
+    uint32_t swizzle_b, uint32_t swizzle_a,
+    const void* src_data, size_t width, size_t height,
+    size_t src_bytes_per_row,
+    size_t* out_bytes_per_row, size_t* out_bytes_per_image) {
+    if (out_bytes_per_row) *out_bytes_per_row = 0;
+    if (out_bytes_per_image) *out_bytes_per_image = 0;
+    if (!src_data || width == 0 || height == 0 ||
+        !out_bytes_per_row || !out_bytes_per_image) {
+        return NULL;
+    }
+    if (internal_format != GL_R8) {
+        return NULL;
+    }
+
+    size_t dst_bytes_per_row = width * 4u;
+    size_t dst_bytes_per_image = dst_bytes_per_row * height;
+    if (dst_bytes_per_image == 0 ||
+        dst_bytes_per_image > (512u * 1024u * 1024u)) {
+        return NULL;
+    }
+
+    uint8_t* dst = (uint8_t*)malloc(dst_bytes_per_image);
+    if (!dst) {
+        return NULL;
+    }
+
+    const uint8_t* src = static_cast<const uint8_t*>(src_data);
+    for (size_t row = 0; row < height; row++) {
+        uint8_t* dst_row = dst + row * dst_bytes_per_row;
+        const uint8_t* src_row = src + row * src_bytes_per_row;
+        for (size_t x = 0; x < width; x++) {
+            uint8_t red = src_row[x];
+            uint8_t* out = dst_row + (x * 4u);
+            out[0] = mglRenderCppResolveR8SwizzledComponent(swizzle_r, red);
+            out[1] = mglRenderCppResolveR8SwizzledComponent(swizzle_g, red);
+            out[2] = mglRenderCppResolveR8SwizzledComponent(swizzle_b, red);
+            out[3] = mglRenderCppResolveR8SwizzledComponent(swizzle_a, red);
+        }
+    }
+
+    *out_bytes_per_row = dst_bytes_per_row;
+    *out_bytes_per_image = dst_bytes_per_image;
+    return dst;
+}
+
 uint8_t* mglRenderCppCreateRGBA8ExpandedUpload(
     const void* src_data, size_t width, size_t height,
     size_t src_bytes_per_row, uint32_t internal_format,

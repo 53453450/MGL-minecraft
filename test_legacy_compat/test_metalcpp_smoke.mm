@@ -6462,6 +6462,69 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
         printf("RGBA8_EXPAND_OK\n");
     }
 
+    /* P4.5 (item 1111): R8 swizzle resolve + single-channel expand. */
+    {
+        if (mglRenderCppResolveR8SwizzledComponent(GL_RED, 0x80) != 0x80 ||
+            mglRenderCppResolveR8SwizzledComponent(GL_ONE, 0x10) != 0xff ||
+            mglRenderCppResolveR8SwizzledComponent(GL_ALPHA, 0x10) != 0xff ||
+            mglRenderCppResolveR8SwizzledComponent(GL_GREEN, 0x80) != 0x00 ||
+            mglRenderCppResolveR8SwizzledComponent(GL_BLUE, 0x80) != 0x00 ||
+            mglRenderCppResolveR8SwizzledComponent(GL_ZERO, 0x80) != 0x00 ||
+            mglRenderCppResolveR8SwizzledComponent(0xdeadbeefu, 0x80) != 0x00) {
+            fprintf(stderr, "FAIL: r8 swizzle resolve\n");
+            return 1;
+        }
+
+        const uint8_t src[] = {0x80, 0xFF};
+        size_t bpr = 0, bpi = 0;
+        uint8_t *out = mglRenderCppCreateSingleChannelSwizzledUpload(
+            GL_R8, GL_RED, GL_ZERO, GL_ZERO, GL_ONE,
+            src, 2, 1, 2, &bpr, &bpi);
+        if (!out || bpr != 8 || bpi != 8) {
+            fprintf(stderr, "FAIL: r8 swizzle expand alloc\n");
+            free(out);
+            return 1;
+        }
+        const uint8_t want[8] = {
+            0x80, 0x00, 0x00, 0xff,
+            0xff, 0x00, 0x00, 0xff
+        };
+        if (memcmp(out, want, sizeof(want)) != 0) {
+            fprintf(stderr, "FAIL: r8 swizzle expand mismatch\n");
+            free(out);
+            return 1;
+        }
+        free(out);
+
+        /* src_bytes_per_row > width: second row starts at offset 4. */
+        const uint8_t srcPad[] = {0x11, 0x00, 0x00, 0x00, 0x22};
+        out = mglRenderCppCreateSingleChannelSwizzledUpload(
+            GL_R8, GL_RED, GL_RED, GL_RED, GL_RED,
+            srcPad, 1, 2, 4, &bpr, &bpi);
+        if (!out || bpr != 4 || bpi != 8 ||
+            out[0] != 0x11 || out[1] != 0x11 || out[2] != 0x11 || out[3] != 0x11 ||
+            out[4] != 0x22 || out[5] != 0x22 || out[6] != 0x22 || out[7] != 0x22) {
+            fprintf(stderr, "FAIL: r8 swizzle padded row\n");
+            free(out);
+            return 1;
+        }
+        free(out);
+
+        if (mglRenderCppCreateSingleChannelSwizzledUpload(
+                GL_R16, GL_RED, GL_ZERO, GL_ZERO, GL_ONE,
+                src, 2, 1, 2, &bpr, &bpi) != NULL ||
+            mglRenderCppCreateSingleChannelSwizzledUpload(
+                GL_R8, GL_RED, GL_ZERO, GL_ZERO, GL_ONE,
+                NULL, 2, 1, 2, &bpr, &bpi) != NULL ||
+            mglRenderCppCreateSingleChannelSwizzledUpload(
+                GL_R8, GL_RED, GL_ZERO, GL_ZERO, GL_ONE,
+                src, 0, 1, 2, &bpr, &bpi) != NULL) {
+            fprintf(stderr, "FAIL: r8 swizzle bad-arg rejection\n");
+            return 1;
+        }
+        printf("R8_SWIZZLE_EXPAND_OK\n");
+    }
+
     /* P4.3c: whole-batch simple replay.  Valid batch encodes; unknown command
      * type falls back to NEEDS_OBJC; bad args are rejected. */
     {
