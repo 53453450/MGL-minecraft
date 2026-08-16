@@ -4500,6 +4500,112 @@ static int verifyReadbackScalarConvert(void) {
             return 1;
         }
     }
+    /* 16/32-bit direct path (bypass BGRA8). */
+    {
+        uint16_t r16 = 65535;
+        float red = 0.0f;
+        if (mglRenderCppCopy16or32TextureBytesToGL(
+                &r16, 2u, &red, 4u, 1u, 1u,
+                (uint32_t)MTLPixelFormatR16Unorm,
+                (uint32_t)GL_RED, (uint32_t)GL_FLOAT, 0) != 1 ||
+            fabsf(red - 1.0f) > 1e-6f) {
+            fprintf(stderr, "FAIL: r16unorm -> red float\n");
+            return 1;
+        }
+        uint8_t ub = 0;
+        if (mglRenderCppCopy16or32TextureBytesToGL(
+                &r16, 2u, &ub, 1u, 1u, 1u,
+                (uint32_t)MTLPixelFormatR16Unorm,
+                (uint32_t)GL_RED, (uint32_t)GL_UNSIGNED_BYTE, 0) != 1 ||
+            ub != 255) {
+            fprintf(stderr, "FAIL: r16unorm -> red u8\n");
+            return 1;
+        }
+        float rgba[4] = {0, 0, 0, 0};
+        if (mglRenderCppCopy16or32TextureBytesToGL(
+                &r16, 2u, rgba, 16u, 1u, 1u,
+                (uint32_t)MTLPixelFormatR16Unorm,
+                (uint32_t)GL_RGBA, (uint32_t)GL_FLOAT, 0) != 1 ||
+            fabsf(rgba[0] - 1.0f) > 1e-6f || fabsf(rgba[1] - 1.0f) > 1e-6f ||
+            fabsf(rgba[2] - 1.0f) > 1e-6f || fabsf(rgba[3] - 1.0f) > 1e-6f) {
+            fprintf(stderr, "FAIL: r16unorm -> rgba replicate\n");
+            return 1;
+        }
+        uint16_t rgba16[4] = {65535, 0, 0, 65535};
+        float bgra[4] = {0, 0, 0, 0};
+        if (mglRenderCppCopy16or32TextureBytesToGL(
+                rgba16, 8u, bgra, 16u, 1u, 1u,
+                (uint32_t)MTLPixelFormatRGBA16Unorm,
+                (uint32_t)GL_BGRA, (uint32_t)GL_FLOAT, 0) != 1 ||
+            fabsf(bgra[0]) > 1e-6f || fabsf(bgra[1]) > 1e-6f ||
+            fabsf(bgra[2] - 1.0f) > 1e-6f || fabsf(bgra[3] - 1.0f) > 1e-6f) {
+            fprintf(stderr, "FAIL: rgba16unorm -> bgra float\n");
+            return 1;
+        }
+        uint16_t packed565 = 0;
+        if (mglRenderCppCopy16or32TextureBytesToGL(
+                rgba16, 8u, &packed565, 2u, 1u, 1u,
+                (uint32_t)MTLPixelFormatRGBA16Unorm,
+                (uint32_t)GL_RGB, (uint32_t)GL_UNSIGNED_SHORT_5_6_5,
+                0) != 1 ||
+            packed565 != 0xF800u) {
+            fprintf(stderr, "FAIL: rgba16unorm -> 565 0x%x\n", packed565);
+            return 1;
+        }
+        uint16_t h1 = 0x3C00; /* half 1.0 */
+        red = 0.0f;
+        if (mglRenderCppCopy16or32TextureBytesToGL(
+                &h1, 2u, &red, 4u, 1u, 1u,
+                (uint32_t)MTLPixelFormatR16Float,
+                (uint32_t)GL_RED, (uint32_t)GL_FLOAT, 0) != 1 ||
+            fabsf(red - 1.0f) > 1e-6f) {
+            fprintf(stderr, "FAIL: r16float -> red float\n");
+            return 1;
+        }
+        float f32 = 1.0f;
+        red = 0.0f;
+        if (mglRenderCppCopy16or32TextureBytesToGL(
+                &f32, 4u, &red, 4u, 1u, 1u,
+                (uint32_t)MTLPixelFormatR32Float,
+                (uint32_t)GL_RED, (uint32_t)GL_FLOAT, 0) != 1 ||
+            fabsf(red - 1.0f) > 1e-6f) {
+            fprintf(stderr, "FAIL: r32float -> red float\n");
+            return 1;
+        }
+        int16_t s16 = 32767;
+        red = 0.0f;
+        if (mglRenderCppCopy16or32TextureBytesToGL(
+                &s16, 2u, &red, 4u, 1u, 1u,
+                (uint32_t)MTLPixelFormatR16Snorm,
+                (uint32_t)GL_RED, (uint32_t)GL_FLOAT, 0) != 1 ||
+            fabsf(red - 1.0f) > 1e-6f) {
+            fprintf(stderr, "FAIL: r16snorm -> red float\n");
+            return 1;
+        }
+        uint16_t rows[2] = {65535, 0};
+        float flip[2];
+        memset(flip, 0, sizeof(flip));
+        if (mglRenderCppCopy16or32TextureBytesToGL(
+                rows, 2u, flip, 4u, 1u, 2u,
+                (uint32_t)MTLPixelFormatR16Unorm,
+                (uint32_t)GL_RED, (uint32_t)GL_FLOAT, 1) != 1 ||
+            fabsf(flip[0]) > 1e-6f ||
+            fabsf(flip[1] - 1.0f) > 1e-6f) {
+            fprintf(stderr, "FAIL: r16unorm flipY\n");
+            return 1;
+        }
+        if (mglRenderCppCopy16or32TextureBytesToGL(
+                &r16, 2u, &red, 4u, 1u, 1u,
+                (uint32_t)MTLPixelFormatRGBA8Unorm,
+                (uint32_t)GL_RED, (uint32_t)GL_FLOAT, 0) != 0 ||
+            mglRenderCppCopy16or32TextureBytesToGL(
+                NULL, 2u, &red, 4u, 1u, 1u,
+                (uint32_t)MTLPixelFormatR16Unorm,
+                (uint32_t)GL_RED, (uint32_t)GL_FLOAT, 0) != 0) {
+            fprintf(stderr, "FAIL: 16or32 bad args\n");
+            return 1;
+        }
+    }
     printf("READBACK_SCALAR_CONVERT_OK\n");
     return 0;
 }
