@@ -491,9 +491,21 @@ TEST(Metallib, RuntimeSSBOArrayLengthAcrossStages) {
         "layout(std430, binding=0) buffer Data { uint prefix; float values[]; } dataBuffer;\n"
         "int runtimeLength() { return dataBuffer.values.length(); }\n"
         "void main() { dataBuffer.prefix = uint(runtimeLength()); }\n",
+        "#version 460 core\n"
+        "layout(points) in;\n"
+        "layout(points, max_vertices=1) out;\n"
+        "layout(std430, binding=0) buffer Data { uint prefix; float values[]; } dataBuffer;\n"
+        "void main() { dataBuffer.prefix = uint(dataBuffer.values.length()); "
+        "gl_Position = gl_in[0].gl_Position; EmitVertex(); EndPrimitive(); }\n",
+        "#version 460 core\n"
+        "layout(isolines, equal_spacing, cw) in;\n"
+        "layout(std430, binding=0) buffer Data { uint prefix; float values[]; } dataBuffer;\n"
+        "void main() { dataBuffer.prefix = uint(dataBuffer.values.length()); "
+        "gl_Position = gl_in[0].gl_Position; }\n",
     };
     static const int stages[] = {
         MGL_STAGE_VERTEX, MGL_STAGE_FRAGMENT, MGL_STAGE_COMPUTE,
+        MGL_STAGE_GEOMETRY, MGL_STAGE_TESS_EVALUATION,
     };
     for (size_t i = 0; i < sizeof(stages) / sizeof(stages[0]); i++) {
         unsigned char *bytes = nullptr;

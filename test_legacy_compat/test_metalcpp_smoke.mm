@@ -77,6 +77,16 @@ static int s_legacyProgramBindCount = 0;
 extern "C" void mtlBindProgram(GLMContext, Program *) {
     ++s_legacyProgramBindCount;
 }
+static int s_legacyFlushCount = 0;
+static bool s_legacyFlushFinish = false;
+extern "C" void mtlFlush(GLMContext, bool finish) {
+    ++s_legacyFlushCount;
+    s_legacyFlushFinish = finish;
+}
+extern "C" int mglContextHasValidMetalBridge(GLMContext context) {
+    return context && context->mtl_funcs.mtlObj &&
+           reinterpret_cast<uintptr_t>(context->mtl_funcs.mtlObj) >= 0x1000u;
+}
 
 static std::atomic<int> s_commandBufferCompletionCount{0};
 static std::atomic<int> s_commandBufferContextDestroyCount{0};
@@ -1371,21 +1381,21 @@ static int verifyCompilerAndBinaryArchive(void) {
     id<MTLBinaryArchive> archive =
         (__bridge_transfer id<MTLBinaryArchive>)archivePtr;
 
-    if (mglRenderCppSetRenderPipelineBinaryArchive(
-            (__bridge void *)pipelineDesc,
-            (__bridge void *)archive) != 0 ||
-        pipelineDesc.binaryArchives.count != 1 ||
+    void *archivePipelinePtr = NULL;
+    int archiveHit = -1;
+    if (mglRenderCppCreateRenderPipelineStateWithArchive(
+            (__bridge void *)pipelineDesc, (__bridge void *)archive,
+            &archivePipelinePtr, &archiveHit,
+            message, sizeof(message)) != 0 || !archivePipelinePtr ||
+        archiveHit != 0 || pipelineDesc.binaryArchives.count != 1 ||
         pipelineDesc.binaryArchives.firstObject != archive) {
-        fprintf(stderr, "FAIL: binary archive descriptor binding facade\n");
+        fprintf(stderr, "FAIL: binary archive first create/miss: hit=%d %s\n",
+                archiveHit, message[0] ? message : "unknown");
         return 1;
     }
-    if (mglRenderCppAddRenderPipelineFunctionsToBinaryArchive(
-            (__bridge void *)archive, (__bridge void *)pipelineDesc,
-            message, sizeof(message)) != 0) {
-        fprintf(stderr, "FAIL: binary archive add pipeline facade: %s\n",
-                message[0] ? message : "unknown");
-        return 1;
-    }
+    id<MTLRenderPipelineState> archivePipeline =
+        (__bridge_transfer id<MTLRenderPipelineState>)archivePipelinePtr;
+    if (!archivePipeline) return 1;
 
     NSString *archivePath = [NSTemporaryDirectory()
         stringByAppendingPathComponent:
@@ -1400,6 +1410,36 @@ static int verifyCompilerAndBinaryArchive(void) {
                 message[0] ? message : "unknown");
         return 1;
     }
+
+    MTLBinaryArchiveDescriptor *loadedArchiveDesc =
+        [[MTLBinaryArchiveDescriptor alloc] init];
+    loadedArchiveDesc.url = archiveURL;
+    void *loadedArchivePtr = NULL;
+    if (mglRenderCppCreateBinaryArchive(
+            (__bridge void *)loadedArchiveDesc,
+            "MGL Smoke Reloaded Binary Archive",
+            &loadedArchivePtr, message, sizeof(message)) != 0 ||
+        !loadedArchivePtr) {
+        fprintf(stderr, "FAIL: binary archive reload: %s\n",
+                message[0] ? message : "unknown");
+        return 1;
+    }
+    id<MTLBinaryArchive> loadedArchive =
+        (__bridge_transfer id<MTLBinaryArchive>)loadedArchivePtr;
+    void *hitPipelinePtr = NULL;
+    archiveHit = 0;
+    if (mglRenderCppCreateRenderPipelineStateWithArchive(
+            (__bridge void *)pipelineDesc, (__bridge void *)loadedArchive,
+            &hitPipelinePtr, &archiveHit,
+            message, sizeof(message)) != 0 || !hitPipelinePtr ||
+        archiveHit != 1) {
+        fprintf(stderr, "FAIL: binary archive reload/hit: hit=%d %s\n",
+                archiveHit, message[0] ? message : "unknown");
+        return 1;
+    }
+    id<MTLRenderPipelineState> hitPipeline =
+        (__bridge_transfer id<MTLRenderPipelineState>)hitPipelinePtr;
+    if (!hitPipeline) return 1;
     NSError *removeError = nil;
     if (![NSFileManager.defaultManager removeItemAtURL:archiveURL
                                                  error:&removeError]) {
@@ -1408,6 +1448,7 @@ static int verifyCompilerAndBinaryArchive(void) {
         return 1;
     }
 
+    printf("BINARY_ARCHIVE_HIT_MISS_OK\n");
     printf("PRECOMPILED_PSO_OK\n");
     return 0;
 }
@@ -2058,6 +2099,151 @@ static int verifyCommandBufferOwner(void) {
         return 1;
     }
 
+    if (mglRenderCppCommandBufferOwnerBeginCommit(NULL) != -1 ||
+        mglRenderCppCommandBufferOwnerBeginCommit(owner) != 1 ||
+        mglRenderCppCommandBufferOwnerBeginCommit(owner) != 0) {
+        fprintf(stderr, "FAIL: command buffer commit guard acquire\n");
+        mglRenderCppCommandBufferOwnerEndCommit(owner);
+        mglRenderCppDestroyCommandBufferOwner(&owner);
+        mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+        return 1;
+    }
+
+    id<MTLDevice> device =
+        (__bridge id<MTLDevice>)mglRenderCppGetDevice();
+    MTLTextureDescriptor *targetDescriptor = [MTLTextureDescriptor
+        texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+        width:2 height:2 mipmapped:NO];
+    targetDescriptor.usage = MTLTextureUsageRenderTarget;
+    id<MTLTexture> target = [device newTextureWithDescriptor:targetDescriptor];
+    MTLTextureDescriptor *depthDescriptor = [MTLTextureDescriptor
+        texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
+        width:2 height:2 mipmapped:NO];
+    depthDescriptor.usage = MTLTextureUsageRenderTarget;
+    id<MTLTexture> depthTarget =
+        [device newTextureWithDescriptor:depthDescriptor];
+    MGLRenderCppRenderPassState renderPass =
+        renderPassStateWithColorTarget(
+            target, MTLLoadActionClear, MTLStoreActionStore);
+    void *renderEncoder = NULL;
+    void *blitEncoder = NULL;
+    if (!device || !target || !depthTarget ||
+        mglRenderCppCreateRenderEncoderFromCommandBufferOwnerState(
+            NULL, &renderPass, &renderEncoder) != -1 ||
+        mglRenderCppCreateRenderEncoderFromCommandBufferOwnerState(
+            owner, NULL, &renderEncoder) != -1 ||
+        mglRenderCppCreateRenderEncoderFromCommandBufferOwnerState(
+            owner, &renderPass, NULL) != -1 ||
+        mglRenderCppCreateRenderEncoderFromCommandBufferOwnerState(
+            owner, &renderPass, &renderEncoder) != 0 || !renderEncoder ||
+        mglRenderCppEndRenderEncoder(renderEncoder) != 0 ||
+        mglRenderCppCreateBlitEncoderFromCommandBufferOwner(
+            NULL, &blitEncoder) != -1 ||
+        mglRenderCppCreateBlitEncoderFromCommandBufferOwner(
+            owner, NULL) != -1 ||
+        mglRenderCppCreateBlitEncoderFromCommandBufferOwner(
+            owner, &blitEncoder) != 0 || !blitEncoder ||
+        mglRenderCppEndBlitEncoder(blitEncoder) != 0 ||
+        mglRenderCppEncodeColorClearForCommandBufferOwner(
+            NULL, (__bridge void *)target, 0, 0, 0,
+            1.0, 0.0, 0.0, 1.0) != -1 ||
+        mglRenderCppEncodeColorClearForCommandBufferOwner(
+            owner, NULL, 0, 0, 0, 1.0, 0.0, 0.0, 1.0) != -1 ||
+        mglRenderCppEncodeColorClearForCommandBufferOwner(
+            owner, (__bridge void *)target, 0, 0, 0,
+            1.0, 0.0, 0.0, 1.0) != 0 ||
+        mglRenderCppEncodeDepthClearForCommandBufferOwner(
+            NULL, (__bridge void *)depthTarget, 0, 0, 0, 1.0) != -1 ||
+        mglRenderCppEncodeDepthClearForCommandBufferOwner(
+            owner, NULL, 0, 0, 0, 1.0) != -1 ||
+        mglRenderCppEncodeDepthClearForCommandBufferOwner(
+            owner, (__bridge void *)depthTarget, 0, 0, 0, 1.0) != 0) {
+        fprintf(stderr, "FAIL: command buffer owner encoders\n");
+        mglRenderCppCommandBufferOwnerEndCommit(owner);
+        mglRenderCppDestroyCommandBufferOwner(&owner);
+        mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+        return 1;
+    }
+
+    MGLRenderCppCommandBufferState ownerState = {};
+    if (mglRenderCppGetCommandBufferOwnerState(NULL, &ownerState) != -1 ||
+        mglRenderCppGetCommandBufferOwnerState(owner, NULL) != -1 ||
+        mglRenderCppGetCommandBufferOwnerState(owner, &ownerState) != 0 ||
+        ownerState.status != MTLCommandBufferStatusNotEnqueued ||
+        ownerState.has_error ||
+        mglRenderCppPresentDrawableForCommandBufferOwner(
+            NULL, NULL, &ownerState) != -1 ||
+        mglRenderCppPresentDrawableForCommandBufferOwner(
+            owner, NULL, &ownerState) != -1) {
+        fprintf(stderr, "FAIL: command buffer owner state/present guards\n");
+        mglRenderCppDestroyCommandBufferOwner(&owner);
+        mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+        return 1;
+    }
+    mglRenderCppCommandBufferOwnerEndCommit(owner);
+    if (mglRenderCppCommandBufferOwnerBeginCommit(owner) != 1) {
+        fprintf(stderr, "FAIL: command buffer commit guard release\n");
+        mglRenderCppDestroyCommandBufferOwner(&owner);
+        mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+        return 1;
+    }
+    mglRenderCppCommandBufferOwnerEndCommit(owner);
+
+    MGLRenderCppCommandBufferState classifyState = {};
+    MGLRenderCppCommandBufferCommitDecision commitDecision = {};
+    MGLRenderCppCommandBufferCompletionDecision completionDecision = {};
+    if (mglRenderCppClassifyCommandBufferCommit(NULL, &commitDecision) != -1 ||
+        mglRenderCppClassifyCommandBufferCommit(&classifyState, NULL) != -1 ||
+        mglRenderCppClassifyCommandBufferCompletion(NULL,
+                                                     &completionDecision) != -1 ||
+        mglRenderCppClassifyCommandBufferCompletion(&classifyState,
+                                                     NULL) != -1) {
+        fprintf(stderr, "FAIL: command buffer decision null guards\n");
+        mglRenderCppDestroyCommandBufferOwner(&owner);
+        mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+        return 1;
+    }
+    for (uint32_t status = MTLCommandBufferStatusNotEnqueued;
+         status <= MTLCommandBufferStatusError; ++status) {
+        classifyState.status = status;
+        uint32_t expected = status < MTLCommandBufferStatusCommitted
+            ? MGL_RENDER_CPP_COMMAND_BUFFER_COMMIT_PROCEED
+            : MGL_RENDER_CPP_COMMAND_BUFFER_COMMIT_SKIP_ALREADY_COMMITTED;
+        if (mglRenderCppClassifyCommandBufferCommit(
+                &classifyState, &commitDecision) != 0 ||
+            commitDecision.action != expected) {
+            fprintf(stderr,
+                    "FAIL: command buffer commit decision status=%u\n",
+                    status);
+            mglRenderCppDestroyCommandBufferOwner(&owner);
+            mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+            return 1;
+        }
+    }
+    classifyState = {};
+    if (mglRenderCppClassifyCommandBufferCompletion(
+            &classifyState, &completionDecision) != 0 ||
+        completionDecision.has_error ||
+        completionDecision.is_driver_rejection) {
+        fprintf(stderr, "FAIL: command buffer completion success decision\n");
+        mglRenderCppDestroyCommandBufferOwner(&owner);
+        mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+        return 1;
+    }
+    classifyState.has_error = 1;
+    classifyState.error_code = 4;
+    snprintf(classifyState.error_domain, sizeof(classifyState.error_domain),
+             "%s", "MTLCommandBufferErrorDomain");
+    if (mglRenderCppClassifyCommandBufferCompletion(
+            &classifyState, &completionDecision) != 0 ||
+        !completionDecision.has_error ||
+        !completionDecision.is_driver_rejection) {
+        fprintf(stderr, "FAIL: command buffer driver rejection decision\n");
+        mglRenderCppDestroyCommandBufferOwner(&owner);
+        mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+        return 1;
+    }
+
     id<MTLCommandBuffer> submitted =
         (__bridge id<MTLCommandBuffer>)commandBuffer;
     MGLRenderCppCommandBufferState initialState = {};
@@ -2080,6 +2266,11 @@ static int verifyCommandBufferOwner(void) {
     if (mglRenderCppTakeCommandBufferSubmission(
             owner, &submission, &detached) != 0 || !submission ||
         detached != commandBuffer ||
+        mglRenderCppGetCommandBufferOwnerState(owner, &ownerState) != -1 ||
+        mglRenderCppCreateRenderEncoderFromCommandBufferOwnerState(
+            owner, &renderPass, &renderEncoder) != -1 ||
+        mglRenderCppCreateBlitEncoderFromCommandBufferOwner(
+            owner, &blitEncoder) != -1 ||
         mglRenderCppCommandBufferSubmissionMatchesBuffer(
             submission, detached) != 1 ||
         mglRenderCppCommandBufferSubmissionMatchesBuffer(
@@ -2157,6 +2348,176 @@ static int verifyCommandBufferOwner(void) {
     }
     printf("COMMAND_BUFFER_OWNER_OK\n");
     printf("COMMAND_BUFFER_STATE_OK\n");
+    printf("COMMAND_BUFFER_OWNER_PRESENT_OK\n");
+    printf("COMMAND_BUFFER_OWNER_ENCODERS_OK\n");
+    printf("COMMAND_BUFFER_OWNER_CLEARS_OK\n");
+    printf("COMMAND_BUFFER_COMMIT_GUARD_OK\n");
+    printf("COMMAND_BUFFER_RECOVERY_DECISION_OK\n");
+    return 0;
+}
+
+static int verifyCommandRecoveryOwner(void) {
+    void *owner = NULL;
+    MGLRenderCppCommandRecoverySnapshot state = {};
+    MGLRenderCppCommandRecoverySuccess success = {};
+    MGLRenderCppCommandRecoverySkipDecision skip = {};
+    if (mglRenderCppCreateCommandRecoveryOwner(NULL) != -1 ||
+        mglRenderCppCommandRecoveryRecordError(NULL, 0.0, &state) != -1 ||
+        mglRenderCppCommandRecoveryRecordSuccess(NULL, 0.0, &success) != -1 ||
+        mglRenderCppCommandRecoveryClearMode(NULL) != -1 ||
+        mglRenderCppCommandRecoveryShouldSkip(NULL, 0.0, &skip) != -1 ||
+        mglRenderCppCreateCommandRecoveryOwner(&owner) != 0 || !owner ||
+        mglRenderCppCommandRecoveryRecordError(owner, 0.0, NULL) != -1 ||
+        mglRenderCppCommandRecoveryRecordSuccess(owner, 0.0, NULL) != -1 ||
+        mglRenderCppCommandRecoveryShouldSkip(owner, 0.0, NULL) != -1) {
+        fprintf(stderr, "FAIL: command recovery owner create/guards\n");
+        mglRenderCppDestroyCommandRecoveryOwner(&owner);
+        return 1;
+    }
+
+    for (uint64_t count = 1; count <= 8; ++count) {
+        if (mglRenderCppCommandRecoveryRecordError(
+                owner, 100.0, &state) != 0 ||
+            state.consecutive_errors != count ||
+            state.consecutive_successes != 0 ||
+            state.last_error_time != 100.0) {
+            fprintf(stderr, "FAIL: command recovery record error\n");
+            mglRenderCppDestroyCommandRecoveryOwner(&owner);
+            return 1;
+        }
+    }
+    if (mglRenderCppCommandRecoveryShouldSkip(owner, 100.1, &skip) != 0 ||
+        !skip.should_skip || !skip.entered_recovery_mode ||
+        skip.recovery_timed_out || !skip.state.recovery_mode ||
+        skip.state.consecutive_errors != 8 ||
+        mglRenderCppCommandRecoveryShouldSkip(owner, 100.2, &skip) != 0 ||
+        !skip.should_skip || skip.entered_recovery_mode) {
+        fprintf(stderr, "FAIL: command recovery skip threshold\n");
+        mglRenderCppDestroyCommandRecoveryOwner(&owner);
+        return 1;
+    }
+
+    if (mglRenderCppCommandRecoveryRecordSuccess(
+            owner, 100.1, &success) != 0 ||
+        success.sustained_recovery ||
+        success.state.consecutive_successes != 1 ||
+        !success.state.recovery_mode ||
+        mglRenderCppCommandRecoveryClearMode(owner) != 1 ||
+        mglRenderCppCommandRecoveryClearMode(owner) != 0) {
+        fprintf(stderr, "FAIL: command recovery first success clear\n");
+        mglRenderCppDestroyCommandRecoveryOwner(&owner);
+        return 1;
+    }
+    for (uint32_t index = 0; index < 3; ++index) {
+        double now = 100.2 + (double)index * 0.1;
+        if (mglRenderCppCommandRecoveryRecordSuccess(
+                owner, now, &success) != 0) {
+            fprintf(stderr, "FAIL: command recovery sustained input\n");
+            mglRenderCppDestroyCommandRecoveryOwner(&owner);
+            return 1;
+        }
+    }
+    if (!success.sustained_recovery || success.recovered_successes != 4 ||
+        success.previous_errors != 8 ||
+        success.state.consecutive_errors != 0 ||
+        success.state.consecutive_successes != 0 ||
+        success.state.recovery_mode) {
+        fprintf(stderr, "FAIL: command recovery sustained reset\n");
+        mglRenderCppDestroyCommandRecoveryOwner(&owner);
+        return 1;
+    }
+
+    if (mglRenderCppCommandRecoveryRecordError(owner, 200.0, &state) != 0 ||
+        mglRenderCppCommandRecoveryShouldSkip(owner, 204.0, &skip) != 0 ||
+        skip.should_skip || !skip.recovery_timed_out ||
+        skip.previous_errors != 1 || skip.state.consecutive_errors != 0) {
+        fprintf(stderr, "FAIL: command recovery timeout\n");
+        mglRenderCppDestroyCommandRecoveryOwner(&owner);
+        return 1;
+    }
+
+    mglRenderCppDestroyCommandRecoveryOwner(&owner);
+    if (owner) {
+        fprintf(stderr, "FAIL: command recovery owner destroy\n");
+        return 1;
+    }
+    printf("COMMAND_BUFFER_RECOVERY_OWNER_OK\n");
+    return 0;
+}
+
+static int verifyCommandBufferCompletionProcess(void) {
+    void *owner = NULL;
+    MGLRenderCppCommandBufferState state = {};
+    MGLRenderCppCommandBufferCompletionResult result = {};
+    if (mglRenderCppProcessCommandBufferCompletion(
+            NULL, &state, 0.0, &result) != -1 ||
+        mglRenderCppCreateCommandRecoveryOwner(&owner) != 0 || !owner ||
+        mglRenderCppProcessCommandBufferCompletion(
+            owner, NULL, 0.0, &result) != -1 ||
+        mglRenderCppProcessCommandBufferCompletion(
+            owner, &state, 0.0, NULL) != -1) {
+        fprintf(stderr, "FAIL: command completion process guards\n");
+        mglRenderCppDestroyCommandRecoveryOwner(&owner);
+        return 1;
+    }
+
+    state.has_error = 1;
+    state.error_code = 4;
+    snprintf(state.error_domain, sizeof(state.error_domain), "%s",
+             "MTLCommandBufferErrorDomain");
+    for (uint64_t count = 1; count <= 8; ++count) {
+        if (mglRenderCppProcessCommandBufferCompletion(
+                owner, &state, 300.0, &result) != 0 ||
+            !result.decision.has_error ||
+            !result.decision.is_driver_rejection ||
+            result.state.consecutive_errors != count ||
+            result.state.consecutive_successes != 0) {
+            fprintf(stderr, "FAIL: command completion process error\n");
+            mglRenderCppDestroyCommandRecoveryOwner(&owner);
+            return 1;
+        }
+    }
+
+    MGLRenderCppCommandRecoverySkipDecision skip = {};
+    if (mglRenderCppCommandRecoveryShouldSkip(owner, 300.1, &skip) != 0 ||
+        !skip.entered_recovery_mode || !skip.state.recovery_mode) {
+        fprintf(stderr, "FAIL: command completion process recovery setup\n");
+        mglRenderCppDestroyCommandRecoveryOwner(&owner);
+        return 1;
+    }
+
+    state = {};
+    if (mglRenderCppProcessCommandBufferCompletion(
+            owner, &state, 300.1, &result) != 0 ||
+        result.decision.has_error || result.sustained_recovery ||
+        !result.cleared_recovery_mode ||
+        result.state.consecutive_successes != 1 ||
+        result.state.recovery_mode) {
+        fprintf(stderr, "FAIL: command completion process first success\n");
+        mglRenderCppDestroyCommandRecoveryOwner(&owner);
+        return 1;
+    }
+    for (uint32_t index = 0; index < 3; ++index) {
+        double now = 300.2 + (double)index * 0.1;
+        if (mglRenderCppProcessCommandBufferCompletion(
+                owner, &state, now, &result) != 0) {
+            fprintf(stderr, "FAIL: command completion process sustained input\n");
+            mglRenderCppDestroyCommandRecoveryOwner(&owner);
+            return 1;
+        }
+    }
+    if (!result.sustained_recovery || result.cleared_recovery_mode ||
+        result.recovered_successes != 4 || result.previous_errors != 8 ||
+        result.state.consecutive_errors != 0 ||
+        result.state.consecutive_successes != 0 ||
+        result.state.recovery_mode) {
+        fprintf(stderr, "FAIL: command completion process sustained result\n");
+        mglRenderCppDestroyCommandRecoveryOwner(&owner);
+        return 1;
+    }
+
+    mglRenderCppDestroyCommandRecoveryOwner(&owner);
+    printf("COMMAND_BUFFER_COMPLETION_PROCESS_OK\n");
     return 0;
 }
 
@@ -3321,6 +3682,51 @@ static int verifyTextureDataKinds(void) {
         fprintf(stderr, "FAIL: texture data kind name\n");
         return 1;
     }
+    if (!mglRenderCppMetalPixelFormatIsDepthOrStencil(
+            (uint32_t)MTLPixelFormatDepth16Unorm) ||
+        !mglRenderCppMetalPixelFormatIsDepthOrStencil(
+            (uint32_t)MTLPixelFormatStencil8) ||
+        mglRenderCppMetalPixelFormatIsDepthOrStencil(
+            (uint32_t)MTLPixelFormatRGBA8Unorm) ||
+        !mglRenderCppMetalPixelFormatIsPackedDepthStencil(
+            (uint32_t)MTLPixelFormatDepth24Unorm_Stencil8) ||
+        mglRenderCppMetalPixelFormatIsPackedDepthStencil(
+            (uint32_t)MTLPixelFormatDepth32Float) ||
+        !mglRenderCppGLInternalFormatLooksDepthOrStencil(GL_DEPTH_COMPONENT24) ||
+        !mglRenderCppGLInternalFormatLooksDepthOrStencil(GL_STENCIL_INDEX8) ||
+        mglRenderCppGLInternalFormatLooksDepthOrStencil(GL_RGBA8)) {
+        fprintf(stderr, "FAIL: texture depth/stencil classification\n");
+        return 1;
+    }
+    if (!mglRenderCppTexturePixelFormatCompatibleWithExpectedDataKind(
+            (uint32_t)MTLPixelFormatRGBA8Unorm,
+            MGL_RENDER_CPP_TEXTURE_DATA_KIND_FLOAT) ||
+        mglRenderCppTexturePixelFormatCompatibleWithExpectedDataKind(
+            (uint32_t)MTLPixelFormatRGBA8Unorm,
+            MGL_RENDER_CPP_TEXTURE_DATA_KIND_SINT) ||
+        !mglRenderCppTexturePixelFormatCompatibleWithExpectedDataKind(
+            (uint32_t)MTLPixelFormatRGBA8Unorm,
+            MGL_RENDER_CPP_TEXTURE_DATA_KIND_UNKNOWN)) {
+        fprintf(stderr, "FAIL: texture data kind compatibility\n");
+        return 1;
+    }
+    if (mglRenderCppMetalCompressedBlockHeight(
+            (uint32_t)MTLPixelFormatBC1_RGBA) != 4u ||
+        mglRenderCppMetalCompressedBlockHeight(
+            (uint32_t)MTLPixelFormatASTC_6x6_LDR) != 6u ||
+        mglRenderCppMetalCompressedBlockHeight(
+            (uint32_t)MTLPixelFormatRGBA8Unorm) != 1u ||
+        mglRenderCppMetalUploadRowsForPixelFormat(
+            (uint32_t)MTLPixelFormatBC1_RGBA, 1u) != 1u ||
+        mglRenderCppMetalUploadRowsForPixelFormat(
+            (uint32_t)MTLPixelFormatBC1_RGBA, 5u) != 2u ||
+        mglRenderCppMetalUploadRowsForPixelFormat(
+            (uint32_t)MTLPixelFormatRGBA8Unorm, 0u) != 1u) {
+        fprintf(stderr, "FAIL: compressed texture upload row math\n");
+        return 1;
+    }
+    printf("TEXTURE_COMPRESSED_ROWS_OK\n");
+    printf("TEXTURE_FORMAT_CLASSIFY_OK\n");
     printf("TEXTURE_DATA_KIND_OK\n");
     return 0;
 }
@@ -5400,6 +5806,16 @@ static int verifyRuntimeArraySizes(void) {
 }
 
 static int verifyBufferSlotRegistry(void) {
+    if (kMGLMaxMetalUserBufferIndex != 30 ||
+        kMGLMaxMetalUserBufferCount != 31 ||
+        kMGLMaxMetalVertexBufferIndex != kMGLMaxMetalUserBufferIndex ||
+        kMGLMaxMetalVertexBufferCount != kMGLMaxMetalUserBufferCount ||
+        kMGLMaxMetalComputeBufferIndex != 31 ||
+        kMGLMaxMetalComputeBufferCount != 32) {
+        fprintf(stderr, "FAIL: buffer-slot physical/user boundaries\n");
+        return 1;
+    }
+
     /* P0 (2026-08-16 audit): the GS reserved-set must cover the real
      * mgl_air_gs_abi.h slots — INPUT=24, GATHER_PARAMS=25, OUTPUT=28,
      * COUNTS=29, GATHER=30, XFB=31, XFB_META=27 (plus the shared
@@ -5464,15 +5880,107 @@ static int verifyBufferSlotRegistry(void) {
         return 1;
     }
 
-    /* Reserved-name labels: slot 25 must mention GATHER_PARAMS; 27/31 must
-     * mention the GS XFB roles. */
+    /* Reserved-name labels: slot 23 is the compute-ABI runtime table, slot 25
+     * is gather params, and 27/31 carry the GS XFB roles. */
+    const char *n23 = mglBufferSlotReservedName(23);
     const char *n25 = mglBufferSlotReservedName(25);
     const char *n27 = mglBufferSlotReservedName(27);
     const char *n31 = mglBufferSlotReservedName(31);
-    if (!n25 || !strstr(n25, "GATHER_PARAMS") ||
+    if (!n23 || !strstr(n23, "COMPUTE_ABI_RUNTIME") ||
+        !n25 || !strstr(n25, "GATHER_PARAMS") ||
         !n27 || !strstr(n27, "XFB_META") ||
         !n31 || !strstr(n31, "XFB")) {
         fprintf(stderr, "FAIL: buffer-slot reserved-name labels\n");
+        return 1;
+    }
+
+    /* Program-aware gate: the same numeric slot is legal when its internal
+     * owner is inactive, and rejected only on the stage/path that actually
+     * binds the internal buffer. */
+    Program program = {};
+    if (mglBufferSlotConflictsForProgram(&program, 24u, _GEOMETRY_SHADER) ||
+        mglBufferSlotConflictsForProgram(&program, 28u, _VERTEX_SHADER) ||
+        mglBufferSlotConflictsForProgram(&program, 30u, _FRAGMENT_SHADER)) {
+        fprintf(stderr, "FAIL: buffer-slot ordinary-program false positive\n");
+        return 1;
+    }
+
+    program.gs_route = MGL_GS_ROUTE_COMPUTE;
+    if (!mglBufferSlotConflictsForProgram(&program, 24u, _GEOMETRY_SHADER) ||
+        !mglBufferSlotConflictsForProgram(&program, 31u, _GEOMETRY_SHADER) ||
+        mglBufferSlotConflictsForProgram(&program, 24u, _VERTEX_SHADER)) {
+        fprintf(stderr, "FAIL: buffer-slot GS program gate\n");
+        return 1;
+    }
+
+    program = {};
+    program.tess_gen_mode = GL_TRIANGLES;
+    if (!mglBufferSlotConflictsForProgram(&program, 27u,
+                                          _TESS_EVALUATION_SHADER) ||
+        mglBufferSlotConflictsForProgram(&program, 24u,
+                                         _TESS_EVALUATION_SHADER) ||
+        !mglBufferSlotConflictsForProgram(&program, 24u,
+                                          _TESS_CONTROL_SHADER) ||
+        mglBufferSlotConflictsForProgram(&program, 30u,
+                                         _TESS_CONTROL_SHADER)) {
+        fprintf(stderr, "FAIL: buffer-slot native tess program gate\n");
+        return 1;
+    }
+
+    program.tess_gen_mode = GL_ISOLINES;
+    if (!mglBufferSlotConflictsForProgram(&program, 24u,
+                                          _TESS_EVALUATION_SHADER) ||
+        !mglBufferSlotConflictsForProgram(&program, 31u,
+                                          _TESS_EVALUATION_SHADER)) {
+        fprintf(stderr, "FAIL: buffer-slot compute tess program gate\n");
+        return 1;
+    }
+
+    program = {};
+    program.uses_cull_distance = GL_TRUE;
+    program.usesFragCoordParams = GL_TRUE;
+    if (!mglBufferSlotConflictsForProgram(&program, 28u, _VERTEX_SHADER) ||
+        !mglBufferSlotConflictsForProgram(&program, 30u, _FRAGMENT_SHADER) ||
+        mglBufferSlotConflictsForProgram(&program, 30u, _VERTEX_SHADER)) {
+        fprintf(stderr, "FAIL: buffer-slot emulation program gate\n");
+        return 1;
+    }
+
+    /* Ordinary stages use hidden runtime-size slot 25.  GS and compute-TES
+     * move the table to slot 23 so their gather params can remain at 25. */
+    program = {};
+    program.modules[_COMPUTE_SHADER].needs_runtime_array_size_buffer = GL_TRUE;
+    if (!mglBufferSlotConflictsForProgram(&program, 25u, _COMPUTE_SHADER) ||
+        mglBufferSlotConflictsForProgram(&program, 23u, _COMPUTE_SHADER) ||
+        mglRuntimeArraySizeBufferIndexForProgram(&program, _COMPUTE_SHADER) !=
+            MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX) {
+        fprintf(stderr, "FAIL: buffer-slot runtime-size program gate\n");
+        return 1;
+    }
+
+    program = {};
+    program.gs_route = MGL_GS_ROUTE_COMPUTE;
+    program.modules[_GEOMETRY_SHADER].needs_runtime_array_size_buffer = GL_TRUE;
+    if (!mglBufferSlotConflictsForProgram(&program, 23u, _GEOMETRY_SHADER) ||
+        !mglBufferSlotConflictsForProgram(&program, 25u, _GEOMETRY_SHADER) ||
+        mglRuntimeArraySizeBufferIndexForProgram(&program, _GEOMETRY_SHADER) !=
+            MGL_COMPUTE_ABI_RUNTIME_ARRAY_SIZE_BUFFER_INDEX) {
+        fprintf(stderr, "FAIL: buffer-slot GS runtime-size program gate\n");
+        return 1;
+    }
+
+    program = {};
+    program.tess_gen_mode = GL_ISOLINES;
+    program.modules[_TESS_EVALUATION_SHADER].needs_runtime_array_size_buffer =
+        GL_TRUE;
+    if (!mglBufferSlotConflictsForProgram(&program, 23u,
+                                          _TESS_EVALUATION_SHADER) ||
+        !mglBufferSlotConflictsForProgram(&program, 25u,
+                                          _TESS_EVALUATION_SHADER) ||
+        mglRuntimeArraySizeBufferIndexForProgram(
+            &program, _TESS_EVALUATION_SHADER) !=
+            MGL_COMPUTE_ABI_RUNTIME_ARRAY_SIZE_BUFFER_INDEX) {
+        fprintf(stderr, "FAIL: buffer-slot compute-TES runtime-size gate\n");
         return 1;
     }
 
@@ -6968,6 +7476,23 @@ static int verifyQueryUtilities(id<MTLDevice> device) {
         mglRenderCppDestroyQueryStateOwner(&queryOwner);
         return 1;
     }
+    GLMContextRec callbackContext = {};
+    callbackContext.mtl_funcs.mtlObj = reinterpret_cast<void *>(0x1000u);
+    const int flushCountBeforeTimestamp = s_legacyFlushCount;
+    uint64_t callbackTimestamp = mglRenderCppGetGPUTimestamp(
+        &callbackContext);
+    if (callbackTimestamp == 0 ||
+        s_legacyFlushCount != flushCountBeforeTimestamp + 1 ||
+        !s_legacyFlushFinish ||
+        mglRenderCppGetGPUTimestamp(NULL) != 0) {
+        fprintf(stderr,
+                "FAIL: GPU timestamp callback timestamp=%llu flush=%d finish=%d\n",
+                (unsigned long long)callbackTimestamp,
+                s_legacyFlushCount, s_legacyFlushFinish ? 1 : 0);
+        mglRenderCppDestroyQueryStateOwner(&queryOwner);
+        return 1;
+    }
+    printf("GPU_TIMESTAMP_CALLBACK_OK\n");
     uint64_t elapsed = 0;
     if (mglRenderCppBeginTimerQuery(queryOwner) != 0 ||
         mglRenderCppEndTimerQuery(queryOwner, &elapsed) != 0) {
@@ -6975,6 +7500,31 @@ static int verifyQueryUtilities(id<MTLDevice> device) {
         mglRenderCppDestroyQueryStateOwner(&queryOwner);
         return 1;
     }
+    if (mglRenderCppRegisterContextQueryStateOwner(
+            &callbackContext, queryOwner) != 0) {
+        fprintf(stderr, "FAIL: register timer callback owner\n");
+        mglRenderCppDestroyQueryStateOwner(&queryOwner);
+        return 1;
+    }
+    const int flushCountBeforeTimer = s_legacyFlushCount;
+    mglRenderCppBeginTimerQueryCallback(&callbackContext);
+    uint64_t callbackElapsed =
+        mglRenderCppEndTimerQueryCallback(&callbackContext);
+    if (s_legacyFlushCount != flushCountBeforeTimer + 2 ||
+        !s_legacyFlushFinish ||
+        mglRenderCppEndTimerQueryCallback(NULL) != 0) {
+        fprintf(stderr,
+                "FAIL: timer query callbacks elapsed=%llu flush=%d finish=%d\n",
+                (unsigned long long)callbackElapsed,
+                s_legacyFlushCount, s_legacyFlushFinish ? 1 : 0);
+        mglRenderCppUnregisterContextQueryStateOwner(
+            &callbackContext, queryOwner);
+        mglRenderCppDestroyQueryStateOwner(&queryOwner);
+        return 1;
+    }
+    mglRenderCppUnregisterContextQueryStateOwner(
+        &callbackContext, queryOwner);
+    printf("TIMER_QUERY_CALLBACKS_OK\n");
     visibility = nil;
     mglRenderCppDestroyQueryStateOwner(&queryOwner);
     if (queryOwner) {
@@ -7207,6 +7757,8 @@ int main(void) {
         if (verifySyncCallbacks(device) != 0) return 1;
         if (verifyCommandQueueOwner() != 0) return 1;
         if (verifyCommandBufferOwner() != 0) return 1;
+        if (verifyCommandRecoveryOwner() != 0) return 1;
+        if (verifyCommandBufferCompletionProcess() != 0) return 1;
         if (verifyPendingEventOwner() != 0) return 1;
         if (verifyLevelUploadPrep() != 0) return 1;
         if (verifyCopyBackEncode() != 0) return 1;

@@ -15,6 +15,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "mgl_air_gs_abi.h"
+#include "mgl_air_tess_abi.h"
 #include "mgl_shader_abi.h"
 
 // 独立 AIR 门禁：不链接 mgl_uniform_reflection.c（SPIRV-Cross 依赖树）。
@@ -303,6 +305,26 @@ static const char *kGS =
     "        emit_input(i);\n"
     "    }\n"
     "    EndPrimitive();\n"
+    "}\n";
+
+static const char *kGSRuntimeLength =
+    "#version 460 core\n"
+    "layout(points) in;\n"
+    "layout(points, max_vertices=1) out;\n"
+    "layout(std430, binding=0) buffer RuntimeData { uint count; float values[]; } dataBuffer;\n"
+    "void main() {\n"
+    "    dataBuffer.count = uint(dataBuffer.values.length());\n"
+    "    gl_Position = gl_in[0].gl_Position;\n"
+    "    EmitVertex(); EndPrimitive();\n"
+    "}\n";
+
+static const char *kTESComputeRuntimeLength =
+    "#version 460 core\n"
+    "layout(isolines, equal_spacing, cw) in;\n"
+    "layout(std430, binding=0) buffer RuntimeData { uint count; float values[]; } dataBuffer;\n"
+    "void main() {\n"
+    "    dataBuffer.count = uint(dataBuffer.values.length());\n"
+    "    gl_Position = gl_in[0].gl_Position;\n"
     "}\n";
 
 static id<MTLLibrary> loadLibrary(id<MTLDevice> dev, const unsigned char *bytes,
@@ -1090,6 +1112,195 @@ int main(int argc, const char *argv[]) {
                 return 1;
             }
             printf("GS_OK\n");
+        }
+
+        /* Runtime-array `.length()` in fixed compute ABIs: the size table is
+         * bound at slot 23 while GS/TES gather params remain at slot 25. */
+        {
+            unsigned char *runtimeGSBytes = NULL;
+            size_t runtimeGSSize = 0;
+            if (mglShaderCompileGLSL(kGSRuntimeLength, MGL_STAGE_GEOMETRY,
+                                     &runtimeGSBytes, &runtimeGSSize,
+                                     err, sizeof err) != 0) {
+                fprintf(stderr, "GS_RUNTIME_LENGTH_COMPILE_FAIL: %s\n", err);
+                return 1;
+            }
+            id<MTLLibrary> runtimeGSLib = loadLibrary(
+                dev, runtimeGSBytes, runtimeGSSize, "gs-runtime-length");
+            mglShaderFree(runtimeGSBytes);
+            if (!runtimeGSLib) return 1;
+            id<MTLFunction> runtimeGSFn =
+                [runtimeGSLib newFunctionWithName:@"main"];
+            NSError *runtimeGSErr = nil;
+            id<MTLComputePipelineState> runtimeGSPSO =
+                [dev newComputePipelineStateWithFunction:runtimeGSFn
+                                                   error:&runtimeGSErr];
+            if (!runtimeGSPSO) {
+                fprintf(stderr, "GS_RUNTIME_LENGTH_PSO_FAIL: %s\n",
+                        runtimeGSErr.localizedDescription.UTF8String ?: "?");
+                return 1;
+            }
+
+            const uint32_t visibleBytes = 4u + 7u * 4u;
+            id<MTLBuffer> runtimeData = [dev newBufferWithLength:visibleBytes
+                options:MTLResourceStorageModeShared];
+            memset(runtimeData.contents, 0, runtimeData.length);
+            uint32_t sizeConstants[kMGLMaxMetalUserBufferCount] = {0};
+            sizeConstants[0] = visibleBytes;
+            id<MTLBuffer> sizeTable = [dev newBufferWithBytes:sizeConstants
+                length:sizeof sizeConstants options:MTLResourceStorageModeShared];
+
+            float inputRecord[MGL_AIR_PER_VERTEX_STRIDE / sizeof(float)] = {
+                0.0f, 0.0f, 0.0f, 1.0f,
+            };
+            id<MTLBuffer> input = [dev newBufferWithBytes:inputRecord
+                length:sizeof inputRecord options:MTLResourceStorageModeShared];
+            id<MTLBuffer> output = [dev newBufferWithLength:
+                3u * MGL_AIR_PER_VERTEX_STRIDE
+                options:MTLResourceStorageModeShared];
+            id<MTLBuffer> counts = [dev newBufferWithLength:
+                MGL_AIR_GS_COUNTS_RECORD_BYTES
+                options:MTLResourceStorageModeShared];
+            const uint32_t gatherIndex = 0u;
+            id<MTLBuffer> gather = [dev newBufferWithBytes:&gatherIndex
+                length:sizeof gatherIndex options:MTLResourceStorageModeShared];
+            const MGLAIRGSGatherParams gatherParams = {1u, 1u, 0u, 0u};
+            id<MTLBuffer> xfb = [dev newBufferWithLength:MGL_AIR_PER_VERTEX_STRIDE
+                options:MTLResourceStorageModeShared];
+            MGLAIRGSXFBMeta xfbMeta = {};
+            id<MTLBuffer> meta = [dev newBufferWithBytes:&xfbMeta
+                length:sizeof xfbMeta options:MTLResourceStorageModeShared];
+            memset(output.contents, 0, output.length);
+            memset(counts.contents, 0, counts.length);
+
+            id<MTLCommandBuffer> runtimeGSCB = [cq commandBuffer];
+            id<MTLComputeCommandEncoder> runtimeGSEnc =
+                [runtimeGSCB computeCommandEncoder];
+            [runtimeGSEnc setComputePipelineState:runtimeGSPSO];
+            [runtimeGSEnc setBuffer:runtimeData offset:0 atIndex:0];
+            [runtimeGSEnc setBuffer:sizeTable offset:0
+                             atIndex:MGL_COMPUTE_ABI_RUNTIME_ARRAY_SIZE_BUFFER_INDEX];
+            [runtimeGSEnc setBuffer:input offset:0 atIndex:MGL_AIR_GS_SLOT_INPUT];
+            [runtimeGSEnc setBuffer:output offset:0 atIndex:MGL_AIR_GS_SLOT_OUTPUT];
+            [runtimeGSEnc setBuffer:counts offset:0 atIndex:MGL_AIR_GS_SLOT_COUNTS];
+            [runtimeGSEnc setBuffer:gather offset:0 atIndex:MGL_AIR_GS_SLOT_GATHER];
+            [runtimeGSEnc setBytes:&gatherParams length:sizeof gatherParams
+                           atIndex:MGL_AIR_GS_SLOT_GATHER_PARAMS];
+            [runtimeGSEnc setBuffer:xfb offset:0 atIndex:MGL_AIR_GS_SLOT_XFB];
+            [runtimeGSEnc setBuffer:meta offset:0 atIndex:MGL_AIR_GS_SLOT_XFB_META];
+            [runtimeGSEnc dispatchThreads:MTLSizeMake(1, 1, 1)
+                    threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+            [runtimeGSEnc endEncoding];
+            [runtimeGSCB commit];
+            [runtimeGSCB waitUntilCompleted];
+            if (runtimeGSCB.status == MTLCommandBufferStatusError ||
+                ((uint32_t *)runtimeData.contents)[0] != 7u) {
+                fprintf(stderr,
+                        "GS_RUNTIME_LENGTH_VALUE_FAIL: got=%u status=%lu error=%s\n",
+                        ((uint32_t *)runtimeData.contents)[0],
+                        (unsigned long)runtimeGSCB.status,
+                        runtimeGSCB.error.localizedDescription.UTF8String ?: "?");
+                return 1;
+            }
+            printf("GS_RUNTIME_LENGTH_OK\n");
+        }
+
+        {
+            unsigned char *runtimeTESBytes = NULL;
+            size_t runtimeTESSize = 0;
+            if (mglShaderCompileGLSL(kTESComputeRuntimeLength,
+                                     MGL_STAGE_TESS_EVALUATION,
+                                     &runtimeTESBytes, &runtimeTESSize,
+                                     err, sizeof err) != 0) {
+                fprintf(stderr, "TES_RUNTIME_LENGTH_COMPILE_FAIL: %s\n", err);
+                return 1;
+            }
+            id<MTLLibrary> runtimeTESLib = loadLibrary(
+                dev, runtimeTESBytes, runtimeTESSize, "tes-runtime-length");
+            mglShaderFree(runtimeTESBytes);
+            if (!runtimeTESLib) return 1;
+            id<MTLFunction> runtimeTESFn =
+                [runtimeTESLib newFunctionWithName:@"main"];
+            NSError *runtimeTESErr = nil;
+            id<MTLComputePipelineState> runtimeTESPSO =
+                [dev newComputePipelineStateWithFunction:runtimeTESFn
+                                                   error:&runtimeTESErr];
+            if (!runtimeTESPSO) {
+                fprintf(stderr, "TES_RUNTIME_LENGTH_PSO_FAIL: %s\n",
+                        runtimeTESErr.localizedDescription.UTF8String ?: "?");
+                return 1;
+            }
+
+            const uint32_t visibleBytes = 4u + 7u * 4u;
+            id<MTLBuffer> runtimeData = [dev newBufferWithLength:visibleBytes
+                options:MTLResourceStorageModeShared];
+            memset(runtimeData.contents, 0, runtimeData.length);
+            uint32_t sizeConstants[kMGLMaxMetalUserBufferCount] = {0};
+            sizeConstants[0] = visibleBytes;
+            id<MTLBuffer> sizeTable = [dev newBufferWithBytes:sizeConstants
+                length:sizeof sizeConstants options:MTLResourceStorageModeShared];
+            float stageIn[MGL_AIR_PER_VERTEX_STRIDE / sizeof(float)] = {
+                0.0f, 0.0f, 0.0f, 1.0f,
+            };
+            id<MTLBuffer> stageInBuffer = [dev newBufferWithBytes:stageIn
+                length:sizeof stageIn options:MTLResourceStorageModeShared];
+            const uint16_t factorsWords[6] = {
+                0x3c00u, 0x3c00u, 0x3c00u, 0x3c00u, 0x3c00u, 0x3c00u,
+            };
+            id<MTLBuffer> factors = [dev newBufferWithBytes:factorsWords
+                length:sizeof factorsWords options:MTLResourceStorageModeShared];
+            id<MTLBuffer> patchInputs = [dev newBufferWithLength:16u
+                options:MTLResourceStorageModeShared];
+            id<MTLBuffer> stageOut = [dev newBufferWithLength:MGL_AIR_PER_VERTEX_STRIDE
+                options:MTLResourceStorageModeShared];
+            const uint32_t contract[4] = {0u, 1u, 1u, 0u};
+            const uint32_t gatherIndex = 0u;
+            id<MTLBuffer> gather = [dev newBufferWithBytes:&gatherIndex
+                length:sizeof gatherIndex options:MTLResourceStorageModeShared];
+            const uint32_t gatherParams[5] = {1u, 0u, 0u, 0u, 0u};
+            id<MTLBuffer> xfb = [dev newBufferWithLength:MGL_AIR_PER_VERTEX_STRIDE
+                options:MTLResourceStorageModeShared];
+
+            id<MTLCommandBuffer> runtimeTESCB = [cq commandBuffer];
+            id<MTLComputeCommandEncoder> runtimeTESEnc =
+                [runtimeTESCB computeCommandEncoder];
+            [runtimeTESEnc setComputePipelineState:runtimeTESPSO];
+            /* TES user buffers start at slot 1; slot 0 is reserved by the
+             * existing native-TES resource ABI (see AIR reflector). */
+            [runtimeTESEnc setBuffer:runtimeData offset:0 atIndex:1];
+            [runtimeTESEnc setBuffer:sizeTable offset:0
+                              atIndex:MGL_COMPUTE_ABI_RUNTIME_ARRAY_SIZE_BUFFER_INDEX];
+            [runtimeTESEnc setBuffer:stageInBuffer offset:0
+                              atIndex:MGL_AIR_TESS_SLOT_TCS_STAGE_IN];
+            [runtimeTESEnc setBuffer:factors offset:0
+                              atIndex:MGL_AIR_TESS_SLOT_TESS_FACTOR];
+            [runtimeTESEnc setBuffer:patchInputs offset:0
+                              atIndex:MGL_AIR_TESS_SLOT_PATCH_OUT];
+            [runtimeTESEnc setBuffer:stageOut offset:0
+                              atIndex:MGL_AIR_TESS_SLOT_TCS_OUTPUT];
+            [runtimeTESEnc setBytes:contract length:sizeof contract
+                            atIndex:MGL_AIR_TESS_SLOT_INDIRECT];
+            [runtimeTESEnc setBuffer:gather offset:0
+                              atIndex:MGL_AIR_TESS_SLOT_GATHER_INDEX];
+            [runtimeTESEnc setBytes:gatherParams length:sizeof gatherParams
+                            atIndex:MGL_AIR_TESS_SLOT_GATHER_PARAMS];
+            [runtimeTESEnc setBuffer:xfb offset:0
+                              atIndex:MGL_AIR_TESS_SLOT_XFB_OUT];
+            [runtimeTESEnc dispatchThreadgroups:MTLSizeMake(1, 1, 1)
+                      threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+            [runtimeTESEnc endEncoding];
+            [runtimeTESCB commit];
+            [runtimeTESCB waitUntilCompleted];
+            if (runtimeTESCB.status == MTLCommandBufferStatusError ||
+                ((uint32_t *)runtimeData.contents)[0] != 7u) {
+                fprintf(stderr,
+                        "TES_RUNTIME_LENGTH_VALUE_FAIL: got=%u status=%lu error=%s\n",
+                        ((uint32_t *)runtimeData.contents)[0],
+                        (unsigned long)runtimeTESCB.status,
+                        runtimeTESCB.error.localizedDescription.UTF8String ?: "?");
+                return 1;
+            }
+            printf("TES_RUNTIME_LENGTH_OK\n");
         }
 
         /* XFB capture variant: vertex outputs (position + varyings) go

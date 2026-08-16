@@ -55,7 +55,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 73
+#define MAX_TESTS 75
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -385,6 +385,170 @@ static GLuint link_program_with_geometry(const char *vs_src,
         return 0;
     }
     return program;
+}
+
+/* Link a program after installing an XFB varying list.  The API error is
+ * returned separately because ARB_transform_feedback3 rejects special names
+ * in GL_SEPARATE_ATTRIBS before link time. */
+static int xfb_link_status(const char *vs_src,
+                           const char *gs_src,
+                           const char *fs_src,
+                           GLsizei varying_count,
+                           const char *const *varyings,
+                           GLenum buffer_mode,
+                           GLenum *out_api_error,
+                           GLint *out_link_status)
+{
+    if (!vs_src || !fs_src || !out_api_error || !out_link_status)
+        return 1;
+
+    GLuint shaders[3] = {0, 0, 0};
+    shaders[0] = compile_shader(GL_VERTEX_SHADER, vs_src);
+    shaders[1] = gs_src ? compile_shader(GL_GEOMETRY_SHADER, gs_src) : 0;
+    shaders[2] = compile_shader(GL_FRAGMENT_SHADER, fs_src);
+    if (!shaders[0] || (gs_src && !shaders[1]) || !shaders[2]) {
+        for (int i = 0; i < 3; i++) {
+            if (shaders[i]) glDeleteShader(shaders[i]);
+        }
+        return 1;
+    }
+
+    GLuint program = glCreateProgram();
+    if (!program) {
+        for (int i = 0; i < 3; i++) {
+            if (shaders[i]) glDeleteShader(shaders[i]);
+        }
+        return 1;
+    }
+    for (int i = 0; i < 3; i++) {
+        if (shaders[i]) glAttachShader(program, shaders[i]);
+    }
+    while (glGetError() != GL_NO_ERROR) { }
+    glTransformFeedbackVaryings(program, varying_count, varyings,
+                                buffer_mode);
+    *out_api_error = glGetError();
+    glLinkProgram(program);
+    glGetProgramiv(program, GL_LINK_STATUS, out_link_status);
+    glDeleteProgram(program);
+    for (int i = 0; i < 3; i++) {
+        if (shaders[i]) glDeleteShader(shaders[i]);
+    }
+    while (glGetError() != GL_NO_ERROR) { }
+    return 0;
+}
+
+static int geometry_program_link_status_with_ssbo_count(GLuint ssbo_count,
+                                                        int use_runtime_length,
+                                                        GLint *out_status)
+{
+    static const char *vs_src =
+        "#version 460 core\n"
+        "void main() { gl_Position = vec4(0.0, 0.0, 0.0, 1.0); }\n";
+    static const char *fs_src =
+        "#version 460 core\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(1.0); }\n";
+    char gs_src[8192];
+    size_t used = 0u;
+    int written = snprintf(gs_src, sizeof(gs_src),
+        "#version 460 core\n"
+        "layout(points) in;\n"
+        "layout(points, max_vertices=1) out;\n");
+    if (written < 0 || (size_t)written >= sizeof(gs_src)) {
+        return 1;
+    }
+    used = (size_t)written;
+    for (GLuint i = 0; i < ssbo_count; i++) {
+        if (i == 0u && use_runtime_length) {
+            written = snprintf(gs_src + used, sizeof(gs_src) - used,
+                "layout(std430, binding=0) buffer B0 { uint prefix; "
+                "float values[]; } b0;\n");
+        } else {
+            written = snprintf(gs_src + used, sizeof(gs_src) - used,
+                "layout(std430, binding=%u) buffer B%u { uint value%u; } b%u;\n",
+                i, i, i, i);
+        }
+        if (written < 0 || (size_t)written >= sizeof(gs_src) - used) {
+            return 1;
+        }
+        used += (size_t)written;
+    }
+    written = snprintf(gs_src + used, sizeof(gs_src) - used,
+        use_runtime_length
+            ? "void main() { b0.prefix = uint(b0.values.length()); "
+              "gl_Position = gl_in[0].gl_Position; EmitVertex(); "
+              "EndPrimitive(); }\n"
+            : "void main() { gl_Position = gl_in[0].gl_Position; "
+              "EmitVertex(); EndPrimitive(); }\n");
+    if (written < 0 || (size_t)written >= sizeof(gs_src) - used) {
+        return 1;
+    }
+
+    GLuint shaders[3] = {
+        compile_shader(GL_VERTEX_SHADER, vs_src),
+        compile_shader(GL_GEOMETRY_SHADER, gs_src),
+        compile_shader(GL_FRAGMENT_SHADER, fs_src),
+    };
+    if (!shaders[0] || !shaders[1] || !shaders[2]) {
+        for (int i = 0; i < 3; i++) {
+            if (shaders[i]) glDeleteShader(shaders[i]);
+        }
+        return 1;
+    }
+
+    GLuint program = glCreateProgram();
+    for (int i = 0; i < 3; i++) glAttachShader(program, shaders[i]);
+    glLinkProgram(program);
+    for (int i = 0; i < 3; i++) glDeleteShader(shaders[i]);
+    glGetProgramiv(program, GL_LINK_STATUS, out_status);
+    glDeleteProgram(program);
+    return 0;
+}
+
+static int compute_program_link_status_with_ssbo_count(
+    GLuint ssbo_count,
+    int use_runtime_length,
+    GLint *out_status)
+{
+    if (ssbo_count == 0u || !out_status) return 1;
+
+    char cs_src[16384];
+    size_t used = 0u;
+    int written = snprintf(cs_src, sizeof(cs_src),
+                           "#version 460 core\n"
+                           "layout(local_size_x=1) in;\n");
+    if (written < 0 || (size_t)written >= sizeof(cs_src)) return 1;
+    used = (size_t)written;
+
+    for (GLuint i = 0u; i < ssbo_count; i++) {
+        if (i == 0u && use_runtime_length) {
+            written = snprintf(cs_src + used, sizeof(cs_src) - used,
+                "layout(std430, binding=0) buffer B0 { uint prefix; "
+                "float values[]; } b0;\n");
+        } else {
+            written = snprintf(cs_src + used, sizeof(cs_src) - used,
+                "layout(std430, binding=%u) buffer B%u { uint value%u; } b%u;\n",
+                i, i, i, i);
+        }
+        if (written < 0 || (size_t)written >= sizeof(cs_src) - used) return 1;
+        used += (size_t)written;
+    }
+
+    written = snprintf(cs_src + used, sizeof(cs_src) - used,
+        use_runtime_length
+            ? "void main() { b0.prefix = uint(b0.values.length()); }\n"
+            : "void main() { b0.value0 = b0.value0; }\n");
+    if (written < 0 || (size_t)written >= sizeof(cs_src) - used) return 1;
+
+    GLuint shader = compile_shader(GL_COMPUTE_SHADER, cs_src);
+    if (!shader) return 1;
+    GLuint program = glCreateProgram();
+    glAttachShader(program, shader);
+    glLinkProgram(program);
+    glDeleteShader(shader);
+    glGetProgramiv(program, GL_LINK_STATUS, out_status);
+    glDeleteProgram(program);
+    return 0;
 }
 
 static GLuint link_compute_program(const char *cs_src)
@@ -7204,7 +7368,6 @@ static int test_air_gs_unsupported(unsigned char *pixels,
         "#version 450 core\n"
         "layout(location=0) out vec4 frag;\n"
         "void main() { frag = vec4(0.0, 1.0, 0.0, 1.0); }\n";
-
     GLuint program = link_program_with_geometry(vs, gs, fs);
     GLuint vao = 0u;
     int result = 1;
@@ -10916,6 +11079,105 @@ cleanup:
     return result;
 }
 
+/* Link-time validation for ARB_transform_feedback3 layouts.  This is kept
+ * separate from the GS execution tests so unsupported SEPARATE_ATTRIBS
+ * capture does not hide validation regressions. */
+static int test_air_xfb_link_layout(unsigned char *pixels,
+                                    const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "out vec4 x;\n"
+        "out vec2 y;\n"
+        "void main() {\n"
+        "  x = vec4(1.0); y = vec2(0.5);\n"
+        "  gl_Position = vec4(0.0, 0.0, 0.0, 1.0);\n"
+        "}\n";
+    static const char *gs =
+        "#version 450 core\n"
+        "layout(points) in;\n"
+        "layout(points, max_vertices=2) out;\n"
+        "layout(location=0) out vec4 s0_data;\n"
+        "layout(stream=1, location=0) out vec4 s1_data;\n"
+        "void main() {\n"
+        "  s0_data = vec4(1.0);\n"
+        "  gl_Position = gl_in[0].gl_Position;\n"
+        "  EmitStreamVertex(0); EndStreamPrimitive(0);\n"
+        "  s1_data = vec4(2.0);\n"
+        "  EmitStreamVertex(1); EndStreamPrimitive(1);\n"
+        "}\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(0.0, 1.0, 0.0, 1.0); }\n";
+    static const char *interleaved_next[] = {"x", "gl_NextBuffer", "y"};
+    static const char *interleaved_skip[] = {"x", "gl_SkipComponents2", "y"};
+    static const char *interleaved_next_skip[] = {
+        "x", "gl_NextBuffer", "gl_SkipComponents2", "y"
+    };
+    static const char *separate_varyings[] = {"x", "y"};
+    static const char *separate_next[] = {"x", "gl_NextBuffer", "y"};
+    static const char *separate_skip[] = {"x", "gl_SkipComponents2", "y"};
+    static const char *duplicate[] = {"x", "x"};
+    static const char *missing[] = {"does_not_exist"};
+    static const char *stream_mismatch[] = {"s0_data", "s1_data"};
+
+    struct XFBLinkCase {
+        const char *name;
+        const char *vertex;
+        const char *geometry;
+        GLsizei count;
+        const char *const *varyings;
+        GLenum mode;
+        GLenum api_error;
+        GLint link_status;
+    } cases[] = {
+        {"interleaved_next", vs, NULL, 3, interleaved_next,
+         GL_INTERLEAVED_ATTRIBS, GL_NO_ERROR, GL_TRUE},
+        {"interleaved_skip", vs, NULL, 3, interleaved_skip,
+         GL_INTERLEAVED_ATTRIBS, GL_NO_ERROR, GL_TRUE},
+        {"interleaved_next_skip", vs, NULL, 4, interleaved_next_skip,
+         GL_INTERLEAVED_ATTRIBS, GL_NO_ERROR, GL_TRUE},
+        {"separate_varyings", vs, NULL, 2, separate_varyings,
+         GL_SEPARATE_ATTRIBS, GL_NO_ERROR, GL_TRUE},
+        {"separate_next", vs, NULL, 3, separate_next,
+         GL_SEPARATE_ATTRIBS, GL_INVALID_OPERATION, GL_TRUE},
+        {"separate_skip", vs, NULL, 3, separate_skip,
+         GL_SEPARATE_ATTRIBS, GL_INVALID_OPERATION, GL_TRUE},
+        {"duplicate", vs, NULL, 2, duplicate,
+         GL_INTERLEAVED_ATTRIBS, GL_NO_ERROR, GL_FALSE},
+        {"missing", vs, NULL, 1, missing,
+         GL_INTERLEAVED_ATTRIBS, GL_NO_ERROR, GL_FALSE},
+        {"stream_mismatch", vs, gs, 2, stream_mismatch,
+         GL_INTERLEAVED_ATTRIBS, GL_NO_ERROR, GL_FALSE},
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        GLenum api_error = GL_NO_ERROR;
+        GLint link_status = GL_FALSE;
+        if (xfb_link_status(cases[i].vertex, cases[i].geometry, fs,
+                            cases[i].count,
+                            cases[i].varyings, cases[i].mode,
+                            &api_error, &link_status) != 0) {
+            fprintf(stderr, "air_xfb_link_layout: %s setup failed\n",
+                    cases[i].name);
+            return 1;
+        }
+        if (api_error != cases[i].api_error ||
+            link_status != cases[i].link_status) {
+            fprintf(stderr,
+                    "air_xfb_link_layout: %s expected api=0x%x/link=%d, "
+                    "got api=0x%x/link=%d\n",
+                    cases[i].name, cases[i].api_error, cases[i].link_status,
+                    api_error, link_status);
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* GS multi-stream transform feedback (P1, GL 4.6 §11.1.3.4): points in,
  * points out, two streams.  Stream 0 rasterizes and captures to XFB
  * buffer 0; stream 1 captures to XFB buffer 1 (no rasterization).
@@ -10924,7 +11186,7 @@ cleanup:
  * stream 1 (s1_data = p + (0.5, 0)).  After drawing 3 points:
  *   - 3 green points rasterized (stream 0 only)
  *   - PRIMITIVES_GENERATED = 3 (stream 0 only, GL 4.6 §13.2.4)
- *   - TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN = 6 (all streams, 3+3)
+ *   - non-indexed TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN = 3 (stream 0)
  *   - XFB buffer 0: 3 full stage-out records (80B each, stride 20 floats)
  *   - XFB buffer 1: 3 compact records (32B each, stride 8 floats:
  *     position + s1_data)
@@ -10965,11 +11227,15 @@ static int test_air_geometry_multi_stream_xfb(unsigned char *pixels,
         "layout(location=0) in vec2 s0_data;\n"
         "layout(location=0) out vec4 frag;\n"
         "void main() { frag = vec4(0.0, 1.0, 0.0, 1.0); }\n";
-    static const char *varyings[] = { "s0_data", "s1_data" };
+    static const char *varyings[] = {
+        "s0_data", "gl_NextBuffer", "s1_data"
+    };
 
     GLuint fbo = 0u, color = 0u, vao = 0u, vbo = 0u;
     GLuint tbo0 = 0u, tbo1 = 0u;
-    GLuint gen_q = 0u, wr_q = 0u, program = 0u;
+    GLuint gen_q = 0u, wr_q = 0u;
+    GLuint gen_q1 = 0u, wr_q1 = 0u, gen_no_xfb_q1 = 0u;
+    GLuint program = 0u;
     int result = 1;
     fbo = make_fbo(REG_W, REG_H, &color);
     if (!fbo) goto cleanup;
@@ -10983,7 +11249,7 @@ static int test_air_geometry_multi_stream_xfb(unsigned char *pixels,
     program = glCreateProgram();
     if (!program) goto cleanup;
     for (int i = 0; i < 3; i++) glAttachShader(program, shaders[i]);
-    glTransformFeedbackVaryings(program, 2, varyings,
+    glTransformFeedbackVaryings(program, 3, varyings,
                                 GL_INTERLEAVED_ATTRIBS);
     glLinkProgram(program);
     for (int i = 0; i < 3; i++) glDeleteShader(shaders[i]);
@@ -11007,6 +11273,9 @@ static int test_air_geometry_multi_stream_xfb(unsigned char *pixels,
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
     glGenQueries(1, &gen_q);
     glGenQueries(1, &wr_q);
+    glGenQueries(1, &gen_q1);
+    glGenQueries(1, &wr_q1);
+    glGenQueries(1, &gen_no_xfb_q1);
     glUseProgram(program);
 
     glGenBuffers(1, &tbo0);
@@ -11031,12 +11300,25 @@ static int test_air_geometry_multi_stream_xfb(unsigned char *pixels,
         glBeginTransformFeedback(GL_POINTS);
         glBeginQuery(GL_PRIMITIVES_GENERATED, gen_q);
         glBeginQuery(GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN, wr_q);
+        glBeginQueryIndexed(GL_PRIMITIVES_GENERATED, 1u, gen_q1);
+        glBeginQueryIndexed(GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN, 1u,
+                            wr_q1);
         glDrawArrays(GL_POINTS, 0, 3);
+        glEndQueryIndexed(GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN, 1u);
+        glEndQueryIndexed(GL_PRIMITIVES_GENERATED, 1u);
         glEndQuery(GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN);
         glEndQuery(GL_PRIMITIVES_GENERATED);
         glEndTransformFeedback();
         glFinish();
     }
+
+    /* Indexed PRIMITIVES_GENERATED is independent of transform-feedback
+     * capture.  Exercise stream 1 again with XFB inactive so the query cannot
+     * be satisfied accidentally from the written-byte counter. */
+    glBeginQueryIndexed(GL_PRIMITIVES_GENERATED, 1u, gen_no_xfb_q1);
+    glDrawArrays(GL_POINTS, 0, 3);
+    glEndQueryIndexed(GL_PRIMITIVES_GENERATED, 1u);
+    glFinish();
 
     /* Verify rasterization (stream 0 only). */
     {
@@ -11075,17 +11357,27 @@ static int test_air_geometry_multi_stream_xfb(unsigned char *pixels,
         }
     }
 
-    /* Verify queries (GL 4.6 §13.2.4):
+    /* Verify stream 0 and indexed stream 1 queries (GL 4.6 §13.2.4):
      *   PRIMITIVES_GENERATED = stream 0 primitives only (rasterizer-bound) = 3
-     *   TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN = all streams = 3+3 = 6 */
+     *   TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN = stream 0 primitives = 3.
+     *   Indexed stream 1 has three emitted points and three XFB records. */
     {
         GLuint generated = 0u, written = 0u;
+        GLuint generated1 = 0u, written1 = 0u, generatedNoXfb1 = 0u;
         glGetQueryObjectuiv(gen_q, GL_QUERY_RESULT, &generated);
         glGetQueryObjectuiv(wr_q, GL_QUERY_RESULT, &written);
-        if (generated != 3u || written != 6u) {
+        glGetQueryObjectuiv(gen_q1, GL_QUERY_RESULT, &generated1);
+        glGetQueryObjectuiv(wr_q1, GL_QUERY_RESULT, &written1);
+        glGetQueryObjectuiv(gen_no_xfb_q1, GL_QUERY_RESULT,
+                            &generatedNoXfb1);
+        if (generated != 3u || written != 3u ||
+            generated1 != 3u || written1 != 3u || generatedNoXfb1 != 3u) {
             fprintf(stderr,
                     "air_geometry_multi_stream_xfb: query got generated=%u "
-                    "written=%u, expected 3/6\n", generated, written);
+                    "written=%u indexed=%u/%u no_xfb=%u, expected 3/3, "
+                    "3/3 and 3\n",
+                    generated, written, generated1, written1,
+                    generatedNoXfb1);
             goto cleanup;
         }
     }
@@ -11199,6 +11491,9 @@ static int test_air_geometry_multi_stream_xfb(unsigned char *pixels,
 cleanup:
     if (wr_q) glDeleteQueries(1, &wr_q);
     if (gen_q) glDeleteQueries(1, &gen_q);
+    if (wr_q1) glDeleteQueries(1, &wr_q1);
+    if (gen_q1) glDeleteQueries(1, &gen_q1);
+    if (gen_no_xfb_q1) glDeleteQueries(1, &gen_no_xfb_q1);
     if (tbo1) glDeleteBuffers(1, &tbo1);
     if (tbo0) glDeleteBuffers(1, &tbo0);
     if (vbo) glDeleteBuffers(1, &vbo);
@@ -11610,6 +11905,89 @@ cleanup:
     return result;
 }
 
+/* Link-time guard for the GS compute ABI's reserved Metal buffer slots.
+ * Twenty-four SSBOs occupy user slots 0..23 and remain valid.  Adding the
+ * twenty-fifth assigns user slot 24, which is MGL_AIR_GS_SLOT_INPUT and must
+ * fail the link before the renderer can silently overwrite either binding. */
+static int test_air_geometry_buffer_slot_conflict(unsigned char *pixels,
+                                                  const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    GLint control_status = GL_FALSE;
+    GLint conflict_status = GL_TRUE;
+
+    if (geometry_program_link_status_with_ssbo_count(
+            24u, 0, &control_status) != 0 ||
+        geometry_program_link_status_with_ssbo_count(
+            25u, 0, &conflict_status) != 0) {
+        fprintf(stderr,
+                "air_geometry_buffer_slot_conflict: shader setup failed\n");
+        return 1;
+    }
+    if (control_status != GL_TRUE || conflict_status != GL_FALSE) {
+        fprintf(stderr,
+                "air_geometry_buffer_slot_conflict: expected 24 SSBO link=1 "
+                "and 25 SSBO link=0, got %d/%d\n",
+                control_status, conflict_status);
+        return 1;
+    }
+
+    /* GS runtime-array size metadata moves to hidden slot 23 so gather params
+     * remain at slot 25.  User slots 0..22 are valid; a 24th resource would
+     * occupy the hidden size-table slot and must fail at link time. */
+    GLint gs_runtime_valid_status = GL_FALSE;
+    GLint gs_runtime_conflict_status = GL_TRUE;
+    if (geometry_program_link_status_with_ssbo_count(
+            23u, 1, &gs_runtime_valid_status) != 0 ||
+        geometry_program_link_status_with_ssbo_count(
+            24u, 1, &gs_runtime_conflict_status) != 0 ||
+        gs_runtime_valid_status != GL_TRUE ||
+        gs_runtime_conflict_status != GL_FALSE) {
+        fprintf(stderr,
+                "air_geometry_buffer_slot_conflict: expected GS runtime-size "
+                "23/24 SSBO link=1/0, got %d/%d\n",
+                gs_runtime_valid_status, gs_runtime_conflict_status);
+        return 1;
+    }
+
+    /* The runtime-array-size table occupies slot 25 for compute stages.  A
+     * program with 25 user SSBOs reaches slots 0..24 and remains valid; the
+     * 26th reaches slot 25 and must fail before link success. */
+    GLint runtime_valid_status = GL_FALSE;
+    GLint runtime_conflict_status = GL_TRUE;
+    if (compute_program_link_status_with_ssbo_count(
+            25u, 1, &runtime_valid_status) != 0 ||
+        compute_program_link_status_with_ssbo_count(
+            26u, 1, &runtime_conflict_status) != 0 ||
+        runtime_valid_status != GL_TRUE || runtime_conflict_status != GL_FALSE) {
+        fprintf(stderr,
+                "air_geometry_buffer_slot_conflict: expected runtime-size "
+                "25/26 SSBO link=1/0, got %d/%d\n",
+                runtime_valid_status, runtime_conflict_status);
+        return 1;
+    }
+
+    /* Renderer user-buffer tables expose [0,
+     * kMGLMaxMetalUserBufferCount).  The physical compute ABI additionally
+     * owns slot kMGLMaxMetalComputeBufferIndex, which must not be assigned to
+     * a reflected user resource even when runtime sizing is inactive. */
+    GLint max_valid_status = GL_FALSE;
+    GLint max_conflict_status = GL_TRUE;
+    if (compute_program_link_status_with_ssbo_count(
+            31u, 0, &max_valid_status) != 0 ||
+        compute_program_link_status_with_ssbo_count(
+            32u, 0, &max_conflict_status) != 0 ||
+        max_valid_status != GL_TRUE || max_conflict_status != GL_FALSE) {
+        fprintf(stderr,
+                "air_geometry_buffer_slot_conflict: expected user-slot "
+                "31/32 SSBO link=1/0, got %d/%d\n",
+                max_valid_status, max_conflict_status);
+        return 1;
+    }
+    return 0;
+}
+
 /* ------------------------------------------------------------------ */
 /* Test registry                                                      */
 /* ------------------------------------------------------------------ */
@@ -11642,6 +12020,8 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("air_cull_distance", test_air_cull_distance),
     SELF_CHECK_TEST("air_geometry_varying", test_air_geometry_varying),
     SELF_CHECK_TEST("air_geometry_resources", test_air_geometry_resources),
+    SELF_CHECK_TEST("air_geometry_buffer_slot_conflict",
+                    test_air_geometry_buffer_slot_conflict),
     SELF_CHECK_TEST("air_geometry_instancing", test_air_geometry_instancing),
     SELF_CHECK_TEST("air_gs_unsupported", test_air_gs_unsupported),
     SELF_CHECK_TEST("air_geometry_indexed", test_air_geometry_indexed),
@@ -11682,6 +12062,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("air_tessellation_cull_distance",
                     test_air_tessellation_cull_distance),
     SELF_CHECK_TEST("air_geometry_xfb", test_air_geometry_xfb),
+    SELF_CHECK_TEST("air_xfb_link_layout", test_air_xfb_link_layout),
     SELF_CHECK_TEST("air_geometry_multi_stream_xfb",
                     test_air_geometry_multi_stream_xfb),
     SELF_CHECK_TEST("air_geometry_layer_viewport",
