@@ -3623,6 +3623,84 @@ static uint16_t mglCppFloatToHalf(float value)
     return (uint16_t)(sign | ((uint32_t)exp << 10u) | (mant >> 13u));
 }
 
+/* float -> 11-bit unsigned float — faithful copy of mglFloatToFloat11. */
+static uint32_t mglCppFloatToFloat11(float v)
+{
+    if (isnan(v)) return 0x7e0u;
+    if (v <= 0.0f) return 0u;
+    if (v >= 65024.0f) return 0x7c0u;
+    uint32_t bits;
+    memcpy(&bits, &v, sizeof(bits));
+    int ieee_exp = (int)((bits >> 23) & 0xff) - 127;
+    uint32_t ieee_mant = bits & 0x7fffff;
+    if (ieee_exp <= -15) {
+        int shift = -14 - ieee_exp;
+        if (shift >= 11) return 0u;
+        uint32_t src = (ieee_mant | 0x800000);
+        int rshift = 23 - 6 + shift;
+        uint32_t m = src >> rshift;
+        uint32_t rem = src & ((1u << rshift) - 1u);
+        uint32_t half = 1u << (rshift - 1);
+        if (rem > half || (rem == half && (m & 1u))) {
+            m += 1u;
+        }
+        return m & 0x3fu;
+    }
+    if (ieee_exp >= 16) return 0x7c0u;
+    uint32_t exp = (uint32_t)(ieee_exp + 15);
+    uint32_t mant = ieee_mant >> (23 - 6);
+    uint32_t rem = ieee_mant & ((1u << (23 - 6)) - 1u);
+    uint32_t half = 1u << (23 - 6 - 1);
+    if (rem > half || (rem == half && (mant & 1u))) {
+        mant += 1u;
+        if (mant > 0x3fu) {
+            mant = 0u;
+            exp += 1u;
+            if (exp >= 31u) return 0x7c0u;
+        }
+    }
+    return (exp << 6) | mant;
+}
+
+/* float -> 10-bit unsigned float — faithful copy of mglFloatToFloat10. */
+static uint32_t mglCppFloatToFloat10(float v)
+{
+    if (isnan(v)) return 0x3f0u;
+    if (v <= 0.0f) return 0u;
+    if (v >= 64512.0f) return 0x3e0u;
+    uint32_t bits;
+    memcpy(&bits, &v, sizeof(bits));
+    int ieee_exp = (int)((bits >> 23) & 0xff) - 127;
+    uint32_t ieee_mant = bits & 0x7fffff;
+    if (ieee_exp <= -15) {
+        int shift = -14 - ieee_exp;
+        if (shift >= 10) return 0u;
+        uint32_t src = (ieee_mant | 0x800000);
+        int rshift = 23 - 5 + shift;
+        uint32_t m = src >> rshift;
+        uint32_t rem = src & ((1u << rshift) - 1u);
+        uint32_t half = 1u << (rshift - 1);
+        if (rem > half || (rem == half && (m & 1u))) {
+            m += 1u;
+        }
+        return m & 0x1fu;
+    }
+    if (ieee_exp >= 16) return 0x3e0u;
+    uint32_t exp = (uint32_t)(ieee_exp + 15);
+    uint32_t mant = ieee_mant >> (23 - 5);
+    uint32_t rem = ieee_mant & ((1u << (23 - 5)) - 1u);
+    uint32_t half = 1u << (23 - 5 - 1);
+    if (rem > half || (rem == half && (mant & 1u))) {
+        mant += 1u;
+        if (mant > 0x1fu) {
+            mant = 0u;
+            exp += 1u;
+            if (exp >= 31u) return 0x3e0u;
+        }
+    }
+    return (exp << 5) | mant;
+}
+
 /* N-bit mantissa + 5-bit exponent unsigned float unpack — faithful copy
  * of mglUnpackUnsignedFloatComponent (pixel_utils.c). */
 static float mglCppUnpackUnsignedFloatComponent(uint32_t value,
@@ -4274,6 +4352,167 @@ int mglRenderCppCopyRGB10A2TextureBytesToGL(
                     uint32_t raw = rgb10a2_vals[src_idx[c]];
                     float fv = (src_idx[c] == 3)
                         ? (float)raw / 3.0f : (float)raw / 1023.0f;
+                    uint8_t* out = dst_row + (x * dst_pixel_bytes) +
+                                   (uint64_t)c * (uint64_t)comp_bytes;
+                    if (type == GL_UNSIGNED_BYTE) {
+                        float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
+                        uint8_t iv = (uint8_t)lroundf(cv * 255.0f);
+                        memcpy(out, &iv, sizeof(iv));
+                    } else if (type == GL_BYTE) {
+                        float cv = fv > 1.0f ? 1.0f : (fv < -1.0f ? -1.0f : fv);
+                        int8_t iv = (int8_t)lroundf(cv * 127.0f);
+                        memcpy(out, &iv, sizeof(iv));
+                    } else if (type == GL_UNSIGNED_SHORT) {
+                        float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
+                        uint16_t iv = (uint16_t)lroundf(cv * 65535.0f);
+                        memcpy(out, &iv, sizeof(iv));
+                    } else if (type == GL_SHORT) {
+                        float cv = fv > 1.0f ? 1.0f : (fv < -1.0f ? -1.0f : fv);
+                        int16_t iv = (int16_t)lroundf(cv * 32767.0f);
+                        memcpy(out, &iv, sizeof(iv));
+                    } else if (type == GL_UNSIGNED_INT) {
+                        float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
+                        uint32_t iv = (uint32_t)llroundf(cv * 4294967295.0f);
+                        memcpy(out, &iv, sizeof(iv));
+                    } else if (type == GL_INT) {
+                        float cv = fv > 1.0f ? 1.0f : (fv < -1.0f ? -1.0f : fv);
+                        int32_t iv = (int32_t)llroundf(cv * 2147483647.0f);
+                        memcpy(out, &iv, sizeof(iv));
+                    } else if (type == GL_FLOAT) {
+                        memcpy(out, &fv, sizeof(fv));
+                    } else {
+                        uint16_t iv = mglCppFloatToHalf(fv);
+                        memcpy(out, &iv, sizeof(iv));
+                    }
+                }
+            }
+        }
+    }
+    return 1;
+}
+
+static int mglCppReadbackRG11B10TypeAccepted(uint32_t type) {
+    switch (type) {
+        case GL_UNSIGNED_BYTE:
+        case GL_BYTE:
+        case GL_UNSIGNED_SHORT:
+        case GL_SHORT:
+        case GL_UNSIGNED_INT:
+        case GL_INT:
+        case GL_FLOAT:
+        case GL_HALF_FLOAT:
+        case GL_UNSIGNED_INT_10F_11F_11F_REV:
+        case GL_UNSIGNED_INT_5_9_9_9_REV:
+        case GL_UNSIGNED_INT_8_8_8_8:
+        case GL_UNSIGNED_INT_8_8_8_8_REV:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+/* RG11B10Float texture bytes -> GL format/type — mirrors the ObjC
+ * sourceIsRG11B10FloatDirect path. */
+extern "C"
+int mglRenderCppCopyRG11B10TextureBytesToGL(
+    const void* src, uint64_t src_bytes_per_row,
+    void* dst, uint64_t dst_bytes_per_row,
+    uint64_t width, uint64_t height,
+    uint32_t pixel_format, uint32_t format, uint32_t type, int flip_y) {
+    if (!src || !dst || width == 0u || height == 0u) {
+        return 0;
+    }
+    const MTL::PixelFormat pf = static_cast<MTL::PixelFormat>(pixel_format);
+    if (pf != MTL::PixelFormatRG11B10Float ||
+        !mglCppReadbackRG11B10TypeAccepted(type)) {
+        return 0;
+    }
+
+    const uint64_t src_bpp = 4u;
+    uint32_t comp_bytes = mglCppSizeForType(type);
+    if (type == GL_UNSIGNED_INT_10F_11F_11F_REV && format == GL_RGB) {
+        if (dst_bytes_per_row < width * src_bpp) {
+            return 0;
+        }
+        const uint8_t* src_bytes = static_cast<const uint8_t*>(src);
+        uint8_t* dst_bytes = static_cast<uint8_t*>(dst);
+        for (uint64_t y = 0; y < height; y++) {
+            const uint8_t* src_row = src_bytes + (y * src_bytes_per_row);
+            uint64_t dst_y = flip_y ? (height - 1u - y) : y;
+            uint8_t* dst_row = dst_bytes + (dst_y * dst_bytes_per_row);
+            memcpy(dst_row, src_row, width * src_bpp);
+        }
+        return 1;
+    }
+
+    int slots = 0;
+    int src_idx[4] = {0, 0, 0, 0};
+    if (!mglCppReadbackFormatChannelMap(format, &slots, src_idx)) {
+        return 0;
+    }
+
+    uint64_t dst_pixel_bytes = mglCppPixelTypeIsPacked(type)
+        ? (uint64_t)comp_bytes
+        : (uint64_t)comp_bytes * (uint64_t)slots;
+    if (dst_pixel_bytes == 0u || dst_bytes_per_row < width * dst_pixel_bytes) {
+        return 0;
+    }
+
+    const uint8_t* src_bytes = static_cast<const uint8_t*>(src);
+    uint8_t* dst_bytes = static_cast<uint8_t*>(dst);
+    for (uint64_t y = 0; y < height; y++) {
+        const uint8_t* src_row = src_bytes + (y * src_bytes_per_row);
+        uint64_t dst_y = flip_y ? (height - 1u - y) : y;
+        uint8_t* dst_row = dst_bytes + (dst_y * dst_bytes_per_row);
+        for (uint64_t x = 0; x < width; x++) {
+            uint32_t packed = 0u;
+            memcpy(&packed, src_row + (x * src_bpp), sizeof(packed));
+            float float_vals[4] = {
+                mglCppUnpackUnsignedFloatComponent(packed, 6u),
+                mglCppUnpackUnsignedFloatComponent(packed >> 11u, 6u),
+                mglCppUnpackUnsignedFloatComponent(packed >> 22u, 5u),
+                1.0f
+            };
+
+            if (type == GL_UNSIGNED_INT_10F_11F_11F_REV) {
+                float r = float_vals[src_idx[0]];
+                float g = (slots > 1) ? float_vals[src_idx[1]] : 0.0f;
+                float b = (slots > 2) ? float_vals[src_idx[2]] : 0.0f;
+                uint32_t out = (mglCppFloatToFloat11(r) & 0x7ffu) |
+                               ((mglCppFloatToFloat11(g) & 0x7ffu) << 11u) |
+                               ((mglCppFloatToFloat10(b) & 0x3ffu) << 22u);
+                memcpy(dst_row + (x * dst_pixel_bytes), &out, sizeof(out));
+            } else if (type == GL_UNSIGNED_INT_5_9_9_9_REV) {
+                float r = float_vals[src_idx[0]];
+                float g = (slots > 1) ? float_vals[src_idx[1]] : 0.0f;
+                float b = (slots > 2) ? float_vals[src_idx[2]] : 0.0f;
+                uint32_t out = mglCppPackRGBToSharedExp(r, g, b);
+                memcpy(dst_row + (x * dst_pixel_bytes), &out, sizeof(out));
+            } else if (type == GL_UNSIGNED_INT_8_8_8_8) {
+                uint8_t r8 = mglRenderCppFloatToUnorm8(float_vals[src_idx[0]]);
+                uint8_t g8 = (slots > 1)
+                    ? mglRenderCppFloatToUnorm8(float_vals[src_idx[1]]) : 0u;
+                uint8_t b8 = (slots > 2)
+                    ? mglRenderCppFloatToUnorm8(float_vals[src_idx[2]]) : 0u;
+                uint8_t a8 = (slots > 3)
+                    ? mglRenderCppFloatToUnorm8(float_vals[src_idx[3]]) : 0u;
+                uint32_t out = ((uint32_t)r8 << 24u) | ((uint32_t)g8 << 16u) |
+                               ((uint32_t)b8 << 8u) | a8;
+                memcpy(dst_row + (x * dst_pixel_bytes), &out, sizeof(out));
+            } else if (type == GL_UNSIGNED_INT_8_8_8_8_REV) {
+                uint8_t r8 = mglRenderCppFloatToUnorm8(float_vals[src_idx[0]]);
+                uint8_t g8 = (slots > 1)
+                    ? mglRenderCppFloatToUnorm8(float_vals[src_idx[1]]) : 0u;
+                uint8_t b8 = (slots > 2)
+                    ? mglRenderCppFloatToUnorm8(float_vals[src_idx[2]]) : 0u;
+                uint8_t a8 = (slots > 3)
+                    ? mglRenderCppFloatToUnorm8(float_vals[src_idx[3]]) : 0u;
+                uint32_t out = r8 | ((uint32_t)g8 << 8u) |
+                               ((uint32_t)b8 << 16u) | ((uint32_t)a8 << 24u);
+                memcpy(dst_row + (x * dst_pixel_bytes), &out, sizeof(out));
+            } else {
+                for (int c = 0; c < slots; ++c) {
+                    float fv = float_vals[src_idx[c]];
                     uint8_t* out = dst_row + (x * dst_pixel_bytes) +
                                    (uint64_t)c * (uint64_t)comp_bytes;
                     if (type == GL_UNSIGNED_BYTE) {

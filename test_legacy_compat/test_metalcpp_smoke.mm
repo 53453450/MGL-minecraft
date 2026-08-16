@@ -4424,6 +4424,82 @@ static int verifyReadbackScalarConvert(void) {
             return 1;
         }
     }
+    /* RG11B10Float direct path (bypass BGRA8). */
+    {
+        uint32_t src = 0x3C0u; /* R=1.0 float11, G=0, B=0 */
+        uint32_t ident = 0;
+        if (mglRenderCppCopyRG11B10TextureBytesToGL(
+                &src, 4u, &ident, 4u, 1u, 1u,
+                (uint32_t)MTLPixelFormatRG11B10Float,
+                (uint32_t)GL_RGB, (uint32_t)GL_UNSIGNED_INT_10F_11F_11F_REV,
+                0) != 1 ||
+            ident != src) {
+            fprintf(stderr, "FAIL: rg11b10 -> 10F_11F_11F_REV memcpy\n");
+            return 1;
+        }
+        float red = 0.0f;
+        if (mglRenderCppCopyRG11B10TextureBytesToGL(
+                &src, 4u, &red, 4u, 1u, 1u,
+                (uint32_t)MTLPixelFormatRG11B10Float,
+                (uint32_t)GL_RED, (uint32_t)GL_FLOAT, 0) != 1 ||
+            fabsf(red - 1.0f) > 1e-6f) {
+            fprintf(stderr, "FAIL: rg11b10 -> red float\n");
+            return 1;
+        }
+        float bgra[4] = {0, 0, 0, 0};
+        if (mglRenderCppCopyRG11B10TextureBytesToGL(
+                &src, 4u, bgra, 16u, 1u, 1u,
+                (uint32_t)MTLPixelFormatRG11B10Float,
+                (uint32_t)GL_BGRA, (uint32_t)GL_FLOAT, 0) != 1 ||
+            fabsf(bgra[0]) > 1e-6f || fabsf(bgra[1]) > 1e-6f ||
+            fabsf(bgra[2] - 1.0f) > 1e-6f || fabsf(bgra[3] - 1.0f) > 1e-6f) {
+            fprintf(stderr, "FAIL: rg11b10 -> bgra float\n");
+            return 1;
+        }
+        uint8_t ub[4] = {0, 0, 0, 0};
+        if (mglRenderCppCopyRG11B10TextureBytesToGL(
+                &src, 4u, ub, 4u, 1u, 1u,
+                (uint32_t)MTLPixelFormatRG11B10Float,
+                (uint32_t)GL_RGBA, (uint32_t)GL_UNSIGNED_BYTE, 0) != 1 ||
+            ub[0] != 255 || ub[1] != 0 || ub[2] != 0 || ub[3] != 255) {
+            fprintf(stderr, "FAIL: rg11b10 -> rgba8\n");
+            return 1;
+        }
+        uint32_t bgr_pack = 0xffffffffu;
+        if (mglRenderCppCopyRG11B10TextureBytesToGL(
+                &src, 4u, &bgr_pack, 4u, 1u, 1u,
+                (uint32_t)MTLPixelFormatRG11B10Float,
+                (uint32_t)GL_BGR, (uint32_t)GL_UNSIGNED_INT_10F_11F_11F_REV,
+                0) != 1 ||
+            bgr_pack != (0x1E0u << 22)) {
+            fprintf(stderr, "FAIL: rg11b10 -> bgr 10F_11F_11F_REV 0x%x\n",
+                    bgr_pack);
+            return 1;
+        }
+        uint32_t rows[2] = {0x3C0u, 0u};
+        float flip[2];
+        memset(flip, 0, sizeof(flip));
+        if (mglRenderCppCopyRG11B10TextureBytesToGL(
+                rows, 4u, flip, 4u, 1u, 2u,
+                (uint32_t)MTLPixelFormatRG11B10Float,
+                (uint32_t)GL_RED, (uint32_t)GL_FLOAT, 1) != 1 ||
+            fabsf(flip[0]) > 1e-6f ||
+            fabsf(flip[1] - 1.0f) > 1e-6f) {
+            fprintf(stderr, "FAIL: rg11b10 flipY\n");
+            return 1;
+        }
+        if (mglRenderCppCopyRG11B10TextureBytesToGL(
+                &src, 4u, &red, 4u, 1u, 1u,
+                (uint32_t)MTLPixelFormatRGBA8Unorm,
+                (uint32_t)GL_RED, (uint32_t)GL_FLOAT, 0) != 0 ||
+            mglRenderCppCopyRG11B10TextureBytesToGL(
+                NULL, 4u, &red, 4u, 1u, 1u,
+                (uint32_t)MTLPixelFormatRG11B10Float,
+                (uint32_t)GL_RED, (uint32_t)GL_FLOAT, 0) != 0) {
+            fprintf(stderr, "FAIL: rg11b10 bad args\n");
+            return 1;
+        }
+    }
     printf("READBACK_SCALAR_CONVERT_OK\n");
     return 0;
 }

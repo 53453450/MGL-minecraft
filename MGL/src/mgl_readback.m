@@ -158,10 +158,7 @@ BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
             ? YES : NO;
     }
 
-    /* Direct RG11B10Float conversion path: bypass the lossy BGRA8 UNORM intermediate.
-     * RG11B10Float has float channels; going through BGRA8 (8-bit unorm) loses
-     * precision and changes bit patterns, causing CTS copy_image failures.
-     * Convert directly from the native packed float data to the requested GL format/type. */
+    /* P4.5 (item 1171): RG11B10Float direct path in C++ (bypass lossy BGRA8). */
     BOOL sourceIsRG11B10FloatDirect = (pixelFormat == MTLPixelFormatRG11B10Float);
     if (sourceIsRG11B10FloatDirect &&
         (type == GL_UNSIGNED_BYTE || type == GL_BYTE ||
@@ -173,131 +170,13 @@ BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
          type == GL_UNSIGNED_INT_8_8_8_8 ||
          type == GL_UNSIGNED_INT_8_8_8_8_REV))
     {
-        NSUInteger srcBpp = 4u; /* RG11B10Float is 4 bytes per pixel */
-        NSUInteger dstPixelBytes = (NSUInteger)sizeForFormatType(format, type);
-        if (dstPixelBytes == 0u || dstBytesPerRow < width * dstPixelBytes) {
-            return NO;
-        }
-
-        /* For GL_UNSIGNED_INT_10F_11F_11F_REV with GL_RGB, Metal's RG11B10Float
-         * uses the exact same LSB-first bit layout (R[0:10], G[11:21], B[22:31]).
-         * Raw memcpy preserves the exact bits. */
-        if (type == GL_UNSIGNED_INT_10F_11F_11F_REV && format == GL_RGB) {
-            for (NSUInteger y = 0; y < height; y++) {
-                const uint8_t *srcRow = src + (y * srcBytesPerRow);
-                NSUInteger dstY = flipY ? (height - 1u - y) : y;
-                uint8_t *dstRow = dst + (dstY * dstBytesPerRow);
-                memcpy(dstRow, srcRow, width * srcBpp);
-            }
-            return YES;
-        }
-
-        /* Determine output channel mapping */
-        int slots = 0;
-        int srcIdx[4] = {0,0,0,0}; /* indices into R,G,B,A (0=R,1=G,2=B,3=A) */
-        switch (format) {
-            case GL_RGBA: slots = 4; srcIdx[0]=0; srcIdx[1]=1; srcIdx[2]=2; srcIdx[3]=3; break;
-            case GL_BGRA: slots = 4; srcIdx[0]=2; srcIdx[1]=1; srcIdx[2]=0; srcIdx[3]=3; break;
-            case GL_RGB:  slots = 3; srcIdx[0]=0; srcIdx[1]=1; srcIdx[2]=2; break;
-            case GL_BGR:  slots = 3; srcIdx[0]=2; srcIdx[1]=1; srcIdx[2]=0; break;
-            case GL_RG:   slots = 2; srcIdx[0]=0; srcIdx[1]=1; break;
-            case GL_RED:  slots = 1; srcIdx[0]=0; break;
-            case GL_GREEN: slots = 1; srcIdx[0]=1; break;
-            case GL_BLUE:  slots = 1; srcIdx[0]=2; break;
-            case GL_ALPHA: slots = 1; srcIdx[0]=3; break;
-            default: return NO;
-        }
-
-        NSUInteger compBytes = (NSUInteger)sizeForType(type);
-
-        for (NSUInteger y = 0; y < height; y++) {
-            const uint8_t *srcRow = src + (y * srcBytesPerRow);
-            NSUInteger dstY = flipY ? (height - 1u - y) : y;
-            uint8_t *dstRow = dst + (dstY * dstBytesPerRow);
-            for (NSUInteger x = 0; x < width; x++) {
-                uint32_t packed = 0u;
-                memcpy(&packed, srcRow + (x * srcBpp), sizeof(packed));
-                /* Decode float channels from RG11B10Float packed format.
-                 * R: bits 0-10 (11-bit float, 6-bit mantissa)
-                 * G: bits 11-21 (11-bit float, 6-bit mantissa)
-                 * B: bits 22-31 (10-bit float, 5-bit mantissa) */
-                float float_vals[4] = {
-                    mglUnpackUnsignedFloatComponent(packed, 6u),         /* R */
-                    mglUnpackUnsignedFloatComponent(packed >> 11u, 6u),  /* G */
-                    mglUnpackUnsignedFloatComponent(packed >> 22u, 5u),  /* B */
-                    1.0f                                                /* A (always 1) */
-                };
-
-                if (type == GL_UNSIGNED_INT_10F_11F_11F_REV) {
-                    /* Pack as R11G11B10 float with remapped channels.
-                     * Layout: R[0:10], G[11:21], B[22:31] */
-                    float r = float_vals[srcIdx[0]];
-                    float g = (slots > 1) ? float_vals[srcIdx[1]] : 0.0f;
-                    float b = (slots > 2) ? float_vals[srcIdx[2]] : 0.0f;
-                    uint32_t out = (mglFloatToFloat11(r) & 0x7ffu) |
-                                   ((mglFloatToFloat11(g) & 0x7ffu) << 11u) |
-                                   ((mglFloatToFloat10(b) & 0x3ffu) << 22u);
-                    memcpy(dstRow + (x * dstPixelBytes), &out, sizeof(out));
-                } else if (type == GL_UNSIGNED_INT_5_9_9_9_REV) {
-                    float r = float_vals[srcIdx[0]];
-                    float g = (slots > 1) ? float_vals[srcIdx[1]] : 0.0f;
-                    float b = (slots > 2) ? float_vals[srcIdx[2]] : 0.0f;
-                    uint32_t out = mglPackRGBToSharedExp(r, g, b);
-                    memcpy(dstRow + (x * dstPixelBytes), &out, sizeof(out));
-                } else if (type == GL_UNSIGNED_INT_8_8_8_8) {
-                    uint8_t r8 = mglMetalFloatToUnorm8(float_vals[srcIdx[0]]);
-                    uint8_t g8 = (slots > 1) ? mglMetalFloatToUnorm8(float_vals[srcIdx[1]]) : 0u;
-                    uint8_t b8 = (slots > 2) ? mglMetalFloatToUnorm8(float_vals[srcIdx[2]]) : 0u;
-                    uint8_t a8 = (slots > 3) ? mglMetalFloatToUnorm8(float_vals[srcIdx[3]]) : 0u;
-                    uint32_t out = ((uint32_t)r8 << 24u) | ((uint32_t)g8 << 16u) | ((uint32_t)b8 << 8u) | a8;
-                    memcpy(dstRow + (x * dstPixelBytes), &out, sizeof(out));
-                } else if (type == GL_UNSIGNED_INT_8_8_8_8_REV) {
-                    uint8_t r8 = mglMetalFloatToUnorm8(float_vals[srcIdx[0]]);
-                    uint8_t g8 = (slots > 1) ? mglMetalFloatToUnorm8(float_vals[srcIdx[1]]) : 0u;
-                    uint8_t b8 = (slots > 2) ? mglMetalFloatToUnorm8(float_vals[srcIdx[2]]) : 0u;
-                    uint8_t a8 = (slots > 3) ? mglMetalFloatToUnorm8(float_vals[srcIdx[3]]) : 0u;
-                    uint32_t out = r8 | ((uint32_t)g8 << 8u) | ((uint32_t)b8 << 16u) | ((uint32_t)a8 << 24u);
-                    memcpy(dstRow + (x * dstPixelBytes), &out, sizeof(out));
-                } else {
-                    /* Non-packed types: convert via float */
-                    for (int c = 0; c < slots; ++c) {
-                        float fv = float_vals[srcIdx[c]];
-                        uint8_t *out = dstRow + (x * dstPixelBytes) + (NSUInteger)c * compBytes;
-                        if (type == GL_UNSIGNED_BYTE) {
-                            float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
-                            uint8_t iv = (uint8_t)lroundf(cv * 255.0f);
-                            memcpy(out, &iv, sizeof(iv));
-                        } else if (type == GL_BYTE) {
-                            float cv = fv > 1.0f ? 1.0f : (fv < -1.0f ? -1.0f : fv);
-                            int8_t iv = (int8_t)lroundf(cv * 127.0f);
-                            memcpy(out, &iv, sizeof(iv));
-                        } else if (type == GL_UNSIGNED_SHORT) {
-                            float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
-                            uint16_t iv = (uint16_t)lroundf(cv * 65535.0f);
-                            memcpy(out, &iv, sizeof(iv));
-                        } else if (type == GL_SHORT) {
-                            float cv = fv > 1.0f ? 1.0f : (fv < -1.0f ? -1.0f : fv);
-                            int16_t iv = (int16_t)lroundf(cv * 32767.0f);
-                            memcpy(out, &iv, sizeof(iv));
-                        } else if (type == GL_UNSIGNED_INT) {
-                            float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
-                            uint32_t iv = (uint32_t)llroundf(cv * 4294967295.0f);
-                            memcpy(out, &iv, sizeof(iv));
-                        } else if (type == GL_INT) {
-                            float cv = fv > 1.0f ? 1.0f : (fv < -1.0f ? -1.0f : fv);
-                            int32_t iv = (int32_t)llroundf(cv * 2147483647.0f);
-                            memcpy(out, &iv, sizeof(iv));
-                        } else if (type == GL_FLOAT) {
-                            memcpy(out, &fv, sizeof(fv));
-                        } else { /* GL_HALF_FLOAT */
-                            uint16_t iv = mglFloatToHalf(fv);
-                            memcpy(out, &iv, sizeof(iv));
-                        }
-                    }
-                }
-            }
-        }
-        return YES;
+        return mglRenderCppCopyRG11B10TextureBytesToGL(
+                   src, (uint64_t)srcBytesPerRow,
+                   dst, (uint64_t)dstBytesPerRow,
+                   (uint64_t)width, (uint64_t)height,
+                   (uint32_t)pixelFormat, (uint32_t)format, (uint32_t)type,
+                   flipY ? 1 : 0)
+            ? YES : NO;
     }
 
     /* Direct 16-bit/32-bit conversion path: bypass the lossy BGRA8 UNORM intermediate.
