@@ -1321,6 +1321,10 @@ uint8_t mglRenderCppResolveR8SwizzledComponent(uint32_t swizzle, uint8_t red);
  * otherwise the GL_R* internal-format table.  Returns 1/0. */
 int mglRenderCppTextureUploadNeedsSingleChannelSwizzle(uint32_t internal_format,
                                                        int swizzled);
+/* P4.5 (item 1111): stored color-component count for an internal format.
+ * Mirrors mglStoredColorComponentsForTexture after the null-tex check
+ * (null stays in ObjC and returns 4).  Unknown formats → 4. */
+uint32_t mglRenderCppStoredColorComponents(uint32_t internal_format);
 uint8_t *mglRenderCppCreateSingleChannelSwizzledUpload(
     uint32_t internal_format,
     uint32_t swizzle_r, uint32_t swizzle_g,

@@ -39,7 +39,6 @@
 /* GL format introspection helpers implemented in pixel_utils.c.  Declared
  * here so this module does not need to include the full MGLRenderer private
  * header. */
-GLuint numComponentsForFormat(GLenum format);
 GLuint sizeForInternalFormat(GLenum internalformat, GLenum format, GLenum type);
 
 static MGLMetalTextureRef mglTextureCompatCreateView(
@@ -247,9 +246,8 @@ NSUInteger mglStoredColorComponentsForTexture(Texture *tex)
     if (!tex) {
         return 4;
     }
-
-    GLuint components = numComponentsForFormat(tex->internalformat);
-    return components > 0 ? (NSUInteger)components : 4;
+    return (NSUInteger)mglRenderCppStoredColorComponents(
+        (uint32_t)tex->internalformat);
 }
 
 MTLTextureSwizzle mglMTLSwizzleForGLSwizzle(Texture *tex, GLenum swizzle)

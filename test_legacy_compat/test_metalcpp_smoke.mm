@@ -6597,6 +6597,24 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
         printf("R_ONLY_SWIZZLE_GATE_OK\n");
     }
 
+    /* P4.5 (item 1111): stored color-component count. */
+    {
+        if (mglRenderCppStoredColorComponents(GL_RED) != 1 ||
+            mglRenderCppStoredColorComponents(GL_R8) != 1 ||
+            mglRenderCppStoredColorComponents(GL_DEPTH_COMPONENT) != 1 ||
+            mglRenderCppStoredColorComponents(GL_RG8) != 2 ||
+            mglRenderCppStoredColorComponents(0x190A) != 2 ||
+            mglRenderCppStoredColorComponents(GL_RGB8) != 3 ||
+            mglRenderCppStoredColorComponents(GL_BGR) != 3 ||
+            mglRenderCppStoredColorComponents(GL_RGBA8) != 4 ||
+            mglRenderCppStoredColorComponents(GL_BGRA) != 4 ||
+            mglRenderCppStoredColorComponents(GL_RGB10_A2) != 4) {
+            fprintf(stderr, "FAIL: stored color components\n");
+            return 1;
+        }
+        printf("STORED_COLOR_COMPONENTS_OK\n");
+    }
+
     /* P4.3c: whole-batch simple replay.  Valid batch encodes; unknown command
      * type falls back to NEEDS_OBJC; bad args are rejected. */
     {
