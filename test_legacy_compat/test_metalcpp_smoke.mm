@@ -4178,6 +4178,110 @@ static int verifyReadbackScalarConvert(void) {
             return 1;
         }
     }
+    /* Metal texture bytes -> GL BGRA8 (decode + optional flipY). */
+    {
+        uint8_t rgba[2][4] = {{10, 20, 30, 40}, {50, 60, 70, 80}};
+        uint8_t dst[2][4] = {{0, 0, 0, 0}, {0, 0, 0, 0}};
+        /* RGBA8Unorm: R,G,B,A -> B,G,R,A. */
+        mglRenderCppCopyTextureBytesToBGRA8(
+            rgba, 4u, dst, 4u, 1u, 2u,
+            (uint32_t)MTLPixelFormatRGBA8Unorm, 0);
+        if (dst[0][0] != 30 || dst[0][1] != 20 || dst[0][2] != 10 ||
+            dst[0][3] != 40 ||
+            dst[1][0] != 70 || dst[1][1] != 60 || dst[1][2] != 50 ||
+            dst[1][3] != 80) {
+            fprintf(stderr, "FAIL: rgba8->bgra8\n");
+            return 1;
+        }
+        memset(dst, 0, sizeof(dst));
+        mglRenderCppCopyTextureBytesToBGRA8(
+            rgba, 4u, dst, 4u, 1u, 2u,
+            (uint32_t)MTLPixelFormatRGBA8Unorm, 1);
+        if (dst[0][0] != 70 || dst[1][0] != 30) {
+            fprintf(stderr, "FAIL: rgba8->bgra8 flipY\n");
+            return 1;
+        }
+        /* BGRA8Unorm is not a decoded source: memcpy 4 bytes as-is. */
+        uint8_t bgra[4] = {11, 22, 33, 44};
+        memset(dst, 0, sizeof(dst));
+        mglRenderCppCopyTextureBytesToBGRA8(
+            bgra, 4u, dst, 4u, 1u, 1u,
+            (uint32_t)MTLPixelFormatBGRA8Unorm, 0);
+        if (dst[0][0] != 11 || dst[0][1] != 22 || dst[0][2] != 33 ||
+            dst[0][3] != 44) {
+            fprintf(stderr, "FAIL: bgra8 passthrough\n");
+            return 1;
+        }
+        /* R8Unorm: R -> B channel, A=255. */
+        uint8_t r8 = 90;
+        memset(dst, 0, sizeof(dst));
+        mglRenderCppCopyTextureBytesToBGRA8(
+            &r8, 1u, dst, 4u, 1u, 1u,
+            (uint32_t)MTLPixelFormatR8Unorm, 0);
+        if (dst[0][0] != 0 || dst[0][1] != 0 || dst[0][2] != 90 ||
+            dst[0][3] != 255) {
+            fprintf(stderr, "FAIL: r8->bgra8\n");
+            return 1;
+        }
+        /* RGB10A2Unorm: R=1023, G=0, B=0, A=3 -> BGRA (0,0,255,255). */
+        uint32_t rgb10 = 1023u | (3u << 30);
+        memset(dst, 0, sizeof(dst));
+        mglRenderCppCopyTextureBytesToBGRA8(
+            &rgb10, 4u, dst, 4u, 1u, 1u,
+            (uint32_t)MTLPixelFormatRGB10A2Unorm, 0);
+        if (dst[0][0] != 0 || dst[0][1] != 0 || dst[0][2] != 255 ||
+            dst[0][3] != 255) {
+            fprintf(stderr, "FAIL: rgb10a2->bgra8\n");
+            return 1;
+        }
+        /* BGR5A1Unorm: B=31, G=31, R=0, A=1 -> (255,255,0,255). */
+        uint16_t bgr5 = 31u | (31u << 5) | (1u << 15);
+        memset(dst, 0, sizeof(dst));
+        mglRenderCppCopyTextureBytesToBGRA8(
+            &bgr5, 2u, dst, 4u, 1u, 1u,
+            (uint32_t)MTLPixelFormatBGR5A1Unorm, 0);
+        if (dst[0][0] != 255 || dst[0][1] != 255 || dst[0][2] != 0 ||
+            dst[0][3] != 255) {
+            fprintf(stderr, "FAIL: bgr5a1->bgra8\n");
+            return 1;
+        }
+        /* RGBA32Float: (1,0,0,1) -> BGRA (0,0,255,255). */
+        float rgba32[4] = {1.0f, 0.0f, 0.0f, 1.0f};
+        memset(dst, 0, sizeof(dst));
+        mglRenderCppCopyTextureBytesToBGRA8(
+            rgba32, 16u, dst, 4u, 1u, 1u,
+            (uint32_t)MTLPixelFormatRGBA32Float, 0);
+        if (dst[0][0] != 0 || dst[0][1] != 0 || dst[0][2] != 255 ||
+            dst[0][3] != 255) {
+            fprintf(stderr, "FAIL: rgba32f->bgra8\n");
+            return 1;
+        }
+        /* RGB9E5: exp=15, mant_r=256 -> 256 * 2^(15-24) = 0.5 -> R=128. */
+        uint32_t rgb9e5 = 256u | (15u << 27);
+        memset(dst, 0, sizeof(dst));
+        mglRenderCppCopyTextureBytesToBGRA8(
+            &rgb9e5, 4u, dst, 4u, 1u, 1u,
+            (uint32_t)MTLPixelFormatRGB9E5Float, 0);
+        if (dst[0][0] != 0 || dst[0][1] != 0 || dst[0][2] != 128 ||
+            dst[0][3] != 255) {
+            fprintf(stderr, "FAIL: rgb9e5->bgra8 %u %u %u %u\n",
+                    dst[0][0], dst[0][1], dst[0][2], dst[0][3]);
+            return 1;
+        }
+        /* Bad args leave dest unchanged. */
+        uint8_t sentinel[4] = {1, 2, 3, 4};
+        mglRenderCppCopyTextureBytesToBGRA8(
+            NULL, 4u, sentinel, 4u, 1u, 1u,
+            (uint32_t)MTLPixelFormatRGBA8Unorm, 0);
+        mglRenderCppCopyTextureBytesToBGRA8(
+            rgba, 4u, sentinel, 4u, 0u, 1u,
+            (uint32_t)MTLPixelFormatRGBA8Unorm, 0);
+        if (sentinel[0] != 1 || sentinel[1] != 2 || sentinel[2] != 3 ||
+            sentinel[3] != 4) {
+            fprintf(stderr, "FAIL: texture->bgra8 bad args\n");
+            return 1;
+        }
+    }
     printf("READBACK_SCALAR_CONVERT_OK\n");
     return 0;
 }

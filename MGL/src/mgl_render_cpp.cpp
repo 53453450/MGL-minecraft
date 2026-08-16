@@ -3565,6 +3565,348 @@ int mglRenderCppCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(
     return 1;
 }
 
+/* IEEE-754 binary16 -> float — faithful copy of mglHalfToFloat
+ * (pixel_utils.c); TU-local because pixel_utils.h is ObjC-only. */
+static float mglCppHalfToFloat(uint16_t value)
+{
+    uint32_t sign = (uint32_t)(value >> 15u);
+    uint32_t exponent = (value >> 10u) & 31u;
+    uint32_t mantissa = value & 1023u;
+    float result;
+    if (exponent == 0u) {
+        result = ldexpf((float)mantissa, -24);
+    } else if (exponent == 31u) {
+        result = mantissa ? NAN : INFINITY;
+    } else {
+        result = ldexpf(1.0f + (float)mantissa / 1024.0f, (int)exponent - 15);
+    }
+    return sign ? -result : result;
+}
+
+/* N-bit mantissa + 5-bit exponent unsigned float unpack — faithful copy
+ * of mglUnpackUnsignedFloatComponent (pixel_utils.c). */
+static float mglCppUnpackUnsignedFloatComponent(uint32_t value,
+                                               uint32_t mantissa_bits)
+{
+    if (mantissa_bits == 0u || mantissa_bits > 23u) return 0.0f;
+
+    uint32_t mantissa_mask = (1u << mantissa_bits) - 1u;
+    uint32_t mantissa = value & mantissa_mask;
+    uint32_t exponent = (value >> mantissa_bits) & 0x1fu;
+
+    if (exponent == 31u) {
+        return (mantissa == 0u) ? INFINITY : NAN;
+    }
+    if (exponent == 0u) {
+        return ldexpf((float)mantissa, 1 - 15 - (int)mantissa_bits);
+    }
+    float normalized = 1.0f + (float)mantissa / (float)(1u << mantissa_bits);
+    return ldexpf(normalized, (int)exponent - 15);
+}
+
+/* Copy Metal texture bytes into GL BGRA8 with optional Y-flip —
+ * mirrors mglMetalCopyTextureBytesToBGRA8. */
+extern "C"
+void mglRenderCppCopyTextureBytesToBGRA8(
+    const void* src, uint64_t src_bytes_per_row,
+    void* dst, uint64_t dst_bytes_per_row,
+    uint64_t width, uint64_t height,
+    uint32_t pixel_format, int flip_y) {
+    if (!src || !dst || width == 0u || height == 0u) {
+        return;
+    }
+
+    const MTL::PixelFormat pf = static_cast<MTL::PixelFormat>(pixel_format);
+    bool sourceIsRGBA =
+        (pf == MTL::PixelFormatRGBA8Unorm ||
+         pf == MTL::PixelFormatRGBA8Unorm_sRGB);
+    bool sourceIsRGBA32Float = (pf == MTL::PixelFormatRGBA32Float);
+    bool sourceIsR8 = (pf == MTL::PixelFormatR8Unorm);
+    bool sourceIsRG8 = (pf == MTL::PixelFormatRG8Unorm);
+    bool sourceIsR16Unorm = (pf == MTL::PixelFormatR16Unorm);
+    bool sourceIsRG16Unorm = (pf == MTL::PixelFormatRG16Unorm);
+    bool sourceIsRGBA16Unorm = (pf == MTL::PixelFormatRGBA16Unorm);
+    bool sourceIsR16Snorm = (pf == MTL::PixelFormatR16Snorm);
+    bool sourceIsRG16Snorm = (pf == MTL::PixelFormatRG16Snorm);
+    bool sourceIsRGBA16Snorm = (pf == MTL::PixelFormatRGBA16Snorm);
+    bool sourceIsBGR5A1 = (pf == MTL::PixelFormatBGR5A1Unorm);
+    bool sourceIsABGR4 = (pf == MTL::PixelFormatABGR4Unorm);
+    bool sourceIsRG11B10Float = (pf == MTL::PixelFormatRG11B10Float);
+    bool sourceIsR32Float = (pf == MTL::PixelFormatR32Float);
+    bool sourceIsRG32Float = (pf == MTL::PixelFormatRG32Float);
+    bool sourceIsRG16Float = (pf == MTL::PixelFormatRG16Float);
+    bool sourceIsR16Float = (pf == MTL::PixelFormatR16Float);
+    bool sourceIsRGBA16Float = (pf == MTL::PixelFormatRGBA16Float);
+    bool sourceIsBGR10A2 = (pf == MTL::PixelFormatBGR10A2Unorm);
+    bool sourceIsRGB10A2 = (pf == MTL::PixelFormatRGB10A2Unorm);
+    bool sourceIsR8Snorm = (pf == MTL::PixelFormatR8Snorm);
+    bool sourceIsRG8Snorm = (pf == MTL::PixelFormatRG8Snorm);
+    bool sourceIsRGBA8Snorm = (pf == MTL::PixelFormatRGBA8Snorm);
+    bool sourceIsR8Uint = (pf == MTL::PixelFormatR8Uint);
+    bool sourceIsR8Sint = (pf == MTL::PixelFormatR8Sint);
+    bool sourceIsRG8Uint = (pf == MTL::PixelFormatRG8Uint);
+    bool sourceIsRG8Sint = (pf == MTL::PixelFormatRG8Sint);
+    bool sourceIsRGBA8Uint = (pf == MTL::PixelFormatRGBA8Uint);
+    bool sourceIsRGBA8Sint = (pf == MTL::PixelFormatRGBA8Sint);
+    bool sourceIsRGB9E5 = (pf == MTL::PixelFormatRGB9E5Float);
+
+    const uint8_t* srcBytes = static_cast<const uint8_t*>(src);
+    uint8_t* dstBytes = static_cast<uint8_t*>(dst);
+    for (uint64_t y = 0; y < height; y++) {
+        const uint8_t* srcRow = srcBytes + (y * src_bytes_per_row);
+        uint64_t dstY = flip_y ? (height - 1u - y) : y;
+        uint8_t* dstRow = dstBytes + (dstY * dst_bytes_per_row);
+
+        if (!sourceIsRGBA && !sourceIsRGBA32Float && !sourceIsR8 && !sourceIsRG8 &&
+            !sourceIsR16Unorm && !sourceIsRG16Unorm && !sourceIsRGBA16Unorm &&
+            !sourceIsR16Snorm && !sourceIsRG16Snorm && !sourceIsRGBA16Snorm &&
+            !sourceIsBGR5A1 && !sourceIsABGR4 && !sourceIsRG11B10Float &&
+            !sourceIsR32Float && !sourceIsRG32Float && !sourceIsRG16Float &&
+            !sourceIsR16Float && !sourceIsRGBA16Float && !sourceIsBGR10A2 &&
+            !sourceIsRGB10A2 &&
+            !sourceIsR8Snorm && !sourceIsRG8Snorm && !sourceIsRGBA8Snorm &&
+            !sourceIsR8Uint && !sourceIsR8Sint && !sourceIsRG8Uint && !sourceIsRG8Sint &&
+            !sourceIsRGBA8Uint && !sourceIsRGBA8Sint && !sourceIsRGB9E5) {
+            memcpy(dstRow, srcRow, width * 4u);
+            continue;
+        }
+
+        for (uint64_t x = 0; x < width; x++) {
+            uint8_t* d = dstRow + (x * 4u);
+            if (sourceIsRGBA32Float) {
+                const float* s = reinterpret_cast<const float*>(
+                    srcRow + (x * sizeof(float) * 4u));
+                d[0] = mglRenderCppFloatToUnorm8(s[2]);
+                d[1] = mglRenderCppFloatToUnorm8(s[1]);
+                d[2] = mglRenderCppFloatToUnorm8(s[0]);
+                d[3] = mglRenderCppFloatToUnorm8(s[3]);
+            } else if (sourceIsRGBA16Float) {
+                uint16_t components[4] = {0u, 0u, 0u, 0u};
+                memcpy(components, srcRow + x * sizeof(components),
+                       sizeof(components));
+                d[0] = mglRenderCppFloatToUnorm8(
+                    mglCppHalfToFloat(components[2]));
+                d[1] = mglRenderCppFloatToUnorm8(
+                    mglCppHalfToFloat(components[1]));
+                d[2] = mglRenderCppFloatToUnorm8(
+                    mglCppHalfToFloat(components[0]));
+                d[3] = mglRenderCppFloatToUnorm8(
+                    mglCppHalfToFloat(components[3]));
+            } else if (sourceIsRG11B10Float) {
+                uint32_t packed = 0u;
+                memcpy(&packed, srcRow + x * sizeof(packed), sizeof(packed));
+                d[0] = mglRenderCppFloatToUnorm8(
+                    mglCppUnpackUnsignedFloatComponent(packed >> 22u, 5u));
+                d[1] = mglRenderCppFloatToUnorm8(
+                    mglCppUnpackUnsignedFloatComponent(packed >> 11u, 6u));
+                d[2] = mglRenderCppFloatToUnorm8(
+                    mglCppUnpackUnsignedFloatComponent(packed, 6u));
+                d[3] = 255u;
+            } else if (sourceIsRG32Float) {
+                const float* s = reinterpret_cast<const float*>(
+                    srcRow + (x * sizeof(float) * 2u));
+                d[0] = 0u;
+                d[1] = mglRenderCppFloatToUnorm8(s[1]);
+                d[2] = mglRenderCppFloatToUnorm8(s[0]);
+                d[3] = 255u;
+            } else if (sourceIsR32Float) {
+                float component = 0.0f;
+                memcpy(&component, srcRow + x * sizeof(component),
+                       sizeof(component));
+                d[0] = 0u;
+                d[1] = 0u;
+                d[2] = mglRenderCppFloatToUnorm8(component);
+                d[3] = 255u;
+            } else if (sourceIsRG16Float) {
+                uint16_t components[2] = {0u, 0u};
+                memcpy(components, srcRow + x * sizeof(components),
+                       sizeof(components));
+                d[0] = 0u;
+                d[1] = mglRenderCppFloatToUnorm8(
+                    mglCppHalfToFloat(components[1]));
+                d[2] = mglRenderCppFloatToUnorm8(
+                    mglCppHalfToFloat(components[0]));
+                d[3] = 255u;
+            } else if (sourceIsR16Float) {
+                uint16_t component = 0u;
+                memcpy(&component, srcRow + x * sizeof(component),
+                       sizeof(component));
+                d[0] = 0u;
+                d[1] = 0u;
+                d[2] = mglRenderCppFloatToUnorm8(mglCppHalfToFloat(component));
+                d[3] = 255u;
+            } else if (sourceIsRGBA16Unorm) {
+                uint16_t components[4] = {0u, 0u, 0u, 0u};
+                memcpy(components, srcRow + x * sizeof(components),
+                       sizeof(components));
+                d[0] = (uint8_t)((components[2] * 255u + 32767u) / 65535u);
+                d[1] = (uint8_t)((components[1] * 255u + 32767u) / 65535u);
+                d[2] = (uint8_t)((components[0] * 255u + 32767u) / 65535u);
+                d[3] = (uint8_t)((components[3] * 255u + 32767u) / 65535u);
+            } else if (sourceIsRG16Unorm) {
+                uint16_t components[2] = {0u, 0u};
+                memcpy(components, srcRow + x * sizeof(components),
+                       sizeof(components));
+                d[0] = 0u;
+                d[1] = (uint8_t)((components[1] * 255u + 32767u) / 65535u);
+                d[2] = (uint8_t)((components[0] * 255u + 32767u) / 65535u);
+                d[3] = 255u;
+            } else if (sourceIsR16Unorm) {
+                uint16_t component = 0u;
+                memcpy(&component, srcRow + x * sizeof(component),
+                       sizeof(component));
+                d[0] = 0u;
+                d[1] = 0u;
+                d[2] = (uint8_t)((component * 255u + 32767u) / 65535u);
+                d[3] = 255u;
+            } else if (sourceIsRGBA16Snorm) {
+                int16_t components[4] = {0, 0, 0, 0};
+                memcpy(components, srcRow + x * sizeof(components),
+                       sizeof(components));
+                d[0] = mglRenderCppFloatToUnorm8(
+                    mglRenderCppSnorm16ToFloat(components[2]));
+                d[1] = mglRenderCppFloatToUnorm8(
+                    mglRenderCppSnorm16ToFloat(components[1]));
+                d[2] = mglRenderCppFloatToUnorm8(
+                    mglRenderCppSnorm16ToFloat(components[0]));
+                d[3] = mglRenderCppFloatToUnorm8(
+                    mglRenderCppSnorm16ToFloat(components[3]));
+            } else if (sourceIsRG16Snorm) {
+                int16_t components[2] = {0, 0};
+                memcpy(components, srcRow + x * sizeof(components),
+                       sizeof(components));
+                d[0] = 0u;
+                d[1] = mglRenderCppFloatToUnorm8(
+                    mglRenderCppSnorm16ToFloat(components[1]));
+                d[2] = mglRenderCppFloatToUnorm8(
+                    mglRenderCppSnorm16ToFloat(components[0]));
+                d[3] = 255u;
+            } else if (sourceIsR16Snorm) {
+                int16_t component = 0;
+                memcpy(&component, srcRow + x * sizeof(component),
+                       sizeof(component));
+                d[0] = 0u;
+                d[1] = 0u;
+                d[2] = mglRenderCppFloatToUnorm8(
+                    mglRenderCppSnorm16ToFloat(component));
+                d[3] = 255u;
+            } else if (sourceIsBGR10A2) {
+                uint32_t packed = 0u;
+                memcpy(&packed, srcRow + x * sizeof(packed), sizeof(packed));
+                d[0] = (uint8_t)(((packed & 1023u) * 255u) / 1023u);
+                d[1] = (uint8_t)((((packed >> 10u) & 1023u) * 255u) / 1023u);
+                d[2] = (uint8_t)((((packed >> 20u) & 1023u) * 255u) / 1023u);
+                d[3] = (uint8_t)((((packed >> 30u) & 3u) * 255u) / 3u);
+            } else if (sourceIsRGB10A2) {
+                /* MTLPixelFormatRGB10A2Unorm: R[0:9], G[10:19], B[20:29],
+                 * A[30:31] (LSB-first).  BGRA8: d[0]=B, d[1]=G, d[2]=R,
+                 * d[3]=A. */
+                uint32_t packed = 0u;
+                memcpy(&packed, srcRow + x * sizeof(packed), sizeof(packed));
+                d[0] = (uint8_t)((((packed >> 20u) & 1023u) * 255u) / 1023u);
+                d[1] = (uint8_t)((((packed >> 10u) & 1023u) * 255u) / 1023u);
+                d[2] = (uint8_t)(((packed & 1023u) * 255u) / 1023u);
+                d[3] = (uint8_t)((((packed >> 30u) & 3u) * 255u) / 3u);
+            } else if (sourceIsR8) {
+                d[0] = 0u;
+                d[1] = 0u;
+                d[2] = srcRow[x];
+                d[3] = 255u;
+            } else if (sourceIsRG8) {
+                const uint8_t* s = srcRow + x * 2u;
+                d[0] = 0u;
+                d[1] = s[1];
+                d[2] = s[0];
+                d[3] = 255u;
+            } else if (sourceIsBGR5A1) {
+                /* MTLPixelFormatBGR5A1Unorm: B[0:4], G[5:9], R[10:14], A[15].
+                 * Output BGRA8: d[0]=B, d[1]=G, d[2]=R, d[3]=A. */
+                uint16_t packed = 0u;
+                memcpy(&packed, srcRow + x * sizeof(packed), sizeof(packed));
+                d[0] = (uint8_t)(((packed & 31u) * 255u) / 31u);
+                d[1] = (uint8_t)((((packed >> 5u) & 31u) * 255u) / 31u);
+                d[2] = (uint8_t)((((packed >> 10u) & 31u) * 255u) / 31u);
+                d[3] = ((packed >> 15u) & 1u) ? 255u : 0u;
+            } else if (sourceIsABGR4) {
+                /* MTLPixelFormatABGR4Unorm: A[0:3], B[4:7], G[8:11], R[12:15].
+                 * Output BGRA8: d[0]=B, d[1]=G, d[2]=R, d[3]=A. */
+                uint16_t packed = 0u;
+                memcpy(&packed, srcRow + x * sizeof(packed), sizeof(packed));
+                d[0] = (uint8_t)((((packed >> 4u) & 15u) * 255u) / 15u);
+                d[1] = (uint8_t)((((packed >> 8u) & 15u) * 255u) / 15u);
+                d[2] = (uint8_t)((((packed >> 12u) & 15u) * 255u) / 15u);
+                d[3] = (uint8_t)(((packed & 15u) * 255u) / 15u);
+            } else if (sourceIsR8Snorm || sourceIsR8Sint) {
+                int8_t s = (int8_t)srcRow[x];
+                d[0] = 0u;
+                d[1] = 0u;
+                d[2] = mglRenderCppFloatToUnorm8(mglRenderCppSnorm8ToFloat(s));
+                d[3] = 255u;
+            } else if (sourceIsRG8Snorm || sourceIsRG8Sint) {
+                const int8_t* s = reinterpret_cast<const int8_t*>(
+                    srcRow + x * 2u);
+                d[0] = 0u;
+                d[1] = mglRenderCppFloatToUnorm8(
+                    mglRenderCppSnorm8ToFloat(s[1]));
+                d[2] = mglRenderCppFloatToUnorm8(
+                    mglRenderCppSnorm8ToFloat(s[0]));
+                d[3] = 255u;
+            } else if (sourceIsRGBA8Snorm || sourceIsRGBA8Sint) {
+                const int8_t* s = reinterpret_cast<const int8_t*>(
+                    srcRow + x * 4u);
+                d[0] = mglRenderCppFloatToUnorm8(
+                    mglRenderCppSnorm8ToFloat(s[2]));
+                d[1] = mglRenderCppFloatToUnorm8(
+                    mglRenderCppSnorm8ToFloat(s[1]));
+                d[2] = mglRenderCppFloatToUnorm8(
+                    mglRenderCppSnorm8ToFloat(s[0]));
+                d[3] = mglRenderCppFloatToUnorm8(
+                    mglRenderCppSnorm8ToFloat(s[3]));
+            } else if (sourceIsR8Uint) {
+                d[0] = 0u;
+                d[1] = 0u;
+                d[2] = srcRow[x];
+                d[3] = 255u;
+            } else if (sourceIsRG8Uint) {
+                const uint8_t* s = srcRow + x * 2u;
+                d[0] = 0u;
+                d[1] = s[1];
+                d[2] = s[0];
+                d[3] = 255u;
+            } else if (sourceIsRGBA8Uint) {
+                const uint8_t* s = srcRow + x * 4u;
+                d[0] = s[2];
+                d[1] = s[1];
+                d[2] = s[0];
+                d[3] = s[3];
+            } else if (sourceIsRGB9E5) {
+                /* MTLPixelFormatRGB9E5Float: 4 bytes/pixel, shared exponent.
+                 * Unpack to float R,G,B then convert to BGRA8 UNORM. */
+                uint32_t packed = 0u;
+                memcpy(&packed, srcRow + x * 4u, sizeof(packed));
+                uint32_t exp = (packed >> 27u) & 31u;
+                uint32_t mant_r = packed & 511u;
+                uint32_t mant_g = (packed >> 9u) & 511u;
+                uint32_t mant_b = (packed >> 18u) & 511u;
+                float scale = ldexpf(1.0f, (int)exp - 24);
+                float rf = (float)mant_r * scale;
+                float gf = (float)mant_g * scale;
+                float bf = (float)mant_b * scale;
+                d[0] = mglRenderCppFloatToUnorm8(bf);
+                d[1] = mglRenderCppFloatToUnorm8(gf);
+                d[2] = mglRenderCppFloatToUnorm8(rf);
+                d[3] = 255u;
+            } else {
+                const uint8_t* s = srcRow + (x * 4u);
+                d[0] = s[2];
+                d[1] = s[1];
+                d[2] = s[0];
+                d[3] = s[3];
+            }
+        }
+    }
+}
+
 
 /* P4.4: little-endian packed read + unorm bit expansion (RGBA8 path). */
 static uint32_t mglCppReadPackedUploadLE(const uint8_t* src, size_t bytes) {

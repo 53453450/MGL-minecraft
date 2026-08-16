@@ -393,6 +393,17 @@ int mglRenderCppCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(
     uint64_t width, uint64_t height,
     uint32_t pixel_format, int flip_y);
 
+/* P4.5 (item 1171): copy Metal texture bytes into GL BGRA8 (source-format
+ * decode: RGBA8/BGRA8, R/RG/RGBA 8/16/32 unorm/snorm/int/uint/float,
+ * RGB9E5, RGB10A2/BGR10A2, BGR5A1, ABGR4, RG11B10, half/float variants)
+ * with optional Y-flip.  Pure CPU data transform shared by both gates —
+ * mirrors the ObjC mglMetalCopyTextureBytesToBGRA8 exactly (void). */
+void mglRenderCppCopyTextureBytesToBGRA8(
+    const void *src, uint64_t src_bytes_per_row,
+    void *dst, uint64_t dst_bytes_per_row,
+    uint64_t width, uint64_t height,
+    uint32_t pixel_format, int flip_y);
+
 /* P4.4: CPU→GPU 上传路径选路。纯决策函数（无 Metal 对象参与），把
  * MGLRenderer+Texture.m uploadTextureSliceViaBlit 的「storage mode /
  * 纹理类型 / AGX 能力位 → replaceRegion 或 blit 或 reject」判定迁入 C++，
