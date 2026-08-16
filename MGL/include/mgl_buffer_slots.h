@@ -4,13 +4,18 @@
  *
  * Reserved Metal buffer slot registry.
  *
- * Metal vertex/compute pipelines expose 31 buffer slots (0..30).  MGL reserves
- * the high end of this range for internal use (tessellation, transform
- * feedback, gl_FragCoord fixup, cull-distance emulation, runtime
+ * MGL user/vertex-buffer tables expose indices 0..30 (count 31).  Fixed AIR
+ * compute ABIs may additionally use physical index 31; current GS/TES kernels
+ * exercise that index on Apple M4, while indices >= 32 cross the AGX 5-bit
+ * compiler boundary.  Slot 31 is therefore internal-only and MUST NOT expand
+ * the ordinary user-resource or vertex-layout tables to 32 entries.
+ *
+ * MGL reserves the high end of these domains for internal use (tessellation,
+ * transform feedback, gl_FragCoord fixup, cull-distance emulation, runtime
  * sizing).  A low vertex-stage slot is also reserved for fixed-function point
  * size emulation.  GL user buffer bindings (UBO/SSBO/atomic-counter) MUST NOT
- * land in the reserved range — `mglBufferSlotIsReservedForStage` is the
- * conflict-detection gate used by `applyMSLResourceBindings`.
+ * land in the reserved range; the program-aware link gate is
+ * `mglBufferSlotConflictsForProgram`.
  *
  * IMPORTANT — cross-stage slot reuse:
  * Several slots are reused across disjoint pipeline stages (e.g. slot 28 is
@@ -20,12 +25,12 @@
  * per-slot comments for reuse notes.
  *
  * Adding a new reserved slot:
- *   1. Pick the lowest free slot in [25, 30] for high internal slots, or a
- *      documented low slot if the feature must not collide with vertex attrs.
+ *   1. Pick the lowest free slot in [25, 30] for a user-visible stage or a
+ *      documented compute-only physical slot in [25, 31].
  *   2. Add an entry here with a doc comment + reuse notes.
  *   3. Update `mglBufferSlotIsReservedForStage` if the slot is stage-specific.
- *   4. Add a conflict check in `applyMSLResourceBindings` if user buffers could
- *      collide.
+ *   4. Extend `mglBufferSlotConflictsForProgram` and its link-time regression
+ *      coverage if a reflected user buffer could collide.
  */
 
 #ifndef MGL_BUFFER_SLOTS_H
@@ -39,8 +44,12 @@ extern "C" {
 
 /* spvBufferSizeConstants slot for runtime-sized SSBO arrays.
  * Set via SPVC_COMPILER_OPTION_MSL_BUFFER_SIZE_BUFFER_INDEX.  Bound in all
- * stages that have `needs_runtime_array_size_buffer`. */
+ * ordinary stages that have `needs_runtime_array_size_buffer`. */
 #define MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX 25u
+
+/* GS and compute-TES already use slot 25 for gather parameters.  Their AIR
+ * kernels place the hidden runtime-array size table at slot 23 instead. */
+#define MGL_COMPUTE_ABI_RUNTIME_ARRAY_SIZE_BUFFER_INDEX 23u
 
 typedef enum {
     /* Fixed-function point size parameter for vertex shaders.  Vertex attribute
@@ -64,15 +73,7 @@ typedef enum {
 
     /* Indirect draw parameter buffer (vertexCount, instanceCount, ...).
      * TCS/TES compute dispatch path.  Reused as kMGLCullDistanceVertex in VS.
-     *
-     * In the TES compute kernel path, slot 29 is ALSO reused as the
-     * `_mgl_xfb_out` transform-feedback output buffer: the MSL is injected by
-     * mglFixMSLTesAsComputeKernel and the buffer is bound by
-     * dispatchTessEvaluationShader.  This is safe because TCS and TES run in
-     * separate compute encoders — the TCS dispatch never sees the TES XFB
-     * binding, and the TES dispatch's XFB use never overlaps the TCS indirect
-     * params use.  Both uses are confined to the TCS/TES compute path and do
-     * not collide with the VS cull-distance reuse of slot 29 (disjoint path). */
+     * TES compute XFB uses the separate internal-only physical slot 31. */
     kMGLBufferSlot_IndirectParams   = 29,
 
     /* TES gl_in buffer (TCS output vertices).  Reused as
@@ -123,9 +124,18 @@ typedef enum {
      * resource bindings; slot 15 is reserved for point-size emulation. */
     kMGLVertexAttribBufferBase      = 16,
 
-    /* Metal vertex buffer layout indices are 0..30 (count = 31). */
-    kMGLMaxMetalVertexBufferIndex  = 30,
-    kMGLMaxMetalVertexBufferCount  = 31,
+    /* Reflected user resources and vertex-buffer layout tables are capped at
+     * 0..30.  The historical vertex names remain aliases because renderer
+     * table sizes and pipeline signatures already use them. */
+    kMGLMaxMetalUserBufferIndex    = 30,
+    kMGLMaxMetalUserBufferCount    = 31,
+    kMGLMaxMetalVertexBufferIndex  = kMGLMaxMetalUserBufferIndex,
+    kMGLMaxMetalVertexBufferCount  = kMGLMaxMetalUserBufferCount,
+
+    /* Physical compute-only ABI domain.  Slot 31 is reserved for fixed GS/TES
+     * transform-feedback streams and is never assigned to a user resource. */
+    kMGLMaxMetalComputeBufferIndex = 31,
+    kMGLMaxMetalComputeBufferCount = 32,
 } MGLReservedBufferSlot;
 
 /* Returns GL_TRUE if `slot` is reserved by MGL for the given shader `stage`
@@ -134,25 +144,21 @@ typedef enum {
  * `stage` is a _MAX_SHADER_TYPES index (see glm_context.h).  Pass -1 to check
  * against all stages conservatively.
  *
- * NOTE: slot 25 (MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX) is NOT considered reserved
- * here — the backend manages its own binding and it is intentionally
- * assignable to user SSBOs that need runtime-sized array sizing.  The
- * renderer binds the size buffer at slot 25 only when
- * `modules[stage].needs_runtime_array_size_buffer` is true, and the backend's own
- * decoration logic avoids collisions with user bindings. */
+ * NOTE: this conservative helper does not know whether a stage uses the
+ * runtime-array size table at slot 25.  Link-time callers must use
+ * `mglBufferSlotConflictsForProgram`, which reserves slot 25 exactly when
+ * `modules[stage].needs_runtime_array_size_buffer` is true. */
 GLboolean mglBufferSlotIsReservedForStage(GLuint slot, int stage);
 
 /* Returns GL_TRUE if `slot` is reserved in ANY stage (conservative check
  * for callers that do not know the target stage). */
 GLboolean mglBufferSlotIsReserved(GLuint slot);
 
-/* Returns GL_TRUE if `slot` is reserved for a program that uses
- * tessellation (TCS and/or TES shader attached).  Slots 26-30 are reserved
- * by the TCS/TES compute dispatch path (TessFactor=26, PatchOutput=27,
- * PatchInfo=28, IndirectParams=29, TESGlIn=30).  Call this from
- * `applyMSLResourceBindings` when `pptr` has TCS/TES stages attached to
- * detect UBO/SSBO bindings that would silently collide with tessellation
- * reserved buffers. */
+/* Returns GL_TRUE for the legacy cross-route tessellation helper range 26..30
+ * (factors, patch output/info, indirect params, TES gl_in).  It intentionally
+ * does not model route-specific slots 24, 25 or 31; link-time callers must use
+ * `mglBufferSlotConflictsForProgram` for the exact TCS/native-TES/compute-TES
+ * ownership set. */
 GLboolean mglBufferSlotIsReservedForTessellation(GLuint slot);
 
 /* Returns GL_TRUE if `slot` is reserved for a program whose vertex shader
@@ -162,14 +168,31 @@ GLboolean mglBufferSlotIsReservedForCullDistance(GLuint slot);
 
 /* Returns GL_TRUE if `slot` is reserved for a program with a geometry
  * shader running on the M3 compute-expansion path (mgl_air_gs_abi.h).
- * Slots 24 (VS capture input), 28 (expanded output), 29 (counts) and
- * 30 (GS XFB, reserved) are owned by the GS compute kernel. */
+ * The current GS compute ABI owns slots 24..31, including gather params,
+ * output/count buffers and transform-feedback stream/meta buffers. */
 GLboolean mglBufferSlotIsReservedForGeometry(GLuint slot);
 
 /* Returns GL_TRUE if `slot` is reserved for a program whose fragment shader
  * uses the gl_FragCoord fixup.  Slot 30 is reserved by the FS FragCoord
  * params path. */
 GLboolean mglBufferSlotIsReservedForFragCoordFixup(GLuint slot);
+
+struct Program_t;
+
+/* Returns the hidden runtime-array size-table slot emitted for this program's
+ * stage.  GS and isolines/point-mode TES use the compute-ABI slot 23; all
+ * other stages use the ordinary slot 25. */
+GLuint mglRuntimeArraySizeBufferIndexForProgram(
+    const struct Program_t *program, int stage);
+
+/* Returns GL_TRUE when a reflected user buffer at `slot` would collide with
+ * an internal buffer used by the active execution path for `program` and
+ * `stage`.  Unlike the conservative registry helpers above, this query is
+ * program-aware: ordinary programs are not rejected merely because they use
+ * a numeric slot that is reserved by an inactive GS/TES/emulation path. */
+GLboolean mglBufferSlotConflictsForProgram(const struct Program_t *program,
+                                           GLuint slot,
+                                           int stage);
 
 /* Human-readable name for a reserved slot, or NULL if not reserved.
  * Useful for conflict-reporting logs. */

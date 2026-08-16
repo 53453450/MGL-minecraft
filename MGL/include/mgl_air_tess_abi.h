@@ -25,6 +25,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "mgl_buffer_slots.h" /* compute physical buffer-index boundary */
 #include "mgl_shader_abi.h" /* MGL_AIR_PER_VERTEX_*, MGLShaderResourceList */
 
 #if defined(__cplusplus)
@@ -137,6 +138,29 @@ enum {
      * transform-feedback target here when feedback is active. */
     MGL_AIR_TESS_SLOT_XFB_OUT       = 31,
 };
+
+MGL_AIR_TESS_STATIC_ASSERT(MGL_COMPUTE_ABI_RUNTIME_ARRAY_SIZE_BUFFER_INDEX <
+                               MGL_AIR_TESS_SLOT_TCS_STAGE_IN,
+                           "compute-TES runtime-size table must stay below the fixed ABI");
+MGL_AIR_TESS_STATIC_ASSERT(MGL_COMPUTE_ABI_RUNTIME_ARRAY_SIZE_BUFFER_INDEX !=
+                               MGL_AIR_TESS_SLOT_GATHER_PARAMS,
+                           "compute-TES runtime-size table must not alias gather params");
+
+MGL_AIR_TESS_STATIC_ASSERT((int)MGL_AIR_TESS_SLOT_XFB_OUT ==
+                               (int)kMGLMaxMetalComputeBufferIndex,
+                           "TES XFB must occupy the last physical compute slot");
+MGL_AIR_TESS_STATIC_ASSERT((int)MGL_AIR_TESS_SLOT_XFB_OUT <
+                               (int)kMGLMaxMetalComputeBufferCount,
+                           "TES XFB exceeds the physical compute slot domain");
+MGL_AIR_TESS_STATIC_ASSERT((int)MGL_AIR_TESS_SLOT_XFB_OUT >
+                               (int)kMGLMaxMetalUserBufferIndex,
+                           "TES XFB slot must remain internal-only");
+MGL_AIR_TESS_STATIC_ASSERT(kMGLMaxMetalUserBufferCount ==
+                               kMGLMaxMetalUserBufferIndex + 1,
+                           "user buffer count must remain the 0..30 domain");
+MGL_AIR_TESS_STATIC_ASSERT(kMGLMaxMetalComputeBufferCount ==
+                               kMGLMaxMetalComputeBufferIndex + 1,
+                           "compute physical count must include slot 31");
 
 MGL_AIR_TESS_STATIC_ASSERT(MGL_AIR_TESS_FACTOR_QUAD_HALF_BYTES == 12u,
                            "quad half tess factors are 12 bytes");

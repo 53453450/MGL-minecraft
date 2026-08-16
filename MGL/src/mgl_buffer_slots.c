@@ -8,6 +8,7 @@
  */
 
 #include "mgl_buffer_slots.h"
+#include "glm_context.h"  /* brings in Program after GLMContext typedef */
 #include <stddef.h>  /* NULL */
 
 /* Shader stage indices — must match the enum order in glm_context.h
@@ -139,9 +140,98 @@ GLboolean mglBufferSlotIsReservedForFragCoordFixup(GLuint slot)
     return (slot == 30u) ? GL_TRUE : GL_FALSE;
 }
 
+GLuint mglRuntimeArraySizeBufferIndexForProgram(const Program *program,
+                                                int stage)
+{
+    if (program &&
+        (stage == _GEOMETRY_SHADER ||
+         (stage == _TESS_EVALUATION_SHADER &&
+          (program->tess_gen_mode == GL_ISOLINES ||
+           program->tess_gen_point_mode)))) {
+        return MGL_COMPUTE_ABI_RUNTIME_ARRAY_SIZE_BUFFER_INDEX;
+    }
+    return MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX;
+}
+
+GLboolean mglBufferSlotConflictsForProgram(const Program *program,
+                                           GLuint slot,
+                                           int stage)
+{
+    if (!program || stage < 0 || stage >= _MAX_SHADER_TYPES) {
+        return GL_FALSE;
+    }
+
+    /* The AIR backend exposes the runtime-array byte-size table at a fixed
+     * Metal slot.  A reflected user buffer at that slot would be overwritten
+     * when the stage binds the hidden table, so reject the collision at link
+     * time rather than allowing a draw/dispatch-time data corruption. */
+    if (slot == mglRuntimeArraySizeBufferIndexForProgram(program, stage) &&
+        program->modules[stage].needs_runtime_array_size_buffer) {
+        return GL_TRUE;
+    }
+
+    switch (stage) {
+        case _VERTEX_SHADER:
+            if (program->uses_point_size_params &&
+                slot == kMGLPointSizeBufferIndex) {
+                return GL_TRUE;
+            }
+            if (program->uses_cull_distance &&
+                mglBufferSlotIsReservedForCullDistance(slot)) {
+                return GL_TRUE;
+            }
+            break;
+
+        case _TESS_CONTROL_SHADER:
+            /* The TCS AIR compute kernel always owns stage_in(24), factors
+             * (26), patch output(27), stage output(28), and indirect(29).
+             * Slot 30 belongs to TES, so do not reject a TCS-only user
+             * resource there. */
+            if (slot == 24u || (slot >= 26u && slot <= 29u)) {
+                return GL_TRUE;
+            }
+            break;
+
+        case _TESS_EVALUATION_SHADER:
+            if (program->tess_gen_mode == GL_ISOLINES ||
+                program->tess_gen_point_mode) {
+                /* Isolines and point-mode TES execute as a compute kernel
+                 * whose fixed ABI occupies every slot in [24, 31]. */
+                if (slot >= 24u && slot <= 31u) {
+                    return GL_TRUE;
+                }
+            } else if (slot == 27u || slot == 28u || slot == 30u) {
+                /* Native triangle/quad TES: patch input, patch info, gl_in. */
+                return GL_TRUE;
+            }
+            break;
+
+        case _GEOMETRY_SHADER:
+            if (program->gs_route == MGL_GS_ROUTE_COMPUTE &&
+                mglBufferSlotIsReservedForGeometry(slot)) {
+                return GL_TRUE;
+            }
+            break;
+
+        case _FRAGMENT_SHADER:
+            if (program->usesFragCoordParams &&
+                mglBufferSlotIsReservedForFragCoordFixup(slot)) {
+                return GL_TRUE;
+            }
+            break;
+
+        default:
+            break;
+    }
+
+    return GL_FALSE;
+}
+
 const char *mglBufferSlotReservedName(GLuint slot)
 {
     switch (slot) {
+        case 23:
+            return "MGL_COMPUTE_ABI_RUNTIME_ARRAY_SIZE_BUFFER_INDEX (GS/compute-TES runtime-sized SSBO sizing)";
         case 14:
             return "kMGLLodBiasMaxBufferIndex (FS LOD_BIAS clamp max)";
         case 15:
@@ -149,7 +239,7 @@ const char *mglBufferSlotReservedName(GLuint slot)
         case 24:
             return "kMGLBufferSlot_TCSStageInRepl (TCS [[stage_in]] replacement) / MGL_AIR_GS_SLOT_INPUT (GS compute expansion)";
         case 25:
-            return "MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX (runtime-sized SSBO sizing) / MGL_AIR_GS_SLOT_GATHER_PARAMS (GS index-gather params)";
+            return "MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX (ordinary runtime-sized SSBO sizing) / MGL_AIR_GS_SLOT_GATHER_PARAMS / MGL_AIR_TESS_SLOT_GATHER_PARAMS";
         case 26:
             return "kMGLBufferSlot_TessFactor (TCS/TES compute path)";
         case 27:

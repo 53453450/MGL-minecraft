@@ -2536,8 +2536,19 @@ static llvm::Value *emitGeometryStreamVertex(Codegen &cg, int32_t stream)
     llvm::Value *metaBase = cg.b->CreateBitCast(
         cg.geometryXfbMetaPtr, i32->getPointerTo(1));
     /* Stream block offset: MGLAIRGSXFBStreamMeta is 32 bytes, with
-     * stride@0 capacity@4 capture_base@8 cursor@16 written@24. */
+     * stride@0 capacity@4 capture_base@8 generated@12 cursor@16
+     * written@24. */
     llvm::Value *blockOff = cg.b->getInt32(stream * 8u); /* 32B in u32 words */
+    if (stream > 0) {
+        /* Non-zero streams are currently points-only. Count each visible
+         * emitted point independently of XFB capture so indexed
+         * PRIMITIVES_GENERATED remains meaningful when no XFB buffer is bound. */
+        llvm::Value *generatedPtr = cg.b->CreateGEP(
+            i32, metaBase, cg.b->CreateAdd(blockOff, cg.b->getInt32(3)));
+        cg.b->CreateAtomicRMW(llvm::AtomicRMWInst::Add, generatedPtr,
+                              cg.b->getInt32(1), llvm::MaybeAlign(),
+                              llvm::AtomicOrdering::Monotonic);
+    }
     llvm::Value *stride = cg.b->CreateAlignedLoad(
         i32, cg.b->CreateGEP(i32, metaBase, blockOff), llvm::Align(4));
     llvm::Value *captureOn = cg.b->CreateICmpNE(stride, cg.b->getInt32(0));
@@ -5944,6 +5955,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         (tu->layout_primitive == MGL_AST_TES_ISOLINES ||
          tu->layout_point_mode != 0);
     const bool isKernel = isCompute || isTCS || isGS || isTESCompute;
+    const uint32_t runtimeArraySizeBufferIndex =
+        (isGS || isTESCompute)
+            ? MGL_COMPUTE_ABI_RUNTIME_ARRAY_SIZE_BUFFER_INDEX
+            : MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX;
 
     if (isGS) {
         /* The parser intentionally shares the token `triangles` between TES
@@ -6425,7 +6440,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
          * expanded output records, one 28-byte counts record per work
          * item, the optional indexed gather stream, the gather params
          * constant, the transform-feedback stream(31) and its atomic
-         * meta record(32).  All buffers in device address space. */
+         * meta record(27).  All buffers in device address space. */
         for (int i = 0; i < 3; i++)
             paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
         /* Gather stream + params are bound only for indexed draws; the
@@ -7264,7 +7279,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 cg.geometryCountPtr && cg.geometryWorkItemId) {
                 /* ABI (mgl_air_gs_abi.h §5): append this work item's
                  * visible expanded vertices to the XFB stream (slot 31)
-                 * through the atomic meta cursor (slot 32).  Capture is
+                 * through the atomic meta cursor (slot 27).  Capture is
                  * off when the runtime pre-wrote stride == 0; culled
                  * primitives (visible == 0) contribute nothing, matching
                  * GL 4.6 §13.2.4.  The record run is 2 header records +
@@ -7739,7 +7754,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             llvm::MDString::get(ctx, "air.buffer"),
             llvm::MDString::get(ctx, "air.location_index"),
             llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                i32, MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX)),
+                i32, runtimeArraySizeBufferIndex)),
             llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(i32, 1)),
             llvm::MDString::get(ctx, "air.read"),
             llvm::MDString::get(ctx, "air.address_space"),
@@ -7952,7 +7967,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         uboCount + (needsBufferSizeBuffer ? 1 : 0) + 2 * texCount + imageCount;
     if (isTCS) mArgSlot += 5;
     else if (isGS) mArgSlot += 7;  /* input/output/counts/gather/params/xfb/xfb-meta */
-    else if (isTESCompute) mArgSlot += 7; /* stage_in/factors/patches/out/indirect/gather/params */
+    else if (isTESCompute) mArgSlot += 8; /* stage_in/factors/patches/out/indirect/gather/params/xfb */
     if (isVS) {
         /* Vertex attribute metadata already emitted above. */
     } else if (isTES && !isTESCompute) {

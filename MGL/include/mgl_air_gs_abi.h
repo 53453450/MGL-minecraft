@@ -28,6 +28,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "mgl_buffer_slots.h" /* compute physical buffer-index boundary */
 #include "mgl_shader_abi.h" /* MGLAIRPerVertexRecord, MGL_AIR_PER_VERTEX_* */
 
 #if defined(__cplusplus)
@@ -70,6 +71,22 @@ enum {
      * mask, so slot indices >= 32 crash the shader-compiler service. */
     MGL_AIR_GS_SLOT_XFB_META = 27,
 };
+
+MGL_AIR_STATIC_ASSERT((int)MGL_AIR_GS_SLOT_XFB ==
+                          (int)kMGLMaxMetalComputeBufferIndex,
+                      "GS XFB must occupy the last physical compute slot");
+MGL_AIR_STATIC_ASSERT((int)MGL_AIR_GS_SLOT_XFB <
+                          (int)kMGLMaxMetalComputeBufferCount,
+                      "GS XFB exceeds the physical compute slot domain");
+MGL_AIR_STATIC_ASSERT((int)MGL_AIR_GS_SLOT_XFB >
+                          (int)kMGLMaxMetalUserBufferIndex,
+                      "GS XFB slot must remain internal-only");
+MGL_AIR_STATIC_ASSERT(kMGLMaxMetalUserBufferCount ==
+                          kMGLMaxMetalUserBufferIndex + 1,
+                      "user buffer count must remain the 0..30 domain");
+MGL_AIR_STATIC_ASSERT(kMGLMaxMetalComputeBufferCount ==
+                          kMGLMaxMetalComputeBufferIndex + 1,
+                      "compute physical count must include slot 31");
 
 /* =====================================================================
  * 2. Output record layout
@@ -226,7 +243,9 @@ typedef struct MGLAIRGSIndexGatherParams {
  * only legal when the output primitive type is points.  The single
  * physical slot-31 buffer is split into per-stream segments
  * (capture_base = byte offset of the segment); each stream owns one
- * MGLAIRGSXFBStreamMeta with its own atomic cursor / written counter.
+ * MGLAIRGSXFBStreamMeta with its own emitted-point, atomic cursor, and
+ * written counters.  The emitted-point counter is independent of capture so
+ * indexed PRIMITIVES_GENERATED remains valid when no XFB buffer is bound.
  *
  * The GS expanded output is variable-length (culled primitives contribute
  * nothing, GL 4.6 §13.2.4), so the kernel appends the visible expanded
@@ -245,7 +264,7 @@ typedef struct MGLAIRGSXFBStreamMeta {
     uint32_t capacity_bytes;  /* store capacity from the bound offset     */
     uint32_t capture_base;    /* byte offset of this stream's segment in
                                * the slot-31 buffer (renderer preset)     */
-    uint32_t pad;             /* keep u64 fields 8-aligned               */
+    uint32_t generated;       /* emitted visible points (stream > 0 query) */
     uint64_t cursor;          /* atomic reservation cursor (GPU written)  */
     uint64_t written;         /* atomic written-byte counter (GPU written)*/
 } MGLAIRGSXFBStreamMeta;
@@ -255,9 +274,11 @@ typedef struct MGLAIRGSXFBMeta {
 } MGLAIRGSXFBMeta;
 
 MGL_AIR_STATIC_ASSERT(sizeof(MGLAIRGSXFBStreamMeta) == 32u,
-                      "GS XFB stream meta is 12 + 4 pad + 8 + 8 bytes");
+                      "GS XFB stream meta is 12 + 4 generated + 8 + 8 bytes");
 MGL_AIR_STATIC_ASSERT(offsetof(MGLAIRGSXFBStreamMeta, stride) == 0u,
                       "stride must lead the stream meta");
+MGL_AIR_STATIC_ASSERT(offsetof(MGLAIRGSXFBStreamMeta, generated) == 12u,
+                      "generated counter must remain in the ABI padding word");
 MGL_AIR_STATIC_ASSERT(offsetof(MGLAIRGSXFBStreamMeta, cursor) == 16u,
                       "cursor must be 64-bit aligned at offset 16");
 MGL_AIR_STATIC_ASSERT(offsetof(MGLAIRGSXFBStreamMeta, written) == 24u,
@@ -303,11 +324,18 @@ enum {
     MGL_AIR_GS_SLOT_GATHER = 30,
 
     /* GS indexed gather params (setBytes constant), compute encoder only.
-     * Numerically the same slot as MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX (25); the
-     * size buffer is only bound when the GS uses runtime-sized SSBOs, which
-     * is not supported together with indexed gathers (P1). */
+     * Ordinary stages use runtime-array size slot 25, but GS kernels move that
+     * hidden table to MGL_COMPUTE_ABI_RUNTIME_ARRAY_SIZE_BUFFER_INDEX (23), so
+     * `.length()` and indexed/array gather parameters can coexist. */
     MGL_AIR_GS_SLOT_GATHER_PARAMS = 25,
 };
+
+MGL_AIR_STATIC_ASSERT(MGL_COMPUTE_ABI_RUNTIME_ARRAY_SIZE_BUFFER_INDEX <
+                          MGL_AIR_GS_SLOT_INPUT,
+                      "GS runtime-size table must stay below the fixed ABI");
+MGL_AIR_STATIC_ASSERT(MGL_COMPUTE_ABI_RUNTIME_ARRAY_SIZE_BUFFER_INDEX !=
+                          MGL_AIR_GS_SLOT_GATHER_PARAMS,
+                      "GS runtime-size table must not alias gather params");
 
 typedef struct MGLAIRGSGatherParams {
     uint32_t vertices_per_instance;   /* record span per instance (capture
