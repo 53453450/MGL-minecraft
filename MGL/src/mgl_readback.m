@@ -275,9 +275,7 @@ BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
             ? YES : NO;
     }
 
-    /* Packed type readback from BGRA8/RGBA8 UNORM source.
-     * Each pixel is extracted from 4-byte BGRA8/RGBA8 source and packed
-     * into the destination packed type. */
+    /* P4.5 (item 1171): BGRA8/RGBA8 packed readback in C++. */
     if (type == GL_UNSIGNED_BYTE_3_3_2 ||
         type == GL_UNSIGNED_BYTE_2_3_3_REV ||
         type == GL_UNSIGNED_SHORT_5_6_5 ||
@@ -292,88 +290,13 @@ BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
         type == GL_UNSIGNED_INT_2_10_10_10_REV ||
         type == GL_UNSIGNED_INT_10F_11F_11F_REV ||
         type == GL_UNSIGNED_INT_5_9_9_9_REV) {
-        for (NSUInteger y = 0; y < height; y++) {
-            const uint8_t *srcRow = src + (y * srcBytesPerRow);
-            NSUInteger dstY = flipY ? (height - 1u - y) : y;
-            uint8_t *dstRow = dst + (dstY * dstBytesPerRow);
-            for (NSUInteger x = 0; x < width; x++) {
-                const uint8_t *s = srcRow + (x * 4u);
-                uint32_t r = sourceIsRGBA ? s[0] : s[2];
-                uint32_t g = s[1];
-                uint32_t b = sourceIsRGBA ? s[2] : s[0];
-                uint32_t a = s[3];
-                /* Apply format channel mapping */
-                uint32_t rr = r, gg = g, bb = b, aa = a;
-                switch (format) {
-                    case GL_RGBA: case GL_RGB: case GL_RED: case GL_RG:
-                    case GL_GREEN: case GL_BLUE: case GL_ALPHA:
-                        break;
-                    case GL_BGRA: case GL_BGR: {
-                        uint32_t tmp = rr; rr = bb; bb = tmp;
-                        break;
-                    }
-                    default:
-                        break;
-                }
-                uint8_t *d = dstRow + (x * dstPixelBytes);
-                if (type == GL_UNSIGNED_BYTE_3_3_2) {
-                    d[0] = (uint8_t)(((rr >> 5u) << 5u) | ((gg >> 5u) << 2u) | (bb >> 6u));
-                } else if (type == GL_UNSIGNED_BYTE_2_3_3_REV) {
-                    d[0] = (uint8_t)((rr >> 5u) | ((gg >> 5u) << 3u) | ((bb >> 6u) << 6u));
-                } else if (type == GL_UNSIGNED_SHORT_5_6_5) {
-                    uint16_t packed = (uint16_t)(((rr >> 3u) << 11u) | ((gg >> 2u) << 5u) | (bb >> 3u));
-                    memcpy(d, &packed, sizeof(packed));
-                } else if (type == GL_UNSIGNED_SHORT_5_6_5_REV) {
-                    uint16_t packed = (uint16_t)((rr >> 3u) | ((gg >> 2u) << 5u) | ((bb >> 3u) << 11u));
-                    memcpy(d, &packed, sizeof(packed));
-                } else if (type == GL_UNSIGNED_SHORT_4_4_4_4) {
-                    uint16_t packed = (uint16_t)(((rr >> 4u) << 12u) | ((gg >> 4u) << 8u) | ((bb >> 4u) << 4u) | (aa >> 4u));
-                    memcpy(d, &packed, sizeof(packed));
-                } else if (type == GL_UNSIGNED_SHORT_4_4_4_4_REV) {
-                    uint16_t packed = (uint16_t)((rr >> 4u) | ((gg >> 4u) << 4u) | ((bb >> 4u) << 8u) | ((aa >> 4u) << 12u));
-                    memcpy(d, &packed, sizeof(packed));
-                } else if (type == GL_UNSIGNED_SHORT_5_5_5_1) {
-                    uint16_t packed = (uint16_t)(((rr >> 3u) << 11u) | ((gg >> 3u) << 6u) | ((bb >> 3u) << 1u) | (aa >= 128u ? 1u : 0u));
-                    memcpy(d, &packed, sizeof(packed));
-                } else if (type == GL_UNSIGNED_SHORT_1_5_5_5_REV) {
-                    uint16_t packed = (uint16_t)((rr >> 3u) | ((gg >> 3u) << 5u) | ((bb >> 3u) << 10u) | ((aa >= 128u ? 1u : 0u) << 15u));
-                    memcpy(d, &packed, sizeof(packed));
-                } else if (type == GL_UNSIGNED_INT_8_8_8_8) {
-                    /* CTS: R=(val>>24), G=(val>>16), B=(val>>8), A=(val>>0).
-                     * On little-endian this stores as [A,B,G,R] in memory. */
-                    uint32_t packed = ((uint32_t)rr << 24u) | ((uint32_t)gg << 16u) | ((uint32_t)bb << 8u) | aa;
-                    memcpy(d, &packed, sizeof(packed));
-                } else if (type == GL_UNSIGNED_INT_8_8_8_8_REV) {
-                    /* CTS: R=(val>>0), G=(val>>8), B=(val>>16), A=(val>>24).
-                     * On little-endian this stores as [R,G,B,A] in memory. */
-                    uint32_t packed = rr | ((uint32_t)gg << 8u) | ((uint32_t)bb << 16u) | ((uint32_t)aa << 24u);
-                    memcpy(d, &packed, sizeof(packed));
-                } else if (type == GL_UNSIGNED_INT_10_10_10_2) {
-                    uint32_t r10 = rr * 1023u / 255u;
-                    uint32_t g10 = gg * 1023u / 255u;
-                    uint32_t b10 = bb * 1023u / 255u;
-                    uint32_t a2 = aa * 3u / 255u;
-                    uint32_t packed = (r10 << 22u) | (g10 << 12u) | (b10 << 2u) | a2;
-                    memcpy(d, &packed, sizeof(packed));
-                } else if (type == GL_UNSIGNED_INT_2_10_10_10_REV) {
-                    uint32_t r10 = rr * 1023u / 255u;
-                    uint32_t g10 = gg * 1023u / 255u;
-                    uint32_t b10 = bb * 1023u / 255u;
-                    uint32_t a2 = aa * 3u / 255u;
-                    uint32_t packed = r10 | (g10 << 10u) | (b10 << 20u) | (a2 << 30u);
-                    memcpy(d, &packed, sizeof(packed));
-                } else if (type == GL_UNSIGNED_INT_10F_11F_11F_REV) {
-                    uint32_t packed = mglPackUnsignedFloatFromUNorm8(rr, 6u) |
-                                      (mglPackUnsignedFloatFromUNorm8(gg, 6u) << 11u) |
-                                      (mglPackUnsignedFloatFromUNorm8(bb, 5u) << 22u);
-                    memcpy(d, &packed, sizeof(packed));
-                } else if (type == GL_UNSIGNED_INT_5_9_9_9_REV) {
-                    uint32_t packed = mglPackRGBToSharedExp((double)rr / 255.0, (double)gg / 255.0, (double)bb / 255.0);
-                    memcpy(d, &packed, sizeof(packed));
-                }
-            }
-        }
-        return YES;
+        return mglRenderCppCopyUnorm8PackedTextureBytesToGL(
+                   src, (uint64_t)srcBytesPerRow,
+                   dst, (uint64_t)dstBytesPerRow,
+                   (uint64_t)width, (uint64_t)height,
+                   (uint32_t)pixelFormat, (uint32_t)format, (uint32_t)type,
+                   flipY ? 1 : 0)
+            ? YES : NO;
     }
 
     for (NSUInteger y = 0; y < height; y++) {

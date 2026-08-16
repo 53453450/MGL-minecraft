@@ -455,6 +455,17 @@ int mglRenderCppCopyUnorm8ScalarTextureBytesToGL(
     uint64_t width, uint64_t height,
     uint32_t pixel_format, uint32_t format, uint32_t type, int flip_y);
 
+/* P4.5 (item 1171): BGRA8/RGBA8 UNORM texture bytes -> GL packed
+ * types (3_3_2 / 5_6_5 / 4_4_4_4 / 5_5_5_1 / 8_8_8_8 /
+ * 10_10_10_2 / 10F_11F_11F_REV / 5_9_9_9_REV and REV variants).
+ * Mirrors the ObjC packed readback path (1 on success, 0 on bad
+ * args / unsupported). */
+int mglRenderCppCopyUnorm8PackedTextureBytesToGL(
+    const void *src, uint64_t src_bytes_per_row,
+    void *dst, uint64_t dst_bytes_per_row,
+    uint64_t width, uint64_t height,
+    uint32_t pixel_format, uint32_t format, uint32_t type, int flip_y);
+
 /* P4.4: CPU→GPU 上传路径选路。纯决策函数（无 Metal 对象参与），把
  * MGLRenderer+Texture.m uploadTextureSliceViaBlit 的「storage mode /
  * 纹理类型 / AGX 能力位 → replaceRegion 或 blit 或 reject」判定迁入 C++，

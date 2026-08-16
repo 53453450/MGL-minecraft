@@ -4704,6 +4704,90 @@ static int verifyReadbackScalarConvert(void) {
             return 1;
         }
     }
+    /* BGRA8/RGBA8 UNORM packed readback. */
+    {
+        uint8_t bgra[4] = {0, 0, 255, 255}; /* B,G,R,A → logical R=255 */
+        uint16_t rgb565 = 0;
+        if (mglRenderCppCopyUnorm8PackedTextureBytesToGL(
+                bgra, 4u, &rgb565, 2u, 1u, 1u,
+                (uint32_t)MTLPixelFormatBGRA8Unorm,
+                (uint32_t)GL_RGB, (uint32_t)GL_UNSIGNED_SHORT_5_6_5,
+                0) != 1 ||
+            rgb565 != 0xF800u) {
+            fprintf(stderr, "FAIL: bgra8 -> rgb 565 0x%x\n", rgb565);
+            return 1;
+        }
+        uint16_t bgr565 = 0;
+        if (mglRenderCppCopyUnorm8PackedTextureBytesToGL(
+                bgra, 4u, &bgr565, 2u, 1u, 1u,
+                (uint32_t)MTLPixelFormatBGRA8Unorm,
+                (uint32_t)GL_BGR, (uint32_t)GL_UNSIGNED_SHORT_5_6_5,
+                0) != 1 ||
+            bgr565 != 0x001Fu) {
+            fprintf(stderr, "FAIL: bgra8 -> bgr 565 0x%x\n", bgr565);
+            return 1;
+        }
+        uint32_t rev8888 = 0;
+        if (mglRenderCppCopyUnorm8PackedTextureBytesToGL(
+                bgra, 4u, &rev8888, 4u, 1u, 1u,
+                (uint32_t)MTLPixelFormatBGRA8Unorm,
+                (uint32_t)GL_RGBA, (uint32_t)GL_UNSIGNED_INT_8_8_8_8_REV,
+                0) != 1 ||
+            rev8888 != 0xFF0000FFu) {
+            fprintf(stderr, "FAIL: bgra8 -> 8888_REV 0x%x\n", rev8888);
+            return 1;
+        }
+        uint32_t rev210 = 0;
+        if (mglRenderCppCopyUnorm8PackedTextureBytesToGL(
+                bgra, 4u, &rev210, 4u, 1u, 1u,
+                (uint32_t)MTLPixelFormatBGRA8Unorm,
+                (uint32_t)GL_RGBA, (uint32_t)GL_UNSIGNED_INT_2_10_10_10_REV,
+                0) != 1 ||
+            rev210 != (1023u | (3u << 30))) {
+            fprintf(stderr, "FAIL: bgra8 -> 2_10_10_10_REV 0x%x\n", rev210);
+            return 1;
+        }
+        uint8_t rgba8[4] = {255, 0, 0, 255};
+        uint16_t rgba565 = 0;
+        if (mglRenderCppCopyUnorm8PackedTextureBytesToGL(
+                rgba8, 4u, &rgba565, 2u, 1u, 1u,
+                (uint32_t)MTLPixelFormatRGBA8Unorm,
+                (uint32_t)GL_RGB, (uint32_t)GL_UNSIGNED_SHORT_5_6_5,
+                0) != 1 ||
+            rgba565 != 0xF800u) {
+            fprintf(stderr, "FAIL: rgba8 -> rgb 565 0x%x\n", rgba565);
+            return 1;
+        }
+        uint8_t rows[8] = {0, 0, 255, 255, 0, 0, 0, 255};
+        uint16_t flip[2] = {0, 0};
+        if (mglRenderCppCopyUnorm8PackedTextureBytesToGL(
+                rows, 4u, flip, 2u, 1u, 2u,
+                (uint32_t)MTLPixelFormatBGRA8Unorm,
+                (uint32_t)GL_RGB, (uint32_t)GL_UNSIGNED_SHORT_5_6_5,
+                1) != 1 ||
+            flip[0] != 0u || flip[1] != 0xF800u) {
+            fprintf(stderr, "FAIL: unorm8 packed flipY 0x%x 0x%x\n",
+                    flip[0], flip[1]);
+            return 1;
+        }
+        if (mglRenderCppCopyUnorm8PackedTextureBytesToGL(
+                bgra, 4u, &rgb565, 2u, 1u, 1u,
+                (uint32_t)MTLPixelFormatBGRA8Unorm,
+                (uint32_t)GL_RGB, (uint32_t)GL_FLOAT, 0) != 0 ||
+            mglRenderCppCopyUnorm8PackedTextureBytesToGL(
+                bgra, 4u, &rgb565, 2u, 1u, 1u,
+                (uint32_t)MTLPixelFormatR16Unorm,
+                (uint32_t)GL_RGB, (uint32_t)GL_UNSIGNED_SHORT_5_6_5,
+                0) != 0 ||
+            mglRenderCppCopyUnorm8PackedTextureBytesToGL(
+                NULL, 4u, &rgb565, 2u, 1u, 1u,
+                (uint32_t)MTLPixelFormatBGRA8Unorm,
+                (uint32_t)GL_RGB, (uint32_t)GL_UNSIGNED_SHORT_5_6_5,
+                0) != 0) {
+            fprintf(stderr, "FAIL: unorm8 packed bad args\n");
+            return 1;
+        }
+    }
     printf("READBACK_SCALAR_CONVERT_OK\n");
     return 0;
 }
