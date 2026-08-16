@@ -233,6 +233,19 @@ typedef struct MGLActiveUniformEntry_t {
  * and binding mutations, freed at program deletion. */
 typedef struct MGLBufferBindingPlan MGLBufferBindingPlan;
 
+#define MGL_MAX_TRANSFORM_FEEDBACK_BUFFERS 4u
+
+/* Link-time transform-feedback scatter plan.  The plan is populated even for
+ * the currently unsupported GS SEPARATE_ATTRIBS execution route so that link
+ * validation and the eventual capture backend share one authoritative layout. */
+typedef struct MGLTransformFeedbackVaryingPlan_t {
+    GLuint buffer_index;
+    GLuint component_offset;
+    GLuint component_count;
+    GLint stream;
+    GLboolean builtin;
+} MGLTransformFeedbackVaryingPlan;
+
 typedef struct Program_t {
     GLuint dirty_bits;
     GLuint name;
@@ -342,6 +355,10 @@ typedef struct Program_t {
     GLsizei transform_feedback_varying_count;
     GLenum transform_feedback_buffer_mode;
     char transform_feedback_varying_names[MAX_ATTRIBS][96];
+    MGLTransformFeedbackVaryingPlan transform_feedback_layout[MAX_ATTRIBS];
+    GLuint transform_feedback_layout_buffer_count;
+    GLuint transform_feedback_layout_component_count;
+    GLboolean transform_feedback_layout_valid;
     /* Built-in variables exposed as active PROGRAM_INPUT / PROGRAM_OUTPUT
      * resources (gl_VertexID, gl_InstanceID, gl_FragDepth, gl_SampleMask, etc.).
      * Stored per-stage so that separate (single-stage) programs can expose

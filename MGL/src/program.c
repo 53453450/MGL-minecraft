@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <limits.h>
 #include <stdatomic.h>
 #include <ctype.h>
 #include <malloc/malloc.h>
@@ -37,8 +38,10 @@
 #include "mgl_metal_ref.h"
 #include "mgl_uniform_reflection.h"
 #include "mgl_program_reflection.h"
+#include "mgl_program_resource.h"
 #include "mgl_sampler_compat.h"
 #include "mgl_buffer_plan.h"
+#include "mgl_shader_resource.h"
 #include "mgl_render_cpp.h"
 
 
@@ -743,17 +746,108 @@ void mglDetachShader(GLMContext ctx, GLuint program, GLuint shader)
 
 
 
-/* Validate that all transform feedback varying names are active outputs
- * of the program.  Per the GL spec, LinkProgram must fail if any captured
- * varying is not an output of the last pre-rasterization stage. */
-static bool mglValidateTransformFeedbackVaryings(Program *pptr)
+static GLuint mglTransformFeedbackTypeComponents(GLuint type)
 {
-    if (!pptr || pptr->transform_feedback_varying_count <= 0)
+    switch (type) {
+        case GL_FLOAT: case GL_INT: case GL_UNSIGNED_INT: case GL_BOOL:
+        case GL_DOUBLE:
+            return 1u;
+        case GL_FLOAT_VEC2: case GL_INT_VEC2: case GL_UNSIGNED_INT_VEC2:
+        case GL_BOOL_VEC2: case GL_DOUBLE_VEC2:
+            return 2u;
+        case GL_FLOAT_VEC3: case GL_INT_VEC3: case GL_UNSIGNED_INT_VEC3:
+        case GL_BOOL_VEC3: case GL_DOUBLE_VEC3:
+            return 3u;
+        case GL_FLOAT_VEC4: case GL_INT_VEC4: case GL_UNSIGNED_INT_VEC4:
+        case GL_BOOL_VEC4: case GL_DOUBLE_VEC4:
+            return 4u;
+        case GL_FLOAT_MAT2: case GL_DOUBLE_MAT2:
+            return 4u;
+        case GL_FLOAT_MAT3: case GL_DOUBLE_MAT3:
+            return 9u;
+        case GL_FLOAT_MAT4: case GL_DOUBLE_MAT4:
+            return 16u;
+        case GL_FLOAT_MAT2x3: case GL_FLOAT_MAT3x2:
+        case GL_DOUBLE_MAT2x3: case GL_DOUBLE_MAT3x2:
+            return 6u;
+        case GL_FLOAT_MAT2x4: case GL_FLOAT_MAT4x2:
+        case GL_DOUBLE_MAT2x4: case GL_DOUBLE_MAT4x2:
+            return 8u;
+        case GL_FLOAT_MAT3x4: case GL_FLOAT_MAT4x3:
+        case GL_DOUBLE_MAT3x4: case GL_DOUBLE_MAT4x3:
+            return 12u;
+        default:
+            return 0u;
+    }
+}
+
+static bool mglTransformFeedbackBaseName(const char *name,
+                                         char out[96])
+{
+    if (!name || !name[0] || !out)
+        return false;
+    const char *bracket = strchr(name, '[');
+    size_t baseLength = bracket ? (size_t)(bracket - name) : strlen(name);
+    if (baseLength == 0u || baseLength > 95u)
+        return false;
+    if (!bracket) {
+        if (strchr(name, ']') != NULL)
+            return false;
+    } else {
+        char *end = NULL;
+        unsigned long element = strtoul(bracket + 1, &end, 10);
+        if (end == bracket + 1 || !end || *end != ']' || end[1] != '\0' ||
+            element > UINT_MAX)
+            return false;
+    }
+    memcpy(out, name, baseLength);
+    out[baseLength] = '\0';
+    return true;
+}
+
+static bool mglTransformFeedbackArrayElement(const char *name,
+                                             GLboolean *isElement,
+                                             GLuint *elementIndex)
+{
+    if (!name || !isElement || !elementIndex)
+        return false;
+    const char *bracket = strchr(name, '[');
+    if (!bracket) {
+        *isElement = GL_FALSE;
+        *elementIndex = 0u;
+        return strchr(name, ']') == NULL;
+    }
+    char *end = NULL;
+    unsigned long element = strtoul(bracket + 1, &end, 10);
+    if (end == bracket + 1 || !end || *end != ']' || end[1] != '\0' ||
+        element > UINT_MAX)
+        return false;
+    *isElement = GL_TRUE;
+    *elementIndex = (GLuint)element;
+    return true;
+}
+
+/* Build the link-time XFB scatter plan and validate the ARB_transform_feedback3
+ * control entries.  Execution still deliberately gates GS SEPARATE_ATTRIBS
+ * elsewhere, but every accepted program now has one authoritative binding,
+ * component-offset, and stream assignment plan ready for that route. */
+static bool mglValidateTransformFeedbackVaryings(GLMContext ctx, Program *pptr)
+{
+    if (!pptr)
+        return false;
+
+    memset(pptr->transform_feedback_layout, 0,
+           sizeof(pptr->transform_feedback_layout));
+    pptr->transform_feedback_layout_buffer_count = 0u;
+    pptr->transform_feedback_layout_component_count = 0u;
+    pptr->transform_feedback_layout_valid = GL_FALSE;
+    if (pptr->transform_feedback_varying_count <= 0) {
+        pptr->transform_feedback_layout_valid = GL_TRUE;
         return true;
+    }
 
     /* Determine the last active stage before fragment (the stage that
-     * provides transform feedback outputs).  Priority: geometry > tess
-     * eval > vertex. */
+     * provides transform feedback outputs). */
     int feedback_stage = -1;
     if (pptr->attached_shader_mask & GEOMETRY_SHADER_MASK_BIT)
         feedback_stage = _GEOMETRY_SHADER;
@@ -761,45 +855,165 @@ static bool mglValidateTransformFeedbackVaryings(Program *pptr)
         feedback_stage = _TESS_EVALUATION_SHADER;
     else if (pptr->attached_shader_mask & VERTEX_SHADER_MASK_BIT)
         feedback_stage = _VERTEX_SHADER;
-
     if (feedback_stage < 0)
-    {
-        /* No stage to capture from — all varyings are invalid. */
         return false;
-    }
 
     MGLShaderResourceList *outputs =
         &pptr->shader_resources_list[feedback_stage][_STAGE_OUTPUT_RES];
+    const GLuint maxInterleaved = ctx
+        ? ctx->state.var.max_transform_feedback_interleaved_components : 64u;
+    const GLuint maxSeparateComponents = ctx
+        ? ctx->state.var.max_transform_feedback_separate_components : 4u;
+    const GLuint maxBuffers = ctx
+        ? ctx->state.var.max_transform_feedback_buffers
+        : MGL_MAX_TRANSFORM_FEEDBACK_BUFFERS;
+    const GLuint maxSeparateAttribs = ctx
+        ? ctx->state.var.max_transform_feedback_separate_attribs
+        : MGL_MAX_TRANSFORM_FEEDBACK_BUFFERS;
+    if (maxBuffers == 0u || maxBuffers > MGL_MAX_TRANSFORM_FEEDBACK_BUFFERS ||
+        maxSeparateAttribs == 0u ||
+        maxSeparateAttribs > MGL_MAX_TRANSFORM_FEEDBACK_BUFFERS)
+        return false;
 
-    for (GLsizei i = 0; i < pptr->transform_feedback_varying_count; i++)
-    {
-        const char *varying = pptr->transform_feedback_varying_names[i];
-        if (!varying || varying[0] == '\0')
+    GLint bufferStream[MGL_MAX_TRANSFORM_FEEDBACK_BUFFERS];
+    GLuint bufferOffsets[MGL_MAX_TRANSFORM_FEEDBACK_BUFFERS] = {0};
+    for (GLuint i = 0u; i < MGL_MAX_TRANSFORM_FEEDBACK_BUFFERS; i++)
+        bufferStream[i] = -1;
+    GLuint buffer = 0u;
+    GLuint bufferCount = pptr->transform_feedback_buffer_mode ==
+        GL_SEPARATE_ATTRIBS
+        ? (GLuint)pptr->transform_feedback_varying_count : 1u;
+    if (pptr->transform_feedback_buffer_mode == GL_SEPARATE_ATTRIBS &&
+        bufferCount > maxSeparateAttribs)
+        return false;
+
+    for (GLsizei i = 0; i < pptr->transform_feedback_varying_count; i++) {
+        const char *name = pptr->transform_feedback_varying_names[i];
+        if (!name || !name[0])
+            return false;
+
+        if (strcmp(name, "gl_NextBuffer") == 0) {
+            if (pptr->transform_feedback_buffer_mode != GL_INTERLEAVED_ATTRIBS ||
+                buffer + 1u >= maxBuffers)
+                return false;
+            buffer++;
+            bufferOffsets[buffer] = 0u;
+            bufferCount = buffer + 1u;
+            pptr->transform_feedback_layout[i].buffer_index = buffer;
+            pptr->transform_feedback_layout[i].component_offset = 0u;
+            pptr->transform_feedback_layout[i].component_count = 0u;
+            pptr->transform_feedback_layout[i].stream = -1;
+            pptr->transform_feedback_layout[i].builtin = GL_TRUE;
             continue;
+        }
+        if (strncmp(name, "gl_SkipComponents", 17) == 0) {
+            if (pptr->transform_feedback_buffer_mode != GL_INTERLEAVED_ATTRIBS ||
+                name[17] < '1' || name[17] > '4' || name[18] != '\0')
+                return false;
+            GLuint skip = (GLuint)(name[17] - '0');
+            GLuint componentOffset = bufferOffsets[buffer];
+            if (componentOffset > maxInterleaved ||
+                skip > maxInterleaved - componentOffset)
+                return false;
+            pptr->transform_feedback_layout[i].buffer_index = buffer;
+            pptr->transform_feedback_layout[i].component_offset =
+                componentOffset;
+            pptr->transform_feedback_layout[i].component_count = skip;
+            pptr->transform_feedback_layout[i].stream = -1;
+            pptr->transform_feedback_layout[i].builtin = GL_TRUE;
+            bufferOffsets[buffer] += skip;
+            continue;
+        }
 
-        /* Strip array subscript for comparison (e.g. "foo[0]" -> "foo"). */
-        char base_name[96];
-        strncpy(base_name, varying, sizeof(base_name) - 1);
-        base_name[sizeof(base_name) - 1] = '\0';
-        char *bracket = strchr(base_name, '[');
-        if (bracket)
-            *bracket = '\0';
-
-        bool found = false;
-        for (GLuint j = 0; j < outputs->count; j++)
-        {
-            if (outputs->list[j].name &&
-                strcmp(outputs->list[j].name, base_name) == 0)
-            {
-                found = true;
-                break;
+        char baseName[96];
+        if (!mglTransformFeedbackBaseName(name, baseName))
+            return false;
+        GLboolean isArrayElement = GL_FALSE;
+        GLuint arrayElement = 0u;
+        if (!mglTransformFeedbackArrayElement(name, &isArrayElement,
+                                              &arrayElement))
+            return false;
+        for (GLsizei prior = 0; prior < i; prior++) {
+            char priorName[96];
+            const char *priorVarying =
+                pptr->transform_feedback_varying_names[prior];
+            if (mglTransformFeedbackBaseName(priorVarying, priorName) &&
+                strcmp(baseName, priorName) == 0) {
+                GLboolean priorIsElement = GL_FALSE;
+                GLuint priorElement = 0u;
+                if (!mglTransformFeedbackArrayElement(priorVarying,
+                                                      &priorIsElement,
+                                                      &priorElement))
+                    return false;
+                if (!isArrayElement || !priorIsElement ||
+                    arrayElement == priorElement)
+                    return false;
             }
         }
 
-        if (!found)
+        MGLShaderResource *output = NULL;
+        for (GLuint j = 0u; j < outputs->count; j++) {
+            if (outputs->list[j].name &&
+                strcmp(outputs->list[j].name, baseName) == 0) {
+                output = &outputs->list[j];
+                break;
+            }
+        }
+        if (!output)
             return false;
+
+        GLuint components = mglTransformFeedbackTypeComponents(output->gl_type);
+        GLuint arraySize = output->gl_array_size > 0
+            ? (GLuint)output->gl_array_size : 1u;
+        if (isArrayElement) {
+            if (!output->is_array || arrayElement >= arraySize)
+                return false;
+            arraySize = 1u;
+        }
+        if (components == 0u ||
+            arraySize > UINT_MAX / components)
+            return false;
+        components *= arraySize;
+
+        if (pptr->transform_feedback_buffer_mode == GL_SEPARATE_ATTRIBS) {
+            buffer = (GLuint)i;
+            if (buffer >= maxSeparateAttribs)
+                return false;
+        }
+        GLuint componentOffset = bufferOffsets[buffer];
+        if (pptr->transform_feedback_buffer_mode == GL_SEPARATE_ATTRIBS) {
+            if (components > maxSeparateComponents)
+                return false;
+        } else if (componentOffset > maxInterleaved ||
+                   components > maxInterleaved - componentOffset) {
+            return false;
+        }
+
+        GLint stream = output->stream >= 0 ? output->stream : 0;
+        if (stream < 0 || stream >= 4)
+            return false;
+        if (bufferStream[buffer] < 0)
+            bufferStream[buffer] = stream;
+        else if (bufferStream[buffer] != stream)
+            return false;
+
+        MGLTransformFeedbackVaryingPlan *entry =
+            &pptr->transform_feedback_layout[i];
+        entry->buffer_index = buffer;
+        entry->component_offset = componentOffset;
+        entry->component_count = components;
+        entry->stream = stream;
+        entry->builtin = GL_FALSE;
+        bufferOffsets[buffer] += components;
     }
 
+    pptr->transform_feedback_layout_buffer_count = bufferCount;
+    pptr->transform_feedback_layout_component_count = 0u;
+    for (GLuint i = 0u; i < bufferCount; i++) {
+        if (bufferOffsets[i] > pptr->transform_feedback_layout_component_count)
+            pptr->transform_feedback_layout_component_count = bufferOffsets[i];
+    }
+    pptr->transform_feedback_layout_valid = GL_TRUE;
     return true;
 }
 
@@ -1072,7 +1286,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
 
     /* Validate transform feedback varyings: the link must fail if any
      * captured varying is not an active output of the program. */
-    if (!mglValidateTransformFeedbackVaryings(pptr)) {
+    if (!mglValidateTransformFeedbackVaryings(ctx, pptr)) {
         fprintf(stderr,
                 "MGL WARNING: mglLinkProgram failed program %u: transform feedback "
                 "varying not found in program outputs\n",
@@ -1260,6 +1474,101 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
                                 ctx->state.var.max_atomic_counter_buffer_bindings);
                         binding_error = true;
                         break;
+                    }
+                }
+            }
+        }
+
+        /* The AIR backend assigns Metal buffer locations independently from
+         * GL layout(binding=N).  Validate those reflected locations against
+         * the internal ABI slots used by the program's actual execution
+         * paths before marking the link successful.  Delaying this until
+         * draw/dispatch would let user buffers silently overwrite GS/TES or
+         * emulation data already bound on the same encoder. */
+        if (!binding_error) {
+            static const int buffer_resource_types[] = {
+                _UNIFORM_BUFFER_RES,
+                _UNIFORM_CONSTANT_RES,
+                _STORAGE_BUFFER_RES,
+                _ATOMIC_COUNTER_RES
+            };
+            for (int stage = 0;
+                 stage < _MAX_SHADER_TYPES && !binding_error;
+                 stage++) {
+                if ((pptr->attached_shader_mask & (1u << stage)) == 0u) {
+                    continue;
+                }
+                for (size_t type_index = 0;
+                     type_index < sizeof(buffer_resource_types) /
+                                      sizeof(buffer_resource_types[0]) &&
+                     !binding_error;
+                     type_index++) {
+                    int resource_type = buffer_resource_types[type_index];
+                    MGLShaderResourceList *resources =
+                        &pptr->shader_resources_list[stage][resource_type];
+                    for (GLuint resource_index = 0;
+                         resource_index < resources->count && !binding_error;
+                         resource_index++) {
+                        MGLShaderResource *resource =
+                            &resources->list[resource_index];
+                        if (mglShouldSkipStageBufferResource(
+                                pptr, stage, resource_type, resource)) {
+                            continue;
+                        }
+                        GLuint element_count =
+                            mglStageBufferResourceElementCount(resource_type,
+                                                               resource);
+                        if (element_count == 0u) {
+                            element_count = 1u;
+                        }
+                        for (GLuint element = 0; element < element_count;
+                             element++) {
+                            uint64_t slot64 = (uint64_t)resource->binding +
+                                              (uint64_t)element;
+                            if (slot64 > UINT32_MAX) {
+                                fprintf(stderr,
+                                        "MGL LINK ERROR: program %u %s %s '%s' "
+                                        "Metal buffer slot overflows uint32\n",
+                                        pptr->name,
+                                        mglShaderStageName(stage),
+                                        mglMGLShaderResourceTypeName(resource_type),
+                                        resource->name ? resource->name : "(null)");
+                                binding_error = true;
+                                break;
+                            }
+                            GLuint slot = (GLuint)slot64;
+                            if (slot >= kMGLMaxMetalUserBufferCount) {
+                                fprintf(stderr,
+                                        "MGL LINK ERROR: program %u %s %s '%s' "
+                                        "Metal buffer slot %u exceeds user slot "
+                                        "limit [0, %u)\n",
+                                        pptr->name,
+                                        mglShaderStageName(stage),
+                                        mglMGLShaderResourceTypeName(resource_type),
+                                        resource->name ? resource->name : "(null)",
+                                        slot,
+                                        (unsigned)kMGLMaxMetalUserBufferCount);
+                                binding_error = true;
+                                break;
+                            }
+                            if (!mglBufferSlotConflictsForProgram(pptr, slot,
+                                                                 stage)) {
+                                continue;
+                            }
+                            const char *reserved =
+                                mglBufferSlotReservedName(slot);
+                            fprintf(stderr,
+                                    "MGL LINK ERROR: program %u %s %s '%s' "
+                                    "Metal buffer slot %u conflicts with %s\n",
+                                    pptr->name,
+                                    mglShaderStageName(stage),
+                                    mglMGLShaderResourceTypeName(resource_type),
+                                    resource->name ? resource->name : "(null)",
+                                    slot,
+                                    reserved ? reserved : "an internal buffer");
+                            binding_error = true;
+                            break;
+                        }
                     }
                 }
             }
