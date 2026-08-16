@@ -875,23 +875,37 @@ struct CommandBufferCompletionContext {
     ~CommandBufferCompletionContext() { destroy(); }
 
     void destroy() {
-        void* value = std::exchange(context, nullptr);
-        MGLRenderCppDestroyContext destroyFunction =
-            std::exchange(destroyContext, nullptr);
+        void* value = nullptr;
+        MGLRenderCppDestroyContext destroyFunction = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            value = std::exchange(context, nullptr);
+            destroyFunction = std::exchange(destroyContext, nullptr);
+        }
         if (value && destroyFunction) destroyFunction(value);
     }
 
     void complete(MTL::CommandBuffer* commandBuffer) {
         MGLRenderCppCommandBufferState state = {};
         snapshotCommandBufferState(commandBuffer, &state);
-        void* callbackContext = context;
+        void* callbackContext = nullptr;
+        MGLRenderCppCommandBufferCompletion completionCallback = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            if (completed) return;
+            completed = true;
+            callbackContext = context;
+            completionCallback = callback;
+        }
         struct DestroyGuard {
             CommandBufferCompletionContext* owner;
             ~DestroyGuard() { owner->destroy(); }
         } guard{this};
-        callback(callbackContext, &state);
+        if (completionCallback) completionCallback(callbackContext, &state);
     }
 
+    std::mutex mutex;
+    bool completed = false;
     MGLRenderCppCommandBufferCompletion callback = nullptr;
     void* context = nullptr;
     MGLRenderCppDestroyContext destroyContext = nullptr;
