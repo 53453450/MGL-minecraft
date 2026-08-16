@@ -36,20 +36,29 @@
 extern "C" {
 #endif
 
+/* Private Metal-cpp value facades used by the inline compatibility names.
+ * Keep declarations local instead of making this public header depend on
+ * MGL/src/mgl_render_cpp.h. */
+int mglRenderCppMetalPixelFormatIsDepthOrStencil(uint32_t pixel_format);
+int mglRenderCppMetalPixelFormatIsPackedDepthStencil(uint32_t pixel_format);
+int mglRenderCppGLInternalFormatLooksDepthOrStencil(uint32_t internal_format);
+int mglRenderCppTexturePixelFormatCompatibleWithExpectedDataKind(
+    uint32_t pixel_format, uint32_t expected_kind);
+uint64_t mglRenderCppMetalCompressedBlockHeight(uint32_t pixel_format);
+uint64_t mglRenderCppMetalUploadRowsForPixelFormat(uint32_t pixel_format,
+                                                   uint64_t pixel_height);
+
 /* === Pixel format classification ===
  *
- * These are static inline so the compiler can fold them at call sites that
- * pass constant pixel formats (very common in switch statements). */
+ * These remain inline compatibility wrappers; the classification tables are
+ * implemented once in the Metal-cpp TU and exposed through integer C ABI. */
 
 /* Returns true if `format` is a depth, stencil, or packed depth-stencil
  * Metal pixel format. */
 static inline bool mglMetalPixelFormatIsDepthOrStencil(MTLPixelFormat format)
 {
-    return format == MTLPixelFormatDepth16Unorm ||
-           format == MTLPixelFormatDepth32Float ||
-           format == MTLPixelFormatDepth24Unorm_Stencil8 ||
-           format == MTLPixelFormatDepth32Float_Stencil8 ||
-           format == MTLPixelFormatStencil8;
+    return mglRenderCppMetalPixelFormatIsDepthOrStencil(
+        (uint32_t)format) != 0;
 }
 
 /* Returns true if `format` is a packed depth-stencil Metal pixel format
@@ -57,8 +66,8 @@ static inline bool mglMetalPixelFormatIsDepthOrStencil(MTLPixelFormat format)
  * depth and stencil attachments must share the same texture. */
 static inline bool mglMetalPixelFormatIsPackedDepthStencil(MTLPixelFormat format)
 {
-    return format == MTLPixelFormatDepth24Unorm_Stencil8 ||
-           format == MTLPixelFormatDepth32Float_Stencil8;
+    return mglRenderCppMetalPixelFormatIsPackedDepthStencil(
+        (uint32_t)format) != 0;
 }
 
 /* Returns true if `internalformat` is a GL depth, depth-stencil, or
@@ -66,21 +75,8 @@ static inline bool mglMetalPixelFormatIsPackedDepthStencil(MTLPixelFormat format
  * paths and to skip color-only fallbacks. */
 static inline bool mglRendererGLInternalFormatLooksDepthOrStencil(GLenum internalformat)
 {
-    switch (internalformat) {
-        case GL_DEPTH_COMPONENT:
-        case GL_DEPTH_COMPONENT16:
-        case GL_DEPTH_COMPONENT24:
-        case GL_DEPTH_COMPONENT32:
-        case GL_DEPTH_COMPONENT32F:
-        case GL_DEPTH_STENCIL:
-        case GL_DEPTH24_STENCIL8:
-        case GL_DEPTH32F_STENCIL8:
-        case GL_STENCIL_INDEX:
-        case GL_STENCIL_INDEX8:
-            return true;
-        default:
-            return false;
-    }
+    return mglRenderCppGLInternalFormatLooksDepthOrStencil(
+        (uint32_t)internalformat) != 0;
 }
 
 /* === Texture data-kind matching ===
@@ -105,10 +101,8 @@ MGLTextureDataKind mglTextureDataKindForPixelFormat(MTLPixelFormat pixelFormat);
 static inline bool mglTexturePixelFormatCompatibleWithExpectedDataKind(MTLPixelFormat pixelFormat,
                                                                       MGLTextureDataKind expectedKind)
 {
-    if (expectedKind == MGLTextureDataKindUnknown) {
-        return true;
-    }
-    return mglTextureDataKindForPixelFormat(pixelFormat) == expectedKind;
+    return mglRenderCppTexturePixelFormatCompatibleWithExpectedDataKind(
+        (uint32_t)pixelFormat, (uint32_t)expectedKind) != 0;
 }
 
 const char *mglTextureDataKindName(MGLTextureDataKind kind);
@@ -213,72 +207,8 @@ MTLPixelFormat mglEffectiveMTLPixelFormatForTexture(MTLPixelFormat fmt, Texture 
  * their Y dimension (5/6/8/10/12); uncompressed formats return 1. */
 static inline NSUInteger mglMetalCompressedBlockHeight(MTLPixelFormat pixelFormat)
 {
-    switch (pixelFormat) {
-        case MTLPixelFormatBC1_RGBA:
-        case MTLPixelFormatBC1_RGBA_sRGB:
-        case MTLPixelFormatBC2_RGBA:
-        case MTLPixelFormatBC2_RGBA_sRGB:
-        case MTLPixelFormatBC3_RGBA:
-        case MTLPixelFormatBC3_RGBA_sRGB:
-        case MTLPixelFormatBC4_RUnorm:
-        case MTLPixelFormatBC4_RSnorm:
-        case MTLPixelFormatBC5_RGUnorm:
-        case MTLPixelFormatBC5_RGSnorm:
-        case MTLPixelFormatBC6H_RGBFloat:
-        case MTLPixelFormatBC6H_RGBUfloat:
-        case MTLPixelFormatBC7_RGBAUnorm:
-        case MTLPixelFormatBC7_RGBAUnorm_sRGB:
-        case MTLPixelFormatASTC_4x4_sRGB:
-        case MTLPixelFormatASTC_4x4_LDR:
-        case MTLPixelFormatASTC_4x4_HDR:
-        case MTLPixelFormatASTC_5x4_sRGB:
-        case MTLPixelFormatASTC_5x4_LDR:
-        case MTLPixelFormatASTC_5x4_HDR:
-            return 4u;
-        case MTLPixelFormatASTC_5x5_sRGB:
-        case MTLPixelFormatASTC_5x5_LDR:
-        case MTLPixelFormatASTC_5x5_HDR:
-        case MTLPixelFormatASTC_6x5_sRGB:
-        case MTLPixelFormatASTC_6x5_LDR:
-        case MTLPixelFormatASTC_6x5_HDR:
-        case MTLPixelFormatASTC_8x5_sRGB:
-        case MTLPixelFormatASTC_8x5_LDR:
-        case MTLPixelFormatASTC_8x5_HDR:
-        case MTLPixelFormatASTC_10x5_sRGB:
-        case MTLPixelFormatASTC_10x5_LDR:
-        case MTLPixelFormatASTC_10x5_HDR:
-            return 5u;
-        case MTLPixelFormatASTC_6x6_sRGB:
-        case MTLPixelFormatASTC_6x6_LDR:
-        case MTLPixelFormatASTC_6x6_HDR:
-        case MTLPixelFormatASTC_8x6_sRGB:
-        case MTLPixelFormatASTC_8x6_LDR:
-        case MTLPixelFormatASTC_8x6_HDR:
-        case MTLPixelFormatASTC_10x6_sRGB:
-        case MTLPixelFormatASTC_10x6_LDR:
-        case MTLPixelFormatASTC_10x6_HDR:
-            return 6u;
-        case MTLPixelFormatASTC_8x8_sRGB:
-        case MTLPixelFormatASTC_8x8_LDR:
-        case MTLPixelFormatASTC_8x8_HDR:
-        case MTLPixelFormatASTC_10x8_sRGB:
-        case MTLPixelFormatASTC_10x8_LDR:
-        case MTLPixelFormatASTC_10x8_HDR:
-            return 8u;
-        case MTLPixelFormatASTC_10x10_sRGB:
-        case MTLPixelFormatASTC_10x10_LDR:
-        case MTLPixelFormatASTC_10x10_HDR:
-        case MTLPixelFormatASTC_12x10_sRGB:
-        case MTLPixelFormatASTC_12x10_LDR:
-        case MTLPixelFormatASTC_12x10_HDR:
-            return 10u;
-        case MTLPixelFormatASTC_12x12_sRGB:
-        case MTLPixelFormatASTC_12x12_LDR:
-        case MTLPixelFormatASTC_12x12_HDR:
-            return 12u;
-        default:
-            return 1u;
-    }
+    return (NSUInteger)mglRenderCppMetalCompressedBlockHeight(
+        (uint32_t)pixelFormat);
 }
 
 /* Returns the number of upload rows for a compressed texture of the given
@@ -286,12 +216,8 @@ static inline NSUInteger mglMetalCompressedBlockHeight(MTLPixelFormat pixelForma
  * For compressed formats the height is rounded up to the block height. */
 static inline NSUInteger mglMetalUploadRowsForPixelFormat(MTLPixelFormat pixelFormat, NSUInteger pixelHeight)
 {
-    NSUInteger height = pixelHeight ? pixelHeight : 1u;
-    NSUInteger blockHeight = mglMetalCompressedBlockHeight(pixelFormat);
-    if (blockHeight <= 1u) {
-        return height;
-    }
-    return (height + blockHeight - 1u) / blockHeight;
+    return (NSUInteger)mglRenderCppMetalUploadRowsForPixelFormat(
+        (uint32_t)pixelFormat, (uint64_t)pixelHeight);
 }
 
 /* === Texture level read-only helpers ===

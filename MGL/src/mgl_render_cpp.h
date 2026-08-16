@@ -68,6 +68,13 @@ void mglRenderCppBindProgram(GLMContext glm_ctx, Program *program);
 void mglRenderCppWaitForSync(GLMContext glm_ctx, Sync *sync);
 unsigned int mglRenderCppGetSyncStatus(GLMContext glm_ctx, Sync *sync);
 void mglRenderCppReleaseSync(GLMContext glm_ctx, Sync *sync);
+uint64_t mglRenderCppGetGPUTimestamp(GLMContext glm_ctx);
+int mglRenderCppRegisterContextQueryStateOwner(GLMContext glm_ctx,
+                                               void *query_owner);
+void mglRenderCppUnregisterContextQueryStateOwner(GLMContext glm_ctx,
+                                                  void *query_owner);
+void mglRenderCppBeginTimerQueryCallback(GLMContext glm_ctx);
+uint64_t mglRenderCppEndTimerQueryCallback(GLMContext glm_ctx);
 
 enum {
     MGL_RENDER_CPP_AIR_PROGRAM_BOUND = 0,
@@ -365,6 +372,19 @@ int32_t mglRenderCppTextureIndexForMetalType(uint32_t texture_type);
 #define MGL_RENDER_CPP_TEXTURE_DATA_KIND_DEPTH   4u
 
 uint32_t mglRenderCppTextureDataKindForPixelFormat(uint32_t pixel_format);
+/* P4.5 (item 1111): pure pixel-format and GL internal-format predicates.
+ * The C ABI carries only stable integer enum values; ObjC compatibility
+ * headers remain thin wrappers around these C++ tables. */
+int mglRenderCppMetalPixelFormatIsDepthOrStencil(uint32_t pixel_format);
+int mglRenderCppMetalPixelFormatIsPackedDepthStencil(uint32_t pixel_format);
+int mglRenderCppGLInternalFormatLooksDepthOrStencil(uint32_t internal_format);
+int mglRenderCppTexturePixelFormatCompatibleWithExpectedDataKind(
+    uint32_t pixel_format, uint32_t expected_kind);
+/* P4.5 (item 1111): compressed upload row math.  Returns the block height
+ * and rounded upload-row count using uint64_t so the C ABI is Foundation-free. */
+uint64_t mglRenderCppMetalCompressedBlockHeight(uint32_t pixel_format);
+uint64_t mglRenderCppMetalUploadRowsForPixelFormat(uint32_t pixel_format,
+                                                   uint64_t pixel_height);
 /* P4.5 (item 1111): data-kind → debug name string (static literals).
  * kind uses MGL_RENDER_CPP_TEXTURE_DATA_KIND_*. */
 const char *mglRenderCppTextureDataKindName(uint32_t kind);
@@ -582,8 +602,8 @@ int mglRenderCppCopyBackCPUPrefix(
  * MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX when a compute shader uses .length()
  * on an unsized SSBO array.  This fills `out_sizes[out_capacity]` from the
  * per-buffer {metal_slot, visible_size} pairs, skipping the runtime-size
- * buffer slot itself and any slot >= max_slot (the Metal buffer-count cap,
- * kMGLMaxMetalVertexBufferCount=31).  `out_sizes` is expected to be
+ * buffer slot itself and any slot >= max_slot (the ordinary user-buffer table
+ * cap, kMGLMaxMetalUserBufferCount=31).  `out_sizes` is expected to be
  * zero-initialized by the caller; only claimed slots are written.  Returns
  * 0 on success, -1 on bad args (NULL out, NULL entries with nonzero count,
  * out_capacity < max_slot). */
@@ -1470,6 +1490,17 @@ int mglRenderCppCreateRenderPipelineState(
     void **pipeline_out,
     char *err,
     size_t errcap);
+/* Descriptor-based archive-aware creation used by the temporary ObjC
+ * descriptor paths. Complete VS+FS pipelines query the archive first and are
+ * added only on a miss. archive_hit_out is optional and receives 1 only when
+ * the returned PSO came directly from the archive. */
+int mglRenderCppCreateRenderPipelineStateWithArchive(
+    void *render_pipeline_descriptor,
+    void *binary_archive,
+    void **pipeline_out,
+    int *archive_hit_out,
+    char *err,
+    size_t errcap);
 /* P4.2: final/simple/safe descriptor builder 的 C ABI 入口 —— 从
  * MGLRenderCppPipelineDescriptorState value-state 直接创建 render PSO，
  * ObjC 不再组装 MTLRenderPipelineDescriptor。vs_function/fs_function 为 +0
@@ -1494,14 +1525,6 @@ int mglRenderCppCreateBinaryArchive(void *binary_archive_descriptor,
                                     void **binary_archive_out,
                                     char *err,
                                     size_t errcap);
-int mglRenderCppSetRenderPipelineBinaryArchive(
-    void *render_pipeline_descriptor,
-    void *binary_archive);
-int mglRenderCppAddRenderPipelineFunctionsToBinaryArchive(
-    void *binary_archive,
-    void *render_pipeline_descriptor,
-    char *err,
-    size_t errcap);
 int mglRenderCppSerializeBinaryArchive(void *binary_archive,
                                        void *url,
                                        char *err,
@@ -1957,6 +1980,51 @@ typedef struct MGLRenderCppCommandBufferState_t {
     char error_description[MGL_RENDER_CPP_ERROR_DESCRIPTION_CAPACITY];
 } MGLRenderCppCommandBufferState;
 
+typedef enum MGLRenderCppCommandBufferCommitAction_t {
+    MGL_RENDER_CPP_COMMAND_BUFFER_COMMIT_PROCEED = 0,
+    MGL_RENDER_CPP_COMMAND_BUFFER_COMMIT_SKIP_ALREADY_COMMITTED = 1,
+} MGLRenderCppCommandBufferCommitAction;
+
+typedef struct MGLRenderCppCommandBufferCommitDecision_t {
+    uint32_t action;
+} MGLRenderCppCommandBufferCommitDecision;
+
+typedef struct MGLRenderCppCommandBufferCompletionDecision_t {
+    uint32_t has_error;
+    uint32_t is_driver_rejection;
+} MGLRenderCppCommandBufferCompletionDecision;
+
+typedef struct MGLRenderCppCommandRecoverySnapshot_t {
+    uint64_t consecutive_errors;
+    uint64_t consecutive_successes;
+    double last_error_time;
+    uint32_t recovery_mode;
+} MGLRenderCppCommandRecoverySnapshot;
+
+typedef struct MGLRenderCppCommandRecoverySuccess_t {
+    MGLRenderCppCommandRecoverySnapshot state;
+    uint32_t sustained_recovery;
+    uint64_t recovered_successes;
+    uint64_t previous_errors;
+} MGLRenderCppCommandRecoverySuccess;
+
+typedef struct MGLRenderCppCommandRecoverySkipDecision_t {
+    MGLRenderCppCommandRecoverySnapshot state;
+    uint32_t should_skip;
+    uint32_t entered_recovery_mode;
+    uint32_t recovery_timed_out;
+    uint64_t previous_errors;
+} MGLRenderCppCommandRecoverySkipDecision;
+
+typedef struct MGLRenderCppCommandBufferCompletionResult_t {
+    MGLRenderCppCommandBufferCompletionDecision decision;
+    MGLRenderCppCommandRecoverySnapshot state;
+    uint32_t sustained_recovery;
+    uint32_t cleared_recovery_mode;
+    uint64_t recovered_successes;
+    uint64_t previous_errors;
+} MGLRenderCppCommandBufferCompletionResult;
+
 typedef void (*MGLRenderCppCommandBufferCompletion)(
     void *context,
     const MGLRenderCppCommandBufferState *state);
@@ -1969,6 +2037,43 @@ typedef void (*MGLRenderCppDestroyContext)(void *context);
 int mglRenderCppGetCommandBufferState(
     void *command_buffer,
     MGLRenderCppCommandBufferState *state_out);
+/* Pure value-state classification used by the ObjC recovery policy. Commit
+ * classification intentionally preserves the legacy status-test ordering. */
+int mglRenderCppClassifyCommandBufferCommit(
+    const MGLRenderCppCommandBufferState *state,
+    MGLRenderCppCommandBufferCommitDecision *decision_out);
+int mglRenderCppClassifyCommandBufferCompletion(
+    const MGLRenderCppCommandBufferState *state,
+    MGLRenderCppCommandBufferCompletionDecision *decision_out);
+/* Thread-safe owner for the renderer's command-completion error counters.
+ * Timestamps are caller-provided seconds so policy remains independent of
+ * Foundation and can be tested deterministically. */
+int mglRenderCppCreateCommandRecoveryOwner(void **owner_out);
+void mglRenderCppDestroyCommandRecoveryOwner(void **owner);
+int mglRenderCppCommandRecoveryRecordError(
+    void *owner,
+    double now,
+    MGLRenderCppCommandRecoverySnapshot *state_out);
+int mglRenderCppCommandRecoveryRecordSuccess(
+    void *owner,
+    double now,
+    MGLRenderCppCommandRecoverySuccess *result_out);
+/* Kept separate from RecordSuccess to preserve the legacy two-lock completion
+ * sequence. Returns 1 when recovery mode was cleared, 0 when already clear. */
+int mglRenderCppCommandRecoveryClearMode(void *owner);
+int mglRenderCppCommandRecoveryShouldSkip(
+    void *owner,
+    double now,
+    MGLRenderCppCommandRecoverySkipDecision *decision_out);
+/* Classify one completed command buffer and apply the legacy recovery-owner
+ * update sequence. Success intentionally performs RecordSuccess followed by
+ * the separate ClearMode operation so the former two-lock ordering remains
+ * observable; ObjC consumes the returned value state for logging/reset work. */
+int mglRenderCppProcessCommandBufferCompletion(
+    void *owner,
+    const MGLRenderCppCommandBufferState *state,
+    double now,
+    MGLRenderCppCommandBufferCompletionResult *result_out);
 int mglRenderCppAddCommandBufferCompletion(
     void *command_buffer,
     MGLRenderCppCommandBufferCompletion callback,
@@ -1989,10 +2094,28 @@ int mglRenderCppCreateCommandBufferOwnerAdopt(void *command_buffer,
 /* Borrowed pointer to the owner's current command buffer (NULL when the
  * owner has none / owner is NULL). */
 void *mglRenderCppCommandBufferOwnerGetCurrent(void *owner);
+/* Snapshot the owner's current buffer without exposing it to the caller.
+ * Returns -1 when the owner/current buffer/state output is missing. */
+int mglRenderCppGetCommandBufferOwnerState(
+    void *owner,
+    MGLRenderCppCommandBufferState *state_out);
+/* Encode presentation on the owner's current not-enqueued command buffer.
+ * Returns 0 on success, 1 when the current buffer is already finalized, and
+ * -1 for missing owner/current buffer/drawable. */
+int mglRenderCppPresentDrawableForCommandBufferOwner(
+    void *owner,
+    void *drawable,
+    MGLRenderCppCommandBufferState *state_out);
 int mglRenderCppResetCommandBufferOwner(void *owner,
                                         void *command_queue,
                                         void **command_buffer_out);
 void mglRenderCppDiscardCommandBufferOwnerCurrent(void *owner);
+/* Reentrancy guard for command-buffer commit. Returns 1 when acquired, 0
+ * when a commit is already in progress, and -1 for a missing owner. This
+ * preserves the former MGLCommandState BOOL semantics; it is intentionally
+ * not a cross-thread synchronization primitive. */
+int mglRenderCppCommandBufferOwnerBeginCommit(void *owner);
+void mglRenderCppCommandBufferOwnerEndCommit(void *owner);
 int mglRenderCppTakeCommandBufferSubmission(void *owner,
                                              void **submission_out,
                                              void **command_buffer_out);
@@ -2022,7 +2145,6 @@ void mglRenderCppResetMDIScratchOwner(void *owner);
 void mglRenderCppDestroyMDIScratchOwner(void **owner);
 int mglRenderCppCommitCommandBuffer(void *command_buffer);
 int mglRenderCppWaitCommandBuffer(void *command_buffer);
-int mglRenderCppPresentDrawable(void *command_buffer, void *drawable);
 
 /* P4.3b: per-draw binding snapshot。ObjC 侧保留「判定哪些绑定需要 emit」
  * 的 GL 逻辑（dedup 检查、统计、COW 记账），把通过判定的绑定序列收集进
@@ -2272,6 +2394,12 @@ int mglRenderCppGetRenderPassStateOwner(
     void *owner, MGLRenderCppRenderPassState *state_out);
 int mglRenderCppCreateRenderEncoderFromStateOwner(
     void *command_buffer, void *state_owner, void **render_encoder_out);
+/* Owner-aware variant used by command-lifecycle callers. The command buffer
+ * stays inside CommandBufferOwner; the returned encoder is borrowed. */
+int mglRenderCppCreateRenderEncoderFromCommandBufferOwnerState(
+    void *command_buffer_owner,
+    const MGLRenderCppRenderPassState *render_pass,
+    void **render_encoder_out);
 void mglRenderCppDestroyRenderPassStateOwner(void **owner);
 
 /* C++ owns the temporary MTL::RenderPassDescriptor used to create the
@@ -2289,12 +2417,32 @@ int mglRenderCppEncodeColorClear(void *command_buffer,
                                  double green,
                                  double blue,
                                  double alpha);
+/* Owner-aware variant used by renderer clear paths. The current command
+ * buffer remains inside CommandBufferOwner and is never borrowed through the
+ * C ABI. */
+int mglRenderCppEncodeColorClearForCommandBufferOwner(
+    void *command_buffer_owner,
+    void *texture,
+    uint64_t level,
+    uint64_t slice,
+    uint64_t depth_plane,
+    double red,
+    double green,
+    double blue,
+    double alpha);
 int mglRenderCppEncodeDepthClear(void *command_buffer,
                                  void *texture,
                                  uint64_t level,
                                  uint64_t slice,
                                  uint64_t depth_plane,
                                  double clear_depth);
+int mglRenderCppEncodeDepthClearForCommandBufferOwner(
+    void *command_buffer_owner,
+    void *texture,
+    uint64_t level,
+    uint64_t slice,
+    uint64_t depth_plane,
+    double clear_depth);
 int mglRenderCppEncodeMultisampleResolve(
     void *command_buffer,
     uint32_t attachment_kind,
@@ -2333,6 +2481,11 @@ void mglRenderCppDestroyRenderEncoderOwner(void **owner);
 int mglRenderCppEndRenderEncoder(void *render_encoder);
 int mglRenderCppCreateBlitEncoder(void *command_buffer,
                                   void **blit_encoder_out);
+/* Creates a borrowed blit encoder from CommandBufferOwner.current without
+ * exposing the current command buffer through the C ABI. */
+int mglRenderCppCreateBlitEncoderFromCommandBufferOwner(
+    void *command_buffer_owner,
+    void **blit_encoder_out);
 int mglRenderCppEndBlitEncoder(void *blit_encoder);
 /* Encode and end a complete buffer-to-texture upload blit in C++. The
  * command buffer retains the encoded resources after this function returns. */

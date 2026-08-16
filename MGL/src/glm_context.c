@@ -50,6 +50,14 @@ extern void mglFreeProgram(GLMContext ctx, Program *ptr);
 static _Thread_local GLMContext _ctx = NULL;
 static _Thread_local GLboolean _ctx_explicitly_unbound = GL_FALSE;
 
+int mglContextHasValidMetalBridge(GLMContext ctx)
+{
+    const uintptr_t minimum_valid_pointer = 0x1000u;
+    return ctx && (uintptr_t)ctx >= minimum_valid_pointer &&
+           ctx->mtl_funcs.mtlObj &&
+           (uintptr_t)ctx->mtl_funcs.mtlObj >= minimum_valid_pointer;
+}
+
 enum {
     kMGLMTLPixelFormatInvalid = 0,
     kMGLMTLPixelFormatRGBA8Unorm = 70,
@@ -741,7 +749,6 @@ static void mglDestroyContextShader(GLuint name, void *data, void *user)
 
 static void mglDestroyContextProgram(GLuint name, void *data, void *user)
 {
-    (void)name;
     GLMContext ctx = (GLMContext)user;
     Program *program = (Program *)data;
 
@@ -749,6 +756,10 @@ static void mglDestroyContextProgram(GLuint name, void *data, void *user)
         return;
     }
 
+    /* mglFreeProgram requires the name to be detached first.  foreach does
+     * not rehash on deletion, so removing the current slot is safe and keeps
+     * teardown on the same lifecycle path as glDeleteProgram. */
+    deleteHashElement(&ctx->state.program_table, name);
     mglFreeProgram(ctx, program);
 }
 

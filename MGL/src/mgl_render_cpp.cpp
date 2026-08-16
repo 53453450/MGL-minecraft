@@ -62,6 +62,8 @@ extern "C" void mtlFlushBufferRange(GLMContext glm_ctx,
                                      intptr_t offset,
                                      intptr_t length);
 extern "C" void mtlBindProgram(GLMContext glm_ctx, Program* program);
+extern "C" void mtlFlush(GLMContext glm_ctx, bool finish);
+extern "C" int mglContextHasValidMetalBridge(GLMContext glm_ctx);
 
 namespace mgl {
 
@@ -660,6 +662,8 @@ struct RendererCpp {
     std::array<Buffer*, kPackedStructBufferCapacity> packedStructBuffers{};
     size_t packedStructBufferIndex = 0;
     std::set<BindingState*> bindingStates;
+    std::mutex queryContextMutex;
+    std::map<GLMContext, void*> queryStateOwners;
 };
 
 struct CommandQueueOwner {
@@ -696,7 +700,26 @@ struct CommandBufferOwner {
 
     MTL::CommandBuffer* current = nullptr;
     CommandBufferSyncList syncs;
+    bool commit_in_progress = false;
 };
+
+struct CommandBufferRecoveryOwner {
+    std::mutex mutex;
+    uint64_t consecutiveErrors = 0;
+    uint64_t consecutiveSuccesses = 0;
+    double lastErrorTime = 0.0;
+    bool recoveryMode = false;
+};
+
+void snapshotCommandRecovery(
+    const CommandBufferRecoveryOwner& owner,
+    MGLRenderCppCommandRecoverySnapshot* state) {
+    if (!state) return;
+    state->consecutive_errors = owner.consecutiveErrors;
+    state->consecutive_successes = owner.consecutiveSuccesses;
+    state->last_error_time = owner.lastErrorTime;
+    state->recovery_mode = owner.recoveryMode ? 1u : 0u;
+}
 
 /* P4.5 (item 1141): the pending shared-event slot (event + GL sync name)
  * lives inside this owner; the ObjC MGLCommandState.currentEvent /
@@ -2712,6 +2735,69 @@ void mglRenderCppReleaseSync(GLMContext glm_ctx, Sync* sync) {
     mgl::releaseBridgedObject(&sync->mtl_event);
 }
 
+uint64_t mglRenderCppGetGPUTimestamp(GLMContext glm_ctx) {
+    if (!mglContextHasValidMetalBridge(glm_ctx)) {
+        return 0;
+    }
+
+    /* Preserve the existing GL ordering contract through the ObjC flush
+     * adapter.  Only the callback entry and timestamp sample move to C++;
+     * commit/AGX recovery remains owned by the legacy high-level path. */
+    mtlFlush(glm_ctx, true);
+    uint64_t cpu_timestamp = 0;
+    uint64_t gpu_timestamp = 0;
+    return mglRenderCppSampleTimestamps(
+               &cpu_timestamp, &gpu_timestamp) == 0
+        ? gpu_timestamp : 0;
+}
+
+int mglRenderCppRegisterContextQueryStateOwner(GLMContext glm_ctx,
+                                               void* query_owner) {
+    if (!glm_ctx || !query_owner) return -1;
+    mgl::RendererCpp& renderer = mgl::renderer();
+    std::lock_guard<std::mutex> lock(renderer.queryContextMutex);
+    renderer.queryStateOwners[glm_ctx] = query_owner;
+    return 0;
+}
+
+void mglRenderCppUnregisterContextQueryStateOwner(GLMContext glm_ctx,
+                                                  void* query_owner) {
+    if (!glm_ctx || !query_owner) return;
+    mgl::RendererCpp& renderer = mgl::renderer();
+    std::lock_guard<std::mutex> lock(renderer.queryContextMutex);
+    auto found = renderer.queryStateOwners.find(glm_ctx);
+    if (found != renderer.queryStateOwners.end() &&
+        found->second == query_owner) {
+        renderer.queryStateOwners.erase(found);
+    }
+}
+
+void mglRenderCppBeginTimerQueryCallback(GLMContext glm_ctx) {
+    if (!mglContextHasValidMetalBridge(glm_ctx)) return;
+    mtlFlush(glm_ctx, true);
+
+    mgl::RendererCpp& renderer = mgl::renderer();
+    std::lock_guard<std::mutex> lock(renderer.queryContextMutex);
+    auto found = renderer.queryStateOwners.find(glm_ctx);
+    if (found == renderer.queryStateOwners.end() ||
+        mglRenderCppBeginTimerQuery(found->second) != 0) {
+        fprintf(stderr, "MGL ERROR: failed to begin Metal-cpp timer query\n");
+    }
+}
+
+uint64_t mglRenderCppEndTimerQueryCallback(GLMContext glm_ctx) {
+    if (!mglContextHasValidMetalBridge(glm_ctx)) return 0;
+    mtlFlush(glm_ctx, true);
+
+    mgl::RendererCpp& renderer = mgl::renderer();
+    std::lock_guard<std::mutex> lock(renderer.queryContextMutex);
+    auto found = renderer.queryStateOwners.find(glm_ctx);
+    uint64_t elapsed = 0;
+    return found != renderer.queryStateOwners.end() &&
+           mglRenderCppEndTimerQuery(found->second, &elapsed) == 0
+        ? elapsed : 0;
+}
+
 int mglRenderCppCreateBuffer(uint64_t length,
                              uint64_t resource_options,
                              const char* label,
@@ -3259,6 +3345,142 @@ uint32_t mglRenderCppTextureDataKindForPixelFormat(uint32_t pixel_format) {
         default:
             return MGL_RENDER_CPP_TEXTURE_DATA_KIND_FLOAT;
     }
+}
+
+extern "C"
+int mglRenderCppMetalPixelFormatIsDepthOrStencil(uint32_t pixel_format) {
+    switch (static_cast<MTL::PixelFormat>(pixel_format)) {
+        case MTL::PixelFormatDepth16Unorm:
+        case MTL::PixelFormatDepth32Float:
+        case MTL::PixelFormatDepth24Unorm_Stencil8:
+        case MTL::PixelFormatDepth32Float_Stencil8:
+        case MTL::PixelFormatStencil8:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+extern "C"
+int mglRenderCppMetalPixelFormatIsPackedDepthStencil(uint32_t pixel_format) {
+    switch (static_cast<MTL::PixelFormat>(pixel_format)) {
+        case MTL::PixelFormatDepth24Unorm_Stencil8:
+        case MTL::PixelFormatDepth32Float_Stencil8:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+extern "C"
+int mglRenderCppGLInternalFormatLooksDepthOrStencil(uint32_t internal_format) {
+    switch (internal_format) {
+        case GL_DEPTH_COMPONENT:
+        case GL_DEPTH_COMPONENT16:
+        case GL_DEPTH_COMPONENT24:
+        case GL_DEPTH_COMPONENT32:
+        case GL_DEPTH_COMPONENT32F:
+        case GL_DEPTH_STENCIL:
+        case GL_DEPTH24_STENCIL8:
+        case GL_DEPTH32F_STENCIL8:
+        case GL_STENCIL_INDEX:
+        case GL_STENCIL_INDEX8:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+extern "C"
+int mglRenderCppTexturePixelFormatCompatibleWithExpectedDataKind(
+    uint32_t pixel_format, uint32_t expected_kind) {
+    if (expected_kind == MGL_RENDER_CPP_TEXTURE_DATA_KIND_UNKNOWN) {
+        return 1;
+    }
+    return mglRenderCppTextureDataKindForPixelFormat(pixel_format) ==
+           expected_kind;
+}
+
+extern "C"
+uint64_t mglRenderCppMetalCompressedBlockHeight(uint32_t pixel_format) {
+    switch (static_cast<MTL::PixelFormat>(pixel_format)) {
+        case MTL::PixelFormatBC1_RGBA:
+        case MTL::PixelFormatBC1_RGBA_sRGB:
+        case MTL::PixelFormatBC2_RGBA:
+        case MTL::PixelFormatBC2_RGBA_sRGB:
+        case MTL::PixelFormatBC3_RGBA:
+        case MTL::PixelFormatBC3_RGBA_sRGB:
+        case MTL::PixelFormatBC4_RUnorm:
+        case MTL::PixelFormatBC4_RSnorm:
+        case MTL::PixelFormatBC5_RGUnorm:
+        case MTL::PixelFormatBC5_RGSnorm:
+        case MTL::PixelFormatBC6H_RGBFloat:
+        case MTL::PixelFormatBC6H_RGBUfloat:
+        case MTL::PixelFormatBC7_RGBAUnorm:
+        case MTL::PixelFormatBC7_RGBAUnorm_sRGB:
+        case MTL::PixelFormatASTC_4x4_sRGB:
+        case MTL::PixelFormatASTC_4x4_LDR:
+        case MTL::PixelFormatASTC_4x4_HDR:
+        case MTL::PixelFormatASTC_5x4_sRGB:
+        case MTL::PixelFormatASTC_5x4_LDR:
+        case MTL::PixelFormatASTC_5x4_HDR:
+            return 4u;
+        case MTL::PixelFormatASTC_5x5_sRGB:
+        case MTL::PixelFormatASTC_5x5_LDR:
+        case MTL::PixelFormatASTC_5x5_HDR:
+        case MTL::PixelFormatASTC_6x5_sRGB:
+        case MTL::PixelFormatASTC_6x5_LDR:
+        case MTL::PixelFormatASTC_6x5_HDR:
+        case MTL::PixelFormatASTC_8x5_sRGB:
+        case MTL::PixelFormatASTC_8x5_LDR:
+        case MTL::PixelFormatASTC_8x5_HDR:
+        case MTL::PixelFormatASTC_10x5_sRGB:
+        case MTL::PixelFormatASTC_10x5_LDR:
+        case MTL::PixelFormatASTC_10x5_HDR:
+            return 5u;
+        case MTL::PixelFormatASTC_6x6_sRGB:
+        case MTL::PixelFormatASTC_6x6_LDR:
+        case MTL::PixelFormatASTC_6x6_HDR:
+        case MTL::PixelFormatASTC_8x6_sRGB:
+        case MTL::PixelFormatASTC_8x6_LDR:
+        case MTL::PixelFormatASTC_8x6_HDR:
+        case MTL::PixelFormatASTC_10x6_sRGB:
+        case MTL::PixelFormatASTC_10x6_LDR:
+        case MTL::PixelFormatASTC_10x6_HDR:
+            return 6u;
+        case MTL::PixelFormatASTC_8x8_sRGB:
+        case MTL::PixelFormatASTC_8x8_LDR:
+        case MTL::PixelFormatASTC_8x8_HDR:
+        case MTL::PixelFormatASTC_10x8_sRGB:
+        case MTL::PixelFormatASTC_10x8_LDR:
+        case MTL::PixelFormatASTC_10x8_HDR:
+            return 8u;
+        case MTL::PixelFormatASTC_10x10_sRGB:
+        case MTL::PixelFormatASTC_10x10_LDR:
+        case MTL::PixelFormatASTC_10x10_HDR:
+        case MTL::PixelFormatASTC_12x10_sRGB:
+        case MTL::PixelFormatASTC_12x10_LDR:
+        case MTL::PixelFormatASTC_12x10_HDR:
+            return 10u;
+        case MTL::PixelFormatASTC_12x12_sRGB:
+        case MTL::PixelFormatASTC_12x12_LDR:
+        case MTL::PixelFormatASTC_12x12_HDR:
+            return 12u;
+        default:
+            return 1u;
+    }
+}
+
+extern "C"
+uint64_t mglRenderCppMetalUploadRowsForPixelFormat(uint32_t pixel_format,
+                                                   uint64_t pixel_height) {
+    const uint64_t height = pixel_height ? pixel_height : 1u;
+    const uint64_t block_height =
+        mglRenderCppMetalCompressedBlockHeight(pixel_format);
+    if (block_height <= 1u) {
+        return height;
+    }
+    return (height + block_height - 1u) / block_height;
 }
 
 extern "C"
@@ -5651,7 +5873,8 @@ int mglRenderCppBuildRuntimeArraySizes(
     for (uint32_t i = 0; i < entry_count; i++) {
         const MGLRenderCppBufferSizeEntry& entry = entries[i];
         /* Skip the runtime-array-size buffer slot itself and any slot at or
-         * beyond the Metal buffer-count cap (kMGLMaxMetalVertexBufferCount).
+         * beyond the ordinary user-buffer table cap
+         * (kMGLMaxMetalUserBufferCount).
          * The size is truncated to uint32 exactly like the original ObjC
          * cast — the AIR backend reads a uint32; sizes >= 2^32 wrap. */
         if (entry.metal_slot >= max_slot ||
@@ -8950,6 +9173,64 @@ int mglRenderCppCreateRenderPipelineState(
     return 0;
 }
 
+int mglRenderCppCreateRenderPipelineStateWithArchive(
+    void* render_pipeline_descriptor,
+    void* binary_archive,
+    void** pipeline_out,
+    int* archive_hit_out,
+    char* err,
+    size_t errcap) {
+    if (pipeline_out) *pipeline_out = nullptr;
+    if (archive_hit_out) *archive_hit_out = 0;
+    if (err && errcap) err[0] = '\0';
+    MTL::RenderPipelineDescriptor* descriptor =
+        static_cast<MTL::RenderPipelineDescriptor*>(
+            render_pipeline_descriptor);
+    MTL::BinaryArchive* archive =
+        static_cast<MTL::BinaryArchive*>(binary_archive);
+    if (!descriptor || !pipeline_out) return -1;
+
+    mgl::RendererCpp& renderer = mgl::renderer();
+    std::lock_guard<std::mutex> lock(renderer.mutex);
+    if (!renderer.device) return -1;
+
+    const bool archiveEligible = archive && descriptor->vertexFunction() &&
+                                 descriptor->fragmentFunction();
+    MTL::RenderPipelineState* pipeline = nullptr;
+    NS::Error* nsError = nullptr;
+    if (archiveEligible) {
+        descriptor->setBinaryArchives(NS::Array::array(archive));
+        pipeline = renderer.device->newRenderPipelineState(
+            descriptor, MTL::PipelineOptionFailOnBinaryArchiveMiss,
+            nullptr, &nsError);
+        if (pipeline && archive_hit_out) *archive_hit_out = 1;
+    }
+
+    const bool archiveMiss = archiveEligible && !pipeline;
+    if (!pipeline) {
+        nsError = nullptr;
+        pipeline = renderer.device->newRenderPipelineState(
+            descriptor, &nsError);
+    }
+    if (!pipeline) {
+        mgl::copyError(nsError, err, errcap);
+        return -1;
+    }
+
+    if (archiveMiss) {
+        NS::Error* addError = nullptr;
+        if (!archive->addRenderPipelineFunctions(descriptor, &addError)) {
+            char addMessage[512] = {0};
+            mgl::copyError(addError, addMessage, sizeof(addMessage));
+            fprintf(stderr,
+                    "MGL BINARY ARCHIVE: addRenderPipeline warning: %s\n",
+                    addMessage[0] ? addMessage : "unknown error");
+        }
+    }
+    *pipeline_out = pipeline;
+    return 0;
+}
+
 int mglRenderCppCreateComputePipelineState(void* function,
                                            void** pipeline_out,
                                            char* err,
@@ -9001,39 +9282,6 @@ int mglRenderCppCreateBinaryArchive(void* binary_archive_descriptor,
             NS::String::string(label, NS::UTF8StringEncoding));
     }
     *binary_archive_out = archive;
-    return 0;
-}
-
-int mglRenderCppSetRenderPipelineBinaryArchive(
-    void* render_pipeline_descriptor,
-    void* binary_archive) {
-    MTL::RenderPipelineDescriptor* descriptor =
-        static_cast<MTL::RenderPipelineDescriptor*>(
-            render_pipeline_descriptor);
-    MTL::BinaryArchive* archive =
-        static_cast<MTL::BinaryArchive*>(binary_archive);
-    if (!descriptor || !archive) return -1;
-    descriptor->setBinaryArchives(NS::Array::array(archive));
-    return 0;
-}
-
-int mglRenderCppAddRenderPipelineFunctionsToBinaryArchive(
-    void* binary_archive,
-    void* render_pipeline_descriptor,
-    char* err,
-    size_t errcap) {
-    if (err && errcap) err[0] = '\0';
-    MTL::BinaryArchive* archive =
-        static_cast<MTL::BinaryArchive*>(binary_archive);
-    MTL::RenderPipelineDescriptor* descriptor =
-        static_cast<MTL::RenderPipelineDescriptor*>(
-            render_pipeline_descriptor);
-    if (!archive || !descriptor) return -1;
-    NS::Error* nsError = nullptr;
-    if (!archive->addRenderPipelineFunctions(descriptor, &nsError)) {
-        mgl::copyError(nsError, err, errcap);
-        return -1;
-    }
     return 0;
 }
 
@@ -10709,6 +10957,172 @@ int mglRenderCppGetCommandBufferState(
         static_cast<MTL::CommandBuffer*>(command_buffer), state_out);
 }
 
+int mglRenderCppClassifyCommandBufferCommit(
+    const MGLRenderCppCommandBufferState* state,
+    MGLRenderCppCommandBufferCommitDecision* decision_out) {
+    if (decision_out) memset(decision_out, 0, sizeof(*decision_out));
+    if (!state || !decision_out) return -1;
+
+    /* Preserve commitCommandBufferWithAGXRecovery's original ordering. Since
+     * Error follows Committed numerically, Error is classified as the legacy
+     * already-committed skip rather than changing recovery behavior here. */
+    if (state->status >=
+        static_cast<uint32_t>(MTL::CommandBufferStatusCommitted)) {
+        decision_out->action =
+            MGL_RENDER_CPP_COMMAND_BUFFER_COMMIT_SKIP_ALREADY_COMMITTED;
+    } else {
+        decision_out->action =
+            MGL_RENDER_CPP_COMMAND_BUFFER_COMMIT_PROCEED;
+    }
+    return 0;
+}
+
+int mglRenderCppClassifyCommandBufferCompletion(
+    const MGLRenderCppCommandBufferState* state,
+    MGLRenderCppCommandBufferCompletionDecision* decision_out) {
+    if (decision_out) memset(decision_out, 0, sizeof(*decision_out));
+    if (!state || !decision_out) return -1;
+
+    decision_out->has_error = state->has_error != 0;
+    decision_out->is_driver_rejection =
+        decision_out->has_error &&
+        strncmp(state->error_domain, "MTLCommandBufferErrorDomain",
+                sizeof(state->error_domain)) == 0 &&
+        state->error_code == 4;
+    return 0;
+}
+
+int mglRenderCppCreateCommandRecoveryOwner(void** owner_out) {
+    if (owner_out) *owner_out = nullptr;
+    if (!owner_out) return -1;
+    mgl::CommandBufferRecoveryOwner* owner =
+        new (std::nothrow) mgl::CommandBufferRecoveryOwner();
+    if (!owner) return -1;
+    *owner_out = owner;
+    return 0;
+}
+
+void mglRenderCppDestroyCommandRecoveryOwner(void** owner_handle) {
+    if (!owner_handle || !*owner_handle) return;
+    mgl::CommandBufferRecoveryOwner* owner =
+        static_cast<mgl::CommandBufferRecoveryOwner*>(*owner_handle);
+    *owner_handle = nullptr;
+    delete owner;
+}
+
+int mglRenderCppCommandRecoveryRecordError(
+    void* owner_handle,
+    double now,
+    MGLRenderCppCommandRecoverySnapshot* state_out) {
+    if (state_out) memset(state_out, 0, sizeof(*state_out));
+    mgl::CommandBufferRecoveryOwner* owner =
+        static_cast<mgl::CommandBufferRecoveryOwner*>(owner_handle);
+    if (!owner || !state_out) return -1;
+    std::lock_guard<std::mutex> lock(owner->mutex);
+    owner->consecutiveErrors++;
+    owner->consecutiveSuccesses = 0;
+    owner->lastErrorTime = now;
+    mgl::snapshotCommandRecovery(*owner, state_out);
+    return 0;
+}
+
+int mglRenderCppCommandRecoveryRecordSuccess(
+    void* owner_handle,
+    double now,
+    MGLRenderCppCommandRecoverySuccess* result_out) {
+    if (result_out) memset(result_out, 0, sizeof(*result_out));
+    mgl::CommandBufferRecoveryOwner* owner =
+        static_cast<mgl::CommandBufferRecoveryOwner*>(owner_handle);
+    if (!owner || !result_out) return -1;
+    std::lock_guard<std::mutex> lock(owner->mutex);
+    if (owner->consecutiveErrors > 0 || owner->recoveryMode) {
+        owner->consecutiveSuccesses++;
+        if (owner->consecutiveSuccesses >= 4 &&
+            now - owner->lastErrorTime > 0.25) {
+            result_out->sustained_recovery = 1;
+            result_out->recovered_successes = owner->consecutiveSuccesses;
+            result_out->previous_errors = owner->consecutiveErrors;
+            owner->consecutiveErrors = 0;
+            owner->recoveryMode = false;
+            owner->consecutiveSuccesses = 0;
+        }
+    }
+    mgl::snapshotCommandRecovery(*owner, &result_out->state);
+    return 0;
+}
+
+int mglRenderCppCommandRecoveryClearMode(void* owner_handle) {
+    mgl::CommandBufferRecoveryOwner* owner =
+        static_cast<mgl::CommandBufferRecoveryOwner*>(owner_handle);
+    if (!owner) return -1;
+    std::lock_guard<std::mutex> lock(owner->mutex);
+    if (!owner->recoveryMode) return 0;
+    owner->recoveryMode = false;
+    return 1;
+}
+
+int mglRenderCppCommandRecoveryShouldSkip(
+    void* owner_handle,
+    double now,
+    MGLRenderCppCommandRecoverySkipDecision* decision_out) {
+    if (decision_out) memset(decision_out, 0, sizeof(*decision_out));
+    mgl::CommandBufferRecoveryOwner* owner =
+        static_cast<mgl::CommandBufferRecoveryOwner*>(owner_handle);
+    if (!owner || !decision_out) return -1;
+    std::lock_guard<std::mutex> lock(owner->mutex);
+    if (now - owner->lastErrorTime > 3.0) {
+        decision_out->recovery_timed_out = 1;
+        decision_out->previous_errors = owner->consecutiveErrors;
+        owner->consecutiveErrors = 0;
+        owner->recoveryMode = false;
+    } else if (owner->consecutiveErrors >= 8 || owner->recoveryMode) {
+        decision_out->should_skip = 1;
+        if (!owner->recoveryMode) {
+            owner->recoveryMode = true;
+            decision_out->entered_recovery_mode = 1;
+        }
+    }
+    mgl::snapshotCommandRecovery(*owner, &decision_out->state);
+    return 0;
+}
+
+int mglRenderCppProcessCommandBufferCompletion(
+    void* owner_handle,
+    const MGLRenderCppCommandBufferState* state,
+    double now,
+    MGLRenderCppCommandBufferCompletionResult* result_out) {
+    if (result_out) memset(result_out, 0, sizeof(*result_out));
+    if (!owner_handle || !state || !result_out) return -1;
+    if (mglRenderCppClassifyCommandBufferCompletion(
+            state, &result_out->decision) != 0) {
+        return -1;
+    }
+
+    if (result_out->decision.has_error) {
+        return mglRenderCppCommandRecoveryRecordError(
+            owner_handle, now, &result_out->state);
+    }
+
+    MGLRenderCppCommandRecoverySuccess success = {};
+    if (mglRenderCppCommandRecoveryRecordSuccess(
+            owner_handle, now, &success) != 0) {
+        return -1;
+    }
+    result_out->state = success.state;
+    result_out->sustained_recovery = success.sustained_recovery;
+    result_out->recovered_successes = success.recovered_successes;
+    result_out->previous_errors = success.previous_errors;
+
+    /* Keep this as a distinct owner operation. The legacy completion path
+     * acquired its recovery lock once in recordGPUSuccess and once again to
+     * clear recovery mode on the first successful completion. */
+    int cleared = mglRenderCppCommandRecoveryClearMode(owner_handle);
+    if (cleared < 0) return -1;
+    result_out->cleared_recovery_mode = (uint32_t)cleared;
+    if (cleared == 1) result_out->state.recovery_mode = 0;
+    return 0;
+}
+
 int mglRenderCppAddCommandBufferCompletion(
     void* command_buffer,
     MGLRenderCppCommandBufferCompletion callback,
@@ -10728,8 +11142,8 @@ int mglRenderCppAddCommandBufferCompletion(
     completion->callback = callback;
     completion->context = context;
     completion->destroyContext = destroy_context;
-    MTL::HandlerFunction handler =
-        [completion](MTL::CommandBuffer* completedBuffer) {
+    MTL::CommandBufferHandler handler =
+        ^(MTL::CommandBuffer* completedBuffer) {
             completion->complete(completedBuffer);
         };
     commandBuffer->addCompletedHandler(handler);
@@ -10798,6 +11212,39 @@ void* mglRenderCppCommandBufferOwnerGetCurrent(void* owner_handle) {
     mgl::CommandBufferOwner* owner =
         static_cast<mgl::CommandBufferOwner*>(owner_handle);
     return owner ? static_cast<void*>(owner->current) : nullptr;
+}
+
+int mglRenderCppGetCommandBufferOwnerState(
+    void* owner_handle,
+    MGLRenderCppCommandBufferState* state_out) {
+    if (state_out) memset(state_out, 0, sizeof(*state_out));
+    mgl::CommandBufferOwner* owner =
+        static_cast<mgl::CommandBufferOwner*>(owner_handle);
+    if (!owner || !owner->current || !state_out) return -1;
+    return mgl::snapshotCommandBufferState(owner->current, state_out);
+}
+
+int mglRenderCppPresentDrawableForCommandBufferOwner(
+    void* owner_handle,
+    void* drawable,
+    MGLRenderCppCommandBufferState* state_out) {
+    if (state_out) memset(state_out, 0, sizeof(*state_out));
+    mgl::CommandBufferOwner* owner =
+        static_cast<mgl::CommandBufferOwner*>(owner_handle);
+    MTL::Drawable* surface = static_cast<MTL::Drawable*>(drawable);
+    if (!owner || !owner->current || !surface) return -1;
+
+    MGLRenderCppCommandBufferState state = {};
+    if (mgl::snapshotCommandBufferState(owner->current, &state) != 0) {
+        return -1;
+    }
+    if (state_out) *state_out = state;
+    if (state.status !=
+        static_cast<uint32_t>(MTL::CommandBufferStatusNotEnqueued)) {
+        return 1;
+    }
+    owner->current->presentDrawable(surface);
+    return 0;
 }
 
 void mglRenderCppDiscardCommandBufferOwnerCurrent(void* owner_handle) {
@@ -10892,6 +11339,22 @@ void mglRenderCppCommandBufferOwnerClearSyncs(void* owner_handle) {
         static_cast<mgl::CommandBufferOwner*>(owner_handle);
     if (!owner) return;
     owner->syncs.reset();
+}
+
+int mglRenderCppCommandBufferOwnerBeginCommit(void* owner_handle) {
+    mgl::CommandBufferOwner* owner =
+        static_cast<mgl::CommandBufferOwner*>(owner_handle);
+    if (!owner) return -1;
+    if (owner->commit_in_progress) return 0;
+    owner->commit_in_progress = true;
+    return 1;
+}
+
+void mglRenderCppCommandBufferOwnerEndCommit(void* owner_handle) {
+    mgl::CommandBufferOwner* owner =
+        static_cast<mgl::CommandBufferOwner*>(owner_handle);
+    if (!owner) return;
+    owner->commit_in_progress = false;
 }
 
 void mglRenderCppDestroyCommandBufferOwner(void** owner_handle) {
@@ -11058,15 +11521,6 @@ int mglRenderCppWaitCommandBuffer(void* command_buffer) {
     return 0;
 }
 
-int mglRenderCppPresentDrawable(void* command_buffer, void* drawable) {
-    MTL::CommandBuffer* command =
-        static_cast<MTL::CommandBuffer*>(command_buffer);
-    MTL::Drawable* surface = static_cast<MTL::Drawable*>(drawable);
-    if (!command || !surface) return -1;
-    command->presentDrawable(surface);
-    return 0;
-}
-
 int mglRenderCppCreateRenderEncoderFromState(
     void* command_buffer,
     const MGLRenderCppRenderPassState* render_pass,
@@ -11117,6 +11571,24 @@ int mglRenderCppEncodeColorClear(void* command_buffer,
     return 0;
 }
 
+int mglRenderCppEncodeColorClearForCommandBufferOwner(
+    void* command_buffer_owner,
+    void* texture,
+    uint64_t level,
+    uint64_t slice,
+    uint64_t depth_plane,
+    double red,
+    double green,
+    double blue,
+    double alpha) {
+    mgl::CommandBufferOwner* owner =
+        static_cast<mgl::CommandBufferOwner*>(command_buffer_owner);
+    if (!owner || !owner->current) return -1;
+    return mglRenderCppEncodeColorClear(
+        owner->current, texture, level, slice, depth_plane,
+        red, green, blue, alpha);
+}
+
 int mglRenderCppEncodeDepthClear(void* command_buffer,
                                  void* texture,
                                  uint64_t level,
@@ -11140,6 +11612,20 @@ int mglRenderCppEncodeDepthClear(void* command_buffer,
     }
     static_cast<MTL::RenderCommandEncoder*>(encoder_handle)->endEncoding();
     return 0;
+}
+
+int mglRenderCppEncodeDepthClearForCommandBufferOwner(
+    void* command_buffer_owner,
+    void* texture,
+    uint64_t level,
+    uint64_t slice,
+    uint64_t depth_plane,
+    double clear_depth) {
+    mgl::CommandBufferOwner* owner =
+        static_cast<mgl::CommandBufferOwner*>(command_buffer_owner);
+    if (!owner || !owner->current) return -1;
+    return mglRenderCppEncodeDepthClear(
+        owner->current, texture, level, slice, depth_plane, clear_depth);
 }
 
 int mglRenderCppEncodeMultisampleResolve(
@@ -11674,6 +12160,18 @@ int mglRenderCppCreateRenderEncoderFromStateOwner(
         command_buffer, &owner->state, render_encoder_out);
 }
 
+int mglRenderCppCreateRenderEncoderFromCommandBufferOwnerState(
+    void* command_buffer_owner,
+    const MGLRenderCppRenderPassState* render_pass,
+    void** render_encoder_out) {
+    if (render_encoder_out) *render_encoder_out = nullptr;
+    mgl::CommandBufferOwner* owner =
+        static_cast<mgl::CommandBufferOwner*>(command_buffer_owner);
+    if (!owner || !owner->current) return -1;
+    return mglRenderCppCreateRenderEncoderFromState(
+        owner->current, render_pass, render_encoder_out);
+}
+
 void mglRenderCppDestroyRenderPassStateOwner(void** owner_handle) {
     if (!owner_handle || !*owner_handle) return;
     mgl::RenderPassStateOwner* owner =
@@ -11700,6 +12198,17 @@ int mglRenderCppCreateBlitEncoder(void* command_buffer,
     if (!encoder) return -1;
     *blit_encoder_out = encoder;
     return 0;
+}
+
+int mglRenderCppCreateBlitEncoderFromCommandBufferOwner(
+    void* command_buffer_owner,
+    void** blit_encoder_out) {
+    if (blit_encoder_out) *blit_encoder_out = nullptr;
+    mgl::CommandBufferOwner* owner =
+        static_cast<mgl::CommandBufferOwner*>(command_buffer_owner);
+    if (!owner || !owner->current) return -1;
+    return mglRenderCppCreateBlitEncoder(
+        owner->current, blit_encoder_out);
 }
 
 int mglRenderCppEndBlitEncoder(void* blit_encoder) {
