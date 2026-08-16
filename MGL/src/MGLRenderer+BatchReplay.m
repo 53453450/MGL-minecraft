@@ -18,6 +18,33 @@ static BOOL mglBatchReplayUsesMetalCpp(void)
            mglRenderCppGetDevice() != NULL;
 }
 
+static bool mglBatchReplayCollectResourceBinding(
+    MGLRenderCppResourceBindingSnapshot *snapshot,
+    uint32_t stage,
+    uint32_t kind,
+    void *resource,
+    uint32_t index)
+{
+    if (!snapshot || stage > MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT ||
+        kind > MGL_RENDER_CPP_RESOURCE_BINDING_SAMPLER) {
+        return false;
+    }
+    uint32_t *count = stage == MGL_RENDER_CPP_BINDING_STAGE_VERTEX
+        ? &snapshot->vertex_op_count : &snapshot->fragment_op_count;
+    MGLRenderCppResourceBindingOp *ops =
+        stage == MGL_RENDER_CPP_BINDING_STAGE_VERTEX
+            ? snapshot->vertex_ops : snapshot->fragment_ops;
+    if (*count >= MGL_RENDER_CPP_RESOURCE_BINDING_SNAPSHOT_MAX_OPS) {
+        return false;
+    }
+    ops[(*count)++] = (MGLRenderCppResourceBindingOp){
+        .kind = kind,
+        .index = index,
+        .resource = resource,
+    };
+    return true;
+}
+
 static void mglBatchReplaySetRenderBuffer(
     id<MTLRenderCommandEncoder> encoder,
     id<MTLBuffer> buffer,
@@ -695,6 +722,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                                              encodeContext:(const MGLEncodeContext *)encCtx
 {
     if (!touched_units || !glm_ctx || !encCtx->encoder) return false;
+    MGLRenderCppResourceBindingSnapshot snapshot = {0};
 
     for (int stage_index = 0; stage_index < 2; stage_index++) {
         int stage = stage_index == 0 ? _VERTEX_SHADER : _FRAGMENT_SHADER;
@@ -764,10 +792,14 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 return false;
             }
 
-            if (stage == _VERTEX_SHADER) {
-                [self setVertexTextureIfNeeded:texture atIndex:metal_slot];
-            } else {
-                [self setFragmentTextureIfNeeded:texture atIndex:metal_slot];
+            uint32_t binding_stage = stage == _VERTEX_SHADER
+                ? MGL_RENDER_CPP_BINDING_STAGE_VERTEX
+                : MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT;
+            if (!mglBatchReplayCollectResourceBinding(
+                    &snapshot, binding_stage,
+                    MGL_RENDER_CPP_RESOURCE_BINDING_TEXTURE,
+                    (__bridge void *)texture, metal_slot)) {
+                return false;
             }
 
             if (!resource || resource->has_combined_sampler) {
@@ -788,17 +820,18 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 GLuint sampler_slot = resource
                     ? mglMetalCombinedSamplerSlot(resource) : metal_slot;
                 if (sampler_slot >= kMaxFragmentSamplerSlots) return false;
-                if (stage == _VERTEX_SHADER) {
-                    [self setVertexSamplerStateIfNeeded:sampler
-                                               atIndex:sampler_slot];
-                } else {
-                    [self setFragmentSamplerStateIfNeeded:sampler
-                                                 atIndex:sampler_slot];
+                if (!mglBatchReplayCollectResourceBinding(
+                        &snapshot, binding_stage,
+                        MGL_RENDER_CPP_RESOURCE_BINDING_SAMPLER,
+                        (__bridge void *)sampler, sampler_slot)) {
+                    return false;
                 }
             }
         }
     }
-    return true;
+    return mglRenderCppEncodeResourceBindingSnapshot(
+        _bindingStateOwner, (__bridge void *)encCtx->encoder,
+        &snapshot, NULL, 0) == 0;
 }
 
 - (id<MTLSamplerState>)samplerStateForSnapshotKey:(const MGLSamplerSnapshotKey *)key
@@ -891,6 +924,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     const MGLSamplerSnapshotSet *set =
         &cb->sampler_snapshot_sets[cmd->sampler_snapshot_id];
     if (set->count > MGL_MAX_SAMPLER_SNAPSHOT_ENTRIES) return false;
+    MGLRenderCppResourceBindingSnapshot snapshot = {0};
 
     for (uint8_t i = 0; i < set->count; i++) {
         const MGLSamplerSnapshotEntry *entry = &set->entries[i];
@@ -928,15 +962,24 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             }
         }
 
+        uint32_t bindingStage;
         if (entry->stage == _VERTEX_SHADER) {
-            [self setVertexSamplerStateIfNeeded:sampler atIndex:entry->metal_slot];
+            bindingStage = MGL_RENDER_CPP_BINDING_STAGE_VERTEX;
         } else if (entry->stage == _FRAGMENT_SHADER) {
-            [self setFragmentSamplerStateIfNeeded:sampler atIndex:entry->metal_slot];
+            bindingStage = MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT;
         } else {
             return false;
         }
+        if (!mglBatchReplayCollectResourceBinding(
+                &snapshot, bindingStage,
+                MGL_RENDER_CPP_RESOURCE_BINDING_SAMPLER,
+                (__bridge void *)sampler, entry->metal_slot)) {
+            return false;
+        }
     }
-    return true;
+    return mglRenderCppEncodeResourceBindingSnapshot(
+        _bindingStateOwner, (__bridge void *)encCtx->encoder,
+        &snapshot, NULL, 0) == 0;
 }
 
 - (bool)applyDynamicBindingsForCommand:(const MGLDrawCommand *)cmd

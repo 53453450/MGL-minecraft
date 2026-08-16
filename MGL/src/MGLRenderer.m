@@ -3218,14 +3218,6 @@ void logDirtyBits(GLMContext ctx)
 
 /* invalidateLastBoundFragmentBufferAtIndex:(NSUInteger)index moved to MGLRenderer+Draw.m */
 
-/* setVertexTextureIfNeeded:(id<MTLTexture>)texture atIndex:(NSUInteger)index moved to MGLRenderer+Draw.m */
-
-/* setFragmentTextureIfNeeded:(id<MTLTexture>)texture atIndex:(NSUInteger)index moved to MGLRenderer+Draw.m */
-
-/* setVertexSamplerStateIfNeeded:(id<MTLSamplerState>)sampler atIndex:(NSUInteger)index moved to MGLRenderer+Draw.m */
-
-/* setFragmentSamplerStateIfNeeded:(id<MTLSamplerState>)sampler atIndex:(NSUInteger)index moved to MGLRenderer+Draw.m */
-
 /* setViewportIfNeeded:(MTLViewport)viewport moved to MGLRenderer+Draw.m */
 
 /* setScissorRectIfNeeded:(MTLScissorRect)rect moved to MGLRenderer+Draw.m */

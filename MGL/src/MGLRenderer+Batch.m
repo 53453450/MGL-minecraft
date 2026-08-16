@@ -526,42 +526,6 @@ static void mglBatchExecuteIndirectCommands(
         _bindingStateOwner, (uint32_t)index);
 }
 
-- (void)setVertexTextureIfNeeded:(id<MTLTexture>)texture atIndex:(NSUInteger)index
-{
-    mglRenderCppBindingSetTexture(
-        _bindingStateOwner,
-        mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
-        (__bridge void *)texture, MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
-        (uint32_t)index);
-}
-
-- (void)setFragmentTextureIfNeeded:(id<MTLTexture>)texture atIndex:(NSUInteger)index
-{
-    mglRenderCppBindingSetTexture(
-        _bindingStateOwner,
-        mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
-        (__bridge void *)texture, MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT,
-        (uint32_t)index);
-}
-
-- (void)setVertexSamplerStateIfNeeded:(id<MTLSamplerState>)sampler atIndex:(NSUInteger)index
-{
-    mglRenderCppBindingSetSampler(
-        _bindingStateOwner,
-        mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
-        (__bridge void *)sampler, MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
-        (uint32_t)index);
-}
-
-- (void)setFragmentSamplerStateIfNeeded:(id<MTLSamplerState>)sampler atIndex:(NSUInteger)index
-{
-    mglRenderCppBindingSetSampler(
-        _bindingStateOwner,
-        mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
-        (__bridge void *)sampler, MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT,
-        (uint32_t)index);
-}
-
 - (void)setViewportIfNeeded:(MTLViewport)viewport
 {
     mglRenderCppBindingSetViewport(
