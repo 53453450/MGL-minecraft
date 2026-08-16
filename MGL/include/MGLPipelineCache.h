@@ -61,8 +61,6 @@ typedef struct MGLPipelineCacheState_t {
      * overwriteWords: contract). */
     MGLPipelineCacheKey *__strong _Nullable pipelineCacheQueryKey;
     BOOL dsCacheEnabled;
-    id<MTLBinaryArchive> __strong _Nullable binaryArchive;
-    BOOL binaryArchiveEnabled;
     BOOL psoDedupEnabled;
 } MGLPipelineCacheState;
 
@@ -73,10 +71,13 @@ NS_ASSUME_NONNULL_BEGIN
     MGLPipelineCacheState _state;
     id<MTLDevice> _device;
     void *_cppOwner;
+    BOOL _binaryArchiveRequested;
 }
 
 @property(nonatomic, readonly) const MGLPipelineCacheState *state;
 @property(nonatomic, strong, nullable) id<MTLDevice> device;
+@property(nonatomic, readonly, getter=isBinaryArchiveEnabled)
+    BOOL binaryArchiveEnabled;
 
 - (instancetype)initWithPSODedupEnabled:(BOOL)psoDedupEnabled
                 depthStencilCacheEnabled:(BOOL)depthStencilCacheEnabled
@@ -130,6 +131,13 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable id<MTLRenderPipelineState>)createRenderPipelineStateWithDescriptor:
     (MTLRenderPipelineDescriptor *)descriptor
     error:(NSError * _Nullable * _Nullable)error;
+- (int)createRenderPipelineFromState:
+    (const MGLRenderCppPipelineDescriptorState * _Nonnull)state
+    vertexFunction:(void * _Nonnull)vertexFunction
+    fragmentFunction:(void * _Nullable)fragmentFunction
+    pipelineOut:(void * _Nullable * _Nonnull)pipelineOut
+    errorMessage:(char * _Nullable)errorMessage
+    errorCapacity:(size_t)errorCapacity;
 
 - (void)resetCaches;
 - (void)shutdown;

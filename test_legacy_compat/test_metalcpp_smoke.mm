@@ -1617,6 +1617,112 @@ static int verifyPipelineCacheOwner(id<MTLDevice> device) {
     return 0;
 }
 
+static int verifyPipelineArchiveOwner(id<MTLDevice> device) {
+    id<MTLLibrary> library = smokeLoadAssetLibrary(device, "scaled_blit");
+    id<MTLFunction> vertex =
+        [library newFunctionWithName:@"mgl_scaled_blit_vs"];
+    id<MTLFunction> fragment =
+        [library newFunctionWithName:@"mgl_scaled_blit_fs"];
+    MTLRenderPipelineDescriptor *descriptor =
+        [MTLRenderPipelineDescriptor new];
+    descriptor.vertexFunction = vertex;
+    descriptor.fragmentFunction = fragment;
+    descriptor.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA8Unorm;
+    if (!library || !vertex || !fragment) {
+        fprintf(stderr, "FAIL: pipeline archive owner fixture\n");
+        return 1;
+    }
+
+    NSString *archivePath = [NSTemporaryDirectory()
+        stringByAppendingPathComponent:
+            [NSString stringWithFormat:@"mgl-pipeline-owner-%@.binaryarchive",
+                                       NSUUID.UUID.UUIDString]];
+    NSURL *archiveURL = [NSURL fileURLWithPath:archivePath];
+    const char *archiveKey = archivePath.UTF8String;
+    void *owner1 = NULL;
+    void *owner2 = NULL;
+    void *pipelinePtr = NULL;
+    char message[512] = {0};
+    int reused = -1;
+    int enabled = 0;
+    int present = 0;
+    int archiveHit = -1;
+    int result = 1;
+
+    if (mglRenderCppCreatePipelineCacheOwner(1, 1, 1, &owner1) != 0 ||
+        !owner1 ||
+        mglRenderCppLoadPipelineBinaryArchive(
+            owner1, archiveKey, (__bridge void *)archiveURL, 0,
+            &reused, message, sizeof(message)) != 0 || reused != 0 ||
+        mglRenderCppGetPipelineBinaryArchiveState(
+            owner1, &enabled, &present) != 0 || !enabled || !present) {
+        fprintf(stderr, "FAIL: pipeline archive owner create: %s\n",
+                message[0] ? message : "unknown");
+        goto cleanup;
+    }
+
+    if (mglRenderCppCreateRenderPipelineStateWithArchiveOwner(
+            owner1, (__bridge void *)descriptor, &pipelinePtr,
+            &archiveHit, message, sizeof(message)) != 0 || !pipelinePtr ||
+        archiveHit != 0) {
+        fprintf(stderr, "FAIL: pipeline archive owner miss/add: hit=%d %s\n",
+                archiveHit, message[0] ? message : "unknown");
+        goto cleanup;
+    }
+    CFBridgingRelease(pipelinePtr);
+    pipelinePtr = NULL;
+
+    if (mglRenderCppSerializePipelineBinaryArchive(
+            owner1, (__bridge void *)archiveURL,
+            message, sizeof(message)) != 0 ||
+        ![NSFileManager.defaultManager fileExistsAtPath:archivePath]) {
+        fprintf(stderr, "FAIL: pipeline archive owner serialize: %s\n",
+                message[0] ? message : "unknown");
+        goto cleanup;
+    }
+
+    reused = 0;
+    if (mglRenderCppCreatePipelineCacheOwner(1, 1, 1, &owner2) != 0 ||
+        !owner2 ||
+        mglRenderCppLoadPipelineBinaryArchive(
+            owner2, archiveKey, (__bridge void *)archiveURL, 1,
+            &reused, message, sizeof(message)) != 0 || reused != 1 ||
+        mglRenderCppGetPipelineBinaryArchiveState(
+            owner2, &enabled, &present) != 0 || !enabled || !present) {
+        fprintf(stderr, "FAIL: pipeline archive owner reuse: reused=%d %s\n",
+                reused, message[0] ? message : "unknown");
+        goto cleanup;
+    }
+
+    archiveHit = 0;
+    if (mglRenderCppCreateRenderPipelineStateWithArchiveOwner(
+            owner2, (__bridge void *)descriptor, &pipelinePtr,
+            &archiveHit, message, sizeof(message)) != 0 || !pipelinePtr ||
+        archiveHit != 1) {
+        fprintf(stderr, "FAIL: pipeline archive owner hit: hit=%d %s\n",
+                archiveHit, message[0] ? message : "unknown");
+        goto cleanup;
+    }
+    CFBridgingRelease(pipelinePtr);
+    pipelinePtr = NULL;
+
+    mglRenderCppDiscardPipelineBinaryArchive(owner2, archiveKey);
+    if (mglRenderCppGetPipelineBinaryArchiveState(
+            owner2, &enabled, &present) != 0 || !enabled || present) {
+        fprintf(stderr, "FAIL: pipeline archive owner discard\n");
+        goto cleanup;
+    }
+    result = 0;
+
+cleanup:
+    if (pipelinePtr) CFBridgingRelease(pipelinePtr);
+    mglRenderCppDestroyPipelineCacheOwner(&owner2);
+    mglRenderCppDestroyPipelineCacheOwner(&owner1);
+    [NSFileManager.defaultManager removeItemAtURL:archiveURL error:NULL];
+    if (result == 0) printf("PIPELINE_ARCHIVE_OWNER_OK\n");
+    return result;
+}
+
 static int verifyBindingDedup(id<MTLDevice> device) {
     id<MTLCommandQueue> queue = [device newCommandQueue];
     if (!queue) return 1;
@@ -7918,6 +8024,7 @@ int main(void) {
         if (verifyTextureTransferFacade() != 0) return 1;
         if (verifyNoCopyBufferFacade() != 0) return 1;
         if (verifyCompilerAndBinaryArchive() != 0) return 1;
+        if (verifyPipelineArchiveOwner(device) != 0) return 1;
         if (verifyPipelineCacheOwner(device) != 0) return 1;
         if (verifyBindingDedup(device) != 0) return 1;
         if (verifyComputeSetters(device) != 0) return 1;

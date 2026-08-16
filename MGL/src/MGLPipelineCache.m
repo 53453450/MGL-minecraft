@@ -1,7 +1,5 @@
 #import "MGLPipelineCache.h"
 
-#import <os/lock.h>
-
 #import "mgl_frame_activity.h"
 #include "mgl_env_flag.h"
 #include "mgl_render_cpp.h"
@@ -12,6 +10,7 @@
 @end
 
 @interface MGLPipelineCache ()
+- (BOOL)ensureCppOwnerCreated;
 - (BOOL)ensureCppOwner;
 @end
 
@@ -44,28 +43,6 @@ static id<MTLDepthStencilState> mglPipelineCacheCreateDepthStencilState(
         }
     }
     return [device newDepthStencilStateWithDescriptor:descriptor];
-}
-
-static id<MTLBinaryArchive> mglPipelineCacheCreateBinaryArchive(
-    id<MTLDevice> device,
-    MTLBinaryArchiveDescriptor *descriptor,
-    NSError **error)
-{
-    if (mglPipelineCacheUsesMetalCpp()) {
-        void *archive = NULL;
-        char message[512] = {0};
-        if (mglRenderCppCreateBinaryArchive(
-                (__bridge void *)descriptor,
-                "MGL Pipeline Binary Archive", &archive,
-                message, sizeof(message)) == 0 && archive) {
-            return (__bridge_transfer id<MTLBinaryArchive>)archive;
-        }
-        if (error) {
-            *error = mglPipelineCacheMetalCppError(message, 11);
-        }
-        return nil;
-    }
-    return [device newBinaryArchiveWithDescriptor:descriptor error:error];
 }
 
 static MGLRenderCppStencilDescriptorState
@@ -281,8 +258,6 @@ static inline void MGLPopulateDepthStencilKey(MGLDepthStencilCacheKey *key,
 
 @end
 
-static os_unfair_lock s_binaryArchiveLock = OS_UNFAIR_LOCK_INIT;
-static NSMutableDictionary<NSString *, id<MTLBinaryArchive>> *s_binaryArchives;
 /* v5 excludes either kind of incomplete render pipeline and isolates both
  * sanitizer builds and archive producers. The producer boundary prevents the
  * temporary A/B implementations from sharing mutable state; the archive-aware
@@ -346,7 +321,7 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
     _state.pipelineDescriptorCacheLRU = [[NSMutableOrderedSet alloc] initWithCapacity:64];
     _state.psoDedupEnabled = psoDedupEnabled;
     _state.dsCacheEnabled = depthStencilCacheEnabled;
-    _state.binaryArchiveEnabled = binaryArchiveEnabled;
+    _binaryArchiveRequested = binaryArchiveEnabled;
     if (depthStencilCacheEnabled) {
         _state.depthStencilStateCache = [NSMutableDictionary new];
         _state.depthStencilStateCacheLRU = [NSMutableOrderedSet new];
@@ -359,14 +334,14 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
     return &_state;
 }
 
-- (BOOL)ensureCppOwner
+- (BOOL)ensureCppOwnerCreated
 {
     if (_cppOwner) return YES;
-    if (!mglPipelineCacheUsesMetalCpp()) return NO;
+    if (!_device || !mglRenderCppGetDevice()) return NO;
     if (mglRenderCppCreatePipelineCacheOwner(
             _state.psoDedupEnabled ? 1 : 0,
             _state.dsCacheEnabled ? 1 : 0,
-            _state.binaryArchiveEnabled ? 1 : 0,
+            _binaryArchiveRequested ? 1 : 0,
             &_cppOwner) != 0 || !_cppOwner) {
         _cppOwner = NULL;
         return NO;
@@ -404,6 +379,21 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
     return YES;
 }
 
+- (BOOL)ensureCppOwner
+{
+    return mglPipelineCacheUsesMetalCpp() && [self ensureCppOwnerCreated];
+}
+
+- (BOOL)isBinaryArchiveEnabled
+{
+    int enabled = _binaryArchiveRequested ? 1 : 0;
+    if (_cppOwner) {
+        mglRenderCppGetPipelineBinaryArchiveState(
+            _cppOwner, &enabled, NULL);
+    }
+    return enabled != 0;
+}
+
 - (id<MTLDevice>)device
 {
     return _device;
@@ -415,7 +405,7 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
         mglRenderCppDestroyPipelineCacheOwner(&_cppOwner);
     }
     _device = device;
-    if (_device) [self ensureCppOwner];
+    if (_device) [self ensureCppOwnerCreated];
 }
 
 - (id<MTLDepthStencilState>)depthStencilStateForDescriptor:
@@ -784,109 +774,75 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
 
 - (void)loadBinaryArchive
 {
-    if (!_state.binaryArchiveEnabled || !_device) return;
+    if (!self.binaryArchiveEnabled || !_device ||
+        ![self ensureCppOwnerCreated]) return;
 
     NSURL *archiveURL = [self binaryArchiveURL];
     NSString *archiveKey = archiveURL.path;
-    os_unfair_lock_lock(&s_binaryArchiveLock);
-    @try {
-        id<MTLBinaryArchive> sharedArchive = s_binaryArchives[archiveKey];
-        if (sharedArchive) {
-            _state.binaryArchive = sharedArchive;
-            return;
+    NSFileManager *fileManager = NSFileManager.defaultManager;
+    BOOL archiveExists = [fileManager fileExistsAtPath:archiveKey];
+    int reused = 0;
+    char message[512] = {0};
+    int result = mglRenderCppLoadPipelineBinaryArchive(
+        _cppOwner, archiveKey.UTF8String, (__bridge void *)archiveURL,
+        archiveExists ? 1 : 0, &reused, message, sizeof(message));
+    if (result != 0 && archiveExists) {
+        NSError *removeError = nil;
+        if (![fileManager removeItemAtURL:archiveURL error:&removeError]) {
+            NSLog(@"MGL BINARY ARCHIVE: failed to remove incompatible archive: %@",
+                  removeError.localizedDescription);
         }
-
-        NSFileManager *fileManager = NSFileManager.defaultManager;
-        BOOL archiveExists = [fileManager fileExistsAtPath:archiveKey];
-        MTLBinaryArchiveDescriptor *descriptor = [[MTLBinaryArchiveDescriptor alloc] init];
-        if (archiveExists) descriptor.url = archiveURL;
-
-        NSError *loadError = nil;
-        id<MTLBinaryArchive> archive =
-            mglPipelineCacheCreateBinaryArchive(_device, descriptor,
-                                                &loadError);
-        if (!archive && archiveExists) {
-            NSError *removeError = nil;
-            if (![fileManager removeItemAtURL:archiveURL error:&removeError]) {
-                NSLog(@"MGL BINARY ARCHIVE: failed to remove incompatible archive: %@",
-                      removeError.localizedDescription);
-            }
-            NSLog(@"MGL BINARY ARCHIVE: rebuilding incompatible archive: %@",
-                  loadError.localizedDescription);
-            descriptor = [[MTLBinaryArchiveDescriptor alloc] init];
-            loadError = nil;
-            archive = mglPipelineCacheCreateBinaryArchive(
-                _device, descriptor, &loadError);
-            archiveExists = NO;
-        }
-
-        if (archive) {
-            if (!mglPipelineCacheUsesMetalCpp()) {
-                archive.label = @"MGL Pipeline Binary Archive";
-            }
-            if (!s_binaryArchives) s_binaryArchives = [NSMutableDictionary new];
-            s_binaryArchives[archiveKey] = archive;
-            _state.binaryArchive = archive;
-            NSLog(@"MGL BINARY ARCHIVE: %@ %@",
-                  archiveExists ? @"loaded" : @"created", archiveURL.lastPathComponent);
-        } else {
-            NSLog(@"MGL BINARY ARCHIVE: unavailable, PSO compile will continue without it: %@",
-                  loadError.localizedDescription);
-        }
-    } @catch (NSException *exception) {
-        _state.binaryArchive = nil;
-        NSLog(@"MGL BINARY ARCHIVE: load exception, continuing without archive: %@",
-              exception.reason);
-    } @finally {
-        os_unfair_lock_unlock(&s_binaryArchiveLock);
+        NSLog(@"MGL BINARY ARCHIVE: rebuilding incompatible archive: %s",
+              message[0] ? message : "unknown error");
+        archiveExists = NO;
+        message[0] = '\0';
+        result = mglRenderCppLoadPipelineBinaryArchive(
+            _cppOwner, archiveKey.UTF8String, (__bridge void *)archiveURL,
+            0, &reused, message, sizeof(message));
+    }
+    if (result == 0) {
+        NSLog(@"MGL BINARY ARCHIVE: %@ %@",
+              reused ? @"reused" : (archiveExists ? @"loaded" : @"created"),
+              archiveURL.lastPathComponent);
+    } else {
+        NSLog(@"MGL BINARY ARCHIVE: unavailable, PSO compile will continue without it: %s",
+              message[0] ? message : "unknown error");
     }
 }
 
 - (void)saveBinaryArchive
 {
-    if (!_state.binaryArchive) return;
+    int present = 0;
+    if (!_cppOwner ||
+        mglRenderCppGetPipelineBinaryArchiveState(
+            _cppOwner, NULL, &present) != 0 || !present) return;
 
     NSURL *archiveURL = [self binaryArchiveURL];
-    NSError *serializeError = nil;
+    NSString *archiveKey = archiveURL.path;
     NSError *removeError = nil;
-    BOOL ok = NO;
+    char message[512] = {0};
+    BOOL ok = mglRenderCppSerializePipelineBinaryArchive(
+        _cppOwner, (__bridge void *)archiveURL,
+        message, sizeof(message)) == 0;
     BOOL discarded = NO;
-    os_unfair_lock_lock(&s_binaryArchiveLock);
-    @try {
-        if (mglPipelineCacheUsesMetalCpp()) {
-            char message[512] = {0};
-            ok = mglRenderCppSerializeBinaryArchive(
-                    (__bridge void *)_state.binaryArchive,
-                    (__bridge void *)archiveURL,
-                    message, sizeof(message)) == 0;
-            if (!ok) {
-                serializeError = mglPipelineCacheMetalCppError(message, 12);
-            }
-        } else {
-            ok = [_state.binaryArchive serializeToURL:archiveURL
-                                                error:&serializeError];
-        }
-        if (!ok && serializeError) {
-            NSFileManager *fileManager = NSFileManager.defaultManager;
-            discarded = ![fileManager fileExistsAtPath:archiveURL.path] ||
-                [fileManager removeItemAtURL:archiveURL error:&removeError];
-            [s_binaryArchives removeObjectForKey:archiveURL.path];
-            _state.binaryArchive = nil;
-        }
-    } @catch (NSException *exception) {
-        NSLog(@"MGL BINARY ARCHIVE: serialize exception: %@", exception.reason);
-    } @finally {
-        os_unfair_lock_unlock(&s_binaryArchiveLock);
+    if (!ok) {
+        NSFileManager *fileManager = NSFileManager.defaultManager;
+        discarded = ![fileManager fileExistsAtPath:archiveKey] ||
+            [fileManager removeItemAtURL:archiveURL error:&removeError];
+        mglRenderCppDiscardPipelineBinaryArchive(
+            _cppOwner, archiveKey.UTF8String);
     }
     if (ok) {
         NSLog(@"MGL BINARY ARCHIVE: saved to %@", archiveURL.lastPathComponent);
-    } else if (serializeError) {
+    } else {
+        NSString *description = message[0]
+            ? [NSString stringWithUTF8String:message] : @"unknown error";
         if (discarded) {
             NSLog(@"MGL BINARY ARCHIVE: discarded unserializable archive: %@",
-                  serializeError.localizedDescription);
+                  description);
         } else {
             NSLog(@"MGL BINARY ARCHIVE: serialize failed: %@; removal failed: %@",
-                  serializeError.localizedDescription,
+                  description,
                   removeError.localizedDescription);
         }
     }
@@ -907,37 +863,19 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
         return nil;
     }
 
-    id<MTLBinaryArchive> archive =
-        (_state.binaryArchiveEnabled && descriptor.vertexFunction &&
-         descriptor.fragmentFunction) ? _state.binaryArchive : nil;
-    if (mglPipelineCacheUsesMetalCpp()) {
+    if ([self ensureCppOwnerCreated]) {
         void *pipeline = NULL;
         char message[512] = {0};
         int archiveHit = 0;
-        int result = archive
-            ? mglRenderCppCreateRenderPipelineStateWithArchive(
-                  (__bridge void *)descriptor, (__bridge void *)archive,
-                  &pipeline, &archiveHit, message, sizeof(message))
-            : mglRenderCppCreateRenderPipelineState(
-                  (__bridge void *)descriptor, &pipeline,
-                  message, sizeof(message));
+        int result = mglRenderCppCreateRenderPipelineStateWithArchiveOwner(
+            _cppOwner, (__bridge void *)descriptor, &pipeline,
+            &archiveHit, message, sizeof(message));
         (void)archiveHit;
         if (result == 0 && pipeline) {
             return (__bridge_transfer id<MTLRenderPipelineState>)pipeline;
         }
         if (error) *error = mglPipelineCacheMetalCppError(message, 12);
         return nil;
-    }
-
-    if (archive) {
-        descriptor.binaryArchives = @[archive];
-        NSError *lookupError = nil;
-        id<MTLRenderPipelineState> pipeline =
-            [_device newRenderPipelineStateWithDescriptor:descriptor
-                                                   options:MTLPipelineOptionFailOnBinaryArchiveMiss
-                                                reflection:NULL
-                                                     error:&lookupError];
-        if (pipeline) return pipeline;
     }
 
     NSError *compileError = nil;
@@ -949,24 +887,21 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
         return nil;
     }
 
-    if (archive) {
-        NSError *addError = nil;
-        os_unfair_lock_lock(&s_binaryArchiveLock);
-        @try {
-            [archive addRenderPipelineFunctionsWithDescriptor:descriptor
-                                                        error:&addError];
-        } @catch (NSException *exception) {
-            NSLog(@"MGL BINARY ARCHIVE: addRenderPipeline exception: %@",
-                  exception.reason);
-        } @finally {
-            os_unfair_lock_unlock(&s_binaryArchiveLock);
-        }
-        if (addError) {
-            NSLog(@"MGL BINARY ARCHIVE: addRenderPipeline warning: %@",
-                  addError.localizedDescription);
-        }
-    }
     return pipeline;
+}
+
+- (int)createRenderPipelineFromState:
+    (const MGLRenderCppPipelineDescriptorState *)state
+    vertexFunction:(void *)vertexFunction
+    fragmentFunction:(void *)fragmentFunction
+    pipelineOut:(void **)pipelineOut
+    errorMessage:(char *)errorMessage
+    errorCapacity:(size_t)errorCapacity
+{
+    if (![self ensureCppOwnerCreated]) return -1;
+    return mglRenderCppCreateRenderPipelineFromStateWithArchiveOwner(
+        _cppOwner, vertexFunction, fragmentFunction, state,
+        pipelineOut, errorMessage, errorCapacity);
 }
 
 - (void)invalidatePipelineState
@@ -1060,10 +995,10 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
 
 - (void)disableBinaryArchive
 {
-    if ([self ensureCppOwner]) {
+    _binaryArchiveRequested = NO;
+    if ([self ensureCppOwnerCreated]) {
         mglRenderCppDisablePipelineBinaryArchive(_cppOwner);
     }
-    _state.binaryArchiveEnabled = NO;
 }
 
 - (void)resetCaches
@@ -1090,7 +1025,6 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
     _state.depthStencilStateCache = nil;
     _state.depthStencilStateCacheLRU = nil;
     _state.depthStencilCacheQueryKey = nil;
-    _state.binaryArchive = nil;
     _device = nil;
     mglRenderCppDestroyPipelineCacheOwner(&_cppOwner);
 }

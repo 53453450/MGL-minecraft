@@ -1475,6 +1475,20 @@ int mglRenderCppGetPipelineCacheFlags(
     int *depth_stencil_cache_enabled_out,
     int *binary_archive_enabled_out);
 void mglRenderCppDisablePipelineBinaryArchive(void *owner);
+int mglRenderCppGetPipelineBinaryArchiveState(
+    void *owner, int *enabled_out, int *present_out);
+int mglRenderCppLoadPipelineBinaryArchive(
+    void *owner,
+    const char *cache_key,
+    void *url,
+    int archive_exists,
+    int *reused_out,
+    char *err,
+    size_t errcap);
+int mglRenderCppSerializePipelineBinaryArchive(
+    void *owner, void *url, char *err, size_t errcap);
+void mglRenderCppDiscardPipelineBinaryArchive(
+    void *owner, const char *cache_key);
 int mglRenderCppGetPipelineActiveState(
     void *owner, MGLRenderCppPipelineActiveState *state_out);
 int mglRenderCppInvalidatePipelineActiveState(void *owner);
@@ -1535,6 +1549,13 @@ int mglRenderCppCreateRenderPipelineStateWithArchive(
     int *archive_hit_out,
     char *err,
     size_t errcap);
+int mglRenderCppCreateRenderPipelineStateWithArchiveOwner(
+    void *owner,
+    void *render_pipeline_descriptor,
+    void **pipeline_out,
+    int *archive_hit_out,
+    char *err,
+    size_t errcap);
 /* P4.2: final/simple/safe descriptor builder 的 C ABI 入口 —— 从
  * MGLRenderCppPipelineDescriptorState value-state 直接创建 render PSO，
  * ObjC 不再组装 MTLRenderPipelineDescriptor。vs_function/fs_function 为 +0
@@ -1547,6 +1568,14 @@ int mglRenderCppCreateRenderPipelineFromState(
     void *fs_function,
     const MGLRenderCppPipelineDescriptorState *state,
     void *binary_archive,
+    void **pipeline_out,
+    char *err,
+    size_t errcap);
+int mglRenderCppCreateRenderPipelineFromStateWithArchiveOwner(
+    void *owner,
+    void *vs_function,
+    void *fs_function,
+    const MGLRenderCppPipelineDescriptorState *state,
     void **pipeline_out,
     char *err,
     size_t errcap);

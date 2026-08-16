@@ -248,7 +248,10 @@ struct PipelineCacheDepthStencilEntry {
 };
 
 struct PipelineCacheOwner {
-    ~PipelineCacheOwner() { reset(); }
+    ~PipelineCacheOwner() {
+        clearBinaryArchive();
+        reset();
+    }
 
     void clearCaches() {
         releaseObject(active.pipeline_state);
@@ -269,6 +272,12 @@ struct PipelineCacheOwner {
         active.color0_format = static_cast<uint32_t>(MTL::PixelFormatInvalid);
         active.depth_format = static_cast<uint32_t>(MTL::PixelFormatInvalid);
         active.stencil_format = static_cast<uint32_t>(MTL::PixelFormatInvalid);
+    }
+
+    void clearBinaryArchive() {
+        if (binaryArchive) binaryArchive->release();
+        binaryArchive = nullptr;
+        binaryArchiveKey.clear();
     }
 
     static void retainObject(void* object) {
@@ -327,6 +336,8 @@ struct PipelineCacheOwner {
     bool psoDedupEnabled = true;
     bool depthStencilCacheEnabled = true;
     bool binaryArchiveEnabled = false;
+    MTL::BinaryArchive* binaryArchive = nullptr;
+    std::string binaryArchiveKey;
     MGLRenderCppPipelineActiveState active{
         nullptr, nullptr, nullptr,
         static_cast<uint32_t>(MTL::PixelFormatInvalid),
@@ -657,6 +668,9 @@ struct RendererCpp {
      * their FNV-1a hash, owned by the renderer until shutdown.  Functions from
      * these libraries are always +1 refs handed to callers. */
     std::map<uint64_t, MTL::Library*> auxLibraries;
+    /* Process-wide archive registry mirrors the former ObjC shared dictionary.
+     * Each map entry owns one reference; PipelineCacheOwner retains its own. */
+    std::map<std::string, MTL::BinaryArchive*> binaryArchives;
     std::map<ConvertedVertexBufferKey, MTL::Buffer*>
         convertedVertexBuffers;
     std::array<Buffer*, kPackedStructBufferCapacity> packedStructBuffers{};
@@ -920,6 +934,10 @@ void releasePipelineCaches(RendererCpp& renderer) {
         if (entry.second) entry.second->release();
     }
     renderer.auxLibraries.clear();
+    for (auto& entry : renderer.binaryArchives) {
+        if (entry.second) entry.second->release();
+    }
+    renderer.binaryArchives.clear();
     for (auto& entry : renderer.convertedVertexBuffers) {
         if (entry.second) entry.second->release();
     }
@@ -8872,6 +8890,110 @@ void mglRenderCppDisablePipelineBinaryArchive(void* owner_handle) {
     if (!owner) return;
     std::lock_guard<std::mutex> lock(owner->mutex);
     owner->binaryArchiveEnabled = false;
+    owner->clearBinaryArchive();
+}
+
+int mglRenderCppGetPipelineBinaryArchiveState(
+    void* owner_handle, int* enabled_out, int* present_out) {
+    auto* owner = static_cast<mgl::PipelineCacheOwner*>(owner_handle);
+    if (enabled_out) *enabled_out = 0;
+    if (present_out) *present_out = 0;
+    if (!owner) return -1;
+    std::lock_guard<std::mutex> lock(owner->mutex);
+    if (enabled_out) *enabled_out = owner->binaryArchiveEnabled ? 1 : 0;
+    if (present_out) *present_out = owner->binaryArchive ? 1 : 0;
+    return 0;
+}
+
+int mglRenderCppLoadPipelineBinaryArchive(
+    void* owner_handle,
+    const char* cache_key,
+    void* url,
+    int archive_exists,
+    int* reused_out,
+    char* err,
+    size_t errcap) {
+    auto* owner = static_cast<mgl::PipelineCacheOwner*>(owner_handle);
+    auto* archiveURL = static_cast<NS::URL*>(url);
+    if (reused_out) *reused_out = 0;
+    if (err && errcap) err[0] = '\0';
+    if (!owner || !cache_key || !cache_key[0] || !archiveURL) return -1;
+
+    mgl::RendererCpp& renderer = mgl::renderer();
+    std::scoped_lock lock(renderer.mutex, owner->mutex);
+    if (!renderer.device || !owner->binaryArchiveEnabled) return -1;
+
+    auto shared = renderer.binaryArchives.find(cache_key);
+    if (shared != renderer.binaryArchives.end() && shared->second) {
+        owner->clearBinaryArchive();
+        owner->binaryArchive = shared->second;
+        owner->binaryArchive->retain();
+        owner->binaryArchiveKey = cache_key;
+        if (reused_out) *reused_out = 1;
+        return 0;
+    }
+
+    MTL::BinaryArchiveDescriptor* descriptor =
+        MTL::BinaryArchiveDescriptor::alloc()->init();
+    if (!descriptor) return -1;
+    if (archive_exists) descriptor->setUrl(archiveURL);
+    NS::Error* nsError = nullptr;
+    MTL::BinaryArchive* archive =
+        renderer.device->newBinaryArchive(descriptor, &nsError);
+    descriptor->release();
+    if (!archive) {
+        mgl::copyError(nsError, err, errcap);
+        return -1;
+    }
+    archive->setLabel(NS::String::string(
+        "MGL Pipeline Binary Archive", NS::UTF8StringEncoding));
+
+    renderer.binaryArchives.emplace(cache_key, archive);
+    owner->clearBinaryArchive();
+    owner->binaryArchive = archive;
+    owner->binaryArchive->retain();
+    owner->binaryArchiveKey = cache_key;
+    return 0;
+}
+
+int mglRenderCppSerializePipelineBinaryArchive(
+    void* owner_handle, void* url, char* err, size_t errcap) {
+    auto* owner = static_cast<mgl::PipelineCacheOwner*>(owner_handle);
+    auto* archiveURL = static_cast<NS::URL*>(url);
+    if (err && errcap) err[0] = '\0';
+    if (!owner || !archiveURL) return -1;
+
+    MTL::BinaryArchive* archive = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(owner->mutex);
+        if (!owner->binaryArchiveEnabled || !owner->binaryArchive) return -1;
+        archive = owner->binaryArchive;
+        archive->retain();
+    }
+    NS::Error* nsError = nullptr;
+    const bool serialized = archive->serializeToURL(archiveURL, &nsError);
+    archive->release();
+    if (!serialized) {
+        mgl::copyError(nsError, err, errcap);
+        return -1;
+    }
+    return 0;
+}
+
+void mglRenderCppDiscardPipelineBinaryArchive(
+    void* owner_handle, const char* cache_key) {
+    auto* owner = static_cast<mgl::PipelineCacheOwner*>(owner_handle);
+    if (!owner) return;
+    mgl::RendererCpp& renderer = mgl::renderer();
+    std::scoped_lock lock(renderer.mutex, owner->mutex);
+    std::string key = cache_key && cache_key[0]
+        ? std::string(cache_key) : owner->binaryArchiveKey;
+    owner->clearBinaryArchive();
+    auto shared = renderer.binaryArchives.find(key);
+    if (shared != renderer.binaryArchives.end()) {
+        if (shared->second) shared->second->release();
+        renderer.binaryArchives.erase(shared);
+    }
 }
 
 int mglRenderCppGetPipelineActiveState(
@@ -9255,6 +9377,29 @@ int mglRenderCppCreateRenderPipelineFromState(
         pipeline_out, err, errcap);
 }
 
+int mglRenderCppCreateRenderPipelineFromStateWithArchiveOwner(
+    void* owner_handle,
+    void* vs_function,
+    void* fs_function,
+    const MGLRenderCppPipelineDescriptorState* state,
+    void** pipeline_out,
+    char* err,
+    size_t errcap) {
+    auto* owner = static_cast<mgl::PipelineCacheOwner*>(owner_handle);
+    MTL::BinaryArchive* archive = nullptr;
+    if (owner) {
+        std::lock_guard<std::mutex> lock(owner->mutex);
+        if (owner->binaryArchiveEnabled && owner->binaryArchive) {
+            archive = owner->binaryArchive;
+            archive->retain();
+        }
+    }
+    int result = mglRenderCppCreateRenderPipelineFromState(
+        vs_function, fs_function, state, archive, pipeline_out, err, errcap);
+    if (archive) archive->release();
+    return result;
+}
+
 int mglRenderCppCreateRenderPipelineState(
     void* render_pipeline_descriptor,
     void** pipeline_out,
@@ -9338,6 +9483,33 @@ int mglRenderCppCreateRenderPipelineStateWithArchive(
     }
     *pipeline_out = pipeline;
     return 0;
+}
+
+int mglRenderCppCreateRenderPipelineStateWithArchiveOwner(
+    void* owner_handle,
+    void* render_pipeline_descriptor,
+    void** pipeline_out,
+    int* archive_hit_out,
+    char* err,
+    size_t errcap) {
+    if (archive_hit_out) *archive_hit_out = 0;
+    auto* owner = static_cast<mgl::PipelineCacheOwner*>(owner_handle);
+    MTL::BinaryArchive* archive = nullptr;
+    if (owner) {
+        std::lock_guard<std::mutex> lock(owner->mutex);
+        if (owner->binaryArchiveEnabled && owner->binaryArchive) {
+            archive = owner->binaryArchive;
+            archive->retain();
+        }
+    }
+    int result = archive
+        ? mglRenderCppCreateRenderPipelineStateWithArchive(
+              render_pipeline_descriptor, archive, pipeline_out,
+              archive_hit_out, err, errcap)
+        : mglRenderCppCreateRenderPipelineState(
+              render_pipeline_descriptor, pipeline_out, err, errcap);
+    if (archive) archive->release();
+    return result;
 }
 
 int mglRenderCppCreateComputePipelineState(void* function,

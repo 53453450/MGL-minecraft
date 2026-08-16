@@ -369,7 +369,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
      * The archive is stored in the user's Caches directory and persists
      * compiled PSO binaries across launches, reducing cold-start PSO
      * compile time from ~10s to ~2s on subsequent launches. */
-    if (_pipelineCache.state->binaryArchiveEnabled) {
+    if (_pipelineCache.binaryArchiveEnabled) {
         if (@available(macOS 11.0, *)) {
             [_pipelineCache loadBinaryArchive];
         } else {

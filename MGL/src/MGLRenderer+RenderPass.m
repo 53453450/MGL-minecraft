@@ -6708,7 +6708,6 @@ stencil_format_ok:;
     char cppError[512] = {0};
     /* 方法级作用域：@try 内赋值、@catch 的 safe fallback 也要用。 */
     void *psoPtr = NULL;
-    void *binaryArchive = NULL;
 
     @try {
         static uint64_t s_pipelineCreateBeginCount = 0;
@@ -6733,16 +6732,16 @@ stencil_format_ok:;
                                          userInfo:nil];
         }
 
-        if (_pipelineCache.state->binaryArchiveEnabled) {
-            binaryArchive = (__bridge void *)_pipelineCache.state->binaryArchive;
-        }
         psoPtr = NULL;
         cppError[0] = '\0';
-        if (mglRenderCppCreateRenderPipelineFromState(
-                (__bridge void *)vertexFunction,
-                fragmentFunction ? (__bridge void *)fragmentFunction : NULL,
-                &finalState, binaryArchive, &psoPtr,
-                cppError, sizeof(cppError)) != 0 || !psoPtr) {
+        if ([_pipelineCache
+                createRenderPipelineFromState:&finalState
+                vertexFunction:(__bridge void *)vertexFunction
+                fragmentFunction:fragmentFunction
+                    ? (__bridge void *)fragmentFunction : NULL
+                pipelineOut:&psoPtr
+                errorMessage:cppError
+                errorCapacity:sizeof(cppError)] != 0 || !psoPtr) {
             if (cppError[0]) {
                 NSLog(@"MGL METALCPP PSO fallback: %s", cppError);
             }
@@ -6910,11 +6909,14 @@ stencil_format_ok:;
                     }
                     psoPtr = NULL;
                     cppError[0] = '\0';
-                    if (mglRenderCppCreateRenderPipelineFromState(
-                            (__bridge void *)vertexFunction,
-                            fragmentFunction ? (__bridge void *)fragmentFunction : NULL,
-                            &simpleState, binaryArchive, &psoPtr,
-                            cppError, sizeof(cppError)) == 0 && psoPtr) {
+                    if ([_pipelineCache
+                            createRenderPipelineFromState:&simpleState
+                            vertexFunction:(__bridge void *)vertexFunction
+                            fragmentFunction:fragmentFunction
+                                ? (__bridge void *)fragmentFunction : NULL
+                            pipelineOut:&psoPtr
+                            errorMessage:cppError
+                            errorCapacity:sizeof(cppError)] == 0 && psoPtr) {
                         compiledPSO = (__bridge_transfer id<MTLRenderPipelineState>)psoPtr;
                     }
                     if (compiledPSO) {
@@ -6993,11 +6995,14 @@ stencil_format_ok:;
                     safeFS ? (__bridge_transfer id<MTLFunction>)safeFS : nil;
                 psoPtr = NULL;
                 cppError[0] = '\0';
-                if (mglRenderCppCreateRenderPipelineFromState(
-                        (__bridge void *)safeVSFunction,
-                        safeFSFunction ? (__bridge void *)safeFSFunction : NULL,
-                        &safeState, binaryArchive, &psoPtr,
-                        cppError, sizeof(cppError)) == 0 && psoPtr) {
+                if ([_pipelineCache
+                        createRenderPipelineFromState:&safeState
+                        vertexFunction:(__bridge void *)safeVSFunction
+                        fragmentFunction:safeFSFunction
+                            ? (__bridge void *)safeFSFunction : NULL
+                        pipelineOut:&psoPtr
+                        errorMessage:cppError
+                        errorCapacity:sizeof(cppError)] == 0 && psoPtr) {
                     compiledPSO = (__bridge_transfer id<MTLRenderPipelineState>)psoPtr;
                 }
             }
@@ -7053,7 +7058,7 @@ stencil_format_ok:;
                                     programName:currentProgramName
                                  vertexFunction:vertexFunction
                                fragmentFunction:fragmentFunction];
-            /* 归档 add 已由 C++ builder 完成（binaryArchive 非空时）。 */
+            /* Archive lookup/add is owned by PipelineCacheOwner's C++ builder. */
             [self insertPipelineStateIntoCacheWithWords:pipelineCacheKeyWords
                                             pipelineSig:pipelineSig
                                              vertexSig:vertexSig
