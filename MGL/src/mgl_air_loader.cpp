@@ -188,9 +188,9 @@ MTL::RenderPipelineDescriptor* buildRenderPipelineDescriptor(
     return rpd;
 }
 
-// P4.2: 共享 PSO 创建。archive（+0 borrowed）非空时：创建前应用到
-// descriptor（setBinaryArchives），成功后把该 pipeline 加入 archive —— 镜像
-// ObjC applyBinaryArchiveToDescriptor / addPipelineToBinaryArchive。
+// P4.2: 共享 PSO 创建。完整 pipeline 先用
+// FailOnBinaryArchiveMiss 查询 archive；命中直接使用，miss 才普通编译
+// 并 add。这使 archive 在多轮加载/保存中保持增量且不重复追加。
 int createRenderPipelineInternal(
     MTL::Device* dev, MTL::Function* vsFn, MTL::Function* fsFn,
     const MGLRenderCppPipelineDescriptorState* desc, MTL::BinaryArchive* archive,
@@ -207,7 +207,8 @@ int createRenderPipelineInternal(
     std::string key = pipelineKey(vsFn, fsFn, &state);
     PSOCache& cache = psoCache();
     auto it = cache.find(key);
-    if (it != cache.end()) {
+    const bool archiveEligible = archive && vsFn && fsFn;
+    if (it != cache.end() && !archiveEligible) {
         static_cast<MTL::RenderPipelineState*>(it->second)->retain();
         *pso_out = it->second;
         return 0;
@@ -223,18 +224,57 @@ int createRenderPipelineInternal(
     if (fsFn) {
         rpd->setFragmentFunction(fsFn);
     }
-    if (archive) {
+    /* Metal accepts incomplete render pipelines used by capture/discard
+     * paths, but MTLBinaryArchive rejects either missing stage when it later
+     * serializes.  Match the ObjC archive gate and keep both vertex-only and
+     * fragment-only PSOs out of the archive. */
+    if (archiveEligible) {
         rpd->setBinaryArchives(NS::Array::array(archive));
     }
 
     NS::Error* nsErr = nullptr;
-    MTL::RenderPipelineState* pso = dev->newRenderPipelineState(rpd, &nsErr);
+    MTL::RenderPipelineState* pso = nullptr;
+    if (archiveEligible) {
+        pso = dev->newRenderPipelineState(
+            rpd, MTL::PipelineOptionFailOnBinaryArchiveMiss,
+            nullptr, &nsErr);
+        if (pso) {
+            if (it != cache.end()) {
+                pso->release();
+                static_cast<MTL::RenderPipelineState*>(it->second)->retain();
+                *pso_out = it->second;
+                rpd->release();
+                return 0;
+            }
+        } else if (it != cache.end()) {
+            /* The PSO already exists in this process, so only teach the
+             * persistent archive about the miss; recompiling the same PSO is
+             * unnecessary. */
+            NS::Error* addErr = nullptr;
+            if (!archive->addRenderPipelineFunctions(rpd, &addErr)) {
+                char addMessage[512] = {0};
+                copyError(addErr, addMessage, sizeof(addMessage));
+                fprintf(stderr,
+                        "MGL BINARY ARCHIVE: addRenderPipeline warning: %s\n",
+                        addMessage[0] ? addMessage : "unknown error");
+            }
+            static_cast<MTL::RenderPipelineState*>(it->second)->retain();
+            *pso_out = it->second;
+            rpd->release();
+            return 0;
+        }
+    }
+    const bool archiveMiss = archiveEligible && !pso;
+    if (!pso) {
+        nsErr = nullptr;
+        pso = dev->newRenderPipelineState(rpd, &nsErr);
+    }
     if (!pso) {
         copyError(nsErr, err, errcap);
         rpd->release();
         return -1;
     }
-    if (archive) {
+    if (archiveMiss) {
         NS::Error* addErr = nullptr;
         if (!archive->addRenderPipelineFunctions(rpd, &addErr)) {
             char addMessage[512] = {0};

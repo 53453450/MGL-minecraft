@@ -78,9 +78,10 @@ int mglAirCreateRenderPipeline(const void* device, void* vs_function, void* fs_f
                                char* err, size_t errcap);
 
 /* P4.2: mglAirCreateRenderPipeline + 二进制归档。binary_archive（+0 borrowed
- * MTL::BinaryArchive*，可为 NULL）在创建前应用到 descriptor，成功后把该
- * pipeline 加入 archive —— 镜像 ObjC applyBinaryArchiveToDescriptor /
- * addPipelineToBinaryArchive。 */
+ * MTL::BinaryArchive*，可为 NULL）仅用于同时具有 vertex/fragment function
+ * 的完整 render pipeline；先查 archive hit，miss 才编译并 add。合法的
+ * vertex-only capture/rasterizer-discard PSO 不进 archive，因为 Metal 会在
+ * 序列化阶段拒绝该记录。 */
 int mglAirCreateRenderPipelineWithArchive(
     const void* device, void* vs_function, void* fs_function,
     const MGLRenderCppPipelineDescriptorState* desc, void* binary_archive,

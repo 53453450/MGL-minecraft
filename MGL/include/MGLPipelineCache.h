@@ -124,8 +124,12 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (void)loadBinaryArchive;
 - (void)saveBinaryArchive;
-- (void)applyBinaryArchiveToDescriptor:(MTLRenderPipelineDescriptor *)descriptor;
-- (void)addPipelineToBinaryArchive:(MTLRenderPipelineDescriptor *)descriptor;
+/* Complete VS+FS descriptors query the binary archive first. A miss falls
+ * back to ordinary compilation and is then added exactly once; incomplete
+ * descriptors bypass the archive. */
+- (nullable id<MTLRenderPipelineState>)createRenderPipelineStateWithDescriptor:
+    (MTLRenderPipelineDescriptor *)descriptor
+    error:(NSError * _Nullable * _Nullable)error;
 
 - (void)resetCaches;
 - (void)shutdown;
