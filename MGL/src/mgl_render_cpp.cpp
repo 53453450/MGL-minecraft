@@ -3583,6 +3583,46 @@ static float mglCppHalfToFloat(uint16_t value)
     return sign ? -result : result;
 }
 
+/* float -> IEEE-754 binary16 — faithful copy of mglFloatToHalf
+ * (pixel_utils.c). */
+static uint16_t mglCppFloatToHalf(float value)
+{
+    uint32_t f;
+    memcpy(&f, &value, sizeof(f));
+    uint32_t sign = (f >> 16u) & 0x8000u;
+    int32_t exp = ((int32_t)(f >> 23u) & 0xff) - 112;
+    uint32_t mant = f & 0x7fffffu;
+
+    if (exp >= 143) {
+        if (mant != 0u) {
+            return (uint16_t)(sign | 0x7e00u);
+        }
+        return (uint16_t)(sign | 0x7c00u);
+    }
+
+    if (exp <= 0) {
+        int shift = 1 - exp;
+        if (shift >= 25) {
+            return (uint16_t)sign;
+        }
+        uint32_t m = (mant | 0x800000u) >> shift;
+        m += 0x00001000u + ((m >> 13u) & 1u);
+        return (uint16_t)(sign | (m >> 13u));
+    }
+    if (exp >= 31) {
+        return (uint16_t)(sign | 0x7c00u);
+    }
+    mant += 0x00001000u + ((mant >> 13u) & 1u);
+    if (mant >= 0x800000u) {
+        mant = 0;
+        exp++;
+        if (exp >= 31) {
+            return (uint16_t)(sign | 0x7c00u);
+        }
+    }
+    return (uint16_t)(sign | ((uint32_t)exp << 10u) | (mant >> 13u));
+}
+
 /* N-bit mantissa + 5-bit exponent unsigned float unpack — faithful copy
  * of mglUnpackUnsignedFloatComponent (pixel_utils.c). */
 static float mglCppUnpackUnsignedFloatComponent(uint32_t value,
@@ -3905,6 +3945,207 @@ void mglRenderCppCopyTextureBytesToBGRA8(
             }
         }
     }
+}
+
+extern "C"
+int mglRenderCppReadbackGLTypeAccepted(uint32_t type) {
+    switch (type) {
+        case GL_UNSIGNED_BYTE:
+        case GL_UNSIGNED_INT_8_8_8_8:
+        case GL_UNSIGNED_INT_8_8_8_8_REV:
+        case GL_FLOAT:
+        case GL_BYTE:
+        case GL_SHORT:
+        case GL_INT:
+        case GL_UNSIGNED_INT:
+        case GL_UNSIGNED_SHORT:
+        case GL_HALF_FLOAT:
+        case GL_UNSIGNED_BYTE_3_3_2:
+        case GL_UNSIGNED_BYTE_2_3_3_REV:
+        case GL_UNSIGNED_SHORT_5_6_5:
+        case GL_UNSIGNED_SHORT_5_6_5_REV:
+        case GL_UNSIGNED_SHORT_4_4_4_4:
+        case GL_UNSIGNED_SHORT_4_4_4_4_REV:
+        case GL_UNSIGNED_SHORT_5_5_5_1:
+        case GL_UNSIGNED_SHORT_1_5_5_5_REV:
+        case GL_UNSIGNED_INT_10_10_10_2:
+        case GL_UNSIGNED_INT_2_10_10_10_REV:
+        case GL_UNSIGNED_INT_10F_11F_11F_REV:
+        case GL_UNSIGNED_INT_5_9_9_9_REV:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static int mglCppReadbackFormatChannelMap(uint32_t format, int* slots,
+                                          int src_idx[4]) {
+    if (!slots || !src_idx) return 0;
+    src_idx[0] = src_idx[1] = src_idx[2] = src_idx[3] = 0;
+    switch (format) {
+        case GL_RGBA: *slots = 4; src_idx[0]=0; src_idx[1]=1; src_idx[2]=2; src_idx[3]=3; return 1;
+        case GL_BGRA: *slots = 4; src_idx[0]=2; src_idx[1]=1; src_idx[2]=0; src_idx[3]=3; return 1;
+        case GL_RGB:  *slots = 3; src_idx[0]=0; src_idx[1]=1; src_idx[2]=2; return 1;
+        case GL_BGR:  *slots = 3; src_idx[0]=2; src_idx[1]=1; src_idx[2]=0; return 1;
+        case GL_RG:   *slots = 2; src_idx[0]=0; src_idx[1]=1; return 1;
+        case GL_RED:  *slots = 1; src_idx[0]=0; return 1;
+        case GL_GREEN: *slots = 1; src_idx[0]=1; return 1;
+        case GL_BLUE:  *slots = 1; src_idx[0]=2; return 1;
+        case GL_ALPHA: *slots = 1; src_idx[0]=3; return 1;
+        default: return 0;
+    }
+}
+
+/* Pixel-type storage size — faithful copy of sizeForType (pixel_utils.c). */
+static uint32_t mglCppSizeForType(uint32_t type) {
+    switch (type) {
+        case GL_UNSIGNED_BYTE:
+        case GL_BYTE:
+        case GL_UNSIGNED_BYTE_3_3_2:
+        case GL_UNSIGNED_BYTE_2_3_3_REV:
+            return sizeof(uint8_t);
+        case GL_UNSIGNED_SHORT:
+        case GL_SHORT:
+        case GL_HALF_FLOAT:
+        case GL_UNSIGNED_SHORT_5_6_5:
+        case GL_UNSIGNED_SHORT_5_6_5_REV:
+        case GL_UNSIGNED_SHORT_4_4_4_4:
+        case GL_UNSIGNED_SHORT_4_4_4_4_REV:
+        case GL_UNSIGNED_SHORT_5_5_5_1:
+        case GL_UNSIGNED_SHORT_1_5_5_5_REV:
+            return sizeof(uint16_t);
+        case GL_UNSIGNED_INT:
+        case GL_INT:
+        case GL_FLOAT:
+        case GL_UNSIGNED_INT_8_8_8_8:
+        case GL_UNSIGNED_INT_8_8_8_8_REV:
+        case GL_UNSIGNED_INT_10_10_10_2:
+        case GL_UNSIGNED_INT_2_10_10_10_REV:
+        case GL_UNSIGNED_INT_10F_11F_11F_REV:
+        case GL_UNSIGNED_INT_5_9_9_9_REV:
+        case GL_UNSIGNED_INT_24_8:
+            return sizeof(uint32_t);
+        case GL_FLOAT_32_UNSIGNED_INT_24_8_REV:
+            return 8u;
+        default:
+            return sizeof(uint32_t);
+    }
+}
+
+static int mglCppPixelTypeIsPacked(uint32_t type) {
+    switch (type) {
+        case GL_UNSIGNED_BYTE_3_3_2:
+        case GL_UNSIGNED_BYTE_2_3_3_REV:
+        case GL_UNSIGNED_SHORT_5_6_5:
+        case GL_UNSIGNED_SHORT_5_6_5_REV:
+        case GL_UNSIGNED_SHORT_4_4_4_4:
+        case GL_UNSIGNED_SHORT_4_4_4_4_REV:
+        case GL_UNSIGNED_SHORT_5_5_5_1:
+        case GL_UNSIGNED_SHORT_1_5_5_5_REV:
+        case GL_UNSIGNED_INT_8_8_8_8:
+        case GL_UNSIGNED_INT_8_8_8_8_REV:
+        case GL_UNSIGNED_INT_10_10_10_2:
+        case GL_UNSIGNED_INT_2_10_10_10_REV:
+        case GL_UNSIGNED_INT_10F_11F_11F_REV:
+        case GL_UNSIGNED_INT_5_9_9_9_REV:
+        case GL_UNSIGNED_INT_24_8:
+        case GL_FLOAT_32_UNSIGNED_INT_24_8_REV:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+/* SNORM8 texture bytes -> GL format/type — mirrors the ObjC
+ * sourceIsSnorm8 path of mglMetalCopyBGRA8CompatibleTextureBytesToGL. */
+extern "C"
+int mglRenderCppCopySnorm8TextureBytesToGL(
+    const void* src, uint64_t src_bytes_per_row,
+    void* dst, uint64_t dst_bytes_per_row,
+    uint64_t width, uint64_t height,
+    uint32_t pixel_format, uint32_t format, uint32_t type, int flip_y) {
+    if (!src || !dst || width == 0u || height == 0u) {
+        return 0;
+    }
+    const MTL::PixelFormat pf = static_cast<MTL::PixelFormat>(pixel_format);
+    if (pf != MTL::PixelFormatR8Snorm &&
+        pf != MTL::PixelFormatRG8Snorm &&
+        pf != MTL::PixelFormatRGBA8Snorm) {
+        return 0;
+    }
+
+    int slots = 0;
+    int src_idx[4] = {0, 0, 0, 0};
+    if (!mglCppReadbackFormatChannelMap(format, &slots, src_idx)) {
+        return 0;
+    }
+
+    uint64_t src_bpp = mglRenderCppReadbackBytesPerPixel(pixel_format);
+    uint32_t comp_bytes = mglCppSizeForType(type);
+    uint64_t dst_pixel_bytes = mglCppPixelTypeIsPacked(type)
+        ? (uint64_t)comp_bytes
+        : (uint64_t)comp_bytes * (uint64_t)slots;
+    if (dst_pixel_bytes == 0u || dst_bytes_per_row < width * dst_pixel_bytes) {
+        return 0;
+    }
+
+    int src_channels = (int)src_bpp;
+    const uint8_t* src_bytes = static_cast<const uint8_t*>(src);
+    uint8_t* dst_bytes = static_cast<uint8_t*>(dst);
+    for (uint64_t y = 0; y < height; y++) {
+        const uint8_t* src_row = src_bytes + (y * src_bytes_per_row);
+        uint64_t dst_y = flip_y ? (height - 1u - y) : y;
+        uint8_t* dst_row = dst_bytes + (dst_y * dst_bytes_per_row);
+        for (uint64_t x = 0; x < width; x++) {
+            const int8_t* s = reinterpret_cast<const int8_t*>(
+                src_row + (x * src_bpp));
+            uint8_t* dp = dst_row + (x * dst_pixel_bytes);
+            for (int c = 0; c < slots; ++c) {
+                int idx = src_idx[c];
+                if (idx >= src_channels) idx = src_channels - 1;
+                int8_t sv = s[idx];
+                float fv = mglRenderCppSnorm8ToFloat(sv);
+                uint8_t* out = dp + (uint64_t)c * (uint64_t)comp_bytes;
+                if (type == GL_BYTE) {
+                    int32_t iv = (int32_t)lroundf(fv * 127.0f);
+                    if (iv > 127) iv = 127;
+                    if (iv < -128) iv = -128;
+                    int8_t biv = (int8_t)iv;
+                    memcpy(out, &biv, sizeof(biv));
+                } else if (type == GL_UNSIGNED_BYTE) {
+                    float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
+                    uint8_t iv = (uint8_t)lroundf(cv * 255.0f);
+                    memcpy(out, &iv, sizeof(iv));
+                } else if (type == GL_FLOAT) {
+                    memcpy(out, &fv, sizeof(fv));
+                } else if (type == GL_HALF_FLOAT) {
+                    uint16_t iv = mglCppFloatToHalf(fv);
+                    memcpy(out, &iv, sizeof(iv));
+                } else if (type == GL_SHORT) {
+                    int32_t iv = (int32_t)lroundf(fv * 32767.0f);
+                    if (iv > 32767) iv = 32767;
+                    if (iv < -32768) iv = -32768;
+                    int16_t siv = (int16_t)iv;
+                    memcpy(out, &siv, sizeof(siv));
+                } else if (type == GL_UNSIGNED_SHORT) {
+                    float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
+                    uint16_t iv = (uint16_t)lroundf(cv * 65535.0f);
+                    memcpy(out, &iv, sizeof(iv));
+                } else if (type == GL_INT) {
+                    int64_t iv = (int64_t)llroundf(fv * 2147483647.0f);
+                    if (iv > 2147483647LL) iv = 2147483647LL;
+                    if (iv < -2147483648LL) iv = -2147483648LL;
+                    int32_t iiv = (int32_t)iv;
+                    memcpy(out, &iiv, sizeof(iiv));
+                } else if (type == GL_UNSIGNED_INT) {
+                    float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
+                    uint32_t iv = (uint32_t)llroundf(cv * 4294967295.0f);
+                    memcpy(out, &iv, sizeof(iv));
+                }
+            }
+        }
+    }
+    return 1;
 }
 
 

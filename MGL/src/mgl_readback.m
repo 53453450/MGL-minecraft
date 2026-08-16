@@ -116,113 +116,24 @@ BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
         return NO;
     }
 
-    if (type != GL_UNSIGNED_BYTE &&
-        type != GL_UNSIGNED_INT_8_8_8_8 &&
-        type != GL_UNSIGNED_INT_8_8_8_8_REV &&
-        type != GL_FLOAT &&
-        type != GL_BYTE &&
-        type != GL_SHORT &&
-        type != GL_INT &&
-        type != GL_UNSIGNED_INT &&
-        type != GL_UNSIGNED_SHORT &&
-        type != GL_HALF_FLOAT &&
-        type != GL_UNSIGNED_BYTE_3_3_2 &&
-        type != GL_UNSIGNED_BYTE_2_3_3_REV &&
-        type != GL_UNSIGNED_SHORT_5_6_5 &&
-        type != GL_UNSIGNED_SHORT_5_6_5_REV &&
-        type != GL_UNSIGNED_SHORT_4_4_4_4 &&
-        type != GL_UNSIGNED_SHORT_4_4_4_4_REV &&
-        type != GL_UNSIGNED_SHORT_5_5_5_1 &&
-        type != GL_UNSIGNED_SHORT_1_5_5_5_REV &&
-        type != GL_UNSIGNED_INT_10_10_10_2 &&
-        type != GL_UNSIGNED_INT_2_10_10_10_REV &&
-        type != GL_UNSIGNED_INT_10F_11F_11F_REV &&
-        type != GL_UNSIGNED_INT_5_9_9_9_REV) {
+    /* P4.5 (item 1171): type-accept table in C++. */
+    if (!mglRenderCppReadbackGLTypeAccepted((uint32_t)type)) {
         return NO;
     }
 
-    /* Direct SNORM conversion path: bypass the lossy BGRA8 UNORM intermediate.
-     * SNORM int8_t -> BGRA8 UNORM loses sign information, so we convert directly
-     * from the native SNORM texture data to the requested GL format/type. */
+    /* P4.5 (item 1171): SNORM8 direct path in C++ (bypass lossy BGRA8). */
     BOOL sourceIsSnorm8 =
         (pixelFormat == MTLPixelFormatR8Snorm ||
          pixelFormat == MTLPixelFormatRG8Snorm ||
          pixelFormat == MTLPixelFormatRGBA8Snorm);
     if (sourceIsSnorm8) {
-        NSUInteger srcBpp = mglMetalReadbackBytesPerPixel(pixelFormat);
-        NSUInteger dstPixelBytes = (NSUInteger)sizeForFormatType(format, type);
-        if (dstPixelBytes == 0u || dstBytesPerRow < width * dstPixelBytes) {
-            return NO;
-        }
-        int srcChannels = (int)(srcBpp); /* 1 for R8, 2 for RG8, 4 for RGBA8 */
-        int slots = 0;
-        int srcIdx[4] = {0,0,0,0};
-        switch (format) {
-            case GL_RGBA: slots = 4; srcIdx[0]=0; srcIdx[1]=1; srcIdx[2]=2; srcIdx[3]=3; break;
-            case GL_BGRA: slots = 4; srcIdx[0]=2; srcIdx[1]=1; srcIdx[2]=0; srcIdx[3]=3; break;
-            case GL_RGB:  slots = 3; srcIdx[0]=0; srcIdx[1]=1; srcIdx[2]=2; break;
-            case GL_BGR:  slots = 3; srcIdx[0]=2; srcIdx[1]=1; srcIdx[2]=0; break;
-            case GL_RG:   slots = 2; srcIdx[0]=0; srcIdx[1]=1; break;
-            case GL_RED:  slots = 1; srcIdx[0]=0; break;
-            case GL_GREEN: slots = 1; srcIdx[0]=1; break;
-            case GL_BLUE:  slots = 1; srcIdx[0]=2; break;
-            case GL_ALPHA: slots = 1; srcIdx[0]=3; break;
-            default: return NO;
-        }
-        NSUInteger compBytes = (NSUInteger)sizeForType(type);
-        for (NSUInteger y = 0; y < height; y++) {
-            const uint8_t *srcRow = src + (y * srcBytesPerRow);
-            NSUInteger dstY = flipY ? (height - 1u - y) : y;
-            uint8_t *dstRow = dst + (dstY * dstBytesPerRow);
-            for (NSUInteger x = 0; x < width; x++) {
-                const int8_t *s = (const int8_t *)(srcRow + (x * srcBpp));
-                uint8_t *dp = dstRow + (x * dstPixelBytes);
-                for (int c = 0; c < slots; ++c) {
-                    int idx = srcIdx[c];
-                    if (idx >= srcChannels) idx = srcChannels - 1;
-                    int8_t sv = s[idx];
-                    float fv = mglMetalSnorm8ToFloat(sv);
-                    uint8_t *out = dp + (NSUInteger)c * compBytes;
-                    if (type == GL_BYTE) {
-                        int32_t iv = (int32_t)lroundf(fv * 127.0f);
-                        if (iv > 127) iv = 127;
-                        if (iv < -128) iv = -128;
-                        int8_t biv = (int8_t)iv;
-                        memcpy(out, &biv, sizeof(biv));
-                    } else if (type == GL_UNSIGNED_BYTE) {
-                        float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
-                        uint8_t iv = (uint8_t)lroundf(cv * 255.0f);
-                        memcpy(out, &iv, sizeof(iv));
-                    } else if (type == GL_FLOAT) {
-                        memcpy(out, &fv, sizeof(fv));
-                    } else if (type == GL_HALF_FLOAT) {
-                        uint16_t iv = mglFloatToHalf(fv);
-                        memcpy(out, &iv, sizeof(iv));
-                    } else if (type == GL_SHORT) {
-                        int32_t iv = (int32_t)lroundf(fv * 32767.0f);
-                        if (iv > 32767) iv = 32767;
-                        if (iv < -32768) iv = -32768;
-                        int16_t siv = (int16_t)iv;
-                        memcpy(out, &siv, sizeof(siv));
-                    } else if (type == GL_UNSIGNED_SHORT) {
-                        float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
-                        uint16_t iv = (uint16_t)lroundf(cv * 65535.0f);
-                        memcpy(out, &iv, sizeof(iv));
-                    } else if (type == GL_INT) {
-                        int64_t iv = (int64_t)llroundf(fv * 2147483647.0f);
-                        if (iv > 2147483647LL) iv = 2147483647LL;
-                        if (iv < -2147483648LL) iv = -2147483648LL;
-                        int32_t iiv = (int32_t)iv;
-                        memcpy(out, &iiv, sizeof(iiv));
-                    } else if (type == GL_UNSIGNED_INT) {
-                        float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
-                        uint32_t iv = (uint32_t)llroundf(cv * 4294967295.0f);
-                        memcpy(out, &iv, sizeof(iv));
-                    }
-                }
-            }
-        }
-        return YES;
+        return mglRenderCppCopySnorm8TextureBytesToGL(
+                   src, (uint64_t)srcBytesPerRow,
+                   dst, (uint64_t)dstBytesPerRow,
+                   (uint64_t)width, (uint64_t)height,
+                   (uint32_t)pixelFormat, (uint32_t)format, (uint32_t)type,
+                   flipY ? 1 : 0)
+            ? YES : NO;
     }
 
     /* Direct RGB10A2 conversion path: bypass the lossy BGRA8 UNORM intermediate.

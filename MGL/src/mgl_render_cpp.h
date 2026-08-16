@@ -404,6 +404,19 @@ void mglRenderCppCopyTextureBytesToBGRA8(
     uint64_t width, uint64_t height,
     uint32_t pixel_format, int flip_y);
 
+/* P4.5 (item 1171): accepted GL pixel types for
+ * mglMetalCopyBGRA8CompatibleTextureBytesToGL.  Returns 1/0. */
+int mglRenderCppReadbackGLTypeAccepted(uint32_t type);
+
+/* P4.5 (item 1171): SNORM8 texture bytes -> GL format/type, bypassing
+ * the lossy BGRA8 UNORM intermediate.  Mirrors the ObjC sourceIsSnorm8
+ * path (1 on success, 0 on bad args / unsupported format). */
+int mglRenderCppCopySnorm8TextureBytesToGL(
+    const void *src, uint64_t src_bytes_per_row,
+    void *dst, uint64_t dst_bytes_per_row,
+    uint64_t width, uint64_t height,
+    uint32_t pixel_format, uint32_t format, uint32_t type, int flip_y);
+
 /* P4.4: CPU→GPU 上传路径选路。纯决策函数（无 Metal 对象参与），把
  * MGLRenderer+Texture.m uploadTextureSliceViaBlit 的「storage mode /
  * 纹理类型 / AGX 能力位 → replaceRegion 或 blit 或 reject」判定迁入 C++，

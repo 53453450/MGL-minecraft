@@ -4282,6 +4282,72 @@ static int verifyReadbackScalarConvert(void) {
             return 1;
         }
     }
+    /* GL readback type-accept table + SNORM8 direct path. */
+    if (!mglRenderCppReadbackGLTypeAccepted((uint32_t)GL_UNSIGNED_BYTE) ||
+        !mglRenderCppReadbackGLTypeAccepted((uint32_t)GL_FLOAT) ||
+        !mglRenderCppReadbackGLTypeAccepted(
+            (uint32_t)GL_UNSIGNED_INT_2_10_10_10_REV) ||
+        mglRenderCppReadbackGLTypeAccepted((uint32_t)GL_DEPTH_COMPONENT) ||
+        mglRenderCppReadbackGLTypeAccepted(0u)) {
+        fprintf(stderr, "FAIL: readback type-accept\n");
+        return 1;
+    }
+    {
+        int8_t r8 = 127;
+        float fdst = 0.0f;
+        if (mglRenderCppCopySnorm8TextureBytesToGL(
+                &r8, 1u, &fdst, 4u, 1u, 1u,
+                (uint32_t)MTLPixelFormatR8Snorm,
+                (uint32_t)GL_RED, (uint32_t)GL_FLOAT, 0) != 1 ||
+            fabsf(fdst - 1.0f) > 1e-6f) {
+            fprintf(stderr, "FAIL: snorm8 r8 -> float\n");
+            return 1;
+        }
+        int8_t bdst = 0;
+        if (mglRenderCppCopySnorm8TextureBytesToGL(
+                &r8, 1u, &bdst, 1u, 1u, 1u,
+                (uint32_t)MTLPixelFormatR8Snorm,
+                (uint32_t)GL_RED, (uint32_t)GL_BYTE, 0) != 1 ||
+            bdst != 127) {
+            fprintf(stderr, "FAIL: snorm8 r8 -> byte\n");
+            return 1;
+        }
+        int8_t rgba[2][4] = {{127, 0, -128, 127}, {0, 127, 0, 127}};
+        float bgra[2][4];
+        memset(bgra, 0, sizeof(bgra));
+        if (mglRenderCppCopySnorm8TextureBytesToGL(
+                rgba, 4u, bgra, 16u, 1u, 2u,
+                (uint32_t)MTLPixelFormatRGBA8Snorm,
+                (uint32_t)GL_BGRA, (uint32_t)GL_FLOAT, 0) != 1 ||
+            fabsf(bgra[0][0] + 1.0f) > 1e-6f ||
+            fabsf(bgra[0][1]) > 1e-6f ||
+            fabsf(bgra[0][2] - 1.0f) > 1e-6f ||
+            fabsf(bgra[0][3] - 1.0f) > 1e-6f) {
+            fprintf(stderr, "FAIL: snorm8 rgba -> bgra float\n");
+            return 1;
+        }
+        memset(bgra, 0, sizeof(bgra));
+        if (mglRenderCppCopySnorm8TextureBytesToGL(
+                rgba, 4u, bgra, 16u, 1u, 2u,
+                (uint32_t)MTLPixelFormatRGBA8Snorm,
+                (uint32_t)GL_BGRA, (uint32_t)GL_FLOAT, 1) != 1 ||
+            fabsf(bgra[0][2]) > 1e-6f ||
+            fabsf(bgra[1][2] - 1.0f) > 1e-6f) {
+            fprintf(stderr, "FAIL: snorm8 flipY\n");
+            return 1;
+        }
+        if (mglRenderCppCopySnorm8TextureBytesToGL(
+                rgba, 4u, bgra, 16u, 1u, 1u,
+                (uint32_t)MTLPixelFormatRGBA8Unorm,
+                (uint32_t)GL_RGBA, (uint32_t)GL_FLOAT, 0) != 0 ||
+            mglRenderCppCopySnorm8TextureBytesToGL(
+                NULL, 4u, bgra, 16u, 1u, 1u,
+                (uint32_t)MTLPixelFormatRGBA8Snorm,
+                (uint32_t)GL_RGBA, (uint32_t)GL_FLOAT, 0) != 0) {
+            fprintf(stderr, "FAIL: snorm8 bad args\n");
+            return 1;
+        }
+    }
     printf("READBACK_SCALAR_CONVERT_OK\n");
     return 0;
 }
