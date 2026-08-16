@@ -16,8 +16,8 @@ static BOOL mglBufferUsesMetalCpp(void)
            mglRenderCppGetDevice() != NULL;
 }
 
-static id<MTLBuffer> mglBufferCreate(
-    id<MTLDevice> device,
+static MGLMetalBufferRef mglBufferCreate(
+    MGLMetalDeviceRef device,
     NSUInteger length,
     MTLResourceOptions options)
 {
@@ -25,14 +25,14 @@ static id<MTLBuffer> mglBufferCreate(
         void *buffer = NULL;
         if (mglRenderCppCreateBuffer(length, options, NULL, &buffer) == 0 &&
             buffer) {
-            return (__bridge_transfer id<MTLBuffer>)buffer;
+            return (__bridge_transfer MGLMetalBufferRef)buffer;
         }
     }
     return [device newBufferWithLength:length options:options];
 }
 
-static id<MTLBuffer> mglBufferCreateWithBytes(
-    id<MTLDevice> device,
+static MGLMetalBufferRef mglBufferCreateWithBytes(
+    MGLMetalDeviceRef device,
     const void *bytes,
     NSUInteger length,
     MTLResourceOptions options)
@@ -41,13 +41,13 @@ static id<MTLBuffer> mglBufferCreateWithBytes(
         void *buffer = NULL;
         if (mglRenderCppCreateBufferWithBytes(bytes, length, options, NULL,
                                               &buffer) == 0 && buffer) {
-            return (__bridge_transfer id<MTLBuffer>)buffer;
+            return (__bridge_transfer MGLMetalBufferRef)buffer;
         }
     }
     return [device newBufferWithBytes:bytes length:length options:options];
 }
 
-static id<MTLBuffer> mglBufferCreateConvertedVertexBuffer(
+static MGLMetalBufferRef mglBufferCreateConvertedVertexBuffer(
     Buffer *sourceBuffer,
     const MGLResolvedVertexAttribBinding *resolved,
     MGLRenderCppVertexConversionKind kind,
@@ -82,7 +82,7 @@ static id<MTLBuffer> mglBufferCreateConvertedVertexBuffer(
     if (outStride) {
         *outStride = (NSUInteger)convertedStride;
     }
-    return (__bridge_transfer id<MTLBuffer>)convertedBuffer;
+    return (__bridge_transfer MGLMetalBufferRef)convertedBuffer;
 }
 
 // CRITICAL SECURITY: Safe Metal object validation helper
@@ -124,7 +124,7 @@ static float mglFloat10ToFloat(uint32_t val) {
 }
 
 @interface MGLBufferSnapshotPoolEntry : NSObject
-@property (nonatomic, strong) id<MTLBuffer> buffer;
+@property (nonatomic, strong) MGLMetalBufferRef buffer;
 @property (nonatomic) uint64_t lastUseGeneration;
 @end
 
@@ -133,7 +133,7 @@ static float mglFloat10ToFloat(uint32_t val) {
 
 @implementation MGLRenderer (Buffer)
 
-- (id<MTLBuffer>)floatVertexBufferForDoubleAttrib:(Buffer *)sourceBuffer
+- (MGLMetalBufferRef)floatVertexBufferForDoubleAttrib:(Buffer *)sourceBuffer
                                          resolved:(const MGLResolvedVertexAttribBinding *)resolved
                                              size:(GLuint)componentCount
                                          outStride:(NSUInteger *)outStride
@@ -156,7 +156,7 @@ static float mglFloat10ToFloat(uint32_t val) {
         sourceBytes = (const uint8_t *)(uintptr_t)sourceBuffer->data.buffer_data;
         sourceSize = (size_t)sourceBuffer->size;
     } else if (sourceBuffer->data.mtl_data) {
-        id<MTLBuffer> metal = (__bridge id<MTLBuffer>)(sourceBuffer->data.mtl_data);
+        MGLMetalBufferRef metal = (__bridge MGLMetalBufferRef)(sourceBuffer->data.mtl_data);
         if (metal && metal.contents && metal.length > 0) {
             sourceBytes = (const uint8_t *)metal.contents;
             sourceSize = (size_t)metal.length;
@@ -189,7 +189,7 @@ static float mglFloat10ToFloat(uint32_t val) {
     if (!_resourceFallback.doubleVertexAttribBufferCache) {
         _resourceFallback.doubleVertexAttribBufferCache = [NSMutableDictionary dictionary];
     }
-    id<MTLBuffer> cached = _resourceFallback.doubleVertexAttribBufferCache[cacheKey];
+    MGLMetalBufferRef cached = _resourceFallback.doubleVertexAttribBufferCache[cacheKey];
     if (cached) {
         if (outStride) {
             *outStride = convertedStride;
@@ -239,7 +239,7 @@ static float mglFloat10ToFloat(uint32_t val) {
         }
     }
 
-    id<MTLBuffer> converted = mglBufferCreateWithBytes(
+    MGLMetalBufferRef converted = mglBufferCreateWithBytes(
         _device, dst, convertedData.length, MTLResourceStorageModeShared);
     if (!converted) {
         return nil;
@@ -259,7 +259,7 @@ static float mglFloat10ToFloat(uint32_t val) {
  * float. We perform that conversion on the CPU side, mirroring the GL_DOUBLE
  * path. sizeof(GLint)==sizeof(GLfloat)==4, so the converted stride equals the
  * original stride. */
-- (id<MTLBuffer>)floatVertexBufferForIntAttrib:(Buffer *)sourceBuffer
+- (MGLMetalBufferRef)floatVertexBufferForIntAttrib:(Buffer *)sourceBuffer
                                       resolved:(const MGLResolvedVertexAttribBinding *)resolved
                                           size:(GLuint)componentCount
                                     normalized:(GLboolean)normalized
@@ -287,7 +287,7 @@ static float mglFloat10ToFloat(uint32_t val) {
         sourceBytes = (const uint8_t *)(uintptr_t)sourceBuffer->data.buffer_data;
         sourceSize = (size_t)sourceBuffer->size;
     } else if (sourceBuffer->data.mtl_data) {
-        id<MTLBuffer> metal = (__bridge id<MTLBuffer>)(sourceBuffer->data.mtl_data);
+        MGLMetalBufferRef metal = (__bridge MGLMetalBufferRef)(sourceBuffer->data.mtl_data);
         if (metal && metal.contents && metal.length > 0) {
             sourceBytes = (const uint8_t *)metal.contents;
             sourceSize = (size_t)metal.length;
@@ -321,7 +321,7 @@ static float mglFloat10ToFloat(uint32_t val) {
     if (!_resourceFallback.doubleVertexAttribBufferCache) {
         _resourceFallback.doubleVertexAttribBufferCache = [NSMutableDictionary dictionary];
     }
-    id<MTLBuffer> cached = _resourceFallback.doubleVertexAttribBufferCache[cacheKey];
+    MGLMetalBufferRef cached = _resourceFallback.doubleVertexAttribBufferCache[cacheKey];
     if (cached) {
         if (outStride) {
             *outStride = convertedStride;
@@ -388,7 +388,7 @@ static float mglFloat10ToFloat(uint32_t val) {
         }
     }
 
-    id<MTLBuffer> converted = mglBufferCreateWithBytes(
+    MGLMetalBufferRef converted = mglBufferCreateWithBytes(
         _device, dst, convertedData.length, MTLResourceStorageModeShared);
     if (!converted) {
         return nil;
@@ -406,7 +406,7 @@ static float mglFloat10ToFloat(uint32_t val) {
  * each component is converted independently to float. Output is float[size].
  * sizeof(GLfixed)==sizeof(GLfloat)==4, so the converted stride equals the
  * original stride, mirroring floatVertexBufferForIntAttrib. */
-- (id<MTLBuffer>)floatVertexBufferForFixedAttrib:(Buffer *)sourceBuffer
+- (MGLMetalBufferRef)floatVertexBufferForFixedAttrib:(Buffer *)sourceBuffer
                                          resolved:(const MGLResolvedVertexAttribBinding *)resolved
                                              size:(GLuint)componentCount
                                         outStride:(NSUInteger *)outStride
@@ -429,7 +429,7 @@ static float mglFloat10ToFloat(uint32_t val) {
         sourceBytes = (const uint8_t *)(uintptr_t)sourceBuffer->data.buffer_data;
         sourceSize = (size_t)sourceBuffer->size;
     } else if (sourceBuffer->data.mtl_data) {
-        id<MTLBuffer> metal = (__bridge id<MTLBuffer>)(sourceBuffer->data.mtl_data);
+        MGLMetalBufferRef metal = (__bridge MGLMetalBufferRef)(sourceBuffer->data.mtl_data);
         if (metal && metal.contents && metal.length > 0) {
             sourceBytes = (const uint8_t *)metal.contents;
             sourceSize = (size_t)metal.length;
@@ -462,7 +462,7 @@ static float mglFloat10ToFloat(uint32_t val) {
     if (!_resourceFallback.doubleVertexAttribBufferCache) {
         _resourceFallback.doubleVertexAttribBufferCache = [NSMutableDictionary dictionary];
     }
-    id<MTLBuffer> cached = _resourceFallback.doubleVertexAttribBufferCache[cacheKey];
+    MGLMetalBufferRef cached = _resourceFallback.doubleVertexAttribBufferCache[cacheKey];
     if (cached) {
         if (outStride) {
             *outStride = convertedStride;
@@ -511,7 +511,7 @@ static float mglFloat10ToFloat(uint32_t val) {
         }
     }
 
-    id<MTLBuffer> converted = mglBufferCreateWithBytes(
+    MGLMetalBufferRef converted = mglBufferCreateWithBytes(
         _device, dst, convertedData.length, MTLResourceStorageModeShared);
     if (!converted) {
         return nil;
@@ -530,7 +530,7 @@ static float mglFloat10ToFloat(uint32_t val) {
  * element (4 bytes) is smaller than the float4 output (16 bytes), so the
  * converted buffer is zero-initialized and the unpacked floats are written
  * per vertex (no copy-then-overwrite, unlike the GL_DOUBLE path). */
-- (id<MTLBuffer>)floatVertexBufferForPacked1010102Attrib:(Buffer *)sourceBuffer
+- (MGLMetalBufferRef)floatVertexBufferForPacked1010102Attrib:(Buffer *)sourceBuffer
                                                   resolved:(const MGLResolvedVertexAttribBinding *)resolved
                                                  outStride:(NSUInteger *)outStride
 {
@@ -553,7 +553,7 @@ static float mglFloat10ToFloat(uint32_t val) {
         sourceBytes = (const uint8_t *)(uintptr_t)sourceBuffer->data.buffer_data;
         sourceSize = (size_t)sourceBuffer->size;
     } else if (sourceBuffer->data.mtl_data) {
-        id<MTLBuffer> metal = (__bridge id<MTLBuffer>)(sourceBuffer->data.mtl_data);
+        MGLMetalBufferRef metal = (__bridge MGLMetalBufferRef)(sourceBuffer->data.mtl_data);
         if (metal && metal.contents && metal.length > 0) {
             sourceBytes = (const uint8_t *)metal.contents;
             sourceSize = (size_t)metal.length;
@@ -586,7 +586,7 @@ static float mglFloat10ToFloat(uint32_t val) {
     if (!_resourceFallback.doubleVertexAttribBufferCache) {
         _resourceFallback.doubleVertexAttribBufferCache = [NSMutableDictionary dictionary];
     }
-    id<MTLBuffer> cached = _resourceFallback.doubleVertexAttribBufferCache[cacheKey];
+    MGLMetalBufferRef cached = _resourceFallback.doubleVertexAttribBufferCache[cacheKey];
     if (cached) {
         if (outStride) {
             *outStride = convertedStride;
@@ -639,7 +639,7 @@ static float mglFloat10ToFloat(uint32_t val) {
         memcpy(dst + dstOffset + rel, floats, outBytes);
     }
 
-    id<MTLBuffer> converted = mglBufferCreateWithBytes(
+    MGLMetalBufferRef converted = mglBufferCreateWithBytes(
         _device, dst, convertedData.length, MTLResourceStorageModeShared);
     if (!converted) {
         return nil;
@@ -658,7 +658,7 @@ static float mglFloat10ToFloat(uint32_t val) {
  * float3. Like the 10_10_10_2 path, the source element (4 bytes) is smaller
  * than the float3 output (12 bytes), so the converted buffer is zero-
  * initialized and unpacked floats are written per vertex. */
-- (id<MTLBuffer>)floatVertexBufferForPacked10f11f11fAttrib:(Buffer *)sourceBuffer
+- (MGLMetalBufferRef)floatVertexBufferForPacked10f11f11fAttrib:(Buffer *)sourceBuffer
                                                      resolved:(const MGLResolvedVertexAttribBinding *)resolved
                                                     outStride:(NSUInteger *)outStride
 {
@@ -681,7 +681,7 @@ static float mglFloat10ToFloat(uint32_t val) {
         sourceBytes = (const uint8_t *)(uintptr_t)sourceBuffer->data.buffer_data;
         sourceSize = (size_t)sourceBuffer->size;
     } else if (sourceBuffer->data.mtl_data) {
-        id<MTLBuffer> metal = (__bridge id<MTLBuffer>)(sourceBuffer->data.mtl_data);
+        MGLMetalBufferRef metal = (__bridge MGLMetalBufferRef)(sourceBuffer->data.mtl_data);
         if (metal && metal.contents && metal.length > 0) {
             sourceBytes = (const uint8_t *)metal.contents;
             sourceSize = (size_t)metal.length;
@@ -714,7 +714,7 @@ static float mglFloat10ToFloat(uint32_t val) {
     if (!_resourceFallback.doubleVertexAttribBufferCache) {
         _resourceFallback.doubleVertexAttribBufferCache = [NSMutableDictionary dictionary];
     }
-    id<MTLBuffer> cached = _resourceFallback.doubleVertexAttribBufferCache[cacheKey];
+    MGLMetalBufferRef cached = _resourceFallback.doubleVertexAttribBufferCache[cacheKey];
     if (cached) {
         if (outStride) {
             *outStride = convertedStride;
@@ -766,7 +766,7 @@ static float mglFloat10ToFloat(uint32_t val) {
         memcpy(dst + dstOffset + rel, floats, outBytes);
     }
 
-    id<MTLBuffer> converted = mglBufferCreateWithBytes(
+    MGLMetalBufferRef converted = mglBufferCreateWithBytes(
         _device, dst, convertedData.length, MTLResourceStorageModeShared);
     if (!converted) {
         return nil;
@@ -783,7 +783,7 @@ static float mglFloat10ToFloat(uint32_t val) {
  * directly to an int/uint shader input (e.g. GL_UNSIGNED_BYTE -> int32 for
  * an `in int` attribute) into a 32-bit integer buffer matching the shader's
  * declared type. dstIsInt selects int32 vs uint32 output. */
-- (id<MTLBuffer>)integerVertexBufferForAttrib:(Buffer *)sourceBuffer
+- (MGLMetalBufferRef)integerVertexBufferForAttrib:(Buffer *)sourceBuffer
                                      resolved:(const MGLResolvedVertexAttribBinding *)resolved
                                          size:(GLuint)componentCount
                                        srcType:(GLenum)srcType
@@ -813,7 +813,7 @@ static float mglFloat10ToFloat(uint32_t val) {
         sourceBytes = (const uint8_t *)(uintptr_t)sourceBuffer->data.buffer_data;
         sourceSize = (size_t)sourceBuffer->size;
     } else if (sourceBuffer->data.mtl_data) {
-        id<MTLBuffer> metal = (__bridge id<MTLBuffer>)(sourceBuffer->data.mtl_data);
+        MGLMetalBufferRef metal = (__bridge MGLMetalBufferRef)(sourceBuffer->data.mtl_data);
         if (metal && metal.contents && metal.length > 0) {
             sourceBytes = (const uint8_t *)metal.contents;
             sourceSize = (size_t)metal.length;
@@ -849,7 +849,7 @@ static float mglFloat10ToFloat(uint32_t val) {
     if (!_resourceFallback.doubleVertexAttribBufferCache) {
         _resourceFallback.doubleVertexAttribBufferCache = [NSMutableDictionary dictionary];
     }
-    id<MTLBuffer> cached = _resourceFallback.doubleVertexAttribBufferCache[cacheKey];
+    MGLMetalBufferRef cached = _resourceFallback.doubleVertexAttribBufferCache[cacheKey];
     if (cached) {
         if (outStride) {
             *outStride = convertedStride;
@@ -941,7 +941,7 @@ static float mglFloat10ToFloat(uint32_t val) {
         }
     }
 
-    id<MTLBuffer> converted = mglBufferCreateWithBytes(
+    MGLMetalBufferRef converted = mglBufferCreateWithBytes(
         _device, dst, convertedData.length, MTLResourceStorageModeShared);
     if (!converted) {
         return nil;
@@ -990,7 +990,7 @@ static int s_packedStructBufferIdx = 0;
  * and the Buffer wrapper (the expensive part: hash-table membership, dirty
  * tracking) is already ring-reused. */
 static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
-                                         id<MTLDevice> device,
+                                         MGLMetalDeviceRef device,
                                          const void *data,
                                          size_t size)
 {
@@ -1046,7 +1046,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
             src = padded;
         }
     }
-    id<MTLBuffer> mtlBuffer = mglBufferCreateWithBytes(
+    MGLMetalBufferRef mtlBuffer = mglBufferCreateWithBytes(
         device, src, mtl_size, MTLResourceCPUCacheModeDefaultCache);
     if (padded) {
         free(padded);
@@ -2360,8 +2360,8 @@ void mglNoteBufferEncoded(Buffer *buf)
  * current backing (oldBuffer) may still be in the current command buffer, so
  * its slot is never a reuse candidate.  When the pool is full and nothing is
  * reusable, falls back to a plain allocation that is not pooled. */
-static id<MTLBuffer> mglCowPoolTakeSnapshotForOwner(id<MTLDevice> device,
-                                                    id<MTLBuffer> oldBuffer,
+static MGLMetalBufferRef mglCowPoolTakeSnapshotForOwner(MGLMetalDeviceRef device,
+                                                    MGLMetalBufferRef oldBuffer,
                                                     NSUInteger length,
                                                     MTLResourceOptions options,
                                                     Buffer *owner)
@@ -2383,7 +2383,7 @@ static id<MTLBuffer> mglCowPoolTakeSnapshotForOwner(id<MTLDevice> device,
     }
 
     if (pool.count < MGL_COW_POOL_MAX_SLOTS) {
-        id<MTLBuffer> snapshot = mglBufferCreate(device, length, options);
+        MGLMetalBufferRef snapshot = mglBufferCreate(device, length, options);
         if (!snapshot) {
             return nil;
         }
@@ -2395,9 +2395,9 @@ static id<MTLBuffer> mglCowPoolTakeSnapshotForOwner(id<MTLDevice> device,
     return mglBufferCreate(device, length, options);
 }
 
-BOOL mglSnapshotSharedDirtyBuffer(id<MTLDevice> device,
+BOOL mglSnapshotSharedDirtyBuffer(MGLMetalDeviceRef device,
                                          Buffer *ptr,
-                                         id<MTLBuffer> *bufferPtr)
+                                         MGLMetalBufferRef *bufferPtr)
 {
     if (mglBufferUsesMetalCpp()) {
         void *metalBuffer = NULL;
@@ -2409,11 +2409,11 @@ BOOL mglSnapshotSharedDirtyBuffer(id<MTLDevice> device,
             return NO;
         }
         if (bufferPtr) {
-            *bufferPtr = (__bridge id<MTLBuffer>)metalBuffer;
+            *bufferPtr = (__bridge MGLMetalBufferRef)metalBuffer;
         }
         return YES;
     }
-    id<MTLBuffer> buffer = bufferPtr ? *bufferPtr : nil;
+    MGLMetalBufferRef buffer = bufferPtr ? *bufferPtr : nil;
     const void *cpuData = ptr ? (const void *)(uintptr_t)ptr->data.buffer_data : NULL;
     /* Transient batch buffers need no snapshot: their MTLBuffer is created
      * with newBufferWithBytes from the merged CPU data at bind time and the
@@ -2440,7 +2440,7 @@ BOOL mglSnapshotSharedDirtyBuffer(id<MTLDevice> device,
         options |= MTLResourceCPUCacheModeWriteCombined;
     }
 
-    id<MTLBuffer> snapshot = mglCowPoolTakeSnapshotForOwner(device, buffer,
+    MGLMetalBufferRef snapshot = mglCowPoolTakeSnapshotForOwner(device, buffer,
                                                             buffer.length,
                                                             options, ptr);
     if (!snapshot) {
@@ -2475,9 +2475,9 @@ BOOL mglSnapshotSharedDirtyBuffer(id<MTLDevice> device,
     return YES;
 }
 
-BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
+BOOL mglSnapshotSharedBufferRange(MGLMetalDeviceRef device,
                                          Buffer *ptr,
-                                         id<MTLBuffer> *bufferPtr,
+                                         MGLMetalBufferRef *bufferPtr,
                                          NSUInteger offset,
                                          NSUInteger length)
 {
@@ -2492,11 +2492,11 @@ BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
             return NO;
         }
         if (bufferPtr) {
-            *bufferPtr = (__bridge id<MTLBuffer>)metalBuffer;
+            *bufferPtr = (__bridge MGLMetalBufferRef)metalBuffer;
         }
         return YES;
     }
-    id<MTLBuffer> buffer = bufferPtr ? *bufferPtr : nil;
+    MGLMetalBufferRef buffer = bufferPtr ? *bufferPtr : nil;
     const uint8_t *cpuData = ptr ? (const uint8_t *)(uintptr_t)ptr->data.buffer_data : NULL;
     /* Same transient early-out as mglSnapshotSharedDirtyBuffer above. */
     if (!device || !ptr || !buffer || ptr->transient_batch_buffer ||
@@ -2512,7 +2512,7 @@ BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
         options |= MTLResourceCPUCacheModeWriteCombined;
     }
 
-    id<MTLBuffer> snapshot = mglCowPoolTakeSnapshotForOwner(device, buffer,
+    MGLMetalBufferRef snapshot = mglCowPoolTakeSnapshotForOwner(device, buffer,
                                                             buffer.length,
                                                             options, ptr);
     if (!snapshot) {
@@ -2580,13 +2580,13 @@ BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
                 RETURN_FALSE_ON_NULL(ptr->data.mtl_data);
             }
 
-            id<MTLBuffer> buffer = (id<MTLBuffer>)SafeMetalBridge(ptr->data.mtl_data, objc_getClass("MTLBuffer"), "MTLBuffer");
+            MGLMetalBufferRef buffer = (MGLMetalBufferRef)SafeMetalBridge(ptr->data.mtl_data, objc_getClass("MTLBuffer"), "MTLBuffer");
             if (!buffer) {
                 NSLog(@"MGL SECURITY ERROR: Failed to validate small Metal buffer (buffer %u)", ptr->name);
                 return false;
             }
 
-            id<MTLBuffer> bufferBeforeSnapshot = buffer;
+            MGLMetalBufferRef bufferBeforeSnapshot = buffer;
             if (!mglSnapshotSharedDirtyBuffer(_device, ptr, &buffer)) {
                 return false;
             }
@@ -2686,7 +2686,7 @@ BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
                 mtlHead[0] = '\0';
                 NSUInteger metalLen = 0;
                 if (ptr->data.mtl_data && (uintptr_t)ptr->data.mtl_data >= 0x10000u) {
-                    id<MTLBuffer> mtlBuffer = (__bridge id<MTLBuffer>)(ptr->data.mtl_data);
+                    MGLMetalBufferRef mtlBuffer = (__bridge MGLMetalBufferRef)(ptr->data.mtl_data);
                     if (mtlBuffer) {
                         metalLen = mtlBuffer.length;
                         const void *mtlBytes = mtlBuffer.contents;
@@ -2738,7 +2738,7 @@ BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
         }
 
         // CRITICAL SECURITY FIX: Safe Metal buffer validation
-        id<MTLBuffer> buffer = (id<MTLBuffer>)SafeMetalBridge(ptr->data.mtl_data, objc_getClass("MTLBuffer"), "MTLBuffer");
+        MGLMetalBufferRef buffer = (MGLMetalBufferRef)SafeMetalBridge(ptr->data.mtl_data, objc_getClass("MTLBuffer"), "MTLBuffer");
         if (!buffer) {
             NSLog(@"MGL SECURITY ERROR: Failed to validate Metal buffer (buffer %u)", ptr->name);
             return false;

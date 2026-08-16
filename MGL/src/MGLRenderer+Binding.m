@@ -11,7 +11,7 @@ static BOOL mglBindingUsesMetalCpp(void)
            mglRenderCppGetDevice() != NULL;
 }
 
-static id<MTLBuffer> mglBindingCreateBuffer(id<MTLDevice> device,
+static MGLMetalBufferRef mglBindingCreateBuffer(MGLMetalDeviceRef device,
                                             NSUInteger length,
                                             MTLResourceOptions options)
 {
@@ -19,14 +19,14 @@ static id<MTLBuffer> mglBindingCreateBuffer(id<MTLDevice> device,
         void *buffer = NULL;
         if (mglRenderCppCreateBuffer(length, options, NULL, &buffer) == 0 &&
             buffer) {
-            return (__bridge_transfer id<MTLBuffer>)buffer;
+            return (__bridge_transfer MGLMetalBufferRef)buffer;
         }
     }
     return [device newBufferWithLength:length options:options];
 }
 
-static id<MTLBuffer> mglBindingCreateBufferWithBytes(
-    id<MTLDevice> device,
+static MGLMetalBufferRef mglBindingCreateBufferWithBytes(
+    MGLMetalDeviceRef device,
     const void *bytes,
     NSUInteger length,
     MTLResourceOptions options)
@@ -35,14 +35,14 @@ static id<MTLBuffer> mglBindingCreateBufferWithBytes(
         void *buffer = NULL;
         if (mglRenderCppCreateBufferWithBytes(bytes, length, options, NULL,
                                               &buffer) == 0 && buffer) {
-            return (__bridge_transfer id<MTLBuffer>)buffer;
+            return (__bridge_transfer MGLMetalBufferRef)buffer;
         }
     }
     return [device newBufferWithBytes:bytes length:length options:options];
 }
 
-static id<MTLBuffer> mglBindingCreateBufferWithBytesNoCopy(
-    id<MTLDevice> device,
+static MGLMetalBufferRef mglBindingCreateBufferWithBytesNoCopy(
+    MGLMetalDeviceRef device,
     const void *bytes,
     NSUInteger length,
     MTLResourceOptions options,
@@ -53,7 +53,7 @@ static id<MTLBuffer> mglBindingCreateBufferWithBytesNoCopy(
         if (mglRenderCppCreateBufferWithBytesNoCopy(
                 bytes, length, options, NULL, deallocateVM ? 1 : 0,
                 &buffer) == 0 && buffer) {
-            return (__bridge_transfer id<MTLBuffer>)buffer;
+            return (__bridge_transfer MGLMetalBufferRef)buffer;
         }
     }
     return [device newBufferWithBytesNoCopy:(void *)bytes
@@ -70,41 +70,41 @@ static id<MTLBuffer> mglBindingCreateBufferWithBytesNoCopy(
     } : nil];
 }
 
-static id<MTLSamplerState> mglBindingCreateSampler(
-    id<MTLDevice> device,
+static MGLMetalSamplerStateRef mglBindingCreateSampler(
+    MGLMetalDeviceRef device,
     MTLSamplerDescriptor *descriptor)
 {
     if (mglBindingUsesMetalCpp()) {
         void *sampler = NULL;
         if (mglRenderCppCreateSampler((__bridge void *)descriptor,
                                       &sampler) == 0 && sampler) {
-            return (__bridge_transfer id<MTLSamplerState>)sampler;
+            return (__bridge_transfer MGLMetalSamplerStateRef)sampler;
         }
     }
     return [device newSamplerStateWithDescriptor:descriptor];
 }
 
-static id<MTLBlitCommandEncoder> mglBindingCreateBlitEncoder(
-    id<MTLCommandBuffer> commandBuffer)
+static MGLMetalBlitCommandEncoderRef mglBindingCreateBlitEncoder(
+    MGLMetalCommandBufferRef commandBuffer)
 {
     if (mglBindingUsesMetalCpp()) {
         void *encoderCPP = NULL;
         if (mglRenderCppCreateBlitEncoder((__bridge void *)commandBuffer,
                                           &encoderCPP) == 0 &&
             encoderCPP) {
-            return (__bridge id<MTLBlitCommandEncoder>)encoderCPP;
+            return (__bridge MGLMetalBlitCommandEncoderRef)encoderCPP;
         }
     }
     return [commandBuffer blitCommandEncoder];
 }
 
-static void mglBindingCopyTexture(id<MTLBlitCommandEncoder> encoder,
-                                  id<MTLTexture> source,
+static void mglBindingCopyTexture(MGLMetalBlitCommandEncoderRef encoder,
+                                  MGLMetalTextureRef source,
                                   NSUInteger sourceSlice,
                                   NSUInteger sourceLevel,
                                   MTLOrigin sourceOrigin,
                                   MTLSize sourceSize,
-                                  id<MTLTexture> destination,
+                                  MGLMetalTextureRef destination,
                                   NSUInteger destinationSlice,
                                   NSUInteger destinationLevel,
                                   MTLOrigin destinationOrigin)
@@ -130,7 +130,7 @@ static void mglBindingCopyTexture(id<MTLBlitCommandEncoder> encoder,
            destinationOrigin:destinationOrigin];
 }
 
-static void mglBindingEndBlitEncoder(id<MTLBlitCommandEncoder> encoder)
+static void mglBindingEndBlitEncoder(MGLMetalBlitCommandEncoderRef encoder)
 {
     if (mglBindingUsesMetalCpp() &&
         mglRenderCppEndBlitEncoder((__bridge void *)encoder) == 0) {
@@ -199,7 +199,7 @@ static void mglBindingEndBlitEncoder(id<MTLBlitCommandEncoder> encoder)
             return;
         }
 
-        id<MTLBuffer> buffer = mglBindingCreateBufferWithBytes(
+        MGLMetalBufferRef buffer = mglBindingCreateBufferWithBytes(
             _device, (void *)(uintptr_t)ptr->data.buffer_data,
             (NSUInteger)ptr->size, options);
         if (!buffer) {
@@ -220,7 +220,7 @@ static void mglBindingEndBlitEncoder(id<MTLBlitCommandEncoder> encoder)
             return;
         }
 
-        id<MTLBuffer> buffer = mglBindingCreateBufferWithBytesNoCopy(
+        MGLMetalBufferRef buffer = mglBindingCreateBufferWithBytesNoCopy(
             _device, (void *)(ptr->data.buffer_data), ptr->size, options, YES);
 
         ptr->data.mtl_data = (void *)CFBridgingRetain(buffer);
@@ -228,7 +228,7 @@ static void mglBindingEndBlitEncoder(id<MTLBlitCommandEncoder> encoder)
     }
     else
     {
-        id<MTLBuffer> buffer;
+        MGLMetalBufferRef buffer;
         
         if (ptr->data.buffer_data)
         {
@@ -308,7 +308,7 @@ static void mglBindingEndBlitEncoder(id<MTLBlitCommandEncoder> encoder)
     // in a compute shader), preserve it via a GPU-to-GPU blit instead of
     // re-uploading potentially stale CPU data.
     if (tex->mtl_data && tex->is_render_target) {
-        id<MTLTexture> existingTexture = (__bridge id<MTLTexture>)(tex->mtl_data);
+        MGLMetalTextureRef existingTexture = (__bridge MGLMetalTextureRef)(tex->mtl_data);
         MTLTextureUsage requiredRenderTargetUsage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
         NSUInteger requiredMipLevels =
             (tex->target == GL_RENDERBUFFER || tex->samples > 1u)
@@ -327,7 +327,7 @@ static void mglBindingEndBlitEncoder(id<MTLBlitCommandEncoder> encoder)
 
             // Keep a strong reference to the old texture so we can blit its GPU
             // data to the new one after releasing tex->mtl_data.
-            __strong id<MTLTexture> oldTexture = existingTexture;
+            __strong MGLMetalTextureRef oldTexture = existingTexture;
 
             mglSafeReleaseMetalObj((void **)&tex->mtl_data);
             [self releaseGLSampledRenderTargetCopyForTexture:tex];
@@ -335,7 +335,7 @@ static void mglBindingEndBlitEncoder(id<MTLBlitCommandEncoder> encoder)
             // Create a new texture with correct usage.  Don't set
             // DIRTY_TEXTURE_DATA so that createMTLTextureFromGLTexture
             // skips CPU data upload — we'll blit GPU data instead.
-            id<MTLTexture> newTexture = [self createMTLTextureFromGLTexture:tex];
+            MGLMetalTextureRef newTexture = [self createMTLTextureFromGLTexture:tex];
             if (newTexture && oldTexture &&
                 newTexture.width == oldTexture.width &&
                 newTexture.height == oldTexture.height &&
@@ -345,9 +345,9 @@ static void mglBindingEndBlitEncoder(id<MTLBlitCommandEncoder> encoder)
                 // is_render_target transition.
                 [self endRenderEncodingLocked];
                 if ([self ensureWritableCommandBufferLocked:"is_render_target_blit"]) {
-                    id<MTLBlitCommandEncoder> blit =
+                    MGLMetalBlitCommandEncoderRef blit =
                         mglBindingCreateBlitEncoder(
-                            (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
+                            (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
                     if (blit) {
                         NSUInteger copySlices = MIN(oldTexture.arrayLength, newTexture.arrayLength);
                         NSUInteger copyLevels = MIN(oldTexture.mipmapLevelCount, newTexture.mipmapLevelCount);
@@ -388,7 +388,7 @@ static void mglBindingEndBlitEncoder(id<MTLBlitCommandEncoder> encoder)
         if (tex->mtl_data &&
             !storageShapeChanged &&
             (tex->dirty_bits & DIRTY_TEXTURE_DATA) != 0) {
-            id<MTLTexture> existingTexture = (__bridge id<MTLTexture>)(tex->mtl_data);
+            MGLMetalTextureRef existingTexture = (__bridge MGLMetalTextureRef)(tex->mtl_data);
             if (existingTexture &&
                 [self uploadFullCPUTextureDataIntoTexture:tex
                                                      metal:existingTexture
@@ -488,7 +488,7 @@ static void mglBindingEndBlitEncoder(id<MTLBlitCommandEncoder> encoder)
     }
 
     if (mglMipDiagEnabled()) {
-        id<MTLTexture> mtlTex = (__bridge id<MTLTexture>)(tex->mtl_data);
+        MGLMetalTextureRef mtlTex = (__bridge MGLMetalTextureRef)(tex->mtl_data);
         uint64_t signature = 1469598103934665603ULL;
         signature = mglMipDiagMixState(signature, (uint64_t)(uintptr_t)tex->mtl_data);
         signature = mglMipDiagMixState(signature, mtlTex ? mtlTex.mipmapLevelCount : 0u);

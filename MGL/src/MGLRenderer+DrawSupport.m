@@ -62,8 +62,8 @@ static bool mglGeometryGatherIndices(const uint8_t *indexBytes,
     return true;
 }
 
-static id<MTLBuffer> mglDrawSupportCreateBuffer(
-    id<MTLDevice> device,
+static MGLMetalBufferRef mglDrawSupportCreateBuffer(
+    MGLMetalDeviceRef device,
     NSUInteger length,
     MTLResourceOptions options)
 {
@@ -71,14 +71,14 @@ static id<MTLBuffer> mglDrawSupportCreateBuffer(
         void *buffer = NULL;
         if (mglRenderCppCreateBuffer(length, options, NULL, &buffer) == 0 &&
             buffer) {
-            return (__bridge_transfer id<MTLBuffer>)buffer;
+            return (__bridge_transfer MGLMetalBufferRef)buffer;
         }
     }
     return [device newBufferWithLength:length options:options];
 }
 
-static id<MTLBuffer> mglDrawSupportCreateBufferWithBytes(
-    id<MTLDevice> device,
+static MGLMetalBufferRef mglDrawSupportCreateBufferWithBytes(
+    MGLMetalDeviceRef device,
     const void *bytes,
     NSUInteger length,
     MTLResourceOptions options)
@@ -87,29 +87,29 @@ static id<MTLBuffer> mglDrawSupportCreateBufferWithBytes(
         void *buffer = NULL;
         if (mglRenderCppCreateBufferWithBytes(bytes, length, options, NULL,
                                               &buffer) == 0 && buffer) {
-            return (__bridge_transfer id<MTLBuffer>)buffer;
+            return (__bridge_transfer MGLMetalBufferRef)buffer;
         }
     }
     return [device newBufferWithBytes:bytes length:length options:options];
 }
 
-static id<MTLBlitCommandEncoder> mglDrawSupportCreateBlitEncoder(
-    id<MTLCommandBuffer> commandBuffer)
+static MGLMetalBlitCommandEncoderRef mglDrawSupportCreateBlitEncoder(
+    MGLMetalCommandBufferRef commandBuffer)
 {
     if (mglDrawSupportUsesMetalCpp()) {
         void *encoder = NULL;
         if (mglRenderCppCreateBlitEncoder((__bridge void *)commandBuffer,
                                           &encoder) == 0 && encoder) {
-            return (__bridge id<MTLBlitCommandEncoder>)encoder;
+            return (__bridge MGLMetalBlitCommandEncoderRef)encoder;
         }
     }
     return [commandBuffer blitCommandEncoder];
 }
 
-static void mglDrawSupportBlitCopyBuffer(id<MTLBlitCommandEncoder> encoder,
-                                         id<MTLBuffer> source,
+static void mglDrawSupportBlitCopyBuffer(MGLMetalBlitCommandEncoderRef encoder,
+                                         MGLMetalBufferRef source,
                                          NSUInteger sourceOffset,
-                                         id<MTLBuffer> destination,
+                                         MGLMetalBufferRef destination,
                                          NSUInteger destinationOffset,
                                          NSUInteger size)
 {
@@ -124,7 +124,7 @@ static void mglDrawSupportBlitCopyBuffer(id<MTLBlitCommandEncoder> encoder,
                        size:size];
 }
 
-static void mglDrawSupportEndBlitEncoder(id<MTLBlitCommandEncoder> encoder)
+static void mglDrawSupportEndBlitEncoder(MGLMetalBlitCommandEncoderRef encoder)
 {
     if (mglDrawSupportUsesMetalCpp() &&
         mglRenderCppEndBlitEncoder((__bridge void *)encoder) == 0) {
@@ -134,8 +134,8 @@ static void mglDrawSupportEndBlitEncoder(id<MTLBlitCommandEncoder> encoder)
 }
 
 static void mglDrawSupportSetVertexBuffer(
-    id<MTLRenderCommandEncoder> encoder,
-    id<MTLBuffer> buffer,
+    MGLMetalRenderCommandEncoderRef encoder,
+    MGLMetalBufferRef buffer,
     NSUInteger offset,
     NSUInteger index)
 {
@@ -149,7 +149,7 @@ static void mglDrawSupportSetVertexBuffer(
 }
 
 static void mglDrawSupportSetVertexBytes(
-    id<MTLRenderCommandEncoder> encoder,
+    MGLMetalRenderCommandEncoderRef encoder,
     const void *bytes,
     NSUInteger length,
     NSUInteger index)
@@ -164,10 +164,10 @@ static void mglDrawSupportSetVertexBytes(
 }
 
 static void mglDrawSupportDrawIndexedPrimitives(
-    id<MTLRenderCommandEncoder> encoder,
+    MGLMetalRenderCommandEncoderRef encoder,
     MTLPrimitiveType primitiveType,
     NSUInteger indexCount,
-    id<MTLBuffer> indexBuffer,
+    MGLMetalBufferRef indexBuffer,
     NSUInteger indexBufferOffset,
     NSUInteger instanceCount,
     NSInteger baseVertex,
@@ -190,11 +190,11 @@ static void mglDrawSupportDrawIndexedPrimitives(
 /* Variant that honors the GL index type (UInt8/UInt16/UInt32).  Used by the
  * GS indexed capture so the original EBO drives vertex fetch directly. */
 static void mglDrawSupportDrawIndexedPrimitivesType(
-    id<MTLRenderCommandEncoder> encoder,
+    MGLMetalRenderCommandEncoderRef encoder,
     MTLPrimitiveType primitiveType,
     NSUInteger indexCount,
     MTLIndexType indexType,
-    id<MTLBuffer> indexBuffer,
+    MGLMetalBufferRef indexBuffer,
     NSUInteger indexBufferOffset,
     NSUInteger instanceCount,
     NSInteger baseVertex,
@@ -215,7 +215,7 @@ static void mglDrawSupportDrawIndexedPrimitivesType(
 }
 
 static void mglDrawSupportDrawPrimitives(
-    id<MTLRenderCommandEncoder> encoder,
+    MGLMetalRenderCommandEncoderRef encoder,
     MTLPrimitiveType primitiveType,
     NSUInteger vertexStart,
     NSUInteger vertexCount,
@@ -234,9 +234,9 @@ static void mglDrawSupportDrawPrimitives(
 }
 
 static void mglDrawSupportDrawPrimitivesIndirect(
-    id<MTLRenderCommandEncoder> encoder,
+    MGLMetalRenderCommandEncoderRef encoder,
     MTLPrimitiveType primitiveType,
-    id<MTLBuffer> indirectBuffer,
+    MGLMetalBufferRef indirectBuffer,
     NSUInteger indirectBufferOffset)
 {
     (void)mglRenderCppEncodeDraw((__bridge void *)encoder,
@@ -248,23 +248,23 @@ static void mglDrawSupportDrawPrimitivesIndirect(
         }, NULL, 0);
 }
 
-static id<MTLComputeCommandEncoder> mglDrawSupportCreateComputeEncoder(
-    id<MTLCommandBuffer> commandBuffer)
+static MGLMetalComputeCommandEncoderRef mglDrawSupportCreateComputeEncoder(
+    MGLMetalCommandBufferRef commandBuffer)
 {
     if (mglDrawSupportUsesMetalCpp()) {
         void *encoderCPP = NULL;
         if (mglRenderCppCreateComputeEncoder((__bridge void *)commandBuffer,
                                               &encoderCPP) == 0 &&
             encoderCPP) {
-            return (__bridge id<MTLComputeCommandEncoder>)encoderCPP;
+            return (__bridge MGLMetalComputeCommandEncoderRef)encoderCPP;
         }
     }
     return [commandBuffer computeCommandEncoder];
 }
 
 static void mglDrawSupportSetComputePipeline(
-    id<MTLComputeCommandEncoder> encoder,
-    id<MTLComputePipelineState> pipeline)
+    MGLMetalComputeCommandEncoderRef encoder,
+    MGLMetalComputePipelineStateRef pipeline)
 {
     if (mglDrawSupportUsesMetalCpp() &&
         mglRenderCppSetComputePipelineState((__bridge void *)encoder,
@@ -275,8 +275,8 @@ static void mglDrawSupportSetComputePipeline(
 }
 
 static void mglDrawSupportSetComputeBuffer(
-    id<MTLComputeCommandEncoder> encoder,
-    id<MTLBuffer> buffer,
+    MGLMetalComputeCommandEncoderRef encoder,
+    MGLMetalBufferRef buffer,
     NSUInteger offset,
     NSUInteger index)
 {
@@ -290,7 +290,7 @@ static void mglDrawSupportSetComputeBuffer(
 }
 
 static void mglDrawSupportSetComputeBytes(
-    id<MTLComputeCommandEncoder> encoder,
+    MGLMetalComputeCommandEncoderRef encoder,
     const void *bytes,
     NSUInteger length,
     NSUInteger index)
@@ -304,7 +304,7 @@ static void mglDrawSupportSetComputeBytes(
 }
 
 static void mglDrawSupportDispatchCompute(
-    id<MTLComputeCommandEncoder> encoder,
+    MGLMetalComputeCommandEncoderRef encoder,
     MTLSize groups,
     MTLSize threads)
 {
@@ -320,7 +320,7 @@ static void mglDrawSupportDispatchCompute(
 }
 
 static void mglDrawSupportEndComputeEncoder(
-    id<MTLComputeCommandEncoder> encoder)
+    MGLMetalComputeCommandEncoderRef encoder)
 {
     if (mglDrawSupportUsesMetalCpp() &&
         mglRenderCppEndComputeEncoder((__bridge void *)encoder) == 0) {
@@ -330,8 +330,8 @@ static void mglDrawSupportEndComputeEncoder(
 }
 
 static void mglDrawSupportSetTessellationFactors(
-    id<MTLRenderCommandEncoder> encoder,
-    id<MTLBuffer> buffer,
+    MGLMetalRenderCommandEncoderRef encoder,
+    MGLMetalBufferRef buffer,
     NSUInteger offset,
     NSUInteger instanceStride)
 {
@@ -347,11 +347,11 @@ static void mglDrawSupportSetTessellationFactors(
 }
 
 static void mglDrawSupportDrawPatches(
-    id<MTLRenderCommandEncoder> encoder,
+    MGLMetalRenderCommandEncoderRef encoder,
     NSUInteger controlPointCount,
     NSUInteger patchStart,
     NSUInteger patchCount,
-    id<MTLBuffer> patchIndexBuffer,
+    MGLMetalBufferRef patchIndexBuffer,
     NSUInteger patchIndexBufferOffset,
     NSUInteger instanceCount,
     NSUInteger baseInstance)
@@ -371,13 +371,13 @@ static void mglDrawSupportDrawPatches(
 }
 
 static void mglDrawSupportDrawIndexedPatches(
-    id<MTLRenderCommandEncoder> encoder,
+    MGLMetalRenderCommandEncoderRef encoder,
     NSUInteger controlPointCount,
     NSUInteger patchStart,
     NSUInteger patchCount,
-    id<MTLBuffer> patchIndexBuffer,
+    MGLMetalBufferRef patchIndexBuffer,
     NSUInteger patchIndexBufferOffset,
-    id<MTLBuffer> controlPointIndexBuffer,
+    MGLMetalBufferRef controlPointIndexBuffer,
     NSUInteger controlPointIndexBufferOffset,
     NSUInteger instanceCount,
     NSUInteger baseInstance)
@@ -475,14 +475,14 @@ static BOOL mglNativeTESInterfaceSupported(Program *tcsProgram,
         tcsProgram ? (uint32_t)tcsProgram->tess_control_output_vertices : 0u) != 0;
 }
 
-static id<MTLBuffer> mglDefaultTessFactorBuffer(id<MTLDevice> device,
+static MGLMetalBufferRef mglDefaultTessFactorBuffer(MGLMetalDeviceRef device,
                                                 GLMState *state,
                                                 GLuint patchCount)
 {
     if (!device || !state || patchCount == 0u) return nil;
     const NSUInteger stride = 12u;
     if ((NSUInteger)patchCount > NSUIntegerMax / stride) return nil;
-    id<MTLBuffer> buffer = mglDrawSupportCreateBuffer(
+    MGLMetalBufferRef buffer = mglDrawSupportCreateBuffer(
         device, (NSUInteger)patchCount * stride,
         MTLResourceStorageModeShared);
     if (!buffer || !buffer.contents) return nil;
@@ -502,8 +502,8 @@ static id<MTLBuffer> mglDefaultTessFactorBuffer(id<MTLDevice> device,
 /* Cached variant of the default factor buffer for the TES-only path:
  * consecutive tess draws reuse one stable allocation unless the default
  * patch levels or patch count actually changed. */
-static id<MTLBuffer> mglCachedDefaultTessFactorBuffer(
-    id<MTLDevice> device, MGLTessellationState *tess, GLMState *state,
+static MGLMetalBufferRef mglCachedDefaultTessFactorBuffer(
+    MGLMetalDeviceRef device, MGLTessellationState *tess, GLMState *state,
     GLuint patchCount)
 {
     if (!device || !tess || !state || patchCount == 0u) return nil;
@@ -523,7 +523,7 @@ static id<MTLBuffer> mglCachedDefaultTessFactorBuffer(
     if (!levelsChanged && tess->tessFactorCacheBuffer) {
         return tess->tessFactorCacheBuffer;
     }
-    id<MTLBuffer> fresh = mglDefaultTessFactorBuffer(device, state, patchCount);
+    MGLMetalBufferRef fresh = mglDefaultTessFactorBuffer(device, state, patchCount);
     if (!fresh) return nil;
     tess->tessFactorCacheBuffer = fresh;
     tess->tessFactorCachePatchCount = patchCount;
@@ -536,8 +536,8 @@ static id<MTLBuffer> mglCachedDefaultTessFactorBuffer(
     return fresh;
 }
 
-static id<MTLBuffer> mglNativeTessFactorBuffer(id<MTLDevice> device,
-                                                id<MTLBuffer> canonical,
+static MGLMetalBufferRef mglNativeTessFactorBuffer(MGLMetalDeviceRef device,
+                                                MGLMetalBufferRef canonical,
                                                 GLenum mode,
                                                 GLuint patchCount)
 {
@@ -554,7 +554,7 @@ static id<MTLBuffer> mglNativeTessFactorBuffer(id<MTLDevice> device,
     }
 
     const NSUInteger triangleStride = 8u;
-    id<MTLBuffer> result = mglDrawSupportCreateBuffer(
+    MGLMetalBufferRef result = mglDrawSupportCreateBuffer(
         device, (NSUInteger)patchCount * triangleStride,
         MTLResourceStorageModeShared);
     if (!result || !result.contents) {
@@ -572,7 +572,7 @@ static id<MTLBuffer> mglNativeTessFactorBuffer(id<MTLDevice> device,
     return result;
 }
 
-static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
+static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
                                              Program *tesProgram,
                                              GLuint patchCount,
                                              GLuint instanceCount)
@@ -616,7 +616,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
         endVertex;
     if (endVertex == 0u || lastCaptureIndex == 0u ||
         lastCaptureIndex > NSUIntegerMax / 32u) return NO;
-    id<MTLBuffer> capture = mglDrawSupportCreateBuffer(
+    MGLMetalBufferRef capture = mglDrawSupportCreateBuffer(
         _device, (NSUInteger)(lastCaptureIndex * 32u),
         MTLResourceStorageModeShared);
     if (!capture) return NO;
@@ -625,13 +625,13 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     _tessellation.cullDistanceCaptureActive = YES;
     drawCtx->state.dirty_bits = DIRTY_ALL;
     if (![self processGLState:true] ||
-        !(__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
+        !(__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
         _tessellation.cullDistanceCaptureActive = NO;
         drawCtx->state.dirty_bits = DIRTY_ALL;
         return NO;
     }
-    id<MTLRenderCommandEncoder> encoder =
-        (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner);
+    MGLMetalRenderCommandEncoderRef encoder =
+        (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner);
     MGLCullDistanceEmuParams params = {
         .prim_vertex_count = 1u,
         .culldist_offset = 0u,
@@ -716,13 +716,13 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
                                           instanceCount:instanceCount
                                            baseInstance:baseInstance] ||
             ![self processGLState:true] ||
-            !(__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
+            !(__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
             return YES;
         }
     }
 
     MGLEncodeContext encCtx = {
-        .encoder = (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
+        .encoder = (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
     };
     return [self encodeCullDistanceElementDraw:mode
                                     indexBytes:indexBytes
@@ -751,7 +751,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
 
     if (mode == GL_TRIANGLE_STRIP && count >= 3) {
         NSUInteger indexCount = 0u;
-        id<MTLBuffer> indexBuffer = mglNewTriangleStripArrayIndexBuffer(
+        MGLMetalBufferRef indexBuffer = mglNewTriangleStripArrayIndexBuffer(
             _device, (NSUInteger)count, &indexCount);
         if (!indexBuffer || indexCount == 0u) return YES;
         for (NSUInteger primitive = 0u; primitive * 3u < indexCount;
@@ -777,7 +777,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
 
     if (mode == GL_TRIANGLE_FAN && count >= 3) {
         NSUInteger indexCount = 0u;
-        id<MTLBuffer> indexBuffer = mglNewTriangleFanArrayIndexBuffer(
+        MGLMetalBufferRef indexBuffer = mglNewTriangleFanArrayIndexBuffer(
             _device, (NSUInteger)count, &indexCount);
         if (!indexBuffer || indexCount == 0u) return YES;
         for (NSUInteger primitive = 0u; primitive * 3u < indexCount;
@@ -818,7 +818,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
 
     if (mode == GL_LINE_LOOP && count >= 2) {
         NSUInteger indexCount = 0u;
-        id<MTLBuffer> indexBuffer = mglNewLineLoopArrayIndexBuffer(
+        MGLMetalBufferRef indexBuffer = mglNewLineLoopArrayIndexBuffer(
             _device, (NSUInteger)first, (NSUInteger)count, &indexCount);
         if (!indexBuffer || indexCount == 0u) return YES;
         for (NSUInteger primitive = 0u; primitive + 1u < indexCount;
@@ -886,8 +886,8 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
         return YES;
     }
 
-    id<MTLBuffer> indexBuffer =
-        (__bridge id<MTLBuffer>)indexBufferHandle;
+    MGLMetalBufferRef indexBuffer =
+        (__bridge MGLMetalBufferRef)indexBufferHandle;
     @try {
         for (uint64_t primitiveIndex = 0u;
              primitiveIndex < primitiveCount; ++primitiveIndex) {
@@ -917,7 +917,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     return YES;
 }
 
-- (id<MTLBuffer>)captureAIRVertexPositionsForTessellation:(GLMContext)drawCtx
+- (MGLMetalBufferRef)captureAIRVertexPositionsForTessellation:(GLMContext)drawCtx
                                                     first:(GLint)first
                                                     count:(GLsizei)count
                                             instanceCount:(GLsizei)instanceCount
@@ -944,7 +944,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
                                    &captureOffset)) {
         return nil;
     }
-    id<MTLBuffer> capture = mglDrawSupportCreateBuffer(
+    MGLMetalBufferRef capture = mglDrawSupportCreateBuffer(
         _device, captureSize, MTLResourceStorageModeShared);
     if (!capture) return nil;
 
@@ -952,13 +952,13 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     _tessellation.tessVertexCaptureActive = YES;
     drawCtx->state.dirty_bits = DIRTY_ALL;
     if (![self processGLState:true] ||
-        !(__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
+        !(__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
         _tessellation.tessVertexCaptureActive = NO;
         return nil;
     }
 
-    id<MTLRenderCommandEncoder> encoder =
-        (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner);
+    MGLMetalRenderCommandEncoderRef encoder =
+        (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner);
     mglDrawSupportSetVertexBuffer(encoder, capture, 0u, 29u);
     const uint32_t captureParams[3] = {
         (uint32_t)first, (uint32_t)recordsPerInstance, baseInstance,
@@ -982,8 +982,8 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
  * EBO so Metal's baseVertex is applied to stage_in fetch; the capture
  * kernel's vertex_id is the raw index value, so records are sparse
  * ([instance][vertex_id], span = maxIndex+1 per instance). */
-- (id<MTLBuffer>)captureAIRVertexPositionsForGeometryIndexed:(GLMContext)drawCtx
-                                                  indexBuffer:(id<MTLBuffer>)indexBuffer
+- (MGLMetalBufferRef)captureAIRVertexPositionsForGeometryIndexed:(GLMContext)drawCtx
+                                                  indexBuffer:(MGLMetalBufferRef)indexBuffer
                                                     indexType:(MTLIndexType)indexType
                                                   indexOffset:(NSUInteger)indexOffset
                                                         count:(GLsizei)count
@@ -1015,20 +1015,20 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
                                    &captureOffset)) {
         return nil;
     }
-    id<MTLBuffer> capture = mglDrawSupportCreateBuffer(
+    MGLMetalBufferRef capture = mglDrawSupportCreateBuffer(
         _device, captureSize, MTLResourceStorageModeShared);
     if (!capture) return nil;
     self->ctx = drawCtx;
     _tessellation.tessVertexCaptureActive = YES;
     drawCtx->state.dirty_bits = DIRTY_ALL;
     if (![self processGLState:true] ||
-        !(__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
+        !(__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
         _tessellation.tessVertexCaptureActive = NO;
         return nil;
     }
 
-    id<MTLRenderCommandEncoder> encoder =
-        (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner);
+    MGLMetalRenderCommandEncoderRef encoder =
+        (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner);
     mglDrawSupportSetVertexBuffer(encoder, capture, 0u, 29u);
     const uint32_t captureParams[3] = {
         0u, (uint32_t)recordsPerInstance, baseInstance,
@@ -1040,7 +1040,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
      * stream would write past the sparse record span and corrupt the
      * next instance's data.  Sanitize the marker away (to vertex 0, whose
      * record no gathered patch ever references) before drawing. */
-    id<MTLBuffer> sanitizedIndexBuffer = indexBuffer;
+    MGLMetalBufferRef sanitizedIndexBuffer = indexBuffer;
     NSUInteger sanitizedIndexOffset = indexOffset;
     uint32_t restartIndex = 0u;
     if (mglPrimitiveRestartIndexForType(drawCtx, indexType, &restartIndex)) {
@@ -1069,7 +1069,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
                         if (((const uint32_t *)copy)[i] == restartIndex)
                             ((uint32_t *)copy)[i] = 0u;
                 }
-                id<MTLBuffer> clean =
+                MGLMetalBufferRef clean =
                     mglDrawSupportCreateBufferWithBytes(
                         _device, copy, streamBytes,
                         MTLResourceStorageModeShared);
@@ -1211,10 +1211,10 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     uint32_t gatherPrimitives = 0u;
     uint32_t gatherMaxIndex = 0u;
     const uint8_t *indexBytes = NULL;
-    id<MTLBuffer> eboMetal = nil;
+    MGLMetalBufferRef eboMetal = nil;
     NSUInteger indexOffsetBytes = 0u;
     MTLIndexType captureIndexType = MTLIndexTypeUInt32;
-    id<MTLBuffer> gatherBuf = nil;
+    MGLMetalBufferRef gatherBuf = nil;
     MGLAIRGSGatherParams gparams;
     memset(&gparams, 0, sizeof(gparams));
     if (indexedDraw) {
@@ -1224,7 +1224,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
                              GL_INVALID_OPERATION);
             return YES;
         }
-        eboMetal = (__bridge id<MTLBuffer>)ebo->data.mtl_data;
+        eboMetal = (__bridge MGLMetalBufferRef)ebo->data.mtl_data;
         indexOffsetBytes = (NSUInteger)(uintptr_t)indices;
         indexBytes = mglElementIndexSourceForDraw(ebo, eboMetal, indexType,
                                                   indexOffsetBytes, count);
@@ -1303,7 +1303,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     /* Run the real VS once into the shared per-vertex records used by the AIR GS
      * kernel.  This helper closes the render encoder before compute begins. */
     NSUInteger inputOffset = 0u;
-    id<MTLBuffer> input = nil;
+    MGLMetalBufferRef input = nil;
     if (indexedDraw) {
         input = [self captureAIRVertexPositionsForGeometryIndexed:drawCtx
                                                       indexBuffer:eboMetal
@@ -1334,9 +1334,9 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     int pipelineResult = mglGetOrCreateProgramComputePipeline(
         program, _GEOMETRY_SHADER, &pipelineHandle,
         pipelineError, sizeof(pipelineError));
-    id<MTLComputePipelineState> pipeline =
+    MGLMetalComputePipelineStateRef pipeline =
         pipelineResult == 0 && pipelineHandle
-            ? (__bridge_transfer id<MTLComputePipelineState>)pipelineHandle
+            ? (__bridge_transfer MGLMetalComputePipelineStateRef)pipelineHandle
             : nil;
     if (!pipeline) {
         NSLog(@"MGL GS ERROR: compute PSO failed program=%u: %s",
@@ -1346,9 +1346,9 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
         return YES;
     }
 
-    if (!(__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner) ||
+    if (!(__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner) ||
         mglRenderCommandBufferStatus(
-            (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner)) >=
+            (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner)) >=
             MTLCommandBufferStatusCommitted) {
         if (![self newCommandBuffer]) {
             drawCtx->state.dirty_bits = DIRTY_ALL;
@@ -1357,12 +1357,12 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     }
     const NSUInteger outputSize =
         (NSUInteger)workItemCount * recordsPerPrimitive * outputStride;
-    id<MTLBuffer> output = mglDrawSupportCreateBuffer(
+    MGLMetalBufferRef output = mglDrawSupportCreateBuffer(
         _device, outputSize, MTLResourceStorageModeShared);
     /* ABI (mgl_air_gs_abi.h §3): one 28-byte counts record per work item —
      * 16-byte indirect args + 12 bytes kernel scratch. */
     const NSUInteger countsRecordBytes = MGL_AIR_GS_COUNTS_RECORD_BYTES;
-    id<MTLBuffer> counts = mglDrawSupportCreateBuffer(
+    MGLMetalBufferRef counts = mglDrawSupportCreateBuffer(
         _device, (NSUInteger)workItemCount * countsRecordBytes,
         MTLResourceStorageModeShared);
     if (!output || !counts || !output.contents || !counts.contents) {
@@ -1410,9 +1410,9 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
      * geometry_stream_xfb_stride[s] bytes). */
     TransformFeedback *xfbState = MGL_STATE(drawCtx)->transform_feedback;
     const bool xfbActive = xfbState && xfbState->active && !xfbState->paused;
-    id<MTLBuffer> xfbTemporary = nil;
-    id<MTLBuffer> xfbCaptureBuffer = nil;
-    id<MTLBuffer> xfbDestinationMTL = nil;
+    MGLMetalBufferRef xfbTemporary = nil;
+    MGLMetalBufferRef xfbCaptureBuffer = nil;
+    MGLMetalBufferRef xfbDestinationMTL = nil;
     NSUInteger xfbDestinationOffset = 0u;
     NSUInteger xfbRemainingVisibleBytes = 0u;
     NSUInteger xfbMaxCaptureBytes = 0u;
@@ -1424,7 +1424,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     NSUInteger streamCapBytes[MGL_AIR_GS_MAX_STREAMS] = {0u};
     NSUInteger streamDstOffset[MGL_AIR_GS_MAX_STREAMS] = {0u};
     NSUInteger streamRemaining[MGL_AIR_GS_MAX_STREAMS] = {0u};
-    id<MTLBuffer> streamDstMTL[MGL_AIR_GS_MAX_STREAMS] = {nil};
+    MGLMetalBufferRef streamDstMTL[MGL_AIR_GS_MAX_STREAMS] = {nil};
     NSUInteger streamStride[MGL_AIR_GS_MAX_STREAMS] = {0u};
     if (xfbActive) {
         streamStride[0] = outputStride;
@@ -1443,7 +1443,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
                 if (!slot->buf->data.mtl_data) {
                     [self bindMTLBuffer:slot->buf];
                 }
-                id<MTLBuffer> mtl = (__bridge id<MTLBuffer>)(
+                MGLMetalBufferRef mtl = (__bridge MGLMetalBufferRef)(
                     slot->buf->data.mtl_data);
                 if (!mtl) continue;
                 BufferMap map = {0};
@@ -1497,8 +1497,8 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
                 if (!xfbSlot->buf->data.mtl_data) {
                     [self bindMTLBuffer:xfbSlot->buf];
                 }
-                id<MTLBuffer> xfbMTL =
-                    (__bridge id<MTLBuffer>)(xfbSlot->buf->data.mtl_data);
+                MGLMetalBufferRef xfbMTL =
+                    (__bridge MGLMetalBufferRef)(xfbSlot->buf->data.mtl_data);
                 if (xfbMTL) {
                     BufferMap xfbMap = {0};
                     xfbMap.buf = xfbSlot->buf;
@@ -1554,7 +1554,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
         xfbMeta.stream[s].capture_base =
             (uint32_t)MIN(streamPhysBase[s], (NSUInteger)UINT32_MAX);
     }
-    id<MTLBuffer> xfbMetaBuf = mglDrawSupportCreateBufferWithBytes(
+    MGLMetalBufferRef xfbMetaBuf = mglDrawSupportCreateBufferWithBytes(
         _device, &xfbMeta, sizeof(xfbMeta), MTLResourceStorageModeShared);
     if (!xfbMetaBuf) {
         drawCtx->state.dirty_bits = DIRTY_ALL;
@@ -1562,7 +1562,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
                          GL_OUT_OF_MEMORY);
         return YES;
     }
-    id<MTLComputeCommandEncoder> compute = nil;
+    MGLMetalComputeCommandEncoderRef compute = nil;
     const BOOL cppDispatch = mglDrawSupportUsesMetalCpp();
     if (cppDispatch) {
         /* P4.3e: GS compute dispatch 编排的固定序列（encoder + pipeline +
@@ -1603,12 +1603,12 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
         if (mglRenderCppBeginComputeDispatch(
                 mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
                 &setup, &computeHandle, NULL, 0) == 0 && computeHandle) {
-            compute = (__bridge id<MTLComputeCommandEncoder>)computeHandle;
+            compute = (__bridge MGLMetalComputeCommandEncoderRef)computeHandle;
         }
     }
     if (!compute) {
         compute = mglDrawSupportCreateComputeEncoder(
-            (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
+            (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
         if (!compute) {
             drawCtx->state.dirty_bits = DIRTY_ALL;
             return YES;
@@ -1718,7 +1718,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
              * a temporary; copy each stream's segment back to its GL XFB
              * buffer.  The fast path (direct bind, no temporary) skips this
              * and only advances the write offset below. */
-            id<MTLBlitCommandEncoder> xfbBlit = nil;
+            MGLMetalBlitCommandEncoderRef xfbBlit = nil;
             for (uint32_t s = 0u; s < gsStreamCount; s++) {
                 if (!streamDstMTL[s] || streamStride[s] == 0u) continue;
                 NSUInteger w = (NSUInteger)meta->stream[s].written;
@@ -1736,7 +1736,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
                 if (copyBytes == 0u) continue;
                 if (!xfbBlit) {
                     xfbBlit = mglDrawSupportCreateBlitEncoder(
-                        (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
+                        (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
                     if (!xfbBlit) {
                         _geometry.expansionActive = NO;
                         _geometry.program = NULL;
@@ -1808,13 +1808,13 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
         return YES;
     }
     if (![self processGLState:true] ||
-        !(__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner) ||
+        !(__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner) ||
         [self currentDrawRasterizationIsEmpty] ||
         [self currentDrawModeIsFullyCulled:gsOutputMode]) {
         if (getenv("MGL_GS_DIAG")) {
             NSLog(@"MGL GS DIAG raster-skip: pgl=%d enc=%d empty=%d cull=%d",
                   [self processGLState:true] ? 1 : 0,
-                  (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner) ? 1 : 0,
+                  (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner) ? 1 : 0,
                   [self currentDrawRasterizationIsEmpty] ? 1 : 0,
                   [self currentDrawModeIsFullyCulled:gsOutputMode] ? 1 : 0);
         }
@@ -1831,8 +1831,8 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     }
 
     [self applyPolygonOffsetForDrawMode:gsOutputMode];
-    id<MTLRenderCommandEncoder> encoder =
-        (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner);
+    MGLMetalRenderCommandEncoderRef encoder =
+        (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner);
     if (getenv("MGL_GS_DIAG")) {
         const uint32_t *cw = (const uint32_t *)counts.contents;
         const float *ow = (const float *)output.contents;
@@ -2087,7 +2087,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
             return false;
         }
 
-        id<MTLBuffer> mtlBuffer = (__bridge id<MTLBuffer>)(vbo->data.mtl_data);
+        MGLMetalBufferRef mtlBuffer = (__bridge MGLMetalBufferRef)(vbo->data.mtl_data);
         if (!mtlBuffer) {
             NSLog(@"MGL DRAWARRAYS BLOCK call=%llu attrib=%u buffer=%u reason=mtl_bridge_nil",
                   (unsigned long long)drawCall,
@@ -2158,7 +2158,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
 - (BOOL)resolveElementBufferForDraw:(const char *)label
                             context:(GLMContext)drawCtx
                            glBuffer:(Buffer **)glBufferOut
-                          mtlBuffer:(id<MTLBuffer> *)mtlBufferOut
+                          mtlBuffer:(MGLMetalBufferRef *)mtlBufferOut
 {
     Buffer *gl_element_buffer = getElementBuffer(drawCtx);
     return [self resolveElementBuffer:gl_element_buffer
@@ -2172,7 +2172,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
                                   label:(const char *)label
                                 context:(GLMContext)drawCtx
                                glBuffer:(Buffer **)glBufferOut
-                              mtlBuffer:(id<MTLBuffer> *)mtlBufferOut
+                              mtlBuffer:(MGLMetalBufferRef *)mtlBufferOut
 {
     Buffer *gl_element_buffer = NULL;
     if (cmd && cmd->elementBuffer) {
@@ -2198,7 +2198,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
                        label:(const char *)label
                      context:(GLMContext)drawCtx
                     glBuffer:(Buffer **)glBufferOut
-                   mtlBuffer:(id<MTLBuffer> *)mtlBufferOut
+                   mtlBuffer:(MGLMetalBufferRef *)mtlBufferOut
 {
     if (!gl_element_buffer) {
         NSLog(@"MGL WARNING: %s skipped because no element array buffer is bound", label ? label : "indexed draw");
@@ -2212,7 +2212,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
         return NO;
     }
 
-    id<MTLBuffer> indexBuffer = (__bridge id<MTLBuffer>)(gl_element_buffer->data.mtl_data);
+    MGLMetalBufferRef indexBuffer = (__bridge MGLMetalBufferRef)(gl_element_buffer->data.mtl_data);
     if (!indexBuffer) {
         NSLog(@"MGL WARNING: %s skipped because element buffer %u has no Metal buffer",
               label ? label : "indexed draw",
@@ -2232,7 +2232,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
 - (BOOL)resolveIndirectBufferForDraw:(const char *)label
                              context:(GLMContext)drawCtx
                             glBuffer:(Buffer **)glBufferOut
-                           mtlBuffer:(id<MTLBuffer> *)mtlBufferOut
+                           mtlBuffer:(MGLMetalBufferRef *)mtlBufferOut
 {
     Buffer *gl_indirect_buffer = getIndirectBuffer(drawCtx);
     if (!gl_indirect_buffer) {
@@ -2247,7 +2247,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
         return NO;
     }
 
-    id<MTLBuffer> indirectBuffer = (__bridge id<MTLBuffer>)(gl_indirect_buffer->data.mtl_data);
+    MGLMetalBufferRef indirectBuffer = (__bridge MGLMetalBufferRef)(gl_indirect_buffer->data.mtl_data);
     if (!indirectBuffer) {
         NSLog(@"MGL WARNING: %s skipped because indirect buffer %u has no Metal buffer",
               label ? label : "indirect draw",
@@ -2276,7 +2276,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
      * dispatching into these Metal entry points. If processGLState has just
      * rebuilt a render encoder, keep it; a second flush can discard the fresh
      * pass and make state restoration fail for CPU-emulated indirect modes. */
-    if ((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
+    if ((__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
         return YES;
     }
 
@@ -2286,7 +2286,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
               label ? label : "indirect emulation");
         return NO;
     }
-    if (!(__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
+    if (!(__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
         NSLog(@"MGL WARNING: %s skipped because CPU-read synchronization left no render encoder",
               label ? label : "indirect emulation");
         return NO;
@@ -2313,7 +2313,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
         &passWidth, &passHeight);
     if (passWidth == 0 || passHeight == 0) {
         for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
-            id<MTLTexture> color = mglRenderPassAttachmentTextureForState(
+            MGLMetalTextureRef color = mglRenderPassAttachmentTextureForState(
                 _renderPassManager.state->renderPassDescriptor,
                 _renderPassManager.state->renderPassStateOwner,
                 MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, i);
@@ -2324,7 +2324,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
             }
         }
         if (passWidth == 0 || passHeight == 0) {
-            id<MTLTexture> depth = mglRenderPassAttachmentTextureForState(
+            MGLMetalTextureRef depth = mglRenderPassAttachmentTextureForState(
                 _renderPassManager.state->renderPassDescriptor,
                 _renderPassManager.state->renderPassStateOwner,
                 MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0);
@@ -2334,7 +2334,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
             }
         }
         if (passWidth == 0 || passHeight == 0) {
-            id<MTLTexture> stencil = mglRenderPassAttachmentTextureForState(
+            MGLMetalTextureRef stencil = mglRenderPassAttachmentTextureForState(
                 _renderPassManager.state->renderPassDescriptor,
                 _renderPassManager.state->renderPassStateOwner,
                 MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0);
@@ -2359,7 +2359,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
 
 - (void)applyPolygonOffsetForDrawMode:(GLenum)mode
 {
-    if (!(__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
+    if (!(__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
         return;
     }
 
@@ -2472,7 +2472,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
      * uses "culldistance_data" as the attribute name. We identify them
      * via the shader resource list (which preserves the name) or
      * by checking the MSL source for [[attribute(N)]] with that name. */
-    id<MTLBuffer> cullMtlBuffer = nil;
+    MGLMetalBufferRef cullMtlBuffer = nil;
     GLintptr cullBindingOffset = 0;
     GLuint cullStride = 0;
     GLuint cullDistSize = 0;
@@ -2522,7 +2522,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
         }
         if (cullDistSize == 0) {
             /* First cull distance attribute: record buffer/stride/offset. */
-            cullMtlBuffer = (__bridge id<MTLBuffer>)resolved.buffer->data.mtl_data;
+            cullMtlBuffer = (__bridge MGLMetalBufferRef)resolved.buffer->data.mtl_data;
             cullBindingOffset = resolved.binding_offset;
             cullStride = resolved.stride;
             cullFirstRelativeOffset = resolved.relativeoffset;
@@ -2541,7 +2541,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     if (!cullMtlBuffer || cullDistSize == 0) {
         /* No cull distance attributes found; bind a dummy buffer to satisfy
          * Metal validation (the shader still references the slots). */
-        static id<MTLBuffer> sDummyCullBuffer = nil;
+        static MGLMetalBufferRef sDummyCullBuffer = nil;
         static dispatch_once_t onceToken;
         dispatch_once(&onceToken, ^{
             float dummy[4] = {0.0f, 0.0f, 0.0f, 0.0f};
@@ -2720,8 +2720,8 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
             if (!ebo || ![self processBuffer:ebo] || !ebo->data.mtl_data) {
                 nativeTES = NO;
             } else {
-                id<MTLBuffer> eboMetal =
-                    (__bridge id<MTLBuffer>)ebo->data.mtl_data;
+                MGLMetalBufferRef eboMetal =
+                    (__bridge MGLMetalBufferRef)ebo->data.mtl_data;
                 const NSUInteger indexOffsetBytes =
                     (NSUInteger)(uintptr_t)indices;
                 const uint8_t *indexBytes = mglElementIndexSourceForDraw(
@@ -2739,7 +2739,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
                                               &gatherMaxIndex)) {
                     nativeTES = NO;
                 } else {
-                    id<MTLBuffer> gatherBuf =
+                    MGLMetalBufferRef gatherBuf =
                         mglDrawSupportCreateBufferWithBytes(
                             _device, gatherArray,
                             (NSUInteger)gatherCount * 4u,
@@ -2749,7 +2749,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
                         nativeTES = NO;
                     } else {
                         NSUInteger captureOffset = 0u;
-                        id<MTLBuffer> capture = [self
+                        MGLMetalBufferRef capture = [self
                             captureAIRVertexPositionsForGeometryIndexed:drawCtx
                                                             indexBuffer:eboMetal
                                                               indexType:getMTLIndexType(indexType)
@@ -2779,7 +2779,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
             }
         } else {
             NSUInteger captureOffset = 0u;
-            id<MTLBuffer> capture =
+            MGLMetalBufferRef capture =
                 [self captureAIRVertexPositionsForTessellation:drawCtx
                                                          first:first
                                                          count:count
@@ -2831,7 +2831,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     }
 
     if (nativeTES) {
-        id<MTLBuffer> nativeFactors = mglNativeTessFactorBuffer(
+        MGLMetalBufferRef nativeFactors = mglNativeTessFactorBuffer(
             _device, _tessellation.tessFactorBuffer,
             tesProgram->tess_gen_mode, patchCount);
         if (!nativeFactors || !_tessellation.tcsOutputBuffer ||
@@ -2853,7 +2853,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
         drawCtx->state.dirty_bits = DIRTY_ALL;
 
         BOOL stateReady = [self processGLState:true];
-        if (!stateReady || !(__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
+        if (!stateReady || !(__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
             _tessellation.nativeTESActive = NO;
             _tessellation.nativeTESProgram = NULL;
             _tessellation.tessVertexCaptureBuffer = nil;
@@ -2865,8 +2865,8 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
         if (![self currentDrawRasterizationIsEmpty] &&
             ![self currentDrawModeIsFullyCulled:GL_TRIANGLES]) {
             [self applyPolygonOffsetForDrawMode:GL_TRIANGLES];
-            id<MTLRenderCommandEncoder> encoder =
-                (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner);
+            MGLMetalRenderCommandEncoderRef encoder =
+                (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner);
             /* Metal does not advance the post-tessellation control-point
              * pointer correctly for patchStart. Draw each patch separately:
              * slot 0 is rebased to the patch, while slot 30 stays at the

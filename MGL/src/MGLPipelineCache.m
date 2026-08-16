@@ -3,6 +3,7 @@
 #import "mgl_frame_activity.h"
 #include "mgl_env_flag.h"
 #include "mgl_render_cpp.h"
+#include "mgl_render_cpp_objc.h"
 #include "mgl_air_loader.h"   /* MGLRenderCppPipelineDescriptorState */
 
 @interface MGLPipelineCacheKey ()
@@ -31,15 +32,15 @@ static NSError *mglPipelineCacheMetalCppError(const char *message,
                            userInfo:@{NSLocalizedDescriptionKey: description}];
 }
 
-static id<MTLDepthStencilState> mglPipelineCacheCreateDepthStencilState(
-    id<MTLDevice> device,
+static MGLMetalDepthStencilStateRef mglPipelineCacheCreateDepthStencilState(
+    MGLMetalDeviceRef device,
     MTLDepthStencilDescriptor *descriptor)
 {
     if (mglPipelineCacheUsesMetalCpp()) {
         void *state = NULL;
         if (mglRenderCppCreateDepthStencilState(
                 (__bridge void *)descriptor, &state) == 0 && state) {
-            return (__bridge_transfer id<MTLDepthStencilState>)state;
+            return (__bridge_transfer MGLMetalDepthStencilStateRef)state;
         }
     }
     return [device newDepthStencilStateWithDescriptor:descriptor];
@@ -394,12 +395,12 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
     return enabled != 0;
 }
 
-- (id<MTLDevice>)device
+- (MGLMetalDeviceRef)device
 {
     return _device;
 }
 
-- (void)setDevice:(id<MTLDevice>)device
+- (void)setDevice:(MGLMetalDeviceRef)device
 {
     if (_device != device) {
         mglRenderCppDestroyPipelineCacheOwner(&_cppOwner);
@@ -408,7 +409,7 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
     if (_device) [self ensureCppOwnerCreated];
 }
 
-- (id<MTLDepthStencilState>)depthStencilStateForDescriptor:
+- (MGLMetalDepthStencilStateRef)depthStencilStateForDescriptor:
     (MTLDepthStencilDescriptor *)descriptor
 {
     if (!descriptor || !_device) return nil;
@@ -424,19 +425,19 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
                 if (created) {
                     MGL_PERF_INC(g_mglDepthStencilStateCreatesSinceSwap);
                 }
-                return (__bridge id<MTLDepthStencilState>)statePtr;
+                return (__bridge MGLMetalDepthStencilStateRef)statePtr;
             }
             return nil;
         }
         if (mglRenderCppCreateDepthStencilStateFromState(
                 &descriptorState, &statePtr) == 0 && statePtr) {
             MGL_PERF_INC(g_mglDepthStencilStateCreatesSinceSwap);
-            return (__bridge_transfer id<MTLDepthStencilState>)statePtr;
+            return (__bridge_transfer MGLMetalDepthStencilStateRef)statePtr;
         }
         return nil;
     }
     if (!_state.dsCacheEnabled) {
-        id<MTLDepthStencilState> state =
+        MGLMetalDepthStencilStateRef state =
             mglPipelineCacheCreateDepthStencilState(_device, descriptor);
         MGL_PERF_INC(g_mglDepthStencilStateCreatesSinceSwap);
         return state;
@@ -452,12 +453,12 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
      * DS cache is small (cap 64) and distinct depth/stencil states are few,
      * so we intentionally skip LRU-touch on hits — touching would require
      * copying the hash key, reintroducing the per-lookup alloc this avoids. */
-    id<MTLDepthStencilState> cached = _state.depthStencilStateCache[key];
+    MGLMetalDepthStencilStateRef cached = _state.depthStencilStateCache[key];
     if (cached) {
         return cached;
     }
 
-    id<MTLDepthStencilState> state =
+    MGLMetalDepthStencilStateRef state =
         mglPipelineCacheCreateDepthStencilState(_device, descriptor);
     MGL_PERF_INC(g_mglDepthStencilStateCreatesSinceSwap);
     if (state) {
@@ -589,9 +590,9 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
 }
 
 - (BOOL)lookupPipelineForWords:(const uint64_t *)words
-                      pipeline:(id<MTLRenderPipelineState> *)pipelineOut
-                vertexFunction:(id<MTLFunction> *)vertexFunctionOut
-              fragmentFunction:(id<MTLFunction> *)fragmentFunctionOut
+                      pipeline:(MGLMetalRenderPipelineStateRef *)pipelineOut
+                vertexFunction:(MGLMetalFunctionRef *)vertexFunctionOut
+              fragmentFunction:(MGLMetalFunctionRef *)fragmentFunctionOut
 {
     if (pipelineOut) *pipelineOut = nil;
     if (vertexFunctionOut) *vertexFunctionOut = nil;
@@ -606,10 +607,10 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
             !cached.pipeline_state) {
             return NO;
         }
-        *pipelineOut = (__bridge id<MTLRenderPipelineState>)cached.pipeline_state;
-        *vertexFunctionOut = (__bridge id<MTLFunction>)cached.vertex_function;
+        *pipelineOut = (__bridge MGLMetalRenderPipelineStateRef)cached.pipeline_state;
+        *vertexFunctionOut = (__bridge MGLMetalFunctionRef)cached.vertex_function;
         *fragmentFunctionOut =
-            (__bridge id<MTLFunction>)cached.fragment_function;
+            (__bridge MGLMetalFunctionRef)cached.fragment_function;
         return YES;
     }
 
@@ -631,7 +632,7 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
         }
         return YES;
     }
-    *pipelineOut = (id<MTLRenderPipelineState>)entry;
+    *pipelineOut = (MGLMetalRenderPipelineStateRef)entry;
     return YES;
 }
 
@@ -644,9 +645,9 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
         [self pipelineQueryKeyForWords:words]];
 }
 
-- (NSUInteger)storePipeline:(id<MTLRenderPipelineState>)pipeline
-              vertexFunction:(id<MTLFunction>)vertexFunction
-            fragmentFunction:(id<MTLFunction>)fragmentFunction
+- (NSUInteger)storePipeline:(MGLMetalRenderPipelineStateRef)pipeline
+              vertexFunction:(MGLMetalFunctionRef)vertexFunction
+            fragmentFunction:(MGLMetalFunctionRef)fragmentFunction
                     forWords:(const uint64_t *)words
 {
     if (!pipeline || !words) return 0;
@@ -848,7 +849,7 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
     }
 }
 
-- (id<MTLRenderPipelineState>)createRenderPipelineStateWithDescriptor:
+- (MGLMetalRenderPipelineStateRef)createRenderPipelineStateWithDescriptor:
     (MTLRenderPipelineDescriptor *)descriptor
     error:(NSError **)error
 {
@@ -872,14 +873,14 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
             &archiveHit, message, sizeof(message));
         (void)archiveHit;
         if (result == 0 && pipeline) {
-            return (__bridge_transfer id<MTLRenderPipelineState>)pipeline;
+            return (__bridge_transfer MGLMetalRenderPipelineStateRef)pipeline;
         }
         if (error) *error = mglPipelineCacheMetalCppError(message, 12);
         return nil;
     }
 
     NSError *compileError = nil;
-    id<MTLRenderPipelineState> pipeline =
+    MGLMetalRenderPipelineStateRef pipeline =
         [_device newRenderPipelineStateWithDescriptor:descriptor
                                                 error:&compileError];
     if (!pipeline) {
@@ -918,7 +919,7 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
     _state.pipelineFragmentFunction = nil;
 }
 
-- (void)setPipelineState:(id<MTLRenderPipelineState>)pipelineState
+- (void)setPipelineState:(MGLMetalRenderPipelineStateRef)pipelineState
 {
     if ([self ensureCppOwner]) {
         mglRenderCppSetPipelineActiveObject(
@@ -927,13 +928,13 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
     _state.pipelineState = pipelineState;
 }
 
-- (void)activatePipelineState:(id<MTLRenderPipelineState>)pipelineState
+- (void)activatePipelineState:(MGLMetalRenderPipelineStateRef)pipelineState
                  color0Format:(MTLPixelFormat)color0Format
                   depthFormat:(MTLPixelFormat)depthFormat
                 stencilFormat:(MTLPixelFormat)stencilFormat
                   programName:(GLuint)programName
-               vertexFunction:(id<MTLFunction>)vertexFunction
-             fragmentFunction:(id<MTLFunction>)fragmentFunction
+               vertexFunction:(MGLMetalFunctionRef)vertexFunction
+             fragmentFunction:(MGLMetalFunctionRef)fragmentFunction
 {
     if ([self ensureCppOwner]) {
         MGLRenderCppPipelineActiveState active = {
