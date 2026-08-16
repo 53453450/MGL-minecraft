@@ -261,82 +261,18 @@ BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
         return NO;
     }
 
-    /* Scalar integer / half-float readback from BGRA8 UNORM source.
-     * Components are scaled to the destination type's unsigned range. */
+    /* P4.5 (item 1171): BGRA8/RGBA8 scalar readback in C++. */
     if (type == GL_BYTE || type == GL_SHORT ||
         type == GL_INT || type == GL_UNSIGNED_INT ||
         type == GL_UNSIGNED_SHORT || type == GL_HALF_FLOAT ||
         type == GL_FLOAT) {
-        NSUInteger compBytes = (NSUInteger)sizeForType(type);
-        int slots = 0;
-        int srcIdx[4] = {0,0,0,0};
-        switch (format) {
-            case GL_RGBA: slots = 4; srcIdx[0]=0; srcIdx[1]=1; srcIdx[2]=2; srcIdx[3]=3; break;
-            case GL_BGRA: slots = 4; srcIdx[0]=2; srcIdx[1]=1; srcIdx[2]=0; srcIdx[3]=3; break;
-            case GL_RGB:  slots = 3; srcIdx[0]=0; srcIdx[1]=1; srcIdx[2]=2; break;
-            case GL_BGR:  slots = 3; srcIdx[0]=2; srcIdx[1]=1; srcIdx[2]=0; break;
-            case GL_RG:   slots = 2; srcIdx[0]=0; srcIdx[1]=1; break;
-            case GL_RED:  slots = 1; srcIdx[0]=0; break;
-            case GL_GREEN: slots = 1; srcIdx[0]=1; break;
-            case GL_BLUE:  slots = 1; srcIdx[0]=2; break;
-            case GL_ALPHA: slots = 1; srcIdx[0]=3; break;
-            default: return NO;
-        }
-        for (NSUInteger y = 0; y < height; y++) {
-            const uint8_t *srcRow = src + (y * srcBytesPerRow);
-            NSUInteger dstY = flipY ? (height - 1u - y) : y;
-            uint8_t *dstRow = dst + (dstY * dstBytesPerRow);
-            for (NSUInteger x = 0; x < width; x++) {
-                const uint8_t *s = srcRow + (x * 4u);
-                /* cv[0]=R, cv[1]=G, cv[2]=B, cv[3]=A in logical order.
-                 * BGRA8 source: s[0]=B, s[1]=G, s[2]=R, s[3]=A.
-                 * RGBA8 source: s[0]=R, s[1]=G, s[2]=B, s[3]=A. */
-                const unsigned cv[4] = {
-                    sourceIsRGBA ? s[0] : s[2],
-                    s[1],
-                    sourceIsRGBA ? s[2] : s[0],
-                    s[3]
-                };
-                uint8_t *dp = dstRow + (x * dstPixelBytes);
-                for (int c = 0; c < slots; ++c) {
-                    unsigned v = cv[srcIdx[c]];
-                    uint8_t *out = dp + (NSUInteger)c * compBytes;
-                    if (type == GL_BYTE) {
-                        /* UNORM (0-255) -> SNORM (-128..127) */
-                        float fv = (float)v / 255.0f;
-                        int32_t iv = (int32_t)lroundf(fv * 127.0f);
-                        if (iv > 127) iv = 127;
-                        if (iv < -128) iv = -128;
-                        int8_t biv = (int8_t)iv;
-                        memcpy(out, &biv, sizeof(biv));
-                    } else if (type == GL_UNSIGNED_SHORT) {
-                        uint16_t iv = (uint16_t)((uint32_t)v * 257u);
-                        memcpy(out, &iv, sizeof(iv));
-                    } else if (type == GL_SHORT) {
-                        int32_t scaled = (int32_t)((uint32_t)v * 32767u / 255u);
-                        if (scaled > 32767) scaled = 32767;
-                        int16_t iv = (int16_t)scaled;
-                        memcpy(out, &iv, sizeof(iv));
-                    } else if (type == GL_UNSIGNED_INT) {
-                        uint32_t iv = (uint32_t)v * 16843009u;
-                        memcpy(out, &iv, sizeof(iv));
-                    } else if (type == GL_INT) {
-                        /* Use 64-bit arithmetic to avoid uint32 overflow:
-                         * v * 2147483647 overflows uint32 for v > 1. */
-                        int32_t scaled = (int32_t)((uint64_t)v * 2147483647ULL / 255u);
-                        if (scaled > 2147483647) scaled = 2147483647;
-                        memcpy(out, &scaled, sizeof(scaled));
-                    } else if (type == GL_FLOAT) {
-                        float fv = (float)v / 255.0f;
-                        memcpy(out, &fv, sizeof(fv));
-                    } else { /* GL_HALF_FLOAT */
-                        uint16_t iv = mglFloatToHalf((float)v / 255.0f);
-                        memcpy(out, &iv, sizeof(iv));
-                    }
-                }
-            }
-        }
-        return YES;
+        return mglRenderCppCopyUnorm8ScalarTextureBytesToGL(
+                   src, (uint64_t)srcBytesPerRow,
+                   dst, (uint64_t)dstBytesPerRow,
+                   (uint64_t)width, (uint64_t)height,
+                   (uint32_t)pixelFormat, (uint32_t)format, (uint32_t)type,
+                   flipY ? 1 : 0)
+            ? YES : NO;
     }
 
     /* Packed type readback from BGRA8/RGBA8 UNORM source.

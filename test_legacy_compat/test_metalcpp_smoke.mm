@@ -4606,6 +4606,104 @@ static int verifyReadbackScalarConvert(void) {
             return 1;
         }
     }
+    /* BGRA8/RGBA8 UNORM scalar readback. */
+    {
+        uint8_t bgra[4] = {0, 0, 255, 255}; /* B,G,R,A → logical R=255 */
+        float red = 0.0f;
+        if (mglRenderCppCopyUnorm8ScalarTextureBytesToGL(
+                bgra, 4u, &red, 4u, 1u, 1u,
+                (uint32_t)MTLPixelFormatBGRA8Unorm,
+                (uint32_t)GL_RED, (uint32_t)GL_FLOAT, 0) != 1 ||
+            fabsf(red - 1.0f) > 1e-6f) {
+            fprintf(stderr, "FAIL: bgra8 -> red float\n");
+            return 1;
+        }
+        float rgba[4] = {0, 0, 0, 0};
+        if (mglRenderCppCopyUnorm8ScalarTextureBytesToGL(
+                bgra, 4u, rgba, 16u, 1u, 1u,
+                (uint32_t)MTLPixelFormatBGRA8Unorm,
+                (uint32_t)GL_RGBA, (uint32_t)GL_FLOAT, 0) != 1 ||
+            fabsf(rgba[0] - 1.0f) > 1e-6f || fabsf(rgba[1]) > 1e-6f ||
+            fabsf(rgba[2]) > 1e-6f || fabsf(rgba[3] - 1.0f) > 1e-6f) {
+            fprintf(stderr, "FAIL: bgra8 -> rgba float\n");
+            return 1;
+        }
+        float out_bgra[4] = {0, 0, 0, 0};
+        if (mglRenderCppCopyUnorm8ScalarTextureBytesToGL(
+                bgra, 4u, out_bgra, 16u, 1u, 1u,
+                (uint32_t)MTLPixelFormatBGRA8Unorm,
+                (uint32_t)GL_BGRA, (uint32_t)GL_FLOAT, 0) != 1 ||
+            fabsf(out_bgra[0]) > 1e-6f || fabsf(out_bgra[1]) > 1e-6f ||
+            fabsf(out_bgra[2] - 1.0f) > 1e-6f ||
+            fabsf(out_bgra[3] - 1.0f) > 1e-6f) {
+            fprintf(stderr, "FAIL: bgra8 -> bgra float\n");
+            return 1;
+        }
+        uint8_t rgba8[4] = {255, 0, 0, 255};
+        red = 0.0f;
+        if (mglRenderCppCopyUnorm8ScalarTextureBytesToGL(
+                rgba8, 4u, &red, 4u, 1u, 1u,
+                (uint32_t)MTLPixelFormatRGBA8Unorm,
+                (uint32_t)GL_RED, (uint32_t)GL_FLOAT, 0) != 1 ||
+            fabsf(red - 1.0f) > 1e-6f) {
+            fprintf(stderr, "FAIL: rgba8 -> red float\n");
+            return 1;
+        }
+        uint16_t us = 0;
+        if (mglRenderCppCopyUnorm8ScalarTextureBytesToGL(
+                bgra, 4u, &us, 2u, 1u, 1u,
+                (uint32_t)MTLPixelFormatBGRA8Unorm,
+                (uint32_t)GL_RED, (uint32_t)GL_UNSIGNED_SHORT, 0) != 1 ||
+            us != 65535) {
+            fprintf(stderr, "FAIL: bgra8 -> red u16 %u\n", us);
+            return 1;
+        }
+        int8_t sb = 0;
+        if (mglRenderCppCopyUnorm8ScalarTextureBytesToGL(
+                bgra, 4u, &sb, 1u, 1u, 1u,
+                (uint32_t)MTLPixelFormatBGRA8Unorm,
+                (uint32_t)GL_RED, (uint32_t)GL_BYTE, 0) != 1 ||
+            sb != 127) {
+            fprintf(stderr, "FAIL: bgra8 -> red snorm8 %d\n", sb);
+            return 1;
+        }
+        uint16_t half = 0;
+        if (mglRenderCppCopyUnorm8ScalarTextureBytesToGL(
+                bgra, 4u, &half, 2u, 1u, 1u,
+                (uint32_t)MTLPixelFormatBGRA8Unorm,
+                (uint32_t)GL_RED, (uint32_t)GL_HALF_FLOAT, 0) != 1 ||
+            half != 0x3C00) {
+            fprintf(stderr, "FAIL: bgra8 -> red half 0x%x\n", half);
+            return 1;
+        }
+        uint8_t rows[8] = {0, 0, 255, 255, 0, 0, 0, 255};
+        float flip[2];
+        memset(flip, 0, sizeof(flip));
+        if (mglRenderCppCopyUnorm8ScalarTextureBytesToGL(
+                rows, 4u, flip, 4u, 1u, 2u,
+                (uint32_t)MTLPixelFormatBGRA8Unorm,
+                (uint32_t)GL_RED, (uint32_t)GL_FLOAT, 1) != 1 ||
+            fabsf(flip[0]) > 1e-6f ||
+            fabsf(flip[1] - 1.0f) > 1e-6f) {
+            fprintf(stderr, "FAIL: unorm8 scalar flipY\n");
+            return 1;
+        }
+        if (mglRenderCppCopyUnorm8ScalarTextureBytesToGL(
+                bgra, 4u, &red, 4u, 1u, 1u,
+                (uint32_t)MTLPixelFormatBGRA8Unorm,
+                (uint32_t)GL_RED, (uint32_t)GL_UNSIGNED_BYTE, 0) != 0 ||
+            mglRenderCppCopyUnorm8ScalarTextureBytesToGL(
+                bgra, 4u, &red, 4u, 1u, 1u,
+                (uint32_t)MTLPixelFormatR16Unorm,
+                (uint32_t)GL_RED, (uint32_t)GL_FLOAT, 0) != 0 ||
+            mglRenderCppCopyUnorm8ScalarTextureBytesToGL(
+                NULL, 4u, &red, 4u, 1u, 1u,
+                (uint32_t)MTLPixelFormatBGRA8Unorm,
+                (uint32_t)GL_RED, (uint32_t)GL_FLOAT, 0) != 0) {
+            fprintf(stderr, "FAIL: unorm8 scalar bad args\n");
+            return 1;
+        }
+    }
     printf("READBACK_SCALAR_CONVERT_OK\n");
     return 0;
 }

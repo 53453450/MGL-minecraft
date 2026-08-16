@@ -4883,6 +4883,110 @@ int mglRenderCppCopy16or32TextureBytesToGL(
     return 1;
 }
 
+static int mglCppReadbackUnorm8ScalarTypeAccepted(uint32_t type) {
+    switch (type) {
+        case GL_BYTE:
+        case GL_SHORT:
+        case GL_INT:
+        case GL_UNSIGNED_INT:
+        case GL_UNSIGNED_SHORT:
+        case GL_HALF_FLOAT:
+        case GL_FLOAT:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+/* BGRA8/RGBA8 UNORM -> GL scalar types — mirrors the ObjC
+ * scalar integer / half-float readback path. */
+extern "C"
+int mglRenderCppCopyUnorm8ScalarTextureBytesToGL(
+    const void* src, uint64_t src_bytes_per_row,
+    void* dst, uint64_t dst_bytes_per_row,
+    uint64_t width, uint64_t height,
+    uint32_t pixel_format, uint32_t format, uint32_t type, int flip_y) {
+    if (!src || !dst || width == 0u || height == 0u) {
+        return 0;
+    }
+    const MTL::PixelFormat pf = static_cast<MTL::PixelFormat>(pixel_format);
+    const int source_is_rgba =
+        (pf == MTL::PixelFormatRGBA8Unorm ||
+         pf == MTL::PixelFormatRGBA8Unorm_sRGB);
+    const int source_is_bgra =
+        (pf == MTL::PixelFormatBGRA8Unorm ||
+         pf == MTL::PixelFormatBGRA8Unorm_sRGB);
+    if ((!source_is_rgba && !source_is_bgra) ||
+        !mglCppReadbackUnorm8ScalarTypeAccepted(type)) {
+        return 0;
+    }
+
+    int slots = 0;
+    int src_idx[4] = {0, 0, 0, 0};
+    if (!mglCppReadbackFormatChannelMap(format, &slots, src_idx)) {
+        return 0;
+    }
+
+    uint32_t comp_bytes = mglCppSizeForType(type);
+    uint64_t dst_pixel_bytes = (uint64_t)comp_bytes * (uint64_t)slots;
+    if (dst_pixel_bytes == 0u || dst_bytes_per_row < width * dst_pixel_bytes) {
+        return 0;
+    }
+
+    const uint8_t* src_bytes = static_cast<const uint8_t*>(src);
+    uint8_t* dst_bytes = static_cast<uint8_t*>(dst);
+    for (uint64_t y = 0; y < height; y++) {
+        const uint8_t* src_row = src_bytes + (y * src_bytes_per_row);
+        uint64_t dst_y = flip_y ? (height - 1u - y) : y;
+        uint8_t* dst_row = dst_bytes + (dst_y * dst_bytes_per_row);
+        for (uint64_t x = 0; x < width; x++) {
+            const uint8_t* s = src_row + (x * 4u);
+            const unsigned cv[4] = {
+                source_is_rgba ? s[0] : s[2],
+                s[1],
+                source_is_rgba ? s[2] : s[0],
+                s[3]
+            };
+            uint8_t* dp = dst_row + (x * dst_pixel_bytes);
+            for (int c = 0; c < slots; ++c) {
+                unsigned v = cv[src_idx[c]];
+                uint8_t* out = dp + (uint64_t)c * (uint64_t)comp_bytes;
+                if (type == GL_BYTE) {
+                    float fv = (float)v / 255.0f;
+                    int32_t iv = (int32_t)lroundf(fv * 127.0f);
+                    if (iv > 127) iv = 127;
+                    if (iv < -128) iv = -128;
+                    int8_t biv = (int8_t)iv;
+                    memcpy(out, &biv, sizeof(biv));
+                } else if (type == GL_UNSIGNED_SHORT) {
+                    uint16_t iv = (uint16_t)((uint32_t)v * 257u);
+                    memcpy(out, &iv, sizeof(iv));
+                } else if (type == GL_SHORT) {
+                    int32_t scaled = (int32_t)((uint32_t)v * 32767u / 255u);
+                    if (scaled > 32767) scaled = 32767;
+                    int16_t iv = (int16_t)scaled;
+                    memcpy(out, &iv, sizeof(iv));
+                } else if (type == GL_UNSIGNED_INT) {
+                    uint32_t iv = (uint32_t)v * 16843009u;
+                    memcpy(out, &iv, sizeof(iv));
+                } else if (type == GL_INT) {
+                    int32_t scaled =
+                        (int32_t)((uint64_t)v * 2147483647ULL / 255u);
+                    if (scaled > 2147483647) scaled = 2147483647;
+                    memcpy(out, &scaled, sizeof(scaled));
+                } else if (type == GL_FLOAT) {
+                    float fv = (float)v / 255.0f;
+                    memcpy(out, &fv, sizeof(fv));
+                } else {
+                    uint16_t iv = mglCppFloatToHalf((float)v / 255.0f);
+                    memcpy(out, &iv, sizeof(iv));
+                }
+            }
+        }
+    }
+    return 1;
+}
+
 
 /* P4.4: little-endian packed read + unorm bit expansion (RGBA8 path). */
 static uint32_t mglCppReadPackedUploadLE(const uint8_t* src, size_t bytes) {
