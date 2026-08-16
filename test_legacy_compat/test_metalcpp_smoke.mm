@@ -6897,6 +6897,117 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
         printf("TEXTURE_UPLOAD_ROUTE_OK\n");
     }
 
+    /* P4.4: complete upload layout plan.  Cover logical 1D backing,
+     * compressed rows, 3D padded planes, array/cube stride normalization,
+     * destination subresources, and the staging allocation ceiling. */
+    {
+        MGLRenderCppTextureUploadPlan plan = {};
+        if (mglRenderCppBuildTextureUploadPlan(
+                GL_TEXTURE_1D, (uint32_t)MTLTextureType2D,
+                (uint32_t)MTLStorageModeShared,
+                (uint32_t)MTLPixelFormatRGBA8Unorm, 0,
+                16u, 0u, 0u, 64u, 64u, 2u, 9u, &plan) != 0 ||
+            plan.route != MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_REPLACE_1D ||
+            plan.replace_region_dimension != 2u || plan.replace_use_slice ||
+            plan.normalized_height != 1u || plan.normalized_depth != 1u ||
+            plan.expected_bytes_per_image != 64u ||
+            plan.normalized_bytes_per_image != 64u ||
+            plan.copy_depth != 1u || plan.buffer_size != 64u ||
+            plan.destination_slice != 0u || plan.destination_level != 2u) {
+            fprintf(stderr, "FAIL: texture upload plan logical 1D\n");
+            return 1;
+        }
+
+        if (mglRenderCppBuildTextureUploadPlan(
+                GL_TEXTURE_1D_ARRAY, (uint32_t)MTLTextureType2DArray,
+                (uint32_t)MTLStorageModeManaged,
+                (uint32_t)MTLPixelFormatRGBA8Unorm, 0,
+                16u, 7u, 1u, 64u, 448u, 3u, 5u, &plan) != 0 ||
+            plan.route != MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_REPLACE_1D ||
+            plan.replace_region_dimension != 2u || !plan.replace_use_slice ||
+            plan.normalized_height != 1u ||
+            plan.normalized_bytes_per_image != 64u ||
+            plan.destination_slice != 5u || plan.destination_level != 3u) {
+            fprintf(stderr, "FAIL: texture upload plan logical 1D array\n");
+            return 1;
+        }
+
+        if (mglRenderCppBuildTextureUploadPlan(
+                GL_TEXTURE_3D, (uint32_t)MTLTextureType3D,
+                (uint32_t)MTLStorageModeShared,
+                (uint32_t)MTLPixelFormatRGBA8Unorm, 1,
+                4u, 4u, 3u, 16u, 80u, 1u, 7u, &plan) != 0 ||
+            plan.route != MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_REPLACE_3D ||
+            plan.replace_region_dimension != 3u || !plan.requires_repack ||
+            plan.upload_rows != 4u ||
+            plan.expected_bytes_per_image != 64u ||
+            plan.normalized_bytes_per_image != 80u ||
+            plan.copy_depth != 3u || plan.buffer_size != 0u ||
+            plan.destination_slice != 0u) {
+            fprintf(stderr, "FAIL: texture upload plan padded 3D\n");
+            return 1;
+        }
+
+        if (mglRenderCppBuildTextureUploadPlan(
+                GL_TEXTURE_CUBE_MAP, (uint32_t)MTLTextureTypeCube,
+                (uint32_t)MTLStorageModePrivate,
+                (uint32_t)MTLPixelFormatRGBA8Unorm, 1,
+                4u, 4u, 8u, 16u, 256u, 0u, 5u, &plan) != 0 ||
+            plan.route != MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_BLIT ||
+            plan.normalized_bytes_per_image != 64u ||
+            plan.copy_depth != 1u || plan.buffer_size != 64u ||
+            plan.destination_slice != 5u) {
+            fprintf(stderr, "FAIL: texture upload plan cube normalization\n");
+            return 1;
+        }
+
+        if (mglRenderCppBuildTextureUploadPlan(
+                GL_TEXTURE_2D, (uint32_t)MTLTextureType2D,
+                (uint32_t)MTLStorageModePrivate,
+                (uint32_t)MTLPixelFormatBC1_RGBA, 0,
+                8u, 5u, 1u, 16u, 32u, 0u, 0u, &plan) != 0 ||
+            plan.upload_rows != 2u ||
+            plan.expected_bytes_per_image != 32u ||
+            plan.buffer_size != 32u) {
+            fprintf(stderr, "FAIL: texture upload plan compressed rows\n");
+            return 1;
+        }
+
+        const uint64_t maxStaging = 512ull * 1024ull * 1024ull;
+        if (mglRenderCppBuildTextureUploadPlan(
+                GL_TEXTURE_2D, (uint32_t)MTLTextureType2D,
+                (uint32_t)MTLStorageModePrivate,
+                (uint32_t)MTLPixelFormatRGBA8Unorm, 0,
+                1u, 1u, 1u, maxStaging, maxStaging, 0u, 0u,
+                &plan) != 0 || plan.buffer_size != maxStaging ||
+            mglRenderCppBuildTextureUploadPlan(
+                GL_TEXTURE_2D, (uint32_t)MTLTextureType2D,
+                (uint32_t)MTLStorageModePrivate,
+                (uint32_t)MTLPixelFormatRGBA8Unorm, 0,
+                1u, 1u, 1u, maxStaging + 1u, maxStaging + 1u,
+                0u, 0u, &plan) != -1 ||
+            mglRenderCppBuildTextureUploadPlan(
+                GL_TEXTURE_2D, (uint32_t)MTLTextureType2D,
+                (uint32_t)MTLStorageModePrivate,
+                (uint32_t)MTLPixelFormatBC1_RGBA, 0,
+                1u, 5u, 1u, UINT64_MAX, UINT64_MAX,
+                0u, 0u, &plan) != -1 ||
+            mglRenderCppBuildTextureUploadPlan(
+                GL_TEXTURE_2D, (uint32_t)MTLTextureType2D,
+                (uint32_t)MTLStorageModePrivate,
+                (uint32_t)MTLPixelFormatRGBA8Unorm, 0,
+                1u, 1u, 1u, 64u, 63u, 0u, 0u, &plan) != -1 ||
+            mglRenderCppBuildTextureUploadPlan(
+                GL_TEXTURE_2D, (uint32_t)MTLTextureType2D,
+                (uint32_t)MTLStorageModePrivate,
+                (uint32_t)MTLPixelFormatRGBA8Unorm, 0,
+                1u, 1u, 1u, 64u, 64u, 0u, 0u, NULL) != -1) {
+            fprintf(stderr, "FAIL: texture upload plan bounds\n");
+            return 1;
+        }
+        printf("TEXTURE_UPLOAD_PLAN_OK\n");
+    }
+
     /* P4.4: 3D depth-plane repack — tight-pack a strided multi-plane buffer
      * and verify the output layout byte-for-byte; bad args return NULL. */
     {

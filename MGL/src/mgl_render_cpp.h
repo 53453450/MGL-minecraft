@@ -544,6 +544,40 @@ int mglRenderCppCopyUnorm8SwizzleTextureBytesToGL(
 int mglRenderCppTextureUploadRoute(uint32_t texture_type,
                                    uint32_t storage_mode,
                                    int has_agx_3d_copy_bug);
+/* Complete value-state plan for a full texture-level/slice upload.  This
+ * centralizes the layout normalization that used to live around the ObjC
+ * replaceRegion/blit branches.  A REJECT route is a valid plan; malformed
+ * dimensions/strides and staging allocations above 512 MiB return -1. */
+typedef struct MGLRenderCppTextureUploadPlan_t {
+    uint32_t route;
+    uint32_t replace_region_dimension; /* 1, 2, or 3; 0 for blit/reject */
+    uint32_t replace_use_slice;
+    uint32_t requires_repack;
+    uint64_t normalized_height;
+    uint64_t normalized_depth;
+    uint64_t upload_rows;
+    uint64_t expected_bytes_per_image;
+    uint64_t normalized_bytes_per_image;
+    uint64_t copy_depth;
+    uint64_t buffer_size;
+    uint64_t destination_slice;
+    uint64_t destination_level;
+} MGLRenderCppTextureUploadPlan;
+
+int mglRenderCppBuildTextureUploadPlan(
+    uint32_t gl_target,
+    uint32_t texture_type,
+    uint32_t storage_mode,
+    uint32_t pixel_format,
+    int has_agx_3d_copy_bug,
+    uint64_t width,
+    uint64_t height,
+    uint64_t depth,
+    uint64_t bytes_per_row,
+    uint64_t bytes_per_image,
+    uint64_t destination_level,
+    uint64_t destination_slice,
+    MGLRenderCppTextureUploadPlan *plan_out);
 /* P4.4: 3D 纹理 depth-plane 重打包（tight image stride）。把 strided
  * (bytes_per_image > expected) 的 depth planes 压成 tight
  * (expected_bytes_per_image) 布局，供 replaceRegion 上传（Metal 要求

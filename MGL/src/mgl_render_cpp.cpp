@@ -3721,6 +3721,115 @@ int mglRenderCppTextureUploadRoute(uint32_t texture_type,
     return MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_BLIT;
 }
 
+extern "C"
+int mglRenderCppBuildTextureUploadPlan(
+    uint32_t gl_target,
+    uint32_t texture_type,
+    uint32_t storage_mode,
+    uint32_t pixel_format,
+    int has_agx_3d_copy_bug,
+    uint64_t width,
+    uint64_t height,
+    uint64_t depth,
+    uint64_t bytes_per_row,
+    uint64_t bytes_per_image,
+    uint64_t destination_level,
+    uint64_t destination_slice,
+    MGLRenderCppTextureUploadPlan* plan_out) {
+    if (!plan_out) return -1;
+    *plan_out = {};
+    if (width == 0u || bytes_per_row == 0u || bytes_per_image == 0u) {
+        return -1;
+    }
+
+    const MTL::TextureType type = static_cast<MTL::TextureType>(texture_type);
+    const bool is_3d = type == MTL::TextureType3D;
+    const bool logical_1d =
+        gl_target == GL_TEXTURE_1D || gl_target == GL_TEXTURE_1D_ARRAY;
+    const bool logical_1d_array = gl_target == GL_TEXTURE_1D_ARRAY;
+    const bool is_array_or_cube =
+        type == MTL::TextureTypeCube || type == MTL::TextureTypeCubeArray ||
+        type == MTL::TextureType2DArray || type == MTL::TextureType1DArray ||
+        type == MTL::TextureType2DMultisampleArray;
+
+    MGLRenderCppTextureUploadPlan plan = {};
+    plan.normalized_height = logical_1d
+        ? 1u
+        : std::max<uint64_t>(height, 1u);
+    plan.normalized_depth = std::max<uint64_t>(depth, 1u);
+    plan.copy_depth = is_3d ? plan.normalized_depth : 1u;
+    plan.upload_rows = mglRenderCppMetalUploadRowsForPixelFormat(
+        pixel_format, plan.normalized_height);
+    if (plan.upload_rows == 0u ||
+        bytes_per_row > std::numeric_limits<uint64_t>::max() /
+                            plan.upload_rows) {
+        return -1;
+    }
+    plan.expected_bytes_per_image = bytes_per_row * plan.upload_rows;
+    if (bytes_per_image < plan.expected_bytes_per_image) return -1;
+    plan.normalized_bytes_per_image =
+        (is_array_or_cube || !is_3d)
+            ? plan.expected_bytes_per_image
+            : bytes_per_image;
+    plan.destination_slice =
+        (is_3d || gl_target == GL_TEXTURE_1D) ? 0u : destination_slice;
+    plan.destination_level = destination_level;
+
+    const uint32_t private_mode =
+        static_cast<uint32_t>(MTL::StorageModePrivate);
+    if (logical_1d && storage_mode != private_mode) {
+        plan.route = MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_REPLACE_1D;
+        plan.replace_region_dimension =
+            (type == MTL::TextureType1D || type == MTL::TextureType1DArray)
+                ? 1u
+                : 2u;
+        plan.replace_use_slice = logical_1d_array ||
+                                 type == MTL::TextureType1DArray;
+    } else {
+        plan.route = static_cast<uint32_t>(mglRenderCppTextureUploadRoute(
+            texture_type, storage_mode, has_agx_3d_copy_bug));
+        if (plan.route == MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_REPLACE_1D) {
+            plan.replace_region_dimension = 1u;
+            plan.replace_use_slice = type == MTL::TextureType1DArray;
+        } else if (plan.route ==
+                   MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_REPLACE_3D) {
+            plan.replace_region_dimension = 3u;
+            plan.requires_repack =
+                plan.normalized_bytes_per_image !=
+                plan.expected_bytes_per_image;
+        }
+    }
+
+    if (plan.route == MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_REJECT) {
+        *plan_out = plan;
+        return 0;
+    }
+
+    if (plan.route == MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_REPLACE_3D) {
+        if (plan.requires_repack &&
+            plan.copy_depth > std::numeric_limits<uint64_t>::max() /
+                                  plan.expected_bytes_per_image) {
+            return -1;
+        }
+    } else {
+        if (plan.copy_depth > std::numeric_limits<uint64_t>::max() /
+                                  plan.normalized_bytes_per_image) {
+            return -1;
+        }
+        plan.buffer_size =
+            plan.normalized_bytes_per_image * plan.copy_depth;
+        constexpr uint64_t kMaxTextureUploadStagingBytes =
+            512ull * 1024ull * 1024ull;
+        if (plan.buffer_size == 0u ||
+            plan.buffer_size > kMaxTextureUploadStagingBytes) {
+            return -1;
+        }
+    }
+
+    *plan_out = plan;
+    return 0;
+}
+
 /* GL_RGB9_E5 shared-exponent packing — faithful copy of the pure-C
  * mglPackRGBToSharedExp (pixel_utils.c); kept TU-local so this facade does
  * not need pixel_utils.h (ObjC-only header, not C++-clean). */
