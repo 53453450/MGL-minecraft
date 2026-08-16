@@ -1331,6 +1331,10 @@ int mglRenderCppTextureUploadNeedsSingleChannelSwizzle(uint32_t internal_format,
  * Mirrors mglStoredColorComponentsForTexture after the null-tex check
  * (null stays in ObjC and returns 4).  Unknown formats → 4. */
 uint32_t mglRenderCppStoredColorComponents(uint32_t internal_format);
+/* P4.5 (item 1111): GL swizzle enum → Metal TextureSwizzle ABI value
+ * (uint32_t).  components gates missing channels to Zero / One(for Alpha). */
+uint32_t mglRenderCppMTLSwizzleForGLSwizzle(uint32_t gl_swizzle,
+                                            uint32_t components);
 uint8_t *mglRenderCppCreateSingleChannelSwizzledUpload(
     uint32_t internal_format,
     uint32_t swizzle_r, uint32_t swizzle_g,

@@ -6617,6 +6617,53 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
         printf("CHANNEL_EXPANSION_GATE_OK\n");
     }
 
+    /* P4.5 (item 1111): GL swizzle → Metal TextureSwizzle ABI. */
+    {
+        if (mglRenderCppMTLSwizzleForGLSwizzle(GL_ZERO, 4) !=
+                (uint32_t)MTLTextureSwizzleZero ||
+            mglRenderCppMTLSwizzleForGLSwizzle(GL_ONE, 4) !=
+                (uint32_t)MTLTextureSwizzleOne ||
+            mglRenderCppMTLSwizzleForGLSwizzle(GL_RED, 4) !=
+                (uint32_t)MTLTextureSwizzleRed ||
+            mglRenderCppMTLSwizzleForGLSwizzle(GL_GREEN, 4) !=
+                (uint32_t)MTLTextureSwizzleGreen ||
+            mglRenderCppMTLSwizzleForGLSwizzle(GL_BLUE, 4) !=
+                (uint32_t)MTLTextureSwizzleBlue ||
+            mglRenderCppMTLSwizzleForGLSwizzle(GL_ALPHA, 4) !=
+                (uint32_t)MTLTextureSwizzleAlpha) {
+            fprintf(stderr, "FAIL: gl→mtl swizzle identity\n");
+            return 1;
+        }
+        /* R-only: G/B → Zero, A → One. */
+        if (mglRenderCppMTLSwizzleForGLSwizzle(GL_RED, 1) !=
+                (uint32_t)MTLTextureSwizzleRed ||
+            mglRenderCppMTLSwizzleForGLSwizzle(GL_GREEN, 1) !=
+                (uint32_t)MTLTextureSwizzleZero ||
+            mglRenderCppMTLSwizzleForGLSwizzle(GL_BLUE, 1) !=
+                (uint32_t)MTLTextureSwizzleZero ||
+            mglRenderCppMTLSwizzleForGLSwizzle(GL_ALPHA, 1) !=
+                (uint32_t)MTLTextureSwizzleOne) {
+            fprintf(stderr, "FAIL: gl→mtl swizzle R-only gate\n");
+            return 1;
+        }
+        /* RG: B → Zero, A → One. */
+        if (mglRenderCppMTLSwizzleForGLSwizzle(GL_GREEN, 2) !=
+                (uint32_t)MTLTextureSwizzleGreen ||
+            mglRenderCppMTLSwizzleForGLSwizzle(GL_BLUE, 2) !=
+                (uint32_t)MTLTextureSwizzleZero ||
+            mglRenderCppMTLSwizzleForGLSwizzle(GL_ALPHA, 2) !=
+                (uint32_t)MTLTextureSwizzleOne) {
+            fprintf(stderr, "FAIL: gl→mtl swizzle RG gate\n");
+            return 1;
+        }
+        if (mglRenderCppMTLSwizzleForGLSwizzle(0xdeadbeefu, 4) !=
+                (uint32_t)MTLTextureSwizzleZero) {
+            fprintf(stderr, "FAIL: gl→mtl swizzle unknown\n");
+            return 1;
+        }
+        printf("GL_MTL_SWIZZLE_OK\n");
+    }
+
     /* P4.3c: whole-batch simple replay.  Valid batch encodes; unknown command
      * type falls back to NEEDS_OBJC; bad args are rejected. */
     {

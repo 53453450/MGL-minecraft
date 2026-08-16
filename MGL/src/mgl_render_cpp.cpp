@@ -7880,6 +7880,38 @@ uint32_t mglRenderCppStoredColorComponents(uint32_t internal_format) {
 }
 
 extern "C"
+uint32_t mglRenderCppMTLSwizzleForGLSwizzle(uint32_t gl_swizzle,
+                                            uint32_t components) {
+    switch (gl_swizzle) {
+        case GL_ZERO:
+            return (uint32_t)MTL::TextureSwizzleZero;
+        case GL_ONE:
+            return (uint32_t)MTL::TextureSwizzleOne;
+        case GL_RED:
+            return components >= 1u
+                ? (uint32_t)MTL::TextureSwizzleRed
+                : (uint32_t)MTL::TextureSwizzleZero;
+        case GL_GREEN:
+            return components >= 2u
+                ? (uint32_t)MTL::TextureSwizzleGreen
+                : (uint32_t)MTL::TextureSwizzleZero;
+        case GL_BLUE:
+            return components >= 3u
+                ? (uint32_t)MTL::TextureSwizzleBlue
+                : (uint32_t)MTL::TextureSwizzleZero;
+        case GL_ALPHA:
+            return components >= 4u
+                ? (uint32_t)MTL::TextureSwizzleAlpha
+                : (uint32_t)MTL::TextureSwizzleOne;
+        default:
+            fprintf(stderr,
+                    "MGL ERROR: Unknown swizzle value 0x%x in swizzleTexDesc\n",
+                    gl_swizzle);
+            return (uint32_t)MTL::TextureSwizzleZero;
+    }
+}
+
+extern "C"
 uint8_t* mglRenderCppCreateSingleChannelSwizzledUpload(
     uint32_t internal_format,
     uint32_t swizzle_r, uint32_t swizzle_g,

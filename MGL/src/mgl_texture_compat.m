@@ -253,19 +253,8 @@ NSUInteger mglStoredColorComponentsForTexture(Texture *tex)
 MTLTextureSwizzle mglMTLSwizzleForGLSwizzle(Texture *tex, GLenum swizzle)
 {
     NSUInteger components = mglStoredColorComponentsForTexture(tex);
-
-    switch (swizzle)
-    {
-        case GL_ZERO: return MTLTextureSwizzleZero;
-        case GL_ONE: return MTLTextureSwizzleOne;
-        case GL_RED: return components >= 1 ? MTLTextureSwizzleRed : MTLTextureSwizzleZero;
-        case GL_GREEN: return components >= 2 ? MTLTextureSwizzleGreen : MTLTextureSwizzleZero;
-        case GL_BLUE: return components >= 3 ? MTLTextureSwizzleBlue : MTLTextureSwizzleZero;
-        case GL_ALPHA: return components >= 4 ? MTLTextureSwizzleAlpha : MTLTextureSwizzleOne;
-        default:
-            NSLog(@"MGL ERROR: Unknown swizzle value 0x%x in swizzleTexDesc", swizzle);
-            return MTLTextureSwizzleZero;
-    }
+    return (MTLTextureSwizzle)mglRenderCppMTLSwizzleForGLSwizzle(
+        (uint32_t)swizzle, (uint32_t)components);
 }
 
 bool mglTextureUploadNeedsSingleChannelSwizzle(Texture *tex)
