@@ -1317,6 +1317,10 @@ uint8_t *mglRenderCppCreateRGBA8ExpandedUpload(const void *src_data,
  * expands GL_R8 1B/px → RGBA8 via the four swizzle enums; malloc'd
  * result, NULL on bad args / non-R8 / size cap. */
 uint8_t mglRenderCppResolveR8SwizzledComponent(uint32_t swizzle, uint8_t red);
+/* P4.5 (item 1111): R-only upload-swizzle gate.  swizzled==0 → 0;
+ * otherwise the GL_R* internal-format table.  Returns 1/0. */
+int mglRenderCppTextureUploadNeedsSingleChannelSwizzle(uint32_t internal_format,
+                                                       int swizzled);
 uint8_t *mglRenderCppCreateSingleChannelSwizzledUpload(
     uint32_t internal_format,
     uint32_t swizzle_r, uint32_t swizzle_g,

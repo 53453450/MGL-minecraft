@@ -272,36 +272,11 @@ MTLTextureSwizzle mglMTLSwizzleForGLSwizzle(Texture *tex, GLenum swizzle)
 
 bool mglTextureUploadNeedsSingleChannelSwizzle(Texture *tex)
 {
-    if (!tex || !tex->params.swizzled) {
+    if (!tex) {
         return false;
     }
-
-    /* Single-channel GL formats (R-only) rely on GL swizzle to route the lone
-     * Red value into G/B/A.  Metal applies swizzle via MTLTextureDescriptor
-     * at texture-creation time, but to keep single-channel swizzle behavior
-     * consistent across all R-only formats (and aligned with the RGBA8
-     * expansion path), expand every single-channel format on the CPU into a
-     * 4-channel buffer and let mglResolveR8SwizzledComponent route channels.
-     * This avoids depending on MTLTextureDescriptor.swizzle, which some Apple
-     * GPU paths handle inconsistently for single-channel textures. */
-    switch (tex->internalformat)
-    {
-        case GL_R8:
-        case GL_R8_SNORM:
-        case GL_R16:
-        case GL_R16_SNORM:
-        case GL_R16F:
-        case GL_R32F:
-        case GL_R8I:
-        case GL_R8UI:
-        case GL_R16I:
-        case GL_R16UI:
-        case GL_R32I:
-        case GL_R32UI:
-            return true;
-        default:
-            return false;
-    }
+    return mglRenderCppTextureUploadNeedsSingleChannelSwizzle(
+        (uint32_t)tex->internalformat, tex->params.swizzled ? 1 : 0) != 0;
 }
 
 uint8_t mglResolveR8SwizzledComponent(Texture *tex, GLenum swizzle, uint8_t red)

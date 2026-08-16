@@ -6573,6 +6573,30 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
         printf("R8_SWIZZLE_EXPAND_OK\n");
     }
 
+    /* P4.5 (item 1111): R-only upload-swizzle gate. */
+    {
+        if (mglRenderCppTextureUploadNeedsSingleChannelSwizzle(GL_R8, 0) != 0 ||
+            mglRenderCppTextureUploadNeedsSingleChannelSwizzle(GL_R8, 1) != 1 ||
+            mglRenderCppTextureUploadNeedsSingleChannelSwizzle(GL_R8_SNORM, 1) != 1 ||
+            mglRenderCppTextureUploadNeedsSingleChannelSwizzle(GL_R16, 1) != 1 ||
+            mglRenderCppTextureUploadNeedsSingleChannelSwizzle(GL_R16_SNORM, 1) != 1 ||
+            mglRenderCppTextureUploadNeedsSingleChannelSwizzle(GL_R16F, 1) != 1 ||
+            mglRenderCppTextureUploadNeedsSingleChannelSwizzle(GL_R32F, 1) != 1 ||
+            mglRenderCppTextureUploadNeedsSingleChannelSwizzle(GL_R8I, 1) != 1 ||
+            mglRenderCppTextureUploadNeedsSingleChannelSwizzle(GL_R8UI, 1) != 1 ||
+            mglRenderCppTextureUploadNeedsSingleChannelSwizzle(GL_R16I, 1) != 1 ||
+            mglRenderCppTextureUploadNeedsSingleChannelSwizzle(GL_R16UI, 1) != 1 ||
+            mglRenderCppTextureUploadNeedsSingleChannelSwizzle(GL_R32I, 1) != 1 ||
+            mglRenderCppTextureUploadNeedsSingleChannelSwizzle(GL_R32UI, 1) != 1 ||
+            mglRenderCppTextureUploadNeedsSingleChannelSwizzle(GL_RG8, 1) != 0 ||
+            mglRenderCppTextureUploadNeedsSingleChannelSwizzle(GL_RGBA8, 1) != 0 ||
+            mglRenderCppTextureUploadNeedsSingleChannelSwizzle(0u, 1) != 0) {
+            fprintf(stderr, "FAIL: r-only swizzle gate\n");
+            return 1;
+        }
+        printf("R_ONLY_SWIZZLE_GATE_OK\n");
+    }
+
     /* P4.3c: whole-batch simple replay.  Valid batch encodes; unknown command
      * type falls back to NEEDS_OBJC; bad args are rejected. */
     {

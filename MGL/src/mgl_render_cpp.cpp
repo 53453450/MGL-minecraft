@@ -7649,6 +7649,31 @@ uint8_t mglRenderCppResolveR8SwizzledComponent(uint32_t swizzle, uint8_t red) {
 }
 
 extern "C"
+int mglRenderCppTextureUploadNeedsSingleChannelSwizzle(uint32_t internal_format,
+                                                       int swizzled) {
+    if (!swizzled) {
+        return 0;
+    }
+    switch (internal_format) {
+        case GL_R8:
+        case GL_R8_SNORM:
+        case GL_R16:
+        case GL_R16_SNORM:
+        case GL_R16F:
+        case GL_R32F:
+        case GL_R8I:
+        case GL_R8UI:
+        case GL_R16I:
+        case GL_R16UI:
+        case GL_R32I:
+        case GL_R32UI:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+extern "C"
 uint8_t* mglRenderCppCreateSingleChannelSwizzledUpload(
     uint32_t internal_format,
     uint32_t swizzle_r, uint32_t swizzle_g,
