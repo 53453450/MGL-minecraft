@@ -4788,6 +4788,83 @@ static int verifyReadbackScalarConvert(void) {
             return 1;
         }
     }
+    /* BGRA8/RGBA8 UNSIGNED_BYTE channel swizzle. */
+    {
+        uint8_t bgra[4] = {0, 0, 255, 255}; /* B,G,R,A → logical R=255 */
+        uint8_t rgba[4] = {0, 0, 0, 0};
+        if (mglRenderCppCopyUnorm8SwizzleTextureBytesToGL(
+                bgra, 4u, rgba, 4u, 1u, 1u,
+                (uint32_t)MTLPixelFormatBGRA8Unorm,
+                (uint32_t)GL_RGBA, (uint32_t)GL_UNSIGNED_BYTE, 0) != 1 ||
+            rgba[0] != 255 || rgba[1] != 0 || rgba[2] != 0 || rgba[3] != 255) {
+            fprintf(stderr, "FAIL: bgra8 -> rgba8 swizzle\n");
+            return 1;
+        }
+        uint8_t out_bgra[4] = {1, 1, 1, 1};
+        if (mglRenderCppCopyUnorm8SwizzleTextureBytesToGL(
+                bgra, 4u, out_bgra, 4u, 1u, 1u,
+                (uint32_t)MTLPixelFormatBGRA8Unorm,
+                (uint32_t)GL_BGRA, (uint32_t)GL_UNSIGNED_BYTE, 0) != 1 ||
+            out_bgra[0] != 0 || out_bgra[1] != 0 ||
+            out_bgra[2] != 255 || out_bgra[3] != 255) {
+            fprintf(stderr, "FAIL: bgra8 -> bgra8 swizzle\n");
+            return 1;
+        }
+        uint8_t rgb[3] = {0, 0, 0};
+        if (mglRenderCppCopyUnorm8SwizzleTextureBytesToGL(
+                bgra, 4u, rgb, 3u, 1u, 1u,
+                (uint32_t)MTLPixelFormatBGRA8Unorm,
+                (uint32_t)GL_RGB, (uint32_t)GL_UNSIGNED_BYTE, 0) != 1 ||
+            rgb[0] != 255 || rgb[1] != 0 || rgb[2] != 0) {
+            fprintf(stderr, "FAIL: bgra8 -> rgb8 swizzle\n");
+            return 1;
+        }
+        uint8_t red = 0, blue = 255;
+        if (mglRenderCppCopyUnorm8SwizzleTextureBytesToGL(
+                bgra, 4u, &red, 1u, 1u, 1u,
+                (uint32_t)MTLPixelFormatBGRA8Unorm,
+                (uint32_t)GL_RED, (uint32_t)GL_UNSIGNED_BYTE, 0) != 1 ||
+            red != 255 ||
+            mglRenderCppCopyUnorm8SwizzleTextureBytesToGL(
+                bgra, 4u, &blue, 1u, 1u, 1u,
+                (uint32_t)MTLPixelFormatBGRA8Unorm,
+                (uint32_t)GL_BLUE, (uint32_t)GL_UNSIGNED_BYTE, 0) != 1 ||
+            blue != 0) {
+            fprintf(stderr, "FAIL: bgra8 -> red/blue swizzle\n");
+            return 1;
+        }
+        uint8_t rgba8[4] = {255, 0, 0, 255};
+        uint8_t bgr[3] = {0, 0, 0};
+        if (mglRenderCppCopyUnorm8SwizzleTextureBytesToGL(
+                rgba8, 4u, bgr, 3u, 1u, 1u,
+                (uint32_t)MTLPixelFormatRGBA8Unorm,
+                (uint32_t)GL_BGR, (uint32_t)GL_UNSIGNED_BYTE, 0) != 1 ||
+            bgr[0] != 0 || bgr[1] != 0 || bgr[2] != 255) {
+            fprintf(stderr, "FAIL: rgba8 -> bgr8 swizzle\n");
+            return 1;
+        }
+        uint8_t rows[8] = {0, 0, 255, 255, 0, 0, 0, 255};
+        uint8_t flip[2] = {1, 1};
+        if (mglRenderCppCopyUnorm8SwizzleTextureBytesToGL(
+                rows, 4u, flip, 1u, 1u, 2u,
+                (uint32_t)MTLPixelFormatBGRA8Unorm,
+                (uint32_t)GL_RED, (uint32_t)GL_UNSIGNED_BYTE, 1) != 1 ||
+            flip[0] != 0 || flip[1] != 255) {
+            fprintf(stderr, "FAIL: unorm8 swizzle flipY\n");
+            return 1;
+        }
+        if (mglRenderCppCopyUnorm8SwizzleTextureBytesToGL(
+                bgra, 4u, rgba, 4u, 1u, 1u,
+                (uint32_t)MTLPixelFormatR16Unorm,
+                (uint32_t)GL_RGBA, (uint32_t)GL_UNSIGNED_BYTE, 0) != 0 ||
+            mglRenderCppCopyUnorm8SwizzleTextureBytesToGL(
+                NULL, 4u, rgba, 4u, 1u, 1u,
+                (uint32_t)MTLPixelFormatBGRA8Unorm,
+                (uint32_t)GL_RGBA, (uint32_t)GL_UNSIGNED_BYTE, 0) != 0) {
+            fprintf(stderr, "FAIL: unorm8 swizzle bad args\n");
+            return 1;
+        }
+    }
     printf("READBACK_SCALAR_CONVERT_OK\n");
     return 0;
 }

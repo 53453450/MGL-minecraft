@@ -299,100 +299,14 @@ BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
             ? YES : NO;
     }
 
-    for (NSUInteger y = 0; y < height; y++) {
-        const uint8_t *srcRow = src + (y * srcBytesPerRow);
-        NSUInteger dstY = flipY ? (height - 1u - y) : y;
-        uint8_t *dstRow = dst + (dstY * dstBytesPerRow);
-
-        for (NSUInteger x = 0; x < width; x++) {
-            const uint8_t *s = srcRow + (x * 4u);
-            uint8_t r = sourceIsRGBA ? s[0] : s[2];
-            uint8_t g = s[1];
-            uint8_t b = sourceIsRGBA ? s[2] : s[0];
-            uint8_t a = s[3];
-            uint8_t *d = dstRow + (x * dstPixelBytes);
-
-            switch (format) {
-                case GL_BGRA:
-                    if (dstPixelBytes != 4u) {
-                        return NO;
-                    }
-                    d[0] = b;
-                    d[1] = g;
-                    d[2] = r;
-                    d[3] = a;
-                    break;
-                case GL_RGBA:
-                    if (dstPixelBytes != 4u && (type != GL_FLOAT || dstPixelBytes != 16u)) {
-                        return NO;
-                    }
-                    if (type == GL_FLOAT) {
-                        float *fd = (float *)d;
-                        fd[0] = (float)r / 255.0f;
-                        fd[1] = (float)g / 255.0f;
-                        fd[2] = (float)b / 255.0f;
-                        fd[3] = (float)a / 255.0f;
-                    } else {
-                        d[0] = r;
-                        d[1] = g;
-                        d[2] = b;
-                        d[3] = a;
-                    }
-                    break;
-                case GL_BGR:
-                    if (type != GL_UNSIGNED_BYTE || dstPixelBytes != 3u) {
-                        return NO;
-                    }
-                    d[0] = b;
-                    d[1] = g;
-                    d[2] = r;
-                    break;
-                case GL_RGB:
-                    if (type != GL_UNSIGNED_BYTE || dstPixelBytes != 3u) {
-                        return NO;
-                    }
-                    d[0] = r;
-                    d[1] = g;
-                    d[2] = b;
-                    break;
-                case GL_RG:
-                    if (type != GL_UNSIGNED_BYTE || dstPixelBytes != 2u) {
-                        return NO;
-                    }
-                    d[0] = r;
-                    d[1] = g;
-                    break;
-                case GL_RED:
-                    if (type != GL_UNSIGNED_BYTE || dstPixelBytes != 1u) {
-                        return NO;
-                    }
-                    d[0] = r;
-                    break;
-                case GL_GREEN:
-                    if (type != GL_UNSIGNED_BYTE || dstPixelBytes != 1u) {
-                        return NO;
-                    }
-                    d[0] = g;
-                    break;
-                case GL_BLUE:
-                    if (type != GL_UNSIGNED_BYTE || dstPixelBytes != 1u) {
-                        return NO;
-                    }
-                    d[0] = b;
-                    break;
-                case GL_ALPHA:
-                    if (type != GL_UNSIGNED_BYTE || dstPixelBytes != 1u) {
-                        return NO;
-                    }
-                    d[0] = a;
-                    break;
-                default:
-                    return NO;
-            }
-        }
-    }
-
-    return YES;
+    /* P4.5 (item 1171): UNSIGNED_BYTE channel-swizzle tail in C++. */
+    return mglRenderCppCopyUnorm8SwizzleTextureBytesToGL(
+               src, (uint64_t)srcBytesPerRow,
+               dst, (uint64_t)dstBytesPerRow,
+               (uint64_t)width, (uint64_t)height,
+               (uint32_t)pixelFormat, (uint32_t)format, (uint32_t)type,
+               flipY ? 1 : 0)
+        ? YES : NO;
 }
 
 BOOL mglMetalCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(const uint8_t *src,

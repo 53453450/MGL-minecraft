@@ -5167,6 +5167,127 @@ int mglRenderCppCopyUnorm8PackedTextureBytesToGL(
     return 1;
 }
 
+/* BGRA8/RGBA8 UNORM -> GL channel swizzle — mirrors the ObjC final
+ * format switch (UNSIGNED_BYTE tail + leftover RGBA FLOAT). */
+extern "C"
+int mglRenderCppCopyUnorm8SwizzleTextureBytesToGL(
+    const void* src, uint64_t src_bytes_per_row,
+    void* dst, uint64_t dst_bytes_per_row,
+    uint64_t width, uint64_t height,
+    uint32_t pixel_format, uint32_t format, uint32_t type, int flip_y) {
+    if (!src || !dst || width == 0u || height == 0u) {
+        return 0;
+    }
+    const MTL::PixelFormat pf = static_cast<MTL::PixelFormat>(pixel_format);
+    const int source_is_rgba =
+        (pf == MTL::PixelFormatRGBA8Unorm ||
+         pf == MTL::PixelFormatRGBA8Unorm_sRGB);
+    const int source_is_bgra =
+        (pf == MTL::PixelFormatBGRA8Unorm ||
+         pf == MTL::PixelFormatBGRA8Unorm_sRGB);
+    if (!source_is_rgba && !source_is_bgra) {
+        return 0;
+    }
+
+    int slots = 0;
+    int src_idx[4] = {0, 0, 0, 0};
+    if (!mglCppReadbackFormatChannelMap(format, &slots, src_idx)) {
+        return 0;
+    }
+    (void)src_idx;
+
+    uint32_t comp_bytes = mglCppSizeForType(type);
+    uint64_t dst_pixel_bytes = mglCppPixelTypeIsPacked(type)
+        ? (uint64_t)comp_bytes
+        : (uint64_t)comp_bytes * (uint64_t)slots;
+    if (dst_pixel_bytes == 0u || dst_bytes_per_row < width * dst_pixel_bytes) {
+        return 0;
+    }
+
+    if (format == GL_BGRA) {
+        if (dst_pixel_bytes != 4u) return 0;
+    } else if (format == GL_RGBA) {
+        if (dst_pixel_bytes != 4u &&
+            !(type == GL_FLOAT && dst_pixel_bytes == 16u)) {
+            return 0;
+        }
+    } else if (format == GL_BGR || format == GL_RGB) {
+        if (type != GL_UNSIGNED_BYTE || dst_pixel_bytes != 3u) return 0;
+    } else if (format == GL_RG) {
+        if (type != GL_UNSIGNED_BYTE || dst_pixel_bytes != 2u) return 0;
+    } else {
+        if (type != GL_UNSIGNED_BYTE || dst_pixel_bytes != 1u) return 0;
+    }
+
+    const uint8_t* src_bytes = static_cast<const uint8_t*>(src);
+    uint8_t* dst_bytes = static_cast<uint8_t*>(dst);
+    for (uint64_t y = 0; y < height; y++) {
+        const uint8_t* src_row = src_bytes + (y * src_bytes_per_row);
+        uint64_t dst_y = flip_y ? (height - 1u - y) : y;
+        uint8_t* dst_row = dst_bytes + (dst_y * dst_bytes_per_row);
+        for (uint64_t x = 0; x < width; x++) {
+            const uint8_t* s = src_row + (x * 4u);
+            uint8_t r = source_is_rgba ? s[0] : s[2];
+            uint8_t g = s[1];
+            uint8_t b = source_is_rgba ? s[2] : s[0];
+            uint8_t a = s[3];
+            uint8_t* d = dst_row + (x * dst_pixel_bytes);
+
+            switch (format) {
+                case GL_BGRA:
+                    d[0] = b;
+                    d[1] = g;
+                    d[2] = r;
+                    d[3] = a;
+                    break;
+                case GL_RGBA:
+                    if (type == GL_FLOAT) {
+                        float* fd = reinterpret_cast<float*>(d);
+                        fd[0] = (float)r / 255.0f;
+                        fd[1] = (float)g / 255.0f;
+                        fd[2] = (float)b / 255.0f;
+                        fd[3] = (float)a / 255.0f;
+                    } else {
+                        d[0] = r;
+                        d[1] = g;
+                        d[2] = b;
+                        d[3] = a;
+                    }
+                    break;
+                case GL_BGR:
+                    d[0] = b;
+                    d[1] = g;
+                    d[2] = r;
+                    break;
+                case GL_RGB:
+                    d[0] = r;
+                    d[1] = g;
+                    d[2] = b;
+                    break;
+                case GL_RG:
+                    d[0] = r;
+                    d[1] = g;
+                    break;
+                case GL_RED:
+                    d[0] = r;
+                    break;
+                case GL_GREEN:
+                    d[0] = g;
+                    break;
+                case GL_BLUE:
+                    d[0] = b;
+                    break;
+                case GL_ALPHA:
+                    d[0] = a;
+                    break;
+                default:
+                    return 0;
+            }
+        }
+    }
+    return 1;
+}
+
 
 /* P4.4: little-endian packed read + unorm bit expansion (RGBA8 path). */
 static uint32_t mglCppReadPackedUploadLE(const uint8_t* src, size_t bytes) {
