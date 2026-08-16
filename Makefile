@@ -26,6 +26,7 @@ CFLAGS += -O2
 # dlopen() so sanitized runs use the standalone regression binary.
 ifdef SANITIZE
 CFLAGS += -fsanitize=$(SANITIZE) -fno-omit-frame-pointer
+CXXFLAGS += -fsanitize=$(SANITIZE) -fno-omit-frame-pointer
 LIBS += -fsanitize=$(SANITIZE)
 endif
 CFLAGS += -arch $(HOST_ARCH)
@@ -231,6 +232,28 @@ mgl_es_lib := $(build_dir)/libmgl_es.dylib
 
 mgl_core_link_objs := $(mgl_core_objs) $(mgl_core_arc_objs) $(mgl_core_obj)
 mgl_es_link_objs := $(mgl_es_objs) $(mgl_es_arc_objs) $(mgl_es_obj)
+
+# M1 AIR backend: GLSL -> metallib -> PSO gate (C++20 + LLVM, Metal runtime).
+# Define these before the compile/link configuration hashes below so changes
+# to C++ and LLVM flags invalidate existing objects and libraries.
+LLVM_ROOT ?= /opt/homebrew/opt/llvm@15
+LLVM_CXX ?= $(APPLE_CLANG)
+LLVM_CXXFLAGS := -std=c++20 -isysroot $(SDK_ROOT) -I$(LLVM_ROOT)/include -IMGL/include \
+	-IMGL/src \
+	-IMGL/include/GL \
+	-Iexternal/metal-cpp
+LLVM_LDFLAGS := -L$(LLVM_ROOT)/lib -lLLVM-15 -lc++
+# The *.cpp sources (GLSL->metallib compiler + Metal-cpp renderer/loader) build
+# with LLVM headers and metal-cpp (header-only).
+M1_AIR_CXXFLAGS := -std=c++20 -I$(LLVM_ROOT)/include -IMGL/include \
+	-IMGL/include/GL \
+	-Iexternal/metal-cpp
+CXXFLAGS_GL_CORE := $(CXXFLAGS) -DMGL_GL_CORE $(M1_AIR_CXXFLAGS)
+CXXFLAGS_GL_ES := $(CXXFLAGS) -DMGL_GL_ES $(M1_AIR_CXXFLAGS)
+# Product libs carry the M1 AIR backend, so they depend on the LLVM runtime.
+# -lobjc: mgl_render_cpp.cpp 等纯 C++ TU 内联调用 objc_msgSend，clang++ 不会
+# 像 ObjC 目标文件那样自动补链 ObjC runtime。
+LIBS += $(LLVM_LDFLAGS) -lobjc
 
 CC_ID := $(shell $(CC) --version 2>/dev/null | sed -n '1p')
 CXX_ID := $(shell $(CXX) --version 2>/dev/null | sed -n '1p')
@@ -548,26 +571,6 @@ $(build_dir)/test_mglsema: test_legacy_compat/test_mglsema.c MGL/src/mgl_glsl_se
 test-mglsema: $(build_dir)/test_mglsema
 	$(build_dir)/test_mglsema
 
-# M1 AIR backend: GLSL -> metallib -> PSO gate (C++20 + LLVM, Metal runtime).
-LLVM_ROOT ?= /opt/homebrew/opt/llvm@15
-LLVM_CXX ?= $(APPLE_CLANG)
-LLVM_CXXFLAGS := -std=c++20 -isysroot $(SDK_ROOT) -I$(LLVM_ROOT)/include -IMGL/include \
-	-IMGL/src \
-	-IMGL/include/GL \
-	-Iexternal/metal-cpp
-LLVM_LDFLAGS := -L$(LLVM_ROOT)/lib -lLLVM-15 -lc++
-# The *.cpp sources (GLSL->metallib compiler + Metal-cpp renderer/loader) build
-# with LLVM headers and metal-cpp (header-only).
-M1_AIR_CXXFLAGS := -std=c++20 -I$(LLVM_ROOT)/include -IMGL/include \
-	-IMGL/include/GL \
-	-Iexternal/metal-cpp
-CXXFLAGS_GL_CORE := $(CXXFLAGS) -DMGL_GL_CORE $(M1_AIR_CXXFLAGS)
-CXXFLAGS_GL_ES := $(CXXFLAGS) -DMGL_GL_ES $(M1_AIR_CXXFLAGS)
-# Product libs carry the M1 AIR backend, so they depend on the LLVM runtime.
-# -lobjc: mgl_render_cpp.cpp 等纯 C++ TU 内联调用 objc_msgSend，clang++ 不会
-# 像 ObjC 目标文件那样自动补链 ObjC runtime。
-LIBS += $(LLVM_LDFLAGS) -lobjc
-
 $(build_dir)/test_mglair: test_legacy_compat/test_mglair.mm \
 	MGL/src/mgl_air_backend.cpp MGL/src/mgl_metallib_writer.cpp \
 	MGL/src/mgl_legacy_compat.c MGL/include/mgl_legacy_compat.h \
@@ -590,7 +593,8 @@ test-mglair: $(build_dir)/test_mglair
 # MC-style shader repro: anonymous std140 UBO blocks + samplers through the
 # AIR backend.  C sources build as C (they are not valid C++).
 MCREPRO_CSRC := MGL/src/mgl_air_reflect.c MGL/src/mgl_glsl_sema.c \
-	MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c MGL/src/mgl_ir.c
+	MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c MGL/src/mgl_ir.c \
+	MGL/src/mgl_legacy_compat.c
 MCREPRO_COBJ := $(patsubst MGL/src/%.c,$(build_dir)/mcrepro_%.o,$(MCREPRO_CSRC))
 
 $(build_dir)/mcrepro_%.o: MGL/src/%.c
@@ -653,6 +657,24 @@ $(build_dir)/test_mglair_gtest: test_legacy_compat/test_mglair_gtest.cpp \
 
 test-mglair-gtest: $(build_dir)/test_mglair_gtest
 	$(build_dir)/test_mglair_gtest
+
+# Standalone test targets may be the first target invoked after `make clean`;
+# keep their output directory an explicit prerequisite instead of relying on a
+# prior library build to create it.
+$(build_dir)/test_regression \
+$(build_dir)/test_dirty_hash \
+$(build_dir)/test_legacy_compat \
+$(build_dir)/test_mglir \
+$(build_dir)/test_mgllex \
+$(build_dir)/test_mglparse \
+$(build_dir)/test_mglsema \
+$(build_dir)/test_mglair \
+$(build_dir)/test_mcrepro \
+$(build_dir)/test_metalcpp_smoke \
+$(build_dir)/test_mglair_gtest: | $(build_dir)
+
+$(build_dir):
+	@mkdir -p $@
 
 test-frontends:
 	$(MAKE) test-legacy-compat
