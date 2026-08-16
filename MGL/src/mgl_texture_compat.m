@@ -81,15 +81,7 @@ static MGLMetalTextureRef mglTextureCompatCreateView(
 
 static bool mglTextureMinFilterUsesMipmaps(GLenum minFilter)
 {
-    switch (minFilter) {
-        case GL_NEAREST_MIPMAP_NEAREST:
-        case GL_LINEAR_MIPMAP_NEAREST:
-        case GL_NEAREST_MIPMAP_LINEAR:
-        case GL_LINEAR_MIPMAP_LINEAR:
-            return true;
-        default:
-            return false;
-    }
+    return mglRenderCppTextureMinFilterUsesMipmaps((uint32_t)minFilter) != 0;
 }
 
 MGLTextureDataKind mglTextureDataKindForPixelFormat(MTLPixelFormat pixelFormat)

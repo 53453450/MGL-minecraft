@@ -3262,6 +3262,19 @@ uint32_t mglRenderCppTextureDataKindForPixelFormat(uint32_t pixel_format) {
 }
 
 extern "C"
+int mglRenderCppTextureMinFilterUsesMipmaps(uint32_t min_filter) {
+    switch (min_filter) {
+        case GL_NEAREST_MIPMAP_NEAREST:
+        case GL_LINEAR_MIPMAP_NEAREST:
+        case GL_NEAREST_MIPMAP_LINEAR:
+        case GL_LINEAR_MIPMAP_LINEAR:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+extern "C"
 int mglRenderCppMetalLayerPixelFormatIsSupported(uint32_t pixel_format) {
     switch (static_cast<MTL::PixelFormat>(pixel_format)) {
         case MTL::PixelFormatBGRA8Unorm:

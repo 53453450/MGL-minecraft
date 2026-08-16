@@ -6664,6 +6664,21 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
         printf("GL_MTL_SWIZZLE_OK\n");
     }
 
+    /* P4.5 (item 1111): min-filter uses-mipmaps gate. */
+    {
+        if (mglRenderCppTextureMinFilterUsesMipmaps(GL_NEAREST_MIPMAP_NEAREST) != 1 ||
+            mglRenderCppTextureMinFilterUsesMipmaps(GL_LINEAR_MIPMAP_NEAREST) != 1 ||
+            mglRenderCppTextureMinFilterUsesMipmaps(GL_NEAREST_MIPMAP_LINEAR) != 1 ||
+            mglRenderCppTextureMinFilterUsesMipmaps(GL_LINEAR_MIPMAP_LINEAR) != 1 ||
+            mglRenderCppTextureMinFilterUsesMipmaps(GL_NEAREST) != 0 ||
+            mglRenderCppTextureMinFilterUsesMipmaps(GL_LINEAR) != 0 ||
+            mglRenderCppTextureMinFilterUsesMipmaps(0u) != 0) {
+            fprintf(stderr, "FAIL: min-filter uses-mipmaps\n");
+            return 1;
+        }
+        printf("MIN_FILTER_MIPMAPS_OK\n");
+    }
+
     /* P4.3c: whole-batch simple replay.  Valid batch encodes; unknown command
      * type falls back to NEEDS_OBJC; bad args are rejected. */
     {
