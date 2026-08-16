@@ -35,6 +35,7 @@
 #include <mutex>
 #include <new>
 #include <set>
+#include <chrono>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -723,6 +724,7 @@ struct CommandBufferRecoveryOwner {
     uint64_t consecutiveSuccesses = 0;
     double lastErrorTime = 0.0;
     bool recoveryMode = false;
+    bool resetRequested = false;
 };
 
 void snapshotCommandRecovery(
@@ -11546,6 +11548,68 @@ int mglRenderCppProcessCommandBufferCompletion(
     result_out->cleared_recovery_mode = (uint32_t)cleared;
     if (cleared == 1) result_out->state.recovery_mode = 0;
     return 0;
+}
+
+namespace {
+
+struct CommandRecoveryCompletionContext {
+    mgl::CommandBufferRecoveryOwner* owner = nullptr;
+};
+
+double commandRecoveryNowSeconds() {
+    using Clock = std::chrono::steady_clock;
+    return std::chrono::duration<double>(Clock::now().time_since_epoch()).count();
+}
+
+void commandRecoveryCompletion(void* context,
+                               const MGLRenderCppCommandBufferState* state) {
+    CommandRecoveryCompletionContext* completion =
+        static_cast<CommandRecoveryCompletionContext*>(context);
+    if (!completion || !completion->owner || !state) return;
+
+    MGLRenderCppCommandBufferCompletionResult result = {};
+    if (mglRenderCppProcessCommandBufferCompletion(
+            completion->owner, state, commandRecoveryNowSeconds(), &result) != 0) {
+        return;
+    }
+
+    if (result.decision.is_driver_rejection) {
+        std::lock_guard<std::mutex> lock(completion->owner->mutex);
+        completion->owner->resetRequested = true;
+    }
+}
+
+void destroyCommandRecoveryCompletionContext(void* context) {
+    delete static_cast<CommandRecoveryCompletionContext*>(context);
+}
+
+}  // namespace
+
+int mglRenderCppAddCommandBufferRecoveryCompletion(
+    void* command_buffer,
+    void* recovery_owner) {
+    if (!command_buffer || !recovery_owner) return -1;
+    CommandRecoveryCompletionContext* context =
+        new (std::nothrow) CommandRecoveryCompletionContext();
+    if (!context) return -1;
+    context->owner = static_cast<mgl::CommandBufferRecoveryOwner*>(recovery_owner);
+    int result = mglRenderCppAddCommandBufferCompletion(
+        command_buffer,
+        commandRecoveryCompletion,
+        context,
+        destroyCommandRecoveryCompletionContext);
+    if (result != 0) delete context;
+    return result;
+}
+
+int mglRenderCppCommandRecoveryTakeResetRequest(void* recovery_owner) {
+    mgl::CommandBufferRecoveryOwner* owner =
+        static_cast<mgl::CommandBufferRecoveryOwner*>(recovery_owner);
+    if (!owner) return -1;
+    std::lock_guard<std::mutex> lock(owner->mutex);
+    if (!owner->resetRequested) return 0;
+    owner->resetRequested = false;
+    return 1;
 }
 
 int mglRenderCppAddCommandBufferCompletion(

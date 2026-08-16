@@ -3518,6 +3518,15 @@ void logDirtyBits(GLMContext ctx)
          * yet, so resetMetalState can swap the command queue / clear caches
          * without racing an active encoder.  The request flag is set by the
          * Metal completion handler (GPURecovery.m) via release-store. */
+        /* Gate-on completion workers latch recovery requests in the C++ owner;
+         * consume them only at this GL-thread frame boundary.  Keep the
+         * atomic field for the disabled-gate adapter and legacy error paths. */
+        if (mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
+            mglRenderCppCommandRecoveryTakeResetRequest(
+                _gpuRecovery.commandRecoveryOwner) == 1) {
+            atomic_store_explicit(&_deviceResetRequested, true,
+                                  memory_order_release);
+        }
         if (atomic_exchange_explicit(&_deviceResetRequested, false, memory_order_acquire)) {
             [self resetMetalState];
         }

@@ -2162,6 +2162,15 @@ int mglRenderCppProcessCommandBufferCompletion(
     const MGLRenderCppCommandBufferState *state,
     double now,
     MGLRenderCppCommandBufferCompletionResult *result_out);
+/* Register the standard command-recovery completion handler without capturing
+ * an Objective-C renderer.  The C++ recovery owner records error/success
+ * counters and latches a deferred-reset request for the GL thread. */
+int mglRenderCppAddCommandBufferRecoveryCompletion(
+    void *command_buffer,
+    void *recovery_owner);
+/* Consume a reset request latched by a completion worker. Returns 1 when a
+ * request was consumed, 0 when none is pending, and -1 for invalid owner. */
+int mglRenderCppCommandRecoveryTakeResetRequest(void *recovery_owner);
 int mglRenderCppAddCommandBufferCompletion(
     void *command_buffer,
     MGLRenderCppCommandBufferCompletion callback,

@@ -208,13 +208,23 @@
         [self recordGPUError];
     }
 
-    // Add completion handler for AGX error detection
-    __block typeof(self) blockSelf = self;
-    uint64_t commitCallForBlock = commitCall;
-    bool traceCommitForBlock = traceCommit;
-    mglRenderAddCommandBufferCompletion(
-        commandBuffer,
-        ^(const MGLRenderCppCommandBufferState *completionState) {
+    // Register recovery bookkeeping in the C++ owner.  The gate-on handler
+    // deliberately captures no renderer/ARC object on the Metal worker.
+    BOOL recoveryCompletionRegistered = NO;
+    if (mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
+        mglRenderCppGetDevice() && _gpuRecovery.commandRecoveryOwner) {
+        recoveryCompletionRegistered =
+            mglRenderCppAddCommandBufferRecoveryCompletion(
+                (__bridge void *)commandBuffer,
+                _gpuRecovery.commandRecoveryOwner) == 0;
+    }
+    if (!recoveryCompletionRegistered) {
+        __block typeof(self) blockSelf = self;
+        uint64_t commitCallForBlock = commitCall;
+        bool traceCommitForBlock = traceCommit;
+        mglRenderAddCommandBufferCompletion(
+            commandBuffer,
+            ^(const MGLRenderCppCommandBufferState *completionState) {
             MGLRenderCppCommandBufferCompletionResult completionResult = {0};
             if (mglRenderCppProcessCommandBufferCompletion(
                     blockSelf->_gpuRecovery.commandRecoveryOwner,
@@ -283,7 +293,8 @@
                     NSLog(@"MGL AGX RECOVERY: Exiting GPU recovery mode after successful completion");
                 }
             }
-        });
+            });
+    }
 
     // CRITICAL FIX: Enhanced command buffer validation before commit
     // Prevents MTLReleaseAssertionFailure in AGX driver
