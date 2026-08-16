@@ -11,7 +11,7 @@
 #include <stdlib.h>
 #include "mgl_env_flag.h"
 #include "mgl_render_cpp.h"
-#include "mgl_render_cpp_objc.h"   /* P4.3a: mglRenderCppTryEncodeDraw */
+#include "mgl_render_cpp_objc.h" /* transitional Metal ref typedefs */
 
 static void mglDrawEncodePrimitives(MGLMetalRenderCommandEncoderRef encoder,
                                     MTLPrimitiveType primitiveType,
@@ -20,20 +20,15 @@ static void mglDrawEncodePrimitives(MGLMetalRenderCommandEncoderRef encoder,
                                     NSUInteger instanceCount,
                                     NSUInteger baseInstance)
 {
-    /* P4.3a: 统一 draw plan 提交（gate-on 走 C++ EncodeDraw）。 */
-    if (mglRenderCppTryEncodeDraw(encoder, &(MGLRenderCppDrawPlan){
+    (void)mglRenderCppEncodeDraw((__bridge void *)encoder,
+        &(MGLRenderCppDrawPlan){
             .kind = MGL_RENDER_CPP_DRAW_ARRAY,
             .primitive_type = (uint32_t)primitiveType,
             .vertex_start = vertexStart,
             .vertex_count = vertexCount,
             .instance_count = instanceCount,
             .base_instance = baseInstance,
-        })) {
-        return;
-    }
-    [encoder drawPrimitives:primitiveType vertexStart:vertexStart
-                vertexCount:vertexCount instanceCount:instanceCount
-               baseInstance:baseInstance];
+        }, NULL, 0);
 }
 
 static void mglDrawEncodeIndexed(MGLMetalRenderCommandEncoderRef encoder,
@@ -46,7 +41,8 @@ static void mglDrawEncodeIndexed(MGLMetalRenderCommandEncoderRef encoder,
                                  NSInteger baseVertex,
                                  NSUInteger baseInstance)
 {
-    if (mglRenderCppTryEncodeDraw(encoder, &(MGLRenderCppDrawPlan){
+    (void)mglRenderCppEncodeDraw((__bridge void *)encoder,
+        &(MGLRenderCppDrawPlan){
             .kind = MGL_RENDER_CPP_DRAW_INDEXED,
             .primitive_type = (uint32_t)primitiveType,
             .index_count = indexCount,
@@ -56,14 +52,7 @@ static void mglDrawEncodeIndexed(MGLMetalRenderCommandEncoderRef encoder,
             .instance_count = instanceCount,
             .base_vertex = baseVertex,
             .base_instance = baseInstance,
-        })) {
-        return;
-    }
-    [encoder drawIndexedPrimitives:primitiveType indexCount:indexCount
-                         indexType:indexType indexBuffer:indexBuffer
-                 indexBufferOffset:indexBufferOffset
-                     instanceCount:instanceCount baseVertex:baseVertex
-                      baseInstance:baseInstance];
+        }, NULL, 0);
 }
 
 BOOL mglEncodeArrayLineLoop(MGLMetalRenderCommandEncoderRef encoder,

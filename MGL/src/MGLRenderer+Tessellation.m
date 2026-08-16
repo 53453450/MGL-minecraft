@@ -196,22 +196,15 @@ static void mglTessDrawPrimitives(id<MTLRenderCommandEncoder> encoder,
                                   NSUInteger instanceCount,
                                   NSUInteger baseInstance)
 {
-    /* P4.3a: TES compute 展开的 passthrough raster draw 走统一 draw plan。 */
-    if (mglRenderCppTryEncodeDraw(encoder, &(MGLRenderCppDrawPlan){
+    (void)mglRenderCppEncodeDraw((__bridge void *)encoder,
+        &(MGLRenderCppDrawPlan){
             .kind = MGL_RENDER_CPP_DRAW_ARRAY,
             .primitive_type = (uint32_t)type,
             .vertex_start = vertexStart,
             .vertex_count = vertexCount,
             .instance_count = instanceCount,
             .base_instance = baseInstance,
-        })) {
-        return;
-    }
-    [encoder drawPrimitives:type
-                vertexStart:vertexStart
-                vertexCount:vertexCount
-              instanceCount:instanceCount
-               baseInstance:baseInstance];
+        }, NULL, 0);
 }
 
 static void mglTessSetComputeTexture(id<MTLComputeCommandEncoder> encoder,
@@ -1147,7 +1140,7 @@ typedef struct {
         return false;
     }
 
-    /* Save tess factor buffer for TES drawPatches path. */
+    /* Save tess factor buffer for TES patch-draw path. */
     _tessellation.tessFactorBuffer = tessFactorBuf;
 
     return true;

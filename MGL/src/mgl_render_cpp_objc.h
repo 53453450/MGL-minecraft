@@ -206,22 +206,6 @@ static inline int mglRenderAddCommandBufferCompletion(
     return 0;
 }
 
-/* P4.3a: draw 提交统一入口的 ObjC 桥。gate-on（MGL_USE_METALCPP + device）
- * 时把 plan 交给 C++ mglRenderCppEncodeDraw；返回 YES 表示已由 C++ 提交，
- * NO 表示调用方应走 ObjC 直接编码（gate-off 或 C++ 校验失败回退）。 */
-static inline BOOL mglRenderCppTryEncodeDraw(
-    id<MTLRenderCommandEncoder> encoder,
-    const MGLRenderCppDrawPlan *plan)
-{
-    if (!encoder || !plan) return NO;
-    if (!mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") ||
-        !mglRenderCppGetDevice()) {
-        return NO;
-    }
-    return mglRenderCppEncodeDraw(
-        (__bridge void *)encoder, plan, NULL, 0) == 0;
-}
-
 /* Returns a borrowed queue retained by the opaque C++ owner. Assign the
  * result to an ObjC strong field before the owner can be reset or destroyed. */
 static inline id<MTLCommandQueue>

@@ -8,7 +8,6 @@
 #import "mgl_frame_activity.h"
 #include "mgl_env_flag.h"
 #include "mgl_render_cpp.h"
-#include "mgl_render_cpp_objc.h"   /* P4.3a: mglRenderCppTryEncodeDraw */
 
 static const NSUInteger kMaxFragmentSamplerSlots = 16;
 
@@ -73,22 +72,15 @@ static void mglBatchReplayDrawPrimitives(
     NSUInteger instanceCount,
     NSUInteger baseInstance)
 {
-    /* P4.3a: 统一 draw plan 提交（gate-on 走 C++ EncodeDraw）。 */
-    if (mglRenderCppTryEncodeDraw(encoder, &(MGLRenderCppDrawPlan){
+    (void)mglRenderCppEncodeDraw((__bridge void *)encoder,
+        &(MGLRenderCppDrawPlan){
             .kind = MGL_RENDER_CPP_DRAW_ARRAY,
             .primitive_type = (uint32_t)primitiveType,
             .vertex_start = vertexStart,
             .vertex_count = vertexCount,
             .instance_count = instanceCount,
             .base_instance = baseInstance,
-        })) {
-        return;
-    }
-    [encoder drawPrimitives:primitiveType
-                vertexStart:vertexStart
-                vertexCount:vertexCount
-              instanceCount:instanceCount
-               baseInstance:baseInstance];
+        }, NULL, 0);
 }
 
 static void mglBatchReplayDrawIndexedPrimitives(
@@ -102,7 +94,8 @@ static void mglBatchReplayDrawIndexedPrimitives(
     NSInteger baseVertex,
     NSUInteger baseInstance)
 {
-    if (mglRenderCppTryEncodeDraw(encoder, &(MGLRenderCppDrawPlan){
+    (void)mglRenderCppEncodeDraw((__bridge void *)encoder,
+        &(MGLRenderCppDrawPlan){
             .kind = MGL_RENDER_CPP_DRAW_INDEXED,
             .primitive_type = (uint32_t)primitiveType,
             .index_count = indexCount,
@@ -112,17 +105,7 @@ static void mglBatchReplayDrawIndexedPrimitives(
             .instance_count = instanceCount,
             .base_vertex = baseVertex,
             .base_instance = baseInstance,
-        })) {
-        return;
-    }
-    [encoder drawIndexedPrimitives:primitiveType
-                        indexCount:indexCount
-                         indexType:indexType
-                       indexBuffer:indexBuffer
-                 indexBufferOffset:indexBufferOffset
-                     instanceCount:instanceCount
-                        baseVertex:baseVertex
-                      baseInstance:baseInstance];
+        }, NULL, 0);
 }
 
 static void mglBatchReplayDrawPrimitivesIndirect(
@@ -131,17 +114,13 @@ static void mglBatchReplayDrawPrimitivesIndirect(
     id<MTLBuffer> indirectBuffer,
     NSUInteger indirectBufferOffset)
 {
-    if (mglRenderCppTryEncodeDraw(encoder, &(MGLRenderCppDrawPlan){
+    (void)mglRenderCppEncodeDraw((__bridge void *)encoder,
+        &(MGLRenderCppDrawPlan){
             .kind = MGL_RENDER_CPP_DRAW_ARRAY_INDIRECT,
             .primitive_type = (uint32_t)primitiveType,
             .indirect_buffer = (__bridge void *)indirectBuffer,
             .indirect_buffer_offset = indirectBufferOffset,
-        })) {
-        return;
-    }
-    [encoder drawPrimitives:primitiveType
-             indirectBuffer:indirectBuffer
-       indirectBufferOffset:indirectBufferOffset];
+        }, NULL, 0);
 }
 
 static void mglBatchReplayDrawIndexedPrimitivesIndirect(
@@ -153,7 +132,8 @@ static void mglBatchReplayDrawIndexedPrimitivesIndirect(
     id<MTLBuffer> indirectBuffer,
     NSUInteger indirectBufferOffset)
 {
-    if (mglRenderCppTryEncodeDraw(encoder, &(MGLRenderCppDrawPlan){
+    (void)mglRenderCppEncodeDraw((__bridge void *)encoder,
+        &(MGLRenderCppDrawPlan){
             .kind = MGL_RENDER_CPP_DRAW_INDEXED_INDIRECT,
             .primitive_type = (uint32_t)primitiveType,
             .index_type = (uint32_t)indexType,
@@ -161,15 +141,7 @@ static void mglBatchReplayDrawIndexedPrimitivesIndirect(
             .index_buffer_offset = indexBufferOffset,
             .indirect_buffer = (__bridge void *)indirectBuffer,
             .indirect_buffer_offset = indirectBufferOffset,
-        })) {
-        return;
-    }
-    [encoder drawIndexedPrimitives:primitiveType
-                         indexType:indexType
-                       indexBuffer:indexBuffer
-                 indexBufferOffset:indexBufferOffset
-                    indirectBuffer:indirectBuffer
-              indirectBufferOffset:indirectBufferOffset];
+        }, NULL, 0);
 }
 
 static bool mglBuildDynamicVertexArray(const VertexArray *base,
@@ -1653,7 +1625,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                     encCtx->encoder,
                     _pipelineCache.state->pipelineState);
         /* Cull distance emulation: bind vertex/params buffers before
-         * drawPrimitives in the deferred batch path. */
+         * array draw in the deferred batch path. */
         {
             Program *batchProgram = mglResolveProgramForStageFromState(glm_ctx, _VERTEX_SHADER);
             if (batchProgram && batchProgram->uses_cull_distance) {
@@ -1814,7 +1786,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                           reason:(ok ? "direct_arrays_instanced_quads" : "direct_arrays_instanced_quads_buffer")];
     } else {
         /* Cull distance emulation: bind vertex/params buffers before
-         * drawPrimitives in the deferred batch path. */
+         * array draw in the deferred batch path. */
         {
             Program *batchProgram = mglResolveProgramForStageFromState(glm_ctx, _VERTEX_SHADER);
             if (batchProgram && batchProgram->uses_cull_distance) {
@@ -1976,7 +1948,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                           reason:(ok ? "direct_arrays_base_instance_quads" : "direct_arrays_base_instance_quads_buffer")];
     } else {
         /* Cull distance emulation: bind vertex/params buffers before
-         * drawPrimitives in the deferred batch path. */
+         * array draw in the deferred batch path. */
         {
             Program *batchProgram = mglResolveProgramForStageFromState(glm_ctx, _VERTEX_SHADER);
             if (batchProgram && batchProgram->uses_cull_distance) {

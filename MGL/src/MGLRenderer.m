@@ -425,19 +425,15 @@ static void mglRendererDrawPrimitives(id<MTLRenderCommandEncoder> encoder,
                                       NSUInteger vertexStart,
                                       NSUInteger vertexCount)
 {
-    /* P4.3a: 统一 draw plan 提交（gate-on 走 C++ EncodeDraw）。 */
-    if (mglRenderCppTryEncodeDraw(encoder, &(MGLRenderCppDrawPlan){
+    (void)mglRenderCppEncodeDraw((__bridge void *)encoder,
+        &(MGLRenderCppDrawPlan){
             .kind = MGL_RENDER_CPP_DRAW_ARRAY,
             .primitive_type = (uint32_t)primitiveType,
             .vertex_start = vertexStart,
             .vertex_count = vertexCount,
             .instance_count = 1u,
             .base_instance = 0u,
-        })) {
-        return;
-    }
-    [encoder drawPrimitives:primitiveType vertexStart:vertexStart
-                vertexCount:vertexCount];
+        }, NULL, 0);
 }
 
 static void mglRendererBlitCopyBuffer(id<MTLBlitCommandEncoder> encoder,

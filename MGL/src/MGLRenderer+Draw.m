@@ -6,7 +6,6 @@
 #import "mgl_frame_activity.h"
 #include "mgl_env_flag.h"
 #include "mgl_render_cpp.h"
-#include "mgl_render_cpp_objc.h"   /* P4.3a: mglRenderCppTryEncodeDraw */
 
 static void mglDrawPrimitives(id<MTLRenderCommandEncoder> encoder,
                               MTLPrimitiveType primitiveType,
@@ -15,22 +14,15 @@ static void mglDrawPrimitives(id<MTLRenderCommandEncoder> encoder,
                               NSUInteger instanceCount,
                               NSUInteger baseInstance)
 {
-    /* P4.3a: 统一 draw plan 提交（gate-on 走 C++ EncodeDraw）。 */
-    if (mglRenderCppTryEncodeDraw(encoder, &(MGLRenderCppDrawPlan){
+    (void)mglRenderCppEncodeDraw((__bridge void *)encoder,
+        &(MGLRenderCppDrawPlan){
             .kind = MGL_RENDER_CPP_DRAW_ARRAY,
             .primitive_type = (uint32_t)primitiveType,
             .vertex_start = vertexStart,
             .vertex_count = vertexCount,
             .instance_count = instanceCount,
             .base_instance = baseInstance,
-        })) {
-        return;
-    }
-    [encoder drawPrimitives:primitiveType
-                vertexStart:vertexStart
-                vertexCount:vertexCount
-              instanceCount:instanceCount
-               baseInstance:baseInstance];
+        }, NULL, 0);
 }
 
 static void mglDrawIndexedPrimitives(id<MTLRenderCommandEncoder> encoder,
@@ -43,7 +35,8 @@ static void mglDrawIndexedPrimitives(id<MTLRenderCommandEncoder> encoder,
                                      NSInteger baseVertex,
                                      NSUInteger baseInstance)
 {
-    if (mglRenderCppTryEncodeDraw(encoder, &(MGLRenderCppDrawPlan){
+    (void)mglRenderCppEncodeDraw((__bridge void *)encoder,
+        &(MGLRenderCppDrawPlan){
             .kind = MGL_RENDER_CPP_DRAW_INDEXED,
             .primitive_type = (uint32_t)primitiveType,
             .index_count = indexCount,
@@ -53,17 +46,7 @@ static void mglDrawIndexedPrimitives(id<MTLRenderCommandEncoder> encoder,
             .instance_count = instanceCount,
             .base_vertex = baseVertex,
             .base_instance = baseInstance,
-        })) {
-        return;
-    }
-    [encoder drawIndexedPrimitives:primitiveType
-                        indexCount:indexCount
-                         indexType:indexType
-                       indexBuffer:indexBuffer
-                 indexBufferOffset:indexBufferOffset
-                     instanceCount:instanceCount
-                        baseVertex:baseVertex
-                      baseInstance:baseInstance];
+        }, NULL, 0);
 }
 
 static void mglDrawPrimitivesIndirect(id<MTLRenderCommandEncoder> encoder,
@@ -71,17 +54,13 @@ static void mglDrawPrimitivesIndirect(id<MTLRenderCommandEncoder> encoder,
                                       id<MTLBuffer> indirectBuffer,
                                       NSUInteger indirectBufferOffset)
 {
-    if (mglRenderCppTryEncodeDraw(encoder, &(MGLRenderCppDrawPlan){
+    (void)mglRenderCppEncodeDraw((__bridge void *)encoder,
+        &(MGLRenderCppDrawPlan){
             .kind = MGL_RENDER_CPP_DRAW_ARRAY_INDIRECT,
             .primitive_type = (uint32_t)primitiveType,
             .indirect_buffer = (__bridge void *)indirectBuffer,
             .indirect_buffer_offset = indirectBufferOffset,
-        })) {
-        return;
-    }
-    [encoder drawPrimitives:primitiveType
-             indirectBuffer:indirectBuffer
-       indirectBufferOffset:indirectBufferOffset];
+        }, NULL, 0);
 }
 
 static void mglDrawIndexedPrimitivesIndirect(
@@ -93,7 +72,8 @@ static void mglDrawIndexedPrimitivesIndirect(
     id<MTLBuffer> indirectBuffer,
     NSUInteger indirectBufferOffset)
 {
-    if (mglRenderCppTryEncodeDraw(encoder, &(MGLRenderCppDrawPlan){
+    (void)mglRenderCppEncodeDraw((__bridge void *)encoder,
+        &(MGLRenderCppDrawPlan){
             .kind = MGL_RENDER_CPP_DRAW_INDEXED_INDIRECT,
             .primitive_type = (uint32_t)primitiveType,
             .index_type = (uint32_t)indexType,
@@ -101,15 +81,7 @@ static void mglDrawIndexedPrimitivesIndirect(
             .index_buffer_offset = indexBufferOffset,
             .indirect_buffer = (__bridge void *)indirectBuffer,
             .indirect_buffer_offset = indirectBufferOffset,
-        })) {
-        return;
-    }
-    [encoder drawIndexedPrimitives:primitiveType
-                         indexType:indexType
-                       indexBuffer:indexBuffer
-                 indexBufferOffset:indexBufferOffset
-                    indirectBuffer:indirectBuffer
-              indirectBufferOffset:indirectBufferOffset];
+        }, NULL, 0);
 }
 
 /* === C helpers used by Draw and Batch methods === */
@@ -470,7 +442,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                     fanIndexBuffer, 0, 1, first, 0);
             }
         } @catch (NSException *exception) {
-            NSLog(@"MGL ERROR: mtlDrawArrays triangle fan drawIndexedPrimitives failed: %@", exception);
+            NSLog(@"MGL ERROR: mtlDrawArrays triangle fan indexed draw failed: %@", exception);
             if (traceLogDraw) {
                 mglTraceLog("DRAW_ARRAYS_SKIP call=%llu program=%u reason=triangle_fan_exception",
                             (unsigned long long)drawCall,
@@ -535,7 +507,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                     MTLIndexTypeUInt32, loopIndexBuffer, 0, 1, 0, 0);
             }
         } @catch (NSException *exception) {
-            NSLog(@"MGL ERROR: mtlDrawArrays line loop drawIndexedPrimitives failed: %@", exception);
+            NSLog(@"MGL ERROR: mtlDrawArrays line loop indexed draw failed: %@", exception);
             if (traceLogDraw) {
                 mglTraceLog("DRAW_ARRAYS_SKIP call=%llu program=%u reason=line_loop_exception",
                             (unsigned long long)drawCall,
@@ -654,7 +626,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                               primitiveType, first, count, 1, 0);
         }
     } @catch (NSException *exception) {
-        NSLog(@"MGL ERROR: mtlDrawArrays - drawPrimitives failed: %@", exception);
+        NSLog(@"MGL ERROR: mtlDrawArrays - array draw failed: %@", exception);
         // Don't crash, just return gracefully
         if (traceLogDraw) {
             mglTraceLog("DRAW_ARRAYS_SKIP call=%llu program=%u reason=draw_exception",
@@ -1910,7 +1882,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                 drawIndexOffset, 1, 0, 0);
         }
     } @catch (NSException *exception) {
-        NSLog(@"MGL ERROR: drawElements call=%llu drawIndexedPrimitives exception: %@",
+        NSLog(@"MGL ERROR: drawElements call=%llu indexed draw exception: %@",
               (unsigned long long)drawCall, exception);
         if (traceLogDraw) {
             mglTraceLog("DRAW_ELEMENTS_SKIP call=%llu program=%u reason=draw_exception",
@@ -2412,7 +2384,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
 
-    // for now lets just ignore the range data and use drawIndexedPrimitives
+    // for now lets just ignore the range data and use indexed draw
     //
     // in the future it would be an idea to use temp buffers for large buffers that would wire
     // to much memory down.. like a million point galaxy drawing
@@ -3811,7 +3783,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
 
-    // for now lets just ignore the range data and use drawIndexedPrimitives
+    // for now lets just ignore the range data and use indexed draw
     //
     // in the future it would be an idea to use temp buffers for large buffers that would wire
     // to much memory down.. like a million point galaxy drawing
@@ -4005,7 +3977,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
 
-    // for now lets just ignore the range data and use drawIndexedPrimitives
+    // for now lets just ignore the range data and use indexed draw
     //
     // in the future it would be an idea to use temp buffers for large buffers that would wire
     // to much memory down.. like a million point galaxy drawing

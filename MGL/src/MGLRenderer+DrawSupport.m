@@ -173,8 +173,8 @@ static void mglDrawSupportDrawIndexedPrimitives(
     NSInteger baseVertex,
     NSUInteger baseInstance)
 {
-    /* P4.3a: 统一 draw plan 提交（gate-on 走 C++ EncodeDraw）。 */
-    if (mglRenderCppTryEncodeDraw(encoder, &(MGLRenderCppDrawPlan){
+    (void)mglRenderCppEncodeDraw((__bridge void *)encoder,
+        &(MGLRenderCppDrawPlan){
             .kind = MGL_RENDER_CPP_DRAW_INDEXED,
             .primitive_type = (uint32_t)primitiveType,
             .index_count = indexCount,
@@ -184,17 +184,7 @@ static void mglDrawSupportDrawIndexedPrimitives(
             .instance_count = instanceCount,
             .base_vertex = baseVertex,
             .base_instance = baseInstance,
-        })) {
-        return;
-    }
-    [encoder drawIndexedPrimitives:primitiveType
-                        indexCount:indexCount
-                       indexType:MTLIndexTypeUInt32
-                       indexBuffer:indexBuffer
-                 indexBufferOffset:indexBufferOffset
-                     instanceCount:instanceCount
-                        baseVertex:baseVertex
-                      baseInstance:baseInstance];
+        }, NULL, 0);
 }
 
 /* Variant that honors the GL index type (UInt8/UInt16/UInt32).  Used by the
@@ -210,7 +200,8 @@ static void mglDrawSupportDrawIndexedPrimitivesType(
     NSInteger baseVertex,
     NSUInteger baseInstance)
 {
-    if (mglRenderCppTryEncodeDraw(encoder, &(MGLRenderCppDrawPlan){
+    (void)mglRenderCppEncodeDraw((__bridge void *)encoder,
+        &(MGLRenderCppDrawPlan){
             .kind = MGL_RENDER_CPP_DRAW_INDEXED,
             .primitive_type = (uint32_t)primitiveType,
             .index_count = indexCount,
@@ -220,17 +211,7 @@ static void mglDrawSupportDrawIndexedPrimitivesType(
             .instance_count = instanceCount,
             .base_vertex = baseVertex,
             .base_instance = baseInstance,
-        })) {
-        return;
-    }
-    [encoder drawIndexedPrimitives:primitiveType
-                        indexCount:indexCount
-                       indexType:indexType
-                       indexBuffer:indexBuffer
-                 indexBufferOffset:indexBufferOffset
-                     instanceCount:instanceCount
-                        baseVertex:baseVertex
-                      baseInstance:baseInstance];
+        }, NULL, 0);
 }
 
 static void mglDrawSupportDrawPrimitives(
@@ -241,21 +222,15 @@ static void mglDrawSupportDrawPrimitives(
     NSUInteger instanceCount,
     NSUInteger baseInstance)
 {
-    if (mglRenderCppTryEncodeDraw(encoder, &(MGLRenderCppDrawPlan){
+    (void)mglRenderCppEncodeDraw((__bridge void *)encoder,
+        &(MGLRenderCppDrawPlan){
             .kind = MGL_RENDER_CPP_DRAW_ARRAY,
             .primitive_type = (uint32_t)primitiveType,
             .vertex_start = vertexStart,
             .vertex_count = vertexCount,
             .instance_count = instanceCount,
             .base_instance = baseInstance,
-        })) {
-        return;
-    }
-    [encoder drawPrimitives:primitiveType
-                vertexStart:vertexStart
-                vertexCount:vertexCount
-              instanceCount:instanceCount
-               baseInstance:baseInstance];
+        }, NULL, 0);
 }
 
 static void mglDrawSupportDrawPrimitivesIndirect(
@@ -264,17 +239,13 @@ static void mglDrawSupportDrawPrimitivesIndirect(
     id<MTLBuffer> indirectBuffer,
     NSUInteger indirectBufferOffset)
 {
-    if (mglRenderCppTryEncodeDraw(encoder, &(MGLRenderCppDrawPlan){
+    (void)mglRenderCppEncodeDraw((__bridge void *)encoder,
+        &(MGLRenderCppDrawPlan){
             .kind = MGL_RENDER_CPP_DRAW_ARRAY_INDIRECT,
             .primitive_type = (uint32_t)primitiveType,
             .indirect_buffer = (__bridge void *)indirectBuffer,
             .indirect_buffer_offset = indirectBufferOffset,
-        })) {
-        return;
-    }
-    [encoder drawPrimitives:primitiveType
-             indirectBuffer:indirectBuffer
-       indirectBufferOffset:indirectBufferOffset];
+        }, NULL, 0);
 }
 
 static id<MTLComputeCommandEncoder> mglDrawSupportCreateComputeEncoder(
@@ -385,8 +356,8 @@ static void mglDrawSupportDrawPatches(
     NSUInteger instanceCount,
     NSUInteger baseInstance)
 {
-    /* P4.3a: native TES 的 drawPatches 也走统一 draw plan。 */
-    if (mglRenderCppTryEncodeDraw(encoder, &(MGLRenderCppDrawPlan){
+    (void)mglRenderCppEncodeDraw((__bridge void *)encoder,
+        &(MGLRenderCppDrawPlan){
             .kind = MGL_RENDER_CPP_DRAW_PATCHES,
             .primitive_type = (uint32_t)MTLPrimitiveTypeTriangle,
             .control_point_count = controlPointCount,
@@ -396,16 +367,7 @@ static void mglDrawSupportDrawPatches(
             .patch_index_buffer_offset = patchIndexBufferOffset,
             .instance_count = instanceCount,
             .base_instance = baseInstance,
-        })) {
-        return;
-    }
-    [encoder drawPatches:controlPointCount
-              patchStart:patchStart
-              patchCount:patchCount
-        patchIndexBuffer:patchIndexBuffer
-  patchIndexBufferOffset:patchIndexBufferOffset
-           instanceCount:instanceCount
-            baseInstance:baseInstance];
+        }, NULL, 0);
 }
 
 static void mglDrawSupportDrawIndexedPatches(
@@ -420,7 +382,8 @@ static void mglDrawSupportDrawIndexedPatches(
     NSUInteger instanceCount,
     NSUInteger baseInstance)
 {
-    if (mglRenderCppTryEncodeDraw(encoder, &(MGLRenderCppDrawPlan){
+    (void)mglRenderCppEncodeDraw((__bridge void *)encoder,
+        &(MGLRenderCppDrawPlan){
             .kind = MGL_RENDER_CPP_DRAW_INDEXED_PATCHES,
             .primitive_type = (uint32_t)MTLPrimitiveTypeTriangle,
             .control_point_count = controlPointCount,
@@ -434,18 +397,7 @@ static void mglDrawSupportDrawIndexedPatches(
                 controlPointIndexBufferOffset,
             .instance_count = instanceCount,
             .base_instance = baseInstance,
-        })) {
-        return;
-    }
-    [encoder drawIndexedPatches:controlPointCount
-                     patchStart:patchStart
-                     patchCount:patchCount
-               patchIndexBuffer:patchIndexBuffer
-         patchIndexBufferOffset:patchIndexBufferOffset
-        controlPointIndexBuffer:controlPointIndexBuffer
-  controlPointIndexBufferOffset:controlPointIndexBufferOffset
-                   instanceCount:instanceCount
-                    baseInstance:baseInstance];
+        }, NULL, 0);
 }
 
 extern void mglRecordActivePrimitiveQueryDraw(GLMContext ctx,
@@ -1026,7 +978,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
 }
 
 /* Indexed variant of the VS capture for direct indexed GS draws
- * (mgl_air_gs_abi.h §7).  Runs drawIndexedPrimitives against the original
+ * (mgl_air_gs_abi.h §7).  Runs indexed draws against the original
  * EBO so Metal's baseVertex is applied to stage_in fetch; the capture
  * kernel's vertex_id is the raw index value, so records are sparse
  * ([instance][vertex_id], span = maxIndex+1 per instance). */
@@ -2762,7 +2714,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
              * gather buffer (raw index stream) drive Metal's
              * controlPointIndexBuffer.  baseVertex is already applied by the
              * indexed capture draw.  Instances are drawn one at a time from
-             * their contiguous capture spans because Metal drawPatches has no
+             * their contiguous capture spans because Metal patch draws have no
              * per-instance patch-data offset. */
             Buffer *ebo = getElementBuffer(drawCtx);
             if (!ebo || ![self processBuffer:ebo] || !ebo->data.mtl_data) {
@@ -3011,7 +2963,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
 
     if (airTES) {
         /* Isolines and layout(point_mode) have no Metal-native equivalent
-         * (MTLPatchType is triangle/quad only and drawPatches has no output
+         * (MTLPatchType is triangle/quad only and patch draws have no output
          * primitive type), so those programs run as an AIR compute kernel
          * expansion + passthrough vertex (line/point rasterization). */
         if (tesProgram && (tesProgram->tess_gen_point_mode ||

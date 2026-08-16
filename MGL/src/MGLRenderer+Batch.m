@@ -8,7 +8,7 @@
 #import "mgl_sampler_compat.h"
 #include "mgl_env_flag.h"
 #include "mgl_render_cpp.h"
-#include "mgl_render_cpp_objc.h"   /* P4.3a: mglRenderCppTryEncodeDraw */
+#include "mgl_render_cpp_objc.h"   /* owner-first render-pass readers */
 
 static BOOL mglBatchUsesMetalCpp(void)
 {
@@ -27,8 +27,8 @@ static void mglBatchDrawIndexedPrimitives(
     NSInteger baseVertex,
     NSUInteger baseInstance)
 {
-    /* P4.3a: 统一 draw plan 提交（gate-on 走 C++ EncodeDraw）。 */
-    if (mglRenderCppTryEncodeDraw(encoder, &(MGLRenderCppDrawPlan){
+    (void)mglRenderCppEncodeDraw((__bridge void *)encoder,
+        &(MGLRenderCppDrawPlan){
             .kind = MGL_RENDER_CPP_DRAW_INDEXED,
             .primitive_type = (uint32_t)primitiveType,
             .index_count = indexCount,
@@ -38,17 +38,7 @@ static void mglBatchDrawIndexedPrimitives(
             .instance_count = instanceCount,
             .base_vertex = baseVertex,
             .base_instance = baseInstance,
-        })) {
-        return;
-    }
-    [encoder drawIndexedPrimitives:primitiveType
-                        indexCount:indexCount
-                         indexType:indexType
-                       indexBuffer:indexBuffer
-                 indexBufferOffset:indexBufferOffset
-                     instanceCount:instanceCount
-                        baseVertex:baseVertex
-                      baseInstance:baseInstance];
+        }, NULL, 0);
 }
 
 static void mglBatchDrawIndexedPrimitivesIndirect(
@@ -60,7 +50,8 @@ static void mglBatchDrawIndexedPrimitivesIndirect(
     id<MTLBuffer> indirectBuffer,
     NSUInteger indirectBufferOffset)
 {
-    if (mglRenderCppTryEncodeDraw(encoder, &(MGLRenderCppDrawPlan){
+    (void)mglRenderCppEncodeDraw((__bridge void *)encoder,
+        &(MGLRenderCppDrawPlan){
             .kind = MGL_RENDER_CPP_DRAW_INDEXED_INDIRECT,
             .primitive_type = (uint32_t)primitiveType,
             .index_type = (uint32_t)indexType,
@@ -68,15 +59,7 @@ static void mglBatchDrawIndexedPrimitivesIndirect(
             .index_buffer_offset = indexBufferOffset,
             .indirect_buffer = (__bridge void *)indirectBuffer,
             .indirect_buffer_offset = indirectBufferOffset,
-        })) {
-        return;
-    }
-    [encoder drawIndexedPrimitives:primitiveType
-                         indexType:indexType
-                       indexBuffer:indexBuffer
-                 indexBufferOffset:indexBufferOffset
-                    indirectBuffer:indirectBuffer
-              indirectBufferOffset:indirectBufferOffset];
+        }, NULL, 0);
 }
 
 static id<MTLIndirectCommandBuffer> mglBatchCreateIndirectCommandBuffer(
@@ -148,21 +131,10 @@ static void mglBatchSetIndirectDrawIndexed(
     NSInteger baseVertex,
     NSUInteger baseInstance)
 {
-    if (mglBatchUsesMetalCpp() &&
-        mglRenderCppSetIndirectDrawIndexed(
-            (__bridge void *)command, (uint32_t)primitiveType, indexCount,
-            (uint32_t)indexType, (__bridge void *)indexBuffer,
-            indexBufferOffset, instanceCount, baseVertex, baseInstance) == 0) {
-        return;
-    }
-    [command drawIndexedPrimitives:primitiveType
-                        indexCount:indexCount
-                         indexType:indexType
-                       indexBuffer:indexBuffer
-                 indexBufferOffset:indexBufferOffset
-                     instanceCount:instanceCount
-                        baseVertex:baseVertex
-                      baseInstance:baseInstance];
+    (void)mglRenderCppSetIndirectDrawIndexed(
+        (__bridge void *)command, (uint32_t)primitiveType, indexCount,
+        (uint32_t)indexType, (__bridge void *)indexBuffer,
+        indexBufferOffset, instanceCount, baseVertex, baseInstance);
 }
 
 static void mglBatchSetIndirectDraw(
@@ -173,17 +145,9 @@ static void mglBatchSetIndirectDraw(
     NSUInteger instanceCount,
     NSUInteger baseInstance)
 {
-    if (mglBatchUsesMetalCpp() &&
-        mglRenderCppSetIndirectDraw(
-            (__bridge void *)command, (uint32_t)primitiveType, vertexStart,
-            vertexCount, instanceCount, baseInstance) == 0) {
-        return;
-    }
-    [command drawPrimitives:primitiveType
-                vertexStart:vertexStart
-                vertexCount:vertexCount
-              instanceCount:instanceCount
-               baseInstance:baseInstance];
+    (void)mglRenderCppSetIndirectDraw(
+        (__bridge void *)command, (uint32_t)primitiveType, vertexStart,
+        vertexCount, instanceCount, baseInstance);
 }
 
 static void mglBatchUseRenderResource(
