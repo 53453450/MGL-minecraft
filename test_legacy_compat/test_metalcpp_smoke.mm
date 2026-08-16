@@ -2160,10 +2160,8 @@ static int verifyCommandBufferOwner(void) {
     return 0;
 }
 
-/* Stub definitions of the compat-subsystem helpers the upload-prep path
- * calls (the standalone smoke binary does not link mgl_texture_compat.m).
- * Only the cases exercised by LEVEL_UPLOAD_PREP_OK are implemented; the
- * production A/B parity is covered by the regression suite. */
+/* Stub for sizeForInternalFormat (smoke does not link pixel_utils.c).
+ * Expansion gates now live in mgl_render_cpp.cpp. */
 extern "C" {
 GLuint sizeForInternalFormat(GLenum internalformat, GLenum, GLenum) {
     switch (internalformat) {
@@ -2171,28 +2169,6 @@ GLuint sizeForInternalFormat(GLenum internalformat, GLenum, GLenum) {
         case GL_RGB8: return 3;
         default: return 0;
     }
-}
-bool mglTextureInternalFormatNeedsRGBA8Expansion(
-    GLenum internalformat, uint32_t pixelFormat) {
-    bool isRGBA8 = (pixelFormat == (uint32_t)MTLPixelFormatRGBA8Unorm ||
-                    pixelFormat == (uint32_t)MTLPixelFormatRGBA8Unorm_sRGB);
-    if (!isRGBA8) return false;
-    switch (internalformat) {
-        case GL_RGB8:
-        case GL_SRGB8:
-        case GL_RGB565:
-            return true;
-        default:
-            return false;
-    }
-}
-bool mglTextureNeedsChannelExpansion(
-    GLenum internalformat, uint32_t pixelFormat) {
-    bool isRGBA16 =
-        (pixelFormat == (uint32_t)MTLPixelFormatRGBA16Unorm ||
-         pixelFormat == (uint32_t)MTLPixelFormatRGBA16Snorm ||
-         pixelFormat == (uint32_t)MTLPixelFormatRGBA16Float);
-    return isRGBA16 && internalformat == GL_RGB16;
 }
 }
 
@@ -6613,6 +6589,32 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
             return 1;
         }
         printf("STORED_COLOR_COMPONENTS_OK\n");
+    }
+
+    /* P4.5 (item 1111): RGB → RGBA expansion gates. */
+    {
+        const uint32_t rgba8 = (uint32_t)MTLPixelFormatRGBA8Unorm;
+        const uint32_t rgba8s = (uint32_t)MTLPixelFormatRGBA8Snorm;
+        const uint32_t bgra8 = (uint32_t)MTLPixelFormatBGRA8Unorm;
+        const uint32_t rgba16 = (uint32_t)MTLPixelFormatRGBA16Float;
+        const uint32_t rgba32 = (uint32_t)MTLPixelFormatRGBA32Float;
+        if (mglRenderCppTextureInternalFormatNeedsRGBA8Expansion(GL_RGB8, rgba8) != 1 ||
+            mglRenderCppTextureInternalFormatNeedsRGBA8Expansion(GL_SRGB8, rgba8) != 1 ||
+            mglRenderCppTextureInternalFormatNeedsRGBA8Expansion(GL_RGB565, rgba8) != 1 ||
+            mglRenderCppTextureInternalFormatNeedsRGBA8Expansion(GL_RGB8_SNORM, rgba8s) != 1 ||
+            mglRenderCppTextureInternalFormatNeedsRGBA8Expansion(GL_R3_G3_B2, rgba8) != 1 ||
+            mglRenderCppTextureInternalFormatNeedsRGBA8Expansion(GL_RGBA8, rgba8) != 0 ||
+            mglRenderCppTextureInternalFormatNeedsRGBA8Expansion(GL_RGB8, bgra8) != 0 ||
+            mglRenderCppTextureNeedsChannelExpansion(GL_RGB16, rgba16) != 1 ||
+            mglRenderCppTextureNeedsChannelExpansion(GL_RGB16F, rgba16) != 1 ||
+            mglRenderCppTextureNeedsChannelExpansion(GL_RGB32F, rgba32) != 1 ||
+            mglRenderCppTextureNeedsChannelExpansion(GL_RGB12, rgba16) != 1 ||
+            mglRenderCppTextureNeedsChannelExpansion(GL_RGB8, rgba16) != 0 ||
+            mglRenderCppTextureNeedsChannelExpansion(GL_RGB16, rgba8) != 0) {
+            fprintf(stderr, "FAIL: channel expansion gates\n");
+            return 1;
+        }
+        printf("CHANNEL_EXPANSION_GATE_OK\n");
     }
 
     /* P4.3c: whole-batch simple replay.  Valid batch encodes; unknown command

@@ -1311,6 +1311,12 @@ uint8_t *mglRenderCppCreateRGBA8ExpandedUpload(const void *src_data,
                                                uint32_t internal_format,
                                                size_t *out_bytes_per_row,
                                                size_t *out_bytes_per_image);
+/* P4.5 (item 1111): RGB-family → RGBA expansion gates.  Pixel format is
+ * the Apple MTLPixelFormat numeric value.  Returns 1/0. */
+int mglRenderCppTextureInternalFormatNeedsRGBA8Expansion(
+    uint32_t internal_format, uint32_t pixel_format);
+int mglRenderCppTextureNeedsChannelExpansion(uint32_t internal_format,
+                                             uint32_t pixel_format);
 
 /* P4.5 (item 1111): R8 swizzle component + single-channel upload expand.
  * Resolve mirrors mglResolveR8SwizzledComponent (tex unused).  Create

@@ -318,77 +318,15 @@ uint8_t *mglCreateSingleChannelSwizzledUpload(Texture *tex,
 bool mglTextureInternalFormatNeedsRGBA8Expansion(GLenum internalformat,
                                                  uint32_t pixelFormat)
 {
-    /* Metal has no RGB8 pixel format, so GL_RGB8-family internal formats are
-     * backed by RGBA8 variants.  The CPU data is 3 bytes/pixel (RGB) but Metal
-     * expects 4 bytes/pixel (RGBA), so expansion is required. */
-    bool isRGBA8Variant =
-        (pixelFormat == MTLPixelFormatRGBA8Unorm ||
-         pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB ||
-         pixelFormat == MTLPixelFormatRGBA8Snorm ||
-         pixelFormat == MTLPixelFormatRGBA8Sint ||
-         pixelFormat == MTLPixelFormatRGBA8Uint);
-    if (!isRGBA8Variant) {
-        return false;
-    }
-
-    switch (internalformat) {
-        /* Packed legacy formats (already handled) */
-        case GL_RGB4:
-        case GL_RGB5:
-        case GL_RGB10:
-        case GL_RGB12:
-        case GL_RGBA2:
-        case GL_RGBA4:
-        case GL_RGB5_A1:
-        case GL_R3_G3_B2:
-        /* 8-bit RGB formats – 3 bytes/pixel in CPU, 4 bytes/pixel in Metal */
-        case GL_RGB8:
-        case GL_SRGB8:
-        case GL_RGB8_SNORM:
-        case GL_RGB8I:
-        case GL_RGB8UI:
-        /* GL_RGB565: Metal's MTLPixelFormatB5G6R5Unorm reverses the channel
-         * order (B in the high bits vs R in the high bits for GL), so back
-         * it with RGBA8Unorm and let the CPU expansion rearrange channels. */
-        case GL_RGB565:
-            return true;
-        default:
-            return false;
-    }
+    return mglRenderCppTextureInternalFormatNeedsRGBA8Expansion(
+        (uint32_t)internalformat, pixelFormat) != 0;
 }
 
 bool mglTextureNeedsChannelExpansion(GLenum internalformat,
                                      uint32_t pixelFormat)
 {
-    /* Only handle non-RGBA8 Metal pixel formats */
-    bool isRGBA16Variant =
-        (pixelFormat == MTLPixelFormatRGBA16Unorm ||
-         pixelFormat == MTLPixelFormatRGBA16Snorm ||
-         pixelFormat == MTLPixelFormatRGBA16Float ||
-         pixelFormat == MTLPixelFormatRGBA16Sint ||
-         pixelFormat == MTLPixelFormatRGBA16Uint);
-    bool isRGBA32Variant =
-        (pixelFormat == MTLPixelFormatRGBA32Float ||
-         pixelFormat == MTLPixelFormatRGBA32Sint ||
-         pixelFormat == MTLPixelFormatRGBA32Uint);
-    if (!isRGBA16Variant && !isRGBA32Variant) {
-        return false;
-    }
-
-    switch (internalformat) {
-        case GL_RGB16:
-        case GL_RGB16_SNORM:
-        case GL_RGB16F:
-        case GL_RGB16I:
-        case GL_RGB16UI:
-        case GL_RGB32F:
-        case GL_RGB32I:
-        case GL_RGB32UI:
-        case GL_RGB12:
-            return true;
-        default:
-            return false;
-    }
+    return mglRenderCppTextureNeedsChannelExpansion(
+        (uint32_t)internalformat, pixelFormat) != 0;
 }
 
 uint8_t *mglCreateChannelExpandedUpload(Texture *tex,

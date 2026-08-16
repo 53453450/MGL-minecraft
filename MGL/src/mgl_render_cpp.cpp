@@ -5644,10 +5644,73 @@ int mglRenderCppBuildRuntimeArraySizes(
 extern "C" {
 GLuint sizeForInternalFormat(GLenum internalformat, GLenum format,
                              GLenum type);
-bool mglTextureInternalFormatNeedsRGBA8Expansion(GLenum internalformat,
-                                                 uint32_t pixelFormat);
-bool mglTextureNeedsChannelExpansion(GLenum internalformat,
-                                     uint32_t pixelFormat);
+}
+
+extern "C"
+int mglRenderCppTextureInternalFormatNeedsRGBA8Expansion(
+    uint32_t internal_format, uint32_t pixel_format) {
+    const MTL::PixelFormat pf = static_cast<MTL::PixelFormat>(pixel_format);
+    const bool is_rgba8_variant =
+        (pf == MTL::PixelFormatRGBA8Unorm ||
+         pf == MTL::PixelFormatRGBA8Unorm_sRGB ||
+         pf == MTL::PixelFormatRGBA8Snorm ||
+         pf == MTL::PixelFormatRGBA8Sint ||
+         pf == MTL::PixelFormatRGBA8Uint);
+    if (!is_rgba8_variant) {
+        return 0;
+    }
+    switch (internal_format) {
+        case GL_RGB4:
+        case GL_RGB5:
+        case GL_RGB10:
+        case GL_RGB12:
+        case GL_RGBA2:
+        case GL_RGBA4:
+        case GL_RGB5_A1:
+        case GL_R3_G3_B2:
+        case GL_RGB8:
+        case GL_SRGB8:
+        case GL_RGB8_SNORM:
+        case GL_RGB8I:
+        case GL_RGB8UI:
+        case GL_RGB565:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+extern "C"
+int mglRenderCppTextureNeedsChannelExpansion(uint32_t internal_format,
+                                             uint32_t pixel_format) {
+    const MTL::PixelFormat pf = static_cast<MTL::PixelFormat>(pixel_format);
+    const bool is_rgba16_variant =
+        (pf == MTL::PixelFormatRGBA16Unorm ||
+         pf == MTL::PixelFormatRGBA16Snorm ||
+         pf == MTL::PixelFormatRGBA16Float ||
+         pf == MTL::PixelFormatRGBA16Sint ||
+         pf == MTL::PixelFormatRGBA16Uint);
+    const bool is_rgba32_variant =
+        (pf == MTL::PixelFormatRGBA32Float ||
+         pf == MTL::PixelFormatRGBA32Sint ||
+         pf == MTL::PixelFormatRGBA32Uint);
+    if (!is_rgba16_variant && !is_rgba32_variant) {
+        return 0;
+    }
+    switch (internal_format) {
+        case GL_RGB16:
+        case GL_RGB16_SNORM:
+        case GL_RGB16F:
+        case GL_RGB16I:
+        case GL_RGB16UI:
+        case GL_RGB32F:
+        case GL_RGB32I:
+        case GL_RGB32UI:
+        case GL_RGB12:
+            return 1;
+        default:
+            return 0;
+    }
 }
 
 /* P4.5 (item 1111): RGB -> RGBA channel expansion (RGBA16/RGBA32 family
@@ -7739,8 +7802,8 @@ int mglRenderCppTexturePrepareLevelUpload(
     uint64_t bpr = bytes_per_row;
     uint64_t bpi = bytes_per_image;
     void* expanded = nullptr;
-    if (mglTextureInternalFormatNeedsRGBA8Expansion(
-            (GLenum)internal_format, pixel_format)) {
+    if (mglRenderCppTextureInternalFormatNeedsRGBA8Expansion(
+            internal_format, pixel_format)) {
         size_t ebpr = 0;
         size_t ebpi = 0;
         expanded = mglRenderCppCreateRGBA8ExpandedUpload(
@@ -7751,8 +7814,8 @@ int mglRenderCppTexturePrepareLevelUpload(
             bpr = ebpr;
             bpi = ebpi;
         }
-    } else if (mglTextureNeedsChannelExpansion(
-                   (GLenum)internal_format, pixel_format)) {
+    } else if (mglRenderCppTextureNeedsChannelExpansion(
+                   internal_format, pixel_format)) {
         size_t ebpr = 0;
         size_t ebpi = 0;
         expanded = mglRenderCppCreateChannelExpandedUpload(
