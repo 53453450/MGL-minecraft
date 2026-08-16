@@ -412,8 +412,17 @@ typedef struct {
 - (bool)bindBuffersToComputeEncoder:(id<MTLComputeCommandEncoder>)encoder
                                stage:(int)stage
                            copyBacks:(MGLStageBindingCopyBackList *)copyBacks;
+- (bool)bindBuffersToComputeEncoder:(id<MTLComputeCommandEncoder>)encoder
+                               stage:(int)stage
+                           copyBacks:(MGLStageBindingCopyBackList *)copyBacks
+                       executionPlan:(MGLRenderCppComputeExecutionPlan *)executionPlan
+                        temporaries:(NSMutableArray *)temporaries;
 - (bool)bindTexturesToComputeEncoder:(id<MTLComputeCommandEncoder>)encoder
                                 stage:(int)stage;
+- (bool)bindTexturesToComputeEncoder:(id<MTLComputeCommandEncoder>)encoder
+                                stage:(int)stage
+                        executionPlan:(MGLRenderCppComputeExecutionPlan *)executionPlan
+                         temporaries:(NSMutableArray *)temporaries;
 
 @end
 

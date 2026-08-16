@@ -11099,6 +11099,136 @@ int mglRenderCppDispatchComputePlan(
     return -1;
 }
 
+int mglRenderCppAppendComputeBindingSnapshotToPlan(
+    MGLRenderCppComputeExecutionPlan* plan,
+    const MGLRenderCppComputeBindingSnapshot* snapshot,
+    char* err,
+    size_t errcap) {
+    if (err && errcap) err[0] = '\0';
+    if (!plan || !snapshot) {
+        if (err && errcap) snprintf(err, errcap, "bad compute plan args");
+        return -1;
+    }
+    if (snapshot->op_count > MGL_RENDER_CPP_COMPUTE_BINDING_SNAPSHOT_MAX_OPS ||
+        plan->binding_op_count > MGL_RENDER_CPP_COMPUTE_EXECUTION_MAX_OPS ||
+        snapshot->op_count >
+            MGL_RENDER_CPP_COMPUTE_EXECUTION_MAX_OPS -
+                plan->binding_op_count) {
+        if (err && errcap) snprintf(err, errcap, "compute execution op overflow");
+        return -1;
+    }
+    for (uint32_t i = 0; i < snapshot->op_count; i++) {
+        const MGLRenderCppComputeBindingOp* op = &snapshot->ops[i];
+        if (op->kind > 3u || (op->kind == 1u && !op->bytes)) {
+            if (err && errcap) {
+                snprintf(err, errcap, "invalid compute binding op %u", i);
+            }
+            return -1;
+        }
+        plan->binding_ops[plan->binding_op_count++] = *op;
+    }
+    return 0;
+}
+
+int mglRenderCppEncodeComputeExecutionPlanForCommandBufferOwner(
+    void* command_buffer_owner,
+    const MGLRenderCppComputeExecutionPlan* plan,
+    char* err,
+    size_t errcap) {
+    if (err && errcap) err[0] = '\0';
+    if (!command_buffer_owner || !plan || !plan->pipeline) {
+        if (err && errcap) snprintf(err, errcap, "bad compute execution plan");
+        return -1;
+    }
+    if (plan->binding_op_count > MGL_RENDER_CPP_COMPUTE_EXECUTION_MAX_OPS) {
+        if (err && errcap) snprintf(err, errcap, "compute execution op overflow");
+        return -1;
+    }
+
+    mgl::CommandBufferOwner* owner =
+        static_cast<mgl::CommandBufferOwner*>(command_buffer_owner);
+    MTL::CommandBuffer* command_buffer = owner->current;
+    if (!command_buffer) {
+        if (err && errcap) snprintf(err, errcap, "no current command buffer");
+        return -1;
+    }
+    MTL::ComputeCommandEncoder* encoder = command_buffer->computeCommandEncoder();
+    if (!encoder) {
+        if (err && errcap) snprintf(err, errcap, "compute encoder failed");
+        return -1;
+    }
+
+    encoder->setComputePipelineState(
+        static_cast<MTL::ComputePipelineState*>(plan->pipeline));
+    for (uint32_t i = 0; i < plan->binding_op_count; i++) {
+        const MGLRenderCppComputeBindingOp* op = &plan->binding_ops[i];
+        switch (op->kind) {
+            case 0u:
+                encoder->setBuffer(static_cast<MTL::Buffer*>(op->buffer),
+                                   static_cast<NS::UInteger>(op->offset),
+                                   op->index);
+                break;
+            case 1u:
+                if (!op->bytes) {
+                    encoder->endEncoding();
+                    if (err && errcap) snprintf(err, errcap,
+                                                "null compute bytes op %u", i);
+                    return -1;
+                }
+                encoder->setBytes(op->bytes, op->length, op->index);
+                break;
+            case 2u:
+                encoder->setTexture(static_cast<MTL::Texture*>(op->buffer),
+                                    op->index);
+                break;
+            case 3u:
+                encoder->setSamplerState(
+                    static_cast<MTL::SamplerState*>(op->buffer), op->index);
+                break;
+            default:
+                encoder->endEncoding();
+                if (err && errcap) snprintf(err, errcap,
+                                            "bad compute op kind %u", op->kind);
+                return -1;
+        }
+    }
+
+    const MGLRenderCppComputePlan* dispatch = &plan->dispatch;
+    const uint32_t local_x = dispatch->local_x ? dispatch->local_x : 1u;
+    const uint32_t local_y = dispatch->local_y ? dispatch->local_y : 1u;
+    const uint32_t local_z = dispatch->local_z ? dispatch->local_z : 1u;
+    MTL::Size threads = MTL::Size(local_x, local_y, local_z);
+    if (dispatch->dispatch_kind == MGL_RENDER_CPP_COMPUTE_DISPATCH_DIRECT) {
+        if (!dispatch->groups_x || !dispatch->groups_y || !dispatch->groups_z) {
+            encoder->endEncoding();
+            if (err && errcap) snprintf(err, errcap, "zero compute dispatch groups");
+            return -1;
+        }
+        encoder->dispatchThreadgroups(
+            MTL::Size(dispatch->groups_x, dispatch->groups_y, dispatch->groups_z),
+            threads);
+    } else if (dispatch->dispatch_kind ==
+               MGL_RENDER_CPP_COMPUTE_DISPATCH_INDIRECT) {
+        MTL::Buffer* indirect =
+            static_cast<MTL::Buffer*>(dispatch->indirect_buffer);
+        if (!indirect) {
+            encoder->endEncoding();
+            if (err && errcap) snprintf(err, errcap, "null indirect buffer");
+            return -1;
+        }
+        encoder->dispatchThreadgroups(
+            indirect, static_cast<NS::UInteger>(dispatch->indirect_offset),
+            threads);
+    } else {
+        encoder->endEncoding();
+        if (err && errcap) snprintf(err, errcap, "bad dispatch kind %u",
+                                    dispatch->dispatch_kind);
+        return -1;
+    }
+    encoder->endEncoding();
+    return 0;
+}
+
 int mglRenderCppDispatchComputeThreads(void* compute_encoder,
                                        uint32_t threads_x,
                                        uint32_t threads_y,

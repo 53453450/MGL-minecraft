@@ -7596,6 +7596,86 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
             mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
             return 1;
         }
+
+        /* P4.5: owner-aware compute execution plan.  The owner path must
+         * create the encoder, replay the ordered bindings, dispatch, and end
+         * encoding without lending the current command buffer to ObjC. */
+        MGLRenderCppComputeBindingSnapshot ownerSnapshot = {};
+        ownerSnapshot.ops[ownerSnapshot.op_count++] =
+            (MGLRenderCppComputeBindingOp){0u, 0u, 0u,
+                (__bridge void *)computeScratch, NULL, 0u};
+        ownerSnapshot.ops[ownerSnapshot.op_count++] =
+            (MGLRenderCppComputeBindingOp){1u, 1u, 0u, NULL, "ABCD", 4u};
+        MGLRenderCppComputeExecutionPlan ownerPlan = {};
+        ownerPlan.pipeline = csPipeline;
+        ownerPlan.dispatch = (MGLRenderCppComputePlan){
+            .dispatch_kind = MGL_RENDER_CPP_COMPUTE_DISPATCH_DIRECT,
+            .groups_x = 1u, .groups_y = 1u, .groups_z = 1u,
+            .local_x = 1u, .local_y = 1u, .local_z = 1u,
+        };
+        char ownerError[128] = {0};
+        if (mglRenderCppAppendComputeBindingSnapshotToPlan(
+                &ownerPlan, &ownerSnapshot, ownerError,
+                sizeof(ownerError)) != 0 || ownerPlan.binding_op_count != 2u ||
+            mglRenderCppAppendComputeBindingSnapshotToPlan(
+                NULL, &ownerSnapshot, NULL, 0) != -1) {
+            fprintf(stderr, "FAIL: compute execution plan append: %s\n",
+                    ownerError);
+            CFRelease(csPipeline);
+            mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
+            mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
+            return 1;
+        }
+        void *executionOwner = NULL;
+        void *executionCommandBuffer = NULL;
+        if (mglRenderCppCreateCommandBufferOwner(
+                (__bridge void *)cdQueue, &executionOwner,
+                &executionCommandBuffer) != 0 || !executionOwner ||
+            !executionCommandBuffer ||
+            mglRenderCppEncodeComputeExecutionPlanForCommandBufferOwner(
+                executionOwner, &ownerPlan, ownerError,
+                sizeof(ownerError)) != 0 ||
+            mglRenderCppCommitCommandBuffer(executionCommandBuffer) != 0 ||
+            mglRenderCppWaitCommandBuffer(executionCommandBuffer) != 0) {
+            fprintf(stderr, "FAIL: owner compute execution plan: %s\n",
+                    ownerError[0] ? ownerError : "command failure");
+            mglRenderCppDestroyCommandBufferOwner(&executionOwner);
+            CFRelease(csPipeline);
+            mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
+            mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
+            return 1;
+        }
+        mglRenderCppDestroyCommandBufferOwner(&executionOwner);
+
+        /* Indirect dispatch uses the same owner facade and validates the
+         * indirect buffer path independently of the direct plan above. */
+        MGLRenderCppComputeExecutionPlan indirectPlan = ownerPlan;
+        indirectPlan.binding_op_count = 0u;
+        indirectPlan.dispatch.dispatch_kind =
+            MGL_RENDER_CPP_COMPUTE_DISPATCH_INDIRECT;
+        indirectPlan.dispatch.indirect_buffer =
+            (__bridge void *)computeScratch;
+        indirectPlan.dispatch.indirect_offset = 0u;
+        executionOwner = NULL;
+        executionCommandBuffer = NULL;
+        if (mglRenderCppCreateCommandBufferOwner(
+                (__bridge void *)cdQueue, &executionOwner,
+                &executionCommandBuffer) != 0 || !executionOwner ||
+            mglRenderCppEncodeComputeExecutionPlanForCommandBufferOwner(
+                executionOwner, &indirectPlan, ownerError,
+                sizeof(ownerError)) != 0 ||
+            mglRenderCppCommitCommandBuffer(executionCommandBuffer) != 0 ||
+            mglRenderCppWaitCommandBuffer(executionCommandBuffer) != 0) {
+            fprintf(stderr, "FAIL: owner indirect execution plan: %s\n",
+                    ownerError[0] ? ownerError : "command failure");
+            mglRenderCppDestroyCommandBufferOwner(&executionOwner);
+            CFRelease(csPipeline);
+            mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
+            mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
+            return 1;
+        }
+        mglRenderCppDestroyCommandBufferOwner(&executionOwner);
+        printf("COMPUTE_EXECUTION_PLAN_OK\n");
         CFRelease(csPipeline);
         [cdCommandBuffer commit];
         [cdCommandBuffer waitUntilCompleted];

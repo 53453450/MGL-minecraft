@@ -1969,6 +1969,31 @@ int mglRenderCppDispatchComputePlan(
     char *err,
     size_t errcap);
 
+/* P4.5 compute execution plan: ObjC collects the ordered binding operations
+ * and keeps temporary Metal objects alive until this call returns. C++ owns
+ * encoder creation, pipeline/binding replay, dispatch, and endEncoding. */
+#define MGL_RENDER_CPP_COMPUTE_EXECUTION_MAX_OPS 512u
+
+typedef struct MGLRenderCppComputeExecutionPlan_t {
+    void *pipeline; /* +0 borrowed MTL::ComputePipelineState* */
+    uint32_t binding_op_count;
+    MGLRenderCppComputeBindingOp
+        binding_ops[MGL_RENDER_CPP_COMPUTE_EXECUTION_MAX_OPS];
+    MGLRenderCppComputePlan dispatch;
+} MGLRenderCppComputeExecutionPlan;
+
+int mglRenderCppAppendComputeBindingSnapshotToPlan(
+    MGLRenderCppComputeExecutionPlan *plan,
+    const MGLRenderCppComputeBindingSnapshot *snapshot,
+    char *err,
+    size_t errcap);
+
+int mglRenderCppEncodeComputeExecutionPlanForCommandBufferOwner(
+    void *command_buffer_owner,
+    const MGLRenderCppComputeExecutionPlan *plan,
+    char *err,
+    size_t errcap);
+
 /* P4.3e: GS/TES compute dispatch 编排的固定序列（建 encoder → pipeline →
  * ABI 槽位 buffer/bytes）一次交给 C++；GL 资源绑定（stage buffers/textures）
  * 在 begin/end 之间由 ObjC 完成（只经 C++ facade）。与逐条

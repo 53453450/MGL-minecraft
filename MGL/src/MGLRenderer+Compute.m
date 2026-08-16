@@ -188,7 +188,20 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
                                 stage:(int)stage
                               copyBacks:(MGLStageBindingCopyBackList *)copyBacks
 {
-    if (!computeCommandEncoder || !copyBacks) {
+    return [self bindBuffersToComputeEncoder:computeCommandEncoder
+                                       stage:stage
+                                     copyBacks:copyBacks
+                                 executionPlan:NULL
+                                  temporaries:nil];
+}
+
+- (bool) bindBuffersToComputeEncoder:(id <MTLComputeCommandEncoder>) computeCommandEncoder
+                                stage:(int)stage
+                              copyBacks:(MGLStageBindingCopyBackList *)copyBacks
+                          executionPlan:(MGLRenderCppComputeExecutionPlan *)executionPlan
+                           temporaries:(NSMutableArray *)temporaries
+{
+    if ((!computeCommandEncoder && !executionPlan) || !copyBacks) {
         NSLog(@"MGL COMPUTE ERROR: NULL compute encoder for buffer binding");
         return false;
     }
@@ -199,16 +212,31 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
      * 任一校验失败路径先 flush 已收集 op 再 return false，与直接路径「已发生
      * emit」对齐。gate-off 直接 mglComputeSetBuffer（A/B 对照）。copy-back
      * 登记等书keeping 保持内联、两门一致。 */
-    const BOOL useComputeBindingSnapshot = mglComputeUsesMetalCpp();
+    const BOOL useComputeBindingSnapshot = mglComputeUsesMetalCpp() || executionPlan;
+    BOOL snapshotOK = YES;
     MGLRenderCppComputeBindingSnapshot cbindSnapshot = {0};
 #define MGL_CBIND_FLUSH_SNAPSHOT()                                              \
     do {                                                                        \
         if (useComputeBindingSnapshot && cbindSnapshot.op_count > 0) {          \
-            mglRenderCppEncodeComputeBindingSnapshot(                           \
-                (__bridge void *)computeCommandEncoder, &cbindSnapshot,         \
-                NULL, 0);                                                       \
+            if (executionPlan) {                                                \
+                if (mglRenderCppAppendComputeBindingSnapshotToPlan(             \
+                        executionPlan, &cbindSnapshot, NULL, 0) != 0) {         \
+                    snapshotOK = NO;                                            \
+                }                                                               \
+            } else {                                                            \
+                snapshotOK = mglRenderCppEncodeComputeBindingSnapshot(          \
+                    (__bridge void *)computeCommandEncoder, &cbindSnapshot,    \
+                    NULL, 0) == 0 && snapshotOK;                                 \
+            }                                                                   \
             cbindSnapshot = (MGLRenderCppComputeBindingSnapshot){0};            \
         }                                                                       \
+    } while (0)
+
+#define MGL_CBIND_RETAIN_TEMP(obj)                                               \
+    do {                                                                         \
+        if (executionPlan && temporaries && (obj)) {                            \
+            [temporaries addObject:(obj)];                                      \
+        }                                                                        \
     } while (0)
 
 #define MGL_CBIND_EMIT_BUFFER(slot, bufPtr, off)                                \
@@ -345,6 +373,7 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
              * post-dispatch blit preserves writes to the legal prefix. */
             MGL_CBIND_EMIT_BUFFER(metalBindingIndex,
                                  (__bridge void *)isolated, 0);
+            MGL_CBIND_RETAIN_TEMP(isolated);
             /* Isolated buffers are owned only by this loop local (created via
              * __bridge_transfer on gate-on): flush immediately so the encoder
              * retains the buffer while it is still alive, instead of holding a
@@ -408,6 +437,7 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
             if (sizeBuffer) {
                 MGL_CBIND_EMIT_BUFFER(runtimeSizeSlot,
                                       (__bridge void *)sizeBuffer, 0);
+                MGL_CBIND_RETAIN_TEMP(sizeBuffer);
                 /* sizeBuffer is a block-local (__bridge_transfer on gate-on):
                  * flush before the block ends so the encoder retains it. */
                 MGL_CBIND_FLUSH_SNAPSHOT();
@@ -421,11 +451,26 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
     MGL_CBIND_FLUSH_SNAPSHOT();
 #undef MGL_CBIND_EMIT_BUFFER
 #undef MGL_CBIND_FLUSH_SNAPSHOT
+#undef MGL_CBIND_RETAIN_TEMP
+    if (!snapshotOK) {
+        return false;
+    }
     return true;
 }
 
 - (bool) bindTexturesToComputeEncoder:(id <MTLComputeCommandEncoder>) computeCommandEncoder
                                  stage:(int)stage
+{
+    return [self bindTexturesToComputeEncoder:computeCommandEncoder
+                                         stage:stage
+                                 executionPlan:NULL
+                                  temporaries:nil];
+}
+
+- (bool) bindTexturesToComputeEncoder:(id <MTLComputeCommandEncoder>) computeCommandEncoder
+                                 stage:(int)stage
+                         executionPlan:(MGLRenderCppComputeExecutionPlan *)executionPlan
+                          temporaries:(NSMutableArray *)temporaries
 {
     GLuint count;
     enum {
@@ -441,7 +486,7 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
         {0,0}
     };
 
-    if (!computeCommandEncoder) {
+    if (!computeCommandEncoder && !executionPlan) {
         NSLog(@"MGL COMPUTE ERROR: NULL compute encoder for texture binding");
         return false;
     }
@@ -451,9 +496,10 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
      * 直接 mglComputeSetTexture/mglComputeSetSampler（A/B 对照）。临时对象
      * （level view / fallback sampler，gate-on __bridge_transfer 局部）经
      * ctexTemporaries 强持有至末尾重放后才释放——禁止悬垂进延迟重放。 */
-    const BOOL useComputeTextureSnapshot = mglComputeUsesMetalCpp();
+    const BOOL useComputeTextureSnapshot = mglComputeUsesMetalCpp() || executionPlan;
+    BOOL textureSnapshotOK = YES;
     MGLRenderCppComputeBindingSnapshot ctexSnapshot = {0};
-    NSMutableArray *ctexTemporaries = nil;
+    NSMutableArray *ctexTemporaries = temporaries;
 #define MGL_CTEX_RETAIN_TEMP(obj)                                               \
     do {                                                                        \
         if (useComputeTextureSnapshot && (obj)) {                               \
@@ -465,9 +511,16 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
 #define MGL_CTEX_FLUSH_SNAPSHOT()                                               \
     do {                                                                        \
         if (useComputeTextureSnapshot && ctexSnapshot.op_count > 0) {           \
-            mglRenderCppEncodeComputeBindingSnapshot(                           \
-                (__bridge void *)computeCommandEncoder, &ctexSnapshot,          \
-                NULL, 0);                                                       \
+            if (executionPlan) {                                                \
+                if (mglRenderCppAppendComputeBindingSnapshotToPlan(             \
+                        executionPlan, &ctexSnapshot, NULL, 0) != 0) {          \
+                    textureSnapshotOK = NO;                                     \
+                }                                                               \
+            } else {                                                            \
+                textureSnapshotOK = mglRenderCppEncodeComputeBindingSnapshot(    \
+                    (__bridge void *)computeCommandEncoder, &ctexSnapshot,     \
+                    NULL, 0) == 0 && textureSnapshotOK;                          \
+            }                                                                   \
             ctexSnapshot = (MGLRenderCppComputeBindingSnapshot){0};             \
         }                                                                       \
     } while (0)
@@ -824,19 +877,34 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
 
     MGL_STATE(ctx)->dirty_bits &= ~(DIRTY_TEX_BINDING | DIRTY_SAMPLER | DIRTY_IMAGE_UNIT_STATE);
 
+    if (!textureSnapshotOK) {
+        return false;
+    }
+
     return true;
 }
 
 #pragma mark ------------------------------------------------------------------------------------------
 #pragma mark processCompute
 #pragma mark ------------------------------------------------------------------------------------------
--(bool)processCompute:(id <MTLComputeCommandEncoder>) computeCommandEncoder
-                copyBacks:(MGLStageBindingCopyBackList *)copyBacks
+- (bool)processCompute:(id <MTLComputeCommandEncoder>)computeCommandEncoder
+             copyBacks:(MGLStageBindingCopyBackList *)copyBacks
+{
+    return [self processCompute:computeCommandEncoder
+                       copyBacks:copyBacks
+                   executionPlan:NULL
+                    temporaries:nil];
+}
+
+- (bool)processCompute:(id <MTLComputeCommandEncoder>)computeCommandEncoder
+             copyBacks:(MGLStageBindingCopyBackList *)copyBacks
+         executionPlan:(MGLRenderCppComputeExecutionPlan *)executionPlan
+          temporaries:(NSMutableArray *)temporaries
 {
     // from https://developer.apple.com/library/archive/documentation/Miscellaneous/Conceptual/MetalProgrammingGuide/Compute-Ctx/Compute-Ctx.html#//apple_ref/doc/uid/TP40014221-CH6-SW1
     Program *program;
 
-    if (!computeCommandEncoder) {
+    if (!computeCommandEncoder && !executionPlan) {
         NSLog(@"MGL COMPUTE ERROR: processCompute called with NULL encoder");
         return false;
     }
@@ -887,17 +955,28 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
         return false;
     }
 
-    mglComputeSetPipeline(computeCommandEncoder, computePipelineState);
+    if (executionPlan) {
+        executionPlan->pipeline = (__bridge void *)computePipelineState;
+        if (temporaries) {
+            [temporaries addObject:computePipelineState];
+        }
+    } else {
+        mglComputeSetPipeline(computeCommandEncoder, computePipelineState);
+    }
 
     RETURN_FALSE_ON_FAILURE([self bindBuffersToComputeEncoder:computeCommandEncoder
-                                                    stage:_COMPUTE_SHADER
-                                                   copyBacks:copyBacks]);
+                                                         stage:_COMPUTE_SHADER
+                                                      copyBacks:copyBacks
+                                                  executionPlan:executionPlan
+                                                   temporaries:temporaries]);
 
     //setTexture:atIndex:
     //setTextures:withRange:
     RETURN_FALSE_ON_FAILURE(
         [self bindTexturesToComputeEncoder:computeCommandEncoder
-                                     stage:_COMPUTE_SHADER]);
+                                      stage:_COMPUTE_SHADER
+                              executionPlan:executionPlan
+                               temporaries:temporaries]);
 
     // setSamplerState:atIndex:
     // setSamplerState:lodMinClamp:lodMaxClamp:atIndex:
@@ -959,16 +1038,30 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
     }
 
     MGLStageBindingCopyBackList copyBacks = {0};
-    id<MTLComputeCommandEncoder> computeCommandEncoder =
-        mglComputeCreateEncoder((__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
-    if (!computeCommandEncoder) {
-        NSLog(@"MGL ERROR: Failed to create compute command encoder for %s",
-              reason ? reason : "dispatch");
-        return NO;
+    const BOOL useExecutionPlan = mglComputeUsesMetalCpp();
+    MGLRenderCppComputeExecutionPlan executionPlan = {0};
+    NSMutableArray *executionTemporaries = useExecutionPlan
+        ? [NSMutableArray array] : nil;
+    id<MTLComputeCommandEncoder> computeCommandEncoder = nil;
+    if (!useExecutionPlan) {
+        computeCommandEncoder = mglComputeCreateEncoder(
+            (__bridge id<MTLCommandBuffer>)
+                mglRenderCppCommandBufferOwnerGetCurrent(
+                    _renderPassManager.state->currentCommandBufferOwner));
+        if (!computeCommandEncoder) {
+            NSLog(@"MGL ERROR: Failed to create compute command encoder for %s",
+                  reason ? reason : "dispatch");
+            return NO;
+        }
     }
 
-    if (![self processCompute:computeCommandEncoder copyBacks:&copyBacks]) {
-        mglComputeEndEncoder(computeCommandEncoder);
+    if (![self processCompute:computeCommandEncoder
+                    copyBacks:&copyBacks
+                executionPlan:useExecutionPlan ? &executionPlan : NULL
+                 temporaries:executionTemporaries]) {
+        if (computeCommandEncoder) {
+            mglComputeEndEncoder(computeCommandEncoder);
+        }
         [self clearStageBindingCopyBacks:&copyBacks];
         return NO;
     }
@@ -978,7 +1071,9 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
     if (!ptr) {
         NSLog(@"MGL COMPUTE ERROR: %s with no current compute program after binding",
               reason ? reason : "glDispatchCompute");
-        mglComputeEndEncoder(computeCommandEncoder);
+        if (computeCommandEncoder) {
+            mglComputeEndEncoder(computeCommandEncoder);
+        }
         [self clearStageBindingCopyBacks:&copyBacks];
         mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
         return NO;
@@ -988,8 +1083,8 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
      * local size（0 由 C++ 解析为 1，与 `x ? x : 1` 默认一致），gate-on
      * 一次 C ABI 调用在 C++ 内完成 dispatchThreadgroups 编码；gate-off 走
      * 原逐条 ObjC 路径作 A/B 对照。 */
-    if (mglComputeUsesMetalCpp()) {
-        MGLRenderCppComputePlan computePlan = {
+    if (useExecutionPlan) {
+        executionPlan.dispatch = (MGLRenderCppComputePlan){
             .dispatch_kind = dispatchKind,
             .groups_x = groups_x,
             .groups_y = groups_y,
@@ -1001,12 +1096,11 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
                 ? (__bridge void *)indirectBuffer : NULL,
             .indirect_offset = indirectOffset,
         };
-        if (mglRenderCppDispatchComputePlan(
-                (__bridge void *)computeCommandEncoder, &computePlan,
-                NULL, 0) != 0) {
-            NSLog(@"MGL COMPUTE ERROR: C++ %s plan encode failed",
+        if (mglRenderCppEncodeComputeExecutionPlanForCommandBufferOwner(
+                _renderPassManager.state->currentCommandBufferOwner,
+                &executionPlan, NULL, 0) != 0) {
+            NSLog(@"MGL COMPUTE ERROR: C++ %s execution plan encode failed",
                   reason ? reason : "dispatch");
-            mglComputeEndEncoder(computeCommandEncoder);
             [self clearStageBindingCopyBacks:&copyBacks];
             mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
             return NO;
@@ -1035,7 +1129,9 @@ static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
         }
     }
 
-    mglComputeEndEncoder(computeCommandEncoder);
+    if (computeCommandEncoder) {
+        mglComputeEndEncoder(computeCommandEncoder);
+    }
     /* Without this, a dispatch with no copy-backs stays in the current
      * command buffer and flushCommandBufferLocked's empty-CB skip drops it:
      * glFinish then never executes the compute writes (SSBO stores vanish). */
