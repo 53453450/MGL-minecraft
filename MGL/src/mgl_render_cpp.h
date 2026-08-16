@@ -381,6 +381,22 @@ int mglRenderCppReadbackFormatIsBGRA8Compatible(uint32_t pixel_format);
 int mglRenderCppPixelFormatIsIntegerColor(uint32_t pixel_format);
 int mglRenderCppPixelFormatIsSignedIntegerColor(uint32_t pixel_format);
 
+/* P4.5 (item 1171): copy packed rows with optional Y-flip.  Pure CPU
+ * memcpy of `row_bytes` per row — mirrors mglMetalCopyRows (void). */
+void mglRenderCppCopyRows(
+    const void *src, uint64_t src_bytes_per_row,
+    void *dst, uint64_t dst_bytes_per_row,
+    uint64_t row_bytes, uint64_t height, int flip_y);
+
+/* P4.5 (item 1171): Depth16Unorm / unpacked depth-float rows -> GL
+ * float rows with optional Y-flip.  Mirrors the CPU convert loop in
+ * mglReadDepthTextureAsFloat (void; bad args are a no-op). */
+void mglRenderCppCopyDepthTextureBytesToFloat(
+    const void *src, uint64_t src_bytes_per_row,
+    void *dst, uint64_t dst_bytes_per_row,
+    uint64_t width, uint64_t height,
+    uint64_t src_depth_bytes, int is_depth16, int flip_y);
+
 /* P4.5 (item 1171): copy GL BGRA8 rows into a BGRA8-compatible Metal pixel
  * format (RGBA8Unorm / BGRA8Unorm / RGB9E5Float / RGB10A2Unorm /
  * BGR10A2Unorm) with optional Y-flip.  Pure CPU data transform shared by

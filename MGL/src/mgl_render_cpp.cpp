@@ -3476,6 +3476,58 @@ static uint32_t mglCppPackRGBToSharedExp(double red, double green, double blue)
     return red_s | (green_s << 9) | (blue_s << 18) | ((uint32_t)exp_s << 27);
 }
 
+/* Packed row copy with optional Y-flip — mirrors mglMetalCopyRows. */
+extern "C"
+void mglRenderCppCopyRows(
+    const void* src, uint64_t src_bytes_per_row,
+    void* dst, uint64_t dst_bytes_per_row,
+    uint64_t row_bytes, uint64_t height, int flip_y) {
+    if (!src || !dst || row_bytes == 0u || height == 0u) {
+        return;
+    }
+    const uint8_t* src_bytes = static_cast<const uint8_t*>(src);
+    uint8_t* dst_bytes = static_cast<uint8_t*>(dst);
+    for (uint64_t y = 0; y < height; y++) {
+        const uint8_t* src_row = src_bytes + (y * src_bytes_per_row);
+        uint64_t dst_y = flip_y ? (height - 1u - y) : y;
+        uint8_t* dst_row = dst_bytes + (dst_y * dst_bytes_per_row);
+        memcpy(dst_row, src_row, row_bytes);
+    }
+}
+
+/* Depth16Unorm / unpacked depth-float -> GL float rows — mirrors the
+ * CPU convert loop in mglReadDepthTextureAsFloat. */
+extern "C"
+void mglRenderCppCopyDepthTextureBytesToFloat(
+    const void* src, uint64_t src_bytes_per_row,
+    void* dst, uint64_t dst_bytes_per_row,
+    uint64_t width, uint64_t height,
+    uint64_t src_depth_bytes, int is_depth16, int flip_y) {
+    if (!src || !dst || width == 0u || height == 0u ||
+        src_depth_bytes == 0u) {
+        return;
+    }
+    const uint8_t* src_bytes = static_cast<const uint8_t*>(src);
+    uint8_t* dst_bytes = static_cast<uint8_t*>(dst);
+    for (uint64_t y = 0; y < height; y++) {
+        const uint8_t* src_row = src_bytes + (y * src_bytes_per_row);
+        uint64_t dst_y = flip_y ? (height - 1u - y) : y;
+        float* dst_row = reinterpret_cast<float*>(
+            dst_bytes + (dst_y * dst_bytes_per_row));
+        for (uint64_t x = 0; x < width; x++) {
+            if (is_depth16) {
+                uint16_t value = 0u;
+                memcpy(&value, src_row + (x * src_depth_bytes),
+                       sizeof(value));
+                dst_row[x] = (float)value / 65535.0f;
+            } else {
+                memcpy(&dst_row[x], src_row + (x * src_depth_bytes),
+                       sizeof(float));
+            }
+        }
+    }
+}
+
 /* Copy GL BGRA8 rows into a BGRA8-compatible Metal pixel format with
  * optional Y-flip — mirrors mglMetalCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes. */
 extern "C"

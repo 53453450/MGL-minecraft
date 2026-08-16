@@ -1414,20 +1414,14 @@ static void mglTextureCopyTextureToBuffer(
     if (readbackSuccess) {
         uint8_t *dst = ((uint8_t *)pixelBytes) + dstOffset;
         if (sourceIsDepthStencil || sourceIsDepth16) {
-            const uint8_t *src = (const uint8_t *)readBuffer.contents;
-            for (NSUInteger row = 0; row < (NSUInteger)copyH; row++) {
-                const uint8_t *srcRow = src + row * stagingBytesPerRow;
-                float *dstRow = (float *)(void *)(dst + ((NSUInteger)copyH - 1u - row) * bytesPerRow);
-                for (NSUInteger column = 0; column < (NSUInteger)copyW; column++) {
-                    if (sourceIsDepth16) {
-                        uint16_t value = 0u;
-                        memcpy(&value, srcRow + column * sourceDepthBytes, sizeof(value));
-                        dstRow[column] = (float)value / 65535.0f;
-                    } else {
-                        memcpy(&dstRow[column], srcRow + column * sourceDepthBytes, sizeof(float));
-                    }
-                }
-            }
+            /* P4.5 (item 1171): Depth16 / unpacked depth-float -> GL float. */
+            mglRenderCppCopyDepthTextureBytesToFloat(
+                readBuffer.contents, (uint64_t)stagingBytesPerRow,
+                dst, (uint64_t)bytesPerRow,
+                (uint64_t)copyW, (uint64_t)copyH,
+                (uint64_t)sourceDepthBytes,
+                sourceIsDepth16 ? 1 : 0,
+                1);
         } else {
             mglMetalCopyRows((const uint8_t *)readBuffer.contents,
                              stagingBytesPerRow,

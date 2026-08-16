@@ -4865,6 +4865,45 @@ static int verifyReadbackScalarConvert(void) {
             return 1;
         }
     }
+    /* Packed row copy + depth16/float convert. */
+    {
+        uint8_t src[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+        uint8_t dst[8] = {0};
+        mglRenderCppCopyRows(src, 4u, dst, 4u, 4u, 2u, 0);
+        if (memcmp(dst, src, 8) != 0) {
+            fprintf(stderr, "FAIL: copy rows identity\n");
+            return 1;
+        }
+        memset(dst, 0, sizeof(dst));
+        mglRenderCppCopyRows(src, 4u, dst, 4u, 4u, 2u, 1);
+        if (memcmp(dst, src + 4, 4) != 0 || memcmp(dst + 4, src, 4) != 0) {
+            fprintf(stderr, "FAIL: copy rows flipY\n");
+            return 1;
+        }
+        uint8_t sentinel[4] = {9, 9, 9, 9};
+        mglRenderCppCopyRows(NULL, 4u, sentinel, 4u, 4u, 1u, 0);
+        if (sentinel[0] != 9) {
+            fprintf(stderr, "FAIL: copy rows bad args\n");
+            return 1;
+        }
+        uint16_t d16[2] = {0, 65535};
+        float df[2] = {1.0f, 1.0f};
+        mglRenderCppCopyDepthTextureBytesToFloat(
+            d16, 2u, df, 4u, 1u, 2u, 2u, 1, 1);
+        if (fabsf(df[0] - 1.0f) > 1e-6f || fabsf(df[1]) > 1e-6f) {
+            fprintf(stderr, "FAIL: depth16 -> float flipY\n");
+            return 1;
+        }
+        float srcf[2] = {0.25f, 0.75f};
+        float dstf[2] = {0, 0};
+        mglRenderCppCopyDepthTextureBytesToFloat(
+            srcf, 4u, dstf, 4u, 1u, 2u, 4u, 0, 0);
+        if (fabsf(dstf[0] - 0.25f) > 1e-6f ||
+            fabsf(dstf[1] - 0.75f) > 1e-6f) {
+            fprintf(stderr, "FAIL: depth float rows\n");
+            return 1;
+        }
+    }
     printf("READBACK_SCALAR_CONVERT_OK\n");
     return 0;
 }

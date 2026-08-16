@@ -135,16 +135,13 @@ void mglMetalCopyRows(const uint8_t *src,
                       NSUInteger height,
                       BOOL flipY)
 {
-    if (!src || !dst || rowBytes == 0u || height == 0u) {
-        return;
-    }
-
-    for (NSUInteger y = 0; y < height; y++) {
-        const uint8_t *srcRow = src + (y * srcBytesPerRow);
-        NSUInteger dstY = flipY ? (height - 1u - y) : y;
-        uint8_t *dstRow = dst + (dstY * dstBytesPerRow);
-        memcpy(dstRow, srcRow, rowBytes);
-    }
+    /* P4.5 (item 1171): thin delegate — single source of truth in C++
+     * (mglRenderCppCopyRows), shared by both gates. */
+    mglRenderCppCopyRows(
+        src, (uint64_t)srcBytesPerRow,
+        dst, (uint64_t)dstBytesPerRow,
+        (uint64_t)rowBytes, (uint64_t)height,
+        flipY ? 1 : 0);
 }
 
 /* MGLScaledBlitParams / MGLMSAAIntegerResolveParams / MGLClearRectParams
