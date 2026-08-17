@@ -40,8 +40,7 @@ mglRenderCommandBufferState(id<MTLCommandBuffer> commandBuffer)
 {
     MGLRenderCppCommandBufferState state = {0};
     if (!commandBuffer) return state;
-    if (mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
-        mglRenderCppGetDevice() &&
+    if (mglRenderCppGetDevice() &&
         mglRenderCppGetCommandBufferState(
             (__bridge void *)commandBuffer, &state) == 0) {
         return state;
@@ -96,8 +95,7 @@ mglRenderCreateRenderEncoderForCommandBufferOwner(
     const MGLRenderCppRenderPassState *state)
 {
     if (!owner) return nil;
-    if (mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
-        mglRenderCppGetDevice() && state) {
+    if (mglRenderCppGetDevice() && state) {
         void *encoder = NULL;
         if (mglRenderCppCreateRenderEncoderFromCommandBufferOwnerState(
                 owner, state, &encoder) == 0 && encoder) {
@@ -177,8 +175,7 @@ static inline int mglRenderAddCommandBufferCompletion(
     MGLRenderCommandBufferCompletionBlock block)
 {
     if (!commandBuffer || !block) return -1;
-    if (mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
-        mglRenderCppGetDevice()) {
+    if (mglRenderCppGetDevice()) {
         MGLRenderCommandBufferCompletionBlock copiedBlock = [block copy];
         void *context = (__bridge_retained void *)copiedBlock;
         int result = mglRenderCppAddCommandBufferCompletion(
@@ -294,8 +291,7 @@ mglRenderCppTextureDescriptorStateFromObjC(MTLTextureDescriptor *descriptor)
  * descriptor mirror for the gate-off A/B baseline. */
 static inline BOOL mglRenderPassUsesMetalCpp(void)
 {
-    return mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
-           mglRenderCppGetDevice() != NULL;
+    return mglRenderCppGetDevice() != NULL;
 }
 
 static inline BOOL mglRenderCppGetRenderPassState(

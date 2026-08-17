@@ -30,7 +30,6 @@ static void mglDrawEncodePrimitives(MGLMetalRenderCommandEncoderRef encoder,
             .base_instance = baseInstance,
         };
     if (renderEncoderOwner &&
-        mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
         mglRenderCppGetDevice()) {
         (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
             renderEncoderOwner, &plan, NULL, 0);
@@ -62,7 +61,6 @@ static void mglDrawEncodeIndexed(MGLMetalRenderCommandEncoderRef encoder,
             .base_instance = baseInstance,
         };
     if (renderEncoderOwner &&
-        mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
         mglRenderCppGetDevice()) {
         (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
             renderEncoderOwner, &plan, NULL, 0);

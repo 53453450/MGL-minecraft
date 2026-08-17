@@ -7,8 +7,7 @@
 
 static BOOL mglBindingUsesMetalCpp(void)
 {
-    return mglEnvFlagEnabledDefaultOn("MGL_USE_METALCPP") &&
-           mglRenderCppGetDevice() != NULL;
+    return mglRenderCppGetDevice() != NULL;
 }
 
 void mglRendererCallbackBindTexture(void *runtime_context,

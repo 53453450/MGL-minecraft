@@ -115,6 +115,7 @@ help:
 		'  make test             Run the interactive GLFW test application.' \
 		'  make check-air-only   Fail if production paths reference the legacy GLSL->SPIR-V->MSL chain.' \
 		'  make check-p4-metalcpp Fail if the P4 Metal-cpp ownership/callback census regresses.' \
+		'  make check-p5-metalcpp Fail if the single-path Metal-cpp renderer regresses.' \
 		'  make clean            Remove local build outputs.'
 
 # P3 硬闸：生产路径不得残留旧 source-compile 链（详见 scripts/check_air_only.sh）。
@@ -123,6 +124,9 @@ check-air-only:
 
 check-p4-metalcpp:
 	@bash scripts/check_p4_metalcpp.sh
+
+check-p5-metalcpp:
+	@bash scripts/check_p5_metalcpp.sh
 
 # mgl
 #mgl_srcs_c := $(wildcard MGL/src/*.c)

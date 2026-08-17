@@ -39,9 +39,8 @@ static MGLMetalLibraryRef mglRenderPassLoadAuxLibrary(MGLMetalDeviceRef device,
 static MGLMetalRenderCommandEncoderRef
 mglRenderPassFallbackEncoder(void *owner)
 {
-    if (mglRenderPassUsesMetalCpp()) return nil;
-    return (__bridge MGLMetalRenderCommandEncoderRef)
-        mglRenderCppRenderEncoderOwnerGetCurrentForFallback(owner);
+    (void)owner;
+    return nil;
 }
 
 static MGLRenderCppRenderPassIdentityState mglRenderPassIdentitySnapshot(
@@ -896,7 +895,7 @@ static bool mglLoadAIRMainFunction(MGLMetalDeviceRef device,
         return false;
     }
     MGLMetalLibraryRef library = nil;
-    if (mglEnvFlagEnabledDefaultOn("MGL_USE_METALCPP")) {
+    if (mglRenderCppGetDevice() != NULL) {
         void *libraryCPP = NULL;
         void *deviceCPP = mglRenderCppGetDevice();
         if (!deviceCPP ||

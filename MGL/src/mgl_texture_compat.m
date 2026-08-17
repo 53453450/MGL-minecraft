@@ -48,8 +48,7 @@ static MGLMetalTextureRef mglTextureCompatCreateView(
     BOOL useSwizzle,
     MTLTextureSwizzleChannels swizzle)
 {
-    if (mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
-        mglRenderCppGetDevice() != NULL) {
+    if (mglRenderCppGetDevice() != NULL) {
         void *view = NULL;
         if (mglRenderCppCreateTextureViewRange(
                 (__bridge void *)texture,

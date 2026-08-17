@@ -3152,10 +3152,9 @@ static int verifyCommandBufferGetterAndAdopt(void) {
 }
 
 static int verifyRenderEncoderGetter(void) {
-    /* P4.5: raw render-encoder borrowing is a gate-off-only compatibility
-     * operation. Gate-on must fail closed even when the owner is populated. */
-    if (mglRenderCppRenderEncoderOwnerGetCurrentForFallback(NULL) != NULL) {
-        fprintf(stderr, "FAIL: re getter null owner\n");
+    /* P5: render encoders stay opaque; callers can only query owner state. */
+    if (mglRenderCppRenderEncoderOwnerHasCurrent(NULL) != 0) {
+        fprintf(stderr, "FAIL: re owner null state\n");
         return 1;
     }
     id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
@@ -3182,17 +3181,8 @@ static int verifyRenderEncoderGetter(void) {
         fprintf(stderr, "FAIL: re owner create\n");
         return 1;
     }
-    setenv("MGL_USE_METALCPP", "1", 1);
-    if (mglRenderCppRenderEncoderOwnerGetCurrentForFallback(owner) != NULL) {
-        fprintf(stderr, "FAIL: re getter exposed encoder under gate-on\n");
-        return 1;
-    }
-    setenv("MGL_USE_METALCPP", "0", 1);
-    id<MTLRenderCommandEncoder> readBack =
-        (__bridge id<MTLRenderCommandEncoder>)
-            mglRenderCppRenderEncoderOwnerGetCurrentForFallback(owner);
-    if (readBack != encoder) {
-        fprintf(stderr, "FAIL: re getter identity\n");
+    if (mglRenderCppRenderEncoderOwnerHasCurrent(owner) != 1) {
+        fprintf(stderr, "FAIL: re owner missing current encoder\n");
         return 1;
     }
     if (mglRenderCppSetRenderEncoderOwnerLabel(
@@ -3205,21 +3195,17 @@ static int verifyRenderEncoderGetter(void) {
         fprintf(stderr, "FAIL: re owner end\n");
         return 1;
     }
-    /* Ending clears the borrowed current encoder while retaining the reusable
-     * owner shell for the next reset. */
-    if (mglRenderCppRenderEncoderOwnerGetCurrentForFallback(owner) != NULL ||
-        mglRenderCppRenderEncoderOwnerHasCurrent(owner) != 0) {
-        fprintf(stderr, "FAIL: re getter after end\n");
+    if (mglRenderCppRenderEncoderOwnerHasCurrent(owner) != 0) {
+        fprintf(stderr, "FAIL: re owner still active after end\n");
         return 1;
     }
     mglRenderCppDestroyRenderEncoderOwner(&owner);
-    unsetenv("MGL_USE_METALCPP");
     if (owner != NULL) {
         fprintf(stderr, "FAIL: re owner not cleared\n");
         return 1;
     }
     /* The owner already called endEncoding via EndRenderEncoderOwner. */
-    printf("RE_GETTER_OK\n");
+    printf("RE_OWNER_OK\n");
     return 0;
 }
 

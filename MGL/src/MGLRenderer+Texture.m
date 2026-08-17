@@ -7,8 +7,7 @@
 #include "mgl_render_cpp_objc.h"
 static BOOL mglTextureUsesMetalCpp(void)
 {
-    return mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
-           mglRenderCppGetDevice() != NULL;
+    return mglRenderCppGetDevice() != NULL;
 }
 
 int mglRendererCallbackResource(void *runtime_context,

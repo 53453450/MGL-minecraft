@@ -174,7 +174,7 @@ MGLPrimitiveRestartEncodeResult mglEncodePrimitiveRestartedElementDraw(id<MTLRen
 
 /* Owner-aware variants used by the gate-on renderer path. The encoder argument
  * is retained only for the gate-off adapter; C++ resolves the active encoder
- * from renderEncoderOwner when MGL_USE_METALCPP is enabled. */
+ * from renderEncoderOwner on the Metal-cpp renderer path. */
 BOOL mglEncodeArrayLineLoopForRenderEncoderOwner(
     id<MTLRenderCommandEncoder> encoder, void *renderEncoderOwner,
     GLMContext drawCtx, id<MTLDevice> device, GLsizei count,

@@ -34,6 +34,8 @@
 
 @interface MGLRenderer ()
 
+- (BOOL)mglRendererIsReady;
+
 @end
 
 #endif /* MGLRenderer_Lifecycle_Private_h */

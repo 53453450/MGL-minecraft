@@ -14002,17 +14002,6 @@ int mglRenderCppEndRenderEncoderOwner(void* owner_handle) {
     return 0;
 }
 
-extern "C"
-void* mglRenderCppRenderEncoderOwnerGetCurrentForFallback(void* owner_handle) {
-    if (mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
-        mglRenderCppGetDevice() != nullptr) {
-        return nullptr;
-    }
-    mgl::RenderEncoderOwner* owner =
-        static_cast<mgl::RenderEncoderOwner*>(owner_handle);
-    return owner ? static_cast<void*>(owner->encoder) : nullptr;
-}
-
 static void* mglRenderCppActiveRenderEncoder(void* owner_handle) {
     mgl::RenderEncoderOwner* owner =
         static_cast<mgl::RenderEncoderOwner*>(owner_handle);

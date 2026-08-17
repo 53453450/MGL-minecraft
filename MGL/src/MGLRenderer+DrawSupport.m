@@ -14,27 +14,22 @@
 
 static BOOL mglDrawSupportUsesMetalCpp(void)
 {
-    return mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
-           mglRenderCppGetDevice() != NULL;
+    return mglRenderCppGetDevice() != NULL;
 }
 
 static MGLMetalRenderCommandEncoderRef mglDrawSupportFallbackEncoder(
     void *renderEncoderOwner)
 {
-    if (mglDrawSupportUsesMetalCpp()) return nil;
-    return (__bridge MGLMetalRenderCommandEncoderRef)
-        mglRenderCppRenderEncoderOwnerGetCurrentForFallback(renderEncoderOwner);
+    (void)renderEncoderOwner;
+    return nil;
 }
 
 static BOOL mglDrawSupportEncodeContextIsActive(
     const MGLEncodeContext *encodeContext)
 {
     if (!encodeContext) return NO;
-    if (mglDrawSupportUsesMetalCpp()) {
-        return mglRenderCppRenderEncoderOwnerHasCurrent(
-            encodeContext->render_encoder_owner) == 1;
-    }
-    return encodeContext->encoder != nil;
+    return mglRenderCppRenderEncoderOwnerHasCurrent(
+        encodeContext->render_encoder_owner) == 1;
 }
 
 /* CPU index gather for direct indexed GS draws (mgl_air_gs_abi.h §7).

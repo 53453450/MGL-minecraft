@@ -37,8 +37,7 @@ static id<MTLTexture> mglLifecycleCreateTexture(
     id<MTLDevice> device,
     MTLTextureDescriptor *descriptor)
 {
-    if (mglEnvFlagEnabledDefaultOn("MGL_USE_METALCPP") &&
-        mglRenderCppGetDevice() != NULL) {
+    if (mglRenderCppGetDevice() != NULL) {
         void *texture = NULL;
         MGLRenderCppTextureDescriptorState state =
             mglRenderCppTextureDescriptorStateFromObjC(descriptor);
@@ -56,8 +55,7 @@ static void mglLifecycleReplaceTextureRegion(id<MTLTexture> texture,
                                              const void *bytes,
                                              NSUInteger bytesPerRow)
 {
-    if (mglEnvFlagEnabledDefaultOn("MGL_USE_METALCPP") &&
-        mglRenderCppGetDevice() != NULL &&
+    if (mglRenderCppGetDevice() != NULL &&
         mglRenderCppTextureReplaceRegion(
             (__bridge void *)texture,
             region.origin.x, region.origin.y, region.origin.z,
@@ -116,7 +114,7 @@ static void mglLifecycleReplaceTextureRegion(id<MTLTexture> texture,
      * inspect the resulting function pointers.  This census deliberately
      * counts wrappers that call mgl_metal_bridge as legacy until their gate-on
      * path no longer selector-forwards. */
-    if (mglEnvFlagEnabledDefaultOn("MGL_USE_METALCPP")) {
+    if (mglRenderCppGetDevice() != NULL) {
         MGLRenderCppCallbackInstallResult installed = {0};
         MGLMetalCallbackCensus census = {0};
         if (mglRenderCppInstallMetalCallbacks(glm_ctx, &installed) != 0 ||
@@ -261,6 +259,10 @@ void* CppCreateMGLRendererFromContextAndBindToWindow (void *glm_ctx, void *windo
     //[w.contentView addSubview:view];
     [w setContentView:view];
     [renderer createMGLRendererAndBindToContext: glm_ctx view: view];
+    if (![renderer mglRendererIsReady]) {
+        NSLog(@"MGL ERROR: renderer initialization failed closed");
+        return NULL;
+    }
     // Ownership: the returned pointer is NON-OWNING (borrowed).
     // The renderer's lifetime is tied to glm_ctx->mtl_funcs.mtlObj, which is
     // retained via CFBridgingRetain in bindObjFuncsToGLMContext.
@@ -281,6 +283,10 @@ void* CppCreateMGLRendererHeadless (void *glm_ctx)
     [view setWantsLayer:YES];
 
     [renderer createMGLRendererAndBindToContext: glm_ctx view: view];
+    if (![renderer mglRendererIsReady]) {
+        NSLog(@"MGL ERROR: headless renderer initialization failed closed");
+        return NULL;
+    }
     // Ownership: the returned pointer is NON-OWNING (borrowed).
     // The renderer's lifetime is tied to glm_ctx->mtl_funcs.mtlObj, which is
     // retained via CFBridgingRetain in bindObjFuncsToGLMContext.
@@ -384,31 +390,31 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     NSLog(@"MGL INFO: Metal device created: %@", _device);
 
     /* METALCPP 路径（Phase 1）：把现有 id<MTLDevice> 桥接给 C++ 渲染门面
-     * （+1 retain，shutdown 时 release）。AIR 加载器/PSO 走 MGL_USE_METALCPP=1
+     * （+1 retain，shutdown 时 release）。AIR 加载器/PSO 走唯一 Metal-cpp
      * 时经 mglRenderCppGetDevice() 取用。 */
     if (mglRenderCppInit((__bridge void *)_device) != 0) {
         NSLog(@"MGL ERROR: mglRenderCppInit failed (Metal-cpp bridge)");
-    } else {
-        NSLog(@"MGL INFO: Metal-cpp renderer bridge ready (%p)",
-              mglRenderCppGetDevice());
-        /* Rebind now that the C++ device exists.  The first bind above keeps
-         * early-failure cleanup valid; this bind selects migrated callbacks. */
-        [self bindObjFuncsToGLMContext:glm_ctx];
-        if (mglRenderCppCreateQueryStateOwner(256u, &_queryStateOwner) != 0) {
-            _queryStateOwner = NULL;
-            NSLog(@"MGL ERROR: failed to create Metal-cpp query state owner");
-        } else if (mglRenderCppRegisterContextQueryStateOwner(
-                       glm_ctx, _queryStateOwner) != 0) {
-            NSLog(@"MGL ERROR: failed to register context query state owner");
-        }
-        mglRenderCppAttachRuntimeOwners(
-            glm_ctx,
-            _renderPassManager.state->currentCommandBufferOwner,
-            _renderPassManager.state->currentRenderEncoderOwner,
-            _renderPassManager.state->renderPassStateOwner,
-            _queryStateOwner,
-            _gpuRecovery.commandRecoveryOwner);
+        return;
     }
+    NSLog(@"MGL INFO: Metal-cpp renderer bridge ready (%p)",
+          mglRenderCppGetDevice());
+    /* Rebind now that the C++ device exists.  The first bind above keeps
+     * early-failure cleanup valid; this bind selects migrated callbacks. */
+    [self bindObjFuncsToGLMContext:glm_ctx];
+    if (mglRenderCppCreateQueryStateOwner(256u, &_queryStateOwner) != 0) {
+        _queryStateOwner = NULL;
+        NSLog(@"MGL ERROR: failed to create Metal-cpp query state owner");
+    } else if (mglRenderCppRegisterContextQueryStateOwner(
+                   glm_ctx, _queryStateOwner) != 0) {
+        NSLog(@"MGL ERROR: failed to register context query state owner");
+    }
+    mglRenderCppAttachRuntimeOwners(
+        glm_ctx,
+        _renderPassManager.state->currentCommandBufferOwner,
+        _renderPassManager.state->currentRenderEncoderOwner,
+        _renderPassManager.state->renderPassStateOwner,
+        _queryStateOwner,
+        _gpuRecovery.commandRecoveryOwner);
     _pipelineCache.device = _device;
 
     /* Initialize AGX Capability Layer (centralized device detection +
@@ -428,26 +434,15 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     }
 
     // Create command queue with virtualization-safe settings
-    MTLCommandQueueDescriptor *queueDescriptor = [[MTLCommandQueueDescriptor alloc] init];
     if (isVirtualized) {
         NSLog(@"MGL INFO: VIRTUALIZED AGX - Enabling virtualization-safe command queue settings");
-        queueDescriptor.maxCommandBufferCount =
-            MGLCapabilityMaxConcurrentCommandBuffers(&_capability);
     }
 
-    const BOOL useMetalCppQueue =
-        mglEnvFlagEnabledDefaultOn("MGL_USE_METALCPP") &&
-        mglRenderCppGetDevice();
-    if (useMetalCppQueue) {
-        uint32_t maxCommandBuffers = isVirtualized
-            ? (uint32_t)MGLCapabilityMaxConcurrentCommandBuffers(&_capability)
-            : 0u;
-        _commandQueue = mglRenderCppCreateOrResetCommandQueueOwner(
-            &_commandQueueOwner, maxCommandBuffers);
-    } else {
-        mglRenderCppDestroyCommandQueueOwner(&_commandQueueOwner);
-        _commandQueue = [_device newCommandQueueWithDescriptor:queueDescriptor];
-    }
+    uint32_t maxCommandBuffers = isVirtualized
+        ? (uint32_t)MGLCapabilityMaxConcurrentCommandBuffers(&_capability)
+        : 0u;
+    _commandQueue = mglRenderCppCreateOrResetCommandQueueOwner(
+        &_commandQueueOwner, maxCommandBuffers);
     if (!_commandQueue) {
         NSLog(@"MGL ERROR: Failed to create Metal command queue");
         // Intentional early return on critical Metal initialization failure.
@@ -578,6 +573,19 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     // necessitates Info.plist in the cwd, see https://stackoverflow.com/a/64172784
     //MTLCaptureDescriptor *descriptor = [self setupCaptureToFile: _device];
     //[self startCapture:descriptor];
+}
+
+- (BOOL)mglRendererIsReady
+{
+    if (!ctx || !_device || !mglRenderCppGetDevice() ||
+        !_commandQueueOwner || !_commandQueue || !_layer || !_renderPassManager) {
+        return NO;
+    }
+
+    MGLRenderCppCommandBufferState commandState = {0};
+    return mglRenderCommandBufferOwnerState(
+        _renderPassManager.state->currentCommandBufferOwner,
+        &commandState);
 }
 
 /* Publish view geometry to the GL thread as an atomic snapshot.  Main thread

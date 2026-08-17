@@ -59,16 +59,14 @@ static void mglWriteTCSStageInComponent(
 
 static BOOL mglTessUsesMetalCpp(void)
 {
-    return mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
-           mglRenderCppGetDevice() != NULL;
+    return mglRenderCppGetDevice() != NULL;
 }
 
 static MGLMetalRenderCommandEncoderRef mglTessFallbackRenderEncoder(
     void *owner)
 {
-    if (mglTessUsesMetalCpp()) return nil;
-    return (__bridge MGLMetalRenderCommandEncoderRef)
-        mglRenderCppRenderEncoderOwnerGetCurrentForFallback(owner);
+    (void)owner;
+    return nil;
 }
 
 static MGLMetalBufferRef mglTessCreateBuffer(MGLMetalDeviceRef device,

@@ -74,8 +74,7 @@ static id<MTLTexture> mglRendererCreateTextureView(
     id<MTLTexture> texture,
     MTLPixelFormat pixelFormat)
 {
-    if (mglEnvFlagEnabledDefaultOn("MGL_USE_METALCPP") &&
-        mglRenderCppGetDevice() != NULL) {
+    if (mglRenderCppGetDevice() != NULL) {
         void *view = NULL;
         if (mglRenderCppCreateTextureView(
                 (__bridge void *)texture, (uint32_t)pixelFormat,
@@ -312,8 +311,7 @@ BOOL mglEnvFlagEnabledDefaultOn(const char *name)
 
 static BOOL mglRendererUsesMetalCpp(void)
 {
-    return mglEnvFlagEnabledDefaultOn("MGL_USE_METALCPP") &&
-           mglRenderCppGetDevice() != NULL;
+    return mglRenderCppGetDevice() != NULL;
 }
 
 static id<MTLBuffer> mglRendererCreateBuffer(id<MTLDevice> device,
@@ -4435,8 +4433,7 @@ void mglRendererCallbackClearBuffer(void *runtime_context,
  * (cpu_shadow_pending) or when the Metal buffer shares the shadow memory. */
 - (void)mtlReadBackBuffer:(GLMContext)glm_ctx buf:(Buffer *)buf offset:(size_t)offset size:(size_t)size
 {
-    if (mglEnvFlagEnabledDefaultOn("MGL_USE_METALCPP") &&
-        mglRenderCppGetDevice() != NULL) {
+    if (mglRenderCppGetDevice() != NULL) {
         mglRenderCppReadBackBuffer(glm_ctx, buf, offset, size);
         return;
     }
@@ -4475,8 +4472,7 @@ void mglRendererCallbackClearBuffer(void *runtime_context,
 {
     id<MTLBuffer> mtl_buffer = nil;
 
-    if (mglEnvFlagEnabledDefaultOn("MGL_USE_METALCPP") &&
-        mglRenderCppGetDevice() != NULL) {
+    if (mglRenderCppGetDevice() != NULL) {
         void *mapped = NULL;
         char mapError[256] = {0};
         int mapResult = mglRenderCppMapBufferStorage(

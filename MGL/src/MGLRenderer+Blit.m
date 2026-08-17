@@ -40,8 +40,7 @@ typedef struct MGLBlitColorState {
 
 static BOOL mglBlitUsesMetalCpp(void)
 {
-    return mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
-           mglRenderCppGetDevice() != NULL;
+    return mglRenderCppGetDevice() != NULL;
 }
 
 static MGLMetalBufferRef mglBlitCreateBuffer(MGLMetalDeviceRef device,

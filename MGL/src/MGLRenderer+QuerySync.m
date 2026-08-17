@@ -8,8 +8,7 @@
 
 static void mglQuerySyncWaitCommandBuffer(MGLMetalCommandBufferRef commandBuffer)
 {
-    if (mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
-        mglRenderCppGetDevice() != NULL) {
+    if (mglRenderCppGetDevice() != NULL) {
         if (mglRenderCppWaitCommandBuffer(
                 (__bridge void *)commandBuffer) != 0) {
             NSLog(@"MGL ERROR: Metal-cpp query/sync wait failed");
@@ -68,18 +67,9 @@ static void *mglQueryVisibilityBuffer(void *queryStateOwner)
      * they were encoded), matching GL semantics. */
     METAL_LOCK();
     @try {
-        const BOOL useMetalCpp =
-            mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
-            mglRenderCppGetDevice() != NULL;
-        MGLMetalRenderCommandEncoderRef fallbackEncoder = useMetalCpp
-            ? nil
-            : (__bridge MGLMetalRenderCommandEncoderRef)
-                mglRenderCppRenderEncoderOwnerGetCurrentForFallback(
-                    _renderPassManager.state->currentRenderEncoderOwner);
-        const BOOL hasEncoder = useMetalCpp
-            ? mglRenderCppRenderEncoderOwnerHasCurrent(
-                  _renderPassManager.state->currentRenderEncoderOwner) == 1
-            : fallbackEncoder != nil;
+        const BOOL hasEncoder =
+            mglRenderCppRenderEncoderOwnerHasCurrent(
+                _renderPassManager.state->currentRenderEncoderOwner) == 1;
         /* P4.1f: under gate-on the visibility buffer lives in the C++
          * RenderPassStateOwner; the ObjC descriptor mirror is nil. */
         BOOL hasVisibilityBuffer = NO;
@@ -99,13 +89,9 @@ static void *mglQueryVisibilityBuffer(void *queryStateOwner)
             uint64_t offset = 0;
             if (mglRenderCppAcquireSampleQuerySlot(
                     _queryStateOwner, &mode, &offset) != 0 ||
-                (useMetalCpp
-                    ? mglRenderCppSetVisibilityResultModeForRenderEncoderOwner(
-                          _renderPassManager.state->currentRenderEncoderOwner,
-                          mode, offset)
-                    : mglRenderCppSetVisibilityResultMode(
-                          (__bridge void *)fallbackEncoder,
-                          mode, offset)) != 0) {
+                mglRenderCppSetVisibilityResultModeForRenderEncoderOwner(
+                    _renderPassManager.state->currentRenderEncoderOwner,
+                    mode, offset) != 0) {
                 [self endRenderEncodingLocked];
             }
         } else {

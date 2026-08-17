@@ -9,32 +9,25 @@
 
 static BOOL mglDrawUsesMetalCpp(void)
 {
-    return mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
-           mglRenderCppGetDevice() != NULL;
+    return mglRenderCppGetDevice() != NULL;
 }
 
 static MGLMetalRenderCommandEncoderRef mglDrawFallbackEncoder(void *owner)
 {
-    if (mglDrawUsesMetalCpp()) {
-        return nil;
-    }
-    return (__bridge MGLMetalRenderCommandEncoderRef)
-        mglRenderCppRenderEncoderOwnerGetCurrentForFallback(owner);
+    (void)owner;
+    return nil;
 }
 
 static BOOL mglDrawHasActiveEncoder(void *owner,
                                     MGLMetalRenderCommandEncoderRef encoder)
 {
-    return mglDrawUsesMetalCpp()
-        ? mglRenderCppRenderEncoderOwnerHasCurrent(owner) != 0
-        : encoder != nil;
+    (void)encoder;
+    return mglRenderCppRenderEncoderOwnerHasCurrent(owner) != 0;
 }
 
 static void *mglDrawEncoderTraceToken(void *owner)
 {
-    return mglDrawUsesMetalCpp()
-        ? owner
-        : (__bridge void *)mglDrawFallbackEncoder(owner);
+    return owner;
 }
 
 static void mglDrawPrimitives(MGLMetalRenderCommandEncoderRef encoder,
@@ -509,8 +502,7 @@ void mglRendererCallbackDraw(void *runtime_context,
         }
 
         @try {
-            if (mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
-                mglRenderCppGetDevice()) {
+            if (mglRenderCppGetDevice()) {
                 if (mglRenderCppSetRenderPipelineStateForOwner(
                         _renderPassManager.state->currentRenderEncoderOwner,
                         (__bridge void *)_pipelineCache.state->pipelineState) != 0) {

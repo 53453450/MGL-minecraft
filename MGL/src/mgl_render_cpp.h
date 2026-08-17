@@ -3109,10 +3109,6 @@ int mglRenderCppResetRenderEncoderOwner(
 int mglRenderCppEndRenderEncoderOwner(void *owner);
 int mglRenderCppSetRenderEncoderOwnerLabel(void *owner,
                                            const char *label);
-/* Gate-off-only borrowed pointer to the owner's current render encoder.
- * Returns NULL while the Metal-cpp gate is active, even when the owner has an
- * encoder, so gate-on callers cannot accidentally bypass the owner facade. */
-void *mglRenderCppRenderEncoderOwnerGetCurrentForFallback(void *owner);
 int mglRenderCppRenderEncoderOwnerHasCurrent(void *owner);
 void mglRenderCppDestroyRenderEncoderOwner(void **owner);
 int mglRenderCppEndRenderEncoder(void *render_encoder);

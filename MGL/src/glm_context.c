@@ -78,7 +78,12 @@ static void mgl_auto_init(void) {
                                           GL_DEPTH_COMPONENT24, GL_UNSIGNED_INT,
                                           GL_STENCIL_INDEX8, GL_UNSIGNED_BYTE);
         _ctx = ctx;
-        CppCreateMGLRendererHeadless(ctx);
+        if (!CppCreateMGLRendererHeadless(ctx)) {
+            fprintf(stderr, "MGL: Failed to initialize headless Metal renderer\n");
+            _ctx = NULL;
+            destroyGLMContext(ctx);
+            return;
+        }
         fprintf(stderr, "MGL: Initialized headless Metal renderer\n");
     }
 }

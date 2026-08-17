@@ -12,33 +12,25 @@
 
 static BOOL mglBatchUsesMetalCpp(void)
 {
-    return mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
-           mglRenderCppGetDevice() != NULL;
+    return mglRenderCppGetDevice() != NULL;
 }
 
 static MGLMetalRenderCommandEncoderRef mglBatchFallbackEncoder(void *owner)
 {
-    if (mglBatchUsesMetalCpp()) {
-        return nil;
-    }
-    return (__bridge MGLMetalRenderCommandEncoderRef)
-        mglRenderCppRenderEncoderOwnerGetCurrentForFallback(owner);
+    (void)owner;
+    return nil;
 }
 
 static BOOL mglBatchHasActiveEncoder(void *owner,
                                      MGLMetalRenderCommandEncoderRef encoder)
 {
-    return mglBatchUsesMetalCpp()
-        ? mglRenderCppRenderEncoderOwnerHasCurrent(owner) != 0
-        : encoder != nil;
+    (void)encoder;
+    return mglRenderCppRenderEncoderOwnerHasCurrent(owner) != 0;
 }
 
 static void *mglBatchEncoderTraceToken(void *owner)
 {
-    if (mglBatchUsesMetalCpp()) {
-        return owner;
-    }
-    return mglRenderCppRenderEncoderOwnerGetCurrentForFallback(owner);
+    return owner;
 }
 
 static void mglBatchDrawIndexedPrimitives(

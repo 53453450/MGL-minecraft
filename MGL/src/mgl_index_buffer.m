@@ -19,8 +19,7 @@
 static MGLMetalBufferRef mglIndexCreateBuffer(MGLMetalDeviceRef device,
                                           NSUInteger length)
 {
-    if (mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
-        mglRenderCppGetDevice() != NULL) {
+    if (mglRenderCppGetDevice() != NULL) {
         void *buffer = NULL;
         if (mglRenderCppCreateBuffer(
                 length, MTLResourceStorageModeShared, NULL, &buffer) == 0 &&

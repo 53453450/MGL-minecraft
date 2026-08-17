@@ -140,16 +140,8 @@
     // CRITICAL: Recreate command queue to clear AGX driver error state
     NSLog(@"MGL AGX RECOVERY: Recreating command queue to clear GPU error state");
     _commandQueue = nil;
-    const BOOL useMetalCppQueue =
-        mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
-        mglRenderCppGetDevice();
-    if (useMetalCppQueue) {
-        _commandQueue = mglRenderCppCreateOrResetCommandQueueOwner(
-            &_commandQueueOwner, 0u);
-    } else {
-        mglRenderCppDestroyCommandQueueOwner(&_commandQueueOwner);
-        _commandQueue = [_device newCommandQueue];
-    }
+    _commandQueue = mglRenderCppCreateOrResetCommandQueueOwner(
+        &_commandQueueOwner, 0u);
     if (!_commandQueue) {
         NSLog(@"MGL CRITICAL: Failed to recreate command queue during AGX recovery");
     } else {

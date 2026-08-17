@@ -13,8 +13,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
 
 static BOOL mglBatchReplayUsesMetalCpp(void)
 {
-    return mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
-           mglRenderCppGetDevice() != NULL;
+    return mglRenderCppGetDevice() != NULL;
 }
 
 static BOOL mglBatchReplayHasActiveEncoder(const MGLEncodeContext *encCtx)
@@ -1091,11 +1090,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     /* Texture materialization may have ended and recreated the render encoder
      * (RT-sampled-copy path). The cached encoder is now stale; refresh it so
      * per-draw buffer overrides and the draw itself target the live encoder. */
-    if (!mglBatchReplayUsesMetalCpp()) {
-        encCtx->encoder = (__bridge MGLMetalRenderCommandEncoderRef)
-            mglRenderCppRenderEncoderOwnerGetCurrentForFallback(
-                _renderPassManager.state->currentRenderEncoderOwner);
-    }
+    encCtx->encoder = nil;
 
     bool direct_vertex_ok = cmd->dynamic_vertex_binding_count == 0 ||
         [self bindDynamicVertexArrayBuffersDirectly:draw_vao
@@ -1133,9 +1128,6 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                             context:(GLMContext)glm_ctx
                       encodeContext:(const MGLEncodeContext *)encCtx
 {
-    if (!mglBatchReplayUsesMetalCpp()) {
-        return NO;
-    }
     if (!mglBatchReplayHasActiveEncoder(encCtx) || !batch ||
         batch->command_count == 0 ||
         batch->command_count > MGL_RENDER_CPP_REPLAY_BATCH_MAX_COMMANDS) {
@@ -1294,12 +1286,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                                   reason:"cull_distance_capture_restore"];
                 continue;
             }
-            if (!mglBatchReplayUsesMetalCpp()) {
-                liveEncCtx.encoder =
-                    (__bridge MGLMetalRenderCommandEncoderRef)
-                        mglRenderCppRenderEncoderOwnerGetCurrentForFallback(
-                            _renderPassManager.state->currentRenderEncoderOwner);
-            }
+            liveEncCtx.encoder = nil;
         }
         if (![self applyDynamicBindingsForCommand:cmd context:glm_ctx encodeContext:&liveEncCtx]) {
             [self traceReplayCommand:batch
