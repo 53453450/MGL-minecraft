@@ -122,9 +122,8 @@ static int s_operationComputeIndirectCount = 0;
 static int s_operationDrawCount = 0;
 static int s_operationResourceCount = 0;
 
-extern "C" void mglRendererReleaseOperationContext(void *operationContext) {
-    if (operationContext) CFRelease((CFTypeRef)operationContext);
-}
+extern "C" void mglRendererPlatformBackendWillDestroy(
+    void *, MGLRendererBackendHandle *) {}
 
 extern "C" void mglRendererCompatDispatchCompute(
     void *, GLMContext, unsigned int groupsX,
@@ -260,18 +259,7 @@ static int verifyDirectRendererABI(id<MTLDevice> device) {
         fprintf(stderr, "FAIL: renderer backend fixture\n");
         return 1;
     }
-
-    void *operationContext =
-        (__bridge_retained void *)[[NSObject alloc] init];
-    if (mglRendererBackendInstallOperationContext(
-            backend, operationContext) != 0 ||
-        mglRendererBackendGetOperationContext(backend) != operationContext) {
-        fprintf(stderr, "FAIL: backend operation context install\n");
-        mglRendererReleaseOperationContext(operationContext);
-        mglRendererBackendDestroy(&backend);
-        return 1;
-    }
-    operationContext = nullptr;
+    context.platform_renderer_shell = &context;
 
     mglRendererDispatchCompute(&context, 2, 3, 4);
     mglRendererDispatchComputeIndirect(&context, 64);

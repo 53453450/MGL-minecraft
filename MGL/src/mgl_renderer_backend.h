@@ -49,12 +49,6 @@ int mglRendererBackendAttachRuntimeOwners(MGLRendererBackendHandle *backend,
                                           void *command_buffer_owner,
                                           void *render_encoder_owner,
                                           void *render_pass_state_owner);
-int mglRendererBackendInstallOperationContext(
-    MGLRendererBackendHandle *backend,
-    void *operation_context);
-void *mglRendererBackendGetOperationContext(
-    const MGLRendererBackendHandle *backend);
-void mglRendererReleaseOperationContext(void *operation_context);
 int mglRendererBackendIsDestroying(
     const MGLRendererBackendHandle *backend);
 void *mglRendererBackendGetOwner(const MGLRendererBackendHandle *backend,

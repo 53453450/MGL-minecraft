@@ -124,8 +124,8 @@ typedef struct GLMContextRec_t {
      * MGLRenderer-owned MGLBatchArena ivar.  Accessed from draw_command.c. */
     MGLBatchArena  *batch_arena;
 
-    /* P5 renderer roots. The backend owns all Metal state and the transitional
-     * operation context; the context retains the platform shell until teardown. */
+    /* P5 renderer roots. The backend owns Metal state; the context retains the
+     * platform renderer shell until backend teardown is complete. */
     void *renderer_backend;
     void *platform_renderer_shell;
 

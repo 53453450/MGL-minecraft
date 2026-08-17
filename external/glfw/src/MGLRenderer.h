@@ -33,6 +33,7 @@
 #ifdef __OBJC__
 
 #import <AppKit/AppKit.h>
+#import "MGLPlatformRendererShell.h"
 
 #ifndef __GLM_CONTEXT_
 #define __GLM_CONTEXT_
@@ -46,7 +47,7 @@ typedef unsigned int GLenum;
 #define GL_ENUM_DEFINED_FOR_MGL_RENDERER 1
 #endif
 
-@interface MGLRenderer : NSObject
+@interface MGLRenderer : MGLPlatformRendererShell
 {
 }
 

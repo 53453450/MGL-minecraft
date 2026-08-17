@@ -25,6 +25,7 @@
 
 #import <Appkit/Appkit.h>
 #import <Metal/Metal.h>
+#import "MGLPlatformRendererShell.h"
 #include "GL/glcorearb.h"
 
 #ifndef __GLM_CONTEXT_
@@ -32,7 +33,7 @@
 typedef struct GLMContextRec_t *GLMContext;
 #endif
 
-@interface MGLRenderer : NSObject
+@interface MGLRenderer : MGLPlatformRendererShell
 {
 
 }

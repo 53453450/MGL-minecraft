@@ -204,7 +204,6 @@ static inline double mglTraceNowSeconds(void)
      * that identifier to exist inside MGLRenderer methods. */
     GLMContext  ctx;    // context macros need this exact name
     MGLRendererBackendHandle *_backend;
-    MGLPlatformRendererShell *_platformShell;
     /* Window whose resize/backing notifications are observed for geometry
      * publishing (see MGLRenderer+Lifecycle.m).  Weak: never retain a window
      * the host owns. */
@@ -323,8 +322,8 @@ static inline double mglTraceNowSeconds(void)
  * New or touched code should prefer the explicit container fields directly.
  * These aliases keep the existing category implementations behavior-identical
  * while shrinking MGLRenderer's ivar surface. */
-#define _view _platformShell.view
-#define _layer _platformShell.layer
+#define _view self.view
+#define _layer self.layer
 #define _drawable _core.drawable
 #define _activeState _core.activeState
 #define _device _core.device

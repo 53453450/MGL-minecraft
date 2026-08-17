@@ -12,6 +12,10 @@
  * createMGLRendererAndBindToContext:view: and observeValueForKeyPath:. */
 static void *s_kvoViewGeometryContext = &s_kvoViewGeometryContext;
 
+@interface MGLRenderer (LifecycleBackendBoundary)
+- (void)mglBackendWillDestroy:(MGLRendererBackendHandle *)backend;
+@end
+
 static MTLPixelFormat mglMetalLayerPixelFormatForContext(GLMContext drawCtx)
 {
     MTLPixelFormat fallback = MTLPixelFormatBGRA8Unorm;
@@ -67,25 +71,12 @@ static void mglLifecycleReplaceTextureRegion(id<MTLTexture> texture,
 
 #pragma mark C interface to context functions
 
-void mglRendererReleaseOperationContext(void *operation_context)
-{
-    if (operation_context) CFRelease((CFTypeRef)operation_context);
-}
-
-static int mglRendererInstallBackendOperationContext(
-    MGLRenderer *renderer,
-    GLMContext glm_ctx,
+void mglRendererPlatformBackendWillDestroy(
+    void *platform_shell,
     MGLRendererBackendHandle *backend)
 {
-    if (!renderer || !glm_ctx || !backend) return -1;
-    void *retainedRenderer = (void *)CFBridgingRetain(renderer);
-    if (mglRendererBackendInstallOperationContext(
-            backend, retainedRenderer) != 0) {
-        mglRendererReleaseOperationContext(retainedRenderer);
-        NSLog(@"MGL ERROR: failed to install renderer operation context");
-        return -1;
-    }
-    return 0;
+    MGLRenderer *renderer = (__bridge MGLRenderer *)platform_shell;
+    [renderer mglBackendWillDestroy:backend];
 }
 
 - (id) initMGLRendererFromContext: (void *)glm_ctx andBindToWindow: (NSWindow *)window;
@@ -147,7 +138,7 @@ void* CppCreateMGLRendererFromContextAndBindToWindow (void *glm_ctx, void *windo
         return NULL;
     }
     // Ownership: the returned pointer is NON-OWNING (borrowed).
-    // The renderer's lifetime is tied to the backend operation context.
+    // The context retains the renderer through platform_renderer_shell.
     // The caller must NOT CFRelease/free the returned pointer, and must keep
     // glm_ctx alive while using the returned pointer.
     return  (__bridge void *)(renderer);
@@ -170,7 +161,7 @@ void* CppCreateMGLRendererHeadless (void *glm_ctx)
         return NULL;
     }
     // Ownership: the returned pointer is NON-OWNING (borrowed).
-    // The renderer's lifetime is tied to the backend operation context.
+    // The context retains the renderer through platform_renderer_shell.
     // The caller must NOT CFRelease/free the returned pointer, and must keep
     // glm_ctx alive while using the returned pointer.
     return  (__bridge void *)(renderer);
@@ -188,9 +179,10 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     mglClaimGLThread();            /* idempotent; records the init thread as the GL thread */
     ctx = glm_ctx;
     _backend = NULL;
-    _platformShell = [[MGLPlatformRendererShell alloc] initWithView:view];
-    if (!_platformShell) {
-        NSLog(@"MGL ERROR: failed to create platform renderer shell");
+    self.view = view;
+    self.layer = nil;
+    if (!self.view) {
+        NSLog(@"MGL ERROR: failed to bind platform renderer view");
         return;
     }
     _renderPassManager = [MGLRenderPassManager new];
@@ -276,6 +268,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         return;
     }
     glm_ctx->renderer_backend = _backend;
+    glm_ctx->platform_renderer_shell = (void *)CFBridgingRetain(self);
     _bindingStateOwner = mglRendererBackendGetOwner(
         _backend, MGL_RENDERER_BACKEND_OWNER_BINDING);
     _queryStateOwner = mglRendererBackendGetOwner(
@@ -283,13 +276,6 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     _gpuRecovery.commandRecoveryOwner = mglRendererBackendGetOwner(
         _backend, MGL_RENDERER_BACKEND_OWNER_RECOVERY);
     NSLog(@"MGL INFO: Metal-cpp renderer backend ready (%p)", _backend);
-    if (mglRendererInstallBackendOperationContext(
-            self, glm_ctx, _backend) != 0) {
-        mglRendererBackendDestroy(
-            (MGLRendererBackendHandle **)&glm_ctx->renderer_backend);
-        _backend = NULL;
-        return;
-    }
     mglRenderCppAttachRuntimeOwners(
         glm_ctx,
         _renderPassManager.state->currentCommandBufferOwner,
@@ -448,9 +434,6 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         NSLog(@"MGL ERROR: Exception creating initial Metal command buffer: %@", exception);
     }
     
-    glm_ctx->platform_renderer_shell =
-        (void *)CFBridgingRetain(_platformShell);
-
     // PROACTIVE TEXTURE CREATION: Create essential textures to break sync loop
     NSLog(@"MGL INFO: PROACTIVE - Creating essential textures to prevent magenta screen");
     [self createProactiveTextures];
@@ -473,6 +456,16 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     return mglRenderCommandBufferOwnerState(
         _renderPassManager.state->currentCommandBufferOwner,
         &commandState);
+}
+
+- (void)mglBackendWillDestroy:(MGLRendererBackendHandle *)backend
+{
+    if (_backend != backend) return;
+    _backend = NULL;
+    _bindingStateOwner = NULL;
+    _queryStateOwner = NULL;
+    _gpuRecovery.commandRecoveryOwner = NULL;
+    _commandQueueOwner = NULL;
 }
 
 /* Publish view geometry to the GL thread as an atomic snapshot.  Main thread
@@ -768,7 +761,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
 
         /* Task 4: Release all address-stable snapshot arena chunks. */
         mglDestroyBatchArena(&_batching.batchArena);
-        _platformShell = nil;
+        _view = nil;
 
     } @catch (NSException *exception) {
         NSLog(@"MGL ERROR: Exception during dealloc cleanup: %@", exception);

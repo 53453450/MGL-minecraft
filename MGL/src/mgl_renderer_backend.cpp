@@ -10,6 +10,8 @@
 
 extern "C" Program *mglResolveProgramForStageFromState(
     GLMContext context, int stage);
+extern "C" void mglRendererPlatformBackendWillDestroy(
+    void *platform_shell, MGLRendererBackendHandle *backend);
 extern "C" void mglRendererCompatDispatchCompute(
     void *compat_context, GLMContext context,
     unsigned int groups_x, unsigned int groups_y, unsigned int groups_z);
@@ -146,7 +148,6 @@ struct MGLRendererBackendHandle {
     void *query_owner = nullptr;
     void *recovery_owner = nullptr;
     void *binding_owner = nullptr;
-    void *operation_context = nullptr;
     bool renderer_initialized = false;
     bool shutdown_started = false;
     bool destroying = false;
@@ -154,19 +155,15 @@ struct MGLRendererBackendHandle {
 
 static void *mglRendererBackendCompatContext(GLMContext context)
 {
-    if (!context || !context->renderer_backend) return nullptr;
-    return mglRendererBackendGetOperationContext(
-        static_cast<MGLRendererBackendHandle *>(context->renderer_backend));
+    return context && context->renderer_backend
+        ? context->platform_renderer_shell
+        : nullptr;
 }
 
 static void mglRendererBackendReleaseOwnedState(
     MGLRendererBackendHandle *backend)
 {
     if (!backend) return;
-    if (backend->operation_context) {
-        mglRendererReleaseOperationContext(backend->operation_context);
-        backend->operation_context = nullptr;
-    }
     mglRenderCppDestroyCommandQueueOwner(&backend->command_queue_owner);
     mglRenderCppBindingDestroy(backend->binding_owner);
     backend->binding_owner = nullptr;
@@ -259,31 +256,6 @@ extern "C" int mglRendererBackendAttachRuntimeOwners(
     return 0;
 }
 
-extern "C" int mglRendererBackendInstallOperationContext(
-    MGLRendererBackendHandle *backend,
-    void *operation_context)
-{
-    if (!backend || !operation_context) return -1;
-    void *previous = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(backend->mutex);
-        if (backend->shutdown_started || backend->destroying) return -1;
-        previous = backend->operation_context;
-        backend->operation_context = operation_context;
-    }
-    if (previous) mglRendererReleaseOperationContext(previous);
-    return 0;
-}
-
-extern "C" void *mglRendererBackendGetOperationContext(
-    const MGLRendererBackendHandle *backend)
-{
-    if (!backend) return nullptr;
-    std::lock_guard<std::mutex> lock(
-        const_cast<MGLRendererBackendHandle *>(backend)->mutex);
-    return backend->operation_context;
-}
-
 extern "C" int mglRendererBackendIsDestroying(
     const MGLRendererBackendHandle *backend)
 {
@@ -356,13 +328,20 @@ extern "C" void mglRendererBackendDestroy(
     if (!backend_ptr || !*backend_ptr) return;
     MGLRendererBackendHandle *backend = *backend_ptr;
     *backend_ptr = nullptr;
+    void *platform_shell = nullptr;
     {
         std::lock_guard<std::mutex> lock(backend->mutex);
         if (backend->destroying) return;
         backend->destroying = true;
+        if (backend->context) {
+            platform_shell = backend->context->platform_renderer_shell;
+        }
         if (backend->context && backend->context->renderer_backend == backend) {
             backend->context->renderer_backend = nullptr;
         }
+    }
+    if (platform_shell) {
+        mglRendererPlatformBackendWillDestroy(platform_shell, backend);
     }
     (void)mglRendererBackendShutdown(backend, nullptr);
     mglRendererBackendReleaseOwnedState(backend);
