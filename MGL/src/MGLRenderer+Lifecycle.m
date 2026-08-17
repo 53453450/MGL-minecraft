@@ -240,8 +240,8 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     NSLog(@"MGL INFO: VIRTUALIZED AGX - Creating Metal device with virtualization detection");
 
     // Create the Metal device
-    _device = MTLCreateSystemDefaultDevice();
-    if (!_device) {
+    id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+    if (!device) {
         NSLog(@"MGL ERROR: Metal device not found - this is required for Apple Silicon");
         // Intentional early return on critical Metal initialization failure.
         // The renderer is left in a PARTIALLY INITIALIZED state:
@@ -255,10 +255,10 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         return; // Exit early rather than continuing with nil device
     }
 
-    NSLog(@"MGL INFO: Metal device created: %@", _device);
+    NSLog(@"MGL INFO: Metal device created: %@", device);
 
     MGLRendererBackendCreateInfo backendInfo = {
-        .objc_device = (__bridge void *)_device,
+        .objc_device = (__bridge void *)device,
         .context = glm_ctx,
         .binding_slot_count = TEXTURE_UNITS,
         .query_capacity = 256u,
@@ -733,12 +733,6 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
             NSLog(@"MGL INFO: Removing and releasing layer");
             [_layer removeFromSuperlayer];
             _layer = nil;
-        }
-
-        // Cleanup device. The backend command queue owner was destroyed above.
-        if (_device) {
-            NSLog(@"MGL INFO: Releasing Metal device");
-            _device = nil;
         }
 
         /* Task 4: Release all address-stable snapshot arena chunks. */

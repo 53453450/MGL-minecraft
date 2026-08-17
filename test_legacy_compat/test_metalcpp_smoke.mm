@@ -8808,6 +8808,10 @@ static int verifyRendererBackend(id<MTLDevice> device) {
         fprintf(stderr, "FAIL: renderer backend create\n");
         return 1;
     }
+    if (mglRendererBackendGetDevice(backend) != (__bridge void *)device) {
+        fprintf(stderr, "FAIL: renderer backend device ownership\n");
+        return 1;
+    }
     if (mglRendererBackendIsReady(backend) != 0) {
         fprintf(stderr, "FAIL: renderer backend ready before queue\n");
         return 1;
@@ -9020,7 +9024,8 @@ static int verifyRendererBackend(id<MTLDevice> device) {
     }
     printf("RENDERER_BACKEND_PROACTIVE_TEXTURE_OK\n");
     MGLRendererBackendShutdownResult shutdown = {};
-    if (mglRendererBackendShutdown(backend, &shutdown) != 0) {
+    if (mglRendererBackendShutdown(backend, &shutdown) != 0 ||
+        mglRendererBackendGetDevice(backend) != (__bridge void *)device) {
         fprintf(stderr, "FAIL: renderer backend shutdown\n");
         return 1;
     }

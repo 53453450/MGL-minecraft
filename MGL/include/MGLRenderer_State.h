@@ -72,7 +72,6 @@ typedef struct {
 typedef struct MGLRendererCoreState_t {
     id<CAMetalDrawable> __strong drawable;
     GLMState *activeState;
-    id<MTLDevice> __strong device;
     MGLCapability capability;
     MGLDrawable drawBuffers[_MAX_DRAW_BUFFERS];
     BOOL defaultDrawableWrittenSinceLastSwap;

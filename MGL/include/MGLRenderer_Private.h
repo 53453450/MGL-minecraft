@@ -325,7 +325,8 @@ static inline double mglTraceNowSeconds(void)
 #define _layer self.layer
 #define _drawable _core.drawable
 #define _activeState _core.activeState
-#define _device _core.device
+#define _device ((__bridge id<MTLDevice>) \
+    mglRendererBackendGetDevice(_backend))
 #define _capability _core.capability
 #define _drawBuffers _core.drawBuffers
 #define _defaultDrawableWrittenSinceLastSwap _core.defaultDrawableWrittenSinceLastSwap

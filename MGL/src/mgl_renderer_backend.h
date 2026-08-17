@@ -62,6 +62,9 @@ typedef struct MGLRendererBackendShutdownResult {
 int mglRendererBackendCreate(const MGLRendererBackendCreateInfo *info,
                              MGLRendererBackendHandle **backend_out);
 int mglRendererBackendIsReady(const MGLRendererBackendHandle *backend);
+/* Immutable after create; returns the borrowed device retained by the backend. */
+void *mglRendererBackendGetDevice(
+    const MGLRendererBackendHandle *backend);
 int mglRendererBackendResetCommandQueue(MGLRendererBackendHandle *backend,
                                         uint32_t max_command_buffers,
                                         void **command_queue_out);

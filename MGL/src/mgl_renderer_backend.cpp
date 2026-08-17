@@ -133,6 +133,7 @@ struct MGLRendererBackendFallbackTextureEntry {
 struct MGLRendererBackendHandle {
     std::mutex mutex;
     GLMContext context = nullptr;
+    MTL::Device *device = nullptr;
     void *command_queue_owner = nullptr;
     MTL::CommandQueue *command_queue = nullptr;
     void *command_buffer_owner = nullptr;
@@ -258,6 +259,10 @@ static void mglRendererBackendReleaseOwnedState(
     if (backend->renderer_initialized) {
         mglRenderCppShutdown();
         backend->renderer_initialized = false;
+    }
+    if (backend->device) {
+        backend->device->release();
+        backend->device = nullptr;
     }
 }
 
@@ -391,7 +396,11 @@ extern "C" int mglRendererBackendCreate(
 
     MGLRendererBackendHandle *backend = new MGLRendererBackendHandle();
     backend->context = info->context;
+    backend->device = static_cast<MTL::Device *>(info->objc_device);
+    backend->device->retain();
     if (mglRenderCppInit(info->objc_device) != 0) {
+        backend->device->release();
+        backend->device = nullptr;
         delete backend;
         return -1;
     }
@@ -418,9 +427,16 @@ extern "C" int mglRendererBackendIsReady(
     if (!backend) return 0;
     std::lock_guard<std::mutex> lock(
         const_cast<MGLRendererBackendHandle *>(backend)->mutex);
-    return backend->renderer_initialized && !backend->shutdown_started &&
+    return backend->device && backend->renderer_initialized &&
+           !backend->shutdown_started &&
            backend->command_queue_owner && backend->binding_owner &&
            backend->query_owner && backend->recovery_owner;
+}
+
+extern "C" void *mglRendererBackendGetDevice(
+    const MGLRendererBackendHandle *backend)
+{
+    return backend ? backend->device : nullptr;
 }
 
 extern "C" int mglRendererBackendResetCommandQueue(
