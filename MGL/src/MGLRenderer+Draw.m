@@ -141,28 +141,25 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     return false;
 }
 
-static MGLRenderer *mglRendererCompatDrawTarget(void *runtime_context,
-                                                GLMContext glm_ctx)
+static MGLRenderer *mglRendererCompatDrawTarget(GLMContext glm_ctx)
 {
-    MGLRenderer *renderer = (__bridge MGLRenderer *)runtime_context;
-    return renderer && glm_ctx ? renderer : nil;
+    return mglRendererForContext(glm_ctx);
 }
 
-void mglRendererCompatDrawArrays(void *runtime_context, GLMContext glm_ctx,
+void mglRendererCompatDrawArrays(GLMContext glm_ctx,
                                  uint32_t mode, int32_t first, int32_t count)
 {
-    MGLRenderer *renderer = mglRendererCompatDrawTarget(runtime_context, glm_ctx);
+    MGLRenderer *renderer = mglRendererCompatDrawTarget(glm_ctx);
     if (!renderer) return;
     @autoreleasepool {
         [renderer mtlDrawArrays:glm_ctx mode:mode first:first count:count];
     }
 }
 
-void mglRendererCompatDrawElements(
-    void *runtime_context, GLMContext glm_ctx, uint32_t mode,
+void mglRendererCompatDrawElements(GLMContext glm_ctx, uint32_t mode,
     int32_t count, uint32_t type, const void *indices)
 {
-    MGLRenderer *renderer = mglRendererCompatDrawTarget(runtime_context, glm_ctx);
+    MGLRenderer *renderer = mglRendererCompatDrawTarget(glm_ctx);
     if (!renderer) return;
     @autoreleasepool {
         [renderer mtlDrawElements:glm_ctx mode:mode count:count
@@ -170,12 +167,11 @@ void mglRendererCompatDrawElements(
     }
 }
 
-void mglRendererCompatDrawRangeElements(
-    void *runtime_context, GLMContext glm_ctx, uint32_t mode,
+void mglRendererCompatDrawRangeElements(GLMContext glm_ctx, uint32_t mode,
     uint32_t start, uint32_t end, int32_t count, uint32_t type,
     const void *indices)
 {
-    MGLRenderer *renderer = mglRendererCompatDrawTarget(runtime_context, glm_ctx);
+    MGLRenderer *renderer = mglRendererCompatDrawTarget(glm_ctx);
     if (!renderer) return;
     @autoreleasepool {
         [renderer mtlDrawRangeElements:glm_ctx mode:mode start:start end:end
@@ -183,11 +179,10 @@ void mglRendererCompatDrawRangeElements(
     }
 }
 
-void mglRendererCompatDrawArraysInstanced(
-    void *runtime_context, GLMContext glm_ctx, uint32_t mode,
+void mglRendererCompatDrawArraysInstanced(GLMContext glm_ctx, uint32_t mode,
     int32_t first, int32_t count, int32_t instance_count)
 {
-    MGLRenderer *renderer = mglRendererCompatDrawTarget(runtime_context, glm_ctx);
+    MGLRenderer *renderer = mglRendererCompatDrawTarget(glm_ctx);
     if (!renderer) return;
     @autoreleasepool {
         [renderer mtlDrawArraysInstanced:glm_ctx mode:mode first:first
@@ -195,12 +190,11 @@ void mglRendererCompatDrawArraysInstanced(
     }
 }
 
-void mglRendererCompatDrawElementsInstanced(
-    void *runtime_context, GLMContext glm_ctx, uint32_t mode,
+void mglRendererCompatDrawElementsInstanced(GLMContext glm_ctx, uint32_t mode,
     int32_t count, uint32_t type, const void *indices,
     int32_t instance_count)
 {
-    MGLRenderer *renderer = mglRendererCompatDrawTarget(runtime_context, glm_ctx);
+    MGLRenderer *renderer = mglRendererCompatDrawTarget(glm_ctx);
     if (!renderer) return;
     @autoreleasepool {
         [renderer mtlDrawElementsInstanced:glm_ctx mode:mode count:count
@@ -209,11 +203,10 @@ void mglRendererCompatDrawElementsInstanced(
     }
 }
 
-void mglRendererCompatDrawElementsBaseVertex(
-    void *runtime_context, GLMContext glm_ctx, uint32_t mode,
+void mglRendererCompatDrawElementsBaseVertex(GLMContext glm_ctx, uint32_t mode,
     int32_t count, uint32_t type, const void *indices, int32_t base_vertex)
 {
-    MGLRenderer *renderer = mglRendererCompatDrawTarget(runtime_context, glm_ctx);
+    MGLRenderer *renderer = mglRendererCompatDrawTarget(glm_ctx);
     if (!renderer) return;
     @autoreleasepool {
         [renderer mtlDrawElementsBaseVertex:glm_ctx mode:mode count:count
@@ -222,12 +215,11 @@ void mglRendererCompatDrawElementsBaseVertex(
     }
 }
 
-void mglRendererCompatDrawRangeElementsBaseVertex(
-    void *runtime_context, GLMContext glm_ctx, uint32_t mode,
+void mglRendererCompatDrawRangeElementsBaseVertex(GLMContext glm_ctx, uint32_t mode,
     uint32_t start, uint32_t end, int32_t count, uint32_t type,
     const void *indices, int32_t base_vertex)
 {
-    MGLRenderer *renderer = mglRendererCompatDrawTarget(runtime_context, glm_ctx);
+    MGLRenderer *renderer = mglRendererCompatDrawTarget(glm_ctx);
     if (!renderer) return;
     @autoreleasepool {
         [renderer mtlDrawRangeElementsBaseVertex:glm_ctx mode:mode
@@ -237,12 +229,11 @@ void mglRendererCompatDrawRangeElementsBaseVertex(
     }
 }
 
-void mglRendererCompatDrawElementsInstancedBaseVertex(
-    void *runtime_context, GLMContext glm_ctx, uint32_t mode,
+void mglRendererCompatDrawElementsInstancedBaseVertex(GLMContext glm_ctx, uint32_t mode,
     int32_t count, uint32_t type, const void *indices,
     int32_t instance_count, int32_t base_vertex)
 {
-    MGLRenderer *renderer = mglRendererCompatDrawTarget(runtime_context, glm_ctx);
+    MGLRenderer *renderer = mglRendererCompatDrawTarget(glm_ctx);
     if (!renderer) return;
     @autoreleasepool {
         [renderer mtlDrawElementsInstancedBaseVertex:glm_ctx mode:mode
@@ -253,22 +244,20 @@ void mglRendererCompatDrawElementsInstancedBaseVertex(
     }
 }
 
-void mglRendererCompatDrawArraysIndirect(
-    void *runtime_context, GLMContext glm_ctx,
+void mglRendererCompatDrawArraysIndirect(GLMContext glm_ctx,
     uint32_t mode, const void *indirect)
 {
-    MGLRenderer *renderer = mglRendererCompatDrawTarget(runtime_context, glm_ctx);
+    MGLRenderer *renderer = mglRendererCompatDrawTarget(glm_ctx);
     if (!renderer) return;
     @autoreleasepool {
         [renderer mtlDrawArraysIndirect:glm_ctx mode:mode indirect:indirect];
     }
 }
 
-void mglRendererCompatDrawElementsIndirect(
-    void *runtime_context, GLMContext glm_ctx,
+void mglRendererCompatDrawElementsIndirect(GLMContext glm_ctx,
     uint32_t mode, uint32_t type, const void *indirect)
 {
-    MGLRenderer *renderer = mglRendererCompatDrawTarget(runtime_context, glm_ctx);
+    MGLRenderer *renderer = mglRendererCompatDrawTarget(glm_ctx);
     if (!renderer) return;
     @autoreleasepool {
         [renderer mtlDrawElementsIndirect:glm_ctx mode:mode type:type
@@ -276,12 +265,11 @@ void mglRendererCompatDrawElementsIndirect(
     }
 }
 
-void mglRendererCompatDrawArraysInstancedBaseInstance(
-    void *runtime_context, GLMContext glm_ctx, uint32_t mode,
+void mglRendererCompatDrawArraysInstancedBaseInstance(GLMContext glm_ctx, uint32_t mode,
     int32_t first, int32_t count, int32_t instance_count,
     uint32_t base_instance)
 {
-    MGLRenderer *renderer = mglRendererCompatDrawTarget(runtime_context, glm_ctx);
+    MGLRenderer *renderer = mglRendererCompatDrawTarget(glm_ctx);
     if (!renderer) return;
     @autoreleasepool {
         [renderer mtlDrawArraysInstancedBaseInstance:glm_ctx mode:mode
@@ -291,12 +279,11 @@ void mglRendererCompatDrawArraysInstancedBaseInstance(
     }
 }
 
-void mglRendererCompatDrawElementsInstancedBaseInstance(
-    void *runtime_context, GLMContext glm_ctx, uint32_t mode,
+void mglRendererCompatDrawElementsInstancedBaseInstance(GLMContext glm_ctx, uint32_t mode,
     int32_t count, uint32_t type, const void *indices,
     int32_t instance_count, uint32_t base_instance)
 {
-    MGLRenderer *renderer = mglRendererCompatDrawTarget(runtime_context, glm_ctx);
+    MGLRenderer *renderer = mglRendererCompatDrawTarget(glm_ctx);
     if (!renderer) return;
     @autoreleasepool {
         [renderer mtlDrawElementsInstancedBaseInstance:glm_ctx mode:mode
@@ -307,12 +294,11 @@ void mglRendererCompatDrawElementsInstancedBaseInstance(
     }
 }
 
-void mglRendererCompatDrawElementsInstancedBaseVertexBaseInstance(
-    void *runtime_context, GLMContext glm_ctx, uint32_t mode,
+void mglRendererCompatDrawElementsInstancedBaseVertexBaseInstance(GLMContext glm_ctx, uint32_t mode,
     int32_t count, uint32_t type, const void *indices,
     int32_t instance_count, int32_t base_vertex, uint32_t base_instance)
 {
-    MGLRenderer *renderer = mglRendererCompatDrawTarget(runtime_context, glm_ctx);
+    MGLRenderer *renderer = mglRendererCompatDrawTarget(glm_ctx);
     if (!renderer) return;
     @autoreleasepool {
         [renderer mtlDrawElementsInstancedBaseVertexBaseInstance:glm_ctx
@@ -325,11 +311,10 @@ void mglRendererCompatDrawElementsInstancedBaseVertexBaseInstance(
     }
 }
 
-void mglRendererCompatMultiDrawArrays(
-    void *runtime_context, GLMContext glm_ctx, uint32_t mode,
+void mglRendererCompatMultiDrawArrays(GLMContext glm_ctx, uint32_t mode,
     const int32_t *firsts, const int32_t *counts, int32_t draw_count)
 {
-    MGLRenderer *renderer = mglRendererCompatDrawTarget(runtime_context, glm_ctx);
+    MGLRenderer *renderer = mglRendererCompatDrawTarget(glm_ctx);
     if (!renderer) return;
     @autoreleasepool {
         [renderer mtlMultiDrawArrays:glm_ctx mode:mode
@@ -339,12 +324,11 @@ void mglRendererCompatMultiDrawArrays(
     }
 }
 
-void mglRendererCompatMultiDrawElements(
-    void *runtime_context, GLMContext glm_ctx, uint32_t mode,
+void mglRendererCompatMultiDrawElements(GLMContext glm_ctx, uint32_t mode,
     const int32_t *counts, uint32_t type, const void *const *indices,
     int32_t draw_count)
 {
-    MGLRenderer *renderer = mglRendererCompatDrawTarget(runtime_context, glm_ctx);
+    MGLRenderer *renderer = mglRendererCompatDrawTarget(glm_ctx);
     if (!renderer) return;
     @autoreleasepool {
         [renderer mtlMultiDrawElements:glm_ctx mode:mode
@@ -353,12 +337,11 @@ void mglRendererCompatMultiDrawElements(
     }
 }
 
-void mglRendererCompatMultiDrawElementsBaseVertex(
-    void *runtime_context, GLMContext glm_ctx, uint32_t mode,
+void mglRendererCompatMultiDrawElementsBaseVertex(GLMContext glm_ctx, uint32_t mode,
     const int32_t *counts, uint32_t type, const void *const *indices,
     int32_t draw_count, const int32_t *base_vertices)
 {
-    MGLRenderer *renderer = mglRendererCompatDrawTarget(runtime_context, glm_ctx);
+    MGLRenderer *renderer = mglRendererCompatDrawTarget(glm_ctx);
     if (!renderer) return;
     @autoreleasepool {
         [renderer mtlMultiDrawElementsBaseVertex:glm_ctx mode:mode
@@ -369,11 +352,10 @@ void mglRendererCompatMultiDrawElementsBaseVertex(
     }
 }
 
-void mglRendererCompatMultiDrawArraysIndirect(
-    void *runtime_context, GLMContext glm_ctx, uint32_t mode,
+void mglRendererCompatMultiDrawArraysIndirect(GLMContext glm_ctx, uint32_t mode,
     const void *indirect, int32_t draw_count, int32_t stride)
 {
-    MGLRenderer *renderer = mglRendererCompatDrawTarget(runtime_context, glm_ctx);
+    MGLRenderer *renderer = mglRendererCompatDrawTarget(glm_ctx);
     if (!renderer) return;
     @autoreleasepool {
         [renderer mtlMultiDrawArraysIndirect:glm_ctx mode:mode
@@ -382,11 +364,10 @@ void mglRendererCompatMultiDrawArraysIndirect(
     }
 }
 
-void mglRendererCompatMultiDrawElementsIndirect(
-    void *runtime_context, GLMContext glm_ctx, uint32_t mode, uint32_t type,
+void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uint32_t type,
     const void *indirect, int32_t draw_count, int32_t stride)
 {
-    MGLRenderer *renderer = mglRendererCompatDrawTarget(runtime_context, glm_ctx);
+    MGLRenderer *renderer = mglRendererCompatDrawTarget(glm_ctx);
     if (!renderer) return;
     @autoreleasepool {
         [renderer mtlMultiDrawElementsIndirect:glm_ctx mode:mode type:type

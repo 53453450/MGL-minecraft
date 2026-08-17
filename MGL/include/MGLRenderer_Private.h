@@ -82,6 +82,13 @@ extern Texture *findTexture(GLMContext ctx, GLuint texture);
 BOOL mglEnvFlagEnabled(const char *name);
 BOOL mglEnvFlagEnabledDefaultOn(const char *name);
 
+static inline MGLRenderer *mglRendererForContext(GLMContext context)
+{
+    return context
+        ? (__bridge MGLRenderer *)context->platform_renderer_shell
+        : nil;
+}
+
 static inline BOOL mglBindingStateIsValid(void *owner)
 {
     uint32_t valid = 0;

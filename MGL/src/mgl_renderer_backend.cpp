@@ -12,127 +12,93 @@ extern "C" Program *mglResolveProgramForStageFromState(
     GLMContext context, int stage);
 extern "C" void mglRendererPlatformBackendWillDestroy(
     void *platform_shell, MGLRendererBackendHandle *backend);
-extern "C" void mglRendererCompatDispatchCompute(
-    void *compat_context, GLMContext context,
+extern "C" void mglRendererCompatDispatchCompute(GLMContext context,
     unsigned int groups_x, unsigned int groups_y, unsigned int groups_z);
-extern "C" void mglRendererCompatDispatchComputeIndirect(
-    void *compat_context, GLMContext context, intptr_t indirect);
-extern "C" void mglRendererCompatDrawArrays(
-    void *compat_context, GLMContext context,
+extern "C" void mglRendererCompatDispatchComputeIndirect(GLMContext context, intptr_t indirect);
+extern "C" void mglRendererCompatDrawArrays(GLMContext context,
     uint32_t mode, int32_t first, int32_t count);
-extern "C" void mglRendererCompatDrawElements(
-    void *compat_context, GLMContext context,
+extern "C" void mglRendererCompatDrawElements(GLMContext context,
     uint32_t mode, int32_t count, uint32_t type, const void *indices);
-extern "C" void mglRendererCompatDrawRangeElements(
-    void *compat_context, GLMContext context, uint32_t mode,
+extern "C" void mglRendererCompatDrawRangeElements(GLMContext context, uint32_t mode,
     uint32_t start, uint32_t end, int32_t count, uint32_t type,
     const void *indices);
-extern "C" void mglRendererCompatDrawArraysInstanced(
-    void *compat_context, GLMContext context, uint32_t mode,
+extern "C" void mglRendererCompatDrawArraysInstanced(GLMContext context, uint32_t mode,
     int32_t first, int32_t count, int32_t instance_count);
-extern "C" void mglRendererCompatDrawElementsInstanced(
-    void *compat_context, GLMContext context, uint32_t mode,
+extern "C" void mglRendererCompatDrawElementsInstanced(GLMContext context, uint32_t mode,
     int32_t count, uint32_t type, const void *indices,
     int32_t instance_count);
-extern "C" void mglRendererCompatDrawElementsBaseVertex(
-    void *compat_context, GLMContext context, uint32_t mode,
+extern "C" void mglRendererCompatDrawElementsBaseVertex(GLMContext context, uint32_t mode,
     int32_t count, uint32_t type, const void *indices, int32_t base_vertex);
-extern "C" void mglRendererCompatDrawRangeElementsBaseVertex(
-    void *compat_context, GLMContext context, uint32_t mode,
+extern "C" void mglRendererCompatDrawRangeElementsBaseVertex(GLMContext context, uint32_t mode,
     uint32_t start, uint32_t end, int32_t count, uint32_t type,
     const void *indices, int32_t base_vertex);
-extern "C" void mglRendererCompatDrawElementsInstancedBaseVertex(
-    void *compat_context, GLMContext context, uint32_t mode,
+extern "C" void mglRendererCompatDrawElementsInstancedBaseVertex(GLMContext context, uint32_t mode,
     int32_t count, uint32_t type, const void *indices,
     int32_t instance_count, int32_t base_vertex);
-extern "C" void mglRendererCompatDrawArraysIndirect(
-    void *compat_context, GLMContext context,
+extern "C" void mglRendererCompatDrawArraysIndirect(GLMContext context,
     uint32_t mode, const void *indirect);
-extern "C" void mglRendererCompatDrawElementsIndirect(
-    void *compat_context, GLMContext context,
+extern "C" void mglRendererCompatDrawElementsIndirect(GLMContext context,
     uint32_t mode, uint32_t type, const void *indirect);
-extern "C" void mglRendererCompatDrawArraysInstancedBaseInstance(
-    void *compat_context, GLMContext context, uint32_t mode,
+extern "C" void mglRendererCompatDrawArraysInstancedBaseInstance(GLMContext context, uint32_t mode,
     int32_t first, int32_t count, int32_t instance_count,
     uint32_t base_instance);
-extern "C" void mglRendererCompatDrawElementsInstancedBaseInstance(
-    void *compat_context, GLMContext context, uint32_t mode,
+extern "C" void mglRendererCompatDrawElementsInstancedBaseInstance(GLMContext context, uint32_t mode,
     int32_t count, uint32_t type, const void *indices,
     int32_t instance_count, uint32_t base_instance);
-extern "C" void mglRendererCompatDrawElementsInstancedBaseVertexBaseInstance(
-    void *compat_context, GLMContext context, uint32_t mode,
+extern "C" void mglRendererCompatDrawElementsInstancedBaseVertexBaseInstance(GLMContext context, uint32_t mode,
     int32_t count, uint32_t type, const void *indices,
     int32_t instance_count, int32_t base_vertex, uint32_t base_instance);
-extern "C" void mglRendererCompatMultiDrawArrays(
-    void *compat_context, GLMContext context, uint32_t mode,
+extern "C" void mglRendererCompatMultiDrawArrays(GLMContext context, uint32_t mode,
     const int32_t *firsts, const int32_t *counts, int32_t draw_count);
-extern "C" void mglRendererCompatMultiDrawElements(
-    void *compat_context, GLMContext context, uint32_t mode,
+extern "C" void mglRendererCompatMultiDrawElements(GLMContext context, uint32_t mode,
     const int32_t *counts, uint32_t type, const void *const *indices,
     int32_t draw_count);
-extern "C" void mglRendererCompatMultiDrawElementsBaseVertex(
-    void *compat_context, GLMContext context, uint32_t mode,
+extern "C" void mglRendererCompatMultiDrawElementsBaseVertex(GLMContext context, uint32_t mode,
     const int32_t *counts, uint32_t type, const void *const *indices,
     int32_t draw_count, const int32_t *base_vertices);
-extern "C" void mglRendererCompatMultiDrawArraysIndirect(
-    void *compat_context, GLMContext context, uint32_t mode,
+extern "C" void mglRendererCompatMultiDrawArraysIndirect(GLMContext context, uint32_t mode,
     const void *indirect, int32_t draw_count, int32_t stride);
-extern "C" void mglRendererCompatMultiDrawElementsIndirect(
-    void *compat_context, GLMContext context, uint32_t mode, uint32_t type,
+extern "C" void mglRendererCompatMultiDrawElementsIndirect(GLMContext context, uint32_t mode, uint32_t type,
     const void *indirect, int32_t draw_count, int32_t stride);
-extern "C" void mglRendererCompatBindTexture(
-    void *compat_context, GLMContext context, Texture *texture);
-extern "C" void mglRendererCompatFlushDrawBuffer(
-    void *compat_context, GLMContext context);
-extern "C" void mglRendererCompatSwapBuffers(
-    void *compat_context, GLMContext context);
-extern "C" void mglRendererCompatClearBuffer(
-    void *compat_context, GLMContext context,
+extern "C" void mglRendererCompatBindTexture(GLMContext context, Texture *texture);
+extern "C" void mglRendererCompatFlushDrawBuffer(GLMContext context);
+extern "C" void mglRendererCompatSwapBuffers(GLMContext context);
+extern "C" void mglRendererCompatClearBuffer(GLMContext context,
     unsigned int type, unsigned int mask);
-extern "C" void mglRendererCompatBlitFramebuffer(
-    void *compat_context, GLMContext context,
+extern "C" void mglRendererCompatBlitFramebuffer(GLMContext context,
     int src_x0, int src_y0, int src_x1, int src_y1,
     int dst_x0, int dst_y0, int dst_x1, int dst_y1,
     unsigned int mask, unsigned int filter);
-extern "C" void mglRendererCompatReadDrawable(
-    void *compat_context, GLMContext context, void *pixel_bytes,
+extern "C" void mglRendererCompatReadDrawable(GLMContext context, void *pixel_bytes,
     uint32_t bytes_per_row, uint32_t bytes_per_image,
     int32_t x, int32_t y, int32_t width, int32_t height);
-extern "C" void mglRendererCompatReadIntegerPixels(
-    void *compat_context, GLMContext context, void *pixel_bytes,
+extern "C" void mglRendererCompatReadIntegerPixels(GLMContext context, void *pixel_bytes,
     uint32_t bytes_per_row, uint32_t bytes_per_image,
     int32_t x, int32_t y, int32_t width, int32_t height,
     uint32_t format, uint32_t type);
-extern "C" void mglRendererCompatReadDepthPixels(
-    void *compat_context, GLMContext context, void *pixel_bytes,
+extern "C" void mglRendererCompatReadDepthPixels(GLMContext context, void *pixel_bytes,
     uint32_t bytes_per_row, uint32_t bytes_per_image,
     int32_t x, int32_t y, int32_t width, int32_t height);
-extern "C" void mglRendererCompatGetTexImage(
-    void *compat_context, GLMContext context, Texture *texture,
+extern "C" void mglRendererCompatGetTexImage(GLMContext context, Texture *texture,
     void *pixel_bytes, uint32_t bytes_per_row, uint32_t bytes_per_image,
     int32_t x, int32_t y, int32_t width, int32_t height,
     uint32_t format, uint32_t type, uint32_t level, uint32_t slice);
-extern "C" void mglRendererCompatGenerateMipmaps(
-    void *compat_context, GLMContext context, Texture *texture);
-extern "C" void mglRendererCompatTexSubImage(
-    void *compat_context, GLMContext context, Texture *texture, Buffer *buffer,
+extern "C" void mglRendererCompatGenerateMipmaps(GLMContext context, Texture *texture);
+extern "C" void mglRendererCompatTexSubImage(GLMContext context, Texture *texture, Buffer *buffer,
     size_t source_offset, size_t source_pitch, size_t source_image_size,
     size_t source_size, uint32_t slice, uint32_t level,
     size_t width, size_t height, size_t depth,
     size_t x_offset, size_t y_offset, size_t z_offset);
-extern "C" bool mglRendererCompatTexSubImageBytes(
-    void *compat_context, GLMContext context, Texture *texture,
+extern "C" bool mglRendererCompatTexSubImageBytes(GLMContext context, Texture *texture,
     const void *bytes, size_t bytes_size,
     size_t source_offset, size_t source_pitch, size_t source_image_size,
     uint32_t slice, uint32_t level,
     size_t width, size_t height, size_t depth,
     size_t x_offset, size_t y_offset, size_t z_offset);
-extern "C" void mglRendererCompatCopyTexSubImage(
-    void *compat_context, GLMContext context, Texture *texture,
+extern "C" void mglRendererCompatCopyTexSubImage(GLMContext context, Texture *texture,
     uint32_t slice, int32_t level, int32_t x_offset, int32_t y_offset,
     int32_t x, int32_t y, int32_t width, int32_t height);
-extern "C" void mglRendererCompatCopyImageSubData(
-    void *compat_context, GLMContext context, Texture *source_texture,
+extern "C" void mglRendererCompatCopyImageSubData(GLMContext context, Texture *source_texture,
     int32_t source_level, int32_t source_x, int32_t source_y, int32_t source_z,
     Texture *destination_texture, int32_t destination_level,
     int32_t destination_x, int32_t destination_y, int32_t destination_z,
@@ -153,7 +119,7 @@ struct MGLRendererBackendHandle {
     bool destroying = false;
 };
 
-static void *mglRendererBackendCompatContext(GLMContext context)
+static void *mglRendererBackendPlatformShell(GLMContext context)
 {
     return context && context->renderer_backend
         ? context->platform_renderer_shell
@@ -355,8 +321,8 @@ extern "C" void mglRendererBindBuffer(GLMContext context, Buffer *buffer)
 
 extern "C" void mglRendererBindTexture(GLMContext context, Texture *texture)
 {
-    void *compat = mglRendererBackendCompatContext(context);
-    if (compat) mglRendererCompatBindTexture(compat, context, texture);
+    void *platform_shell = mglRendererBackendPlatformShell(context);
+    if (platform_shell) mglRendererCompatBindTexture(context, texture);
 }
 
 extern "C" void mglRendererBindProgram(GLMContext context, Program *program)
@@ -403,14 +369,14 @@ extern "C" void mglRendererFlush(GLMContext context, bool finish)
 
 extern "C" void mglRendererSwapBuffers(GLMContext context)
 {
-    void *compat = mglRendererBackendCompatContext(context);
-    if (compat) mglRendererCompatSwapBuffers(compat, context);
+    void *platform_shell = mglRendererBackendPlatformShell(context);
+    if (platform_shell) mglRendererCompatSwapBuffers(context);
 }
 
 extern "C" void mglRendererFlushDrawBuffer(GLMContext context)
 {
-    void *compat = mglRendererBackendCompatContext(context);
-    if (compat) mglRendererCompatFlushDrawBuffer(compat, context);
+    void *platform_shell = mglRendererBackendPlatformShell(context);
+    if (platform_shell) mglRendererCompatFlushDrawBuffer(context);
 }
 
 extern "C" void mglRendererInvalidateRenderPass(GLMContext context)
@@ -421,8 +387,8 @@ extern "C" void mglRendererInvalidateRenderPass(GLMContext context)
 extern "C" void mglRendererClearBuffer(
     GLMContext context, uint32_t type, uint32_t mask)
 {
-    void *compat = mglRendererBackendCompatContext(context);
-    if (compat) mglRendererCompatClearBuffer(compat, context, type, mask);
+    void *platform_shell = mglRendererBackendPlatformShell(context);
+    if (platform_shell) mglRendererCompatClearBuffer(context, type, mask);
 }
 
 extern "C" void mglRendererBlitFramebuffer(
@@ -431,10 +397,9 @@ extern "C" void mglRendererBlitFramebuffer(
     int32_t dst_x0, int32_t dst_y0, int32_t dst_x1, int32_t dst_y1,
     uint32_t mask, uint32_t filter)
 {
-    void *compat = mglRendererBackendCompatContext(context);
-    if (compat) {
-        mglRendererCompatBlitFramebuffer(
-            compat, context, src_x0, src_y0, src_x1, src_y1,
+    void *platform_shell = mglRendererBackendPlatformShell(context);
+    if (platform_shell) {
+        mglRendererCompatBlitFramebuffer(context, src_x0, src_y0, src_x1, src_y1,
             dst_x0, dst_y0, dst_x1, dst_y1, mask, filter);
     }
 }
@@ -471,10 +436,9 @@ extern "C" void mglRendererReadDrawable(
     uint32_t bytes_per_row, uint32_t bytes_per_image,
     int32_t x, int32_t y, int32_t width, int32_t height)
 {
-    void *compat = mglRendererBackendCompatContext(context);
-    if (compat) {
-        mglRendererCompatReadDrawable(
-            compat, context, pixel_bytes, bytes_per_row, bytes_per_image,
+    void *platform_shell = mglRendererBackendPlatformShell(context);
+    if (platform_shell) {
+        mglRendererCompatReadDrawable(context, pixel_bytes, bytes_per_row, bytes_per_image,
             x, y, width, height);
     }
 }
@@ -485,10 +449,9 @@ extern "C" void mglRendererReadIntegerPixels(
     int32_t x, int32_t y, int32_t width, int32_t height,
     uint32_t format, uint32_t type)
 {
-    void *compat = mglRendererBackendCompatContext(context);
-    if (compat) {
-        mglRendererCompatReadIntegerPixels(
-            compat, context, pixel_bytes, bytes_per_row, bytes_per_image,
+    void *platform_shell = mglRendererBackendPlatformShell(context);
+    if (platform_shell) {
+        mglRendererCompatReadIntegerPixels(context, pixel_bytes, bytes_per_row, bytes_per_image,
             x, y, width, height, format, type);
     }
 }
@@ -498,10 +461,9 @@ extern "C" void mglRendererReadDepthPixels(
     uint32_t bytes_per_row, uint32_t bytes_per_image,
     int32_t x, int32_t y, int32_t width, int32_t height)
 {
-    void *compat = mglRendererBackendCompatContext(context);
-    if (compat) {
-        mglRendererCompatReadDepthPixels(
-            compat, context, pixel_bytes, bytes_per_row, bytes_per_image,
+    void *platform_shell = mglRendererBackendPlatformShell(context);
+    if (platform_shell) {
+        mglRendererCompatReadDepthPixels(context, pixel_bytes, bytes_per_row, bytes_per_image,
             x, y, width, height);
     }
 }
@@ -512,10 +474,9 @@ extern "C" void mglRendererGetTexImage(
     int32_t x, int32_t y, int32_t width, int32_t height,
     uint32_t format, uint32_t type, uint32_t level, uint32_t slice)
 {
-    void *compat = mglRendererBackendCompatContext(context);
-    if (compat) {
-        mglRendererCompatGetTexImage(
-            compat, context, texture, pixel_bytes,
+    void *platform_shell = mglRendererBackendPlatformShell(context);
+    if (platform_shell) {
+        mglRendererCompatGetTexImage(context, texture, pixel_bytes,
             bytes_per_row, bytes_per_image, x, y, width, height,
             format, type, level, slice);
     }
@@ -524,8 +485,8 @@ extern "C" void mglRendererGetTexImage(
 extern "C" void mglRendererGenerateMipmaps(
     GLMContext context, Texture *texture)
 {
-    void *compat = mglRendererBackendCompatContext(context);
-    if (compat) mglRendererCompatGenerateMipmaps(compat, context, texture);
+    void *platform_shell = mglRendererBackendPlatformShell(context);
+    if (platform_shell) mglRendererCompatGenerateMipmaps(context, texture);
 }
 
 extern "C" void mglRendererTexSubImage(
@@ -536,10 +497,9 @@ extern "C" void mglRendererTexSubImage(
     size_t width, size_t height, size_t depth,
     size_t x_offset, size_t y_offset, size_t z_offset)
 {
-    void *compat = mglRendererBackendCompatContext(context);
-    if (compat) {
-        mglRendererCompatTexSubImage(
-            compat, context, texture, buffer,
+    void *platform_shell = mglRendererBackendPlatformShell(context);
+    if (platform_shell) {
+        mglRendererCompatTexSubImage(context, texture, buffer,
             source_offset, source_pitch, source_image_size, source_size,
             slice, level, width, height, depth,
             x_offset, y_offset, z_offset);
@@ -554,9 +514,8 @@ extern "C" bool mglRendererTexSubImageBytes(
     size_t width, size_t height, size_t depth,
     size_t x_offset, size_t y_offset, size_t z_offset)
 {
-    void *compat = mglRendererBackendCompatContext(context);
-    return compat && mglRendererCompatTexSubImageBytes(
-        compat, context, texture, bytes, bytes_size,
+    void *platform_shell = mglRendererBackendPlatformShell(context);
+    return platform_shell && mglRendererCompatTexSubImageBytes(context, texture, bytes, bytes_size,
         source_offset, source_pitch, source_image_size,
         slice, level, width, height, depth,
         x_offset, y_offset, z_offset);
@@ -568,10 +527,9 @@ extern "C" void mglRendererCopyTexSubImage(
     int32_t x_offset, int32_t y_offset,
     int32_t x, int32_t y, int32_t width, int32_t height)
 {
-    void *compat = mglRendererBackendCompatContext(context);
-    if (compat) {
-        mglRendererCompatCopyTexSubImage(
-            compat, context, texture, slice, level, x_offset, y_offset,
+    void *platform_shell = mglRendererBackendPlatformShell(context);
+    if (platform_shell) {
+        mglRendererCompatCopyTexSubImage(context, texture, slice, level, x_offset, y_offset,
             x, y, width, height);
     }
 }
@@ -584,10 +542,9 @@ extern "C" void mglRendererCopyImageSubData(
     int32_t destination_x, int32_t destination_y, int32_t destination_z,
     int32_t width, int32_t height, int32_t depth)
 {
-    void *compat = mglRendererBackendCompatContext(context);
-    if (compat) {
-        mglRendererCompatCopyImageSubData(
-            compat, context, source_texture,
+    void *platform_shell = mglRendererBackendPlatformShell(context);
+    if (platform_shell) {
+        mglRendererCompatCopyImageSubData(context, source_texture,
             source_level, source_x, source_y, source_z,
             destination_texture, destination_level,
             destination_x, destination_y, destination_z,
@@ -598,18 +555,17 @@ extern "C" void mglRendererCopyImageSubData(
 extern "C" void mglRendererDrawArrays(
     GLMContext context, uint32_t mode, int32_t first, int32_t count)
 {
-    void *compat = mglRendererBackendCompatContext(context);
-    if (compat) mglRendererCompatDrawArrays(compat, context, mode, first, count);
+    void *platform_shell = mglRendererBackendPlatformShell(context);
+    if (platform_shell) mglRendererCompatDrawArrays(context, mode, first, count);
 }
 
 extern "C" void mglRendererDrawElements(
     GLMContext context, uint32_t mode, int32_t count,
     uint32_t type, const void *indices)
 {
-    void *compat = mglRendererBackendCompatContext(context);
-    if (compat) {
-        mglRendererCompatDrawElements(
-            compat, context, mode, count, type, indices);
+    void *platform_shell = mglRendererBackendPlatformShell(context);
+    if (platform_shell) {
+        mglRendererCompatDrawElements(context, mode, count, type, indices);
     }
 }
 
@@ -617,10 +573,9 @@ extern "C" void mglRendererDrawRangeElements(
     GLMContext context, uint32_t mode, uint32_t start, uint32_t end,
     int32_t count, uint32_t type, const void *indices)
 {
-    void *compat = mglRendererBackendCompatContext(context);
-    if (compat) {
-        mglRendererCompatDrawRangeElements(
-            compat, context, mode, start, end, count, type, indices);
+    void *platform_shell = mglRendererBackendPlatformShell(context);
+    if (platform_shell) {
+        mglRendererCompatDrawRangeElements(context, mode, start, end, count, type, indices);
     }
 }
 
@@ -628,10 +583,9 @@ extern "C" void mglRendererDrawArraysInstanced(
     GLMContext context, uint32_t mode, int32_t first, int32_t count,
     int32_t instance_count)
 {
-    void *compat = mglRendererBackendCompatContext(context);
-    if (compat) {
-        mglRendererCompatDrawArraysInstanced(
-            compat, context, mode, first, count, instance_count);
+    void *platform_shell = mglRendererBackendPlatformShell(context);
+    if (platform_shell) {
+        mglRendererCompatDrawArraysInstanced(context, mode, first, count, instance_count);
     }
 }
 
@@ -639,10 +593,9 @@ extern "C" void mglRendererDrawElementsInstanced(
     GLMContext context, uint32_t mode, int32_t count, uint32_t type,
     const void *indices, int32_t instance_count)
 {
-    void *compat = mglRendererBackendCompatContext(context);
-    if (compat) {
-        mglRendererCompatDrawElementsInstanced(
-            compat, context, mode, count, type, indices, instance_count);
+    void *platform_shell = mglRendererBackendPlatformShell(context);
+    if (platform_shell) {
+        mglRendererCompatDrawElementsInstanced(context, mode, count, type, indices, instance_count);
     }
 }
 
@@ -650,10 +603,9 @@ extern "C" void mglRendererDrawElementsBaseVertex(
     GLMContext context, uint32_t mode, int32_t count, uint32_t type,
     const void *indices, int32_t base_vertex)
 {
-    void *compat = mglRendererBackendCompatContext(context);
-    if (compat) {
-        mglRendererCompatDrawElementsBaseVertex(
-            compat, context, mode, count, type, indices, base_vertex);
+    void *platform_shell = mglRendererBackendPlatformShell(context);
+    if (platform_shell) {
+        mglRendererCompatDrawElementsBaseVertex(context, mode, count, type, indices, base_vertex);
     }
 }
 
@@ -661,10 +613,9 @@ extern "C" void mglRendererDrawRangeElementsBaseVertex(
     GLMContext context, uint32_t mode, uint32_t start, uint32_t end,
     int32_t count, uint32_t type, const void *indices, int32_t base_vertex)
 {
-    void *compat = mglRendererBackendCompatContext(context);
-    if (compat) {
-        mglRendererCompatDrawRangeElementsBaseVertex(
-            compat, context, mode, start, end, count, type,
+    void *platform_shell = mglRendererBackendPlatformShell(context);
+    if (platform_shell) {
+        mglRendererCompatDrawRangeElementsBaseVertex(context, mode, start, end, count, type,
             indices, base_vertex);
     }
 }
@@ -673,10 +624,9 @@ extern "C" void mglRendererDrawElementsInstancedBaseVertex(
     GLMContext context, uint32_t mode, int32_t count, uint32_t type,
     const void *indices, int32_t instance_count, int32_t base_vertex)
 {
-    void *compat = mglRendererBackendCompatContext(context);
-    if (compat) {
-        mglRendererCompatDrawElementsInstancedBaseVertex(
-            compat, context, mode, count, type, indices,
+    void *platform_shell = mglRendererBackendPlatformShell(context);
+    if (platform_shell) {
+        mglRendererCompatDrawElementsInstancedBaseVertex(context, mode, count, type, indices,
             instance_count, base_vertex);
     }
 }
@@ -684,17 +634,16 @@ extern "C" void mglRendererDrawElementsInstancedBaseVertex(
 extern "C" void mglRendererDrawArraysIndirect(
     GLMContext context, uint32_t mode, const void *indirect)
 {
-    void *compat = mglRendererBackendCompatContext(context);
-    if (compat) mglRendererCompatDrawArraysIndirect(compat, context, mode, indirect);
+    void *platform_shell = mglRendererBackendPlatformShell(context);
+    if (platform_shell) mglRendererCompatDrawArraysIndirect(context, mode, indirect);
 }
 
 extern "C" void mglRendererDrawElementsIndirect(
     GLMContext context, uint32_t mode, uint32_t type, const void *indirect)
 {
-    void *compat = mglRendererBackendCompatContext(context);
-    if (compat) {
-        mglRendererCompatDrawElementsIndirect(
-            compat, context, mode, type, indirect);
+    void *platform_shell = mglRendererBackendPlatformShell(context);
+    if (platform_shell) {
+        mglRendererCompatDrawElementsIndirect(context, mode, type, indirect);
     }
 }
 
@@ -702,10 +651,9 @@ extern "C" void mglRendererDrawArraysInstancedBaseInstance(
     GLMContext context, uint32_t mode, int32_t first, int32_t count,
     int32_t instance_count, uint32_t base_instance)
 {
-    void *compat = mglRendererBackendCompatContext(context);
-    if (compat) {
-        mglRendererCompatDrawArraysInstancedBaseInstance(
-            compat, context, mode, first, count, instance_count, base_instance);
+    void *platform_shell = mglRendererBackendPlatformShell(context);
+    if (platform_shell) {
+        mglRendererCompatDrawArraysInstancedBaseInstance(context, mode, first, count, instance_count, base_instance);
     }
 }
 
@@ -713,10 +661,9 @@ extern "C" void mglRendererDrawElementsInstancedBaseInstance(
     GLMContext context, uint32_t mode, int32_t count, uint32_t type,
     const void *indices, int32_t instance_count, uint32_t base_instance)
 {
-    void *compat = mglRendererBackendCompatContext(context);
-    if (compat) {
-        mglRendererCompatDrawElementsInstancedBaseInstance(
-            compat, context, mode, count, type, indices,
+    void *platform_shell = mglRendererBackendPlatformShell(context);
+    if (platform_shell) {
+        mglRendererCompatDrawElementsInstancedBaseInstance(context, mode, count, type, indices,
             instance_count, base_instance);
     }
 }
@@ -726,10 +673,9 @@ extern "C" void mglRendererDrawElementsInstancedBaseVertexBaseInstance(
     const void *indices, int32_t instance_count, int32_t base_vertex,
     uint32_t base_instance)
 {
-    void *compat = mglRendererBackendCompatContext(context);
-    if (compat) {
-        mglRendererCompatDrawElementsInstancedBaseVertexBaseInstance(
-            compat, context, mode, count, type, indices,
+    void *platform_shell = mglRendererBackendPlatformShell(context);
+    if (platform_shell) {
+        mglRendererCompatDrawElementsInstancedBaseVertexBaseInstance(context, mode, count, type, indices,
             instance_count, base_vertex, base_instance);
     }
 }
@@ -738,10 +684,9 @@ extern "C" void mglRendererMultiDrawArrays(
     GLMContext context, uint32_t mode,
     const int32_t *firsts, const int32_t *counts, int32_t draw_count)
 {
-    void *compat = mglRendererBackendCompatContext(context);
-    if (compat) {
-        mglRendererCompatMultiDrawArrays(
-            compat, context, mode, firsts, counts, draw_count);
+    void *platform_shell = mglRendererBackendPlatformShell(context);
+    if (platform_shell) {
+        mglRendererCompatMultiDrawArrays(context, mode, firsts, counts, draw_count);
     }
 }
 
@@ -749,10 +694,9 @@ extern "C" void mglRendererMultiDrawElements(
     GLMContext context, uint32_t mode, const int32_t *counts,
     uint32_t type, const void *const *indices, int32_t draw_count)
 {
-    void *compat = mglRendererBackendCompatContext(context);
-    if (compat) {
-        mglRendererCompatMultiDrawElements(
-            compat, context, mode, counts, type, indices, draw_count);
+    void *platform_shell = mglRendererBackendPlatformShell(context);
+    if (platform_shell) {
+        mglRendererCompatMultiDrawElements(context, mode, counts, type, indices, draw_count);
     }
 }
 
@@ -761,10 +705,9 @@ extern "C" void mglRendererMultiDrawElementsBaseVertex(
     uint32_t type, const void *const *indices, int32_t draw_count,
     const int32_t *base_vertices)
 {
-    void *compat = mglRendererBackendCompatContext(context);
-    if (compat) {
-        mglRendererCompatMultiDrawElementsBaseVertex(
-            compat, context, mode, counts, type, indices,
+    void *platform_shell = mglRendererBackendPlatformShell(context);
+    if (platform_shell) {
+        mglRendererCompatMultiDrawElementsBaseVertex(context, mode, counts, type, indices,
             draw_count, base_vertices);
     }
 }
@@ -773,10 +716,9 @@ extern "C" void mglRendererMultiDrawArraysIndirect(
     GLMContext context, uint32_t mode, const void *indirect,
     int32_t draw_count, int32_t stride)
 {
-    void *compat = mglRendererBackendCompatContext(context);
-    if (compat) {
-        mglRendererCompatMultiDrawArraysIndirect(
-            compat, context, mode, indirect, draw_count, stride);
+    void *platform_shell = mglRendererBackendPlatformShell(context);
+    if (platform_shell) {
+        mglRendererCompatMultiDrawArraysIndirect(context, mode, indirect, draw_count, stride);
     }
 }
 
@@ -784,10 +726,9 @@ extern "C" void mglRendererMultiDrawElementsIndirect(
     GLMContext context, uint32_t mode, uint32_t type,
     const void *indirect, int32_t draw_count, int32_t stride)
 {
-    void *compat = mglRendererBackendCompatContext(context);
-    if (compat) {
-        mglRendererCompatMultiDrawElementsIndirect(
-            compat, context, mode, type, indirect, draw_count, stride);
+    void *platform_shell = mglRendererBackendPlatformShell(context);
+    if (platform_shell) {
+        mglRendererCompatMultiDrawElementsIndirect(context, mode, type, indirect, draw_count, stride);
     }
 }
 
@@ -795,20 +736,18 @@ extern "C" void mglRendererDispatchCompute(
     GLMContext context, uint32_t groups_x,
     uint32_t groups_y, uint32_t groups_z)
 {
-    void *compat = mglRendererBackendCompatContext(context);
-    if (compat) {
-        mglRendererCompatDispatchCompute(
-            compat, context, groups_x, groups_y, groups_z);
+    void *platform_shell = mglRendererBackendPlatformShell(context);
+    if (platform_shell) {
+        mglRendererCompatDispatchCompute(context, groups_x, groups_y, groups_z);
     }
 }
 
 extern "C" void mglRendererDispatchComputeIndirect(
     GLMContext context, intptr_t indirect)
 {
-    void *compat = mglRendererBackendCompatContext(context);
-    if (compat) {
-        mglRendererCompatDispatchComputeIndirect(
-            compat, context, indirect);
+    void *platform_shell = mglRendererBackendPlatformShell(context);
+    if (platform_shell) {
+        mglRendererCompatDispatchComputeIndirect(context, indirect);
     }
 }
 
