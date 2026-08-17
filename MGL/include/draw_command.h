@@ -116,7 +116,7 @@ typedef struct {
 /* Immutable value key for the subset of TextureParameter represented by an
  * MTLSamplerState. Keeping this type independent of mgl_types_texture.h
  * avoids the glm_context.h / mgl_types_state.h include cycle. */
-typedef struct {
+typedef struct MGLSamplerSnapshotKey {
     uint32_t target;
     uint32_t min_filter;
     uint32_t mag_filter;

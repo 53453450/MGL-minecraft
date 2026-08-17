@@ -39,14 +39,6 @@
 #define kMGLMaxBufferSlots 31
 #endif
 
-#ifndef kMGLSamplerSnapshotCacheCapacity
-#define kMGLSamplerSnapshotCacheCapacity 256
-#endif
-
-#ifndef kMGLSamplerSnapshotCacheIndexCapacity
-#define kMGLSamplerSnapshotCacheIndexCapacity 512
-#endif
-
 typedef struct MGLDrawable_t {
     GLuint width;
     GLuint height;
@@ -121,11 +113,6 @@ typedef struct MGLResourceFallbackState_t {
     NSMutableDictionary<NSNumber *, id<MTLTexture>> *__strong fallbackSampledTextureCache;
     NSMutableDictionary<NSString *, id<MTLBuffer>> *__strong doubleVertexAttribBufferCache;
     id<MTLSamplerState> __strong fallbackSamplerState;
-    MGLSamplerSnapshotKey samplerSnapshotCacheKeys[kMGLSamplerSnapshotCacheCapacity];
-    id<MTLSamplerState> __strong samplerSnapshotCacheStates[kMGLSamplerSnapshotCacheCapacity];
-    uint16_t samplerSnapshotCacheIndex[kMGLSamplerSnapshotCacheIndexCapacity];
-    uint16_t samplerSnapshotCacheCount;
-    uint16_t samplerSnapshotCacheNext;
     MGLFragmentTextureTraceBinding fragmentTextureTraceBindings[TEXTURE_UNITS];
 } MGLResourceFallbackState;
 

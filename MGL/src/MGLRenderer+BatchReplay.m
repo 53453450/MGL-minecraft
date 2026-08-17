@@ -766,19 +766,14 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
 - (MGLMetalSamplerStateRef)samplerStateForSnapshotKey:(const MGLSamplerSnapshotKey *)key
 {
     if (!key) return nil;
-
-    const uint32_t mask = kMGLSamplerSnapshotCacheIndexCapacity - 1u;
-    uint32_t hashSlot = (uint32_t)mglRendererSamplerSnapshotHash(key) & mask;
-    for (uint32_t probe = 0; probe < kMGLSamplerSnapshotCacheIndexCapacity;
-         probe++, hashSlot = (hashSlot + 1u) & mask) {
-        uint16_t encoded = _resourceFallback.samplerSnapshotCacheIndex[hashSlot];
-        if (encoded == 0u) break;
-        if (encoded == UINT16_MAX) continue;
-        uint16_t index = encoded - 1u;
-        if (index < _resourceFallback.samplerSnapshotCacheCount &&
-            memcmp(&_resourceFallback.samplerSnapshotCacheKeys[index], key, sizeof(*key)) == 0) {
-            return _resourceFallback.samplerSnapshotCacheStates[index];
-        }
+    void *cachedState = NULL;
+    int cacheResult = mglRendererBackendGetSamplerSnapshotState(
+        _backend, key, &cachedState);
+    if (cacheResult == 1) {
+        return (__bridge MGLMetalSamplerStateRef)cachedState;
+    }
+    if (cacheResult < 0) {
+        return nil;
     }
 
     TextureParameter params;
@@ -798,46 +793,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     MGLMetalSamplerStateRef state =
         [self createMTLSamplerForTexParam:&params target:key->target];
     if (!state) return nil;
-
-    uint16_t slot;
-    if (_resourceFallback.samplerSnapshotCacheCount < kMGLSamplerSnapshotCacheCapacity) {
-        slot = _resourceFallback.samplerSnapshotCacheCount++;
-    } else {
-        slot = _resourceFallback.samplerSnapshotCacheNext++ % kMGLSamplerSnapshotCacheCapacity;
-
-        const MGLSamplerSnapshotKey *oldKey = &_resourceFallback.samplerSnapshotCacheKeys[slot];
-        uint32_t oldHashSlot =
-            (uint32_t)mglRendererSamplerSnapshotHash(oldKey) & mask;
-        for (uint32_t probe = 0; probe < kMGLSamplerSnapshotCacheIndexCapacity;
-             probe++, oldHashSlot = (oldHashSlot + 1u) & mask) {
-            uint16_t encoded = _resourceFallback.samplerSnapshotCacheIndex[oldHashSlot];
-            if (encoded == 0u) break;
-            if (encoded == slot + 1u) {
-                _resourceFallback.samplerSnapshotCacheIndex[oldHashSlot] = UINT16_MAX;
-                break;
-            }
-        }
-    }
-    _resourceFallback.samplerSnapshotCacheKeys[slot] = *key;
-    _resourceFallback.samplerSnapshotCacheStates[slot] = state;
-
-    hashSlot = (uint32_t)mglRendererSamplerSnapshotHash(key) & mask;
-    uint32_t firstTombstone = UINT32_MAX;
-    for (uint32_t probe = 0; probe < kMGLSamplerSnapshotCacheIndexCapacity;
-         probe++, hashSlot = (hashSlot + 1u) & mask) {
-        uint16_t encoded = _resourceFallback.samplerSnapshotCacheIndex[hashSlot];
-        if (encoded == UINT16_MAX && firstTombstone == UINT32_MAX) {
-            firstTombstone = hashSlot;
-        } else if (encoded == 0u) {
-            if (firstTombstone != UINT32_MAX) hashSlot = firstTombstone;
-            _resourceFallback.samplerSnapshotCacheIndex[hashSlot] = slot + 1u;
-            return state;
-        }
-    }
-    if (firstTombstone != UINT32_MAX) {
-        _resourceFallback.samplerSnapshotCacheIndex[firstTombstone] = slot + 1u;
-    }
-    return state;
+    return mglRendererBackendPutSamplerSnapshotState(
+        _backend, key, (__bridge void *)state) == 0 ? state : nil;
 }
 
 - (bool)applySamplerSnapshotForCommand:(const MGLDrawCommand *)cmd

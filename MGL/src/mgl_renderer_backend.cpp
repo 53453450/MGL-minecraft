@@ -1,6 +1,8 @@
 #include "mgl_renderer_backend.h"
 
 #include <algorithm>
+#include <array>
+#include <cstring>
 #include <mutex>
 
 #include "glm_context.h"
@@ -111,6 +113,17 @@ struct MGLRendererBackendPassthroughCache {
     uint64_t program_instance_id = 0;
 };
 
+static constexpr uint16_t kMGLSamplerSnapshotCacheCapacity = 256u;
+static constexpr uint16_t kMGLSamplerSnapshotCacheIndexCapacity = 512u;
+
+struct MGLRendererBackendSamplerSnapshotCache {
+    std::array<MGLSamplerSnapshotKey, kMGLSamplerSnapshotCacheCapacity> keys{};
+    std::array<MTL::SamplerState *, kMGLSamplerSnapshotCacheCapacity> states{};
+    std::array<uint16_t, kMGLSamplerSnapshotCacheIndexCapacity> index{};
+    uint16_t count = 0;
+    uint16_t next = 0;
+};
+
 struct MGLRendererBackendHandle {
     std::mutex mutex;
     GLMContext context = nullptr;
@@ -130,6 +143,7 @@ struct MGLRendererBackendHandle {
     MTL::DepthStencilState *clear_rect_depth_state = nullptr;
     MGLRendererBackendPassthroughCache geometry_passthrough;
     MGLRendererBackendPassthroughCache tess_evaluation_passthrough;
+    MGLRendererBackendSamplerSnapshotCache sampler_snapshots;
     bool renderer_initialized = false;
     bool shutdown_started = false;
     bool destroying = false;
@@ -182,6 +196,12 @@ static void mglRendererBackendReleaseOwnedState(
         backend->tess_evaluation_passthrough.library->release();
     }
     backend->tess_evaluation_passthrough = {};
+    for (uint16_t i = 0; i < backend->sampler_snapshots.count; i++) {
+        if (backend->sampler_snapshots.states[i]) {
+            backend->sampler_snapshots.states[i]->release();
+        }
+    }
+    backend->sampler_snapshots = {};
     mglRenderCppDestroyCommandQueueOwner(&backend->command_queue_owner);
     mglRenderCppBindingDestroy(backend->binding_owner);
     backend->binding_owner = nullptr;
@@ -236,6 +256,82 @@ static void mglRendererBackendReplacePassthroughCache(
     cache->function = new_function;
     cache->program_instance_id = new_library && new_function
         ? program_instance_id : 0;
+}
+
+static uint64_t mglRendererBackendHashSamplerSnapshotKey(
+    const MGLSamplerSnapshotKey *key)
+{
+    const uint8_t *bytes = reinterpret_cast<const uint8_t *>(key);
+    uint64_t hash = 1469598103934665603ull;
+    for (size_t i = 0; i < sizeof(*key); i++) {
+        hash ^= bytes[i];
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
+static int mglRendererBackendFindSamplerSnapshotSlot(
+    const MGLRendererBackendSamplerSnapshotCache &cache,
+    const MGLSamplerSnapshotKey *key)
+{
+    const uint32_t mask = kMGLSamplerSnapshotCacheIndexCapacity - 1u;
+    uint32_t hash_slot =
+        static_cast<uint32_t>(mglRendererBackendHashSamplerSnapshotKey(key)) & mask;
+    for (uint32_t probe = 0; probe < kMGLSamplerSnapshotCacheIndexCapacity;
+         probe++, hash_slot = (hash_slot + 1u) & mask) {
+        uint16_t encoded = cache.index[hash_slot];
+        if (encoded == 0u) break;
+        if (encoded == UINT16_MAX) continue;
+        uint16_t slot = encoded - 1u;
+        if (slot < cache.count &&
+            std::memcmp(&cache.keys[slot], key, sizeof(*key)) == 0) {
+            return static_cast<int>(slot);
+        }
+    }
+    return -1;
+}
+
+static void mglRendererBackendRemoveSamplerSnapshotIndex(
+    MGLRendererBackendSamplerSnapshotCache &cache, uint16_t slot)
+{
+    const uint32_t mask = kMGLSamplerSnapshotCacheIndexCapacity - 1u;
+    uint32_t hash_slot = static_cast<uint32_t>(
+        mglRendererBackendHashSamplerSnapshotKey(&cache.keys[slot])) & mask;
+    for (uint32_t probe = 0; probe < kMGLSamplerSnapshotCacheIndexCapacity;
+         probe++, hash_slot = (hash_slot + 1u) & mask) {
+        uint16_t encoded = cache.index[hash_slot];
+        if (encoded == 0u) break;
+        if (encoded == slot + 1u) {
+            cache.index[hash_slot] = UINT16_MAX;
+            break;
+        }
+    }
+}
+
+static int mglRendererBackendInsertSamplerSnapshotIndex(
+    MGLRendererBackendSamplerSnapshotCache &cache,
+    const MGLSamplerSnapshotKey *key, uint16_t slot)
+{
+    const uint32_t mask = kMGLSamplerSnapshotCacheIndexCapacity - 1u;
+    uint32_t hash_slot =
+        static_cast<uint32_t>(mglRendererBackendHashSamplerSnapshotKey(key)) & mask;
+    uint32_t first_tombstone = UINT32_MAX;
+    for (uint32_t probe = 0; probe < kMGLSamplerSnapshotCacheIndexCapacity;
+         probe++, hash_slot = (hash_slot + 1u) & mask) {
+        uint16_t encoded = cache.index[hash_slot];
+        if (encoded == UINT16_MAX && first_tombstone == UINT32_MAX) {
+            first_tombstone = hash_slot;
+        } else if (encoded == 0u) {
+            if (first_tombstone != UINT32_MAX) hash_slot = first_tombstone;
+            cache.index[hash_slot] = slot + 1u;
+            return 0;
+        }
+    }
+    if (first_tombstone != UINT32_MAX) {
+        cache.index[first_tombstone] = slot + 1u;
+        return 0;
+    }
+    return -1;
 }
 
 extern "C" int mglRendererBackendCreate(
@@ -440,6 +536,57 @@ extern "C" int mglRendererBackendGetPassthroughFunction(
     }
     *function_out = cache->function;
     return 1;
+}
+
+extern "C" int mglRendererBackendGetSamplerSnapshotState(
+    const MGLRendererBackendHandle *backend,
+    const MGLSamplerSnapshotKey *key, void **state_out)
+{
+    if (state_out) *state_out = nullptr;
+    if (!backend || !key || !state_out) return -1;
+    std::lock_guard<std::mutex> lock(
+        const_cast<MGLRendererBackendHandle *>(backend)->mutex);
+    int slot = mglRendererBackendFindSamplerSnapshotSlot(
+        backend->sampler_snapshots, key);
+    if (slot < 0) return 0;
+    *state_out = backend->sampler_snapshots.states[slot];
+    return *state_out ? 1 : 0;
+}
+
+extern "C" int mglRendererBackendPutSamplerSnapshotState(
+    MGLRendererBackendHandle *backend,
+    const MGLSamplerSnapshotKey *key, void *state)
+{
+    if (!backend || !key || !state) return -1;
+    std::lock_guard<std::mutex> lock(backend->mutex);
+    if (backend->destroying) return -1;
+    MGLRendererBackendSamplerSnapshotCache &cache = backend->sampler_snapshots;
+    int existing_slot = mglRendererBackendFindSamplerSnapshotSlot(cache, key);
+    if (existing_slot >= 0) {
+        mglRendererBackendReplaceObject(
+            cache.states[existing_slot], state);
+        return 0;
+    }
+
+    uint16_t slot;
+    if (cache.count < kMGLSamplerSnapshotCacheCapacity) {
+        slot = cache.count++;
+    } else {
+        slot = cache.next++ % kMGLSamplerSnapshotCacheCapacity;
+        mglRendererBackendRemoveSamplerSnapshotIndex(cache, slot);
+    }
+
+    MTL::SamplerState *replacement = static_cast<MTL::SamplerState *>(state);
+    replacement->retain();
+    if (cache.states[slot]) cache.states[slot]->release();
+    cache.keys[slot] = *key;
+    cache.states[slot] = replacement;
+    if (mglRendererBackendInsertSamplerSnapshotIndex(cache, key, slot) != 0) {
+        replacement->release();
+        cache.states[slot] = nullptr;
+        return -1;
+    }
+    return 0;
 }
 
 extern "C" int mglRendererBackendIsDestroying(

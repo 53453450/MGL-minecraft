@@ -8923,6 +8923,34 @@ static int verifyRendererBackend(id<MTLDevice> device) {
         return 1;
     }
     printf("RENDERER_BACKEND_PASSTHROUGH_CACHE_OK\n");
+    MGLSamplerSnapshotKey samplerKey = {};
+    samplerKey.target = GL_TEXTURE_2D;
+    samplerKey.min_filter = GL_LINEAR;
+    samplerKey.mag_filter = GL_NEAREST;
+    samplerKey.wrap_s = GL_REPEAT;
+    samplerKey.wrap_t = GL_CLAMP_TO_EDGE;
+    samplerKey.wrap_r = GL_MIRRORED_REPEAT;
+    samplerKey.max_anisotropy = 1.0f;
+    samplerKey.max_lod = 4.0f;
+    void *cachedSampler = NULL;
+    if (mglRendererBackendGetSamplerSnapshotState(
+            backend, &samplerKey, &cachedSampler) != 0 || cachedSampler ||
+        mglRendererBackendPutSamplerSnapshotState(
+            backend, &samplerKey, (__bridge void *)nearestSampler) != 0 ||
+        mglRendererBackendGetSamplerSnapshotState(
+            backend, &samplerKey, &cachedSampler) != 1 ||
+        cachedSampler != (__bridge void *)nearestSampler ||
+        mglRendererBackendPutSamplerSnapshotState(
+            backend, &samplerKey, (__bridge void *)linearSampler) != 0 ||
+        mglRendererBackendGetSamplerSnapshotState(
+            backend, &samplerKey, &cachedSampler) != 1 ||
+        cachedSampler != (__bridge void *)linearSampler ||
+        mglRendererBackendPutSamplerSnapshotState(
+            backend, &samplerKey, NULL) != -1) {
+        fprintf(stderr, "FAIL: renderer backend sampler snapshot cache\n");
+        return 1;
+    }
+    printf("RENDERER_BACKEND_SAMPLER_SNAPSHOT_CACHE_OK\n");
     MGLRendererBackendShutdownResult shutdown = {};
     if (mglRendererBackendShutdown(backend, &shutdown) != 0) {
         fprintf(stderr, "FAIL: renderer backend shutdown\n");

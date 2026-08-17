@@ -715,14 +715,6 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
             [_pipelineCache shutdown];
             _pipelineCache = nil;
         }
-        for (uint16_t i = 0; i < _resourceFallback.samplerSnapshotCacheCount; i++) {
-            _resourceFallback.samplerSnapshotCacheStates[i] = nil;
-        }
-        _resourceFallback.samplerSnapshotCacheCount = 0;
-        _resourceFallback.samplerSnapshotCacheNext = 0;
-        memset(_resourceFallback.samplerSnapshotCacheIndex, 0,
-               sizeof(_resourceFallback.samplerSnapshotCacheIndex));
-
         if (_backend && mglRendererBackendIsDestroying(_backend) != 1) {
             if (ctx && ctx->renderer_backend == _backend) {
                 mglRendererBackendDestroy(

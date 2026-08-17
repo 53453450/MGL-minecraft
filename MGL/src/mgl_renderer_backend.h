@@ -14,6 +14,7 @@ extern "C" {
 typedef struct GLMContextRec_t *GLMContext;
 typedef struct MGLRendererBackendHandle MGLRendererBackendHandle;
 typedef struct MGLShaderResource_t MGLShaderResource;
+typedef struct MGLSamplerSnapshotKey MGLSamplerSnapshotKey;
 
 typedef enum MGLRendererBackendOwnerKind {
     MGL_RENDERER_BACKEND_OWNER_COMMAND_QUEUE = 0,
@@ -88,6 +89,14 @@ int mglRendererBackendGetPassthroughFunction(
     const MGLRendererBackendHandle *backend,
     MGLRendererBackendPassthroughKind kind,
     uint64_t program_instance_id, void **function_out);
+/* Sampler snapshot states are retained by the backend. Get returns 1 on an
+ * exact key hit, 0 on miss, and -1 for invalid input. state_out is borrowed. */
+int mglRendererBackendGetSamplerSnapshotState(
+    const MGLRendererBackendHandle *backend,
+    const MGLSamplerSnapshotKey *key, void **state_out);
+int mglRendererBackendPutSamplerSnapshotState(
+    MGLRendererBackendHandle *backend,
+    const MGLSamplerSnapshotKey *key, void *state);
 int mglRendererBackendIsDestroying(
     const MGLRendererBackendHandle *backend);
 void *mglRendererBackendGetOwner(const MGLRendererBackendHandle *backend,
