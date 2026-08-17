@@ -29,7 +29,7 @@ typedef struct __GLsync {
     GLsizei name;
     void *mtl_event;
     /* Retained Metal command buffer capturing all GL commands issued before the
-     * fence insertion point. mtlWaitForSync blocks on its completion. Stored as
+     * fence insertion point. The C++ sync path blocks on its completion. Stored as
      * void* (CFBridgingRetain/Release) since this struct is used from plain C. */
     void *mtl_command_buffer;
     /* reference count for deferred sync lifetime management.

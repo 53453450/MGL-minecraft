@@ -165,7 +165,7 @@ typedef struct QueryObject_t {
 	GLboolean saw_draw;
 	GLboolean sample_result_known;
 	GLboolean primitive_result_known;
-	GLboolean timer_result_known;  /* GL_TIME_ELAPSED: set when mtlEndTimerQuery wrote a real GPU result */
+	GLboolean timer_result_known;  /* GL_TIME_ELAPSED: backend produced a real GPU result */
 	GLuint64 result;
 } QueryObject;
 
@@ -464,7 +464,7 @@ static void mgl_finish_query_result(QueryObject *q)
 			q->result = q->saw_draw ? 1u : 0u;
 			break;
 		case GL_TIME_ELAPSED:
-			/* Real GPU elapsed time is set by mtlEndTimerQuery in
+			/* Real GPU elapsed time is set by the renderer backend in
 			 * mglEndQuery (with timer_result_known = GL_TRUE).
 			 * Only fall back to the fake counter when the Metal
 			 * backend was never called — a real zero result (e.g.

@@ -178,7 +178,7 @@ GLenum  mglClientWaitSync(GLMContext ctx, GLsync sync, GLbitfield flags, GLuint6
     mglRetainSyncReference(sync);
 
     /* GL_ALREADY_SIGNALED: the fence had already completed at call time, so no
-     * wait is performed. mtlGetSyncStatus reports GL_SIGNALED when the retained
+     * wait is performed. The backend status query reports GL_SIGNALED when the retained
      * command buffer has completed or when there is no CB to wait on. */
     if (mglRendererGetSyncStatus(ctx, sync) == GL_SIGNALED)
     {
@@ -193,7 +193,7 @@ GLenum  mglClientWaitSync(GLMContext ctx, GLsync sync, GLbitfield flags, GLuint6
         goto cleanup;
     }
 
-    /* Finite timeout: mtlWaitForSync blocks via waitUntilCompleted (which has no
+    /* Finite timeout: the backend wait blocks until completion (which has no
      * timeout), so to honor a bounded timeout we poll the non-blocking status
      * with short sleeps up to the timeout, returning GL_TIMEOUT_EXPIRED if the
      * fence does not complete in time. */
@@ -245,15 +245,15 @@ void mglWaitSync(GLMContext ctx, GLsync sync, GLbitfield flags, GLuint64 timeout
     }
 
     /* retain so a concurrent glDeleteSync cannot free the sync while
-     * mtlWaitForSync blocks on sync->mtl_command_buffer. */
+     * the backend waits on sync->mtl_command_buffer. */
     mglRetainSyncReference(sync);
 
-    /* mtlWaitForSync now blocks via waitUntilCompleted on the retained command
+    /* The backend blocks on the retained command
      * buffer, satisfying the GL spec requirement that glWaitSync block until the
      * fence's insertion-point-prior commands have completed on the GPU.
      *
      * MGL_SYNC_STRICT: fence wait already performs conservative sync via
-     * mtlWaitForSync (waitUntilCompleted); no extra strict branch needed. */
+     * the same completion wait; no extra strict branch is needed. */
     mglRendererWaitForSync(ctx, sync);
 
     mglReleaseSyncReference(ctx, sync);

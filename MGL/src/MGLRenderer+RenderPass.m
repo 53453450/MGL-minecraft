@@ -4096,7 +4096,7 @@ output->name, (unsigned)i,
     // STEP 1: Clean up sync tracking list safely.
     // IMPORTANT: Do NOT dereference Sync* entries here. Sync objects are owned by GL sync lifecycle
     // and may already be deleted by glDeleteSync on other paths.
-    // Both this read/clear path and the append path (mtlGetSync) run on the GL
+    // Both this read/clear path and the backend sync append path run on the GL
     // calling thread, so no lock is needed.
     [_renderPassManager clearCurrentCommandBufferSyncListEntries];
 

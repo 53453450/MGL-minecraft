@@ -352,7 +352,6 @@ static inline double mglTraceNowSeconds(void)
 #import "MGLRenderer+GPURecovery_Private.h"
 #import "MGLRenderer+Blit_Private.h"
 #import "MGLRenderer+Texture_Private.h"
-#import "MGLRenderer+QuerySync_Private.h"
 #import "MGLRenderer+Tessellation_Private.h"
 #import "MGLRenderer+Lifecycle_Private.h"
 #import "MGLRenderer+Buffer_Private.h"

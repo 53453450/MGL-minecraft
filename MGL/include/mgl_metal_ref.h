@@ -25,10 +25,9 @@
  *   - Unifies program.c's raw CFRelease on MGLShaderModule fields (4 sites)
  *   - Is a pure C function (no ObjC messaging), so it works in both .c and .m TUs
  *
- * Scope: this header ONLY covers the generic `void *` slot pattern.
- * Sync objects keep their own `mtlReleaseSync` path (needs @try/@catch for
- * legacy MTLSharedEvent robustness). The renderer itself is retained by the
- * backend operation context and released during backend destruction.
+ * Scope: this header covers the generic `void *` slot pattern used by renderer
+ * resources and sync objects. The renderer itself is retained by the backend
+ * operation context and released during backend destruction.
  *
  * Dependencies: CoreFoundation (CFBridgingRelease) + stddef.h (NULL).
  * No Metal framework dependency — works in pure C TUs.
