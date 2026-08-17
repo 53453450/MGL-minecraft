@@ -8891,6 +8891,38 @@ static int verifyRendererBackend(id<MTLDevice> device) {
         return 1;
     }
     printf("RENDERER_BACKEND_BLIT_CACHE_OK\n");
+    id<MTLLibrary> passthroughLibrary =
+        smokeLoadAssetLibrary(device, "scaled_blit");
+    id<MTLFunction> passthroughFunction = passthroughLibrary
+        ? [passthroughLibrary newFunctionWithName:@"mgl_scaled_blit_vs"] : nil;
+    void *cachedPassthroughFunction = NULL;
+    if (!passthroughLibrary || !passthroughFunction ||
+        mglRendererBackendSetPassthroughFunction(
+            backend, MGL_RENDERER_BACKEND_PASSTHROUGH_GEOMETRY,
+            (__bridge void *)passthroughLibrary,
+            (__bridge void *)passthroughFunction, 41u) != 0 ||
+        mglRendererBackendGetPassthroughFunction(
+            backend, MGL_RENDERER_BACKEND_PASSTHROUGH_GEOMETRY,
+            42u, &cachedPassthroughFunction) != 0 ||
+        cachedPassthroughFunction != NULL ||
+        mglRendererBackendGetPassthroughFunction(
+            backend, MGL_RENDERER_BACKEND_PASSTHROUGH_GEOMETRY,
+            41u, &cachedPassthroughFunction) != 1 ||
+        cachedPassthroughFunction != (__bridge void *)passthroughFunction ||
+        mglRendererBackendSetPassthroughFunction(
+            backend, MGL_RENDERER_BACKEND_PASSTHROUGH_GEOMETRY,
+            (__bridge void *)passthroughLibrary, NULL, 41u) != -1 ||
+        mglRendererBackendSetPassthroughFunction(
+            backend, MGL_RENDERER_BACKEND_PASSTHROUGH_GEOMETRY,
+            NULL, NULL, 0u) != 0 ||
+        mglRendererBackendGetPassthroughFunction(
+            backend, MGL_RENDERER_BACKEND_PASSTHROUGH_GEOMETRY,
+            41u, &cachedPassthroughFunction) != 0 ||
+        cachedPassthroughFunction != NULL) {
+        fprintf(stderr, "FAIL: renderer backend passthrough cache\n");
+        return 1;
+    }
+    printf("RENDERER_BACKEND_PASSTHROUGH_CACHE_OK\n");
     MGLRendererBackendShutdownResult shutdown = {};
     if (mglRendererBackendShutdown(backend, &shutdown) != 0) {
         fprintf(stderr, "FAIL: renderer backend shutdown\n");
