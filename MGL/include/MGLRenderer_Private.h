@@ -220,7 +220,6 @@ static inline double mglTraceNowSeconds(void)
     void *_queryStateOwner;
     MGLRenderPassManager *_renderPassManager;
     MGLResourceFallbackState _resourceFallback;
-    MGLBlitState _blit;
     void *_bindingStateOwner;
     MGLTessellationState _tessellation;
     MGLGeometryState _geometry;

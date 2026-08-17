@@ -503,7 +503,11 @@ static MGLMetalRenderPipelineStateRef mglLookupCppAuxRenderPipeline(
 - (MGLMetalSamplerStateRef)scaledBlitSamplerForFilter:(GLuint)filter
 {
     BOOL wantsNearest = (filter == GL_NEAREST);
-    MGLMetalSamplerStateRef cached = wantsNearest ? _blit.scaledBlitNearestSampler : _blit.scaledBlitLinearSampler;
+    MGLRendererBackendBlitCacheKind cacheKind = wantsNearest
+        ? MGL_RENDERER_BACKEND_BLIT_CACHE_NEAREST_SAMPLER
+        : MGL_RENDERER_BACKEND_BLIT_CACHE_LINEAR_SAMPLER;
+    MGLMetalSamplerStateRef cached = (__bridge MGLMetalSamplerStateRef)
+        mglRendererBackendGetBlitCachedObject(_backend, cacheKind);
     if (cached) {
         return cached;
     }
@@ -522,13 +526,12 @@ static MGLMetalRenderPipelineStateRef mglLookupCppAuxRenderPipeline(
         return nil;
     }
 
-    if (wantsNearest) {
-        _blit.scaledBlitNearestSampler = sampler;
-    } else {
-        _blit.scaledBlitLinearSampler = sampler;
+    if (mglRendererBackendSetBlitCachedObject(
+            _backend, cacheKind, (__bridge void *)sampler) != 0) {
+        return nil;
     }
-
-    return sampler;
+    return (__bridge MGLMetalSamplerStateRef)
+        mglRendererBackendGetBlitCachedObject(_backend, cacheKind);
 }
 
 - (MGLMetalRenderPipelineStateRef)scaledBlitPipelineForPixelFormat:(MTLPixelFormat)pixelFormat
@@ -1536,16 +1539,27 @@ static MGLMetalRenderPipelineStateRef mglLookupCppAuxRenderPipeline(
 
 - (MGLMetalDepthStencilStateRef)clearRectDepthState
 {
-    if (_blit.clearRectDepthState) {
-        return _blit.clearRectDepthState;
+    MGLMetalDepthStencilStateRef cached = (__bridge MGLMetalDepthStencilStateRef)
+        mglRendererBackendGetBlitCachedObject(
+            _backend, MGL_RENDERER_BACKEND_BLIT_CACHE_CLEAR_DEPTH_STATE);
+    if (cached) {
+        return cached;
     }
 
     MTLDepthStencilDescriptor *desc = [[MTLDepthStencilDescriptor alloc] init];
     desc.depthCompareFunction = MTLCompareFunctionAlways;
     desc.depthWriteEnabled = YES;
-    _blit.clearRectDepthState =
+    MGLMetalDepthStencilStateRef depthState =
         mglBlitCreateDepthStencilState(_device, desc);
-    return _blit.clearRectDepthState;
+    if (!depthState ||
+        mglRendererBackendSetBlitCachedObject(
+            _backend, MGL_RENDERER_BACKEND_BLIT_CACHE_CLEAR_DEPTH_STATE,
+            (__bridge void *)depthState) != 0) {
+        return nil;
+    }
+    return (__bridge MGLMetalDepthStencilStateRef)
+        mglRendererBackendGetBlitCachedObject(
+            _backend, MGL_RENDERER_BACKEND_BLIT_CACHE_CLEAR_DEPTH_STATE);
 }
 
 /* Depth/stencil blit path for mtlBlitFramebuffer.

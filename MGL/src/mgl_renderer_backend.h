@@ -25,6 +25,12 @@ typedef enum MGLRendererBackendOwnerKind {
     MGL_RENDERER_BACKEND_OWNER_BINDING = 6,
 } MGLRendererBackendOwnerKind;
 
+typedef enum MGLRendererBackendBlitCacheKind {
+    MGL_RENDERER_BACKEND_BLIT_CACHE_NEAREST_SAMPLER = 0,
+    MGL_RENDERER_BACKEND_BLIT_CACHE_LINEAR_SAMPLER = 1,
+    MGL_RENDERER_BACKEND_BLIT_CACHE_CLEAR_DEPTH_STATE = 2,
+} MGLRendererBackendBlitCacheKind;
+
 typedef struct MGLRendererBackendCreateInfo {
     void *objc_device;
     GLMContext context;
@@ -60,6 +66,13 @@ int mglRendererBackendSetTransientDepthTexture(
 void *mglRendererBackendGetTransientDepthTexture(
     const MGLRendererBackendHandle *backend,
     uint64_t *width_out, uint64_t *height_out);
+int mglRendererBackendSetBlitCachedObject(
+    MGLRendererBackendHandle *backend,
+    MGLRendererBackendBlitCacheKind kind, void *object);
+/* Blit cache getters return borrowed references owned by the backend. */
+void *mglRendererBackendGetBlitCachedObject(
+    const MGLRendererBackendHandle *backend,
+    MGLRendererBackendBlitCacheKind kind);
 int mglRendererBackendIsDestroying(
     const MGLRendererBackendHandle *backend);
 void *mglRendererBackendGetOwner(const MGLRendererBackendHandle *backend,

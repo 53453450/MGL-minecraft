@@ -129,12 +129,6 @@ typedef struct MGLResourceFallbackState_t {
     MGLFragmentTextureTraceBinding fragmentTextureTraceBindings[TEXTURE_UNITS];
 } MGLResourceFallbackState;
 
-typedef struct MGLBlitState_t {
-    id<MTLSamplerState> __strong scaledBlitNearestSampler;
-    id<MTLSamplerState> __strong scaledBlitLinearSampler;
-    id<MTLDepthStencilState> __strong clearRectDepthState;
-} MGLBlitState;
-
 typedef struct MGLTessellationState_t {
     id<MTLBuffer> __strong tessFactorBuffer;
     /* Stable cached default-levels buffer (TES-only path): rebuilt only when

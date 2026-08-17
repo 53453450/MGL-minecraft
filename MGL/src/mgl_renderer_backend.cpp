@@ -119,6 +119,9 @@ struct MGLRendererBackendHandle {
     MTL::Texture *transient_depth_texture = nullptr;
     uint64_t transient_depth_texture_width = 0;
     uint64_t transient_depth_texture_height = 0;
+    MTL::SamplerState *scaled_blit_nearest_sampler = nullptr;
+    MTL::SamplerState *scaled_blit_linear_sampler = nullptr;
+    MTL::DepthStencilState *clear_rect_depth_state = nullptr;
     bool renderer_initialized = false;
     bool shutdown_started = false;
     bool destroying = false;
@@ -145,6 +148,18 @@ static void mglRendererBackendReleaseOwnedState(
     }
     backend->transient_depth_texture_width = 0;
     backend->transient_depth_texture_height = 0;
+    if (backend->scaled_blit_nearest_sampler) {
+        backend->scaled_blit_nearest_sampler->release();
+        backend->scaled_blit_nearest_sampler = nullptr;
+    }
+    if (backend->scaled_blit_linear_sampler) {
+        backend->scaled_blit_linear_sampler->release();
+        backend->scaled_blit_linear_sampler = nullptr;
+    }
+    if (backend->clear_rect_depth_state) {
+        backend->clear_rect_depth_state->release();
+        backend->clear_rect_depth_state = nullptr;
+    }
     mglRenderCppDestroyCommandQueueOwner(&backend->command_queue_owner);
     mglRenderCppBindingDestroy(backend->binding_owner);
     backend->binding_owner = nullptr;
@@ -159,10 +174,10 @@ static void mglRendererBackendReleaseOwnedState(
     }
 }
 
-static void mglRendererBackendReplaceTexture(MTL::Texture *&slot,
-                                             void *texture)
+template <typename T>
+static void mglRendererBackendReplaceObject(T *&slot, void *object)
 {
-    MTL::Texture *replacement = static_cast<MTL::Texture *>(texture);
+    T *replacement = static_cast<T *>(object);
     if (replacement == slot) return;
     if (replacement) replacement->retain();
     if (slot) slot->release();
@@ -253,7 +268,7 @@ extern "C" int mglRendererBackendSetFallbackRenderTargetTexture(
     if (!backend) return -1;
     std::lock_guard<std::mutex> lock(backend->mutex);
     if (backend->destroying) return -1;
-    mglRendererBackendReplaceTexture(
+    mglRendererBackendReplaceObject(
         backend->fallback_render_target_texture, texture);
     return 0;
 }
@@ -274,7 +289,7 @@ extern "C" int mglRendererBackendSetTransientDepthTexture(
     if (!backend) return -1;
     std::lock_guard<std::mutex> lock(backend->mutex);
     if (backend->destroying) return -1;
-    mglRendererBackendReplaceTexture(backend->transient_depth_texture, texture);
+    mglRendererBackendReplaceObject(backend->transient_depth_texture, texture);
     backend->transient_depth_texture_width = texture ? width : 0;
     backend->transient_depth_texture_height = texture ? height : 0;
     return 0;
@@ -292,6 +307,48 @@ extern "C" void *mglRendererBackendGetTransientDepthTexture(
     if (width_out) *width_out = backend->transient_depth_texture_width;
     if (height_out) *height_out = backend->transient_depth_texture_height;
     return backend->transient_depth_texture;
+}
+
+extern "C" int mglRendererBackendSetBlitCachedObject(
+    MGLRendererBackendHandle *backend,
+    MGLRendererBackendBlitCacheKind kind, void *object)
+{
+    if (!backend) return -1;
+    std::lock_guard<std::mutex> lock(backend->mutex);
+    if (backend->destroying) return -1;
+    switch (kind) {
+        case MGL_RENDERER_BACKEND_BLIT_CACHE_NEAREST_SAMPLER:
+            mglRendererBackendReplaceObject(
+                backend->scaled_blit_nearest_sampler, object);
+            return 0;
+        case MGL_RENDERER_BACKEND_BLIT_CACHE_LINEAR_SAMPLER:
+            mglRendererBackendReplaceObject(
+                backend->scaled_blit_linear_sampler, object);
+            return 0;
+        case MGL_RENDERER_BACKEND_BLIT_CACHE_CLEAR_DEPTH_STATE:
+            mglRendererBackendReplaceObject(
+                backend->clear_rect_depth_state, object);
+            return 0;
+    }
+    return -1;
+}
+
+extern "C" void *mglRendererBackendGetBlitCachedObject(
+    const MGLRendererBackendHandle *backend,
+    MGLRendererBackendBlitCacheKind kind)
+{
+    if (!backend) return nullptr;
+    std::lock_guard<std::mutex> lock(
+        const_cast<MGLRendererBackendHandle *>(backend)->mutex);
+    switch (kind) {
+        case MGL_RENDERER_BACKEND_BLIT_CACHE_NEAREST_SAMPLER:
+            return backend->scaled_blit_nearest_sampler;
+        case MGL_RENDERER_BACKEND_BLIT_CACHE_LINEAR_SAMPLER:
+            return backend->scaled_blit_linear_sampler;
+        case MGL_RENDERER_BACKEND_BLIT_CACHE_CLEAR_DEPTH_STATE:
+            return backend->clear_rect_depth_state;
+    }
+    return nullptr;
 }
 
 extern "C" int mglRendererBackendIsDestroying(

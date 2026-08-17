@@ -8834,9 +8834,22 @@ static int verifyRendererBackend(id<MTLDevice> device) {
                                                       mipmapped:NO];
     id<MTLTexture> fallbackTexture = [device newTextureWithDescriptor:textureDescriptor];
     id<MTLTexture> transientTexture = [device newTextureWithDescriptor:textureDescriptor];
+    MTLSamplerDescriptor *samplerDescriptor = [[MTLSamplerDescriptor alloc] init];
+    id<MTLSamplerState> nearestSampler =
+        [device newSamplerStateWithDescriptor:samplerDescriptor];
+    samplerDescriptor.minFilter = MTLSamplerMinMagFilterLinear;
+    id<MTLSamplerState> linearSampler =
+        [device newSamplerStateWithDescriptor:samplerDescriptor];
+    MTLDepthStencilDescriptor *depthDescriptor =
+        [[MTLDepthStencilDescriptor alloc] init];
+    depthDescriptor.depthCompareFunction = MTLCompareFunctionAlways;
+    depthDescriptor.depthWriteEnabled = YES;
+    id<MTLDepthStencilState> clearDepthState =
+        [device newDepthStencilStateWithDescriptor:depthDescriptor];
     uint64_t transientWidth = 0;
     uint64_t transientHeight = 0;
-    if (!fallbackTexture || !transientTexture ||
+    if (!fallbackTexture || !transientTexture || !nearestSampler ||
+        !linearSampler || !clearDepthState ||
         mglRendererBackendSetFallbackRenderTargetTexture(
             backend, (__bridge void *)fallbackTexture) != 0 ||
         mglRendererBackendGetFallbackRenderTargetTexture(backend) !=
@@ -8856,6 +8869,28 @@ static int verifyRendererBackend(id<MTLDevice> device) {
         return 1;
     }
     printf("RENDERER_BACKEND_RENDER_PASS_CACHE_OK\n");
+    if (mglRendererBackendSetBlitCachedObject(
+            backend, MGL_RENDERER_BACKEND_BLIT_CACHE_NEAREST_SAMPLER,
+            (__bridge void *)nearestSampler) != 0 ||
+        mglRendererBackendSetBlitCachedObject(
+            backend, MGL_RENDERER_BACKEND_BLIT_CACHE_LINEAR_SAMPLER,
+            (__bridge void *)linearSampler) != 0 ||
+        mglRendererBackendSetBlitCachedObject(
+            backend, MGL_RENDERER_BACKEND_BLIT_CACHE_CLEAR_DEPTH_STATE,
+            (__bridge void *)clearDepthState) != 0 ||
+        mglRendererBackendGetBlitCachedObject(
+            backend, MGL_RENDERER_BACKEND_BLIT_CACHE_NEAREST_SAMPLER) !=
+            (__bridge void *)nearestSampler ||
+        mglRendererBackendGetBlitCachedObject(
+            backend, MGL_RENDERER_BACKEND_BLIT_CACHE_LINEAR_SAMPLER) !=
+            (__bridge void *)linearSampler ||
+        mglRendererBackendGetBlitCachedObject(
+            backend, MGL_RENDERER_BACKEND_BLIT_CACHE_CLEAR_DEPTH_STATE) !=
+            (__bridge void *)clearDepthState) {
+        fprintf(stderr, "FAIL: renderer backend blit cache\n");
+        return 1;
+    }
+    printf("RENDERER_BACKEND_BLIT_CACHE_OK\n");
     MGLRendererBackendShutdownResult shutdown = {};
     if (mglRendererBackendShutdown(backend, &shutdown) != 0) {
         fprintf(stderr, "FAIL: renderer backend shutdown\n");
