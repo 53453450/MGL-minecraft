@@ -165,11 +165,7 @@ static bool mglRenderPassSnapshotAttachmentMatchesSubresource(
            attachment->depth_plane == subresource.depthPlane;
 }
 
-/* Owner-first render-pass state readers.  Under Metal-cpp the C++
- * RenderPassStateOwner is the writer of record for every attachment field;
- * these helpers consult it first and fall back to the ObjC descriptor mirror
- * for the gate-off A/B path.  They must only be used at read sites outside
- * the mglRenderPassSetPersistent* writer bodies (those write both sides). */
+/* RenderPassStateOwner is the writer of record for every attachment field. */
 static MGLMetalTextureRef mglRenderPassAttachmentTextureFor(
     const MGLCommandState *commandState,
     uint32_t attachmentKind,
@@ -181,21 +177,7 @@ static MGLMetalTextureRef mglRenderPassAttachmentTextureFor(
         return attachment.texture
             ? (__bridge MGLMetalTextureRef)attachment.texture : nil;
     }
-    if (!commandState || !commandState->renderPassDescriptor) {
-        return nil;
-    }
-    switch (attachmentKind) {
-        case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR:
-            if (colorIndex >= MAX_COLOR_ATTACHMENTS) return nil;
-            return commandState->renderPassDescriptor
-                .colorAttachments[colorIndex].texture;
-        case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH:
-            return commandState->renderPassDescriptor.depthAttachment.texture;
-        case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL:
-            return commandState->renderPassDescriptor.stencilAttachment.texture;
-        default:
-            return nil;
-    }
+    return nil;
 }
 
 static MGLMetalTextureRef mglRenderPassColorTextureFor(
@@ -239,37 +221,7 @@ static BOOL mglRenderPassActionsFor(
         }
         return YES;
     }
-    if (!commandState || !commandState->renderPassDescriptor) return NO;
-    MTLRenderPassAttachmentDescriptor *attachmentDescriptor = nil;
-    switch (attachmentKind) {
-        case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR: {
-            if (colorIndex >= MAX_COLOR_ATTACHMENTS) return NO;
-            attachmentDescriptor = commandState->renderPassDescriptor
-                .colorAttachments[colorIndex];
-            break;
-        }
-        case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH:
-            attachmentDescriptor =
-                commandState->renderPassDescriptor.depthAttachment;
-            break;
-        case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL:
-            attachmentDescriptor =
-                commandState->renderPassDescriptor.stencilAttachment;
-            break;
-        default:
-            return NO;
-    }
-    if (!attachmentDescriptor) return NO;
-    if (loadActionOut) {
-        *loadActionOut = (uint32_t)attachmentDescriptor.loadAction;
-    }
-    if (storeActionOut) {
-        *storeActionOut = (uint32_t)attachmentDescriptor.storeAction;
-    }
-    if (storeActionOptionsOut) {
-        *storeActionOptionsOut = attachmentDescriptor.storeActionOptions;
-    }
-    return YES;
+    return NO;
 }
 
 static BOOL mglRenderPassClearValuesFor(
@@ -281,57 +233,25 @@ static BOOL mglRenderPassClearValuesFor(
     uint32_t *clearStencilOut)
 {
     MGLRenderCppRenderPassState state = {0};
-    if (mglRenderPassGetPersistentState(commandState, &state)) {
-        switch (attachmentKind) {
-            case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR: {
-                if (colorIndex >= MAX_COLOR_ATTACHMENTS) return NO;
-                const MGLRenderCppRenderPassColorState *color =
-                    &state.color[colorIndex];
-                if (clearColorOut) {
-                    clearColorOut[0] = color->clear_red;
-                    clearColorOut[1] = color->clear_green;
-                    clearColorOut[2] = color->clear_blue;
-                    clearColorOut[3] = color->clear_alpha;
-                }
-                return YES;
-            }
-            case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH:
-                if (clearDepthOut) *clearDepthOut = state.depth.clear_depth;
-                return YES;
-            case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL:
-                if (clearStencilOut) *clearStencilOut = state.stencil.clear_stencil;
-                return YES;
-            default:
-                return NO;
-        }
-    }
-    if (!commandState || !commandState->renderPassDescriptor) return NO;
+    if (!mglRenderPassGetPersistentState(commandState, &state)) return NO;
     switch (attachmentKind) {
         case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR: {
             if (colorIndex >= MAX_COLOR_ATTACHMENTS) return NO;
-            MTLRenderPassColorAttachmentDescriptor *attachment =
-                commandState->renderPassDescriptor
-                    .colorAttachments[colorIndex];
-            if (!attachment) return NO;
+            const MGLRenderCppRenderPassColorState *color =
+                &state.color[colorIndex];
             if (clearColorOut) {
-                clearColorOut[0] = attachment.clearColor.red;
-                clearColorOut[1] = attachment.clearColor.green;
-                clearColorOut[2] = attachment.clearColor.blue;
-                clearColorOut[3] = attachment.clearColor.alpha;
+                clearColorOut[0] = color->clear_red;
+                clearColorOut[1] = color->clear_green;
+                clearColorOut[2] = color->clear_blue;
+                clearColorOut[3] = color->clear_alpha;
             }
             return YES;
         }
         case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH:
-            if (clearDepthOut) {
-                *clearDepthOut = commandState->renderPassDescriptor
-                    .depthAttachment.clearDepth;
-            }
+            if (clearDepthOut) *clearDepthOut = state.depth.clear_depth;
             return YES;
         case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL:
-            if (clearStencilOut) {
-                *clearStencilOut = commandState->renderPassDescriptor
-                    .stencilAttachment.clearStencil;
-            }
+            if (clearStencilOut) *clearStencilOut = state.stencil.clear_stencil;
             return YES;
         default:
             return NO;
@@ -344,19 +264,13 @@ static BOOL mglRenderPassRenderTargetSizeFor(
     uint64_t *heightOut)
 {
     MGLRenderCppRenderPassState state = {0};
-    if (mglRenderPassGetPersistentState(commandState, &state)) {
-        if (widthOut) *widthOut = state.render_target_width;
-        if (heightOut) *heightOut = state.render_target_height;
-        return YES;
-    }
-    if (!commandState || !commandState->renderPassDescriptor) return NO;
-    if (widthOut) *widthOut = commandState->renderPassDescriptor.renderTargetWidth;
-    if (heightOut) *heightOut = commandState->renderPassDescriptor.renderTargetHeight;
+    if (!mglRenderPassGetPersistentState(commandState, &state)) return NO;
+    if (widthOut) *widthOut = state.render_target_width;
+    if (heightOut) *heightOut = state.render_target_height;
     return YES;
 }
 
-/* Single-value variants of the owner-first readers for scripted call sites.
- * Each falls back to the mirror, then to the provided default. */
+/* Single-value variants use zero or the caller-provided explicit default. */
 static NSUInteger mglRenderPassRenderTargetWidthFor(
     const MGLCommandState *commandState)
 {
@@ -449,9 +363,6 @@ static uint32_t mglRenderPassVisibilityResultTypeFor(
     MGLRenderCppRenderPassState state = {0};
     if (mglRenderPassGetPersistentState(commandState, &state)) {
         return state.visibility_result_type;
-    }
-    if (commandState && commandState->renderPassDescriptor) {
-        return (uint32_t)commandState->renderPassDescriptor.visibilityResultType;
     }
     return 0u;
 }
@@ -1053,11 +964,8 @@ output->name, (unsigned)i,
     if (!fbo) {
         GLuint mgl_drawbuffer = mglDefaultDrawBufferIndexForGL(MGL_STATE(ctx)->draw_buffer);
         MGLMetalTextureRef expectedColor0 = nil;
-        MGLMetalTextureRef actualColor0 = hasPassState
-            ? mglRenderPassTextureFromSnapshot(
-                  &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0)
-            : _renderPassManager.state->renderPassDescriptor
-                  .colorAttachments[0].texture;
+        MGLMetalTextureRef actualColor0 = mglRenderPassTextureFromSnapshot(
+            &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0);
 
         if (mgl_drawbuffer == _FRONT) {
             expectedColor0 = _drawable ? _drawable.texture : nil;
@@ -1087,14 +995,10 @@ output->name, (unsigned)i,
             }
         }
 
-        MGLMetalTextureRef actualDepth = hasPassState
-            ? mglRenderPassTextureFromSnapshot(
-                  &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0)
-            : mglRenderPassDepthTextureFor(_renderPassManager.state);
-        MGLMetalTextureRef actualStencil = hasPassState
-            ? mglRenderPassTextureFromSnapshot(
-                  &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0)
-            : mglRenderPassStencilTextureFor(_renderPassManager.state);
+        MGLMetalTextureRef actualDepth = mglRenderPassTextureFromSnapshot(
+            &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0);
+        MGLMetalTextureRef actualStencil = mglRenderPassTextureFromSnapshot(
+            &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0);
         if (actualDepth != expectedDepth) {
             return false;
         }
@@ -1131,27 +1035,18 @@ output->name, (unsigned)i,
             expected = (__bridge MGLMetalTextureRef)(tex->mtl_data);
         }
 
-        MGLMetalTextureRef actual = hasPassState
-            ? mglRenderPassTextureFromSnapshot(
-                  &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR,
-                  colorSlot)
-            : _renderPassManager.state->renderPassDescriptor
-                  .colorAttachments[colorSlot].texture;
+        MGLMetalTextureRef actual = mglRenderPassTextureFromSnapshot(
+            &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR,
+            colorSlot);
         if (actual != expected) {
             return false;
         }
 
         if (attachment && actual) {
             MGLMetalAttachmentSubresource subresource = mglMetalAttachmentSubresourceForAttachment(attachment);
-            bool matches = hasPassState
-                ? mglRenderPassSnapshotAttachmentMatchesSubresource(
-                      &passState,
-                      MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR,
-                      colorSlot, subresource)
-                : mglMetalRenderPassColorAttachmentMatchesSubresource(
-                      _renderPassManager.state->renderPassDescriptor
-                          .colorAttachments[colorSlot],
-                      subresource);
+            bool matches = mglRenderPassSnapshotAttachmentMatchesSubresource(
+                &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR,
+                colorSlot, subresource);
             if (!matches) {
                 return false;
             }
@@ -1159,13 +1054,9 @@ output->name, (unsigned)i,
 
         MGLMetalTextureRef nextColor = nil;
         if (i + 1u < MAX_COLOR_ATTACHMENTS) {
-            nextColor = hasPassState
-                ? mglRenderPassTextureFromSnapshot(
-                      &passState,
-                      MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR,
-                      i + 1u)
-                : _renderPassManager.state->renderPassDescriptor
-                      .colorAttachments[i + 1u].texture;
+            nextColor = mglRenderPassTextureFromSnapshot(
+                &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR,
+                i + 1u);
         }
         if (i + 1u >= MAX_COLOR_ATTACHMENTS ||
             (mglMetalDrawBufferAt(ctx, i + 1u) == GL_NONE &&
@@ -1185,22 +1076,16 @@ output->name, (unsigned)i,
         }
         expectedDepth = depthTex ? (__bridge MGLMetalTextureRef)(depthTex->mtl_data) : nil;
     }
-    MGLMetalTextureRef actualDepth = hasPassState
-        ? mglRenderPassTextureFromSnapshot(
-              &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0)
-        : mglRenderPassDepthTextureFor(_renderPassManager.state);
+    MGLMetalTextureRef actualDepth = mglRenderPassTextureFromSnapshot(
+        &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0);
     if (actualDepth != expectedDepth) {
         return false;
     }
     if (fbo->depth.texture && expectedDepth) {
         MGLMetalAttachmentSubresource subresource = mglMetalAttachmentSubresourceForAttachment(&fbo->depth);
-        bool matches = hasPassState
-            ? mglRenderPassSnapshotAttachmentMatchesSubresource(
-                  &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH,
-                  0, subresource)
-            : mglMetalRenderPassDepthAttachmentMatchesSubresource(
-                  _renderPassManager.state->renderPassDescriptor.depthAttachment,
-                  subresource);
+        bool matches = mglRenderPassSnapshotAttachmentMatchesSubresource(
+            &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH,
+            0, subresource);
         if (!matches) {
             return false;
         }
@@ -1217,22 +1102,16 @@ output->name, (unsigned)i,
         }
         expectedStencil = stencilTex ? (__bridge MGLMetalTextureRef)(stencilTex->mtl_data) : nil;
     }
-    MGLMetalTextureRef actualStencil = hasPassState
-        ? mglRenderPassTextureFromSnapshot(
-              &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0)
-        : mglRenderPassStencilTextureFor(_renderPassManager.state);
+    MGLMetalTextureRef actualStencil = mglRenderPassTextureFromSnapshot(
+        &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0);
     if (actualStencil != expectedStencil) {
         return false;
     }
     if (fbo->stencil.texture && expectedStencil) {
         MGLMetalAttachmentSubresource subresource = mglMetalAttachmentSubresourceForAttachment(&fbo->stencil);
-        bool matches = hasPassState
-            ? mglRenderPassSnapshotAttachmentMatchesSubresource(
-                  &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL,
-                  0, subresource)
-            : mglMetalRenderPassStencilAttachmentMatchesSubresource(
-                  _renderPassManager.state->renderPassDescriptor.stencilAttachment,
-                  subresource);
+        bool matches = mglRenderPassSnapshotAttachmentMatchesSubresource(
+            &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL,
+            0, subresource);
         if (!matches) {
             return false;
         }
@@ -1368,11 +1247,8 @@ output->name, (unsigned)i,
     }
 
     for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
-        MGLMetalTextureRef texture = hasPassState
-            ? mglRenderPassTextureFromSnapshot(
-                  &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, i)
-            : _renderPassManager.state->renderPassDescriptor
-                  .colorAttachments[i].texture;
+        MGLMetalTextureRef texture = mglRenderPassTextureFromSnapshot(
+            &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, i);
         if (texture) {
             mglRenderPassSetPersistentActions(
                 _renderPassManager.state,
@@ -1380,20 +1256,16 @@ output->name, (unsigned)i,
                 MTLLoadActionLoad, MTLStoreActionStore);
         }
     }
-    MGLMetalTextureRef depthTexture = hasPassState
-        ? mglRenderPassTextureFromSnapshot(
-              &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0)
-        : mglRenderPassDepthTextureFor(_renderPassManager.state);
+    MGLMetalTextureRef depthTexture = mglRenderPassTextureFromSnapshot(
+        &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0);
     if (depthTexture) {
         mglRenderPassSetPersistentActions(
             _renderPassManager.state,
             MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0,
             MTLLoadActionLoad, MTLStoreActionStore);
     }
-    MGLMetalTextureRef stencilTexture = hasPassState
-        ? mglRenderPassTextureFromSnapshot(
-              &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0)
-        : mglRenderPassStencilTextureFor(_renderPassManager.state);
+    MGLMetalTextureRef stencilTexture = mglRenderPassTextureFromSnapshot(
+        &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0);
     if (stencilTexture) {
         mglRenderPassSetPersistentActions(
             _renderPassManager.state,
@@ -1952,10 +1824,7 @@ output->name, (unsigned)i,
         NSUInteger passHeight = 0;
         MGLMetalTextureRef passTexture = nil;
 
-        /* P4.1f: gate-on 下 pass 尺寸在 C++ owner（descriptor 镜像为 nil），
-         * 用 owner 存在性作为「pass 已配置」信号，否则会回退到 drawable
-         * 尺寸（200x200）做 GL→Metal 视口换算，viewport 落在 128x128
-         * render target 之外 → 所有 draw 静默空转。 */
+        /* The C++ owner is the authoritative configured-pass signal. */
         BOOL hasConfiguredRenderPass =
             _renderPassManager.state->renderPassStateOwner != NULL;
         if (hasConfiguredRenderPass) {
@@ -4356,10 +4225,7 @@ output->name, (unsigned)i,
         }
     }
 
-    /* P4.1f: gate-on 下 pass 状态在 C++ owner，descriptor 镜像为 nil ——
-     * 用 owner 存在性作为「pass 已配置」的信号，否则 pipeline 会用
-     * FBO/context 推导的格式构建，与真实 pass（如 sRGB 变体、transient
-     * depth）不匹配，Metal 会静默丢弃所有 draw。 */
+    /* Derive pipeline attachment formats from the configured C++ pass. */
     BOOL hasConfiguredRenderPass =
         _renderPassManager.state->renderPassStateOwner != NULL;
     if (hasConfiguredRenderPass) {
@@ -4405,12 +4271,7 @@ output->name, (unsigned)i,
 
     /* rasterSampleCount：与 render pass attachment 的 sample count 对齐
      * （默认 1）。 */
-    /* Owner-first attachment readers (gate-on: C++ owner; gate-off: ObjC
-     * descriptor mirror).  The old guard required the ObjC descriptor to
-     * exist, which skipped MSAA alignment entirely under gate-on
-     * (renderPassDescriptor == nil) and left rasterSampleCount = 1 in a
-     * 4x pass -> draws wrote a single sample of four, so resolves came
-     * back at 25% coverage. */
+    /* Resolve the pipeline sample count from the C++ render-pass state. */
     NSUInteger resolvedSampleCount = 1;
     MGLMetalTextureRef rpColor0 = mglRenderPassColorTextureFor(_renderPassManager.state, 0);
     MGLMetalTextureRef rpDepth = mglRenderPassDepthTextureFor(_renderPassManager.state);
@@ -4428,8 +4289,7 @@ output->name, (unsigned)i,
     state->raster_sample_count = (uint32_t)resolvedSampleCount;
 
     /* 深度/模板 packed normalize（与 mglNormalizePipelineDepthStencilFormats
-     * 一致；C++ builder 内还会再兜底一次）。签名必须在 normalize 之后计算，
-     * 与 gate-off 的 descriptor 路径保持一致。 */
+     * 一致；C++ builder 内还会再兜底一次）。签名必须在 normalize 之后计算。 */
     {
         uint32_t depthFormat = state->depth_format;
         uint32_t stencilFormat = state->stencil_format;
