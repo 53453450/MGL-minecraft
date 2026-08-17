@@ -15,6 +15,17 @@ static BOOL mglBindingStateUsesMetalCpp(void)
            mglRenderCppGetDevice() != NULL;
 }
 
+static BOOL mglBindingStateHasActiveEncoder(const MGLEncodeContext *encCtx)
+{
+    if (!encCtx) {
+        return NO;
+    }
+    return mglBindingStateUsesMetalCpp()
+        ? mglRenderCppRenderEncoderOwnerHasCurrent(
+              encCtx->render_encoder_owner) != 0
+        : encCtx->encoder != nil;
+}
+
 static MGLMetalBufferRef mglBindingStateCreateBuffer(
     MGLMetalDeviceRef device,
     NSUInteger length,
@@ -68,14 +79,15 @@ static MGLMetalTextureRef mglBindingStateCreateTextureLevelView(
 
 static void mglBindingStateSetVertexBuffer(
     MGLMetalRenderCommandEncoderRef encoder,
+    void *renderEncoderOwner,
     MGLMetalBufferRef buffer,
     NSUInteger offset,
     NSUInteger index)
 {
-    if (mglBindingStateUsesMetalCpp() &&
-        mglRenderCppSetRenderBuffer(
-            (__bridge void *)encoder, (__bridge void *)buffer, offset,
-            MGL_RENDER_CPP_BINDING_STAGE_VERTEX, (uint32_t)index) == 0) {
+    if (mglBindingStateUsesMetalCpp()) {
+        (void)mglRenderCppSetRenderBufferForOwner(
+            renderEncoderOwner, (__bridge void *)buffer, offset,
+            MGL_RENDER_CPP_BINDING_STAGE_VERTEX, (uint32_t)index);
         return;
     }
     [encoder setVertexBuffer:buffer offset:offset atIndex:index];
@@ -83,14 +95,15 @@ static void mglBindingStateSetVertexBuffer(
 
 static void mglBindingStateSetVertexBytes(
     MGLMetalRenderCommandEncoderRef encoder,
+    void *renderEncoderOwner,
     const void *bytes,
     NSUInteger length,
     NSUInteger index)
 {
-    if (mglBindingStateUsesMetalCpp() &&
-        mglRenderCppSetRenderBytes((__bridge void *)encoder, bytes, length,
-                                   MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
-                                   (uint32_t)index) == 0) {
+    if (mglBindingStateUsesMetalCpp()) {
+        (void)mglRenderCppSetRenderBytesForOwner(
+            renderEncoderOwner, bytes, length,
+            MGL_RENDER_CPP_BINDING_STAGE_VERTEX, (uint32_t)index);
         return;
     }
     [encoder setVertexBytes:bytes length:length atIndex:index];
@@ -98,14 +111,15 @@ static void mglBindingStateSetVertexBytes(
 
 static void mglBindingStateSetFragmentBuffer(
     MGLMetalRenderCommandEncoderRef encoder,
+    void *renderEncoderOwner,
     MGLMetalBufferRef buffer,
     NSUInteger offset,
     NSUInteger index)
 {
-    if (mglBindingStateUsesMetalCpp() &&
-        mglRenderCppSetRenderBuffer(
-            (__bridge void *)encoder, (__bridge void *)buffer, offset,
-            MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT, (uint32_t)index) == 0) {
+    if (mglBindingStateUsesMetalCpp()) {
+        (void)mglRenderCppSetRenderBufferForOwner(
+            renderEncoderOwner, (__bridge void *)buffer, offset,
+            MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT, (uint32_t)index);
         return;
     }
     [encoder setFragmentBuffer:buffer offset:offset atIndex:index];
@@ -113,14 +127,15 @@ static void mglBindingStateSetFragmentBuffer(
 
 static void mglBindingStateSetFragmentBytes(
     MGLMetalRenderCommandEncoderRef encoder,
+    void *renderEncoderOwner,
     const void *bytes,
     NSUInteger length,
     NSUInteger index)
 {
-    if (mglBindingStateUsesMetalCpp() &&
-        mglRenderCppSetRenderBytes((__bridge void *)encoder, bytes, length,
-                                   MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT,
-                                   (uint32_t)index) == 0) {
+    if (mglBindingStateUsesMetalCpp()) {
+        (void)mglRenderCppSetRenderBytesForOwner(
+            renderEncoderOwner, bytes, length,
+            MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT, (uint32_t)index);
         return;
     }
     [encoder setFragmentBytes:bytes length:length atIndex:index];
@@ -167,14 +182,15 @@ static bool mglBindingStateQueueResourceBinding(
         return mglBindingStateCollectResourceBinding(
             snapshot, stage, kind, resource, index);
     }
-    void *encoder = mglRenderCppRenderEncoderOwnerGetCurrent(renderEncoderOwner);
     if (kind == MGL_RENDER_CPP_RESOURCE_BINDING_TEXTURE) {
-        return mglRenderCppBindingSetTexture(
-            bindingStateOwner, encoder, resource, stage, index) >= 0;
+        return mglRenderCppBindingSetTextureForOwner(
+            bindingStateOwner, renderEncoderOwner,
+            resource, stage, index) >= 0;
     }
     if (kind == MGL_RENDER_CPP_RESOURCE_BINDING_SAMPLER) {
-        return mglRenderCppBindingSetSampler(
-            bindingStateOwner, encoder, resource, stage, index) >= 0;
+        return mglRenderCppBindingSetSamplerForOwner(
+            bindingStateOwner, renderEncoderOwner,
+            resource, stage, index) >= 0;
     }
     return false;
 }
@@ -189,10 +205,8 @@ static bool mglBindingStateFlushResourceBindings(
          snapshot->fragment_op_count == 0)) {
         return true;
     }
-    void *encoder = mglRenderCppRenderEncoderOwnerGetCurrent(renderEncoderOwner);
-    if (!encoder ||
-        mglRenderCppEncodeResourceBindingSnapshot(
-            bindingStateOwner, encoder, snapshot, NULL, 0) != 0) {
+    if (mglRenderCppEncodeResourceBindingSnapshotForRenderEncoderOwner(
+            bindingStateOwner, renderEncoderOwner, snapshot, NULL, 0) != 0) {
         return false;
     }
     *snapshot = (MGLRenderCppResourceBindingSnapshot){0};
@@ -234,7 +248,7 @@ static bool mglBindingStateFlushResourceBindings(
               ctx, ctx ? MGL_STATE(ctx)->vao : NULL, encCtx->encoder);
     }
 
-    if (!ctx || !encCtx->encoder) {
+    if (!ctx || !mglBindingStateHasActiveEncoder(encCtx)) {
         NSLog(@"MGL VBIND skip: encoder/ctx nil");
         return false;
     }
@@ -266,8 +280,8 @@ static bool mglBindingStateFlushResourceBindings(
 #define MGL_VBIND_FLUSH_SNAPSHOT()                                              \
     do {                                                                        \
         if (vbindSnapshot.vertex_op_count > 0) {                                \
-            mglRenderCppEncodeBindingSnapshot(                                  \
-                (__bridge void *)encCtx->encoder, &vbindSnapshot, NULL, 0);     \
+            mglRenderCppEncodeBindingSnapshotForRenderEncoderOwner(             \
+                encCtx->render_encoder_owner, &vbindSnapshot, NULL, 0);         \
             vbindSnapshot = (MGLRenderCppBindingSnapshot){0};                   \
             vbindByteScratchUsed = 0;                                           \
         }                                                                       \
@@ -317,7 +331,8 @@ static bool mglBindingStateFlushResourceBindings(
             MGL_VBIND_COLLECT_BUFFER(slot, bufPtr, off);                        \
         } else {                                                                \
             mglBindingStateSetVertexBuffer(                                     \
-                encCtx->encoder, (__bridge MGLMetalBufferRef)(bufPtr),              \
+                encCtx->encoder, encCtx->render_encoder_owner,                  \
+                (__bridge MGLMetalBufferRef)(bufPtr),                           \
                 (off), (slot));                                                 \
         }                                                                       \
     } while (0)
@@ -328,7 +343,8 @@ static bool mglBindingStateFlushResourceBindings(
             MGL_VBIND_COLLECT_BYTES(slot, src, len);                            \
         } else {                                                                \
             mglBindingStateSetVertexBytes(                                      \
-                encCtx->encoder, (src), (len), (slot));                         \
+                encCtx->encoder, encCtx->render_encoder_owner,                  \
+                (src), (len), (slot));                                          \
         }                                                                       \
     } while (0)
 
@@ -338,7 +354,8 @@ static bool mglBindingStateFlushResourceBindings(
             MGL_VBIND_COLLECT_BUFFER(slot, NULL, 0);                            \
         } else {                                                                \
             mglBindingStateSetVertexBuffer(                                     \
-                encCtx->encoder, nil, 0, (slot));                               \
+                encCtx->encoder, encCtx->render_encoder_owner,                  \
+                nil, 0, (slot));                                                \
         }                                                                       \
     } while (0)
 
@@ -702,8 +719,8 @@ static bool mglBindingStateFlushResourceBindings(
      * encoder-side order matches the direct path (map-loop emits, then VAO
      * attrib emits).  Gate-off path never collects, so this is a no-op. */
     if (useVertexBindingSnapshot && vbindSnapshot.vertex_op_count > 0) {
-        mglRenderCppEncodeBindingSnapshot(
-            (__bridge void *)encCtx->encoder, &vbindSnapshot, NULL, 0);
+        mglRenderCppEncodeBindingSnapshotForRenderEncoderOwner(
+            encCtx->render_encoder_owner, &vbindSnapshot, NULL, 0);
         vbindSnapshot = (MGLRenderCppBindingSnapshot){0};
         vbindByteScratchUsed = 0;
     }
@@ -813,8 +830,8 @@ static bool mglBindingStateFlushResourceBindings(
 #define MGL_VATTR_FLUSH_SNAPSHOT()                                              \
     do {                                                                        \
         if (vattrUseSnapshot && vattrSnapshot->vertex_op_count > 0) {           \
-            mglRenderCppEncodeBindingSnapshot(                                  \
-                (__bridge void *)encCtx->encoder, vattrSnapshot, NULL, 0);      \
+            mglRenderCppEncodeBindingSnapshotForRenderEncoderOwner(             \
+                encCtx->render_encoder_owner, vattrSnapshot, NULL, 0);          \
             *vattrSnapshot = (MGLRenderCppBindingSnapshot){0};                  \
         }                                                                       \
     } while (0)
@@ -835,7 +852,8 @@ static bool mglBindingStateFlushResourceBindings(
                                         /* length */ 0u};                       \
         } else {                                                                \
             mglBindingStateSetVertexBuffer(                                     \
-                encCtx->encoder, (__bridge MGLMetalBufferRef)(bufPtr),              \
+                encCtx->encoder, encCtx->render_encoder_owner,                  \
+                (__bridge MGLMetalBufferRef)(bufPtr),                           \
                 (off), (slot));                                                 \
         }                                                                       \
     } while (0)
@@ -1372,8 +1390,8 @@ static bool mglBindingStateFlushResourceBindings(
     do {                                                                        \
         if (vfallbackUseSnapshot &&                                             \
             vfallbackSnapshot->vertex_op_count > 0) {                           \
-            mglRenderCppEncodeBindingSnapshot(                                  \
-                (__bridge void *)encCtx->encoder, vfallbackSnapshot, NULL, 0);  \
+            mglRenderCppEncodeBindingSnapshotForRenderEncoderOwner(             \
+                encCtx->render_encoder_owner, vfallbackSnapshot, NULL, 0);      \
             *vfallbackSnapshot = (MGLRenderCppBindingSnapshot){0};              \
         }                                                                       \
     } while (0)
@@ -1395,7 +1413,8 @@ static bool mglBindingStateFlushResourceBindings(
                                         /* length */ 0u};                       \
         } else {                                                                \
             mglBindingStateSetVertexBuffer(                                     \
-                encCtx->encoder, (__bridge MGLMetalBufferRef)(bufPtr),              \
+                encCtx->encoder, encCtx->render_encoder_owner,                  \
+                (__bridge MGLMetalBufferRef)(bufPtr),                           \
                 (off), (slot));                                                 \
         }                                                                       \
     } while (0)
@@ -1522,8 +1541,8 @@ static bool mglBindingStateFlushResourceBindings(
     do {                                                                        \
         if (vpointUseSnapshot &&                                                \
             vpointSnapshot->vertex_op_count > 0) {                              \
-            mglRenderCppEncodeBindingSnapshot(                                  \
-                (__bridge void *)encCtx->encoder, vpointSnapshot, NULL, 0);     \
+            mglRenderCppEncodeBindingSnapshotForRenderEncoderOwner(             \
+                encCtx->render_encoder_owner, vpointSnapshot, NULL, 0);         \
             *vpointSnapshot = (MGLRenderCppBindingSnapshot){0};                 \
             *vpointByteScratchUsed = 0;                                         \
         }                                                                       \
@@ -1553,7 +1572,8 @@ static bool mglBindingStateFlushResourceBindings(
                                         /* length */ (uint32_t)len_};           \
         } else {                                                                \
             mglBindingStateSetVertexBytes(                                      \
-                encCtx->encoder, (src), (len), (slot));                         \
+                encCtx->encoder, encCtx->render_encoder_owner,                  \
+                (src), (len), (slot));                                          \
         }                                                                       \
     } while (0)
     int pointSizeStages[] = { _VERTEX_SHADER, _TESS_EVALUATION_SHADER, _GEOMETRY_SHADER };
@@ -1613,7 +1633,7 @@ static bool mglBindingStateFlushResourceBindings(
         NSLog(@"MGL FBIND begin ctx=%p encoder=%p", ctx, encCtx->encoder);
     }
 
-    if (!ctx || !encCtx->encoder) {
+    if (!ctx || !mglBindingStateHasActiveEncoder(encCtx)) {
         NSLog(@"MGL FBIND skip: ctx/encoder nil");
         return false;
     }
@@ -1636,8 +1656,8 @@ static bool mglBindingStateFlushResourceBindings(
 #define MGL_FBIND_FLUSH_SNAPSHOT()                                              \
     do {                                                                        \
         if (snapshot.fragment_op_count > 0) {                                   \
-            mglRenderCppEncodeBindingSnapshot(                                  \
-                (__bridge void *)encCtx->encoder, &snapshot, NULL, 0);          \
+            mglRenderCppEncodeBindingSnapshotForRenderEncoderOwner(             \
+                encCtx->render_encoder_owner, &snapshot, NULL, 0);              \
             snapshot = (MGLRenderCppBindingSnapshot){0};                        \
             fbindByteScratchUsed = 0;                                           \
         }                                                                       \
@@ -1687,7 +1707,8 @@ static bool mglBindingStateFlushResourceBindings(
             MGL_FBIND_COLLECT_BUFFER(slot, bufPtr, off);                        \
         } else {                                                                \
             mglBindingStateSetFragmentBuffer(                                   \
-                encCtx->encoder, (__bridge MGLMetalBufferRef)(bufPtr),              \
+                encCtx->encoder, encCtx->render_encoder_owner,                  \
+                (__bridge MGLMetalBufferRef)(bufPtr),                           \
                 (off), (slot));                                                 \
         }                                                                       \
     } while (0)
@@ -1698,7 +1719,8 @@ static bool mglBindingStateFlushResourceBindings(
             MGL_FBIND_COLLECT_BYTES(slot, src, len);                            \
         } else {                                                                \
             mglBindingStateSetFragmentBytes(                                    \
-                encCtx->encoder, (src), (len), (slot));                         \
+                encCtx->encoder, encCtx->render_encoder_owner,                  \
+                (src), (len), (slot));                                          \
         }                                                                       \
     } while (0)
 
@@ -1708,7 +1730,8 @@ static bool mglBindingStateFlushResourceBindings(
             MGL_FBIND_COLLECT_BUFFER(slot, NULL, 0);                            \
         } else {                                                                \
             mglBindingStateSetFragmentBuffer(                                   \
-                encCtx->encoder, nil, 0, (slot));                               \
+                encCtx->encoder, encCtx->render_encoder_owner,                  \
+                nil, 0, (slot));                                                \
         }                                                                       \
     } while (0)
 
@@ -1826,8 +1849,9 @@ static bool mglBindingStateFlushResourceBindings(
                 if ((uintptr_t)ptr->data.mtl_data < 0x100000000ULL) {
                     NSLog(@"MGL FBIND skip small MTL buffer=%u slot=%u: suspicious mtl_data pointer=%p",
                           ptr->name, i, ptr->data.mtl_data);
-                    mglBindingStateSetFragmentBuffer(encCtx->encoder, nil, 0,
-                                                     bindingIndex);
+                    mglBindingStateSetFragmentBuffer(
+                        encCtx->encoder, encCtx->render_encoder_owner, nil, 0,
+                        bindingIndex);
                     mglRenderCppBindingClearFragmentBuffer(_bindingStateOwner,
                                                          (uint32_t)bindingIndex);
             mglRenderCppBindingClearFragmentBuffer(_bindingStateOwner,
@@ -2076,8 +2100,8 @@ static bool mglBindingStateFlushResourceBindings(
      * then fallback emits).  Gate-off path never collects (all emits were
      * direct), so this is a no-op there. */
     if (useBindingSnapshot && snapshot.fragment_op_count > 0) {
-        mglRenderCppEncodeBindingSnapshot(
-            (__bridge void *)encCtx->encoder, &snapshot, NULL, 0);
+        mglRenderCppEncodeBindingSnapshotForRenderEncoderOwner(
+            encCtx->render_encoder_owner, &snapshot, NULL, 0);
         snapshot = (MGLRenderCppBindingSnapshot){0};
         fbindByteScratchUsed = 0;
     }
@@ -2159,8 +2183,8 @@ static bool mglBindingStateFlushResourceBindings(
     do {                                                                        \
         if (ffallbackUseSnapshot &&                                             \
             ffallbackSnapshot->fragment_op_count > 0) {                        \
-            mglRenderCppEncodeBindingSnapshot(                                 \
-                (__bridge void *)encCtx->encoder, ffallbackSnapshot, NULL, 0); \
+            mglRenderCppEncodeBindingSnapshotForRenderEncoderOwner(            \
+                encCtx->render_encoder_owner, ffallbackSnapshot, NULL, 0);     \
             *ffallbackSnapshot = (MGLRenderCppBindingSnapshot){0};              \
         }                                                                       \
     } while (0)
@@ -2181,7 +2205,8 @@ static bool mglBindingStateFlushResourceBindings(
                                         /* length */ 0u};                        \
         } else {                                                                \
             mglBindingStateSetFragmentBuffer(                                   \
-                encCtx->encoder, (__bridge MGLMetalBufferRef)(bufPtr),              \
+                encCtx->encoder, encCtx->render_encoder_owner,                  \
+                (__bridge MGLMetalBufferRef)(bufPtr),                           \
                 (off), (slot));                                                 \
         }                                                                       \
     } while (0)
@@ -2277,7 +2302,7 @@ static bool mglBindingStateFlushResourceBindings(
 static const NSUInteger kMaxFragmentSamplerSlots = 16;
 
 #define MGL_ABORT_TBIND_IF_ENCODER_CLOSED() do { \
-    if (!(__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) { \
+    if (mglRenderCppRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) == 0) { \
         if (ctx) { \
             mglMarkRendererDirtyBits(ctx->active_state, (DIRTY_TEX | DIRTY_TEX_BINDING | DIRTY_RENDER_STATE)); \
         } \
@@ -2304,7 +2329,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     const BOOL useResourceSnapshot = mglBindingStateUsesMetalCpp();
     MGLRenderCppResourceBindingSnapshot resourceSnapshot = {0};
 
-    if (!encCtx->encoder) {
+    if (!mglBindingStateHasActiveEncoder(encCtx)) {
         // No active render encoder yet (or it was rotated). Texture/sampler binding
         // can be deferred until the next encoder is created.
         return true;
@@ -4242,8 +4267,8 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             RETURN_FALSE_ON_FAILURE([self bindMTLTexture:ptr]);
         }
     }
-    if (!mglRenderCppRenderEncoderOwnerGetCurrent(
-            _renderPassManager.state->currentRenderEncoderOwner)) {
+    if (mglRenderCppRenderEncoderOwnerHasCurrent(
+            _renderPassManager.state->currentRenderEncoderOwner) == 0) {
         RETURN_FALSE_ON_FAILURE([self restoreRenderEncoderAfterTextureUploadForDraw:"vs-storage-image-bind"]);
     }
     for (GLuint i = 0; i < vertexStorageImageCount; i++)
@@ -4306,9 +4331,9 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
      *
      * Pass 1: Pre-resolve every storage image's Metal texture via
      * bindMTLTexture.  This may trigger texture (re)creation and CPU→GPU
-     * blit uploads, which close (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner) (Metal does not allow
-     * a render encoder and a blit encoder on the same command buffer
-     * simultaneously).  We do NOT touch (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner) here.
+     * blit uploads, which close the active render encoder (Metal does not
+     * allow a render encoder and a blit encoder on the same command buffer
+     * simultaneously). We do not bind resources during this pass.
      *
      * Pass 2: Bind the now-resolved Metal textures to the (possibly
      * restored) render encoder.  If pass 1 closed the encoder, restore it
@@ -4347,8 +4372,8 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     }
 
     /* Restore render encoder if any pass-1 bindMTLTexture closed it. */
-    if (!mglRenderCppRenderEncoderOwnerGetCurrent(
-            _renderPassManager.state->currentRenderEncoderOwner)) {
+    if (mglRenderCppRenderEncoderOwnerHasCurrent(
+            _renderPassManager.state->currentRenderEncoderOwner) == 0) {
         RETURN_FALSE_ON_FAILURE([self restoreRenderEncoderAfterTextureUploadForDraw:"storage-image-bind"]);
     }
 

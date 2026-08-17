@@ -32,6 +32,7 @@
  * read from _renderPassManager.state->currentRenderEncoder. */
 typedef struct {
     id<MTLRenderCommandEncoder> encoder;
+    void *render_encoder_owner;
 } MGLEncodeContext;
 
 /* === Resolved vertex-attrib binding === */
@@ -152,8 +153,8 @@ BOOL mglRendererGLSampledCopyLooksUsable(Texture *tex,
 void mglLogDrawWithoutSwapWatchdog(const char *kind,
                                           uint64_t drawCall,
                                           GLMContext ctx,
-                                          id<MTLCommandBuffer> commandBuffer,
-                                          id<MTLRenderCommandEncoder> renderEncoder,
+                                          void *commandBufferOwner,
+                                          void *renderEncoderOwner,
                                           MTLRenderPassDescriptor *renderPassDescriptor);
 Texture *mglFindFramebufferColorTexturePairedWithDepth(GLMContext glctx,
                                                               Texture *depthTexture,

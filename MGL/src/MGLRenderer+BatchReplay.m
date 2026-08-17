@@ -17,6 +17,24 @@ static BOOL mglBatchReplayUsesMetalCpp(void)
            mglRenderCppGetDevice() != NULL;
 }
 
+static BOOL mglBatchReplayHasActiveEncoder(const MGLEncodeContext *encCtx)
+{
+    if (!encCtx) return NO;
+    return mglBatchReplayUsesMetalCpp()
+        ? mglRenderCppRenderEncoderOwnerHasCurrent(
+              encCtx->render_encoder_owner) != 0
+        : encCtx->encoder != nil;
+}
+
+static void *mglBatchReplayEncoderTraceToken(
+    const MGLEncodeContext *encCtx)
+{
+    if (!encCtx) return NULL;
+    return mglBatchReplayUsesMetalCpp()
+        ? encCtx->render_encoder_owner
+        : (__bridge void *)encCtx->encoder;
+}
+
 static bool mglBatchReplayCollectResourceBinding(
     MGLRenderCppResourceBindingSnapshot *snapshot,
     uint32_t stage,
@@ -46,15 +64,16 @@ static bool mglBatchReplayCollectResourceBinding(
 
 static void mglBatchReplaySetRenderBuffer(
     MGLMetalRenderCommandEncoderRef encoder,
+    void *renderEncoderOwner,
     MGLMetalBufferRef buffer,
     NSUInteger offset,
     uint32_t stage,
     NSUInteger index)
 {
-    if (mglBatchReplayUsesMetalCpp() &&
-        mglRenderCppSetRenderBuffer(
-            (__bridge void *)encoder, (__bridge void *)buffer, offset,
-            stage, (uint32_t)index) == 0) {
+    if (mglBatchReplayUsesMetalCpp()) {
+        (void)mglRenderCppSetRenderBufferForOwner(
+            renderEncoderOwner, (__bridge void *)buffer, offset,
+            stage, (uint32_t)index);
         return;
     }
     if (stage == MGL_RENDER_CPP_BINDING_STAGE_VERTEX) {
@@ -66,25 +85,32 @@ static void mglBatchReplaySetRenderBuffer(
 
 static void mglBatchReplayDrawPrimitives(
     MGLMetalRenderCommandEncoderRef encoder,
+    void *renderEncoderOwner,
     MTLPrimitiveType primitiveType,
     NSUInteger vertexStart,
     NSUInteger vertexCount,
     NSUInteger instanceCount,
     NSUInteger baseInstance)
 {
-    (void)mglRenderCppEncodeDraw((__bridge void *)encoder,
-        &(MGLRenderCppDrawPlan){
+    const MGLRenderCppDrawPlan plan = {
             .kind = MGL_RENDER_CPP_DRAW_ARRAY,
             .primitive_type = (uint32_t)primitiveType,
             .vertex_start = vertexStart,
             .vertex_count = vertexCount,
             .instance_count = instanceCount,
             .base_instance = baseInstance,
-        }, NULL, 0);
+        };
+    if (mglBatchReplayUsesMetalCpp()) {
+        (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
+            renderEncoderOwner, &plan, NULL, 0);
+    } else {
+        (void)mglRenderCppEncodeDraw((__bridge void *)encoder, &plan, NULL, 0);
+    }
 }
 
 static void mglBatchReplayDrawIndexedPrimitives(
     MGLMetalRenderCommandEncoderRef encoder,
+    void *renderEncoderOwner,
     MTLPrimitiveType primitiveType,
     NSUInteger indexCount,
     MTLIndexType indexType,
@@ -94,8 +120,7 @@ static void mglBatchReplayDrawIndexedPrimitives(
     NSInteger baseVertex,
     NSUInteger baseInstance)
 {
-    (void)mglRenderCppEncodeDraw((__bridge void *)encoder,
-        &(MGLRenderCppDrawPlan){
+    const MGLRenderCppDrawPlan plan = {
             .kind = MGL_RENDER_CPP_DRAW_INDEXED,
             .primitive_type = (uint32_t)primitiveType,
             .index_count = indexCount,
@@ -105,26 +130,39 @@ static void mglBatchReplayDrawIndexedPrimitives(
             .instance_count = instanceCount,
             .base_vertex = baseVertex,
             .base_instance = baseInstance,
-        }, NULL, 0);
+        };
+    if (mglBatchReplayUsesMetalCpp()) {
+        (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
+            renderEncoderOwner, &plan, NULL, 0);
+    } else {
+        (void)mglRenderCppEncodeDraw((__bridge void *)encoder, &plan, NULL, 0);
+    }
 }
 
 static void mglBatchReplayDrawPrimitivesIndirect(
     MGLMetalRenderCommandEncoderRef encoder,
+    void *renderEncoderOwner,
     MTLPrimitiveType primitiveType,
     MGLMetalBufferRef indirectBuffer,
     NSUInteger indirectBufferOffset)
 {
-    (void)mglRenderCppEncodeDraw((__bridge void *)encoder,
-        &(MGLRenderCppDrawPlan){
+    const MGLRenderCppDrawPlan plan = {
             .kind = MGL_RENDER_CPP_DRAW_ARRAY_INDIRECT,
             .primitive_type = (uint32_t)primitiveType,
             .indirect_buffer = (__bridge void *)indirectBuffer,
             .indirect_buffer_offset = indirectBufferOffset,
-        }, NULL, 0);
+        };
+    if (mglBatchReplayUsesMetalCpp()) {
+        (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
+            renderEncoderOwner, &plan, NULL, 0);
+    } else {
+        (void)mglRenderCppEncodeDraw((__bridge void *)encoder, &plan, NULL, 0);
+    }
 }
 
 static void mglBatchReplayDrawIndexedPrimitivesIndirect(
     MGLMetalRenderCommandEncoderRef encoder,
+    void *renderEncoderOwner,
     MTLPrimitiveType primitiveType,
     MTLIndexType indexType,
     MGLMetalBufferRef indexBuffer,
@@ -132,8 +170,7 @@ static void mglBatchReplayDrawIndexedPrimitivesIndirect(
     MGLMetalBufferRef indirectBuffer,
     NSUInteger indirectBufferOffset)
 {
-    (void)mglRenderCppEncodeDraw((__bridge void *)encoder,
-        &(MGLRenderCppDrawPlan){
+    const MGLRenderCppDrawPlan plan = {
             .kind = MGL_RENDER_CPP_DRAW_INDEXED_INDIRECT,
             .primitive_type = (uint32_t)primitiveType,
             .index_type = (uint32_t)indexType,
@@ -141,7 +178,13 @@ static void mglBatchReplayDrawIndexedPrimitivesIndirect(
             .index_buffer_offset = indexBufferOffset,
             .indirect_buffer = (__bridge void *)indirectBuffer,
             .indirect_buffer_offset = indirectBufferOffset,
-        }, NULL, 0);
+        };
+    if (mglBatchReplayUsesMetalCpp()) {
+        (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
+            renderEncoderOwner, &plan, NULL, 0);
+    } else {
+        (void)mglRenderCppEncodeDraw((__bridge void *)encoder, &plan, NULL, 0);
+    }
 }
 
 static bool mglBuildDynamicVertexArray(const VertexArray *base,
@@ -335,7 +378,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 continue;
             }
             mglBatchReplayDrawIndexedPrimitivesIndirect(
-                encCtx->encoder, primType, drawIndexType, drawIndexBuffer,
+                encCtx->encoder, encCtx->render_encoder_owner, primType,
+                drawIndexType, drawIndexBuffer,
                 drawIndexOffset, indirectArgsBuffer,
                 indirectArgsOffset + (i * argSize));
             [self traceReplayCommand:batch
@@ -360,7 +404,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
 
         for (uint32_t i = 0; i < batch->command_count; i++) {
             mglBatchReplayDrawPrimitivesIndirect(
-                encCtx->encoder, primType, indirectArgsBuffer,
+                encCtx->encoder, encCtx->render_encoder_owner, primType,
+                indirectArgsBuffer,
                 indirectArgsOffset + (i * argSize));
             [self traceReplayCommand:batch
                              command:&batch->commands[i]
@@ -521,7 +566,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                     }
                 } else {
                     mglBatchReplaySetRenderBuffer(
-                        encCtx->encoder, metal_buffer, dynamic_offset,
+                        encCtx->encoder, encCtx->render_encoder_owner,
+                        metal_buffer, dynamic_offset,
                         MGL_RENDER_CPP_BINDING_STAGE_VERTEX, metal_slot);
                 }
             } else {
@@ -529,8 +575,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             }
         }
         if (useBindingSnapshot && snapshot.vertex_op_count > 0) {
-            mglRenderCppEncodeBindingSnapshot(
-                (__bridge void *)encCtx->encoder, &snapshot, NULL, 0);
+            mglRenderCppEncodeBindingSnapshotForRenderEncoderOwner(
+                encCtx->render_encoder_owner, &snapshot, NULL, 0);
         }
     }
     return true;
@@ -633,7 +679,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                             }
                         } else {
                             mglBatchReplaySetRenderBuffer(
-                                encCtx->encoder, metal_buffer,
+                                encCtx->encoder, encCtx->render_encoder_owner,
+                                metal_buffer,
                                 (NSUInteger)start,
                                 MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
                                 metal_slot);
@@ -668,7 +715,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                             }
                         } else {
                             mglBatchReplaySetRenderBuffer(
-                                encCtx->encoder, metal_buffer,
+                                encCtx->encoder, encCtx->render_encoder_owner,
+                                metal_buffer,
                                 (NSUInteger)start,
                                 MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT,
                                 metal_slot);
@@ -683,8 +731,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     if (useBindingSnapshot &&
         (snapshot.vertex_op_count > 0 ||
          snapshot.fragment_op_count > 0)) {
-        mglRenderCppEncodeBindingSnapshot(
-            (__bridge void *)encCtx->encoder, &snapshot, NULL, 0);
+        mglRenderCppEncodeBindingSnapshotForRenderEncoderOwner(
+            encCtx->render_encoder_owner, &snapshot, NULL, 0);
     }
     return true;
 }
@@ -693,7 +741,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                                                    context:(GLMContext)glm_ctx
                                              encodeContext:(const MGLEncodeContext *)encCtx
 {
-    if (!touched_units || !glm_ctx || !encCtx->encoder) return false;
+    if (!touched_units || !glm_ctx ||
+        !mglBatchReplayHasActiveEncoder(encCtx)) return false;
     MGLRenderCppResourceBindingSnapshot snapshot = {0};
 
     for (int stage_index = 0; stage_index < 2; stage_index++) {
@@ -801,8 +850,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             }
         }
     }
-    return mglRenderCppEncodeResourceBindingSnapshot(
-        _bindingStateOwner, (__bridge void *)encCtx->encoder,
+    return mglRenderCppEncodeResourceBindingSnapshotForRenderEncoderOwner(
+        _bindingStateOwner, encCtx->render_encoder_owner,
         &snapshot, NULL, 0) == 0;
 }
 
@@ -889,7 +938,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
 {
     if (!cmd || !glm_ctx) return false;
     if (cmd->sampler_snapshot_id == MGL_INVALID_SAMPLER_SNAPSHOT_ID) return true;
-    if (!encCtx->encoder) return false;
+    if (!mglBatchReplayHasActiveEncoder(encCtx)) return false;
 
     MGLCommandBuffer *cb = &glm_ctx->draw_command_buffer;
     if (cmd->sampler_snapshot_id >= cb->sampler_snapshot_set_count) return false;
@@ -949,8 +998,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             return false;
         }
     }
-    return mglRenderCppEncodeResourceBindingSnapshot(
-        _bindingStateOwner, (__bridge void *)encCtx->encoder,
+    return mglRenderCppEncodeResourceBindingSnapshotForRenderEncoderOwner(
+        _bindingStateOwner, encCtx->render_encoder_owner,
         &snapshot, NULL, 0) == 0;
 }
 
@@ -963,7 +1012,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                  cmd->dynamic_texture_binding_count == 0)) {
         return true;
     }
-    if (!glm_ctx || !encCtx->encoder) {
+    if (!glm_ctx || !mglBatchReplayHasActiveEncoder(encCtx)) {
         return false;
     }
 
@@ -1042,7 +1091,11 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     /* Texture materialization may have ended and recreated the render encoder
      * (RT-sampled-copy path). The cached encoder is now stale; refresh it so
      * per-draw buffer overrides and the draw itself target the live encoder. */
-    encCtx->encoder = (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner);
+    if (!mglBatchReplayUsesMetalCpp()) {
+        encCtx->encoder = (__bridge MGLMetalRenderCommandEncoderRef)
+            mglRenderCppRenderEncoderOwnerGetCurrentForFallback(
+                _renderPassManager.state->currentRenderEncoderOwner);
+    }
 
     bool direct_vertex_ok = cmd->dynamic_vertex_binding_count == 0 ||
         [self bindDynamicVertexArrayBuffersDirectly:draw_vao
@@ -1083,7 +1136,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     if (!mglBatchReplayUsesMetalCpp()) {
         return NO;
     }
-    if (!encCtx || !encCtx->encoder || !batch ||
+    if (!mglBatchReplayHasActiveEncoder(encCtx) || !batch ||
         batch->command_count == 0 ||
         batch->command_count > MGL_RENDER_CPP_REPLAY_BATCH_MAX_COMMANDS) {
         return NO;
@@ -1171,8 +1224,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         .command_count = batch->command_count,
         .commands = cmds,
     };
-    return mglRenderCppReplayBatchDraws(
-        (__bridge void *)encCtx->encoder, &replayBatch, NULL, 0) ==
+    return mglRenderCppReplayBatchDrawsForRenderEncoderOwner(
+        encCtx->render_encoder_owner, &replayBatch, NULL, 0) ==
         MGL_RENDER_CPP_REPLAY_BATCH_OK;
 }
 
@@ -1180,8 +1233,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
              encodeContext:(const MGLEncodeContext *)encCtx
 {
     /* Mutable working copy: applyDynamicBindingsForCommand: may rotate the
-     * encoder (RT-sampled-copy path) and refresh liveEncCtx.encoder in place,
-     * so the per-command draw dispatch below targets the live encoder. */
+     * encoder (RT-sampled-copy path). Gate-off refreshes liveEncCtx.encoder;
+     * gate-on continues through render_encoder_owner. */
     MGLEncodeContext liveEncCtx = *encCtx;
     /* P4.3c: gate-on 下满足「简单批」条件的 batch 由 C++ 整批循环绘制
      * （replay 执行 loop 的最小 surgery 版：数据仍是本 batch arena 的只读
@@ -1229,7 +1282,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         }
         if (capturedCullDistances) {
             if (![self processGLState:true] ||
-                !(__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
+                mglRenderCppRenderEncoderOwnerHasCurrent(
+                    _renderPassManager.state->currentRenderEncoderOwner) == 0) {
                 [self traceReplayCommand:batch
                                  command:cmd
                                  context:glm_ctx
@@ -1240,8 +1294,12 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                                   reason:"cull_distance_capture_restore"];
                 continue;
             }
-            liveEncCtx.encoder =
-                (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner);
+            if (!mglBatchReplayUsesMetalCpp()) {
+                liveEncCtx.encoder =
+                    (__bridge MGLMetalRenderCommandEncoderRef)
+                        mglRenderCppRenderEncoderOwnerGetCurrentForFallback(
+                            _renderPassManager.state->currentRenderEncoderOwner);
+            }
         }
         if (![self applyDynamicBindingsForCommand:cmd context:glm_ctx encodeContext:&liveEncCtx]) {
             [self traceReplayCommand:batch
@@ -1371,7 +1429,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     Program *batchProgram =
         mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
     if (!batchProgram || !batchProgram->uses_cull_distance ||
-        !encCtx || !encCtx->encoder) {
+        !mglBatchReplayHasActiveEncoder(encCtx)) {
         return NO;
     }
 
@@ -1396,7 +1454,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                                  explicitVertexCount:3u
                                       encodeContext:encCtx];
             mglBatchReplayDrawIndexedPrimitives(
-                encCtx->encoder, MTLPrimitiveTypeTriangle, 3u,
+                encCtx->encoder, encCtx->render_encoder_owner,
+                MTLPrimitiveTypeTriangle, 3u,
                 MTLIndexTypeUInt32, stripIndexBuffer,
                 primitive * 3u * sizeof(uint32_t), instanceCount, first,
                 baseInstance);
@@ -1426,7 +1485,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                                  explicitVertexCount:3u
                                       encodeContext:encCtx];
             mglBatchReplayDrawIndexedPrimitives(
-                encCtx->encoder, MTLPrimitiveTypeTriangle, 3u,
+                encCtx->encoder, encCtx->render_encoder_owner,
+                MTLPrimitiveTypeTriangle, 3u,
                 MTLIndexTypeUInt32, fanIndexBuffer,
                 primitive * 3u * sizeof(uint32_t), instanceCount, first,
                 baseInstance);
@@ -1442,7 +1502,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                                  explicitVertexCount:0u
                                       encodeContext:encCtx];
             mglBatchReplayDrawPrimitives(
-                encCtx->encoder, MTLPrimitiveTypeLine, first + primitive, 2u,
+                encCtx->encoder, encCtx->render_encoder_owner,
+                MTLPrimitiveTypeLine, first + primitive, 2u,
                 instanceCount, baseInstance);
         }
         return YES;
@@ -1470,7 +1531,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                                  explicitVertexCount:2u
                                       encodeContext:encCtx];
             mglBatchReplayDrawIndexedPrimitives(
-                encCtx->encoder, MTLPrimitiveTypeLine, 2u,
+                encCtx->encoder, encCtx->render_encoder_owner,
+                MTLPrimitiveTypeLine, 2u,
                 MTLIndexTypeUInt32, loopIndexBuffer,
                 primitive * sizeof(uint32_t), instanceCount, 0,
                 baseInstance);
@@ -1512,8 +1574,9 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         return;
     }
     if (polygonModePoint) {
-        mglEncodeArrayPolygonPoint(encCtx->encoder, _device,
-                                   mode, cmd->first, count, 1u, 0u, "batch");
+        mglEncodeArrayPolygonPointForRenderEncoderOwner(
+            encCtx->encoder, encCtx->render_encoder_owner, _device,
+            mode, cmd->first, count, 1u, 0u, "batch");
         [self traceReplayCommand:batch
                          command:cmd
                          context:glm_ctx
@@ -1529,7 +1592,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 _device, (NSUInteger)count, &fanCount);
             if (fanBuf && fanCount > 0) {
                 mglBatchReplayDrawIndexedPrimitives(
-                    encCtx->encoder, MTLPrimitiveTypeTriangle, fanCount,
+                    encCtx->encoder, encCtx->render_encoder_owner,
+                    MTLPrimitiveTypeTriangle, fanCount,
                     MTLIndexTypeUInt32, fanBuf, 0, 1, cmd->first, 0);
                 [self traceReplayCommand:batch
                                  command:cmd
@@ -1566,7 +1630,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 _device, (NSUInteger)cmd->first, (NSUInteger)count, &loopCount);
             if (loopBuf && loopCount > 0) {
                 mglBatchReplayDrawIndexedPrimitives(
-                    encCtx->encoder, MTLPrimitiveTypeLineStrip, loopCount,
+                    encCtx->encoder, encCtx->render_encoder_owner,
+                    MTLPrimitiveTypeLineStrip, loopCount,
                     MTLIndexTypeUInt32, loopBuf, 0, 1, 0, 0);
                 [self traceReplayCommand:batch
                                  command:cmd
@@ -1597,14 +1662,10 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                               reason:"direct_arrays_line_loop_small"];
         }
     } else if (emulateQuads) {
-        BOOL ok = mglEncodeArrayQuads(encCtx->encoder,
-                                      _device,
-                                      count,
-                                      cmd->first,
-                                      1u,
-                                      0u,
-                                      mglPolygonModeLineForDrawMode(glm_ctx, mode),
-                                      "batch");
+        BOOL ok = mglEncodeArrayQuadsForRenderEncoderOwner(
+            encCtx->encoder, encCtx->render_encoder_owner, _device, count,
+            cmd->first, 1u, 0u,
+            mglPolygonModeLineForDrawMode(glm_ctx, mode), "batch");
         [self traceReplayCommand:batch
                          command:cmd
                          context:glm_ctx
@@ -1622,7 +1683,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                     (unsigned)mode,
                     (int)cmd->first,
                     (int)count,
-                    encCtx->encoder,
+                    mglBatchReplayEncoderTraceToken(encCtx),
                     _pipelineCache.state->pipelineState);
         /* Cull distance emulation: bind vertex/params buffers before
          * array draw in the deferred batch path. */
@@ -1637,7 +1698,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             }
         }
         mglBatchReplayDrawPrimitives(
-            encCtx->encoder, primType, cmd->first, count, 1, 0);
+            encCtx->encoder, encCtx->render_encoder_owner, primType,
+            cmd->first, count, 1, 0);
         [self traceReplayCommand:batch
                          command:cmd
                          context:glm_ctx
@@ -1681,9 +1743,9 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         return;
     }
     if (polygonModePoint) {
-        mglEncodeArrayPolygonPoint(encCtx->encoder, _device,
-                                   mode, cmd->first, count,
-                                   instanceCount, 0u, "batch");
+        mglEncodeArrayPolygonPointForRenderEncoderOwner(
+            encCtx->encoder, encCtx->render_encoder_owner, _device,
+            mode, cmd->first, count, instanceCount, 0u, "batch");
         [self traceReplayCommand:batch
                          command:cmd
                          context:glm_ctx
@@ -1699,7 +1761,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 _device, (NSUInteger)count, &fanCount);
             if (fanBuf && fanCount > 0) {
                 mglBatchReplayDrawIndexedPrimitives(
-                    encCtx->encoder, MTLPrimitiveTypeTriangle, fanCount,
+                    encCtx->encoder, encCtx->render_encoder_owner,
+                    MTLPrimitiveTypeTriangle, fanCount,
                     MTLIndexTypeUInt32, fanBuf, 0, instanceCount,
                     cmd->first, 0);
                 [self traceReplayCommand:batch
@@ -1737,7 +1800,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 _device, (NSUInteger)cmd->first, (NSUInteger)count, &loopCount);
             if (loopBuf && loopCount > 0) {
                 mglBatchReplayDrawIndexedPrimitives(
-                    encCtx->encoder, MTLPrimitiveTypeLineStrip, loopCount,
+                    encCtx->encoder, encCtx->render_encoder_owner,
+                    MTLPrimitiveTypeLineStrip, loopCount,
                     MTLIndexTypeUInt32, loopBuf, 0, instanceCount, 0, 0);
                 [self traceReplayCommand:batch
                                  command:cmd
@@ -1768,14 +1832,10 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                               reason:"direct_arrays_instanced_line_loop_small"];
         }
     } else if (emulateQuads) {
-        BOOL ok = mglEncodeArrayQuads(encCtx->encoder,
-                                      _device,
-                                      count,
-                                      cmd->first,
-                                      instanceCount,
-                                      0u,
-                                      mglPolygonModeLineForDrawMode(glm_ctx, mode),
-                                      "batch");
+        BOOL ok = mglEncodeArrayQuadsForRenderEncoderOwner(
+            encCtx->encoder, encCtx->render_encoder_owner, _device, count,
+            cmd->first, instanceCount, 0u,
+            mglPolygonModeLineForDrawMode(glm_ctx, mode), "batch");
         [self traceReplayCommand:batch
                          command:cmd
                          context:glm_ctx
@@ -1798,7 +1858,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             }
         }
         mglBatchReplayDrawPrimitives(
-            encCtx->encoder, primType, cmd->first, count, instanceCount, 0);
+            encCtx->encoder, encCtx->render_encoder_owner, primType,
+            cmd->first, count, instanceCount, 0);
         [self traceReplayCommand:batch
                          command:cmd
                          context:glm_ctx
@@ -1842,9 +1903,10 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         return;
     }
     if (polygonModePoint) {
-        mglEncodeArrayPolygonPoint(encCtx->encoder, _device,
-                                   mode, cmd->first, count,
-                                   instanceCount, cmd->baseInstance, "batch");
+        mglEncodeArrayPolygonPointForRenderEncoderOwner(
+            encCtx->encoder, encCtx->render_encoder_owner, _device,
+            mode, cmd->first, count, instanceCount, cmd->baseInstance,
+            "batch");
         [self traceReplayCommand:batch
                          command:cmd
                          context:glm_ctx
@@ -1860,7 +1922,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 _device, (NSUInteger)count, &fanCount);
             if (fanBuf && fanCount > 0) {
                 mglBatchReplayDrawIndexedPrimitives(
-                    encCtx->encoder, MTLPrimitiveTypeTriangle, fanCount,
+                    encCtx->encoder, encCtx->render_encoder_owner,
+                    MTLPrimitiveTypeTriangle, fanCount,
                     MTLIndexTypeUInt32, fanBuf, 0, instanceCount,
                     cmd->first, cmd->baseInstance);
                 [self traceReplayCommand:batch
@@ -1898,7 +1961,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 _device, (NSUInteger)cmd->first, (NSUInteger)count, &loopCount);
             if (loopBuf && loopCount > 0) {
                 mglBatchReplayDrawIndexedPrimitives(
-                    encCtx->encoder, MTLPrimitiveTypeLineStrip, loopCount,
+                    encCtx->encoder, encCtx->render_encoder_owner,
+                    MTLPrimitiveTypeLineStrip, loopCount,
                     MTLIndexTypeUInt32, loopBuf, 0, instanceCount, 0,
                     cmd->baseInstance);
                 [self traceReplayCommand:batch
@@ -1930,14 +1994,10 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                               reason:"direct_arrays_base_instance_line_loop_small"];
         }
     } else if (emulateQuads) {
-        BOOL ok = mglEncodeArrayQuads(encCtx->encoder,
-                                      _device,
-                                      count,
-                                      cmd->first,
-                                      instanceCount,
-                                      cmd->baseInstance,
-                                      mglPolygonModeLineForDrawMode(glm_ctx, mode),
-                                      "batch");
+        BOOL ok = mglEncodeArrayQuadsForRenderEncoderOwner(
+            encCtx->encoder, encCtx->render_encoder_owner, _device, count,
+            cmd->first, instanceCount, cmd->baseInstance,
+            mglPolygonModeLineForDrawMode(glm_ctx, mode), "batch");
         [self traceReplayCommand:batch
                          command:cmd
                          context:glm_ctx
@@ -1960,7 +2020,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             }
         }
         mglBatchReplayDrawPrimitives(
-            encCtx->encoder, primType, cmd->first, count, instanceCount,
+            encCtx->encoder, encCtx->render_encoder_owner, primType,
+            cmd->first, count, instanceCount,
             cmd->baseInstance);
         [self traceReplayCommand:batch
                          command:cmd
@@ -2045,7 +2106,9 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     }
 
     MGLPrimitiveRestartEncodeResult restartResult =
-        mglEncodePrimitiveRestartedElementDraw(encCtx->encoder,
+        mglEncodePrimitiveRestartedElementDrawForRenderEncoderOwner(
+                                               encCtx->encoder,
+                                               encCtx->render_encoder_owner,
                                                _device,
                                                glm_ctx,
                                                glBuf,
@@ -2073,12 +2136,11 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     }
 
     if (polygonModePoint) {
-        mglEncodeElementPolygonPoint(encCtx->encoder, _device,
-                                     glBuf, idxBuf, mode,
-                                     cmd->indexType, mtlIdxType,
-                                     idxOffset, count, instanceCount,
-                                     cmd->baseVertex,
-                                     cmd->baseInstance, "batch");
+        mglEncodeElementPolygonPointForRenderEncoderOwner(
+            encCtx->encoder, encCtx->render_encoder_owner, _device,
+            glBuf, idxBuf, mode, cmd->indexType, mtlIdxType, idxOffset,
+            count, instanceCount, cmd->baseVertex, cmd->baseInstance,
+            "batch");
         [self traceReplayCommand:batch
                          command:cmd
                          context:glm_ctx
@@ -2088,12 +2150,10 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                            phase:"SUBMIT"
                           reason:"direct_elements_polygon_point"];
     } else if (emulateTriangleFan) {
-        mglEncodeElementTriangleFan(encCtx->encoder, _device,
-                                    glBuf, idxBuf,
-                                    cmd->indexType, idxOffset,
-                                    count, instanceCount,
-                                    cmd->baseVertex,
-                                    cmd->baseInstance, "batch");
+        mglEncodeElementTriangleFanForRenderEncoderOwner(
+            encCtx->encoder, encCtx->render_encoder_owner, _device,
+            glBuf, idxBuf, cmd->indexType, idxOffset, count, instanceCount,
+            cmd->baseVertex, cmd->baseInstance, "batch");
         [self traceReplayCommand:batch
                          command:cmd
                          context:glm_ctx
@@ -2103,12 +2163,10 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                            phase:(count >= 3 ? "SUBMIT" : "SKIP")
                           reason:"direct_elements_triangle_fan"];
     } else if (emulateLineLoop) {
-        mglEncodeElementLineLoop(encCtx->encoder, _device,
-                                 glBuf, idxBuf,
-                                 cmd->indexType, idxOffset,
-                                 count, instanceCount,
-                                 cmd->baseVertex,
-                                 cmd->baseInstance, "batch");
+        mglEncodeElementLineLoopForRenderEncoderOwner(
+            encCtx->encoder, encCtx->render_encoder_owner, _device,
+            glBuf, idxBuf, cmd->indexType, idxOffset, count, instanceCount,
+            cmd->baseVertex, cmd->baseInstance, "batch");
         [self traceReplayCommand:batch
                          command:cmd
                          context:glm_ctx
@@ -2118,14 +2176,11 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                          phase:(count >= 2 ? "SUBMIT" : "SKIP")
                           reason:"direct_elements_line_loop"];
     } else if (emulateQuads) {
-        BOOL ok = mglEncodeElementQuads(encCtx->encoder, _device,
-                                        glBuf, idxBuf,
-                                        cmd->indexType, idxOffset,
-                                        count, instanceCount,
-                                        cmd->baseVertex,
-                                        cmd->baseInstance,
-                                        mglPolygonModeLineForDrawMode(glm_ctx, mode),
-                                        "batch");
+        BOOL ok = mglEncodeElementQuadsForRenderEncoderOwner(
+            encCtx->encoder, encCtx->render_encoder_owner, _device,
+            glBuf, idxBuf, cmd->indexType, idxOffset, count, instanceCount,
+            cmd->baseVertex, cmd->baseInstance,
+            mglPolygonModeLineForDrawMode(glm_ctx, mode), "batch");
         [self traceReplayCommand:batch
                          command:cmd
                          context:glm_ctx
@@ -2154,7 +2209,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             return;
         }
         mglBatchReplayDrawIndexedPrimitives(
-            encCtx->encoder, primType, count, drawIndexType, drawIndexBuffer,
+            encCtx->encoder, encCtx->render_encoder_owner, primType,
+            count, drawIndexType, drawIndexBuffer,
             idxOffset, instanceCount, cmd->baseVertex, cmd->baseInstance);
         [self traceReplayCommand:batch
                          command:cmd

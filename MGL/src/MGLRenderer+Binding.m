@@ -11,6 +11,15 @@ static BOOL mglBindingUsesMetalCpp(void)
            mglRenderCppGetDevice() != NULL;
 }
 
+void mglRendererCallbackBindTexture(void *runtime_context,
+                                    GLMContext glm_ctx,
+                                    Texture *texture)
+{
+    MGLRenderer *renderer = (__bridge MGLRenderer *)runtime_context;
+    if (!renderer || !glm_ctx || !texture) return;
+    (void)[renderer bindMTLTexture:texture];
+}
+
 static MGLMetalBufferRef mglBindingCreateBuffer(MGLMetalDeviceRef device,
                                             NSUInteger length,
                                             MTLResourceOptions options)
@@ -84,20 +93,6 @@ static MGLMetalSamplerStateRef mglBindingCreateSampler(
     return [device newSamplerStateWithDescriptor:descriptor];
 }
 
-static MGLMetalBlitCommandEncoderRef mglBindingCreateBlitEncoder(
-    MGLMetalCommandBufferRef commandBuffer)
-{
-    if (mglBindingUsesMetalCpp()) {
-        void *encoderCPP = NULL;
-        if (mglRenderCppCreateBlitEncoder((__bridge void *)commandBuffer,
-                                          &encoderCPP) == 0 &&
-            encoderCPP) {
-            return (__bridge MGLMetalBlitCommandEncoderRef)encoderCPP;
-        }
-    }
-    return [commandBuffer blitCommandEncoder];
-}
-
 static void mglBindingCopyTexture(MGLMetalBlitCommandEncoderRef encoder,
                                   MGLMetalTextureRef source,
                                   NSUInteger sourceSlice,
@@ -109,16 +104,6 @@ static void mglBindingCopyTexture(MGLMetalBlitCommandEncoderRef encoder,
                                   NSUInteger destinationLevel,
                                   MTLOrigin destinationOrigin)
 {
-    if (mglBindingUsesMetalCpp() &&
-        mglRenderCppBlitCopyTexture(
-            (__bridge void *)encoder, (__bridge void *)source, sourceSlice,
-            sourceLevel, sourceOrigin.x, sourceOrigin.y, sourceOrigin.z,
-            sourceSize.width, sourceSize.height, sourceSize.depth,
-            (__bridge void *)destination, destinationSlice, destinationLevel,
-            destinationOrigin.x, destinationOrigin.y,
-            destinationOrigin.z) == 0) {
-        return;
-    }
     [encoder copyFromTexture:source
                  sourceSlice:sourceSlice
                  sourceLevel:sourceLevel
@@ -132,10 +117,6 @@ static void mglBindingCopyTexture(MGLMetalBlitCommandEncoderRef encoder,
 
 static void mglBindingEndBlitEncoder(MGLMetalBlitCommandEncoderRef encoder)
 {
-    if (mglBindingUsesMetalCpp() &&
-        mglRenderCppEndBlitEncoder((__bridge void *)encoder) == 0) {
-        return;
-    }
     [encoder endEncoding];
 }
 
@@ -345,10 +326,24 @@ static void mglBindingEndBlitEncoder(MGLMetalBlitCommandEncoderRef encoder)
                 // is_render_target transition.
                 [self endRenderEncodingLocked];
                 if ([self ensureWritableCommandBufferLocked:"is_render_target_blit"]) {
-                    MGLMetalBlitCommandEncoderRef blit =
-                        mglBindingCreateBlitEncoder(
-                            (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
-                    if (blit) {
+                    if (mglBindingUsesMetalCpp()) {
+                        if (mglRenderCppCopyMatchingTextureSubresourcesForCommandBufferOwner(
+                                _renderPassManager.state->currentCommandBufferOwner,
+                                (__bridge void *)oldTexture,
+                                (__bridge void *)newTexture) != 0) {
+                            NSLog(@"MGL ERROR: Metal-cpp render-target preservation blit failed texture=%u",
+                                  tex->name);
+                            tex->dirty_bits |= DIRTY_TEXTURE_DATA;
+                            return false;
+                        }
+                    } else {
+                        MGLMetalBlitCommandEncoderRef blit =
+                            mglRenderCreateBlitEncoderForCommandBufferOwner(
+                                _renderPassManager.state->currentCommandBufferOwner);
+                        if (!blit) {
+                            tex->dirty_bits |= DIRTY_TEXTURE_DATA;
+                            return false;
+                        }
                         NSUInteger copySlices = MIN(oldTexture.arrayLength, newTexture.arrayLength);
                         NSUInteger copyLevels = MIN(oldTexture.mipmapLevelCount, newTexture.mipmapLevelCount);
                         for (NSUInteger slice = 0; slice < copySlices; slice++) {
