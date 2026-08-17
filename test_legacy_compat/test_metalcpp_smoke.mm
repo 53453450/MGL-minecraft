@@ -9003,6 +9003,16 @@ static int verifyRendererBackend(id<MTLDevice> device) {
         return 1;
     }
     printf("RENDERER_BACKEND_CULL_DISTANCE_CAPTURE_OK\n");
+    if (mglRendererBackendSetTessControlPointIndexBuffer(
+            backend, (__bridge void *)fallbackBuffer) != 0 ||
+        mglRendererBackendGetTessControlPointIndexBuffer(backend) !=
+            (__bridge void *)fallbackBuffer ||
+        mglRendererBackendSetTessControlPointIndexBuffer(backend, NULL) != 0 ||
+        mglRendererBackendGetTessControlPointIndexBuffer(backend) != NULL) {
+        fprintf(stderr, "FAIL: renderer backend tess control-point index\n");
+        return 1;
+    }
+    printf("RENDERER_BACKEND_TESS_CONTROL_POINT_INDEX_OK\n");
     if (mglRendererBackendSetFallbackResource(
             backend, MGL_RENDERER_BACKEND_FALLBACK_SAMPLED_TEXTURE,
             (__bridge void *)fallbackTexture) != 0 ||

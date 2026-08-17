@@ -129,6 +129,11 @@ int mglRendererBackendSetCullDistanceCaptureBuffer(
 /* Returns the borrowed cull-distance capture buffer owned by the backend. */
 void *mglRendererBackendGetCullDistanceCaptureBuffer(
     const MGLRendererBackendHandle *backend);
+int mglRendererBackendSetTessControlPointIndexBuffer(
+    MGLRendererBackendHandle *backend, void *buffer);
+/* Returns the borrowed indexed-TES gather buffer owned by the backend. */
+void *mglRendererBackendGetTessControlPointIndexBuffer(
+    const MGLRendererBackendHandle *backend);
 int mglRendererBackendSetFallbackResource(
     MGLRendererBackendHandle *backend,
     MGLRendererBackendFallbackResourceKind kind, void *resource);

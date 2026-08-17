@@ -120,9 +120,6 @@ typedef struct MGLTessellationState_t {
     BOOL nativeTESActive;
     Program *nativeTESProgram;
     MGLStageBindingCopyBackList nativeTESCopyBacks;
-    /* Indexed native TES: sparse VS capture records [vertex_id] +
-     * CPU gather buffer fed as Metal controlPointIndexBuffer. */
-    id<MTLBuffer> __strong tessControlPointIndexBuffer;
     BOOL tessIndexedDraw;
     /* 256-aligned per-instance record span of the VS capture, used as the
      * per-instance draw offset when instanced native TES loops instances. */

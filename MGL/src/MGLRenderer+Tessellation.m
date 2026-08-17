@@ -1322,11 +1322,14 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
               (unsigned)tesProgram->name);
         return false;
     }
+    MGLMetalBufferRef controlPointIndexBuffer =
+        (__bridge MGLMetalBufferRef)
+            mglRendererBackendGetTessControlPointIndexBuffer(_backend);
     if (_tessellation.tessIndexedDraw) {
         /* Indexed draws: the capture is a sparse [instance][vertex_id]
          * stream read through the gather stream in the kernel (slot 30 +
          * params slot 25); the instance offset math below does not apply. */
-        if (!_tessellation.tessControlPointIndexBuffer ||
+        if (!controlPointIndexBuffer ||
             _tessellation.tessInstanceRecords == 0u) {
             NSLog(@"MGL TESS ERROR: indexed TES compute missing gather "
                   "program=%u", (unsigned)tesProgram->name);
@@ -1769,7 +1772,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     contractWords[1] = glInVertices;
     const BOOL indexed = _tessellation.tessIndexedDraw;
     MGLMetalBufferRef gatherBuffer = indexed
-        ? _tessellation.tessControlPointIndexBuffer : nil;
+        ? controlPointIndexBuffer : nil;
     const GLuint gatherFirstVertex = 0u;
     const GLuint gatherVertsPerInstance =
         indexed ? (GLuint)_tessellation.tessInstanceRecords

@@ -2655,7 +2655,7 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
 
     _tessellation.tessVertexCaptureBuffer = nil;
     _tessellation.tessVertexCaptureOffset = 0u;
-    _tessellation.tessControlPointIndexBuffer = nil;
+    (void)mglRendererBackendSetTessControlPointIndexBuffer(_backend, NULL);
     _tessellation.tessIndexedDraw = NO;
     _tessellation.tessInstanceRecords = 0u;
     /* A TCS from a previous draw must not leak into a TES-only dispatch
@@ -2734,7 +2734,8 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
                         } else {
                             _tessellation.tessVertexCaptureBuffer = capture;
                             _tessellation.tessVertexCaptureOffset = captureOffset;
-                            _tessellation.tessControlPointIndexBuffer = gatherBuf;
+                            (void)mglRendererBackendSetTessControlPointIndexBuffer(
+                                _backend, (__bridge void *)gatherBuf);
                             _tessellation.tessIndexedDraw = YES;
                             _tessellation.tessInstanceRecords =
                                 (NSUInteger)gatherMaxIndex + 1u;
@@ -2872,10 +2873,14 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
                                               atIndex:27u];
                 }
                 if (_tessellation.tessIndexedDraw) {
+                    MGLMetalBufferRef controlPointIndexBuffer =
+                        (__bridge MGLMetalBufferRef)
+                            mglRendererBackendGetTessControlPointIndexBuffer(
+                                _backend);
                     mglDrawSupportDrawIndexedPatches(
                         _renderPassManager.state->currentRenderEncoderOwner, _tessellation.tcsOutVertices, 0u, patchCount,
                         nil, 0u,
-                        _tessellation.tessControlPointIndexBuffer, 0u,
+                        controlPointIndexBuffer, 0u,
                         1u, (NSUInteger)baseInstance + (NSUInteger)i);
                 } else {
                     const NSUInteger cpcStride =
@@ -2920,7 +2925,7 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
         _tessellation.nativeTESProgram = NULL;
         _tessellation.tessVertexCaptureBuffer = nil;
         _tessellation.tessVertexCaptureOffset = 0u;
-        _tessellation.tessControlPointIndexBuffer = nil;
+        (void)mglRendererBackendSetTessControlPointIndexBuffer(_backend, NULL);
         _tessellation.tessIndexedDraw = NO;
         _tessellation.tessInstanceRecords = 0u;
         drawCtx->state.dirty_bits = DIRTY_ALL;
