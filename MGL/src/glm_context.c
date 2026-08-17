@@ -945,7 +945,7 @@ void destroyGLMContext(GLMContext ctx)
 // CRITICAL FIX: Library destructor for proper cleanup.
 // project_memory hard constraint: mgl_auto_cleanup must call destroyGLMContext
 // when _ctx != NULL to prevent Metal object leaks in dlopen/dlclose scenarios.
-// The backend callback runtime retains MGLRenderer. Clearing _ctx before the
+// The backend operation context retains MGLRenderer. Clearing _ctx before the
 // call lets destroyGLMContext's save/restore logic leave the TLS slot clean.
 __attribute__((destructor))
 static void mgl_auto_cleanup(void)

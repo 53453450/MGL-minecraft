@@ -15,7 +15,7 @@ struct MGLRendererBackendHandle {
     void *query_owner = nullptr;
     void *recovery_owner = nullptr;
     void *binding_owner = nullptr;
-    void *callback_runtime = nullptr;
+    void *operation_context = nullptr;
     bool renderer_initialized = false;
     bool shutdown_started = false;
     bool destroying = false;
@@ -25,7 +25,10 @@ static void mglRendererBackendReleaseOwnedState(
     MGLRendererBackendHandle *backend)
 {
     if (!backend) return;
-    mglRenderCppDestroyCallbackRuntime(&backend->callback_runtime);
+    if (backend->operation_context) {
+        mglRendererReleaseOperationContext(backend->operation_context);
+        backend->operation_context = nullptr;
+    }
     mglRenderCppDestroyCommandQueueOwner(&backend->command_queue_owner);
     mglRenderCppBindingDestroy(backend->binding_owner);
     backend->binding_owner = nullptr;
@@ -118,29 +121,29 @@ extern "C" int mglRendererBackendAttachRuntimeOwners(
     return 0;
 }
 
-extern "C" int mglRendererBackendInstallCallbackRuntime(
+extern "C" int mglRendererBackendInstallOperationContext(
     MGLRendererBackendHandle *backend,
-    void *callback_runtime)
+    void *operation_context)
 {
-    if (!backend || !callback_runtime) return -1;
+    if (!backend || !operation_context) return -1;
     void *previous = nullptr;
     {
         std::lock_guard<std::mutex> lock(backend->mutex);
         if (backend->shutdown_started || backend->destroying) return -1;
-        previous = backend->callback_runtime;
-        backend->callback_runtime = callback_runtime;
+        previous = backend->operation_context;
+        backend->operation_context = operation_context;
     }
-    mglRenderCppDestroyCallbackRuntime(&previous);
+    if (previous) mglRendererReleaseOperationContext(previous);
     return 0;
 }
 
-extern "C" void *mglRendererBackendGetCallbackRuntime(
+extern "C" void *mglRendererBackendGetOperationContext(
     const MGLRendererBackendHandle *backend)
 {
     if (!backend) return nullptr;
     std::lock_guard<std::mutex> lock(
         const_cast<MGLRendererBackendHandle *>(backend)->mutex);
-    return backend->callback_runtime;
+    return backend->operation_context;
 }
 
 extern "C" int mglRendererBackendIsDestroying(

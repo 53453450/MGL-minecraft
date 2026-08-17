@@ -90,39 +90,50 @@ static std::atomic<int> s_commandBufferCompletionCount{0};
 static std::atomic<int> s_commandBufferContextDestroyCount{0};
 static std::atomic<uint32_t> s_commandBufferCompletionStatus{0};
 
-static int s_callbackComputeCount = 0;
-static int s_callbackComputeIndirectCount = 0;
-static int s_callbackDrawCount = 0;
-static int s_callbackResourceCount = 0;
-static void smokeDispatchCompute(void *, GLMContext, unsigned int groupsX,
-                                 unsigned int groupsY, unsigned int groupsZ) {
+static int s_operationComputeCount = 0;
+static int s_operationComputeIndirectCount = 0;
+static int s_operationDrawCount = 0;
+static int s_operationResourceCount = 0;
+
+extern "C" void mglRendererReleaseOperationContext(void *operationContext) {
+    if (operationContext) CFRelease((CFTypeRef)operationContext);
+}
+
+extern "C" void mglRendererCallbackDispatchCompute(
+    void *, GLMContext, unsigned int groupsX,
+    unsigned int groupsY, unsigned int groupsZ) {
     if (groupsX == 2 && groupsY == 3 && groupsZ == 4) {
-        ++s_callbackComputeCount;
+        ++s_operationComputeCount;
     }
 }
-static void smokeDispatchComputeIndirect(void *, GLMContext,
-                                         intptr_t indirect) {
-    if (indirect == 64) {
-        ++s_callbackComputeIndirectCount;
-    }
+
+extern "C" void mglRendererCallbackDispatchComputeIndirect(
+    void *, GLMContext, intptr_t indirect) {
+    if (indirect == 64) ++s_operationComputeIndirectCount;
 }
-static void smokeDraw(void *, GLMContext,
-                      const MGLRenderCppDrawCallbackArgs *args) {
+
+extern "C" void mglRendererCallbackDraw(
+    void *, GLMContext, const MGLRenderCppDrawCallbackArgs *args) {
     if (args && args->kind == MGL_RENDER_CPP_DRAW_CALLBACK_ARRAYS &&
         args->mode == GL_TRIANGLES && args->first == 5 && args->count == 6) {
-        ++s_callbackDrawCount;
+        ++s_operationDrawCount;
     }
 }
-static void smokeBindTexture(void *, GLMContext, Texture *) {}
-static void smokeVoidContext(void *, GLMContext) {}
-static void smokeClear(void *, GLMContext, unsigned int, unsigned int) {}
-static void smokeBlit(void *, GLMContext, int, int, int, int, int, int, int,
-                      int, unsigned int, unsigned int) {}
-static int smokeResource(void *, GLMContext,
-                         const MGLRenderCppResourceCallbackArgs *args) {
+
+extern "C" void mglRendererCallbackBindTexture(
+    void *, GLMContext, Texture *) {}
+extern "C" void mglRendererCallbackFlushDrawBuffer(void *, GLMContext) {}
+extern "C" void mglRendererCallbackSwapBuffers(void *, GLMContext) {}
+extern "C" void mglRendererCallbackClearBuffer(
+    void *, GLMContext, unsigned int, unsigned int) {}
+extern "C" void mglRendererCallbackBlitFramebuffer(
+    void *, GLMContext, int, int, int, int, int, int, int, int,
+    unsigned int, unsigned int) {}
+extern "C" int mglRendererCallbackResource(
+    void *, GLMContext, const MGLRenderCppResourceCallbackArgs *args) {
     if (args &&
         args->kind == MGL_RENDER_CPP_RESOURCE_CALLBACK_GENERATE_MIPMAPS) {
-        ++s_callbackResourceCount;
+        ++s_operationResourceCount;
     }
     return 1;
 }
@@ -156,41 +167,30 @@ static int verifyDirectRendererABI(id<MTLDevice> device) {
         return 1;
     }
 
-    MGLRenderCppCallbackRuntimeOps callbackOps = {};
-    callbackOps.dispatch_compute = smokeDispatchCompute;
-    callbackOps.dispatch_compute_indirect = smokeDispatchComputeIndirect;
-    callbackOps.draw = smokeDraw;
-    callbackOps.bind_texture = smokeBindTexture;
-    callbackOps.flush_draw_buffer = smokeVoidContext;
-    callbackOps.swap_buffers = smokeVoidContext;
-    callbackOps.clear_buffer = smokeClear;
-    callbackOps.blit_framebuffer = smokeBlit;
-    callbackOps.resource = smokeResource;
-    int runtimeToken = 7;
-    void *runtime = nullptr;
-    if (mglRenderCppCreateCallbackRuntime(
-            &runtimeToken, &callbackOps, &runtime) != 0 || !runtime ||
-        mglRendererBackendInstallCallbackRuntime(backend, runtime) != 0 ||
-        mglRendererBackendGetCallbackRuntime(backend) != runtime) {
-        fprintf(stderr, "FAIL: callback runtime create\n");
-        mglRenderCppDestroyCallbackRuntime(&runtime);
+    void *operationContext =
+        (__bridge_retained void *)[[NSObject alloc] init];
+    if (mglRendererBackendInstallOperationContext(
+            backend, operationContext) != 0 ||
+        mglRendererBackendGetOperationContext(backend) != operationContext) {
+        fprintf(stderr, "FAIL: backend operation context install\n");
+        mglRendererReleaseOperationContext(operationContext);
         mglRendererBackendDestroy(&backend);
         return 1;
     }
-    runtime = nullptr;
+    operationContext = nullptr;
 
     mglRendererDispatchCompute(&context, 2, 3, 4);
     mglRendererDispatchComputeIndirect(&context, 64);
     mglRendererDrawArrays(&context, GL_TRIANGLES, 5, 6);
     Texture smokeTexture = {};
     mglRendererGenerateMipmaps(&context, &smokeTexture);
-    if (s_callbackComputeCount != 1 ||
-        s_callbackComputeIndirectCount != 1 || s_callbackDrawCount != 1 ||
-        s_callbackResourceCount != 1) {
+    if (s_operationComputeCount != 1 ||
+        s_operationComputeIndirectCount != 1 ||
+        s_operationDrawCount != 1 || s_operationResourceCount != 1) {
         fprintf(stderr,
-                "FAIL: callback runtime dispatch direct=%d indirect=%d draw=%d resource=%d\n",
-                s_callbackComputeCount, s_callbackComputeIndirectCount,
-                s_callbackDrawCount, s_callbackResourceCount);
+                "FAIL: fixed operation dispatch direct=%d indirect=%d draw=%d resource=%d\n",
+                s_operationComputeCount, s_operationComputeIndirectCount,
+                s_operationDrawCount, s_operationResourceCount);
         mglRendererBackendDestroy(&backend);
         return 1;
     }

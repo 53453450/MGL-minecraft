@@ -28,7 +28,7 @@
  * Scope: this header ONLY covers the generic `void *` slot pattern.
  * Sync objects keep their own `mtlReleaseSync` path (needs @try/@catch for
  * legacy MTLSharedEvent robustness). The renderer itself is retained by the
- * backend callback runtime and released during backend destruction.
+ * backend operation context and released during backend destruction.
  *
  * Dependencies: CoreFoundation (CFBridgingRelease) + stddef.h (NULL).
  * No Metal framework dependency — works in pure C TUs.

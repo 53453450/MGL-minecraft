@@ -2908,85 +2908,79 @@ void mglRenderCppInvalidateRenderPass(GLMContext glm_ctx) {
 
 namespace {
 
-struct RendererCallbackRuntime {
-    void* context = nullptr;
-    MGLRenderCppCallbackRuntimeOps ops = {};
-};
-
-RendererCallbackRuntime* callbackRuntime(GLMContext glm_ctx) {
-    return static_cast<RendererCallbackRuntime*>(
-        mglRendererBackendGetCallbackRuntime(rendererBackend(glm_ctx)));
+void* rendererOperationContext(GLMContext glm_ctx) {
+    return mglRendererBackendGetOperationContext(rendererBackend(glm_ctx));
 }
 
 void mglRenderCppDispatchComputeCallback(GLMContext glm_ctx,
                                          unsigned int groups_x,
                                          unsigned int groups_y,
                                          unsigned int groups_z) {
-    RendererCallbackRuntime* runtime = callbackRuntime(glm_ctx);
-    if (!runtime || !runtime->ops.dispatch_compute) return;
-    runtime->ops.dispatch_compute(
-        runtime->context, glm_ctx, groups_x, groups_y, groups_z);
+    void* operation_context = rendererOperationContext(glm_ctx);
+    if (!operation_context) return;
+    mglRendererCallbackDispatchCompute(
+        operation_context, glm_ctx, groups_x, groups_y, groups_z);
 }
 
 void mglRenderCppDispatchComputeIndirectCallback(GLMContext glm_ctx,
                                                  intptr_t indirect) {
-    RendererCallbackRuntime* runtime = callbackRuntime(glm_ctx);
-    if (!runtime || !runtime->ops.dispatch_compute_indirect) return;
-    runtime->ops.dispatch_compute_indirect(
-        runtime->context, glm_ctx, indirect);
+    void* operation_context = rendererOperationContext(glm_ctx);
+    if (!operation_context) return;
+    mglRendererCallbackDispatchComputeIndirect(
+        operation_context, glm_ctx, indirect);
 }
 
 void dispatchDrawCallback(GLMContext glm_ctx,
                           const MGLRenderCppDrawCallbackArgs& args) {
-    RendererCallbackRuntime* runtime = callbackRuntime(glm_ctx);
-    if (!runtime || !runtime->ops.draw) return;
-    runtime->ops.draw(runtime->context, glm_ctx, &args);
+    void* operation_context = rendererOperationContext(glm_ctx);
+    if (!operation_context) return;
+    mglRendererCallbackDraw(operation_context, glm_ctx, &args);
 }
 
 int dispatchResourceCallback(GLMContext glm_ctx,
                              const MGLRenderCppResourceCallbackArgs& args) {
-    RendererCallbackRuntime* runtime = callbackRuntime(glm_ctx);
-    return runtime && runtime->ops.resource
-        ? runtime->ops.resource(runtime->context, glm_ctx, &args)
+    void* operation_context = rendererOperationContext(glm_ctx);
+    return operation_context
+        ? mglRendererCallbackResource(operation_context, glm_ctx, &args)
         : 0;
 }
 
 void mglRenderCppBindTextureCallback(GLMContext glm_ctx, Texture* texture) {
-    RendererCallbackRuntime* runtime = callbackRuntime(glm_ctx);
-    if (!runtime || !runtime->ops.bind_texture) return;
-    runtime->ops.bind_texture(runtime->context, glm_ctx, texture);
+    void* operation_context = rendererOperationContext(glm_ctx);
+    if (!operation_context) return;
+    mglRendererCallbackBindTexture(operation_context, glm_ctx, texture);
 }
 
 void mglRenderCppFlushDrawBufferCallback(GLMContext glm_ctx) {
-    RendererCallbackRuntime* runtime = callbackRuntime(glm_ctx);
-    if (!runtime || !runtime->ops.flush_draw_buffer) return;
-    runtime->ops.flush_draw_buffer(runtime->context, glm_ctx);
+    void* operation_context = rendererOperationContext(glm_ctx);
+    if (!operation_context) return;
+    mglRendererCallbackFlushDrawBuffer(operation_context, glm_ctx);
 }
 
 void mglRenderCppSwapBuffersCallback(GLMContext glm_ctx) {
-    RendererCallbackRuntime* runtime = callbackRuntime(glm_ctx);
-    if (!runtime || !runtime->ops.swap_buffers) return;
-    runtime->ops.swap_buffers(runtime->context, glm_ctx);
+    void* operation_context = rendererOperationContext(glm_ctx);
+    if (!operation_context) return;
+    mglRendererCallbackSwapBuffers(operation_context, glm_ctx);
 }
 
 void mglRenderCppClearBufferCallback(GLMContext glm_ctx,
                                      unsigned int type,
                                      unsigned int mask) {
-    RendererCallbackRuntime* runtime = callbackRuntime(glm_ctx);
-    if (!runtime || !runtime->ops.clear_buffer) return;
-    runtime->ops.clear_buffer(runtime->context, glm_ctx, type, mask);
+    void* operation_context = rendererOperationContext(glm_ctx);
+    if (!operation_context) return;
+    mglRendererCallbackClearBuffer(operation_context, glm_ctx, type, mask);
 }
 
 void mglRenderCppBlitFramebufferCallback(
     GLMContext glm_ctx, int src_x0, int src_y0, int src_x1, int src_y1,
     int dst_x0, int dst_y0, int dst_x1, int dst_y1, unsigned int mask,
     unsigned int filter) {
-    RendererCallbackRuntime* runtime = callbackRuntime(glm_ctx);
-    if (!runtime || !runtime->ops.blit_framebuffer) return;
-    runtime->ops.blit_framebuffer(runtime->context, glm_ctx,
-                                  src_x0, src_y0, src_x1, src_y1,
-                                  dst_x0, dst_y0, dst_x1, dst_y1,
-                                  mask, filter);
+    void* operation_context = rendererOperationContext(glm_ctx);
+    if (!operation_context) return;
+    mglRendererCallbackBlitFramebuffer(
+        operation_context, glm_ctx,
+        src_x0, src_y0, src_x1, src_y1,
+        dst_x0, dst_y0, dst_x1, dst_y1, mask, filter);
 }
 
 void mglRenderCppReadDrawableCallback(GLMContext glm_ctx, void* pixel_bytes,
@@ -3467,31 +3461,6 @@ void mglRenderCppInvokeDrawCallback(
     GLMContext glm_ctx,
     const MGLRenderCppDrawCallbackArgs* args) {
     if (args) dispatchDrawCallback(glm_ctx, *args);
-}
-
-int mglRenderCppCreateCallbackRuntime(
-    void* runtime_context,
-    const MGLRenderCppCallbackRuntimeOps* ops,
-    void** runtime_out) {
-    if (runtime_out) *runtime_out = nullptr;
-    if (!runtime_context || !ops || !runtime_out) return -1;
-    RendererCallbackRuntime* runtime = new (std::nothrow) RendererCallbackRuntime;
-    if (!runtime) return -1;
-    runtime->context = runtime_context;
-    runtime->ops = *ops;
-    *runtime_out = runtime;
-    return 0;
-}
-
-void mglRenderCppDestroyCallbackRuntime(void** runtime_io) {
-    if (!runtime_io || !*runtime_io) return;
-    RendererCallbackRuntime* runtime =
-        static_cast<RendererCallbackRuntime*>(*runtime_io);
-    *runtime_io = nullptr;
-    if (runtime->ops.release_context) {
-        runtime->ops.release_context(runtime->context);
-    }
-    delete runtime;
 }
 
 int mglRenderCppAttachRuntimeOwners(GLMContext glm_ctx,

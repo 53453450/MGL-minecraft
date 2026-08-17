@@ -70,41 +70,22 @@ static void mglLifecycleReplaceTextureRegion(id<MTLTexture> texture,
 
 #pragma mark C interface to context functions
 
-static void mglRendererCallbackReleaseRuntimeContext(void *runtime_context)
+void mglRendererReleaseOperationContext(void *operation_context)
 {
-    if (runtime_context) CFRelease((CFTypeRef)runtime_context);
+    if (operation_context) CFRelease((CFTypeRef)operation_context);
 }
 
-static int mglRendererInstallBackendCallbacks(
+static int mglRendererInstallBackendOperationContext(
     MGLRenderer *renderer,
     GLMContext glm_ctx,
     MGLRendererBackendHandle *backend)
 {
     if (!renderer || !glm_ctx || !backend) return -1;
-    MGLRenderCppCallbackRuntimeOps callbackOps = {
-        .release_context = mglRendererCallbackReleaseRuntimeContext,
-        .dispatch_compute = mglRendererCallbackDispatchCompute,
-        .dispatch_compute_indirect =
-            mglRendererCallbackDispatchComputeIndirect,
-        .draw = mglRendererCallbackDraw,
-        .bind_texture = mglRendererCallbackBindTexture,
-        .flush_draw_buffer = mglRendererCallbackFlushDrawBuffer,
-        .swap_buffers = mglRendererCallbackSwapBuffers,
-        .clear_buffer = mglRendererCallbackClearBuffer,
-        .blit_framebuffer = mglRendererCallbackBlitFramebuffer,
-        .resource = mglRendererCallbackResource,
-    };
     void *retainedRenderer = (void *)CFBridgingRetain(renderer);
-    void *runtime = NULL;
-    if (mglRenderCppCreateCallbackRuntime(
-            retainedRenderer, &callbackOps, &runtime) != 0) {
-        CFRelease((CFTypeRef)retainedRenderer);
-        NSLog(@"MGL ERROR: failed to create renderer callback runtime");
-        return -1;
-    }
-    if (mglRendererBackendInstallCallbackRuntime(backend, runtime) != 0) {
-        mglRenderCppDestroyCallbackRuntime(&runtime);
-        NSLog(@"MGL ERROR: failed to install renderer callback runtime");
+    if (mglRendererBackendInstallOperationContext(
+            backend, retainedRenderer) != 0) {
+        mglRendererReleaseOperationContext(retainedRenderer);
+        NSLog(@"MGL ERROR: failed to install renderer operation context");
         return -1;
     }
     return 0;
@@ -169,7 +150,7 @@ void* CppCreateMGLRendererFromContextAndBindToWindow (void *glm_ctx, void *windo
         return NULL;
     }
     // Ownership: the returned pointer is NON-OWNING (borrowed).
-    // The renderer's lifetime is tied to the backend callback runtime.
+    // The renderer's lifetime is tied to the backend operation context.
     // The caller must NOT CFRelease/free the returned pointer, and must keep
     // glm_ctx alive while using the returned pointer.
     return  (__bridge void *)(renderer);
@@ -192,7 +173,7 @@ void* CppCreateMGLRendererHeadless (void *glm_ctx)
         return NULL;
     }
     // Ownership: the returned pointer is NON-OWNING (borrowed).
-    // The renderer's lifetime is tied to the backend callback runtime.
+    // The renderer's lifetime is tied to the backend operation context.
     // The caller must NOT CFRelease/free the returned pointer, and must keep
     // glm_ctx alive while using the returned pointer.
     return  (__bridge void *)(renderer);
@@ -305,7 +286,8 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     _gpuRecovery.commandRecoveryOwner = mglRendererBackendGetOwner(
         _backend, MGL_RENDERER_BACKEND_OWNER_RECOVERY);
     NSLog(@"MGL INFO: Metal-cpp renderer backend ready (%p)", _backend);
-    if (mglRendererInstallBackendCallbacks(self, glm_ctx, _backend) != 0) {
+    if (mglRendererInstallBackendOperationContext(
+            self, glm_ctx, _backend) != 0) {
         mglRendererBackendDestroy(
             (MGLRendererBackendHandle **)&glm_ctx->renderer_backend);
         _backend = NULL;

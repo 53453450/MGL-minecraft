@@ -76,45 +76,6 @@ uint64_t mglRenderCppGetGPUTimestamp(GLMContext glm_ctx);
 typedef struct MGLRenderCppDrawCallbackArgs_t MGLRenderCppDrawCallbackArgs;
 typedef struct MGLRenderCppResourceCallbackArgs_t MGLRenderCppResourceCallbackArgs;
 
-typedef struct MGLRenderCppCallbackRuntimeOps_t {
-    void (*release_context)(void *runtime_context);
-    void (*dispatch_compute)(void *runtime_context,
-                             GLMContext glm_ctx,
-                             unsigned int groups_x,
-                             unsigned int groups_y,
-                             unsigned int groups_z);
-    void (*dispatch_compute_indirect)(void *runtime_context,
-                                      GLMContext glm_ctx,
-                                      intptr_t indirect);
-    void (*draw)(void *runtime_context,
-                 GLMContext glm_ctx,
-                 const MGLRenderCppDrawCallbackArgs *args);
-    void (*bind_texture)(void *runtime_context,
-                         GLMContext glm_ctx,
-                         Texture *texture);
-    void (*flush_draw_buffer)(void *runtime_context, GLMContext glm_ctx);
-    void (*swap_buffers)(void *runtime_context, GLMContext glm_ctx);
-    void (*clear_buffer)(void *runtime_context,
-                         GLMContext glm_ctx,
-                         unsigned int type,
-                         unsigned int mask);
-    void (*blit_framebuffer)(void *runtime_context,
-                             GLMContext glm_ctx,
-                             int src_x0,
-                             int src_y0,
-                             int src_x1,
-                             int src_y1,
-                             int dst_x0,
-                             int dst_y0,
-                             int dst_x1,
-                             int dst_y1,
-                             unsigned int mask,
-                             unsigned int filter);
-    int (*resource)(void *runtime_context,
-                    GLMContext glm_ctx,
-                    const MGLRenderCppResourceCallbackArgs *args);
-} MGLRenderCppCallbackRuntimeOps;
-
 enum {
     MGL_RENDER_CPP_DRAW_CALLBACK_ARRAYS = 0,
     MGL_RENDER_CPP_DRAW_CALLBACK_ELEMENTS = 1,
@@ -204,15 +165,8 @@ struct MGLRenderCppResourceCallbackArgs_t {
     int32_t destination_z;
 };
 
-int mglRenderCppCreateCallbackRuntime(
-    void *runtime_context,
-    const MGLRenderCppCallbackRuntimeOps *ops,
-    void **runtime_out);
-void mglRenderCppDestroyCallbackRuntime(void **runtime_io);
-
-/* ObjC renderer category implementations registered in the runtime operation
- * table.  These are C-callable shared entry points, not selector-forwarding
- * bridge functions. */
+/* Transitional ObjC renderer operations invoked through a fixed C ABI while
+ * their method bodies move into the backend subsystem by subsystem. */
 void mglRendererCallbackDispatchCompute(void *runtime_context,
                                         GLMContext glm_ctx,
                                         unsigned int groups_x,
