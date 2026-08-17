@@ -37,8 +37,8 @@ int mglRenderCppInit(void* objc_device);
 /* 释放渲染层持有的 MTL::* 对象（含 device 的 C++ 侧 retain）。幂等。 */
 void mglRenderCppShutdown(void);
 
-/* 调试/测试用：返回 C++ 侧持有的 MTL::Device*（void* 形式），未初始化返回 NULL。 */
-void* mglRenderCppGetDevice(void);
+/* Renderer initialization state as a C ABI value, never a borrowed object. */
+int mglRenderCppIsInitialized(void);
 
 /* Load the AIR entry point named "main" with the renderer-owned device.
  * Returned library/function objects are +1 retained for the caller. */

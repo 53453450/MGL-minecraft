@@ -2460,7 +2460,7 @@ static int verifyCommandQueueOwner(void) {
     return 0;
 }
 
-static int verifyCommandBufferOwner(void) {
+static int verifyCommandBufferOwner(id<MTLDevice> device) {
     void *queueOwner = NULL;
     void *queue = NULL;
     void *owner = NULL;
@@ -2486,8 +2486,6 @@ static int verifyCommandBufferOwner(void) {
         return 1;
     }
 
-    id<MTLDevice> device =
-        (__bridge id<MTLDevice>)mglRenderCppGetDevice();
     MTLTextureDescriptor *targetDescriptor = [MTLTextureDescriptor
         texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
         width:2 height:2 mipmapped:NO];
@@ -8892,12 +8890,11 @@ int main(void) {
             fprintf(stderr, "FAIL: mglRenderCppInit rc=%d\n", rc);
             return 1;
         }
-        void* dev = mglRenderCppGetDevice();
-        if (!dev) {
-            fprintf(stderr, "FAIL: device null after init\n");
+        if (mglRenderCppIsInitialized() != 1) {
+            fprintf(stderr, "FAIL: renderer not initialized after init\n");
             return 1;
         }
-        printf("SMOKE_OK device=%p\n", dev);
+        printf("SMOKE_OK device=%p\n", (__bridge void *)device);
 
         if (verifyAttachmentSubresource() != 0) return 1;
         if (verifyBufferBinding() != 0) return 1;
@@ -8917,7 +8914,7 @@ int main(void) {
         if (verifySyncCallbacks(device) != 0) return 1;
         if (verifyDirectRendererABI(device) != 0) return 1;
         if (verifyCommandQueueOwner() != 0) return 1;
-        if (verifyCommandBufferOwner() != 0) return 1;
+        if (verifyCommandBufferOwner(device) != 0) return 1;
         if (verifyCommandRecoveryOwner() != 0) return 1;
         if (verifyCommandBufferCompletionProcess() != 0) return 1;
         if (verifyPendingEventOwner() != 0) return 1;
@@ -9006,14 +9003,14 @@ int main(void) {
         const uint64_t releaseCountBeforeShutdown = s_metalReleaseCount;
 
         mglRenderCppShutdown();
-        if (mglRenderCppGetDevice() == NULL ||
+        if (mglRenderCppIsInitialized() != 1 ||
             s_metalReleaseCount != releaseCountBeforeShutdown) {
             fprintf(stderr,
                     "FAIL: first shutdown dropped shared renderer state\n");
             return 1;
         }
         mglRenderCppShutdown();
-        if (mglRenderCppGetDevice() != NULL ||
+        if (mglRenderCppIsInitialized() != 0 ||
             s_metalReleaseCount != releaseCountBeforeShutdown + 128) {
             fprintf(stderr,
                     "FAIL: final shutdown did not clear renderer state\n");

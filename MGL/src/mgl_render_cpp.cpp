@@ -1437,8 +1437,10 @@ void mglRenderCppShutdown(void) {
     }
 }
 
-void* mglRenderCppGetDevice(void) {
-    return mgl::renderer().device;
+int mglRenderCppIsInitialized(void) {
+    mgl::RendererCpp& renderer = mgl::renderer();
+    std::lock_guard<std::mutex> lock(renderer.mutex);
+    return renderer.device && renderer.users > 0 ? 1 : 0;
 }
 
 int mglRenderCppLoadAIRMainFunction(const unsigned char* bytes,
