@@ -355,7 +355,6 @@ static inline double mglTraceNowSeconds(void)
 #import "MGLRenderer+Tessellation_Private.h"
 #import "MGLRenderer+Lifecycle_Private.h"
 #import "MGLRenderer+Buffer_Private.h"
-#import "MGLRenderer+ProgramBinding_Private.h"
 #import "MGLRenderer+SwapDiagnostics_Private.h"
 
 #endif /* MGLRenderer_Private_h */

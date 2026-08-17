@@ -322,10 +322,7 @@ typedef struct {
 // === Methods defined in MGLRenderer.m, called from MGLRenderer+Draw.m ===
 // getVertexBufferIndexWithAttributeSet: and floatVertexBufferFor*Attrib: are
 // now declared in MGLRenderer+Buffer_Private.h (implemented in +Buffer.m).
-// getProgramBinding* / getProgramMetalBufferIndexForStage: /
-// getProgramBindingRequiredSize* / getProgramExpectedTexture* /
-// getProgramDeclaredTextureType: are now declared in
-// MGLRenderer+ProgramBinding_Private.h (implemented in +ProgramBinding.m).
+// Program reflection queries use the fixed mglRendererGetProgram* C ABI.
 - (id<MTLSamplerState>)fallbackSamplerState;
 - (GLuint)textureUnitForSampledResource:(MGLShaderResource *)sampledResource
                             metalBinding:(GLuint)metalBinding

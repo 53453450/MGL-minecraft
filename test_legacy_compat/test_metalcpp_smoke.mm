@@ -35,6 +35,33 @@ extern "C" void mglMetalCountRelease(int) { ++s_metalReleaseCount; }
 extern "C" void mglMetalCountCreate(int) { ++s_metalCreateCount; }
 extern "C" void mglRecordBufferCowSnapshot(uint64_t) {}
 
+/* Product builds provide these pure program-reflection helpers from the GL
+ * state/resource subsystems. The standalone facade smoke links only the
+ * backend TUs, so keep fixed test implementations here. */
+extern "C" Program *mglResolveProgramForStageFromState(
+    GLMContext context, int stage) {
+    if (!context || !context->active_state || stage < 0 ||
+        stage >= _MAX_SHADER_TYPES) {
+        return nullptr;
+    }
+    return context->active_state->program;
+}
+
+extern "C" bool mglShouldSkipStageBufferResource(
+    Program *, int, int, const MGLShaderResource *) {
+    return false;
+}
+
+extern "C" GLuint mglClientBufferBindingForResource(
+    int, const MGLShaderResource *resource) {
+    return resource ? resource->gl_binding : 0u;
+}
+
+extern "C" GLuint mglMetalResourceSlot(
+    const MGLShaderResource *resource) {
+    return resource ? resource->binding : 0u;
+}
+
 /* Load a precompiled aux metallib with the plain Metal load-from-data API.
  * Smoke fixtures must not compile MSL source. */
 static id<MTLLibrary> smokeLoadAssetLibrary(id<MTLDevice> device,
@@ -3989,6 +4016,93 @@ static int verifyShaderResourceTextureTypes(void) {
         }
     }
     printf("SHADER_RESOURCE_TEXTURE_TYPE_OK\n");
+    return 0;
+}
+
+static int verifyProgramBindingQueries(void) {
+    GLMContextRec_t context = {};
+    GLMState state = {};
+    Program program = {};
+    MGLShaderResource buffers[2] = {};
+    MGLShaderResource texture = {};
+
+    context.active_state = &state;
+    state.program = &program;
+    state.program_name = 17u;
+    program.name = 17u;
+
+    buffers[0].binding = 11u;
+    buffers[0].gl_binding = 7u;
+    buffers[0].location = 3u;
+    buffers[0].required_size = 64u;
+    buffers[1].binding = 12u;
+    buffers[1].gl_binding = 7u;
+    buffers[1].location = 4u;
+    buffers[1].required_size = 96u;
+    program.shader_resources_list[_VERTEX_SHADER][_UNIFORM_BUFFER_RES] = {
+        .count = 2u,
+        .list = buffers,
+    };
+
+    texture.binding = 5u;
+    texture.gl_binding = 2u;
+    texture.location = 9u;
+    texture.image_dim = MGL_IMAGE_DIM_CUBE;
+    texture.image_arrayed = 1u;
+    texture.texture_data_kind = MGL_SHADER_TEXTURE_DATA_UINT;
+    program.shader_resources_list[_FRAGMENT_SHADER][_SAMPLED_IMAGE_RES] = {
+        .count = 1u,
+        .list = &texture,
+    };
+
+    if (mglRendererGetProgramBindingCount(
+            nullptr, _VERTEX_SHADER, _UNIFORM_BUFFER_RES) != 0 ||
+        mglRendererGetProgramBindingCount(
+            &context, -1, _UNIFORM_BUFFER_RES) != 0 ||
+        mglRendererGetProgramBindingCount(
+            &context, _VERTEX_SHADER, MGL_MAX_SHADER_RESOURCES) != 0 ||
+        mglRendererGetProgramBinding(
+            &context, _VERTEX_SHADER, _UNIFORM_BUFFER_RES, 2) != 0 ||
+        mglRendererGetProgramBindingCount(
+            &context, _VERTEX_SHADER, _UNIFORM_BUFFER_RES) != 2 ||
+        mglRendererGetProgramBinding(
+            &context, _VERTEX_SHADER, _UNIFORM_BUFFER_RES, 1) != 12 ||
+        mglRendererGetProgramGLBinding(
+            &context, _VERTEX_SHADER, _UNIFORM_BUFFER_RES, 0) != 7 ||
+        mglRendererGetProgramLocation(
+            &context, _VERTEX_SHADER, _UNIFORM_BUFFER_RES, 1) != 4 ||
+        mglRendererGetProgramBindingRequiredSize(
+            &context, _VERTEX_SHADER, _UNIFORM_BUFFER_RES, 0) != 64u ||
+        mglRendererGetProgramMetalBufferIndexForStage(
+            &context, _VERTEX_SHADER, 7u) != 11 ||
+        mglRendererGetProgramBindingRequiredSizeForStage(
+            &context, _VERTEX_SHADER, 7u) != 96u ||
+        mglRendererGetProgramMetalBufferIndexForStage(
+            &context, _VERTEX_SHADER, 99u) != -1 ||
+        mglRendererGetProgramDeclaredTextureType(
+            &context, _FRAGMENT_SHADER, _SAMPLED_IMAGE_RES, 0) !=
+            (uint32_t)MTLTextureTypeCubeArray ||
+        mglRendererGetProgramExpectedTextureType(
+            &context, _FRAGMENT_SHADER, _SAMPLED_IMAGE_RES, 0) !=
+            (uint32_t)MTLTextureTypeCubeArray ||
+        mglRendererGetProgramExpectedTextureDataKind(
+            &context, _FRAGMENT_SHADER, _SAMPLED_IMAGE_RES, 0) !=
+            MGL_SHADER_TEXTURE_DATA_UINT) {
+        fprintf(stderr, "FAIL: program binding query facade\n");
+        return 1;
+    }
+
+    texture.texture_data_kind = MGL_SHADER_TEXTURE_DATA_UNKNOWN;
+    if (mglRendererGetProgramExpectedTextureDataKind(
+            &context, _FRAGMENT_SHADER, _SAMPLED_IMAGE_RES, 0) !=
+            MGL_SHADER_TEXTURE_DATA_FLOAT ||
+        mglRendererGetProgramDeclaredTextureType(
+            &context, _FRAGMENT_SHADER, _SAMPLED_IMAGE_RES, 1) != 0u) {
+        fprintf(stderr, "FAIL: program texture query defaults\n");
+        return 1;
+    }
+
+    printf("PROGRAM_BINDING_QUERY_OK\n");
     return 0;
 }
 
@@ -8826,6 +8940,7 @@ int main(void) {
         if (verifyVertexAttribResolve() != 0) return 1;
         if (verifyMetalTypeTables() != 0) return 1;
         if (verifyShaderResourceTextureTypes() != 0) return 1;
+        if (verifyProgramBindingQueries() != 0) return 1;
         if (verifyTextureCreationTargetPlans() != 0) return 1;
         if (verifyTextureTargetIndices() != 0) return 1;
         if (verifyTextureDataKinds() != 0) return 1;

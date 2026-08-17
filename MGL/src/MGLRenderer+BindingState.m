@@ -454,8 +454,7 @@ static bool mglBindingStateFlushResourceBindings(
         if (isBaseBinding) {
             NSInteger metalBindingIndex = map->has_metal_binding
                 ? (NSInteger)map->metal_binding_index
-                : [self getProgramMetalBufferIndexForStage:vertexStage
-                                             clientBinding:glBindingIndex];
+                : mglRendererGetProgramMetalBufferIndexForStage(ctx, vertexStage, glBindingIndex);
             if (metalBindingIndex < 0) {
                 continue;
             }
@@ -518,11 +517,8 @@ static bool mglBindingStateFlushResourceBindings(
         NSUInteger requiredBindingBytes = kMGLMinimumStageBindingSize;
         if (isBaseBinding && glBindingIndex < MAX_BINDABLE_BUFFERS) {
             reflectedRequiredBytes = map->has_metal_binding
-                ? [self getProgramBindingRequiredSize:vertexStage
-                                                 type:(int)map->resource_type
-                                                index:(int)map->resource_index]
-                : [self getProgramBindingRequiredSizeForStage:vertexStage
-                                                clientBinding:glBindingIndex];
+                ? mglRendererGetProgramBindingRequiredSize(ctx, vertexStage, (int)map->resource_type, (int)map->resource_index)
+                : mglRendererGetProgramBindingRequiredSizeForStage(ctx, vertexStage, glBindingIndex);
             if (reflectedRequiredBytes > requiredBindingBytes) {
                 requiredBindingBytes = reflectedRequiredBytes;
             }
@@ -1436,7 +1432,7 @@ static bool mglBindingStateFlushResourceBindings(
     };
     for (int t = 0; t < 4; t++) {
         int resourceType = resourceTypes[t];
-        int count = [self getProgramBindingCount:vertexStage type:resourceType];
+        int count = mglRendererGetProgramBindingCount(ctx, vertexStage, resourceType);
         Program *program = activeProgram;
         for (int i = 0; i < count; i++) {
             if (!program || resourceType < 0 || resourceType >= MGL_MAX_SHADER_RESOURCES ||
@@ -1766,8 +1762,7 @@ static bool mglBindingStateFlushResourceBindings(
         if (isBaseBinding) {
             NSInteger metalBindingIndex = map->has_metal_binding
                 ? (NSInteger)map->metal_binding_index
-                : [self getProgramMetalBufferIndexForStage:_FRAGMENT_SHADER
-                                             clientBinding:glBindingIndex];
+                : mglRendererGetProgramMetalBufferIndexForStage(ctx, _FRAGMENT_SHADER, glBindingIndex);
             if (metalBindingIndex < 0) {
                 continue;
             }
@@ -1910,11 +1905,8 @@ static bool mglBindingStateFlushResourceBindings(
             NSUInteger requiredBindingBytes = kMGLMinimumStageBindingSize;
             if (isBaseBinding && glBindingIndex < MAX_BINDABLE_BUFFERS) {
                 reflectedRequiredBytes = map->has_metal_binding
-                    ? [self getProgramBindingRequiredSize:_FRAGMENT_SHADER
-                                                     type:(int)map->resource_type
-                                                    index:(int)map->resource_index]
-                    : [self getProgramBindingRequiredSizeForStage:_FRAGMENT_SHADER
-                                                    clientBinding:glBindingIndex];
+                    ? mglRendererGetProgramBindingRequiredSize(ctx, _FRAGMENT_SHADER, (int)map->resource_type, (int)map->resource_index)
+                    : mglRendererGetProgramBindingRequiredSizeForStage(ctx, _FRAGMENT_SHADER, glBindingIndex);
                 if (reflectedRequiredBytes > requiredBindingBytes) {
                     requiredBindingBytes = reflectedRequiredBytes;
                 }
@@ -2225,7 +2217,7 @@ static bool mglBindingStateFlushResourceBindings(
     };
     for (int t = 0; t < 4; t++) {
         int resourceType = resourceTypes[t];
-        int count = [self getProgramBindingCount:_FRAGMENT_SHADER type:resourceType];
+        int count = mglRendererGetProgramBindingCount(ctx, _FRAGMENT_SHADER, resourceType);
         Program *program = activeProgram;
         for (int i = 0; i < count; i++) {
             if (!program || resourceType < 0 || resourceType >= MGL_MAX_SHADER_RESOURCES ||
@@ -2445,8 +2437,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
 
     // Metal validates every active stage resource. Bind vertex-stage sampled
     // images as well, even though most Minecraft pipelines only sample in FS.
-    vertexSampledCount = [self getProgramBindingCount:vertexResourceStage
-                                                  type:_SAMPLED_IMAGE_RES];
+    vertexSampledCount = mglRendererGetProgramBindingCount(ctx, vertexResourceStage, _SAMPLED_IMAGE_RES);
     if (![self bindVertexSampledTexturesToEncoder:vertexProgram
                                   vertexProgramName:vertexProgramName
                                      defaultSampler:defaultSampler
@@ -2575,7 +2566,9 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             mglExpectedTextureTypeForResource(currentProgram, vertexStage, sampledResource);
         MTLTextureType lookupType = (MTLTextureType)
             mglDeclaredTextureTypeFromResource(sampledResource);
-        MGLTextureDataKind expectedKind = mglExpectedTextureDataKindForResource(currentProgram, vertexStage, sampledResource);
+        MGLTextureDataKind expectedKind = (MGLTextureDataKind)
+            mglExpectedTextureDataKindForResource(
+                currentProgram, vertexStage, sampledResource);
         Texture *ptr = [self textureForSampledResource:sampledResource
                                           metalBinding:spirvBinding
                                                   stage:vertexStage
@@ -3034,7 +3027,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     MGLRenderCppResourceBindingSnapshot resourceSnapshot = {0};
 
     // Bind sampled images (texture + sampler).
-    *sampledCount = [self getProgramBindingCount:_FRAGMENT_SHADER type:_SAMPLED_IMAGE_RES];
+    *sampledCount = mglRendererGetProgramBindingCount(ctx, _FRAGMENT_SHADER, _SAMPLED_IMAGE_RES);
     for (GLuint i = 0; i < *sampledCount; i++)
     {
         Program *sampleProgram = fragmentProgram;
@@ -3069,7 +3062,9 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             mglExpectedTextureTypeForResource(sampleProgram, _FRAGMENT_SHADER, sampledResource);
         MTLTextureType lookupType = (MTLTextureType)
             mglDeclaredTextureTypeFromResource(sampledResource);
-        MGLTextureDataKind expectedKind = mglExpectedTextureDataKindForResource(sampleProgram, _FRAGMENT_SHADER, sampledResource);
+        MGLTextureDataKind expectedKind = (MGLTextureDataKind)
+            mglExpectedTextureDataKindForResource(
+                sampleProgram, _FRAGMENT_SHADER, sampledResource);
         Texture *ptr = [self textureForSampledResource:sampledResource
                                           metalBinding:spirvBinding
                                                   stage:_FRAGMENT_SHADER
@@ -4239,8 +4234,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     /* Vertex-stage storage image binding (two-pass, same pattern as fragment). */
     const int vertexStage = _tessellation.nativeTESActive
         ? _TESS_EVALUATION_SHADER : _VERTEX_SHADER;
-    GLuint vertexStorageImageCount = [self getProgramBindingCount:vertexStage
-                                                            type:_STORAGE_IMAGE_RES];
+    GLuint vertexStorageImageCount = mglRendererGetProgramBindingCount(ctx, vertexStage, _STORAGE_IMAGE_RES);
     for (GLuint i = 0; i < vertexStorageImageCount; i++)
     {
         MGLShaderResource *resource = NULL;
@@ -4255,9 +4249,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             continue;
         }
         GLuint glUnit = resource ? (resource->sampler_unit >= 0 ? (GLuint)resource->sampler_unit : resource->gl_binding)
-                                 : [self getProgramGLBinding:vertexStage
-                                                        type:_STORAGE_IMAGE_RES
-                                                       index:(int)i];
+                                 : mglRendererGetProgramGLBinding(ctx, vertexStage, _STORAGE_IMAGE_RES, (int)i);
         if (glUnit >= TEXTURE_UNITS) {
             continue;
         }
@@ -4284,13 +4276,9 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             continue;
         }
         GLuint metalSlot = resource ? mglMetalResourceSlot(resource)
-                                    : [self getProgramBinding:vertexStage
-                                                        type:_STORAGE_IMAGE_RES
-                                                       index:(int)i];
+                                    : mglRendererGetProgramBinding(ctx, vertexStage, _STORAGE_IMAGE_RES, (int)i);
         GLuint glUnit = resource ? (resource->sampler_unit >= 0 ? (GLuint)resource->sampler_unit : resource->gl_binding)
-                                 : [self getProgramGLBinding:vertexStage
-                                                        type:_STORAGE_IMAGE_RES
-                                                       index:(int)i];
+                                 : mglRendererGetProgramGLBinding(ctx, vertexStage, _STORAGE_IMAGE_RES, (int)i);
         if (metalSlot >= TEXTURE_UNITS || glUnit >= TEXTURE_UNITS) {
             continue;
         }
@@ -4324,8 +4312,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         }
     }
 
-    GLuint fragmentStorageImageCount = [self getProgramBindingCount:_FRAGMENT_SHADER
-                                                               type:_STORAGE_IMAGE_RES];
+    GLuint fragmentStorageImageCount = mglRendererGetProgramBindingCount(ctx, _FRAGMENT_SHADER, _STORAGE_IMAGE_RES);
     /* Two-pass storage image binding:
      *
      * Pass 1: Pre-resolve every storage image's Metal texture via
@@ -4357,9 +4344,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         }
 
         GLuint glUnit = resource ? (resource->sampler_unit >= 0 ? (GLuint)resource->sampler_unit : resource->gl_binding)
-                                 : [self getProgramGLBinding:_FRAGMENT_SHADER
-                                                        type:_STORAGE_IMAGE_RES
-                                                       index:(int)i];
+                                 : mglRendererGetProgramGLBinding(ctx, _FRAGMENT_SHADER, _STORAGE_IMAGE_RES, (int)i);
         if (glUnit >= TEXTURE_UNITS) {
             continue;
         }
@@ -4391,13 +4376,9 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         }
 
         GLuint metalSlot = resource ? mglMetalResourceSlot(resource)
-                                    : [self getProgramBinding:_FRAGMENT_SHADER
-                                                        type:_STORAGE_IMAGE_RES
-                                                       index:(int)i];
+                                    : mglRendererGetProgramBinding(ctx, _FRAGMENT_SHADER, _STORAGE_IMAGE_RES, (int)i);
         GLuint glUnit = resource ? (resource->sampler_unit >= 0 ? (GLuint)resource->sampler_unit : resource->gl_binding)
-                                 : [self getProgramGLBinding:_FRAGMENT_SHADER
-                                                        type:_STORAGE_IMAGE_RES
-                                                       index:(int)i];
+                                 : mglRendererGetProgramGLBinding(ctx, _FRAGMENT_SHADER, _STORAGE_IMAGE_RES, (int)i);
         if (metalSlot >= TEXTURE_UNITS || glUnit >= TEXTURE_UNITS) {
             continue;
         }
@@ -4466,12 +4447,12 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     const BOOL useResourceSnapshot = mglBindingStateUsesMetalCpp();
     MGLRenderCppResourceBindingSnapshot resourceSnapshot = {0};
     // Bind separate samplers explicitly.
-    *separateSamplerCount = [self getProgramBindingCount:_FRAGMENT_SHADER type:_SEPARATE_SAMPLERS_RES];
+    *separateSamplerCount = mglRendererGetProgramBindingCount(ctx, _FRAGMENT_SHADER, _SEPARATE_SAMPLERS_RES);
     *boundSeparateSamplers = 0;
     for (GLuint i = 0; i < *separateSamplerCount; i++)
     {
-        GLuint spirvBinding = [self getProgramBinding:_FRAGMENT_SHADER type:_SEPARATE_SAMPLERS_RES index:(int)i];
-        GLuint glBinding = [self getProgramGLBinding:_FRAGMENT_SHADER type:_SEPARATE_SAMPLERS_RES index:(int)i];
+        GLuint spirvBinding = mglRendererGetProgramBinding(ctx, _FRAGMENT_SHADER, _SEPARATE_SAMPLERS_RES, (int)i);
+        GLuint glBinding = mglRendererGetProgramGLBinding(ctx, _FRAGMENT_SHADER, _SEPARATE_SAMPLERS_RES, (int)i);
         if (spirvBinding >= TEXTURE_UNITS || glBinding >= TEXTURE_UNITS) {
             continue;
         }
@@ -4551,9 +4532,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             }
 
             MTLTextureType expectedType = (MTLTextureType)
-                [self getProgramExpectedTextureType:arrayStage
-                                              type:_SAMPLED_IMAGE_RES
-                                             index:(int)resourceIndex];
+                mglRendererGetProgramExpectedTextureType(ctx, arrayStage, _SAMPLED_IMAGE_RES, (int)resourceIndex);
             for (GLint element = 1; element < resource->gl_array_size; element++) {
                 GLuint metalSlot = resource->binding + (GLuint)element;
                 GLuint samplerSlot =

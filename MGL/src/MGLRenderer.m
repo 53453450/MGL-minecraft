@@ -2900,8 +2900,7 @@ void logDirtyBits(GLMContext ctx)
 
 /* bindFramebufferTexture:isDrawBuffer: moved to MGLRenderer+RenderPass.m */
 
-/* getProgramBinding* / getProgramExpectedTexture* / getProgramLocation moved
- * to MGLRenderer+ProgramBinding.m */
+/* Program reflection queries are owned by the C++ renderer backend. */
 
 /* invalidateCurrentPipelineStateForReason: moved to MGLRenderer+RenderPass.m */
 

@@ -2133,7 +2133,7 @@ output->name, (unsigned)i,
     BOOL defaultFramebufferSampledPass =
         state->framebuffer == NULL &&
         !state->caps.depth_test &&
-        [self getProgramBindingCount:_FRAGMENT_SHADER type:_SAMPLED_IMAGE_RES] > 0;
+        mglRendererGetProgramBindingCount(ctx, _FRAGMENT_SHADER, _SAMPLED_IMAGE_RES) > 0;
     BOOL rtSampledCopyDraw = _renderPassManager.state->currentDrawUsesRTSampledCopy;
 
     if (state->caps.cull_face && !defaultFramebufferSampledPass && !rtSampledCopyDraw)

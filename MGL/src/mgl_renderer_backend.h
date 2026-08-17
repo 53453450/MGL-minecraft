@@ -13,6 +13,7 @@ extern "C" {
 
 typedef struct GLMContextRec_t *GLMContext;
 typedef struct MGLRendererBackendHandle MGLRendererBackendHandle;
+typedef struct MGLShaderResource_t MGLShaderResource;
 
 typedef enum MGLRendererBackendOwnerKind {
     MGL_RENDERER_BACKEND_OWNER_COMMAND_QUEUE = 0,
@@ -217,6 +218,48 @@ uint64_t mglRendererEndSampleQuery(GLMContext context);
 void mglRendererBeginTimerQuery(GLMContext context);
 uint64_t mglRendererEndTimerQuery(GLMContext context);
 uint64_t mglRendererGetGPUTimestamp(GLMContext context);
+
+int32_t mglRendererGetProgramBindingCount(GLMContext context,
+                                          int32_t stage,
+                                          int32_t type);
+int32_t mglRendererGetProgramBinding(GLMContext context,
+                                     int32_t stage,
+                                     int32_t type,
+                                     int32_t index);
+int32_t mglRendererGetProgramGLBinding(GLMContext context,
+                                       int32_t stage,
+                                       int32_t type,
+                                       int32_t index);
+int32_t mglRendererGetProgramLocation(GLMContext context,
+                                      int32_t stage,
+                                      int32_t type,
+                                      int32_t index);
+size_t mglRendererGetProgramBindingRequiredSize(GLMContext context,
+                                                int32_t stage,
+                                                int32_t type,
+                                                int32_t index);
+size_t mglRendererGetProgramBindingRequiredSizeForStage(
+    GLMContext context, int32_t stage, uint32_t client_binding);
+intptr_t mglRendererGetProgramMetalBufferIndexForStage(
+    GLMContext context, int32_t stage, uint32_t client_binding);
+uint32_t mglRendererGetProgramDeclaredTextureType(GLMContext context,
+                                                  int32_t stage,
+                                                  int32_t type,
+                                                  int32_t index);
+uint32_t mglRendererGetProgramExpectedTextureType(GLMContext context,
+                                                  int32_t stage,
+                                                  int32_t type,
+                                                  int32_t index);
+uint32_t mglRendererGetProgramExpectedTextureDataKind(GLMContext context,
+                                                      int32_t stage,
+                                                      int32_t type,
+                                                      int32_t index);
+uint32_t mglDeclaredTextureTypeFromResource(const MGLShaderResource *resource);
+uint32_t mglExpectedTextureTypeForResource(Program *program,
+                                           int32_t stage,
+                                           MGLShaderResource *resource);
+uint32_t mglExpectedTextureDataKindForResource(
+    Program *program, int32_t stage, MGLShaderResource *resource);
 
 #ifdef __cplusplus
 }

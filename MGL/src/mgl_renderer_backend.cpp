@@ -1,9 +1,15 @@
 #include "mgl_renderer_backend.h"
 
+#include <algorithm>
 #include <mutex>
 
 #include "glm_context.h"
+#include "mgl_program_resource.h"
 #include "mgl_render_cpp.h"
+#include "mgl_shader_resource.h"
+
+extern "C" Program *mglResolveProgramForStageFromState(
+    GLMContext context, int stage);
 
 struct MGLRendererBackendHandle {
     std::mutex mutex;
@@ -779,4 +785,226 @@ extern "C" uint64_t mglRendererEndTimerQuery(GLMContext context)
 extern "C" uint64_t mglRendererGetGPUTimestamp(GLMContext context)
 {
     return mglRenderCppGetGPUTimestamp(context);
+}
+
+namespace {
+
+bool mglRendererProgramResourceTypeIsSupported(int32_t type,
+                                               bool include_separate)
+{
+    switch (type) {
+        case _UNIFORM_BUFFER_RES:
+        case _UNIFORM_CONSTANT_RES:
+        case _STORAGE_BUFFER_RES:
+        case _ATOMIC_COUNTER_RES:
+        case _PUSH_CONSTANT_RES:
+        case _STAGE_INPUT_RES:
+        case _STAGE_OUTPUT_RES:
+        case _SAMPLED_IMAGE_RES:
+        case _STORAGE_IMAGE_RES:
+            return true;
+        case _SEPARATE_IMAGE_RES:
+        case _SEPARATE_SAMPLERS_RES:
+            return include_separate;
+        default:
+            return false;
+    }
+}
+
+MGLShaderResource *mglRendererProgramResource(GLMContext context,
+                                               int32_t stage,
+                                               int32_t type,
+                                               int32_t index,
+                                               Program **program_out)
+{
+    if (program_out) *program_out = nullptr;
+    if (!context || stage < 0 || stage >= _MAX_SHADER_TYPES ||
+        type < 0 || type >= MGL_MAX_SHADER_RESOURCES) {
+        return nullptr;
+    }
+    Program *program = mglResolveProgramForStageFromState(context, stage);
+    if (!program) return nullptr;
+    MGLShaderResourceList *list = &program->shader_resources_list[stage][type];
+    if (index < 0 || index >= static_cast<int32_t>(list->count)) return nullptr;
+    if (program_out) *program_out = program;
+    return &list->list[index];
+}
+
+}  // namespace
+
+extern "C" uint32_t mglDeclaredTextureTypeFromResource(
+    const MGLShaderResource *resource)
+{
+    return mglRenderCppTextureTypeForShaderResource(
+        resource != nullptr,
+        resource ? static_cast<uint32_t>(resource->image_dim) : 0u,
+        resource ? static_cast<uint32_t>(resource->image_arrayed) : 0u,
+        resource ? static_cast<uint32_t>(resource->image_multisampled) : 0u);
+}
+
+extern "C" uint32_t mglExpectedTextureTypeForResource(
+    Program *program, int32_t stage, MGLShaderResource *resource)
+{
+    if (!program || !resource || stage < 0 || stage >= _MAX_SHADER_TYPES) {
+        return 0;
+    }
+    return mglDeclaredTextureTypeFromResource(resource);
+}
+
+extern "C" uint32_t mglExpectedTextureDataKindForResource(
+    Program *program, int32_t stage, MGLShaderResource *resource)
+{
+    if (!program || !resource || stage < 0 || stage >= _MAX_SHADER_TYPES) {
+        return MGL_SHADER_TEXTURE_DATA_UNKNOWN;
+    }
+    return resource->texture_data_kind != MGL_SHADER_TEXTURE_DATA_UNKNOWN
+        ? static_cast<uint32_t>(resource->texture_data_kind)
+        : static_cast<uint32_t>(MGL_SHADER_TEXTURE_DATA_FLOAT);
+}
+
+extern "C" int32_t mglRendererGetProgramBindingCount(
+    GLMContext context, int32_t stage, int32_t type)
+{
+    if (!context || stage < 0 || stage >= _MAX_SHADER_TYPES ||
+        !mglRendererProgramResourceTypeIsSupported(type, true)) {
+        return 0;
+    }
+    Program *program = mglResolveProgramForStageFromState(context, stage);
+    return program ? static_cast<int32_t>(
+        program->shader_resources_list[stage][type].count) : 0;
+}
+
+extern "C" int32_t mglRendererGetProgramBinding(
+    GLMContext context, int32_t stage, int32_t type, int32_t index)
+{
+    if (!mglRendererProgramResourceTypeIsSupported(type, true)) return 0;
+    MGLShaderResource *resource = mglRendererProgramResource(
+        context, stage, type, index, nullptr);
+    return resource ? static_cast<int32_t>(resource->binding) : 0;
+}
+
+extern "C" int32_t mglRendererGetProgramGLBinding(
+    GLMContext context, int32_t stage, int32_t type, int32_t index)
+{
+    MGLShaderResource *resource = mglRendererProgramResource(
+        context, stage, type, index, nullptr);
+    return resource ? static_cast<int32_t>(resource->gl_binding) : 0;
+}
+
+extern "C" int32_t mglRendererGetProgramLocation(
+    GLMContext context, int32_t stage, int32_t type, int32_t index)
+{
+    switch (type) {
+        case _UNIFORM_BUFFER_RES:
+        case _UNIFORM_CONSTANT_RES:
+        case _STORAGE_BUFFER_RES:
+        case _ATOMIC_COUNTER_RES:
+        case _PUSH_CONSTANT_RES:
+        case _STAGE_INPUT_RES:
+        case _SAMPLED_IMAGE_RES:
+        case _STORAGE_IMAGE_RES:
+            break;
+        default:
+            return 0;
+    }
+    MGLShaderResource *resource = mglRendererProgramResource(
+        context, stage, type, index, nullptr);
+    return resource ? static_cast<int32_t>(resource->location) : 0;
+}
+
+extern "C" size_t mglRendererGetProgramBindingRequiredSize(
+    GLMContext context, int32_t stage, int32_t type, int32_t index)
+{
+    MGLShaderResource *resource = mglRendererProgramResource(
+        context, stage, type, index, nullptr);
+    return resource ? static_cast<size_t>(resource->required_size) : 0u;
+}
+
+extern "C" intptr_t mglRendererGetProgramMetalBufferIndexForStage(
+    GLMContext context, int32_t stage, uint32_t client_binding)
+{
+    static constexpr int32_t resource_types[] = {
+        _UNIFORM_BUFFER_RES, _UNIFORM_CONSTANT_RES, _STORAGE_BUFFER_RES,
+        _ATOMIC_COUNTER_RES, _PUSH_CONSTANT_RES,
+    };
+    if (!context || stage < 0 || stage >= _MAX_SHADER_TYPES) {
+        return static_cast<intptr_t>(client_binding);
+    }
+    Program *program = mglResolveProgramForStageFromState(context, stage);
+    if (!program) return static_cast<intptr_t>(client_binding);
+    for (int32_t type : resource_types) {
+        MGLShaderResourceList *list =
+            &program->shader_resources_list[stage][type];
+        for (uint32_t i = 0; i < list->count; ++i) {
+            MGLShaderResource *resource = &list->list[i];
+            if (mglShouldSkipStageBufferResource(
+                    program, stage, type, resource)) {
+                continue;
+            }
+            if (mglClientBufferBindingForResource(type, resource) ==
+                client_binding) {
+                return static_cast<intptr_t>(mglMetalResourceSlot(resource));
+            }
+        }
+    }
+    return -1;
+}
+
+extern "C" size_t mglRendererGetProgramBindingRequiredSizeForStage(
+    GLMContext context, int32_t stage, uint32_t client_binding)
+{
+    static constexpr int32_t resource_types[] = {
+        _UNIFORM_BUFFER_RES, _UNIFORM_CONSTANT_RES, _STORAGE_BUFFER_RES,
+        _ATOMIC_COUNTER_RES, _PUSH_CONSTANT_RES,
+    };
+    if (!context || stage < 0 || stage >= _MAX_SHADER_TYPES) return 0u;
+    Program *program = mglResolveProgramForStageFromState(context, stage);
+    if (!program) return 0u;
+    size_t required = 0u;
+    for (int32_t type : resource_types) {
+        MGLShaderResourceList *list =
+            &program->shader_resources_list[stage][type];
+        for (uint32_t i = 0; i < list->count; ++i) {
+            MGLShaderResource *resource = &list->list[i];
+            if (mglShouldSkipStageBufferResource(
+                    program, stage, type, resource) ||
+                mglClientBufferBindingForResource(type, resource) !=
+                    client_binding) {
+                continue;
+            }
+            required = std::max(
+                required, static_cast<size_t>(resource->required_size));
+        }
+    }
+    return required;
+}
+
+extern "C" uint32_t mglRendererGetProgramDeclaredTextureType(
+    GLMContext context, int32_t stage, int32_t type, int32_t index)
+{
+    MGLShaderResource *resource = mglRendererProgramResource(
+        context, stage, type, index, nullptr);
+    return resource ? mglDeclaredTextureTypeFromResource(resource) : 0u;
+}
+
+extern "C" uint32_t mglRendererGetProgramExpectedTextureType(
+    GLMContext context, int32_t stage, int32_t type, int32_t index)
+{
+    Program *program = nullptr;
+    MGLShaderResource *resource = mglRendererProgramResource(
+        context, stage, type, index, &program);
+    return resource
+        ? mglExpectedTextureTypeForResource(program, stage, resource)
+        : 0u;
+}
+
+extern "C" uint32_t mglRendererGetProgramExpectedTextureDataKind(
+    GLMContext context, int32_t stage, int32_t type, int32_t index)
+{
+    Program *program = nullptr;
+    MGLShaderResource *resource = mglRendererProgramResource(
+        context, stage, type, index, &program);
+    return resource
+        ? mglExpectedTextureDataKindForResource(program, stage, resource)
+        : static_cast<uint32_t>(MGL_SHADER_TEXTURE_DATA_UNKNOWN);
 }

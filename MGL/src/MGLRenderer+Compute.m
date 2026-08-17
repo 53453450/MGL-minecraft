@@ -332,9 +332,7 @@ void mglRendererCallbackDispatchComputeIndirect(void *runtime_context,
             : nil;
 
         NSUInteger requiredBytes =
-            [self getProgramBindingRequiredSize:stage
-                                           type:(int)map->resource_type
-                                          index:(int)map->resource_index];
+            mglRendererGetProgramBindingRequiredSize(ctx, stage, (int)map->resource_type, (int)map->resource_index);
         if (map->resource_type == _ATOMIC_COUNTER_RES &&
             requiredBytes < sizeof(uint32_t)) {
             requiredBytes = sizeof(uint32_t);
@@ -588,7 +586,7 @@ void mglRendererCallbackDispatchComputeIndirect(void *runtime_context,
         gl_texture_type = mapped_types[type].gl_texture_type;
 
         // iterate shader storage buffers
-        count = [self getProgramBindingCount:stage type:spvc_type];
+        count = mglRendererGetProgramBindingCount(ctx, stage, spvc_type);
         if (count)
         {
             int textures_to_be_mapped = count;
@@ -600,7 +598,7 @@ void mglRendererCallbackDispatchComputeIndirect(void *runtime_context,
             for (int i=0; i < (int)count && textures_to_be_mapped > 0; i++)
             {
                 MGLShaderResource *resource = NULL;
-                GLuint metalBinding = [self getProgramBinding:stage type:spvc_type index:i];
+                GLuint metalBinding = mglRendererGetProgramBinding(ctx, stage, spvc_type, i);
                 GLuint glUnit = 0u;
                 Texture *ptr = NULL;
 
@@ -633,15 +631,11 @@ void mglRendererCallbackDispatchComputeIndirect(void *runtime_context,
                                                  metalBinding:metalBinding
                                                          stage:stage
                                                   expectedType:(MTLTextureType)
-                                                      [self getProgramDeclaredTextureType:stage
-                                                                                   type:spvc_type
-                                                                                  index:i]];
+                                                      mglRendererGetProgramDeclaredTextureType(ctx, stage, spvc_type, i)];
                         break;
                     case _IMAGE_TEXTURE:
                         glUnit = resource ? (resource->sampler_unit >= 0 ? (GLuint)resource->sampler_unit : resource->gl_binding)
-                                          : [self getProgramGLBinding:stage
-                                                                                        type:spvc_type
-                                                                                       index:i];
+                                          : mglRendererGetProgramGLBinding(ctx, stage, spvc_type, i);
                         if (glUnit >= TEXTURE_UNITS) {
                             continue;
                         }
@@ -768,9 +762,7 @@ void mglRendererCallbackDispatchComputeIndirect(void *runtime_context,
             }
 
             MTLTextureType expectedType = (MTLTextureType)
-                [self getProgramDeclaredTextureType:stage
-                                               type:_SAMPLED_IMAGE_RES
-                                              index:(int)resourceIndex];
+                mglRendererGetProgramDeclaredTextureType(ctx, stage, _SAMPLED_IMAGE_RES, (int)resourceIndex);
             for (GLint element = 1; element < resource->gl_array_size; element++) {
                 GLuint metalSlot = resource->binding + (GLuint)element;
                 GLuint samplerSlot =

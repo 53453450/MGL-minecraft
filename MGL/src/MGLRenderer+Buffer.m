@@ -1112,7 +1112,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
     // bind vao attribs to buffers (attribs can share the same buffer)
     if (stage == _VERTEX_SHADER)
     {
-        int count = [self getProgramBindingCount: stage type: _STAGE_INPUT_RES];
+        int count = mglRendererGetProgramBindingCount(ctx, stage, _STAGE_INPUT_RES);
         VertexArray *vao = mglRendererGetValidatedVAO(ctx, "mapGLBuffersToMTLBufferMap");
         if (![self mapVertexAttributeBuffersToBufferMap:buffer_map vao:vao stageInputCount:count stage:stage]) {
             return false;

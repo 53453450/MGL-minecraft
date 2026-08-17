@@ -630,11 +630,11 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                     continue;
                 }
                 NSUInteger reflected_required_bytes = map->has_metal_binding
-                    ? [self getProgramBindingRequiredSize:stages[stage_index]
-                                                   type:(int)map->resource_type
-                                                  index:(int)map->resource_index]
-                    : [self getProgramBindingRequiredSizeForStage:stages[stage_index]
-                                                    clientBinding:override->binding_index];
+                    ? mglRendererGetProgramBindingRequiredSize(
+                          ctx, stages[stage_index], (int)map->resource_type,
+                          (int)map->resource_index)
+                    : mglRendererGetProgramBindingRequiredSizeForStage(
+                          ctx, stages[stage_index], override->binding_index);
                 NSUInteger required_binding_bytes = kMGLMinimumStageBindingSize;
                 if (reflected_required_bytes > required_binding_bytes) {
                     required_binding_bytes = reflected_required_bytes;
@@ -645,8 +645,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
 
                 NSInteger resolved_slot = map->has_metal_binding
                     ? (NSInteger)map->metal_binding_index
-                    : [self getProgramMetalBufferIndexForStage:stages[stage_index]
-                                                 clientBinding:override->binding_index];
+                    : mglRendererGetProgramMetalBufferIndexForStage(
+                          ctx, stages[stage_index], override->binding_index);
                 if (resolved_slot < 0 || resolved_slot >= kMGLMaxBufferSlots) {
                     return false;
                 }
@@ -747,14 +747,11 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     for (int stage_index = 0; stage_index < 2; stage_index++) {
         int stage = stage_index == 0 ? _VERTEX_SHADER : _FRAGMENT_SHADER;
         Program *program = mglResolveProgramForStageFromState(glm_ctx, stage);
-        GLuint sampled_count = [self getProgramBindingCount:stage
-                                                       type:_SAMPLED_IMAGE_RES];
+        GLuint sampled_count = mglRendererGetProgramBindingCount(ctx, stage, _SAMPLED_IMAGE_RES);
         for (GLuint resource_index = 0;
              resource_index < sampled_count;
              resource_index++) {
-            GLuint metal_slot = [self getProgramBinding:stage
-                                                    type:_SAMPLED_IMAGE_RES
-                                                   index:(int)resource_index];
+            GLuint metal_slot = mglRendererGetProgramBinding(ctx, stage, _SAMPLED_IMAGE_RES, (int)resource_index);
             if (metal_slot >= TEXTURE_UNITS) continue;
 
             MGLShaderResource *resource = NULL;
@@ -780,17 +777,11 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             }
 
             MTLTextureType expected_type = (MTLTextureType)
-                [self getProgramExpectedTextureType:stage
-                                                type:_SAMPLED_IMAGE_RES
-                                               index:(int)resource_index];
+                mglRendererGetProgramExpectedTextureType(ctx, stage, _SAMPLED_IMAGE_RES, (int)resource_index);
             MTLTextureType lookup_type = (MTLTextureType)
-                [self getProgramDeclaredTextureType:stage
-                                                type:_SAMPLED_IMAGE_RES
-                                               index:(int)resource_index];
+                mglRendererGetProgramDeclaredTextureType(ctx, stage, _SAMPLED_IMAGE_RES, (int)resource_index);
             MGLTextureDataKind expected_kind =
-                [self getProgramExpectedTextureDataKind:stage
-                                                   type:_SAMPLED_IMAGE_RES
-                                                  index:(int)resource_index];
+                (MGLTextureDataKind)mglRendererGetProgramExpectedTextureDataKind(ctx, stage, _SAMPLED_IMAGE_RES, (int)resource_index);
             Texture *texture_object =
                 [self textureForSampledResource:resource
                                    metalBinding:metal_slot
