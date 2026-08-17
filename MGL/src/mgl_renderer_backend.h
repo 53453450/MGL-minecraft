@@ -111,6 +111,13 @@ int mglRendererBackendGetSamplerSnapshotState(
 int mglRendererBackendPutSamplerSnapshotState(
     MGLRendererBackendHandle *backend,
     const MGLSamplerSnapshotKey *key, void *state);
+/* TES-only default factor buffers are cached by patch count and six levels. */
+int mglRendererBackendGetTessFactorBuffer(
+    const MGLRendererBackendHandle *backend, uint32_t patch_count,
+    const float levels[6], void **buffer_out);
+int mglRendererBackendPutTessFactorBuffer(
+    MGLRendererBackendHandle *backend, uint32_t patch_count,
+    const float levels[6], void *buffer);
 int mglRendererBackendSetFallbackResource(
     MGLRendererBackendHandle *backend,
     MGLRendererBackendFallbackResourceKind kind, void *resource);

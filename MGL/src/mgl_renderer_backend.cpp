@@ -152,6 +152,9 @@ struct MGLRendererBackendHandle {
     MGLRendererBackendPassthroughCache geometry_passthrough;
     MGLRendererBackendPassthroughCache tess_evaluation_passthrough;
     MGLRendererBackendSamplerSnapshotCache sampler_snapshots;
+    MTL::Buffer *tess_factor_buffer = nullptr;
+    uint32_t tess_factor_patch_count = 0;
+    std::array<float, 6> tess_factor_levels{};
     MTL::Texture *fallback_sampled_texture = nullptr;
     MTL::Texture *fallback_cube_sampled_texture = nullptr;
     MTL::Buffer *fallback_texture_buffer_storage = nullptr;
@@ -218,6 +221,12 @@ static void mglRendererBackendReleaseOwnedState(
         }
     }
     backend->sampler_snapshots = {};
+    if (backend->tess_factor_buffer) {
+        backend->tess_factor_buffer->release();
+        backend->tess_factor_buffer = nullptr;
+    }
+    backend->tess_factor_patch_count = 0;
+    backend->tess_factor_levels = {};
     if (backend->fallback_sampled_texture) {
         backend->fallback_sampled_texture->release();
         backend->fallback_sampled_texture = nullptr;
@@ -658,6 +667,39 @@ extern "C" int mglRendererBackendPutSamplerSnapshotState(
         cache.states[slot] = nullptr;
         return -1;
     }
+    return 0;
+}
+
+extern "C" int mglRendererBackendGetTessFactorBuffer(
+    const MGLRendererBackendHandle *backend, uint32_t patch_count,
+    const float levels[6], void **buffer_out)
+{
+    if (buffer_out) *buffer_out = nullptr;
+    if (!backend || patch_count == 0u || !levels || !buffer_out) return -1;
+    std::lock_guard<std::mutex> lock(
+        const_cast<MGLRendererBackendHandle *>(backend)->mutex);
+    if (!backend->tess_factor_buffer ||
+        backend->tess_factor_patch_count != patch_count) {
+        return 0;
+    }
+    for (size_t i = 0; i < backend->tess_factor_levels.size(); i++) {
+        if (backend->tess_factor_levels[i] != levels[i]) return 0;
+    }
+    *buffer_out = backend->tess_factor_buffer;
+    return 1;
+}
+
+extern "C" int mglRendererBackendPutTessFactorBuffer(
+    MGLRendererBackendHandle *backend, uint32_t patch_count,
+    const float levels[6], void *buffer)
+{
+    if (!backend || patch_count == 0u || !levels || !buffer) return -1;
+    std::lock_guard<std::mutex> lock(backend->mutex);
+    if (backend->destroying) return -1;
+    mglRendererBackendReplaceObject(backend->tess_factor_buffer, buffer);
+    backend->tess_factor_patch_count = patch_count;
+    std::copy_n(levels, backend->tess_factor_levels.size(),
+                backend->tess_factor_levels.begin());
     return 0;
 }
 

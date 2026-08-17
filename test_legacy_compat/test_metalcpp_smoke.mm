@@ -8958,6 +8958,27 @@ static int verifyRendererBackend(id<MTLDevice> device) {
         return 1;
     }
     printf("RENDERER_BACKEND_SAMPLER_SNAPSHOT_CACHE_OK\n");
+    float tessLevels[6] = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
+    float changedTessLevels[6] = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 7.0f};
+    void *cachedTessFactors = NULL;
+    if (mglRendererBackendGetTessFactorBuffer(
+            backend, 4u, tessLevels, &cachedTessFactors) != 0 ||
+        cachedTessFactors != NULL ||
+        mglRendererBackendPutTessFactorBuffer(
+            backend, 4u, tessLevels, (__bridge void *)fallbackBuffer) != 0 ||
+        mglRendererBackendGetTessFactorBuffer(
+            backend, 5u, tessLevels, &cachedTessFactors) != 0 ||
+        cachedTessFactors != NULL ||
+        mglRendererBackendGetTessFactorBuffer(
+            backend, 4u, changedTessLevels, &cachedTessFactors) != 0 ||
+        cachedTessFactors != NULL ||
+        mglRendererBackendGetTessFactorBuffer(
+            backend, 4u, tessLevels, &cachedTessFactors) != 1 ||
+        cachedTessFactors != (__bridge void *)fallbackBuffer) {
+        fprintf(stderr, "FAIL: renderer backend tess factor cache\n");
+        return 1;
+    }
+    printf("RENDERER_BACKEND_TESS_FACTOR_CACHE_OK\n");
     if (mglRendererBackendSetFallbackResource(
             backend, MGL_RENDERER_BACKEND_FALLBACK_SAMPLED_TEXTURE,
             (__bridge void *)fallbackTexture) != 0 ||
