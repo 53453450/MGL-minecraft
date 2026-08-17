@@ -49,6 +49,17 @@ int mglRendererBackendAttachRuntimeOwners(MGLRendererBackendHandle *backend,
                                           void *command_buffer_owner,
                                           void *render_encoder_owner,
                                           void *render_pass_state_owner);
+int mglRendererBackendSetFallbackRenderTargetTexture(
+    MGLRendererBackendHandle *backend, void *texture);
+/* Texture getters return borrowed references owned by the backend. */
+void *mglRendererBackendGetFallbackRenderTargetTexture(
+    const MGLRendererBackendHandle *backend);
+int mglRendererBackendSetTransientDepthTexture(
+    MGLRendererBackendHandle *backend, void *texture,
+    uint64_t width, uint64_t height);
+void *mglRendererBackendGetTransientDepthTexture(
+    const MGLRendererBackendHandle *backend,
+    uint64_t *width_out, uint64_t *height_out);
 int mglRendererBackendIsDestroying(
     const MGLRendererBackendHandle *backend);
 void *mglRendererBackendGetOwner(const MGLRendererBackendHandle *backend,

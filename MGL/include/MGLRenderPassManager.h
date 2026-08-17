@@ -22,10 +22,6 @@ typedef struct MGLCommandState_t {
     void *_Nullable detachedCommandBufferSubmission;
     void *_Nullable mdiArgsScratchOwner;
     void *_Nullable currentRenderEncoderOwner;
-    MGLMetalTextureRef __strong _Nullable fallbackRenderTargetTexture;
-    MGLMetalTextureRef __strong _Nullable transientDepthTexture;
-    NSUInteger transientDepthTextureWidth;
-    NSUInteger transientDepthTextureHeight;
     BOOL currentDrawUsesRTSampledCopy;
     void *_Nullable pendingEventOwner;
     /* Cache for currentRenderPassMatchesCurrentFramebuffer.
@@ -92,10 +88,6 @@ NS_ASSUME_NONNULL_BEGIN
                      generation:(uint64_t)generation;
 - (void)clearFboMatchCache;
 - (void)setTraceReplayFlushId:(uint64_t)flushId batchIndex:(uint32_t)batchIndex;
-- (void)setTransientDepthTexture:(nullable MGLMetalTextureRef)texture
-                           width:(NSUInteger)width
-                          height:(NSUInteger)height;
-- (void)setFallbackRenderTargetTexture:(nullable MGLMetalTextureRef)texture;
 - (void)setCurrentDrawUsesRTSampledCopy:(BOOL)usesRTSampledCopy;
 - (void)setDontCareFrameGeneration:(GLuint)generation;
 - (void)incrementDontCareFrameGenerationWithWrap;

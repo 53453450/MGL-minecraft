@@ -8827,6 +8827,35 @@ static int verifyRendererBackend(id<MTLDevice> device) {
         fprintf(stderr, "FAIL: renderer backend owner roots\n");
         return 1;
     }
+    MTLTextureDescriptor *textureDescriptor =
+        [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+                                                          width:4
+                                                         height:4
+                                                      mipmapped:NO];
+    id<MTLTexture> fallbackTexture = [device newTextureWithDescriptor:textureDescriptor];
+    id<MTLTexture> transientTexture = [device newTextureWithDescriptor:textureDescriptor];
+    uint64_t transientWidth = 0;
+    uint64_t transientHeight = 0;
+    if (!fallbackTexture || !transientTexture ||
+        mglRendererBackendSetFallbackRenderTargetTexture(
+            backend, (__bridge void *)fallbackTexture) != 0 ||
+        mglRendererBackendGetFallbackRenderTargetTexture(backend) !=
+            (__bridge void *)fallbackTexture ||
+        mglRendererBackendSetTransientDepthTexture(
+            backend, (__bridge void *)transientTexture, 4u, 4u) != 0 ||
+        mglRendererBackendGetTransientDepthTexture(
+            backend, &transientWidth, &transientHeight) !=
+            (__bridge void *)transientTexture ||
+        transientWidth != 4u || transientHeight != 4u ||
+        mglRendererBackendSetTransientDepthTexture(
+            backend, NULL, 99u, 99u) != 0 ||
+        mglRendererBackendGetTransientDepthTexture(
+            backend, &transientWidth, &transientHeight) != NULL ||
+        transientWidth != 0u || transientHeight != 0u) {
+        fprintf(stderr, "FAIL: renderer backend render-pass cache\n");
+        return 1;
+    }
+    printf("RENDERER_BACKEND_RENDER_PASS_CACHE_OK\n");
     MGLRendererBackendShutdownResult shutdown = {};
     if (mglRendererBackendShutdown(backend, &shutdown) != 0) {
         fprintf(stderr, "FAIL: renderer backend shutdown\n");

@@ -4,6 +4,7 @@
 #include <mutex>
 
 #include "glm_context.h"
+#include "mgl_metal_cpp.h"
 #include "mgl_program_resource.h"
 #include "mgl_render_cpp.h"
 #include "mgl_shader_resource.h"
@@ -114,6 +115,10 @@ struct MGLRendererBackendHandle {
     void *query_owner = nullptr;
     void *recovery_owner = nullptr;
     void *binding_owner = nullptr;
+    MTL::Texture *fallback_render_target_texture = nullptr;
+    MTL::Texture *transient_depth_texture = nullptr;
+    uint64_t transient_depth_texture_width = 0;
+    uint64_t transient_depth_texture_height = 0;
     bool renderer_initialized = false;
     bool shutdown_started = false;
     bool destroying = false;
@@ -130,6 +135,16 @@ static void mglRendererBackendReleaseOwnedState(
     MGLRendererBackendHandle *backend)
 {
     if (!backend) return;
+    if (backend->fallback_render_target_texture) {
+        backend->fallback_render_target_texture->release();
+        backend->fallback_render_target_texture = nullptr;
+    }
+    if (backend->transient_depth_texture) {
+        backend->transient_depth_texture->release();
+        backend->transient_depth_texture = nullptr;
+    }
+    backend->transient_depth_texture_width = 0;
+    backend->transient_depth_texture_height = 0;
     mglRenderCppDestroyCommandQueueOwner(&backend->command_queue_owner);
     mglRenderCppBindingDestroy(backend->binding_owner);
     backend->binding_owner = nullptr;
@@ -142,6 +157,16 @@ static void mglRendererBackendReleaseOwnedState(
         mglRenderCppShutdown();
         backend->renderer_initialized = false;
     }
+}
+
+static void mglRendererBackendReplaceTexture(MTL::Texture *&slot,
+                                             void *texture)
+{
+    MTL::Texture *replacement = static_cast<MTL::Texture *>(texture);
+    if (replacement == slot) return;
+    if (replacement) replacement->retain();
+    if (slot) slot->release();
+    slot = replacement;
 }
 
 extern "C" int mglRendererBackendCreate(
@@ -220,6 +245,53 @@ extern "C" int mglRendererBackendAttachRuntimeOwners(
     backend->render_encoder_owner = render_encoder_owner;
     backend->render_pass_state_owner = render_pass_state_owner;
     return 0;
+}
+
+extern "C" int mglRendererBackendSetFallbackRenderTargetTexture(
+    MGLRendererBackendHandle *backend, void *texture)
+{
+    if (!backend) return -1;
+    std::lock_guard<std::mutex> lock(backend->mutex);
+    if (backend->destroying) return -1;
+    mglRendererBackendReplaceTexture(
+        backend->fallback_render_target_texture, texture);
+    return 0;
+}
+
+extern "C" void *mglRendererBackendGetFallbackRenderTargetTexture(
+    const MGLRendererBackendHandle *backend)
+{
+    if (!backend) return nullptr;
+    std::lock_guard<std::mutex> lock(
+        const_cast<MGLRendererBackendHandle *>(backend)->mutex);
+    return backend->fallback_render_target_texture;
+}
+
+extern "C" int mglRendererBackendSetTransientDepthTexture(
+    MGLRendererBackendHandle *backend, void *texture,
+    uint64_t width, uint64_t height)
+{
+    if (!backend) return -1;
+    std::lock_guard<std::mutex> lock(backend->mutex);
+    if (backend->destroying) return -1;
+    mglRendererBackendReplaceTexture(backend->transient_depth_texture, texture);
+    backend->transient_depth_texture_width = texture ? width : 0;
+    backend->transient_depth_texture_height = texture ? height : 0;
+    return 0;
+}
+
+extern "C" void *mglRendererBackendGetTransientDepthTexture(
+    const MGLRendererBackendHandle *backend,
+    uint64_t *width_out, uint64_t *height_out)
+{
+    if (width_out) *width_out = 0;
+    if (height_out) *height_out = 0;
+    if (!backend) return nullptr;
+    std::lock_guard<std::mutex> lock(
+        const_cast<MGLRendererBackendHandle *>(backend)->mutex);
+    if (width_out) *width_out = backend->transient_depth_texture_width;
+    if (height_out) *height_out = backend->transient_depth_texture_height;
+    return backend->transient_depth_texture;
 }
 
 extern "C" int mglRendererBackendIsDestroying(

@@ -434,20 +434,6 @@ static void mglRenderPassManagerStoreIdentity(
     _state.traceReplayBatchIndex = batchIndex;
 }
 
-- (void)setTransientDepthTexture:(nullable MGLMetalTextureRef)texture
-                           width:(NSUInteger)width
-                          height:(NSUInteger)height
-{
-    _state.transientDepthTexture = texture;
-    _state.transientDepthTextureWidth = width;
-    _state.transientDepthTextureHeight = height;
-}
-
-- (void)setFallbackRenderTargetTexture:(nullable MGLMetalTextureRef)texture
-{
-    _state.fallbackRenderTargetTexture = texture;
-}
-
 - (void)setCurrentDrawUsesRTSampledCopy:(BOOL)usesRTSampledCopy
 {
     _state.currentDrawUsesRTSampledCopy = usesRTSampledCopy;
@@ -483,8 +469,6 @@ static void mglRenderPassManagerStoreIdentity(
 
     /* P4.5 (item 1141): sync tracking list lives inside the C++ owner;
      * the owner destructor frees it. */
-    _state.fallbackRenderTargetTexture = nil;
-    _state.transientDepthTexture = nil;
     mglRenderCppDestroyPendingEventOwner(&_state.pendingEventOwner);
     _state.currentDrawUsesRTSampledCopy = NO;
 }

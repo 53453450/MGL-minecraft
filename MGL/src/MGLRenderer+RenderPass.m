@@ -6,6 +6,7 @@
 #include "mgl_air_loader.h"     /* METALCPP: AIR metallib 加载（Phase 1） */
 #include "mgl_aux_assets.h"
 #include "mgl_render_cpp_objc.h" /* METALCPP: C ABI + ObjC state adapter */
+#include "mgl_renderer_backend.h"
 #include "mgl_env_flag.h"
 #include "mgl_shader_abi.h"
 
@@ -36,6 +37,33 @@ static MGLMetalTextureRef mglRenderPassCreateTexture(
         return (__bridge_transfer MGLMetalTextureRef)texture;
     }
     return nil;
+}
+
+static MGLRendererBackendHandle *mglRenderPassBackend(GLMContext context)
+{
+    return context
+        ? (MGLRendererBackendHandle *)context->renderer_backend
+        : NULL;
+}
+
+static MGLMetalTextureRef mglRenderPassFallbackRenderTarget(
+    GLMContext context)
+{
+    return (__bridge MGLMetalTextureRef)
+        mglRendererBackendGetFallbackRenderTargetTexture(
+            mglRenderPassBackend(context));
+}
+
+static MGLMetalTextureRef mglRenderPassTransientDepthTexture(
+    GLMContext context, NSUInteger *widthOut, NSUInteger *heightOut)
+{
+    uint64_t width = 0;
+    uint64_t height = 0;
+    void *texture = mglRendererBackendGetTransientDepthTexture(
+        mglRenderPassBackend(context), &width, &height);
+    if (widthOut) *widthOut = (NSUInteger)width;
+    if (heightOut) *heightOut = (NSUInteger)height;
+    return (__bridge MGLMetalTextureRef)texture;
 }
 
 static MGLMetalBufferRef mglRenderPassCreateBufferWithBytes(
@@ -2579,9 +2607,13 @@ output->name, (unsigned)i,
         }
 
         if (depthWidth > 0 && depthHeight > 0) {
-            if (!_renderPassManager.state->transientDepthTexture ||
-                _renderPassManager.state->transientDepthTextureWidth != depthWidth ||
-                _renderPassManager.state->transientDepthTextureHeight != depthHeight) {
+            NSUInteger cachedDepthWidth = 0;
+            NSUInteger cachedDepthHeight = 0;
+            MGLMetalTextureRef transientDepth =
+                mglRenderPassTransientDepthTexture(
+                    ctx, &cachedDepthWidth, &cachedDepthHeight);
+            if (!transientDepth || cachedDepthWidth != depthWidth ||
+                cachedDepthHeight != depthHeight) {
                 MTLTextureDescriptor *depthDesc =
                     [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
                                                                        width:depthWidth
@@ -2589,11 +2621,19 @@ output->name, (unsigned)i,
                                                                    mipmapped:NO];
                 depthDesc.usage = MTLTextureUsageRenderTarget;
                 depthDesc.storageMode = MTLStorageModePrivate;
-                MGLMetalTextureRef transientDepth =
+                transientDepth =
                     mglRenderPassCreateTexture(_device, depthDesc);
-                [_renderPassManager setTransientDepthTexture:transientDepth width:depthWidth height:depthHeight];
+                if (mglRendererBackendSetTransientDepthTexture(
+                        mglRenderPassBackend(ctx),
+                        (__bridge void *)transientDepth,
+                        depthWidth, depthHeight) != 0) {
+                    transientDepth = nil;
+                } else {
+                    transientDepth = mglRenderPassTransientDepthTexture(
+                        ctx, NULL, NULL);
+                }
 
-                if (_renderPassManager.state->transientDepthTexture) {
+                if (transientDepth) {
                     static uint64_t s_transientDepthCreateCount = 0;
                     uint64_t hit = ++s_transientDepthCreateCount;
                     if (hit <= 16 || (hit % 128) == 0) {
@@ -2611,11 +2651,11 @@ output->name, (unsigned)i,
                 }
             }
 
-            if (_renderPassManager.state->transientDepthTexture) {
+            if (transientDepth) {
                 mglRenderPassSetPersistentAttachment(
                     _renderPassManager.state,
                     MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0,
-                    _renderPassManager.state->transientDepthTexture,
+                    transientDepth,
                     0, 0, 0, NO);
                 mglRenderPassSetPersistentActions(
                     _renderPassManager.state,
@@ -3034,7 +3074,9 @@ output->name, (unsigned)i,
     }
 
     if (!hasOutputAttachment) {
-        if (!_renderPassManager.state->fallbackRenderTargetTexture) {
+        MGLMetalTextureRef fallbackRenderTarget =
+            mglRenderPassFallbackRenderTarget(ctx);
+        if (!fallbackRenderTarget) {
             MTLTextureDescriptor *fbDesc =
                 [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
                                                                    width:1
@@ -3042,16 +3084,22 @@ output->name, (unsigned)i,
                                                                mipmapped:NO];
             fbDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
             fbDesc.storageMode = MTLStorageModeShared;
-            [_renderPassManager setFallbackRenderTargetTexture:
-                mglRenderPassCreateTexture(_device, fbDesc)];
+            fallbackRenderTarget = mglRenderPassCreateTexture(_device, fbDesc);
+            if (mglRendererBackendSetFallbackRenderTargetTexture(
+                    mglRenderPassBackend(ctx),
+                    (__bridge void *)fallbackRenderTarget) != 0) {
+                fallbackRenderTarget = nil;
+            } else {
+                fallbackRenderTarget = mglRenderPassFallbackRenderTarget(ctx);
+            }
         }
 
-        if (_renderPassManager.state->fallbackRenderTargetTexture) {
+        if (fallbackRenderTarget) {
             NSLog(@"MGL WARNING: Render pass had no attachments; binding 1x1 fallback color target");
             mglRenderPassSetPersistentAttachment(
                 _renderPassManager.state,
                 MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0,
-                _renderPassManager.state->fallbackRenderTargetTexture,
+                fallbackRenderTarget,
                 0, 0, 0, NO);
             mglRenderPassSetPersistentActions(
                 _renderPassManager.state,
@@ -3118,7 +3166,9 @@ output->name, (unsigned)i,
 
     // Ultimate slot-0 fallback to keep draw path alive and avoid black frame.
     if (!hasOutputAttachment && !mglRenderPassColorTextureFor(_renderPassManager.state, 0)) {
-        if (!_renderPassManager.state->fallbackRenderTargetTexture) {
+        MGLMetalTextureRef fallbackRenderTarget =
+            mglRenderPassFallbackRenderTarget(ctx);
+        if (!fallbackRenderTarget) {
             MTLTextureDescriptor *fbDesc =
                 [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
                                                                    width:1
@@ -3126,15 +3176,21 @@ output->name, (unsigned)i,
                                                                mipmapped:NO];
             fbDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
             fbDesc.storageMode = MTLStorageModeShared;
-            [_renderPassManager setFallbackRenderTargetTexture:
-                mglRenderPassCreateTexture(_device, fbDesc)];
+            fallbackRenderTarget = mglRenderPassCreateTexture(_device, fbDesc);
+            if (mglRendererBackendSetFallbackRenderTargetTexture(
+                    mglRenderPassBackend(ctx),
+                    (__bridge void *)fallbackRenderTarget) != 0) {
+                fallbackRenderTarget = nil;
+            } else {
+                fallbackRenderTarget = mglRenderPassFallbackRenderTarget(ctx);
+            }
         }
-        if (_renderPassManager.state->fallbackRenderTargetTexture) {
+        if (fallbackRenderTarget) {
             NSLog(@"MGL WARNING: colorAttachment[0] unavailable; binding 1x1 fallback");
             mglRenderPassSetPersistentAttachment(
                 _renderPassManager.state,
                 MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0,
-                _renderPassManager.state->fallbackRenderTargetTexture,
+                fallbackRenderTarget,
                 0, 0, 0, NO);
             mglRenderPassSetPersistentActions(
                 _renderPassManager.state,
