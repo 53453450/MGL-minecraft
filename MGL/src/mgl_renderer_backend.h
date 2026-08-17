@@ -134,6 +134,11 @@ int mglRendererBackendSetTessControlPointIndexBuffer(
 /* Returns the borrowed indexed-TES gather buffer owned by the backend. */
 void *mglRendererBackendGetTessControlPointIndexBuffer(
     const MGLRendererBackendHandle *backend);
+int mglRendererBackendSetTessVertexCaptureBuffer(
+    MGLRendererBackendHandle *backend, void *buffer);
+/* Returns the borrowed VS capture buffer owned by the backend. */
+void *mglRendererBackendGetTessVertexCaptureBuffer(
+    const MGLRendererBackendHandle *backend);
 int mglRendererBackendSetFallbackResource(
     MGLRendererBackendHandle *backend,
     MGLRendererBackendFallbackResourceKind kind, void *resource);

@@ -9013,6 +9013,16 @@ static int verifyRendererBackend(id<MTLDevice> device) {
         return 1;
     }
     printf("RENDERER_BACKEND_TESS_CONTROL_POINT_INDEX_OK\n");
+    if (mglRendererBackendSetTessVertexCaptureBuffer(
+            backend, (__bridge void *)fallbackBuffer) != 0 ||
+        mglRendererBackendGetTessVertexCaptureBuffer(backend) !=
+            (__bridge void *)fallbackBuffer ||
+        mglRendererBackendSetTessVertexCaptureBuffer(backend, NULL) != 0 ||
+        mglRendererBackendGetTessVertexCaptureBuffer(backend) != NULL) {
+        fprintf(stderr, "FAIL: renderer backend tess vertex capture\n");
+        return 1;
+    }
+    printf("RENDERER_BACKEND_TESS_VERTEX_CAPTURE_OK\n");
     if (mglRendererBackendSetFallbackResource(
             backend, MGL_RENDERER_BACKEND_FALLBACK_SAMPLED_TEXTURE,
             (__bridge void *)fallbackTexture) != 0 ||

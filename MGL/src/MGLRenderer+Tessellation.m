@@ -1105,7 +1105,9 @@ typedef struct {
     }
 
     NSUInteger tcsInStride = 0u;
-    MGLMetalBufferRef tcsStageInBuffer = _tessellation.tessVertexCaptureBuffer;
+    MGLMetalBufferRef tcsStageInBuffer =
+        (__bridge MGLMetalBufferRef)
+            mglRendererBackendGetTessVertexCaptureBuffer(_backend);
     NSUInteger tcsStageInOffset = _tessellation.tessVertexCaptureOffset;
     if (tcsStageInBuffer) {
         tcsInStride = mglAIRPerVertexStrideForResources(
@@ -1312,7 +1314,8 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     NSUInteger glInStride = _tessellation.tcsOutputStride;
     GLuint glInVertices = _tessellation.tcsOutVertices;
     if (!glInBuffer) {
-        glInBuffer = _tessellation.tessVertexCaptureBuffer;
+        glInBuffer = (__bridge MGLMetalBufferRef)
+            mglRendererBackendGetTessVertexCaptureBuffer(_backend);
         glInOffset = _tessellation.tessVertexCaptureOffset;
         glInStride = contract->per_vertex_out_stride;
         glInVertices = MAX(1u, contract->patch_vertices);

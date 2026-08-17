@@ -2653,7 +2653,7 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
         : MGL_AIR_PER_VERTEX_STRIDE;
     contract.patch_out_stride = 16u; /* refined by the TCS dispatcher */
 
-    _tessellation.tessVertexCaptureBuffer = nil;
+    (void)mglRendererBackendSetTessVertexCaptureBuffer(_backend, NULL);
     _tessellation.tessVertexCaptureOffset = 0u;
     (void)mglRendererBackendSetTessControlPointIndexBuffer(_backend, NULL);
     _tessellation.tessIndexedDraw = NO;
@@ -2732,7 +2732,8 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
                         if (!capture) {
                             nativeTES = NO;
                         } else {
-                            _tessellation.tessVertexCaptureBuffer = capture;
+                            (void)mglRendererBackendSetTessVertexCaptureBuffer(
+                                _backend, (__bridge void *)capture);
                             _tessellation.tessVertexCaptureOffset = captureOffset;
                             (void)mglRendererBackendSetTessControlPointIndexBuffer(
                                 _backend, (__bridge void *)gatherBuf);
@@ -2759,7 +2760,8 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
             if (!capture) {
                 nativeTES = NO;
             } else {
-                _tessellation.tessVertexCaptureBuffer = capture;
+                (void)mglRendererBackendSetTessVertexCaptureBuffer(
+                    _backend, (__bridge void *)capture);
                 _tessellation.tessVertexCaptureOffset = captureOffset;
                 _tessellation.tessInstanceRecords = (NSUInteger)count;
             }
@@ -2768,7 +2770,8 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
 
     if (nativeTES && !tcsProgram) {
         _tessellation.tcsOutputBuffer =
-            _tessellation.tessVertexCaptureBuffer;
+            (__bridge MGLMetalBufferRef)
+                mglRendererBackendGetTessVertexCaptureBuffer(_backend);
         _tessellation.tcsOutputOffset =
             _tessellation.tessVertexCaptureOffset;
         _tessellation.tcsOutputStride = contract.per_vertex_out_stride;
@@ -2794,7 +2797,7 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
                                      program:tcsProgram
                                     contract:&contract]) {
             drawCtx->state.dirty_bits = DIRTY_ALL;
-            _tessellation.tessVertexCaptureBuffer = nil;
+            (void)mglRendererBackendSetTessVertexCaptureBuffer(_backend, NULL);
             _tessellation.tessVertexCaptureOffset = 0u;
             return YES;
         }
@@ -2811,7 +2814,7 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
             mglDispatchError(drawCtx, label ? label : "tessellationDraw",
                              GL_OUT_OF_MEMORY);
             drawCtx->state.dirty_bits = DIRTY_ALL;
-            _tessellation.tessVertexCaptureBuffer = nil;
+            (void)mglRendererBackendSetTessVertexCaptureBuffer(_backend, NULL);
             _tessellation.tessVertexCaptureOffset = 0u;
             return YES;
         }
@@ -2825,7 +2828,7 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
         if (!stateReady || mglRenderCppRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 1) {
             _tessellation.nativeTESActive = NO;
             _tessellation.nativeTESProgram = NULL;
-            _tessellation.tessVertexCaptureBuffer = nil;
+            (void)mglRendererBackendSetTessVertexCaptureBuffer(_backend, NULL);
             _tessellation.tessVertexCaptureOffset = 0u;
             drawCtx->state.dirty_bits = DIRTY_ALL;
             return YES;
@@ -2923,7 +2926,7 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
 
         _tessellation.nativeTESActive = NO;
         _tessellation.nativeTESProgram = NULL;
-        _tessellation.tessVertexCaptureBuffer = nil;
+        (void)mglRendererBackendSetTessVertexCaptureBuffer(_backend, NULL);
         _tessellation.tessVertexCaptureOffset = 0u;
         (void)mglRendererBackendSetTessControlPointIndexBuffer(_backend, NULL);
         _tessellation.tessIndexedDraw = NO;
@@ -2951,7 +2954,7 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
                                  GL_INVALID_OPERATION);
             }
             drawCtx->state.dirty_bits = DIRTY_ALL;
-            _tessellation.tessVertexCaptureBuffer = nil;
+            (void)mglRendererBackendSetTessVertexCaptureBuffer(_backend, NULL);
             _tessellation.tessVertexCaptureOffset = 0u;
             return YES;
         }
@@ -2962,7 +2965,7 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
         mglDispatchError(drawCtx, label ? label : "tessellationDraw",
                          GL_INVALID_OPERATION);
         drawCtx->state.dirty_bits = DIRTY_ALL;
-        _tessellation.tessVertexCaptureBuffer = nil;
+        (void)mglRendererBackendSetTessVertexCaptureBuffer(_backend, NULL);
         _tessellation.tessVertexCaptureOffset = 0u;
         return YES;
     }
@@ -2977,7 +2980,7 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
     }
 
     drawCtx->state.dirty_bits = DIRTY_ALL;
-    _tessellation.tessVertexCaptureBuffer = nil;
+    (void)mglRendererBackendSetTessVertexCaptureBuffer(_backend, NULL);
     _tessellation.tessVertexCaptureOffset = 0u;
     (void)label;
     return YES;
