@@ -2665,7 +2665,7 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
     _tessellation.tcsOutputOffset = 0u;
     _tessellation.tcsOutputStride = 0u;
     _tessellation.tcsOutVertices = 0u;
-    _tessellation.tessFactorBuffer = nil;
+    (void)mglRendererBackendSetCurrentTessFactorBuffer(_backend, NULL);
     /* The VS position capture and the default factor buffer are consumed by
      * both the native patch pipeline and the AIR TES compute expansion
      * (isolines / point_mode with no TCS), so they must exist even when
@@ -2778,10 +2778,12 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
             _tessellation.tessVertexCaptureOffset;
         _tessellation.tcsOutputStride = contract.per_vertex_out_stride;
         _tessellation.tcsOutVertices = patchVertices;
-        _tessellation.tessFactorBuffer = mglCachedDefaultTessFactorBuffer(
+        MGLMetalBufferRef tessFactorBuffer = mglCachedDefaultTessFactorBuffer(
             _device, _backend, MGL_STATE(drawCtx), patchCount);
+        (void)mglRendererBackendSetCurrentTessFactorBuffer(
+            _backend, (__bridge void *)tessFactorBuffer);
         if (!tessVertexCaptureBuffer ||
-            !_tessellation.tessFactorBuffer) {
+            !tessFactorBuffer) {
             nativeTES = NO;
         }
     }
@@ -2790,8 +2792,10 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
         /* TES-only compute expansion also needs the default levels; the
          * cached buffer is rebuilt only when glPatchParameterfv levels
          * (or the patch count) change between draws. */
-        _tessellation.tessFactorBuffer = mglCachedDefaultTessFactorBuffer(
+        MGLMetalBufferRef tessFactorBuffer = mglCachedDefaultTessFactorBuffer(
             _device, _backend, MGL_STATE(drawCtx), patchCount);
+        (void)mglRendererBackendSetCurrentTessFactorBuffer(
+            _backend, (__bridge void *)tessFactorBuffer);
     }
 
     if (tcsProgram) {
@@ -2807,10 +2811,12 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
 
     MGLMetalBufferRef tcsOutputBuffer = (__bridge MGLMetalBufferRef)
         mglRendererBackendGetTcsOutputBuffer(_backend);
+    MGLMetalBufferRef tessFactorBuffer = (__bridge MGLMetalBufferRef)
+        mglRendererBackendGetCurrentTessFactorBuffer(_backend);
 
     if (nativeTES) {
         MGLMetalBufferRef nativeFactors = mglNativeTessFactorBuffer(
-            _device, _tessellation.tessFactorBuffer,
+            _device, tessFactorBuffer,
             tesProgram->tess_gen_mode, patchCount);
         if (!nativeFactors || !tcsOutputBuffer ||
             _tessellation.tcsOutputStride < MGL_AIR_PER_VERTEX_STRIDE) {
@@ -2918,7 +2924,7 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
             _currentCBHasWork = YES;
 
             GLuint64 primitives = mglNativeTessPrimitiveCount(
-                _tessellation.tessFactorBuffer, tesProgram, patchCount,
+                tessFactorBuffer, tesProgram, patchCount,
                 (GLuint)instanceCount);
             mglRecordActivePrimitiveQueryDraw(drawCtx, primitives, primitives);
         }

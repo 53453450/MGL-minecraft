@@ -155,6 +155,7 @@ struct MGLRendererBackendHandle {
     MTL::Buffer *tess_factor_buffer = nullptr;
     uint32_t tess_factor_patch_count = 0;
     std::array<float, 6> tess_factor_levels{};
+    MTL::Buffer *current_tess_factor_buffer = nullptr;
     MTL::Buffer *tess_xfb_dummy_buffer = nullptr;
     MTL::Buffer *cull_distance_capture_buffer = nullptr;
     MTL::Buffer *tess_control_point_index_buffer = nullptr;
@@ -233,6 +234,10 @@ static void mglRendererBackendReleaseOwnedState(
     }
     backend->tess_factor_patch_count = 0;
     backend->tess_factor_levels = {};
+    if (backend->current_tess_factor_buffer) {
+        backend->current_tess_factor_buffer->release();
+        backend->current_tess_factor_buffer = nullptr;
+    }
     if (backend->tess_xfb_dummy_buffer) {
         backend->tess_xfb_dummy_buffer->release();
         backend->tess_xfb_dummy_buffer = nullptr;
@@ -731,6 +736,26 @@ extern "C" int mglRendererBackendPutTessFactorBuffer(
     std::copy_n(levels, backend->tess_factor_levels.size(),
                 backend->tess_factor_levels.begin());
     return 0;
+}
+
+extern "C" int mglRendererBackendSetCurrentTessFactorBuffer(
+    MGLRendererBackendHandle *backend, void *buffer)
+{
+    if (!backend) return -1;
+    std::lock_guard<std::mutex> lock(backend->mutex);
+    if (backend->destroying) return -1;
+    mglRendererBackendReplaceObject(
+        backend->current_tess_factor_buffer, buffer);
+    return 0;
+}
+
+extern "C" void *mglRendererBackendGetCurrentTessFactorBuffer(
+    const MGLRendererBackendHandle *backend)
+{
+    if (!backend) return nullptr;
+    std::lock_guard<std::mutex> lock(
+        const_cast<MGLRendererBackendHandle *>(backend)->mutex);
+    return backend->current_tess_factor_buffer;
 }
 
 extern "C" int mglRendererBackendGetTessXfbDummyBuffer(

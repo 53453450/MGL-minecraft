@@ -118,6 +118,11 @@ int mglRendererBackendGetTessFactorBuffer(
 int mglRendererBackendPutTessFactorBuffer(
     MGLRendererBackendHandle *backend, uint32_t patch_count,
     const float levels[6], void *buffer);
+int mglRendererBackendSetCurrentTessFactorBuffer(
+    MGLRendererBackendHandle *backend, void *buffer);
+/* Returns the borrowed factor buffer selected for the current tess draw. */
+void *mglRendererBackendGetCurrentTessFactorBuffer(
+    const MGLRendererBackendHandle *backend);
 /* Returns a borrowed TES XFB dummy buffer when it meets minimum_length. */
 int mglRendererBackendGetTessXfbDummyBuffer(
     const MGLRendererBackendHandle *backend, uint64_t minimum_length,

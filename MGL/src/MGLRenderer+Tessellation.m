@@ -1193,7 +1193,8 @@ typedef struct {
     }
 
     /* Save tess factor buffer for TES patch-draw path. */
-    _tessellation.tessFactorBuffer = tessFactorBuf;
+    (void)mglRendererBackendSetCurrentTessFactorBuffer(
+        _backend, (__bridge void *)tessFactorBuf);
 
     return true;
 }
@@ -1315,6 +1316,8 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
      * dispatch (or defaults). */
     MGLMetalBufferRef tcsOutputBuffer = (__bridge MGLMetalBufferRef)
         mglRendererBackendGetTcsOutputBuffer(_backend);
+    MGLMetalBufferRef tessFactorBuffer = (__bridge MGLMetalBufferRef)
+        mglRendererBackendGetCurrentTessFactorBuffer(_backend);
     MGLMetalBufferRef glInBuffer = tcsOutputBuffer;
     NSUInteger glInOffset = _tessellation.tcsOutputOffset;
     NSUInteger glInStride = _tessellation.tcsOutputStride;
@@ -1326,7 +1329,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
         glInStride = contract->per_vertex_out_stride;
         glInVertices = MAX(1u, contract->patch_vertices);
     }
-    if (!glInBuffer || !_tessellation.tessFactorBuffer) {
+    if (!glInBuffer || !tessFactorBuffer) {
         NSLog(@"MGL TESS ERROR: missing TES compute inputs program=%u",
               (unsigned)tesProgram->name);
         return false;
@@ -1367,10 +1370,10 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
 
     /* Compute per-patch item counts and the per-instance total. */
     const uint16_t *factorBytes =
-        (const uint16_t *)_tessellation.tessFactorBuffer.contents;
+        (const uint16_t *)tessFactorBuffer.contents;
     NSUInteger factorByteCount =
         (NSUInteger)patchCount * MGL_AIR_TESS_FACTOR_QUAD_HALF_BYTES;
-    if ((NSUInteger)_tessellation.tessFactorBuffer.length < factorByteCount) {
+    if ((NSUInteger)tessFactorBuffer.length < factorByteCount) {
         NSLog(@"MGL TESS ERROR: factor buffer too small for %u patches",
               (unsigned)patchCount);
         return false;
@@ -1478,7 +1481,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     if (!mglTessPlanBufferOrBind(
             &executionPlan,
             executionTemporaries, computeEncoder,
-            _tessellation.tessFactorBuffer, 0u,
+            tessFactorBuffer, 0u,
             MGL_AIR_TESS_SLOT_TESS_FACTOR) ||
         !mglTessPlanBufferOrBind(
             &executionPlan,
@@ -2069,6 +2072,8 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     if (!tesProgram || !glm_ctx || !contract) {
         return false;
     }
+    MGLMetalBufferRef tessFactorBuffer = (__bridge MGLMetalBufferRef)
+        mglRendererBackendGetCurrentTessFactorBuffer(_backend);
 
     Shader *tesShader = tesProgram->shader_slots[_TESS_EVALUATION_SHADER];
     if (!tesShader || !tesProgram->modules[_TESS_EVALUATION_SHADER].mtl_function) {
@@ -2339,11 +2344,11 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
      * writes one XFB entry.  The vertex count formula matches what the
      * CTS counter program expects (primitive count * vertices-per-primitive). */
     GLuint vertsPerPatch = 1;
-    if (_tessellation.tessFactorBuffer) {
+    if (tessFactorBuffer) {
         const struct {
             uint16_t edge[4];
             uint16_t inside[2];
-        } __attribute__((packed)) *tf = (const void *)_tessellation.tessFactorBuffer.contents;
+        } __attribute__((packed)) *tf = (const void *)tessFactorBuffer.contents;
         GLenum genMode = tesProgram ? tesProgram->tess_gen_mode : GL_TRIANGLES;
         GLboolean pointMode = tesProgram ? tesProgram->tess_gen_point_mode : GL_FALSE;
         if (patchCount > 0) {
@@ -2595,12 +2600,12 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
      * For triangles: primitives ≈ ceil(inside)² (rough estimate).
      * For quads:      primitives ≈ 2 × ceil(inside0) × ceil(inside1).
      * For isolines:   primitives ≈ ceil(edge[0]). */
-    if (_tessellation.tessFactorBuffer) {
+    if (tessFactorBuffer) {
         const struct {
             uint16_t edge[4];
             uint16_t inside[2];
         } __attribute__((packed)) *tessFactors =
-            (const void *)_tessellation.tessFactorBuffer.contents;
+            (const void *)tessFactorBuffer.contents;
 
         GLenum genMode = tesProgram ? tesProgram->tess_gen_mode : GL_TRIANGLES;
         GLboolean pointMode = tesProgram ? tesProgram->tess_gen_point_mode : GL_FALSE;

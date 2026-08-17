@@ -8979,6 +8979,16 @@ static int verifyRendererBackend(id<MTLDevice> device) {
         return 1;
     }
     printf("RENDERER_BACKEND_TESS_FACTOR_CACHE_OK\n");
+    if (mglRendererBackendSetCurrentTessFactorBuffer(
+            backend, (__bridge void *)fallbackBuffer) != 0 ||
+        mglRendererBackendGetCurrentTessFactorBuffer(backend) !=
+            (__bridge void *)fallbackBuffer ||
+        mglRendererBackendSetCurrentTessFactorBuffer(backend, NULL) != 0 ||
+        mglRendererBackendGetCurrentTessFactorBuffer(backend) != NULL) {
+        fprintf(stderr, "FAIL: renderer backend current tess factor\n");
+        return 1;
+    }
+    printf("RENDERER_BACKEND_CURRENT_TESS_FACTOR_OK\n");
     void *cachedTessDummy = NULL;
     if (mglRendererBackendGetTessXfbDummyBuffer(
             backend, 1u, &cachedTessDummy) != 0 || cachedTessDummy != NULL ||
