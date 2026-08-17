@@ -17,7 +17,7 @@
 #include <stddef.h>
 
 #ifdef __OBJC__
-#import <Metal/Metal.h>
+#import <Foundation/Foundation.h>
 #endif
 
 typedef enum {
@@ -36,9 +36,9 @@ typedef enum {
 #define MGL_BUG_MSL_PIPELINE_REJECTION          "msl_pipeline_rejection"
 
 typedef struct MGLCapability_t {
-#ifdef __OBJC__
-    id<MTLDevice>  __strong device;
-#endif
+    /* Borrowed from the renderer backend, which owns the Metal device for
+     * the full lifetime of this value-state cache. */
+    void          *device;
     MGLGPUFamily   family;
     bool           isVirtualized;
 
@@ -61,18 +61,9 @@ typedef struct MGLCapability_t {
     bool           conservativeCPUCacheMode;
 } MGLCapability;
 
-/* Bridge an opaque device reference to the ObjC device (keeps id<MTL out of
- * the implementation text for the P4 whitelist census). */
-#ifdef __OBJC__
-typedef id<MTLDevice> MGLMetalDeviceRef;
-static inline MGLMetalDeviceRef mglCapabilityDeviceRef(void *device) {
-    return (__bridge MGLMetalDeviceRef)device;
-}
-#endif
-
-/* Initialize capability from a Metal device.  Must be called once after the
- * device is created.  Subsequent queries read cached fields without touching
- * the Metal API. */
+/* Initialize capability from a backend-owned Metal device.  Must be called
+ * once after backend creation; the borrowed device pointer remains valid
+ * until backend shutdown. */
 #ifdef __OBJC__
 void MGLCapabilityInit(MGLCapability *cap, void *deviceRef);
 #endif

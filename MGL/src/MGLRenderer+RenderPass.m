@@ -5694,9 +5694,9 @@ stencil_format_ok:;
             // Circuit breaker for repeated VS/FS interface mismatch.
             if (now < _gpuRecovery.interfaceMismatchRetryAfter &&
                 currentProgramName == _gpuRecovery.interfaceMismatchProgramName &&
-                builtColor0Format == (uint32_t)_gpuRecovery.interfaceMismatchColor0Format &&
-                builtDepthFormat == (uint32_t)_gpuRecovery.interfaceMismatchDepthFormat &&
-                builtStencilFormat == (uint32_t)_gpuRecovery.interfaceMismatchStencilFormat) {
+                builtColor0Format == _gpuRecovery.interfaceMismatchColor0Format &&
+                builtDepthFormat == _gpuRecovery.interfaceMismatchDepthFormat &&
+                builtStencilFormat == _gpuRecovery.interfaceMismatchStencilFormat) {
                 state->dirty_bits &= ~(DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
                 return false;
             }
@@ -5794,9 +5794,9 @@ stencil_format_ok:;
 	                    // Mirror successful compile-side breaker resets.
 	                    _gpuRecovery.interfaceMismatchStreak = 0;
 	                    _gpuRecovery.interfaceMismatchProgramName = 0;
-	                    _gpuRecovery.interfaceMismatchColor0Format = MTLPixelFormatInvalid;
-	                    _gpuRecovery.interfaceMismatchDepthFormat = MTLPixelFormatInvalid;
-	                    _gpuRecovery.interfaceMismatchStencilFormat = MTLPixelFormatInvalid;
+	                    _gpuRecovery.interfaceMismatchColor0Format = (uint32_t)MTLPixelFormatInvalid;
+	                    _gpuRecovery.interfaceMismatchDepthFormat = (uint32_t)MTLPixelFormatInvalid;
+	                    _gpuRecovery.interfaceMismatchStencilFormat = (uint32_t)MTLPixelFormatInvalid;
 	                    _gpuRecovery.interfaceMismatchRetryAfter = 0.0;
 	                    if (_gpuRecovery.programMismatchProgramName == currentProgramName) {
 	                        _gpuRecovery.programMismatchProgramName = 0;
@@ -5982,18 +5982,18 @@ stencil_format_ok:;
                     compiledPSO = previousPipelineState;
                     pipelineReusedPrevious = true;
                     _gpuRecovery.interfaceMismatchProgramName = currentProgramName;
-                    _gpuRecovery.interfaceMismatchColor0Format = (MTLPixelFormat)builtColor0Format;
-                    _gpuRecovery.interfaceMismatchDepthFormat = (MTLPixelFormat)builtDepthFormat;
-                    _gpuRecovery.interfaceMismatchStencilFormat = (MTLPixelFormat)builtStencilFormat;
+                    _gpuRecovery.interfaceMismatchColor0Format = builtColor0Format;
+                    _gpuRecovery.interfaceMismatchDepthFormat = builtDepthFormat;
+                    _gpuRecovery.interfaceMismatchStencilFormat = builtStencilFormat;
                     _gpuRecovery.interfaceMismatchStreak = 1u;
                     _gpuRecovery.interfaceMismatchRetryAfter = now + 0.10;
                     _gpuRecovery.pipelineRetryAfter = _gpuRecovery.interfaceMismatchRetryAfter;
                 } else {
                     BOOL sameMismatchSignature =
                     (currentProgramName == _gpuRecovery.interfaceMismatchProgramName &&
-                    builtColor0Format == (uint32_t)_gpuRecovery.interfaceMismatchColor0Format &&
-                    builtDepthFormat == (uint32_t)_gpuRecovery.interfaceMismatchDepthFormat &&
-                    builtStencilFormat == (uint32_t)_gpuRecovery.interfaceMismatchStencilFormat);
+                    builtColor0Format == _gpuRecovery.interfaceMismatchColor0Format &&
+                    builtDepthFormat == _gpuRecovery.interfaceMismatchDepthFormat &&
+                    builtStencilFormat == _gpuRecovery.interfaceMismatchStencilFormat);
                     if (sameMismatchSignature) {
                         if (_gpuRecovery.interfaceMismatchStreak < UINT32_MAX) {
                             _gpuRecovery.interfaceMismatchStreak++;
@@ -6001,9 +6001,9 @@ stencil_format_ok:;
                     } else {
                         _gpuRecovery.interfaceMismatchStreak = 1;
                         _gpuRecovery.interfaceMismatchProgramName = currentProgramName;
-                        _gpuRecovery.interfaceMismatchColor0Format = (MTLPixelFormat)builtColor0Format;
-                        _gpuRecovery.interfaceMismatchDepthFormat = (MTLPixelFormat)builtDepthFormat;
-                        _gpuRecovery.interfaceMismatchStencilFormat = (MTLPixelFormat)builtStencilFormat;
+                        _gpuRecovery.interfaceMismatchColor0Format = builtColor0Format;
+                        _gpuRecovery.interfaceMismatchDepthFormat = builtDepthFormat;
+                        _gpuRecovery.interfaceMismatchStencilFormat = builtStencilFormat;
                     }
 
                     // Exponential backoff: 0.10, 0.20, 0.40, 0.80, 1.60, capped at 2.00 sec.
@@ -6240,9 +6240,9 @@ stencil_format_ok:;
             // Clear interface-mismatch breaker after a real compile.
             _gpuRecovery.interfaceMismatchStreak = 0;
             _gpuRecovery.interfaceMismatchProgramName = 0;
-            _gpuRecovery.interfaceMismatchColor0Format = MTLPixelFormatInvalid;
-            _gpuRecovery.interfaceMismatchDepthFormat = MTLPixelFormatInvalid;
-            _gpuRecovery.interfaceMismatchStencilFormat = MTLPixelFormatInvalid;
+            _gpuRecovery.interfaceMismatchColor0Format = (uint32_t)MTLPixelFormatInvalid;
+            _gpuRecovery.interfaceMismatchDepthFormat = (uint32_t)MTLPixelFormatInvalid;
+            _gpuRecovery.interfaceMismatchStencilFormat = (uint32_t)MTLPixelFormatInvalid;
             _gpuRecovery.interfaceMismatchRetryAfter = 0.0;
             [_pipelineCache activatePipelineState:compiledPSO
                                    color0Format:(MTLPixelFormat)builtColor0Format

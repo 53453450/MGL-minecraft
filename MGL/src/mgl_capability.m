@@ -10,11 +10,16 @@
 #import <Metal/Metal.h>
 #import <string.h>
 
+static id<MTLDevice> mglCapabilityDeviceRef(void *device)
+{
+    return (__bridge id<MTLDevice>)device;
+}
+
 void MGLCapabilityInit(MGLCapability *cap, void *deviceRef)
 {
     memset(cap, 0, sizeof(*cap));
-    MGLMetalDeviceRef device = mglCapabilityDeviceRef(deviceRef);
-    cap->device = device;
+    id<MTLDevice> device = mglCapabilityDeviceRef(deviceRef);
+    cap->device = deviceRef;
 
     NSString *name = [device name] ?: @"Unknown Metal Device";
     BOOL supportsAppleFamily = NO;
@@ -81,8 +86,10 @@ void MGLCapabilityInit(MGLCapability *cap, void *deviceRef)
 bool MGLCapabilitySupportsSampleCount(MGLCapability *cap, NSUInteger samples)
 {
     if (!cap || samples <= 1) return true;
+    id<MTLDevice> device = mglCapabilityDeviceRef(cap->device);
+    if (!device) return false;
     return samples <= cap->maxSampleCount &&
-        [cap->device supportsTextureSampleCount:samples];
+        [device supportsTextureSampleCount:samples];
 }
 
 NSUInteger MGLCapabilityClampSampleCount(MGLCapability *cap, NSUInteger requested)
@@ -91,10 +98,12 @@ NSUInteger MGLCapabilityClampSampleCount(MGLCapability *cap, NSUInteger requeste
     if (requested <= 1) return 1;
 
     static const NSUInteger candidates[] = { 32u, 16u, 8u, 4u, 2u };
+    id<MTLDevice> device = mglCapabilityDeviceRef(cap->device);
+    if (!device) return 1;
 
     for (NSUInteger i = 0; i < sizeof(candidates) / sizeof(candidates[0]); ++i) {
         NSUInteger candidate = candidates[i];
-        if (candidate <= requested && [cap->device supportsTextureSampleCount:candidate]) {
+        if (candidate <= requested && [device supportsTextureSampleCount:candidate]) {
             return candidate;
         }
     }

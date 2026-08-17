@@ -24,16 +24,10 @@
 #define MGLRenderer_State_h
 
 #import <Foundation/Foundation.h>
-#import <Metal/Metal.h>
-#import <AppKit/AppKit.h>
-#import <QuartzCore/QuartzCore.h>
-#import <simd/simd.h>
-#include <os/lock.h>
 
 #include "glm_context.h"
 #import "mgl_capability.h"
 #import "mgl_trace_strategy.h"
-#import "mgl_texture_compat.h"
 
 #ifndef kMGLMaxBufferSlots
 #define kMGLMaxBufferSlots 31
@@ -87,9 +81,9 @@ typedef struct MGLGPURecoveryState_t {
     CFTimeInterval pipelineRetryAfter;
     CFTimeInterval interfaceMismatchRetryAfter;
     GLuint interfaceMismatchProgramName;
-    MTLPixelFormat interfaceMismatchColor0Format;
-    MTLPixelFormat interfaceMismatchDepthFormat;
-    MTLPixelFormat interfaceMismatchStencilFormat;
+    uint32_t interfaceMismatchColor0Format;
+    uint32_t interfaceMismatchDepthFormat;
+    uint32_t interfaceMismatchStencilFormat;
     uint32_t interfaceMismatchStreak;
     GLuint programMismatchProgramName;
     CFTimeInterval programMismatchRetryAfter;
