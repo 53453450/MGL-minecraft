@@ -32,9 +32,49 @@ extern "C" void mglRendererCompatBlitFramebuffer(
     int src_x0, int src_y0, int src_x1, int src_y1,
     int dst_x0, int dst_y0, int dst_x1, int dst_y1,
     unsigned int mask, unsigned int filter);
-extern "C" int mglRendererCompatResource(
-    void *compat_context, GLMContext context,
-    const MGLRenderCppResourceCallbackArgs *args);
+extern "C" void mglRendererCompatReadDrawable(
+    void *compat_context, GLMContext context, void *pixel_bytes,
+    uint32_t bytes_per_row, uint32_t bytes_per_image,
+    int32_t x, int32_t y, int32_t width, int32_t height);
+extern "C" void mglRendererCompatReadIntegerPixels(
+    void *compat_context, GLMContext context, void *pixel_bytes,
+    uint32_t bytes_per_row, uint32_t bytes_per_image,
+    int32_t x, int32_t y, int32_t width, int32_t height,
+    uint32_t format, uint32_t type);
+extern "C" void mglRendererCompatReadDepthPixels(
+    void *compat_context, GLMContext context, void *pixel_bytes,
+    uint32_t bytes_per_row, uint32_t bytes_per_image,
+    int32_t x, int32_t y, int32_t width, int32_t height);
+extern "C" void mglRendererCompatGetTexImage(
+    void *compat_context, GLMContext context, Texture *texture,
+    void *pixel_bytes, uint32_t bytes_per_row, uint32_t bytes_per_image,
+    int32_t x, int32_t y, int32_t width, int32_t height,
+    uint32_t format, uint32_t type, uint32_t level, uint32_t slice);
+extern "C" void mglRendererCompatGenerateMipmaps(
+    void *compat_context, GLMContext context, Texture *texture);
+extern "C" void mglRendererCompatTexSubImage(
+    void *compat_context, GLMContext context, Texture *texture, Buffer *buffer,
+    size_t source_offset, size_t source_pitch, size_t source_image_size,
+    size_t source_size, uint32_t slice, uint32_t level,
+    size_t width, size_t height, size_t depth,
+    size_t x_offset, size_t y_offset, size_t z_offset);
+extern "C" bool mglRendererCompatTexSubImageBytes(
+    void *compat_context, GLMContext context, Texture *texture,
+    const void *bytes, size_t bytes_size,
+    size_t source_offset, size_t source_pitch, size_t source_image_size,
+    uint32_t slice, uint32_t level,
+    size_t width, size_t height, size_t depth,
+    size_t x_offset, size_t y_offset, size_t z_offset);
+extern "C" void mglRendererCompatCopyTexSubImage(
+    void *compat_context, GLMContext context, Texture *texture,
+    uint32_t slice, int32_t level, int32_t x_offset, int32_t y_offset,
+    int32_t x, int32_t y, int32_t width, int32_t height);
+extern "C" void mglRendererCompatCopyImageSubData(
+    void *compat_context, GLMContext context, Texture *source_texture,
+    int32_t source_level, int32_t source_x, int32_t source_y, int32_t source_z,
+    Texture *destination_texture, int32_t destination_level,
+    int32_t destination_x, int32_t destination_y, int32_t destination_z,
+    int32_t width, int32_t height, int32_t depth);
 
 struct MGLRendererBackendHandle {
     std::mutex mutex;
@@ -387,28 +427,17 @@ extern "C" void mglRendererFlushBufferRange(
     mglRenderCppFlushBufferRange(context, buffer, offset, length);
 }
 
-static int mglRendererInvokeResource(
-    GLMContext context, MGLRenderCppResourceCallbackArgs args)
-{
-    void *compat = mglRendererBackendCompatContext(context);
-    return compat ? mglRendererCompatResource(compat, context, &args) : 0;
-}
-
 extern "C" void mglRendererReadDrawable(
     GLMContext context, void *pixel_bytes,
     uint32_t bytes_per_row, uint32_t bytes_per_image,
     int32_t x, int32_t y, int32_t width, int32_t height)
 {
-    mglRendererInvokeResource(context, {
-        .kind = MGL_RENDER_CPP_RESOURCE_CALLBACK_READ_DRAWABLE,
-        .pixel_bytes = pixel_bytes,
-        .width = static_cast<size_t>(width),
-        .height = static_cast<size_t>(height),
-        .bytes_per_row = bytes_per_row,
-        .bytes_per_image = bytes_per_image,
-        .x = x,
-        .y = y,
-    });
+    void *compat = mglRendererBackendCompatContext(context);
+    if (compat) {
+        mglRendererCompatReadDrawable(
+            compat, context, pixel_bytes, bytes_per_row, bytes_per_image,
+            x, y, width, height);
+    }
 }
 
 extern "C" void mglRendererReadIntegerPixels(
@@ -417,18 +446,12 @@ extern "C" void mglRendererReadIntegerPixels(
     int32_t x, int32_t y, int32_t width, int32_t height,
     uint32_t format, uint32_t type)
 {
-    mglRendererInvokeResource(context, {
-        .kind = MGL_RENDER_CPP_RESOURCE_CALLBACK_READ_INTEGER_PIXELS,
-        .pixel_bytes = pixel_bytes,
-        .width = static_cast<size_t>(width),
-        .height = static_cast<size_t>(height),
-        .bytes_per_row = bytes_per_row,
-        .bytes_per_image = bytes_per_image,
-        .format = format,
-        .type = type,
-        .x = x,
-        .y = y,
-    });
+    void *compat = mglRendererBackendCompatContext(context);
+    if (compat) {
+        mglRendererCompatReadIntegerPixels(
+            compat, context, pixel_bytes, bytes_per_row, bytes_per_image,
+            x, y, width, height, format, type);
+    }
 }
 
 extern "C" void mglRendererReadDepthPixels(
@@ -436,16 +459,12 @@ extern "C" void mglRendererReadDepthPixels(
     uint32_t bytes_per_row, uint32_t bytes_per_image,
     int32_t x, int32_t y, int32_t width, int32_t height)
 {
-    mglRendererInvokeResource(context, {
-        .kind = MGL_RENDER_CPP_RESOURCE_CALLBACK_READ_DEPTH_PIXELS,
-        .pixel_bytes = pixel_bytes,
-        .width = static_cast<size_t>(width),
-        .height = static_cast<size_t>(height),
-        .bytes_per_row = bytes_per_row,
-        .bytes_per_image = bytes_per_image,
-        .x = x,
-        .y = y,
-    });
+    void *compat = mglRendererBackendCompatContext(context);
+    if (compat) {
+        mglRendererCompatReadDepthPixels(
+            compat, context, pixel_bytes, bytes_per_row, bytes_per_image,
+            x, y, width, height);
+    }
 }
 
 extern "C" void mglRendererGetTexImage(
@@ -454,30 +473,20 @@ extern "C" void mglRendererGetTexImage(
     int32_t x, int32_t y, int32_t width, int32_t height,
     uint32_t format, uint32_t type, uint32_t level, uint32_t slice)
 {
-    mglRendererInvokeResource(context, {
-        .kind = MGL_RENDER_CPP_RESOURCE_CALLBACK_GET_TEX_IMAGE,
-        .texture = texture,
-        .pixel_bytes = pixel_bytes,
-        .width = static_cast<size_t>(width),
-        .height = static_cast<size_t>(height),
-        .bytes_per_row = bytes_per_row,
-        .bytes_per_image = bytes_per_image,
-        .format = format,
-        .type = type,
-        .slice = slice,
-        .level = level,
-        .x = x,
-        .y = y,
-    });
+    void *compat = mglRendererBackendCompatContext(context);
+    if (compat) {
+        mglRendererCompatGetTexImage(
+            compat, context, texture, pixel_bytes,
+            bytes_per_row, bytes_per_image, x, y, width, height,
+            format, type, level, slice);
+    }
 }
 
 extern "C" void mglRendererGenerateMipmaps(
     GLMContext context, Texture *texture)
 {
-    mglRendererInvokeResource(context, {
-        .kind = MGL_RENDER_CPP_RESOURCE_CALLBACK_GENERATE_MIPMAPS,
-        .texture = texture,
-    });
+    void *compat = mglRendererBackendCompatContext(context);
+    if (compat) mglRendererCompatGenerateMipmaps(compat, context, texture);
 }
 
 extern "C" void mglRendererTexSubImage(
@@ -488,23 +497,14 @@ extern "C" void mglRendererTexSubImage(
     size_t width, size_t height, size_t depth,
     size_t x_offset, size_t y_offset, size_t z_offset)
 {
-    mglRendererInvokeResource(context, {
-        .kind = MGL_RENDER_CPP_RESOURCE_CALLBACK_TEX_SUB_IMAGE,
-        .texture = texture,
-        .buffer = buffer,
-        .source_offset = source_offset,
-        .source_pitch = source_pitch,
-        .source_image_size = source_image_size,
-        .source_size = source_size,
-        .width = width,
-        .height = height,
-        .depth = depth,
-        .x_offset = x_offset,
-        .y_offset = y_offset,
-        .z_offset = z_offset,
-        .slice = slice,
-        .level = level,
-    });
+    void *compat = mglRendererBackendCompatContext(context);
+    if (compat) {
+        mglRendererCompatTexSubImage(
+            compat, context, texture, buffer,
+            source_offset, source_pitch, source_image_size, source_size,
+            slice, level, width, height, depth,
+            x_offset, y_offset, z_offset);
+    }
 }
 
 extern "C" bool mglRendererTexSubImageBytes(
@@ -515,23 +515,12 @@ extern "C" bool mglRendererTexSubImageBytes(
     size_t width, size_t height, size_t depth,
     size_t x_offset, size_t y_offset, size_t z_offset)
 {
-    return mglRendererInvokeResource(context, {
-        .kind = MGL_RENDER_CPP_RESOURCE_CALLBACK_TEX_SUB_IMAGE_BYTES,
-        .texture = texture,
-        .bytes = bytes,
-        .bytes_size = bytes_size,
-        .source_offset = source_offset,
-        .source_pitch = source_pitch,
-        .source_image_size = source_image_size,
-        .width = width,
-        .height = height,
-        .depth = depth,
-        .x_offset = x_offset,
-        .y_offset = y_offset,
-        .z_offset = z_offset,
-        .slice = slice,
-        .level = level,
-    }) != 0;
+    void *compat = mglRendererBackendCompatContext(context);
+    return compat && mglRendererCompatTexSubImageBytes(
+        compat, context, texture, bytes, bytes_size,
+        source_offset, source_pitch, source_image_size,
+        slice, level, width, height, depth,
+        x_offset, y_offset, z_offset);
 }
 
 extern "C" void mglRendererCopyTexSubImage(
@@ -540,18 +529,12 @@ extern "C" void mglRendererCopyTexSubImage(
     int32_t x_offset, int32_t y_offset,
     int32_t x, int32_t y, int32_t width, int32_t height)
 {
-    mglRendererInvokeResource(context, {
-        .kind = MGL_RENDER_CPP_RESOURCE_CALLBACK_COPY_TEX_SUB_IMAGE,
-        .texture = texture,
-        .width = static_cast<size_t>(width),
-        .height = static_cast<size_t>(height),
-        .x_offset = static_cast<size_t>(x_offset),
-        .y_offset = static_cast<size_t>(y_offset),
-        .slice = slice,
-        .level = static_cast<uint32_t>(level),
-        .x = x,
-        .y = y,
-    });
+    void *compat = mglRendererBackendCompatContext(context);
+    if (compat) {
+        mglRendererCompatCopyTexSubImage(
+            compat, context, texture, slice, level, x_offset, y_offset,
+            x, y, width, height);
+    }
 }
 
 extern "C" void mglRendererCopyImageSubData(
@@ -562,22 +545,15 @@ extern "C" void mglRendererCopyImageSubData(
     int32_t destination_x, int32_t destination_y, int32_t destination_z,
     int32_t width, int32_t height, int32_t depth)
 {
-    mglRendererInvokeResource(context, {
-        .kind = MGL_RENDER_CPP_RESOURCE_CALLBACK_COPY_IMAGE_SUB_DATA,
-        .source_texture = source_texture,
-        .destination_texture = destination_texture,
-        .width = static_cast<size_t>(width),
-        .height = static_cast<size_t>(height),
-        .depth = static_cast<size_t>(depth),
-        .source_level = source_level,
-        .source_x = source_x,
-        .source_y = source_y,
-        .source_z = source_z,
-        .destination_level = destination_level,
-        .destination_x = destination_x,
-        .destination_y = destination_y,
-        .destination_z = destination_z,
-    });
+    void *compat = mglRendererBackendCompatContext(context);
+    if (compat) {
+        mglRendererCompatCopyImageSubData(
+            compat, context, source_texture,
+            source_level, source_x, source_y, source_z,
+            destination_texture, destination_level,
+            destination_x, destination_y, destination_z,
+            width, height, depth);
+    }
 }
 
 static void mglRendererInvokeDraw(

@@ -6,106 +6,137 @@
 #include "mgl_env_flag.h"
 #include "mgl_render_cpp_objc.h"
 
-int mglRendererCompatResource(void *runtime_context,
-                              GLMContext glm_ctx,
-                              const MGLRenderCppResourceCallbackArgs *args)
+static MTLRegion mglRendererCompatRegion(int32_t x, int32_t y,
+                                         int32_t width, int32_t height)
+{
+    return MTLRegionMake2D((NSUInteger)x, (NSUInteger)y,
+                           (NSUInteger)width, (NSUInteger)height);
+}
+
+void mglRendererCompatReadDrawable(
+    void *runtime_context, GLMContext glm_ctx, void *pixel_bytes,
+    uint32_t bytes_per_row, uint32_t bytes_per_image,
+    int32_t x, int32_t y, int32_t width, int32_t height)
 {
     MGLRenderer *renderer = (__bridge MGLRenderer *)runtime_context;
-    if (!renderer || !glm_ctx || !args) return 0;
+    if (!renderer || !glm_ctx) return;
+    [renderer mtlReadDrawable:glm_ctx pixelBytes:pixel_bytes
+                  bytesPerRow:bytes_per_row bytesPerImage:bytes_per_image
+                   fromRegion:mglRendererCompatRegion(x, y, width, height)];
+}
 
-    MTLRegion region = MTLRegionMake2D((NSUInteger)args->x,
-                                       (NSUInteger)args->y,
-                                       (NSUInteger)args->width,
-                                       (NSUInteger)args->height);
-    switch (args->kind) {
-        case MGL_RENDER_CPP_RESOURCE_CALLBACK_READ_DRAWABLE:
-            [renderer mtlReadDrawable:glm_ctx
-                           pixelBytes:args->pixel_bytes
-                          bytesPerRow:args->bytes_per_row
-                        bytesPerImage:args->bytes_per_image
-                           fromRegion:region];
-            return 1;
-        case MGL_RENDER_CPP_RESOURCE_CALLBACK_READ_INTEGER_PIXELS:
-            [renderer mtlReadIntegerPixels:glm_ctx
-                                pixelBytes:args->pixel_bytes
-                               bytesPerRow:args->bytes_per_row
-                             bytesPerImage:args->bytes_per_image
-                                fromRegion:region
-                                    format:args->format
-                                      type:args->type];
-            return 1;
-        case MGL_RENDER_CPP_RESOURCE_CALLBACK_READ_DEPTH_PIXELS:
-            [renderer mtlReadDepthPixels:glm_ctx
-                              pixelBytes:args->pixel_bytes
-                             bytesPerRow:args->bytes_per_row
-                           bytesPerImage:args->bytes_per_image
-                              fromRegion:region];
-            return 1;
-        case MGL_RENDER_CPP_RESOURCE_CALLBACK_GET_TEX_IMAGE:
-            [renderer mtlGetTexImage:glm_ctx tex:args->texture
-                          pixelBytes:args->pixel_bytes
-                         bytesPerRow:args->bytes_per_row
-                       bytesPerImage:args->bytes_per_image
-                          fromRegion:region
-                              format:args->format type:args->type
-                         mipmapLevel:args->level slice:args->slice];
-            return 1;
-        case MGL_RENDER_CPP_RESOURCE_CALLBACK_GENERATE_MIPMAPS:
-            [renderer mtlGenerateMipmaps:glm_ctx forTexture:args->texture];
-            return 1;
-        case MGL_RENDER_CPP_RESOURCE_CALLBACK_TEX_SUB_IMAGE:
-            [renderer mtlTexSubImage:glm_ctx tex:args->texture buf:args->buffer
-                          src_offset:args->source_offset
-                           src_pitch:args->source_pitch
-                      src_image_size:args->source_image_size
-                           src_size:args->source_size
-                              slice:args->slice level:args->level
-                              width:args->width height:args->height
-                              depth:args->depth
-                            xoffset:args->x_offset yoffset:args->y_offset
-                            zoffset:args->z_offset];
-            return 1;
-        case MGL_RENDER_CPP_RESOURCE_CALLBACK_TEX_SUB_IMAGE_BYTES:
-            return [renderer mtlTexSubImageBytes:glm_ctx tex:args->texture
-                                           bytes:args->bytes
-                                       bytesSize:args->bytes_size
-                                      src_offset:args->source_offset
-                                       src_pitch:args->source_pitch
-                                  src_image_size:args->source_image_size
-                                           slice:args->slice level:args->level
-                                           width:args->width height:args->height
-                                           depth:args->depth
-                                         xoffset:args->x_offset
-                                         yoffset:args->y_offset
-                                         zoffset:args->z_offset] ? 1 : 0;
-        case MGL_RENDER_CPP_RESOURCE_CALLBACK_COPY_TEX_SUB_IMAGE:
-            [renderer mtlCopyTexSubImage:glm_ctx tex:args->texture
-                                   slice:args->slice
-                             mipmapLevel:args->level
-                                 xoffset:(NSInteger)args->x_offset
-                                 yoffset:(NSInteger)args->y_offset
-                                       x:args->x y:args->y
-                                   width:args->width height:args->height];
-            return 1;
-        case MGL_RENDER_CPP_RESOURCE_CALLBACK_COPY_IMAGE_SUB_DATA:
-            [renderer mtlCopyImageSubData:glm_ctx
-                               srcTexture:args->source_texture
-                                  srcLevel:args->source_level
-                                      srcX:args->source_x
-                                      srcY:args->source_y
-                                      srcZ:args->source_z
-                               dstTexture:args->destination_texture
-                                  dstLevel:args->destination_level
-                                      dstX:args->destination_x
-                                      dstY:args->destination_y
-                                      dstZ:args->destination_z
-                                     width:(GLsizei)args->width
-                                    height:(GLsizei)args->height
-                                     depth:(GLsizei)args->depth];
-            return 1;
-        default:
-            return 0;
-    }
+void mglRendererCompatReadIntegerPixels(
+    void *runtime_context, GLMContext glm_ctx, void *pixel_bytes,
+    uint32_t bytes_per_row, uint32_t bytes_per_image,
+    int32_t x, int32_t y, int32_t width, int32_t height,
+    uint32_t format, uint32_t type)
+{
+    MGLRenderer *renderer = (__bridge MGLRenderer *)runtime_context;
+    if (!renderer || !glm_ctx) return;
+    [renderer mtlReadIntegerPixels:glm_ctx pixelBytes:pixel_bytes
+                       bytesPerRow:bytes_per_row bytesPerImage:bytes_per_image
+                        fromRegion:mglRendererCompatRegion(x, y, width, height)
+                            format:format type:type];
+}
+
+void mglRendererCompatReadDepthPixels(
+    void *runtime_context, GLMContext glm_ctx, void *pixel_bytes,
+    uint32_t bytes_per_row, uint32_t bytes_per_image,
+    int32_t x, int32_t y, int32_t width, int32_t height)
+{
+    MGLRenderer *renderer = (__bridge MGLRenderer *)runtime_context;
+    if (!renderer || !glm_ctx) return;
+    [renderer mtlReadDepthPixels:glm_ctx pixelBytes:pixel_bytes
+                     bytesPerRow:bytes_per_row bytesPerImage:bytes_per_image
+                      fromRegion:mglRendererCompatRegion(x, y, width, height)];
+}
+
+void mglRendererCompatGetTexImage(
+    void *runtime_context, GLMContext glm_ctx, Texture *texture,
+    void *pixel_bytes, uint32_t bytes_per_row, uint32_t bytes_per_image,
+    int32_t x, int32_t y, int32_t width, int32_t height,
+    uint32_t format, uint32_t type, uint32_t level, uint32_t slice)
+{
+    MGLRenderer *renderer = (__bridge MGLRenderer *)runtime_context;
+    if (!renderer || !glm_ctx) return;
+    [renderer mtlGetTexImage:glm_ctx tex:texture pixelBytes:pixel_bytes
+                 bytesPerRow:bytes_per_row bytesPerImage:bytes_per_image
+                  fromRegion:mglRendererCompatRegion(x, y, width, height)
+                      format:format type:type mipmapLevel:level slice:slice];
+}
+
+void mglRendererCompatGenerateMipmaps(
+    void *runtime_context, GLMContext glm_ctx, Texture *texture)
+{
+    MGLRenderer *renderer = (__bridge MGLRenderer *)runtime_context;
+    if (!renderer || !glm_ctx) return;
+    [renderer mtlGenerateMipmaps:glm_ctx forTexture:texture];
+}
+
+void mglRendererCompatTexSubImage(
+    void *runtime_context, GLMContext glm_ctx, Texture *texture, Buffer *buffer,
+    size_t source_offset, size_t source_pitch, size_t source_image_size,
+    size_t source_size, uint32_t slice, uint32_t level,
+    size_t width, size_t height, size_t depth,
+    size_t x_offset, size_t y_offset, size_t z_offset)
+{
+    MGLRenderer *renderer = (__bridge MGLRenderer *)runtime_context;
+    if (!renderer || !glm_ctx) return;
+    [renderer mtlTexSubImage:glm_ctx tex:texture buf:buffer
+                  src_offset:source_offset src_pitch:source_pitch
+              src_image_size:source_image_size src_size:source_size
+                       slice:slice level:level width:width height:height
+                       depth:depth xoffset:x_offset yoffset:y_offset
+                     zoffset:z_offset];
+}
+
+bool mglRendererCompatTexSubImageBytes(
+    void *runtime_context, GLMContext glm_ctx, Texture *texture,
+    const void *bytes, size_t bytes_size,
+    size_t source_offset, size_t source_pitch, size_t source_image_size,
+    uint32_t slice, uint32_t level,
+    size_t width, size_t height, size_t depth,
+    size_t x_offset, size_t y_offset, size_t z_offset)
+{
+    MGLRenderer *renderer = (__bridge MGLRenderer *)runtime_context;
+    if (!renderer || !glm_ctx) return false;
+    return [renderer mtlTexSubImageBytes:glm_ctx tex:texture
+                                    bytes:bytes bytesSize:bytes_size
+                               src_offset:source_offset src_pitch:source_pitch
+                           src_image_size:source_image_size
+                                    slice:slice level:level
+                                    width:width height:height depth:depth
+                                  xoffset:x_offset yoffset:y_offset
+                                  zoffset:z_offset];
+}
+
+void mglRendererCompatCopyTexSubImage(
+    void *runtime_context, GLMContext glm_ctx, Texture *texture,
+    uint32_t slice, int32_t level, int32_t x_offset, int32_t y_offset,
+    int32_t x, int32_t y, int32_t width, int32_t height)
+{
+    MGLRenderer *renderer = (__bridge MGLRenderer *)runtime_context;
+    if (!renderer || !glm_ctx) return;
+    [renderer mtlCopyTexSubImage:glm_ctx tex:texture slice:slice
+                    mipmapLevel:level xoffset:x_offset yoffset:y_offset
+                              x:x y:y width:width height:height];
+}
+
+void mglRendererCompatCopyImageSubData(
+    void *runtime_context, GLMContext glm_ctx, Texture *source_texture,
+    int32_t source_level, int32_t source_x, int32_t source_y, int32_t source_z,
+    Texture *destination_texture, int32_t destination_level,
+    int32_t destination_x, int32_t destination_y, int32_t destination_z,
+    int32_t width, int32_t height, int32_t depth)
+{
+    MGLRenderer *renderer = (__bridge MGLRenderer *)runtime_context;
+    if (!renderer || !glm_ctx) return;
+    [renderer mtlCopyImageSubData:glm_ctx srcTexture:source_texture
+                         srcLevel:source_level srcX:source_x srcY:source_y
+                             srcZ:source_z dstTexture:destination_texture
+                         dstLevel:destination_level dstX:destination_x
+                             dstY:destination_y dstZ:destination_z
+                            width:width height:height depth:depth];
 }
 
 static MGLMetalBufferRef mglTextureCreateBuffer(MGLMetalDeviceRef device,

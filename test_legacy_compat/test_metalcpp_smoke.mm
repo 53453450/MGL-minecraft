@@ -156,14 +156,39 @@ extern "C" void mglRendererCompatClearBuffer(
 extern "C" void mglRendererCompatBlitFramebuffer(
     void *, GLMContext, int, int, int, int, int, int, int, int,
     unsigned int, unsigned int) {}
-extern "C" int mglRendererCompatResource(
-    void *, GLMContext, const MGLRenderCppResourceCallbackArgs *args) {
-    if (args &&
-        args->kind == MGL_RENDER_CPP_RESOURCE_CALLBACK_GENERATE_MIPMAPS) {
-        ++s_operationResourceCount;
-    }
-    return 1;
+extern "C" void mglRendererCompatReadDrawable(
+    void *, GLMContext, void *, uint32_t, uint32_t,
+    int32_t, int32_t, int32_t, int32_t) {}
+extern "C" void mglRendererCompatReadIntegerPixels(
+    void *, GLMContext, void *, uint32_t, uint32_t,
+    int32_t, int32_t, int32_t, int32_t, uint32_t, uint32_t) {}
+extern "C" void mglRendererCompatReadDepthPixels(
+    void *, GLMContext, void *, uint32_t, uint32_t,
+    int32_t, int32_t, int32_t, int32_t) {}
+extern "C" void mglRendererCompatGetTexImage(
+    void *, GLMContext, Texture *, void *, uint32_t, uint32_t,
+    int32_t, int32_t, int32_t, int32_t,
+    uint32_t, uint32_t, uint32_t, uint32_t) {}
+extern "C" void mglRendererCompatGenerateMipmaps(
+    void *, GLMContext, Texture *) {
+    ++s_operationResourceCount;
 }
+extern "C" void mglRendererCompatTexSubImage(
+    void *, GLMContext, Texture *, Buffer *, size_t, size_t, size_t, size_t,
+    uint32_t, uint32_t, size_t, size_t, size_t, size_t, size_t, size_t) {}
+extern "C" bool mglRendererCompatTexSubImageBytes(
+    void *, GLMContext, Texture *, const void *, size_t,
+    size_t, size_t, size_t, uint32_t, uint32_t,
+    size_t, size_t, size_t, size_t, size_t, size_t) {
+    return true;
+}
+extern "C" void mglRendererCompatCopyTexSubImage(
+    void *, GLMContext, Texture *, uint32_t, int32_t, int32_t, int32_t,
+    int32_t, int32_t, int32_t, int32_t) {}
+extern "C" void mglRendererCompatCopyImageSubData(
+    void *, GLMContext, Texture *, int32_t, int32_t, int32_t, int32_t,
+    Texture *, int32_t, int32_t, int32_t, int32_t,
+    int32_t, int32_t, int32_t) {}
 
 static int smokeCreateBackend(id<MTLDevice> device,
                               GLMContext context,

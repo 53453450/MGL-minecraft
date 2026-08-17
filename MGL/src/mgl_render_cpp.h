@@ -74,7 +74,6 @@ void mglRenderCppFlush(GLMContext glm_ctx, bool finish);
 void mglRenderCppInvalidateRenderPass(GLMContext glm_ctx);
 uint64_t mglRenderCppGetGPUTimestamp(GLMContext glm_ctx);
 typedef struct MGLRenderCppDrawCallbackArgs_t MGLRenderCppDrawCallbackArgs;
-typedef struct MGLRenderCppResourceCallbackArgs_t MGLRenderCppResourceCallbackArgs;
 
 enum {
     MGL_RENDER_CPP_DRAW_CALLBACK_ARRAYS = 0,
@@ -114,55 +113,6 @@ struct MGLRenderCppDrawCallbackArgs_t {
     const int32_t *firsts;
     const int32_t *counts;
     const int32_t *base_vertices;
-};
-
-enum {
-    MGL_RENDER_CPP_RESOURCE_CALLBACK_READ_DRAWABLE = 0,
-    MGL_RENDER_CPP_RESOURCE_CALLBACK_READ_INTEGER_PIXELS = 1,
-    MGL_RENDER_CPP_RESOURCE_CALLBACK_READ_DEPTH_PIXELS = 2,
-    MGL_RENDER_CPP_RESOURCE_CALLBACK_GET_TEX_IMAGE = 3,
-    MGL_RENDER_CPP_RESOURCE_CALLBACK_GENERATE_MIPMAPS = 4,
-    MGL_RENDER_CPP_RESOURCE_CALLBACK_TEX_SUB_IMAGE = 5,
-    MGL_RENDER_CPP_RESOURCE_CALLBACK_TEX_SUB_IMAGE_BYTES = 6,
-    MGL_RENDER_CPP_RESOURCE_CALLBACK_COPY_TEX_SUB_IMAGE = 7,
-    MGL_RENDER_CPP_RESOURCE_CALLBACK_COPY_IMAGE_SUB_DATA = 8,
-};
-
-struct MGLRenderCppResourceCallbackArgs_t {
-    uint32_t kind;
-    Texture *texture;
-    Texture *source_texture;
-    Texture *destination_texture;
-    Buffer *buffer;
-    void *pixel_bytes;
-    const void *bytes;
-    size_t bytes_size;
-    size_t source_offset;
-    size_t source_pitch;
-    size_t source_image_size;
-    size_t source_size;
-    size_t width;
-    size_t height;
-    size_t depth;
-    size_t x_offset;
-    size_t y_offset;
-    size_t z_offset;
-    uint32_t bytes_per_row;
-    uint32_t bytes_per_image;
-    uint32_t format;
-    uint32_t type;
-    uint32_t slice;
-    uint32_t level;
-    int32_t x;
-    int32_t y;
-    int32_t source_level;
-    int32_t source_x;
-    int32_t source_y;
-    int32_t source_z;
-    int32_t destination_level;
-    int32_t destination_x;
-    int32_t destination_y;
-    int32_t destination_z;
 };
 
 /* Publish the borrowed runtime owner handles used by direct C++ callbacks. */
