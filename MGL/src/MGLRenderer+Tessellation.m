@@ -1018,13 +1018,15 @@ typedef struct {
     GLuint patchCountTC = vertexCount / patchVertices;
     if (patchCountTC == 0u) patchCountTC = 1u;
     NSUInteger tcsOutSize = (NSUInteger)patchCountTC * tcsOutVertices * tcsOutStride;
-    _tessellation.tcsOutputBuffer = mglTessCreateBuffer(
+    MGLMetalBufferRef tcsOutputBuffer = mglTessCreateBuffer(
         _device, tcsOutSize, MTLResourceStorageModeShared);
-    if (!_tessellation.tcsOutputBuffer || !_tessellation.tcsOutputBuffer.contents) {
+    (void)mglRendererBackendSetTcsOutputBuffer(
+        _backend, (__bridge void *)tcsOutputBuffer);
+    if (!tcsOutputBuffer || !tcsOutputBuffer.contents) {
         [self clearStageBindingCopyBacks:&stageCopyBacks];
         return false;
     }
-    memset(_tessellation.tcsOutputBuffer.contents, 0, tcsOutSize);
+    memset(tcsOutputBuffer.contents, 0, tcsOutSize);
     _tessellation.tcsOutputOffset = 0u;
     /* TCS stage output (spvOut) binds at slot 28 — the same numeric slot as
      * the TES patch-info constant, reused across disjoint encoders.  The
@@ -1033,7 +1035,7 @@ typedef struct {
     if (!mglTessPlanBufferOrBind(
             &executionPlan,
             executionTemporaries, computeEncoder,
-            _tessellation.tcsOutputBuffer, 0,
+            tcsOutputBuffer, 0,
             MGL_AIR_TESS_SLOT_TCS_OUTPUT)) {
         [self clearStageBindingCopyBacks:&stageCopyBacks];
         return false;
@@ -1311,7 +1313,9 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
      * when there is no TCS, which the draw path already aliased into
      * tcsOutputBuffer).  Factors and per-patch inputs come from the TCS
      * dispatch (or defaults). */
-    MGLMetalBufferRef glInBuffer = _tessellation.tcsOutputBuffer;
+    MGLMetalBufferRef tcsOutputBuffer = (__bridge MGLMetalBufferRef)
+        mglRendererBackendGetTcsOutputBuffer(_backend);
+    MGLMetalBufferRef glInBuffer = tcsOutputBuffer;
     NSUInteger glInOffset = _tessellation.tcsOutputOffset;
     NSUInteger glInStride = _tessellation.tcsOutputStride;
     GLuint glInVertices = _tessellation.tcsOutVertices;
@@ -1345,7 +1349,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
         glInStride = MGL_AIR_PER_VERTEX_STRIDE;
     }
     if (glInVertices == 0u) glInVertices = MAX(1u, contract->patch_vertices);
-    const BOOL glInFromTCS = (glInBuffer == _tessellation.tcsOutputBuffer);
+    const BOOL glInFromTCS = (glInBuffer == tcsOutputBuffer);
     const NSUInteger glInInstanceStride =
         (glInFromTCS || _tessellation.tessIndexedDraw)
             ? 0u
@@ -2299,11 +2303,13 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
      * spvOut[patchID * outputVertices + invocationID], so TES gl_in should
      * point to the same buffer.  The MSL rewriter changed TES's [[stage_in]]
      * to "device <type> *gl_in [[buffer(30)]]". */
-    if (_tessellation.tcsOutputBuffer) {
+    MGLMetalBufferRef tcsOutputBuffer = (__bridge MGLMetalBufferRef)
+        mglRendererBackendGetTcsOutputBuffer(_backend);
+    if (tcsOutputBuffer) {
         if (!mglTessPlanBufferOrBind(
                 &executionPlan,
                 executionTemporaries, computeEncoder,
-                _tessellation.tcsOutputBuffer, 0,
+                tcsOutputBuffer, 0,
                 MGL_AIR_TESS_SLOT_GL_IN)) {
             [self clearStageBindingCopyBacks:&stageCopyBacks];
             return false;

@@ -144,6 +144,11 @@ int mglRendererBackendSetTcsPatchOutBuffer(
 /* Returns the borrowed TCS per-patch output buffer owned by the backend. */
 void *mglRendererBackendGetTcsPatchOutBuffer(
     const MGLRendererBackendHandle *backend);
+int mglRendererBackendSetTcsOutputBuffer(
+    MGLRendererBackendHandle *backend, void *buffer);
+/* Returns the borrowed TCS per-vertex output buffer owned by the backend. */
+void *mglRendererBackendGetTcsOutputBuffer(
+    const MGLRendererBackendHandle *backend);
 int mglRendererBackendSetFallbackResource(
     MGLRendererBackendHandle *backend,
     MGLRendererBackendFallbackResourceKind kind, void *resource);

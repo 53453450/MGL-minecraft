@@ -2661,7 +2661,7 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
     /* A TCS from a previous draw must not leak into a TES-only dispatch
      * (dispatchAIRTessEvalCompute reads tcsOutputBuffer as the gl_in
      * source when non-nil).  The TCS dispatcher re-populates it. */
-    _tessellation.tcsOutputBuffer = nil;
+    (void)mglRendererBackendSetTcsOutputBuffer(_backend, NULL);
     _tessellation.tcsOutputOffset = 0u;
     _tessellation.tcsOutputStride = 0u;
     _tessellation.tcsOutVertices = 0u;
@@ -2769,16 +2769,18 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
     }
 
     if (nativeTES && !tcsProgram) {
-        _tessellation.tcsOutputBuffer =
+        MGLMetalBufferRef tessVertexCaptureBuffer =
             (__bridge MGLMetalBufferRef)
                 mglRendererBackendGetTessVertexCaptureBuffer(_backend);
+        (void)mglRendererBackendSetTcsOutputBuffer(
+            _backend, (__bridge void *)tessVertexCaptureBuffer);
         _tessellation.tcsOutputOffset =
             _tessellation.tessVertexCaptureOffset;
         _tessellation.tcsOutputStride = contract.per_vertex_out_stride;
         _tessellation.tcsOutVertices = patchVertices;
         _tessellation.tessFactorBuffer = mglCachedDefaultTessFactorBuffer(
             _device, _backend, MGL_STATE(drawCtx), patchCount);
-        if (!_tessellation.tcsOutputBuffer ||
+        if (!tessVertexCaptureBuffer ||
             !_tessellation.tessFactorBuffer) {
             nativeTES = NO;
         }
@@ -2803,11 +2805,14 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
         }
     }
 
+    MGLMetalBufferRef tcsOutputBuffer = (__bridge MGLMetalBufferRef)
+        mglRendererBackendGetTcsOutputBuffer(_backend);
+
     if (nativeTES) {
         MGLMetalBufferRef nativeFactors = mglNativeTessFactorBuffer(
             _device, _tessellation.tessFactorBuffer,
             tesProgram->tess_gen_mode, patchCount);
-        if (!nativeFactors || !_tessellation.tcsOutputBuffer ||
+        if (!nativeFactors || !tcsOutputBuffer ||
             _tessellation.tcsOutputStride < MGL_AIR_PER_VERTEX_STRIDE) {
             NSLog(@"MGL TESS ERROR: invalid native TES buffers program=%u",
                   (unsigned)tesProgram->name);
@@ -2852,15 +2857,15 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
                     _tessellation.tessVertexCaptureOffset +
                     (NSUInteger)i * instanceStrideBytes;
                 mglDrawSupportSetVertexBuffer(
-                    _renderPassManager.state->currentRenderEncoderOwner, _tessellation.tcsOutputBuffer,
+                    _renderPassManager.state->currentRenderEncoderOwner, tcsOutputBuffer,
                     instanceOffset, 0u);
-                [self recordLastBoundVertexBuffer:_tessellation.tcsOutputBuffer
+                [self recordLastBoundVertexBuffer:tcsOutputBuffer
                                            offset:instanceOffset
                                           atIndex:0u];
                 mglDrawSupportSetVertexBuffer(
-                    _renderPassManager.state->currentRenderEncoderOwner, _tessellation.tcsOutputBuffer,
+                    _renderPassManager.state->currentRenderEncoderOwner, tcsOutputBuffer,
                     instanceOffset, 30u);
-                [self recordLastBoundVertexBuffer:_tessellation.tcsOutputBuffer
+                [self recordLastBoundVertexBuffer:tcsOutputBuffer
                                            offset:instanceOffset
                                           atIndex:30u];
                 GLuint patchInfo[2] = {patchVertices, _tessellation.tcsOutVertices};
@@ -2897,10 +2902,10 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
                         const NSUInteger patchOffset =
                             instanceOffset + (NSUInteger)p * cpcStride;
                         mglDrawSupportSetVertexBuffer(
-                            _renderPassManager.state->currentRenderEncoderOwner, _tessellation.tcsOutputBuffer,
+                            _renderPassManager.state->currentRenderEncoderOwner, tcsOutputBuffer,
                             patchOffset, 0u);
                         [self recordLastBoundVertexBuffer:
-                                  _tessellation.tcsOutputBuffer
+                                  tcsOutputBuffer
                                                    offset:patchOffset
                                                   atIndex:0u];
                         mglDrawSupportDrawPatches(

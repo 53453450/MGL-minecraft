@@ -9033,6 +9033,16 @@ static int verifyRendererBackend(id<MTLDevice> device) {
         return 1;
     }
     printf("RENDERER_BACKEND_TCS_PATCH_OUT_OK\n");
+    if (mglRendererBackendSetTcsOutputBuffer(
+            backend, (__bridge void *)fallbackBuffer) != 0 ||
+        mglRendererBackendGetTcsOutputBuffer(backend) !=
+            (__bridge void *)fallbackBuffer ||
+        mglRendererBackendSetTcsOutputBuffer(backend, NULL) != 0 ||
+        mglRendererBackendGetTcsOutputBuffer(backend) != NULL) {
+        fprintf(stderr, "FAIL: renderer backend TCS output\n");
+        return 1;
+    }
+    printf("RENDERER_BACKEND_TCS_OUTPUT_OK\n");
     if (mglRendererBackendSetFallbackResource(
             backend, MGL_RENDERER_BACKEND_FALLBACK_SAMPLED_TEXTURE,
             (__bridge void *)fallbackTexture) != 0 ||
