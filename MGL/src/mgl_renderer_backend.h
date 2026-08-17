@@ -37,6 +37,14 @@ typedef enum MGLRendererBackendPassthroughKind {
     MGL_RENDERER_BACKEND_PASSTHROUGH_TESS_EVALUATION = 1,
 } MGLRendererBackendPassthroughKind;
 
+typedef enum MGLRendererBackendFallbackResourceKind {
+    MGL_RENDERER_BACKEND_FALLBACK_SAMPLED_TEXTURE = 0,
+    MGL_RENDERER_BACKEND_FALLBACK_CUBE_SAMPLED_TEXTURE = 1,
+    MGL_RENDERER_BACKEND_FALLBACK_TEXTURE_BUFFER_STORAGE = 2,
+    MGL_RENDERER_BACKEND_FALLBACK_SINT_TEXTURE_BUFFER = 3,
+    MGL_RENDERER_BACKEND_FALLBACK_SAMPLER = 4,
+} MGLRendererBackendFallbackResourceKind;
+
 typedef struct MGLRendererBackendCreateInfo {
     void *objc_device;
     GLMContext context;
@@ -97,6 +105,13 @@ int mglRendererBackendGetSamplerSnapshotState(
 int mglRendererBackendPutSamplerSnapshotState(
     MGLRendererBackendHandle *backend,
     const MGLSamplerSnapshotKey *key, void *state);
+int mglRendererBackendSetFallbackResource(
+    MGLRendererBackendHandle *backend,
+    MGLRendererBackendFallbackResourceKind kind, void *resource);
+/* Fallback resource getters return borrowed references owned by the backend. */
+void *mglRendererBackendGetFallbackResource(
+    const MGLRendererBackendHandle *backend,
+    MGLRendererBackendFallbackResourceKind kind);
 int mglRendererBackendIsDestroying(
     const MGLRendererBackendHandle *backend);
 void *mglRendererBackendGetOwner(const MGLRendererBackendHandle *backend,

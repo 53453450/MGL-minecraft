@@ -144,6 +144,11 @@ struct MGLRendererBackendHandle {
     MGLRendererBackendPassthroughCache geometry_passthrough;
     MGLRendererBackendPassthroughCache tess_evaluation_passthrough;
     MGLRendererBackendSamplerSnapshotCache sampler_snapshots;
+    MTL::Texture *fallback_sampled_texture = nullptr;
+    MTL::Texture *fallback_cube_sampled_texture = nullptr;
+    MTL::Buffer *fallback_texture_buffer_storage = nullptr;
+    MTL::Texture *fallback_sint_texture_buffer = nullptr;
+    MTL::SamplerState *fallback_sampler = nullptr;
     bool renderer_initialized = false;
     bool shutdown_started = false;
     bool destroying = false;
@@ -202,6 +207,26 @@ static void mglRendererBackendReleaseOwnedState(
         }
     }
     backend->sampler_snapshots = {};
+    if (backend->fallback_sampled_texture) {
+        backend->fallback_sampled_texture->release();
+        backend->fallback_sampled_texture = nullptr;
+    }
+    if (backend->fallback_cube_sampled_texture) {
+        backend->fallback_cube_sampled_texture->release();
+        backend->fallback_cube_sampled_texture = nullptr;
+    }
+    if (backend->fallback_texture_buffer_storage) {
+        backend->fallback_texture_buffer_storage->release();
+        backend->fallback_texture_buffer_storage = nullptr;
+    }
+    if (backend->fallback_sint_texture_buffer) {
+        backend->fallback_sint_texture_buffer->release();
+        backend->fallback_sint_texture_buffer = nullptr;
+    }
+    if (backend->fallback_sampler) {
+        backend->fallback_sampler->release();
+        backend->fallback_sampler = nullptr;
+    }
     mglRenderCppDestroyCommandQueueOwner(&backend->command_queue_owner);
     mglRenderCppBindingDestroy(backend->binding_owner);
     backend->binding_owner = nullptr;
@@ -587,6 +612,60 @@ extern "C" int mglRendererBackendPutSamplerSnapshotState(
         return -1;
     }
     return 0;
+}
+
+extern "C" int mglRendererBackendSetFallbackResource(
+    MGLRendererBackendHandle *backend,
+    MGLRendererBackendFallbackResourceKind kind, void *resource)
+{
+    if (!backend) return -1;
+    std::lock_guard<std::mutex> lock(backend->mutex);
+    if (backend->destroying) return -1;
+    switch (kind) {
+        case MGL_RENDERER_BACKEND_FALLBACK_SAMPLED_TEXTURE:
+            mglRendererBackendReplaceObject(
+                backend->fallback_sampled_texture, resource);
+            return 0;
+        case MGL_RENDERER_BACKEND_FALLBACK_CUBE_SAMPLED_TEXTURE:
+            mglRendererBackendReplaceObject(
+                backend->fallback_cube_sampled_texture, resource);
+            return 0;
+        case MGL_RENDERER_BACKEND_FALLBACK_TEXTURE_BUFFER_STORAGE:
+            mglRendererBackendReplaceObject(
+                backend->fallback_texture_buffer_storage, resource);
+            return 0;
+        case MGL_RENDERER_BACKEND_FALLBACK_SINT_TEXTURE_BUFFER:
+            mglRendererBackendReplaceObject(
+                backend->fallback_sint_texture_buffer, resource);
+            return 0;
+        case MGL_RENDERER_BACKEND_FALLBACK_SAMPLER:
+            mglRendererBackendReplaceObject(
+                backend->fallback_sampler, resource);
+            return 0;
+    }
+    return -1;
+}
+
+extern "C" void *mglRendererBackendGetFallbackResource(
+    const MGLRendererBackendHandle *backend,
+    MGLRendererBackendFallbackResourceKind kind)
+{
+    if (!backend) return nullptr;
+    std::lock_guard<std::mutex> lock(
+        const_cast<MGLRendererBackendHandle *>(backend)->mutex);
+    switch (kind) {
+        case MGL_RENDERER_BACKEND_FALLBACK_SAMPLED_TEXTURE:
+            return backend->fallback_sampled_texture;
+        case MGL_RENDERER_BACKEND_FALLBACK_CUBE_SAMPLED_TEXTURE:
+            return backend->fallback_cube_sampled_texture;
+        case MGL_RENDERER_BACKEND_FALLBACK_TEXTURE_BUFFER_STORAGE:
+            return backend->fallback_texture_buffer_storage;
+        case MGL_RENDERER_BACKEND_FALLBACK_SINT_TEXTURE_BUFFER:
+            return backend->fallback_sint_texture_buffer;
+        case MGL_RENDERER_BACKEND_FALLBACK_SAMPLER:
+            return backend->fallback_sampler;
+    }
+    return nullptr;
 }
 
 extern "C" int mglRendererBackendIsDestroying(

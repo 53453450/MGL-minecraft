@@ -8834,6 +8834,8 @@ static int verifyRendererBackend(id<MTLDevice> device) {
                                                       mipmapped:NO];
     id<MTLTexture> fallbackTexture = [device newTextureWithDescriptor:textureDescriptor];
     id<MTLTexture> transientTexture = [device newTextureWithDescriptor:textureDescriptor];
+    id<MTLBuffer> fallbackBuffer =
+        [device newBufferWithLength:256 options:MTLResourceStorageModeShared];
     MTLSamplerDescriptor *samplerDescriptor = [[MTLSamplerDescriptor alloc] init];
     id<MTLSamplerState> nearestSampler =
         [device newSamplerStateWithDescriptor:samplerDescriptor];
@@ -8848,7 +8850,7 @@ static int verifyRendererBackend(id<MTLDevice> device) {
         [device newDepthStencilStateWithDescriptor:depthDescriptor];
     uint64_t transientWidth = 0;
     uint64_t transientHeight = 0;
-    if (!fallbackTexture || !transientTexture || !nearestSampler ||
+    if (!fallbackTexture || !transientTexture || !fallbackBuffer || !nearestSampler ||
         !linearSampler || !clearDepthState ||
         mglRendererBackendSetFallbackRenderTargetTexture(
             backend, (__bridge void *)fallbackTexture) != 0 ||
@@ -8951,6 +8953,40 @@ static int verifyRendererBackend(id<MTLDevice> device) {
         return 1;
     }
     printf("RENDERER_BACKEND_SAMPLER_SNAPSHOT_CACHE_OK\n");
+    if (mglRendererBackendSetFallbackResource(
+            backend, MGL_RENDERER_BACKEND_FALLBACK_SAMPLED_TEXTURE,
+            (__bridge void *)fallbackTexture) != 0 ||
+        mglRendererBackendSetFallbackResource(
+            backend, MGL_RENDERER_BACKEND_FALLBACK_CUBE_SAMPLED_TEXTURE,
+            (__bridge void *)transientTexture) != 0 ||
+        mglRendererBackendSetFallbackResource(
+            backend, MGL_RENDERER_BACKEND_FALLBACK_TEXTURE_BUFFER_STORAGE,
+            (__bridge void *)fallbackBuffer) != 0 ||
+        mglRendererBackendSetFallbackResource(
+            backend, MGL_RENDERER_BACKEND_FALLBACK_SINT_TEXTURE_BUFFER,
+            (__bridge void *)fallbackTexture) != 0 ||
+        mglRendererBackendSetFallbackResource(
+            backend, MGL_RENDERER_BACKEND_FALLBACK_SAMPLER,
+            (__bridge void *)nearestSampler) != 0 ||
+        mglRendererBackendGetFallbackResource(
+            backend, MGL_RENDERER_BACKEND_FALLBACK_SAMPLED_TEXTURE) !=
+            (__bridge void *)fallbackTexture ||
+        mglRendererBackendGetFallbackResource(
+            backend, MGL_RENDERER_BACKEND_FALLBACK_CUBE_SAMPLED_TEXTURE) !=
+            (__bridge void *)transientTexture ||
+        mglRendererBackendGetFallbackResource(
+            backend, MGL_RENDERER_BACKEND_FALLBACK_TEXTURE_BUFFER_STORAGE) !=
+            (__bridge void *)fallbackBuffer ||
+        mglRendererBackendGetFallbackResource(
+            backend, MGL_RENDERER_BACKEND_FALLBACK_SINT_TEXTURE_BUFFER) !=
+            (__bridge void *)fallbackTexture ||
+        mglRendererBackendGetFallbackResource(
+            backend, MGL_RENDERER_BACKEND_FALLBACK_SAMPLER) !=
+            (__bridge void *)nearestSampler) {
+        fprintf(stderr, "FAIL: renderer backend fallback resources\n");
+        return 1;
+    }
+    printf("RENDERER_BACKEND_FALLBACK_RESOURCES_OK\n");
     MGLRendererBackendShutdownResult shutdown = {};
     if (mglRendererBackendShutdown(backend, &shutdown) != 0) {
         fprintf(stderr, "FAIL: renderer backend shutdown\n");

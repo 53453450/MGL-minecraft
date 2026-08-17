@@ -5700,8 +5700,11 @@ static void mglTextureCopyTextureToBuffer(
 
 - (MGLMetalTextureRef)fallbackSampledTexture
 {
-    if (_resourceFallback.fallbackSampledTexture || !kMGLEnableSampledTextureFallback) {
-        return _resourceFallback.fallbackSampledTexture;
+    MGLMetalTextureRef cached = (__bridge MGLMetalTextureRef)
+        mglRendererBackendGetFallbackResource(
+            _backend, MGL_RENDERER_BACKEND_FALLBACK_SAMPLED_TEXTURE);
+    if (cached || !kMGLEnableSampledTextureFallback) {
+        return cached;
     }
 
     MTLTextureDescriptor *desc =
@@ -5712,26 +5715,33 @@ static void mglTextureCopyTextureToBuffer(
     desc.usage = MTLTextureUsageShaderRead;
     desc.storageMode = MTLStorageModeShared;
 
-    _resourceFallback.fallbackSampledTexture =
-        mglTextureCreateTexture(_device, desc);
-    if (_resourceFallback.fallbackSampledTexture) {
+    MGLMetalTextureRef texture = mglTextureCreateTexture(_device, desc);
+    if (texture) {
         uint32_t pixel = 0xff000000u;
         mglTextureReplaceRegion(
-            _resourceFallback.fallbackSampledTexture,
+            texture,
             MTLRegionMake2D(0, 0, 1, 1), 0, 0, &pixel,
             sizeof(pixel), 0, NO);
+        if (mglRendererBackendSetFallbackResource(
+                _backend, MGL_RENDERER_BACKEND_FALLBACK_SAMPLED_TEXTURE,
+                (__bridge void *)texture) != 0) {
+            return nil;
+        }
         NSLog(@"MGL INFO: Created 1x1 fallback sampled texture for missing shader resources");
     } else {
         NSLog(@"MGL ERROR: Failed to create fallback sampled texture");
     }
 
-    return _resourceFallback.fallbackSampledTexture;
+    return texture;
 }
 
 - (MGLMetalTextureRef)fallbackCubeSampledTexture
 {
-    if (_resourceFallback.fallbackCubeSampledTexture || !kMGLEnableSampledTextureFallback) {
-        return _resourceFallback.fallbackCubeSampledTexture;
+    MGLMetalTextureRef cached = (__bridge MGLMetalTextureRef)
+        mglRendererBackendGetFallbackResource(
+            _backend, MGL_RENDERER_BACKEND_FALLBACK_CUBE_SAMPLED_TEXTURE);
+    if (cached || !kMGLEnableSampledTextureFallback) {
+        return cached;
     }
 
     MTLTextureDescriptor *desc = [MTLTextureDescriptor new];
@@ -5745,43 +5755,60 @@ static void mglTextureCopyTextureToBuffer(
     desc.usage = MTLTextureUsageShaderRead;
     desc.storageMode = MTLStorageModeShared;
 
-    _resourceFallback.fallbackCubeSampledTexture =
-        mglTextureCreateTexture(_device, desc);
-    if (_resourceFallback.fallbackCubeSampledTexture) {
+    MGLMetalTextureRef texture = mglTextureCreateTexture(_device, desc);
+    if (texture) {
         uint32_t pixel = 0xff000000u;
         for (NSUInteger face = 0; face < 6; face++) {
             mglTextureReplaceRegion(
-                _resourceFallback.fallbackCubeSampledTexture,
+                texture,
                 MTLRegionMake2D(0, 0, 1, 1), 0, face, &pixel,
                 sizeof(pixel), sizeof(pixel), YES);
+        }
+        if (mglRendererBackendSetFallbackResource(
+                _backend, MGL_RENDERER_BACKEND_FALLBACK_CUBE_SAMPLED_TEXTURE,
+                (__bridge void *)texture) != 0) {
+            return nil;
         }
         NSLog(@"MGL INFO: Created 1x1 fallback cube sampled texture for missing shader resources");
     } else {
         NSLog(@"MGL ERROR: Failed to create fallback cube sampled texture");
     }
 
-    return _resourceFallback.fallbackCubeSampledTexture;
+    return texture;
 }
 
 - (MGLMetalTextureRef)fallbackTextureBufferSampledTexture
 {
-    if (_resourceFallback.fallbackSintTextureBuffer || !kMGLEnableSampledTextureFallback) {
-        return _resourceFallback.fallbackSintTextureBuffer;
+    MGLMetalTextureRef cachedTexture = (__bridge MGLMetalTextureRef)
+        mglRendererBackendGetFallbackResource(
+            _backend, MGL_RENDERER_BACKEND_FALLBACK_SINT_TEXTURE_BUFFER);
+    if (cachedTexture || !kMGLEnableSampledTextureFallback) {
+        return cachedTexture;
     }
 
     static const NSUInteger kFallbackTexelCount = 64;
     static const NSUInteger kFallbackBytesPerTexel = 4;
 
-    if (!_resourceFallback.fallbackTextureBufferStorage) {
-        _resourceFallback.fallbackTextureBufferStorage = mglTextureCreateBuffer(
+    MGLMetalBufferRef storage = (__bridge MGLMetalBufferRef)
+        mglRendererBackendGetFallbackResource(
+            _backend, MGL_RENDERER_BACKEND_FALLBACK_TEXTURE_BUFFER_STORAGE);
+    if (!storage) {
+        storage = mglTextureCreateBuffer(
             _device, kFallbackTexelCount * kFallbackBytesPerTexel,
             MTLResourceStorageModeShared);
-        if (_resourceFallback.fallbackTextureBufferStorage && _resourceFallback.fallbackTextureBufferStorage.contents) {
-            memset(_resourceFallback.fallbackTextureBufferStorage.contents, 0, kFallbackTexelCount * kFallbackBytesPerTexel);
+        if (storage && storage.contents) {
+            memset(storage.contents, 0,
+                   kFallbackTexelCount * kFallbackBytesPerTexel);
+        }
+        if (storage && mglRendererBackendSetFallbackResource(
+                _backend,
+                MGL_RENDERER_BACKEND_FALLBACK_TEXTURE_BUFFER_STORAGE,
+                (__bridge void *)storage) != 0) {
+            storage = nil;
         }
     }
 
-    if (!_resourceFallback.fallbackTextureBufferStorage) {
+    if (!storage) {
         NSLog(@"MGL ERROR: Failed to create fallback texture-buffer backing storage");
         return nil;
     }
@@ -5797,20 +5824,24 @@ static void mglTextureCopyTextureToBuffer(
     desc.storageMode = MTLStorageModeShared;
 
     @try {
-        _resourceFallback.fallbackSintTextureBuffer =
-            mglTextureCreateBufferTexture(
-                _resourceFallback.fallbackTextureBufferStorage, desc, 0,
-                kFallbackTexelCount * kFallbackBytesPerTexel);
+        cachedTexture = mglTextureCreateBufferTexture(
+            storage, desc, 0,
+            kFallbackTexelCount * kFallbackBytesPerTexel);
     } @catch (NSException *exception) {
         NSLog(@"MGL ERROR: Failed to create fallback texture-buffer texture: %@", exception);
-        _resourceFallback.fallbackSintTextureBuffer = nil;
+        cachedTexture = nil;
     }
 
-    if (_resourceFallback.fallbackSintTextureBuffer) {
+    if (cachedTexture && mglRendererBackendSetFallbackResource(
+            _backend, MGL_RENDERER_BACKEND_FALLBACK_SINT_TEXTURE_BUFFER,
+            (__bridge void *)cachedTexture) != 0) {
+        cachedTexture = nil;
+    }
+    if (cachedTexture) {
         NSLog(@"MGL INFO: Created fallback signed integer texture buffer for missing/invalid texel-buffer resources");
     }
 
-    return _resourceFallback.fallbackSintTextureBuffer;
+    return cachedTexture;
 }
 
 - (MGLMetalTextureRef)fallbackSampledTextureForExpectedType:(MTLTextureType)expectedType
@@ -6142,8 +6173,11 @@ static void mglTextureCopyTextureToBuffer(
 
 - (MGLMetalSamplerStateRef)fallbackSamplerState
 {
-    if (_resourceFallback.fallbackSamplerState) {
-        return _resourceFallback.fallbackSamplerState;
+    MGLMetalSamplerStateRef cached = (__bridge MGLMetalSamplerStateRef)
+        mglRendererBackendGetFallbackResource(
+            _backend, MGL_RENDERER_BACKEND_FALLBACK_SAMPLER);
+    if (cached) {
+        return cached;
     }
 
     MTLSamplerDescriptor *desc = [MTLSamplerDescriptor new];
@@ -6154,13 +6188,17 @@ static void mglTextureCopyTextureToBuffer(
     desc.tAddressMode = MTLSamplerAddressModeClampToEdge;
     desc.rAddressMode = MTLSamplerAddressModeClampToEdge;
 
-    _resourceFallback.fallbackSamplerState =
-        mglTextureCreateSampler(_device, desc);
-    if (!_resourceFallback.fallbackSamplerState) {
+    MGLMetalSamplerStateRef sampler = mglTextureCreateSampler(_device, desc);
+    if (!sampler) {
         NSLog(@"MGL ERROR: Failed to create fallback sampler state");
+        return nil;
     }
-
-    return _resourceFallback.fallbackSamplerState;
+    if (mglRendererBackendSetFallbackResource(
+            _backend, MGL_RENDERER_BACKEND_FALLBACK_SAMPLER,
+            (__bridge void *)sampler) != 0) {
+        return nil;
+    }
+    return sampler;
 }
 
 - (void)traceSampledTextureReadback:(MGLMetalTextureRef)texture
