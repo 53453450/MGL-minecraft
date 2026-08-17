@@ -5,11 +5,6 @@
 #import "MGLRenderer+Blit_Private.h"
 #include "mgl_render_cpp.h"
 
-static BOOL mglBindingUsesMetalCpp(void)
-{
-    return mglRenderCppGetDevice() != NULL;
-}
-
 void mglRendererCallbackBindTexture(void *runtime_context,
                                     GLMContext glm_ctx,
                                     Texture *texture)
@@ -19,104 +14,17 @@ void mglRendererCallbackBindTexture(void *runtime_context,
     (void)[renderer bindMTLTexture:texture];
 }
 
-static MGLMetalBufferRef mglBindingCreateBuffer(MGLMetalDeviceRef device,
-                                            NSUInteger length,
-                                            MTLResourceOptions options)
-{
-    if (mglBindingUsesMetalCpp()) {
-        void *buffer = NULL;
-        if (mglRenderCppCreateBuffer(length, options, NULL, &buffer) == 0 &&
-            buffer) {
-            return (__bridge_transfer MGLMetalBufferRef)buffer;
-        }
-    }
-    return [device newBufferWithLength:length options:options];
-}
-
-static MGLMetalBufferRef mglBindingCreateBufferWithBytes(
-    MGLMetalDeviceRef device,
-    const void *bytes,
-    NSUInteger length,
-    MTLResourceOptions options)
-{
-    if (mglBindingUsesMetalCpp()) {
-        void *buffer = NULL;
-        if (mglRenderCppCreateBufferWithBytes(bytes, length, options, NULL,
-                                              &buffer) == 0 && buffer) {
-            return (__bridge_transfer MGLMetalBufferRef)buffer;
-        }
-    }
-    return [device newBufferWithBytes:bytes length:length options:options];
-}
-
-static MGLMetalBufferRef mglBindingCreateBufferWithBytesNoCopy(
-    MGLMetalDeviceRef device,
-    const void *bytes,
-    NSUInteger length,
-    MTLResourceOptions options,
-    BOOL deallocateVM)
-{
-    if (mglBindingUsesMetalCpp()) {
-        void *buffer = NULL;
-        if (mglRenderCppCreateBufferWithBytesNoCopy(
-                bytes, length, options, NULL, deallocateVM ? 1 : 0,
-                &buffer) == 0 && buffer) {
-            return (__bridge_transfer MGLMetalBufferRef)buffer;
-        }
-    }
-    return [device newBufferWithBytesNoCopy:(void *)bytes
-                                      length:length
-                                     options:options
-                                 deallocator:deallocateVM ? ^(void *pointer, NSUInteger size) {
-        kern_return_t result = vm_deallocate((vm_map_t)mach_task_self(),
-                                             (vm_address_t)pointer,
-                                             (vm_size_t)size);
-        if (result != KERN_SUCCESS) {
-            NSLog(@"MGL WARNING: vm_deallocate failed for Metal no-copy buffer err=%d ptr=%p len=%lu",
-                  result, pointer, (unsigned long)size);
-        }
-    } : nil];
-}
-
 static MGLMetalSamplerStateRef mglBindingCreateSampler(
     MGLMetalDeviceRef device,
     MTLSamplerDescriptor *descriptor)
 {
-    if (mglBindingUsesMetalCpp()) {
-        void *sampler = NULL;
-        if (mglRenderCppCreateSampler((__bridge void *)descriptor,
-                                      &sampler) == 0 && sampler) {
-            return (__bridge_transfer MGLMetalSamplerStateRef)sampler;
-        }
+    (void)device;
+    void *sampler = NULL;
+    if (mglRenderCppCreateSampler((__bridge void *)descriptor,
+                                  &sampler) == 0 && sampler) {
+        return (__bridge_transfer MGLMetalSamplerStateRef)sampler;
     }
-    return [device newSamplerStateWithDescriptor:descriptor];
-}
-
-static void mglBindingCopyTexture(MGLMetalBlitCommandEncoderRef encoder,
-                                  MGLMetalTextureRef source,
-                                  NSUInteger sourceSlice,
-                                  NSUInteger sourceLevel,
-                                  MTLOrigin sourceOrigin,
-                                  MTLSize sourceSize,
-                                  MGLMetalTextureRef destination,
-                                  NSUInteger destinationSlice,
-                                  NSUInteger destinationLevel,
-                                  MTLOrigin destinationOrigin)
-{
-    [encoder copyFromTexture:source
-                 sourceSlice:sourceSlice
-                 sourceLevel:sourceLevel
-                sourceOrigin:sourceOrigin
-                  sourceSize:sourceSize
-                   toTexture:destination
-            destinationSlice:destinationSlice
-            destinationLevel:destinationLevel
-           destinationOrigin:destinationOrigin];
-}
-
-static void mglBindingEndBlitEncoder(MGLMetalBlitCommandEncoderRef encoder)
-{
-    [encoder endEncoding];
+    return nil;
 }
 
 @implementation MGLRenderer (Binding)
@@ -128,142 +36,15 @@ static void mglBindingEndBlitEncoder(MGLMetalBlitCommandEncoderRef encoder)
     METAL_UNLOCK();
 }
 
-- (void) bindMTLBufferLocked:(Buffer *) ptr
+- (void) bindMTLBufferLocked:(Buffer *)ptr
 {
-    MTLResourceOptions options;
-    const size_t kMaxSafeBufferSize = (size_t)2 * 1024 * 1024 * 1024; // 2 GiB safety cap
-
-    if (mglBindingUsesMetalCpp()) {
-        char bindError[256] = {0};
-        int bindResult = mglRenderCppBindBufferStorage(
-            ptr, bindError, sizeof(bindError));
-        if (bindResult == MGL_RENDER_CPP_BUFFER_BOUND) {
-            return;
-        }
-        if (bindResult == MGL_RENDER_CPP_BUFFER_ERROR) {
-            NSLog(@"MGL ERROR: Metal-cpp buffer bind failed buffer=%u: %s",
-                  ptr ? (unsigned)ptr->name : 0u,
-                  bindError[0] ? bindError : "?");
-            return;
-        }
-    }
-
-    mglMetalCountCreate(MGLMetalKindBuffer);
-
-    if (!ptr) {
-        NSLog(@"MGL ERROR: bindMTLBuffer called with NULL buffer");
-        return;
-    }
-
-    // Corrupted buffer sizes can crash Metal validation immediately.
-    if (ptr->size == 0 || ptr->size > kMaxSafeBufferSize) {
-        NSLog(@"MGL ERROR: Refusing to create Metal buffer with suspicious size=%zu for buffer %u",
-              (size_t)ptr->size, ptr->name);
-        ptr->data.mtl_data = NULL;
-        return;
-    }
-
-    options = MTLResourceCPUCacheModeDefaultCache | MTLResourceStorageModeShared;
-
-    // ways we will only write to this
-    if ((ptr->storage_flags & GL_MAP_READ_BIT) == 0)
-    {
-        options |= MTLResourceCPUCacheModeWriteCombined;
-    }
-
-    if (ptr->transient_batch_buffer)
-    {
-        if (!ptr->data.buffer_data) {
-            NSLog(@"MGL ERROR: transient batch buffer has no CPU backing (size=%zu)", (size_t)ptr->size);
-            ptr->data.mtl_data = NULL;
-            return;
-        }
-
-        MGLMetalBufferRef buffer = mglBindingCreateBufferWithBytes(
-            _device, (void *)(uintptr_t)ptr->data.buffer_data,
-            (NSUInteger)ptr->size, options);
-        if (!buffer) {
-            NSLog(@"MGL ERROR: Failed to create transient batch Metal buffer (size=%zu)", (size_t)ptr->size);
-            ptr->data.mtl_data = NULL;
-            return;
-        }
-
-        ptr->data.mtl_data = (void *)CFBridgingRetain(buffer);
-        return;
-    }
-
-    if (ptr->storage_flags & GL_CLIENT_STORAGE_BIT)
-    {
-        if (!ptr->data.buffer_data) {
-            NSLog(@"MGL ERROR: GL_CLIENT_STORAGE_BIT set but buffer_data is NULL for buffer %u", ptr->name);
-            ptr->data.mtl_data = NULL;
-            return;
-        }
-
-        MGLMetalBufferRef buffer = mglBindingCreateBufferWithBytesNoCopy(
-            _device, (void *)(ptr->data.buffer_data), ptr->size, options, YES);
-
-        ptr->data.mtl_data = (void *)CFBridgingRetain(buffer);
-        ptr->data.mtl_owns_buffer_data = buffer ? GL_TRUE : GL_FALSE;
-    }
-    else
-    {
-        MGLMetalBufferRef buffer;
-        
-        if (ptr->data.buffer_data)
-        {
-            size_t safeBufferSize = ptr->data.buffer_size;
-            if (safeBufferSize == 0 || safeBufferSize > kMaxSafeBufferSize) {
-                safeBufferSize = ptr->size;
-            }
-
-            if ((ptr->immutable_storage & BUFFER_IMMUTABLE_STORAGE_FLAG) &&
-                (ptr->storage_flags & GL_MAP_PERSISTENT_BIT)) {
-                /*
-                 * A persistent GL mapping must keep returning the same CPU
-                 * address.  Wrap that VM allocation directly so explicit
-                 * range flushes update the Metal resource in place instead of
-                 * allocating and copying a full-buffer snapshot per flush.
-                 * The Metal object owns the VM range so in-flight command
-                 * buffers keep it alive after GL deletion or context teardown.
-                 */
-                buffer = mglBindingCreateBufferWithBytesNoCopy(
-                    _device, (void *)ptr->data.buffer_data,
-                    safeBufferSize, options, YES);
-                ptr->data.mtl_owns_buffer_data = buffer ? GL_TRUE : GL_FALSE;
-            } else {
-                buffer = mglBindingCreateBufferWithBytes(
-                    _device, (void *)ptr->data.buffer_data,
-                    safeBufferSize, options);
-                ptr->data.mtl_owns_buffer_data = GL_FALSE;
-            }
-            if (!buffer) {
-                NSLog(@"MGL ERROR: Failed to create Metal buffer from CPU backing (size=%zu, buffer=%u)",
-                      safeBufferSize, ptr->name);
-                ptr->data.mtl_data = NULL;
-                return;
-            }
-        }
-        else
-        {
-            buffer = mglBindingCreateBuffer(_device, ptr->size, options);
-            if (!buffer) {
-                NSLog(@"MGL ERROR: Failed to allocate Metal buffer with length=%zu (buffer=%u)",
-                      (size_t)ptr->size, ptr->name);
-                ptr->data.mtl_data = NULL;
-                return;
-            }
-
-            ptr->data.buffer_data = (vm_address_t)NULL;
-        }
-
-        ptr->data.mtl_data = (void *)CFBridgingRetain(buffer);
-        if ((ptr->storage_flags & GL_MAP_PERSISTENT_BIT) &&
-            (ptr->data.dirty_bits & DIRTY_BUFFER_DATA) &&
-            buffer.length > 0 &&
-            buffer.storageMode == MTLStorageModeManaged) {
-            [buffer didModifyRange:NSMakeRange(0, buffer.length)];
-        }
+    char bindError[256] = {0};
+    int bindResult = mglRenderCppBindBufferStorage(
+        ptr, bindError, sizeof(bindError));
+    if (bindResult != MGL_RENDER_CPP_BUFFER_BOUND) {
+        NSLog(@"MGL ERROR: Metal-cpp buffer bind failed buffer=%u: %s",
+              ptr ? (unsigned)ptr->name : 0u,
+              bindError[0] ? bindError : "?");
     }
 }
 
@@ -325,40 +106,14 @@ static void mglBindingEndBlitEncoder(MGLMetalBlitCommandEncoderRef encoder)
                 // is_render_target transition.
                 [self endRenderEncodingLocked];
                 if ([self ensureWritableCommandBufferLocked:"is_render_target_blit"]) {
-                    if (mglBindingUsesMetalCpp()) {
-                        if (mglRenderCppCopyMatchingTextureSubresourcesForCommandBufferOwner(
-                                _renderPassManager.state->currentCommandBufferOwner,
-                                (__bridge void *)oldTexture,
-                                (__bridge void *)newTexture) != 0) {
-                            NSLog(@"MGL ERROR: Metal-cpp render-target preservation blit failed texture=%u",
-                                  tex->name);
-                            tex->dirty_bits |= DIRTY_TEXTURE_DATA;
-                            return false;
-                        }
-                    } else {
-                        MGLMetalBlitCommandEncoderRef blit =
-                            mglRenderCreateBlitEncoderForCommandBufferOwner(
-                                _renderPassManager.state->currentCommandBufferOwner);
-                        if (!blit) {
-                            tex->dirty_bits |= DIRTY_TEXTURE_DATA;
-                            return false;
-                        }
-                        NSUInteger copySlices = MIN(oldTexture.arrayLength, newTexture.arrayLength);
-                        NSUInteger copyLevels = MIN(oldTexture.mipmapLevelCount, newTexture.mipmapLevelCount);
-                        for (NSUInteger slice = 0; slice < copySlices; slice++) {
-                            for (NSUInteger level = 0; level < copyLevels; level++) {
-                                NSUInteger lw = (oldTexture.width >> level);
-                                NSUInteger lh = (oldTexture.height >> level);
-                                if (lw == 0 || lh == 0) continue;
-                                MTLSize levelSize = MTLSizeMake(lw, lh, 1);
-                                mglBindingCopyTexture(
-                                    blit, oldTexture, slice, level,
-                                    MTLOriginMake(0, 0, 0), levelSize,
-                                    newTexture, slice, level,
-                                    MTLOriginMake(0, 0, 0));
-                            }
-                        }
-                        mglBindingEndBlitEncoder(blit);
+                    if (mglRenderCppCopyMatchingTextureSubresourcesForCommandBufferOwner(
+                            _renderPassManager.state->currentCommandBufferOwner,
+                            (__bridge void *)oldTexture,
+                            (__bridge void *)newTexture) != 0) {
+                        NSLog(@"MGL ERROR: Metal-cpp render-target preservation blit failed texture=%u",
+                              tex->name);
+                        tex->dirty_bits |= DIRTY_TEXTURE_DATA;
+                        return false;
                     }
                 }
                 tex->mtl_data = (void *)CFBridgingRetain(newTexture);
