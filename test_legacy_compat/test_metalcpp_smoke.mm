@@ -2508,11 +2508,6 @@ static int verifyCommandBufferOwner(void) {
     MGLRenderCppRenderPassState renderPass =
         renderPassStateWithColorTarget(
             target, MTLLoadActionClear, MTLStoreActionStore);
-    MTLRenderPassDescriptor *objcRenderPass =
-        [MTLRenderPassDescriptor renderPassDescriptor];
-    objcRenderPass.colorAttachments[0].texture = target;
-    objcRenderPass.colorAttachments[0].loadAction = MTLLoadActionLoad;
-    objcRenderPass.colorAttachments[0].storeAction = MTLStoreActionStore;
     void *renderEncoder = NULL;
     void *blitEncoder = NULL;
     void *computeEncoder = NULL;
@@ -2528,15 +2523,6 @@ static int verifyCommandBufferOwner(void) {
         mglRenderCppCreateRenderEncoderFromCommandBufferOwnerState(
             owner, &renderPass, &renderEncoder) != 0 || !renderEncoder ||
         mglRenderCppEndRenderEncoder(renderEncoder) != 0 ||
-        mglRenderCppCreateRenderEncoderFromCommandBufferOwnerDescriptor(
-            NULL, (__bridge void *)objcRenderPass, &renderEncoder) != -1 ||
-        mglRenderCppCreateRenderEncoderFromCommandBufferOwnerDescriptor(
-            owner, NULL, &renderEncoder) != -1 ||
-        mglRenderCppCreateRenderEncoderFromCommandBufferOwnerDescriptor(
-            owner, (__bridge void *)objcRenderPass, NULL) != -1 ||
-        mglRenderCppCreateRenderEncoderFromCommandBufferOwnerDescriptor(
-            owner, (__bridge void *)objcRenderPass, &renderEncoder) != 0 ||
-        !renderEncoder || mglRenderCppEndRenderEncoder(renderEncoder) != 0 ||
         mglRenderCppCreateBlitEncoderFromCommandBufferOwner(
             NULL, &blitEncoder) != -1 ||
         mglRenderCppCreateBlitEncoderFromCommandBufferOwner(

@@ -4152,7 +4152,7 @@ void mglRendererCompatClearBuffer(GLMContext glm_ctx,
     id<MTLRenderCommandEncoder> clearEncoder =
         mglRenderCreateRenderEncoderForCommandBufferOwner(
             _renderPassManager.state->currentCommandBufferOwner,
-            clearPass, &clearState);
+            &clearState);
     if (!clearEncoder) {
         NSLog(@"MGL ERROR: scissored clear failed to create render encoder");
         return;

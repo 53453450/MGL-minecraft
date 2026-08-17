@@ -13689,25 +13689,6 @@ int mglRenderCppCreateRenderEncoderFromCommandBufferOwnerState(
         owner->current, render_pass, render_encoder_out);
 }
 
-int mglRenderCppCreateRenderEncoderFromCommandBufferOwnerDescriptor(
-    void* command_buffer_owner,
-    void* render_pass_descriptor,
-    void** render_encoder_out) {
-    if (render_encoder_out) *render_encoder_out = nullptr;
-    mgl::CommandBufferOwner* owner =
-        static_cast<mgl::CommandBufferOwner*>(command_buffer_owner);
-    MTL::RenderPassDescriptor* descriptor =
-        static_cast<MTL::RenderPassDescriptor*>(render_pass_descriptor);
-    if (!owner || !owner->current || !descriptor || !render_encoder_out) {
-        return -1;
-    }
-    MTL::RenderCommandEncoder* encoder =
-        owner->current->renderCommandEncoder(descriptor);
-    if (!encoder) return -1;
-    *render_encoder_out = encoder;
-    return 0;
-}
-
 void mglRenderCppDestroyRenderPassStateOwner(void** owner_handle) {
     if (!owner_handle || !*owner_handle) return;
     mgl::RenderPassStateOwner* owner =

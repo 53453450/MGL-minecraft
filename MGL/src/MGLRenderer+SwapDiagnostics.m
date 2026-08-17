@@ -37,7 +37,7 @@ static MGLMetalRenderCommandEncoderRef mglSwapDiagnosticsCreateRenderEncoder(
     state.color[0].attachment.load_action = MTLLoadActionDontCare;
     state.color[0].attachment.store_action = MTLStoreActionStore;
     return mglRenderCreateRenderEncoderForCommandBufferOwner(
-        commandBufferOwner, nil, &state);
+        commandBufferOwner, &state);
 }
 
 static void mglSwapDiagnosticsSetRenderPipeline(

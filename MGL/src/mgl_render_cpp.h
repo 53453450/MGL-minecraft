@@ -2745,13 +2745,6 @@ int mglRenderCppCreateRenderEncoderFromCommandBufferOwnerState(
     void *command_buffer_owner,
     const MGLRenderCppRenderPassState *render_pass,
     void **render_encoder_out);
-/* Compatibility path for an already-materialized ObjC render-pass
- * descriptor. The descriptor pointer is borrowed and remains opaque at the
- * C ABI; CommandBufferOwner.current does not escape. */
-int mglRenderCppCreateRenderEncoderFromCommandBufferOwnerDescriptor(
-    void *command_buffer_owner,
-    void *render_pass_descriptor,
-    void **render_encoder_out);
 void mglRenderCppDestroyRenderPassStateOwner(void **owner);
 
 /* C++ owns the temporary MTL::RenderPassDescriptor used to create the

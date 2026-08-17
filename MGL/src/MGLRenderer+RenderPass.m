@@ -6,6 +6,7 @@
 #include "mgl_air_loader.h"     /* METALCPP: AIR metallib 加载（Phase 1） */
 #include "mgl_aux_assets.h"
 #include "mgl_render_cpp_objc.h" /* METALCPP: C ABI + ObjC state adapter */
+#include "mgl_env_flag.h"
 #include "mgl_shader_abi.h"
 
 #import <objc/message.h>

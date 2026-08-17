@@ -1,9 +1,8 @@
-// Transitional Objective-C adapter for the pure-C Metal-cpp renderer ABI.
+// Objective-C type adapter for the pure-C Metal-cpp renderer ABI.
 #pragma once
 
 #import <Metal/Metal.h>
 
-#include "mgl_env_flag.h"
 #include "mgl_render_cpp.h"
 
 /* P4 whitelist adapter column: shell modules reference ObjC Metal objects
@@ -68,27 +67,16 @@ static inline int mglRenderPresentDrawableForCommandBufferOwner(
         owner, (__bridge void *)drawable, NULL);
 }
 
-/* Owner-first encoder adapters. CommandBufferOwner.current stays inside C++
- * on both gates; gate-off may keep ObjC descriptor construction without
- * borrowing the command buffer itself. */
+/* Owner-first encoder adapters. CommandBufferOwner.current stays inside C++. */
 static inline MGLMetalRenderCommandEncoderRef
 mglRenderCreateRenderEncoderForCommandBufferOwner(
     void *owner,
-    MTLRenderPassDescriptor *descriptor,
     const MGLRenderCppRenderPassState *state)
 {
-    if (!owner) return nil;
-    if (mglRenderCppGetDevice() && state) {
-        void *encoder = NULL;
-        if (mglRenderCppCreateRenderEncoderFromCommandBufferOwnerState(
-                owner, state, &encoder) == 0 && encoder) {
-            return (__bridge MGLMetalRenderCommandEncoderRef)encoder;
-        }
-    }
+    if (!owner || !state) return nil;
     void *encoder = NULL;
-    if (descriptor &&
-        mglRenderCppCreateRenderEncoderFromCommandBufferOwnerDescriptor(
-            owner, (__bridge void *)descriptor, &encoder) == 0 && encoder) {
+    if (mglRenderCppCreateRenderEncoderFromCommandBufferOwnerState(
+            owner, state, &encoder) == 0 && encoder) {
         return (__bridge MGLMetalRenderCommandEncoderRef)encoder;
     }
     return nil;

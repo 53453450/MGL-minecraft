@@ -312,27 +312,17 @@ static void mglRenderPassManagerStoreIdentity(
 
 - (MGLMetalRenderCommandEncoderRef)createRenderEncoderWithDescriptor:(MTLRenderPassDescriptor *)descriptor
 {
-    MGLMetalRenderCommandEncoderRef renderEncoder = nil;
-    if (_state.currentCommandBufferOwner && _state.renderPassStateOwner &&
-        (!descriptor || descriptor == _state.renderPassDescriptor)) {
-        MGLRenderCppRenderPassState renderPassState = {0};
-        if (mglRenderCppGetRenderPassStateOwner(
-                _state.renderPassStateOwner, &renderPassState) == 0) {
-            renderEncoder = mglRenderCreateRenderEncoderForCommandBufferOwner(
-                _state.currentCommandBufferOwner, descriptor,
-                &renderPassState);
-        }
+    (void)descriptor;
+    if (!_state.currentCommandBufferOwner || !_state.renderPassStateOwner) {
+        return nil;
     }
-    if (!renderEncoder && descriptor) {
-        void *encoder = NULL;
-        if (mglRenderCppCreateRenderEncoderFromCommandBufferOwnerDescriptor(
-                _state.currentCommandBufferOwner,
-                (__bridge void *)descriptor,
-                &encoder) == 0 && encoder) {
-            renderEncoder = (__bridge MGLMetalRenderCommandEncoderRef)encoder;
-        }
+    MGLRenderCppRenderPassState renderPassState = {0};
+    if (mglRenderCppGetRenderPassStateOwner(
+            _state.renderPassStateOwner, &renderPassState) != 0) {
+        return nil;
     }
-    return renderEncoder;
+    return mglRenderCreateRenderEncoderForCommandBufferOwner(
+        _state.currentCommandBufferOwner, &renderPassState);
 }
 
 - (void)endCurrentRenderEncoder
