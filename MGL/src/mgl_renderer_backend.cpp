@@ -157,6 +157,7 @@ struct MGLRendererBackendHandle {
     MTL::SamplerState *fallback_sampler = nullptr;
     std::vector<MGLRendererBackendFallbackTextureEntry>
         fallback_sampled_textures;
+    std::vector<MTL::Texture *> proactive_textures;
     bool renderer_initialized = false;
     bool shutdown_started = false;
     bool destroying = false;
@@ -240,6 +241,10 @@ static void mglRendererBackendReleaseOwnedState(
         if (entry.texture) entry.texture->release();
     }
     backend->fallback_sampled_textures.clear();
+    for (MTL::Texture *texture : backend->proactive_textures) {
+        if (texture) texture->release();
+    }
+    backend->proactive_textures.clear();
     mglRenderCppDestroyCommandQueueOwner(&backend->command_queue_owner);
     mglRenderCppBindingDestroy(backend->binding_owner);
     backend->binding_owner = nullptr;
@@ -727,6 +732,18 @@ extern "C" int mglRendererBackendPutFallbackSampledTexture(
             backend->fallback_sampled_textures.begin(),
             backend->fallback_sampled_textures.begin() + evict_count);
     }
+    return 0;
+}
+
+extern "C" int mglRendererBackendRetainProactiveTexture(
+    MGLRendererBackendHandle *backend, void *texture)
+{
+    if (!backend || !texture) return -1;
+    std::lock_guard<std::mutex> lock(backend->mutex);
+    if (backend->destroying) return -1;
+    MTL::Texture *retained = static_cast<MTL::Texture *>(texture);
+    retained->retain();
+    backend->proactive_textures.push_back(retained);
     return 0;
 }
 

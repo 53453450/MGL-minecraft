@@ -118,6 +118,8 @@ int mglRendererBackendGetFallbackSampledTexture(
 int mglRendererBackendPutFallbackSampledTexture(
     MGLRendererBackendHandle *backend,
     uint64_t key, void *texture);
+int mglRendererBackendRetainProactiveTexture(
+    MGLRendererBackendHandle *backend, void *texture);
 int mglRendererBackendIsDestroying(
     const MGLRendererBackendHandle *backend);
 void *mglRendererBackendGetOwner(const MGLRendererBackendHandle *backend,

@@ -327,7 +327,6 @@ static inline double mglTraceNowSeconds(void)
 #define _activeState _core.activeState
 #define _device _core.device
 #define _capability _core.capability
-#define _proactiveTextures _core.proactiveTextures
 #define _drawBuffers _core.drawBuffers
 #define _defaultDrawableWrittenSinceLastSwap _core.defaultDrawableWrittenSinceLastSwap
 #define _commandQueueOwner _core.commandQueueOwner

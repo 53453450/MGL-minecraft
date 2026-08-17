@@ -9011,6 +9011,13 @@ static int verifyRendererBackend(id<MTLDevice> device) {
         return 1;
     }
     printf("RENDERER_BACKEND_FALLBACK_TEXTURE_CACHE_OK\n");
+    if (mglRendererBackendRetainProactiveTexture(
+            backend, (__bridge void *)fallbackTexture) != 0 ||
+        mglRendererBackendRetainProactiveTexture(backend, NULL) != -1) {
+        fprintf(stderr, "FAIL: renderer backend proactive texture ownership\n");
+        return 1;
+    }
+    printf("RENDERER_BACKEND_PROACTIVE_TEXTURE_OK\n");
     MGLRendererBackendShutdownResult shutdown = {};
     if (mglRendererBackendShutdown(backend, &shutdown) != 0) {
         fprintf(stderr, "FAIL: renderer backend shutdown\n");

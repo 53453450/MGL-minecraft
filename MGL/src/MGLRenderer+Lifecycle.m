@@ -606,10 +606,10 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
             }
 
             // Store the proactive texture for future use
-            if (!_proactiveTextures) {
-                _proactiveTextures = [[NSMutableArray alloc] init];
+            if (mglRendererBackendRetainProactiveTexture(
+                    _backend, (__bridge void *)proactiveTexture) != 0) {
+                NSLog(@"MGL WARNING: Failed to retain proactive texture in renderer backend");
             }
-            [_proactiveTextures addObject:proactiveTexture];
 
         } else {
             NSLog(@"MGL PROACTIVE ERROR: Could not create proactive texture");

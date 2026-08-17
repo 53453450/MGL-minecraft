@@ -74,7 +74,6 @@ typedef struct MGLRendererCoreState_t {
     GLMState *activeState;
     id<MTLDevice> __strong device;
     MGLCapability capability;
-    NSMutableArray *__strong proactiveTextures;
     MGLDrawable drawBuffers[_MAX_DRAW_BUFFERS];
     BOOL defaultDrawableWrittenSinceLastSwap;
     /* Borrowed aliases into MGLRendererBackendHandle during P5 migration. */
