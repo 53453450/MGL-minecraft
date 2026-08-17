@@ -1467,7 +1467,6 @@ output->name, (unsigned)i,
 
     RETURN_FALSE_ON_FAILURE([self mapBuffersToMTL]);
     MGLEncodeContext encCtx = {
-        .encoder = nil,
         .render_encoder_owner = _renderPassManager.state->currentRenderEncoderOwner,
     };
     RETURN_FALSE_ON_FAILURE([self bindVertexBuffersToCurrentRenderEncoder:&encCtx]);
@@ -3722,7 +3721,6 @@ output->name, (unsigned)i,
     if (MGL_STATE(ctx)->vao)
     {
         MGLEncodeContext encCtx = {
-            .encoder = nil,
             .render_encoder_owner = _renderPassManager.state->currentRenderEncoderOwner,
         };
         if ([self bindVertexBuffersToCurrentRenderEncoder:&encCtx] == false)
@@ -5470,7 +5468,6 @@ output->name, (unsigned)i,
         // buffer data can be changed but the bindings remain in place.. so we need to update the data if this is the case
         // like a uniform or buffer sub data call
         MGLEncodeContext encCtx = {
-            .encoder = nil,
             .render_encoder_owner = _renderPassManager.state->currentRenderEncoderOwner,
         };
 

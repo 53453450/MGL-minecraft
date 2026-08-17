@@ -12,13 +12,6 @@
 #include "mgl_air_gs_abi.h"
 #include "mgl_air_tess_abi.h"
 
-static MGLMetalRenderCommandEncoderRef mglDrawSupportFallbackEncoder(
-    void *renderEncoderOwner)
-{
-    (void)renderEncoderOwner;
-    return nil;
-}
-
 static BOOL mglDrawSupportEncodeContextIsActive(
     const MGLEncodeContext *encodeContext)
 {
@@ -125,33 +118,28 @@ static void mglDrawSupportEndBlitEncoder(MGLMetalBlitCommandEncoderRef encoder)
 }
 
 static void mglDrawSupportSetVertexBuffer(
-    MGLMetalRenderCommandEncoderRef encoder,
     void *renderEncoderOwner,
     MGLMetalBufferRef buffer,
     NSUInteger offset,
     NSUInteger index)
 {
-    (void)encoder;
     (void)mglRenderCppSetRenderBufferForOwner(
         renderEncoderOwner, (__bridge void *)buffer, offset,
         MGL_RENDER_CPP_BINDING_STAGE_VERTEX, (uint32_t)index);
 }
 
 static void mglDrawSupportSetVertexBytes(
-    MGLMetalRenderCommandEncoderRef encoder,
     void *renderEncoderOwner,
     const void *bytes,
     NSUInteger length,
     NSUInteger index)
 {
-    (void)encoder;
     (void)mglRenderCppSetRenderBytesForOwner(
         renderEncoderOwner, bytes, length,
         MGL_RENDER_CPP_BINDING_STAGE_VERTEX, (uint32_t)index);
 }
 
 static void mglDrawSupportDrawIndexedPrimitives(
-    MGLMetalRenderCommandEncoderRef encoder,
     void *renderEncoderOwner,
     MTLPrimitiveType primitiveType,
     NSUInteger indexCount,
@@ -161,7 +149,6 @@ static void mglDrawSupportDrawIndexedPrimitives(
     NSInteger baseVertex,
     NSUInteger baseInstance)
 {
-    (void)encoder;
     (void)mglRenderCppEncodeDrawForRenderEncoderOwner(renderEncoderOwner,
         &(MGLRenderCppDrawPlan){
             .kind = MGL_RENDER_CPP_DRAW_INDEXED,
@@ -179,7 +166,6 @@ static void mglDrawSupportDrawIndexedPrimitives(
 /* Variant that honors the GL index type (UInt8/UInt16/UInt32).  Used by the
  * GS indexed capture so the original EBO drives vertex fetch directly. */
 static void mglDrawSupportDrawIndexedPrimitivesType(
-    MGLMetalRenderCommandEncoderRef encoder,
     void *renderEncoderOwner,
     MTLPrimitiveType primitiveType,
     NSUInteger indexCount,
@@ -201,13 +187,11 @@ static void mglDrawSupportDrawIndexedPrimitivesType(
             .base_vertex = baseVertex,
             .base_instance = baseInstance,
         };
-    (void)encoder;
     (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
         renderEncoderOwner, &plan, NULL, 0);
 }
 
 static void mglDrawSupportDrawPrimitives(
-    MGLMetalRenderCommandEncoderRef encoder,
     void *renderEncoderOwner,
     MTLPrimitiveType primitiveType,
     NSUInteger vertexStart,
@@ -223,13 +207,11 @@ static void mglDrawSupportDrawPrimitives(
             .instance_count = instanceCount,
             .base_instance = baseInstance,
         };
-    (void)encoder;
     (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
         renderEncoderOwner, &plan, NULL, 0);
 }
 
 static void mglDrawSupportDrawPrimitivesIndirect(
-    MGLMetalRenderCommandEncoderRef encoder,
     void *renderEncoderOwner,
     MTLPrimitiveType primitiveType,
     MGLMetalBufferRef indirectBuffer,
@@ -241,7 +223,6 @@ static void mglDrawSupportDrawPrimitivesIndirect(
             .indirect_buffer = (__bridge void *)indirectBuffer,
             .indirect_buffer_offset = indirectBufferOffset,
         };
-    (void)encoder;
     (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
         renderEncoderOwner, &plan, NULL, 0);
 }
@@ -301,19 +282,16 @@ static void mglDrawSupportEndComputeEncoder(
 }
 
 static void mglDrawSupportSetTessellationFactors(
-    MGLMetalRenderCommandEncoderRef encoder,
     void *renderEncoderOwner,
     MGLMetalBufferRef buffer,
     NSUInteger offset,
     NSUInteger instanceStride)
 {
-    (void)encoder;
     (void)mglRenderCppSetTessellationFactorBufferForOwner(
         renderEncoderOwner, (__bridge void *)buffer, offset, instanceStride);
 }
 
 static void mglDrawSupportDrawPatches(
-    MGLMetalRenderCommandEncoderRef encoder,
     void *renderEncoderOwner,
     NSUInteger controlPointCount,
     NSUInteger patchStart,
@@ -334,13 +312,11 @@ static void mglDrawSupportDrawPatches(
             .instance_count = instanceCount,
             .base_instance = baseInstance,
         };
-    (void)encoder;
     (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
         renderEncoderOwner, &plan, NULL, 0);
 }
 
 static void mglDrawSupportDrawIndexedPatches(
-    MGLMetalRenderCommandEncoderRef encoder,
     void *renderEncoderOwner,
     NSUInteger controlPointCount,
     NSUInteger patchStart,
@@ -367,7 +343,6 @@ static void mglDrawSupportDrawIndexedPatches(
             .instance_count = instanceCount,
             .base_instance = baseInstance,
         };
-    (void)encoder;
     (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
         renderEncoderOwner, &plan, NULL, 0);
 }
@@ -602,8 +577,6 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
         drawCtx->state.dirty_bits = DIRTY_ALL;
         return NO;
     }
-    MGLMetalRenderCommandEncoderRef encoder =
-        mglDrawSupportFallbackEncoder(_renderPassManager.state->currentRenderEncoderOwner);
     MGLCullDistanceEmuParams params = {
         .prim_vertex_count = 1u,
         .culldist_offset = 0u,
@@ -613,10 +586,10 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
         .first_instance = baseInstance,
         .instance_stride = (uint32_t)count,
     };
-    mglDrawSupportSetVertexBuffer(encoder, _renderPassManager.state->currentRenderEncoderOwner, capture, 0u, 29u);
+    mglDrawSupportSetVertexBuffer(_renderPassManager.state->currentRenderEncoderOwner, capture, 0u, 29u);
     mglDrawSupportSetVertexBytes(
-        encoder, _renderPassManager.state->currentRenderEncoderOwner, &params, sizeof(params), kMGLCullDistanceParamsBufferIndex);
-    mglDrawSupportDrawPrimitives(encoder, _renderPassManager.state->currentRenderEncoderOwner, MTLPrimitiveTypePoint,
+        _renderPassManager.state->currentRenderEncoderOwner, &params, sizeof(params), kMGLCullDistanceParamsBufferIndex);
+    mglDrawSupportDrawPrimitives(_renderPassManager.state->currentRenderEncoderOwner, MTLPrimitiveTypePoint,
                                  (NSUInteger)first, (NSUInteger)count,
                                  (NSUInteger)instanceCount,
                                  (NSUInteger)baseInstance);
@@ -694,7 +667,6 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
     }
 
     MGLEncodeContext encCtx = {
-        .encoder = mglDrawSupportFallbackEncoder(_renderPassManager.state->currentRenderEncoderOwner),
         .render_encoder_owner = _renderPassManager.state->currentRenderEncoderOwner,
     };
     return [self encodeCullDistanceElementDraw:mode
@@ -740,7 +712,7 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
                                  explicitVertexCount:3u
                                       encodeContext:encCtx];
             mglDrawSupportDrawIndexedPrimitives(
-                encCtx->encoder, encCtx->render_encoder_owner, MTLPrimitiveTypeTriangle, 3u, indexBuffer,
+                encCtx->render_encoder_owner, MTLPrimitiveTypeTriangle, 3u, indexBuffer,
                 primitive * 3u * sizeof(uint32_t),
                 (NSUInteger)instanceCount, (NSInteger)first,
                 (NSUInteger)baseInstance);
@@ -766,7 +738,7 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
                                  explicitVertexCount:3u
                                       encodeContext:encCtx];
             mglDrawSupportDrawIndexedPrimitives(
-                encCtx->encoder, encCtx->render_encoder_owner, MTLPrimitiveTypeTriangle, 3u, indexBuffer,
+                encCtx->render_encoder_owner, MTLPrimitiveTypeTriangle, 3u, indexBuffer,
                 primitive * 3u * sizeof(uint32_t),
                 (NSUInteger)instanceCount, (NSInteger)first,
                 (NSUInteger)baseInstance);
@@ -782,7 +754,7 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
                                  explicitVertexCount:0u
                                       encodeContext:encCtx];
             mglDrawSupportDrawPrimitives(
-                encCtx->encoder, encCtx->render_encoder_owner, MTLPrimitiveTypeLine,
+                encCtx->render_encoder_owner, MTLPrimitiveTypeLine,
                 (NSUInteger)(first + primitive), 2u,
                 (NSUInteger)instanceCount, (NSUInteger)baseInstance);
         }
@@ -807,7 +779,7 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
                                  explicitVertexCount:2u
                                       encodeContext:encCtx];
             mglDrawSupportDrawIndexedPrimitives(
-                encCtx->encoder, encCtx->render_encoder_owner, MTLPrimitiveTypeLine, 2u, indexBuffer,
+                encCtx->render_encoder_owner, MTLPrimitiveTypeLine, 2u, indexBuffer,
                 primitive * sizeof(uint32_t), (NSUInteger)instanceCount, 0,
                 (NSUInteger)baseInstance);
         }
@@ -875,7 +847,7 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
                                  explicitVertexCount:primitive.vertex_count
                                       encodeContext:encCtx];
             mglDrawSupportDrawIndexedPrimitives(
-                encCtx->encoder, encCtx->render_encoder_owner,
+                encCtx->render_encoder_owner,
                 (MTLPrimitiveType)primitive.primitive_type,
                 (NSUInteger)primitive.index_count,
                 indexBuffer,
@@ -929,16 +901,13 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
         _tessellation.tessVertexCaptureActive = NO;
         return nil;
     }
-
-    MGLMetalRenderCommandEncoderRef encoder =
-        mglDrawSupportFallbackEncoder(_renderPassManager.state->currentRenderEncoderOwner);
-    mglDrawSupportSetVertexBuffer(encoder, _renderPassManager.state->currentRenderEncoderOwner, capture, 0u, 29u);
+    mglDrawSupportSetVertexBuffer(_renderPassManager.state->currentRenderEncoderOwner, capture, 0u, 29u);
     const uint32_t captureParams[3] = {
         (uint32_t)first, (uint32_t)recordsPerInstance, baseInstance,
     };
     mglDrawSupportSetVertexBytes(
-        encoder, _renderPassManager.state->currentRenderEncoderOwner, captureParams, sizeof(captureParams), 28u);
-    mglDrawSupportDrawPrimitives(encoder, _renderPassManager.state->currentRenderEncoderOwner, MTLPrimitiveTypePoint,
+        _renderPassManager.state->currentRenderEncoderOwner, captureParams, sizeof(captureParams), 28u);
+    mglDrawSupportDrawPrimitives(_renderPassManager.state->currentRenderEncoderOwner, MTLPrimitiveTypePoint,
                                  (NSUInteger)first, (NSUInteger)count,
                                  (NSUInteger)instanceCount,
                                  (NSUInteger)baseInstance);
@@ -999,15 +968,12 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
         _tessellation.tessVertexCaptureActive = NO;
         return nil;
     }
-
-    MGLMetalRenderCommandEncoderRef encoder =
-        mglDrawSupportFallbackEncoder(_renderPassManager.state->currentRenderEncoderOwner);
-    mglDrawSupportSetVertexBuffer(encoder, _renderPassManager.state->currentRenderEncoderOwner, capture, 0u, 29u);
+    mglDrawSupportSetVertexBuffer(_renderPassManager.state->currentRenderEncoderOwner, capture, 0u, 29u);
     const uint32_t captureParams[3] = {
         0u, (uint32_t)recordsPerInstance, baseInstance,
     };
     mglDrawSupportSetVertexBytes(
-        encoder, _renderPassManager.state->currentRenderEncoderOwner, captureParams, sizeof(captureParams), 28u);
+        _renderPassManager.state->currentRenderEncoderOwner, captureParams, sizeof(captureParams), 28u);
     /* The capture kernel indexes records by raw vertex_id with no bounds
      * check; a primitive-restart marker (0xFFFFFFFF for UInt32) in the
      * stream would write past the sparse record span and corrupt the
@@ -1055,7 +1021,7 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
         }
     }
     mglDrawSupportDrawIndexedPrimitivesType(
-        encoder, _renderPassManager.state->currentRenderEncoderOwner, MTLPrimitiveTypePoint, (NSUInteger)count, indexType,
+        _renderPassManager.state->currentRenderEncoderOwner, MTLPrimitiveTypePoint, (NSUInteger)count, indexType,
         sanitizedIndexBuffer, sanitizedIndexOffset, (NSUInteger)instanceCount,
         (NSInteger)baseVertex, (NSUInteger)baseInstance);
     _currentCBHasWork = YES;
@@ -1842,8 +1808,6 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
     }
 
     [self applyPolygonOffsetForDrawMode:gsOutputMode];
-    MGLMetalRenderCommandEncoderRef encoder =
-        mglDrawSupportFallbackEncoder(_renderPassManager.state->currentRenderEncoderOwner);
     if (getenv("MGL_GS_DIAG")) {
         const uint32_t *cw = (const uint32_t *)counts.contents;
         const float *ow = (const float *)output.contents;
@@ -1870,9 +1834,9 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
         NSUInteger offset =
             ((NSUInteger)primitive * recordsPerPrimitive +
              MGL_AIR_GS_HEADER_RECORDS) * outputStride;
-        mglDrawSupportSetVertexBuffer(encoder, _renderPassManager.state->currentRenderEncoderOwner, output, offset, 0u);
+        mglDrawSupportSetVertexBuffer(_renderPassManager.state->currentRenderEncoderOwner, output, offset, 0u);
         mglDrawSupportDrawPrimitivesIndirect(
-            encoder, _renderPassManager.state->currentRenderEncoderOwner, outputPrimitive, counts,
+            _renderPassManager.state->currentRenderEncoderOwner, outputPrimitive, counts,
             (NSUInteger)primitive * countsRecordBytes);
     }
     _currentCBHasWork = YES;
@@ -2464,7 +2428,7 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
                    explicitVertexCount * sizeof(params.explicit_vertices[0]));
         }
         mglDrawSupportSetVertexBuffer(
-            encCtx->encoder, encCtx->render_encoder_owner, _tessellation.cullDistanceCaptureBuffer, 0u,
+            encCtx->render_encoder_owner, _tessellation.cullDistanceCaptureBuffer, 0u,
             kMGLCullDistanceVertexBufferIndex);
         [self recordLastBoundVertexBuffer:
                   _tessellation.cullDistanceCaptureBuffer
@@ -2472,7 +2436,7 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
                                   atIndex:kMGLCullDistanceVertexBufferIndex];
         MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
         mglDrawSupportSetVertexBytes(
-            encCtx->encoder, encCtx->render_encoder_owner, &params, sizeof(params),
+            encCtx->render_encoder_owner, &params, sizeof(params),
             kMGLCullDistanceParamsBufferIndex);
         [self invalidateLastBoundVertexBufferAtIndex:
                   kMGLCullDistanceParamsBufferIndex];
@@ -2584,14 +2548,14 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
     }
 
     mglDrawSupportSetVertexBuffer(
-        encCtx->encoder, encCtx->render_encoder_owner, cullMtlBuffer, 0,
+        encCtx->render_encoder_owner, cullMtlBuffer, 0,
         kMGLCullDistanceVertexBufferIndex);
     [self recordLastBoundVertexBuffer:cullMtlBuffer
                                offset:0
                               atIndex:kMGLCullDistanceVertexBufferIndex];
     MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
     mglDrawSupportSetVertexBytes(
-        encCtx->encoder, encCtx->render_encoder_owner, &params, sizeof(params),
+        encCtx->render_encoder_owner, &params, sizeof(params),
         kMGLCullDistanceParamsBufferIndex);
     [self invalidateLastBoundVertexBufferAtIndex:kMGLCullDistanceParamsBufferIndex];
 }
@@ -2876,8 +2840,6 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
         if (![self currentDrawRasterizationIsEmpty] &&
             ![self currentDrawModeIsFullyCulled:GL_TRIANGLES]) {
             [self applyPolygonOffsetForDrawMode:GL_TRIANGLES];
-            MGLMetalRenderCommandEncoderRef encoder =
-                mglDrawSupportFallbackEncoder(_renderPassManager.state->currentRenderEncoderOwner);
             /* Metal does not advance the post-tessellation control-point
              * pointer correctly for patchStart. Draw each patch separately:
              * slot 0 is rebased to the patch, while slot 30 stays at the
@@ -2887,19 +2849,19 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
             const NSUInteger instanceStrideBytes =
                 instanceRecords * _tessellation.tcsOutputStride;
             mglDrawSupportSetTessellationFactors(
-                encoder, _renderPassManager.state->currentRenderEncoderOwner, nativeFactors, 0u, 0u);
+                _renderPassManager.state->currentRenderEncoderOwner, nativeFactors, 0u, 0u);
             for (GLsizei i = 0; i < instanceCount; i++) {
                 const NSUInteger instanceOffset =
                     _tessellation.tessVertexCaptureOffset +
                     (NSUInteger)i * instanceStrideBytes;
                 mglDrawSupportSetVertexBuffer(
-                    encoder, _renderPassManager.state->currentRenderEncoderOwner, _tessellation.tcsOutputBuffer,
+                    _renderPassManager.state->currentRenderEncoderOwner, _tessellation.tcsOutputBuffer,
                     instanceOffset, 0u);
                 [self recordLastBoundVertexBuffer:_tessellation.tcsOutputBuffer
                                            offset:instanceOffset
                                           atIndex:0u];
                 mglDrawSupportSetVertexBuffer(
-                    encoder, _renderPassManager.state->currentRenderEncoderOwner, _tessellation.tcsOutputBuffer,
+                    _renderPassManager.state->currentRenderEncoderOwner, _tessellation.tcsOutputBuffer,
                     instanceOffset, 30u);
                 [self recordLastBoundVertexBuffer:_tessellation.tcsOutputBuffer
                                            offset:instanceOffset
@@ -2907,10 +2869,10 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
                 GLuint patchInfo[2] = {patchVertices, _tessellation.tcsOutVertices};
                 if (patchInfo[1] == 0u) patchInfo[1] = patchVertices;
                 mglDrawSupportSetVertexBytes(
-                    encoder, _renderPassManager.state->currentRenderEncoderOwner, patchInfo, sizeof(patchInfo), 28u);
+                    _renderPassManager.state->currentRenderEncoderOwner, patchInfo, sizeof(patchInfo), 28u);
                 if (_tessellation.tcsPatchOutBuffer) {
                     mglDrawSupportSetVertexBuffer(
-                        encoder, _renderPassManager.state->currentRenderEncoderOwner, _tessellation.tcsPatchOutBuffer, 0u, 27u);
+                        _renderPassManager.state->currentRenderEncoderOwner, _tessellation.tcsPatchOutBuffer, 0u, 27u);
                     [self recordLastBoundVertexBuffer:
                               _tessellation.tcsPatchOutBuffer
                                                offset:0u
@@ -2918,7 +2880,7 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
                 }
                 if (_tessellation.tessIndexedDraw) {
                     mglDrawSupportDrawIndexedPatches(
-                        encoder, _renderPassManager.state->currentRenderEncoderOwner, _tessellation.tcsOutVertices, 0u, patchCount,
+                        _renderPassManager.state->currentRenderEncoderOwner, _tessellation.tcsOutVertices, 0u, patchCount,
                         nil, 0u,
                         _tessellation.tessControlPointIndexBuffer, 0u,
                         1u, (NSUInteger)baseInstance + (NSUInteger)i);
@@ -2930,14 +2892,14 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
                         const NSUInteger patchOffset =
                             instanceOffset + (NSUInteger)p * cpcStride;
                         mglDrawSupportSetVertexBuffer(
-                            encoder, _renderPassManager.state->currentRenderEncoderOwner, _tessellation.tcsOutputBuffer,
+                            _renderPassManager.state->currentRenderEncoderOwner, _tessellation.tcsOutputBuffer,
                             patchOffset, 0u);
                         [self recordLastBoundVertexBuffer:
                                   _tessellation.tcsOutputBuffer
                                                    offset:patchOffset
                                                   atIndex:0u];
                         mglDrawSupportDrawPatches(
-                            encoder, _renderPassManager.state->currentRenderEncoderOwner, _tessellation.tcsOutVertices, p, 1u,
+                            _renderPassManager.state->currentRenderEncoderOwner, _tessellation.tcsOutVertices, p, 1u,
                             nil, 0u, 1u,
                             (NSUInteger)baseInstance + (NSUInteger)i);
                     }

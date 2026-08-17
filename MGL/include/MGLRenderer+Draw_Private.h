@@ -28,10 +28,8 @@
 #include "mgl_air_tess_abi.h"
 #include "mgl_air_gs_abi.h"
 
-/* Encode target passed explicitly to the issue and bind methods instead of
- * read from _renderPassManager.state->currentRenderEncoder. */
+/* Encode target passed explicitly to issue and bind methods. */
 typedef struct {
-    id<MTLRenderCommandEncoder> encoder;
     void *render_encoder_owner;
 } MGLEncodeContext;
 

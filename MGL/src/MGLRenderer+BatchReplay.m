@@ -999,7 +999,6 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     /* Texture materialization may have ended and recreated the render encoder
      * (RT-sampled-copy path). The cached encoder is now stale; refresh it so
      * per-draw buffer overrides and the draw itself target the live encoder. */
-    encCtx->encoder = nil;
 
     bool direct_vertex_ok = cmd->dynamic_vertex_binding_count == 0 ||
         [self bindDynamicVertexArrayBuffersDirectly:draw_vao
@@ -1133,9 +1132,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
 - (void)issueDirectBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx
              encodeContext:(const MGLEncodeContext *)encCtx
 {
-    /* Mutable working copy: applyDynamicBindingsForCommand: may rotate the
-     * encoder (RT-sampled-copy path). Gate-off refreshes liveEncCtx.encoder;
-     * gate-on continues through render_encoder_owner. */
+    /* Mutable working copy: texture materialization may rotate the active
+     * encoder, while the owner remains the stable encode target. */
     MGLEncodeContext liveEncCtx = *encCtx;
     /* P4.3c: gate-on 下满足「简单批」条件的 batch 由 C++ 整批循环绘制
      * （replay 执行 loop 的最小 surgery 版：数据仍是本 batch arena 的只读
@@ -1195,7 +1193,6 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                                   reason:"cull_distance_capture_restore"];
                 continue;
             }
-            liveEncCtx.encoder = nil;
         }
         if (![self applyDynamicBindingsForCommand:cmd context:glm_ctx encodeContext:&liveEncCtx]) {
             [self traceReplayCommand:batch

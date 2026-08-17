@@ -680,7 +680,6 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
                         (GLuint)first + (GLuint)primitive + 2u,
                     };
                     MGLEncodeContext encCtx = {
-                        .encoder = nil,
                         .render_encoder_owner = _renderPassManager.state->currentRenderEncoderOwner,
                     };
                     [self bindCullDistanceEmulationBuffers:mode
@@ -746,7 +745,6 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
                             (GLuint)((primitive + 1u) % (NSUInteger)count),
                     };
                     MGLEncodeContext encCtx = {
-                        .encoder = nil,
                         .render_encoder_owner = _renderPassManager.state->currentRenderEncoderOwner,
                     };
                     [self bindCullDistanceEmulationBuffers:mode
@@ -777,7 +775,6 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
     } else if (emulateQuads) {
         if (usesCullDistance) {
             MGLEncodeContext encCtx = {
-                .encoder = nil,
                 .render_encoder_owner = _renderPassManager.state->currentRenderEncoderOwner,
             };
             [self bindCullDistanceEmulationBuffers:mode
@@ -821,7 +818,6 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
     if (usesCullDistance && mode != GL_TRIANGLE_STRIP &&
         mode != GL_LINE_STRIP) {
         MGLEncodeContext encCtx = {
-            .encoder = nil,
             .render_encoder_owner = _renderPassManager.state->currentRenderEncoderOwner,
         };
         [self bindCullDistanceEmulationBuffers:mode
@@ -860,7 +856,6 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
                     (GLuint)first + (GLuint)primitive + 2u,
                 };
                 MGLEncodeContext encCtx = {
-                    .encoder = nil,
                     .render_encoder_owner = _renderPassManager.state->currentRenderEncoderOwner,
                 };
                 [self bindCullDistanceEmulationBuffers:mode
@@ -876,7 +871,6 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
         } else if (usesCullDistance && mode == GL_LINE_STRIP && count >= 2) {
             for (GLsizei primitive = 0; primitive + 1 < count; primitive++) {
                 MGLEncodeContext encCtx = {
-                    .encoder = nil,
                     .render_encoder_owner = _renderPassManager.state->currentRenderEncoderOwner,
                 };
                 [self bindCullDistanceEmulationBuffers:mode
@@ -1975,7 +1969,6 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
                                  polygonLineMode:mglPolygonModeLineForDrawMode(
                                                      ctx, mode)
                                    encodeContext:&(MGLEncodeContext){
-                                       .encoder = nil,
                                        .render_encoder_owner = _renderPassManager.state->currentRenderEncoderOwner,
                                    }]) {
             return YES;
@@ -2407,7 +2400,6 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
                             instanceCount:instancecount
                              baseInstance:0u
                             encodeContext:&(MGLEncodeContext){
-                                .encoder = nil,
                                 .render_encoder_owner = _renderPassManager.state->currentRenderEncoderOwner,
                             }]) {
         [self recordArrayDrawSubmittedMode:mode
@@ -3806,7 +3798,6 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
                             instanceCount:instancecount
                              baseInstance:baseinstance
                             encodeContext:&(MGLEncodeContext){
-                                .encoder = nil,
                                 .render_encoder_owner = _renderPassManager.state->currentRenderEncoderOwner,
                             }]) {
         [self recordArrayDrawSubmittedMode:mode

@@ -10,10 +10,8 @@
 #include "mgl_render_cpp.h"
 #include "mgl_render_cpp_objc.h"   /* owner-first render-pass readers */
 
-static BOOL mglBatchHasActiveEncoder(void *owner,
-                                     MGLMetalRenderCommandEncoderRef encoder)
+static BOOL mglBatchHasActiveEncoder(void *owner)
 {
-    (void)encoder;
     return mglRenderCppRenderEncoderOwnerHasCurrent(owner) != 0;
 }
 
@@ -23,7 +21,6 @@ static void *mglBatchEncoderTraceToken(void *owner)
 }
 
 static void mglBatchDrawIndexedPrimitives(
-    MGLMetalRenderCommandEncoderRef encoder,
     void *renderEncoderOwner,
     MTLPrimitiveType primitiveType,
     NSUInteger indexCount,
@@ -45,13 +42,11 @@ static void mglBatchDrawIndexedPrimitives(
             .base_vertex = baseVertex,
             .base_instance = baseInstance,
         };
-    (void)encoder;
     (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
         renderEncoderOwner, &plan, NULL, 0);
 }
 
 static void mglBatchDrawIndexedPrimitivesIndirect(
-    MGLMetalRenderCommandEncoderRef encoder,
     void *renderEncoderOwner,
     MTLPrimitiveType primitiveType,
     MTLIndexType indexType,
@@ -69,7 +64,6 @@ static void mglBatchDrawIndexedPrimitivesIndirect(
             .indirect_buffer = (__bridge void *)indirectBuffer,
             .indirect_buffer_offset = indirectBufferOffset,
         };
-    (void)encoder;
     (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
         renderEncoderOwner, &plan, NULL, 0);
 }
@@ -144,25 +138,21 @@ static void mglBatchSetIndirectDraw(
 }
 
 static void mglBatchUseRenderResource(
-    MGLMetalRenderCommandEncoderRef encoder,
     void *renderEncoderOwner,
     MGLMetalResourceRef resource,
     MTLResourceUsage usage,
     MTLRenderStages stages)
 {
-    (void)encoder;
     (void)mglRenderCppUseRenderResourceForOwner(
         renderEncoderOwner, (__bridge void *)resource,
         (uint32_t)usage, (uint32_t)stages);
 }
 
 static void mglBatchExecuteIndirectCommands(
-    MGLMetalRenderCommandEncoderRef encoder,
     void *renderEncoderOwner,
     MGLMetalIndirectCommandBufferRef indirectBuffer,
     NSRange range)
 {
-    (void)encoder;
     (void)mglRenderCppExecuteIndirectCommandsForOwner(
         renderEncoderOwner, (__bridge void *)indirectBuffer,
         range.location, range.length);
@@ -508,7 +498,6 @@ static void mglBatchExecuteIndirectCommands(
         RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList:&state->fragment_buffer_map_list]);
     }
     MGLEncodeContext encCtx = {
-        .encoder = nil,
         .render_encoder_owner = _renderPassManager.state->currentRenderEncoderOwner,
     };
     RETURN_FALSE_ON_FAILURE([self bindVertexBuffersToCurrentRenderEncoder:&encCtx]);
@@ -518,10 +507,8 @@ static void mglBatchExecuteIndirectCommands(
         RETURN_FALSE_ON_FAILURE([self bindActiveTexturesToMTL]);
     }
     RETURN_FALSE_ON_FAILURE([self restoreRenderEncoderAfterTextureUploadForDraw:"final-active-texture-bind"]);
-    encCtx.encoder = nil;
     if (![self bindTexturesToCurrentRenderEncoder:&encCtx]) {
         RETURN_FALSE_ON_FAILURE([self restoreRenderEncoderAfterTextureUploadForDraw:"final-sampled-texture-bind"]);
-        encCtx.encoder = nil;
         RETURN_FALSE_ON_FAILURE([self bindTexturesToCurrentRenderEncoder:&encCtx]);
     }
     return true;
@@ -1191,7 +1178,6 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
 
             MGLBatchPath scheduledPath = [self scheduleDrawBatch:batch context:glm_ctx];
             MGLEncodeContext encCtx = {
-                .encoder = nil,
                 .render_encoder_owner = _renderPassManager.state->currentRenderEncoderOwner,
             };
             switch (scheduledPath) {
@@ -1552,7 +1538,6 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
      * once after texture binding so stream-merge, MDI and ICB paths remain
      * available. Only genuinely mixed batches rebind per command. */
     MGLEncodeContext samplerEncCtx = {
-        .encoder = nil,
         .render_encoder_owner = _renderPassManager.state->currentRenderEncoderOwner,
     };
     if (!batch->sampler_snapshots_mixed &&
@@ -1723,7 +1708,7 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
     MTLPrimitiveType primType = (MTLPrimitiveType)batch->key.primitive_type;
 
     mglBatchDrawIndexedPrimitives(
-        encCtx->encoder, encCtx->render_encoder_owner, primType,
+        encCtx->render_encoder_owner, primType,
         (NSUInteger)batch->stream_index_count,
         MTLIndexTypeUInt32, mtlIndexBuffer, 0, 1, 0,
         firstCmd->baseInstance);
@@ -1742,7 +1727,7 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
 {
     if (!batch || !encCtx || !batch->stream_merged || batch->command_count == 0 ||
         batch->stream_index_count == 0 ||
-        !mglBatchHasActiveEncoder(encCtx->render_encoder_owner, encCtx->encoder)) {
+        !mglBatchHasActiveEncoder(encCtx->render_encoder_owner)) {
         return NO;
     }
     if (mglEnvFlagEnabled("MGL_DISABLE_MDI") ||
@@ -1829,7 +1814,7 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
     for (uint32_t i = 0; i < batch->command_count; i++) {
         MGLDrawCommand *cmd = &batch->commands[i];
         mglBatchDrawIndexedPrimitivesIndirect(
-            encCtx->encoder, encCtx->render_encoder_owner, primType,
+            encCtx->render_encoder_owner, primType,
             MTLIndexTypeUInt32, mtlIndexBuffer,
             (NSUInteger)cmd->indexBufferOffset, indirectArgsBuffer,
             indirectArgsOffset + (i * argSize));
@@ -1851,8 +1836,7 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
                           encodeContext:(const MGLEncodeContext *)encCtx
 {
     if (!batch || batch->command_count == 0 || !_device ||
-        !mglBatchHasActiveEncoder(encCtx ? encCtx->render_encoder_owner : NULL,
-                                 encCtx ? encCtx->encoder : nil)) {
+        !mglBatchHasActiveEncoder(encCtx ? encCtx->render_encoder_owner : NULL)) {
         if (batch && batch->command_count > 0) {
             [self traceReplayCommand:batch
                              command:&batch->commands[0]
@@ -1993,7 +1977,7 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
                     (NSInteger)cmd->baseVertex,
                     (NSUInteger)cmd->baseInstance);
                 mglBatchUseRenderResource(
-                    encCtx->encoder, encCtx->render_encoder_owner,
+                    encCtx->render_encoder_owner,
                     drawIndexBuffer, MTLResourceUsageRead,
                     MTLRenderStageVertex);
             }
@@ -2021,11 +2005,11 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
         }
 
         mglBatchUseRenderResource(
-            encCtx->encoder, encCtx->render_encoder_owner,
+            encCtx->render_encoder_owner,
             icb, MTLResourceUsageRead,
             MTLRenderStageVertex);
         mglBatchExecuteIndirectCommands(
-            encCtx->encoder, encCtx->render_encoder_owner, icb,
+            encCtx->render_encoder_owner, icb,
             NSMakeRange(0, (NSUInteger)batch->command_count));
         for (uint32_t i = 0; i < batch->command_count; i++) {
             [self traceReplayCommand:batch
