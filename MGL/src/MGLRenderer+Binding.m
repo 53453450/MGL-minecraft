@@ -5,9 +5,9 @@
 #import "MGLRenderer+Blit_Private.h"
 #include "mgl_render_cpp.h"
 
-void mglRendererCallbackBindTexture(void *runtime_context,
-                                    GLMContext glm_ctx,
-                                    Texture *texture)
+void mglRendererCompatBindTexture(void *runtime_context,
+                                  GLMContext glm_ctx,
+                                  Texture *texture)
 {
     MGLRenderer *renderer = (__bridge MGLRenderer *)runtime_context;
     if (!renderer || !glm_ctx || !texture) return;

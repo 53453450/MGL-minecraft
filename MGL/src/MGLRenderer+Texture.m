@@ -6,9 +6,9 @@
 #include "mgl_env_flag.h"
 #include "mgl_render_cpp_objc.h"
 
-int mglRendererCallbackResource(void *runtime_context,
-                                GLMContext glm_ctx,
-                                const MGLRenderCppResourceCallbackArgs *args)
+int mglRendererCompatResource(void *runtime_context,
+                              GLMContext glm_ctx,
+                              const MGLRenderCppResourceCallbackArgs *args)
 {
     MGLRenderer *renderer = (__bridge MGLRenderer *)runtime_context;
     if (!renderer || !glm_ctx || !args) return 0;

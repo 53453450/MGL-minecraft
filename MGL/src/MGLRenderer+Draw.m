@@ -141,9 +141,9 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     return false;
 }
 
-void mglRendererCallbackDraw(void *runtime_context,
-                             GLMContext glm_ctx,
-                             const MGLRenderCppDrawCallbackArgs *args)
+void mglRendererCompatDraw(void *runtime_context,
+                           GLMContext glm_ctx,
+                           const MGLRenderCppDrawCallbackArgs *args)
 {
     MGLRenderer *renderer = (__bridge MGLRenderer *)runtime_context;
     if (!renderer || !glm_ctx || !args) return;

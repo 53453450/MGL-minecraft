@@ -122,11 +122,11 @@ static void mglComputeEndEncoder(MGLMetalComputeCommandEncoderRef encoder)
                                 indirect:(GLintptr)indirect;
 @end
 
-void mglRendererCallbackDispatchCompute(void *runtime_context,
-                                        GLMContext glm_ctx,
-                                        unsigned int groups_x,
-                                        unsigned int groups_y,
-                                        unsigned int groups_z)
+void mglRendererCompatDispatchCompute(void *runtime_context,
+                                      GLMContext glm_ctx,
+                                      unsigned int groups_x,
+                                      unsigned int groups_y,
+                                      unsigned int groups_z)
 {
     MGLRenderer *renderer = (__bridge MGLRenderer *)runtime_context;
     if (!renderer || !glm_ctx) return;
@@ -138,9 +138,9 @@ void mglRendererCallbackDispatchCompute(void *runtime_context,
     METAL_UNLOCK();
 }
 
-void mglRendererCallbackDispatchComputeIndirect(void *runtime_context,
-                                                GLMContext glm_ctx,
-                                                intptr_t indirect)
+void mglRendererCompatDispatchComputeIndirect(void *runtime_context,
+                                              GLMContext glm_ctx,
+                                              intptr_t indirect)
 {
     MGLRenderer *renderer = (__bridge MGLRenderer *)runtime_context;
     if (!renderer || !glm_ctx) return;

@@ -3028,18 +3028,18 @@ static MGLMetalRenderPipelineStateRef mglLookupCppAuxRenderPipeline(
     [self blitFramebufferDirectColorCopyWithState:&st];
 }
 
-void mglRendererCallbackBlitFramebuffer(void *runtime_context,
-                                        GLMContext glm_ctx,
-                                        int src_x0,
-                                        int src_y0,
-                                        int src_x1,
-                                        int src_y1,
-                                        int dst_x0,
-                                        int dst_y0,
-                                        int dst_x1,
-                                        int dst_y1,
-                                        unsigned int mask,
-                                        unsigned int filter)
+void mglRendererCompatBlitFramebuffer(void *runtime_context,
+                                      GLMContext glm_ctx,
+                                      int src_x0,
+                                      int src_y0,
+                                      int src_x1,
+                                      int src_y1,
+                                      int dst_x0,
+                                      int dst_y0,
+                                      int dst_x1,
+                                      int dst_y1,
+                                      unsigned int mask,
+                                      unsigned int filter)
 {
     MGLRenderer *renderer = (__bridge MGLRenderer *)runtime_context;
     if (!renderer || !glm_ctx) return;

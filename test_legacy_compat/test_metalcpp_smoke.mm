@@ -126,7 +126,7 @@ extern "C" void mglRendererReleaseOperationContext(void *operationContext) {
     if (operationContext) CFRelease((CFTypeRef)operationContext);
 }
 
-extern "C" void mglRendererCallbackDispatchCompute(
+extern "C" void mglRendererCompatDispatchCompute(
     void *, GLMContext, unsigned int groupsX,
     unsigned int groupsY, unsigned int groupsZ) {
     if (groupsX == 2 && groupsY == 3 && groupsZ == 4) {
@@ -134,12 +134,12 @@ extern "C" void mglRendererCallbackDispatchCompute(
     }
 }
 
-extern "C" void mglRendererCallbackDispatchComputeIndirect(
+extern "C" void mglRendererCompatDispatchComputeIndirect(
     void *, GLMContext, intptr_t indirect) {
     if (indirect == 64) ++s_operationComputeIndirectCount;
 }
 
-extern "C" void mglRendererCallbackDraw(
+extern "C" void mglRendererCompatDraw(
     void *, GLMContext, const MGLRenderCppDrawCallbackArgs *args) {
     if (args && args->kind == MGL_RENDER_CPP_DRAW_CALLBACK_ARRAYS &&
         args->mode == GL_TRIANGLES && args->first == 5 && args->count == 6) {
@@ -147,16 +147,16 @@ extern "C" void mglRendererCallbackDraw(
     }
 }
 
-extern "C" void mglRendererCallbackBindTexture(
+extern "C" void mglRendererCompatBindTexture(
     void *, GLMContext, Texture *) {}
-extern "C" void mglRendererCallbackFlushDrawBuffer(void *, GLMContext) {}
-extern "C" void mglRendererCallbackSwapBuffers(void *, GLMContext) {}
-extern "C" void mglRendererCallbackClearBuffer(
+extern "C" void mglRendererCompatFlushDrawBuffer(void *, GLMContext) {}
+extern "C" void mglRendererCompatSwapBuffers(void *, GLMContext) {}
+extern "C" void mglRendererCompatClearBuffer(
     void *, GLMContext, unsigned int, unsigned int) {}
-extern "C" void mglRendererCallbackBlitFramebuffer(
+extern "C" void mglRendererCompatBlitFramebuffer(
     void *, GLMContext, int, int, int, int, int, int, int, int,
     unsigned int, unsigned int) {}
-extern "C" int mglRendererCallbackResource(
+extern "C" int mglRendererCompatResource(
     void *, GLMContext, const MGLRenderCppResourceCallbackArgs *args) {
     if (args &&
         args->kind == MGL_RENDER_CPP_RESOURCE_CALLBACK_GENERATE_MIPMAPS) {

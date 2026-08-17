@@ -1024,8 +1024,8 @@ static void mglBatchExecuteIndirectCommands(
     }
 }
 
-void mglRendererCallbackFlushDrawBuffer(void *runtime_context,
-                                        GLMContext glm_ctx)
+void mglRendererCompatFlushDrawBuffer(void *runtime_context,
+                                      GLMContext glm_ctx)
 {
     MGLRenderer *renderer = (__bridge MGLRenderer *)runtime_context;
     if (!renderer || !glm_ctx) return;

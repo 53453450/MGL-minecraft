@@ -10,6 +10,31 @@
 
 extern "C" Program *mglResolveProgramForStageFromState(
     GLMContext context, int stage);
+extern "C" void mglRendererCompatDispatchCompute(
+    void *compat_context, GLMContext context,
+    unsigned int groups_x, unsigned int groups_y, unsigned int groups_z);
+extern "C" void mglRendererCompatDispatchComputeIndirect(
+    void *compat_context, GLMContext context, intptr_t indirect);
+extern "C" void mglRendererCompatDraw(
+    void *compat_context, GLMContext context,
+    const MGLRenderCppDrawCallbackArgs *args);
+extern "C" void mglRendererCompatBindTexture(
+    void *compat_context, GLMContext context, Texture *texture);
+extern "C" void mglRendererCompatFlushDrawBuffer(
+    void *compat_context, GLMContext context);
+extern "C" void mglRendererCompatSwapBuffers(
+    void *compat_context, GLMContext context);
+extern "C" void mglRendererCompatClearBuffer(
+    void *compat_context, GLMContext context,
+    unsigned int type, unsigned int mask);
+extern "C" void mglRendererCompatBlitFramebuffer(
+    void *compat_context, GLMContext context,
+    int src_x0, int src_y0, int src_x1, int src_y1,
+    int dst_x0, int dst_y0, int dst_x1, int dst_y1,
+    unsigned int mask, unsigned int filter);
+extern "C" int mglRendererCompatResource(
+    void *compat_context, GLMContext context,
+    const MGLRenderCppResourceCallbackArgs *args);
 
 struct MGLRendererBackendHandle {
     std::mutex mutex;
@@ -26,6 +51,13 @@ struct MGLRendererBackendHandle {
     bool shutdown_started = false;
     bool destroying = false;
 };
+
+static void *mglRendererBackendCompatContext(GLMContext context)
+{
+    if (!context || !context->renderer_backend) return nullptr;
+    return mglRendererBackendGetOperationContext(
+        static_cast<MGLRendererBackendHandle *>(context->renderer_backend));
+}
 
 static void mglRendererBackendReleaseOwnedState(
     MGLRendererBackendHandle *backend)
@@ -244,7 +276,8 @@ extern "C" void mglRendererBindBuffer(GLMContext context, Buffer *buffer)
 
 extern "C" void mglRendererBindTexture(GLMContext context, Texture *texture)
 {
-    mglRenderCppInvokeBindTextureCallback(context, texture);
+    void *compat = mglRendererBackendCompatContext(context);
+    if (compat) mglRendererCompatBindTexture(compat, context, texture);
 }
 
 extern "C" void mglRendererBindProgram(GLMContext context, Program *program)
@@ -291,12 +324,14 @@ extern "C" void mglRendererFlush(GLMContext context, bool finish)
 
 extern "C" void mglRendererSwapBuffers(GLMContext context)
 {
-    mglRenderCppInvokeSwapBuffersCallback(context);
+    void *compat = mglRendererBackendCompatContext(context);
+    if (compat) mglRendererCompatSwapBuffers(compat, context);
 }
 
 extern "C" void mglRendererFlushDrawBuffer(GLMContext context)
 {
-    mglRenderCppInvokeFlushDrawBufferCallback(context);
+    void *compat = mglRendererBackendCompatContext(context);
+    if (compat) mglRendererCompatFlushDrawBuffer(compat, context);
 }
 
 extern "C" void mglRendererInvalidateRenderPass(GLMContext context)
@@ -307,7 +342,8 @@ extern "C" void mglRendererInvalidateRenderPass(GLMContext context)
 extern "C" void mglRendererClearBuffer(
     GLMContext context, uint32_t type, uint32_t mask)
 {
-    mglRenderCppInvokeClearBufferCallback(context, type, mask);
+    void *compat = mglRendererBackendCompatContext(context);
+    if (compat) mglRendererCompatClearBuffer(compat, context, type, mask);
 }
 
 extern "C" void mglRendererBlitFramebuffer(
@@ -316,9 +352,12 @@ extern "C" void mglRendererBlitFramebuffer(
     int32_t dst_x0, int32_t dst_y0, int32_t dst_x1, int32_t dst_y1,
     uint32_t mask, uint32_t filter)
 {
-    mglRenderCppInvokeBlitFramebufferCallback(
-        context, src_x0, src_y0, src_x1, src_y1,
-        dst_x0, dst_y0, dst_x1, dst_y1, mask, filter);
+    void *compat = mglRendererBackendCompatContext(context);
+    if (compat) {
+        mglRendererCompatBlitFramebuffer(
+            compat, context, src_x0, src_y0, src_x1, src_y1,
+            dst_x0, dst_y0, dst_x1, dst_y1, mask, filter);
+    }
 }
 
 extern "C" void mglRendererBufferSubData(
@@ -351,7 +390,8 @@ extern "C" void mglRendererFlushBufferRange(
 static int mglRendererInvokeResource(
     GLMContext context, MGLRenderCppResourceCallbackArgs args)
 {
-    return mglRenderCppInvokeResourceCallback(context, &args);
+    void *compat = mglRendererBackendCompatContext(context);
+    return compat ? mglRendererCompatResource(compat, context, &args) : 0;
 }
 
 extern "C" void mglRendererReadDrawable(
@@ -543,7 +583,8 @@ extern "C" void mglRendererCopyImageSubData(
 static void mglRendererInvokeDraw(
     GLMContext context, MGLRenderCppDrawCallbackArgs args)
 {
-    mglRenderCppInvokeDrawCallback(context, &args);
+    void *compat = mglRendererBackendCompatContext(context);
+    if (compat) mglRendererCompatDraw(compat, context, &args);
 }
 
 extern "C" void mglRendererDrawArrays(
@@ -751,14 +792,21 @@ extern "C" void mglRendererDispatchCompute(
     GLMContext context, uint32_t groups_x,
     uint32_t groups_y, uint32_t groups_z)
 {
-    mglRenderCppInvokeComputeCallback(
-        context, groups_x, groups_y, groups_z);
+    void *compat = mglRendererBackendCompatContext(context);
+    if (compat) {
+        mglRendererCompatDispatchCompute(
+            compat, context, groups_x, groups_y, groups_z);
+    }
 }
 
 extern "C" void mglRendererDispatchComputeIndirect(
     GLMContext context, intptr_t indirect)
 {
-    mglRenderCppInvokeComputeIndirectCallback(context, indirect);
+    void *compat = mglRendererBackendCompatContext(context);
+    if (compat) {
+        mglRendererCompatDispatchComputeIndirect(
+            compat, context, indirect);
+    }
 }
 
 extern "C" void mglRendererBeginSampleQuery(

@@ -3284,8 +3284,8 @@ void logDirtyBits(GLMContext ctx)
 }
 
 #pragma mark C interface to mtlSwapBuffers
-void mglRendererCallbackSwapBuffers(void *runtime_context,
-                                    GLMContext glm_ctx)
+void mglRendererCompatSwapBuffers(void *runtime_context,
+                                  GLMContext glm_ctx)
 {
     MGLRenderer *renderer = (__bridge MGLRenderer *)runtime_context;
     if (!renderer || !glm_ctx) return;
@@ -3728,10 +3728,10 @@ void mglRendererCallbackSwapBuffers(void *runtime_context,
  * MGLRenderer+SwapDiagnostics.m */
 
 #pragma mark C interface to mtlClearBuffer
-void mglRendererCallbackClearBuffer(void *runtime_context,
-                                    GLMContext glm_ctx,
-                                    unsigned int type,
-                                    unsigned int mask)
+void mglRendererCompatClearBuffer(void *runtime_context,
+                                  GLMContext glm_ctx,
+                                  unsigned int type,
+                                  unsigned int mask)
 {
     MGLRenderer *renderer = (__bridge MGLRenderer *)runtime_context;
     if (!renderer || !glm_ctx) return;
