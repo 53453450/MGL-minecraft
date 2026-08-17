@@ -5824,9 +5824,12 @@ void mglQueryCounter(GLMContext ctx, GLuint id, GLenum target)
 	/* Use the real GPU timestamp from Metal's sampleTimestamps API
 	 * when available; fall back to the fake counter for API-level
 	 * compatibility on backends without timer query support. */
-	if (ctx->mtl_funcs.mtlGetGPUTimestamp)
+	if (ctx->mtl_funcs.mtlGetGPUTimestamp) {
+		/* The callback only samples. Keep the GL ordering boundary at the
+		 * semantic call site for both the ObjC fallback and C++ path. */
+		mglFlushCommandBuffer(ctx);
 		q->result = ctx->mtl_funcs.mtlGetGPUTimestamp(ctx);
-	else
+	} else
 		q->result = s_fake_timestamp_counter++;
 }
 
