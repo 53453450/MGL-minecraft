@@ -21,13 +21,6 @@ typedef struct MGLRenderCppPipelineBlendState_t
 NS_ASSUME_NONNULL_END
 
 typedef struct MGLPipelineCacheState_t {
-    MTLBlendFactor src_blend_rgb_factor[MAX_COLOR_ATTACHMENTS];
-    MTLBlendFactor dst_blend_rgb_factor[MAX_COLOR_ATTACHMENTS];
-    MTLBlendFactor src_blend_alpha_factor[MAX_COLOR_ATTACHMENTS];
-    MTLBlendFactor dst_blend_alpha_factor[MAX_COLOR_ATTACHMENTS];
-    MTLBlendOperation rgb_blend_operation[MAX_COLOR_ATTACHMENTS];
-    MTLBlendOperation alpha_blend_operation[MAX_COLOR_ATTACHMENTS];
-    MTLColorWriteMask color_mask[MAX_COLOR_ATTACHMENTS];
     id<MTLRenderPipelineState> __strong _Nullable pipelineState;
     MTLPixelFormat pipelineColor0Format;
     MTLPixelFormat pipelineDepthFormat;
@@ -65,8 +58,6 @@ NS_ASSUME_NONNULL_BEGIN
                       pipeline:(id<MTLRenderPipelineState> _Nullable * _Nonnull)pipelineOut
                 vertexFunction:(id<MTLFunction> _Nullable * _Nonnull)vertexFunctionOut
               fragmentFunction:(id<MTLFunction> _Nullable * _Nonnull)fragmentFunctionOut;
-- (nullable MTLRenderPipelineDescriptor *)pipelineDescriptorForWords:
-    (const uint64_t * _Nonnull)words;
 /* Descriptor cache value-state lookup. A hit copies state and returns YES. */
 - (BOOL)pipelineDescriptorStateForWords:
     (const uint64_t * _Nonnull)words
@@ -75,8 +66,6 @@ NS_ASSUME_NONNULL_BEGIN
               vertexFunction:(nullable id<MTLFunction>)vertexFunction
             fragmentFunction:(nullable id<MTLFunction>)fragmentFunction
                     forWords:(const uint64_t * _Nonnull)words;
-- (void)storePipelineDescriptor:(MTLRenderPipelineDescriptor *)descriptor
-                       forWords:(const uint64_t * _Nonnull)words;
 - (void)storePipelineDescriptorState:
     (const MGLRenderCppPipelineDescriptorState * _Nonnull)state
                             forWords:(const uint64_t * _Nonnull)words;

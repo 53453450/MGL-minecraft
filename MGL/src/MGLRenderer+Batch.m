@@ -1223,7 +1223,7 @@ void mglRendererCallbackFlushDrawBuffer(void *runtime_context,
                 /* Per-batch Metal vertex-buffer contract: dynamic BindVertexBuffer
                  * overrides store absolute VERTEX_BINDING_OFFSET and rebind via
                  * setVertexBuffer:offset:.  The descriptor must therefore bake only
-                 * relativeoffset for those batches (see generateVertexDescriptor).
+                 * relativeoffset for those batches (see generateVertexDescriptorState).
                  * Set before restore so DIRTY_VAO rebuilds the matching descriptor. */
                 GLuint absoluteContractDirty = 0u;
                 if (wantAbsoluteVertexOffsets !=

@@ -32,10 +32,8 @@ typedef struct MGLRenderCppPipelineDescriptorState
 
 @interface MGLRenderer ()
 
-- (MTLVertexDescriptor *)generateVertexDescriptor;
 - (BOOL)generateVertexDescriptorState:(MGLRenderCppPipelineDescriptorState *)state;
 - (void)updateBlendStateCache;
-- (void)bindBlendStateToPipelineStateDescriptor:(MTLRenderPipelineDescriptor *)pipelineStateDescriptor;
 
 @end
 

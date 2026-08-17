@@ -107,25 +107,6 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
         return NO;
     }
 
-    for (NSUInteger index = 0; index < MAX_COLOR_ATTACHMENTS; ++index) {
-        MGLRenderCppPipelineBlendState blend = {
-            .source_rgb_factor =
-                (uint32_t)_state.src_blend_rgb_factor[index],
-            .destination_rgb_factor =
-                (uint32_t)_state.dst_blend_rgb_factor[index],
-            .source_alpha_factor =
-                (uint32_t)_state.src_blend_alpha_factor[index],
-            .destination_alpha_factor =
-                (uint32_t)_state.dst_blend_alpha_factor[index],
-            .rgb_operation =
-                (uint32_t)_state.rgb_blend_operation[index],
-            .alpha_operation =
-                (uint32_t)_state.alpha_blend_operation[index],
-            .color_write_mask = (uint32_t)_state.color_mask[index],
-        };
-        mglRenderCppSetPipelineBlendState(
-            _cppOwner, (uint32_t)index, &blend);
-    }
     MGLRenderCppPipelineActiveState active = {
         .pipeline_state = (__bridge void *)_state.pipelineState,
         .vertex_function = (__bridge void *)_state.pipelineVertexFunction,
@@ -223,13 +204,6 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
     return YES;
 }
 
-- (MTLRenderPipelineDescriptor *)pipelineDescriptorForWords:
-    (const uint64_t *)words
-{
-    (void)words;
-    return nil;
-}
-
 - (NSUInteger)storePipeline:(MGLMetalRenderPipelineStateRef)pipeline
               vertexFunction:(MGLMetalFunctionRef)vertexFunction
             fragmentFunction:(MGLMetalFunctionRef)fragmentFunction
@@ -249,13 +223,6 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
     }
     MGL_PERF_ADD(g_mglPipelineCacheEvictionsSinceSwap, removed);
     return (NSUInteger)removed;
-}
-
-- (void)storePipelineDescriptor:(MTLRenderPipelineDescriptor *)descriptor
-                       forWords:(const uint64_t *)words
-{
-    (void)descriptor;
-    (void)words;
 }
 
 - (BOOL)pipelineDescriptorStateForWords:(const uint64_t *)words

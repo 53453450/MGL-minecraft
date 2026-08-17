@@ -2352,14 +2352,14 @@ MTLVertexFormat glTypeSizeToMtlType(GLuint type, GLuint size, bool normalized)
                  * A in MSB); the two bit orders are incompatible and cannot be
                  * mapped directly.  Return Invalid so the caller falls back to
                  * the CPU conversion path (the mglDoubleVertexAttribFloatFormat
-                 * path in generateVertexDescriptor). */
+                 * path in generateVertexDescriptorState). */
                 break;
 
             /* GL_UNSIGNED_INT_10F_11F_11F_REV: 11/11/10 float packed format,
              * with no corresponding Metal vertex format.  Return Invalid; the
              * CPU must unpack it to float (like the GL_DOUBLE
              * mglDoubleVertexAttribFloatFormat path).  The CPU conversion
-             * entry point lives in generateVertexDescriptor
+             * entry point lives in generateVertexDescriptorState
              * (MGLRenderer+RenderPass.m) and needs extending to recognize
              * this type. */
             case GL_UNSIGNED_INT_10F_11F_11F_REV:
@@ -2367,7 +2367,7 @@ MTLVertexFormat glTypeSizeToMtlType(GLuint type, GLuint size, bool normalized)
 
             /* GL_FIXED: 16.16 fixed-point format, with no corresponding Metal
              * vertex format.  Return Invalid; the CPU must unpack it to float.
-             * The CPU conversion entry point lives in generateVertexDescriptor
+             * The CPU conversion entry point lives in generateVertexDescriptorState
              * (MGLRenderer+RenderPass.m) and needs extending to recognize
              * this type. */
             case GL_FIXED:
@@ -3122,9 +3122,9 @@ void logDirtyBits(GLMContext ctx)
 
 /* newCommandBufferAndRenderEncoder moved to MGLRenderer+RenderPass.m */
 
-/* generatePipelineDescriptor moved to MGLRenderer+RenderPass.m */
+/* generatePipelineDescriptorState moved to MGLRenderer+RenderPass.m */
 
-/* generateVertexDescriptor moved to MGLRenderer+RenderPass.m */
+/* generateVertexDescriptorState moved to MGLRenderer+VertexLayout.m */
 
 #pragma mark utility funcs for processGLState
 - (MTLBlendFactor) blendFactorFromGL:(GLenum)gl_blend

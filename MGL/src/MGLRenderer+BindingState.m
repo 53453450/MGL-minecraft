@@ -462,7 +462,7 @@ static bool mglBindingStateFlushResourceBindings(
         }
 
         // Vertex attribute streams are rebound from VAO below using a deterministic
-        // attribute->slot mapping shared with generateVertexDescriptor.
+        // attribute->slot mapping shared with generateVertexDescriptorState.
         // Keep this pass for resource/base bindings only.
         if (!isBaseBinding) {
             continue;
@@ -853,7 +853,7 @@ static bool mglBindingStateFlushResourceBindings(
         }                                                                       \
     } while (0)
 
-    // Attribute bindings must use the exact same index mapping as generateVertexDescriptor.
+    // Attribute bindings must use the same mapping as generateVertexDescriptorState.
     // Do this pass directly from the VAO so pipeline creation does not depend on map list timing.
     GLuint maxAttribs = MAX_ATTRIBS;
     for (GLuint attrib = 0; attrib < maxAttribs; attrib++) {

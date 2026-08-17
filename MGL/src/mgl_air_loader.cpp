@@ -80,7 +80,7 @@ void normalizeDepthStencilFormats(MGLRenderCppPipelineDescriptorState* desc) {
 }
 
 // P4.2: 由 value-state 组装 MTL::RenderPipelineDescriptor（final/simple/safe
-// 共用）。镜像 ObjC generatePipelineDescriptor +
+// 共用）。镜像 renderer pipeline descriptor state +
 // bindBlendStateToPipelineStateDescriptor + mglEnableIndirectCommandBuffersForPipeline：
 //   - label "GLSL Pipeline"
 //   - color attachment 的 writeMask/blend 只在 pixelFormat 有效时设置
@@ -149,7 +149,7 @@ MTL::RenderPipelineDescriptor* buildRenderPipelineDescriptor(
             vd->attributes()->object(i)->setOffset(desc->attrib_offset[i]);
             vd->attributes()->object(i)->setBufferIndex(bufIdx);
             /* 只有格式有效的 attribute 才写 layout —— 与 ObjC
-             * generateVertexDescriptor 一致：未使用的 attrib（Invalid
+             * generateVertexDescriptorState 一致：未使用的 attrib（Invalid
              * 格式、零值 buffer 索引）不得用 0 stride/stepRate 覆盖已写
              * 的 layout 状态。 */
             if (desc->attrib_format[i] !=
