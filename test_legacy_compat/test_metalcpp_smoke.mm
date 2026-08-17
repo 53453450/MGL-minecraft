@@ -8939,6 +8939,32 @@ static int verifyRendererBackend(id<MTLDevice> device) {
         return 1;
     }
     printf("RENDERER_BACKEND_STAGE_COPY_BACK_OWNER_OK\n");
+    const uint8_t currentAttribBytes[16] = {
+        1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u,
+        9u, 10u, 11u, 12u, 13u, 14u, 15u, 16u,
+    };
+    uint8_t differentAttribBytes[16];
+    memcpy(differentAttribBytes, currentAttribBytes,
+           sizeof(differentAttribBytes));
+    differentAttribBytes[0] = 99u;
+    if (mglRendererBackendSetCurrentAttribBuffer(
+            backend, 2u, currentAttribBytes,
+            (uint32_t)sizeof(currentAttribBytes), 16u,
+            (__bridge void *)fallbackBuffer) != 0 ||
+        mglRendererBackendGetCurrentAttribBuffer(
+            backend, 2u, currentAttribBytes,
+            (uint32_t)sizeof(currentAttribBytes), 16u) !=
+            (__bridge void *)fallbackBuffer ||
+        mglRendererBackendGetCurrentAttribBuffer(
+            backend, 2u, differentAttribBytes,
+            (uint32_t)sizeof(differentAttribBytes), 16u) != NULL ||
+        mglRendererBackendGetCurrentAttribBuffer(
+            backend, 2u, currentAttribBytes,
+            (uint32_t)sizeof(currentAttribBytes), 8u) != NULL) {
+        fprintf(stderr, "FAIL: renderer backend current attrib cache\n");
+        return 1;
+    }
+    printf("RENDERER_BACKEND_CURRENT_ATTRIB_CACHE_OK\n");
     if (mglRendererBackendSetBlitCachedObject(
             backend, MGL_RENDERER_BACKEND_BLIT_CACHE_NEAREST_SAMPLER,
             (__bridge void *)nearestSampler) != 0 ||

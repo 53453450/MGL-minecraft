@@ -112,6 +112,13 @@ int mglRendererBackendClearStageCopyBackSlot(
     uint32_t slot);
 int mglRendererBackendClearStageCopyBackList(
     MGLRendererBackendHandle *backend, const void *copy_back_list_key);
+/* Returns a borrowed cached buffer when the value key and stride match. */
+void *mglRendererBackendGetCurrentAttribBuffer(
+    const MGLRendererBackendHandle *backend, uint32_t attrib,
+    const void *bytes, uint32_t byte_count, uint64_t stride);
+int mglRendererBackendSetCurrentAttribBuffer(
+    MGLRendererBackendHandle *backend, uint32_t attrib,
+    const void *bytes, uint32_t byte_count, uint64_t stride, void *buffer);
 int mglRendererBackendSetBlitCachedObject(
     MGLRendererBackendHandle *backend,
     MGLRendererBackendBlitCacheKind kind, void *object);

@@ -864,13 +864,10 @@ static bool mglBindingStateFlushResourceBindings(
              * and stride haven't changed since the last draw.  This avoids the
              * per-draw NSMutableData allocation + newBufferWithBytes + 4096×
              * memcpy loop. */
-            MGLMetalBufferRef currentAttribBuffer = nil;
-            if (_currentAttribCacheValid[attrib] &&
-                _currentAttribCacheStride[attrib] == attribStride &&
-                memcmp(_currentAttribCacheBytes[attrib], attribBytes, attribStride) == 0 &&
-                _currentAttribBuffers[attrib] != nil) {
-                currentAttribBuffer = _currentAttribBuffers[attrib];
-            }
+            MGLMetalBufferRef currentAttribBuffer = (__bridge id<MTLBuffer>)
+                mglRendererBackendGetCurrentAttribBuffer(
+                    _backend, attrib, attribBytes, (uint32_t)attribStride,
+                    (uint64_t)attribStride);
 
             if (currentAttribBuffer == nil) {
                 /* Cache miss — rebuild the repeated buffer. */
@@ -890,11 +887,13 @@ static bool mglBindingStateFlushResourceBindings(
                     NSLog(@"MGL VBIND skip attrib=%u: failed to allocate current vertex attrib Metal buffer", attrib);
                     continue;
                 }
-                /* Store in cache. */
-                _currentAttribBuffers[attrib] = currentAttribBuffer;
-                memcpy(_currentAttribCacheBytes[attrib], attribBytes, attribStride);
-                _currentAttribCacheStride[attrib] = attribStride;
-                _currentAttribCacheValid[attrib] = YES;
+                if (mglRendererBackendSetCurrentAttribBuffer(
+                        _backend, attrib, attribBytes, (uint32_t)attribStride,
+                        (uint64_t)attribStride,
+                        (__bridge void *)currentAttribBuffer) != 0) {
+                    NSLog(@"MGL VBIND skip attrib=%u: failed to retain current vertex attrib cache buffer", attrib);
+                    continue;
+                }
             }
             if (!mglBindingStateIsValid(_bindingStateOwner) ||
                 !mglBindingStateBufferMatches(

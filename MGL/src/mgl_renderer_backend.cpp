@@ -140,6 +140,13 @@ struct MGLRendererBackendStageCopyBackList {
     std::array<MGLRendererBackendStageCopyBackSlot, 31> slots{};
 };
 
+struct MGLRendererBackendCurrentAttribCacheEntry {
+    MTL::Buffer *buffer = nullptr;
+    std::array<uint8_t, 16> bytes{};
+    uint64_t stride = 0;
+    uint32_t byte_count = 0;
+};
+
 struct MGLRendererBackendHandle {
     std::mutex mutex;
     GLMContext context = nullptr;
@@ -160,6 +167,8 @@ struct MGLRendererBackendHandle {
     std::array<MTL::Texture *, 6> default_draw_buffer_depths{};
     std::array<MTL::Texture *, 6> default_draw_buffer_stencils{};
     std::vector<MGLRendererBackendStageCopyBackList> stage_copy_back_lists;
+    std::array<MGLRendererBackendCurrentAttribCacheEntry, MAX_ATTRIBS>
+        current_attrib_cache{};
     MTL::SamplerState *scaled_blit_nearest_sampler = nullptr;
     MTL::SamplerState *scaled_blit_linear_sampler = nullptr;
     MTL::DepthStencilState *clear_rect_depth_state = nullptr;
@@ -230,6 +239,11 @@ static void mglRendererBackendReleaseOwnedState(
         }
     }
     backend->stage_copy_back_lists.clear();
+    for (MGLRendererBackendCurrentAttribCacheEntry &entry :
+         backend->current_attrib_cache) {
+        if (entry.buffer) entry.buffer->release();
+    }
+    backend->current_attrib_cache = {};
     if (backend->scaled_blit_nearest_sampler) {
         backend->scaled_blit_nearest_sampler->release();
         backend->scaled_blit_nearest_sampler = nullptr;
@@ -765,6 +779,47 @@ extern "C" int mglRendererBackendClearStageCopyBackList(
         if (entry.destination) entry.destination->release();
     }
     backend->stage_copy_back_lists.erase(list_it);
+    return 0;
+}
+
+extern "C" void *mglRendererBackendGetCurrentAttribBuffer(
+    const MGLRendererBackendHandle *backend, uint32_t attrib,
+    const void *bytes, uint32_t byte_count, uint64_t stride)
+{
+    if (!backend || attrib >= MAX_ATTRIBS || !bytes ||
+        byte_count == 0u || byte_count > 16u || stride == 0u) {
+        return nullptr;
+    }
+    std::lock_guard<std::mutex> lock(
+        const_cast<MGLRendererBackendHandle *>(backend)->mutex);
+    if (backend->destroying) return nullptr;
+    const MGLRendererBackendCurrentAttribCacheEntry &entry =
+        backend->current_attrib_cache[attrib];
+    if (!entry.buffer || entry.byte_count != byte_count ||
+        entry.stride != stride ||
+        std::memcmp(entry.bytes.data(), bytes, byte_count) != 0) {
+        return nullptr;
+    }
+    return entry.buffer;
+}
+
+extern "C" int mglRendererBackendSetCurrentAttribBuffer(
+    MGLRendererBackendHandle *backend, uint32_t attrib,
+    const void *bytes, uint32_t byte_count, uint64_t stride, void *buffer)
+{
+    if (!backend || attrib >= MAX_ATTRIBS || !bytes ||
+        byte_count == 0u || byte_count > 16u || stride == 0u || !buffer) {
+        return -1;
+    }
+    std::lock_guard<std::mutex> lock(backend->mutex);
+    if (backend->destroying) return -1;
+    MGLRendererBackendCurrentAttribCacheEntry &entry =
+        backend->current_attrib_cache[attrib];
+    mglRendererBackendReplaceObject(entry.buffer, buffer);
+    entry.bytes = {};
+    std::memcpy(entry.bytes.data(), bytes, byte_count);
+    entry.byte_count = byte_count;
+    entry.stride = stride;
     return 0;
 }
 

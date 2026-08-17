@@ -228,15 +228,6 @@ static inline double mglTraceNowSeconds(void)
      * Metal when the VS writes [[render_target_array_index]]). */
     GLenum _lastDrawPrimitiveMode;
     MGLBatchingState _batching;
-    /* Cached current-vertex-attrib MTLBuffers.
-     * Each slot caches the repeated (4096×) MTLBuffer built from
-     * current_vertex_attrib[attrib], keyed on (attribBytes, stride).
-     * Avoids per-draw NSMutableData + newBufferWithBytes when the
-     * current value hasn't changed (common in Minecraft GUI/item pass). */
-    id<MTLBuffer> _currentAttribBuffers[MAX_ATTRIBS];
-    uint8_t       _currentAttribCacheBytes[MAX_ATTRIBS][16];
-    NSUInteger    _currentAttribCacheStride[MAX_ATTRIBS];
-    BOOL          _currentAttribCacheValid[MAX_ATTRIBS];
     /* Cached spvBufferSizeConstants MTLBuffers.
      * Each stage's size-constants buffer is a fixed 124-byte (31×uint32)
      * buffer bound at MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX when a shader uses
