@@ -81,14 +81,6 @@ static MGLMetalBufferRef mglRenderPassCreateBufferWithBytes(
     return nil;
 }
 
-static MGLMetalCommandQueueRef mglRenderPassCreateCommandQueue(
-    MGLMetalDeviceRef device,
-    void **owner)
-{
-    (void)device;
-    return mglRenderCppCreateOrResetCommandQueueOwner(owner, 0u);
-}
-
 static void mglRenderPassWaitCommandBuffer(MGLMetalCommandBufferRef commandBuffer)
 {
     if (mglRenderCppWaitCommandBuffer(
@@ -3711,8 +3703,9 @@ output->name, (unsigned)i,
             Class queueClass = [_commandQueue class];
             if (!queueClass) {
                 NSLog(@"MGL AGX CRITICAL: _commandQueue is invalid (no class) - recreating");
-                _commandQueue = mglRenderPassCreateCommandQueue(
-                    _device, &_commandQueueOwner);
+                void *commandQueue = NULL;
+                (void)mglRendererBackendResetCommandQueue(
+                    _backend, 0u, &commandQueue);
                 if (!_commandQueue) {
                     NSLog(@"MGL AGX CRITICAL: Failed to recreate command queue");
                     [self recordGPUError];
@@ -3722,8 +3715,9 @@ output->name, (unsigned)i,
         } @catch (NSException *exception) {
             NSLog(@"MGL AGX CRITICAL: _commandQueue validation exception: %@ - recreating", exception);
             [self recordGPUError];
-            _commandQueue = mglRenderPassCreateCommandQueue(
-                _device, &_commandQueueOwner);
+            void *commandQueue = NULL;
+            (void)mglRendererBackendResetCommandQueue(
+                _backend, 0u, &commandQueue);
             if (!_commandQueue) {
                 NSLog(@"MGL AGX CRITICAL: Failed to recreate command queue after exception");
                 [self recordGPUError];

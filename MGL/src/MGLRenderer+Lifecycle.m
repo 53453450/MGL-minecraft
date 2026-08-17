@@ -308,12 +308,8 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         ? (uint32_t)MGLCapabilityMaxConcurrentCommandBuffers(&_capability)
         : 0u;
     void *commandQueue = NULL;
-    if (mglRendererBackendResetCommandQueue(
-            _backend, maxCommandBuffers, &commandQueue) == 0) {
-        _commandQueue = (__bridge id<MTLCommandQueue>)commandQueue;
-        _commandQueueOwner = mglRendererBackendGetOwner(
-            _backend, MGL_RENDERER_BACKEND_OWNER_COMMAND_QUEUE);
-    }
+    (void)mglRendererBackendResetCommandQueue(
+        _backend, maxCommandBuffers, &commandQueue);
     if (!_commandQueue) {
         NSLog(@"MGL ERROR: Failed to create Metal command queue");
         // Intentional early return on critical Metal initialization failure.
@@ -465,7 +461,6 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     _bindingStateOwner = NULL;
     _queryStateOwner = NULL;
     _gpuRecovery.commandRecoveryOwner = NULL;
-    _commandQueueOwner = NULL;
 }
 
 /* Publish view geometry to the GL thread as an atomic snapshot.  Main thread
@@ -727,7 +722,6 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         _bindingStateOwner = NULL;
         _queryStateOwner = NULL;
         _gpuRecovery.commandRecoveryOwner = NULL;
-        _commandQueueOwner = NULL;
 
         // Cleanup drawable and layer
         if (_drawable) {
@@ -741,11 +735,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
             _layer = nil;
         }
 
-        // Cleanup command queue and device
-        if (_commandQueue) {
-            NSLog(@"MGL INFO: Releasing command queue");
-            _commandQueue = nil;
-        }
+        // Cleanup device. The backend command queue owner was destroyed above.
         if (_device) {
             NSLog(@"MGL INFO: Releasing Metal device");
             _device = nil;

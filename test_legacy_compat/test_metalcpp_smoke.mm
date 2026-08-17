@@ -8814,7 +8814,8 @@ static int verifyRendererBackend(id<MTLDevice> device) {
     }
     void *queue = NULL;
     if (mglRendererBackendResetCommandQueue(backend, 4u, &queue) != 0 ||
-        !queue || mglRendererBackendIsReady(backend) != 1) {
+        !queue || mglRendererBackendGetCommandQueue(backend) != queue ||
+        mglRendererBackendIsReady(backend) != 1) {
         fprintf(stderr, "FAIL: renderer backend queue readiness\n");
         return 1;
     }

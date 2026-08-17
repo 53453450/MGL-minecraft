@@ -65,6 +65,9 @@ int mglRendererBackendIsReady(const MGLRendererBackendHandle *backend);
 int mglRendererBackendResetCommandQueue(MGLRendererBackendHandle *backend,
                                         uint32_t max_command_buffers,
                                         void **command_queue_out);
+/* Returns the current borrowed queue owned by CommandQueueOwner. */
+void *mglRendererBackendGetCommandQueue(
+    const MGLRendererBackendHandle *backend);
 int mglRendererBackendAttachRuntimeOwners(MGLRendererBackendHandle *backend,
                                           void *command_buffer_owner,
                                           void *render_encoder_owner,

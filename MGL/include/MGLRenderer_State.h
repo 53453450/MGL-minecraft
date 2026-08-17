@@ -76,9 +76,6 @@ typedef struct MGLRendererCoreState_t {
     MGLCapability capability;
     MGLDrawable drawBuffers[_MAX_DRAW_BUFFERS];
     BOOL defaultDrawableWrittenSinceLastSwap;
-    /* Borrowed aliases into MGLRendererBackendHandle during P5 migration. */
-    void *commandQueueOwner;
-    id<MTLCommandQueue> __strong commandQueue;
     /* Lock-free hand-off channels.  Written by the completion-handler thread
      * / main queue, drained (and resynchronized) on the GL thread. */
     _Atomic bool deviceResetRequested;

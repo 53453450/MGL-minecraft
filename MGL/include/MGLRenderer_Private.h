@@ -329,8 +329,10 @@ static inline double mglTraceNowSeconds(void)
 #define _capability _core.capability
 #define _drawBuffers _core.drawBuffers
 #define _defaultDrawableWrittenSinceLastSwap _core.defaultDrawableWrittenSinceLastSwap
-#define _commandQueueOwner _core.commandQueueOwner
-#define _commandQueue _core.commandQueue
+#define _commandQueueOwner mglRendererBackendGetOwner( \
+    _backend, MGL_RENDERER_BACKEND_OWNER_COMMAND_QUEUE)
+#define _commandQueue ((__bridge id<MTLCommandQueue>) \
+    mglRendererBackendGetCommandQueue(_backend))
 #define _deviceResetRequested _core.deviceResetRequested
 #define _pendingDrawableW _core.pendingDrawableW
 #define _pendingDrawableH _core.pendingDrawableH

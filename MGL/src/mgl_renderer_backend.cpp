@@ -134,6 +134,7 @@ struct MGLRendererBackendHandle {
     std::mutex mutex;
     GLMContext context = nullptr;
     void *command_queue_owner = nullptr;
+    MTL::CommandQueue *command_queue = nullptr;
     void *command_buffer_owner = nullptr;
     void *render_encoder_owner = nullptr;
     void *render_pass_state_owner = nullptr;
@@ -246,6 +247,7 @@ static void mglRendererBackendReleaseOwnedState(
     }
     backend->proactive_textures.clear();
     mglRenderCppDestroyCommandQueueOwner(&backend->command_queue_owner);
+    backend->command_queue = nullptr;
     mglRenderCppBindingDestroy(backend->binding_owner);
     backend->binding_owner = nullptr;
     mglRenderCppDestroyQueryStateOwner(&backend->query_owner);
@@ -430,6 +432,7 @@ extern "C" int mglRendererBackendResetCommandQueue(
     if (!backend || !command_queue_out) return -1;
     std::lock_guard<std::mutex> lock(backend->mutex);
     if (!backend->renderer_initialized || backend->shutdown_started) return -1;
+    backend->command_queue = nullptr;
     void *queue = nullptr;
     int result = backend->command_queue_owner
         ? mglRenderCppResetCommandQueueOwner(
@@ -437,8 +440,18 @@ extern "C" int mglRendererBackendResetCommandQueue(
         : mglRenderCppCreateCommandQueueOwner(
               max_command_buffers, &backend->command_queue_owner, &queue);
     if (result != 0 || !queue) return -1;
+    backend->command_queue = static_cast<MTL::CommandQueue *>(queue);
     *command_queue_out = queue;
     return 0;
+}
+
+extern "C" void *mglRendererBackendGetCommandQueue(
+    const MGLRendererBackendHandle *backend)
+{
+    if (!backend) return nullptr;
+    std::lock_guard<std::mutex> lock(
+        const_cast<MGLRendererBackendHandle *>(backend)->mutex);
+    return backend->command_queue;
 }
 
 extern "C" int mglRendererBackendAttachRuntimeOwners(
