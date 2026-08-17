@@ -4458,9 +4458,8 @@ Buffer *getIndirectBuffer(GLMContext ctx)
     if (!copyBacks) {
         return;
     }
-    for (NSUInteger i = 0; i < kMGLMaxBufferSlots; i++) {
-        [self clearStageBindingCopyBack:copyBacks atIndex:i];
-    }
+    (void)mglRendererBackendClearStageCopyBackList(_backend, copyBacks);
+    memset(copyBacks, 0, sizeof(*copyBacks));
 }
 
 - (void)clearStageBindingCopyBack:(MGLStageBindingCopyBackList *)copyBacks
@@ -4469,12 +4468,10 @@ Buffer *getIndirectBuffer(GLMContext ctx)
     if (!copyBacks || index >= kMGLMaxBufferSlots) {
         return;
     }
+    (void)mglRendererBackendClearStageCopyBackSlot(
+        _backend, copyBacks, (uint32_t)index);
     MGLStageBindingCopyBack *entry = &copyBacks->slots[index];
-    entry->temporary = nil;
-    entry->destination = nil;
-    entry->destination_buffer = NULL;
-    entry->destination_offset = 0;
-    entry->length = 0;
+    memset(entry, 0, sizeof(*entry));
 }
 
 - (bool)recordStageBindingCopyBack:(MGLStageBindingCopyBackList *)copyBacks
@@ -4500,8 +4497,13 @@ Buffer *getIndirectBuffer(GLMContext ctx)
     }
 
     MGLStageBindingCopyBack *entry = &copyBacks->slots[index];
-    entry->temporary = temporary;
-    entry->destination = destination;
+    if (mglRendererBackendSetStageCopyBackResources(
+            _backend, copyBacks, (uint32_t)index,
+            (__bridge void *)temporary, (__bridge void *)destination) != 0) {
+        return false;
+    }
+    entry->temporary = (__bridge void *)temporary;
+    entry->destination = (__bridge void *)destination;
     entry->destination_buffer = destinationBuffer;
     entry->destination_offset = destinationOffset;
     entry->length = length;
@@ -4528,8 +4530,8 @@ Buffer *getIndirectBuffer(GLMContext ctx)
         if (entry->length == 0) {
             continue;
         }
-        entries[entryCount].temporary = (__bridge void *)entry->temporary;
-        entries[entryCount].destination = (__bridge void *)entry->destination;
+        entries[entryCount].temporary = entry->temporary;
+        entries[entryCount].destination = entry->destination;
         entries[entryCount].destination_buffer = entry->destination_buffer;
         entries[entryCount].destination_offset = entry->destination_offset;
         entries[entryCount].length = entry->length;

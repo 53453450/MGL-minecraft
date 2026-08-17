@@ -1164,8 +1164,8 @@ typedef struct {
             if (entry->length == 0u) continue;
             copyBackEntries[copyBackEntryCount++] =
                 (MGLRenderCppCopyBackEntry){
-                    .temporary = (__bridge void *)entry->temporary,
-                    .destination = (__bridge void *)entry->destination,
+                    .temporary = entry->temporary,
+                    .destination = entry->destination,
                     .destination_buffer = entry->destination_buffer,
                     .destination_offset = entry->destination_offset,
                     .length = entry->length,
@@ -1862,8 +1862,8 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
             if (entry->length == 0u) continue;
             copyBackEntries[copyBackEntryCount++] =
                 (MGLRenderCppCopyBackEntry){
-                    .temporary = (__bridge void *)entry->temporary,
-                    .destination = (__bridge void *)entry->destination,
+                    .temporary = entry->temporary,
+                    .destination = entry->destination,
                     .destination_buffer = entry->destination_buffer,
                     .destination_offset = entry->destination_offset,
                     .length = entry->length,
@@ -2531,8 +2531,8 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
             if (entry->length == 0u) continue;
             copyBackEntries[copyBackEntryCount++] =
                 (MGLRenderCppCopyBackEntry){
-                    .temporary = (__bridge void *)entry->temporary,
-                    .destination = (__bridge void *)entry->destination,
+                    .temporary = entry->temporary,
+                    .destination = entry->destination,
                     .destination_buffer = entry->destination_buffer,
                     .destination_offset = entry->destination_offset,
                     .length = entry->length,

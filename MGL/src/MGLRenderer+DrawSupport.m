@@ -1590,8 +1590,8 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
             if (entry->length == 0) continue;
             copyBackEntries[copyBackEntryCount++] =
                 (MGLRenderCppCopyBackEntry){
-                    .temporary = (__bridge void *)entry->temporary,
-                    .destination = (__bridge void *)entry->destination,
+                    .temporary = entry->temporary,
+                    .destination = entry->destination,
                     .destination_buffer = entry->destination_buffer,
                     .destination_offset = entry->destination_offset,
                     .length = entry->length,

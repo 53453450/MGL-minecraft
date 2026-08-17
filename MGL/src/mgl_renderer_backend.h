@@ -101,6 +101,17 @@ void *mglRendererBackendGetDefaultDrawBufferAttachment(
     MGLRendererBackendDefaultDrawBufferAttachmentKind kind);
 int mglRendererBackendClearDefaultDrawBuffer(
     MGLRendererBackendHandle *backend, uint32_t draw_buffer_index);
+int mglRendererBackendSetStageCopyBackResources(
+    MGLRendererBackendHandle *backend, const void *copy_back_list_key,
+    uint32_t slot, void *temporary, void *destination);
+int mglRendererBackendGetStageCopyBackResources(
+    const MGLRendererBackendHandle *backend, const void *copy_back_list_key,
+    uint32_t slot, void **temporary_out, void **destination_out);
+int mglRendererBackendClearStageCopyBackSlot(
+    MGLRendererBackendHandle *backend, const void *copy_back_list_key,
+    uint32_t slot);
+int mglRendererBackendClearStageCopyBackList(
+    MGLRendererBackendHandle *backend, const void *copy_back_list_key);
 int mglRendererBackendSetBlitCachedObject(
     MGLRendererBackendHandle *backend,
     MGLRendererBackendBlitCacheKind kind, void *object);

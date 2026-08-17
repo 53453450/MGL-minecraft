@@ -8905,6 +8905,40 @@ static int verifyRendererBackend(id<MTLDevice> device) {
         return 1;
     }
     printf("RENDERER_BACKEND_DEFAULT_DRAW_BUFFERS_OK\n");
+    int stageCopyBackKey = 0;
+    void *copyBackTemporary = NULL;
+    void *copyBackDestination = NULL;
+    if (mglRendererBackendSetStageCopyBackResources(
+            backend, &stageCopyBackKey, 3u,
+            (__bridge void *)fallbackBuffer,
+            (__bridge void *)fallbackBuffer) != 0 ||
+        mglRendererBackendGetStageCopyBackResources(
+            backend, &stageCopyBackKey, 3u,
+            &copyBackTemporary, &copyBackDestination) != 1 ||
+        copyBackTemporary != (__bridge void *)fallbackBuffer ||
+        copyBackDestination != (__bridge void *)fallbackBuffer ||
+        mglRendererBackendClearStageCopyBackSlot(
+            backend, &stageCopyBackKey, 3u) != 0 ||
+        mglRendererBackendGetStageCopyBackResources(
+            backend, &stageCopyBackKey, 3u,
+            &copyBackTemporary, &copyBackDestination) != 0 ||
+        mglRendererBackendSetStageCopyBackResources(
+            backend, &stageCopyBackKey, 4u,
+            (__bridge void *)fallbackBuffer,
+            (__bridge void *)fallbackBuffer) != 0 ||
+        mglRendererBackendSetStageCopyBackResources(
+            backend, &stageCopyBackKey, 5u,
+            (__bridge void *)fallbackBuffer,
+            (__bridge void *)fallbackBuffer) != 0 ||
+        mglRendererBackendClearStageCopyBackList(
+            backend, &stageCopyBackKey) != 0 ||
+        mglRendererBackendGetStageCopyBackResources(
+            backend, &stageCopyBackKey, 4u,
+            &copyBackTemporary, &copyBackDestination) != 0) {
+        fprintf(stderr, "FAIL: renderer backend stage copy-back owner\n");
+        return 1;
+    }
+    printf("RENDERER_BACKEND_STAGE_COPY_BACK_OWNER_OK\n");
     if (mglRendererBackendSetBlitCachedObject(
             backend, MGL_RENDERER_BACKEND_BLIT_CACHE_NEAREST_SAMPLER,
             (__bridge void *)nearestSampler) != 0 ||

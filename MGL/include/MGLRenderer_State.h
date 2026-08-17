@@ -55,8 +55,8 @@ enum {
 };
 
 typedef struct {
-    id<MTLBuffer> __strong temporary;
-    id<MTLBuffer> __strong destination;
+    void *temporary;
+    void *destination;
     Buffer *destination_buffer;
     NSUInteger destination_offset;
     NSUInteger length;

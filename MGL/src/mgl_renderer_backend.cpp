@@ -130,6 +130,16 @@ struct MGLRendererBackendFallbackTextureEntry {
     MTL::Texture *texture = nullptr;
 };
 
+struct MGLRendererBackendStageCopyBackSlot {
+    MTL::Buffer *temporary = nullptr;
+    MTL::Buffer *destination = nullptr;
+};
+
+struct MGLRendererBackendStageCopyBackList {
+    const void *key = nullptr;
+    std::array<MGLRendererBackendStageCopyBackSlot, 31> slots{};
+};
+
 struct MGLRendererBackendHandle {
     std::mutex mutex;
     GLMContext context = nullptr;
@@ -149,6 +159,7 @@ struct MGLRendererBackendHandle {
     std::array<MTL::Texture *, 6> default_draw_buffer_colors{};
     std::array<MTL::Texture *, 6> default_draw_buffer_depths{};
     std::array<MTL::Texture *, 6> default_draw_buffer_stencils{};
+    std::vector<MGLRendererBackendStageCopyBackList> stage_copy_back_lists;
     MTL::SamplerState *scaled_blit_nearest_sampler = nullptr;
     MTL::SamplerState *scaled_blit_linear_sampler = nullptr;
     MTL::DepthStencilState *clear_rect_depth_state = nullptr;
@@ -211,6 +222,14 @@ static void mglRendererBackendReleaseOwnedState(
         if (texture) texture->release();
     }
     backend->default_draw_buffer_stencils = {};
+    for (MGLRendererBackendStageCopyBackList &list :
+         backend->stage_copy_back_lists) {
+        for (MGLRendererBackendStageCopyBackSlot &slot : list.slots) {
+            if (slot.temporary) slot.temporary->release();
+            if (slot.destination) slot.destination->release();
+        }
+    }
+    backend->stage_copy_back_lists.clear();
     if (backend->scaled_blit_nearest_sampler) {
         backend->scaled_blit_nearest_sampler->release();
         backend->scaled_blit_nearest_sampler = nullptr;
@@ -333,6 +352,15 @@ static void mglRendererBackendReplaceObject(T *&slot, void *object)
     if (replacement) replacement->retain();
     if (slot) slot->release();
     slot = replacement;
+}
+
+static bool mglRendererBackendStageCopyBackListEmpty(
+    const MGLRendererBackendStageCopyBackList &list)
+{
+    for (const MGLRendererBackendStageCopyBackSlot &slot : list.slots) {
+        if (slot.temporary || slot.destination) return false;
+    }
+    return true;
 }
 
 static MGLRendererBackendPassthroughCache *
@@ -644,6 +672,99 @@ extern "C" int mglRendererBackendClearDefaultDrawBuffer(
         backend->default_draw_buffer_depths[draw_buffer_index], nullptr);
     mglRendererBackendReplaceObject(
         backend->default_draw_buffer_stencils[draw_buffer_index], nullptr);
+    return 0;
+}
+
+extern "C" int mglRendererBackendSetStageCopyBackResources(
+    MGLRendererBackendHandle *backend, const void *copy_back_list_key,
+    uint32_t slot, void *temporary, void *destination)
+{
+    if (!backend || !copy_back_list_key || slot >= 31u ||
+        !temporary || !destination) {
+        return -1;
+    }
+    std::lock_guard<std::mutex> lock(backend->mutex);
+    if (backend->destroying) return -1;
+    auto list_it = std::find_if(
+        backend->stage_copy_back_lists.begin(),
+        backend->stage_copy_back_lists.end(),
+        [copy_back_list_key](const MGLRendererBackendStageCopyBackList &list) {
+            return list.key == copy_back_list_key;
+        });
+    if (list_it == backend->stage_copy_back_lists.end()) {
+        backend->stage_copy_back_lists.push_back({});
+        list_it = backend->stage_copy_back_lists.end() - 1;
+        list_it->key = copy_back_list_key;
+    }
+    mglRendererBackendReplaceObject(list_it->slots[slot].temporary, temporary);
+    mglRendererBackendReplaceObject(list_it->slots[slot].destination, destination);
+    return 0;
+}
+
+extern "C" int mglRendererBackendGetStageCopyBackResources(
+    const MGLRendererBackendHandle *backend, const void *copy_back_list_key,
+    uint32_t slot, void **temporary_out, void **destination_out)
+{
+    if (temporary_out) *temporary_out = nullptr;
+    if (destination_out) *destination_out = nullptr;
+    if (!backend || !copy_back_list_key || slot >= 31u ||
+        !temporary_out || !destination_out) {
+        return -1;
+    }
+    std::lock_guard<std::mutex> lock(
+        const_cast<MGLRendererBackendHandle *>(backend)->mutex);
+    auto list_it = std::find_if(
+        backend->stage_copy_back_lists.begin(),
+        backend->stage_copy_back_lists.end(),
+        [copy_back_list_key](const MGLRendererBackendStageCopyBackList &list) {
+            return list.key == copy_back_list_key;
+        });
+    if (list_it == backend->stage_copy_back_lists.end()) return 0;
+    *temporary_out = list_it->slots[slot].temporary;
+    *destination_out = list_it->slots[slot].destination;
+    return (*temporary_out && *destination_out) ? 1 : 0;
+}
+
+extern "C" int mglRendererBackendClearStageCopyBackSlot(
+    MGLRendererBackendHandle *backend, const void *copy_back_list_key,
+    uint32_t slot)
+{
+    if (!backend || !copy_back_list_key || slot >= 31u) return -1;
+    std::lock_guard<std::mutex> lock(backend->mutex);
+    if (backend->destroying) return -1;
+    auto list_it = std::find_if(
+        backend->stage_copy_back_lists.begin(),
+        backend->stage_copy_back_lists.end(),
+        [copy_back_list_key](const MGLRendererBackendStageCopyBackList &list) {
+            return list.key == copy_back_list_key;
+        });
+    if (list_it == backend->stage_copy_back_lists.end()) return 0;
+    mglRendererBackendReplaceObject(list_it->slots[slot].temporary, nullptr);
+    mglRendererBackendReplaceObject(list_it->slots[slot].destination, nullptr);
+    if (mglRendererBackendStageCopyBackListEmpty(*list_it)) {
+        backend->stage_copy_back_lists.erase(list_it);
+    }
+    return 0;
+}
+
+extern "C" int mglRendererBackendClearStageCopyBackList(
+    MGLRendererBackendHandle *backend, const void *copy_back_list_key)
+{
+    if (!backend || !copy_back_list_key) return -1;
+    std::lock_guard<std::mutex> lock(backend->mutex);
+    if (backend->destroying) return -1;
+    auto list_it = std::find_if(
+        backend->stage_copy_back_lists.begin(),
+        backend->stage_copy_back_lists.end(),
+        [copy_back_list_key](const MGLRendererBackendStageCopyBackList &list) {
+            return list.key == copy_back_list_key;
+        });
+    if (list_it == backend->stage_copy_back_lists.end()) return 0;
+    for (MGLRendererBackendStageCopyBackSlot &entry : list_it->slots) {
+        if (entry.temporary) entry.temporary->release();
+        if (entry.destination) entry.destination->release();
+    }
+    backend->stage_copy_back_lists.erase(list_it);
     return 0;
 }
 
