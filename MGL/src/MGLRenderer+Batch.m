@@ -10,17 +10,6 @@
 #include "mgl_render_cpp.h"
 #include "mgl_render_cpp_objc.h"   /* owner-first render-pass readers */
 
-static BOOL mglBatchUsesMetalCpp(void)
-{
-    return mglRenderCppGetDevice() != NULL;
-}
-
-static MGLMetalRenderCommandEncoderRef mglBatchFallbackEncoder(void *owner)
-{
-    (void)owner;
-    return nil;
-}
-
 static BOOL mglBatchHasActiveEncoder(void *owner,
                                      MGLMetalRenderCommandEncoderRef encoder)
 {
@@ -56,12 +45,9 @@ static void mglBatchDrawIndexedPrimitives(
             .base_vertex = baseVertex,
             .base_instance = baseInstance,
         };
-    if (mglBatchUsesMetalCpp()) {
-        (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
-            renderEncoderOwner, &plan, NULL, 0);
-    } else {
-        (void)mglRenderCppEncodeDraw((__bridge void *)encoder, &plan, NULL, 0);
-    }
+    (void)encoder;
+    (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
+        renderEncoderOwner, &plan, NULL, 0);
 }
 
 static void mglBatchDrawIndexedPrimitivesIndirect(
@@ -83,12 +69,9 @@ static void mglBatchDrawIndexedPrimitivesIndirect(
             .indirect_buffer = (__bridge void *)indirectBuffer,
             .indirect_buffer_offset = indirectBufferOffset,
         };
-    if (mglBatchUsesMetalCpp()) {
-        (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
-            renderEncoderOwner, &plan, NULL, 0);
-    } else {
-        (void)mglRenderCppEncodeDraw((__bridge void *)encoder, &plan, NULL, 0);
-    }
+    (void)encoder;
+    (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
+        renderEncoderOwner, &plan, NULL, 0);
 }
 
 static MGLMetalIndirectCommandBufferRef mglBatchCreateIndirectCommandBuffer(
@@ -96,57 +79,38 @@ static MGLMetalIndirectCommandBufferRef mglBatchCreateIndirectCommandBuffer(
     BOOL indexed,
     NSUInteger maxCommandCount)
 {
-    if (mglBatchUsesMetalCpp()) {
-        void *bufferCPP = NULL;
-        uint32_t commandTypes = indexed
-            ? (uint32_t)MTLIndirectCommandTypeDrawIndexed
-            : (uint32_t)MTLIndirectCommandTypeDraw;
-        if (mglRenderCppCreateIndirectCommandBuffer(
-                commandTypes, 1, 1, 0, 0, maxCommandCount,
-                MTLResourceStorageModePrivate, &bufferCPP) == 0 &&
-            bufferCPP) {
-            return (__bridge_transfer MGLMetalIndirectCommandBufferRef)bufferCPP;
-        }
+    (void)device;
+    void *bufferCPP = NULL;
+    uint32_t commandTypes = indexed
+        ? (uint32_t)MTLIndirectCommandTypeDrawIndexed
+        : (uint32_t)MTLIndirectCommandTypeDraw;
+    if (mglRenderCppCreateIndirectCommandBuffer(
+            commandTypes, 1, 1, 0, 0, maxCommandCount,
+            MTLResourceStorageModePrivate, &bufferCPP) == 0 && bufferCPP) {
+        return (__bridge_transfer MGLMetalIndirectCommandBufferRef)bufferCPP;
     }
-    MTLIndirectCommandBufferDescriptor *descriptor =
-        [[MTLIndirectCommandBufferDescriptor alloc] init];
-    descriptor.commandTypes = indexed
-        ? MTLIndirectCommandTypeDrawIndexed
-        : MTLIndirectCommandTypeDraw;
-    descriptor.inheritPipelineState = YES;
-    descriptor.inheritBuffers = YES;
-    descriptor.maxVertexBufferBindCount = 0;
-    descriptor.maxFragmentBufferBindCount = 0;
-    return [device newIndirectCommandBufferWithDescriptor:descriptor
-                                           maxCommandCount:maxCommandCount
-                                                   options:MTLResourceStorageModePrivate];
+    return nil;
 }
 
 static void mglBatchResetIndirectCommandBuffer(
     MGLMetalIndirectCommandBufferRef indirectBuffer,
     NSRange range)
 {
-    if (mglBatchUsesMetalCpp()) {
-        (void)mglRenderCppResetIndirectCommandBuffer(
-            (__bridge void *)indirectBuffer, range.location, range.length);
-        return;
-    }
-    [indirectBuffer resetWithRange:range];
+    (void)mglRenderCppResetIndirectCommandBuffer(
+        (__bridge void *)indirectBuffer, range.location, range.length);
 }
 
 static MGLMetalIndirectRenderCommandRef mglBatchIndirectRenderCommand(
     MGLMetalIndirectCommandBufferRef indirectBuffer,
     NSUInteger index)
 {
-    if (mglBatchUsesMetalCpp()) {
-        void *commandCPP = NULL;
-        if (mglRenderCppGetIndirectRenderCommand(
-                (__bridge void *)indirectBuffer, index, &commandCPP) == 0 &&
-            commandCPP) {
-            return (__bridge MGLMetalIndirectRenderCommandRef)commandCPP;
-        }
+    void *commandCPP = NULL;
+    if (mglRenderCppGetIndirectRenderCommand(
+            (__bridge void *)indirectBuffer, index, &commandCPP) == 0 &&
+        commandCPP) {
+        return (__bridge MGLMetalIndirectRenderCommandRef)commandCPP;
     }
-    return [indirectBuffer indirectRenderCommandAtIndex:index];
+    return nil;
 }
 
 static void mglBatchSetIndirectDrawIndexed(
@@ -186,13 +150,10 @@ static void mglBatchUseRenderResource(
     MTLResourceUsage usage,
     MTLRenderStages stages)
 {
-    if (mglBatchUsesMetalCpp()) {
-        (void)mglRenderCppUseRenderResourceForOwner(
-            renderEncoderOwner, (__bridge void *)resource,
-            (uint32_t)usage, (uint32_t)stages);
-        return;
-    }
-    [encoder useResource:resource usage:usage stages:stages];
+    (void)encoder;
+    (void)mglRenderCppUseRenderResourceForOwner(
+        renderEncoderOwner, (__bridge void *)resource,
+        (uint32_t)usage, (uint32_t)stages);
 }
 
 static void mglBatchExecuteIndirectCommands(
@@ -201,13 +162,10 @@ static void mglBatchExecuteIndirectCommands(
     MGLMetalIndirectCommandBufferRef indirectBuffer,
     NSRange range)
 {
-    if (mglBatchUsesMetalCpp()) {
-        (void)mglRenderCppExecuteIndirectCommandsForOwner(
-            renderEncoderOwner, (__bridge void *)indirectBuffer,
-            range.location, range.length);
-        return;
-    }
-    [encoder executeCommandsInBuffer:indirectBuffer withRange:range];
+    (void)encoder;
+    (void)mglRenderCppExecuteIndirectCommandsForOwner(
+        renderEncoderOwner, (__bridge void *)indirectBuffer,
+        range.location, range.length);
 }
 
 @implementation MGLRenderer (Batch)
@@ -344,12 +302,7 @@ static void mglBatchExecuteIndirectCommands(
         }
     }
 
-    /* P4.1f: gate-on validity comes from the C++ owner. */
-    if (mglRenderPassUsesMetalCpp()) {
-        if (!_renderPassManager.state->renderPassStateOwner) {
-            return;
-        }
-    } else if (!_renderPassManager.state->renderPassDescriptor) {
+    if (!_renderPassManager.state->renderPassStateOwner) {
         return;
     }
 
@@ -524,42 +477,23 @@ static void mglBatchExecuteIndirectCommands(
 - (void)setViewportIfNeeded:(MTLViewport)viewport
 {
     void *owner = _renderPassManager.state->currentRenderEncoderOwner;
-    if (mglBatchUsesMetalCpp()) {
-        mglRenderCppBindingSetViewportForOwner(
-            _bindingStateOwner, owner, viewport.originX, viewport.originY,
-            viewport.width, viewport.height, viewport.znear, viewport.zfar);
-    } else {
-        mglRenderCppBindingSetViewport(
-            _bindingStateOwner, (__bridge void *)mglBatchFallbackEncoder(owner),
-            viewport.originX, viewport.originY, viewport.width, viewport.height,
-            viewport.znear, viewport.zfar);
-    }
+    mglRenderCppBindingSetViewportForOwner(
+        _bindingStateOwner, owner, viewport.originX, viewport.originY,
+        viewport.width, viewport.height, viewport.znear, viewport.zfar);
 }
 
 - (void)setScissorRectIfNeeded:(MTLScissorRect)rect
 {
     void *owner = _renderPassManager.state->currentRenderEncoderOwner;
-    if (mglBatchUsesMetalCpp()) {
-        mglRenderCppBindingSetScissorForOwner(
-            _bindingStateOwner, owner, rect.x, rect.y, rect.width, rect.height);
-    } else {
-        mglRenderCppBindingSetScissor(
-            _bindingStateOwner, (__bridge void *)mglBatchFallbackEncoder(owner),
-            rect.x, rect.y, rect.width, rect.height);
-    }
+    mglRenderCppBindingSetScissorForOwner(
+        _bindingStateOwner, owner, rect.x, rect.y, rect.width, rect.height);
 }
 
 - (void)setTriangleFillModeIfNeeded:(MTLTriangleFillMode)mode
 {
     void *owner = _renderPassManager.state->currentRenderEncoderOwner;
-    if (mglBatchUsesMetalCpp()) {
-        mglRenderCppBindingSetTriangleFillForOwner(
-            _bindingStateOwner, owner, (uint32_t)mode);
-    } else {
-        mglRenderCppBindingSetTriangleFill(
-            _bindingStateOwner, (__bridge void *)mglBatchFallbackEncoder(owner),
-            (uint32_t)mode);
-    }
+    mglRenderCppBindingSetTriangleFillForOwner(
+        _bindingStateOwner, owner, (uint32_t)mode);
 }
 
 - (bool)syncResourceBindingsForContext:(GLMContext)glm_ctx
@@ -574,7 +508,7 @@ static void mglBatchExecuteIndirectCommands(
         RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList:&state->fragment_buffer_map_list]);
     }
     MGLEncodeContext encCtx = {
-        .encoder = mglBatchFallbackEncoder(_renderPassManager.state->currentRenderEncoderOwner),
+        .encoder = nil,
         .render_encoder_owner = _renderPassManager.state->currentRenderEncoderOwner,
     };
     RETURN_FALSE_ON_FAILURE([self bindVertexBuffersToCurrentRenderEncoder:&encCtx]);
@@ -584,10 +518,10 @@ static void mglBatchExecuteIndirectCommands(
         RETURN_FALSE_ON_FAILURE([self bindActiveTexturesToMTL]);
     }
     RETURN_FALSE_ON_FAILURE([self restoreRenderEncoderAfterTextureUploadForDraw:"final-active-texture-bind"]);
-    encCtx.encoder = mglBatchFallbackEncoder(_renderPassManager.state->currentRenderEncoderOwner);
+    encCtx.encoder = nil;
     if (![self bindTexturesToCurrentRenderEncoder:&encCtx]) {
         RETURN_FALSE_ON_FAILURE([self restoreRenderEncoderAfterTextureUploadForDraw:"final-sampled-texture-bind"]);
-        encCtx.encoder = mglBatchFallbackEncoder(_renderPassManager.state->currentRenderEncoderOwner);
+        encCtx.encoder = nil;
         RETURN_FALSE_ON_FAILURE([self bindTexturesToCurrentRenderEncoder:&encCtx]);
     }
     return true;
@@ -1258,7 +1192,7 @@ void mglRendererCallbackFlushDrawBuffer(void *runtime_context,
 
             MGLBatchPath scheduledPath = [self scheduleDrawBatch:batch context:glm_ctx];
             MGLEncodeContext encCtx = {
-                .encoder = mglBatchFallbackEncoder(_renderPassManager.state->currentRenderEncoderOwner),
+                .encoder = nil,
                 .render_encoder_owner = _renderPassManager.state->currentRenderEncoderOwner,
             };
             switch (scheduledPath) {
@@ -1619,7 +1553,7 @@ void mglRendererCallbackFlushDrawBuffer(void *runtime_context,
      * once after texture binding so stream-merge, MDI and ICB paths remain
      * available. Only genuinely mixed batches rebind per command. */
     MGLEncodeContext samplerEncCtx = {
-        .encoder = mglBatchFallbackEncoder(_renderPassManager.state->currentRenderEncoderOwner),
+        .encoder = nil,
         .render_encoder_owner = _renderPassManager.state->currentRenderEncoderOwner,
     };
     if (!batch->sampler_snapshots_mixed &&
