@@ -5,74 +5,112 @@
 #import "MGLRenderer+Texture_Private.h"
 #include "mgl_env_flag.h"
 #include "mgl_render_cpp_objc.h"
-#include <stdatomic.h>
-
-typedef struct MGLTextureCompletionWaitContext_t {
-    atomic_uint references;
-    dispatch_semaphore_t semaphore;
-    MGLRenderCppCommandBufferState state;
-} MGLTextureCompletionWaitContext;
-
-static void mglTextureReleaseCompletionWaitContext(
-    MGLTextureCompletionWaitContext *context)
-{
-    if (!context) return;
-    if (atomic_fetch_sub_explicit(
-            &context->references, 1u, memory_order_acq_rel) == 1u) {
-        free(context);
-    }
-}
-
-static void mglTextureCompletionWait(
-    void *rawContext,
-    const MGLRenderCppCommandBufferState *state)
-{
-    MGLTextureCompletionWaitContext *context =
-        (MGLTextureCompletionWaitContext *)rawContext;
-    if (!context) return;
-    if (state) context->state = *state;
-    if (context->semaphore) dispatch_semaphore_signal(context->semaphore);
-}
-
-static void mglTextureDestroyCompletionWaitContext(void *rawContext)
-{
-    mglTextureReleaseCompletionWaitContext(
-        (MGLTextureCompletionWaitContext *)rawContext);
-}
-
-static MGLTextureCompletionWaitContext *mglTextureAddCompletionWait(
-    MGLMetalCommandBufferRef commandBuffer,
-    dispatch_semaphore_t semaphore)
-{
-    if (!commandBuffer || !semaphore) return NULL;
-    MGLTextureCompletionWaitContext *context =
-        (MGLTextureCompletionWaitContext *)calloc(1, sizeof(*context));
-    if (!context) return NULL;
-    atomic_init(&context->references, 2u);
-    context->semaphore = semaphore;
-    if (mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
-        mglRenderCppGetDevice()) {
-        if (mglRenderCppAddCommandBufferCompletion(
-                (__bridge void *)commandBuffer,
-                mglTextureCompletionWait,
-                context,
-                mglTextureDestroyCompletionWaitContext) == 0) {
-            return context;
-        }
-    }
-    [commandBuffer addCompletedHandler:^(MGLMetalCommandBufferRef cb) {
-        MGLRenderCppCommandBufferState state =
-            mglRenderCommandBufferState(cb);
-        mglTextureCompletionWait(context, &state);
-        mglTextureDestroyCompletionWaitContext(context);
-    }];
-    return context;
-}
-
 static BOOL mglTextureUsesMetalCpp(void)
 {
     return mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
            mglRenderCppGetDevice() != NULL;
+}
+
+int mglRendererCallbackResource(void *runtime_context,
+                                GLMContext glm_ctx,
+                                const MGLRenderCppResourceCallbackArgs *args)
+{
+    MGLRenderer *renderer = (__bridge MGLRenderer *)runtime_context;
+    if (!renderer || !glm_ctx || !args) return 0;
+
+    MTLRegion region = MTLRegionMake2D((NSUInteger)args->x,
+                                       (NSUInteger)args->y,
+                                       (NSUInteger)args->width,
+                                       (NSUInteger)args->height);
+    switch (args->kind) {
+        case MGL_RENDER_CPP_RESOURCE_CALLBACK_READ_DRAWABLE:
+            [renderer mtlReadDrawable:glm_ctx
+                           pixelBytes:args->pixel_bytes
+                          bytesPerRow:args->bytes_per_row
+                        bytesPerImage:args->bytes_per_image
+                           fromRegion:region];
+            return 1;
+        case MGL_RENDER_CPP_RESOURCE_CALLBACK_READ_INTEGER_PIXELS:
+            [renderer mtlReadIntegerPixels:glm_ctx
+                                pixelBytes:args->pixel_bytes
+                               bytesPerRow:args->bytes_per_row
+                             bytesPerImage:args->bytes_per_image
+                                fromRegion:region
+                                    format:args->format
+                                      type:args->type];
+            return 1;
+        case MGL_RENDER_CPP_RESOURCE_CALLBACK_READ_DEPTH_PIXELS:
+            [renderer mtlReadDepthPixels:glm_ctx
+                              pixelBytes:args->pixel_bytes
+                             bytesPerRow:args->bytes_per_row
+                           bytesPerImage:args->bytes_per_image
+                              fromRegion:region];
+            return 1;
+        case MGL_RENDER_CPP_RESOURCE_CALLBACK_GET_TEX_IMAGE:
+            [renderer mtlGetTexImage:glm_ctx tex:args->texture
+                          pixelBytes:args->pixel_bytes
+                         bytesPerRow:args->bytes_per_row
+                       bytesPerImage:args->bytes_per_image
+                          fromRegion:region
+                              format:args->format type:args->type
+                         mipmapLevel:args->level slice:args->slice];
+            return 1;
+        case MGL_RENDER_CPP_RESOURCE_CALLBACK_GENERATE_MIPMAPS:
+            [renderer mtlGenerateMipmaps:glm_ctx forTexture:args->texture];
+            return 1;
+        case MGL_RENDER_CPP_RESOURCE_CALLBACK_TEX_SUB_IMAGE:
+            [renderer mtlTexSubImage:glm_ctx tex:args->texture buf:args->buffer
+                          src_offset:args->source_offset
+                           src_pitch:args->source_pitch
+                      src_image_size:args->source_image_size
+                           src_size:args->source_size
+                              slice:args->slice level:args->level
+                              width:args->width height:args->height
+                              depth:args->depth
+                            xoffset:args->x_offset yoffset:args->y_offset
+                            zoffset:args->z_offset];
+            return 1;
+        case MGL_RENDER_CPP_RESOURCE_CALLBACK_TEX_SUB_IMAGE_BYTES:
+            return [renderer mtlTexSubImageBytes:glm_ctx tex:args->texture
+                                           bytes:args->bytes
+                                       bytesSize:args->bytes_size
+                                      src_offset:args->source_offset
+                                       src_pitch:args->source_pitch
+                                  src_image_size:args->source_image_size
+                                           slice:args->slice level:args->level
+                                           width:args->width height:args->height
+                                           depth:args->depth
+                                         xoffset:args->x_offset
+                                         yoffset:args->y_offset
+                                         zoffset:args->z_offset] ? 1 : 0;
+        case MGL_RENDER_CPP_RESOURCE_CALLBACK_COPY_TEX_SUB_IMAGE:
+            [renderer mtlCopyTexSubImage:glm_ctx tex:args->texture
+                                   slice:args->slice
+                             mipmapLevel:args->level
+                                 xoffset:(NSInteger)args->x_offset
+                                 yoffset:(NSInteger)args->y_offset
+                                       x:args->x y:args->y
+                                   width:args->width height:args->height];
+            return 1;
+        case MGL_RENDER_CPP_RESOURCE_CALLBACK_COPY_IMAGE_SUB_DATA:
+            [renderer mtlCopyImageSubData:glm_ctx
+                               srcTexture:args->source_texture
+                                  srcLevel:args->source_level
+                                      srcX:args->source_x
+                                      srcY:args->source_y
+                                      srcZ:args->source_z
+                               dstTexture:args->destination_texture
+                                  dstLevel:args->destination_level
+                                      dstX:args->destination_x
+                                      dstY:args->destination_y
+                                      dstZ:args->destination_z
+                                     width:(GLsizei)args->width
+                                    height:(GLsizei)args->height
+                                     depth:(GLsizei)args->depth];
+            return 1;
+        default:
+            return 0;
+    }
 }
 
 static MGLMetalBufferRef mglTextureCreateBuffer(MGLMetalDeviceRef device,
@@ -245,8 +283,8 @@ static MGLMetalBlitCommandEncoderRef mglTextureCreateCurrentBlitEncoder(
 static void mglTextureEndBlitEncoder(MGLMetalBlitCommandEncoderRef encoder)
 {
     if (!encoder) return;
-    if (mglTextureUsesMetalCpp() &&
-        mglRenderCppEndBlitEncoder((__bridge void *)encoder) == 0) {
+    if (mglTextureUsesMetalCpp()) {
+        (void)mglRenderCppEndBlitEncoder((__bridge void *)encoder);
         return;
     }
     [encoder endEncoding];
@@ -255,8 +293,11 @@ static void mglTextureEndBlitEncoder(MGLMetalBlitCommandEncoderRef encoder)
 static void mglTextureCommitCommandBuffer(MGLMetalCommandBufferRef commandBuffer)
 {
     if (!commandBuffer) return;
-    if (mglTextureUsesMetalCpp() &&
-        mglRenderCppCommitCommandBuffer((__bridge void *)commandBuffer) == 0) {
+    if (mglTextureUsesMetalCpp()) {
+        if (mglRenderCppCommitCommandBuffer(
+                (__bridge void *)commandBuffer) != 0) {
+            NSLog(@"MGL ERROR: Metal-cpp texture command-buffer commit failed");
+        }
         return;
     }
     [commandBuffer commit];
@@ -265,27 +306,29 @@ static void mglTextureCommitCommandBuffer(MGLMetalCommandBufferRef commandBuffer
 static void mglTextureWaitCommandBuffer(MGLMetalCommandBufferRef commandBuffer)
 {
     if (!commandBuffer) return;
-    if (mglTextureUsesMetalCpp() &&
-        mglRenderCppWaitCommandBuffer((__bridge void *)commandBuffer) == 0) {
+    if (mglTextureUsesMetalCpp()) {
+        if (mglRenderCppWaitCommandBuffer(
+                (__bridge void *)commandBuffer) != 0) {
+            NSLog(@"MGL ERROR: Metal-cpp texture command-buffer wait failed");
+        }
         return;
     }
     [commandBuffer waitUntilCompleted];
 }
 
 static MGLMetalRenderCommandEncoderRef mglTextureCreateRenderEncoder(
-    MGLMetalCommandBufferRef commandBuffer,
+    void *commandBufferOwner,
     MTLRenderPassDescriptor *descriptor)
 {
-    return commandBuffer
-        ? [commandBuffer renderCommandEncoderWithDescriptor:descriptor]
-        : nil;
+    return mglRenderCreateRenderEncoderForCommandBufferOwner(
+        commandBufferOwner, descriptor, NULL);
 }
 
 static void mglTextureEndRenderEncoder(MGLMetalRenderCommandEncoderRef encoder)
 {
     if (!encoder) return;
-    if (mglTextureUsesMetalCpp() &&
-        mglRenderCppEndRenderEncoder((__bridge void *)encoder) == 0) {
+    if (mglTextureUsesMetalCpp()) {
+        (void)mglRenderCppEndRenderEncoder((__bridge void *)encoder);
         return;
     }
     [encoder endEncoding];
@@ -361,8 +404,8 @@ static void mglTextureCopyTextureToBuffer(
             return false;
         }
 
-        if (mglRenderCppEncodeTextureUploadLayers(
-                mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
+        if (mglRenderCppEncodeTextureUploadLayersForCommandBufferOwner(
+                _renderPassManager.state->currentCommandBufferOwner,
                 (__bridge void *)sourceBuffer, sourceOffset,
                 sourceBytesPerRow, sourceBytesPerImage, sourceLayerStride,
                 sourceSize.width, sourceSize.height, sourceSize.depth,
@@ -777,8 +820,10 @@ static void mglTextureCopyTextureToBuffer(
                           ctx->state.default_clear_color[2],
                           ctx->state.default_clear_color[3]);
 
-    MGLMetalRenderCommandEncoderRef clearEncoder = mglTextureCreateRenderEncoder(
-        (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner), clearPass);
+    MGLMetalRenderCommandEncoderRef clearEncoder =
+        mglRenderCreateRenderEncoderForCommandBufferOwner(
+            _renderPassManager.state->currentCommandBufferOwner,
+            clearPass, NULL);
     if (clearEncoder) {
         mglTextureEndRenderEncoder(clearEncoder);
         ctx->state.default_fbo_clear_bitmask &= ~GL_COLOR_BUFFER_BIT;
@@ -824,8 +869,10 @@ static void mglTextureCopyTextureToBuffer(
                           attachment->clear_color[2],
                           attachment->clear_color[3]);
 
-    MGLMetalRenderCommandEncoderRef clearEncoder = mglTextureCreateRenderEncoder(
-        (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner), clearPass);
+    MGLMetalRenderCommandEncoderRef clearEncoder =
+        mglRenderCreateRenderEncoderForCommandBufferOwner(
+            _renderPassManager.state->currentCommandBufferOwner,
+            clearPass, NULL);
     if (clearEncoder) {
         mglTextureEndRenderEncoder(clearEncoder);
         attachment->clear_bitmask &= ~GL_COLOR_BUFFER_BIT;
@@ -862,7 +909,8 @@ static void mglTextureCopyTextureToBuffer(
     MGLMetalBufferRef readBuffer = mglTextureCreateBuffer(
         _device, stagingSize, MTLResourceStorageModeShared);
     MGLMetalBlitCommandEncoderRef blitEncoder = readBuffer
-        ? mglTextureCreateBlitEncoder((__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner))
+        ? mglRenderCreateBlitEncoderForCommandBufferOwner(
+              _renderPassManager.state->currentCommandBufferOwner)
         : nil;
     if (!readBuffer || !blitEncoder) {
         NSLog(@"MGL WARNING: readPixels failed to create %s resources for %s",
@@ -899,37 +947,38 @@ static void mglTextureCopyTextureToBuffer(
         return nil;
     }
 
-    dispatch_semaphore_t readbackDone = dispatch_semaphore_create(0);
-    MGLTextureCompletionWaitContext *readbackContext =
-        mglTextureAddCompletionWait(
-        (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
-        readbackDone);
-    mglTextureCommitCommandBuffer((__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
-    _lastCommittedCB = (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner);
-
-    dispatch_time_t readbackDeadline = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC));
-    if (!readbackContext ||
-        dispatch_semaphore_wait(readbackDone, readbackDeadline) != 0) {
-        NSLog(@"MGL WARNING: readPixels %s command buffer timed out for %s; returning zeroed data",
-              logKind ? logKind : "readback",
-              reason ? reason : "unknown");
-        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
-        if (outSuccess) {
-            *outSuccess = NO;
-        }
-    } else if (readbackContext->state.has_error) {
-        NSLog(@"MGL WARNING: readPixels %s command buffer failed for %s: %@; returning zeroed data",
-              logKind ? logKind : "readback",
-              reason ? reason : "unknown",
-              mglRenderCommandBufferErrorString(&readbackContext->state));
+    MGLMetalCommandBufferRef readbackCommandBuffer =
+        [_renderPassManager detachCurrentCommandBufferForSubmission];
+    MGLRenderCppCommandBufferTransaction readbackTransaction = {0};
+    int readbackTransactionResult = [_renderPassManager
+        commitCommandBufferTransaction:readbackCommandBuffer
+        recoveryOwner:_gpuRecovery.commandRecoveryOwner
+        waitForCompletion:YES
+        result:&readbackTransaction];
+    if (readbackTransactionResult != 0 || readbackTransaction.has_error) {
+        NSLog(@"MGL WARNING: readPixels %s owner transaction failed for %s",
+              logKind ? logKind : "readback", reason ? reason : "unknown");
         mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
         if (outSuccess) {
             *outSuccess = NO;
         }
     }
 
+    if (readbackTransactionResult == 0 &&
+        readbackTransaction.completion.has_error) {
+        NSLog(@"MGL WARNING: readPixels %s command buffer failed for %s: %@; returning zeroed data",
+              logKind ? logKind : "readback",
+              reason ? reason : "unknown",
+              mglRenderCommandBufferErrorString(
+                  &readbackTransaction.completion));
+        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        if (outSuccess) {
+            *outSuccess = NO;
+        }
+    }
+
+    [_renderPassManager releaseDetachedCommandBufferIfOwned:readbackCommandBuffer];
     [self newCommandBuffer];
-    mglTextureReleaseCompletionWaitContext(readbackContext);
     return readBuffer;
 }
 
@@ -1371,7 +1420,8 @@ static void mglTextureCopyTextureToBuffer(
     MGLMetalBufferRef readBuffer = mglTextureCreateBuffer(
         _device, stagingSize, MTLResourceStorageModeShared);
     MGLMetalBlitCommandEncoderRef blit = readBuffer
-        ? mglTextureCreateBlitEncoder((__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner))
+        ? mglRenderCreateBlitEncoderForCommandBufferOwner(
+              _renderPassManager.state->currentCommandBufferOwner)
         : nil;
     if (!readBuffer || !blit) {
         mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
@@ -1398,9 +1448,20 @@ static void mglTextureCopyTextureToBuffer(
         MTLSizeMake((NSUInteger)copyW, (NSUInteger)copyH, 1u), readBuffer,
         0u, srcBytesPerRow, stagingSize);
     mglTextureEndBlitEncoder(blit);
-    mglTextureCommitCommandBuffer((__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
-    _lastCommittedCB = (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner);
-    mglTextureWaitCommandBuffer((__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
+    MGLMetalCommandBufferRef integerReadbackCommandBuffer =
+        [_renderPassManager detachCurrentCommandBufferForSubmission];
+    MGLRenderCppCommandBufferTransaction integerReadbackTransaction = {0};
+    int integerReadbackResult = [_renderPassManager
+        commitCommandBufferTransaction:integerReadbackCommandBuffer
+        recoveryOwner:_gpuRecovery.commandRecoveryOwner
+        waitForCompletion:YES
+        result:&integerReadbackTransaction];
+    if (integerReadbackResult != 0 || integerReadbackTransaction.has_error) {
+        NSLog(@"MGL ERROR: integer texture readback owner transaction failed");
+        [_renderPassManager releaseDetachedCommandBufferIfOwned:integerReadbackCommandBuffer];
+        return NO;
+    }
+    [_renderPassManager releaseDetachedCommandBufferIfOwned:integerReadbackCommandBuffer];
 
     NSUInteger dstX = (NSUInteger)(minX - (NSInteger)region.origin.x);
     NSUInteger dstY = (NSUInteger)(minY - (NSInteger)region.origin.y);
@@ -1451,15 +1512,19 @@ static void mglTextureCopyTextureToBuffer(
 
     MGLMetalAttachmentSubresource subresource =
         mglMetalAttachmentSubresourceForAttachment(attachment);
-    if (mglTextureUsesMetalCpp() &&
-        mglRenderCppEncodeDepthClearForCommandBufferOwner(
+    if (mglTextureUsesMetalCpp()) {
+        if (mglRenderCppEncodeDepthClearForCommandBufferOwner(
             _renderPassManager.state->currentCommandBufferOwner,
             (__bridge void *)texture, subresource.level,
             subresource.slice, subresource.depthPlane,
             attachment->clear_color[0]) == 0) {
-        attachment->clear_bitmask &= ~GL_DEPTH_BUFFER_BIT;
-        mglMarkTextureLevelRenderTargetWritten(
-            textureObj, attachment->level);
+            attachment->clear_bitmask &= ~GL_DEPTH_BUFFER_BIT;
+            mglMarkTextureLevelRenderTargetWritten(
+                textureObj, attachment->level);
+        } else {
+            NSLog(@"MGL WARNING: C++ readPixels depth clear failed fbo=%u",
+                  (unsigned)fbo->name);
+        }
         return;
     }
     MTLRenderPassDescriptor *clearPass = [MTLRenderPassDescriptor renderPassDescriptor];
@@ -1472,7 +1537,7 @@ static void mglTextureCopyTextureToBuffer(
     clearPass.depthAttachment.clearDepth = attachment->clear_color[0];
 
     MGLMetalRenderCommandEncoderRef clearEncoder = mglTextureCreateRenderEncoder(
-        (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner), clearPass);
+        _renderPassManager.state->currentCommandBufferOwner, clearPass);
     if (clearEncoder) {
         mglTextureEndRenderEncoder(clearEncoder);
         attachment->clear_bitmask &= ~GL_DEPTH_BUFFER_BIT;
@@ -1489,12 +1554,15 @@ static void mglTextureCopyTextureToBuffer(
         return;
     }
 
-    if (mglTextureUsesMetalCpp() &&
-        mglRenderCppEncodeDepthClearForCommandBufferOwner(
+    if (mglTextureUsesMetalCpp()) {
+        if (mglRenderCppEncodeDepthClearForCommandBufferOwner(
             _renderPassManager.state->currentCommandBufferOwner,
             (__bridge void *)texture, 0, 0, 0,
             ctx->state.var.depth_clear_value) == 0) {
-        ctx->state.default_fbo_clear_bitmask &= ~GL_DEPTH_BUFFER_BIT;
+            ctx->state.default_fbo_clear_bitmask &= ~GL_DEPTH_BUFFER_BIT;
+        } else {
+            NSLog(@"MGL WARNING: C++ default depth clear failed");
+        }
         return;
     }
 
@@ -1505,7 +1573,7 @@ static void mglTextureCopyTextureToBuffer(
     clearPass.depthAttachment.clearDepth = ctx->state.var.depth_clear_value;
 
     MGLMetalRenderCommandEncoderRef clearEncoder = mglTextureCreateRenderEncoder(
-        (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner), clearPass);
+        _renderPassManager.state->currentCommandBufferOwner, clearPass);
     if (clearEncoder) {
         mglTextureEndRenderEncoder(clearEncoder);
         ctx->state.default_fbo_clear_bitmask &= ~GL_DEPTH_BUFFER_BIT;
@@ -1877,12 +1945,12 @@ static void mglTextureCopyTextureToBuffer(
      * reading back. Without this, getBytes may return stale/zero data because
      * the blit encoding the upload is still in the uncommitted command buffer. */
     [self endRenderEncoding];
-    if ((__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner)) {
+    if (mglRenderCppCommandBufferOwnerHasCurrent(
+            _renderPassManager.state->currentCommandBufferOwner) == 1) {
         MGLMetalCommandBufferRef pendingCB =
             [_renderPassManager detachCurrentCommandBufferForSubmission];
         @try {
             [self commitCommandBufferWithAGXRecovery:pendingCB];
-            _lastCommittedCB = pendingCB;
             mglTextureWaitCommandBuffer(pendingCB);
         } @catch (NSException *e) {
             NSLog(@"MGL WARNING: mtlGetTexImage pre-readback flush failed: %@", e.reason);

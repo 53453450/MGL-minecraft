@@ -36,6 +36,14 @@ static MGLMetalLibraryRef mglRenderPassLoadAuxLibrary(MGLMetalDeviceRef device,
 /* mglRenderPassUsesMetalCpp: P4.1f 统一 gate 定义移入
  * mgl_render_cpp_objc.h（owner-first reader 需要跨 category 共享）。 */
 
+static MGLMetalRenderCommandEncoderRef
+mglRenderPassFallbackEncoder(void *owner)
+{
+    if (mglRenderPassUsesMetalCpp()) return nil;
+    return (__bridge MGLMetalRenderCommandEncoderRef)
+        mglRenderCppRenderEncoderOwnerGetCurrentForFallback(owner);
+}
+
 static MGLRenderCppRenderPassIdentityState mglRenderPassIdentitySnapshot(
     const MGLCommandState *commandState)
 {
@@ -122,9 +130,9 @@ static void mglRenderPassSetDepthClipMode(
     MGLMetalRenderCommandEncoderRef encoder,
     MTLDepthClipMode mode)
 {
-    if (mglRenderPassUsesMetalCpp() &&
-        mglRenderCppSetDepthClipMode((__bridge void *)encoder,
-                                     (uint32_t)mode) == 0) {
+    if (mglRenderPassUsesMetalCpp()) {
+        (void)mglRenderCppSetDepthClipMode(
+            (__bridge void *)encoder, (uint32_t)mode);
         return;
     }
     [encoder setDepthClipMode:mode];
@@ -135,9 +143,9 @@ static void mglRenderPassSetStencilReferenceValues(
     uint32_t frontReference,
     uint32_t backReference)
 {
-    if (mglRenderPassUsesMetalCpp() &&
-        mglRenderCppSetStencilReferenceValues(
-            (__bridge void *)encoder, frontReference, backReference) == 0) {
+    if (mglRenderPassUsesMetalCpp()) {
+        (void)mglRenderCppSetStencilReferenceValues(
+            (__bridge void *)encoder, frontReference, backReference);
         return;
     }
     [encoder setStencilFrontReferenceValue:frontReference
@@ -150,10 +158,10 @@ static void mglRenderPassSetFragmentBytes(
     NSUInteger length,
     NSUInteger index)
 {
-    if (mglRenderPassUsesMetalCpp() &&
-        mglRenderCppSetRenderBytes(
+    if (mglRenderPassUsesMetalCpp()) {
+        (void)mglRenderCppSetRenderBytes(
             (__bridge void *)encoder, bytes, length,
-            MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT, (uint32_t)index) == 0) {
+            MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT, (uint32_t)index);
         return;
     }
     [encoder setFragmentBytes:bytes length:length atIndex:index];
@@ -166,10 +174,10 @@ static void mglRenderPassSetBuffer(
     uint32_t stage,
     NSUInteger index)
 {
-    if (mglRenderPassUsesMetalCpp() &&
-        mglRenderCppSetRenderBuffer(
+    if (mglRenderPassUsesMetalCpp()) {
+        (void)mglRenderCppSetRenderBuffer(
             (__bridge void *)encoder, (__bridge void *)buffer, offset, stage,
-            (uint32_t)index) == 0) {
+            (uint32_t)index);
         return;
     }
     if (stage == MGL_RENDER_CPP_BINDING_STAGE_VERTEX) {
@@ -181,8 +189,11 @@ static void mglRenderPassSetBuffer(
 
 static void mglRenderPassWaitCommandBuffer(MGLMetalCommandBufferRef commandBuffer)
 {
-    if (mglRenderPassUsesMetalCpp() &&
-        mglRenderCppWaitCommandBuffer((__bridge void *)commandBuffer) == 0) {
+    if (mglRenderPassUsesMetalCpp()) {
+        if (mglRenderCppWaitCommandBuffer(
+                (__bridge void *)commandBuffer) != 0) {
+            NSLog(@"MGL ERROR: Metal-cpp render-pass wait failed");
+        }
         return;
     }
     [commandBuffer waitUntilCompleted];
@@ -1192,7 +1203,9 @@ output->name, (unsigned)i,
 
 - (void)mtlInvalidateRenderPass:(GLMContext)glm_ctx
 {
-    if (!glm_ctx || glm_ctx != ctx || !(__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
+    if (!glm_ctx || glm_ctx != ctx ||
+        mglRenderCppRenderEncoderOwnerHasCurrent(
+            _renderPassManager.state->currentRenderEncoderOwner) != 1) {
         return;
     }
 
@@ -1225,8 +1238,8 @@ output->name, (unsigned)i,
         mglLogRenderPassLifecycle("invalidate-before-end",
                                   hit,
                                   glm_ctx,
-                                  (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
-                                  (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
+                                  _renderPassManager.state->currentCommandBufferOwner,
+                                  _renderPassManager.state->currentRenderEncoderOwner,
                                   _renderPassManager.state->renderPassDescriptor,
                                   _drawable,
                                   _renderPassManager.state->renderPassFramebuffer,
@@ -1540,7 +1553,8 @@ output->name, (unsigned)i,
         return true;
     }
 
-    if (!(__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
+    if (mglRenderCppRenderEncoderOwnerHasCurrent(
+            _renderPassManager.state->currentRenderEncoderOwner) != 1) {
         return true;
     }
 
@@ -1573,8 +1587,8 @@ output->name, (unsigned)i,
         mglLogRenderPassLifecycle(fbo ? "fbo-mismatch-before-rebuild" : "default-fbo-mismatch-before-rebuild",
                                   hit,
                                   ctx,
-                                  (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
-                                  (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
+                                  _renderPassManager.state->currentCommandBufferOwner,
+                                  _renderPassManager.state->currentRenderEncoderOwner,
                                   _renderPassManager.state->renderPassDescriptor,
                                   _drawable,
                                   _renderPassManager.state->renderPassFramebuffer,
@@ -1592,7 +1606,8 @@ output->name, (unsigned)i,
 
 - (void)endRenderPassIfFramebufferChangedForNonDraw:(uint64_t)processCall
 {
-    if (!ctx || !(__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
+    if (!ctx || mglRenderCppRenderEncoderOwnerHasCurrent(
+                    _renderPassManager.state->currentRenderEncoderOwner) != 1) {
         return;
     }
 
@@ -1618,8 +1633,8 @@ output->name, (unsigned)i,
         mglLogRenderPassLifecycle("non-draw-mismatch-before-end",
                                   hit,
                                   ctx,
-                                  (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
-                                  (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
+                                  _renderPassManager.state->currentCommandBufferOwner,
+                                  _renderPassManager.state->currentRenderEncoderOwner,
                                   _renderPassManager.state->renderPassDescriptor,
                                   _drawable,
                                   _renderPassManager.state->renderPassFramebuffer,
@@ -1635,7 +1650,8 @@ output->name, (unsigned)i,
 
 - (bool)restoreRenderEncoderAfterTextureUploadForDraw:(const char *)reason
 {
-    if ((__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
+    if (mglRenderCppRenderEncoderOwnerHasCurrent(
+            _renderPassManager.state->currentRenderEncoderOwner) == 1) {
         return true;
     }
     MGLRenderCppRenderPassState passState = {0};
@@ -1704,17 +1720,16 @@ output->name, (unsigned)i,
         [self recordGPUError];
         return false;
     }
-    if (!(__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
+    if (mglRenderCppRenderEncoderOwnerHasCurrent(
+            _renderPassManager.state->currentRenderEncoderOwner) != 1) {
         NSLog(@"MGL ERROR: restoring render encoder after texture upload returned nil encoder reason=%s",
               reason ? reason : "(null)");
         [self recordGPUError];
         return false;
     }
-    MGLMetalRenderCommandEncoderRef restoredEncoder =
-        (__bridge MGLMetalRenderCommandEncoderRef)
-            mglRenderCppRenderEncoderOwnerGetCurrent(
-                _renderPassManager.state->currentRenderEncoderOwner);
-    restoredEncoder.label = @"GL Render Encoder";
+    mglRenderCppSetRenderEncoderOwnerLabel(
+        _renderPassManager.state->currentRenderEncoderOwner,
+        "GL Render Encoder");
     /* When trace is disabled, skip the full-struct memset and trace call
      * and clear only the functional flag fields. */
     if (mglTraceLogIsEnabled()) {
@@ -1741,9 +1756,9 @@ output->name, (unsigned)i,
     }
 
     @try {
-        if (mglRenderCppBindingSetPipelineIfNeeded(
+        if (mglRenderCppBindingSetPipelineIfNeededForOwner(
                 _bindingStateOwner,
-                mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
+                _renderPassManager.state->currentRenderEncoderOwner,
                 (__bridge void *)_pipelineCache.state->pipelineState) > 0) {
             MGL_PERF_INC(g_mglSetRenderPipelineStateCallsSinceSwap);
         } else {
@@ -1759,7 +1774,11 @@ output->name, (unsigned)i,
     }
 
     RETURN_FALSE_ON_FAILURE([self mapBuffersToMTL]);
-    MGLEncodeContext encCtx = { .encoder = (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner) };
+    MGLEncodeContext encCtx = {
+        .encoder = mglRenderPassFallbackEncoder(
+            _renderPassManager.state->currentRenderEncoderOwner),
+        .render_encoder_owner = _renderPassManager.state->currentRenderEncoderOwner,
+    };
     RETURN_FALSE_ON_FAILURE([self bindVertexBuffersToCurrentRenderEncoder:&encCtx]);
     RETURN_FALSE_ON_FAILURE([self bindFragmentBuffersToCurrentRenderEncoder:&encCtx]);
     return true;
@@ -2055,16 +2074,16 @@ output->name, (unsigned)i,
         MGLMetalDepthStencilStateRef dsState =
             [_pipelineCache depthStencilStateForDescriptor:dsDesc];
 
-        if (mglRenderCppBindingSetDepthStencilIfNeeded(
+        if (mglRenderCppBindingSetDepthStencilIfNeededForOwner(
                 _bindingStateOwner,
-                mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
+                _renderPassManager.state->currentRenderEncoderOwner,
                 (__bridge void *)dsState) > 0) {
         } else {
             MGL_PERF_INC(g_mglDepthStencilStateSkipsSinceSwap);
         }
         if (useStencilState) {
-            mglRenderPassSetStencilReferenceValues(
-                (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
+            mglRenderCppSetStencilReferenceValuesForOwner(
+                _renderPassManager.state->currentRenderEncoderOwner,
                 (uint32_t)state->var.stencil_ref,
                 (uint32_t)state->var.stencil_back_ref);
         }
@@ -2078,9 +2097,9 @@ output->name, (unsigned)i,
         MGLMetalDepthStencilStateRef disabledDSState =
             [_pipelineCache depthStencilStateForDescriptor:disabledDSDesc];
         if (disabledDSState) {
-            if (mglRenderCppBindingSetDepthStencilIfNeeded(
+            if (mglRenderCppBindingSetDepthStencilIfNeededForOwner(
                     _bindingStateOwner,
-                    mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
+                    _renderPassManager.state->currentRenderEncoderOwner,
                     (__bridge void *)disabledDSState) > 0) {
             } else {
                 MGL_PERF_INC(g_mglDepthStencilStateSkipsSinceSwap);
@@ -2093,9 +2112,9 @@ output->name, (unsigned)i,
         float bcGreen = state->var.blend_color[1];
         float bcBlue  = state->var.blend_color[2];
         float bcAlpha = state->var.blend_color[3];
-        mglRenderCppBindingSetBlendColorIfNeeded(
+        mglRenderCppBindingSetBlendColorIfNeededForOwner(
             _bindingStateOwner,
-            mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
+            _renderPassManager.state->currentRenderEncoderOwner,
             bcRed, bcGreen, bcBlue, bcAlpha);
     }
 
@@ -2130,30 +2149,30 @@ output->name, (unsigned)i,
                 cull_mode = MTLCullModeNone;
         }
 
-        mglRenderCppBindingSetCullIfNeeded(
+        mglRenderCppBindingSetCullIfNeededForOwner(
             _bindingStateOwner,
-            mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
+            _renderPassManager.state->currentRenderEncoderOwner,
             (uint32_t)cull_mode);
         MTLWinding _winding =
             mglMaybeInvertMTLWinding(mglMTLWindingForGL(state->var.front_face),
                                      state->var.clip_origin == GL_UPPER_LEFT);
-        mglRenderCppBindingSetWindingIfNeeded(
+        mglRenderCppBindingSetWindingIfNeededForOwner(
             _bindingStateOwner,
-            mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
+            _renderPassManager.state->currentRenderEncoderOwner,
             (uint32_t)_winding);
     }
     else
     {
-        mglRenderCppBindingSetCullIfNeeded(
+        mglRenderCppBindingSetCullIfNeededForOwner(
             _bindingStateOwner,
-            mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
+            _renderPassManager.state->currentRenderEncoderOwner,
             (uint32_t)MTLCullModeNone);
         MTLWinding _winding =
             mglMaybeInvertMTLWinding(mglMTLWindingForGL(state->var.front_face),
                                      state->var.clip_origin == GL_UPPER_LEFT);
-        mglRenderCppBindingSetWindingIfNeeded(
+        mglRenderCppBindingSetWindingIfNeededForOwner(
             _bindingStateOwner,
-            mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
+            _renderPassManager.state->currentRenderEncoderOwner,
             (uint32_t)_winding);
 
         if (state->caps.cull_face && defaultFramebufferSampledPass) {
@@ -2188,9 +2207,9 @@ output->name, (unsigned)i,
 
     if (state->caps.depth_clamp)
     {
-        mglRenderPassSetDepthClipMode(
-            (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
-            MTLDepthClipModeClamp);
+        mglRenderCppSetDepthClipModeForOwner(
+            _renderPassManager.state->currentRenderEncoderOwner,
+            (uint32_t)MTLDepthClipModeClamp);
     }
 
     if (state->caps.polygon_offset_fill ||
@@ -2200,16 +2219,16 @@ output->name, (unsigned)i,
         float _bias = state->var.polygon_offset_units;
         float _slope = state->var.polygon_offset_factor;
         float _clamp = 0.0f;
-        mglRenderCppBindingSetDepthBiasIfNeeded(
+        mglRenderCppBindingSetDepthBiasIfNeededForOwner(
             _bindingStateOwner,
-            mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
+            _renderPassManager.state->currentRenderEncoderOwner,
             _bias, _clamp, _slope);
     }
     else
     {
-        mglRenderCppBindingSetDepthBiasIfNeeded(
+        mglRenderCppBindingSetDepthBiasIfNeededForOwner(
             _bindingStateOwner,
-            mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
+            _renderPassManager.state->currentRenderEncoderOwner,
             0.0f, 0.0f, 0.0f);
     }
 
@@ -2637,9 +2656,9 @@ output->name, (unsigned)i,
                     viewports[vi * 6 + 4] = state->var.depth_range[0];
                     viewports[vi * 6 + 5] = state->var.depth_range[1];
                 }
-                mglRenderCppBindingSetViewports(
+                mglRenderCppBindingSetViewportsForOwner(
                     _bindingStateOwner,
-                    mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
+                    _renderPassManager.state->currentRenderEncoderOwner,
                     viewports, (uint64_t)MGL_MAX_VIEWPORTS);
             } else {
                 /* A shader may still write gl_ViewportIndex (e.g. gl_Layer
@@ -2656,9 +2675,9 @@ output->name, (unsigned)i,
                     viewports[vi * 6 + 4] = state->var.depth_range[0];
                     viewports[vi * 6 + 5] = state->var.depth_range[1];
                 }
-                mglRenderCppBindingSetViewports(
+                mglRenderCppBindingSetViewportsForOwner(
                     _bindingStateOwner,
-                    mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
+                    _renderPassManager.state->currentRenderEncoderOwner,
                     viewports, (uint64_t)MGL_MAX_VIEWPORTS);
             }
         } else {
@@ -3648,22 +3667,25 @@ output->name, (unsigned)i,
 - (bool) createRenderEncoderLocked:(uint64_t)renderEncoderCall
 {
     // CRITICAL FIX: Validate command buffer state before creating render encoder
-    if (!(__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner)) {
+    MGLRenderCppCommandBufferState commandState = {0};
+    if (!mglRenderCommandBufferOwnerState(
+            _renderPassManager.state->currentCommandBufferOwner,
+            &commandState)) {
         NSLog(@"MGL ERROR: Cannot create render encoder - command buffer is NULL");
         [self recordGPUError];
         return false;
     }
 
     // Check if command buffer already has an active encoder (Metal API violation)
-    if ((__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
+    if (mglRenderCppRenderEncoderOwnerHasCurrent(
+            _renderPassManager.state->currentRenderEncoderOwner) == 1) {
         NSLog(@"MGL WARNING: Active render encoder detected - ending it before creating new one");
         [self endRenderEncodingLocked];
     }
 
     // Validate command buffer status. If already committed/completed, rotate to a new buffer.
     MTLCommandBufferStatus bufferStatus =
-        mglRenderCommandBufferStatus(
-            (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
+        (MTLCommandBufferStatus)commandState.status;
     if (bufferStatus >= MTLCommandBufferStatusCommitted) {
         NSLog(@"MGL WARNING: Render encoder requested on finalized command buffer (status: %ld) - creating a fresh command buffer", (long)bufferStatus);
         if (![self newCommandBufferLocked]) {
@@ -3672,14 +3694,15 @@ output->name, (unsigned)i,
             return false;
         }
 
-        if (!(__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner)) {
-            NSLog(@"MGL ERROR: newCommandBuffer returned but (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner) is NULL");
+        if (!mglRenderCommandBufferOwnerState(
+                _renderPassManager.state->currentCommandBufferOwner,
+                &commandState)) {
+            NSLog(@"MGL ERROR: newCommandBuffer returned without a current command buffer");
             [self recordGPUError];
             return false;
         }
 
-        bufferStatus = mglRenderCommandBufferStatus(
-            (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
+        bufferStatus = (MTLCommandBufferStatus)commandState.status;
         if (bufferStatus >= MTLCommandBufferStatusCommitted) {
             NSLog(@"MGL ERROR: Fresh command buffer is still finalized (status: %ld)", (long)bufferStatus);
             [self recordGPUError];
@@ -3697,8 +3720,8 @@ output->name, (unsigned)i,
 	            mglLogRenderPassLifecycle("pre-create",
 	                                      hit,
                                       ctx,
-                                      (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
-                                      (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
+                                      _renderPassManager.state->currentCommandBufferOwner,
+                                      _renderPassManager.state->currentRenderEncoderOwner,
                                       _renderPassManager.state->renderPassDescriptor,
                                       _drawable,
                                       _renderPassManager.state->renderPassFramebuffer,
@@ -3771,9 +3794,12 @@ output->name, (unsigned)i,
                 [_renderPassManager createRenderEncoderWithDescriptor:
                     _renderPassManager.state->renderPassDescriptor];
             [_renderPassManager installRenderEncoder:renderEncoder];
-            if (!(__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
+            if (mglRenderCppRenderEncoderOwnerHasCurrent(
+                    _renderPassManager.state->currentRenderEncoderOwner) != 1) {
             NSLog(@"MGL ERROR: Failed to create render encoder - invalid render pass descriptor or command buffer");
-            NSLog(@"MGL DEBUG: Command buffer: %@, Render pass descriptor: %@", (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner), _renderPassManager.state->renderPassDescriptor);
+            NSLog(@"MGL DEBUG: Command buffer owner: %p, Render pass descriptor: %@",
+                  _renderPassManager.state->currentCommandBufferOwner,
+                  _renderPassManager.state->renderPassDescriptor);
             [self recordGPUError];
             return false;
         }
@@ -3781,14 +3807,15 @@ output->name, (unsigned)i,
          * pass when a sample query is active. MTLVisibilityResultModeBoolean
          * writes 1 to the buffer if any samples pass per-fragment tests. */
         if (_queryStateOwner &&
-            (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
+            mglRenderCppRenderEncoderOwnerHasCurrent(
+                _renderPassManager.state->currentRenderEncoderOwner) == 1) {
             uint32_t visibilityMode = 0;
             uint64_t visibilityOffset = 0;
             if (mglRenderCppAcquireSampleQuerySlot(
                     _queryStateOwner, &visibilityMode,
                     &visibilityOffset) == 0) {
-                mglRenderCppSetVisibilityResultMode(
-                    mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
+                mglRenderCppSetVisibilityResultModeForRenderEncoderOwner(
+                    _renderPassManager.state->currentRenderEncoderOwner,
                     visibilityMode, visibilityOffset);
             }
         }
@@ -3819,11 +3846,9 @@ output->name, (unsigned)i,
         [_renderPassManager clearCurrentRenderEncoder];
         return false;
     }
-    MGLMetalRenderCommandEncoderRef restoredEncoder =
-        (__bridge MGLMetalRenderCommandEncoderRef)
-            mglRenderCppRenderEncoderOwnerGetCurrent(
-                _renderPassManager.state->currentRenderEncoderOwner);
-    restoredEncoder.label = @"GL Render Encoder";
+    mglRenderCppSetRenderEncoderOwnerLabel(
+        _renderPassManager.state->currentRenderEncoderOwner,
+        "GL Render Encoder");
 	    {
 	        static uint64_t s_renderPassCreatedLogCount = 0;
 	        uint64_t hit = ++s_renderPassCreatedLogCount;
@@ -3831,8 +3856,8 @@ output->name, (unsigned)i,
 	            mglLogRenderPassLifecycle("created",
 	                                      hit,
                                       ctx,
-                                      (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
-                                      (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
+                                      _renderPassManager.state->currentCommandBufferOwner,
+                                      _renderPassManager.state->currentRenderEncoderOwner,
                                       _renderPassManager.state->renderPassDescriptor,
                                       _drawable,
                                       _renderPassManager.state->renderPassFramebuffer,
@@ -3918,7 +3943,8 @@ output->name, (unsigned)i,
     }
 
     // CRITICAL SAFETY: Check command buffer before creating render encoder
-    if (!(__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner)) {
+    if (mglRenderCppCommandBufferOwnerHasCurrent(
+            _renderPassManager.state->currentCommandBufferOwner) != 1) {
         // Attempt recovery: create a new command buffer instead of failing immediately
         if ([self newCommandBufferLocked]) {
             // Successfully created - continue
@@ -4019,7 +4045,11 @@ output->name, (unsigned)i,
     // selected for the draw.
     if (MGL_STATE(ctx)->vao)
     {
-        MGLEncodeContext encCtx = { .encoder = (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner) };
+        MGLEncodeContext encCtx = {
+            .encoder = mglRenderPassFallbackEncoder(
+                _renderPassManager.state->currentRenderEncoderOwner),
+            .render_encoder_owner = _renderPassManager.state->currentRenderEncoderOwner,
+        };
         if ([self bindVertexBuffersToCurrentRenderEncoder:&encCtx] == false)
         {
             DEBUG_PRINT("vertex buffer binding failed\n");
@@ -4056,7 +4086,8 @@ output->name, (unsigned)i,
     // Metal API requires ending encoders before creating new command buffers
 
     // STEP 0: End any existing render encoder to prevent MTLReleaseAssertionFailure
-    if ((__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
+    if (mglRenderCppRenderEncoderOwnerHasCurrent(
+            _renderPassManager.state->currentRenderEncoderOwner) == 1) {
         if (kMGLVerboseFrameLoopLogs) {
             NSLog(@"MGL INFO: Ending existing render encoder before creating new command buffer");
         }
@@ -4069,6 +4100,15 @@ output->name, (unsigned)i,
     // Both this read/clear path and the append path (mtlGetSync) run on the GL
     // calling thread, so no lock is needed.
     [_renderPassManager clearCurrentCommandBufferSyncListEntries];
+
+    /* A successful C++ submit transaction rotates the owner to the next
+     * current command buffer before returning. Consume that exact buffer so
+     * the ObjC adapter does not immediately allocate and release another one.
+     * Unmarked current buffers still follow the ordinary fresh-rotate path. */
+    if ([_renderPassManager consumeTransactionCreatedCurrentCommandBuffer]) {
+        _currentCBHasWork = NO;
+        return true;
+    }
 
     // CRITICAL SAFETY: Validate command queue before creating buffer
     if (!_commandQueue) {
@@ -4133,9 +4173,14 @@ output->name, (unsigned)i,
         _currentCBHasWork = NO;
 
         // AGX Driver Validation: Check if the command buffer is immediately invalid
-        MGLRenderCppCommandBufferState initialState =
-            mglRenderCommandBufferState(
-                (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
+        MGLRenderCppCommandBufferState initialState = {0};
+        if (!mglRenderCommandBufferOwnerState(
+                _renderPassManager.state->currentCommandBufferOwner,
+                &initialState)) {
+            NSLog(@"MGL AGX CRITICAL: New command buffer owner has no current buffer");
+            [self recordGPUError];
+            return false;
+        }
         if (initialState.has_error) {
             NSLog(@"MGL AGX WARNING: New command buffer has immediate error: %@",
                   mglRenderCommandBufferErrorString(&initialState));
@@ -4144,9 +4189,7 @@ output->name, (unsigned)i,
         }
 
         // AGX DRIVER COMPATIBILITY: Enhanced validation to prevent rejections
-        if (mglRenderCommandBufferStatus(
-                (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner)) ==
-            MTLCommandBufferStatusError) {
+        if (initialState.status == MTLCommandBufferStatusError) {
             NSLog(@"MGL AGX CRITICAL: Command buffer immediately in error state");
             [self recordGPUError];
             [_renderPassManager discardCurrentCommandBuffer];
@@ -4155,8 +4198,10 @@ output->name, (unsigned)i,
         }
 
         // Additional AGX validation: Check for buffer properties that cause rejections
-        initialState = mglRenderCommandBufferState(
-            (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
+        memset(&initialState, 0, sizeof(initialState));
+        (void)mglRenderCommandBufferOwnerState(
+            _renderPassManager.state->currentCommandBufferOwner,
+            &initialState);
         if (initialState.has_error) {
             NSLog(@"MGL AGX WARNING: Command buffer has immediate error: %@",
                   mglRenderCommandBufferErrorString(&initialState));
@@ -4222,17 +4267,21 @@ output->name, (unsigned)i,
         }
 
         // ADDITIONAL SAFETY: Validate command buffer is still valid before encoding
-        if (!(__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner)) {
+        if (mglRenderCppCommandBufferOwnerHasCurrent(
+                _renderPassManager.state->currentCommandBufferOwner) != 1) {
             NSLog(@"MGL ERROR: Command buffer became NULL before event wait encoding");
             return false;
         }
 
         @try {
-            NSLog(@"MGL INFO: Encoding safe event wait: event=%p, syncName=%u, cmdbuf=%p", cachedEvent, cachedSyncName, (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
-
-            // Use conservative approach: only encode if everything looks perfect
-            [(__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner) encodeWaitForEvent:cachedEvent value:cachedSyncName];
-
+            NSLog(@"MGL INFO: Encoding safe event wait: event=%p, syncName=%u",
+                  cachedEvent, cachedSyncName);
+            if (mglRenderCppEncodeWaitForEventForCommandBufferOwner(
+                    _renderPassManager.state->currentCommandBufferOwner,
+                    (__bridge void *)cachedEvent, cachedSyncName) != 0) {
+                NSLog(@"MGL ERROR: Event wait owner facade rejected the request");
+                return false;
+            }
             NSLog(@"MGL SUCCESS: Event wait encoded successfully on fresh command buffer");
         } @catch (NSException *exception) {
             NSLog(@"MGL ERROR: Event wait failed - %@: %@", exception.name, exception.reason);
@@ -4255,7 +4304,10 @@ output->name, (unsigned)i,
 
 - (bool)ensureWritableCommandBufferLocked:(const char *)reason
 {
-    if (!(__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner)) {
+    MGLRenderCppCommandBufferState commandState = {0};
+    if (!mglRenderCommandBufferOwnerState(
+            _renderPassManager.state->currentCommandBufferOwner,
+            &commandState)) {
         if (kMGLDiagnosticStateLogs) {
             mglTraceLogNSString(@"MGL INFO: %s requested with NULL command buffer, creating one", reason ? reason : "operation");
         }
@@ -4263,11 +4315,17 @@ output->name, (unsigned)i,
             NSLog(@"MGL ERROR: Failed to create command buffer for %s", reason ? reason : "operation");
             return false;
         }
+        if (!mglRenderCommandBufferOwnerState(
+                _renderPassManager.state->currentCommandBufferOwner,
+                &commandState)) {
+            NSLog(@"MGL ERROR: Created command buffer owner has no current buffer for %s",
+                  reason ? reason : "operation");
+            return false;
+        }
     }
 
     MTLCommandBufferStatus status =
-        mglRenderCommandBufferStatus(
-            (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
+        (MTLCommandBufferStatus)commandState.status;
     if (status >= MTLCommandBufferStatusCommitted) {
         NSLog(@"MGL INFO: %s requested on finalized command buffer (status: %ld), rotating", reason ? reason : "operation", (long)status);
         [self endRenderEncodingLocked];
@@ -4276,10 +4334,11 @@ output->name, (unsigned)i,
             return false;
         }
 
-        if (!(__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner) ||
-            mglRenderCommandBufferStatus(
-                (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner)) >=
-                MTLCommandBufferStatusCommitted) {
+        memset(&commandState, 0, sizeof(commandState));
+        if (!mglRenderCommandBufferOwnerState(
+                _renderPassManager.state->currentCommandBufferOwner,
+                &commandState) ||
+            commandState.status >= MTLCommandBufferStatusCommitted) {
             NSLog(@"MGL ERROR: Unable to obtain writable command buffer for %s", reason ? reason : "operation");
             return false;
         }
@@ -5288,7 +5347,8 @@ output->name, (unsigned)i,
      * re-issue all binds rather than skipping them via the dedup fast path. */
     [self invalidateLastBoundState];
 
-    if ((__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner))
+    if (mglRenderCppRenderEncoderOwnerHasCurrent(
+            _renderPassManager.state->currentRenderEncoderOwner) == 1)
     {
         /* An active render encoder means work was encoded into the current
          * CB, so flushCommandBufferLocked: must not skip the commit. */
@@ -5307,8 +5367,8 @@ output->name, (unsigned)i,
             mglLogRenderPassLifecycle("end",
                                       hit,
                                       ctx,
-                                      (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
-                                      (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
+                                      _renderPassManager.state->currentCommandBufferOwner,
+                                      _renderPassManager.state->currentRenderEncoderOwner,
                                       _renderPassManager.state->renderPassDescriptor,
                                       _drawable,
                                       _renderPassManager.state->renderPassFramebuffer,
@@ -5376,7 +5436,8 @@ output->name, (unsigned)i,
 
 - (BOOL)currentRenderPassUsesTexture:(MGLMetalTextureRef)texture
 {
-    if (!texture || !(__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
+    if (!texture || mglRenderCppRenderEncoderOwnerHasCurrent(
+                        _renderPassManager.state->currentRenderEncoderOwner) != 1) {
         return NO;
     }
     /* P4.1f: gate-on validity comes from the C++ owner. */
@@ -5420,14 +5481,15 @@ output->name, (unsigned)i,
 
     [self endRenderEncoding];
 
-    if (!(__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner)) {
+    MGLRenderCppCommandBufferState commandState = {0};
+    if (!mglRenderCommandBufferOwnerState(
+            _renderPassManager.state->currentCommandBufferOwner,
+            &commandState)) {
         BOOL ok = [self newCommandBuffer];
         return ok;
     }
 
-    if (mglRenderCommandBufferStatus(
-            (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner)) !=
-        MTLCommandBufferStatusNotEnqueued) {
+    if (commandState.status != MTLCommandBufferStatusNotEnqueued) {
         BOOL ok = [self newCommandBuffer];
         return ok;
     }
@@ -5437,7 +5499,6 @@ output->name, (unsigned)i,
 
     @try {
         [self commitCommandBufferWithAGXRecovery:commandBufferToCommit];
-        _lastCommittedCB = commandBufferToCommit;
         mglRenderPassWaitCommandBuffer(commandBufferToCommit);
     } @catch (NSException *exception) {
         NSLog(@"MGL ERROR: failed to synchronize render pass for texture readback (%s): %@",
@@ -5480,7 +5541,8 @@ output->name, (unsigned)i,
             NSLog(@"MGL CRITICAL: Re-creating Metal command buffer");
             [_renderPassManager installNewCommandBufferFromQueue:_commandQueue];
 
-            if (!(__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner)) {
+            if (mglRenderCppCommandBufferOwnerHasCurrent(
+                    _renderPassManager.state->currentCommandBufferOwner) != 1) {
                 NSLog(@"MGL CRITICAL: Failed to create new command buffer during recovery");
             }
         }
@@ -5517,8 +5579,8 @@ output->name, (unsigned)i,
               (unsigned long long)processCall, draw_command ? 1 : 0);
         mglLogStateSnapshot("processGLState.enter",
                             ctx,
-                            (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
-                            (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
+                            _renderPassManager.state->currentCommandBufferOwner,
+                            _renderPassManager.state->currentRenderEncoderOwner,
                             _renderPassManager.state->renderPassDescriptor,
                             _drawable);
     }
@@ -5527,8 +5589,8 @@ output->name, (unsigned)i,
         if (traceProcess) {
             mglLogStateSnapshot("processGLState.fail.null_ctx",
                                 ctx,
-                                (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
-                                (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
+                                _renderPassManager.state->currentCommandBufferOwner,
+                                _renderPassManager.state->currentRenderEncoderOwner,
                                 _renderPassManager.state->renderPassDescriptor,
                                 _drawable);
         }
@@ -5647,8 +5709,8 @@ output->name, (unsigned)i,
         if (traceProcess) {
             mglLogStateSnapshot("processGLState.fail.null_ctx",
                                 ctx,
-                                (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
-                                (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
+                                _renderPassManager.state->currentCommandBufferOwner,
+                                _renderPassManager.state->currentRenderEncoderOwner,
                                 _renderPassManager.state->renderPassDescriptor,
                                 _drawable);
         }
@@ -5685,10 +5747,15 @@ output->name, (unsigned)i,
 
     // Keep command buffer lifecycle healthy: if the active one is already finalized,
     // rotate to a fresh buffer before any state processing.
-    if ((__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner) && (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner) == NULL) {
+    MGLRenderCppCommandBufferState processCommandState = {0};
+    int processHasCommand = mglRenderCppGetCommandBufferOwnerState(
+        _renderPassManager.state->currentCommandBufferOwner,
+        &processCommandState) == 0;
+    if (processHasCommand &&
+        mglRenderCppRenderEncoderOwnerHasCurrent(
+            _renderPassManager.state->currentRenderEncoderOwner) != 1) {
         MTLCommandBufferStatus preStatus =
-            mglRenderCommandBufferStatus(
-                (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
+            (MTLCommandBufferStatus)processCommandState.status;
         if (preStatus >= MTLCommandBufferStatusCommitted) {
             static uint64_t s_rotateFinalizedCount = 0;
             uint64_t rotateHit = ++s_rotateFinalizedCount;
@@ -5701,15 +5768,15 @@ output->name, (unsigned)i,
                 if (traceProcess) {
                     mglLogStateSnapshot("processGLState.fail.new_cb_rotate",
                                         ctx,
-                                        (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
-                                        (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
+                                        _renderPassManager.state->currentCommandBufferOwner,
+                                        _renderPassManager.state->currentRenderEncoderOwner,
                                         _renderPassManager.state->renderPassDescriptor,
                                         _drawable);
                 }
                 return false;
             }
         }
-    } else if (!(__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner)) {
+    } else if (!processHasCommand) {
         if (kMGLVerboseFrameLoopLogs) {
             NSLog(@"MGL INFO: processGLState found NULL command buffer, creating one");
         }
@@ -5718,8 +5785,8 @@ output->name, (unsigned)i,
             if (traceProcess) {
                 mglLogStateSnapshot("processGLState.fail.new_cb_initial",
                                     ctx,
-                                    (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
-                                    (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
+                                    _renderPassManager.state->currentCommandBufferOwner,
+                                    _renderPassManager.state->currentRenderEncoderOwner,
                                     _renderPassManager.state->renderPassDescriptor,
                                     _drawable);
             }
@@ -5732,7 +5799,8 @@ output->name, (unsigned)i,
                                                             work:&resourceSyncWork]);
 
     // Ensure a render encoder exists for draw commands.
-    if (!(__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
+    if (mglRenderCppRenderEncoderOwnerHasCurrent(
+            _renderPassManager.state->currentRenderEncoderOwner) != 1) {
         static uint64_t s_nilEncoderRecoveryCount = 0;
         uint64_t nilHit = ++s_nilEncoderRecoveryCount;
         if (nilHit <= 16ull || (nilHit % 2048ull) == 0ull) {
@@ -5741,8 +5809,8 @@ output->name, (unsigned)i,
             mglLogRenderPassLifecycle("nil-encoder-before-recovery",
                                       nilHit,
                                       ctx,
-                                      (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
-                                      (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
+                                      _renderPassManager.state->currentCommandBufferOwner,
+                                      _renderPassManager.state->currentRenderEncoderOwner,
                                       _renderPassManager.state->renderPassDescriptor,
                                       _drawable,
                                       _renderPassManager.state->renderPassFramebuffer,
@@ -5756,8 +5824,8 @@ output->name, (unsigned)i,
             mglLogRenderPassLifecycle("nil-encoder-after-recovery",
                                       nilHit,
                                       ctx,
-                                      (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
-                                      (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
+                                      _renderPassManager.state->currentCommandBufferOwner,
+                                      _renderPassManager.state->currentRenderEncoderOwner,
                                       _renderPassManager.state->renderPassDescriptor,
                                       _drawable,
                                       _renderPassManager.state->renderPassFramebuffer,
@@ -5811,8 +5879,8 @@ output->name, (unsigned)i,
         if (traceProcess) {
             mglLogStateSnapshot("processGLState.fail.nil_pipeline",
                                 ctx,
-                                (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
-                                (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
+                                _renderPassManager.state->currentCommandBufferOwner,
+                                _renderPassManager.state->currentRenderEncoderOwner,
                                 _renderPassManager.state->renderPassDescriptor,
                                 _drawable);
         }
@@ -5822,9 +5890,9 @@ output->name, (unsigned)i,
     RETURN_FALSE_ON_FAILURE([self validateRenderPassAttachmentsAndPipelineFormatsLocked:traceProcess]);
 
     @try {
-        if (mglRenderCppBindingSetPipelineIfNeeded(
+        if (mglRenderCppBindingSetPipelineIfNeededForOwner(
                 _bindingStateOwner,
-                mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
+                _renderPassManager.state->currentRenderEncoderOwner,
                 (__bridge void *)_pipelineCache.state->pipelineState) > 0) {
             MGL_PERF_INC(g_mglSetRenderPipelineStateCallsSinceSwap);
         } else {
@@ -5839,8 +5907,8 @@ output->name, (unsigned)i,
         if (traceProcess) {
             mglLogStateSnapshot("processGLState.fail.set_pipeline",
                                 ctx,
-                                (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
-                                (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
+                                _renderPassManager.state->currentCommandBufferOwner,
+                                _renderPassManager.state->currentRenderEncoderOwner,
                                 _renderPassManager.state->renderPassDescriptor,
                                 _drawable);
         }
@@ -5877,9 +5945,11 @@ output->name, (unsigned)i,
             0.0f,
             0.0f
         };
-        mglRenderPassSetFragmentBytes(
-            (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner), &fragCoordParams,
-            sizeof(fragCoordParams), kMGLFragCoordParamsBufferIndex);
+        mglRenderCppSetRenderBytesForOwner(
+            _renderPassManager.state->currentRenderEncoderOwner,
+            &fragCoordParams, sizeof(fragCoordParams),
+            MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT,
+            kMGLFragCoordParamsBufferIndex);
         [self invalidateLastBoundFragmentBufferAtIndex:kMGLFragCoordParamsBufferIndex];
     }
 
@@ -5916,18 +5986,22 @@ output->name, (unsigned)i,
             }
             lodBiasArr[unit] = bias;
         }
-        mglRenderPassSetFragmentBytes(
-            (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner), lodBiasArr,
-            sizeof(lodBiasArr), kMGLLodBiasBufferIndex);
+        mglRenderCppSetRenderBytesForOwner(
+            _renderPassManager.state->currentRenderEncoderOwner,
+            lodBiasArr, sizeof(lodBiasArr),
+            MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT,
+            kMGLLodBiasBufferIndex);
         [self invalidateLastBoundFragmentBufferAtIndex:kMGLLodBiasBufferIndex];
 
         /* Bind _mglLodBiasMax scalar (MAX_TEXTURE_LOD_BIAS) for the MSL
          * clamp(biastexobj + biasshader, -biasmax, biasmax) in
          * mglRewriteMSLBiasExpr and in the no-bias injected clamp().
          * GL 4.6 §8.14.1 eq 8.8. */
-        mglRenderPassSetFragmentBytes(
-            (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner), &biasmax,
-            sizeof(biasmax), kMGLLodBiasMaxBufferIndex);
+        mglRenderCppSetRenderBytesForOwner(
+            _renderPassManager.state->currentRenderEncoderOwner,
+            &biasmax, sizeof(biasmax),
+            MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT,
+            kMGLLodBiasMaxBufferIndex);
         [self invalidateLastBoundFragmentBufferAtIndex:kMGLLodBiasMaxBufferIndex];
     }
 
@@ -5944,8 +6018,8 @@ output->name, (unsigned)i,
               (unsigned long long)processCall, draw_command ? 1 : 0, processElapsedUs);
         mglLogStateSnapshot("processGLState.exit.ok",
                             ctx,
-                            (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
-                            (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
+                            _renderPassManager.state->currentCommandBufferOwner,
+                            _renderPassManager.state->currentRenderEncoderOwner,
                             _renderPassManager.state->renderPassDescriptor,
                             _drawable);
     } else if (processElapsedUs >= 25.0) {
@@ -6060,7 +6134,8 @@ output->name, (unsigned)i,
             RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList: &MGL_STATE(ctx)->fragment_buffer_map_list]);
             if (work) work->updatedBaseLists = true;
 
-            if (!(__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
+            if (mglRenderCppRenderEncoderOwnerHasCurrent(
+                    _renderPassManager.state->currentRenderEncoderOwner) != 1) {
                 RETURN_FALSE_ON_FAILURE(
                     [self newRenderEncoderLockedWithReason:MGL_ENC_REASON_VAO]);
             }
@@ -6081,7 +6156,8 @@ output->name, (unsigned)i,
         }
         else if (MGL_STATE(ctx)->dirty_bits & DIRTY_RENDER_STATE)
         {
-            if ((__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner) == NULL)
+            if (mglRenderCppRenderEncoderOwnerHasCurrent(
+                    _renderPassManager.state->currentRenderEncoderOwner) != 1)
             {
                 RETURN_FALSE_ON_FAILURE(
                     [self newRenderEncoderLockedWithReason:MGL_ENC_REASON_RS]);
@@ -6118,7 +6194,11 @@ output->name, (unsigned)i,
     {
         // buffer data can be changed but the bindings remain in place.. so we need to update the data if this is the case
         // like a uniform or buffer sub data call
-        MGLEncodeContext encCtx = { .encoder = (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner) };
+        MGLEncodeContext encCtx = {
+            .encoder = mglRenderPassFallbackEncoder(
+                _renderPassManager.state->currentRenderEncoderOwner),
+            .render_encoder_owner = _renderPassManager.state->currentRenderEncoderOwner,
+        };
 
         if( [self checkForDirtyBufferData: &MGL_STATE(ctx)->vertex_buffer_map_list])
         {
@@ -6157,8 +6237,8 @@ output->name, (unsigned)i,
         if (traceProcess) {
             mglLogStateSnapshot("processGLState.fail.nil_rpd",
                                 ctx,
-                                (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
-                                (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
+                                _renderPassManager.state->currentCommandBufferOwner,
+                                _renderPassManager.state->currentRenderEncoderOwner,
                                 _renderPassManager.state->renderPassDescriptor,
                                 _drawable);
         }
@@ -6176,8 +6256,8 @@ output->name, (unsigned)i,
                 if (traceProcess) {
                     mglLogStateSnapshot("processGLState.fail.color_usage",
                                         ctx,
-                                        (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
-                                        (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
+                                        _renderPassManager.state->currentCommandBufferOwner,
+                                        _renderPassManager.state->currentRenderEncoderOwner,
                                         _renderPassManager.state->renderPassDescriptor,
                                         _drawable);
                 }
@@ -6195,8 +6275,8 @@ output->name, (unsigned)i,
         if (traceProcess) {
             mglLogStateSnapshot("processGLState.fail.no_attachments",
                                 ctx,
-                                (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
-                                (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
+                                _renderPassManager.state->currentCommandBufferOwner,
+                                _renderPassManager.state->currentRenderEncoderOwner,
                                 _renderPassManager.state->renderPassDescriptor,
                                 _drawable);
         }
@@ -7625,7 +7705,8 @@ stencil_format_ok:;
  * that needs it. */
 - (bool) bindBufferSizeConstantsForRenderEncoder
 {
-    if (!(__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
+    if (mglRenderCppRenderEncoderOwnerHasCurrent(
+            _renderPassManager.state->currentRenderEncoderOwner) != 1) {
         return true;
     }
 
@@ -7663,9 +7744,10 @@ stencil_format_ok:;
             _vertexSizeConstantsValid = YES;
         }
         if (_vertexSizeBuffer) {
-            mglRenderPassSetBuffer(
-                (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
-                _vertexSizeBuffer, 0, MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
+            mglRenderCppSetRenderBufferForOwner(
+                _renderPassManager.state->currentRenderEncoderOwner,
+                (__bridge void *)_vertexSizeBuffer, 0,
+                MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
                 MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX);
             [self recordLastBoundVertexBuffer:_vertexSizeBuffer
                                        offset:0
@@ -7704,9 +7786,10 @@ stencil_format_ok:;
             _fragmentSizeConstantsValid = YES;
         }
         if (_fragmentSizeBuffer) {
-            mglRenderPassSetBuffer(
-                (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
-                _fragmentSizeBuffer, 0, MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT,
+            mglRenderCppSetRenderBufferForOwner(
+                _renderPassManager.state->currentRenderEncoderOwner,
+                (__bridge void *)_fragmentSizeBuffer, 0,
+                MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT,
                 MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX);
             [self recordLastBoundFragmentBuffer:_fragmentSizeBuffer
                                          offset:0
@@ -7724,20 +7807,18 @@ stencil_format_ok:;
     [self flushCommandBufferLocked:finish];
     METAL_UNLOCK();
 
-    /* waitUntilCompleted is outside METAL_LOCK to avoid blocking other
-     * threads that need the lock while the GPU finishes.  The CB was already
-     * committed inside the lock; waiting outside is safe because the CB
-     * retains itself until completion. */
-    if (finish && _pendingFinishCB != nil) {
-        @try {
-            if (mglRenderCommandBufferStatus(_pendingFinishCB) !=
-                MTLCommandBufferStatusNotEnqueued) {
-                mglRenderPassWaitCommandBuffer(_pendingFinishCB);
-            }
-        } @catch (NSException *exception) {
-            NSLog(@"MGL ERROR: waitUntilCompleted failed outside lock: %@", exception);
+    /* The C++ command owner retains the last accepted submission. Waiting
+     * through its value-state API keeps completion lifetime out of the
+     * renderer's ObjC ivar mirror and preserves the old outside-lock wait. */
+    if (finish) {
+        MGLRenderCppCommandBufferState finishState = {0};
+        int waitResult = [_renderPassManager
+            waitForLastSubmittedCommandBuffer:&finishState];
+        if (waitResult < 0 || finishState.has_error) {
+            NSLog(@"MGL ERROR: owner waitUntilCompleted failed status=%u domain=%s code=%lld",
+                  finishState.status, finishState.error_domain,
+                  (long long)finishState.error_code);
         }
-        _pendingFinishCB = nil;
     }
 }
 
@@ -7756,24 +7837,25 @@ stencil_format_ok:;
 
     /* If processGLStateLocked: left a render encoder active, mark the CB as
      * having work so the commit below is not skipped. */
-    if ((__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
+    if (mglRenderCppRenderEncoderOwnerHasCurrent(
+            _renderPassManager.state->currentRenderEncoderOwner) == 1) {
         _currentCBHasWork = YES;
     }
 
     [self endRenderEncodingLocked];
 
-    /* Skip empty-CB commit when finish=true: wait on _lastCommittedCB
+    /* Skip empty-CB commit when finish=true: wait on the owner's last submit
      * instead (Metal CBs execute serially on the same queue).  Any path
      * that encodes work (draws/render/blit/compute) into the current CB
      * MUST set _currentCBHasWork before calling flushCommandBuffer:YES,
      * else the skip drops uncommitted work. */
-    if (finish && !_currentCBHasWork && _lastCommittedCB != nil) {
-        _pendingFinishCB = _lastCommittedCB;
+    if (finish && !_currentCBHasWork &&
+        [_renderPassManager hasLastSubmittedCommandBuffer]) {
         return;
     }
-    if (finish && !_currentCBHasWork && _lastCommittedCB == nil) {
+    if (finish && !_currentCBHasWork &&
+        ![_renderPassManager hasLastSubmittedCommandBuffer]) {
         /* No CB was ever committed — nothing to wait for. */
-        _pendingFinishCB = nil;
         return;
     }
 
@@ -7782,14 +7864,16 @@ stencil_format_ok:;
         return;
     }
 
-    if (!(__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner)) {
+    MGLRenderCppCommandBufferState currentState = {0};
+    if (!mglRenderCommandBufferOwnerState(
+            _renderPassManager.state->currentCommandBufferOwner,
+            &currentState)) {
         NSLog(@"MGL WARNING: No current command buffer in flushCommandBuffer");
         return;
     }
 
     MTLCommandBufferStatus currentStatus =
-        mglRenderCommandBufferStatus(
-            (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
+        (MTLCommandBufferStatus)currentState.status;
     if (currentStatus != MTLCommandBufferStatusNotEnqueued) {
         NSLog(@"MGL INFO: flushCommandBuffer found finalized buffer (status=%ld), rotating", (long)currentStatus);
         if (![self newCommandBufferLocked]) {
@@ -7798,9 +7882,7 @@ stencil_format_ok:;
         return;
     }
 
-    MGLRenderCppCommandBufferState preCommitState =
-        mglRenderCommandBufferState(
-            (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
+    MGLRenderCppCommandBufferState preCommitState = currentState;
     if (preCommitState.has_error) {
         NSLog(@"MGL ERROR: Command buffer has error before commit: %@",
               mglRenderCommandBufferErrorString(&preCommitState));
@@ -7819,12 +7901,8 @@ stencil_format_ok:;
 
     @try {
         [self commitCommandBufferWithAGXRecovery:commandBufferToCommit];
-        _lastCommittedCB = commandBufferToCommit;
-        /* Don't waitUntilCompleted inside the lock — save the CB for the
-         * caller (flushCommandBuffer:) to wait on after unlock. */
-        if (finish) {
-            _pendingFinishCB = commandBufferToCommit;
-        }
+        /* The owner now retains the last submit; flushCommandBuffer waits on
+         * that state after releasing METAL_LOCK. */
     } @catch (NSException *exception) {
         NSLog(@"MGL ERROR: Command buffer commit failed in flushCommandBuffer: %@", exception);
         [self recordGPUError];
@@ -7841,7 +7919,8 @@ stencil_format_ok:;
     GLMState *state = MGL_STATE(glm_ctx);
     Framebuffer *framebuffer = mglRendererGetValidatedFramebuffer(glm_ctx, "processGLState.dirtyFBO");
     BOOL framebufferBindingDirty = framebuffer && (framebuffer->dirty_bits & DIRTY_FBO_BINDING);
-    if ((__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner) &&
+    if (mglRenderCppRenderEncoderOwnerHasCurrent(
+            _renderPassManager.state->currentRenderEncoderOwner) == 1 &&
         !framebufferBindingDirty &&
         [self currentRenderPassMatchesCurrentFramebuffer]) {
         state->dirty_bits &= ~DIRTY_FBO;

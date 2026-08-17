@@ -69,11 +69,10 @@ static void mglComputeSetBuffer(MGLMetalComputeCommandEncoderRef encoder,
                                 NSUInteger offset,
                                 NSUInteger index)
 {
-    if (mglComputeUsesMetalCpp() &&
-        mglRenderCppSetComputeBuffer((__bridge void *)encoder,
-                                     (__bridge void *)buffer,
-                                     (uint64_t)offset,
-                                     (uint32_t)index) == 0) {
+    if (mglComputeUsesMetalCpp()) {
+        (void)mglRenderCppSetComputeBuffer(
+            (__bridge void *)encoder, (__bridge void *)buffer,
+            (uint64_t)offset, (uint32_t)index);
         return;
     }
     [encoder setBuffer:buffer offset:offset atIndex:index];
@@ -83,10 +82,10 @@ static void mglComputeSetTexture(MGLMetalComputeCommandEncoderRef encoder,
                                  MGLMetalTextureRef texture,
                                  NSUInteger index)
 {
-    if (mglComputeUsesMetalCpp() &&
-        mglRenderCppSetComputeTexture((__bridge void *)encoder,
-                                      (__bridge void *)texture,
-                                      (uint32_t)index) == 0) {
+    if (mglComputeUsesMetalCpp()) {
+        (void)mglRenderCppSetComputeTexture(
+            (__bridge void *)encoder, (__bridge void *)texture,
+            (uint32_t)index);
         return;
     }
     [encoder setTexture:texture atIndex:index];
@@ -96,10 +95,10 @@ static void mglComputeSetSampler(MGLMetalComputeCommandEncoderRef encoder,
                                  MGLMetalSamplerStateRef sampler,
                                  NSUInteger index)
 {
-    if (mglComputeUsesMetalCpp() &&
-        mglRenderCppSetComputeSampler((__bridge void *)encoder,
-                                      (__bridge void *)sampler,
-                                      (uint32_t)index) == 0) {
+    if (mglComputeUsesMetalCpp()) {
+        (void)mglRenderCppSetComputeSampler(
+            (__bridge void *)encoder, (__bridge void *)sampler,
+            (uint32_t)index);
         return;
     }
     [encoder setSamplerState:sampler atIndex:index];
@@ -108,9 +107,9 @@ static void mglComputeSetSampler(MGLMetalComputeCommandEncoderRef encoder,
 static void mglComputeSetPipeline(MGLMetalComputeCommandEncoderRef encoder,
                                    MGLMetalComputePipelineStateRef pipeline)
 {
-    if (mglComputeUsesMetalCpp() &&
-        mglRenderCppSetComputePipelineState((__bridge void *)encoder,
-                                            (__bridge void *)pipeline) == 0) {
+    if (mglComputeUsesMetalCpp()) {
+        (void)mglRenderCppSetComputePipelineState(
+            (__bridge void *)encoder, (__bridge void *)pipeline);
         return;
     }
     [encoder setComputePipelineState:pipeline];
@@ -120,14 +119,12 @@ static void mglComputeDispatch(MGLMetalComputeCommandEncoderRef encoder,
                                MTLSize groups,
                                MTLSize threads)
 {
-    if (mglComputeUsesMetalCpp() &&
-        mglRenderCppDispatchCompute((__bridge void *)encoder,
-                                    (uint32_t)groups.width,
-                                    (uint32_t)groups.height,
-                                    (uint32_t)groups.depth,
-                                    (uint32_t)threads.width,
-                                    (uint32_t)threads.height,
-                                    (uint32_t)threads.depth) == 0) {
+    if (mglComputeUsesMetalCpp()) {
+        (void)mglRenderCppDispatchCompute(
+            (__bridge void *)encoder, (uint32_t)groups.width,
+            (uint32_t)groups.height, (uint32_t)groups.depth,
+            (uint32_t)threads.width, (uint32_t)threads.height,
+            (uint32_t)threads.depth);
         return;
     }
     [encoder dispatchThreadgroups:groups threadsPerThreadgroup:threads];
@@ -138,11 +135,11 @@ static void mglComputeDispatchIndirect(MGLMetalComputeCommandEncoderRef encoder,
                                        NSUInteger offset,
                                        MTLSize threads)
 {
-    if (mglComputeUsesMetalCpp() &&
-        mglRenderCppDispatchComputeIndirect(
+    if (mglComputeUsesMetalCpp()) {
+        (void)mglRenderCppDispatchComputeIndirect(
             (__bridge void *)encoder, (__bridge void *)buffer,
             (uint64_t)offset, (uint32_t)threads.width,
-            (uint32_t)threads.height, (uint32_t)threads.depth) == 0) {
+            (uint32_t)threads.height, (uint32_t)threads.depth);
         return;
     }
     [encoder dispatchThreadgroupsWithIndirectBuffer:buffer
@@ -150,23 +147,10 @@ static void mglComputeDispatchIndirect(MGLMetalComputeCommandEncoderRef encoder,
                                  threadsPerThreadgroup:threads];
 }
 
-static MGLMetalComputeCommandEncoderRef mglComputeCreateEncoder(
-    MGLMetalCommandBufferRef commandBuffer)
-{
-    if (mglComputeUsesMetalCpp()) {
-        void *encoder = NULL;
-        if (mglRenderCppCreateComputeEncoder((__bridge void *)commandBuffer,
-                                              &encoder) == 0 && encoder) {
-            return (__bridge MGLMetalComputeCommandEncoderRef)encoder;
-        }
-    }
-    return [commandBuffer computeCommandEncoder];
-}
-
 static void mglComputeEndEncoder(MGLMetalComputeCommandEncoderRef encoder)
 {
-    if (mglComputeUsesMetalCpp() &&
-        mglRenderCppEndComputeEncoder((__bridge void *)encoder) == 0) {
+    if (mglComputeUsesMetalCpp()) {
+        (void)mglRenderCppEndComputeEncoder((__bridge void *)encoder);
         return;
     }
     [encoder endEncoding];
@@ -180,6 +164,33 @@ static void mglComputeEndEncoder(MGLMetalComputeCommandEncoderRef encoder)
 - (void)mtlDispatchComputeIndirectLocked:(GLMContext)glm_ctx
                                 indirect:(GLintptr)indirect;
 @end
+
+void mglRendererCallbackDispatchCompute(void *runtime_context,
+                                        GLMContext glm_ctx,
+                                        unsigned int groups_x,
+                                        unsigned int groups_y,
+                                        unsigned int groups_z)
+{
+    MGLRenderer *renderer = (__bridge MGLRenderer *)runtime_context;
+    if (!renderer || !glm_ctx) return;
+    METAL_LOCK();
+    [renderer mtlDispatchComputeLocked:glm_ctx
+                               groupsX:groups_x
+                               groupsY:groups_y
+                               groupsZ:groups_z];
+    METAL_UNLOCK();
+}
+
+void mglRendererCallbackDispatchComputeIndirect(void *runtime_context,
+                                                GLMContext glm_ctx,
+                                                intptr_t indirect)
+{
+    MGLRenderer *renderer = (__bridge MGLRenderer *)runtime_context;
+    if (!renderer || !glm_ctx) return;
+    METAL_LOCK();
+    [renderer mtlDispatchComputeIndirectLocked:glm_ctx indirect:indirect];
+    METAL_UNLOCK();
+}
 
 @implementation MGLRenderer (Compute)
 
@@ -1045,10 +1056,9 @@ static void mglComputeEndEncoder(MGLMetalComputeCommandEncoderRef encoder)
         ? [NSMutableArray array] : nil;
     MGLMetalComputeCommandEncoderRef computeCommandEncoder = nil;
     if (!useExecutionPlan) {
-        computeCommandEncoder = mglComputeCreateEncoder(
-            (__bridge MGLMetalCommandBufferRef)
-                mglRenderCppCommandBufferOwnerGetCurrent(
-                    _renderPassManager.state->currentCommandBufferOwner));
+        computeCommandEncoder =
+            mglRenderCreateComputeEncoderForCommandBufferOwner(
+                _renderPassManager.state->currentCommandBufferOwner);
         if (!computeCommandEncoder) {
             NSLog(@"MGL ERROR: Failed to create compute command encoder for %s",
                   reason ? reason : "dispatch");
@@ -1084,7 +1094,21 @@ static void mglComputeEndEncoder(MGLMetalComputeCommandEncoderRef encoder)
      * local size（0 由 C++ 解析为 1，与 `x ? x : 1` 默认一致），gate-on
      * 一次 C ABI 调用在 C++ 内完成 dispatchThreadgroups 编码；gate-off 走
      * 原逐条 ObjC 路径作 A/B 对照。 */
+    BOOL hasCopyBackEntries = NO;
     if (useExecutionPlan) {
+        /* Copy-back resources are consumed by a following blit/CPU-visible
+         * transaction. Request an explicit buffer barrier at the end of the
+         * compute encoder so the plan carries the visibility requirement
+         * alongside dispatch and binding state. */
+        for (NSUInteger slot = 0; slot < kMGLMaxBufferSlots; slot++) {
+            if (copyBacks.slots[slot].length != 0) {
+                hasCopyBackEntries = YES;
+                break;
+            }
+        }
+        executionPlan.barrier_scope = hasCopyBackEntries
+            ? MGL_RENDER_CPP_COMPUTE_BARRIER_BUFFERS
+            : MGL_RENDER_CPP_COMPUTE_BARRIER_NONE;
         executionPlan.dispatch = (MGLRenderCppComputePlan){
             .dispatch_kind = dispatchKind,
             .groups_x = groups_x,
@@ -1097,15 +1121,44 @@ static void mglComputeEndEncoder(MGLMetalComputeCommandEncoderRef encoder)
                 ? (__bridge void *)indirectBuffer : NULL,
             .indirect_offset = indirectOffset,
         };
-        if (mglRenderCppEncodeComputeExecutionPlanForCommandBufferOwner(
+        MGLRenderCppCopyBackEntry copyBackEntries[kMGLMaxBufferSlots] = {0};
+        uint32_t copyBackEntryCount = 0;
+        for (NSUInteger slot = 0; slot < kMGLMaxBufferSlots; slot++) {
+            MGLStageBindingCopyBack *entry = &copyBacks.slots[slot];
+            if (entry->length == 0) continue;
+            copyBackEntries[copyBackEntryCount++] =
+                (MGLRenderCppCopyBackEntry){
+                    .temporary = (__bridge void *)entry->temporary,
+                    .destination = (__bridge void *)entry->destination,
+                    .destination_buffer = entry->destination_buffer,
+                    .destination_offset = entry->destination_offset,
+                    .length = entry->length,
+                };
+        }
+        MGLRenderCppComputeExecutionResult executionResult = {0};
+        char executionError[256] = {0};
+        if (mglRenderCppExecuteComputeExecutionPlan(
                 _renderPassManager.state->currentCommandBufferOwner,
-                &executionPlan, NULL, 0) != 0) {
-            NSLog(@"MGL COMPUTE ERROR: C++ %s execution plan encode failed",
-                  reason ? reason : "dispatch");
+                _gpuRecovery.commandRecoveryOwner,
+                &executionPlan,
+                copyBackEntries,
+                copyBackEntryCount,
+                0u,
+                &executionResult,
+                executionError,
+                sizeof(executionError)) != 0) {
+            if (executionResult.transaction.device_reset_requested) {
+                atomic_store_explicit(&_deviceResetRequested, true,
+                                      memory_order_release);
+            }
+            NSLog(@"MGL COMPUTE ERROR: C++ %s execution transaction failed: %s",
+                  reason ? reason : "dispatch",
+                  executionError[0] ? executionError : "unknown error");
             [self clearStageBindingCopyBacks:&copyBacks];
             mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
             return NO;
         }
+        [self clearStageBindingCopyBacks:&copyBacks];
     } else {
         MTLSize numThreadgroups;
         MTLSize threadsPerThreadgroup;
@@ -1138,11 +1191,18 @@ static void mglComputeEndEncoder(MGLMetalComputeCommandEncoderRef encoder)
      * glFinish then never executes the compute writes (SSBO stores vanish). */
     _currentCBHasWork = YES;
 
-    if (![self flushStageBindingCopyBacks:&copyBacks
+    if (!useExecutionPlan &&
+        ![self flushStageBindingCopyBacks:&copyBacks
                      requireCPUVisibility:NO]) {
         NSLog(@"MGL COMPUTE ERROR: failed to copy isolated writable buffer prefixes after %s",
               reason ? reason : "dispatch");
         mglDispatchError(glm_ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
+        return NO;
+    }
+    if (useExecutionPlan && hasCopyBackEntries &&
+        ![self newCommandBufferLocked]) {
+        NSLog(@"MGL COMPUTE ERROR: failed to install post-compute command buffer after %s",
+              reason ? reason : "dispatch");
         return NO;
     }
 

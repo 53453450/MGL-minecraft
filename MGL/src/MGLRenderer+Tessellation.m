@@ -63,6 +63,14 @@ static BOOL mglTessUsesMetalCpp(void)
            mglRenderCppGetDevice() != NULL;
 }
 
+static MGLMetalRenderCommandEncoderRef mglTessFallbackRenderEncoder(
+    void *owner)
+{
+    if (mglTessUsesMetalCpp()) return nil;
+    return (__bridge MGLMetalRenderCommandEncoderRef)
+        mglRenderCppRenderEncoderOwnerGetCurrentForFallback(owner);
+}
+
 static MGLMetalBufferRef mglTessCreateBuffer(MGLMetalDeviceRef device,
                                          NSUInteger length,
                                          MTLResourceOptions options)
@@ -127,23 +135,10 @@ static MGLMetalTextureRef mglTessCreateTextureLevelView(
                                            slices:NSMakeRange(0, sliceCount)];
 }
 
-static MGLMetalComputeCommandEncoderRef mglTessCreateComputeEncoder(
-    MGLMetalCommandBufferRef commandBuffer)
-{
-    if (mglTessUsesMetalCpp()) {
-        void *encoder = NULL;
-        if (mglRenderCppCreateComputeEncoder((__bridge void *)commandBuffer,
-                                              &encoder) == 0 && encoder) {
-            return (__bridge MGLMetalComputeCommandEncoderRef)encoder;
-        }
-    }
-    return [commandBuffer computeCommandEncoder];
-}
-
 static void mglTessEndComputeEncoder(MGLMetalComputeCommandEncoderRef encoder)
 {
-    if (mglTessUsesMetalCpp() &&
-        mglRenderCppEndComputeEncoder((__bridge void *)encoder) == 0) {
+    if (mglTessUsesMetalCpp()) {
+        (void)mglRenderCppEndComputeEncoder((__bridge void *)encoder);
         return;
     }
     [encoder endEncoding];
@@ -152,9 +147,9 @@ static void mglTessEndComputeEncoder(MGLMetalComputeCommandEncoderRef encoder)
 static void mglTessSetComputePipeline(MGLMetalComputeCommandEncoderRef encoder,
                                       MGLMetalComputePipelineStateRef pipeline)
 {
-    if (mglTessUsesMetalCpp() &&
-        mglRenderCppSetComputePipelineState((__bridge void *)encoder,
-                                            (__bridge void *)pipeline) == 0) {
+    if (mglTessUsesMetalCpp()) {
+        (void)mglRenderCppSetComputePipelineState(
+            (__bridge void *)encoder, (__bridge void *)pipeline);
         return;
     }
     [encoder setComputePipelineState:pipeline];
@@ -165,56 +160,63 @@ static void mglTessSetComputeBuffer(MGLMetalComputeCommandEncoderRef encoder,
                                     NSUInteger offset,
                                     NSUInteger index)
 {
-    if (mglTessUsesMetalCpp() &&
-        mglRenderCppSetComputeBuffer((__bridge void *)encoder,
-                                     (__bridge void *)buffer, offset,
-                                     (uint32_t)index) == 0) {
+    if (mglTessUsesMetalCpp()) {
+        (void)mglRenderCppSetComputeBuffer(
+            (__bridge void *)encoder, (__bridge void *)buffer, offset,
+            (uint32_t)index);
         return;
     }
     [encoder setBuffer:buffer offset:offset atIndex:index];
 }
 
 static void mglTessSetRenderVertexBuffer(MGLMetalRenderCommandEncoderRef encoder,
+                                         void *renderEncoderOwner,
                                          MGLMetalBufferRef buffer,
                                          NSUInteger offset,
                                          NSUInteger index)
 {
-    if (mglTessUsesMetalCpp() &&
-        mglRenderCppSetRenderBuffer((__bridge void *)encoder,
-                                    (__bridge void *)buffer, offset,
-                                    MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
-                                    (uint32_t)index) == 0) {
+    if (mglTessUsesMetalCpp()) {
+        (void)mglRenderCppSetRenderBufferForOwner(
+            renderEncoderOwner, (__bridge void *)buffer, offset,
+            MGL_RENDER_CPP_BINDING_STAGE_VERTEX, (uint32_t)index);
         return;
     }
     [encoder setVertexBuffer:buffer offset:offset atIndex:index];
 }
 
 static void mglTessDrawPrimitives(MGLMetalRenderCommandEncoderRef encoder,
+                                  void *renderEncoderOwner,
                                   MTLPrimitiveType type,
                                   NSUInteger vertexStart,
                                   NSUInteger vertexCount,
                                   NSUInteger instanceCount,
                                   NSUInteger baseInstance)
 {
-    (void)mglRenderCppEncodeDraw((__bridge void *)encoder,
-        &(MGLRenderCppDrawPlan){
+    const MGLRenderCppDrawPlan plan = {
             .kind = MGL_RENDER_CPP_DRAW_ARRAY,
             .primitive_type = (uint32_t)type,
             .vertex_start = vertexStart,
             .vertex_count = vertexCount,
             .instance_count = instanceCount,
             .base_instance = baseInstance,
-        }, NULL, 0);
+        };
+    if (mglTessUsesMetalCpp()) {
+        (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
+            renderEncoderOwner, &plan, NULL, 0);
+    } else {
+        (void)mglRenderCppEncodeDraw(
+            (__bridge void *)encoder, &plan, NULL, 0);
+    }
 }
 
 static void mglTessSetComputeTexture(MGLMetalComputeCommandEncoderRef encoder,
                                      MGLMetalTextureRef texture,
                                      NSUInteger index)
 {
-    if (mglTessUsesMetalCpp() &&
-        mglRenderCppSetComputeTexture((__bridge void *)encoder,
-                                      (__bridge void *)texture,
-                                      (uint32_t)index) == 0) {
+    if (mglTessUsesMetalCpp()) {
+        (void)mglRenderCppSetComputeTexture(
+            (__bridge void *)encoder, (__bridge void *)texture,
+            (uint32_t)index);
         return;
     }
     [encoder setTexture:texture atIndex:index];
@@ -224,10 +226,10 @@ static void mglTessSetComputeSampler(MGLMetalComputeCommandEncoderRef encoder,
                                      MGLMetalSamplerStateRef sampler,
                                      NSUInteger index)
 {
-    if (mglTessUsesMetalCpp() &&
-        mglRenderCppSetComputeSampler((__bridge void *)encoder,
-                                      (__bridge void *)sampler,
-                                      (uint32_t)index) == 0) {
+    if (mglTessUsesMetalCpp()) {
+        (void)mglRenderCppSetComputeSampler(
+            (__bridge void *)encoder, (__bridge void *)sampler,
+            (uint32_t)index);
         return;
     }
     [encoder setSamplerState:sampler atIndex:index];
@@ -238,9 +240,9 @@ static void mglTessSetComputeBytes(MGLMetalComputeCommandEncoderRef encoder,
                                    NSUInteger length,
                                    NSUInteger index)
 {
-    if (mglTessUsesMetalCpp() &&
-        mglRenderCppSetComputeBytes((__bridge void *)encoder, bytes, length,
-                                    (uint32_t)index) == 0) {
+    if (mglTessUsesMetalCpp()) {
+        (void)mglRenderCppSetComputeBytes(
+            (__bridge void *)encoder, bytes, length, (uint32_t)index);
         return;
     }
     [encoder setBytes:bytes length:length atIndex:index];
@@ -250,29 +252,16 @@ static void mglTessDispatchCompute(MGLMetalComputeCommandEncoderRef encoder,
                                    MTLSize groups,
                                    MTLSize threads)
 {
-    if (mglTessUsesMetalCpp() &&
-        mglRenderCppDispatchCompute(
+    if (mglTessUsesMetalCpp()) {
+        (void)mglRenderCppDispatchCompute(
             (__bridge void *)encoder,
             (uint32_t)groups.width, (uint32_t)groups.height,
             (uint32_t)groups.depth,
             (uint32_t)threads.width, (uint32_t)threads.height,
-            (uint32_t)threads.depth) == 0) {
+            (uint32_t)threads.depth);
         return;
     }
     [encoder dispatchThreadgroups:groups threadsPerThreadgroup:threads];
-}
-
-static MGLMetalBlitCommandEncoderRef mglTessCreateBlitEncoder(
-    MGLMetalCommandBufferRef commandBuffer)
-{
-    if (mglTessUsesMetalCpp()) {
-        void *encoder = NULL;
-        if (mglRenderCppCreateBlitEncoder((__bridge void *)commandBuffer,
-                                          &encoder) == 0 && encoder) {
-            return (__bridge MGLMetalBlitCommandEncoderRef)encoder;
-        }
-    }
-    return [commandBuffer blitCommandEncoder];
 }
 
 static void mglTessBlitCopyBuffer(MGLMetalBlitCommandEncoderRef encoder,
@@ -282,11 +271,11 @@ static void mglTessBlitCopyBuffer(MGLMetalBlitCommandEncoderRef encoder,
                                   NSUInteger destinationOffset,
                                   NSUInteger size)
 {
-    if (mglTessUsesMetalCpp() &&
-        mglRenderCppBlitCopyBuffer(
+    if (mglTessUsesMetalCpp()) {
+        (void)mglRenderCppBlitCopyBuffer(
             (__bridge void *)encoder, (__bridge void *)source,
             (uint64_t)sourceOffset, (__bridge void *)destination,
-            (uint64_t)destinationOffset, (uint64_t)size) == 0) {
+            (uint64_t)destinationOffset, (uint64_t)size);
         return;
     }
     [encoder copyFromBuffer:source sourceOffset:sourceOffset
@@ -296,11 +285,182 @@ static void mglTessBlitCopyBuffer(MGLMetalBlitCommandEncoderRef encoder,
 
 static void mglTessEndBlitEncoder(MGLMetalBlitCommandEncoderRef encoder)
 {
-    if (mglTessUsesMetalCpp() &&
-        mglRenderCppEndBlitEncoder((__bridge void *)encoder) == 0) {
+    if (mglTessUsesMetalCpp()) {
+        (void)mglRenderCppEndBlitEncoder((__bridge void *)encoder);
         return;
     }
     [encoder endEncoding];
+}
+
+static bool mglTessEncodeBufferCopiesForOwner(
+    void *commandBufferOwner,
+    const MGLRenderCppBufferCopyEntry *entries,
+    uint32_t entryCount)
+{
+    if (!commandBufferOwner || !entries || entryCount == 0u) return false;
+    if (mglTessUsesMetalCpp()) {
+        return mglRenderCppEncodeBufferCopiesForCommandBufferOwner(
+            commandBufferOwner, entries, entryCount) == 0;
+    }
+    MGLMetalBlitCommandEncoderRef blit =
+        mglRenderCreateBlitEncoderForCommandBufferOwner(commandBufferOwner);
+    if (!blit) return false;
+    for (uint32_t i = 0u; i < entryCount; i++) {
+        const MGLRenderCppBufferCopyEntry *entry = &entries[i];
+        mglTessBlitCopyBuffer(
+            blit,
+            (__bridge MGLMetalBufferRef)entry->source_buffer,
+            (NSUInteger)entry->source_offset,
+            (__bridge MGLMetalBufferRef)entry->destination_buffer,
+            (NSUInteger)entry->destination_offset,
+            (NSUInteger)entry->length);
+    }
+    mglTessEndBlitEncoder(blit);
+    return true;
+}
+
+static bool mglTessAppendComputeResourceOp(
+    MGLRenderCppComputeExecutionPlan *plan,
+    NSMutableArray *temporaries,
+    uint32_t kind,
+    id resource,
+    NSUInteger offset,
+    NSUInteger index)
+{
+    if (!plan || kind > 3u ||
+        plan->binding_op_count >= MGL_RENDER_CPP_COMPUTE_EXECUTION_MAX_OPS) {
+        return false;
+    }
+    plan->binding_ops[plan->binding_op_count++] =
+        (MGLRenderCppComputeBindingOp){
+            .kind = kind,
+            .index = (uint32_t)index,
+            .offset = (uint64_t)offset,
+            .buffer = (__bridge void *)resource,
+            .bytes = NULL,
+            .length = 0u,
+        };
+    if (resource && temporaries) [temporaries addObject:resource];
+    return true;
+}
+
+static bool mglTessAppendComputeBytesOp(
+    MGLRenderCppComputeExecutionPlan *plan,
+    NSMutableArray *temporaries,
+    const void *bytes,
+    NSUInteger length,
+    NSUInteger index)
+{
+    if (!plan || !temporaries || !bytes || length == 0u ||
+        length > UINT32_MAX ||
+        plan->binding_op_count >= MGL_RENDER_CPP_COMPUTE_EXECUTION_MAX_OPS) {
+        return false;
+    }
+    NSData *storage = [NSData dataWithBytes:bytes length:length];
+    if (!storage) return false;
+    [temporaries addObject:storage];
+    plan->binding_ops[plan->binding_op_count++] =
+        (MGLRenderCppComputeBindingOp){
+            .kind = 1u,
+            .index = (uint32_t)index,
+            .offset = 0u,
+            .buffer = NULL,
+            .bytes = storage.bytes,
+            .length = (uint32_t)length,
+        };
+    return true;
+}
+
+static bool mglTessPlanBufferOrBind(
+    MGLRenderCppComputeExecutionPlan *plan,
+    NSMutableArray *temporaries,
+    MGLMetalComputeCommandEncoderRef encoder,
+    MGLMetalBufferRef buffer,
+    NSUInteger offset,
+    NSUInteger index)
+{
+    if (plan) {
+        return mglTessAppendComputeResourceOp(
+            plan, temporaries, 0u, buffer, offset, index);
+    }
+    if (!encoder) return false;
+    mglTessSetComputeBuffer(encoder, buffer, offset, index);
+    return true;
+}
+
+static bool mglTessPlanTextureOrBind(
+    MGLRenderCppComputeExecutionPlan *plan,
+    NSMutableArray *temporaries,
+    MGLMetalComputeCommandEncoderRef encoder,
+    MGLMetalTextureRef texture,
+    NSUInteger index)
+{
+    if (plan) {
+        return mglTessAppendComputeResourceOp(
+            plan, temporaries, 2u, texture, 0u, index);
+    }
+    if (!encoder) return false;
+    mglTessSetComputeTexture(encoder, texture, index);
+    return true;
+}
+
+static bool mglTessPlanSamplerOrBind(
+    MGLRenderCppComputeExecutionPlan *plan,
+    NSMutableArray *temporaries,
+    MGLMetalComputeCommandEncoderRef encoder,
+    MGLMetalSamplerStateRef sampler,
+    NSUInteger index)
+{
+    if (plan) {
+        return mglTessAppendComputeResourceOp(
+            plan, temporaries, 3u, sampler, 0u, index);
+    }
+    if (!encoder) return false;
+    mglTessSetComputeSampler(encoder, sampler, index);
+    return true;
+}
+
+static bool mglTessPlanBytesOrBind(
+    MGLRenderCppComputeExecutionPlan *plan,
+    NSMutableArray *temporaries,
+    MGLMetalComputeCommandEncoderRef encoder,
+    const void *bytes,
+    NSUInteger length,
+    NSUInteger index)
+{
+    if (plan) {
+        return mglTessAppendComputeBytesOp(
+            plan, temporaries, bytes, length, index);
+    }
+    if (!encoder) return false;
+    mglTessSetComputeBytes(encoder, bytes, length, index);
+    return true;
+}
+
+static bool mglTessPlanDispatchOrBind(
+    MGLRenderCppComputeExecutionPlan *plan,
+    MGLMetalComputeCommandEncoderRef encoder,
+    MTLSize groups,
+    MTLSize threads)
+{
+    MGLRenderCppComputePlan dispatch = {
+        .dispatch_kind = MGL_RENDER_CPP_COMPUTE_DISPATCH_DIRECT,
+        .groups_x = (uint32_t)groups.width,
+        .groups_y = (uint32_t)groups.height,
+        .groups_z = (uint32_t)groups.depth,
+        .local_x = (uint32_t)threads.width,
+        .local_y = (uint32_t)threads.height,
+        .local_z = (uint32_t)threads.depth,
+        .indirect_buffer = NULL,
+        .indirect_offset = 0u,
+    };
+    if (plan) {
+        return mglRenderCppAppendComputeDispatchToPlan(
+            plan, &dispatch, NULL, 0) == 0;
+    }
+    if (!encoder) return false;
+    mglTessDispatchCompute(encoder, groups, threads);
+    return true;
 }
 
 static const uint8_t *mglRendererReadableBufferBytes(Buffer *buffer)
@@ -506,49 +666,69 @@ typedef struct {
     if (!needsInitializationBlit) {
         return true;
     }
-    if (!(__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner) ||
-        mglRenderCommandBufferStatus(
-            (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner)) !=
-            MTLCommandBufferStatusNotEnqueued) {
+    MGLRenderCppCommandBufferState commandState = {0};
+    if (!mglRenderCommandBufferOwnerState(
+            _renderPassManager.state->currentCommandBufferOwner,
+            &commandState) ||
+        commandState.status != MTLCommandBufferStatusNotEnqueued) {
         return false;
     }
 
-    MGLMetalBlitCommandEncoderRef blit =
-        mglTessCreateBlitEncoder((__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
-    if (!blit) {
-        return false;
-    }
+    MGLRenderCppBufferCopyEntry copyEntries[kMGLMaxBufferSlots] = {0};
+    uint32_t copyEntryCount = 0u;
     for (NSUInteger i = 0; i < kMGLMaxBufferSlots; i++) {
         MGLTessStageBufferBinding *binding = &bindings->slots[i];
         if (binding->initialization_length == 0) {
             continue;
         }
-        mglTessBlitCopyBuffer(blit, binding->initialization_source,
-                              binding->initialization_source_offset,
-                              binding->buffer, 0,
-                              binding->initialization_length);
+        copyEntries[copyEntryCount++] = (MGLRenderCppBufferCopyEntry){
+            .source_buffer = (__bridge void *)binding->initialization_source,
+            .source_offset = binding->initialization_source_offset,
+            .destination_buffer = (__bridge void *)binding->buffer,
+            .destination_offset = 0u,
+            .length = binding->initialization_length,
+        };
     }
-    mglTessEndBlitEncoder(blit);
-    return true;
+    return mglTessEncodeBufferCopiesForOwner(
+        _renderPassManager.state->currentCommandBufferOwner,
+        copyEntries, copyEntryCount);
 }
 
 - (bool)bindPreparedTessStageBufferBindings:(const MGLTessStageBufferBindingList *)bindings
                            toComputeEncoder:(MGLMetalComputeCommandEncoderRef)computeCommandEncoder
+                              executionPlan:(MGLRenderCppComputeExecutionPlan *)executionPlan
+                               temporaries:(NSMutableArray *)temporaries
 {
     MGL_ASSERT_GL_THREAD();
-    if (!bindings || !computeCommandEncoder) {
+    if (!bindings || (!computeCommandEncoder && !executionPlan)) {
         return false;
     }
     for (NSUInteger i = 0; i < kMGLMaxBufferSlots; i++) {
         const MGLTessStageBufferBinding *binding = &bindings->slots[i];
         if (binding->valid) {
-            mglTessSetComputeBuffer(computeCommandEncoder, binding->buffer,
-                                    binding->offset, i);
+            if (executionPlan) {
+                if (!mglTessAppendComputeResourceOp(
+                        executionPlan, temporaries, 0u, binding->buffer,
+                        binding->offset, i)) {
+                    return false;
+                }
+            } else {
+                mglTessSetComputeBuffer(computeCommandEncoder, binding->buffer,
+                                        binding->offset, i);
+            }
         }
     }
     if (bindings->size_buffer) {
-        mglTessSetComputeBuffer(computeCommandEncoder, bindings->size_buffer,
-                                0, bindings->size_buffer_index);
+        if (executionPlan) {
+            if (!mglTessAppendComputeResourceOp(
+                    executionPlan, temporaries, 0u, bindings->size_buffer,
+                    0u, bindings->size_buffer_index)) {
+                return false;
+            }
+        } else {
+            mglTessSetComputeBuffer(computeCommandEncoder, bindings->size_buffer,
+                                    0, bindings->size_buffer_index);
+        }
     }
     return true;
 }
@@ -563,9 +743,12 @@ typedef struct {
 - (void)bindPointSizeParamsToComputeEncoder:(MGLMetalComputeCommandEncoderRef)computeEncoder
                                     program:(Program *)program
                                       stage:(int)stage
+                              executionPlan:(MGLRenderCppComputeExecutionPlan *)executionPlan
+                               temporaries:(NSMutableArray *)temporaries
 {
     MGL_ASSERT_GL_THREAD();
-    if (!computeEncoder || !program || stage < 0 || stage >= _MAX_SHADER_TYPES) {
+    if ((!computeEncoder && !executionPlan) || !program ||
+        stage < 0 || stage >= _MAX_SHADER_TYPES) {
         return;
     }
     if (!program->uses_point_size_params) {
@@ -575,9 +758,15 @@ typedef struct {
         ctx && MGL_STATE(ctx)->var.point_size > 0.0f ? MGL_STATE(ctx)->var.point_size : 1.0f,
         ctx && MGL_STATE(ctx)->caps.program_point_size ? 1.0f : 0.0f
     };
-    mglTessSetComputeBytes(computeEncoder, pointSizeParams,
-                           sizeof(pointSizeParams),
-                           kMGLPointSizeParamBufferIndex);
+    if (executionPlan) {
+        (void)mglTessAppendComputeBytesOp(
+            executionPlan, temporaries, pointSizeParams,
+            sizeof(pointSizeParams), kMGLPointSizeParamBufferIndex);
+    } else {
+        mglTessSetComputeBytes(computeEncoder, pointSizeParams,
+                               sizeof(pointSizeParams),
+                               kMGLPointSizeParamBufferIndex);
+    }
 }
 
 - (MGLMetalBufferRef)newTCSStageInBufferForContext:(GLMContext)drawCtx
@@ -823,7 +1012,8 @@ typedef struct {
      * encoder on the command buffer, and Metal forbids two encoders
      * on the same command buffer simultaneously.  End any active render
      * encoder first for the same reason. */
-    if ((__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
+    if (mglRenderCppRenderEncoderOwnerHasCurrent(
+            _renderPassManager.state->currentRenderEncoderOwner) == 1) {
         [self endRenderEncoding];
     }
 
@@ -831,10 +1021,11 @@ typedef struct {
      * before processGLState() (which normally creates the command buffer),
      * and prior operations (glBufferData, glEndQuery, etc.) may have
      * committed the previous command buffer. */
-    if (!(__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner) ||
-        mglRenderCommandBufferStatus(
-            (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner)) >=
-            MTLCommandBufferStatusCommitted) {
+    MGLRenderCppCommandBufferState commandState = {0};
+    if (!mglRenderCommandBufferOwnerState(
+            _renderPassManager.state->currentCommandBufferOwner,
+            &commandState) ||
+        commandState.status >= MTLCommandBufferStatusCommitted) {
         if (![self newCommandBuffer]) {
             NSLog(@"MGL TESS ERROR: failed to create command buffer for TCS dispatch");
             return false;
@@ -877,15 +1068,23 @@ typedef struct {
         return false;
     }
 
-    MGLMetalComputeCommandEncoderRef computeEncoder =
-        mglTessCreateComputeEncoder((__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
-    if (!computeEncoder) {
-        NSLog(@"MGL TESS ERROR: failed to create compute encoder for TCS dispatch");
-        [self clearStageBindingCopyBacks:&stageCopyBacks];
-        return false;
+    const BOOL useExecutionPlan = mglTessUsesMetalCpp();
+    MGLRenderCppComputeExecutionPlan executionPlan = {0};
+    NSMutableArray *executionTemporaries = useExecutionPlan
+        ? [NSMutableArray array] : nil;
+    MGLMetalComputeCommandEncoderRef computeEncoder = nil;
+    if (useExecutionPlan) {
+        executionPlan.pipeline = (__bridge void *)tcsPipeline;
+    } else {
+        computeEncoder = mglRenderCreateComputeEncoderForCommandBufferOwner(
+            _renderPassManager.state->currentCommandBufferOwner);
+        if (!computeEncoder) {
+            NSLog(@"MGL TESS ERROR: failed to create compute encoder for TCS dispatch");
+            [self clearStageBindingCopyBacks:&stageCopyBacks];
+            return false;
+        }
+        mglTessSetComputePipeline(computeEncoder, tcsPipeline);
     }
-
-    mglTessSetComputePipeline(computeEncoder, tcsPipeline);
 
     /* PASS 2: Bind storage images for TCS stage. */
     for (GLuint i = 0; i < tcsImgCount; i++) {
@@ -930,7 +1129,13 @@ typedef struct {
                 }
             }
         }
-        mglTessSetComputeTexture(computeEncoder, texture, metalSlot);
+        if (!mglTessPlanTextureOrBind(
+                useExecutionPlan ? &executionPlan : NULL,
+                executionTemporaries, computeEncoder, texture, metalSlot)) {
+            if (computeEncoder) mglTessEndComputeEncoder(computeEncoder);
+            [self clearStageBindingCopyBacks:&stageCopyBacks];
+            return false;
+        }
     }
 
     /* Also bind sampled (read-only) images for TCS stage. */
@@ -964,7 +1169,13 @@ typedef struct {
             [self bindMTLTexture:ptr];
         }
         MGLMetalTextureRef texture = ptr ? (__bridge MGLMetalTextureRef)(ptr->mtl_data) : nil;
-        mglTessSetComputeTexture(computeEncoder, texture, metalSlot);
+        if (!mglTessPlanTextureOrBind(
+                useExecutionPlan ? &executionPlan : NULL,
+                executionTemporaries, computeEncoder, texture, metalSlot)) {
+            if (computeEncoder) mglTessEndComputeEncoder(computeEncoder);
+            [self clearStageBindingCopyBacks:&stageCopyBacks];
+            return false;
+        }
         if (resource && resource->has_combined_sampler) {
             MGLMetalSamplerStateRef sampler = nil;
             if (MGL_STATE(ctx)->texture_samplers[glUnit]) {
@@ -987,22 +1198,32 @@ typedef struct {
                     _device, [MTLSamplerDescriptor new]);
             }
             if (sampler) {
-                mglTessSetComputeSampler(computeEncoder, sampler,
-                                         mglMetalCombinedSamplerSlot(resource));
+                if (!mglTessPlanSamplerOrBind(
+                        useExecutionPlan ? &executionPlan : NULL,
+                        executionTemporaries, computeEncoder, sampler,
+                        mglMetalCombinedSamplerSlot(resource))) {
+                    if (computeEncoder) mglTessEndComputeEncoder(computeEncoder);
+                    [self clearStageBindingCopyBacks:&stageCopyBacks];
+                    return false;
+                }
             }
         }
     }
 
     /* Bind stage buffers (UBO, SSBO, atomic counters) for TCS. */
     if (![self bindPreparedTessStageBufferBindings:&stageBufferBindings
-                                  toComputeEncoder:computeEncoder]) {
-        mglTessEndComputeEncoder(computeEncoder);
+                                  toComputeEncoder:computeEncoder
+                                     executionPlan:useExecutionPlan ? &executionPlan : NULL
+                                      temporaries:executionTemporaries]) {
+        if (computeEncoder) mglTessEndComputeEncoder(computeEncoder);
         [self clearStageBindingCopyBacks:&stageCopyBacks];
         return false;
     }
     [self bindPointSizeParamsToComputeEncoder:computeEncoder
                                       program:tcsProgram
-                                        stage:_TESS_CONTROL_SHADER];
+                                        stage:_TESS_CONTROL_SHADER
+                                executionPlan:useExecutionPlan ? &executionPlan : NULL
+                                 temporaries:executionTemporaries];
 
     /* Create indirect params buffer (buffer 29).
      * spvIndirectParams[0] = vertexCount, [1] = instanceCount. */
@@ -1039,8 +1260,15 @@ typedef struct {
      * the TES patch-info constant, reused across disjoint encoders.  The
      * TCS kernel's fixed ABI is stage_in(24) factors(26) patchOut(27)
      * stageOut(28) indirect(29); see mgl_air_tess_abi.h. */
-    mglTessSetComputeBuffer(computeEncoder, _tessellation.tcsOutputBuffer, 0,
-                            MGL_AIR_TESS_SLOT_TCS_OUTPUT);
+    if (!mglTessPlanBufferOrBind(
+            useExecutionPlan ? &executionPlan : NULL,
+            executionTemporaries, computeEncoder,
+            _tessellation.tcsOutputBuffer, 0,
+            MGL_AIR_TESS_SLOT_TCS_OUTPUT)) {
+        if (computeEncoder) mglTessEndComputeEncoder(computeEncoder);
+        [self clearStageBindingCopyBacks:&stageCopyBacks];
+        return false;
+    }
 
     /* Create TCS per-patch output buffer (buffer 27 = spvPatchOut).
      * Patch varyings use the same stable location ABI as other stage
@@ -1062,8 +1290,15 @@ typedef struct {
         return false;
     }
     memset(_tessellation.tcsPatchOutBuffer.contents, 0, tcsPatchSize);
-    mglTessSetComputeBuffer(computeEncoder, _tessellation.tcsPatchOutBuffer, 0,
-                            MGL_AIR_TESS_SLOT_PATCH_OUT);
+    if (!mglTessPlanBufferOrBind(
+            useExecutionPlan ? &executionPlan : NULL,
+            executionTemporaries, computeEncoder,
+            _tessellation.tcsPatchOutBuffer, 0,
+            MGL_AIR_TESS_SLOT_PATCH_OUT)) {
+        if (computeEncoder) mglTessEndComputeEncoder(computeEncoder);
+        [self clearStageBindingCopyBacks:&stageCopyBacks];
+        return false;
+    }
 
     GLuint indirectParams[2] = { patchVertices, instanceCount };
     MGLMetalBufferRef indirectBuf = mglTessCreateBufferWithBytes(
@@ -1074,8 +1309,14 @@ typedef struct {
         [self clearStageBindingCopyBacks:&stageCopyBacks];
         return false;
     }
-    mglTessSetComputeBuffer(computeEncoder, indirectBuf, 0,
-                            MGL_AIR_TESS_SLOT_INDIRECT);
+    if (!mglTessPlanBufferOrBind(
+            useExecutionPlan ? &executionPlan : NULL,
+            executionTemporaries, computeEncoder, indirectBuf, 0,
+            MGL_AIR_TESS_SLOT_INDIRECT)) {
+        if (computeEncoder) mglTessEndComputeEncoder(computeEncoder);
+        [self clearStageBindingCopyBacks:&stageCopyBacks];
+        return false;
+    }
 
     /* Create tessellation factor buffer (buffer 26).
      * The compute path always uses the quad-half layout: 4 edge + 2 inner
@@ -1091,8 +1332,14 @@ typedef struct {
         return false;
     }
     memset(tessFactorBuf.contents, 0, tessFactorSize);
-    mglTessSetComputeBuffer(computeEncoder, tessFactorBuf, 0,
-                            MGL_AIR_TESS_SLOT_TESS_FACTOR);
+    if (!mglTessPlanBufferOrBind(
+            useExecutionPlan ? &executionPlan : NULL,
+            executionTemporaries, computeEncoder, tessFactorBuf, 0,
+            MGL_AIR_TESS_SLOT_TESS_FACTOR)) {
+        if (computeEncoder) mglTessEndComputeEncoder(computeEncoder);
+        [self clearStageBindingCopyBacks:&stageCopyBacks];
+        return false;
+    }
 
     NSUInteger tcsInStride = 0u;
     MGLMetalBufferRef tcsStageInBuffer = _tessellation.tessVertexCaptureBuffer;
@@ -1123,21 +1370,67 @@ typedef struct {
         [self clearStageBindingCopyBacks:&stageCopyBacks];
         return false;
     }
-    mglTessSetComputeBuffer(computeEncoder, tcsStageInBuffer,
-                            tcsStageInOffset,
-                            MGL_AIR_TESS_SLOT_TCS_STAGE_IN);
+    if (!mglTessPlanBufferOrBind(
+            useExecutionPlan ? &executionPlan : NULL,
+            executionTemporaries, computeEncoder, tcsStageInBuffer,
+            tcsStageInOffset, MGL_AIR_TESS_SLOT_TCS_STAGE_IN)) {
+        if (computeEncoder) mglTessEndComputeEncoder(computeEncoder);
+        [self clearStageBindingCopyBacks:&stageCopyBacks];
+        return false;
+    }
 
     /* Dispatch: one threadgroup per patch, tcsOutVertices threads per threadgroup (one thread per TCS output vertex = gl_InvocationID). */
     MTLSize threadgroups = MTLSizeMake(patchCount, 1, 1);
     MTLSize threadsPerTG = MTLSizeMake(tcsOutVertices, 1, 1);
-    mglTessDispatchCompute(computeEncoder, threadgroups, threadsPerTG);
-
-    mglTessEndComputeEncoder(computeEncoder);
-
-    if (![self flushStageBindingCopyBacks:&stageCopyBacks
-                     requireCPUVisibility:YES]) {
-        NSLog(@"MGL TESS ERROR: failed to synchronize TCS buffer writes");
+    if (!mglTessPlanDispatchOrBind(
+            useExecutionPlan ? &executionPlan : NULL, computeEncoder,
+            threadgroups, threadsPerTG)) {
+        if (computeEncoder) mglTessEndComputeEncoder(computeEncoder);
+        [self clearStageBindingCopyBacks:&stageCopyBacks];
         return false;
+    }
+
+    if (useExecutionPlan) {
+        MGLRenderCppCopyBackEntry copyBackEntries[kMGLMaxBufferSlots] = {0};
+        uint32_t copyBackEntryCount = 0u;
+        for (NSUInteger slot = 0; slot < kMGLMaxBufferSlots; slot++) {
+            MGLStageBindingCopyBack *entry = &stageCopyBacks.slots[slot];
+            if (entry->length == 0u) continue;
+            copyBackEntries[copyBackEntryCount++] =
+                (MGLRenderCppCopyBackEntry){
+                    .temporary = (__bridge void *)entry->temporary,
+                    .destination = (__bridge void *)entry->destination,
+                    .destination_buffer = entry->destination_buffer,
+                    .destination_offset = entry->destination_offset,
+                    .length = entry->length,
+                };
+        }
+        executionPlan.barrier_scope = MGL_RENDER_CPP_COMPUTE_BARRIER_BUFFERS;
+        MGLRenderCppComputeExecutionResult executionResult = {0};
+        char executionError[256] = {0};
+        if (mglRenderCppExecuteComputeExecutionPlan(
+                _renderPassManager.state->currentCommandBufferOwner,
+                _gpuRecovery.commandRecoveryOwner,
+                &executionPlan, copyBackEntries, copyBackEntryCount, 1u,
+                &executionResult, executionError,
+                sizeof(executionError)) != 0) {
+            if (executionResult.transaction.device_reset_requested) {
+                atomic_store_explicit(&_deviceResetRequested, true,
+                                      memory_order_release);
+            }
+            NSLog(@"MGL TESS ERROR: C++ TCS execution failed: %s",
+                  executionError[0] ? executionError : "unknown error");
+            [self clearStageBindingCopyBacks:&stageCopyBacks];
+            return false;
+        }
+        [self clearStageBindingCopyBacks:&stageCopyBacks];
+    } else {
+        mglTessEndComputeEncoder(computeEncoder);
+        if (![self flushStageBindingCopyBacks:&stageCopyBacks
+                         requireCPUVisibility:YES]) {
+            NSLog(@"MGL TESS ERROR: failed to synchronize TCS buffer writes");
+            return false;
+        }
     }
 
     /* Save tess factor buffer for TES patch-draw path. */
@@ -1362,13 +1655,15 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     memset(outBuffer.contents, 0, outSize);
 
     /* PASS 1: pre-resolve textures before opening the compute encoder. */
-    if ((__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
+    if (mglRenderCppRenderEncoderOwnerHasCurrent(
+            _renderPassManager.state->currentRenderEncoderOwner) == 1) {
         [self endRenderEncoding];
     }
-    if (!(__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner) ||
-        mglRenderCommandBufferStatus(
-            (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner)) >=
-            MTLCommandBufferStatusCommitted) {
+    MGLRenderCppCommandBufferState commandState = {0};
+    if (!mglRenderCommandBufferOwnerState(
+            _renderPassManager.state->currentCommandBufferOwner,
+            &commandState) ||
+        commandState.status >= MTLCommandBufferStatusCommitted) {
         if (![self newCommandBuffer]) {
             NSLog(@"MGL TESS ERROR: failed to create command buffer for TES compute");
             return false;
@@ -1412,54 +1707,41 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
         return false;
     }
 
-    /* P4.5: TES compute dispatch 编排的固定序列（encoder + pipeline + ABI
-     * 槽位 buffer）一次交给 C++（与 P4.3e GS 的
-     * mglRenderCppBeginComputeDispatch 模式一致，P4.1e3 修复后落地）。
-     * GL 资源绑定（storage/sampled 纹理、stage 缓冲、XFB 槽位）在
-     * begin/end 之间经 C++ facade 完成。 */
+    const BOOL useExecutionPlan = mglTessUsesMetalCpp();
+    MGLRenderCppComputeExecutionPlan executionPlan = {0};
+    NSMutableArray *executionTemporaries = useExecutionPlan
+        ? [NSMutableArray array] : nil;
     MGLMetalComputeCommandEncoderRef computeEncoder = nil;
-    if (mglTessUsesMetalCpp()) {
-        MGLRenderCppComputeDispatchSetup setup = {
-            .pipeline = (__bridge void *)tesPipeline,
-        };
-        setup.buffers[setup.buffer_count++] =
-            (MGLRenderCppComputeBufferEntry){
-                (__bridge void *)_tessellation.tessFactorBuffer, 0u,
-                MGL_AIR_TESS_SLOT_TESS_FACTOR };
-        MGLMetalBufferRef patchInputs = _tessellation.tcsPatchOutBuffer;
-        setup.buffers[setup.buffer_count++] =
-            (MGLRenderCppComputeBufferEntry){
-                (__bridge void *)(patchInputs ? patchInputs : outBuffer), 0u,
-                MGL_AIR_TESS_SLOT_PATCH_OUT };
-        setup.buffers[setup.buffer_count++] =
-            (MGLRenderCppComputeBufferEntry){
-                (__bridge void *)outBuffer, 0u,
-                MGL_AIR_TESS_SLOT_TCS_OUTPUT };
-        void *computeHandle = NULL;
-        if (mglRenderCppBeginComputeDispatch(
-                mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
-                &setup, &computeHandle, NULL, 0) == 0 && computeHandle) {
-            computeEncoder =
-                (__bridge MGLMetalComputeCommandEncoderRef)computeHandle;
-        }
-    }
-    if (!computeEncoder) {
-        computeEncoder = mglTessCreateComputeEncoder(
-            (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
+    if (useExecutionPlan) {
+        executionPlan.pipeline = (__bridge void *)tesPipeline;
+    } else {
+        computeEncoder = mglRenderCreateComputeEncoderForCommandBufferOwner(
+            _renderPassManager.state->currentCommandBufferOwner);
         if (!computeEncoder) {
             NSLog(@"MGL TESS ERROR: failed to create compute encoder for TES compute");
             [self clearStageBindingCopyBacks:&stageCopyBacks];
             return false;
         }
         mglTessSetComputePipeline(computeEncoder, tesPipeline);
-        mglTessSetComputeBuffer(computeEncoder, _tessellation.tessFactorBuffer,
-                                0u, MGL_AIR_TESS_SLOT_TESS_FACTOR);
-        MGLMetalBufferRef patchInputs = _tessellation.tcsPatchOutBuffer;
-        mglTessSetComputeBuffer(computeEncoder,
-                                patchInputs ? patchInputs : outBuffer, 0u,
-                                MGL_AIR_TESS_SLOT_PATCH_OUT);
-        mglTessSetComputeBuffer(computeEncoder, outBuffer, 0u,
-                                MGL_AIR_TESS_SLOT_TCS_OUTPUT);
+    }
+    MGLMetalBufferRef patchInputs = _tessellation.tcsPatchOutBuffer;
+    if (!mglTessPlanBufferOrBind(
+            useExecutionPlan ? &executionPlan : NULL,
+            executionTemporaries, computeEncoder,
+            _tessellation.tessFactorBuffer, 0u,
+            MGL_AIR_TESS_SLOT_TESS_FACTOR) ||
+        !mglTessPlanBufferOrBind(
+            useExecutionPlan ? &executionPlan : NULL,
+            executionTemporaries, computeEncoder,
+            patchInputs ? patchInputs : outBuffer, 0u,
+            MGL_AIR_TESS_SLOT_PATCH_OUT) ||
+        !mglTessPlanBufferOrBind(
+            useExecutionPlan ? &executionPlan : NULL,
+            executionTemporaries, computeEncoder, outBuffer, 0u,
+            MGL_AIR_TESS_SLOT_TCS_OUTPUT)) {
+        if (computeEncoder) mglTessEndComputeEncoder(computeEncoder);
+        [self clearStageBindingCopyBacks:&stageCopyBacks];
+        return false;
     }
 
     /* PASS 2: bind storage images for the TES stage. */
@@ -1492,7 +1774,13 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
             [self bindMTLTexture:ptr];
         }
         MGLMetalTextureRef texture = ptr ? (__bridge MGLMetalTextureRef)(ptr->mtl_data) : nil;
-        mglTessSetComputeTexture(computeEncoder, texture, metalSlot);
+        if (!mglTessPlanTextureOrBind(
+                useExecutionPlan ? &executionPlan : NULL,
+                executionTemporaries, computeEncoder, texture, metalSlot)) {
+            if (computeEncoder) mglTessEndComputeEncoder(computeEncoder);
+            [self clearStageBindingCopyBacks:&stageCopyBacks];
+            return false;
+        }
     }
 
     /* Bind sampled textures + combined samplers for the TES stage. */
@@ -1527,7 +1815,13 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
             [self bindMTLTexture:ptr];
         }
         MGLMetalTextureRef texture = ptr ? (__bridge MGLMetalTextureRef)(ptr->mtl_data) : nil;
-        mglTessSetComputeTexture(computeEncoder, texture, metalSlot);
+        if (!mglTessPlanTextureOrBind(
+                useExecutionPlan ? &executionPlan : NULL,
+                executionTemporaries, computeEncoder, texture, metalSlot)) {
+            if (computeEncoder) mglTessEndComputeEncoder(computeEncoder);
+            [self clearStageBindingCopyBacks:&stageCopyBacks];
+            return false;
+        }
         if (resource && resource->has_combined_sampler) {
             MGLMetalSamplerStateRef sampler = nil;
             if (MGL_STATE(glm_ctx)->texture_samplers[glUnit]) {
@@ -1551,21 +1845,31 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
                     _device, [MTLSamplerDescriptor new]);
             }
             if (sampler) {
-                mglTessSetComputeSampler(computeEncoder, sampler,
-                                         mglMetalCombinedSamplerSlot(resource));
+                if (!mglTessPlanSamplerOrBind(
+                        useExecutionPlan ? &executionPlan : NULL,
+                        executionTemporaries, computeEncoder, sampler,
+                        mglMetalCombinedSamplerSlot(resource))) {
+                    if (computeEncoder) mglTessEndComputeEncoder(computeEncoder);
+                    [self clearStageBindingCopyBacks:&stageCopyBacks];
+                    return false;
+                }
             }
         }
     }
 
     if (![self bindPreparedTessStageBufferBindings:&stageBufferBindings
-                                  toComputeEncoder:computeEncoder]) {
-        mglTessEndComputeEncoder(computeEncoder);
+                                  toComputeEncoder:computeEncoder
+                                     executionPlan:useExecutionPlan ? &executionPlan : NULL
+                                      temporaries:executionTemporaries]) {
+        if (computeEncoder) mglTessEndComputeEncoder(computeEncoder);
         [self clearStageBindingCopyBacks:&stageCopyBacks];
         return false;
     }
     [self bindPointSizeParamsToComputeEncoder:computeEncoder
                                       program:tesProgram
-                                        stage:_TESS_EVALUATION_SHADER];
+                                        stage:_TESS_EVALUATION_SHADER
+                                executionPlan:useExecutionPlan ? &executionPlan : NULL
+                                 temporaries:executionTemporaries];
 
     /* Fixed ABI buffers (backend mgl_air_tess_abi.h §3): stage_in(24) is
      * the control point stream, factors(26) the quad-half records, patch
@@ -1668,8 +1972,14 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
                 [self clearStageBindingCopyBacks:&stageCopyBacks];
                 return false;
             }
-            mglTessSetComputeBuffer(computeEncoder, xfbTemporary, 0u,
-                                    MGL_AIR_TESS_SLOT_XFB_OUT);
+            if (!mglTessPlanBufferOrBind(
+                    useExecutionPlan ? &executionPlan : NULL,
+                    executionTemporaries, computeEncoder, xfbTemporary, 0u,
+                    MGL_AIR_TESS_SLOT_XFB_OUT)) {
+                if (computeEncoder) mglTessEndComputeEncoder(computeEncoder);
+                [self clearStageBindingCopyBacks:&stageCopyBacks];
+                return false;
+            }
             if (primitiveLayoutOK && xfbMTL && destinationOffsetOK) {
                 NSUInteger copiedPrimitives = MIN(
                     capturePrimitives, remainingVisibleBytes / primitiveBytes);
@@ -1692,9 +2002,15 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
                                     MTLResourceStorageModeShared);
         }
         if (_tessellation.tessXfbDummyBuffer) {
-            mglTessSetComputeBuffer(computeEncoder,
-                                    _tessellation.tessXfbDummyBuffer, 0u,
-                                    MGL_AIR_TESS_SLOT_XFB_OUT);
+            if (!mglTessPlanBufferOrBind(
+                    useExecutionPlan ? &executionPlan : NULL,
+                    executionTemporaries, computeEncoder,
+                    _tessellation.tessXfbDummyBuffer, 0u,
+                    MGL_AIR_TESS_SLOT_XFB_OUT)) {
+                if (computeEncoder) mglTessEndComputeEncoder(computeEncoder);
+                [self clearStageBindingCopyBacks:&stageCopyBacks];
+                return false;
+            }
         }
     }
 
@@ -1738,20 +2054,41 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
         const NSUInteger instGlInOffset =
             indexed ? 0u
                     : glInOffset + (NSUInteger)inst * glInInstanceStride;
-        mglTessSetComputeBuffer(computeEncoder, glInBuffer, instGlInOffset,
-                                MGL_AIR_TESS_SLOT_TCS_STAGE_IN);
+        if (!mglTessPlanBufferOrBind(
+                useExecutionPlan ? &executionPlan : NULL,
+                executionTemporaries, computeEncoder,
+                glInBuffer, instGlInOffset,
+                MGL_AIR_TESS_SLOT_TCS_STAGE_IN)) {
+            free(patchBases);
+            if (computeEncoder) mglTessEndComputeEncoder(computeEncoder);
+            [self clearStageBindingCopyBacks:&stageCopyBacks];
+            return false;
+        }
         if (gatherBuffer) {
-            mglTessSetComputeBuffer(computeEncoder, gatherBuffer, 0u,
-                                    MGL_AIR_TESS_SLOT_GATHER_INDEX);
+            if (!mglTessPlanBufferOrBind(
+                    useExecutionPlan ? &executionPlan : NULL,
+                    executionTemporaries, computeEncoder, gatherBuffer, 0u,
+                    MGL_AIR_TESS_SLOT_GATHER_INDEX)) {
+                free(patchBases);
+                if (computeEncoder) mglTessEndComputeEncoder(computeEncoder);
+                [self clearStageBindingCopyBacks:&stageCopyBacks];
+                return false;
+            }
         }
         {
             const GLuint gatherParams[5] = {
                 gatherVertsPerInstance, gatherPrimsPerInstance,
                 gatherFirstVertex, indexed ? 1u : 0u, inst,
             };
-            mglTessSetComputeBytes(computeEncoder, gatherParams,
-                                   sizeof(gatherParams),
-                                   MGL_AIR_TESS_SLOT_GATHER_PARAMS);
+            if (!mglTessPlanBytesOrBind(
+                    useExecutionPlan ? &executionPlan : NULL,
+                    executionTemporaries, computeEncoder, gatherParams,
+                    sizeof(gatherParams), MGL_AIR_TESS_SLOT_GATHER_PARAMS)) {
+                free(patchBases);
+                if (computeEncoder) mglTessEndComputeEncoder(computeEncoder);
+                [self clearStageBindingCopyBacks:&stageCopyBacks];
+                return false;
+            }
         }
         for (GLuint p = 0u; p < patchCount; p++) {
             const void *record =
@@ -1763,32 +2100,88 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
             contractWords[0] = p;
             contractWords[2] = items;
             contractWords[3] = inst * itemsPerInstanceU + patchBases[p];
-            mglTessSetComputeBytes(computeEncoder, contractWords,
-                                   sizeof(contractWords),
-                                   MGL_AIR_TESS_SLOT_INDIRECT);
-            mglTessDispatchCompute(computeEncoder,
-                                   MTLSizeMake((items + 63u) / 64u, 1u, 1u),
-                                   MTLSizeMake(64u, 1u, 1u));
+            if (!mglTessPlanBytesOrBind(
+                    useExecutionPlan ? &executionPlan : NULL,
+                    executionTemporaries, computeEncoder, contractWords,
+                    sizeof(contractWords), MGL_AIR_TESS_SLOT_INDIRECT) ||
+                !mglTessPlanDispatchOrBind(
+                    useExecutionPlan ? &executionPlan : NULL, computeEncoder,
+                    MTLSizeMake((items + 63u) / 64u, 1u, 1u),
+                    MTLSizeMake(64u, 1u, 1u))) {
+                free(patchBases);
+                if (computeEncoder) mglTessEndComputeEncoder(computeEncoder);
+                [self clearStageBindingCopyBacks:&stageCopyBacks];
+                return false;
+            }
         }
     }
     free(patchBases);
-    mglTessEndComputeEncoder(computeEncoder);
-    if (![self flushStageBindingCopyBacks:&stageCopyBacks
-                     requireCPUVisibility:YES]) {
-        NSLog(@"MGL TESS ERROR: failed to synchronize TES compute buffer writes");
-        return false;
+    if (useExecutionPlan) {
+        MGLRenderCppCopyBackEntry copyBackEntries[kMGLMaxBufferSlots] = {0};
+        uint32_t copyBackEntryCount = 0u;
+        for (NSUInteger slot = 0; slot < kMGLMaxBufferSlots; slot++) {
+            MGLStageBindingCopyBack *entry = &stageCopyBacks.slots[slot];
+            if (entry->length == 0u) continue;
+            copyBackEntries[copyBackEntryCount++] =
+                (MGLRenderCppCopyBackEntry){
+                    .temporary = (__bridge void *)entry->temporary,
+                    .destination = (__bridge void *)entry->destination,
+                    .destination_buffer = entry->destination_buffer,
+                    .destination_offset = entry->destination_offset,
+                    .length = entry->length,
+                };
+        }
+        executionPlan.barrier_scope = MGL_RENDER_CPP_COMPUTE_BARRIER_BUFFERS;
+        MGLRenderCppComputeExecutionResult executionResult = {0};
+        char executionError[256] = {0};
+        if (mglRenderCppExecuteComputeExecutionPlan(
+                _renderPassManager.state->currentCommandBufferOwner,
+                _gpuRecovery.commandRecoveryOwner,
+                &executionPlan, copyBackEntries, copyBackEntryCount, 1u,
+                &executionResult, executionError,
+                sizeof(executionError)) != 0) {
+            if (executionResult.transaction.device_reset_requested) {
+                atomic_store_explicit(&_deviceResetRequested, true,
+                                      memory_order_release);
+            }
+            NSLog(@"MGL TESS ERROR: C++ TES execution failed: %s",
+                  executionError[0] ? executionError : "unknown error");
+            [self clearStageBindingCopyBacks:&stageCopyBacks];
+            return false;
+        }
+        [self clearStageBindingCopyBacks:&stageCopyBacks];
+    } else {
+        mglTessEndComputeEncoder(computeEncoder);
+        if (![self flushStageBindingCopyBacks:&stageCopyBacks
+                         requireCPUVisibility:YES]) {
+            NSLog(@"MGL TESS ERROR: failed to synchronize TES compute buffer writes");
+            return false;
+        }
     }
 
     if (xfbWrittenBytes > 0u && xfbTemporary && xfbCopyDestination) {
-        MGLMetalBlitCommandEncoderRef xfbBlit =
-            mglTessCreateBlitEncoder((__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
-        if (!xfbBlit) {
-            NSLog(@"MGL TESS XFB: failed to create bounded copy encoder");
-            return false;
-        }
         const MGLShaderResourceList *outputs =
             &tesProgram->shader_resources_list[_TESS_EVALUATION_SHADER]
                                                 [_STAGE_OUTPUT_RES];
+        const NSUInteger varyingCount =
+            (NSUInteger)MAX(tesProgram->transform_feedback_varying_count, 0);
+        NSUInteger copyCapacity = 0u;
+        if (!mglCheckedNSUIntegerProduct(xfbCopiedVertices, varyingCount,
+                                         &copyCapacity) ||
+            copyCapacity > UINT32_MAX ||
+            copyCapacity > SIZE_MAX / sizeof(MGLRenderCppBufferCopyEntry)) {
+            NSLog(@"MGL TESS XFB: copy plan size overflow");
+            return false;
+        }
+        MGLRenderCppBufferCopyEntry *xfbCopies = copyCapacity
+            ? (MGLRenderCppBufferCopyEntry *)calloc(
+                  copyCapacity, sizeof(MGLRenderCppBufferCopyEntry))
+            : NULL;
+        if (copyCapacity && !xfbCopies) {
+            NSLog(@"MGL TESS XFB: copy plan allocation failed");
+            return false;
+        }
+        uint32_t xfbCopyCount = 0u;
         for (NSUInteger vertex = 0u; vertex < xfbCopiedVertices; vertex++) {
             NSUInteger compactOffset = 0u;
             for (GLsizei varying = 0;
@@ -1815,13 +2208,25 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
                     (NSUInteger)output->location * 16u;
                 NSUInteger destinationOffset = xfbCopyDestinationOffset +
                     vertex * xfbCompactStride + compactOffset;
-                mglTessBlitCopyBuffer(xfbBlit, xfbTemporary, sourceOffset,
-                                      xfbCopyDestination, destinationOffset,
-                                      fieldBytes);
+                xfbCopies[xfbCopyCount++] = (MGLRenderCppBufferCopyEntry){
+                    .source_buffer = (__bridge void *)xfbTemporary,
+                    .source_offset = sourceOffset,
+                    .destination_buffer = (__bridge void *)xfbCopyDestination,
+                    .destination_offset = destinationOffset,
+                    .length = fieldBytes,
+                };
                 compactOffset += fieldBytes;
             }
         }
-        mglTessEndBlitEncoder(xfbBlit);
+        const bool xfbCopyOK = xfbCopyCount == 0u ||
+            mglTessEncodeBufferCopiesForOwner(
+                _renderPassManager.state->currentCommandBufferOwner,
+                xfbCopies, xfbCopyCount);
+        free(xfbCopies);
+        if (!xfbCopyOK) {
+            NSLog(@"MGL TESS XFB: failed to encode bounded copies");
+            return false;
+        }
         if (xfbDestination) {
             xfbDestination->ever_written = GL_TRUE;
         }
@@ -1875,7 +2280,9 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     _tessellation.tessComputePrimitiveType = primType;
     _tessellation.tessComputeProgram = tesProgram;
     BOOL stateReady = [self processGLState:true];
-    if (!stateReady || !(__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner) ||
+    if (!stateReady ||
+        mglRenderCppRenderEncoderOwnerHasCurrent(
+            _renderPassManager.state->currentRenderEncoderOwner) != 1 ||
         [self currentDrawRasterizationIsEmpty]) {
         _tessellation.tessComputeActive = NO;
         _tessellation.tessComputeOutputBuffer = nil;
@@ -1895,13 +2302,17 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
                                             ? GL_LINES
                                             : GL_POINTS];
     MGLMetalRenderCommandEncoderRef encoder =
-        (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner);
+        mglTessFallbackRenderEncoder(
+            _renderPassManager.state->currentRenderEncoderOwner);
     for (GLsizei i = 0; i < instanceCount; i++) {
         NSUInteger instanceOffset =
             (NSUInteger)i * (NSUInteger)itemsPerInstanceU * outStride;
-        mglTessSetRenderVertexBuffer(encoder, outBuffer, instanceOffset, 0u);
+        mglTessSetRenderVertexBuffer(
+            encoder, _renderPassManager.state->currentRenderEncoderOwner,
+            outBuffer, instanceOffset, 0u);
         mglTessDrawPrimitives(
-            encoder, primType, 0u, (NSUInteger)itemsPerInstanceU, 1u,
+            encoder, _renderPassManager.state->currentRenderEncoderOwner,
+            primType, 0u, (NSUInteger)itemsPerInstanceU, 1u,
             (NSUInteger)baseInstance + (NSUInteger)i);
     }
     _currentCBHasWork = YES;
@@ -1964,15 +2375,17 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
 
     /* PASS 1: Pre-resolve all Metal textures that the TES kernel needs.
      * Must happen before opening any encoder (same reason as TCS). */
-    if ((__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
+    if (mglRenderCppRenderEncoderOwnerHasCurrent(
+            _renderPassManager.state->currentRenderEncoderOwner) == 1) {
         [self endRenderEncoding];
     }
 
     /* Ensure a writable command buffer exists (same reason as TCS). */
-    if (!(__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner) ||
-        mglRenderCommandBufferStatus(
-            (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner)) >=
-            MTLCommandBufferStatusCommitted) {
+    MGLRenderCppCommandBufferState commandState = {0};
+    if (!mglRenderCommandBufferOwnerState(
+            _renderPassManager.state->currentCommandBufferOwner,
+            &commandState) ||
+        commandState.status >= MTLCommandBufferStatusCommitted) {
         if (![self newCommandBuffer]) {
             NSLog(@"MGL TESS ERROR: failed to create command buffer for TES dispatch");
             return false;
@@ -2015,15 +2428,23 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
         return false;
     }
 
-    MGLMetalComputeCommandEncoderRef computeEncoder =
-        mglTessCreateComputeEncoder((__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
-    if (!computeEncoder) {
-        NSLog(@"MGL TESS ERROR: failed to create compute encoder for TES dispatch");
-        [self clearStageBindingCopyBacks:&stageCopyBacks];
-        return false;
+    const BOOL useExecutionPlan = mglTessUsesMetalCpp();
+    MGLRenderCppComputeExecutionPlan executionPlan = {0};
+    NSMutableArray *executionTemporaries = useExecutionPlan
+        ? [NSMutableArray array] : nil;
+    MGLMetalComputeCommandEncoderRef computeEncoder = nil;
+    if (useExecutionPlan) {
+        executionPlan.pipeline = (__bridge void *)tesPipeline;
+    } else {
+        computeEncoder = mglRenderCreateComputeEncoderForCommandBufferOwner(
+            _renderPassManager.state->currentCommandBufferOwner);
+        if (!computeEncoder) {
+            NSLog(@"MGL TESS ERROR: failed to create compute encoder for TES dispatch");
+            [self clearStageBindingCopyBacks:&stageCopyBacks];
+            return false;
+        }
+        mglTessSetComputePipeline(computeEncoder, tesPipeline);
     }
-
-    mglTessSetComputePipeline(computeEncoder, tesPipeline);
 
     /* PASS 2: Bind storage images for TES stage. */
     for (GLuint i = 0; i < tesImgCount; i++) {
@@ -2068,7 +2489,13 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
                 }
             }
         }
-        mglTessSetComputeTexture(computeEncoder, texture, metalSlot);
+        if (!mglTessPlanTextureOrBind(
+                useExecutionPlan ? &executionPlan : NULL,
+                executionTemporaries, computeEncoder, texture, metalSlot)) {
+            if (computeEncoder) mglTessEndComputeEncoder(computeEncoder);
+            [self clearStageBindingCopyBacks:&stageCopyBacks];
+            return false;
+        }
     }
 
     /* Also bind sampled (read-only) images for TES stage. */
@@ -2102,7 +2529,13 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
             [self bindMTLTexture:ptr];
         }
         MGLMetalTextureRef texture = ptr ? (__bridge MGLMetalTextureRef)(ptr->mtl_data) : nil;
-        mglTessSetComputeTexture(computeEncoder, texture, metalSlot);
+        if (!mglTessPlanTextureOrBind(
+                useExecutionPlan ? &executionPlan : NULL,
+                executionTemporaries, computeEncoder, texture, metalSlot)) {
+            if (computeEncoder) mglTessEndComputeEncoder(computeEncoder);
+            [self clearStageBindingCopyBacks:&stageCopyBacks];
+            return false;
+        }
         if (resource && resource->has_combined_sampler) {
             MGLMetalSamplerStateRef sampler = nil;
             if (MGL_STATE(ctx)->texture_samplers[glUnit]) {
@@ -2125,28 +2558,37 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
                     _device, [MTLSamplerDescriptor new]);
             }
             if (sampler) {
-                mglTessSetComputeSampler(computeEncoder, sampler,
-                                         mglMetalCombinedSamplerSlot(resource));
+                if (!mglTessPlanSamplerOrBind(
+                        useExecutionPlan ? &executionPlan : NULL,
+                        executionTemporaries, computeEncoder, sampler,
+                        mglMetalCombinedSamplerSlot(resource))) {
+                    if (computeEncoder) mglTessEndComputeEncoder(computeEncoder);
+                    [self clearStageBindingCopyBacks:&stageCopyBacks];
+                    return false;
+                }
             }
         }
     }
 
     /* Bind stage buffers (UBO, SSBO, atomic counters) for TES. */
     if (![self bindPreparedTessStageBufferBindings:&stageBufferBindings
-                                  toComputeEncoder:computeEncoder]) {
-        mglTessEndComputeEncoder(computeEncoder);
+                                  toComputeEncoder:computeEncoder
+                                     executionPlan:useExecutionPlan ? &executionPlan : NULL
+                                      temporaries:executionTemporaries]) {
+        if (computeEncoder) mglTessEndComputeEncoder(computeEncoder);
         [self clearStageBindingCopyBacks:&stageCopyBacks];
         return false;
     }
     [self bindPointSizeParamsToComputeEncoder:computeEncoder
                                       program:tesProgram
-                                        stage:_TESS_EVALUATION_SHADER];
+                                        stage:_TESS_EVALUATION_SHADER
+                                executionPlan:useExecutionPlan ? &executionPlan : NULL
+                                 temporaries:executionTemporaries];
 
     /* Dispatch: one threadgroup per patch, 1 thread per threadgroup.
      * gl_PrimitiveID → threadgroup_position_in_grid gives the patch index.
      * TessCoord → thread_position_in_threadgroup is 0 (1 thread per TG). */
     const GLuint patchVertices = MAX(1u, contract->patch_vertices);
-    const GLuint vertexCount = contract->vertex_count;
     const GLuint patchCount = MAX(1u, contract->patch_count);
 
     /* Bind patch info to buffer(28): {patch_vertices_in, tcs_out_vertices}.
@@ -2155,8 +2597,14 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     {
         GLuint patchInfo[2] = { patchVertices, _tessellation.tcsOutVertices };
         if (patchInfo[1] == 0) patchInfo[1] = patchVertices;
-        mglTessSetComputeBytes(computeEncoder, patchInfo, sizeof(patchInfo),
-                               MGL_AIR_TESS_SLOT_PATCH_INFO);
+        if (!mglTessPlanBytesOrBind(
+                useExecutionPlan ? &executionPlan : NULL,
+                executionTemporaries, computeEncoder, patchInfo,
+                sizeof(patchInfo), MGL_AIR_TESS_SLOT_PATCH_INFO)) {
+            if (computeEncoder) mglTessEndComputeEncoder(computeEncoder);
+            [self clearStageBindingCopyBacks:&stageCopyBacks];
+            return false;
+        }
     }
 
     /* Bind TCS output buffer to buffer(30) for TES gl_in.
@@ -2166,8 +2614,15 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
      * point to the same buffer.  The MSL rewriter changed TES's [[stage_in]]
      * to "device <type> *gl_in [[buffer(30)]]". */
     if (_tessellation.tcsOutputBuffer) {
-        mglTessSetComputeBuffer(computeEncoder, _tessellation.tcsOutputBuffer, 0,
-                                MGL_AIR_TESS_SLOT_GL_IN);
+        if (!mglTessPlanBufferOrBind(
+                useExecutionPlan ? &executionPlan : NULL,
+                executionTemporaries, computeEncoder,
+                _tessellation.tcsOutputBuffer, 0,
+                MGL_AIR_TESS_SLOT_GL_IN)) {
+            if (computeEncoder) mglTessEndComputeEncoder(computeEncoder);
+            [self clearStageBindingCopyBacks:&stageCopyBacks];
+            return false;
+        }
     }
 
     /* Bind TCS patch output buffer to buffer(27) for TES patchIn.
@@ -2176,8 +2631,15 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
      * TCS spvPatchOut and TES patchIn, which is correct since the data flows
      * TCS → TES. */
     if (_tessellation.tcsPatchOutBuffer) {
-        mglTessSetComputeBuffer(computeEncoder, _tessellation.tcsPatchOutBuffer, 0,
-                                MGL_AIR_TESS_SLOT_PATCH_OUT);
+        if (!mglTessPlanBufferOrBind(
+                useExecutionPlan ? &executionPlan : NULL,
+                executionTemporaries, computeEncoder,
+                _tessellation.tcsPatchOutBuffer, 0,
+                MGL_AIR_TESS_SLOT_PATCH_OUT)) {
+            if (computeEncoder) mglTessEndComputeEncoder(computeEncoder);
+            [self clearStageBindingCopyBacks:&stageCopyBacks];
+            return false;
+        }
     }
 
     /* Compute vertsPerPatch from tessellation factors.
@@ -2307,8 +2769,14 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
 
         if (primitiveLayoutOK && xfbMTL && destinationOffsetOK &&
             requiredBytes <= remainingVisibleBytes) {
-            mglTessSetComputeBuffer(computeEncoder, xfbMTL, destinationOffset,
-                                    kMGLBufferSlot_IndirectParams);
+            if (!mglTessPlanBufferOrBind(
+                    useExecutionPlan ? &executionPlan : NULL,
+                    executionTemporaries, computeEncoder, xfbMTL,
+                    destinationOffset, kMGLBufferSlot_IndirectParams)) {
+                if (computeEncoder) mglTessEndComputeEncoder(computeEncoder);
+                [self clearStageBindingCopyBacks:&stageCopyBacks];
+                return false;
+            }
             xfbSlot->buf->ever_written = GL_TRUE;
             xfbPrimitiveCapacity = captureVertices / verticesPerPrimitive;
             xfbWrittenBytes = xfbPrimitiveCapacity * primitiveBytes;
@@ -2323,8 +2791,14 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
                 return false;
             }
             memset(xfbTemporary.contents, 0, requiredBytes);
-            mglTessSetComputeBuffer(computeEncoder, xfbTemporary, 0,
-                                    kMGLBufferSlot_IndirectParams);
+            if (!mglTessPlanBufferOrBind(
+                    useExecutionPlan ? &executionPlan : NULL,
+                    executionTemporaries, computeEncoder, xfbTemporary, 0,
+                    kMGLBufferSlot_IndirectParams)) {
+                if (computeEncoder) mglTessEndComputeEncoder(computeEncoder);
+                [self clearStageBindingCopyBacks:&stageCopyBacks];
+                return false;
+            }
 
             /* Unknown layouts stay in the temporary buffer. This is an honest
              * no-capture fallback; copying an unproven stride could overwrite
@@ -2344,31 +2818,78 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
 
     MTLSize threadgroups = MTLSizeMake(patchCount, 1, 1);
     MTLSize threadsPerTG = MTLSizeMake(vertsPerPatch, 1, 1);
-    mglTessDispatchCompute(computeEncoder, threadgroups, threadsPerTG);
+    if (!mglTessPlanDispatchOrBind(
+            useExecutionPlan ? &executionPlan : NULL, computeEncoder,
+            threadgroups, threadsPerTG)) {
+        if (computeEncoder) mglTessEndComputeEncoder(computeEncoder);
+        [self clearStageBindingCopyBacks:&stageCopyBacks];
+        return false;
+    }
 
-    mglTessEndComputeEncoder(computeEncoder);
     /* Without this, a TES dispatch with no copy-backs stays in the current
      * command buffer and flushCommandBufferLocked's empty-CB skip drops it:
      * glFinish then never executes the TES writes (SSBO stores vanish). */
     _currentCBHasWork = YES;
 
-    if (![self flushStageBindingCopyBacks:&stageCopyBacks
-                     requireCPUVisibility:NO]) {
-        NSLog(@"MGL TESS ERROR: failed to copy isolated TES writable buffer prefixes");
-        return false;
+    if (useExecutionPlan) {
+        MGLRenderCppCopyBackEntry copyBackEntries[kMGLMaxBufferSlots] = {0};
+        uint32_t copyBackEntryCount = 0u;
+        for (NSUInteger slot = 0; slot < kMGLMaxBufferSlots; slot++) {
+            MGLStageBindingCopyBack *entry = &stageCopyBacks.slots[slot];
+            if (entry->length == 0u) continue;
+            copyBackEntries[copyBackEntryCount++] =
+                (MGLRenderCppCopyBackEntry){
+                    .temporary = (__bridge void *)entry->temporary,
+                    .destination = (__bridge void *)entry->destination,
+                    .destination_buffer = entry->destination_buffer,
+                    .destination_offset = entry->destination_offset,
+                    .length = entry->length,
+                };
+        }
+        executionPlan.barrier_scope = copyBackEntryCount
+            ? MGL_RENDER_CPP_COMPUTE_BARRIER_BUFFERS
+            : MGL_RENDER_CPP_COMPUTE_BARRIER_NONE;
+        MGLRenderCppComputeExecutionResult executionResult = {0};
+        char executionError[256] = {0};
+        if (mglRenderCppExecuteComputeExecutionPlan(
+                _renderPassManager.state->currentCommandBufferOwner,
+                _gpuRecovery.commandRecoveryOwner,
+                &executionPlan, copyBackEntries, copyBackEntryCount, 0u,
+                &executionResult, executionError,
+                sizeof(executionError)) != 0) {
+            if (executionResult.transaction.device_reset_requested) {
+                atomic_store_explicit(&_deviceResetRequested, true,
+                                      memory_order_release);
+            }
+            NSLog(@"MGL TESS ERROR: C++ TES-only execution failed: %s",
+                  executionError[0] ? executionError : "unknown error");
+            [self clearStageBindingCopyBacks:&stageCopyBacks];
+            return false;
+        }
+        [self clearStageBindingCopyBacks:&stageCopyBacks];
+    } else {
+        mglTessEndComputeEncoder(computeEncoder);
+        if (![self flushStageBindingCopyBacks:&stageCopyBacks
+                         requireCPUVisibility:NO]) {
+            NSLog(@"MGL TESS ERROR: failed to copy isolated TES writable buffer prefixes");
+            return false;
+        }
     }
 
     if (xfbCopyBytes > 0u) {
-        MGLMetalBlitCommandEncoderRef xfbBlit =
-            mglTessCreateBlitEncoder((__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
-        if (!xfbBlit) {
-            NSLog(@"MGL TESS XFB: failed to create bounded copy encoder");
+        const MGLRenderCppBufferCopyEntry xfbCopy = {
+            .source_buffer = (__bridge void *)xfbTemporary,
+            .source_offset = 0u,
+            .destination_buffer = (__bridge void *)xfbCopyDestination,
+            .destination_offset = xfbCopyDestinationOffset,
+            .length = xfbCopyBytes,
+        };
+        if (!mglTessEncodeBufferCopiesForOwner(
+                _renderPassManager.state->currentCommandBufferOwner,
+                &xfbCopy, 1u)) {
+            NSLog(@"MGL TESS XFB: failed to encode bounded copy");
             return false;
         }
-        mglTessBlitCopyBuffer(xfbBlit, xfbTemporary, 0,
-                              xfbCopyDestination, xfbCopyDestinationOffset,
-                              xfbCopyBytes);
-        mglTessEndBlitEncoder(xfbBlit);
         if (xfbDestination) {
             xfbDestination->ever_written = GL_TRUE;
         }

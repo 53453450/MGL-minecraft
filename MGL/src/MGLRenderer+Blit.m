@@ -201,11 +201,10 @@ static MGLMetalRenderCommandEncoderRef mglBlitCreateRenderEncoder(
     MTLRenderPassDescriptor *descriptor,
     const MGLRenderCppRenderPassState *state)
 {
-    if (mglBlitUsesMetalCpp() && state &&
-        (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(renderPassManager.state->currentCommandBufferOwner)) {
+    if (mglBlitUsesMetalCpp() && state) {
         void *encoder = NULL;
-        if (mglRenderCppCreateRenderEncoderFromState(
-                mglRenderCppCommandBufferOwnerGetCurrent(renderPassManager.state->currentCommandBufferOwner),
+        if (mglRenderCppCreateRenderEncoderFromCommandBufferOwnerState(
+                renderPassManager.state->currentCommandBufferOwner,
                 state, &encoder) == 0 && encoder) {
             return (__bridge MGLMetalRenderCommandEncoderRef)encoder;
         }
@@ -241,8 +240,8 @@ static MGLRenderCppRenderPassAttachmentState mglBlitRenderPassAttachment(
 static void mglBlitEndRenderEncoder(MGLMetalRenderCommandEncoderRef encoder)
 {
     if (!encoder) return;
-    if (mglBlitUsesMetalCpp() &&
-        mglRenderCppEndRenderEncoder((__bridge void *)encoder) == 0) {
+    if (mglBlitUsesMetalCpp()) {
+        (void)mglRenderCppEndRenderEncoder((__bridge void *)encoder);
         return;
     }
     [encoder endEncoding];
@@ -251,9 +250,9 @@ static void mglBlitEndRenderEncoder(MGLMetalRenderCommandEncoderRef encoder)
 static void mglBlitSetRenderPipeline(MGLMetalRenderCommandEncoderRef encoder,
                                      MGLMetalRenderPipelineStateRef pipeline)
 {
-    if (mglBlitUsesMetalCpp() &&
-        mglRenderCppSetRenderPipelineState((__bridge void *)encoder,
-                                           (__bridge void *)pipeline) == 0) {
+    if (mglBlitUsesMetalCpp()) {
+        (void)mglRenderCppSetRenderPipelineState(
+            (__bridge void *)encoder, (__bridge void *)pipeline);
         return;
     }
     [encoder setRenderPipelineState:pipeline];
@@ -262,9 +261,9 @@ static void mglBlitSetRenderPipeline(MGLMetalRenderCommandEncoderRef encoder,
 static void mglBlitSetDepthStencil(MGLMetalRenderCommandEncoderRef encoder,
                                    MGLMetalDepthStencilStateRef state)
 {
-    if (mglBlitUsesMetalCpp() &&
-        mglRenderCppSetRenderDepthStencilState((__bridge void *)encoder,
-                                               (__bridge void *)state) == 0) {
+    if (mglBlitUsesMetalCpp()) {
+        (void)mglRenderCppSetRenderDepthStencilState(
+            (__bridge void *)encoder, (__bridge void *)state);
         return;
     }
     [encoder setDepthStencilState:state];
@@ -276,9 +275,9 @@ static void mglBlitSetRenderBytes(MGLMetalRenderCommandEncoderRef encoder,
                                   uint32_t stage,
                                   NSUInteger index)
 {
-    if (mglBlitUsesMetalCpp() &&
-        mglRenderCppSetRenderBytes((__bridge void *)encoder, bytes, length,
-                                   stage, (uint32_t)index) == 0) {
+    if (mglBlitUsesMetalCpp()) {
+        (void)mglRenderCppSetRenderBytes(
+            (__bridge void *)encoder, bytes, length, stage, (uint32_t)index);
         return;
     }
     if (stage == MGL_RENDER_CPP_BINDING_STAGE_VERTEX) {
@@ -293,10 +292,10 @@ static void mglBlitSetRenderTexture(MGLMetalRenderCommandEncoderRef encoder,
                                     uint32_t stage,
                                     NSUInteger index)
 {
-    if (mglBlitUsesMetalCpp() &&
-        mglRenderCppSetRenderTexture((__bridge void *)encoder,
-                                     (__bridge void *)texture, stage,
-                                     (uint32_t)index) == 0) {
+    if (mglBlitUsesMetalCpp()) {
+        (void)mglRenderCppSetRenderTexture(
+            (__bridge void *)encoder, (__bridge void *)texture, stage,
+            (uint32_t)index);
         return;
     }
     if (stage == MGL_RENDER_CPP_BINDING_STAGE_VERTEX) {
@@ -311,10 +310,10 @@ static void mglBlitSetRenderSampler(MGLMetalRenderCommandEncoderRef encoder,
                                     uint32_t stage,
                                     NSUInteger index)
 {
-    if (mglBlitUsesMetalCpp() &&
-        mglRenderCppSetRenderSampler((__bridge void *)encoder,
-                                     (__bridge void *)sampler, stage,
-                                     (uint32_t)index) == 0) {
+    if (mglBlitUsesMetalCpp()) {
+        (void)mglRenderCppSetRenderSampler(
+            (__bridge void *)encoder, (__bridge void *)sampler, stage,
+            (uint32_t)index);
         return;
     }
     if (stage == MGL_RENDER_CPP_BINDING_STAGE_VERTEX) {
@@ -327,11 +326,11 @@ static void mglBlitSetRenderSampler(MGLMetalRenderCommandEncoderRef encoder,
 static void mglBlitSetRenderViewport(MGLMetalRenderCommandEncoderRef encoder,
                                      MTLViewport viewport)
 {
-    if (mglBlitUsesMetalCpp() &&
-        mglRenderCppSetRenderViewport(
+    if (mglBlitUsesMetalCpp()) {
+        (void)mglRenderCppSetRenderViewport(
             (__bridge void *)encoder, viewport.originX, viewport.originY,
             viewport.width, viewport.height, viewport.znear,
-            viewport.zfar) == 0) {
+            viewport.zfar);
         return;
     }
     [encoder setViewport:viewport];
@@ -340,9 +339,9 @@ static void mglBlitSetRenderViewport(MGLMetalRenderCommandEncoderRef encoder,
 static void mglBlitSetRenderScissor(MGLMetalRenderCommandEncoderRef encoder,
                                     MTLScissorRect rect)
 {
-    if (mglBlitUsesMetalCpp() &&
-        mglRenderCppSetRenderScissor((__bridge void *)encoder, rect.x, rect.y,
-                                     rect.width, rect.height) == 0) {
+    if (mglBlitUsesMetalCpp()) {
+        (void)mglRenderCppSetRenderScissor(
+            (__bridge void *)encoder, rect.x, rect.y, rect.width, rect.height);
         return;
     }
     [encoder setScissorRect:rect];
@@ -364,25 +363,11 @@ static void mglBlitDrawPrimitives(MGLMetalRenderCommandEncoderRef encoder,
         }, NULL, 0);
 }
 
-static MGLMetalComputeCommandEncoderRef mglBlitCreateComputeEncoder(
-    MGLMetalCommandBufferRef commandBuffer)
-{
-    if (mglBlitUsesMetalCpp()) {
-        void *encoderCPP = NULL;
-        if (mglRenderCppCreateComputeEncoder((__bridge void *)commandBuffer,
-                                              &encoderCPP) == 0 &&
-            encoderCPP) {
-            return (__bridge MGLMetalComputeCommandEncoderRef)encoderCPP;
-        }
-    }
-    return [commandBuffer computeCommandEncoder];
-}
-
 static void mglBlitEndComputeEncoder(MGLMetalComputeCommandEncoderRef encoder)
 {
     if (!encoder) return;
-    if (mglBlitUsesMetalCpp() &&
-        mglRenderCppEndComputeEncoder((__bridge void *)encoder) == 0) {
+    if (mglBlitUsesMetalCpp()) {
+        (void)mglRenderCppEndComputeEncoder((__bridge void *)encoder);
         return;
     }
     [encoder endEncoding];
@@ -391,9 +376,9 @@ static void mglBlitEndComputeEncoder(MGLMetalComputeCommandEncoderRef encoder)
 static void mglBlitSetComputePipeline(MGLMetalComputeCommandEncoderRef encoder,
                                       MGLMetalComputePipelineStateRef pipeline)
 {
-    if (mglBlitUsesMetalCpp() &&
-        mglRenderCppSetComputePipelineState((__bridge void *)encoder,
-                                            (__bridge void *)pipeline) == 0) {
+    if (mglBlitUsesMetalCpp()) {
+        (void)mglRenderCppSetComputePipelineState(
+            (__bridge void *)encoder, (__bridge void *)pipeline);
         return;
     }
     [encoder setComputePipelineState:pipeline];
@@ -403,10 +388,10 @@ static void mglBlitSetComputeTexture(MGLMetalComputeCommandEncoderRef encoder,
                                      MGLMetalTextureRef texture,
                                      NSUInteger index)
 {
-    if (mglBlitUsesMetalCpp() &&
-        mglRenderCppSetComputeTexture((__bridge void *)encoder,
-                                      (__bridge void *)texture,
-                                      (uint32_t)index) == 0) {
+    if (mglBlitUsesMetalCpp()) {
+        (void)mglRenderCppSetComputeTexture(
+            (__bridge void *)encoder, (__bridge void *)texture,
+            (uint32_t)index);
         return;
     }
     [encoder setTexture:texture atIndex:index];
@@ -417,9 +402,9 @@ static void mglBlitSetComputeBytes(MGLMetalComputeCommandEncoderRef encoder,
                                    NSUInteger length,
                                    NSUInteger index)
 {
-    if (mglBlitUsesMetalCpp() &&
-        mglRenderCppSetComputeBytes((__bridge void *)encoder, bytes, length,
-                                    (uint32_t)index) == 0) {
+    if (mglBlitUsesMetalCpp()) {
+        (void)mglRenderCppSetComputeBytes(
+            (__bridge void *)encoder, bytes, length, (uint32_t)index);
         return;
     }
     [encoder setBytes:bytes length:length atIndex:index];
@@ -457,8 +442,8 @@ static MGLMetalBlitCommandEncoderRef mglBlitCreateBlitEncoder(
 static void mglBlitEndBlitEncoder(MGLMetalBlitCommandEncoderRef encoder)
 {
     if (!encoder) return;
-    if (mglBlitUsesMetalCpp() &&
-        mglRenderCppEndBlitEncoder((__bridge void *)encoder) == 0) {
+    if (mglBlitUsesMetalCpp()) {
+        (void)mglRenderCppEndBlitEncoder((__bridge void *)encoder);
         return;
     }
     [encoder endEncoding];
@@ -551,10 +536,9 @@ static void mglBlitSynchronizeTexture(MGLMetalBlitCommandEncoderRef encoder,
                                       NSUInteger slice,
                                       NSUInteger level)
 {
-    if (mglBlitUsesMetalCpp() &&
-        mglRenderCppBlitSynchronizeTexture((__bridge void *)encoder,
-                                           (__bridge void *)texture, slice,
-                                           level) == 0) {
+    if (mglBlitUsesMetalCpp()) {
+        (void)mglRenderCppBlitSynchronizeTexture(
+            (__bridge void *)encoder, (__bridge void *)texture, slice, level);
         return;
     }
     [encoder synchronizeTexture:texture slice:slice level:level];
@@ -1058,7 +1042,8 @@ static MGLMetalRenderPipelineStateRef mglLookupCppAuxRenderPipeline(
     }
 
     MGLMetalComputeCommandEncoderRef encoder =
-        mglBlitCreateComputeEncoder((__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
+        mglRenderCreateComputeEncoderForCommandBufferOwner(
+            _renderPassManager.state->currentCommandBufferOwner);
     if (!encoder) {
         NSLog(@"MGL WARN: failed to create MSAA integer resolve encoder for %s",
               reason ? reason : "unknown");
@@ -1139,8 +1124,8 @@ static MGLMetalRenderPipelineStateRef mglLookupCppAuxRenderPipeline(
     BOOL resolvesDepth =
         mglMetalPixelFormatIsDepthOrStencil(sourceTexture.pixelFormat);
     if (mglBlitUsesMetalCpp() &&
-        mglRenderCppEncodeMultisampleResolve(
-            mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
+        mglRenderCppEncodeMultisampleResolveForCommandBufferOwner(
+            _renderPassManager.state->currentCommandBufferOwner,
             resolvesDepth
                 ? MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH
                 : MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR,
@@ -1476,7 +1461,9 @@ static MGLMetalRenderPipelineStateRef mglLookupCppAuxRenderPipeline(
         }
     }
 
-    BOOL hadRenderEncoder = ((__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner) != nil);
+    BOOL hadRenderEncoder =
+        mglRenderCppRenderEncoderOwnerHasCurrent(
+            _renderPassManager.state->currentRenderEncoderOwner) == 1;
     if (hadRenderEncoder) {
         [self endRenderEncodingLocked];
     }
@@ -1499,7 +1486,9 @@ static MGLMetalRenderPipelineStateRef mglLookupCppAuxRenderPipeline(
             : nil;
     }
 
-    if (hadRenderEncoder && !(__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
+    if (hadRenderEncoder &&
+        mglRenderCppRenderEncoderOwnerHasCurrent(
+            _renderPassManager.state->currentRenderEncoderOwner) != 1) {
         if (![self restoreRenderEncoderAfterTextureUploadForDraw:"sample_gate_miss_repair"]) {
             return nil;
         }
@@ -1698,7 +1687,8 @@ static MGLMetalRenderPipelineStateRef mglLookupCppAuxRenderPipeline(
 
     if (useComputePath) {
         MGLMetalComputeCommandEncoderRef computeEncoder =
-            mglBlitCreateComputeEncoder((__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
+            mglRenderCreateComputeEncoderForCommandBufferOwner(
+                _renderPassManager.state->currentCommandBufferOwner);
         if (!computeEncoder) {
             static uint64_t s_computeEncoderFailCount = 0;
             uint64_t hit = ++s_computeEncoderFailCount;
@@ -2208,7 +2198,8 @@ static MGLMetalRenderPipelineStateRef mglLookupCppAuxRenderPipeline(
                                                                    mtlTexture:depthDrawTexture];
                             }
                             MGLMetalBlitCommandEncoderRef depthBlit =
-                                mglBlitCreateBlitEncoder((__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
+                                mglRenderCreateBlitEncoderForCommandBufferOwner(
+                                    _renderPassManager.state->currentCommandBufferOwner);
                             if (depthBlit) {
                                 NSUInteger sourceMetalY =
                                     depthReadTexture.height - (NSUInteger)(copySrcY + copyHeight);
@@ -2623,8 +2614,8 @@ static MGLMetalRenderPipelineStateRef mglLookupCppAuxRenderPipeline(
         }
 
         BOOL resolveEncoded = mglBlitUsesMetalCpp() &&
-            mglRenderCppEncodeMultisampleResolve(
-                mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
+            mglRenderCppEncodeMultisampleResolveForCommandBufferOwner(
+                _renderPassManager.state->currentCommandBufferOwner,
                 MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR,
                 (__bridge void *)readtexid, readSubresource.level,
                 readSubresource.slice, readSubresource.depthPlane,
@@ -2663,7 +2654,8 @@ static MGLMetalRenderPipelineStateRef mglLookupCppAuxRenderPipeline(
         /* Synchronize the resolved texture so the subsequent blit/shader can
          * read it on a tile-based Apple GPU without stale tile memory. */
         MGLMetalBlitCommandEncoderRef syncBlit =
-            mglBlitCreateBlitEncoder((__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
+            mglRenderCreateBlitEncoderForCommandBufferOwner(
+                _renderPassManager.state->currentCommandBufferOwner);
         if (syncBlit) {
             mglBlitSynchronizeTexture(syncBlit, resolveTex, 0, 0);
             mglBlitEndBlitEncoder(syncBlit);
@@ -2792,7 +2784,8 @@ static MGLMetalRenderPipelineStateRef mglLookupCppAuxRenderPipeline(
         }
 
         MGLMetalBlitCommandEncoderRef integerBlit =
-            mglBlitCreateBlitEncoder((__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
+            mglRenderCreateBlitEncoderForCommandBufferOwner(
+                _renderPassManager.state->currentCommandBufferOwner);
         if (!integerBlit) {
             NSLog(@"MGL WARN: mtlBlitFramebuffer failed to create integer direct blit encoder");
             return YES;
@@ -3033,7 +3026,8 @@ static MGLMetalRenderPipelineStateRef mglLookupCppAuxRenderPipeline(
     // start blit encoder
     MGLMetalBlitCommandEncoderRef blitCommandEncoder;
     blitCommandEncoder =
-        mglBlitCreateBlitEncoder((__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
+        mglRenderCreateBlitEncoderForCommandBufferOwner(
+            _renderPassManager.state->currentCommandBufferOwner);
     if (!blitCommandEncoder) {
         NSLog(@"MGL WARN: mtlBlitFramebuffer failed to create blit encoder");
         return;
@@ -3556,6 +3550,29 @@ static MGLMetalRenderPipelineStateRef mglLookupCppAuxRenderPipeline(
     [self blitFramebufferDirectColorCopyWithState:&st];
 }
 
+void mglRendererCallbackBlitFramebuffer(void *runtime_context,
+                                        GLMContext glm_ctx,
+                                        int src_x0,
+                                        int src_y0,
+                                        int src_x1,
+                                        int src_y1,
+                                        int dst_x0,
+                                        int dst_y0,
+                                        int dst_x1,
+                                        int dst_y1,
+                                        unsigned int mask,
+                                        unsigned int filter)
+{
+    MGLRenderer *renderer = (__bridge MGLRenderer *)runtime_context;
+    if (!renderer || !glm_ctx) return;
+    [renderer mtlBlitFramebuffer:glm_ctx
+                           srcX0:src_x0 srcY0:src_y0
+                           srcX1:src_x1 srcY1:src_y1
+                           dstX0:dst_x0 dstY0:dst_y0
+                           dstX1:dst_x1 dstY1:dst_y1
+                            mask:mask filter:filter];
+}
+
 
 /* Texture-to-texture blit path for glCopyTexImage2D / glCopyTexSubImage when
  * the destination texture uses a non-BGRA8-compatible Metal pixel format
@@ -3681,7 +3698,8 @@ static MGLMetalRenderPipelineStateRef mglLookupCppAuxRenderPipeline(
     }
 
     MGLMetalBlitCommandEncoderRef blitEncoder =
-        mglBlitCreateBlitEncoder((__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
+        mglRenderCreateBlitEncoderForCommandBufferOwner(
+            _renderPassManager.state->currentCommandBufferOwner);
     if (!blitEncoder) {
         mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
         return YES;
@@ -3936,9 +3954,9 @@ static MGLMetalRenderPipelineStateRef mglLookupCppAuxRenderPipeline(
         return NO;
     }
 
-    MGLMetalCommandBufferRef readCommandBuffer = (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner);
     MGLMetalBlitCommandEncoderRef readEncoder =
-        mglBlitCreateBlitEncoder(readCommandBuffer);
+        mglRenderCreateBlitEncoderForCommandBufferOwner(
+            _renderPassManager.state->currentCommandBufferOwner);
     if (!readEncoder) {
         return NO;
     }
@@ -3962,9 +3980,9 @@ static MGLMetalRenderPipelineStateRef mglLookupCppAuxRenderPipeline(
     }
 
     [self flushCommandBuffer:YES];
-    MGLRenderCppCommandBufferState readState =
-        mglRenderCommandBufferState(readCommandBuffer);
-    if (readState.has_error) {
+    MGLRenderCppCommandBufferState readState = {0};
+    if ([_renderPassManager waitForLastSubmittedCommandBuffer:&readState] != 0 ||
+        readState.has_error) {
         return NO;
     }
     memcpy(bytes, stagingBuffer.contents, totalBytes);
@@ -4195,7 +4213,8 @@ static MGLMetalRenderPipelineStateRef mglLookupCppAuxRenderPipeline(
                                     MTLResourceStorageModeShared);
                             if (stagingBuf) {
                                 MGLMetalBlitCommandEncoderRef uploadEncoder =
-                                    mglBlitCreateBlitEncoder((__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
+                                    mglRenderCreateBlitEncoderForCommandBufferOwner(
+                                        _renderPassManager.state->currentCommandBufferOwner);
                                 if (uploadEncoder) {
                                     mglBlitCopyBufferToTexture(
                                         uploadEncoder, stagingBuf, 0,
@@ -4675,8 +4694,8 @@ static MGLMetalRenderPipelineStateRef mglLookupCppAuxRenderPipeline(
                             return YES;
                         }
                         MGLMetalBlitCommandEncoderRef readEncoder =
-                            mglBlitCreateBlitEncoder(
-                                (__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
+                            mglRenderCreateBlitEncoderForCommandBufferOwner(
+                                _renderPassManager.state->currentCommandBufferOwner);
                         if (!readEncoder) {
                             free(stagingBytes);
                             mglDispatchError(glm_ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
@@ -5288,7 +5307,8 @@ static MGLMetalRenderPipelineStateRef mglLookupCppAuxRenderPipeline(
     }
 
     MGLMetalBlitCommandEncoderRef blitEncoder =
-        mglBlitCreateBlitEncoder((__bridge MGLMetalCommandBufferRef)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner));
+        mglRenderCreateBlitEncoderForCommandBufferOwner(
+            _renderPassManager.state->currentCommandBufferOwner);
     if (!blitEncoder) {
         NSLog(@"MGL ERROR: mtlCopyImageSubData failed to create blit encoder");
         mglDispatchError(glm_ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
