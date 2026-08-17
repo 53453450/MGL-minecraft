@@ -1140,7 +1140,7 @@ void mglLogStateSnapshot(const char *tag,
                                 GLMContext ctx,
                                 void *commandBufferOwner,
                                 void *renderEncoderOwner,
-                                MTLRenderPassDescriptor *renderPassDescriptor,
+                                void *renderPassStateOwner,
                                 id<CAMetalDrawable> drawable)
 {
     if (!kMGLDiagnosticStateLogs) {
@@ -1148,9 +1148,9 @@ void mglLogStateSnapshot(const char *tag,
     }
 
     if (!mglRendererContextLikelyValid(ctx)) {
-        mglTraceLogNSString(@"MGL TRACE %s ctx=%p(invalid) cbOwner=%p encOwner=%p rpd=%p drawable=%p",
+        mglTraceLogNSString(@"MGL TRACE %s ctx=%p(invalid) cbOwner=%p encOwner=%p rpOwner=%p drawable=%p",
               tag ? tag : "snapshot", ctx, commandBufferOwner,
-              renderEncoderOwner, renderPassDescriptor, drawable);
+              renderEncoderOwner, renderPassStateOwner, drawable);
         return;
     }
 
@@ -1180,22 +1180,40 @@ void mglLogStateSnapshot(const char *tag,
     char dirtyNames[256];
     mglFormatDirtyBits((uint32_t)ctx->active_state->dirty_bits, dirtyNames, sizeof(dirtyNames));
 
-    id<MTLTexture> rpColor0 = renderPassDescriptor ? renderPassDescriptor.colorAttachments[0].texture : nil;
-    id<MTLTexture> rpDepth = renderPassDescriptor ? renderPassDescriptor.depthAttachment.texture : nil;
-    id<MTLTexture> rpStencil = renderPassDescriptor ? renderPassDescriptor.stencilAttachment.texture : nil;
-    MTLLoadAction colorLoadAction = renderPassDescriptor ? renderPassDescriptor.colorAttachments[0].loadAction : MTLLoadActionDontCare;
-    MTLStoreAction colorStoreAction = renderPassDescriptor ? renderPassDescriptor.colorAttachments[0].storeAction : MTLStoreActionDontCare;
-    MTLLoadAction depthLoadAction = renderPassDescriptor ? renderPassDescriptor.depthAttachment.loadAction : MTLLoadActionDontCare;
-    MTLStoreAction depthStoreAction = renderPassDescriptor ? renderPassDescriptor.depthAttachment.storeAction : MTLStoreActionDontCare;
-    MTLLoadAction stencilLoadAction = renderPassDescriptor ? renderPassDescriptor.stencilAttachment.loadAction : MTLLoadActionDontCare;
-    MTLStoreAction stencilStoreAction = renderPassDescriptor ? renderPassDescriptor.stencilAttachment.storeAction : MTLStoreActionDontCare;
-    MTLClearColor rpClearColor = renderPassDescriptor ? renderPassDescriptor.colorAttachments[0].clearColor : MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
+    MGLRenderCppRenderPassState renderPassState = {0};
+    BOOL hasRenderPassState = renderPassStateOwner &&
+        mglRenderCppGetRenderPassStateOwner(
+            renderPassStateOwner, &renderPassState) == 0;
+    id<MTLTexture> rpColor0 = hasRenderPassState && renderPassState.color[0].attachment.texture
+        ? (__bridge id<MTLTexture>)renderPassState.color[0].attachment.texture : nil;
+    id<MTLTexture> rpDepth = hasRenderPassState && renderPassState.depth.attachment.texture
+        ? (__bridge id<MTLTexture>)renderPassState.depth.attachment.texture : nil;
+    id<MTLTexture> rpStencil = hasRenderPassState && renderPassState.stencil.attachment.texture
+        ? (__bridge id<MTLTexture>)renderPassState.stencil.attachment.texture : nil;
+    MTLLoadAction colorLoadAction = hasRenderPassState
+        ? (MTLLoadAction)renderPassState.color[0].attachment.load_action : MTLLoadActionDontCare;
+    MTLStoreAction colorStoreAction = hasRenderPassState
+        ? (MTLStoreAction)renderPassState.color[0].attachment.store_action : MTLStoreActionDontCare;
+    MTLLoadAction depthLoadAction = hasRenderPassState
+        ? (MTLLoadAction)renderPassState.depth.attachment.load_action : MTLLoadActionDontCare;
+    MTLStoreAction depthStoreAction = hasRenderPassState
+        ? (MTLStoreAction)renderPassState.depth.attachment.store_action : MTLStoreActionDontCare;
+    MTLLoadAction stencilLoadAction = hasRenderPassState
+        ? (MTLLoadAction)renderPassState.stencil.attachment.load_action : MTLLoadActionDontCare;
+    MTLStoreAction stencilStoreAction = hasRenderPassState
+        ? (MTLStoreAction)renderPassState.stencil.attachment.store_action : MTLStoreActionDontCare;
+    MTLClearColor rpClearColor = hasRenderPassState
+        ? MTLClearColorMake(renderPassState.color[0].clear_red,
+                            renderPassState.color[0].clear_green,
+                            renderPassState.color[0].clear_blue,
+                            renderPassState.color[0].clear_alpha)
+        : MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
 
     id<MTLTexture> drawableTexture = drawable ? drawable.texture : nil;
 
     mglTraceLogNSString(@"MGL TRACE %s prog=%u dirty=0x%x[%s] clear=0x%x drawBuf=0x%x readBuf=0x%x vao=%p drawFBO=%p(%u) "
           "vp=(%u,%u,%u,%u) scissor(en=%d box=%d,%d,%d,%d) caps(depth=%d blend=%d cull=%d) "
-          "stateClear=(%.3f,%.3f,%.3f,%.3f) cbOwner=%p[%s] encOwner=%p(active=%d) rpd=%p rt=%lux%lu "
+          "stateClear=(%.3f,%.3f,%.3f,%.3f) cbOwner=%p[%s] encOwner=%p(active=%d) rpOwner=%p rt=%lux%lu "
           "c0=%p fmt=%lu usage=0x%lx la/sa=%s/%s clear=(%.3f,%.3f,%.3f,%.3f) "
           "depth=%p(%lu %s/%s) stencil=%p(%lu %s/%s) drawable=%p tex=%p d=%lux%lu",
           tag ? tag : "snapshot",
@@ -1228,9 +1246,9 @@ void mglLogStateSnapshot(const char *tag,
           mglCommandBufferStatusName(cbStatus),
           renderEncoderOwner,
           hasRenderEncoder,
-          renderPassDescriptor,
-          (unsigned long)(renderPassDescriptor ? renderPassDescriptor.renderTargetWidth : 0),
-          (unsigned long)(renderPassDescriptor ? renderPassDescriptor.renderTargetHeight : 0),
+          renderPassStateOwner,
+          (unsigned long)(hasRenderPassState ? renderPassState.render_target_width : 0),
+          (unsigned long)(hasRenderPassState ? renderPassState.render_target_height : 0),
           rpColor0,
           (unsigned long)(rpColor0 ? rpColor0.pixelFormat : MTLPixelFormatInvalid),
           (unsigned long)(rpColor0 ? rpColor0.usage : 0),
@@ -1269,7 +1287,7 @@ void mglLogDrawWithoutSwapWatchdog(const char *kind,
                                           GLMContext ctx,
                                           void *commandBufferOwner,
                                           void *renderEncoderOwner,
-                                          MTLRenderPassDescriptor *renderPassDescriptor)
+                                          void *renderPassStateOwner)
 {
     uint64_t drawArrays = MGL_FRAME_LOAD(g_mglDrawArraysSinceSwap);
     uint64_t drawElements = MGL_FRAME_LOAD(g_mglDrawElementsSinceSwap);
@@ -1292,14 +1310,26 @@ void mglLogDrawWithoutSwapWatchdog(const char *kind,
         : MTLCommandBufferStatusNotEnqueued;
     BOOL hasRenderEncoder =
         mglRenderCppRenderEncoderOwnerHasCurrent(renderEncoderOwner) == 1;
-    id<MTLTexture> rpColor0 = renderPassDescriptor ? renderPassDescriptor.colorAttachments[0].texture : nil;
-    MTLLoadAction colorLoadAction = renderPassDescriptor ? renderPassDescriptor.colorAttachments[0].loadAction : MTLLoadActionDontCare;
-    MTLStoreAction colorStoreAction = renderPassDescriptor ? renderPassDescriptor.colorAttachments[0].storeAction : MTLStoreActionDontCare;
-    MTLClearColor clear = renderPassDescriptor ? renderPassDescriptor.colorAttachments[0].clearColor : MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
+    MGLRenderCppRenderPassState renderPassState = {0};
+    BOOL hasRenderPassState = renderPassStateOwner &&
+        mglRenderCppGetRenderPassStateOwner(
+            renderPassStateOwner, &renderPassState) == 0;
+    id<MTLTexture> rpColor0 = hasRenderPassState && renderPassState.color[0].attachment.texture
+        ? (__bridge id<MTLTexture>)renderPassState.color[0].attachment.texture : nil;
+    MTLLoadAction colorLoadAction = hasRenderPassState
+        ? (MTLLoadAction)renderPassState.color[0].attachment.load_action : MTLLoadActionDontCare;
+    MTLStoreAction colorStoreAction = hasRenderPassState
+        ? (MTLStoreAction)renderPassState.color[0].attachment.store_action : MTLStoreActionDontCare;
+    MTLClearColor clear = hasRenderPassState
+        ? MTLClearColorMake(renderPassState.color[0].clear_red,
+                            renderPassState.color[0].clear_green,
+                            renderPassState.color[0].clear_blue,
+                            renderPassState.color[0].clear_alpha)
+        : MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
 
     NSLog(@"MGL WATCHDOG: draws-without-swap kind=%s drawCall=%llu total=%llu arrays=%llu elements=%llu "
           "swapCalls=%llu lastSwapAgeMs=%.2f program=%u drawBuf=0x%x fbo=%p vao=%p cb=%p[%s] enc=%p "
-          "rpd=%p c0=%p fmt=%lu la/sa=%s/%s clear=(%.3f,%.3f,%.3f,%.3f)",
+          "rpOwner=%p c0=%p fmt=%lu la/sa=%s/%s clear=(%.3f,%.3f,%.3f,%.3f)",
           kind ? kind : "draw",
           (unsigned long long)drawCall,
           (unsigned long long)totalDraws,
@@ -1314,7 +1344,7 @@ void mglLogDrawWithoutSwapWatchdog(const char *kind,
           hasCommandBuffer ? commandBufferOwner : NULL,
           mglCommandBufferStatusName(cbStatus),
           hasRenderEncoder ? renderEncoderOwner : NULL,
-          renderPassDescriptor,
+          renderPassStateOwner,
           rpColor0,
           (unsigned long)(rpColor0 ? rpColor0.pixelFormat : MTLPixelFormatInvalid),
           mglLoadActionName(colorLoadAction),
@@ -1330,7 +1360,7 @@ void mglLogRenderPassLifecycle(const char *tag,
                                       GLMContext ctx,
                                       void *commandBufferOwner,
                                       void *renderEncoderOwner,
-                                      MTLRenderPassDescriptor *renderPassDescriptor,
+                                      void *renderPassStateOwner,
                                       id<CAMetalDrawable> drawable,
                                       Framebuffer *renderPassFramebuffer,
                                       GLuint renderPassFramebufferName,
@@ -1349,13 +1379,24 @@ void mglLogRenderPassLifecycle(const char *tag,
         : MTLCommandBufferStatusNotEnqueued;
     int hasRenderEncoder =
         mglRenderCppRenderEncoderOwnerHasCurrent(renderEncoderOwner) == 1;
-    id<MTLTexture> c0 = renderPassDescriptor ? renderPassDescriptor.colorAttachments[0].texture : nil;
-    id<MTLTexture> c1 = renderPassDescriptor ? renderPassDescriptor.colorAttachments[1].texture : nil;
-    id<MTLTexture> depth = renderPassDescriptor ? renderPassDescriptor.depthAttachment.texture : nil;
-    id<MTLTexture> stencil = renderPassDescriptor ? renderPassDescriptor.stencilAttachment.texture : nil;
+    MGLRenderCppRenderPassState renderPassState = {0};
+    BOOL hasRenderPassState = renderPassStateOwner &&
+        mglRenderCppGetRenderPassStateOwner(
+            renderPassStateOwner, &renderPassState) == 0;
+    id<MTLTexture> c0 = hasRenderPassState && renderPassState.color[0].attachment.texture
+        ? (__bridge id<MTLTexture>)renderPassState.color[0].attachment.texture : nil;
+    id<MTLTexture> c1 = hasRenderPassState && renderPassState.color[1].attachment.texture
+        ? (__bridge id<MTLTexture>)renderPassState.color[1].attachment.texture : nil;
+    id<MTLTexture> depth = hasRenderPassState && renderPassState.depth.attachment.texture
+        ? (__bridge id<MTLTexture>)renderPassState.depth.attachment.texture : nil;
+    id<MTLTexture> stencil = hasRenderPassState && renderPassState.stencil.attachment.texture
+        ? (__bridge id<MTLTexture>)renderPassState.stencil.attachment.texture : nil;
     id<MTLTexture> drawableTexture = drawable ? drawable.texture : nil;
-    MTLClearColor clear = renderPassDescriptor
-        ? renderPassDescriptor.colorAttachments[0].clearColor
+    MTLClearColor clear = hasRenderPassState
+        ? MTLClearColorMake(renderPassState.color[0].clear_red,
+                            renderPassState.color[0].clear_green,
+                            renderPassState.color[0].clear_blue,
+                            renderPassState.color[0].clear_alpha)
         : MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
 
     Framebuffer *fbo = ctx ? ctx->active_state->framebuffer : NULL;
@@ -1377,7 +1418,7 @@ void mglLogRenderPassLifecycle(const char *tag,
     }
 
     mglTraceLog("RENDERPASS_%s call=%llu program=%u dirty=0x%x drawBuf=0x%x readBuf=0x%x "
-                "fbo=%u(%p) rpFbo=%u(%p) rpDrawBuf=0x%x rpDrawCount=%d vao=%p cbOwner=%p[%s] encOwner=%p(active=%d) rpd=%p rt=%lux%lu "
+                "fbo=%u(%p) rpFbo=%u(%p) rpDrawBuf=0x%x rpDrawCount=%d vao=%p cbOwner=%p[%s] encOwner=%p(active=%d) rpOwner=%p rt=%lux%lu "
                 "c0Name=%u c0=%p fmt=%lu usage=0x%lx size=%lux%lu la/sa=%s/%s clear=(%.3f,%.3f,%.3f,%.3f) "
                 "c1Name=%u c1=%p fmt=%lu usage=0x%lx size=%lux%lu la/sa=%s/%s "
                 "depthName=%u depth=%p fmt=%lu usage=0x%lx size=%lux%lu la/sa=%s/%s "
@@ -1400,17 +1441,17 @@ void mglLogRenderPassLifecycle(const char *tag,
                 mglCommandBufferStatusName(cbStatus),
                 renderEncoderOwner,
                 hasRenderEncoder,
-                renderPassDescriptor,
-                (unsigned long)(renderPassDescriptor ? renderPassDescriptor.renderTargetWidth : 0),
-                (unsigned long)(renderPassDescriptor ? renderPassDescriptor.renderTargetHeight : 0),
+                renderPassStateOwner,
+                (unsigned long)(hasRenderPassState ? renderPassState.render_target_width : 0),
+                (unsigned long)(hasRenderPassState ? renderPassState.render_target_height : 0),
                 (unsigned)color0Name,
                 c0,
                 (unsigned long)(c0 ? c0.pixelFormat : MTLPixelFormatInvalid),
                 (unsigned long)(c0 ? c0.usage : 0),
                 (unsigned long)(c0 ? c0.width : 0),
                 (unsigned long)(c0 ? c0.height : 0),
-                mglLoadActionName(renderPassDescriptor ? renderPassDescriptor.colorAttachments[0].loadAction : MTLLoadActionDontCare),
-                mglStoreActionName(renderPassDescriptor ? renderPassDescriptor.colorAttachments[0].storeAction : MTLStoreActionDontCare),
+                mglLoadActionName(hasRenderPassState ? (MTLLoadAction)renderPassState.color[0].attachment.load_action : MTLLoadActionDontCare),
+                mglStoreActionName(hasRenderPassState ? (MTLStoreAction)renderPassState.color[0].attachment.store_action : MTLStoreActionDontCare),
                 clear.red,
                 clear.green,
                 clear.blue,
@@ -1421,23 +1462,23 @@ void mglLogRenderPassLifecycle(const char *tag,
                 (unsigned long)(c1 ? c1.usage : 0),
                 (unsigned long)(c1 ? c1.width : 0),
                 (unsigned long)(c1 ? c1.height : 0),
-                mglLoadActionName(renderPassDescriptor ? renderPassDescriptor.colorAttachments[1].loadAction : MTLLoadActionDontCare),
-                mglStoreActionName(renderPassDescriptor ? renderPassDescriptor.colorAttachments[1].storeAction : MTLStoreActionDontCare),
+                mglLoadActionName(hasRenderPassState ? (MTLLoadAction)renderPassState.color[1].attachment.load_action : MTLLoadActionDontCare),
+                mglStoreActionName(hasRenderPassState ? (MTLStoreAction)renderPassState.color[1].attachment.store_action : MTLStoreActionDontCare),
                 (unsigned)depthName,
                 depth,
                 (unsigned long)(depth ? depth.pixelFormat : MTLPixelFormatInvalid),
                 (unsigned long)(depth ? depth.usage : 0),
                 (unsigned long)(depth ? depth.width : 0),
                 (unsigned long)(depth ? depth.height : 0),
-                mglLoadActionName(renderPassDescriptor ? renderPassDescriptor.depthAttachment.loadAction : MTLLoadActionDontCare),
-                mglStoreActionName(renderPassDescriptor ? renderPassDescriptor.depthAttachment.storeAction : MTLStoreActionDontCare),
+                mglLoadActionName(hasRenderPassState ? (MTLLoadAction)renderPassState.depth.attachment.load_action : MTLLoadActionDontCare),
+                mglStoreActionName(hasRenderPassState ? (MTLStoreAction)renderPassState.depth.attachment.store_action : MTLStoreActionDontCare),
                 stencil,
                 (unsigned long)(stencil ? stencil.pixelFormat : MTLPixelFormatInvalid),
                 (unsigned long)(stencil ? stencil.usage : 0),
                 (unsigned long)(stencil ? stencil.width : 0),
                 (unsigned long)(stencil ? stencil.height : 0),
-                mglLoadActionName(renderPassDescriptor ? renderPassDescriptor.stencilAttachment.loadAction : MTLLoadActionDontCare),
-                mglStoreActionName(renderPassDescriptor ? renderPassDescriptor.stencilAttachment.storeAction : MTLStoreActionDontCare),
+                mglLoadActionName(hasRenderPassState ? (MTLLoadAction)renderPassState.stencil.attachment.load_action : MTLLoadActionDontCare),
+                mglStoreActionName(hasRenderPassState ? (MTLStoreAction)renderPassState.stencil.attachment.store_action : MTLStoreActionDontCare),
                 drawable,
                 drawableTexture,
                 (unsigned long)(drawableTexture ? drawableTexture.width : 0),
@@ -3363,7 +3404,7 @@ void mglRendererCompatSwapBuffers(GLMContext glm_ctx)
                             activeCtx,
                             _renderPassManager.state->currentCommandBufferOwner,
                             _renderPassManager.state->currentRenderEncoderOwner,
-                            _renderPassManager.state->renderPassDescriptor,
+                            _renderPassManager.state->renderPassStateOwner,
                             _drawable);
     }
 
@@ -3389,7 +3430,7 @@ void mglRendererCompatSwapBuffers(GLMContext glm_ctx)
                                         activeCtx,
                                         _renderPassManager.state->currentCommandBufferOwner,
                                         _renderPassManager.state->currentRenderEncoderOwner,
-                                        _renderPassManager.state->renderPassDescriptor,
+                                        _renderPassManager.state->renderPassStateOwner,
                                         _drawable);
                 }
             } else if (traceSwap) {
@@ -3691,7 +3732,7 @@ void mglRendererCompatSwapBuffers(GLMContext glm_ctx)
                                 ctx,
                                 _renderPassManager.state->currentCommandBufferOwner,
                                 _renderPassManager.state->currentRenderEncoderOwner,
-                                _renderPassManager.state->renderPassDescriptor,
+                                _renderPassManager.state->renderPassStateOwner,
                                 _drawable);
         } else if (swapElapsedUs >= 25000.0) {
             mglTraceLogNSString(@"MGL TRACE swap.slow call=%llu elapsed=%.1fus",

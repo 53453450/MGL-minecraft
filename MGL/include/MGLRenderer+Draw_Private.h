@@ -153,7 +153,7 @@ void mglLogDrawWithoutSwapWatchdog(const char *kind,
                                           GLMContext ctx,
                                           void *commandBufferOwner,
                                           void *renderEncoderOwner,
-                                          MTLRenderPassDescriptor *renderPassDescriptor);
+                                          void *renderPassStateOwner);
 Texture *mglFindFramebufferColorTexturePairedWithDepth(GLMContext glctx,
                                                               Texture *depthTexture,
                                                               GLuint *fboNameOut);

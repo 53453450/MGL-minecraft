@@ -45,7 +45,7 @@ void mglLogRenderPassLifecycle(const char *tag,
                                GLMContext ctx,
                                void *commandBufferOwner,
                                void *renderEncoderOwner,
-                               MTLRenderPassDescriptor *renderPassDescriptor,
+                               void *renderPassStateOwner,
                                id<CAMetalDrawable> drawable,
                                Framebuffer *renderPassFramebuffer,
                                GLuint renderPassFramebufferName,
@@ -75,7 +75,7 @@ void mglLogStateSnapshot(const char *tag,
                          GLMContext ctx,
                          void *commandBufferOwner,
                          void *renderEncoderOwner,
-                         MTLRenderPassDescriptor *renderPassDescriptor,
+                         void *renderPassStateOwner,
                          id<CAMetalDrawable> drawable);
 Framebuffer *mglRendererGetValidatedFramebuffer(GLMContext ctx, const char *where);
 

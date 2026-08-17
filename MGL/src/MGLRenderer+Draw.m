@@ -901,7 +901,7 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
                                   ctx,
                                   _renderPassManager.state->currentCommandBufferOwner,
                                   _renderPassManager.state->currentRenderEncoderOwner,
-                                  _renderPassManager.state->renderPassDescriptor);
+                                  _renderPassManager.state->renderPassStateOwner);
 
     double drawElapsedUs = (mglTraceClockNS() - drawStartNS) / 1000.0;
     if (traceDraw || drawElapsedUs >= 16000.0) {
@@ -1403,7 +1403,7 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
                                   ctx,
                                   _renderPassManager.state->currentCommandBufferOwner,
                                   _renderPassManager.state->currentRenderEncoderOwner,
-                                  _renderPassManager.state->renderPassDescriptor);
+                                  _renderPassManager.state->renderPassStateOwner);
 
     double drawElapsedUs = (mglTraceClockNS() - drawStartNS) / 1000.0;
     if (traceDraw || drawElapsedUs >= 16000.0) {
