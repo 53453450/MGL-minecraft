@@ -13,15 +13,13 @@
 #include "mgl_render_cpp.h"
 #include "mgl_render_cpp_objc.h" /* transitional Metal ref typedefs */
 
-static void mglDrawEncodePrimitives(MGLMetalRenderCommandEncoderRef encoder,
-                                    void *renderEncoderOwner,
+static void mglDrawEncodePrimitives(void *renderEncoderOwner,
                                     MTLPrimitiveType primitiveType,
                                     NSUInteger vertexStart,
                                     NSUInteger vertexCount,
                                     NSUInteger instanceCount,
                                     NSUInteger baseInstance)
 {
-    (void)encoder;
     const MGLRenderCppDrawPlan plan = {
             .kind = MGL_RENDER_CPP_DRAW_ARRAY,
             .primitive_type = (uint32_t)primitiveType,
@@ -35,8 +33,7 @@ static void mglDrawEncodePrimitives(MGLMetalRenderCommandEncoderRef encoder,
         renderEncoderOwner, &plan, NULL, 0);
 }
 
-static void mglDrawEncodeIndexed(MGLMetalRenderCommandEncoderRef encoder,
-                                 void *renderEncoderOwner,
+static void mglDrawEncodeIndexed(void *renderEncoderOwner,
                                  MTLPrimitiveType primitiveType,
                                  NSUInteger indexCount,
                                  MTLIndexType indexType,
@@ -46,7 +43,6 @@ static void mglDrawEncodeIndexed(MGLMetalRenderCommandEncoderRef encoder,
                                  NSInteger baseVertex,
                                  NSUInteger baseInstance)
 {
-    (void)encoder;
     const MGLRenderCppDrawPlan plan = {
             .kind = MGL_RENDER_CPP_DRAW_INDEXED,
             .primitive_type = (uint32_t)primitiveType,
@@ -63,8 +59,7 @@ static void mglDrawEncodeIndexed(MGLMetalRenderCommandEncoderRef encoder,
         renderEncoderOwner, &plan, NULL, 0);
 }
 
-static BOOL mglEncodeArrayLineLoopTarget(MGLMetalRenderCommandEncoderRef encoder,
-                            void *renderEncoderOwner,
+static BOOL mglEncodeArrayLineLoopTarget(void *renderEncoderOwner,
                             GLMContext drawCtx,
                             MGLMetalDeviceRef device,
                             GLsizei count,
@@ -99,15 +94,14 @@ static BOOL mglEncodeArrayLineLoopTarget(MGLMetalRenderCommandEncoderRef encoder
         return NO;
     }
 
-    mglDrawEncodeIndexed(encoder, renderEncoderOwner,
+    mglDrawEncodeIndexed(renderEncoderOwner,
                          MTLPrimitiveTypeLineStrip, loopIndexCount,
                          MTLIndexTypeUInt32, loopIndexBuffer, 0,
                          instanceCount, 0, baseInstance);
     return YES;
 }
 
-static BOOL mglEncodeArrayTriangleFanTarget(MGLMetalRenderCommandEncoderRef encoder,
-                                      void *renderEncoderOwner,
+static BOOL mglEncodeArrayTriangleFanTarget(void *renderEncoderOwner,
                                       MGLMetalDeviceRef device,
                                       GLsizei count,
                                       GLint baseVertex,
@@ -131,15 +125,14 @@ static BOOL mglEncodeArrayTriangleFanTarget(MGLMetalRenderCommandEncoderRef enco
         return NO;
     }
 
-    mglDrawEncodeIndexed(encoder, renderEncoderOwner,
+    mglDrawEncodeIndexed(renderEncoderOwner,
                          MTLPrimitiveTypeTriangle, fanIndexCount,
                          MTLIndexTypeUInt32, fanIndexBuffer, 0,
                          instanceCount, baseVertex, baseInstance);
     return YES;
 }
 
-static BOOL mglEncodeElementLineLoopTarget(MGLMetalRenderCommandEncoderRef encoder,
-                                     void *renderEncoderOwner,
+static BOOL mglEncodeElementLineLoopTarget(void *renderEncoderOwner,
                                      MGLMetalDeviceRef device,
                                      Buffer *glElementBuffer,
                                      MGLMetalBufferRef metalElementBuffer,
@@ -176,15 +169,14 @@ static BOOL mglEncodeElementLineLoopTarget(MGLMetalRenderCommandEncoderRef encod
         return NO;
     }
 
-    mglDrawEncodeIndexed(encoder, renderEncoderOwner,
+    mglDrawEncodeIndexed(renderEncoderOwner,
                          MTLPrimitiveTypeLineStrip, loopIndexCount,
                          MTLIndexTypeUInt32, loopIndexBuffer, 0,
                          instanceCount, baseVertex, baseInstance);
     return YES;
 }
 
-static BOOL mglEncodeElementTriangleFanTarget(MGLMetalRenderCommandEncoderRef encoder,
-                                        void *renderEncoderOwner,
+static BOOL mglEncodeElementTriangleFanTarget(void *renderEncoderOwner,
                                         MGLMetalDeviceRef device,
                                         Buffer *glElementBuffer,
                                         MGLMetalBufferRef metalElementBuffer,
@@ -221,15 +213,14 @@ static BOOL mglEncodeElementTriangleFanTarget(MGLMetalRenderCommandEncoderRef en
         return NO;
     }
 
-    mglDrawEncodeIndexed(encoder, renderEncoderOwner,
+    mglDrawEncodeIndexed(renderEncoderOwner,
                          MTLPrimitiveTypeTriangle, fanIndexCount,
                          MTLIndexTypeUInt32, fanIndexBuffer, 0,
                          instanceCount, baseVertex, baseInstance);
     return YES;
 }
 
-static BOOL mglEncodeArrayQuadsTarget(MGLMetalRenderCommandEncoderRef encoder,
-                                void *renderEncoderOwner,
+static BOOL mglEncodeArrayQuadsTarget(void *renderEncoderOwner,
                                 MGLMetalDeviceRef device,
                                 GLsizei count,
                                 GLint baseVertex,
@@ -254,16 +245,14 @@ static BOOL mglEncodeArrayQuadsTarget(MGLMetalRenderCommandEncoderRef encoder,
         return NO;
     }
 
-    mglDrawEncodeIndexed(
-        encoder, renderEncoderOwner,
+    mglDrawEncodeIndexed(renderEncoderOwner,
         lineMode ? MTLPrimitiveTypeLine : MTLPrimitiveTypeTriangle,
         quadIndexCount, MTLIndexTypeUInt32, quadIndexBuffer, 0,
         instanceCount, baseVertex, baseInstance);
     return YES;
 }
 
-static BOOL mglEncodeElementQuadsTarget(MGLMetalRenderCommandEncoderRef encoder,
-                                  void *renderEncoderOwner,
+static BOOL mglEncodeElementQuadsTarget(void *renderEncoderOwner,
                                   MGLMetalDeviceRef device,
                                   Buffer *glElementBuffer,
                                   MGLMetalBufferRef metalElementBuffer,
@@ -299,16 +288,14 @@ static BOOL mglEncodeElementQuadsTarget(MGLMetalRenderCommandEncoderRef encoder,
         return NO;
     }
 
-    mglDrawEncodeIndexed(
-        encoder, renderEncoderOwner,
+    mglDrawEncodeIndexed(renderEncoderOwner,
         lineMode ? MTLPrimitiveTypeLine : MTLPrimitiveTypeTriangle,
         quadIndexCount, MTLIndexTypeUInt32, quadIndexBuffer, 0,
         instanceCount, baseVertex, baseInstance);
     return YES;
 }
 
-static BOOL mglEncodeArrayPolygonPointTarget(MGLMetalRenderCommandEncoderRef encoder,
-                                       void *renderEncoderOwner,
+static BOOL mglEncodeArrayPolygonPointTarget(void *renderEncoderOwner,
                                        MGLMetalDeviceRef device,
                                        GLenum mode,
                                        GLint first,
@@ -329,7 +316,7 @@ static BOOL mglEncodeArrayPolygonPointTarget(MGLMetalRenderCommandEncoderRef enc
         if (drawableCount == 0u) {
             return YES;
         }
-        mglDrawEncodePrimitives(encoder, renderEncoderOwner,
+        mglDrawEncodePrimitives(renderEncoderOwner,
                                 MTLPrimitiveTypePoint, first,
                                 drawableCount, instanceCount, baseInstance);
         return YES;
@@ -362,15 +349,14 @@ static BOOL mglEncodeArrayPolygonPointTarget(MGLMetalRenderCommandEncoderRef enc
         return NO;
     }
 
-    mglDrawEncodeIndexed(encoder, renderEncoderOwner,
+    mglDrawEncodeIndexed(renderEncoderOwner,
                          MTLPrimitiveTypePoint, pointIndexCount,
                          MTLIndexTypeUInt32, pointIndexBuffer, 0,
                          instanceCount, first, baseInstance);
     return YES;
 }
 
-static BOOL mglEncodeElementPolygonPointTarget(MGLMetalRenderCommandEncoderRef encoder,
-                                         void *renderEncoderOwner,
+static BOOL mglEncodeElementPolygonPointTarget(void *renderEncoderOwner,
                                          MGLMetalDeviceRef device,
                                          Buffer *glElementBuffer,
                                          MGLMetalBufferRef metalElementBuffer,
@@ -409,7 +395,7 @@ static BOOL mglEncodeElementPolygonPointTarget(MGLMetalRenderCommandEncoderRef e
             return NO;
         }
 
-        mglDrawEncodeIndexed(encoder, renderEncoderOwner,
+        mglDrawEncodeIndexed(renderEncoderOwner,
                              MTLPrimitiveTypePoint,
                              drawableIndexCount, drawIndexType,
                              drawIndexBuffer, drawIndexOffset,
@@ -457,15 +443,14 @@ static BOOL mglEncodeElementPolygonPointTarget(MGLMetalRenderCommandEncoderRef e
         return NO;
     }
 
-    mglDrawEncodeIndexed(encoder, renderEncoderOwner,
+    mglDrawEncodeIndexed(renderEncoderOwner,
                          MTLPrimitiveTypePoint, pointIndexCount,
                          MTLIndexTypeUInt32, pointIndexBuffer, 0,
                          instanceCount, baseVertex, baseInstance);
     return YES;
 }
 
-static BOOL mglEncodeRestartSegmentTarget(MGLMetalRenderCommandEncoderRef encoder,
-                                    void *renderEncoderOwner,
+static BOOL mglEncodeRestartSegmentTarget(void *renderEncoderOwner,
                                     MGLMetalDeviceRef device,
                                     Buffer *glElementBuffer,
                                     MGLMetalBufferRef metalElementBuffer,
@@ -504,8 +489,7 @@ static BOOL mglEncodeRestartSegmentTarget(MGLMetalRenderCommandEncoderRef encode
 
     if (primitiveType == MTLPrimitiveTypePoint &&
         (mode == GL_TRIANGLES || mode == GL_TRIANGLE_STRIP || mode == GL_TRIANGLE_FAN || mode == GL_QUADS)) {
-        return mglEncodeElementPolygonPointTarget(encoder,
-                                            renderEncoderOwner,
+        return mglEncodeElementPolygonPointTarget(renderEncoderOwner,
                                             device,
                                             glElementBuffer,
                                             metalElementBuffer,
@@ -521,8 +505,7 @@ static BOOL mglEncodeRestartSegmentTarget(MGLMetalRenderCommandEncoderRef encode
     }
 
     if (mode == GL_TRIANGLE_FAN) {
-        return mglEncodeElementTriangleFanTarget(encoder,
-                                           renderEncoderOwner,
+        return mglEncodeElementTriangleFanTarget(renderEncoderOwner,
                                            device,
                                            glElementBuffer,
                                            metalElementBuffer,
@@ -536,8 +519,7 @@ static BOOL mglEncodeRestartSegmentTarget(MGLMetalRenderCommandEncoderRef encode
     }
 
     if (mode == GL_LINE_LOOP) {
-        return mglEncodeElementLineLoopTarget(encoder,
-                                        renderEncoderOwner,
+        return mglEncodeElementLineLoopTarget(renderEncoderOwner,
                                         device,
                                         glElementBuffer,
                                         metalElementBuffer,
@@ -551,8 +533,7 @@ static BOOL mglEncodeRestartSegmentTarget(MGLMetalRenderCommandEncoderRef encode
     }
 
     if (mode == GL_QUADS) {
-        return mglEncodeElementQuadsTarget(encoder,
-                                     renderEncoderOwner,
+        return mglEncodeElementQuadsTarget(renderEncoderOwner,
                                      device,
                                      glElementBuffer,
                                      metalElementBuffer,
@@ -577,7 +558,7 @@ static BOOL mglEncodeRestartSegmentTarget(MGLMetalRenderCommandEncoderRef encode
         return NO;
     }
 
-    mglDrawEncodeIndexed(encoder, renderEncoderOwner,
+    mglDrawEncodeIndexed(renderEncoderOwner,
                          primitiveType, segmentIndexCount,
                          preparedIndexType, preparedIndexBuffer,
                          preparedByteOffset, instanceCount, baseVertex,
@@ -585,8 +566,7 @@ static BOOL mglEncodeRestartSegmentTarget(MGLMetalRenderCommandEncoderRef encode
     return YES;
 }
 
-static MGLPrimitiveRestartEncodeResult mglEncodePrimitiveRestartedElementDrawTarget(MGLMetalRenderCommandEncoderRef encoder,
-                                                                              void *renderEncoderOwner,
+static MGLPrimitiveRestartEncodeResult mglEncodePrimitiveRestartedElementDrawTarget(void *renderEncoderOwner,
                                                                               MGLMetalDeviceRef device,
                                                                               GLMContext ctx,
                                                                               Buffer *glElementBuffer,
@@ -707,8 +687,7 @@ static MGLPrimitiveRestartEncodeResult mglEncodePrimitiveRestartedElementDrawTar
         for (NSUInteger rp = 0; rp < restartPositionCount; rp++) {
             NSUInteger restartAt = restartPositions[rp];
             NSUInteger segmentCount = restartAt - segmentStart;
-            if (!mglEncodeRestartSegmentTarget(encoder,
-                                         renderEncoderOwner,
+            if (!mglEncodeRestartSegmentTarget(renderEncoderOwner,
                                          device,
                                          glElementBuffer,
                                          metalElementBuffer,
@@ -738,8 +717,7 @@ static MGLPrimitiveRestartEncodeResult mglEncodePrimitiveRestartedElementDrawTar
                 for (GLsizei i = 0; i < count && encodedAllSegments; i++) {
                     if (typedSrc[i] != (uint8_t)restartIndex) continue;
                     NSUInteger segmentCount = (NSUInteger)i - segmentStart;
-                    if (!mglEncodeRestartSegmentTarget(encoder,
-                                                 renderEncoderOwner,
+                    if (!mglEncodeRestartSegmentTarget(renderEncoderOwner,
                                                  device, glElementBuffer, metalElementBuffer,
                                                  preparedIndexBuffer, mode, primitiveType,
                                                  glIndexType, preparedIndexType, indexOffset,
@@ -758,8 +736,7 @@ static MGLPrimitiveRestartEncodeResult mglEncodePrimitiveRestartedElementDrawTar
                 for (GLsizei i = 0; i < count && encodedAllSegments; i++) {
                     if (typedSrc[i] != (uint16_t)restartIndex) continue;
                     NSUInteger segmentCount = (NSUInteger)i - segmentStart;
-                    if (!mglEncodeRestartSegmentTarget(encoder,
-                                                 renderEncoderOwner,
+                    if (!mglEncodeRestartSegmentTarget(renderEncoderOwner,
                                                  device, glElementBuffer, metalElementBuffer,
                                                  preparedIndexBuffer, mode, primitiveType,
                                                  glIndexType, preparedIndexType, indexOffset,
@@ -778,8 +755,7 @@ static MGLPrimitiveRestartEncodeResult mglEncodePrimitiveRestartedElementDrawTar
                 for (GLsizei i = 0; i < count && encodedAllSegments; i++) {
                     if (typedSrc[i] != restartIndex) continue;
                     NSUInteger segmentCount = (NSUInteger)i - segmentStart;
-                    if (!mglEncodeRestartSegmentTarget(encoder,
-                                                 renderEncoderOwner,
+                    if (!mglEncodeRestartSegmentTarget(renderEncoderOwner,
                                                  device, glElementBuffer, metalElementBuffer,
                                                  preparedIndexBuffer, mode, primitiveType,
                                                  glIndexType, preparedIndexType, indexOffset,
@@ -800,8 +776,7 @@ static MGLPrimitiveRestartEncodeResult mglEncodePrimitiveRestartedElementDrawTar
 
     if (encodedAllSegments) {
         NSUInteger trailingCount = (NSUInteger)count - segmentStart;
-        encodedAllSegments = mglEncodeRestartSegmentTarget(encoder,
-                                                     renderEncoderOwner,
+        encodedAllSegments = mglEncodeRestartSegmentTarget(renderEncoderOwner,
                                                      device,
                                                      glElementBuffer,
                                                      metalElementBuffer,
@@ -824,104 +799,96 @@ static MGLPrimitiveRestartEncodeResult mglEncodePrimitiveRestartedElementDrawTar
 }
 
 BOOL mglEncodeArrayLineLoopForRenderEncoderOwner(
-    MGLMetalRenderCommandEncoderRef encoder, void *renderEncoderOwner,
+    void *renderEncoderOwner,
     GLMContext drawCtx, MGLMetalDeviceRef device, GLsizei count,
     GLint firstVertex, NSUInteger instanceCount, NSUInteger baseInstance,
     const char *label)
 {
-    return mglEncodeArrayLineLoopTarget(
-        encoder, renderEncoderOwner, drawCtx, device, count, firstVertex,
+    return mglEncodeArrayLineLoopTarget(renderEncoderOwner, drawCtx, device, count, firstVertex,
         instanceCount, baseInstance, label);
 }
 
 BOOL mglEncodeArrayTriangleFanForRenderEncoderOwner(
-    MGLMetalRenderCommandEncoderRef encoder, void *renderEncoderOwner,
+    void *renderEncoderOwner,
     MGLMetalDeviceRef device, GLsizei count, GLint baseVertex,
     NSUInteger instanceCount, NSUInteger baseInstance, const char *label)
 {
-    return mglEncodeArrayTriangleFanTarget(
-        encoder, renderEncoderOwner, device, count, baseVertex, instanceCount,
+    return mglEncodeArrayTriangleFanTarget(renderEncoderOwner, device, count, baseVertex, instanceCount,
         baseInstance, label);
 }
 
 BOOL mglEncodeElementLineLoopForRenderEncoderOwner(
-    MGLMetalRenderCommandEncoderRef encoder, void *renderEncoderOwner,
+    void *renderEncoderOwner,
     MGLMetalDeviceRef device, Buffer *glElementBuffer,
     MGLMetalBufferRef metalElementBuffer, GLenum glIndexType,
     NSUInteger indexOffset, GLsizei count, NSUInteger instanceCount,
     NSInteger baseVertex, NSUInteger baseInstance, const char *label)
 {
-    return mglEncodeElementLineLoopTarget(
-        encoder, renderEncoderOwner, device, glElementBuffer,
+    return mglEncodeElementLineLoopTarget(renderEncoderOwner, device, glElementBuffer,
         metalElementBuffer, glIndexType, indexOffset, count, instanceCount,
         baseVertex, baseInstance, label);
 }
 
 BOOL mglEncodeElementTriangleFanForRenderEncoderOwner(
-    MGLMetalRenderCommandEncoderRef encoder, void *renderEncoderOwner,
+    void *renderEncoderOwner,
     MGLMetalDeviceRef device, Buffer *glElementBuffer,
     MGLMetalBufferRef metalElementBuffer, GLenum glIndexType,
     NSUInteger indexOffset, GLsizei count, NSUInteger instanceCount,
     NSInteger baseVertex, NSUInteger baseInstance, const char *label)
 {
-    return mglEncodeElementTriangleFanTarget(
-        encoder, renderEncoderOwner, device, glElementBuffer,
+    return mglEncodeElementTriangleFanTarget(renderEncoderOwner, device, glElementBuffer,
         metalElementBuffer, glIndexType, indexOffset, count, instanceCount,
         baseVertex, baseInstance, label);
 }
 
 BOOL mglEncodeArrayQuadsForRenderEncoderOwner(
-    MGLMetalRenderCommandEncoderRef encoder, void *renderEncoderOwner,
+    void *renderEncoderOwner,
     MGLMetalDeviceRef device, GLsizei count, GLint baseVertex,
     NSUInteger instanceCount, NSUInteger baseInstance, BOOL lineMode,
     const char *label)
 {
-    return mglEncodeArrayQuadsTarget(
-        encoder, renderEncoderOwner, device, count, baseVertex, instanceCount,
+    return mglEncodeArrayQuadsTarget(renderEncoderOwner, device, count, baseVertex, instanceCount,
         baseInstance, lineMode, label);
 }
 
 BOOL mglEncodeElementQuadsForRenderEncoderOwner(
-    MGLMetalRenderCommandEncoderRef encoder, void *renderEncoderOwner,
+    void *renderEncoderOwner,
     MGLMetalDeviceRef device, Buffer *glElementBuffer,
     MGLMetalBufferRef metalElementBuffer, GLenum glIndexType,
     NSUInteger indexOffset, GLsizei count, NSUInteger instanceCount,
     NSInteger baseVertex, NSUInteger baseInstance, BOOL lineMode,
     const char *label)
 {
-    return mglEncodeElementQuadsTarget(
-        encoder, renderEncoderOwner, device, glElementBuffer,
+    return mglEncodeElementQuadsTarget(renderEncoderOwner, device, glElementBuffer,
         metalElementBuffer, glIndexType, indexOffset, count, instanceCount,
         baseVertex, baseInstance, lineMode, label);
 }
 
 BOOL mglEncodeArrayPolygonPointForRenderEncoderOwner(
-    MGLMetalRenderCommandEncoderRef encoder, void *renderEncoderOwner,
+    void *renderEncoderOwner,
     MGLMetalDeviceRef device, GLenum mode, GLint first, GLsizei count,
     NSUInteger instanceCount, NSUInteger baseInstance, const char *label)
 {
-    return mglEncodeArrayPolygonPointTarget(
-        encoder, renderEncoderOwner, device, mode, first, count,
+    return mglEncodeArrayPolygonPointTarget(renderEncoderOwner, device, mode, first, count,
         instanceCount, baseInstance, label);
 }
 
 BOOL mglEncodeElementPolygonPointForRenderEncoderOwner(
-    MGLMetalRenderCommandEncoderRef encoder, void *renderEncoderOwner,
+    void *renderEncoderOwner,
     MGLMetalDeviceRef device, Buffer *glElementBuffer,
     MGLMetalBufferRef metalElementBuffer, GLenum mode, GLenum glIndexType,
     MTLIndexType metalIndexType, NSUInteger indexOffset, GLsizei count,
     NSUInteger instanceCount, NSInteger baseVertex,
     NSUInteger baseInstance, const char *label)
 {
-    return mglEncodeElementPolygonPointTarget(
-        encoder, renderEncoderOwner, device, glElementBuffer,
+    return mglEncodeElementPolygonPointTarget(renderEncoderOwner, device, glElementBuffer,
         metalElementBuffer, mode, glIndexType, metalIndexType, indexOffset,
         count, instanceCount, baseVertex, baseInstance, label);
 }
 
 MGLPrimitiveRestartEncodeResult
 mglEncodePrimitiveRestartedElementDrawForRenderEncoderOwner(
-    MGLMetalRenderCommandEncoderRef encoder, void *renderEncoderOwner,
+    void *renderEncoderOwner,
     MGLMetalDeviceRef device, GLMContext ctx, Buffer *glElementBuffer,
     MGLMetalBufferRef metalElementBuffer, GLenum mode,
     MTLPrimitiveType primitiveType, GLenum glIndexType,
@@ -929,8 +896,7 @@ mglEncodePrimitiveRestartedElementDrawForRenderEncoderOwner(
     NSUInteger instanceCount, NSInteger baseVertex,
     NSUInteger baseInstance, const char *label)
 {
-    return mglEncodePrimitiveRestartedElementDrawTarget(
-        encoder, renderEncoderOwner, device, ctx, glElementBuffer,
+    return mglEncodePrimitiveRestartedElementDrawTarget(renderEncoderOwner, device, ctx, glElementBuffer,
         metalElementBuffer, mode, primitiveType, glIndexType, metalIndexType,
         indexOffset, count, instanceCount, baseVertex, baseInstance, label);
 }

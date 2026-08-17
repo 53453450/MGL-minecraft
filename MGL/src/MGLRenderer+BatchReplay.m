@@ -1478,8 +1478,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         return;
     }
     if (polygonModePoint) {
-        mglEncodeArrayPolygonPointForRenderEncoderOwner(
-            encCtx->encoder, encCtx->render_encoder_owner, _device,
+        mglEncodeArrayPolygonPointForRenderEncoderOwner(encCtx->render_encoder_owner, _device,
             mode, cmd->first, count, 1u, 0u, "batch");
         [self traceReplayCommand:batch
                          command:cmd
@@ -1566,8 +1565,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                               reason:"direct_arrays_line_loop_small"];
         }
     } else if (emulateQuads) {
-        BOOL ok = mglEncodeArrayQuadsForRenderEncoderOwner(
-            encCtx->encoder, encCtx->render_encoder_owner, _device, count,
+        BOOL ok = mglEncodeArrayQuadsForRenderEncoderOwner(encCtx->render_encoder_owner, _device, count,
             cmd->first, 1u, 0u,
             mglPolygonModeLineForDrawMode(glm_ctx, mode), "batch");
         [self traceReplayCommand:batch
@@ -1647,8 +1645,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         return;
     }
     if (polygonModePoint) {
-        mglEncodeArrayPolygonPointForRenderEncoderOwner(
-            encCtx->encoder, encCtx->render_encoder_owner, _device,
+        mglEncodeArrayPolygonPointForRenderEncoderOwner(encCtx->render_encoder_owner, _device,
             mode, cmd->first, count, instanceCount, 0u, "batch");
         [self traceReplayCommand:batch
                          command:cmd
@@ -1736,8 +1733,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                               reason:"direct_arrays_instanced_line_loop_small"];
         }
     } else if (emulateQuads) {
-        BOOL ok = mglEncodeArrayQuadsForRenderEncoderOwner(
-            encCtx->encoder, encCtx->render_encoder_owner, _device, count,
+        BOOL ok = mglEncodeArrayQuadsForRenderEncoderOwner(encCtx->render_encoder_owner, _device, count,
             cmd->first, instanceCount, 0u,
             mglPolygonModeLineForDrawMode(glm_ctx, mode), "batch");
         [self traceReplayCommand:batch
@@ -1807,8 +1803,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         return;
     }
     if (polygonModePoint) {
-        mglEncodeArrayPolygonPointForRenderEncoderOwner(
-            encCtx->encoder, encCtx->render_encoder_owner, _device,
+        mglEncodeArrayPolygonPointForRenderEncoderOwner(encCtx->render_encoder_owner, _device,
             mode, cmd->first, count, instanceCount, cmd->baseInstance,
             "batch");
         [self traceReplayCommand:batch
@@ -1898,8 +1893,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                               reason:"direct_arrays_base_instance_line_loop_small"];
         }
     } else if (emulateQuads) {
-        BOOL ok = mglEncodeArrayQuadsForRenderEncoderOwner(
-            encCtx->encoder, encCtx->render_encoder_owner, _device, count,
+        BOOL ok = mglEncodeArrayQuadsForRenderEncoderOwner(encCtx->render_encoder_owner, _device, count,
             cmd->first, instanceCount, cmd->baseInstance,
             mglPolygonModeLineForDrawMode(glm_ctx, mode), "batch");
         [self traceReplayCommand:batch
@@ -2010,9 +2004,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     }
 
     MGLPrimitiveRestartEncodeResult restartResult =
-        mglEncodePrimitiveRestartedElementDrawForRenderEncoderOwner(
-                                               encCtx->encoder,
-                                               encCtx->render_encoder_owner,
+        mglEncodePrimitiveRestartedElementDrawForRenderEncoderOwner(encCtx->render_encoder_owner,
                                                _device,
                                                glm_ctx,
                                                glBuf,
@@ -2040,8 +2032,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     }
 
     if (polygonModePoint) {
-        mglEncodeElementPolygonPointForRenderEncoderOwner(
-            encCtx->encoder, encCtx->render_encoder_owner, _device,
+        mglEncodeElementPolygonPointForRenderEncoderOwner(encCtx->render_encoder_owner, _device,
             glBuf, idxBuf, mode, cmd->indexType, mtlIdxType, idxOffset,
             count, instanceCount, cmd->baseVertex, cmd->baseInstance,
             "batch");
@@ -2054,8 +2045,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                            phase:"SUBMIT"
                           reason:"direct_elements_polygon_point"];
     } else if (emulateTriangleFan) {
-        mglEncodeElementTriangleFanForRenderEncoderOwner(
-            encCtx->encoder, encCtx->render_encoder_owner, _device,
+        mglEncodeElementTriangleFanForRenderEncoderOwner(encCtx->render_encoder_owner, _device,
             glBuf, idxBuf, cmd->indexType, idxOffset, count, instanceCount,
             cmd->baseVertex, cmd->baseInstance, "batch");
         [self traceReplayCommand:batch
@@ -2067,8 +2057,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                            phase:(count >= 3 ? "SUBMIT" : "SKIP")
                           reason:"direct_elements_triangle_fan"];
     } else if (emulateLineLoop) {
-        mglEncodeElementLineLoopForRenderEncoderOwner(
-            encCtx->encoder, encCtx->render_encoder_owner, _device,
+        mglEncodeElementLineLoopForRenderEncoderOwner(encCtx->render_encoder_owner, _device,
             glBuf, idxBuf, cmd->indexType, idxOffset, count, instanceCount,
             cmd->baseVertex, cmd->baseInstance, "batch");
         [self traceReplayCommand:batch
@@ -2080,8 +2069,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                          phase:(count >= 2 ? "SUBMIT" : "SKIP")
                           reason:"direct_elements_line_loop"];
     } else if (emulateQuads) {
-        BOOL ok = mglEncodeElementQuadsForRenderEncoderOwner(
-            encCtx->encoder, encCtx->render_encoder_owner, _device,
+        BOOL ok = mglEncodeElementQuadsForRenderEncoderOwner(encCtx->render_encoder_owner, _device,
             glBuf, idxBuf, cmd->indexType, idxOffset, count, instanceCount,
             cmd->baseVertex, cmd->baseInstance,
             mglPolygonModeLineForDrawMode(glm_ctx, mode), "batch");
