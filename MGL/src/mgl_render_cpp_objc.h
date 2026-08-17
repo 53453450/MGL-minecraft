@@ -3,8 +3,6 @@
 
 #import <Metal/Metal.h>
 
-#include <stdio.h>
-
 #include "mgl_env_flag.h"
 #include "mgl_render_cpp.h"
 
@@ -27,34 +25,19 @@ typedef id<MTLComputePipelineState> MGLMetalComputePipelineStateRef;
 typedef id<MTLDepthStencilState> MGLMetalDepthStencilStateRef;
 typedef id<MTLSamplerState> MGLMetalSamplerStateRef;
 typedef id<MTLEvent> MGLMetalEventRef;
-typedef id<MTLFunction> MGLMetalFunctionRef;
 typedef id<MTLLibrary> MGLMetalLibraryRef;
 typedef id<MTLIndirectCommandBuffer> MGLMetalIndirectCommandBufferRef;
 typedef id<MTLIndirectRenderCommand> MGLMetalIndirectRenderCommandRef;
 typedef id<MTLResource> MGLMetalResourceRef;
 
-/* Snapshot command-buffer state through Metal-cpp when enabled while keeping
- * the direct Objective-C path as the A/B baseline. */
+/* Snapshot command-buffer state through the single Metal-cpp path. */
 static inline MGLRenderCppCommandBufferState
 mglRenderCommandBufferState(id<MTLCommandBuffer> commandBuffer)
 {
     MGLRenderCppCommandBufferState state = {0};
     if (!commandBuffer) return state;
-    if (mglRenderCppGetDevice() &&
-        mglRenderCppGetCommandBufferState(
-            (__bridge void *)commandBuffer, &state) == 0) {
-        return state;
-    }
-
-    state.status = (uint32_t)commandBuffer.status;
-    NSError *error = commandBuffer.error;
-    if (!error) return state;
-    state.has_error = 1;
-    state.error_code = (int64_t)error.code;
-    snprintf(state.error_domain, sizeof(state.error_domain), "%s",
-             error.domain.UTF8String ?: "");
-    snprintf(state.error_description, sizeof(state.error_description), "%s",
-             error.localizedDescription.UTF8String ?: "");
+    (void)mglRenderCppGetCommandBufferState(
+        (__bridge void *)commandBuffer, &state);
     return state;
 }
 
@@ -166,33 +149,24 @@ static inline void mglRenderDestroyCommandBufferCompletionBlock(
     (void)releasedBlock;
 }
 
-/* Under Metal-cpp, copy the ObjC block into an explicitly retained opaque
- * context. The C++ completion facade invokes it once and releases that retain
- * through destroy_context. The disabled path remains the native ObjC A/B
- * baseline. */
+/* Copy the ObjC block into an explicitly retained opaque context. The C++
+ * completion facade invokes it once and releases that retain through
+ * destroy_context. */
 static inline int mglRenderAddCommandBufferCompletion(
     id<MTLCommandBuffer> commandBuffer,
     MGLRenderCommandBufferCompletionBlock block)
 {
     if (!commandBuffer || !block) return -1;
-    if (mglRenderCppGetDevice()) {
-        MGLRenderCommandBufferCompletionBlock copiedBlock = [block copy];
-        void *context = (__bridge_retained void *)copiedBlock;
-        int result = mglRenderCppAddCommandBufferCompletion(
-            (__bridge void *)commandBuffer,
-            mglRenderInvokeCommandBufferCompletionBlock,
-            context,
-            mglRenderDestroyCommandBufferCompletionBlock);
-        if (result == 0) return 0;
-        mglRenderDestroyCommandBufferCompletionBlock(context);
-        return result;
-    }
-    [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> completed) {
-        MGLRenderCppCommandBufferState state =
-            mglRenderCommandBufferState(completed);
-        block(&state);
-    }];
-    return 0;
+    MGLRenderCommandBufferCompletionBlock copiedBlock = [block copy];
+    void *context = (__bridge_retained void *)copiedBlock;
+    int result = mglRenderCppAddCommandBufferCompletion(
+        (__bridge void *)commandBuffer,
+        mglRenderInvokeCommandBufferCompletionBlock,
+        context,
+        mglRenderDestroyCommandBufferCompletionBlock);
+    if (result == 0) return 0;
+    mglRenderDestroyCommandBufferCompletionBlock(context);
+    return result;
 }
 
 static inline int mglRenderAddCommandBufferOwnerCompletion(
