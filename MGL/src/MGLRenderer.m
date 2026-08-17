@@ -308,70 +308,51 @@ BOOL mglEnvFlagEnabledDefaultOn(const char *name)
     return mglEnvFlagEnabledCached(name, YES);
 }
 
-static BOOL mglRendererUsesMetalCpp(void)
-{
-    return mglRenderCppGetDevice() != NULL;
-}
-
 static id<MTLBuffer> mglRendererCreateBuffer(id<MTLDevice> device,
                                              NSUInteger length,
                                              MTLResourceOptions options)
 {
-    if (mglRendererUsesMetalCpp()) {
-        void *buffer = NULL;
-        if (mglRenderCppCreateBuffer(length, options, NULL, &buffer) == 0 &&
-            buffer) {
-            return (__bridge_transfer id<MTLBuffer>)buffer;
-        }
+    (void)device;
+    void *buffer = NULL;
+    if (mglRenderCppCreateBuffer(length, options, NULL, &buffer) == 0 &&
+        buffer) {
+        return (__bridge_transfer id<MTLBuffer>)buffer;
     }
-    return [device newBufferWithLength:length options:options];
+    return nil;
 }
 
 static id<MTLTexture> mglRendererCreateTexture(
     id<MTLDevice> device,
     MTLTextureDescriptor *descriptor)
 {
-    if (mglRendererUsesMetalCpp()) {
-        void *texture = NULL;
-        MGLRenderCppTextureDescriptorState state =
-            mglRenderCppTextureDescriptorStateFromObjC(descriptor);
-        if (mglRenderCppCreateTextureFromState(&state, NULL, &texture) == 0 &&
-            texture) {
-            return (__bridge_transfer id<MTLTexture>)texture;
-        }
+    (void)device;
+    void *texture = NULL;
+    MGLRenderCppTextureDescriptorState state =
+        mglRenderCppTextureDescriptorStateFromObjC(descriptor);
+    if (mglRenderCppCreateTextureFromState(&state, NULL, &texture) == 0 &&
+        texture) {
+        return (__bridge_transfer id<MTLTexture>)texture;
     }
-    return [device newTextureWithDescriptor:descriptor];
+    return nil;
 }
 
 static void mglRendererEndRenderEncoder(id<MTLRenderCommandEncoder> encoder)
 {
-    if (mglRendererUsesMetalCpp()) {
-        (void)mglRenderCppEndRenderEncoder((__bridge void *)encoder);
-        return;
-    }
-    [encoder endEncoding];
+    (void)mglRenderCppEndRenderEncoder((__bridge void *)encoder);
 }
 
 static void mglRendererSetRenderPipeline(id<MTLRenderCommandEncoder> encoder,
                                          id<MTLRenderPipelineState> pipeline)
 {
-    if (mglRendererUsesMetalCpp()) {
-        (void)mglRenderCppSetRenderPipelineState(
-            (__bridge void *)encoder, (__bridge void *)pipeline);
-        return;
-    }
-    [encoder setRenderPipelineState:pipeline];
+    (void)mglRenderCppSetRenderPipelineState(
+        (__bridge void *)encoder, (__bridge void *)pipeline);
 }
 
 static void mglRendererSetDepthStencil(id<MTLRenderCommandEncoder> encoder,
                                        id<MTLDepthStencilState> state)
 {
-    if (mglRendererUsesMetalCpp()) {
-        (void)mglRenderCppSetRenderDepthStencilState(
-            (__bridge void *)encoder, (__bridge void *)state);
-        return;
-    }
-    [encoder setDepthStencilState:state];
+    (void)mglRenderCppSetRenderDepthStencilState(
+        (__bridge void *)encoder, (__bridge void *)state);
 }
 
 static void mglRendererSetRenderBytes(id<MTLRenderCommandEncoder> encoder,
@@ -380,41 +361,24 @@ static void mglRendererSetRenderBytes(id<MTLRenderCommandEncoder> encoder,
                                       uint32_t stage,
                                       NSUInteger index)
 {
-    if (mglRendererUsesMetalCpp()) {
-        (void)mglRenderCppSetRenderBytes(
-            (__bridge void *)encoder, bytes, length, stage, (uint32_t)index);
-        return;
-    }
-    if (stage == MGL_RENDER_CPP_BINDING_STAGE_VERTEX) {
-        [encoder setVertexBytes:bytes length:length atIndex:index];
-    } else {
-        [encoder setFragmentBytes:bytes length:length atIndex:index];
-    }
+    (void)mglRenderCppSetRenderBytes(
+        (__bridge void *)encoder, bytes, length, stage, (uint32_t)index);
 }
 
 static void mglRendererSetViewport(id<MTLRenderCommandEncoder> encoder,
                                    MTLViewport viewport)
 {
-    if (mglRendererUsesMetalCpp()) {
-        (void)mglRenderCppSetRenderViewport(
-            (__bridge void *)encoder, viewport.originX, viewport.originY,
-            viewport.width, viewport.height, viewport.znear,
-            viewport.zfar);
-        return;
-    }
-    [encoder setViewport:viewport];
+    (void)mglRenderCppSetRenderViewport(
+        (__bridge void *)encoder, viewport.originX, viewport.originY,
+        viewport.width, viewport.height, viewport.znear, viewport.zfar);
 }
 
 static void mglRendererSetScissor(id<MTLRenderCommandEncoder> encoder,
                                   MTLScissorRect scissor)
 {
-    if (mglRendererUsesMetalCpp()) {
-        (void)mglRenderCppSetRenderScissor(
-            (__bridge void *)encoder, scissor.x, scissor.y,
-            scissor.width, scissor.height);
-        return;
-    }
-    [encoder setScissorRect:scissor];
+    (void)mglRenderCppSetRenderScissor(
+        (__bridge void *)encoder, scissor.x, scissor.y,
+        scissor.width, scissor.height);
 }
 
 static void mglRendererDrawPrimitives(id<MTLRenderCommandEncoder> encoder,
@@ -433,43 +397,9 @@ static void mglRendererDrawPrimitives(id<MTLRenderCommandEncoder> encoder,
         }, NULL, 0);
 }
 
-static void mglRendererBlitCopyBuffer(id<MTLBlitCommandEncoder> encoder,
-                                      id<MTLBuffer> source,
-                                      NSUInteger sourceOffset,
-                                      id<MTLBuffer> destination,
-                                      NSUInteger destinationOffset,
-                                      NSUInteger size)
-{
-    if (mglRendererUsesMetalCpp()) {
-        (void)mglRenderCppBlitCopyBuffer(
-            (__bridge void *)encoder, (__bridge void *)source, sourceOffset,
-            (__bridge void *)destination, destinationOffset, size);
-        return;
-    }
-    [encoder copyFromBuffer:source sourceOffset:sourceOffset
-                   toBuffer:destination destinationOffset:destinationOffset
-                       size:size];
-}
-
 static void mglRendererEndBlitEncoder(id<MTLBlitCommandEncoder> encoder)
 {
-    if (mglRendererUsesMetalCpp()) {
-        (void)mglRenderCppEndBlitEncoder((__bridge void *)encoder);
-        return;
-    }
-    [encoder endEncoding];
-}
-
-static void mglRendererWaitCommandBuffer(id<MTLCommandBuffer> commandBuffer)
-{
-    if (mglRendererUsesMetalCpp()) {
-        if (mglRenderCppWaitCommandBuffer(
-                (__bridge void *)commandBuffer) != 0) {
-            NSLog(@"MGL ERROR: Metal-cpp command-buffer wait failed");
-        }
-        return;
-    }
-    [commandBuffer waitUntilCompleted];
+    (void)mglRenderCppEndBlitEncoder((__bridge void *)encoder);
 }
 
 /* Trace log core infrastructure (3 static globals, mglInitTraceLogIfNeeded,
@@ -4274,146 +4204,16 @@ void mglRendererCallbackClearBuffer(void *runtime_context,
 
 -(void) mtlBufferSubDataLocked:(GLMContext) glm_ctx buf:(Buffer *)buf offset:(size_t)offset size:(size_t)size ptr:(const void *)ptr
 {
-    if (mglRendererUsesMetalCpp()) {
-        char subDataError[256] = {0};
-        int subDataResult = mglRenderCppBufferSubDataStorage(
-            buf, offset, size, ptr, subDataError, sizeof(subDataError));
-        if (subDataResult == MGL_RENDER_CPP_BUFFER_OPERATION_HANDLED) {
-            return;
-        }
-        if (subDataResult == MGL_RENDER_CPP_BUFFER_OPERATION_ERROR) {
-            NSLog(@"MGL ERROR: Metal-cpp buffer subdata failed buffer=%u: %s",
-                  buf ? (unsigned)buf->name : 0u,
-                  subDataError[0] ? subDataError : "?");
-            return;
-        }
-    }
-
-    static uint64_t s_mtlBufferSubDataCalls = 0;
-    uint64_t call = ++s_mtlBufferSubDataCalls;
-    bool trace = kMGLDiagnosticStateLogs && mglShouldTraceBufferTransferCall(call);
-    id<MTLBuffer> mtl_buffer;
-    void *data;
-
-    if (!buf) {
-        NSLog(@"MGL ERROR: mtlBufferSubData null buffer offset=%zu size=%zu", offset, size);
-        return;
-    }
-
-    if (size == 0) {
-        return;
-    }
-
-    if (!ptr) {
-        NSLog(@"MGL WARNING: mtlBufferSubData null source ptr buffer=%u offset=%zu size=%zu", buf->name, offset, size);
-        return;
-    }
-
-    if (trace) {
-        char srcHead[64];
-        srcHead[0] = '\0';
-        mglTraceFormatBytes(ptr, size, srcHead, sizeof(srcHead));
-        uint64_t srcHash = mglTraceHashBytes(ptr, size);
-        mglTraceLogNSString(@"MGL TRACE mtlBufferSubData.begin call=%llu buffer=%u size=%lld off=%zu len=%zu mtl=%p cpu=%p dirty=0x%x srcHash=0x%016llx srcHead=%s",
-              (unsigned long long)call,
-              buf->name,
-              (long long)buf->size,
-              offset,
-              size,
-              buf->data.mtl_data,
-              (void *)(uintptr_t)buf->data.buffer_data,
-              buf->data.dirty_bits,
-              (unsigned long long)srcHash,
-              srcHead);
-    }
-
-    if (buf->data.mtl_data == NULL)
-    {
-        [self bindMTLBufferLocked:buf];
-    }
-
-    // AGX Driver Compatibility: For small buffers, bindMTLBuffer may still have NULL mtl_data
-    // In this case, we should update the buffer_data directly
-    if (buf->data.mtl_data == NULL)
-    {
-        // Small buffer case - update buffer_data directly
-        if (buf->data.buffer_data)
-        {
-            memcpy((void *)(buf->data.buffer_data + offset), ptr, size);
-            if (trace) {
-                const void *dst = (const void *)((uintptr_t)buf->data.buffer_data + offset);
-                char dstHead[64];
-                dstHead[0] = '\0';
-                mglTraceFormatBytes(dst, size, dstHead, sizeof(dstHead));
-                uint64_t dstHash = mglTraceHashBytes(dst, size);
-                mglTraceLogNSString(@"MGL TRACE mtlBufferSubData.cpuFallback call=%llu buffer=%u off=%zu len=%zu dstHash=0x%016llx dstHead=%s",
-                      (unsigned long long)call,
-                      buf->name,
-                      offset,
-                      size,
-                      (unsigned long long)dstHash,
-                      dstHead);
-            }
-        }
-        return;
-    }
-
-    mtl_buffer = (__bridge id<MTLBuffer>)(buf->data.mtl_data);
-    if (!mtl_buffer) {
-        NSLog(@"MGL ERROR: mtlBufferSubData buffer=%u has invalid Metal buffer", buf->name);
-        return;
-    }
-
-    uint8_t *cpuData = (uint8_t *)(uintptr_t)buf->data.buffer_data;
-    id<MTLBuffer> bufferBeforeSnapshot = mtl_buffer;
-    if (cpuData && cpuData != mtl_buffer.contents) {
-        memmove(cpuData + offset, ptr, size);
-        if (!mglSnapshotSharedDirtyBuffer(_device, buf, &mtl_buffer)) {
-            return;
-        }
-    }
-
-    if (offset > mtl_buffer.length || size > (mtl_buffer.length - offset)) {
-        NSLog(@"MGL ERROR: mtlBufferSubData range exceeds Metal buffer buffer=%u off=%zu size=%zu len=%lu",
-              buf->name,
-              offset,
-              size,
-              (unsigned long)mtl_buffer.length);
-        return;
-    }
-
-    data = mtl_buffer.contents;
-    if (!data) {
-        NSLog(@"MGL ERROR: mtlBufferSubData buffer=%u has NULL contents", buf->name);
-        return;
-    }
-    /* A COW snapshot already copied the CPU shadow (including this range when
-     * written_min/max covers it).  Only write the Metal store in place when
-     * no new buffer was allocated. */
-    if (mtl_buffer == bufferBeforeSnapshot) {
-        memcpy((uint8_t *)data + offset, ptr, size);
-        if (mtl_buffer.storageMode == MTLStorageModeManaged) {
-            [mtl_buffer didModifyRange:NSMakeRange(offset, size)];
-        }
-    }
-
-    if (trace) {
-        const void *dst = (const void *)((const uint8_t *)mtl_buffer.contents + offset);
-        char dstHead[64];
-        dstHead[0] = '\0';
-        mglTraceFormatBytes(dst, size, dstHead, sizeof(dstHead));
-        uint64_t dstHash = mglTraceHashBytes(dst, size);
-        mglTraceLogNSString(@"MGL TRACE mtlBufferSubData.end call=%llu buffer=%u off=%zu len=%zu mtlLen=%lu dstHash=0x%016llx dstHead=%s",
-              (unsigned long long)call,
-              buf->name,
-              offset,
-              size,
-              (unsigned long)mtl_buffer.length,
-              (unsigned long long)dstHash,
-              dstHead);
+    (void)glm_ctx;
+    char error[256] = {0};
+    int result = mglRenderCppBufferSubDataStorage(
+        buf, offset, size, ptr, error, sizeof(error));
+    if (result != MGL_RENDER_CPP_BUFFER_OPERATION_HANDLED) {
+        NSLog(@"MGL ERROR: Metal-cpp buffer subdata failed buffer=%u: %s",
+              buf ? (unsigned)buf->name : 0u,
+              error[0] ? error : "not applicable");
     }
 }
-
 #pragma mark C interface to mtlMapUnmapBuffer
 -(void *) mtlMapUnmapBuffer:(GLMContext) glm_ctx buf:(Buffer *)buf offset:(size_t) offset size:(size_t) size access:(GLenum) access map:(bool)map
 {
@@ -4431,199 +4231,24 @@ void mglRendererCallbackClearBuffer(void *runtime_context,
  * (cpu_shadow_pending) or when the Metal buffer shares the shadow memory. */
 - (void)mtlReadBackBuffer:(GLMContext)glm_ctx buf:(Buffer *)buf offset:(size_t)offset size:(size_t)size
 {
-    if (mglRenderCppGetDevice() != NULL) {
-        mglRenderCppReadBackBuffer(glm_ctx, buf, offset, size);
-        return;
-    }
-    if (!buf || size == 0 || buf->cpu_shadow_pending) {
-        return;
-    }
-
-    id<MTLBuffer> mtlBuffer = (__bridge id<MTLBuffer>)(buf->data.mtl_data);
-    if (!mtlBuffer || mtlBuffer.storageMode != MTLStorageModeShared) {
-        return;
-    }
-
-    uint8_t *mtlBase = (uint8_t *)mtlBuffer.contents;
-    uint8_t *cpuBase = (uint8_t *)(uintptr_t)buf->data.buffer_data;
-    if (!mtlBase || !cpuBase || mtlBase == cpuBase) {
-        return;
-    }
-
-    NSUInteger mtlLen = mtlBuffer.length;
-    NSUInteger shadowLen = (NSUInteger)buf->data.buffer_size;
-    if (offset >= mtlLen) {
-        return;
-    }
-    size_t safeLen = MIN((NSUInteger)size, mtlLen - (NSUInteger)offset);
-    if (shadowLen > 0 && (NSUInteger)offset + safeLen > shadowLen) {
-        if ((NSUInteger)offset >= shadowLen) {
-            return;
-        }
-        safeLen = shadowLen - (NSUInteger)offset;
-    }
-
-    memcpy(cpuBase + offset, mtlBase + offset, safeLen);
+    mglRenderCppReadBackBuffer(glm_ctx, buf, offset, size);
 }
-
 -(void *) mtlMapUnmapBufferLocked:(GLMContext) glm_ctx buf:(Buffer *)buf offset:(size_t) offset size:(size_t) size access:(GLenum) access map:(bool)map
 {
-    id<MTLBuffer> mtl_buffer = nil;
-
-    if (mglRenderCppGetDevice() != NULL) {
-        void *mapped = NULL;
-        char mapError[256] = {0};
-        int mapResult = mglRenderCppMapBufferStorage(
-            buf, offset, size, (unsigned int)access, map,
-            &mapped, mapError, sizeof(mapError));
-        if (mapResult == MGL_RENDER_CPP_BUFFER_OPERATION_HANDLED) {
-            return mapped;
-        }
-        if (mapResult == MGL_RENDER_CPP_BUFFER_OPERATION_ERROR) {
-            NSLog(@"MGL ERROR: Metal-cpp buffer map failed buffer=%u: %s",
-                  buf ? (unsigned)buf->name : 0u,
-                  mapError[0] ? mapError : "?");
-            return NULL;
-        }
-    }
-
-    if (!buf) {
-        NSLog(@"MGL ERROR: mtlMapUnmapBuffer called with NULL buffer");
+    (void)glm_ctx;
+    void *mapped = NULL;
+    char error[256] = {0};
+    int result = mglRenderCppMapBufferStorage(
+        buf, offset, size, (unsigned int)access, map,
+        &mapped, error, sizeof(error));
+    if (result != MGL_RENDER_CPP_BUFFER_OPERATION_HANDLED) {
+        NSLog(@"MGL ERROR: Metal-cpp buffer map failed buffer=%u: %s",
+              buf ? (unsigned)buf->name : 0u,
+              error[0] ? error : "not applicable");
         return NULL;
     }
-
-    if (buf->data.mtl_data == NULL)
-    {
-        [self bindMTLBufferLocked:buf];
-    }
-
-    mtl_buffer = (__bridge id<MTLBuffer>)(buf->data.mtl_data);
-    if (!mtl_buffer) {
-        NSLog(@"MGL ERROR: mtlMapUnmapBuffer buffer=%u has NULL Metal buffer after bind", buf->name);
-        return NULL;
-    }
-
-    uint8_t *mtlBase = (uint8_t *)mtl_buffer.contents;
-    NSUInteger mtlLen = mtl_buffer.length;
-    if (offset > mtlLen) {
-        NSLog(@"MGL ERROR: mtlMapUnmapBuffer buffer=%u offset=%zu beyond mtlLen=%lu",
-              buf->name, offset, (unsigned long)mtlLen);
-        return NULL;
-    }
-    NSUInteger safeLen = MIN((NSUInteger)size, (mtlLen - (NSUInteger)offset));
-
-    uint8_t *cpuBase = NULL;
-    if (buf->data.buffer_data && ((uintptr_t)buf->data.buffer_data >= 0x1000ull)) {
-        cpuBase = (uint8_t *)(uintptr_t)buf->data.buffer_data;
-    }
-
-    if (map)
-    {
-        bool reads = access == GL_READ_ONLY || access == GL_READ_WRITE ||
-                     (access & GL_MAP_READ_BIT) != 0;
-        if (cpuBase) {
-            uint8_t *cpuPtr = cpuBase + offset;
-            /* cpu_shadow_pending: the shadow holds map-write bytes not yet
-             * uploaded to the Metal buffer; refreshing from Metal here would
-             * clobber them with stale data (GL 4.6 §6.3: unmapped writes
-             * must stay visible).  The flag is cleared once encoding uploads
-             * the shadow or a GPU write is copied back into it, so GPU
-             * readback (SSBO/XFB writes) still refreshes from Metal. */
-            if (reads && mtlBase && mtlBase != cpuBase && safeLen > 0 &&
-                !buf->cpu_shadow_pending) {
-                memcpy(cpuPtr, mtlBase + offset, (size_t)safeLen);
-            }
-
-            if (kMGLDiagnosticStateLogs) {
-                uint64_t mtlHash = mglTraceHashBytes(mtlBase ? mtlBase + offset : NULL, (size_t)safeLen);
-                uint64_t cpuHash = mglTraceHashBytes(cpuPtr, (size_t)safeLen);
-                char mtlHead[64];
-                char cpuHead[64];
-                mtlHead[0] = '\0';
-                cpuHead[0] = '\0';
-                mglTraceFormatBytes(mtlBase ? mtlBase + offset : NULL, (size_t)safeLen, mtlHead, sizeof(mtlHead));
-                mglTraceFormatBytes(cpuPtr, (size_t)safeLen, cpuHead, sizeof(cpuHead));
-                mglTraceLogNSString(@"MGL TRACE mtlMap.map buffer=%u off=%zu req=%zu safe=%lu access=0x%x mtlPtr=%p cpuPtr=%p samePtr=%d mtlHash=0x%016llx cpuHash=0x%016llx mtlHead=%s cpuHead=%s",
-                      buf->name,
-                      offset,
-                      size,
-                      (unsigned long)safeLen,
-                      (unsigned)access,
-                      mtlBase ? mtlBase + offset : NULL,
-                      cpuPtr,
-                      (mtlBase && mtlBase + offset == cpuPtr) ? 1 : 0,
-                      (unsigned long long)mtlHash,
-                      (unsigned long long)cpuHash,
-                      mtlHead,
-                      cpuHead);
-            }
-            return cpuPtr;
-        }
-
-        uint8_t *mappedPtr = mtlBase ? (mtlBase + offset) : NULL;
-        if (kMGLDiagnosticStateLogs) {
-            uint64_t mtlHash = mglTraceHashBytes(mappedPtr, (size_t)safeLen);
-            char mtlHead[64];
-            mtlHead[0] = '\0';
-            mglTraceFormatBytes(mappedPtr, (size_t)safeLen, mtlHead, sizeof(mtlHead));
-
-            uint8_t *cpuPtr = cpuBase ? (cpuBase + offset) : NULL;
-            uint64_t cpuHash = mglTraceHashBytes(cpuPtr, (size_t)safeLen);
-            char cpuHead[64];
-            cpuHead[0] = '\0';
-            mglTraceFormatBytes(cpuPtr, (size_t)safeLen, cpuHead, sizeof(cpuHead));
-
-            mglTraceLogNSString(@"MGL TRACE mtlMap.map buffer=%u off=%zu req=%zu safe=%lu access=0x%x mtlPtr=%p cpuPtr=%p samePtr=%d mtlHash=0x%016llx cpuHash=0x%016llx mtlHead=%s cpuHead=%s",
-                  buf->name,
-                  offset,
-                  size,
-                  (unsigned long)safeLen,
-                  (unsigned)access,
-                  mappedPtr,
-                  cpuPtr,
-                  (mappedPtr && cpuPtr && mappedPtr == cpuPtr) ? 1 : 0,
-                  (unsigned long long)mtlHash,
-                  (unsigned long long)cpuHash,
-                  mtlHead,
-                  cpuHead);
-        }
-
-        return mappedPtr;
-    }
-
-    if (!cpuBase && mtl_buffer.storageMode == MTLStorageModeManaged) {
-        [mtl_buffer didModifyRange:NSMakeRange(offset, safeLen)];
-    }
-
-    if (kMGLDiagnosticStateLogs) {
-        uint8_t *mtlPtr = mtlBase ? (mtlBase + offset) : NULL;
-        uint8_t *cpuPtr = cpuBase ? (cpuBase + offset) : NULL;
-        uint64_t mtlHash = mglTraceHashBytes(mtlPtr, (size_t)safeLen);
-        uint64_t cpuHash = mglTraceHashBytes(cpuPtr, (size_t)safeLen);
-        char mtlHead[64];
-        char cpuHead[64];
-        mtlHead[0] = '\0';
-        cpuHead[0] = '\0';
-        mglTraceFormatBytes(mtlPtr, (size_t)safeLen, mtlHead, sizeof(mtlHead));
-        mglTraceFormatBytes(cpuPtr, (size_t)safeLen, cpuHead, sizeof(cpuHead));
-        mglTraceLogNSString(@"MGL TRACE mtlMap.unmap buffer=%u off=%zu req=%zu safe=%lu access=0x%x mtlPtr=%p cpuPtr=%p samePtr=%d mtlHash=0x%016llx cpuHash=0x%016llx mtlHead=%s cpuHead=%s",
-              buf->name,
-              offset,
-              size,
-              (unsigned long)safeLen,
-              (unsigned)access,
-              mtlPtr,
-              cpuPtr,
-              (mtlPtr && cpuPtr && mtlPtr == cpuPtr) ? 1 : 0,
-              (unsigned long long)mtlHash,
-              (unsigned long long)cpuHash,
-              mtlHead,
-              cpuHead);
-    }
-
-    return NULL;
+    return mapped;
 }
-
 #pragma mark C interface to mtlFlushMappedBufferRange
 -(void) mtlFlushMappedBufferRange:(GLMContext) glm_ctx buf:(Buffer *)buf offset:(GLintptr) offset length:(GLsizeiptr) length
 {
@@ -4634,99 +4259,16 @@ void mglRendererCallbackClearBuffer(void *runtime_context,
 
 -(void) mtlFlushMappedBufferRangeLocked:(GLMContext) glm_ctx buf:(Buffer *)buf offset:(GLintptr) offset length:(GLsizeiptr) length
 {
-    if (mglRendererUsesMetalCpp()) {
-        char flushError[256] = {0};
-        int flushResult = mglRenderCppFlushBufferRangeStorage(
-            buf, offset, length, flushError, sizeof(flushError));
-        if (flushResult == MGL_RENDER_CPP_BUFFER_OPERATION_HANDLED) {
-            return;
-        }
-        if (flushResult == MGL_RENDER_CPP_BUFFER_OPERATION_ERROR) {
-            NSLog(@"MGL ERROR: Metal-cpp buffer range flush failed buffer=%u: %s",
-                  buf ? (unsigned)buf->name : 0u,
-                  flushError[0] ? flushError : "?");
-            return;
-        }
-    }
-
-    id<MTLBuffer> mtl_buffer;
-
-    if (!buf) {
-        NSLog(@"MGL ERROR: mtlFlushMappedBufferRange called with NULL buffer");
-        return;
-    }
-
-    mtl_buffer = (__bridge id<MTLBuffer>)(buf->data.mtl_data);
-    if (!mtl_buffer) {
-        [self bindMTLBufferLocked:buf];
-        mtl_buffer = (__bridge id<MTLBuffer>)(buf->data.mtl_data);
-        if (!mtl_buffer) {
-            return;
-        }
-    }
-
-    if (offset > mtl_buffer.length || length > (mtl_buffer.length - offset)) {
-        NSLog(@"MGL ERROR: mtlFlushMappedBufferRange out of range buffer=%u off=%ld len=%ld mtlLen=%lu",
-              buf->name,
-              offset,
-              length,
-              (unsigned long)mtl_buffer.length);
-        return;
-    }
-
-    if (!mglSnapshotSharedBufferRange(_device,
-                                      buf,
-                                      &mtl_buffer,
-                                      (NSUInteger)offset,
-                                      (NSUInteger)length)) {
-        return;
-    }
-
-    if (mtl_buffer.storageMode == MTLStorageModeManaged) {
-        [mtl_buffer didModifyRange:NSMakeRange(offset, length)];
+    (void)glm_ctx;
+    char error[256] = {0};
+    int result = mglRenderCppFlushBufferRangeStorage(
+        buf, offset, length, error, sizeof(error));
+    if (result != MGL_RENDER_CPP_BUFFER_OPERATION_HANDLED) {
+        NSLog(@"MGL ERROR: Metal-cpp buffer range flush failed buffer=%u: %s",
+              buf ? (unsigned)buf->name : 0u,
+              error[0] ? error : "not applicable");
     }
 }
-
-
-
-/*
- * mglReadColorTextureAsBGRA8:... — readPixels color readback staging buffer path
- *
- * Trigger: glReadPixels color readback (BGRA8-compatible format) goes through this staging buffer path.
- * Guarantees: ensureWritableCommandBuffer acquires a writable CB → newBufferWithLength creates a staging
- *             buffer → blitCommandEncoder copyFromTexture copies GPU texture data into the staging buffer →
- *             addCompletedHandler + dispatch_semaphore_wait (250ms timeout) blocks until the CB completes →
- *             copies from stagingBuffer.contents into the user buffer → newCommandBuffer creates a new CB.
- *             Ensures that all GPU writes to this texture have completed via the CB and are visible to the CPU before readback.
- * Degradation: a 250ms timeout returns zero data and reports GL_INVALID_OPERATION; a command buffer error reports the same.
- */
-
-
-
-/*
- * mglApplyPendingFBODepthClearForReadback:attachment:textureObj:mtlTexture: — deferred depth clear materialization
- *
- * Trigger: before depth readback, if the FBO depth attachment has an unmaterialized deferred lazy clear
- *          (attachment->clear_bitmask & GL_DEPTH_BUFFER_BIT).
- * Guarantees: constructs a render pass with loadAction=Clear (depthAttachment.loadAction=Clear),
- *             immediately calls endEncoding to materialize the clear, so subsequent readback observes
- *             cleared values rather than undefined data; clears the corresponding bit in clear_bitmask
- *             to avoid a duplicate clear. Must complete before the readback blit, otherwise the GPU write
- *             (clear) is not visible to the CPU before readback.
- */
-
-
-/*
- * mtlReadDepthPixels: — depth readback path
- *
- * Trigger: glReadPixels depth component readback.
- * Guarantees: endRenderEncoding closes the open render encoder → ensureWritableCommandBuffer acquires
- *             a writable CB → mglApplyPendingFBODepthClearForReadback materializes the deferred lazy
- *             depth clear (loadAction=Clear) so readback observes cleared values → delegates to the
- *             staging buffer readback path (copyFromTexture + completed-handler semaphore).
- *             Ensures that all GPU depth writes and deferred clears have completed and are visible to the CPU before readback.
- */
-
 #pragma mark C interface to mtlReadDrawable
 
 
