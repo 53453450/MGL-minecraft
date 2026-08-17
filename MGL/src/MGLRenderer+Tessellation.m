@@ -1981,10 +1981,6 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
                                   : MTLPrimitiveTypePoint);
 
     _tessellation.tessComputeActive = YES;
-    _tessellation.tessComputeOutputBuffer = outBuffer;
-    _tessellation.tessComputeOutputStride = outStride;
-    _tessellation.tessComputeItems = itemsPerInstanceU;
-    _tessellation.tessComputePrimitiveType = primType;
     _tessellation.tessComputeProgram = tesProgram;
     BOOL stateReady = [self processGLState:true];
     if (!stateReady ||
@@ -1992,7 +1988,6 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
             _renderPassManager.state->currentRenderEncoderOwner) != 1 ||
         [self currentDrawRasterizationIsEmpty]) {
         _tessellation.tessComputeActive = NO;
-        _tessellation.tessComputeOutputBuffer = nil;
         _tessellation.tessComputeProgram = NULL;
         if (xfbActive) {
             const GLuint64 vpp = pointMode ? 1u
@@ -2031,7 +2026,6 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     }
     mglRecordActivePrimitiveQueryDraw(glm_ctx, prims, written);
     _tessellation.tessComputeActive = NO;
-    _tessellation.tessComputeOutputBuffer = nil;
     _tessellation.tessComputeProgram = NULL;
     return YES;
 }

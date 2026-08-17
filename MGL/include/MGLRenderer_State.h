@@ -106,7 +106,6 @@ typedef struct MGLResourceFallbackState_t {
 
 typedef struct MGLTessellationState_t {
     id<MTLBuffer> __strong tessFactorBuffer;
-    id<MTLBuffer> __strong nativeTessFactorBuffer;
     id<MTLBuffer> __strong tcsOutputBuffer;
     id<MTLBuffer> __strong tcsPatchOutBuffer;
     id<MTLBuffer> __strong tessVertexCaptureBuffer;
@@ -133,10 +132,6 @@ typedef struct MGLTessellationState_t {
      * kernel (per-patch dispatch, contract at slot 29) and consumed by a
      * passthrough vertex stage drawing lines / points. */
     BOOL tessComputeActive;
-    id<MTLBuffer> __strong tessComputeOutputBuffer;
-    NSUInteger tessComputeOutputStride;
-    GLuint tessComputeItems;
-    MTLPrimitiveType tessComputePrimitiveType;
     Program *tessComputeProgram;
     /* 1-byte dummy bound to the TES compute XFB stream slot (31) when GL
      * feedback is inactive (the kernel always declares/writes it). */

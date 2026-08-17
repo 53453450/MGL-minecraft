@@ -2810,7 +2810,6 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
             return YES;
         }
 
-        _tessellation.nativeTessFactorBuffer = nativeFactors;
         _tessellation.nativeTESProgram = tesProgram;
         _tessellation.nativeTESActive = YES;
         [self clearStageBindingCopyBacks:&_tessellation.nativeTESCopyBacks];
