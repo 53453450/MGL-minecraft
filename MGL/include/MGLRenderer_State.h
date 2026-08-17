@@ -111,7 +111,6 @@ typedef struct MGLTessellationState_t {
     id<MTLBuffer> __strong tessVertexCaptureBuffer;
     NSUInteger tessVertexCaptureOffset;
     BOOL tessVertexCaptureActive;
-    id<MTLBuffer> __strong cullDistanceCaptureBuffer;
     BOOL cullDistanceCaptureActive;
     uint32_t cullDistanceCaptureFirstInstance;
     uint32_t cullDistanceCaptureInstanceStride;

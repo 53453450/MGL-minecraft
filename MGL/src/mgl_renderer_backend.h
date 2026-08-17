@@ -124,6 +124,11 @@ int mglRendererBackendGetTessXfbDummyBuffer(
     void **buffer_out);
 int mglRendererBackendPutTessXfbDummyBuffer(
     MGLRendererBackendHandle *backend, void *buffer);
+int mglRendererBackendSetCullDistanceCaptureBuffer(
+    MGLRendererBackendHandle *backend, void *buffer);
+/* Returns the borrowed cull-distance capture buffer owned by the backend. */
+void *mglRendererBackendGetCullDistanceCaptureBuffer(
+    const MGLRendererBackendHandle *backend);
 int mglRendererBackendSetFallbackResource(
     MGLRendererBackendHandle *backend,
     MGLRendererBackendFallbackResourceKind kind, void *resource);

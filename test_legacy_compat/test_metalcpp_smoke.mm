@@ -8993,6 +8993,16 @@ static int verifyRendererBackend(id<MTLDevice> device) {
         return 1;
     }
     printf("RENDERER_BACKEND_TESS_XFB_DUMMY_CACHE_OK\n");
+    if (mglRendererBackendSetCullDistanceCaptureBuffer(
+            backend, (__bridge void *)fallbackBuffer) != 0 ||
+        mglRendererBackendGetCullDistanceCaptureBuffer(backend) !=
+            (__bridge void *)fallbackBuffer ||
+        mglRendererBackendSetCullDistanceCaptureBuffer(backend, NULL) != 0 ||
+        mglRendererBackendGetCullDistanceCaptureBuffer(backend) != NULL) {
+        fprintf(stderr, "FAIL: renderer backend cull-distance capture\n");
+        return 1;
+    }
+    printf("RENDERER_BACKEND_CULL_DISTANCE_CAPTURE_OK\n");
     if (mglRendererBackendSetFallbackResource(
             backend, MGL_RENDERER_BACKEND_FALLBACK_SAMPLED_TEXTURE,
             (__bridge void *)fallbackTexture) != 0 ||

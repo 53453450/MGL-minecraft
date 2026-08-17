@@ -537,7 +537,7 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
                               instanceCount:(GLsizei)instanceCount
                                baseInstance:(GLuint)baseInstance
 {
-    _tessellation.cullDistanceCaptureBuffer = nil;
+    (void)mglRendererBackendSetCullDistanceCaptureBuffer(_backend, NULL);
     _tessellation.cullDistanceCaptureFirstInstance = 0u;
     _tessellation.cullDistanceCaptureInstanceStride = 0u;
     if (!drawCtx || first < 0 || count <= 0 || instanceCount <= 0) return NO;
@@ -589,7 +589,8 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
     _currentCBHasWork = YES;
     [self endRenderEncoding];
     _tessellation.cullDistanceCaptureActive = NO;
-    _tessellation.cullDistanceCaptureBuffer = capture;
+    (void)mglRendererBackendSetCullDistanceCaptureBuffer(
+        _backend, (__bridge void *)capture);
     _tessellation.cullDistanceCaptureFirstInstance = baseInstance;
     _tessellation.cullDistanceCaptureInstanceStride = (uint32_t)count;
     drawCtx->state.dirty_bits = DIRTY_ALL;
@@ -800,8 +801,10 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
     Program *activeProgram =
         ctx ? mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER) : NULL;
     if (!activeProgram || !activeProgram->uses_cull_distance) return NO;
+    MGLMetalBufferRef captureBuffer = (__bridge MGLMetalBufferRef)
+        mglRendererBackendGetCullDistanceCaptureBuffer(_backend);
     if (activeProgram->modules[_VERTEX_SHADER].mtl_cull_capture_function &&
-        !_tessellation.cullDistanceCaptureBuffer) {
+        !captureBuffer) {
         return YES;
     }
     if (!indexBytes || count <= 0 || instanceCount <= 0 ||
@@ -2399,7 +2402,9 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
     uint32_t prim_vertex_count =
         mglRenderCppPrimitiveVertexCountForMode((uint32_t)mode);
 
-    if (_tessellation.cullDistanceCaptureBuffer) {
+    MGLMetalBufferRef captureBuffer = (__bridge MGLMetalBufferRef)
+        mglRendererBackendGetCullDistanceCaptureBuffer(_backend);
+    if (captureBuffer) {
         MGLCullDistanceEmuParams params = {
             .prim_vertex_count = prim_vertex_count,
             .culldist_offset = 0u,
@@ -2417,10 +2422,10 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
                    explicitVertexCount * sizeof(params.explicit_vertices[0]));
         }
         mglDrawSupportSetVertexBuffer(
-            encCtx->render_encoder_owner, _tessellation.cullDistanceCaptureBuffer, 0u,
+            encCtx->render_encoder_owner, captureBuffer, 0u,
             kMGLCullDistanceVertexBufferIndex);
         [self recordLastBoundVertexBuffer:
-                  _tessellation.cullDistanceCaptureBuffer
+                  captureBuffer
                                    offset:0
                                   atIndex:kMGLCullDistanceVertexBufferIndex];
         MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
