@@ -41,6 +41,7 @@ typedef struct MGLCommandState_t {
     GLuint lastFboMatchFboName;
     uint64_t lastFboMatchFboGeneration;
     BOOL lastFboMatchResult;
+    GLMContext _Nullable runtimeContext;
 } MGLCommandState;
 
 NS_ASSUME_NONNULL_BEGIN
@@ -52,12 +53,20 @@ NS_ASSUME_NONNULL_BEGIN
 
 @property(nonatomic, readonly) const MGLCommandState *state;
 
+- (void)setRuntimeContext:(nullable GLMContext)context;
 - (void)updateRenderPassIdentityForContext:(GLMContext)context;
 - (void)clearRenderPassIdentity;
 - (nullable MGLMetalCommandBufferRef)installNewCommandBufferFromQueue:(nullable MGLMetalCommandQueueRef)commandQueue;
 - (nullable MGLMetalCommandBufferRef)detachCurrentCommandBufferForSubmission;
 - (void)discardCurrentCommandBuffer;
 - (BOOL)commitDetachedCommandBufferIfOwned:(nullable MGLMetalCommandBufferRef)commandBuffer;
+- (int)commitCommandBufferTransaction:(nullable MGLMetalCommandBufferRef)commandBuffer
+                         recoveryOwner:(nullable void *)recoveryOwner
+                     waitForCompletion:(BOOL)waitForCompletion
+                                result:(MGLRenderCppCommandBufferTransaction *)result;
+- (BOOL)hasLastSubmittedCommandBuffer;
+- (int)waitForLastSubmittedCommandBuffer:(MGLRenderCppCommandBufferState *)state;
+- (nullable MGLMetalCommandBufferRef)consumeTransactionCreatedCurrentCommandBuffer;
 - (void)releaseDetachedCommandBufferIfOwned:(nullable MGLMetalCommandBufferRef)commandBuffer;
 - (BOOL)appendSyncToCurrentCommandBuffer:(Sync *)sync;
 - (void)clearCurrentCommandBufferSyncListEntries;

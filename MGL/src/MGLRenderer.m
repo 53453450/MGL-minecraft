@@ -348,8 +348,8 @@ static id<MTLTexture> mglRendererCreateTexture(
 
 static void mglRendererEndRenderEncoder(id<MTLRenderCommandEncoder> encoder)
 {
-    if (mglRendererUsesMetalCpp() &&
-        mglRenderCppEndRenderEncoder((__bridge void *)encoder) == 0) {
+    if (mglRendererUsesMetalCpp()) {
+        (void)mglRenderCppEndRenderEncoder((__bridge void *)encoder);
         return;
     }
     [encoder endEncoding];
@@ -358,9 +358,9 @@ static void mglRendererEndRenderEncoder(id<MTLRenderCommandEncoder> encoder)
 static void mglRendererSetRenderPipeline(id<MTLRenderCommandEncoder> encoder,
                                          id<MTLRenderPipelineState> pipeline)
 {
-    if (mglRendererUsesMetalCpp() &&
-        mglRenderCppSetRenderPipelineState((__bridge void *)encoder,
-                                           (__bridge void *)pipeline) == 0) {
+    if (mglRendererUsesMetalCpp()) {
+        (void)mglRenderCppSetRenderPipelineState(
+            (__bridge void *)encoder, (__bridge void *)pipeline);
         return;
     }
     [encoder setRenderPipelineState:pipeline];
@@ -369,9 +369,9 @@ static void mglRendererSetRenderPipeline(id<MTLRenderCommandEncoder> encoder,
 static void mglRendererSetDepthStencil(id<MTLRenderCommandEncoder> encoder,
                                        id<MTLDepthStencilState> state)
 {
-    if (mglRendererUsesMetalCpp() &&
-        mglRenderCppSetRenderDepthStencilState((__bridge void *)encoder,
-                                               (__bridge void *)state) == 0) {
+    if (mglRendererUsesMetalCpp()) {
+        (void)mglRenderCppSetRenderDepthStencilState(
+            (__bridge void *)encoder, (__bridge void *)state);
         return;
     }
     [encoder setDepthStencilState:state];
@@ -383,9 +383,9 @@ static void mglRendererSetRenderBytes(id<MTLRenderCommandEncoder> encoder,
                                       uint32_t stage,
                                       NSUInteger index)
 {
-    if (mglRendererUsesMetalCpp() &&
-        mglRenderCppSetRenderBytes((__bridge void *)encoder, bytes, length,
-                                   stage, (uint32_t)index) == 0) {
+    if (mglRendererUsesMetalCpp()) {
+        (void)mglRenderCppSetRenderBytes(
+            (__bridge void *)encoder, bytes, length, stage, (uint32_t)index);
         return;
     }
     if (stage == MGL_RENDER_CPP_BINDING_STAGE_VERTEX) {
@@ -398,11 +398,11 @@ static void mglRendererSetRenderBytes(id<MTLRenderCommandEncoder> encoder,
 static void mglRendererSetViewport(id<MTLRenderCommandEncoder> encoder,
                                    MTLViewport viewport)
 {
-    if (mglRendererUsesMetalCpp() &&
-        mglRenderCppSetRenderViewport(
+    if (mglRendererUsesMetalCpp()) {
+        (void)mglRenderCppSetRenderViewport(
             (__bridge void *)encoder, viewport.originX, viewport.originY,
             viewport.width, viewport.height, viewport.znear,
-            viewport.zfar) == 0) {
+            viewport.zfar);
         return;
     }
     [encoder setViewport:viewport];
@@ -411,10 +411,10 @@ static void mglRendererSetViewport(id<MTLRenderCommandEncoder> encoder,
 static void mglRendererSetScissor(id<MTLRenderCommandEncoder> encoder,
                                   MTLScissorRect scissor)
 {
-    if (mglRendererUsesMetalCpp() &&
-        mglRenderCppSetRenderScissor((__bridge void *)encoder, scissor.x,
-                                     scissor.y, scissor.width,
-                                     scissor.height) == 0) {
+    if (mglRendererUsesMetalCpp()) {
+        (void)mglRenderCppSetRenderScissor(
+            (__bridge void *)encoder, scissor.x, scissor.y,
+            scissor.width, scissor.height);
         return;
     }
     [encoder setScissorRect:scissor];
@@ -443,10 +443,10 @@ static void mglRendererBlitCopyBuffer(id<MTLBlitCommandEncoder> encoder,
                                       NSUInteger destinationOffset,
                                       NSUInteger size)
 {
-    if (mglRendererUsesMetalCpp() &&
-        mglRenderCppBlitCopyBuffer(
+    if (mglRendererUsesMetalCpp()) {
+        (void)mglRenderCppBlitCopyBuffer(
             (__bridge void *)encoder, (__bridge void *)source, sourceOffset,
-            (__bridge void *)destination, destinationOffset, size) == 0) {
+            (__bridge void *)destination, destinationOffset, size);
         return;
     }
     [encoder copyFromBuffer:source sourceOffset:sourceOffset
@@ -456,8 +456,8 @@ static void mglRendererBlitCopyBuffer(id<MTLBlitCommandEncoder> encoder,
 
 static void mglRendererEndBlitEncoder(id<MTLBlitCommandEncoder> encoder)
 {
-    if (mglRendererUsesMetalCpp() &&
-        mglRenderCppEndBlitEncoder((__bridge void *)encoder) == 0) {
+    if (mglRendererUsesMetalCpp()) {
+        (void)mglRenderCppEndBlitEncoder((__bridge void *)encoder);
         return;
     }
     [encoder endEncoding];
@@ -465,8 +465,11 @@ static void mglRendererEndBlitEncoder(id<MTLBlitCommandEncoder> encoder)
 
 static void mglRendererWaitCommandBuffer(id<MTLCommandBuffer> commandBuffer)
 {
-    if (mglRendererUsesMetalCpp() &&
-        mglRenderCppWaitCommandBuffer((__bridge void *)commandBuffer) == 0) {
+    if (mglRendererUsesMetalCpp()) {
+        if (mglRenderCppWaitCommandBuffer(
+                (__bridge void *)commandBuffer) != 0) {
+            NSLog(@"MGL ERROR: Metal-cpp command-buffer wait failed");
+        }
         return;
     }
     [commandBuffer waitUntilCompleted];
@@ -1210,8 +1213,8 @@ void mglLogLoopHeartbeat(const char *tag,
 
 void mglLogStateSnapshot(const char *tag,
                                 GLMContext ctx,
-                                id<MTLCommandBuffer> commandBuffer,
-                                id<MTLRenderCommandEncoder> renderEncoder,
+                                void *commandBufferOwner,
+                                void *renderEncoderOwner,
                                 MTLRenderPassDescriptor *renderPassDescriptor,
                                 id<CAMetalDrawable> drawable)
 {
@@ -1220,8 +1223,9 @@ void mglLogStateSnapshot(const char *tag,
     }
 
     if (!mglRendererContextLikelyValid(ctx)) {
-        mglTraceLogNSString(@"MGL TRACE %s ctx=%p(invalid) cb=%p enc=%p rpd=%p drawable=%p",
-              tag ? tag : "snapshot", ctx, commandBuffer, renderEncoder, renderPassDescriptor, drawable);
+        mglTraceLogNSString(@"MGL TRACE %s ctx=%p(invalid) cbOwner=%p encOwner=%p rpd=%p drawable=%p",
+              tag ? tag : "snapshot", ctx, commandBufferOwner,
+              renderEncoderOwner, renderPassDescriptor, drawable);
         return;
     }
 
@@ -1240,10 +1244,14 @@ void mglLogStateSnapshot(const char *tag,
         }
     }
 
-    MTLCommandBufferStatus cbStatus = commandBuffer
-        ? mglRenderCommandBufferStatus(commandBuffer)
+    MGLRenderCppCommandBufferState commandState = {0};
+    BOOL hasCommandBuffer = mglRenderCommandBufferOwnerState(
+        commandBufferOwner, &commandState);
+    MTLCommandBufferStatus cbStatus = hasCommandBuffer
+        ? (MTLCommandBufferStatus)commandState.status
         : MTLCommandBufferStatusNotEnqueued;
-    NSString *cbLabel = commandBuffer ? (commandBuffer.label ?: @"(no-label)") : @"(nil)";
+    int hasRenderEncoder =
+        mglRenderCppRenderEncoderOwnerHasCurrent(renderEncoderOwner) == 1;
     char dirtyNames[256];
     mglFormatDirtyBits((uint32_t)ctx->active_state->dirty_bits, dirtyNames, sizeof(dirtyNames));
 
@@ -1262,7 +1270,7 @@ void mglLogStateSnapshot(const char *tag,
 
     mglTraceLogNSString(@"MGL TRACE %s prog=%u dirty=0x%x[%s] clear=0x%x drawBuf=0x%x readBuf=0x%x vao=%p drawFBO=%p(%u) "
           "vp=(%u,%u,%u,%u) scissor(en=%d box=%d,%d,%d,%d) caps(depth=%d blend=%d cull=%d) "
-          "stateClear=(%.3f,%.3f,%.3f,%.3f) cb=%p[%s] label=%@ enc=%p rpd=%p rt=%lux%lu "
+          "stateClear=(%.3f,%.3f,%.3f,%.3f) cbOwner=%p[%s] encOwner=%p(active=%d) rpd=%p rt=%lux%lu "
           "c0=%p fmt=%lu usage=0x%lx la/sa=%s/%s clear=(%.3f,%.3f,%.3f,%.3f) "
           "depth=%p(%lu %s/%s) stencil=%p(%lu %s/%s) drawable=%p tex=%p d=%lux%lu",
           tag ? tag : "snapshot",
@@ -1291,10 +1299,10 @@ void mglLogStateSnapshot(const char *tag,
           ctx->active_state->color_clear_value[1],
           ctx->active_state->color_clear_value[2],
           ctx->active_state->color_clear_value[3],
-          commandBuffer,
+          commandBufferOwner,
           mglCommandBufferStatusName(cbStatus),
-          cbLabel,
-          renderEncoder,
+          renderEncoderOwner,
+          hasRenderEncoder,
           renderPassDescriptor,
           (unsigned long)(renderPassDescriptor ? renderPassDescriptor.renderTargetWidth : 0),
           (unsigned long)(renderPassDescriptor ? renderPassDescriptor.renderTargetHeight : 0),
@@ -1334,8 +1342,8 @@ void mglLogStateSnapshot(const char *tag,
 void mglLogDrawWithoutSwapWatchdog(const char *kind,
                                           uint64_t drawCall,
                                           GLMContext ctx,
-                                          id<MTLCommandBuffer> commandBuffer,
-                                          id<MTLRenderCommandEncoder> renderEncoder,
+                                          void *commandBufferOwner,
+                                          void *renderEncoderOwner,
                                           MTLRenderPassDescriptor *renderPassDescriptor)
 {
     uint64_t drawArrays = MGL_FRAME_LOAD(g_mglDrawArraysSinceSwap);
@@ -1351,9 +1359,14 @@ void mglLogDrawWithoutSwapWatchdog(const char *kind,
     if (lastSwapAgeMs >= 0.0 && lastSwapAgeMs < 250.0) {
         return;
     }
-    MTLCommandBufferStatus cbStatus = commandBuffer
-        ? mglRenderCommandBufferStatus(commandBuffer)
+    MGLRenderCppCommandBufferState commandState = {0};
+    BOOL hasCommandBuffer = mglRenderCommandBufferOwnerState(
+        commandBufferOwner, &commandState);
+    MTLCommandBufferStatus cbStatus = hasCommandBuffer
+        ? (MTLCommandBufferStatus)commandState.status
         : MTLCommandBufferStatusNotEnqueued;
+    BOOL hasRenderEncoder =
+        mglRenderCppRenderEncoderOwnerHasCurrent(renderEncoderOwner) == 1;
     id<MTLTexture> rpColor0 = renderPassDescriptor ? renderPassDescriptor.colorAttachments[0].texture : nil;
     MTLLoadAction colorLoadAction = renderPassDescriptor ? renderPassDescriptor.colorAttachments[0].loadAction : MTLLoadActionDontCare;
     MTLStoreAction colorStoreAction = renderPassDescriptor ? renderPassDescriptor.colorAttachments[0].storeAction : MTLStoreActionDontCare;
@@ -1373,9 +1386,9 @@ void mglLogDrawWithoutSwapWatchdog(const char *kind,
           (unsigned)(ctx ? ctx->active_state->draw_buffer : 0u),
           ctx ? ctx->active_state->framebuffer : NULL,
           ctx ? ctx->active_state->vao : NULL,
-          commandBuffer,
+          hasCommandBuffer ? commandBufferOwner : NULL,
           mglCommandBufferStatusName(cbStatus),
-          renderEncoder,
+          hasRenderEncoder ? renderEncoderOwner : NULL,
           renderPassDescriptor,
           rpColor0,
           (unsigned long)(rpColor0 ? rpColor0.pixelFormat : MTLPixelFormatInvalid),
@@ -1390,8 +1403,8 @@ void mglLogDrawWithoutSwapWatchdog(const char *kind,
 void mglLogRenderPassLifecycle(const char *tag,
                                       uint64_t call,
                                       GLMContext ctx,
-                                      id<MTLCommandBuffer> commandBuffer,
-                                      id<MTLRenderCommandEncoder> renderEncoder,
+                                      void *commandBufferOwner,
+                                      void *renderEncoderOwner,
                                       MTLRenderPassDescriptor *renderPassDescriptor,
                                       id<CAMetalDrawable> drawable,
                                       Framebuffer *renderPassFramebuffer,
@@ -1403,9 +1416,14 @@ void mglLogRenderPassLifecycle(const char *tag,
         return;
     }
 
-    MTLCommandBufferStatus cbStatus = commandBuffer
-        ? mglRenderCommandBufferStatus(commandBuffer)
+    MGLRenderCppCommandBufferState commandState = {0};
+    BOOL hasCommandBuffer = mglRenderCommandBufferOwnerState(
+        commandBufferOwner, &commandState);
+    MTLCommandBufferStatus cbStatus = hasCommandBuffer
+        ? (MTLCommandBufferStatus)commandState.status
         : MTLCommandBufferStatusNotEnqueued;
+    int hasRenderEncoder =
+        mglRenderCppRenderEncoderOwnerHasCurrent(renderEncoderOwner) == 1;
     id<MTLTexture> c0 = renderPassDescriptor ? renderPassDescriptor.colorAttachments[0].texture : nil;
     id<MTLTexture> c1 = renderPassDescriptor ? renderPassDescriptor.colorAttachments[1].texture : nil;
     id<MTLTexture> depth = renderPassDescriptor ? renderPassDescriptor.depthAttachment.texture : nil;
@@ -1434,7 +1452,7 @@ void mglLogRenderPassLifecycle(const char *tag,
     }
 
     mglTraceLog("RENDERPASS_%s call=%llu program=%u dirty=0x%x drawBuf=0x%x readBuf=0x%x "
-                "fbo=%u(%p) rpFbo=%u(%p) rpDrawBuf=0x%x rpDrawCount=%d vao=%p cb=%p[%s] enc=%p rpd=%p rt=%lux%lu "
+                "fbo=%u(%p) rpFbo=%u(%p) rpDrawBuf=0x%x rpDrawCount=%d vao=%p cbOwner=%p[%s] encOwner=%p(active=%d) rpd=%p rt=%lux%lu "
                 "c0Name=%u c0=%p fmt=%lu usage=0x%lx size=%lux%lu la/sa=%s/%s clear=(%.3f,%.3f,%.3f,%.3f) "
                 "c1Name=%u c1=%p fmt=%lu usage=0x%lx size=%lux%lu la/sa=%s/%s "
                 "depthName=%u depth=%p fmt=%lu usage=0x%lx size=%lux%lu la/sa=%s/%s "
@@ -1453,9 +1471,10 @@ void mglLogRenderPassLifecycle(const char *tag,
                 (unsigned)renderPassDrawBuffer,
                 (int)renderPassDrawBufferCount,
                 ctx ? ctx->active_state->vao : NULL,
-                commandBuffer,
+                commandBufferOwner,
                 mglCommandBufferStatusName(cbStatus),
-                renderEncoder,
+                renderEncoderOwner,
+                hasRenderEncoder,
                 renderPassDescriptor,
                 (unsigned long)(renderPassDescriptor ? renderPassDescriptor.renderTargetWidth : 0),
                 (unsigned long)(renderPassDescriptor ? renderPassDescriptor.renderTargetHeight : 0),
@@ -3341,6 +3360,20 @@ void logDirtyBits(GLMContext ctx)
 }
 
 #pragma mark C interface to mtlSwapBuffers
+void mglRendererCallbackSwapBuffers(void *runtime_context,
+                                    GLMContext glm_ctx)
+{
+    MGLRenderer *renderer = (__bridge MGLRenderer *)runtime_context;
+    if (!renderer || !glm_ctx) return;
+    @autoreleasepool {
+        @try {
+            [renderer mtlSwapBuffers:glm_ctx];
+        } @catch (NSException *exception) {
+            NSLog(@"MGL CRITICAL: callback swap exception: %@", exception);
+        }
+    }
+}
+
 -(void) mtlSwapBuffers:(GLMContext) glm_ctx
 {
     mglClaimGLThread();            /* idempotent; the rendering loop is GL-thread */
@@ -3405,8 +3438,8 @@ void logDirtyBits(GLMContext ctx)
               (unsigned long long)swapCall, shouldPresent ? 1 : 0, (unsigned)drawBuffer);
         mglLogStateSnapshot("swap.enter",
                             activeCtx,
-                            (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
-                            (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
+                            _renderPassManager.state->currentCommandBufferOwner,
+                            _renderPassManager.state->currentRenderEncoderOwner,
                             _renderPassManager.state->renderPassDescriptor,
                             _drawable);
     }
@@ -3431,8 +3464,8 @@ void logDirtyBits(GLMContext ctx)
                 if (traceSwap || (swapCall % 120ull) == 0ull) {
                     mglLogStateSnapshot("mainthread.stall.snapshot",
                                         activeCtx,
-                                        (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
-                                        (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
+                                        _renderPassManager.state->currentCommandBufferOwner,
+                                        _renderPassManager.state->currentRenderEncoderOwner,
                                         _renderPassManager.state->renderPassDescriptor,
                                         _drawable);
                 }
@@ -3518,11 +3551,9 @@ void logDirtyBits(GLMContext ctx)
          * yet, so resetMetalState can swap the command queue / clear caches
          * without racing an active encoder.  The request flag is set by the
          * Metal completion handler (GPURecovery.m) via release-store. */
-        /* Gate-on completion workers latch recovery requests in the C++ owner;
-         * consume them only at this GL-thread frame boundary.  Keep the
-         * atomic field for the disabled-gate adapter and legacy error paths. */
-        if (mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
-            mglRenderCppCommandRecoveryTakeResetRequest(
+        /* Completion workers latch recovery requests in the C++ owner on
+         * both gates; consume them only at this GL-thread frame boundary. */
+        if (mglRenderCppCommandRecoveryTakeResetRequest(
                 _gpuRecovery.commandRecoveryOwner) == 1) {
             atomic_store_explicit(&_deviceResetRequested, true,
                                   memory_order_release);
@@ -3642,8 +3673,10 @@ void logDirtyBits(GLMContext ctx)
                 return;
             }
             if (traceSwap) {
-                mglTraceLogNSString(@"MGL TRACE swap.present call=%llu cb=%p drawable=%p",
-                      (unsigned long long)swapCall, (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner), _drawable);
+                mglTraceLogNSString(@"MGL TRACE swap.present call=%llu cbOwner=%p drawable=%p",
+                      (unsigned long long)swapCall,
+                      _renderPassManager.state->currentCommandBufferOwner,
+                      _drawable);
             }
 
         } @catch (NSException *exception) {
@@ -3683,25 +3716,17 @@ void logDirtyBits(GLMContext ctx)
              * commitCommandBufferWithAGXRecovery: commits the CB, and Metal
              * asserts if addCompletedHandler: is called after commit. */
             if (commandBufferToCommit) {
-                BOOL completionRegistered = NO;
-                if (mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
-                    mglRenderCppGetDevice()) {
-                    int completionResult =
-                        mglRenderCppAddCommandBufferCompletion(
+                int completionResult =
+                    mglRenderCppAddCommandBufferCompletion(
                         (__bridge void *)commandBufferToCommit,
                         mglRecordFrameCommandBufferCompleted,
                         (void *)(uintptr_t)committedGeneration,
                         NULL);
-                    completionRegistered = completionResult == 0;
-                }
-                if (!completionRegistered) {
-                    [commandBufferToCommit addCompletedHandler:^(id<MTLCommandBuffer> buffer) {
-                        mglRecordFrameCompleted(committedGeneration);
-                    }];
+                if (completionResult != 0) {
+                    NSLog(@"MGL ERROR: Failed to register C++ frame completion handler");
                 }
             }
             [self commitCommandBufferWithAGXRecovery:commandBufferToCommit];
-            _lastCommittedCB = commandBufferToCommit;
             if (traceSwap) {
                 mglTraceLogNSString(@"MGL TRACE swap.commit.end call=%llu", (unsigned long long)swapCall);
             }
@@ -3742,8 +3767,8 @@ void logDirtyBits(GLMContext ctx)
                   swapElapsedUs);
             mglLogStateSnapshot("swap.exit.ok",
                                 ctx,
-                                (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(_renderPassManager.state->currentCommandBufferOwner),
-                                (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner),
+                                _renderPassManager.state->currentCommandBufferOwner,
+                                _renderPassManager.state->currentRenderEncoderOwner,
                                 _renderPassManager.state->renderPassDescriptor,
                                 _drawable);
         } else if (swapElapsedUs >= 25000.0) {
@@ -3779,6 +3804,16 @@ void logDirtyBits(GLMContext ctx)
  * MGLRenderer+SwapDiagnostics.m */
 
 #pragma mark C interface to mtlClearBuffer
+void mglRendererCallbackClearBuffer(void *runtime_context,
+                                    GLMContext glm_ctx,
+                                    unsigned int type,
+                                    unsigned int mask)
+{
+    MGLRenderer *renderer = (__bridge MGLRenderer *)runtime_context;
+    if (!renderer || !glm_ctx) return;
+    [renderer mtlClearBuffer:glm_ctx type:type mask:mask];
+}
+
 -(void) mtlClearBuffer:(GLMContext) glm_ctx type:(GLuint) type mask:(GLbitfield) mask
 {
     (void)type;
@@ -4028,7 +4063,8 @@ void logDirtyBits(GLMContext ctx)
         mglRenderCppIsSampleQueryActive(
             _queryStateOwner, &sampleQueryActive);
     }
-    if ((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner) &&
+    if (mglRenderCppRenderEncoderOwnerHasCurrent(
+            _renderPassManager.state->currentRenderEncoderOwner) == 1 &&
         [self currentRenderPassMatchesCurrentFramebuffer] &&
         !sampleQueryActive) {
         if (_renderPassManager.state->renderPassStateOwner ||
@@ -4078,35 +4114,52 @@ void logDirtyBits(GLMContext ctx)
          * record those real values / invalidate those slots in the bind
          * cache instead of invalidating everything, so textures, samplers
          * and the other buffer slots keep their dedup state. */
-        id<MTLRenderCommandEncoder> encoder = (__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner);
-
-        mglRenderCppBindingSetViewport(
-            _bindingStateOwner, (__bridge void *)encoder,
+        mglRenderCppBindingSetViewportForOwner(
+            _bindingStateOwner,
+            _renderPassManager.state->currentRenderEncoderOwner,
             viewport.originX, viewport.originY, viewport.width, viewport.height,
             viewport.znear, viewport.zfar);
-        mglRenderCppBindingSetScissor(
-            _bindingStateOwner, (__bridge void *)encoder,
+        mglRenderCppBindingSetScissorForOwner(
+            _bindingStateOwner,
+            _renderPassManager.state->currentRenderEncoderOwner,
             scissor.x, scissor.y, scissor.width, scissor.height);
-        mglRendererSetRenderPipeline(encoder, pipeline);
+        mglRenderCppSetRenderPipelineStateForOwner(
+            _renderPassManager.state->currentRenderEncoderOwner,
+            (__bridge void *)pipeline);
         mglRenderCppBindingSetPipelineState(
             _bindingStateOwner, (__bridge void *)pipeline);
         if (wantsDepth) {
             id<MTLDepthStencilState> depthState = [self clearRectDepthState];
             if (depthState) {
-                mglRendererSetDepthStencil(encoder, depthState);
+                mglRenderCppSetRenderDepthStencilStateForOwner(
+                    _renderPassManager.state->currentRenderEncoderOwner,
+                    (__bridge void *)depthState);
                 mglRenderCppBindingSetDepthStencilState(
                     _bindingStateOwner, (__bridge void *)depthState);
             }
         }
-        mglRendererSetRenderBytes(encoder, &params, sizeof(params),
-                                  MGL_RENDER_CPP_BINDING_STAGE_VERTEX, 0);
+        mglRenderCppSetRenderBytesForOwner(
+            _renderPassManager.state->currentRenderEncoderOwner,
+            &params, sizeof(params),
+            MGL_RENDER_CPP_BINDING_STAGE_VERTEX, 0);
         mglRenderCppBindingInvalidateVertexBuffer(_bindingStateOwner, 0);
         if (wantsColor) {
-            mglRendererSetRenderBytes(encoder, &params, sizeof(params),
-                                      MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT, 0);
+            mglRenderCppSetRenderBytesForOwner(
+                _renderPassManager.state->currentRenderEncoderOwner,
+                &params, sizeof(params),
+                MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT, 0);
             mglRenderCppBindingInvalidateFragmentBuffer(_bindingStateOwner, 0);
         }
-        mglRendererDrawPrimitives(encoder, MTLPrimitiveTypeTriangleStrip, 0, 4);
+        const MGLRenderCppDrawPlan clearDraw = {
+            .kind = MGL_RENDER_CPP_DRAW_ARRAY,
+            .primitive_type = (uint32_t)MTLPrimitiveTypeTriangleStrip,
+            .vertex_start = 0u,
+            .vertex_count = 4u,
+            .instance_count = 1u,
+        };
+        (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
+            _renderPassManager.state->currentRenderEncoderOwner,
+            &clearDraw, NULL, 0);
 
         if (wantsColor && colorTexObj && colorAttachment) {
             colorAttachment->clear_bitmask &= ~GL_COLOR_BUFFER_BIT;
@@ -4962,9 +5015,26 @@ Buffer *getIndirectBuffer(GLMContext ctx)
     id<MTLCommandBuffer> stageCommandBuffer =
         [_renderPassManager detachCurrentCommandBufferForSubmission];
     @try {
-        [self commitCommandBufferWithAGXRecovery:stageCommandBuffer];
-        _lastCommittedCB = stageCommandBuffer;
-        mglRendererWaitCommandBuffer(stageCommandBuffer);
+        MGLRenderCppCommandBufferTransaction transaction = {0};
+        int transactionResult = [_renderPassManager
+            commitCommandBufferTransaction:stageCommandBuffer
+            recoveryOwner:_gpuRecovery.commandRecoveryOwner
+            waitForCompletion:YES
+            result:&transaction];
+        if (transactionResult != 0 || transaction.has_error) {
+            NSLog(@"MGL BUFFER RANGE: C++ stage transaction failed before=%u after=%u completion=%u",
+                  transaction.before.status, transaction.after.status,
+                  transaction.completion.status);
+            if (transaction.device_reset_requested) {
+                atomic_store_explicit(&_deviceResetRequested, true,
+                                      memory_order_release);
+            }
+            [_renderPassManager
+                releaseDetachedCommandBufferIfOwned:stageCommandBuffer];
+            [self clearStageBindingCopyBacks:copyBacks];
+            [self newCommandBufferLocked];
+            return false;
+        }
     } @catch (NSException *exception) {
         NSLog(@"MGL BUFFER RANGE: stage synchronization failed: %@",
               exception.reason);

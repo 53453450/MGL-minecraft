@@ -85,6 +85,26 @@ static void mglLifecycleReplaceTextureRegion(id<MTLTexture> texture,
 
     glm_ctx->mtl_funcs.mtlObj = (void *)CFBridgingRetain(self);
 
+    mglRenderCppDestroyCallbackRuntime(&glm_ctx->metal_callback_runtime);
+    MGLRenderCppCallbackRuntimeOps callbackOps = {
+        .dispatch_compute = mglRendererCallbackDispatchCompute,
+        .dispatch_compute_indirect =
+            mglRendererCallbackDispatchComputeIndirect,
+        .draw = mglRendererCallbackDraw,
+        .bind_texture = mglRendererCallbackBindTexture,
+        .flush_draw_buffer = mglRendererCallbackFlushDrawBuffer,
+        .swap_buffers = mglRendererCallbackSwapBuffers,
+        .clear_buffer = mglRendererCallbackClearBuffer,
+        .blit_framebuffer = mglRendererCallbackBlitFramebuffer,
+        .resource = mglRendererCallbackResource,
+        .legacy = mglRendererCallbackLegacy,
+    };
+    if (mglRenderCppCreateCallbackRuntime(
+            (__bridge void *)self, &callbackOps,
+            &glm_ctx->metal_callback_runtime) != 0) {
+        NSLog(@"MGL ERROR: failed to create renderer callback runtime");
+    }
+
     /* Assignment block generated from MGL_MTL_FUNC_LIST (see
      * mgl_types_metal_funcs.h — single source of truth). */
 #define MGL_MTL_FUNC_ASSIGN(field, cname, ret, args) \
@@ -92,35 +112,98 @@ static void mglLifecycleReplaceTextureRegion(id<MTLTexture> texture,
     MGL_MTL_FUNC_LIST(MGL_MTL_FUNC_ASSIGN)
 #undef MGL_MTL_FUNC_ASSIGN
 
-    /* These callbacks can enter Metal-cpp directly.  Some retain a narrow
-     * legacy fallback/ordering adapter (for example timestamp -> mtlFlush),
-     * while owner-dependent callbacks remain on mgl_metal_bridge until their
-     * state moves to C++. */
+    /* Install the migrated table from one C++ entry point, then independently
+     * inspect the resulting function pointers.  This census deliberately
+     * counts wrappers that call mgl_metal_bridge as legacy until their gate-on
+     * path no longer selector-forwards. */
     if (mglEnvFlagEnabledDefaultOn("MGL_USE_METALCPP")) {
-        if (mglRenderCppGetDevice() != NULL) {
-            glm_ctx->mtl_funcs.mtlBindBuffer = mglRenderCppBindBuffer;
-            glm_ctx->mtl_funcs.mtlBufferSubData =
-                mglRenderCppBufferSubData;
-            glm_ctx->mtl_funcs.mtlMapUnmapBuffer =
-                mglRenderCppMapUnmapBuffer;
-            glm_ctx->mtl_funcs.mtlReadBackBuffer =
-                mglRenderCppReadBackBuffer;
-            glm_ctx->mtl_funcs.mtlFlushBufferRange =
-                mglRenderCppFlushBufferRange;
-            glm_ctx->mtl_funcs.mtlBindProgram = mglRenderCppBindProgram;
-            glm_ctx->mtl_funcs.mtlGetGPUTimestamp =
-                mglRenderCppGetGPUTimestamp;
-            glm_ctx->mtl_funcs.mtlBeginTimerQuery =
-                mglRenderCppBeginTimerQueryCallback;
-            glm_ctx->mtl_funcs.mtlEndTimerQuery =
-                mglRenderCppEndTimerQueryCallback;
+        MGLRenderCppCallbackInstallResult installed = {0};
+        MGLMetalCallbackCensus census = {0};
+        if (mglRenderCppInstallMetalCallbacks(glm_ctx, &installed) != 0 ||
+            mglMetalBridgeGetCallbackCensus(glm_ctx, &census) != 0 ||
+            census.null_entries != 0 ||
+            census.non_legacy != installed.installed ||
+            installed.strict_cpp + installed.pure_adapter +
+                    installed.legacy_fallback !=
+                installed.installed) {
+            NSLog(@"MGL ERROR: invalid Metal callback census "
+                   "installed=%u strict=%u adapter=%u hybrid=%u total=%u "
+                   "nonLegacy=%u legacy=%u null=%u",
+                  installed.installed, installed.strict_cpp,
+                  installed.pure_adapter, installed.legacy_fallback,
+                  census.total,
+                  census.non_legacy, census.legacy, census.null_entries);
         }
-        glm_ctx->mtl_funcs.mtlDeleteMTLObj = mglRenderCppDeleteMTLObj;
-        glm_ctx->mtl_funcs.release_buffer_metal_data =
-            mglRenderCppReleaseBufferMetalData;
-        glm_ctx->mtl_funcs.mtlWaitForSync = mglRenderCppWaitForSync;
-        glm_ctx->mtl_funcs.mtlGetSyncStatus = mglRenderCppGetSyncStatus;
-        glm_ctx->mtl_funcs.mtlReleaseSync = mglRenderCppReleaseSync;
+    }
+}
+
+uint64_t mglRendererCallbackLegacy(
+    void *runtime_context,
+    GLMContext glm_ctx,
+    const MGLRenderCppLegacyCallbackArgs *args)
+{
+    MGLRenderer *renderer = (__bridge MGLRenderer *)runtime_context;
+    if (!renderer || !glm_ctx || !args) return 0;
+
+    switch (args->kind) {
+        case MGL_RENDER_CPP_LEGACY_CALLBACK_BIND_BUFFER:
+            [renderer bindMTLBuffer:args->buffer];
+            return 0;
+        case MGL_RENDER_CPP_LEGACY_CALLBACK_BIND_PROGRAM:
+            return [renderer bindMTLProgram:args->program] ? 1u : 0u;
+        case MGL_RENDER_CPP_LEGACY_CALLBACK_DELETE_OBJECT:
+            [renderer mtlDeleteMTLObj:glm_ctx buffer:args->object];
+            return 0;
+        case MGL_RENDER_CPP_LEGACY_CALLBACK_GET_SYNC:
+            [renderer mtlGetSync:glm_ctx sync:args->sync];
+            return 0;
+        case MGL_RENDER_CPP_LEGACY_CALLBACK_WAIT_SYNC:
+            [renderer mtlWaitForSync:glm_ctx sync:args->sync];
+            return 0;
+        case MGL_RENDER_CPP_LEGACY_CALLBACK_GET_SYNC_STATUS:
+            return [renderer mtlGetSyncStatus:glm_ctx sync:args->sync];
+        case MGL_RENDER_CPP_LEGACY_CALLBACK_RELEASE_SYNC:
+            [renderer mtlReleaseSync:glm_ctx sync:args->sync];
+            return 0;
+        case MGL_RENDER_CPP_LEGACY_CALLBACK_FLUSH:
+            [renderer mtlFlush:glm_ctx finish:args->flag];
+            return 0;
+        case MGL_RENDER_CPP_LEGACY_CALLBACK_INVALIDATE_RENDER_PASS:
+            [renderer mtlInvalidateRenderPass:glm_ctx];
+            return 0;
+        case MGL_RENDER_CPP_LEGACY_CALLBACK_BUFFER_SUB_DATA:
+            [renderer mtlBufferSubData:glm_ctx buf:args->buffer
+                                offset:args->offset size:args->size
+                                   ptr:args->bytes];
+            return 0;
+        case MGL_RENDER_CPP_LEGACY_CALLBACK_MAP_UNMAP_BUFFER:
+            return (uint64_t)(uintptr_t)
+                [renderer mtlMapUnmapBuffer:glm_ctx buf:args->buffer
+                                     offset:args->offset size:args->size
+                                     access:args->value map:args->flag];
+        case MGL_RENDER_CPP_LEGACY_CALLBACK_READ_BACK_BUFFER:
+            [renderer mtlReadBackBuffer:glm_ctx buf:args->buffer
+                                 offset:args->offset size:args->size];
+            return 0;
+        case MGL_RENDER_CPP_LEGACY_CALLBACK_FLUSH_BUFFER_RANGE:
+            [renderer mtlFlushMappedBufferRange:glm_ctx buf:args->buffer
+                                         offset:args->signed_offset
+                                         length:args->signed_length];
+            return 0;
+        case MGL_RENDER_CPP_LEGACY_CALLBACK_BEGIN_TIMER_QUERY:
+            [renderer mtlBeginTimerQuery:glm_ctx];
+            return 0;
+        case MGL_RENDER_CPP_LEGACY_CALLBACK_END_TIMER_QUERY:
+            return [renderer mtlEndTimerQuery:glm_ctx];
+        case MGL_RENDER_CPP_LEGACY_CALLBACK_GET_GPU_TIMESTAMP:
+            return [renderer mtlGetGPUTimestamp:glm_ctx];
+        case MGL_RENDER_CPP_LEGACY_CALLBACK_BEGIN_SAMPLE_QUERY:
+            [renderer mtlBeginSampleQuery:glm_ctx target:args->value];
+            return 0;
+        case MGL_RENDER_CPP_LEGACY_CALLBACK_END_SAMPLE_QUERY:
+            return [renderer mtlEndSampleQuery:glm_ctx];
+        default:
+            return 0;
     }
 }
 
@@ -218,6 +301,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     mglClaimGLThread();            /* idempotent; records the init thread as the GL thread */
     ctx = glm_ctx;
     _renderPassManager = [MGLRenderPassManager new];
+    [_renderPassManager setRuntimeContext:glm_ctx];
 
     /* start the DontCare frame generation at 1 so it never matches a
      * texture's zero-initialized mtl_rt_frame_generation stamp until that
@@ -230,6 +314,13 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         _gpuRecovery.commandRecoveryOwner = NULL;
         NSLog(@"MGL ERROR: failed to create command recovery owner");
     }
+    mglRenderCppAttachRuntimeOwners(
+        glm_ctx,
+        _renderPassManager.state->currentCommandBufferOwner,
+        _renderPassManager.state->currentRenderEncoderOwner,
+        _renderPassManager.state->renderPassStateOwner,
+        glm_ctx->metal_query_state_owner,
+        _gpuRecovery.commandRecoveryOwner);
     BOOL psoDedupEnabled = mglEnvFlagEnabledDefaultOn("MGL_PSO_DEDUP");
     BOOL depthStencilCacheEnabled = mglEnvFlagEnabledDefaultOn("MGL_DS_CACHE");
     BOOL binaryArchiveEnabled = mglEnvFlagEnabledDefaultOn("MGL_BINARY_ARCHIVE");
@@ -310,6 +401,13 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
                        glm_ctx, _queryStateOwner) != 0) {
             NSLog(@"MGL ERROR: failed to register context query state owner");
         }
+        mglRenderCppAttachRuntimeOwners(
+            glm_ctx,
+            _renderPassManager.state->currentCommandBufferOwner,
+            _renderPassManager.state->currentRenderEncoderOwner,
+            _renderPassManager.state->renderPassStateOwner,
+            _queryStateOwner,
+            _gpuRecovery.commandRecoveryOwner);
     }
     _pipelineCache.device = _device;
 
@@ -337,14 +435,16 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
             MGLCapabilityMaxConcurrentCommandBuffers(&_capability);
     }
 
-    if (mglEnvFlagEnabledDefaultOn("MGL_USE_METALCPP") && mglRenderCppGetDevice()) {
+    const BOOL useMetalCppQueue =
+        mglEnvFlagEnabledDefaultOn("MGL_USE_METALCPP") &&
+        mglRenderCppGetDevice();
+    if (useMetalCppQueue) {
         uint32_t maxCommandBuffers = isVirtualized
             ? (uint32_t)MGLCapabilityMaxConcurrentCommandBuffers(&_capability)
             : 0u;
         _commandQueue = mglRenderCppCreateOrResetCommandQueueOwner(
             &_commandQueueOwner, maxCommandBuffers);
-    }
-    if (!_commandQueue) {
+    } else {
         mglRenderCppDestroyCommandQueueOwner(&_commandQueueOwner);
         _commandQueue = [_device newCommandQueueWithDescriptor:queueDescriptor];
     }
@@ -666,6 +766,9 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     NSLog(@"MGL INFO: MGLRenderer dealloc - cleaning up Metal resources");
 
     @try {
+        if (ctx) {
+            mglRenderCppDestroyCallbackRuntime(&ctx->metal_callback_runtime);
+        }
         /* Remove the geometry observers before any view/state teardown. */
         if (_view) {
             [_view removeObserver:self forKeyPath:@"bounds" context:s_kvoViewGeometryContext];
@@ -705,14 +808,17 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
             [_renderPassManager discardCurrentCommandBuffer];
         }
 
-        if ((__bridge id<MTLRenderCommandEncoder>)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner)) {
+        if (mglRenderCppRenderEncoderOwnerHasCurrent(
+                _renderPassManager.state->currentRenderEncoderOwner) == 1) {
             NSLog(@"MGL INFO: Releasing current render encoder");
             [_renderPassManager clearCurrentRenderEncoder];
         }
 
+        [_renderPassManager setRuntimeContext:NULL];
         [_renderPassManager shutdown];
         _renderPassManager = nil;
 
+        mglRenderCppDetachRuntimeOwners(ctx);
         mglRenderCppUnregisterContextQueryStateOwner(ctx, _queryStateOwner);
         mglRenderCppDestroyQueryStateOwner(&_queryStateOwner);
         mglRenderCppDestroyCommandRecoveryOwner(

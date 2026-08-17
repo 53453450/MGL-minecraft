@@ -219,10 +219,6 @@ static inline double mglTraceNowSeconds(void)
      * Metal when the VS writes [[render_target_array_index]]). */
     GLenum _lastDrawPrimitiveMode;
     MGLBatchingState _batching;
-    /* Command buffer that needs waitUntilCompleted after METAL_UNLOCK.
-     * Set by flushCommandBufferLocked: when finish=true, consumed by
-     * flushCommandBuffer: after unlock.  GL is single-threaded so no race. */
-    id<MTLCommandBuffer> _pendingFinishCB;
     /* Cached current-vertex-attrib MTLBuffers.
      * Each slot caches the repeated (4096×) MTLBuffer built from
      * current_vertex_attrib[attrib], keyed on (attribBytes, stride).
@@ -248,14 +244,8 @@ static inline double mglTraceNowSeconds(void)
     id<MTLBuffer> _fragmentSizeBuffer;
     uint32_t      _fragmentSizeConstantsCache[31];
     BOOL          _fragmentSizeConstantsValid;
-    /* Track whether the current command buffer has any encoded work
-     * and the most recently committed CB.  When mtlFlush(ctx, true) is
-     * called and the current CB has no work, we can wait on _lastCommittedCB
-     * instead of committing an empty CB — Metal CBs on the same queue
-     * execute serially, so waiting on the last committed CB guarantees all
-     * prior GPU work is done.  This avoids a kernel-level commit + wait
-     * for redundant sync calls (e.g., repeated glFinish, buffer read maps). */
-    id<MTLCommandBuffer> _lastCommittedCB;
+    /* Track whether the current command buffer has encoded work. The C++
+     * CommandBufferOwner retains the most recent submission for glFinish. */
     BOOL                 _currentCBHasWork;
 }
 

@@ -107,7 +107,14 @@ GLsync mglFenceSync(GLMContext ctx, GLenum condition, GLbitfield flags)
     }
 
     ptr = newSync(ctx);
+    if (!ptr) {
+        return NULL;
+    }
 
+    /* The GL semantic layer drains deferred draws before the backend captures
+     * the fence command buffer. The gate-on callback can then submit and
+     * rotate the C++ owner without selector-forwarding into the renderer. */
+    mglFlushPendingDraws(ctx);
     ctx->mtl_funcs.mtlGetSync(ctx, ptr);
 
     /* register in sync_table so destroyGLMContext can release

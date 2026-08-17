@@ -43,8 +43,8 @@ static const char *kMGLLodBiasMSLName = "_mglLodBias";
 void mglLogRenderPassLifecycle(const char *tag,
                                uint64_t call,
                                GLMContext ctx,
-                               id<MTLCommandBuffer> commandBuffer,
-                               id<MTLRenderCommandEncoder> renderEncoder,
+                               void *commandBufferOwner,
+                               void *renderEncoderOwner,
                                MTLRenderPassDescriptor *renderPassDescriptor,
                                id<CAMetalDrawable> drawable,
                                Framebuffer *renderPassFramebuffer,
@@ -73,8 +73,8 @@ void mglLogLoopHeartbeat(const char *tag,
                          double warnGapSeconds);
 void mglLogStateSnapshot(const char *tag,
                          GLMContext ctx,
-                         id<MTLCommandBuffer> commandBuffer,
-                         id<MTLRenderCommandEncoder> renderEncoder,
+                         void *commandBufferOwner,
+                         void *renderEncoderOwner,
                          MTLRenderPassDescriptor *renderPassDescriptor,
                          id<CAMetalDrawable> drawable);
 Framebuffer *mglRendererGetValidatedFramebuffer(GLMContext ctx, const char *where);

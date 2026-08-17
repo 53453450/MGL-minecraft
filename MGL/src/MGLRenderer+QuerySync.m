@@ -9,8 +9,11 @@
 static void mglQuerySyncWaitCommandBuffer(MGLMetalCommandBufferRef commandBuffer)
 {
     if (mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
-        mglRenderCppGetDevice() != NULL &&
-        mglRenderCppWaitCommandBuffer((__bridge void *)commandBuffer) == 0) {
+        mglRenderCppGetDevice() != NULL) {
+        if (mglRenderCppWaitCommandBuffer(
+                (__bridge void *)commandBuffer) != 0) {
+            NSLog(@"MGL ERROR: Metal-cpp query/sync wait failed");
+        }
         return;
     }
     [commandBuffer waitUntilCompleted];
@@ -65,7 +68,18 @@ static void *mglQueryVisibilityBuffer(void *queryStateOwner)
      * they were encoded), matching GL semantics. */
     METAL_LOCK();
     @try {
-        MGLMetalRenderCommandEncoderRef encoder = (__bridge MGLMetalRenderCommandEncoderRef)mglRenderCppRenderEncoderOwnerGetCurrent(_renderPassManager.state->currentRenderEncoderOwner);
+        const BOOL useMetalCpp =
+            mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
+            mglRenderCppGetDevice() != NULL;
+        MGLMetalRenderCommandEncoderRef fallbackEncoder = useMetalCpp
+            ? nil
+            : (__bridge MGLMetalRenderCommandEncoderRef)
+                mglRenderCppRenderEncoderOwnerGetCurrentForFallback(
+                    _renderPassManager.state->currentRenderEncoderOwner);
+        const BOOL hasEncoder = useMetalCpp
+            ? mglRenderCppRenderEncoderOwnerHasCurrent(
+                  _renderPassManager.state->currentRenderEncoderOwner) == 1
+            : fallbackEncoder != nil;
         /* P4.1f: under gate-on the visibility buffer lives in the C++
          * RenderPassStateOwner; the ObjC descriptor mirror is nil. */
         BOOL hasVisibilityBuffer = NO;
@@ -80,13 +94,18 @@ static void *mglQueryVisibilityBuffer(void *queryStateOwner)
                 _renderPassManager.state->renderPassDescriptor
                     .visibilityResultBuffer != nil;
         }
-        if (encoder && hasVisibilityBuffer) {
+        if (hasEncoder && hasVisibilityBuffer) {
             uint32_t mode = 0;
             uint64_t offset = 0;
             if (mglRenderCppAcquireSampleQuerySlot(
                     _queryStateOwner, &mode, &offset) != 0 ||
-                mglRenderCppSetVisibilityResultMode(
-                    (__bridge void *)encoder, mode, offset) != 0) {
+                (useMetalCpp
+                    ? mglRenderCppSetVisibilityResultModeForRenderEncoderOwner(
+                          _renderPassManager.state->currentRenderEncoderOwner,
+                          mode, offset)
+                    : mglRenderCppSetVisibilityResultMode(
+                          (__bridge void *)fallbackEncoder,
+                          mode, offset)) != 0) {
                 [self endRenderEncodingLocked];
             }
         } else {
@@ -127,48 +146,30 @@ static void *mglQueryVisibilityBuffer(void *queryStateOwner)
 
 #pragma mark Metal GPU timer query (GL_TIME_ELAPSED / GL_TIMESTAMP)
 
-/* Called from glBeginQuery(GL_TIME_ELAPSED).  Flushes all pending GPU
- * work so the GPU is idle, then samples the GPU timestamp.  The timestamp
- * is stored by the C++ QueryStateOwner and used by mtlEndTimerQuery to compute
- * the elapsed GPU time.
- *
- * The flush ensures the begin timestamp is taken before any commands
- * submitted between begin/end reach the GPU.  This gives an accurate
- * measurement of GPU execution time for the bracketed commands. */
+/* Called after the GL query layer has established the ordering boundary for
+ * GL_TIME_ELAPSED. The fallback callback only samples the C++ query owner. */
 -(void)mtlBeginTimerQuery:(GLMContext)glm_ctx
 {
     (void)glm_ctx;
-    /* Flush and wait for all pending GPU work to complete so the GPU
-     * is idle when we sample the begin timestamp. */
-    [self flushCommandBuffer:YES];
     if (mglRenderCppBeginTimerQuery(_queryStateOwner) != 0) {
         NSLog(@"MGL ERROR: failed to begin Metal-cpp timer query");
     }
 }
 
-/* Called from glEndQuery(GL_TIME_ELAPSED).  Flushes all pending GPU work
- * (including any draws submitted between begin and end), waits for the
- * GPU to complete, then samples the end timestamp.  Returns the elapsed
- * GPU nanoseconds (end - begin). */
+/* Called after the GL query layer has flushed the bracketed work. */
 -(GLuint64)mtlEndTimerQuery:(GLMContext)glm_ctx
 {
     (void)glm_ctx;
-    /* Flush and wait for all GPU work submitted between begin and end. */
-    [self flushCommandBuffer:YES];
     uint64_t elapsed = 0;
     return mglRenderCppEndTimerQuery(
                _queryStateOwner, &elapsed) == 0 ? elapsed : 0;
 }
 
-/* Returns the current GPU timestamp in nanoseconds.  Used by
- * glQueryCounter(GL_TIMESTAMP).  Per the GL spec, the timestamp must be
- * recorded after all previously issued commands have completed, so we
- * flush the pending command buffer and wait for completion before
- * sampling the GPU timestamp. */
+/* Returns the current GPU timestamp after the GL query layer has flushed the
+ * ordering boundary required by glQueryCounter(GL_TIMESTAMP). */
 -(GLuint64)mtlGetGPUTimestamp:(GLMContext)glm_ctx
 {
     (void)glm_ctx;
-    [self flushCommandBuffer:YES];
     uint64_t cpuTimestamp = 0;
     uint64_t gpuTimestamp = 0;
     return mglRenderCppSampleTimestamps(
@@ -244,7 +245,6 @@ static void *mglQueryVisibilityBuffer(void *queryStateOwner)
 
         @try {
             [self commitCommandBufferWithAGXRecovery:cbToCommit];
-            _lastCommittedCB = cbToCommit;
         } @catch (NSException *exception) {
             NSLog(@"MGL ERROR: Failed to commit fence command buffer: %@", exception);
             [self recordGPUError];
