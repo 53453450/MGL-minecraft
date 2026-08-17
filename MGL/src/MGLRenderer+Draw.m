@@ -7,11 +7,6 @@
 #include "mgl_env_flag.h"
 #include "mgl_render_cpp.h"
 
-static BOOL mglDrawUsesMetalCpp(void)
-{
-    return mglRenderCppGetDevice() != NULL;
-}
-
 static MGLMetalRenderCommandEncoderRef mglDrawFallbackEncoder(void *owner)
 {
     (void)owner;
@@ -38,6 +33,7 @@ static void mglDrawPrimitives(MGLMetalRenderCommandEncoderRef encoder,
                               NSUInteger instanceCount,
                               NSUInteger baseInstance)
 {
+    (void)encoder;
     const MGLRenderCppDrawPlan plan = {
             .kind = MGL_RENDER_CPP_DRAW_ARRAY,
             .primitive_type = (uint32_t)primitiveType,
@@ -46,12 +42,8 @@ static void mglDrawPrimitives(MGLMetalRenderCommandEncoderRef encoder,
             .instance_count = instanceCount,
             .base_instance = baseInstance,
         };
-    if (mglDrawUsesMetalCpp()) {
-        (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
-            renderEncoderOwner, &plan, NULL, 0);
-    } else {
-        (void)mglRenderCppEncodeDraw((__bridge void *)encoder, &plan, NULL, 0);
-    }
+    (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
+        renderEncoderOwner, &plan, NULL, 0);
 }
 
 static void mglDrawIndexedPrimitives(MGLMetalRenderCommandEncoderRef encoder,
@@ -65,6 +57,7 @@ static void mglDrawIndexedPrimitives(MGLMetalRenderCommandEncoderRef encoder,
                                      NSInteger baseVertex,
                                      NSUInteger baseInstance)
 {
+    (void)encoder;
     const MGLRenderCppDrawPlan plan = {
             .kind = MGL_RENDER_CPP_DRAW_INDEXED,
             .primitive_type = (uint32_t)primitiveType,
@@ -76,12 +69,8 @@ static void mglDrawIndexedPrimitives(MGLMetalRenderCommandEncoderRef encoder,
             .base_vertex = baseVertex,
             .base_instance = baseInstance,
         };
-    if (mglDrawUsesMetalCpp()) {
-        (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
-            renderEncoderOwner, &plan, NULL, 0);
-    } else {
-        (void)mglRenderCppEncodeDraw((__bridge void *)encoder, &plan, NULL, 0);
-    }
+    (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
+        renderEncoderOwner, &plan, NULL, 0);
 }
 
 static void mglDrawPrimitivesIndirect(MGLMetalRenderCommandEncoderRef encoder,
@@ -90,18 +79,15 @@ static void mglDrawPrimitivesIndirect(MGLMetalRenderCommandEncoderRef encoder,
                                       MGLMetalBufferRef indirectBuffer,
                                       NSUInteger indirectBufferOffset)
 {
+    (void)encoder;
     const MGLRenderCppDrawPlan plan = {
             .kind = MGL_RENDER_CPP_DRAW_ARRAY_INDIRECT,
             .primitive_type = (uint32_t)primitiveType,
             .indirect_buffer = (__bridge void *)indirectBuffer,
             .indirect_buffer_offset = indirectBufferOffset,
         };
-    if (mglDrawUsesMetalCpp()) {
-        (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
-            renderEncoderOwner, &plan, NULL, 0);
-    } else {
-        (void)mglRenderCppEncodeDraw((__bridge void *)encoder, &plan, NULL, 0);
-    }
+    (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
+        renderEncoderOwner, &plan, NULL, 0);
 }
 
 static void mglDrawIndexedPrimitivesIndirect(
@@ -114,6 +100,7 @@ static void mglDrawIndexedPrimitivesIndirect(
     MGLMetalBufferRef indirectBuffer,
     NSUInteger indirectBufferOffset)
 {
+    (void)encoder;
     const MGLRenderCppDrawPlan plan = {
             .kind = MGL_RENDER_CPP_DRAW_INDEXED_INDIRECT,
             .primitive_type = (uint32_t)primitiveType,
@@ -123,12 +110,8 @@ static void mglDrawIndexedPrimitivesIndirect(
             .indirect_buffer = (__bridge void *)indirectBuffer,
             .indirect_buffer_offset = indirectBufferOffset,
         };
-    if (mglDrawUsesMetalCpp()) {
-        (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
-            renderEncoderOwner, &plan, NULL, 0);
-    } else {
-        (void)mglRenderCppEncodeDraw((__bridge void *)encoder, &plan, NULL, 0);
-    }
+    (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
+        renderEncoderOwner, &plan, NULL, 0);
 }
 
 /* === C helpers used by Draw and Batch methods === */
@@ -502,19 +485,11 @@ void mglRendererCallbackDraw(void *runtime_context,
         }
 
         @try {
-            if (mglRenderCppGetDevice()) {
-                if (mglRenderCppSetRenderPipelineStateForOwner(
-                        _renderPassManager.state->currentRenderEncoderOwner,
-                        (__bridge void *)_pipelineCache.state->pipelineState) != 0) {
-                    NSLog(@"MGL ERROR: mtlDrawArrays - C++ pipeline recovery setter failed");
-                    return;
-                }
-            } else {
-                MGLMetalRenderCommandEncoderRef recoveryEncoder =
-                    mglDrawFallbackEncoder(
-                        _renderPassManager.state->currentRenderEncoderOwner);
-                [recoveryEncoder setRenderPipelineState:
-                    _pipelineCache.state->pipelineState];
+            if (mglRenderCppSetRenderPipelineStateForOwner(
+                    _renderPassManager.state->currentRenderEncoderOwner,
+                    (__bridge void *)_pipelineCache.state->pipelineState) != 0) {
+                NSLog(@"MGL ERROR: mtlDrawArrays - C++ pipeline recovery setter failed");
+                return;
             }
             mglRenderCppBindingSetPipelineState(
                 _bindingStateOwner,
