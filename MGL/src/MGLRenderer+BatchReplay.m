@@ -53,7 +53,6 @@ static bool mglBatchReplayCollectResourceBinding(
 }
 
 static void mglBatchReplayDrawPrimitives(
-    MGLMetalRenderCommandEncoderRef encoder,
     void *renderEncoderOwner,
     MTLPrimitiveType primitiveType,
     NSUInteger vertexStart,
@@ -69,13 +68,11 @@ static void mglBatchReplayDrawPrimitives(
             .instance_count = instanceCount,
             .base_instance = baseInstance,
         };
-    (void)encoder;
     (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
         renderEncoderOwner, &plan, NULL, 0);
 }
 
 static void mglBatchReplayDrawIndexedPrimitives(
-    MGLMetalRenderCommandEncoderRef encoder,
     void *renderEncoderOwner,
     MTLPrimitiveType primitiveType,
     NSUInteger indexCount,
@@ -97,13 +94,11 @@ static void mglBatchReplayDrawIndexedPrimitives(
             .base_vertex = baseVertex,
             .base_instance = baseInstance,
         };
-    (void)encoder;
     (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
         renderEncoderOwner, &plan, NULL, 0);
 }
 
 static void mglBatchReplayDrawPrimitivesIndirect(
-    MGLMetalRenderCommandEncoderRef encoder,
     void *renderEncoderOwner,
     MTLPrimitiveType primitiveType,
     MGLMetalBufferRef indirectBuffer,
@@ -115,13 +110,11 @@ static void mglBatchReplayDrawPrimitivesIndirect(
             .indirect_buffer = (__bridge void *)indirectBuffer,
             .indirect_buffer_offset = indirectBufferOffset,
         };
-    (void)encoder;
     (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
         renderEncoderOwner, &plan, NULL, 0);
 }
 
 static void mglBatchReplayDrawIndexedPrimitivesIndirect(
-    MGLMetalRenderCommandEncoderRef encoder,
     void *renderEncoderOwner,
     MTLPrimitiveType primitiveType,
     MTLIndexType indexType,
@@ -139,7 +132,6 @@ static void mglBatchReplayDrawIndexedPrimitivesIndirect(
             .indirect_buffer = (__bridge void *)indirectBuffer,
             .indirect_buffer_offset = indirectBufferOffset,
         };
-    (void)encoder;
     (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
         renderEncoderOwner, &plan, NULL, 0);
 }
@@ -335,7 +327,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 continue;
             }
             mglBatchReplayDrawIndexedPrimitivesIndirect(
-                encCtx->encoder, encCtx->render_encoder_owner, primType,
+                encCtx->render_encoder_owner, primType,
                 drawIndexType, drawIndexBuffer,
                 drawIndexOffset, indirectArgsBuffer,
                 indirectArgsOffset + (i * argSize));
@@ -361,7 +353,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
 
         for (uint32_t i = 0; i < batch->command_count; i++) {
             mglBatchReplayDrawPrimitivesIndirect(
-                encCtx->encoder, encCtx->render_encoder_owner, primType,
+                encCtx->render_encoder_owner, primType,
                 indirectArgsBuffer,
                 indirectArgsOffset + (i * argSize));
             [self traceReplayCommand:batch
@@ -1358,7 +1350,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                                  explicitVertexCount:3u
                                       encodeContext:encCtx];
             mglBatchReplayDrawIndexedPrimitives(
-                encCtx->encoder, encCtx->render_encoder_owner,
+                encCtx->render_encoder_owner,
                 MTLPrimitiveTypeTriangle, 3u,
                 MTLIndexTypeUInt32, stripIndexBuffer,
                 primitive * 3u * sizeof(uint32_t), instanceCount, first,
@@ -1389,7 +1381,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                                  explicitVertexCount:3u
                                       encodeContext:encCtx];
             mglBatchReplayDrawIndexedPrimitives(
-                encCtx->encoder, encCtx->render_encoder_owner,
+                encCtx->render_encoder_owner,
                 MTLPrimitiveTypeTriangle, 3u,
                 MTLIndexTypeUInt32, fanIndexBuffer,
                 primitive * 3u * sizeof(uint32_t), instanceCount, first,
@@ -1406,7 +1398,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                                  explicitVertexCount:0u
                                       encodeContext:encCtx];
             mglBatchReplayDrawPrimitives(
-                encCtx->encoder, encCtx->render_encoder_owner,
+                encCtx->render_encoder_owner,
                 MTLPrimitiveTypeLine, first + primitive, 2u,
                 instanceCount, baseInstance);
         }
@@ -1435,7 +1427,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                                  explicitVertexCount:2u
                                       encodeContext:encCtx];
             mglBatchReplayDrawIndexedPrimitives(
-                encCtx->encoder, encCtx->render_encoder_owner,
+                encCtx->render_encoder_owner,
                 MTLPrimitiveTypeLine, 2u,
                 MTLIndexTypeUInt32, loopIndexBuffer,
                 primitive * sizeof(uint32_t), instanceCount, 0,
@@ -1495,7 +1487,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 _device, (NSUInteger)count, &fanCount);
             if (fanBuf && fanCount > 0) {
                 mglBatchReplayDrawIndexedPrimitives(
-                    encCtx->encoder, encCtx->render_encoder_owner,
+                    encCtx->render_encoder_owner,
                     MTLPrimitiveTypeTriangle, fanCount,
                     MTLIndexTypeUInt32, fanBuf, 0, 1, cmd->first, 0);
                 [self traceReplayCommand:batch
@@ -1533,7 +1525,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 _device, (NSUInteger)cmd->first, (NSUInteger)count, &loopCount);
             if (loopBuf && loopCount > 0) {
                 mglBatchReplayDrawIndexedPrimitives(
-                    encCtx->encoder, encCtx->render_encoder_owner,
+                    encCtx->render_encoder_owner,
                     MTLPrimitiveTypeLineStrip, loopCount,
                     MTLIndexTypeUInt32, loopBuf, 0, 1, 0, 0);
                 [self traceReplayCommand:batch
@@ -1600,7 +1592,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             }
         }
         mglBatchReplayDrawPrimitives(
-            encCtx->encoder, encCtx->render_encoder_owner, primType,
+            encCtx->render_encoder_owner, primType,
             cmd->first, count, 1, 0);
         [self traceReplayCommand:batch
                          command:cmd
@@ -1662,7 +1654,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 _device, (NSUInteger)count, &fanCount);
             if (fanBuf && fanCount > 0) {
                 mglBatchReplayDrawIndexedPrimitives(
-                    encCtx->encoder, encCtx->render_encoder_owner,
+                    encCtx->render_encoder_owner,
                     MTLPrimitiveTypeTriangle, fanCount,
                     MTLIndexTypeUInt32, fanBuf, 0, instanceCount,
                     cmd->first, 0);
@@ -1701,7 +1693,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 _device, (NSUInteger)cmd->first, (NSUInteger)count, &loopCount);
             if (loopBuf && loopCount > 0) {
                 mglBatchReplayDrawIndexedPrimitives(
-                    encCtx->encoder, encCtx->render_encoder_owner,
+                    encCtx->render_encoder_owner,
                     MTLPrimitiveTypeLineStrip, loopCount,
                     MTLIndexTypeUInt32, loopBuf, 0, instanceCount, 0, 0);
                 [self traceReplayCommand:batch
@@ -1758,7 +1750,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             }
         }
         mglBatchReplayDrawPrimitives(
-            encCtx->encoder, encCtx->render_encoder_owner, primType,
+            encCtx->render_encoder_owner, primType,
             cmd->first, count, instanceCount, 0);
         [self traceReplayCommand:batch
                          command:cmd
@@ -1821,7 +1813,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 _device, (NSUInteger)count, &fanCount);
             if (fanBuf && fanCount > 0) {
                 mglBatchReplayDrawIndexedPrimitives(
-                    encCtx->encoder, encCtx->render_encoder_owner,
+                    encCtx->render_encoder_owner,
                     MTLPrimitiveTypeTriangle, fanCount,
                     MTLIndexTypeUInt32, fanBuf, 0, instanceCount,
                     cmd->first, cmd->baseInstance);
@@ -1860,7 +1852,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 _device, (NSUInteger)cmd->first, (NSUInteger)count, &loopCount);
             if (loopBuf && loopCount > 0) {
                 mglBatchReplayDrawIndexedPrimitives(
-                    encCtx->encoder, encCtx->render_encoder_owner,
+                    encCtx->render_encoder_owner,
                     MTLPrimitiveTypeLineStrip, loopCount,
                     MTLIndexTypeUInt32, loopBuf, 0, instanceCount, 0,
                     cmd->baseInstance);
@@ -1918,7 +1910,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             }
         }
         mglBatchReplayDrawPrimitives(
-            encCtx->encoder, encCtx->render_encoder_owner, primType,
+            encCtx->render_encoder_owner, primType,
             cmd->first, count, instanceCount,
             cmd->baseInstance);
         [self traceReplayCommand:batch
@@ -2101,7 +2093,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             return;
         }
         mglBatchReplayDrawIndexedPrimitives(
-            encCtx->encoder, encCtx->render_encoder_owner, primType,
+            encCtx->render_encoder_owner, primType,
             count, drawIndexType, drawIndexBuffer,
             idxOffset, instanceCount, cmd->baseVertex, cmd->baseInstance);
         [self traceReplayCommand:batch
