@@ -106,8 +106,6 @@ typedef struct MGLGPURecoveryState_t {
 } MGLGPURecoveryState;
 
 typedef struct MGLResourceFallbackState_t {
-    NSMutableDictionary<NSNumber *, id<MTLTexture>> *__strong fallbackSampledTextureCache;
-    NSMutableDictionary<NSString *, id<MTLBuffer>> *__strong doubleVertexAttribBufferCache;
     MGLFragmentTextureTraceBinding fragmentTextureTraceBindings[TEXTURE_UNITS];
 } MGLResourceFallbackState;
 

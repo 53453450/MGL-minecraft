@@ -4702,21 +4702,4 @@ Buffer *getIndirectBuffer(GLMContext ctx)
 
 /* mtlMultiDrawElementsIndirect: (GLMContext)glm_ctx mode:(GLenum) mode type:(GLenum)type indirect:(const void *)indirect drawcount:(GLsizei) drawcount stride:(GLsizei)stride moved to MGLRenderer+Draw.m */
 
-/* FIFO eviction for auxiliary caches.  NSDictionary enumerates in
- * insertion order on recent macOS runtimes, so removing the first 1/4 of
- * allKeys evicts the oldest entries — matching the _pipelineCache.state->pipelineStateCache
- * strategy.  Called at each insertion site after the new entry is added. */
-- (void)mglCapAuxCache:(NSMutableDictionary *)cache
-                 limit:(NSUInteger)limit
-{
-    if (!cache || limit == 0) return;
-    if (cache.count <= limit) return;
-    NSArray *keys = cache.allKeys;
-    NSUInteger evictCount = keys.count / 4;
-    if (evictCount < 1) evictCount = 1;
-    for (NSUInteger i = 0; i < evictCount; i++) {
-        [cache removeObjectForKey:keys[i]];
-    }
-}
-
 @end

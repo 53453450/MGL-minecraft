@@ -8987,6 +8987,30 @@ static int verifyRendererBackend(id<MTLDevice> device) {
         return 1;
     }
     printf("RENDERER_BACKEND_FALLBACK_RESOURCES_OK\n");
+    void *cachedFallbackTexture = NULL;
+    if (mglRendererBackendGetFallbackSampledTexture(
+            backend, 7u, &cachedFallbackTexture) != 0 ||
+        cachedFallbackTexture != NULL) {
+        fprintf(stderr, "FAIL: renderer backend fallback texture miss\n");
+        return 1;
+    }
+    for (uint64_t key = 0; key < 33u; key++) {
+        if (mglRendererBackendPutFallbackSampledTexture(
+                backend, key, (__bridge void *)fallbackTexture) != 0) {
+            fprintf(stderr, "FAIL: renderer backend fallback texture put\n");
+            return 1;
+        }
+    }
+    if (mglRendererBackendGetFallbackSampledTexture(
+            backend, 0u, &cachedFallbackTexture) != 0 ||
+        cachedFallbackTexture != NULL ||
+        mglRendererBackendGetFallbackSampledTexture(
+            backend, 32u, &cachedFallbackTexture) != 1 ||
+        cachedFallbackTexture != (__bridge void *)fallbackTexture) {
+        fprintf(stderr, "FAIL: renderer backend fallback texture eviction\n");
+        return 1;
+    }
+    printf("RENDERER_BACKEND_FALLBACK_TEXTURE_CACHE_OK\n");
     MGLRendererBackendShutdownResult shutdown = {};
     if (mglRendererBackendShutdown(backend, &shutdown) != 0) {
         fprintf(stderr, "FAIL: renderer backend shutdown\n");

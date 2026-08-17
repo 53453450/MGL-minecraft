@@ -112,6 +112,12 @@ int mglRendererBackendSetFallbackResource(
 void *mglRendererBackendGetFallbackResource(
     const MGLRendererBackendHandle *backend,
     MGLRendererBackendFallbackResourceKind kind);
+int mglRendererBackendGetFallbackSampledTexture(
+    const MGLRendererBackendHandle *backend,
+    uint64_t key, void **texture_out);
+int mglRendererBackendPutFallbackSampledTexture(
+    MGLRendererBackendHandle *backend,
+    uint64_t key, void *texture);
 int mglRendererBackendIsDestroying(
     const MGLRendererBackendHandle *backend);
 void *mglRendererBackendGetOwner(const MGLRendererBackendHandle *backend,

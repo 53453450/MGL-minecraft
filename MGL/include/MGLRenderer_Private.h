@@ -258,13 +258,6 @@ static inline double mglTraceNowSeconds(void)
     BOOL                 _currentCBHasWork;
 }
 
-/* cap an auxiliary cache at `limit` entries with FIFO eviction of
- * the oldest 1/4 on overflow.  Mirrors the pipeline state cache eviction
- * strategy.  Keeps unbounded auxiliary caches (blit/clear/resolve pipelines,
- * fallback textures, double-vertex buffers) from growing without bound. */
-- (void)mglCapAuxCache:(NSMutableDictionary *)cache
-                 limit:(NSUInteger)limit;
-
 /* Methods called from MGLRenderer+Compute.m.
  * mapGLBuffersToMTLBufferMap:stage: now declared in MGLRenderer+Buffer_Private.h. */
 - (id<MTLBuffer>)isolatedStageBindingBufferForMap:(const BufferMap *)map

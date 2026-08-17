@@ -5865,15 +5865,15 @@ static void mglTextureCopyTextureToBuffer(
         pixelFormat = MTLPixelFormatDepth32Float;
     }
 
-    if (!_resourceFallback.fallbackSampledTextureCache) {
-        _resourceFallback.fallbackSampledTextureCache = [[NSMutableDictionary alloc] initWithCapacity:8];
-    }
-
     NSUInteger keyValue = (((NSUInteger)textureType) << 8u) | ((NSUInteger)dataKind);
-    NSNumber *key = @(keyValue);
-    MGLMetalTextureRef cached = _resourceFallback.fallbackSampledTextureCache[key];
-    if (cached) {
-        return cached;
+    void *cachedTexture = NULL;
+    int cacheResult = mglRendererBackendGetFallbackSampledTexture(
+        _backend, keyValue, &cachedTexture);
+    if (cacheResult == 1) {
+        return (__bridge MGLMetalTextureRef)cachedTexture;
+    }
+    if (cacheResult < 0) {
+        return nil;
     }
 
     MTLTextureDescriptor *desc = [MTLTextureDescriptor new];
@@ -5926,8 +5926,10 @@ static void mglTextureCopyTextureToBuffer(
             texture, region, 0, 0, &pixel, sizeof(pixel), 0, NO);
     }
 
-    _resourceFallback.fallbackSampledTextureCache[key] = texture;
-    [self mglCapAuxCache:_resourceFallback.fallbackSampledTextureCache limit:32];
+    if (mglRendererBackendPutFallbackSampledTexture(
+            _backend, keyValue, (__bridge void *)texture) != 0) {
+        return nil;
+    }
     NSLog(@"MGL INFO: Created %@ fallback sampled texture type=%lu format=%lu",
           [NSString stringWithUTF8String:mglTextureDataKindName(dataKind)],
           (unsigned long)textureType,

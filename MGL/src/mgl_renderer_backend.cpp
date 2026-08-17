@@ -4,6 +4,7 @@
 #include <array>
 #include <cstring>
 #include <mutex>
+#include <vector>
 
 #include "glm_context.h"
 #include "mgl_metal_cpp.h"
@@ -124,6 +125,11 @@ struct MGLRendererBackendSamplerSnapshotCache {
     uint16_t next = 0;
 };
 
+struct MGLRendererBackendFallbackTextureEntry {
+    uint64_t key = 0;
+    MTL::Texture *texture = nullptr;
+};
+
 struct MGLRendererBackendHandle {
     std::mutex mutex;
     GLMContext context = nullptr;
@@ -149,6 +155,8 @@ struct MGLRendererBackendHandle {
     MTL::Buffer *fallback_texture_buffer_storage = nullptr;
     MTL::Texture *fallback_sint_texture_buffer = nullptr;
     MTL::SamplerState *fallback_sampler = nullptr;
+    std::vector<MGLRendererBackendFallbackTextureEntry>
+        fallback_sampled_textures;
     bool renderer_initialized = false;
     bool shutdown_started = false;
     bool destroying = false;
@@ -227,6 +235,11 @@ static void mglRendererBackendReleaseOwnedState(
         backend->fallback_sampler->release();
         backend->fallback_sampler = nullptr;
     }
+    for (MGLRendererBackendFallbackTextureEntry &entry :
+         backend->fallback_sampled_textures) {
+        if (entry.texture) entry.texture->release();
+    }
+    backend->fallback_sampled_textures.clear();
     mglRenderCppDestroyCommandQueueOwner(&backend->command_queue_owner);
     mglRenderCppBindingDestroy(backend->binding_owner);
     backend->binding_owner = nullptr;
@@ -666,6 +679,55 @@ extern "C" void *mglRendererBackendGetFallbackResource(
             return backend->fallback_sampler;
     }
     return nullptr;
+}
+
+extern "C" int mglRendererBackendGetFallbackSampledTexture(
+    const MGLRendererBackendHandle *backend,
+    uint64_t key, void **texture_out)
+{
+    if (texture_out) *texture_out = nullptr;
+    if (!backend || !texture_out) return -1;
+    std::lock_guard<std::mutex> lock(
+        const_cast<MGLRendererBackendHandle *>(backend)->mutex);
+    for (const MGLRendererBackendFallbackTextureEntry &entry :
+         backend->fallback_sampled_textures) {
+        if (entry.key == key) {
+            *texture_out = entry.texture;
+            return entry.texture ? 1 : 0;
+        }
+    }
+    return 0;
+}
+
+extern "C" int mglRendererBackendPutFallbackSampledTexture(
+    MGLRendererBackendHandle *backend,
+    uint64_t key, void *texture)
+{
+    if (!backend || !texture) return -1;
+    std::lock_guard<std::mutex> lock(backend->mutex);
+    if (backend->destroying) return -1;
+    for (MGLRendererBackendFallbackTextureEntry &entry :
+         backend->fallback_sampled_textures) {
+        if (entry.key == key) {
+            mglRendererBackendReplaceObject(entry.texture, texture);
+            return 0;
+        }
+    }
+    MTL::Texture *retained = static_cast<MTL::Texture *>(texture);
+    retained->retain();
+    backend->fallback_sampled_textures.push_back({key, retained});
+    static constexpr size_t kFallbackSampledTextureCacheLimit = 32u;
+    if (backend->fallback_sampled_textures.size() >
+        kFallbackSampledTextureCacheLimit) {
+        size_t evict_count = backend->fallback_sampled_textures.size() / 4u;
+        for (size_t i = 0; i < evict_count; i++) {
+            backend->fallback_sampled_textures[i].texture->release();
+        }
+        backend->fallback_sampled_textures.erase(
+            backend->fallback_sampled_textures.begin(),
+            backend->fallback_sampled_textures.begin() + evict_count);
+    }
+    return 0;
 }
 
 extern "C" int mglRendererBackendIsDestroying(
