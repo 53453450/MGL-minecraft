@@ -9210,8 +9210,11 @@ static int verifyPlatformRendererShell(void) {
     NSView *view = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 8, 8)];
     MGLPlatformRendererShell *shell =
         [[MGLPlatformRendererShell alloc] initWithView:view];
+    NSObject *drawableToken = [[NSObject alloc] init];
+    shell.drawable = (id<CAMetalDrawable>)drawableToken;
     MGLPlatformRendererShellResult result = {};
     if (!shell || shell.view != view ||
+        shell.drawable != (id<CAMetalDrawable>)drawableToken ||
         [shell performOperation:smokePlatformOperation
                         context:reinterpret_cast<void *>(0x1234u)
                          result:&result] != 7 ||

@@ -67,7 +67,6 @@ typedef struct {
 } MGLStageBindingCopyBackList;
 
 typedef struct MGLRendererCoreState_t {
-    id<CAMetalDrawable> __strong drawable;
     GLMState *activeState;
     MGLCapability capability;
     MGLDrawable drawBuffers[_MAX_DRAW_BUFFERS];

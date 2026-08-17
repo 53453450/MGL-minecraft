@@ -17,6 +17,7 @@ typedef int (*MGLPlatformRendererShellOperation)(void *context);
 
 @property(nonatomic, strong) NSView *view;
 @property(nonatomic, strong) CAMetalLayer *layer;
+@property(nonatomic, strong) id<CAMetalDrawable> drawable;
 
 - (instancetype)initWithView:(NSView *)view;
 - (int)performOperation:(MGLPlatformRendererShellOperation)operation

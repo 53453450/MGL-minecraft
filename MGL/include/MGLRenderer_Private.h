@@ -323,7 +323,7 @@ static inline double mglTraceNowSeconds(void)
  * while shrinking MGLRenderer's ivar surface. */
 #define _view self.view
 #define _layer self.layer
-#define _drawable _core.drawable
+#define _drawable self.drawable
 #define _activeState _core.activeState
 #define _device ((__bridge id<MTLDevice>) \
     mglRendererBackendGetDevice(_backend))
