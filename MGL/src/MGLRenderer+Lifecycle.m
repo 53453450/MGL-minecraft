@@ -93,7 +93,6 @@ static int mglRendererInstallBackendCallbacks(
         .clear_buffer = mglRendererCallbackClearBuffer,
         .blit_framebuffer = mglRendererCallbackBlitFramebuffer,
         .resource = mglRendererCallbackResource,
-        .legacy = mglRendererCallbackLegacy,
     };
     void *retainedRenderer = (void *)CFBridgingRetain(renderer);
     void *runtime = NULL;
@@ -109,76 +108,6 @@ static int mglRendererInstallBackendCallbacks(
         return -1;
     }
     return 0;
-}
-
-uint64_t mglRendererCallbackLegacy(
-    void *runtime_context,
-    GLMContext glm_ctx,
-    const MGLRenderCppLegacyCallbackArgs *args)
-{
-    MGLRenderer *renderer = (__bridge MGLRenderer *)runtime_context;
-    if (!renderer || !glm_ctx || !args) return 0;
-
-    switch (args->kind) {
-        case MGL_RENDER_CPP_LEGACY_CALLBACK_BIND_BUFFER:
-            [renderer bindMTLBuffer:args->buffer];
-            return 0;
-        case MGL_RENDER_CPP_LEGACY_CALLBACK_BIND_PROGRAM:
-            return [renderer bindMTLProgram:args->program] ? 1u : 0u;
-        case MGL_RENDER_CPP_LEGACY_CALLBACK_DELETE_OBJECT:
-            [renderer mtlDeleteMTLObj:glm_ctx buffer:args->object];
-            return 0;
-        case MGL_RENDER_CPP_LEGACY_CALLBACK_GET_SYNC:
-            [renderer mtlGetSync:glm_ctx sync:args->sync];
-            return 0;
-        case MGL_RENDER_CPP_LEGACY_CALLBACK_WAIT_SYNC:
-            [renderer mtlWaitForSync:glm_ctx sync:args->sync];
-            return 0;
-        case MGL_RENDER_CPP_LEGACY_CALLBACK_GET_SYNC_STATUS:
-            return [renderer mtlGetSyncStatus:glm_ctx sync:args->sync];
-        case MGL_RENDER_CPP_LEGACY_CALLBACK_RELEASE_SYNC:
-            [renderer mtlReleaseSync:glm_ctx sync:args->sync];
-            return 0;
-        case MGL_RENDER_CPP_LEGACY_CALLBACK_FLUSH:
-            [renderer mtlFlush:glm_ctx finish:args->flag];
-            return 0;
-        case MGL_RENDER_CPP_LEGACY_CALLBACK_INVALIDATE_RENDER_PASS:
-            [renderer mtlInvalidateRenderPass:glm_ctx];
-            return 0;
-        case MGL_RENDER_CPP_LEGACY_CALLBACK_BUFFER_SUB_DATA:
-            [renderer mtlBufferSubData:glm_ctx buf:args->buffer
-                                offset:args->offset size:args->size
-                                   ptr:args->bytes];
-            return 0;
-        case MGL_RENDER_CPP_LEGACY_CALLBACK_MAP_UNMAP_BUFFER:
-            return (uint64_t)(uintptr_t)
-                [renderer mtlMapUnmapBuffer:glm_ctx buf:args->buffer
-                                     offset:args->offset size:args->size
-                                     access:args->value map:args->flag];
-        case MGL_RENDER_CPP_LEGACY_CALLBACK_READ_BACK_BUFFER:
-            [renderer mtlReadBackBuffer:glm_ctx buf:args->buffer
-                                 offset:args->offset size:args->size];
-            return 0;
-        case MGL_RENDER_CPP_LEGACY_CALLBACK_FLUSH_BUFFER_RANGE:
-            [renderer mtlFlushMappedBufferRange:glm_ctx buf:args->buffer
-                                         offset:args->signed_offset
-                                         length:args->signed_length];
-            return 0;
-        case MGL_RENDER_CPP_LEGACY_CALLBACK_BEGIN_TIMER_QUERY:
-            [renderer mtlBeginTimerQuery:glm_ctx];
-            return 0;
-        case MGL_RENDER_CPP_LEGACY_CALLBACK_END_TIMER_QUERY:
-            return [renderer mtlEndTimerQuery:glm_ctx];
-        case MGL_RENDER_CPP_LEGACY_CALLBACK_GET_GPU_TIMESTAMP:
-            return [renderer mtlGetGPUTimestamp:glm_ctx];
-        case MGL_RENDER_CPP_LEGACY_CALLBACK_BEGIN_SAMPLE_QUERY:
-            [renderer mtlBeginSampleQuery:glm_ctx target:args->value];
-            return 0;
-        case MGL_RENDER_CPP_LEGACY_CALLBACK_END_SAMPLE_QUERY:
-            return [renderer mtlEndSampleQuery:glm_ctx];
-        default:
-            return 0;
-    }
 }
 
 - (id) initMGLRendererFromContext: (void *)glm_ctx andBindToWindow: (NSWindow *)window;

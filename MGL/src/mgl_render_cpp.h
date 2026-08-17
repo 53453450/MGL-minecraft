@@ -75,7 +75,6 @@ void mglRenderCppInvalidateRenderPass(GLMContext glm_ctx);
 uint64_t mglRenderCppGetGPUTimestamp(GLMContext glm_ctx);
 typedef struct MGLRenderCppDrawCallbackArgs_t MGLRenderCppDrawCallbackArgs;
 typedef struct MGLRenderCppResourceCallbackArgs_t MGLRenderCppResourceCallbackArgs;
-typedef struct MGLRenderCppLegacyCallbackArgs_t MGLRenderCppLegacyCallbackArgs;
 
 typedef struct MGLRenderCppCallbackRuntimeOps_t {
     void (*release_context)(void *runtime_context);
@@ -114,9 +113,6 @@ typedef struct MGLRenderCppCallbackRuntimeOps_t {
     int (*resource)(void *runtime_context,
                     GLMContext glm_ctx,
                     const MGLRenderCppResourceCallbackArgs *args);
-    uint64_t (*legacy)(void *runtime_context,
-                       GLMContext glm_ctx,
-                       const MGLRenderCppLegacyCallbackArgs *args);
 } MGLRenderCppCallbackRuntimeOps;
 
 enum {
@@ -208,42 +204,6 @@ struct MGLRenderCppResourceCallbackArgs_t {
     int32_t destination_z;
 };
 
-enum {
-    MGL_RENDER_CPP_LEGACY_CALLBACK_BIND_BUFFER = 0,
-    MGL_RENDER_CPP_LEGACY_CALLBACK_BIND_PROGRAM = 1,
-    MGL_RENDER_CPP_LEGACY_CALLBACK_DELETE_OBJECT = 2,
-    MGL_RENDER_CPP_LEGACY_CALLBACK_GET_SYNC = 3,
-    MGL_RENDER_CPP_LEGACY_CALLBACK_WAIT_SYNC = 4,
-    MGL_RENDER_CPP_LEGACY_CALLBACK_GET_SYNC_STATUS = 5,
-    MGL_RENDER_CPP_LEGACY_CALLBACK_RELEASE_SYNC = 6,
-    MGL_RENDER_CPP_LEGACY_CALLBACK_FLUSH = 7,
-    MGL_RENDER_CPP_LEGACY_CALLBACK_INVALIDATE_RENDER_PASS = 8,
-    MGL_RENDER_CPP_LEGACY_CALLBACK_BUFFER_SUB_DATA = 9,
-    MGL_RENDER_CPP_LEGACY_CALLBACK_MAP_UNMAP_BUFFER = 10,
-    MGL_RENDER_CPP_LEGACY_CALLBACK_READ_BACK_BUFFER = 11,
-    MGL_RENDER_CPP_LEGACY_CALLBACK_FLUSH_BUFFER_RANGE = 12,
-    MGL_RENDER_CPP_LEGACY_CALLBACK_BEGIN_TIMER_QUERY = 13,
-    MGL_RENDER_CPP_LEGACY_CALLBACK_END_TIMER_QUERY = 14,
-    MGL_RENDER_CPP_LEGACY_CALLBACK_GET_GPU_TIMESTAMP = 15,
-    MGL_RENDER_CPP_LEGACY_CALLBACK_BEGIN_SAMPLE_QUERY = 16,
-    MGL_RENDER_CPP_LEGACY_CALLBACK_END_SAMPLE_QUERY = 17,
-};
-
-struct MGLRenderCppLegacyCallbackArgs_t {
-    uint32_t kind;
-    Buffer *buffer;
-    Program *program;
-    Sync *sync;
-    void *object;
-    const void *bytes;
-    size_t offset;
-    size_t size;
-    intptr_t signed_offset;
-    intptr_t signed_length;
-    uint32_t value;
-    bool flag;
-};
-
 int mglRenderCppCreateCallbackRuntime(
     void *runtime_context,
     const MGLRenderCppCallbackRuntimeOps *ops,
@@ -290,14 +250,6 @@ void mglRendererCallbackBlitFramebuffer(void *runtime_context,
 int mglRendererCallbackResource(void *runtime_context,
                                 GLMContext glm_ctx,
                                 const MGLRenderCppResourceCallbackArgs *args);
-uint64_t mglRendererCallbackLegacy(
-    void *runtime_context,
-    GLMContext glm_ctx,
-    const MGLRenderCppLegacyCallbackArgs *args);
-
-uint64_t mglRenderCppInvokeLegacyCallback(
-    GLMContext glm_ctx,
-    const MGLRenderCppLegacyCallbackArgs *args);
 void mglRenderCppInvokeBindTextureCallback(GLMContext glm_ctx,
                                            Texture *texture);
 void mglRenderCppInvokeFlushDrawBufferCallback(GLMContext glm_ctx);

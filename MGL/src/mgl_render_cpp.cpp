@@ -1996,14 +1996,6 @@ void mglRenderCppBindBuffer(GLMContext glm_ctx, Buffer* buffer) {
     int result = mglRenderCppBindBufferStorage(
         buffer, error, sizeof(error));
     if (result == MGL_RENDER_CPP_BUFFER_BOUND) return;
-    if (result == MGL_RENDER_CPP_BUFFER_NOT_APPLICABLE) {
-        MGLRenderCppLegacyCallbackArgs args = {
-            .kind = MGL_RENDER_CPP_LEGACY_CALLBACK_BIND_BUFFER,
-            .buffer = buffer,
-        };
-        (void)mglRenderCppInvokeLegacyCallback(glm_ctx, &args);
-        return;
-    }
     fprintf(stderr,
             "MGL ERROR: Metal-cpp buffer bind failed buffer=%u: %s\n",
             buffer ? (unsigned)buffer->name : 0u,
@@ -2094,17 +2086,6 @@ void mglRenderCppBufferSubData(GLMContext glm_ctx,
     int result = mglRenderCppBufferSubDataStorage(
         buffer, offset, size, bytes, error, sizeof(error));
     if (result == MGL_RENDER_CPP_BUFFER_OPERATION_HANDLED) return;
-    if (result == MGL_RENDER_CPP_BUFFER_OPERATION_NOT_APPLICABLE) {
-        MGLRenderCppLegacyCallbackArgs args = {
-            .kind = MGL_RENDER_CPP_LEGACY_CALLBACK_BUFFER_SUB_DATA,
-            .buffer = buffer,
-            .bytes = bytes,
-            .offset = offset,
-            .size = size,
-        };
-        (void)mglRenderCppInvokeLegacyCallback(glm_ctx, &args);
-        return;
-    }
     fprintf(stderr,
             "MGL ERROR: Metal-cpp buffer subdata failed buffer=%u: %s\n",
             buffer ? (unsigned)buffer->name : 0u,
@@ -2188,18 +2169,6 @@ void* mglRenderCppMapUnmapBuffer(GLMContext glm_ctx,
     int result = mglRenderCppMapBufferStorage(
         buffer, offset, size, access, map, &mapped, error, sizeof(error));
     if (result == MGL_RENDER_CPP_BUFFER_OPERATION_HANDLED) return mapped;
-    if (result == MGL_RENDER_CPP_BUFFER_OPERATION_NOT_APPLICABLE) {
-        MGLRenderCppLegacyCallbackArgs args = {
-            .kind = MGL_RENDER_CPP_LEGACY_CALLBACK_MAP_UNMAP_BUFFER,
-            .buffer = buffer,
-            .offset = offset,
-            .size = size,
-            .value = access,
-            .flag = map,
-        };
-        return reinterpret_cast<void*>(static_cast<uintptr_t>(
-            mglRenderCppInvokeLegacyCallback(glm_ctx, &args)));
-    }
     fprintf(stderr,
             "MGL ERROR: Metal-cpp buffer map failed buffer=%u: %s\n",
             buffer ? (unsigned)buffer->name : 0u,
@@ -2301,16 +2270,6 @@ void mglRenderCppFlushBufferRange(GLMContext glm_ctx,
     int result = mglRenderCppFlushBufferRangeStorage(
         buffer, offset, length, error, sizeof(error));
     if (result == MGL_RENDER_CPP_BUFFER_OPERATION_HANDLED) return;
-    if (result == MGL_RENDER_CPP_BUFFER_OPERATION_NOT_APPLICABLE) {
-        MGLRenderCppLegacyCallbackArgs args = {
-            .kind = MGL_RENDER_CPP_LEGACY_CALLBACK_FLUSH_BUFFER_RANGE,
-            .buffer = buffer,
-            .signed_offset = offset,
-            .signed_length = length,
-        };
-        (void)mglRenderCppInvokeLegacyCallback(glm_ctx, &args);
-        return;
-    }
     fprintf(stderr,
             "MGL ERROR: Metal-cpp buffer range flush failed buffer=%u: %s\n",
             buffer ? (unsigned)buffer->name : 0u,
@@ -2992,14 +2951,6 @@ int dispatchResourceCallback(GLMContext glm_ctx,
         : 0;
 }
 
-uint64_t dispatchLegacyCallback(GLMContext glm_ctx,
-                                const MGLRenderCppLegacyCallbackArgs& args) {
-    RendererCallbackRuntime* runtime = callbackRuntime(glm_ctx);
-    return runtime && runtime->ops.legacy
-        ? runtime->ops.legacy(runtime->context, glm_ctx, &args)
-        : 0;
-}
-
 void mglRenderCppBindTextureCallback(GLMContext glm_ctx, Texture* texture) {
     RendererCallbackRuntime* runtime = callbackRuntime(glm_ctx);
     if (!runtime || !runtime->ops.bind_texture) return;
@@ -3464,12 +3415,6 @@ void mglRenderCppMultiDrawElementsIndirectCallback(GLMContext glm_ctx,
 }
 
 }  // namespace
-
-uint64_t mglRenderCppInvokeLegacyCallback(
-    GLMContext glm_ctx,
-    const MGLRenderCppLegacyCallbackArgs* args) {
-    return args ? dispatchLegacyCallback(glm_ctx, *args) : 0;
-}
 
 void mglRenderCppInvokeBindTextureCallback(GLMContext glm_ctx,
                                            Texture* texture) {
