@@ -12,11 +12,6 @@
 #include "mgl_air_gs_abi.h"
 #include "mgl_air_tess_abi.h"
 
-static BOOL mglDrawSupportUsesMetalCpp(void)
-{
-    return mglRenderCppGetDevice() != NULL;
-}
-
 static MGLMetalRenderCommandEncoderRef mglDrawSupportFallbackEncoder(
     void *renderEncoderOwner)
 {
@@ -81,14 +76,13 @@ static MGLMetalBufferRef mglDrawSupportCreateBuffer(
     NSUInteger length,
     MTLResourceOptions options)
 {
-    if (mglDrawSupportUsesMetalCpp()) {
-        void *buffer = NULL;
-        if (mglRenderCppCreateBuffer(length, options, NULL, &buffer) == 0 &&
-            buffer) {
-            return (__bridge_transfer MGLMetalBufferRef)buffer;
-        }
+    (void)device;
+    void *buffer = NULL;
+    if (mglRenderCppCreateBuffer(length, options, NULL, &buffer) == 0 &&
+        buffer) {
+        return (__bridge_transfer MGLMetalBufferRef)buffer;
     }
-    return [device newBufferWithLength:length options:options];
+    return nil;
 }
 
 static MGLMetalBufferRef mglDrawSupportCreateBufferWithBytes(
@@ -97,14 +91,13 @@ static MGLMetalBufferRef mglDrawSupportCreateBufferWithBytes(
     NSUInteger length,
     MTLResourceOptions options)
 {
-    if (mglDrawSupportUsesMetalCpp()) {
-        void *buffer = NULL;
-        if (mglRenderCppCreateBufferWithBytes(bytes, length, options, NULL,
-                                              &buffer) == 0 && buffer) {
-            return (__bridge_transfer MGLMetalBufferRef)buffer;
-        }
+    (void)device;
+    void *buffer = NULL;
+    if (mglRenderCppCreateBufferWithBytes(bytes, length, options, NULL,
+                                          &buffer) == 0 && buffer) {
+        return (__bridge_transfer MGLMetalBufferRef)buffer;
     }
-    return [device newBufferWithBytes:bytes length:length options:options];
+    return nil;
 }
 
 static MGLMetalBlitCommandEncoderRef mglDrawSupportCreateBlitEncoder(
@@ -121,24 +114,14 @@ static void mglDrawSupportBlitCopyBuffer(MGLMetalBlitCommandEncoderRef encoder,
                                          NSUInteger destinationOffset,
                                          NSUInteger size)
 {
-    if (mglDrawSupportUsesMetalCpp()) {
-        (void)mglRenderCppBlitCopyBuffer(
-            (__bridge void *)encoder, (__bridge void *)source, sourceOffset,
-            (__bridge void *)destination, destinationOffset, size);
-        return;
-    }
-    [encoder copyFromBuffer:source sourceOffset:sourceOffset
-                   toBuffer:destination destinationOffset:destinationOffset
-                       size:size];
+    (void)mglRenderCppBlitCopyBuffer(
+        (__bridge void *)encoder, (__bridge void *)source, sourceOffset,
+        (__bridge void *)destination, destinationOffset, size);
 }
 
 static void mglDrawSupportEndBlitEncoder(MGLMetalBlitCommandEncoderRef encoder)
 {
-    if (mglDrawSupportUsesMetalCpp()) {
-        (void)mglRenderCppEndBlitEncoder((__bridge void *)encoder);
-        return;
-    }
-    [encoder endEncoding];
+    (void)mglRenderCppEndBlitEncoder((__bridge void *)encoder);
 }
 
 static void mglDrawSupportSetVertexBuffer(
@@ -148,13 +131,10 @@ static void mglDrawSupportSetVertexBuffer(
     NSUInteger offset,
     NSUInteger index)
 {
-    if (mglDrawSupportUsesMetalCpp()) {
-        (void)mglRenderCppSetRenderBufferForOwner(
-            renderEncoderOwner, (__bridge void *)buffer, offset,
-            MGL_RENDER_CPP_BINDING_STAGE_VERTEX, (uint32_t)index);
-        return;
-    }
-    [encoder setVertexBuffer:buffer offset:offset atIndex:index];
+    (void)encoder;
+    (void)mglRenderCppSetRenderBufferForOwner(
+        renderEncoderOwner, (__bridge void *)buffer, offset,
+        MGL_RENDER_CPP_BINDING_STAGE_VERTEX, (uint32_t)index);
 }
 
 static void mglDrawSupportSetVertexBytes(
@@ -164,13 +144,10 @@ static void mglDrawSupportSetVertexBytes(
     NSUInteger length,
     NSUInteger index)
 {
-    if (mglDrawSupportUsesMetalCpp()) {
-        (void)mglRenderCppSetRenderBytesForOwner(
-            renderEncoderOwner, bytes, length,
-            MGL_RENDER_CPP_BINDING_STAGE_VERTEX, (uint32_t)index);
-        return;
-    }
-    [encoder setVertexBytes:bytes length:length atIndex:index];
+    (void)encoder;
+    (void)mglRenderCppSetRenderBytesForOwner(
+        renderEncoderOwner, bytes, length,
+        MGL_RENDER_CPP_BINDING_STAGE_VERTEX, (uint32_t)index);
 }
 
 static void mglDrawSupportDrawIndexedPrimitives(
@@ -184,8 +161,8 @@ static void mglDrawSupportDrawIndexedPrimitives(
     NSInteger baseVertex,
     NSUInteger baseInstance)
 {
-    (void)(mglDrawSupportUsesMetalCpp()
-        ? mglRenderCppEncodeDrawForRenderEncoderOwner(renderEncoderOwner,
+    (void)encoder;
+    (void)mglRenderCppEncodeDrawForRenderEncoderOwner(renderEncoderOwner,
         &(MGLRenderCppDrawPlan){
             .kind = MGL_RENDER_CPP_DRAW_INDEXED,
             .primitive_type = (uint32_t)primitiveType,
@@ -196,19 +173,7 @@ static void mglDrawSupportDrawIndexedPrimitives(
             .instance_count = instanceCount,
             .base_vertex = baseVertex,
             .base_instance = baseInstance,
-        }, NULL, 0)
-        : mglRenderCppEncodeDraw((__bridge void *)encoder,
-        &(MGLRenderCppDrawPlan){
-            .kind = MGL_RENDER_CPP_DRAW_INDEXED,
-            .primitive_type = (uint32_t)primitiveType,
-            .index_count = indexCount,
-            .index_type = (uint32_t)MTLIndexTypeUInt32,
-            .index_buffer = (__bridge void *)indexBuffer,
-            .index_buffer_offset = indexBufferOffset,
-            .instance_count = instanceCount,
-            .base_vertex = baseVertex,
-            .base_instance = baseInstance,
-        }, NULL, 0));
+        }, NULL, 0);
 }
 
 /* Variant that honors the GL index type (UInt8/UInt16/UInt32).  Used by the
@@ -236,10 +201,9 @@ static void mglDrawSupportDrawIndexedPrimitivesType(
             .base_vertex = baseVertex,
             .base_instance = baseInstance,
         };
-    (void)(mglDrawSupportUsesMetalCpp()
-        ? mglRenderCppEncodeDrawForRenderEncoderOwner(
-              renderEncoderOwner, &plan, NULL, 0)
-        : mglRenderCppEncodeDraw((__bridge void *)encoder, &plan, NULL, 0));
+    (void)encoder;
+    (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
+        renderEncoderOwner, &plan, NULL, 0);
 }
 
 static void mglDrawSupportDrawPrimitives(
@@ -259,10 +223,9 @@ static void mglDrawSupportDrawPrimitives(
             .instance_count = instanceCount,
             .base_instance = baseInstance,
         };
-    (void)(mglDrawSupportUsesMetalCpp()
-        ? mglRenderCppEncodeDrawForRenderEncoderOwner(
-              renderEncoderOwner, &plan, NULL, 0)
-        : mglRenderCppEncodeDraw((__bridge void *)encoder, &plan, NULL, 0));
+    (void)encoder;
+    (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
+        renderEncoderOwner, &plan, NULL, 0);
 }
 
 static void mglDrawSupportDrawPrimitivesIndirect(
@@ -278,10 +241,9 @@ static void mglDrawSupportDrawPrimitivesIndirect(
             .indirect_buffer = (__bridge void *)indirectBuffer,
             .indirect_buffer_offset = indirectBufferOffset,
         };
-    (void)(mglDrawSupportUsesMetalCpp()
-        ? mglRenderCppEncodeDrawForRenderEncoderOwner(
-              renderEncoderOwner, &plan, NULL, 0)
-        : mglRenderCppEncodeDraw((__bridge void *)encoder, &plan, NULL, 0));
+    (void)encoder;
+    (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
+        renderEncoderOwner, &plan, NULL, 0);
 }
 
 static MGLMetalComputeCommandEncoderRef mglDrawSupportCreateComputeEncoder(
@@ -295,12 +257,8 @@ static void mglDrawSupportSetComputePipeline(
     MGLMetalComputeCommandEncoderRef encoder,
     MGLMetalComputePipelineStateRef pipeline)
 {
-    if (mglDrawSupportUsesMetalCpp()) {
-        (void)mglRenderCppSetComputePipelineState((__bridge void *)encoder,
-                                                  (__bridge void *)pipeline);
-        return;
-    }
-    [encoder setComputePipelineState:pipeline];
+    (void)mglRenderCppSetComputePipelineState((__bridge void *)encoder,
+                                              (__bridge void *)pipeline);
 }
 
 static void mglDrawSupportSetComputeBuffer(
@@ -309,13 +267,9 @@ static void mglDrawSupportSetComputeBuffer(
     NSUInteger offset,
     NSUInteger index)
 {
-    if (mglDrawSupportUsesMetalCpp()) {
-        (void)mglRenderCppSetComputeBuffer((__bridge void *)encoder,
-                                           (__bridge void *)buffer, offset,
-                                           (uint32_t)index);
-        return;
-    }
-    [encoder setBuffer:buffer offset:offset atIndex:index];
+    (void)mglRenderCppSetComputeBuffer((__bridge void *)encoder,
+                                       (__bridge void *)buffer, offset,
+                                       (uint32_t)index);
 }
 
 static void mglDrawSupportSetComputeBytes(
@@ -324,12 +278,8 @@ static void mglDrawSupportSetComputeBytes(
     NSUInteger length,
     NSUInteger index)
 {
-    if (mglDrawSupportUsesMetalCpp()) {
-        (void)mglRenderCppSetComputeBytes((__bridge void *)encoder, bytes,
-                                          length, (uint32_t)index);
-        return;
-    }
-    [encoder setBytes:bytes length:length atIndex:index];
+    (void)mglRenderCppSetComputeBytes((__bridge void *)encoder, bytes,
+                                      length, (uint32_t)index);
 }
 
 static void mglDrawSupportDispatchCompute(
@@ -337,25 +287,17 @@ static void mglDrawSupportDispatchCompute(
     MTLSize groups,
     MTLSize threads)
 {
-    if (mglDrawSupportUsesMetalCpp()) {
-        (void)mglRenderCppDispatchCompute(
-            (__bridge void *)encoder, (uint32_t)groups.width,
-            (uint32_t)groups.height, (uint32_t)groups.depth,
-            (uint32_t)threads.width, (uint32_t)threads.height,
-            (uint32_t)threads.depth);
-        return;
-    }
-    [encoder dispatchThreadgroups:groups threadsPerThreadgroup:threads];
+    (void)mglRenderCppDispatchCompute(
+        (__bridge void *)encoder, (uint32_t)groups.width,
+        (uint32_t)groups.height, (uint32_t)groups.depth,
+        (uint32_t)threads.width, (uint32_t)threads.height,
+        (uint32_t)threads.depth);
 }
 
 static void mglDrawSupportEndComputeEncoder(
     MGLMetalComputeCommandEncoderRef encoder)
 {
-    if (mglDrawSupportUsesMetalCpp()) {
-        (void)mglRenderCppEndComputeEncoder((__bridge void *)encoder);
-        return;
-    }
-    [encoder endEncoding];
+    (void)mglRenderCppEndComputeEncoder((__bridge void *)encoder);
 }
 
 static void mglDrawSupportSetTessellationFactors(
@@ -365,15 +307,9 @@ static void mglDrawSupportSetTessellationFactors(
     NSUInteger offset,
     NSUInteger instanceStride)
 {
-    if (mglDrawSupportUsesMetalCpp()) {
-        (void)mglRenderCppSetTessellationFactorBufferForOwner(
-            renderEncoderOwner, (__bridge void *)buffer, offset,
-            instanceStride);
-        return;
-    }
-    [encoder setTessellationFactorBuffer:buffer
-                                  offset:offset
-                          instanceStride:instanceStride];
+    (void)encoder;
+    (void)mglRenderCppSetTessellationFactorBufferForOwner(
+        renderEncoderOwner, (__bridge void *)buffer, offset, instanceStride);
 }
 
 static void mglDrawSupportDrawPatches(
@@ -398,10 +334,9 @@ static void mglDrawSupportDrawPatches(
             .instance_count = instanceCount,
             .base_instance = baseInstance,
         };
-    (void)(mglDrawSupportUsesMetalCpp()
-        ? mglRenderCppEncodeDrawForRenderEncoderOwner(
-              renderEncoderOwner, &plan, NULL, 0)
-        : mglRenderCppEncodeDraw((__bridge void *)encoder, &plan, NULL, 0));
+    (void)encoder;
+    (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
+        renderEncoderOwner, &plan, NULL, 0);
 }
 
 static void mglDrawSupportDrawIndexedPatches(
@@ -432,10 +367,9 @@ static void mglDrawSupportDrawIndexedPatches(
             .instance_count = instanceCount,
             .base_instance = baseInstance,
         };
-    (void)(mglDrawSupportUsesMetalCpp()
-        ? mglRenderCppEncodeDrawForRenderEncoderOwner(
-              renderEncoderOwner, &plan, NULL, 0)
-        : mglRenderCppEncodeDraw((__bridge void *)encoder, &plan, NULL, 0));
+    (void)encoder;
+    (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
+        renderEncoderOwner, &plan, NULL, 0);
 }
 
 extern void mglRecordActivePrimitiveQueryDraw(GLMContext ctx,
@@ -1602,7 +1536,7 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
                          GL_OUT_OF_MEMORY);
         return YES;
     }
-    const BOOL cppDispatch = mglDrawSupportUsesMetalCpp();
+    const BOOL cppDispatch = YES;
     MGLMetalComputeCommandEncoderRef compute = nil;
     MGLRenderCppComputeExecutionPlan executionPlan = {0};
     NSMutableArray *executionTemporaries = cppDispatch
