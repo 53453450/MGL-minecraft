@@ -2713,13 +2713,6 @@ int mglRenderCppSetRenderPassStateVisibility(
     uint32_t visibility_result_type);
 int mglRenderCppSetRenderPassStateDimensions(
     void *owner, uint64_t width, uint64_t height);
-/* P4.5: mirror-fallback color-attachment query（ObjC
- * mglRenderPassUsesColorTexture 迁入）。descriptor 为 MTL::RenderPassDescriptor*，
- * texture 为 MTL::Texture*；命中返回 1 并写 attachment_index_out，未命中 0；
- * 坏参返回 -1。 */
-int mglRenderCppRenderPassUsesColorTexture(void *render_pass_descriptor,
-                                           void *texture,
-                                           size_t *attachment_index_out);
 /* P4.5 (item 1141): pending shared-event slot inside the C++ owner.
  * `int` in these decls is GLsizei (GL signed 32-bit) — the C ABI matches. */
 int mglRenderCppCreatePendingEventOwner(void **owner_out);

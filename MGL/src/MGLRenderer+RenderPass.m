@@ -3227,7 +3227,6 @@ output->name, (unsigned)i,
                   i, (unsigned long)attTex.usage);
             NSUInteger clearLevel = 0u, clearSlice = 0u, clearDepthPlane = 0u;
             mglRenderPassAttachmentSubresourceForState(
-                _renderPassManager.state->renderPassDescriptor,
                 _renderPassManager.state->renderPassStateOwner,
                 MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, i,
                 &clearLevel, &clearSlice, &clearDepthPlane);
@@ -3246,7 +3245,6 @@ output->name, (unsigned)i,
                 NSLog(@"MGL WARNING: colorAttachment[0] missing; remapping colorAttachment[%d] -> [0]", i);
                 NSUInteger srcLevel = 0u, srcSlice = 0u, srcDepthPlane = 0u;
                 mglRenderPassAttachmentSubresourceForState(
-                    _renderPassManager.state->renderPassDescriptor,
                     _renderPassManager.state->renderPassStateOwner,
                     MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, i,
                     &srcLevel, &srcSlice, &srcDepthPlane);

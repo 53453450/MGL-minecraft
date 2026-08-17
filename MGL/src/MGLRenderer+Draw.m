@@ -527,15 +527,12 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
         MTLPixelFormat rpDepthFormat = MTLPixelFormatInvalid;
         MTLPixelFormat rpStencilFormat = MTLPixelFormatInvalid;
         MGLMetalTextureRef rpColor0 = mglRenderPassAttachmentTextureForState(
-            _renderPassManager.state->renderPassDescriptor,
             _renderPassManager.state->renderPassStateOwner,
             MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0);
         MGLMetalTextureRef rpDepth = mglRenderPassAttachmentTextureForState(
-            _renderPassManager.state->renderPassDescriptor,
             _renderPassManager.state->renderPassStateOwner,
             MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0);
         MGLMetalTextureRef rpStencil = mglRenderPassAttachmentTextureForState(
-            _renderPassManager.state->renderPassDescriptor,
             _renderPassManager.state->renderPassStateOwner,
             MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0);
         if (rpColor0) rpColor0Format = rpColor0.pixelFormat;

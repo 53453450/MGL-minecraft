@@ -3531,7 +3531,6 @@ void mglRendererCompatSwapBuffers(GLMContext glm_ctx)
         }
 
         id<MTLTexture> rpColor0 = mglRenderPassAttachmentTextureForState(
-            _renderPassManager.state->renderPassDescriptor,
             _renderPassManager.state->renderPassStateOwner,
             MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0);
         id<MTLTexture> drawableTexture = _drawable ? _drawable.texture : nil;
@@ -3989,17 +3988,14 @@ void mglRendererCompatClearBuffer(GLMContext glm_ctx,
             _renderPassManager.state->currentRenderEncoderOwner) == 1 &&
         [self currentRenderPassMatchesCurrentFramebuffer] &&
         !sampleQueryActive) {
-        if (_renderPassManager.state->renderPassStateOwner ||
-            _renderPassManager.state->renderPassDescriptor) {
+        if (_renderPassManager.state->renderPassStateOwner) {
             BOOL colorMatches = !wantsColor;
             if (wantsColor) {
                 id<MTLTexture> rpColor0 = mglRenderPassAttachmentTextureForState(
-                    _renderPassManager.state->renderPassDescriptor,
                     _renderPassManager.state->renderPassStateOwner,
                     MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0);
                 NSUInteger rpLevel = 0u, rpSlice = 0u, rpDepthPlane = 0u;
                 mglRenderPassAttachmentSubresourceForState(
-                    _renderPassManager.state->renderPassDescriptor,
                     _renderPassManager.state->renderPassStateOwner,
                     MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0,
                     &rpLevel, &rpSlice, &rpDepthPlane);
@@ -4010,12 +4006,10 @@ void mglRendererCompatClearBuffer(GLMContext glm_ctx,
             BOOL depthMatches = !wantsDepth;
             if (wantsDepth) {
                 id<MTLTexture> rpDepth = mglRenderPassAttachmentTextureForState(
-                    _renderPassManager.state->renderPassDescriptor,
                     _renderPassManager.state->renderPassStateOwner,
                     MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0);
                 NSUInteger rpLevel = 0u, rpSlice = 0u, rpDepthPlane = 0u;
                 mglRenderPassAttachmentSubresourceForState(
-                    _renderPassManager.state->renderPassDescriptor,
                     _renderPassManager.state->renderPassStateOwner,
                     MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0,
                     &rpLevel, &rpSlice, &rpDepthPlane);

@@ -2283,13 +2283,11 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
     NSUInteger passWidth = 0;
     NSUInteger passHeight = 0;
     mglRenderPassRenderTargetSizeForState(
-        _renderPassManager.state->renderPassDescriptor,
         _renderPassManager.state->renderPassStateOwner,
         &passWidth, &passHeight);
     if (passWidth == 0 || passHeight == 0) {
         for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
             MGLMetalTextureRef color = mglRenderPassAttachmentTextureForState(
-                _renderPassManager.state->renderPassDescriptor,
                 _renderPassManager.state->renderPassStateOwner,
                 MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, i);
             if (color) {
@@ -2300,7 +2298,6 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
         }
         if (passWidth == 0 || passHeight == 0) {
             MGLMetalTextureRef depth = mglRenderPassAttachmentTextureForState(
-                _renderPassManager.state->renderPassDescriptor,
                 _renderPassManager.state->renderPassStateOwner,
                 MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0);
             if (depth) {
@@ -2310,7 +2307,6 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
         }
         if (passWidth == 0 || passHeight == 0) {
             MGLMetalTextureRef stencil = mglRenderPassAttachmentTextureForState(
-                _renderPassManager.state->renderPassDescriptor,
                 _renderPassManager.state->renderPassStateOwner,
                 MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0);
             if (stencil) {
