@@ -107,10 +107,7 @@ static void mglRenderPassManagerStoreIdentity(
 
 - (MGLMetalCommandBufferRef)installNewCommandBufferFromQueue:(MGLMetalCommandQueueRef)commandQueue
 {
-    /* P4.5 (item 1141): the C++ CommandBufferOwner is the single source on
-     * BOTH gates — the ObjC mirror is gone.  If owner creation fails, the
-     * fallback adopts the ObjC-created buffer so reads via the getter stay
-     * correct. */
+    /* The C++ CommandBufferOwner is the only command-buffer creation path. */
     MGLMetalCommandBufferRef commandBuffer = nil;
     if (commandQueue) {
         commandBuffer = mglRenderCppCreateOrResetCommandBufferOwner(
@@ -119,13 +116,6 @@ static void mglRenderPassManagerStoreIdentity(
     if (!commandBuffer) {
         mglRenderCppDestroyCommandBufferOwner(
             &_state.currentCommandBufferOwner);
-        commandBuffer = commandQueue ? [commandQueue commandBuffer] : nil;
-        if (commandBuffer &&
-            mglRenderCppCreateCommandBufferOwnerAdopt(
-                (__bridge void *)commandBuffer,
-                &_state.currentCommandBufferOwner) != 0) {
-            commandBuffer = nil;
-        }
     }
     [self resetMDIScratch];
     mglRenderPassManagerSyncRuntimeOwners(&_state);

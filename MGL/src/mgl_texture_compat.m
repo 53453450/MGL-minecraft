@@ -48,34 +48,22 @@ static MGLMetalTextureRef mglTextureCompatCreateView(
     BOOL useSwizzle,
     MTLTextureSwizzleChannels swizzle)
 {
-    if (mglRenderCppGetDevice() != NULL) {
-        void *view = NULL;
-        if (mglRenderCppCreateTextureViewRange(
-                (__bridge void *)texture,
-                (uint32_t)texture.pixelFormat,
-                (uint32_t)texture.textureType,
-                levels.location, levels.length,
-                slices.location, slices.length,
-                useSwizzle ? 1 : 0,
-                (uint32_t)swizzle.red,
-                (uint32_t)swizzle.green,
-                (uint32_t)swizzle.blue,
-                (uint32_t)swizzle.alpha,
-                &view) == 0 && view) {
-            return (__bridge_transfer MGLMetalTextureRef)view;
-        }
+    void *view = NULL;
+    if (mglRenderCppCreateTextureViewRange(
+            (__bridge void *)texture,
+            (uint32_t)texture.pixelFormat,
+            (uint32_t)texture.textureType,
+            levels.location, levels.length,
+            slices.location, slices.length,
+            useSwizzle ? 1 : 0,
+            (uint32_t)swizzle.red,
+            (uint32_t)swizzle.green,
+            (uint32_t)swizzle.blue,
+            (uint32_t)swizzle.alpha,
+            &view) == 0 && view) {
+        return (__bridge_transfer MGLMetalTextureRef)view;
     }
-    if (useSwizzle) {
-        return [texture newTextureViewWithPixelFormat:texture.pixelFormat
-                                          textureType:texture.textureType
-                                               levels:levels
-                                               slices:slices
-                                              swizzle:swizzle];
-    }
-    return [texture newTextureViewWithPixelFormat:texture.pixelFormat
-                                      textureType:texture.textureType
-                                           levels:levels
-                                           slices:slices];
+    return nil;
 }
 
 static bool mglTextureMinFilterUsesMipmaps(GLenum minFilter)

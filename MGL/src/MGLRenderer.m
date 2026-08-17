@@ -73,15 +73,13 @@ static id<MTLTexture> mglRendererCreateTextureView(
     id<MTLTexture> texture,
     MTLPixelFormat pixelFormat)
 {
-    if (mglRenderCppGetDevice() != NULL) {
-        void *view = NULL;
-        if (mglRenderCppCreateTextureView(
-                (__bridge void *)texture, (uint32_t)pixelFormat,
-                &view) == 0 && view) {
-            return (__bridge_transfer id<MTLTexture>)view;
-        }
+    void *view = NULL;
+    if (mglRenderCppCreateTextureView(
+            (__bridge void *)texture, (uint32_t)pixelFormat,
+            &view) == 0 && view) {
+        return (__bridge_transfer id<MTLTexture>)view;
     }
-    return [texture newTextureViewWithPixelFormat:pixelFormat];
+    return nil;
 }
 
 // Applies GL_FRAMEBUFFER_SRGB state to a render-target texture by creating

@@ -36,16 +36,15 @@ static id<MTLTexture> mglLifecycleCreateTexture(
     id<MTLDevice> device,
     MTLTextureDescriptor *descriptor)
 {
-    if (mglRenderCppGetDevice() != NULL) {
-        void *texture = NULL;
-        MGLRenderCppTextureDescriptorState state =
-            mglRenderCppTextureDescriptorStateFromObjC(descriptor);
-        if (mglRenderCppCreateTextureFromState(&state, NULL, &texture) == 0 &&
-            texture) {
-            return (__bridge_transfer id<MTLTexture>)texture;
-        }
+    (void)device;
+    void *texture = NULL;
+    MGLRenderCppTextureDescriptorState state =
+        mglRenderCppTextureDescriptorStateFromObjC(descriptor);
+    if (mglRenderCppCreateTextureFromState(&state, NULL, &texture) == 0 &&
+        texture) {
+        return (__bridge_transfer id<MTLTexture>)texture;
     }
-    return [device newTextureWithDescriptor:descriptor];
+    return nil;
 }
 
 static void mglLifecycleReplaceTextureRegion(id<MTLTexture> texture,
@@ -54,16 +53,14 @@ static void mglLifecycleReplaceTextureRegion(id<MTLTexture> texture,
                                              const void *bytes,
                                              NSUInteger bytesPerRow)
 {
-    if (mglRenderCppGetDevice() != NULL &&
-        mglRenderCppTextureReplaceRegion(
+    if (mglRenderCppTextureReplaceRegion(
             (__bridge void *)texture,
             region.origin.x, region.origin.y, region.origin.z,
             region.size.width, region.size.height, region.size.depth,
             level, 0, bytes, bytesPerRow, 0, 0) == 0) {
         return;
     }
-    [texture replaceRegion:region mipmapLevel:level withBytes:bytes
-                bytesPerRow:bytesPerRow];
+    NSLog(@"MGL ERROR: proactive texture upload failed through Metal-cpp");
 }
 
 @implementation MGLRenderer (Lifecycle)

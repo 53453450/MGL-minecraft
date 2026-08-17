@@ -19,16 +19,14 @@
 static MGLMetalBufferRef mglIndexCreateBuffer(MGLMetalDeviceRef device,
                                           NSUInteger length)
 {
-    if (mglRenderCppGetDevice() != NULL) {
-        void *buffer = NULL;
-        if (mglRenderCppCreateBuffer(
-                length, MTLResourceStorageModeShared, NULL, &buffer) == 0 &&
-            buffer) {
-            return (__bridge_transfer MGLMetalBufferRef)buffer;
-        }
+    (void)device;
+    void *buffer = NULL;
+    if (mglRenderCppCreateBuffer(
+            length, MTLResourceStorageModeShared, NULL, &buffer) == 0 &&
+        buffer) {
+        return (__bridge_transfer MGLMetalBufferRef)buffer;
     }
-    return [device newBufferWithLength:length
-                               options:MTLResourceStorageModeShared];
+    return nil;
 }
 
 /* Allocate the MTLBuffer up front and write indices directly into its

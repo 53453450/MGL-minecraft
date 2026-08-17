@@ -281,18 +281,7 @@ mglRenderCppTextureDescriptorStateFromObjC(MTLTextureDescriptor *descriptor)
     return state;
 }
 
-/* === P4.1f: owner-first render-pass state readers ===
- *
- * Gate-on render-pass state lives in the C++ RenderPassStateOwner; the ObjC
- * MTLRenderPassDescriptor mirror is nil under gate-on.  These single gate
- * check and owner-first readers are the one shared source of truth for
- * category files (RenderPass/Batch/Draw/DrawSupport/BindingState/QuerySync/
- * MGLRenderer.m).  They consult the C++ owner first and fall back to the
- * descriptor mirror for the gate-off A/B baseline. */
-static inline BOOL mglRenderPassUsesMetalCpp(void)
-{
-    return mglRenderCppGetDevice() != NULL;
-}
+/* === Owner-first render-pass state readers === */
 
 static inline BOOL mglRenderCppGetRenderPassState(
     void *renderPassStateOwner,
