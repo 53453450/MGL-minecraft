@@ -139,6 +139,11 @@ int mglRendererBackendSetTessVertexCaptureBuffer(
 /* Returns the borrowed VS capture buffer owned by the backend. */
 void *mglRendererBackendGetTessVertexCaptureBuffer(
     const MGLRendererBackendHandle *backend);
+int mglRendererBackendSetTcsPatchOutBuffer(
+    MGLRendererBackendHandle *backend, void *buffer);
+/* Returns the borrowed TCS per-patch output buffer owned by the backend. */
+void *mglRendererBackendGetTcsPatchOutBuffer(
+    const MGLRendererBackendHandle *backend);
 int mglRendererBackendSetFallbackResource(
     MGLRendererBackendHandle *backend,
     MGLRendererBackendFallbackResourceKind kind, void *resource);

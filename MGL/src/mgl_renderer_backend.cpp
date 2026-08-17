@@ -159,6 +159,7 @@ struct MGLRendererBackendHandle {
     MTL::Buffer *cull_distance_capture_buffer = nullptr;
     MTL::Buffer *tess_control_point_index_buffer = nullptr;
     MTL::Buffer *tess_vertex_capture_buffer = nullptr;
+    MTL::Buffer *tcs_patch_out_buffer = nullptr;
     MTL::Texture *fallback_sampled_texture = nullptr;
     MTL::Texture *fallback_cube_sampled_texture = nullptr;
     MTL::Buffer *fallback_texture_buffer_storage = nullptr;
@@ -246,6 +247,10 @@ static void mglRendererBackendReleaseOwnedState(
     if (backend->tess_vertex_capture_buffer) {
         backend->tess_vertex_capture_buffer->release();
         backend->tess_vertex_capture_buffer = nullptr;
+    }
+    if (backend->tcs_patch_out_buffer) {
+        backend->tcs_patch_out_buffer->release();
+        backend->tcs_patch_out_buffer = nullptr;
     }
     if (backend->fallback_sampled_texture) {
         backend->fallback_sampled_texture->release();
@@ -807,6 +812,25 @@ extern "C" void *mglRendererBackendGetTessVertexCaptureBuffer(
     std::lock_guard<std::mutex> lock(
         const_cast<MGLRendererBackendHandle *>(backend)->mutex);
     return backend->tess_vertex_capture_buffer;
+}
+
+extern "C" int mglRendererBackendSetTcsPatchOutBuffer(
+    MGLRendererBackendHandle *backend, void *buffer)
+{
+    if (!backend) return -1;
+    std::lock_guard<std::mutex> lock(backend->mutex);
+    if (backend->destroying) return -1;
+    mglRendererBackendReplaceObject(backend->tcs_patch_out_buffer, buffer);
+    return 0;
+}
+
+extern "C" void *mglRendererBackendGetTcsPatchOutBuffer(
+    const MGLRendererBackendHandle *backend)
+{
+    if (!backend) return nullptr;
+    std::lock_guard<std::mutex> lock(
+        const_cast<MGLRendererBackendHandle *>(backend)->mutex);
+    return backend->tcs_patch_out_buffer;
 }
 
 extern "C" int mglRendererBackendSetFallbackResource(

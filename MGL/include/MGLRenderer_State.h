@@ -107,7 +107,6 @@ typedef struct MGLResourceFallbackState_t {
 typedef struct MGLTessellationState_t {
     id<MTLBuffer> __strong tessFactorBuffer;
     id<MTLBuffer> __strong tcsOutputBuffer;
-    id<MTLBuffer> __strong tcsPatchOutBuffer;
     NSUInteger tessVertexCaptureOffset;
     BOOL tessVertexCaptureActive;
     BOOL cullDistanceCaptureActive;

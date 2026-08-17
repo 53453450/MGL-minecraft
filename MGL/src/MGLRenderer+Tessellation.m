@@ -1051,17 +1051,19 @@ typedef struct {
         tcsPatchStride = mglAIRPatchVaryingStride(outs);
     }
     NSUInteger tcsPatchSize = (NSUInteger)patchCountTC * tcsPatchStride;
-    _tessellation.tcsPatchOutBuffer = mglTessCreateBuffer(
+    MGLMetalBufferRef tcsPatchOutBuffer = mglTessCreateBuffer(
         _device, tcsPatchSize, MTLResourceStorageModeShared);
-    if (!_tessellation.tcsPatchOutBuffer || !_tessellation.tcsPatchOutBuffer.contents) {
+    (void)mglRendererBackendSetTcsPatchOutBuffer(
+        _backend, (__bridge void *)tcsPatchOutBuffer);
+    if (!tcsPatchOutBuffer || !tcsPatchOutBuffer.contents) {
         [self clearStageBindingCopyBacks:&stageCopyBacks];
         return false;
     }
-    memset(_tessellation.tcsPatchOutBuffer.contents, 0, tcsPatchSize);
+    memset(tcsPatchOutBuffer.contents, 0, tcsPatchSize);
     if (!mglTessPlanBufferOrBind(
             &executionPlan,
             executionTemporaries, computeEncoder,
-            _tessellation.tcsPatchOutBuffer, 0,
+            tcsPatchOutBuffer, 0,
             MGL_AIR_TESS_SLOT_PATCH_OUT)) {
         [self clearStageBindingCopyBacks:&stageCopyBacks];
         return false;
@@ -1467,7 +1469,8 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     NSMutableArray *executionTemporaries = [NSMutableArray array];
     MGLMetalComputeCommandEncoderRef computeEncoder = nil;
     executionPlan.pipeline = (__bridge void *)tesPipeline;
-    MGLMetalBufferRef patchInputs = _tessellation.tcsPatchOutBuffer;
+    MGLMetalBufferRef patchInputs = (__bridge MGLMetalBufferRef)
+        mglRendererBackendGetTcsPatchOutBuffer(_backend);
     if (!mglTessPlanBufferOrBind(
             &executionPlan,
             executionTemporaries, computeEncoder,
@@ -2312,11 +2315,13 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
      * reads patchIn[...] from buffer(27).  Note: buffer 27 is reused for both
      * TCS spvPatchOut and TES patchIn, which is correct since the data flows
      * TCS → TES. */
-    if (_tessellation.tcsPatchOutBuffer) {
+    MGLMetalBufferRef tcsPatchOutBuffer = (__bridge MGLMetalBufferRef)
+        mglRendererBackendGetTcsPatchOutBuffer(_backend);
+    if (tcsPatchOutBuffer) {
         if (!mglTessPlanBufferOrBind(
                 &executionPlan,
                 executionTemporaries, computeEncoder,
-                _tessellation.tcsPatchOutBuffer, 0,
+                tcsPatchOutBuffer, 0,
                 MGL_AIR_TESS_SLOT_PATCH_OUT)) {
             [self clearStageBindingCopyBacks:&stageCopyBacks];
             return false;

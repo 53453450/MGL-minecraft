@@ -2867,11 +2867,15 @@ static GLuint64 mglNativeTessPrimitiveCount(MGLMetalBufferRef canonical,
                 if (patchInfo[1] == 0u) patchInfo[1] = patchVertices;
                 mglDrawSupportSetVertexBytes(
                     _renderPassManager.state->currentRenderEncoderOwner, patchInfo, sizeof(patchInfo), 28u);
-                if (_tessellation.tcsPatchOutBuffer) {
+                MGLMetalBufferRef tcsPatchOutBuffer =
+                    (__bridge MGLMetalBufferRef)
+                        mglRendererBackendGetTcsPatchOutBuffer(_backend);
+                if (tcsPatchOutBuffer) {
                     mglDrawSupportSetVertexBuffer(
-                        _renderPassManager.state->currentRenderEncoderOwner, _tessellation.tcsPatchOutBuffer, 0u, 27u);
+                        _renderPassManager.state->currentRenderEncoderOwner,
+                        tcsPatchOutBuffer, 0u, 27u);
                     [self recordLastBoundVertexBuffer:
-                              _tessellation.tcsPatchOutBuffer
+                              tcsPatchOutBuffer
                                                offset:0u
                                               atIndex:27u];
                 }
