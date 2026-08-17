@@ -2,49 +2,11 @@
 // Buffer/vertex data operations (GL buffer -> Metal mapping, dirty-buffer
 // updates, vertex attribute conversion) extracted from MGLRenderer.m
 
-#import <objc/runtime.h>
-
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+Buffer_Private.h"
 #import "mgl_buffer_plan.h"
 #include "mgl_env_flag.h"
 #include "mgl_render_cpp.h"
-
-static BOOL mglBufferUsesMetalCpp(void)
-{
-    return mglRenderCppGetDevice() != NULL;
-}
-
-static MGLMetalBufferRef mglBufferCreate(
-    MGLMetalDeviceRef device,
-    NSUInteger length,
-    MTLResourceOptions options)
-{
-    if (mglBufferUsesMetalCpp()) {
-        void *buffer = NULL;
-        if (mglRenderCppCreateBuffer(length, options, NULL, &buffer) == 0 &&
-            buffer) {
-            return (__bridge_transfer MGLMetalBufferRef)buffer;
-        }
-    }
-    return [device newBufferWithLength:length options:options];
-}
-
-static MGLMetalBufferRef mglBufferCreateWithBytes(
-    MGLMetalDeviceRef device,
-    const void *bytes,
-    NSUInteger length,
-    MTLResourceOptions options)
-{
-    if (mglBufferUsesMetalCpp()) {
-        void *buffer = NULL;
-        if (mglRenderCppCreateBufferWithBytes(bytes, length, options, NULL,
-                                              &buffer) == 0 && buffer) {
-            return (__bridge_transfer MGLMetalBufferRef)buffer;
-        }
-    }
-    return [device newBufferWithBytes:bytes length:length options:options];
-}
 
 static MGLMetalBufferRef mglBufferCreateConvertedVertexBuffer(
     Buffer *sourceBuffer,
@@ -84,52 +46,6 @@ static MGLMetalBufferRef mglBufferCreateConvertedVertexBuffer(
     return (__bridge_transfer MGLMetalBufferRef)convertedBuffer;
 }
 
-// CRITICAL SECURITY: Safe Metal object validation helper
-static inline id<NSObject> SafeMetalBridge(void *ptr, Class expectedClass, const char *objectName) {
-    if (!ptr) {
-        NSLog(@"MGL SECURITY ERROR: NULL pointer for %s", objectName);
-        return nil;
-    }
-
-    id<NSObject> obj = (__bridge id<NSObject>)(ptr);
-    if (!obj) {
-        NSLog(@"MGL SECURITY ERROR: Metal bridge cast returned nil for %s", objectName);
-        return nil;
-    }
-
-    if (expectedClass && [obj isKindOfClass:expectedClass] == NO) {
-        NSLog(@"MGL SECURITY ERROR: Metal object is not valid %s (got %@)", objectName, NSStringFromClass([obj class]));
-        return nil;
-    }
-
-    return obj;
-}
-
-/* ---- 11-bit / 10-bit unsigned float unpacking ----
- * Used to decode GL_UNSIGNED_INT_10F_11F_11F_REV vertex data on the CPU.
- * These are unsigned floating-point formats (no sign bit) sharing the same
- * 5-bit exponent bias (15) as half-float, with 6 or 5 mantissa bits.
- * P4.5 (item 1141/887): single source of truth is
- * mglRenderCppFloat11ToFloat / mglRenderCppFloat10ToFloat
- * (mgl_render_cpp.cpp) — these shells keep the three packed-conversion
- * call sites unchanged. */
-
-static float mglFloat11ToFloat(uint32_t val) {
-    return mglRenderCppFloat11ToFloat(val);
-}
-
-static float mglFloat10ToFloat(uint32_t val) {
-    return mglRenderCppFloat10ToFloat(val);
-}
-
-@interface MGLBufferSnapshotPoolEntry : NSObject
-@property (nonatomic, strong) MGLMetalBufferRef buffer;
-@property (nonatomic) uint64_t lastUseGeneration;
-@end
-
-@implementation MGLBufferSnapshotPoolEntry
-@end
-
 @implementation MGLRenderer (Buffer)
 
 - (MGLMetalBufferRef)floatVertexBufferForDoubleAttrib:(Buffer *)sourceBuffer
@@ -143,112 +59,9 @@ static float mglFloat10ToFloat(uint32_t val) {
     if (!sourceBuffer || !resolved || componentCount == 0 || componentCount > 4) {
         return nil;
     }
-    if (mglBufferUsesMetalCpp()) {
-        return mglBufferCreateConvertedVertexBuffer(
-            sourceBuffer, resolved, MGL_RENDER_CPP_VERTEX_DOUBLE_TO_FLOAT,
-            componentCount, GL_DOUBLE, GL_FALSE, NO, outStride);
-    }
-
-    const uint8_t *sourceBytes = NULL;
-    size_t sourceSize = 0;
-    if (sourceBuffer->data.buffer_data && sourceBuffer->size > 0) {
-        sourceBytes = (const uint8_t *)(uintptr_t)sourceBuffer->data.buffer_data;
-        sourceSize = (size_t)sourceBuffer->size;
-    } else if (sourceBuffer->data.mtl_data) {
-        MGLMetalBufferRef metal = (__bridge MGLMetalBufferRef)(sourceBuffer->data.mtl_data);
-        if (metal && metal.contents && metal.length > 0) {
-            sourceBytes = (const uint8_t *)metal.contents;
-            sourceSize = (size_t)metal.length;
-        }
-    }
-    if (!sourceBytes || sourceSize == 0) {
-        return nil;
-    }
-
-    NSUInteger originalStride = (resolved->stride > 0)
-        ? (NSUInteger)resolved->stride
-        : (NSUInteger)(componentCount * sizeof(GLdouble));
-    NSUInteger convertedStride = mglAlignVertexStrideForMetal(MAX(originalStride, (NSUInteger)(componentCount * sizeof(GLfloat))));
-    if (resolved->binding_offset < 0 || resolved->relativeoffset < 0 ||
-        (NSUInteger)resolved->binding_offset >= sourceSize) {
-        return nil;
-    }
-
-    size_t copyLength = sourceSize - (size_t)resolved->binding_offset;
-    uint64_t sourceHash = mglHashVertexBytesFNV1a(sourceBytes + (size_t)resolved->binding_offset, copyLength);
-    NSString *cacheKey = [NSString stringWithFormat:@"%u:%lld:%lld:%u:%u:%lu:%zu:%016llx",
-                          sourceBuffer->name,
-                          (long long)resolved->binding_offset,
-                          (long long)resolved->relativeoffset,
-                          (unsigned)originalStride,
-                          (unsigned)componentCount,
-                          (unsigned long)convertedStride,
-                          copyLength,
-                          (unsigned long long)sourceHash];
-    if (!_resourceFallback.doubleVertexAttribBufferCache) {
-        _resourceFallback.doubleVertexAttribBufferCache = [NSMutableDictionary dictionary];
-    }
-    MGLMetalBufferRef cached = _resourceFallback.doubleVertexAttribBufferCache[cacheKey];
-    if (cached) {
-        if (outStride) {
-            *outStride = convertedStride;
-        }
-        return cached;
-    }
-
-    if (originalStride == 0u) {
-        return nil;
-    }
-
-    NSUInteger vertexCount = ((NSUInteger)copyLength + originalStride - 1u) / originalStride;
-    if (vertexCount == 0u || vertexCount > NSUIntegerMax / convertedStride) {
-        return nil;
-    }
-
-    NSMutableData *convertedData = [NSMutableData dataWithLength:vertexCount * convertedStride];
-    if (!convertedData) {
-        return nil;
-    }
-    uint8_t *dst = (uint8_t *)convertedData.mutableBytes;
-
-    NSUInteger rel = (NSUInteger)resolved->relativeoffset;
-    NSUInteger doubleBytes = (NSUInteger)componentCount * sizeof(GLdouble);
-    NSUInteger floatBytes = (NSUInteger)componentCount * sizeof(GLfloat);
-    const uint8_t *srcBase = sourceBytes + (size_t)resolved->binding_offset;
-    for (NSUInteger vertex = 0; vertex < vertexCount; vertex++) {
-        NSUInteger srcOffset = vertex * originalStride;
-        NSUInteger dstOffset = vertex * convertedStride;
-        NSUInteger copyBytes = 0;
-
-        if (srcOffset < (NSUInteger)copyLength) {
-            copyBytes = MIN(originalStride, (NSUInteger)copyLength - srcOffset);
-            memcpy(dst + dstOffset, srcBase + srcOffset, copyBytes);
-        }
-
-        if (rel <= copyBytes && doubleBytes <= copyBytes - rel) {
-            GLfloat floats[4] = {0.0f, 0.0f, 0.0f, 1.0f};
-            for (GLuint c = 0; c < componentCount; c++) {
-                GLdouble d = 0.0;
-                memcpy(&d,
-                       srcBase + srcOffset + rel + (NSUInteger)c * sizeof(GLdouble),
-                       sizeof(d));
-                floats[c] = (GLfloat)d;
-            }
-            memcpy(dst + dstOffset + rel, floats, floatBytes);
-        }
-    }
-
-    MGLMetalBufferRef converted = mglBufferCreateWithBytes(
-        _device, dst, convertedData.length, MTLResourceStorageModeShared);
-    if (!converted) {
-        return nil;
-    }
-    _resourceFallback.doubleVertexAttribBufferCache[cacheKey] = converted;
-    [self mglCapAuxCache:_resourceFallback.doubleVertexAttribBufferCache limit:64];
-    if (outStride) {
-        *outStride = convertedStride;
-    }
-    return converted;
+    return mglBufferCreateConvertedVertexBuffer(
+        sourceBuffer, resolved, MGL_RENDER_CPP_VERTEX_DOUBLE_TO_FLOAT,
+        componentCount, GL_DOUBLE, GL_FALSE, NO, outStride);
 }
 
 /* Metal has no int/uint->float vertex format conversion for 32-bit integer
@@ -268,136 +81,13 @@ static float mglFloat10ToFloat(uint32_t val) {
     if (outStride) {
         *outStride = 0;
     }
-    if (!sourceBuffer || !resolved || componentCount == 0 || componentCount > 4) {
+    if (!sourceBuffer || !resolved || componentCount == 0 || componentCount > 4 ||
+        (type != GL_INT && type != GL_UNSIGNED_INT)) {
         return nil;
     }
-    if (type != GL_INT && type != GL_UNSIGNED_INT) {
-        return nil;
-    }
-    if (mglBufferUsesMetalCpp()) {
-        return mglBufferCreateConvertedVertexBuffer(
-            sourceBuffer, resolved, MGL_RENDER_CPP_VERTEX_INT_TO_FLOAT,
-            componentCount, type, normalized, NO, outStride);
-    }
-
-    const uint8_t *sourceBytes = NULL;
-    size_t sourceSize = 0;
-    if (sourceBuffer->data.buffer_data && sourceBuffer->size > 0) {
-        sourceBytes = (const uint8_t *)(uintptr_t)sourceBuffer->data.buffer_data;
-        sourceSize = (size_t)sourceBuffer->size;
-    } else if (sourceBuffer->data.mtl_data) {
-        MGLMetalBufferRef metal = (__bridge MGLMetalBufferRef)(sourceBuffer->data.mtl_data);
-        if (metal && metal.contents && metal.length > 0) {
-            sourceBytes = (const uint8_t *)metal.contents;
-            sourceSize = (size_t)metal.length;
-        }
-    }
-    if (!sourceBytes || sourceSize == 0) {
-        return nil;
-    }
-
-    NSUInteger originalStride = (resolved->stride > 0)
-        ? (NSUInteger)resolved->stride
-        : (NSUInteger)(componentCount * sizeof(GLint));
-    NSUInteger convertedStride = mglAlignVertexStrideForMetal(originalStride);
-    if (resolved->binding_offset < 0 || resolved->relativeoffset < 0 ||
-        (NSUInteger)resolved->binding_offset >= sourceSize) {
-        return nil;
-    }
-
-    size_t copyLength = sourceSize - (size_t)resolved->binding_offset;
-    uint64_t sourceHash = mglHashVertexBytesFNV1a(sourceBytes + (size_t)resolved->binding_offset, copyLength);
-    NSString *cacheKey = [NSString stringWithFormat:@"I:%u:%lld:%lld:%u:%u:%u:%lu:%zu:%016llx",
-                          sourceBuffer->name,
-                          (long long)resolved->binding_offset,
-                          (long long)resolved->relativeoffset,
-                          (unsigned)type,
-                          (unsigned)normalized,
-                          (unsigned)originalStride,
-                          (unsigned long)convertedStride,
-                          copyLength,
-                          (unsigned long long)sourceHash];
-    if (!_resourceFallback.doubleVertexAttribBufferCache) {
-        _resourceFallback.doubleVertexAttribBufferCache = [NSMutableDictionary dictionary];
-    }
-    MGLMetalBufferRef cached = _resourceFallback.doubleVertexAttribBufferCache[cacheKey];
-    if (cached) {
-        if (outStride) {
-            *outStride = convertedStride;
-        }
-        return cached;
-    }
-
-    if (originalStride == 0u) {
-        return nil;
-    }
-
-    NSUInteger vertexCount = ((NSUInteger)copyLength + originalStride - 1u) / originalStride;
-    if (vertexCount == 0u || vertexCount > NSUIntegerMax / convertedStride) {
-        return nil;
-    }
-
-    NSMutableData *convertedData = [NSMutableData dataWithLength:vertexCount * convertedStride];
-    if (!convertedData) {
-        return nil;
-    }
-    uint8_t *dst = (uint8_t *)convertedData.mutableBytes;
-
-    NSUInteger rel = (NSUInteger)resolved->relativeoffset;
-    NSUInteger compBytes = (NSUInteger)componentCount * sizeof(GLfloat);
-    const uint8_t *srcBase = sourceBytes + (size_t)resolved->binding_offset;
-    for (NSUInteger vertex = 0; vertex < vertexCount; vertex++) {
-        NSUInteger srcOffset = vertex * originalStride;
-        NSUInteger dstOffset = vertex * convertedStride;
-        NSUInteger copyBytes = 0;
-
-        if (srcOffset < (NSUInteger)copyLength) {
-            copyBytes = MIN(originalStride, (NSUInteger)copyLength - srcOffset);
-            memcpy(dst + dstOffset, srcBase + srcOffset, copyBytes);
-        }
-
-        if (rel <= copyBytes && compBytes <= copyBytes - rel) {
-            GLfloat floats[4] = {0.0f, 0.0f, 0.0f, 1.0f};
-            for (GLuint c = 0; c < componentCount; c++) {
-                if (type == GL_INT) {
-                    GLint iv = 0;
-                    memcpy(&iv,
-                           srcBase + srcOffset + rel + (NSUInteger)c * sizeof(GLint),
-                           sizeof(iv));
-                    if (normalized) {
-                        double d = (double)iv / 2147483647.0;
-                        if (d < -1.0) d = -1.0;
-                        floats[c] = (GLfloat)d;
-                    } else {
-                        floats[c] = (GLfloat)iv;
-                    }
-                } else { /* GL_UNSIGNED_INT */
-                    GLuint uv = 0;
-                    memcpy(&uv,
-                           srcBase + srcOffset + rel + (NSUInteger)c * sizeof(GLuint),
-                           sizeof(uv));
-                    if (normalized) {
-                        floats[c] = (GLfloat)((double)uv / 4294967295.0);
-                    } else {
-                        floats[c] = (GLfloat)uv;
-                    }
-                }
-            }
-            memcpy(dst + dstOffset + rel, floats, compBytes);
-        }
-    }
-
-    MGLMetalBufferRef converted = mglBufferCreateWithBytes(
-        _device, dst, convertedData.length, MTLResourceStorageModeShared);
-    if (!converted) {
-        return nil;
-    }
-    _resourceFallback.doubleVertexAttribBufferCache[cacheKey] = converted;
-    [self mglCapAuxCache:_resourceFallback.doubleVertexAttribBufferCache limit:64];
-    if (outStride) {
-        *outStride = convertedStride;
-    }
-    return converted;
+    return mglBufferCreateConvertedVertexBuffer(
+        sourceBuffer, resolved, MGL_RENDER_CPP_VERTEX_INT_TO_FLOAT,
+        componentCount, type, normalized, NO, outStride);
 }
 
 /* GL_FIXED: each component is a 32-bit signed integer (GLfixed) representing
@@ -416,111 +106,9 @@ static float mglFloat10ToFloat(uint32_t val) {
     if (!sourceBuffer || !resolved || componentCount == 0 || componentCount > 4) {
         return nil;
     }
-    if (mglBufferUsesMetalCpp()) {
-        return mglBufferCreateConvertedVertexBuffer(
-            sourceBuffer, resolved, MGL_RENDER_CPP_VERTEX_FIXED_TO_FLOAT,
-            componentCount, GL_FIXED, GL_FALSE, NO, outStride);
-    }
-
-    const uint8_t *sourceBytes = NULL;
-    size_t sourceSize = 0;
-    if (sourceBuffer->data.buffer_data && sourceBuffer->size > 0) {
-        sourceBytes = (const uint8_t *)(uintptr_t)sourceBuffer->data.buffer_data;
-        sourceSize = (size_t)sourceBuffer->size;
-    } else if (sourceBuffer->data.mtl_data) {
-        MGLMetalBufferRef metal = (__bridge MGLMetalBufferRef)(sourceBuffer->data.mtl_data);
-        if (metal && metal.contents && metal.length > 0) {
-            sourceBytes = (const uint8_t *)metal.contents;
-            sourceSize = (size_t)metal.length;
-        }
-    }
-    if (!sourceBytes || sourceSize == 0) {
-        return nil;
-    }
-
-    NSUInteger originalStride = (resolved->stride > 0)
-        ? (NSUInteger)resolved->stride
-        : (NSUInteger)(componentCount * sizeof(int32_t));
-    NSUInteger convertedStride = mglAlignVertexStrideForMetal(MAX(originalStride, (NSUInteger)(componentCount * sizeof(GLfloat))));
-    if (resolved->binding_offset < 0 || resolved->relativeoffset < 0 ||
-        (NSUInteger)resolved->binding_offset >= sourceSize) {
-        return nil;
-    }
-
-    size_t copyLength = sourceSize - (size_t)resolved->binding_offset;
-    uint64_t sourceHash = mglHashVertexBytesFNV1a(sourceBytes + (size_t)resolved->binding_offset, copyLength);
-    NSString *cacheKey = [NSString stringWithFormat:@"X:%u:%lld:%lld:%u:%u:%lu:%zu:%016llx",
-                          sourceBuffer->name,
-                          (long long)resolved->binding_offset,
-                          (long long)resolved->relativeoffset,
-                          (unsigned)originalStride,
-                          (unsigned)componentCount,
-                          (unsigned long)convertedStride,
-                          copyLength,
-                          (unsigned long long)sourceHash];
-    if (!_resourceFallback.doubleVertexAttribBufferCache) {
-        _resourceFallback.doubleVertexAttribBufferCache = [NSMutableDictionary dictionary];
-    }
-    MGLMetalBufferRef cached = _resourceFallback.doubleVertexAttribBufferCache[cacheKey];
-    if (cached) {
-        if (outStride) {
-            *outStride = convertedStride;
-        }
-        return cached;
-    }
-
-    if (originalStride == 0u) {
-        return nil;
-    }
-
-    NSUInteger vertexCount = ((NSUInteger)copyLength + originalStride - 1u) / originalStride;
-    if (vertexCount == 0u || vertexCount > NSUIntegerMax / convertedStride) {
-        return nil;
-    }
-
-    NSMutableData *convertedData = [NSMutableData dataWithLength:vertexCount * convertedStride];
-    if (!convertedData) {
-        return nil;
-    }
-    uint8_t *dst = (uint8_t *)convertedData.mutableBytes;
-
-    NSUInteger rel = (NSUInteger)resolved->relativeoffset;
-    NSUInteger compBytes = (NSUInteger)componentCount * sizeof(GLfloat);
-    const uint8_t *srcBase = sourceBytes + (size_t)resolved->binding_offset;
-    for (NSUInteger vertex = 0; vertex < vertexCount; vertex++) {
-        NSUInteger srcOffset = vertex * originalStride;
-        NSUInteger dstOffset = vertex * convertedStride;
-        NSUInteger copyBytes = 0;
-
-        if (srcOffset < (NSUInteger)copyLength) {
-            copyBytes = MIN(originalStride, (NSUInteger)copyLength - srcOffset);
-            memcpy(dst + dstOffset, srcBase + srcOffset, copyBytes);
-        }
-
-        if (rel <= copyBytes && compBytes <= copyBytes - rel) {
-            GLfloat floats[4] = {0.0f, 0.0f, 0.0f, 1.0f};
-            for (GLuint c = 0; c < componentCount; c++) {
-                int32_t raw = 0;
-                memcpy(&raw,
-                       srcBase + srcOffset + rel + (NSUInteger)c * sizeof(int32_t),
-                       sizeof(raw));
-                floats[c] = (GLfloat)((double)raw / 65536.0);
-            }
-            memcpy(dst + dstOffset + rel, floats, compBytes);
-        }
-    }
-
-    MGLMetalBufferRef converted = mglBufferCreateWithBytes(
-        _device, dst, convertedData.length, MTLResourceStorageModeShared);
-    if (!converted) {
-        return nil;
-    }
-    _resourceFallback.doubleVertexAttribBufferCache[cacheKey] = converted;
-    [self mglCapAuxCache:_resourceFallback.doubleVertexAttribBufferCache limit:64];
-    if (outStride) {
-        *outStride = convertedStride;
-    }
-    return converted;
+    return mglBufferCreateConvertedVertexBuffer(
+        sourceBuffer, resolved, MGL_RENDER_CPP_VERTEX_FIXED_TO_FLOAT,
+        componentCount, GL_FIXED, GL_FALSE, NO, outStride);
 }
 
 /* GL_UNSIGNED_INT_10_10_10_2: 1 uint32 packed as RGBA.
@@ -539,116 +127,9 @@ static float mglFloat10ToFloat(uint32_t val) {
     if (!sourceBuffer || !resolved) {
         return nil;
     }
-    if (mglBufferUsesMetalCpp()) {
-        return mglBufferCreateConvertedVertexBuffer(
-            sourceBuffer, resolved,
-            MGL_RENDER_CPP_VERTEX_PACKED_1010102_TO_FLOAT,
-            4u, GL_UNSIGNED_INT_10_10_10_2, GL_TRUE, NO, outStride);
-    }
-
-    const uint8_t *sourceBytes = NULL;
-    size_t sourceSize = 0;
-    if (sourceBuffer->data.buffer_data && sourceBuffer->size > 0) {
-        sourceBytes = (const uint8_t *)(uintptr_t)sourceBuffer->data.buffer_data;
-        sourceSize = (size_t)sourceBuffer->size;
-    } else if (sourceBuffer->data.mtl_data) {
-        MGLMetalBufferRef metal = (__bridge MGLMetalBufferRef)(sourceBuffer->data.mtl_data);
-        if (metal && metal.contents && metal.length > 0) {
-            sourceBytes = (const uint8_t *)metal.contents;
-            sourceSize = (size_t)metal.length;
-        }
-    }
-    if (!sourceBytes || sourceSize == 0) {
-        return nil;
-    }
-
-    const NSUInteger outComponents = 4u;
-    NSUInteger originalStride = (resolved->stride > 0)
-        ? (NSUInteger)resolved->stride
-        : (NSUInteger)sizeof(uint32_t);
-    NSUInteger convertedStride = mglAlignVertexStrideForMetal(MAX(originalStride, outComponents * sizeof(GLfloat)));
-    if (resolved->binding_offset < 0 || resolved->relativeoffset < 0 ||
-        (NSUInteger)resolved->binding_offset >= sourceSize) {
-        return nil;
-    }
-
-    size_t copyLength = sourceSize - (size_t)resolved->binding_offset;
-    uint64_t sourceHash = mglHashVertexBytesFNV1a(sourceBytes + (size_t)resolved->binding_offset, copyLength);
-    NSString *cacheKey = [NSString stringWithFormat:@"Y:%u:%lld:%lld:%u:%lu:%zu:%016llx",
-                          sourceBuffer->name,
-                          (long long)resolved->binding_offset,
-                          (long long)resolved->relativeoffset,
-                          (unsigned)originalStride,
-                          (unsigned long)convertedStride,
-                          copyLength,
-                          (unsigned long long)sourceHash];
-    if (!_resourceFallback.doubleVertexAttribBufferCache) {
-        _resourceFallback.doubleVertexAttribBufferCache = [NSMutableDictionary dictionary];
-    }
-    MGLMetalBufferRef cached = _resourceFallback.doubleVertexAttribBufferCache[cacheKey];
-    if (cached) {
-        if (outStride) {
-            *outStride = convertedStride;
-        }
-        return cached;
-    }
-
-    if (originalStride == 0u) {
-        return nil;
-    }
-
-    NSUInteger vertexCount = ((NSUInteger)copyLength + originalStride - 1u) / originalStride;
-    if (vertexCount == 0u || vertexCount > NSUIntegerMax / convertedStride) {
-        return nil;
-    }
-
-    NSMutableData *convertedData = [NSMutableData dataWithLength:vertexCount * convertedStride];
-    if (!convertedData) {
-        return nil;
-    }
-    /* Zero-init so missing source bytes / padding default to 0. */
-    memset(convertedData.mutableBytes, 0, convertedData.length);
-    uint8_t *dst = (uint8_t *)convertedData.mutableBytes;
-
-    NSUInteger rel = (NSUInteger)resolved->relativeoffset;
-    NSUInteger outBytes = outComponents * sizeof(GLfloat);
-    const uint8_t *srcBase = sourceBytes + (size_t)resolved->binding_offset;
-    for (NSUInteger vertex = 0; vertex < vertexCount; vertex++) {
-        NSUInteger srcOffset = vertex * originalStride;
-        NSUInteger dstOffset = vertex * convertedStride;
-
-        size_t srcByteIdx = (size_t)srcOffset + rel;
-        if (srcByteIdx + sizeof(uint32_t) > (size_t)copyLength) {
-            continue;
-        }
-        if (rel + outBytes > convertedStride) {
-            continue;
-        }
-
-        uint32_t packed = 0;
-        memcpy(&packed, srcBase + srcByteIdx, sizeof(packed));
-
-        /* Non-REV layout: R[22-31] G[12-21] B[2-11] A[0-1] */
-        GLfloat r = (GLfloat)((packed >> 22) & 0x3FFu) / 1023.0f;
-        GLfloat g = (GLfloat)((packed >> 12) & 0x3FFu) / 1023.0f;
-        GLfloat b = (GLfloat)((packed >>  2) & 0x3FFu) / 1023.0f;
-        GLfloat a = (GLfloat)(packed & 0x3u) / 3.0f;
-
-        GLfloat floats[4] = {r, g, b, a};
-        memcpy(dst + dstOffset + rel, floats, outBytes);
-    }
-
-    MGLMetalBufferRef converted = mglBufferCreateWithBytes(
-        _device, dst, convertedData.length, MTLResourceStorageModeShared);
-    if (!converted) {
-        return nil;
-    }
-    _resourceFallback.doubleVertexAttribBufferCache[cacheKey] = converted;
-    [self mglCapAuxCache:_resourceFallback.doubleVertexAttribBufferCache limit:64];
-    if (outStride) {
-        *outStride = convertedStride;
-    }
-    return converted;
+    return mglBufferCreateConvertedVertexBuffer(
+        sourceBuffer, resolved, MGL_RENDER_CPP_VERTEX_PACKED_1010102_TO_FLOAT,
+        4u, GL_UNSIGNED_INT_10_10_10_2, GL_TRUE, NO, outStride);
 }
 
 /* GL_UNSIGNED_INT_10F_11F_11F_REV: 1 uint32 packed as RGB float.
@@ -667,115 +148,9 @@ static float mglFloat10ToFloat(uint32_t val) {
     if (!sourceBuffer || !resolved) {
         return nil;
     }
-    if (mglBufferUsesMetalCpp()) {
-        return mglBufferCreateConvertedVertexBuffer(
-            sourceBuffer, resolved,
-            MGL_RENDER_CPP_VERTEX_PACKED_10F11F11F_TO_FLOAT,
-            3u, GL_UNSIGNED_INT_10F_11F_11F_REV, GL_FALSE, NO, outStride);
-    }
-
-    const uint8_t *sourceBytes = NULL;
-    size_t sourceSize = 0;
-    if (sourceBuffer->data.buffer_data && sourceBuffer->size > 0) {
-        sourceBytes = (const uint8_t *)(uintptr_t)sourceBuffer->data.buffer_data;
-        sourceSize = (size_t)sourceBuffer->size;
-    } else if (sourceBuffer->data.mtl_data) {
-        MGLMetalBufferRef metal = (__bridge MGLMetalBufferRef)(sourceBuffer->data.mtl_data);
-        if (metal && metal.contents && metal.length > 0) {
-            sourceBytes = (const uint8_t *)metal.contents;
-            sourceSize = (size_t)metal.length;
-        }
-    }
-    if (!sourceBytes || sourceSize == 0) {
-        return nil;
-    }
-
-    const NSUInteger outComponents = 3u;
-    NSUInteger originalStride = (resolved->stride > 0)
-        ? (NSUInteger)resolved->stride
-        : (NSUInteger)sizeof(uint32_t);
-    NSUInteger convertedStride = mglAlignVertexStrideForMetal(MAX(originalStride, outComponents * sizeof(GLfloat)));
-    if (resolved->binding_offset < 0 || resolved->relativeoffset < 0 ||
-        (NSUInteger)resolved->binding_offset >= sourceSize) {
-        return nil;
-    }
-
-    size_t copyLength = sourceSize - (size_t)resolved->binding_offset;
-    uint64_t sourceHash = mglHashVertexBytesFNV1a(sourceBytes + (size_t)resolved->binding_offset, copyLength);
-    NSString *cacheKey = [NSString stringWithFormat:@"Z:%u:%lld:%lld:%u:%lu:%zu:%016llx",
-                          sourceBuffer->name,
-                          (long long)resolved->binding_offset,
-                          (long long)resolved->relativeoffset,
-                          (unsigned)originalStride,
-                          (unsigned long)convertedStride,
-                          copyLength,
-                          (unsigned long long)sourceHash];
-    if (!_resourceFallback.doubleVertexAttribBufferCache) {
-        _resourceFallback.doubleVertexAttribBufferCache = [NSMutableDictionary dictionary];
-    }
-    MGLMetalBufferRef cached = _resourceFallback.doubleVertexAttribBufferCache[cacheKey];
-    if (cached) {
-        if (outStride) {
-            *outStride = convertedStride;
-        }
-        return cached;
-    }
-
-    if (originalStride == 0u) {
-        return nil;
-    }
-
-    NSUInteger vertexCount = ((NSUInteger)copyLength + originalStride - 1u) / originalStride;
-    if (vertexCount == 0u || vertexCount > NSUIntegerMax / convertedStride) {
-        return nil;
-    }
-
-    NSMutableData *convertedData = [NSMutableData dataWithLength:vertexCount * convertedStride];
-    if (!convertedData) {
-        return nil;
-    }
-    /* Zero-init so missing source bytes / padding default to 0. */
-    memset(convertedData.mutableBytes, 0, convertedData.length);
-    uint8_t *dst = (uint8_t *)convertedData.mutableBytes;
-
-    NSUInteger rel = (NSUInteger)resolved->relativeoffset;
-    NSUInteger outBytes = outComponents * sizeof(GLfloat);
-    const uint8_t *srcBase = sourceBytes + (size_t)resolved->binding_offset;
-    for (NSUInteger vertex = 0; vertex < vertexCount; vertex++) {
-        NSUInteger srcOffset = vertex * originalStride;
-        NSUInteger dstOffset = vertex * convertedStride;
-
-        size_t srcByteIdx = (size_t)srcOffset + rel;
-        if (srcByteIdx + sizeof(uint32_t) > (size_t)copyLength) {
-            continue;
-        }
-        if (rel + outBytes > convertedStride) {
-            continue;
-        }
-
-        uint32_t packed = 0;
-        memcpy(&packed, srcBase + srcByteIdx, sizeof(packed));
-
-        /* REV layout: R[0-10] G[11-21] B[22-31] */
-        GLfloat r = mglFloat11ToFloat((packed >>  0) & 0x7FFu);
-        GLfloat g = mglFloat11ToFloat((packed >> 11) & 0x7FFu);
-        GLfloat b = mglFloat10ToFloat((packed >> 22) & 0x3FFu);
-
-        GLfloat floats[3] = {r, g, b};
-        memcpy(dst + dstOffset + rel, floats, outBytes);
-    }
-
-    MGLMetalBufferRef converted = mglBufferCreateWithBytes(
-        _device, dst, convertedData.length, MTLResourceStorageModeShared);
-    if (!converted) {
-        return nil;
-    }
-    _resourceFallback.doubleVertexAttribBufferCache[cacheKey] = converted;
-    [self mglCapAuxCache:_resourceFallback.doubleVertexAttribBufferCache limit:64];
-    if (outStride) {
-        *outStride = convertedStride;
-    }
-    return converted;
+    return mglBufferCreateConvertedVertexBuffer(
+        sourceBuffer, resolved, MGL_RENDER_CPP_VERTEX_PACKED_10F11F11F_TO_FLOAT,
+        3u, GL_UNSIGNED_INT_10F_11F_11F_REV, GL_FALSE, NO, outStride);
 }
 
 /* Converts integer vertex data from a source type that Metal cannot feed
@@ -795,162 +170,9 @@ static float mglFloat10ToFloat(uint32_t val) {
     if (!sourceBuffer || !resolved || componentCount == 0 || componentCount > 4) {
         return nil;
     }
-    if (mglBufferUsesMetalCpp()) {
-        return mglBufferCreateConvertedVertexBuffer(
-            sourceBuffer, resolved, MGL_RENDER_CPP_VERTEX_INTEGER_TO_32,
-            componentCount, srcType, GL_FALSE, dstIsInt, outStride);
-    }
-
-    size_t srcCompSize = mglVertexAttribComponentSize(srcType);
-    if (srcCompSize == 0) {
-        return nil;
-    }
-
-    const uint8_t *sourceBytes = NULL;
-    size_t sourceSize = 0;
-    if (sourceBuffer->data.buffer_data && sourceBuffer->size > 0) {
-        sourceBytes = (const uint8_t *)(uintptr_t)sourceBuffer->data.buffer_data;
-        sourceSize = (size_t)sourceBuffer->size;
-    } else if (sourceBuffer->data.mtl_data) {
-        MGLMetalBufferRef metal = (__bridge MGLMetalBufferRef)(sourceBuffer->data.mtl_data);
-        if (metal && metal.contents && metal.length > 0) {
-            sourceBytes = (const uint8_t *)metal.contents;
-            sourceSize = (size_t)metal.length;
-        }
-    }
-    if (!sourceBytes || sourceSize == 0) {
-        return nil;
-    }
-
-    NSUInteger originalStride = (resolved->stride > 0)
-        ? (NSUInteger)resolved->stride
-        : (NSUInteger)(componentCount * srcCompSize);
-    NSUInteger convertedStride = mglAlignVertexStrideForMetal((NSUInteger)componentCount * sizeof(GLint));
-    if (resolved->binding_offset < 0 || resolved->relativeoffset < 0 ||
-        (NSUInteger)resolved->binding_offset >= sourceSize) {
-        return nil;
-    }
-
-    size_t copyLength = sourceSize - (size_t)resolved->binding_offset;
-    uint64_t sourceHash = mglHashVertexBytesFNV1a(sourceBytes + (size_t)resolved->binding_offset, copyLength);
-    NSString *cacheKey = [NSString stringWithFormat:@"J:%u:%lld:%lld:%u:%u:%u:%u:%lu:%lu:%zu:%016llx",
-                          sourceBuffer->name,
-                          (long long)resolved->binding_offset,
-                          (long long)resolved->relativeoffset,
-                          (unsigned)srcType,
-                          (unsigned)dstIsInt,
-                          (unsigned)componentCount,
-                          (unsigned)originalStride,
-                          (unsigned long)convertedStride,
-                          (unsigned long)srcCompSize,
-                          copyLength,
-                          (unsigned long long)sourceHash];
-    if (!_resourceFallback.doubleVertexAttribBufferCache) {
-        _resourceFallback.doubleVertexAttribBufferCache = [NSMutableDictionary dictionary];
-    }
-    MGLMetalBufferRef cached = _resourceFallback.doubleVertexAttribBufferCache[cacheKey];
-    if (cached) {
-        if (outStride) {
-            *outStride = convertedStride;
-        }
-        return cached;
-    }
-
-    if (originalStride == 0u) {
-        return nil;
-    }
-
-    NSUInteger vertexCount = ((NSUInteger)copyLength + originalStride - 1u) / originalStride;
-    if (vertexCount == 0u || vertexCount > NSUIntegerMax / convertedStride) {
-        return nil;
-    }
-
-    NSMutableData *convertedData = [NSMutableData dataWithLength:vertexCount * convertedStride];
-    if (!convertedData) {
-        return nil;
-    }
-    /* Zero-init so missing source bytes default to 0. */
-    memset(convertedData.mutableBytes, 0, convertedData.length);
-    uint8_t *dst = (uint8_t *)convertedData.mutableBytes;
-
-    NSUInteger rel = (NSUInteger)resolved->relativeoffset;
-    const uint8_t *srcBase = sourceBytes + (size_t)resolved->binding_offset;
-
-    for (NSUInteger vertex = 0; vertex < vertexCount; vertex++) {
-        NSUInteger srcOffset = vertex * originalStride;
-        NSUInteger dstOffset = vertex * convertedStride;
-        uint8_t *dstComp = dst + dstOffset;
-
-        for (GLuint c = 0; c < componentCount; c++) {
-            size_t srcByteIdx = (size_t)srcOffset + rel + (size_t)c * srcCompSize;
-            if (srcByteIdx + srcCompSize > (size_t)copyLength) {
-                break;
-            }
-            const uint8_t *srcComp = srcBase + srcByteIdx;
-
-            if (dstIsInt) {
-                int32_t outVal = 0;
-                switch (srcType) {
-                    case GL_BYTE: {
-                        int8_t v; memcpy(&v, srcComp, 1); outVal = (int32_t)v; break;
-                    }
-                    case GL_UNSIGNED_BYTE: {
-                        uint8_t v; memcpy(&v, srcComp, 1); outVal = (int32_t)(uint32_t)v; break;
-                    }
-                    case GL_SHORT: {
-                        int16_t v; memcpy(&v, srcComp, 2); outVal = (int32_t)v; break;
-                    }
-                    case GL_UNSIGNED_SHORT: {
-                        uint16_t v; memcpy(&v, srcComp, 2); outVal = (int32_t)(uint32_t)v; break;
-                    }
-                    case GL_INT: {
-                        int32_t v; memcpy(&v, srcComp, 4); outVal = v; break;
-                    }
-                    case GL_UNSIGNED_INT: {
-                        uint32_t v; memcpy(&v, srcComp, 4); outVal = (int32_t)v; break;
-                    }
-                    default: break;
-                }
-                memcpy(dstComp + (size_t)c * sizeof(int32_t), &outVal, sizeof(outVal));
-            } else {
-                uint32_t outVal = 0;
-                switch (srcType) {
-                    case GL_BYTE: {
-                        int8_t v; memcpy(&v, srcComp, 1); outVal = (uint32_t)(int32_t)v; break;
-                    }
-                    case GL_UNSIGNED_BYTE: {
-                        uint8_t v; memcpy(&v, srcComp, 1); outVal = (uint32_t)v; break;
-                    }
-                    case GL_SHORT: {
-                        int16_t v; memcpy(&v, srcComp, 2); outVal = (uint32_t)(int32_t)v; break;
-                    }
-                    case GL_UNSIGNED_SHORT: {
-                        uint16_t v; memcpy(&v, srcComp, 2); outVal = (uint32_t)v; break;
-                    }
-                    case GL_INT: {
-                        int32_t v; memcpy(&v, srcComp, 4); outVal = (uint32_t)v; break;
-                    }
-                    case GL_UNSIGNED_INT: {
-                        uint32_t v; memcpy(&v, srcComp, 4); outVal = v; break;
-                    }
-                    default: break;
-                }
-                memcpy(dstComp + (size_t)c * sizeof(uint32_t), &outVal, sizeof(outVal));
-            }
-        }
-    }
-
-    MGLMetalBufferRef converted = mglBufferCreateWithBytes(
-        _device, dst, convertedData.length, MTLResourceStorageModeShared);
-    if (!converted) {
-        return nil;
-    }
-    _resourceFallback.doubleVertexAttribBufferCache[cacheKey] = converted;
-    [self mglCapAuxCache:_resourceFallback.doubleVertexAttribBufferCache limit:64];
-    if (outStride) {
-        *outStride = convertedStride;
-    }
-    return converted;
+    return mglBufferCreateConvertedVertexBuffer(
+        sourceBuffer, resolved, MGL_RENDER_CPP_VERTEX_INTEGER_TO_32,
+        componentCount, srcType, GL_FALSE, dstIsInt, outStride);
 }
 
 /* bindMTLBuffer: moved to MGLRenderer+RenderPass.m */
@@ -967,104 +189,28 @@ static float mglFloat10ToFloat(uint32_t val) {
  * buffers at render time.
  */
 
-#define MGL_MAX_PACKED_STRUCT_BUFFERS 128
-static Buffer *s_packedStructBuffers[MGL_MAX_PACKED_STRUCT_BUFFERS];
-static int s_packedStructBufferIdx = 0;
-
 /* Compute the location step per array element from reflected members.
  * For a struct S = { vec4 m0, float m1[2], mat2 m2 }, the step is 4
  * (m0=1 + m1=2 + m2=1 in CTS convention). */
 /* mglPlainStructLocStep and mglGLTypeElementByteSize are now shared
  * static inline helpers in mgl_buffer_plan.h. */
 
-/* Get a reusable Buffer object for packed struct data.  The Buffer wrapper
- * is reused from a 128-slot ring; the Metal buffer is recreated each call
- * (newBufferWithBytes) so that deferred batches still referencing a previous
- * slot's MTLBuffer via ARC retain stay valid until the GPU consumes them.
- *
- * Why not persist and memcpy-in-place: a batch can hold up to 4096 draws, so
- * the 128-slot ring can wrap within a single unflushed batch.  In-place
- * overwrite would race with GPU reads of the prior contents.  The per-call
- * alloc is acceptable because Metal maps small shared-memory buffers cheaply,
- * and the Buffer wrapper (the expensive part: hash-table membership, dirty
- * tracking) is already ring-reused. */
+/* Acquire renderer-owned packed struct storage from the C++ backend. */
 static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                                          MGLMetalDeviceRef device,
                                          const void *data,
                                          size_t size)
 {
-    if (mglBufferUsesMetalCpp()) {
-        char error[256] = {0};
-        Buffer *buffer = mglRenderCppAcquirePackedStructBuffer(
-            data, size, error, sizeof(error));
-        if (!buffer) {
-            NSLog(@"MGL ERROR: Metal-cpp packed struct buffer failed: %s",
-                  error[0] ? error : "unknown");
-        }
-        return buffer;
+    (void)ctx;
+    (void)device;
+    char error[256] = {0};
+    Buffer *buffer = mglRenderCppAcquirePackedStructBuffer(
+        data, size, error, sizeof(error));
+    if (!buffer) {
+        NSLog(@"MGL ERROR: Metal-cpp packed struct buffer failed: %s",
+              error[0] ? error : "unknown");
     }
-
-    if (s_packedStructBufferIdx >= MGL_MAX_PACKED_STRUCT_BUFFERS) {
-        s_packedStructBufferIdx = 0;
-    }
-    int idx = s_packedStructBufferIdx++;
-    Buffer *buf = s_packedStructBuffers[idx];
-    if (!buf) {
-        buf = (Buffer *)calloc(1, sizeof(Buffer));
-        if (!buf) {
-            return NULL;
-        }
-        buf->name = 0xF0000000u | (GLuint)idx;
-        buf->target = GL_UNIFORM_BUFFER;
-        buf->usage = GL_STATIC_DRAW;
-        buf->written_min = -1;
-        buf->written_max = -1;
-        s_packedStructBuffers[idx] = buf;
-    }
-
-    /* Release previous Metal buffer if any */
-    if (buf->data.mtl_data) {
-        mglSafeReleaseMetalObj((void **)&buf->data.mtl_data);
-    }
-
-    /* Create new Metal buffer with packed data.
-     * Pad to kMGLMinimumStageBindingSize so the buffer passes the
-     * minimum-size validation in the vertex/fragment binding paths
-     * (which otherwise replaces undersized buffers with a zero-filled
-     * fallback, losing the struct data). */
-    size_t mtl_size = size;
-    if (mtl_size < kMGLMinimumStageBindingSize) {
-        mtl_size = kMGLMinimumStageBindingSize;
-    }
-    uint8_t *padded = NULL;
-    const void *src = data;
-    if (mtl_size > size) {
-        padded = (uint8_t *)calloc(1, mtl_size);
-        if (padded) {
-            memcpy(padded, data, size);
-            src = padded;
-        }
-    }
-    MGLMetalBufferRef mtlBuffer = mglBufferCreateWithBytes(
-        device, src, mtl_size, MTLResourceCPUCacheModeDefaultCache);
-    if (padded) {
-        free(padded);
-    }
-    if (!mtlBuffer) {
-        return NULL;
-    }
-    buf->data.mtl_data = (void *)CFBridgingRetain(mtlBuffer);
-    buf->size = (GLsizeiptr)mtl_size;
-    buf->data.buffer_data = 0;
-    buf->data.buffer_size = mtl_size;
-    buf->data.dirty_bits = 0;
-    buf->has_initialized_data = GL_TRUE;
-    buf->ever_written = GL_TRUE;
-    /* Mark as transient so mglRendererGetValidatedBuffer bypasses the
-     * buffer hash-table lookup (packed struct buffers are standalone
-     * Buffer wrappers, not inserted into the GL buffer table). */
-    buf->transient_batch_buffer = GL_TRUE;
-    return buf;
+    return buffer;
 }
 
 - (bool) mapGLBuffersToMTLBufferMap:(BufferMapList *)buffer_map stage: (int) stage
@@ -2258,539 +1404,75 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
  * rest must be preserved.  The range is cumulative, so a CPU write covering the
  * whole store still authorizes a full overwrite.  Returns NO when there is
  * nothing to push. */
-static BOOL mglBufferShadowUploadRange(const Buffer *ptr,
-                                       NSUInteger limit,
-                                       NSUInteger *outOffset,
-                                       NSUInteger *outLength)
-{
-    /* P4.5 (item 1141/887): 影子上传范围数学（gpu_write_target 时按记录的
-     * written_min/max 跨度钳制到 limit，否则整个 limit；空跨度/零长拒绝）
-     * 在 C++（mglRenderCppBufferShadowUploadRange，两门共用）。 */
-    uint64_t offset = 0;
-    uint64_t length = 0;
-    if (mglRenderCppBufferShadowUploadRange(
-            ptr->gpu_write_target ? 1 : 0,
-            (int64_t)ptr->written_min,
-            (int64_t)ptr->written_max,
-            (uint64_t)limit,
-            &offset, &length) != 0) {
-        return NO;
-    }
-    *outOffset = (NSUInteger)offset;
-    *outLength = (NSUInteger)length;
-    return YES;
-}
-
-/* === CoW snapshot pool ===
- *
- * Every glBufferSubData on a dynamic buffer whose current Metal backing was
- * created with newBufferWithLength allocates a fresh MTLBuffer and memcpy's
- * the whole store (mglSnapshotSharedDirtyBuffer).  The old buffer is then
- * dead as soon as the GPU finishes the frame that encoded it.  Pooling that
- * old buffer for reuse removes the per-upload allocation, at the cost of
- * keeping one full copy per live snapshot slot.
- *
- * Reuse is safe only when the GPU can no longer read the buffer.  A
- * monotonically increasing frame generation is bumped at swap; every buffer
- * binding records the generation it was last encoded with (direct draw sites
- * plus a swap-time sweep of the bound buffer maps, which covers base/attrib/
- * uniform/SSBO bindings in one place).  A slot is reusable once the swap
- * command buffer that committed its generation has completed.  All entry
- * points run under METAL_LOCK; the completion handler only stores a counter. */
-
-static uint64_t s_mglFrameGeneration = 0;
-static _Atomic uint64_t s_mglCompletedFrameGeneration = 0;
-#define MGL_COW_POOL_MAX_SLOTS 4
-
-uint64_t mglCompletedFrameGeneration(void)
-{
-    return atomic_load_explicit(&s_mglCompletedFrameGeneration,
-                                memory_order_acquire);
-}
+/* Buffer CoW generation and snapshot ownership live in the C++ backend. */
 
 uint64_t mglAdvanceFrameGeneration(void)
 {
-    if (mglBufferUsesMetalCpp()) {
-        return mglRenderCppAdvanceBufferGeneration();
-    }
-    return ++s_mglFrameGeneration;
+    return mglRenderCppAdvanceBufferGeneration();
 }
 
 void mglRecordFrameCompleted(uint64_t generation)
 {
-    if (mglBufferUsesMetalCpp()) {
-        mglRenderCppRecordBufferGenerationCompleted(generation);
-        return;
-    }
-    uint64_t completed = atomic_load_explicit(&s_mglCompletedFrameGeneration,
-                                              memory_order_relaxed);
-    while (generation > completed) {
-        if (atomic_compare_exchange_weak_explicit(&s_mglCompletedFrameGeneration,
-                                                  &completed, generation,
-                                                  memory_order_release,
-                                                  memory_order_relaxed)) {
-            return;
-        }
-    }
+    mglRenderCppRecordBufferGenerationCompleted(generation);
 }
 
 /* Mark the slot holding buf's current Metal backing as encoded in the current
  * generation, so it is not recycled until that frame's GPU work completes. */
 void mglNoteBufferEncoded(Buffer *buf)
 {
-    if (mglBufferUsesMetalCpp()) {
-        mglRenderCppNoteBufferEncoded(buf);
-        return;
-    }
-    if (!buf || !buf->mtl_cow_pool || !buf->data.mtl_data) {
-        return;
-    }
-    NSArray<MGLBufferSnapshotPoolEntry *> *pool =
-        (__bridge NSArray *)buf->mtl_cow_pool;
-    for (MGLBufferSnapshotPoolEntry *entry in pool) {
-        if (entry.buffer == (__bridge id)buf->data.mtl_data) {
-            entry.lastUseGeneration = s_mglFrameGeneration;
-            return;
-        }
-    }
-}
-
-/* Reuse a snapshot slot, or allocate and pool a fresh one when available.  The
- * current backing (oldBuffer) may still be in the current command buffer, so
- * its slot is never a reuse candidate.  When the pool is full and nothing is
- * reusable, falls back to a plain allocation that is not pooled. */
-static MGLMetalBufferRef mglCowPoolTakeSnapshotForOwner(MGLMetalDeviceRef device,
-                                                    MGLMetalBufferRef oldBuffer,
-                                                    NSUInteger length,
-                                                    MTLResourceOptions options,
-                                                    Buffer *owner)
-{
-    NSMutableArray<MGLBufferSnapshotPoolEntry *> *pool =
-        owner->mtl_cow_pool ? (__bridge NSMutableArray *)owner->mtl_cow_pool : nil;
-    if (!pool) {
-        pool = [NSMutableArray arrayWithCapacity:MGL_COW_POOL_MAX_SLOTS];
-        owner->mtl_cow_pool = (void *)CFBridgingRetain(pool);
-    }
-
-    uint64_t completed = mglCompletedFrameGeneration();
-    for (MGLBufferSnapshotPoolEntry *entry in pool) {
-        if (!entry.buffer || entry.buffer == oldBuffer ||
-            completed < entry.lastUseGeneration) {
-            continue;
-        }
-        return entry.buffer;
-    }
-
-    if (pool.count < MGL_COW_POOL_MAX_SLOTS) {
-        MGLMetalBufferRef snapshot = mglBufferCreate(device, length, options);
-        if (!snapshot) {
-            return nil;
-        }
-        MGLBufferSnapshotPoolEntry *entry = [MGLBufferSnapshotPoolEntry new];
-        entry.buffer = snapshot;
-        [pool addObject:entry];
-        return snapshot;
-    }
-    return mglBufferCreate(device, length, options);
+    mglRenderCppNoteBufferEncoded(buf);
 }
 
 BOOL mglSnapshotSharedDirtyBuffer(MGLMetalDeviceRef device,
-                                         Buffer *ptr,
-                                         MGLMetalBufferRef *bufferPtr)
+                                  Buffer *ptr,
+                                  MGLMetalBufferRef *bufferPtr)
 {
-    if (mglBufferUsesMetalCpp()) {
-        void *metalBuffer = NULL;
-        char error[256] = {0};
-        if (mglRenderCppSnapshotSharedDirtyBuffer(
-                ptr, &metalBuffer, error, sizeof(error)) != 0) {
-            NSLog(@"MGL BUFFER ERROR: Metal-cpp dirty snapshot failed buffer=%u: %s",
-                  ptr ? ptr->name : 0u, error[0] ? error : "?");
-            return NO;
-        }
-        if (bufferPtr) {
-            *bufferPtr = (__bridge MGLMetalBufferRef)metalBuffer;
-        }
-        return YES;
-    }
-    MGLMetalBufferRef buffer = bufferPtr ? *bufferPtr : nil;
-    const void *cpuData = ptr ? (const void *)(uintptr_t)ptr->data.buffer_data : NULL;
-    /* Transient batch buffers need no snapshot: their MTLBuffer is created
-     * with newBufferWithBytes from the merged CPU data at bind time and the
-     * CPU data is immutable once the batch is recorded — the
-     * cpuData != contents check below would otherwise allocate and copy a
-     * second MTLBuffer per stream batch just to discard the first. */
-    if (!device || !ptr || !buffer || ptr->transient_batch_buffer ||
-        buffer.storageMode != MTLStorageModeShared ||
-        !cpuData || (uintptr_t)cpuData < 0x1000u ||
-        (ptr->storage_flags & GL_CLIENT_STORAGE_BIT) || cpuData == buffer.contents) {
-        return YES;
-    }
-
-    NSUInteger snapshotLength = buffer.length;
-    if (ptr->data.buffer_size > 0) {
-        snapshotLength = MIN(snapshotLength, (NSUInteger)ptr->data.buffer_size);
-    }
-    if (snapshotLength == 0) {
-        return YES;
-    }
-
-    MTLResourceOptions options = MTLResourceStorageModeShared;
-    if (buffer.cpuCacheMode == MTLCPUCacheModeWriteCombined) {
-        options |= MTLResourceCPUCacheModeWriteCombined;
-    }
-
-    MGLMetalBufferRef snapshot = mglCowPoolTakeSnapshotForOwner(device, buffer,
-                                                            buffer.length,
-                                                            options, ptr);
-    if (!snapshot) {
-        NSLog(@"MGL BUFFER ERROR: failed to snapshot dynamic buffer %u", ptr->name);
+    (void)device;
+    void *metalBuffer = NULL;
+    char error[256] = {0};
+    if (mglRenderCppSnapshotSharedDirtyBuffer(
+            ptr, &metalBuffer, error, sizeof(error)) != 0) {
+        NSLog(@"MGL BUFFER ERROR: Metal-cpp dirty snapshot failed buffer=%u: %s",
+              ptr ? ptr->name : 0u, error[0] ? error : "?");
         return NO;
     }
-    MGL_PERF_INC(g_mglBufferCowCountSinceSwap);
-    MGL_PERF_ADD(g_mglBufferCowBytesSinceSwap, (uint64_t)buffer.length);
-
-    if (ptr->gpu_write_target) {
-        NSUInteger uploadOffset = 0;
-        NSUInteger uploadLength = 0;
-        memcpy(snapshot.contents, buffer.contents, buffer.length);
-        if (mglBufferShadowUploadRange(ptr, snapshotLength, &uploadOffset, &uploadLength)) {
-            memcpy((uint8_t *)snapshot.contents + uploadOffset,
-                   (const uint8_t *)cpuData + uploadOffset,
-                   uploadLength);
-        }
-    } else {
-        memcpy(snapshot.contents, cpuData, snapshotLength);
-        if (snapshotLength < snapshot.length) {
-            memset((uint8_t *)snapshot.contents + snapshotLength,
-                   0,
-                   snapshot.length - snapshotLength);
-        }
+    if (bufferPtr) {
+        *bufferPtr = (__bridge MGLMetalBufferRef)metalBuffer;
     }
-
-    mglSafeReleaseMetalObj((void **)&ptr->data.mtl_data);
-    ptr->data.mtl_data = (void *)CFBridgingRetain(snapshot);
-    mglNoteBufferEncoded(ptr);
-    *bufferPtr = snapshot;
     return YES;
 }
 
 BOOL mglSnapshotSharedBufferRange(MGLMetalDeviceRef device,
-                                         Buffer *ptr,
-                                         MGLMetalBufferRef *bufferPtr,
-                                         NSUInteger offset,
-                                         NSUInteger length)
+                                  Buffer *ptr,
+                                  MGLMetalBufferRef *bufferPtr,
+                                  NSUInteger offset,
+                                  NSUInteger length)
 {
-    if (mglBufferUsesMetalCpp()) {
-        void *metalBuffer = NULL;
-        char error[256] = {0};
-        if (mglRenderCppSnapshotSharedBufferRange(
-                ptr, offset, length, &metalBuffer,
-                error, sizeof(error)) != 0) {
-            NSLog(@"MGL BUFFER ERROR: Metal-cpp range snapshot failed buffer=%u: %s",
-                  ptr ? ptr->name : 0u, error[0] ? error : "?");
-            return NO;
-        }
-        if (bufferPtr) {
-            *bufferPtr = (__bridge MGLMetalBufferRef)metalBuffer;
-        }
-        return YES;
-    }
-    MGLMetalBufferRef buffer = bufferPtr ? *bufferPtr : nil;
-    const uint8_t *cpuData = ptr ? (const uint8_t *)(uintptr_t)ptr->data.buffer_data : NULL;
-    /* Same transient early-out as mglSnapshotSharedDirtyBuffer above. */
-    if (!device || !ptr || !buffer || ptr->transient_batch_buffer ||
-        buffer.storageMode != MTLStorageModeShared ||
-        !cpuData || (uintptr_t)cpuData < 0x1000u ||
-        (ptr->storage_flags & GL_CLIENT_STORAGE_BIT) || cpuData == buffer.contents ||
-        offset > buffer.length || length > buffer.length - offset) {
-        return YES;
-    }
-
-    MTLResourceOptions options = MTLResourceStorageModeShared;
-    if (buffer.cpuCacheMode == MTLCPUCacheModeWriteCombined) {
-        options |= MTLResourceCPUCacheModeWriteCombined;
-    }
-
-    MGLMetalBufferRef snapshot = mglCowPoolTakeSnapshotForOwner(device, buffer,
-                                                            buffer.length,
-                                                            options, ptr);
-    if (!snapshot) {
-        NSLog(@"MGL BUFFER ERROR: failed to snapshot mapped buffer %u", ptr->name);
+    (void)device;
+    void *metalBuffer = NULL;
+    char error[256] = {0};
+    if (mglRenderCppSnapshotSharedBufferRange(
+            ptr, offset, length, &metalBuffer, error, sizeof(error)) != 0) {
+        NSLog(@"MGL BUFFER ERROR: Metal-cpp range snapshot failed buffer=%u: %s",
+              ptr ? ptr->name : 0u, error[0] ? error : "?");
         return NO;
     }
-    MGL_PERF_INC(g_mglBufferCowCountSinceSwap);
-    MGL_PERF_ADD(g_mglBufferCowBytesSinceSwap, (uint64_t)buffer.length);
-
-    memcpy(snapshot.contents, buffer.contents, buffer.length);
-    memcpy((uint8_t *)snapshot.contents + offset, cpuData + offset, length);
-
-    mglSafeReleaseMetalObj((void **)&ptr->data.mtl_data);
-    ptr->data.mtl_data = (void *)CFBridgingRetain(snapshot);
-    mglNoteBufferEncoded(ptr);
-    *bufferPtr = snapshot;
+    if (bufferPtr) {
+        *bufferPtr = (__bridge MGLMetalBufferRef)metalBuffer;
+    }
     return YES;
 }
 
 - (bool) updateDirtyBuffer:(Buffer *)ptr
 {
-    if (mglBufferUsesMetalCpp()) {
-        char error[256] = {0};
-        int result = mglRenderCppUpdateDirtyBuffer(
-            ptr, error, sizeof(error));
-        if (result == MGL_RENDER_CPP_BUFFER_OPERATION_HANDLED) {
-            return true;
-        }
-        if (result == MGL_RENDER_CPP_BUFFER_OPERATION_ERROR) {
-            NSLog(@"MGL BUFFER ERROR: Metal-cpp dirty update failed buffer=%u: %s",
-                  ptr ? ptr->name : 0u, error[0] ? error : "?");
-            return false;
-        }
-        /* Custom no-copy storage remains owned by the ObjC baseline. */
-    }
-
-    /* Small plain-uniform slots are bound with set*Bytes straight from the CPU
-     * shadow, so materializing an MTLBuffer here would only make every later
-     * upload allocate a full-buffer copy-on-write snapshot that no encoder ever
-     * binds.  While no Metal buffer exists there is nothing to keep in sync:
-     * consumers that do need one create it from the current shadow. */
-    if (ptr->plain_uniform_slot && ptr->data.mtl_data == NULL &&
-        ptr->data.buffer_data && ptr->size > 0 && ptr->size <= 4096)
-    {
-        ptr->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
+    char error[256] = {0};
+    int result = mglRenderCppUpdateDirtyBuffer(ptr, error, sizeof(error));
+    if (result == MGL_RENDER_CPP_BUFFER_OPERATION_HANDLED) {
         return true;
     }
-
-    if (ptr->size < 4096)
-    {
-        if ((ptr->data.dirty_bits & DIRTY_BUFFER_ADDR) && ptr->data.mtl_data == NULL) {
-            [self bindMTLBuffer: ptr];
-            RETURN_FALSE_ON_NULL(ptr->data.mtl_data);
-        }
-
-        /*
-         * Small buffers are often bound with set*Bytes for vertex attributes, but
-         * uniform/base bindings may still bind the Metal buffer directly. Keep
-         * that backing synchronized when glBufferSubData/DSA fallback updates the
-         * CPU copy, otherwise GUI/item/entity matrices can sample stale data.
-         */
-        if (ptr->data.dirty_bits & DIRTY_BUFFER_DATA) {
-            if (ptr->data.mtl_data == NULL) {
-                [self bindMTLBuffer: ptr];
-                RETURN_FALSE_ON_NULL(ptr->data.mtl_data);
-            }
-
-            MGLMetalBufferRef buffer = (MGLMetalBufferRef)SafeMetalBridge(ptr->data.mtl_data, objc_getClass("MTLBuffer"), "MTLBuffer");
-            if (!buffer) {
-                NSLog(@"MGL SECURITY ERROR: Failed to validate small Metal buffer (buffer %u)", ptr->name);
-                return false;
-            }
-
-            MGLMetalBufferRef bufferBeforeSnapshot = buffer;
-            if (!mglSnapshotSharedDirtyBuffer(_device, ptr, &buffer)) {
-                return false;
-            }
-
-            NSUInteger copyLen = (NSUInteger)MAX((GLsizeiptr)0, ptr->size);
-            copyLen = MIN(copyLen, buffer.length);
-            if (ptr->data.buffer_size > 0) {
-                copyLen = MIN(copyLen, (NSUInteger)ptr->data.buffer_size);
-            }
-
-            const void *cpuData = (const void *)(uintptr_t)ptr->data.buffer_data;
-            void *metalData = buffer.contents;
-            /* Snapshot already populated the new Shared buffer from the CPU
-             * shadow (or Metal+shadow overlay for gpu_write_target).  Only
-             * upload in place when no new MTLBuffer was allocated. */
-            if (buffer == bufferBeforeSnapshot &&
-                cpuData && (uintptr_t)cpuData >= 0x1000u && metalData && copyLen > 0) {
-                NSUInteger uploadOffset = 0;
-                NSUInteger uploadLength = 0;
-                if (mglBufferShadowUploadRange(ptr, copyLen, &uploadOffset, &uploadLength)) {
-                    if (cpuData != metalData) {
-                        memmove((uint8_t *)metalData + uploadOffset,
-                                (const uint8_t *)cpuData + uploadOffset,
-                                uploadLength);
-                    }
-                    if (buffer.storageMode == MTLStorageModeManaged) {
-                        [buffer didModifyRange:NSMakeRange(uploadOffset, uploadLength)];
-                    }
-                }
-            } else if (buffer == bufferBeforeSnapshot && metalData && copyLen > 0) {
-                NSUInteger modifyOffset = 0;
-                NSUInteger modifyLength = copyLen;
-                if (ptr->mapped_length > 0 &&
-                    ptr->mapped_offset >= 0 &&
-                    (NSUInteger)ptr->mapped_offset < buffer.length) {
-                    modifyOffset = (NSUInteger)ptr->mapped_offset;
-                    modifyLength = MIN((NSUInteger)ptr->mapped_length, buffer.length - modifyOffset);
-                }
-                if (modifyLength > 0 && buffer.storageMode == MTLStorageModeManaged) {
-                    [buffer didModifyRange:NSMakeRange(modifyOffset, modifyLength)];
-                }
-            }
-
-            if (kMGLDiagnosticStateLogs) {
-                static uint64_t s_smallDirtyUploadCalls = 0;
-                uint64_t call = ++s_smallDirtyUploadCalls;
-                if (mglShouldTraceBufferTransferCall(call)) {
-                    const void *cpuSample = (const void *)(uintptr_t)ptr->data.buffer_data;
-                    const void *mtlSample = buffer.contents;
-                    size_t sampleLen = (size_t)copyLen;
-                    uint64_t cpuHash = mglTraceHashBytes(cpuSample, sampleLen);
-                    uint64_t mtlHash = mglTraceHashBytes(mtlSample, sampleLen);
-                    char cpuHead[64];
-                    char mtlHead[64];
-                    cpuHead[0] = '\0';
-                    mtlHead[0] = '\0';
-                    mglTraceFormatBytes(cpuSample, sampleLen, cpuHead, sizeof(cpuHead));
-                    mglTraceFormatBytes(mtlSample, sampleLen, mtlHead, sizeof(mtlHead));
-                    mglTraceLogNSString(@"MGL TRACE smallBufferDirty.upload call=%llu buffer=%u size=%lld dirty=0x%x copy=%lu cpuHash=0x%016llx cpuHead=%s mtlLen=%lu mtlHash=0x%016llx mtlHead=%s",
-                          (unsigned long long)call,
-                          ptr->name,
-                          (long long)ptr->size,
-                          ptr->data.dirty_bits,
-                          (unsigned long)copyLen,
-                          (unsigned long long)cpuHash,
-                          cpuHead,
-                          (unsigned long)buffer.length,
-                          (unsigned long long)mtlHash,
-                          mtlHead);
-                }
-            }
-
-            if (ptr->access_flags & GL_MAP_COHERENT_BIT) {
-                ptr->data.dirty_bits = DIRTY_BUFFER_DATA;
-            } else {
-                ptr->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
-                /* Shadow is now uploaded; read-maps may refresh from Metal. */
-                ptr->cpu_shadow_pending = GL_FALSE;
-            }
-
-            return true;
-        }
-
-        if (kMGLDiagnosticStateLogs && (ptr->data.dirty_bits & DIRTY_BUFFER_ADDR)) {
-            static uint64_t s_smallDirtySkipCalls = 0;
-            uint64_t call = ++s_smallDirtySkipCalls;
-            if (mglShouldTraceBufferTransferCall(call)) {
-                const void *cpuData = (const void *)(uintptr_t)ptr->data.buffer_data;
-                size_t sampleLen = ptr->size > 0 ? (size_t)ptr->size : 0u;
-                uint64_t cpuHash = mglTraceHashBytes(cpuData, sampleLen);
-                char cpuHead[64];
-                cpuHead[0] = '\0';
-                mglTraceFormatBytes(cpuData, sampleLen, cpuHead, sizeof(cpuHead));
-
-                uint64_t mtlHash = 0ull;
-                char mtlHead[64];
-                mtlHead[0] = '\0';
-                NSUInteger metalLen = 0;
-                if (ptr->data.mtl_data && (uintptr_t)ptr->data.mtl_data >= 0x10000u) {
-                    MGLMetalBufferRef mtlBuffer = (__bridge MGLMetalBufferRef)(ptr->data.mtl_data);
-                    if (mtlBuffer) {
-                        metalLen = mtlBuffer.length;
-                        const void *mtlBytes = mtlBuffer.contents;
-                        size_t mtlSample = (size_t)MIN((NSUInteger)sampleLen, metalLen);
-                        mtlHash = mglTraceHashBytes(mtlBytes, mtlSample);
-                        mglTraceFormatBytes(mtlBytes, mtlSample, mtlHead, sizeof(mtlHead));
-                    }
-                }
-
-                mglTraceLogNSString(@"MGL TRACE smallBufferDirty.skip call=%llu buffer=%u size=%lld dirty=0x%x cpuHash=0x%016llx cpuHead=%s mtl=%p mtlLen=%lu mtlHash=0x%016llx mtlHead=%s",
-                      (unsigned long long)call,
-                      ptr->name,
-                      (long long)ptr->size,
-                      ptr->data.dirty_bits,
-                      (unsigned long long)cpuHash,
-                      cpuHead,
-                      ptr->data.mtl_data,
-                      (unsigned long)metalLen,
-                      (unsigned long long)mtlHash,
-                      (metalLen > 0 ? mtlHead : "-"));
-            }
-        }
-
-        ptr->data.dirty_bits &= ~DIRTY_BUFFER_ADDR;
-        return true;
-    }
-    
-    if (ptr->data.dirty_bits & DIRTY_BUFFER_ADDR)
-    {
-        if (ptr->data.mtl_data == NULL)
-        {
-            [self bindMTLBuffer: ptr];
-            RETURN_FALSE_ON_NULL(ptr->data.mtl_data);
-        }
-
-        if ((ptr->data.dirty_bits & DIRTY_BUFFER_DATA) == 0)
-        {
-            ptr->data.dirty_bits &= ~DIRTY_BUFFER_ADDR;
-            return true;
-        }
-    }
-
-    if (ptr->data.dirty_bits & DIRTY_BUFFER_DATA)
-    {
-        if (ptr->data.mtl_data == NULL)
-        {
-            [self bindMTLBuffer: ptr];
-            RETURN_FALSE_ON_NULL(ptr->data.mtl_data);
-        }
-
-        // CRITICAL SECURITY FIX: Safe Metal buffer validation
-        MGLMetalBufferRef buffer = (MGLMetalBufferRef)SafeMetalBridge(ptr->data.mtl_data, objc_getClass("MTLBuffer"), "MTLBuffer");
-        if (!buffer) {
-            NSLog(@"MGL SECURITY ERROR: Failed to validate Metal buffer (buffer %u)", ptr->name);
-            return false;
-        }
-
-        if (!mglSnapshotSharedDirtyBuffer(_device, ptr, &buffer)) {
-            return false;
-        }
-
-        // clear dirty bits if not mapped as coherent
-        // this will cause us to keep loading the buffer and keep the GPU
-        // contents in check for EVERY drawing operation
-        BOOL coherentMapped =
-            (ptr->access_flags & GL_MAP_COHERENT_BIT) != 0;
-        if (coherentMapped)
-        {
-            NSUInteger modifyOffset = 0;
-            NSUInteger modifyLength = buffer.length;
-            if (ptr->mapped_length > 0 &&
-                ptr->mapped_offset >= 0 &&
-                (NSUInteger)ptr->mapped_offset < buffer.length) {
-                modifyOffset = (NSUInteger)ptr->mapped_offset;
-                modifyLength = MIN((NSUInteger)ptr->mapped_length, buffer.length - modifyOffset);
-            }
-            if (modifyLength > 0 && buffer.storageMode == MTLStorageModeManaged) {
-                [buffer didModifyRange:NSMakeRange(modifyOffset, modifyLength)];
-            }
-
-            ptr->data.dirty_bits = DIRTY_BUFFER_DATA;
-        }
-        else
-        {
-            NSUInteger modifyLength = buffer.length;
-            if (ptr->data.buffer_size > 0) {
-                modifyLength = MIN(modifyLength, (NSUInteger)ptr->data.buffer_size);
-            }
-            if (modifyLength > 0 && buffer.storageMode == MTLStorageModeManaged) {
-                [buffer didModifyRange:NSMakeRange(0, modifyLength)];
-            }
-
-            ptr->data.dirty_bits = 0;
-            /* Shadow is now uploaded; read-maps may refresh from Metal again. */
-            ptr->cpu_shadow_pending = GL_FALSE;
-        }
-    }
-    else
-    {
-        NSLog(@"MGL BUFFER ERROR: updateDirtyBuffer saw buffer %u with no CPU or Metal backing",
-              ptr ? ptr->name : 0u);
-        return false;
-    }
-
-    return true;
+    NSLog(@"MGL BUFFER ERROR: Metal-cpp dirty update failed buffer=%u: %s",
+          ptr ? ptr->name : 0u, error[0] ? error : "?");
+    return false;
 }
 
 - (bool) checkForDirtyBufferData:  (BufferMapList *)buffer_map_list
