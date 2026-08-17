@@ -3903,10 +3903,16 @@ void mglRendererCompatClearBuffer(GLMContext glm_ctx,
                 }
                 colorTexture = _drawable ? _drawable.texture : nil;
             } else if (drawBufferIndex < _MAX_DRAW_BUFFERS) {
-                colorTexture = _drawBuffers[drawBufferIndex].drawbuffer;
+                colorTexture = (__bridge id<MTLTexture>)
+                    mglRendererBackendGetDefaultDrawBufferAttachment(
+                        _backend, drawBufferIndex,
+                        MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_COLOR);
                 if (!colorTexture) {
                     colorTexture = [self newDrawBuffer:glm_ctx->pixel_format.mtl_pixel_format isDepthStencil:false];
-                    _drawBuffers[drawBufferIndex].drawbuffer = colorTexture;
+                    (void)mglRendererBackendSetDefaultDrawBufferAttachment(
+                        _backend, drawBufferIndex,
+                        MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_COLOR,
+                        (__bridge void *)colorTexture);
                 }
             }
             if (!colorTexture) {
@@ -3915,7 +3921,10 @@ void mglRendererCompatClearBuffer(GLMContext glm_ctx,
         }
 
         if (wantsDepth && drawBufferIndex < _MAX_DRAW_BUFFERS) {
-            depthTexture = _drawBuffers[drawBufferIndex].depthbuffer;
+            depthTexture = (__bridge id<MTLTexture>)
+                mglRendererBackendGetDefaultDrawBufferAttachment(
+                    _backend, drawBufferIndex,
+                    MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_DEPTH);
             if (!depthTexture) {
                 MTLPixelFormat depthFormat = glm_ctx->depth_format.mtl_pixel_format;
                 if (depthFormat == MTLPixelFormatInvalid) {
@@ -3926,7 +3935,10 @@ void mglRendererCompatClearBuffer(GLMContext glm_ctx,
                 depthTexture = [self newDrawBufferWithCustomSize:depthFormat
                                                   isDepthStencil:true
                                                       customSize:CGSizeMake(depthWidth, depthHeight)];
-                _drawBuffers[drawBufferIndex].depthbuffer = depthTexture;
+                (void)mglRendererBackendSetDefaultDrawBufferAttachment(
+                    _backend, drawBufferIndex,
+                    MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_DEPTH,
+                    (__bridge void *)depthTexture);
             }
             if (!depthTexture) {
                 wantsDepth = NO;

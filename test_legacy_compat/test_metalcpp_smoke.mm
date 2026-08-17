@@ -8876,6 +8876,35 @@ static int verifyRendererBackend(id<MTLDevice> device) {
         return 1;
     }
     printf("RENDERER_BACKEND_RENDER_PASS_CACHE_OK\n");
+    if (mglRendererBackendSetDefaultDrawBufferAttachment(
+            backend, 2u, MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_COLOR,
+            (__bridge void *)fallbackTexture) != 0 ||
+        mglRendererBackendSetDefaultDrawBufferAttachment(
+            backend, 2u, MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_DEPTH,
+            (__bridge void *)fallbackTexture) != 0 ||
+        mglRendererBackendSetDefaultDrawBufferAttachment(
+            backend, 2u, MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_STENCIL,
+            (__bridge void *)fallbackTexture) != 0 ||
+        mglRendererBackendGetDefaultDrawBufferAttachment(
+            backend, 2u, MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_COLOR) !=
+            (__bridge void *)fallbackTexture ||
+        mglRendererBackendGetDefaultDrawBufferAttachment(
+            backend, 2u, MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_DEPTH) !=
+            (__bridge void *)fallbackTexture ||
+        mglRendererBackendGetDefaultDrawBufferAttachment(
+            backend, 2u, MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_STENCIL) !=
+            (__bridge void *)fallbackTexture ||
+        mglRendererBackendClearDefaultDrawBuffer(backend, 2u) != 0 ||
+        mglRendererBackendGetDefaultDrawBufferAttachment(
+            backend, 2u, MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_COLOR) != NULL ||
+        mglRendererBackendGetDefaultDrawBufferAttachment(
+            backend, 2u, MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_DEPTH) != NULL ||
+        mglRendererBackendGetDefaultDrawBufferAttachment(
+            backend, 2u, MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_STENCIL) != NULL) {
+        fprintf(stderr, "FAIL: renderer backend default draw buffers\n");
+        return 1;
+    }
+    printf("RENDERER_BACKEND_DEFAULT_DRAW_BUFFERS_OK\n");
     if (mglRendererBackendSetBlitCachedObject(
             backend, MGL_RENDERER_BACKEND_BLIT_CACHE_NEAREST_SAMPLER,
             (__bridge void *)nearestSampler) != 0 ||

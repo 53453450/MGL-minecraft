@@ -46,6 +46,15 @@ static MGLRendererBackendHandle *mglRenderPassBackend(GLMContext context)
         : NULL;
 }
 
+static MGLMetalTextureRef mglRenderPassDefaultDrawBufferAttachment(
+    MGLRendererBackendHandle *backend, GLuint drawBufferIndex,
+    MGLRendererBackendDefaultDrawBufferAttachmentKind kind)
+{
+    return (__bridge MGLMetalTextureRef)
+        mglRendererBackendGetDefaultDrawBufferAttachment(
+            backend, drawBufferIndex, kind);
+}
+
 static MGLMetalTextureRef mglRenderPassFallbackRenderTarget(
     GLMContext context)
 {
@@ -970,7 +979,9 @@ output->name, (unsigned)i,
         if (mgl_drawbuffer == _FRONT) {
             expectedColor0 = _drawable ? _drawable.texture : nil;
         } else if (mgl_drawbuffer < _MAX_DRAW_BUFFERS) {
-            expectedColor0 = _drawBuffers[mgl_drawbuffer].drawbuffer;
+            expectedColor0 = mglRenderPassDefaultDrawBufferAttachment(
+                _backend, mgl_drawbuffer,
+                MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_COLOR);
         }
 
         if (actualColor0 != expectedColor0) {
@@ -980,13 +991,21 @@ output->name, (unsigned)i,
         MGLMetalTextureRef expectedDepth = nil;
         MGLMetalTextureRef expectedStencil = nil;
         if (mgl_drawbuffer < _MAX_DRAW_BUFFERS) {
+            MGLMetalTextureRef cachedDepth =
+                mglRenderPassDefaultDrawBufferAttachment(
+                    _backend, mgl_drawbuffer,
+                    MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_DEPTH);
+            MGLMetalTextureRef cachedStencil =
+                mglRenderPassDefaultDrawBufferAttachment(
+                    _backend, mgl_drawbuffer,
+                    MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_STENCIL);
             BOOL defaultPassNeedsDepth = MGL_STATE(ctx)->caps.depth_test ||
-                                         _drawBuffers[mgl_drawbuffer].depthbuffer != nil;
+                                         cachedDepth != nil;
             BOOL defaultPassNeedsStencil = MGL_STATE(ctx)->caps.stencil_test ||
                                            ctx->stencil_format.format ||
-                                           _drawBuffers[mgl_drawbuffer].stencilbuffer != nil;
-            expectedDepth = defaultPassNeedsDepth ? _drawBuffers[mgl_drawbuffer].depthbuffer : nil;
-            expectedStencil = defaultPassNeedsStencil ? _drawBuffers[mgl_drawbuffer].stencilbuffer : nil;
+                                           cachedStencil != nil;
+            expectedDepth = defaultPassNeedsDepth ? cachedDepth : nil;
+            expectedStencil = defaultPassNeedsStencil ? cachedStencil : nil;
             if (MGL_STATE(ctx)->caps.depth_test && !expectedDepth) {
                 return false;
             }
@@ -1145,7 +1164,11 @@ output->name, (unsigned)i,
         if (!fbo) {
             expectedDefaultColor0 = (mglDefaultDrawbuffer == _FRONT)
                 ? (_drawable ? _drawable.texture : nil)
-                : ((mglDefaultDrawbuffer < _MAX_DRAW_BUFFERS) ? _drawBuffers[mglDefaultDrawbuffer].drawbuffer : nil);
+                : ((mglDefaultDrawbuffer < _MAX_DRAW_BUFFERS)
+                    ? mglRenderPassDefaultDrawBufferAttachment(
+                          _backend, mglDefaultDrawbuffer,
+                          MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_COLOR)
+                    : nil);
         }
         GLuint fboName = fbo ? fbo->name : 0u;
         GLuint attachment0Name = (fbo && (fbo->color_attachment_bitfield & 1u)) ? fbo->color_attachments[0].texture : 0u;
@@ -2461,9 +2484,8 @@ output->name, (unsigned)i,
 
     if(![self checkDrawBufferSize:mgl_drawbuffer])
     {
-        _drawBuffers[mgl_drawbuffer].drawbuffer = NULL;
-        _drawBuffers[mgl_drawbuffer].depthbuffer = NULL;
-        _drawBuffers[mgl_drawbuffer].stencilbuffer = NULL;
+        (void)mglRendererBackendClearDefaultDrawBuffer(
+            _backend, mgl_drawbuffer);
         _drawBuffers[mgl_drawbuffer].width = 0;
         _drawBuffers[mgl_drawbuffer].height = 0;
     }
@@ -2494,21 +2516,30 @@ output->name, (unsigned)i,
             }
         }
     }
-    else if(_drawBuffers[mgl_drawbuffer].drawbuffer)
-    {
-        texture = _drawBuffers[mgl_drawbuffer].drawbuffer;
-    }
     else
     {
-        texture = [self newDrawBuffer: ctx->pixel_format.mtl_pixel_format isDepthStencil:false];
-        _drawBuffers[mgl_drawbuffer].drawbuffer = texture;
+        texture = mglRenderPassDefaultDrawBufferAttachment(
+            _backend, mgl_drawbuffer,
+            MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_COLOR);
+        if (!texture) {
+            texture = [self newDrawBuffer:ctx->pixel_format.mtl_pixel_format
+                           isDepthStencil:false];
+            (void)mglRendererBackendSetDefaultDrawBufferAttachment(
+                _backend, mgl_drawbuffer,
+                MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_COLOR,
+                (__bridge void *)texture);
+        }
     }
 
     // attach depth. The default framebuffer must have a usable depth
     // attachment whenever GL depth testing is active, even if the legacy
     // context format fields were left unset by the window/bootstrap path.
+    MGLMetalTextureRef cachedDepth =
+        mglRenderPassDefaultDrawBufferAttachment(
+            _backend, mgl_drawbuffer,
+            MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_DEPTH);
     BOOL defaultPassNeedsDepth = MGL_STATE(ctx)->caps.depth_test ||
-                                 _drawBuffers[mgl_drawbuffer].depthbuffer != nil;
+                                 cachedDepth != nil;
     if (defaultPassNeedsDepth)
     {
         MTLPixelFormat depthFormat = ctx->depth_format.mtl_pixel_format;
@@ -2516,14 +2547,17 @@ output->name, (unsigned)i,
             depthFormat = MTLPixelFormatDepth32Float;
         }
 
-        if(_drawBuffers[mgl_drawbuffer].depthbuffer)
+        if(cachedDepth)
         {
-            depth_texture = _drawBuffers[mgl_drawbuffer].depthbuffer;
+            depth_texture = cachedDepth;
         }
         else
         {
             depth_texture = [self newDrawBufferWithCustomSize:depthFormat isDepthStencil:true customSize: CGSizeMake(texture.width, texture.height) ];
-            _drawBuffers[mgl_drawbuffer].depthbuffer = depth_texture;
+            (void)mglRendererBackendSetDefaultDrawBufferAttachment(
+                _backend, mgl_drawbuffer,
+                MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_DEPTH,
+                (__bridge void *)depth_texture);
             if (depth_texture) {
                 static uint64_t s_defaultDepthCreateCount = 0;
                 uint64_t hit = ++s_defaultDepthCreateCount;
@@ -2539,9 +2573,13 @@ output->name, (unsigned)i,
     }
 
     // attach stencil
+    MGLMetalTextureRef cachedStencil =
+        mglRenderPassDefaultDrawBufferAttachment(
+            _backend, mgl_drawbuffer,
+            MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_STENCIL);
     BOOL defaultPassNeedsStencil = MGL_STATE(ctx)->caps.stencil_test ||
                                    ctx->stencil_format.format ||
-                                   _drawBuffers[mgl_drawbuffer].stencilbuffer != nil;
+                                   cachedStencil != nil;
     if (defaultPassNeedsStencil)
     {
         MTLPixelFormat stencilFormat = ctx->stencil_format.mtl_pixel_format;
@@ -2550,14 +2588,17 @@ output->name, (unsigned)i,
             stencilFormat = MTLPixelFormatStencil8;
         }
 
-        if(_drawBuffers[mgl_drawbuffer].stencilbuffer)
+        if(cachedStencil)
         {
-            stencil_texture = _drawBuffers[mgl_drawbuffer].stencilbuffer;
+            stencil_texture = cachedStencil;
         }
         else
         {
             stencil_texture = [self newDrawBufferWithCustomSize:stencilFormat isDepthStencil:true customSize: CGSizeMake(texture.width, texture.height) ];
-            _drawBuffers[mgl_drawbuffer].stencilbuffer = stencil_texture;
+            (void)mglRendererBackendSetDefaultDrawBufferAttachment(
+                _backend, mgl_drawbuffer,
+                MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_STENCIL,
+                (__bridge void *)stencil_texture);
         }
     }
 

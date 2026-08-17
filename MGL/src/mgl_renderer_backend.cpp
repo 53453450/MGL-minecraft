@@ -146,6 +146,9 @@ struct MGLRendererBackendHandle {
     MTL::Texture *transient_depth_texture = nullptr;
     uint64_t transient_depth_texture_width = 0;
     uint64_t transient_depth_texture_height = 0;
+    std::array<MTL::Texture *, 6> default_draw_buffer_colors{};
+    std::array<MTL::Texture *, 6> default_draw_buffer_depths{};
+    std::array<MTL::Texture *, 6> default_draw_buffer_stencils{};
     MTL::SamplerState *scaled_blit_nearest_sampler = nullptr;
     MTL::SamplerState *scaled_blit_linear_sampler = nullptr;
     MTL::DepthStencilState *clear_rect_depth_state = nullptr;
@@ -196,6 +199,18 @@ static void mglRendererBackendReleaseOwnedState(
     }
     backend->transient_depth_texture_width = 0;
     backend->transient_depth_texture_height = 0;
+    for (MTL::Texture *texture : backend->default_draw_buffer_colors) {
+        if (texture) texture->release();
+    }
+    backend->default_draw_buffer_colors = {};
+    for (MTL::Texture *texture : backend->default_draw_buffer_depths) {
+        if (texture) texture->release();
+    }
+    backend->default_draw_buffer_depths = {};
+    for (MTL::Texture *texture : backend->default_draw_buffer_stencils) {
+        if (texture) texture->release();
+    }
+    backend->default_draw_buffer_stencils = {};
     if (backend->scaled_blit_nearest_sampler) {
         backend->scaled_blit_nearest_sampler->release();
         backend->scaled_blit_nearest_sampler = nullptr;
@@ -573,6 +588,63 @@ extern "C" void *mglRendererBackendGetTransientDepthTexture(
     if (width_out) *width_out = backend->transient_depth_texture_width;
     if (height_out) *height_out = backend->transient_depth_texture_height;
     return backend->transient_depth_texture;
+}
+
+extern "C" int mglRendererBackendSetDefaultDrawBufferAttachment(
+    MGLRendererBackendHandle *backend, uint32_t draw_buffer_index,
+    MGLRendererBackendDefaultDrawBufferAttachmentKind kind, void *texture)
+{
+    if (!backend || draw_buffer_index >= 6u) return -1;
+    std::lock_guard<std::mutex> lock(backend->mutex);
+    if (backend->destroying) return -1;
+    switch (kind) {
+        case MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_COLOR:
+            mglRendererBackendReplaceObject(
+                backend->default_draw_buffer_colors[draw_buffer_index], texture);
+            return 0;
+        case MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_DEPTH:
+            mglRendererBackendReplaceObject(
+                backend->default_draw_buffer_depths[draw_buffer_index], texture);
+            return 0;
+        case MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_STENCIL:
+            mglRendererBackendReplaceObject(
+                backend->default_draw_buffer_stencils[draw_buffer_index], texture);
+            return 0;
+    }
+    return -1;
+}
+
+extern "C" void *mglRendererBackendGetDefaultDrawBufferAttachment(
+    const MGLRendererBackendHandle *backend, uint32_t draw_buffer_index,
+    MGLRendererBackendDefaultDrawBufferAttachmentKind kind)
+{
+    if (!backend || draw_buffer_index >= 6u) return nullptr;
+    std::lock_guard<std::mutex> lock(
+        const_cast<MGLRendererBackendHandle *>(backend)->mutex);
+    switch (kind) {
+        case MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_COLOR:
+            return backend->default_draw_buffer_colors[draw_buffer_index];
+        case MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_DEPTH:
+            return backend->default_draw_buffer_depths[draw_buffer_index];
+        case MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_STENCIL:
+            return backend->default_draw_buffer_stencils[draw_buffer_index];
+    }
+    return nullptr;
+}
+
+extern "C" int mglRendererBackendClearDefaultDrawBuffer(
+    MGLRendererBackendHandle *backend, uint32_t draw_buffer_index)
+{
+    if (!backend || draw_buffer_index >= 6u) return -1;
+    std::lock_guard<std::mutex> lock(backend->mutex);
+    if (backend->destroying) return -1;
+    mglRendererBackendReplaceObject(
+        backend->default_draw_buffer_colors[draw_buffer_index], nullptr);
+    mglRendererBackendReplaceObject(
+        backend->default_draw_buffer_depths[draw_buffer_index], nullptr);
+    mglRendererBackendReplaceObject(
+        backend->default_draw_buffer_stencils[draw_buffer_index], nullptr);
+    return 0;
 }
 
 extern "C" int mglRendererBackendSetBlitCachedObject(

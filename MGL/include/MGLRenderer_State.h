@@ -42,9 +42,6 @@
 typedef struct MGLDrawable_t {
     GLuint width;
     GLuint height;
-    id<MTLTexture> __strong drawbuffer;
-    id<MTLTexture> __strong depthbuffer;
-    id<MTLTexture> __strong stencilbuffer;
 } MGLDrawable;
 
 enum {

@@ -37,6 +37,12 @@ typedef enum MGLRendererBackendPassthroughKind {
     MGL_RENDERER_BACKEND_PASSTHROUGH_TESS_EVALUATION = 1,
 } MGLRendererBackendPassthroughKind;
 
+typedef enum MGLRendererBackendDefaultDrawBufferAttachmentKind {
+    MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_COLOR = 0,
+    MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_DEPTH = 1,
+    MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_STENCIL = 2,
+} MGLRendererBackendDefaultDrawBufferAttachmentKind;
+
 typedef enum MGLRendererBackendFallbackResourceKind {
     MGL_RENDERER_BACKEND_FALLBACK_SAMPLED_TEXTURE = 0,
     MGL_RENDERER_BACKEND_FALLBACK_CUBE_SAMPLED_TEXTURE = 1,
@@ -86,6 +92,15 @@ int mglRendererBackendSetTransientDepthTexture(
 void *mglRendererBackendGetTransientDepthTexture(
     const MGLRendererBackendHandle *backend,
     uint64_t *width_out, uint64_t *height_out);
+int mglRendererBackendSetDefaultDrawBufferAttachment(
+    MGLRendererBackendHandle *backend, uint32_t draw_buffer_index,
+    MGLRendererBackendDefaultDrawBufferAttachmentKind kind, void *texture);
+/* Returns a borrowed default draw-buffer attachment owned by the backend. */
+void *mglRendererBackendGetDefaultDrawBufferAttachment(
+    const MGLRendererBackendHandle *backend, uint32_t draw_buffer_index,
+    MGLRendererBackendDefaultDrawBufferAttachmentKind kind);
+int mglRendererBackendClearDefaultDrawBuffer(
+    MGLRendererBackendHandle *backend, uint32_t draw_buffer_index);
 int mglRendererBackendSetBlitCachedObject(
     MGLRendererBackendHandle *backend,
     MGLRendererBackendBlitCacheKind kind, void *object);

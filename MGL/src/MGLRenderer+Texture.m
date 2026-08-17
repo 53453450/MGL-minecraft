@@ -1521,7 +1521,10 @@ static void mglTextureCopyTextureToBuffer(
     GLuint drawBufferIndex = mglDefaultDrawBufferIndexForGL(glm_ctx->state.read_buffer);
     MGLMetalTextureRef texture = nil;
     if (drawBufferIndex < _MAX_DRAW_BUFFERS) {
-        texture = _drawBuffers[drawBufferIndex].depthbuffer;
+        texture = (__bridge MGLMetalTextureRef)
+            mglRendererBackendGetDefaultDrawBufferAttachment(
+                _backend, drawBufferIndex,
+                MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_DEPTH);
     }
 
     if (!texture) {
@@ -1743,7 +1746,10 @@ static void mglTextureCopyTextureToBuffer(
     }
     else if (mgl_drawbuffer < _MAX_DRAW_BUFFERS)
     {
-        texture = _drawBuffers[mgl_drawbuffer].drawbuffer;
+        texture = (__bridge MGLMetalTextureRef)
+            mglRendererBackendGetDefaultDrawBufferAttachment(
+                _backend, mgl_drawbuffer,
+                MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_COLOR);
     }
 
     if (!texture)
