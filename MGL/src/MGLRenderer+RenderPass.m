@@ -61,21 +61,6 @@ static MGLMetalCommandQueueRef mglRenderPassCreateCommandQueue(
     return mglRenderCppCreateOrResetCommandQueueOwner(owner, 0u);
 }
 
-static MGLMetalFunctionRef mglRenderPassCreateFunction(
-    MGLMetalLibraryRef library,
-    NSString *name,
-    char *errorText,
-    size_t errorCap)
-{
-    void *function = NULL;
-    if (mglRenderCppCreateFunction(
-            (__bridge void *)library, name.UTF8String, NULL,
-            &function, errorText, errorCap) == 0 && function) {
-        return (__bridge_transfer MGLMetalFunctionRef)function;
-    }
-    return nil;
-}
-
 static void mglRenderPassWaitCommandBuffer(MGLMetalCommandBufferRef commandBuffer)
 {
     if (mglRenderCppWaitCommandBuffer(
@@ -512,34 +497,30 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
            !strstr(src, "gl_ViewportIndex");
 }
 
-static bool mglLoadAIRMainFunction(MGLMetalDeviceRef device,
-                                   const unsigned char *bytes,
+static bool mglLoadAIRMainFunction(const unsigned char *bytes,
                                    size_t size,
                                    MGLMetalLibraryRef __strong *libraryOut,
                                    MGLMetalFunctionRef __strong *functionOut,
                                    char *errorText,
                                    size_t errorCap)
 {
-    if (!device || !bytes || size == 0u || !libraryOut || !functionOut) {
+    if (libraryOut) *libraryOut = nil;
+    if (functionOut) *functionOut = nil;
+    if (!bytes || size == 0u || !libraryOut || !functionOut) {
         if (errorText && errorCap) snprintf(errorText, errorCap, "bad args");
         return false;
     }
-    (void)device;
     void *libraryCPP = NULL;
-    void *deviceCPP = mglRenderCppGetDevice();
-    if (!deviceCPP ||
-        mglAirLoadLibrary(deviceCPP, bytes, size, &libraryCPP,
-                          errorText, errorCap) != 0 || !libraryCPP) {
+    void *functionCPP = NULL;
+    if (mglRenderCppLoadAIRMainFunction(
+            bytes, size, &libraryCPP, &functionCPP,
+            errorText, errorCap) != 0 || !libraryCPP || !functionCPP) {
         return false;
     }
     MGLMetalLibraryRef library =
         (__bridge_transfer MGLMetalLibraryRef)libraryCPP;
     MGLMetalFunctionRef function =
-        mglRenderPassCreateFunction(library, @"main", errorText, errorCap);
-    if (!function) {
-        if (errorText && errorCap) snprintf(errorText, errorCap, "missing main");
-        return false;
-    }
+        (__bridge_transfer MGLMetalFunctionRef)functionCPP;
     *libraryOut = library;
     *functionOut = function;
     return true;
@@ -665,7 +646,7 @@ output->name, (unsigned)i,
     MGLMetalLibraryRef library = nil;
     MGLMetalFunctionRef function = nil;
     BOOL loaded = mglLoadAIRMainFunction(
-        _device, bytes, size, &library, &function,
+        bytes, size, &library, &function,
         errorText, sizeof(errorText));
     mglShaderFree(bytes);
     if (!loaded || !library || !function) {
@@ -802,7 +783,7 @@ output->name, (unsigned)i,
     MGLMetalLibraryRef library = nil;
     MGLMetalFunctionRef function = nil;
     BOOL loaded = mglLoadAIRMainFunction(
-        _device, bytes, size, &library, &function,
+        bytes, size, &library, &function,
         errorText, sizeof(errorText));
     mglShaderFree(bytes);
     if (!loaded || !library || !function) {
@@ -1459,7 +1440,7 @@ output->name, (unsigned)i,
                     MGLMetalFunctionRef function = nil;
                     char loadError[256] = {0};
                     if (!mglLoadAIRMainFunction(
-                            _device, ptr->modules[i].metallib_bytes,
+                            ptr->modules[i].metallib_bytes,
                             ptr->modules[i].metallib_size, &library, &function,
                             loadError, sizeof loadError)) {
                         NSLog(@"MGL ERROR: Failed to load AIR metallib program=%u stage=%d: %s",
@@ -1478,7 +1459,6 @@ output->name, (unsigned)i,
                     MGLMetalFunctionRef function = nil;
                     char loadError[256] = {0};
                     if (!mglLoadAIRMainFunction(
-                            _device,
                             ptr->modules[i].metallib_tess_capture_bytes,
                             ptr->modules[i].metallib_tess_capture_size,
                             &library, &function, loadError,
@@ -1501,7 +1481,6 @@ output->name, (unsigned)i,
                     MGLMetalFunctionRef function = nil;
                     char loadError[256] = {0};
                     if (!mglLoadAIRMainFunction(
-                            _device,
                             ptr->modules[i].metallib_cull_capture_bytes,
                             ptr->modules[i].metallib_cull_capture_size,
                             &library, &function, loadError,

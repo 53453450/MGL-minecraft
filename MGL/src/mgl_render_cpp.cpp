@@ -1441,6 +1441,28 @@ void* mglRenderCppGetDevice(void) {
     return mgl::renderer().device;
 }
 
+int mglRenderCppLoadAIRMainFunction(const unsigned char* bytes,
+                                    size_t size,
+                                    void** library_out,
+                                    void** function_out,
+                                    char* err,
+                                    size_t errcap) {
+    if (library_out) *library_out = nullptr;
+    if (function_out) *function_out = nullptr;
+    if (!bytes || size == 0 || !library_out || !function_out) {
+        if (err && errcap) snprintf(err, errcap, "bad args");
+        return -1;
+    }
+    mgl::RendererCpp& renderer = mgl::renderer();
+    std::lock_guard<std::mutex> lock(renderer.mutex);
+    if (!renderer.device) {
+        if (err && errcap) snprintf(err, errcap, "renderer not initialized");
+        return -1;
+    }
+    return mgl::loadAIRMainFunction(
+        renderer.device, bytes, size, library_out, function_out, err, errcap);
+}
+
 void mglRenderCppDeleteMTLObj(GLMContext glm_ctx, void* object) {
     (void)glm_ctx;
     mgl::releaseBridgedObject(&object);

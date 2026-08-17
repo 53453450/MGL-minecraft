@@ -65,7 +65,7 @@ typedef struct MGLRenderCppPipelineDescriptorState {
 /* 旧名兼容别名（P3.4 backend-neutral 命名迁移期的过渡名）。 */
 typedef MGLRenderCppPipelineDescriptorState MGLPipelineDescriptorState;
 
-/* device: void* = MTL::Device*（mglRenderCppGetDevice() 取得）。
+/* device: void* = MTL::Device*，仅供 C++ renderer 内部调用。
  * bytes/size: .metallib 字节块。成功返回 0 且 *library_out 非空。 */
 int mglAirLoadLibrary(const void* device, const unsigned char* bytes, size_t size,
                       void** library_out, char* err, size_t errcap);

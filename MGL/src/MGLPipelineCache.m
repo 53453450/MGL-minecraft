@@ -97,7 +97,7 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
 - (BOOL)ensureCppOwnerCreated
 {
     if (_cppOwner) return YES;
-    if (!_device || !mglRenderCppGetDevice()) return NO;
+    if (!_device) return NO;
     if (mglRenderCppCreatePipelineCacheOwner(
             _state.psoDedupEnabled ? 1 : 0,
             _state.dsCacheEnabled ? 1 : 0,

@@ -40,6 +40,15 @@ void mglRenderCppShutdown(void);
 /* 调试/测试用：返回 C++ 侧持有的 MTL::Device*（void* 形式），未初始化返回 NULL。 */
 void* mglRenderCppGetDevice(void);
 
+/* Load the AIR entry point named "main" with the renderer-owned device.
+ * Returned library/function objects are +1 retained for the caller. */
+int mglRenderCppLoadAIRMainFunction(const unsigned char *bytes,
+                                    size_t size,
+                                    void **library_out,
+                                    void **function_out,
+                                    char *err,
+                                    size_t errcap);
+
 /* Direct renderer entries. Objects passed here carry the +1 bridge reference
  * owned by the GL state. */
 void mglRenderCppDeleteMTLObj(GLMContext glm_ctx, void *object);
