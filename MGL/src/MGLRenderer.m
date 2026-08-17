@@ -49,7 +49,6 @@
 #import "mgl_trace_log.h"
 #import "mgl_byte_hash.h"
 #import "mgl_compute_pipeline_cache.h"
-#import "mgl_metal_bridge.h"
 
 #define TRACE_FUNCTION()    DEBUG_PRINT("%s\n", __FUNCTION__);
 

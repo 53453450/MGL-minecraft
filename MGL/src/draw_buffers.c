@@ -1022,13 +1022,11 @@ static void mglCPUFeedbackFlushAndCount(GLMContext ctx,
         if (!xfb) {
             continue;
         }
-        if (ctx->mtl_funcs.mtlBufferSubData) {
-            ctx->mtl_funcs.mtlBufferSubData(ctx,
-                                            xfb,
-                                            (size_t)dstOffset,
-                                            (size_t)writeSize,
-                                            (uint8_t *)(uintptr_t)xfb->data.buffer_data + dstOffset);
-        }
+        mglRendererBufferSubData(ctx,
+                                 xfb,
+                                 (size_t)dstOffset,
+                                 (size_t)writeSize,
+                                 (uint8_t *)(uintptr_t)xfb->data.buffer_data + dstOffset);
         xfb->data.dirty_bits |= DIRTY_BUFFER_DATA;
         xfb->ever_written = GL_TRUE;
         xfb->has_initialized_data = GL_TRUE;
@@ -1598,50 +1596,50 @@ static void mglDrawDispatch(GLMContext ctx, const MGLDrawCommand *cmd)
     if (cmd->mode == GL_PATCHES) {
         switch (cmd->type) {
             case MGL_CMD_DRAW_ARRAYS:
-                ctx->mtl_funcs.mtlDrawArrays(
+                mglRendererDrawArrays(
                     ctx, cmd->mode, cmd->first, cmd->count);
                 return;
             case MGL_CMD_DRAW_ARRAYS_INSTANCED:
-                ctx->mtl_funcs.mtlDrawArraysInstanced(
+                mglRendererDrawArraysInstanced(
                     ctx, cmd->mode, cmd->first, cmd->count,
                     cmd->instanceCount);
                 return;
             case MGL_CMD_DRAW_ARRAYS_INSTANCED_BASE_INSTANCE:
-                ctx->mtl_funcs.mtlDrawArraysInstancedBaseInstance(
+                mglRendererDrawArraysInstancedBaseInstance(
                     ctx, cmd->mode, cmd->first, cmd->count,
                     cmd->instanceCount, cmd->baseInstance);
                 return;
             case MGL_CMD_DRAW_ELEMENTS:
-                ctx->mtl_funcs.mtlDrawElements(
+                mglRendererDrawElements(
                     ctx, cmd->mode, cmd->count, cmd->indexType,
                     (const void *)(uintptr_t)cmd->indexBufferOffset);
                 return;
             case MGL_CMD_DRAW_ELEMENTS_INSTANCED:
-                ctx->mtl_funcs.mtlDrawElementsInstanced(
+                mglRendererDrawElementsInstanced(
                     ctx, cmd->mode, cmd->count, cmd->indexType,
                     (const void *)(uintptr_t)cmd->indexBufferOffset,
                     cmd->instanceCount);
                 return;
             case MGL_CMD_DRAW_ELEMENTS_BASE_VERTEX:
-                ctx->mtl_funcs.mtlDrawElementsBaseVertex(
+                mglRendererDrawElementsBaseVertex(
                     ctx, cmd->mode, cmd->count, cmd->indexType,
                     (const void *)(uintptr_t)cmd->indexBufferOffset,
                     cmd->baseVertex);
                 return;
             case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX:
-                ctx->mtl_funcs.mtlDrawElementsInstancedBaseVertex(
+                mglRendererDrawElementsInstancedBaseVertex(
                     ctx, cmd->mode, cmd->count, cmd->indexType,
                     (const void *)(uintptr_t)cmd->indexBufferOffset,
                     cmd->instanceCount, cmd->baseVertex);
                 return;
             case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_INSTANCE:
-                ctx->mtl_funcs.mtlDrawElementsInstancedBaseInstance(
+                mglRendererDrawElementsInstancedBaseInstance(
                     ctx, cmd->mode, cmd->count, cmd->indexType,
                     (const void *)(uintptr_t)cmd->indexBufferOffset,
                     cmd->instanceCount, cmd->baseInstance);
                 return;
             case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX_BASE_INSTANCE:
-                ctx->mtl_funcs.mtlDrawElementsInstancedBaseVertexBaseInstance(
+                mglRendererDrawElementsInstancedBaseVertexBaseInstance(
                     ctx, cmd->mode, cmd->count, cmd->indexType,
                     (const void *)(uintptr_t)cmd->indexBufferOffset,
                     cmd->instanceCount, cmd->baseVertex, cmd->baseInstance);
@@ -1660,50 +1658,50 @@ static void mglDrawDispatch(GLMContext ctx, const MGLDrawCommand *cmd)
         mglFlushCommandBuffer(ctx);
         switch (cmd->type) {
             case MGL_CMD_DRAW_ARRAYS:
-                ctx->mtl_funcs.mtlDrawArrays(
+                mglRendererDrawArrays(
                     ctx, cmd->mode, cmd->first, cmd->count);
                 return;
             case MGL_CMD_DRAW_ARRAYS_INSTANCED:
-                ctx->mtl_funcs.mtlDrawArraysInstanced(
+                mglRendererDrawArraysInstanced(
                     ctx, cmd->mode, cmd->first, cmd->count,
                     cmd->instanceCount);
                 return;
             case MGL_CMD_DRAW_ARRAYS_INSTANCED_BASE_INSTANCE:
-                ctx->mtl_funcs.mtlDrawArraysInstancedBaseInstance(
+                mglRendererDrawArraysInstancedBaseInstance(
                     ctx, cmd->mode, cmd->first, cmd->count,
                     cmd->instanceCount, cmd->baseInstance);
                 return;
             case MGL_CMD_DRAW_ELEMENTS:
-                ctx->mtl_funcs.mtlDrawElements(
+                mglRendererDrawElements(
                     ctx, cmd->mode, cmd->count, cmd->indexType,
                     (const void *)(uintptr_t)cmd->indexBufferOffset);
                 return;
             case MGL_CMD_DRAW_ELEMENTS_INSTANCED:
-                ctx->mtl_funcs.mtlDrawElementsInstanced(
+                mglRendererDrawElementsInstanced(
                     ctx, cmd->mode, cmd->count, cmd->indexType,
                     (const void *)(uintptr_t)cmd->indexBufferOffset,
                     cmd->instanceCount);
                 return;
             case MGL_CMD_DRAW_ELEMENTS_BASE_VERTEX:
-                ctx->mtl_funcs.mtlDrawElementsBaseVertex(
+                mglRendererDrawElementsBaseVertex(
                     ctx, cmd->mode, cmd->count, cmd->indexType,
                     (const void *)(uintptr_t)cmd->indexBufferOffset,
                     cmd->baseVertex);
                 return;
             case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX:
-                ctx->mtl_funcs.mtlDrawElementsInstancedBaseVertex(
+                mglRendererDrawElementsInstancedBaseVertex(
                     ctx, cmd->mode, cmd->count, cmd->indexType,
                     (const void *)(uintptr_t)cmd->indexBufferOffset,
                     cmd->instanceCount, cmd->baseVertex);
                 return;
             case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_INSTANCE:
-                ctx->mtl_funcs.mtlDrawElementsInstancedBaseInstance(
+                mglRendererDrawElementsInstancedBaseInstance(
                     ctx, cmd->mode, cmd->count, cmd->indexType,
                     (const void *)(uintptr_t)cmd->indexBufferOffset,
                     cmd->instanceCount, cmd->baseInstance);
                 return;
             case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX_BASE_INSTANCE:
-                ctx->mtl_funcs.mtlDrawElementsInstancedBaseVertexBaseInstance(
+                mglRendererDrawElementsInstancedBaseVertexBaseInstance(
                     ctx, cmd->mode, cmd->count, cmd->indexType,
                     (const void *)(uintptr_t)cmd->indexBufferOffset,
                     cmd->instanceCount, cmd->baseVertex, cmd->baseInstance);
@@ -1736,49 +1734,49 @@ static void mglDrawDispatch(GLMContext ctx, const MGLDrawCommand *cmd)
 
     switch (cmd->type) {
         case MGL_CMD_DRAW_ARRAYS:
-            ctx->mtl_funcs.mtlDrawArrays(ctx, cmd->mode, cmd->first, cmd->count);
+            mglRendererDrawArrays(ctx, cmd->mode, cmd->first, cmd->count);
             break;
         case MGL_CMD_DRAW_ELEMENTS:
-            ctx->mtl_funcs.mtlDrawElements(ctx, cmd->mode, cmd->count, cmd->indexType,
+            mglRendererDrawElements(ctx, cmd->mode, cmd->count, cmd->indexType,
                                            (const void *)(uintptr_t)cmd->indexBufferOffset);
             break;
         case MGL_CMD_DRAW_ARRAYS_INSTANCED:
-            ctx->mtl_funcs.mtlDrawArraysInstanced(ctx, cmd->mode, cmd->first, cmd->count,
+            mglRendererDrawArraysInstanced(ctx, cmd->mode, cmd->first, cmd->count,
                                                   cmd->instanceCount);
             break;
         case MGL_CMD_DRAW_ELEMENTS_INSTANCED:
-            ctx->mtl_funcs.mtlDrawElementsInstanced(ctx, cmd->mode, cmd->count, cmd->indexType,
+            mglRendererDrawElementsInstanced(ctx, cmd->mode, cmd->count, cmd->indexType,
                                                     (const void *)(uintptr_t)cmd->indexBufferOffset,
                                                     cmd->instanceCount);
             break;
         case MGL_CMD_DRAW_ELEMENTS_BASE_VERTEX:
             /* DrawRangeElementsBaseVertex also lands here (start/end ignored
              * by Metal backend — verified at MGLRenderer.m:32670). */
-            ctx->mtl_funcs.mtlDrawElementsBaseVertex(ctx, cmd->mode, cmd->count, cmd->indexType,
+            mglRendererDrawElementsBaseVertex(ctx, cmd->mode, cmd->count, cmd->indexType,
                                                      (const void *)(uintptr_t)cmd->indexBufferOffset,
                                                      cmd->baseVertex);
             break;
         case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX:
-            ctx->mtl_funcs.mtlDrawElementsInstancedBaseVertex(ctx, cmd->mode, cmd->count,
+            mglRendererDrawElementsInstancedBaseVertex(ctx, cmd->mode, cmd->count,
                                                               cmd->indexType,
                                                               (const void *)(uintptr_t)cmd->indexBufferOffset,
                                                               cmd->instanceCount,
                                                               cmd->baseVertex);
             break;
         case MGL_CMD_DRAW_ARRAYS_INSTANCED_BASE_INSTANCE:
-            ctx->mtl_funcs.mtlDrawArraysInstancedBaseInstance(ctx, cmd->mode, cmd->first,
+            mglRendererDrawArraysInstancedBaseInstance(ctx, cmd->mode, cmd->first,
                                                               cmd->count, cmd->instanceCount,
                                                               cmd->baseInstance);
             break;
         case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_INSTANCE:
-            ctx->mtl_funcs.mtlDrawElementsInstancedBaseInstance(ctx, cmd->mode, cmd->count,
+            mglRendererDrawElementsInstancedBaseInstance(ctx, cmd->mode, cmd->count,
                                                                 cmd->indexType,
                                                                 (const void *)(uintptr_t)cmd->indexBufferOffset,
                                                                 cmd->instanceCount,
                                                                 cmd->baseInstance);
             break;
         case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX_BASE_INSTANCE:
-            ctx->mtl_funcs.mtlDrawElementsInstancedBaseVertexBaseInstance(ctx, cmd->mode, cmd->count,
+            mglRendererDrawElementsInstancedBaseVertexBaseInstance(ctx, cmd->mode, cmd->count,
                                                                           cmd->indexType,
                                                                           (const void *)(uintptr_t)cmd->indexBufferOffset,
                                                                           cmd->instanceCount,
@@ -1960,7 +1958,7 @@ void mglDrawArraysIndirect(GLMContext ctx, GLenum mode, const void *indirect)
     mglFlushCommandBuffer(ctx);
     mglTraceLogExternal("DRAW_ARRAYS_INDIRECT_FRONTEND_DISPATCH mode=0x%x indirect=%p program=%u",
                         (unsigned)mode, indirect, (unsigned)mglTraceDrawProgram(ctx));
-    ctx->mtl_funcs.mtlDrawArraysIndirect(ctx, mode, indirect);
+    mglRendererDrawArraysIndirect(ctx, mode, indirect);
 }
 
 void mglDrawElementsIndirect(GLMContext ctx, GLenum mode, GLenum type, const void *indirect)
@@ -2023,7 +2021,7 @@ void mglDrawElementsIndirect(GLMContext ctx, GLenum mode, GLenum type, const voi
     mglFlushCommandBuffer(ctx);
     mglTraceLogExternal("DRAW_ELEMENTS_INDIRECT_FRONTEND_DISPATCH mode=0x%x type=0x%x indirect=%p program=%u",
                         (unsigned)mode, (unsigned)type, indirect, (unsigned)mglTraceDrawProgram(ctx));
-    ctx->mtl_funcs.mtlDrawElementsIndirect(ctx, mode, type, indirect);
+    mglRendererDrawElementsIndirect(ctx, mode, type, indirect);
 }
 
 void mglDrawArraysInstancedBaseInstance(GLMContext ctx, GLenum mode, GLint first, GLsizei count, GLsizei instancecount, GLuint baseinstance)
@@ -2094,7 +2092,7 @@ void mglMultiDrawArrays(GLMContext ctx, GLenum mode, const GLint *first, const G
     if (mglCurrentExpandedGeometryDrawProgram(ctx)) {
         /* P1: GS expansion cannot be replayed as a deferred batch; forward
          * to the renderer which decodes each sub-draw through the GS path. */
-        ctx->mtl_funcs.mtlMultiDrawArrays(ctx, mode, first, count, drawcount);
+        mglRendererMultiDrawArrays(ctx, mode, first, count, drawcount);
         return;
     }
 
@@ -2116,7 +2114,7 @@ void mglMultiDrawArrays(GLMContext ctx, GLenum mode, const GLint *first, const G
         return;
     }
 
-    ctx->mtl_funcs.mtlMultiDrawArrays(ctx, mode, first, count, drawcount);
+    mglRendererMultiDrawArrays(ctx, mode, first, count, drawcount);
 }
 
 void mglMultiDrawElements(GLMContext ctx, GLenum mode, const GLsizei *count, GLenum type, const void *const*indices, GLsizei drawcount)
@@ -2149,7 +2147,7 @@ void mglMultiDrawElements(GLMContext ctx, GLenum mode, const GLsizei *count, GLe
 
     if (mglCurrentExpandedGeometryDrawProgram(ctx)) {
         /* P1: GS expansion cannot be replayed as a deferred batch. */
-        ctx->mtl_funcs.mtlMultiDrawElements(ctx, mode, count, type, indices,
+        mglRendererMultiDrawElements(ctx, mode, count, type, indices,
                                             drawcount);
         return;
     }
@@ -2175,7 +2173,7 @@ void mglMultiDrawElements(GLMContext ctx, GLenum mode, const GLsizei *count, GLe
         return;
     }
 
-    ctx->mtl_funcs.mtlMultiDrawElements(ctx, mode, count, type, indices, drawcount);
+    mglRendererMultiDrawElements(ctx, mode, count, type, indices, drawcount);
 }
 
 void mglMultiDrawElementsBaseVertex(GLMContext ctx, GLenum mode, const GLsizei *count, GLenum type, const void *const*indices, GLsizei drawcount, const GLint *basevertex)
@@ -2208,7 +2206,7 @@ void mglMultiDrawElementsBaseVertex(GLMContext ctx, GLenum mode, const GLsizei *
 
     if (mglCurrentExpandedGeometryDrawProgram(ctx)) {
         /* P1: GS expansion cannot be replayed as a deferred batch. */
-        ctx->mtl_funcs.mtlMultiDrawElementsBaseVertex(ctx, mode, count, type,
+        mglRendererMultiDrawElementsBaseVertex(ctx, mode, count, type,
                                                       indices, drawcount,
                                                       basevertex);
         return;
@@ -2236,7 +2234,7 @@ void mglMultiDrawElementsBaseVertex(GLMContext ctx, GLenum mode, const GLsizei *
         return;
     }
 
-    ctx->mtl_funcs.mtlMultiDrawElementsBaseVertex(ctx, mode, count, type, indices, drawcount, basevertex);
+    mglRendererMultiDrawElementsBaseVertex(ctx, mode, count, type, indices, drawcount, basevertex);
 }
 
 void mglMultiDrawArraysIndirect(GLMContext ctx, GLenum mode, const void *indirect, GLsizei drawcount, GLsizei stride)
@@ -2298,7 +2296,7 @@ void mglMultiDrawArraysIndirect(GLMContext ctx, GLenum mode, const void *indirec
     mglFlushCommandBuffer(ctx);
     mglTraceLogExternal("MULTI_DRAW_ARRAYS_INDIRECT_FRONTEND_DISPATCH mode=0x%x indirect=%p drawcount=%d stride=%d program=%u",
                         (unsigned)mode, indirect, (int)drawcount, (int)stride, (unsigned)mglTraceDrawProgram(ctx));
-    ctx->mtl_funcs.mtlMultiDrawArraysIndirect(ctx, mode, indirect, drawcount, stride);
+    mglRendererMultiDrawArraysIndirect(ctx, mode, indirect, drawcount, stride);
 }
 
 void mglMultiDrawElementsIndirect(GLMContext ctx, GLenum mode, GLenum type, const void *indirect, GLsizei drawcount, GLsizei stride)
@@ -2373,5 +2371,5 @@ void mglMultiDrawElementsIndirect(GLMContext ctx, GLenum mode, GLenum type, cons
     mglFlushCommandBuffer(ctx);
     mglTraceLogExternal("MULTI_DRAW_ELEMENTS_INDIRECT_FRONTEND_DISPATCH mode=0x%x type=0x%x indirect=%p drawcount=%d stride=%d program=%u",
                         (unsigned)mode, (unsigned)type, indirect, (int)drawcount, (int)stride, (unsigned)mglTraceDrawProgram(ctx));
-    ctx->mtl_funcs.mtlMultiDrawElementsIndirect(ctx, mode, type, indirect, drawcount, stride);
+    mglRendererMultiDrawElementsIndirect(ctx, mode, type, indirect, drawcount, stride);
 }

@@ -49,22 +49,6 @@
 extern "C" void mglMetalCountRelease(int kind);
 extern "C" void mglMetalCountCreate(int kind);
 extern "C" void mglRecordBufferCowSnapshot(uint64_t bytes);
-extern "C" void mtlBindBuffer(GLMContext glm_ctx, Buffer* buffer);
-extern "C" void mtlBufferSubData(GLMContext glm_ctx,
-                                  Buffer* buffer,
-                                  size_t offset,
-                                  size_t size,
-                                  const void* bytes);
-extern "C" void* mtlMapUnmapBuffer(GLMContext glm_ctx,
-                                     Buffer* buffer,
-                                     size_t offset,
-                                     size_t size,
-                                     unsigned int access,
-                                     bool map);
-extern "C" void mtlFlushBufferRange(GLMContext glm_ctx,
-                                     Buffer* buffer,
-                                     intptr_t offset,
-                                     intptr_t length);
 
 namespace mgl {
 
@@ -2013,7 +1997,11 @@ void mglRenderCppBindBuffer(GLMContext glm_ctx, Buffer* buffer) {
         buffer, error, sizeof(error));
     if (result == MGL_RENDER_CPP_BUFFER_BOUND) return;
     if (result == MGL_RENDER_CPP_BUFFER_NOT_APPLICABLE) {
-        mtlBindBuffer(glm_ctx, buffer);
+        MGLRenderCppLegacyCallbackArgs args = {
+            .kind = MGL_RENDER_CPP_LEGACY_CALLBACK_BIND_BUFFER,
+            .buffer = buffer,
+        };
+        (void)mglRenderCppInvokeLegacyCallback(glm_ctx, &args);
         return;
     }
     fprintf(stderr,
@@ -2107,7 +2095,14 @@ void mglRenderCppBufferSubData(GLMContext glm_ctx,
         buffer, offset, size, bytes, error, sizeof(error));
     if (result == MGL_RENDER_CPP_BUFFER_OPERATION_HANDLED) return;
     if (result == MGL_RENDER_CPP_BUFFER_OPERATION_NOT_APPLICABLE) {
-        mtlBufferSubData(glm_ctx, buffer, offset, size, bytes);
+        MGLRenderCppLegacyCallbackArgs args = {
+            .kind = MGL_RENDER_CPP_LEGACY_CALLBACK_BUFFER_SUB_DATA,
+            .buffer = buffer,
+            .bytes = bytes,
+            .offset = offset,
+            .size = size,
+        };
+        (void)mglRenderCppInvokeLegacyCallback(glm_ctx, &args);
         return;
     }
     fprintf(stderr,
@@ -2194,8 +2189,16 @@ void* mglRenderCppMapUnmapBuffer(GLMContext glm_ctx,
         buffer, offset, size, access, map, &mapped, error, sizeof(error));
     if (result == MGL_RENDER_CPP_BUFFER_OPERATION_HANDLED) return mapped;
     if (result == MGL_RENDER_CPP_BUFFER_OPERATION_NOT_APPLICABLE) {
-        return mtlMapUnmapBuffer(
-            glm_ctx, buffer, offset, size, access, map);
+        MGLRenderCppLegacyCallbackArgs args = {
+            .kind = MGL_RENDER_CPP_LEGACY_CALLBACK_MAP_UNMAP_BUFFER,
+            .buffer = buffer,
+            .offset = offset,
+            .size = size,
+            .value = access,
+            .flag = map,
+        };
+        return reinterpret_cast<void*>(static_cast<uintptr_t>(
+            mglRenderCppInvokeLegacyCallback(glm_ctx, &args)));
     }
     fprintf(stderr,
             "MGL ERROR: Metal-cpp buffer map failed buffer=%u: %s\n",
@@ -2299,7 +2302,13 @@ void mglRenderCppFlushBufferRange(GLMContext glm_ctx,
         buffer, offset, length, error, sizeof(error));
     if (result == MGL_RENDER_CPP_BUFFER_OPERATION_HANDLED) return;
     if (result == MGL_RENDER_CPP_BUFFER_OPERATION_NOT_APPLICABLE) {
-        mtlFlushBufferRange(glm_ctx, buffer, offset, length);
+        MGLRenderCppLegacyCallbackArgs args = {
+            .kind = MGL_RENDER_CPP_LEGACY_CALLBACK_FLUSH_BUFFER_RANGE,
+            .buffer = buffer,
+            .signed_offset = offset,
+            .signed_length = length,
+        };
+        (void)mglRenderCppInvokeLegacyCallback(glm_ctx, &args);
         return;
     }
     fprintf(stderr,
@@ -2812,21 +2821,37 @@ void mglRenderCppBindProgram(GLMContext glm_ctx, Program* program) {
                        : "unknown error"));
 }
 
+namespace {
+
+MGLRendererBackendHandle* rendererBackend(GLMContext context) {
+    return context
+        ? static_cast<MGLRendererBackendHandle*>(context->renderer_backend)
+        : nullptr;
+}
+
+void* rendererOwner(GLMContext context, MGLRendererBackendOwnerKind kind) {
+    return mglRendererBackendGetOwner(rendererBackend(context), kind);
+}
+
+} // namespace
+
 void mglRenderCppGetSync(GLMContext glm_ctx, Sync* sync) {
     if (!sync) return;
 
     mgl::releaseBridgedObject(&sync->mtl_command_buffer);
     mgl::releaseBridgedObject(&sync->mtl_event);
-    if (!glm_ctx || !glm_ctx->metal_command_buffer_owner) return;
+    void* command_owner = rendererOwner(
+        glm_ctx, MGL_RENDERER_BACKEND_OWNER_COMMAND_BUFFER);
+    if (!command_owner) return;
 
-    void* render_owner = glm_ctx->metal_render_encoder_owner;
+    void* render_owner = rendererOwner(
+        glm_ctx, MGL_RENDERER_BACKEND_OWNER_RENDER_ENCODER);
     if (render_owner &&
         mglRenderCppRenderEncoderOwnerHasCurrent(render_owner) == 1 &&
         mglRenderCppEndRenderEncoderOwner(render_owner) != 0) {
         return;
     }
 
-    void* command_owner = glm_ctx->metal_command_buffer_owner;
     MGLRenderCppCommandBufferState state = {};
     if (mglRenderCppGetCommandBufferOwnerState(command_owner, &state) != 0 ||
         state.status !=
@@ -2854,7 +2879,8 @@ void mglRenderCppGetSync(GLMContext glm_ctx, Sync* sync) {
     MGLRenderCppCommandBufferTransaction transaction = {};
     int result = mglRenderCppCommitCommandBufferTransaction(
         command_owner, &submission, command_buffer,
-        glm_ctx->metal_command_recovery_owner, 0u, &transaction);
+        rendererOwner(glm_ctx, MGL_RENDERER_BACKEND_OWNER_RECOVERY),
+        0u, &transaction);
     mglRenderCppDestroyCommandBufferSubmission(&submission);
     if (result != 0 &&
         transaction.result !=
@@ -2893,7 +2919,9 @@ void mglRenderCppReleaseSync(GLMContext glm_ctx, Sync* sync) {
 }
 
 void mglRenderCppFlush(GLMContext glm_ctx, bool finish) {
-    if (!glm_ctx || !glm_ctx->metal_command_buffer_owner) return;
+    void* command_owner = rendererOwner(
+        glm_ctx, MGL_RENDERER_BACKEND_OWNER_COMMAND_BUFFER);
+    if (!command_owner) return;
 
     Sync boundary = {};
     mglRenderCppGetSync(glm_ctx, &boundary);
@@ -2903,7 +2931,7 @@ void mglRenderCppFlush(GLMContext glm_ctx, bool finish) {
         } else {
             MGLRenderCppCommandBufferState state = {};
             (void)mglRenderCppWaitCommandBufferOwnerLastSubmitted(
-                glm_ctx->metal_command_buffer_owner, &state);
+                command_owner, &state);
         }
     } else {
         mglRenderCppReleaseSync(glm_ctx, &boundary);
@@ -2911,11 +2939,11 @@ void mglRenderCppFlush(GLMContext glm_ctx, bool finish) {
 }
 
 void mglRenderCppInvalidateRenderPass(GLMContext glm_ctx) {
-    if (!glm_ctx || !glm_ctx->metal_render_encoder_owner) return;
-    if (mglRenderCppRenderEncoderOwnerHasCurrent(
-            glm_ctx->metal_render_encoder_owner) == 1) {
-        (void)mglRenderCppEndRenderEncoderOwner(
-            glm_ctx->metal_render_encoder_owner);
+    void* render_owner = rendererOwner(
+        glm_ctx, MGL_RENDERER_BACKEND_OWNER_RENDER_ENCODER);
+    if (!render_owner) return;
+    if (mglRenderCppRenderEncoderOwnerHasCurrent(render_owner) == 1) {
+        (void)mglRenderCppEndRenderEncoderOwner(render_owner);
     }
 }
 
@@ -2927,9 +2955,8 @@ struct RendererCallbackRuntime {
 };
 
 RendererCallbackRuntime* callbackRuntime(GLMContext glm_ctx) {
-    return glm_ctx
-        ? static_cast<RendererCallbackRuntime*>(glm_ctx->metal_callback_runtime)
-        : nullptr;
+    return static_cast<RendererCallbackRuntime*>(
+        mglRendererBackendGetCallbackRuntime(rendererBackend(glm_ctx)));
 }
 
 void mglRenderCppDispatchComputeCallback(GLMContext glm_ctx,
@@ -3513,150 +3540,31 @@ int mglRenderCppCreateCallbackRuntime(
 
 void mglRenderCppDestroyCallbackRuntime(void** runtime_io) {
     if (!runtime_io || !*runtime_io) return;
-    delete static_cast<RendererCallbackRuntime*>(*runtime_io);
+    RendererCallbackRuntime* runtime =
+        static_cast<RendererCallbackRuntime*>(*runtime_io);
     *runtime_io = nullptr;
-}
-
-int mglRenderCppInstallMetalCallbacks(
-    GLMContext glm_ctx,
-    MGLRenderCppCallbackInstallResult* result_out) {
-    if (result_out) memset(result_out, 0, sizeof(*result_out));
-    if (!glm_ctx || !result_out) return -1;
-
-    RendererCallbackRuntime* runtime = callbackRuntime(glm_ctx);
-    if (!runtime || !runtime->ops.dispatch_compute ||
-        !runtime->ops.dispatch_compute_indirect || !runtime->ops.draw ||
-        !runtime->ops.bind_texture || !runtime->ops.flush_draw_buffer ||
-        !runtime->ops.swap_buffers || !runtime->ops.clear_buffer ||
-        !runtime->ops.blit_framebuffer || !runtime->ops.resource) {
-        return -1;
+    if (runtime->ops.release_context) {
+        runtime->ops.release_context(runtime->context);
     }
-
-    glm_ctx->mtl_funcs.mtlBindBuffer = mglRenderCppBindBuffer;
-    glm_ctx->mtl_funcs.mtlBufferSubData = mglRenderCppBufferSubData;
-    glm_ctx->mtl_funcs.mtlMapUnmapBuffer = mglRenderCppMapUnmapBuffer;
-    glm_ctx->mtl_funcs.mtlReadBackBuffer = mglRenderCppReadBackBuffer;
-    glm_ctx->mtl_funcs.mtlFlushBufferRange = mglRenderCppFlushBufferRange;
-    glm_ctx->mtl_funcs.mtlBindProgram = mglRenderCppBindProgram;
-    glm_ctx->mtl_funcs.mtlGetSync = mglRenderCppGetSync;
-    glm_ctx->mtl_funcs.mtlBeginSampleQuery =
-        mglRenderCppBeginSampleQueryCallback;
-    glm_ctx->mtl_funcs.mtlEndSampleQuery =
-        mglRenderCppEndSampleQueryCallback;
-    glm_ctx->mtl_funcs.mtlGetGPUTimestamp = mglRenderCppGetGPUTimestamp;
-    glm_ctx->mtl_funcs.mtlBeginTimerQuery =
-        mglRenderCppBeginTimerQueryCallback;
-    glm_ctx->mtl_funcs.mtlEndTimerQuery =
-        mglRenderCppEndTimerQueryCallback;
-    glm_ctx->mtl_funcs.mtlDeleteMTLObj = mglRenderCppDeleteMTLObj;
-    glm_ctx->mtl_funcs.release_buffer_metal_data =
-        mglRenderCppReleaseBufferMetalData;
-    glm_ctx->mtl_funcs.mtlWaitForSync = mglRenderCppWaitForSync;
-    glm_ctx->mtl_funcs.mtlGetSyncStatus = mglRenderCppGetSyncStatus;
-    glm_ctx->mtl_funcs.mtlReleaseSync = mglRenderCppReleaseSync;
-    glm_ctx->mtl_funcs.mtlFlush = mglRenderCppFlush;
-    glm_ctx->mtl_funcs.mtlInvalidateRenderPass =
-        mglRenderCppInvalidateRenderPass;
-    glm_ctx->mtl_funcs.mtlDispatchCompute =
-        mglRenderCppDispatchComputeCallback;
-    glm_ctx->mtl_funcs.mtlDispatchComputeIndirect =
-        mglRenderCppDispatchComputeIndirectCallback;
-    glm_ctx->mtl_funcs.mtlDrawArrays = mglRenderCppDrawArraysCallback;
-    glm_ctx->mtl_funcs.mtlDrawElements = mglRenderCppDrawElementsCallback;
-    glm_ctx->mtl_funcs.mtlDrawRangeElements =
-        mglRenderCppDrawRangeElementsCallback;
-    glm_ctx->mtl_funcs.mtlDrawArraysInstanced =
-        mglRenderCppDrawArraysInstancedCallback;
-    glm_ctx->mtl_funcs.mtlDrawElementsInstanced =
-        mglRenderCppDrawElementsInstancedCallback;
-    glm_ctx->mtl_funcs.mtlDrawElementsBaseVertex =
-        mglRenderCppDrawElementsBaseVertexCallback;
-    glm_ctx->mtl_funcs.mtlDrawRangeElementsBaseVertex =
-        mglRenderCppDrawRangeElementsBaseVertexCallback;
-    glm_ctx->mtl_funcs.mtlDrawElementsInstancedBaseVertex =
-        mglRenderCppDrawElementsInstancedBaseVertexCallback;
-    glm_ctx->mtl_funcs.mtlDrawArraysIndirect =
-        mglRenderCppDrawArraysIndirectCallback;
-    glm_ctx->mtl_funcs.mtlDrawElementsIndirect =
-        mglRenderCppDrawElementsIndirectCallback;
-    glm_ctx->mtl_funcs.mtlDrawArraysInstancedBaseInstance =
-        mglRenderCppDrawArraysInstancedBaseInstanceCallback;
-    glm_ctx->mtl_funcs.mtlDrawElementsInstancedBaseInstance =
-        mglRenderCppDrawElementsInstancedBaseInstanceCallback;
-    glm_ctx->mtl_funcs.mtlDrawElementsInstancedBaseVertexBaseInstance =
-        mglRenderCppDrawElementsInstancedBaseVertexBaseInstanceCallback;
-    glm_ctx->mtl_funcs.mtlMultiDrawArrays =
-        mglRenderCppMultiDrawArraysCallback;
-    glm_ctx->mtl_funcs.mtlMultiDrawElements =
-        mglRenderCppMultiDrawElementsCallback;
-    glm_ctx->mtl_funcs.mtlMultiDrawElementsBaseVertex =
-        mglRenderCppMultiDrawElementsBaseVertexCallback;
-    glm_ctx->mtl_funcs.mtlMultiDrawArraysIndirect =
-        mglRenderCppMultiDrawArraysIndirectCallback;
-    glm_ctx->mtl_funcs.mtlMultiDrawElementsIndirect =
-        mglRenderCppMultiDrawElementsIndirectCallback;
-    glm_ctx->mtl_funcs.mtlBindTexture = mglRenderCppBindTextureCallback;
-    glm_ctx->mtl_funcs.mtlFlushDrawBuffer =
-        mglRenderCppFlushDrawBufferCallback;
-    glm_ctx->mtl_funcs.mtlSwapBuffers = mglRenderCppSwapBuffersCallback;
-    glm_ctx->mtl_funcs.mtlClearBuffer = mglRenderCppClearBufferCallback;
-    glm_ctx->mtl_funcs.mtlBlitFramebuffer =
-        mglRenderCppBlitFramebufferCallback;
-    glm_ctx->mtl_funcs.mtlReadDrawable = mglRenderCppReadDrawableCallback;
-    glm_ctx->mtl_funcs.mtlReadIntegerPixels =
-        mglRenderCppReadIntegerPixelsCallback;
-    glm_ctx->mtl_funcs.mtlReadDepthPixels =
-        mglRenderCppReadDepthPixelsCallback;
-    glm_ctx->mtl_funcs.mtlGetTexImage = mglRenderCppGetTexImageCallback;
-    glm_ctx->mtl_funcs.mtlGenerateMipmaps =
-        mglRenderCppGenerateMipmapsCallback;
-    glm_ctx->mtl_funcs.mtlTexSubImage = mglRenderCppTexSubImageCallback;
-    glm_ctx->mtl_funcs.mtlTexSubImageBytes =
-        mglRenderCppTexSubImageBytesCallback;
-    glm_ctx->mtl_funcs.mtlCopyTexSubImage =
-        mglRenderCppCopyTexSubImageCallback;
-    glm_ctx->mtl_funcs.mtlCopyImageSubData =
-        mglRenderCppCopyImageSubDataCallback;
-    result_out->installed = 53;
-    result_out->strict_cpp = 19;
-    result_out->pure_adapter = 34;
-    result_out->legacy_fallback = 0;
-    return 0;
+    delete runtime;
 }
 
 int mglRenderCppAttachRuntimeOwners(GLMContext glm_ctx,
                                     void* command_buffer_owner,
                                     void* render_encoder_owner,
-                                    void* render_pass_state_owner,
-                                    void* query_state_owner,
-                                    void* command_recovery_owner) {
-    if (!glm_ctx) return -1;
-    glm_ctx->metal_command_buffer_owner = command_buffer_owner;
-    glm_ctx->metal_render_encoder_owner = render_encoder_owner;
-    glm_ctx->metal_render_pass_state_owner = render_pass_state_owner;
-    glm_ctx->metal_query_state_owner = query_state_owner;
-    glm_ctx->metal_command_recovery_owner = command_recovery_owner;
-    if (glm_ctx->renderer_backend) {
-        (void)mglRendererBackendAttachRuntimeOwners(
-            static_cast<MGLRendererBackendHandle *>(glm_ctx->renderer_backend),
-            command_buffer_owner,
-            render_encoder_owner,
-            render_pass_state_owner);
-    }
-    return 0;
+                                    void* render_pass_state_owner) {
+    MGLRendererBackendHandle* backend = rendererBackend(glm_ctx);
+    return backend
+        ? mglRendererBackendAttachRuntimeOwners(
+              backend, command_buffer_owner,
+              render_encoder_owner, render_pass_state_owner)
+        : -1;
 }
 
 void mglRenderCppDetachRuntimeOwners(GLMContext glm_ctx) {
-    if (!glm_ctx) return;
-    glm_ctx->metal_command_buffer_owner = nullptr;
-    glm_ctx->metal_render_encoder_owner = nullptr;
-    glm_ctx->metal_render_pass_state_owner = nullptr;
-    glm_ctx->metal_query_state_owner = nullptr;
-    glm_ctx->metal_command_recovery_owner = nullptr;
-    if (glm_ctx->renderer_backend) {
+    if (MGLRendererBackendHandle* backend = rendererBackend(glm_ctx)) {
         (void)mglRendererBackendAttachRuntimeOwners(
-            static_cast<MGLRendererBackendHandle *>(glm_ctx->renderer_backend),
-            nullptr, nullptr, nullptr);
+            backend, nullptr, nullptr, nullptr);
     }
 }
 
@@ -3675,11 +3583,13 @@ uint64_t mglRenderCppGetGPUTimestamp(GLMContext glm_ctx) {
 
 void mglRenderCppBeginSampleQueryCallback(GLMContext glm_ctx,
                                           unsigned int target) {
-    if (!glm_ctx || !glm_ctx->metal_query_state_owner) return;
+    void* query_owner = rendererOwner(
+        glm_ctx, MGL_RENDERER_BACKEND_OWNER_QUERY);
+    if (!query_owner) return;
 
     void* visibility_buffer = nullptr;
     if (mglRenderCppBeginSampleQuery(
-            glm_ctx->metal_query_state_owner,
+            query_owner,
             target == GL_SAMPLES_PASSED ? 1u : 0u,
             "MGL Visibility Result", &visibility_buffer) != 0 ||
         !visibility_buffer) {
@@ -3689,19 +3599,22 @@ void mglRenderCppBeginSampleQueryCallback(GLMContext glm_ctx,
     uint32_t mode = 0;
     uint64_t offset = 0;
     if (mglRenderCppAcquireSampleQuerySlot(
-            glm_ctx->metal_query_state_owner, &mode, &offset) != 0) {
+            query_owner, &mode, &offset) != 0) {
         return;
     }
 
     bool pass_has_visibility = false;
     MGLRenderCppRenderPassState pass = {};
-    if (glm_ctx->metal_render_pass_state_owner &&
+    void* render_pass_owner = rendererOwner(
+        glm_ctx, MGL_RENDERER_BACKEND_OWNER_RENDER_PASS);
+    if (render_pass_owner &&
         mglRenderCppGetRenderPassStateOwner(
-            glm_ctx->metal_render_pass_state_owner, &pass) == 0) {
+            render_pass_owner, &pass) == 0) {
         pass_has_visibility = pass.visibility_result_buffer != nullptr;
     }
 
-    void* render_owner = glm_ctx->metal_render_encoder_owner;
+    void* render_owner = rendererOwner(
+        glm_ctx, MGL_RENDERER_BACKEND_OWNER_RENDER_ENCODER);
     if (!render_owner ||
         mglRenderCppRenderEncoderOwnerHasCurrent(render_owner) != 1) {
         return;
@@ -3714,18 +3627,21 @@ void mglRenderCppBeginSampleQueryCallback(GLMContext glm_ctx,
 }
 
 uint64_t mglRenderCppEndSampleQueryCallback(GLMContext glm_ctx) {
-    if (!glm_ctx || !glm_ctx->metal_query_state_owner) return 0;
+    void* query_owner = rendererOwner(
+        glm_ctx, MGL_RENDERER_BACKEND_OWNER_QUERY);
+    if (!query_owner) return 0;
 
-    void* render_owner = glm_ctx->metal_render_encoder_owner;
+    void* render_owner = rendererOwner(
+        glm_ctx, MGL_RENDERER_BACKEND_OWNER_RENDER_ENCODER);
     if (render_owner &&
         mglRenderCppRenderEncoderOwnerHasCurrent(render_owner) == 1) {
         (void)mglRenderCppEndRenderEncoderOwner(render_owner);
     }
-    mglRenderCppEndSampleQuery(glm_ctx->metal_query_state_owner);
+    mglRenderCppEndSampleQuery(query_owner);
 
     void* visibility_buffer = nullptr;
     if (mglRenderCppGetQueryVisibilityBuffer(
-            glm_ctx->metal_query_state_owner, &visibility_buffer) == 0 &&
+            query_owner, &visibility_buffer) == 0 &&
         visibility_buffer) {
         Sync boundary = {};
         mglRenderCppGetSync(glm_ctx, &boundary);
@@ -3734,38 +3650,24 @@ uint64_t mglRenderCppEndSampleQueryCallback(GLMContext glm_ctx) {
 
     uint64_t result = 0;
     return mglRenderCppGetSampleQueryResult(
-               glm_ctx->metal_query_state_owner, &result) == 0
+               query_owner, &result) == 0
         ? result : 0;
 }
 
-int mglRenderCppRegisterContextQueryStateOwner(GLMContext glm_ctx,
-                                               void* query_owner) {
-    if (!glm_ctx || !query_owner) return -1;
-    glm_ctx->metal_query_state_owner = query_owner;
-    return 0;
-}
-
-void mglRenderCppUnregisterContextQueryStateOwner(GLMContext glm_ctx,
-                                                  void* query_owner) {
-    if (!glm_ctx || !query_owner) return;
-    if (glm_ctx->metal_query_state_owner == query_owner) {
-        glm_ctx->metal_query_state_owner = nullptr;
-    }
-}
-
 void mglRenderCppBeginTimerQueryCallback(GLMContext glm_ctx) {
-    if (!glm_ctx) return;
-    if (!glm_ctx->metal_query_state_owner ||
-        mglRenderCppBeginTimerQuery(glm_ctx->metal_query_state_owner) != 0) {
+    void* query_owner = rendererOwner(
+        glm_ctx, MGL_RENDERER_BACKEND_OWNER_QUERY);
+    if (!query_owner || mglRenderCppBeginTimerQuery(query_owner) != 0) {
         fprintf(stderr, "MGL ERROR: failed to begin Metal-cpp timer query\n");
     }
 }
 
 uint64_t mglRenderCppEndTimerQueryCallback(GLMContext glm_ctx) {
-    if (!glm_ctx) return 0;
+    void* query_owner = rendererOwner(
+        glm_ctx, MGL_RENDERER_BACKEND_OWNER_QUERY);
     uint64_t elapsed = 0;
-    return glm_ctx->metal_query_state_owner &&
-           mglRenderCppEndTimerQuery(glm_ctx->metal_query_state_owner, &elapsed) == 0
+    return query_owner &&
+           mglRenderCppEndTimerQuery(query_owner, &elapsed) == 0
         ? elapsed : 0;
 }
 

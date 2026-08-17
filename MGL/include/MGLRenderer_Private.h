@@ -294,7 +294,20 @@ static inline double mglTraceNowSeconds(void)
 /* Locked variant of flushDrawBuffer: — caller must hold METAL_LOCK.
  * Defined in MGLRenderer+Batch.m, called from already-locked callers
  * (mtlSwapBuffersLocked:, flushCommandBufferLocked:). */
+- (void)flushDrawBuffer:(GLMContext)glm_ctx;
 - (void)flushDrawBufferLocked:(GLMContext)glm_ctx;
+- (void)mtlDeleteMTLObj:(GLMContext)glm_ctx buffer:(void *)obj;
+- (void)mtlFlush:(GLMContext)glm_ctx finish:(bool)finish;
+- (void)mtlInvalidateRenderPass:(GLMContext)glm_ctx;
+- (void)mtlBufferSubData:(GLMContext)glm_ctx buf:(Buffer *)buf
+                  offset:(size_t)offset size:(size_t)size ptr:(const void *)ptr;
+- (void *)mtlMapUnmapBuffer:(GLMContext)glm_ctx buf:(Buffer *)buf
+                      offset:(size_t)offset size:(size_t)size
+                      access:(GLenum)access map:(bool)map;
+- (void)mtlReadBackBuffer:(GLMContext)glm_ctx buf:(Buffer *)buf
+                   offset:(size_t)offset size:(size_t)size;
+- (void)mtlFlushMappedBufferRange:(GLMContext)glm_ctx buf:(Buffer *)buf
+                           offset:(GLintptr)offset length:(GLsizeiptr)length;
 
 /* Drawable-geometry hand-off (component 3 of the lock replacement).
  * mglMainThreadSyncViewGeometry: main-thread only; reads NSView/NSWindow/

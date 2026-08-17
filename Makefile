@@ -254,6 +254,7 @@ LLVM_LDFLAGS := -L$(LLVM_ROOT)/lib -lLLVM-15 -lc++
 # The *.cpp sources (GLSL->metallib compiler + Metal-cpp renderer/loader) build
 # with LLVM headers and metal-cpp (header-only).
 M1_AIR_CXXFLAGS := -std=c++20 -I$(LLVM_ROOT)/include -IMGL/include \
+	-IMGL/src \
 	-IMGL/include/GL \
 	-Iexternal/metal-cpp
 CXXFLAGS_GL_CORE := $(CXXFLAGS) -DMGL_GL_CORE $(M1_AIR_CXXFLAGS)

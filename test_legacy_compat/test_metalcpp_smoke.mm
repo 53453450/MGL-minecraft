@@ -85,10 +85,6 @@ extern "C" void mtlFlush(GLMContext, bool finish) {
     ++s_legacyFlushCount;
     s_legacyFlushFinish = finish;
 }
-extern "C" int mglContextHasValidMetalBridge(GLMContext context) {
-    return context && context->mtl_funcs.mtlObj &&
-           reinterpret_cast<uintptr_t>(context->mtl_funcs.mtlObj) >= 0x1000u;
-}
 
 static std::atomic<int> s_commandBufferCompletionCount{0};
 static std::atomic<int> s_commandBufferContextDestroyCount{0};
@@ -131,30 +127,35 @@ static int smokeResource(void *, GLMContext,
     return 1;
 }
 
-static int verifyMetalCallbackInstall(void) {
-    {
-        GLMContextRec_t incompleteContext = {};
-        MGLRenderCppCallbackRuntimeOps incompleteOps = {};
-        incompleteOps.dispatch_compute = smokeDispatchCompute;
-        int incompleteToken = 3;
-        MGLRenderCppCallbackInstallResult incompleteInstall = {};
-        if (mglRenderCppCreateCallbackRuntime(
-                &incompleteToken, &incompleteOps,
-                &incompleteContext.metal_callback_runtime) != 0 ||
-            mglRenderCppInstallMetalCallbacks(
-                &incompleteContext, &incompleteInstall) == 0 ||
-            incompleteInstall.installed != 0 ||
-            incompleteInstall.pure_adapter != 0) {
-            fprintf(stderr, "FAIL: incomplete callback runtime accepted\n");
-            mglRenderCppDestroyCallbackRuntime(
-                &incompleteContext.metal_callback_runtime);
-            return 1;
-        }
-        mglRenderCppDestroyCallbackRuntime(
-            &incompleteContext.metal_callback_runtime);
+static int smokeCreateBackend(id<MTLDevice> device,
+                              GLMContext context,
+                              MGLRendererBackendHandle **backendOut) {
+    MGLRendererBackendCreateInfo info = {};
+    info.objc_device = (__bridge void *)device;
+    info.context = context;
+    info.binding_slot_count = 64;
+    info.query_capacity = 8;
+    void *queue = nullptr;
+    if (mglRendererBackendCreate(&info, backendOut) != 0 || !*backendOut) {
+        return -1;
+    }
+    context->renderer_backend = *backendOut;
+    if (mglRendererBackendResetCommandQueue(*backendOut, 2, &queue) != 0 ||
+        !queue || mglRendererBackendIsReady(*backendOut) != 1) {
+        mglRendererBackendDestroy(backendOut);
+        return -1;
+    }
+    return 0;
+}
+
+static int verifyDirectRendererABI(id<MTLDevice> device) {
+    GLMContextRec_t context = {};
+    MGLRendererBackendHandle *backend = nullptr;
+    if (smokeCreateBackend(device, &context, &backend) != 0) {
+        fprintf(stderr, "FAIL: renderer backend fixture\n");
+        return 1;
     }
 
-    GLMContextRec_t context = {};
     MGLRenderCppCallbackRuntimeOps callbackOps = {};
     callbackOps.dispatch_compute = smokeDispatchCompute;
     callbackOps.dispatch_compute_indirect = smokeDispatchComputeIndirect;
@@ -166,38 +167,23 @@ static int verifyMetalCallbackInstall(void) {
     callbackOps.blit_framebuffer = smokeBlit;
     callbackOps.resource = smokeResource;
     int runtimeToken = 7;
+    void *runtime = nullptr;
     if (mglRenderCppCreateCallbackRuntime(
-            &runtimeToken, &callbackOps, &context.metal_callback_runtime) != 0 ||
-        !context.metal_callback_runtime) {
+            &runtimeToken, &callbackOps, &runtime) != 0 || !runtime ||
+        mglRendererBackendInstallCallbackRuntime(backend, runtime) != 0 ||
+        mglRendererBackendGetCallbackRuntime(backend) != runtime) {
         fprintf(stderr, "FAIL: callback runtime create\n");
+        mglRenderCppDestroyCallbackRuntime(&runtime);
+        mglRendererBackendDestroy(&backend);
         return 1;
     }
-    MGLRenderCppCallbackInstallResult installed = {};
-    int installResult =
-        mglRenderCppInstallMetalCallbacks(&context, &installed);
-    uint32_t nonNull = 0;
-#define MGL_MTL_FUNC_NON_NULL(field, cname, ret, args) \
-    nonNull += context.mtl_funcs.field ? 1u : 0u;
-    MGL_MTL_FUNC_LIST(MGL_MTL_FUNC_NON_NULL)
-#undef MGL_MTL_FUNC_NON_NULL
-    if (MGL_MTL_FUNC_COUNT != 53 || installResult != 0 ||
-        installed.installed != 53 || installed.strict_cpp != 19 ||
-        installed.pure_adapter != 34 || installed.legacy_fallback != 0 ||
-        nonNull != 53) {
-        fprintf(stderr,
-                "FAIL: Metal callback install total=%u result=%d "
-                "installed=%u strict=%u adapter=%u hybrid=%u nonNull=%u\n",
-                (unsigned)MGL_MTL_FUNC_COUNT, installResult,
-                installed.installed, installed.strict_cpp,
-                installed.pure_adapter, installed.legacy_fallback, nonNull);
-        mglRenderCppDestroyCallbackRuntime(&context.metal_callback_runtime);
-        return 1;
-    }
-    context.mtl_funcs.mtlDispatchCompute(&context, 2, 3, 4);
-    context.mtl_funcs.mtlDispatchComputeIndirect(&context, 64);
-    context.mtl_funcs.mtlDrawArrays(&context, GL_TRIANGLES, 5, 6);
+    runtime = nullptr;
+
+    mglRendererDispatchCompute(&context, 2, 3, 4);
+    mglRendererDispatchComputeIndirect(&context, 64);
+    mglRendererDrawArrays(&context, GL_TRIANGLES, 5, 6);
     Texture smokeTexture = {};
-    context.mtl_funcs.mtlGenerateMipmaps(&context, &smokeTexture);
+    mglRendererGenerateMipmaps(&context, &smokeTexture);
     if (s_callbackComputeCount != 1 ||
         s_callbackComputeIndirectCount != 1 || s_callbackDrawCount != 1 ||
         s_callbackResourceCount != 1) {
@@ -205,46 +191,46 @@ static int verifyMetalCallbackInstall(void) {
                 "FAIL: callback runtime dispatch direct=%d indirect=%d draw=%d resource=%d\n",
                 s_callbackComputeCount, s_callbackComputeIndirectCount,
                 s_callbackDrawCount, s_callbackResourceCount);
-        mglRenderCppDestroyCallbackRuntime(&context.metal_callback_runtime);
+        mglRendererBackendDestroy(&backend);
         return 1;
     }
-    mglRenderCppDestroyCallbackRuntime(&context.metal_callback_runtime);
-    if (context.metal_callback_runtime != nullptr) {
-        fprintf(stderr, "FAIL: callback runtime destroy\n");
-        return 1;
-    }
-    printf("CALLBACK_RUNTIME_OK\n");
-    printf("METAL_CALLBACK_CENSUS_OK total=%u strict=%u adapter=%u hybrid=%u legacy=%u\n",
-           (unsigned)MGL_MTL_FUNC_COUNT, installed.strict_cpp,
-           installed.pure_adapter, installed.legacy_fallback,
-           (unsigned)MGL_MTL_FUNC_COUNT - installed.installed);
 
     void *commandOwner = reinterpret_cast<void *>(0x1110u);
     void *encoderOwner = reinterpret_cast<void *>(0x2220u);
     void *passOwner = reinterpret_cast<void *>(0x3330u);
-    void *queryOwner = reinterpret_cast<void *>(0x4440u);
-    void *recoveryOwner = reinterpret_cast<void *>(0x5550u);
     if (mglRenderCppAttachRuntimeOwners(
-            &context, commandOwner, encoderOwner, passOwner, queryOwner,
-            recoveryOwner) != 0 ||
-        context.metal_command_buffer_owner != commandOwner ||
-        context.metal_render_encoder_owner != encoderOwner ||
-        context.metal_render_pass_state_owner != passOwner ||
-        context.metal_query_state_owner != queryOwner ||
-        context.metal_command_recovery_owner != recoveryOwner) {
+            &context, commandOwner, encoderOwner, passOwner) != 0 ||
+        mglRendererBackendGetOwner(
+            backend, MGL_RENDERER_BACKEND_OWNER_COMMAND_BUFFER) != commandOwner ||
+        mglRendererBackendGetOwner(
+            backend, MGL_RENDERER_BACKEND_OWNER_RENDER_ENCODER) != encoderOwner ||
+        mglRendererBackendGetOwner(
+            backend, MGL_RENDERER_BACKEND_OWNER_RENDER_PASS) != passOwner ||
+        !mglRendererBackendGetOwner(
+            backend, MGL_RENDERER_BACKEND_OWNER_QUERY) ||
+        !mglRendererBackendGetOwner(
+            backend, MGL_RENDERER_BACKEND_OWNER_RECOVERY)) {
         fprintf(stderr, "FAIL: runtime owner attach\n");
+        mglRendererBackendDestroy(&backend);
         return 1;
     }
     mglRenderCppDetachRuntimeOwners(&context);
-    if (context.metal_command_buffer_owner ||
-        context.metal_render_encoder_owner ||
-        context.metal_render_pass_state_owner ||
-        context.metal_query_state_owner ||
-        context.metal_command_recovery_owner) {
+    if (mglRendererBackendGetOwner(
+            backend, MGL_RENDERER_BACKEND_OWNER_COMMAND_BUFFER) ||
+        mglRendererBackendGetOwner(
+            backend, MGL_RENDERER_BACKEND_OWNER_RENDER_ENCODER) ||
+        mglRendererBackendGetOwner(
+            backend, MGL_RENDERER_BACKEND_OWNER_RENDER_PASS)) {
         fprintf(stderr, "FAIL: runtime owner detach\n");
+        mglRendererBackendDestroy(&backend);
         return 1;
     }
-    printf("RUNTIME_OWNER_ATTACH_DETACH_OK\n");
+    mglRendererBackendDestroy(&backend);
+    if (context.renderer_backend != nullptr) {
+        fprintf(stderr, "FAIL: backend destroy did not clear context\n");
+        return 1;
+    }
+    printf("DIRECT_RENDERER_ABI_OK\n");
     return 0;
 }
 
@@ -2329,19 +2315,17 @@ static int verifySyncCallbacks(id<MTLDevice> device) {
     id<MTLCommandQueue> ownerQueue = [device newCommandQueue];
     void *commandOwner = NULL;
     void *current = NULL;
-    void *recoveryOwner = NULL;
     GLMContextRec_t context = {};
+    MGLRendererBackendHandle *backend = nullptr;
     Sync captured = {};
-    if (!ownerQueue ||
+    if (smokeCreateBackend(device, &context, &backend) != 0 || !ownerQueue ||
         mglRenderCppCreateCommandBufferOwner(
             (__bridge void *)ownerQueue, &commandOwner, &current) != 0 ||
         !commandOwner || !current ||
-        mglRenderCppCreateCommandRecoveryOwner(&recoveryOwner) != 0 ||
-        mglRenderCppAttachRuntimeOwners(
-            &context, commandOwner, NULL, NULL, NULL, recoveryOwner) != 0) {
+        mglRenderCppAttachRuntimeOwners(&context, commandOwner, NULL, NULL) != 0) {
         fprintf(stderr, "FAIL: sync capture owner fixture\n");
-        mglRenderCppDestroyCommandRecoveryOwner(&recoveryOwner);
         mglRenderCppDestroyCommandBufferOwner(&commandOwner);
+        mglRendererBackendDestroy(&backend);
         return 1;
     }
     mglRenderCppGetSync(&context, &captured);
@@ -2354,8 +2338,8 @@ static int verifySyncCallbacks(id<MTLDevice> device) {
         fprintf(stderr, "FAIL: sync capture/owner rotation\n");
         mglRenderCppReleaseSync(&context, &captured);
         mglRenderCppDetachRuntimeOwners(&context);
-        mglRenderCppDestroyCommandRecoveryOwner(&recoveryOwner);
         mglRenderCppDestroyCommandBufferOwner(&commandOwner);
+        mglRendererBackendDestroy(&backend);
         return 1;
     }
     mglRenderCppWaitForSync(&context, &captured);
@@ -2363,13 +2347,13 @@ static int verifySyncCallbacks(id<MTLDevice> device) {
         mglRenderCppGetSyncStatus(&context, &captured) != GL_SIGNALED) {
         fprintf(stderr, "FAIL: captured sync wait/release\n");
         mglRenderCppDetachRuntimeOwners(&context);
-        mglRenderCppDestroyCommandRecoveryOwner(&recoveryOwner);
         mglRenderCppDestroyCommandBufferOwner(&commandOwner);
+        mglRendererBackendDestroy(&backend);
         return 1;
     }
     mglRenderCppDetachRuntimeOwners(&context);
-    mglRenderCppDestroyCommandRecoveryOwner(&recoveryOwner);
     mglRenderCppDestroyCommandBufferOwner(&commandOwner);
+    mglRendererBackendDestroy(&backend);
     printf("SYNC_CALLBACKS_OK\n");
     return 0;
 }
@@ -8454,7 +8438,6 @@ static int verifyQueryUtilities(id<MTLDevice> device) {
         return 1;
     }
     GLMContextRec callbackContext = {};
-    callbackContext.mtl_funcs.mtlObj = reinterpret_cast<void *>(0x1000u);
     const int flushCountBeforeTimestamp = s_legacyFlushCount;
     uint64_t callbackTimestamp = mglRenderCppGetGPUTimestamp(
         &callbackContext);
@@ -8476,29 +8459,26 @@ static int verifyQueryUtilities(id<MTLDevice> device) {
         mglRenderCppDestroyQueryStateOwner(&queryOwner);
         return 1;
     }
-    if (mglRenderCppRegisterContextQueryStateOwner(
-            &callbackContext, queryOwner) != 0) {
-        fprintf(stderr, "FAIL: register timer callback owner\n");
+    MGLRendererBackendHandle *callbackBackend = nullptr;
+    if (smokeCreateBackend(device, &callbackContext, &callbackBackend) != 0) {
+        fprintf(stderr, "FAIL: timer callback backend\n");
         mglRenderCppDestroyQueryStateOwner(&queryOwner);
         return 1;
     }
     const int flushCountBeforeTimer = s_legacyFlushCount;
-    mglRenderCppBeginTimerQueryCallback(&callbackContext);
-    uint64_t callbackElapsed =
-        mglRenderCppEndTimerQueryCallback(&callbackContext);
+    mglRendererBeginTimerQuery(&callbackContext);
+    uint64_t callbackElapsed = mglRendererEndTimerQuery(&callbackContext);
     if (s_legacyFlushCount != flushCountBeforeTimer ||
-        mglRenderCppEndTimerQueryCallback(NULL) != 0) {
+        mglRendererEndTimerQuery(NULL) != 0) {
         fprintf(stderr,
                 "FAIL: timer query callbacks elapsed=%llu flush=%d finish=%d\n",
                 (unsigned long long)callbackElapsed,
                 s_legacyFlushCount, s_legacyFlushFinish ? 1 : 0);
-        mglRenderCppUnregisterContextQueryStateOwner(
-            &callbackContext, queryOwner);
+        mglRendererBackendDestroy(&callbackBackend);
         mglRenderCppDestroyQueryStateOwner(&queryOwner);
         return 1;
     }
-    mglRenderCppUnregisterContextQueryStateOwner(
-        &callbackContext, queryOwner);
+    mglRendererBackendDestroy(&callbackBackend);
     printf("TIMER_QUERY_CALLBACKS_OK\n");
     visibility = nil;
     mglRenderCppDestroyQueryStateOwner(&queryOwner);
@@ -8812,7 +8792,7 @@ int main(void) {
         if (verifyBindingDedup(device) != 0) return 1;
         if (verifyComputeSetters(device) != 0) return 1;
         if (verifySyncCallbacks(device) != 0) return 1;
-        if (verifyMetalCallbackInstall() != 0) return 1;
+        if (verifyDirectRendererABI(device) != 0) return 1;
         if (verifyCommandQueueOwner() != 0) return 1;
         if (verifyCommandBufferOwner() != 0) return 1;
         if (verifyCommandRecoveryOwner() != 0) return 1;

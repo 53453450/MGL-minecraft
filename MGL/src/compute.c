@@ -64,7 +64,7 @@ void mglDispatchCompute(GLMContext ctx, GLuint num_groups_x, GLuint num_groups_y
         return;
 
     mglFlushCommandBuffer(ctx);
-    ctx->mtl_funcs.mtlDispatchCompute(ctx, num_groups_x, num_groups_y, num_groups_z);
+    mglRendererDispatchCompute(ctx, num_groups_x, num_groups_y, num_groups_z);
 }
 
 void mglDispatchComputeIndirect(GLMContext ctx, GLintptr indirect)
@@ -126,5 +126,5 @@ void mglDispatchComputeIndirect(GLMContext ctx, GLintptr indirect)
     }
 
     mglFlushCommandBuffer(ctx);
-    ctx->mtl_funcs.mtlDispatchComputeIndirect(ctx, indirect);
+    mglRendererDispatchComputeIndirect(ctx, indirect);
 }

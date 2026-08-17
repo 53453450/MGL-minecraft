@@ -234,7 +234,7 @@ static GLboolean mglFlushPendingColorClearToTexture(GLMContext ctx, FBOAttachmen
         return GL_FALSE;
     }
 
-    if (!ctx->state.caps.scissor_test && ctx->mtl_funcs.mtlClearBuffer) {
+    if (!ctx->state.caps.scissor_test) {
         static unsigned s_immediate_flush_logs = 0u;
         if (s_immediate_flush_logs < 64u) {
             fprintf(stderr,
@@ -245,7 +245,7 @@ static GLboolean mglFlushPendingColorClearToTexture(GLMContext ctx, FBOAttachmen
             s_immediate_flush_logs++;
         }
 
-        ctx->mtl_funcs.mtlClearBuffer(ctx, 0, pendingMask);
+        mglRendererClearBuffer(ctx, 0, pendingMask);
         if (!(att->clear_bitmask & pendingMask)) {
             return GL_TRUE;
         }
@@ -925,9 +925,7 @@ void mglBindFramebuffer(GLMContext ctx, GLenum target, GLuint framebuffer)
      * flushes. */
     if (drawFboChanged && !deferFboRotation) {
         mglFlushPendingDraws(ctx);
-        if (ctx->mtl_funcs.mtlInvalidateRenderPass) {
-            ctx->mtl_funcs.mtlInvalidateRenderPass(ctx);
-        }
+        mglRendererInvalidateRenderPass(ctx);
     }
 
     switch(target) {
@@ -3111,7 +3109,7 @@ void mglBlitFramebuffer(GLMContext ctx, GLint srcX0, GLint srcY0, GLint srcX1, G
     }
     GLbitfield backendMask = mask;
     if (backendMask != 0u) {
-        ctx->mtl_funcs.mtlBlitFramebuffer(ctx, srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, backendMask, filter);
+        mglRendererBlitFramebuffer(ctx, srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, backendMask, filter);
     }
 }
 

@@ -195,15 +195,13 @@ static void mglPrepareGpuWrittenBufferForCpuShadowWrite(GLMContext ctx,
     }
 
     mglFlushCommandBuffer(ctx);
-    if (ctx->mtl_funcs.mtlFlush) {
-        ctx->mtl_funcs.mtlFlush(ctx, true);
-    }
-    if (ctx->mtl_funcs.mtlReadBackBuffer && ptr->size > 0) {
+    mglRendererFlush(ctx, true);
+    if (ptr->size > 0) {
         size_t readback_size = (size_t)ptr->size;
         if (ptr->data.buffer_size > 0 && readback_size > ptr->data.buffer_size) {
             readback_size = ptr->data.buffer_size;
         }
-        ctx->mtl_funcs.mtlReadBackBuffer(ctx, ptr, 0, readback_size);
+        mglRendererReadBackBuffer(ctx, ptr, 0, readback_size);
     }
 }
 
@@ -910,7 +908,7 @@ void bufferStorage(GLMContext ctx, Buffer *ptr, GLenum target, GLuint index, GLs
     /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
     if (ctx->sync_strict) {
         mglFlushCommandBuffer(ctx);
-        ctx->mtl_funcs.mtlFlush(ctx, true);
+        mglRendererFlush(ctx, true);
     }
 
     buffer_size = page_size_align(size);
@@ -1080,15 +1078,15 @@ bool clearBufferData(GLMContext ctx, Buffer *ptr, GLenum internalformat, GLintpt
 
     mglFlushPendingDrawsForBufferRange(ctx, ptr, offset, size);
 
-    if (ptr->data.mtl_owns_buffer_data && ctx->mtl_funcs.mtlFlush) {
+    if (ptr->data.mtl_owns_buffer_data) {
         mglFlushCommandBuffer(ctx);
-        ctx->mtl_funcs.mtlFlush(ctx, true);
+        mglRendererFlush(ctx, true);
     }
 
     /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
     if (ctx->sync_strict) {
         mglFlushCommandBuffer(ctx);
-        ctx->mtl_funcs.mtlFlush(ctx, true);
+        mglRendererFlush(ctx, true);
     }
 
     size_t pixel_size = sizeForInternalFormat(internalformat, format, type);
@@ -1818,7 +1816,7 @@ kern_return_t initBufferData(GLMContext ctx, Buffer *ptr, GLsizeiptr size, const
         /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
         if (ctx->sync_strict) {
             mglFlushCommandBuffer(ctx);
-            ctx->mtl_funcs.mtlFlush(ctx, true);
+            mglRendererFlush(ctx, true);
         }
     }
 
@@ -2154,15 +2152,15 @@ void mglBufferSubData(GLMContext ctx, GLenum target, GLintptr offset, GLsizeiptr
 
     mglFlushPendingDrawsForBufferRange(ctx, ptr, offset, size);
 
-    if (ptr->data.mtl_owns_buffer_data && ctx->mtl_funcs.mtlFlush) {
+    if (ptr->data.mtl_owns_buffer_data) {
         mglFlushCommandBuffer(ctx);
-        ctx->mtl_funcs.mtlFlush(ctx, true);
+        mglRendererFlush(ctx, true);
     }
 
     /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
     if (ctx->sync_strict) {
         mglFlushCommandBuffer(ctx);
-        ctx->mtl_funcs.mtlFlush(ctx, true);
+        mglRendererFlush(ctx, true);
     }
 
     if (ptr->storage_flags & (GL_CLIENT_STORAGE_BIT | GL_DYNAMIC_STORAGE_BIT))
@@ -2262,28 +2260,15 @@ void mglBufferSubData(GLMContext ctx, GLenum target, GLintptr offset, GLsizeiptr
                                 src_preview,
                                 ptr->data.mtl_data);
         }
-        if (ctx->mtl_funcs.mtlBufferSubData)
-        {
-            /* Mark before the Metal upload so gpu_write_target snapshots
-             * include this range in their shadow overlay (otherwise the
-             * COW path would preserve stale Metal bytes over the write). */
-            mglBufferMarkWrite(ptr,
-                               kInitBufferSubData,
-                               offset,
-                               size,
-                               data,
-                               src_hash_for_meta);
-            ctx->mtl_funcs.mtlBufferSubData(ctx, ptr, offset, size, data);
-        }
-        else
-        {
-            mglBufferMarkWrite(ptr,
-                               kInitBufferSubData,
-                               offset,
-                               size,
-                               data,
-                               src_hash_for_meta);
-        }
+        /* Mark before the Metal upload so gpu_write_target snapshots include
+         * this range in their shadow overlay. */
+        mglBufferMarkWrite(ptr,
+                           kInitBufferSubData,
+                           offset,
+                           size,
+                           data,
+                           src_hash_for_meta);
+        mglRendererBufferSubData(ctx, ptr, offset, size, data);
     }
 }
 
@@ -2337,15 +2322,15 @@ void mglNamedBufferSubData(GLMContext ctx, GLuint buffer, GLintptr offset, GLsiz
 
     mglFlushPendingDrawsForBufferRange(ctx, ptr, offset, size);
 
-    if (ptr->data.mtl_owns_buffer_data && ctx->mtl_funcs.mtlFlush) {
+    if (ptr->data.mtl_owns_buffer_data) {
         mglFlushCommandBuffer(ctx);
-        ctx->mtl_funcs.mtlFlush(ctx, true);
+        mglRendererFlush(ctx, true);
     }
 
     /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
     if (ctx->sync_strict) {
         mglFlushCommandBuffer(ctx);
-        ctx->mtl_funcs.mtlFlush(ctx, true);
+        mglRendererFlush(ctx, true);
     }
 
     /* Same guard as mglBufferSubData — only element array buffers need the
@@ -2388,7 +2373,7 @@ void mglNamedBufferSubData(GLMContext ctx, GLuint buffer, GLintptr offset, GLsiz
         if (ptr->data.mtl_data)
         {
             // use use metal to do the subdata call
-            ctx->mtl_funcs.mtlBufferSubData(ctx, ptr, offset, size, data);
+            mglRendererBufferSubData(ctx, ptr, offset, size, data);
             ptr->cpu_shadow_pending = GL_FALSE;
         }
         else
@@ -2407,7 +2392,7 @@ void mglNamedBufferSubData(GLMContext ctx, GLuint buffer, GLintptr offset, GLsiz
                            size,
                            data,
                            src_hash_for_meta);
-        ctx->mtl_funcs.mtlBufferSubData(ctx, ptr, offset, size, data);
+        mglRendererBufferSubData(ctx, ptr, offset, size, data);
     }
 }
 
@@ -2492,34 +2477,31 @@ void copyBufferSubData(GLMContext ctx, Buffer *src_buf, Buffer *dst_buf, GLintpt
     mglFlushPendingDrawsForBufferRange(ctx, dst_buf, writeOffset, size);
     mglFlushPendingDrawsForBufferRange(ctx, src_buf, readOffset, size);
 
-    if (dst_buf->data.mtl_owns_buffer_data && ctx->mtl_funcs.mtlFlush) {
+    if (dst_buf->data.mtl_owns_buffer_data) {
         mglFlushCommandBuffer(ctx);
-        ctx->mtl_funcs.mtlFlush(ctx, true);
+        mglRendererFlush(ctx, true);
     }
 
     /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
     if (ctx->sync_strict) {
         mglFlushCommandBuffer(ctx);
-        ctx->mtl_funcs.mtlFlush(ctx, true);
+        mglRendererFlush(ctx, true);
     }
 
-    if (ctx->mtl_funcs.mtlMapUnmapBuffer)
-    {
-        src_data = (uint8_t *)ctx->mtl_funcs.mtlMapUnmapBuffer(ctx, src_buf, readOffset, size, GL_READ_ONLY, true);
-        dst_data = (uint8_t *)ctx->mtl_funcs.mtlMapUnmapBuffer(ctx, dst_buf, writeOffset, size, GL_WRITE_ONLY, true);
+    src_data = (uint8_t *)mglRendererMapUnmapBuffer(ctx, src_buf, readOffset, size, GL_READ_ONLY, true);
+    dst_data = (uint8_t *)mglRendererMapUnmapBuffer(ctx, dst_buf, writeOffset, size, GL_WRITE_ONLY, true);
 
-        if (src_data && dst_data) {
-            used_map_callback = true;
-        } else {
-            if (src_data) {
-                ctx->mtl_funcs.mtlMapUnmapBuffer(ctx, src_buf, readOffset, size, GL_READ_ONLY, false);
-            }
-            if (dst_data) {
-                ctx->mtl_funcs.mtlMapUnmapBuffer(ctx, dst_buf, writeOffset, size, GL_WRITE_ONLY, false);
-            }
-            src_data = NULL;
-            dst_data = NULL;
+    if (src_data && dst_data) {
+        used_map_callback = true;
+    } else {
+        if (src_data) {
+            mglRendererMapUnmapBuffer(ctx, src_buf, readOffset, size, GL_READ_ONLY, false);
         }
+        if (dst_data) {
+            mglRendererMapUnmapBuffer(ctx, dst_buf, writeOffset, size, GL_WRITE_ONLY, false);
+        }
+        src_data = NULL;
+        dst_data = NULL;
     }
 
     if (!src_data || !dst_data)
@@ -2538,7 +2520,7 @@ void copyBufferSubData(GLMContext ctx, Buffer *src_buf, Buffer *dst_buf, GLintpt
                 "(src=%p dst=%p mapCb=%p srcBase=%p dstBase=%p)\n",
                 src_data,
                 dst_data,
-                (void *)ctx->mtl_funcs.mtlMapUnmapBuffer,
+                (void *)mglRendererMapUnmapBuffer,
                 (void *)(uintptr_t)src_buf->data.buffer_data,
                 (void *)(uintptr_t)dst_buf->data.buffer_data);
         ERROR_RETURN(GL_INVALID_OPERATION);
@@ -2557,7 +2539,7 @@ void copyBufferSubData(GLMContext ctx, Buffer *src_buf, Buffer *dst_buf, GLintpt
 
     if (used_map_callback)
     {
-        ctx->mtl_funcs.mtlMapUnmapBuffer(ctx, dst_buf, writeOffset, size, GL_WRITE_ONLY, false);
+        mglRendererMapUnmapBuffer(ctx, dst_buf, writeOffset, size, GL_WRITE_ONLY, false);
     }
 }
 
@@ -2742,9 +2724,7 @@ void *mglMapBuffer(GLMContext ctx, GLenum target, GLenum access)
      * dispatches) are complete before the CPU reads the buffer contents. */
     if (access == GL_READ_ONLY || access == GL_READ_WRITE) {
         mglFlushCommandBuffer(ctx);
-        if (ctx->mtl_funcs.mtlFlush) {
-            ctx->mtl_funcs.mtlFlush(ctx, true);
-        }
+        mglRendererFlush(ctx, true);
     }
 
     ptr->mapped = GL_TRUE;
@@ -2752,11 +2732,7 @@ void *mglMapBuffer(GLMContext ctx, GLenum target, GLenum access)
     ptr->access_flags = 0;
     ptr->mapped_offset = 0;
     ptr->mapped_length = ptr->size;
-    if (ctx->mtl_funcs.mtlMapUnmapBuffer) {
-        mapped_ptr = ctx->mtl_funcs.mtlMapUnmapBuffer(ctx, ptr, 0, ptr->size, access, true);
-    } else if (ptr->data.buffer_data) {
-        mapped_ptr = (void *)(uintptr_t)ptr->data.buffer_data;
-    }
+    mapped_ptr = mglRendererMapUnmapBuffer(ctx, ptr, 0, ptr->size, access, true);
 
     ptr->mapped_ptr = mapped_ptr;
 
@@ -2871,19 +2847,9 @@ GLboolean mglUnmapBuffer(GLMContext ctx, GLenum target)
         return GL_TRUE;
     }
 
-    if (ctx->mtl_funcs.mtlMapUnmapBuffer)
-    {
-        /* GL_MAP_FLUSH_EXPLICIT_BIT (GL 4.6 §6.3.2.1): when set, the app is
-         * contractually responsible for flushing modified subranges via
-         * glFlushMappedBufferRange before unmap — unmap must NOT auto-flush.
-         * mglFlushMappedBufferRange already calls didModifyRange for each
-         * explicit subrange, so a full-range didModifyRange here is redundant
-         * (and re-notifies Metal of already-flushed or never-modified regions,
-         * wasting CPU→GPU bandwidth on MTLStorageModeManaged buffers).
-         * Regions the app forgot to flush are undefined per spec. */
-        if (!(ptr->access_flags & GL_MAP_FLUSH_EXPLICIT_BIT)) {
-            ctx->mtl_funcs.mtlMapUnmapBuffer(ctx, ptr, unmap_offset, unmap_length, unmap_access, false);
-        }
+    /* GL_MAP_FLUSH_EXPLICIT_BIT: explicit subranges were already notified. */
+    if (!(ptr->access_flags & GL_MAP_FLUSH_EXPLICIT_BIT)) {
+        mglRendererMapUnmapBuffer(ctx, ptr, unmap_offset, unmap_length, unmap_access, false);
     }
 
     mglBufferMarkMapWrite(ptr);
@@ -2932,13 +2898,13 @@ GLboolean mglUnmapNamedBuffer(GLMContext ctx, GLuint buffer)
         ERROR_RETURN_VALUE(GL_INVALID_OPERATION, GL_FALSE);
     }
 
-    if (!(ptr->storage_flags & GL_MAP_PERSISTENT_BIT) && ctx->mtl_funcs.mtlMapUnmapBuffer)
+    if (!(ptr->storage_flags & GL_MAP_PERSISTENT_BIT))
     {
         /* GL_MAP_FLUSH_EXPLICIT_BIT: see the comment in mglUnmapBuffer above.
          * The app flushes via glFlushMappedBufferRange; unmap must not
          * auto-flush the full range. */
         if (!(ptr->access_flags & GL_MAP_FLUSH_EXPLICIT_BIT)) {
-            ctx->mtl_funcs.mtlMapUnmapBuffer(ctx,
+            mglRendererMapUnmapBuffer(ctx,
                                              ptr,
                                              ptr->mapped_offset,
                                              ptr->mapped_length > 0 ? ptr->mapped_length : ptr->size,
@@ -3086,9 +3052,7 @@ void *mglMapBufferRange(GLMContext ctx, GLenum target, GLintptr offset, GLsizeip
      * that needs no extra strict branch. */
     if (access_flags & GL_MAP_READ_BIT) {
         mglFlushCommandBuffer(ctx);
-        if (ctx->mtl_funcs.mtlFlush) {
-            ctx->mtl_funcs.mtlFlush(ctx, true);
-        }
+        mglRendererFlush(ctx, true);
     }
 
     ptr->access = 0;
@@ -3130,22 +3094,7 @@ void *mglMapBufferRange(GLMContext ctx, GLenum target, GLintptr offset, GLsizeip
     ptr->access_flags = access_flags;
     ptr->mapped = GL_TRUE;
 
-    if (!ctx->mtl_funcs.mtlMapUnmapBuffer)
-    {
-        // Safety fallback: keep the process alive even if Metal map callback is unavailable.
-        mapped_ptr = (void *)((uint8_t *)(uintptr_t)ptr->data.buffer_data + offset);
-        if (trace_map) {
-            fprintf(stderr,
-                    "MGL TRACE MapBufferRange.return fallback target=0x%x buffer=%u mappedPtr=%p\n",
-                    target,
-                    ptr->name,
-                    mapped_ptr);
-        }
-        ptr->mapped_ptr = mapped_ptr;
-        return mapped_ptr;
-    }
-
-    mapped_ptr = ctx->mtl_funcs.mtlMapUnmapBuffer(ctx, ptr, offset, length, access_flags, true);
+    mapped_ptr = mglRendererMapUnmapBuffer(ctx, ptr, offset, length, access_flags, true);
     if (trace_map) {
         fprintf(stderr,
                 "MGL TRACE MapBufferRange.return mtl target=0x%x buffer=%u mappedPtr=%p\n",
@@ -3248,9 +3197,7 @@ void *mglMapNamedBufferRange(GLMContext ctx, GLuint buffer, GLintptr offset, GLs
      * dispatches) are complete before the CPU reads the buffer contents. */
     if (access & GL_MAP_READ_BIT) {
         mglFlushCommandBuffer(ctx);
-        if (ctx->mtl_funcs.mtlFlush) {
-            ctx->mtl_funcs.mtlFlush(ctx, true);
-        }
+        mglRendererFlush(ctx, true);
     }
 
     ptr->access = 0;
@@ -3289,20 +3236,7 @@ void *mglMapNamedBufferRange(GLMContext ctx, GLuint buffer, GLintptr offset, GLs
     ptr->access_flags = access;
     ptr->mapped = GL_TRUE;
 
-    if (!ctx->mtl_funcs.mtlMapUnmapBuffer)
-    {
-        mapped_ptr = (void *)((uint8_t *)(uintptr_t)ptr->data.buffer_data + (size_t)offset);
-        if (trace_map) {
-            fprintf(stderr,
-                    "MGL TRACE MapNamedBufferRange.return fallback buffer=%u mappedPtr=%p\n",
-                    ptr->name,
-                    mapped_ptr);
-        }
-        ptr->mapped_ptr = mapped_ptr;
-        return mapped_ptr;
-    }
-
-    mapped_ptr = ctx->mtl_funcs.mtlMapUnmapBuffer(ctx, ptr, offset, length, access, true);
+    mapped_ptr = mglRendererMapUnmapBuffer(ctx, ptr, offset, length, access, true);
     if (trace_map) {
         fprintf(stderr,
                 "MGL TRACE MapNamedBufferRange.return mtl buffer=%u mappedPtr=%p\n",
@@ -3362,14 +3296,8 @@ void mglFlushMappedBufferRange(GLMContext ctx, GLenum target, GLintptr offset, G
 
     if (ptr->access_flags & GL_MAP_FLUSH_EXPLICIT_BIT)
     {
-        if (!ctx->mtl_funcs.mtlFlushBufferRange)
-        {
-            fprintf(stderr, "MGL Error: mglFlushMappedBufferRange: mtlFlushBufferRange callback unavailable\n");
-            ERROR_RETURN(GL_INVALID_OPERATION);
-            return;
-        }
         GLintptr absolute_offset = ptr->mapped_offset + offset;
-        ctx->mtl_funcs.mtlFlushBufferRange(ctx, ptr, absolute_offset, length);
+        mglRendererFlushBufferRange(ctx, ptr, absolute_offset, length);
         mglBufferMarkWrite(ptr, kInitMapWrite, absolute_offset, length,
                            (const uint8_t *)(uintptr_t)ptr->data.buffer_data + absolute_offset,
                            mglTraceHashBytes((const uint8_t *)(uintptr_t)ptr->data.buffer_data + absolute_offset, (size_t)length));
@@ -3422,14 +3350,8 @@ void mglFlushMappedNamedBufferRange(GLMContext ctx, GLuint buffer, GLintptr offs
         return;
     }
 
-    if (!ctx->mtl_funcs.mtlFlushBufferRange)
-    {
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return;
-    }
-
     GLintptr absolute_offset = ptr->mapped_offset + offset;
-    ctx->mtl_funcs.mtlFlushBufferRange(ctx, ptr, absolute_offset, length);
+    mglRendererFlushBufferRange(ctx, ptr, absolute_offset, length);
     mglBufferMarkWrite(ptr, kInitMapWrite, absolute_offset, length,
                        (const uint8_t *)(uintptr_t)ptr->data.buffer_data + absolute_offset,
                        mglTraceHashBytes((const uint8_t *)(uintptr_t)ptr->data.buffer_data + absolute_offset, (size_t)length));
@@ -3770,16 +3692,12 @@ void mglGetBufferSubData(GLMContext ctx, GLenum target, GLintptr offset, GLsizei
     /* MGL_SYNC_STRICT: mtlFlush(ctx, true) already performed commit +
      * waitUntilCompleted here, a conservative path needing no extra strict
      * branch (avoids a double wait). */
-    if (ctx->mtl_funcs.mtlFlush) {
-        ctx->mtl_funcs.mtlFlush(ctx, true);
-    }
+    mglRendererFlush(ctx, true);
 
     /* A shader may have written this range (SSBO/XFB); after the GPU wait
      * above, refresh the CPU shadow from the Metal buffer so the read returns
      * the shader results instead of stale shadow bytes. */
-    if (ctx->mtl_funcs.mtlReadBackBuffer) {
-        ctx->mtl_funcs.mtlReadBackBuffer(ctx, ptr, (size_t)offset, (size_t)size);
-    }
+    mglRendererReadBackBuffer(ctx, ptr, (size_t)offset, (size_t)size);
 
     if (!mgl_range_ok_size_t(offset, size, ptr->data.buffer_size))
     {
@@ -3993,17 +3911,11 @@ void mglGetNamedBufferSubData(GLMContext ctx, GLuint buffer, GLintptr offset, GL
         return;
     }
 
-    if (ctx->mtl_funcs.mtlFlush)
-    {
-        ctx->mtl_funcs.mtlFlush(ctx, true);
-    }
+    mglRendererFlush(ctx, true);
 
     /* Same shadow refresh as mglGetBufferSubData: shader-written ranges
      * (SSBO/XFB) live in the Metal buffer, not the CPU shadow. */
-    if (ctx->mtl_funcs.mtlReadBackBuffer)
-    {
-        ctx->mtl_funcs.mtlReadBackBuffer(ctx, ptr, (size_t)offset, (size_t)size);
-    }
+    mglRendererReadBackBuffer(ctx, ptr, (size_t)offset, (size_t)size);
 
     memcpy(data, (const uint8_t *)((uintptr_t)ptr->data.buffer_data) + (uintptr_t)offset, (size_t)size);
 }

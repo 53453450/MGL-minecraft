@@ -16,12 +16,8 @@
  * MGLRenderer+Lifecycle_Private.h
  * MGL
  *
- * Private method declarations for the Lifecycle category
- * (MGLRenderer+Lifecycle.m).  Covers renderer construction
- * (createMGLRendererAndBindToContext:view:), the glm_ctx mtl_funcs binding
- * table (bindObjFuncsToGLMContext:), proactive texture priming, Metal frame
- * capture helpers, and dealloc.  The CppCreateMGLRenderer* C entry points are
- * declared in MGLRenderer.h.
+ * Private readiness declarations for the compatibility renderer shell.
+ * The CppCreateMGLRenderer* C entry points are declared in MGLRenderer.h.
  *
  * Imports MGLRenderer.h for the MGLRenderer interface;
  * the category file itself imports MGLRenderer_Private.h for ivar access and shared types.

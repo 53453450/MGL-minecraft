@@ -18,14 +18,8 @@
  *
  * Private method declarations for the QuerySync category (MGLRenderer+QuerySync.m).
  *
- * Note: The public QuerySync method declarations (mtlGetSync:sync:,
- * mtlWaitForSync:sync:, mtlGetSyncStatus:sync:, mtlReleaseSync:sync:,
- * mtlBeginSampleQuery:, mtlEndSampleQuery:, mtlBeginTimerQuery:,
- * mtlEndTimerQuery:, mtlGetGPUTimestamp:) are declared in mgl_metal_bridge.h
- * and called through GLMContext function pointers.  This header exists for
- * structural symmetry with the other per-category private headers and
- * MGLRenderer.h provides the MGLRenderer interface;
- * ivar access comes from MGLRenderer_Private.h in the implementing file.
+ * These selectors are temporary private operation targets until P5.4 moves
+ * query and sync semantics into the C++ backend.
  *
  * Imports MGLRenderer.h for the MGLRenderer interface;
  * the category file itself imports MGLRenderer_Private.h for ivar access and shared types.
@@ -37,6 +31,16 @@
 #import "MGLRenderer.h"
 
 @interface MGLRenderer ()
+
+- (void)mtlGetSync:(GLMContext)glm_ctx sync:(Sync *)sync;
+- (void)mtlWaitForSync:(GLMContext)glm_ctx sync:(Sync *)sync;
+- (GLenum)mtlGetSyncStatus:(GLMContext)glm_ctx sync:(Sync *)sync;
+- (void)mtlReleaseSync:(GLMContext)glm_ctx sync:(Sync *)sync;
+- (void)mtlBeginSampleQuery:(GLMContext)glm_ctx target:(GLenum)target;
+- (GLuint64)mtlEndSampleQuery:(GLMContext)glm_ctx;
+- (void)mtlBeginTimerQuery:(GLMContext)glm_ctx;
+- (GLuint64)mtlEndTimerQuery:(GLMContext)glm_ctx;
+- (GLuint64)mtlGetGPUTimestamp:(GLMContext)glm_ctx;
 
 @end
 

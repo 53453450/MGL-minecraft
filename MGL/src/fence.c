@@ -69,11 +69,8 @@ static void mglReleaseSyncReference(GLMContext ctx, Sync *sync)
                                                    memory_order_acquire);
         if (should_delete) {
             /* glDeleteSync was called: release Metal resources and free. */
-            if (ctx && ctx->mtl_funcs.mtlReleaseSync) {
-                ctx->mtl_funcs.mtlReleaseSync(ctx, sync);
-            } else if (ctx && ctx->mtl_funcs.mtlWaitForSync &&
-                       (sync->mtl_command_buffer || sync->mtl_event)) {
-                ctx->mtl_funcs.mtlWaitForSync(ctx, sync);
+            if (ctx) {
+                mglRendererReleaseSync(ctx, sync);
             }
             free(sync);
         }
@@ -115,7 +112,7 @@ GLsync mglFenceSync(GLMContext ctx, GLenum condition, GLbitfield flags)
      * the fence command buffer. The gate-on callback can then submit and
      * rotate the C++ owner without selector-forwarding into the renderer. */
     mglFlushPendingDraws(ctx);
-    ctx->mtl_funcs.mtlGetSync(ctx, ptr);
+    mglRendererGetSync(ctx, ptr);
 
     /* register in sync_table so destroyGLMContext can release
      * Metal resources. mglDeleteSync removes the entry on explicit free. */
@@ -183,8 +180,7 @@ GLenum  mglClientWaitSync(GLMContext ctx, GLsync sync, GLbitfield flags, GLuint6
     /* GL_ALREADY_SIGNALED: the fence had already completed at call time, so no
      * wait is performed. mtlGetSyncStatus reports GL_SIGNALED when the retained
      * command buffer has completed or when there is no CB to wait on. */
-    if (ctx->mtl_funcs.mtlGetSyncStatus &&
-        ctx->mtl_funcs.mtlGetSyncStatus(ctx, sync) == GL_SIGNALED)
+    if (mglRendererGetSyncStatus(ctx, sync) == GL_SIGNALED)
     {
         result = GL_ALREADY_SIGNALED;
         goto cleanup;
@@ -201,44 +197,32 @@ GLenum  mglClientWaitSync(GLMContext ctx, GLsync sync, GLbitfield flags, GLuint6
      * timeout), so to honor a bounded timeout we poll the non-blocking status
      * with short sleeps up to the timeout, returning GL_TIMEOUT_EXPIRED if the
      * fence does not complete in time. */
-    if (ctx->mtl_funcs.mtlGetSyncStatus)
+    const uint64_t poll_interval_ns = 500000; /* 0.5 ms */
+    uint64_t elapsed_ns = 0;
+
+    while (elapsed_ns < timeout)
     {
-        const uint64_t poll_interval_ns = 500000; /* 0.5 ms */
-        uint64_t elapsed_ns = 0;
-
-        while (elapsed_ns < timeout)
-        {
-            if (ctx->mtl_funcs.mtlGetSyncStatus(ctx, sync) == GL_SIGNALED)
-            {
-                result = GL_CONDITION_SATISFIED;
-                goto cleanup;
-            }
-
-            struct timespec ts;
-            ts.tv_sec = 0;
-            ts.tv_nsec = (long)poll_interval_ns;
-            nanosleep(&ts, NULL);
-
-            elapsed_ns += poll_interval_ns;
-        }
-
-        /* Final check after the timeout has elapsed. */
-        if (ctx->mtl_funcs.mtlGetSyncStatus(ctx, sync) == GL_SIGNALED)
+        if (mglRendererGetSyncStatus(ctx, sync) == GL_SIGNALED)
         {
             result = GL_CONDITION_SATISFIED;
             goto cleanup;
         }
 
-        result = GL_TIMEOUT_EXPIRED;
+        struct timespec ts;
+        ts.tv_sec = 0;
+        ts.tv_nsec = (long)poll_interval_ns;
+        nanosleep(&ts, NULL);
+
+        elapsed_ns += poll_interval_ns;
+    }
+
+    if (mglRendererGetSyncStatus(ctx, sync) == GL_SIGNALED)
+    {
+        result = GL_CONDITION_SATISFIED;
         goto cleanup;
     }
 
-    /* Fallback (no status query available): block until the fence completes.
-     *
-     * MGL_SYNC_STRICT: fence wait already performs conservative sync via
-     * mtlWaitForSync (waitUntilCompleted); no extra strict branch needed. */
-    ctx->mtl_funcs.mtlWaitForSync(ctx, sync);
-    result = GL_CONDITION_SATISFIED;
+    result = GL_TIMEOUT_EXPIRED;
 
 cleanup:
     mglReleaseSyncReference(ctx, sync);
@@ -270,7 +254,7 @@ void mglWaitSync(GLMContext ctx, GLsync sync, GLbitfield flags, GLuint64 timeout
      *
      * MGL_SYNC_STRICT: fence wait already performs conservative sync via
      * mtlWaitForSync (waitUntilCompleted); no extra strict branch needed. */
-    ctx->mtl_funcs.mtlWaitForSync(ctx, sync);
+    mglRendererWaitForSync(ctx, sync);
 
     mglReleaseSyncReference(ctx, sync);
 }
@@ -310,16 +294,7 @@ void mglGetSynciv(GLMContext ctx, GLsync sync, GLenum pname, GLsizei count, GLsi
             break;
 
         case GL_SYNC_STATUS:
-            /* Non-blocking status query. Report GL_SIGNALED when the retained
-             * command buffer has completed (or there is no CB to wait on);
-             * otherwise GL_UNSIGNALED. Does not block. Falls back to the
-             * void*-null check if the backend status entry is unavailable. */
-            if (ctx->mtl_funcs.mtlGetSyncStatus) {
-                *values = ctx->mtl_funcs.mtlGetSyncStatus(ctx, sync);
-            } else {
-                *values = (sync->mtl_command_buffer == NULL && sync->mtl_event == NULL)
-                          ? GL_SIGNALED : GL_UNSIGNALED;
-            }
+            *values = mglRendererGetSyncStatus(ctx, sync);
             break;
 
         case GL_SYNC_CONDITION:
@@ -398,9 +373,7 @@ void mglMemoryBarrier(GLMContext ctx, GLbitfield barriers)
      * subsequent GL draws/reads. No explicit endComputeEncoding is needed here.
      */
     mglFlushCommandBuffer(ctx);
-    if (ctx->mtl_funcs.mtlFlush) {
-        ctx->mtl_funcs.mtlFlush(ctx, true);
-    }
+    mglRendererFlush(ctx, true);
     /* MGL_SYNC_STRICT: mglFlushCommandBuffer + mtlFlush(ctx, true)
      * (commit + waitUntilCompleted) already ran here, a conservative path
      * that needs no extra strict branch. */

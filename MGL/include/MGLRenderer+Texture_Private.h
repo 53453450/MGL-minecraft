@@ -76,6 +76,50 @@ void mglMetalCopyRows(const uint8_t *src,
             bytesPerRow:(NSUInteger)bytesPerRow
           bytesPerImage:(NSUInteger)bytesPerImage
              fromRegion:(MTLRegion)region;
+- (void)mtlReadIntegerPixels:(GLMContext)glm_ctx
+                   pixelBytes:(void *)pixelBytes
+                  bytesPerRow:(NSUInteger)bytesPerRow
+                bytesPerImage:(NSUInteger)bytesPerImage
+                   fromRegion:(MTLRegion)region
+                       format:(GLenum)format type:(GLenum)type;
+- (void)mtlReadDepthPixels:(GLMContext)glm_ctx
+                 pixelBytes:(void *)pixelBytes
+                bytesPerRow:(NSUInteger)bytesPerRow
+              bytesPerImage:(NSUInteger)bytesPerImage
+                 fromRegion:(MTLRegion)region;
+- (void)mtlGetTexImage:(GLMContext)glm_ctx tex:(Texture *)tex
+             pixelBytes:(void *)pixelBytes bytesPerRow:(NSUInteger)bytesPerRow
+          bytesPerImage:(NSUInteger)bytesPerImage fromRegion:(MTLRegion)region
+                 format:(GLenum)format type:(GLenum)type
+            mipmapLevel:(NSUInteger)level slice:(NSUInteger)slice;
+- (void)mtlGenerateMipmaps:(GLMContext)glm_ctx forTexture:(Texture *)tex;
+- (void)mtlTexSubImage:(GLMContext)glm_ctx tex:(Texture *)tex
+                    buf:(Buffer *)buf src_offset:(size_t)src_offset
+              src_pitch:(size_t)src_pitch src_image_size:(size_t)src_image_size
+               src_size:(size_t)src_size slice:(GLuint)slice level:(GLuint)level
+                  width:(size_t)width height:(size_t)height depth:(size_t)depth
+                xoffset:(size_t)xoffset yoffset:(size_t)yoffset
+                zoffset:(size_t)zoffset;
+- (bool)mtlTexSubImageBytes:(GLMContext)glm_ctx tex:(Texture *)tex
+                      bytes:(const void *)bytes bytesSize:(size_t)bytes_size
+                 src_offset:(size_t)src_offset src_pitch:(size_t)src_pitch
+             src_image_size:(size_t)src_image_size slice:(GLuint)slice
+                      level:(GLuint)level width:(size_t)width
+                     height:(size_t)height depth:(size_t)depth
+                    xoffset:(size_t)xoffset yoffset:(size_t)yoffset
+                    zoffset:(size_t)zoffset;
+- (void)mtlCopyTexSubImage:(GLMContext)glm_ctx tex:(Texture *)tex
+                     slice:(NSUInteger)slice mipmapLevel:(NSUInteger)level
+                   xoffset:(NSInteger)xoffset yoffset:(NSInteger)yoffset
+                         x:(NSInteger)x y:(NSInteger)y
+                     width:(NSUInteger)width height:(NSUInteger)height;
+- (void)mtlCopyImageSubData:(GLMContext)glm_ctx
+                 srcTexture:(Texture *)srcTex srcLevel:(GLint)srcLevel
+                       srcX:(GLint)srcX srcY:(GLint)srcY srcZ:(GLint)srcZ
+                 dstTexture:(Texture *)dstTex dstLevel:(GLint)dstLevel
+                       dstX:(GLint)dstX dstY:(GLint)dstY dstZ:(GLint)dstZ
+                      width:(GLsizei)width height:(GLsizei)height
+                      depth:(GLsizei)depth;
 
 // === Pending FBO clear application for readback ===
 - (void)mglApplyPendingFBODepthClearForReadback:(Framebuffer *)fbo

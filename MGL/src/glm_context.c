@@ -51,12 +51,14 @@ extern void mglFreeProgram(GLMContext ctx, Program *ptr);
 static _Thread_local GLMContext _ctx = NULL;
 static _Thread_local GLboolean _ctx_explicitly_unbound = GL_FALSE;
 
-int mglContextHasValidMetalBridge(GLMContext ctx)
+int mglContextHasReadyRendererBackend(GLMContext ctx)
 {
     const uintptr_t minimum_valid_pointer = 0x1000u;
     return ctx && (uintptr_t)ctx >= minimum_valid_pointer &&
-           ctx->mtl_funcs.mtlObj &&
-           (uintptr_t)ctx->mtl_funcs.mtlObj >= minimum_valid_pointer;
+           ctx->renderer_backend &&
+           (uintptr_t)ctx->renderer_backend >= minimum_valid_pointer &&
+           mglRendererBackendIsReady(
+               (MGLRendererBackendHandle *)ctx->renderer_backend) == 1;
 }
 
 enum {
@@ -701,13 +703,13 @@ void MGLswapBuffers(GLMContext ctx)
         mglTraceLogExternal("SWAP_ENTRY call=%llu ctx=%p mtlSwap=%p drawBuf=0x%x fbo=%p program=%u",
                             (unsigned long long)call,
                             (void *)ctx,
-                            (void *)ctx->mtl_funcs.mtlSwapBuffers,
+                            (void *)mglRendererSwapBuffers,
                             (unsigned)ctx->state.draw_buffer,
                             (void *)ctx->state.framebuffer,
                             (unsigned)ctx->state.program_name);
     }
 
-    ctx->mtl_funcs.mtlSwapBuffers(ctx);
+    mglRendererSwapBuffers(ctx);
 }
 
 static void mglDestroyContextBuffer(GLuint name, void *data, void *user)
@@ -772,7 +774,7 @@ static void mglDestroyContextProgram(GLuint name, void *data, void *user)
 static void mglDestroyContextSampler(GLuint name, void *data, void *user)
 {
     (void)name;
-    GLMContext ctx = (GLMContext)user;
+    (void)user;
     Sampler *sampler = (Sampler *)data;
 
     if (!sampler) {
@@ -851,11 +853,8 @@ static void mglDestroyContextSync(GLuint name, void *data, void *user)
         return;
     }
 
-    if (ctx && ctx->mtl_funcs.mtlReleaseSync) {
-        ctx->mtl_funcs.mtlReleaseSync(ctx, sync);
-    } else if (ctx && ctx->mtl_funcs.mtlWaitForSync &&
-               (sync->mtl_command_buffer || sync->mtl_event)) {
-        ctx->mtl_funcs.mtlWaitForSync(ctx, sync);
+    if (ctx) {
+        mglRendererReleaseSync(ctx, sync);
     }
 
     free(sync);
@@ -924,26 +923,11 @@ void destroyGLMContext(GLMContext ctx)
 
     #undef MGL_FREE_HASH_TABLE
 
-    /* mtlView/mtlObj are retained via CFBridgingRetain in
-     * MGLRenderer.m:bindObjFuncsToGLMContext: (ARC ObjC TU).  This TU is
-     * plain C, where CFBridgingRelease is not declared — CFRelease is the
-     * correct plain-C counterpart (CFBridgingRelease is macro-equivalent to
-     * CFRelease under non-ARC).  If this file is ever renamed to .mm and
-     * compiled under ARC, switch to CFBridgingRelease for correct bridge
-     * semantics.  See mgl_metal_ref.h lines 58-60. */
-    if (ctx->mtl_funcs.mtlObj) {
-        CFRelease(ctx->mtl_funcs.mtlObj);
-        ctx->mtl_funcs.mtlObj = NULL;
-    }
     mglRendererBackendDestroy(
         (MGLRendererBackendHandle **)&ctx->renderer_backend);
     if (ctx->platform_renderer_shell) {
         CFRelease(ctx->platform_renderer_shell);
         ctx->platform_renderer_shell = NULL;
-    }
-    if (ctx->mtl_funcs.mtlView) {
-        CFRelease(ctx->mtl_funcs.mtlView);
-        ctx->mtl_funcs.mtlView = NULL;
     }
 
     if (save == ctx) {
@@ -961,8 +945,7 @@ void destroyGLMContext(GLMContext ctx)
 // CRITICAL FIX: Library destructor for proper cleanup.
 // project_memory hard constraint: mgl_auto_cleanup must call destroyGLMContext
 // when _ctx != NULL to prevent Metal object leaks in dlopen/dlclose scenarios.
-// ctx holds a CFBridgingRetain reference on MGLRenderer (mtlObj), so MGLRenderer
-// cannot be fully dealloc'd until we release it here.  Clearing _ctx before the
+// The backend callback runtime retains MGLRenderer. Clearing _ctx before the
 // call lets destroyGLMContext's save/restore logic leave the TLS slot clean.
 __attribute__((destructor))
 static void mgl_auto_cleanup(void)

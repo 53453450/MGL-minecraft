@@ -1594,21 +1594,21 @@ static void mglBeginQueryAtIndex(GLMContext ctx, GLenum target,
 	/* For sample queries, activate the Metal visibility result buffer so
 	 * the GPU accurately reports whether any fragments passed per-fragment
 	 * tests (depth, stencil, scissor, etc.). */
-	if (mgl_query_target_is_sample(target) && ctx->mtl_funcs.mtlBeginSampleQuery)
+	if (mgl_query_target_is_sample(target))
 	{
 		/* Deferred draws issued before glBeginQuery must be encoded before the
 		 * visibility query starts or they would be counted by this query. */
 		mglFlushCommandBuffer(ctx);
-		ctx->mtl_funcs.mtlBeginSampleQuery(ctx, target);
+		mglRendererBeginSampleQuery(ctx, target);
 	}
 
 	/* For GL_TIME_ELAPSED, flush pending GPU work and sample the GPU
 	 * timestamp so mglEndQuery can compute accurate GPU elapsed time. */
-	if (target == GL_TIME_ELAPSED && ctx->mtl_funcs.mtlBeginTimerQuery)
+	if (target == GL_TIME_ELAPSED)
 	{
 		/* Establish the GL ordering boundary before the Metal timestamp. */
 		mglFlushCommandBuffer(ctx);
-		ctx->mtl_funcs.mtlBeginTimerQuery(ctx);
+		mglRendererBeginTimerQuery(ctx);
 	}
 }
 
@@ -2409,12 +2409,8 @@ void mglCopyImageSubData(GLMContext ctx, GLuint srcName, GLenum srcTarget, GLint
 		}
 	}
 
-	if (!ctx->mtl_funcs.mtlCopyImageSubData) {
-		return;
-	}
-
 	// Use Metal blit to copy texture regions
-	ctx->mtl_funcs.mtlCopyImageSubData(ctx, srcTex, srcLevel, srcX, srcY, srcZ,
+	mglRendererCopyImageSubData(ctx, srcTex, srcLevel, srcX, srcY, srcZ,
 	                                    dstTex, dstLevel, dstX, dstY, dstZ,
 	                                    srcWidth, srcHeight, srcDepth);
 }
@@ -2742,12 +2738,12 @@ static void mglEndQueryAtIndex(GLMContext ctx, GLenum target, GLuint index)
 	 * This replaces the previous heuristic that unconditionally set the
 	 * result to 1 for any draw, which incorrectly reported non-zero for
 	 * draws where all fragments failed the depth/stencil test. */
-	if (mgl_query_target_is_sample(target) && ctx->mtl_funcs.mtlEndSampleQuery)
+	if (mgl_query_target_is_sample(target))
 	{
 		/* Draws inside the query are normally still in MGL's deferred command
 		 * buffer. Replay them while the Metal visibility query is active. */
 		mglFlushCommandBuffer(ctx);
-		GLuint64 gpuResult = ctx->mtl_funcs.mtlEndSampleQuery(ctx);
+		GLuint64 gpuResult = mglRendererEndSampleQuery(ctx);
 		/* §17.3.5: ANY_SAMPLES_PASSED* results are booleans; the Metal
 		 * Boolean visibility mode only guarantees "nonzero". */
 		q->result = (target == GL_SAMPLES_PASSED) ? gpuResult
@@ -2757,10 +2753,10 @@ static void mglEndQueryAtIndex(GLMContext ctx, GLenum target, GLuint index)
 
 	/* For GL_TIME_ELAPSED, flush pending GPU work and compute the GPU
 	 * elapsed time via Metal's sampleTimestamps API. */
-	if (target == GL_TIME_ELAPSED && ctx->mtl_funcs.mtlEndTimerQuery)
+	if (target == GL_TIME_ELAPSED)
 	{
 		mglFlushCommandBuffer(ctx);
-		q->result = ctx->mtl_funcs.mtlEndTimerQuery(ctx);
+		q->result = mglRendererEndTimerQuery(ctx);
 		q->timer_result_known = GL_TRUE;
 	}
 
@@ -5350,9 +5346,7 @@ static bool mglReadIndirectCountParameter(GLMContext ctx,
 	 * fallback reads the command count. mglFlushCommandBuffer only drains MGL's
 	 * deferred draw buffer; mtlFlush(..., true) commits and waits for Metal. */
 	mglFlushCommandBuffer(ctx);
-	if (ctx->mtl_funcs.mtlFlush) {
-		ctx->mtl_funcs.mtlFlush(ctx, true);
-	}
+	mglRendererFlush(ctx, true);
 
 	base = (const uint8_t *)(uintptr_t)parameter_buffer->data.buffer_data;
 	logical_size = parameter_buffer->size > 0 ? (size_t)parameter_buffer->size : 0u;
@@ -5821,16 +5815,9 @@ void mglQueryCounter(GLMContext ctx, GLuint id, GLenum target)
 	}
 	q->target = GL_TIMESTAMP;
 	q->available = GL_TRUE;
-	/* Use the real GPU timestamp from Metal's sampleTimestamps API
-	 * when available; fall back to the fake counter for API-level
-	 * compatibility on backends without timer query support. */
-	if (ctx->mtl_funcs.mtlGetGPUTimestamp) {
-		/* The callback only samples. Keep the GL ordering boundary at the
-		 * semantic call site for both the ObjC fallback and C++ path. */
-		mglFlushCommandBuffer(ctx);
-		q->result = ctx->mtl_funcs.mtlGetGPUTimestamp(ctx);
-	} else
-		q->result = s_fake_timestamp_counter++;
+	/* Keep the GL ordering boundary at the semantic call site. */
+	mglFlushCommandBuffer(ctx);
+	q->result = mglRendererGetGPUTimestamp(ctx);
 }
 
 void mglReadnPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLsizei bufSize, void *data)

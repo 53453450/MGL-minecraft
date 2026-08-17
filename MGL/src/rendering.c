@@ -545,7 +545,6 @@ static void mglMaterializeImmediateClear(GLMContext ctx, GLbitfield mask, const 
     static uint64_t s_immediateClearCount = 0;
 
     if (!ctx ||
-        !ctx->mtl_funcs.mtlClearBuffer ||
         ctx->state.caps.scissor_test ||
         (mask & (GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT)) == 0)
     {
@@ -570,7 +569,7 @@ static void mglMaterializeImmediateClear(GLMContext ctx, GLbitfield mask, const 
                             (unsigned long long)hit);
     }
 
-    ctx->mtl_funcs.mtlClearBuffer(ctx, 0, mask);
+    mglRendererClearBuffer(ctx, 0, mask);
     ctx->state.clear_bitmask &= ~mask;
 }
 
@@ -658,9 +657,7 @@ void mglClear(GLMContext ctx, GLbitfield mask)
                                 (unsigned)ctx->state.var.stencil_writemask,
                                 (unsigned)ctx->state.var.stencil_back_writemask);
         }
-        if (ctx->mtl_funcs.mtlClearBuffer) {
-            ctx->mtl_funcs.mtlClearBuffer(ctx, 0, mask);
-        }
+        mglRendererClearBuffer(ctx, 0, mask);
         if ((mask & GL_STENCIL_BUFFER_BIT) &&
             ctx->state.framebuffer &&
             (ctx->state.var.stencil_writemask != 0u ||
@@ -1026,13 +1023,13 @@ void mglFinish(GLMContext ctx)
 {
     mglTraceLogExternal("MGL: mglFinish called - flushing and waiting for GPU");
     mglFlushCommandBuffer(ctx);
-    ctx->mtl_funcs.mtlFlush(ctx, true);
+    mglRendererFlush(ctx, true);
 }
 
 void mglFlush(GLMContext ctx)
 {
     mglFlushCommandBuffer(ctx);
-    ctx->mtl_funcs.mtlFlush(ctx, false);
+    mglRendererFlush(ctx, false);
 }
 
 void mglDrawBuffers(GLMContext ctx, GLsizei n, const GLenum *bufs)
@@ -1124,8 +1121,8 @@ void mglDrawBuffers(GLMContext ctx, GLsizei n, const GLenum *bufs)
     if (changed)
         mglFlushPendingDraws(ctx);
 
-    if (changed && ctx->mtl_funcs.mtlInvalidateRenderPass)
-        ctx->mtl_funcs.mtlInvalidateRenderPass(ctx);
+    if (changed)
+        mglRendererInvalidateRenderPass(ctx);
 
     for (GLsizei i = 0; i < n; ++i)
         STATE(draw_buffers[i]) = bufs[i];
@@ -1155,8 +1152,8 @@ void mglDrawBuffer(GLMContext ctx, GLenum buf)
         if (changed)
             mglFlushPendingDraws(ctx);
 
-        if (changed && ctx->mtl_funcs.mtlInvalidateRenderPass)
-            ctx->mtl_funcs.mtlInvalidateRenderPass(ctx);
+        if (changed)
+            mglRendererInvalidateRenderPass(ctx);
 
         STATE(draw_buffer) = GL_NONE;
         STATE(draw_buffer_count) = 1;
@@ -1220,8 +1217,8 @@ void mglDrawBuffer(GLMContext ctx, GLenum buf)
     if (changed)
         mglFlushPendingDraws(ctx);
 
-    if (changed && ctx->mtl_funcs.mtlInvalidateRenderPass)
-        ctx->mtl_funcs.mtlInvalidateRenderPass(ctx);
+    if (changed)
+        mglRendererInvalidateRenderPass(ctx);
 
     if ((buf >= GL_COLOR_ATTACHMENT0) &&
         (buf < (GL_COLOR_ATTACHMENT0 + STATE(max_color_attachments))))
@@ -2517,13 +2514,13 @@ static bool mglReadPixelsDepthComponent(GLMContext ctx,
                     : 0.0f;
             }
         }
-    } else if (ctx->mtl_funcs.mtlReadDepthPixels) {
+    } else {
         floatDepth = (GLfloat *)calloc((size_t)width * height, sizeof(GLfloat));
         if (!floatDepth) {
             ERROR_RETURN_VALUE(GL_OUT_OF_MEMORY, false);
         }
         mglFlushCommandBuffer(ctx);
-        ctx->mtl_funcs.mtlReadDepthPixels(ctx,
+        mglRendererReadDepthPixels(ctx,
                                           floatDepth,
                                           (GLuint)(width * sizeof(GLfloat)),
                                           (GLuint)((size_t)width * height * sizeof(GLfloat)),
@@ -2700,14 +2697,13 @@ static bool mglReadPixelsDepthStencil(GLMContext ctx,
         !depthTex->is_render_target) {
         /* CPU shadow path — depth_shadow is authoritative for
          * non-render-target depth textures. */
-    } else if (depthTex && depthTex->is_render_target &&
-               ctx->mtl_funcs.mtlReadDepthPixels) {
+    } else if (depthTex && depthTex->is_render_target) {
         gpuDepth = (GLfloat *)calloc((size_t)width * height, sizeof(GLfloat));
         if (!gpuDepth) {
             ERROR_RETURN_VALUE(GL_OUT_OF_MEMORY, false);
         }
         mglFlushCommandBuffer(ctx);
-        ctx->mtl_funcs.mtlReadDepthPixels(ctx,
+        mglRendererReadDepthPixels(ctx,
                                           gpuDepth,
                                           (GLuint)(width * sizeof(GLfloat)),
                                           (GLuint)((size_t)width * height * sizeof(GLfloat)),
@@ -3128,8 +3124,7 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
          type == GL_UNSIGNED_INT_8_8_8_8 || type == GL_UNSIGNED_INT_8_8_8_8_REV ||
          type == GL_UNSIGNED_INT_10_10_10_2 || type == GL_UNSIGNED_INT_2_10_10_10_REV))
     {
-        if (!ctx->mtl_funcs.mtlReadIntegerPixels ||
-            pack_layout.dst_pitch > UINT_MAX ||
+        if (pack_layout.dst_pitch > UINT_MAX ||
             pack_layout.write_span_bytes > UINT_MAX)
         {
             ERROR_RETURN(GL_INVALID_OPERATION);
@@ -3137,7 +3132,7 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
         }
 
         mglFlushCommandBuffer(ctx);
-        ctx->mtl_funcs.mtlReadIntegerPixels(ctx,
+        mglRendererReadIntegerPixels(ctx,
                                             pixels,
                                             (GLuint)pack_layout.dst_pitch,
                                             (GLuint)pack_layout.write_span_bytes,
@@ -3236,9 +3231,7 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
     /* Integer texture formats need to be read back via mtlGetTexImage (which
      * has a dedicated integer readback path) rather than via mtlReadDrawable
      * (which converts to BGRA8 UNORM, losing integer semantics). */
-    if (readColorTexture &&
-        ctx->mtl_funcs.mtlGetTexImage &&
-        mglIsIntegerReadFormat(format))
+    if (readColorTexture && mglIsIntegerReadFormat(format))
     {
         GLuint level = readColorAttachment ? readColorAttachment->level : 0u;
         GLuint slice = (readColorAttachment && !readColorAttachment->layered)
@@ -3253,7 +3246,7 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
         }
 
         mglFlushCommandBuffer(ctx);
-        ctx->mtl_funcs.mtlGetTexImage(ctx,
+        mglRendererGetTexImage(ctx,
                                       readColorTexture,
                                       pixels,
                                       (GLuint)pack_layout.dst_pitch,
@@ -3287,7 +3280,6 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
         readColorTexture->internalformat != GL_SRGB8_ALPHA8 &&
         readColorTexture->internalformat != GL_R8 &&
         readColorTexture->internalformat != GL_RG8 &&
-        ctx->mtl_funcs.mtlGetTexImage &&
         mglIsColorReadFormat(format))
     {
         GLuint level = readColorAttachment ? readColorAttachment->level : 0u;
@@ -3303,7 +3295,7 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
         }
 
         mglFlushCommandBuffer(ctx);
-        ctx->mtl_funcs.mtlGetTexImage(ctx,
+        mglRendererGetTexImage(ctx,
                                       readColorTexture,
                                       pixels,
                                       (GLuint)pack_layout.dst_pitch,
@@ -3356,7 +3348,7 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
         return;
     }
 
-    ctx->mtl_funcs.mtlReadDrawable(ctx, (void *)buffer_data, (GLuint)readback_pitch, (GLuint)readback_size, x, y, width, height);
+    mglRendererReadDrawable(ctx, (void *)buffer_data, (GLuint)readback_pitch, (GLuint)readback_size, x, y, width, height);
 
 
     if (!mglPackBGRA8ReadPixels((const uint8_t *)buffer_data,

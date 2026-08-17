@@ -79,15 +79,13 @@ void mglDispatchError(GLMContext ctx, const char *func, GLenum type);
 #include "mgl_types_framebuffer.h"
 #include "mgl_types_sync.h"
 #include "mgl_types_state.h"
-#include "mgl_types_metal_funcs.h"
+#include "mgl_renderer_backend.h"
 
 static_assert(_TEXTURE_BUFFER == _TEXTURE_BUFFER_TARGET, "_TEXTURE_BUFFER != _TEXTURE_BUFFER_TARGET");
 
 static_assert(TEXTURE_UNITS == 128, "active_texture_mask relies on this");
 
 typedef struct GLMContextRec_t *GLMContext;
-
-/* GLMMetalFuncs moved to mgl_types_metal_funcs.h (P2-3). */
 
 typedef struct GLMContextRec_t {
     GLuint      context_flags;
@@ -99,8 +97,6 @@ typedef struct GLMContextRec_t {
 #ifdef MGL_GL_ES
     struct GLM_ES_DispatchTable dispatch;
 #endif
-
-    struct GLMMetalFuncs mtl_funcs;
 
     GLMState    state;
     /* Pointer to the currently active GLMState.  Always points to the embedded
@@ -128,21 +124,10 @@ typedef struct GLMContextRec_t {
      * MGLRenderer-owned MGLBatchArena ivar.  Accessed from draw_command.c. */
     MGLBatchArena  *batch_arena;
 
-    /* P5 renderer roots. The context owns the backend handle and retains the
-     * platform shell until teardown; renderer/category pointers are borrowed. */
+    /* P5 renderer roots. The backend owns all Metal state and the callback
+     * runtime; the context retains the platform shell until teardown. */
     void *renderer_backend;
     void *platform_renderer_shell;
-
-    /* Borrowed C++ renderer runtime handles.  These are synchronized by the
-     * renderer on the GL thread and never own the pointed-to objects.  Metal
-     * callbacks use them to enter owner facades without selector-forwarding
-     * through mtl_funcs.mtlObj. */
-    void *metal_command_buffer_owner;
-    void *metal_render_encoder_owner;
-    void *metal_render_pass_state_owner;
-    void *metal_query_state_owner;
-    void *metal_command_recovery_owner;
-    void *metal_callback_runtime;
 
     void (* error_func)(GLMContext ctx, const char *func, GLenum type);
 } GLMContextRec;

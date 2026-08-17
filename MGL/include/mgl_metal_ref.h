@@ -10,7 +10,7 @@
  * Sync::mtl_event / mtl_command_buffer, etc.).
  *
  * Problem: the codebase had three parallel release paths:
- *   1. ctx->mtl_funcs.mtlDeleteMTLObj(ctx, ptr)  — C files (22 call sites)
+ *   1. renderer callback deletion from C files
  *   2. CFBridgingRelease(ptr); ptr = NULL;        — MGLRenderer.m (24 sites)
  *   3. CFRelease(ptr); ptr = NULL;                — program.c MGLShaderModule + 3-way
  *                                                   if/else fallbacks (9 sites)
@@ -27,9 +27,8 @@
  *
  * Scope: this header ONLY covers the generic `void *` slot pattern.
  * Sync objects keep their own `mtlReleaseSync` path (needs @try/@catch for
- * legacy MTLSharedEvent robustness).  Context teardown of `mtlView` /
- * `mtlObj` (the renderer itself) stays in glm_context.c (those are assigned
- * via CFBridgingRetain of ObjC objects, not Metal objects per se).
+ * legacy MTLSharedEvent robustness). The renderer itself is retained by the
+ * backend callback runtime and released during backend destruction.
  *
  * Dependencies: CoreFoundation (CFBridgingRelease) + stddef.h (NULL).
  * No Metal framework dependency — works in pure C TUs.

@@ -40,8 +40,8 @@ void mglRenderCppShutdown(void);
 /* 调试/测试用：返回 C++ 侧持有的 MTL::Device*（void* 形式），未初始化返回 NULL。 */
 void* mglRenderCppGetDevice(void);
 
-/* GLMMetalFuncs entries that do not require access to the ObjC renderer.
- * Objects passed here carry the +1 bridge reference owned by the GL state. */
+/* Direct renderer entries. Objects passed here carry the +1 bridge reference
+ * owned by the GL state. */
 void mglRenderCppDeleteMTLObj(GLMContext glm_ctx, void *object);
 void mglRenderCppReleaseBufferMetalData(GLMContext glm_ctx, Buffer *buffer);
 void mglRenderCppReleaseBufferCowPool(Buffer *buffer);
@@ -73,18 +73,12 @@ void mglRenderCppReleaseSync(GLMContext glm_ctx, Sync *sync);
 void mglRenderCppFlush(GLMContext glm_ctx, bool finish);
 void mglRenderCppInvalidateRenderPass(GLMContext glm_ctx);
 uint64_t mglRenderCppGetGPUTimestamp(GLMContext glm_ctx);
-typedef struct MGLRenderCppCallbackInstallResult_t {
-    uint32_t installed;
-    uint32_t strict_cpp;
-    uint32_t pure_adapter;
-    uint32_t legacy_fallback;
-} MGLRenderCppCallbackInstallResult;
-
 typedef struct MGLRenderCppDrawCallbackArgs_t MGLRenderCppDrawCallbackArgs;
 typedef struct MGLRenderCppResourceCallbackArgs_t MGLRenderCppResourceCallbackArgs;
 typedef struct MGLRenderCppLegacyCallbackArgs_t MGLRenderCppLegacyCallbackArgs;
 
 typedef struct MGLRenderCppCallbackRuntimeOps_t {
+    void (*release_context)(void *runtime_context);
     void (*dispatch_compute)(void *runtime_context,
                              GLMContext glm_ctx,
                              unsigned int groups_x,
@@ -333,22 +327,12 @@ void mglRenderCppInvokeDrawCallback(
  * callbacks and callbacks dispatched through the opaque pure-C runtime table
  * are reported separately.  Wrappers that can still call a legacy bridge do
  * not count toward P4's completion criterion. */
-int mglRenderCppInstallMetalCallbacks(
-    GLMContext glm_ctx,
-    MGLRenderCppCallbackInstallResult *result_out);
-/* Publish the borrowed runtime owner handles used by direct C++ callbacks.
- * The context does not retain these owners; the renderer owns their lifetime. */
+/* Publish the borrowed runtime owner handles used by direct C++ callbacks. */
 int mglRenderCppAttachRuntimeOwners(GLMContext glm_ctx,
                                     void *command_buffer_owner,
                                     void *render_encoder_owner,
-                                    void *render_pass_state_owner,
-                                    void *query_state_owner,
-                                    void *command_recovery_owner);
+                                    void *render_pass_state_owner);
 void mglRenderCppDetachRuntimeOwners(GLMContext glm_ctx);
-int mglRenderCppRegisterContextQueryStateOwner(GLMContext glm_ctx,
-                                               void *query_owner);
-void mglRenderCppUnregisterContextQueryStateOwner(GLMContext glm_ctx,
-                                                  void *query_owner);
 void mglRenderCppBeginTimerQueryCallback(GLMContext glm_ctx);
 uint64_t mglRenderCppEndTimerQueryCallback(GLMContext glm_ctx);
 void mglRenderCppBeginSampleQueryCallback(GLMContext glm_ctx,

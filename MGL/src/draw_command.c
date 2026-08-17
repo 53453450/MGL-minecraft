@@ -167,8 +167,8 @@ static void mglDestroyTransientBuffer(GLMContext ctx, Buffer *buffer)
 {
     if (!buffer) return;
 
-    if (ctx && ctx->mtl_funcs.release_buffer_metal_data)
-        ctx->mtl_funcs.release_buffer_metal_data(ctx, buffer);
+    if (ctx)
+        mglRendererReleaseBufferMetalData(ctx, buffer);
     if (buffer->data.buffer_data) {
         free((void *)(uintptr_t)buffer->data.buffer_data);
         buffer->data.buffer_data = 0;
@@ -4116,7 +4116,7 @@ void mglAppendDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
  * buffer to Metal
  *
  * Trigger: when batch_count > 0, submit the encoded deferred draws to the
- * Metal backend for execution via ctx->mtl_funcs.mtlFlushDrawBuffer(ctx).
+ * Metal backend for execution via mglRendererFlushDrawBuffer(ctx).
  * Guarantee: final rendezvous of every hazard-detection flush; after the call
  * all per-CB read/write tracking arrays are cleared.
  * Overflow degradation: none (this function performs no hazard detection; it
@@ -4129,10 +4129,8 @@ void mglFlushCommandBuffer(GLMContext ctx)
     MGLCommandBuffer *cb = &ctx->draw_command_buffer;
     if (cb->batch_count == 0) return;
 
-    if (ctx->mtl_funcs.mtlFlushDrawBuffer) {
-        MGL_PERF_INC(g_mglFlushTotalSinceSwap);
-        ctx->mtl_funcs.mtlFlushDrawBuffer(ctx);
-    }
+    MGL_PERF_INC(g_mglFlushTotalSinceSwap);
+    mglRendererFlushDrawBuffer(ctx);
 }
 
 /*

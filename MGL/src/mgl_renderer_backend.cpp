@@ -15,18 +15,17 @@ struct MGLRendererBackendHandle {
     void *query_owner = nullptr;
     void *recovery_owner = nullptr;
     void *binding_owner = nullptr;
+    void *callback_runtime = nullptr;
     bool renderer_initialized = false;
     bool shutdown_started = false;
+    bool destroying = false;
 };
 
 static void mglRendererBackendReleaseOwnedState(
     MGLRendererBackendHandle *backend)
 {
     if (!backend) return;
-    if (backend->context && backend->query_owner) {
-        mglRenderCppUnregisterContextQueryStateOwner(
-            backend->context, backend->query_owner);
-    }
+    mglRenderCppDestroyCallbackRuntime(&backend->callback_runtime);
     mglRenderCppDestroyCommandQueueOwner(&backend->command_queue_owner);
     mglRenderCppBindingDestroy(backend->binding_owner);
     backend->binding_owner = nullptr;
@@ -70,14 +69,6 @@ extern "C" int mglRendererBackendCreate(
         delete backend;
         return -1;
     }
-    if (backend->context &&
-        mglRenderCppRegisterContextQueryStateOwner(
-            backend->context, backend->query_owner) != 0) {
-        mglRendererBackendReleaseOwnedState(backend);
-        delete backend;
-        return -1;
-    }
-
     *backend_out = backend;
     return 0;
 }
@@ -125,6 +116,40 @@ extern "C" int mglRendererBackendAttachRuntimeOwners(
     backend->render_encoder_owner = render_encoder_owner;
     backend->render_pass_state_owner = render_pass_state_owner;
     return 0;
+}
+
+extern "C" int mglRendererBackendInstallCallbackRuntime(
+    MGLRendererBackendHandle *backend,
+    void *callback_runtime)
+{
+    if (!backend || !callback_runtime) return -1;
+    void *previous = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(backend->mutex);
+        if (backend->shutdown_started || backend->destroying) return -1;
+        previous = backend->callback_runtime;
+        backend->callback_runtime = callback_runtime;
+    }
+    mglRenderCppDestroyCallbackRuntime(&previous);
+    return 0;
+}
+
+extern "C" void *mglRendererBackendGetCallbackRuntime(
+    const MGLRendererBackendHandle *backend)
+{
+    if (!backend) return nullptr;
+    std::lock_guard<std::mutex> lock(
+        const_cast<MGLRendererBackendHandle *>(backend)->mutex);
+    return backend->callback_runtime;
+}
+
+extern "C" int mglRendererBackendIsDestroying(
+    const MGLRendererBackendHandle *backend)
+{
+    if (!backend) return 0;
+    std::lock_guard<std::mutex> lock(
+        const_cast<MGLRendererBackendHandle *>(backend)->mutex);
+    return backend->destroying ? 1 : 0;
 }
 
 extern "C" void *mglRendererBackendGetOwner(
@@ -189,8 +214,566 @@ extern "C" void mglRendererBackendDestroy(
 {
     if (!backend_ptr || !*backend_ptr) return;
     MGLRendererBackendHandle *backend = *backend_ptr;
+    *backend_ptr = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(backend->mutex);
+        if (backend->destroying) return;
+        backend->destroying = true;
+        if (backend->context && backend->context->renderer_backend == backend) {
+            backend->context->renderer_backend = nullptr;
+        }
+    }
     (void)mglRendererBackendShutdown(backend, nullptr);
     mglRendererBackendReleaseOwnedState(backend);
     delete backend;
-    *backend_ptr = nullptr;
+}
+
+extern "C" void mglRendererBindBuffer(GLMContext context, Buffer *buffer)
+{
+    mglRenderCppBindBuffer(context, buffer);
+}
+
+extern "C" void mglRendererBindTexture(GLMContext context, Texture *texture)
+{
+    mglRenderCppInvokeBindTextureCallback(context, texture);
+}
+
+extern "C" void mglRendererBindProgram(GLMContext context, Program *program)
+{
+    mglRenderCppBindProgram(context, program);
+}
+
+extern "C" void mglRendererDeleteMetalObject(GLMContext context, void *object)
+{
+    mglRenderCppDeleteMTLObj(context, object);
+}
+
+extern "C" void mglRendererReleaseBufferMetalData(
+    GLMContext context, Buffer *buffer)
+{
+    mglRenderCppReleaseBufferMetalData(context, buffer);
+}
+
+extern "C" void mglRendererGetSync(GLMContext context, Sync *sync)
+{
+    mglRenderCppGetSync(context, sync);
+}
+
+extern "C" void mglRendererWaitForSync(GLMContext context, Sync *sync)
+{
+    mglRenderCppWaitForSync(context, sync);
+}
+
+extern "C" uint32_t mglRendererGetSyncStatus(
+    GLMContext context, Sync *sync)
+{
+    return mglRenderCppGetSyncStatus(context, sync);
+}
+
+extern "C" void mglRendererReleaseSync(GLMContext context, Sync *sync)
+{
+    mglRenderCppReleaseSync(context, sync);
+}
+
+extern "C" void mglRendererFlush(GLMContext context, bool finish)
+{
+    mglRenderCppFlush(context, finish);
+}
+
+extern "C" void mglRendererSwapBuffers(GLMContext context)
+{
+    mglRenderCppInvokeSwapBuffersCallback(context);
+}
+
+extern "C" void mglRendererFlushDrawBuffer(GLMContext context)
+{
+    mglRenderCppInvokeFlushDrawBufferCallback(context);
+}
+
+extern "C" void mglRendererInvalidateRenderPass(GLMContext context)
+{
+    mglRenderCppInvalidateRenderPass(context);
+}
+
+extern "C" void mglRendererClearBuffer(
+    GLMContext context, uint32_t type, uint32_t mask)
+{
+    mglRenderCppInvokeClearBufferCallback(context, type, mask);
+}
+
+extern "C" void mglRendererBlitFramebuffer(
+    GLMContext context,
+    int32_t src_x0, int32_t src_y0, int32_t src_x1, int32_t src_y1,
+    int32_t dst_x0, int32_t dst_y0, int32_t dst_x1, int32_t dst_y1,
+    uint32_t mask, uint32_t filter)
+{
+    mglRenderCppInvokeBlitFramebufferCallback(
+        context, src_x0, src_y0, src_x1, src_y1,
+        dst_x0, dst_y0, dst_x1, dst_y1, mask, filter);
+}
+
+extern "C" void mglRendererBufferSubData(
+    GLMContext context, Buffer *buffer,
+    size_t offset, size_t size, const void *bytes)
+{
+    mglRenderCppBufferSubData(context, buffer, offset, size, bytes);
+}
+
+extern "C" void *mglRendererMapUnmapBuffer(
+    GLMContext context, Buffer *buffer, size_t offset, size_t size,
+    uint32_t access, bool map)
+{
+    return mglRenderCppMapUnmapBuffer(
+        context, buffer, offset, size, access, map);
+}
+
+extern "C" void mglRendererReadBackBuffer(
+    GLMContext context, Buffer *buffer, size_t offset, size_t size)
+{
+    mglRenderCppReadBackBuffer(context, buffer, offset, size);
+}
+
+extern "C" void mglRendererFlushBufferRange(
+    GLMContext context, Buffer *buffer, intptr_t offset, intptr_t length)
+{
+    mglRenderCppFlushBufferRange(context, buffer, offset, length);
+}
+
+static int mglRendererInvokeResource(
+    GLMContext context, MGLRenderCppResourceCallbackArgs args)
+{
+    return mglRenderCppInvokeResourceCallback(context, &args);
+}
+
+extern "C" void mglRendererReadDrawable(
+    GLMContext context, void *pixel_bytes,
+    uint32_t bytes_per_row, uint32_t bytes_per_image,
+    int32_t x, int32_t y, int32_t width, int32_t height)
+{
+    mglRendererInvokeResource(context, {
+        .kind = MGL_RENDER_CPP_RESOURCE_CALLBACK_READ_DRAWABLE,
+        .pixel_bytes = pixel_bytes,
+        .width = static_cast<size_t>(width),
+        .height = static_cast<size_t>(height),
+        .bytes_per_row = bytes_per_row,
+        .bytes_per_image = bytes_per_image,
+        .x = x,
+        .y = y,
+    });
+}
+
+extern "C" void mglRendererReadIntegerPixels(
+    GLMContext context, void *pixel_bytes,
+    uint32_t bytes_per_row, uint32_t bytes_per_image,
+    int32_t x, int32_t y, int32_t width, int32_t height,
+    uint32_t format, uint32_t type)
+{
+    mglRendererInvokeResource(context, {
+        .kind = MGL_RENDER_CPP_RESOURCE_CALLBACK_READ_INTEGER_PIXELS,
+        .pixel_bytes = pixel_bytes,
+        .width = static_cast<size_t>(width),
+        .height = static_cast<size_t>(height),
+        .bytes_per_row = bytes_per_row,
+        .bytes_per_image = bytes_per_image,
+        .format = format,
+        .type = type,
+        .x = x,
+        .y = y,
+    });
+}
+
+extern "C" void mglRendererReadDepthPixels(
+    GLMContext context, void *pixel_bytes,
+    uint32_t bytes_per_row, uint32_t bytes_per_image,
+    int32_t x, int32_t y, int32_t width, int32_t height)
+{
+    mglRendererInvokeResource(context, {
+        .kind = MGL_RENDER_CPP_RESOURCE_CALLBACK_READ_DEPTH_PIXELS,
+        .pixel_bytes = pixel_bytes,
+        .width = static_cast<size_t>(width),
+        .height = static_cast<size_t>(height),
+        .bytes_per_row = bytes_per_row,
+        .bytes_per_image = bytes_per_image,
+        .x = x,
+        .y = y,
+    });
+}
+
+extern "C" void mglRendererGetTexImage(
+    GLMContext context, Texture *texture, void *pixel_bytes,
+    uint32_t bytes_per_row, uint32_t bytes_per_image,
+    int32_t x, int32_t y, int32_t width, int32_t height,
+    uint32_t format, uint32_t type, uint32_t level, uint32_t slice)
+{
+    mglRendererInvokeResource(context, {
+        .kind = MGL_RENDER_CPP_RESOURCE_CALLBACK_GET_TEX_IMAGE,
+        .texture = texture,
+        .pixel_bytes = pixel_bytes,
+        .width = static_cast<size_t>(width),
+        .height = static_cast<size_t>(height),
+        .bytes_per_row = bytes_per_row,
+        .bytes_per_image = bytes_per_image,
+        .format = format,
+        .type = type,
+        .slice = slice,
+        .level = level,
+        .x = x,
+        .y = y,
+    });
+}
+
+extern "C" void mglRendererGenerateMipmaps(
+    GLMContext context, Texture *texture)
+{
+    mglRendererInvokeResource(context, {
+        .kind = MGL_RENDER_CPP_RESOURCE_CALLBACK_GENERATE_MIPMAPS,
+        .texture = texture,
+    });
+}
+
+extern "C" void mglRendererTexSubImage(
+    GLMContext context, Texture *texture, Buffer *buffer,
+    size_t source_offset, size_t source_pitch,
+    size_t source_image_size, size_t source_size,
+    uint32_t slice, uint32_t level,
+    size_t width, size_t height, size_t depth,
+    size_t x_offset, size_t y_offset, size_t z_offset)
+{
+    mglRendererInvokeResource(context, {
+        .kind = MGL_RENDER_CPP_RESOURCE_CALLBACK_TEX_SUB_IMAGE,
+        .texture = texture,
+        .buffer = buffer,
+        .source_offset = source_offset,
+        .source_pitch = source_pitch,
+        .source_image_size = source_image_size,
+        .source_size = source_size,
+        .width = width,
+        .height = height,
+        .depth = depth,
+        .x_offset = x_offset,
+        .y_offset = y_offset,
+        .z_offset = z_offset,
+        .slice = slice,
+        .level = level,
+    });
+}
+
+extern "C" bool mglRendererTexSubImageBytes(
+    GLMContext context, Texture *texture,
+    const void *bytes, size_t bytes_size,
+    size_t source_offset, size_t source_pitch, size_t source_image_size,
+    uint32_t slice, uint32_t level,
+    size_t width, size_t height, size_t depth,
+    size_t x_offset, size_t y_offset, size_t z_offset)
+{
+    return mglRendererInvokeResource(context, {
+        .kind = MGL_RENDER_CPP_RESOURCE_CALLBACK_TEX_SUB_IMAGE_BYTES,
+        .texture = texture,
+        .bytes = bytes,
+        .bytes_size = bytes_size,
+        .source_offset = source_offset,
+        .source_pitch = source_pitch,
+        .source_image_size = source_image_size,
+        .width = width,
+        .height = height,
+        .depth = depth,
+        .x_offset = x_offset,
+        .y_offset = y_offset,
+        .z_offset = z_offset,
+        .slice = slice,
+        .level = level,
+    }) != 0;
+}
+
+extern "C" void mglRendererCopyTexSubImage(
+    GLMContext context, Texture *texture,
+    uint32_t slice, int32_t level,
+    int32_t x_offset, int32_t y_offset,
+    int32_t x, int32_t y, int32_t width, int32_t height)
+{
+    mglRendererInvokeResource(context, {
+        .kind = MGL_RENDER_CPP_RESOURCE_CALLBACK_COPY_TEX_SUB_IMAGE,
+        .texture = texture,
+        .width = static_cast<size_t>(width),
+        .height = static_cast<size_t>(height),
+        .x_offset = static_cast<size_t>(x_offset),
+        .y_offset = static_cast<size_t>(y_offset),
+        .slice = slice,
+        .level = static_cast<uint32_t>(level),
+        .x = x,
+        .y = y,
+    });
+}
+
+extern "C" void mglRendererCopyImageSubData(
+    GLMContext context, Texture *source_texture,
+    int32_t source_level, int32_t source_x, int32_t source_y, int32_t source_z,
+    Texture *destination_texture,
+    int32_t destination_level,
+    int32_t destination_x, int32_t destination_y, int32_t destination_z,
+    int32_t width, int32_t height, int32_t depth)
+{
+    mglRendererInvokeResource(context, {
+        .kind = MGL_RENDER_CPP_RESOURCE_CALLBACK_COPY_IMAGE_SUB_DATA,
+        .source_texture = source_texture,
+        .destination_texture = destination_texture,
+        .width = static_cast<size_t>(width),
+        .height = static_cast<size_t>(height),
+        .depth = static_cast<size_t>(depth),
+        .source_level = source_level,
+        .source_x = source_x,
+        .source_y = source_y,
+        .source_z = source_z,
+        .destination_level = destination_level,
+        .destination_x = destination_x,
+        .destination_y = destination_y,
+        .destination_z = destination_z,
+    });
+}
+
+static void mglRendererInvokeDraw(
+    GLMContext context, MGLRenderCppDrawCallbackArgs args)
+{
+    mglRenderCppInvokeDrawCallback(context, &args);
+}
+
+extern "C" void mglRendererDrawArrays(
+    GLMContext context, uint32_t mode, int32_t first, int32_t count)
+{
+    mglRendererInvokeDraw(context, {
+        .kind = MGL_RENDER_CPP_DRAW_CALLBACK_ARRAYS,
+        .mode = mode, .first = first, .count = count,
+    });
+}
+
+extern "C" void mglRendererDrawElements(
+    GLMContext context, uint32_t mode, int32_t count,
+    uint32_t type, const void *indices)
+{
+    mglRendererInvokeDraw(context, {
+        .kind = MGL_RENDER_CPP_DRAW_CALLBACK_ELEMENTS,
+        .mode = mode, .type = type, .count = count,
+        .indices_or_indirect = indices,
+    });
+}
+
+extern "C" void mglRendererDrawRangeElements(
+    GLMContext context, uint32_t mode, uint32_t start, uint32_t end,
+    int32_t count, uint32_t type, const void *indices)
+{
+    mglRendererInvokeDraw(context, {
+        .kind = MGL_RENDER_CPP_DRAW_CALLBACK_RANGE_ELEMENTS,
+        .mode = mode, .type = type, .start = start, .end = end,
+        .count = count, .indices_or_indirect = indices,
+    });
+}
+
+extern "C" void mglRendererDrawArraysInstanced(
+    GLMContext context, uint32_t mode, int32_t first, int32_t count,
+    int32_t instance_count)
+{
+    mglRendererInvokeDraw(context, {
+        .kind = MGL_RENDER_CPP_DRAW_CALLBACK_ARRAYS_INSTANCED,
+        .mode = mode, .first = first, .count = count,
+        .instance_count = instance_count,
+    });
+}
+
+extern "C" void mglRendererDrawElementsInstanced(
+    GLMContext context, uint32_t mode, int32_t count, uint32_t type,
+    const void *indices, int32_t instance_count)
+{
+    mglRendererInvokeDraw(context, {
+        .kind = MGL_RENDER_CPP_DRAW_CALLBACK_ELEMENTS_INSTANCED,
+        .mode = mode, .type = type, .count = count,
+        .instance_count = instance_count, .indices_or_indirect = indices,
+    });
+}
+
+extern "C" void mglRendererDrawElementsBaseVertex(
+    GLMContext context, uint32_t mode, int32_t count, uint32_t type,
+    const void *indices, int32_t base_vertex)
+{
+    mglRendererInvokeDraw(context, {
+        .kind = MGL_RENDER_CPP_DRAW_CALLBACK_ELEMENTS_BASE_VERTEX,
+        .mode = mode, .type = type, .count = count,
+        .base_vertex = base_vertex, .indices_or_indirect = indices,
+    });
+}
+
+extern "C" void mglRendererDrawRangeElementsBaseVertex(
+    GLMContext context, uint32_t mode, uint32_t start, uint32_t end,
+    int32_t count, uint32_t type, const void *indices, int32_t base_vertex)
+{
+    mglRendererInvokeDraw(context, {
+        .kind = MGL_RENDER_CPP_DRAW_CALLBACK_RANGE_ELEMENTS_BASE_VERTEX,
+        .mode = mode, .type = type, .start = start, .end = end,
+        .count = count, .base_vertex = base_vertex,
+        .indices_or_indirect = indices,
+    });
+}
+
+extern "C" void mglRendererDrawElementsInstancedBaseVertex(
+    GLMContext context, uint32_t mode, int32_t count, uint32_t type,
+    const void *indices, int32_t instance_count, int32_t base_vertex)
+{
+    mglRendererInvokeDraw(context, {
+        .kind = MGL_RENDER_CPP_DRAW_CALLBACK_ELEMENTS_INSTANCED_BASE_VERTEX,
+        .mode = mode, .type = type, .count = count,
+        .instance_count = instance_count, .base_vertex = base_vertex,
+        .indices_or_indirect = indices,
+    });
+}
+
+extern "C" void mglRendererDrawArraysIndirect(
+    GLMContext context, uint32_t mode, const void *indirect)
+{
+    mglRendererInvokeDraw(context, {
+        .kind = MGL_RENDER_CPP_DRAW_CALLBACK_ARRAYS_INDIRECT,
+        .mode = mode, .indices_or_indirect = indirect,
+    });
+}
+
+extern "C" void mglRendererDrawElementsIndirect(
+    GLMContext context, uint32_t mode, uint32_t type, const void *indirect)
+{
+    mglRendererInvokeDraw(context, {
+        .kind = MGL_RENDER_CPP_DRAW_CALLBACK_ELEMENTS_INDIRECT,
+        .mode = mode, .type = type, .indices_or_indirect = indirect,
+    });
+}
+
+extern "C" void mglRendererDrawArraysInstancedBaseInstance(
+    GLMContext context, uint32_t mode, int32_t first, int32_t count,
+    int32_t instance_count, uint32_t base_instance)
+{
+    mglRendererInvokeDraw(context, {
+        .kind = MGL_RENDER_CPP_DRAW_CALLBACK_ARRAYS_INSTANCED_BASE_INSTANCE,
+        .mode = mode, .first = first, .count = count,
+        .instance_count = instance_count, .base_instance = base_instance,
+    });
+}
+
+extern "C" void mglRendererDrawElementsInstancedBaseInstance(
+    GLMContext context, uint32_t mode, int32_t count, uint32_t type,
+    const void *indices, int32_t instance_count, uint32_t base_instance)
+{
+    mglRendererInvokeDraw(context, {
+        .kind = MGL_RENDER_CPP_DRAW_CALLBACK_ELEMENTS_INSTANCED_BASE_INSTANCE,
+        .mode = mode, .type = type, .count = count,
+        .instance_count = instance_count, .base_instance = base_instance,
+        .indices_or_indirect = indices,
+    });
+}
+
+extern "C" void mglRendererDrawElementsInstancedBaseVertexBaseInstance(
+    GLMContext context, uint32_t mode, int32_t count, uint32_t type,
+    const void *indices, int32_t instance_count, int32_t base_vertex,
+    uint32_t base_instance)
+{
+    mglRendererInvokeDraw(context, {
+        .kind =
+            MGL_RENDER_CPP_DRAW_CALLBACK_ELEMENTS_INSTANCED_BASE_VERTEX_BASE_INSTANCE,
+        .mode = mode, .type = type, .count = count,
+        .instance_count = instance_count, .base_vertex = base_vertex,
+        .base_instance = base_instance, .indices_or_indirect = indices,
+    });
+}
+
+extern "C" void mglRendererMultiDrawArrays(
+    GLMContext context, uint32_t mode,
+    const int32_t *firsts, const int32_t *counts, int32_t draw_count)
+{
+    mglRendererInvokeDraw(context, {
+        .kind = MGL_RENDER_CPP_DRAW_CALLBACK_MULTI_ARRAYS,
+        .mode = mode, .draw_count = draw_count,
+        .firsts = firsts, .counts = counts,
+    });
+}
+
+extern "C" void mglRendererMultiDrawElements(
+    GLMContext context, uint32_t mode, const int32_t *counts,
+    uint32_t type, const void *const *indices, int32_t draw_count)
+{
+    mglRendererInvokeDraw(context, {
+        .kind = MGL_RENDER_CPP_DRAW_CALLBACK_MULTI_ELEMENTS,
+        .mode = mode, .type = type, .draw_count = draw_count,
+        .indices_or_indirect = indices, .counts = counts,
+    });
+}
+
+extern "C" void mglRendererMultiDrawElementsBaseVertex(
+    GLMContext context, uint32_t mode, const int32_t *counts,
+    uint32_t type, const void *const *indices, int32_t draw_count,
+    const int32_t *base_vertices)
+{
+    mglRendererInvokeDraw(context, {
+        .kind = MGL_RENDER_CPP_DRAW_CALLBACK_MULTI_ELEMENTS_BASE_VERTEX,
+        .mode = mode, .type = type, .draw_count = draw_count,
+        .indices_or_indirect = indices, .counts = counts,
+        .base_vertices = base_vertices,
+    });
+}
+
+extern "C" void mglRendererMultiDrawArraysIndirect(
+    GLMContext context, uint32_t mode, const void *indirect,
+    int32_t draw_count, int32_t stride)
+{
+    mglRendererInvokeDraw(context, {
+        .kind = MGL_RENDER_CPP_DRAW_CALLBACK_MULTI_ARRAYS_INDIRECT,
+        .mode = mode, .draw_count = draw_count, .stride = stride,
+        .indices_or_indirect = indirect,
+    });
+}
+
+extern "C" void mglRendererMultiDrawElementsIndirect(
+    GLMContext context, uint32_t mode, uint32_t type,
+    const void *indirect, int32_t draw_count, int32_t stride)
+{
+    mglRendererInvokeDraw(context, {
+        .kind = MGL_RENDER_CPP_DRAW_CALLBACK_MULTI_ELEMENTS_INDIRECT,
+        .mode = mode, .type = type,
+        .draw_count = draw_count, .stride = stride,
+        .indices_or_indirect = indirect,
+    });
+}
+
+extern "C" void mglRendererDispatchCompute(
+    GLMContext context, uint32_t groups_x,
+    uint32_t groups_y, uint32_t groups_z)
+{
+    mglRenderCppInvokeComputeCallback(
+        context, groups_x, groups_y, groups_z);
+}
+
+extern "C" void mglRendererDispatchComputeIndirect(
+    GLMContext context, intptr_t indirect)
+{
+    mglRenderCppInvokeComputeIndirectCallback(context, indirect);
+}
+
+extern "C" void mglRendererBeginSampleQuery(
+    GLMContext context, uint32_t target)
+{
+    mglRenderCppBeginSampleQueryCallback(context, target);
+}
+
+extern "C" uint64_t mglRendererEndSampleQuery(GLMContext context)
+{
+    return mglRenderCppEndSampleQueryCallback(context);
+}
+
+extern "C" void mglRendererBeginTimerQuery(GLMContext context)
+{
+    mglRenderCppBeginTimerQueryCallback(context);
+}
+
+extern "C" uint64_t mglRendererEndTimerQuery(GLMContext context)
+{
+    return mglRenderCppEndTimerQueryCallback(context);
+}
+
+extern "C" uint64_t mglRendererGetGPUTimestamp(GLMContext context)
+{
+    return mglRenderCppGetGPUTimestamp(context);
 }

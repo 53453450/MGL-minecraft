@@ -1,11 +1,10 @@
 // MGLRenderer+Lifecycle.m
-// Renderer construction, glm_ctx mtl_funcs binding, proactive texture
+// Renderer construction, backend callback binding, proactive texture
 // priming, Metal frame capture, and dealloc — extracted from MGLRenderer.m.
 
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+Lifecycle_Private.h"
 #import "mgl.h"
-#import "mgl_metal_bridge.h"
 #import "draw_command.h"
 #include "mgl_render_cpp_objc.h" /* C ABI + ObjC descriptor state adapter */
 
@@ -71,20 +70,19 @@ static void mglLifecycleReplaceTextureRegion(id<MTLTexture> texture,
 
 #pragma mark C interface to context functions
 
-- (void) bindObjFuncsToGLMContext: (GLMContext) glm_ctx
+static void mglRendererCallbackReleaseRuntimeContext(void *runtime_context)
 {
-    /* mtlObj is CFBridgingRetain +1 (see destroyGLMContext in glm_context.c).
-     * Re-binding (e.g. GLFW window renderer replacing the auto-init headless
-     * renderer) must release the previous owner or it leaks permanently. */
-    void *previousObj = glm_ctx->mtl_funcs.mtlObj;
-    if (previousObj != NULL) {
-        CFRelease((CFTypeRef)previousObj);
-    }
+    if (runtime_context) CFRelease((CFTypeRef)runtime_context);
+}
 
-    glm_ctx->mtl_funcs.mtlObj = (void *)CFBridgingRetain(self);
-
-    mglRenderCppDestroyCallbackRuntime(&glm_ctx->metal_callback_runtime);
+static int mglRendererInstallBackendCallbacks(
+    MGLRenderer *renderer,
+    GLMContext glm_ctx,
+    MGLRendererBackendHandle *backend)
+{
+    if (!renderer || !glm_ctx || !backend) return -1;
     MGLRenderCppCallbackRuntimeOps callbackOps = {
+        .release_context = mglRendererCallbackReleaseRuntimeContext,
         .dispatch_compute = mglRendererCallbackDispatchCompute,
         .dispatch_compute_indirect =
             mglRendererCallbackDispatchComputeIndirect,
@@ -97,42 +95,20 @@ static void mglLifecycleReplaceTextureRegion(id<MTLTexture> texture,
         .resource = mglRendererCallbackResource,
         .legacy = mglRendererCallbackLegacy,
     };
+    void *retainedRenderer = (void *)CFBridgingRetain(renderer);
+    void *runtime = NULL;
     if (mglRenderCppCreateCallbackRuntime(
-            (__bridge void *)self, &callbackOps,
-            &glm_ctx->metal_callback_runtime) != 0) {
+            retainedRenderer, &callbackOps, &runtime) != 0) {
+        CFRelease((CFTypeRef)retainedRenderer);
         NSLog(@"MGL ERROR: failed to create renderer callback runtime");
+        return -1;
     }
-
-    /* Assignment block generated from MGL_MTL_FUNC_LIST (see
-     * mgl_types_metal_funcs.h — single source of truth). */
-#define MGL_MTL_FUNC_ASSIGN(field, cname, ret, args) \
-    glm_ctx->mtl_funcs.field = cname;
-    MGL_MTL_FUNC_LIST(MGL_MTL_FUNC_ASSIGN)
-#undef MGL_MTL_FUNC_ASSIGN
-
-    /* Install the migrated table from one C++ entry point, then independently
-     * inspect the resulting function pointers.  This census deliberately
-     * counts wrappers that call mgl_metal_bridge as legacy until their gate-on
-     * path no longer selector-forwards. */
-    if (mglRenderCppGetDevice() != NULL) {
-        MGLRenderCppCallbackInstallResult installed = {0};
-        MGLMetalCallbackCensus census = {0};
-        if (mglRenderCppInstallMetalCallbacks(glm_ctx, &installed) != 0 ||
-            mglMetalBridgeGetCallbackCensus(glm_ctx, &census) != 0 ||
-            census.null_entries != 0 ||
-            census.non_legacy != installed.installed ||
-            installed.strict_cpp + installed.pure_adapter +
-                    installed.legacy_fallback !=
-                installed.installed) {
-            NSLog(@"MGL ERROR: invalid Metal callback census "
-                   "installed=%u strict=%u adapter=%u hybrid=%u total=%u "
-                   "nonLegacy=%u legacy=%u null=%u",
-                  installed.installed, installed.strict_cpp,
-                  installed.pure_adapter, installed.legacy_fallback,
-                  census.total,
-                  census.non_legacy, census.legacy, census.null_entries);
-        }
+    if (mglRendererBackendInstallCallbackRuntime(backend, runtime) != 0) {
+        mglRenderCppDestroyCallbackRuntime(&runtime);
+        NSLog(@"MGL ERROR: failed to install renderer callback runtime");
+        return -1;
     }
+    return 0;
 }
 
 uint64_t mglRendererCallbackLegacy(
@@ -264,8 +240,7 @@ void* CppCreateMGLRendererFromContextAndBindToWindow (void *glm_ctx, void *windo
         return NULL;
     }
     // Ownership: the returned pointer is NON-OWNING (borrowed).
-    // The renderer's lifetime is tied to glm_ctx->mtl_funcs.mtlObj, which is
-    // retained via CFBridgingRetain in bindObjFuncsToGLMContext.
+    // The renderer's lifetime is tied to the backend callback runtime.
     // The caller must NOT CFRelease/free the returned pointer, and must keep
     // glm_ctx alive while using the returned pointer.
     return  (__bridge void *)(renderer);
@@ -288,8 +263,7 @@ void* CppCreateMGLRendererHeadless (void *glm_ctx)
         return NULL;
     }
     // Ownership: the returned pointer is NON-OWNING (borrowed).
-    // The renderer's lifetime is tied to glm_ctx->mtl_funcs.mtlObj, which is
-    // retained via CFBridgingRetain in bindObjFuncsToGLMContext.
+    // The renderer's lifetime is tied to the backend callback runtime.
     // The caller must NOT CFRelease/free the returned pointer, and must keep
     // glm_ctx alive while using the returned pointer.
     return  (__bridge void *)(renderer);
@@ -354,7 +328,6 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
           _batching.skipSameKeyRestoreEnabled ? 1 : 0,
           _batching.dirtyKeyDeltaEnabled ? 1 : 0);
 
-    [self bindObjFuncsToGLMContext: glm_ctx];
     if (glm_ctx->renderer_backend) {
         mglRendererBackendDestroy(
             (MGLRendererBackendHandle **)&glm_ctx->renderer_backend);
@@ -375,9 +348,8 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         // The renderer is left in a PARTIALLY INITIALIZED state:
         //   SET: ctx, AGX GPU error tracking
         //        command recovery owner, _pipeline*Format/
-        //        _pipelineCache.state->pipelineProgramName,
-        //        _pipelineCache.state->pipelineStateCache, and glm_ctx->mtl_funcs (bound via
-        //        bindObjFuncsToGLMContext, with mtlObj retained).
+        //        _pipelineCache.state->pipelineProgramName and
+        //        _pipelineCache.state->pipelineStateCache.
         //   NIL: _device, _commandQueue, _view.
         // Continuing is pointless without a Metal device — every subsequent
         // operation depends on it.
@@ -404,16 +376,17 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     _gpuRecovery.commandRecoveryOwner = mglRendererBackendGetOwner(
         _backend, MGL_RENDERER_BACKEND_OWNER_RECOVERY);
     NSLog(@"MGL INFO: Metal-cpp renderer backend ready (%p)", _backend);
-    /* Rebind now that the C++ device exists.  The first bind above keeps
-     * early-failure cleanup valid; this bind selects migrated callbacks. */
-    [self bindObjFuncsToGLMContext:glm_ctx];
+    if (mglRendererInstallBackendCallbacks(self, glm_ctx, _backend) != 0) {
+        mglRendererBackendDestroy(
+            (MGLRendererBackendHandle **)&glm_ctx->renderer_backend);
+        _backend = NULL;
+        return;
+    }
     mglRenderCppAttachRuntimeOwners(
         glm_ctx,
         _renderPassManager.state->currentCommandBufferOwner,
         _renderPassManager.state->currentRenderEncoderOwner,
-        _renderPassManager.state->renderPassStateOwner,
-        _queryStateOwner,
-        _gpuRecovery.commandRecoveryOwner);
+        _renderPassManager.state->renderPassStateOwner);
     _pipelineCache.device = _device;
 
     /* Initialize AGX Capability Layer (centralized device detection +
@@ -453,8 +426,8 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         // The renderer is left in a PARTIALLY INITIALIZED state:
         //   SET: ctx, AGX GPU error tracking
         //        fields, _pipeline*Format/_pipelineCache.state->pipelineProgramName,
-        //        _pipelineCache.state->pipelineStateCache, glm_ctx->mtl_funcs (bound, mtlObj
-        //        retained), _device, MTL4 compiler (if available), _capability.
+        //        _pipelineCache.state->pipelineStateCache, _device,
+        //        MTL4 compiler (if available), _capability.
         //   NIL: _commandQueue, _view.
         // Continuing is pointless without a command queue — no encoding or
         // submission is possible.
@@ -567,10 +540,6 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         NSLog(@"MGL ERROR: Exception creating initial Metal command buffer: %@", exception);
     }
     
-    if (glm_ctx->mtl_funcs.mtlView) {
-        CFRelease(glm_ctx->mtl_funcs.mtlView);
-    }
-    glm_ctx->mtl_funcs.mtlView = (void *)CFBridgingRetain(view);
     glm_ctx->platform_renderer_shell =
         (void *)CFBridgingRetain(_platformShell);
 
@@ -784,9 +753,6 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     NSLog(@"MGL INFO: MGLRenderer dealloc - cleaning up Metal resources");
 
     @try {
-        if (ctx) {
-            mglRenderCppDestroyCallbackRuntime(&ctx->metal_callback_runtime);
-        }
         /* Remove the geometry observers before any view/state teardown. */
         if (_view) {
             [_view removeObserver:self forKeyPath:@"bounds" context:s_kvoViewGeometryContext];
@@ -856,11 +822,13 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         memset(_resourceFallback.samplerSnapshotCacheIndex, 0,
                sizeof(_resourceFallback.samplerSnapshotCacheIndex));
 
-        if (ctx && ctx->renderer_backend == _backend) {
-            mglRendererBackendDestroy(
-                (MGLRendererBackendHandle **)&ctx->renderer_backend);
-        } else {
-            mglRendererBackendDestroy(&_backend);
+        if (_backend && mglRendererBackendIsDestroying(_backend) != 1) {
+            if (ctx && ctx->renderer_backend == _backend) {
+                mglRendererBackendDestroy(
+                    (MGLRendererBackendHandle **)&ctx->renderer_backend);
+            } else {
+                mglRendererBackendDestroy(&_backend);
+            }
         }
         _backend = NULL;
         _bindingStateOwner = NULL;

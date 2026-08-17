@@ -8,7 +8,6 @@
 #import "mgl_sampler_compat.h"
 #import "mgl_trace_log.h"
 #import "mgl_compute_pipeline_cache.h"
-#import "mgl_metal_bridge.h"
 #include "mgl_env_flag.h"
 #include "mgl_render_cpp_objc.h"
 #include "mgl_shader_abi.h"

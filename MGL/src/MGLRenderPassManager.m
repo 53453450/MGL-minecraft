@@ -17,9 +17,7 @@ static void mglRenderPassManagerSyncRuntimeOwners(MGLCommandState *state)
         context,
         state->currentCommandBufferOwner,
         state->currentRenderEncoderOwner,
-        state->renderPassStateOwner,
-        context->metal_query_state_owner,
-        context->metal_command_recovery_owner);
+        state->renderPassStateOwner);
 }
 
 static void mglRenderPassManagerSyncIdentityView(

@@ -337,8 +337,8 @@ void mglReleaseGLSampledTextureCopy(GLMContext ctx, Texture *tex, const char *re
     }
 
     if (tex->mtl_gl_sampled_data) {
-        if (ctx && ctx->mtl_funcs.mtlDeleteMTLObj) {
-            ctx->mtl_funcs.mtlDeleteMTLObj(ctx, tex->mtl_gl_sampled_data);
+        if (ctx) {
+            mglRendererDeleteMetalObject(ctx, tex->mtl_gl_sampled_data);
         }
         tex->mtl_gl_sampled_data = NULL;
     }
@@ -1607,7 +1607,7 @@ void generateMipmaps(GLMContext ctx, GLuint texture, GLenum target)
         ptr->dirty_bits |= DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_DATA;
     }
 
-    ctx->mtl_funcs.mtlGenerateMipmaps(ctx, ptr);
+    mglRendererGenerateMipmaps(ctx, ptr);
 }
 
 void mglGenerateMipmap(GLMContext ctx, GLenum target)
@@ -1669,46 +1669,26 @@ void invalidateTexture(GLMContext ctx, Texture *tex)
 
     if (tex->mtl_data)
     {
-        if (ctx->mtl_funcs.mtlDeleteMTLObj) {
-            ctx->mtl_funcs.mtlDeleteMTLObj(ctx, tex->mtl_data);
-        } else {
-            fprintf(stderr,
-                    "MGL WARNING: invalidateTexture cannot release Metal texture tex=%u because mtlDeleteMTLObj is NULL\n",
-                    tex->name);
-        }
+        mglRendererDeleteMetalObject(ctx, tex->mtl_data);
         tex->mtl_data = NULL;
     }
 
     if (tex->mtl_gl_sampled_data)
     {
-        if (ctx->mtl_funcs.mtlDeleteMTLObj) {
-            ctx->mtl_funcs.mtlDeleteMTLObj(ctx, tex->mtl_gl_sampled_data);
-        } else {
-            fprintf(stderr,
-                    "MGL WARNING: invalidateTexture cannot release GL-sampled Metal texture tex=%u because mtlDeleteMTLObj is NULL\n",
-                    tex->name);
-        }
+        mglRendererDeleteMetalObject(ctx, tex->mtl_gl_sampled_data);
         tex->mtl_gl_sampled_data = NULL;
     }
 
     if (tex->params.mtl_data)
     {
-        if (ctx->mtl_funcs.mtlDeleteMTLObj) {
-            ctx->mtl_funcs.mtlDeleteMTLObj(ctx, tex->params.mtl_data);
-        } else {
-            fprintf(stderr,
-                    "MGL WARNING: invalidateTexture cannot release Metal sampler params tex=%u because mtlDeleteMTLObj is NULL\n",
-                    tex->name);
-        }
+        mglRendererDeleteMetalObject(ctx, tex->params.mtl_data);
         tex->params.mtl_data = NULL;
     }
 
     /* release cached base-level texture view */
     if (tex->mtl_base_level_view)
     {
-        if (ctx->mtl_funcs.mtlDeleteMTLObj) {
-            ctx->mtl_funcs.mtlDeleteMTLObj(ctx, tex->mtl_base_level_view);
-        }
+        mglRendererDeleteMetalObject(ctx, tex->mtl_base_level_view);
         tex->mtl_base_level_view = NULL;
         tex->mtl_base_level_view_source = NULL;
         tex->mtl_base_level_view_base = 0u;
@@ -2674,7 +2654,7 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
     /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
     if (ctx->sync_strict) {
         mglFlushCommandBuffer(ctx);
-        ctx->mtl_funcs.mtlFlush(ctx, true);
+        mglRendererFlush(ctx, true);
     }
 
     // all the levels are created on a tex storage call.. if we get here we should just assert
@@ -3592,7 +3572,7 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
     /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
     if (ctx->sync_strict) {
         mglFlushCommandBuffer(ctx);
-        ctx->mtl_funcs.mtlFlush(ctx, true);
+        mglRendererFlush(ctx, true);
     }
 
     // Debug: Log large texture uploads (VM framebuffer size)
@@ -4037,7 +4017,7 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
         src_size = required_bytes;
 
         // Preserve cube-map / array target slice information. zoffset is for 3D origin, not array/cube slice.
-        ctx->mtl_funcs.mtlTexSubImage(ctx, tex, buf, src_offset, src_pitch, src_image_size, src_size, face, level, width, height, depth, xoffset, yoffset, zoffset);
+        mglRendererTexSubImage(ctx, tex, buf, src_offset, src_pitch, src_image_size, src_size, face, level, width, height, depth, xoffset, yoffset, zoffset);
         lvl->ever_written = GL_TRUE;
         lvl->suspicious_zero_upload = GL_FALSE;
         lvl->metal_data_authoritative = GL_FALSE;
@@ -4074,7 +4054,6 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
     bool uploaded_direct = false;
     bool had_pending_texture_data_before_direct = (tex->dirty_bits & DIRTY_TEXTURE_DATA) != 0;
     if (!resolved_unpack_buf &&
-        ctx->mtl_funcs.mtlTexSubImageBytes &&
         tex->mtl_data &&
         (tex->dirty_bits & DIRTY_TEXTURE_LEVEL) == 0 &&
         upload_rect_valid) {
@@ -4082,7 +4061,7 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
         if (depth > 1) {
             upload_src_image_size = dst_image_pitch;
         }
-        uploaded_direct = ctx->mtl_funcs.mtlTexSubImageBytes(ctx,
+        uploaded_direct = mglRendererTexSubImageBytes(ctx,
                                                              tex,
                                                              texture_data,
                                                              lvl->data_size,
@@ -4473,7 +4452,7 @@ void texStorage(GLMContext ctx, Texture *tex, GLuint faces, GLsizei levels, GLbo
     tex->immutable_storage = BUFFER_IMMUTABLE_STORAGE_FLAG;
 
     // bind it to metal
-    ctx->mtl_funcs.mtlBindTexture(ctx, tex);
+    mglRendererBindTexture(ctx, tex);
 
     ERROR_CHECK_RETURN(tex->mtl_data, GL_OUT_OF_MEMORY);
 }
@@ -4895,7 +4874,7 @@ void mglClearTexImage(GLMContext ctx, GLuint texture, GLint level, GLenum format
     /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
     if (ctx->sync_strict) {
         mglFlushCommandBuffer(ctx);
-        ctx->mtl_funcs.mtlFlush(ctx, true);
+        mglRendererFlush(ctx, true);
     }
 
     GLsizei width = (GLsizei)lvl->width;
@@ -5004,7 +4983,7 @@ void mglClearTexSubImage(GLMContext ctx, GLuint texture, GLint level, GLint xoff
     /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
     if (ctx->sync_strict) {
         mglFlushCommandBuffer(ctx);
-        ctx->mtl_funcs.mtlFlush(ctx, true);
+        mglRendererFlush(ctx, true);
     }
 
     if (mglClearTextureLevelCPU(lvl, tex->internalformat, xoffset, yoffset, zoffset, width, height, depth, format, type, data)) {
@@ -5243,21 +5222,16 @@ void mglCopyTexImage2D(GLMContext ctx, GLenum target, GLint level, GLenum intern
         return;
     }
 
-    if (!ctx->mtl_funcs.mtlCopyTexSubImage) {
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return;
-    }
-
     // Copy from framebuffer to texture
     mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
 
     /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
     if (ctx->sync_strict) {
         mglFlushCommandBuffer(ctx);
-        ctx->mtl_funcs.mtlFlush(ctx, true);
+        mglRendererFlush(ctx, true);
     }
 
-    ctx->mtl_funcs.mtlCopyTexSubImage(ctx, tex, face, level, 0, 0, x, y, width, height);
+    mglRendererCopyTexSubImage(ctx, tex, face, level, 0, 0, x, y, width, height);
 }
 
 void mglCopyTexSubImage1D(GLMContext ctx, GLenum target, GLint level, GLint xoffset, GLint x, GLint y, GLsizei width)
@@ -5277,20 +5251,15 @@ void mglCopyTexSubImage1D(GLMContext ctx, GLenum target, GLint level, GLint xoff
         }
         return;
     }
-    if (!ctx->mtl_funcs.mtlCopyTexSubImage) {
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return;
-    }
-
     mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
 
     /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
     if (ctx->sync_strict) {
         mglFlushCommandBuffer(ctx);
-        ctx->mtl_funcs.mtlFlush(ctx, true);
+        mglRendererFlush(ctx, true);
     }
 
-    ctx->mtl_funcs.mtlCopyTexSubImage(ctx, tex, 0, level, xoffset, 0, x, y, width, 1);
+    mglRendererCopyTexSubImage(ctx, tex, 0, level, xoffset, 0, x, y, width, 1);
 }
 
 void mglCopyTexSubImage2D(GLMContext ctx, GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint x, GLint y, GLsizei width, GLsizei height)
@@ -5337,21 +5306,16 @@ void mglCopyTexSubImage2D(GLMContext ctx, GLenum target, GLint level, GLint xoff
         return;
     }
 
-    if (!ctx->mtl_funcs.mtlCopyTexSubImage) {
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return;
-    }
-
     // This copies from the current read framebuffer to the texture
     mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
 
     /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
     if (ctx->sync_strict) {
         mglFlushCommandBuffer(ctx);
-        ctx->mtl_funcs.mtlFlush(ctx, true);
+        mglRendererFlush(ctx, true);
     }
 
-    ctx->mtl_funcs.mtlCopyTexSubImage(ctx, tex, face, level, xoffset, yoffset, x, y, width, height);
+    mglRendererCopyTexSubImage(ctx, tex, face, level, xoffset, yoffset, x, y, width, height);
 }
 
 void mglCopyTexSubImage3D(GLMContext ctx, GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLint x, GLint y, GLsizei width, GLsizei height)
@@ -5377,20 +5341,15 @@ void mglCopyTexSubImage3D(GLMContext ctx, GLenum target, GLint level, GLint xoff
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
-    if (!ctx->mtl_funcs.mtlCopyTexSubImage) {
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return;
-    }
-
     mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
 
     /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
     if (ctx->sync_strict) {
         mglFlushCommandBuffer(ctx);
-        ctx->mtl_funcs.mtlFlush(ctx, true);
+        mglRendererFlush(ctx, true);
     }
 
-    ctx->mtl_funcs.mtlCopyTexSubImage(ctx, tex, (GLuint)zoffset, level, xoffset, yoffset, x, y, width, height);
+    mglRendererCopyTexSubImage(ctx, tex, (GLuint)zoffset, level, xoffset, yoffset, x, y, width, height);
 }
 
 void mglCopyTextureSubImage1D(GLMContext ctx, GLuint texture, GLint level, GLint xoffset, GLint x, GLint y, GLsizei width)
@@ -5414,20 +5373,15 @@ void mglCopyTextureSubImage1D(GLMContext ctx, GLuint texture, GLint level, GLint
         }
         return;
     }
-    if (!ctx->mtl_funcs.mtlCopyTexSubImage) {
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return;
-    }
-
     mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
 
     /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
     if (ctx->sync_strict) {
         mglFlushCommandBuffer(ctx);
-        ctx->mtl_funcs.mtlFlush(ctx, true);
+        mglRendererFlush(ctx, true);
     }
 
-    ctx->mtl_funcs.mtlCopyTexSubImage(ctx, tex, 0, level, xoffset, 0, x, y, width, 1);
+    mglRendererCopyTexSubImage(ctx, tex, 0, level, xoffset, 0, x, y, width, 1);
 }
 
 void mglCopyTextureSubImage2D(GLMContext ctx, GLuint texture, GLint level, GLint xoffset, GLint yoffset, GLint x, GLint y, GLsizei width, GLsizei height)
@@ -5457,19 +5411,15 @@ void mglCopyTextureSubImage2D(GLMContext ctx, GLuint texture, GLint level, GLint
             ERROR_RETURN(GL_INVALID_VALUE);
             return;
         }
-        if (!ctx->mtl_funcs.mtlCopyTexSubImage) {
-            ERROR_RETURN(GL_INVALID_OPERATION);
-            return;
-        }
         mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
 
         /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
         if (ctx->sync_strict) {
             mglFlushCommandBuffer(ctx);
-            ctx->mtl_funcs.mtlFlush(ctx, true);
+            mglRendererFlush(ctx, true);
         }
 
-        ctx->mtl_funcs.mtlCopyTexSubImage(ctx, tex, 0, level, xoffset, yoffset, x, y, width, height);
+        mglRendererCopyTexSubImage(ctx, tex, 0, level, xoffset, yoffset, x, y, width, height);
     } else {
         ERROR_RETURN(GL_INVALID_OPERATION);
     }
@@ -5503,20 +5453,15 @@ void mglCopyTextureSubImage3D(GLMContext ctx, GLuint texture, GLint level, GLint
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
-    if (!ctx->mtl_funcs.mtlCopyTexSubImage) {
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return;
-    }
-
     mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
 
     /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
     if (ctx->sync_strict) {
         mglFlushCommandBuffer(ctx);
-        ctx->mtl_funcs.mtlFlush(ctx, true);
+        mglRendererFlush(ctx, true);
     }
 
-    ctx->mtl_funcs.mtlCopyTexSubImage(ctx, tex, (GLuint)zoffset, level, xoffset, yoffset, x, y, width, height);
+    mglRendererCopyTexSubImage(ctx, tex, (GLuint)zoffset, level, xoffset, yoffset, x, y, width, height);
 }
 
 #pragma mark get tex image
@@ -5690,7 +5635,7 @@ void mglGetTexImage(GLMContext ctx, GLenum target, GLint level, GLenum format, G
             mglFlushCommandBuffer(ctx);
             uint8_t *dst_base = (uint8_t *)pixels + pack_layout.skip_offset_bytes;
             for (GLsizei z = 0; z < depth; z++) {
-                ctx->mtl_funcs.mtlGetTexImage(ctx,
+                mglRendererGetTexImage(ctx,
                                               tex,
                                               dst_base + ((size_t)z * pack_layout.dst_image_size),
                                               (GLuint)pack_layout.dst_pitch,
@@ -5737,7 +5682,7 @@ void mglGetTexImage(GLMContext ctx, GLenum target, GLint level, GLenum format, G
 
     // Use the Metal function to read the texture
     mglFlushCommandBuffer(ctx);
-    ctx->mtl_funcs.mtlGetTexImage(ctx,
+    mglRendererGetTexImage(ctx,
                                   tex,
                                   (uint8_t *)pixels + pack_layout.skip_offset_bytes,
                                   (GLuint)pack_layout.dst_pitch,
@@ -5836,7 +5781,7 @@ void mglGetTextureImage(GLMContext ctx, GLuint texture, GLint level, GLenum form
     }
     
     mglFlushCommandBuffer(ctx);
-    ctx->mtl_funcs.mtlGetTexImage(ctx,
+    mglRendererGetTexImage(ctx,
                                   tex,
                                   (uint8_t *)pixels + pack_layout.skip_offset_bytes,
                                   (GLuint)pack_layout.dst_pitch,
@@ -5977,7 +5922,7 @@ void mglGetTextureSubImage(GLMContext ctx, GLuint texture, GLint level, GLint xo
     }
 
     mglFlushCommandBuffer(ctx);
-    ctx->mtl_funcs.mtlGetTexImage(ctx,
+    mglRendererGetTexImage(ctx,
                                   tex,
                                   (uint8_t *)pixels + pack_layout.skip_offset_bytes,
                                   (GLuint)pack_layout.dst_pitch,
@@ -6182,9 +6127,9 @@ static void mglTextureBufferRangeImpl(GLMContext ctx, GLuint texture, GLenum int
 
     if (buffer == 0)
     {
-        if (tex->mtl_data && ctx->mtl_funcs.mtlDeleteMTLObj)
+        if (tex->mtl_data)
         {
-            ctx->mtl_funcs.mtlDeleteMTLObj(ctx, tex->mtl_data);
+            mglRendererDeleteMetalObject(ctx, tex->mtl_data);
         }
 
         tex->texture_buffer = NULL;
@@ -6259,9 +6204,9 @@ static void mglTextureBufferRangeImpl(GLMContext ctx, GLuint texture, GLenum int
         return;
     }
 
-    if (tex->mtl_data && ctx->mtl_funcs.mtlDeleteMTLObj)
+    if (tex->mtl_data)
     {
-        ctx->mtl_funcs.mtlDeleteMTLObj(ctx, tex->mtl_data);
+        mglRendererDeleteMetalObject(ctx, tex->mtl_data);
         tex->mtl_data = NULL;
     }
 

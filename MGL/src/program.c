@@ -1687,12 +1687,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
      * mglProgramActiveUniformCount / At / IndexByName / MaxNameLength. */
     mglBuildActiveUniformCache(pptr);
 
-    /* Only call mtlBindProgram if Metal functions are initialized */
-    if (ctx->mtl_funcs.mtlBindProgram) {
-        ctx->mtl_funcs.mtlBindProgram(ctx, pptr);
-    } else {
-        fprintf(stderr, "WARNING: Metal functions not initialized, skipping mtlBindProgram\n");
-    }
+    mglRendererBindProgram(ctx, pptr);
 
     //ERROR_CHECK_RETURN(pptr->mtl_data, GL_INVALID_OPERATION);
 }

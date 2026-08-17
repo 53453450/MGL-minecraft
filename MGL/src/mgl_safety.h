@@ -37,8 +37,8 @@ static inline bool mglObjectPointerLooksPlausible(const void *ptr)
     /* Reject NULL and low-page addresses (catches common corruption patterns
      * like small integers being treated as pointers).  The previous 4 GB
      * lower bound rejected valid pointers on some macOS address layouts;
-     * use 0x1000 (consistent with kMGLMinValidPointer in mgl_metal_bridge.m)
-     * and rely on mglPointerRangeIsReadable for rigorous validation. */
+     * use 0x1000 and rely on mglPointerRangeIsReadable for rigorous
+     * validation. */
     return ptr != NULL && (uintptr_t)ptr >= 0x1000;
 }
 

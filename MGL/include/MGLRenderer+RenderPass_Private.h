@@ -125,6 +125,7 @@ void mglEnableIndirectCommandBuffersForPipeline(MTLRenderPipelineDescriptor *pip
                                           reason:(const char *)reason;
 
 // === Thread Safety: *Locked variants ===
+- (bool)bindMTLProgram:(Program *)ptr;
 - (bool)bindMTLProgramLocked:(Program *)ptr;
 - (bool)newCommandBufferLocked;
 - (bool)ensureWritableCommandBufferLocked:(const char *)reason;
