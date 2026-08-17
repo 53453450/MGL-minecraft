@@ -13,8 +13,7 @@
  *
  * The helpers here are pure: they do not touch the renderer ivar, the
  * command buffer, or the render encoder.  They operate only on the
- * FBOAttachment / MTLRenderPassDescriptor structures passed in as
- * arguments.
+ * value-state structures passed in as arguments.
  *
  * External dependencies:
  *   - FBOAttachment type (glm_context.h).

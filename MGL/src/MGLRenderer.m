@@ -4009,9 +4009,9 @@ void mglRendererCompatClearBuffer(GLMContext glm_ctx,
     };
 
     /* Optimization: reuse the current render encoder when it targets the same
-     * framebuffer attachments we're about to clear.  This avoids ending the
-     * current encoder + creating a new MTLRenderPassDescriptor + new encoder
-     * for every scissored clear (3-8 times per frame in MC).
+     * framebuffer attachments we're about to clear. This avoids ending the
+     * current encoder and creating a dedicated encoder for every scissored
+     * clear (3-8 times per frame in MC).
      *
      * Conditions: an encoder is active, the render pass matches the current
      * FBO, no visibility query is active (which would require an encoder
@@ -4145,15 +4145,8 @@ void mglRendererCompatClearBuffer(GLMContext glm_ctx,
         return;
     }
 
-    MTLRenderPassDescriptor *clearPass = [MTLRenderPassDescriptor renderPassDescriptor];
     MGLRenderCppRenderPassState clearState = {0};
     if (colorTexture) {
-        clearPass.colorAttachments[0].texture = colorTexture;
-        clearPass.colorAttachments[0].level = colorSubresource.level;
-        clearPass.colorAttachments[0].slice = colorSubresource.slice;
-        clearPass.colorAttachments[0].depthPlane = colorSubresource.depthPlane;
-        clearPass.colorAttachments[0].loadAction = MTLLoadActionLoad;
-        clearPass.colorAttachments[0].storeAction = MTLStoreActionStore;
         clearState.color[0].attachment.texture =
             (__bridge void *)colorTexture;
         clearState.color[0].attachment.level = colorSubresource.level;
@@ -4164,12 +4157,6 @@ void mglRendererCompatClearBuffer(GLMContext glm_ctx,
         clearState.color[0].attachment.store_action = MTLStoreActionStore;
     }
     if (depthTexture) {
-        clearPass.depthAttachment.texture = depthTexture;
-        clearPass.depthAttachment.level = depthSubresource.level;
-        clearPass.depthAttachment.slice = depthSubresource.slice;
-        clearPass.depthAttachment.depthPlane = depthSubresource.depthPlane;
-        clearPass.depthAttachment.loadAction = MTLLoadActionLoad;
-        clearPass.depthAttachment.storeAction = MTLStoreActionStore;
         clearState.depth.attachment.texture =
             (__bridge void *)depthTexture;
         clearState.depth.attachment.level = depthSubresource.level;
@@ -4179,8 +4166,6 @@ void mglRendererCompatClearBuffer(GLMContext glm_ctx,
         clearState.depth.attachment.load_action = MTLLoadActionLoad;
         clearState.depth.attachment.store_action = MTLStoreActionStore;
     }
-    clearPass.renderTargetWidth = passWidth;
-    clearPass.renderTargetHeight = passHeight;
     clearState.render_target_width = passWidth;
     clearState.render_target_height = passHeight;
 

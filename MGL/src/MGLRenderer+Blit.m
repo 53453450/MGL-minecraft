@@ -160,10 +160,8 @@ static MGLMetalDepthStencilStateRef mglBlitCreateDepthStencilState(
 
 static MGLMetalRenderCommandEncoderRef mglBlitCreateRenderEncoder(
     MGLRenderPassManager *renderPassManager,
-    MTLRenderPassDescriptor *descriptor,
     const MGLRenderCppRenderPassState *state)
 {
-    (void)descriptor;
     if (!state) return nil;
     void *encoder = NULL;
     if (mglRenderCppCreateRenderEncoderFromCommandBufferOwnerState(
@@ -840,11 +838,6 @@ static MGLMetalRenderPipelineStateRef mglLookupCppAuxRenderPipeline(
     params.forceOpaqueAlpha = 0.0f;
     params._padding = (vector_float3){0.0f, 0.0f, 0.0f};
 
-    MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
-    pass.depthAttachment.texture = depthTexture;
-    pass.depthAttachment.loadAction = MTLLoadActionDontCare;
-    pass.depthAttachment.storeAction = MTLStoreActionStore;
-
     MGLRenderCppRenderPassState passState =
         mglBlitDefaultRenderPassState();
     passState.depth.attachment = mglBlitRenderPassAttachment(
@@ -852,7 +845,7 @@ static MGLMetalRenderPipelineStateRef mglLookupCppAuxRenderPipeline(
         MTLStoreActionStore);
 
     MGLMetalRenderCommandEncoderRef encoder =
-        mglBlitCreateRenderEncoder(_renderPassManager, pass, &passState);
+        mglBlitCreateRenderEncoder(_renderPassManager, &passState);
     if (!encoder) {
         mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
         return nil;
@@ -1238,9 +1231,9 @@ static MGLMetalRenderPipelineStateRef mglLookupCppAuxRenderPipeline(
      *
      * Optimization: when the destination supports MTLTextureUsageShaderWrite,
      * use a single MTLComputeCommandEncoder to dispatch all dirty mip levels
-     * (one dispatchThreads per level).  This avoids creating one
-     * MTLRenderCommandEncoder + MTLRenderPassDescriptor + 2 texture views per
-     * mip level — the dominant CPU cost when the frame had 42 render encoders
+     * (one dispatchThreads per level). This avoids creating one render encoder
+     * plus two texture views per mip level, the dominant CPU cost when the
+     * frame had 42 render encoders
      * and ~60ms of render-encoder CPU time.  The compute kernel samples the
      * source at an explicit level and writes the destination at an explicit
      * level, so no per-level texture views are needed.
@@ -1410,14 +1403,6 @@ static MGLMetalRenderPipelineStateRef mglLookupCppAuxRenderPipeline(
                     }
                 }
 
-                MTLRenderPassDescriptor *copyPass = [MTLRenderPassDescriptor renderPassDescriptor];
-                copyPass.colorAttachments[0].texture = dstLvl;
-                copyPass.colorAttachments[0].level = 0u;
-                copyPass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
-                copyPass.colorAttachments[0].storeAction = MTLStoreActionStore;
-                copyPass.renderTargetWidth = dstLvl.width;
-                copyPass.renderTargetHeight = dstLvl.height;
-
                 MGLRenderCppRenderPassState copyState =
                     mglBlitDefaultRenderPassState();
                 copyState.color[0].attachment =
@@ -1428,8 +1413,7 @@ static MGLMetalRenderPipelineStateRef mglLookupCppAuxRenderPipeline(
                 copyState.render_target_height = dstLvl.height;
 
                 MGLMetalRenderCommandEncoderRef copyEncoder =
-                    mglBlitCreateRenderEncoder(_renderPassManager, copyPass,
-                                               &copyState);
+                    mglBlitCreateRenderEncoder(_renderPassManager, &copyState);
                 if (!copyEncoder) {
                     static uint64_t s_copyEncoderFailCount = 0;
                     uint64_t hit = ++s_copyEncoderFailCount;
@@ -1620,27 +1604,12 @@ static MGLMetalRenderPipelineStateRef mglLookupCppAuxRenderPipeline(
                                                            mtlTexture:depthReadTexture];
                     }
 
-                    MTLRenderPassDescriptor *resolvePass = [MTLRenderPassDescriptor renderPassDescriptor];
                     BOOL resolvedAny = NO;
                     if (depthStencilMask & GL_DEPTH_BUFFER_BIT) {
-                        resolvePass.depthAttachment.texture = depthReadTexture;
-                        resolvePass.depthAttachment.slice = depthReadSubresource.slice;
-                        resolvePass.depthAttachment.loadAction = MTLLoadActionLoad;
-                        resolvePass.depthAttachment.storeAction = MTLStoreActionMultisampleResolve;
-                        resolvePass.depthAttachment.resolveTexture = depthDrawTexture;
-                        resolvePass.depthAttachment.resolveSlice = depthDrawSubresource.slice;
-                        resolvePass.depthAttachment.depthResolveFilter = MTLMultisampleDepthResolveFilterSample0;
                         resolvedAny = YES;
                     }
                     if ((depthStencilMask & GL_STENCIL_BUFFER_BIT) &&
                         mglMetalPixelFormatIsPackedDepthStencil(depthReadTexture.pixelFormat)) {
-                        resolvePass.stencilAttachment.texture = depthReadTexture;
-                        resolvePass.stencilAttachment.slice = depthReadSubresource.slice;
-                        resolvePass.stencilAttachment.loadAction = MTLLoadActionLoad;
-                        resolvePass.stencilAttachment.storeAction = MTLStoreActionMultisampleResolve;
-                        resolvePass.stencilAttachment.resolveTexture = depthDrawTexture;
-                        resolvePass.stencilAttachment.resolveSlice = depthDrawSubresource.slice;
-                        resolvePass.stencilAttachment.stencilResolveFilter = MTLMultisampleStencilResolveFilterSample0;
                         resolvedAny = YES;
                     }
 
@@ -1679,7 +1648,6 @@ static MGLMetalRenderPipelineStateRef mglLookupCppAuxRenderPipeline(
                         }
                         MGLMetalRenderCommandEncoderRef resolveEncoder =
                             mglBlitCreateRenderEncoder(_renderPassManager,
-                                                       resolvePass,
                                                        &resolveState);
                         if (resolveEncoder) {
                             mglBlitEndRenderEncoder(resolveEncoder);
@@ -1806,22 +1774,11 @@ static MGLMetalRenderPipelineStateRef mglLookupCppAuxRenderPipeline(
                         if (depthPipeline && sampler) {
                             [self endRenderEncoding];
                             if ([self ensureWritableCommandBuffer:"mtlBlitFramebuffer.depthScaled"]) {
-                                MTLRenderPassDescriptor *scaledDepthPass =
-                                    [MTLRenderPassDescriptor renderPassDescriptor];
-                                scaledDepthPass.depthAttachment.texture = depthDrawTexture;
-                                scaledDepthPass.depthAttachment.loadAction = MTLLoadActionLoad;
-                                scaledDepthPass.depthAttachment.storeAction = MTLStoreActionStore;
-
                                 /* For packed depth+stencil formats, also set the stencil
                                  * attachment to the same texture so Metal preserves the
                                  * stencil component during the render pass. */
                                 BOOL isPackedDepthStencil =
                                     mglMetalPixelFormatIsPackedDepthStencil(depthDrawTexture.pixelFormat);
-                                if (isPackedDepthStencil) {
-                                    scaledDepthPass.stencilAttachment.texture = depthDrawTexture;
-                                    scaledDepthPass.stencilAttachment.loadAction = MTLLoadActionLoad;
-                                    scaledDepthPass.stencilAttachment.storeAction = MTLStoreActionStore;
-                                }
 
                                 MGLRenderCppRenderPassState scaledDepthState =
                                     mglBlitDefaultRenderPassState();
@@ -1840,7 +1797,6 @@ static MGLMetalRenderPipelineStateRef mglLookupCppAuxRenderPipeline(
 
                                 MGLMetalRenderCommandEncoderRef depthEncoder =
                                     mglBlitCreateRenderEncoder(_renderPassManager,
-                                                               scaledDepthPass,
                                                                &scaledDepthState);
                                 if (depthEncoder) {
                                     mglBlitSetRenderPipeline(depthEncoder, depthPipeline);
@@ -2412,14 +2368,6 @@ static MGLMetalRenderPipelineStateRef mglLookupCppAuxRenderPipeline(
         params.forceOpaqueAlpha = (drawfbo == NULL && drawtexid == (_drawable ? _drawable.texture : nil)) ? 1.0f : 0.0f;
         params._padding = (vector_float3){0.0f, 0.0f, 0.0f};
 
-        MTLRenderPassDescriptor *scaledPass = [MTLRenderPassDescriptor renderPassDescriptor];
-        scaledPass.colorAttachments[0].texture = drawtexid;
-        scaledPass.colorAttachments[0].level = drawSubresource.level;
-        scaledPass.colorAttachments[0].slice = drawSubresource.slice;
-        scaledPass.colorAttachments[0].depthPlane = drawSubresource.depthPlane;
-        scaledPass.colorAttachments[0].loadAction = MTLLoadActionLoad;
-        scaledPass.colorAttachments[0].storeAction = MTLStoreActionStore;
-
         MGLRenderCppRenderPassState scaledState =
             mglBlitDefaultRenderPassState();
         scaledState.color[0].attachment = mglBlitRenderPassAttachment(
@@ -2428,8 +2376,7 @@ static MGLMetalRenderPipelineStateRef mglLookupCppAuxRenderPipeline(
             MTLStoreActionStore);
 
         MGLMetalRenderCommandEncoderRef encoder =
-            mglBlitCreateRenderEncoder(_renderPassManager, scaledPass,
-                                       &scaledState);
+            mglBlitCreateRenderEncoder(_renderPassManager, &scaledState);
         if (!encoder) {
             NSLog(@"MGL WARN: mtlBlitFramebuffer failed to create scaled render encoder");
             return YES;

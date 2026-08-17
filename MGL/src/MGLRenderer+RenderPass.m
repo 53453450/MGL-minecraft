@@ -3553,7 +3553,7 @@ output->name, (unsigned)i,
                                                   traceRenderEncoder:traceRenderEncoder]);
     RETURN_FALSE_ON_FAILURE([self createRenderEncoderLocked:renderEncoderCall]);
 
-    // apply all state that isn't included in a renderPassDescriptor into the render encoder
+    // Apply dynamic state that is not part of the render-pass owner state.
     [self updateCurrentRenderEncoder];
 
     // Only bind buffers when creating the encoder. Sampled textures depend on the
