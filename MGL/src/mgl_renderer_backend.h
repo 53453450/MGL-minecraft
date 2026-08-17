@@ -118,6 +118,12 @@ int mglRendererBackendGetTessFactorBuffer(
 int mglRendererBackendPutTessFactorBuffer(
     MGLRendererBackendHandle *backend, uint32_t patch_count,
     const float levels[6], void *buffer);
+/* Returns a borrowed TES XFB dummy buffer when it meets minimum_length. */
+int mglRendererBackendGetTessXfbDummyBuffer(
+    const MGLRendererBackendHandle *backend, uint64_t minimum_length,
+    void **buffer_out);
+int mglRendererBackendPutTessXfbDummyBuffer(
+    MGLRendererBackendHandle *backend, void *buffer);
 int mglRendererBackendSetFallbackResource(
     MGLRendererBackendHandle *backend,
     MGLRendererBackendFallbackResourceKind kind, void *resource);

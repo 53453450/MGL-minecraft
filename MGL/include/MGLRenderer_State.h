@@ -133,9 +133,6 @@ typedef struct MGLTessellationState_t {
      * passthrough vertex stage drawing lines / points. */
     BOOL tessComputeActive;
     Program *tessComputeProgram;
-    /* 1-byte dummy bound to the TES compute XFB stream slot (31) when GL
-     * feedback is inactive (the kernel always declares/writes it). */
-    id<MTLBuffer> __strong tessXfbDummyBuffer;
 } MGLTessellationState;
 
 typedef struct MGLGeometryState_t {

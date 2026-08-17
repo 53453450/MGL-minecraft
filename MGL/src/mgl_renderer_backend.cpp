@@ -155,6 +155,7 @@ struct MGLRendererBackendHandle {
     MTL::Buffer *tess_factor_buffer = nullptr;
     uint32_t tess_factor_patch_count = 0;
     std::array<float, 6> tess_factor_levels{};
+    MTL::Buffer *tess_xfb_dummy_buffer = nullptr;
     MTL::Texture *fallback_sampled_texture = nullptr;
     MTL::Texture *fallback_cube_sampled_texture = nullptr;
     MTL::Buffer *fallback_texture_buffer_storage = nullptr;
@@ -227,6 +228,10 @@ static void mglRendererBackendReleaseOwnedState(
     }
     backend->tess_factor_patch_count = 0;
     backend->tess_factor_levels = {};
+    if (backend->tess_xfb_dummy_buffer) {
+        backend->tess_xfb_dummy_buffer->release();
+        backend->tess_xfb_dummy_buffer = nullptr;
+    }
     if (backend->fallback_sampled_texture) {
         backend->fallback_sampled_texture->release();
         backend->fallback_sampled_texture = nullptr;
@@ -700,6 +705,32 @@ extern "C" int mglRendererBackendPutTessFactorBuffer(
     backend->tess_factor_patch_count = patch_count;
     std::copy_n(levels, backend->tess_factor_levels.size(),
                 backend->tess_factor_levels.begin());
+    return 0;
+}
+
+extern "C" int mglRendererBackendGetTessXfbDummyBuffer(
+    const MGLRendererBackendHandle *backend, uint64_t minimum_length,
+    void **buffer_out)
+{
+    if (buffer_out) *buffer_out = nullptr;
+    if (!backend || minimum_length == 0u || !buffer_out) return -1;
+    std::lock_guard<std::mutex> lock(
+        const_cast<MGLRendererBackendHandle *>(backend)->mutex);
+    if (!backend->tess_xfb_dummy_buffer ||
+        backend->tess_xfb_dummy_buffer->length() < minimum_length) {
+        return 0;
+    }
+    *buffer_out = backend->tess_xfb_dummy_buffer;
+    return 1;
+}
+
+extern "C" int mglRendererBackendPutTessXfbDummyBuffer(
+    MGLRendererBackendHandle *backend, void *buffer)
+{
+    if (!backend || !buffer) return -1;
+    std::lock_guard<std::mutex> lock(backend->mutex);
+    if (backend->destroying) return -1;
+    mglRendererBackendReplaceObject(backend->tess_xfb_dummy_buffer, buffer);
     return 0;
 }
 

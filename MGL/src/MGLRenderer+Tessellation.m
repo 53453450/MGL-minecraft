@@ -1715,17 +1715,25 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
         /* The TES compute kernel always declares and writes the XFB stream
          * slot (31); bind a 1-byte dummy so the slot is never dangling when
          * GL feedback is inactive. */
-        if (!_tessellation.tessXfbDummyBuffer ||
-            _tessellation.tessXfbDummyBuffer.length < outSize) {
-            _tessellation.tessXfbDummyBuffer =
-                mglTessCreateBuffer(_device, MAX(outSize, 1u),
-                                    MTLResourceStorageModeShared);
+        void *cachedDummy = NULL;
+        MGLMetalBufferRef xfbDummy = nil;
+        if (mglRendererBackendGetTessXfbDummyBuffer(
+                _backend, MAX(outSize, 1u), &cachedDummy) == 1) {
+            xfbDummy = (__bridge MGLMetalBufferRef)cachedDummy;
         }
-        if (_tessellation.tessXfbDummyBuffer) {
+        if (!xfbDummy) {
+            xfbDummy = mglTessCreateBuffer(
+                _device, MAX(outSize, 1u), MTLResourceStorageModeShared);
+            if (xfbDummy) {
+                (void)mglRendererBackendPutTessXfbDummyBuffer(
+                    _backend, (__bridge void *)xfbDummy);
+            }
+        }
+        if (xfbDummy) {
             if (!mglTessPlanBufferOrBind(
                     &executionPlan,
                     executionTemporaries, computeEncoder,
-                    _tessellation.tessXfbDummyBuffer, 0u,
+                    xfbDummy, 0u,
                     MGL_AIR_TESS_SLOT_XFB_OUT)) {
                 [self clearStageBindingCopyBacks:&stageCopyBacks];
                 return false;

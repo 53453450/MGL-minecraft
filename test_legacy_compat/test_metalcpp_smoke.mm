@@ -8979,6 +8979,20 @@ static int verifyRendererBackend(id<MTLDevice> device) {
         return 1;
     }
     printf("RENDERER_BACKEND_TESS_FACTOR_CACHE_OK\n");
+    void *cachedTessDummy = NULL;
+    if (mglRendererBackendGetTessXfbDummyBuffer(
+            backend, 1u, &cachedTessDummy) != 0 || cachedTessDummy != NULL ||
+        mglRendererBackendPutTessXfbDummyBuffer(
+            backend, (__bridge void *)fallbackBuffer) != 0 ||
+        mglRendererBackendGetTessXfbDummyBuffer(
+            backend, 257u, &cachedTessDummy) != 0 || cachedTessDummy != NULL ||
+        mglRendererBackendGetTessXfbDummyBuffer(
+            backend, 256u, &cachedTessDummy) != 1 ||
+        cachedTessDummy != (__bridge void *)fallbackBuffer) {
+        fprintf(stderr, "FAIL: renderer backend tess XFB dummy cache\n");
+        return 1;
+    }
+    printf("RENDERER_BACKEND_TESS_XFB_DUMMY_CACHE_OK\n");
     if (mglRendererBackendSetFallbackResource(
             backend, MGL_RENDERER_BACKEND_FALLBACK_SAMPLED_TEXTURE,
             (__bridge void *)fallbackTexture) != 0 ||
