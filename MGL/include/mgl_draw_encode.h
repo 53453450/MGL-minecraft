@@ -172,6 +172,63 @@ MGLPrimitiveRestartEncodeResult mglEncodePrimitiveRestartedElementDraw(id<MTLRen
                                                                        NSUInteger baseInstance,
                                                                        const char *label);
 
+/* Owner-aware variants used by the gate-on renderer path. The encoder argument
+ * is retained only for the gate-off adapter; C++ resolves the active encoder
+ * from renderEncoderOwner when MGL_USE_METALCPP is enabled. */
+BOOL mglEncodeArrayLineLoopForRenderEncoderOwner(
+    id<MTLRenderCommandEncoder> encoder, void *renderEncoderOwner,
+    GLMContext drawCtx, id<MTLDevice> device, GLsizei count,
+    GLint firstVertex, NSUInteger instanceCount, NSUInteger baseInstance,
+    const char *label);
+BOOL mglEncodeArrayTriangleFanForRenderEncoderOwner(
+    id<MTLRenderCommandEncoder> encoder, void *renderEncoderOwner,
+    id<MTLDevice> device, GLsizei count, GLint baseVertex,
+    NSUInteger instanceCount, NSUInteger baseInstance, const char *label);
+BOOL mglEncodeArrayQuadsForRenderEncoderOwner(
+    id<MTLRenderCommandEncoder> encoder, void *renderEncoderOwner,
+    id<MTLDevice> device, GLsizei count, GLint baseVertex,
+    NSUInteger instanceCount, NSUInteger baseInstance, BOOL lineMode,
+    const char *label);
+BOOL mglEncodeArrayPolygonPointForRenderEncoderOwner(
+    id<MTLRenderCommandEncoder> encoder, void *renderEncoderOwner,
+    id<MTLDevice> device, GLenum mode, GLint first, GLsizei count,
+    NSUInteger instanceCount, NSUInteger baseInstance, const char *label);
+BOOL mglEncodeElementLineLoopForRenderEncoderOwner(
+    id<MTLRenderCommandEncoder> encoder, void *renderEncoderOwner,
+    id<MTLDevice> device, Buffer *glElementBuffer,
+    id<MTLBuffer> metalElementBuffer, GLenum glIndexType,
+    NSUInteger indexOffset, GLsizei count, NSUInteger instanceCount,
+    NSInteger baseVertex, NSUInteger baseInstance, const char *label);
+BOOL mglEncodeElementTriangleFanForRenderEncoderOwner(
+    id<MTLRenderCommandEncoder> encoder, void *renderEncoderOwner,
+    id<MTLDevice> device, Buffer *glElementBuffer,
+    id<MTLBuffer> metalElementBuffer, GLenum glIndexType,
+    NSUInteger indexOffset, GLsizei count, NSUInteger instanceCount,
+    NSInteger baseVertex, NSUInteger baseInstance, const char *label);
+BOOL mglEncodeElementQuadsForRenderEncoderOwner(
+    id<MTLRenderCommandEncoder> encoder, void *renderEncoderOwner,
+    id<MTLDevice> device, Buffer *glElementBuffer,
+    id<MTLBuffer> metalElementBuffer, GLenum glIndexType,
+    NSUInteger indexOffset, GLsizei count, NSUInteger instanceCount,
+    NSInteger baseVertex, NSUInteger baseInstance, BOOL lineMode,
+    const char *label);
+BOOL mglEncodeElementPolygonPointForRenderEncoderOwner(
+    id<MTLRenderCommandEncoder> encoder, void *renderEncoderOwner,
+    id<MTLDevice> device, Buffer *glElementBuffer,
+    id<MTLBuffer> metalElementBuffer, GLenum mode, GLenum glIndexType,
+    MTLIndexType metalIndexType, NSUInteger indexOffset, GLsizei count,
+    NSUInteger instanceCount, NSInteger baseVertex,
+    NSUInteger baseInstance, const char *label);
+MGLPrimitiveRestartEncodeResult
+mglEncodePrimitiveRestartedElementDrawForRenderEncoderOwner(
+    id<MTLRenderCommandEncoder> encoder, void *renderEncoderOwner,
+    id<MTLDevice> device, GLMContext ctx, Buffer *glElementBuffer,
+    id<MTLBuffer> metalElementBuffer, GLenum mode,
+    MTLPrimitiveType primitiveType, GLenum glIndexType,
+    MTLIndexType metalIndexType, NSUInteger indexOffset, GLsizei count,
+    NSUInteger instanceCount, NSInteger baseVertex,
+    NSUInteger baseInstance, const char *label);
+
 /* === Indirect-draw skip checks === */
 
 BOOL mglSkipIndirectElementDrawWhenPrimitiveRestartEnabled(GLMContext ctx,

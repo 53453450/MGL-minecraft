@@ -106,4 +106,10 @@ MGL_MTL_FUNC_LIST(MGL_MTL_FUNC_STRUCT)
 #undef MGL_MTL_FUNC_STRUCT
 } ;
 
+enum {
+#define MGL_MTL_FUNC_COUNT_ONE(field, cname, ret, args) + 1
+    MGL_MTL_FUNC_COUNT = 0 MGL_MTL_FUNC_LIST(MGL_MTL_FUNC_COUNT_ONE)
+#undef MGL_MTL_FUNC_COUNT_ONE
+};
+
 #endif /* mgl_types_metal_funcs_h */

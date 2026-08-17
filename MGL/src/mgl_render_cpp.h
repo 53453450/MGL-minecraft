@@ -15,6 +15,7 @@ typedef struct TextureLevel_t TextureLevel;
 
 typedef struct GLMContextRec_t *GLMContext;
 typedef struct Buffer_t Buffer;
+typedef struct Texture_t Texture;
 typedef struct TextureParameter_t TextureParameter;
 typedef struct Program_t Program;
 typedef struct __GLsync Sync;
@@ -65,16 +66,294 @@ void mglRenderCppFlushBufferRange(GLMContext glm_ctx,
                                   intptr_t offset,
                                   intptr_t length);
 void mglRenderCppBindProgram(GLMContext glm_ctx, Program *program);
+void mglRenderCppGetSync(GLMContext glm_ctx, Sync *sync);
 void mglRenderCppWaitForSync(GLMContext glm_ctx, Sync *sync);
 unsigned int mglRenderCppGetSyncStatus(GLMContext glm_ctx, Sync *sync);
 void mglRenderCppReleaseSync(GLMContext glm_ctx, Sync *sync);
+void mglRenderCppFlush(GLMContext glm_ctx, bool finish);
+void mglRenderCppInvalidateRenderPass(GLMContext glm_ctx);
 uint64_t mglRenderCppGetGPUTimestamp(GLMContext glm_ctx);
+typedef struct MGLRenderCppCallbackInstallResult_t {
+    uint32_t installed;
+    uint32_t strict_cpp;
+    uint32_t pure_adapter;
+    uint32_t legacy_fallback;
+} MGLRenderCppCallbackInstallResult;
+
+typedef struct MGLRenderCppDrawCallbackArgs_t MGLRenderCppDrawCallbackArgs;
+typedef struct MGLRenderCppResourceCallbackArgs_t MGLRenderCppResourceCallbackArgs;
+typedef struct MGLRenderCppLegacyCallbackArgs_t MGLRenderCppLegacyCallbackArgs;
+
+typedef struct MGLRenderCppCallbackRuntimeOps_t {
+    void (*dispatch_compute)(void *runtime_context,
+                             GLMContext glm_ctx,
+                             unsigned int groups_x,
+                             unsigned int groups_y,
+                             unsigned int groups_z);
+    void (*dispatch_compute_indirect)(void *runtime_context,
+                                      GLMContext glm_ctx,
+                                      intptr_t indirect);
+    void (*draw)(void *runtime_context,
+                 GLMContext glm_ctx,
+                 const MGLRenderCppDrawCallbackArgs *args);
+    void (*bind_texture)(void *runtime_context,
+                         GLMContext glm_ctx,
+                         Texture *texture);
+    void (*flush_draw_buffer)(void *runtime_context, GLMContext glm_ctx);
+    void (*swap_buffers)(void *runtime_context, GLMContext glm_ctx);
+    void (*clear_buffer)(void *runtime_context,
+                         GLMContext glm_ctx,
+                         unsigned int type,
+                         unsigned int mask);
+    void (*blit_framebuffer)(void *runtime_context,
+                             GLMContext glm_ctx,
+                             int src_x0,
+                             int src_y0,
+                             int src_x1,
+                             int src_y1,
+                             int dst_x0,
+                             int dst_y0,
+                             int dst_x1,
+                             int dst_y1,
+                             unsigned int mask,
+                             unsigned int filter);
+    int (*resource)(void *runtime_context,
+                    GLMContext glm_ctx,
+                    const MGLRenderCppResourceCallbackArgs *args);
+    uint64_t (*legacy)(void *runtime_context,
+                       GLMContext glm_ctx,
+                       const MGLRenderCppLegacyCallbackArgs *args);
+} MGLRenderCppCallbackRuntimeOps;
+
+enum {
+    MGL_RENDER_CPP_DRAW_CALLBACK_ARRAYS = 0,
+    MGL_RENDER_CPP_DRAW_CALLBACK_ELEMENTS = 1,
+    MGL_RENDER_CPP_DRAW_CALLBACK_RANGE_ELEMENTS = 2,
+    MGL_RENDER_CPP_DRAW_CALLBACK_ARRAYS_INSTANCED = 3,
+    MGL_RENDER_CPP_DRAW_CALLBACK_ELEMENTS_INSTANCED = 4,
+    MGL_RENDER_CPP_DRAW_CALLBACK_ELEMENTS_BASE_VERTEX = 5,
+    MGL_RENDER_CPP_DRAW_CALLBACK_RANGE_ELEMENTS_BASE_VERTEX = 6,
+    MGL_RENDER_CPP_DRAW_CALLBACK_ELEMENTS_INSTANCED_BASE_VERTEX = 7,
+    MGL_RENDER_CPP_DRAW_CALLBACK_ARRAYS_INDIRECT = 8,
+    MGL_RENDER_CPP_DRAW_CALLBACK_ELEMENTS_INDIRECT = 9,
+    MGL_RENDER_CPP_DRAW_CALLBACK_ARRAYS_INSTANCED_BASE_INSTANCE = 10,
+    MGL_RENDER_CPP_DRAW_CALLBACK_ELEMENTS_INSTANCED_BASE_INSTANCE = 11,
+    MGL_RENDER_CPP_DRAW_CALLBACK_ELEMENTS_INSTANCED_BASE_VERTEX_BASE_INSTANCE = 12,
+    MGL_RENDER_CPP_DRAW_CALLBACK_MULTI_ARRAYS = 13,
+    MGL_RENDER_CPP_DRAW_CALLBACK_MULTI_ELEMENTS = 14,
+    MGL_RENDER_CPP_DRAW_CALLBACK_MULTI_ELEMENTS_BASE_VERTEX = 15,
+    MGL_RENDER_CPP_DRAW_CALLBACK_MULTI_ARRAYS_INDIRECT = 16,
+    MGL_RENDER_CPP_DRAW_CALLBACK_MULTI_ELEMENTS_INDIRECT = 17,
+};
+
+struct MGLRenderCppDrawCallbackArgs_t {
+    uint32_t kind;
+    uint32_t mode;
+    uint32_t type;
+    uint32_t start;
+    uint32_t end;
+    int32_t first;
+    int32_t count;
+    int32_t instance_count;
+    int32_t base_vertex;
+    uint32_t base_instance;
+    int32_t draw_count;
+    int32_t stride;
+    const void *indices_or_indirect;
+    const int32_t *firsts;
+    const int32_t *counts;
+    const int32_t *base_vertices;
+};
+
+enum {
+    MGL_RENDER_CPP_RESOURCE_CALLBACK_READ_DRAWABLE = 0,
+    MGL_RENDER_CPP_RESOURCE_CALLBACK_READ_INTEGER_PIXELS = 1,
+    MGL_RENDER_CPP_RESOURCE_CALLBACK_READ_DEPTH_PIXELS = 2,
+    MGL_RENDER_CPP_RESOURCE_CALLBACK_GET_TEX_IMAGE = 3,
+    MGL_RENDER_CPP_RESOURCE_CALLBACK_GENERATE_MIPMAPS = 4,
+    MGL_RENDER_CPP_RESOURCE_CALLBACK_TEX_SUB_IMAGE = 5,
+    MGL_RENDER_CPP_RESOURCE_CALLBACK_TEX_SUB_IMAGE_BYTES = 6,
+    MGL_RENDER_CPP_RESOURCE_CALLBACK_COPY_TEX_SUB_IMAGE = 7,
+    MGL_RENDER_CPP_RESOURCE_CALLBACK_COPY_IMAGE_SUB_DATA = 8,
+};
+
+struct MGLRenderCppResourceCallbackArgs_t {
+    uint32_t kind;
+    Texture *texture;
+    Texture *source_texture;
+    Texture *destination_texture;
+    Buffer *buffer;
+    void *pixel_bytes;
+    const void *bytes;
+    size_t bytes_size;
+    size_t source_offset;
+    size_t source_pitch;
+    size_t source_image_size;
+    size_t source_size;
+    size_t width;
+    size_t height;
+    size_t depth;
+    size_t x_offset;
+    size_t y_offset;
+    size_t z_offset;
+    uint32_t bytes_per_row;
+    uint32_t bytes_per_image;
+    uint32_t format;
+    uint32_t type;
+    uint32_t slice;
+    uint32_t level;
+    int32_t x;
+    int32_t y;
+    int32_t source_level;
+    int32_t source_x;
+    int32_t source_y;
+    int32_t source_z;
+    int32_t destination_level;
+    int32_t destination_x;
+    int32_t destination_y;
+    int32_t destination_z;
+};
+
+enum {
+    MGL_RENDER_CPP_LEGACY_CALLBACK_BIND_BUFFER = 0,
+    MGL_RENDER_CPP_LEGACY_CALLBACK_BIND_PROGRAM = 1,
+    MGL_RENDER_CPP_LEGACY_CALLBACK_DELETE_OBJECT = 2,
+    MGL_RENDER_CPP_LEGACY_CALLBACK_GET_SYNC = 3,
+    MGL_RENDER_CPP_LEGACY_CALLBACK_WAIT_SYNC = 4,
+    MGL_RENDER_CPP_LEGACY_CALLBACK_GET_SYNC_STATUS = 5,
+    MGL_RENDER_CPP_LEGACY_CALLBACK_RELEASE_SYNC = 6,
+    MGL_RENDER_CPP_LEGACY_CALLBACK_FLUSH = 7,
+    MGL_RENDER_CPP_LEGACY_CALLBACK_INVALIDATE_RENDER_PASS = 8,
+    MGL_RENDER_CPP_LEGACY_CALLBACK_BUFFER_SUB_DATA = 9,
+    MGL_RENDER_CPP_LEGACY_CALLBACK_MAP_UNMAP_BUFFER = 10,
+    MGL_RENDER_CPP_LEGACY_CALLBACK_READ_BACK_BUFFER = 11,
+    MGL_RENDER_CPP_LEGACY_CALLBACK_FLUSH_BUFFER_RANGE = 12,
+    MGL_RENDER_CPP_LEGACY_CALLBACK_BEGIN_TIMER_QUERY = 13,
+    MGL_RENDER_CPP_LEGACY_CALLBACK_END_TIMER_QUERY = 14,
+    MGL_RENDER_CPP_LEGACY_CALLBACK_GET_GPU_TIMESTAMP = 15,
+    MGL_RENDER_CPP_LEGACY_CALLBACK_BEGIN_SAMPLE_QUERY = 16,
+    MGL_RENDER_CPP_LEGACY_CALLBACK_END_SAMPLE_QUERY = 17,
+};
+
+struct MGLRenderCppLegacyCallbackArgs_t {
+    uint32_t kind;
+    Buffer *buffer;
+    Program *program;
+    Sync *sync;
+    void *object;
+    const void *bytes;
+    size_t offset;
+    size_t size;
+    intptr_t signed_offset;
+    intptr_t signed_length;
+    uint32_t value;
+    bool flag;
+};
+
+int mglRenderCppCreateCallbackRuntime(
+    void *runtime_context,
+    const MGLRenderCppCallbackRuntimeOps *ops,
+    void **runtime_out);
+void mglRenderCppDestroyCallbackRuntime(void **runtime_io);
+
+/* ObjC renderer category implementations registered in the runtime operation
+ * table.  These are C-callable shared entry points, not selector-forwarding
+ * bridge functions. */
+void mglRendererCallbackDispatchCompute(void *runtime_context,
+                                        GLMContext glm_ctx,
+                                        unsigned int groups_x,
+                                        unsigned int groups_y,
+                                        unsigned int groups_z);
+void mglRendererCallbackDispatchComputeIndirect(void *runtime_context,
+                                                GLMContext glm_ctx,
+                                                intptr_t indirect);
+void mglRendererCallbackDraw(void *runtime_context,
+                             GLMContext glm_ctx,
+                             const MGLRenderCppDrawCallbackArgs *args);
+void mglRendererCallbackBindTexture(void *runtime_context,
+                                    GLMContext glm_ctx,
+                                    Texture *texture);
+void mglRendererCallbackFlushDrawBuffer(void *runtime_context,
+                                        GLMContext glm_ctx);
+void mglRendererCallbackSwapBuffers(void *runtime_context,
+                                    GLMContext glm_ctx);
+void mglRendererCallbackClearBuffer(void *runtime_context,
+                                    GLMContext glm_ctx,
+                                    unsigned int type,
+                                    unsigned int mask);
+void mglRendererCallbackBlitFramebuffer(void *runtime_context,
+                                        GLMContext glm_ctx,
+                                        int src_x0,
+                                        int src_y0,
+                                        int src_x1,
+                                        int src_y1,
+                                        int dst_x0,
+                                        int dst_y0,
+                                        int dst_x1,
+                                        int dst_y1,
+                                        unsigned int mask,
+                                        unsigned int filter);
+int mglRendererCallbackResource(void *runtime_context,
+                                GLMContext glm_ctx,
+                                const MGLRenderCppResourceCallbackArgs *args);
+uint64_t mglRendererCallbackLegacy(
+    void *runtime_context,
+    GLMContext glm_ctx,
+    const MGLRenderCppLegacyCallbackArgs *args);
+
+uint64_t mglRenderCppInvokeLegacyCallback(
+    GLMContext glm_ctx,
+    const MGLRenderCppLegacyCallbackArgs *args);
+void mglRenderCppInvokeBindTextureCallback(GLMContext glm_ctx,
+                                           Texture *texture);
+void mglRenderCppInvokeFlushDrawBufferCallback(GLMContext glm_ctx);
+void mglRenderCppInvokeSwapBuffersCallback(GLMContext glm_ctx);
+void mglRenderCppInvokeClearBufferCallback(GLMContext glm_ctx,
+                                           unsigned int type,
+                                           unsigned int mask);
+void mglRenderCppInvokeBlitFramebufferCallback(
+    GLMContext glm_ctx,
+    int src_x0, int src_y0, int src_x1, int src_y1,
+    int dst_x0, int dst_y0, int dst_x1, int dst_y1,
+    unsigned int mask, unsigned int filter);
+int mglRenderCppInvokeResourceCallback(
+    GLMContext glm_ctx,
+    const MGLRenderCppResourceCallbackArgs *args);
+void mglRenderCppInvokeComputeCallback(GLMContext glm_ctx,
+                                       unsigned int groups_x,
+                                       unsigned int groups_y,
+                                       unsigned int groups_z);
+void mglRenderCppInvokeComputeIndirectCallback(GLMContext glm_ctx,
+                                               intptr_t indirect);
+void mglRenderCppInvokeDrawCallback(
+    GLMContext glm_ctx,
+    const MGLRenderCppDrawCallbackArgs *args);
+
+/* Install every callback that currently enters the C++ renderer.  Strict C++
+ * callbacks and callbacks dispatched through the opaque pure-C runtime table
+ * are reported separately.  Wrappers that can still call a legacy bridge do
+ * not count toward P4's completion criterion. */
+int mglRenderCppInstallMetalCallbacks(
+    GLMContext glm_ctx,
+    MGLRenderCppCallbackInstallResult *result_out);
+/* Publish the borrowed runtime owner handles used by direct C++ callbacks.
+ * The context does not retain these owners; the renderer owns their lifetime. */
+int mglRenderCppAttachRuntimeOwners(GLMContext glm_ctx,
+                                    void *command_buffer_owner,
+                                    void *render_encoder_owner,
+                                    void *render_pass_state_owner,
+                                    void *query_state_owner,
+                                    void *command_recovery_owner);
+void mglRenderCppDetachRuntimeOwners(GLMContext glm_ctx);
 int mglRenderCppRegisterContextQueryStateOwner(GLMContext glm_ctx,
                                                void *query_owner);
 void mglRenderCppUnregisterContextQueryStateOwner(GLMContext glm_ctx,
                                                   void *query_owner);
 void mglRenderCppBeginTimerQueryCallback(GLMContext glm_ctx);
 uint64_t mglRenderCppEndTimerQueryCallback(GLMContext glm_ctx);
+void mglRenderCppBeginSampleQueryCallback(GLMContext glm_ctx,
+                                          unsigned int target);
+uint64_t mglRenderCppEndSampleQueryCallback(GLMContext glm_ctx);
 
 enum {
     MGL_RENDER_CPP_AIR_PROGRAM_BOUND = 0,
@@ -97,9 +376,9 @@ enum {
     MGL_RENDER_CPP_BUFFER_ERROR = -1,
 };
 
-/* Materialize ordinary shared/copy-backed Buffer storage in Metal-cpp.
- * Client-storage and persistent no-copy buffers return NOT_APPLICABLE because
- * their custom vm_deallocate ownership remains in the ObjC baseline. */
+/* Materialize shared, copy-backed, client-storage, and persistent no-copy
+ * Buffer storage in Metal-cpp. No-copy buffers transfer VM-range cleanup to
+ * the retained Metal object and set data.mtl_owns_buffer_data. */
 int mglRenderCppBindBufferStorage(Buffer *buffer,
                                   char *err,
                                   size_t errcap);
@@ -1595,6 +1874,10 @@ int mglRenderCppSerializeBinaryArchive(void *binary_archive,
 int mglRenderCppSetVisibilityResultMode(void *render_encoder,
                                         uint32_t mode,
                                         uint64_t offset);
+int mglRenderCppSetVisibilityResultModeForRenderEncoderOwner(
+    void *render_encoder_owner,
+    uint32_t mode,
+    uint64_t offset);
 int mglRenderCppSampleTimestamps(uint64_t *cpu_timestamp_out,
                                  uint64_t *gpu_timestamp_out);
 int mglRenderCppCreateQueryStateOwner(uint32_t visibility_slot_count,
@@ -1833,16 +2116,44 @@ int mglRenderCppBindingSetBlendColorIfNeeded(void *binding_state,
                                              float green,
                                              float blue,
                                              float alpha);
+int mglRenderCppBindingSetPipelineIfNeededForOwner(
+    void *binding_state, void *render_encoder_owner, void *pipeline_state);
+int mglRenderCppBindingSetDepthStencilIfNeededForOwner(
+    void *binding_state, void *render_encoder_owner,
+    void *depth_stencil_state);
+int mglRenderCppBindingSetCullIfNeededForOwner(
+    void *binding_state, void *render_encoder_owner, uint32_t mode);
+int mglRenderCppBindingSetWindingIfNeededForOwner(
+    void *binding_state, void *render_encoder_owner, uint32_t winding);
+int mglRenderCppBindingSetBlendColorIfNeededForOwner(
+    void *binding_state, void *render_encoder_owner,
+    float red, float green, float blue, float alpha);
 int mglRenderCppBindingSetTexture(void *binding_state,
                                  void *render_encoder,
                                  void *texture,
                                  uint32_t stage,
                                  uint32_t index);
 int mglRenderCppBindingSetSampler(void *binding_state,
-                                  void *render_encoder,
-                                  void *sampler,
-                                  uint32_t stage,
-                                  uint32_t index);
+                                 void *render_encoder,
+                                 void *sampler,
+                                 uint32_t stage,
+                                 uint32_t index);
+int mglRenderCppBindingSetTextureForOwner(void *binding_state,
+                                         void *render_encoder_owner,
+                                         void *texture,
+                                         uint32_t stage,
+                                         uint32_t index);
+int mglRenderCppBindingSetSamplerForOwner(void *binding_state,
+                                         void *render_encoder_owner,
+                                         void *sampler,
+                                         uint32_t stage,
+                                         uint32_t index);
+int mglRenderCppBindingSetDepthBiasIfNeededForOwner(
+    void *binding_state,
+    void *render_encoder_owner,
+    float depth_bias,
+    float clamp,
+    float slope_scale);
 int mglRenderCppBindingGetTexture(void *binding_state,
                                   uint32_t stage,
                                   uint32_t index,
@@ -1865,6 +2176,10 @@ int mglRenderCppBindingSetViewports(void *binding_state,
                                     void *render_encoder,
                                     const double *viewports,
                                     uint64_t count);
+int mglRenderCppBindingSetViewportsForOwner(void *binding_state,
+                                            void *render_encoder_owner,
+                                            const double *viewports,
+                                            uint64_t count);
 int mglRenderCppBindingSetScissor(void *binding_state,
                                  void *render_encoder,
                                  uint64_t x,
@@ -1874,6 +2189,23 @@ int mglRenderCppBindingSetScissor(void *binding_state,
 int mglRenderCppBindingSetTriangleFill(void *binding_state,
                                       void *render_encoder,
                                       uint32_t mode);
+int mglRenderCppBindingSetViewportForOwner(void *binding_state,
+                                          void *render_encoder_owner,
+                                          double origin_x,
+                                          double origin_y,
+                                          double width,
+                                          double height,
+                                          double znear,
+                                          double zfar);
+int mglRenderCppBindingSetScissorForOwner(void *binding_state,
+                                         void *render_encoder_owner,
+                                         uint64_t x,
+                                         uint64_t y,
+                                         uint64_t width,
+                                         uint64_t height);
+int mglRenderCppBindingSetTriangleFillForOwner(void *binding_state,
+                                              void *render_encoder_owner,
+                                              uint32_t mode);
 int mglRenderCppBindingGetStats(void *binding_state,
                                MGLRenderCppBindingStats *stats_out);
 
@@ -1973,18 +2305,44 @@ int mglRenderCppDispatchComputePlan(
  * and keeps temporary Metal objects alive until this call returns. C++ owns
  * encoder creation, pipeline/binding replay, dispatch, and endEncoding. */
 #define MGL_RENDER_CPP_COMPUTE_EXECUTION_MAX_OPS 512u
+#define MGL_RENDER_CPP_COMPUTE_EXECUTION_MAX_DISPATCHES 128u
+
+typedef struct MGLRenderCppComputeDispatchEntry_t {
+    /* Replay this dispatch after exactly binding_op_count binding operations. */
+    uint32_t binding_op_count;
+    MGLRenderCppComputePlan dispatch;
+} MGLRenderCppComputeDispatchEntry;
 
 typedef struct MGLRenderCppComputeExecutionPlan_t {
     void *pipeline; /* +0 borrowed MTL::ComputePipelineState* */
     uint32_t binding_op_count;
     MGLRenderCppComputeBindingOp
         binding_ops[MGL_RENDER_CPP_COMPUTE_EXECUTION_MAX_OPS];
+    uint32_t dispatch_op_count;
+    MGLRenderCppComputeDispatchEntry
+        dispatch_ops[MGL_RENDER_CPP_COMPUTE_EXECUTION_MAX_DISPATCHES];
+    /* Backward-compatible single-dispatch form used when dispatch_op_count=0. */
     MGLRenderCppComputePlan dispatch;
+    uint32_t barrier_scope;
 } MGLRenderCppComputeExecutionPlan;
+
+/* Value-state barrier request. These values intentionally mirror Metal's
+ * BarrierScope bit values without exposing MTL::* through the C ABI. */
+enum {
+    MGL_RENDER_CPP_COMPUTE_BARRIER_NONE = 0u,
+    MGL_RENDER_CPP_COMPUTE_BARRIER_BUFFERS = 1u,
+    MGL_RENDER_CPP_COMPUTE_BARRIER_TEXTURES = 2u,
+    MGL_RENDER_CPP_COMPUTE_BARRIER_RENDER_TARGETS = 4u,
+};
 
 int mglRenderCppAppendComputeBindingSnapshotToPlan(
     MGLRenderCppComputeExecutionPlan *plan,
     const MGLRenderCppComputeBindingSnapshot *snapshot,
+    char *err,
+    size_t errcap);
+int mglRenderCppAppendComputeDispatchToPlan(
+    MGLRenderCppComputeExecutionPlan *plan,
+    const MGLRenderCppComputePlan *dispatch,
     char *err,
     size_t errcap);
 
@@ -2028,6 +2386,13 @@ typedef struct MGLRenderCppComputeDispatchSetup_t {
  * （command buffer 持有 encoder）。失败返回 -1。 */
 int mglRenderCppBeginComputeDispatch(
     void *command_buffer,
+    const MGLRenderCppComputeDispatchSetup *setup,
+    void **compute_encoder_out,
+    char *err,
+    size_t errcap);
+/* Owner-aware form. CommandBufferOwner.current remains inside C++. */
+int mglRenderCppBeginComputeDispatchForCommandBufferOwner(
+    void *command_buffer_owner,
     const MGLRenderCppComputeDispatchSetup *setup,
     void **compute_encoder_out,
     char *err,
@@ -2077,10 +2442,12 @@ typedef struct MGLRenderCppCommandBufferCommitDecision_t {
     uint32_t action;
 } MGLRenderCppCommandBufferCommitDecision;
 
-typedef struct MGLRenderCppCommandBufferCompletionDecision_t {
-    uint32_t has_error;
-    uint32_t is_driver_rejection;
-} MGLRenderCppCommandBufferCompletionDecision;
+typedef enum MGLRenderCppCommandBufferTransactionResult_t {
+    MGL_RENDER_CPP_COMMAND_BUFFER_TRANSACTION_COMMITTED = 0,
+    MGL_RENDER_CPP_COMMAND_BUFFER_TRANSACTION_SKIPPED = 1,
+    MGL_RENDER_CPP_COMMAND_BUFFER_TRANSACTION_NESTED = 2,
+    MGL_RENDER_CPP_COMMAND_BUFFER_TRANSACTION_ERROR = 3,
+} MGLRenderCppCommandBufferTransactionResult;
 
 typedef struct MGLRenderCppCommandRecoverySnapshot_t {
     uint64_t consecutive_errors;
@@ -2088,6 +2455,58 @@ typedef struct MGLRenderCppCommandRecoverySnapshot_t {
     double last_error_time;
     uint32_t recovery_mode;
 } MGLRenderCppCommandRecoverySnapshot;
+
+/* Result of one owner-aware submit transaction.  State snapshots are value
+ * copies; no command-buffer pointer is retained by the result. */
+typedef struct MGLRenderCppCommandBufferTransaction_t {
+    MGLRenderCppCommandBufferState before;
+    MGLRenderCppCommandBufferState after;
+    MGLRenderCppCommandBufferState completion;
+    uint32_t result;
+    uint32_t used_submission;
+    uint32_t completion_registered;
+    uint32_t waited;
+    uint32_t has_error;
+    uint32_t is_driver_rejection;
+    uint32_t device_reset_requested;
+    uint32_t recovery_error_recorded;
+    MGLRenderCppCommandRecoverySnapshot recovery;
+    uint32_t needs_new_command_buffer;
+    /* Set when the C++ owner created the next current command buffer as part
+     * of this transaction.  A zero value means the caller must retain its
+     * legacy queue/reset adapter (for example an adopted ObjC buffer). */
+    uint32_t current_command_buffer_created;
+} MGLRenderCppCommandBufferTransaction;
+
+/* Result of one owner-contained compute execution.  No submission or Metal
+ * object pointer escapes the transaction.  When submitted is zero, the
+ * encoded compute work remains in CommandBufferOwner.current for the normal
+ * renderer flush. */
+typedef struct MGLRenderCppComputeExecutionResult_t {
+    MGLRenderCppCommandBufferTransaction transaction;
+    uint32_t submitted;
+    uint32_t cpu_prefix_synchronized;
+    uint32_t failed_copy_back_index;
+} MGLRenderCppComputeExecutionResult;
+
+/* Validate and encode a complete compute plan, then (when copy-backs or CPU
+ * visibility require a boundary) encode the copy-back blit and perform the
+ * owner submit/wait transaction before synchronizing GL CPU prefixes. */
+int mglRenderCppExecuteComputeExecutionPlan(
+    void *command_buffer_owner,
+    void *recovery_owner,
+    const MGLRenderCppComputeExecutionPlan *plan,
+    const MGLRenderCppCopyBackEntry *copy_backs,
+    uint32_t copy_back_count,
+    uint32_t require_cpu_visibility,
+    MGLRenderCppComputeExecutionResult *result,
+    char *err,
+    size_t errcap);
+
+typedef struct MGLRenderCppCommandBufferCompletionDecision_t {
+    uint32_t has_error;
+    uint32_t is_driver_rejection;
+} MGLRenderCppCommandBufferCompletionDecision;
 
 typedef struct MGLRenderCppCommandRecoverySuccess_t {
     MGLRenderCppCommandRecoverySnapshot state;
@@ -2125,11 +2544,23 @@ typedef void (*MGLRenderCppDestroyContext)(void *context);
 int mglRenderCppGetCommandBufferState(
     void *command_buffer,
     MGLRenderCppCommandBufferState *state_out);
-/* Pure value-state classification used by the ObjC recovery policy. Commit
- * classification intentionally preserves the legacy status-test ordering. */
+/* Pure value-state classification used by the owner transaction and platform
+ * log adapters. Commit classification preserves the legacy status ordering. */
 int mglRenderCppClassifyCommandBufferCommit(
     const MGLRenderCppCommandBufferState *state,
     MGLRenderCppCommandBufferCommitDecision *decision_out);
+/* Commit one detached/current command buffer through the C++ owner.  When
+ * submission_handle points at a matching C++ submission, that ownership is
+ * consumed; otherwise the borrowed command buffer is committed directly.
+ * Recovery counting, driver-rejection classification, and reset decisions are
+ * returned as value-state; the caller only publishes platform logging/reset. */
+int mglRenderCppCommitCommandBufferTransaction(
+    void *owner,
+    void **submission_handle,
+    void *command_buffer,
+    void *recovery_owner,
+    uint32_t wait_for_completion,
+    MGLRenderCppCommandBufferTransaction *result_out);
 int mglRenderCppClassifyCommandBufferCompletion(
     const MGLRenderCppCommandBufferState *state,
     MGLRenderCppCommandBufferCompletionDecision *decision_out);
@@ -2142,6 +2573,12 @@ int mglRenderCppCommandRecoveryRecordError(
     void *owner,
     double now,
     MGLRenderCppCommandRecoverySnapshot *state_out);
+/* Platform exception boundary for failures that cannot cross the C++ ABI.
+ * Applies the recovery update at most once to transaction_inout. */
+int mglRenderCppCommandRecoveryRecordTransactionFailure(
+    void *owner,
+    const MGLRenderCppCommandBufferState *state,
+    MGLRenderCppCommandBufferTransaction *transaction_inout);
 int mglRenderCppCommandRecoveryRecordSuccess(
     void *owner,
     double now,
@@ -2176,6 +2613,13 @@ int mglRenderCppAddCommandBufferCompletion(
     MGLRenderCppCommandBufferCompletion callback,
     void *context,
     MGLRenderCppDestroyContext destroy_context);
+/* Register a completion on CommandBufferOwner.current without exposing the
+ * borrowed command buffer through the C ABI. */
+int mglRenderCppAddCommandBufferOwnerCompletion(
+    void *owner,
+    MGLRenderCppCommandBufferCompletion callback,
+    void *context,
+    MGLRenderCppDestroyContext destroy_context);
 /* The current-buffer owner retains the autoreleased command buffer returned
  * by Metal. Detach moves that +1 reference into a submission handle; commit
  * consumes the submission only after Metal accepts it. Returned command
@@ -2191,9 +2635,29 @@ int mglRenderCppCreateCommandBufferOwnerAdopt(void *command_buffer,
 /* Borrowed pointer to the owner's current command buffer (NULL when the
  * owner has none / owner is NULL). */
 void *mglRenderCppCommandBufferOwnerGetCurrent(void *owner);
+/* Returns 1 when current exists, 0 when empty, and -1 for a null owner. */
+int mglRenderCppCommandBufferOwnerHasCurrent(void *owner);
+/* Create the next current command buffer from the queue retained by the
+ * owner.  Returns 0 on success, 1 when the owner has no queue (adopted
+ * fallback), and -1 on allocation/argument failure. */
+int mglRenderCppCommandBufferOwnerCreateNext(void *owner,
+                                             void **command_buffer_out);
 /* Snapshot the owner's current buffer without exposing it to the caller.
  * Returns -1 when the owner/current buffer/state output is missing. */
 int mglRenderCppGetCommandBufferOwnerState(
+    void *owner,
+    MGLRenderCppCommandBufferState *state_out);
+/* The owner retains the most recently accepted submission. These APIs keep
+ * glFinish/readback synchronization in the lifecycle owner without exposing
+ * a borrowed command-buffer pointer to Objective-C. */
+int mglRenderCppCommandBufferOwnerHasLastSubmitted(void *owner);
+/* Wait for one submitted command buffer and return a value-state snapshot.
+ * Returns 0 on completed success, 1 when the buffer is still NotEnqueued,
+ * and -1 for invalid arguments, wait failures, or command-buffer errors. */
+int mglRenderCppWaitCommandBufferState(
+    void *command_buffer,
+    MGLRenderCppCommandBufferState *state_out);
+int mglRenderCppWaitCommandBufferOwnerLastSubmitted(
     void *owner,
     MGLRenderCppCommandBufferState *state_out);
 /* Encode presentation on the owner's current not-enqueued command buffer.
@@ -2203,6 +2667,8 @@ int mglRenderCppPresentDrawableForCommandBufferOwner(
     void *owner,
     void *drawable,
     MGLRenderCppCommandBufferState *state_out);
+int mglRenderCppEncodeWaitForEventForCommandBufferOwner(
+    void *owner, void *event, uint64_t value);
 int mglRenderCppResetCommandBufferOwner(void *owner,
                                         void *command_queue,
                                         void **command_buffer_out);
@@ -2213,6 +2679,12 @@ void mglRenderCppDiscardCommandBufferOwnerCurrent(void *owner);
  * not a cross-thread synchronization primitive. */
 int mglRenderCppCommandBufferOwnerBeginCommit(void *owner);
 void mglRenderCppCommandBufferOwnerEndCommit(void *owner);
+/* Consume the marker for a current buffer created by the preceding submit
+ * transaction. Returns 1 and a borrowed current buffer once, 0 when no such
+ * buffer is pending, and -1 for invalid arguments. */
+int mglRenderCppCommandBufferOwnerConsumeTransactionCurrent(
+    void *owner,
+    void **command_buffer_out);
 int mglRenderCppTakeCommandBufferSubmission(void *owner,
                                              void **submission_out,
                                              void **command_buffer_out);
@@ -2277,6 +2749,11 @@ int mglRenderCppEncodeBindingSnapshot(
     const MGLRenderCppBindingSnapshot *snapshot,
     char *err,
     size_t errcap);
+int mglRenderCppEncodeBindingSnapshotForRenderEncoderOwner(
+    void *render_encoder_owner,
+    const MGLRenderCppBindingSnapshot *snapshot,
+    char *err,
+    size_t errcap);
 
 /* Texture/sampler bindings are collected separately from buffer/bytes ops.
  * Resource resolution may rotate the render encoder while uploading a
@@ -2308,6 +2785,12 @@ typedef struct MGLRenderCppResourceBindingSnapshot_t {
 int mglRenderCppEncodeResourceBindingSnapshot(
     void *binding_state,
     void *render_encoder,
+    const MGLRenderCppResourceBindingSnapshot *snapshot,
+    char *err,
+    size_t errcap);
+int mglRenderCppEncodeResourceBindingSnapshotForRenderEncoderOwner(
+    void *binding_state,
+    void *render_encoder_owner,
     const MGLRenderCppResourceBindingSnapshot *snapshot,
     char *err,
     size_t errcap);
@@ -2531,6 +3014,13 @@ int mglRenderCppCreateRenderEncoderFromCommandBufferOwnerState(
     void *command_buffer_owner,
     const MGLRenderCppRenderPassState *render_pass,
     void **render_encoder_out);
+/* Compatibility path for an already-materialized ObjC render-pass
+ * descriptor. The descriptor pointer is borrowed and remains opaque at the
+ * C ABI; CommandBufferOwner.current does not escape. */
+int mglRenderCppCreateRenderEncoderFromCommandBufferOwnerDescriptor(
+    void *command_buffer_owner,
+    void *render_pass_descriptor,
+    void **render_encoder_out);
 void mglRenderCppDestroyRenderPassStateOwner(void **owner);
 
 /* C++ owns the temporary MTL::RenderPassDescriptor used to create the
@@ -2586,6 +3076,18 @@ int mglRenderCppEncodeMultisampleResolve(
     uint64_t resolve_slice,
     uint64_t resolve_depth_plane,
     uint32_t resolve_filter);
+int mglRenderCppEncodeMultisampleResolveForCommandBufferOwner(
+    void *command_buffer_owner,
+    uint32_t attachment_kind,
+    void *source_texture,
+    uint64_t source_level,
+    uint64_t source_slice,
+    uint64_t source_depth_plane,
+    void *resolve_texture,
+    uint64_t resolve_level,
+    uint64_t resolve_slice,
+    uint64_t resolve_depth_plane,
+    uint32_t resolve_filter);
 /* The owner retains the autoreleased encoder returned by Metal. End is
  * idempotent per owned encoder; destroy releases the retained reference. */
 int mglRenderCppCreateRenderEncoderOwnerFromState(
@@ -2605,9 +3107,13 @@ int mglRenderCppResetRenderEncoderOwner(
     void *owner,
     void *render_encoder);
 int mglRenderCppEndRenderEncoderOwner(void *owner);
-/* Borrowed pointer to the owner's current render encoder (NULL when the
- * owner has none / owner is NULL). */
-void *mglRenderCppRenderEncoderOwnerGetCurrent(void *owner);
+int mglRenderCppSetRenderEncoderOwnerLabel(void *owner,
+                                           const char *label);
+/* Gate-off-only borrowed pointer to the owner's current render encoder.
+ * Returns NULL while the Metal-cpp gate is active, even when the owner has an
+ * encoder, so gate-on callers cannot accidentally bypass the owner facade. */
+void *mglRenderCppRenderEncoderOwnerGetCurrentForFallback(void *owner);
+int mglRenderCppRenderEncoderOwnerHasCurrent(void *owner);
 void mglRenderCppDestroyRenderEncoderOwner(void **owner);
 int mglRenderCppEndRenderEncoder(void *render_encoder);
 int mglRenderCppCreateBlitEncoder(void *command_buffer,
@@ -2617,6 +3123,27 @@ int mglRenderCppCreateBlitEncoder(void *command_buffer,
 int mglRenderCppCreateBlitEncoderFromCommandBufferOwner(
     void *command_buffer_owner,
     void **blit_encoder_out);
+/* Encode a complete texture-to-texture preservation copy inside the owner.
+ * Every common array slice and mip level is copied at its full mip extent;
+ * encoder creation and endEncoding remain entirely in C++. */
+int mglRenderCppCopyMatchingTextureSubresourcesForCommandBufferOwner(
+    void *command_buffer_owner,
+    void *source_texture,
+    void *destination_texture);
+typedef struct MGLRenderCppBufferCopyEntry_t {
+    void *source_buffer;
+    uint64_t source_offset;
+    void *destination_buffer;
+    uint64_t destination_offset;
+    uint64_t length;
+} MGLRenderCppBufferCopyEntry;
+int mglRenderCppEncodeBufferCopiesForCommandBufferOwner(
+    void *command_buffer_owner,
+    const MGLRenderCppBufferCopyEntry *entries,
+    uint32_t entry_count);
+int mglRenderCppCreateComputeEncoderFromCommandBufferOwner(
+    void *command_buffer_owner,
+    void **compute_encoder_out);
 int mglRenderCppEndBlitEncoder(void *blit_encoder);
 /* Encode and end a complete buffer-to-texture upload blit in C++. The
  * command buffer retains the encoded resources after this function returns. */
@@ -2639,6 +3166,23 @@ int mglRenderCppEncodeTextureUpload(void *command_buffer,
  * range cannot leave a partially encoded layer prefix. */
 int mglRenderCppEncodeTextureUploadLayers(
     void *command_buffer,
+    void *source_buffer,
+    uint64_t source_offset,
+    uint64_t source_bytes_per_row,
+    uint64_t source_bytes_per_image,
+    uint64_t source_layer_stride,
+    uint64_t source_width,
+    uint64_t source_height,
+    uint64_t source_depth,
+    void *destination_texture,
+    uint64_t destination_base_slice,
+    uint64_t layer_count,
+    uint64_t destination_level,
+    uint64_t destination_x,
+    uint64_t destination_y,
+    uint64_t destination_z);
+int mglRenderCppEncodeTextureUploadLayersForCommandBufferOwner(
+    void *command_buffer_owner,
     void *source_buffer,
     uint64_t source_offset,
     uint64_t source_bytes_per_row,
@@ -2790,6 +3334,11 @@ int mglRenderCppEncodeDraw(void *render_encoder,
                            const MGLRenderCppDrawPlan *plan,
                            char *err,
                            size_t errcap);
+int mglRenderCppEncodeDrawForRenderEncoderOwner(
+    void *render_encoder_owner,
+    const MGLRenderCppDrawPlan *plan,
+    char *err,
+    size_t errcap);
 
 typedef struct MGLRenderCppCullDistancePrimitive_t {
     uint32_t vertices[4];
@@ -2863,6 +3412,51 @@ int mglRenderCppSetTessellationFactorBuffer(void *render_encoder,
                                             void *buffer,
                                             uint64_t offset,
                                             uint64_t instance_stride);
+int mglRenderCppSetRenderBufferForOwner(void *render_encoder_owner,
+                                        void *buffer,
+                                        uint64_t offset,
+                                        uint32_t stage,
+                                        uint32_t index);
+int mglRenderCppSetRenderBytesForOwner(void *render_encoder_owner,
+                                       const void *bytes,
+                                       size_t length,
+                                       uint32_t stage,
+                                       uint32_t index);
+int mglRenderCppSetRenderPipelineStateForOwner(void *render_encoder_owner,
+                                               void *pipeline_state);
+int mglRenderCppSetRenderDepthStencilStateForOwner(void *render_encoder_owner,
+                                                   void *depth_stencil_state);
+int mglRenderCppSetRenderTextureForOwner(void *render_encoder_owner,
+                                         void *texture,
+                                         uint32_t stage,
+                                         uint32_t index);
+int mglRenderCppSetRenderSamplerForOwner(void *render_encoder_owner,
+                                         void *sampler,
+                                         uint32_t stage,
+                                         uint32_t index);
+int mglRenderCppSetRenderViewportForOwner(void *render_encoder_owner,
+                                          double origin_x,
+                                          double origin_y,
+                                          double width,
+                                          double height,
+                                          double znear,
+                                          double zfar);
+int mglRenderCppSetRenderScissorForOwner(void *render_encoder_owner,
+                                         uint64_t x,
+                                         uint64_t y,
+                                         uint64_t width,
+                                         uint64_t height);
+int mglRenderCppSetDepthClipModeForOwner(void *render_encoder_owner,
+                                         uint32_t mode);
+int mglRenderCppSetStencilReferenceValuesForOwner(
+    void *render_encoder_owner,
+    uint32_t front_reference,
+    uint32_t back_reference);
+int mglRenderCppSetTessellationFactorBufferForOwner(
+    void *render_encoder_owner,
+    void *buffer,
+    uint64_t offset,
+    uint64_t instance_stride);
 int mglRenderCppDrawPatches(void *render_encoder,
                             uint64_t control_point_count,
                             uint64_t patch_start,
@@ -2920,6 +3514,19 @@ int mglRenderCppExecuteIndirectCommands(void *render_encoder,
                                         void *indirect_buffer,
                                         uint64_t location,
                                         uint64_t length);
+int mglRenderCppReplayBatchDrawsForRenderEncoderOwner(
+    void *render_encoder_owner,
+    const MGLRenderCppReplayBatch *batch,
+    char *err,
+    size_t errcap);
+int mglRenderCppUseRenderResourceForOwner(void *render_encoder_owner,
+                                          void *resource,
+                                          uint32_t usage,
+                                          uint32_t stages);
+int mglRenderCppExecuteIndirectCommandsForOwner(void *render_encoder_owner,
+                                                 void *indirect_buffer,
+                                                 uint64_t location,
+                                                 uint64_t length);
 
 #ifdef __cplusplus
 } // extern "C"

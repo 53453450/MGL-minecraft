@@ -128,6 +128,17 @@ typedef struct GLMContextRec_t {
      * MGLRenderer-owned MGLBatchArena ivar.  Accessed from draw_command.c. */
     MGLBatchArena  *batch_arena;
 
+    /* Borrowed C++ renderer runtime handles.  These are synchronized by the
+     * renderer on the GL thread and never own the pointed-to objects.  Metal
+     * callbacks use them to enter owner facades without selector-forwarding
+     * through mtl_funcs.mtlObj. */
+    void *metal_command_buffer_owner;
+    void *metal_render_encoder_owner;
+    void *metal_render_pass_state_owner;
+    void *metal_query_state_owner;
+    void *metal_command_recovery_owner;
+    void *metal_callback_runtime;
+
     void (* error_func)(GLMContext ctx, const char *func, GLenum type);
 } GLMContextRec;
 

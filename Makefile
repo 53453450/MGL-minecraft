@@ -114,11 +114,15 @@ help:
 		'  make test-dirty-hash  Run the minimal dirty-hash batch regression.' \
 		'  make test             Run the interactive GLFW test application.' \
 		'  make check-air-only   Fail if production paths reference the legacy GLSL->SPIR-V->MSL chain.' \
+		'  make check-p4-metalcpp Fail if the P4 Metal-cpp ownership/callback census regresses.' \
 		'  make clean            Remove local build outputs.'
 
 # P3 硬闸：生产路径不得残留旧 source-compile 链（详见 scripts/check_air_only.sh）。
 check-air-only:
 	@bash scripts/check_air_only.sh
+
+check-p4-metalcpp:
+	@bash scripts/check_p4_metalcpp.sh
 
 # mgl
 #mgl_srcs_c := $(wildcard MGL/src/*.c)
@@ -693,6 +697,7 @@ test-air:
 # The interactive GLFW application and performance benchmark remain explicit.
 test-all:
 	$(MAKE) check-air-only
+	$(MAKE) check-p4-metalcpp
 	$(MAKE) test-frontends
 	$(MAKE) test-air
 	$(MAKE) test-dirty-hash
@@ -703,5 +708,7 @@ test-all:
 	test-legacy-compat test-mglir test-mgllex test-mglparse test-mglsema \
 	test-mglair test-mglair-gtest test-mcrepro test-metalcpp test-frontends \
 	test-air test-all check-air-only
+
+.PHONY: check-p4-metalcpp
 
 -include $(deps)

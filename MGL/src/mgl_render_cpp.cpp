@@ -20,6 +20,7 @@
 #include "mgl_types_program.h"
 #include "mgl_types_state.h"
 #include "mgl_types_sync.h"
+#include "glm_context.h"
 
 #include <algorithm>
 #include <array>
@@ -41,6 +42,7 @@
 #include <vector>
 
 #include <mach/mach.h>
+#include <Block.h>
 #include <objc/runtime.h>
 
 extern "C" void mglMetalCountRelease(int kind);
@@ -62,9 +64,6 @@ extern "C" void mtlFlushBufferRange(GLMContext glm_ctx,
                                      Buffer* buffer,
                                      intptr_t offset,
                                      intptr_t length);
-extern "C" void mtlBindProgram(GLMContext glm_ctx, Program* program);
-extern "C" void mtlFlush(GLMContext glm_ctx, bool finish);
-extern "C" int mglContextHasValidMetalBridge(GLMContext glm_ctx);
 
 namespace mgl {
 
@@ -677,8 +676,6 @@ struct RendererCpp {
     std::array<Buffer*, kPackedStructBufferCapacity> packedStructBuffers{};
     size_t packedStructBufferIndex = 0;
     std::set<BindingState*> bindingStates;
-    std::mutex queryContextMutex;
-    std::map<GLMContext, void*> queryStateOwners;
 };
 
 struct CommandQueueOwner {
@@ -710,22 +707,57 @@ struct CommandBufferSyncList {
 
 struct CommandBufferOwner {
     ~CommandBufferOwner() {
+        if (lastSubmitted) lastSubmitted->release();
         if (current) current->release();
+        if (queue) queue->release();
     }
 
+    /* Retained only for owners created from the C++ queue facade. Adopted
+     * ObjC buffers intentionally leave this null as a fallback. */
+    MTL::CommandQueue* queue = nullptr;
     MTL::CommandBuffer* current = nullptr;
+    /* Most recently accepted submission.  The owner retains this buffer so
+     * finish/readback paths can wait through value-state APIs instead of
+     * mirroring command-buffer lifetime in Objective-C ivars. */
+    MTL::CommandBuffer* lastSubmitted = nullptr;
     CommandBufferSyncList syncs;
     bool commit_in_progress = false;
+    /* Set only by a submit transaction that rotated the owner.  Keeping this
+     * bit beside `current` avoids an ObjC lifecycle mirror while allowing the
+     * caller to consume the already-created buffer exactly once. */
+    bool transaction_created_current = false;
 };
+
+void setLastSubmitted(CommandBufferOwner* owner,
+                      MTL::CommandBuffer* commandBuffer) {
+    if (!owner || owner->lastSubmitted == commandBuffer) return;
+    if (commandBuffer) commandBuffer->retain();
+    if (owner->lastSubmitted) owner->lastSubmitted->release();
+    owner->lastSubmitted = commandBuffer;
+}
 
 struct CommandBufferRecoveryOwner {
     std::mutex mutex;
+    std::atomic<uint32_t> references{1};
     uint64_t consecutiveErrors = 0;
     uint64_t consecutiveSuccesses = 0;
     double lastErrorTime = 0.0;
     bool recoveryMode = false;
     bool resetRequested = false;
 };
+
+void retainCommandRecoveryOwner(CommandBufferRecoveryOwner* owner) {
+    if (owner) {
+        owner->references.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+void releaseCommandRecoveryOwner(CommandBufferRecoveryOwner* owner) {
+    if (owner && owner->references.fetch_sub(
+                      1, std::memory_order_acq_rel) == 1) {
+        delete owner;
+    }
+}
 
 void snapshotCommandRecovery(
     const CommandBufferRecoveryOwner& owner,
@@ -876,6 +908,32 @@ int snapshotCommandBufferState(
 struct CommandBufferCompletionContext {
     ~CommandBufferCompletionContext() { destroy(); }
 
+    void retain() {
+        references.fetch_add(1u, std::memory_order_relaxed);
+    }
+
+    void release() {
+        if (references.fetch_sub(1u, std::memory_order_acq_rel) == 1u) {
+            delete this;
+        }
+    }
+
+    void abandonCallerContext() {
+        std::lock_guard<std::mutex> lock(mutex);
+        context = nullptr;
+        destroyContext = nullptr;
+    }
+
+    void configure(MGLRenderCppCommandBufferCompletion completionCallback,
+                   void* callbackContext,
+                   MGLRenderCppDestroyContext destroyFunction) {
+        std::lock_guard<std::mutex> lock(mutex);
+        completed = false;
+        callback = completionCallback;
+        context = callbackContext;
+        destroyContext = destroyFunction;
+    }
+
     void destroy() {
         void* value = nullptr;
         MGLRenderCppDestroyContext destroyFunction = nullptr;
@@ -907,6 +965,7 @@ struct CommandBufferCompletionContext {
     }
 
     std::mutex mutex;
+    std::atomic<uint32_t> references{1u};
     bool completed = false;
     MGLRenderCppCommandBufferCompletion callback = nullptr;
     void* context = nullptr;
@@ -1674,16 +1733,6 @@ int mglRenderCppBindBufferStorage(Buffer* buffer,
         return MGL_RENDER_CPP_BUFFER_ERROR;
     }
 
-    const bool clientStorage =
-        (buffer->storage_flags & GL_CLIENT_STORAGE_BIT) != 0;
-    const bool persistentNoCopy =
-        buffer->data.buffer_data != 0 &&
-        (buffer->immutable_storage & BUFFER_IMMUTABLE_STORAGE_FLAG) != 0 &&
-        (buffer->storage_flags & GL_MAP_PERSISTENT_BIT) != 0;
-    if (clientStorage || persistentNoCopy) {
-        return MGL_RENDER_CPP_BUFFER_NOT_APPLICABLE;
-    }
-
     if (buffer->size <= 0 ||
         static_cast<size_t>(buffer->size) > kMaxSafeBufferSize) {
         if (err && errcap) {
@@ -1721,13 +1770,36 @@ int mglRenderCppBindBufferStorage(Buffer* buffer,
         allocationSize = static_cast<size_t>(buffer->size);
     }
 
+    const bool clientStorage =
+        (buffer->storage_flags & GL_CLIENT_STORAGE_BIT) != 0;
+    const bool persistentNoCopy =
+        bytes &&
+        (buffer->immutable_storage & BUFFER_IMMUTABLE_STORAGE_FLAG) != 0 &&
+        (buffer->storage_flags & GL_MAP_PERSISTENT_BIT) != 0;
+    const bool noCopy = clientStorage || persistentNoCopy;
+    if (noCopy && !bytes) {
+        if (err && errcap) {
+            snprintf(err, errcap,
+                     "no-copy buffer has no CPU backing buffer=%u",
+                     static_cast<unsigned>(buffer->name));
+        }
+        buffer->data.mtl_data = nullptr;
+        return MGL_RENDER_CPP_BUFFER_ERROR;
+    }
+    if (clientStorage) {
+        allocationSize = static_cast<size_t>(buffer->size);
+    }
+
     void* metalBuffer = nullptr;
     mglMetalCountCreate(mgl::kMetalKindBuffer);
-    int result = bytes
-        ? mglRenderCppCreateBufferWithBytes(
-              bytes, allocationSize, options, nullptr, &metalBuffer)
-        : mglRenderCppCreateBuffer(
-              allocationSize, options, nullptr, &metalBuffer);
+    int result = noCopy
+        ? mglRenderCppCreateBufferWithBytesNoCopy(
+              bytes, allocationSize, options, nullptr, 1, &metalBuffer)
+        : (bytes
+            ? mglRenderCppCreateBufferWithBytes(
+                  bytes, allocationSize, options, nullptr, &metalBuffer)
+            : mglRenderCppCreateBuffer(
+                  allocationSize, options, nullptr, &metalBuffer));
     if (result != 0 || !metalBuffer) {
         if (err && errcap) {
             snprintf(err, errcap, "Metal buffer creation failed size=%zu",
@@ -1738,7 +1810,7 @@ int mglRenderCppBindBufferStorage(Buffer* buffer,
     }
 
     buffer->data.mtl_data = metalBuffer;
-    buffer->data.mtl_owns_buffer_data = GL_FALSE;
+    buffer->data.mtl_owns_buffer_data = noCopy ? GL_TRUE : GL_FALSE;
     if (!bytes) buffer->data.buffer_data = 0;
     return MGL_RENDER_CPP_BUFFER_BOUND;
 }
@@ -2722,31 +2794,81 @@ int mglRenderCppBindAIRProgram(Program* program,
 }
 
 void mglRenderCppBindProgram(GLMContext glm_ctx, Program* program) {
+    (void)glm_ctx;
     int failedStage = -1;
     char error[256] = {};
     int result = mglRenderCppBindAIRProgram(
         program, &failedStage, error, sizeof(error));
     if (result == MGL_RENDER_CPP_AIR_PROGRAM_BOUND) return;
-    if (result == MGL_RENDER_CPP_AIR_PROGRAM_NOT_APPLICABLE) {
-        mtlBindProgram(glm_ctx, program);
-        return;
-    }
     fprintf(stderr,
-            "MGL ERROR: Metal-cpp AIR program bind failed program=%u "
+            "MGL ERROR: Metal-cpp program bind failed program=%u "
             "stage=%d: %s\n",
             program ? (unsigned)program->name : 0u, failedStage,
-            error[0] ? error : "unknown error");
+            error[0]
+                ? error
+                : (result == MGL_RENDER_CPP_AIR_PROGRAM_NOT_APPLICABLE
+                       ? "linked program has no AIR metallib"
+                       : "unknown error"));
+}
+
+void mglRenderCppGetSync(GLMContext glm_ctx, Sync* sync) {
+    if (!sync) return;
+
+    mgl::releaseBridgedObject(&sync->mtl_command_buffer);
+    mgl::releaseBridgedObject(&sync->mtl_event);
+    if (!glm_ctx || !glm_ctx->metal_command_buffer_owner) return;
+
+    void* render_owner = glm_ctx->metal_render_encoder_owner;
+    if (render_owner &&
+        mglRenderCppRenderEncoderOwnerHasCurrent(render_owner) == 1 &&
+        mglRenderCppEndRenderEncoderOwner(render_owner) != 0) {
+        return;
+    }
+
+    void* command_owner = glm_ctx->metal_command_buffer_owner;
+    MGLRenderCppCommandBufferState state = {};
+    if (mglRenderCppGetCommandBufferOwnerState(command_owner, &state) != 0 ||
+        state.status !=
+            static_cast<uint32_t>(MTL::CommandBufferStatusNotEnqueued) ||
+        state.has_error) {
+        void* next = nullptr;
+        (void)mglRenderCppCommandBufferOwnerCreateNext(command_owner, &next);
+        return;
+    }
+
+    void* submission = nullptr;
+    void* command_buffer = nullptr;
+    if (mglRenderCppTakeCommandBufferSubmission(
+            command_owner, &submission, &command_buffer) != 0 ||
+        !submission || !command_buffer) {
+        mglRenderCppDestroyCommandBufferSubmission(&submission);
+        return;
+    }
+
+    MTL::CommandBuffer* command =
+        static_cast<MTL::CommandBuffer*>(command_buffer);
+    command->retain();
+    sync->mtl_command_buffer = command;
+
+    MGLRenderCppCommandBufferTransaction transaction = {};
+    int result = mglRenderCppCommitCommandBufferTransaction(
+        command_owner, &submission, command_buffer,
+        glm_ctx->metal_command_recovery_owner, 0u, &transaction);
+    mglRenderCppDestroyCommandBufferSubmission(&submission);
+    if (result != 0 &&
+        transaction.result !=
+            MGL_RENDER_CPP_COMMAND_BUFFER_TRANSACTION_COMMITTED) {
+        mgl::releaseBridgedObject(&sync->mtl_command_buffer);
+    }
 }
 
 void mglRenderCppWaitForSync(GLMContext glm_ctx, Sync* sync) {
     (void)glm_ctx;
     if (!sync) return;
     if (sync->mtl_command_buffer) {
-        MTL::CommandBuffer* commandBuffer =
-            static_cast<MTL::CommandBuffer*>(sync->mtl_command_buffer);
-        if (commandBuffer->status() != MTL::CommandBufferStatusCompleted) {
-            commandBuffer->waitUntilCompleted();
-        }
+        MGLRenderCppCommandBufferState state = {};
+        (void)mglRenderCppWaitCommandBufferState(
+            sync->mtl_command_buffer, &state);
         mgl::releaseBridgedObject(&sync->mtl_command_buffer);
     }
     mgl::releaseBridgedObject(&sync->mtl_event);
@@ -2769,15 +2891,768 @@ void mglRenderCppReleaseSync(GLMContext glm_ctx, Sync* sync) {
     mgl::releaseBridgedObject(&sync->mtl_event);
 }
 
-uint64_t mglRenderCppGetGPUTimestamp(GLMContext glm_ctx) {
-    if (!mglContextHasValidMetalBridge(glm_ctx)) {
-        return 0;
+void mglRenderCppFlush(GLMContext glm_ctx, bool finish) {
+    if (!glm_ctx || !glm_ctx->metal_command_buffer_owner) return;
+
+    Sync boundary = {};
+    mglRenderCppGetSync(glm_ctx, &boundary);
+    if (finish) {
+        if (boundary.mtl_command_buffer) {
+            mglRenderCppWaitForSync(glm_ctx, &boundary);
+        } else {
+            MGLRenderCppCommandBufferState state = {};
+            (void)mglRenderCppWaitCommandBufferOwnerLastSubmitted(
+                glm_ctx->metal_command_buffer_owner, &state);
+        }
+    } else {
+        mglRenderCppReleaseSync(glm_ctx, &boundary);
+    }
+}
+
+void mglRenderCppInvalidateRenderPass(GLMContext glm_ctx) {
+    if (!glm_ctx || !glm_ctx->metal_render_encoder_owner) return;
+    if (mglRenderCppRenderEncoderOwnerHasCurrent(
+            glm_ctx->metal_render_encoder_owner) == 1) {
+        (void)mglRenderCppEndRenderEncoderOwner(
+            glm_ctx->metal_render_encoder_owner);
+    }
+}
+
+namespace {
+
+struct RendererCallbackRuntime {
+    void* context = nullptr;
+    MGLRenderCppCallbackRuntimeOps ops = {};
+};
+
+RendererCallbackRuntime* callbackRuntime(GLMContext glm_ctx) {
+    return glm_ctx
+        ? static_cast<RendererCallbackRuntime*>(glm_ctx->metal_callback_runtime)
+        : nullptr;
+}
+
+void mglRenderCppDispatchComputeCallback(GLMContext glm_ctx,
+                                         unsigned int groups_x,
+                                         unsigned int groups_y,
+                                         unsigned int groups_z) {
+    RendererCallbackRuntime* runtime = callbackRuntime(glm_ctx);
+    if (!runtime || !runtime->ops.dispatch_compute) return;
+    runtime->ops.dispatch_compute(
+        runtime->context, glm_ctx, groups_x, groups_y, groups_z);
+}
+
+void mglRenderCppDispatchComputeIndirectCallback(GLMContext glm_ctx,
+                                                 intptr_t indirect) {
+    RendererCallbackRuntime* runtime = callbackRuntime(glm_ctx);
+    if (!runtime || !runtime->ops.dispatch_compute_indirect) return;
+    runtime->ops.dispatch_compute_indirect(
+        runtime->context, glm_ctx, indirect);
+}
+
+void dispatchDrawCallback(GLMContext glm_ctx,
+                          const MGLRenderCppDrawCallbackArgs& args) {
+    RendererCallbackRuntime* runtime = callbackRuntime(glm_ctx);
+    if (!runtime || !runtime->ops.draw) return;
+    runtime->ops.draw(runtime->context, glm_ctx, &args);
+}
+
+int dispatchResourceCallback(GLMContext glm_ctx,
+                             const MGLRenderCppResourceCallbackArgs& args) {
+    RendererCallbackRuntime* runtime = callbackRuntime(glm_ctx);
+    return runtime && runtime->ops.resource
+        ? runtime->ops.resource(runtime->context, glm_ctx, &args)
+        : 0;
+}
+
+uint64_t dispatchLegacyCallback(GLMContext glm_ctx,
+                                const MGLRenderCppLegacyCallbackArgs& args) {
+    RendererCallbackRuntime* runtime = callbackRuntime(glm_ctx);
+    return runtime && runtime->ops.legacy
+        ? runtime->ops.legacy(runtime->context, glm_ctx, &args)
+        : 0;
+}
+
+void mglRenderCppBindTextureCallback(GLMContext glm_ctx, Texture* texture) {
+    RendererCallbackRuntime* runtime = callbackRuntime(glm_ctx);
+    if (!runtime || !runtime->ops.bind_texture) return;
+    runtime->ops.bind_texture(runtime->context, glm_ctx, texture);
+}
+
+void mglRenderCppFlushDrawBufferCallback(GLMContext glm_ctx) {
+    RendererCallbackRuntime* runtime = callbackRuntime(glm_ctx);
+    if (!runtime || !runtime->ops.flush_draw_buffer) return;
+    runtime->ops.flush_draw_buffer(runtime->context, glm_ctx);
+}
+
+void mglRenderCppSwapBuffersCallback(GLMContext glm_ctx) {
+    RendererCallbackRuntime* runtime = callbackRuntime(glm_ctx);
+    if (!runtime || !runtime->ops.swap_buffers) return;
+    runtime->ops.swap_buffers(runtime->context, glm_ctx);
+}
+
+void mglRenderCppClearBufferCallback(GLMContext glm_ctx,
+                                     unsigned int type,
+                                     unsigned int mask) {
+    RendererCallbackRuntime* runtime = callbackRuntime(glm_ctx);
+    if (!runtime || !runtime->ops.clear_buffer) return;
+    runtime->ops.clear_buffer(runtime->context, glm_ctx, type, mask);
+}
+
+void mglRenderCppBlitFramebufferCallback(
+    GLMContext glm_ctx, int src_x0, int src_y0, int src_x1, int src_y1,
+    int dst_x0, int dst_y0, int dst_x1, int dst_y1, unsigned int mask,
+    unsigned int filter) {
+    RendererCallbackRuntime* runtime = callbackRuntime(glm_ctx);
+    if (!runtime || !runtime->ops.blit_framebuffer) return;
+    runtime->ops.blit_framebuffer(runtime->context, glm_ctx,
+                                  src_x0, src_y0, src_x1, src_y1,
+                                  dst_x0, dst_y0, dst_x1, dst_y1,
+                                  mask, filter);
+}
+
+void mglRenderCppReadDrawableCallback(GLMContext glm_ctx, void* pixel_bytes,
+                                      unsigned int bytes_per_row,
+                                      unsigned int bytes_per_image,
+                                      int x, int y, int width, int height) {
+    MGLRenderCppResourceCallbackArgs args = {};
+    args.kind = MGL_RENDER_CPP_RESOURCE_CALLBACK_READ_DRAWABLE;
+    args.pixel_bytes = pixel_bytes;
+    args.bytes_per_row = bytes_per_row;
+    args.bytes_per_image = bytes_per_image;
+    args.x = x;
+    args.y = y;
+    args.width = width;
+    args.height = height;
+    dispatchResourceCallback(glm_ctx, args);
+}
+
+void mglRenderCppReadIntegerPixelsCallback(
+    GLMContext glm_ctx, void* pixel_bytes, unsigned int bytes_per_row,
+    unsigned int bytes_per_image, int x, int y, int width, int height,
+    unsigned int format, unsigned int type) {
+    MGLRenderCppResourceCallbackArgs args = {};
+    args.kind = MGL_RENDER_CPP_RESOURCE_CALLBACK_READ_INTEGER_PIXELS;
+    args.pixel_bytes = pixel_bytes;
+    args.bytes_per_row = bytes_per_row;
+    args.bytes_per_image = bytes_per_image;
+    args.x = x;
+    args.y = y;
+    args.width = width;
+    args.height = height;
+    args.format = format;
+    args.type = type;
+    dispatchResourceCallback(glm_ctx, args);
+}
+
+void mglRenderCppReadDepthPixelsCallback(
+    GLMContext glm_ctx, void* pixel_bytes, unsigned int bytes_per_row,
+    unsigned int bytes_per_image, int x, int y, int width, int height) {
+    MGLRenderCppResourceCallbackArgs args = {};
+    args.kind = MGL_RENDER_CPP_RESOURCE_CALLBACK_READ_DEPTH_PIXELS;
+    args.pixel_bytes = pixel_bytes;
+    args.bytes_per_row = bytes_per_row;
+    args.bytes_per_image = bytes_per_image;
+    args.x = x;
+    args.y = y;
+    args.width = width;
+    args.height = height;
+    dispatchResourceCallback(glm_ctx, args);
+}
+
+void mglRenderCppGetTexImageCallback(
+    GLMContext glm_ctx, Texture* texture, void* pixel_bytes,
+    unsigned int bytes_per_row, unsigned int bytes_per_image,
+    int x, int y, int width, int height, unsigned int format,
+    unsigned int type, unsigned int level, unsigned int slice) {
+    MGLRenderCppResourceCallbackArgs args = {};
+    args.kind = MGL_RENDER_CPP_RESOURCE_CALLBACK_GET_TEX_IMAGE;
+    args.texture = texture;
+    args.pixel_bytes = pixel_bytes;
+    args.bytes_per_row = bytes_per_row;
+    args.bytes_per_image = bytes_per_image;
+    args.x = x;
+    args.y = y;
+    args.width = width;
+    args.height = height;
+    args.format = format;
+    args.type = type;
+    args.level = level;
+    args.slice = slice;
+    dispatchResourceCallback(glm_ctx, args);
+}
+
+void mglRenderCppGenerateMipmapsCallback(GLMContext glm_ctx,
+                                         Texture* texture) {
+    MGLRenderCppResourceCallbackArgs args = {};
+    args.kind = MGL_RENDER_CPP_RESOURCE_CALLBACK_GENERATE_MIPMAPS;
+    args.texture = texture;
+    dispatchResourceCallback(glm_ctx, args);
+}
+
+void mglRenderCppTexSubImageCallback(
+    GLMContext glm_ctx, Texture* texture, Buffer* buffer,
+    size_t source_offset, size_t source_pitch, size_t source_image_size,
+    size_t source_size, unsigned int slice, unsigned int level,
+    size_t width, size_t height, size_t depth, size_t x_offset,
+    size_t y_offset, size_t z_offset) {
+    MGLRenderCppResourceCallbackArgs args = {};
+    args.kind = MGL_RENDER_CPP_RESOURCE_CALLBACK_TEX_SUB_IMAGE;
+    args.texture = texture;
+    args.buffer = buffer;
+    args.source_offset = source_offset;
+    args.source_pitch = source_pitch;
+    args.source_image_size = source_image_size;
+    args.source_size = source_size;
+    args.slice = slice;
+    args.level = level;
+    args.width = width;
+    args.height = height;
+    args.depth = depth;
+    args.x_offset = x_offset;
+    args.y_offset = y_offset;
+    args.z_offset = z_offset;
+    dispatchResourceCallback(glm_ctx, args);
+}
+
+bool mglRenderCppTexSubImageBytesCallback(
+    GLMContext glm_ctx, Texture* texture, const void* bytes, size_t bytes_size,
+    size_t source_offset, size_t source_pitch, size_t source_image_size,
+    unsigned int slice, unsigned int level, size_t width, size_t height,
+    size_t depth, size_t x_offset, size_t y_offset, size_t z_offset) {
+    MGLRenderCppResourceCallbackArgs args = {};
+    args.kind = MGL_RENDER_CPP_RESOURCE_CALLBACK_TEX_SUB_IMAGE_BYTES;
+    args.texture = texture;
+    args.bytes = bytes;
+    args.bytes_size = bytes_size;
+    args.source_offset = source_offset;
+    args.source_pitch = source_pitch;
+    args.source_image_size = source_image_size;
+    args.slice = slice;
+    args.level = level;
+    args.width = width;
+    args.height = height;
+    args.depth = depth;
+    args.x_offset = x_offset;
+    args.y_offset = y_offset;
+    args.z_offset = z_offset;
+    return dispatchResourceCallback(glm_ctx, args) != 0;
+}
+
+void mglRenderCppCopyTexSubImageCallback(
+    GLMContext glm_ctx, Texture* texture, unsigned int slice, int level,
+    int x_offset, int y_offset, int x, int y, int width, int height) {
+    MGLRenderCppResourceCallbackArgs args = {};
+    args.kind = MGL_RENDER_CPP_RESOURCE_CALLBACK_COPY_TEX_SUB_IMAGE;
+    args.texture = texture;
+    args.slice = slice;
+    args.level = static_cast<uint32_t>(level);
+    args.x_offset = static_cast<size_t>(x_offset);
+    args.y_offset = static_cast<size_t>(y_offset);
+    args.x = x;
+    args.y = y;
+    args.width = width;
+    args.height = height;
+    dispatchResourceCallback(glm_ctx, args);
+}
+
+void mglRenderCppCopyImageSubDataCallback(
+    GLMContext glm_ctx, Texture* source_texture, int source_level,
+    int source_x, int source_y, int source_z, Texture* destination_texture,
+    int destination_level, int destination_x, int destination_y,
+    int destination_z, int width, int height, int depth) {
+    MGLRenderCppResourceCallbackArgs args = {};
+    args.kind = MGL_RENDER_CPP_RESOURCE_CALLBACK_COPY_IMAGE_SUB_DATA;
+    args.source_texture = source_texture;
+    args.destination_texture = destination_texture;
+    args.source_level = source_level;
+    args.source_x = source_x;
+    args.source_y = source_y;
+    args.source_z = source_z;
+    args.destination_level = destination_level;
+    args.destination_x = destination_x;
+    args.destination_y = destination_y;
+    args.destination_z = destination_z;
+    args.width = width;
+    args.height = height;
+    args.depth = depth;
+    dispatchResourceCallback(glm_ctx, args);
+}
+
+void mglRenderCppDrawArraysCallback(GLMContext glm_ctx, unsigned int mode,
+                                    int first, int count) {
+    MGLRenderCppDrawCallbackArgs args = {};
+    args.kind = MGL_RENDER_CPP_DRAW_CALLBACK_ARRAYS;
+    args.mode = mode;
+    args.first = first;
+    args.count = count;
+    dispatchDrawCallback(glm_ctx, args);
+}
+
+void mglRenderCppDrawElementsCallback(GLMContext glm_ctx, unsigned int mode,
+                                      int count, unsigned int type,
+                                      const void* indices) {
+    MGLRenderCppDrawCallbackArgs args = {};
+    args.kind = MGL_RENDER_CPP_DRAW_CALLBACK_ELEMENTS;
+    args.mode = mode;
+    args.type = type;
+    args.count = count;
+    args.indices_or_indirect = indices;
+    dispatchDrawCallback(glm_ctx, args);
+}
+
+void mglRenderCppDrawRangeElementsCallback(GLMContext glm_ctx,
+                                           unsigned int mode,
+                                           unsigned int start,
+                                           unsigned int end,
+                                           int count,
+                                           unsigned int type,
+                                           const void* indices) {
+    MGLRenderCppDrawCallbackArgs args = {};
+    args.kind = MGL_RENDER_CPP_DRAW_CALLBACK_RANGE_ELEMENTS;
+    args.mode = mode;
+    args.start = start;
+    args.end = end;
+    args.count = count;
+    args.type = type;
+    args.indices_or_indirect = indices;
+    dispatchDrawCallback(glm_ctx, args);
+}
+
+void mglRenderCppDrawArraysInstancedCallback(GLMContext glm_ctx,
+                                             unsigned int mode,
+                                             int first,
+                                             int count,
+                                             int instance_count) {
+    MGLRenderCppDrawCallbackArgs args = {};
+    args.kind = MGL_RENDER_CPP_DRAW_CALLBACK_ARRAYS_INSTANCED;
+    args.mode = mode;
+    args.first = first;
+    args.count = count;
+    args.instance_count = instance_count;
+    dispatchDrawCallback(glm_ctx, args);
+}
+
+void mglRenderCppDrawElementsInstancedCallback(GLMContext glm_ctx,
+                                               unsigned int mode,
+                                               int count,
+                                               unsigned int type,
+                                               const void* indices,
+                                               int instance_count) {
+    MGLRenderCppDrawCallbackArgs args = {};
+    args.kind = MGL_RENDER_CPP_DRAW_CALLBACK_ELEMENTS_INSTANCED;
+    args.mode = mode;
+    args.count = count;
+    args.type = type;
+    args.indices_or_indirect = indices;
+    args.instance_count = instance_count;
+    dispatchDrawCallback(glm_ctx, args);
+}
+
+void mglRenderCppDrawElementsBaseVertexCallback(GLMContext glm_ctx,
+                                                unsigned int mode,
+                                                int count,
+                                                unsigned int type,
+                                                const void* indices,
+                                                int base_vertex) {
+    MGLRenderCppDrawCallbackArgs args = {};
+    args.kind = MGL_RENDER_CPP_DRAW_CALLBACK_ELEMENTS_BASE_VERTEX;
+    args.mode = mode;
+    args.count = count;
+    args.type = type;
+    args.indices_or_indirect = indices;
+    args.base_vertex = base_vertex;
+    dispatchDrawCallback(glm_ctx, args);
+}
+
+void mglRenderCppDrawRangeElementsBaseVertexCallback(
+    GLMContext glm_ctx, unsigned int mode, unsigned int start,
+    unsigned int end, int count, unsigned int type, const void* indices,
+    int base_vertex) {
+    MGLRenderCppDrawCallbackArgs args = {};
+    args.kind = MGL_RENDER_CPP_DRAW_CALLBACK_RANGE_ELEMENTS_BASE_VERTEX;
+    args.mode = mode;
+    args.start = start;
+    args.end = end;
+    args.count = count;
+    args.type = type;
+    args.indices_or_indirect = indices;
+    args.base_vertex = base_vertex;
+    dispatchDrawCallback(glm_ctx, args);
+}
+
+void mglRenderCppDrawElementsInstancedBaseVertexCallback(
+    GLMContext glm_ctx, unsigned int mode, int count, unsigned int type,
+    const void* indices, int instance_count, int base_vertex) {
+    MGLRenderCppDrawCallbackArgs args = {};
+    args.kind = MGL_RENDER_CPP_DRAW_CALLBACK_ELEMENTS_INSTANCED_BASE_VERTEX;
+    args.mode = mode;
+    args.count = count;
+    args.type = type;
+    args.indices_or_indirect = indices;
+    args.instance_count = instance_count;
+    args.base_vertex = base_vertex;
+    dispatchDrawCallback(glm_ctx, args);
+}
+
+void mglRenderCppDrawArraysIndirectCallback(GLMContext glm_ctx,
+                                            unsigned int mode,
+                                            const void* indirect) {
+    MGLRenderCppDrawCallbackArgs args = {};
+    args.kind = MGL_RENDER_CPP_DRAW_CALLBACK_ARRAYS_INDIRECT;
+    args.mode = mode;
+    args.indices_or_indirect = indirect;
+    dispatchDrawCallback(glm_ctx, args);
+}
+
+void mglRenderCppDrawElementsIndirectCallback(GLMContext glm_ctx,
+                                              unsigned int mode,
+                                              unsigned int type,
+                                              const void* indirect) {
+    MGLRenderCppDrawCallbackArgs args = {};
+    args.kind = MGL_RENDER_CPP_DRAW_CALLBACK_ELEMENTS_INDIRECT;
+    args.mode = mode;
+    args.type = type;
+    args.indices_or_indirect = indirect;
+    dispatchDrawCallback(glm_ctx, args);
+}
+
+void mglRenderCppDrawArraysInstancedBaseInstanceCallback(
+    GLMContext glm_ctx, unsigned int mode, int first, int count,
+    int instance_count, unsigned int base_instance) {
+    MGLRenderCppDrawCallbackArgs args = {};
+    args.kind = MGL_RENDER_CPP_DRAW_CALLBACK_ARRAYS_INSTANCED_BASE_INSTANCE;
+    args.mode = mode;
+    args.first = first;
+    args.count = count;
+    args.instance_count = instance_count;
+    args.base_instance = base_instance;
+    dispatchDrawCallback(glm_ctx, args);
+}
+
+void mglRenderCppDrawElementsInstancedBaseInstanceCallback(
+    GLMContext glm_ctx, unsigned int mode, int count, unsigned int type,
+    const void* indices, int instance_count, unsigned int base_instance) {
+    MGLRenderCppDrawCallbackArgs args = {};
+    args.kind = MGL_RENDER_CPP_DRAW_CALLBACK_ELEMENTS_INSTANCED_BASE_INSTANCE;
+    args.mode = mode;
+    args.count = count;
+    args.type = type;
+    args.indices_or_indirect = indices;
+    args.instance_count = instance_count;
+    args.base_instance = base_instance;
+    dispatchDrawCallback(glm_ctx, args);
+}
+
+void mglRenderCppDrawElementsInstancedBaseVertexBaseInstanceCallback(
+    GLMContext glm_ctx, unsigned int mode, int count, unsigned int type,
+    const void* indices, int instance_count, int base_vertex,
+    unsigned int base_instance) {
+    MGLRenderCppDrawCallbackArgs args = {};
+    args.kind =
+        MGL_RENDER_CPP_DRAW_CALLBACK_ELEMENTS_INSTANCED_BASE_VERTEX_BASE_INSTANCE;
+    args.mode = mode;
+    args.count = count;
+    args.type = type;
+    args.indices_or_indirect = indices;
+    args.instance_count = instance_count;
+    args.base_vertex = base_vertex;
+    args.base_instance = base_instance;
+    dispatchDrawCallback(glm_ctx, args);
+}
+
+void mglRenderCppMultiDrawArraysCallback(GLMContext glm_ctx,
+                                         unsigned int mode,
+                                         const int* firsts,
+                                         const int* counts,
+                                         int draw_count) {
+    MGLRenderCppDrawCallbackArgs args = {};
+    args.kind = MGL_RENDER_CPP_DRAW_CALLBACK_MULTI_ARRAYS;
+    args.mode = mode;
+    args.firsts = firsts;
+    args.counts = counts;
+    args.draw_count = draw_count;
+    dispatchDrawCallback(glm_ctx, args);
+}
+
+void mglRenderCppMultiDrawElementsCallback(GLMContext glm_ctx,
+                                           unsigned int mode,
+                                           const int* counts,
+                                           unsigned int type,
+                                           const void* const* indices,
+                                           int draw_count) {
+    MGLRenderCppDrawCallbackArgs args = {};
+    args.kind = MGL_RENDER_CPP_DRAW_CALLBACK_MULTI_ELEMENTS;
+    args.mode = mode;
+    args.type = type;
+    args.counts = counts;
+    args.indices_or_indirect = indices;
+    args.draw_count = draw_count;
+    dispatchDrawCallback(glm_ctx, args);
+}
+
+void mglRenderCppMultiDrawElementsBaseVertexCallback(
+    GLMContext glm_ctx, unsigned int mode, const int* counts,
+    unsigned int type, const void* const* indices, int draw_count,
+    const int* base_vertices) {
+    MGLRenderCppDrawCallbackArgs args = {};
+    args.kind = MGL_RENDER_CPP_DRAW_CALLBACK_MULTI_ELEMENTS_BASE_VERTEX;
+    args.mode = mode;
+    args.type = type;
+    args.counts = counts;
+    args.indices_or_indirect = indices;
+    args.draw_count = draw_count;
+    args.base_vertices = base_vertices;
+    dispatchDrawCallback(glm_ctx, args);
+}
+
+void mglRenderCppMultiDrawArraysIndirectCallback(GLMContext glm_ctx,
+                                                 unsigned int mode,
+                                                 const void* indirect,
+                                                 int draw_count,
+                                                 int stride) {
+    MGLRenderCppDrawCallbackArgs args = {};
+    args.kind = MGL_RENDER_CPP_DRAW_CALLBACK_MULTI_ARRAYS_INDIRECT;
+    args.mode = mode;
+    args.indices_or_indirect = indirect;
+    args.draw_count = draw_count;
+    args.stride = stride;
+    dispatchDrawCallback(glm_ctx, args);
+}
+
+void mglRenderCppMultiDrawElementsIndirectCallback(GLMContext glm_ctx,
+                                                   unsigned int mode,
+                                                   unsigned int type,
+                                                   const void* indirect,
+                                                   int draw_count,
+                                                   int stride) {
+    MGLRenderCppDrawCallbackArgs args = {};
+    args.kind = MGL_RENDER_CPP_DRAW_CALLBACK_MULTI_ELEMENTS_INDIRECT;
+    args.mode = mode;
+    args.type = type;
+    args.indices_or_indirect = indirect;
+    args.draw_count = draw_count;
+    args.stride = stride;
+    dispatchDrawCallback(glm_ctx, args);
+}
+
+}  // namespace
+
+uint64_t mglRenderCppInvokeLegacyCallback(
+    GLMContext glm_ctx,
+    const MGLRenderCppLegacyCallbackArgs* args) {
+    return args ? dispatchLegacyCallback(glm_ctx, *args) : 0;
+}
+
+void mglRenderCppInvokeBindTextureCallback(GLMContext glm_ctx,
+                                           Texture* texture) {
+    mglRenderCppBindTextureCallback(glm_ctx, texture);
+}
+
+void mglRenderCppInvokeFlushDrawBufferCallback(GLMContext glm_ctx) {
+    mglRenderCppFlushDrawBufferCallback(glm_ctx);
+}
+
+void mglRenderCppInvokeSwapBuffersCallback(GLMContext glm_ctx) {
+    mglRenderCppSwapBuffersCallback(glm_ctx);
+}
+
+void mglRenderCppInvokeClearBufferCallback(GLMContext glm_ctx,
+                                           unsigned int type,
+                                           unsigned int mask) {
+    mglRenderCppClearBufferCallback(glm_ctx, type, mask);
+}
+
+void mglRenderCppInvokeBlitFramebufferCallback(
+    GLMContext glm_ctx, int src_x0, int src_y0, int src_x1, int src_y1,
+    int dst_x0, int dst_y0, int dst_x1, int dst_y1, unsigned int mask,
+    unsigned int filter) {
+    mglRenderCppBlitFramebufferCallback(
+        glm_ctx, src_x0, src_y0, src_x1, src_y1,
+        dst_x0, dst_y0, dst_x1, dst_y1, mask, filter);
+}
+
+int mglRenderCppInvokeResourceCallback(
+    GLMContext glm_ctx,
+    const MGLRenderCppResourceCallbackArgs* args) {
+    return args ? dispatchResourceCallback(glm_ctx, *args) : 0;
+}
+
+void mglRenderCppInvokeComputeCallback(GLMContext glm_ctx,
+                                       unsigned int groups_x,
+                                       unsigned int groups_y,
+                                       unsigned int groups_z) {
+    mglRenderCppDispatchComputeCallback(
+        glm_ctx, groups_x, groups_y, groups_z);
+}
+
+void mglRenderCppInvokeComputeIndirectCallback(GLMContext glm_ctx,
+                                               intptr_t indirect) {
+    mglRenderCppDispatchComputeIndirectCallback(glm_ctx, indirect);
+}
+
+void mglRenderCppInvokeDrawCallback(
+    GLMContext glm_ctx,
+    const MGLRenderCppDrawCallbackArgs* args) {
+    if (args) dispatchDrawCallback(glm_ctx, *args);
+}
+
+int mglRenderCppCreateCallbackRuntime(
+    void* runtime_context,
+    const MGLRenderCppCallbackRuntimeOps* ops,
+    void** runtime_out) {
+    if (runtime_out) *runtime_out = nullptr;
+    if (!runtime_context || !ops || !runtime_out) return -1;
+    RendererCallbackRuntime* runtime = new (std::nothrow) RendererCallbackRuntime;
+    if (!runtime) return -1;
+    runtime->context = runtime_context;
+    runtime->ops = *ops;
+    *runtime_out = runtime;
+    return 0;
+}
+
+void mglRenderCppDestroyCallbackRuntime(void** runtime_io) {
+    if (!runtime_io || !*runtime_io) return;
+    delete static_cast<RendererCallbackRuntime*>(*runtime_io);
+    *runtime_io = nullptr;
+}
+
+int mglRenderCppInstallMetalCallbacks(
+    GLMContext glm_ctx,
+    MGLRenderCppCallbackInstallResult* result_out) {
+    if (result_out) memset(result_out, 0, sizeof(*result_out));
+    if (!glm_ctx || !result_out) return -1;
+
+    RendererCallbackRuntime* runtime = callbackRuntime(glm_ctx);
+    if (!runtime || !runtime->ops.dispatch_compute ||
+        !runtime->ops.dispatch_compute_indirect || !runtime->ops.draw ||
+        !runtime->ops.bind_texture || !runtime->ops.flush_draw_buffer ||
+        !runtime->ops.swap_buffers || !runtime->ops.clear_buffer ||
+        !runtime->ops.blit_framebuffer || !runtime->ops.resource) {
+        return -1;
     }
 
-    /* Preserve the existing GL ordering contract through the ObjC flush
-     * adapter.  Only the callback entry and timestamp sample move to C++;
-     * commit/AGX recovery remains owned by the legacy high-level path. */
-    mtlFlush(glm_ctx, true);
+    glm_ctx->mtl_funcs.mtlBindBuffer = mglRenderCppBindBuffer;
+    glm_ctx->mtl_funcs.mtlBufferSubData = mglRenderCppBufferSubData;
+    glm_ctx->mtl_funcs.mtlMapUnmapBuffer = mglRenderCppMapUnmapBuffer;
+    glm_ctx->mtl_funcs.mtlReadBackBuffer = mglRenderCppReadBackBuffer;
+    glm_ctx->mtl_funcs.mtlFlushBufferRange = mglRenderCppFlushBufferRange;
+    glm_ctx->mtl_funcs.mtlBindProgram = mglRenderCppBindProgram;
+    glm_ctx->mtl_funcs.mtlGetSync = mglRenderCppGetSync;
+    glm_ctx->mtl_funcs.mtlBeginSampleQuery =
+        mglRenderCppBeginSampleQueryCallback;
+    glm_ctx->mtl_funcs.mtlEndSampleQuery =
+        mglRenderCppEndSampleQueryCallback;
+    glm_ctx->mtl_funcs.mtlGetGPUTimestamp = mglRenderCppGetGPUTimestamp;
+    glm_ctx->mtl_funcs.mtlBeginTimerQuery =
+        mglRenderCppBeginTimerQueryCallback;
+    glm_ctx->mtl_funcs.mtlEndTimerQuery =
+        mglRenderCppEndTimerQueryCallback;
+    glm_ctx->mtl_funcs.mtlDeleteMTLObj = mglRenderCppDeleteMTLObj;
+    glm_ctx->mtl_funcs.release_buffer_metal_data =
+        mglRenderCppReleaseBufferMetalData;
+    glm_ctx->mtl_funcs.mtlWaitForSync = mglRenderCppWaitForSync;
+    glm_ctx->mtl_funcs.mtlGetSyncStatus = mglRenderCppGetSyncStatus;
+    glm_ctx->mtl_funcs.mtlReleaseSync = mglRenderCppReleaseSync;
+    glm_ctx->mtl_funcs.mtlFlush = mglRenderCppFlush;
+    glm_ctx->mtl_funcs.mtlInvalidateRenderPass =
+        mglRenderCppInvalidateRenderPass;
+    glm_ctx->mtl_funcs.mtlDispatchCompute =
+        mglRenderCppDispatchComputeCallback;
+    glm_ctx->mtl_funcs.mtlDispatchComputeIndirect =
+        mglRenderCppDispatchComputeIndirectCallback;
+    glm_ctx->mtl_funcs.mtlDrawArrays = mglRenderCppDrawArraysCallback;
+    glm_ctx->mtl_funcs.mtlDrawElements = mglRenderCppDrawElementsCallback;
+    glm_ctx->mtl_funcs.mtlDrawRangeElements =
+        mglRenderCppDrawRangeElementsCallback;
+    glm_ctx->mtl_funcs.mtlDrawArraysInstanced =
+        mglRenderCppDrawArraysInstancedCallback;
+    glm_ctx->mtl_funcs.mtlDrawElementsInstanced =
+        mglRenderCppDrawElementsInstancedCallback;
+    glm_ctx->mtl_funcs.mtlDrawElementsBaseVertex =
+        mglRenderCppDrawElementsBaseVertexCallback;
+    glm_ctx->mtl_funcs.mtlDrawRangeElementsBaseVertex =
+        mglRenderCppDrawRangeElementsBaseVertexCallback;
+    glm_ctx->mtl_funcs.mtlDrawElementsInstancedBaseVertex =
+        mglRenderCppDrawElementsInstancedBaseVertexCallback;
+    glm_ctx->mtl_funcs.mtlDrawArraysIndirect =
+        mglRenderCppDrawArraysIndirectCallback;
+    glm_ctx->mtl_funcs.mtlDrawElementsIndirect =
+        mglRenderCppDrawElementsIndirectCallback;
+    glm_ctx->mtl_funcs.mtlDrawArraysInstancedBaseInstance =
+        mglRenderCppDrawArraysInstancedBaseInstanceCallback;
+    glm_ctx->mtl_funcs.mtlDrawElementsInstancedBaseInstance =
+        mglRenderCppDrawElementsInstancedBaseInstanceCallback;
+    glm_ctx->mtl_funcs.mtlDrawElementsInstancedBaseVertexBaseInstance =
+        mglRenderCppDrawElementsInstancedBaseVertexBaseInstanceCallback;
+    glm_ctx->mtl_funcs.mtlMultiDrawArrays =
+        mglRenderCppMultiDrawArraysCallback;
+    glm_ctx->mtl_funcs.mtlMultiDrawElements =
+        mglRenderCppMultiDrawElementsCallback;
+    glm_ctx->mtl_funcs.mtlMultiDrawElementsBaseVertex =
+        mglRenderCppMultiDrawElementsBaseVertexCallback;
+    glm_ctx->mtl_funcs.mtlMultiDrawArraysIndirect =
+        mglRenderCppMultiDrawArraysIndirectCallback;
+    glm_ctx->mtl_funcs.mtlMultiDrawElementsIndirect =
+        mglRenderCppMultiDrawElementsIndirectCallback;
+    glm_ctx->mtl_funcs.mtlBindTexture = mglRenderCppBindTextureCallback;
+    glm_ctx->mtl_funcs.mtlFlushDrawBuffer =
+        mglRenderCppFlushDrawBufferCallback;
+    glm_ctx->mtl_funcs.mtlSwapBuffers = mglRenderCppSwapBuffersCallback;
+    glm_ctx->mtl_funcs.mtlClearBuffer = mglRenderCppClearBufferCallback;
+    glm_ctx->mtl_funcs.mtlBlitFramebuffer =
+        mglRenderCppBlitFramebufferCallback;
+    glm_ctx->mtl_funcs.mtlReadDrawable = mglRenderCppReadDrawableCallback;
+    glm_ctx->mtl_funcs.mtlReadIntegerPixels =
+        mglRenderCppReadIntegerPixelsCallback;
+    glm_ctx->mtl_funcs.mtlReadDepthPixels =
+        mglRenderCppReadDepthPixelsCallback;
+    glm_ctx->mtl_funcs.mtlGetTexImage = mglRenderCppGetTexImageCallback;
+    glm_ctx->mtl_funcs.mtlGenerateMipmaps =
+        mglRenderCppGenerateMipmapsCallback;
+    glm_ctx->mtl_funcs.mtlTexSubImage = mglRenderCppTexSubImageCallback;
+    glm_ctx->mtl_funcs.mtlTexSubImageBytes =
+        mglRenderCppTexSubImageBytesCallback;
+    glm_ctx->mtl_funcs.mtlCopyTexSubImage =
+        mglRenderCppCopyTexSubImageCallback;
+    glm_ctx->mtl_funcs.mtlCopyImageSubData =
+        mglRenderCppCopyImageSubDataCallback;
+    result_out->installed = 53;
+    result_out->strict_cpp = 19;
+    result_out->pure_adapter = 34;
+    result_out->legacy_fallback = 0;
+    return 0;
+}
+
+int mglRenderCppAttachRuntimeOwners(GLMContext glm_ctx,
+                                    void* command_buffer_owner,
+                                    void* render_encoder_owner,
+                                    void* render_pass_state_owner,
+                                    void* query_state_owner,
+                                    void* command_recovery_owner) {
+    if (!glm_ctx) return -1;
+    glm_ctx->metal_command_buffer_owner = command_buffer_owner;
+    glm_ctx->metal_render_encoder_owner = render_encoder_owner;
+    glm_ctx->metal_render_pass_state_owner = render_pass_state_owner;
+    glm_ctx->metal_query_state_owner = query_state_owner;
+    glm_ctx->metal_command_recovery_owner = command_recovery_owner;
+    return 0;
+}
+
+void mglRenderCppDetachRuntimeOwners(GLMContext glm_ctx) {
+    if (!glm_ctx) return;
+    glm_ctx->metal_command_buffer_owner = nullptr;
+    glm_ctx->metal_render_encoder_owner = nullptr;
+    glm_ctx->metal_render_pass_state_owner = nullptr;
+    glm_ctx->metal_query_state_owner = nullptr;
+    glm_ctx->metal_command_recovery_owner = nullptr;
+}
+
+uint64_t mglRenderCppGetGPUTimestamp(GLMContext glm_ctx) {
+    if (!glm_ctx) return 0;
+
+    /* The GL semantic layer establishes the ordering boundary before entering
+     * this callback. Sampling itself is entirely C++ and does not need the
+     * ObjC renderer bridge. */
     uint64_t cpu_timestamp = 0;
     uint64_t gpu_timestamp = 0;
     return mglRenderCppSampleTimestamps(
@@ -2785,50 +3660,99 @@ uint64_t mglRenderCppGetGPUTimestamp(GLMContext glm_ctx) {
         ? gpu_timestamp : 0;
 }
 
+void mglRenderCppBeginSampleQueryCallback(GLMContext glm_ctx,
+                                          unsigned int target) {
+    if (!glm_ctx || !glm_ctx->metal_query_state_owner) return;
+
+    void* visibility_buffer = nullptr;
+    if (mglRenderCppBeginSampleQuery(
+            glm_ctx->metal_query_state_owner,
+            target == GL_SAMPLES_PASSED ? 1u : 0u,
+            "MGL Visibility Result", &visibility_buffer) != 0 ||
+        !visibility_buffer) {
+        return;
+    }
+
+    uint32_t mode = 0;
+    uint64_t offset = 0;
+    if (mglRenderCppAcquireSampleQuerySlot(
+            glm_ctx->metal_query_state_owner, &mode, &offset) != 0) {
+        return;
+    }
+
+    bool pass_has_visibility = false;
+    MGLRenderCppRenderPassState pass = {};
+    if (glm_ctx->metal_render_pass_state_owner &&
+        mglRenderCppGetRenderPassStateOwner(
+            glm_ctx->metal_render_pass_state_owner, &pass) == 0) {
+        pass_has_visibility = pass.visibility_result_buffer != nullptr;
+    }
+
+    void* render_owner = glm_ctx->metal_render_encoder_owner;
+    if (!render_owner ||
+        mglRenderCppRenderEncoderOwnerHasCurrent(render_owner) != 1) {
+        return;
+    }
+    if (!pass_has_visibility ||
+        mglRenderCppSetVisibilityResultModeForRenderEncoderOwner(
+            render_owner, mode, offset) != 0) {
+        (void)mglRenderCppEndRenderEncoderOwner(render_owner);
+    }
+}
+
+uint64_t mglRenderCppEndSampleQueryCallback(GLMContext glm_ctx) {
+    if (!glm_ctx || !glm_ctx->metal_query_state_owner) return 0;
+
+    void* render_owner = glm_ctx->metal_render_encoder_owner;
+    if (render_owner &&
+        mglRenderCppRenderEncoderOwnerHasCurrent(render_owner) == 1) {
+        (void)mglRenderCppEndRenderEncoderOwner(render_owner);
+    }
+    mglRenderCppEndSampleQuery(glm_ctx->metal_query_state_owner);
+
+    void* visibility_buffer = nullptr;
+    if (mglRenderCppGetQueryVisibilityBuffer(
+            glm_ctx->metal_query_state_owner, &visibility_buffer) == 0 &&
+        visibility_buffer) {
+        Sync boundary = {};
+        mglRenderCppGetSync(glm_ctx, &boundary);
+        mglRenderCppWaitForSync(glm_ctx, &boundary);
+    }
+
+    uint64_t result = 0;
+    return mglRenderCppGetSampleQueryResult(
+               glm_ctx->metal_query_state_owner, &result) == 0
+        ? result : 0;
+}
+
 int mglRenderCppRegisterContextQueryStateOwner(GLMContext glm_ctx,
                                                void* query_owner) {
     if (!glm_ctx || !query_owner) return -1;
-    mgl::RendererCpp& renderer = mgl::renderer();
-    std::lock_guard<std::mutex> lock(renderer.queryContextMutex);
-    renderer.queryStateOwners[glm_ctx] = query_owner;
+    glm_ctx->metal_query_state_owner = query_owner;
     return 0;
 }
 
 void mglRenderCppUnregisterContextQueryStateOwner(GLMContext glm_ctx,
                                                   void* query_owner) {
     if (!glm_ctx || !query_owner) return;
-    mgl::RendererCpp& renderer = mgl::renderer();
-    std::lock_guard<std::mutex> lock(renderer.queryContextMutex);
-    auto found = renderer.queryStateOwners.find(glm_ctx);
-    if (found != renderer.queryStateOwners.end() &&
-        found->second == query_owner) {
-        renderer.queryStateOwners.erase(found);
+    if (glm_ctx->metal_query_state_owner == query_owner) {
+        glm_ctx->metal_query_state_owner = nullptr;
     }
 }
 
 void mglRenderCppBeginTimerQueryCallback(GLMContext glm_ctx) {
-    if (!mglContextHasValidMetalBridge(glm_ctx)) return;
-    mtlFlush(glm_ctx, true);
-
-    mgl::RendererCpp& renderer = mgl::renderer();
-    std::lock_guard<std::mutex> lock(renderer.queryContextMutex);
-    auto found = renderer.queryStateOwners.find(glm_ctx);
-    if (found == renderer.queryStateOwners.end() ||
-        mglRenderCppBeginTimerQuery(found->second) != 0) {
+    if (!glm_ctx) return;
+    if (!glm_ctx->metal_query_state_owner ||
+        mglRenderCppBeginTimerQuery(glm_ctx->metal_query_state_owner) != 0) {
         fprintf(stderr, "MGL ERROR: failed to begin Metal-cpp timer query\n");
     }
 }
 
 uint64_t mglRenderCppEndTimerQueryCallback(GLMContext glm_ctx) {
-    if (!mglContextHasValidMetalBridge(glm_ctx)) return 0;
-    mtlFlush(glm_ctx, true);
-
-    mgl::RendererCpp& renderer = mgl::renderer();
-    std::lock_guard<std::mutex> lock(renderer.queryContextMutex);
-    auto found = renderer.queryStateOwners.find(glm_ctx);
+    if (!glm_ctx) return 0;
     uint64_t elapsed = 0;
-    return found != renderer.queryStateOwners.end() &&
-           mglRenderCppEndTimerQuery(found->second, &elapsed) == 0
+    return glm_ctx->metal_query_state_owner &&
+           mglRenderCppEndTimerQuery(glm_ctx->metal_query_state_owner, &elapsed) == 0
         ? elapsed : 0;
 }
 
@@ -9611,6 +10535,17 @@ int mglRenderCppSetVisibilityResultMode(void* render_encoder,
     return 0;
 }
 
+int mglRenderCppSetVisibilityResultModeForRenderEncoderOwner(
+    void* render_encoder_owner,
+    uint32_t mode,
+    uint64_t offset) {
+    mgl::RenderEncoderOwner* owner =
+        static_cast<mgl::RenderEncoderOwner*>(render_encoder_owner);
+    if (!owner || !owner->encoder || owner->ended) return -1;
+    return mglRenderCppSetVisibilityResultMode(
+        owner->encoder, mode, offset);
+}
+
 int mglRenderCppSampleTimestamps(uint64_t* cpu_timestamp_out,
                                  uint64_t* gpu_timestamp_out) {
     if (!cpu_timestamp_out || !gpu_timestamp_out) return -1;
@@ -11146,6 +12081,79 @@ int mglRenderCppAppendComputeBindingSnapshotToPlan(
     return 0;
 }
 
+int mglRenderCppAppendComputeDispatchToPlan(
+    MGLRenderCppComputeExecutionPlan* plan,
+    const MGLRenderCppComputePlan* dispatch,
+    char* err,
+    size_t errcap) {
+    if (err && errcap) err[0] = '\0';
+    if (!plan || !dispatch ||
+        plan->dispatch_op_count >=
+            MGL_RENDER_CPP_COMPUTE_EXECUTION_MAX_DISPATCHES) {
+        if (err && errcap) snprintf(err, errcap, "compute dispatch sequence overflow");
+        return -1;
+    }
+    if (dispatch->dispatch_kind == MGL_RENDER_CPP_COMPUTE_DISPATCH_DIRECT) {
+        if (!dispatch->groups_x || !dispatch->groups_y || !dispatch->groups_z) {
+            if (err && errcap) snprintf(err, errcap, "zero compute dispatch groups");
+            return -1;
+        }
+    } else if (dispatch->dispatch_kind ==
+               MGL_RENDER_CPP_COMPUTE_DISPATCH_INDIRECT) {
+        if (!dispatch->indirect_buffer) {
+            if (err && errcap) snprintf(err, errcap, "null indirect buffer");
+            return -1;
+        }
+    } else {
+        if (err && errcap) snprintf(err, errcap, "bad dispatch kind %u",
+                                    dispatch->dispatch_kind);
+        return -1;
+    }
+    MGLRenderCppComputeDispatchEntry* entry =
+        &plan->dispatch_ops[plan->dispatch_op_count++];
+    entry->binding_op_count = plan->binding_op_count;
+    entry->dispatch = *dispatch;
+    return 0;
+}
+
+static int mglRenderCppEncodeComputeDispatchOnEncoder(
+    MTL::ComputeCommandEncoder* encoder,
+    const MGLRenderCppComputePlan* dispatch,
+    char* err,
+    size_t errcap) {
+    if (!encoder || !dispatch) return -1;
+    const uint32_t local_x = dispatch->local_x ? dispatch->local_x : 1u;
+    const uint32_t local_y = dispatch->local_y ? dispatch->local_y : 1u;
+    const uint32_t local_z = dispatch->local_z ? dispatch->local_z : 1u;
+    const MTL::Size threads(local_x, local_y, local_z);
+    if (dispatch->dispatch_kind == MGL_RENDER_CPP_COMPUTE_DISPATCH_DIRECT) {
+        if (!dispatch->groups_x || !dispatch->groups_y || !dispatch->groups_z) {
+            if (err && errcap) snprintf(err, errcap, "zero compute dispatch groups");
+            return -1;
+        }
+        encoder->dispatchThreadgroups(
+            MTL::Size(dispatch->groups_x, dispatch->groups_y,
+                      dispatch->groups_z),
+            threads);
+        return 0;
+    }
+    if (dispatch->dispatch_kind == MGL_RENDER_CPP_COMPUTE_DISPATCH_INDIRECT) {
+        MTL::Buffer* indirect =
+            static_cast<MTL::Buffer*>(dispatch->indirect_buffer);
+        if (!indirect) {
+            if (err && errcap) snprintf(err, errcap, "null indirect buffer");
+            return -1;
+        }
+        encoder->dispatchThreadgroups(
+            indirect, static_cast<NS::UInteger>(dispatch->indirect_offset),
+            threads);
+        return 0;
+    }
+    if (err && errcap) snprintf(err, errcap, "bad dispatch kind %u",
+                                dispatch->dispatch_kind);
+    return -1;
+}
+
 int mglRenderCppEncodeComputeExecutionPlanForCommandBufferOwner(
     void* command_buffer_owner,
     const MGLRenderCppComputeExecutionPlan* plan,
@@ -11159,6 +12167,85 @@ int mglRenderCppEncodeComputeExecutionPlanForCommandBufferOwner(
     if (plan->binding_op_count > MGL_RENDER_CPP_COMPUTE_EXECUTION_MAX_OPS) {
         if (err && errcap) snprintf(err, errcap, "compute execution op overflow");
         return -1;
+    }
+    if (plan->dispatch_op_count >
+        MGL_RENDER_CPP_COMPUTE_EXECUTION_MAX_DISPATCHES) {
+        if (err && errcap) snprintf(err, errcap, "compute dispatch sequence overflow");
+        return -1;
+    }
+    const uint32_t validBarrierScope =
+        MGL_RENDER_CPP_COMPUTE_BARRIER_BUFFERS |
+        MGL_RENDER_CPP_COMPUTE_BARRIER_TEXTURES |
+        MGL_RENDER_CPP_COMPUTE_BARRIER_RENDER_TARGETS;
+    if (plan->barrier_scope & ~validBarrierScope) {
+        if (err && errcap) snprintf(err, errcap, "invalid compute barrier scope");
+        return -1;
+    }
+    for (uint32_t i = 0; i < plan->binding_op_count; i++) {
+        const MGLRenderCppComputeBindingOp* op = &plan->binding_ops[i];
+        if (op->kind > 3u || (op->kind == 1u && !op->bytes)) {
+            if (err && errcap) {
+                snprintf(err, errcap, "invalid compute binding op %u", i);
+            }
+            return -1;
+        }
+    }
+    if (plan->dispatch_op_count == 0 &&
+        plan->dispatch.dispatch_kind ==
+            MGL_RENDER_CPP_COMPUTE_DISPATCH_DIRECT &&
+        (!plan->dispatch.groups_x || !plan->dispatch.groups_y ||
+         !plan->dispatch.groups_z)) {
+        if (err && errcap) snprintf(err, errcap, "zero compute dispatch groups");
+        return -1;
+    }
+    if (plan->dispatch_op_count == 0 &&
+        plan->dispatch.dispatch_kind ==
+            MGL_RENDER_CPP_COMPUTE_DISPATCH_INDIRECT &&
+        !plan->dispatch.indirect_buffer) {
+        if (err && errcap) snprintf(err, errcap, "null indirect buffer");
+        return -1;
+    }
+    if (plan->dispatch_op_count == 0 &&
+        plan->dispatch.dispatch_kind !=
+            MGL_RENDER_CPP_COMPUTE_DISPATCH_DIRECT &&
+        plan->dispatch.dispatch_kind !=
+            MGL_RENDER_CPP_COMPUTE_DISPATCH_INDIRECT) {
+        if (err && errcap) {
+            snprintf(err, errcap, "bad dispatch kind %u",
+                     plan->dispatch.dispatch_kind);
+        }
+        return -1;
+    }
+    uint32_t previousDispatchBindingCount = 0u;
+    for (uint32_t i = 0; i < plan->dispatch_op_count; i++) {
+        const MGLRenderCppComputeDispatchEntry* entry = &plan->dispatch_ops[i];
+        if (entry->binding_op_count < previousDispatchBindingCount ||
+            entry->binding_op_count > plan->binding_op_count) {
+            if (err && errcap) snprintf(err, errcap, "invalid dispatch ordering %u", i);
+            return -1;
+        }
+        if (entry->dispatch.dispatch_kind ==
+                MGL_RENDER_CPP_COMPUTE_DISPATCH_DIRECT &&
+            (!entry->dispatch.groups_x || !entry->dispatch.groups_y ||
+             !entry->dispatch.groups_z)) {
+            if (err && errcap) snprintf(err, errcap, "zero compute dispatch groups");
+            return -1;
+        }
+        if (entry->dispatch.dispatch_kind ==
+                MGL_RENDER_CPP_COMPUTE_DISPATCH_INDIRECT &&
+            !entry->dispatch.indirect_buffer) {
+            if (err && errcap) snprintf(err, errcap, "null indirect buffer");
+            return -1;
+        }
+        if (entry->dispatch.dispatch_kind !=
+                MGL_RENDER_CPP_COMPUTE_DISPATCH_DIRECT &&
+            entry->dispatch.dispatch_kind !=
+                MGL_RENDER_CPP_COMPUTE_DISPATCH_INDIRECT) {
+            if (err && errcap) snprintf(err, errcap, "bad dispatch kind %u",
+                                        entry->dispatch.dispatch_kind);
+            return -1;
+        }
+        previousDispatchBindingCount = entry->binding_op_count;
     }
 
     mgl::CommandBufferOwner* owner =
@@ -11176,7 +12263,19 @@ int mglRenderCppEncodeComputeExecutionPlanForCommandBufferOwner(
 
     encoder->setComputePipelineState(
         static_cast<MTL::ComputePipelineState*>(plan->pipeline));
-    for (uint32_t i = 0; i < plan->binding_op_count; i++) {
+    uint32_t nextDispatch = 0u;
+    for (uint32_t i = 0; i <= plan->binding_op_count; i++) {
+        while (nextDispatch < plan->dispatch_op_count &&
+               plan->dispatch_ops[nextDispatch].binding_op_count == i) {
+            if (mglRenderCppEncodeComputeDispatchOnEncoder(
+                    encoder, &plan->dispatch_ops[nextDispatch].dispatch,
+                    err, errcap) != 0) {
+                encoder->endEncoding();
+                return -1;
+            }
+            nextDispatch++;
+        }
+        if (i == plan->binding_op_count) break;
         const MGLRenderCppComputeBindingOp* op = &plan->binding_ops[i];
         switch (op->kind) {
             case 0u:
@@ -11209,39 +12308,111 @@ int mglRenderCppEncodeComputeExecutionPlanForCommandBufferOwner(
         }
     }
 
-    const MGLRenderCppComputePlan* dispatch = &plan->dispatch;
-    const uint32_t local_x = dispatch->local_x ? dispatch->local_x : 1u;
-    const uint32_t local_y = dispatch->local_y ? dispatch->local_y : 1u;
-    const uint32_t local_z = dispatch->local_z ? dispatch->local_z : 1u;
-    MTL::Size threads = MTL::Size(local_x, local_y, local_z);
-    if (dispatch->dispatch_kind == MGL_RENDER_CPP_COMPUTE_DISPATCH_DIRECT) {
-        if (!dispatch->groups_x || !dispatch->groups_y || !dispatch->groups_z) {
-            encoder->endEncoding();
-            if (err && errcap) snprintf(err, errcap, "zero compute dispatch groups");
-            return -1;
-        }
-        encoder->dispatchThreadgroups(
-            MTL::Size(dispatch->groups_x, dispatch->groups_y, dispatch->groups_z),
-            threads);
-    } else if (dispatch->dispatch_kind ==
-               MGL_RENDER_CPP_COMPUTE_DISPATCH_INDIRECT) {
-        MTL::Buffer* indirect =
-            static_cast<MTL::Buffer*>(dispatch->indirect_buffer);
-        if (!indirect) {
-            encoder->endEncoding();
-            if (err && errcap) snprintf(err, errcap, "null indirect buffer");
-            return -1;
-        }
-        encoder->dispatchThreadgroups(
-            indirect, static_cast<NS::UInteger>(dispatch->indirect_offset),
-            threads);
-    } else {
+    if (plan->dispatch_op_count == 0 &&
+        mglRenderCppEncodeComputeDispatchOnEncoder(
+            encoder, &plan->dispatch, err, errcap) != 0) {
         encoder->endEncoding();
-        if (err && errcap) snprintf(err, errcap, "bad dispatch kind %u",
-                                    dispatch->dispatch_kind);
         return -1;
     }
+    if (plan->barrier_scope != MGL_RENDER_CPP_COMPUTE_BARRIER_NONE) {
+        encoder->memoryBarrier(static_cast<MTL::BarrierScope>(
+            plan->barrier_scope));
+    }
     encoder->endEncoding();
+    return 0;
+}
+
+extern "C"
+int mglRenderCppExecuteComputeExecutionPlan(
+    void* command_buffer_owner,
+    void* recovery_owner,
+    const MGLRenderCppComputeExecutionPlan* plan,
+    const MGLRenderCppCopyBackEntry* copy_backs,
+    uint32_t copy_back_count,
+    uint32_t require_cpu_visibility,
+    MGLRenderCppComputeExecutionResult* result,
+    char* err,
+    size_t errcap) {
+    if (err && errcap) err[0] = '\0';
+    if (result) {
+        memset(result, 0, sizeof(*result));
+        result->failed_copy_back_index = copy_back_count;
+    }
+    if (!command_buffer_owner || !plan || !result ||
+        (!copy_backs && copy_back_count)) {
+        if (err && errcap) snprintf(err, errcap, "bad compute transaction args");
+        return -1;
+    }
+
+    /* Reject malformed copy-backs before opening the compute encoder. */
+    if (mglRenderCppEncodeStageBindingCopyBacks(
+            copy_backs, copy_back_count, nullptr) != 0) {
+        if (err && errcap) snprintf(err, errcap, "invalid compute copy-back");
+        for (uint32_t i = 0; i < copy_back_count; i++) {
+            const MGLRenderCppCopyBackEntry& entry = copy_backs[i];
+            if (!entry.length) continue;
+            MTL::Buffer* temporary = static_cast<MTL::Buffer*>(
+                const_cast<void*>(entry.temporary));
+            MTL::Buffer* destination = static_cast<MTL::Buffer*>(
+                const_cast<void*>(entry.destination));
+            if (!temporary || !destination ||
+                entry.length > temporary->length() ||
+                entry.destination_offset > destination->length() ||
+                entry.length > destination->length() - entry.destination_offset) {
+                result->failed_copy_back_index = i;
+                break;
+            }
+        }
+        return -1;
+    }
+    if (mglRenderCppEncodeComputeExecutionPlanForCommandBufferOwner(
+            command_buffer_owner, plan, err, errcap) != 0) {
+        return -1;
+    }
+
+    bool has_copies = false;
+    for (uint32_t i = 0; i < copy_back_count; i++) {
+        has_copies = has_copies || copy_backs[i].length != 0;
+    }
+    if (!has_copies && !require_cpu_visibility) return 0;
+
+    mgl::CommandBufferOwner* owner =
+        static_cast<mgl::CommandBufferOwner*>(command_buffer_owner);
+    MTL::CommandBuffer* command_buffer = owner->current;
+    if (!command_buffer) {
+        if (err && errcap) snprintf(err, errcap, "no compute command buffer");
+        return -1;
+    }
+    if (has_copies) {
+        MTL::BlitCommandEncoder* blit = command_buffer->blitCommandEncoder();
+        if (!blit) {
+            if (err && errcap) snprintf(err, errcap, "compute copy-back encoder failed");
+            return -1;
+        }
+        int encode_result = mglRenderCppEncodeStageBindingCopyBacks(
+            copy_backs, copy_back_count, blit);
+        blit->endEncoding();
+        if (encode_result != 0) {
+            if (err && errcap) snprintf(err, errcap, "compute copy-back encode failed");
+            return -1;
+        }
+    }
+
+    result->submitted = 1u;
+    if (mglRenderCppCommitCommandBufferTransaction(
+            command_buffer_owner, nullptr, command_buffer, recovery_owner,
+            1u, &result->transaction) != 0 ||
+        result->transaction.has_error) {
+        if (err && errcap) snprintf(err, errcap, "compute submit/wait failed");
+        return -1;
+    }
+    if (mglRenderCppCopyBackCPUPrefix(
+            copy_backs, copy_back_count,
+            &result->failed_copy_back_index) != 0) {
+        if (err && errcap) snprintf(err, errcap, "compute CPU prefix sync failed");
+        return -1;
+    }
+    result->cpu_prefix_synchronized = 1u;
     return 0;
 }
 
@@ -11321,6 +12492,23 @@ int mglRenderCppBeginComputeDispatch(
     }
     *compute_encoder_out = encoder;
     return 0;
+}
+
+int mglRenderCppBeginComputeDispatchForCommandBufferOwner(
+    void* command_buffer_owner,
+    const MGLRenderCppComputeDispatchSetup* setup,
+    void** compute_encoder_out,
+    char* err,
+    size_t errcap) {
+    mgl::CommandBufferOwner* owner =
+        static_cast<mgl::CommandBufferOwner*>(command_buffer_owner);
+    if (!owner || !owner->current) {
+        if (err && errcap) snprintf(err, errcap, "missing current command buffer");
+        if (compute_encoder_out) *compute_encoder_out = nullptr;
+        return -1;
+    }
+    return mglRenderCppBeginComputeDispatch(
+        owner->current, setup, compute_encoder_out, err, errcap);
 }
 
 int mglRenderCppEndComputeDispatch(void* compute_encoder,
@@ -11404,6 +12592,397 @@ int mglRenderCppClassifyCommandBufferCommit(
     return 0;
 }
 
+namespace {
+
+double commandRecoveryNowSeconds() {
+    using Clock = std::chrono::system_clock;
+    return std::chrono::duration<double>(Clock::now().time_since_epoch()).count();
+}
+
+void snapshotCommandRecoveryOwner(
+    mgl::CommandBufferRecoveryOwner* owner,
+    MGLRenderCppCommandRecoverySnapshot* state) {
+    if (!owner || !state) return;
+    std::lock_guard<std::mutex> lock(owner->mutex);
+    mgl::snapshotCommandRecovery(*owner, state);
+}
+
+int applyCommandRecoveryFailure(
+    mgl::CommandBufferRecoveryOwner* owner,
+    const MGLRenderCppCommandBufferState* state,
+    bool request_reset,
+    MGLRenderCppCommandBufferTransaction* transaction) {
+    if (!owner || !transaction) return -1;
+    if (transaction->recovery_error_recorded) {
+        snapshotCommandRecoveryOwner(owner, &transaction->recovery);
+        return 0;
+    }
+
+    MGLRenderCppCommandBufferCompletionDecision decision = {};
+    if (state && mglRenderCppClassifyCommandBufferCompletion(
+                     state, &decision) != 0) {
+        return -1;
+    }
+    const bool driver_rejection = decision.is_driver_rejection != 0;
+    {
+        std::lock_guard<std::mutex> lock(owner->mutex);
+        owner->consecutiveErrors++;
+        owner->consecutiveSuccesses = 0;
+        owner->lastErrorTime = commandRecoveryNowSeconds();
+        mgl::snapshotCommandRecovery(*owner, &transaction->recovery);
+    }
+    transaction->has_error = 1u;
+    transaction->is_driver_rejection = driver_rejection ? 1u : 0u;
+    transaction->device_reset_requested =
+        (request_reset || driver_rejection) ? 1u : 0u;
+    transaction->recovery_error_recorded = 1u;
+    return 0;
+}
+
+struct CommandRecoveryCompletionContext {
+    ~CommandRecoveryCompletionContext() {
+        mgl::releaseCommandRecoveryOwner(owner);
+    }
+
+    void retain() {
+        references.fetch_add(1u, std::memory_order_relaxed);
+    }
+
+    void release() {
+        if (references.fetch_sub(1u, std::memory_order_acq_rel) == 1u) {
+            delete this;
+        }
+    }
+
+    std::atomic<uint32_t> references{1u};
+    std::mutex applyMutex;
+    mgl::CommandBufferRecoveryOwner* owner = nullptr;
+    bool completionApplied = false;
+    bool completionHadError = false;
+    bool completionWasDriverRejection = false;
+    bool transactionFailureApplied = false;
+};
+
+void processCommandRecoveryCompletionLocked(
+    CommandRecoveryCompletionContext* completion,
+    const MGLRenderCppCommandBufferState* state,
+    MGLRenderCppCommandBufferCompletionResult* result_out) {
+    if (!completion || !completion->owner || !state) return;
+    MGLRenderCppCommandBufferCompletionDecision decision = {};
+    if (mglRenderCppClassifyCommandBufferCompletion(state, &decision) != 0) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(completion->applyMutex);
+    if (completion->transactionFailureApplied ||
+        completion->completionApplied) {
+        if (result_out) {
+            result_out->decision = decision;
+            snapshotCommandRecoveryOwner(completion->owner,
+                                         &result_out->state);
+        }
+        return;
+    }
+
+    MGLRenderCppCommandBufferCompletionResult result = {};
+    if (mglRenderCppProcessCommandBufferCompletion(
+            completion->owner, state, commandRecoveryNowSeconds(), &result) != 0) {
+        return;
+    }
+    completion->completionApplied = true;
+    completion->completionHadError = result.decision.has_error != 0;
+    completion->completionWasDriverRejection =
+        result.decision.is_driver_rejection != 0;
+    if (result.decision.is_driver_rejection) {
+        std::lock_guard<std::mutex> ownerLock(completion->owner->mutex);
+        completion->owner->resetRequested = true;
+    }
+    if (result_out) *result_out = result;
+}
+
+void commandRecoveryCompletion(void* context,
+                               const MGLRenderCppCommandBufferState* state) {
+    processCommandRecoveryCompletionLocked(
+        static_cast<CommandRecoveryCompletionContext*>(context), state,
+        nullptr);
+}
+
+void destroyCommandRecoveryCompletionContext(void* context) {
+    CommandRecoveryCompletionContext* completion =
+        static_cast<CommandRecoveryCompletionContext*>(context);
+    if (completion) completion->release();
+}
+
+int addCommandBufferRecoveryCompletion(
+    void* command_buffer,
+    void* recovery_owner,
+    CommandRecoveryCompletionContext** context_out) {
+    if (context_out) *context_out = nullptr;
+    if (!command_buffer || !recovery_owner) return -1;
+    CommandRecoveryCompletionContext* context =
+        new (std::nothrow) CommandRecoveryCompletionContext();
+    if (!context) return -1;
+    context->owner =
+        static_cast<mgl::CommandBufferRecoveryOwner*>(recovery_owner);
+    mgl::retainCommandRecoveryOwner(context->owner);
+    if (context_out) {
+        context->retain();
+        *context_out = context;
+    }
+    int result = mglRenderCppAddCommandBufferCompletion(
+        command_buffer, commandRecoveryCompletion, context,
+        destroyCommandRecoveryCompletionContext);
+    if (result != 0) {
+        if (context_out) {
+            *context_out = nullptr;
+            context->release();
+        }
+        context->release();
+    }
+    return result;
+}
+
+int applyCommandRecoveryTransactionFailure(
+    CommandRecoveryCompletionContext* completion,
+    mgl::CommandBufferRecoveryOwner* owner,
+    const MGLRenderCppCommandBufferState* state,
+    MGLRenderCppCommandBufferTransaction* transaction) {
+    if (!owner || !transaction) return 0;
+    if (!completion) {
+        return applyCommandRecoveryFailure(owner, state, true, transaction);
+    }
+
+    std::lock_guard<std::mutex> lock(completion->applyMutex);
+    if (completion->transactionFailureApplied ||
+        (completion->completionApplied && completion->completionHadError)) {
+        snapshotCommandRecoveryOwner(owner, &transaction->recovery);
+        transaction->has_error = 1u;
+        transaction->is_driver_rejection =
+            completion->completionWasDriverRejection ? 1u : 0u;
+        transaction->device_reset_requested = 1u;
+        transaction->recovery_error_recorded = 1u;
+        return 0;
+    }
+    int result = applyCommandRecoveryFailure(owner, state, true, transaction);
+    if (result == 0) completion->transactionFailureApplied = true;
+    return result;
+}
+
+struct ScopedRecoveryCompletionContext {
+    ~ScopedRecoveryCompletionContext() {
+        if (context) context->release();
+    }
+    CommandRecoveryCompletionContext* context = nullptr;
+};
+
+}  // namespace
+
+extern "C"
+int mglRenderCppCommitCommandBufferTransaction(
+    void* owner_handle,
+    void** submission_handle,
+    void* command_buffer,
+    void* recovery_owner,
+    uint32_t wait_for_completion,
+    MGLRenderCppCommandBufferTransaction* result_out) {
+    if (result_out) memset(result_out, 0, sizeof(*result_out));
+    if (!command_buffer || !result_out) return -1;
+    result_out->result = MGL_RENDER_CPP_COMMAND_BUFFER_TRANSACTION_ERROR;
+
+    MTL::CommandBuffer* command =
+        static_cast<MTL::CommandBuffer*>(command_buffer);
+    mgl::CommandBufferRecoveryOwner* recovery =
+        static_cast<mgl::CommandBufferRecoveryOwner*>(recovery_owner);
+    ScopedRecoveryCompletionContext recovery_completion;
+    if (mgl::snapshotCommandBufferState(command, &result_out->before) != 0) {
+        applyCommandRecoveryTransactionFailure(
+            nullptr, recovery, nullptr, result_out);
+        return -1;
+    }
+
+    MGLRenderCppCommandBufferCommitDecision decision = {};
+    if (mglRenderCppClassifyCommandBufferCommit(
+            &result_out->before, &decision) != 0) {
+        applyCommandRecoveryTransactionFailure(
+            nullptr, recovery, &result_out->before, result_out);
+        return -1;
+    }
+    if (decision.action ==
+        MGL_RENDER_CPP_COMMAND_BUFFER_COMMIT_SKIP_ALREADY_COMMITTED) {
+        result_out->result =
+            MGL_RENDER_CPP_COMMAND_BUFFER_TRANSACTION_SKIPPED;
+        result_out->after = result_out->before;
+        if (result_out->before.has_error && recovery) {
+            applyCommandRecoveryFailure(
+                recovery, &result_out->before, false, result_out);
+        } else if (recovery) {
+            snapshotCommandRecoveryOwner(recovery, &result_out->recovery);
+        }
+        return 0;
+    }
+
+    bool commit_guard_acquired = false;
+    if (owner_handle) {
+        int guard = mglRenderCppCommandBufferOwnerBeginCommit(owner_handle);
+        if (guard < 0) {
+            applyCommandRecoveryTransactionFailure(
+                nullptr, recovery, &result_out->before, result_out);
+            return -1;
+        }
+        if (guard == 0) {
+            result_out->result =
+                MGL_RENDER_CPP_COMMAND_BUFFER_TRANSACTION_NESTED;
+            result_out->after = result_out->before;
+            if (recovery) {
+                snapshotCommandRecoveryOwner(recovery,
+                                             &result_out->recovery);
+            }
+            return 0;
+        }
+        commit_guard_acquired = true;
+    }
+
+    struct CommitGuard {
+        void* owner = nullptr;
+        bool* acquired = nullptr;
+        ~CommitGuard() {
+            if (owner && acquired && *acquired) {
+                mglRenderCppCommandBufferOwnerEndCommit(owner);
+                *acquired = false;
+            }
+        }
+    } commit_guard{owner_handle, &commit_guard_acquired};
+
+    if (submission_handle && *submission_handle &&
+        mglRenderCppCommandBufferSubmissionMatchesBuffer(
+            *submission_handle, command_buffer) != 1) {
+        result_out->after = result_out->before;
+        applyCommandRecoveryTransactionFailure(
+            nullptr, recovery, &result_out->before, result_out);
+        if (!recovery) result_out->has_error = 1u;
+        return -1;
+    }
+
+    int commit_result = -1;
+    bool committed = false;
+    if (recovery &&
+        addCommandBufferRecoveryCompletion(
+            command_buffer, recovery_owner,
+            &recovery_completion.context) != 0) {
+        applyCommandRecoveryTransactionFailure(
+            nullptr, recovery, &result_out->before, result_out);
+        return -1;
+    }
+    result_out->completion_registered = recovery ? 1u : 0u;
+    try {
+        if (submission_handle && *submission_handle &&
+            mglRenderCppCommandBufferSubmissionMatchesBuffer(
+                *submission_handle, command_buffer) == 1) {
+            result_out->used_submission = 1u;
+            commit_result = mglRenderCppCommitCommandBufferSubmission(
+                submission_handle);
+        } else {
+            command->commit();
+            commit_result = 0;
+        }
+        committed = commit_result == 0;
+    } catch (...) {
+        commit_result = -1;
+        applyCommandRecoveryTransactionFailure(
+            recovery_completion.context, recovery, &result_out->before,
+            result_out);
+        if (!recovery) result_out->has_error = 1u;
+    }
+
+    if (mgl::snapshotCommandBufferState(command, &result_out->after) != 0) {
+        applyCommandRecoveryTransactionFailure(
+            recovery_completion.context, recovery, nullptr, result_out);
+        if (!recovery) result_out->has_error = 1u;
+    }
+    if (!committed) {
+        applyCommandRecoveryTransactionFailure(
+            recovery_completion.context, recovery, &result_out->after,
+            result_out);
+        if (!recovery) result_out->has_error = 1u;
+        return -1;
+    }
+    if (owner_handle) {
+        mgl::setLastSubmitted(
+            static_cast<mgl::CommandBufferOwner*>(owner_handle), command);
+    }
+    result_out->result =
+        MGL_RENDER_CPP_COMMAND_BUFFER_TRANSACTION_COMMITTED;
+    result_out->needs_new_command_buffer = 1u;
+    if (wait_for_completion) {
+        result_out->waited = 1u;
+        try {
+            command->waitUntilCompleted();
+        } catch (...) {
+            applyCommandRecoveryTransactionFailure(
+                recovery_completion.context, recovery, nullptr, result_out);
+            if (!recovery) result_out->has_error = 1u;
+            return -1;
+        }
+        if (mgl::snapshotCommandBufferState(
+                command, &result_out->completion) != 0) {
+            applyCommandRecoveryTransactionFailure(
+                recovery_completion.context, recovery, nullptr, result_out);
+            if (!recovery) result_out->has_error = 1u;
+            return -1;
+        }
+        MGLRenderCppCommandBufferCompletionDecision completionDecision = {};
+        if (mglRenderCppClassifyCommandBufferCompletion(
+                &result_out->completion, &completionDecision) != 0) {
+            applyCommandRecoveryTransactionFailure(
+                recovery_completion.context, recovery,
+                &result_out->completion, result_out);
+            if (!recovery) result_out->has_error = 1u;
+            return -1;
+        }
+        result_out->has_error = completionDecision.has_error;
+        result_out->is_driver_rejection =
+            completionDecision.is_driver_rejection;
+        if (recovery_completion.context) {
+            MGLRenderCppCommandBufferCompletionResult completionResult = {};
+            processCommandRecoveryCompletionLocked(
+                recovery_completion.context, &result_out->completion,
+                &completionResult);
+            result_out->recovery = completionResult.state;
+            result_out->recovery_error_recorded =
+                completionDecision.has_error ? 1u : 0u;
+        }
+        if (recovery) {
+            result_out->device_reset_requested =
+                mglRenderCppCommandRecoveryTakeResetRequest(
+                    recovery_owner) == 1 ? 1u : 0u;
+        }
+        if (result_out->has_error) return -1;
+    }
+    /* Taking a submission leaves the owner without a current command buffer.
+     * Owners created from the C++ queue rotate the next buffer here so the
+     * lifecycle transaction owns creation as well as submission. Adopted ObjC
+     * buffers have no queue and keep the legacy reset adapter. */
+    if (owner_handle) {
+        void* next = nullptr;
+        int nextResult = mglRenderCppCommandBufferOwnerCreateNext(
+            owner_handle, &next);
+        if (nextResult == 0 && next) {
+            result_out->current_command_buffer_created = 1u;
+            static_cast<mgl::CommandBufferOwner*>(owner_handle)
+                ->transaction_created_current = true;
+        } else if (nextResult < 0) {
+            applyCommandRecoveryTransactionFailure(
+                recovery_completion.context, recovery, nullptr, result_out);
+            if (!recovery) result_out->has_error = 1u;
+            return -1;
+        }
+    }
+    if (recovery) {
+        snapshotCommandRecoveryOwner(recovery, &result_out->recovery);
+    }
+    return 0;
+}
+
 int mglRenderCppClassifyCommandBufferCompletion(
     const MGLRenderCppCommandBufferState* state,
     MGLRenderCppCommandBufferCompletionDecision* decision_out) {
@@ -11434,7 +13013,7 @@ void mglRenderCppDestroyCommandRecoveryOwner(void** owner_handle) {
     mgl::CommandBufferRecoveryOwner* owner =
         static_cast<mgl::CommandBufferRecoveryOwner*>(*owner_handle);
     *owner_handle = nullptr;
-    delete owner;
+    releaseCommandRecoveryOwner(owner);
 }
 
 int mglRenderCppCommandRecoveryRecordError(
@@ -11451,6 +13030,19 @@ int mglRenderCppCommandRecoveryRecordError(
     owner->lastErrorTime = now;
     mgl::snapshotCommandRecovery(*owner, state_out);
     return 0;
+}
+
+int mglRenderCppCommandRecoveryRecordTransactionFailure(
+    void* owner_handle,
+    const MGLRenderCppCommandBufferState* state,
+    MGLRenderCppCommandBufferTransaction* transaction_inout) {
+    mgl::CommandBufferRecoveryOwner* owner =
+        static_cast<mgl::CommandBufferRecoveryOwner*>(owner_handle);
+    if (!owner || !transaction_inout) return -1;
+    transaction_inout->result =
+        MGL_RENDER_CPP_COMMAND_BUFFER_TRANSACTION_ERROR;
+    return applyCommandRecoveryFailure(
+        owner, state, true, transaction_inout);
 }
 
 int mglRenderCppCommandRecoveryRecordSuccess(
@@ -11550,56 +13142,11 @@ int mglRenderCppProcessCommandBufferCompletion(
     return 0;
 }
 
-namespace {
-
-struct CommandRecoveryCompletionContext {
-    mgl::CommandBufferRecoveryOwner* owner = nullptr;
-};
-
-double commandRecoveryNowSeconds() {
-    using Clock = std::chrono::steady_clock;
-    return std::chrono::duration<double>(Clock::now().time_since_epoch()).count();
-}
-
-void commandRecoveryCompletion(void* context,
-                               const MGLRenderCppCommandBufferState* state) {
-    CommandRecoveryCompletionContext* completion =
-        static_cast<CommandRecoveryCompletionContext*>(context);
-    if (!completion || !completion->owner || !state) return;
-
-    MGLRenderCppCommandBufferCompletionResult result = {};
-    if (mglRenderCppProcessCommandBufferCompletion(
-            completion->owner, state, commandRecoveryNowSeconds(), &result) != 0) {
-        return;
-    }
-
-    if (result.decision.is_driver_rejection) {
-        std::lock_guard<std::mutex> lock(completion->owner->mutex);
-        completion->owner->resetRequested = true;
-    }
-}
-
-void destroyCommandRecoveryCompletionContext(void* context) {
-    delete static_cast<CommandRecoveryCompletionContext*>(context);
-}
-
-}  // namespace
-
 int mglRenderCppAddCommandBufferRecoveryCompletion(
     void* command_buffer,
     void* recovery_owner) {
-    if (!command_buffer || !recovery_owner) return -1;
-    CommandRecoveryCompletionContext* context =
-        new (std::nothrow) CommandRecoveryCompletionContext();
-    if (!context) return -1;
-    context->owner = static_cast<mgl::CommandBufferRecoveryOwner*>(recovery_owner);
-    int result = mglRenderCppAddCommandBufferCompletion(
-        command_buffer,
-        commandRecoveryCompletion,
-        context,
-        destroyCommandRecoveryCompletionContext);
-    if (result != 0) delete context;
-    return result;
+    return addCommandBufferRecoveryCompletion(
+        command_buffer, recovery_owner, nullptr);
 }
 
 int mglRenderCppCommandRecoveryTakeResetRequest(void* recovery_owner) {
@@ -11621,22 +13168,58 @@ int mglRenderCppAddCommandBufferCompletion(
         static_cast<MTL::CommandBuffer*>(command_buffer);
     if (!commandBuffer || !callback) return -1;
 
-    std::shared_ptr<mgl::CommandBufferCompletionContext> completion;
-    try {
-        completion =
-            std::make_shared<mgl::CommandBufferCompletionContext>();
-    } catch (const std::bad_alloc&) {
-        return -1;
-    }
-    completion->callback = callback;
-    completion->context = context;
-    completion->destroyContext = destroy_context;
-    MTL::CommandBufferHandler handler =
+    mgl::CommandBufferCompletionContext* completion =
+        new (std::nothrow) mgl::CommandBufferCompletionContext();
+    if (!completion) return -1;
+    completion->configure(callback, context, destroy_context);
+    /* The block captures only a raw pointer. A separate reference belongs to
+     * the handler, so a completion that runs before addCompletedHandler
+     * returns cannot race a block copy helper or destroy this context early. */
+    completion->retain();
+    MTL::CommandBufferHandler stackHandler =
         ^(MTL::CommandBuffer* completedBuffer) {
             completion->complete(completedBuffer);
+            completion->release();
         };
-    commandBuffer->addCompletedHandler(handler);
+#ifdef __OBJC__
+    MTL::CommandBufferHandler handler = [stackHandler copy];
+#else
+    MTL::CommandBufferHandler handler = Block_copy(stackHandler);
+#endif
+    if (!handler) {
+        completion->abandonCallerContext();
+        completion->release();
+        completion->release();
+        return -1;
+    }
+    try {
+        commandBuffer->addCompletedHandler(handler);
+    } catch (...) {
+#ifndef __OBJC__
+        Block_release(handler);
+#endif
+        completion->abandonCallerContext();
+        completion->release();
+        completion->release();
+        return -1;
+    }
+#ifndef __OBJC__
+    Block_release(handler);
+#endif
+    completion->release();
     return 0;
+}
+
+int mglRenderCppAddCommandBufferOwnerCompletion(
+    void* owner_handle,
+    MGLRenderCppCommandBufferCompletion callback,
+    void* context,
+    MGLRenderCppDestroyContext destroy_context) {
+    mgl::CommandBufferOwner* owner =
+        static_cast<mgl::CommandBufferOwner*>(owner_handle);
+    if (!owner || !owner->current) return -1;
+    return mglRenderCppAddCommandBufferCompletion(
+        owner->current, callback, context, destroy_context);
 }
 
 int mglRenderCppCreateCommandBufferOwner(void* command_queue,
@@ -11650,6 +13233,8 @@ int mglRenderCppCreateCommandBufferOwner(void* command_queue,
     mgl::CommandBufferOwner* owner =
         new (std::nothrow) mgl::CommandBufferOwner();
     if (!owner) return -1;
+    queue->retain();
+    owner->queue = queue;
     MTL::CommandBuffer* commandBuffer = queue->commandBuffer();
     if (!commandBuffer) {
         delete owner;
@@ -11671,11 +13256,17 @@ int mglRenderCppResetCommandBufferOwner(void* owner_handle,
     MTL::CommandQueue* queue =
         static_cast<MTL::CommandQueue*>(command_queue);
     if (!owner || !queue || !command_buffer_out) return -1;
+    if (owner->queue != queue) {
+        queue->retain();
+        if (owner->queue) owner->queue->release();
+        owner->queue = queue;
+    }
     MTL::CommandBuffer* commandBuffer = queue->commandBuffer();
     if (!commandBuffer) return -1;
     commandBuffer->retain();
     if (owner->current) owner->current->release();
     owner->current = commandBuffer;
+    owner->transaction_created_current = false;
     owner->syncs.reset();
     *command_buffer_out = commandBuffer;
     return 0;
@@ -11692,6 +13283,7 @@ int mglRenderCppCreateCommandBufferOwnerAdopt(void* command_buffer,
     if (!owner) return -1;
     commandBuffer->retain();
     owner->current = commandBuffer;
+    owner->transaction_created_current = false;
     *owner_out = owner;
     return 0;
 }
@@ -11703,6 +13295,44 @@ void* mglRenderCppCommandBufferOwnerGetCurrent(void* owner_handle) {
     return owner ? static_cast<void*>(owner->current) : nullptr;
 }
 
+int mglRenderCppCommandBufferOwnerHasCurrent(void* owner_handle) {
+    mgl::CommandBufferOwner* owner =
+        static_cast<mgl::CommandBufferOwner*>(owner_handle);
+    return owner ? (owner->current ? 1 : 0) : -1;
+}
+
+int mglRenderCppCommandBufferOwnerCreateNext(
+    void* owner_handle,
+    void** command_buffer_out) {
+    if (command_buffer_out) *command_buffer_out = nullptr;
+    mgl::CommandBufferOwner* owner =
+        static_cast<mgl::CommandBufferOwner*>(owner_handle);
+    if (!owner || !command_buffer_out) return -1;
+    if (!owner->queue) return 1;
+    if (owner->current) {
+        /* A direct commit path can leave the committed object in the owner
+         * instead of transferring a submission handle.  Drop that owner
+         * reference before rotating; an unfinalized current buffer must stay
+         * untouched because callers may still be encoding into it. */
+        MTL::CommandBufferStatus status = owner->current->status();
+        if (status < MTL::CommandBufferStatusCommitted) {
+            owner->transaction_created_current = false;
+            *command_buffer_out = owner->current;
+            return 0;
+        }
+        owner->current->release();
+        owner->current = nullptr;
+    }
+    MTL::CommandBuffer* commandBuffer = owner->queue->commandBuffer();
+    if (!commandBuffer) return -1;
+    commandBuffer->retain();
+    owner->current = commandBuffer;
+    owner->transaction_created_current = false;
+    owner->syncs.reset();
+    *command_buffer_out = commandBuffer;
+    return 0;
+}
+
 int mglRenderCppGetCommandBufferOwnerState(
     void* owner_handle,
     MGLRenderCppCommandBufferState* state_out) {
@@ -11711,6 +13341,52 @@ int mglRenderCppGetCommandBufferOwnerState(
         static_cast<mgl::CommandBufferOwner*>(owner_handle);
     if (!owner || !owner->current || !state_out) return -1;
     return mgl::snapshotCommandBufferState(owner->current, state_out);
+}
+
+int mglRenderCppCommandBufferOwnerHasLastSubmitted(void* owner_handle) {
+    mgl::CommandBufferOwner* owner =
+        static_cast<mgl::CommandBufferOwner*>(owner_handle);
+    return owner ? (owner->lastSubmitted ? 1 : 0) : -1;
+}
+
+int mglRenderCppWaitCommandBufferState(
+    void* command_buffer,
+    MGLRenderCppCommandBufferState* state_out) {
+    if (state_out) memset(state_out, 0, sizeof(*state_out));
+    MTL::CommandBuffer* command =
+        static_cast<MTL::CommandBuffer*>(command_buffer);
+    if (!command || !state_out) return -1;
+
+    MGLRenderCppCommandBufferState before = {};
+    if (mgl::snapshotCommandBufferState(command, &before) != 0) return -1;
+    if (before.status ==
+        static_cast<uint32_t>(MTL::CommandBufferStatusNotEnqueued)) {
+        *state_out = before;
+        return 1;
+    }
+    try {
+        if (before.status !=
+            static_cast<uint32_t>(MTL::CommandBufferStatusCompleted)) {
+            command->waitUntilCompleted();
+        }
+    } catch (...) {
+        (void)mgl::snapshotCommandBufferState(command, state_out);
+        return -1;
+    }
+    if (mgl::snapshotCommandBufferState(command, state_out) != 0) return -1;
+    return state_out->has_error ? -1 : 0;
+}
+
+int mglRenderCppWaitCommandBufferOwnerLastSubmitted(
+    void* owner_handle,
+    MGLRenderCppCommandBufferState* state_out) {
+    if (state_out) memset(state_out, 0, sizeof(*state_out));
+    mgl::CommandBufferOwner* owner =
+        static_cast<mgl::CommandBufferOwner*>(owner_handle);
+    if (!owner || !state_out) return -1;
+    MTL::CommandBuffer* commandBuffer = owner->lastSubmitted;
+    if (!commandBuffer) return 1;
+    return mglRenderCppWaitCommandBufferState(commandBuffer, state_out);
 }
 
 int mglRenderCppPresentDrawableForCommandBufferOwner(
@@ -11736,12 +13412,31 @@ int mglRenderCppPresentDrawableForCommandBufferOwner(
     return 0;
 }
 
+int mglRenderCppEncodeWaitForEventForCommandBufferOwner(
+    void* owner_handle,
+    void* event,
+    uint64_t value) {
+    mgl::CommandBufferOwner* owner =
+        static_cast<mgl::CommandBufferOwner*>(owner_handle);
+    MTL::Event* metal_event = static_cast<MTL::Event*>(event);
+    if (!owner || !owner->current || !metal_event || value == 0u) return -1;
+    MGLRenderCppCommandBufferState state = {};
+    if (mgl::snapshotCommandBufferState(owner->current, &state) != 0 ||
+        state.status !=
+            static_cast<uint32_t>(MTL::CommandBufferStatusNotEnqueued)) {
+        return -1;
+    }
+    owner->current->encodeWait(metal_event, value);
+    return 0;
+}
+
 void mglRenderCppDiscardCommandBufferOwnerCurrent(void* owner_handle) {
     mgl::CommandBufferOwner* owner =
         static_cast<mgl::CommandBufferOwner*>(owner_handle);
     if (!owner || !owner->current) return;
     owner->current->release();
     owner->current = nullptr;
+    owner->transaction_created_current = false;
     owner->syncs.reset();
 }
 
@@ -11761,6 +13456,7 @@ int mglRenderCppTakeCommandBufferSubmission(void* owner_handle,
     if (!submission) return -1;
     submission->buffer = owner->current;
     owner->current = nullptr;
+    owner->transaction_created_current = false;
     *submission_out = submission;
     *command_buffer_out = submission->buffer;
     return 0;
@@ -11844,6 +13540,27 @@ void mglRenderCppCommandBufferOwnerEndCommit(void* owner_handle) {
         static_cast<mgl::CommandBufferOwner*>(owner_handle);
     if (!owner) return;
     owner->commit_in_progress = false;
+}
+
+extern "C"
+int mglRenderCppCommandBufferOwnerConsumeTransactionCurrent(
+    void* owner_handle,
+    void** command_buffer_out) {
+    if (command_buffer_out) *command_buffer_out = nullptr;
+    mgl::CommandBufferOwner* owner =
+        static_cast<mgl::CommandBufferOwner*>(owner_handle);
+    if (!owner || !command_buffer_out) return -1;
+    if (!owner->transaction_created_current || !owner->current) return 0;
+    MGLRenderCppCommandBufferState state = {};
+    if (mgl::snapshotCommandBufferState(owner->current, &state) != 0 ||
+        state.status != static_cast<uint32_t>(MTL::CommandBufferStatusNotEnqueued)) {
+        owner->transaction_created_current = false;
+        return 0;
+    }
+    owner->transaction_created_current = false;
+    owner->syncs.reset();
+    *command_buffer_out = owner->current;
+    return 1;
 }
 
 void mglRenderCppDestroyCommandBufferOwner(void** owner_handle) {
@@ -12003,11 +13720,8 @@ int mglRenderCppCommitCommandBuffer(void* command_buffer) {
 }
 
 int mglRenderCppWaitCommandBuffer(void* command_buffer) {
-    MTL::CommandBuffer* command =
-        static_cast<MTL::CommandBuffer*>(command_buffer);
-    if (!command) return -1;
-    command->waitUntilCompleted();
-    return 0;
+    MGLRenderCppCommandBufferState state = {};
+    return mglRenderCppWaitCommandBufferState(command_buffer, &state);
 }
 
 int mglRenderCppCreateRenderEncoderFromState(
@@ -12168,6 +13882,27 @@ int mglRenderCppEncodeMultisampleResolve(
     return 0;
 }
 
+int mglRenderCppEncodeMultisampleResolveForCommandBufferOwner(
+    void* command_buffer_owner,
+    uint32_t attachment_kind,
+    void* source_texture,
+    uint64_t source_level,
+    uint64_t source_slice,
+    uint64_t source_depth_plane,
+    void* resolve_texture,
+    uint64_t resolve_level,
+    uint64_t resolve_slice,
+    uint64_t resolve_depth_plane,
+    uint32_t resolve_filter) {
+    mgl::CommandBufferOwner* owner =
+        static_cast<mgl::CommandBufferOwner*>(command_buffer_owner);
+    if (!owner || !owner->current) return -1;
+    return mglRenderCppEncodeMultisampleResolve(
+        owner->current, attachment_kind, source_texture, source_level,
+        source_slice, source_depth_plane, resolve_texture, resolve_level,
+        resolve_slice, resolve_depth_plane, resolve_filter);
+}
+
 static int mglRenderCppResetRenderEncoderOwnerImpl(
     mgl::RenderEncoderOwner* owner,
     void* command_buffer,
@@ -12256,19 +13991,50 @@ int mglRenderCppResetRenderEncoderOwner(
 int mglRenderCppEndRenderEncoderOwner(void* owner_handle) {
     mgl::RenderEncoderOwner* owner =
         static_cast<mgl::RenderEncoderOwner*>(owner_handle);
-    if (!owner || !owner->encoder) return -1;
+    if (!owner) return -1;
+    if (!owner->encoder) return owner->ended ? 0 : -1;
     if (!owner->ended) {
         owner->encoder->endEncoding();
         owner->ended = true;
     }
+    owner->encoder->release();
+    owner->encoder = nullptr;
     return 0;
 }
 
 extern "C"
-void* mglRenderCppRenderEncoderOwnerGetCurrent(void* owner_handle) {
+void* mglRenderCppRenderEncoderOwnerGetCurrentForFallback(void* owner_handle) {
+    if (mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
+        mglRenderCppGetDevice() != nullptr) {
+        return nullptr;
+    }
     mgl::RenderEncoderOwner* owner =
         static_cast<mgl::RenderEncoderOwner*>(owner_handle);
     return owner ? static_cast<void*>(owner->encoder) : nullptr;
+}
+
+static void* mglRenderCppActiveRenderEncoder(void* owner_handle) {
+    mgl::RenderEncoderOwner* owner =
+        static_cast<mgl::RenderEncoderOwner*>(owner_handle);
+    return owner && owner->encoder && !owner->ended
+        ? static_cast<void*>(owner->encoder)
+        : nullptr;
+}
+
+int mglRenderCppRenderEncoderOwnerHasCurrent(void* owner_handle) {
+    mgl::RenderEncoderOwner* owner =
+        static_cast<mgl::RenderEncoderOwner*>(owner_handle);
+    return owner && owner->encoder && !owner->ended ? 1 : 0;
+}
+
+int mglRenderCppSetRenderEncoderOwnerLabel(void* owner_handle,
+                                           const char* label) {
+    mgl::RenderEncoderOwner* owner =
+        static_cast<mgl::RenderEncoderOwner*>(owner_handle);
+    if (!owner || !owner->encoder || owner->ended || !label) return -1;
+    owner->encoder->setLabel(
+        NS::String::string(label, NS::UTF8StringEncoding));
+    return 0;
 }
 
 void mglRenderCppDestroyRenderEncoderOwner(void** owner_handle) {
@@ -12661,6 +14427,25 @@ int mglRenderCppCreateRenderEncoderFromCommandBufferOwnerState(
         owner->current, render_pass, render_encoder_out);
 }
 
+int mglRenderCppCreateRenderEncoderFromCommandBufferOwnerDescriptor(
+    void* command_buffer_owner,
+    void* render_pass_descriptor,
+    void** render_encoder_out) {
+    if (render_encoder_out) *render_encoder_out = nullptr;
+    mgl::CommandBufferOwner* owner =
+        static_cast<mgl::CommandBufferOwner*>(command_buffer_owner);
+    MTL::RenderPassDescriptor* descriptor =
+        static_cast<MTL::RenderPassDescriptor*>(render_pass_descriptor);
+    if (!owner || !owner->current || !descriptor || !render_encoder_out) {
+        return -1;
+    }
+    MTL::RenderCommandEncoder* encoder =
+        owner->current->renderCommandEncoder(descriptor);
+    if (!encoder) return -1;
+    *render_encoder_out = encoder;
+    return 0;
+}
+
 void mglRenderCppDestroyRenderPassStateOwner(void** owner_handle) {
     if (!owner_handle || !*owner_handle) return;
     mgl::RenderPassStateOwner* owner =
@@ -12698,6 +14483,98 @@ int mglRenderCppCreateBlitEncoderFromCommandBufferOwner(
     if (!owner || !owner->current) return -1;
     return mglRenderCppCreateBlitEncoder(
         owner->current, blit_encoder_out);
+}
+
+int mglRenderCppCopyMatchingTextureSubresourcesForCommandBufferOwner(
+    void* command_buffer_owner,
+    void* source_texture,
+    void* destination_texture) {
+    mgl::CommandBufferOwner* owner =
+        static_cast<mgl::CommandBufferOwner*>(command_buffer_owner);
+    MTL::Texture* source = static_cast<MTL::Texture*>(source_texture);
+    MTL::Texture* destination =
+        static_cast<MTL::Texture*>(destination_texture);
+    if (!owner || !owner->current || !source || !destination ||
+        source->width() != destination->width() ||
+        source->height() != destination->height() ||
+        source->depth() != destination->depth()) {
+        return -1;
+    }
+
+    const NS::UInteger slice_count =
+        std::min(source->arrayLength(), destination->arrayLength());
+    const NS::UInteger level_count = std::min(
+        source->mipmapLevelCount(), destination->mipmapLevelCount());
+    if (slice_count == 0 || level_count == 0) return -1;
+
+    MTL::BlitCommandEncoder* encoder =
+        owner->current->blitCommandEncoder();
+    if (!encoder) return -1;
+    for (NS::UInteger slice = 0; slice < slice_count; ++slice) {
+        for (NS::UInteger level = 0; level < level_count; ++level) {
+            const NS::UInteger width =
+                std::max<NS::UInteger>(1u, source->width() >> level);
+            const NS::UInteger height =
+                std::max<NS::UInteger>(1u, source->height() >> level);
+            const NS::UInteger depth =
+                std::max<NS::UInteger>(1u, source->depth() >> level);
+            encoder->copyFromTexture(
+                source, slice, level, MTL::Origin(0, 0, 0),
+                MTL::Size(width, height, depth), destination, slice, level,
+                MTL::Origin(0, 0, 0));
+        }
+    }
+    encoder->endEncoding();
+    return 0;
+}
+
+int mglRenderCppEncodeBufferCopiesForCommandBufferOwner(
+    void* command_buffer_owner,
+    const MGLRenderCppBufferCopyEntry* entries,
+    uint32_t entry_count) {
+    mgl::CommandBufferOwner* owner =
+        static_cast<mgl::CommandBufferOwner*>(command_buffer_owner);
+    if (!owner || !owner->current || !entries || entry_count == 0u) {
+        return -1;
+    }
+    for (uint32_t i = 0; i < entry_count; ++i) {
+        const MGLRenderCppBufferCopyEntry& entry = entries[i];
+        MTL::Buffer* source = static_cast<MTL::Buffer*>(entry.source_buffer);
+        MTL::Buffer* destination =
+            static_cast<MTL::Buffer*>(entry.destination_buffer);
+        if (!source || !destination || entry.length == 0u ||
+            entry.source_offset > source->length() ||
+            entry.length > source->length() - entry.source_offset ||
+            entry.destination_offset > destination->length() ||
+            entry.length > destination->length() - entry.destination_offset) {
+            return -1;
+        }
+    }
+    MTL::BlitCommandEncoder* encoder =
+        owner->current->blitCommandEncoder();
+    if (!encoder) return -1;
+    for (uint32_t i = 0; i < entry_count; ++i) {
+        const MGLRenderCppBufferCopyEntry& entry = entries[i];
+        encoder->copyFromBuffer(
+            static_cast<MTL::Buffer*>(entry.source_buffer),
+            static_cast<NS::UInteger>(entry.source_offset),
+            static_cast<MTL::Buffer*>(entry.destination_buffer),
+            static_cast<NS::UInteger>(entry.destination_offset),
+            static_cast<NS::UInteger>(entry.length));
+    }
+    encoder->endEncoding();
+    return 0;
+}
+
+int mglRenderCppCreateComputeEncoderFromCommandBufferOwner(
+    void* command_buffer_owner,
+    void** compute_encoder_out) {
+    if (compute_encoder_out) *compute_encoder_out = nullptr;
+    mgl::CommandBufferOwner* owner =
+        static_cast<mgl::CommandBufferOwner*>(command_buffer_owner);
+    if (!owner || !owner->current) return -1;
+    return mglRenderCppCreateComputeEncoder(
+        owner->current, compute_encoder_out);
 }
 
 int mglRenderCppEndBlitEncoder(void* blit_encoder) {
@@ -12811,6 +14688,34 @@ int mglRenderCppEncodeTextureUploadLayers(
     }
     encoder->endEncoding();
     return 0;
+}
+
+int mglRenderCppEncodeTextureUploadLayersForCommandBufferOwner(
+    void* command_buffer_owner,
+    void* source_buffer,
+    uint64_t source_offset,
+    uint64_t source_bytes_per_row,
+    uint64_t source_bytes_per_image,
+    uint64_t source_layer_stride,
+    uint64_t source_width,
+    uint64_t source_height,
+    uint64_t source_depth,
+    void* destination_texture,
+    uint64_t destination_base_slice,
+    uint64_t layer_count,
+    uint64_t destination_level,
+    uint64_t destination_x,
+    uint64_t destination_y,
+    uint64_t destination_z) {
+    mgl::CommandBufferOwner* owner =
+        static_cast<mgl::CommandBufferOwner*>(command_buffer_owner);
+    if (!owner || !owner->current) return -1;
+    return mglRenderCppEncodeTextureUploadLayers(
+        owner->current, source_buffer, source_offset, source_bytes_per_row,
+        source_bytes_per_image, source_layer_stride, source_width,
+        source_height, source_depth, destination_texture,
+        destination_base_slice, layer_count, destination_level,
+        destination_x, destination_y, destination_z);
 }
 
 int mglRenderCppEncodeTextureUpload(void* command_buffer,
@@ -13115,6 +15020,16 @@ int mglRenderCppEncodeDraw(void* render_encoder,
     }
 }
 
+int mglRenderCppEncodeDrawForRenderEncoderOwner(
+    void* render_encoder_owner,
+    const MGLRenderCppDrawPlan* plan,
+    char* err,
+    size_t errcap) {
+    return mglRenderCppEncodeDraw(
+        mglRenderCppActiveRenderEncoder(render_encoder_owner),
+        plan, err, errcap);
+}
+
 int mglRenderCppCreateCullDistanceIndexPlan(
     void* device,
     const void* source_indices,
@@ -13311,6 +15226,16 @@ int mglRenderCppEncodeBindingSnapshot(
     return 0;
 }
 
+int mglRenderCppEncodeBindingSnapshotForRenderEncoderOwner(
+    void* render_encoder_owner,
+    const MGLRenderCppBindingSnapshot* snapshot,
+    char* err,
+    size_t errcap) {
+    return mglRenderCppEncodeBindingSnapshot(
+        mglRenderCppActiveRenderEncoder(render_encoder_owner),
+        snapshot, err, errcap);
+}
+
 int mglRenderCppEncodeResourceBindingSnapshot(
     void* binding_state,
     void* render_encoder,
@@ -13369,6 +15294,18 @@ int mglRenderCppEncodeResourceBindingSnapshot(
     }
     return encodeStage(snapshot->fragment_ops, snapshot->fragment_op_count,
                        MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT);
+}
+
+int mglRenderCppEncodeResourceBindingSnapshotForRenderEncoderOwner(
+    void* binding_state,
+    void* render_encoder_owner,
+    const MGLRenderCppResourceBindingSnapshot* snapshot,
+    char* err,
+    size_t errcap) {
+    return mglRenderCppEncodeResourceBindingSnapshot(
+        binding_state,
+        mglRenderCppActiveRenderEncoder(render_encoder_owner),
+        snapshot, err, errcap);
 }
 
 /* P4.3c: whole-batch simple replay。命令类型数值与 draw_command.h 的
@@ -13596,6 +15533,226 @@ int mglRenderCppSetTessellationFactorBuffer(void* render_encoder,
     return 0;
 }
 
+int mglRenderCppSetRenderBufferForOwner(void* render_encoder_owner,
+                                        void* buffer,
+                                        uint64_t offset,
+                                        uint32_t stage,
+                                        uint32_t index) {
+    return mglRenderCppSetRenderBuffer(
+        mglRenderCppActiveRenderEncoder(render_encoder_owner),
+        buffer, offset, stage, index);
+}
+
+int mglRenderCppBindingSetTextureForOwner(void* binding_state,
+                                         void* render_encoder_owner,
+                                         void* texture,
+                                         uint32_t stage,
+                                         uint32_t index) {
+    return mglRenderCppBindingSetTexture(
+        binding_state, mglRenderCppActiveRenderEncoder(render_encoder_owner),
+        texture, stage, index);
+}
+
+int mglRenderCppBindingSetSamplerForOwner(void* binding_state,
+                                         void* render_encoder_owner,
+                                         void* sampler,
+                                         uint32_t stage,
+                                         uint32_t index) {
+    return mglRenderCppBindingSetSampler(
+        binding_state, mglRenderCppActiveRenderEncoder(render_encoder_owner),
+        sampler, stage, index);
+}
+
+int mglRenderCppBindingSetPipelineIfNeededForOwner(
+    void* binding_state,
+    void* render_encoder_owner,
+    void* pipeline_state) {
+    return mglRenderCppBindingSetPipelineIfNeeded(
+        binding_state, mglRenderCppActiveRenderEncoder(render_encoder_owner),
+        pipeline_state);
+}
+
+int mglRenderCppBindingSetDepthStencilIfNeededForOwner(
+    void* binding_state,
+    void* render_encoder_owner,
+    void* depth_stencil_state) {
+    return mglRenderCppBindingSetDepthStencilIfNeeded(
+        binding_state, mglRenderCppActiveRenderEncoder(render_encoder_owner),
+        depth_stencil_state);
+}
+
+int mglRenderCppBindingSetCullIfNeededForOwner(
+    void* binding_state,
+    void* render_encoder_owner,
+    uint32_t mode) {
+    return mglRenderCppBindingSetCullIfNeeded(
+        binding_state, mglRenderCppActiveRenderEncoder(render_encoder_owner),
+        mode);
+}
+
+int mglRenderCppBindingSetWindingIfNeededForOwner(
+    void* binding_state,
+    void* render_encoder_owner,
+    uint32_t winding) {
+    return mglRenderCppBindingSetWindingIfNeeded(
+        binding_state, mglRenderCppActiveRenderEncoder(render_encoder_owner),
+        winding);
+}
+
+int mglRenderCppBindingSetBlendColorIfNeededForOwner(
+    void* binding_state,
+    void* render_encoder_owner,
+    float red,
+    float green,
+    float blue,
+    float alpha) {
+    return mglRenderCppBindingSetBlendColorIfNeeded(
+        binding_state, mglRenderCppActiveRenderEncoder(render_encoder_owner),
+        red, green, blue, alpha);
+}
+
+int mglRenderCppBindingSetDepthBiasIfNeededForOwner(
+    void* binding_state,
+    void* render_encoder_owner,
+    float depth_bias,
+    float clamp,
+    float slope_scale) {
+    return mglRenderCppBindingSetDepthBiasIfNeeded(
+        binding_state, mglRenderCppActiveRenderEncoder(render_encoder_owner),
+        depth_bias, clamp, slope_scale);
+}
+
+int mglRenderCppBindingSetViewportForOwner(void* binding_state,
+                                          void* render_encoder_owner,
+                                          double origin_x,
+                                          double origin_y,
+                                          double width,
+                                          double height,
+                                          double znear,
+                                          double zfar) {
+    return mglRenderCppBindingSetViewport(
+        binding_state, mglRenderCppActiveRenderEncoder(render_encoder_owner),
+        origin_x, origin_y, width, height, znear, zfar);
+}
+
+int mglRenderCppBindingSetViewportsForOwner(void* binding_state,
+                                            void* render_encoder_owner,
+                                            const double* viewports,
+                                            uint64_t count) {
+    return mglRenderCppBindingSetViewports(
+        binding_state, mglRenderCppActiveRenderEncoder(render_encoder_owner),
+        viewports, count);
+}
+
+int mglRenderCppBindingSetScissorForOwner(void* binding_state,
+                                         void* render_encoder_owner,
+                                         uint64_t x,
+                                         uint64_t y,
+                                         uint64_t width,
+                                         uint64_t height) {
+    return mglRenderCppBindingSetScissor(
+        binding_state, mglRenderCppActiveRenderEncoder(render_encoder_owner),
+        x, y, width, height);
+}
+
+int mglRenderCppBindingSetTriangleFillForOwner(void* binding_state,
+                                              void* render_encoder_owner,
+                                              uint32_t mode) {
+    return mglRenderCppBindingSetTriangleFill(
+        binding_state, mglRenderCppActiveRenderEncoder(render_encoder_owner),
+        mode);
+}
+
+int mglRenderCppSetRenderBytesForOwner(void* render_encoder_owner,
+                                       const void* bytes,
+                                       size_t length,
+                                       uint32_t stage,
+                                       uint32_t index) {
+    return mglRenderCppSetRenderBytes(
+        mglRenderCppActiveRenderEncoder(render_encoder_owner),
+        bytes, length, stage, index);
+}
+
+int mglRenderCppSetRenderPipelineStateForOwner(void* render_encoder_owner,
+                                               void* pipeline_state) {
+    return mglRenderCppSetRenderPipelineState(
+        mglRenderCppActiveRenderEncoder(render_encoder_owner),
+        pipeline_state);
+}
+
+int mglRenderCppSetRenderDepthStencilStateForOwner(
+    void* render_encoder_owner,
+    void* depth_stencil_state) {
+    return mglRenderCppSetRenderDepthStencilState(
+        mglRenderCppActiveRenderEncoder(render_encoder_owner),
+        depth_stencil_state);
+}
+
+int mglRenderCppSetRenderTextureForOwner(void* render_encoder_owner,
+                                         void* texture,
+                                         uint32_t stage,
+                                         uint32_t index) {
+    return mglRenderCppSetRenderTexture(
+        mglRenderCppActiveRenderEncoder(render_encoder_owner),
+        texture, stage, index);
+}
+
+int mglRenderCppSetRenderSamplerForOwner(void* render_encoder_owner,
+                                         void* sampler,
+                                         uint32_t stage,
+                                         uint32_t index) {
+    return mglRenderCppSetRenderSampler(
+        mglRenderCppActiveRenderEncoder(render_encoder_owner),
+        sampler, stage, index);
+}
+
+int mglRenderCppSetRenderViewportForOwner(void* render_encoder_owner,
+                                          double origin_x,
+                                          double origin_y,
+                                          double width,
+                                          double height,
+                                          double znear,
+                                          double zfar) {
+    return mglRenderCppSetRenderViewport(
+        mglRenderCppActiveRenderEncoder(render_encoder_owner),
+        origin_x, origin_y, width, height, znear, zfar);
+}
+
+int mglRenderCppSetRenderScissorForOwner(void* render_encoder_owner,
+                                         uint64_t x,
+                                         uint64_t y,
+                                         uint64_t width,
+                                         uint64_t height) {
+    return mglRenderCppSetRenderScissor(
+        mglRenderCppActiveRenderEncoder(render_encoder_owner),
+        x, y, width, height);
+}
+
+int mglRenderCppSetDepthClipModeForOwner(void* render_encoder_owner,
+                                         uint32_t mode) {
+    return mglRenderCppSetDepthClipMode(
+        mglRenderCppActiveRenderEncoder(render_encoder_owner), mode);
+}
+
+int mglRenderCppSetStencilReferenceValuesForOwner(
+    void* render_encoder_owner,
+    uint32_t front_reference,
+    uint32_t back_reference) {
+    return mglRenderCppSetStencilReferenceValues(
+        mglRenderCppActiveRenderEncoder(render_encoder_owner),
+        front_reference, back_reference);
+}
+
+int mglRenderCppSetTessellationFactorBufferForOwner(
+    void* render_encoder_owner,
+    void* buffer,
+    uint64_t offset,
+    uint64_t instance_stride) {
+    return mglRenderCppSetTessellationFactorBuffer(
+        mglRenderCppActiveRenderEncoder(render_encoder_owner),
+        buffer, offset, instance_stride);
+}
+
 int mglRenderCppDrawPatches(void* render_encoder,
                             uint64_t control_point_count,
                             uint64_t patch_start,
@@ -13763,6 +15920,34 @@ int mglRenderCppExecuteIndirectCommands(void* render_encoder,
     if (!encoder || !buffer || length == 0) return -1;
     encoder->executeCommandsInBuffer(buffer, NS::Range(location, length));
     return 0;
+}
+
+int mglRenderCppReplayBatchDrawsForRenderEncoderOwner(
+    void* render_encoder_owner,
+    const MGLRenderCppReplayBatch* batch,
+    char* err,
+    size_t errcap) {
+    return mglRenderCppReplayBatchDraws(
+        mglRenderCppActiveRenderEncoder(render_encoder_owner),
+        batch, err, errcap);
+}
+
+int mglRenderCppUseRenderResourceForOwner(void* render_encoder_owner,
+                                          void* resource,
+                                          uint32_t usage,
+                                          uint32_t stages) {
+    return mglRenderCppUseRenderResource(
+        mglRenderCppActiveRenderEncoder(render_encoder_owner),
+        resource, usage, stages);
+}
+
+int mglRenderCppExecuteIndirectCommandsForOwner(void* render_encoder_owner,
+                                                 void* indirect_buffer,
+                                                 uint64_t location,
+                                                 uint64_t length) {
+    return mglRenderCppExecuteIndirectCommands(
+        mglRenderCppActiveRenderEncoder(render_encoder_owner),
+        indirect_buffer, location, length);
 }
 
 } // extern "C"

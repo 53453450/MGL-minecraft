@@ -92,6 +92,160 @@ static std::atomic<int> s_commandBufferCompletionCount{0};
 static std::atomic<int> s_commandBufferContextDestroyCount{0};
 static std::atomic<uint32_t> s_commandBufferCompletionStatus{0};
 
+static int s_callbackComputeCount = 0;
+static int s_callbackComputeIndirectCount = 0;
+static int s_callbackDrawCount = 0;
+static int s_callbackResourceCount = 0;
+static void smokeDispatchCompute(void *, GLMContext, unsigned int groupsX,
+                                 unsigned int groupsY, unsigned int groupsZ) {
+    if (groupsX == 2 && groupsY == 3 && groupsZ == 4) {
+        ++s_callbackComputeCount;
+    }
+}
+static void smokeDispatchComputeIndirect(void *, GLMContext,
+                                         intptr_t indirect) {
+    if (indirect == 64) {
+        ++s_callbackComputeIndirectCount;
+    }
+}
+static void smokeDraw(void *, GLMContext,
+                      const MGLRenderCppDrawCallbackArgs *args) {
+    if (args && args->kind == MGL_RENDER_CPP_DRAW_CALLBACK_ARRAYS &&
+        args->mode == GL_TRIANGLES && args->first == 5 && args->count == 6) {
+        ++s_callbackDrawCount;
+    }
+}
+static void smokeBindTexture(void *, GLMContext, Texture *) {}
+static void smokeVoidContext(void *, GLMContext) {}
+static void smokeClear(void *, GLMContext, unsigned int, unsigned int) {}
+static void smokeBlit(void *, GLMContext, int, int, int, int, int, int, int,
+                      int, unsigned int, unsigned int) {}
+static int smokeResource(void *, GLMContext,
+                         const MGLRenderCppResourceCallbackArgs *args) {
+    if (args &&
+        args->kind == MGL_RENDER_CPP_RESOURCE_CALLBACK_GENERATE_MIPMAPS) {
+        ++s_callbackResourceCount;
+    }
+    return 1;
+}
+
+static int verifyMetalCallbackInstall(void) {
+    {
+        GLMContextRec_t incompleteContext = {};
+        MGLRenderCppCallbackRuntimeOps incompleteOps = {};
+        incompleteOps.dispatch_compute = smokeDispatchCompute;
+        int incompleteToken = 3;
+        MGLRenderCppCallbackInstallResult incompleteInstall = {};
+        if (mglRenderCppCreateCallbackRuntime(
+                &incompleteToken, &incompleteOps,
+                &incompleteContext.metal_callback_runtime) != 0 ||
+            mglRenderCppInstallMetalCallbacks(
+                &incompleteContext, &incompleteInstall) == 0 ||
+            incompleteInstall.installed != 0 ||
+            incompleteInstall.pure_adapter != 0) {
+            fprintf(stderr, "FAIL: incomplete callback runtime accepted\n");
+            mglRenderCppDestroyCallbackRuntime(
+                &incompleteContext.metal_callback_runtime);
+            return 1;
+        }
+        mglRenderCppDestroyCallbackRuntime(
+            &incompleteContext.metal_callback_runtime);
+    }
+
+    GLMContextRec_t context = {};
+    MGLRenderCppCallbackRuntimeOps callbackOps = {};
+    callbackOps.dispatch_compute = smokeDispatchCompute;
+    callbackOps.dispatch_compute_indirect = smokeDispatchComputeIndirect;
+    callbackOps.draw = smokeDraw;
+    callbackOps.bind_texture = smokeBindTexture;
+    callbackOps.flush_draw_buffer = smokeVoidContext;
+    callbackOps.swap_buffers = smokeVoidContext;
+    callbackOps.clear_buffer = smokeClear;
+    callbackOps.blit_framebuffer = smokeBlit;
+    callbackOps.resource = smokeResource;
+    int runtimeToken = 7;
+    if (mglRenderCppCreateCallbackRuntime(
+            &runtimeToken, &callbackOps, &context.metal_callback_runtime) != 0 ||
+        !context.metal_callback_runtime) {
+        fprintf(stderr, "FAIL: callback runtime create\n");
+        return 1;
+    }
+    MGLRenderCppCallbackInstallResult installed = {};
+    int installResult =
+        mglRenderCppInstallMetalCallbacks(&context, &installed);
+    uint32_t nonNull = 0;
+#define MGL_MTL_FUNC_NON_NULL(field, cname, ret, args) \
+    nonNull += context.mtl_funcs.field ? 1u : 0u;
+    MGL_MTL_FUNC_LIST(MGL_MTL_FUNC_NON_NULL)
+#undef MGL_MTL_FUNC_NON_NULL
+    if (MGL_MTL_FUNC_COUNT != 53 || installResult != 0 ||
+        installed.installed != 53 || installed.strict_cpp != 19 ||
+        installed.pure_adapter != 34 || installed.legacy_fallback != 0 ||
+        nonNull != 53) {
+        fprintf(stderr,
+                "FAIL: Metal callback install total=%u result=%d "
+                "installed=%u strict=%u adapter=%u hybrid=%u nonNull=%u\n",
+                (unsigned)MGL_MTL_FUNC_COUNT, installResult,
+                installed.installed, installed.strict_cpp,
+                installed.pure_adapter, installed.legacy_fallback, nonNull);
+        mglRenderCppDestroyCallbackRuntime(&context.metal_callback_runtime);
+        return 1;
+    }
+    context.mtl_funcs.mtlDispatchCompute(&context, 2, 3, 4);
+    context.mtl_funcs.mtlDispatchComputeIndirect(&context, 64);
+    context.mtl_funcs.mtlDrawArrays(&context, GL_TRIANGLES, 5, 6);
+    Texture smokeTexture = {};
+    context.mtl_funcs.mtlGenerateMipmaps(&context, &smokeTexture);
+    if (s_callbackComputeCount != 1 ||
+        s_callbackComputeIndirectCount != 1 || s_callbackDrawCount != 1 ||
+        s_callbackResourceCount != 1) {
+        fprintf(stderr,
+                "FAIL: callback runtime dispatch direct=%d indirect=%d draw=%d resource=%d\n",
+                s_callbackComputeCount, s_callbackComputeIndirectCount,
+                s_callbackDrawCount, s_callbackResourceCount);
+        mglRenderCppDestroyCallbackRuntime(&context.metal_callback_runtime);
+        return 1;
+    }
+    mglRenderCppDestroyCallbackRuntime(&context.metal_callback_runtime);
+    if (context.metal_callback_runtime != nullptr) {
+        fprintf(stderr, "FAIL: callback runtime destroy\n");
+        return 1;
+    }
+    printf("CALLBACK_RUNTIME_OK\n");
+    printf("METAL_CALLBACK_CENSUS_OK total=%u strict=%u adapter=%u hybrid=%u legacy=%u\n",
+           (unsigned)MGL_MTL_FUNC_COUNT, installed.strict_cpp,
+           installed.pure_adapter, installed.legacy_fallback,
+           (unsigned)MGL_MTL_FUNC_COUNT - installed.installed);
+
+    void *commandOwner = reinterpret_cast<void *>(0x1110u);
+    void *encoderOwner = reinterpret_cast<void *>(0x2220u);
+    void *passOwner = reinterpret_cast<void *>(0x3330u);
+    void *queryOwner = reinterpret_cast<void *>(0x4440u);
+    void *recoveryOwner = reinterpret_cast<void *>(0x5550u);
+    if (mglRenderCppAttachRuntimeOwners(
+            &context, commandOwner, encoderOwner, passOwner, queryOwner,
+            recoveryOwner) != 0 ||
+        context.metal_command_buffer_owner != commandOwner ||
+        context.metal_render_encoder_owner != encoderOwner ||
+        context.metal_render_pass_state_owner != passOwner ||
+        context.metal_query_state_owner != queryOwner ||
+        context.metal_command_recovery_owner != recoveryOwner) {
+        fprintf(stderr, "FAIL: runtime owner attach\n");
+        return 1;
+    }
+    mglRenderCppDetachRuntimeOwners(&context);
+    if (context.metal_command_buffer_owner ||
+        context.metal_render_encoder_owner ||
+        context.metal_render_pass_state_owner ||
+        context.metal_query_state_owner ||
+        context.metal_command_recovery_owner) {
+        fprintf(stderr, "FAIL: runtime owner detach\n");
+        return 1;
+    }
+    printf("RUNTIME_OWNER_ATTACH_DETACH_OK\n");
+    return 0;
+}
+
 static MGLRenderCppRenderPassState renderPassStateWithColorTarget(
     id<MTLTexture> texture,
     MTLLoadAction loadAction,
@@ -422,35 +576,64 @@ static int verifyBufferBinding(void) {
     mglRenderCppReleaseBufferMetalData(NULL, &largeDirty);
     mglRenderCppReleaseBufferCowPool(&largeDirty);
 
+    const size_t noCopyLength = 16384u;
+    vm_address_t noCopyAddress = 0;
+    if (vm_allocate((vm_map_t)mach_task_self(), &noCopyAddress,
+                    (vm_size_t)noCopyLength, VM_FLAGS_ANYWHERE) !=
+            KERN_SUCCESS ||
+        noCopyAddress == 0) {
+        fprintf(stderr, "FAIL: no-copy callback VM allocation\n");
+        return 1;
+    }
+    uint8_t *noCopyBytes = reinterpret_cast<uint8_t *>(noCopyAddress);
+    memcpy(noCopyBytes, source, sizeof(source));
+
+    const int legacyBindBefore = s_legacyBufferBindCount;
+    const int legacySubDataBefore = s_legacyBufferSubDataCount;
+    const int legacyMapBefore = s_legacyBufferMapCount;
+    const int legacyFlushBefore = s_legacyBufferFlushRangeCount;
     Buffer noCopy = {};
     noCopy.name = 102u;
-    noCopy.size = sizeof(source);
-    noCopy.data.buffer_size = sizeof(source);
-    noCopy.data.buffer_data = (vm_address_t)(uintptr_t)source;
+    noCopy.size = noCopyLength;
+    noCopy.data.buffer_size = noCopyLength;
+    noCopy.data.buffer_data = noCopyAddress;
     noCopy.storage_flags = GL_CLIENT_STORAGE_BIT;
-    if (mglRenderCppBindBufferStorage(&noCopy, message, sizeof(message)) !=
-        MGL_RENDER_CPP_BUFFER_NOT_APPLICABLE) {
-        fprintf(stderr, "FAIL: no-copy buffer was claimed by C++ binder\n");
-        return 1;
-    }
     mglRenderCppBindBuffer(NULL, &noCopy);
-    if (s_legacyBufferBindCount != 1 || noCopy.data.mtl_data) {
-        fprintf(stderr, "FAIL: no-copy buffer callback fallback\n");
+    if (!noCopy.data.mtl_data || !noCopy.data.mtl_owns_buffer_data) {
+        vm_deallocate((vm_map_t)mach_task_self(), noCopyAddress,
+                      (vm_size_t)noCopyLength);
+        fprintf(stderr, "FAIL: no-copy buffer C++ callback bind\n");
         return 1;
     }
-    void *fallbackMap = mglRenderCppMapUnmapBuffer(
+    id<MTLBuffer> noCopyMetal =
+        (__bridge id<MTLBuffer>)noCopy.data.mtl_data;
+    if (noCopyMetal.contents != noCopyBytes) {
+        fprintf(stderr, "FAIL: no-copy buffer address changed\n");
+        return 1;
+    }
+    const uint8_t replacement[] = {0xa1, 0xb2, 0xc3, 0xd4};
+    mglRenderCppBufferSubData(
+        NULL, &noCopy, 4, sizeof(replacement), replacement);
+    if (memcmp(noCopyBytes + 4, replacement, sizeof(replacement)) != 0) {
+        fprintf(stderr, "FAIL: no-copy buffer subdata\n");
+        return 1;
+    }
+    void *noCopyMapped = mglRenderCppMapUnmapBuffer(
         NULL, &noCopy, 0, sizeof(source), GL_READ_ONLY, true);
-    if (fallbackMap != reinterpret_cast<void *>(0x1234u) ||
-        s_legacyBufferMapCount != 1) {
-        fprintf(stderr, "FAIL: no-copy buffer map fallback\n");
+    if (noCopyMapped != noCopyBytes) {
+        fprintf(stderr, "FAIL: no-copy buffer map address\n");
         return 1;
     }
     mglRenderCppFlushBufferRange(
         NULL, &noCopy, 0, (intptr_t)sizeof(source));
-    if (s_legacyBufferFlushRangeCount != 1) {
-        fprintf(stderr, "FAIL: no-copy buffer range flush fallback\n");
+    if (s_legacyBufferBindCount != legacyBindBefore ||
+        s_legacyBufferSubDataCount != legacySubDataBefore ||
+        s_legacyBufferMapCount != legacyMapBefore ||
+        s_legacyBufferFlushRangeCount != legacyFlushBefore) {
+        fprintf(stderr, "FAIL: no-copy buffer entered legacy callback\n");
         return 1;
     }
+    mglRenderCppReleaseBufferMetalData(NULL, &noCopy);
     return 0;
 }
 
@@ -796,9 +979,9 @@ static int verifyAIRProgramClassification(void) {
     }
     program.dirty_bits = DIRTY_PROGRAM;
     mglRenderCppBindProgram(NULL, &program);
-    if (s_legacyProgramBindCount != 1 ||
+    if (s_legacyProgramBindCount != 0 ||
         (program.dirty_bits & DIRTY_PROGRAM) != 0u) {
-        fprintf(stderr, "FAIL: legacy program callback fallback\n");
+        fprintf(stderr, "FAIL: non-AIR program reached legacy callback\n");
         return 1;
     }
 
@@ -2140,11 +2323,63 @@ static int verifySyncCallbacks(id<MTLDevice> device) {
         fprintf(stderr, "FAIL: sync release did not clear resources\n");
         return 1;
     }
+
+    id<MTLCommandQueue> ownerQueue = [device newCommandQueue];
+    void *commandOwner = NULL;
+    void *current = NULL;
+    void *recoveryOwner = NULL;
+    GLMContextRec_t context = {};
+    Sync captured = {};
+    if (!ownerQueue ||
+        mglRenderCppCreateCommandBufferOwner(
+            (__bridge void *)ownerQueue, &commandOwner, &current) != 0 ||
+        !commandOwner || !current ||
+        mglRenderCppCreateCommandRecoveryOwner(&recoveryOwner) != 0 ||
+        mglRenderCppAttachRuntimeOwners(
+            &context, commandOwner, NULL, NULL, NULL, recoveryOwner) != 0) {
+        fprintf(stderr, "FAIL: sync capture owner fixture\n");
+        mglRenderCppDestroyCommandRecoveryOwner(&recoveryOwner);
+        mglRenderCppDestroyCommandBufferOwner(&commandOwner);
+        return 1;
+    }
+    mglRenderCppGetSync(&context, &captured);
+    void *next = mglRenderCppCommandBufferOwnerGetCurrent(commandOwner);
+    unsigned int capturedStatus =
+        mglRenderCppGetSyncStatus(&context, &captured);
+    if (!captured.mtl_command_buffer || !next || next == current ||
+        (capturedStatus != GL_SIGNALED &&
+         capturedStatus != GL_UNSIGNALED)) {
+        fprintf(stderr, "FAIL: sync capture/owner rotation\n");
+        mglRenderCppReleaseSync(&context, &captured);
+        mglRenderCppDetachRuntimeOwners(&context);
+        mglRenderCppDestroyCommandRecoveryOwner(&recoveryOwner);
+        mglRenderCppDestroyCommandBufferOwner(&commandOwner);
+        return 1;
+    }
+    mglRenderCppWaitForSync(&context, &captured);
+    if (captured.mtl_command_buffer || captured.mtl_event ||
+        mglRenderCppGetSyncStatus(&context, &captured) != GL_SIGNALED) {
+        fprintf(stderr, "FAIL: captured sync wait/release\n");
+        mglRenderCppDetachRuntimeOwners(&context);
+        mglRenderCppDestroyCommandRecoveryOwner(&recoveryOwner);
+        mglRenderCppDestroyCommandBufferOwner(&commandOwner);
+        return 1;
+    }
+    mglRenderCppDetachRuntimeOwners(&context);
+    mglRenderCppDestroyCommandRecoveryOwner(&recoveryOwner);
+    mglRenderCppDestroyCommandBufferOwner(&commandOwner);
     printf("SYNC_CALLBACKS_OK\n");
     return 0;
 }
 
 static int verifyCommandQueueOwner(void) {
+    void *invalidQueue = reinterpret_cast<void *>(0x1u);
+    if (mglRenderCppResetCommandQueueOwner(NULL, 0, &invalidQueue) != -1 ||
+        invalidQueue != NULL) {
+        fprintf(stderr, "FAIL: invalid command queue owner reset contract\n");
+        return 1;
+    }
+
     void *owner = NULL;
     void *queuePtr = NULL;
     if (mglRenderCppCreateCommandQueueOwner(2, &owner, &queuePtr) != 0 ||
@@ -2228,12 +2463,26 @@ static int verifyCommandBufferOwner(void) {
     depthDescriptor.usage = MTLTextureUsageRenderTarget;
     id<MTLTexture> depthTarget =
         [device newTextureWithDescriptor:depthDescriptor];
+    MTLTextureDescriptor *copyDescriptor = [MTLTextureDescriptor
+        texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+        width:2 height:2 mipmapped:YES];
+    copyDescriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+    id<MTLTexture> copySource = [device newTextureWithDescriptor:copyDescriptor];
+    id<MTLTexture> copyDestination = [device newTextureWithDescriptor:copyDescriptor];
     MGLRenderCppRenderPassState renderPass =
         renderPassStateWithColorTarget(
             target, MTLLoadActionClear, MTLStoreActionStore);
+    MTLRenderPassDescriptor *objcRenderPass =
+        [MTLRenderPassDescriptor renderPassDescriptor];
+    objcRenderPass.colorAttachments[0].texture = target;
+    objcRenderPass.colorAttachments[0].loadAction = MTLLoadActionLoad;
+    objcRenderPass.colorAttachments[0].storeAction = MTLStoreActionStore;
     void *renderEncoder = NULL;
     void *blitEncoder = NULL;
-    if (!device || !target || !depthTarget ||
+    void *computeEncoder = NULL;
+    if (!device || !target || !depthTarget || !copySource || !copyDestination ||
+        mglRenderCppCommandBufferOwnerHasCurrent(NULL) != -1 ||
+        mglRenderCppCommandBufferOwnerHasCurrent(owner) != 1 ||
         mglRenderCppCreateRenderEncoderFromCommandBufferOwnerState(
             NULL, &renderPass, &renderEncoder) != -1 ||
         mglRenderCppCreateRenderEncoderFromCommandBufferOwnerState(
@@ -2243,6 +2492,15 @@ static int verifyCommandBufferOwner(void) {
         mglRenderCppCreateRenderEncoderFromCommandBufferOwnerState(
             owner, &renderPass, &renderEncoder) != 0 || !renderEncoder ||
         mglRenderCppEndRenderEncoder(renderEncoder) != 0 ||
+        mglRenderCppCreateRenderEncoderFromCommandBufferOwnerDescriptor(
+            NULL, (__bridge void *)objcRenderPass, &renderEncoder) != -1 ||
+        mglRenderCppCreateRenderEncoderFromCommandBufferOwnerDescriptor(
+            owner, NULL, &renderEncoder) != -1 ||
+        mglRenderCppCreateRenderEncoderFromCommandBufferOwnerDescriptor(
+            owner, (__bridge void *)objcRenderPass, NULL) != -1 ||
+        mglRenderCppCreateRenderEncoderFromCommandBufferOwnerDescriptor(
+            owner, (__bridge void *)objcRenderPass, &renderEncoder) != 0 ||
+        !renderEncoder || mglRenderCppEndRenderEncoder(renderEncoder) != 0 ||
         mglRenderCppCreateBlitEncoderFromCommandBufferOwner(
             NULL, &blitEncoder) != -1 ||
         mglRenderCppCreateBlitEncoderFromCommandBufferOwner(
@@ -2250,6 +2508,31 @@ static int verifyCommandBufferOwner(void) {
         mglRenderCppCreateBlitEncoderFromCommandBufferOwner(
             owner, &blitEncoder) != 0 || !blitEncoder ||
         mglRenderCppEndBlitEncoder(blitEncoder) != 0 ||
+        mglRenderCppCopyMatchingTextureSubresourcesForCommandBufferOwner(
+            NULL, (__bridge void *)copySource,
+            (__bridge void *)copyDestination) != -1 ||
+        mglRenderCppCopyMatchingTextureSubresourcesForCommandBufferOwner(
+            owner, NULL, (__bridge void *)copyDestination) != -1 ||
+        mglRenderCppCopyMatchingTextureSubresourcesForCommandBufferOwner(
+            owner, (__bridge void *)copySource,
+            (__bridge void *)copyDestination) != 0 ||
+        mglRenderCppEncodeBufferCopiesForCommandBufferOwner(
+            NULL, NULL, 0) != -1 ||
+        mglRenderCppCreateComputeEncoderFromCommandBufferOwner(
+            NULL, &computeEncoder) != -1 ||
+        mglRenderCppCreateComputeEncoderFromCommandBufferOwner(
+            owner, NULL) != -1 ||
+        mglRenderCppCreateComputeEncoderFromCommandBufferOwner(
+            owner, &computeEncoder) != 0 || !computeEncoder ||
+        mglRenderCppEndComputeEncoder(computeEncoder) != 0 ||
+        mglRenderCppBeginComputeDispatchForCommandBufferOwner(
+            NULL, NULL, &computeEncoder, NULL, 0) != -1 ||
+        mglRenderCppEncodeMultisampleResolveForCommandBufferOwner(
+            NULL, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR,
+            NULL, 0, 0, 0, NULL, 0, 0, 0, 0) != -1 ||
+        mglRenderCppEncodeTextureUploadLayersForCommandBufferOwner(
+            NULL, NULL, 0, 0, 0, 0, 0, 0, 0,
+            NULL, 0, 0, 0, 0, 0, 0) != -1 ||
         mglRenderCppEncodeColorClearForCommandBufferOwner(
             NULL, (__bridge void *)target, 0, 0, 0,
             1.0, 0.0, 0.0, 1.0) != -1 ||
@@ -2282,6 +2565,15 @@ static int verifyCommandBufferOwner(void) {
         mglRenderCppPresentDrawableForCommandBufferOwner(
             owner, NULL, &ownerState) != -1) {
         fprintf(stderr, "FAIL: command buffer owner state/present guards\n");
+        mglRenderCppDestroyCommandBufferOwner(&owner);
+        mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+        return 1;
+    }
+    if (mglRenderCppEncodeWaitForEventForCommandBufferOwner(
+            NULL, NULL, 0u) != -1 ||
+        mglRenderCppEncodeWaitForEventForCommandBufferOwner(
+            owner, NULL, 1u) != -1) {
+        fprintf(stderr, "FAIL: command buffer owner event wait guards\n");
         mglRenderCppDestroyCommandBufferOwner(&owner);
         mglRenderCppDestroyCommandQueueOwner(&queueOwner);
         return 1;
@@ -2353,11 +2645,16 @@ static int verifyCommandBufferOwner(void) {
     id<MTLCommandBuffer> submitted =
         (__bridge id<MTLCommandBuffer>)commandBuffer;
     MGLRenderCppCommandBufferState initialState = {};
+    MGLRenderCppCommandBufferState waitState = {};
     int *completionContext = new int(7);
     if (mglRenderCppGetCommandBufferState(
             commandBuffer, &initialState) != 0 ||
         initialState.status != MTLCommandBufferStatusNotEnqueued ||
         initialState.has_error ||
+        mglRenderCppWaitCommandBufferState(commandBuffer, &waitState) != 1 ||
+        waitState.status != MTLCommandBufferStatusNotEnqueued ||
+        mglRenderCppWaitCommandBufferState(NULL, &waitState) != -1 ||
+        mglRenderCppWaitCommandBufferState(commandBuffer, NULL) != -1 ||
         mglRenderCppAddCommandBufferCompletion(
             commandBuffer, commandBufferCompletion, completionContext,
             destroyCommandBufferCompletionContext) != 0) {
@@ -2367,11 +2664,30 @@ static int verifyCommandBufferOwner(void) {
         mglRenderCppDestroyCommandQueueOwner(&queueOwner);
         return 1;
     }
+    if (mglRenderCppAddCommandBufferOwnerCompletion(
+            NULL, commandBufferCompletion, NULL, NULL) != -1) {
+        fprintf(stderr, "FAIL: command buffer owner completion guard\n");
+        mglRenderCppDestroyCommandBufferOwner(&owner);
+        mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+        return 1;
+    }
+    int *ownerCompletionContext = new int(8);
+    if (mglRenderCppAddCommandBufferOwnerCompletion(
+            owner, commandBufferCompletion, ownerCompletionContext,
+            destroyCommandBufferCompletionContext) != 0) {
+        fprintf(stderr, "FAIL: command buffer owner completion setup\n");
+        delete ownerCompletionContext;
+        mglRenderCppDestroyCommandBufferOwner(&owner);
+        mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+        return 1;
+    }
     void *submission = NULL;
     void *detached = NULL;
+    MGLRenderCppCommandBufferTransaction transaction = {};
     if (mglRenderCppTakeCommandBufferSubmission(
             owner, &submission, &detached) != 0 || !submission ||
         detached != commandBuffer ||
+        mglRenderCppCommandBufferOwnerHasCurrent(owner) != 0 ||
         mglRenderCppGetCommandBufferOwnerState(owner, &ownerState) != -1 ||
         mglRenderCppCreateRenderEncoderFromCommandBufferOwnerState(
             owner, &renderPass, &renderEncoder) != -1 ||
@@ -2382,9 +2698,47 @@ static int verifyCommandBufferOwner(void) {
         mglRenderCppCommandBufferSubmissionMatchesBuffer(
             submission, NULL) != -1 ||
         mglRenderCppCommandBufferSubmissionMatchesBuffer(
-            submission, (void *)(uintptr_t)0xdeadbeef) != 0 ||
-        mglRenderCppCommitCommandBufferSubmission(&submission) != 0 ||
-        submission || mglRenderCppWaitCommandBuffer(detached) != 0 ||
+            submission, (void *)(uintptr_t)0xdeadbeef) != 0) {
+        fprintf(stderr, "FAIL: command buffer submission detach\n");
+        mglRenderCppDestroyCommandBufferSubmission(&submission);
+        mglRenderCppDestroyCommandBufferOwner(&owner);
+        mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+        return 1;
+    }
+    void *mismatchedCommandBuffer = NULL;
+    if (mglRenderCppCreateCommandBuffer(
+            queue, &mismatchedCommandBuffer) != 0 ||
+        !mismatchedCommandBuffer ||
+        mglRenderCppCommitCommandBufferTransaction(
+            owner, &submission, mismatchedCommandBuffer, NULL, 0, &transaction) != -1 ||
+        transaction.result !=
+            MGL_RENDER_CPP_COMMAND_BUFFER_TRANSACTION_ERROR ||
+        !transaction.has_error || !submission ||
+        mglRenderCppCommandBufferOwnerBeginCommit(owner) != 1) {
+        fprintf(stderr, "FAIL: command buffer transaction mismatch guard\n");
+        mglRenderCppDestroyCommandBufferSubmission(&submission);
+        mglRenderCppDestroyCommandBufferOwner(&owner);
+        mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+        return 1;
+    }
+    mglRenderCppCommandBufferOwnerEndCommit(owner);
+    transaction = {};
+    if (mglRenderCppCommitCommandBufferTransaction(
+            owner, &submission, detached, NULL, 0, &transaction) != 0 ||
+        transaction.result !=
+            MGL_RENDER_CPP_COMMAND_BUFFER_TRANSACTION_COMMITTED ||
+        !transaction.used_submission || transaction.has_error ||
+        !transaction.current_command_buffer_created ||
+        transaction.needs_new_command_buffer != 1u ||
+        mglRenderCppCommandBufferOwnerHasCurrent(owner) != 1 ||
+        !mglRenderCppCommandBufferOwnerGetCurrent(owner) || submission ||
+        mglRenderCppCommandBufferOwnerHasLastSubmitted(owner) != 1 ||
+        mglRenderCppWaitCommandBufferOwnerLastSubmitted(
+            owner, &ownerState) != 0 ||
+        ownerState.status != MTLCommandBufferStatusCompleted ||
+        mglRenderCppWaitCommandBufferState(detached, &waitState) != 0 ||
+        waitState.status != MTLCommandBufferStatusCompleted ||
+        waitState.has_error ||
         submitted.status == MTLCommandBufferStatusError) {
         fprintf(stderr, "FAIL: command buffer submission commit\n");
         mglRenderCppDestroyCommandBufferSubmission(&submission);
@@ -2392,14 +2746,66 @@ static int verifyCommandBufferOwner(void) {
         mglRenderCppDestroyCommandQueueOwner(&queueOwner);
         return 1;
     }
+    void *transactionCurrent = NULL;
+    void *transactionCurrentAgain = (void *)(uintptr_t)0x1;
+    if (mglRenderCppCommandBufferOwnerConsumeTransactionCurrent(
+            owner, &transactionCurrent) != 1 ||
+        !transactionCurrent ||
+        transactionCurrent != mglRenderCppCommandBufferOwnerGetCurrent(owner) ||
+        mglRenderCppCommandBufferOwnerConsumeTransactionCurrent(
+            owner, &transactionCurrentAgain) != 0 ||
+        transactionCurrentAgain != NULL ||
+        mglRenderCppCommandBufferOwnerConsumeTransactionCurrent(
+            NULL, &transactionCurrentAgain) != -1 ||
+        mglRenderCppCommandBufferOwnerConsumeTransactionCurrent(
+            owner, NULL) != -1) {
+        fprintf(stderr, "FAIL: command buffer transaction current consume\n");
+        mglRenderCppDestroyCommandBufferOwner(&owner);
+        mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+        return 1;
+    }
+    transaction = {};
+    if (mglRenderCppCommitCommandBufferTransaction(
+            owner, NULL, detached, NULL, 0, &transaction) != 0 ||
+        transaction.result !=
+            MGL_RENDER_CPP_COMMAND_BUFFER_TRANSACTION_SKIPPED ||
+        transaction.has_error) {
+        fprintf(stderr, "FAIL: command buffer transaction repeat guard\n");
+        mglRenderCppDestroyCommandBufferOwner(&owner);
+        mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+        return 1;
+    }
+
+    void *adoptedOwner = NULL;
+    void *adoptedCurrent = mglRenderCppCommandBufferOwnerGetCurrent(owner);
+    if (!adoptedCurrent ||
+        mglRenderCppCreateCommandBufferOwnerAdopt(
+            adoptedCurrent, &adoptedOwner) != 0 || !adoptedOwner) {
+        fprintf(stderr, "FAIL: command buffer adopted owner fixture\n");
+        mglRenderCppDestroyCommandBufferOwner(&adoptedOwner);
+        mglRenderCppDestroyCommandBufferOwner(&owner);
+        mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+        return 1;
+    }
+    mglRenderCppDiscardCommandBufferOwnerCurrent(adoptedOwner);
+    void *adoptedNext = NULL;
+    if (mglRenderCppCommandBufferOwnerCreateNext(
+            adoptedOwner, &adoptedNext) != 1 || adoptedNext) {
+        fprintf(stderr, "FAIL: adopted owner unexpectedly retained queue\n");
+        mglRenderCppDestroyCommandBufferOwner(&adoptedOwner);
+        mglRenderCppDestroyCommandBufferOwner(&owner);
+        mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+        return 1;
+    }
+    mglRenderCppDestroyCommandBufferOwner(&adoptedOwner);
     MGLRenderCppCommandBufferState completedState = {};
     if (mglRenderCppGetCommandBufferState(
             detached, &completedState) != 0 ||
         completedState.status != MTLCommandBufferStatusCompleted ||
         completedState.has_error ||
-        s_commandBufferCompletionCount.load(std::memory_order_relaxed) != 1 ||
+        s_commandBufferCompletionCount.load(std::memory_order_relaxed) != 2 ||
         s_commandBufferContextDestroyCount.load(
-            std::memory_order_relaxed) != 1 ||
+            std::memory_order_relaxed) != 2 ||
         s_commandBufferCompletionStatus.load(std::memory_order_relaxed) !=
             MTLCommandBufferStatusCompleted) {
         fprintf(stderr, "FAIL: command buffer state/completion result\n");
@@ -2429,9 +2835,26 @@ static int verifyCommandBufferOwner(void) {
         mglRenderCppDestroyCommandQueueOwner(&queueOwner);
         return 1;
     }
-    mglRenderCppDestroyCommandBufferSubmission(&submission);
-    if (submission) {
-        fprintf(stderr, "FAIL: command buffer submission destroy\n");
+    void *recoveryOwner = NULL;
+    MGLRenderCppCommandBufferTransaction recoveryTransaction = {};
+    if (mglRenderCppCreateCommandRecoveryOwner(&recoveryOwner) != 0 ||
+        mglRenderCppCommitCommandBufferTransaction(
+            owner, &submission, detached, recoveryOwner, 0,
+            &recoveryTransaction) != 0 ||
+        recoveryTransaction.result !=
+            MGL_RENDER_CPP_COMMAND_BUFFER_TRANSACTION_COMMITTED ||
+        !recoveryTransaction.completion_registered || submission) {
+        fprintf(stderr, "FAIL: command buffer recovery transaction\n");
+        mglRenderCppDestroyCommandRecoveryOwner(&recoveryOwner);
+        mglRenderCppDestroyCommandBufferSubmission(&submission);
+        mglRenderCppDestroyCommandBufferOwner(&owner);
+        mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+        return 1;
+    }
+    /* The completion context owns a reference independent of this handle. */
+    mglRenderCppDestroyCommandRecoveryOwner(&recoveryOwner);
+    if (mglRenderCppWaitCommandBuffer(detached) != 0) {
+        fprintf(stderr, "FAIL: command buffer recovery completion after owner destroy\n");
         mglRenderCppDestroyCommandBufferOwner(&owner);
         mglRenderCppDestroyCommandQueueOwner(&queueOwner);
         return 1;
@@ -2456,8 +2879,11 @@ static int verifyCommandBufferOwner(void) {
     printf("COMMAND_BUFFER_STATE_OK\n");
     printf("COMMAND_BUFFER_OWNER_PRESENT_OK\n");
     printf("COMMAND_BUFFER_OWNER_ENCODERS_OK\n");
+    printf("COMMAND_BUFFER_OWNER_COMPLETION_OK\n");
     printf("COMMAND_BUFFER_OWNER_CLEARS_OK\n");
     printf("COMMAND_BUFFER_COMMIT_GUARD_OK\n");
+    printf("COMMAND_BUFFER_TRANSACTION_OK\n");
+    printf("COMMAND_BUFFER_LAST_SUBMITTED_OK\n");
     printf("COMMAND_BUFFER_RECOVERY_DECISION_OK\n");
     return 0;
 }
@@ -2542,12 +2968,52 @@ static int verifyCommandRecoveryOwner(void) {
         return 1;
     }
 
+    MGLRenderCppCommandBufferState driverFailure = {};
+    driverFailure.has_error = 1u;
+    driverFailure.error_code = 4;
+    snprintf(driverFailure.error_domain, sizeof(driverFailure.error_domain),
+             "%s", "MTLCommandBufferErrorDomain");
+    MGLRenderCppCommandBufferTransaction failedTransaction = {};
+    if (mglRenderCppCommandRecoveryRecordTransactionFailure(
+            NULL, &driverFailure, &failedTransaction) != -1 ||
+        mglRenderCppCommandRecoveryRecordTransactionFailure(
+            owner, &driverFailure, NULL) != -1 ||
+        mglRenderCppCommandRecoveryRecordTransactionFailure(
+            owner, &driverFailure, &failedTransaction) != 0 ||
+        failedTransaction.result !=
+            MGL_RENDER_CPP_COMMAND_BUFFER_TRANSACTION_ERROR ||
+        !failedTransaction.has_error ||
+        !failedTransaction.is_driver_rejection ||
+        !failedTransaction.device_reset_requested ||
+        !failedTransaction.recovery_error_recorded ||
+        failedTransaction.recovery.consecutive_errors != 1 ||
+        mglRenderCppCommandRecoveryRecordTransactionFailure(
+            owner, &driverFailure, &failedTransaction) != 0 ||
+        failedTransaction.recovery.consecutive_errors != 1) {
+        fprintf(stderr, "FAIL: command recovery transaction failure\n");
+        mglRenderCppDestroyCommandRecoveryOwner(&owner);
+        return 1;
+    }
+
+    MGLRenderCppCommandBufferTransaction genericFailure = {};
+    if (mglRenderCppCommandRecoveryRecordTransactionFailure(
+            owner, NULL, &genericFailure) != 0 ||
+        !genericFailure.has_error || genericFailure.is_driver_rejection ||
+        !genericFailure.device_reset_requested ||
+        !genericFailure.recovery_error_recorded ||
+        genericFailure.recovery.consecutive_errors != 2) {
+        fprintf(stderr, "FAIL: generic command recovery transaction failure\n");
+        mglRenderCppDestroyCommandRecoveryOwner(&owner);
+        return 1;
+    }
+
     mglRenderCppDestroyCommandRecoveryOwner(&owner);
     if (owner) {
         fprintf(stderr, "FAIL: command recovery owner destroy\n");
         return 1;
     }
     printf("COMMAND_BUFFER_RECOVERY_OWNER_OK\n");
+    printf("COMMAND_BUFFER_TRANSACTION_RECOVERY_OK\n");
     return 0;
 }
 
@@ -2686,9 +3152,9 @@ static int verifyCommandBufferGetterAndAdopt(void) {
 }
 
 static int verifyRenderEncoderGetter(void) {
-    /* P4.5 (item 1141): render-encoder owner getter — the ObjC mirror is
-     * gone and reads borrow through the C++ owner on both gates. */
-    if (mglRenderCppRenderEncoderOwnerGetCurrent(NULL) != NULL) {
+    /* P4.5: raw render-encoder borrowing is a gate-off-only compatibility
+     * operation. Gate-on must fail closed even when the owner is populated. */
+    if (mglRenderCppRenderEncoderOwnerGetCurrentForFallback(NULL) != NULL) {
         fprintf(stderr, "FAIL: re getter null owner\n");
         return 1;
     }
@@ -2716,25 +3182,38 @@ static int verifyRenderEncoderGetter(void) {
         fprintf(stderr, "FAIL: re owner create\n");
         return 1;
     }
+    setenv("MGL_USE_METALCPP", "1", 1);
+    if (mglRenderCppRenderEncoderOwnerGetCurrentForFallback(owner) != NULL) {
+        fprintf(stderr, "FAIL: re getter exposed encoder under gate-on\n");
+        return 1;
+    }
+    setenv("MGL_USE_METALCPP", "0", 1);
     id<MTLRenderCommandEncoder> readBack =
         (__bridge id<MTLRenderCommandEncoder>)
-            mglRenderCppRenderEncoderOwnerGetCurrent(owner);
+            mglRenderCppRenderEncoderOwnerGetCurrentForFallback(owner);
     if (readBack != encoder) {
         fprintf(stderr, "FAIL: re getter identity\n");
         return 1;
     }
-    if (mglRenderCppEndRenderEncoderOwner(owner) != 0) {
+    if (mglRenderCppSetRenderEncoderOwnerLabel(
+            NULL, "invalid") != -1 ||
+        mglRenderCppSetRenderEncoderOwnerLabel(
+            owner, NULL) != -1 ||
+        mglRenderCppSetRenderEncoderOwnerLabel(
+            owner, "Render Encoder Owner Smoke") != 0 ||
+        mglRenderCppEndRenderEncoderOwner(owner) != 0) {
         fprintf(stderr, "FAIL: re owner end\n");
         return 1;
     }
-    /* The owner keeps the (ended) encoder pointer until destroy — matches
-     * the mirror's end semantics (clear is a separate step). */
-    if (mglRenderCppRenderEncoderOwnerGetCurrent(owner) !=
-        (__bridge void *)encoder) {
+    /* Ending clears the borrowed current encoder while retaining the reusable
+     * owner shell for the next reset. */
+    if (mglRenderCppRenderEncoderOwnerGetCurrentForFallback(owner) != NULL ||
+        mglRenderCppRenderEncoderOwnerHasCurrent(owner) != 0) {
         fprintf(stderr, "FAIL: re getter after end\n");
         return 1;
     }
     mglRenderCppDestroyRenderEncoderOwner(&owner);
+    unsetenv("MGL_USE_METALCPP");
     if (owner != NULL) {
         fprintf(stderr, "FAIL: re owner not cleared\n");
         return 1;
@@ -6838,7 +7317,12 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
         char drawError[128] = {0};
         if (mglRenderCppEncodeDraw(stateEncoder, &draw,
                                    drawError, sizeof(drawError)) != 0 ||
+            mglRenderCppEncodeDrawForRenderEncoderOwner(
+                adoptedStateEncoderOwner, &draw,
+                drawError, sizeof(drawError)) != 0 ||
             mglRenderCppEncodeDraw(NULL, &draw, NULL, 0) != -1 ||
+            mglRenderCppEncodeDrawForRenderEncoderOwner(
+                NULL, &draw, NULL, 0) != -1 ||
             mglRenderCppEncodeDraw(stateEncoder, &badKind,
                                    drawError, sizeof(drawError)) != -1 ||
             mglRenderCppEncodeDraw(stateEncoder, &noInstance, NULL, 0) != -1) {
@@ -6890,6 +7374,9 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
         char snapError[128] = {0};
         if (mglRenderCppEncodeBindingSnapshot(
                 stateEncoder, &snap, snapError, sizeof(snapError)) != 0 ||
+            mglRenderCppEncodeBindingSnapshotForRenderEncoderOwner(
+                adoptedStateEncoderOwner, &snap,
+                snapError, sizeof(snapError)) != 0 ||
             mglRenderCppEncodeBindingSnapshot(NULL, &snap, NULL, 0) != -1 ||
             mglRenderCppEncodeBindingSnapshot(
                 stateEncoder, &overflow, snapError, sizeof(snapError)) != -1 ||
@@ -6942,6 +7429,9 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
         if (!bindingOwner || !resourceTexture || !resourceSampler ||
             mglRenderCppEncodeResourceBindingSnapshot(
                 bindingOwner, stateEncoder, &resourceSnap,
+                resourceError, sizeof(resourceError)) != 0 ||
+            mglRenderCppEncodeResourceBindingSnapshotForRenderEncoderOwner(
+                bindingOwner, adoptedStateEncoderOwner, &resourceSnap,
                 resourceError, sizeof(resourceError)) != 0 ||
             mglRenderCppEncodeResourceBindingSnapshot(
                 NULL, stateEncoder, &resourceSnap, NULL, 0) != -1 ||
@@ -7613,6 +8103,25 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
             .groups_x = 1u, .groups_y = 1u, .groups_z = 1u,
             .local_x = 1u, .local_y = 1u, .local_z = 1u,
         };
+        MGLRenderCppComputeExecutionPlan sequencePlan = ownerPlan;
+        sequencePlan.dispatch = (MGLRenderCppComputePlan){};
+        sequencePlan.dispatch_op_count = 0u;
+        MGLRenderCppComputePlan sequenceDispatch = {
+            .dispatch_kind = MGL_RENDER_CPP_COMPUTE_DISPATCH_DIRECT,
+            .groups_x = 1u, .groups_y = 1u, .groups_z = 1u,
+            .local_x = 1u, .local_y = 1u, .local_z = 1u,
+        };
+        if (mglRenderCppAppendComputeDispatchToPlan(
+                &sequencePlan, &sequenceDispatch, NULL, 0) != 0 ||
+            mglRenderCppAppendComputeDispatchToPlan(
+                &sequencePlan, &sequenceDispatch, NULL, 0) != 0 ||
+            sequencePlan.dispatch_op_count != 2u ||
+            sequencePlan.dispatch_ops[0].binding_op_count !=
+                sequencePlan.binding_op_count) {
+            fprintf(stderr, "FAIL: compute dispatch sequence plan\n");
+            return 1;
+        }
+        ownerPlan.barrier_scope = MGL_RENDER_CPP_COMPUTE_BARRIER_BUFFERS;
         char ownerError[128] = {0};
         if (mglRenderCppAppendComputeBindingSnapshotToPlan(
                 &ownerPlan, &ownerSnapshot, ownerError,
@@ -7639,6 +8148,106 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
             mglRenderCppWaitCommandBuffer(executionCommandBuffer) != 0) {
             fprintf(stderr, "FAIL: owner compute execution plan: %s\n",
                     ownerError[0] ? ownerError : "command failure");
+            mglRenderCppDestroyCommandBufferOwner(&executionOwner);
+            CFRelease(csPipeline);
+            mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
+            mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
+            return 1;
+        }
+        mglRenderCppDestroyCommandBufferOwner(&executionOwner);
+
+        /* Unified compute transaction: C++ owns plan encode, copy-back blit,
+         * submit/wait and CPU-prefix visibility.  The ObjC-facing result has
+         * no detached submission pointer, and the owner rotates exactly once. */
+        uint8_t copySourceBytes[32] = {0};
+        for (size_t i = 0; i < sizeof(copySourceBytes); i++) {
+            copySourceBytes[i] = (uint8_t)(0xa0u + i);
+        }
+        id<MTLBuffer> copySource =
+            [device newBufferWithBytes:copySourceBytes
+                                length:sizeof(copySourceBytes)
+                               options:MTLResourceStorageModeShared];
+        id<MTLBuffer> copyDestination =
+            [device newBufferWithLength:sizeof(copySourceBytes)
+                                options:MTLResourceStorageModeShared];
+        uint8_t cpuPrefix[32] = {0};
+        Buffer cpuDestination = {};
+        cpuDestination.data.buffer_data = (vm_address_t)cpuPrefix;
+        cpuDestination.data.buffer_size = sizeof(cpuPrefix);
+        MGLRenderCppCopyBackEntry transactionCopy = {
+            .temporary = (__bridge void *)copySource,
+            .destination = (__bridge void *)copyDestination,
+            .destination_buffer = &cpuDestination,
+            .destination_offset = 4u,
+            .length = 12u,
+        };
+        executionOwner = NULL;
+        executionCommandBuffer = NULL;
+        MGLRenderCppComputeExecutionResult executionResult = {};
+        if (!copySource || !copyDestination ||
+            mglRenderCppCreateCommandBufferOwner(
+                (__bridge void *)cdQueue, &executionOwner,
+                &executionCommandBuffer) != 0 ||
+            mglRenderCppExecuteComputeExecutionPlan(
+                executionOwner, NULL, &ownerPlan, &transactionCopy, 1u, 0u,
+                &executionResult, ownerError, sizeof(ownerError)) != 0 ||
+            !executionResult.submitted ||
+            !executionResult.cpu_prefix_synchronized ||
+            executionResult.failed_copy_back_index != 1u ||
+            executionResult.transaction.current_command_buffer_created != 1u ||
+            mglRenderCppCommandBufferOwnerConsumeTransactionCurrent(
+                executionOwner, &executionCommandBuffer) != 1 ||
+            !executionCommandBuffer ||
+            memcmp(cpuPrefix + 4, copySourceBytes, 12u) != 0) {
+            fprintf(stderr, "FAIL: compute owner copy-back transaction: %s\n",
+                    ownerError[0] ? ownerError : "transaction mismatch");
+            mglRenderCppDestroyCommandBufferOwner(&executionOwner);
+            CFRelease(csPipeline);
+            mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
+            mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
+            return 1;
+        }
+        mglRenderCppDestroyCommandBufferOwner(&executionOwner);
+
+        /* OOB copy-back is rejected before compute/blit encoding. */
+        MGLRenderCppCopyBackEntry badTransactionCopy = transactionCopy;
+        badTransactionCopy.length = 64u;
+        executionOwner = NULL;
+        executionCommandBuffer = NULL;
+        executionResult = (MGLRenderCppComputeExecutionResult){};
+        if (mglRenderCppCreateCommandBufferOwner(
+                (__bridge void *)cdQueue, &executionOwner,
+                &executionCommandBuffer) != 0 ||
+            mglRenderCppExecuteComputeExecutionPlan(
+                executionOwner, NULL, &ownerPlan, &badTransactionCopy, 1u, 0u,
+                &executionResult, ownerError, sizeof(ownerError)) != -1 ||
+            executionResult.failed_copy_back_index != 0u ||
+            executionResult.submitted != 0u) {
+            fprintf(stderr, "FAIL: compute owner copy-back OOB rejection: %s\n",
+                    ownerError[0] ? ownerError : "accepted invalid range");
+            mglRenderCppDestroyCommandBufferOwner(&executionOwner);
+            CFRelease(csPipeline);
+            mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
+            mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
+            return 1;
+        }
+        mglRenderCppDestroyCommandBufferOwner(&executionOwner);
+        printf("COMPUTE_EXECUTION_TRANSACTION_OK\n");
+
+        /* Barrier scope is value-state validated before an encoder is
+         * created; malformed plans must fail closed. */
+        MGLRenderCppComputeExecutionPlan invalidBarrierPlan = ownerPlan;
+        invalidBarrierPlan.barrier_scope = 8u;
+        executionOwner = NULL;
+        executionCommandBuffer = NULL;
+        if (mglRenderCppCreateCommandBufferOwner(
+                (__bridge void *)cdQueue, &executionOwner,
+                &executionCommandBuffer) != 0 ||
+            mglRenderCppEncodeComputeExecutionPlanForCommandBufferOwner(
+                executionOwner, &invalidBarrierPlan, ownerError,
+                sizeof(ownerError)) != -1) {
+            fprintf(stderr, "FAIL: compute barrier scope validation: %s\n",
+                    ownerError[0] ? ownerError : "accepted invalid scope");
             mglRenderCppDestroyCommandBufferOwner(&executionOwner);
             CFRelease(csPipeline);
             mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
@@ -7688,7 +8297,28 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
         printf("COMPUTE_DISPATCH_OK\n");
     }
 
-    if (mglRenderCppEndRenderEncoderOwner(adoptedStateEncoderOwner) != 0) {
+    int ownerHasBefore = mglRenderCppRenderEncoderOwnerHasCurrent(
+        adoptedStateEncoderOwner);
+    int ownerViewport = mglRenderCppSetRenderViewportForOwner(
+        adoptedStateEncoderOwner, 0.0, 0.0, 2.0, 2.0, 0.0, 1.0);
+    int ownerScissor = mglRenderCppSetRenderScissorForOwner(
+        adoptedStateEncoderOwner, 0u, 0u, 2u, 2u);
+    int ownerClip = mglRenderCppSetDepthClipModeForOwner(
+        adoptedStateEncoderOwner, (uint32_t)MTLDepthClipModeClip);
+    int ownerStencil = mglRenderCppSetStencilReferenceValuesForOwner(
+        adoptedStateEncoderOwner, 0u, 0u);
+    int ownerEnd = mglRenderCppEndRenderEncoderOwner(adoptedStateEncoderOwner);
+    int ownerHasAfter = mglRenderCppRenderEncoderOwnerHasCurrent(
+        adoptedStateEncoderOwner);
+    int ownerAfterSetter = mglRenderCppSetRenderScissorForOwner(
+        adoptedStateEncoderOwner, 0u, 0u, 1u, 1u);
+    if (ownerHasBefore != 1 || ownerViewport != 0 || ownerScissor != 0 ||
+        ownerClip != 0 || ownerStencil != 0 || ownerEnd != 0 ||
+        ownerHasAfter != 0 || ownerAfterSetter != -1) {
+        fprintf(stderr, "owner state results before=%d viewport=%d scissor=%d "
+                "clip=%d stencil=%d end=%d after=%d afterSetter=%d\n",
+                ownerHasBefore, ownerViewport, ownerScissor, ownerClip,
+                ownerStencil, ownerEnd, ownerHasAfter, ownerAfterSetter);
         fprintf(stderr, "FAIL: render-pass state owner encoder end\n");
         mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
         mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
@@ -7796,20 +8426,26 @@ static int verifyQueryUtilities(id<MTLDevice> device) {
     renderPassState.visibility_result_buffer =
         (__bridge void *)visibility;
     void *encoder = NULL;
+    void *encoderOwner = NULL;
     if (mglRenderCppCreateRenderEncoderFromState(
             (__bridge void *)commandBuffer, &renderPassState, &encoder) != 0 ||
-        !encoder || mglRenderCppSetVisibilityResultMode(
-            encoder,
+        !encoder || mglRenderCppCreateRenderEncoderOwner(
+            encoder, &encoderOwner) != 0 || !encoderOwner ||
+        mglRenderCppSetVisibilityResultModeForRenderEncoderOwner(
+            encoderOwner,
             (uint32_t)MTLVisibilityResultModeBoolean, 0) != 0) {
-        fprintf(stderr, "FAIL: visibility mode facade\n");
+        fprintf(stderr, "FAIL: visibility mode owner facade\n");
+        mglRenderCppDestroyRenderEncoderOwner(&encoderOwner);
         mglRenderCppDestroyQueryStateOwner(&queryOwner);
         return 1;
     }
-    if (mglRenderCppEndRenderEncoder(encoder) != 0) {
+    if (mglRenderCppEndRenderEncoderOwner(encoderOwner) != 0) {
         fprintf(stderr, "FAIL: visibility render encoder end\n");
+        mglRenderCppDestroyRenderEncoderOwner(&encoderOwner);
         mglRenderCppDestroyQueryStateOwner(&queryOwner);
         return 1;
     }
+    mglRenderCppDestroyRenderEncoderOwner(&encoderOwner);
     [commandBuffer commit];
     [commandBuffer waitUntilCompleted];
     if (commandBuffer.status == MTLCommandBufferStatusError) {
@@ -7835,8 +8471,7 @@ static int verifyQueryUtilities(id<MTLDevice> device) {
     uint64_t callbackTimestamp = mglRenderCppGetGPUTimestamp(
         &callbackContext);
     if (callbackTimestamp == 0 ||
-        s_legacyFlushCount != flushCountBeforeTimestamp + 1 ||
-        !s_legacyFlushFinish ||
+        s_legacyFlushCount != flushCountBeforeTimestamp ||
         mglRenderCppGetGPUTimestamp(NULL) != 0) {
         fprintf(stderr,
                 "FAIL: GPU timestamp callback timestamp=%llu flush=%d finish=%d\n",
@@ -7863,8 +8498,7 @@ static int verifyQueryUtilities(id<MTLDevice> device) {
     mglRenderCppBeginTimerQueryCallback(&callbackContext);
     uint64_t callbackElapsed =
         mglRenderCppEndTimerQueryCallback(&callbackContext);
-    if (s_legacyFlushCount != flushCountBeforeTimer + 2 ||
-        !s_legacyFlushFinish ||
+    if (s_legacyFlushCount != flushCountBeforeTimer ||
         mglRenderCppEndTimerQueryCallback(NULL) != 0) {
         fprintf(stderr,
                 "FAIL: timer query callbacks elapsed=%llu flush=%d finish=%d\n",
@@ -8109,6 +8743,7 @@ int main(void) {
         if (verifyBindingDedup(device) != 0) return 1;
         if (verifyComputeSetters(device) != 0) return 1;
         if (verifySyncCallbacks(device) != 0) return 1;
+        if (verifyMetalCallbackInstall() != 0) return 1;
         if (verifyCommandQueueOwner() != 0) return 1;
         if (verifyCommandBufferOwner() != 0) return 1;
         if (verifyCommandRecoveryOwner() != 0) return 1;

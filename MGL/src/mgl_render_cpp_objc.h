@@ -66,26 +66,15 @@ mglRenderCommandBufferStatus(id<MTLCommandBuffer> commandBuffer)
         mglRenderCommandBufferState(commandBuffer).status;
 }
 
-/* P4.5 command-owner adapter. Gate-on reads/presents through the owner-aware
- * C++ facade; the raw Objective-C command buffer is borrowed only by the
- * disabled-gate baseline. */
+/* P4.5 command-owner adapter. Status reads stay inside the owner on both
+ * gates; the result is a caller-owned value snapshot. */
 static inline BOOL mglRenderCommandBufferOwnerState(
     void *owner,
     MGLRenderCppCommandBufferState *stateOut)
 {
     if (stateOut) memset(stateOut, 0, sizeof(*stateOut));
     if (!owner || !stateOut) return NO;
-    if (mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
-        mglRenderCppGetDevice() &&
-        mglRenderCppGetCommandBufferOwnerState(owner, stateOut) == 0) {
-        return YES;
-    }
-    MGLMetalCommandBufferRef commandBuffer =
-        (__bridge MGLMetalCommandBufferRef)
-            mglRenderCppCommandBufferOwnerGetCurrent(owner);
-    if (!commandBuffer) return NO;
-    *stateOut = mglRenderCommandBufferState(commandBuffer);
-    return YES;
+    return mglRenderCppGetCommandBufferOwnerState(owner, stateOut) == 0;
 }
 
 static inline int mglRenderPresentDrawableForCommandBufferOwner(
@@ -93,23 +82,13 @@ static inline int mglRenderPresentDrawableForCommandBufferOwner(
     MGLMetalDrawableRef drawable)
 {
     if (!owner || !drawable) return -1;
-    if (mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
-        mglRenderCppGetDevice() &&
-        mglRenderCppPresentDrawableForCommandBufferOwner(
-            owner, (__bridge void *)drawable, NULL) == 0) {
-        return 0;
-    }
-    MGLMetalCommandBufferRef commandBuffer =
-        (__bridge MGLMetalCommandBufferRef)
-            mglRenderCppCommandBufferOwnerGetCurrent(owner);
-    if (!commandBuffer) return -1;
-    [commandBuffer presentDrawable:drawable];
-    return 0;
+    return mglRenderCppPresentDrawableForCommandBufferOwner(
+        owner, (__bridge void *)drawable, NULL);
 }
 
-/* Owner-first encoder adapters. Gate-on keeps the command buffer inside the
- * C++ owner; the borrowed getter remains only for the ObjC compatibility
- * fallback. */
+/* Owner-first encoder adapters. CommandBufferOwner.current stays inside C++
+ * on both gates; gate-off may keep ObjC descriptor construction without
+ * borrowing the command buffer itself. */
 static inline MGLMetalRenderCommandEncoderRef
 mglRenderCreateRenderEncoderForCommandBufferOwner(
     void *owner,
@@ -125,30 +104,37 @@ mglRenderCreateRenderEncoderForCommandBufferOwner(
             return (__bridge MGLMetalRenderCommandEncoderRef)encoder;
         }
     }
-    MGLMetalCommandBufferRef commandBuffer =
-        (__bridge MGLMetalCommandBufferRef)
-            mglRenderCppCommandBufferOwnerGetCurrent(owner);
-    return commandBuffer && descriptor
-        ? [commandBuffer renderCommandEncoderWithDescriptor:descriptor]
-        : nil;
+    void *encoder = NULL;
+    if (descriptor &&
+        mglRenderCppCreateRenderEncoderFromCommandBufferOwnerDescriptor(
+            owner, (__bridge void *)descriptor, &encoder) == 0 && encoder) {
+        return (__bridge MGLMetalRenderCommandEncoderRef)encoder;
+    }
+    return nil;
 }
 
 static inline MGLMetalBlitCommandEncoderRef
 mglRenderCreateBlitEncoderForCommandBufferOwner(void *owner)
 {
     if (!owner) return nil;
-    if (mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
-        mglRenderCppGetDevice()) {
-        void *encoder = NULL;
-        if (mglRenderCppCreateBlitEncoderFromCommandBufferOwner(
-                owner, &encoder) == 0 && encoder) {
-            return (__bridge MGLMetalBlitCommandEncoderRef)encoder;
-        }
+    void *encoder = NULL;
+    if (mglRenderCppCreateBlitEncoderFromCommandBufferOwner(
+            owner, &encoder) == 0 && encoder) {
+        return (__bridge MGLMetalBlitCommandEncoderRef)encoder;
     }
-    MGLMetalCommandBufferRef commandBuffer =
-        (__bridge MGLMetalCommandBufferRef)
-            mglRenderCppCommandBufferOwnerGetCurrent(owner);
-    return commandBuffer ? [commandBuffer blitCommandEncoder] : nil;
+    return nil;
+}
+
+static inline MGLMetalComputeCommandEncoderRef
+mglRenderCreateComputeEncoderForCommandBufferOwner(void *owner)
+{
+    if (!owner) return nil;
+    void *encoder = NULL;
+    if (mglRenderCppCreateComputeEncoderFromCommandBufferOwner(
+            owner, &encoder) == 0 && encoder) {
+        return (__bridge MGLMetalComputeCommandEncoderRef)encoder;
+    }
+    return nil;
 }
 
 static inline NSString *
@@ -202,6 +188,7 @@ static inline int mglRenderAddCommandBufferCompletion(
             mglRenderDestroyCommandBufferCompletionBlock);
         if (result == 0) return 0;
         mglRenderDestroyCommandBufferCompletionBlock(context);
+        return result;
     }
     [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> completed) {
         MGLRenderCppCommandBufferState state =
@@ -209,6 +196,23 @@ static inline int mglRenderAddCommandBufferCompletion(
         block(&state);
     }];
     return 0;
+}
+
+static inline int mglRenderAddCommandBufferOwnerCompletion(
+    void *owner,
+    MGLRenderCommandBufferCompletionBlock block)
+{
+    if (!owner || !block) return -1;
+    MGLRenderCommandBufferCompletionBlock copiedBlock = [block copy];
+    void *context = (__bridge_retained void *)copiedBlock;
+    int result = mglRenderCppAddCommandBufferOwnerCompletion(
+        owner,
+        mglRenderInvokeCommandBufferCompletionBlock,
+        context,
+        mglRenderDestroyCommandBufferCompletionBlock);
+    if (result == 0) return 0;
+    mglRenderDestroyCommandBufferCompletionBlock(context);
+    return -1;
 }
 
 /* Returns a borrowed queue retained by the opaque C++ owner. Assign the
