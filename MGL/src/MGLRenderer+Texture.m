@@ -5,10 +5,6 @@
 #import "MGLRenderer+Texture_Private.h"
 #include "mgl_env_flag.h"
 #include "mgl_render_cpp_objc.h"
-static BOOL mglTextureUsesMetalCpp(void)
-{
-    return mglRenderCppGetDevice() != NULL;
-}
 
 int mglRendererCallbackResource(void *runtime_context,
                                 GLMContext glm_ctx,
@@ -116,14 +112,13 @@ static MGLMetalBufferRef mglTextureCreateBuffer(MGLMetalDeviceRef device,
                                             NSUInteger length,
                                             MTLResourceOptions options)
 {
-    if (mglTextureUsesMetalCpp()) {
-        void *buffer = NULL;
-        if (mglRenderCppCreateBuffer(length, options, NULL, &buffer) == 0 &&
-            buffer) {
-            return (__bridge_transfer MGLMetalBufferRef)buffer;
-        }
+    (void)device;
+    void *buffer = NULL;
+    if (mglRenderCppCreateBuffer(length, options, NULL, &buffer) == 0 &&
+        buffer) {
+        return (__bridge_transfer MGLMetalBufferRef)buffer;
     }
-    return [device newBufferWithLength:length options:options];
+    return nil;
 }
 
 static MGLMetalBufferRef mglTextureCreateBufferWithBytes(
@@ -132,30 +127,28 @@ static MGLMetalBufferRef mglTextureCreateBufferWithBytes(
     NSUInteger length,
     MTLResourceOptions options)
 {
-    if (mglTextureUsesMetalCpp()) {
-        void *buffer = NULL;
-        if (mglRenderCppCreateBufferWithBytes(bytes, length, options, NULL,
-                                              &buffer) == 0 && buffer) {
-            return (__bridge_transfer MGLMetalBufferRef)buffer;
-        }
+    (void)device;
+    void *buffer = NULL;
+    if (mglRenderCppCreateBufferWithBytes(bytes, length, options, NULL,
+                                          &buffer) == 0 && buffer) {
+        return (__bridge_transfer MGLMetalBufferRef)buffer;
     }
-    return [device newBufferWithBytes:bytes length:length options:options];
+    return nil;
 }
 
 static MGLMetalTextureRef mglTextureCreateTexture(
     MGLMetalDeviceRef device,
     MTLTextureDescriptor *descriptor)
 {
-    if (mglTextureUsesMetalCpp()) {
-        void *texture = NULL;
-        MGLRenderCppTextureDescriptorState state =
-            mglRenderCppTextureDescriptorStateFromObjC(descriptor);
-        if (mglRenderCppCreateTextureFromState(&state, NULL, &texture) == 0 &&
-            texture) {
-            return (__bridge_transfer MGLMetalTextureRef)texture;
-        }
+    (void)device;
+    void *texture = NULL;
+    MGLRenderCppTextureDescriptorState state =
+        mglRenderCppTextureDescriptorStateFromObjC(descriptor);
+    if (mglRenderCppCreateTextureFromState(&state, NULL, &texture) == 0 &&
+        texture) {
+        return (__bridge_transfer MGLMetalTextureRef)texture;
     }
-    return [device newTextureWithDescriptor:descriptor];
+    return nil;
 }
 
 static MGLMetalTextureRef mglTextureCreateBufferTexture(
@@ -164,20 +157,15 @@ static MGLMetalTextureRef mglTextureCreateBufferTexture(
     NSUInteger offset,
     NSUInteger bytesPerRow)
 {
-    if (mglTextureUsesMetalCpp()) {
-        void *texture = NULL;
-        MGLRenderCppTextureDescriptorState state =
-            mglRenderCppTextureDescriptorStateFromObjC(descriptor);
-        if (mglRenderCppCreateBufferTextureFromState(
-                (__bridge void *)buffer, &state, offset, bytesPerRow,
-                &texture) == 0 && texture) {
-            return (__bridge_transfer MGLMetalTextureRef)texture;
-        }
-        return nil;
+    void *texture = NULL;
+    MGLRenderCppTextureDescriptorState state =
+        mglRenderCppTextureDescriptorStateFromObjC(descriptor);
+    if (mglRenderCppCreateBufferTextureFromState(
+            (__bridge void *)buffer, &state, offset, bytesPerRow,
+            &texture) == 0 && texture) {
+        return (__bridge_transfer MGLMetalTextureRef)texture;
     }
-    return [buffer newTextureWithDescriptor:descriptor
-                                     offset:offset
-                                bytesPerRow:bytesPerRow];
+    return nil;
 }
 
 static void mglTextureReplaceRegion(MGLMetalTextureRef texture,
@@ -210,21 +198,14 @@ static void mglTextureGetBytes(MGLMetalTextureRef texture,
                                NSUInteger slice,
                                BOOL useSlice)
 {
-    if (mglTextureUsesMetalCpp() &&
-        mglRenderCppTextureGetBytes(
+    if (mglRenderCppTextureGetBytes(
             (__bridge void *)texture, bytes, bytesPerRow, bytesPerImage,
             region.origin.x, region.origin.y, region.origin.z,
             region.size.width, region.size.height, region.size.depth,
-            level, slice, useSlice ? 1 : 0) == 0) {
-        return;
-    }
-    if (useSlice) {
-        [texture getBytes:bytes bytesPerRow:bytesPerRow
-             bytesPerImage:bytesPerImage fromRegion:region
-            mipmapLevel:level slice:slice];
-    } else {
-        [texture getBytes:bytes bytesPerRow:bytesPerRow
-               fromRegion:region mipmapLevel:level];
+            level, slice, useSlice ? 1 : 0) != 0) {
+        [NSException raise:@"MGLTextureGetBytesError"
+                    format:@"C++ texture getBytes failed (level=%lu slice=%lu)",
+                           (unsigned long)level, (unsigned long)slice];
     }
 }
 
@@ -232,41 +213,38 @@ static MGLMetalSamplerStateRef mglTextureCreateSampler(
     MGLMetalDeviceRef device,
     MTLSamplerDescriptor *descriptor)
 {
-    if (mglTextureUsesMetalCpp()) {
-        void *sampler = NULL;
-        if (mglRenderCppCreateSampler((__bridge void *)descriptor,
-                                      &sampler) == 0 && sampler) {
-            return (__bridge_transfer MGLMetalSamplerStateRef)sampler;
-        }
+    (void)device;
+    void *sampler = NULL;
+    if (mglRenderCppCreateSampler((__bridge void *)descriptor,
+                                  &sampler) == 0 && sampler) {
+        return (__bridge_transfer MGLMetalSamplerStateRef)sampler;
     }
-    return [device newSamplerStateWithDescriptor:descriptor];
+    return nil;
 }
 
 static MGLMetalCommandBufferRef mglTextureCreateCommandBuffer(
     MGLMetalCommandQueueRef queue)
 {
-    if (mglTextureUsesMetalCpp() && queue) {
-        void *commandBufferCPP = NULL;
-        if (mglRenderCppCreateCommandBuffer((__bridge void *)queue,
-                                             &commandBufferCPP) == 0 &&
-            commandBufferCPP) {
-            return (__bridge MGLMetalCommandBufferRef)commandBufferCPP;
-        }
+    if (!queue) return nil;
+    void *commandBufferCPP = NULL;
+    if (mglRenderCppCreateCommandBuffer((__bridge void *)queue,
+                                         &commandBufferCPP) == 0 &&
+        commandBufferCPP) {
+        return (__bridge MGLMetalCommandBufferRef)commandBufferCPP;
     }
-    return queue ? [queue commandBuffer] : nil;
+    return nil;
 }
 
 static MGLMetalBlitCommandEncoderRef mglTextureCreateBlitEncoder(
     MGLMetalCommandBufferRef commandBuffer)
 {
-    if (mglTextureUsesMetalCpp() && commandBuffer) {
-        void *encoderCPP = NULL;
-        if (mglRenderCppCreateBlitEncoder((__bridge void *)commandBuffer,
-                                           &encoderCPP) == 0 && encoderCPP) {
-            return (__bridge MGLMetalBlitCommandEncoderRef)encoderCPP;
-        }
+    if (!commandBuffer) return nil;
+    void *encoderCPP = NULL;
+    if (mglRenderCppCreateBlitEncoder((__bridge void *)commandBuffer,
+                                       &encoderCPP) == 0 && encoderCPP) {
+        return (__bridge MGLMetalBlitCommandEncoderRef)encoderCPP;
     }
-    return commandBuffer ? [commandBuffer blitCommandEncoder] : nil;
+    return nil;
 }
 
 /* Owner-first adapter for work that is encoded on the renderer's current
@@ -282,55 +260,25 @@ static MGLMetalBlitCommandEncoderRef mglTextureCreateCurrentBlitEncoder(
 static void mglTextureEndBlitEncoder(MGLMetalBlitCommandEncoderRef encoder)
 {
     if (!encoder) return;
-    if (mglTextureUsesMetalCpp()) {
-        (void)mglRenderCppEndBlitEncoder((__bridge void *)encoder);
-        return;
-    }
-    [encoder endEncoding];
+    (void)mglRenderCppEndBlitEncoder((__bridge void *)encoder);
 }
 
 static void mglTextureCommitCommandBuffer(MGLMetalCommandBufferRef commandBuffer)
 {
     if (!commandBuffer) return;
-    if (mglTextureUsesMetalCpp()) {
-        if (mglRenderCppCommitCommandBuffer(
-                (__bridge void *)commandBuffer) != 0) {
-            NSLog(@"MGL ERROR: Metal-cpp texture command-buffer commit failed");
-        }
-        return;
+    if (mglRenderCppCommitCommandBuffer(
+            (__bridge void *)commandBuffer) != 0) {
+        NSLog(@"MGL ERROR: Metal-cpp texture command-buffer commit failed");
     }
-    [commandBuffer commit];
 }
 
 static void mglTextureWaitCommandBuffer(MGLMetalCommandBufferRef commandBuffer)
 {
     if (!commandBuffer) return;
-    if (mglTextureUsesMetalCpp()) {
-        if (mglRenderCppWaitCommandBuffer(
-                (__bridge void *)commandBuffer) != 0) {
-            NSLog(@"MGL ERROR: Metal-cpp texture command-buffer wait failed");
-        }
-        return;
+    if (mglRenderCppWaitCommandBuffer(
+            (__bridge void *)commandBuffer) != 0) {
+        NSLog(@"MGL ERROR: Metal-cpp texture command-buffer wait failed");
     }
-    [commandBuffer waitUntilCompleted];
-}
-
-static MGLMetalRenderCommandEncoderRef mglTextureCreateRenderEncoder(
-    void *commandBufferOwner,
-    MTLRenderPassDescriptor *descriptor)
-{
-    return mglRenderCreateRenderEncoderForCommandBufferOwner(
-        commandBufferOwner, descriptor, NULL);
-}
-
-static void mglTextureEndRenderEncoder(MGLMetalRenderCommandEncoderRef encoder)
-{
-    if (!encoder) return;
-    if (mglTextureUsesMetalCpp()) {
-        (void)mglRenderCppEndRenderEncoder((__bridge void *)encoder);
-        return;
-    }
-    [encoder endEncoding];
 }
 
 static void mglTextureCopyTextureToBuffer(
@@ -345,21 +293,12 @@ static void mglTextureCopyTextureToBuffer(
     NSUInteger bytesPerRow,
     NSUInteger bytesPerImage)
 {
-    if (mglTextureUsesMetalCpp() &&
-        mglRenderCppBlitCopyTextureToBuffer(
+    (void)mglRenderCppBlitCopyTextureToBuffer(
             (__bridge void *)encoder, (__bridge void *)source, sourceSlice,
             sourceLevel, sourceOrigin.x, sourceOrigin.y, sourceOrigin.z,
             sourceSize.width, sourceSize.height, sourceSize.depth,
             (__bridge void *)destination, destinationOffset, bytesPerRow,
-            bytesPerImage) == 0) {
-        return;
-    }
-    [encoder copyFromTexture:source sourceSlice:sourceSlice
-                 sourceLevel:sourceLevel sourceOrigin:sourceOrigin
-                  sourceSize:sourceSize toBuffer:destination
-           destinationOffset:destinationOffset
-      destinationBytesPerRow:bytesPerRow
-    destinationBytesPerImage:bytesPerImage];
+            bytesPerImage);
 }
 
 @implementation MGLRenderer (Texture)
@@ -797,8 +736,7 @@ static void mglTextureCopyTextureToBuffer(
         return;
     }
 
-    if (mglTextureUsesMetalCpp() &&
-        mglRenderCppEncodeColorClearForCommandBufferOwner(
+    if (mglRenderCppEncodeColorClearForCommandBufferOwner(
             _renderPassManager.state->currentCommandBufferOwner,
             (__bridge void *)texture, 0, 0, 0,
             ctx->state.default_clear_color[0],
@@ -808,27 +746,7 @@ static void mglTextureCopyTextureToBuffer(
         ctx->state.default_fbo_clear_bitmask &= ~GL_COLOR_BUFFER_BIT;
         return;
     }
-
-    MTLRenderPassDescriptor *clearPass = [MTLRenderPassDescriptor renderPassDescriptor];
-    clearPass.colorAttachments[0].texture = texture;
-    clearPass.colorAttachments[0].loadAction = MTLLoadActionClear;
-    clearPass.colorAttachments[0].storeAction = MTLStoreActionStore;
-    clearPass.colorAttachments[0].clearColor =
-        MTLClearColorMake(ctx->state.default_clear_color[0],
-                          ctx->state.default_clear_color[1],
-                          ctx->state.default_clear_color[2],
-                          ctx->state.default_clear_color[3]);
-
-    MGLMetalRenderCommandEncoderRef clearEncoder =
-        mglRenderCreateRenderEncoderForCommandBufferOwner(
-            _renderPassManager.state->currentCommandBufferOwner,
-            clearPass, NULL);
-    if (clearEncoder) {
-        mglTextureEndRenderEncoder(clearEncoder);
-        ctx->state.default_fbo_clear_bitmask &= ~GL_COLOR_BUFFER_BIT;
-    } else {
-        NSLog(@"MGL WARNING: readPixels failed to apply pending default framebuffer color clear");
-    }
+    NSLog(@"MGL WARNING: C++ default framebuffer color clear failed");
 }
 
 - (void)mglApplyPendingFBOColorClearForReadback:(Framebuffer *)fbo
@@ -837,14 +755,14 @@ static void mglTextureCopyTextureToBuffer(
                                      mtlTexture:(MGLMetalTextureRef)texture
                                   attachmentEnum:(GLenum)attachmentEnum
 {
+    (void)attachmentEnum;
     if (!fbo || !attachment || !texture || !(attachment->clear_bitmask & GL_COLOR_BUFFER_BIT)) {
         return;
     }
 
     MGLMetalAttachmentSubresource subresource =
         mglMetalAttachmentSubresourceForAttachment(attachment);
-    if (mglTextureUsesMetalCpp() &&
-        mglRenderCppEncodeColorClearForCommandBufferOwner(
+    if (mglRenderCppEncodeColorClearForCommandBufferOwner(
             _renderPassManager.state->currentCommandBufferOwner,
             (__bridge void *)texture, subresource.level,
             subresource.slice, subresource.depthPlane,
@@ -855,32 +773,8 @@ static void mglTextureCopyTextureToBuffer(
             textureObj, attachment->level);
         return;
     }
-    MTLRenderPassDescriptor *clearPass = [MTLRenderPassDescriptor renderPassDescriptor];
-    clearPass.colorAttachments[0].texture = texture;
-    clearPass.colorAttachments[0].level = subresource.level;
-    clearPass.colorAttachments[0].slice = subresource.slice;
-    clearPass.colorAttachments[0].depthPlane = subresource.depthPlane;
-    clearPass.colorAttachments[0].loadAction = MTLLoadActionClear;
-    clearPass.colorAttachments[0].storeAction = MTLStoreActionStore;
-    clearPass.colorAttachments[0].clearColor =
-        MTLClearColorMake(attachment->clear_color[0],
-                          attachment->clear_color[1],
-                          attachment->clear_color[2],
-                          attachment->clear_color[3]);
-
-    MGLMetalRenderCommandEncoderRef clearEncoder =
-        mglRenderCreateRenderEncoderForCommandBufferOwner(
-            _renderPassManager.state->currentCommandBufferOwner,
-            clearPass, NULL);
-    if (clearEncoder) {
-        mglTextureEndRenderEncoder(clearEncoder);
-        attachment->clear_bitmask &= ~GL_COLOR_BUFFER_BIT;
-        mglMarkTextureLevelRenderTargetWritten(textureObj, attachment->level);
-    } else {
-        NSLog(@"MGL WARNING: readPixels failed to apply pending FBO clear fbo=%u attachment=0x%x",
-              (unsigned)fbo->name,
-              (unsigned)attachmentEnum);
-    }
+    NSLog(@"MGL WARNING: C++ readPixels FBO color clear failed fbo=%u",
+          (unsigned)fbo->name);
 }
 
 /* P4.5 (item 1171): readback 共享序列——staging buffer 创建 + blit encoder +
@@ -1511,38 +1405,15 @@ static void mglTextureCopyTextureToBuffer(
 
     MGLMetalAttachmentSubresource subresource =
         mglMetalAttachmentSubresourceForAttachment(attachment);
-    if (mglTextureUsesMetalCpp()) {
-        if (mglRenderCppEncodeDepthClearForCommandBufferOwner(
+    if (mglRenderCppEncodeDepthClearForCommandBufferOwner(
             _renderPassManager.state->currentCommandBufferOwner,
             (__bridge void *)texture, subresource.level,
             subresource.slice, subresource.depthPlane,
             attachment->clear_color[0]) == 0) {
-            attachment->clear_bitmask &= ~GL_DEPTH_BUFFER_BIT;
-            mglMarkTextureLevelRenderTargetWritten(
-                textureObj, attachment->level);
-        } else {
-            NSLog(@"MGL WARNING: C++ readPixels depth clear failed fbo=%u",
-                  (unsigned)fbo->name);
-        }
-        return;
-    }
-    MTLRenderPassDescriptor *clearPass = [MTLRenderPassDescriptor renderPassDescriptor];
-    clearPass.depthAttachment.texture = texture;
-    clearPass.depthAttachment.level = subresource.level;
-    clearPass.depthAttachment.slice = subresource.slice;
-    clearPass.depthAttachment.depthPlane = subresource.depthPlane;
-    clearPass.depthAttachment.loadAction = MTLLoadActionClear;
-    clearPass.depthAttachment.storeAction = MTLStoreActionStore;
-    clearPass.depthAttachment.clearDepth = attachment->clear_color[0];
-
-    MGLMetalRenderCommandEncoderRef clearEncoder = mglTextureCreateRenderEncoder(
-        _renderPassManager.state->currentCommandBufferOwner, clearPass);
-    if (clearEncoder) {
-        mglTextureEndRenderEncoder(clearEncoder);
         attachment->clear_bitmask &= ~GL_DEPTH_BUFFER_BIT;
         mglMarkTextureLevelRenderTargetWritten(textureObj, attachment->level);
     } else {
-        NSLog(@"MGL WARNING: readPixels failed to apply pending FBO depth clear fbo=%u",
+        NSLog(@"MGL WARNING: C++ readPixels depth clear failed fbo=%u",
               (unsigned)fbo->name);
     }
 }
@@ -1553,31 +1424,13 @@ static void mglTextureCopyTextureToBuffer(
         return;
     }
 
-    if (mglTextureUsesMetalCpp()) {
-        if (mglRenderCppEncodeDepthClearForCommandBufferOwner(
+    if (mglRenderCppEncodeDepthClearForCommandBufferOwner(
             _renderPassManager.state->currentCommandBufferOwner,
             (__bridge void *)texture, 0, 0, 0,
             ctx->state.var.depth_clear_value) == 0) {
-            ctx->state.default_fbo_clear_bitmask &= ~GL_DEPTH_BUFFER_BIT;
-        } else {
-            NSLog(@"MGL WARNING: C++ default depth clear failed");
-        }
-        return;
-    }
-
-    MTLRenderPassDescriptor *clearPass = [MTLRenderPassDescriptor renderPassDescriptor];
-    clearPass.depthAttachment.texture = texture;
-    clearPass.depthAttachment.loadAction = MTLLoadActionClear;
-    clearPass.depthAttachment.storeAction = MTLStoreActionStore;
-    clearPass.depthAttachment.clearDepth = ctx->state.var.depth_clear_value;
-
-    MGLMetalRenderCommandEncoderRef clearEncoder = mglTextureCreateRenderEncoder(
-        _renderPassManager.state->currentCommandBufferOwner, clearPass);
-    if (clearEncoder) {
-        mglTextureEndRenderEncoder(clearEncoder);
         ctx->state.default_fbo_clear_bitmask &= ~GL_DEPTH_BUFFER_BIT;
     } else {
-        NSLog(@"MGL WARNING: readPixels failed to apply pending default framebuffer depth clear");
+        NSLog(@"MGL WARNING: C++ default depth clear failed");
     }
 }
 
@@ -2261,11 +2114,12 @@ static void mglTextureCopyTextureToBuffer(
     }
 
     @try {
-        if (!(mglTextureUsesMetalCpp() &&
-              mglRenderCppBlitGenerateMipmaps(
-                  (__bridge void *)blitCommandEncoder,
-                  (__bridge void *)texture) == 0)) {
-            [blitCommandEncoder generateMipmapsForTexture:texture];
+        if (mglRenderCppBlitGenerateMipmaps(
+                (__bridge void *)blitCommandEncoder,
+                (__bridge void *)texture) != 0) {
+            [NSException raise:@"MGLGenerateMipmapsError"
+                        format:@"C++ mipmap generation failed for texture %u",
+                               tex->name];
         }
         mglTextureEndBlitEncoder(blitCommandEncoder);
     } @catch (NSException *exception) {
@@ -5810,292 +5664,16 @@ static void mglTextureCopyTextureToBuffer(
 - (MGLMetalSamplerStateRef) createMTLSamplerForTexParam:(TextureParameter *)tex_param target:(GLuint)target
 {
     mglMetalCountCreate(MGLMetalKindSampler);
-    if (mglTextureUsesMetalCpp()) {
-        void *sampler = NULL;
-        char error[256] = {0};
-        if (mglRenderCppCreateSamplerForGL(
-                tex_param, target, &sampler, error, sizeof(error)) == 0 &&
-            sampler) {
-            return (__bridge_transfer MGLMetalSamplerStateRef)sampler;
-        }
-        NSLog(@"MGL SAMPLER ERROR: Metal-cpp sampler creation failed: %s",
-              error[0] ? error : "unknown");
-        return nil;
+    void *sampler = NULL;
+    char error[256] = {0};
+    if (mglRenderCppCreateSamplerForGL(
+            tex_param, target, &sampler, error, sizeof(error)) == 0 &&
+        sampler) {
+        return (__bridge_transfer MGLMetalSamplerStateRef)sampler;
     }
-    MTLSamplerDescriptor *samplerDescriptor;
-
-    if (!tex_param) {
-        NSLog(@"MGL SAMPLER ERROR: createMTLSamplerForTexParam called with NULL parameters");
-        return nil;
-    }
-
-    samplerDescriptor = [MTLSamplerDescriptor new];
-    if (!samplerDescriptor) {
-        NSLog(@"MGL SAMPLER ERROR: failed to allocate MTLSamplerDescriptor");
-        return nil;
-    }
-
-    switch(tex_param->min_filter)
-    {
-        case GL_NEAREST:
-            samplerDescriptor.minFilter = MTLSamplerMinMagFilterNearest;
-            break;
-
-        case GL_LINEAR:
-            samplerDescriptor.minFilter = MTLSamplerMinMagFilterLinear;
-            break;
-
-        case GL_NEAREST_MIPMAP_NEAREST:
-            samplerDescriptor.minFilter = MTLSamplerMinMagFilterNearest;
-            samplerDescriptor.mipFilter = MTLSamplerMipFilterNearest;
-            break;
-
-        case GL_LINEAR_MIPMAP_NEAREST:
-            samplerDescriptor.minFilter = MTLSamplerMinMagFilterLinear;
-            samplerDescriptor.mipFilter = MTLSamplerMipFilterNearest;
-            break;
-
-        case GL_NEAREST_MIPMAP_LINEAR:
-            samplerDescriptor.minFilter = MTLSamplerMinMagFilterNearest;
-            samplerDescriptor.mipFilter = MTLSamplerMipFilterLinear;
-            break;
-
-        case GL_LINEAR_MIPMAP_LINEAR:
-            samplerDescriptor.minFilter = MTLSamplerMinMagFilterLinear;
-            samplerDescriptor.mipFilter = MTLSamplerMipFilterLinear;
-            break;
-
-        default:
-            NSLog(@"MGL SAMPLER ERROR: invalid GL_TEXTURE_MIN_FILTER 0x%x", tex_param->min_filter);
-            return nil;
-    }
-
-    switch(tex_param->mag_filter)
-    {
-        case GL_NEAREST:
-            samplerDescriptor.magFilter = MTLSamplerMinMagFilterNearest;
-            break;
-
-        case GL_LINEAR:
-            samplerDescriptor.magFilter = MTLSamplerMinMagFilterLinear;
-            break;
-
-        default:
-            NSLog(@"MGL SAMPLER ERROR: invalid GL_TEXTURE_MAG_FILTER 0x%x", tex_param->mag_filter);
-            return nil;
-    }
-
-    //     @property (nonatomic) NSUInteger maxAnisotropy;
-    if (tex_param->max_anisotropy > 1.0f)
-    {
-        /* Explicit GLfloat -> NSUInteger cast avoids -Wconversion warnings and
-         * silent truncation (e.g. 4.5f -> 4). tex_param->max_anisotropy was
-         * already clamped to [1.0, kMGLMaxAnisotropyLimit] on the GL side
-         * (setTexParmf/setTexParmi in tex_param.c). Metal does not expose a
-         * device-level maxAnisotropy query, so kMGLMaxAnisotropyLimit is the
-         * single source of truth for both the GL query and the Metal cap;
-         * defensive clamp below guards against future drift. */
-        NSUInteger v = (NSUInteger)tex_param->max_anisotropy;
-        NSUInteger limit = (NSUInteger)kMGLMaxAnisotropyLimit;
-        if (limit < 1u) limit = 1u;
-        if (v < 1u) v = 1u;
-        if (v > limit) v = limit;
-        samplerDescriptor.maxAnisotropy = v;
-    }
-
-    //    @property (nonatomic) MTLSamplerAddressMode sAddressMode;
-    //    @property (nonatomic) MTLSamplerAddressMode tAddressMode;
-    //    @property (nonatomic) MTLSamplerAddressMode rAddressMode;
-    for (int i=0; i<3; i++)
-    {
-        MTLSamplerAddressMode mode = 0;
-        GLenum type = 0;
-
-        switch(i)
-        {
-            case 0: type = tex_param->wrap_s; break;
-            case 1: type = tex_param->wrap_t; break;
-            case 2: type = tex_param->wrap_r; break;
-        }
-
-        switch(type)
-        {
-            case GL_CLAMP_TO_EDGE:
-                mode = MTLSamplerAddressModeClampToEdge;
-                break;
-
-            case GL_CLAMP_TO_BORDER:
-                mode = MTLSamplerAddressModeClampToBorderColor;
-                break;
-
-            case GL_MIRRORED_REPEAT:
-                mode = MTLSamplerAddressModeMirrorRepeat;
-                break;
-
-            case GL_REPEAT:
-                mode = MTLSamplerAddressModeRepeat;
-                break;
-
-            case GL_MIRROR_CLAMP_TO_EDGE:
-                mode = MTLSamplerAddressModeMirrorClampToEdge;
-                break;
-
-    //        case GL_CLAMP_TO_ZERO_MGL_EXT:
-    //            mode = MTLSamplerAddressModeClampToZero;
-    //            break;
-
-            default:
-                NSLog(@"MGL SAMPLER ERROR: invalid GL texture wrap mode 0x%x for axis %d", type, i);
-                return nil;
-        }
-
-        switch(i)
-        {
-            case 0: samplerDescriptor.sAddressMode = mode; break;
-            case 1: samplerDescriptor.tAddressMode = mode; break;
-            case 2: samplerDescriptor.rAddressMode = mode; break;
-        }
-    }
-
-    BOOL usesBorderColor = (tex_param->wrap_s == GL_CLAMP_TO_BORDER ||
-                            tex_param->wrap_t == GL_CLAMP_TO_BORDER ||
-                            tex_param->wrap_r == GL_CLAMP_TO_BORDER);
-    if (!usesBorderColor)
-    {
-        samplerDescriptor.borderColor = MTLSamplerBorderColorTransparentBlack;
-    }
-    else if ((tex_param->border_color[0] == 0.0) &&
-             (tex_param->border_color[1] == 0.0) &&
-             (tex_param->border_color[2] == 0.0) &&
-             (tex_param->border_color[3] == 0.0))
-    {
-        samplerDescriptor.borderColor = MTLSamplerBorderColorTransparentBlack;
-    }
-    else if ((tex_param->border_color[0] == 0.0) &&
-             (tex_param->border_color[1] == 0.0) &&
-             (tex_param->border_color[2] == 0.0) &&
-             (tex_param->border_color[3] == 1.0))
-    {
-        samplerDescriptor.borderColor = MTLSamplerBorderColorOpaqueBlack;
-    }
-    else if ((tex_param->border_color[0] == 1.0) &&
-             (tex_param->border_color[1] == 1.0) &&
-             (tex_param->border_color[2] == 1.0) &&
-             (tex_param->border_color[3] == 1.0))
-    {
-        samplerDescriptor.borderColor = MTLSamplerBorderColorOpaqueWhite;
-    }
-    else
-    {
-        static uint64_t s_unsupportedBorderColorCount = 0;
-        uint64_t hit = ++s_unsupportedBorderColorCount;
-        if (hit <= 32ull || (hit % 256ull) == 0ull) {
-            NSLog(@"MGL SAMPLER WARNING: GL border color (%g,%g,%g,%g) is not exactly representable by MTLSamplerBorderColor; approximating hit=%llu",
-                  tex_param->border_color[0],
-                  tex_param->border_color[1],
-                  tex_param->border_color[2],
-                  tex_param->border_color[3],
-                  (unsigned long long)hit);
-        }
-
-        if (tex_param->border_color[3] < 0.5f) {
-            samplerDescriptor.borderColor = MTLSamplerBorderColorTransparentBlack;
-        } else if (tex_param->border_color[0] >= 0.5f &&
-                   tex_param->border_color[1] >= 0.5f &&
-                   tex_param->border_color[2] >= 0.5f) {
-            samplerDescriptor.borderColor = MTLSamplerBorderColorOpaqueWhite;
-        } else {
-            samplerDescriptor.borderColor = MTLSamplerBorderColorOpaqueBlack;
-        }
-    }
-
-    if (target == GL_TEXTURE_RECTANGLE)
-    {
-        samplerDescriptor.normalizedCoordinates = false;
-        if ((tex_param->wrap_s != GL_CLAMP_TO_EDGE) ||
-            (tex_param->wrap_t != GL_CLAMP_TO_EDGE) ||
-            (tex_param->wrap_r != GL_CLAMP_TO_EDGE))
-        {
-            static uint64_t s_rectWrapClampWarningCount = 0;
-            uint64_t hit = ++s_rectWrapClampWarningCount;
-            if (hit <= 16ull || (hit % 256ull) == 0ull) {
-                NSLog(@"MGL SAMPLER WARNING: GL_TEXTURE_RECTANGLE requires unnormalized coordinates; forcing ClampToEdge sampler address modes for Metal compatibility hit=%llu",
-                      (unsigned long long)hit);
-            }
-            samplerDescriptor.sAddressMode = MTLSamplerAddressModeClampToEdge;
-            samplerDescriptor.tAddressMode = MTLSamplerAddressModeClampToEdge;
-            samplerDescriptor.rAddressMode = MTLSamplerAddressModeClampToEdge;
-        }
-    }
-
-    // @property (nonatomic) BOOL lodAverage API_AVAILABLE(ios(9.0), macos(11.0), macCatalyst(14.0));
-
-
-    // @property (nonatomic) MTLCompareFunction compareFunction API_AVAILABLE(macos(10.11), ios(9.0));
-    if (tex_param->compare_mode == GL_NONE)
-    {
-        samplerDescriptor.compareFunction = MTLCompareFunctionNever;
-    }
-    else if (tex_param->compare_mode == GL_COMPARE_REF_TO_TEXTURE)
-    {
-        if (!mglIsValidGLCompareFunction(tex_param->compare_func))
-        {
-            NSLog(@"MGL SAMPLER ERROR: invalid GL_TEXTURE_COMPARE_FUNC 0x%x", tex_param->compare_func);
-            return nil;
-        }
-        samplerDescriptor.compareFunction =
-            mglMTLCompareFunctionForGL(tex_param->compare_func,
-                                       MTLCompareFunctionNever,
-                                       "sampler");
-    }
-    else
-    {
-        NSLog(@"MGL SAMPLER ERROR: invalid GL_TEXTURE_COMPARE_MODE 0x%x", tex_param->compare_mode);
-        return nil;
-    }
-
-    /* Apply GL_TEXTURE_MIN_LOD / GL_TEXTURE_MAX_LOD as Metal lod clamps.
-     * GL defaults: min_lod=-1000, max_lod=1000 (effectively unclamped).
-     * Metal's lodMinClamp cannot be negative (minimum 0.0), so clamp to 0.0
-     * unconditionally rather than only when the GL default sentinel is seen. */
-    samplerDescriptor.lodMinClamp = (tex_param->min_lod < 0.0f) ? 0.0f : tex_param->min_lod;
-    samplerDescriptor.lodMaxClamp = (tex_param->max_lod >= 1000.0f) ? 1e9f : tex_param->max_lod;
-
-    MGLMetalSamplerStateRef sampler =
-        mglTextureCreateSampler(_device, samplerDescriptor);
-    if (!sampler) {
-        NSLog(@"MGL SAMPLER ERROR: failed to create MTLSamplerState");
-        return nil;
-    }
-
-    /* Diagnostic: log sampler state to diagnose Minecraft "gray + moiré" issues. */
-    {
-        static uint64_t s_samplerDiagLogs = 0;
-        uint64_t diagHit = ++s_samplerDiagLogs;
-        if (kMGLDiagnosticStateLogs &&
-            (diagHit <= 64ull || (diagHit % 256ull) == 0ull)) {
-            mglTraceLogNSString(@"MGL SAMPLER_DIAG minFilter=0x%x magFilter=0x%x mipFilter=%lu "
-                          @"minLod=%f maxLod=%f lodMinClamp=%f lodMaxClamp=%f "
-                          @"wrapS=0x%x wrapT=0x%x maxAniso=%f aniso=%d "
-                          @"compareMode=0x%x compareFunc=0x%x hit=%llu",
-                          (unsigned)tex_param->min_filter,
-                          (unsigned)tex_param->mag_filter,
-                          (unsigned long)samplerDescriptor.mipFilter,
-                          tex_param->min_lod,
-                          tex_param->max_lod,
-                          samplerDescriptor.lodMinClamp,
-                          samplerDescriptor.lodMaxClamp,
-                          (unsigned)tex_param->wrap_s,
-                          (unsigned)tex_param->wrap_t,
-                          tex_param->max_anisotropy,
-                          (int)samplerDescriptor.maxAnisotropy,
-                          (unsigned)tex_param->compare_mode,
-                          (unsigned)tex_param->compare_func,
-                          (unsigned long long)diagHit);
-        }
-    }
-
-    return sampler;
+    NSLog(@"MGL SAMPLER ERROR: Metal-cpp sampler creation failed: %s",
+          error[0] ? error : "unknown");
+    return nil;
 }
 
 - (MGLMetalTextureRef)fallbackSampledTexture
