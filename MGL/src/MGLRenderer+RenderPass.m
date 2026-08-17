@@ -1256,8 +1256,7 @@ output->name, (unsigned)i,
 
     @try {
         MGLMetalRenderCommandEncoderRef renderEncoder =
-            [_renderPassManager createRenderEncoderWithDescriptor:
-                _renderPassManager.state->renderPassDescriptor];
+            [_renderPassManager createRenderEncoder];
         [_renderPassManager installRenderEncoder:renderEncoder];
     } @catch (NSException *exception) {
         NSLog(@"MGL ERROR: restoring render encoder after texture upload failed to create encoder: %@",
@@ -3319,8 +3318,7 @@ output->name, (unsigned)i,
         }
         @try {
             MGLMetalRenderCommandEncoderRef renderEncoder =
-                [_renderPassManager createRenderEncoderWithDescriptor:
-                    _renderPassManager.state->renderPassDescriptor];
+                [_renderPassManager createRenderEncoder];
             [_renderPassManager installRenderEncoder:renderEncoder];
             if (mglRenderCppRenderEncoderOwnerHasCurrent(
                     _renderPassManager.state->currentRenderEncoderOwner) != 1) {

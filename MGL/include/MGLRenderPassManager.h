@@ -75,7 +75,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable MGLMetalEventRef)detachPendingEventWithSyncName:(nullable GLuint *)syncNameOut;
 - (void)clearPendingEvent;
 - (void)installRenderEncoder:(nullable MGLMetalRenderCommandEncoderRef)renderEncoder;
-- (nullable MGLMetalRenderCommandEncoderRef)createRenderEncoderWithDescriptor:(nullable MTLRenderPassDescriptor *)descriptor;
+- (nullable MGLMetalRenderCommandEncoderRef)createRenderEncoder;
 - (void)endCurrentRenderEncoder;
 - (void)clearCurrentRenderEncoder;
 - (BOOL)beginCommandBufferCommit;

@@ -310,9 +310,8 @@ static void mglRenderPassManagerStoreIdentity(
     mglRenderPassManagerSyncRuntimeOwners(&_state);
 }
 
-- (MGLMetalRenderCommandEncoderRef)createRenderEncoderWithDescriptor:(MTLRenderPassDescriptor *)descriptor
+- (MGLMetalRenderCommandEncoderRef)createRenderEncoder
 {
-    (void)descriptor;
     if (!_state.currentCommandBufferOwner || !_state.renderPassStateOwner) {
         return nil;
     }
