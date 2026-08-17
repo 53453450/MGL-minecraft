@@ -3,12 +3,14 @@
 #import <Metal/Metal.h>
 #import <Foundation/Foundation.h>
 #import <simd/simd.h>
+#import "MGLPlatformRendererShell.h"
 #include <math.h>
 #include <stdio.h>
 #include <mach/mach.h>
 #include <atomic>
 
 #include "mgl_render_cpp_objc.h"
+#include "mgl_renderer_backend.h"
 #include "mgl_air_loader.h"
 #include "mgl_aux_assets.h"
 #include "mgl_buffer_slots.h"
@@ -8693,6 +8695,87 @@ static int verifyRawRenderAndBlitFacade(id<MTLDevice> device) {
     return 0;
 }
 
+static int verifyRendererBackend(id<MTLDevice> device) {
+    MGLRendererBackendCreateInfo info = {
+        .objc_device = (__bridge void *)device,
+        .context = NULL,
+        .binding_slot_count = 128u,
+        .query_capacity = 32u,
+    };
+    MGLRendererBackendHandle *backend = NULL;
+    if (mglRendererBackendCreate(&info, &backend) != 0 || !backend) {
+        fprintf(stderr, "FAIL: renderer backend create\n");
+        return 1;
+    }
+    if (mglRendererBackendIsReady(backend) != 0) {
+        fprintf(stderr, "FAIL: renderer backend ready before queue\n");
+        return 1;
+    }
+    void *queue = NULL;
+    if (mglRendererBackendResetCommandQueue(backend, 4u, &queue) != 0 ||
+        !queue || mglRendererBackendIsReady(backend) != 1) {
+        fprintf(stderr, "FAIL: renderer backend queue readiness\n");
+        return 1;
+    }
+    if (!mglRendererBackendGetOwner(
+            backend, MGL_RENDERER_BACKEND_OWNER_BINDING) ||
+        !mglRendererBackendGetOwner(
+            backend, MGL_RENDERER_BACKEND_OWNER_QUERY) ||
+        !mglRendererBackendGetOwner(
+            backend, MGL_RENDERER_BACKEND_OWNER_RECOVERY)) {
+        fprintf(stderr, "FAIL: renderer backend owner roots\n");
+        return 1;
+    }
+    MGLRendererBackendShutdownResult shutdown = {};
+    if (mglRendererBackendShutdown(backend, &shutdown) != 0) {
+        fprintf(stderr, "FAIL: renderer backend shutdown\n");
+        return 1;
+    }
+    mglRendererBackendDestroy(&backend);
+    if (backend) {
+        fprintf(stderr, "FAIL: renderer backend destroy\n");
+        return 1;
+    }
+    printf("RENDERER_BACKEND_OK\n");
+    return 0;
+}
+
+static int smokePlatformOperation(void *context) {
+    return context == reinterpret_cast<void *>(0x1234u) ? 7 : -1;
+}
+
+static int smokePlatformException(void *) {
+    @throw [NSException exceptionWithName:@"MGLSmokeException"
+                                   reason:@"platform boundary"
+                                 userInfo:nil];
+}
+
+static int verifyPlatformRendererShell(void) {
+    NSView *view = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 8, 8)];
+    MGLPlatformRendererShell *shell =
+        [[MGLPlatformRendererShell alloc] initWithView:view];
+    MGLPlatformRendererShellResult result = {};
+    if (!shell || shell.view != view ||
+        [shell performOperation:smokePlatformOperation
+                        context:reinterpret_cast<void *>(0x1234u)
+                         result:&result] != 7 ||
+        result.status != 7) {
+        fprintf(stderr, "FAIL: platform shell operation\n");
+        return 1;
+    }
+    result = {};
+    if ([shell performOperation:smokePlatformException
+                        context:NULL
+                         result:&result] != -1 ||
+        result.status != -1 ||
+        strcmp(result.exception_name, "MGLSmokeException") != 0) {
+        fprintf(stderr, "FAIL: platform shell exception boundary\n");
+        return 1;
+    }
+    printf("PLATFORM_SHELL_OK\n");
+    return 0;
+}
+
 int main(void) {
     @autoreleasepool {
         id<MTLDevice> device = MTLCreateSystemDefaultDevice();
@@ -8800,6 +8883,8 @@ int main(void) {
         if (verifyRenderEncoderOwner(device) != 0) return 1;
         if (verifyQueryUtilities(device) != 0) return 1;
         if (verifyRawRenderAndBlitFacade(device) != 0) return 1;
+        if (verifyRendererBackend(device) != 0) return 1;
+        if (verifyPlatformRendererShell() != 0) return 1;
 
         // 多 context 引用同一 device：重复 init 增加一个 renderer user。
         if (mglRenderCppInit((__bridge void*)device) != 0) {

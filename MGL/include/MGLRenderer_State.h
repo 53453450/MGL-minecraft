@@ -78,8 +78,6 @@ typedef struct {
 } MGLStageBindingCopyBackList;
 
 typedef struct MGLRendererCoreState_t {
-    NSView *__strong view;
-    CAMetalLayer *__strong layer;
     id<CAMetalDrawable> __strong drawable;
     GLMState *activeState;
     id<MTLDevice> __strong device;
@@ -87,6 +85,7 @@ typedef struct MGLRendererCoreState_t {
     NSMutableArray *__strong proactiveTextures;
     MGLDrawable drawBuffers[_MAX_DRAW_BUFFERS];
     BOOL defaultDrawableWrittenSinceLastSwap;
+    /* Borrowed aliases into MGLRendererBackendHandle during P5 migration. */
     void *commandQueueOwner;
     id<MTLCommandQueue> __strong commandQueue;
     /* Lock-free hand-off channels.  Written by the completion-handler thread

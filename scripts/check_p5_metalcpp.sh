@@ -39,11 +39,24 @@ if [ "$macro_files" != "MGL/src/mgl_render_cpp.cpp" ]; then
 fi
 
 abi_metal_hits=$(perl -0pe 's{/\*.*?\*/}{}gs; s{//[^\n]*}{}g' \
-    MGL/src/mgl_render_cpp.h | \
+    MGL/src/mgl_render_cpp.h MGL/src/mgl_renderer_backend.h | \
     rg -n 'id[[:space:]]*<MTL|MTL::' || true)
 if [ -n "$abi_metal_hits" ]; then
     fail "public C ABI exposes Objective-C or Metal-cpp types"
     printf '%s\n' "$abi_metal_hits" | sed 's/^/    /'
+fi
+
+if ! rg -q 'void \*renderer_backend;' MGL/include/glm_context.h ||
+   ! rg -q 'void \*platform_renderer_shell;' MGL/include/glm_context.h; then
+    fail "GLMContext is missing the P5 backend/platform roots"
+fi
+
+core_platform_hits=$(rg -n \
+    'NSView[[:space:]]*\*__strong view|CAMetalLayer[[:space:]]*\*__strong layer' \
+    MGL/include/MGLRenderer_State.h || true)
+if [ -n "$core_platform_hits" ]; then
+    fail "renderer core state still directly owns platform view/layer"
+    printf '%s\n' "$core_platform_hits" | sed 's/^/    /'
 fi
 
 if [ "$failures" -ne 0 ]; then

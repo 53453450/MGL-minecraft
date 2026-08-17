@@ -11,6 +11,7 @@
 
 #include "mgl_metal_cpp.h"
 #include "mgl_render_cpp.h"
+#include "mgl_renderer_backend.h"
 #include "mgl_air_loader.h"
 #include "mgl_aux_assets.h"
 #include "mgl_compute_pipeline_cache.h"
@@ -3635,6 +3636,13 @@ int mglRenderCppAttachRuntimeOwners(GLMContext glm_ctx,
     glm_ctx->metal_render_pass_state_owner = render_pass_state_owner;
     glm_ctx->metal_query_state_owner = query_state_owner;
     glm_ctx->metal_command_recovery_owner = command_recovery_owner;
+    if (glm_ctx->renderer_backend) {
+        (void)mglRendererBackendAttachRuntimeOwners(
+            static_cast<MGLRendererBackendHandle *>(glm_ctx->renderer_backend),
+            command_buffer_owner,
+            render_encoder_owner,
+            render_pass_state_owner);
+    }
     return 0;
 }
 
@@ -3645,6 +3653,11 @@ void mglRenderCppDetachRuntimeOwners(GLMContext glm_ctx) {
     glm_ctx->metal_render_pass_state_owner = nullptr;
     glm_ctx->metal_query_state_owner = nullptr;
     glm_ctx->metal_command_recovery_owner = nullptr;
+    if (glm_ctx->renderer_backend) {
+        (void)mglRendererBackendAttachRuntimeOwners(
+            static_cast<MGLRendererBackendHandle *>(glm_ctx->renderer_backend),
+            nullptr, nullptr, nullptr);
+    }
 }
 
 uint64_t mglRenderCppGetGPUTimestamp(GLMContext glm_ctx) {

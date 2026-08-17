@@ -34,6 +34,7 @@
 #include <mach/vm_map.h>
 
 #include "glm_context.h"
+#include "mgl_renderer_backend.h"
 #include "vertex_arrays.h"
 #include "buffers.h"
 #include "shaders.h"
@@ -930,13 +931,19 @@ void destroyGLMContext(GLMContext ctx)
      * CFRelease under non-ARC).  If this file is ever renamed to .mm and
      * compiled under ARC, switch to CFBridgingRelease for correct bridge
      * semantics.  See mgl_metal_ref.h lines 58-60. */
-    if (ctx->mtl_funcs.mtlView) {
-        CFRelease(ctx->mtl_funcs.mtlView);
-        ctx->mtl_funcs.mtlView = NULL;
-    }
     if (ctx->mtl_funcs.mtlObj) {
         CFRelease(ctx->mtl_funcs.mtlObj);
         ctx->mtl_funcs.mtlObj = NULL;
+    }
+    mglRendererBackendDestroy(
+        (MGLRendererBackendHandle **)&ctx->renderer_backend);
+    if (ctx->platform_renderer_shell) {
+        CFRelease(ctx->platform_renderer_shell);
+        ctx->platform_renderer_shell = NULL;
+    }
+    if (ctx->mtl_funcs.mtlView) {
+        CFRelease(ctx->mtl_funcs.mtlView);
+        ctx->mtl_funcs.mtlView = NULL;
     }
 
     if (save == ctx) {

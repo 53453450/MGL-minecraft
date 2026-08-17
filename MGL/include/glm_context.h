@@ -128,6 +128,11 @@ typedef struct GLMContextRec_t {
      * MGLRenderer-owned MGLBatchArena ivar.  Accessed from draw_command.c. */
     MGLBatchArena  *batch_arena;
 
+    /* P5 renderer roots. The context owns the backend handle and retains the
+     * platform shell until teardown; renderer/category pointers are borrowed. */
+    void *renderer_backend;
+    void *platform_renderer_shell;
+
     /* Borrowed C++ renderer runtime handles.  These are synchronized by the
      * renderer on the GL thread and never own the pointed-to objects.  Metal
      * callbacks use them to enter owner facades without selector-forwarding

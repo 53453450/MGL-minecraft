@@ -22,6 +22,7 @@
 #define MGLRenderer_Private_h
 
 #import "MGLRenderer.h"
+#import "MGLPlatformRendererShell.h"
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #import <AppKit/AppKit.h>
@@ -34,6 +35,7 @@
  * TEXTURE_UNITS, and GL types (GLenum, GLuint, GLsizei, ...). */
 #include "glm_context.h"
 #include "mgl_render_cpp.h"
+#include "mgl_renderer_backend.h"
 #import "mgl_capability.h"          // ivar type: MGLCapability
 #import "mgl_texture_compat.h"      // MGLTextureDataKind
 #import "mgl_trace_strategy.h"      // ivar type: MGLFragmentTextureTraceBinding
@@ -201,6 +203,8 @@ static inline double mglTraceNowSeconds(void)
     /* Keep this ivar named `ctx`: C GLM macros and older helper code expect
      * that identifier to exist inside MGLRenderer methods. */
     GLMContext  ctx;    // context macros need this exact name
+    MGLRendererBackendHandle *_backend;
+    MGLPlatformRendererShell *_platformShell;
     /* Window whose resize/backing notifications are observed for geometry
      * publishing (see MGLRenderer+Lifecycle.m).  Weak: never retain a window
      * the host owns. */
@@ -306,8 +310,8 @@ static inline double mglTraceNowSeconds(void)
  * New or touched code should prefer the explicit container fields directly.
  * These aliases keep the existing category implementations behavior-identical
  * while shrinking MGLRenderer's ivar surface. */
-#define _view _core.view
-#define _layer _core.layer
+#define _view _platformShell.view
+#define _layer _platformShell.layer
 #define _drawable _core.drawable
 #define _activeState _core.activeState
 #define _device _core.device

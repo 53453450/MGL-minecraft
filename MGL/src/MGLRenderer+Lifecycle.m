@@ -306,6 +306,12 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
 {
     mglClaimGLThread();            /* idempotent; records the init thread as the GL thread */
     ctx = glm_ctx;
+    _backend = NULL;
+    _platformShell = [[MGLPlatformRendererShell alloc] initWithView:view];
+    if (!_platformShell) {
+        NSLog(@"MGL ERROR: failed to create platform renderer shell");
+        return;
+    }
     _renderPassManager = [MGLRenderPassManager new];
     [_renderPassManager setRuntimeContext:glm_ctx];
 
@@ -314,19 +320,6 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
      * texture is actually written this frame. */
     [_renderPassManager setDontCareFrameGeneration:1u];
 
-    // Initialize AGX GPU error tracking
-    if (mglRenderCppCreateCommandRecoveryOwner(
-            &_gpuRecovery.commandRecoveryOwner) != 0) {
-        _gpuRecovery.commandRecoveryOwner = NULL;
-        NSLog(@"MGL ERROR: failed to create command recovery owner");
-    }
-    mglRenderCppAttachRuntimeOwners(
-        glm_ctx,
-        _renderPassManager.state->currentCommandBufferOwner,
-        _renderPassManager.state->currentRenderEncoderOwner,
-        _renderPassManager.state->renderPassStateOwner,
-        glm_ctx->metal_query_state_owner,
-        _gpuRecovery.commandRecoveryOwner);
     BOOL psoDedupEnabled = mglEnvFlagEnabledDefaultOn("MGL_PSO_DEDUP");
     BOOL depthStencilCacheEnabled = mglEnvFlagEnabledDefaultOn("MGL_DS_CACHE");
     BOOL binaryArchiveEnabled = mglEnvFlagEnabledDefaultOn("MGL_BINARY_ARCHIVE");
@@ -334,10 +327,6 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         initWithPSODedupEnabled:psoDedupEnabled
       depthStencilCacheEnabled:depthStencilCacheEnabled
            binaryArchiveEnabled:binaryArchiveEnabled];
-    _bindingStateOwner = mglRenderCppBindingCreate(TEXTURE_UNITS);
-    if (!_bindingStateOwner) {
-        NSLog(@"MGL ERROR: failed to create Metal-cpp binding state owner");
-    }
     /* Snapshot arena: batch snapshot/commands from bump allocator. */
     _batching.arenaSnapshotEnabled = mglEnvFlagEnabledDefaultOn("MGL_ARENA_SNAPSHOT");
     if (_batching.arenaSnapshotEnabled) {
@@ -366,6 +355,14 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
           _batching.dirtyKeyDeltaEnabled ? 1 : 0);
 
     [self bindObjFuncsToGLMContext: glm_ctx];
+    if (glm_ctx->renderer_backend) {
+        mglRendererBackendDestroy(
+            (MGLRendererBackendHandle **)&glm_ctx->renderer_backend);
+    }
+    if (glm_ctx->platform_renderer_shell) {
+        CFRelease(glm_ctx->platform_renderer_shell);
+        glm_ctx->platform_renderer_shell = NULL;
+    }
 
     // VIRTUALIZED AGX DETECTION: Create Metal device with virtualization safety
     NSLog(@"MGL INFO: VIRTUALIZED AGX - Creating Metal device with virtualization detection");
@@ -389,25 +386,27 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
 
     NSLog(@"MGL INFO: Metal device created: %@", _device);
 
-    /* METALCPP 路径（Phase 1）：把现有 id<MTLDevice> 桥接给 C++ 渲染门面
-     * （+1 retain，shutdown 时 release）。AIR 加载器/PSO 走唯一 Metal-cpp
-     * 时经 mglRenderCppGetDevice() 取用。 */
-    if (mglRenderCppInit((__bridge void *)_device) != 0) {
-        NSLog(@"MGL ERROR: mglRenderCppInit failed (Metal-cpp bridge)");
+    MGLRendererBackendCreateInfo backendInfo = {
+        .objc_device = (__bridge void *)_device,
+        .context = glm_ctx,
+        .binding_slot_count = TEXTURE_UNITS,
+        .query_capacity = 256u,
+    };
+    if (mglRendererBackendCreate(&backendInfo, &_backend) != 0) {
+        NSLog(@"MGL ERROR: failed to create Metal-cpp renderer backend");
         return;
     }
-    NSLog(@"MGL INFO: Metal-cpp renderer bridge ready (%p)",
-          mglRenderCppGetDevice());
+    glm_ctx->renderer_backend = _backend;
+    _bindingStateOwner = mglRendererBackendGetOwner(
+        _backend, MGL_RENDERER_BACKEND_OWNER_BINDING);
+    _queryStateOwner = mglRendererBackendGetOwner(
+        _backend, MGL_RENDERER_BACKEND_OWNER_QUERY);
+    _gpuRecovery.commandRecoveryOwner = mglRendererBackendGetOwner(
+        _backend, MGL_RENDERER_BACKEND_OWNER_RECOVERY);
+    NSLog(@"MGL INFO: Metal-cpp renderer backend ready (%p)", _backend);
     /* Rebind now that the C++ device exists.  The first bind above keeps
      * early-failure cleanup valid; this bind selects migrated callbacks. */
     [self bindObjFuncsToGLMContext:glm_ctx];
-    if (mglRenderCppCreateQueryStateOwner(256u, &_queryStateOwner) != 0) {
-        _queryStateOwner = NULL;
-        NSLog(@"MGL ERROR: failed to create Metal-cpp query state owner");
-    } else if (mglRenderCppRegisterContextQueryStateOwner(
-                   glm_ctx, _queryStateOwner) != 0) {
-        NSLog(@"MGL ERROR: failed to register context query state owner");
-    }
     mglRenderCppAttachRuntimeOwners(
         glm_ctx,
         _renderPassManager.state->currentCommandBufferOwner,
@@ -441,8 +440,13 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     uint32_t maxCommandBuffers = isVirtualized
         ? (uint32_t)MGLCapabilityMaxConcurrentCommandBuffers(&_capability)
         : 0u;
-    _commandQueue = mglRenderCppCreateOrResetCommandQueueOwner(
-        &_commandQueueOwner, maxCommandBuffers);
+    void *commandQueue = NULL;
+    if (mglRendererBackendResetCommandQueue(
+            _backend, maxCommandBuffers, &commandQueue) == 0) {
+        _commandQueue = (__bridge id<MTLCommandQueue>)commandQueue;
+        _commandQueueOwner = mglRendererBackendGetOwner(
+            _backend, MGL_RENDERER_BACKEND_OWNER_COMMAND_QUEUE);
+    }
     if (!_commandQueue) {
         NSLog(@"MGL ERROR: Failed to create Metal command queue");
         // Intentional early return on critical Metal initialization failure.
@@ -563,7 +567,12 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         NSLog(@"MGL ERROR: Exception creating initial Metal command buffer: %@", exception);
     }
     
+    if (glm_ctx->mtl_funcs.mtlView) {
+        CFRelease(glm_ctx->mtl_funcs.mtlView);
+    }
     glm_ctx->mtl_funcs.mtlView = (void *)CFBridgingRetain(view);
+    glm_ctx->platform_renderer_shell =
+        (void *)CFBridgingRetain(_platformShell);
 
     // PROACTIVE TEXTURE CREATION: Create essential textures to break sync loop
     NSLog(@"MGL INFO: PROACTIVE - Creating essential textures to prevent magenta screen");
@@ -577,7 +586,8 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
 
 - (BOOL)mglRendererIsReady
 {
-    if (!ctx || !_device || !mglRenderCppGetDevice() ||
+    if (!ctx || !_device || !_backend ||
+        mglRendererBackendIsReady(_backend) != 1 ||
         !_commandQueueOwner || !_commandQueue || !_layer || !_renderPassManager) {
         return NO;
     }
@@ -802,11 +812,6 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         /* Drop strong references held by the last-bound dedup cache before
          * releasing the underlying Metal resources below. */
         [self invalidateLastBoundState];
-        /* Destroy the per-context C++ binding state before final renderer
-         * shutdown releases any remaining renderer-owned Metal objects. */
-        mglRenderCppBindingDestroy(_bindingStateOwner);
-        _bindingStateOwner = NULL;
-
         // Cleanup command buffer and encoder
         MGLRenderCppCommandBufferState commandState = {0};
         if (mglRenderCommandBufferOwnerState(
@@ -822,15 +827,18 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
             [_renderPassManager clearCurrentRenderEncoder];
         }
 
+        MGLRendererBackendShutdownResult shutdownResult = {0};
+        if (_backend &&
+            mglRendererBackendShutdown(_backend, &shutdownResult) != 0) {
+            NSLog(@"MGL ERROR: renderer backend shutdown wait failed code=%lld",
+                  shutdownResult.last_submission_error_code);
+        }
+
         [_renderPassManager setRuntimeContext:NULL];
         [_renderPassManager shutdown];
         _renderPassManager = nil;
 
         mglRenderCppDetachRuntimeOwners(ctx);
-        mglRenderCppUnregisterContextQueryStateOwner(ctx, _queryStateOwner);
-        mglRenderCppDestroyQueryStateOwner(&_queryStateOwner);
-        mglRenderCppDestroyCommandRecoveryOwner(
-            &_gpuRecovery.commandRecoveryOwner);
 
         if (_pipelineCache) {
             if (_pipelineCache.state->pipelineState) {
@@ -847,6 +855,18 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         _resourceFallback.samplerSnapshotCacheNext = 0;
         memset(_resourceFallback.samplerSnapshotCacheIndex, 0,
                sizeof(_resourceFallback.samplerSnapshotCacheIndex));
+
+        if (ctx && ctx->renderer_backend == _backend) {
+            mglRendererBackendDestroy(
+                (MGLRendererBackendHandle **)&ctx->renderer_backend);
+        } else {
+            mglRendererBackendDestroy(&_backend);
+        }
+        _backend = NULL;
+        _bindingStateOwner = NULL;
+        _queryStateOwner = NULL;
+        _gpuRecovery.commandRecoveryOwner = NULL;
+        _commandQueueOwner = NULL;
 
         // Cleanup drawable and layer
         if (_drawable) {
@@ -865,18 +885,14 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
             NSLog(@"MGL INFO: Releasing command queue");
             _commandQueue = nil;
         }
-        mglRenderCppDestroyCommandQueueOwner(&_commandQueueOwner);
-
         if (_device) {
             NSLog(@"MGL INFO: Releasing Metal device");
             _device = nil;
         }
 
-        /* METALCPP 路径：释放 C++ 渲染门面持有的 device 引用。 */
-        mglRenderCppShutdown();
-
         /* Task 4: Release all address-stable snapshot arena chunks. */
         mglDestroyBatchArena(&_batching.batchArena);
+        _platformShell = nil;
 
     } @catch (NSException *exception) {
         NSLog(@"MGL ERROR: Exception during dealloc cleanup: %@", exception);
