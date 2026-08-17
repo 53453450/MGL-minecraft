@@ -73,47 +73,6 @@ void mglRenderCppReleaseSync(GLMContext glm_ctx, Sync *sync);
 void mglRenderCppFlush(GLMContext glm_ctx, bool finish);
 void mglRenderCppInvalidateRenderPass(GLMContext glm_ctx);
 uint64_t mglRenderCppGetGPUTimestamp(GLMContext glm_ctx);
-typedef struct MGLRenderCppDrawCallbackArgs_t MGLRenderCppDrawCallbackArgs;
-
-enum {
-    MGL_RENDER_CPP_DRAW_CALLBACK_ARRAYS = 0,
-    MGL_RENDER_CPP_DRAW_CALLBACK_ELEMENTS = 1,
-    MGL_RENDER_CPP_DRAW_CALLBACK_RANGE_ELEMENTS = 2,
-    MGL_RENDER_CPP_DRAW_CALLBACK_ARRAYS_INSTANCED = 3,
-    MGL_RENDER_CPP_DRAW_CALLBACK_ELEMENTS_INSTANCED = 4,
-    MGL_RENDER_CPP_DRAW_CALLBACK_ELEMENTS_BASE_VERTEX = 5,
-    MGL_RENDER_CPP_DRAW_CALLBACK_RANGE_ELEMENTS_BASE_VERTEX = 6,
-    MGL_RENDER_CPP_DRAW_CALLBACK_ELEMENTS_INSTANCED_BASE_VERTEX = 7,
-    MGL_RENDER_CPP_DRAW_CALLBACK_ARRAYS_INDIRECT = 8,
-    MGL_RENDER_CPP_DRAW_CALLBACK_ELEMENTS_INDIRECT = 9,
-    MGL_RENDER_CPP_DRAW_CALLBACK_ARRAYS_INSTANCED_BASE_INSTANCE = 10,
-    MGL_RENDER_CPP_DRAW_CALLBACK_ELEMENTS_INSTANCED_BASE_INSTANCE = 11,
-    MGL_RENDER_CPP_DRAW_CALLBACK_ELEMENTS_INSTANCED_BASE_VERTEX_BASE_INSTANCE = 12,
-    MGL_RENDER_CPP_DRAW_CALLBACK_MULTI_ARRAYS = 13,
-    MGL_RENDER_CPP_DRAW_CALLBACK_MULTI_ELEMENTS = 14,
-    MGL_RENDER_CPP_DRAW_CALLBACK_MULTI_ELEMENTS_BASE_VERTEX = 15,
-    MGL_RENDER_CPP_DRAW_CALLBACK_MULTI_ARRAYS_INDIRECT = 16,
-    MGL_RENDER_CPP_DRAW_CALLBACK_MULTI_ELEMENTS_INDIRECT = 17,
-};
-
-struct MGLRenderCppDrawCallbackArgs_t {
-    uint32_t kind;
-    uint32_t mode;
-    uint32_t type;
-    uint32_t start;
-    uint32_t end;
-    int32_t first;
-    int32_t count;
-    int32_t instance_count;
-    int32_t base_vertex;
-    uint32_t base_instance;
-    int32_t draw_count;
-    int32_t stride;
-    const void *indices_or_indirect;
-    const int32_t *firsts;
-    const int32_t *counts;
-    const int32_t *base_vertices;
-};
 
 /* Publish the borrowed runtime owner handles used by direct C++ callbacks. */
 int mglRenderCppAttachRuntimeOwners(GLMContext glm_ctx,

@@ -15,9 +15,69 @@ extern "C" void mglRendererCompatDispatchCompute(
     unsigned int groups_x, unsigned int groups_y, unsigned int groups_z);
 extern "C" void mglRendererCompatDispatchComputeIndirect(
     void *compat_context, GLMContext context, intptr_t indirect);
-extern "C" void mglRendererCompatDraw(
+extern "C" void mglRendererCompatDrawArrays(
     void *compat_context, GLMContext context,
-    const MGLRenderCppDrawCallbackArgs *args);
+    uint32_t mode, int32_t first, int32_t count);
+extern "C" void mglRendererCompatDrawElements(
+    void *compat_context, GLMContext context,
+    uint32_t mode, int32_t count, uint32_t type, const void *indices);
+extern "C" void mglRendererCompatDrawRangeElements(
+    void *compat_context, GLMContext context, uint32_t mode,
+    uint32_t start, uint32_t end, int32_t count, uint32_t type,
+    const void *indices);
+extern "C" void mglRendererCompatDrawArraysInstanced(
+    void *compat_context, GLMContext context, uint32_t mode,
+    int32_t first, int32_t count, int32_t instance_count);
+extern "C" void mglRendererCompatDrawElementsInstanced(
+    void *compat_context, GLMContext context, uint32_t mode,
+    int32_t count, uint32_t type, const void *indices,
+    int32_t instance_count);
+extern "C" void mglRendererCompatDrawElementsBaseVertex(
+    void *compat_context, GLMContext context, uint32_t mode,
+    int32_t count, uint32_t type, const void *indices, int32_t base_vertex);
+extern "C" void mglRendererCompatDrawRangeElementsBaseVertex(
+    void *compat_context, GLMContext context, uint32_t mode,
+    uint32_t start, uint32_t end, int32_t count, uint32_t type,
+    const void *indices, int32_t base_vertex);
+extern "C" void mglRendererCompatDrawElementsInstancedBaseVertex(
+    void *compat_context, GLMContext context, uint32_t mode,
+    int32_t count, uint32_t type, const void *indices,
+    int32_t instance_count, int32_t base_vertex);
+extern "C" void mglRendererCompatDrawArraysIndirect(
+    void *compat_context, GLMContext context,
+    uint32_t mode, const void *indirect);
+extern "C" void mglRendererCompatDrawElementsIndirect(
+    void *compat_context, GLMContext context,
+    uint32_t mode, uint32_t type, const void *indirect);
+extern "C" void mglRendererCompatDrawArraysInstancedBaseInstance(
+    void *compat_context, GLMContext context, uint32_t mode,
+    int32_t first, int32_t count, int32_t instance_count,
+    uint32_t base_instance);
+extern "C" void mglRendererCompatDrawElementsInstancedBaseInstance(
+    void *compat_context, GLMContext context, uint32_t mode,
+    int32_t count, uint32_t type, const void *indices,
+    int32_t instance_count, uint32_t base_instance);
+extern "C" void mglRendererCompatDrawElementsInstancedBaseVertexBaseInstance(
+    void *compat_context, GLMContext context, uint32_t mode,
+    int32_t count, uint32_t type, const void *indices,
+    int32_t instance_count, int32_t base_vertex, uint32_t base_instance);
+extern "C" void mglRendererCompatMultiDrawArrays(
+    void *compat_context, GLMContext context, uint32_t mode,
+    const int32_t *firsts, const int32_t *counts, int32_t draw_count);
+extern "C" void mglRendererCompatMultiDrawElements(
+    void *compat_context, GLMContext context, uint32_t mode,
+    const int32_t *counts, uint32_t type, const void *const *indices,
+    int32_t draw_count);
+extern "C" void mglRendererCompatMultiDrawElementsBaseVertex(
+    void *compat_context, GLMContext context, uint32_t mode,
+    const int32_t *counts, uint32_t type, const void *const *indices,
+    int32_t draw_count, const int32_t *base_vertices);
+extern "C" void mglRendererCompatMultiDrawArraysIndirect(
+    void *compat_context, GLMContext context, uint32_t mode,
+    const void *indirect, int32_t draw_count, int32_t stride);
+extern "C" void mglRendererCompatMultiDrawElementsIndirect(
+    void *compat_context, GLMContext context, uint32_t mode, uint32_t type,
+    const void *indirect, int32_t draw_count, int32_t stride);
 extern "C" void mglRendererCompatBindTexture(
     void *compat_context, GLMContext context, Texture *texture);
 extern "C" void mglRendererCompatFlushDrawBuffer(
@@ -556,140 +616,130 @@ extern "C" void mglRendererCopyImageSubData(
     }
 }
 
-static void mglRendererInvokeDraw(
-    GLMContext context, MGLRenderCppDrawCallbackArgs args)
-{
-    void *compat = mglRendererBackendCompatContext(context);
-    if (compat) mglRendererCompatDraw(compat, context, &args);
-}
-
 extern "C" void mglRendererDrawArrays(
     GLMContext context, uint32_t mode, int32_t first, int32_t count)
 {
-    mglRendererInvokeDraw(context, {
-        .kind = MGL_RENDER_CPP_DRAW_CALLBACK_ARRAYS,
-        .mode = mode, .first = first, .count = count,
-    });
+    void *compat = mglRendererBackendCompatContext(context);
+    if (compat) mglRendererCompatDrawArrays(compat, context, mode, first, count);
 }
 
 extern "C" void mglRendererDrawElements(
     GLMContext context, uint32_t mode, int32_t count,
     uint32_t type, const void *indices)
 {
-    mglRendererInvokeDraw(context, {
-        .kind = MGL_RENDER_CPP_DRAW_CALLBACK_ELEMENTS,
-        .mode = mode, .type = type, .count = count,
-        .indices_or_indirect = indices,
-    });
+    void *compat = mglRendererBackendCompatContext(context);
+    if (compat) {
+        mglRendererCompatDrawElements(
+            compat, context, mode, count, type, indices);
+    }
 }
 
 extern "C" void mglRendererDrawRangeElements(
     GLMContext context, uint32_t mode, uint32_t start, uint32_t end,
     int32_t count, uint32_t type, const void *indices)
 {
-    mglRendererInvokeDraw(context, {
-        .kind = MGL_RENDER_CPP_DRAW_CALLBACK_RANGE_ELEMENTS,
-        .mode = mode, .type = type, .start = start, .end = end,
-        .count = count, .indices_or_indirect = indices,
-    });
+    void *compat = mglRendererBackendCompatContext(context);
+    if (compat) {
+        mglRendererCompatDrawRangeElements(
+            compat, context, mode, start, end, count, type, indices);
+    }
 }
 
 extern "C" void mglRendererDrawArraysInstanced(
     GLMContext context, uint32_t mode, int32_t first, int32_t count,
     int32_t instance_count)
 {
-    mglRendererInvokeDraw(context, {
-        .kind = MGL_RENDER_CPP_DRAW_CALLBACK_ARRAYS_INSTANCED,
-        .mode = mode, .first = first, .count = count,
-        .instance_count = instance_count,
-    });
+    void *compat = mglRendererBackendCompatContext(context);
+    if (compat) {
+        mglRendererCompatDrawArraysInstanced(
+            compat, context, mode, first, count, instance_count);
+    }
 }
 
 extern "C" void mglRendererDrawElementsInstanced(
     GLMContext context, uint32_t mode, int32_t count, uint32_t type,
     const void *indices, int32_t instance_count)
 {
-    mglRendererInvokeDraw(context, {
-        .kind = MGL_RENDER_CPP_DRAW_CALLBACK_ELEMENTS_INSTANCED,
-        .mode = mode, .type = type, .count = count,
-        .instance_count = instance_count, .indices_or_indirect = indices,
-    });
+    void *compat = mglRendererBackendCompatContext(context);
+    if (compat) {
+        mglRendererCompatDrawElementsInstanced(
+            compat, context, mode, count, type, indices, instance_count);
+    }
 }
 
 extern "C" void mglRendererDrawElementsBaseVertex(
     GLMContext context, uint32_t mode, int32_t count, uint32_t type,
     const void *indices, int32_t base_vertex)
 {
-    mglRendererInvokeDraw(context, {
-        .kind = MGL_RENDER_CPP_DRAW_CALLBACK_ELEMENTS_BASE_VERTEX,
-        .mode = mode, .type = type, .count = count,
-        .base_vertex = base_vertex, .indices_or_indirect = indices,
-    });
+    void *compat = mglRendererBackendCompatContext(context);
+    if (compat) {
+        mglRendererCompatDrawElementsBaseVertex(
+            compat, context, mode, count, type, indices, base_vertex);
+    }
 }
 
 extern "C" void mglRendererDrawRangeElementsBaseVertex(
     GLMContext context, uint32_t mode, uint32_t start, uint32_t end,
     int32_t count, uint32_t type, const void *indices, int32_t base_vertex)
 {
-    mglRendererInvokeDraw(context, {
-        .kind = MGL_RENDER_CPP_DRAW_CALLBACK_RANGE_ELEMENTS_BASE_VERTEX,
-        .mode = mode, .type = type, .start = start, .end = end,
-        .count = count, .base_vertex = base_vertex,
-        .indices_or_indirect = indices,
-    });
+    void *compat = mglRendererBackendCompatContext(context);
+    if (compat) {
+        mglRendererCompatDrawRangeElementsBaseVertex(
+            compat, context, mode, start, end, count, type,
+            indices, base_vertex);
+    }
 }
 
 extern "C" void mglRendererDrawElementsInstancedBaseVertex(
     GLMContext context, uint32_t mode, int32_t count, uint32_t type,
     const void *indices, int32_t instance_count, int32_t base_vertex)
 {
-    mglRendererInvokeDraw(context, {
-        .kind = MGL_RENDER_CPP_DRAW_CALLBACK_ELEMENTS_INSTANCED_BASE_VERTEX,
-        .mode = mode, .type = type, .count = count,
-        .instance_count = instance_count, .base_vertex = base_vertex,
-        .indices_or_indirect = indices,
-    });
+    void *compat = mglRendererBackendCompatContext(context);
+    if (compat) {
+        mglRendererCompatDrawElementsInstancedBaseVertex(
+            compat, context, mode, count, type, indices,
+            instance_count, base_vertex);
+    }
 }
 
 extern "C" void mglRendererDrawArraysIndirect(
     GLMContext context, uint32_t mode, const void *indirect)
 {
-    mglRendererInvokeDraw(context, {
-        .kind = MGL_RENDER_CPP_DRAW_CALLBACK_ARRAYS_INDIRECT,
-        .mode = mode, .indices_or_indirect = indirect,
-    });
+    void *compat = mglRendererBackendCompatContext(context);
+    if (compat) mglRendererCompatDrawArraysIndirect(compat, context, mode, indirect);
 }
 
 extern "C" void mglRendererDrawElementsIndirect(
     GLMContext context, uint32_t mode, uint32_t type, const void *indirect)
 {
-    mglRendererInvokeDraw(context, {
-        .kind = MGL_RENDER_CPP_DRAW_CALLBACK_ELEMENTS_INDIRECT,
-        .mode = mode, .type = type, .indices_or_indirect = indirect,
-    });
+    void *compat = mglRendererBackendCompatContext(context);
+    if (compat) {
+        mglRendererCompatDrawElementsIndirect(
+            compat, context, mode, type, indirect);
+    }
 }
 
 extern "C" void mglRendererDrawArraysInstancedBaseInstance(
     GLMContext context, uint32_t mode, int32_t first, int32_t count,
     int32_t instance_count, uint32_t base_instance)
 {
-    mglRendererInvokeDraw(context, {
-        .kind = MGL_RENDER_CPP_DRAW_CALLBACK_ARRAYS_INSTANCED_BASE_INSTANCE,
-        .mode = mode, .first = first, .count = count,
-        .instance_count = instance_count, .base_instance = base_instance,
-    });
+    void *compat = mglRendererBackendCompatContext(context);
+    if (compat) {
+        mglRendererCompatDrawArraysInstancedBaseInstance(
+            compat, context, mode, first, count, instance_count, base_instance);
+    }
 }
 
 extern "C" void mglRendererDrawElementsInstancedBaseInstance(
     GLMContext context, uint32_t mode, int32_t count, uint32_t type,
     const void *indices, int32_t instance_count, uint32_t base_instance)
 {
-    mglRendererInvokeDraw(context, {
-        .kind = MGL_RENDER_CPP_DRAW_CALLBACK_ELEMENTS_INSTANCED_BASE_INSTANCE,
-        .mode = mode, .type = type, .count = count,
-        .instance_count = instance_count, .base_instance = base_instance,
-        .indices_or_indirect = indices,
-    });
+    void *compat = mglRendererBackendCompatContext(context);
+    if (compat) {
+        mglRendererCompatDrawElementsInstancedBaseInstance(
+            compat, context, mode, count, type, indices,
+            instance_count, base_instance);
+    }
 }
 
 extern "C" void mglRendererDrawElementsInstancedBaseVertexBaseInstance(
@@ -697,35 +747,34 @@ extern "C" void mglRendererDrawElementsInstancedBaseVertexBaseInstance(
     const void *indices, int32_t instance_count, int32_t base_vertex,
     uint32_t base_instance)
 {
-    mglRendererInvokeDraw(context, {
-        .kind =
-            MGL_RENDER_CPP_DRAW_CALLBACK_ELEMENTS_INSTANCED_BASE_VERTEX_BASE_INSTANCE,
-        .mode = mode, .type = type, .count = count,
-        .instance_count = instance_count, .base_vertex = base_vertex,
-        .base_instance = base_instance, .indices_or_indirect = indices,
-    });
+    void *compat = mglRendererBackendCompatContext(context);
+    if (compat) {
+        mglRendererCompatDrawElementsInstancedBaseVertexBaseInstance(
+            compat, context, mode, count, type, indices,
+            instance_count, base_vertex, base_instance);
+    }
 }
 
 extern "C" void mglRendererMultiDrawArrays(
     GLMContext context, uint32_t mode,
     const int32_t *firsts, const int32_t *counts, int32_t draw_count)
 {
-    mglRendererInvokeDraw(context, {
-        .kind = MGL_RENDER_CPP_DRAW_CALLBACK_MULTI_ARRAYS,
-        .mode = mode, .draw_count = draw_count,
-        .firsts = firsts, .counts = counts,
-    });
+    void *compat = mglRendererBackendCompatContext(context);
+    if (compat) {
+        mglRendererCompatMultiDrawArrays(
+            compat, context, mode, firsts, counts, draw_count);
+    }
 }
 
 extern "C" void mglRendererMultiDrawElements(
     GLMContext context, uint32_t mode, const int32_t *counts,
     uint32_t type, const void *const *indices, int32_t draw_count)
 {
-    mglRendererInvokeDraw(context, {
-        .kind = MGL_RENDER_CPP_DRAW_CALLBACK_MULTI_ELEMENTS,
-        .mode = mode, .type = type, .draw_count = draw_count,
-        .indices_or_indirect = indices, .counts = counts,
-    });
+    void *compat = mglRendererBackendCompatContext(context);
+    if (compat) {
+        mglRendererCompatMultiDrawElements(
+            compat, context, mode, counts, type, indices, draw_count);
+    }
 }
 
 extern "C" void mglRendererMultiDrawElementsBaseVertex(
@@ -733,35 +782,34 @@ extern "C" void mglRendererMultiDrawElementsBaseVertex(
     uint32_t type, const void *const *indices, int32_t draw_count,
     const int32_t *base_vertices)
 {
-    mglRendererInvokeDraw(context, {
-        .kind = MGL_RENDER_CPP_DRAW_CALLBACK_MULTI_ELEMENTS_BASE_VERTEX,
-        .mode = mode, .type = type, .draw_count = draw_count,
-        .indices_or_indirect = indices, .counts = counts,
-        .base_vertices = base_vertices,
-    });
+    void *compat = mglRendererBackendCompatContext(context);
+    if (compat) {
+        mglRendererCompatMultiDrawElementsBaseVertex(
+            compat, context, mode, counts, type, indices,
+            draw_count, base_vertices);
+    }
 }
 
 extern "C" void mglRendererMultiDrawArraysIndirect(
     GLMContext context, uint32_t mode, const void *indirect,
     int32_t draw_count, int32_t stride)
 {
-    mglRendererInvokeDraw(context, {
-        .kind = MGL_RENDER_CPP_DRAW_CALLBACK_MULTI_ARRAYS_INDIRECT,
-        .mode = mode, .draw_count = draw_count, .stride = stride,
-        .indices_or_indirect = indirect,
-    });
+    void *compat = mglRendererBackendCompatContext(context);
+    if (compat) {
+        mglRendererCompatMultiDrawArraysIndirect(
+            compat, context, mode, indirect, draw_count, stride);
+    }
 }
 
 extern "C" void mglRendererMultiDrawElementsIndirect(
     GLMContext context, uint32_t mode, uint32_t type,
     const void *indirect, int32_t draw_count, int32_t stride)
 {
-    mglRendererInvokeDraw(context, {
-        .kind = MGL_RENDER_CPP_DRAW_CALLBACK_MULTI_ELEMENTS_INDIRECT,
-        .mode = mode, .type = type,
-        .draw_count = draw_count, .stride = stride,
-        .indices_or_indirect = indirect,
-    });
+    void *compat = mglRendererBackendCompatContext(context);
+    if (compat) {
+        mglRendererCompatMultiDrawElementsIndirect(
+            compat, context, mode, type, indirect, draw_count, stride);
+    }
 }
 
 extern "C" void mglRendererDispatchCompute(

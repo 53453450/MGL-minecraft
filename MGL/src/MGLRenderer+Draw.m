@@ -141,136 +141,257 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     return false;
 }
 
-void mglRendererCompatDraw(void *runtime_context,
-                           GLMContext glm_ctx,
-                           const MGLRenderCppDrawCallbackArgs *args)
+static MGLRenderer *mglRendererCompatDrawTarget(void *runtime_context,
+                                                GLMContext glm_ctx)
 {
     MGLRenderer *renderer = (__bridge MGLRenderer *)runtime_context;
-    if (!renderer || !glm_ctx || !args) return;
+    return renderer && glm_ctx ? renderer : nil;
+}
 
+void mglRendererCompatDrawArrays(void *runtime_context, GLMContext glm_ctx,
+                                 uint32_t mode, int32_t first, int32_t count)
+{
+    MGLRenderer *renderer = mglRendererCompatDrawTarget(runtime_context, glm_ctx);
+    if (!renderer) return;
     @autoreleasepool {
-        switch (args->kind) {
-            case MGL_RENDER_CPP_DRAW_CALLBACK_ARRAYS:
-                [renderer mtlDrawArrays:glm_ctx mode:args->mode
-                                   first:args->first count:args->count];
-                break;
-            case MGL_RENDER_CPP_DRAW_CALLBACK_ELEMENTS:
-                [renderer mtlDrawElements:glm_ctx mode:args->mode
-                                     count:args->count type:args->type
-                                   indices:args->indices_or_indirect];
-                break;
-            case MGL_RENDER_CPP_DRAW_CALLBACK_RANGE_ELEMENTS:
-                [renderer mtlDrawRangeElements:glm_ctx mode:args->mode
-                                           start:args->start end:args->end
-                                           count:args->count type:args->type
-                                         indices:args->indices_or_indirect];
-                break;
-            case MGL_RENDER_CPP_DRAW_CALLBACK_ARRAYS_INSTANCED:
-                [renderer mtlDrawArraysInstanced:glm_ctx mode:args->mode
-                                           first:args->first count:args->count
-                                   instancecount:args->instance_count];
-                break;
-            case MGL_RENDER_CPP_DRAW_CALLBACK_ELEMENTS_INSTANCED:
-                [renderer mtlDrawElementsInstanced:glm_ctx mode:args->mode
-                                             count:args->count type:args->type
-                                           indices:args->indices_or_indirect
-                                     instancecount:args->instance_count];
-                break;
-            case MGL_RENDER_CPP_DRAW_CALLBACK_ELEMENTS_BASE_VERTEX:
-                [renderer mtlDrawElementsBaseVertex:glm_ctx mode:args->mode
-                                              count:args->count type:args->type
-                                            indices:args->indices_or_indirect
-                                         basevertex:args->base_vertex];
-                break;
-            case MGL_RENDER_CPP_DRAW_CALLBACK_RANGE_ELEMENTS_BASE_VERTEX:
-                [renderer mtlDrawRangeElementsBaseVertex:glm_ctx mode:args->mode
-                                                    start:args->start end:args->end
-                                                    count:args->count type:args->type
-                                                  indices:args->indices_or_indirect
-                                               basevertex:args->base_vertex];
-                break;
-            case MGL_RENDER_CPP_DRAW_CALLBACK_ELEMENTS_INSTANCED_BASE_VERTEX:
-                [renderer mtlDrawElementsInstancedBaseVertex:glm_ctx
-                                                        mode:args->mode
-                                                       count:args->count
-                                                        type:args->type
-                                                     indices:args->indices_or_indirect
-                                               instancecount:args->instance_count
-                                                  basevertex:args->base_vertex];
-                break;
-            case MGL_RENDER_CPP_DRAW_CALLBACK_ARRAYS_INDIRECT:
-                [renderer mtlDrawArraysIndirect:glm_ctx mode:args->mode
-                                        indirect:args->indices_or_indirect];
-                break;
-            case MGL_RENDER_CPP_DRAW_CALLBACK_ELEMENTS_INDIRECT:
-                [renderer mtlDrawElementsIndirect:glm_ctx mode:args->mode
-                                             type:args->type
-                                         indirect:args->indices_or_indirect];
-                break;
-            case MGL_RENDER_CPP_DRAW_CALLBACK_ARRAYS_INSTANCED_BASE_INSTANCE:
-                [renderer mtlDrawArraysInstancedBaseInstance:glm_ctx
-                                                       mode:args->mode
-                                                      first:args->first
-                                                      count:args->count
-                                              instancecount:args->instance_count
-                                               baseinstance:args->base_instance];
-                break;
-            case MGL_RENDER_CPP_DRAW_CALLBACK_ELEMENTS_INSTANCED_BASE_INSTANCE:
-                [renderer mtlDrawElementsInstancedBaseInstance:glm_ctx
-                                                         mode:args->mode
-                                                        count:args->count
-                                                         type:args->type
-                                                      indices:args->indices_or_indirect
-                                                instancecount:args->instance_count
-                                                 baseinstance:args->base_instance];
-                break;
-            case MGL_RENDER_CPP_DRAW_CALLBACK_ELEMENTS_INSTANCED_BASE_VERTEX_BASE_INSTANCE:
-                [renderer mtlDrawElementsInstancedBaseVertexBaseInstance:glm_ctx
-                                                                   mode:args->mode
-                                                                  count:args->count
-                                                                   type:args->type
-                                                                indices:args->indices_or_indirect
-                                                          instancecount:args->instance_count
-                                                             basevertex:args->base_vertex
-                                                           baseinstance:args->base_instance];
-                break;
-            case MGL_RENDER_CPP_DRAW_CALLBACK_MULTI_ARRAYS:
-                [renderer mtlMultiDrawArrays:glm_ctx mode:args->mode
-                                       first:(const GLint *)args->firsts
-                                       count:(const GLsizei *)args->counts
-                                   drawcount:args->draw_count];
-                break;
-            case MGL_RENDER_CPP_DRAW_CALLBACK_MULTI_ELEMENTS:
-                [renderer mtlMultiDrawElements:glm_ctx mode:args->mode
-                                        count:(const GLsizei *)args->counts
-                                         type:args->type
-                                      indices:(const void *const *)args->indices_or_indirect
-                                    drawcount:args->draw_count];
-                break;
-            case MGL_RENDER_CPP_DRAW_CALLBACK_MULTI_ELEMENTS_BASE_VERTEX:
-                [renderer mtlMultiDrawElementsBaseVertex:glm_ctx mode:args->mode
-                                                  count:(const GLsizei *)args->counts
-                                                   type:args->type
-                                                indices:(const void *const *)args->indices_or_indirect
-                                              drawcount:args->draw_count
-                                             basevertex:(const GLint *)args->base_vertices];
-                break;
-            case MGL_RENDER_CPP_DRAW_CALLBACK_MULTI_ARRAYS_INDIRECT:
-                [renderer mtlMultiDrawArraysIndirect:glm_ctx mode:args->mode
-                                            indirect:args->indices_or_indirect
-                                           drawcount:args->draw_count
-                                              stride:args->stride];
-                break;
-            case MGL_RENDER_CPP_DRAW_CALLBACK_MULTI_ELEMENTS_INDIRECT:
-                [renderer mtlMultiDrawElementsIndirect:glm_ctx mode:args->mode
-                                                  type:args->type
-                                              indirect:args->indices_or_indirect
-                                             drawcount:args->draw_count
-                                                stride:args->stride];
-                break;
-            default:
-                break;
-        }
+        [renderer mtlDrawArrays:glm_ctx mode:mode first:first count:count];
+    }
+}
+
+void mglRendererCompatDrawElements(
+    void *runtime_context, GLMContext glm_ctx, uint32_t mode,
+    int32_t count, uint32_t type, const void *indices)
+{
+    MGLRenderer *renderer = mglRendererCompatDrawTarget(runtime_context, glm_ctx);
+    if (!renderer) return;
+    @autoreleasepool {
+        [renderer mtlDrawElements:glm_ctx mode:mode count:count
+                             type:type indices:indices];
+    }
+}
+
+void mglRendererCompatDrawRangeElements(
+    void *runtime_context, GLMContext glm_ctx, uint32_t mode,
+    uint32_t start, uint32_t end, int32_t count, uint32_t type,
+    const void *indices)
+{
+    MGLRenderer *renderer = mglRendererCompatDrawTarget(runtime_context, glm_ctx);
+    if (!renderer) return;
+    @autoreleasepool {
+        [renderer mtlDrawRangeElements:glm_ctx mode:mode start:start end:end
+                                   count:count type:type indices:indices];
+    }
+}
+
+void mglRendererCompatDrawArraysInstanced(
+    void *runtime_context, GLMContext glm_ctx, uint32_t mode,
+    int32_t first, int32_t count, int32_t instance_count)
+{
+    MGLRenderer *renderer = mglRendererCompatDrawTarget(runtime_context, glm_ctx);
+    if (!renderer) return;
+    @autoreleasepool {
+        [renderer mtlDrawArraysInstanced:glm_ctx mode:mode first:first
+                                   count:count instancecount:instance_count];
+    }
+}
+
+void mglRendererCompatDrawElementsInstanced(
+    void *runtime_context, GLMContext glm_ctx, uint32_t mode,
+    int32_t count, uint32_t type, const void *indices,
+    int32_t instance_count)
+{
+    MGLRenderer *renderer = mglRendererCompatDrawTarget(runtime_context, glm_ctx);
+    if (!renderer) return;
+    @autoreleasepool {
+        [renderer mtlDrawElementsInstanced:glm_ctx mode:mode count:count
+                                     type:type indices:indices
+                            instancecount:instance_count];
+    }
+}
+
+void mglRendererCompatDrawElementsBaseVertex(
+    void *runtime_context, GLMContext glm_ctx, uint32_t mode,
+    int32_t count, uint32_t type, const void *indices, int32_t base_vertex)
+{
+    MGLRenderer *renderer = mglRendererCompatDrawTarget(runtime_context, glm_ctx);
+    if (!renderer) return;
+    @autoreleasepool {
+        [renderer mtlDrawElementsBaseVertex:glm_ctx mode:mode count:count
+                                      type:type indices:indices
+                                basevertex:base_vertex];
+    }
+}
+
+void mglRendererCompatDrawRangeElementsBaseVertex(
+    void *runtime_context, GLMContext glm_ctx, uint32_t mode,
+    uint32_t start, uint32_t end, int32_t count, uint32_t type,
+    const void *indices, int32_t base_vertex)
+{
+    MGLRenderer *renderer = mglRendererCompatDrawTarget(runtime_context, glm_ctx);
+    if (!renderer) return;
+    @autoreleasepool {
+        [renderer mtlDrawRangeElementsBaseVertex:glm_ctx mode:mode
+                                           start:start end:end count:count
+                                            type:type indices:indices
+                                      basevertex:base_vertex];
+    }
+}
+
+void mglRendererCompatDrawElementsInstancedBaseVertex(
+    void *runtime_context, GLMContext glm_ctx, uint32_t mode,
+    int32_t count, uint32_t type, const void *indices,
+    int32_t instance_count, int32_t base_vertex)
+{
+    MGLRenderer *renderer = mglRendererCompatDrawTarget(runtime_context, glm_ctx);
+    if (!renderer) return;
+    @autoreleasepool {
+        [renderer mtlDrawElementsInstancedBaseVertex:glm_ctx mode:mode
+                                               count:count type:type
+                                             indices:indices
+                                       instancecount:instance_count
+                                          basevertex:base_vertex];
+    }
+}
+
+void mglRendererCompatDrawArraysIndirect(
+    void *runtime_context, GLMContext glm_ctx,
+    uint32_t mode, const void *indirect)
+{
+    MGLRenderer *renderer = mglRendererCompatDrawTarget(runtime_context, glm_ctx);
+    if (!renderer) return;
+    @autoreleasepool {
+        [renderer mtlDrawArraysIndirect:glm_ctx mode:mode indirect:indirect];
+    }
+}
+
+void mglRendererCompatDrawElementsIndirect(
+    void *runtime_context, GLMContext glm_ctx,
+    uint32_t mode, uint32_t type, const void *indirect)
+{
+    MGLRenderer *renderer = mglRendererCompatDrawTarget(runtime_context, glm_ctx);
+    if (!renderer) return;
+    @autoreleasepool {
+        [renderer mtlDrawElementsIndirect:glm_ctx mode:mode type:type
+                                 indirect:indirect];
+    }
+}
+
+void mglRendererCompatDrawArraysInstancedBaseInstance(
+    void *runtime_context, GLMContext glm_ctx, uint32_t mode,
+    int32_t first, int32_t count, int32_t instance_count,
+    uint32_t base_instance)
+{
+    MGLRenderer *renderer = mglRendererCompatDrawTarget(runtime_context, glm_ctx);
+    if (!renderer) return;
+    @autoreleasepool {
+        [renderer mtlDrawArraysInstancedBaseInstance:glm_ctx mode:mode
+                                               first:first count:count
+                                       instancecount:instance_count
+                                        baseinstance:base_instance];
+    }
+}
+
+void mglRendererCompatDrawElementsInstancedBaseInstance(
+    void *runtime_context, GLMContext glm_ctx, uint32_t mode,
+    int32_t count, uint32_t type, const void *indices,
+    int32_t instance_count, uint32_t base_instance)
+{
+    MGLRenderer *renderer = mglRendererCompatDrawTarget(runtime_context, glm_ctx);
+    if (!renderer) return;
+    @autoreleasepool {
+        [renderer mtlDrawElementsInstancedBaseInstance:glm_ctx mode:mode
+                                                 count:count type:type
+                                               indices:indices
+                                         instancecount:instance_count
+                                          baseinstance:base_instance];
+    }
+}
+
+void mglRendererCompatDrawElementsInstancedBaseVertexBaseInstance(
+    void *runtime_context, GLMContext glm_ctx, uint32_t mode,
+    int32_t count, uint32_t type, const void *indices,
+    int32_t instance_count, int32_t base_vertex, uint32_t base_instance)
+{
+    MGLRenderer *renderer = mglRendererCompatDrawTarget(runtime_context, glm_ctx);
+    if (!renderer) return;
+    @autoreleasepool {
+        [renderer mtlDrawElementsInstancedBaseVertexBaseInstance:glm_ctx
+                                                           mode:mode count:count
+                                                           type:type
+                                                        indices:indices
+                                                  instancecount:instance_count
+                                                     basevertex:base_vertex
+                                                   baseinstance:base_instance];
+    }
+}
+
+void mglRendererCompatMultiDrawArrays(
+    void *runtime_context, GLMContext glm_ctx, uint32_t mode,
+    const int32_t *firsts, const int32_t *counts, int32_t draw_count)
+{
+    MGLRenderer *renderer = mglRendererCompatDrawTarget(runtime_context, glm_ctx);
+    if (!renderer) return;
+    @autoreleasepool {
+        [renderer mtlMultiDrawArrays:glm_ctx mode:mode
+                               first:(const GLint *)firsts
+                               count:(const GLsizei *)counts
+                           drawcount:draw_count];
+    }
+}
+
+void mglRendererCompatMultiDrawElements(
+    void *runtime_context, GLMContext glm_ctx, uint32_t mode,
+    const int32_t *counts, uint32_t type, const void *const *indices,
+    int32_t draw_count)
+{
+    MGLRenderer *renderer = mglRendererCompatDrawTarget(runtime_context, glm_ctx);
+    if (!renderer) return;
+    @autoreleasepool {
+        [renderer mtlMultiDrawElements:glm_ctx mode:mode
+                                count:(const GLsizei *)counts type:type
+                              indices:indices drawcount:draw_count];
+    }
+}
+
+void mglRendererCompatMultiDrawElementsBaseVertex(
+    void *runtime_context, GLMContext glm_ctx, uint32_t mode,
+    const int32_t *counts, uint32_t type, const void *const *indices,
+    int32_t draw_count, const int32_t *base_vertices)
+{
+    MGLRenderer *renderer = mglRendererCompatDrawTarget(runtime_context, glm_ctx);
+    if (!renderer) return;
+    @autoreleasepool {
+        [renderer mtlMultiDrawElementsBaseVertex:glm_ctx mode:mode
+                                          count:(const GLsizei *)counts
+                                           type:type indices:indices
+                                      drawcount:draw_count
+                                     basevertex:(const GLint *)base_vertices];
+    }
+}
+
+void mglRendererCompatMultiDrawArraysIndirect(
+    void *runtime_context, GLMContext glm_ctx, uint32_t mode,
+    const void *indirect, int32_t draw_count, int32_t stride)
+{
+    MGLRenderer *renderer = mglRendererCompatDrawTarget(runtime_context, glm_ctx);
+    if (!renderer) return;
+    @autoreleasepool {
+        [renderer mtlMultiDrawArraysIndirect:glm_ctx mode:mode
+                                    indirect:indirect drawcount:draw_count
+                                       stride:stride];
+    }
+}
+
+void mglRendererCompatMultiDrawElementsIndirect(
+    void *runtime_context, GLMContext glm_ctx, uint32_t mode, uint32_t type,
+    const void *indirect, int32_t draw_count, int32_t stride)
+{
+    MGLRenderer *renderer = mglRendererCompatDrawTarget(runtime_context, glm_ctx);
+    if (!renderer) return;
+    @autoreleasepool {
+        [renderer mtlMultiDrawElementsIndirect:glm_ctx mode:mode type:type
+                                      indirect:indirect drawcount:draw_count
+                                         stride:stride];
     }
 }
 
