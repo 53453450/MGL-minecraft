@@ -8,39 +8,32 @@
 #include "mgl_render_cpp.h"
 #include "mgl_render_cpp_objc.h"
 
-static BOOL mglComputeUsesMetalCpp(void)
-{
-    return mglRenderCppGetDevice() != NULL;
-}
-
 static MGLMetalBufferRef mglComputeCreateBufferWithBytes(
     MGLMetalDeviceRef device,
     const void *bytes,
     NSUInteger length,
     MTLResourceOptions options)
 {
-    if (mglComputeUsesMetalCpp()) {
-        void *buffer = NULL;
-        if (mglRenderCppCreateBufferWithBytes(bytes, length, options, NULL,
-                                              &buffer) == 0 && buffer) {
-            return (__bridge_transfer MGLMetalBufferRef)buffer;
-        }
+    (void)device;
+    void *buffer = NULL;
+    if (mglRenderCppCreateBufferWithBytes(bytes, length, options, NULL,
+                                          &buffer) == 0 && buffer) {
+        return (__bridge_transfer MGLMetalBufferRef)buffer;
     }
-    return [device newBufferWithBytes:bytes length:length options:options];
+    return nil;
 }
 
 static MGLMetalSamplerStateRef mglComputeCreateSampler(
     MGLMetalDeviceRef device,
     MTLSamplerDescriptor *descriptor)
 {
-    if (mglComputeUsesMetalCpp()) {
-        void *sampler = NULL;
-        if (mglRenderCppCreateSampler((__bridge void *)descriptor,
-                                      &sampler) == 0 && sampler) {
-            return (__bridge_transfer MGLMetalSamplerStateRef)sampler;
-        }
+    (void)device;
+    void *sampler = NULL;
+    if (mglRenderCppCreateSampler((__bridge void *)descriptor,
+                                  &sampler) == 0 && sampler) {
+        return (__bridge_transfer MGLMetalSamplerStateRef)sampler;
     }
-    return [device newSamplerStateWithDescriptor:descriptor];
+    return nil;
 }
 
 static MGLMetalTextureRef mglComputeCreateTextureLevelView(
@@ -48,19 +41,14 @@ static MGLMetalTextureRef mglComputeCreateTextureLevelView(
     NSUInteger level,
     NSUInteger sliceCount)
 {
-    if (mglComputeUsesMetalCpp()) {
-        void *view = NULL;
-        if (mglRenderCppCreateTextureViewRange(
-                (__bridge void *)texture, (uint32_t)texture.pixelFormat,
-                (uint32_t)texture.textureType, level, 1, 0, sliceCount,
-                0, 0, 0, 0, 0, &view) == 0 && view) {
-            return (__bridge_transfer MGLMetalTextureRef)view;
-        }
+    void *view = NULL;
+    if (mglRenderCppCreateTextureViewRange(
+            (__bridge void *)texture, (uint32_t)texture.pixelFormat,
+            (uint32_t)texture.textureType, level, 1, 0, sliceCount,
+            0, 0, 0, 0, 0, &view) == 0 && view) {
+        return (__bridge_transfer MGLMetalTextureRef)view;
     }
-    return [texture newTextureViewWithPixelFormat:texture.pixelFormat
-                                      textureType:texture.textureType
-                                           levels:NSMakeRange(level, 1)
-                                           slices:NSMakeRange(0, sliceCount)];
+    return nil;
 }
 
 static void mglComputeSetBuffer(MGLMetalComputeCommandEncoderRef encoder,
@@ -68,65 +56,45 @@ static void mglComputeSetBuffer(MGLMetalComputeCommandEncoderRef encoder,
                                 NSUInteger offset,
                                 NSUInteger index)
 {
-    if (mglComputeUsesMetalCpp()) {
-        (void)mglRenderCppSetComputeBuffer(
-            (__bridge void *)encoder, (__bridge void *)buffer,
-            (uint64_t)offset, (uint32_t)index);
-        return;
-    }
-    [encoder setBuffer:buffer offset:offset atIndex:index];
+    (void)mglRenderCppSetComputeBuffer(
+        (__bridge void *)encoder, (__bridge void *)buffer,
+        (uint64_t)offset, (uint32_t)index);
 }
 
 static void mglComputeSetTexture(MGLMetalComputeCommandEncoderRef encoder,
                                  MGLMetalTextureRef texture,
                                  NSUInteger index)
 {
-    if (mglComputeUsesMetalCpp()) {
-        (void)mglRenderCppSetComputeTexture(
-            (__bridge void *)encoder, (__bridge void *)texture,
-            (uint32_t)index);
-        return;
-    }
-    [encoder setTexture:texture atIndex:index];
+    (void)mglRenderCppSetComputeTexture(
+        (__bridge void *)encoder, (__bridge void *)texture,
+        (uint32_t)index);
 }
 
 static void mglComputeSetSampler(MGLMetalComputeCommandEncoderRef encoder,
                                  MGLMetalSamplerStateRef sampler,
                                  NSUInteger index)
 {
-    if (mglComputeUsesMetalCpp()) {
-        (void)mglRenderCppSetComputeSampler(
-            (__bridge void *)encoder, (__bridge void *)sampler,
-            (uint32_t)index);
-        return;
-    }
-    [encoder setSamplerState:sampler atIndex:index];
+    (void)mglRenderCppSetComputeSampler(
+        (__bridge void *)encoder, (__bridge void *)sampler,
+        (uint32_t)index);
 }
 
 static void mglComputeSetPipeline(MGLMetalComputeCommandEncoderRef encoder,
                                    MGLMetalComputePipelineStateRef pipeline)
 {
-    if (mglComputeUsesMetalCpp()) {
-        (void)mglRenderCppSetComputePipelineState(
-            (__bridge void *)encoder, (__bridge void *)pipeline);
-        return;
-    }
-    [encoder setComputePipelineState:pipeline];
+    (void)mglRenderCppSetComputePipelineState(
+        (__bridge void *)encoder, (__bridge void *)pipeline);
 }
 
 static void mglComputeDispatch(MGLMetalComputeCommandEncoderRef encoder,
                                MTLSize groups,
                                MTLSize threads)
 {
-    if (mglComputeUsesMetalCpp()) {
-        (void)mglRenderCppDispatchCompute(
-            (__bridge void *)encoder, (uint32_t)groups.width,
-            (uint32_t)groups.height, (uint32_t)groups.depth,
-            (uint32_t)threads.width, (uint32_t)threads.height,
-            (uint32_t)threads.depth);
-        return;
-    }
-    [encoder dispatchThreadgroups:groups threadsPerThreadgroup:threads];
+    (void)mglRenderCppDispatchCompute(
+        (__bridge void *)encoder, (uint32_t)groups.width,
+        (uint32_t)groups.height, (uint32_t)groups.depth,
+        (uint32_t)threads.width, (uint32_t)threads.height,
+        (uint32_t)threads.depth);
 }
 
 static void mglComputeDispatchIndirect(MGLMetalComputeCommandEncoderRef encoder,
@@ -134,25 +102,15 @@ static void mglComputeDispatchIndirect(MGLMetalComputeCommandEncoderRef encoder,
                                        NSUInteger offset,
                                        MTLSize threads)
 {
-    if (mglComputeUsesMetalCpp()) {
-        (void)mglRenderCppDispatchComputeIndirect(
-            (__bridge void *)encoder, (__bridge void *)buffer,
-            (uint64_t)offset, (uint32_t)threads.width,
-            (uint32_t)threads.height, (uint32_t)threads.depth);
-        return;
-    }
-    [encoder dispatchThreadgroupsWithIndirectBuffer:buffer
-                                  indirectBufferOffset:offset
-                                 threadsPerThreadgroup:threads];
+    (void)mglRenderCppDispatchComputeIndirect(
+        (__bridge void *)encoder, (__bridge void *)buffer,
+        (uint64_t)offset, (uint32_t)threads.width,
+        (uint32_t)threads.height, (uint32_t)threads.depth);
 }
 
 static void mglComputeEndEncoder(MGLMetalComputeCommandEncoderRef encoder)
 {
-    if (mglComputeUsesMetalCpp()) {
-        (void)mglRenderCppEndComputeEncoder((__bridge void *)encoder);
-        return;
-    }
-    [encoder endEncoding];
+    (void)mglRenderCppEndComputeEncoder((__bridge void *)encoder);
 }
 
 @interface MGLRenderer (ComputeLocked)
@@ -223,7 +181,7 @@ void mglRendererCallbackDispatchComputeIndirect(void *runtime_context,
      * 任一校验失败路径先 flush 已收集 op 再 return false，与直接路径「已发生
      * emit」对齐。gate-off 直接 mglComputeSetBuffer（A/B 对照）。copy-back
      * 登记等书keeping 保持内联、两门一致。 */
-    const BOOL useComputeBindingSnapshot = mglComputeUsesMetalCpp() || executionPlan;
+    const BOOL useComputeBindingSnapshot = YES;
     BOOL snapshotOK = YES;
     MGLRenderCppComputeBindingSnapshot cbindSnapshot = {0};
 #define MGL_CBIND_FLUSH_SNAPSHOT()                                              \
@@ -505,7 +463,7 @@ void mglRendererCallbackDispatchComputeIndirect(void *runtime_context,
      * 直接 mglComputeSetTexture/mglComputeSetSampler（A/B 对照）。临时对象
      * （level view / fallback sampler，gate-on __bridge_transfer 局部）经
      * ctexTemporaries 强持有至末尾重放后才释放——禁止悬垂进延迟重放。 */
-    const BOOL useComputeTextureSnapshot = mglComputeUsesMetalCpp() || executionPlan;
+    const BOOL useComputeTextureSnapshot = YES;
     BOOL textureSnapshotOK = YES;
     MGLRenderCppComputeBindingSnapshot ctexSnapshot = {0};
     NSMutableArray *ctexTemporaries = temporaries;
@@ -1041,7 +999,7 @@ void mglRendererCallbackDispatchComputeIndirect(void *runtime_context,
     }
 
     MGLStageBindingCopyBackList copyBacks = {0};
-    const BOOL useExecutionPlan = mglComputeUsesMetalCpp();
+    const BOOL useExecutionPlan = YES;
     MGLRenderCppComputeExecutionPlan executionPlan = {0};
     NSMutableArray *executionTemporaries = useExecutionPlan
         ? [NSMutableArray array] : nil;
