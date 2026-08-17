@@ -6,19 +6,10 @@
 #include "mgl_render_cpp_objc.h"
 #include "mgl_air_loader.h"   /* MGLRenderCppPipelineDescriptorState */
 
-@interface MGLPipelineCacheKey ()
-- (void)copyWords:(uint64_t[MGL_PIPELINE_CACHE_KEY_WORDS])words;
-@end
-
 @interface MGLPipelineCache ()
 - (BOOL)ensureCppOwnerCreated;
 - (BOOL)ensureCppOwner;
 @end
-
-static BOOL mglPipelineCacheUsesMetalCpp(void)
-{
-    return mglRenderCppGetDevice() != NULL;
-}
 
 static NSError *mglPipelineCacheMetalCppError(const char *message,
                                               NSInteger code)
@@ -29,20 +20,6 @@ static NSError *mglPipelineCacheMetalCppError(const char *message,
     return [NSError errorWithDomain:@"MGLPipelineCache"
                                code:code
                            userInfo:@{NSLocalizedDescriptionKey: description}];
-}
-
-static MGLMetalDepthStencilStateRef mglPipelineCacheCreateDepthStencilState(
-    MGLMetalDeviceRef device,
-    MTLDepthStencilDescriptor *descriptor)
-{
-    if (mglPipelineCacheUsesMetalCpp()) {
-        void *state = NULL;
-        if (mglRenderCppCreateDepthStencilState(
-                (__bridge void *)descriptor, &state) == 0 && state) {
-            return (__bridge_transfer MGLMetalDepthStencilStateRef)state;
-        }
-    }
-    return [device newDepthStencilStateWithDescriptor:descriptor];
 }
 
 static MGLRenderCppStencilDescriptorState
@@ -75,189 +52,6 @@ mglPipelineCacheDepthStencilState(MTLDepthStencilDescriptor *descriptor)
     };
 }
 
-@implementation MGLPipelineCacheKey {
-    uint64_t _words[MGL_PIPELINE_CACHE_KEY_WORDS];
-}
-
-- (instancetype)initWithWords:(const uint64_t[MGL_PIPELINE_CACHE_KEY_WORDS])words
-{
-    self = [super init];
-    if (self) {
-        memcpy(_words, words, sizeof(_words));
-    }
-    return self;
-}
-
-/* Rewrites the cached words of a reusable query key.  The caller must never
- * store this object into the pipeline cache dictionaries/LRU — only the
- * hit-path lookup may use it, because later overwrites would corrupt any
- * dictionary that retained the object.  Miss paths must allocate a fresh
- * MGLPipelineCacheKey instead. */
-- (void)overwriteWords:(const uint64_t[MGL_PIPELINE_CACHE_KEY_WORDS])words
-{
-    memcpy(_words, words, sizeof(_words));
-}
-
-- (void)copyWords:(uint64_t[MGL_PIPELINE_CACHE_KEY_WORDS])words
-{
-    memcpy(words, _words, sizeof(_words));
-}
-
-- (BOOL)isEqual:(id)object
-{
-    if (self == object) return YES;
-    if (![object isKindOfClass:[MGLPipelineCacheKey class]]) return NO;
-    MGLPipelineCacheKey *other = object;
-    return memcmp(_words, other->_words, sizeof(_words)) == 0;
-}
-
-- (NSUInteger)hash
-{
-    uint64_t hash = 0x9e3779b97f4a7c15ull;
-    for (unsigned i = 0; i < MGL_PIPELINE_CACHE_KEY_WORDS; i++) {
-        hash ^= _words[i];
-        hash *= 0x100000001b3ull;
-    }
-    return (NSUInteger)hash;
-}
-
-- (id)copyWithZone:(NSZone *)zone
-{
-    return self;  /* immutable */
-}
-
-- (NSString *)description
-{
-    return [NSString stringWithFormat:@"%016llx-%016llx-%016llx-%016llx-%016llx-%016llx-%016llx",
-            (unsigned long long)_words[0], (unsigned long long)_words[1],
-            (unsigned long long)_words[2], (unsigned long long)_words[3],
-            (unsigned long long)_words[4], (unsigned long long)_words[5],
-            (unsigned long long)_words[6]];
-}
-
-@end
-
-@interface MGLDepthStencilCacheKey : NSObject <NSCopying>
-@property(nonatomic) MTLCompareFunction depthCompareFunction;
-@property(nonatomic) BOOL depthWriteEnabled;
-@property(nonatomic) BOOL frontStencilPresent;
-@property(nonatomic) MTLCompareFunction frontStencilCompareFunction;
-@property(nonatomic) uint32_t frontReadMask;
-@property(nonatomic) uint32_t frontWriteMask;
-@property(nonatomic) MTLStencilOperation frontStencilFailureOperation;
-@property(nonatomic) MTLStencilOperation frontDepthFailureOperation;
-@property(nonatomic) MTLStencilOperation frontDepthStencilPassOperation;
-@property(nonatomic) BOOL backStencilPresent;
-@property(nonatomic) MTLCompareFunction backStencilCompareFunction;
-@property(nonatomic) uint32_t backReadMask;
-@property(nonatomic) uint32_t backWriteMask;
-@property(nonatomic) MTLStencilOperation backStencilFailureOperation;
-@property(nonatomic) MTLStencilOperation backDepthFailureOperation;
-@property(nonatomic) MTLStencilOperation backDepthStencilPassOperation;
-@end
-
-/* Populates the key's fields from a MTLDepthStencilDescriptor. */
-static inline void MGLPopulateDepthStencilKey(MGLDepthStencilCacheKey *key,
-                                              MTLDepthStencilDescriptor *descriptor)
-{
-    key.depthCompareFunction = descriptor.depthCompareFunction;
-    key.depthWriteEnabled = descriptor.depthWriteEnabled;
-
-    MTLStencilDescriptor *front = descriptor.frontFaceStencil;
-    if (front) {
-        key.frontStencilPresent = YES;
-        key.frontStencilCompareFunction = front.stencilCompareFunction;
-        key.frontReadMask = front.readMask;
-        key.frontWriteMask = front.writeMask;
-        key.frontStencilFailureOperation = front.stencilFailureOperation;
-        key.frontDepthFailureOperation = front.depthFailureOperation;
-        key.frontDepthStencilPassOperation = front.depthStencilPassOperation;
-    }
-
-    MTLStencilDescriptor *back = descriptor.backFaceStencil;
-    if (back) {
-        key.backStencilPresent = YES;
-        key.backStencilCompareFunction = back.stencilCompareFunction;
-        key.backReadMask = back.readMask;
-        key.backWriteMask = back.writeMask;
-        key.backStencilFailureOperation = back.stencilFailureOperation;
-        key.backDepthFailureOperation = back.depthFailureOperation;
-        key.backDepthStencilPassOperation = back.depthStencilPassOperation;
-    }
-}
-
-@implementation MGLDepthStencilCacheKey
-
-- (BOOL)isEqual:(id)object
-{
-    if (self == object) return YES;
-    if (![object isKindOfClass:[MGLDepthStencilCacheKey class]]) return NO;
-
-    MGLDepthStencilCacheKey *other = object;
-    return _depthCompareFunction == other.depthCompareFunction &&
-           _depthWriteEnabled == other.depthWriteEnabled &&
-           _frontStencilPresent == other.frontStencilPresent &&
-           _frontStencilCompareFunction == other.frontStencilCompareFunction &&
-           _frontReadMask == other.frontReadMask &&
-           _frontWriteMask == other.frontWriteMask &&
-           _frontStencilFailureOperation == other.frontStencilFailureOperation &&
-           _frontDepthFailureOperation == other.frontDepthFailureOperation &&
-           _frontDepthStencilPassOperation == other.frontDepthStencilPassOperation &&
-           _backStencilPresent == other.backStencilPresent &&
-           _backStencilCompareFunction == other.backStencilCompareFunction &&
-           _backReadMask == other.backReadMask &&
-           _backWriteMask == other.backWriteMask &&
-           _backStencilFailureOperation == other.backStencilFailureOperation &&
-           _backDepthFailureOperation == other.backDepthFailureOperation &&
-           _backDepthStencilPassOperation == other.backDepthStencilPassOperation;
-}
-
-- (NSUInteger)hash
-{
-    NSUInteger hash = 0;
-    hash = hash * 31 + (NSUInteger)_depthCompareFunction;
-    hash = hash * 31 + (NSUInteger)_depthWriteEnabled;
-    hash = hash * 31 + (NSUInteger)_frontStencilPresent;
-    hash = hash * 31 + (NSUInteger)_frontStencilCompareFunction;
-    hash = hash * 31 + (NSUInteger)_frontReadMask;
-    hash = hash * 31 + (NSUInteger)_frontWriteMask;
-    hash = hash * 31 + (NSUInteger)_frontStencilFailureOperation;
-    hash = hash * 31 + (NSUInteger)_frontDepthFailureOperation;
-    hash = hash * 31 + (NSUInteger)_frontDepthStencilPassOperation;
-    hash = hash * 31 + (NSUInteger)_backStencilPresent;
-    hash = hash * 31 + (NSUInteger)_backStencilCompareFunction;
-    hash = hash * 31 + (NSUInteger)_backReadMask;
-    hash = hash * 31 + (NSUInteger)_backWriteMask;
-    hash = hash * 31 + (NSUInteger)_backStencilFailureOperation;
-    hash = hash * 31 + (NSUInteger)_backDepthFailureOperation;
-    hash = hash * 31 + (NSUInteger)_backDepthStencilPassOperation;
-    return hash;
-}
-
-- (id)copyWithZone:(NSZone *)zone
-{
-    MGLDepthStencilCacheKey *copy = [[MGLDepthStencilCacheKey allocWithZone:zone] init];
-    copy.depthCompareFunction = _depthCompareFunction;
-    copy.depthWriteEnabled = _depthWriteEnabled;
-    copy.frontStencilPresent = _frontStencilPresent;
-    copy.frontStencilCompareFunction = _frontStencilCompareFunction;
-    copy.frontReadMask = _frontReadMask;
-    copy.frontWriteMask = _frontWriteMask;
-    copy.frontStencilFailureOperation = _frontStencilFailureOperation;
-    copy.frontDepthFailureOperation = _frontDepthFailureOperation;
-    copy.frontDepthStencilPassOperation = _frontDepthStencilPassOperation;
-    copy.backStencilPresent = _backStencilPresent;
-    copy.backStencilCompareFunction = _backStencilCompareFunction;
-    copy.backReadMask = _backReadMask;
-    copy.backWriteMask = _backWriteMask;
-    copy.backStencilFailureOperation = _backStencilFailureOperation;
-    copy.backDepthFailureOperation = _backDepthFailureOperation;
-    copy.backDepthStencilPassOperation = _backDepthStencilPassOperation;
-    return copy;
-}
-
-@end
-
 /* v5 excludes either kind of incomplete render pipeline and isolates both
  * sanitizer builds and archive producers. The producer boundary prevents the
  * temporary A/B implementations from sharing mutable state; the archive-aware
@@ -269,32 +63,6 @@ static NSString * const kMGLPipelineArchiveBuildSchema = @"v5-tsan";
 #else
 static NSString * const kMGLPipelineArchiveBuildSchema = @"v5";
 #endif
-
-static void MGLTouchLRU(NSMutableOrderedSet *lru, id key)
-{
-    if (!lru || !key) return;
-    [lru removeObject:key];
-    [lru addObject:key];
-}
-
-static NSUInteger MGLEvictLRU(NSMutableDictionary *cache,
-                              NSMutableOrderedSet *lru,
-                              NSUInteger count)
-{
-    NSUInteger removed = 0;
-    while (removed < count && lru.count > 0) {
-        id key = lru.firstObject;
-        [lru removeObjectAtIndex:0];
-        if ([cache objectForKey:key]) {
-            [cache removeObjectForKey:key];
-            removed++;
-        }
-    }
-#if DEBUG
-    NSCAssert(cache.count == lru.count, @"cache/LRU index count mismatch");
-#endif
-    return removed;
-}
 
 static NSString *MGLSafeArchivePathComponent(NSString *value)
 {
@@ -315,17 +83,9 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
     _state.pipelineColor0Format = MTLPixelFormatInvalid;
     _state.pipelineDepthFormat = MTLPixelFormatInvalid;
     _state.pipelineStencilFormat = MTLPixelFormatInvalid;
-    _state.pipelineStateCache = [[NSMutableDictionary alloc] initWithCapacity:64];
-    _state.pipelineStateCacheLRU = [[NSMutableOrderedSet alloc] initWithCapacity:64];
-    _state.pipelineDescriptorCache = [[NSMutableDictionary alloc] initWithCapacity:64];
-    _state.pipelineDescriptorCacheLRU = [[NSMutableOrderedSet alloc] initWithCapacity:64];
     _state.psoDedupEnabled = psoDedupEnabled;
     _state.dsCacheEnabled = depthStencilCacheEnabled;
     _binaryArchiveRequested = binaryArchiveEnabled;
-    if (depthStencilCacheEnabled) {
-        _state.depthStencilStateCache = [NSMutableDictionary new];
-        _state.depthStencilStateCacheLRU = [NSMutableOrderedSet new];
-    }
     return self;
 }
 
@@ -381,7 +141,7 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
 
 - (BOOL)ensureCppOwner
 {
-    return mglPipelineCacheUsesMetalCpp() && [self ensureCppOwnerCreated];
+    return [self ensureCppOwnerCreated];
 }
 
 - (BOOL)isBinaryArchiveEnabled
@@ -412,180 +172,28 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
     (MTLDepthStencilDescriptor *)descriptor
 {
     if (!descriptor || !_device) return nil;
-    if ([self ensureCppOwner]) {
-        MGLRenderCppDepthStencilDescriptorState descriptorState =
-            mglPipelineCacheDepthStencilState(descriptor);
-        void *statePtr = NULL;
-        if (_state.dsCacheEnabled) {
-            int created = 0;
-            if (mglRenderCppGetOrCreateDepthStencilState(
-                    _cppOwner, &descriptorState, &statePtr, &created) == 0 &&
-                statePtr) {
-                if (created) {
-                    MGL_PERF_INC(g_mglDepthStencilStateCreatesSinceSwap);
-                }
-                return (__bridge MGLMetalDepthStencilStateRef)statePtr;
+    if (![self ensureCppOwner]) return nil;
+    MGLRenderCppDepthStencilDescriptorState descriptorState =
+        mglPipelineCacheDepthStencilState(descriptor);
+    void *statePtr = NULL;
+    if (_state.dsCacheEnabled) {
+        int created = 0;
+        if (mglRenderCppGetOrCreateDepthStencilState(
+                _cppOwner, &descriptorState, &statePtr, &created) == 0 &&
+            statePtr) {
+            if (created) {
+                MGL_PERF_INC(g_mglDepthStencilStateCreatesSinceSwap);
             }
-            return nil;
-        }
-        if (mglRenderCppCreateDepthStencilStateFromState(
-                &descriptorState, &statePtr) == 0 && statePtr) {
-            MGL_PERF_INC(g_mglDepthStencilStateCreatesSinceSwap);
-            return (__bridge_transfer MGLMetalDepthStencilStateRef)statePtr;
+            return (__bridge MGLMetalDepthStencilStateRef)statePtr;
         }
         return nil;
     }
-    if (!_state.dsCacheEnabled) {
-        MGLMetalDepthStencilStateRef state =
-            mglPipelineCacheCreateDepthStencilState(_device, descriptor);
+    if (mglRenderCppCreateDepthStencilStateFromState(
+            &descriptorState, &statePtr) == 0 && statePtr) {
         MGL_PERF_INC(g_mglDepthStencilStateCreatesSinceSwap);
-        return state;
+        return (__bridge_transfer MGLMetalDepthStencilStateRef)statePtr;
     }
-
-    if (!_state.depthStencilCacheQueryKey) {
-        _state.depthStencilCacheQueryKey = [MGLDepthStencilCacheKey new];
-    }
-    MGLDepthStencilCacheKey *key = _state.depthStencilCacheQueryKey;
-    MGLPopulateDepthStencilKey(key, descriptor);
-
-    /* Hit path uses the reusable query key (no per-lookup allocation).  The
-     * DS cache is small (cap 64) and distinct depth/stencil states are few,
-     * so we intentionally skip LRU-touch on hits — touching would require
-     * copying the hash key, reintroducing the per-lookup alloc this avoids. */
-    MGLMetalDepthStencilStateRef cached = _state.depthStencilStateCache[key];
-    if (cached) {
-        return cached;
-    }
-
-    MGLMetalDepthStencilStateRef state =
-        mglPipelineCacheCreateDepthStencilState(_device, descriptor);
-    MGL_PERF_INC(g_mglDepthStencilStateCreatesSinceSwap);
-    if (state) {
-        MGLDepthStencilCacheKey *cacheKey = [key copy];
-        _state.depthStencilStateCache[cacheKey] = state;
-        MGLTouchLRU(_state.depthStencilStateCacheLRU, cacheKey);
-        if (_state.depthStencilStateCache.count > 64) {
-            MGLEvictLRU(_state.depthStencilStateCache,
-                        _state.depthStencilStateCacheLRU,
-                        _state.depthStencilStateCache.count - 64);
-        }
-    }
-    return state;
-}
-
-- (id)pipelineEntryForKey:(MGLPipelineCacheKey *)key
-{
-    if ([self ensureCppOwner] && key) {
-        uint64_t words[MGL_PIPELINE_CACHE_KEY_WORDS];
-        [key copyWords:words];
-        MGLRenderCppPipelineActiveState cached = {0};
-        if (mglRenderCppLookupPipeline(_cppOwner, words, &cached) != 1 ||
-            !cached.pipeline_state) {
-            return nil;
-        }
-        id vertexFunction = cached.vertex_function
-            ? (__bridge id)cached.vertex_function : [NSNull null];
-        id fragmentFunction = cached.fragment_function
-            ? (__bridge id)cached.fragment_function : [NSNull null];
-        return @{
-            @"pipeline": (__bridge id)cached.pipeline_state,
-            @"sig": @(words[5]),
-            @"vsig": @(words[6]),
-            @"vertexFunction": vertexFunction,
-            @"fragmentFunction": fragmentFunction,
-        };
-    }
-    return _state.pipelineStateCache[key];
-}
-
-- (MGLPipelineCacheKey *)pipelineQueryKeyForWords:
-    (const uint64_t[MGL_PIPELINE_CACHE_KEY_WORDS])words
-{
-    if (!_state.pipelineCacheQueryKey) {
-        _state.pipelineCacheQueryKey =
-            [[MGLPipelineCacheKey alloc] initWithWords:words];
-    } else {
-        [_state.pipelineCacheQueryKey overwriteWords:words];
-    }
-    return _state.pipelineCacheQueryKey;
-}
-
-- (void)markPipelineEntryUsedForKey:(MGLPipelineCacheKey *)key
-{
-    if (_cppOwner) return;
-    if (_state.pipelineStateCache[key]) {
-        MGLTouchLRU(_state.pipelineStateCacheLRU, key);
-    }
-}
-
-- (MTLRenderPipelineDescriptor *)pipelineDescriptorForKey:(MGLPipelineCacheKey *)key
-{
-    /* P4.2: descriptor cache 的 C++ 侧已改为 value-state 版
-     * （pipelineDescriptorStateForWords:state:）；本方法只服务 gate-off 的
-     * ObjC descriptor 字典。 */
-    MTLRenderPipelineDescriptor *descriptor = _state.pipelineDescriptorCache[key];
-    if (descriptor) MGLTouchLRU(_state.pipelineDescriptorCacheLRU, key);
-    return descriptor;
-}
-
-- (NSUInteger)storePipelineEntry:(id)entry forKey:(MGLPipelineCacheKey *)key
-{
-    if (!entry || !key) return 0;
-    if ([self ensureCppOwner]) {
-        id pipeline = entry;
-        id vertexFunction = nil;
-        id fragmentFunction = nil;
-        if ([entry isKindOfClass:[NSDictionary class]]) {
-            NSDictionary *dictionary = (NSDictionary *)entry;
-            pipeline = dictionary[@"pipeline"];
-            vertexFunction = dictionary[@"vertexFunction"];
-            fragmentFunction = dictionary[@"fragmentFunction"];
-            if (vertexFunction == [NSNull null]) vertexFunction = nil;
-            if (fragmentFunction == [NSNull null]) fragmentFunction = nil;
-        }
-        if (!pipeline) return 0;
-        uint64_t words[MGL_PIPELINE_CACHE_KEY_WORDS];
-        [key copyWords:words];
-        MGLRenderCppPipelineActiveState state = {
-            .pipeline_state = (__bridge void *)pipeline,
-            .vertex_function = (__bridge void *)vertexFunction,
-            .fragment_function = (__bridge void *)fragmentFunction,
-        };
-        uint32_t removed = 0;
-        if (mglRenderCppStorePipeline(
-                _cppOwner, words, &state, &removed) != 0) {
-            return 0;
-        }
-        MGL_PERF_ADD(g_mglPipelineCacheEvictionsSinceSwap, removed);
-        return (NSUInteger)removed;
-    }
-    NSUInteger removed = 0;
-    BOOL replacing = _state.pipelineStateCache[key] != nil;
-    if (!replacing && _state.pipelineStateCache.count >= 256) {
-        NSUInteger evictCount = MAX((NSUInteger)1, _state.pipelineStateCache.count / 4);
-        removed = MGLEvictLRU(_state.pipelineStateCache,
-                              _state.pipelineStateCacheLRU,
-                              evictCount);
-        MGL_PERF_ADD(g_mglPipelineCacheEvictionsSinceSwap, removed);
-    }
-    _state.pipelineStateCache[key] = entry;
-    MGLTouchLRU(_state.pipelineStateCacheLRU, key);
-    return removed;
-}
-
-- (void)storePipelineDescriptor:(MTLRenderPipelineDescriptor *)descriptor
-                         forKey:(MGLPipelineCacheKey *)key
-{
-    /* P4.2: gate-off ObjC descriptor 字典（gate-on 走
-     * storePipelineDescriptorState:forWords:）。 */
-    if (!descriptor || !key) return;
-    _state.pipelineDescriptorCache[key] = [descriptor copy];
-    MGLTouchLRU(_state.pipelineDescriptorCacheLRU, key);
-    if (_state.pipelineDescriptorCache.count > 128) {
-        MGLEvictLRU(_state.pipelineDescriptorCache,
-                    _state.pipelineDescriptorCacheLRU,
-                    _state.pipelineDescriptorCache.count - 128);
-    }
+    return nil;
 }
 
 - (BOOL)lookupPipelineForWords:(const uint64_t *)words
@@ -600,48 +208,26 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
         !fragmentFunctionOut) {
         return NO;
     }
-    if ([self ensureCppOwner]) {
-        MGLRenderCppPipelineActiveState cached = {0};
-        if (mglRenderCppLookupPipeline(_cppOwner, words, &cached) != 1 ||
-            !cached.pipeline_state) {
-            return NO;
-        }
-        *pipelineOut = (__bridge MGLMetalRenderPipelineStateRef)cached.pipeline_state;
-        *vertexFunctionOut = (__bridge MGLMetalFunctionRef)cached.vertex_function;
-        *fragmentFunctionOut =
-            (__bridge MGLMetalFunctionRef)cached.fragment_function;
-        return YES;
+    if (![self ensureCppOwner]) return NO;
+    MGLRenderCppPipelineActiveState cached = {0};
+    if (mglRenderCppLookupPipeline(_cppOwner, words, &cached) != 1 ||
+        !cached.pipeline_state) {
+        return NO;
     }
-
-    MGLPipelineCacheKey *key = [self pipelineQueryKeyForWords:words];
-    id entry = _state.pipelineStateCache[key];
-    if (!entry) return NO;
-    if ([entry isKindOfClass:[NSDictionary class]]) {
-        NSDictionary *dictionary = (NSDictionary *)entry;
-        id pipeline = dictionary[@"pipeline"];
-        id vertexFunction = dictionary[@"vertexFunction"];
-        id fragmentFunction = dictionary[@"fragmentFunction"];
-        if (!pipeline) return NO;
-        *pipelineOut = pipeline;
-        if (vertexFunction != [NSNull null]) {
-            *vertexFunctionOut = vertexFunction;
-        }
-        if (fragmentFunction != [NSNull null]) {
-            *fragmentFunctionOut = fragmentFunction;
-        }
-        return YES;
-    }
-    *pipelineOut = (MGLMetalRenderPipelineStateRef)entry;
+    *pipelineOut =
+        (__bridge MGLMetalRenderPipelineStateRef)cached.pipeline_state;
+    *vertexFunctionOut =
+        (__bridge MGLMetalFunctionRef)cached.vertex_function;
+    *fragmentFunctionOut =
+        (__bridge MGLMetalFunctionRef)cached.fragment_function;
     return YES;
 }
 
 - (MTLRenderPipelineDescriptor *)pipelineDescriptorForWords:
     (const uint64_t *)words
 {
-    /* P4.2: gate-off 专用（gate-on 用 pipelineDescriptorStateForWords:state:）。 */
-    if (!words) return nil;
-    return [self pipelineDescriptorForKey:
-        [self pipelineQueryKeyForWords:words]];
+    (void)words;
+    return nil;
 }
 
 - (NSUInteger)storePipeline:(MGLMetalRenderPipelineStateRef)pipeline
@@ -650,96 +236,52 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
                     forWords:(const uint64_t *)words
 {
     if (!pipeline || !words) return 0;
-    if ([self ensureCppOwner]) {
-        MGLRenderCppPipelineActiveState state = {
-            .pipeline_state = (__bridge void *)pipeline,
-            .vertex_function = (__bridge void *)vertexFunction,
-            .fragment_function = (__bridge void *)fragmentFunction,
-        };
-        uint32_t removed = 0;
-        if (mglRenderCppStorePipeline(
-                _cppOwner, words, &state, &removed) != 0) {
-            return 0;
-        }
-        MGL_PERF_ADD(g_mglPipelineCacheEvictionsSinceSwap, removed);
-        return (NSUInteger)removed;
-    }
-
-    MGLPipelineCacheKey *key =
-        [[MGLPipelineCacheKey alloc] initWithWords:words];
-    id vertexValue = vertexFunction ?: [NSNull null];
-    id fragmentValue = fragmentFunction ?: [NSNull null];
-    NSDictionary *entry = @{
-        @"pipeline": pipeline,
-        @"sig": @(words[5]),
-        @"vsig": @(words[6]),
-        @"vertexFunction": vertexValue,
-        @"fragmentFunction": fragmentValue,
+    if (![self ensureCppOwner]) return 0;
+    MGLRenderCppPipelineActiveState state = {
+        .pipeline_state = (__bridge void *)pipeline,
+        .vertex_function = (__bridge void *)vertexFunction,
+        .fragment_function = (__bridge void *)fragmentFunction,
     };
-    return [self storePipelineEntry:entry forKey:key];
+    uint32_t removed = 0;
+    if (mglRenderCppStorePipeline(
+            _cppOwner, words, &state, &removed) != 0) {
+        return 0;
+    }
+    MGL_PERF_ADD(g_mglPipelineCacheEvictionsSinceSwap, removed);
+    return (NSUInteger)removed;
 }
 
 - (void)storePipelineDescriptor:(MTLRenderPipelineDescriptor *)descriptor
                        forWords:(const uint64_t *)words
 {
-    /* P4.2: gate-off 专用（gate-on 走 storePipelineDescriptorState:forWords:）。 */
-    if (!descriptor || !words) return;
-    MGLPipelineCacheKey *key =
-        [[MGLPipelineCacheKey alloc] initWithWords:words];
-    [self storePipelineDescriptor:descriptor forKey:key];
+    (void)descriptor;
+    (void)words;
 }
 
 - (BOOL)pipelineDescriptorStateForWords:(const uint64_t *)words
                                   state:(MGLRenderCppPipelineDescriptorState *)stateOut
 {
     if (!words || !stateOut) return NO;
-    if ([self ensureCppOwner]) {
-        if (mglRenderCppLookupPipelineDescriptorState(
-                _cppOwner, words, stateOut) == 1) {
-            return YES;
-        }
-    }
-    return NO;
+    return [self ensureCppOwner] &&
+        mglRenderCppLookupPipelineDescriptorState(
+            _cppOwner, words, stateOut) == 1;
 }
 
 - (void)storePipelineDescriptorState:(const MGLRenderCppPipelineDescriptorState *)state
                             forWords:(const uint64_t *)words
 {
     if (!state || !words) return;
-    if ([self ensureCppOwner]) {
-        mglRenderCppStorePipelineDescriptorState(
-            _cppOwner, words, state);
-    }
-    /* gate-off 无 value-state cache：ObjC descriptor 字典由
-     * storePipelineDescriptor:forWords: 维护。 */
+    if (![self ensureCppOwner]) return;
+    mglRenderCppStorePipelineDescriptorState(_cppOwner, words, state);
 }
 
 - (BOOL)blendStateForAttachment:(NSUInteger)index
                             out:(MGLRenderCppPipelineBlendState *)outState
 {
     if (index >= MAX_COLOR_ATTACHMENTS || !outState) return NO;
-    if ([self ensureCppOwner]) {
-        if (mglRenderCppGetPipelineBlendState(
-                _cppOwner, (uint32_t)index, outState) == 0) {
-            return YES;
-        }
-    }
-    *outState = (MGLRenderCppPipelineBlendState){
-        .source_rgb_factor =
-            (uint32_t)_state.src_blend_rgb_factor[index],
-        .destination_rgb_factor =
-            (uint32_t)_state.dst_blend_rgb_factor[index],
-        .source_alpha_factor =
-            (uint32_t)_state.src_blend_alpha_factor[index],
-        .destination_alpha_factor =
-            (uint32_t)_state.dst_blend_alpha_factor[index],
-        .rgb_operation =
-            (uint32_t)_state.rgb_blend_operation[index],
-        .alpha_operation =
-            (uint32_t)_state.alpha_blend_operation[index],
-        .color_write_mask = (uint32_t)_state.color_mask[index],
-    };
-    return YES;
+    return [self ensureCppOwner] &&
+        mglRenderCppGetPipelineBlendState(
+            _cppOwner, (uint32_t)index, outState) == 0;
 }
 
 - (NSURL *)binaryArchiveURL
@@ -764,9 +306,8 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
     NSString *deviceID = registryID != 0
         ? [NSString stringWithFormat:@"%016llx", (unsigned long long)registryID]
         : MGLSafeArchivePathComponent(_device.name);
-    NSString *producer = mglPipelineCacheUsesMetalCpp() ? @"cpp" : @"objc";
-    NSString *schema = [NSString stringWithFormat:@"%@-%@",
-                        kMGLPipelineArchiveBuildSchema, producer];
+    NSString *schema = [NSString stringWithFormat:@"%@-cpp",
+                        kMGLPipelineArchiveBuildSchema];
     NSString *filename = [NSString stringWithFormat:@"pipeline-%@-%@.binaryarchive",
                           schema, deviceID];
     return [NSURL fileURLWithPath:[mglDir stringByAppendingPathComponent:filename]];
@@ -863,31 +404,19 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
         return nil;
     }
 
-    if ([self ensureCppOwnerCreated]) {
-        void *pipeline = NULL;
-        char message[512] = {0};
-        int archiveHit = 0;
-        int result = mglRenderCppCreateRenderPipelineStateWithArchiveOwner(
-            _cppOwner, (__bridge void *)descriptor, &pipeline,
-            &archiveHit, message, sizeof(message));
-        (void)archiveHit;
-        if (result == 0 && pipeline) {
-            return (__bridge_transfer MGLMetalRenderPipelineStateRef)pipeline;
-        }
-        if (error) *error = mglPipelineCacheMetalCppError(message, 12);
-        return nil;
+    if (![self ensureCppOwnerCreated]) return nil;
+    void *pipeline = NULL;
+    char message[512] = {0};
+    int archiveHit = 0;
+    int result = mglRenderCppCreateRenderPipelineStateWithArchiveOwner(
+        _cppOwner, (__bridge void *)descriptor, &pipeline,
+        &archiveHit, message, sizeof(message));
+    (void)archiveHit;
+    if (result == 0 && pipeline) {
+        return (__bridge_transfer MGLMetalRenderPipelineStateRef)pipeline;
     }
-
-    NSError *compileError = nil;
-    MGLMetalRenderPipelineStateRef pipeline =
-        [_device newRenderPipelineStateWithDescriptor:descriptor
-                                                error:&compileError];
-    if (!pipeline) {
-        if (error) *error = compileError;
-        return nil;
-    }
-
-    return pipeline;
+    if (error) *error = mglPipelineCacheMetalCppError(message, 12);
+    return nil;
 }
 
 - (int)createRenderPipelineFromState:
@@ -979,18 +508,6 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
         mglRenderCppSetPipelineBlendState(
             _cppOwner, (uint32_t)index, &blend);
     }
-    /* P4.2: gate-on 下 C++ owner 是 blend 状态的唯一权威（value-state 填充走
-     * blendStateForAttachment:out: 的 owner-first 读取）；镜像只服务 gate-off
-     * 的 ObjC descriptor 路径，gate-on 下不再写。 */
-    if (!mglPipelineCacheUsesMetalCpp()) {
-        _state.src_blend_rgb_factor[index] = srcRgbFactor;
-        _state.src_blend_alpha_factor[index] = srcAlphaFactor;
-        _state.dst_blend_rgb_factor[index] = dstRgbFactor;
-        _state.dst_blend_alpha_factor[index] = dstAlphaFactor;
-        _state.rgb_blend_operation[index] = rgbOperation;
-        _state.alpha_blend_operation[index] = alphaOperation;
-        _state.color_mask[index] = colorMask;
-    }
 }
 
 - (void)disableBinaryArchive
@@ -1007,24 +524,11 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
     _state.pipelineState = nil;
     _state.pipelineVertexFunction = nil;
     _state.pipelineFragmentFunction = nil;
-    [_state.pipelineStateCache removeAllObjects];
-    [_state.pipelineStateCacheLRU removeAllObjects];
-    [_state.pipelineDescriptorCache removeAllObjects];
-    [_state.pipelineDescriptorCacheLRU removeAllObjects];
-    [_state.depthStencilStateCache removeAllObjects];
-    [_state.depthStencilStateCacheLRU removeAllObjects];
 }
 
 - (void)shutdown
 {
     [self resetCaches];
-    _state.pipelineStateCache = nil;
-    _state.pipelineStateCacheLRU = nil;
-    _state.pipelineDescriptorCache = nil;
-    _state.pipelineDescriptorCacheLRU = nil;
-    _state.depthStencilStateCache = nil;
-    _state.depthStencilStateCacheLRU = nil;
-    _state.depthStencilCacheQueryKey = nil;
     _device = nil;
     mglRenderCppDestroyPipelineCacheOwner(&_cppOwner);
 }
