@@ -10,7 +10,6 @@
 typedef struct MGLCommandState_t {
     void *_Nullable renderPassIdentityOwner;
     void *_Nullable renderPassStateOwner;
-    MTLRenderPassDescriptor *__strong _Nullable renderPassDescriptor;
     Framebuffer *_Nullable renderPassFramebuffer;
     GLuint renderPassFramebufferName;
     GLenum renderPassDrawBuffer;

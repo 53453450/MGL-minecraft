@@ -405,7 +405,6 @@ static void mglRenderPassManagerStoreIdentity(
             &_state.renderPassStateOwner) != 0) {
         _state.renderPassStateOwner = NULL;
     }
-    _state.renderPassDescriptor = nil;
     mglRenderPassManagerSyncRuntimeOwners(&_state);
 }
 
@@ -468,7 +467,6 @@ static void mglRenderPassManagerStoreIdentity(
 
 - (void)shutdown
 {
-    _state.renderPassDescriptor = nil;
     mglRenderCppDestroyRenderPassStateOwner(
         &_state.renderPassStateOwner);
     mglRenderPassManagerSyncRuntimeOwners(&_state);

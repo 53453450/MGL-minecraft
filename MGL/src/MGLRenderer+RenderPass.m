@@ -3299,8 +3299,8 @@ output->name, (unsigned)i,
 	        }
 	    }
         /* When a GL sample query (GL_SAMPLES_PASSED / GL_ANY_SAMPLES_PASSED)
-         * is active, attach the visibility result buffer to the render pass
-         * descriptor and zero it so the GPU accumulates a fresh count. */
+         * is active, attach the visibility result buffer to the render-pass
+         * owner state so the GPU accumulates a fresh count. */
         void *queryVisibilityBuffer = NULL;
         if (_queryStateOwner &&
             mglRenderCppGetQueryVisibilityBuffer(
@@ -3311,10 +3311,6 @@ output->name, (unsigned)i,
             mglRenderCppSetRenderPassStateVisibility(
                 _renderPassManager.state->renderPassStateOwner,
                 queryVisibilityBuffer, visibilityResultType);
-            if (_renderPassManager.state->renderPassDescriptor) {
-                _renderPassManager.state->renderPassDescriptor.visibilityResultBuffer =
-                    (__bridge MGLMetalBufferRef)queryVisibilityBuffer;
-            }
         }
         @try {
             MGLMetalRenderCommandEncoderRef renderEncoder =
@@ -3322,10 +3318,10 @@ output->name, (unsigned)i,
             [_renderPassManager installRenderEncoder:renderEncoder];
             if (mglRenderCppRenderEncoderOwnerHasCurrent(
                     _renderPassManager.state->currentRenderEncoderOwner) != 1) {
-            NSLog(@"MGL ERROR: Failed to create render encoder - invalid render pass descriptor or command buffer");
-            NSLog(@"MGL DEBUG: Command buffer owner: %p, Render pass descriptor: %@",
+            NSLog(@"MGL ERROR: Failed to create render encoder - invalid render pass state or command buffer");
+            NSLog(@"MGL DEBUG: Command buffer owner: %p, Render pass state owner: %p",
                   _renderPassManager.state->currentCommandBufferOwner,
-                  _renderPassManager.state->renderPassDescriptor);
+                  _renderPassManager.state->renderPassStateOwner);
             [self recordGPUError];
             return false;
         }
@@ -5035,7 +5031,7 @@ output->name, (unsigned)i,
         fragmentProgram && fragmentProgram->usesFragCoordParams == GL_TRUE;
     if (useFragCoordParams) {
         NSUInteger passHeight = mglRenderPassRenderTargetHeightFor(_renderPassManager.state);
-        if (passHeight == 0 && _renderPassManager.state->renderPassDescriptor) {
+        if (passHeight == 0) {
             for (int i = 0; i < MAX_COLOR_ATTACHMENTS && passHeight == 0; i++) {
                 MGLMetalTextureRef color = mglRenderPassColorTextureFor(_renderPassManager.state, i);
                 passHeight = color ? color.height : 0;
