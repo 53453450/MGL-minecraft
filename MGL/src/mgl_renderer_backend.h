@@ -31,6 +31,11 @@ typedef enum MGLRendererBackendBlitCacheKind {
     MGL_RENDERER_BACKEND_BLIT_CACHE_CLEAR_DEPTH_STATE = 2,
 } MGLRendererBackendBlitCacheKind;
 
+typedef enum MGLRendererBackendPassthroughKind {
+    MGL_RENDERER_BACKEND_PASSTHROUGH_GEOMETRY = 0,
+    MGL_RENDERER_BACKEND_PASSTHROUGH_TESS_EVALUATION = 1,
+} MGLRendererBackendPassthroughKind;
+
 typedef struct MGLRendererBackendCreateInfo {
     void *objc_device;
     GLMContext context;
@@ -73,6 +78,16 @@ int mglRendererBackendSetBlitCachedObject(
 void *mglRendererBackendGetBlitCachedObject(
     const MGLRendererBackendHandle *backend,
     MGLRendererBackendBlitCacheKind kind);
+int mglRendererBackendSetPassthroughFunction(
+    MGLRendererBackendHandle *backend,
+    MGLRendererBackendPassthroughKind kind,
+    void *library, void *function, uint64_t program_instance_id);
+/* Returns 1 on an exact cache hit, 0 on miss, and -1 for invalid input.
+ * function_out is a borrowed reference owned by the backend. */
+int mglRendererBackendGetPassthroughFunction(
+    const MGLRendererBackendHandle *backend,
+    MGLRendererBackendPassthroughKind kind,
+    uint64_t program_instance_id, void **function_out);
 int mglRendererBackendIsDestroying(
     const MGLRendererBackendHandle *backend);
 void *mglRendererBackendGetOwner(const MGLRendererBackendHandle *backend,

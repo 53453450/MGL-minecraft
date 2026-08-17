@@ -105,6 +105,12 @@ extern "C" void mglRendererCompatCopyImageSubData(GLMContext context, Texture *s
     int32_t destination_x, int32_t destination_y, int32_t destination_z,
     int32_t width, int32_t height, int32_t depth);
 
+struct MGLRendererBackendPassthroughCache {
+    MTL::Library *library = nullptr;
+    MTL::Function *function = nullptr;
+    uint64_t program_instance_id = 0;
+};
+
 struct MGLRendererBackendHandle {
     std::mutex mutex;
     GLMContext context = nullptr;
@@ -122,6 +128,8 @@ struct MGLRendererBackendHandle {
     MTL::SamplerState *scaled_blit_nearest_sampler = nullptr;
     MTL::SamplerState *scaled_blit_linear_sampler = nullptr;
     MTL::DepthStencilState *clear_rect_depth_state = nullptr;
+    MGLRendererBackendPassthroughCache geometry_passthrough;
+    MGLRendererBackendPassthroughCache tess_evaluation_passthrough;
     bool renderer_initialized = false;
     bool shutdown_started = false;
     bool destroying = false;
@@ -160,6 +168,20 @@ static void mglRendererBackendReleaseOwnedState(
         backend->clear_rect_depth_state->release();
         backend->clear_rect_depth_state = nullptr;
     }
+    if (backend->geometry_passthrough.function) {
+        backend->geometry_passthrough.function->release();
+    }
+    if (backend->geometry_passthrough.library) {
+        backend->geometry_passthrough.library->release();
+    }
+    backend->geometry_passthrough = {};
+    if (backend->tess_evaluation_passthrough.function) {
+        backend->tess_evaluation_passthrough.function->release();
+    }
+    if (backend->tess_evaluation_passthrough.library) {
+        backend->tess_evaluation_passthrough.library->release();
+    }
+    backend->tess_evaluation_passthrough = {};
     mglRenderCppDestroyCommandQueueOwner(&backend->command_queue_owner);
     mglRenderCppBindingDestroy(backend->binding_owner);
     backend->binding_owner = nullptr;
@@ -182,6 +204,38 @@ static void mglRendererBackendReplaceObject(T *&slot, void *object)
     if (replacement) replacement->retain();
     if (slot) slot->release();
     slot = replacement;
+}
+
+static MGLRendererBackendPassthroughCache *
+mglRendererBackendPassthroughCacheForKind(
+    MGLRendererBackendHandle *backend,
+    MGLRendererBackendPassthroughKind kind)
+{
+    if (!backend) return nullptr;
+    switch (kind) {
+        case MGL_RENDERER_BACKEND_PASSTHROUGH_GEOMETRY:
+            return &backend->geometry_passthrough;
+        case MGL_RENDERER_BACKEND_PASSTHROUGH_TESS_EVALUATION:
+            return &backend->tess_evaluation_passthrough;
+    }
+    return nullptr;
+}
+
+static void mglRendererBackendReplacePassthroughCache(
+    MGLRendererBackendPassthroughCache *cache,
+    void *library, void *function, uint64_t program_instance_id)
+{
+    if (!cache) return;
+    MTL::Library *new_library = static_cast<MTL::Library *>(library);
+    MTL::Function *new_function = static_cast<MTL::Function *>(function);
+    if (new_library) new_library->retain();
+    if (new_function) new_function->retain();
+    if (cache->function) cache->function->release();
+    if (cache->library) cache->library->release();
+    cache->library = new_library;
+    cache->function = new_function;
+    cache->program_instance_id = new_library && new_function
+        ? program_instance_id : 0;
 }
 
 extern "C" int mglRendererBackendCreate(
@@ -349,6 +403,43 @@ extern "C" void *mglRendererBackendGetBlitCachedObject(
             return backend->clear_rect_depth_state;
     }
     return nullptr;
+}
+
+extern "C" int mglRendererBackendSetPassthroughFunction(
+    MGLRendererBackendHandle *backend,
+    MGLRendererBackendPassthroughKind kind,
+    void *library, void *function, uint64_t program_instance_id)
+{
+    if (!backend || ((library == nullptr) != (function == nullptr))) return -1;
+    std::lock_guard<std::mutex> lock(backend->mutex);
+    if (backend->destroying) return -1;
+    MGLRendererBackendPassthroughCache *cache =
+        mglRendererBackendPassthroughCacheForKind(backend, kind);
+    if (!cache) return -1;
+    mglRendererBackendReplacePassthroughCache(
+        cache, library, function, program_instance_id);
+    return 0;
+}
+
+extern "C" int mglRendererBackendGetPassthroughFunction(
+    const MGLRendererBackendHandle *backend,
+    MGLRendererBackendPassthroughKind kind,
+    uint64_t program_instance_id, void **function_out)
+{
+    if (function_out) *function_out = nullptr;
+    if (!backend || !function_out) return -1;
+    std::lock_guard<std::mutex> lock(
+        const_cast<MGLRendererBackendHandle *>(backend)->mutex);
+    MGLRendererBackendPassthroughCache *cache =
+        mglRendererBackendPassthroughCacheForKind(
+            const_cast<MGLRendererBackendHandle *>(backend), kind);
+    if (!cache) return -1;
+    if (!cache->library || !cache->function ||
+        cache->program_instance_id != program_instance_id) {
+        return 0;
+    }
+    *function_out = cache->function;
+    return 1;
 }
 
 extern "C" int mglRendererBackendIsDestroying(

@@ -582,14 +582,15 @@ static const char *mglGeometryPassthroughSwizzle(GLenum type)
                                      outputPrimitive:(MTLPrimitiveType)outputPrimitive
 {
     if (!program) return NO;
-    if (_geometry.passthroughLibrary && _geometry.passthroughFunction &&
-        _geometry.passthroughProgramInstanceId ==
-            program->pipeline_cache_instance_id) {
+    void *cachedFunction = NULL;
+    if (mglRendererBackendGetPassthroughFunction(
+            _backend, MGL_RENDERER_BACKEND_PASSTHROUGH_GEOMETRY,
+            program->pipeline_cache_instance_id, &cachedFunction) == 1) {
         return YES;
     }
-    _geometry.passthroughLibrary = nil;
-    _geometry.passthroughFunction = nil;
-    _geometry.passthroughProgramInstanceId = 0u;
+    (void)mglRendererBackendSetPassthroughFunction(
+        _backend, MGL_RENDERER_BACKEND_PASSTHROUGH_GEOMETRY,
+        NULL, NULL, 0u);
 
     MGLShaderResourceList *outputs =
         &program->shader_resources_list[_GEOMETRY_SHADER][_STAGE_OUTPUT_RES];
@@ -682,11 +683,10 @@ output->name, (unsigned)i,
               errorText[0] ? errorText : "?");
         return NO;
     }
-    _geometry.passthroughLibrary = library;
-    _geometry.passthroughFunction = function;
-    _geometry.passthroughProgramInstanceId =
-        program->pipeline_cache_instance_id;
-    return YES;
+    return mglRendererBackendSetPassthroughFunction(
+        _backend, MGL_RENDERER_BACKEND_PASSTHROUGH_GEOMETRY,
+        (__bridge void *)library, (__bridge void *)function,
+        program->pipeline_cache_instance_id) == 0;
 }
 
 /* TES-compute twin of ensureAIRGeometryPassthroughFunctionForProgram: the
@@ -698,15 +698,15 @@ output->name, (unsigned)i,
 - (BOOL)ensureAIRTessEvalPassthroughFunctionForProgram:(Program *)program
 {
     if (!program) return NO;
-    if (_tessellation.tessPassthroughLibrary &&
-        _tessellation.tessPassthroughFunction &&
-        _tessellation.tessPassthroughProgramInstanceId ==
-            program->pipeline_cache_instance_id) {
+    void *cachedFunction = NULL;
+    if (mglRendererBackendGetPassthroughFunction(
+            _backend, MGL_RENDERER_BACKEND_PASSTHROUGH_TESS_EVALUATION,
+            program->pipeline_cache_instance_id, &cachedFunction) == 1) {
         return YES;
     }
-    _tessellation.tessPassthroughLibrary = nil;
-    _tessellation.tessPassthroughFunction = nil;
-    _tessellation.tessPassthroughProgramInstanceId = 0u;
+    (void)mglRendererBackendSetPassthroughFunction(
+        _backend, MGL_RENDERER_BACKEND_PASSTHROUGH_TESS_EVALUATION,
+        NULL, NULL, 0u);
 
     MGLShaderResourceList *outputs =
         &program->shader_resources_list[_TESS_EVALUATION_SHADER][_STAGE_OUTPUT_RES];
@@ -819,11 +819,10 @@ output->name, (unsigned)i,
               errorText[0] ? errorText : "?");
         return NO;
     }
-    _tessellation.tessPassthroughLibrary = library;
-    _tessellation.tessPassthroughFunction = function;
-    _tessellation.tessPassthroughProgramInstanceId =
-        program->pipeline_cache_instance_id;
-    return YES;
+    return mglRendererBackendSetPassthroughFunction(
+        _backend, MGL_RENDERER_BACKEND_PASSTHROUGH_TESS_EVALUATION,
+        (__bridge void *)library, (__bridge void *)function,
+        program->pipeline_cache_instance_id) == 0;
 }
 
 - (void)mtlInvalidateRenderPass:(GLMContext)glm_ctx
@@ -4034,10 +4033,24 @@ output->name, (unsigned)i,
         return NO;
     }
 
+    void *geometryPassthroughFunction = NULL;
+    if (geometryExpansion && _geometry.program) {
+        (void)mglRendererBackendGetPassthroughFunction(
+            _backend, MGL_RENDERER_BACKEND_PASSTHROUGH_GEOMETRY,
+            _geometry.program->pipeline_cache_instance_id,
+            &geometryPassthroughFunction);
+    }
+    void *tessPassthroughFunction = NULL;
+    if (tessCompute && _tessellation.tessComputeProgram) {
+        (void)mglRendererBackendGetPassthroughFunction(
+            _backend, MGL_RENDERER_BACKEND_PASSTHROUGH_TESS_EVALUATION,
+            _tessellation.tessComputeProgram->pipeline_cache_instance_id,
+            &tessPassthroughFunction);
+    }
     void *vertexFunctionPtr = geometryExpansion
-        ? (__bridge void *)_geometry.passthroughFunction
+        ? geometryPassthroughFunction
         : tessCompute
-        ? (__bridge void *)_tessellation.tessPassthroughFunction
+        ? tessPassthroughFunction
         : cullDistanceCapture
         ? vertexProgram->modules[_VERTEX_SHADER].mtl_cull_capture_function
         : tessVertexCapture

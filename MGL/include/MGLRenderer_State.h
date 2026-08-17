@@ -172,18 +172,12 @@ typedef struct MGLTessellationState_t {
     GLuint tessComputeItems;
     MTLPrimitiveType tessComputePrimitiveType;
     Program *tessComputeProgram;
-    id<MTLLibrary> __strong tessPassthroughLibrary;
-    id<MTLFunction> __strong tessPassthroughFunction;
-    uint64_t tessPassthroughProgramInstanceId;
     /* 1-byte dummy bound to the TES compute XFB stream slot (31) when GL
      * feedback is inactive (the kernel always declares/writes it). */
     id<MTLBuffer> __strong tessXfbDummyBuffer;
 } MGLTessellationState;
 
 typedef struct MGLGeometryState_t {
-    id<MTLLibrary> __strong passthroughLibrary;
-    id<MTLFunction> __strong passthroughFunction;
-    uint64_t passthroughProgramInstanceId;
     BOOL expansionActive;
     Program *program;
 } MGLGeometryState;
