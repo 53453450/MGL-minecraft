@@ -99,27 +99,39 @@ make
 
 ```
 MGL-minecraft/
-├── MGL/                         # 核心库源码
-│   ├── include/                 # OpenGL/MGL 头文件
-│   └── src/                     # C/Objective-C 实现
-│       ├── MGLRenderer.m        # Metal 渲染器与绘制路径
-│       ├── MGLTextures.m        # Metal 纹理桥接
-│       ├── buffers.c            # Buffer/UBO/SSBO 状态
-│       ├── framebuffers.c       # FBO/RBO 与 completeness
-│       ├── get.c                # glGet/internalformat 查询
-│       ├── pixel_utils.c        # 像素格式与布局工具
-│       ├── rendering.c          # 渲染状态与 draw 调度
-│       ├── shaders.c            # GLSL frontend entry
-│       ├── tex_param.c          # 纹理参数与 internalformat 查询
-│       └── textures.c           # 纹理上传、清理、压缩格式路径
-├── external/                    # SPIRV-Cross、SPIRV-Tools、glslang、GLFW 等依赖
+├── MGL/
+│   ├── include/                 # OpenGL API、GLM 和 MGL value-state 头文件
+│   ├── src/
+│   │   ├── mgl_air_backend.cpp  # GLSL frontend/MGLIR 到 AIR LLVM bitcode
+│   │   ├── mgl_air_loader.cpp   # AIR/metallib function 与 pipeline 加载
+│   │   ├── mgl_render.cpp       # 唯一 Metal-cpp implementation TU 和 C ABI
+│   │   ├── mgl_render.h         # 不暴露 MTL::* 的 opaque/value-state 接口
+│   │   ├── mgl_renderer_backend.cpp # renderer owner、cache 和 transaction 生命周期
+│   │   ├── mgl_renderer_backend.h   # backend handle 的 C facade
+│   │   ├── mgl_metal.h          # Metal-cpp include/implementation boundary
+│   │   ├── MGLPlatformRendererShell.m # NSView/CAMetalLayer/device/drawable 平台壳
+│   │   ├── MGLRenderer*.m       # OpenGL 语义编排与 backend C ABI 调用
+│   │   ├── mgl_aux_assets.*     # 生成的预编译辅助 metallib 字节表
+│   │   └── *.c/*.m/*.cpp        # GL 状态、资源、AIR ABI 和工具模块
+│   └── aux_shaders/             # 构建期编译并嵌入的辅助 Metal shader
+├── external/
+│   ├── metal-cpp/               # Apple 官方 header-only Metal C++ bindings
+│   ├── glfw/                    # 本仓库维护的本地 GLFW 分支，不从远端更新
+│   ├── OpenGL-Registry/         # Khronos OpenGL registry
+│   └── ezxml/                   # XML 解析依赖
+├── test_legacy_compat/          # GLSL 兼容、AIR、Metal-cpp smoke 和 gtest
+├── test_regression/             # headless OpenGL/Metal 回归套件
+├── test_dirty_hash/             # dirty-state 批处理回归
+├── test_mgl/                    # 本地功能测试
 ├── benchmark/                   # 性能测试工具
-├── test_mgl/                    # 本地 smoke/功能测试
-├── MGL_Golden_Images/           # 图像回归基准
-├── TestImages/                  # 测试纹理素材
 ├── enum_parser/                 # OpenGL enum 生成辅助
 ├── spec_parser/                 # 规范解析辅助
-├── build/                       # 本地构建输出
+├── scripts/                     # 资产生成、回归、trace 和 benchmark 脚本
+├── docs/                        # AIR/Metal-cpp 设计与验收记录
+├── MGL_Golden_Images/           # 图像回归基准
+├── TestImages/                  # 测试纹理素材
+├── config.mk.example            # 本地 SDK/toolchain 配置模板
+├── build/                       # 本地构建输出（由 Makefile 生成）
 ├── Makefile                     # 唯一构建入口
 ├── README.md                    # 中文说明
 ├── README_EN.md                 # English README
@@ -131,30 +143,33 @@ MGL-minecraft/
 
 ## 核心模块说明
 
-### 着色器转译 (shaders.c)
+### 着色器与 AIR 路径
 
-着色器转译是 MGL 的核心功能，负责将 GLSL 着色器转换为 Metal Shading Language (MSL)：
+生产路径由自研 GLSL frontend、MGLIR、AIR backend 和预编译 metallib 组成：
 
 ```c
-GLSL 源码 (330/420/450)
+OpenGL glCompileShader / program link
     │
     ▼
-glslang 预处理与编译
+mgl_legacy_compat.c（旧 GLSL 语法兼容）
     │
     ▼
-SPIR-V 中间表示
+mgl_glsl_lexer.c → mgl_glsl_parser.c → mgl_glsl_sema.c
     │
     ▼
-SPIRV-Cross 转译
+mgl_ir.c / mgl_air_reflect.c
     │
     ▼
-Metal Shading Language
+mgl_air_backend.cpp → AIR LLVM bitcode → metallib
+    │
+    ▼
+mgl_air_loader.cpp / mgl_render.cpp → Metal-cpp PSO 与 encoder
 ```
 
 **关键特性：**
-- 自动升级旧版 GLSL (140/330) 到 420+
-- 自动为 UBO 分配 binding 索引
-- 添加必要的扩展声明 (`GL_ARB_shading_language_420pack`)
+- 旧版 GLSL 兼容转换在进入 frontend 前完成
+- AIR reflection 生成资源、varying、tessellation 和 geometry ABI
+- 辅助 shader 以 metallib 字节表形式嵌入，不在运行时读取 Metal 源码
 
 ### 状态管理
 
@@ -168,12 +183,32 @@ STATE(dirty_bits) |= DIRTY_RENDER_STATE;
 processGLState(ctx, true);
 ```
 
-### Metal 渲染器 (MGLRenderer.m)
+### Metal backend 与平台壳
 
-Objective-C 实现的 Metal 渲染器，处理：
-- RenderCommandEncoder 创建与管理
-- 状态映射 (OpenGL → Metal)
-- 绘制命令执行
+- `mgl_render.cpp` 是唯一包含 Metal-cpp implementation macro 的 translation unit，
+  负责资源创建、pipeline/render-pass、binding、draw/blit/compute 和 command-buffer
+  transaction。
+- `mgl_renderer_backend.cpp` 持有 renderer backend handle、owner、cache、completion
+  和 temporary-resource 生命周期。
+- `MGLPlatformRendererShell.m` 是唯一持有 `NSView`、`CAMetalLayer`、drawable 和
+  device 初始化的 Objective-C 平台边界。
+- `MGLRenderer*.m` 保留 OpenGL 状态与语义编排，通过纯 C value-state/opaque handle
+  调用 backend，不直接实现 Metal 路径。
+
+核心调用关系：
+
+```text
+MGLRenderer*.m（GL 语义）
+        │ value-state / opaque handle
+        ▼
+mgl_renderer_backend.cpp（owner、cache、transaction）
+        │ C ABI
+        ▼
+mgl_render.cpp（Metal-cpp） ───> Metal command queue / encoder / resource
+        ▲
+        │ device、layer、drawable
+MGLPlatformRendererShell.m（AppKit/CAMetalLayer）
+```
 
 ## 调试
 
@@ -231,7 +266,9 @@ MGL_MIP_DIAG=1
 
 ## 致谢
 
-- [Khronos Group](https://www.khronos.org/) - SPIRV-Cross, glslang, SPIRV-Tools,VK-GL-CTS
+- [Khronos Group](https://www.khronos.org/) - OpenGL Registry and GL CTS
+- [LLVM](https://llvm.org/) - AIR backend code generation
+- [Apple metal-cpp](https://github.com/apple/metal-cpp) - Metal C++ bindings
 - [GLFW](https://www.glfw.org/) - 窗口管理库
 - [openglonmetal/MGL](https://github.com/openglonmetal/MGL) - MGL框架，没有它就没有MGL-minecraft
 - [Hexeption/MCP-Reborn](https://github.com/Hexeption/MCP-Reborn) 
