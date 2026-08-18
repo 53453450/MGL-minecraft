@@ -9,6 +9,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "mgl_render_values.h"
 
 /* Forward decl (mgl_types_texture.h pulls in GLMContext-typed state). */
 typedef struct TextureLevel_t TextureLevel;
@@ -20,15 +21,47 @@ typedef struct TextureParameter_t TextureParameter;
 typedef struct Program_t Program;
 typedef struct __GLsync Sync;
 
+typedef struct MGLMetalAttachmentSubresource_t MGLMetalAttachmentSubresource;
+
 /* P4.2: final/simple/safe pipeline descriptor 的 value-state。完整定义在
  * mgl_air_loader.h（MGLRenderCppPipelineDescriptorState）；此处只前向声明，
  * ObjC 侧构造 value-state，不再组装 MTLRenderPipelineDescriptor。 */
 typedef struct MGLRenderCppPipelineDescriptorState
     MGLRenderCppPipelineDescriptorState;
 
+/* Device capability snapshot produced by the Metal-cpp owner.  The C ABI
+ * carries only integer/value state; the MTL::Device is used exclusively by
+ * mgl_render_cpp.cpp while populating this record. */
+typedef struct MGLRenderCppCapabilityState_t {
+    uint32_t family;
+    uint32_t is_virtualized;
+    uint32_t supports8x_msaa;
+    uint64_t max_sample_count;
+    uint64_t max_texture_dimensions;
+    uint32_t bug_3d_getbytes_slice_oob;
+    uint32_t bug_3d_replace_region_nonzero_origin;
+    uint32_t bug_3d_copy_from_buffer_slice_oob;
+    uint32_t bug_async_shader_compile_in_vm;
+    uint32_t bug_msl_pipeline_rejection;
+    uint64_t command_buffer_recovery_limit;
+    uint64_t max_concurrent_command_buffers;
+    uint64_t texture_alignment_bytes;
+    uint32_t conservative_cpu_cache_mode;
+} MGLRenderCppCapabilityState;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* Pure synchronization helpers. Metal descriptor inspection is confined to
+ * the Metal-cpp implementation TU; the C ABI carries only opaque handles and
+ * integer enum values. */
+bool mglRenderCppRenderPassAttachmentMatchesSubresource(
+    const void *descriptor,
+    const MGLMetalAttachmentSubresource *subresource);
+const char *mglRenderCppCommandBufferStatusName(uint32_t status);
+const char *mglRenderCppLoadActionName(uint32_t action);
+const char *mglRenderCppStoreActionName(uint32_t action);
 
 /* 初始化渲染层。objc_device 为现有 id<MTLDevice>（桥接 +1 retain，不转移所有权）。
  * 返回 0 = 成功；< 0 = 失败（参数为空 / 桥接失败）。 */
@@ -39,6 +72,11 @@ void mglRenderCppShutdown(void);
 
 /* Renderer initialization state as a C ABI value, never a borrowed object. */
 int mglRenderCppIsInitialized(void);
+
+/* Query device capabilities through Metal-cpp and return a pure value-state
+ * snapshot. The device pointer is borrowed for the duration of the call. */
+int mglRenderCppQueryCapability(void *device,
+                                MGLRenderCppCapabilityState *state_out);
 
 /* Load the AIR entry point named "main" with the renderer-owned device.
  * Returned library/function objects are +1 retained for the caller. */
@@ -236,6 +274,33 @@ int mglRenderCppCreateBufferWithBytesNoCopy(const void *bytes,
                                             const char *label,
                                             int deallocate_vm,
                                             void **buffer_out);
+int mglRenderCppGetBufferContents(void *buffer,
+                                  void **contents_out,
+                                  uint64_t *length_out);
+typedef struct MGLRenderCppBufferInfo_t {
+    uint64_t length;
+} MGLRenderCppBufferInfo;
+int mglRenderCppGetBufferInfo(const void *buffer,
+                              MGLRenderCppBufferInfo *info_out);
+int mglRenderCppAddBufferDebugMarker(void *buffer,
+                                     const char *marker,
+                                     uint64_t location,
+                                     uint64_t length);
+typedef struct MGLRenderCppTextureInfo_t {
+    uint32_t pixel_format;
+    uint32_t texture_type;
+    uint64_t width;
+    uint64_t height;
+    uint64_t depth;
+    uint64_t mipmap_level_count;
+    uint64_t array_length;
+    uint64_t usage;
+    uint32_t storage_mode;
+    uint64_t sample_count;
+} MGLRenderCppTextureInfo;
+int mglRenderCppGetTextureInfo(const void *texture,
+                               MGLRenderCppTextureInfo *info_out);
+int mglRenderCppTextureIsFramebufferOnly(const void *texture);
 typedef struct MGLRenderCppTextureDescriptorState_t {
     uint32_t texture_type;
     uint32_t pixel_format;
@@ -257,6 +322,7 @@ typedef struct MGLRenderCppTextureDescriptorState_t {
     uint32_t swizzle_green;
     uint32_t swizzle_blue;
     uint32_t swizzle_alpha;
+    uint32_t has_swizzle;
 } MGLRenderCppTextureDescriptorState;
 
 /* C++ owns and releases the temporary MTL::TextureDescriptor. The C ABI
@@ -265,9 +331,21 @@ int mglRenderCppCreateTextureFromState(
     const MGLRenderCppTextureDescriptorState *texture_descriptor,
     const char *label,
     void **texture_out);
+/* The descriptor is an opaque borrowed Objective-C object. C++ reads its
+ * value fields and owns the temporary Metal-cpp descriptor it creates. */
+int mglRenderCppCreateTextureFromDescriptor(
+    void *descriptor,
+    const char *label,
+    void **texture_out);
 int mglRenderCppCreateBufferTextureFromState(
     void *buffer,
     const MGLRenderCppTextureDescriptorState *texture_descriptor,
+    uint64_t offset,
+    uint64_t bytes_per_row,
+    void **texture_out);
+int mglRenderCppCreateBufferTextureFromDescriptor(
+    void *buffer,
+    void *descriptor,
     uint64_t offset,
     uint64_t bytes_per_row,
     void **texture_out);
@@ -288,6 +366,13 @@ int mglRenderCppCreateTextureViewRange(
     uint32_t swizzle_blue,
     uint32_t swizzle_alpha,
     void **texture_view_out);
+/* Apply GL BASE_LEVEL/MAX_LEVEL and swizzle state to a sampled texture. The
+ * returned texture is +1 retained for the caller; the Texture cache keeps its
+ * own reference. */
+int mglRenderCppSampledTextureViewForBaseLevel(
+    Texture *texture_object,
+    void *source_texture,
+    void **view_out);
 /* CPU-visible texture transfer facade. use_slice selects Metal's
  * slice/bytesPerImage overload; region values are passed explicitly so the
  * C ABI does not expose MTLRegion. */
@@ -381,7 +466,7 @@ uint32_t mglRenderCppTextureTypeForShaderResource(
  * texture-unit slot. Unsupported Metal texture types return -1. */
 int32_t mglRenderCppTextureIndexForMetalType(uint32_t texture_type);
 
-/* P4.5 (item 1014/887): MTLPixelFormat ABI value -> shader-visible texture
+/* P4.5 (item 1014/887): MGLPixelFormat ABI value -> shader-visible texture
  * data kind.  Keep the C ABI backend-neutral; the numeric results mirror
  * MGLTextureDataKind without exposing that ObjC enum here. */
 #define MGL_RENDER_CPP_TEXTURE_DATA_KIND_UNKNOWN 0u
@@ -410,14 +495,14 @@ const char *mglRenderCppTextureDataKindName(uint32_t kind);
 /* P4.5 (item 1111): min-filter → uses-mipmaps.  Returns 1/0. */
 int mglRenderCppTextureMinFilterUsesMipmaps(uint32_t min_filter);
 
-/* P4.5 (item 1171): readback bytes-per-pixel table (MTLPixelFormat ABI value
+/* P4.5 (item 1171): readback bytes-per-pixel table (MGLPixelFormat ABI value
  * -> bytes).  Pure CPU table shared by both gates — mirrors the ObjC
  * mglMetalReadbackBytesPerPixel exactly (default 4 bytes for unlisted
  * formats).  The C ABI carries the pixel format as uint32_t (Apple stable
  * enum), matching mglRenderCppTextureDataKindForPixelFormat. */
 uint32_t mglRenderCppReadbackBytesPerPixel(uint32_t pixel_format);
 
-/* P4.5 (item 1171): readback pixel-format classification (MTLPixelFormat ABI
+/* P4.5 (item 1171): readback pixel-format classification (MGLPixelFormat ABI
  * value -> boolean).  Pure CPU tables shared by both gates — mirror the ObjC
  * mglMetalReadbackFormatIsBGRA8Compatible / mglMetalPixelFormatIsIntegerColor /
  * mglMetalPixelFormatIsSignedIntegerColor exactly.  Returns 1/0. */
@@ -426,7 +511,7 @@ int mglRenderCppPixelFormatIsIntegerColor(uint32_t pixel_format);
 int mglRenderCppPixelFormatIsSignedIntegerColor(uint32_t pixel_format);
 
 /* P4.5 (item 1111/887): layer / sRGB pixel-format tables.  Pixel format
- * is the Apple MTLPixelFormat numeric value.  Effective honors
+ * is the Apple MGLPixelFormat numeric value.  Effective honors
  * GL_EXT_texture_sRGB_decode via the raw srgb_decode_ext enum. */
 int mglRenderCppMetalLayerPixelFormatIsSupported(uint32_t pixel_format);
 uint32_t mglRenderCppSRGBPixelFormat(uint32_t pixel_format);
@@ -897,7 +982,7 @@ typedef struct MGLRenderCppIntegerReadbackSource_t {
 } MGLRenderCppIntegerReadbackSource;
 
 /* P4.5 (item 1171/1116): integer-readback SOURCE format classification —
- * the 19-entry MTLPixelFormat -> {components, component bytes, signed,
+ * the 19-entry MGLPixelFormat -> {components, component bytes, signed,
  * RGB10A2} table.  Pure classification shared by both gates.  Returns 0
  * with recognized=1 on a known format, 0 with recognized=0 on unknown,
  * -1 on bad args. */
@@ -1080,6 +1165,9 @@ uint32_t mglRenderCppIntegerAttribConversionFormat(
     uint64_t src_type,
     uint64_t shader_gl_type,
     uint32_t size);
+const char *mglRenderCppVertexFormatName(uint32_t format);
+uint64_t mglRenderCppVertexDescriptorSignature(const void *descriptor);
+uint64_t mglRenderCppPipelineDescriptorSignature(const void *descriptor);
 /* FNV-1a single hash step; matches mglHashStepU64. */
 uint64_t mglRenderCppHashStepU64(uint64_t hash, uint64_t value);
 /* Fixed restart-index for a type; matches the fixed branch of
@@ -1390,7 +1478,7 @@ uint8_t *mglRenderCppCreateRGBA8ExpandedUpload(const void *src_data,
                                                size_t *out_bytes_per_row,
                                                size_t *out_bytes_per_image);
 /* P4.5 (item 1111): RGB-family → RGBA expansion gates.  Pixel format is
- * the Apple MTLPixelFormat numeric value.  Returns 1/0. */
+ * the Apple MGLPixelFormat numeric value.  Returns 1/0. */
 int mglRenderCppTextureInternalFormatNeedsRGBA8Expansion(
     uint32_t internal_format, uint32_t pixel_format);
 int mglRenderCppTextureNeedsChannelExpansion(uint32_t internal_format,
@@ -1422,6 +1510,8 @@ uint8_t *mglRenderCppCreateSingleChannelSwizzledUpload(
     size_t *out_bytes_per_row, size_t *out_bytes_per_image);
 int mglRenderCppCreateSampler(void *sampler_descriptor,
                               void **sampler_out);
+int mglRenderCppCreateDefaultSampler(void **sampler_out);
+int mglRenderCppCreateFilterSampler(uint32_t nearest, void **sampler_out);
 /* Translate GL texture parameters into a Metal-cpp sampler descriptor and
  * create the sampler without exposing MTL::* through this C ABI. */
 int mglRenderCppCreateSamplerForGL(const TextureParameter *params,
@@ -1453,6 +1543,18 @@ typedef struct MGLRenderCppDepthStencilDescriptorState_t {
     MGLRenderCppStencilDescriptorState front;
     MGLRenderCppStencilDescriptorState back;
 } MGLRenderCppDepthStencilDescriptorState;
+
+/* Read an opaque ObjC depth/stencil descriptor into value-state. The descriptor
+ * object is borrowed and inspected only inside the Metal-cpp implementation TU. */
+int mglRenderCppDescribeDepthStencilDescriptor(
+    const void *depth_stencil_descriptor,
+    MGLRenderCppDepthStencilDescriptorState *state_out);
+
+/* Return stable device identity data for platform-neutral cache naming. */
+int mglRenderCppGetDeviceIdentity(const void *device,
+                                  uint64_t *registry_id_out,
+                                  char *name_out,
+                                  size_t name_capacity);
 
 int mglRenderCppCreateDepthStencilStateFromState(
     const MGLRenderCppDepthStencilDescriptorState *descriptor,
@@ -1602,6 +1704,7 @@ int mglRenderCppCreateComputePipelineState(void *function,
                                            void **pipeline_out,
                                            char *err,
                                            size_t errcap);
+uint32_t mglRenderCppComputePipelineMaxTotalThreads(void *pipeline);
 int mglRenderCppCreateBinaryArchive(void *binary_archive_descriptor,
                                     const char *label,
                                     void **binary_archive_out,
@@ -2284,6 +2387,14 @@ typedef void (*MGLRenderCppDestroyContext)(void *context);
 int mglRenderCppGetCommandBufferState(
     void *command_buffer,
     MGLRenderCppCommandBufferState *state_out);
+const char *mglRenderCppCommandBufferErrorDescription(
+    const MGLRenderCppCommandBufferState *state);
+uint32_t mglRenderCppCommandBufferStatus(void *command_buffer);
+int mglRenderCppGetCommandBufferLabel(const void *command_buffer,
+                                      char *label_out,
+                                      size_t label_capacity);
+int mglRenderCppSetCommandBufferLabel(void *command_buffer,
+                                      const char *label);
 /* Pure value-state classification used by the owner transaction and platform
  * log adapters. Commit classification preserves the legacy status ordering. */
 int mglRenderCppClassifyCommandBufferCommit(
@@ -2385,6 +2496,10 @@ int mglRenderCppCommandBufferOwnerCreateNext(void *owner,
 /* Snapshot the owner's current buffer without exposing it to the caller.
  * Returns -1 when the owner/current buffer/state output is missing. */
 int mglRenderCppGetCommandBufferOwnerState(
+    void *owner,
+    MGLRenderCppCommandBufferState *state_out);
+/* Boolean convenience form: returns 1 when a snapshot was produced. */
+int mglRenderCppCommandBufferOwnerHasState(
     void *owner,
     MGLRenderCppCommandBufferState *state_out);
 /* The owner retains the most recently accepted submission. These APIs keep
@@ -2739,6 +2854,13 @@ int mglRenderCppCommandBufferOwnerAppendSync(void *owner_handle, Sync *sync);
 void mglRenderCppCommandBufferOwnerClearSyncs(void *owner_handle);
 int mglRenderCppGetRenderPassStateOwner(
     void *owner, MGLRenderCppRenderPassState *state_out);
+/* Returns a borrowed attachment snapshot. Object pointers remain owned by the
+ * render-pass owner and are valid only while that owner keeps the state. */
+int mglRenderCppGetRenderPassAttachmentStateOwner(
+    void *owner,
+    uint32_t attachment_kind,
+    uint32_t color_index,
+    MGLRenderCppRenderPassAttachmentState *attachment_out);
 int mglRenderCppCreateRenderEncoderFromStateOwner(
     void *command_buffer, void *state_owner, void **render_encoder_out);
 /* Owner-aware variant used by command-lifecycle callers. The command buffer
@@ -2747,6 +2869,13 @@ int mglRenderCppCreateRenderEncoderFromCommandBufferOwnerState(
     void *command_buffer_owner,
     const MGLRenderCppRenderPassState *render_pass,
     void **render_encoder_out);
+/* Borrowed-object convenience forms for Objective-C callers.  The return
+ * value is an opaque Metal object owned by the command-buffer owner. */
+void *mglRenderCppCreateRenderEncoderBorrowed(
+    void *command_buffer_owner,
+    const MGLRenderCppRenderPassState *render_pass);
+void *mglRenderCppCreateBlitEncoderBorrowed(void *command_buffer_owner);
+void *mglRenderCppCreateComputeEncoderBorrowed(void *command_buffer_owner);
 void mglRenderCppDestroyRenderPassStateOwner(void **owner);
 
 /* C++ owns the temporary MTL::RenderPassDescriptor used to create the
@@ -2755,6 +2884,25 @@ int mglRenderCppCreateRenderEncoderFromState(
     void *command_buffer,
     const MGLRenderCppRenderPassState *render_pass,
     void **render_encoder_out);
+void *mglRenderCppGetRenderPassAttachmentTextureOwner(
+    void *owner, uint32_t attachment_kind, uint32_t color_index);
+int mglRenderCppGetRenderPassAttachmentSubresourceOwner(
+    void *owner, uint32_t attachment_kind, uint32_t color_index,
+    uint64_t *level_out, uint64_t *slice_out, uint64_t *depth_plane_out);
+int mglRenderCppGetRenderTargetSizeOwner(
+    void *owner, uint64_t *width_out, uint64_t *height_out);
+int mglRenderCppRenderPassUsesColorTextureOwner(
+    void *owner, void *texture, uint32_t *attachment_index_out);
+int mglRenderCppGetRenderPassAttachmentActionsOwner(
+    void *owner, uint32_t attachment_kind, uint32_t color_index,
+    uint32_t *load_action_out, uint32_t *store_action_out,
+    uint64_t *store_action_options_out);
+uint32_t mglRenderCppRenderPassLoadActionForTrace(
+    void *owner, uint32_t attachment_kind, uint32_t color_index,
+    uint32_t default_load_action);
+uint32_t mglRenderCppRenderPassStoreActionForTrace(
+    void *owner, uint32_t attachment_kind, uint32_t color_index,
+    uint32_t default_store_action);
 int mglRenderCppEncodeColorClear(void *command_buffer,
                                  void *texture,
                                  uint64_t level,

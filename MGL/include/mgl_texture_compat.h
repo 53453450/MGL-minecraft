@@ -27,10 +27,8 @@
 #define MGL_TEXTURE_COMPAT_H
 
 #include "glm_context.h"
-
-#ifdef __OBJC__
-#import <Metal/Metal.h>
-#endif
+#include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -55,7 +53,7 @@ uint64_t mglRenderCppMetalUploadRowsForPixelFormat(uint32_t pixel_format,
 
 /* Returns true if `format` is a depth, stencil, or packed depth-stencil
  * Metal pixel format. */
-static inline bool mglMetalPixelFormatIsDepthOrStencil(MTLPixelFormat format)
+static inline bool mglMetalPixelFormatIsDepthOrStencil(uint32_t format)
 {
     return mglRenderCppMetalPixelFormatIsDepthOrStencil(
         (uint32_t)format) != 0;
@@ -64,7 +62,7 @@ static inline bool mglMetalPixelFormatIsDepthOrStencil(MTLPixelFormat format)
 /* Returns true if `format` is a packed depth-stencil Metal pixel format
  * (Depth24Unorm_Stencil8 or Depth32Float_Stencil8).  Used to decide whether
  * depth and stencil attachments must share the same texture. */
-static inline bool mglMetalPixelFormatIsPackedDepthStencil(MTLPixelFormat format)
+static inline bool mglMetalPixelFormatIsPackedDepthStencil(uint32_t format)
 {
     return mglRenderCppMetalPixelFormatIsPackedDepthStencil(
         (uint32_t)format) != 0;
@@ -86,19 +84,19 @@ static inline bool mglRendererGLInternalFormatLooksDepthOrStencil(GLenum interna
  * binding to fail or sample garbage.  These helpers classify a Metal pixel
  * format into the matching GLSL data kind so sampler binding can verify
  * compatibility. */
-typedef NS_ENUM(NSUInteger, MGLTextureDataKind) {
+typedef enum MGLTextureDataKind {
     MGLTextureDataKindUnknown = 0,
     MGLTextureDataKindFloat = 1,
     MGLTextureDataKindSint = 2,
     MGLTextureDataKindUint = 3,
     MGLTextureDataKindDepth = 4,
-};
+} MGLTextureDataKind;
 
-MGLTextureDataKind mglTextureDataKindForPixelFormat(MTLPixelFormat pixelFormat);
+MGLTextureDataKind mglTextureDataKindForPixelFormat(uint32_t pixelFormat);
 
 /* Returns true if `pixelFormat`'s data kind matches `expectedKind` (or if
  * `expectedKind` is Unknown, which means "no constraint"). */
-static inline bool mglTexturePixelFormatCompatibleWithExpectedDataKind(MTLPixelFormat pixelFormat,
+static inline bool mglTexturePixelFormatCompatibleWithExpectedDataKind(uint32_t pixelFormat,
                                                                       MGLTextureDataKind expectedKind)
 {
     return mglRenderCppTexturePixelFormatCompatibleWithExpectedDataKind(
@@ -112,7 +110,7 @@ const char *mglTextureDataKindName(MGLTextureDataKind kind);
  * GL spec 8.14.3: mip level N has dimensions max(1, floor(base >> N)).
  * Metal textures store all levels but the dimension must be computed
  * explicitly when blitting/uploading. */
-NSUInteger mglMetalTextureLevelDimension(NSUInteger base, NSUInteger level);
+size_t mglMetalTextureLevelDimension(size_t base, size_t level);
 
 /* === Sampled texture view for BASE/MAX_LEVEL windows ===
  *
@@ -125,8 +123,7 @@ NSUInteger mglMetalTextureLevelDimension(NSUInteger base, NSUInteger level);
  *
  * Returns `texture` unchanged if no view is needed (full window or invalid
  * range).  Returns a cached/new view otherwise. */
-id<MTLTexture> mglSampledTextureViewForBaseLevel(Texture *ptr,
-                                                 id<MTLTexture> texture);
+void *mglSampledTextureViewForBaseLevel(Texture *ptr, void *texture);
 
 /* === Swizzle ===
  *
@@ -134,39 +131,39 @@ id<MTLTexture> mglSampledTextureViewForBaseLevel(Texture *ptr,
  * applies swizzle at texture-creation time via MTLTextureSwizzleChannels.
  * These helpers translate GL swizzle enums to Metal and handle the special
  * case of single-channel R8 swizzle expansion at upload time. */
-NSUInteger mglStoredColorComponentsForTexture(Texture *tex);
-MTLTextureSwizzle mglMTLSwizzleForGLSwizzle(Texture *tex, GLenum swizzle);
+size_t mglStoredColorComponentsForTexture(Texture *tex);
+uint32_t mglMTLSwizzleForGLSwizzle(Texture *tex, GLenum swizzle);
 bool mglTextureUploadNeedsSingleChannelSwizzle(Texture *tex);
 uint8_t mglResolveR8SwizzledComponent(Texture *tex, GLenum swizzle, uint8_t red);
 uint8_t *mglCreateSingleChannelSwizzledUpload(Texture *tex,
                                               const uint8_t *srcData,
-                                              NSUInteger width,
-                                              NSUInteger height,
-                                              NSUInteger srcBytesPerRow,
-                                              NSUInteger *outBytesPerRow,
-                                              NSUInteger *outBytesPerImage);
+                                              size_t width,
+                                              size_t height,
+                                              size_t srcBytesPerRow,
+                                              size_t *outBytesPerRow,
+                                              size_t *outBytesPerImage);
 
 /* === RGB → RGBA channel expansion ===
  *
  * Metal has no RGB8 / RGB16F / RGB32F pixel format — GL RGB-family formats
  * are backed by RGBA variants.  CPU upload data is 3 channels but Metal
  * expects 4, so expansion is required. */
-/* pixelFormat is uint32_t (MTLPixelFormat value) so the C++ TU can call
+/* pixelFormat is uint32_t (MGLPixelFormat value) so the C++ TU can call
  * these; the ABI is unchanged. */
 bool mglTextureInternalFormatNeedsRGBA8Expansion(GLenum internalformat,
                                                  uint32_t pixelFormat);
 bool mglTextureNeedsChannelExpansion(GLenum internalformat,
                                      uint32_t pixelFormat);
-uint32_t mglReadPackedUploadLE(const uint8_t *src, NSUInteger bytes);
+uint32_t mglReadPackedUploadLE(const uint8_t *src, size_t bytes);
 uint8_t mglExpandUNormBitsTo8(uint32_t value, uint32_t bits);
 uint8_t *mglCreateChannelExpandedUpload(Texture *tex,
-                                        MTLPixelFormat pixelFormat,
+                                        uint32_t pixelFormat,
                                         const uint8_t *srcData,
-                                        NSUInteger width,
-                                        NSUInteger height,
-                                        NSUInteger srcBytesPerRow,
-                                        NSUInteger *outBytesPerRow,
-                                        NSUInteger *outBytesPerImage);
+                                        size_t width,
+                                        size_t height,
+                                        size_t srcBytesPerRow,
+                                        size_t *outBytesPerRow,
+                                        size_t *outBytesPerImage);
 
 /* Create expanded upload data for legacy packed RGB formats (GL_RGB4/5/10/12,
  * GL_RGBA2/4, GL_RGB5_A1, GL_R3_G3_B2) that are backed by Metal RGBA8.
@@ -174,25 +171,25 @@ uint8_t *mglCreateChannelExpandedUpload(Texture *tex,
  * buffer.  Returns NULL on failure. */
 uint8_t *mglCreateRGBA8ExpandedUpload(Texture *tex,
                                       const uint8_t *srcData,
-                                      NSUInteger width,
-                                      NSUInteger height,
-                                      NSUInteger srcBytesPerRow,
-                                      NSUInteger *outBytesPerRow,
-                                      NSUInteger *outBytesPerImage);
+                                      size_t width,
+                                      size_t height,
+                                      size_t srcBytesPerRow,
+                                      size_t *outBytesPerRow,
+                                      size_t *outBytesPerImage);
 
 /* === Layer pixel format / compressed block helpers === */
 
-/* Returns YES if `pixelFormat` is one of the MTLPixelFormat values supported
+/* Returns YES if `pixelFormat` is one of the MGLPixelFormat values supported
  * by the MGL render-target layer (currently BGRA8 linear / sRGB). */
-BOOL mglMetalLayerPixelFormatIsSupported(MTLPixelFormat pixelFormat);
+bool mglMetalLayerPixelFormatIsSupported(uint32_t pixelFormat);
 
 /* Returns the sRGB variant of a color-renderable pixel format, or the
  * original format if no sRGB variant exists. */
-MTLPixelFormat mglSRGBPixelFormat(MTLPixelFormat fmt);
+uint32_t mglSRGBPixelFormat(uint32_t fmt);
 
 /* Returns the linear variant of a color-renderable pixel format, or the
  * original format if no linear variant exists. */
-MTLPixelFormat mglLinearPixelFormat(MTLPixelFormat fmt);
+uint32_t mglLinearPixelFormat(uint32_t fmt);
 
 /* Returns the effective Metal pixel format for a texture, honoring
  * GL_EXT_texture_sRGB_decode.  When tex->params.srgb_decode_ext is
@@ -200,23 +197,23 @@ MTLPixelFormat mglLinearPixelFormat(MTLPixelFormat fmt);
  * variant so the data is sampled without automatic sRGB decode; otherwise
  * the format is returned unchanged.  Call from the texture-creation path
  * when selecting the Metal pixel format for an sRGB internal format. */
-MTLPixelFormat mglEffectiveMTLPixelFormatForTexture(MTLPixelFormat fmt, Texture *tex);
+uint32_t mglEffectiveMTLPixelFormatForTexture(uint32_t fmt, Texture *tex);
 
 /* Returns the compressed-block height (in pixels) for a Metal compressed
  * pixel format.  BC1-BC7 and ASTC 4x4 return 4; ASTC variants return
  * their Y dimension (5/6/8/10/12); uncompressed formats return 1. */
-static inline NSUInteger mglMetalCompressedBlockHeight(MTLPixelFormat pixelFormat)
+static inline size_t mglMetalCompressedBlockHeight(uint32_t pixelFormat)
 {
-    return (NSUInteger)mglRenderCppMetalCompressedBlockHeight(
+    return (size_t)mglRenderCppMetalCompressedBlockHeight(
         (uint32_t)pixelFormat);
 }
 
 /* Returns the number of upload rows for a compressed texture of the given
  * pixel height.  For uncompressed formats this equals `pixelHeight` (min 1).
  * For compressed formats the height is rounded up to the block height. */
-static inline NSUInteger mglMetalUploadRowsForPixelFormat(MTLPixelFormat pixelFormat, NSUInteger pixelHeight)
+static inline size_t mglMetalUploadRowsForPixelFormat(uint32_t pixelFormat, size_t pixelHeight)
 {
-    return (NSUInteger)mglRenderCppMetalUploadRowsForPixelFormat(
+    return (size_t)mglRenderCppMetalUploadRowsForPixelFormat(
         (uint32_t)pixelFormat, (uint64_t)pixelHeight);
 }
 

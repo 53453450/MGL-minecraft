@@ -8,7 +8,7 @@
 #include "mgl_env_flag.h"
 #include "mgl_render_cpp.h"
 
-static MGLMetalBufferRef mglBufferCreateConvertedVertexBuffer(
+static id mglBufferCreateConvertedVertexBuffer(
     Buffer *sourceBuffer,
     const MGLResolvedVertexAttribBinding *resolved,
     MGLRenderCppVertexConversionKind kind,
@@ -43,12 +43,12 @@ static MGLMetalBufferRef mglBufferCreateConvertedVertexBuffer(
     if (outStride) {
         *outStride = (NSUInteger)convertedStride;
     }
-    return (__bridge_transfer MGLMetalBufferRef)convertedBuffer;
+    return (__bridge_transfer id)convertedBuffer;
 }
 
 @implementation MGLRenderer (Buffer)
 
-- (MGLMetalBufferRef)floatVertexBufferForDoubleAttrib:(Buffer *)sourceBuffer
+- (id)floatVertexBufferForDoubleAttrib:(Buffer *)sourceBuffer
                                          resolved:(const MGLResolvedVertexAttribBinding *)resolved
                                              size:(GLuint)componentCount
                                          outStride:(NSUInteger *)outStride
@@ -65,13 +65,13 @@ static MGLMetalBufferRef mglBufferCreateConvertedVertexBuffer(
 }
 
 /* Metal has no int/uint->float vertex format conversion for 32-bit integer
- * formats (MTLVertexFormatInt/UInt require integer shader inputs). When an
+ * formats (MGLVertexFormatInt/UInt require integer shader inputs). When an
  * app uses glVertexAttribFormat (non-integer) with GL_INT/GL_UNSIGNED_INT and
  * a float shader input, GL requires the integer values to be converted to
  * float. We perform that conversion on the CPU side, mirroring the GL_DOUBLE
  * path. sizeof(GLint)==sizeof(GLfloat)==4, so the converted stride equals the
  * original stride. */
-- (MGLMetalBufferRef)floatVertexBufferForIntAttrib:(Buffer *)sourceBuffer
+- (id)floatVertexBufferForIntAttrib:(Buffer *)sourceBuffer
                                       resolved:(const MGLResolvedVertexAttribBinding *)resolved
                                           size:(GLuint)componentCount
                                     normalized:(GLboolean)normalized
@@ -95,7 +95,7 @@ static MGLMetalBufferRef mglBufferCreateConvertedVertexBuffer(
  * each component is converted independently to float. Output is float[size].
  * sizeof(GLfixed)==sizeof(GLfloat)==4, so the converted stride equals the
  * original stride, mirroring floatVertexBufferForIntAttrib. */
-- (MGLMetalBufferRef)floatVertexBufferForFixedAttrib:(Buffer *)sourceBuffer
+- (id)floatVertexBufferForFixedAttrib:(Buffer *)sourceBuffer
                                          resolved:(const MGLResolvedVertexAttribBinding *)resolved
                                              size:(GLuint)componentCount
                                         outStride:(NSUInteger *)outStride
@@ -117,7 +117,7 @@ static MGLMetalBufferRef mglBufferCreateConvertedVertexBuffer(
  * element (4 bytes) is smaller than the float4 output (16 bytes), so the
  * converted buffer is zero-initialized and the unpacked floats are written
  * per vertex (no copy-then-overwrite, unlike the GL_DOUBLE path). */
-- (MGLMetalBufferRef)floatVertexBufferForPacked1010102Attrib:(Buffer *)sourceBuffer
+- (id)floatVertexBufferForPacked1010102Attrib:(Buffer *)sourceBuffer
                                                   resolved:(const MGLResolvedVertexAttribBinding *)resolved
                                                  outStride:(NSUInteger *)outStride
 {
@@ -138,7 +138,7 @@ static MGLMetalBufferRef mglBufferCreateConvertedVertexBuffer(
  * float3. Like the 10_10_10_2 path, the source element (4 bytes) is smaller
  * than the float3 output (12 bytes), so the converted buffer is zero-
  * initialized and unpacked floats are written per vertex. */
-- (MGLMetalBufferRef)floatVertexBufferForPacked10f11f11fAttrib:(Buffer *)sourceBuffer
+- (id)floatVertexBufferForPacked10f11f11fAttrib:(Buffer *)sourceBuffer
                                                      resolved:(const MGLResolvedVertexAttribBinding *)resolved
                                                     outStride:(NSUInteger *)outStride
 {
@@ -157,7 +157,7 @@ static MGLMetalBufferRef mglBufferCreateConvertedVertexBuffer(
  * directly to an int/uint shader input (e.g. GL_UNSIGNED_BYTE -> int32 for
  * an `in int` attribute) into a 32-bit integer buffer matching the shader's
  * declared type. dstIsInt selects int32 vs uint32 output. */
-- (MGLMetalBufferRef)integerVertexBufferForAttrib:(Buffer *)sourceBuffer
+- (id)integerVertexBufferForAttrib:(Buffer *)sourceBuffer
                                      resolved:(const MGLResolvedVertexAttribBinding *)resolved
                                          size:(GLuint)componentCount
                                        srcType:(GLenum)srcType
@@ -196,13 +196,9 @@ static MGLMetalBufferRef mglBufferCreateConvertedVertexBuffer(
  * static inline helpers in mgl_buffer_plan.h. */
 
 /* Acquire renderer-owned packed struct storage from the C++ backend. */
-static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
-                                         MGLMetalDeviceRef device,
-                                         const void *data,
+static Buffer *mglGetPackedStructBuffer(const void *data,
                                          size_t size)
 {
-    (void)ctx;
-    (void)device;
     char error[256] = {0};
     Buffer *buffer = mglRenderCppAcquirePackedStructBuffer(
         data, size, error, sizeof(error));
@@ -465,8 +461,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                     }
                 }
 
-                Buffer *packedBuf = mglGetPackedStructBuffer(ctx, _device,
-                                                              packed, struct_size);
+                Buffer *packedBuf = mglGetPackedStructBuffer(packed, struct_size);
                 if (packed != stack_packed) {
                     free(packed);
                 }
@@ -951,8 +946,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                             }
                         }
 
-                        Buffer *packedBuf = mglGetPackedStructBuffer(ctx, _device,
-                                                                      packed, struct_size);
+                        Buffer *packedBuf = mglGetPackedStructBuffer(packed, struct_size);
                         if (packed != stack_packed) {
                             free(packed);
                         }
@@ -1423,11 +1417,8 @@ void mglNoteBufferEncoded(Buffer *buf)
     mglRenderCppNoteBufferEncoded(buf);
 }
 
-BOOL mglSnapshotSharedDirtyBuffer(MGLMetalDeviceRef device,
-                                  Buffer *ptr,
-                                  MGLMetalBufferRef *bufferPtr)
+BOOL mglSnapshotSharedDirtyBuffer(Buffer *ptr, id *bufferPtr)
 {
-    (void)device;
     void *metalBuffer = NULL;
     char error[256] = {0};
     if (mglRenderCppSnapshotSharedDirtyBuffer(
@@ -1437,18 +1428,16 @@ BOOL mglSnapshotSharedDirtyBuffer(MGLMetalDeviceRef device,
         return NO;
     }
     if (bufferPtr) {
-        *bufferPtr = (__bridge MGLMetalBufferRef)metalBuffer;
+        *bufferPtr = (__bridge id)metalBuffer;
     }
     return YES;
 }
 
-BOOL mglSnapshotSharedBufferRange(MGLMetalDeviceRef device,
-                                  Buffer *ptr,
-                                  MGLMetalBufferRef *bufferPtr,
+BOOL mglSnapshotSharedBufferRange(Buffer *ptr,
+                                  id *bufferPtr,
                                   NSUInteger offset,
                                   NSUInteger length)
 {
-    (void)device;
     void *metalBuffer = NULL;
     char error[256] = {0};
     if (mglRenderCppSnapshotSharedBufferRange(
@@ -1458,7 +1447,7 @@ BOOL mglSnapshotSharedBufferRange(MGLMetalDeviceRef device,
         return NO;
     }
     if (bufferPtr) {
-        *bufferPtr = (__bridge MGLMetalBufferRef)metalBuffer;
+        *bufferPtr = (__bridge id)metalBuffer;
     }
     return YES;
 }

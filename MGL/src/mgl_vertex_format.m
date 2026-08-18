@@ -10,6 +10,7 @@
  */
 
 #import "mgl_vertex_format.h"
+#import "mgl_render_cpp.h"
 
 #include "mgl_air_loader.h"   /* MGLRenderCppPipelineDescriptorState */
 
@@ -17,54 +18,22 @@
 
 /* === Vertex format mapping (extern) === */
 
-const char *mglVertexFormatName(MTLVertexFormat format)
+const char *mglVertexFormatName(uint32_t format)
 {
-    switch (format) {
-        case MTLVertexFormatFloat: return "Float";
-        case MTLVertexFormatFloat2: return "Float2";
-        case MTLVertexFormatFloat3: return "Float3";
-        case MTLVertexFormatFloat4: return "Float4";
-        case MTLVertexFormatUChar4: return "UChar4";
-        case MTLVertexFormatUChar4Normalized: return "UChar4Normalized";
-        case MTLVertexFormatUChar3: return "UChar3";
-        case MTLVertexFormatUChar3Normalized: return "UChar3Normalized";
-        case MTLVertexFormatUChar2: return "UChar2";
-        case MTLVertexFormatUChar2Normalized: return "UChar2Normalized";
-        case MTLVertexFormatUChar: return "UChar";
-        case MTLVertexFormatUCharNormalized: return "UCharNormalized";
-        case MTLVertexFormatShort: return "Short";
-        case MTLVertexFormatShort2: return "Short2";
-        case MTLVertexFormatShort3: return "Short3";
-        case MTLVertexFormatShort4: return "Short4";
-        case MTLVertexFormatShortNormalized: return "ShortNormalized";
-        case MTLVertexFormatShort2Normalized: return "Short2Normalized";
-        case MTLVertexFormatShort3Normalized: return "Short3Normalized";
-        case MTLVertexFormatShort4Normalized: return "Short4Normalized";
-        case MTLVertexFormatUShort: return "UShort";
-        case MTLVertexFormatUShort2: return "UShort2";
-        case MTLVertexFormatUShort3: return "UShort3";
-        case MTLVertexFormatUShort4: return "UShort4";
-        case MTLVertexFormatUShortNormalized: return "UShortNormalized";
-        case MTLVertexFormatUShort2Normalized: return "UShort2Normalized";
-        case MTLVertexFormatUShort3Normalized: return "UShort3Normalized";
-        case MTLVertexFormatUShort4Normalized: return "UShort4Normalized";
-        case MTLVertexFormatUInt1010102Normalized: return "UInt1010102Normalized";
-        case MTLVertexFormatInt1010102Normalized: return "Int1010102Normalized";
-        default: return "Unknown";
-    }
+    return mglRenderCppVertexFormatName(format);
 }
 
 bool mglIntegerAttribNeedsConversion(GLenum srcType,
                                      GLuint shaderGlType,
                                      GLuint size,
-                                     MTLVertexFormat *outFormat)
+                                     void *outFormat)
 {
     uint32_t format = mglRenderCppIntegerAttribConversionFormat(
         (uint64_t)srcType, (uint64_t)shaderGlType, (uint32_t)size);
     if (outFormat) {
-        *outFormat = (MTLVertexFormat)format;
+        *(uint32_t *)outFormat = format;
     }
-    return format != (uint32_t)MTLVertexFormatInvalid;
+    return format != 0u;
 }
 
 double mglDecodeVertexAttribComponent(const uint8_t *src,
@@ -131,87 +100,22 @@ double mglDecodeVertexAttribComponent(const uint8_t *src,
 
 /* === Pipeline signature === */
 
-uint64_t mglVertexDescriptorSignature(MTLVertexDescriptor *vertexDescriptor)
+uint64_t mglVertexDescriptorSignature(const void *vertexDescriptor)
 {
-    uint64_t hash = 1469598103934665603ull;
-    if (!vertexDescriptor) {
-        return hash;
-    }
-
-    for (NSUInteger i = 0; i < MAX_ATTRIBS; i++) {
-        MTLVertexAttributeDescriptor *attrib = vertexDescriptor.attributes[i];
-        if (!attrib) {
-            continue;
-        }
-        hash = mglHashStepU64(hash, (uint64_t)attrib.format);
-        hash = mglHashStepU64(hash, (uint64_t)attrib.offset);
-        hash = mglHashStepU64(hash, (uint64_t)attrib.bufferIndex);
-    }
-
-    /* kMGLMaxMetalVertexBufferCount = 31 (Metal vertex buffer slots 0..30).
-     * Referenced as literal to avoid a circular include with MGLRenderer.m,
-     * which defines its own static const version.  See mgl_buffer_slots.h. */
-    for (NSUInteger i = 0; i < 31u; i++) {
-        MTLVertexBufferLayoutDescriptor *layout = vertexDescriptor.layouts[i];
-        if (!layout) {
-            continue;
-        }
-        hash = mglHashStepU64(hash, (uint64_t)layout.stride);
-        hash = mglHashStepU64(hash, (uint64_t)layout.stepFunction);
-        hash = mglHashStepU64(hash, (uint64_t)layout.stepRate);
-    }
-
-    return hash;
+    return mglRenderCppVertexDescriptorSignature(vertexDescriptor);
 }
 
-uint64_t mglPipelineDescriptorSignature(MTLRenderPipelineDescriptor *pipelineStateDescriptor)
+uint64_t mglPipelineDescriptorSignature(const void *pipelineStateDescriptor)
 {
-    uint64_t hash = 1469598103934665603ull;
-    if (!pipelineStateDescriptor) {
-        return hash;
-    }
-
-    hash = mglHashStepU64(hash, (uint64_t)pipelineStateDescriptor.rasterSampleCount);
-    hash = mglHashStepU64(hash, (uint64_t)pipelineStateDescriptor.rasterizationEnabled);
-    hash = mglHashStepU64(hash, (uint64_t)pipelineStateDescriptor.alphaToCoverageEnabled);
-    hash = mglHashStepU64(hash, (uint64_t)pipelineStateDescriptor.alphaToOneEnabled);
-    hash = mglHashStepU64(hash, (uint64_t)pipelineStateDescriptor.depthAttachmentPixelFormat);
-    hash = mglHashStepU64(hash, (uint64_t)pipelineStateDescriptor.stencilAttachmentPixelFormat);
-    hash = mglHashStepU64(hash, (uint64_t)pipelineStateDescriptor.tessellationPartitionMode);
-    hash = mglHashStepU64(hash, (uint64_t)pipelineStateDescriptor.maxTessellationFactor);
-    hash = mglHashStepU64(hash, (uint64_t)pipelineStateDescriptor.tessellationFactorScaleEnabled);
-    hash = mglHashStepU64(hash, (uint64_t)pipelineStateDescriptor.tessellationFactorFormat);
-    hash = mglHashStepU64(hash, (uint64_t)pipelineStateDescriptor.tessellationControlPointIndexType);
-    hash = mglHashStepU64(hash, (uint64_t)pipelineStateDescriptor.tessellationFactorStepFunction);
-    hash = mglHashStepU64(hash, (uint64_t)pipelineStateDescriptor.tessellationOutputWindingOrder);
-
-    for (NSUInteger i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
-        MTLRenderPipelineColorAttachmentDescriptor *attachment = pipelineStateDescriptor.colorAttachments[i];
-        if (!attachment) {
-            continue;
-        }
-        hash = mglHashStepU64(hash, (uint64_t)attachment.pixelFormat);
-        hash = mglHashStepU64(hash, (uint64_t)attachment.blendingEnabled);
-        hash = mglHashStepU64(hash, (uint64_t)attachment.sourceRGBBlendFactor);
-        hash = mglHashStepU64(hash, (uint64_t)attachment.destinationRGBBlendFactor);
-        hash = mglHashStepU64(hash, (uint64_t)attachment.rgbBlendOperation);
-        hash = mglHashStepU64(hash, (uint64_t)attachment.sourceAlphaBlendFactor);
-        hash = mglHashStepU64(hash, (uint64_t)attachment.destinationAlphaBlendFactor);
-        hash = mglHashStepU64(hash, (uint64_t)attachment.alphaBlendOperation);
-        hash = mglHashStepU64(hash, (uint64_t)attachment.writeMask);
-    }
-
-    return hash;
+    return mglRenderCppPipelineDescriptorSignature(pipelineStateDescriptor);
 }
 
-MTLWinding mglMaybeInvertMTLWinding(MTLWinding winding, BOOL invert)
+uint32_t mglMaybeInvertMTLWinding(uint32_t winding, bool invert)
 {
     if (!invert) {
         return winding;
     }
-    return (winding == MTLWindingClockwise)
-        ? MTLWindingCounterClockwise
-        : MTLWindingClockwise;
+    return winding == 0u ? 1u : 0u;
 }
 
 /* === P4.2: value-state signatures ===
@@ -245,7 +149,7 @@ uint64_t mglVertexDescriptorSignatureFromState(
             ? state->attrib_buffer_index[i] : 0u;
         /* 只有 format 有效（非 Invalid）的 attribute 才在 ObjC 生成路径里写
          * layout；未写过的 layout 保持默认 (0/PerVertex/1)。 */
-        if (state->attrib_format[i] != (uint32_t)MTLVertexFormatInvalid) {
+        if (state->attrib_format[i] != 0u) {
             layoutStride[bi] = state->attrib_stride[i];
             layoutStepFunction[bi] = state->attrib_step_function[i];
             layoutStepRate[bi] = state->attrib_step_rate[i];

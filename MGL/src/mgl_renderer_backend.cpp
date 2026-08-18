@@ -147,6 +147,12 @@ struct MGLRendererBackendCurrentAttribCacheEntry {
     uint32_t byte_count = 0;
 };
 
+struct MGLRendererBackendSizeConstantsCacheEntry {
+    MTL::Buffer *buffer = nullptr;
+    std::array<uint32_t, 31> constants{};
+    bool valid = false;
+};
+
 struct MGLRendererBackendHandle {
     std::mutex mutex;
     GLMContext context = nullptr;
@@ -160,6 +166,9 @@ struct MGLRendererBackendHandle {
     void *recovery_owner = nullptr;
     void *binding_owner = nullptr;
     MTL::Texture *fallback_render_target_texture = nullptr;
+    MTL::Buffer *fallback_binding_buffer = nullptr;
+    uint64_t fallback_binding_buffer_length = 0;
+    MTL::Buffer *cull_distance_dummy_buffer = nullptr;
     MTL::Texture *transient_depth_texture = nullptr;
     uint64_t transient_depth_texture_width = 0;
     uint64_t transient_depth_texture_height = 0;
@@ -169,6 +178,8 @@ struct MGLRendererBackendHandle {
     std::vector<MGLRendererBackendStageCopyBackList> stage_copy_back_lists;
     std::array<MGLRendererBackendCurrentAttribCacheEntry, MAX_ATTRIBS>
         current_attrib_cache{};
+    std::array<MGLRendererBackendSizeConstantsCacheEntry, 2>
+        size_constants_cache{};
     MTL::SamplerState *scaled_blit_nearest_sampler = nullptr;
     MTL::SamplerState *scaled_blit_linear_sampler = nullptr;
     MTL::DepthStencilState *clear_rect_depth_state = nullptr;
@@ -213,6 +224,15 @@ static void mglRendererBackendReleaseOwnedState(
         backend->fallback_render_target_texture->release();
         backend->fallback_render_target_texture = nullptr;
     }
+    if (backend->fallback_binding_buffer) {
+        backend->fallback_binding_buffer->release();
+        backend->fallback_binding_buffer = nullptr;
+    }
+    backend->fallback_binding_buffer_length = 0;
+    if (backend->cull_distance_dummy_buffer) {
+        backend->cull_distance_dummy_buffer->release();
+        backend->cull_distance_dummy_buffer = nullptr;
+    }
     if (backend->transient_depth_texture) {
         backend->transient_depth_texture->release();
         backend->transient_depth_texture = nullptr;
@@ -244,6 +264,11 @@ static void mglRendererBackendReleaseOwnedState(
         if (entry.buffer) entry.buffer->release();
     }
     backend->current_attrib_cache = {};
+    for (MGLRendererBackendSizeConstantsCacheEntry &entry :
+         backend->size_constants_cache) {
+        if (entry.buffer) entry.buffer->release();
+    }
+    backend->size_constants_cache = {};
     if (backend->scaled_blit_nearest_sampler) {
         backend->scaled_blit_nearest_sampler->release();
         backend->scaled_blit_nearest_sampler = nullptr;
@@ -605,6 +630,41 @@ extern "C" void *mglRendererBackendGetFallbackRenderTargetTexture(
     return backend->fallback_render_target_texture;
 }
 
+extern "C" void *mglRendererBackendGetFallbackBindingBuffer(
+    MGLRendererBackendHandle *backend, uint64_t minimum_length)
+{
+    if (!backend || minimum_length == 0u) return nullptr;
+    std::lock_guard<std::mutex> lock(backend->mutex);
+    if (backend->destroying || !backend->device) return nullptr;
+    if (!backend->fallback_binding_buffer ||
+        backend->fallback_binding_buffer_length < minimum_length) {
+        MTL::Buffer *replacement = backend->device->newBuffer(
+            static_cast<NS::UInteger>(minimum_length),
+            MTL::ResourceStorageModeShared);
+        if (!replacement) return nullptr;
+        if (backend->fallback_binding_buffer) {
+            backend->fallback_binding_buffer->release();
+        }
+        backend->fallback_binding_buffer = replacement;
+        backend->fallback_binding_buffer_length = minimum_length;
+    }
+    return backend->fallback_binding_buffer;
+}
+
+extern "C" void *mglRendererBackendGetCullDistanceDummyBuffer(
+    MGLRendererBackendHandle *backend)
+{
+    if (!backend) return nullptr;
+    std::lock_guard<std::mutex> lock(backend->mutex);
+    if (backend->destroying || !backend->device) return nullptr;
+    if (!backend->cull_distance_dummy_buffer) {
+        const float dummy[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        backend->cull_distance_dummy_buffer = backend->device->newBuffer(
+            dummy, sizeof(dummy), MTL::ResourceStorageModeShared);
+    }
+    return backend->cull_distance_dummy_buffer;
+}
+
 extern "C" int mglRendererBackendSetTransientDepthTexture(
     MGLRendererBackendHandle *backend, void *texture,
     uint64_t width, uint64_t height)
@@ -820,6 +880,49 @@ extern "C" int mglRendererBackendSetCurrentAttribBuffer(
     std::memcpy(entry.bytes.data(), bytes, byte_count);
     entry.byte_count = byte_count;
     entry.stride = stride;
+    return 0;
+}
+
+extern "C" void *mglRendererBackendGetSizeConstantsBuffer(
+    const MGLRendererBackendHandle *backend,
+    MGLRendererBackendSizeConstantsStage stage,
+    const uint32_t *constants, uint32_t count)
+{
+    if (!backend || stage < MGL_RENDERER_BACKEND_SIZE_CONSTANTS_VERTEX ||
+        stage > MGL_RENDERER_BACKEND_SIZE_CONSTANTS_FRAGMENT ||
+        !constants || count != 31u) {
+        return nullptr;
+    }
+    std::lock_guard<std::mutex> lock(
+        const_cast<MGLRendererBackendHandle *>(backend)->mutex);
+    if (backend->destroying) return nullptr;
+    const MGLRendererBackendSizeConstantsCacheEntry &entry =
+        backend->size_constants_cache[(size_t)stage];
+    if (!entry.valid || !entry.buffer ||
+        std::memcmp(entry.constants.data(), constants,
+                    sizeof(entry.constants)) != 0) {
+        return nullptr;
+    }
+    return entry.buffer;
+}
+
+extern "C" int mglRendererBackendSetSizeConstantsBuffer(
+    MGLRendererBackendHandle *backend,
+    MGLRendererBackendSizeConstantsStage stage,
+    const uint32_t *constants, uint32_t count, void *buffer)
+{
+    if (!backend || stage < MGL_RENDERER_BACKEND_SIZE_CONSTANTS_VERTEX ||
+        stage > MGL_RENDERER_BACKEND_SIZE_CONSTANTS_FRAGMENT ||
+        !constants || count != 31u || !buffer) {
+        return -1;
+    }
+    std::lock_guard<std::mutex> lock(backend->mutex);
+    if (backend->destroying) return -1;
+    MGLRendererBackendSizeConstantsCacheEntry &entry =
+        backend->size_constants_cache[(size_t)stage];
+    mglRendererBackendReplaceObject(entry.buffer, buffer);
+    std::memcpy(entry.constants.data(), constants, sizeof(entry.constants));
+    entry.valid = true;
     return 0;
 }
 
@@ -1242,6 +1345,48 @@ extern "C" int mglRendererBackendRetainProactiveTexture(
     MTL::Texture *retained = static_cast<MTL::Texture *>(texture);
     retained->retain();
     backend->proactive_textures.push_back(retained);
+    return 0;
+}
+
+extern "C" int mglRendererBackendCreateProactiveTexture(
+    MGLRendererBackendHandle *backend)
+{
+    if (!backend) return -1;
+    std::lock_guard<std::mutex> lock(backend->mutex);
+    if (backend->destroying || !backend->device) return -1;
+
+    MTL::TextureDescriptor *descriptor =
+        MTL::TextureDescriptor::alloc()->init();
+    if (!descriptor) return -1;
+    descriptor->setTextureType(MTL::TextureType2D);
+    descriptor->setPixelFormat(MTL::PixelFormatRGBA8Unorm);
+    descriptor->setWidth(256u);
+    descriptor->setHeight(256u);
+    descriptor->setDepth(1u);
+    descriptor->setMipmapLevelCount(1u);
+    descriptor->setSampleCount(1u);
+    descriptor->setArrayLength(1u);
+    descriptor->setUsage(MTL::TextureUsageShaderRead |
+                         MTL::TextureUsageRenderTarget);
+    descriptor->setStorageMode(MTL::StorageModeShared);
+
+    MTL::Texture *texture = backend->device->newTexture(descriptor);
+    descriptor->release();
+    if (!texture) return -1;
+
+    std::vector<uint32_t> gradient(256u * 256u);
+    for (uint32_t y = 0; y < 256u; ++y) {
+        for (uint32_t x = 0; x < 256u; ++x) {
+            const uint8_t r = static_cast<uint8_t>((x * 128u) / 256u + 64u);
+            const uint8_t g = static_cast<uint8_t>((y * 128u) / 256u + 64u);
+            gradient[y * 256u + x] =
+                (UINT32_C(255) << 24) | (UINT32_C(255) << 16) |
+                (static_cast<uint32_t>(g) << 8) | r;
+        }
+    }
+    texture->replaceRegion(MTL::Region::Make2D(0u, 0u, 256u, 256u),
+                           0u, gradient.data(), 256u * sizeof(uint32_t));
+    backend->proactive_textures.push_back(texture);
     return 0;
 }
 

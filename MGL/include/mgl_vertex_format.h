@@ -34,14 +34,9 @@
 #ifndef MGL_VERTEX_FORMAT_H
 #define MGL_VERTEX_FORMAT_H
 
-#include <objc/objc.h>  /* BOOL, GLuint, GLenum, GLboolean */
+#include <objc/objc.h>  /* GLuint, GLenum, GLboolean */
 #include <stdint.h>
 #include <stddef.h>
-
-#ifdef __OBJC__
-#import <Foundation/Foundation.h>
-#import <Metal/Metal.h>
-#endif
 
 #include "glm_context.h"
 #include "mgl_byte_hash.h"
@@ -61,6 +56,9 @@ uint64_t mglRenderCppAlignVertexStrideForMetal(uint64_t stride);
 uint32_t mglRenderCppDoubleVertexAttribFloatFormat(uint32_t size);
 uint32_t mglRenderCppIntegerAttribConversionFormat(
     uint64_t src_type, uint64_t shader_gl_type, uint32_t size);
+const char *mglRenderCppVertexFormatName(uint32_t format);
+uint64_t mglRenderCppVertexDescriptorSignature(const void *descriptor);
+uint64_t mglRenderCppPipelineDescriptorSignature(const void *descriptor);
 
 /* === Vertex format mapping (static inline, hot-path) === */
 
@@ -97,9 +95,9 @@ static inline size_t mglVertexAttribElementBytes(GLenum type, GLuint size)
 
 /* Maps a GL double attrib size to the corresponding MTLVertexFormat (Float
  * variants, since Metal has no double vertex formats). */
-static inline MTLVertexFormat mglDoubleVertexAttribFloatFormat(GLuint size)
+static inline uint32_t mglDoubleVertexAttribFloatFormat(GLuint size)
 {
-    return (MTLVertexFormat)mglRenderCppDoubleVertexAttribFloatFormat((uint32_t)size);
+    return mglRenderCppDoubleVertexAttribFloatFormat((uint32_t)size);
 }
 
 /* Aligns a vertex stride to Metal's 4-byte minimum alignment. */
@@ -111,7 +109,7 @@ static inline NSUInteger mglAlignVertexStrideForMetal(NSUInteger stride)
 /* === Vertex format mapping (extern) === */
 
 /* Human-readable name for an MTLVertexFormat enum value. */
-const char *mglVertexFormatName(MTLVertexFormat format);
+const char *mglVertexFormatName(uint32_t format);
 
 /* For glVertexAttribIFormat (integer) attribs, Metal only allows 32-bit
  * Int/UInt formats.  Returns true and sets *outFormat when CPU conversion
@@ -119,7 +117,7 @@ const char *mglVertexFormatName(MTLVertexFormat format);
 bool mglIntegerAttribNeedsConversion(GLenum srcType,
                                      GLuint shaderGlType,
                                      GLuint size,
-                                     MTLVertexFormat *outFormat);
+                                     void *outFormat);
 
 /* Decodes a single vertex attrib component to double for trace/replay.
  * Handles normalized conversion for signed/unsigned types. */
@@ -131,10 +129,10 @@ double mglDecodeVertexAttribComponent(const uint8_t *src,
 /* === Pipeline signature === */
 
 /* FNV-1a hash of a MTLVertexDescriptor for pipeline cache keys. */
-uint64_t mglVertexDescriptorSignature(MTLVertexDescriptor *vertexDescriptor);
+uint64_t mglVertexDescriptorSignature(const void *vertexDescriptor);
 
 /* FNV-1a hash of a MTLRenderPipelineDescriptor for pipeline cache keys. */
-uint64_t mglPipelineDescriptorSignature(MTLRenderPipelineDescriptor *pipelineStateDescriptor);
+uint64_t mglPipelineDescriptorSignature(const void *pipelineStateDescriptor);
 
 /* P4.2: value-state 版签名（MGLRenderCppPipelineDescriptorState 的完整定义
  * 在 mgl_air_loader.h）。哈希字段与顺序必须与 descriptor 版完全一致，保证
@@ -148,7 +146,7 @@ uint64_t mglPipelineDescriptorSignatureFromState(
 
 /* Inverts MTLWinding (CW↔CCW) when `invert` is true; otherwise returns
  * winding unchanged. */
-MTLWinding mglMaybeInvertMTLWinding(MTLWinding winding, BOOL invert);
+uint32_t mglMaybeInvertMTLWinding(uint32_t winding, bool invert);
 
 #ifdef __cplusplus
 }

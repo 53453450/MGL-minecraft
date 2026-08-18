@@ -46,7 +46,7 @@ void mglLogRenderPassLifecycle(const char *tag,
                                void *commandBufferOwner,
                                void *renderEncoderOwner,
                                void *renderPassStateOwner,
-                               id<CAMetalDrawable> drawable,
+                               id drawable,
                                Framebuffer *renderPassFramebuffer,
                                GLuint renderPassFramebufferName,
                                GLenum renderPassDrawBuffer,
@@ -55,13 +55,11 @@ NSRange mglRendererFindMSLEntryParameterClose(NSString *msl, const char *entryPo
 GLuint mglCurrentRenderProgramKey(GLMContext ctx);
 void mglWriteProgramMSLDump(Program *program, NSString *reason);
 GLuint mglRendererSafeFramebufferName(GLMContext ctx);
-id<MTLTexture> mglApplySRGBStateToRenderTarget(id<MTLTexture> texture, GLMContext ctx);
+id mglApplySRGBStateToRenderTarget(id texture, GLMContext ctx);
 Program *mglResolveProgramFromState(GLMContext ctx);
 BOOL mglRendererPointerInHashTable(HashTable *table, const void *ptr);
 
 Program *mglResolveProgramForStageFromState(GLMContext ctx, int stage);
-void mglNormalizePipelineDepthStencilFormats(MTLRenderPipelineDescriptor *desc,
-                                             const char *label);
 VertexArray *mglRendererGetValidatedVAO(GLMContext ctx, const char *where);
 
 /* Render-pass logging / validation helpers. */
@@ -76,17 +74,16 @@ void mglLogStateSnapshot(const char *tag,
                          void *commandBufferOwner,
                          void *renderEncoderOwner,
                          void *renderPassStateOwner,
-                         id<CAMetalDrawable> drawable);
+                         id drawable);
 Framebuffer *mglRendererGetValidatedFramebuffer(GLMContext ctx, const char *where);
 
 /* GL type/size → Metal vertex format — defined in MGLRenderer.m. */
-MTLVertexFormat glTypeSizeToMtlType(GLuint type, GLuint size, bool normalized);
+uint32_t glTypeSizeToMtlType(GLuint type, GLuint size, bool normalized);
 
 /* GL texture → Metal pixel format — defined in pixel_utils.c. */
-MTLPixelFormat mtlPixelFormatForGLTex(Texture *gl_tex);
+uint32_t mtlPixelFormatForGLTex(Texture *gl_tex);
 
 /* Pipeline helper — defined in MGLRenderer.m, used by RenderPass.m and Blit.m. */
-void mglEnableIndirectCommandBuffersForPipeline(MTLRenderPipelineDescriptor *pipelineStateDescriptor);
 
 @interface MGLRenderer ()
 
@@ -115,13 +112,13 @@ void mglEnableIndirectCommandBuffersForPipeline(MTLRenderPipelineDescriptor *pip
 
 // === Framebuffer attachment helpers ===
 - (Texture *)framebufferAttachmentTexture:(FBOAttachment *)fbo_attachment;
-- (BOOL)currentRenderPassUsesTexture:(id<MTLTexture>)texture;
+- (BOOL)currentRenderPassUsesTexture:(id)texture;
 - (void)updateGLSampledCopiesForEndedRenderPassFramebuffer:(Framebuffer *)fbo
                                                   drawCount:(GLsizei)drawCount
                                                drawBuffers:(const GLenum *)drawBuffers
                                                     reason:(const char *)reason;
 - (bool)restoreRenderEncoderAfterTextureUploadForDraw:(const char *)reason;
-- (BOOL)synchronizeRenderPassForTextureReadback:(id<MTLTexture>)texture
+- (BOOL)synchronizeRenderPassForTextureReadback:(id)texture
                                           reason:(const char *)reason;
 
 // === Thread Safety: *Locked variants ===
@@ -141,17 +138,17 @@ void mglEnableIndirectCommandBuffersForPipeline(MTLRenderPipelineDescriptor *pip
 // === Methods defined in MGLRenderer.m, called from MGLRenderer+RenderPass.m ===
 // mapBuffersToMTL, updateDirtyBaseBufferList:, checkForDirtyBufferData: are
 // now declared in MGLRenderer+Buffer_Private.h (implemented in +Buffer.m).
-- (id<MTLTexture>)createMTLTextureFromGLTexture:(Texture *)tex;
-- (id<MTLTexture>)createFallbackMTLTexture:(Texture *)tex;
-- (id<MTLSamplerState>)createMTLSamplerForTexParam:(TextureParameter *)tex_param target:(GLuint)target;
-- (MTLStencilOperation)mtlStencilOpForGLOp:(GLenum)op;
+- (id)createMTLTextureFromGLTexture:(Texture *)tex;
+- (id)createFallbackMTLTexture:(Texture *)tex;
+- (id)createMTLSamplerForTexParam:(TextureParameter *)tex_param target:(GLuint)target;
+- (uint32_t)mtlStencilOpForGLOp:(GLenum)op;
 - (bool)checkDrawBufferSize:(GLuint)index;
-- (id)newDrawBuffer:(MTLPixelFormat)pixelFormat isDepthStencil:(bool)depthStencil;
-- (id)newDrawBufferWithCustomSize:(MTLPixelFormat)pixelFormat
+- (id)newDrawBuffer:(uint32_t)pixelFormat isDepthStencil:(bool)depthStencil;
+- (id)newDrawBufferWithCustomSize:(uint32_t)pixelFormat
                      isDepthStencil:(bool)depthStencil
                         customSize:(CGSize)size;
-- (MTLBlendFactor)blendFactorFromGL:(GLenum)gl_blend;
-- (MTLBlendOperation)blendOperationFromGL:(GLenum)gl_blend_op;
+- (uint32_t)blendFactorFromGL:(GLenum)gl_blend;
+- (uint32_t)blendOperationFromGL:(GLenum)gl_blend_op;
 
 // Thread Safety: *Locked variants defined in MGLRenderer.m
 - (void)mtlDeleteMTLObjLocked:(GLMContext)glm_ctx buffer:(void *)obj;

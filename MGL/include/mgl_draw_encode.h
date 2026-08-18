@@ -12,8 +12,7 @@
  * They depend on mgl_index_buffer.h (index buffer builders) and
  * mgl_draw_mode.h (polygon-mode classification).
  *
- * Dependencies: Metal.framework (id<MTLDevice>, id<MTLBuffer>,
- * id<MTLRenderCommandEncoder>, MTLPrimitiveType) + glm_context.h
+ * Dependencies: opaque Metal handles and numeric Metal enum values + glm_context.h
  * (GLMContext, mglDispatchError) + mgl_index_buffer.h + mgl_draw_mode.h.
  */
 
@@ -24,11 +23,6 @@
 
 #include <stdbool.h>
 
-#ifdef __OBJC__
-#import <Foundation/Foundation.h>
-#import <Metal/Metal.h>
-#endif
-
 #include "glm_context.h"
 #include "mgl_index_buffer.h"
 #include "mgl_draw_mode.h"
@@ -37,6 +31,41 @@
 extern "C" {
 #endif
 
+#ifdef __OBJC__
+typedef id MGLDrawMetalHandle;
+#else
+typedef void *MGLDrawMetalHandle;
+#endif
+
+enum {
+    MGL_DRAW_PRIMITIVE_POINT = 0,
+    MGL_DRAW_PRIMITIVE_LINE = 1,
+    MGL_DRAW_PRIMITIVE_LINE_STRIP = 2,
+    MGL_DRAW_PRIMITIVE_TRIANGLE = 3,
+    MGL_DRAW_PRIMITIVE_TRIANGLE_STRIP = 4,
+};
+
+enum {
+    MGL_DRAW_INDEX_UINT16 = 0,
+    MGL_DRAW_INDEX_UINT32 = 1,
+};
+
+/* Metal indirect-draw buffer layout expressed as pure C value-state. */
+typedef struct MGLDrawPrimitivesIndirectArguments_t {
+    uint32_t vertexCount;
+    uint32_t instanceCount;
+    uint32_t vertexStart;
+    uint32_t baseInstance;
+} MGLDrawPrimitivesIndirectArguments;
+
+typedef struct MGLDrawIndexedPrimitivesIndirectArguments_t {
+    uint32_t indexCount;
+    uint32_t instanceCount;
+    uint32_t indexStart;
+    int32_t baseVertex;
+    uint32_t baseInstance;
+} MGLDrawIndexedPrimitivesIndirectArguments;
+
 /* Result of primitive-restart encoding. */
 typedef enum MGLPrimitiveRestartEncodeResult {
     MGLPrimitiveRestartEncodeNotNeeded = 0,
@@ -44,75 +73,71 @@ typedef enum MGLPrimitiveRestartEncodeResult {
     MGLPrimitiveRestartEncodeFailed = 2,
 } MGLPrimitiveRestartEncodeResult;
 
-#ifdef __OBJC__
-
 /* Owner-aware primitive emulation. C++ resolves the active encoder from
  * renderEncoderOwner; no borrowed render encoder crosses this API. */
-BOOL mglEncodeArrayLineLoopForRenderEncoderOwner(
+bool mglEncodeArrayLineLoopForRenderEncoderOwner(
     void *renderEncoderOwner,
-    GLMContext drawCtx, id<MTLDevice> device, GLsizei count,
-    GLint firstVertex, NSUInteger instanceCount, NSUInteger baseInstance,
+    GLMContext drawCtx, MGLDrawMetalHandle device, GLsizei count,
+    GLint firstVertex, size_t instanceCount, size_t baseInstance,
     const char *label);
-BOOL mglEncodeArrayTriangleFanForRenderEncoderOwner(
+bool mglEncodeArrayTriangleFanForRenderEncoderOwner(
     void *renderEncoderOwner,
-    id<MTLDevice> device, GLsizei count, GLint baseVertex,
-    NSUInteger instanceCount, NSUInteger baseInstance, const char *label);
-BOOL mglEncodeArrayQuadsForRenderEncoderOwner(
+    MGLDrawMetalHandle device, GLsizei count, GLint baseVertex,
+    size_t instanceCount, size_t baseInstance, const char *label);
+bool mglEncodeArrayQuadsForRenderEncoderOwner(
     void *renderEncoderOwner,
-    id<MTLDevice> device, GLsizei count, GLint baseVertex,
-    NSUInteger instanceCount, NSUInteger baseInstance, BOOL lineMode,
+    MGLDrawMetalHandle device, GLsizei count, GLint baseVertex,
+    size_t instanceCount, size_t baseInstance, bool lineMode,
     const char *label);
-BOOL mglEncodeArrayPolygonPointForRenderEncoderOwner(
+bool mglEncodeArrayPolygonPointForRenderEncoderOwner(
     void *renderEncoderOwner,
-    id<MTLDevice> device, GLenum mode, GLint first, GLsizei count,
-    NSUInteger instanceCount, NSUInteger baseInstance, const char *label);
-BOOL mglEncodeElementLineLoopForRenderEncoderOwner(
+    MGLDrawMetalHandle device, GLenum mode, GLint first, GLsizei count,
+    size_t instanceCount, size_t baseInstance, const char *label);
+bool mglEncodeElementLineLoopForRenderEncoderOwner(
     void *renderEncoderOwner,
-    id<MTLDevice> device, Buffer *glElementBuffer,
-    id<MTLBuffer> metalElementBuffer, GLenum glIndexType,
-    NSUInteger indexOffset, GLsizei count, NSUInteger instanceCount,
-    NSInteger baseVertex, NSUInteger baseInstance, const char *label);
-BOOL mglEncodeElementTriangleFanForRenderEncoderOwner(
+    MGLDrawMetalHandle device, Buffer *glElementBuffer,
+    MGLDrawMetalHandle metalElementBuffer, GLenum glIndexType,
+    size_t indexOffset, GLsizei count, size_t instanceCount,
+    int64_t baseVertex, size_t baseInstance, const char *label);
+bool mglEncodeElementTriangleFanForRenderEncoderOwner(
     void *renderEncoderOwner,
-    id<MTLDevice> device, Buffer *glElementBuffer,
-    id<MTLBuffer> metalElementBuffer, GLenum glIndexType,
-    NSUInteger indexOffset, GLsizei count, NSUInteger instanceCount,
-    NSInteger baseVertex, NSUInteger baseInstance, const char *label);
-BOOL mglEncodeElementQuadsForRenderEncoderOwner(
+    MGLDrawMetalHandle device, Buffer *glElementBuffer,
+    MGLDrawMetalHandle metalElementBuffer, GLenum glIndexType,
+    size_t indexOffset, GLsizei count, size_t instanceCount,
+    int64_t baseVertex, size_t baseInstance, const char *label);
+bool mglEncodeElementQuadsForRenderEncoderOwner(
     void *renderEncoderOwner,
-    id<MTLDevice> device, Buffer *glElementBuffer,
-    id<MTLBuffer> metalElementBuffer, GLenum glIndexType,
-    NSUInteger indexOffset, GLsizei count, NSUInteger instanceCount,
-    NSInteger baseVertex, NSUInteger baseInstance, BOOL lineMode,
+    MGLDrawMetalHandle device, Buffer *glElementBuffer,
+    MGLDrawMetalHandle metalElementBuffer, GLenum glIndexType,
+    size_t indexOffset, GLsizei count, size_t instanceCount,
+    int64_t baseVertex, size_t baseInstance, bool lineMode,
     const char *label);
-BOOL mglEncodeElementPolygonPointForRenderEncoderOwner(
+bool mglEncodeElementPolygonPointForRenderEncoderOwner(
     void *renderEncoderOwner,
-    id<MTLDevice> device, Buffer *glElementBuffer,
-    id<MTLBuffer> metalElementBuffer, GLenum mode, GLenum glIndexType,
-    MTLIndexType metalIndexType, NSUInteger indexOffset, GLsizei count,
-    NSUInteger instanceCount, NSInteger baseVertex,
-    NSUInteger baseInstance, const char *label);
+    MGLDrawMetalHandle device, Buffer *glElementBuffer,
+    MGLDrawMetalHandle metalElementBuffer, GLenum mode, GLenum glIndexType,
+    uint32_t metalIndexType, size_t indexOffset, GLsizei count,
+    size_t instanceCount, int64_t baseVertex,
+    size_t baseInstance, const char *label);
 MGLPrimitiveRestartEncodeResult
 mglEncodePrimitiveRestartedElementDrawForRenderEncoderOwner(
     void *renderEncoderOwner,
-    id<MTLDevice> device, GLMContext ctx, Buffer *glElementBuffer,
-    id<MTLBuffer> metalElementBuffer, GLenum mode,
-    MTLPrimitiveType primitiveType, GLenum glIndexType,
-    MTLIndexType metalIndexType, NSUInteger indexOffset, GLsizei count,
-    NSUInteger instanceCount, NSInteger baseVertex,
-    NSUInteger baseInstance, const char *label);
+    MGLDrawMetalHandle device, GLMContext ctx, Buffer *glElementBuffer,
+    MGLDrawMetalHandle metalElementBuffer, GLenum mode,
+    uint32_t primitiveType, GLenum glIndexType,
+    uint32_t metalIndexType, size_t indexOffset, GLsizei count,
+    size_t instanceCount, int64_t baseVertex,
+    size_t baseInstance, const char *label);
 
 /* === Indirect-draw skip checks === */
 
-BOOL mglSkipIndirectElementDrawWhenPrimitiveRestartEnabled(GLMContext ctx,
+bool mglSkipIndirectElementDrawWhenPrimitiveRestartEnabled(GLMContext ctx,
                                                             GLenum glIndexType,
                                                             const char *label);
 
-BOOL mglSkipIndirectDrawWhenPolygonPointEmulationNeeded(GLMContext ctx,
+bool mglSkipIndirectDrawWhenPolygonPointEmulationNeeded(GLMContext ctx,
                                                          GLenum mode,
                                                          const char *label);
-
-#endif /* __OBJC__ */
 
 #ifdef __cplusplus
 }

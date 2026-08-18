@@ -24,7 +24,6 @@
 #import "MGLRenderer.h"
 #import "MGLPlatformRendererShell.h"
 #import <Foundation/Foundation.h>
-#import <Metal/Metal.h>
 #import <AppKit/AppKit.h>
 #import <QuartzCore/QuartzCore.h>   // CAMetalLayer
 #import <simd/simd.h>               // vector_float4, vector_uint2, etc.
@@ -49,9 +48,7 @@
 #import "mgl_safety.h"
 #import "mgl_vertex_format.h"
 #import "mgl_thread_affinity.h"      // MGL_ASSERT_GL_THREAD / mglClaimGLThread
-#define MGL_NO_MTL_PIXEL_FORMAT
 #import "pixel_utils.h"
-#undef MGL_NO_MTL_PIXEL_FORMAT
 #import "mgl_frame_activity.h"      // mglPerfLockTimingEnabled, MGL_FRAME_ADD
 #import "mgl_draw_buffer.h"
 #import "mgl_buffer_slots.h"
@@ -74,6 +71,13 @@ extern Texture *findTexture(GLMContext ctx, GLuint texture);
 #import "MGLRenderer_State.h"
 #import "MGLPipelineCache.h"
 #import "MGLRenderPassManager.h"
+
+#ifndef MGL_VALUE_GEOMETRY_TYPES
+#define MGL_VALUE_GEOMETRY_TYPES 1
+typedef struct MGLSizeValue_t { uint64_t width, height, depth; } MGLSizeValue;
+typedef struct MGLOriginValue_t { int64_t x, y, z; } MGLOriginValue;
+typedef struct MGLRegionValue_t { MGLOriginValue origin; MGLSizeValue size; } MGLRegionValue;
+#endif
 
 /* Shared helpers — declared here because inline functions in per-category
  * private headers (e.g. mglTraceRTYFlipDiagnosticsEnabled) call them.
@@ -228,22 +232,6 @@ static inline double mglTraceNowSeconds(void)
      * Metal when the VS writes [[render_target_array_index]]). */
     GLenum _lastDrawPrimitiveMode;
     MGLBatchingState _batching;
-    /* Cached spvBufferSizeConstants MTLBuffers.
-     * Each stage's size-constants buffer is a fixed 124-byte (31×uint32)
-     * buffer bound at MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX when a shader uses
-     * .length() on unsized SSBO arrays.  Cache the last buffer + its
-     * contents and reuse it when the size constants are unchanged (the
-     * common case — buffer sizes rarely change between draws in the same
-     * frame).  When contents differ we allocate a new buffer so each draw
-     * gets its own snapshot: the GPU reads buffer contents at command
-     * buffer execution time, not at setVertexBuffer time, so we cannot
-     * overwrite a buffer that earlier draws in the same CB still reference. */
-    id<MTLBuffer> _vertexSizeBuffer;
-    uint32_t      _vertexSizeConstantsCache[31];
-    BOOL          _vertexSizeConstantsValid;
-    id<MTLBuffer> _fragmentSizeBuffer;
-    uint32_t      _fragmentSizeConstantsCache[31];
-    BOOL          _fragmentSizeConstantsValid;
     /* Track whether the current command buffer has encoded work. The C++
      * CommandBufferOwner retains the most recent submission for glFinish. */
     BOOL                 _currentCBHasWork;
@@ -251,16 +239,16 @@ static inline double mglTraceNowSeconds(void)
 
 /* Methods called from MGLRenderer+Compute.m.
  * mapGLBuffersToMTLBufferMap:stage: now declared in MGLRenderer+Buffer_Private.h. */
-- (id<MTLBuffer>)isolatedStageBindingBufferForMap:(const BufferMap *)map
-                                           source:(id<MTLBuffer>)source
+- (id)isolatedStageBindingBufferForMap:(const BufferMap *)map
+                                           source:(id)source
                                    requiredLength:(NSUInteger)requiredLength;
 - (void)clearStageBindingCopyBacks:(MGLStageBindingCopyBackList *)copyBacks;
 - (void)clearStageBindingCopyBack:(MGLStageBindingCopyBackList *)copyBacks
                            atIndex:(NSUInteger)index;
 - (bool)recordStageBindingCopyBack:(MGLStageBindingCopyBackList *)copyBacks
                            atIndex:(NSUInteger)index
-                         temporary:(id<MTLBuffer>)temporary
-                        destination:(id<MTLBuffer>)destination
+                         temporary:(id)temporary
+                        destination:(id)destination
                   destinationBuffer:(Buffer *)destinationBuffer
                  destinationOffset:(NSUInteger)destinationOffset
                              length:(NSUInteger)length;
@@ -316,14 +304,14 @@ static inline double mglTraceNowSeconds(void)
 #define _layer self.layer
 #define _drawable self.drawable
 #define _activeState _core.activeState
-#define _device ((__bridge id<MTLDevice>) \
+#define _device ((__bridge id) \
     mglRendererBackendGetDevice(_backend))
 #define _capability _core.capability
 #define _drawBuffers _core.drawBuffers
 #define _defaultDrawableWrittenSinceLastSwap _core.defaultDrawableWrittenSinceLastSwap
 #define _commandQueueOwner mglRendererBackendGetOwner( \
     _backend, MGL_RENDERER_BACKEND_OWNER_COMMAND_QUEUE)
-#define _commandQueue ((__bridge id<MTLCommandQueue>) \
+#define _commandQueue ((__bridge id) \
     mglRendererBackendGetCommandQueue(_backend))
 #define _deviceResetRequested _core.deviceResetRequested
 #define _pendingDrawableW _core.pendingDrawableW

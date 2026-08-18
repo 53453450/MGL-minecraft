@@ -20,10 +20,39 @@ typedef int (*MGLPlatformRendererShellOperation)(void *context);
 @property(nonatomic, strong) id<CAMetalDrawable> drawable;
 
 - (instancetype)initWithView:(NSView *)view;
+- (id)mglCreateSystemDefaultDevice;
+- (BOOL)mglConfigureMetalLayerWithDevice:(id)device
+                    requestedPixelFormat:(uint32_t)requestedPixelFormat
+                     actualPixelFormat:(uint32_t *)actualPixelFormat;
+- (void)mglDetachMetalLayer;
+- (id)mglCaptureDescriptorForDevice:(id)device
+                         outputPath:(NSString *)outputPath;
+- (BOOL)mglStartCaptureWithDescriptor:(id)descriptor
+                                error:(NSError **)error;
+- (void)mglStopCapture;
+- (id)mglNextDrawable;
+- (id)mglDrawableTexture;
+- (id)mglTextureForDrawable:(id)drawable;
+- (BOOL)mglHasMetalLayer;
+- (CGSize)mglMetalLayerDrawableSize;
+- (CGRect)mglMetalLayerFrame;
+- (void)mglSetMetalLayerFrame:(CGRect)frame contentsScale:(CGFloat)scale;
+- (void)mglSetMetalLayerDrawableSize:(CGSize)size;
 - (int)performOperation:(MGLPlatformRendererShellOperation)operation
                 context:(void *)context
                  result:(MGLPlatformRendererShellResult *)result;
 
 @end
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Platform-only drawable bridge used by renderer diagnostics. */
+void *mglPlatformRendererShellTextureForDrawable(void *drawable);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

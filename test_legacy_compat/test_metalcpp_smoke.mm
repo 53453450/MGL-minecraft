@@ -9,7 +9,7 @@
 #include <mach/mach.h>
 #include <atomic>
 
-#include "mgl_render_cpp_objc.h"
+#include "mgl_render_cpp.h"
 #include "mgl_renderer_backend.h"
 #include "mgl_air_loader.h"
 #include "mgl_aux_assets.h"
@@ -34,6 +34,38 @@ static uint64_t s_metalCreateCount = 0;
 extern "C" void mglMetalCountRelease(int) { ++s_metalReleaseCount; }
 extern "C" void mglMetalCountCreate(int) { ++s_metalCreateCount; }
 extern "C" void mglRecordBufferCowSnapshot(uint64_t) {}
+
+static MGLRenderCppTextureDescriptorState
+smokeTextureDescriptorState(MTLTextureDescriptor *descriptor)
+{
+    MGLRenderCppTextureDescriptorState state = {};
+    if (!descriptor) return state;
+
+    state.texture_type = (uint32_t)descriptor.textureType;
+    state.pixel_format = (uint32_t)descriptor.pixelFormat;
+    state.width = descriptor.width;
+    state.height = descriptor.height;
+    state.depth = descriptor.depth;
+    state.mipmap_level_count = descriptor.mipmapLevelCount;
+    state.sample_count = descriptor.sampleCount;
+    state.array_length = descriptor.arrayLength;
+    state.resource_options = descriptor.resourceOptions;
+    state.usage = descriptor.usage;
+    state.cpu_cache_mode = (uint32_t)descriptor.cpuCacheMode;
+    state.storage_mode = (uint32_t)descriptor.storageMode;
+    state.hazard_tracking_mode = (uint32_t)descriptor.hazardTrackingMode;
+    state.compression_type = (uint32_t)descriptor.compressionType;
+    state.placement_sparse_page_size =
+        (uint32_t)descriptor.placementSparsePageSize;
+    state.allow_gpu_optimized_contents =
+        descriptor.allowGPUOptimizedContents ? 1u : 0u;
+    MTLTextureSwizzleChannels swizzle = descriptor.swizzle;
+    state.swizzle_red = (uint32_t)swizzle.red;
+    state.swizzle_green = (uint32_t)swizzle.green;
+    state.swizzle_blue = (uint32_t)swizzle.blue;
+    state.swizzle_alpha = (uint32_t)swizzle.alpha;
+    return state;
+}
 
 /* Product builds provide these pure program-reflection helpers from the GL
  * state/resource subsystems. The standalone facade smoke links only the
@@ -998,6 +1030,18 @@ static int verifySamplerConversion(void) {
         return 1;
     }
 
+    samplerPtr = NULL;
+    if (mglRenderCppCreateDefaultSampler(&samplerPtr) != 0 || !samplerPtr) {
+        fprintf(stderr, "FAIL: default sampler creation\n");
+        return 1;
+    }
+    id<MTLSamplerState> defaultSampler =
+        (__bridge_transfer id<MTLSamplerState>)samplerPtr;
+    if (!defaultSampler) {
+        fprintf(stderr, "FAIL: default sampler returned nil\n");
+        return 1;
+    }
+
     printf("SAMPLER_CONVERSION_OK\n");
     return 0;
 }
@@ -1047,7 +1091,7 @@ static int verifyResourceCreation(void) {
     textureDesc.usage = MTLTextureUsageShaderRead;
     void *texturePtr = NULL;
     MGLRenderCppTextureDescriptorState textureState =
-        mglRenderCppTextureDescriptorStateFromObjC(textureDesc);
+        smokeTextureDescriptorState(textureDesc);
     if (mglRenderCppCreateTextureFromState(
             &textureState, "MGL Smoke Texture", &texturePtr) != 0 ||
         !texturePtr) {
@@ -1086,7 +1130,7 @@ static int verifyResourceCreation(void) {
     mipDesc.usage = MTLTextureUsageShaderRead | MTLTextureUsagePixelFormatView;
     void *mipTexturePtr = NULL;
     MGLRenderCppTextureDescriptorState mipState =
-        mglRenderCppTextureDescriptorStateFromObjC(mipDesc);
+        smokeTextureDescriptorState(mipDesc);
     if (mglRenderCppCreateTextureFromState(
             &mipState, "MGL Smoke Mip Texture", &mipTexturePtr) != 0 ||
         !mipTexturePtr) {
@@ -1095,6 +1139,19 @@ static int verifyResourceCreation(void) {
     }
     id<MTLTexture> mipTexture =
         (__bridge_transfer id<MTLTexture>)mipTexturePtr;
+    MGLRenderCppTextureInfo mipInfo = {};
+    if (mglRenderCppGetTextureInfo((__bridge void *)mipTexture, &mipInfo) != 0 ||
+        mipInfo.pixel_format != (uint32_t)mipTexture.pixelFormat ||
+        mipInfo.texture_type != (uint32_t)mipTexture.textureType ||
+        mipInfo.width != mipTexture.width ||
+        mipInfo.height != mipTexture.height ||
+        mipInfo.depth != mipTexture.depth ||
+        mipInfo.mipmap_level_count != mipTexture.mipmapLevelCount ||
+        mipInfo.array_length != mipTexture.arrayLength ||
+        mipInfo.usage != (uint64_t)mipTexture.usage) {
+        fprintf(stderr, "FAIL: texture info value-state\n");
+        return 1;
+    }
     void *rangeViewPtr = NULL;
     if (mglRenderCppCreateTextureViewRange(
             (__bridge void *)mipTexture,
@@ -1138,7 +1195,7 @@ static int verifyResourceCreation(void) {
     textureBufferDesc.storageMode = MTLStorageModeShared;
     void *bufferTexturePtr = NULL;
     MGLRenderCppTextureDescriptorState textureBufferState =
-        mglRenderCppTextureDescriptorStateFromObjC(textureBufferDesc);
+        smokeTextureDescriptorState(textureBufferDesc);
     if (mglRenderCppCreateBufferTextureFromState(
             (__bridge void *)textureBufferStorage, &textureBufferState, 0, 256,
             &bufferTexturePtr) != 0 || !bufferTexturePtr) {
@@ -1225,7 +1282,7 @@ static int verifyTextureTransferFacade(void) {
     textureDesc.usage = MTLTextureUsageShaderRead;
     void *texturePtr = NULL;
     MGLRenderCppTextureDescriptorState textureState =
-        mglRenderCppTextureDescriptorStateFromObjC(textureDesc);
+        smokeTextureDescriptorState(textureDesc);
     if (mglRenderCppCreateTextureFromState(
             &textureState, "MGL Smoke Texture Transfer", &texturePtr) != 0 ||
         !texturePtr) {
@@ -1258,7 +1315,7 @@ static int verifyTextureTransferFacade(void) {
     arrayDesc.usage = MTLTextureUsageShaderRead;
     void *arrayTexturePtr = NULL;
     MGLRenderCppTextureDescriptorState arrayState =
-        mglRenderCppTextureDescriptorStateFromObjC(arrayDesc);
+        smokeTextureDescriptorState(arrayDesc);
     if (mglRenderCppCreateTextureFromState(
             &arrayState, "MGL Smoke Array Texture Transfer",
             &arrayTexturePtr) != 0 ||
@@ -1307,8 +1364,11 @@ static int verifyNoCopyBufferFacade(void) {
     }
     id<MTLBuffer> buffer =
         (__bridge_transfer id<MTLBuffer>)bufferPtr;
+    MGLRenderCppBufferInfo bufferInfo = {};
     const uint8_t *contents = (const uint8_t *)buffer.contents;
-    if (!contents || buffer.length != length ||
+    if (mglRenderCppGetBufferInfo((__bridge void *)buffer, &bufferInfo) != 0 ||
+        bufferInfo.length != buffer.length ||
+        !contents || buffer.length != length ||
         contents[0] != (uint8_t)0x5a ||
         contents[length - 1] != (uint8_t)((length - 1u) ^ 0x5a)) {
         fprintf(stderr, "FAIL: no-copy buffer contents\n");
@@ -8841,6 +8901,18 @@ static int verifyRendererBackend(id<MTLDevice> device) {
     id<MTLTexture> transientTexture = [device newTextureWithDescriptor:textureDescriptor];
     id<MTLBuffer> fallbackBuffer =
         [device newBufferWithLength:256 options:MTLResourceStorageModeShared];
+    void *backendFallbackBindingBuffer =
+        mglRendererBackendGetFallbackBindingBuffer(backend, 256u);
+    void *backendFallbackBindingBufferAgain =
+        mglRendererBackendGetFallbackBindingBuffer(backend, 256u);
+    void *backendFallbackBindingBufferLarger =
+        mglRendererBackendGetFallbackBindingBuffer(backend, 512u);
+    void *backendFallbackBindingBufferLargerAgain =
+        mglRendererBackendGetFallbackBindingBuffer(backend, 512u);
+    void *backendCullDistanceDummyBuffer =
+        mglRendererBackendGetCullDistanceDummyBuffer(backend);
+    void *backendCullDistanceDummyBufferAgain =
+        mglRendererBackendGetCullDistanceDummyBuffer(backend);
     MTLSamplerDescriptor *samplerDescriptor = [[MTLSamplerDescriptor alloc] init];
     id<MTLSamplerState> nearestSampler =
         [device newSamplerStateWithDescriptor:samplerDescriptor];
@@ -8857,6 +8929,13 @@ static int verifyRendererBackend(id<MTLDevice> device) {
     uint64_t transientHeight = 0;
     if (!fallbackTexture || !transientTexture || !fallbackBuffer || !nearestSampler ||
         !linearSampler || !clearDepthState ||
+        !backendFallbackBindingBuffer ||
+        backendFallbackBindingBuffer != backendFallbackBindingBufferAgain ||
+        !backendFallbackBindingBufferLarger ||
+        backendFallbackBindingBufferLarger != backendFallbackBindingBufferLargerAgain ||
+        !backendCullDistanceDummyBuffer ||
+        backendCullDistanceDummyBuffer != backendCullDistanceDummyBufferAgain ||
+        mglRendererBackendGetFallbackBindingBuffer(backend, 0u) != NULL ||
         mglRendererBackendSetFallbackRenderTargetTexture(
             backend, (__bridge void *)fallbackTexture) != 0 ||
         mglRendererBackendGetFallbackRenderTargetTexture(backend) !=
@@ -8872,9 +8951,10 @@ static int verifyRendererBackend(id<MTLDevice> device) {
         mglRendererBackendGetTransientDepthTexture(
             backend, &transientWidth, &transientHeight) != NULL ||
         transientWidth != 0u || transientHeight != 0u) {
-        fprintf(stderr, "FAIL: renderer backend render-pass cache\n");
+        fprintf(stderr, "FAIL: renderer backend fallback owner/cache\n");
         return 1;
     }
+    printf("RENDERER_BACKEND_FALLBACK_BUFFER_OWNER_OK\n");
     printf("RENDERER_BACKEND_RENDER_PASS_CACHE_OK\n");
     if (mglRendererBackendSetDefaultDrawBufferAttachment(
             backend, 2u, MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_COLOR,
@@ -8965,6 +9045,28 @@ static int verifyRendererBackend(id<MTLDevice> device) {
         return 1;
     }
     printf("RENDERER_BACKEND_CURRENT_ATTRIB_CACHE_OK\n");
+    uint32_t sizeConstants[31] = {0};
+    sizeConstants[4] = 256u;
+    if (mglRendererBackendSetSizeConstantsBuffer(
+            backend, MGL_RENDERER_BACKEND_SIZE_CONSTANTS_VERTEX,
+            sizeConstants, 31u, (__bridge void *)fallbackBuffer) != 0 ||
+        mglRendererBackendGetSizeConstantsBuffer(
+            backend, MGL_RENDERER_BACKEND_SIZE_CONSTANTS_VERTEX,
+            sizeConstants, 31u) != (__bridge void *)fallbackBuffer ||
+        mglRendererBackendGetSizeConstantsBuffer(
+            backend, MGL_RENDERER_BACKEND_SIZE_CONSTANTS_FRAGMENT,
+            sizeConstants, 31u) != NULL) {
+        fprintf(stderr, "FAIL: renderer backend size constants cache\n");
+        return 1;
+    }
+    sizeConstants[4] = 512u;
+    if (mglRendererBackendGetSizeConstantsBuffer(
+            backend, MGL_RENDERER_BACKEND_SIZE_CONSTANTS_VERTEX,
+            sizeConstants, 31u) != NULL) {
+        fprintf(stderr, "FAIL: renderer backend size constants cache key\n");
+        return 1;
+    }
+    printf("RENDERER_BACKEND_SIZE_CONSTANTS_CACHE_OK\n");
     if (mglRendererBackendSetBlitCachedObject(
             backend, MGL_RENDERER_BACKEND_BLIT_CACHE_NEAREST_SAMPLER,
             (__bridge void *)nearestSampler) != 0 ||

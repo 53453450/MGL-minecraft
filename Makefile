@@ -114,7 +114,6 @@ help:
 		'  make test-dirty-hash  Run the minimal dirty-hash batch regression.' \
 		'  make test             Run the interactive GLFW test application.' \
 		'  make check-air-only   Fail if production paths reference the legacy GLSL->SPIR-V->MSL chain.' \
-		'  make check-p4-metalcpp Fail if the P4 Metal-cpp ownership/callback census regresses.' \
 		'  make check-p5-metalcpp Fail if the single-path Metal-cpp renderer regresses.' \
 		'  make clean            Remove local build outputs.'
 
@@ -629,11 +628,11 @@ $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
 	MGL/src/mgl_render_cpp.cpp MGL/src/mgl_render_cpp.h \
 	MGL/src/mgl_renderer_backend.cpp MGL/src/mgl_renderer_backend.h \
 	MGL/src/MGLPlatformRendererShell.m MGL/include/MGLPlatformRendererShell.h \
-	MGL/src/mgl_render_cpp_objc.h MGL/src/mgl_aux_assets.c \
+	MGL/src/mgl_aux_assets.c \
 	MGL/src/mgl_buffer_slots.c \
 	MGL/src/mgl_sync.m
 	$(LLVM_CXX) -x objective-c++ -fobjc-arc -g -O0 $(LLVM_CXXFLAGS) $(LLVM_LDFLAGS) \
-		-framework Cocoa -framework Foundation -framework Metal \
+		-framework Cocoa -framework Foundation -framework QuartzCore -framework Metal \
 		test_legacy_compat/test_metalcpp_smoke.mm \
 		MGL/src/mgl_render_cpp.cpp \
 		MGL/src/mgl_renderer_backend.cpp \
@@ -706,7 +705,7 @@ test-air:
 # The interactive GLFW application and performance benchmark remain explicit.
 test-all:
 	$(MAKE) check-air-only
-	$(MAKE) check-p4-metalcpp
+	$(MAKE) check-p5-metalcpp
 	$(MAKE) test-frontends
 	$(MAKE) test-air
 	$(MAKE) test-dirty-hash
@@ -718,6 +717,6 @@ test-all:
 	test-mglair test-mglair-gtest test-mcrepro test-metalcpp test-frontends \
 	test-air test-all check-air-only
 
-.PHONY: check-p4-metalcpp
+.PHONY: check-p4-metalcpp check-p5-metalcpp
 
 -include $(deps)

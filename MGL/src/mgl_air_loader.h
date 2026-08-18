@@ -28,9 +28,9 @@ typedef struct MGLRenderCppPipelineDescriptorState {
     uint64_t fragment_program_instance;
     uint64_t fragment_program_generation;
     uint32_t color_count;
-    uint32_t color_format[8];   /* MTLPixelFormat 以 uint 传 */
-    uint32_t depth_format;      /* MTLPixelFormat 以 uint 传（MTLPixelFormatInvalid=0） */
-    uint32_t stencil_format;    /* MTLPixelFormat 以 uint 传 */
+    uint32_t color_format[8];   /* MGLPixelFormat 以 uint 传 */
+    uint32_t depth_format;      /* MGLPixelFormat 以 uint 传（MGLPixelFormatInvalid=0） */
+    uint32_t stencil_format;    /* MGLPixelFormat 以 uint 传 */
     int      rasterization_enabled;
     int      icb_enabled;       /* indirect command buffers */
     int      alpha_to_coverage_enabled;

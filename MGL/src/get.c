@@ -58,17 +58,17 @@ static const char *kMglExtensions[] = {
      * results; the underlying code paths were already present. */
     "GL_ARB_clip_control",                 /* glClipControl + viewport/Y-flip + depth-range wiring in MGLRenderer.m */
     "GL_ARB_gpu_shader5",                  /* AIR lowers implicit conversions / floatBitsToInt; core since 150 */
-    "GL_ARB_depth_texture",                /* DEPTH_COMPONENT* -> MTLPixelFormatDepth* already mapped */
+    "GL_ARB_depth_texture",                /* DEPTH_COMPONENT* -> MGLPixelFormatDepth* already mapped */
     "GL_ARB_texture_float",                /* R/RG/RGBA 16F/32F -> Metal float formats already mapped */
-    "GL_EXT_texture_shared_exponent",      /* RGB9_E5 -> MTLPixelFormatRGB9E5Float already mapped */
-    "GL_ARB_texture_rgb10_a2ui",           /* RGB10_A2UI -> MTLPixelFormatRGB10A2Uint already mapped */
+    "GL_EXT_texture_shared_exponent",      /* RGB9_E5 -> MGLPixelFormatRGB9E5Float already mapped */
+    "GL_ARB_texture_rgb10_a2ui",           /* RGB10_A2UI -> MGLPixelFormatRGB10A2Uint already mapped */
     "GL_EXT_texture_integer",              /* RGB/RGBA integer formats already mapped */
     "GL_EXT_texture_shadow_lod",      /* AIR lowers Dref+LOD shadow sampling */
     "GL_ARB_parallel_shader_compile",      /* no-op hint; mglMaxShaderCompilerThreadsKHR stores value */
     "GL_KHR_parallel_shader_compile",      /* alias */
     "GL_EXT_texture_compression_s3tc",     /* MGL maps compressed S3TC internal formats in textures.c */
     "GL_KHR_texture_compression_astc_ldr", /* MGL maps compressed ASTC LDR internal formats in textures.c */
-    "GL_EXT_texture_sRGB_decode",          /* GL_TEXTURE_SRGB_DECODE_EXT state in tex_param.c; mglEffectiveMTLPixelFormatForTexture downgrades sRGB→linear on SKIP_DECODE */
+    "GL_EXT_texture_sRGB_decode",          /* GL_TEXTURE_SRGB_DECODE_EXT state in tex_param.c; mglEffectiveMGLPixelFormatForTexture downgrades sRGB→linear on SKIP_DECODE */
 };
 static_assert((sizeof(kMglExtensions) / sizeof(kMglExtensions[0])) == MGL_NUM_EXTENSIONS,
               "MGL_NUM_EXTENSIONS must match kMglExtensions");
@@ -2271,7 +2271,7 @@ static GLboolean mglInternalFormatIsRenderable(GLenum internalformat)
         !mglInternalFormatHasStencil(storage)) {
         return GL_FALSE;
     }
-    return mtlFormatForGLInternalFormat(storage) != MTLPixelFormatInvalid;
+    return mtlFormatForGLInternalFormat(storage) != MGLPixelFormatInvalid;
 }
 
 static GLboolean mglInternalFormatTargetSupported(GLenum target, GLenum internalformat)
@@ -2279,7 +2279,7 @@ static GLboolean mglInternalFormatTargetSupported(GLenum target, GLenum internal
     GLenum storage = mglCanonicalInternalFormat(internalformat);
     if (!validInternalFormat(internalformat) ||
         !mglInternalformatTargetValid(target) ||
-        mtlFormatForGLInternalFormat(storage) == MTLPixelFormatInvalid) {
+        mtlFormatForGLInternalFormat(storage) == MGLPixelFormatInvalid) {
         return GL_FALSE;
     }
 

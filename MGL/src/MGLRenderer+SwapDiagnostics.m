@@ -11,45 +11,76 @@
 #import "MGLRenderer+SwapDiagnostics_Private.h"
 #import "MGLRenderer+Blit_Private.h"
 #include "mgl_env_flag.h"
-#include "mgl_render_cpp_objc.h"
+#include "mgl_render_cpp.h"
 
-static MGLMetalBufferRef mglSwapDiagnosticsCreateBuffer(
-    MGLMetalDeviceRef device,
-    NSUInteger length)
+typedef void (^MGLSwapCommandCompletionBlock)(
+    const MGLRenderCppCommandBufferState *state);
+
+static void mglSwapCommandCompletionCallback(
+    void *context,
+    const MGLRenderCppCommandBufferState *state)
 {
-    (void)device;
+    MGLSwapCommandCompletionBlock block =
+        (__bridge MGLSwapCommandCompletionBlock)context;
+    if (block) block(state);
+}
+
+static void mglSwapCommandCompletionDestroy(void *context)
+{
+    if (!context) return;
+    (void)CFBridgingRelease(context);
+}
+
+static int mglSwapAddCommandBufferOwnerCompletion(
+    void *owner,
+    MGLSwapCommandCompletionBlock block)
+{
+    if (!owner || !block) return -1;
+    MGLSwapCommandCompletionBlock copied = [block copy];
+    void *context = (__bridge_retained void *)copied;
+    int result = mglRenderCppAddCommandBufferOwnerCompletion(
+        owner,
+        mglSwapCommandCompletionCallback,
+        context,
+        mglSwapCommandCompletionDestroy);
+    if (result != 0) mglSwapCommandCompletionDestroy(context);
+    return result;
+}
+
+static id mglSwapDiagnosticsCreateBuffer(NSUInteger length)
+{
     void *bufferCPP = NULL;
     if (mglRenderCppCreateBuffer(
-            length, MTLResourceStorageModeShared,
+            length, 0u,
             "MGL Swap Diagnostic Sample", &bufferCPP) == 0 && bufferCPP) {
-        return (__bridge_transfer MGLMetalBufferRef)bufferCPP;
+        return (__bridge_transfer id)bufferCPP;
     }
     return nil;
 }
 
-static MGLMetalRenderCommandEncoderRef mglSwapDiagnosticsCreateRenderEncoder(
+static id mglSwapDiagnosticsCreateRenderEncoder(
     void *commandBufferOwner,
-    MGLMetalTextureRef colorTexture)
+    id colorTexture)
 {
     if (!commandBufferOwner || !colorTexture) return nil;
     MGLRenderCppRenderPassState state = {0};
     state.color[0].attachment.texture = (__bridge void *)colorTexture;
-    state.color[0].attachment.load_action = MTLLoadActionDontCare;
-    state.color[0].attachment.store_action = MTLStoreActionStore;
-    return mglRenderCreateRenderEncoderForCommandBufferOwner(
+    state.color[0].attachment.load_action = 0u;
+    state.color[0].attachment.store_action = 1u;
+    return (__bridge id)mglRenderCppCreateRenderEncoderBorrowed(
         commandBufferOwner, &state);
 }
 
 static void mglSwapDiagnosticsSetRenderPipeline(
-    MGLMetalRenderCommandEncoderRef encoder,
-    MGLMetalRenderPipelineStateRef pipeline)
+    id encoder,
+    id pipeline)
 {
     (void)mglRenderCppSetRenderPipelineState(
         (__bridge void *)encoder, (__bridge void *)pipeline);
 }
 
 static void mglSwapDiagnosticsSetRenderBytes(
-    MGLMetalRenderCommandEncoderRef encoder,
+    id encoder,
     const void *bytes,
     NSUInteger length,
     uint32_t stage)
@@ -59,8 +90,8 @@ static void mglSwapDiagnosticsSetRenderBytes(
 }
 
 static void mglSwapDiagnosticsSetFragmentTexture(
-    MGLMetalRenderCommandEncoderRef encoder,
-    MGLMetalTextureRef texture)
+    id encoder,
+    id texture)
 {
     (void)mglRenderCppSetRenderTexture(
         (__bridge void *)encoder, (__bridge void *)texture,
@@ -68,8 +99,8 @@ static void mglSwapDiagnosticsSetFragmentTexture(
 }
 
 static void mglSwapDiagnosticsSetFragmentSampler(
-    MGLMetalRenderCommandEncoderRef encoder,
-    MGLMetalSamplerStateRef sampler)
+    id encoder,
+    id sampler)
 {
     (void)mglRenderCppSetRenderSampler(
         (__bridge void *)encoder, (__bridge void *)sampler,
@@ -77,30 +108,29 @@ static void mglSwapDiagnosticsSetFragmentSampler(
 }
 
 static void mglSwapDiagnosticsSetViewport(
-    MGLMetalRenderCommandEncoderRef encoder,
-    MTLViewport viewport)
+    id encoder,
+    double width,
+    double height)
 {
     (void)mglRenderCppSetRenderViewport(
-        (__bridge void *)encoder, viewport.originX, viewport.originY,
-        viewport.width, viewport.height, viewport.znear, viewport.zfar);
+        (__bridge void *)encoder, 0.0, 0.0, width, height, 0.0, 1.0);
 }
 
 static void mglSwapDiagnosticsSetScissor(
-    MGLMetalRenderCommandEncoderRef encoder,
-    MTLScissorRect scissor)
+    id encoder,
+    NSUInteger width,
+    NSUInteger height)
 {
     (void)mglRenderCppSetRenderScissor(
-        (__bridge void *)encoder, scissor.x, scissor.y,
-        scissor.width, scissor.height);
+        (__bridge void *)encoder, 0u, 0u, width, height);
 }
 
-static void mglSwapDiagnosticsDrawTriangleStrip(
-    MGLMetalRenderCommandEncoderRef encoder)
+static void mglSwapDiagnosticsDrawTriangleStrip(id encoder)
 {
     (void)mglRenderCppEncodeDraw((__bridge void *)encoder,
         &(MGLRenderCppDrawPlan){
             .kind = MGL_RENDER_CPP_DRAW_ARRAY,
-            .primitive_type = (uint32_t)MTLPrimitiveTypeTriangleStrip,
+            .primitive_type = 4u,
             .vertex_start = 0,
             .vertex_count = 4,
             .instance_count = 1u,
@@ -108,47 +138,57 @@ static void mglSwapDiagnosticsDrawTriangleStrip(
         }, NULL, 0);
 }
 
-static void mglSwapDiagnosticsEndRenderEncoder(
-    MGLMetalRenderCommandEncoderRef encoder)
+static void mglSwapDiagnosticsEndRenderEncoder(id encoder)
 {
     (void)mglRenderCppEndRenderEncoder((__bridge void *)encoder);
 }
 
-static MGLMetalBlitCommandEncoderRef mglSwapDiagnosticsCreateBlitEncoder(
+static id mglSwapDiagnosticsCreateBlitEncoder(
     void *commandBufferOwner)
 {
-    return mglRenderCreateBlitEncoderForCommandBufferOwner(
+    return (__bridge id)mglRenderCppCreateBlitEncoderBorrowed(
         commandBufferOwner);
 }
 
 static void mglSwapDiagnosticsCopyTextureToBuffer(
-    MGLMetalBlitCommandEncoderRef encoder,
-    MGLMetalTextureRef texture,
-    MTLOrigin origin,
-    MTLSize size,
-    MGLMetalBufferRef buffer,
+    id encoder,
+    id texture,
+    NSUInteger originX,
+    NSUInteger originY,
+    NSUInteger width,
+    NSUInteger height,
+    id buffer,
     NSUInteger bytesPerRow,
     NSUInteger bytesPerImage)
 {
     (void)mglRenderCppBlitCopyTextureToBuffer(
         (__bridge void *)encoder, (__bridge void *)texture, 0, 0,
-        origin.x, origin.y, origin.z, size.width, size.height, size.depth,
+        originX, originY, 0u, width, height, 1u,
         (__bridge void *)buffer, 0, bytesPerRow, bytesPerImage);
 }
 
-static void mglSwapDiagnosticsEndBlitEncoder(
-    MGLMetalBlitCommandEncoderRef encoder)
+static void mglSwapDiagnosticsEndBlitEncoder(id encoder)
 {
     (void)mglRenderCppEndBlitEncoder((__bridge void *)encoder);
 }
 
 @implementation MGLRenderer (SwapDiagnostics)
 
-- (void)copyRenderPassColorToDrawableIfNeeded:(MGLMetalTextureRef)rpColor0
-                              drawableTexture:(MGLMetalTextureRef)drawableTexture
+- (void)copyRenderPassColorToDrawableIfNeeded:(id)rpColor0
+                              drawableTexture:(id)drawableTexture
                                       swapCall:(uint64_t)swapCall
                                     traceSwap:(bool)traceSwap
 {
+    MGLRenderCppTextureInfo sourceInfo = {0};
+    MGLRenderCppTextureInfo drawableInfo = {0};
+    if (rpColor0) {
+        (void)mglRenderCppGetTextureInfo(
+            (__bridge const void *)rpColor0, &sourceInfo);
+    }
+    if (drawableTexture) {
+        (void)mglRenderCppGetTextureInfo(
+            (__bridge const void *)drawableTexture, &drawableInfo);
+    }
     // Diagnostic + compatibility path:
     // When swapping the default framebuffer, the active render pass should target the drawable.
     // If it still points to an offscreen texture, copy that texture into the drawable before present.
@@ -164,36 +204,36 @@ static void mglSwapDiagnosticsEndBlitEncoder(
             mglTraceLogNSString(@"MGL TRACE swap.copyToDrawable.begin call=%llu src=%p fmt=%lu %lux%lu dst=%p fmt=%lu %lux%lu",
                   (unsigned long long)swapCall,
                   rpColor0,
-                  (unsigned long)rpColor0.pixelFormat,
-                  (unsigned long)rpColor0.width,
-                  (unsigned long)rpColor0.height,
+                  (unsigned long)sourceInfo.pixel_format,
+                  (unsigned long)sourceInfo.width,
+                  (unsigned long)sourceInfo.height,
                   drawableTexture,
-                  (unsigned long)drawableTexture.pixelFormat,
-                  (unsigned long)drawableTexture.width,
-                  (unsigned long)drawableTexture.height);
+                  (unsigned long)drawableInfo.pixel_format,
+                  (unsigned long)drawableInfo.width,
+                  (unsigned long)drawableInfo.height);
         }
 
         BOOL canShaderCopyToDrawable =
-            (rpColor0.pixelFormat == drawableTexture.pixelFormat ||
-             (rpColor0.pixelFormat == MTLPixelFormatRGBA8Unorm && drawableTexture.pixelFormat == MTLPixelFormatBGRA8Unorm) ||
-             (rpColor0.pixelFormat == MTLPixelFormatBGRA8Unorm && drawableTexture.pixelFormat == MTLPixelFormatRGBA8Unorm));
+            (sourceInfo.pixel_format == drawableInfo.pixel_format ||
+             (sourceInfo.pixel_format == 70u && drawableInfo.pixel_format == 80u) ||
+             (sourceInfo.pixel_format == 80u && drawableInfo.pixel_format == 70u));
         if (canShaderCopyToDrawable) {
-                MGLMetalRenderPipelineStateRef pipeline = [self scaledBlitPipelineForPixelFormat:drawableTexture.pixelFormat];
-                MGLMetalSamplerStateRef sampler = [self scaledBlitSamplerForFilter:GL_NEAREST];
-                NSUInteger copyWidth = MIN((NSUInteger)rpColor0.width, (NSUInteger)drawableTexture.width);
-                NSUInteger copyHeight = MIN((NSUInteger)rpColor0.height, (NSUInteger)drawableTexture.height);
+                id pipeline = [self scaledBlitPipelineForPixelFormat:drawableInfo.pixel_format];
+                id sampler = [self scaledBlitSamplerForFilter:GL_NEAREST];
+                NSUInteger copyWidth = MIN((NSUInteger)sourceInfo.width, (NSUInteger)drawableInfo.width);
+                NSUInteger copyHeight = MIN((NSUInteger)sourceInfo.height, (NSUInteger)drawableInfo.height);
                 if (pipeline && sampler && copyWidth > 0 && copyHeight > 0) {
                     MGLScaledBlitParams params;
                     params.uvRect = (vector_float4){
                         0.0f,
                         0.0f,
-                        rpColor0.width ? ((float)copyWidth / (float)rpColor0.width) : 0.0f,
-                        rpColor0.height ? ((float)copyHeight / (float)rpColor0.height) : 0.0f
+                        sourceInfo.width ? ((float)copyWidth / (float)sourceInfo.width) : 0.0f,
+                        sourceInfo.height ? ((float)copyHeight / (float)sourceInfo.height) : 0.0f
                     };
                     params.forceOpaqueAlpha = 1.0f;
                     params._padding = (vector_float3){0.0f, 0.0f, 0.0f};
 
-                    MGLMetalRenderCommandEncoderRef copyEncoder =
+                    id copyEncoder =
                         mglSwapDiagnosticsCreateRenderEncoder(
                             _renderPassManager.state->currentCommandBufferOwner,
                             drawableTexture);
@@ -207,20 +247,10 @@ static void mglSwapDiagnosticsEndBlitEncoder(
                             MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT);
                         mglSwapDiagnosticsSetFragmentTexture(copyEncoder, rpColor0);
                         mglSwapDiagnosticsSetFragmentSampler(copyEncoder, sampler);
-                        mglSwapDiagnosticsSetViewport(copyEncoder, (MTLViewport){
-                            .originX = 0.0,
-                            .originY = 0.0,
-                            .width = (double)copyWidth,
-                            .height = (double)copyHeight,
-                            .znear = 0.0,
-                            .zfar = 1.0
-                        });
-                        mglSwapDiagnosticsSetScissor(copyEncoder, (MTLScissorRect){
-                            .x = 0,
-                            .y = 0,
-                            .width = copyWidth,
-                            .height = copyHeight
-                        });
+                        mglSwapDiagnosticsSetViewport(
+                            copyEncoder, (double)copyWidth, (double)copyHeight);
+                        mglSwapDiagnosticsSetScissor(
+                            copyEncoder, copyWidth, copyHeight);
                         mglSwapDiagnosticsDrawTriangleStrip(copyEncoder);
                         mglSwapDiagnosticsEndRenderEncoder(copyEncoder);
                     } else {
@@ -235,8 +265,8 @@ static void mglSwapDiagnosticsEndBlitEncoder(
                 }
         } else {
             NSLog(@"MGL WARNING: swap.copyToDrawable skipped due to pixel format mismatch src=%lu dst=%lu",
-                  (unsigned long)rpColor0.pixelFormat,
-                  (unsigned long)drawableTexture.pixelFormat);
+                  (unsigned long)sourceInfo.pixel_format,
+                  (unsigned long)drawableInfo.pixel_format);
         }
 
         if (traceCopyToDrawable) {
@@ -260,8 +290,8 @@ static void mglSwapDiagnosticsEndBlitEncoder(
 
 }
 
-- (void)scheduleSwapTextureSampleDiagnostics:(MGLMetalTextureRef)rpColor0
-                             drawableTexture:(MGLMetalTextureRef)drawableTexture
+- (void)scheduleSwapTextureSampleDiagnostics:(id)rpColor0
+                             drawableTexture:(id)drawableTexture
                                      swapCall:(uint64_t)swapCall
 {
     // Low-frequency dual texture sampling for black-screen diagnostics.
@@ -269,8 +299,8 @@ static void mglSwapDiagnosticsEndBlitEncoder(
     // distinguish "rendered black" from "copy/present black".
     if (kMGLSwapPresentDiagnostics &&
         ((swapCall <= 12ull && (swapCall % 3ull) == 0ull) || ((swapCall % 120ull) == 0ull))) {
-        void (^scheduleTextureSample)(MGLMetalTextureRef, NSString *, NSUInteger, NSUInteger) =
-            ^(MGLMetalTextureRef sampleTexture, NSString *sampleTag, NSUInteger originX, NSUInteger originY) {
+        void (^scheduleTextureSample)(id, NSString *, NSUInteger, NSUInteger) =
+            ^(id sampleTexture, NSString *sampleTag, NSUInteger originX, NSUInteger originY) {
                 if (!sampleTexture) {
                     mglTraceLogNSString(@"MGL TRACE swap.sample.%@ call=%llu skipped(texture=nil)",
                           sampleTag,
@@ -278,19 +308,24 @@ static void mglSwapDiagnosticsEndBlitEncoder(
                     return;
                 }
 
-                if (sampleTexture.pixelFormat != MTLPixelFormatBGRA8Unorm &&
-                    sampleTexture.pixelFormat != MTLPixelFormatRGBA8Unorm) {
+                MGLRenderCppTextureInfo sampleInfo = {0};
+                if (mglRenderCppGetTextureInfo(
+                        (__bridge const void *)sampleTexture, &sampleInfo) != 0) {
+                    return;
+                }
+                if (sampleInfo.pixel_format != 80u &&
+                    sampleInfo.pixel_format != 70u) {
                     mglTraceLogNSString(@"MGL TRACE swap.sample.%@ call=%llu skipped(fmt=%lu tex=%lux%lu)",
                           sampleTag,
                           (unsigned long long)swapCall,
-                          (unsigned long)sampleTexture.pixelFormat,
-                          (unsigned long)sampleTexture.width,
-                          (unsigned long)sampleTexture.height);
+                          (unsigned long)sampleInfo.pixel_format,
+                          (unsigned long)sampleInfo.width,
+                          (unsigned long)sampleInfo.height);
                     return;
                 }
 
-                NSUInteger sampleWidth = MIN((NSUInteger)sampleTexture.width, 8u);
-                NSUInteger sampleHeight = MIN((NSUInteger)sampleTexture.height, 8u);
+                NSUInteger sampleWidth = MIN((NSUInteger)sampleInfo.width, 8u);
+                NSUInteger sampleHeight = MIN((NSUInteger)sampleInfo.height, 8u);
                 NSUInteger bytesPerPixel = 4u;
                 NSUInteger sampleBytesPerRow = sampleWidth * bytesPerPixel;
                 NSUInteger sampleBytesPerImage = sampleBytesPerRow * sampleHeight;
@@ -298,27 +333,26 @@ static void mglSwapDiagnosticsEndBlitEncoder(
                     mglTraceLogNSString(@"MGL TRACE swap.sample.%@ call=%llu skipped(invalid-size tex=%lux%lu)",
                           sampleTag,
                           (unsigned long long)swapCall,
-                          (unsigned long)sampleTexture.width,
-                          (unsigned long)sampleTexture.height);
+                          (unsigned long)sampleInfo.width,
+                          (unsigned long)sampleInfo.height);
                     return;
                 }
 
                 NSUInteger clampedOriginX = originX;
                 NSUInteger clampedOriginY = originY;
-                if (clampedOriginX + sampleWidth > (NSUInteger)sampleTexture.width) {
-                    clampedOriginX = ((NSUInteger)sampleTexture.width > sampleWidth)
-                        ? ((NSUInteger)sampleTexture.width - sampleWidth)
+                if (clampedOriginX + sampleWidth > (NSUInteger)sampleInfo.width) {
+                    clampedOriginX = ((NSUInteger)sampleInfo.width > sampleWidth)
+                        ? ((NSUInteger)sampleInfo.width - sampleWidth)
                         : 0u;
                 }
-                if (clampedOriginY + sampleHeight > (NSUInteger)sampleTexture.height) {
-                    clampedOriginY = ((NSUInteger)sampleTexture.height > sampleHeight)
-                        ? ((NSUInteger)sampleTexture.height - sampleHeight)
+                if (clampedOriginY + sampleHeight > (NSUInteger)sampleInfo.height) {
+                    clampedOriginY = ((NSUInteger)sampleInfo.height > sampleHeight)
+                        ? ((NSUInteger)sampleInfo.height - sampleHeight)
                         : 0u;
                 }
 
-                MGLMetalBufferRef sampleBuffer =
-                    mglSwapDiagnosticsCreateBuffer(_device,
-                                                   sampleBytesPerImage);
+                id sampleBuffer =
+                    mglSwapDiagnosticsCreateBuffer(sampleBytesPerImage);
                 if (!sampleBuffer) {
                     NSLog(@"MGL WARNING: swap.sample.%@ call=%llu failed(alloc size=%lu)",
                           sampleTag,
@@ -327,7 +361,7 @@ static void mglSwapDiagnosticsEndBlitEncoder(
                     return;
                 }
 
-                MGLMetalBlitCommandEncoderRef sampleEncoder =
+                id sampleEncoder =
                     mglSwapDiagnosticsCreateBlitEncoder(
                         _renderPassManager.state->currentCommandBufferOwner);
                 if (!sampleEncoder) {
@@ -339,19 +373,21 @@ static void mglSwapDiagnosticsEndBlitEncoder(
 
                 mglSwapDiagnosticsCopyTextureToBuffer(
                     sampleEncoder, sampleTexture,
-                    MTLOriginMake(clampedOriginX, clampedOriginY, 0),
-                    MTLSizeMake(sampleWidth, sampleHeight, 1), sampleBuffer,
+                    clampedOriginX, clampedOriginY,
+                    sampleWidth, sampleHeight, sampleBuffer,
                     sampleBytesPerRow, sampleBytesPerImage);
                 mglSwapDiagnosticsEndBlitEncoder(sampleEncoder);
 
                 uint64_t sampleSwapCall = swapCall;
                 NSString *sampleTagCopy = [sampleTag copy];
-                NSUInteger sampleTexWidth = (NSUInteger)sampleTexture.width;
-                NSUInteger sampleTexHeight = (NSUInteger)sampleTexture.height;
+                NSUInteger sampleTexWidth = (NSUInteger)sampleInfo.width;
+                NSUInteger sampleTexHeight = (NSUInteger)sampleInfo.height;
                 NSUInteger sampleOriginX = clampedOriginX;
                 NSUInteger sampleOriginY = clampedOriginY;
-                [sampleBuffer addDebugMarker:@"mgl_swap_sample" range:NSMakeRange(0, sampleBytesPerImage)];
-                mglRenderAddCommandBufferOwnerCompletion(
+                (void)mglRenderCppAddBufferDebugMarker(
+                    (__bridge void *)sampleBuffer,
+                    "mgl_swap_sample", 0u, sampleBytesPerImage);
+                mglSwapAddCommandBufferOwnerCompletion(
                     _renderPassManager.state->currentCommandBufferOwner,
                     ^(const MGLRenderCppCommandBufferState *sampleState) {
                     NSString *sampleError = sampleState->has_error
@@ -360,13 +396,19 @@ static void mglSwapDiagnosticsEndBlitEncoder(
                              sampleState->error_domain,
                              (long long)sampleState->error_code]
                         : nil;
-                    const uint8_t *p = (const uint8_t *)sampleBuffer.contents;
+                    void *sampleContents = NULL;
+                    uint64_t sampleBufferLength = 0;
+                    (void)mglRenderCppGetBufferContents(
+                        (__bridge void *)sampleBuffer,
+                        &sampleContents, &sampleBufferLength);
+                    const uint8_t *p = sampleBufferLength >= sampleBytesPerImage
+                        ? (const uint8_t *)sampleContents : NULL;
                     if (!p) {
                         mglTraceLogNSString(@"MGL TRACE swap.sample.%@ call=%llu unavailable(contents=nil) status=%s error=%@",
                               sampleTagCopy,
                               (unsigned long long)sampleSwapCall,
                               mglCommandBufferStatusName(
-                                  (MTLCommandBufferStatus)sampleState->status),
+                                  sampleState->status),
                               sampleError);
                         return;
                     }
@@ -427,7 +469,7 @@ static void mglSwapDiagnosticsEndBlitEncoder(
                           (unsigned long)diffFromFirst,
                           appearsSolid ? 1 : 0,
                           mglCommandBufferStatusName(
-                              (MTLCommandBufferStatus)sampleState->status),
+                              sampleState->status),
                           sampleError);
 
                     if ([sampleTagCopy isEqualToString:@"src.center"]) {
@@ -453,12 +495,22 @@ static void mglSwapDiagnosticsEndBlitEncoder(
                 });
             };
 
+        MGLRenderCppTextureInfo sourceInfo = {0};
+        MGLRenderCppTextureInfo drawableInfo = {0};
+        if (rpColor0) {
+            (void)mglRenderCppGetTextureInfo(
+                (__bridge const void *)rpColor0, &sourceInfo);
+        }
+        if (drawableTexture) {
+            (void)mglRenderCppGetTextureInfo(
+                (__bridge const void *)drawableTexture, &drawableInfo);
+        }
         scheduleTextureSample(rpColor0, @"src.tl", 0u, 0u);
         if (rpColor0) {
-            NSUInteger cx = ((NSUInteger)rpColor0.width > 8u) ? (((NSUInteger)rpColor0.width / 2u) - 4u) : 0u;
-            NSUInteger cy = ((NSUInteger)rpColor0.height > 8u) ? (((NSUInteger)rpColor0.height / 2u) - 4u) : 0u;
-            NSUInteger rx = ((NSUInteger)rpColor0.width > 8u) ? ((NSUInteger)rpColor0.width - 8u) : 0u;
-            NSUInteger by = ((NSUInteger)rpColor0.height > 8u) ? ((NSUInteger)rpColor0.height - 8u) : 0u;
+            NSUInteger cx = ((NSUInteger)sourceInfo.width > 8u) ? (((NSUInteger)sourceInfo.width / 2u) - 4u) : 0u;
+            NSUInteger cy = ((NSUInteger)sourceInfo.height > 8u) ? (((NSUInteger)sourceInfo.height / 2u) - 4u) : 0u;
+            NSUInteger rx = ((NSUInteger)sourceInfo.width > 8u) ? ((NSUInteger)sourceInfo.width - 8u) : 0u;
+            NSUInteger by = ((NSUInteger)sourceInfo.height > 8u) ? ((NSUInteger)sourceInfo.height - 8u) : 0u;
             scheduleTextureSample(rpColor0, @"src.center", cx, cy);
             scheduleTextureSample(rpColor0, @"src.right", rx, cy);
             scheduleTextureSample(rpColor0, @"src.bottom", cx, by);
@@ -466,10 +518,10 @@ static void mglSwapDiagnosticsEndBlitEncoder(
         if (drawableTexture != rpColor0) {
             scheduleTextureSample(drawableTexture, @"dst.tl", 0u, 0u);
             if (drawableTexture) {
-                NSUInteger dcx = ((NSUInteger)drawableTexture.width > 8u) ? (((NSUInteger)drawableTexture.width / 2u) - 4u) : 0u;
-                NSUInteger dcy = ((NSUInteger)drawableTexture.height > 8u) ? (((NSUInteger)drawableTexture.height / 2u) - 4u) : 0u;
-                NSUInteger drx = ((NSUInteger)drawableTexture.width > 8u) ? ((NSUInteger)drawableTexture.width - 8u) : 0u;
-                NSUInteger dby = ((NSUInteger)drawableTexture.height > 8u) ? ((NSUInteger)drawableTexture.height - 8u) : 0u;
+                NSUInteger dcx = ((NSUInteger)drawableInfo.width > 8u) ? (((NSUInteger)drawableInfo.width / 2u) - 4u) : 0u;
+                NSUInteger dcy = ((NSUInteger)drawableInfo.height > 8u) ? (((NSUInteger)drawableInfo.height / 2u) - 4u) : 0u;
+                NSUInteger drx = ((NSUInteger)drawableInfo.width > 8u) ? ((NSUInteger)drawableInfo.width - 8u) : 0u;
+                NSUInteger dby = ((NSUInteger)drawableInfo.height > 8u) ? ((NSUInteger)drawableInfo.height - 8u) : 0u;
                 scheduleTextureSample(drawableTexture, @"dst.center", dcx, dcy);
                 scheduleTextureSample(drawableTexture, @"dst.right", drx, dcy);
                 scheduleTextureSample(drawableTexture, @"dst.bottom", dcx, dby);
@@ -477,10 +529,10 @@ static void mglSwapDiagnosticsEndBlitEncoder(
         } else {
             scheduleTextureSample(drawableTexture, @"srcdst.tl", 0u, 0u);
             if (drawableTexture) {
-                NSUInteger sx = ((NSUInteger)drawableTexture.width > 8u) ? (((NSUInteger)drawableTexture.width / 2u) - 4u) : 0u;
-                NSUInteger sy = ((NSUInteger)drawableTexture.height > 8u) ? (((NSUInteger)drawableTexture.height / 2u) - 4u) : 0u;
-                NSUInteger srx = ((NSUInteger)drawableTexture.width > 8u) ? ((NSUInteger)drawableTexture.width - 8u) : 0u;
-                NSUInteger sby = ((NSUInteger)drawableTexture.height > 8u) ? ((NSUInteger)drawableTexture.height - 8u) : 0u;
+                NSUInteger sx = ((NSUInteger)drawableInfo.width > 8u) ? (((NSUInteger)drawableInfo.width / 2u) - 4u) : 0u;
+                NSUInteger sy = ((NSUInteger)drawableInfo.height > 8u) ? (((NSUInteger)drawableInfo.height / 2u) - 4u) : 0u;
+                NSUInteger srx = ((NSUInteger)drawableInfo.width > 8u) ? ((NSUInteger)drawableInfo.width - 8u) : 0u;
+                NSUInteger sby = ((NSUInteger)drawableInfo.height > 8u) ? ((NSUInteger)drawableInfo.height - 8u) : 0u;
                 scheduleTextureSample(drawableTexture, @"srcdst.center", sx, sy);
                 scheduleTextureSample(drawableTexture, @"srcdst.right", srx, sy);
                 scheduleTextureSample(drawableTexture, @"srcdst.bottom", sx, sby);

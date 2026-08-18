@@ -13,11 +13,9 @@
 #define MGL_STATE_COMPAT_H
 
 #include "glcorearb.h"
+#include "mgl_render_values.h"
+#include <stdint.h>
 #include <objc/objc.h>  /* BOOL */
-
-#ifdef __OBJC__
-#import <Metal/Metal.h>
-#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -30,16 +28,14 @@ BOOL mglNearlyEqual(double a, double b);
  * MTLCompareFunction.  On unrecognized enums, logs a rate-limited warning
  * and returns `fallback`.  `label` is a short human-readable tag for the
  * log line (may be NULL). */
-#ifdef __OBJC__
-MTLCompareFunction mglMTLCompareFunctionForGL(GLenum func,
-                                               MTLCompareFunction fallback,
-                                               const char *label);
+uint32_t mglMTLCompareFunctionForGL(GLenum func,
+                                    uint32_t fallback,
+                                    const char *label);
 
 /* Translate GL front-face winding (GL_CW/GL_CCW) to MTLWinding.  On
  * unrecognized enums, logs a rate-limited warning and returns
  * MTLWindingCounterClockwise (GL default). */
-MTLWinding mglMTLWindingForGL(GLenum frontFace);
-#endif
+uint32_t mglMTLWindingForGL(GLenum frontFace);
 
 /* Enum validators (return YES for valid GL enum, NO otherwise). */
 BOOL mglIsValidGLCompareFunction(GLenum func);
@@ -62,7 +58,7 @@ BOOL mglShouldLogSmallBaseBinding(GLuint programName,
                                   GLuint binding,
                                   GLuint glName,
                                   GLsizeiptr rangeSize,
-                                  NSUInteger reflectedSize);
+                                  uint64_t reflectedSize);
 
 #ifdef __cplusplus
 }

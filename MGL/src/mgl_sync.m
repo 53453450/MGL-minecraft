@@ -18,13 +18,12 @@
  * External dependencies:
  *   - FBOAttachment type (glm_context.h).
  *   - MAX_COLOR_ATTACHMENTS (glm_limits.h).
- *   - Metal framework for MTLRenderPass* / MTLCommandBufferStatus /
- *     MTLLoadAction / MTLStoreAction.
+ *   - Metal framework for MTLRenderPass* / MGLCommandBufferStatus /
+ *     MGLLoadAction / MGLStoreAction.
  */
 
 #import "mgl_sync.h"
-#import <Foundation/Foundation.h>
-#import <Metal/Metal.h>
+#import "mgl_render_cpp.h"
 
 /* === Render-pass attachment subresource === */
 
@@ -85,75 +84,37 @@ MGLMetalAttachmentSubresource mglMetalAttachmentSubresourceForAttachment(const F
     return subresource;
 }
 
-BOOL mglMetalRenderPassColorAttachmentMatchesSubresource(MTLRenderPassColorAttachmentDescriptor *descriptor,
+bool mglMetalRenderPassColorAttachmentMatchesSubresource(const void *descriptor,
                                                          MGLMetalAttachmentSubresource subresource)
 {
-    if (!descriptor) {
-        return NO;
-    }
-
-    return descriptor.level == subresource.level &&
-           descriptor.slice == subresource.slice &&
-           descriptor.depthPlane == subresource.depthPlane;
+    return mglRenderCppRenderPassAttachmentMatchesSubresource(descriptor, &subresource);
 }
 
-BOOL mglMetalRenderPassDepthAttachmentMatchesSubresource(MTLRenderPassDepthAttachmentDescriptor *descriptor,
+bool mglMetalRenderPassDepthAttachmentMatchesSubresource(const void *descriptor,
                                                          MGLMetalAttachmentSubresource subresource)
 {
-    if (!descriptor) {
-        return NO;
-    }
-
-    return descriptor.level == subresource.level &&
-           descriptor.slice == subresource.slice &&
-           descriptor.depthPlane == subresource.depthPlane;
+    return mglRenderCppRenderPassAttachmentMatchesSubresource(descriptor, &subresource);
 }
 
-BOOL mglMetalRenderPassStencilAttachmentMatchesSubresource(MTLRenderPassStencilAttachmentDescriptor *descriptor,
+bool mglMetalRenderPassStencilAttachmentMatchesSubresource(const void *descriptor,
                                                            MGLMetalAttachmentSubresource subresource)
 {
-    if (!descriptor) {
-        return NO;
-    }
-
-    return descriptor.level == subresource.level &&
-           descriptor.slice == subresource.slice &&
-           descriptor.depthPlane == subresource.depthPlane;
+    return mglRenderCppRenderPassAttachmentMatchesSubresource(descriptor, &subresource);
 }
 
 /* === Metal enum naming (for trace logging) === */
 
-const char *mglCommandBufferStatusName(MTLCommandBufferStatus status)
+const char *mglCommandBufferStatusName(uint32_t status)
 {
-    switch (status) {
-        case MTLCommandBufferStatusNotEnqueued: return "NotEnqueued";
-        case MTLCommandBufferStatusEnqueued: return "Enqueued";
-        case MTLCommandBufferStatusCommitted: return "Committed";
-        case MTLCommandBufferStatusScheduled: return "Scheduled";
-        case MTLCommandBufferStatusCompleted: return "Completed";
-        case MTLCommandBufferStatusError: return "Error";
-        default: return "Unknown";
-    }
+    return mglRenderCppCommandBufferStatusName(status);
 }
 
-const char *mglLoadActionName(MTLLoadAction action)
+const char *mglLoadActionName(uint32_t action)
 {
-    switch (action) {
-        case MTLLoadActionDontCare: return "DontCare";
-        case MTLLoadActionLoad: return "Load";
-        case MTLLoadActionClear: return "Clear";
-        default: return "Unknown";
-    }
+    return mglRenderCppLoadActionName(action);
 }
 
-const char *mglStoreActionName(MTLStoreAction action)
+const char *mglStoreActionName(uint32_t action)
 {
-    switch (action) {
-        case MTLStoreActionDontCare: return "DontCare";
-        case MTLStoreActionStore: return "Store";
-        case MTLStoreActionMultisampleResolve: return "MSResolve";
-        case MTLStoreActionStoreAndMultisampleResolve: return "Store+MSResolve";
-        case MTLStoreActionUnknown: return "Unknown";
-        default: return "Other";
-    }
+    return mglRenderCppStoreActionName(action);
 }

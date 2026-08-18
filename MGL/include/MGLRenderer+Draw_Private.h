@@ -33,6 +33,22 @@ typedef struct {
     void *render_encoder_owner;
 } MGLEncodeContext;
 
+typedef struct MGLViewportValue_t {
+    double origin_x;
+    double origin_y;
+    double width;
+    double height;
+    double znear;
+    double zfar;
+} MGLViewportValue;
+
+typedef struct MGLScissorRectValue_t {
+    uint64_t x;
+    uint64_t y;
+    uint64_t width;
+    uint64_t height;
+} MGLScissorRectValue;
+
 /* === Resolved vertex-attrib binding === */
 typedef struct MGLResolvedVertexAttribBinding_t {
     const VertexAttrib *attrib;
@@ -131,22 +147,22 @@ Program *mglTraceResolveDrawProgram(GLMContext traceCtx);
 bool mglTraceShouldLogReplay(GLMContext traceCtx, Program *program);
 BOOL mglRendererTextureLooksRecoverableSampled2D(GLMContext glctx,
                                                   Texture *tex,
-                                                  MTLTextureType expectedType,
+                                                  uint32_t expectedType,
                                                   MGLTextureDataKind expectedKind);
 BOOL mglRendererTextureLooksLikeSampledColor2D(GLMContext glctx, Texture *tex);
-MTLIndexType getMTLIndexType(GLenum type);
+uint64_t mglIndexTypeForGLType(GLenum type);
 Buffer *getElementBuffer(GLMContext ctx);
 Buffer *getIndirectBuffer(GLMContext ctx);
-MTLPrimitiveType getMTLPrimitiveType(GLenum mode);
+uint32_t mglPrimitiveTypeForGLMode(GLenum mode);
 
 void mglRestoreProgramPipelinePair(GLMContext ctx, GLuint programName, GLuint pipelineName);
 void mglRendererSyncFramebufferBindingNames(GLMContext ctx);
 Texture *mglTraceFramebufferAttachmentTexture(GLMContext glctx, FBOAttachment *attachment);
 BOOL mglRendererGLSampledCopyLooksUsable(Texture *tex,
-                                                MTLTextureType expectedType,
+                                                uint32_t expectedType,
                                                 MGLTextureDataKind expectedKind,
                                                 BOOL allowPreviousWriteVersion,
-                                                id<MTLTexture> *copyOut,
+                                                id *copyOut,
                                                 BOOL *usedPreviousWriteVersionOut);
 void mglLogDrawWithoutSwapWatchdog(const char *kind,
                                           uint64_t drawCall,
@@ -284,7 +300,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
 - (BOOL)issueIndirectCommandBufferBatch:(MGLDrawBatch *)batch
                                 context:(GLMContext)glm_ctx
                           encodeContext:(const MGLEncodeContext *)encCtx;
-- (id<MTLBuffer>)mdiArgumentScratchBufferWithLength:(NSUInteger)length
+- (id)mdiArgumentScratchBufferWithLength:(NSUInteger)length
                                              offset:(NSUInteger *)offsetOut;
 
 // === Resource binding sync ===
@@ -305,13 +321,13 @@ typedef struct {
 
 // === Dedup state management ===
 - (void)invalidateLastBoundState;
-- (void)recordLastBoundVertexBuffer:(id<MTLBuffer>)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index;
-- (void)recordLastBoundFragmentBuffer:(id<MTLBuffer>)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index;
+- (void)recordLastBoundVertexBuffer:(id)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index;
+- (void)recordLastBoundFragmentBuffer:(id)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index;
 - (void)invalidateLastBoundVertexBufferAtIndex:(NSUInteger)index;
 - (void)invalidateLastBoundFragmentBufferAtIndex:(NSUInteger)index;
-- (void)setViewportIfNeeded:(MTLViewport)viewport;
-- (void)setScissorRectIfNeeded:(MTLScissorRect)rect;
-- (void)setTriangleFillModeIfNeeded:(MTLTriangleFillMode)mode;
+- (void)setViewportIfNeeded:(MGLViewportValue)viewport;
+- (void)setScissorRectIfNeeded:(MGLScissorRectValue)rect;
+- (void)setTriangleFillModeIfNeeded:(uint32_t)mode;
 
 // === Locked draw variants ===
 - (void)mtlDrawArraysLocked:(GLMContext)ctx mode:(GLenum)mode first:(GLint)first count:(GLsizei)count;
@@ -321,7 +337,7 @@ typedef struct {
 // getVertexBufferIndexWithAttributeSet: and floatVertexBufferFor*Attrib: are
 // now declared in MGLRenderer+Buffer_Private.h (implemented in +Buffer.m).
 // Program reflection queries use the fixed mglRendererGetProgram* C ABI.
-- (id<MTLSamplerState>)fallbackSamplerState;
+- (id)fallbackSamplerState;
 - (GLuint)textureUnitForSampledResource:(MGLShaderResource *)sampledResource
                             metalBinding:(GLuint)metalBinding
                                   stage:(int)stage;
@@ -333,18 +349,18 @@ typedef struct {
 - (Texture *)textureForSampledResource:(MGLShaderResource *)sampledResource
                           metalBinding:(GLuint)metalBinding
                                   stage:(int)stage
-                           expectedType:(MTLTextureType)expectedType;
+                           expectedType:(uint32_t)expectedType;
 /* textureUnit-resolved variant — caller passes the already-computed
  * texture unit, skipping the internal textureUnitForSampledResource: call. */
 - (Texture *)textureForSampledResource:(MGLShaderResource *)sampledResource
                           metalBinding:(GLuint)metalBinding
                                   stage:(int)stage
-                           expectedType:(MTLTextureType)expectedType
+                           expectedType:(uint32_t)expectedType
                           textureUnit:(GLuint)textureUnit;
-- (id<MTLTexture>)fallbackSampledTextureForExpectedType:(MTLTextureType)expectedType
+- (id)fallbackSampledTextureForExpectedType:(uint32_t)expectedType
                                                dataKind:(MGLTextureDataKind)dataKind;
-- (int)textureIndexForExpectedMetalType:(MTLTextureType)expectedType;
-- (void)traceSampledTextureReadback:(id<MTLTexture>)texture
+- (int)textureIndexForExpectedMetalType:(uint32_t)expectedType;
+- (void)traceSampledTextureReadback:(id)texture
                               glTex:(Texture *)glTex
                               level:(TextureLevel *)level0
                             program:(GLuint)program
@@ -375,7 +391,7 @@ typedef struct {
                                   label:(const char *)label
                                 context:(GLMContext)drawCtx
                                glBuffer:(Buffer **)glBufferOut
-                              mtlBuffer:(id<MTLBuffer> *)mtlBufferOut;
+                              mtlBuffer:(id *)mtlBufferOut;
 
 - (void)traceReplayCommand:(MGLDrawBatch *)batch
                    command:(MGLDrawCommand *)cmd
@@ -435,11 +451,11 @@ typedef struct {
 - (BOOL)resolveElementBufferForDraw:(const char *)label
                             context:(GLMContext)drawCtx
                            glBuffer:(Buffer **)glBufferOut
-                          mtlBuffer:(id<MTLBuffer> *)mtlBufferOut;
+                          mtlBuffer:(id *)mtlBufferOut;
 - (BOOL)resolveIndirectBufferForDraw:(const char *)label
                              context:(GLMContext)drawCtx
                             glBuffer:(Buffer **)glBufferOut
-                           mtlBuffer:(id<MTLBuffer> *)mtlBufferOut;
+                           mtlBuffer:(id *)mtlBufferOut;
 - (BOOL)prepareEmulatedIndirectCPURead:(GLMContext)drawCtx label:(const char *)label;
 - (BOOL)handleTessellationPatchDrawIfNeeded:(GLMContext)drawCtx
                                         mode:(GLenum *)mode
@@ -461,9 +477,9 @@ typedef struct {
                      instanceCount:(GLsizei)instanceCount
                       baseInstance:(GLuint)baseInstance
                              label:(const char *)label;
-- (id<MTLBuffer>)captureAIRVertexPositionsForGeometryIndexed:(GLMContext)drawCtx
-                                                  indexBuffer:(id<MTLBuffer>)indexBuffer
-                                                    indexType:(MTLIndexType)indexType
+- (id)captureAIRVertexPositionsForGeometryIndexed:(GLMContext)drawCtx
+                                                  indexBuffer:(id)indexBuffer
+                                                    indexType:(uint64_t)indexType
                                                   indexOffset:(NSUInteger)indexOffset
                                                         count:(GLsizei)count
                                                     baseVertex:(GLint)baseVertex
@@ -472,19 +488,19 @@ typedef struct {
                                                      maxIndex:(uint32_t)maxIndex
                                                      outOffset:(NSUInteger *)outOffset;
 - (BOOL)ensureAIRGeometryPassthroughFunctionForProgram:(Program *)program
-                                      outputPrimitive:(MTLPrimitiveType)outputPrimitive;
+                                      outputPrimitive:(uint32_t)outputPrimitive;
 - (BOOL)ensureAIRTessEvalPassthroughFunctionForProgram:(Program *)program;
-- (bool)bindBuffersToComputeEncoder:(id<MTLComputeCommandEncoder>)encoder
+- (bool)bindBuffersToComputeEncoder:(id)encoder
                                stage:(int)stage
                            copyBacks:(MGLStageBindingCopyBackList *)copyBacks;
-- (bool)bindBuffersToComputeEncoder:(id<MTLComputeCommandEncoder>)encoder
+- (bool)bindBuffersToComputeEncoder:(id)encoder
                                stage:(int)stage
                            copyBacks:(MGLStageBindingCopyBackList *)copyBacks
                        executionPlan:(MGLRenderCppComputeExecutionPlan *)executionPlan
                         temporaries:(NSMutableArray *)temporaries;
-- (bool)bindTexturesToComputeEncoder:(id<MTLComputeCommandEncoder>)encoder
+- (bool)bindTexturesToComputeEncoder:(id)encoder
                                 stage:(int)stage;
-- (bool)bindTexturesToComputeEncoder:(id<MTLComputeCommandEncoder>)encoder
+- (bool)bindTexturesToComputeEncoder:(id)encoder
                                 stage:(int)stage
                         executionPlan:(MGLRenderCppComputeExecutionPlan *)executionPlan
                          temporaries:(NSMutableArray *)temporaries;

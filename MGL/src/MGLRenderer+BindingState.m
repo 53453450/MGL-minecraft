@@ -7,7 +7,74 @@
 #import "mgl_frame_activity.h"
 #include "mgl_env_flag.h"
 #include "mgl_render_cpp.h"
-#include "mgl_render_cpp_objc.h"   /* P4.1f: owner-first render-pass readers */
+
+enum {
+    MGL_BINDING_RESOURCE_STORAGE_SHARED = 0u,
+    MGL_BINDING_VERTEX_FORMAT_INVALID = 0u,
+    MGL_BINDING_PIXEL_FORMAT_INVALID = 0u,
+    MGL_BINDING_TEXTURE_TYPE_CUBE = 5u,
+    MGL_BINDING_TEXTURE_TYPE_CUBE_ARRAY = 6u,
+};
+
+static uint64_t mglBindingStateBufferLength(id buffer)
+{
+    MGLRenderCppBufferInfo info = {0};
+    return buffer && mglRenderCppGetBufferInfo((__bridge void *)buffer, &info) == 0
+        ? info.length : 0u;
+}
+
+static MGLRenderCppTextureInfo mglBindingStateTextureInfo(id texture)
+{
+    MGLRenderCppTextureInfo info = {0};
+    if (texture) {
+        (void)mglRenderCppGetTextureInfo((__bridge void *)texture, &info);
+    }
+    return info;
+}
+
+static uint32_t mglBindingStateTexturePixelFormat(id texture)
+{
+    return mglBindingStateTextureInfo(texture).pixel_format;
+}
+
+static uint32_t mglBindingStateTextureType(id texture)
+{
+    return mglBindingStateTextureInfo(texture).texture_type;
+}
+
+static uint64_t mglBindingStateTextureWidth(id texture)
+{
+    return mglBindingStateTextureInfo(texture).width;
+}
+
+static uint64_t mglBindingStateTextureHeight(id texture)
+{
+    return mglBindingStateTextureInfo(texture).height;
+}
+
+static uint64_t mglBindingStateTextureArrayLength(id texture)
+{
+    return mglBindingStateTextureInfo(texture).array_length;
+}
+
+static uint64_t mglBindingStateTextureMipmapLevelCount(id texture)
+{
+    return mglBindingStateTextureInfo(texture).mipmap_level_count;
+}
+
+static BOOL mglBindingStateRenderPassUsesColorTexture(
+    void *owner,
+    void *texture,
+    NSUInteger *attachmentIndexOut)
+{
+    uint32_t attachmentIndex = MAX_COLOR_ATTACHMENTS;
+    const BOOL found = mglRenderCppRenderPassUsesColorTextureOwner(
+        owner, texture, &attachmentIndex);
+    if (attachmentIndexOut) {
+        *attachmentIndexOut = attachmentIndex;
+    }
+    return found;
+}
 
 static BOOL mglBindingStateHasActiveEncoder(const MGLEncodeContext *encCtx)
 {
@@ -18,53 +85,55 @@ static BOOL mglBindingStateHasActiveEncoder(const MGLEncodeContext *encCtx)
         encCtx->render_encoder_owner) != 0;
 }
 
-static MGLMetalBufferRef mglBindingStateCreateBuffer(
-    MGLMetalDeviceRef device,
+static id mglBindingStateCreateBuffer(
+    id device,
     NSUInteger length,
-    MTLResourceOptions options)
+    uint64_t options)
 {
     (void)device;
     void *buffer = NULL;
     if (mglRenderCppCreateBuffer(length, options, NULL, &buffer) == 0 &&
         buffer) {
-        return (__bridge_transfer MGLMetalBufferRef)buffer;
+        return (__bridge_transfer id)buffer;
     }
     return nil;
 }
 
-static MGLMetalBufferRef mglBindingStateCreateBufferWithBytes(
-    MGLMetalDeviceRef device,
+static id mglBindingStateCreateBufferWithBytes(
+    id device,
     const void *bytes,
     NSUInteger length,
-    MTLResourceOptions options)
+    uint64_t options)
 {
     (void)device;
     void *buffer = NULL;
     if (mglRenderCppCreateBufferWithBytes(bytes, length, options, NULL,
                                           &buffer) == 0 && buffer) {
-        return (__bridge_transfer MGLMetalBufferRef)buffer;
+        return (__bridge_transfer id)buffer;
     }
     return nil;
 }
 
-static MGLMetalTextureRef mglBindingStateCreateTextureLevelView(
-    MGLMetalTextureRef texture,
+static id mglBindingStateCreateTextureLevelView(
+    id texture,
     NSUInteger level,
     NSUInteger sliceCount)
 {
+    const MGLRenderCppTextureInfo info = mglBindingStateTextureInfo(texture);
+    if (!texture || info.width == 0u || info.height == 0u) return nil;
     void *view = NULL;
     if (mglRenderCppCreateTextureViewRange(
-            (__bridge void *)texture, (uint32_t)texture.pixelFormat,
-            (uint32_t)texture.textureType, level, 1, 0, sliceCount,
+            (__bridge void *)texture, info.pixel_format,
+            info.texture_type, level, 1, 0, sliceCount,
             0, 0, 0, 0, 0, &view) == 0 && view) {
-        return (__bridge_transfer MGLMetalTextureRef)view;
+        return (__bridge_transfer id)view;
     }
     return nil;
 }
 
 static void mglBindingStateSetVertexBuffer(
     void *renderEncoderOwner,
-    MGLMetalBufferRef buffer,
+    id buffer,
     NSUInteger offset,
     NSUInteger index)
 {
@@ -86,7 +155,7 @@ static void mglBindingStateSetVertexBytes(
 
 static void mglBindingStateSetFragmentBuffer(
     void *renderEncoderOwner,
-    MGLMetalBufferRef buffer,
+    id buffer,
     NSUInteger offset,
     NSUInteger index)
 {
@@ -298,7 +367,7 @@ static bool mglBindingStateFlushResourceBindings(
         } else {                                                                \
             mglBindingStateSetVertexBuffer(                                     \
                 encCtx->render_encoder_owner,                  \
-                (__bridge MGLMetalBufferRef)(bufPtr),                           \
+                (__bridge id)(bufPtr),                           \
                 (off), (slot));                                                 \
         }                                                                       \
     } while (0)
@@ -547,13 +616,13 @@ static bool mglBindingStateFlushResourceBindings(
              * path runs, so refresh here before binding stale contents. */
             [self updateDirtyBuffer:ptr];
         }
-        MGLMetalBufferRef buffer = nil;
+        id buffer = nil;
         if (ptr->data.mtl_data &&
             (uintptr_t)ptr->data.mtl_data >= 0x10000u) {
-            buffer = (__bridge MGLMetalBufferRef)(ptr->data.mtl_data);
+            buffer = (__bridge id)(ptr->data.mtl_data);
         }
 
-        NSUInteger metalLen = buffer ? buffer.length : 0u;
+        NSUInteger metalLen = buffer ? mglBindingStateBufferLength(buffer) : 0u;
         NSUInteger availableBytes = buffer
             ? mglBufferMapVisibleBackingBytes(map, metalLen)
             : 0u;
@@ -563,7 +632,7 @@ static bool mglBindingStateFlushResourceBindings(
             availableBytes < requiredBindingBytes;
         if (needsIsolatedBinding &&
             (!ptr->gpu_write_target || _tessellation.nativeTESActive)) {
-            MGLMetalBufferRef isolated =
+            id isolated =
                 [self isolatedStageBindingBufferForMap:map
                                                  source:buffer
                                          requiredLength:requiredBindingBytes];
@@ -815,7 +884,7 @@ static bool mglBindingStateFlushResourceBindings(
         } else {                                                                \
             mglBindingStateSetVertexBuffer(                                     \
                 encCtx->render_encoder_owner,                  \
-                (__bridge MGLMetalBufferRef)(bufPtr),                           \
+                (__bridge id)(bufPtr),                           \
                 (off), (slot));                                                 \
         }                                                                       \
     } while (0)
@@ -864,7 +933,7 @@ static bool mglBindingStateFlushResourceBindings(
              * and stride haven't changed since the last draw.  This avoids the
              * per-draw NSMutableData allocation + newBufferWithBytes + 4096×
              * memcpy loop. */
-            MGLMetalBufferRef currentAttribBuffer = (__bridge id<MTLBuffer>)
+            id currentAttribBuffer = (__bridge id)
                 mglRendererBackendGetCurrentAttribBuffer(
                     _backend, attrib, attribBytes, (uint32_t)attribStride,
                     (uint64_t)attribStride);
@@ -882,7 +951,7 @@ static bool mglBindingStateFlushResourceBindings(
                 }
                 currentAttribBuffer = mglBindingStateCreateBufferWithBytes(
                     _device, repeated.bytes, repeated.length,
-                    MTLResourceStorageModeShared);
+                    MGL_BINDING_RESOURCE_STORAGE_SHARED);
                 if (!currentAttribBuffer) {
                     NSLog(@"MGL VBIND skip attrib=%u: failed to allocate current vertex attrib Metal buffer", attrib);
                     continue;
@@ -1049,7 +1118,7 @@ static bool mglBindingStateFlushResourceBindings(
         if (attribState->integer == 1 && attribState->type != GL_DOUBLE) {
             MGLShaderResource *attrRes = mglRendererProgramVertexAttribResource(activeProgram, attrib);
             GLuint shaderGlType = attrRes ? attrRes->gl_type : 0u;
-            MTLVertexFormat ignored = MTLVertexFormatInvalid;
+            uint32_t ignored = MGL_BINDING_VERTEX_FORMAT_INVALID;
             if (mglIntegerAttribNeedsConversion(attribState->type,
                                                 shaderGlType,
                                                 attribState->size,
@@ -1069,7 +1138,7 @@ static bool mglBindingStateFlushResourceBindings(
 
         if (attribState->type == GL_DOUBLE) {
             NSUInteger convertedStride = 0;
-            MGLMetalBufferRef convertedBuffer = [self floatVertexBufferForDoubleAttrib:attribBuffer
+            id convertedBuffer = [self floatVertexBufferForDoubleAttrib:attribBuffer
                                                                           resolved:&resolved
                                                                               size:attribState->size
                                                                           outStride:&convertedStride];
@@ -1102,7 +1171,7 @@ static bool mglBindingStateFlushResourceBindings(
 
         if (needsIntToFloatConversion) {
             NSUInteger convertedStride = 0;
-            MGLMetalBufferRef convertedBuffer = [self floatVertexBufferForIntAttrib:attribBuffer
+            id convertedBuffer = [self floatVertexBufferForIntAttrib:attribBuffer
                                                                         resolved:&resolved
                                                                             size:attribState->size
                                                                       normalized:attribState->normalized
@@ -1137,7 +1206,7 @@ static bool mglBindingStateFlushResourceBindings(
 
         if (needsPackedConversion) {
             NSUInteger convertedStride = 0;
-            MGLMetalBufferRef convertedBuffer = nil;
+            id convertedBuffer = nil;
             if (attribState->type == GL_FIXED) {
                 convertedBuffer = [self floatVertexBufferForFixedAttrib:attribBuffer
                                                                resolved:&resolved
@@ -1180,7 +1249,7 @@ static bool mglBindingStateFlushResourceBindings(
 
         if (needsIntegerConversion) {
             NSUInteger convertedStride = 0;
-            MGLMetalBufferRef convertedBuffer = [self integerVertexBufferForAttrib:attribBuffer
+            id convertedBuffer = [self integerVertexBufferForAttrib:attribBuffer
                                                                        resolved:&resolved
                                                                            size:attribState->size
                                                                          srcType:attribState->type
@@ -1229,7 +1298,7 @@ static bool mglBindingStateFlushResourceBindings(
             continue;
         }
 
-        MGLMetalBufferRef attribMetalBuffer = (__bridge MGLMetalBufferRef)(attribBuffer->data.mtl_data);
+        id attribMetalBuffer = (__bridge id)(attribBuffer->data.mtl_data);
         if (!attribMetalBuffer) {
             NSLog(@"MGL VBIND skip attrib=%u buffer=%u: Metal bridge failed",
                   attrib, attribBuffer->name);
@@ -1237,12 +1306,12 @@ static bool mglBindingStateFlushResourceBindings(
         }
 
         NSUInteger attribBindingOffset = (NSUInteger)resolved.binding_offset;
-        if (attribBindingOffset >= attribMetalBuffer.length) {
+        if (attribBindingOffset >= mglBindingStateBufferLength(attribMetalBuffer)) {
             NSLog(@"MGL VBIND skip attrib=%u buffer=%u: bindingOffset=%lu >= metalLen=%lu",
                   attrib,
                   attribBuffer->name,
                   (unsigned long)attribBindingOffset,
-                  (unsigned long)attribMetalBuffer.length);
+                  (unsigned long)mglBindingStateBufferLength(attribMetalBuffer));
             continue;
         }
 
@@ -1279,7 +1348,7 @@ static bool mglBindingStateFlushResourceBindings(
                     mglRendererVertexAttribIsColorInput(activeProgram, attrib)) {
                     effectiveNormalized = GL_TRUE;
                 }
-                MTLVertexFormat format = glTypeSizeToMtlType(attribState->type,
+                uint32_t format = glTypeSizeToMtlType(attribState->type,
                                                              attribState->size,
                                                              effectiveNormalized);
                 mglTraceLog("VATTR_BIND program=%u attrib=%u resource=%s loc=%u metalSlot=%lu glBuffer=%u bindingIndex=%u bindingOffset=%lu relOffset=%lld stride=%u size=%u type=0x%x normalized=%u/%u divisor=%u table=%d metalLen=%lu format=%lu(%s)",
@@ -1299,7 +1368,7 @@ static bool mglBindingStateFlushResourceBindings(
                             (unsigned)effectiveNormalized,
                             (unsigned)resolved.divisor,
                             resolved.uses_binding_table ? 1 : 0,
-                            (unsigned long)attribMetalBuffer.length,
+                            (unsigned long)mglBindingStateBufferLength(attribMetalBuffer),
                             (unsigned long)format,
                             mglVertexFormatName(format));
             }
@@ -1308,7 +1377,7 @@ static bool mglBindingStateFlushResourceBindings(
 	                  (unsigned long)bindingIndex,
                   attribBuffer->name,
                   (unsigned long)attribBindingOffset,
-                  (unsigned long)attribMetalBuffer.length,
+                  (unsigned long)mglBindingStateBufferLength(attribMetalBuffer),
                   attrib,
                   (unsigned)resolved.stride,
                   (unsigned long long)(uintptr_t)resolved.relativeoffset,
@@ -1337,8 +1406,6 @@ static bool mglBindingStateFlushResourceBindings(
                                      bindingSnapshot:(MGLRenderCppBindingSnapshot *)bindingSnapshot
                                          useSnapshot:(BOOL)useSnapshot
 {
-    static MGLMetalBufferRef fallbackBindingBuffer = nil;
-
     /* P4.3b 扩展（round 34）：fallback 段与主 map 循环/VAO attrib 段共用
      * 同一个 binding snapshot（调用方传入）——本方法只收集 buffer op（无
      * bytes op，无需 scratch），结束处一次性重放；重放位置在 attrib 段之后、
@@ -1375,18 +1442,15 @@ static bool mglBindingStateFlushResourceBindings(
         } else {                                                                \
             mglBindingStateSetVertexBuffer(                                     \
                 encCtx->render_encoder_owner,                  \
-                (__bridge MGLMetalBufferRef)(bufPtr),                           \
+                (__bridge id)(bufPtr),                           \
                 (off), (slot));                                                 \
         }                                                                       \
     } while (0)
     const int vertexStage = _tessellation.nativeTESActive
         ? _TESS_EVALUATION_SHADER : _VERTEX_SHADER;
 
-    if (!fallbackBindingBuffer) {
-        fallbackBindingBuffer = mglBindingStateCreateBuffer(
-            _device, kMGLDefaultStageFallbackBufferSize,
-            MTLResourceStorageModeShared);
-    }
+    void *fallbackBindingBuffer = mglRendererBackendGetFallbackBindingBuffer(
+        _backend, kMGLDefaultStageFallbackBufferSize);
 
     // Bind fallback buffer for required stage buffer bindings that were not mapped.
     // This prevents Metal validation aborts on missing buffer slots.
@@ -1426,12 +1490,12 @@ static bool mglBindingStateFlushResourceBindings(
                     if (!mglBindingStateIsValid(_bindingStateOwner) ||
                 !mglBindingStateBufferMatches(
                     _bindingStateOwner, MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
-                    (__bridge void *)fallbackBindingBuffer, 0, (uint32_t)_slot)) {
+                    fallbackBindingBuffer, 0, (uint32_t)_slot)) {
                         MGL_VFB_EMIT_BUFFER(_slot,
-                                            (__bridge void *)fallbackBindingBuffer,
+                                            fallbackBindingBuffer,
                                             0);
                         mglRenderCppBindingUpdateVertexBuffer(
-                    _bindingStateOwner, (__bridge void *)fallbackBindingBuffer, 0,
+                    _bindingStateOwner, fallbackBindingBuffer, 0,
                     (uint32_t)_slot);
                         MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
                     } else {
@@ -1453,11 +1517,11 @@ static bool mglBindingStateFlushResourceBindings(
                 if (!mglBindingStateIsValid(_bindingStateOwner) ||
                 !mglBindingStateBufferMatches(
                     _bindingStateOwner, MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
-                    (__bridge void *)fallbackBindingBuffer, 0, (uint32_t)s)) {
-                    MGL_VFB_EMIT_BUFFER(s, (__bridge void *)fallbackBindingBuffer,
+                fallbackBindingBuffer, 0, (uint32_t)s)) {
+                    MGL_VFB_EMIT_BUFFER(s, fallbackBindingBuffer,
                                          0);
                     mglRenderCppBindingUpdateVertexBuffer(
-                    _bindingStateOwner, (__bridge void *)fallbackBindingBuffer, 0,
+                    _bindingStateOwner, fallbackBindingBuffer, 0,
                     (uint32_t)s);
                     MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
                 } else {
@@ -1670,7 +1734,7 @@ static bool mglBindingStateFlushResourceBindings(
         } else {                                                                \
             mglBindingStateSetFragmentBuffer(                                   \
                 encCtx->render_encoder_owner,                  \
-                (__bridge MGLMetalBufferRef)(bufPtr),                           \
+                (__bridge id)(bufPtr),                           \
                 (off), (slot));                                                 \
         }                                                                       \
     } while (0)
@@ -1819,9 +1883,9 @@ static bool mglBindingStateFlushResourceBindings(
                                                          (uint32_t)bindingIndex);
                     continue;
                 }
-                MGLMetalBufferRef fallbackBuffer = (__bridge MGLMetalBufferRef)(ptr->data.mtl_data);
+                id fallbackBuffer = (__bridge id)(ptr->data.mtl_data);
                 if (fallbackBuffer) {
-                    NSUInteger metalLen = fallbackBuffer.length;
+                    NSUInteger metalLen = mglBindingStateBufferLength(fallbackBuffer);
                     NSUInteger bindOffset = (NSUInteger)offset;
                     if (bindOffset >= metalLen) {
                         NSLog(@"MGL FBIND skip small MTL buffer=%u slot=%u: offset=%lu length=%lu",
@@ -1929,13 +1993,13 @@ static bool mglBindingStateFlushResourceBindings(
                 /* Same first-draw refresh as the vertex path above. */
                 [self updateDirtyBuffer:ptr];
             }
-            MGLMetalBufferRef buffer = nil;
+            id buffer = nil;
             if (ptr->data.mtl_data &&
                 (uintptr_t)ptr->data.mtl_data >= 0x100000000ULL) {
-                buffer = (__bridge MGLMetalBufferRef)(ptr->data.mtl_data);
+                buffer = (__bridge id)(ptr->data.mtl_data);
             }
 
-            NSUInteger metalLen = buffer ? buffer.length : 0u;
+            NSUInteger metalLen = buffer ? mglBindingStateBufferLength(buffer) : 0u;
             NSUInteger availableBytes = buffer
                 ? mglBufferMapVisibleBackingBytes(map, metalLen)
                 : 0u;
@@ -1943,7 +2007,7 @@ static bool mglBindingStateFlushResourceBindings(
             if (!ptr->gpu_write_target &&
                 (!buffer || bindOffset >= metalLen ||
                  availableBytes < requiredBindingBytes)) {
-                MGLMetalBufferRef isolated =
+                id isolated =
                     [self isolatedStageBindingBufferForMap:map
                                                      source:buffer
                                              requiredLength:requiredBindingBytes];
@@ -2129,8 +2193,6 @@ static bool mglBindingStateFlushResourceBindings(
                                        bindingSnapshot:(MGLRenderCppBindingSnapshot *)bindingSnapshot
                                            useSnapshot:(BOOL)useSnapshot
 {
-    static MGLMetalBufferRef fallbackBindingBuffer = nil;
-
     /* Keep fallback emits in the same per-draw snapshot as the main fragment
      * binding loop.  This is the final fragment binding segment, so replaying
      * at method exit preserves the direct path's ordering while removing the
@@ -2164,16 +2226,13 @@ static bool mglBindingStateFlushResourceBindings(
         } else {                                                                \
             mglBindingStateSetFragmentBuffer(                                   \
                 encCtx->render_encoder_owner,                  \
-                (__bridge MGLMetalBufferRef)(bufPtr),                           \
+                (__bridge id)(bufPtr),                           \
                 (off), (slot));                                                 \
         }                                                                       \
     } while (0)
 
-    if (!fallbackBindingBuffer) {
-        fallbackBindingBuffer = mglBindingStateCreateBuffer(
-            _device, kMGLDefaultStageFallbackBufferSize,
-            MTLResourceStorageModeShared);
-    }
+    void *fallbackBindingBuffer = mglRendererBackendGetFallbackBindingBuffer(
+        _backend, kMGLDefaultStageFallbackBufferSize);
 
     // Bind fallback buffer for required stage buffer bindings that were not mapped.
     const int resourceTypes[] = {
@@ -2212,12 +2271,12 @@ static bool mglBindingStateFlushResourceBindings(
                     if (!mglBindingStateIsValid(_bindingStateOwner) ||
                 !mglBindingStateBufferMatches(
                     _bindingStateOwner, MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT,
-                    (__bridge void *)fallbackBindingBuffer, 0, (uint32_t)_slot)) {
+                    fallbackBindingBuffer, 0, (uint32_t)_slot)) {
                         MGL_FFB_EMIT_BUFFER(_slot,
-                                           (__bridge void *)fallbackBindingBuffer,
+                                           fallbackBindingBuffer,
                                            0);
                         mglRenderCppBindingUpdateFragmentBuffer(
-                    _bindingStateOwner, (__bridge void *)fallbackBindingBuffer, 0,
+                    _bindingStateOwner, fallbackBindingBuffer, 0,
                     (uint32_t)_slot);
                         MGL_PERF_INC(g_mglSetFragmentBufferCallsSinceSwap);
                     } else {
@@ -2236,11 +2295,11 @@ static bool mglBindingStateFlushResourceBindings(
                 if (!mglBindingStateIsValid(_bindingStateOwner) ||
                 !mglBindingStateBufferMatches(
                     _bindingStateOwner, MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT,
-                    (__bridge void *)fallbackBindingBuffer, 0, (uint32_t)s)) {
-                    MGL_FFB_EMIT_BUFFER(s, (__bridge void *)fallbackBindingBuffer,
+                fallbackBindingBuffer, 0, (uint32_t)s)) {
+                    MGL_FFB_EMIT_BUFFER(s, fallbackBindingBuffer,
                                         0);
                     mglRenderCppBindingUpdateFragmentBuffer(
-                    _bindingStateOwner, (__bridge void *)fallbackBindingBuffer, 0,
+                    _bindingStateOwner, fallbackBindingBuffer, 0,
                     (uint32_t)s);
                     MGL_PERF_INC(g_mglSetFragmentBufferCallsSinceSwap);
                 } else {
@@ -2325,7 +2384,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     vertexProgramName = vertexProgram ? vertexProgram->name : mglCurrentRenderProgramKey(ctx);
     fragmentProgramName = fragmentProgram ? fragmentProgram->name : mglCurrentRenderProgramKey(ctx);
 
-    MGLMetalSamplerStateRef defaultSampler = [self fallbackSamplerState];
+    id defaultSampler = [self fallbackSamplerState];
     if (defaultSampler) {
         /* Only warmup sampler slots the program actually samples, using the
          * sampled_texture_unit_mask bitmap to skip unused slots, instead of
@@ -2484,7 +2543,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
 
 - (bool)bindVertexSampledTexturesToEncoder:(Program *)vertexProgram
                           vertexProgramName:(GLuint)vertexProgramName
-                             defaultSampler:(MGLMetalSamplerStateRef)defaultSampler
+                             defaultSampler:(id)defaultSampler
                                     bindCall:(uint64_t)bindCall
                                   traceBind:(bool)traceBind
                           vertexSampledCount:(GLuint)vertexSampledCount
@@ -2529,9 +2588,9 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                                            stage:vertexStage];
         /* derive texture types/data kind directly from sampledResource
          * via C helpers, skipping per-resource mglResolveProgramForStageFromState. */
-        MTLTextureType expectedType = (MTLTextureType)
+        uint32_t expectedType = (uint32_t)
             mglExpectedTextureTypeForResource(currentProgram, vertexStage, sampledResource);
-        MTLTextureType lookupType = (MTLTextureType)
+        uint32_t lookupType = (uint32_t)
             mglDeclaredTextureTypeFromResource(sampledResource);
         MGLTextureDataKind expectedKind = (MGLTextureDataKind)
             mglExpectedTextureDataKindForResource(
@@ -2541,18 +2600,18 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                                   stage:vertexStage
                                            expectedType:(lookupType ? lookupType : expectedType)
                                           textureUnit:textureUnit];
-        MGLMetalTextureRef texture = nil;
-        MGLMetalSamplerStateRef sampler = defaultSampler;
+        id texture = nil;
+        id sampler = defaultSampler;
         BOOL usedTypeFallback = NO;
 
         if (ptr) {
             RETURN_FALSE_ON_FAILURE([self bindMTLTexture:ptr]);
             MGL_ABORT_TBIND_IF_ENCODER_CLOSED();
             if (ptr->mtl_data) {
-                texture = (__bridge MGLMetalTextureRef)(ptr->mtl_data);
-                texture = mglSampledTextureViewForBaseLevel(ptr, texture);
+                texture = (__bridge id)(ptr->mtl_data);
+                texture = (__bridge id)mglSampledTextureViewForBaseLevel(ptr, (__bridge void *)texture);
             }
-            if (texture && expectedType != 0 && texture.textureType != expectedType) {
+            if (texture && expectedType != 0 && mglBindingStateTextureType(texture) != expectedType) {
                 static uint64_t s_vertexTypeMismatchLogCount = 0;
                 uint64_t hit = ++s_vertexTypeMismatchLogCount;
                 if (hit <= 32ull || (hit % 512ull) == 0ull) {
@@ -2561,7 +2620,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                           (unsigned)vertexProgramName,
                           (unsigned)ptr->name,
                           (unsigned)ptr->target,
-                          (unsigned long)texture.textureType,
+                          (unsigned long)mglBindingStateTextureType(texture),
                           (unsigned long)expectedType,
                           (unsigned long long)hit);
                 }
@@ -2572,7 +2631,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 usedTypeFallback = YES;
             }
             if (texture &&
-                !mglTexturePixelFormatCompatibleWithExpectedDataKind(texture.pixelFormat, expectedKind)) {
+                !mglTexturePixelFormatCompatibleWithExpectedDataKind(mglBindingStateTexturePixelFormat(texture), expectedKind)) {
                 static uint64_t s_vertexDataKindMismatchLogCount = 0;
                 uint64_t hit = ++s_vertexDataKindMismatchLogCount;
                 if (hit <= 32ull || (hit % 512ull) == 0ull) {
@@ -2581,8 +2640,8 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                           (unsigned)vertexProgramName,
                           (unsigned)ptr->name,
                           (unsigned)ptr->target,
-                          (unsigned long)texture.pixelFormat,
-                          mglTextureDataKindName(mglTextureDataKindForPixelFormat(texture.pixelFormat)),
+                          (unsigned long)mglBindingStateTexturePixelFormat(texture),
+                          mglTextureDataKindName(mglTextureDataKindForPixelFormat(mglBindingStateTexturePixelFormat(texture))),
                           mglTextureDataKindName(expectedKind),
                           (unsigned long)expectedType,
                           (unsigned long long)hit);
@@ -2603,7 +2662,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                     glSampler->mtl_data = (void *)CFBridgingRetain([self createMTLSamplerForTexParam:&glSampler->params target:ptr->target]);
                     glSampler->dirty_bits = 0;
                 }
-                sampler = (__bridge MGLMetalSamplerStateRef)(glSampler->mtl_data);
+                sampler = (__bridge id)(glSampler->mtl_data);
                 mglTraceLogExternal("VERT_SAMPLER_RESOLVE program=%u binding=%u unit=%u source=glSampler samplerName=%u minFilter=0x%x magFilter=0x%x wrapS=0x%x wrapT=0x%x minLod=%.3f maxLod=%.3f glTex=%u base=%u max=%u texSize=%ux%u boundSize=%lux%lu boundLevels=%lu",
                                     (unsigned)vertexProgramName,
                                     (unsigned)spirvBinding,
@@ -2620,11 +2679,11 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                     (unsigned)ptr->params.max_level,
                                     (unsigned)ptr->width,
                                     (unsigned)ptr->height,
-                                    (unsigned long)(texture ? texture.width : 0u),
-                                    (unsigned long)(texture ? texture.height : 0u),
-                                    (unsigned long)(texture ? texture.mipmapLevelCount : 0u));
+                                    (unsigned long)(texture ? mglBindingStateTextureWidth(texture) : 0u),
+                                    (unsigned long)(texture ? mglBindingStateTextureHeight(texture) : 0u),
+                                    (unsigned long)(texture ? mglBindingStateTextureMipmapLevelCount(texture) : 0u));
             } else if (ptr->params.mtl_data) {
-                sampler = (__bridge MGLMetalSamplerStateRef)(ptr->params.mtl_data);
+                sampler = (__bridge id)(ptr->params.mtl_data);
                 mglTraceLogExternal("VERT_SAMPLER_RESOLVE program=%u binding=%u unit=%u source=texParamsFallback samplerName=0 minFilter=0x%x magFilter=0x%x wrapS=0x%x wrapT=0x%x minLod=%.3f maxLod=%.3f glTex=%u base=%u max=%u texSize=%ux%u boundSize=%lux%lu boundLevels=%lu",
                                     (unsigned)vertexProgramName,
                                     (unsigned)spirvBinding,
@@ -2640,9 +2699,9 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                     (unsigned)ptr->params.max_level,
                                     (unsigned)ptr->width,
                                     (unsigned)ptr->height,
-                                    (unsigned long)(texture ? texture.width : 0u),
-                                    (unsigned long)(texture ? texture.height : 0u),
-                                    (unsigned long)(texture ? texture.mipmapLevelCount : 0u));
+                                    (unsigned long)(texture ? mglBindingStateTextureWidth(texture) : 0u),
+                                    (unsigned long)(texture ? mglBindingStateTextureHeight(texture) : 0u),
+                                    (unsigned long)(texture ? mglBindingStateTextureMipmapLevelCount(texture) : 0u));
             }
         }
 
@@ -2675,10 +2734,10 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 if (ptr->mtl_gl_sampled_data &&
                     ptr->mtl_gl_sampled_write_version == ptr->mtl_render_target_write_version &&
                     mglTextureCanUseGLSampledRenderTargetCopy(ptr)) {
-                    MGLMetalTextureRef sampledCopy = (__bridge MGLMetalTextureRef)(ptr->mtl_gl_sampled_data);
+                    id sampledCopy = (__bridge id)(ptr->mtl_gl_sampled_data);
                     if (sampledCopy &&
-                        (expectedType == 0 || sampledCopy.textureType == expectedType) &&
-                        mglTexturePixelFormatCompatibleWithExpectedDataKind(sampledCopy.pixelFormat, expectedKind)) {
+                        (expectedType == 0 || mglBindingStateTextureType(sampledCopy) == expectedType) &&
+                        mglTexturePixelFormatCompatibleWithExpectedDataKind(mglBindingStateTexturePixelFormat(sampledCopy), expectedKind)) {
                         if (mglTraceLogIsEnabled()) {
                             mglTraceLog("RT_SAMPLE_COPY_BIND stage=vertex program=%u name=%s binding=%u unit=%u tex=%u label=\"%s\" original=%p copy=%p size=%lux%lu originalLevels=%lu copyLevels=%lu glLevels=%u mips=%u base=%u max=%u version=%u",
                                         (unsigned)vertexProgramName,
@@ -2689,22 +2748,22 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                         mglTraceTextureLabel(ptr),
                                         texture,
                                         sampledCopy,
-                                        (unsigned long)sampledCopy.width,
-                                        (unsigned long)sampledCopy.height,
-                                        (unsigned long)(texture ? texture.mipmapLevelCount : 0u),
-                                        (unsigned long)sampledCopy.mipmapLevelCount,
+                                        (unsigned long)mglBindingStateTextureWidth(sampledCopy),
+                                        (unsigned long)mglBindingStateTextureHeight(sampledCopy),
+                                        (unsigned long)(texture ? mglBindingStateTextureMipmapLevelCount(texture) : 0u),
+                                        (unsigned long)mglBindingStateTextureMipmapLevelCount(sampledCopy),
                                         (unsigned)ptr->num_levels,
                                         (unsigned)ptr->mipmap_levels,
                                         (unsigned)ptr->params.base_level,
                                         (unsigned)ptr->params.max_level,
                                         (unsigned)ptr->mtl_gl_sampled_write_version);
                         }
-                        texture = mglSampledTextureViewForBaseLevel(ptr, sampledCopy);
+                        texture = (__bridge id)mglSampledTextureViewForBaseLevel(ptr, (__bridge void *)sampledCopy);
                         boundSampledCopy = YES;
                     }
                 }
                 if (!boundSampledCopy && mglTextureCanUseGLSampledRenderTargetCopy(ptr)) {
-                    MGLMetalTextureRef repairedCopy =
+                    id repairedCopy =
                         [self freshGLSampledRenderTargetCopyForSampling:ptr
                                                                   source:texture
                                                                    stage:"vertex"
@@ -2777,8 +2836,8 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                           (unsigned)textureUnit,
                           ptr ? (unsigned)ptr->name : 0u,
                           "generic",
-                          (unsigned long)texture.width,
-                          (unsigned long)texture.height,
+                          (unsigned long)mglBindingStateTextureWidth(texture),
+                          (unsigned long)mglBindingStateTextureHeight(texture),
                           (unsigned long long)hit);
                 }
             }
@@ -2820,9 +2879,9 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                       ptr ? (unsigned)ptr->name : 0u,
                       ptr ? (unsigned)ptr->target : 0u,
                       texture,
-                      (unsigned long)(texture ? texture.textureType : 0),
-                      (unsigned long)(texture ? texture.width : 0),
-                      (unsigned long)(texture ? texture.height : 0),
+                      (unsigned long)(texture ? mglBindingStateTextureType(texture) : 0),
+                      (unsigned long)(texture ? mglBindingStateTextureWidth(texture) : 0),
+                      (unsigned long)(texture ? mglBindingStateTextureHeight(texture) : 0),
                       level0 ? (unsigned)level0->width : 0u,
                       level0 ? (unsigned)level0->height : 0u,
                       level0 ? (unsigned)level0->ever_written : 0u,
@@ -2861,9 +2920,9 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                         mglTraceTextureName(unit2D),
                         mglTraceTextureName(unitCube),
                         texture,
-                        (unsigned long)(texture ? texture.textureType : 0),
-                        (unsigned long)(texture ? texture.width : 0),
-                        (unsigned long)(texture ? texture.height : 0),
+                        (unsigned long)(texture ? mglBindingStateTextureType(texture) : 0),
+                        (unsigned long)(texture ? mglBindingStateTextureWidth(texture) : 0),
+                        (unsigned long)(texture ? mglBindingStateTextureHeight(texture) : 0),
                         level0 ? (unsigned)level0->width : 0u,
                         level0 ? (unsigned)level0->height : 0u,
                         level0 ? (unsigned)level0->ever_written : 0u,
@@ -2887,10 +2946,10 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                       (unsigned long)expectedType,
                       (unsigned long)lookupType,
                       texture,
-                      (unsigned long)(texture ? texture.textureType : 0),
-                      (unsigned long)(texture ? texture.width : 0),
-                      (unsigned long)(texture ? texture.height : 0),
-                      (unsigned long)(texture ? texture.pixelFormat : 0),
+                      (unsigned long)(texture ? mglBindingStateTextureType(texture) : 0),
+                      (unsigned long)(texture ? mglBindingStateTextureWidth(texture) : 0),
+                      (unsigned long)(texture ? mglBindingStateTextureHeight(texture) : 0),
+                      (unsigned long)(texture ? mglBindingStateTexturePixelFormat(texture) : 0),
                       sampler);
             }
         }
@@ -2934,9 +2993,9 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                           ptr ? (unsigned)ptr->target : 0u,
                           usedTypeFallback ? 1 : 0,
                           texture,
-                          (unsigned long)(texture ? texture.textureType : 0),
-                          (unsigned long)(texture ? texture.width : 0),
-                          (unsigned long)(texture ? texture.height : 0),
+                          (unsigned long)(texture ? mglBindingStateTextureType(texture) : 0),
+                          (unsigned long)(texture ? mglBindingStateTextureWidth(texture) : 0),
+                          (unsigned long)(texture ? mglBindingStateTextureHeight(texture) : 0),
                           mglTraceTextureName(unitActive),
                           mglTraceTextureName(unitExpected),
                           sampleLevel0 ? (unsigned)sampleLevel0->width : 0u,
@@ -2977,7 +3036,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
 - (bool)bindFragmentSampledTexturesToEncoder:(Program *)fragmentProgram
                           fragmentProgramName:(GLuint)fragmentProgramName
                              vertexProgramName:(GLuint)vertexProgramName
-                                defaultSampler:(MGLMetalSamplerStateRef)defaultSampler
+                                defaultSampler:(id)defaultSampler
                                        bindCall:(uint64_t)bindCall
                                      traceBind:(bool)traceBind
                           boundSampledTextures:(GLuint *)boundSampledTexturesPtr
@@ -3025,9 +3084,9 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
 
         /* derive texture types/data kind directly from sampledResource
          * via C helpers, skipping per-resource mglResolveProgramForStageFromState. */
-        MTLTextureType expectedType = (MTLTextureType)
+        uint32_t expectedType = (uint32_t)
             mglExpectedTextureTypeForResource(sampleProgram, _FRAGMENT_SHADER, sampledResource);
-        MTLTextureType lookupType = (MTLTextureType)
+        uint32_t lookupType = (uint32_t)
             mglDeclaredTextureTypeFromResource(sampledResource);
         MGLTextureDataKind expectedKind = (MGLTextureDataKind)
             mglExpectedTextureDataKindForResource(
@@ -3037,10 +3096,10 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                                   stage:_FRAGMENT_SHADER
                                            expectedType:(lookupType ? lookupType : expectedType)
                                           textureUnit:textureUnit];
-        MGLMetalTextureRef texture = nil;
-        MGLMetalSamplerStateRef sampler = nil;
-        MGLMetalTextureRef directTextureForTrace = nil;
-        MGLMetalTextureRef sampledCopyForTrace = nil;
+        id texture = nil;
+        id sampler = nil;
+        id directTextureForTrace = nil;
+        id sampledCopyForTrace = nil;
         BOOL usedFallbackTexture = NO;
         BOOL suppressMissingTextureFallback = NO;
         BOOL usedSampledCopyForTrace = NO;
@@ -3145,7 +3204,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
 	                    : NULL;
 	                Texture *unit2D = textureUnit < TEXTURE_UNITS ? MGL_STATE(ctx)->texture_units[textureUnit].textures[_TEXTURE_2D] : NULL;
 	                Texture *unitCube = textureUnit < TEXTURE_UNITS ? MGL_STATE(ctx)->texture_units[textureUnit].textures[_TEXTURE_CUBE_MAP] : NULL;
-	                MTLTextureType actualType = texture ? texture.textureType : 0;
+	                uint32_t actualType = texture ? mglBindingStateTextureType(texture) : 0;
 	                uint64_t levelDataHash = (sampleLevel0 && sampleLevel0->data && sampleLevel0->data_size > 0)
 	                    ? mglTraceHashBytes((const void *)(uintptr_t)sampleLevel0->data, sampleLevel0->data_size)
 	                    : 0ull;
@@ -3168,8 +3227,8 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
 	                      usedFallbackTexture ? 1 : 0,
 	                      texture,
 	                      (unsigned long)actualType,
-	                      (unsigned long)(texture ? texture.width : 0),
-	                      (unsigned long)(texture ? texture.height : 0),
+	                      (unsigned long)(texture ? mglBindingStateTextureWidth(texture) : 0),
+	                      (unsigned long)(texture ? mglBindingStateTextureHeight(texture) : 0),
 	                      mglTraceTextureName(unitActive),
 	                      mglTraceTextureName(unitExpected),
 	                      mglTraceTextureName(unit2D),
@@ -3199,10 +3258,10 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                 : NULL;
                             Texture *atlasUnit2D = textureUnit < TEXTURE_UNITS ? MGL_STATE(ctx)->texture_units[textureUnit].textures[_TEXTURE_2D] : NULL;
                             Texture *atlasUnitCube = textureUnit < TEXTURE_UNITS ? MGL_STATE(ctx)->texture_units[textureUnit].textures[_TEXTURE_CUBE_MAP] : NULL;
-	                        MGLMetalTextureRef rpColor0 = mglRenderPassAttachmentTextureForState(
+	                        id rpColor0 = (__bridge id)mglRenderCppGetRenderPassAttachmentTextureOwner(
                                 _renderPassManager.state->renderPassStateOwner,
                                 MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0);
-	                        MGLMetalTextureRef rpDepth = mglRenderPassAttachmentTextureForState(
+	                        id rpDepth = (__bridge id)mglRenderCppGetRenderPassAttachmentTextureOwner(
                                 _renderPassManager.state->renderPassStateOwner,
                                 MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0);
                         mglTraceLog("RT_SAMPLE_COPY_SAMPLE hit=%llu bindCall=%llu program=%u stateProgram=%u current=%u pipeline=%u vs=%u fs=%u pipelineProgram=%u name=%s binding=%u unit=%u "
@@ -3230,10 +3289,10 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                     texture,
                                     directTextureForTrace,
                                     sampledCopyForTrace,
-                                    (unsigned long)(texture ? texture.pixelFormat : MTLPixelFormatInvalid),
-                                    (unsigned long)(texture ? texture.textureType : 0),
-                                    (unsigned long)(texture ? texture.width : 0),
-                                    (unsigned long)(texture ? texture.height : 0),
+                                    (unsigned long)(texture ? mglBindingStateTexturePixelFormat(texture) : MGL_BINDING_PIXEL_FORMAT_INVALID),
+                                    (unsigned long)(texture ? mglBindingStateTextureType(texture) : 0),
+                                    (unsigned long)(texture ? mglBindingStateTextureWidth(texture) : 0),
+                                    (unsigned long)(texture ? mglBindingStateTextureHeight(texture) : 0),
                                     mglTraceTextureName(atlasUnitActive),
                                     mglTraceTextureName(atlasUnitExpected),
                                     mglTraceTextureName(atlasUnit2D),
@@ -3293,10 +3352,10 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             traceBinding->mtl_texture_ptr = (__bridge void *)texture;
             traceBinding->direct_mtl_texture_ptr = (__bridge void *)(directTextureForTrace ? directTextureForTrace : texture);
             traceBinding->sampled_copy_ptr = (__bridge void *)sampledCopyForTrace;
-            traceBinding->width = texture ? texture.width : 0u;
-            traceBinding->height = texture ? texture.height : 0u;
-            traceBinding->pixel_format = texture ? texture.pixelFormat : MTLPixelFormatInvalid;
-            traceBinding->texture_type = texture ? texture.textureType : 0u;
+            traceBinding->width = texture ? mglBindingStateTextureWidth(texture) : 0u;
+            traceBinding->height = texture ? mglBindingStateTextureHeight(texture) : 0u;
+            traceBinding->pixel_format = texture ? mglBindingStateTexturePixelFormat(texture) : MGL_BINDING_PIXEL_FORMAT_INVALID;
+            traceBinding->texture_type = texture ? mglBindingStateTextureType(texture) : 0u;
             traceBinding->used_sampled_copy = usedSampledCopyForTrace ? 1u : 0u;
             traceBinding->used_fallback = usedFallbackTexture ? 1u : 0u;
         }
@@ -3313,9 +3372,9 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                       ptr ? (unsigned)ptr->name : 0u,
                       ptr ? (unsigned)ptr->target : 0u,
                       texture,
-                      (unsigned long)(texture ? texture.textureType : 0),
-                      (unsigned long)(texture ? texture.width : 0),
-                      (unsigned long)(texture ? texture.height : 0),
+                      (unsigned long)(texture ? mglBindingStateTextureType(texture) : 0),
+                      (unsigned long)(texture ? mglBindingStateTextureWidth(texture) : 0),
+                      (unsigned long)(texture ? mglBindingStateTextureHeight(texture) : 0),
                       level0 ? (unsigned)level0->width : 0u,
                       level0 ? (unsigned)level0->height : 0u,
                       level0 ? (unsigned)level0->ever_written : 0u,
@@ -3354,9 +3413,9 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                         mglTraceTextureName(unit2D),
                         mglTraceTextureName(unitCube),
                         texture,
-                        (unsigned long)(texture ? texture.textureType : 0),
-                        (unsigned long)(texture ? texture.width : 0),
-                        (unsigned long)(texture ? texture.height : 0),
+                        (unsigned long)(texture ? mglBindingStateTextureType(texture) : 0),
+                        (unsigned long)(texture ? mglBindingStateTextureWidth(texture) : 0),
+                        (unsigned long)(texture ? mglBindingStateTextureHeight(texture) : 0),
                         level0 ? (unsigned)level0->width : 0u,
                         level0 ? (unsigned)level0->height : 0u,
                         level0 ? (unsigned)level0->ever_written : 0u,
@@ -3425,8 +3484,8 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                   (unsigned)(level0 ? level0->has_initialized_data : 0u),
                   (unsigned)(level0 ? level0->suspicious_zero_upload : 0u),
                   texture,
-                  (unsigned long)(texture ? texture.width : 0),
-                  (unsigned long)(texture ? texture.height : 0),
+                  (unsigned long)(texture ? mglBindingStateTextureWidth(texture) : 0),
+                  (unsigned long)(texture ? mglBindingStateTextureHeight(texture) : 0),
                   sampler,
                   usedFallbackTexture ? 1 : 0);
         }
@@ -3447,37 +3506,37 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
 }
 
 - (bool)recoverFragmentSampledDepthTexture:(Texture **)ptrPtr
-                                    texture:(MGLMetalTextureRef *)texturePtr
+                                    texture:(id *)texturePtr
                                 sampledName:(const char *)sampledName
                                 spirvBinding:(GLuint)spirvBinding
                                   textureUnit:(GLuint)textureUnit
-                                 expectedType:(MTLTextureType)expectedType
+                                 expectedType:(uint32_t)expectedType
                                  expectedKind:(MGLTextureDataKind)expectedKind
                          fragmentProgramName:(GLuint)fragmentProgramName
                   suppressMissingTextureFallback:(BOOL *)suppressMissingTextureFallbackPtr
                             usedFallbackTexture:(BOOL *)usedFallbackTexturePtr
 {
     Texture *ptr = *ptrPtr;
-    MGLMetalTextureRef texture = *texturePtr;
+    id texture = *texturePtr;
     BOOL suppressMissingTextureFallback = *suppressMissingTextureFallbackPtr;
     BOOL usedFallbackTexture = *usedFallbackTexturePtr;
 
     RETURN_FALSE_ON_FAILURE([self bindMTLTexture:ptr]);
     MGL_ABORT_TBIND_IF_ENCODER_CLOSED();
     if (ptr->mtl_data) {
-        texture = (__bridge MGLMetalTextureRef)(ptr->mtl_data);
-        texture = mglSampledTextureViewForBaseLevel(ptr, texture);
+        texture = (__bridge id)(ptr->mtl_data);
+        texture = (__bridge id)mglSampledTextureViewForBaseLevel(ptr, (__bridge void *)texture);
     }
     BOOL sampledNameIsInSampler =
         sampledName && strcmp(sampledName, "InSampler") == 0;
     if (texture &&
         sampledNameIsInSampler &&
-        mglMetalPixelFormatIsDepthOrStencil(texture.pixelFormat)) {
+        mglMetalPixelFormatIsDepthOrStencil(mglBindingStateTexturePixelFormat(texture))) {
         GLuint pairedFboName = 0u;
         Texture *pairedColor =
             mglFindFramebufferColorTexturePairedWithDepth(ctx, ptr, &pairedFboName);
         Texture *recoverTexture = NULL;
-        MGLMetalTextureRef recoverMTL = nil;
+        id recoverMTL = nil;
         const char *recoverReason = "none";
         BOOL recoveredFromSampledCopy = NO;
         BOOL recoveredFromPreviousVersion = NO;
@@ -3488,19 +3547,19 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                                       pairedColor,
                                                       pairedFboName,
                                                       &currentAttachmentIndex);
-        MGLMetalTextureRef pairedMTL = nil;
+        id pairedMTL = nil;
 
         if (pairedColor) {
             RETURN_FALSE_ON_FAILURE([self bindMTLTexture:pairedColor]);
             MGL_ABORT_TBIND_IF_ENCODER_CLOSED();
             pairedMTL = pairedColor->mtl_data
-                ? (__bridge MGLMetalTextureRef)(pairedColor->mtl_data)
+                ? (__bridge id)(pairedColor->mtl_data)
                 : nil;
             if (!pairedColorIsCurrentDrawTarget && pairedMTL) {
                 pairedColorIsCurrentDrawTarget =
-                    mglRenderPassUsesColorTextureForState(
+                    mglBindingStateRenderPassUsesColorTexture(
                         _renderPassManager.state->renderPassStateOwner,
-                        pairedMTL,
+                        (__bridge void *)pairedMTL,
                         &currentAttachmentIndex);
             }
         }
@@ -3520,7 +3579,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                       pairedColor ? (unsigned)pairedColor->name : 0u);
             }
 
-            MGLMetalTextureRef pairedCopy = nil;
+            id pairedCopy = nil;
             BOOL usedPreviousVersion = NO;
             if (pairedColor &&
                 mglRendererGLSampledCopyLooksUsable(pairedColor,
@@ -3548,7 +3607,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                           (unsigned long)currentAttachmentIndex,
                           ptr ? (unsigned)ptr->name : 0u,
                           pairedColor ? (unsigned)pairedColor->name : 0u,
-                          (unsigned long)texture.pixelFormat,
+                          (unsigned long)mglBindingStateTexturePixelFormat(texture),
                           pairedColor ? (unsigned)pairedColor->mtl_gl_sampled_write_version : 0u,
                           pairedColor ? (unsigned)pairedColor->mtl_render_target_write_version : 0u);
                 }
@@ -3557,7 +3616,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             }
         } else if (pairedColor &&
                    pairedMTL &&
-                   !mglMetalPixelFormatIsDepthOrStencil(pairedMTL.pixelFormat)) {
+                   !mglMetalPixelFormatIsDepthOrStencil(mglBindingStateTexturePixelFormat(pairedMTL))) {
             static uint64_t s_inSamplerDepthRecoveryLogCount = 0;
             uint64_t hit = ++s_inSamplerDepthRecoveryLogCount;
             if (hit <= 64ull || (hit % 512ull) == 0ull) {
@@ -3569,10 +3628,10 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                       (unsigned)pairedFboName,
                       ptr ? (unsigned)ptr->name : 0u,
                       (unsigned)pairedColor->name,
-                      (unsigned long)texture.pixelFormat,
-                      (unsigned long)pairedMTL.pixelFormat,
-                      (unsigned long)pairedMTL.width,
-                      (unsigned long)pairedMTL.height);
+                      (unsigned long)mglBindingStateTexturePixelFormat(texture),
+                      (unsigned long)mglBindingStateTexturePixelFormat(pairedMTL),
+                      (unsigned long)mglBindingStateTextureWidth(pairedMTL),
+                      (unsigned long)mglBindingStateTextureHeight(pairedMTL));
             }
             ptr = pairedColor;
             texture = pairedMTL;
@@ -3589,8 +3648,8 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                     continue;
                 }
 
-                MGLMetalTextureRef candidateMTL = candidate->mtl_data
-                    ? (__bridge MGLMetalTextureRef)(candidate->mtl_data)
+                id candidateMTL = candidate->mtl_data
+                    ? (__bridge id)(candidate->mtl_data)
                     : nil;
                 NSUInteger candidateAttachmentIndex = MAX_COLOR_ATTACHMENTS;
                 BOOL candidateIsCurrentDrawTarget =
@@ -3598,9 +3657,9 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                                               candidate,
                                                               0u,
                                                               &candidateAttachmentIndex) ||
-                    mglRenderPassUsesColorTextureForState(
+                    mglBindingStateRenderPassUsesColorTexture(
                         _renderPassManager.state->renderPassStateOwner,
-                        candidateMTL,
+                        (__bridge void *)candidateMTL,
                         &candidateAttachmentIndex);
 
                 if (!candidateIsCurrentDrawTarget &&
@@ -3608,7 +3667,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                     RETURN_FALSE_ON_FAILURE([self bindMTLTexture:candidate]);
                     MGL_ABORT_TBIND_IF_ENCODER_CLOSED();
                     candidateMTL = candidate->mtl_data
-                        ? (__bridge MGLMetalTextureRef)(candidate->mtl_data)
+                        ? (__bridge id)(candidate->mtl_data)
                         : nil;
                     candidateAttachmentIndex = MAX_COLOR_ATTACHMENTS;
                     candidateIsCurrentDrawTarget =
@@ -3616,13 +3675,13 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                                                   candidate,
                                                                   0u,
                                                                   &candidateAttachmentIndex) ||
-                        mglRenderPassUsesColorTextureForState(
+                        mglBindingStateRenderPassUsesColorTexture(
                             _renderPassManager.state->renderPassStateOwner,
-                            candidateMTL,
+                            (__bridge void *)candidateMTL,
                             &candidateAttachmentIndex);
                 }
 
-                MGLMetalTextureRef candidateCopy = nil;
+                id candidateCopy = nil;
                 BOOL usedPreviousVersion = NO;
                 if (candidate->is_render_target &&
                     mglRendererGLSampledCopyLooksUsable(candidate,
@@ -3646,9 +3705,9 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                     continue;
                 }
                 if (candidateMTL &&
-                    !mglMetalPixelFormatIsDepthOrStencil(candidateMTL.pixelFormat) &&
-                    (expectedType == 0 || candidateMTL.textureType == expectedType) &&
-                    mglTexturePixelFormatCompatibleWithExpectedDataKind(candidateMTL.pixelFormat, expectedKind)) {
+                    !mglMetalPixelFormatIsDepthOrStencil(mglBindingStateTexturePixelFormat(candidateMTL)) &&
+                    (expectedType == 0 || mglBindingStateTextureType(candidateMTL) == expectedType) &&
+                    mglTexturePixelFormatCompatibleWithExpectedDataKind(mglBindingStateTexturePixelFormat(candidateMTL), expectedKind)) {
                     recoverTexture = candidate;
                     recoverMTL = candidateMTL;
                     recoverReason = "history-direct";
@@ -3666,9 +3725,9 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                       (unsigned)spirvBinding,
                       (unsigned)textureUnit,
                       ptr ? (unsigned)ptr->name : 0u,
-                      (unsigned long)texture.pixelFormat,
-                      (unsigned long)texture.width,
-                      (unsigned long)texture.height);
+                      (unsigned long)mglBindingStateTexturePixelFormat(texture),
+                      (unsigned long)mglBindingStateTextureWidth(texture),
+                      (unsigned long)mglBindingStateTextureHeight(texture));
             }
         }
 
@@ -3686,10 +3745,10 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                       (unsigned long)recoverAttachmentIndex,
                       ptr ? (unsigned)ptr->name : 0u,
                       recoverTexture ? (unsigned)recoverTexture->name : 0u,
-                      (unsigned long)texture.pixelFormat,
-                      (unsigned long)recoverMTL.pixelFormat,
-                      (unsigned long)recoverMTL.width,
-                      (unsigned long)recoverMTL.height,
+                      (unsigned long)mglBindingStateTexturePixelFormat(texture),
+                      (unsigned long)mglBindingStateTexturePixelFormat(recoverMTL),
+                      (unsigned long)mglBindingStateTextureWidth(recoverMTL),
+                      (unsigned long)mglBindingStateTextureHeight(recoverMTL),
                       recoveredFromSampledCopy ? 1 : 0,
                       recoveredFromPreviousVersion ? 1 : 0,
                       recoverTexture ? (unsigned)recoverTexture->mtl_gl_sampled_write_version : 0u,
@@ -3706,7 +3765,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         !sampledNameIsInSampler &&
         ptr &&
         ptr->is_render_target &&
-        mglMetalPixelFormatIsDepthOrStencil(texture.pixelFormat) &&
+        mglMetalPixelFormatIsDepthOrStencil(mglBindingStateTexturePixelFormat(texture)) &&
         (!depthSampleLevel0 ||
          !depthSampleLevel0->ever_written ||
          !depthSampleLevel0->has_initialized_data)) {
@@ -3722,20 +3781,20 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         if (pairedColor) {
             RETURN_FALSE_ON_FAILURE([self bindMTLTexture:pairedColor]);
             MGL_ABORT_TBIND_IF_ENCODER_CLOSED();
-            MGLMetalTextureRef pairedMTL = pairedColor->mtl_data
-                ? (__bridge MGLMetalTextureRef)(pairedColor->mtl_data)
+            id pairedMTL = pairedColor->mtl_data
+                ? (__bridge id)(pairedColor->mtl_data)
                 : nil;
             NSUInteger drawAttachmentIndex = MAX_COLOR_ATTACHMENTS;
             BOOL pairedColorIsCurrentDrawTarget =
-                mglRenderPassUsesColorTextureForState(
+                mglBindingStateRenderPassUsesColorTexture(
                     _renderPassManager.state->renderPassStateOwner,
-                    pairedMTL,
+                    (__bridge void *)pairedMTL,
                                               &drawAttachmentIndex);
             if (pairedMTL &&
                 !pairedColorIsCurrentDrawTarget &&
-                !mglMetalPixelFormatIsDepthOrStencil(pairedMTL.pixelFormat) &&
-                (expectedType == 0 || pairedMTL.textureType == expectedType) &&
-                mglTexturePixelFormatCompatibleWithExpectedDataKind(pairedMTL.pixelFormat, expectedKind)) {
+                !mglMetalPixelFormatIsDepthOrStencil(mglBindingStateTexturePixelFormat(pairedMTL)) &&
+                (expectedType == 0 || mglBindingStateTextureType(pairedMTL) == expectedType) &&
+                mglTexturePixelFormatCompatibleWithExpectedDataKind(mglBindingStateTexturePixelFormat(pairedMTL), expectedKind)) {
                 recoverTexture = pairedColor;
                 recoverReason = "paired-color";
             } else if (pairedColorIsCurrentDrawTarget) {
@@ -3775,13 +3834,13 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         if (recoverTexture) {
             RETURN_FALSE_ON_FAILURE([self bindMTLTexture:recoverTexture]);
             MGL_ABORT_TBIND_IF_ENCODER_CLOSED();
-            MGLMetalTextureRef recoverMTL = recoverTexture->mtl_data
-                ? (__bridge MGLMetalTextureRef)(recoverTexture->mtl_data)
+            id recoverMTL = recoverTexture->mtl_data
+                ? (__bridge id)(recoverTexture->mtl_data)
                 : nil;
             if (recoverMTL &&
-                !mglMetalPixelFormatIsDepthOrStencil(recoverMTL.pixelFormat) &&
-                (expectedType == 0 || recoverMTL.textureType == expectedType) &&
-                mglTexturePixelFormatCompatibleWithExpectedDataKind(recoverMTL.pixelFormat, expectedKind)) {
+                !mglMetalPixelFormatIsDepthOrStencil(mglBindingStateTexturePixelFormat(recoverMTL)) &&
+                (expectedType == 0 || mglBindingStateTextureType(recoverMTL) == expectedType) &&
+                mglTexturePixelFormatCompatibleWithExpectedDataKind(mglBindingStateTexturePixelFormat(recoverMTL), expectedKind)) {
                 Framebuffer *currentFbo = ctx ? MGL_STATE(ctx)->framebuffer : NULL;
                 GLuint colorTexName = 0u;
                 GLuint depthTexName = 0u;
@@ -3804,10 +3863,10 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                           (unsigned)textureUnit,
                           ptr ? (unsigned)ptr->name : 0u,
                           (unsigned)recoverTexture->name,
-                          (unsigned long)texture.pixelFormat,
-                          (unsigned long)recoverMTL.pixelFormat,
-                          (unsigned long)texture.width,
-                          (unsigned long)texture.height,
+                          (unsigned long)mglBindingStateTexturePixelFormat(texture),
+                          (unsigned long)mglBindingStateTexturePixelFormat(recoverMTL),
+                          (unsigned long)mglBindingStateTextureWidth(texture),
+                          (unsigned long)mglBindingStateTextureHeight(texture),
                           depthSampleLevel0,
                           depthSampleLevel0 ? (unsigned)depthSampleLevel0->ever_written : 0u,
                           depthSampleLevel0 ? (unsigned)depthSampleLevel0->has_initialized_data : 0u,
@@ -3825,8 +3884,8 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             }
         }
 
-        if (mglMetalPixelFormatIsDepthOrStencil(texture.pixelFormat)) {
-            MGLMetalTextureRef fallbackTexture =
+        if (mglMetalPixelFormatIsDepthOrStencil(mglBindingStateTexturePixelFormat(texture))) {
+            id fallbackTexture =
                 [self fallbackSampledTextureForExpectedType:expectedType dataKind:expectedKind];
             if (fallbackTexture) {
                 static uint64_t s_sampledDepthRenderTargetFallbackLogCount = 0;
@@ -3839,9 +3898,9 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                           (unsigned)spirvBinding,
                           (unsigned)textureUnit,
                           ptr ? (unsigned)ptr->name : 0u,
-                          (unsigned long)texture.pixelFormat,
-                          (unsigned long)texture.width,
-                          (unsigned long)texture.height,
+                          (unsigned long)mglBindingStateTexturePixelFormat(texture),
+                          (unsigned long)mglBindingStateTextureWidth(texture),
+                          (unsigned long)mglBindingStateTextureHeight(texture),
                           depthSampleLevel0,
                           depthSampleLevel0 ? (unsigned)depthSampleLevel0->ever_written : 0u,
                           depthSampleLevel0 ? (unsigned)depthSampleLevel0->has_initialized_data : 0u,
@@ -3863,27 +3922,27 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
 }
 
 - (bool)resolveFragmentSampledYFlipAndSampler:(Texture *)ptr
-                                       texture:(MGLMetalTextureRef *)texturePtr
-                                       sampler:(MGLMetalSamplerStateRef *)samplerPtr
+                                       texture:(id *)texturePtr
+                                       sampler:(id *)samplerPtr
                                    sampledName:(const char *)sampledName
                                 spirvBinding:(GLuint)spirvBinding
                                   textureUnit:(GLuint)textureUnit
-                                 expectedType:(MTLTextureType)expectedType
+                                 expectedType:(uint32_t)expectedType
                                  expectedKind:(MGLTextureDataKind)expectedKind
                          fragmentProgramName:(GLuint)fragmentProgramName
                           vertexProgramName:(GLuint)vertexProgramName
                                 sampleProgram:(Program *)sampleProgram
                             usedFallbackTexture:(BOOL *)usedFallbackTexturePtr
                        usedSampledCopyForTrace:(BOOL *)usedSampledCopyForTracePtr
-                          directTextureForTrace:(MGLMetalTextureRef *)directTextureForTracePtr
-                          sampledCopyForTrace:(MGLMetalTextureRef *)sampledCopyForTracePtr
+                          directTextureForTrace:(id *)directTextureForTracePtr
+                          sampledCopyForTrace:(id *)sampledCopyForTracePtr
 {
-    MGLMetalTextureRef texture = *texturePtr;
-    MGLMetalSamplerStateRef sampler = *samplerPtr;
+    id texture = *texturePtr;
+    id sampler = *samplerPtr;
     BOOL usedFallbackTexture = *usedFallbackTexturePtr;
     BOOL usedSampledCopyForTrace = *usedSampledCopyForTracePtr;
-    MGLMetalTextureRef directTextureForTrace = *directTextureForTracePtr;
-    MGLMetalTextureRef sampledCopyForTrace = *sampledCopyForTracePtr;
+    id directTextureForTrace = *directTextureForTracePtr;
+    id sampledCopyForTrace = *sampledCopyForTracePtr;
 
     /* Y-Flip Subsystem: unified decision for sampling a render target.
      *
@@ -3928,11 +3987,11 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 ptr->mtl_gl_sampled_write_version == ptr->mtl_render_target_write_version &&
                 mglTextureCanUseGLSampledRenderTargetCopy(ptr)) {
                 directTextureForTrace = texture;
-                MGLMetalTextureRef sampledCopy = (__bridge MGLMetalTextureRef)(ptr->mtl_gl_sampled_data);
+                id sampledCopy = (__bridge id)(ptr->mtl_gl_sampled_data);
 
                 if (sampledCopy &&
-                    (expectedType == 0 || sampledCopy.textureType == expectedType) &&
-                    mglTexturePixelFormatCompatibleWithExpectedDataKind(sampledCopy.pixelFormat, expectedKind)) {
+                    (expectedType == 0 || mglBindingStateTextureType(sampledCopy) == expectedType) &&
+                    mglTexturePixelFormatCompatibleWithExpectedDataKind(mglBindingStateTexturePixelFormat(sampledCopy), expectedKind)) {
                     sampledCopyForTrace = sampledCopy;
                     if (mglTraceLogIsEnabled()) {
                         mglTraceLog("RT_SAMPLE_COPY_BIND stage=fragment program=%u stateProgram=%u current=%u pipeline=%u vs=%u fs=%u pipelineProgram=%u name=%s binding=%u unit=%u tex=%u label=\"%s\" original=%p copy=%p size=%lux%lu originalLevels=%lu copyLevels=%lu glLevels=%u mips=%u base=%u max=%u version=%u",
@@ -3950,10 +4009,10 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                     mglTraceTextureLabel(ptr),
                                     texture,
                                     sampledCopy,
-                                    (unsigned long)sampledCopy.width,
-                                    (unsigned long)sampledCopy.height,
-                                    (unsigned long)(texture ? texture.mipmapLevelCount : 0u),
-                                    (unsigned long)sampledCopy.mipmapLevelCount,
+                                    (unsigned long)mglBindingStateTextureWidth(sampledCopy),
+                                    (unsigned long)mglBindingStateTextureHeight(sampledCopy),
+                                    (unsigned long)(texture ? mglBindingStateTextureMipmapLevelCount(texture) : 0u),
+                                    (unsigned long)mglBindingStateTextureMipmapLevelCount(sampledCopy),
                                     (unsigned)ptr->num_levels,
                                     (unsigned)ptr->mipmap_levels,
                                     (unsigned)ptr->params.base_level,
@@ -3964,14 +4023,14 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                            [NSString stringWithFormat:@"tex-rt-sample-copy-fragment-binding-%u-program-%u",
                                                                       (unsigned)spirvBinding,
                                                                       (unsigned)(sampleProgram ? sampleProgram->name : fragmentProgramName)]);
-                    texture = mglSampledTextureViewForBaseLevel(ptr, sampledCopy);
+                    texture = (__bridge id)mglSampledTextureViewForBaseLevel(ptr, (__bridge void *)sampledCopy);
                     usedSampledCopyForTrace = YES;
                     boundSampledCopy = YES;
                 }
             }
             if (!boundSampledCopy && mglTextureCanUseGLSampledRenderTargetCopy(ptr)) {
                 directTextureForTrace = texture;
-                MGLMetalTextureRef repairedCopy =
+                id repairedCopy =
                     [self freshGLSampledRenderTargetCopyForSampling:ptr
                                                               source:texture
                                                                stage:"fragment"
@@ -4032,7 +4091,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             }
         }
     }
-    if (texture && expectedType != 0 && texture.textureType != expectedType) {
+    if (texture && expectedType != 0 && mglBindingStateTextureType(texture) != expectedType) {
         static uint64_t s_fragmentTypeMismatchLogCount = 0;
         uint64_t hit = ++s_fragmentTypeMismatchLogCount;
         if (hit <= 32ull || (hit % 512ull) == 0ull) {
@@ -4041,7 +4100,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                   (unsigned)fragmentProgramName,
                   (unsigned)ptr->name,
                   (unsigned)ptr->target,
-                  (unsigned long)texture.textureType,
+                  (unsigned long)mglBindingStateTextureType(texture),
                   (unsigned long)expectedType,
                   (unsigned long long)hit);
         }
@@ -4053,7 +4112,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         usedSampledCopyForTrace = NO;
     }
     if (texture &&
-        !mglTexturePixelFormatCompatibleWithExpectedDataKind(texture.pixelFormat, expectedKind)) {
+        !mglTexturePixelFormatCompatibleWithExpectedDataKind(mglBindingStateTexturePixelFormat(texture), expectedKind)) {
         static uint64_t s_fragmentDataKindMismatchLogCount = 0;
         uint64_t hit = ++s_fragmentDataKindMismatchLogCount;
         if (hit <= 32ull || (hit % 512ull) == 0ull) {
@@ -4062,8 +4121,8 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                   (unsigned)fragmentProgramName,
                   (unsigned)ptr->name,
                   (unsigned)ptr->target,
-                  (unsigned long)texture.pixelFormat,
-                  mglTextureDataKindName(mglTextureDataKindForPixelFormat(texture.pixelFormat)),
+                  (unsigned long)mglBindingStateTexturePixelFormat(texture),
+                  mglTextureDataKindName(mglTextureDataKindForPixelFormat(mglBindingStateTexturePixelFormat(texture))),
                   mglTextureDataKindName(expectedKind),
                   (unsigned long)expectedType,
                   (unsigned long long)hit);
@@ -4085,7 +4144,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             glSampler->mtl_data = (void *)CFBridgingRetain([self createMTLSamplerForTexParam:&glSampler->params target:ptr->target]);
             glSampler->dirty_bits = 0;
         }
-        sampler = (__bridge MGLMetalSamplerStateRef)(glSampler->mtl_data);
+        sampler = (__bridge id)(glSampler->mtl_data);
         mglTraceLogExternal("FRAG_SAMPLER_RESOLVE program=%u binding=%u unit=%u source=glSampler samplerName=%u minFilter=0x%x magFilter=0x%x wrapS=0x%x wrapT=0x%x minLod=%.3f maxLod=%.3f glTex=%u base=%u max=%u texSize=%ux%u boundSize=%lux%lu boundLevels=%lu",
                             (unsigned)fragmentProgramName,
                             (unsigned)spirvBinding,
@@ -4102,11 +4161,11 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                             (unsigned)ptr->params.max_level,
                             (unsigned)ptr->width,
                             (unsigned)ptr->height,
-                            (unsigned long)(texture ? texture.width : 0u),
-                            (unsigned long)(texture ? texture.height : 0u),
-                            (unsigned long)(texture ? texture.mipmapLevelCount : 0u));
+                            (unsigned long)(texture ? mglBindingStateTextureWidth(texture) : 0u),
+                            (unsigned long)(texture ? mglBindingStateTextureHeight(texture) : 0u),
+                            (unsigned long)(texture ? mglBindingStateTextureMipmapLevelCount(texture) : 0u));
     } else {
-        sampler = (__bridge MGLMetalSamplerStateRef)(ptr->params.mtl_data);
+        sampler = (__bridge id)(ptr->params.mtl_data);
         mglTraceLogExternal("FRAG_SAMPLER_RESOLVE program=%u binding=%u unit=%u source=texParamsFallback samplerName=0 minFilter=0x%x magFilter=0x%x wrapS=0x%x wrapT=0x%x minLod=%.3f maxLod=%.3f glTex=%u base=%u max=%u texSize=%ux%u boundSize=%lux%lu boundLevels=%lu",
                             (unsigned)fragmentProgramName,
                             (unsigned)spirvBinding,
@@ -4122,9 +4181,9 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                             (unsigned)ptr->params.max_level,
                             (unsigned)ptr->width,
                             (unsigned)ptr->height,
-                            (unsigned long)(texture ? texture.width : 0u),
-                            (unsigned long)(texture ? texture.height : 0u),
-                            (unsigned long)(texture ? texture.mipmapLevelCount : 0u));
+                            (unsigned long)(texture ? mglBindingStateTextureWidth(texture) : 0u),
+                            (unsigned long)(texture ? mglBindingStateTextureHeight(texture) : 0u),
+                            (unsigned long)(texture ? mglBindingStateTextureMipmapLevelCount(texture) : 0u));
     }
 
     if (mglMipDiagEnabled() && ptr) {
@@ -4137,7 +4196,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         signature = mglMipDiagMixState(signature, effective->mag_filter);
         signature = mglMipDiagMixState(signature, ptr->params.base_level);
         signature = mglMipDiagMixState(signature, ptr->params.max_level);
-        signature = mglMipDiagMixState(signature, texture ? texture.mipmapLevelCount : 0u);
+        signature = mglMipDiagMixState(signature, texture ? mglBindingStateTextureMipmapLevelCount(texture) : 0u);
         signature = mglMipDiagMixState(signature, (uint64_t)(uintptr_t)texture);
         /* A render-target atlas is sampled through the Y-flip copy, so a mip
          * level left dirty or a version mismatch is what a stale mip looks like. */
@@ -4167,7 +4226,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                   (unsigned)ptr->params.base_level,
                   (unsigned)ptr->params.max_level,
                   (unsigned)ptr->num_levels,
-                  (unsigned long)(texture ? texture.mipmapLevelCount : 0u),
+                  (unsigned long)(texture ? mglBindingStateTextureMipmapLevelCount(texture) : 0u),
                   texture,
                   ptr->is_render_target ? 1 : 0,
                   usedSampledCopyForTrace ? 1 : 0,
@@ -4244,18 +4303,18 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             continue;
         }
         Texture *ptr = MGL_STATE(ctx)->image_units[glUnit].tex;
-        MGLMetalTextureRef texture = nil;
+        id texture = nil;
         if (ptr) {
             MGL_ABORT_TBIND_IF_ENCODER_CLOSED();
-            texture = (__bridge MGLMetalTextureRef)(ptr->mtl_data);
+            texture = (__bridge id)(ptr->mtl_data);
             GLuint imgLevel = MGL_STATE(ctx)->image_units[glUnit].level;
             if (imgLevel > 0u && texture) {
-                NSUInteger sliceCount = texture.arrayLength;
-                if (texture.textureType == MTLTextureTypeCube ||
-                    texture.textureType == MTLTextureTypeCubeArray) {
-                    sliceCount = texture.arrayLength * 6u;
+                NSUInteger sliceCount = mglBindingStateTextureArrayLength(texture);
+                if (mglBindingStateTextureType(texture) == MGL_BINDING_TEXTURE_TYPE_CUBE ||
+                    mglBindingStateTextureType(texture) == MGL_BINDING_TEXTURE_TYPE_CUBE_ARRAY) {
+                    sliceCount = mglBindingStateTextureArrayLength(texture) * 6u;
                 }
-                MGLMetalTextureRef levelView =
+                id levelView =
                     mglBindingStateCreateTextureLevelView(
                         texture, imgLevel, sliceCount);
                 if (levelView) {
@@ -4345,10 +4404,10 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         }
 
         Texture *ptr = MGL_STATE(ctx)->image_units[glUnit].tex;
-        MGLMetalTextureRef texture = nil;
+        id texture = nil;
         if (ptr) {
             MGL_ABORT_TBIND_IF_ENCODER_CLOSED();
-            texture = (__bridge MGLMetalTextureRef)(ptr->mtl_data);
+            texture = (__bridge id)(ptr->mtl_data);
 
             /* Create a mipmap-level-specific texture view so that imageSize()
              * in the shader returns the dimensions at the bound level, not
@@ -4362,12 +4421,12 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 /* Cube and cube-array textures pack 6 face-slices per cube;
                  * the view's slice count must be a multiple of 6 for these
                  * types.  Other types use arrayLength directly. */
-                NSUInteger sliceCount = texture.arrayLength;
-                if (texture.textureType == MTLTextureTypeCube ||
-                    texture.textureType == MTLTextureTypeCubeArray) {
-                    sliceCount = texture.arrayLength * 6u;
+                NSUInteger sliceCount = mglBindingStateTextureArrayLength(texture);
+                if (mglBindingStateTextureType(texture) == MGL_BINDING_TEXTURE_TYPE_CUBE ||
+                    mglBindingStateTextureType(texture) == MGL_BINDING_TEXTURE_TYPE_CUBE_ARRAY) {
+                    sliceCount = mglBindingStateTextureArrayLength(texture) * 6u;
                 }
-                MGLMetalTextureRef levelView =
+                id levelView =
                     mglBindingStateCreateTextureLevelView(
                         texture, imgLevel, sliceCount);
                 if (levelView) {
@@ -4399,7 +4458,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                               fragmentProgram:(Program *)fragmentProgram
                         fragmentProgramName:(GLuint)fragmentProgramName
                           vertexProgramName:(GLuint)vertexProgramName
-                             defaultSampler:(MGLMetalSamplerStateRef)defaultSampler
+                             defaultSampler:(id)defaultSampler
                                     bindCall:(uint64_t)bindCall
                                   traceBind:(bool)traceBind
                          separateSamplerCount:(GLuint *)separateSamplerCount
@@ -4433,7 +4492,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                                     metalBinding:spirvBinding
                                                            stage:_FRAGMENT_SHADER];
 
-        MGLMetalSamplerStateRef sampler = nil;
+        id sampler = nil;
         if (textureUnit < TEXTURE_UNITS && MGL_STATE(ctx)->texture_samplers[textureUnit]) {
             Sampler *glSampler = MGL_STATE(ctx)->texture_samplers[textureUnit];
             if (glSampler->dirty_bits && glSampler->mtl_data) {
@@ -4443,7 +4502,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 glSampler->mtl_data = (void *)CFBridgingRetain([self createMTLSamplerForTexParam:&glSampler->params target:GL_TEXTURE_2D]);
                 glSampler->dirty_bits = 0;
             }
-            sampler = (__bridge MGLMetalSamplerStateRef)(glSampler->mtl_data);
+            sampler = (__bridge id)(glSampler->mtl_data);
         }
 
         if (!sampler) {
@@ -4492,7 +4551,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 continue;
             }
 
-            MTLTextureType expectedType = (MTLTextureType)
+            uint32_t expectedType = (uint32_t)
                 mglRendererGetProgramExpectedTextureType(ctx, arrayStage, _SAMPLED_IMAGE_RES, (int)resourceIndex);
             for (GLint element = 1; element < resource->gl_array_size; element++) {
                 GLuint metalSlot = resource->binding + (GLuint)element;
@@ -4510,10 +4569,10 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                                             metalBinding:metalSlot
                                                                     stage:arrayStage
                                                              expectedType:expectedType];
-                MGLMetalTextureRef metalTexture = nil;
-                MGLMetalSamplerStateRef metalSampler = defaultSampler;
+                id metalTexture = nil;
+                id metalSampler = defaultSampler;
                 if (arrayTexture && [self bindMTLTexture:arrayTexture]) {
-                    metalTexture = (__bridge MGLMetalTextureRef)(arrayTexture->mtl_data);
+                    metalTexture = (__bridge id)(arrayTexture->mtl_data);
                     if (textureUnit < TEXTURE_UNITS && MGL_STATE(ctx)->texture_samplers[textureUnit]) {
                         Sampler *glSampler = MGL_STATE(ctx)->texture_samplers[textureUnit];
                         if (glSampler->mtl_data == NULL) {
@@ -4521,9 +4580,9 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                 [self createMTLSamplerForTexParam:&glSampler->params target:arrayTexture->target]);
                             glSampler->dirty_bits = 0;
                         }
-                        metalSampler = (__bridge MGLMetalSamplerStateRef)(glSampler->mtl_data);
+                        metalSampler = (__bridge id)(glSampler->mtl_data);
                     } else if (arrayTexture->params.mtl_data) {
-                        metalSampler = (__bridge MGLMetalSamplerStateRef)(arrayTexture->params.mtl_data);
+                        metalSampler = (__bridge id)(arrayTexture->params.mtl_data);
                     }
                 }
                 if (!metalTexture) {

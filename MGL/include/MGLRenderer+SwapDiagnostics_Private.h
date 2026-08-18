@@ -32,15 +32,15 @@
 
 /* Copies rpColor0 into drawableTexture when the default framebuffer's render
  * pass still targets an offscreen texture at swap time. */
-- (void)copyRenderPassColorToDrawableIfNeeded:(id<MTLTexture>)rpColor0
-                              drawableTexture:(id<MTLTexture>)drawableTexture
+- (void)copyRenderPassColorToDrawableIfNeeded:(id)rpColor0
+                              drawableTexture:(id)drawableTexture
                                       swapCall:(uint64_t)swapCall
                                     traceSwap:(bool)traceSwap;
 
 /* Samples both render-pass color source and drawable target at low frequency
  * for black-screen diagnostics. */
-- (void)scheduleSwapTextureSampleDiagnostics:(id<MTLTexture>)rpColor0
-                             drawableTexture:(id<MTLTexture>)drawableTexture
+- (void)scheduleSwapTextureSampleDiagnostics:(id)rpColor0
+                             drawableTexture:(id)drawableTexture
                                      swapCall:(uint64_t)swapCall;
 
 @end

@@ -26,6 +26,16 @@
 
 #import "MGLRenderer.h"
 
+#ifndef MGL_VALUE_GEOMETRY_TYPES
+#define MGL_VALUE_GEOMETRY_TYPES 1
+typedef struct MGLSizeValue_t { uint64_t width, height, depth; } MGLSizeValue;
+typedef struct MGLOriginValue_t { int64_t x, y, z; } MGLOriginValue;
+typedef struct MGLRegionValue_t {
+    MGLOriginValue origin;
+    MGLSizeValue size;
+} MGLRegionValue;
+#endif
+
 /* === Texture upload diagnostic constants === */
 static const BOOL kMGLSynchronizeTextureUploads = NO;
 static const NSTimeInterval kMGLTextureUploadWaitTimeoutSeconds = 0.25;
@@ -43,19 +53,19 @@ void mglMetalCopyRows(const uint8_t *src,
 @interface MGLRenderer ()
 
 // === Texture upload ===
-- (bool)copyTextureUploadWithDedicatedCommandBuffer:(id<MTLBuffer>)sourceBuffer
+- (bool)copyTextureUploadWithDedicatedCommandBuffer:(id)sourceBuffer
                                         sourceOffset:(NSUInteger)sourceOffset
                                    sourceBytesPerRow:(NSUInteger)sourceBytesPerRow
                                  sourceBytesPerImage:(NSUInteger)sourceBytesPerImage
                                   sourceLayerStride:(NSUInteger)sourceLayerStride
                                           layerCount:(NSUInteger)layerCount
-                                           sourceSize:(MTLSize)sourceSize
-                                            toTexture:(id<MTLTexture>)texture
+                                           sourceSize:(MGLSizeValue)sourceSize
+                                            toTexture:(id)texture
                                      destinationSlice:(NSUInteger)destinationSlice
                                      destinationLevel:(NSUInteger)destinationLevel
-                                    destinationOrigin:(MTLOrigin)destinationOrigin
+                                    destinationOrigin:(MGLOriginValue)destinationOrigin
                                                reason:(const char *)reason;
-- (bool)uploadTextureSliceViaBlit:(id<MTLTexture>)texture
+- (bool)uploadTextureSliceViaBlit:(id)texture
                           texName:(GLuint)texName
                          texTarget:(GLenum)texTarget
                             bytes:(const void *)bytes
@@ -67,7 +77,7 @@ void mglMetalCopyRows(const uint8_t *src,
                             level:(NSUInteger)level
                             slice:(NSUInteger)slice;
 - (bool)uploadFullCPUTextureDataIntoTexture:(Texture *)tex
-                                      metal:(id<MTLTexture>)texture
+                                      metal:(id)texture
                                      reason:(const char *)reason;
 
 // === Texture readback ===
@@ -75,21 +85,21 @@ void mglMetalCopyRows(const uint8_t *src,
              pixelBytes:(void *)pixelBytes
             bytesPerRow:(NSUInteger)bytesPerRow
           bytesPerImage:(NSUInteger)bytesPerImage
-             fromRegion:(MTLRegion)region;
+             fromRegion:(MGLRegionValue)region;
 - (void)mtlReadIntegerPixels:(GLMContext)glm_ctx
                    pixelBytes:(void *)pixelBytes
                   bytesPerRow:(NSUInteger)bytesPerRow
                 bytesPerImage:(NSUInteger)bytesPerImage
-                   fromRegion:(MTLRegion)region
+                   fromRegion:(MGLRegionValue)region
                        format:(GLenum)format type:(GLenum)type;
 - (void)mtlReadDepthPixels:(GLMContext)glm_ctx
                  pixelBytes:(void *)pixelBytes
                 bytesPerRow:(NSUInteger)bytesPerRow
               bytesPerImage:(NSUInteger)bytesPerImage
-                 fromRegion:(MTLRegion)region;
+                 fromRegion:(MGLRegionValue)region;
 - (void)mtlGetTexImage:(GLMContext)glm_ctx tex:(Texture *)tex
              pixelBytes:(void *)pixelBytes bytesPerRow:(NSUInteger)bytesPerRow
-          bytesPerImage:(NSUInteger)bytesPerImage fromRegion:(MTLRegion)region
+          bytesPerImage:(NSUInteger)bytesPerImage fromRegion:(MGLRegionValue)region
                  format:(GLenum)format type:(GLenum)type
             mipmapLevel:(NSUInteger)level slice:(NSUInteger)slice;
 - (void)mtlGenerateMipmaps:(GLMContext)glm_ctx forTexture:(Texture *)tex;
@@ -125,46 +135,46 @@ void mglMetalCopyRows(const uint8_t *src,
 - (void)mglApplyPendingFBODepthClearForReadback:(Framebuffer *)fbo
                                      attachment:(FBOAttachment *)attachment
                                     textureObj:(Texture *)textureObj
-                                     mtlTexture:(id<MTLTexture>)texture;
+                                     mtlTexture:(id)texture;
 - (void)mglApplyPendingFBOColorClearForReadback:(Framebuffer *)fbo
                                      attachment:(FBOAttachment *)attachment
                                     textureObj:(Texture *)textureObj
-                                     mtlTexture:(id<MTLTexture>)texture
+                                     mtlTexture:(id)texture
                                   attachmentEnum:(GLenum)attachmentEnum;
 
 // === Locked texture upload variant ===
 - (void)mtlTexSubImageLocked:(GLMContext)glm_ctx tex:(Texture *)tex buf:(Buffer *)buf src_offset:(size_t)src_offset src_pitch:(size_t)src_pitch src_image_size:(size_t)src_image_size src_size:(size_t)src_size slice:(GLuint)slice level:(GLuint)level width:(size_t)width height:(size_t)height depth:(size_t)depth xoffset:(size_t)xoffset yoffset:(size_t)yoffset zoffset:(size_t)zoffset;
 
 // === Texture mipmap diagnostics (defined in MGLRenderer.m) ===
-- (void)logMTLTextureMipmapDiagnostics:(id<MTLTexture>)mtlTexture
+- (void)logMTLTextureMipmapDiagnostics:(id)mtlTexture
                                    tex:(Texture *)tex
                  effectiveMipmapLevels:(GLuint)effectiveMipmapLevels;
 
 // === Texture upload helpers (extracted from createMTLTextureFromGLTexture:,
 // defined in MGLRenderer+Texture.m) ===
 - (void)reUploadExistingCPUTextureData:(Texture *)tex
-                                metal:(id<MTLTexture>)texture
-                          pixelFormat:(MTLPixelFormat)pixelFormat
+                                metal:(id)texture
+                          pixelFormat:(uint32_t)pixelFormat
                             numFaces:(uint)num_faces
                     uploadLevelCount:(GLuint)upload_level_count
                               isArray:(BOOL)is_array
                    texture1DBackedBy2D:(BOOL)texture1DBackedBy2D
              texture1DArrayBackedBy2DArray:(BOOL)texture1DArrayBackedBy2DArray
-                             texType:(MTLTextureType)tex_type;
+                             texType:(uint32_t)tex_type;
 
-- (void)fillTextureWithSafeInitialContents:(id<MTLTexture>)texture
+- (void)fillTextureWithSafeInitialContents:(id)texture
                                          tex:(Texture *)tex
-                                 pixelFormat:(MTLPixelFormat)pixelFormat;
+                                 pixelFormat:(uint32_t)pixelFormat;
 
 - (BOOL)uploadDirtyCPUTextureData:(Texture *)tex
-                            metal:(id<MTLTexture>)texture
-                      pixelFormat:(MTLPixelFormat)pixelFormat
+                            metal:(id)texture
+                      pixelFormat:(uint32_t)pixelFormat
                         numFaces:(uint)num_faces
                 uploadLevelCount:(GLuint)upload_level_count
                          isArray:(BOOL)is_array
               texture1DBackedBy2D:(BOOL)texture1DBackedBy2D
         texture1DArrayBackedBy2DArray:(BOOL)texture1DArrayBackedBy2DArray
-                         texType:(MTLTextureType)tex_type
+                         texType:(uint32_t)tex_type
             outAllLevelsUploaded:(BOOL *)outAllLevelsUploaded;
 
 @end

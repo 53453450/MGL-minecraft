@@ -612,7 +612,7 @@ bool checkInternalFormatForMetal(GLMContext ctx, GLuint internalformat)
     GLenum mtl_format;
     mtl_format = mtlFormatForGLInternalFormat(internalformat);
 
-    if (mtl_format == MTLPixelFormatInvalid)
+    if (mtl_format == MGLPixelFormatInvalid)
     {
         // Only warn once per format to reduce log spam during capability probing
         static unsigned warned_formats[64] = {0};
@@ -2934,10 +2934,10 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
 
     switch(mtlFormatForGLInternalFormat(internalformat))
     {
-        case MTLPixelFormatDepth16Unorm:
-        case MTLPixelFormatDepth32Float:
-        case MTLPixelFormatDepth24Unorm_Stencil8:
-        case MTLPixelFormatDepth32Float_Stencil8:
+        case MGLPixelFormatDepth16Unorm:
+        case MGLPixelFormatDepth32Float:
+        case MGLPixelFormatDepth24Unorm_Stencil8:
+        case MGLPixelFormatDepth32Float_Stencil8:
             tex->mtl_requires_private_storage = true;
             break;
 
@@ -3117,10 +3117,10 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
         internalformat != GL_STENCIL_INDEX &&
         internalformat != GL_DEPTH_STENCIL) {
         GLuint mtl_fmt = mtlFormatForGLInternalFormat(internalformat);
-        if (mtl_fmt == MTLPixelFormatDepth16Unorm ||
-            mtl_fmt == MTLPixelFormatDepth32Float ||
-            mtl_fmt == MTLPixelFormatDepth24Unorm_Stencil8 ||
-            mtl_fmt == MTLPixelFormatDepth32Float_Stencil8) {
+        if (mtl_fmt == MGLPixelFormatDepth16Unorm ||
+            mtl_fmt == MGLPixelFormatDepth32Float ||
+            mtl_fmt == MGLPixelFormatDepth24Unorm_Stencil8 ||
+            mtl_fmt == MGLPixelFormatDepth32Float_Stencil8) {
             if (!tex->depth_shadow ||
                 tex->depth_shadow_width != tex->width ||
                 tex->depth_shadow_height != tex->height) {

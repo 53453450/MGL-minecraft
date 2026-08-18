@@ -101,38 +101,38 @@ void mglMarkTextureLevelRenderTargetWrittenImpl(Texture *tex,
 @interface MGLRenderer ()
 
 // === Blit pipeline caches ===
-- (id<MTLRenderPipelineState>)scaledBlitPipelineForPixelFormat:(MTLPixelFormat)pixelFormat;
-- (id<MTLComputePipelineState>)scaledBlitComputePipelineForPixelFormat:(MTLPixelFormat)pixelFormat;
-- (id<MTLSamplerState>)scaledBlitSamplerForFilter:(GLuint)filter;
-- (id<MTLRenderPipelineState>)clearRectPipelineForColorFormat:(MTLPixelFormat)colorFormat
-                                                  depthFormat:(MTLPixelFormat)depthFormat
+- (id)scaledBlitPipelineForPixelFormat:(uint32_t)pixelFormat;
+- (id)scaledBlitComputePipelineForPixelFormat:(uint32_t)pixelFormat;
+- (id)scaledBlitSamplerForFilter:(GLuint)filter;
+- (id)clearRectPipelineForColorFormat:(uint32_t)colorFormat
+                                                  depthFormat:(uint32_t)depthFormat
                                                   writesColor:(BOOL)writesColor
                                                   writesDepth:(BOOL)writesDepth;
-- (id<MTLDepthStencilState>)clearRectDepthState;
+- (id)clearRectDepthState;
 
 // === Multisample resolve ===
-- (id<MTLTexture>)resolvedReadbackTextureForMultisampleTexture:(id<MTLTexture>)sourceTexture
+- (id)resolvedReadbackTextureForMultisampleTexture:(id)sourceTexture
                                                    sourceLevel:(NSUInteger)sourceLevel
                                                    sourceSlice:(NSUInteger)sourceSlice
                                                sourceDepthPlane:(NSUInteger)sourceDepthPlane
                                                         reason:(const char *)reason;
-- (id<MTLTexture>)depthFloatTextureForDepthStencilReadback:(id<MTLTexture>)sourceTexture
+- (id)depthFloatTextureForDepthStencilReadback:(id)sourceTexture
                                                     reason:(const char *)reason;
 
 // === GL sampled render target copy management ===
 - (BOOL)textureCanUseGLSampledRenderTargetCopy:(Texture *)tex
-                                        source:(id<MTLTexture>)source;
+                                        source:(id)source;
 - (void)releaseGLSampledRenderTargetCopyForTexture:(Texture *)tex;
 - (BOOL)updateGLSampledRenderTargetCopyForTexture:(Texture *)tex
-                                           source:(id<MTLTexture>)source
+                                           source:(id)source
                                            reason:(const char *)reason;
-- (id<MTLTexture>)freshGLSampledRenderTargetCopyForSampling:(Texture *)tex
-                                                     source:(id<MTLTexture>)source
+- (id)freshGLSampledRenderTargetCopyForSampling:(Texture *)tex
+                                                     source:(id)source
                                                       stage:(const char *)stage
                                                     program:(GLuint)programName
                                                     binding:(GLuint)binding
                                                        unit:(GLuint)unit
-                                               expectedType:(MTLTextureType)expectedType
+                                               expectedType:(uint32_t)expectedType
                                                expectedKind:(MGLTextureDataKind)expectedKind;
 
 @end

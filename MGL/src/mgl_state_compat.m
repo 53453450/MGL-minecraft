@@ -9,8 +9,6 @@
 #import "mgl_state_compat.h"
 
 #import <Foundation/Foundation.h>
-#import <Metal/Metal.h>
-
 #include <math.h>
 
 BOOL mglNearlyEqual(double a, double b)
@@ -18,19 +16,19 @@ BOOL mglNearlyEqual(double a, double b)
     return fabs(a - b) <= 0.00001;
 }
 
-MTLCompareFunction mglMTLCompareFunctionForGL(GLenum func,
-                                               MTLCompareFunction fallback,
-                                               const char *label)
+uint32_t mglMTLCompareFunctionForGL(GLenum func,
+                                    uint32_t fallback,
+                                    const char *label)
 {
     switch (func) {
-        case GL_NEVER: return MTLCompareFunctionNever;
-        case GL_LESS: return MTLCompareFunctionLess;
-        case GL_EQUAL: return MTLCompareFunctionEqual;
-        case GL_LEQUAL: return MTLCompareFunctionLessEqual;
-        case GL_GREATER: return MTLCompareFunctionGreater;
-        case GL_NOTEQUAL: return MTLCompareFunctionNotEqual;
-        case GL_GEQUAL: return MTLCompareFunctionGreaterEqual;
-        case GL_ALWAYS: return MTLCompareFunctionAlways;
+        case GL_NEVER: return MGLCompareFunctionNever;
+        case GL_LESS: return MGLCompareFunctionLess;
+        case GL_EQUAL: return MGLCompareFunctionEqual;
+        case GL_LEQUAL: return MGLCompareFunctionLessEqual;
+        case GL_GREATER: return MGLCompareFunctionGreater;
+        case GL_NOTEQUAL: return MGLCompareFunctionNotEqual;
+        case GL_GEQUAL: return MGLCompareFunctionGreaterEqual;
+        case GL_ALWAYS: return MGLCompareFunctionAlways;
         default: {
             static uint64_t s_badCompareFunctionCount = 0;
             uint64_t hit = ++s_badCompareFunctionCount;
@@ -48,13 +46,13 @@ MTLCompareFunction mglMTLCompareFunctionForGL(GLenum func,
     }
 }
 
-MTLWinding mglMTLWindingForGL(GLenum frontFace)
+uint32_t mglMTLWindingForGL(GLenum frontFace)
 {
     switch (frontFace) {
         case GL_CW:
-            return MTLWindingClockwise;
+            return MGLWindingClockwise;
         case GL_CCW:
-            return MTLWindingCounterClockwise;
+            return MGLWindingCounterClockwise;
         default: {
             static uint64_t s_badFrontFaceCount = 0;
             uint64_t hit = ++s_badFrontFaceCount;
@@ -65,7 +63,7 @@ MTLWinding mglMTLWindingForGL(GLenum frontFace)
                       (unsigned long long)hit);
             }
 
-            return MTLWindingCounterClockwise;
+            return MGLWindingCounterClockwise;
         }
     }
 }
@@ -149,7 +147,7 @@ BOOL mglShouldLogSmallBaseBinding(GLuint programName,
                                    GLuint binding,
                                    GLuint glName,
                                    GLsizeiptr rangeSize,
-                                   NSUInteger reflectedSize)
+                                   uint64_t reflectedSize)
 {
     typedef struct MGLSmallBaseBindingLogKey_t {
         GLuint programName;
@@ -158,7 +156,7 @@ BOOL mglShouldLogSmallBaseBinding(GLuint programName,
         GLuint binding;
         GLuint glName;
         GLsizeiptr rangeSize;
-        NSUInteger reflectedSize;
+        uint64_t reflectedSize;
         uint64_t hits;  /* 0 == empty slot; >=1 == occupied */
     } MGLSmallBaseBindingLogKey;
 

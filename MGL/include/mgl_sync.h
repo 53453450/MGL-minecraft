@@ -26,10 +26,8 @@
 #define MGL_SYNC_H
 
 #include "glm_context.h"
-
-#ifdef __OBJC__
-#import <Metal/Metal.h>
-#endif
+#include <stdbool.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -40,9 +38,9 @@ extern "C" {
  * Mirrors the (level, slice, depthPlane) triple that Metal uses to address
  * a subresource of a 2D/array/cube/3D texture in a render-pass attachment. */
 typedef struct MGLMetalAttachmentSubresource_t {
-    NSUInteger level;
-    NSUInteger slice;
-    NSUInteger depthPlane;
+    uint64_t level;
+    uint64_t slice;
+    uint64_t depthPlane;
 } MGLMetalAttachmentSubresource;
 
 /* Translate a GL FBOAttachment (level, layer, textarget) to the Metal
@@ -52,24 +50,34 @@ MGLMetalAttachmentSubresource mglMetalAttachmentSubresourceForAttachment(const F
 
 /* Returns YES if the Metal color attachment descriptor addresses the same
  * subresource as `subresource`. */
-BOOL mglMetalRenderPassColorAttachmentMatchesSubresource(MTLRenderPassColorAttachmentDescriptor *descriptor,
+bool mglMetalRenderPassColorAttachmentMatchesSubresource(const void *descriptor,
                                                          MGLMetalAttachmentSubresource subresource);
 
 /* Returns YES if the Metal depth attachment descriptor addresses the same
  * subresource as `subresource`. */
-BOOL mglMetalRenderPassDepthAttachmentMatchesSubresource(MTLRenderPassDepthAttachmentDescriptor *descriptor,
+bool mglMetalRenderPassDepthAttachmentMatchesSubresource(const void *descriptor,
                                                          MGLMetalAttachmentSubresource subresource);
 
 /* Returns YES if the Metal stencil attachment descriptor addresses the same
  * subresource as `subresource`. */
-BOOL mglMetalRenderPassStencilAttachmentMatchesSubresource(MTLRenderPassStencilAttachmentDescriptor *descriptor,
+bool mglMetalRenderPassStencilAttachmentMatchesSubresource(const void *descriptor,
                                                            MGLMetalAttachmentSubresource subresource);
 
 /* === Metal enum naming (for trace logging) === */
 
-const char *mglCommandBufferStatusName(MTLCommandBufferStatus status);
-const char *mglLoadActionName(MTLLoadAction action);
-const char *mglStoreActionName(MTLStoreAction action);
+/* Numeric values are part of the opaque command-buffer value-state ABI. */
+typedef enum MGLCommandBufferStatus_t {
+    MGL_COMMAND_BUFFER_STATUS_NOT_ENQUEUED = 0,
+    MGL_COMMAND_BUFFER_STATUS_ENQUEUED = 1,
+    MGL_COMMAND_BUFFER_STATUS_COMMITTED = 2,
+    MGL_COMMAND_BUFFER_STATUS_SCHEDULED = 3,
+    MGL_COMMAND_BUFFER_STATUS_COMPLETED = 4,
+    MGL_COMMAND_BUFFER_STATUS_ERROR = 5,
+} MGLCommandBufferStatus;
+
+const char *mglCommandBufferStatusName(uint32_t status);
+const char *mglLoadActionName(uint32_t action);
+const char *mglStoreActionName(uint32_t action);
 
 #ifdef __cplusplus
 }

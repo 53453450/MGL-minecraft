@@ -16,10 +16,6 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#ifdef __OBJC__
-#import <Foundation/Foundation.h>
-#endif
-
 typedef enum {
     MGL_GPU_FAMILY_UNKNOWN = 0,
     MGL_GPU_FAMILY_AGX,           /* Apple Silicon (M1/M2/M3/M4...) */
@@ -44,8 +40,8 @@ typedef struct MGLCapability_t {
 
     /* === Capability queries (lazy-cached at init) === */
     bool           supports8xMSAA;
-    NSUInteger     maxSampleCount;
-    NSUInteger     maxTextureDimensions;
+    uint64_t       maxSampleCount;
+    uint64_t       maxTextureDimensions;
 
     /* === Driver bug markers (semantic) === */
     bool           bug_3dGetBytesSliceOOB;
@@ -55,25 +51,23 @@ typedef struct MGLCapability_t {
     bool           bug_mslPipelineRejection;
 
     /* === Robustness config === */
-    NSUInteger     commandBufferRecoveryLimit;
-    NSUInteger     maxConcurrentCommandBuffers;
-    NSUInteger     textureAlignmentBytes;
+    uint64_t       commandBufferRecoveryLimit;
+    uint64_t       maxConcurrentCommandBuffers;
+    uint64_t       textureAlignmentBytes;
     bool           conservativeCPUCacheMode;
 } MGLCapability;
 
 /* Initialize capability from a backend-owned Metal device.  Must be called
  * once after backend creation; the borrowed device pointer remains valid
  * until backend shutdown. */
-#ifdef __OBJC__
 void MGLCapabilityInit(MGLCapability *cap, void *deviceRef);
-#endif
 
 /* === Capability query API === */
-bool       MGLCapabilitySupportsSampleCount(MGLCapability *cap, NSUInteger samples);
-NSUInteger MGLCapabilityClampSampleCount(MGLCapability *cap, NSUInteger requested);
-NSUInteger MGLCapabilityTextureAlignment(MGLCapability *cap);
+bool       MGLCapabilitySupportsSampleCount(MGLCapability *cap, uint64_t samples);
+uint64_t   MGLCapabilityClampSampleCount(MGLCapability *cap, uint64_t requested);
+uint64_t   MGLCapabilityTextureAlignment(MGLCapability *cap);
 bool       MGLCapabilityUseConservativeCPUCache(MGLCapability *cap);
-NSUInteger MGLCapabilityMaxConcurrentCommandBuffers(MGLCapability *cap);
+uint64_t   MGLCapabilityMaxConcurrentCommandBuffers(MGLCapability *cap);
 
 /* === Driver bug query API === */
 bool       MGLCapabilityHasBug(MGLCapability *cap, const char *bugName);

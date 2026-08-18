@@ -1,6 +1,6 @@
 #!/bin/bash
 # P3 baseline recorder: snapshot the full local gate output before/after a P3
-# batch so A/B parity can be compared per sub-batch.  Logs land in
+# batch so regressions can be compared per sub-batch. Logs land in
 # build/p3_baseline/ (not tracked).  Usage: bash scripts/record_p3_baseline.sh <label>
 set -u
 
@@ -21,7 +21,7 @@ run test-mglair make test-mglair
 run test-mglair-gtest make test-mglair-gtest
 run test-metalcpp make test-metalcpp
 run test-regression make test-regression
-run regression-metalcpp env DYLD_LIBRARY_PATH=${PWD}/build \
+run regression-single-path env DYLD_LIBRARY_PATH=${PWD}/build \
     ${PWD}/build/test_regression --golden-dir ${PWD}/MGL_Golden_Images
 
 printf 'P3 baseline %s done: %s\n' "$label" "$out_dir" | tee -a "$out_dir/${label}_00_summary.log"

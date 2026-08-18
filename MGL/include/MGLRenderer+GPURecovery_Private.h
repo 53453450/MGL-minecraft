@@ -33,12 +33,12 @@
 - (void)cleanupCommandBuffer;
 - (void)resetMetalState;
 - (void)emergencyResetMetalState;
-- (void)commitCommandBufferWithAGXRecovery:(id<MTLCommandBuffer>)commandBuffer;
+- (void)commitCommandBufferWithAGXRecovery:(id)commandBuffer;
 - (BOOL)shouldSkipGPUOperations;
 - (void)clearProblematicGPUState;
 - (void)recordGPUError;
 - (void)recordGPUSuccess;
-- (NSUInteger)getOptimalAlignmentForPixelFormat:(MTLPixelFormat)format;
+- (NSUInteger)getOptimalAlignmentForPixelFormat:(uint32_t)format;
 
 @end
 

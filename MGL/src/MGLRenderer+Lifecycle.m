@@ -6,7 +6,6 @@
 #import "MGLRenderer+Lifecycle_Private.h"
 #import "mgl.h"
 #import "draw_command.h"
-#include "mgl_render_cpp_objc.h" /* C ABI + ObjC descriptor state adapter */
 
 /* KVO context shared by the observer registration in
  * createMGLRendererAndBindToContext:view: and observeValueForKeyPath:. */
@@ -15,57 +14,6 @@ static void *s_kvoViewGeometryContext = &s_kvoViewGeometryContext;
 @interface MGLRenderer (LifecycleBackendBoundary)
 - (void)mglBackendWillDestroy:(MGLRendererBackendHandle *)backend;
 @end
-
-static MTLPixelFormat mglMetalLayerPixelFormatForContext(GLMContext drawCtx)
-{
-    MTLPixelFormat fallback = MTLPixelFormatBGRA8Unorm;
-    if (!drawCtx) {
-        return fallback;
-    }
-
-    MTLPixelFormat requested = (MTLPixelFormat)drawCtx->pixel_format.mtl_pixel_format;
-    if (mglMetalLayerPixelFormatIsSupported(requested)) {
-        return requested;
-    }
-
-    NSLog(@"MGL CAMetalLayer pixelFormat fallback glFormat=0x%x glType=0x%x requestedMtl=%lu fallback=%lu",
-          drawCtx->pixel_format.format,
-          drawCtx->pixel_format.type,
-          (unsigned long)requested,
-          (unsigned long)fallback);
-    return fallback;
-}
-
-static id<MTLTexture> mglLifecycleCreateTexture(
-    id<MTLDevice> device,
-    MTLTextureDescriptor *descriptor)
-{
-    (void)device;
-    void *texture = NULL;
-    MGLRenderCppTextureDescriptorState state =
-        mglRenderCppTextureDescriptorStateFromObjC(descriptor);
-    if (mglRenderCppCreateTextureFromState(&state, NULL, &texture) == 0 &&
-        texture) {
-        return (__bridge_transfer id<MTLTexture>)texture;
-    }
-    return nil;
-}
-
-static void mglLifecycleReplaceTextureRegion(id<MTLTexture> texture,
-                                             MTLRegion region,
-                                             NSUInteger level,
-                                             const void *bytes,
-                                             NSUInteger bytesPerRow)
-{
-    if (mglRenderCppTextureReplaceRegion(
-            (__bridge void *)texture,
-            region.origin.x, region.origin.y, region.origin.z,
-            region.size.width, region.size.height, region.size.depth,
-            level, 0, bytes, bytesPerRow, 0, 0) == 0) {
-        return;
-    }
-    NSLog(@"MGL ERROR: proactive texture upload failed through Metal-cpp");
-}
 
 @implementation MGLRenderer (Lifecycle)
 
@@ -240,7 +188,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     NSLog(@"MGL INFO: VIRTUALIZED AGX - Creating Metal device with virtualization detection");
 
     // Create the Metal device
-    id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+    id device = [self mglCreateSystemDefaultDevice];
     if (!device) {
         NSLog(@"MGL ERROR: Metal device not found - this is required for Apple Silicon");
         // Intentional early return on critical Metal initialization failure.
@@ -290,12 +238,15 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
 
     // PROPER AGX VIRTUALIZATION DETECTION: Maintain Metal functionality with virtualization compatibility
     BOOL isVirtualized = _capability.isVirtualized;
-    NSString *deviceName = [_device name];
+    char deviceName[128];
+    (void)mglRenderCppGetDeviceIdentity(
+        (__bridge const void *)_device, NULL,
+        deviceName, sizeof(deviceName));
 
     // DETECTION: Check if running in QEMU virtualization but keep Metal enabled
     if (isVirtualized) {
         isVirtualized = YES;
-        NSLog(@"MGL INFO: AGX device detected - enabling virtualization compatibility mode: %@", deviceName);
+        NSLog(@"MGL INFO: AGX device detected - enabling virtualization compatibility mode: %s", deviceName);
         NSLog(@"MGL INFO: Metal functionality will be maintained with AGX virtualization safety measures");
     }
 
@@ -341,29 +292,16 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
 
     _view = view;
 
-    // PROPER FIX: Create Metal layer with AGX-safe settings
+    // PROPER FIX: Create Metal layer with AGX-safe settings in the platform shell.
     NSLog(@"MGL INFO: PROPER FIX - Creating Metal layer with AGX-safe settings");
 
-    _layer = [[CAMetalLayer alloc] init];
-    if (!_layer) {
+    uint32_t requestedPixelFormat = ctx ? ctx->pixel_format.mtl_pixel_format : 0u;
+    uint32_t pf = 0u;
+    if (![self mglConfigureMetalLayerWithDevice:_device
+                          requestedPixelFormat:requestedPixelFormat
+                           actualPixelFormat:&pf]) {
         NSLog(@"MGL ERROR: Failed to create Metal layer");
         return;
-    }
-
-    _layer.device = _device;
-    MTLPixelFormat requestedPixelFormat = ctx ? (MTLPixelFormat)ctx->pixel_format.mtl_pixel_format
-                                              : MTLPixelFormatInvalid;
-    MTLPixelFormat pf = mglMetalLayerPixelFormatForContext(ctx);
-
-    @try {
-        _layer.pixelFormat = pf;
-    } @catch (NSException *exception) {
-        NSLog(@"MGL CAMetalLayer invalid pixelFormat=%lu requested=%lu exception=%@; falling back to BGRA8Unorm",
-              (unsigned long)pf,
-              (unsigned long)requestedPixelFormat,
-              exception);
-        pf = MTLPixelFormatBGRA8Unorm;
-        _layer.pixelFormat = pf;
     }
 
     if (ctx && ctx->pixel_format.mtl_pixel_format != (GLuint)pf) {
@@ -375,23 +313,10 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         ctx->pixel_format.mtl_pixel_format = (GLuint)pf;
     }
     NSLog(@"MGL CAMetalLayer pixelFormat=%lu requested=%lu glFormat=0x%x glType=0x%x",
-          (unsigned long)_layer.pixelFormat,
+          (unsigned long)pf,
           (unsigned long)requestedPixelFormat,
           ctx ? ctx->pixel_format.format : 0u,
           ctx ? ctx->pixel_format.type : 0u);
-    _layer.opaque = YES;
-    _layer.framebufferOnly = NO; // enable blitting to main color buffer
-    _layer.allowsNextDrawableTimeout = YES; // avoid indefinite nextDrawable stalls
-    _layer.magnificationFilter = kCAFilterNearest;
-    _layer.presentsWithTransaction = NO;
-
-    // AGX-safe layer attachment
-    if ([_view layer]) {
-        [[_view layer] addSublayer: _layer];
-    } else {
-        [_view setLayer: _layer];
-    }
-
     /* Initial geometry: the renderer is created on the main thread (AppKit
      * window setup), so read the view geometry synchronously here.  Later
      * changes arrive via KVO → mglMainThreadSyncViewGeometry. */
@@ -419,9 +344,9 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
 
     // Create initial command buffer for AGX safety
     @try {
-        [_renderPassManager installNewCommandBufferFromQueue:_commandQueue];
+        [_renderPassManager installNewCommandBufferFromQueue:(__bridge void *)_commandQueue];
         MGLRenderCppCommandBufferState commandState = {0};
-        if (!mglRenderCommandBufferOwnerState(
+        if (!mglRenderCppCommandBufferOwnerHasState(
                 _renderPassManager.state->currentCommandBufferOwner,
                 &commandState)) {
             NSLog(@"MGL ERROR: Failed to create initial Metal command buffer");
@@ -434,10 +359,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     NSLog(@"MGL INFO: PROACTIVE - Creating essential textures to prevent magenta screen");
     [self createProactiveTextures];
 
-    // capture Metal commands in MGL.gputrace
-    // necessitates Info.plist in the cwd, see https://stackoverflow.com/a/64172784
-    //MTLCaptureDescriptor *descriptor = [self setupCaptureToFile: _device];
-    //[self startCapture:descriptor];
+    // GPU capture setup is exposed by MGLPlatformRendererShell when needed.
 }
 
 - (BOOL)mglRendererIsReady
@@ -449,7 +371,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     }
 
     MGLRenderCppCommandBufferState commandState = {0};
-    return mglRenderCommandBufferOwnerState(
+    return mglRenderCppCommandBufferOwnerHasState(
         _renderPassManager.state->currentCommandBufferOwner,
         &commandState);
 }
@@ -470,7 +392,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
 - (void)mglMainThreadSyncViewGeometry
 {
     NSAssert(NSThread.isMainThread, @"AppKit geometry must be read on main thread");
-    if (!_view || !_layer) {
+    if (!_view || ![self mglHasMetalLayer]) {
         return;
     }
 
@@ -497,8 +419,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         backingBounds = NSMakeRect(0.0, 0.0, bounds.size.width * scale, bounds.size.height * scale);
     }
 
-    _layer.frame = bounds;
-    _layer.contentsScale = scale;
+    [self mglSetMetalLayerFrame:bounds contentsScale:scale];
 
     uint32_t pw = (uint32_t)MAX(1.0, backingBounds.size.width + 0.5);
     uint32_t ph = (uint32_t)MAX(1.0, backingBounds.size.height + 0.5);
@@ -563,49 +484,8 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     NSLog(@"MGL PROACTIVE: Starting essential texture creation");
 
     @try {
-        // Create a simple 2D texture with gradient pattern to prevent magenta screens
-        MTLTextureDescriptor *proactiveDesc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
-                                                                                                          width:256
-                                                                                                         height:256
-                                                                                                      mipmapped:NO];
-        proactiveDesc.usage = MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget;
-        proactiveDesc.storageMode = MTLStorageModeShared;
-
-        id<MTLTexture> proactiveTexture =
-            mglLifecycleCreateTexture(_device, proactiveDesc);
-        if (proactiveTexture) {
-            // Create gradient pattern data
-            uint32_t *gradientData = calloc(256 * 256, sizeof(uint32_t));
-            if (gradientData) {
-                // Create blue-green gradient pattern
-                for (NSUInteger y = 0; y < 256; y++) {
-                    for (NSUInteger x = 0; x < 256; x++) {
-                        NSUInteger index = y * 256 + x;
-                        uint8_t r = (uint8_t)((x * 128) / 256 + 64);      // Red: 64-192
-                        uint8_t g = (uint8_t)((y * 128) / 256 + 64);      // Green: 64-192
-                        uint8_t b = 255;                                  // Blue: 255
-                        uint8_t a = 255;                                  // Alpha: 255
-                        gradientData[index] = ((uint32_t)a << 24) | ((uint32_t)b << 16) | ((uint32_t)g << 8) | (uint32_t)r;
-                    }
-                }
-
-                MTLRegion region = MTLRegionMake2D(0, 0, 256, 256);
-                mglLifecycleReplaceTextureRegion(
-                    proactiveTexture, region, 0, gradientData,
-                    256 * sizeof(uint32_t));
-
-                free(gradientData);
-                NSLog(@"MGL PROACTIVE SUCCESS: Created 256x256 gradient texture (prevents magenta screen)");
-            } else {
-                NSLog(@"MGL PROACTIVE WARNING: Could not allocate gradient data");
-            }
-
-            // Store the proactive texture for future use
-            if (mglRendererBackendRetainProactiveTexture(
-                    _backend, (__bridge void *)proactiveTexture) != 0) {
-                NSLog(@"MGL WARNING: Failed to retain proactive texture in renderer backend");
-            }
-
+        if (mglRendererBackendCreateProactiveTexture(_backend) == 0) {
+            NSLog(@"MGL PROACTIVE SUCCESS: Created 256x256 gradient texture (prevents magenta screen)");
         } else {
             NSLog(@"MGL PROACTIVE ERROR: Could not create proactive texture");
         }
@@ -615,32 +495,6 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     }
 
     NSLog(@"MGL PROACTIVE: Essential texture creation completed");
-}
-
-- (MTLCaptureDescriptor *)setupCaptureToFile: (id<MTLDevice>)device//(nonnull MTLDevice* )device // (nonnull MTKView *)view
-{
-    MTLCaptureDescriptor *descriptor = [[MTLCaptureDescriptor alloc] init];
-    descriptor.destination = MTLCaptureDestinationGPUTraceDocument;
-    descriptor.outputURL = [NSURL fileURLWithPath:@"MGL.gputrace"];
-    descriptor.captureObject = device; //((MTKView *)view).device;
-    
-    return descriptor;
-}
-
-- (void)startCapture:(MTLCaptureDescriptor *) descriptor
-{
-    NSError *error = nil;
-    BOOL success = [MTLCaptureManager.sharedCaptureManager startCaptureWithDescriptor:descriptor
-                                                                                error:&error];
-    if (!success) {
-        NSLog(@" error capturing mtl => %@ ", [error localizedDescription] );
-    }
-}
-
-// Stop the capture.
-- (void)stopCapture
-{
-    [MTLCaptureManager.sharedCaptureManager stopCapture];
 }
 
 // CRITICAL FIX: Proper resource cleanup to prevent memory leaks and crashes
@@ -666,7 +520,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         }
 
         // Stop any ongoing capture
-        [MTLCaptureManager.sharedCaptureManager stopCapture];
+        [self mglStopCapture];
 
         // End any active rendering
         [self endRenderEncoding];
@@ -676,7 +530,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         [self invalidateLastBoundState];
         // Cleanup command buffer and encoder
         MGLRenderCppCommandBufferState commandState = {0};
-        if (mglRenderCommandBufferOwnerState(
+        if (mglRenderCppCommandBufferOwnerHasState(
                 _renderPassManager.state->currentCommandBufferOwner,
                 &commandState)) {
             NSLog(@"MGL INFO: Releasing current command buffer");
@@ -729,10 +583,9 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
             _drawable = nil;
         }
 
-        if (_layer) {
+        if ([self mglHasMetalLayer]) {
             NSLog(@"MGL INFO: Removing and releasing layer");
-            [_layer removeFromSuperlayer];
-            _layer = nil;
+            [self mglDetachMetalLayer];
         }
 
         /* Task 4: Release all address-stable snapshot arena chunks. */

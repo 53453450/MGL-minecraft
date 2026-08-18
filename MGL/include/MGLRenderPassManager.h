@@ -2,10 +2,9 @@
 #define MGLRenderPassManager_h
 
 #import <Foundation/Foundation.h>
-#import <Metal/Metal.h>
 
 #include "glm_context.h"
-#include "mgl_render_cpp_objc.h"
+#include "mgl_render_cpp.h"
 
 typedef struct MGLCommandState_t {
     void *_Nullable renderPassIdentityOwner;
@@ -51,31 +50,31 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)setRuntimeContext:(nullable GLMContext)context;
 - (void)updateRenderPassIdentityForContext:(GLMContext)context;
 - (void)clearRenderPassIdentity;
-- (nullable MGLMetalCommandBufferRef)installNewCommandBufferFromQueue:(nullable MGLMetalCommandQueueRef)commandQueue;
-- (nullable MGLMetalCommandBufferRef)detachCurrentCommandBufferForSubmission;
+- (void * _Nullable)installNewCommandBufferFromQueue:(void * _Nullable)commandQueue;
+- (void * _Nullable)detachCurrentCommandBufferForSubmission;
 - (void)discardCurrentCommandBuffer;
-- (BOOL)commitDetachedCommandBufferIfOwned:(nullable MGLMetalCommandBufferRef)commandBuffer;
-- (int)commitCommandBufferTransaction:(nullable MGLMetalCommandBufferRef)commandBuffer
+- (BOOL)commitDetachedCommandBufferIfOwned:(void * _Nullable)commandBuffer;
+- (int)commitCommandBufferTransaction:(void * _Nullable)commandBuffer
                          recoveryOwner:(nullable void *)recoveryOwner
                      waitForCompletion:(BOOL)waitForCompletion
                                 result:(MGLRenderCppCommandBufferTransaction *)result;
 - (BOOL)hasLastSubmittedCommandBuffer;
 - (int)waitForLastSubmittedCommandBuffer:(MGLRenderCppCommandBufferState *)state;
-- (nullable MGLMetalCommandBufferRef)consumeTransactionCreatedCurrentCommandBuffer;
-- (void)releaseDetachedCommandBufferIfOwned:(nullable MGLMetalCommandBufferRef)commandBuffer;
+- (void * _Nullable)consumeTransactionCreatedCurrentCommandBuffer;
+- (void)releaseDetachedCommandBufferIfOwned:(void * _Nullable)commandBuffer;
 - (BOOL)appendSyncToCurrentCommandBuffer:(Sync *)sync;
 - (void)clearCurrentCommandBufferSyncListEntries;
-- (nullable MGLMetalEventRef)preparePendingEventWithDevice:(MGLMetalDeviceRef)device
+- (void * _Nullable)preparePendingEventWithDevice:(void * _Nullable)device
                                              syncName:(GLsizei)syncName;
-- (nullable MGLMetalEventRef)detachPendingEventWithSyncName:(nullable GLuint *)syncNameOut;
+- (void * _Nullable)detachPendingEventWithSyncName:(nullable GLuint *)syncNameOut;
 - (void)clearPendingEvent;
-- (void)installRenderEncoder:(nullable MGLMetalRenderCommandEncoderRef)renderEncoder;
-- (nullable MGLMetalRenderCommandEncoderRef)createRenderEncoder;
+- (void)installRenderEncoder:(void * _Nullable)renderEncoder;
+- (void * _Nullable)createRenderEncoder;
 - (void)endCurrentRenderEncoder;
 - (void)clearCurrentRenderEncoder;
 - (BOOL)beginCommandBufferCommit;
 - (void)endCommandBufferCommit;
-- (nullable MGLMetalBufferRef)mdiArgumentScratchBufferWithDevice:(MGLMetalDeviceRef)device
+- (void * _Nullable)mdiArgumentScratchBufferWithDevice:(void * _Nullable)device
                                                       length:(NSUInteger)length
                                                       offset:(nullable NSUInteger *)offsetOut;
 - (void)resetMDIScratch;

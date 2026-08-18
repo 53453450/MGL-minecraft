@@ -18,7 +18,7 @@
  *   - glcorearb.h (GL enums, GLuint/GLsizei)
  *   - glm_context.h (Buffer, GLMContext)
  *   - mgl_vertex_format.h (mglGLIndexElementSize, mglReadGLIndexValue)
- *   - Metal.framework (id<MTLDevice>, id<MTLBuffer>, MTLIndexType) — under __OBJC__
+ *   - opaque Metal handles owned by mgl_render_cpp.cpp
  */
 
 #ifndef MGL_INDEX_BUFFER_H
@@ -30,13 +30,21 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#ifdef __OBJC__
-#import <Foundation/Foundation.h>
-#import <Metal/Metal.h>
+#ifndef __OBJC__
+typedef size_t NSUInteger;
+#ifndef NSUIntegerMax
+#define NSUIntegerMax SIZE_MAX
+#endif
 #endif
 
 #include "glm_context.h"
 #include "mgl_vertex_format.h"
+
+#ifdef __OBJC__
+typedef id MGLIndexMetalHandle;
+#else
+typedef void *MGLIndexMetalHandle;
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -82,7 +90,8 @@ static inline bool mglScanIndexRangeIgnoringRestart(const uint8_t *indexBytes,
     }
     const uint32_t elemWidth = indexType == GL_UNSIGNED_BYTE ? 1u
         : indexType == GL_UNSIGNED_SHORT ? 2u : 4u;
-    uint32_t lo = 0u, hi = 0u, valid = 0;
+    uint32_t lo = 0u, hi = 0u;
+    int valid = 0;
     if (mglRenderCppScanIndexRangeIgnoringRestart(
             indexBytes, elemWidth, (uint32_t)(count > 0 ? count : 0),
             primitiveRestartEnabled ? 1 : 0, restartIndex,
@@ -184,65 +193,63 @@ static inline bool mglComputePreparedIndexByteOffset(GLenum glIndexType,
  * failure.  *outIndexCount receives the number of indices in the new buffer
  * (0 on failure). */
 
-#ifdef __OBJC__
-
 /* Array (non-indexed) variants — generate sequential vertex indices. */
-id<MTLBuffer> mglNewTriangleFanArrayIndexBuffer(id<MTLDevice> device,
-                                                 NSUInteger vertexCount,
-                                                 NSUInteger *outIndexCount);
+MGLIndexMetalHandle mglNewTriangleFanArrayIndexBuffer(MGLIndexMetalHandle device,
+                                                       size_t vertexCount,
+                                                       size_t *outIndexCount);
 
-id<MTLBuffer> mglNewLineLoopArrayIndexBuffer(id<MTLDevice> device,
-                                              NSUInteger firstVertex,
-                                              NSUInteger vertexCount,
-                                              NSUInteger *outIndexCount);
+MGLIndexMetalHandle mglNewLineLoopArrayIndexBuffer(MGLIndexMetalHandle device,
+                                                    size_t firstVertex,
+                                                    size_t vertexCount,
+                                                    size_t *outIndexCount);
 
-id<MTLBuffer> mglNewTriangleStripArrayIndexBuffer(id<MTLDevice> device,
-                                                   NSUInteger vertexCount,
-                                                   NSUInteger *outIndexCount);
+MGLIndexMetalHandle mglNewTriangleStripArrayIndexBuffer(MGLIndexMetalHandle device,
+                                                         size_t vertexCount,
+                                                         size_t *outIndexCount);
 
-id<MTLBuffer> mglNewQuadArrayIndexBuffer(id<MTLDevice> device,
-                                          NSUInteger vertexCount,
-                                          NSUInteger *outIndexCount);
+MGLIndexMetalHandle mglNewQuadArrayIndexBuffer(MGLIndexMetalHandle device,
+                                                size_t vertexCount,
+                                                size_t *outIndexCount);
 
-id<MTLBuffer> mglNewQuadArrayLineIndexBuffer(id<MTLDevice> device,
-                                              NSUInteger vertexCount,
-                                              NSUInteger *outIndexCount);
+MGLIndexMetalHandle mglNewQuadArrayLineIndexBuffer(MGLIndexMetalHandle device,
+                                                    size_t vertexCount,
+                                                    size_t *outIndexCount);
 
 /* Element (indexed) variants — read source indices and expand. */
-id<MTLBuffer> mglNewTriangleFanElementIndexBuffer(id<MTLDevice> device,
-                                                   const uint8_t *sourceIndexBytes,
-                                                   GLenum sourceIndexType,
-                                                   NSUInteger sourceIndexCount,
-                                                   NSUInteger *outIndexCount);
+MGLIndexMetalHandle mglNewTriangleFanElementIndexBuffer(MGLIndexMetalHandle device,
+                                                         const uint8_t *sourceIndexBytes,
+                                                         GLenum sourceIndexType,
+                                                         size_t sourceIndexCount,
+                                                         size_t *outIndexCount);
 
-id<MTLBuffer> mglNewTriangleStripElementIndexBuffer(id<MTLDevice> device,
-                                                     const uint8_t *sourceIndexBytes,
-                                                     GLenum sourceIndexType,
-                                                     NSUInteger sourceIndexCount,
-                                                     NSUInteger *outIndexCount);
+MGLIndexMetalHandle mglNewTriangleStripElementIndexBuffer(MGLIndexMetalHandle device,
+                                                           const uint8_t *sourceIndexBytes,
+                                                           GLenum sourceIndexType,
+                                                           size_t sourceIndexCount,
+                                                           size_t *outIndexCount);
 
-id<MTLBuffer> mglNewLineLoopElementIndexBuffer(id<MTLDevice> device,
-                                                const uint8_t *sourceIndexBytes,
-                                                GLenum sourceIndexType,
-                                                NSUInteger sourceIndexCount,
-                                                NSUInteger *outIndexCount);
+MGLIndexMetalHandle mglNewLineLoopElementIndexBuffer(MGLIndexMetalHandle device,
+                                                      const uint8_t *sourceIndexBytes,
+                                                      GLenum sourceIndexType,
+                                                      size_t sourceIndexCount,
+                                                      size_t *outIndexCount);
 
-id<MTLBuffer> mglNewQuadElementIndexBuffer(id<MTLDevice> device,
-                                            const uint8_t *sourceIndexBytes,
-                                            GLenum sourceIndexType,
-                                            NSUInteger sourceIndexCount,
-                                            NSUInteger *outIndexCount);
+MGLIndexMetalHandle mglNewQuadElementIndexBuffer(MGLIndexMetalHandle device,
+                                                  const uint8_t *sourceIndexBytes,
+                                                  GLenum sourceIndexType,
+                                                  size_t sourceIndexCount,
+                                                  size_t *outIndexCount);
 
-id<MTLBuffer> mglNewQuadElementLineIndexBuffer(id<MTLDevice> device,
-                                                const uint8_t *sourceIndexBytes,
-                                                GLenum sourceIndexType,
-                                                NSUInteger sourceIndexCount,
-                                                NSUInteger *outIndexCount);
+MGLIndexMetalHandle mglNewQuadElementLineIndexBuffer(MGLIndexMetalHandle device,
+                                                      const uint8_t *sourceIndexBytes,
+                                                      GLenum sourceIndexType,
+                                                      size_t sourceIndexCount,
+                                                      size_t *outIndexCount);
 
 /* Expands GL_UNSIGNED_BYTE indices to Metal-compatible UInt16. */
-id<MTLBuffer> mglNewUInt16IndexBufferFromUInt8(id<MTLDevice> device,
-                                                const uint8_t *sourceIndexBytes,
-                                                NSUInteger sourceIndexCount);
+MGLIndexMetalHandle mglNewUInt16IndexBufferFromUInt8(MGLIndexMetalHandle device,
+                                                      const uint8_t *sourceIndexBytes,
+                                                      size_t sourceIndexCount);
 
 /* === Buffer source readers ===
  *
@@ -250,43 +257,41 @@ id<MTLBuffer> mglNewUInt16IndexBufferFromUInt8(id<MTLDevice> device,
  * fallback.  Used by the draw-element path and the UInt8→UInt16 expansion. */
 
 const uint8_t *mglReadableBufferBytes(Buffer *glBuffer,
-                                      id<MTLBuffer> metalBuffer,
-                                      NSUInteger *outSourceByteCount);
+                                      MGLIndexMetalHandle metalBuffer,
+                                      size_t *outSourceByteCount);
 
 const uint8_t *mglElementIndexSourceBytes(Buffer *glElementBuffer,
-                                          id<MTLBuffer> metalElementBuffer,
-                                          NSUInteger *outSourceByteCount);
+                                          MGLIndexMetalHandle metalElementBuffer,
+                                          size_t *outSourceByteCount);
 
 const uint8_t *mglElementIndexSourceForDraw(Buffer *glElementBuffer,
-                                            id<MTLBuffer> metalElementBuffer,
+                                            MGLIndexMetalHandle metalElementBuffer,
                                             GLenum glIndexType,
-                                            NSUInteger indexOffset,
+                                            size_t indexOffset,
                                             GLsizei indexCount);
 
-BOOL mglReadBufferBytes(Buffer *glBuffer,
-                        id<MTLBuffer> metalBuffer,
-                        NSUInteger byteOffset,
+bool mglReadBufferBytes(Buffer *glBuffer,
+                        MGLIndexMetalHandle metalBuffer,
+                        size_t byteOffset,
                         void *dst,
-                        NSUInteger byteCount,
+                        size_t byteCount,
                         const char *label);
 
 /* Prepares the element index buffer for a draw call: if the GL index type is
  * GL_UNSIGNED_BYTE, expands to a new UInt16 MTLBuffer and adjusts the offset
  * + MetalIndexType accordingly.  Otherwise returns the original metalElementBuffer
  * unchanged.  Returns nil on expansion failure. */
-id<MTLBuffer> mglPreparedElementIndexBuffer(id<MTLDevice> device,
-                                             Buffer *glElementBuffer,
-                                             id<MTLBuffer> metalElementBuffer,
-                                             GLenum glIndexType,
-                                             NSUInteger *ioIndexBufferOffset,
-                                             MTLIndexType *outMetalIndexType);
+MGLIndexMetalHandle mglPreparedElementIndexBuffer(MGLIndexMetalHandle device,
+                                                   Buffer *glElementBuffer,
+                                                   MGLIndexMetalHandle metalElementBuffer,
+                                                   GLenum glIndexType,
+                                                   size_t *ioIndexBufferOffset,
+                                                   uint64_t *outMetalIndexType);
 
 /* P3: mark the snapshot-pool slot holding buf's current Metal backing as
  * encoded in the current frame, so it is not recycled until that frame's GPU
  * work completes.  Defined in MGLRenderer+Buffer.m. */
 void mglNoteBufferEncoded(Buffer *buf);
-
-#endif /* __OBJC__ */
 
 #ifdef __cplusplus
 }

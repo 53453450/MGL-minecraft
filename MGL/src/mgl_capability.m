@@ -5,113 +5,53 @@
  * Implementation of the AGX Capability Layer.
  */
 
-#import "mgl_capability.h"
-#import <Foundation/Foundation.h>
-#import <Metal/Metal.h>
+#include "mgl_capability.h"
+#include "mgl_render_cpp.h"
 #import <string.h>
-
-static id<MTLDevice> mglCapabilityDeviceRef(void *device)
-{
-    return (__bridge id<MTLDevice>)device;
-}
 
 void MGLCapabilityInit(MGLCapability *cap, void *deviceRef)
 {
+    if (!cap) return;
     memset(cap, 0, sizeof(*cap));
-    id<MTLDevice> device = mglCapabilityDeviceRef(deviceRef);
     cap->device = deviceRef;
-
-    NSString *name = [device name] ?: @"Unknown Metal Device";
-    BOOL supportsAppleFamily = NO;
-    if (@available(macOS 10.15, *)) {
-        supportsAppleFamily = [device supportsFamily:MTLGPUFamilyApple1];
-    }
-
-    if ([name containsString:@"AGX"]) {
-        /* Current AGX detection also implies virtualization in the MGL test
-         * environment.  On bare-metal Apple Silicon the device name is
-         * typically "Apple M1"/"Apple M2"/...  When running under QEMU /
-         * virtualization the name contains "AGX". */
-        cap->family = MGL_GPU_FAMILY_VIRTUALIZED;
-        cap->isVirtualized = YES;
-        NSLog(@"MGL CAP: AGX virtualized device detected: %@", name);
-    } else if (supportsAppleFamily || [name hasPrefix:@"Apple "]) {
-        cap->family = MGL_GPU_FAMILY_AGX;
-        cap->isVirtualized = NO;
-        NSLog(@"MGL CAP: Apple Silicon device detected: %@", name);
-    } else {
-        cap->family = MGL_GPU_FAMILY_OTHER;
-        NSLog(@"MGL CAP: Non-AGX device detected: %@", name);
-    }
-
-    /* === Capability queries === */
-    cap->maxSampleCount = 1;
-    static const NSUInteger sampleCounts[] = { 32u, 16u, 8u, 4u, 2u };
-    for (NSUInteger i = 0; i < sizeof(sampleCounts) / sizeof(sampleCounts[0]); ++i) {
-        NSUInteger sampleCount = sampleCounts[i];
-        if ([device supportsTextureSampleCount:sampleCount]) {
-            cap->maxSampleCount = sampleCount;
-            break;
-        }
-    }
-    cap->supports8xMSAA = (cap->maxSampleCount >= 8);
-
-    /* === Driver bug markers ===
-     *
-     * AGX (both virtualized and bare-metal Apple Silicon) shares the same
-     * driver bug set.  If a future macOS version fixes any of these, the
-     * fix is a one-line change here. */
-    if (cap->family == MGL_GPU_FAMILY_VIRTUALIZED || cap->family == MGL_GPU_FAMILY_AGX) {
-        cap->bug_3dGetBytesSliceOOB = YES;
-        cap->bug_3dReplaceRegionNonZeroOrigin = YES;
-        cap->bug_3dCopyFromBufferSliceOOB = YES;
-        cap->bug_mslPipelineRejection = YES;
-
-        /* Async shader compile crash is specific to virtualization. */
-        cap->bug_asyncShaderCompileInVM = cap->isVirtualized;
-
-        cap->textureAlignmentBytes = 256;
-        cap->conservativeCPUCacheMode = YES;
-        cap->maxConcurrentCommandBuffers = cap->isVirtualized ? 16 : 64;
-        cap->commandBufferRecoveryLimit = 4096;
-    } else {
-        /* Conservative defaults for non-AGX. */
-        cap->textureAlignmentBytes = 256;
-        cap->conservativeCPUCacheMode = NO;
-        cap->maxConcurrentCommandBuffers = 64;
-        cap->commandBufferRecoveryLimit = 4096;
-    }
+    MGLRenderCppCapabilityState state = {0};
+    if (mglRenderCppQueryCapability(deviceRef, &state) != 0) return;
+    cap->family = (MGLGPUFamily)state.family;
+    cap->isVirtualized = state.is_virtualized != 0;
+    cap->supports8xMSAA = state.supports8x_msaa != 0;
+    cap->maxSampleCount = state.max_sample_count;
+    cap->maxTextureDimensions = state.max_texture_dimensions;
+    cap->bug_3dGetBytesSliceOOB = state.bug_3d_getbytes_slice_oob != 0;
+    cap->bug_3dReplaceRegionNonZeroOrigin =
+        state.bug_3d_replace_region_nonzero_origin != 0;
+    cap->bug_3dCopyFromBufferSliceOOB =
+        state.bug_3d_copy_from_buffer_slice_oob != 0;
+    cap->bug_asyncShaderCompileInVM = state.bug_async_shader_compile_in_vm != 0;
+    cap->bug_mslPipelineRejection = state.bug_msl_pipeline_rejection != 0;
+    cap->commandBufferRecoveryLimit = state.command_buffer_recovery_limit;
+    cap->maxConcurrentCommandBuffers = state.max_concurrent_command_buffers;
+    cap->textureAlignmentBytes = state.texture_alignment_bytes;
+    cap->conservativeCPUCacheMode = state.conservative_cpu_cache_mode != 0;
 }
 
-bool MGLCapabilitySupportsSampleCount(MGLCapability *cap, NSUInteger samples)
+bool MGLCapabilitySupportsSampleCount(MGLCapability *cap, uint64_t samples)
 {
     if (!cap || samples <= 1) return true;
-    id<MTLDevice> device = mglCapabilityDeviceRef(cap->device);
-    if (!device) return false;
-    return samples <= cap->maxSampleCount &&
-        [device supportsTextureSampleCount:samples];
+    return samples <= cap->maxSampleCount;
 }
 
-NSUInteger MGLCapabilityClampSampleCount(MGLCapability *cap, NSUInteger requested)
+uint64_t MGLCapabilityClampSampleCount(MGLCapability *cap, uint64_t requested)
 {
     if (!cap) return 1;
     if (requested <= 1) return 1;
-
-    static const NSUInteger candidates[] = { 32u, 16u, 8u, 4u, 2u };
-    id<MTLDevice> device = mglCapabilityDeviceRef(cap->device);
-    if (!device) return 1;
-
-    for (NSUInteger i = 0; i < sizeof(candidates) / sizeof(candidates[0]); ++i) {
-        NSUInteger candidate = candidates[i];
-        if (candidate <= requested && [device supportsTextureSampleCount:candidate]) {
-            return candidate;
-        }
-    }
-
-    return 1u;
+    static const uint64_t candidates[] = { 32u, 16u, 8u, 4u, 2u };
+    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); ++i)
+        if (candidates[i] <= requested && candidates[i] <= cap->maxSampleCount)
+            return candidates[i];
+    return 1;
 }
 
-NSUInteger MGLCapabilityTextureAlignment(MGLCapability *cap)
+uint64_t MGLCapabilityTextureAlignment(MGLCapability *cap)
 {
     return cap ? cap->textureAlignmentBytes : 256;
 }
@@ -121,7 +61,7 @@ bool MGLCapabilityUseConservativeCPUCache(MGLCapability *cap)
     return cap ? cap->conservativeCPUCacheMode : false;
 }
 
-NSUInteger MGLCapabilityMaxConcurrentCommandBuffers(MGLCapability *cap)
+uint64_t MGLCapabilityMaxConcurrentCommandBuffers(MGLCapability *cap)
 {
     return cap ? cap->maxConcurrentCommandBuffers : 64;
 }

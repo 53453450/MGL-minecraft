@@ -21,10 +21,11 @@
 #ifndef MGLRenderer_h
 #define MGLRenderer_h
 
+#include <stdint.h>
+
 #ifdef __OBJC__
 
 #import <Appkit/Appkit.h>
-#import <Metal/Metal.h>
 #import "MGLPlatformRendererShell.h"
 #include "GL/glcorearb.h"
 
@@ -44,14 +45,14 @@ typedef struct GLMContextRec_t *GLMContext;
 
 @end
 
-MTLPixelFormat mtlPixelFormatForGLFormatType(GLenum gl_format, GLenum gl_type);
+uint32_t mtlPixelFormatForGLFormatType(GLenum gl_format, GLenum gl_type);
 #else
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-GLenum mtlPixelFormatForGLFormatType(GLenum gl_format, GLenum gl_type);
+uint32_t mtlPixelFormatForGLFormatType(GLenum gl_format, GLenum gl_type);
 
 #ifdef __cplusplus
 }

@@ -22,14 +22,13 @@
  * externally visible.
  */
 
-#import <Metal/Metal.h>
-#define MGL_NO_MTL_PIXEL_FORMAT
+#import <Foundation/Foundation.h>
 #import "pixel_utils.h"
 #import "mgl_readback.h"
 #include "mgl_render_cpp.h"
 #include <stdint.h>
 
-BOOL mglMetalReadbackFormatIsBGRA8Compatible(MTLPixelFormat pixelFormat)
+BOOL mglMetalReadbackFormatIsBGRA8Compatible(uint32_t pixelFormat)
 {
     /* P4.5 (item 1171): thin delegate — single source of truth in C++
      * (mglRenderCppReadbackFormatIsBGRA8Compatible), shared by both gates. */
@@ -37,7 +36,7 @@ BOOL mglMetalReadbackFormatIsBGRA8Compatible(MTLPixelFormat pixelFormat)
                (uint32_t)pixelFormat) ? YES : NO;
 }
 
-BOOL mglMetalPixelFormatIsIntegerColor(MTLPixelFormat pixelFormat)
+BOOL mglMetalPixelFormatIsIntegerColor(uint32_t pixelFormat)
 {
     /* P4.5 (item 1171): thin delegate — single source of truth in C++
      * (mglRenderCppPixelFormatIsIntegerColor), shared by both gates. */
@@ -45,7 +44,7 @@ BOOL mglMetalPixelFormatIsIntegerColor(MTLPixelFormat pixelFormat)
                (uint32_t)pixelFormat) ? YES : NO;
 }
 
-BOOL mglMetalPixelFormatIsSignedIntegerColor(MTLPixelFormat pixelFormat)
+BOOL mglMetalPixelFormatIsSignedIntegerColor(uint32_t pixelFormat)
 {
     /* P4.5 (item 1171): thin delegate — single source of truth in C++
      * (mglRenderCppPixelFormatIsSignedIntegerColor), shared by both gates. */
@@ -53,7 +52,7 @@ BOOL mglMetalPixelFormatIsSignedIntegerColor(MTLPixelFormat pixelFormat)
                (uint32_t)pixelFormat) ? YES : NO;
 }
 
-NSUInteger mglMetalReadbackBytesPerPixel(MTLPixelFormat pixelFormat)
+NSUInteger mglMetalReadbackBytesPerPixel(uint32_t pixelFormat)
 {
     /* P4.5 (item 1171): thin delegate — single source of truth in C++
      * (mglRenderCppReadbackBytesPerPixel, pixel format as its Apple ABI
@@ -89,7 +88,7 @@ void mglMetalCopyTextureBytesToBGRA8(const uint8_t *src,
                                             NSUInteger dstBytesPerRow,
                                             NSUInteger width,
                                             NSUInteger height,
-                                            MTLPixelFormat pixelFormat,
+                                            uint32_t pixelFormat,
                                             BOOL flipY)
 {
     /* P4.5 (item 1171): thin delegate — single source of truth in C++
@@ -107,7 +106,7 @@ BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
                                                         NSUInteger dstBytesPerRow,
                                                         NSUInteger width,
                                                         NSUInteger height,
-                                                        MTLPixelFormat pixelFormat,
+                                                        uint32_t pixelFormat,
                                                         GLenum format,
                                                         GLenum type,
                                                         BOOL flipY)
@@ -123,9 +122,9 @@ BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
 
     /* P4.5 (item 1171): SNORM8 direct path in C++ (bypass lossy BGRA8). */
     BOOL sourceIsSnorm8 =
-        (pixelFormat == MTLPixelFormatR8Snorm ||
-         pixelFormat == MTLPixelFormatRG8Snorm ||
-         pixelFormat == MTLPixelFormatRGBA8Snorm);
+        (pixelFormat == MGLPixelFormatR8Snorm ||
+         pixelFormat == MGLPixelFormatRG8Snorm ||
+         pixelFormat == MGLPixelFormatRGBA8Snorm);
     if (sourceIsSnorm8) {
         return mglRenderCppCopySnorm8TextureBytesToGL(
                    src, (uint64_t)srcBytesPerRow,
@@ -137,7 +136,7 @@ BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
     }
 
     /* P4.5 (item 1171): RGB10A2 direct path in C++ (bypass lossy BGRA8). */
-    BOOL sourceIsRGB10A2Direct = (pixelFormat == MTLPixelFormatRGB10A2Unorm);
+    BOOL sourceIsRGB10A2Direct = (pixelFormat == MGLPixelFormatRGB10A2Unorm);
     if (sourceIsRGB10A2Direct &&
         (type == GL_UNSIGNED_BYTE || type == GL_BYTE ||
          type == GL_UNSIGNED_SHORT || type == GL_SHORT ||
@@ -159,7 +158,7 @@ BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
     }
 
     /* P4.5 (item 1171): RG11B10Float direct path in C++ (bypass lossy BGRA8). */
-    BOOL sourceIsRG11B10FloatDirect = (pixelFormat == MTLPixelFormatRG11B10Float);
+    BOOL sourceIsRG11B10FloatDirect = (pixelFormat == MGLPixelFormatRG11B10Float);
     if (sourceIsRG11B10FloatDirect &&
         (type == GL_UNSIGNED_BYTE || type == GL_BYTE ||
          type == GL_UNSIGNED_SHORT || type == GL_SHORT ||
@@ -181,21 +180,21 @@ BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
 
     /* P4.5 (item 1171): 16/32-bit direct path in C++ (bypass lossy BGRA8). */
     BOOL sourceIs16BitUnorm =
-        (pixelFormat == MTLPixelFormatR16Unorm ||
-         pixelFormat == MTLPixelFormatRG16Unorm ||
-         pixelFormat == MTLPixelFormatRGBA16Unorm);
+        (pixelFormat == MGLPixelFormatR16Unorm ||
+         pixelFormat == MGLPixelFormatRG16Unorm ||
+         pixelFormat == MGLPixelFormatRGBA16Unorm);
     BOOL sourceIs16BitSnorm =
-        (pixelFormat == MTLPixelFormatR16Snorm ||
-         pixelFormat == MTLPixelFormatRG16Snorm ||
-         pixelFormat == MTLPixelFormatRGBA16Snorm);
+        (pixelFormat == MGLPixelFormatR16Snorm ||
+         pixelFormat == MGLPixelFormatRG16Snorm ||
+         pixelFormat == MGLPixelFormatRGBA16Snorm);
     BOOL sourceIs16BitFloat =
-        (pixelFormat == MTLPixelFormatR16Float ||
-         pixelFormat == MTLPixelFormatRG16Float ||
-         pixelFormat == MTLPixelFormatRGBA16Float);
+        (pixelFormat == MGLPixelFormatR16Float ||
+         pixelFormat == MGLPixelFormatRG16Float ||
+         pixelFormat == MGLPixelFormatRGBA16Float);
     BOOL sourceIs32BitFloat =
-        (pixelFormat == MTLPixelFormatR32Float ||
-         pixelFormat == MTLPixelFormatRG32Float ||
-         pixelFormat == MTLPixelFormatRGBA32Float);
+        (pixelFormat == MGLPixelFormatR32Float ||
+         pixelFormat == MGLPixelFormatRG32Float ||
+         pixelFormat == MGLPixelFormatRGBA32Float);
 
     if ((sourceIs16BitUnorm || sourceIs16BitSnorm || sourceIs16BitFloat || sourceIs32BitFloat) &&
         (type == GL_UNSIGNED_BYTE || type == GL_BYTE ||
@@ -220,11 +219,11 @@ BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
     }
 
     BOOL sourceIsRGBA =
-        (pixelFormat == MTLPixelFormatRGBA8Unorm ||
-         pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB);
+        (pixelFormat == MGLPixelFormatRGBA8Unorm ||
+         pixelFormat == MGLPixelFormatRGBA8Unorm_sRGB);
     BOOL sourceIsBGRA =
-        (pixelFormat == MTLPixelFormatBGRA8Unorm ||
-         pixelFormat == MTLPixelFormatBGRA8Unorm_sRGB);
+        (pixelFormat == MGLPixelFormatBGRA8Unorm ||
+         pixelFormat == MGLPixelFormatBGRA8Unorm_sRGB);
     if (!sourceIsRGBA && !sourceIsBGRA) {
         if (!mglMetalReadbackFormatIsBGRA8Compatible(pixelFormat) ||
             width > NSUIntegerMax / 4u ||
@@ -250,7 +249,7 @@ BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
                                                            dstBytesPerRow,
                                                            width,
                                                            height,
-                                                           MTLPixelFormatBGRA8Unorm,
+                                                           MGLPixelFormatBGRA8Unorm,
                                                            format,
                                                            type,
                                                            flipY);
@@ -315,7 +314,7 @@ BOOL mglMetalCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(const uint8_t *src,
                                                                  NSUInteger dstBytesPerRow,
                                                                  NSUInteger width,
                                                                  NSUInteger height,
-                                                                 MTLPixelFormat pixelFormat,
+                                                                 uint32_t pixelFormat,
                                                                  BOOL flipY)
 {
     /* P4.5 (item 1171): thin delegate — single source of truth in C++

@@ -62,11 +62,11 @@ int mglContextHasReadyRendererBackend(GLMContext ctx)
 }
 
 enum {
-    kMGLMTLPixelFormatInvalid = 0,
-    kMGLMTLPixelFormatRGBA8Unorm = 70,
-    kMGLMTLPixelFormatRGBA8Unorm_sRGB = 71,
-    kMGLMTLPixelFormatBGRA8Unorm = 80,
-    kMGLMTLPixelFormatBGRA8Unorm_sRGB = 81
+    kMGLMGLPixelFormatInvalid = 0,
+    kMGLMGLPixelFormatRGBA8Unorm = 70,
+    kMGLMGLPixelFormatRGBA8Unorm_sRGB = 71,
+    kMGLMGLPixelFormatBGRA8Unorm = 80,
+    kMGLMGLPixelFormatBGRA8Unorm_sRGB = 81
 };
 
 /* Declared in MGLRenderer.m */
@@ -126,10 +126,10 @@ GLMContext mglGetContext(void)
 static GLuint mglLinearDefaultFramebufferFormat(GLuint mtl_format)
 {
     switch (mtl_format) {
-        case kMGLMTLPixelFormatRGBA8Unorm_sRGB:
-            return kMGLMTLPixelFormatRGBA8Unorm;
-        case kMGLMTLPixelFormatBGRA8Unorm_sRGB:
-            return kMGLMTLPixelFormatBGRA8Unorm;
+        case kMGLMGLPixelFormatRGBA8Unorm_sRGB:
+            return kMGLMGLPixelFormatRGBA8Unorm;
+        case kMGLMGLPixelFormatBGRA8Unorm_sRGB:
+            return kMGLMGLPixelFormatBGRA8Unorm;
         default:
             return mtl_format;
     }
@@ -138,12 +138,12 @@ static GLuint mglLinearDefaultFramebufferFormat(GLuint mtl_format)
 static GLuint mglSRGBDefaultFramebufferFormat(GLuint mtl_format)
 {
     switch (mtl_format) {
-        case kMGLMTLPixelFormatRGBA8Unorm:
-        case kMGLMTLPixelFormatRGBA8Unorm_sRGB:
-            return kMGLMTLPixelFormatRGBA8Unorm_sRGB;
-        case kMGLMTLPixelFormatBGRA8Unorm:
-        case kMGLMTLPixelFormatBGRA8Unorm_sRGB:
-            return kMGLMTLPixelFormatBGRA8Unorm_sRGB;
+        case kMGLMGLPixelFormatRGBA8Unorm:
+        case kMGLMGLPixelFormatRGBA8Unorm_sRGB:
+            return kMGLMGLPixelFormatRGBA8Unorm_sRGB;
+        case kMGLMGLPixelFormatBGRA8Unorm:
+        case kMGLMGLPixelFormatBGRA8Unorm_sRGB:
+            return kMGLMGLPixelFormatBGRA8Unorm_sRGB;
         default:
             return mtl_format;
     }
@@ -152,27 +152,27 @@ static GLuint mglSRGBDefaultFramebufferFormat(GLuint mtl_format)
 static GLuint mglDefaultFramebufferFormatForGLFormatType(GLenum format, GLenum type)
 {
     GLuint mtl_format = mtlPixelFormatForGLFormatType(format, type);
-    if (mtl_format != kMGLMTLPixelFormatInvalid) {
+    if (mtl_format != kMGLMGLPixelFormatInvalid) {
         return mtl_format;
     }
 
     switch (type) {
         case GL_UNSIGNED_BYTE:
             if (format == GL_BGRA) {
-                return kMGLMTLPixelFormatBGRA8Unorm;
+                return kMGLMGLPixelFormatBGRA8Unorm;
             }
             if (format == GL_RGBA) {
-                return kMGLMTLPixelFormatRGBA8Unorm;
+                return kMGLMGLPixelFormatRGBA8Unorm;
             }
             break;
         case GL_UNSIGNED_INT_8_8_8_8:
             if (format == GL_RGBA || format == GL_BGRA) {
-                return kMGLMTLPixelFormatRGBA8Unorm;
+                return kMGLMGLPixelFormatRGBA8Unorm;
             }
             break;
         case GL_UNSIGNED_INT_8_8_8_8_REV:
             if (format == GL_RGBA || format == GL_BGRA) {
-                return kMGLMTLPixelFormatBGRA8Unorm;
+                return kMGLMGLPixelFormatBGRA8Unorm;
             }
             break;
         default:
@@ -189,12 +189,12 @@ void MGLsetDefaultFramebufferSRGBCapable(GLMContext ctx, GLboolean capable)
     }
 
     if (ctx->default_framebuffer_linear_mtl_pixel_format == 0u ||
-        ctx->default_framebuffer_linear_mtl_pixel_format == kMGLMTLPixelFormatInvalid) {
+        ctx->default_framebuffer_linear_mtl_pixel_format == kMGLMGLPixelFormatInvalid) {
         ctx->default_framebuffer_linear_mtl_pixel_format =
             mglLinearDefaultFramebufferFormat(ctx->pixel_format.mtl_pixel_format);
     }
     if (ctx->default_framebuffer_srgb_mtl_pixel_format == 0u ||
-        ctx->default_framebuffer_srgb_mtl_pixel_format == kMGLMTLPixelFormatInvalid) {
+        ctx->default_framebuffer_srgb_mtl_pixel_format == kMGLMGLPixelFormatInvalid) {
         ctx->default_framebuffer_srgb_mtl_pixel_format =
             mglSRGBDefaultFramebufferFormat(ctx->default_framebuffer_linear_mtl_pixel_format);
     }

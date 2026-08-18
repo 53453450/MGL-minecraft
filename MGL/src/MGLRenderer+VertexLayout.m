@@ -6,10 +6,9 @@
 #include "mgl_air_loader.h"   /* MGLRenderCppPipelineDescriptorState */
 
 /* GL type -> Metal vertex-format value for TES control-point inputs. */
-static MTLVertexFormat mglTessControlPointFormat(GLenum type)
+static uint32_t mglTessControlPointFormat(GLenum type)
 {
-    return (MTLVertexFormat)mglRenderCppTessControlPointFormat(
-        (uint64_t)type);
+    return mglRenderCppTessControlPointFormat((uint64_t)type);
 }
 
 @implementation MGLRenderer (VertexLayout)
@@ -30,12 +29,12 @@ static MTLVertexFormat mglTessControlPointFormat(GLenum type)
         /* Native TES: attribute 0 = position (Float4@0, buffer 0),
          * layout 0 = TCS output stride /
          * PerPatchControlPoint；TES 输入 varying 挂在 location+1。 */
-        state->attrib_format[0] = (uint32_t)MTLVertexFormatFloat4;
+        state->attrib_format[0] = mglDoubleVertexAttribFloatFormat(4u);
         state->attrib_offset[0] = 0u;
         state->attrib_buffer_index[0] = 0u;
         state->attrib_stride[0] = (uint32_t)_tessellation.tcsOutputStride;
         state->attrib_step_function[0] =
-            (uint32_t)MTLVertexStepFunctionPerPatchControlPoint;
+            4u;
         state->attrib_step_rate[0] = 1u;
         state->attrib_count = 1u;
         Program *tesProgram = _tessellation.nativeTESProgram;
@@ -46,8 +45,8 @@ static MTLVertexFormat mglTessControlPointFormat(GLenum type)
         for (GLuint i = 0; inputs && inputs->list && i < inputs->count; i++) {
             MGLShaderResource *input = &inputs->list[i];
             if (input->is_per_patch || input->location >= 30u) continue;
-            MTLVertexFormat format = mglTessControlPointFormat(input->gl_type);
-            if (format == MTLVertexFormatInvalid) {
+            uint32_t format = mglTessControlPointFormat(input->gl_type);
+            if (format == 0u) {
                 NSLog(@"MGL TESS ERROR: unsupported control-point varying type "
                       "0x%x for %@", (unsigned)input->gl_type,
                       input->name ? [NSString stringWithUTF8String:input->name]
@@ -64,7 +63,7 @@ static MTLVertexFormat mglTessControlPointFormat(GLenum type)
             state->attrib_stride[attribute] =
                 (uint32_t)_tessellation.tcsOutputStride;
             state->attrib_step_function[attribute] =
-                (uint32_t)MTLVertexStepFunctionPerPatchControlPoint;
+                4u;
             state->attrib_step_rate[attribute] = 1u;
             if (attribute + 1u > state->attrib_count) {
                 state->attrib_count = (uint32_t)(attribute + 1u);
@@ -110,7 +109,7 @@ static MTLVertexFormat mglTessControlPointFormat(GLenum type)
         }
 
         {
-            MTLVertexFormat format;
+            uint32_t format;
             Buffer *attribBuffer = hasAttribBinding ? resolved.buffer : NULL;
 
             if (!usesCurrentValue && !attribBuffer)
@@ -158,18 +157,18 @@ static MTLVertexFormat mglTessControlPointFormat(GLenum type)
             } else if (vao->attrib[i].type == GL_FIXED) {
                 format = mglDoubleVertexAttribFloatFormat(vao->attrib[i].size);
             } else if (vao->attrib[i].type == GL_UNSIGNED_INT_10_10_10_2) {
-                format = MTLVertexFormatFloat4;
+                format = mglDoubleVertexAttribFloatFormat(4u);
             } else if (vao->attrib[i].type == GL_UNSIGNED_INT_10F_11F_11F_REV) {
-                format = MTLVertexFormatFloat3;
+                format = mglDoubleVertexAttribFloatFormat(3u);
             } else if (vao->attrib[i].integer == 1) {
-                MTLVertexFormat convertedFormat = MTLVertexFormatInvalid;
+                uint32_t convertedFormat = 0u;
                 MGLShaderResource *attrRes = mglRendererProgramVertexAttribResource(activeProgram, i);
                 GLuint shaderGlType = attrRes ? attrRes->gl_type : 0u;
                 if (mglIntegerAttribNeedsConversion(vao->attrib[i].type,
                                                     shaderGlType,
                                                     vao->attrib[i].size,
                                                     &convertedFormat) &&
-                    convertedFormat != MTLVertexFormatInvalid) {
+                    convertedFormat != 0u) {
                     format = convertedFormat;
                 } else {
                     format = glTypeSizeToMtlType(vao->attrib[i].type,
@@ -182,7 +181,7 @@ static MTLVertexFormat mglTessControlPointFormat(GLenum type)
                                              normalized);
             }
 
-            if (format == MTLVertexFormatInvalid)
+            if (format == 0u)
             {
                 NSLog(@"MGL PIPELINE DESC fail: unable to map attrib %u type/size/normalize to MTL format", i);
                 return NO;
@@ -237,14 +236,14 @@ static MTLVertexFormat mglTessControlPointFormat(GLenum type)
                     : (NSUInteger)sizeof(uint32_t);
                 stride = mglAlignVertexStrideForMetal(MAX(packedStride, 3u * sizeof(GLfloat)));
             } else if (vao->attrib[i].integer == 1) {
-                MTLVertexFormat convertedFormat = MTLVertexFormatInvalid;
+                uint32_t convertedFormat = 0u;
                 MGLShaderResource *attrRes = mglRendererProgramVertexAttribResource(activeProgram, i);
                 GLuint shaderGlType = attrRes ? attrRes->gl_type : 0u;
                 if (mglIntegerAttribNeedsConversion(vao->attrib[i].type,
                                                     shaderGlType,
                                                     vao->attrib[i].size,
                                                     &convertedFormat) &&
-                    convertedFormat != MTLVertexFormatInvalid) {
+                    convertedFormat != 0u) {
                     stride = mglAlignVertexStrideForMetal(
                         (NSUInteger)vao->attrib[i].size * sizeof(GLint));
                 } else if (layoutStride[mapped_buffer_index] == 0) {
@@ -267,13 +266,13 @@ static MTLVertexFormat mglTessControlPointFormat(GLenum type)
             {
                 state->attrib_step_rate[i] = (uint32_t)resolved.divisor;
                 state->attrib_step_function[i] =
-                    (uint32_t)MTLVertexStepFunctionPerInstance;
+                    2u;
             }
             else
             {
                 state->attrib_step_rate[i] = 1u;
                 state->attrib_step_function[i] =
-                    (uint32_t)MTLVertexStepFunctionPerVertex;
+                    1u;
             }
             if (i + 1u > state->attrib_count) {
                 state->attrib_count = i + 1u;
@@ -323,15 +322,15 @@ static MTLVertexFormat mglTessControlPointFormat(GLenum type)
             repairedState = true;
         }
 
-        MTLColorWriteMask colorMask_i;
+        uint32_t colorMask_i;
         if (!MGL_STATE(ctx)->caps.use_color_mask[i]) {
-            colorMask_i = MTLColorWriteMaskAll;
+            colorMask_i = 15u;
         } else {
-            colorMask_i = MTLColorWriteMaskNone;
-            if (MGL_STATE(ctx)->var.color_writemask[i][0]) colorMask_i |= MTLColorWriteMaskRed;
-            if (MGL_STATE(ctx)->var.color_writemask[i][1]) colorMask_i |= MTLColorWriteMaskGreen;
-            if (MGL_STATE(ctx)->var.color_writemask[i][2]) colorMask_i |= MTLColorWriteMaskBlue;
-            if (MGL_STATE(ctx)->var.color_writemask[i][3]) colorMask_i |= MTLColorWriteMaskAlpha;
+            colorMask_i = 0u;
+            if (MGL_STATE(ctx)->var.color_writemask[i][0]) colorMask_i |= 1u;
+            if (MGL_STATE(ctx)->var.color_writemask[i][1]) colorMask_i |= 2u;
+            if (MGL_STATE(ctx)->var.color_writemask[i][2]) colorMask_i |= 4u;
+            if (MGL_STATE(ctx)->var.color_writemask[i][3]) colorMask_i |= 8u;
         }
 
         /* Force alpha write when rendering to the default framebuffer (drawable).
@@ -343,7 +342,7 @@ static MTLVertexFormat mglTessControlPointFormat(GLenum type)
          * Force alpha write on attachment 0 when rendering to the default
          * framebuffer to ensure the drawable is opaque. */
         if (i == 0 && MGL_STATE(ctx)->framebuffer == NULL) {
-            colorMask_i |= MTLColorWriteMaskAlpha;
+            colorMask_i |= 8u;
         }
         [_pipelineCache setBlendFactorsForAttachment:(NSUInteger)i
                                         srcRgbFactor:[self blendFactorFromGL:MGL_STATE(ctx)->var.blend_src_rgb[i]]

@@ -27,10 +27,6 @@
 #include <string.h>  // For memcpy
 #include <stdbool.h>
 
-#ifdef __APPLE__
-#include <Metal/Metal.h>
-#endif
-
 #include "hash_table.h"
 #include "glm_context.h"
 

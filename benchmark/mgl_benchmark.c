@@ -177,16 +177,10 @@ typedef struct {
     char test[METIC_LEN];
     char metric[METIC_LEN];
     char value[VALUE_LEN];
-    char run[32];   /* A/B run label: "Metal-cpp", "ObjC", or "" for single-run */
 } BenchmarkResult;
 
 static BenchmarkResult g_results[MAX_RESULTS];
 static int g_result_count = 0;
-
-/* A/B comparison mode: when g_run_label is non-NULL, record_result tags each
- * result with the label so two runs (Metal-cpp on vs off) can be compared. */
-static const char *g_run_label = NULL;
-static int g_ab_mode = 0;
 
 static void record_result(const char *test, const char *metric,
                           const char *fmt, ...)
@@ -204,12 +198,6 @@ static void record_result(const char *test, const char *metric,
     va_start(ap, fmt);
     vsnprintf(r->value, VALUE_LEN, fmt, ap);
     va_end(ap);
-    if (g_run_label) {
-        strncpy(r->run, g_run_label, sizeof(r->run) - 1);
-        r->run[sizeof(r->run) - 1] = '\0';
-    } else {
-        r->run[0] = '\0';
-    }
 }
 
 /* Print all buffered results in a formatted table. */
@@ -221,28 +209,14 @@ static void print_all_results(void)
     printf("  Benchmark Results — %s\n", BENCHMARK_BACKEND_NAME);
     printf("========================================");
     printf("========================================\n");
-    if (g_ab_mode) {
-        printf("  %-20s %-28s %-24s %s\n", "Run", "Test", "Metric", "Value");
-        printf("  %-20s %-28s %-24s %s\n",
-               "--------------------", "----------------------------",
-               "------------------------", "--------");
-        for (int i = 0; i < g_result_count; i++) {
-            printf("  %-20s %-28s %-24s %s\n",
-                   g_results[i].run,
-                   g_results[i].test,
-                   g_results[i].metric,
-                   g_results[i].value);
-        }
-    } else {
-        printf("  %-28s %-24s %s\n", "Test", "Metric", "Value");
+    printf("  %-28s %-24s %s\n", "Test", "Metric", "Value");
+    printf("  %-28s %-24s %s\n",
+           "----------------------------", "------------------------", "--------");
+    for (int i = 0; i < g_result_count; i++) {
         printf("  %-28s %-24s %s\n",
-               "----------------------------", "------------------------", "--------");
-        for (int i = 0; i < g_result_count; i++) {
-            printf("  %-28s %-24s %s\n",
-                   g_results[i].test,
-                   g_results[i].metric,
-                   g_results[i].value);
-        }
+               g_results[i].test,
+               g_results[i].metric,
+               g_results[i].value);
     }
     printf("========================================");
     printf("========================================\n");
@@ -366,9 +340,6 @@ static int write_json_results(const char *path)
         fputs(", \"metric\": ", out); json_write_string(out, g_results[i].metric);
         fprintf(out, ", \"value\": %.17g, \"display\": ", numeric);
         json_write_string(out, g_results[i].value);
-        if (g_results[i].run[0]) {
-            fputs(", \"run\": ", out); json_write_string(out, g_results[i].run);
-        }
         fprintf(out, "}%s\n", i + 1 == g_result_count ? "" : ",");
     }
     fputs("  ]\n}\n", out);
@@ -2043,9 +2014,6 @@ static void print_usage(const char *prog)
     printf("  --frames N       Override measured frame count for frame tests\n");
     printf("  --warmup N       Set warm-up frame count (default: 10)\n");
     printf("  --json PATH      Write metadata and numeric results as JSON\n");
-    printf("  --ab             A/B compare Metal-cpp vs ObjC (MGL only)\n");
-    printf("                   Runs the suite twice: MGL_USE_METALCPP=1 then\n");
-    printf("                   =0, prints a side-by-side comparison table\n");
     printf("  --list           List selectable test names\n");
     printf("  --help, -h       Show this help\n");
 }
@@ -2151,63 +2119,6 @@ static int run_all_benchmarks(void)
     return succeeded;
 }
 
-/* ======================================================================== */
-/*  A/B comparison table                                                     */
-/* ======================================================================== */
-
-static void print_ab_comparison(void)
-{
-    printf("\n");
-    printf("========================================");
-    printf("========================================\n");
-    printf("  A/B Comparison — Metal-cpp vs ObjC\n");
-    printf("========================================");
-    printf("========================================\n");
-    printf("  %-28s %-20s %-14s %-14s %-14s %s\n",
-           "Test", "Metric", "Metal-cpp", "ObjC", "Delta", "Change");
-    printf("  %-28s %-20s %-14s %-14s %-14s %s\n",
-           "----------------------------", "--------------------",
-           "--------------", "--------------", "--------------", "-------");
-
-    /* Walk all results from the Metal-cpp run; for each, find the matching
-     * result in the ObjC run (same test + metric).  Print side-by-side. */
-    for (int i = 0; i < g_result_count; i++) {
-        if (strcmp(g_results[i].run, "Metal-cpp") != 0) continue;
-        const char *test = g_results[i].test;
-        const char *metric = g_results[i].metric;
-        const char *mc_value = g_results[i].value;
-
-        /* Find matching ObjC result. */
-        const char *objc_value = NULL;
-        for (int j = 0; j < g_result_count; j++) {
-            if (strcmp(g_results[j].run, "ObjC") == 0 &&
-                strcmp(g_results[j].test, test) == 0 &&
-                strcmp(g_results[j].metric, metric) == 0) {
-                objc_value = g_results[j].value;
-                break;
-            }
-        }
-        if (!objc_value) continue;
-
-        double mc_num = strtod(mc_value, NULL);
-        double objc_num = strtod(objc_value, NULL);
-        double delta = mc_num - objc_num;
-        double pct = (objc_num != 0.0)
-            ? (delta / objc_num) * 100.0
-            : 0.0;
-
-        printf("  %-28s %-20s %-14s %-14s %-+14.3f %-+.1f%%\n",
-               test, metric, mc_value, objc_value, delta, pct);
-    }
-
-    printf("========================================");
-    printf("========================================\n");
-    printf("  Delta = Metal-cpp - ObjC (negative = Metal-cpp is faster/lower)\n");
-    printf("  Change = percentage difference from ObjC baseline\n");
-    printf("========================================");
-    printf("========================================\n");
-}
-
 int main(int argc, char **argv)
 {
     for (int i = 1; i < argc; i++) {
@@ -2232,22 +2143,12 @@ int main(int argc, char **argv)
                 return 1;
         } else if (strcmp(argv[i], "--json") == 0 && i + 1 < argc) {
             g_json_path = argv[++i];
-        } else if (strcmp(argv[i], "--ab") == 0) {
-            g_ab_mode = 1;
         } else {
             fprintf(stderr, "Unknown or incomplete argument: %s\n\n", argv[i]);
             print_usage(argv[0]);
             return 1;
         }
     }
-
-#if defined(__MGL_BENCHMARK_SYSTEM_GL__)
-    if (g_ab_mode) {
-        fprintf(stderr, "--ab mode requires MGL backend (Metal-cpp env var "
-                        "is MGL-specific); cannot use with system OpenGL.\n");
-        return 1;
-    }
-#endif
 
     init_timing();
 
@@ -2258,67 +2159,24 @@ int main(int argc, char **argv)
 
     int benchmarks_succeeded = 1;
 
-    if (g_ab_mode) {
-        /* Phase A: Metal-cpp enabled (MGL default). */
-        printf("=== Phase A: Metal-cpp enabled (MGL_USE_METALCPP=1) ===\n");
-        setenv("MGL_USE_METALCPP", "1", 1);
-        if (!create_context()) {
-            fprintf(stderr, "Failed to create context for Metal-cpp phase\n");
-            glfwTerminate();
-            return 1;
-        }
-        printf("Backend:   %s [Metal-cpp]\n", BENCHMARK_BACKEND_NAME);
-        printf("Renderer:  %s\n", g_renderer_name);
-        printf("Version:   %s\n", g_version_name);
-        printf("Vendor:    %s\n\n", g_vendor_name);
-        g_run_label = "Metal-cpp";
-        printf("Running Metal-cpp benchmarks...\n");
-        if (!run_all_benchmarks()) benchmarks_succeeded = 0;
-        destroy_context();
-
-        /* Phase B: Metal-cpp disabled (ObjC Metal path). */
-        printf("\n=== Phase B: ObjC Metal (MGL_USE_METALCPP=0) ===\n");
-        setenv("MGL_USE_METALCPP", "0", 1);
-        if (!create_context()) {
-            fprintf(stderr, "Failed to create context for ObjC phase\n");
-            glfwTerminate();
-            return 1;
-        }
-        printf("Backend:   %s [ObjC]\n", BENCHMARK_BACKEND_NAME);
-        printf("Renderer:  %s\n", g_renderer_name);
-        printf("Version:   %s\n", g_version_name);
-        printf("Vendor:    %s\n\n", g_vendor_name);
-        g_run_label = "ObjC";
-        printf("Running ObjC benchmarks...\n");
-        if (!run_all_benchmarks()) benchmarks_succeeded = 0;
-        destroy_context();
-
+    if (!create_context()) {
+        fprintf(stderr, "Failed to create GLFW window\n");
         glfwTerminate();
-
-        /* Print full results table + comparison. */
-        print_all_results();
-        print_ab_comparison();
-    } else {
-        /* Single-run mode (original behavior). */
-        if (!create_context()) {
-            fprintf(stderr, "Failed to create GLFW window\n");
-            glfwTerminate();
-            return 1;
-        }
-
-        printf("Backend:   %s\n", BENCHMARK_BACKEND_NAME);
-        printf("Renderer:  %s\n", g_renderer_name);
-        printf("Version:   %s\n", g_version_name);
-        printf("Vendor:    %s\n", g_vendor_name);
-        printf("\n");
-
-        printf("Running benchmarks...\n");
-        if (!run_all_benchmarks()) benchmarks_succeeded = 0;
-
-        print_all_results();
-        destroy_context();
-        glfwTerminate();
+        return 1;
     }
+
+    printf("Backend:   %s\n", BENCHMARK_BACKEND_NAME);
+    printf("Renderer:  %s\n", g_renderer_name);
+    printf("Version:   %s\n", g_version_name);
+    printf("Vendor:    %s\n", g_vendor_name);
+    printf("\n");
+
+    printf("Running benchmarks...\n");
+    if (!run_all_benchmarks()) benchmarks_succeeded = 0;
+
+    print_all_results();
+    destroy_context();
+    glfwTerminate();
 
     if (g_json_path && !write_json_results(g_json_path)) {
         return 1;

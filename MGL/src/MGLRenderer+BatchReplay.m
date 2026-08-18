@@ -54,7 +54,7 @@ static bool mglBatchReplayCollectResourceBinding(
 
 static void mglBatchReplayDrawPrimitives(
     void *renderEncoderOwner,
-    MTLPrimitiveType primitiveType,
+    uint32_t primitiveType,
     NSUInteger vertexStart,
     NSUInteger vertexCount,
     NSUInteger instanceCount,
@@ -74,10 +74,10 @@ static void mglBatchReplayDrawPrimitives(
 
 static void mglBatchReplayDrawIndexedPrimitives(
     void *renderEncoderOwner,
-    MTLPrimitiveType primitiveType,
+    uint32_t primitiveType,
     NSUInteger indexCount,
-    MTLIndexType indexType,
-    MGLMetalBufferRef indexBuffer,
+    uint64_t indexType,
+    id indexBuffer,
     NSUInteger indexBufferOffset,
     NSUInteger instanceCount,
     NSInteger baseVertex,
@@ -100,8 +100,8 @@ static void mglBatchReplayDrawIndexedPrimitives(
 
 static void mglBatchReplayDrawPrimitivesIndirect(
     void *renderEncoderOwner,
-    MTLPrimitiveType primitiveType,
-    MGLMetalBufferRef indirectBuffer,
+    uint32_t primitiveType,
+    id indirectBuffer,
     NSUInteger indirectBufferOffset)
 {
     const MGLRenderCppDrawPlan plan = {
@@ -116,11 +116,11 @@ static void mglBatchReplayDrawPrimitivesIndirect(
 
 static void mglBatchReplayDrawIndexedPrimitivesIndirect(
     void *renderEncoderOwner,
-    MTLPrimitiveType primitiveType,
-    MTLIndexType indexType,
-    MGLMetalBufferRef indexBuffer,
+    uint32_t primitiveType,
+    uint64_t indexType,
+    id indexBuffer,
     NSUInteger indexBufferOffset,
-    MGLMetalBufferRef indirectBuffer,
+    id indirectBuffer,
     NSUInteger indirectBufferOffset)
 {
     const MGLRenderCppDrawPlan plan = {
@@ -225,8 +225,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     }
 
     bool indexed = batch->uses_elements;
-    size_t argSize = indexed ? sizeof(MTLDrawIndexedPrimitivesIndirectArguments)
-                             : sizeof(MTLDrawPrimitivesIndirectArguments);
+    size_t argSize = indexed ? sizeof(MGLDrawIndexedPrimitivesIndirectArguments)
+                             : sizeof(MGLDrawPrimitivesIndirectArguments);
     if (batch->command_count > (UINT32_MAX / argSize)) {
         [self traceReplayCommand:batch
                          command:&batch->commands[0]
@@ -242,7 +242,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     NSUInteger neededBytes = (NSUInteger)argSize * (NSUInteger)batch->command_count;
 
     NSUInteger indirectArgsOffset = 0;
-    MGLMetalBufferRef indirectArgsBuffer =
+    id indirectArgsBuffer =
         [self mdiArgumentScratchBufferWithLength:neededBytes
                                           offset:&indirectArgsOffset];
     if (!indirectArgsBuffer) {
@@ -259,14 +259,25 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         [self issueDirectBatch:batch context:glm_ctx encodeContext:encCtx];
         return;
     }
+    void *indirectArgsContents = NULL;
+    uint64_t indirectArgsLength = 0;
+    if (mglRenderCppGetBufferContents(
+            (__bridge void *)indirectArgsBuffer, &indirectArgsContents,
+            &indirectArgsLength) != 0 ||
+        indirectArgsOffset > indirectArgsLength ||
+        neededBytes > indirectArgsLength - indirectArgsOffset) {
+        [self issueDirectBatch:batch context:glm_ctx encodeContext:encCtx];
+        return;
+    }
 
-    MTLPrimitiveType primType = (MTLPrimitiveType)batch->key.primitive_type;
+    uint32_t primType = (uint32_t)batch->key.primitive_type;
 
     if (indexed) {
         GLenum glIdxType = batch->commands[0].indexType;
 
-        MTLDrawIndexedPrimitivesIndirectArguments *args =
-            (MTLDrawIndexedPrimitivesIndirectArguments *)((uint8_t *)indirectArgsBuffer.contents + indirectArgsOffset);
+        MGLDrawIndexedPrimitivesIndirectArguments *args =
+            (MGLDrawIndexedPrimitivesIndirectArguments *)
+                ((uint8_t *)indirectArgsContents + indirectArgsOffset);
         for (uint32_t i = 0; i < batch->command_count; i++) {
             MGLDrawCommand *cmd = &batch->commands[i];
             if (cmd->indexType != glIdxType) {
@@ -291,7 +302,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         for (uint32_t i = 0; i < batch->command_count; i++) {
             MGLDrawCommand *cmd = &batch->commands[i];
             Buffer *glBuf = NULL;
-            MGLMetalBufferRef idxBuf = nil;
+            id idxBuf = nil;
             if (![self resolveElementBufferForCommand:cmd
                                                 label:"mdiBatch"
                                               context:glm_ctx
@@ -308,8 +319,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 continue;
             }
             NSUInteger drawIndexOffset = cmd->indexBufferOffset;
-            MTLIndexType drawIndexType = getMTLIndexType(glIdxType);
-            MGLMetalBufferRef drawIndexBuffer = mglPreparedElementIndexBuffer(_device,
+            uint64_t drawIndexType = mglIndexTypeForGLType(glIdxType);
+            id drawIndexBuffer = mglPreparedElementIndexBuffer(_device,
                                                                           glBuf,
                                                                           idxBuf,
                                                                           glIdxType,
@@ -341,8 +352,9 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                               reason:"mdi_indexed"];
         }
     } else {
-        MTLDrawPrimitivesIndirectArguments *args =
-            (MTLDrawPrimitivesIndirectArguments *)((uint8_t *)indirectArgsBuffer.contents + indirectArgsOffset);
+        MGLDrawPrimitivesIndirectArguments *args =
+            (MGLDrawPrimitivesIndirectArguments *)
+                ((uint8_t *)indirectArgsContents + indirectArgsOffset);
         for (uint32_t i = 0; i < batch->command_count; i++) {
             MGLDrawCommand *cmd = &batch->commands[i];
             args[i].vertexCount = (uint32_t)cmd->count;
@@ -475,12 +487,17 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             return false;
         }
 
-        MGLMetalBufferRef metal_buffer =
-            (__bridge MGLMetalBufferRef)(draw_buffer->data.mtl_data);
+        id metal_buffer =
+            (__bridge id)(draw_buffer->data.mtl_data);
+        MGLRenderCppBufferInfo metalBufferInfo = {0};
+        if (mglRenderCppGetBufferInfo((__bridge void *)metal_buffer,
+                                      &metalBufferInfo) != 0) {
+            return false;
+        }
         if (binding->offset < 0 ||
             (uint64_t)binding->offset != (uint64_t)dynamic_offset ||
-            (uint64_t)binding->offset >= (uint64_t)metal_buffer.length ||
-            dynamic_offset >= metal_buffer.length) {
+            (uint64_t)binding->offset >= metalBufferInfo.length ||
+            dynamic_offset >= metalBufferInfo.length) {
             return false;
         }
 
@@ -548,11 +565,17 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             return false;
         }
 
-        MGLMetalBufferRef metal_buffer =
-            (__bridge MGLMetalBufferRef)(slot->buf->data.mtl_data);
+        id metal_buffer =
+            (__bridge id)(slot->buf->data.mtl_data);
+        MGLRenderCppBufferInfo metalBufferInfo = {0};
+        if (mglRenderCppGetBufferInfo((__bridge void *)metal_buffer,
+                                      &metalBufferInfo) != 0) {
+            return false;
+        }
         uint64_t start = (uint64_t)override->offset;
         uint64_t length = (uint64_t)override->size;
-        if (start > metal_buffer.length || length > metal_buffer.length - start) {
+        if (start > metalBufferInfo.length ||
+            length > metalBufferInfo.length - start) {
             return false;
         }
 
@@ -694,9 +717,9 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 continue;
             }
 
-            MTLTextureType expected_type = (MTLTextureType)
+            uint32_t expected_type =
                 mglRendererGetProgramExpectedTextureType(ctx, stage, _SAMPLED_IMAGE_RES, (int)resource_index);
-            MTLTextureType lookup_type = (MTLTextureType)
+            uint32_t lookup_type =
                 mglRendererGetProgramDeclaredTextureType(ctx, stage, _SAMPLED_IMAGE_RES, (int)resource_index);
             MGLTextureDataKind expected_kind =
                 (MGLTextureDataKind)mglRendererGetProgramExpectedTextureDataKind(ctx, stage, _SAMPLED_IMAGE_RES, (int)resource_index);
@@ -711,13 +734,17 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 return false;
             }
 
-            MGLMetalTextureRef texture =
-                (__bridge MGLMetalTextureRef)texture_object->mtl_data;
-            texture = mglSampledTextureViewForBaseLevel(texture_object, texture);
+            id texture =
+                (__bridge id)texture_object->mtl_data;
+            texture = (__bridge id)mglSampledTextureViewForBaseLevel(texture_object, (__bridge void *)texture);
+            MGLRenderCppTextureInfo textureInfo = {0};
             if (!texture ||
-                (expected_type != 0 && texture.textureType != expected_type) ||
+                mglRenderCppGetTextureInfo((__bridge void *)texture,
+                                           &textureInfo) != 0 ||
+                (expected_type != 0 &&
+                 textureInfo.texture_type != expected_type) ||
                 !mglTexturePixelFormatCompatibleWithExpectedDataKind(
-                    texture.pixelFormat, expected_kind)) {
+                    textureInfo.pixel_format, expected_kind)) {
                 return false;
             }
 
@@ -732,16 +759,16 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             }
 
             if (!resource || resource->has_combined_sampler) {
-                MGLMetalSamplerStateRef sampler = nil;
+                id sampler = nil;
                 Sampler *bound_sampler =
                     MGL_STATE(glm_ctx)->texture_samplers[texture_unit];
                 if (bound_sampler) {
                     if (bound_sampler->dirty_bits || !bound_sampler->mtl_data) {
                         return false;
                     }
-                    sampler = (__bridge MGLMetalSamplerStateRef)bound_sampler->mtl_data;
+                    sampler = (__bridge id)bound_sampler->mtl_data;
                 } else if (texture_object->params.mtl_data) {
-                    sampler = (__bridge MGLMetalSamplerStateRef)texture_object->params.mtl_data;
+                    sampler = (__bridge id)texture_object->params.mtl_data;
                 } else {
                     return false;
                 }
@@ -763,14 +790,14 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         &snapshot, NULL, 0) == 0;
 }
 
-- (MGLMetalSamplerStateRef)samplerStateForSnapshotKey:(const MGLSamplerSnapshotKey *)key
+- (id)samplerStateForSnapshotKey:(const MGLSamplerSnapshotKey *)key
 {
     if (!key) return nil;
     void *cachedState = NULL;
     int cacheResult = mglRendererBackendGetSamplerSnapshotState(
         _backend, key, &cachedState);
     if (cacheResult == 1) {
-        return (__bridge MGLMetalSamplerStateRef)cachedState;
+        return (__bridge id)cachedState;
     }
     if (cacheResult < 0) {
         return nil;
@@ -790,7 +817,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     params.max_lod = key->max_lod;
     memcpy(params.border_color, key->border_color, sizeof(params.border_color));
 
-    MGLMetalSamplerStateRef state =
+    id state =
         [self createMTLSamplerForTexParam:&params target:key->target];
     if (!state) return nil;
     return mglRendererBackendPutSamplerSnapshotState(
@@ -817,7 +844,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         if (entry->metal_slot >= 16u) {
             return false;
         }
-        MGLMetalSamplerStateRef sampler;
+        id sampler;
         if (entry->key_index == MGL_FALLBACK_SAMPLER_KEY_INDEX) {
             sampler = [self fallbackSamplerState];
         } else {
@@ -1047,7 +1074,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_INSTANCE:
             case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX_BASE_INSTANCE: {
                 Buffer *glBuf = NULL;
-                MGLMetalBufferRef idxBuf = nil;
+                id idxBuf = nil;
                 if (![self resolveElementBufferForCommand:cmd
                                                     label:"cppBatchReplay"
                                                   context:glm_ctx
@@ -1056,11 +1083,11 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                     return NO;
                 }
                 NSUInteger idxOffset = cmd->indexBufferOffset;
-                MTLIndexType mtlIdxType = getMTLIndexType(cmd->indexType);
+                uint64_t mtlIdxType = mglIndexTypeForGLType(cmd->indexType);
                 if ((GLuint)mtlIdxType == 0xFFFFFFFFu) {
                     return NO;
                 }
-                MGLMetalBufferRef prepared = mglPreparedElementIndexBuffer(
+                id prepared = mglPreparedElementIndexBuffer(
                     _device, glBuf, idxBuf, cmd->indexType,
                     &idxOffset, &mtlIdxType);
                 if (!prepared || (GLuint)mtlIdxType == 0xFFFFFFFFu) {
@@ -1117,7 +1144,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                                              baseInstance:cmd->baseInstance];
         } else if (batchProgram && batchProgram->uses_cull_distance) {
             Buffer *elementBuffer = NULL;
-            MGLMetalBufferRef metalElementBuffer = nil;
+            id metalElementBuffer = nil;
             if ([self resolveElementBufferForCommand:cmd
                                                 label:"cullDistanceCapture"
                                               context:glm_ctx
@@ -1146,10 +1173,16 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                                  flushId:_renderPassManager.state->traceReplayFlushId
                               batchIndex:_renderPassManager.state->traceReplayBatchIndex
                             commandIndex:i
-                                   phase:"SKIP"
+                                 phase:"SKIP"
                                   reason:"cull_distance_capture_restore"];
                 continue;
             }
+            /* Cull-distance capture ends the active render pass and destroys
+             * its C++ owner before processGLState creates the replacement
+             * encoder.  Refresh the per-batch context so subsequent draw
+             * helpers never query the released owner handle. */
+            liveEncCtx.render_encoder_owner =
+                _renderPassManager.state->currentRenderEncoderOwner;
         }
         if (![self applyDynamicBindingsForCommand:cmd context:glm_ctx encodeContext:&liveEncCtx]) {
             [self traceReplayCommand:batch
@@ -1183,12 +1216,12 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         BOOL emulateTriangleFan = (mode == GL_TRIANGLE_FAN && !polygonModePoint);
         BOOL emulateLineLoop = (mode == GL_LINE_LOOP);
         BOOL emulateQuads = (mode == GL_QUADS && !polygonModePoint);
-        MTLPrimitiveType primType = polygonModePoint
-            ? MTLPrimitiveTypePoint
-            : (emulateTriangleFan ? MTLPrimitiveTypeTriangle
-                                  : (emulateLineLoop ? MTLPrimitiveTypeLineStrip
-                                                     : (emulateQuads ? MTLPrimitiveTypeTriangle
-                                                                    : (MTLPrimitiveType)batch->key.primitive_type)));
+        uint32_t primType = polygonModePoint
+            ? MGL_DRAW_PRIMITIVE_POINT
+            : (emulateTriangleFan ? MGL_DRAW_PRIMITIVE_TRIANGLE
+                                  : (emulateLineLoop ? MGL_DRAW_PRIMITIVE_LINE_STRIP
+                                                     : (emulateQuads ? MGL_DRAW_PRIMITIVE_TRIANGLE
+                                                                    : (uint32_t)batch->key.primitive_type)));
         if (!polygonModePoint && !emulateTriangleFan && !emulateLineLoop && !emulateQuads &&
             batch->key.primitive_type == 0xFFu) {
             [self traceReplayCommand:batch
@@ -1285,7 +1318,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
 
     if (mode == GL_TRIANGLE_STRIP && count >= 3) {
         NSUInteger stripIndexCount = 0u;
-        MGLMetalBufferRef stripIndexBuffer =
+        id stripIndexBuffer =
             mglNewTriangleStripArrayIndexBuffer(
                 _device, (NSUInteger)count, &stripIndexCount);
         if (!stripIndexBuffer || stripIndexCount == 0u) {
@@ -1305,8 +1338,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                                       encodeContext:encCtx];
             mglBatchReplayDrawIndexedPrimitives(
                 encCtx->render_encoder_owner,
-                MTLPrimitiveTypeTriangle, 3u,
-                MTLIndexTypeUInt32, stripIndexBuffer,
+                MGL_DRAW_PRIMITIVE_TRIANGLE, 3u,
+                MGL_DRAW_INDEX_UINT32, stripIndexBuffer,
                 primitive * 3u * sizeof(uint32_t), instanceCount, first,
                 baseInstance);
         }
@@ -1315,7 +1348,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
 
     if (mode == GL_TRIANGLE_FAN && count >= 3) {
         NSUInteger fanIndexCount = 0u;
-        MGLMetalBufferRef fanIndexBuffer =
+        id fanIndexBuffer =
             mglNewTriangleFanArrayIndexBuffer(
                 _device, (NSUInteger)count, &fanIndexCount);
         if (!fanIndexBuffer || fanIndexCount == 0u) {
@@ -1336,8 +1369,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                                       encodeContext:encCtx];
             mglBatchReplayDrawIndexedPrimitives(
                 encCtx->render_encoder_owner,
-                MTLPrimitiveTypeTriangle, 3u,
-                MTLIndexTypeUInt32, fanIndexBuffer,
+                MGL_DRAW_PRIMITIVE_TRIANGLE, 3u,
+                MGL_DRAW_INDEX_UINT32, fanIndexBuffer,
                 primitive * 3u * sizeof(uint32_t), instanceCount, first,
                 baseInstance);
         }
@@ -1353,7 +1386,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                                       encodeContext:encCtx];
             mglBatchReplayDrawPrimitives(
                 encCtx->render_encoder_owner,
-                MTLPrimitiveTypeLine, first + primitive, 2u,
+                MGL_DRAW_PRIMITIVE_LINE, first + primitive, 2u,
                 instanceCount, baseInstance);
         }
         return YES;
@@ -1361,7 +1394,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
 
     if (mode == GL_LINE_LOOP && count >= 2) {
         NSUInteger loopIndexCount = 0u;
-        MGLMetalBufferRef loopIndexBuffer =
+        id loopIndexBuffer =
             mglNewLineLoopArrayIndexBuffer(
                 _device, (NSUInteger)first, (NSUInteger)count,
                 &loopIndexCount);
@@ -1382,8 +1415,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                                       encodeContext:encCtx];
             mglBatchReplayDrawIndexedPrimitives(
                 encCtx->render_encoder_owner,
-                MTLPrimitiveTypeLine, 2u,
-                MTLIndexTypeUInt32, loopIndexBuffer,
+                MGL_DRAW_PRIMITIVE_LINE, 2u,
+                MGL_DRAW_INDEX_UINT32, loopIndexBuffer,
                 primitive * sizeof(uint32_t), instanceCount, 0,
                 baseInstance);
         }
@@ -1403,7 +1436,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                  emulateTriangleFan:(BOOL)emulateTriangleFan
                     emulateLineLoop:(BOOL)emulateLineLoop
                       emulateQuads:(BOOL)emulateQuads
-                           primType:(MTLPrimitiveType)primType
+                           primType:(uint32_t)primType
                       encodeContext:(const MGLEncodeContext *)encCtx
 {
     if (!polygonModePoint &&
@@ -1437,13 +1470,13 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     } else if (emulateTriangleFan) {
         if (count >= 3) {
             NSUInteger fanCount = 0;
-            MGLMetalBufferRef fanBuf = mglNewTriangleFanArrayIndexBuffer(
+            id fanBuf = mglNewTriangleFanArrayIndexBuffer(
                 _device, (NSUInteger)count, &fanCount);
             if (fanBuf && fanCount > 0) {
                 mglBatchReplayDrawIndexedPrimitives(
                     encCtx->render_encoder_owner,
-                    MTLPrimitiveTypeTriangle, fanCount,
-                    MTLIndexTypeUInt32, fanBuf, 0, 1, cmd->first, 0);
+                    MGL_DRAW_PRIMITIVE_TRIANGLE, fanCount,
+                    MGL_DRAW_INDEX_UINT32, fanBuf, 0, 1, cmd->first, 0);
                 [self traceReplayCommand:batch
                                  command:cmd
                                  context:glm_ctx
@@ -1475,13 +1508,13 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     } else if (emulateLineLoop) {
         if (count >= 2) {
             NSUInteger loopCount = 0;
-            MGLMetalBufferRef loopBuf = mglNewLineLoopArrayIndexBuffer(
+            id loopBuf = mglNewLineLoopArrayIndexBuffer(
                 _device, (NSUInteger)cmd->first, (NSUInteger)count, &loopCount);
             if (loopBuf && loopCount > 0) {
                 mglBatchReplayDrawIndexedPrimitives(
                     encCtx->render_encoder_owner,
-                    MTLPrimitiveTypeLineStrip, loopCount,
-                    MTLIndexTypeUInt32, loopBuf, 0, 1, 0, 0);
+                    MGL_DRAW_PRIMITIVE_LINE_STRIP, loopCount,
+                    MGL_DRAW_INDEX_UINT32, loopBuf, 0, 1, 0, 0);
                 [self traceReplayCommand:batch
                                  command:cmd
                                  context:glm_ctx
@@ -1570,7 +1603,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                           emulateTriangleFan:(BOOL)emulateTriangleFan
                              emulateLineLoop:(BOOL)emulateLineLoop
                                emulateQuads:(BOOL)emulateQuads
-                                    primType:(MTLPrimitiveType)primType
+                                    primType:(uint32_t)primType
                                encodeContext:(const MGLEncodeContext *)encCtx
 {
     if (!polygonModePoint &&
@@ -1604,13 +1637,13 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     } else if (emulateTriangleFan) {
         if (count >= 3) {
             NSUInteger fanCount = 0;
-            MGLMetalBufferRef fanBuf = mglNewTriangleFanArrayIndexBuffer(
+            id fanBuf = mglNewTriangleFanArrayIndexBuffer(
                 _device, (NSUInteger)count, &fanCount);
             if (fanBuf && fanCount > 0) {
                 mglBatchReplayDrawIndexedPrimitives(
                     encCtx->render_encoder_owner,
-                    MTLPrimitiveTypeTriangle, fanCount,
-                    MTLIndexTypeUInt32, fanBuf, 0, instanceCount,
+                    MGL_DRAW_PRIMITIVE_TRIANGLE, fanCount,
+                    MGL_DRAW_INDEX_UINT32, fanBuf, 0, instanceCount,
                     cmd->first, 0);
                 [self traceReplayCommand:batch
                                  command:cmd
@@ -1643,13 +1676,13 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     } else if (emulateLineLoop) {
         if (count >= 2) {
             NSUInteger loopCount = 0;
-            MGLMetalBufferRef loopBuf = mglNewLineLoopArrayIndexBuffer(
+            id loopBuf = mglNewLineLoopArrayIndexBuffer(
                 _device, (NSUInteger)cmd->first, (NSUInteger)count, &loopCount);
             if (loopBuf && loopCount > 0) {
                 mglBatchReplayDrawIndexedPrimitives(
                     encCtx->render_encoder_owner,
-                    MTLPrimitiveTypeLineStrip, loopCount,
-                    MTLIndexTypeUInt32, loopBuf, 0, instanceCount, 0, 0);
+                    MGL_DRAW_PRIMITIVE_LINE_STRIP, loopCount,
+                    MGL_DRAW_INDEX_UINT32, loopBuf, 0, instanceCount, 0, 0);
                 [self traceReplayCommand:batch
                                  command:cmd
                                  context:glm_ctx
@@ -1728,7 +1761,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                                        emulateTriangleFan:(BOOL)emulateTriangleFan
                                           emulateLineLoop:(BOOL)emulateLineLoop
                                             emulateQuads:(BOOL)emulateQuads
-                                                 primType:(MTLPrimitiveType)primType
+                                                 primType:(uint32_t)primType
                                             encodeContext:(const MGLEncodeContext *)encCtx
 {
     if (!polygonModePoint &&
@@ -1763,13 +1796,13 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     } else if (emulateTriangleFan) {
         if (count >= 3) {
             NSUInteger fanCount = 0;
-            MGLMetalBufferRef fanBuf = mglNewTriangleFanArrayIndexBuffer(
+            id fanBuf = mglNewTriangleFanArrayIndexBuffer(
                 _device, (NSUInteger)count, &fanCount);
             if (fanBuf && fanCount > 0) {
                 mglBatchReplayDrawIndexedPrimitives(
                     encCtx->render_encoder_owner,
-                    MTLPrimitiveTypeTriangle, fanCount,
-                    MTLIndexTypeUInt32, fanBuf, 0, instanceCount,
+                    MGL_DRAW_PRIMITIVE_TRIANGLE, fanCount,
+                    MGL_DRAW_INDEX_UINT32, fanBuf, 0, instanceCount,
                     cmd->first, cmd->baseInstance);
                 [self traceReplayCommand:batch
                                  command:cmd
@@ -1802,13 +1835,13 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     } else if (emulateLineLoop) {
         if (count >= 2) {
             NSUInteger loopCount = 0;
-            MGLMetalBufferRef loopBuf = mglNewLineLoopArrayIndexBuffer(
+            id loopBuf = mglNewLineLoopArrayIndexBuffer(
                 _device, (NSUInteger)cmd->first, (NSUInteger)count, &loopCount);
             if (loopBuf && loopCount > 0) {
                 mglBatchReplayDrawIndexedPrimitives(
                     encCtx->render_encoder_owner,
-                    MTLPrimitiveTypeLineStrip, loopCount,
-                    MTLIndexTypeUInt32, loopBuf, 0, instanceCount, 0,
+                    MGL_DRAW_PRIMITIVE_LINE_STRIP, loopCount,
+                    MGL_DRAW_INDEX_UINT32, loopBuf, 0, instanceCount, 0,
                     cmd->baseInstance);
                 [self traceReplayCommand:batch
                                  command:cmd
@@ -1889,12 +1922,12 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 emulateTriangleFan:(BOOL)emulateTriangleFan
                    emulateLineLoop:(BOOL)emulateLineLoop
                      emulateQuads:(BOOL)emulateQuads
-                          primType:(MTLPrimitiveType)primType
+                          primType:(uint32_t)primType
                      encodeContext:(const MGLEncodeContext *)encCtx
 {
     /* Element-based draws */
     Buffer *glBuf = NULL;
-    MGLMetalBufferRef idxBuf = nil;
+    id idxBuf = nil;
     if (![self resolveElementBufferForCommand:cmd
                                         label:"directBatch"
                                       context:glm_ctx
@@ -1911,7 +1944,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         return;
     }
     NSUInteger idxOffset = cmd->indexBufferOffset;
-    MTLIndexType mtlIdxType = getMTLIndexType(cmd->indexType);
+    uint64_t mtlIdxType = mglIndexTypeForGLType(cmd->indexType);
     if ((GLuint)mtlIdxType == 0xFFFFFFFF) {
         [self traceReplayCommand:batch
                          command:cmd
@@ -2028,8 +2061,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                            phase:(ok && count >= 4 ? "SUBMIT" : "SKIP")
                           reason:(ok ? "direct_elements_quads" : "direct_elements_quads_buffer")];
     } else {
-        MTLIndexType drawIndexType = mtlIdxType;
-        MGLMetalBufferRef drawIndexBuffer = mglPreparedElementIndexBuffer(_device,
+        uint64_t drawIndexType = mtlIdxType;
+        id drawIndexBuffer = mglPreparedElementIndexBuffer(_device,
                                                                       glBuf,
                                                                       idxBuf,
                                                                       cmd->indexType,

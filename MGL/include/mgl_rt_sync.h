@@ -30,10 +30,6 @@
 
 #include "glm_context.h"
 
-#ifdef __OBJC__
-#import <Metal/Metal.h>
-#endif
-
 #ifdef __cplusplus
 extern "C" {
 #endif

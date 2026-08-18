@@ -25,23 +25,23 @@
 #ifndef MGL_READBACK_H
 #define MGL_READBACK_H
 
-#include <Metal/Metal.h>
+#include <stdint.h>
 #include "glcorearb.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-BOOL mglMetalReadbackFormatIsBGRA8Compatible(MTLPixelFormat pixelFormat);
-BOOL mglMetalPixelFormatIsIntegerColor(MTLPixelFormat pixelFormat);
-BOOL mglMetalPixelFormatIsSignedIntegerColor(MTLPixelFormat pixelFormat);
-NSUInteger mglMetalReadbackBytesPerPixel(MTLPixelFormat pixelFormat);
+BOOL mglMetalReadbackFormatIsBGRA8Compatible(uint32_t pixelFormat);
+BOOL mglMetalPixelFormatIsIntegerColor(uint32_t pixelFormat);
+BOOL mglMetalPixelFormatIsSignedIntegerColor(uint32_t pixelFormat);
+NSUInteger mglMetalReadbackBytesPerPixel(uint32_t pixelFormat);
 uint8_t mglMetalFloatToUnorm8(float value);
 float mglMetalSnorm16ToFloat(int16_t value);
 float mglMetalSnorm8ToFloat(int8_t value);
-void mglMetalCopyTextureBytesToBGRA8(const uint8_t *src, NSUInteger srcBytesPerRow, uint8_t *dst, NSUInteger dstBytesPerRow, NSUInteger width, NSUInteger height, MTLPixelFormat pixelFormat, BOOL flipY);
-BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src, NSUInteger srcBytesPerRow, uint8_t *dst, NSUInteger dstBytesPerRow, NSUInteger width, NSUInteger height, MTLPixelFormat pixelFormat, GLenum format, GLenum type, BOOL flipY);
-BOOL mglMetalCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(const uint8_t *src, NSUInteger srcBytesPerRow, uint8_t *dst, NSUInteger dstBytesPerRow, NSUInteger width, NSUInteger height, MTLPixelFormat pixelFormat, BOOL flipY);
+void mglMetalCopyTextureBytesToBGRA8(const uint8_t *src, NSUInteger srcBytesPerRow, uint8_t *dst, NSUInteger dstBytesPerRow, NSUInteger width, NSUInteger height, uint32_t pixelFormat, BOOL flipY);
+BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src, NSUInteger srcBytesPerRow, uint8_t *dst, NSUInteger dstBytesPerRow, NSUInteger width, NSUInteger height, uint32_t pixelFormat, GLenum format, GLenum type, BOOL flipY);
+BOOL mglMetalCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(const uint8_t *src, NSUInteger srcBytesPerRow, uint8_t *dst, NSUInteger dstBytesPerRow, NSUInteger width, NSUInteger height, uint32_t pixelFormat, BOOL flipY);
 
 #ifdef __cplusplus
 }

@@ -6,53 +6,57 @@
 #import "mgl_compute_pipeline_cache.h"
 #include "mgl_env_flag.h"
 #include "mgl_render_cpp.h"
-#include "mgl_render_cpp_objc.h"
 
-static MGLMetalBufferRef mglComputeCreateBufferWithBytes(
-    MGLMetalDeviceRef device,
+enum {
+    MGL_COMPUTE_TEXTURE_TYPE_CUBE = 5u,
+    MGL_COMPUTE_TEXTURE_TYPE_CUBE_ARRAY = 6u,
+};
+
+static id mglComputeCreateBufferWithBytes(
     const void *bytes,
     NSUInteger length,
-    MTLResourceOptions options)
+    uint64_t resourceOptions)
 {
-    (void)device;
     void *buffer = NULL;
-    if (mglRenderCppCreateBufferWithBytes(bytes, length, options, NULL,
+    if (mglRenderCppCreateBufferWithBytes(bytes, length, resourceOptions, NULL,
                                           &buffer) == 0 && buffer) {
-        return (__bridge_transfer MGLMetalBufferRef)buffer;
+        return (__bridge_transfer id)buffer;
     }
     return nil;
 }
 
-static MGLMetalSamplerStateRef mglComputeCreateSampler(
-    MGLMetalDeviceRef device,
-    MTLSamplerDescriptor *descriptor)
+static id mglComputeCreateDefaultSampler(void)
 {
-    (void)device;
     void *sampler = NULL;
-    if (mglRenderCppCreateSampler((__bridge void *)descriptor,
-                                  &sampler) == 0 && sampler) {
-        return (__bridge_transfer MGLMetalSamplerStateRef)sampler;
+    if (mglRenderCppCreateDefaultSampler(&sampler) == 0 && sampler) {
+        return (__bridge_transfer id)sampler;
     }
     return nil;
 }
 
-static MGLMetalTextureRef mglComputeCreateTextureLevelView(
-    MGLMetalTextureRef texture,
-    NSUInteger level,
-    NSUInteger sliceCount)
+static id mglComputeCreateTextureLevelView(id texture, NSUInteger level)
 {
+    MGLRenderCppTextureInfo info = {0};
+    if (mglRenderCppGetTextureInfo((__bridge void *)texture, &info) != 0) {
+        return nil;
+    }
+    uint64_t sliceCount = info.array_length;
+    if (info.texture_type == MGL_COMPUTE_TEXTURE_TYPE_CUBE ||
+        info.texture_type == MGL_COMPUTE_TEXTURE_TYPE_CUBE_ARRAY) {
+        sliceCount *= 6u;
+    }
     void *view = NULL;
     if (mglRenderCppCreateTextureViewRange(
-            (__bridge void *)texture, (uint32_t)texture.pixelFormat,
-            (uint32_t)texture.textureType, level, 1, 0, sliceCount,
+            (__bridge void *)texture, info.pixel_format, info.texture_type,
+            level, 1, 0, sliceCount,
             0, 0, 0, 0, 0, &view) == 0 && view) {
-        return (__bridge_transfer MGLMetalTextureRef)view;
+        return (__bridge_transfer id)view;
     }
     return nil;
 }
 
-static void mglComputeSetBuffer(MGLMetalComputeCommandEncoderRef encoder,
-                                MGLMetalBufferRef buffer,
+static void mglComputeSetBuffer(id encoder,
+                                id buffer,
                                 NSUInteger offset,
                                 NSUInteger index)
 {
@@ -61,8 +65,8 @@ static void mglComputeSetBuffer(MGLMetalComputeCommandEncoderRef encoder,
         (uint64_t)offset, (uint32_t)index);
 }
 
-static void mglComputeSetTexture(MGLMetalComputeCommandEncoderRef encoder,
-                                 MGLMetalTextureRef texture,
+static void mglComputeSetTexture(id encoder,
+                                 id texture,
                                  NSUInteger index)
 {
     (void)mglRenderCppSetComputeTexture(
@@ -70,8 +74,8 @@ static void mglComputeSetTexture(MGLMetalComputeCommandEncoderRef encoder,
         (uint32_t)index);
 }
 
-static void mglComputeSetSampler(MGLMetalComputeCommandEncoderRef encoder,
-                                 MGLMetalSamplerStateRef sampler,
+static void mglComputeSetSampler(id encoder,
+                                 id sampler,
                                  NSUInteger index)
 {
     (void)mglRenderCppSetComputeSampler(
@@ -79,36 +83,38 @@ static void mglComputeSetSampler(MGLMetalComputeCommandEncoderRef encoder,
         (uint32_t)index);
 }
 
-static void mglComputeSetPipeline(MGLMetalComputeCommandEncoderRef encoder,
-                                   MGLMetalComputePipelineStateRef pipeline)
+static void mglComputeSetPipeline(id encoder, id pipeline)
 {
     (void)mglRenderCppSetComputePipelineState(
         (__bridge void *)encoder, (__bridge void *)pipeline);
 }
 
-static void mglComputeDispatch(MGLMetalComputeCommandEncoderRef encoder,
-                               MTLSize groups,
-                               MTLSize threads)
+static void mglComputeDispatch(id encoder,
+                               uint32_t groupsX,
+                               uint32_t groupsY,
+                               uint32_t groupsZ,
+                               uint32_t threadsX,
+                               uint32_t threadsY,
+                               uint32_t threadsZ)
 {
     (void)mglRenderCppDispatchCompute(
-        (__bridge void *)encoder, (uint32_t)groups.width,
-        (uint32_t)groups.height, (uint32_t)groups.depth,
-        (uint32_t)threads.width, (uint32_t)threads.height,
-        (uint32_t)threads.depth);
+        (__bridge void *)encoder, groupsX, groupsY, groupsZ,
+        threadsX, threadsY, threadsZ);
 }
 
-static void mglComputeDispatchIndirect(MGLMetalComputeCommandEncoderRef encoder,
-                                       MGLMetalBufferRef buffer,
+static void mglComputeDispatchIndirect(id encoder,
+                                       id buffer,
                                        NSUInteger offset,
-                                       MTLSize threads)
+                                       uint32_t threadsX,
+                                       uint32_t threadsY,
+                                       uint32_t threadsZ)
 {
     (void)mglRenderCppDispatchComputeIndirect(
         (__bridge void *)encoder, (__bridge void *)buffer,
-        (uint64_t)offset, (uint32_t)threads.width,
-        (uint32_t)threads.height, (uint32_t)threads.depth);
+        (uint64_t)offset, threadsX, threadsY, threadsZ);
 }
 
-static void mglComputeEndEncoder(MGLMetalComputeCommandEncoderRef encoder)
+static void mglComputeEndEncoder(id encoder)
 {
     (void)mglRenderCppEndComputeEncoder((__bridge void *)encoder);
 }
@@ -151,7 +157,7 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
 
 #pragma mark ----- compute utility ---------------------------------------------------------------------
 
-- (bool) bindBuffersToComputeEncoder:(id <MTLComputeCommandEncoder>) computeCommandEncoder
+- (bool) bindBuffersToComputeEncoder:(id) computeCommandEncoder
                                 stage:(int)stage
                               copyBacks:(MGLStageBindingCopyBackList *)copyBacks
 {
@@ -162,7 +168,7 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
                                   temporaries:nil];
 }
 
-- (bool) bindBuffersToComputeEncoder:(id <MTLComputeCommandEncoder>) computeCommandEncoder
+- (bool) bindBuffersToComputeEncoder:(id) computeCommandEncoder
                                 stage:(int)stage
                               copyBacks:(MGLStageBindingCopyBackList *)copyBacks
                           executionPlan:(MGLRenderCppComputeExecutionPlan *)executionPlan
@@ -222,7 +228,7 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
                                                /* length */ 0u};                \
         } else {                                                                \
             mglComputeSetBuffer(computeCommandEncoder,                          \
-                                (__bridge MGLMetalBufferRef)(bufPtr), (off),        \
+                                (__bridge id)(bufPtr), (off),                   \
                                 (slot));                                        \
         }                                                                       \
     } while (0)
@@ -283,9 +289,12 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
         if (!ptr->data.mtl_data) {
             [self bindMTLBuffer:ptr];
         }
-        MGLMetalBufferRef buffer = ptr->data.mtl_data
-            ? (__bridge MGLMetalBufferRef)(ptr->data.mtl_data)
+        id buffer = ptr->data.mtl_data
+            ? (__bridge id)(ptr->data.mtl_data)
             : nil;
+        MGLRenderCppBufferInfo bufferInfo = {0};
+        const BOOL hasBufferInfo = buffer &&
+            mglRenderCppGetBufferInfo((__bridge void *)buffer, &bufferInfo) == 0;
 
         NSUInteger requiredBytes =
             mglRendererGetProgramBindingRequiredSize(ctx, stage, (int)map->resource_type, (int)map->resource_index);
@@ -295,18 +304,18 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
         }
 
         GLsizeiptr storageRemaining = mglBufferMapStorageRemaining(map);
-        NSUInteger availableBytes = buffer
-            ? mglBufferMapVisibleBackingBytes(map, buffer.length)
+        NSUInteger availableBytes = hasBufferInfo
+            ? mglBufferMapVisibleBackingBytes(map, bufferInfo.length)
             : 0u;
         BOOL needsIsolatedBinding =
-            !buffer ||
+            !hasBufferInfo ||
             storageRemaining <= 0 ||
-            bindOffset >= buffer.length ||
+            bindOffset >= bufferInfo.length ||
             availableBytes == 0 ||
             (requiredBytes > 0 && availableBytes < requiredBytes);
         if (needsIsolatedBinding) {
             NSUInteger fallbackLength = MAX(requiredBytes, sizeof(uint32_t));
-            MGLMetalBufferRef isolated =
+            id isolated =
                 [self isolatedStageBindingBufferForMap:map
                                                  source:buffer
                                          requiredLength:fallbackLength];
@@ -396,9 +405,8 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
                 return false;
             }
 
-            MGLMetalBufferRef sizeBuffer = mglComputeCreateBufferWithBytes(
-                _device, sizeConstants, sizeof(sizeConstants),
-                MTLResourceStorageModeShared);
+            id sizeBuffer = mglComputeCreateBufferWithBytes(
+                sizeConstants, sizeof(sizeConstants), 0u);
             if (sizeBuffer) {
                 MGL_CBIND_EMIT_BUFFER(runtimeSizeSlot,
                                       (__bridge void *)sizeBuffer, 0);
@@ -423,7 +431,7 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
     return true;
 }
 
-- (bool) bindTexturesToComputeEncoder:(id <MTLComputeCommandEncoder>) computeCommandEncoder
+- (bool) bindTexturesToComputeEncoder:(id) computeCommandEncoder
                                  stage:(int)stage
 {
     return [self bindTexturesToComputeEncoder:computeCommandEncoder
@@ -432,7 +440,7 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
                                   temporaries:nil];
 }
 
-- (bool) bindTexturesToComputeEncoder:(id <MTLComputeCommandEncoder>) computeCommandEncoder
+- (bool) bindTexturesToComputeEncoder:(id) computeCommandEncoder
                                  stage:(int)stage
                          executionPlan:(MGLRenderCppComputeExecutionPlan *)executionPlan
                           temporaries:(NSMutableArray *)temporaries
@@ -506,7 +514,7 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
                                                /* length */ 0u};                \
         } else {                                                                \
             mglComputeSetTexture(computeCommandEncoder,                         \
-                                 (__bridge MGLMetalTextureRef)(texPtr), (slot));    \
+                                 (__bridge id)(texPtr), (slot));                \
         }                                                                       \
     } while (0)
 
@@ -526,7 +534,7 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
                                                /* length */ 0u};                \
         } else {                                                                \
             mglComputeSetSampler(computeCommandEncoder,                         \
-                                 (__bridge MGLMetalSamplerStateRef)(smpPtr),        \
+                                 (__bridge id)(smpPtr),                         \
                                  (slot));                                       \
         }                                                                       \
     } while (0)
@@ -586,8 +594,8 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
                         ptr = [self textureForSampledResource:resource
                                                  metalBinding:metalBinding
                                                          stage:stage
-                                                  expectedType:(MTLTextureType)
-                                                      mglRendererGetProgramDeclaredTextureType(ctx, stage, spvc_type, i)];
+                                                  expectedType:mglRendererGetProgramDeclaredTextureType(
+                                                      ctx, stage, spvc_type, i)];
                         break;
                     case _IMAGE_TEXTURE:
                         glUnit = resource ? (resource->sampler_unit >= 0 ? (GLuint)resource->sampler_unit : resource->gl_binding)
@@ -611,8 +619,7 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
                         continue;
                     }
 
-                    MGLMetalTextureRef texture;
-                    texture = (__bridge MGLMetalTextureRef)(ptr->mtl_data);
+                    id texture = (__bridge id)(ptr->mtl_data);
                     if (!texture) {
                         continue;
                     }
@@ -624,14 +631,8 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
                     if (gl_texture_type == _IMAGE_TEXTURE) {
                         GLuint imgLevel = MGL_STATE(ctx)->image_units[glUnit].level;
                         if (imgLevel > 0u) {
-                            NSUInteger sliceCount = texture.arrayLength;
-                            if (texture.textureType == MTLTextureTypeCube ||
-                                texture.textureType == MTLTextureTypeCubeArray) {
-                                sliceCount = texture.arrayLength * 6u;
-                            }
-                            MGLMetalTextureRef levelView =
-                                mglComputeCreateTextureLevelView(
-                                    texture, imgLevel, sliceCount);
+                            id levelView = mglComputeCreateTextureLevelView(
+                                texture, imgLevel);
                             if (levelView) {
                                 texture = levelView;
                                 /* Keep the view alive until the end replay. */
@@ -640,7 +641,7 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
                         }
                     }
 
-                    MGLMetalSamplerStateRef sampler;
+                    id sampler;
 
                     // late binding of texture samplers.. but its better than scanning the entire texture_samplers
                     if(gl_texture_type == _TEXTURE && MGL_STATE(ctx)->texture_samplers[glUnit])
@@ -664,17 +665,15 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
                             gl_sampler->dirty_bits = 0;
                         }
 
-                        sampler = (__bridge MGLMetalSamplerStateRef)(gl_sampler->mtl_data);
+                        sampler = (__bridge id)(gl_sampler->mtl_data);
                     }
                     else
                     {
-                        sampler = (__bridge MGLMetalSamplerStateRef)(ptr->params.mtl_data);
+                        sampler = (__bridge id)(ptr->params.mtl_data);
                     }
 
                     if (!sampler) {
-                        MGLMetalSamplerStateRef fallbackSampler =
-                            mglComputeCreateSampler(_device,
-                                                    [MTLSamplerDescriptor new]);
+                        id fallbackSampler = mglComputeCreateDefaultSampler();
                         sampler = fallbackSampler;
                         /* Keep the fallback alive until the end replay. */
                         MGL_CTEX_RETAIN_TEMP(sampler);
@@ -717,7 +716,7 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
                 continue;
             }
 
-            MTLTextureType expectedType = (MTLTextureType)
+            uint32_t expectedType =
                 mglRendererGetProgramDeclaredTextureType(ctx, stage, _SAMPLED_IMAGE_RES, (int)resourceIndex);
             for (GLint element = 1; element < resource->gl_array_size; element++) {
                 GLuint metalSlot = resource->binding + (GLuint)element;
@@ -739,8 +738,8 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
                     continue;
                 }
 
-                MGLMetalTextureRef texture = (__bridge MGLMetalTextureRef)(ptr->mtl_data);
-                MGLMetalSamplerStateRef sampler = nil;
+                id texture = (__bridge id)(ptr->mtl_data);
+                id sampler = nil;
                 if (glUnit < TEXTURE_UNITS && MGL_STATE(ctx)->texture_samplers[glUnit]) {
                     Sampler *glSampler = MGL_STATE(ctx)->texture_samplers[glUnit];
                     if (glSampler->mtl_data == NULL) {
@@ -748,13 +747,12 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
                             [self createMTLSamplerForTexParam:&glSampler->params target:ptr->target]);
                         glSampler->dirty_bits = 0;
                     }
-                    sampler = (__bridge MGLMetalSamplerStateRef)(glSampler->mtl_data);
+                    sampler = (__bridge id)(glSampler->mtl_data);
                 } else if (ptr->params.mtl_data) {
-                    sampler = (__bridge MGLMetalSamplerStateRef)(ptr->params.mtl_data);
+                    sampler = (__bridge id)(ptr->params.mtl_data);
                 }
                 if (!sampler) {
-                    sampler = mglComputeCreateSampler(
-                        _device, [MTLSamplerDescriptor new]);
+                    sampler = mglComputeCreateDefaultSampler();
                     /* Keep the fallback alive until the end replay. */
                     MGL_CTEX_RETAIN_TEMP(sampler);
                 }
@@ -798,20 +796,14 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
                     continue;
                 }
 
-                MGLMetalTextureRef texture = (__bridge MGLMetalTextureRef)(ptr->mtl_data);
+                id texture = (__bridge id)(ptr->mtl_data);
 
                 /* For storage images bound to a non-zero mipmap level, create
                  * a level-specific texture view (matches element 0 path). */
                 GLuint imgLevel = MGL_STATE(ctx)->image_units[glUnit].level;
                 if (imgLevel > 0u) {
-                    NSUInteger sliceCount = texture.arrayLength;
-                    if (texture.textureType == MTLTextureTypeCube ||
-                        texture.textureType == MTLTextureTypeCubeArray) {
-                        sliceCount = texture.arrayLength * 6u;
-                    }
-                    MGLMetalTextureRef levelView =
-                        mglComputeCreateTextureLevelView(
-                            texture, imgLevel, sliceCount);
+                    id levelView = mglComputeCreateTextureLevelView(
+                        texture, imgLevel);
                     if (levelView) {
                         texture = levelView;
                         /* Keep the view alive until the end replay. */
@@ -846,7 +838,7 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
 #pragma mark ------------------------------------------------------------------------------------------
 #pragma mark processCompute
 #pragma mark ------------------------------------------------------------------------------------------
-- (bool)processCompute:(id <MTLComputeCommandEncoder>)computeCommandEncoder
+- (bool)processCompute:(id)computeCommandEncoder
              copyBacks:(MGLStageBindingCopyBackList *)copyBacks
 {
     return [self processCompute:computeCommandEncoder
@@ -855,7 +847,7 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
                     temporaries:nil];
 }
 
-- (bool)processCompute:(id <MTLComputeCommandEncoder>)computeCommandEncoder
+- (bool)processCompute:(id)computeCommandEncoder
              copyBacks:(MGLStageBindingCopyBackList *)copyBacks
          executionPlan:(MGLRenderCppComputeExecutionPlan *)executionPlan
           temporaries:(NSMutableArray *)temporaries
@@ -891,8 +883,7 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
         return false;
     }
 
-    id <MTLFunction> func;
-    func = (__bridge MGLMetalFunctionRef)(program->modules[_COMPUTE_SHADER].mtl_function);
+    id func = (__bridge id)(program->modules[_COMPUTE_SHADER].mtl_function);
     if (!func) {
         NSLog(@"MGL COMPUTE ERROR: compute shader for program %u has no Metal function", program->name);
         return false;
@@ -903,9 +894,9 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
     int computePipelineResult = mglGetOrCreateProgramComputePipeline(
         program, _COMPUTE_SHADER, &computePipelineHandle,
         computePipelineError, sizeof(computePipelineError));
-    MGLMetalComputePipelineStateRef computePipelineState =
+    id computePipelineState =
         computePipelineResult == 0 && computePipelineHandle
-            ? (__bridge_transfer MGLMetalComputePipelineStateRef)computePipelineHandle
+            ? (__bridge_transfer id)computePipelineHandle
             : nil;
     if (!computePipelineState) {
         NSLog(@"MGL COMPUTE ERROR: failed to create compute pipeline for program %u: %s",
@@ -969,7 +960,7 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
                                      groupsX:(GLuint)groups_x
                                      groupsY:(GLuint)groups_y
                                      groupsZ:(GLuint)groups_z
-                              indirectBuffer:(MGLMetalBufferRef)indirectBuffer
+                              indirectBuffer:(id)indirectBuffer
                               indirectOffset:(NSUInteger)indirectOffset
                                       reason:(const char *)reason
 {
@@ -1001,10 +992,10 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
     MGLRenderCppComputeExecutionPlan executionPlan = {0};
     NSMutableArray *executionTemporaries = useExecutionPlan
         ? [NSMutableArray array] : nil;
-    MGLMetalComputeCommandEncoderRef computeCommandEncoder = nil;
+    id computeCommandEncoder = nil;
     if (!useExecutionPlan) {
         computeCommandEncoder =
-            mglRenderCreateComputeEncoderForCommandBufferOwner(
+            (__bridge id)mglRenderCppCreateComputeEncoderBorrowed(
                 _renderPassManager.state->currentCommandBufferOwner);
         if (!computeCommandEncoder) {
             NSLog(@"MGL ERROR: Failed to create compute command encoder for %s",
@@ -1107,26 +1098,19 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
         }
         [self clearStageBindingCopyBacks:&copyBacks];
     } else {
-        MTLSize numThreadgroups;
-        MTLSize threadsPerThreadgroup;
-        if (dispatchKind == MGL_RENDER_CPP_COMPUTE_DISPATCH_DIRECT) {
-            numThreadgroups = MTLSizeMake(groups_x, groups_y, groups_z);
-        } else {
-            numThreadgroups = MTLSizeMake(0, 0, 0);
-        }
         /* P4.5 (item 1141/887): 线程组尺寸 0->1 默认在 C++
          * （mglRenderCppThreadgroupSize，两门共用）。 */
         MGLRenderCppThreadgroupSize tg = {0};
         mglRenderCppThreadgroupSize(
             ptr->local_workgroup_size.x, ptr->local_workgroup_size.y,
             ptr->local_workgroup_size.z, &tg);
-        threadsPerThreadgroup = MTLSizeMake(tg.x, tg.y, tg.z);
         if (dispatchKind == MGL_RENDER_CPP_COMPUTE_DISPATCH_DIRECT) {
-            mglComputeDispatch(computeCommandEncoder, numThreadgroups,
-                               threadsPerThreadgroup);
+            mglComputeDispatch(computeCommandEncoder,
+                               groups_x, groups_y, groups_z,
+                               tg.x, tg.y, tg.z);
         } else {
             mglComputeDispatchIndirect(computeCommandEncoder, indirectBuffer,
-                                       indirectOffset, threadsPerThreadgroup);
+                                       indirectOffset, tg.x, tg.y, tg.z);
         }
     }
 
@@ -1251,7 +1235,7 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
         return;
     }
 
-    MGLMetalBufferRef indirectBuffer = (__bridge MGLMetalBufferRef)(glIndirectBuffer->data.mtl_data);
+    id indirectBuffer = (__bridge id)(glIndirectBuffer->data.mtl_data);
     if (!indirectBuffer) {
         NSLog(@"MGL COMPUTE ERROR: dispatch indirect buffer %u has no Metal backing",
               glIndirectBuffer ? glIndirectBuffer->name : 0u);
@@ -1261,13 +1245,16 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
 
     NSUInteger indirectOffset = (NSUInteger)indirect;
     NSUInteger indirectArgBytes = 3u * sizeof(uint32_t);
-    if (indirectOffset > indirectBuffer.length ||
-        indirectArgBytes > (indirectBuffer.length - indirectOffset)) {
+    MGLRenderCppBufferInfo indirectBufferInfo = {0};
+    if (mglRenderCppGetBufferInfo((__bridge void *)indirectBuffer,
+                                  &indirectBufferInfo) != 0 ||
+        indirectOffset > indirectBufferInfo.length ||
+        indirectArgBytes > (indirectBufferInfo.length - indirectOffset)) {
         NSLog(@"MGL COMPUTE ERROR: dispatch indirect range exceeds Metal buffer buffer=%u off=%lu bytes=%lu len=%lu",
               glIndirectBuffer ? glIndirectBuffer->name : 0u,
               (unsigned long)indirectOffset,
               (unsigned long)indirectArgBytes,
-              (unsigned long)indirectBuffer.length);
+              (unsigned long)indirectBufferInfo.length);
         mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
         return;
     }

@@ -22,56 +22,13 @@
  * External dependencies:
  *   - numComponentsForFormat / sizeForInternalFormat (pixel_utils.c) for
  *     GL format introspection.
- *   - Metal framework for MTLPixelFormat / MTLTexture / MTLTextureSwizzle.
+ *   - Metal framework for MGLPixelFormat / MTLTexture / MTLTextureSwizzle.
  */
 
 #import "mgl_texture_compat.h"
-#import <Foundation/Foundation.h>
-#import <Metal/Metal.h>
-#include <stdlib.h>
-#include <string.h>
-
-#import "mgl_trace_log.h"
-#include "mgl_env_flag.h"
 #include "mgl_render_cpp.h"
-#include "mgl_render_cpp_objc.h" /* P4: ref typedefs */
 
-/* GL format introspection helpers implemented in pixel_utils.c.  Declared
- * here so this module does not need to include the full MGLRenderer private
- * header. */
-GLuint sizeForInternalFormat(GLenum internalformat, GLenum format, GLenum type);
-
-static MGLMetalTextureRef mglTextureCompatCreateView(
-    MGLMetalTextureRef texture,
-    NSRange levels,
-    NSRange slices,
-    BOOL useSwizzle,
-    MTLTextureSwizzleChannels swizzle)
-{
-    void *view = NULL;
-    if (mglRenderCppCreateTextureViewRange(
-            (__bridge void *)texture,
-            (uint32_t)texture.pixelFormat,
-            (uint32_t)texture.textureType,
-            levels.location, levels.length,
-            slices.location, slices.length,
-            useSwizzle ? 1 : 0,
-            (uint32_t)swizzle.red,
-            (uint32_t)swizzle.green,
-            (uint32_t)swizzle.blue,
-            (uint32_t)swizzle.alpha,
-            &view) == 0 && view) {
-        return (__bridge_transfer MGLMetalTextureRef)view;
-    }
-    return nil;
-}
-
-static bool mglTextureMinFilterUsesMipmaps(GLenum minFilter)
-{
-    return mglRenderCppTextureMinFilterUsesMipmaps((uint32_t)minFilter) != 0;
-}
-
-MGLTextureDataKind mglTextureDataKindForPixelFormat(MTLPixelFormat pixelFormat)
+MGLTextureDataKind mglTextureDataKindForPixelFormat(uint32_t pixelFormat)
 {
     return (MGLTextureDataKind)mglRenderCppTextureDataKindForPixelFormat(
         (uint32_t)pixelFormat);
@@ -82,151 +39,33 @@ const char *mglTextureDataKindName(MGLTextureDataKind kind)
     return mglRenderCppTextureDataKindName((uint32_t)kind);
 }
 
-NSUInteger mglMetalTextureLevelDimension(NSUInteger base, NSUInteger level)
+size_t mglMetalTextureLevelDimension(size_t base, size_t level)
 {
     /* P4.5 (item 1141/887): mip 级维度循环在 C++
      * （mglRenderCppMetalTextureLevelDimension，两门共用）。 */
-    return (NSUInteger)mglRenderCppMetalTextureLevelDimension(
+    return (size_t)mglRenderCppMetalTextureLevelDimension(
         (uint64_t)base, (uint64_t)level);
 }
 
-MGLMetalTextureRef mglSampledTextureViewForBaseLevel(Texture *ptr,
-                                                 MGLMetalTextureRef texture)
+void *mglSampledTextureViewForBaseLevel(Texture *ptr, void *texture)
 {
-    if (!ptr || !texture) return texture;
-    if (ptr->mipmap_levels == 0u) return texture;
-
-    GLuint baseLevel = ptr->params.base_level;
-    if (baseLevel >= ptr->mipmap_levels) return texture;
-    if ((NSUInteger)baseLevel >= texture.mipmapLevelCount) {
-        return texture;
-    }
-
-    GLuint maxLevel = (ptr->params.max_level == 1000u)
-        ? (ptr->mipmap_levels - 1u)
-        : ptr->params.max_level;
-    if (maxLevel < baseLevel) maxLevel = baseLevel;
-    if (maxLevel >= ptr->mipmap_levels) maxLevel = ptr->mipmap_levels - 1u;
-    if ((NSUInteger)maxLevel >= texture.mipmapLevelCount) maxLevel = (GLuint)texture.mipmapLevelCount - 1u;
-
-    NSUInteger levelCount = maxLevel - baseLevel + 1u;
-    if (levelCount == 0u) return texture;
-
-    /* Fast path: no BASE/MAX window — common case for full-atlas sampling.
-     * Still build a view when base==0 but MAX_LEVEL restricts (MC GpuTextureView
-     * often uses MAX_LEVEL=0 while the Y-flip copy keeps the full mip chain). */
-    if (baseLevel == 0u &&
-        (NSUInteger)levelCount >= texture.mipmapLevelCount) {
-        return texture;
-    }
-
-    /* Cache hit — return the cached view when source texture, base_level,
-     * and max_level all match.  This avoids per-draw newTextureViewWithPixelFormat:
-     * allocation when the texture params haven't changed (common case). */
-    if (ptr->mtl_base_level_view != NULL &&
-        ptr->mtl_base_level_view_source == (__bridge void *)texture &&
-        ptr->mtl_base_level_view_base == baseLevel &&
-        ptr->mtl_base_level_view_max == maxLevel) {
-        return (__bridge MGLMetalTextureRef)ptr->mtl_base_level_view;
-    }
-
-    NSUInteger sliceCount = texture.arrayLength;
-    if (texture.textureType == MTLTextureTypeCube ||
-        texture.textureType == MTLTextureTypeCubeArray) {
-        sliceCount = texture.arrayLength * 6u;
-    }
-
-    /* GL swizzle is texture-object state.  The source Metal texture bakes the
-     * swizzle into MTLTextureDescriptor.swizzle at creation time, but a view
-     * created with newTextureViewWithPixelFormat:levels:slices: defaults to
-     * identity swizzle and does NOT inherit the source's channel routing.
-     * Re-apply the GL swizzle via the swizzle-aware view API (macOS 10.15+)
-     * so sampling the base-level view matches sampling the source texture. */
-    MTLTextureSwizzle sw_r = mglMTLSwizzleForGLSwizzle(ptr, ptr->params.swizzle_r);
-    MTLTextureSwizzle sw_g = mglMTLSwizzleForGLSwizzle(ptr, ptr->params.swizzle_g);
-    MTLTextureSwizzle sw_b = mglMTLSwizzleForGLSwizzle(ptr, ptr->params.swizzle_b);
-    MTLTextureSwizzle sw_a = mglMTLSwizzleForGLSwizzle(ptr, ptr->params.swizzle_a);
-    BOOL swizzleIsIdentity = (sw_r == MTLTextureSwizzleRed &&
-                              sw_g == MTLTextureSwizzleGreen &&
-                              sw_b == MTLTextureSwizzleBlue &&
-                              sw_a == MTLTextureSwizzleAlpha);
-
-    MGLMetalTextureRef levelView = nil;
-    if (swizzleIsIdentity) {
-        levelView = mglTextureCompatCreateView(
-            texture, NSMakeRange(baseLevel, levelCount),
-            NSMakeRange(0, sliceCount), NO,
-            MTLTextureSwizzleChannelsMake(
-                MTLTextureSwizzleRed, MTLTextureSwizzleGreen,
-                MTLTextureSwizzleBlue, MTLTextureSwizzleAlpha));
-    } else if (@available(macOS 10.15, *)) {
-        MTLTextureSwizzleChannels swizzle = MTLTextureSwizzleChannelsMake(sw_r, sw_g, sw_b, sw_a);
-        levelView = mglTextureCompatCreateView(
-            texture, NSMakeRange(baseLevel, levelCount),
-            NSMakeRange(0, sliceCount), YES, swizzle);
-    } else {
-        /* Pre-10.15 fallback: swizzle-aware view API unavailable.  The view
-         * will sample with identity swizzle; the source texture's baked-in
-         * swizzle is lost on the view.  This matches the prior behavior. */
-        levelView = mglTextureCompatCreateView(
-            texture, NSMakeRange(baseLevel, levelCount),
-            NSMakeRange(0, sliceCount), NO,
-            MTLTextureSwizzleChannelsMake(
-                MTLTextureSwizzleRed, MTLTextureSwizzleGreen,
-                MTLTextureSwizzleBlue, MTLTextureSwizzleAlpha));
-    }
-    if (levelView) {
-        /* Store in cache, releasing the old view if any. */
-        if (ptr->mtl_base_level_view) {
-            CFRelease(ptr->mtl_base_level_view);
-        }
-        CFRetain((__bridge CFTypeRef)levelView);
-        ptr->mtl_base_level_view = (__bridge void *)levelView;
-        ptr->mtl_base_level_view_source = (__bridge void *)texture;
-        ptr->mtl_base_level_view_base = baseLevel;
-        ptr->mtl_base_level_view_max = maxLevel;
-        static uint64_t s_sampledBaseViewTraceCount = 0;
-        uint64_t hit = ++s_sampledBaseViewTraceCount;
-        if (hit <= 256ull || (hit % 1024ull) == 0ull) {
-            mglTraceLogExternal("TEX_BASE_VIEW tex=%u target=0x%x minFilter=0x%x mipFilter=%d base=%u max=%u levels=%lu glLevels=%u mips=%u original=%p originalSize=%lux%lu originalLevels=%lu view=%p viewSize=%lux%lu viewLevels=%lu fmt=%lu type=%lu hit=%llu",
-                                (unsigned)ptr->name,
-                                (unsigned)ptr->target,
-                                (unsigned)ptr->params.min_filter,
-                                mglTextureMinFilterUsesMipmaps(ptr->params.min_filter) ? 1 : 0,
-                                (unsigned)baseLevel,
-                                (unsigned)maxLevel,
-                                (unsigned long)levelCount,
-                                (unsigned)ptr->num_levels,
-                                (unsigned)ptr->mipmap_levels,
-                                texture,
-                                (unsigned long)texture.width,
-                                (unsigned long)texture.height,
-                                (unsigned long)texture.mipmapLevelCount,
-                                levelView,
-                                (unsigned long)levelView.width,
-                                (unsigned long)levelView.height,
-                                (unsigned long)levelView.mipmapLevelCount,
-                                (unsigned long)texture.pixelFormat,
-                                (unsigned long)texture.textureType,
-                                (unsigned long long)hit);
-        }
-    }
-    return levelView ? levelView : texture;
+    (void)mglRenderCppSampledTextureViewForBaseLevel(ptr, texture, &texture);
+    return texture;
 }
 
-NSUInteger mglStoredColorComponentsForTexture(Texture *tex)
+size_t mglStoredColorComponentsForTexture(Texture *tex)
 {
     if (!tex) {
         return 4;
     }
-    return (NSUInteger)mglRenderCppStoredColorComponents(
+    return (size_t)mglRenderCppStoredColorComponents(
         (uint32_t)tex->internalformat);
 }
 
-MTLTextureSwizzle mglMTLSwizzleForGLSwizzle(Texture *tex, GLenum swizzle)
+uint32_t mglMTLSwizzleForGLSwizzle(Texture *tex, GLenum swizzle)
 {
-    NSUInteger components = mglStoredColorComponentsForTexture(tex);
-    return (MTLTextureSwizzle)mglRenderCppMTLSwizzleForGLSwizzle(
+    size_t components = mglStoredColorComponentsForTexture(tex);
+    return mglRenderCppMTLSwizzleForGLSwizzle(
         (uint32_t)swizzle, (uint32_t)components);
 }
 
@@ -248,11 +87,11 @@ uint8_t mglResolveR8SwizzledComponent(Texture *tex, GLenum swizzle, uint8_t red)
 
 uint8_t *mglCreateSingleChannelSwizzledUpload(Texture *tex,
                                               const uint8_t *srcData,
-                                              NSUInteger width,
-                                              NSUInteger height,
-                                              NSUInteger srcBytesPerRow,
-                                              NSUInteger *outBytesPerRow,
-                                              NSUInteger *outBytesPerImage)
+                                              size_t width,
+                                              size_t height,
+                                              size_t srcBytesPerRow,
+                                              size_t *outBytesPerRow,
+                                              size_t *outBytesPerImage)
 {
     if (!tex || !srcData || width == 0 || height == 0 || !outBytesPerRow || !outBytesPerImage) {
         return NULL;
@@ -271,8 +110,8 @@ uint8_t *mglCreateSingleChannelSwizzledUpload(Texture *tex,
         srcData, (size_t)width, (size_t)height, (size_t)srcBytesPerRow,
         &outBPR, &outBPI);
     if (result) {
-        *outBytesPerRow = (NSUInteger)outBPR;
-        *outBytesPerImage = (NSUInteger)outBPI;
+        *outBytesPerRow = outBPR;
+        *outBytesPerImage = outBPI;
     }
     return result;
 }
@@ -292,13 +131,13 @@ bool mglTextureNeedsChannelExpansion(GLenum internalformat,
 }
 
 uint8_t *mglCreateChannelExpandedUpload(Texture *tex,
-                                        MTLPixelFormat pixelFormat,
+                                        uint32_t pixelFormat,
                                         const uint8_t *srcData,
-                                        NSUInteger width,
-                                        NSUInteger height,
-                                        NSUInteger srcBytesPerRow,
-                                        NSUInteger *outBytesPerRow,
-                                        NSUInteger *outBytesPerImage)
+                                        size_t width,
+                                        size_t height,
+                                        size_t srcBytesPerRow,
+                                        size_t *outBytesPerRow,
+                                        size_t *outBytesPerImage)
 {
     if (!tex || !srcData || width == 0 || height == 0 ||
         srcBytesPerRow == 0 || !outBytesPerRow || !outBytesPerImage ||
@@ -317,23 +156,23 @@ uint8_t *mglCreateChannelExpandedUpload(Texture *tex,
         srcData, (size_t)width, (size_t)height, (size_t)srcBytesPerRow,
         &outBPR, &outBPI);
     if (result) {
-        *outBytesPerRow = (NSUInteger)outBPR;
-        *outBytesPerImage = (NSUInteger)outBPI;
+        *outBytesPerRow = outBPR;
+        *outBytesPerImage = outBPI;
     }
     return result;
 }
 
 uint8_t *mglCreateRGBA8ExpandedUpload(Texture *tex,
                                       const uint8_t *srcData,
-                                      NSUInteger width,
-                                      NSUInteger height,
-                                      NSUInteger srcBytesPerRow,
-                                      NSUInteger *outBytesPerRow,
-                                      NSUInteger *outBytesPerImage)
+                                      size_t width,
+                                      size_t height,
+                                      size_t srcBytesPerRow,
+                                      size_t *outBytesPerRow,
+                                      size_t *outBytesPerImage)
 {
     if (!tex || !srcData || width == 0 || height == 0 ||
         srcBytesPerRow == 0 || !outBytesPerRow || !outBytesPerImage ||
-        !mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, MTLPixelFormatRGBA8Unorm)) {
+        !mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, 70u)) {
         return NULL;
     }
 
@@ -348,25 +187,23 @@ uint8_t *mglCreateRGBA8ExpandedUpload(Texture *tex,
 
 /* === Layer pixel format helpers === */
 
-BOOL mglMetalLayerPixelFormatIsSupported(MTLPixelFormat pixelFormat)
+bool mglMetalLayerPixelFormatIsSupported(uint32_t pixelFormat)
 {
-    return mglRenderCppMetalLayerPixelFormatIsSupported((uint32_t)pixelFormat)
-        ? YES : NO;
+    return mglRenderCppMetalLayerPixelFormatIsSupported(pixelFormat) != 0;
 }
 
-MTLPixelFormat mglSRGBPixelFormat(MTLPixelFormat fmt)
+uint32_t mglSRGBPixelFormat(uint32_t fmt)
 {
-    return (MTLPixelFormat)mglRenderCppSRGBPixelFormat((uint32_t)fmt);
+    return mglRenderCppSRGBPixelFormat(fmt);
 }
 
-MTLPixelFormat mglLinearPixelFormat(MTLPixelFormat fmt)
+uint32_t mglLinearPixelFormat(uint32_t fmt)
 {
-    return (MTLPixelFormat)mglRenderCppLinearPixelFormat((uint32_t)fmt);
+    return mglRenderCppLinearPixelFormat(fmt);
 }
 
-MTLPixelFormat mglEffectiveMTLPixelFormatForTexture(MTLPixelFormat fmt, Texture *tex)
+uint32_t mglEffectiveMTLPixelFormatForTexture(uint32_t fmt, Texture *tex)
 {
     uint32_t decode = tex ? (uint32_t)tex->params.srgb_decode_ext : 0u;
-    return (MTLPixelFormat)mglRenderCppEffectiveMTLPixelFormat(
-        (uint32_t)fmt, decode);
+    return mglRenderCppEffectiveMTLPixelFormat(fmt, decode);
 }

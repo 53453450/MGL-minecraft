@@ -43,6 +43,11 @@ typedef enum MGLRendererBackendDefaultDrawBufferAttachmentKind {
     MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_STENCIL = 2,
 } MGLRendererBackendDefaultDrawBufferAttachmentKind;
 
+typedef enum MGLRendererBackendSizeConstantsStage {
+    MGL_RENDERER_BACKEND_SIZE_CONSTANTS_VERTEX = 0,
+    MGL_RENDERER_BACKEND_SIZE_CONSTANTS_FRAGMENT = 1,
+} MGLRendererBackendSizeConstantsStage;
+
 typedef enum MGLRendererBackendFallbackResourceKind {
     MGL_RENDERER_BACKEND_FALLBACK_SAMPLED_TEXTURE = 0,
     MGL_RENDERER_BACKEND_FALLBACK_CUBE_SAMPLED_TEXTURE = 1,
@@ -86,6 +91,11 @@ int mglRendererBackendSetFallbackRenderTargetTexture(
 /* Texture getters return borrowed references owned by the backend. */
 void *mglRendererBackendGetFallbackRenderTargetTexture(
     const MGLRendererBackendHandle *backend);
+/* Shared fallback buffers are borrowed references owned by the backend. */
+void *mglRendererBackendGetFallbackBindingBuffer(
+    MGLRendererBackendHandle *backend, uint64_t minimum_length);
+void *mglRendererBackendGetCullDistanceDummyBuffer(
+    MGLRendererBackendHandle *backend);
 int mglRendererBackendSetTransientDepthTexture(
     MGLRendererBackendHandle *backend, void *texture,
     uint64_t width, uint64_t height);
@@ -119,6 +129,15 @@ void *mglRendererBackendGetCurrentAttribBuffer(
 int mglRendererBackendSetCurrentAttribBuffer(
     MGLRendererBackendHandle *backend, uint32_t attrib,
     const void *bytes, uint32_t byte_count, uint64_t stride, void *buffer);
+/* Size-constant cache getters return borrowed buffers owned by the backend. */
+void *mglRendererBackendGetSizeConstantsBuffer(
+    const MGLRendererBackendHandle *backend,
+    MGLRendererBackendSizeConstantsStage stage,
+    const uint32_t *constants, uint32_t count);
+int mglRendererBackendSetSizeConstantsBuffer(
+    MGLRendererBackendHandle *backend,
+    MGLRendererBackendSizeConstantsStage stage,
+    const uint32_t *constants, uint32_t count, void *buffer);
 int mglRendererBackendSetBlitCachedObject(
     MGLRendererBackendHandle *backend,
     MGLRendererBackendBlitCacheKind kind, void *object);
@@ -202,6 +221,9 @@ int mglRendererBackendPutFallbackSampledTexture(
     uint64_t key, void *texture);
 int mglRendererBackendRetainProactiveTexture(
     MGLRendererBackendHandle *backend, void *texture);
+/* Create, upload, and retain the initialization texture entirely in C++. */
+int mglRendererBackendCreateProactiveTexture(
+    MGLRendererBackendHandle *backend);
 int mglRendererBackendIsDestroying(
     const MGLRendererBackendHandle *backend);
 void *mglRendererBackendGetOwner(const MGLRendererBackendHandle *backend,

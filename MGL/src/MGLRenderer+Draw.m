@@ -18,7 +18,7 @@ static void *mglDrawEncoderTraceToken(void *owner)
 }
 
 static void mglDrawPrimitives(void *renderEncoderOwner,
-                              MTLPrimitiveType primitiveType,
+                              uint32_t primitiveType,
                               NSUInteger vertexStart,
                               NSUInteger vertexCount,
                               NSUInteger instanceCount,
@@ -37,10 +37,10 @@ static void mglDrawPrimitives(void *renderEncoderOwner,
 }
 
 static void mglDrawIndexedPrimitives(void *renderEncoderOwner,
-                                     MTLPrimitiveType primitiveType,
+                                     uint32_t primitiveType,
                                      NSUInteger indexCount,
-                                     MTLIndexType indexType,
-                                     MGLMetalBufferRef indexBuffer,
+                                     uint64_t indexType,
+                                     id indexBuffer,
                                      NSUInteger indexBufferOffset,
                                      NSUInteger instanceCount,
                                      NSInteger baseVertex,
@@ -62,8 +62,8 @@ static void mglDrawIndexedPrimitives(void *renderEncoderOwner,
 }
 
 static void mglDrawPrimitivesIndirect(void *renderEncoderOwner,
-                                      MTLPrimitiveType primitiveType,
-                                      MGLMetalBufferRef indirectBuffer,
+                                      uint32_t primitiveType,
+                                      id indirectBuffer,
                                       NSUInteger indirectBufferOffset)
 {
     const MGLRenderCppDrawPlan plan = {
@@ -78,11 +78,11 @@ static void mglDrawPrimitivesIndirect(void *renderEncoderOwner,
 
 static void mglDrawIndexedPrimitivesIndirect(
     void *renderEncoderOwner,
-    MTLPrimitiveType primitiveType,
-    MTLIndexType indexType,
-    MGLMetalBufferRef indexBuffer,
+    uint32_t primitiveType,
+    uint64_t indexType,
+    id indexBuffer,
     NSUInteger indexBufferOffset,
-    MGLMetalBufferRef indirectBuffer,
+    id indirectBuffer,
     NSUInteger indirectBufferOffset)
 {
     const MGLRenderCppDrawPlan plan = {
@@ -392,7 +392,7 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
                         &s_drawArraysLastCallCount,
                         0.25);
 
-    MTLPrimitiveType primitiveType;
+    uint32_t primitiveType;
     static uint64_t process_state_fail_count = 0;
     static uint64_t no_render_encoder_count = 0;
 
@@ -523,24 +523,40 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
 
         // Guard against Metal validation aborts when emergency-rebinding pipeline after
         // encoder recovery. Only bind when pass attachment formats are compatible.
-        MTLPixelFormat rpColor0Format = MTLPixelFormatInvalid;
-        MTLPixelFormat rpDepthFormat = MTLPixelFormatInvalid;
-        MTLPixelFormat rpStencilFormat = MTLPixelFormatInvalid;
-        MGLMetalTextureRef rpColor0 = mglRenderPassAttachmentTextureForState(
+        uint32_t rpColor0Format = 0u;
+        uint32_t rpDepthFormat = 0u;
+        uint32_t rpStencilFormat = 0u;
+        MGLRenderCppRenderPassAttachmentState colorAttachment = {0};
+        MGLRenderCppRenderPassAttachmentState depthAttachment = {0};
+        MGLRenderCppRenderPassAttachmentState stencilAttachment = {0};
+        (void)mglRenderCppGetRenderPassAttachmentStateOwner(
             _renderPassManager.state->renderPassStateOwner,
-            MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0);
-        MGLMetalTextureRef rpDepth = mglRenderPassAttachmentTextureForState(
+            MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0, &colorAttachment);
+        (void)mglRenderCppGetRenderPassAttachmentStateOwner(
             _renderPassManager.state->renderPassStateOwner,
-            MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0);
-        MGLMetalTextureRef rpStencil = mglRenderPassAttachmentTextureForState(
+            MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0, &depthAttachment);
+        (void)mglRenderCppGetRenderPassAttachmentStateOwner(
             _renderPassManager.state->renderPassStateOwner,
-            MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0);
-        if (rpColor0) rpColor0Format = rpColor0.pixelFormat;
-        if (rpDepth) rpDepthFormat = rpDepth.pixelFormat;
-        if (rpStencil) rpStencilFormat = rpStencil.pixelFormat;
+            MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0, &stencilAttachment);
+        id rpColor0 = (__bridge id)colorAttachment.texture;
+        id rpDepth = (__bridge id)depthAttachment.texture;
+        id rpStencil = (__bridge id)stencilAttachment.texture;
+        MGLRenderCppTextureInfo textureInfo = {0};
+        if (rpColor0 && mglRenderCppGetTextureInfo(
+                (__bridge void *)rpColor0, &textureInfo) == 0) {
+            rpColor0Format = textureInfo.pixel_format;
+        }
+        if (rpDepth && mglRenderCppGetTextureInfo(
+                (__bridge void *)rpDepth, &textureInfo) == 0) {
+            rpDepthFormat = textureInfo.pixel_format;
+        }
+        if (rpStencil && mglRenderCppGetTextureInfo(
+                (__bridge void *)rpStencil, &textureInfo) == 0) {
+            rpStencilFormat = textureInfo.pixel_format;
+        }
 
-        BOOL colorMismatch = (_pipelineCache.state->pipelineColor0Format != MTLPixelFormatInvalid &&
-                              rpColor0Format != MTLPixelFormatInvalid &&
+        BOOL colorMismatch = (_pipelineCache.state->pipelineColor0Format != 0u &&
+                              rpColor0Format != 0u &&
                               _pipelineCache.state->pipelineColor0Format != rpColor0Format);
         BOOL depthMismatch = (_pipelineCache.state->pipelineDepthFormat != rpDepthFormat);
         BOOL stencilMismatch = (_pipelineCache.state->pipelineStencilFormat != rpStencilFormat);
@@ -570,13 +586,13 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
         @try {
             if (mglRenderCppSetRenderPipelineStateForOwner(
                     _renderPassManager.state->currentRenderEncoderOwner,
-                    (__bridge void *)_pipelineCache.state->pipelineState) != 0) {
+                    _pipelineCache.state->pipelineState) != 0) {
                 NSLog(@"MGL ERROR: mtlDrawArrays - C++ pipeline recovery setter failed");
                 return;
             }
             mglRenderCppBindingSetPipelineState(
                 _bindingStateOwner,
-                (__bridge void *)_pipelineCache.state->pipelineState);
+                _pipelineCache.state->pipelineState);
             MGL_PERF_INC(g_mglSetRenderPipelineStateCallsSinceSwap);
         } @catch (NSException *exception) {
             NSLog(@"MGL ERROR: mtlDrawArrays - setRenderPipelineState failed after recovery: %@", exception);
@@ -650,7 +666,7 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
         }
 
         NSUInteger fanIndexCount = 0u;
-        MGLMetalBufferRef fanIndexBuffer = mglNewTriangleFanArrayIndexBuffer(_device,
+        id fanIndexBuffer = mglNewTriangleFanArrayIndexBuffer(_device,
                                                                          (NSUInteger)count,
                                                                          &fanIndexCount);
         if (!fanIndexBuffer || fanIndexCount == 0u) {
@@ -685,14 +701,14 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
                                          explicitVertexCount:3u
                                               encodeContext:&encCtx];
                     mglDrawIndexedPrimitives(
-                        encCtx.render_encoder_owner, MTLPrimitiveTypeTriangle, 3u,
-                        MTLIndexTypeUInt32, fanIndexBuffer,
+                        encCtx.render_encoder_owner, MGL_DRAW_PRIMITIVE_TRIANGLE, 3u,
+                        MGL_DRAW_INDEX_UINT32, fanIndexBuffer,
                         primitive * 3u * sizeof(uint32_t), 1, first, 0);
                 }
             } else {
                 mglDrawIndexedPrimitives(
                     _renderPassManager.state->currentRenderEncoderOwner,
-                    MTLPrimitiveTypeTriangle, fanIndexCount, MTLIndexTypeUInt32,
+                    MGL_DRAW_PRIMITIVE_TRIANGLE, fanIndexCount, MGL_DRAW_INDEX_UINT32,
                     fanIndexBuffer, 0, 1, first, 0);
             }
         } @catch (NSException *exception) {
@@ -715,7 +731,7 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
         }
 
         NSUInteger loopIndexCount = 0u;
-        MGLMetalBufferRef loopIndexBuffer = mglNewLineLoopArrayIndexBuffer(_device,
+        id loopIndexBuffer = mglNewLineLoopArrayIndexBuffer(_device,
                                                                        (NSUInteger)first,
                                                                        (NSUInteger)count,
                                                                        &loopIndexCount);
@@ -750,15 +766,15 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
                                          explicitVertexCount:2u
                                               encodeContext:&encCtx];
                     mglDrawIndexedPrimitives(
-                        encCtx.render_encoder_owner, MTLPrimitiveTypeLine, 2u,
-                        MTLIndexTypeUInt32, loopIndexBuffer,
+                        encCtx.render_encoder_owner, MGL_DRAW_PRIMITIVE_LINE, 2u,
+                        MGL_DRAW_INDEX_UINT32, loopIndexBuffer,
                         primitive * sizeof(uint32_t), 1, 0, 0);
                 }
             } else {
                 mglDrawIndexedPrimitives(
                     _renderPassManager.state->currentRenderEncoderOwner,
-                    MTLPrimitiveTypeLineStrip, loopIndexCount,
-                    MTLIndexTypeUInt32, loopIndexBuffer, 0, 1, 0, 0);
+                    MGL_DRAW_PRIMITIVE_LINE_STRIP, loopIndexCount,
+                    MGL_DRAW_INDEX_UINT32, loopIndexBuffer, 0, 1, 0, 0);
             }
         } @catch (NSException *exception) {
             NSLog(@"MGL ERROR: mtlDrawArrays line loop indexed draw failed: %@", exception);
@@ -797,7 +813,7 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
             return;
         }
     } else {
-        primitiveType = getMTLPrimitiveType(mode);
+        primitiveType = mglPrimitiveTypeForGLMode(mode);
         if ((GLuint)primitiveType == 0xFFFFFFFF) {
             NSLog(@"MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call", mode);
             if (traceLogDraw) {
@@ -836,7 +852,7 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
                     _pipelineCache.state->pipelineState);
         if (usesCullDistance && mode == GL_TRIANGLE_STRIP && count >= 3) {
             NSUInteger stripIndexCount = 0u;
-            MGLMetalBufferRef stripIndexBuffer =
+            id stripIndexBuffer =
                 mglNewTriangleStripArrayIndexBuffer(
                     _device, (NSUInteger)count, &stripIndexCount);
             if (!stripIndexBuffer || stripIndexCount == 0u) {
@@ -861,8 +877,8 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
                                      explicitVertexCount:3u
                                           encodeContext:&encCtx];
                 mglDrawIndexedPrimitives(
-                    encCtx.render_encoder_owner, MTLPrimitiveTypeTriangle, 3u,
-                    MTLIndexTypeUInt32, stripIndexBuffer,
+                    encCtx.render_encoder_owner, MGL_DRAW_PRIMITIVE_TRIANGLE, 3u,
+                    MGL_DRAW_INDEX_UINT32, stripIndexBuffer,
                     primitive * 3u * sizeof(uint32_t), 1, first, 0);
             }
         } else if (usesCullDistance && mode == GL_LINE_STRIP && count >= 2) {
@@ -875,7 +891,7 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
                                        explicitVertices:NULL
                                      explicitVertexCount:0u
                                           encodeContext:&encCtx];
-                mglDrawPrimitives(encCtx.render_encoder_owner, MTLPrimitiveTypeLine,
+                mglDrawPrimitives(encCtx.render_encoder_owner, MGL_DRAW_PRIMITIVE_LINE,
                                   first + primitive, 2u, 1u, 0u);
             }
         } else {
@@ -946,8 +962,8 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
                         &s_drawElementsLastCallCount,
                         0.25);
 
-    MTLPrimitiveType primitiveType;
-    MTLIndexType indexType;
+    uint32_t primitiveType;
+    uint64_t indexType;
     GLuint activeProgramName = ctx ? mglCurrentRenderProgramKey(ctx) : 0u;
     Program *drawProgram = NULL;
     Program *drawVertexProgram = NULL;
@@ -1091,7 +1107,7 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
     BOOL emulateTriangleFan = (mode == GL_TRIANGLE_FAN && !polygonModePoint);
     BOOL emulateLineLoop = (mode == GL_LINE_LOOP);
     BOOL emulateQuads = (mode == GL_QUADS && !polygonModePoint);
-    primitiveType = polygonModePoint ? MTLPrimitiveTypePoint : (emulateTriangleFan ? MTLPrimitiveTypeTriangle : (emulateLineLoop ? MTLPrimitiveTypeLineStrip : (emulateQuads ? MTLPrimitiveTypeTriangle : getMTLPrimitiveType(mode))));
+    primitiveType = polygonModePoint ? MGL_DRAW_PRIMITIVE_POINT : (emulateTriangleFan ? MGL_DRAW_PRIMITIVE_TRIANGLE : (emulateLineLoop ? MGL_DRAW_PRIMITIVE_LINE_STRIP : (emulateQuads ? MGL_DRAW_PRIMITIVE_TRIANGLE : mglPrimitiveTypeForGLMode(mode))));
     if ((GLuint)primitiveType == 0xFFFFFFFF) {
         NSLog(@"MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call", mode);
         if (traceLogDraw) {
@@ -1103,7 +1119,7 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
         return;
     }
 
-    indexType = getMTLIndexType(type);
+    indexType = mglIndexTypeForGLType(type);
     if ((GLuint)indexType == 0xFFFFFFFF) {
         NSLog(@"MGL WARNING: Unsupported index type=0x%x, skipping draw call", type);
         if (traceLogDraw) {
@@ -1153,7 +1169,7 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
         return;
     }
 
-    id <MTLBuffer>indexBuffer = (__bridge MGLMetalBufferRef)(gl_element_buffer->data.mtl_data);
+    id indexBuffer = (__bridge id)(gl_element_buffer->data.mtl_data);
     if (!indexBuffer) {
         NSLog(@"MGL WARNING: drawElements call=%llu element buffer bridge failed for gl=%u",
               (unsigned long long)drawCall, gl_element_buffer->name);
@@ -1165,6 +1181,16 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
         }
         return;
     }
+    MGLRenderCppBufferInfo indexBufferInfo = {0};
+    if (mglRenderCppGetBufferInfo((__bridge void *)indexBuffer,
+                                  &indexBufferInfo) != 0) {
+        return;
+    }
+    void *indexBufferContents = NULL;
+    uint64_t indexBufferContentsLength = 0;
+    (void)mglRenderCppGetBufferContents(
+        (__bridge void *)indexBuffer, &indexBufferContents,
+        &indexBufferContentsLength);
 
     NSUInteger indexStride = mglGLIndexElementSize(type);
     if (indexStride == 0u) {
@@ -1189,7 +1215,7 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
               (int)count,
               (unsigned)type,
               gl_element_buffer->name,
-              (unsigned long)indexBuffer.length,
+              (unsigned long)indexBufferInfo.length,
               (unsigned)activeProgramName);
         MGL_FRAME_INC(g_mglDrawElementsSkippedSinceSwap);
         if (traceLogDraw) {
@@ -1218,13 +1244,14 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
         return;
     }
     indexBytesNeeded = (NSUInteger)count * indexStride;
-    if (indexOffset > indexBuffer.length || (indexBuffer.length - indexOffset) < indexBytesNeeded) {
+    if (indexOffset > indexBufferInfo.length ||
+        (indexBufferInfo.length - indexOffset) < indexBytesNeeded) {
         NSLog(@"MGL ERROR: drawElements call=%llu index range OOB gl=%u offset=%lu needed=%lu len=%lu type=0x%x count=%d",
               (unsigned long long)drawCall,
               gl_element_buffer->name,
               (unsigned long)indexOffset,
               (unsigned long)indexBytesNeeded,
-              (unsigned long)indexBuffer.length,
+              (unsigned long)indexBufferInfo.length,
               (unsigned)type,
               (int)count);
         if (traceLogDraw) {
@@ -1234,7 +1261,7 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
                         (unsigned)gl_element_buffer->name,
                         (unsigned long)indexOffset,
                         (unsigned long)indexBytesNeeded,
-                        (unsigned long)indexBuffer.length);
+                        (unsigned long)indexBufferInfo.length);
         }
         return;
     }
@@ -1243,8 +1270,8 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
     if (gl_element_buffer->data.buffer_data &&
         ((uintptr_t)gl_element_buffer->data.buffer_data >= 0x1000ull)) {
         indexBytesForValidation = (const uint8_t *)gl_element_buffer->data.buffer_data;
-    } else if (indexBuffer.contents) {
-        indexBytesForValidation = (const uint8_t *)indexBuffer.contents;
+    } else if (indexBufferContents) {
+        indexBytesForValidation = (const uint8_t *)indexBufferContents;
     }
 
     uint32_t minIndexForDraw = 0u;
@@ -1304,7 +1331,7 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
                     (unsigned long)indexOffset,
                     (unsigned long)indexStride,
                     (unsigned long)indexBytesNeeded,
-                    (unsigned long)indexBuffer.length,
+                    (unsigned long)indexBufferInfo.length,
                     haveIndexRange ? 1 : 0,
                     (unsigned)minIndexForDraw,
                     (unsigned)maxIndexForDraw,
@@ -1411,7 +1438,7 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
               (unsigned long long)drawCall,
               drawElapsedUs,
               gl_element_buffer->name,
-              (unsigned long)indexBuffer.length,
+              (unsigned long)indexBufferInfo.length,
               mglDrawEncoderTraceToken(
                   _renderPassManager.state->currentRenderEncoderOwner));
     }
@@ -1574,7 +1601,7 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
                       (unsigned long long)maxEnd);
                 return NO;
             }
-            MGLMetalBufferRef attribMetalBuffer = (__bridge MGLMetalBufferRef)(vbo->data.mtl_data);
+            id attribMetalBuffer = (__bridge id)(vbo->data.mtl_data);
             if (!attribMetalBuffer) {
                 NSLog(@"MGL VBORANGE BLOCK drawElements call=%llu attrib=%u buffer=%u Metal bridge failed",
                       (unsigned long long)drawCall,
@@ -1583,7 +1610,13 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
                 return NO;
             }
 
-            uint64_t metalLen = (uint64_t)attribMetalBuffer.length;
+            MGLRenderCppBufferInfo attribBufferInfo = {0};
+            if (mglRenderCppGetBufferInfo(
+                    (__bridge void *)attribMetalBuffer,
+                    &attribBufferInfo) != 0) {
+                return NO;
+            }
+            uint64_t metalLen = attribBufferInfo.length;
             if (maxEnd > metalLen) {
                 NSLog(@"MGL VBORANGE BLOCK drawElements call=%llu attrib=%u buffer=%u indexRange=[%u,%u] byteRange=[%llu,%llu) exceeds metalLen=%llu vboSize=%llu stride=%llu bindingOffset=%llu relOffset=%llu elemBytes=%llu divisor=%u",
                       (unsigned long long)drawCall,
@@ -1634,7 +1667,7 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
                   drawVertexProgram:(Program *)drawVertexProgram
                 drawFragmentProgram:(Program *)drawFragmentProgram
                    glElementBuffer:(Buffer *)gl_element_buffer
-                        indexBuffer:(MGLMetalBufferRef)indexBuffer
+                        indexBuffer:(id)indexBuffer
                         indexOffset:(NSUInteger)indexOffset
                         indexStride:(NSUInteger)indexStride
                     indexBytesNeeded:(NSUInteger)indexBytesNeeded
@@ -1647,6 +1680,16 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
                          traceDraw:(bool)traceDraw
                       traceLogDraw:(BOOL)traceLogDraw
 {
+    MGLRenderCppBufferInfo indexBufferInfo = {0};
+    if (mglRenderCppGetBufferInfo((__bridge void *)indexBuffer,
+                                  &indexBufferInfo) != 0) {
+        return;
+    }
+    void *indexBufferContents = NULL;
+    uint64_t indexBufferContentsLength = 0;
+    (void)mglRenderCppGetBufferContents(
+        (__bridge void *)indexBuffer, &indexBufferContents,
+        &indexBufferContentsLength);
     if (traceDraw || indexOffset != 0u) {
         mglTraceLogNSString(@"MGL TRACE drawElements.indices call=%llu gl=%u offset=%lu stride=%lu needed=%lu len=%lu",
               (unsigned long long)drawCall,
@@ -1654,7 +1697,7 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
               (unsigned long)indexOffset,
               (unsigned long)indexStride,
               (unsigned long)indexBytesNeeded,
-              (unsigned long)indexBuffer.length);
+              (unsigned long)indexBufferInfo.length);
     }
 
     /* CloudFaces is a texel-buffer hot path; without a rate limit the
@@ -1686,10 +1729,10 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
         }
 
         if (ctx) {
-            MTLTriangleFillMode loggedTriangleFillMode =
+            uint32_t loggedTriangleFillMode =
                 (mglDrawModeProducesPolygons(mode) && MGL_STATE(ctx)->var.polygon_mode == GL_LINE)
-                    ? MTLTriangleFillModeLines
-                    : MTLTriangleFillModeFill;
+                    ? 1u
+                    : 0u;
             mglTraceLogNSString(@"MGL TRACE drawElements.state call=%llu program=%u mode=0x%x polygonMode=0x%x triFill=%lu colorMask(use=%d rgba=%d%d%d%d) depth(write=%d test=%d) blend=%d cull=%d viewport=%d,%d,%d,%d",
                   (unsigned long long)drawCall,
                   (unsigned)activeProgramName,
@@ -1715,8 +1758,8 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
         if (gl_element_buffer->data.buffer_data &&
             ((uintptr_t)gl_element_buffer->data.buffer_data >= 0x1000ull)) {
             indexBytes = (const uint8_t *)gl_element_buffer->data.buffer_data;
-        } else if (indexBuffer.contents) {
-            indexBytes = (const uint8_t *)indexBuffer.contents;
+        } else if (indexBufferContents) {
+            indexBytes = (const uint8_t *)indexBufferContents;
         }
 
         if (indexBytes) {
@@ -1793,8 +1836,14 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
                     if (vbo->data.buffer_data && ((uintptr_t)vbo->data.buffer_data >= 0x1000ull)) {
                         vboBytes = (const uint8_t *)vbo->data.buffer_data;
                     } else if (vbo->data.mtl_data) {
-                        MGLMetalBufferRef vb = (__bridge MGLMetalBufferRef)(vbo->data.mtl_data);
-                        vboBytes = (const uint8_t *)vb.contents;
+                        id vb = (__bridge id)(vbo->data.mtl_data);
+                        void *vbContents = NULL;
+                        uint64_t vbLength = 0;
+                        if (mglRenderCppGetBufferContents(
+                                (__bridge void *)vb, &vbContents,
+                                &vbLength) == 0) {
+                            vboBytes = (const uint8_t *)vbContents;
+                        }
                     }
 
                     if (vboBytes &&
@@ -1922,7 +1971,7 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
               (unsigned long)indexOffset,
               (unsigned long)indexStride,
               (unsigned long)indexBytesNeeded,
-              (unsigned long)indexBuffer.length,
+              (unsigned long)indexBufferInfo.length,
               haveIndexRange ? 1 : 0,
               (unsigned)minIndexForDraw,
               (unsigned)maxIndexForDraw,
@@ -1937,11 +1986,11 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
 - (BOOL)encodeDrawElementsPrimitive:(uint64_t)drawCall
                           activeProgramName:(GLuint)activeProgramName
                           glElementBuffer:(Buffer *)gl_element_buffer
-                               indexBuffer:(MGLMetalBufferRef)indexBuffer
+                               indexBuffer:(id)indexBuffer
                                      mode:(GLenum)mode
-                            primitiveType:(MTLPrimitiveType)primitiveType
+                            primitiveType:(uint32_t)primitiveType
                                     type:(GLenum)type
-                               indexType:(MTLIndexType)indexType
+                               indexType:(uint64_t)indexType
                              indexOffset:(NSUInteger)indexOffset
                                    count:(GLsizei)count
                    indexBytesForValidation:(const uint8_t *)indexBytesForValidation
@@ -2033,7 +2082,7 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
 
             const uint8_t *fanSource = indexBytesForValidation ? (indexBytesForValidation + indexOffset) : NULL;
             NSUInteger fanIndexCount = 0u;
-            MGLMetalBufferRef fanIndexBuffer = mglNewTriangleFanElementIndexBuffer(_device,
+            id fanIndexBuffer = mglNewTriangleFanElementIndexBuffer(_device,
                                                                                fanSource,
                                                                                type,
                                                                                (NSUInteger)count,
@@ -2057,7 +2106,7 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
 
             mglDrawIndexedPrimitives(
                 _renderPassManager.state->currentRenderEncoderOwner,
-                MTLPrimitiveTypeTriangle, fanIndexCount, MTLIndexTypeUInt32,
+                MGL_DRAW_PRIMITIVE_TRIANGLE, fanIndexCount, MGL_DRAW_INDEX_UINT32,
                 fanIndexBuffer, 0, 1, 0, 0);
         } else if (emulateLineLoop) {
             if (count < 2) {
@@ -2071,7 +2120,7 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
 
             const uint8_t *loopSource = indexBytesForValidation ? (indexBytesForValidation + indexOffset) : NULL;
             NSUInteger loopIndexCount = 0u;
-            MGLMetalBufferRef loopIndexBuffer = mglNewLineLoopElementIndexBuffer(_device,
+            id loopIndexBuffer = mglNewLineLoopElementIndexBuffer(_device,
                                                                              loopSource,
                                                                              type,
                                                                              (NSUInteger)count,
@@ -2095,8 +2144,8 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
 
             mglDrawIndexedPrimitives(
                 _renderPassManager.state->currentRenderEncoderOwner,
-                MTLPrimitiveTypeLineStrip, loopIndexCount,
-                MTLIndexTypeUInt32, loopIndexBuffer, 0, 1, 0, 0);
+                MGL_DRAW_PRIMITIVE_LINE_STRIP, loopIndexCount,
+                MGL_DRAW_INDEX_UINT32, loopIndexBuffer, 0, 1, 0, 0);
         } else if (emulateQuads) {
             if (!mglEncodeElementQuadsForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
                                        _device,
@@ -2121,8 +2170,8 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
             }
         } else {
             NSUInteger drawIndexOffset = indexOffset;
-            MTLIndexType drawIndexType = indexType;
-            MGLMetalBufferRef drawIndexBuffer = mglPreparedElementIndexBuffer(_device,
+            uint64_t drawIndexType = indexType;
+            id drawIndexBuffer = mglPreparedElementIndexBuffer(_device,
                                                                           gl_element_buffer,
                                                                           indexBuffer,
                                                                           type,
@@ -2161,8 +2210,8 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
 {
     self->_lastDrawPrimitiveMode = mode;
 
-    MTLPrimitiveType primitiveType;
-    MTLIndexType indexType;
+    uint32_t primitiveType;
+    uint64_t indexType;
     (void)start;
     (void)end;
 
@@ -2204,14 +2253,14 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
     BOOL emulateTriangleFan = (mode == GL_TRIANGLE_FAN && !polygonModePoint);
     BOOL emulateLineLoop = (mode == GL_LINE_LOOP);
     BOOL emulateQuads = (mode == GL_QUADS && !polygonModePoint);
-    primitiveType = polygonModePoint ? MTLPrimitiveTypePoint : (emulateTriangleFan ? MTLPrimitiveTypeTriangle : (emulateLineLoop ? MTLPrimitiveTypeLineStrip : (emulateQuads ? MTLPrimitiveTypeTriangle : getMTLPrimitiveType(mode))));
+    primitiveType = polygonModePoint ? MGL_DRAW_PRIMITIVE_POINT : (emulateTriangleFan ? MGL_DRAW_PRIMITIVE_TRIANGLE : (emulateLineLoop ? MGL_DRAW_PRIMITIVE_LINE_STRIP : (emulateQuads ? MGL_DRAW_PRIMITIVE_TRIANGLE : mglPrimitiveTypeForGLMode(mode))));
     if ((GLuint)primitiveType == 0xFFFFFFFF) { NSLog(@"MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call", mode); return; }
 
-    indexType = getMTLIndexType(type);
+    indexType = mglIndexTypeForGLType(type);
     if ((GLuint)indexType == 0xFFFFFFFF) { NSLog(@"MGL WARNING: Unsupported index type=0x%x, skipping draw call", type); return; }
 
     Buffer *gl_element_buffer = NULL;
-    MGLMetalBufferRef indexBuffer = nil;
+    id indexBuffer = nil;
     if (![self resolveElementBufferForDraw:"drawRangeElements" context:ctx glBuffer:&gl_element_buffer mtlBuffer:&indexBuffer])
         return;
 
@@ -2326,8 +2375,8 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
         return;
     }
 
-    MTLIndexType drawIndexType = indexType;
-    MGLMetalBufferRef drawIndexBuffer = mglPreparedElementIndexBuffer(_device,
+    uint64_t drawIndexType = indexType;
+    id drawIndexBuffer = mglPreparedElementIndexBuffer(_device,
                                                                   gl_element_buffer,
                                                                   indexBuffer,
                                                                   type,
@@ -2347,7 +2396,7 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
 {
     self->_lastDrawPrimitiveMode = mode;
 
-    MTLPrimitiveType primitiveType;
+    uint32_t primitiveType;
 
     if ([self handleTessellationPatchDrawIfNeeded:glm_ctx
                                              mode:&mode
@@ -2457,7 +2506,7 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
         return;
     }
 
-    primitiveType = mglPolygonModePointForDrawMode(ctx, mode) ? MTLPrimitiveTypePoint : getMTLPrimitiveType(mode);
+    primitiveType = mglPolygonModePointForDrawMode(ctx, mode) ? MGL_DRAW_PRIMITIVE_POINT : mglPrimitiveTypeForGLMode(mode);
     if ((GLuint)primitiveType == 0xFFFFFFFF) { NSLog(@"MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call", mode); return; }
 
     mglDrawPrimitives(_renderPassManager.state->currentRenderEncoderOwner,
@@ -2469,8 +2518,8 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
 {
     self->_lastDrawPrimitiveMode = mode;
 
-    MTLPrimitiveType primitiveType;
-    MTLIndexType indexType;
+    uint32_t primitiveType;
+    uint64_t indexType;
 
     if ([self handleTessellationPatchDrawIfNeeded:glm_ctx
                                              mode:&mode
@@ -2511,14 +2560,14 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
     BOOL emulateTriangleFan = (mode == GL_TRIANGLE_FAN && !polygonModePoint);
     BOOL emulateLineLoop = (mode == GL_LINE_LOOP);
     BOOL emulateQuads = (mode == GL_QUADS && !polygonModePoint);
-    primitiveType = polygonModePoint ? MTLPrimitiveTypePoint : (emulateTriangleFan ? MTLPrimitiveTypeTriangle : (emulateLineLoop ? MTLPrimitiveTypeLineStrip : (emulateQuads ? MTLPrimitiveTypeTriangle : getMTLPrimitiveType(mode))));
+    primitiveType = polygonModePoint ? MGL_DRAW_PRIMITIVE_POINT : (emulateTriangleFan ? MGL_DRAW_PRIMITIVE_TRIANGLE : (emulateLineLoop ? MGL_DRAW_PRIMITIVE_LINE_STRIP : (emulateQuads ? MGL_DRAW_PRIMITIVE_TRIANGLE : mglPrimitiveTypeForGLMode(mode))));
     if ((GLuint)primitiveType == 0xFFFFFFFF) { NSLog(@"MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call", mode); return; }
 
-    indexType = getMTLIndexType(type);
+    indexType = mglIndexTypeForGLType(type);
     if ((GLuint)indexType == 0xFFFFFFFF) { NSLog(@"MGL WARNING: Unsupported index type=0x%x, skipping draw call", type); return; }
 
     Buffer *gl_element_buffer = NULL;
-    MGLMetalBufferRef indexBuffer = nil;
+    id indexBuffer = nil;
     if (![self resolveElementBufferForDraw:"drawElementsInstanced" context:ctx glBuffer:&gl_element_buffer mtlBuffer:&indexBuffer])
         return;
 
@@ -2635,8 +2684,8 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
         return;
     }
 
-    MTLIndexType drawIndexType = indexType;
-    MGLMetalBufferRef drawIndexBuffer = mglPreparedElementIndexBuffer(_device,
+    uint64_t drawIndexType = indexType;
+    id drawIndexBuffer = mglPreparedElementIndexBuffer(_device,
                                                                   gl_element_buffer,
                                                                   indexBuffer,
                                                                   type,
@@ -2661,8 +2710,8 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
 {
     self->_lastDrawPrimitiveMode = mode;
 
-    MTLPrimitiveType primitiveType;
-    MTLIndexType indexType;
+    uint32_t primitiveType;
+    uint64_t indexType;
 
     if ([self handleTessellationPatchDrawIfNeeded:glm_ctx
                                              mode:&mode
@@ -2703,14 +2752,14 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
     BOOL emulateTriangleFan = (mode == GL_TRIANGLE_FAN && !polygonModePoint);
     BOOL emulateLineLoop = (mode == GL_LINE_LOOP);
     BOOL emulateQuads = (mode == GL_QUADS && !polygonModePoint);
-    primitiveType = polygonModePoint ? MTLPrimitiveTypePoint : (emulateTriangleFan ? MTLPrimitiveTypeTriangle : (emulateLineLoop ? MTLPrimitiveTypeLineStrip : (emulateQuads ? MTLPrimitiveTypeTriangle : getMTLPrimitiveType(mode))));
+    primitiveType = polygonModePoint ? MGL_DRAW_PRIMITIVE_POINT : (emulateTriangleFan ? MGL_DRAW_PRIMITIVE_TRIANGLE : (emulateLineLoop ? MGL_DRAW_PRIMITIVE_LINE_STRIP : (emulateQuads ? MGL_DRAW_PRIMITIVE_TRIANGLE : mglPrimitiveTypeForGLMode(mode))));
     if ((GLuint)primitiveType == 0xFFFFFFFF) { NSLog(@"MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call", mode); return; }
 
-    indexType = getMTLIndexType(type);
+    indexType = mglIndexTypeForGLType(type);
     if ((GLuint)indexType == 0xFFFFFFFF) { NSLog(@"MGL WARNING: Unsupported index type=0x%x, skipping draw call", type); return; }
 
     Buffer *gl_element_buffer = NULL;
-    MGLMetalBufferRef indexBuffer = nil;
+    id indexBuffer = nil;
     if (![self resolveElementBufferForDraw:"drawElementsBaseVertex" context:ctx glBuffer:&gl_element_buffer mtlBuffer:&indexBuffer])
         return;
 
@@ -2825,8 +2874,8 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
         return;
     }
 
-    MTLIndexType drawIndexType = indexType;
-    MGLMetalBufferRef drawIndexBuffer = mglPreparedElementIndexBuffer(_device,
+    uint64_t drawIndexType = indexType;
+    id drawIndexBuffer = mglPreparedElementIndexBuffer(_device,
                                                                   gl_element_buffer,
                                                                   indexBuffer,
                                                                   type,
@@ -2846,8 +2895,8 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
 {
     self->_lastDrawPrimitiveMode = mode;
 
-    MTLPrimitiveType primitiveType;
-    MTLIndexType indexType;
+    uint32_t primitiveType;
+    uint64_t indexType;
     (void)start;
     (void)end;
 
@@ -2890,14 +2939,14 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
     BOOL emulateTriangleFan = (mode == GL_TRIANGLE_FAN && !polygonModePoint);
     BOOL emulateLineLoop = (mode == GL_LINE_LOOP);
     BOOL emulateQuads = (mode == GL_QUADS && !polygonModePoint);
-    primitiveType = polygonModePoint ? MTLPrimitiveTypePoint : (emulateTriangleFan ? MTLPrimitiveTypeTriangle : (emulateLineLoop ? MTLPrimitiveTypeLineStrip : (emulateQuads ? MTLPrimitiveTypeTriangle : getMTLPrimitiveType(mode))));
+    primitiveType = polygonModePoint ? MGL_DRAW_PRIMITIVE_POINT : (emulateTriangleFan ? MGL_DRAW_PRIMITIVE_TRIANGLE : (emulateLineLoop ? MGL_DRAW_PRIMITIVE_LINE_STRIP : (emulateQuads ? MGL_DRAW_PRIMITIVE_TRIANGLE : mglPrimitiveTypeForGLMode(mode))));
     if ((GLuint)primitiveType == 0xFFFFFFFF) { NSLog(@"MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call", mode); return; }
 
-    indexType = getMTLIndexType(type);
+    indexType = mglIndexTypeForGLType(type);
     if ((GLuint)indexType == 0xFFFFFFFF) { NSLog(@"MGL WARNING: Unsupported index type=0x%x, skipping draw call", type); return; }
 
     Buffer *gl_element_buffer = NULL;
-    MGLMetalBufferRef indexBuffer = nil;
+    id indexBuffer = nil;
     if (![self resolveElementBufferForDraw:"drawRangeElementsBaseVertex" context:ctx glBuffer:&gl_element_buffer mtlBuffer:&indexBuffer])
         return;
 
@@ -3012,8 +3061,8 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
         return;
     }
 
-    MTLIndexType drawIndexType = indexType;
-    MGLMetalBufferRef drawIndexBuffer = mglPreparedElementIndexBuffer(_device,
+    uint64_t drawIndexType = indexType;
+    id drawIndexBuffer = mglPreparedElementIndexBuffer(_device,
                                                                   gl_element_buffer,
                                                                   indexBuffer,
                                                                   type,
@@ -3033,8 +3082,8 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
 {
     self->_lastDrawPrimitiveMode = mode;
 
-    MTLPrimitiveType primitiveType;
-    MTLIndexType indexType;
+    uint32_t primitiveType;
+    uint64_t indexType;
 
     if (count <= (GLuint)INT_MAX &&
         [self handleTessellationPatchDrawIfNeeded:glm_ctx
@@ -3076,14 +3125,14 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
     BOOL emulateTriangleFan = (mode == GL_TRIANGLE_FAN && !polygonModePoint);
     BOOL emulateLineLoop = (mode == GL_LINE_LOOP);
     BOOL emulateQuads = (mode == GL_QUADS && !polygonModePoint);
-    primitiveType = polygonModePoint ? MTLPrimitiveTypePoint : (emulateTriangleFan ? MTLPrimitiveTypeTriangle : (emulateLineLoop ? MTLPrimitiveTypeLineStrip : (emulateQuads ? MTLPrimitiveTypeTriangle : getMTLPrimitiveType(mode))));
+    primitiveType = polygonModePoint ? MGL_DRAW_PRIMITIVE_POINT : (emulateTriangleFan ? MGL_DRAW_PRIMITIVE_TRIANGLE : (emulateLineLoop ? MGL_DRAW_PRIMITIVE_LINE_STRIP : (emulateQuads ? MGL_DRAW_PRIMITIVE_TRIANGLE : mglPrimitiveTypeForGLMode(mode))));
     if ((GLuint)primitiveType == 0xFFFFFFFF) { NSLog(@"MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call", mode); return; }
 
-    indexType = getMTLIndexType(type);
+    indexType = mglIndexTypeForGLType(type);
     if ((GLuint)indexType == 0xFFFFFFFF) { NSLog(@"MGL WARNING: Unsupported index type=0x%x, skipping draw call", type); return; }
 
     Buffer *gl_element_buffer = NULL;
-    MGLMetalBufferRef indexBuffer = nil;
+    id indexBuffer = nil;
     if (![self resolveElementBufferForDraw:"drawElementsInstancedBaseVertex" context:ctx glBuffer:&gl_element_buffer mtlBuffer:&indexBuffer])
         return;
 
@@ -3200,8 +3249,8 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
         return;
     }
 
-    MTLIndexType drawIndexType = indexType;
-    MGLMetalBufferRef drawIndexBuffer = mglPreparedElementIndexBuffer(_device,
+    uint64_t drawIndexType = indexType;
+    id drawIndexBuffer = mglPreparedElementIndexBuffer(_device,
                                                                   gl_element_buffer,
                                                                   indexBuffer,
                                                                   type,
@@ -3222,7 +3271,7 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
 {
     self->_lastDrawPrimitiveMode = mode;
 
-    MTLPrimitiveType primitiveType;
+    uint32_t primitiveType;
 
     mglTraceLog("DRAW_ARRAYS_INDIRECT_MTL_ENTRY mode=0x%x indirect=%p program=%u",
                 (unsigned)mode, indirect,
@@ -3255,7 +3304,7 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
     }
 
     Buffer *gl_indirect_buffer = NULL;
-    MGLMetalBufferRef indirectBuffer = nil;
+    id indirectBuffer = nil;
     if (![self resolveIndirectBufferForDraw:"drawArraysIndirect" context:ctx glBuffer:&gl_indirect_buffer mtlBuffer:&indirectBuffer]) {
         mglTraceLog("DRAW_ARRAYS_INDIRECT_MTL_SKIP reason=resolve_indirect_buffer program=%u",
                     (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
@@ -3419,7 +3468,7 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
         return;
     }
 
-    primitiveType = polygonModePoint ? MTLPrimitiveTypePoint : getMTLPrimitiveType(mode);
+    primitiveType = polygonModePoint ? MGL_DRAW_PRIMITIVE_POINT : mglPrimitiveTypeForGLMode(mode);
     if ((GLuint)primitiveType == 0xFFFFFFFF) {
         mglTraceLog("DRAW_ARRAYS_INDIRECT_MTL_SKIP reason=unsupported_mode mode=0x%x program=%u",
                     (unsigned)mode,
@@ -3441,8 +3490,8 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
 {
     self->_lastDrawPrimitiveMode = mode;
 
-    MTLPrimitiveType primitiveType;
-    MTLIndexType indexType;
+    uint32_t primitiveType;
+    uint64_t indexType;
 
     mglTraceLog("DRAW_ELEMENTS_INDIRECT_MTL_ENTRY mode=0x%x type=0x%x indirect=%p program=%u",
                 (unsigned)mode, (unsigned)type, indirect,
@@ -3475,7 +3524,7 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
     }
 
     // get element buffer
-    indexType = getMTLIndexType(type);
+    indexType = mglIndexTypeForGLType(type);
     if ((GLuint)indexType == 0xFFFFFFFF) {
         mglTraceLog("DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=unsupported_index_type type=0x%x program=%u",
                     (unsigned)type,
@@ -3490,7 +3539,7 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
     }
 
     Buffer *gl_element_buffer = NULL;
-    MGLMetalBufferRef indexBuffer = nil;
+    id indexBuffer = nil;
     if (![self resolveElementBufferForDraw:"drawElementsIndirect" context:ctx glBuffer:&gl_element_buffer mtlBuffer:&indexBuffer]) {
         mglTraceLog("DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=resolve_element_buffer program=%u",
                     (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
@@ -3499,7 +3548,7 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
 
     // get indirect buffer
     Buffer *gl_indirect_buffer = NULL;
-    MGLMetalBufferRef indirectBuffer = nil;
+    id indirectBuffer = nil;
     if (![self resolveIndirectBufferForDraw:"drawElementsIndirect" context:ctx glBuffer:&gl_indirect_buffer mtlBuffer:&indirectBuffer]) {
         mglTraceLog("DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=resolve_indirect_buffer program=%u",
                     (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
@@ -3706,7 +3755,7 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
         return;
     }
 
-    primitiveType = polygonModePoint ? MTLPrimitiveTypePoint : getMTLPrimitiveType(mode);
+    primitiveType = polygonModePoint ? MGL_DRAW_PRIMITIVE_POINT : mglPrimitiveTypeForGLMode(mode);
     if ((GLuint)primitiveType == 0xFFFFFFFF) {
         mglTraceLog("DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=unsupported_mode mode=0x%x program=%u",
                     (unsigned)mode,
@@ -3716,8 +3765,8 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
     }
 
     NSUInteger indexBufferOffset = 0u;
-    MTLIndexType drawIndexType = indexType;
-    MGLMetalBufferRef drawIndexBuffer = mglPreparedElementIndexBuffer(_device,
+    uint64_t drawIndexType = indexType;
+    id drawIndexBuffer = mglPreparedElementIndexBuffer(_device,
                                                                   gl_element_buffer,
                                                                   indexBuffer,
                                                                   type,
@@ -3745,7 +3794,7 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
 {
     self->_lastDrawPrimitiveMode = mode;
 
-    MTLPrimitiveType primitiveType;
+    uint32_t primitiveType;
 
     if ([self handleTessellationPatchDrawIfNeeded:glm_ctx
                                              mode:&mode
@@ -3855,7 +3904,7 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
         return;
     }
 
-    primitiveType = mglPolygonModePointForDrawMode(ctx, mode) ? MTLPrimitiveTypePoint : getMTLPrimitiveType(mode);
+    primitiveType = mglPolygonModePointForDrawMode(ctx, mode) ? MGL_DRAW_PRIMITIVE_POINT : mglPrimitiveTypeForGLMode(mode);
     if ((GLuint)primitiveType == 0xFFFFFFFF) { NSLog(@"MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call", mode); return; }
 
     mglDrawPrimitives(_renderPassManager.state->currentRenderEncoderOwner,
@@ -3868,8 +3917,8 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
 {
     self->_lastDrawPrimitiveMode = mode;
 
-    MTLPrimitiveType primitiveType;
-    MTLIndexType indexType;
+    uint32_t primitiveType;
+    uint64_t indexType;
 
     if ([self handleTessellationPatchDrawIfNeeded:glm_ctx
                                              mode:&mode
@@ -3910,14 +3959,14 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
     BOOL emulateTriangleFan = (mode == GL_TRIANGLE_FAN && !polygonModePoint);
     BOOL emulateLineLoop = (mode == GL_LINE_LOOP);
     BOOL emulateQuads = (mode == GL_QUADS && !polygonModePoint);
-    primitiveType = polygonModePoint ? MTLPrimitiveTypePoint : (emulateTriangleFan ? MTLPrimitiveTypeTriangle : (emulateLineLoop ? MTLPrimitiveTypeLineStrip : (emulateQuads ? MTLPrimitiveTypeTriangle : getMTLPrimitiveType(mode))));
+    primitiveType = polygonModePoint ? MGL_DRAW_PRIMITIVE_POINT : (emulateTriangleFan ? MGL_DRAW_PRIMITIVE_TRIANGLE : (emulateLineLoop ? MGL_DRAW_PRIMITIVE_LINE_STRIP : (emulateQuads ? MGL_DRAW_PRIMITIVE_TRIANGLE : mglPrimitiveTypeForGLMode(mode))));
     if ((GLuint)primitiveType == 0xFFFFFFFF) { NSLog(@"MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call", mode); return; }
 
-    indexType = getMTLIndexType(type);
+    indexType = mglIndexTypeForGLType(type);
     if ((GLuint)indexType == 0xFFFFFFFF) { NSLog(@"MGL WARNING: Unsupported index type=0x%x, skipping draw call", type); return; }
 
     Buffer *gl_element_buffer = NULL;
-    MGLMetalBufferRef indexBuffer = nil;
+    id indexBuffer = nil;
     if (![self resolveElementBufferForDraw:"drawElementsInstancedBaseInstance" context:ctx glBuffer:&gl_element_buffer mtlBuffer:&indexBuffer])
         return;
 
@@ -4034,8 +4083,8 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
         return;
     }
 
-    MTLIndexType drawIndexType = indexType;
-    MGLMetalBufferRef drawIndexBuffer = mglPreparedElementIndexBuffer(_device,
+    uint64_t drawIndexType = indexType;
+    id drawIndexBuffer = mglPreparedElementIndexBuffer(_device,
                                                                   gl_element_buffer,
                                                                   indexBuffer,
                                                                   type,
@@ -4062,8 +4111,8 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
 {
     self->_lastDrawPrimitiveMode = mode;
 
-    MTLPrimitiveType primitiveType;
-    MTLIndexType indexType;
+    uint32_t primitiveType;
+    uint64_t indexType;
 
     if ([self handleTessellationPatchDrawIfNeeded:glm_ctx
                                              mode:&mode
@@ -4104,14 +4153,14 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
     BOOL emulateTriangleFan = (mode == GL_TRIANGLE_FAN && !polygonModePoint);
     BOOL emulateLineLoop = (mode == GL_LINE_LOOP);
     BOOL emulateQuads = (mode == GL_QUADS && !polygonModePoint);
-    primitiveType = polygonModePoint ? MTLPrimitiveTypePoint : (emulateTriangleFan ? MTLPrimitiveTypeTriangle : (emulateLineLoop ? MTLPrimitiveTypeLineStrip : (emulateQuads ? MTLPrimitiveTypeTriangle : getMTLPrimitiveType(mode))));
+    primitiveType = polygonModePoint ? MGL_DRAW_PRIMITIVE_POINT : (emulateTriangleFan ? MGL_DRAW_PRIMITIVE_TRIANGLE : (emulateLineLoop ? MGL_DRAW_PRIMITIVE_LINE_STRIP : (emulateQuads ? MGL_DRAW_PRIMITIVE_TRIANGLE : mglPrimitiveTypeForGLMode(mode))));
     if ((GLuint)primitiveType == 0xFFFFFFFF) { NSLog(@"MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call", mode); return; }
 
-    indexType = getMTLIndexType(type);
+    indexType = mglIndexTypeForGLType(type);
     if ((GLuint)indexType == 0xFFFFFFFF) { NSLog(@"MGL WARNING: Unsupported index type=0x%x, skipping draw call", type); return; }
 
     Buffer *gl_element_buffer = NULL;
-    MGLMetalBufferRef indexBuffer = nil;
+    id indexBuffer = nil;
     if (![self resolveElementBufferForDraw:"drawElementsInstancedBaseVertexBaseInstance" context:ctx glBuffer:&gl_element_buffer mtlBuffer:&indexBuffer])
         return;
 
@@ -4228,8 +4277,8 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
         return;
     }
 
-    MTLIndexType drawIndexType = indexType;
-    MGLMetalBufferRef drawIndexBuffer = mglPreparedElementIndexBuffer(_device,
+    uint64_t drawIndexType = indexType;
+    id drawIndexBuffer = mglPreparedElementIndexBuffer(_device,
                                                                   gl_element_buffer,
                                                                   indexBuffer,
                                                                   type,
@@ -4255,7 +4304,7 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
 {
     self->_lastDrawPrimitiveMode = mode;
 
-    MTLPrimitiveType primitiveType;
+    uint32_t primitiveType;
 
     if (mode == GL_PATCHES) {
         BOOL handled = NO;
@@ -4410,7 +4459,7 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
         return;
     }
 
-    primitiveType = getMTLPrimitiveType(mode);
+    primitiveType = mglPrimitiveTypeForGLMode(mode);
     if ((GLuint)primitiveType == 0xFFFFFFFF) { NSLog(@"MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call", mode); return; }
 
     uint64_t submittedVertices = 0u;
@@ -4429,8 +4478,8 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
 {
     self->_lastDrawPrimitiveMode = mode;
 
-    MTLPrimitiveType primitiveType;
-    MTLIndexType indexType;
+    uint32_t primitiveType;
+    uint64_t indexType;
 
     if (mode == GL_PATCHES) {
         BOOL handled = NO;
@@ -4515,14 +4564,14 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
     BOOL emulateTriangleFan = (mode == GL_TRIANGLE_FAN && !polygonModePoint);
     BOOL emulateLineLoop = (mode == GL_LINE_LOOP);
     BOOL emulateQuads = (mode == GL_QUADS && !polygonModePoint);
-    primitiveType = polygonModePoint ? MTLPrimitiveTypePoint : (emulateTriangleFan ? MTLPrimitiveTypeTriangle : (emulateLineLoop ? MTLPrimitiveTypeLineStrip : (emulateQuads ? MTLPrimitiveTypeTriangle : getMTLPrimitiveType(mode))));
+    primitiveType = polygonModePoint ? MGL_DRAW_PRIMITIVE_POINT : (emulateTriangleFan ? MGL_DRAW_PRIMITIVE_TRIANGLE : (emulateLineLoop ? MGL_DRAW_PRIMITIVE_LINE_STRIP : (emulateQuads ? MGL_DRAW_PRIMITIVE_TRIANGLE : mglPrimitiveTypeForGLMode(mode))));
     if ((GLuint)primitiveType == 0xFFFFFFFF) { NSLog(@"MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call", mode); return; }
 
-    indexType = getMTLIndexType(type);
+    indexType = mglIndexTypeForGLType(type);
     if ((GLuint)indexType == 0xFFFFFFFF) { NSLog(@"MGL WARNING: Unsupported index type=0x%x, skipping draw call", type); return; }
 
     Buffer *gl_element_buffer = NULL;
-    MGLMetalBufferRef indexBuffer = nil;
+    id indexBuffer = nil;
     if (![self resolveElementBufferForDraw:"multiDrawElements" context:ctx glBuffer:&gl_element_buffer mtlBuffer:&indexBuffer])
         return;
 
@@ -4622,8 +4671,8 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
             continue;
         }
 
-        MTLIndexType drawIndexType = indexType;
-        MGLMetalBufferRef drawIndexBuffer = mglPreparedElementIndexBuffer(_device,
+        uint64_t drawIndexType = indexType;
+        id drawIndexBuffer = mglPreparedElementIndexBuffer(_device,
                                                                       gl_element_buffer,
                                                                       indexBuffer,
                                                                       type,
@@ -4647,8 +4696,8 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
 {
     self->_lastDrawPrimitiveMode = mode;
 
-    MTLPrimitiveType primitiveType;
-    MTLIndexType indexType;
+    uint32_t primitiveType;
+    uint64_t indexType;
 
     if (mode == GL_PATCHES) {
         BOOL handled = NO;
@@ -4734,15 +4783,15 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
     BOOL emulateTriangleFan = (mode == GL_TRIANGLE_FAN && !polygonModePoint);
     BOOL emulateLineLoop = (mode == GL_LINE_LOOP);
     BOOL emulateQuads = (mode == GL_QUADS && !polygonModePoint);
-    primitiveType = polygonModePoint ? MTLPrimitiveTypePoint : (emulateTriangleFan ? MTLPrimitiveTypeTriangle : (emulateLineLoop ? MTLPrimitiveTypeLineStrip : (emulateQuads ? MTLPrimitiveTypeTriangle : getMTLPrimitiveType(mode))));
+    primitiveType = polygonModePoint ? MGL_DRAW_PRIMITIVE_POINT : (emulateTriangleFan ? MGL_DRAW_PRIMITIVE_TRIANGLE : (emulateLineLoop ? MGL_DRAW_PRIMITIVE_LINE_STRIP : (emulateQuads ? MGL_DRAW_PRIMITIVE_TRIANGLE : mglPrimitiveTypeForGLMode(mode))));
     if ((GLuint)primitiveType == 0xFFFFFFFF) { NSLog(@"MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call", mode); return; }
 
-    indexType = getMTLIndexType(type);
+    indexType = mglIndexTypeForGLType(type);
     if ((GLuint)indexType == 0xFFFFFFFF) { NSLog(@"MGL WARNING: Unsupported index type=0x%x, skipping draw call", type); return; }
 
     // element buffer
     Buffer *gl_element_buffer = NULL;
-    MGLMetalBufferRef indexBuffer = nil;
+    id indexBuffer = nil;
     if (![self resolveElementBufferForDraw:"multiDrawElementsBaseVertex" context:ctx glBuffer:&gl_element_buffer mtlBuffer:&indexBuffer])
         return;
 
@@ -4843,8 +4892,8 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
             continue;
         }
 
-        MTLIndexType drawIndexType = indexType;
-        MGLMetalBufferRef drawIndexBuffer = mglPreparedElementIndexBuffer(_device,
+        uint64_t drawIndexType = indexType;
+        id drawIndexBuffer = mglPreparedElementIndexBuffer(_device,
                                                                       gl_element_buffer,
                                                                       indexBuffer,
                                                                       type,
@@ -4868,7 +4917,7 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
 {
     self->_lastDrawPrimitiveMode = mode;
 
-    MTLPrimitiveType primitiveType;
+    uint32_t primitiveType;
 
     mglTraceLog("MULTI_DRAW_ARRAYS_INDIRECT_MTL_ENTRY mode=0x%x indirect=%p drawcount=%d stride=%d program=%u",
                 (unsigned)mode, indirect, (int)drawcount, (int)stride,
@@ -4901,7 +4950,7 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
     }
 
     Buffer *gl_indirect_buffer = NULL;
-    MGLMetalBufferRef indirectBuffer = nil;
+    id indirectBuffer = nil;
     if (![self resolveIndirectBufferForDraw:"multiDrawArraysIndirect" context:ctx glBuffer:&gl_indirect_buffer mtlBuffer:&indirectBuffer]) {
         mglTraceLog("MULTI_DRAW_ARRAYS_INDIRECT_MTL_SKIP reason=resolve_indirect_buffer program=%u",
                     (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
@@ -5103,7 +5152,7 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
         return;
     }
 
-    primitiveType = polygonModePoint ? MTLPrimitiveTypePoint : getMTLPrimitiveType(mode);
+    primitiveType = polygonModePoint ? MGL_DRAW_PRIMITIVE_POINT : mglPrimitiveTypeForGLMode(mode);
     if ((GLuint)primitiveType == 0xFFFFFFFF) {
         mglTraceLog("MULTI_DRAW_ARRAYS_INDIRECT_MTL_SKIP reason=unsupported_mode mode=0x%x program=%u",
                     (unsigned)mode,
@@ -5141,8 +5190,8 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
 {
     self->_lastDrawPrimitiveMode = mode;
 
-    MTLPrimitiveType primitiveType;
-    MTLIndexType indexType;
+    uint32_t primitiveType;
+    uint64_t indexType;
 
     mglTraceLog("MULTI_DRAW_ELEMENTS_INDIRECT_MTL_ENTRY mode=0x%x type=0x%x indirect=%p drawcount=%d stride=%d program=%u",
                 (unsigned)mode, (unsigned)type, indirect, (int)drawcount, (int)stride,
@@ -5174,7 +5223,7 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
     }
 
     // get element buffer
-    indexType = getMTLIndexType(type);
+    indexType = mglIndexTypeForGLType(type);
     if ((GLuint)indexType == 0xFFFFFFFF) {
         mglTraceLog("MULTI_DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=unsupported_index_type type=0x%x program=%u",
                     (unsigned)type,
@@ -5189,7 +5238,7 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
     }
 
     Buffer *gl_element_buffer = NULL;
-    MGLMetalBufferRef indexBuffer = nil;
+    id indexBuffer = nil;
     if (![self resolveElementBufferForDraw:"multiDrawElementsIndirect" context:ctx glBuffer:&gl_element_buffer mtlBuffer:&indexBuffer]) {
         mglTraceLog("MULTI_DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=resolve_element_buffer program=%u",
                     (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
@@ -5198,7 +5247,7 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
 
     // get indirect buffer
     Buffer *gl_indirect_buffer = NULL;
-    MGLMetalBufferRef indirectBuffer = nil;
+    id indirectBuffer = nil;
     if (![self resolveIndirectBufferForDraw:"multiDrawElementsIndirect" context:ctx glBuffer:&gl_indirect_buffer mtlBuffer:&indirectBuffer]) {
         mglTraceLog("MULTI_DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=resolve_indirect_buffer program=%u",
                     (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
@@ -5439,7 +5488,7 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
         return;
     }
 
-    primitiveType = polygonModePoint ? MTLPrimitiveTypePoint : getMTLPrimitiveType(mode);
+    primitiveType = polygonModePoint ? MGL_DRAW_PRIMITIVE_POINT : mglPrimitiveTypeForGLMode(mode);
     if ((GLuint)primitiveType == 0xFFFFFFFF) {
         mglTraceLog("MULTI_DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=unsupported_mode mode=0x%x program=%u",
                     (unsigned)mode,
@@ -5449,8 +5498,8 @@ void mglRendererCompatMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mod
     }
 
     NSUInteger indexBufferOffset = 0u;
-    MTLIndexType drawIndexType = indexType;
-    MGLMetalBufferRef drawIndexBuffer = mglPreparedElementIndexBuffer(_device,
+    uint64_t drawIndexType = indexType;
+    id drawIndexBuffer = mglPreparedElementIndexBuffer(_device,
                                                                   gl_element_buffer,
                                                                   indexBuffer,
                                                                   type,

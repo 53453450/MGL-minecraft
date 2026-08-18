@@ -2099,74 +2099,74 @@ GLenum internalFormatForGLFormatType(GLenum format, GLenum type)
     }
 }
 
-MTLPixelFormat mtlFormatForGLInternalFormat(GLenum internal_format)
+uint32_t mtlFormatForGLInternalFormat(GLenum internal_format)
 {
     switch(internal_format)
     {
         case GL_RGB4:
         case GL_RGB5:
-            return MTLPixelFormatRGBA8Unorm;  // Upconvert to RGBA8
+            return MGLPixelFormatRGBA8Unorm;  // Upconvert to RGBA8
             
         case GL_RGB8:
-            return MTLPixelFormatRGBA8Unorm;  // Metal doesn't have RGB-only formats
+            return MGLPixelFormatRGBA8Unorm;  // Metal doesn't have RGB-only formats
 
         case GL_RGB10:
-            return MTLPixelFormatRGB10A2Unorm;  // 10-bit per channel
+            return MGLPixelFormatRGB10A2Unorm;  // 10-bit per channel
 
         case GL_RGB12:
         case GL_RGB16:
-            return MTLPixelFormatRGBA16Unorm;  // 16-bit per channel
+            return MGLPixelFormatRGBA16Unorm;  // 16-bit per channel
             
         case GL_RGBA2:
         case GL_RGBA4:
         case GL_RGB5_A1:
-            return MTLPixelFormatRGBA8Unorm;  // Upconvert to avoid ABGR4/BGR5A1 bit order mismatch
+            return MGLPixelFormatRGBA8Unorm;  // Upconvert to avoid ABGR4/BGR5A1 bit order mismatch
 
         case GL_RGBA8:
-            return MTLPixelFormatRGBA8Unorm;    // working format
-            //return MTLPixelFormatBGRA8Unorm;    // working format
+            return MGLPixelFormatRGBA8Unorm;    // working format
+            //return MGLPixelFormatBGRA8Unorm;    // working format
 
         case GL_R3_G3_B2:
-            return MTLPixelFormatRGBA8Unorm;    // Upconvert to RGBA8
+            return MGLPixelFormatRGBA8Unorm;    // Upconvert to RGBA8
 
         case GL_ALPHA8UI_EXT:
-            return MTLPixelFormatR8Uint;        // Map Alpha Integer to Red Integer (best effort)
+            return MGLPixelFormatR8Uint;        // Map Alpha Integer to Red Integer (best effort)
 
         case GL_RGB10_A2:
-            return MTLPixelFormatRGB10A2Unorm;    // working format
+            return MGLPixelFormatRGB10A2Unorm;    // working format
 
         case GL_RGBA12:
-            return MTLPixelFormatRGBA16Unorm;  // Upconvert 12-bit to 16-bit
+            return MGLPixelFormatRGBA16Unorm;  // Upconvert 12-bit to 16-bit
 
         case GL_RGBA16:
-            return MTLPixelFormatRGBA16Unorm;    // working format
+            return MGLPixelFormatRGBA16Unorm;    // working format
 
         case GL_COMPRESSED_RGB:
             if (__builtin_available(macOS 11.0, *)) {
-                return MTLPixelFormatETC2_RGB8;
+                return MGLPixelFormatETC2_RGB8;
             } else {
                 // Fallback on earlier versions
-                return MTLPixelFormatInvalid;
+                return MGLPixelFormatInvalid;
             }
 
         case GL_COMPRESSED_RGBA:
             if (__builtin_available(macOS 11.0, *)) {
-                return MTLPixelFormatEAC_RGBA8;
+                return MGLPixelFormatEAC_RGBA8;
             } else {
                 // Fallback on earlier versions
-                return MTLPixelFormatInvalid;
+                return MGLPixelFormatInvalid;
             }
 
         case GL_DEPTH_COMPONENT16:
-            return MTLPixelFormatDepth16Unorm;
+            return MGLPixelFormatDepth16Unorm;
 
         case GL_DEPTH_COMPONENT24:
             // Apple Silicon doesn't support 24-bit depth, use 32-bit float instead.
-            // (Intel Mac MTLPixelFormatDepth24Unorm_Stencil8 exists, but a
+            // (Intel Mac MGLPixelFormatDepth24Unorm_Stencil8 exists, but a
             // depth-only 24-bit format does not; Depth32Float is the portable
             // choice.  CPU shadow buffers still store 24-bit unorm and the
             // upload path normalizes uint→float when filling the Metal texture.)
-            return MTLPixelFormatDepth32Float;
+            return MGLPixelFormatDepth32Float;
 
         case GL_DEPTH_COMPONENT32:
             // GL spec defines DEPTH_COMPONENT32 as a 32-bit unorm format
@@ -2175,508 +2175,508 @@ MTLPixelFormat mtlFormatForGLInternalFormat(GLenum internal_format)
             // Metal has no 32-bit unorm depth format.  As with the 24-bit
             // case, CPU shadow buffers store uint32 and the upload path
             // (rendering.c) performs the uint→float normalization.
-            return MTLPixelFormatDepth32Float;
+            return MGLPixelFormatDepth32Float;
 
         case GL_SRGB:
-            return MTLPixelFormatRGBA8Unorm_sRGB;  // Upconvert to RGBA8 sRGB
+            return MGLPixelFormatRGBA8Unorm_sRGB;  // Upconvert to RGBA8 sRGB
 
         case GL_SRGB8:
-            return MTLPixelFormatRGBA8Unorm_sRGB;
+            return MGLPixelFormatRGBA8Unorm_sRGB;
 
         case GL_SRGB_ALPHA:
-            return MTLPixelFormatRGBA8Unorm_sRGB;  // Upconvert to RGBA8 sRGB
+            return MGLPixelFormatRGBA8Unorm_sRGB;  // Upconvert to RGBA8 sRGB
 
         case GL_SRGB8_ALPHA8:
-            return MTLPixelFormatRGBA8Unorm_sRGB;
+            return MGLPixelFormatRGBA8Unorm_sRGB;
 
         case GL_COMPRESSED_SRGB:
             if (__builtin_available(macOS 11.0, *)) {
-                return MTLPixelFormatETC2_RGB8_sRGB;
+                return MGLPixelFormatETC2_RGB8_sRGB;
             } else {
-                return MTLPixelFormatInvalid;
+                return MGLPixelFormatInvalid;
             }
 
         case GL_COMPRESSED_SRGB_ALPHA:
-            return MTLPixelFormatRGBA8Unorm_sRGB;  // Decompress to RGBA8 sRGB
+            return MGLPixelFormatRGBA8Unorm_sRGB;  // Decompress to RGBA8 sRGB
 
         case GL_COMPRESSED_RED:
             if (__builtin_available(macOS 11.0, *)) {
-                return MTLPixelFormatEAC_R11Unorm;
+                return MGLPixelFormatEAC_R11Unorm;
             } else {
-                return MTLPixelFormatInvalid;
+                return MGLPixelFormatInvalid;
             }
 
         case GL_COMPRESSED_RG:
             if (__builtin_available(macOS 11.0, *)) {
-                return MTLPixelFormatEAC_RG11Unorm;
+                return MGLPixelFormatEAC_RG11Unorm;
             } else {
-                return MTLPixelFormatInvalid;
+                return MGLPixelFormatInvalid;
             }
 
         case GL_RGBA32F:
-            return MTLPixelFormatRGBA32Float;
+            return MGLPixelFormatRGBA32Float;
 
         case GL_RGB32F:
-            return MTLPixelFormatRGBA32Float;
+            return MGLPixelFormatRGBA32Float;
 
         case GL_RGBA16F:
-            return MTLPixelFormatRGBA16Float;
+            return MGLPixelFormatRGBA16Float;
 
         case GL_RGB16F:
-            return MTLPixelFormatRGBA16Float;
+            return MGLPixelFormatRGBA16Float;
 
         case GL_R11F_G11F_B10F:
-            return MTLPixelFormatRG11B10Float;
+            return MGLPixelFormatRG11B10Float;
 
         case GL_RGB9_E5:
-            return MTLPixelFormatRGB9E5Float;
+            return MGLPixelFormatRGB9E5Float;
 
         case GL_RGBA32UI:
-            return MTLPixelFormatRGBA32Uint;
+            return MGLPixelFormatRGBA32Uint;
 
         case GL_RGB32UI:
-            return MTLPixelFormatRGBA32Uint;
+            return MGLPixelFormatRGBA32Uint;
 
         case GL_RGBA16UI:
-            return MTLPixelFormatRGBA16Uint;
+            return MGLPixelFormatRGBA16Uint;
 
         case GL_RGB16UI:
-            return MTLPixelFormatRGBA16Uint;
+            return MGLPixelFormatRGBA16Uint;
 
         case GL_RGBA8UI:
-            return MTLPixelFormatRGBA8Uint;
+            return MGLPixelFormatRGBA8Uint;
 
         case GL_RGB8UI:
-            return MTLPixelFormatRGBA8Uint;
+            return MGLPixelFormatRGBA8Uint;
 
         case GL_RGBA32I:
-            return MTLPixelFormatRGBA32Sint;
+            return MGLPixelFormatRGBA32Sint;
 
         case GL_RGB32I:
-            return MTLPixelFormatRGBA32Sint;
+            return MGLPixelFormatRGBA32Sint;
 
         case GL_RGBA16I:
-            return MTLPixelFormatRGBA16Sint;
+            return MGLPixelFormatRGBA16Sint;
 
         case GL_RGB16I:
-            return MTLPixelFormatRGBA16Sint;
+            return MGLPixelFormatRGBA16Sint;
 
         case GL_RGBA8I:
-            return MTLPixelFormatRGBA8Sint;
+            return MGLPixelFormatRGBA8Sint;
 
         case GL_RGB8I:
-            return MTLPixelFormatRGBA8Sint;
+            return MGLPixelFormatRGBA8Sint;
 
         case GL_DEPTH_COMPONENT32F:
-            return MTLPixelFormatDepth32Float;
+            return MGLPixelFormatDepth32Float;
 
         case GL_DEPTH32F_STENCIL8:
-            return MTLPixelFormatDepth32Float_Stencil8;
+            return MGLPixelFormatDepth32Float_Stencil8;
 
         case GL_DEPTH24_STENCIL8:
-            // MTLPixelFormatX24_Stencil8 (262) is NOT supported on Apple Silicon
+            // MGLPixelFormatX24_Stencil8 (262) is NOT supported on Apple Silicon
             // Use Depth32Float_Stencil8 instead
-            return MTLPixelFormatDepth32Float_Stencil8;
+            return MGLPixelFormatDepth32Float_Stencil8;
 
         case GL_STENCIL_INDEX1:
             // Metal only supports an 8-bit stencil format
-            // (MTLPixelFormatStencil8); 1-bit stencil has no Metal equivalent.
+            // (MGLPixelFormatStencil8); 1-bit stencil has no Metal equivalent.
             // Returning Invalid makes glTexStorage2D reject this format.
             // (glTexImage2D callers could be relaxed to fall back to
             // STENCIL_INDEX8, but that is a behavior change left for later.)
-            return MTLPixelFormatInvalid;
+            return MGLPixelFormatInvalid;
 
         case GL_STENCIL_INDEX4:
             // Metal only supports 8-bit stencil; 4-bit has no equivalent.
             // Returning Invalid makes glTexStorage2D reject this format.
-            return MTLPixelFormatInvalid;
+            return MGLPixelFormatInvalid;
 
         case GL_STENCIL_INDEX8:
-            return MTLPixelFormatStencil8;
+            return MGLPixelFormatStencil8;
 
         case GL_STENCIL_INDEX16:
             // Metal only supports 8-bit stencil; 16-bit has no equivalent.
             // Returning Invalid makes glTexStorage2D reject this format.
-            return MTLPixelFormatInvalid;
+            return MGLPixelFormatInvalid;
 
         case GL_COMPRESSED_RED_RGTC1:
-            return MTLPixelFormatBC4_RUnorm;
+            return MGLPixelFormatBC4_RUnorm;
 
         case GL_COMPRESSED_SIGNED_RED_RGTC1:
-            return MTLPixelFormatBC4_RSnorm;
+            return MGLPixelFormatBC4_RSnorm;
 
         case GL_COMPRESSED_RG_RGTC2:
-            return MTLPixelFormatBC5_RGUnorm;
+            return MGLPixelFormatBC5_RGUnorm;
 
         case GL_COMPRESSED_SIGNED_RG_RGTC2:
-            return MTLPixelFormatBC5_RGSnorm;
+            return MGLPixelFormatBC5_RGSnorm;
         /* S3TC/DXT (GL_EXT_texture_compression_s3tc) — BC1/BC2/BC3.
          * Available on macOS 10.11+; native on Apple Silicon. */
         case GL_COMPRESSED_RGB_S3TC_DXT1_EXT:
         case GL_COMPRESSED_RGBA_S3TC_DXT1_EXT:
-            return MTLPixelFormatBC1_RGBA;
+            return MGLPixelFormatBC1_RGBA;
         case 0x8c4c: /* GL_COMPRESSED_SRGB_S3TC_DXT1_EXT */
         case 0x8c4d: /* GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT1_EXT */
-            return MTLPixelFormatBC1_RGBA_sRGB;
+            return MGLPixelFormatBC1_RGBA_sRGB;
         case GL_COMPRESSED_RGBA_S3TC_DXT3_EXT:
-            return MTLPixelFormatBC2_RGBA;
+            return MGLPixelFormatBC2_RGBA;
         case 0x8c4e: /* GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT3_EXT */
-            return MTLPixelFormatBC2_RGBA_sRGB;
+            return MGLPixelFormatBC2_RGBA_sRGB;
         case GL_COMPRESSED_RGBA_S3TC_DXT5_EXT:
-            return MTLPixelFormatBC3_RGBA;
+            return MGLPixelFormatBC3_RGBA;
         case 0x8c4f: /* GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT */
-            return MTLPixelFormatBC3_RGBA_sRGB;
+            return MGLPixelFormatBC3_RGBA_sRGB;
 
         /* ASTC LDR (GL_KHR_texture_compression_astc_ldr) — macOS 11+. */
         case GL_COMPRESSED_RGBA_ASTC_4x4_KHR:
-            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_4x4_LDR : MTLPixelFormatInvalid;
+            return __builtin_available(macOS 11.0, *) ? MGLPixelFormatASTC_4x4_LDR : MGLPixelFormatInvalid;
         case GL_COMPRESSED_RGBA_ASTC_5x4_KHR:
-            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_5x4_LDR : MTLPixelFormatInvalid;
+            return __builtin_available(macOS 11.0, *) ? MGLPixelFormatASTC_5x4_LDR : MGLPixelFormatInvalid;
         case GL_COMPRESSED_RGBA_ASTC_5x5_KHR:
-            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_5x5_LDR : MTLPixelFormatInvalid;
+            return __builtin_available(macOS 11.0, *) ? MGLPixelFormatASTC_5x5_LDR : MGLPixelFormatInvalid;
         case GL_COMPRESSED_RGBA_ASTC_6x5_KHR:
-            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_6x5_LDR : MTLPixelFormatInvalid;
+            return __builtin_available(macOS 11.0, *) ? MGLPixelFormatASTC_6x5_LDR : MGLPixelFormatInvalid;
         case GL_COMPRESSED_RGBA_ASTC_6x6_KHR:
-            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_6x6_LDR : MTLPixelFormatInvalid;
+            return __builtin_available(macOS 11.0, *) ? MGLPixelFormatASTC_6x6_LDR : MGLPixelFormatInvalid;
         case GL_COMPRESSED_RGBA_ASTC_8x5_KHR:
-            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_8x5_LDR : MTLPixelFormatInvalid;
+            return __builtin_available(macOS 11.0, *) ? MGLPixelFormatASTC_8x5_LDR : MGLPixelFormatInvalid;
         case GL_COMPRESSED_RGBA_ASTC_8x6_KHR:
-            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_8x6_LDR : MTLPixelFormatInvalid;
+            return __builtin_available(macOS 11.0, *) ? MGLPixelFormatASTC_8x6_LDR : MGLPixelFormatInvalid;
         case GL_COMPRESSED_RGBA_ASTC_8x8_KHR:
-            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_8x8_LDR : MTLPixelFormatInvalid;
+            return __builtin_available(macOS 11.0, *) ? MGLPixelFormatASTC_8x8_LDR : MGLPixelFormatInvalid;
         case GL_COMPRESSED_RGBA_ASTC_10x5_KHR:
-            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_10x5_LDR : MTLPixelFormatInvalid;
+            return __builtin_available(macOS 11.0, *) ? MGLPixelFormatASTC_10x5_LDR : MGLPixelFormatInvalid;
         case GL_COMPRESSED_RGBA_ASTC_10x6_KHR:
-            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_10x6_LDR : MTLPixelFormatInvalid;
+            return __builtin_available(macOS 11.0, *) ? MGLPixelFormatASTC_10x6_LDR : MGLPixelFormatInvalid;
         case GL_COMPRESSED_RGBA_ASTC_10x8_KHR:
-            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_10x8_LDR : MTLPixelFormatInvalid;
+            return __builtin_available(macOS 11.0, *) ? MGLPixelFormatASTC_10x8_LDR : MGLPixelFormatInvalid;
         case GL_COMPRESSED_RGBA_ASTC_10x10_KHR:
-            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_10x10_LDR : MTLPixelFormatInvalid;
+            return __builtin_available(macOS 11.0, *) ? MGLPixelFormatASTC_10x10_LDR : MGLPixelFormatInvalid;
         case GL_COMPRESSED_RGBA_ASTC_12x10_KHR:
-            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_12x10_LDR : MTLPixelFormatInvalid;
+            return __builtin_available(macOS 11.0, *) ? MGLPixelFormatASTC_12x10_LDR : MGLPixelFormatInvalid;
         case GL_COMPRESSED_RGBA_ASTC_12x12_KHR:
-            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_12x12_LDR : MTLPixelFormatInvalid;
+            return __builtin_available(macOS 11.0, *) ? MGLPixelFormatASTC_12x12_LDR : MGLPixelFormatInvalid;
         case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4_KHR:
-            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_4x4_sRGB : MTLPixelFormatInvalid;
+            return __builtin_available(macOS 11.0, *) ? MGLPixelFormatASTC_4x4_sRGB : MGLPixelFormatInvalid;
         case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x4_KHR:
-            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_5x4_sRGB : MTLPixelFormatInvalid;
+            return __builtin_available(macOS 11.0, *) ? MGLPixelFormatASTC_5x4_sRGB : MGLPixelFormatInvalid;
         case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x5_KHR:
-            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_5x5_sRGB : MTLPixelFormatInvalid;
+            return __builtin_available(macOS 11.0, *) ? MGLPixelFormatASTC_5x5_sRGB : MGLPixelFormatInvalid;
         case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x5_KHR:
-            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_6x5_sRGB : MTLPixelFormatInvalid;
+            return __builtin_available(macOS 11.0, *) ? MGLPixelFormatASTC_6x5_sRGB : MGLPixelFormatInvalid;
         case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x6_KHR:
-            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_6x6_sRGB : MTLPixelFormatInvalid;
+            return __builtin_available(macOS 11.0, *) ? MGLPixelFormatASTC_6x6_sRGB : MGLPixelFormatInvalid;
         case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_8x5_KHR:
-            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_8x5_sRGB : MTLPixelFormatInvalid;
+            return __builtin_available(macOS 11.0, *) ? MGLPixelFormatASTC_8x5_sRGB : MGLPixelFormatInvalid;
         case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_8x6_KHR:
-            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_8x6_sRGB : MTLPixelFormatInvalid;
+            return __builtin_available(macOS 11.0, *) ? MGLPixelFormatASTC_8x6_sRGB : MGLPixelFormatInvalid;
         case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_8x8_KHR:
-            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_8x8_sRGB : MTLPixelFormatInvalid;
+            return __builtin_available(macOS 11.0, *) ? MGLPixelFormatASTC_8x8_sRGB : MGLPixelFormatInvalid;
         case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x5_KHR:
-            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_10x5_sRGB : MTLPixelFormatInvalid;
+            return __builtin_available(macOS 11.0, *) ? MGLPixelFormatASTC_10x5_sRGB : MGLPixelFormatInvalid;
         case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x6_KHR:
-            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_10x6_sRGB : MTLPixelFormatInvalid;
+            return __builtin_available(macOS 11.0, *) ? MGLPixelFormatASTC_10x6_sRGB : MGLPixelFormatInvalid;
         case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x8_KHR:
-            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_10x8_sRGB : MTLPixelFormatInvalid;
+            return __builtin_available(macOS 11.0, *) ? MGLPixelFormatASTC_10x8_sRGB : MGLPixelFormatInvalid;
         case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x10_KHR:
-            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_10x10_sRGB : MTLPixelFormatInvalid;
+            return __builtin_available(macOS 11.0, *) ? MGLPixelFormatASTC_10x10_sRGB : MGLPixelFormatInvalid;
         case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_12x10_KHR:
-            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_12x10_sRGB : MTLPixelFormatInvalid;
+            return __builtin_available(macOS 11.0, *) ? MGLPixelFormatASTC_12x10_sRGB : MGLPixelFormatInvalid;
         case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_12x12_KHR:
-            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_12x12_sRGB : MTLPixelFormatInvalid;
+            return __builtin_available(macOS 11.0, *) ? MGLPixelFormatASTC_12x12_sRGB : MGLPixelFormatInvalid;
 
         case GL_R8:
-            return MTLPixelFormatR8Unorm;
+            return MGLPixelFormatR8Unorm;
 
         case GL_R16:
-            return MTLPixelFormatR16Unorm;
+            return MGLPixelFormatR16Unorm;
 
         case GL_RG8:
-            return MTLPixelFormatRG8Unorm;
+            return MGLPixelFormatRG8Unorm;
 
         case GL_RG16:
-            return MTLPixelFormatRG16Unorm;
+            return MGLPixelFormatRG16Unorm;
 
         case GL_R16F:
-            return MTLPixelFormatR16Float;
+            return MGLPixelFormatR16Float;
 
         case GL_R32F:
-            return MTLPixelFormatR32Float;
+            return MGLPixelFormatR32Float;
 
         case GL_RG16F:
-            return MTLPixelFormatRG16Float;
+            return MGLPixelFormatRG16Float;
 
         case GL_RG32F:
-            return MTLPixelFormatRG32Float;
+            return MGLPixelFormatRG32Float;
 
         case GL_R8I:
-            return MTLPixelFormatR8Sint;
+            return MGLPixelFormatR8Sint;
 
         case GL_R8UI:
-            return MTLPixelFormatR8Uint;
+            return MGLPixelFormatR8Uint;
 
         case GL_R16I:
-            return MTLPixelFormatR16Sint;
+            return MGLPixelFormatR16Sint;
 
         case GL_R16UI:
-            return MTLPixelFormatR16Uint;
+            return MGLPixelFormatR16Uint;
 
         case GL_R32I:
-            return MTLPixelFormatR32Sint;
+            return MGLPixelFormatR32Sint;
 
         case GL_R32UI:
-            return MTLPixelFormatR32Uint;
+            return MGLPixelFormatR32Uint;
 
         case GL_RG8I:
-            return MTLPixelFormatRG8Sint;
+            return MGLPixelFormatRG8Sint;
 
         case GL_RG8UI:
-            return MTLPixelFormatRG8Uint;
+            return MGLPixelFormatRG8Uint;
 
         case GL_RG16I:
-            return MTLPixelFormatRG16Sint;
+            return MGLPixelFormatRG16Sint;
 
         case GL_RG16UI:
-            return MTLPixelFormatRG16Uint;
+            return MGLPixelFormatRG16Uint;
 
         case GL_RG32I:
-            return MTLPixelFormatRG32Sint;
+            return MGLPixelFormatRG32Sint;
 
         case GL_RG32UI:
-            return MTLPixelFormatRG32Uint;
+            return MGLPixelFormatRG32Uint;
 
         case GL_R8_SNORM:
-            return MTLPixelFormatR8Snorm;
+            return MGLPixelFormatR8Snorm;
 
         case GL_RG8_SNORM:
-            return MTLPixelFormatRG8Snorm;
+            return MGLPixelFormatRG8Snorm;
 
         case GL_RGB8_SNORM:
-            return MTLPixelFormatRGBA8Snorm;
+            return MGLPixelFormatRGBA8Snorm;
 
         case GL_RGBA8_SNORM:
-            return MTLPixelFormatRGBA8Snorm;
+            return MGLPixelFormatRGBA8Snorm;
 
         case GL_R16_SNORM:
-            return MTLPixelFormatR16Snorm;
+            return MGLPixelFormatR16Snorm;
 
         case GL_RG16_SNORM:
-            return MTLPixelFormatRG16Snorm;
+            return MGLPixelFormatRG16Snorm;
 
         case GL_RGB16_SNORM:
-            return MTLPixelFormatRGBA16Snorm;
+            return MGLPixelFormatRGBA16Snorm;
 
         case GL_RGBA16_SNORM:
-            return MTLPixelFormatRGBA16Snorm;
+            return MGLPixelFormatRGBA16Snorm;
 
         case GL_RGB10_A2UI:
-            return MTLPixelFormatRGB10A2Uint;
+            return MGLPixelFormatRGB10A2Uint;
 
         case GL_RGB565:
-            /* MTLPixelFormatB5G6R5Unorm places B in the high bits, but GL
+            /* MGLPixelFormatB5G6R5Unorm places B in the high bits, but GL
              * UNSIGNED_SHORT_5_6_5 places R in the high bits — sampling would
              * swap R and B.  Back GL_RGB565 with RGBA8Unorm instead and let
              * mglCreateRGBA8ExpandedUpload rearrange channels on the CPU.
              * (mglTextureInternalFormatNeedsRGBA8Expansion returns true for
              * GL_RGB565 to drive that expansion path.) */
-            return MTLPixelFormatRGBA8Unorm;
+            return MGLPixelFormatRGBA8Unorm;
 
         // Legacy unsized formats - map to sized equivalents
         case GL_RED:
-            return MTLPixelFormatR8Unorm;
+            return MGLPixelFormatR8Unorm;
             
         case GL_RGBA:
-            return MTLPixelFormatRGBA8Unorm;
+            return MGLPixelFormatRGBA8Unorm;
             
         case GL_RGB:
-            return MTLPixelFormatRGBA8Unorm;  // No RGB-only format in Metal
+            return MGLPixelFormatRGBA8Unorm;  // No RGB-only format in Metal
             
         // Legacy luminance/alpha formats - map to R/RG
         case GL_ALPHA8:
         case GL_LUMINANCE8:
-            return MTLPixelFormatR8Unorm;
+            return MGLPixelFormatR8Unorm;
             
         case GL_ALPHA16:
         case GL_LUMINANCE16:
-            return MTLPixelFormatR16Unorm;
+            return MGLPixelFormatR16Unorm;
             
         case GL_ALPHA32F_ARB:
         case GL_LUMINANCE32F_ARB:
-            return MTLPixelFormatR32Float;
+            return MGLPixelFormatR32Float;
             
         case GL_ALPHA16F_ARB:
         case GL_LUMINANCE16F_ARB:
-            return MTLPixelFormatR16Float;
+            return MGLPixelFormatR16Float;
             
         case GL_LUMINANCE_ALPHA32F_ARB:
-            return MTLPixelFormatRG32Float;
+            return MGLPixelFormatRG32Float;
             
         case GL_LUMINANCE_ALPHA16F_ARB:
-            return MTLPixelFormatRG16Float;
+            return MGLPixelFormatRG16Float;
             
         case 0x8045: // GL_LUMINANCE8_ALPHA8
-            return MTLPixelFormatRG8Unorm;
+            return MGLPixelFormatRG8Unorm;
             
         // Note: 0x8048 (GL_LUMINANCE16_ALPHA16) already handled by GL_LUMINANCE16 case above
         // due to incorrect macro definition
             
         // sRGB R/RG formats
         case GL_SR8_EXT:
-            return MTLPixelFormatR8Unorm_sRGB;
+            return MGLPixelFormatR8Unorm_sRGB;
             
         case GL_SRG8_EXT:
-            return MTLPixelFormatRG8Unorm_sRGB;
+            return MGLPixelFormatRG8Unorm_sRGB;
 
         case GL_COMPRESSED_RGBA_BPTC_UNORM:
-            return MTLPixelFormatBC7_RGBAUnorm;
+            return MGLPixelFormatBC7_RGBAUnorm;
 
         case GL_COMPRESSED_SRGB_ALPHA_BPTC_UNORM:
-            return MTLPixelFormatBC7_RGBAUnorm_sRGB;
+            return MGLPixelFormatBC7_RGBAUnorm_sRGB;
 
         case GL_COMPRESSED_RGB_BPTC_SIGNED_FLOAT:
-            return MTLPixelFormatBC6H_RGBFloat;
+            return MGLPixelFormatBC6H_RGBFloat;
 
         case GL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT:
-            return MTLPixelFormatBC6H_RGBUfloat;
+            return MGLPixelFormatBC6H_RGBUfloat;
 
         case GL_COMPRESSED_RGB8_ETC2:
             if (__builtin_available(macOS 11.0, *)) {
-                return MTLPixelFormatETC2_RGB8;
+                return MGLPixelFormatETC2_RGB8;
             } else {
                 // Fallback on earlier versions
-                return MTLPixelFormatInvalid;
+                return MGLPixelFormatInvalid;
             }
 
         case GL_COMPRESSED_SRGB8_ETC2:
             if (__builtin_available(macOS 11.0, *)) {
-                return MTLPixelFormatETC2_RGB8_sRGB;
+                return MGLPixelFormatETC2_RGB8_sRGB;
             } else {
                 // Fallback on earlier versions
-                return MTLPixelFormatInvalid;
+                return MGLPixelFormatInvalid;
             }
 
         case GL_COMPRESSED_RGB8_PUNCHTHROUGH_ALPHA1_ETC2:
             if (__builtin_available(macOS 11.0, *)) {
-                return MTLPixelFormatETC2_RGB8A1;
+                return MGLPixelFormatETC2_RGB8A1;
             } else {
                 // Fallback on earlier versions
-                return MTLPixelFormatInvalid;
+                return MGLPixelFormatInvalid;
             }
 
         case GL_COMPRESSED_SRGB8_PUNCHTHROUGH_ALPHA1_ETC2:
             if (__builtin_available(macOS 11.0, *)) {
-                return MTLPixelFormatETC2_RGB8A1_sRGB;
+                return MGLPixelFormatETC2_RGB8A1_sRGB;
             } else {
                 // Fallback on earlier versions
-                return MTLPixelFormatInvalid;
+                return MGLPixelFormatInvalid;
             }
 
         case GL_COMPRESSED_RGBA8_ETC2_EAC:
             if (__builtin_available(macOS 11.0, *)) {
-                return MTLPixelFormatEAC_RGBA8;
+                return MGLPixelFormatEAC_RGBA8;
             } else {
                 // Fallback on earlier versions
-                return MTLPixelFormatInvalid;
+                return MGLPixelFormatInvalid;
             }
 
         case GL_COMPRESSED_SRGB8_ALPHA8_ETC2_EAC:
             if (__builtin_available(macOS 11.0, *)) {
-                return MTLPixelFormatEAC_RGBA8_sRGB;
+                return MGLPixelFormatEAC_RGBA8_sRGB;
             } else {
                 // Fallback on earlier versions
-                return MTLPixelFormatInvalid;
+                return MGLPixelFormatInvalid;
             }
 
         case GL_COMPRESSED_R11_EAC:
             if (__builtin_available(macOS 11.0, *)) {
-                return MTLPixelFormatEAC_R11Unorm;
+                return MGLPixelFormatEAC_R11Unorm;
             } else {
                 // Fallback on earlier versions
-                return MTLPixelFormatInvalid;
+                return MGLPixelFormatInvalid;
             }
 
         case GL_COMPRESSED_SIGNED_R11_EAC:
             if (__builtin_available(macOS 11.0, *)) {
-                return MTLPixelFormatEAC_R11Snorm;
+                return MGLPixelFormatEAC_R11Snorm;
             } else {
                 // Fallback on earlier versions
-                return MTLPixelFormatInvalid;
+                return MGLPixelFormatInvalid;
             }
 
         case GL_COMPRESSED_RG11_EAC:
             if (__builtin_available(macOS 11.0, *)) {
-                return MTLPixelFormatEAC_RG11Unorm;
+                return MGLPixelFormatEAC_RG11Unorm;
             } else {
                 // Fallback on earlier versions
-                return MTLPixelFormatInvalid;
+                return MGLPixelFormatInvalid;
             }
 
         case GL_COMPRESSED_SIGNED_RG11_EAC:
             if (__builtin_available(macOS 11.0, *)) {
-                return MTLPixelFormatEAC_RG11Snorm;
+                return MGLPixelFormatEAC_RG11Snorm;
             } else {
                 // Fallback on earlier versions
-                return MTLPixelFormatInvalid;
+                return MGLPixelFormatInvalid;
             }
 
         // Unsized base formats - virglrenderer may pass these
         case GL_RG:
-            return MTLPixelFormatRG8Unorm;
+            return MGLPixelFormatRG8Unorm;
             
         case GL_DEPTH_COMPONENT:
-            return MTLPixelFormatDepth32Float;
+            return MGLPixelFormatDepth32Float;
             
         case GL_DEPTH_STENCIL:
-            return MTLPixelFormatDepth32Float_Stencil8;
+            return MGLPixelFormatDepth32Float_Stencil8;
             
         case GL_STENCIL_INDEX:
-            return MTLPixelFormatStencil8;
+            return MGLPixelFormatStencil8;
 
         // Additional integer formats (alternate enum values used by some implementations)
         case 0x8d72: // GL_ALPHA32UI_EXT
-            return MTLPixelFormatR32Uint;
+            return MGLPixelFormatR32Uint;
         case 0x8d75: // alternate GL_RGB8I
-            return MTLPixelFormatRGBA8Sint;
+            return MGLPixelFormatRGBA8Sint;
         case 0x8d78: // alternate GL_RGBA8UI
-            return MTLPixelFormatRGBA8Uint;
+            return MGLPixelFormatRGBA8Uint;
         case 0x8d7a: // alternate GL_RGB8UI
-            return MTLPixelFormatRGBA8Uint;
+            return MGLPixelFormatRGBA8Uint;
         case 0x8d7b: // GL_ALPHA8I_EXT
-            return MTLPixelFormatR8Sint;
+            return MGLPixelFormatR8Sint;
         // case 0x8d7e: // GL_ALPHA8UI_EXT - Duplicate
-        //    return MTLPixelFormatR8Uint;
+        //    return MGLPixelFormatR8Uint;
         case 0x8d80: // GL_LUMINANCE8UI_EXT
-            return MTLPixelFormatR8Uint;
+            return MGLPixelFormatR8Uint;
         case 0x8d81: // GL_ALPHA32I_EXT
-            return MTLPixelFormatR32Sint;
+            return MGLPixelFormatR32Sint;
         case 0x8d84: // alternate GL_RGBA16I
-            return MTLPixelFormatRGBA16Sint;
+            return MGLPixelFormatRGBA16Sint;
         case 0x8d86: // alternate GL_RGB16I
-            return MTLPixelFormatRGBA16Sint;
+            return MGLPixelFormatRGBA16Sint;
         case 0x8d87: // GL_ALPHA16I_EXT
-            return MTLPixelFormatR16Sint;
+            return MGLPixelFormatR16Sint;
         case 0x8d8a: // alternate GL_RGBA32I
-            return MTLPixelFormatRGBA32Sint;
+            return MGLPixelFormatRGBA32Sint;
         case 0x8d8c: // alternate GL_RGB32I
-            return MTLPixelFormatRGBA32Sint;
+            return MGLPixelFormatRGBA32Sint;
         
         // SNORM formats
         case 0x9014: // GL_ALPHA8_SNORM
-            return MTLPixelFormatR8Snorm;
+            return MGLPixelFormatR8Snorm;
         case 0x9016: // GL_LUMINANCE8_ALPHA8_SNORM
-            return MTLPixelFormatRG8Snorm;
+            return MGLPixelFormatRG8Snorm;
         case 0x9018: // GL_ALPHA16_SNORM
-            return MTLPixelFormatR16Snorm;
+            return MGLPixelFormatR16Snorm;
         case 0x901a: // GL_LUMINANCE16_ALPHA16_SNORM
-            return MTLPixelFormatRG16Snorm;
+            return MGLPixelFormatRG16Snorm;
         case 0x8d8d: // GL_ALPHA32I_EXT
-            return MTLPixelFormatR32Sint;
+            return MGLPixelFormatR32Sint;
         case 0x8d90: // alternate GL_RGBA16UI
-            return MTLPixelFormatRGBA16Uint;
+            return MGLPixelFormatRGBA16Uint;
         case 0x8d92: // alternate GL_RGB16UI
-            return MTLPixelFormatRGBA16Uint;
+            return MGLPixelFormatRGBA16Uint;
         case 0x8d93: // GL_ALPHA16UI_EXT
-            return MTLPixelFormatR16Uint;
+            return MGLPixelFormatR16Uint;
 
         default:
             // Unknown formats - likely Mesa/Gallium internal format enums or capability probes
@@ -2697,10 +2697,10 @@ MTLPixelFormat mtlFormatForGLInternalFormat(GLenum internal_format)
             }
             // For 0x8Dxx and 0x90xx ranges - these are often internal/capability probes
             // Silently return Invalid to indicate "not supported"
-            return MTLPixelFormatInvalid;
+            return MGLPixelFormatInvalid;
     }
 
-    return MTLPixelFormatInvalid;
+    return MGLPixelFormatInvalid;
 }
 
 GLboolean mglIsColorRenderableInternalFormat(GLint internalformat)
@@ -2873,12 +2873,12 @@ GLboolean mglIsColorRenderableInternalFormat(GLint internalformat)
     }
 }
 
-MTLPixelFormat mtlPixelFormatForGLFormatType(GLenum gl_format, GLenum gl_type)
+uint32_t mtlPixelFormatForGLFormatType(GLenum gl_format, GLenum gl_type)
 {
     switch(gl_format)
     {
         case GL_DEPTH_COMPONENT16:
-            return MTLPixelFormatDepth16Unorm;
+            return MGLPixelFormatDepth16Unorm;
 
         case GL_DEPTH_COMPONENT:
         case GL_DEPTH_COMPONENT24:
@@ -2886,15 +2886,15 @@ MTLPixelFormat mtlPixelFormatForGLFormatType(GLenum gl_format, GLenum gl_type)
         case GL_DEPTH_COMPONENT32F:
             // Metal has no portable pure D24 texture on Apple Silicon. Use D32F
             // so default GL_DEPTH_COMPONENT24 contexts still get a depth target.
-            return MTLPixelFormatDepth32Float;
+            return MGLPixelFormatDepth32Float;
 
         case GL_DEPTH_STENCIL:
         case GL_DEPTH24_STENCIL8:
         case GL_DEPTH32F_STENCIL8:
-            return MTLPixelFormatDepth32Float_Stencil8;
+            return MGLPixelFormatDepth32Float_Stencil8;
 
         case GL_STENCIL_INDEX8:
-            return MTLPixelFormatStencil8;
+            return MGLPixelFormatStencil8;
 
         default:
             break;
@@ -2905,9 +2905,9 @@ MTLPixelFormat mtlPixelFormatForGLFormatType(GLenum gl_format, GLenum gl_type)
         case GL_UNSIGNED_BYTE:
             switch(gl_format)
             {
-                case GL_RED: return MTLPixelFormatR8Uint;
-                case GL_RG: return MTLPixelFormatRG8Uint;
-                case GL_RGBA: return MTLPixelFormatRGBA8Unorm;
+                case GL_RED: return MGLPixelFormatR8Uint;
+                case GL_RG: return MGLPixelFormatRG8Uint;
+                case GL_RGBA: return MGLPixelFormatRGBA8Unorm;
                 default:
                     return 0;
             }
@@ -2916,9 +2916,9 @@ MTLPixelFormat mtlPixelFormatForGLFormatType(GLenum gl_format, GLenum gl_type)
         case GL_BYTE:
             switch(gl_format)
             {
-                case GL_RED: return MTLPixelFormatR8Sint;
-                case GL_RG: return MTLPixelFormatRG8Sint;
-                case GL_RGBA: return MTLPixelFormatRGBA8Sint;
+                case GL_RED: return MGLPixelFormatR8Sint;
+                case GL_RG: return MGLPixelFormatRG8Sint;
+                case GL_RGBA: return MGLPixelFormatRGBA8Sint;
                 default:
                     return 0;
             }
@@ -2927,9 +2927,9 @@ MTLPixelFormat mtlPixelFormatForGLFormatType(GLenum gl_format, GLenum gl_type)
         case GL_UNSIGNED_SHORT:
             switch(gl_format)
             {
-                case GL_RED: return MTLPixelFormatR16Uint;
-                case GL_RG: return MTLPixelFormatRG16Uint;
-                case GL_RGBA: return MTLPixelFormatRGBA16Uint;
+                case GL_RED: return MGLPixelFormatR16Uint;
+                case GL_RG: return MGLPixelFormatRG16Uint;
+                case GL_RGBA: return MGLPixelFormatRGBA16Uint;
                 default:
                     return 0;
             }
@@ -2938,9 +2938,9 @@ MTLPixelFormat mtlPixelFormatForGLFormatType(GLenum gl_format, GLenum gl_type)
         case GL_SHORT:
             switch(gl_format)
             {
-                case GL_RED: return MTLPixelFormatR16Sint;
-                case GL_RG: return MTLPixelFormatRG16Sint;
-                case GL_RGBA: return MTLPixelFormatRGBA16Sint;
+                case GL_RED: return MGLPixelFormatR16Sint;
+                case GL_RG: return MGLPixelFormatRG16Sint;
+                case GL_RGBA: return MGLPixelFormatRGBA16Sint;
                 default:
                     return 0;
             }
@@ -2949,10 +2949,10 @@ MTLPixelFormat mtlPixelFormatForGLFormatType(GLenum gl_format, GLenum gl_type)
         case GL_UNSIGNED_INT:
             switch(gl_format)
             {
-                case GL_RED: return MTLPixelFormatR32Uint;
-                case GL_RG: return MTLPixelFormatRG32Uint;
-                case GL_RGBA: return MTLPixelFormatRGBA32Uint;
-                case GL_BGRA: return MTLPixelFormatRGBA32Uint;
+                case GL_RED: return MGLPixelFormatR32Uint;
+                case GL_RG: return MGLPixelFormatRG32Uint;
+                case GL_RGBA: return MGLPixelFormatRGBA32Uint;
+                case GL_BGRA: return MGLPixelFormatRGBA32Uint;
                 default:
                     return 0;
             }
@@ -2961,9 +2961,9 @@ MTLPixelFormat mtlPixelFormatForGLFormatType(GLenum gl_format, GLenum gl_type)
         case GL_INT:
             switch(gl_format)
             {
-                case GL_RED: return MTLPixelFormatR32Uint;
-                case GL_RG: return MTLPixelFormatRG32Uint;
-                case GL_RGBA: return MTLPixelFormatRGBA32Uint;
+                case GL_RED: return MGLPixelFormatR32Uint;
+                case GL_RG: return MGLPixelFormatRG32Uint;
+                case GL_RGBA: return MGLPixelFormatRGBA32Uint;
                 default:
                     return 0;
             }
@@ -2972,11 +2972,11 @@ MTLPixelFormat mtlPixelFormatForGLFormatType(GLenum gl_format, GLenum gl_type)
         case GL_FLOAT:
             switch(gl_format)
             {
-                case GL_RED: return MTLPixelFormatR32Float;
-                case GL_RG: return MTLPixelFormatRG32Float;
-                case GL_RGBA: return MTLPixelFormatRGBA32Float;
-                case GL_DEPTH_COMPONENT: return MTLPixelFormatDepth32Float;
-                case GL_DEPTH_STENCIL: return MTLPixelFormatDepth32Float_Stencil8;
+                case GL_RED: return MGLPixelFormatR32Float;
+                case GL_RG: return MGLPixelFormatRG32Float;
+                case GL_RGBA: return MGLPixelFormatRGBA32Float;
+                case GL_DEPTH_COMPONENT: return MGLPixelFormatDepth32Float;
+                case GL_DEPTH_STENCIL: return MGLPixelFormatDepth32Float_Stencil8;
 
                 default:
                     return 0;
@@ -2986,9 +2986,9 @@ MTLPixelFormat mtlPixelFormatForGLFormatType(GLenum gl_format, GLenum gl_type)
         case GL_HALF_FLOAT:
             switch(gl_format)
             {
-                case GL_RED: return MTLPixelFormatR16Float;
-                case GL_RG: return MTLPixelFormatRG16Float;
-                case GL_RGBA: return MTLPixelFormatRGBA16Float;
+                case GL_RED: return MGLPixelFormatR16Float;
+                case GL_RG: return MGLPixelFormatRG16Float;
+                case GL_RGBA: return MGLPixelFormatRGBA16Float;
                 default:
                     return 0;
             }
@@ -3002,18 +3002,18 @@ MTLPixelFormat mtlPixelFormatForGLFormatType(GLenum gl_format, GLenum gl_type)
 
         case GL_UNSIGNED_SHORT_5_6_5:
             if (__builtin_available(macOS 11.0, *)) {
-                return MTLPixelFormatB5G6R5Unorm;
+                return MGLPixelFormatB5G6R5Unorm;
             } else {
                 // Fallback on earlier versions
-                return MTLPixelFormatInvalid;
+                return MGLPixelFormatInvalid;
             }
 
         case GL_UNSIGNED_SHORT_5_6_5_REV:
             if (__builtin_available(macOS 11.0, *)) {
-                return MTLPixelFormatA1BGR5Unorm;
+                return MGLPixelFormatA1BGR5Unorm;
             } else {
                 // Fallback on earlier versions
-                return MTLPixelFormatInvalid;
+                return MGLPixelFormatInvalid;
             }
 
         case GL_UNSIGNED_SHORT_4_4_4_4:
@@ -3023,16 +3023,16 @@ MTLPixelFormat mtlPixelFormatForGLFormatType(GLenum gl_format, GLenum gl_type)
             return 0;
 
         case GL_UNSIGNED_INT_8_8_8_8:
-            return MTLPixelFormatRGBA8Unorm;
+            return MGLPixelFormatRGBA8Unorm;
 
         case GL_UNSIGNED_INT_8_8_8_8_REV:
-            return MTLPixelFormatBGRA8Unorm;
+            return MGLPixelFormatBGRA8Unorm;
 
         case GL_UNSIGNED_INT_10_10_10_2:
-            return MTLPixelFormatRGB10A2Unorm;
+            return MGLPixelFormatRGB10A2Unorm;
 
         case GL_UNSIGNED_INT_2_10_10_10_REV:
-            return MTLPixelFormatBGR10A2Unorm;
+            return MGLPixelFormatBGR10A2Unorm;
             return 0;
 
         default:
@@ -3040,22 +3040,22 @@ MTLPixelFormat mtlPixelFormatForGLFormatType(GLenum gl_format, GLenum gl_type)
                     "MGL WARNING: mtlPixelFormatForGLFormatType unknown type 0x%x format 0x%x\n",
                     gl_type,
                     gl_format);
-            return MTLPixelFormatInvalid;
+            return MGLPixelFormatInvalid;
     }
 }
 
 extern bool mglTexLevelInternalFormatCompressed(GLint internalformat);
 extern GLint mglCompressedInternalFormatToSizedUncompressed(GLint internalformat);
 
-MTLPixelFormat mtlPixelFormatForGLTex(Texture * tex)
+uint32_t mtlPixelFormatForGLTex(Texture * tex)
 {
-    MTLPixelFormat mtl_format;
+    uint32_t mtl_format;
     GLenum internal_format;
 
     if (!tex)
     {
         fprintf(stderr, "MGL WARNING: mtlPixelFormatForGLTex called with NULL texture\n");
-        return MTLPixelFormatInvalid;
+        return MGLPixelFormatInvalid;
     }
 
     internal_format = tex->internalformat;
@@ -3064,7 +3064,7 @@ MTLPixelFormat mtlPixelFormatForGLTex(Texture * tex)
         fprintf(stderr,
                 "MGL WARNING: mtlPixelFormatForGLTex texture %u has no internal format\n",
                 tex->name);
-        return MTLPixelFormatInvalid;
+        return MGLPixelFormatInvalid;
     }
 
     /* glTexImage* with a compressed internalformat stores data uncompressed
@@ -3080,13 +3080,13 @@ MTLPixelFormat mtlPixelFormatForGLTex(Texture * tex)
     }
 
     mtl_format = mtlFormatForGLInternalFormat(internal_format);
-    if (mtl_format == MTLPixelFormatInvalid)
+    if (mtl_format == MGLPixelFormatInvalid)
     {
         fprintf(stderr,
                 "MGL WARNING: mtlPixelFormatForGLTex texture %u unsupported internal format 0x%x\n",
                 tex->name,
                 internal_format);
-        return MTLPixelFormatInvalid;
+        return MGLPixelFormatInvalid;
     }
 
     return mtl_format;

@@ -3,7 +3,6 @@
 
 #import "MGLRenderer_Private.h"
 #include "mgl_env_flag.h"
-#include "mgl_render_cpp_objc.h"
 
 @implementation MGLRenderer (GPURecovery)
 
@@ -33,7 +32,7 @@
 
         // Get current error tracking from command buffer if available
         MGLRenderCppCommandBufferState currentState = {0};
-        BOOL hasCurrentCommandBuffer = mglRenderCommandBufferOwnerState(
+        BOOL hasCurrentCommandBuffer = mglRenderCppCommandBufferOwnerHasState(
             _renderPassManager.state->currentCommandBufferOwner,
             &currentState);
         if (hasCurrentCommandBuffer &&
@@ -68,8 +67,11 @@
 
         // Check for virtualization environment changes
         if (@available(macOS 11.0, *)) {
+            uint64_t registryID = 0;
+            (void)mglRenderCppGetDeviceIdentity(
+                (__bridge const void *)_device, &registryID, NULL, 0);
             // Device registry ID changes indicate virtualization issues
-            if (_device.registryID == 0) {
+            if (registryID == 0) {
                 NSLog(@"MGL WARNING: Detected virtualized Metal environment - enabling safety mode");
                 // Note: _isVirtualized would be an instance variable to track virtualization state
             }
@@ -102,10 +104,10 @@
     // PROPER FIX: Safe command buffer cleanup
     @try {
         MGLRenderCppCommandBufferState currentState = {0};
-        if (mglRenderCommandBufferOwnerState(
+        if (mglRenderCppCommandBufferOwnerHasState(
                 _renderPassManager.state->currentCommandBufferOwner,
                 &currentState)) {
-            if (currentState.status == MTLCommandBufferStatusCommitted) {
+            if (currentState.status == MGL_COMMAND_BUFFER_STATUS_COMMITTED) {
                 // Do not block indefinitely here; cleanup can be invoked on the render thread.
                 // Command buffers retain resources until completion, so dropping the reference is safe.
                 if (kMGLVerboseFrameLoopLogs) {
@@ -162,7 +164,7 @@
 }
 
 // AGX Driver Compatibility: Specialized command buffer commit with recovery
-- (void)commitCommandBufferWithAGXRecovery:(MGLMetalCommandBufferRef)commandBuffer
+- (void)commitCommandBufferWithAGXRecovery:(id)commandBuffer
 {
     /* s_commitCallCount is owned by the GL calling thread: commit paths are
      * reached on the GL thread and never run on the completion-handler
@@ -179,17 +181,22 @@
     @try {
 
     if (traceCommit) {
-        mglTraceLogNSString(@"MGL TRACE commit.begin call=%llu cb=%p status=%s label=%@",
+        char commandBufferLabel[128];
+        (void)mglRenderCppGetCommandBufferLabel(
+            (__bridge const void *)commandBuffer,
+            commandBufferLabel, sizeof(commandBufferLabel));
+        mglTraceLogNSString(@"MGL TRACE commit.begin call=%llu cb=%p status=%s label=%s",
               (unsigned long long)commitCall,
               commandBuffer,
               mglCommandBufferStatusName(
-                  mglRenderCommandBufferStatus(commandBuffer)),
-              commandBuffer.label ?: @"(no-label)");
+                  mglRenderCppCommandBufferStatus(
+                      (__bridge void *)commandBuffer)),
+              commandBufferLabel);
     }
     MGLRenderCppCommandBufferTransaction transaction = {0};
     @try {
         int transactionResult = [_renderPassManager
-            commitCommandBufferTransaction:commandBuffer
+            commitCommandBufferTransaction:(__bridge void *)commandBuffer
             recoveryOwner:_gpuRecovery.commandRecoveryOwner
             waitForCompletion:NO
             result:&transaction];
@@ -249,11 +256,11 @@
                   (unsigned long long)commitCall,
                   commandBuffer,
                   mglCommandBufferStatusName(
-                      (MTLCommandBufferStatus)transaction.after.status));
+                      transaction.after.status));
         }
     }
     } @finally {
-        [_renderPassManager releaseDetachedCommandBufferIfOwned:commandBuffer];
+        [_renderPassManager releaseDetachedCommandBufferIfOwned:(__bridge void *)commandBuffer];
     }
 }
 
@@ -285,7 +292,7 @@
 
     // Clear current problematic resources
     MGLRenderCppCommandBufferState currentState = {0};
-    if (mglRenderCommandBufferOwnerState(
+    if (mglRenderCppCommandBufferOwnerHasState(
             _renderPassManager.state->currentCommandBufferOwner,
             &currentState)) {
         [_renderPassManager discardCurrentCommandBuffer];
@@ -321,7 +328,7 @@
 
 #pragma mark - Metal Optimization Methods
 
-- (NSUInteger)getOptimalAlignmentForPixelFormat:(MTLPixelFormat)format
+- (NSUInteger)getOptimalAlignmentForPixelFormat:(uint32_t)format
 {
     (void)format;
     // aligned_alloc requires an alignment compatible with platform pointer alignment.

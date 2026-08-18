@@ -1883,7 +1883,7 @@ bool mglStoreCompressedTextureImage(GLMContext ctx,
     /* For block-compressed formats, pitch is the byte stride per row of blocks
      * (ceil(width/block_w) * bytes_per_block); the Metal upload path requires
      * a non-zero bytesPerRow to actually copy data into the compressed
-     * MTLPixelFormat texture.  For unknown/uncompressed formats this falls
+     * MGLPixelFormat texture.  For unknown/uncompressed formats this falls
      * back to 0 (the historic behaviour). */
     lvl->pitch = mglCompressedBytesPerRowOf(internalformat, width);
     lvl->mtl_format = 0u;

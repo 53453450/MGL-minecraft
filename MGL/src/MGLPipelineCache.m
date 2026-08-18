@@ -3,54 +3,12 @@
 #import "mgl_frame_activity.h"
 #include "mgl_env_flag.h"
 #include "mgl_render_cpp.h"
-#include "mgl_render_cpp_objc.h"
 #include "mgl_air_loader.h"   /* MGLRenderCppPipelineDescriptorState */
 
 @interface MGLPipelineCache ()
 - (BOOL)ensureCppOwnerCreated;
 - (BOOL)ensureCppOwner;
 @end
-
-static NSError *mglPipelineCacheMetalCppError(const char *message,
-                                              NSInteger code)
-{
-    NSString *description = message && message[0]
-        ? [NSString stringWithUTF8String:message]
-        : @"Metal-cpp operation failed";
-    return [NSError errorWithDomain:@"MGLPipelineCache"
-                               code:code
-                           userInfo:@{NSLocalizedDescriptionKey: description}];
-}
-
-static MGLRenderCppStencilDescriptorState
-mglPipelineCacheStencilState(MTLStencilDescriptor *descriptor)
-{
-    if (!descriptor) return (MGLRenderCppStencilDescriptorState){0};
-    return (MGLRenderCppStencilDescriptorState){
-        .present = 1,
-        .compare_function = (uint32_t)descriptor.stencilCompareFunction,
-        .read_mask = descriptor.readMask,
-        .write_mask = descriptor.writeMask,
-        .stencil_failure_operation =
-            (uint32_t)descriptor.stencilFailureOperation,
-        .depth_failure_operation =
-            (uint32_t)descriptor.depthFailureOperation,
-        .depth_stencil_pass_operation =
-            (uint32_t)descriptor.depthStencilPassOperation,
-    };
-}
-
-static MGLRenderCppDepthStencilDescriptorState
-mglPipelineCacheDepthStencilState(MTLDepthStencilDescriptor *descriptor)
-{
-    return (MGLRenderCppDepthStencilDescriptorState){
-        .depth_compare_function =
-            (uint32_t)descriptor.depthCompareFunction,
-        .depth_write_enabled = descriptor.depthWriteEnabled ? 1u : 0u,
-        .front = mglPipelineCacheStencilState(descriptor.frontFaceStencil),
-        .back = mglPipelineCacheStencilState(descriptor.backFaceStencil),
-    };
-}
 
 /* v5 excludes either kind of incomplete render pipeline and isolates both
  * sanitizer builds and archive producers. The producer boundary prevents the
@@ -80,9 +38,9 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
     self = [super init];
     if (!self) return nil;
 
-    _state.pipelineColor0Format = MTLPixelFormatInvalid;
-    _state.pipelineDepthFormat = MTLPixelFormatInvalid;
-    _state.pipelineStencilFormat = MTLPixelFormatInvalid;
+    _state.pipelineColor0Format = 0u;
+    _state.pipelineDepthFormat = 0u;
+    _state.pipelineStencilFormat = 0u;
     _state.psoDedupEnabled = psoDedupEnabled;
     _state.dsCacheEnabled = depthStencilCacheEnabled;
     _binaryArchiveRequested = binaryArchiveEnabled;
@@ -108,9 +66,9 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
     }
 
     MGLRenderCppPipelineActiveState active = {
-        .pipeline_state = (__bridge void *)_state.pipelineState,
-        .vertex_function = (__bridge void *)_state.pipelineVertexFunction,
-        .fragment_function = (__bridge void *)_state.pipelineFragmentFunction,
+        .pipeline_state = _state.pipelineState,
+        .vertex_function = _state.pipelineVertexFunction,
+        .fragment_function = _state.pipelineFragmentFunction,
         .color0_format = (uint32_t)_state.pipelineColor0Format,
         .depth_format = (uint32_t)_state.pipelineDepthFormat,
         .stencil_format = (uint32_t)_state.pipelineStencilFormat,
@@ -135,52 +93,48 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
     return enabled != 0;
 }
 
-- (MGLMetalDeviceRef)device
+- (id)device
 {
-    return _device;
+    return (__bridge id)_device;
 }
 
-- (void)setDevice:(MGLMetalDeviceRef)device
+- (void)setDevice:(id)device
 {
-    if (_device != device) {
+    void *opaqueDevice = (__bridge void *)device;
+    if (_device != opaqueDevice) {
         mglRenderCppDestroyPipelineCacheOwner(&_cppOwner);
     }
-    _device = device;
+    _device = opaqueDevice;
     if (_device) [self ensureCppOwnerCreated];
 }
 
-- (MGLMetalDepthStencilStateRef)depthStencilStateForDescriptor:
-    (MTLDepthStencilDescriptor *)descriptor
+- (id)depthStencilStateForValueState:
+    (const MGLRenderCppDepthStencilDescriptorState *)descriptorState
 {
-    if (!descriptor || !_device) return nil;
-    if (![self ensureCppOwner]) return nil;
-    MGLRenderCppDepthStencilDescriptorState descriptorState =
-        mglPipelineCacheDepthStencilState(descriptor);
+    if (!descriptorState || !_device || ![self ensureCppOwner]) return nil;
     void *statePtr = NULL;
     if (_state.dsCacheEnabled) {
         int created = 0;
         if (mglRenderCppGetOrCreateDepthStencilState(
-                _cppOwner, &descriptorState, &statePtr, &created) == 0 &&
+                _cppOwner, descriptorState, &statePtr, &created) == 0 &&
             statePtr) {
-            if (created) {
-                MGL_PERF_INC(g_mglDepthStencilStateCreatesSinceSwap);
-            }
-            return (__bridge MGLMetalDepthStencilStateRef)statePtr;
+            if (created) MGL_PERF_INC(g_mglDepthStencilStateCreatesSinceSwap);
+            return (__bridge id)statePtr;
         }
         return nil;
     }
     if (mglRenderCppCreateDepthStencilStateFromState(
-            &descriptorState, &statePtr) == 0 && statePtr) {
+            descriptorState, &statePtr) == 0 && statePtr) {
         MGL_PERF_INC(g_mglDepthStencilStateCreatesSinceSwap);
-        return (__bridge_transfer MGLMetalDepthStencilStateRef)statePtr;
+        return (__bridge_transfer id)statePtr;
     }
     return nil;
 }
 
 - (BOOL)lookupPipelineForWords:(const uint64_t *)words
-                      pipeline:(MGLMetalRenderPipelineStateRef *)pipelineOut
-                vertexFunction:(MGLMetalFunctionRef *)vertexFunctionOut
-              fragmentFunction:(MGLMetalFunctionRef *)fragmentFunctionOut
+                      pipeline:(id *)pipelineOut
+                vertexFunction:(id *)vertexFunctionOut
+              fragmentFunction:(id *)fragmentFunctionOut
 {
     if (pipelineOut) *pipelineOut = nil;
     if (vertexFunctionOut) *vertexFunctionOut = nil;
@@ -195,18 +149,15 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
         !cached.pipeline_state) {
         return NO;
     }
-    *pipelineOut =
-        (__bridge MGLMetalRenderPipelineStateRef)cached.pipeline_state;
-    *vertexFunctionOut =
-        (__bridge MGLMetalFunctionRef)cached.vertex_function;
-    *fragmentFunctionOut =
-        (__bridge MGLMetalFunctionRef)cached.fragment_function;
+    *pipelineOut = (__bridge id)cached.pipeline_state;
+    *vertexFunctionOut = (__bridge id)cached.vertex_function;
+    *fragmentFunctionOut = (__bridge id)cached.fragment_function;
     return YES;
 }
 
-- (NSUInteger)storePipeline:(MGLMetalRenderPipelineStateRef)pipeline
-              vertexFunction:(MGLMetalFunctionRef)vertexFunction
-            fragmentFunction:(MGLMetalFunctionRef)fragmentFunction
+- (NSUInteger)storePipeline:(id)pipeline
+              vertexFunction:(id)vertexFunction
+            fragmentFunction:(id)fragmentFunction
                     forWords:(const uint64_t *)words
 {
     if (!pipeline || !words) return 0;
@@ -269,10 +220,16 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
     }
 
     uint64_t registryID = 0;
-    if (@available(macOS 11.0, *)) registryID = _device.registryID;
+    char deviceName[256] = {0};
+    (void)mglRenderCppGetDeviceIdentity(_device,
+                                        &registryID, deviceName,
+                                        sizeof(deviceName));
+    NSString *deviceNameString = deviceName[0]
+        ? [NSString stringWithUTF8String:deviceName]
+        : @"unknown";
     NSString *deviceID = registryID != 0
         ? [NSString stringWithFormat:@"%016llx", (unsigned long long)registryID]
-        : MGLSafeArchivePathComponent(_device.name);
+        : MGLSafeArchivePathComponent(deviceNameString);
     NSString *schema = [NSString stringWithFormat:@"%@-cpp",
                         kMGLPipelineArchiveBuildSchema];
     NSString *filename = [NSString stringWithFormat:@"pipeline-%@-%@.binaryarchive",
@@ -356,36 +313,6 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
     }
 }
 
-- (MGLMetalRenderPipelineStateRef)createRenderPipelineStateWithDescriptor:
-    (MTLRenderPipelineDescriptor *)descriptor
-    error:(NSError **)error
-{
-    if (error) *error = nil;
-    if (!descriptor || !_device) {
-        if (error) {
-            *error = [NSError errorWithDomain:@"MGLPipelineCache"
-                                         code:14
-                                     userInfo:@{NSLocalizedDescriptionKey:
-                                                    @"Missing pipeline descriptor or Metal device"}];
-        }
-        return nil;
-    }
-
-    if (![self ensureCppOwnerCreated]) return nil;
-    void *pipeline = NULL;
-    char message[512] = {0};
-    int archiveHit = 0;
-    int result = mglRenderCppCreateRenderPipelineStateWithArchiveOwner(
-        _cppOwner, (__bridge void *)descriptor, &pipeline,
-        &archiveHit, message, sizeof(message));
-    (void)archiveHit;
-    if (result == 0 && pipeline) {
-        return (__bridge_transfer MGLMetalRenderPipelineStateRef)pipeline;
-    }
-    if (error) *error = mglPipelineCacheMetalCppError(message, 12);
-    return nil;
-}
-
 - (int)createRenderPipelineFromState:
     (const MGLRenderCppPipelineDescriptorState *)state
     vertexFunction:(void *)vertexFunction
@@ -405,31 +332,31 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
     if ([self ensureCppOwner]) {
         mglRenderCppInvalidatePipelineActiveState(_cppOwner);
     }
-    _state.pipelineState = nil;
-    _state.pipelineColor0Format = MTLPixelFormatInvalid;
-    _state.pipelineDepthFormat = MTLPixelFormatInvalid;
-    _state.pipelineStencilFormat = MTLPixelFormatInvalid;
+    _state.pipelineState = NULL;
+    _state.pipelineColor0Format = 0u;
+    _state.pipelineDepthFormat = 0u;
+    _state.pipelineStencilFormat = 0u;
     _state.pipelineProgramName = 0u;
-    _state.pipelineVertexFunction = nil;
-    _state.pipelineFragmentFunction = nil;
+    _state.pipelineVertexFunction = NULL;
+    _state.pipelineFragmentFunction = NULL;
 }
 
-- (void)setPipelineState:(MGLMetalRenderPipelineStateRef)pipelineState
+- (void)setPipelineState:(id)pipelineState
 {
     if ([self ensureCppOwner]) {
         mglRenderCppSetPipelineActiveObject(
             _cppOwner, (__bridge void *)pipelineState);
     }
-    _state.pipelineState = pipelineState;
+    _state.pipelineState = (__bridge void *)pipelineState;
 }
 
-- (void)activatePipelineState:(MGLMetalRenderPipelineStateRef)pipelineState
-                 color0Format:(MTLPixelFormat)color0Format
-                  depthFormat:(MTLPixelFormat)depthFormat
-                stencilFormat:(MTLPixelFormat)stencilFormat
+- (void)activatePipelineState:(id)pipelineState
+                 color0Format:(uint32_t)color0Format
+                  depthFormat:(uint32_t)depthFormat
+                stencilFormat:(uint32_t)stencilFormat
                   programName:(GLuint)programName
-               vertexFunction:(MGLMetalFunctionRef)vertexFunction
-             fragmentFunction:(MGLMetalFunctionRef)fragmentFunction
+               vertexFunction:(id)vertexFunction
+             fragmentFunction:(id)fragmentFunction
 {
     if ([self ensureCppOwner]) {
         MGLRenderCppPipelineActiveState active = {
@@ -443,23 +370,23 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
         };
         mglRenderCppActivatePipelineState(_cppOwner, &active);
     }
-    _state.pipelineState = pipelineState;
-    _state.pipelineColor0Format = color0Format;
-    _state.pipelineDepthFormat = depthFormat;
-    _state.pipelineStencilFormat = stencilFormat;
+    _state.pipelineState = (__bridge void *)pipelineState;
+    _state.pipelineColor0Format = (uint64_t)color0Format;
+    _state.pipelineDepthFormat = (uint64_t)depthFormat;
+    _state.pipelineStencilFormat = (uint64_t)stencilFormat;
     _state.pipelineProgramName = programName;
-    _state.pipelineVertexFunction = vertexFunction;
-    _state.pipelineFragmentFunction = fragmentFunction;
+    _state.pipelineVertexFunction = (__bridge void *)vertexFunction;
+    _state.pipelineFragmentFunction = (__bridge void *)fragmentFunction;
 }
 
 - (void)setBlendFactorsForAttachment:(NSUInteger)index
-                        srcRgbFactor:(MTLBlendFactor)srcRgbFactor
-                      srcAlphaFactor:(MTLBlendFactor)srcAlphaFactor
-                        dstRgbFactor:(MTLBlendFactor)dstRgbFactor
-                      dstAlphaFactor:(MTLBlendFactor)dstAlphaFactor
-                        rgbOperation:(MTLBlendOperation)rgbOperation
-                      alphaOperation:(MTLBlendOperation)alphaOperation
-                           colorMask:(MTLColorWriteMask)colorMask
+                        srcRgbFactor:(uint32_t)srcRgbFactor
+                      srcAlphaFactor:(uint32_t)srcAlphaFactor
+                        dstRgbFactor:(uint32_t)dstRgbFactor
+                      dstAlphaFactor:(uint32_t)dstAlphaFactor
+                        rgbOperation:(uint32_t)rgbOperation
+                      alphaOperation:(uint32_t)alphaOperation
+                           colorMask:(uint32_t)colorMask
 {
     if (index >= MAX_COLOR_ATTACHMENTS) return;
     if ([self ensureCppOwner]) {
@@ -488,15 +415,15 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
 - (void)resetCaches
 {
     mglRenderCppResetPipelineCacheOwner(_cppOwner);
-    _state.pipelineState = nil;
-    _state.pipelineVertexFunction = nil;
-    _state.pipelineFragmentFunction = nil;
+    _state.pipelineState = NULL;
+    _state.pipelineVertexFunction = NULL;
+    _state.pipelineFragmentFunction = NULL;
 }
 
 - (void)shutdown
 {
     [self resetCaches];
-    _device = nil;
+    _device = NULL;
     mglRenderCppDestroyPipelineCacheOwner(&_cppOwner);
 }
 

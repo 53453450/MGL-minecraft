@@ -13,15 +13,11 @@ void mglRendererCompatBindTexture(GLMContext glm_ctx,
     (void)[renderer bindMTLTexture:texture];
 }
 
-static MGLMetalSamplerStateRef mglBindingCreateSampler(
-    MGLMetalDeviceRef device,
-    MTLSamplerDescriptor *descriptor)
+static id mglBindingCreateDefaultSampler(void)
 {
-    (void)device;
     void *sampler = NULL;
-    if (mglRenderCppCreateSampler((__bridge void *)descriptor,
-                                  &sampler) == 0 && sampler) {
-        return (__bridge_transfer MGLMetalSamplerStateRef)sampler;
+    if (mglRenderCppCreateDefaultSampler(&sampler) == 0 && sampler) {
+        return (__bridge_transfer id)sampler;
     }
     return nil;
 }
@@ -68,26 +64,35 @@ static MGLMetalSamplerStateRef mglBindingCreateSampler(
     // in a compute shader), preserve it via a GPU-to-GPU blit instead of
     // re-uploading potentially stale CPU data.
     if (tex->mtl_data && tex->is_render_target) {
-        MGLMetalTextureRef existingTexture = (__bridge MGLMetalTextureRef)(tex->mtl_data);
-        MTLTextureUsage requiredRenderTargetUsage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+        id existingTexture = (__bridge id)(tex->mtl_data);
+        MGLRenderCppTextureInfo existingInfo = {0};
+        BOOL hasExistingInfo = existingTexture &&
+            mglRenderCppGetTextureInfo((__bridge void *)existingTexture,
+                                       &existingInfo) == 0;
+        if (existingTexture && !hasExistingInfo) {
+            NSLog(@"MGL ERROR: Failed to query texture %u metadata before render-target transition",
+                  tex->name);
+            return false;
+        }
+        const uint64_t requiredRenderTargetUsage = (1ull << 2) | (1ull << 0);
         NSUInteger requiredMipLevels =
             (tex->target == GL_RENDERBUFFER || tex->samples > 1u)
                 ? 1u
                 : ((tex->mipmap_levels > 1u) ? (NSUInteger)tex->mipmap_levels : 1u);
-        BOOL usageMismatch = existingTexture &&
-            ((existingTexture.usage & requiredRenderTargetUsage) != requiredRenderTargetUsage);
-        BOOL mipCountMismatch = existingTexture &&
-            requiredMipLevels > existingTexture.mipmapLevelCount;
+        BOOL usageMismatch = hasExistingInfo &&
+            ((existingInfo.usage & requiredRenderTargetUsage) != requiredRenderTargetUsage);
+        BOOL mipCountMismatch = hasExistingInfo &&
+            requiredMipLevels > existingInfo.mipmap_level_count;
         if (existingTexture && (usageMismatch || mipCountMismatch)) {
             NSLog(@"MGL WARNING: Recreating texture %u for render-target use (old usage=0x%lx oldMips=%lu requiredMips=%lu)",
                   tex->name,
-                  (unsigned long)existingTexture.usage,
-                  (unsigned long)existingTexture.mipmapLevelCount,
+                  (unsigned long)existingInfo.usage,
+                  (unsigned long)existingInfo.mipmap_level_count,
                   (unsigned long)requiredMipLevels);
 
             // Keep a strong reference to the old texture so we can blit its GPU
             // data to the new one after releasing tex->mtl_data.
-            __strong MGLMetalTextureRef oldTexture = existingTexture;
+            __strong id oldTexture = existingTexture;
 
             mglSafeReleaseMetalObj((void **)&tex->mtl_data);
             [self releaseGLSampledRenderTargetCopyForTexture:tex];
@@ -95,11 +100,15 @@ static MGLMetalSamplerStateRef mglBindingCreateSampler(
             // Create a new texture with correct usage.  Don't set
             // DIRTY_TEXTURE_DATA so that createMTLTextureFromGLTexture
             // skips CPU data upload — we'll blit GPU data instead.
-            MGLMetalTextureRef newTexture = [self createMTLTextureFromGLTexture:tex];
-            if (newTexture && oldTexture &&
-                newTexture.width == oldTexture.width &&
-                newTexture.height == oldTexture.height &&
-                newTexture.depth == oldTexture.depth) {
+            id newTexture = [self createMTLTextureFromGLTexture:tex];
+            MGLRenderCppTextureInfo newInfo = {0};
+            BOOL dimensionsMatch = newTexture &&
+                mglRenderCppGetTextureInfo((__bridge void *)newTexture,
+                                           &newInfo) == 0 &&
+                newInfo.width == existingInfo.width &&
+                newInfo.height == existingInfo.height &&
+                newInfo.depth == existingInfo.depth;
+            if (oldTexture && dimensionsMatch) {
                 // Blit GPU data from old texture to new texture to preserve
                 // any writes (e.g. imageStore) that occurred before the
                 // is_render_target transition.
@@ -136,7 +145,7 @@ static MGLMetalSamplerStateRef mglBindingCreateSampler(
         if (tex->mtl_data &&
             !storageShapeChanged &&
             (tex->dirty_bits & DIRTY_TEXTURE_DATA) != 0) {
-            MGLMetalTextureRef existingTexture = (__bridge MGLMetalTextureRef)(tex->mtl_data);
+            id existingTexture = (__bridge id)(tex->mtl_data);
             if (existingTexture &&
                 [self uploadFullCPUTextureDataIntoTexture:tex
                                                      metal:existingTexture
@@ -214,7 +223,7 @@ static MGLMetalSamplerStateRef mglBindingCreateSampler(
         if (!tex->params.mtl_data) {
             NSLog(@"MGL WARNING: Sampler creation failed, using default");
             tex->params.mtl_data = (void *)CFBridgingRetain(
-                mglBindingCreateSampler(_device, [MTLSamplerDescriptor new]));
+                mglBindingCreateDefaultSampler());
         }
         if ((tex->name == 21u || tex->name == 27u) &&
             mglEnvFlagEnabled("MGL_TRACE_TEXTURE_NAMES")) {
@@ -236,10 +245,14 @@ static MGLMetalSamplerStateRef mglBindingCreateSampler(
     }
 
     if (mglMipDiagEnabled()) {
-        MGLMetalTextureRef mtlTex = (__bridge MGLMetalTextureRef)(tex->mtl_data);
+        id mtlTex = (__bridge id)(tex->mtl_data);
+        MGLRenderCppTextureInfo textureInfo = {0};
+        BOOL hasTextureInfo = mtlTex &&
+            mglRenderCppGetTextureInfo((__bridge void *)mtlTex, &textureInfo) == 0;
         uint64_t signature = 1469598103934665603ULL;
         signature = mglMipDiagMixState(signature, (uint64_t)(uintptr_t)tex->mtl_data);
-        signature = mglMipDiagMixState(signature, mtlTex ? mtlTex.mipmapLevelCount : 0u);
+        signature = mglMipDiagMixState(
+            signature, hasTextureInfo ? textureInfo.mipmap_level_count : 0u);
         signature = mglMipDiagMixState(signature, tex->num_levels);
         signature = mglMipDiagMixState(signature, tex->mipmap_levels);
         signature = mglMipDiagMixState(signature, tex->params.base_level);
@@ -259,7 +272,7 @@ static MGLMetalSamplerStateRef mglBindingCreateSampler(
                   (unsigned)tex->height,
                   (unsigned)tex->num_levels,
                   (unsigned)tex->mipmap_levels,
-                  (unsigned long)(mtlTex ? mtlTex.mipmapLevelCount : 0u),
+                  (unsigned long)(hasTextureInfo ? textureInfo.mipmap_level_count : 0u),
                   (unsigned)tex->params.base_level,
                   (unsigned)tex->params.max_level,
                   tex->mipmapped ? 1 : 0,

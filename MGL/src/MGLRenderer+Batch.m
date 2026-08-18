@@ -8,7 +8,6 @@
 #import "mgl_sampler_compat.h"
 #include "mgl_env_flag.h"
 #include "mgl_render_cpp.h"
-#include "mgl_render_cpp_objc.h"   /* owner-first render-pass readers */
 
 static BOOL mglBatchHasActiveEncoder(void *owner)
 {
@@ -20,12 +19,21 @@ static void *mglBatchEncoderTraceToken(void *owner)
     return owner;
 }
 
+static MGLRenderCppTextureInfo mglBatchTextureInfo(id texture)
+{
+    MGLRenderCppTextureInfo info = {0};
+    if (texture) {
+        (void)mglRenderCppGetTextureInfo((__bridge void *)texture, &info);
+    }
+    return info;
+}
+
 static void mglBatchDrawIndexedPrimitives(
     void *renderEncoderOwner,
-    MTLPrimitiveType primitiveType,
+    uint32_t primitiveType,
     NSUInteger indexCount,
-    MTLIndexType indexType,
-    MGLMetalBufferRef indexBuffer,
+    uint64_t indexType,
+    id indexBuffer,
     NSUInteger indexBufferOffset,
     NSUInteger instanceCount,
     NSInteger baseVertex,
@@ -48,11 +56,11 @@ static void mglBatchDrawIndexedPrimitives(
 
 static void mglBatchDrawIndexedPrimitivesIndirect(
     void *renderEncoderOwner,
-    MTLPrimitiveType primitiveType,
-    MTLIndexType indexType,
-    MGLMetalBufferRef indexBuffer,
+    uint32_t primitiveType,
+    uint64_t indexType,
+    id indexBuffer,
     NSUInteger indexBufferOffset,
-    MGLMetalBufferRef indirectBuffer,
+    id indirectBuffer,
     NSUInteger indirectBufferOffset)
 {
     const MGLRenderCppDrawPlan plan = {
@@ -68,51 +76,49 @@ static void mglBatchDrawIndexedPrimitivesIndirect(
         renderEncoderOwner, &plan, NULL, 0);
 }
 
-static MGLMetalIndirectCommandBufferRef mglBatchCreateIndirectCommandBuffer(
-    MGLMetalDeviceRef device,
+static id mglBatchCreateIndirectCommandBuffer(
     BOOL indexed,
     NSUInteger maxCommandCount)
 {
-    (void)device;
     void *bufferCPP = NULL;
     uint32_t commandTypes = indexed
-        ? (uint32_t)MTLIndirectCommandTypeDrawIndexed
-        : (uint32_t)MTLIndirectCommandTypeDraw;
+        ? (uint32_t)2u
+        : (uint32_t)1u;
     if (mglRenderCppCreateIndirectCommandBuffer(
             commandTypes, 1, 1, 0, 0, maxCommandCount,
-            MTLResourceStorageModePrivate, &bufferCPP) == 0 && bufferCPP) {
-        return (__bridge_transfer MGLMetalIndirectCommandBufferRef)bufferCPP;
+            32u, &bufferCPP) == 0 && bufferCPP) {
+        return (__bridge_transfer id)bufferCPP;
     }
     return nil;
 }
 
 static void mglBatchResetIndirectCommandBuffer(
-    MGLMetalIndirectCommandBufferRef indirectBuffer,
+    id indirectBuffer,
     NSRange range)
 {
     (void)mglRenderCppResetIndirectCommandBuffer(
         (__bridge void *)indirectBuffer, range.location, range.length);
 }
 
-static MGLMetalIndirectRenderCommandRef mglBatchIndirectRenderCommand(
-    MGLMetalIndirectCommandBufferRef indirectBuffer,
+static id mglBatchIndirectRenderCommand(
+    id indirectBuffer,
     NSUInteger index)
 {
     void *commandCPP = NULL;
     if (mglRenderCppGetIndirectRenderCommand(
             (__bridge void *)indirectBuffer, index, &commandCPP) == 0 &&
         commandCPP) {
-        return (__bridge MGLMetalIndirectRenderCommandRef)commandCPP;
+        return (__bridge id)commandCPP;
     }
     return nil;
 }
 
 static void mglBatchSetIndirectDrawIndexed(
-    MGLMetalIndirectRenderCommandRef command,
-    MTLPrimitiveType primitiveType,
+    id command,
+    uint32_t primitiveType,
     NSUInteger indexCount,
-    MTLIndexType indexType,
-    MGLMetalBufferRef indexBuffer,
+    uint64_t indexType,
+    id indexBuffer,
     NSUInteger indexBufferOffset,
     NSUInteger instanceCount,
     NSInteger baseVertex,
@@ -125,8 +131,8 @@ static void mglBatchSetIndirectDrawIndexed(
 }
 
 static void mglBatchSetIndirectDraw(
-    MGLMetalIndirectRenderCommandRef command,
-    MTLPrimitiveType primitiveType,
+    id command,
+    uint32_t primitiveType,
     NSUInteger vertexStart,
     NSUInteger vertexCount,
     NSUInteger instanceCount,
@@ -139,9 +145,9 @@ static void mglBatchSetIndirectDraw(
 
 static void mglBatchUseRenderResource(
     void *renderEncoderOwner,
-    MGLMetalResourceRef resource,
-    MTLResourceUsage usage,
-    MTLRenderStages stages)
+    id resource,
+    uint32_t usage,
+    uint32_t stages)
 {
     (void)mglRenderCppUseRenderResourceForOwner(
         renderEncoderOwner, (__bridge void *)resource,
@@ -150,7 +156,7 @@ static void mglBatchUseRenderResource(
 
 static void mglBatchExecuteIndirectCommands(
     void *renderEncoderOwner,
-    MGLMetalIndirectCommandBufferRef indirectBuffer,
+    id indirectBuffer,
     NSRange range)
 {
     (void)mglRenderCppExecuteIndirectCommandsForOwner(
@@ -208,16 +214,18 @@ static void mglBatchExecuteIndirectCommands(
             Texture *rtColor = NULL;
             Texture *rtDepth = NULL;
             (void)mglFramebufferLooksLikeGLSampledCopyRenderTarget(ctx, fbo, &rtColor, &rtDepth);
-            MGLMetalTextureRef colorMTL = tex->mtl_data ? (__bridge MGLMetalTextureRef)(tex->mtl_data) : nil;
-            MGLMetalTextureRef depthMTL = (rtDepth && rtDepth->mtl_data)
-                ? (__bridge MGLMetalTextureRef)(rtDepth->mtl_data)
+            id colorMTL = tex->mtl_data ? (__bridge id)(tex->mtl_data) : nil;
+            id depthMTL = (rtDepth && rtDepth->mtl_data)
+                ? (__bridge id)(rtDepth->mtl_data)
                 : nil;
-            MGLMetalTextureRef rpColor0 = mglRenderPassAttachmentTextureForState(
+            id rpColor0 = (__bridge id)mglRenderCppGetRenderPassAttachmentTextureOwner(
                 _renderPassManager.state->renderPassStateOwner,
                 MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0);
-            MGLMetalTextureRef rpDepth = mglRenderPassAttachmentTextureForState(
+            id rpDepth = (__bridge id)mglRenderCppGetRenderPassAttachmentTextureOwner(
                 _renderPassManager.state->renderPassStateOwner,
                 MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0);
+            MGLRenderCppTextureInfo colorInfo =
+                mglBatchTextureInfo(colorMTL);
             mglTraceLog("RT_SAMPLE_COPY_WRITE_MARK hit=%llu fbo=%u program=%u rtTex=%u label=\"%s\" depthTex=%u depthLabel=\"%s\" viewport=%d,%d,%d,%d scissor(en=%d box=%d,%d,%d,%d) depth(test=%d write=%d func=0x%x) blend=%d cull=%d colorMask=%d%d%d%d level=%u texInit(ever=%u full=%u source=%u) levels=%u mips=%u mipmapped=%u mtlColor=%p fmt=%lu size=%lux%lu rpColor=%p rpDepth=%p depthMTL=%p",
                         (unsigned long long)hit,
                         (unsigned)fbo->name,
@@ -255,9 +263,9 @@ static void mglBatchExecuteIndirectCommands(
                   tex ? (unsigned)tex->mipmap_levels : 0u,
                   tex ? (unsigned)tex->mipmapped : 0u,
                   colorMTL,
-                  (unsigned long)(colorMTL ? colorMTL.pixelFormat : MTLPixelFormatInvalid),
-                  (unsigned long)(colorMTL ? colorMTL.width : 0),
-                  (unsigned long)(colorMTL ? colorMTL.height : 0),
+                  (unsigned long)colorInfo.pixel_format,
+                  (unsigned long)colorInfo.width,
+                  (unsigned long)colorInfo.height,
                   rpColor0,
                   rpDepth,
                         depthMTL);
@@ -318,14 +326,14 @@ static void mglBatchExecuteIndirectCommands(
             continue;
         }
         Texture *tex = [self framebufferAttachmentTexture:&fbo->color_attachments[attachmentIndex]];
-        MGLMetalTextureRef mtlTex = (tex && tex->mtl_data)
-            ? (__bridge MGLMetalTextureRef)(tex->mtl_data)
+        id mtlTex = (tex && tex->mtl_data)
+            ? (__bridge id)(tex->mtl_data)
             : nil;
         if (!mtlTex) {
             continue;
         }
         for (GLuint colorSlot = 0u; colorSlot < MAX_COLOR_ATTACHMENTS; colorSlot++) {
-            if (mglRenderPassAttachmentTextureForState(
+            if ((__bridge id)mglRenderCppGetRenderPassAttachmentTextureOwner(
                     _renderPassManager.state->renderPassStateOwner,
                     MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR,
                     colorSlot) == mtlTex) {
@@ -437,13 +445,13 @@ static void mglBatchExecuteIndirectCommands(
               @"MGL_STATE() and STATE() would read different GLMState objects");
 }
 
-- (void)recordLastBoundVertexBuffer:(MGLMetalBufferRef)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index
+- (void)recordLastBoundVertexBuffer:(id)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index
 {
     mglRenderCppBindingRecordVertexBuffer(
         _bindingStateOwner, (__bridge void *)buffer, offset, (uint32_t)index);
 }
 
-- (void)recordLastBoundFragmentBuffer:(MGLMetalBufferRef)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index
+- (void)recordLastBoundFragmentBuffer:(id)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index
 {
     mglRenderCppBindingRecordFragmentBuffer(
         _bindingStateOwner, (__bridge void *)buffer, offset, (uint32_t)index);
@@ -461,22 +469,22 @@ static void mglBatchExecuteIndirectCommands(
         _bindingStateOwner, (uint32_t)index);
 }
 
-- (void)setViewportIfNeeded:(MTLViewport)viewport
+- (void)setViewportIfNeeded:(MGLViewportValue)viewport
 {
     void *owner = _renderPassManager.state->currentRenderEncoderOwner;
     mglRenderCppBindingSetViewportForOwner(
-        _bindingStateOwner, owner, viewport.originX, viewport.originY,
+        _bindingStateOwner, owner, viewport.origin_x, viewport.origin_y,
         viewport.width, viewport.height, viewport.znear, viewport.zfar);
 }
 
-- (void)setScissorRectIfNeeded:(MTLScissorRect)rect
+- (void)setScissorRectIfNeeded:(MGLScissorRectValue)rect
 {
     void *owner = _renderPassManager.state->currentRenderEncoderOwner;
     mglRenderCppBindingSetScissorForOwner(
         _bindingStateOwner, owner, rect.x, rect.y, rect.width, rect.height);
 }
 
-- (void)setTriangleFillModeIfNeeded:(MTLTriangleFillMode)mode
+- (void)setTriangleFillModeIfNeeded:(uint32_t)mode
 {
     void *owner = _renderPassManager.state->currentRenderEncoderOwner;
     mglRenderCppBindingSetTriangleFillForOwner(
@@ -603,10 +611,10 @@ static void mglBatchExecuteIndirectCommands(
         mglPointerRangeIsReadable(fbo, sizeof(*fbo))) {
         fboName = fbo->name;
     }
-    MGLMetalTextureRef rpColor0 = mglRenderPassAttachmentTextureForState(
+    id rpColor0 = (__bridge id)mglRenderCppGetRenderPassAttachmentTextureOwner(
                 _renderPassManager.state->renderPassStateOwner,
                 MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0);
-    MGLMetalTextureRef rpDepth = mglRenderPassAttachmentTextureForState(
+    id rpDepth = (__bridge id)mglRenderCppGetRenderPassAttachmentTextureOwner(
                 _renderPassManager.state->renderPassStateOwner,
                 MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0);
     GLMState *snapshot = batch->state_snapshot ? (GLMState *)batch->state_snapshot : NULL;
@@ -739,12 +747,14 @@ static void mglBatchExecuteIndirectCommands(
         mglPointerRangeIsReadable(fbo, sizeof(*fbo))) {
         fboName = fbo->name;
     }
-    MGLMetalTextureRef rpColor0 = mglRenderPassAttachmentTextureForState(
+    id rpColor0 = (__bridge id)mglRenderCppGetRenderPassAttachmentTextureOwner(
                 _renderPassManager.state->renderPassStateOwner,
                 MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0);
-    MGLMetalTextureRef rpDepth = mglRenderPassAttachmentTextureForState(
+    id rpDepth = (__bridge id)mglRenderCppGetRenderPassAttachmentTextureOwner(
                 _renderPassManager.state->renderPassStateOwner,
                 MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0);
+    MGLRenderCppTextureInfo rpColorInfo = mglBatchTextureInfo(rpColor0);
+    MGLRenderCppTextureInfo rpDepthInfo = mglBatchTextureInfo(rpDepth);
     Program *vertexProgram = mglResolveProgramForStageFromState(glm_ctx, _VERTEX_SHADER);
     Program *fragmentProgram = mglResolveProgramForStageFromState(glm_ctx, _FRAGMENT_SHADER);
     FBOAttachment *color0Attachment = (fbo && (fbo->color_attachment_bitfield & 1u))
@@ -817,26 +827,26 @@ static void mglBatchExecuteIndirectCommands(
                 (unsigned)_renderPassManager.state->renderPassFramebufferName,
                 rpColor0,
                 rpDepth,
-                (unsigned long)(rpColor0 ? rpColor0.width : 0),
-                (unsigned long)(rpColor0 ? rpColor0.height : 0),
-                (unsigned long)(rpDepth ? rpDepth.width : 0),
-                (unsigned long)(rpDepth ? rpDepth.height : 0),
-                mglLoadActionName((uint32_t)mglRenderPassLoadActionForTrace(
+                (unsigned long)rpColorInfo.width,
+                (unsigned long)rpColorInfo.height,
+                (unsigned long)rpDepthInfo.width,
+                (unsigned long)rpDepthInfo.height,
+                mglLoadActionName((uint32_t)mglRenderCppRenderPassLoadActionForTrace(
                     _renderPassManager.state->renderPassStateOwner,
                     MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0,
-                    MTLLoadActionDontCare)),
-                mglStoreActionName((uint32_t)mglRenderPassStoreActionForTrace(
+                    0u)),
+                mglStoreActionName((uint32_t)mglRenderCppRenderPassStoreActionForTrace(
                     _renderPassManager.state->renderPassStateOwner,
                     MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0,
-                    MTLStoreActionDontCare)),
-                mglLoadActionName((uint32_t)mglRenderPassLoadActionForTrace(
+                    0u)),
+                mglLoadActionName((uint32_t)mglRenderCppRenderPassLoadActionForTrace(
                     _renderPassManager.state->renderPassStateOwner,
                     MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0,
-                    MTLLoadActionDontCare)),
-                mglStoreActionName((uint32_t)mglRenderPassStoreActionForTrace(
+                    0u)),
+                mglStoreActionName((uint32_t)mglRenderCppRenderPassStoreActionForTrace(
                     _renderPassManager.state->renderPassStateOwner,
                     MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0,
-                    MTLStoreActionDontCare)),
+                    0u)),
                 color0Attachment ? (unsigned)color0Attachment->texture : 0u,
                 color0Attachment ? (unsigned)color0Attachment->textarget : 0u,
                 color0Attachment ? (unsigned)color0Attachment->level : 0u,
@@ -1677,7 +1687,7 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
         return;
     }
 
-    MGLMetalBufferRef mtlIndexBuffer = (__bridge MGLMetalBufferRef)(indexBuffer->data.mtl_data);
+    id mtlIndexBuffer = (__bridge id)(indexBuffer->data.mtl_data);
     if (!mtlIndexBuffer) {
         if (batch->command_count > 0) {
             [self traceReplayCommand:batch
@@ -1694,12 +1704,12 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
     }
 
     MGLDrawCommand *firstCmd = &batch->commands[0];
-    MTLPrimitiveType primType = (MTLPrimitiveType)batch->key.primitive_type;
+    uint32_t primType = (uint32_t)batch->key.primitive_type;
 
     mglBatchDrawIndexedPrimitives(
         encCtx->render_encoder_owner, primType,
         (NSUInteger)batch->stream_index_count,
-        MTLIndexTypeUInt32, mtlIndexBuffer, 0, 1, 0,
+        MGL_DRAW_INDEX_UINT32, mtlIndexBuffer, 0, 1, 0,
         firstCmd->baseInstance);
     [self traceReplayCommand:batch
                      command:firstCmd
@@ -1739,7 +1749,7 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
         return NO;
     }
 
-    MGLMetalBufferRef mtlIndexBuffer = (__bridge MGLMetalBufferRef)(indexBuffer->data.mtl_data);
+    id mtlIndexBuffer = (__bridge id)(indexBuffer->data.mtl_data);
     if (!mtlIndexBuffer) {
         if (batch->command_count > 0) {
             [self traceReplayCommand:batch
@@ -1754,7 +1764,7 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
         return NO;
     }
 
-    size_t argSize = sizeof(MTLDrawIndexedPrimitivesIndirectArguments);
+    size_t argSize = sizeof(MGLDrawIndexedPrimitivesIndirectArguments);
     if (batch->command_count > (UINT32_MAX / argSize)) {
         if (batch->command_count > 0) {
             [self traceReplayCommand:batch
@@ -1771,7 +1781,7 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
 
     NSUInteger neededBytes = (NSUInteger)argSize * (NSUInteger)batch->command_count;
     NSUInteger indirectArgsOffset = 0;
-    MGLMetalBufferRef indirectArgsBuffer =
+    id indirectArgsBuffer =
         [self mdiArgumentScratchBufferWithLength:neededBytes
                                           offset:&indirectArgsOffset];
     if (!indirectArgsBuffer) {
@@ -1787,9 +1797,19 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
         }
         return NO;
     }
+    void *indirectArgsContents = NULL;
+    uint64_t indirectArgsLength = 0;
+    if (mglRenderCppGetBufferContents(
+            (__bridge void *)indirectArgsBuffer, &indirectArgsContents,
+            &indirectArgsLength) != 0 ||
+        indirectArgsOffset > indirectArgsLength ||
+        neededBytes > indirectArgsLength - indirectArgsOffset) {
+        return NO;
+    }
 
-    MTLDrawIndexedPrimitivesIndirectArguments *args =
-        (MTLDrawIndexedPrimitivesIndirectArguments *)((uint8_t *)indirectArgsBuffer.contents + indirectArgsOffset);
+    MGLDrawIndexedPrimitivesIndirectArguments *args =
+        (MGLDrawIndexedPrimitivesIndirectArguments *)
+            ((uint8_t *)indirectArgsContents + indirectArgsOffset);
     for (uint32_t i = 0; i < batch->command_count; i++) {
         MGLDrawCommand *cmd = &batch->commands[i];
         args[i].indexCount = (uint32_t)cmd->count;
@@ -1799,12 +1819,12 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
         args[i].baseInstance = cmd->baseInstance;
     }
 
-    MTLPrimitiveType primType = (MTLPrimitiveType)batch->key.primitive_type;
+    uint32_t primType = (uint32_t)batch->key.primitive_type;
     for (uint32_t i = 0; i < batch->command_count; i++) {
         MGLDrawCommand *cmd = &batch->commands[i];
         mglBatchDrawIndexedPrimitivesIndirect(
             encCtx->render_encoder_owner, primType,
-            MTLIndexTypeUInt32, mtlIndexBuffer,
+            MGL_DRAW_INDEX_UINT32, mtlIndexBuffer,
             (NSUInteger)cmd->indexBufferOffset, indirectArgsBuffer,
             indirectArgsOffset + (i * argSize));
         [self traceReplayCommand:batch
@@ -1856,10 +1876,10 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
 
     if (@available(macOS 10.14, *)) {
         BOOL indexed = batch->uses_elements ? YES : NO;
-        MGLMetalIndirectCommandBufferRef icb = nil;
+        id icb = nil;
         @try {
             icb = mglBatchCreateIndirectCommandBuffer(
-                _device, indexed, (NSUInteger)batch->command_count);
+                indexed, (NSUInteger)batch->command_count);
         } @catch (NSException *exception) {
             static uint64_t s_icbCreateExceptionCount = 0;
             uint64_t hit = ++s_icbCreateExceptionCount;
@@ -1891,7 +1911,7 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
         mglBatchResetIndirectCommandBuffer(
             icb, NSMakeRange(0, (NSUInteger)batch->command_count));
 
-        MTLPrimitiveType primType = (MTLPrimitiveType)batch->key.primitive_type;
+        uint32_t primType = (uint32_t)batch->key.primitive_type;
         if (indexed) {
             for (uint32_t i = 0; i < batch->command_count; i++) {
                 MGLDrawCommand *cmd = &batch->commands[i];
@@ -1908,7 +1928,7 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
                 }
 
                 Buffer *glBuf = NULL;
-                MGLMetalBufferRef idxBuf = nil;
+                id idxBuf = nil;
                 if (![self resolveElementBufferForCommand:cmd
                                                     label:"icbBatch"
                                                   context:glm_ctx
@@ -1926,8 +1946,8 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
                 }
 
                 NSUInteger drawIndexOffset = cmd->indexBufferOffset;
-                MTLIndexType drawIndexType = getMTLIndexType(cmd->indexType);
-                MGLMetalBufferRef drawIndexBuffer = mglPreparedElementIndexBuffer(_device,
+                uint64_t drawIndexType = mglIndexTypeForGLType(cmd->indexType);
+                id drawIndexBuffer = mglPreparedElementIndexBuffer(_device,
                                                                               glBuf,
                                                                               idxBuf,
                                                                               cmd->indexType,
@@ -1945,7 +1965,7 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
                     return NO;
                 }
 
-                MGLMetalIndirectRenderCommandRef indirectCommand =
+                id indirectCommand =
                     mglBatchIndirectRenderCommand(icb, (NSUInteger)i);
                 if (!indirectCommand) {
                     [self traceReplayCommand:batch
@@ -1967,13 +1987,13 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
                     (NSUInteger)cmd->baseInstance);
                 mglBatchUseRenderResource(
                     encCtx->render_encoder_owner,
-                    drawIndexBuffer, MTLResourceUsageRead,
-                    MTLRenderStageVertex);
+                    drawIndexBuffer, 1u,
+                    1u);
             }
         } else {
             for (uint32_t i = 0; i < batch->command_count; i++) {
                 MGLDrawCommand *cmd = &batch->commands[i];
-                MGLMetalIndirectRenderCommandRef indirectCommand =
+                id indirectCommand =
                     mglBatchIndirectRenderCommand(icb, (NSUInteger)i);
                 if (!indirectCommand) {
                     [self traceReplayCommand:batch
@@ -1995,8 +2015,8 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
 
         mglBatchUseRenderResource(
             encCtx->render_encoder_owner,
-            icb, MTLResourceUsageRead,
-            MTLRenderStageVertex);
+            icb, 1u,
+            1u);
         mglBatchExecuteIndirectCommands(
             encCtx->render_encoder_owner, icb,
             NSMakeRange(0, (NSUInteger)batch->command_count));
@@ -2016,12 +2036,13 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
     return NO;
 }
 
-- (MGLMetalBufferRef)mdiArgumentScratchBufferWithLength:(NSUInteger)length
+- (id)mdiArgumentScratchBufferWithLength:(NSUInteger)length
                                              offset:(NSUInteger *)offsetOut
 {
-    return [_renderPassManager mdiArgumentScratchBufferWithDevice:_device
-                                                            length:length
-                                                            offset:offsetOut];
+    return (__bridge id)[_renderPassManager
+        mdiArgumentScratchBufferWithDevice:(__bridge void *)_device
+                                     length:length
+                                     offset:offsetOut];
 }
 
 @end
