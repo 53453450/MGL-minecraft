@@ -1,4 +1,14 @@
 /*
+ * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
+ *
+ * This file contains material from the Apache-2.0-licensed MGL baseline.
+ * Copyrightable modifications made after baseline commit
+ * 79d38f666336141d962109a864a6744bf66e438c are licensed under
+ * LGPL-3.0-only by their respective copyright holders.
+ * See LICENSE-APACHE-2.0, LICENSE, and LICENSING.md.
+ */
+
+/*
  * Copyright (C) Michael Larson on 1/6/2022
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -97,8 +107,8 @@ typedef enum MGLShaderTextureDataKind {
  * capability reporting and the glGetProgramiv geometry reflection. */
 typedef enum MGLGSRoute {
     MGL_GS_ROUTE_NONE = 0,          /* no GS attached */
-    MGL_GS_ROUTE_COMPUTE,           /* compute-expansion path (planned P1) */
-    MGL_GS_ROUTE_MESH,              /* mesh-shader path (planned P2) */
+    MGL_GS_ROUTE_COMPUTE,           /* Compute expansion path. */
+    MGL_GS_ROUTE_MESH,              /* Mesh-shader path. */
     MGL_GS_ROUTE_UNSUPPORTED        /* GS attached, no execution path yet */
 } MGLGSRoute;
 

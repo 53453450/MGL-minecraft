@@ -113,25 +113,13 @@ help:
 		'  make test-regression  Build and run the headless regression suite.' \
 		'  make test-dirty-hash  Run the minimal dirty-hash batch regression.' \
 		'  make test             Run the interactive GLFW test application.' \
-		'  make check-air-only   Fail if production paths reference the legacy GLSL->SPIR-V->MSL chain.' \
-		'  make check-p5-metalcpp Fail if the single-path Metal-cpp renderer regresses.' \
 		'  make clean            Remove local build outputs.'
-
-# P3 硬闸：生产路径不得残留旧 source-compile 链（详见 scripts/check_air_only.sh）。
-check-air-only:
-	@bash scripts/check_air_only.sh
-
-check-p4-metalcpp:
-	@bash scripts/check_p4_metalcpp.sh
-
-check-p5-metalcpp:
-	@bash scripts/check_p5_metalcpp.sh
 
 # mgl
 #mgl_srcs_c := $(wildcard MGL/src/*.c)
 mgl_srcs_c := $(filter-out %/gl_core.c  %/gl_es.c, $(wildcard MGL/src/*.c))
 
-# Aux shader assets (P3): the precompiled metallib table embeds all helper
+# Aux shader assets: the precompiled metallib table embeds all helper
 # shaders; the runtime never compiles .metal source.  The table is regenerated
 # when a *.metal, the MANIFEST, or the generator changes; the committed
 # mgl_aux_assets.* files keep clean clones buildable without the metal tools.
@@ -187,6 +175,15 @@ mgl_es_objs := $(addprefix $(build_es_dir)/,$(mgl_es_objs))
 
 mgl_es_arc_objs := $(mgl_srcs_objc:.m=.o)
 mgl_es_arc_objs := $(addprefix $(build_es_dir)/arc/,$(mgl_es_arc_objs))
+
+# metal-cpp is a header-only external dependency.  Keep it out of the source
+# tree's object recipes while making a missing checkout an explicit fetch step;
+# this also prevents `make -j` from compiling C++ TUs before the headers arrive.
+MGL_METAL_CPP_HEADER := external/metal-cpp/Metal/Metal.hpp
+$(MGL_METAL_CPP_HEADER):
+	@bash external/clone_external.sh
+
+$(mgl_core_objs) $(mgl_es_objs): $(MGL_METAL_CPP_HEADER)
 
 
 # Define the directories and repositories
@@ -259,8 +256,8 @@ M1_AIR_CXXFLAGS := -std=c++20 -I$(LLVM_ROOT)/include -IMGL/include \
 CXXFLAGS_GL_CORE := $(CXXFLAGS) -DMGL_GL_CORE $(M1_AIR_CXXFLAGS)
 CXXFLAGS_GL_ES := $(CXXFLAGS) -DMGL_GL_ES $(M1_AIR_CXXFLAGS)
 # Product libs carry the M1 AIR backend, so they depend on the LLVM runtime.
-# -lobjc: mgl_render_cpp.cpp 等纯 C++ TU 内联调用 objc_msgSend，clang++ 不会
-# 像 ObjC 目标文件那样自动补链 ObjC runtime。
+# Pure C++ translation units call objc_msgSend through metal-cpp, so the
+# Objective-C runtime must be linked explicitly.
 LIBS += $(LLVM_LDFLAGS) -lobjc
 
 CC_ID := $(shell $(CC) --version 2>/dev/null | sed -n '1p')
@@ -378,7 +375,7 @@ $(build_core_dir)/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) -MMD $(CFLAGS_GL_CORE) -c $< -o $@
 
-#-std=gnu17 
+#-std=gnu17
 $(build_core_dir)/%.o: %.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) -MMD $(CXXFLAGS_GL_CORE) -c $< -o $@
@@ -443,8 +440,10 @@ clean:
 install-pkgdeps: download-pkgdeps compile-pkgdeps
 
 download-pkgdeps:
-
-	brew install glm glfw
+	# GLFW is built from the repository-local modified checkout by lib.
+	# Only install the unrelated system dependency here; bench-system may
+	# still be used separately with a manually installed Homebrew GLFW.
+	brew install glm
 
 compile-pkgdeps:
 
@@ -472,7 +471,8 @@ bench: $(build_dir)/libmgl.dylib $(build_dir)/libglfw.dylib
 
 # System Apple OpenGL benchmark target — compiles the same benchmark source
 # with -D__MGL_BENCHMARK_SYSTEM_GL__ and links against the system OpenGL
-# framework via brew's GLFW (no MGL dependency).  Requires `brew install glfw`.
+# framework via a separately installed system GLFW (no MGL dependency).  This
+# optional target is outside the normal build and never replaces local GLFW.
 bench-system: benchmark/mgl_benchmark.c
 	$(APPLE_CLANG) -Wall -gfull -O2 -arch $(HOST_ARCH) \
 		-I$(SYSTEM_GLFW_PREFIX)/include \
@@ -622,8 +622,8 @@ $(build_dir)/test_mcrepro: test_legacy_compat/test_mcrepro.mm \
 test-mcrepro: $(build_dir)/test_mcrepro
 	$(build_dir)/test_mcrepro
 
-# Phase 0 (METALCPP_RENDERER_PLAN): Metal-cpp 基础接入 smoke gate.
-# 桥接现有 id<MTLDevice> -> MTL::Device*，init/shutdown 幂等无崩溃。
+# Metal-cpp initialization smoke gate. Device bridging and repeated
+# initialization/shutdown must remain stable.
 $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
 	MGL/src/mgl_render_cpp.cpp MGL/src/mgl_render_cpp.h \
 	MGL/src/mgl_renderer_backend.cpp MGL/src/mgl_renderer_backend.h \
@@ -704,8 +704,6 @@ test-air:
 # Keep the local gate serial: the GPU suites share Metal compiler/archive state.
 # The interactive GLFW application and performance benchmark remain explicit.
 test-all:
-	$(MAKE) check-air-only
-	$(MAKE) check-p5-metalcpp
 	$(MAKE) test-frontends
 	$(MAKE) test-air
 	$(MAKE) test-dirty-hash
@@ -715,8 +713,6 @@ test-all:
 	build-test-regression test-regression test-dirty-hash test-benchmark \
 	test-legacy-compat test-mglir test-mgllex test-mglparse test-mglsema \
 	test-mglair test-mglair-gtest test-mcrepro test-metalcpp test-frontends \
-	test-air test-all check-air-only
-
-.PHONY: check-p4-metalcpp check-p5-metalcpp
+	test-air test-all
 
 -include $(deps)

@@ -1,13 +1,18 @@
+/*
+ * SPDX-License-Identifier: LGPL-3.0-only
+ *
+ * This file was added after baseline commit
+ * 79d38f666336141d962109a864a6744bf66e438c and is licensed under
+ * LGPL-3.0-only by its respective copyright holder.
+ * See LICENSE and LICENSING.md.
+ */
+
 //------------------------------------------------------------------------------------------------
-// mgl_air_loader.h — AIR metallib → MTL::Library → PSO 的纯 C 接口
+// Pure C interface for loading AIR metallibs and creating pipeline states.
 //
-// 调用方（ObjC 渲染层）只通过本头接触 C++ AIR 加载器，不看见 MTL::* 类型。
-// 所有权规则：
-//   mglAirLoadLibrary 返回的 library（void* = MTL::Library*，+1 retained）由调用方
-//   拥有，可直接 CFBridgingRetain 转移给 ObjC 侧或 mglAirRelease 释放。
-//   mglAirCreateRenderPipeline 返回的 PSO 由 loader 缓存额外 retain；调用方也
-//   持有一份引用。mglAirCreateComputePipeline 不缓存，返回值仅由调用方持有。
-//   两者的调用方引用都用 mglAirRelease 释放。
+// Objective-C callers never see MTL::* types. Returned libraries and pipeline
+// states are owned references and must be released with mglAirRelease. The
+// loader keeps an additional reference only for cached render pipelines.
 //------------------------------------------------------------------------------------------------
 #pragma once
 
@@ -18,25 +23,23 @@
 extern "C" {
 #endif
 
-/* P4.2: final/simple/safe descriptor 等价装配的 value-state 输入。ObjC 只
- * 构造本结构（不再组装 MTLRenderPipelineDescriptor），render/vertex/
- * tessellation 状态逐字段传入 C++ builder；二进制归档由调用方以
- * MTL::BinaryArchive*（void*）传给 mglRenderCppCreateRenderPipelineFromState。 */
+/* Value-state input for render-pipeline construction. Objective-C fills this
+ * structure without exposing MTLRenderPipelineDescriptor. */
 typedef struct MGLRenderCppPipelineDescriptorState {
     uint64_t vertex_program_instance;
     uint64_t vertex_program_generation;
     uint64_t fragment_program_instance;
     uint64_t fragment_program_generation;
     uint32_t color_count;
-    uint32_t color_format[8];   /* MGLPixelFormat 以 uint 传 */
-    uint32_t depth_format;      /* MGLPixelFormat 以 uint 传（MGLPixelFormatInvalid=0） */
-    uint32_t stencil_format;    /* MGLPixelFormat 以 uint 传 */
+    uint32_t color_format[8];   /* MGLPixelFormat ABI values. */
+    uint32_t depth_format;      /* MGLPixelFormatInvalid is zero. */
+    uint32_t stencil_format;    /* MGLPixelFormat ABI value. */
     int      rasterization_enabled;
     int      icb_enabled;       /* indirect command buffers */
     int      alpha_to_coverage_enabled;
     int      alpha_to_one_enabled;
     uint32_t input_primitive_topology;
-    /* AIR 顶点布局（由 finalDescriptor 给出）。 */
+    /* AIR vertex layout. */
     uint32_t attrib_count;
     uint32_t attrib_format[32];
     uint32_t attrib_offset[32];
@@ -62,37 +65,35 @@ typedef struct MGLRenderCppPipelineDescriptorState {
     uint32_t tessellation_output_winding_order;
 } MGLRenderCppPipelineDescriptorState;
 
-/* 旧名兼容别名（P3.4 backend-neutral 命名迁移期的过渡名）。 */
+/* Compatibility alias retained for existing callers. */
 typedef MGLRenderCppPipelineDescriptorState MGLPipelineDescriptorState;
 
-/* device: void* = MTL::Device*，仅供 C++ renderer 内部调用。
- * bytes/size: .metallib 字节块。成功返回 0 且 *library_out 非空。 */
+/* device is an internal MTL::Device*. bytes contains a metallib image.
+ * Returns 0 with an owned library on success. */
 int mglAirLoadLibrary(const void* device, const unsigned char* bytes, size_t size,
                       void** library_out, char* err, size_t errcap);
 
-/* vs_function/fs_function: void* = finalDescriptor 已选定的 MTL::Function*。
- * 使用实际 function 可保留 capture/clip/tess 等 AIR 变体。成功返回 0 且
- * *pso_out 非空。 */
+/* Function pointers are the selected MTL::Function variants. Returns 0 with
+ * an owned pipeline state on success. */
 int mglAirCreateRenderPipeline(const void* device, void* vs_function, void* fs_function,
                                const MGLPipelineDescriptorState* desc, void** pso_out,
                                char* err, size_t errcap);
 
-/* P4.2: mglAirCreateRenderPipeline + 二进制归档。binary_archive（+0 borrowed
- * MTL::BinaryArchive*，可为 NULL）仅用于同时具有 vertex/fragment function
- * 的完整 render pipeline；先查 archive hit，miss 才编译并 add。合法的
- * vertex-only capture/rasterizer-discard PSO 不进 archive，因为 Metal 会在
- * 序列化阶段拒绝该记录。 */
+/* Creates a render pipeline with an optional borrowed binary archive. Complete
+ * vertex/fragment pipelines query the archive before compiling. Vertex-only
+ * capture or rasterizer-discard pipelines are not archived because Metal
+ * rejects those records during serialization. */
 int mglAirCreateRenderPipelineWithArchive(
     const void* device, void* vs_function, void* fs_function,
     const MGLRenderCppPipelineDescriptorState* desc, void* binary_archive,
     void** pso_out, char* err, size_t errcap);
 
-/* library: void* = MTL::Library*；compute function 名为 "main"。返回的
- * PSO 是未缓存的 +1 引用。Program/renderer compute 缓存在 mgl_render_cpp。 */
+/* Creates the "main" compute pipeline from a borrowed MTL::Library*. The
+ * returned pipeline is owned and is not cached by this loader. */
 int mglAirCreateComputePipeline(const void* device, void* library,
                                 void** pso_out, char* err, size_t errcap);
 
-/* MTL::Release 包装（对 loader 返回的 +1 引用）。 */
+/* Releases an owned object returned by this loader. */
 void mglAirRelease(void* obj);
 
 /* Release the loader-owned PSO cache. Called by the C++ renderer when its

@@ -1,10 +1,11 @@
 # AIR M3 与 Metal-cpp Renderer TODO
 
-> 当前快照：2026-08-18（P5 单路径收口，platform-shell/value-state 边界批次）。
+> 当前快照：2026-08-18（M3 单路径收口完成）。
 > 生产源码不再读取迁移期开关，command/resource/encoder 操作通过 C++ owner facade；
 > `mgl_render_cpp_objc.h`、`MGLMetal*Ref` 和 smoke 对 transition adapter 的依赖已删除。
-> 当前终态审计以 `make check-p5-metalcpp`、`make -j4 lib` 和 Metal-cpp smoke 为准；
-> 历史 P4/A-B 数字仅保留在下方完成记录，不代表当前验证契约。
+> 施工期 checker 与 baseline 脚本已在 M3 完成后删除，不再作为长期维护接口；
+> 当前验证入口为 `make -j4 lib`、`make test-all` 和 `git diff --check`。
+> 历史阶段编号、checker 和 A/B 数字仅保留在下方完成记录，不代表当前验证契约。
 >
 > 适用分支：当前工作区（`lgpl`）
 >
@@ -36,11 +37,11 @@ M3 完成必须同时满足以下四项，不能只以 smoke 或单个 draw case
 | AIR VS/FS/CS | 已接入 | frontend、reflection、metallib、PSO 和 runtime tests 已通过 |
 | AIR TCS/TES | 大部分完成 | TCS kernel、TES post-tess vertex、varying/resource ABI 已有；native triangle/quad 支持 array/indexed/instanced/indirect 和非 indexed multi-patch；isolines/point-mode 走 TES compute expansion + passthrough vertex，isolines 几何按 GL 4.6 §11.2.2.3（n 行 edge v、m 段/行、每段 1 线 2 顶点），XFB 经 slot 31 捕获并与光栅化并存（见 P2E） |
 | AIR GS | 大部分完成 | compute route、全部输入/输出拓扑、invocation、varying、resource、instancing、**direct indexed（P1）**、**indirect（P1）**、**multi-draw（P1）**、**XFB（P1，单 stream INTERLEAVED，slot 31 捕获 + slot 27 原子 meta）**、**gl_Layer/gl_ViewportIndex（2026-08-12，`air_geometry_layer_viewport` 回归）**、**多 stream 原型（2026-08-12，`air_geometry_multi_stream_xfb` 回归）** 已有；**XFB link-time layout plan（2026-08-16）** 已有；剩余 SEPARATE_ATTRIBS capture execution、规范化 multi-stream capacity/order、整图元截断/保序、passthrough-XFB 与 default-stream reflection 闭环 |
-| 旧 SPIR-V 构建链 | 已完全脱离（2026-08-14 核验） | `external/` 无 glslang/SPIRV-*；`mgl_msl_compiler.*`/`test_msl_bindings` 已删；`check_air_only.sh` 通过（MGL/src 0 命中动态编译符号）；SPIRV 命名已迁为中性（`MGLShaderModule`/`MGLShaderResource`，旧名仅留 alias）；干净 clone `make` 即构建（glfw 自动配置，见 b188af2） |
-| Metal-cpp 基础设施 | P5 单路径 | 纯 C facade、owner、resource creation、encoder setters、draw/blit/compute wrappers 与 command transaction 已接线 |
-| C++ renderer P5 | 单路径收口 | 生产 gate、旧 ref typedef、过渡 adapter 和直接 ObjC Metal 操作已删除；平台对象由 `MGLPlatformRendererShell` 唯一持有；非平台 ObjC/私有头的 Metal 对象与 descriptor census 为零 |
+| 旧 SPIR-V 构建链 | 已完全脱离（2026-08-14 核验） | `external/` 无 glslang/SPIRV-*；`mgl_msl_compiler.*`/`test_msl_bindings` 已删；生产源码无动态编译链符号；SPIRV 命名已迁为中性（`MGLShaderModule`/`MGLShaderResource`，旧名仅留 alias）；干净 clone `make` 即构建，且始终使用仓库内修改版 GLFW |
+| Metal-cpp 基础设施 | 单路径 | 纯 C facade、owner、resource creation、encoder setters、draw/blit/compute wrappers 与 command transaction 已接线 |
+| C++ renderer | 单路径收口 | 生产 gate、旧 ref typedef、过渡 adapter 和直接 ObjC Metal 操作已删除；平台对象由 `MGLPlatformRendererShell` 唯一持有；非平台 ObjC/私有头的 Metal 对象与 descriptor census 为零 |
 
-### 当前工作区收口状态（2026-08-18，未提交增量）
+### 当前工作区收口状态（2026-08-18）
 
 本轮完成了 P5 单路径的 gate/adapter 删除、owner ABI 补强以及 platform-shell 边界收口；
 私有 GL 语义接口按薄适配层使用纯 value/opaque 状态：
@@ -71,17 +72,16 @@ M3 完成必须同时满足以下四项，不能只以 smoke 或单个 draw case
 - `mgl_draw_encode.m` 的公共/私有入口已改为 opaque handle、数值 primitive/index
   enum 和 C `bool`；它只保留 GL primitive emulation/validation，draw 提交统一走
   `mglRenderCppEncodeDrawForRenderEncoderOwner`。
-- `check-p5-metalcpp` 直接检查 gate/legacy bridge/ref typedef、adapter 文件、
+- 施工期 checker 曾覆盖 gate/legacy bridge/ref typedef、adapter 文件、
   implementation macro 唯一性、backend/platform roots、render-pass/pipeline-cache
-  私有头 opaque 约束和 Objective-C command operation；`make -j4 lib`、
-  `make test-metalcpp`、`git diff --check` 已通过。
+  私有头 opaque 约束和 Objective-C command operation。M3 完成后这些脚本已删除，
+  稳定验证由构建和运行测试承担。
 - 后续审计不再使用 `MGL_USE_METALCPP=0/1` A/B；回归、ASan/TSan 和干净 clone
   构建必须以单一路径分别执行。
 
 本轮串行回归证据（构建产物为当前工作区）：唯一 Metal-cpp 路径为
-`73 PASS / 0 FAIL / 2 SKIP`；`make check-air-only`、`make test-mglair`、
-`make test-mglair-gtest`（42/42）、`make test-metalcpp` 和
-`make check-p5-metalcpp` 通过。
+`73 PASS / 0 FAIL / 2 SKIP`；`make test-mglair`、
+`make test-mglair-gtest`（42/42）、`make test-metalcpp` 和 `make test-all` 通过。
 
 - `MGLPlatformRendererShell` 现在是唯一的 `CAMetalLayer`/drawable/AppKit Metal
   生命周期边界：layer 配置、几何同步、drawable texture bridge 和 detach 均由 shell
@@ -4354,10 +4354,10 @@ kernel dispatch（air_geometry* / XFB 路径）。
   pipeline/function/device 句柄使用 opaque `void *`，格式使用 `uint64_t` value-state，
   blend 参数使用 `uint32_t`。`MGLPipelineCache.m` 是兼容边界，显式恢复 Metal 类型
   后调用 C++ pipeline owner，不持有独立缓存权威状态。
-- `check-p5-metalcpp.sh` 已固定检查：生产 gate/旧 bridge/ref typedef、adapter
-  文件、唯一 implementation TU、backend/platform roots、render-pass/pipeline-cache
-  私有头 opaque 约束，以及 Objective-C command operation。`make test-all` 直接调用
-  P5 checker；P4 checker 仅保留兼容包装。
+- 施工期静态审计覆盖了生产 gate/旧 bridge/ref typedef、adapter 文件、唯一
+  implementation TU、backend/platform roots、render-pass/pipeline-cache 私有头
+  opaque 约束，以及 Objective-C command operation。M3 完成后对应脚本和 Makefile
+  target 已删除。
 - 本批强制全量重编后 `make test-all` 通过；Metal-cpp smoke 输出 `SMOKE_DONE`，
   gtest 为 `42/42`，regression 为 `73 PASS / 0 FAIL / 2 SKIP`，`git diff --check`
   通过。未跟踪的 sanitizer/build 目录按工作区资产保留。
@@ -4371,11 +4371,11 @@ kernel dispatch（air_geometry* / XFB 路径）。
 - `mgl_texture_compat.{h,m}` 的 pixel-format/swizzle/扩展上传接口改为纯整数 ABI；
   BASE/MAX_LEVEL sampled texture view 的 view 创建、缓存 retain/release 和 source
   metadata 查询已统一进入 `mglRenderCppSampledTextureViewForBaseLevel`。
-- P5 checker 新增已完成 value-state island 的 Metal 类型审计，以及 sampled-view
-  backend owner facade 检查。当前生产 gate、过渡 adapter、旧 ref typedef 和直接
+- 施工期审计覆盖了已完成 value-state island 的 Metal 类型，以及 sampled-view
+  backend owner facade。当前生产 gate、过渡 adapter、旧 ref typedef 和直接
   Objective-C command operation 仍保持零命中。
 
-本批验证：`make -j4 lib`、`make check-p5-metalcpp`、`make test-metalcpp`、
+本批验证：`make -j4 lib`、`make test-metalcpp`、
 `make test-mglair`、`make test-mglair-gtest`（42/42）、`make test-regression`
 （73 PASS / 0 FAIL / 2 SKIP）和 `git diff --check` 均通过。下方“未完成”描述属于
 迁移前快照，已被本页末尾的 P5 单路径终态记录取代。
@@ -4404,8 +4404,8 @@ kernel dispatch（air_geometry* / XFB 路径）。
   `Metal/Metal.h`；`isFramebufferOnly` 查询经
   `mglRenderCppTextureIsFramebufferOnly` owner facade，避免通用 `id` 重新承担
   Metal selector。
-- `MGLRenderer+RenderPass_Private.h` 的 drawable 参数降为 opaque `id`；P5 checker
-  已将 RenderPass、Blit 及其私有头纳入严格审计。生产源码无 gate、bridge、旧
+- `MGLRenderer+RenderPass_Private.h` 的 drawable 参数降为 opaque `id`；施工期审计
+  已覆盖 RenderPass、Blit 及其私有头。生产源码无 gate、bridge、旧
   callback/ref typedef 或过渡 adapter，Metal-cpp implementation macro 仍只位于
   `MGL/src/mgl_render_cpp.cpp`。
 
@@ -4416,7 +4416,7 @@ AppKit 生命周期。可复现审计命令：
 
 ```sh
 rg -n 'MGL_USE_METALCPP|mgl_render_cpp_objc|MGLMetal[A-Za-z]+Ref|MGLRendererMetalBridge' \
-  MGL/src MGL/include Makefile test_legacy_compat benchmark scripts/record_p3_baseline.sh
+  MGL/src MGL/include Makefile test_legacy_compat benchmark
 perl -0pe 's{/\*.*?\*/}{}gs; s{//[^\n]*}{}g' MGL/src/*.m MGL/include/*.h | \
   rg -n 'id[[:space:]]*<MTL|MTL[A-Z][A-Za-z]+Descriptor|MTL::'
 rg -n 'CAMetalLayer|NSView|nextDrawable' \
@@ -4436,9 +4436,9 @@ rg -n '#import[[:space:]]+<Metal/Metal\.h>|#include[[:space:]]+<Metal/Metal\.h>'
   --glob '!MGLPlatformRendererShell.m' --glob '!MGLPlatformRendererShell.h'
 ```
 
-`make test-all` 已直接串联 `check-p5-metalcpp`，不再调用失效的 P4 gate。全量 lib
-和专项测试矩阵结果以本记录的验证段落为准；工作区现有 sanitizer/build 目录仍
-视为用户资产，不由本次迁移清理。
+`make test-all` 只运行长期维护的构建和运行测试，不再调用任何迁移阶段 checker。
+全量 lib 和专项测试矩阵结果以本记录的验证段落为准；工作区现有
+sanitizer/build 目录仍视为用户资产，不由本次迁移清理。
 
 ### P5 当前完成记录追加（2026-08-18：platform/recovery/buffer/value layout）
 
@@ -4463,12 +4463,12 @@ rg -n '#import[[:space:]]+<Metal/Metal\.h>|#include[[:space:]]+<Metal/Metal\.h>'
   `mglRenderCppCreateDefaultSampler` 创建并以 +1 opaque handle 返回。
 - `MGLRenderer+VertexLayout.m` 的 vertex format、step function、blend 和 color-write
   mask 全部写入整数 value-state；共享 vertex/blend helper 的私有返回类型同步改为
-  `uint32_t`。Buffer、Binding、VertexLayout 均已加入 P5 completed-island checker。
+  `uint32_t`。Buffer、Binding、VertexLayout 均已纳入施工期边界审计。
 - `MGLRenderer+Compute.m` 已清除 Metal 类型、descriptor 和资源属性读取；buffer
   length 及 texture pixel-format/type/array-length 通过 `MGLRenderCppBufferInfo` /
   `MGLRenderCppTextureInfo` 查询，level view、默认 sampler 和 dispatch 继续由 C++
   facade 创建或编码。compute encoder/pipeline/function/temporary 仅以 opaque `id`
-  持有，`MTLSize` 已改为显式 x/y/z value-state；Compute 已加入 P5 checker。
+  持有，`MTLSize` 已改为显式 x/y/z value-state；Compute 已纳入施工期边界审计。
 
 以下是 2026-08-18 RenderPass/Blit 收口前的历史快照（不代表当前终态）：当时
 renderer 源码仍有 10 个文件、1017 个 `id<MTL...>` 命中；私有头仍有 5 个文件、
@@ -4530,8 +4530,7 @@ rg -n "id[[:space:]]*<MTL|MTL[A-Z][A-Za-z]+Descriptor|MTL::" \
 - stripped 终态 census（注释先剥离）：非平台 `.m`/私有头无 `id<MTL...>`、Metal
   descriptor、`MTL::` 或直接 Metal selector；唯一允许命中为
   `MGLPlatformRendererShell.{m,h}` 的 AppKit/CAMetalLayer 生命周期。
-- `make test-all` 已直接串联 `check-p5-metalcpp`。最终验证通过：
-  `make -j4 lib`、`make check-air-only`、`make check-p5-metalcpp`、
+- 最终验证通过：`make -j4 lib`、
   `make test-mglair`、`make test-mglair-gtest`（42/42）、`make test-metalcpp`、
   `make test-regression`（73 PASS / 0 FAIL / 2 SKIP）和 `git diff --check`。
 
@@ -4541,12 +4540,12 @@ rg -n "id[[:space:]]*<MTL|MTL[A-Z][A-Za-z]+Descriptor|MTL::" \
   Objective-C 分类的函数静态变量持有；`MGLRendererBackendHandle` 负责懒创建、借用
   返回、retain/release 和 teardown。这样这些 Metal buffer 与 size-constants、copy-back
   及其他临时资源遵循同一 backend owner 生命周期。
-- `check-p5-metalcpp.sh` 增加了 backend field/API/lifecycle 以及 Objective-C 静态
-  fallback owner 的窄审计；合法的 GL 语义 fallback 和 capability fallback 不纳入该规则。
+- 施工期审计覆盖了 backend field/API/lifecycle 以及 Objective-C 静态 fallback
+  owner；合法的 GL 语义 fallback 和 capability fallback 不纳入该规则。
 - `test_metalcpp_smoke.mm` 锁定 getter 的零长度拒绝、非空懒创建和重复调用稳定性，
   输出 `RENDERER_BACKEND_FALLBACK_BUFFER_OWNER_OK`。
 
-本轮增量验证：`make -j4 lib`、`make check-air-only`、`make check-p5-metalcpp`、
+本轮增量验证：`make -j4 lib`、
 `make test-mglair`、`make test-mglair-gtest`（42/42）、`make test-metalcpp`、
 `make test-regression`（73 PASS / 0 FAIL / 2 SKIP）、`make test-all` 和
 `git diff --check` 均通过。
@@ -4555,7 +4554,7 @@ rg -n "id[[:space:]]*<MTL|MTL[A-Z][A-Za-z]+Descriptor|MTL::" \
 
 ```sh
 rg -n 'MGL_USE_METALCPP|mgl_render_cpp_objc|MGLMetal[A-Za-z]+Ref|MGLRendererMetalBridge' \
-  MGL/src MGL/include Makefile test_legacy_compat benchmark scripts/record_p3_baseline.sh
+  MGL/src MGL/include Makefile test_legacy_compat benchmark
 for f in MGL/src/*.m MGL/include/*.h; do
   hits=$(perl -0pe 's{/\*.*?\*/}{}gs; s{//[^\n]*}{}g' "$f" |
     rg -n 'id[[:space:]]*<MTL|MTL[A-Z][A-Za-z]+Descriptor|MTL::' || true)
@@ -4802,22 +4801,24 @@ TSan completion race 仍按 `docs/P4_COMMAND_LIFECYCLE_LIMITATIONS_2026-08-16.md
   通过。当时该定向结果不作为原 ObjC completion 生命周期已修复的证据；完整
   修复证据见 2026-08-17 `build-tsan-final` 双门终验。
 
-### P5 当前快照追加（2026-08-18：platform shell 与终态审计）
+### M3 终态记录（2026-08-18：platform shell 与稳定验证）
 
 - `MGLPlatformRendererShell` 集中创建/配置/解绑 `CAMetalLayer`，提供 drawable、
   texture、geometry 和 capture facade；renderer 分类不再直接调用
   `nextDrawable`、读取 `drawable.texture`、访问 `_layer.*` 或检查
   `[_commandQueue class]`。standalone Metal-cpp smoke target 显式链接 QuartzCore。
 - `mgl_state_compat.h`、`mgl_readback.h` 的 Metal enum 参数已改为 C `uint32_t` value
-  state；实现内部保留数值映射，跨语言头不暴露 ObjC Metal 类型。P5 checker 的
-  逐文件审计先剥离注释，再覆盖全部 `MGL/src/*.m`、`*.mm` 与 `MGL/include/*.h`，
-  平台壳是唯一允许的 Metal/AppKit 类型边界。
-- 当前验证：`make -j4 lib`、`make check-air-only`、`make check-p5-metalcpp`、
-  `make test-mglair`、`make test-mglair-gtest`（42/42）、`make test-metalcpp`、
-  `make test-regression`（73/0/2）均通过；CTS 完整 runner 与 Metal 4 真机专项
-  没有可运行入口，相关 TODO 保持未勾选。
+  state；实现内部保留数值映射，跨语言头不暴露 ObjC Metal 类型。终态 census
+  逐文件剥离注释后覆盖全部 `MGL/src/*.m`、`*.mm` 与 `MGL/include/*.h`，平台壳是
+  唯一允许的 Metal/AppKit 类型边界。
+- 当前验证：`make -j4 lib`、`make test-mglair`、`make test-mglair-gtest`（42/42）、
+  `make test-metalcpp`、`make test-regression`（73/0/2）和 `make test-all` 均通过；
+  CTS 完整 runner 与 Metal 4 真机专项没有可运行入口，相关 TODO 保持未勾选。
+- `scripts/check_air_only.sh`、`scripts/check_p4_metalcpp.sh`、
+  `scripts/check_p5_metalcpp.sh` 和 `scripts/record_p3_baseline.sh` 是施工期工具，
+  已随 M3 完工删除；Makefile 不再暴露或调用对应 target。
 
-可复现终态 census（与 checker 的逐文件去注释逻辑一致）：
+需要独立静态复核时，可直接运行终态 census：
 
 ```sh
 for f in MGL/src/*.m MGL/src/*.mm MGL/include/*.h; do

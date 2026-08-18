@@ -1,9 +1,19 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
+ *
+ * This file contains material from the Apache-2.0-licensed MGL baseline.
+ * Copyrightable modifications made after baseline commit
+ * 79d38f666336141d962109a864a6744bf66e438c are licensed under
+ * LGPL-3.0-only by their respective copyright holders.
+ * See LICENSE-APACHE-2.0, LICENSE, and LICENSING.md.
+ */
+
 // MGLRenderer+RenderPass.m
 // Render pass lifecycle methods extracted from MGLRenderer.m
 
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+RenderPass_Private.h"
-#include "mgl_air_loader.h"     /* METALCPP: AIR metallib 加载（Phase 1） */
+#include "mgl_air_loader.h"     /* AIR metallib loader. */
 #include "mgl_aux_assets.h"
 #include "mgl_renderer_backend.h"
 #include "mgl_env_flag.h"
@@ -617,10 +627,7 @@ static const char *mglGeometryPassthroughSwizzle(GLenum type)
     for (GLuint i = 0; outputs->list && i < outputs->count; i++) {
         MGLShaderResource *output = &outputs->list[i];
         if (output->is_per_patch) continue;
-        /* GL 4.6 §11.1.3.4: only stream 0 is rasterized; outputs on
-         * streams > 0 are transform-feedback only and must not appear
-         * in the passthrough vertex function (they share location
-         * values with stream 0 outputs and would cause conflicts). */
+
         if (output->stream > 0) continue;
         const char *type = mglGeometryPassthroughType(output->gl_type);
         if (!type || !output->name) {
@@ -646,9 +653,7 @@ static const char *mglGeometryPassthroughSwizzle(GLenum type)
     if (mgl_gs && mgl_gs->src &&
         (strstr(mgl_gs->src, "gl_Layer") ||
          strstr(mgl_gs->src, "gl_ViewportIndex"))) {
-        /* Per-vertex layer / viewport-index words (offsets 40/44) ride in
-         * record vec4 index 2 (z/w); Metal applies them per primitive from
-         * its last vertex, matching GL 4.6 §11.1.3.5/§11.1.3.6. */
+
         [source appendString:
             @"    vec4 mgl_layer_vp = "
              "mgl_gs_output.records[mgl_base + 2];\n"
@@ -751,13 +756,7 @@ output->name, (unsigned)i,
          "    gl_PointSize = mgl_point_size.x;\n",
          (unsigned long)vec4Stride];
     if (program->tess_cull_distance_count > 0u) {
-        /* Post-tess gl_CullDistance culling (GL 4.6 §13.6.1): the record
-         * carries 8 distances at bytes 20..51 (vec4 base+1 .yzw, base+2
-         * .xyzw, base+3 .x).  A point is culled when any distance < 0; an
-         * isoline segment when both endpoints' distance < 0 for the same
-         * axis (the partner record index is gl_VertexID^1 — every patch
-         * span holds an even item count).  Culled vertices are pushed out
-         * of the clip volume so no fragment is produced. */
+
         if (program->tess_gen_mode == GL_ISOLINES) {
             /* Both endpoints of an isoline segment share the same v, so the
              * cull condition needs the partner record's distances.  The
@@ -846,12 +845,7 @@ output->name, (unsigned)i,
         return;
     }
 
-    /*
-     * When the active framebuffer matches the render-pass framebuffer and the
-     * draw-buffer selection hasn't changed, the invalidation is a spurious
-     * side-effect of state setup (e.g. glDrawBuffers restoring the same values
-     * after a glBindFramebuffer round-trip).  Skip it — no content is lost.
-     */
+
     Framebuffer *curFbo = MGL_STATE(glm_ctx)->framebuffer;
     MGLRenderCppRenderPassIdentityState identity =
         mglRenderPassIdentitySnapshot(_renderPassManager.state);
@@ -932,10 +926,7 @@ output->name, (unsigned)i,
     Framebuffer *fbo = MGL_STATE(ctx)->framebuffer;
     GLuint fboName = fbo ? fbo->name : 0u;
 
-    /* Fast path — cached result for non-default FBOs when attachment config
-     * and render pass are unchanged.  Invalidated by MGLRenderPassManager on
-     * encoder/descriptor/identity changes.  Default framebuffer is never
-     * cached (its inputs change independently of fbo_attachment_generation). */
+
     if (fbo != NULL && fboName != 0u) {
         MGLRenderCppFboMatchCacheState cache = {0};
         if (_renderPassManager.state->renderPassIdentityOwner &&
@@ -1956,9 +1947,7 @@ output->name, (unsigned)i,
                 }
 
                 if (sx >= (GLint)passWidth || sy >= (GLint)passHeight) {
-                    /* GL 4.6 §14.6.1: a scissor box that starts entirely
-                     * outside the viewport clips every fragment.  Keep an
-                     * empty (0-size) box instead of resetting to full pass. */
+
                     sx = 0;
                     sy = 0;
                     sw = 0;
@@ -2252,11 +2241,7 @@ output->name, (unsigned)i,
                     _renderPassManager.state->currentRenderEncoderOwner,
                     viewports, (uint64_t)MGL_MAX_VIEWPORTS);
             } else {
-                /* A shader may still write gl_ViewportIndex (e.g. gl_Layer
-                 * alone binds viewport index to the same value per GL 4.6
-                 * §11.1.3.5).  Keep every slot of the array valid even when
-                 * glViewportIndexedf was never called: unset slots mirror
-                 * slot 0 so such draws rasterize instead of being clipped. */
+
                 double viewports[MGL_MAX_VIEWPORTS * 6];
                 for (int vi = 0; vi < MGL_MAX_VIEWPORTS; vi++) {
                     viewports[vi * 6 + 0] = vx;
@@ -2295,30 +2280,11 @@ output->name, (unsigned)i,
     return result;
 }
 
-/*
- * DontCare load-action inference for a color attachment.
- *
- * Returns YES only when it is provably safe to skip loading the attachment's
- * existing tile contents at pass start, i.e. the pass fully defines them:
- *   - env flag MGL_ENABLE_DONTCARE_LOAD is enabled (default OFF);
- *   - a real backing texture exists;
- *   - blending is disabled (a blend reads the destination, so contents live);
- *   - this is the texture's FIRST render-target use this frame (its stamped
- *     generation differs from the renderer's current frame generation) — a
- *     later pass to the same attachment must Load to preserve earlier draws.
- *
- * On a YES it stamps the texture with the current generation so any subsequent
- * pass this frame correctly falls back to Load. Callers invoke this only on the
- * no-pending-clear branch (a clear already fully defines contents via Clear).
- */
+
 - (BOOL)shouldUseDontCareLoadForColorTexture:(Texture *)tex
                              firstUseThisFrame:(BOOL)firstUseThisFrame
 {
-    /* Pure decision — the caller is responsible for stamping the texture's
-     * frame generation on EVERY render-target use (clear/load/dontcare), so
-     * this predicate must not mutate state. DontCare is safe only on a frame's
-     * first use of the attachment, with no pending clear (caller gates that),
-     * blending off, and the flag enabled. */
+
     if (!mglEnvFlagEnabled("MGL_ENABLE_DONTCARE_LOAD")) {
         return NO;
     }
@@ -2735,10 +2701,7 @@ output->name, (unsigned)i,
 {
     Framebuffer *fbo = MGL_STATE(ctx)->framebuffer;
     GLsizei drawBufferCount = mglMetalDrawBufferCount(ctx);
-    /* Read the DontCare flag once per pass so the feature-off
-     * (default) path skips both the per-attachment stamp write and the
-     * shouldUse call entirely — avoiding per-attachment getenv and a
-     * cache-line write on the common no-DontCare path. */
+
     BOOL dontCareLoadEnabled = mglEnvFlagEnabled("MGL_ENABLE_DONTCARE_LOAD");
     for (int i = 0; i < drawBufferCount; ++i) {
         GLuint attachmentIndex = 0u;
@@ -2824,8 +2787,7 @@ output->name, (unsigned)i,
         } else if (dontCareLoadEnabled &&
                    [self shouldUseDontCareLoadForColorTexture:attachmentTextureForClear
                                                 firstUseThisFrame:colorFirstUseThisFrame]) {
-            /* first render-target use this frame, no clear, no
-             * blend — prior tile contents are dead, skip the load. */
+
             mglRenderPassSetPersistentLoadAction(
                 _renderPassManager.state,
                 MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, colorSlot,
@@ -2838,10 +2800,7 @@ output->name, (unsigned)i,
         }
     }
 
-    /* Consume any pending color clears on attachments that could not be
-     * resolved through a draw buffer — prevents infinite retry when an
-     * attachment's clear_bitmask is set but mglMetalResolveFboDrawAttachmentIndex
-     * fails for its draw buffer. */
+
     for (GLuint ai = 0; ai < MAX_COLOR_ATTACHMENTS; ++ai) {
         if ((fbo->color_attachments[ai].clear_bitmask & GL_COLOR_BUFFER_BIT) &&
             ((fbo->color_attachment_bitfield >> ai) & 1u) == 0u) {
@@ -3573,10 +3532,7 @@ output->name, (unsigned)i,
     MGL_PERF_INC(g_mglEncoderCreateReasonSinceSwap[reason]);
     // I can't remember why this is here...
     @autoreleasepool {
-    /* Invalidate last-bound render encoder state — the new encoder must
-     * re-issue all binds rather than skipping them via the dedup fast path.
-     * Called here (in addition to endRenderEncodingLocked) so the cache is
-     * also cleared on code paths that bypass endRenderEncodingLocked. */
+
     [self invalidateLastBoundState];
 
     static uint64_t s_newRenderEncoderCallCount = 0;
@@ -3709,7 +3665,7 @@ output->name, (unsigned)i,
     // Record successful render encoder creation (final success)
     [self recordGPUSuccess];
     return true;
-        
+
     } //     @autoreleasepool
 }
 
@@ -4133,14 +4089,10 @@ output->name, (unsigned)i,
         ? fragmentProgram->pipeline_cache_generation : 0u;
     state->color_count = MAX_COLOR_ATTACHMENTS;
     state->rasterization_enabled = rasterizerDiscard ? 0 : 1;
-    /* maxTessellationFactor 默认 64 —— 与 ObjC descriptor 默认值一致
-     * （非 TES pipeline 不设该字段，Metal 默认 64；C++ builder 对 0 跳过
-     * 设置）。 */
+
     state->max_tessellation_factor = 64u;
 
-    /* inputPrimitiveTopology：只有 VS/GS 实际写 gl_Layer / gl_ViewportIndex
-     * 时才设置（Metal 要求非 unspecified 的 concrete topology；普通 pipeline
-     * 保持 unspecified 让 Metal 自动检测）。 */
+
     {
         BOOL needsLayerTopology = NO;
         Shader *vsSlot = vertexProgram ? vertexProgram->shader_slots[_VERTEX_SHADER] : NULL;
@@ -4198,8 +4150,7 @@ output->name, (unsigned)i,
         state->tessellation_factor_scale_enabled = 0;
         state->tessellation_factor_format =
             (uint32_t)MGLTessellationFactorFormatHalf;
-        /* Indexed native TES 的 CPU gather 流（uint32）作为
-         * controlPointIndexBuffer；非 indexed 用 None。 */
+
         state->tessellation_control_point_index_type =
             _tessellation.tessIndexedDraw
                 ? (uint32_t)MGLTessellationControlPointIndexTypeUInt32
@@ -4212,9 +4163,7 @@ output->name, (unsigned)i,
                 : (uint32_t)MGLWindingCounterClockwise;
     }
 
-    /* GL_RASTERIZER_DISCARD / capture 变体：rasterizationEnabled 与 vertex
-     * function 的返回类型匹配（void -> NO，有 stage outputs -> YES）。AIR
-     * TES 总是返回 post-tessellation record，故 native TES 强制 YES。 */
+
     if (tessVertexCapture || cullDistanceCapture) {
         state->rasterization_enabled = 0;
     } else if (rasterizerDiscard) {
@@ -4360,8 +4309,7 @@ output->name, (unsigned)i,
         state->color_format[0] = (uint32_t)fallbackColor0;
     }
 
-    /* rasterSampleCount：与 render pass attachment 的 sample count 对齐
-     * （默认 1）。 */
+
     /* Resolve the pipeline sample count from the C++ render-pass state. */
     NSUInteger resolvedSampleCount = 1;
     id rpColor0 = mglRenderPassColorTextureFor(_renderPassManager.state, 0);
@@ -4379,8 +4327,7 @@ output->name, (unsigned)i,
     }
     state->raster_sample_count = (uint32_t)resolvedSampleCount;
 
-    /* 深度/模板 packed normalize（与 mglNormalizePipelineDepthStencilFormats
-     * 一致；C++ builder 内还会再兜底一次）。签名必须在 normalize 之后计算。 */
+
     {
         uint32_t depthFormat = state->depth_format;
         uint32_t stencilFormat = state->stencil_format;
@@ -4401,8 +4348,7 @@ output->name, (unsigned)i,
         }
     }
 
-    /* blend / alpha-to-coverage / alpha-to-one（镜像
-     * bindBlendStateToPipelineStateDescriptor；blend 值 owner-first 读取）。 */
+
     state->alpha_to_coverage_enabled = MGL_STATE(ctx)->caps.sample_alpha_to_coverage ? 1 : 0;
     state->alpha_to_one_enabled = MGL_STATE(ctx)->caps.sample_alpha_to_one ? 1 : 0;
 
@@ -4431,8 +4377,7 @@ output->name, (unsigned)i,
         state->alpha_blend_operation[i] = blend.alpha_operation;
     }
 
-    /* 顶点布局：GS/TES compute 展开用空布局（等价原路径的空白
-     * MTLVertexDescriptor）；其余走 generateVertexDescriptorState。 */
+
     if (!(geometryExpansion || tessCompute)) {
         if (![self generateVertexDescriptorState:state]) {
             return NO;
@@ -4475,27 +4420,7 @@ output->name, (unsigned)i,
         return;
     }
 
-    /* Early-out: skip the per-attachment copy loop entirely when no texture
-     * in this FBO is a sampled render target.  The old code unconditionally
-     * iterated all color attachments on every endRenderPass and created a
-     * Y-flipped copy for each (~313 copies/frame, most never sampled).  The
-     * copy is only needed when the texture will be sampled by a non-yflip
-     * shader in a subsequent draw, which we can't know here — but we CAN skip
-     * textures that were never written (rtVer==0) or never flagged as RT.
-     *
-     * Iterate the actual FBO color attachments rather than the draw-buffer
-     * snapshot.  MC 1.21.11's render abstraction creates transient FBOs such
-     * as the GUI item atlas where the GL draw-buffer state can be incomplete
-     * by the time the Metal encoder ends, but the attachment itself is still
-     * the texture that was rendered and will be sampled immediately.
-     *
-     * NOTE: do NOT skip non-zero attachment levels here.  MC 1.21.11's
-     * terrain atlas is a mipmapped RT whose mip 1-4 are written by separate
-     * FBOs (one per mip level).  Skipping them left the Y-flip copy stale
-     * after those passes ended, so terrain sampling mip>0 fell back to the
-     * un-flipped Metal RT and rendered stripes.  The per-level blit inside
-     * updateGLSampledRenderTargetCopyForTexture handles non-zero levels
-     * correctly. */
+
     bool anySampledRT = false;
     for (GLuint attachmentIndex = 0u; attachmentIndex < MAX_COLOR_ATTACHMENTS; attachmentIndex++) {
         if (((fbo->color_attachment_bitfield >> attachmentIndex) & 1u) == 0u) {
@@ -4530,19 +4455,7 @@ output->name, (unsigned)i,
             continue;
         }
 
-        /* Y-Flip Subsystem: if the RT was rendered by a program whose VS had
-         * Y-flip injection, the Metal texture already holds GL-bottom-origin
-         * data.  No Y-flipped copy is needed — sampling consumers will use
-         * the original via mglDecideYFlipForSampledRT.
-         *
-         * Defensive hardening: only release the copy when it is STALE
-         * (version mismatch).  If a matching copy already exists, keep it —
-         * a future sampler bind that defensively distrusts the authority
-         * (e.g. after an IR binding remap or program-detection change) can
-         * still use the copy instead of falling back to the un-flipped Metal
-         * texture.  Releasing a matching copy saves a tiny amount of VRAM
-         * but creates a fragile coupling: any change that makes the authority
-         * wrong will immediately flip GUI items upside-down. */
+
         if (mglRTWriteAuthorityIsCurrentAndUsesOriginal(tex)) {
             if (tex->mtl_gl_sampled_data &&
                 tex->mtl_gl_sampled_write_version != tex->mtl_render_target_write_version) {
@@ -4571,8 +4484,7 @@ output->name, (unsigned)i,
 
 - (void) endRenderEncodingLocked
 {
-    /* Invalidate last-bound render encoder state — the next encoder must
-     * re-issue all binds rather than skipping them via the dedup fast path. */
+
     [self invalidateLastBoundState];
 
     if (mglRenderCppRenderEncoderOwnerHasCurrent(
@@ -4685,15 +4597,7 @@ output->name, (unsigned)i,
     return NO;
 }
 
-/*
- * synchronizeRenderPassForTextureReadback:reason: — heaviest synchronization boundary (GPU write visibility guarantee before CPU readback)
- *
- * Trigger condition: invoked when the texture to be read back is exactly the render target of the current render pass (color/depth/stencil attachment).
- * Guarantee semantics: endRenderEncoding closes the open render encoder → commitCommandBufferWithAGXRecovery:
- *           commits the current CB → waitUntilCompleted blocks until GPU completion → newCommandBuffer creates a new CB.
- *           Ensures that before CPU readback, all GPU rendering writes encoded to that texture have completed and are visible to the CPU.
- * Degradation: if the texture is not the current render target, returns YES directly (no sync needed); if the CB is already finalized, only rotates.
- */
+
 - (BOOL)synchronizeRenderPassForTextureReadback:(id)texture
                                          reason:(const char *)reason
 {
@@ -5178,33 +5082,20 @@ output->name, (unsigned)i,
         [self invalidateLastBoundFragmentBufferAtIndex:kMGLFragCoordParamsBufferIndex];
     }
 
-    /* LOD_BIAS: Metal MTLSamplerDescriptor has no lodBias property, so MGL
-     * injects bias() into MSL .sample() calls via mglPatchInjectLodBias.
-     * Here we bind the actual bias value as a 4-byte fragment buffer.
-     *
-     * Global single bias — scan bound textures, use first non-zero
-     * lod_bias.  When all are zero, bind 0.0 (no-op, matches Metal default). */
+
     BOOL useLodBias = fragmentProgram &&
         fragmentProgram->uses_lod_bias == GL_TRUE;
     if (useLodBias) {
-        /* P7: Per-texture LOD_BIAS array — one float per sampler slot.
-         * GL 4.6 §8.14.1 eq 8.8 defines biastexobj as per-texture state.
-         * The injected MSL uses _mglLodBias[sampler_idx] to index this array. */
+
         const GLfloat biasmax = ctx->state.var.max_texture_lod_bias;
         float lodBiasArr[TEXTURE_UNITS];
         for (GLuint unit = 0; unit < TEXTURE_UNITS; unit++) {
             Texture *tex = MGL_STATE(ctx)->active_textures[unit];
             Sampler *smp = MGL_STATE(ctx)->texture_samplers[unit];
-            /* GL 4.6 §8.2: sampler object state overrides texture state
-             * when a sampler object is bound to the unit. */
+
             float bias = smp ? smp->params.lod_bias
                              : (tex ? tex->params.lod_bias : 0.0f);
-            /* GL 4.6 §8.14.1 eq 8.8: clamp(biastexobj + biasshader) to
-             * [-biasmax, biasmax].  biasshader is added in-shader by P9's
-             * bias(clamp((expr) + _mglLodBias[idx], -_mglLodBiasMax,
-             * _mglLodBiasMax)) rewrite; the clamp here covers biastexobj
-             * only (CPU-side defensive pre-clamp).  Full sum clamp is done
-             * in MSL via _mglLodBiasMax bound below. */
+
             if (biasmax > 0.0f) {
                 if (bias > biasmax) bias = biasmax;
                 else if (bias < -biasmax) bias = -biasmax;
@@ -5218,10 +5109,7 @@ output->name, (unsigned)i,
             kMGLLodBiasBufferIndex);
         [self invalidateLastBoundFragmentBufferAtIndex:kMGLLodBiasBufferIndex];
 
-        /* Bind _mglLodBiasMax scalar (MAX_TEXTURE_LOD_BIAS) for the MSL
-         * clamp(biastexobj + biasshader, -biasmax, biasmax) in
-         * mglRewriteMSLBiasExpr and in the no-bias injected clamp().
-         * GL 4.6 §8.14.1 eq 8.8. */
+
         mglRenderCppSetRenderBytesForOwner(
             _renderPassManager.state->currentRenderEncoderOwner,
             &biasmax, sizeof(biasmax),
@@ -5882,7 +5770,7 @@ stencil_format_ok:;
     Framebuffer *currentFBO = mglRendererGetValidatedFramebuffer(ctx, "buildPipelineCacheOnCacheMiss.currentFBO");
     GLuint currentFBOName = currentFBO ? currentFBO->name : 0;
 
-    /* Two-level descriptor caching (value-state 版) */
+
     MGLRenderCppPipelineDescriptorState finalState = *pipelineState;
     BOOL stateFromCache = NO;
 
@@ -5915,7 +5803,7 @@ stencil_format_ok:;
     id compiledPSO = nil;
     bool pipelineReusedPrevious = false;
     char cppError[512] = {0};
-    /* 方法级作用域：@try 内赋值、@catch 的 safe fallback 也要用。 */
+
     void *psoPtr = NULL;
 
     @try {
@@ -6097,13 +5985,13 @@ stencil_format_ok:;
                     NSLog(@"MGL INFO: VIRTUALIZED AGX - Trying simplified compilation fallback...");
 
                     // Simplify the state to avoid complex shader compilation issues
-                    // （与 simpleDescriptor 一致：只保留 color0/depth/stencil 格式、
-                    // 顶点布局、functions、rasterization 与 tess 字段）。
+
+
                     MGLRenderCppPipelineDescriptorState simpleState = finalState;
                     simpleState.blending_enabled_mask = 0;
                     simpleState.alpha_to_coverage_enabled = 0;
                     simpleState.alpha_to_one_enabled = 0;
-                    simpleState.raster_sample_count = 0;   /* C++ builder 默认 1 */
+                    simpleState.raster_sample_count = 0;
                     for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
                         simpleState.color_write_mask[i] = 0;
                         simpleState.source_rgb_blend_factor[i] = 0;
@@ -6163,7 +6051,7 @@ stencil_format_ok:;
         @try {
             MGLRenderCppPipelineDescriptorState safeState = {0};
             safeState.color_count = MAX_COLOR_ATTACHMENTS;
-            safeState.rasterization_enabled = 1;   /* safeDescriptor 未设置，默认 YES */
+            safeState.rasterization_enabled = 1;
             uint32_t safeColor0Format = (uint32_t)finalState.color_format[0];
             if (_renderPassManager.state && mglRenderPassColorTextureFor(_renderPassManager.state, 0)) {
                 safeColor0Format = mglRenderPassTextureInfo(
@@ -6485,7 +6373,7 @@ stencil_format_ok:;
     }
     if (finish && !_currentCBHasWork &&
         ![_renderPassManager hasLastSubmittedCommandBuffer]) {
-        /* No CB was ever committed — nothing to wait for. */
+
         return;
     }
 
@@ -6579,19 +6467,7 @@ stencil_format_ok:;
     return true;
 }
 
-/*
- * RenderPass Manager — RenderPass Manager facade: single owner of the FBO-driven
- * encoder rotation (the primary open/close transition). Ends the current
- * render encoder and opens a fresh one against the now-bound framebuffer's
- * render-pass descriptor. Called by the RenderPass Sync unit
- * (syncRenderPassStateForContext:) when currentRenderPassMatchesCurrentFramebuffer
- * is false; the "already matches" fast path returns without rotating. The
- * recovery/nil-encoder paths elsewhere (processGLStateLocked, texture upload,
- * blit) still call newRenderEncoderLocked directly and are documented as
- * out-of-scope for this facade — they are safety nets, not the primary
- * lifecycle transition, and lifting them is deferred until a future pass
- * proves the facade is sufficient under Minecraft workloads.
- */
+
 - (bool)rotateRenderEncoderForCurrentFramebufferLocked
 {
     MGL_PERF_INC(g_mglEncoderFBORotationsSinceSwap);

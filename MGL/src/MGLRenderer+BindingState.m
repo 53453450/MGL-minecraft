@@ -1,3 +1,13 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
+ *
+ * This file contains material from the Apache-2.0-licensed MGL baseline.
+ * Copyrightable modifications made after baseline commit
+ * 79d38f666336141d962109a864a6744bf66e438c are licensed under
+ * LGPL-3.0-only by their respective copyright holders.
+ * See LICENSE-APACHE-2.0, LICENSE, and LICENSING.md.
+ */
+
 // MGLRenderer+BindingState.m
 // Vertex/fragment buffer, attribute and texture binding methods
 // extracted from MGLRenderer+Draw.m
@@ -299,14 +309,7 @@ static bool mglBindingStateFlushResourceBindings(
     const int vertexStage = _tessellation.nativeTESActive
         ? _TESS_EVALUATION_SHADER : _VERTEX_SHADER;
 
-    /* P4.3b main-path extension (vertex counterpart of the fragment loop):
-     * gate-on 下把 vertex 主绑定循环的每个 emit 按原始顺序收集进 snapshot，
-     * 循环结束后一次交给 C++ 重放（setVertexBuffer / setVertexBytes /
-     * nil-clear 交错保序）；gate-off 保持逐条 ObjC 调用作 A/B 对照。
-     * 判定/统计/COW 记账/owner 更新/last-bound 失效两路一致，只有 encoder
-     * 调用被推迟。重放位置在 map 循环后、bindVertexAttributesFromVAO 前，
-     * 保持「map 循环 emit → VAO attrib emit」的原始顺序。bytes 统一拷贝进
-     * 本函数作用域 scratch；scratch 或 op 数组满则先 flush 再继续。 */
+
     const BOOL useVertexBindingSnapshot = YES;
     MGLRenderCppBindingSnapshot vbindSnapshot = {0};
     uint8_t vbindByteScratch[4096];
@@ -481,7 +484,7 @@ static bool mglBindingStateFlushResourceBindings(
     for(int i=0; i<(int)mapCount; i++)
     {
         map = &MGL_STATE(ctx)->vertex_buffer_map_list.buffers[i];
-        
+
         ptr = mglRendererGetValidatedBuffer(ctx, map->buf, __FUNCTION__, (NSUInteger)i);
         offset = map->offset;
         isBaseBinding = (map->attribute_mask == 0);
@@ -560,17 +563,7 @@ static bool mglBindingStateFlushResourceBindings(
             }
         }
 
-        /* For small uniform constants (plain uniforms), use setVertexBytes
-         * to copy the data into the command buffer at bind time. This is
-         * critical for correctness when the same uniform buffer is updated
-         * between draws encoded into the same command buffer — a shared-
-         * memory MTLBuffer would let the GPU see only the final value.
-         *
-         * Decided before bindMTLBuffer so these slots never materialize an
-         * MTLBuffer at all: with one, every glUniform* upload allocates a
-         * copy-on-write snapshot, and a slot below requiredBindingBytes then
-         * allocates a zero-padded isolated buffer per draw on top of it.
-         * Padding here reproduces exactly what that isolated buffer held. */
+
         if (isBaseBinding &&
             map->resource_type == _UNIFORM_CONSTANT_RES &&
             ptr->data.buffer_data &&
@@ -745,10 +738,7 @@ static bool mglBindingStateFlushResourceBindings(
         anyBindingPresent[bindingIndex] = true;
     }
 
-    /* One-shot replay of the collected vertex binding ops.  Must happen here —
-     * after the map loop and before bindVertexAttributesFromVAO — so the
-     * encoder-side order matches the direct path (map-loop emits, then VAO
-     * attrib emits).  Gate-off path never collects, so this is a no-op. */
+
     if (useVertexBindingSnapshot && vbindSnapshot.vertex_op_count > 0) {
         mglRenderCppEncodeBindingSnapshotForRenderEncoderOwner(
             encCtx->render_encoder_owner, &vbindSnapshot, NULL, 0);
@@ -836,9 +826,7 @@ static bool mglBindingStateFlushResourceBindings(
     return true;
 }
 
-/* Bind vertex attributes from the VAO.  Extracted from
- * bindVertexBuffersToCurrentRenderEncoder to keep that function under the
- * 500-line limit.  Pure mechanical extraction — no behavior change. */
+
 - (bool)bindVertexAttributesFromVAO:(VertexArray *)vao
                       activeProgram:(Program *)activeProgram
                 attribsEnabledByApp:(bool)attribsEnabledByApp
@@ -850,12 +838,7 @@ static bool mglBindingStateFlushResourceBindings(
 {
     NSUInteger bindingIndex;
 
-    /* P4.3b 扩展（round 33）：VAO attrib 段与主 map 循环共用调用方传入的
-     * binding snapshot —— 本方法内只收集 buffer op（attrib 段无 bytes op，
-     * 无需 scratch），结束或任一校验失败路径先 flush 已收集 op 再返回，与
-     * 直接路径「已发生 emit」逐点对齐；重放发生在 attrib 段结束（fallback
-     * 之前），保持「map 循环 emit → attrib emit → fallback → point-size」
-     * 的原始顺序。gate-off 直接 setVertexBuffer（A/B 对照）。 */
+
     MGLRenderCppBindingSnapshot *vattrSnapshot = bindingSnapshot;
     const BOOL vattrUseSnapshot = useSnapshot && vattrSnapshot != NULL;
 #define MGL_VATTR_FLUSH_SNAPSHOT()                                              \
@@ -929,17 +912,14 @@ static bool mglBindingStateFlushResourceBindings(
             static const NSUInteger kMGLCurrentAttribRepeatCount = 4096u;
             NSUInteger totalByteCount = kMGLCurrentAttribRepeatCount * attribStride;
 
-            /* Reuse the cached MTLBuffer when the current vertex attrib value
-             * and stride haven't changed since the last draw.  This avoids the
-             * per-draw NSMutableData allocation + newBufferWithBytes + 4096×
-             * memcpy loop. */
+
             id currentAttribBuffer = (__bridge id)
                 mglRendererBackendGetCurrentAttribBuffer(
                     _backend, attrib, attribBytes, (uint32_t)attribStride,
                     (uint64_t)attribStride);
 
             if (currentAttribBuffer == nil) {
-                /* Cache miss — rebuild the repeated buffer. */
+
                 NSMutableData *repeated = [NSMutableData dataWithLength:totalByteCount];
                 if (!repeated) {
                     NSLog(@"MGL VBIND skip attrib=%u: failed to allocate current vertex attrib stream", attrib);
@@ -1385,9 +1365,7 @@ static bool mglBindingStateFlushResourceBindings(
         }
     }
 
-    /* Flush any collected attrib ops (the replay position is here — after
-     * the attrib pass, before the fallback/point-size direct emits — which
-     * matches the direct path's encoder order exactly). */
+
     MGL_VATTR_FLUSH_SNAPSHOT();
 #undef MGL_VATTR_EMIT_BUFFER
 #undef MGL_VATTR_FLUSH_SNAPSHOT
@@ -1395,10 +1373,7 @@ static bool mglBindingStateFlushResourceBindings(
 }
 
 
-/* Bind fallback buffers for vertex-stage buffer slots that were not mapped
- * by the main binding loop above.  Extracted from
- * bindVertexBuffersToCurrentRenderEncoder to keep that function under the
- * 500-line limit.  Pure mechanical extraction — no behavior change. */
+
 - (void)bindVertexFallbackBuffersToCurrentRenderEncoder:(Program *)activeProgram
                                      anyBindingPresent:(bool *)anyBindingPresent
                                      baseBindingPresent:(bool *)baseBindingPresent
@@ -1406,11 +1381,7 @@ static bool mglBindingStateFlushResourceBindings(
                                      bindingSnapshot:(MGLRenderCppBindingSnapshot *)bindingSnapshot
                                          useSnapshot:(BOOL)useSnapshot
 {
-    /* P4.3b 扩展（round 34）：fallback 段与主 map 循环/VAO attrib 段共用
-     * 同一个 binding snapshot（调用方传入）——本方法只收集 buffer op（无
-     * bytes op，无需 scratch），结束处一次性重放；重放位置在 attrib 段之后、
-     * point-size 段之前，与直接路径「attrib emit → fallback emit」顺序一致。
-     * gate-off 直接 setVertexBuffer（A/B 对照）。 */
+
     MGLRenderCppBindingSnapshot *vfallbackSnapshot = bindingSnapshot;
     const BOOL vfallbackUseSnapshot =
         useSnapshot && vfallbackSnapshot != NULL;
@@ -1532,8 +1503,7 @@ static bool mglBindingStateFlushResourceBindings(
         }
     }
 
-    /* Flush any collected fallback ops (replay position: after the attrib
-     * pass, before the point-size emit — matches the direct path order). */
+
     MGL_VFB_FLUSH_SNAPSHOT();
 #undef MGL_VFB_EMIT_BUFFER
 #undef MGL_VFB_FLUSH_SNAPSHOT
@@ -1552,10 +1522,7 @@ static bool mglBindingStateFlushResourceBindings(
 {
     BOOL needsPointSizeParams = NO;
 
-    /* P4.3b 扩展（round 34）：point-size 段共用同一 binding snapshot——单个
-     * bytes op（2×float）收集进调用方 scratch，结束处一次性重放；重放位置在
-     * fallback 段之后（主绑定 pass 的最后一个 emit），顺序与直接路径一致。
-     * gate-off 直接 setVertexBytes（A/B 对照）。 */
+
     MGLRenderCppBindingSnapshot *vpointSnapshot = bindingSnapshot;
     uint8_t *vpointByteScratch = byteScratch;
     size_t *vpointByteScratchUsed = byteScratchUsed;
@@ -1621,8 +1588,7 @@ static bool mglBindingStateFlushResourceBindings(
         anyBindingPresent[kMGLPointSizeParamBufferIndex] = true;
     }
 
-    /* Flush any collected point-size op — the final replay of the main
-     * vertex binding pass (map → attrib → fallback → point-size). */
+
     MGL_VPS_FLUSH_SNAPSHOT();
 #undef MGL_VPS_EMIT_BYTES
 #undef MGL_VPS_FLUSH_SNAPSHOT
@@ -1665,15 +1631,7 @@ static bool mglBindingStateFlushResourceBindings(
     }
     activeProgram = mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
 
-    /* P4.3b main-path extension: gate-on 下把 fragment 主绑定循环的每个 emit
-     * （setFragmentBuffer / setFragmentBytes / nil-clear）按原始顺序收集进
-     * snapshot，循环结束后一次交给 mglRenderCppEncodeBindingSnapshot 在 C++
-     * 重放；gate-off 保持逐条 ObjC 调用作为 A/B 对照。判定（match-check）、
-     * 统计（perf counters）、COW 记账（mglNoteBufferEncoded）、owner 更新与
-     * last-bound 失效两路完全一致 —— 只有 encoder 调用被推迟到循环后。
-     * bytes 数据：CPU 影子内存本身稳定，但统一拷贝进本函数作用域的 scratch，
-     * 保证重放时存活；scratch 或 op 数组满则先 flush 已收集 op 再继续，
-     * 保持全局 emit 顺序。 */
+
     const BOOL useBindingSnapshot = YES;
     MGLRenderCppBindingSnapshot snapshot = {0};
     uint8_t fbindByteScratch[4096];
@@ -1833,7 +1791,7 @@ static bool mglBindingStateFlushResourceBindings(
                   i, ptr->name, (long long)ptr->size);
             continue;
         }
-        
+
         if (!isBaseBinding && ptr->size < 4096)
         {
             if (ptr->data.buffer_data && ptr->size > 0) {
@@ -1925,7 +1883,7 @@ static bool mglBindingStateFlushResourceBindings(
                 mglRenderCppBindingClearFragmentBuffer(_bindingStateOwner,
                                                          (uint32_t)bindingIndex);
             }
-            
+
             // clear buffer data dirty bits
             ptr->data.dirty_bits &= ~DIRTY_BUFFER_DATA;
         }
@@ -1943,16 +1901,7 @@ static bool mglBindingStateFlushResourceBindings(
                 }
             }
 
-            /* For small uniform constants (plain uniforms), use setFragmentBytes
-             * to copy the data into the command buffer at bind time. This is
-             * critical for correctness when the same uniform buffer is updated
-             * between draws encoded into the same command buffer — a shared-
-             * memory MTLBuffer would let the GPU see only the final value.
-             *
-             * See the vertex-stage counterpart: taking this before
-             * bindMTLBuffer keeps these slots free of an MTLBuffer, which
-             * otherwise costs a copy-on-write snapshot per glUniform* upload
-             * plus a zero-padded isolated buffer per draw. */
+
             if (isBaseBinding &&
                 map->resource_type == _UNIFORM_CONSTANT_RES &&
                 ptr->data.buffer_data &&
@@ -2048,7 +1997,7 @@ static bool mglBindingStateFlushResourceBindings(
                 }
                 continue;
             }
-            
+
             if (!mglBindingStateIsValid(_bindingStateOwner) ||
                 !mglBindingStateBufferMatches(
                     _bindingStateOwner, MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT,
@@ -2116,11 +2065,7 @@ static bool mglBindingStateFlushResourceBindings(
         }
     }
 
-    /* One-shot replay of the collected fragment binding ops.  The replay must
-     * happen here — after the map loop and before the fallback bindings —
-     * so the encoder-side order matches the direct path (map-loop emits,
-     * then fallback emits).  Gate-off path never collects (all emits were
-     * direct), so this is a no-op there. */
+
     if (useBindingSnapshot && snapshot.fragment_op_count > 0) {
         mglRenderCppEncodeBindingSnapshotForRenderEncoderOwner(
             encCtx->render_encoder_owner, &snapshot, NULL, 0);
@@ -2182,10 +2127,7 @@ static bool mglBindingStateFlushResourceBindings(
     return true;
 }
 
-/* Bind fallback buffers for fragment-stage buffer slots that were not mapped
- * by the main binding loop above.  Extracted from
- * bindFragmentBuffersToCurrentRenderEncoder to keep that function under the
- * 500-line limit.  Pure mechanical extraction — no behavior change. */
+
 - (void)bindFragmentFallbackBuffersToCurrentRenderEncoder:(Program *)activeProgram
                                        anyBindingPresent:(bool *)anyBindingPresent
                                        baseBindingPresent:(bool *)baseBindingPresent
@@ -2364,7 +2306,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                              TEXTURE_UNITS,
                                              ctx ? mglCurrentRenderProgramKey(ctx) : 0u,
                                              _pipelineCache.state->pipelineProgramName);
-        /* Full clear when trace is active — trace consumers read all fields. */
+
         memset(_resourceFallback.fragmentTextureTraceBindings, 0,
                sizeof(_resourceFallback.fragmentTextureTraceBindings));
     } else {
@@ -2705,11 +2647,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             }
         }
 
-        /* Y-Flip Subsystem: unified decision for sampling a render target.
-         *
-         * NOTE: lazy refresh from bindTexturesToCurrentRenderEncoder was
-         * removed — it re-enters the Metal render encoder during a flush and
-         * crashes AGX.  See the fragment counterpart above. */
+
         if (!usedTypeFallback && ptr && ptr->is_render_target) {
             MGLYFlipDecision yflip = mglDecideYFlipForSampledRT(ptr, currentProgram);
             if (mglTraceRTYFlipDiagnosticsEnabled()) {
@@ -3944,15 +3882,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     id directTextureForTrace = *directTextureForTracePtr;
     id sampledCopyForTrace = *sampledCopyForTracePtr;
 
-    /* Y-Flip Subsystem: unified decision for sampling a render target.
-     *
-     * NOTE: lazy refresh from bindTexturesToCurrentRenderEncoder was
-     * removed — updateGLSampledRenderTargetCopyForTexture creates its
-     * own render encoder, which re-enters the encoder while a flush
-     * triggered by mglBindBufferRange is mid-process and crashes AGX
-     * (MTLReportFailure -> SIGABRT).  Refresh is left to the
-     * end_render_pass / blit_framebuffer paths, which run outside an
-     * active encoder and are encoder-safe. */
+
     if (texture &&
         !usedFallbackTexture &&
         ptr &&
@@ -4333,22 +4263,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     }
 
     GLuint fragmentStorageImageCount = mglRendererGetProgramBindingCount(ctx, _FRAGMENT_SHADER, _STORAGE_IMAGE_RES);
-    /* Two-pass storage image binding:
-     *
-     * Pass 1: Pre-resolve every storage image's Metal texture via
-     * bindMTLTexture.  This may trigger texture (re)creation and CPU→GPU
-     * blit uploads, which close the active render encoder (Metal does not
-     * allow a render encoder and a blit encoder on the same command buffer
-     * simultaneously). We do not bind resources during this pass.
-     *
-     * Pass 2: Bind the now-resolved Metal textures to the (possibly
-     * restored) render encoder.  If pass 1 closed the encoder, restore it
-     * first so every setFragmentTexture:atIndex: call has a valid encoder.
-     *
-     * Without the two-pass split, MGL_ABORT_TBIND_IF_ENCODER_CLOSED would
-     * abort the loop on the first texture that needs a blit upload, leaving
-     * the remaining storage images unbound and the shader reading stale/
-     * default data. */
+
     for (GLuint i = 0; i < fragmentStorageImageCount; i++)
     {
         MGLShaderResource *resource = NULL;

@@ -1,4 +1,14 @@
 /*
+ * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
+ *
+ * This file contains material from the Apache-2.0-licensed MGL baseline.
+ * Copyrightable modifications made after baseline commit
+ * 79d38f666336141d962109a864a6744bf66e438c are licensed under
+ * LGPL-3.0-only by their respective copyright holders.
+ * See LICENSE-APACHE-2.0, LICENSE, and LICENSING.md.
+ */
+
+/*
  * Copyright (C) Michael Larson on 1/6/2022
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -478,7 +488,7 @@ bool validate_program(GLMContext ctx)
             }
         }
     }
-    
+
     // Allow NULL program (MGLRenderer handles it by using cached pipeline or program pipeline)
     return true;
 }
@@ -1654,7 +1664,7 @@ static void mglDrawDispatch(GLMContext ctx, const MGLDrawCommand *cmd)
      * draining older commands only when a deferred batch actually exists;
      * calling the full flush entry point for an empty batch needlessly breaks
      * the current defer window.  The renderer's GS helper then runs the AIR
-     * compute route for both array and indexed shapes (P1). */
+     * compute route for both array and indexed shapes. */
     Program *geometryProgram = mglCurrentExpandedGeometryDrawProgram(ctx);
     if (geometryProgram) {
         if (ctx->draw_command_buffer.batch_count > 0u) {
@@ -2094,7 +2104,7 @@ void mglMultiDrawArrays(GLMContext ctx, GLenum mode, const GLint *first, const G
 
 
     if (mglCurrentExpandedGeometryDrawProgram(ctx)) {
-        /* P1: GS expansion cannot be replayed as a deferred batch; forward
+        /* GS expansion cannot be replayed as a deferred batch; forward
          * to the renderer which decodes each sub-draw through the GS path. */
         mglRendererMultiDrawArrays(ctx, mode, first, count, drawcount);
         return;
@@ -2150,7 +2160,7 @@ void mglMultiDrawElements(GLMContext ctx, GLenum mode, const GLsizei *count, GLe
 
 
     if (mglCurrentExpandedGeometryDrawProgram(ctx)) {
-        /* P1: GS expansion cannot be replayed as a deferred batch. */
+        /* GS expansion cannot be replayed as a deferred batch. */
         mglRendererMultiDrawElements(ctx, mode, count, type, indices,
                                             drawcount);
         return;
@@ -2209,7 +2219,7 @@ void mglMultiDrawElementsBaseVertex(GLMContext ctx, GLenum mode, const GLsizei *
 
 
     if (mglCurrentExpandedGeometryDrawProgram(ctx)) {
-        /* P1: GS expansion cannot be replayed as a deferred batch. */
+        /* GS expansion cannot be replayed as a deferred batch. */
         mglRendererMultiDrawElementsBaseVertex(ctx, mode, count, type,
                                                       indices, drawcount,
                                                       basevertex);

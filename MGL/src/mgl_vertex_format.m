@@ -1,13 +1,14 @@
 /*
- * mgl_vertex_format.m
- * MGL
+ * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
  *
- * Implementation of the Vertex Format / Pipeline Signature Subsystem.
- * See mgl_vertex_format.h for the API contract.
- *
- * Pure helpers for GL→Metal vertex format translation and pipeline state
- * signature computation.  No renderer state dependency.
+ * This file contains material from the Apache-2.0-licensed MGL baseline.
+ * Copyrightable modifications made after baseline commit
+ * 79d38f666336141d962109a864a6744bf66e438c are licensed under
+ * LGPL-3.0-only by their respective copyright holders.
+ * See LICENSE-APACHE-2.0, LICENSE, and LICENSING.md.
  */
+
+
 
 #import "mgl_vertex_format.h"
 #import "mgl_render_cpp.h"
@@ -118,13 +119,7 @@ uint32_t mglMaybeInvertMTLWinding(uint32_t winding, bool invert)
     return winding == 0u ? 1u : 0u;
 }
 
-/* === P4.2: value-state signatures ===
- *
- * 哈希字段与顺序与 descriptor 版完全一致：mglPipelineDescriptorSignature 先
- * 哈希 pipeline 级字段，再逐 color attachment 哈希；mglVertexDescriptorSignature
- * 先哈希 32 个 attribute，再哈希 31 个 layout。layout 的最终值取「生成顺序里
- * 最后写它的 attribute」（attribute 索引升序即生成顺序），与 ObjC descriptor
- * 的累积写入语义一致。 */
+
 
 uint64_t mglVertexDescriptorSignatureFromState(
     const MGLRenderCppPipelineDescriptorState *state)
@@ -147,8 +142,7 @@ uint64_t mglVertexDescriptorSignatureFromState(
         hash = mglHashStepU64(hash, (uint64_t)state->attrib_buffer_index[i]);
         uint32_t bi = state->attrib_buffer_index[i] < 31u
             ? state->attrib_buffer_index[i] : 0u;
-        /* 只有 format 有效（非 Invalid）的 attribute 才在 ObjC 生成路径里写
-         * layout；未写过的 layout 保持默认 (0/PerVertex/1)。 */
+
         if (state->attrib_format[i] != 0u) {
             layoutStride[bi] = state->attrib_stride[i];
             layoutStepFunction[bi] = state->attrib_step_function[i];

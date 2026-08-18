@@ -1,3 +1,13 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
+ *
+ * This file contains material from the Apache-2.0-licensed MGL baseline.
+ * Copyrightable modifications made after baseline commit
+ * 79d38f666336141d962109a864a6744bf66e438c are licensed under
+ * LGPL-3.0-only by their respective copyright holders.
+ * See LICENSE-APACHE-2.0, LICENSE, and LICENSING.md.
+ */
+
 // MGLRenderer+Draw.m
 // Draw command encoding methods extracted from MGLRenderer.m
 
@@ -3314,7 +3324,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
     Program *gsProgram = mglResolveProgramForStageFromState(
         glm_ctx, _GEOMETRY_SHADER);
     if (gsProgram && gsProgram->shader_slots[_GEOMETRY_SHADER]) {
-        /* P1: GS compute expansion needs the indirect parameters
+        /* GS compute expansion needs the indirect parameters
          * synchronously; read the command back and route through the
          * normal GS path (mtlDrawArraysInstancedBaseInstance contains
          * handleGeometryDrawIfNeeded). */
@@ -3558,7 +3568,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
     Program *gsProgram = mglResolveProgramForStageFromState(
         glm_ctx, _GEOMETRY_SHADER);
     if (gsProgram && gsProgram->shader_slots[_GEOMETRY_SHADER]) {
-        /* P1: read the indirect command back and route through the normal
+        /* read the indirect command back and route through the normal
          * GS path (mtlDrawElementsInstancedBaseVertexBaseInstance contains
          * handleGeometryDrawIfNeeded). */
         if (![self prepareEmulatedIndirectCPURead:ctx
@@ -4960,7 +4970,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
     Program *gsProgram = mglResolveProgramForStageFromState(
         glm_ctx, _GEOMETRY_SHADER);
     if (gsProgram && gsProgram->shader_slots[_GEOMETRY_SHADER]) {
-        /* P1: decode every indirect command on the CPU and route each
+        /* decode every indirect command on the CPU and route each
          * through the normal GS path. */
         if (stride < 0 || drawcount <= 0) return;
         if (![self prepareEmulatedIndirectCPURead:ctx
@@ -5257,7 +5267,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
     Program *gsProgram = mglResolveProgramForStageFromState(
         glm_ctx, _GEOMETRY_SHADER);
     if (gsProgram && gsProgram->shader_slots[_GEOMETRY_SHADER]) {
-        /* P1: decode every indirect command on the CPU and route each
+        /* decode every indirect command on the CPU and route each
          * through the normal GS path. */
         if (stride < 0 || drawcount <= 0) return;
         if (![self prepareEmulatedIndirectCPURead:ctx

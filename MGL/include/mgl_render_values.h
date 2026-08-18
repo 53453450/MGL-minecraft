@@ -1,4 +1,13 @@
 /*
+ * SPDX-License-Identifier: LGPL-3.0-only
+ *
+ * This file was added after baseline commit
+ * 79d38f666336141d962109a864a6744bf66e438c and is licensed under
+ * LGPL-3.0-only by its respective copyright holder.
+ * See LICENSE and LICENSING.md.
+ */
+
+/*
  * Pure-C renderer value state shared by the Objective-C GL orchestration
  * layer and the Metal-cpp backend.  These values are the stable numeric ABI
  * consumed by mgl_render_cpp.cpp; no Metal framework type crosses this header.

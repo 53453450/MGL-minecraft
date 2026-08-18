@@ -1,10 +1,16 @@
 /*
+ * SPDX-License-Identifier: LGPL-3.0-only
+ *
+ * This file was added after baseline commit
+ * 79d38f666336141d962109a864a6744bf66e438c and is licensed under
+ * LGPL-3.0-only by its respective copyright holder.
+ * See LICENSE and LICENSING.md.
+ */
+
+/*
  * mgl_air_tess_abi.h
  * MGL - fixed C ABI contract for the M3 tessellation draw path
  * (TCS/TES compute expansion today; Metal 4 native tessellation target).
- *
- * Design doc: docs/AIR_M3_CPP_TODO.md §3 P0 ("把 TCS/TES native draw
- * contract 写成 value state").
  *
  * A GL_PATCHES draw is described by a single value-state struct
  * (MGLAIRTessDrawContract) that travels from the GL entry point into the

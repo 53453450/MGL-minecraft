@@ -1,13 +1,20 @@
+/*
+ * SPDX-License-Identifier: LGPL-3.0-only
+ *
+ * This file was added after baseline commit
+ * 79d38f666336141d962109a864a6744bf66e438c and is licensed under
+ * LGPL-3.0-only by its respective copyright holder.
+ * See LICENSE and LICENSING.md.
+ */
+
 //------------------------------------------------------------------------------------------------
-// mgl_air_loader.cpp — AIR metallib → MTL::Library → PSO（Metal-cpp 实现）
+// AIR metallib -> MTL::Library -> PSO implementation using metal-cpp.
 //
-// 本 TU 不定义 NS_PRIVATE_IMPLEMENTATION / MTL_PRIVATE_IMPLEMENTATION
-// （mgl_render_cpp.cpp 是唯一定义点）；仅 include mgl_metal_cpp.h 拿声明。
+// This TU does not define the metal-cpp implementation macros. They belong to
+// mgl_render_cpp.cpp; this file only consumes the shared declarations.
 //
-// Phase 1 范围（METALCPP_RENDERER_PLAN）：metallib 加载 + render/compute PSO
-// 创建 + 简易 PSO 缓存。render PSO 的 finalDescriptor 等价装配目前覆盖
-// color/depth/stencil/vertexDescriptor(attrib)/rasterization/ICB；blend 与
-// 二进制归档 Phase 4 补齐。主路径接入见 MGLRenderer+RenderPass.m 的门控分支。
+// This loader creates render and compute PSOs, maintains the render-pipeline
+// cache, and handles optional binary-archive lookups.
 //------------------------------------------------------------------------------------------------
 #include "mgl_metal_cpp.h"
 #include "mgl_air_loader.h"
@@ -19,9 +26,8 @@
 
 namespace {
 
-// PSO 缓存：key = 描述符状态序列化摘要。进程退出时 C 的 auto-cleanup
-// 可能晚于 C++ 静态析构；因此容器自身保持进程寿命，只在显式 shutdown
-// 中释放其 Metal 对象并 clear，避免访问已经析构的 std::map。
+// The cache is process-lifetime storage. Explicit shutdown releases its Metal
+// objects before clearing it, avoiding static-destruction ordering hazards.
 using PSOCache = std::map<std::string, void*>;
 
 PSOCache& psoCache() {
@@ -51,16 +57,14 @@ void copyError(NS::Error* e, char* err, size_t errcap) {
     snprintf(err, errcap, "unknown Metal error");
 }
 
-// MTL::PixelFormat packed depth-stencil predicate（镜像
-// mgl_texture_compat.h 的 mglMetalPixelFormatIsPackedDepthStencil）。
+// MTL::PixelFormat packed depth-stencil predicate.
 bool isPackedDepthStencil(uint32_t format) {
     return format == static_cast<uint32_t>(MTL::PixelFormatDepth24Unorm_Stencil8) ||
            format == static_cast<uint32_t>(MTL::PixelFormatDepth32Float_Stencil8);
 }
 
-// P4.2: 在 value-state 上复刻 ObjC mglNormalizePipelineDepthStencilFormats：
-// depth/stencil 各占独立 attachment 但其中之一是 packed 格式时，Metal 要求
-// 两者使用同一个 packed 格式（depth 与 stencil 共享纹理）。
+// Normalizes depth and stencil formats when one attachment uses a packed
+// format. Metal requires both attachments to reference the shared format.
 void normalizeDepthStencilFormats(MGLRenderCppPipelineDescriptorState* desc) {
     uint32_t depth = desc->depth_format;
     uint32_t stencil = desc->stencil_format;
@@ -79,14 +83,9 @@ void normalizeDepthStencilFormats(MGLRenderCppPipelineDescriptorState* desc) {
     desc->stencil_format = packed;
 }
 
-// P4.2: 由 value-state 组装 MTL::RenderPipelineDescriptor（final/simple/safe
-// 共用）。镜像 renderer pipeline descriptor state +
-// bindBlendStateToPipelineStateDescriptor + mglEnableIndirectCommandBuffersForPipeline：
-//   - label "GLSL Pipeline"
-//   - color attachment 的 writeMask/blend 只在 pixelFormat 有效时设置
-//     （未触碰的 attachment 保持 Metal 默认值，与 ObjC descriptor 一致）
-//   - supportIndirectCommandBuffers 由 MGL_ENABLE_ICB_PIPELINES 显式 opt-in
-// 调用方负责先 normalizeDepthStencilFormats。
+// Builds a render-pipeline descriptor from value-state. Valid color
+// attachments receive their write-mask and blend state; indirect command
+// buffers are enabled only when explicitly requested by the caller.
 MTL::RenderPipelineDescriptor* buildRenderPipelineDescriptor(
     const MGLRenderCppPipelineDescriptorState* desc) {
     MTL::RenderPipelineDescriptor* rpd =
@@ -148,10 +147,8 @@ MTL::RenderPipelineDescriptor* buildRenderPipelineDescriptor(
                 (MTL::VertexFormat)desc->attrib_format[i]);
             vd->attributes()->object(i)->setOffset(desc->attrib_offset[i]);
             vd->attributes()->object(i)->setBufferIndex(bufIdx);
-            /* 只有格式有效的 attribute 才写 layout —— 与 ObjC
-             * generateVertexDescriptorState 一致：未使用的 attrib（Invalid
-             * 格式、零值 buffer 索引）不得用 0 stride/stepRate 覆盖已写
-             * 的 layout 状态。 */
+            /* Only valid attributes write a layout. Unused attributes must not
+             * overwrite an existing stride or step rate with zero. */
             if (desc->attrib_format[i] !=
                 static_cast<uint32_t>(MTL::VertexFormatInvalid)) {
                 vd->layouts()->object(bufIdx)->setStride(desc->attrib_stride[i]);
@@ -166,9 +163,8 @@ MTL::RenderPipelineDescriptor* buildRenderPipelineDescriptor(
 
     rpd->setTessellationPartitionMode(
         (MTL::TessellationPartitionMode)desc->tessellation_partition_mode);
-    /* maxTessellationFactor 默认 64（ObjC descriptor 默认值）；0 表示
-     * 未设置（safe/simple fallback 的零值 state），跳过以避免 Metal
-     * "maxTessellationFactor must be >= 1 and <= 64" 断言。 */
+    /* Metal defaults maxTessellationFactor to 64. A zero state means unset;
+     * skip it to avoid passing an invalid value to Metal. */
     if (desc->max_tessellation_factor > 0) {
         rpd->setMaxTessellationFactor(desc->max_tessellation_factor);
     }
@@ -188,9 +184,8 @@ MTL::RenderPipelineDescriptor* buildRenderPipelineDescriptor(
     return rpd;
 }
 
-// P4.2: 共享 PSO 创建。完整 pipeline 先用
-// FailOnBinaryArchiveMiss 查询 archive；命中直接使用，miss 才普通编译
-// 并 add。这使 archive 在多轮加载/保存中保持增量且不重复追加。
+// Shared PSO creation. Complete pipelines query the archive first and add a
+// newly compiled state only on a miss, keeping archive updates incremental.
 int createRenderPipelineInternal(
     MTL::Device* dev, MTL::Function* vsFn, MTL::Function* fsFn,
     const MGLRenderCppPipelineDescriptorState* desc, MTL::BinaryArchive* archive,
@@ -286,9 +281,9 @@ int createRenderPipelineInternal(
     }
     rpd->release();
 
-    pso->retain(); // 缓存长期持有
+    pso->retain(); // The cache holds a long-lived reference.
     cache[key] = pso;
-    *pso_out = pso; // 调用方持有一份引用（mglAirRelease）
+    *pso_out = pso; // The caller owns a reference released with mglAirRelease.
     return 0;
 }
 
@@ -305,7 +300,7 @@ int mglAirLoadLibrary(const void* device, const unsigned char* bytes, size_t siz
     *library_out = nullptr;
     MTL::Device* dev = static_cast<MTL::Device*>(const_cast<void*>(device));
 
-    // ObjC 侧同款：dispatch_data_create → newLibrary(dispatch_data)。
+    // Match the Objective-C path: dispatch_data_create -> newLibrary.
     dispatch_data_t data = dispatch_data_create(bytes, size, nullptr,
                                                 DISPATCH_DATA_DESTRUCTOR_DEFAULT);
     if (!data) {
@@ -319,7 +314,7 @@ int mglAirLoadLibrary(const void* device, const unsigned char* bytes, size_t siz
         copyError(nsErr, err, errcap);
         return -1;
     }
-    *library_out = lib; // +1 retained，调用方拥有
+    *library_out = lib; // Owned by the caller.
     return 0;
 }
 
@@ -374,7 +369,7 @@ int mglAirCreateComputePipeline(const void* device, void* library,
         copyError(nsErr, err, errcap);
         return -1;
     }
-    *pso_out = pso; // +1 retained（compute PSO 暂不进缓存，Phase 4 并入）
+    *pso_out = pso; // Owned by the caller; compute PSOs are not cached here.
     return 0;
 }
 

@@ -1,8 +1,17 @@
+/*
+ * SPDX-License-Identifier: LGPL-3.0-only
+ *
+ * This file was added after baseline commit
+ * 79d38f666336141d962109a864a6744bf66e438c and is licensed under
+ * LGPL-3.0-only by its respective copyright holder.
+ * See LICENSE and LICENSING.md.
+ */
+
 //------------------------------------------------------------------------------------------------
-// mgl_render_cpp.h — C++ 渲染门面的纯 C 入口
+// Pure C entry points for the C++ renderer facade.
 //
-// 状态层（gl_core / glm_dispatch）与残留 ObjC 侧只通过本头接触 C++ 渲染层，
-// 不看见任何 MTL::* 类型。Metal-cpp 私有实现宏唯一定义点在 mgl_render_cpp.cpp。
+// The GL state layer and Objective-C shell use this header without exposing
+// MTL::* types. mgl_render_cpp.cpp is the only metal-cpp implementation TU.
 //------------------------------------------------------------------------------------------------
 #pragma once
 
@@ -23,9 +32,8 @@ typedef struct __GLsync Sync;
 
 typedef struct MGLMetalAttachmentSubresource_t MGLMetalAttachmentSubresource;
 
-/* P4.2: final/simple/safe pipeline descriptor 的 value-state。完整定义在
- * mgl_air_loader.h（MGLRenderCppPipelineDescriptorState）；此处只前向声明，
- * ObjC 侧构造 value-state，不再组装 MTLRenderPipelineDescriptor。 */
+/* Value-state pipeline descriptor defined in mgl_air_loader.h. Objective-C
+ * constructs this state without exposing MTLRenderPipelineDescriptor. */
 typedef struct MGLRenderCppPipelineDescriptorState
     MGLRenderCppPipelineDescriptorState;
 
@@ -63,11 +71,12 @@ const char *mglRenderCppCommandBufferStatusName(uint32_t status);
 const char *mglRenderCppLoadActionName(uint32_t action);
 const char *mglRenderCppStoreActionName(uint32_t action);
 
-/* 初始化渲染层。objc_device 为现有 id<MTLDevice>（桥接 +1 retain，不转移所有权）。
- * 返回 0 = 成功；< 0 = 失败（参数为空 / 桥接失败）。 */
+/* Initializes the renderer. objc_device is an existing id<MTLDevice>; the C++
+ * side retains it without transferring ownership. Returns 0 on success. */
 int mglRenderCppInit(void* objc_device);
 
-/* 释放渲染层持有的 MTL::* 对象（含 device 的 C++ 侧 retain）。幂等。 */
+/* Releases renderer-owned MTL::* objects, including the retained device.
+ * This operation is idempotent. */
 void mglRenderCppShutdown(void);
 
 /* Renderer initialization state as a C ABI value, never a borrowed object. */
@@ -403,7 +412,7 @@ int mglRenderCppTextureGetBytes(void *texture,
                                 uint64_t slice,
                                 int use_slice);
 
-/* P4.5: GL texture creation target + sample count -> Metal descriptor shape.
+/* GL texture creation target + sample count -> Metal descriptor shape.
  * The value result keeps Metal enums behind uint32_t and carries the legacy
  * upload/completeness flags that must stay consistent with the chosen type.
  * GL_TEXTURE_BUFFER is handled by its dedicated buffer-texture path before
@@ -421,7 +430,7 @@ int mglRenderCppTextureTargetPlan(
     uint32_t sample_count,
     MGLRenderCppTextureTargetPlan *plan_out);
 
-/* P4.4: GL subimage coordinates -> Metal upload subresource plan.  In
+/* GL subimage coordinates -> Metal upload subresource plan.  In
  * particular, GL_TEXTURE_1D_ARRAY stores its first layer/count in
  * yoffset/height, while the Metal 2D-array backing needs slice/arrayLength
  * with origin.y=0 and height=1.  The result is pure value state; no MTL type
@@ -452,7 +461,7 @@ int mglRenderCppTextureSubUploadPlan(
     uint64_t source_bytes_per_image,
     MGLRenderCppTextureSubUploadPlan *plan_out);
 
-/* P4.5 (item 1014/887): reflected shader-resource image shape ->
+/* reflected shader-resource image shape ->
  * MTLTextureType ABI value.  The C ABI stays backend-neutral: all inputs and
  * the result are uint32_t values, and has_resource preserves the historical
  * NULL-resource result.  Unsupported dimensions return 0. */
@@ -462,11 +471,11 @@ uint32_t mglRenderCppTextureTypeForShaderResource(
     uint32_t image_arrayed,
     uint32_t image_multisampled);
 
-/* P4.5 (item 1116/887): MTLTextureType ABI value -> per-target OpenGL
+/* MTLTextureType ABI value -> per-target OpenGL
  * texture-unit slot. Unsupported Metal texture types return -1. */
 int32_t mglRenderCppTextureIndexForMetalType(uint32_t texture_type);
 
-/* P4.5 (item 1014/887): MGLPixelFormat ABI value -> shader-visible texture
+/* MGLPixelFormat ABI value -> shader-visible texture
  * data kind.  Keep the C ABI backend-neutral; the numeric results mirror
  * MGLTextureDataKind without exposing that ObjC enum here. */
 #define MGL_RENDER_CPP_TEXTURE_DATA_KIND_UNKNOWN 0u
@@ -476,7 +485,7 @@ int32_t mglRenderCppTextureIndexForMetalType(uint32_t texture_type);
 #define MGL_RENDER_CPP_TEXTURE_DATA_KIND_DEPTH   4u
 
 uint32_t mglRenderCppTextureDataKindForPixelFormat(uint32_t pixel_format);
-/* P4.5 (item 1111): pure pixel-format and GL internal-format predicates.
+/* pure pixel-format and GL internal-format predicates.
  * The C ABI carries only stable integer enum values; ObjC compatibility
  * headers remain thin wrappers around these C++ tables. */
 int mglRenderCppMetalPixelFormatIsDepthOrStencil(uint32_t pixel_format);
@@ -484,25 +493,25 @@ int mglRenderCppMetalPixelFormatIsPackedDepthStencil(uint32_t pixel_format);
 int mglRenderCppGLInternalFormatLooksDepthOrStencil(uint32_t internal_format);
 int mglRenderCppTexturePixelFormatCompatibleWithExpectedDataKind(
     uint32_t pixel_format, uint32_t expected_kind);
-/* P4.5 (item 1111): compressed upload row math.  Returns the block height
+/* compressed upload row math.  Returns the block height
  * and rounded upload-row count using uint64_t so the C ABI is Foundation-free. */
 uint64_t mglRenderCppMetalCompressedBlockHeight(uint32_t pixel_format);
 uint64_t mglRenderCppMetalUploadRowsForPixelFormat(uint32_t pixel_format,
                                                    uint64_t pixel_height);
-/* P4.5 (item 1111): data-kind → debug name string (static literals).
+/* data-kind → debug name string (static literals).
  * kind uses MGL_RENDER_CPP_TEXTURE_DATA_KIND_*. */
 const char *mglRenderCppTextureDataKindName(uint32_t kind);
-/* P4.5 (item 1111): min-filter → uses-mipmaps.  Returns 1/0. */
+/* min-filter → uses-mipmaps.  Returns 1/0. */
 int mglRenderCppTextureMinFilterUsesMipmaps(uint32_t min_filter);
 
-/* P4.5 (item 1171): readback bytes-per-pixel table (MGLPixelFormat ABI value
+/* readback bytes-per-pixel table (MGLPixelFormat ABI value
  * -> bytes).  Pure CPU table shared by both gates — mirrors the ObjC
  * mglMetalReadbackBytesPerPixel exactly (default 4 bytes for unlisted
  * formats).  The C ABI carries the pixel format as uint32_t (Apple stable
  * enum), matching mglRenderCppTextureDataKindForPixelFormat. */
 uint32_t mglRenderCppReadbackBytesPerPixel(uint32_t pixel_format);
 
-/* P4.5 (item 1171): readback pixel-format classification (MGLPixelFormat ABI
+/* readback pixel-format classification (MGLPixelFormat ABI
  * value -> boolean).  Pure CPU tables shared by both gates — mirror the ObjC
  * mglMetalReadbackFormatIsBGRA8Compatible / mglMetalPixelFormatIsIntegerColor /
  * mglMetalPixelFormatIsSignedIntegerColor exactly.  Returns 1/0. */
@@ -510,7 +519,7 @@ int mglRenderCppReadbackFormatIsBGRA8Compatible(uint32_t pixel_format);
 int mglRenderCppPixelFormatIsIntegerColor(uint32_t pixel_format);
 int mglRenderCppPixelFormatIsSignedIntegerColor(uint32_t pixel_format);
 
-/* P4.5 (item 1111/887): layer / sRGB pixel-format tables.  Pixel format
+/* layer / sRGB pixel-format tables.  Pixel format
  * is the Apple MGLPixelFormat numeric value.  Effective honors
  * GL_EXT_texture_sRGB_decode via the raw srgb_decode_ext enum. */
 int mglRenderCppMetalLayerPixelFormatIsSupported(uint32_t pixel_format);
@@ -519,14 +528,14 @@ uint32_t mglRenderCppLinearPixelFormat(uint32_t pixel_format);
 uint32_t mglRenderCppEffectiveMTLPixelFormat(uint32_t pixel_format,
                                              uint32_t srgb_decode_ext);
 
-/* P4.5 (item 1171): copy packed rows with optional Y-flip.  Pure CPU
+/* copy packed rows with optional Y-flip.  Pure CPU
  * memcpy of `row_bytes` per row — mirrors mglMetalCopyRows (void). */
 void mglRenderCppCopyRows(
     const void *src, uint64_t src_bytes_per_row,
     void *dst, uint64_t dst_bytes_per_row,
     uint64_t row_bytes, uint64_t height, int flip_y);
 
-/* P4.5 (item 1171): Depth16Unorm / unpacked depth-float rows -> GL
+/* Depth16Unorm / unpacked depth-float rows -> GL
  * float rows with optional Y-flip.  Mirrors the CPU convert loop in
  * mglReadDepthTextureAsFloat (void; bad args are a no-op). */
 void mglRenderCppCopyDepthTextureBytesToFloat(
@@ -535,7 +544,7 @@ void mglRenderCppCopyDepthTextureBytesToFloat(
     uint64_t width, uint64_t height,
     uint64_t src_depth_bytes, int is_depth16, int flip_y);
 
-/* P4.5 (item 1171): copy GL BGRA8 rows into a BGRA8-compatible Metal pixel
+/* copy GL BGRA8 rows into a BGRA8-compatible Metal pixel
  * format (RGBA8Unorm / BGRA8Unorm / RGB9E5Float / RGB10A2Unorm /
  * BGR10A2Unorm) with optional Y-flip.  Pure CPU data transform shared by
  * both gates — mirrors the ObjC
@@ -547,7 +556,7 @@ int mglRenderCppCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(
     uint64_t width, uint64_t height,
     uint32_t pixel_format, int flip_y);
 
-/* P4.5 (item 1171): copy Metal texture bytes into GL BGRA8 (source-format
+/* copy Metal texture bytes into GL BGRA8 (source-format
  * decode: RGBA8/BGRA8, R/RG/RGBA 8/16/32 unorm/snorm/int/uint/float,
  * RGB9E5, RGB10A2/BGR10A2, BGR5A1, ABGR4, RG11B10, half/float variants)
  * with optional Y-flip.  Pure CPU data transform shared by both gates —
@@ -558,11 +567,11 @@ void mglRenderCppCopyTextureBytesToBGRA8(
     uint64_t width, uint64_t height,
     uint32_t pixel_format, int flip_y);
 
-/* P4.5 (item 1171): accepted GL pixel types for
+/* accepted GL pixel types for
  * mglMetalCopyBGRA8CompatibleTextureBytesToGL.  Returns 1/0. */
 int mglRenderCppReadbackGLTypeAccepted(uint32_t type);
 
-/* P4.5 (item 1171): SNORM8 texture bytes -> GL format/type, bypassing
+/* SNORM8 texture bytes -> GL format/type, bypassing
  * the lossy BGRA8 UNORM intermediate.  Mirrors the ObjC sourceIsSnorm8
  * path (1 on success, 0 on bad args / unsupported format). */
 int mglRenderCppCopySnorm8TextureBytesToGL(
@@ -571,7 +580,7 @@ int mglRenderCppCopySnorm8TextureBytesToGL(
     uint64_t width, uint64_t height,
     uint32_t pixel_format, uint32_t format, uint32_t type, int flip_y);
 
-/* P4.5 (item 1171): RGB10A2Unorm texture bytes -> GL format/type,
+/* RGB10A2Unorm texture bytes -> GL format/type,
  * bypassing the lossy BGRA8 UNORM intermediate.  Mirrors the ObjC
  * sourceIsRGB10A2Direct path (1 on success, 0 on bad args / unsupported). */
 int mglRenderCppCopyRGB10A2TextureBytesToGL(
@@ -580,7 +589,7 @@ int mglRenderCppCopyRGB10A2TextureBytesToGL(
     uint64_t width, uint64_t height,
     uint32_t pixel_format, uint32_t format, uint32_t type, int flip_y);
 
-/* P4.5 (item 1171): RG11B10Float texture bytes -> GL format/type,
+/* RG11B10Float texture bytes -> GL format/type,
  * bypassing the lossy BGRA8 UNORM intermediate.  Mirrors the ObjC
  * sourceIsRG11B10FloatDirect path (1 on success, 0 on bad args). */
 int mglRenderCppCopyRG11B10TextureBytesToGL(
@@ -589,7 +598,7 @@ int mglRenderCppCopyRG11B10TextureBytesToGL(
     uint64_t width, uint64_t height,
     uint32_t pixel_format, uint32_t format, uint32_t type, int flip_y);
 
-/* P4.5 (item 1171): R16/RG16/RGBA16 Unorm/Snorm/Float and
+/* R16/RG16/RGBA16 Unorm/Snorm/Float and
  * R32/RG32/RGBA32 Float texture bytes -> GL format/type, bypassing
  * the lossy BGRA8 UNORM intermediate.  Mirrors the ObjC 16/32-bit
  * direct path (1 on success, 0 on bad args / unsupported). */
@@ -599,7 +608,7 @@ int mglRenderCppCopy16or32TextureBytesToGL(
     uint64_t width, uint64_t height,
     uint32_t pixel_format, uint32_t format, uint32_t type, int flip_y);
 
-/* P4.5 (item 1171): BGRA8/RGBA8 UNORM texture bytes -> GL scalar
+/* BGRA8/RGBA8 UNORM texture bytes -> GL scalar
  * types (BYTE/SHORT/INT/UINT/USHORT/HALF/FLOAT).  Mirrors the ObjC
  * scalar integer/half/float readback path (1 on success, 0 on bad
  * args / unsupported). */
@@ -609,7 +618,7 @@ int mglRenderCppCopyUnorm8ScalarTextureBytesToGL(
     uint64_t width, uint64_t height,
     uint32_t pixel_format, uint32_t format, uint32_t type, int flip_y);
 
-/* P4.5 (item 1171): BGRA8/RGBA8 UNORM texture bytes -> GL packed
+/* BGRA8/RGBA8 UNORM texture bytes -> GL packed
  * types (3_3_2 / 5_6_5 / 4_4_4_4 / 5_5_5_1 / 8_8_8_8 /
  * 10_10_10_2 / 10F_11F_11F_REV / 5_9_9_9_REV and REV variants).
  * Mirrors the ObjC packed readback path (1 on success, 0 on bad
@@ -620,7 +629,7 @@ int mglRenderCppCopyUnorm8PackedTextureBytesToGL(
     uint64_t width, uint64_t height,
     uint32_t pixel_format, uint32_t format, uint32_t type, int flip_y);
 
-/* P4.5 (item 1171): BGRA8/RGBA8 UNORM texture bytes -> GL channel
+/* BGRA8/RGBA8 UNORM texture bytes -> GL channel
  * swizzle tail (UNSIGNED_BYTE, plus the leftover RGBA FLOAT branch).
  * Mirrors the ObjC final format switch (1 on success, 0 on bad args /
  * unsupported). */
@@ -630,16 +639,13 @@ int mglRenderCppCopyUnorm8SwizzleTextureBytesToGL(
     uint64_t width, uint64_t height,
     uint32_t pixel_format, uint32_t format, uint32_t type, int flip_y);
 
-/* P4.4: CPU→GPU 上传路径选路。纯决策函数（无 Metal 对象参与），把
- * MGLRenderer+Texture.m uploadTextureSliceViaBlit 的「storage mode /
- * 纹理类型 / AGX 能力位 → replaceRegion 或 blit 或 reject」判定迁入 C++，
- * ObjC 只剩按返回路由执行对应分支体。texture_type / storage_mode 直接传
- * MTLTextureType / MTLStorageMode 的 ABI 数值（Apple 稳定枚举）。
- * 路由语义与既有内联判定完全一致：
- *   - 1D/1DArray 且非 Private → REPLACE_1D（低频率路径，replaceRegion 安全）
- *   - 3D 且 AGX copyFromBuffer slice OOB bug 生效 → Private 拒绝（REJECT），
- *     否则 REPLACE_3D（需紧凑重打包 + bytesPerImage）
- *   - 其余（2D/2DArray/Cube/1D-Private…）→ BLIT（dedicated CB 保 GPU 顺序） */
+/* Selects the CPU-to-GPU upload route without touching Metal objects.
+ * texture_type and storage_mode use the stable MTLTextureType and
+ * MTLStorageMode ABI values.
+ *   - Non-private 1D/1DArray textures use REPLACE_1D.
+ *   - 3D textures affected by the AGX slice-copy issue reject private storage;
+ *     other 3D textures use REPLACE_3D with tightly packed depth planes.
+ *   - Other texture shapes use BLIT to preserve GPU ordering. */
 #define MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_BLIT          0
 #define MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_REPLACE_1D    1
 #define MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_REPLACE_3D    2
@@ -682,20 +688,16 @@ int mglRenderCppBuildTextureUploadPlan(
     uint64_t destination_level,
     uint64_t destination_slice,
     MGLRenderCppTextureUploadPlan *plan_out);
-/* P4.4: 3D 纹理 depth-plane 重打包（tight image stride）。把 strided
- * (bytes_per_image > expected) 的 depth planes 压成 tight
- * (expected_bytes_per_image) 布局，供 replaceRegion 上传（Metal 要求
- * bytesPerImage = bpr*height，padded 的 plane stride 必须重打包）。
- * 返回 malloc 的 buffer（调用方 free）；参数非法 / 分配失败返回 NULL。 */
+/* Repackages strided 3D depth planes into the tight image stride required by
+ * replaceRegion. Returns a malloc-owned buffer or NULL on invalid input or
+ * allocation failure. */
 void *mglRenderCppTextureRepackDepthPlanes(const void *bytes,
                                            size_t bytes_per_image,
                                            size_t expected_bytes_per_image,
                                            size_t copy_depth);
-/* P4.4: RGB→RGBA 通道扩展（texel buffer 2D fallback 的 CloudFaces 路径）。
- * src 每 texel = src_comp_bytes×3，dst 每 texel = dst_comp_bytes×4（输出
- * tex_width×tex_height 网格，行优先）；alpha 取 alpha_default 的低
- * dst_comp_bytes 字节；超出 texel_count 的尾 texel 置零。返回 0 成功，
- * 坏参返回 -1。dst 由调用方提供（ObjC 用 NSMutableData 管生命周期）。 */
+/* Expands RGB texels to RGBA for the 2D texel-buffer fallback. The caller owns
+ * dst. Missing tail texels are zero-filled and alpha comes from the low
+ * dst_comp_bytes of alpha_default. Returns 0 on success. */
 int mglRenderCppTextureExpandRGBToRGBA(const void *src,
                                        void *dst,
                                        size_t texel_count,
@@ -704,11 +706,9 @@ int mglRenderCppTextureExpandRGBToRGBA(const void *src,
                                        size_t src_comp_bytes,
                                        size_t dst_comp_bytes,
                                        uint64_t alpha_default);
-/* P4.4: RGBA8 通道扩展（旧式 packed 格式 → RGBA8）。internal_format 为 GL
- * 枚举（R3_G3_B2 / RGB4/5/565 / RGB10/12 / RGBA2/4 / RGB5_A1 / RGB8 变体），
- * 按位展开为 8-bit RGBA（unorm 取整，snorm 1.0=0x7f，整型 a=1）。返回
- * malloc 的 dst（调用方 free），坏参 / 未知格式 / 尺寸超限返回 NULL。 */
-/* P4.5 (item 1138): stage-binding copy-back entry (C-ABI mirror of the
+/* Expands legacy packed GL formats into RGBA8. Returns a malloc-owned buffer,
+ * or NULL for invalid input, unsupported formats, or size overflow. */
+/* stage-binding copy-back entry (C-ABI mirror of the
  * ObjC MGLStageBindingCopyBack — the ObjC side bridges the buffer refs). */
 typedef struct MGLRenderCppCopyBackEntry_t {
     const void *temporary;        /* MTL::Buffer* */
@@ -735,7 +735,7 @@ int mglRenderCppCopyBackCPUPrefix(
     uint32_t count,
     uint32_t *failed_index_out);
 
-/* P4.5 (item 1138): runtime-array-size SSBO sizing constants.  The AIR
+/* runtime-array-size SSBO sizing constants.  The AIR
  * backend emits code that reads uint32 byte-sizes from
  * MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX when a compute shader uses .length()
  * on an unsized SSBO array.  This fills `out_sizes[out_capacity]` from the
@@ -758,7 +758,7 @@ int mglRenderCppBuildRuntimeArraySizes(
     uint32_t *out_sizes,
     uint32_t out_capacity);
 
-/* P4.5 (item 1111): per-level CPU upload data preparation — pure CPU
+/* per-level CPU upload data preparation — pure CPU
  * transform shared by both gates (the expansion entries it calls are the
  * same both gates use).  Computes the copy geometry and applies any required
  * format expansion (RGBA8 / channel) to the level bytes.  Returns:
@@ -790,14 +790,14 @@ typedef struct MGLRenderCppIntegerReadbackConvertParams_t {
     uint32_t packed_output_bytes;
 } MGLRenderCppIntegerReadbackConvertParams;
 
-/* P4.5 (item 1171/1116): integer texture readback CPU conversion — the
+/* integer texture readback CPU conversion — the
  * per-pixel component extraction + GL_INTEGER packing/clamping loop of
  * mglReadIntegerTextureAsRGBA32, as a pure data transformation shared by
  * both gates.  Returns 0 on success, -1 on bad args. */
 int mglRenderCppConvertIntegerReadback(
     const MGLRenderCppIntegerReadbackConvertParams *params);
 
-/* P4.5 (item 1141/887): tess-factor buffer CPU transforms — the default
+/* tess-factor buffer CPU transforms — the default
  * canonical factor fill (12B/patch: 4x outer + 2x inner __fp16), the
  * canonical->triangle repack (12B -> 8B/patch) and the native primitive
  * count (GL 4.6 11.2.2.2 ceil rules).  Pure data transforms shared by both
@@ -822,7 +822,7 @@ uint64_t mglRenderCppTessPrimitiveCount(
     uint32_t tess_gen_mode,
     uint32_t instance_count);
 
-/* P4.5 (item 1141/887): GL 4.6 section 11.2.2.2 patch discard predicate.
+/* GL 4.6 section 11.2.2.2 patch discard predicate.
  * Tests the applicable outer/inner tessellation levels before any clamp to
  * one; non-positive or NaN levels discard the patch.  NULL inputs are
  * conservatively treated as discarded.  Shared by both gates. */
@@ -831,7 +831,7 @@ bool mglRenderCppTessFactorsDiscardPatch(
     const float *edge,
     const float *inside);
 
-/* P4.5 (item 1141/887): per-patch expanded item count for the isolines /
+/* per-patch expanded item count for the isolines /
  * point-mode TES kernel (lockstep with mgl_air_backend.cpp's u/v
  * decomposition) — returns 0 when the factor record is missing or the patch
  * is discarded (caller falls back to 1).  Pure data transform shared by
@@ -842,7 +842,7 @@ uint32_t mglRenderCppTessEvalItemsPerPatch(
     uint32_t spacing,
     uint32_t point_mode);
 
-/* P4.5 (item 1141/887): GL 4.6 §11.2.2.2 subdivision-count rounding —
+/* GL 4.6 §11.2.2.2 subdivision-count rounding —
  * fractional_even -> next even (min 2), fractional_odd -> next odd,
  * otherwise ceil(level).  Single source of truth shared by the TES
  * eval-item accounting and the ObjC native per-patch primitive counting
@@ -851,18 +851,18 @@ uint32_t mglRenderCppTessRoundLevelForSpacing(
     uint32_t spacing,
     uint32_t ceil_level);
 
-/* P4.5 (item 1141/887): TES XFB field byte size for a GL type (FLOAT/INT/
+/* TES XFB field byte size for a GL type (FLOAT/INT/
  * UINT + vec2/3/4; 0 for unsupported).  Matches mglTESXFBFieldByteSize and
  * the packed-write stride contract in mglFixMSLTesAsComputeKernel.  Shared
  * by both gates. */
 uint64_t mglRenderCppTESXFBFieldByteSize(uint64_t gl_type);
 
-/* P4.5 (item 1141/887): overflow-checked product (a * b) for tessellation
+/* overflow-checked product (a * b) for tessellation
  * size math; matches the ObjC mglCheckedNSUIntegerProduct.  Returns 0 with
  * *result set, -1 on bad args / overflow.  Shared by both gates. */
 int mglRenderCppCheckedProduct(uint64_t a, uint64_t b, uint64_t *result);
 
-/* P4.5 (item 1141/887): unpack an 11-bit (6-bit mantissa) / 10-bit
+/* unpack an 11-bit (6-bit mantissa) / 10-bit
  * (5-bit mantissa) unsigned float — CPU decode for
  * GL_UNSIGNED_INT_10F_11F_11F_REV vertex data.  5-bit exponent bias 15,
  * no sign bit; matches the ObjC mglFloat11ToFloat / mglFloat10ToFloat
@@ -870,7 +870,7 @@ int mglRenderCppCheckedProduct(uint64_t a, uint64_t b, uint64_t *result);
 float mglRenderCppFloat11ToFloat(uint32_t val);
 float mglRenderCppFloat10ToFloat(uint32_t val);
 
-/* P4.5 (item 1171): CPU pixel-format scalar converters shared by the
+/* CPU pixel-format scalar converters shared by the
  * readback path (mgl_readback.m's mglMetalFloatToUnorm8 /
  * mglMetalSnorm16ToFloat / mglMetalSnorm8ToFloat — pure data transforms,
  * both gates).  Float->unorm8 rounds to nearest (0.5 rounds up); snorm
@@ -879,13 +879,13 @@ uint8_t mglRenderCppFloatToUnorm8(float value);
 float mglRenderCppSnorm16ToFloat(int16_t value);
 float mglRenderCppSnorm8ToFloat(int8_t value);
 
-/* P4.5 (item 1141/887): GL type -> MTLVertexFormat ABI value for TES
+/* GL type -> MTLVertexFormat ABI value for TES
  * control-point stage inputs (Float/Float2/3/4, Int/Int2/3/4,
  * UInt/UInt2/3/4, else 0 = MTLVertexFormatInvalid).  Values match the
  * macOS SDK enum (Float=28 ... UInt4=39).  Shared by both gates. */
 uint32_t mglRenderCppTessControlPointFormat(uint64_t gl_type);
 
-/* P4.5 (item 1141/887): TES XFB compact vertex stride — sum of the byte
+/* TES XFB compact vertex stride — sum of the byte
  * sizes of the transform-feedback varyings resolved by name against the
  * TES stage-output resource list (lockstep with the packed writes injected
  * by mglFixMSLTesAsComputeKernel).  0 when the stride cannot be proven
@@ -903,7 +903,7 @@ int mglRenderCppCheckedTessCaptureSize(
     uint64_t *size_out,
     uint64_t *offset_out);
 
-/* P4.5 (item 1141/887): native TES interface support decision — module /
+/* native TES interface support decision — module /
  * function presence, point-mode / XFB exclusion, TRI/QUADS gen-mode gate,
  * and the MTL::Function patchType + patchControlPointCount consistency
  * checks (zero control-point count = legacy encoding, tolerated).  Shared
@@ -918,7 +918,7 @@ int mglRenderCppNativeTESInterfaceSupported(
     uint64_t tcs_metallib_bytes,
     uint32_t tcs_output_vertices);
 
-/* P4.5 (item 1141/887): pure viewport/scissor/framebuffer intersection
+/* pure viewport/scissor/framebuffer intersection
  * decision for the per-draw rasterization-empty early-out.  Returns 1 when
  * the draw cannot rasterize any pixel, 0 otherwise (a zero pass size is
  * "not empty" — the caller resolves the pass size first).  Shared by both
@@ -944,7 +944,7 @@ typedef struct MGLRenderCppIntegerReadbackClassify_t {
     uint32_t output_component_bytes;
 } MGLRenderCppIntegerReadbackClassify;
 
-/* P4.5 (item 1171/1116): integer-readback classification — the 19-format
+/* integer-readback classification — the 19-format
  * source-integer table, the GL_*_INTEGER output check, the per-format
  * component map (incl. BGR/BGRA orderings and the GREEN/BLUE/ALPHA
  * single-component compat enums) and the per-type output component bytes.
@@ -964,7 +964,7 @@ typedef struct MGLRenderCppIntegerPackedType_t {
     uint32_t output_components;
 } MGLRenderCppIntegerPackedType;
 
-/* P4.5 (item 1171/1116): integer-readback packed-type classification —
+/* integer-readback packed-type classification —
  * the 10-entry GL packed-type table (3_3_2 / 2_3_3_REV / 5_6_5(+REV) /
  * 4_4_4_4(+REV) / 5_5_5_1 / 1_5_5_5_REV / 8_8_8_8(+REV) /
  * 10_10_10_2 / 2_10_10_10_REV).  Pure classification shared by both
@@ -981,7 +981,7 @@ typedef struct MGLRenderCppIntegerReadbackSource_t {
     int recognized;
 } MGLRenderCppIntegerReadbackSource;
 
-/* P4.5 (item 1171/1116): integer-readback SOURCE format classification —
+/* integer-readback SOURCE format classification —
  * the 19-entry MGLPixelFormat -> {components, component bytes, signed,
  * RGB10A2} table.  Pure classification shared by both gates.  Returns 0
  * with recognized=1 on a known format, 0 with recognized=0 on unknown,
@@ -990,7 +990,7 @@ int mglRenderCppIntegerReadbackSourceClassify(
     uint32_t pixel_format,
     MGLRenderCppIntegerReadbackSource *out);
 
-/* P4.5 (item 1141/887): shadow-upload range math — for gpu_write_target
+/* shadow-upload range math — for gpu_write_target
  * buffers, clamps the recorded written_min/written_max span to the limit;
  * otherwise the whole limit.  Returns 0 with offset/length set, -1 when
  * there is nothing to upload (no written span / zero length).  Pure range
@@ -1003,24 +1003,24 @@ int mglRenderCppBufferShadowUploadRange(
     uint64_t *out_offset,
     uint64_t *out_length);
 
-/* P4.5 (item 1141/887): GL draw mode -> MTLPrimitiveType numbering
+/* GL draw mode -> MTLPrimitiveType numbering
  * (0=Point, 1=Line, 2=LineStrip, 3=Triangle, 4=TriangleStrip;
  * 0xFFFFFFFF for modes the renderer routes elsewhere).  Pure table shared
  * by both gates; the caller casts to MTLPrimitiveType. */
 uint32_t mglRenderCppMTLPrimitiveTypeForGLMode(uint32_t mode);
 
-/* P4.5 (item 1141/887): GL element index type -> MTLIndexType numbering
+/* GL element index type -> MTLIndexType numbering
  * (0=UInt16, 1=UInt32; 0xFFFFFFFF otherwise).  Pure table shared by both
  * gates; the caller casts to MTLIndexType. */
 uint32_t mglRenderCppMTLIndexTypeForGLType(uint32_t gl_type);
 
-/* P4.5 (item 1141/887): Metal mipmap level dimension — the greatest
+/* Metal mipmap level dimension — the greatest
  * 2^(level) divisor of base (base>>level, clamped to 1).  Pure computation
  * shared by both gates (the ObjC mglMetalTextureLevelDimension keeps the
  * extern linkage its many callers use). */
 uint64_t mglRenderCppMetalTextureLevelDimension(uint64_t base, uint64_t level);
 
-/* P4.5 (item 1141/887): triangle-fan element emulation — expand a raw
+/* triangle-fan element emulation — expand a raw
  * element index stream into `(center, i+1, i+2)` triplets (count-2
  * triangles x 3, all uint32).  Pure CPU; caller frees the returned array.
  * Returns 0 on success with *out_count set, -1 on bad args / overflow. */
@@ -1031,7 +1031,7 @@ int mglRenderCppExpandTriangleFanIndices(
     uint32_t **out_indices,     /* malloc'd, count*3 entries */
     uint64_t *out_count);
 
-/* P4.5 (item 1141/887): triangle-strip element emulation — expand a raw
+/* triangle-strip element emulation — expand a raw
  * element stream into `(first, second, tri+2)` triplets with alternating
  * first/second offset (tri strips), count-2 triangles, all uint32.
  * Pure CPU; caller frees.  Returns 0 with *out_count set, -1 on error. */
@@ -1039,63 +1039,63 @@ int mglRenderCppExpandTriangleStripIndices(
     const uint8_t *bytes, uint32_t elem_width, uint32_t source_count,
     uint32_t **out_indices, uint64_t *out_count);
 
-/* P4.5 (item 1141/887): LINE_LOOP element emulation — copy the raw index
+/* LINE_LOOP element emulation — copy the raw index
  * stream and append the first index to close the loop (count+1).  Pure CPU;
  * caller frees. */
 int mglRenderCppExpandLineLoopIndices(
     const uint8_t *bytes, uint32_t elem_width, uint32_t source_count,
     uint32_t **out_indices, uint64_t *out_count);
 
-/* P4.5 (item 1141/887): quad-array emulation — for each group of 4 array
+/* quad-array emulation — for each group of 4 array
  * vertices emit `(a,a+1,a+2,a,a+2,a+3)` (two triangles), quad_count*6
  * uint32 total.  Pure CPU; caller frees.  Returns 0 with *out_count, -1 on
  * bad args. */
 int mglRenderCppExpandQuadArrayIndices(
     uint32_t quad_count, uint32_t **out_indices, uint64_t *out_count);
 
-/* P4.5 (item 1141/887): quad-element emulation — read 4 source indexes per
+/* quad-element emulation — read 4 source indexes per
  * quad from the raw stream and emit `(i0,i1,i2,i0,i2,i3)`.  Pure CPU;
  * caller frees. */
 int mglRenderCppExpandQuadElementIndices(
     const uint8_t *bytes, uint32_t elem_width, uint32_t quad_count,
     uint32_t **out_indices, uint64_t *out_count);
 
-/* P4.5 (item 1141/887): GL_UNSIGNED_BYTE element buffer -> UInt16
+/* GL_UNSIGNED_BYTE element buffer -> UInt16
  * expansion — write each byte as uint16.  Pure CPU; caller frees. */
 int mglRenderCppExpandUInt8ToUInt16(
     const uint8_t *bytes, uint32_t byte_count,
     uint16_t **out_indices, uint64_t *out_count);
 
-/* P4.5 (item 1141/887): triangle-fan ARRAY emulation — vertexCount-2
+/* triangle-fan ARRAY emulation — vertexCount-2
  * triangles `(0, tri+1, tri+2)`, all uint32.  Pure CPU; caller frees. */
 int mglRenderCppExpandTriangleFanArrayIndices(
     uint32_t vertex_count, uint32_t **out_indices, uint64_t *out_count);
 
-/* P4.5 (item 1141/887): triangle-strip ARRAY emulation — vertexCount-2
+/* triangle-strip ARRAY emulation — vertexCount-2
  * triangles with alternating offset `(tri&1)`.  Pure CPU; caller frees. */
 int mglRenderCppExpandTriangleStripArrayIndices(
     uint32_t vertex_count, uint32_t **out_indices, uint64_t *out_count);
 
-/* P4.5 (item 1141/887): LINE_LOOP ARRAY emulation — copy `firstVertex+i`
+/* LINE_LOOP ARRAY emulation — copy `firstVertex+i`
  * for count vertices then append `firstVertex`.  Pure CPU; caller frees. */
 int mglRenderCppExpandLineLoopArrayIndices(
     uint32_t first_vertex, uint32_t vertex_count,
     uint32_t **out_indices, uint64_t *out_count);
 
-/* P4.5 (item 1141/887: quad-array LINE_LOOP emulation — for each group of
+/*  (: quad-array LINE_LOOP emulation — for each group of
  * 4 array vertices emit `(a,a+1,a+1,a+2,a+2,a+3,a+3,a)` (a 4-edge closed
  * loop), quad_count*8 uint32 total.  Pure CPU; caller frees. */
 int mglRenderCppExpandQuadArrayLineIndices(
     uint32_t quad_count, uint32_t **out_indices, uint64_t *out_count);
 
-/* P4.5 (item 1141/887): quad-element LINE_LOOP emulation — read 4 source
+/* quad-element LINE_LOOP emulation — read 4 source
  * indexes per quad and emit `(i0,i1,i1,i2,i2,i3,i3,i0)`.  Pure CPU;
  * caller frees. */
 int mglRenderCppExpandQuadElementLineIndices(
     const uint8_t *bytes, uint32_t elem_width, uint32_t quad_count,
     uint32_t **out_indices, uint64_t *out_count);
 
-/* P4.5 (item 1141/887): index-range scan ignoring primitive-restart markers
+/* index-range scan ignoring primitive-restart markers
  * — computes min/max over the byte stream (BYTE/SHORT/INT width), skipping
  * the restart value.  Pure CPU; matches mglScanIndexRangeIgnoringRestart.
  * Returns 0 on success (with *out_valid = 1 if at least one non-restart
@@ -1105,7 +1105,7 @@ int mglRenderCppScanIndexRangeIgnoringRestart(
     int restart_enabled, uint32_t restart_index,
     uint32_t *out_min, uint32_t *out_max, int *out_valid);
 
-/* P4.5 (item 1141/887): prepared (Metal-side) byte offset for a GL element
+/* prepared (Metal-side) byte offset for a GL element
  * buffer — GL_UNSIGNED_BYTE indices are expanded to UInt16 so the offset
  * doubles, other types pass through.  Matches mglComputePreparedIndexByteOffset.
  * Returns 0 on success, -1 on overflow / bad args. */
@@ -1113,7 +1113,7 @@ int mglRenderCppComputePreparedIndexByteOffset(uint64_t gl_index_type,
                                                uint64_t gl_byte_offset,
                                                uint64_t *out_prepared_offset);
 
-/* P4.5 (item 1141/887): baseByteOffset + firstElement * indexStride with
+/* baseByteOffset + firstElement * indexStride with
  * overflow checks.  Matches mglComputeIndexByteOffset.  Returns 0 on success,
  * -1 on bad args / overflow. */
 int mglRenderCppComputeIndexByteOffset(uint64_t base_byte_offset,
@@ -1121,37 +1121,37 @@ int mglRenderCppComputeIndexByteOffset(uint64_t base_byte_offset,
                                        uint64_t index_stride,
                                        uint64_t *out_byte_offset);
 
-/* P4.5 (item 1141/887): GL index element byte size (BYTE=1, SHORT=2, INT=4).
+/* GL index element byte size (BYTE=1, SHORT=2, INT=4).
  * Matches mglGLIndexElementSize.  Returns 0 for unknown type. */
 uint32_t mglRenderCppGLIndexElementSize(uint64_t gl_index_type);
 
-/* P4.5 (item 1141/887): read a single GL index value from a byte buffer at
+/* read a single GL index value from a byte buffer at
  * `element_index` (elem_width 1/2/4).  Matches mglReadGLIndexValue; returns 0
  * for NULL buffer or unknown width. */
 uint32_t mglRenderCppReadGLIndexValue(const uint8_t *bytes, uint32_t elem_width,
                                       uint64_t element_index);
 
-/* P4.5 (item 1141/887): GL vertex-attribute component size in bytes (1/2/4/8).
+/* GL vertex-attribute component size in bytes (1/2/4/8).
  * Matches mglVertexAttribComponentSize.  Returns 0 for unknown. */
 uint32_t mglRenderCppVertexAttribComponentSize(uint64_t gl_type);
 
-/* P4.5 (item 1141/887): total bytes for a vertex-attribute element (type x
+/* total bytes for a vertex-attribute element (type x
  * size), with special handling for packed 10_10_10_2 formats.  Matches
  * mglVertexAttribElementBytes.  Returns 0 for unknown / zero size. */
 uint64_t mglRenderCppVertexAttribElementBytes(uint64_t gl_type, uint32_t size);
 
-/* P4.5 (item 1141/887): does GL primitive mode produce polygonal primitives
+/* does GL primitive mode produce polygonal primitives
  * (triangles/quads) subject to glPolygonMode point/line emulation?  Matches
  * mglDrawModeProducesPolygons.  Returns 1/0. */
 int mglRenderCppDrawModeProducesPolygons(uint64_t gl_mode);
 
-/* P4.5 (item 1141/887): does `mode` with `indexCount` vertices produce at
+/* does `mode` with `indexCount` vertices produce at
  * least one drawable segment (point/line/triangle/quad)?  Matches
  * mglPrimitiveModeHasDrawableSegment.  Returns 1/0. */
 int mglRenderCppPrimitiveModeHasDrawableSegment(uint64_t gl_mode,
                                                 uint64_t index_count);
 
-/* P4.5 (item 1141/887): total triangle index count for `source_vertex_count`
+/* total triangle index count for `source_vertex_count`
  * vertices arranged as quads (4/quad -> 6 indices).  Matches
  * mglQuadTriangleIndexCount; returns 0 on overflow. */
 uint64_t mglRenderCppQuadTriangleIndexCount(uint64_t source_vertex_count);
@@ -1183,7 +1183,7 @@ typedef struct MGLRenderCppGeometryGatherResult_t {
     uint32_t max_index;
 } MGLRenderCppGeometryGatherResult;
 
-/* P4.5 (item 1141/887): the indexed-PATCHES geometry gather — expand a raw
+/* the indexed-PATCHES geometry gather — expand a raw
  * index stream (BYTE/SHORT/INT element size) into a flat vertex-id gather,
  * counting complete primitives of `last` vertices and dropping primitive
  * restarts / trailing incomplete groups.  Pure CPU; caller frees
@@ -1207,7 +1207,7 @@ typedef struct MGLRenderCppReadTextureRegionClip_t {
     int empty;   /* copyW <= 0 || copyH <= 0 (nothing to copy) */
 } MGLRenderCppReadTextureRegionClip;
 
-/* P4.5 (item 1141/887): readPixels region-vs-level clip — clamps a source
+/* readPixels region-vs-level clip — clamps a source
  * read region against the level extents and computes the destination
  * offset-origin for the clipped copy and the Metal source Y (flipped).
  * Pure computation shared by both gates; the empty flag matches the
@@ -1224,7 +1224,7 @@ typedef struct MGLRenderCppThreadgroupSize_t {
     uint32_t z;
 } MGLRenderCppThreadgroupSize;
 
-/* P4.5 (item 1147/887): compute dispatch threadgroup size — resolves a
+/* compute dispatch threadgroup size — resolves a
  * zero local workgroup component to 1 (the `x ? x : 1` default used by the
  * ObjC dispatch fallback).  Pure computation shared by both gates. */
 int mglRenderCppThreadgroupSize(
@@ -1238,7 +1238,7 @@ typedef struct MGLRenderCppVertexAttribResolve_t {
     uint32_t divisor;
 } MGLRenderCppVertexAttribResolve;
 
-/* P4.5 (item 1141/887): ARB_vertex_attrib_binding resolve — the
+/* ARB_vertex_attrib_binding resolve — the
  * binding-table override (offset/stride/divisor) vs the legacy per-attrib
  * values.  Pure decision shared by both gates; the GL buffer validation
  * stays on the ObjC side. */
@@ -1259,7 +1259,7 @@ typedef struct MGLRenderCppPolygonOffsetDecision_t {
     int enable_depth_bias;
 } MGLRenderCppPolygonOffsetDecision;
 
-/* P4.5 (item 1141/887): polygon-offset draw decision — the triangle fill
+/* polygon-offset draw decision — the triangle fill
  * mode (GL_LINE -> lines), the invalid polygon-mode repair condition and
  * the depth-bias enablement per polygon mode with the three capability
  * flags.  Pure decision shared by both gates. */
@@ -1273,7 +1273,7 @@ int mglRenderCppPolygonOffsetDecision(
     int cap_fill,
     MGLRenderCppPolygonOffsetDecision *out);
 
-/* P4.5 (item 1141/887): GL draw mode -> primitive vertex count (for the
+/* GL draw mode -> primitive vertex count (for the
  * cull-distance emulation params; 1 for unknown modes).  Pure table shared
  * by both gates. */
 uint32_t mglRenderCppPrimitiveVertexCountForMode(uint32_t mode);
@@ -1292,7 +1292,7 @@ typedef struct MGLRenderCppBlitScissorRect_t {
     int64_t y1;
 } MGLRenderCppBlitScissorRect;
 
-/* P4.5 (item 1069/1141): scaled-blit UV computation (normalized source
+/* scaled-blit UV computation (normalized source
  * rect with the Metal Y-flip, clamped, direction-swapped per the forward
  * flags).  Pure CPU, shared by both gates. */
 int mglRenderCppScaledBlitUVs(
@@ -1308,7 +1308,7 @@ int mglRenderCppScaledBlitUVs(
     int dst_y_forward,
     MGLRenderCppScaledBlitUVs *out);
 
-/* P4.5 (item 1069/1141): scaled-blit destination scissor base — floor/ceil
+/* scaled-blit destination scissor base — floor/ceil
  * of the destination rect in Metal Y, clamped to the destination texture.
  * The caller intersects the GL scissor box on top.  Pure CPU, shared by
  * both gates. */
@@ -1351,7 +1351,7 @@ typedef struct MGLRenderCppBlitFramebufferPlan_t {
     double scaled_dst_metal_y;
 } MGLRenderCppBlitFramebufferPlan;
 
-/* P4.5 (item 1069/1141): glBlitFramebuffer region math + decisions after
+/* glBlitFramebuffer region math + decisions after
  * the axis clip — direction/flip flags, min/max/abs extents, the scaled-
  * blit decision (format conversion / RT sync / scissor / flip / size
  * mismatch with the 1e-5 epsilon of mglNearlyEqual), the integer copy
@@ -1385,7 +1385,7 @@ typedef struct MGLRenderCppGetTexImagePlan_t {
     uint64_t total_bytes;
 } MGLRenderCppGetTexImagePlan;
 
-/* P4.5 (item 1171/1116): mtlGetTexImage staging plan — direct R32F read
+/* mtlGetTexImage staging plan — direct R32F read
  * detection, the BGRA8 conversion eligibility (dst bytes + single depth
  * layer + non-direct + compatible source), the source-is-BGRA8-family
  * check, and the row/image/total byte computation (conversion pitch:
@@ -1423,7 +1423,7 @@ typedef struct MGLRenderCppLevelUploadOp_t {
     int owns_data;
 } MGLRenderCppLevelUploadOp;
 
-/* P4.5 (item 1116): build the level-upload op list for a single-face
+/* build the level-upload op list for a single-face
  * (2D) CPU upload — inlines the has-uploadable CPU-data check, runs
  * mglRenderCppTexturePrepareLevelUpload per level and classifies each as
  * upload op / short-backing / bad.  levels must have level_count entries.
@@ -1459,7 +1459,7 @@ int mglRenderCppTexturePrepareLevelUpload(
     uint32_t pixel_format,
     MGLRenderCppLevelUploadPrep *out);
 
-/* P4.5 (item 1111): RGB → RGBA channel expansion (RGBA16/RGBA32 family
+/* RGB → RGBA channel expansion (RGBA16/RGBA32 family
  * backed by RGBA variants) — the table + verification moved from
  * mgl_texture_compat.m; malloc'd result, NULL on bad args / unknown format. */
 uint8_t *mglRenderCppCreateChannelExpandedUpload(uint32_t internal_format,
@@ -1477,27 +1477,27 @@ uint8_t *mglRenderCppCreateRGBA8ExpandedUpload(const void *src_data,
                                                uint32_t internal_format,
                                                size_t *out_bytes_per_row,
                                                size_t *out_bytes_per_image);
-/* P4.5 (item 1111): RGB-family → RGBA expansion gates.  Pixel format is
+/* RGB-family → RGBA expansion gates.  Pixel format is
  * the Apple MGLPixelFormat numeric value.  Returns 1/0. */
 int mglRenderCppTextureInternalFormatNeedsRGBA8Expansion(
     uint32_t internal_format, uint32_t pixel_format);
 int mglRenderCppTextureNeedsChannelExpansion(uint32_t internal_format,
                                              uint32_t pixel_format);
 
-/* P4.5 (item 1111): R8 swizzle component + single-channel upload expand.
+/* R8 swizzle component + single-channel upload expand.
  * Resolve mirrors mglResolveR8SwizzledComponent (tex unused).  Create
  * expands GL_R8 1B/px → RGBA8 via the four swizzle enums; malloc'd
  * result, NULL on bad args / non-R8 / size cap. */
 uint8_t mglRenderCppResolveR8SwizzledComponent(uint32_t swizzle, uint8_t red);
-/* P4.5 (item 1111): R-only upload-swizzle gate.  swizzled==0 → 0;
+/* R-only upload-swizzle gate.  swizzled==0 → 0;
  * otherwise the GL_R* internal-format table.  Returns 1/0. */
 int mglRenderCppTextureUploadNeedsSingleChannelSwizzle(uint32_t internal_format,
                                                        int swizzled);
-/* P4.5 (item 1111): stored color-component count for an internal format.
+/* stored color-component count for an internal format.
  * Mirrors mglStoredColorComponentsForTexture after the null-tex check
  * (null stays in ObjC and returns 4).  Unknown formats → 4. */
 uint32_t mglRenderCppStoredColorComponents(uint32_t internal_format);
-/* P4.5 (item 1111): GL swizzle enum → Metal TextureSwizzle ABI value
+/* GL swizzle enum → Metal TextureSwizzle ABI value
  * (uint32_t).  components gates missing channels to Zero / One(for Alpha). */
 uint32_t mglRenderCppMTLSwizzleForGLSwizzle(uint32_t gl_swizzle,
                                             uint32_t components);
@@ -1636,9 +1636,7 @@ int mglRenderCppStorePipeline(
     const uint64_t key_words[MGL_RENDER_CPP_PIPELINE_CACHE_KEY_WORDS],
     const MGLRenderCppPipelineActiveState *state,
     uint32_t *evicted_out);
-/* P4.2: descriptor cache（value-state 版）。缓存 MGLRenderCppPipelineDescriptorState
- * 值，命中时 ObjC 无需重新组装 descriptor state。旧 pointer-based
- * LookupPipelineDescriptor / StorePipelineDescriptor 已删除。 */
+/* Value-state descriptor cache. A hit returns the complete descriptor state. */
 int mglRenderCppLookupPipelineDescriptorState(
     void *owner,
     const uint64_t key_words[MGL_RENDER_CPP_PIPELINE_CACHE_KEY_WORDS],
@@ -1677,13 +1675,9 @@ int mglRenderCppCreateRenderPipelineStateWithArchiveOwner(
     int *archive_hit_out,
     char *err,
     size_t errcap);
-/* P4.2: final/simple/safe descriptor builder 的 C ABI 入口 —— 从
- * MGLRenderCppPipelineDescriptorState value-state 直接创建 render PSO，
- * ObjC 不再组装 MTLRenderPipelineDescriptor。vs_function/fs_function 为 +0
- * borrowed MTL::Function*；binary_archive 为 +0 borrowed MTL::BinaryArchive*
- * （可为 NULL）。深度/模板 packed normalize 与 MGL_ENABLE_ICB_PIPELINES
- * opt-in 在 C++ builder 内完成。成功返回 0 且 *pipeline_out 为 +1 引用
- * （mglAirRelease 释放）。 */
+/* Creates a render PSO from value-state. Function and binary-archive pointers
+ * are borrowed; binary_archive may be NULL. On success pipeline_out receives
+ * an owned reference that must be released with mglAirRelease. */
 int mglRenderCppCreateRenderPipelineFromState(
     void *vs_function,
     void *fs_function,
@@ -2075,13 +2069,10 @@ int mglRenderCppSetComputeThreadgroupMemoryLength(void *compute_encoder,
                                                   uint64_t length,
                                                   uint32_t index);
 
-/* P4.5 compute 绑定 snapshot：与 render binding snapshot 同构的 op 列表，
- * 专用于 compute encoder。kind 0 = setBuffer（NULL = 槽位清除）、
- * 1 = setBytes（对称性提供）、2 = setTexture、3 = setSamplerState；
- * texture/sampler op 的对象指针放 buffer 字段。契约与
- * mglRenderCppEncodeBindingSnapshot 一致：调用方预校验，本函数对坏 kind /
- * NULL bytes / 越界计数返回 -1。临时对象（__bridge_transfer 局部）必须在
- * emit 后立即 flush（编码器当场 retain），禁止悬垂进延迟重放。 */
+/* Compute binding snapshot, structurally equivalent to the render snapshot.
+ * Kinds select buffer, inline bytes, texture, or sampler operations. The
+ * caller validates inputs; malformed operations return -1. Temporary bridged
+ * objects must be flushed immediately and must not enter deferred replay. */
 #define MGL_RENDER_CPP_COMPUTE_BINDING_SNAPSHOT_MAX_OPS 32u
 
 typedef struct MGLRenderCppComputeBindingOp_t {
@@ -2118,11 +2109,8 @@ int mglRenderCppDispatchComputeIndirect(void *compute_encoder,
                                         uint32_t threads_y,
                                         uint32_t threads_z);
 
-/* P4.5 compute 首切片：dispatch 参数 value-state plan。ObjC 只组装纯值
- * （groups + 未解析的 local size），C++ 内把 local size 0 解析为 1（与
- * mtlDispatchCompute 的 `x ? x : 1` 默认一致）并一次完成
- * dispatchThreadgroups / dispatchThreadgroupsWithIndirectBuffer 编码。
- * 为 item 1138 的「ObjC 只传 MGLRenderCppComputePlan value-state」定型。 */
+/* Value-state compute dispatch plan. A zero local dimension resolves to one.
+ * The C++ backend encodes direct or indirect dispatch from this plan. */
 #define MGL_RENDER_CPP_COMPUTE_DISPATCH_DIRECT   0
 #define MGL_RENDER_CPP_COMPUTE_DISPATCH_INDIRECT 1
 
@@ -2131,11 +2119,11 @@ typedef struct MGLRenderCppComputePlan_t {
     uint32_t groups_x;
     uint32_t groups_y;
     uint32_t groups_z;
-    uint32_t local_x;         /* 0 → C++ 解析为 1 */
+    uint32_t local_x;         /* Zero resolves to one. */
     uint32_t local_y;
     uint32_t local_z;
     void *indirect_buffer;    /* INDIRECT: borrowed MTL::Buffer* */
-    uint64_t indirect_offset; /* INDIRECT: 参数块字节偏移 */
+    uint64_t indirect_offset; /* Byte offset of the indirect argument block. */
 } MGLRenderCppComputePlan;
 
 int mglRenderCppDispatchComputePlan(
@@ -2144,7 +2132,7 @@ int mglRenderCppDispatchComputePlan(
     char *err,
     size_t errcap);
 
-/* P4.5 compute execution plan: ObjC collects the ordered binding operations
+/*  compute execution plan: ObjC collects the ordered binding operations
  * and keeps temporary Metal objects alive until this call returns. C++ owns
  * encoder creation, pipeline/binding replay, dispatch, and endEncoding. */
 #define MGL_RENDER_CPP_COMPUTE_EXECUTION_MAX_OPS 512u
@@ -2195,10 +2183,9 @@ int mglRenderCppEncodeComputeExecutionPlanForCommandBufferOwner(
     char *err,
     size_t errcap);
 
-/* P4.3e: GS/TES compute dispatch 编排的固定序列（建 encoder → pipeline →
- * ABI 槽位 buffer/bytes）一次交给 C++；GL 资源绑定（stage buffers/textures）
- * 在 begin/end 之间由 ObjC 完成（只经 C++ facade）。与逐条
- * mglRenderCppSetCompute* / DispatchCompute / EndComputeEncoder 完全等价。 */
+/* Fixed GS/TES compute-dispatch setup. The backend creates the encoder and
+ * binds pipeline ABI slots; GL stage resources are bound through the C++
+ * facade between begin and end. */
 #define MGL_RENDER_CPP_COMPUTE_DISPATCH_MAX_BUFFERS 16u
 #define MGL_RENDER_CPP_COMPUTE_DISPATCH_MAX_BYTES 4u
 
@@ -2224,9 +2211,8 @@ typedef struct MGLRenderCppComputeDispatchSetup_t {
         bytes[MGL_RENDER_CPP_COMPUTE_DISPATCH_MAX_BYTES];
 } MGLRenderCppComputeDispatchSetup;
 
-/* begin：创建 compute encoder（command_buffer 当前 CB）+ setComputePipelineState
- * + 绑定 setup 内全部 buffer/bytes。*compute_encoder_out 为 +0 borrowed
- * （command buffer 持有 encoder）。失败返回 -1。 */
+/* Creates a compute encoder, sets its pipeline and setup bindings, and returns
+ * a borrowed encoder owned by the command buffer. Returns -1 on failure. */
 int mglRenderCppBeginComputeDispatch(
     void *command_buffer,
     const MGLRenderCppComputeDispatchSetup *setup,
@@ -2241,7 +2227,7 @@ int mglRenderCppBeginComputeDispatchForCommandBufferOwner(
     char *err,
     size_t errcap);
 
-/* end：dispatchThreadgroups + endEncoding。encoder 为 begin 返回的同一句柄。 */
+/* Dispatches and ends the encoder returned by mglRenderCppBeginComputeDispatch. */
 int mglRenderCppEndComputeDispatch(void *compute_encoder,
                                    const uint32_t groups[3],
                                    const uint32_t threads[3],
@@ -2570,10 +2556,8 @@ void mglRenderCppDestroyMDIScratchOwner(void **owner);
 int mglRenderCppCommitCommandBuffer(void *command_buffer);
 int mglRenderCppWaitCommandBuffer(void *command_buffer);
 
-/* P4.3b: per-draw binding snapshot。ObjC 侧保留「判定哪些绑定需要 emit」
- * 的 GL 逻辑（dedup 检查、统计、COW 记账），把通过判定的绑定序列收集进
- * snapshot，单次交给 mglRenderCppEncodeBindingSnapshot 在 C++ 内重放
- * （setter 序列在 C++；与直接 draw 路径的 mglRenderCppSetRenderBuffer 等价）。 */
+/* Per-draw binding snapshot. GL-side deduplication and accounting determine
+ * which bindings are emitted; the backend replays the resulting operation list. */
 #define MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_OPS 32u
 
 /* One per-draw binding op: kind 0 = set buffer (buffer == NULL clears the
@@ -2650,23 +2634,21 @@ int mglRenderCppEncodeResourceBindingSnapshotForRenderEncoderOwner(
     char *err,
     size_t errcap);
 
-/* P4.3c: whole-batch simple replay（最小 surgery 版）。满足「简单批」条件的
- * batch（无 dynamic binding / sampler 快照 / cull-distance / 多边形模拟 /
- * primitive restart，元素命令已 prepare 索引缓冲）由 ObjC 把命令解析成纯 C
- * 数组，一次交给 C++ 循环绘制 —— replay 执行 loop 在 C++，数据仍是 ObjC
- * batch arena 的只读快照。命令数超上限或任一条无法解析时 ObjC 回退原循环。 */
+/* Replays a simple draw batch in C++. Eligible batches contain no dynamic
+ * bindings, sampler snapshots, cull-distance state, polygon emulation, or
+ * primitive restart. The command array remains a read-only arena snapshot. */
 #define MGL_RENDER_CPP_REPLAY_BATCH_MAX_COMMANDS 128u
 
 typedef struct MGLRenderCppReplayBatchCommand_t {
-    uint32_t cmd_type;          /* MGLDrawCommandType 数值（draw_command.h） */
+    uint32_t cmd_type;          /* MGLDrawCommandType value. */
     int32_t first;
     uint32_t count;
     uint32_t instance_count;
     int32_t base_vertex;
     uint32_t base_instance;
-    uint32_t index_type;        /* MTLIndexType（ObjC 已转换） */
+    uint32_t index_type;        /* Converted MTLIndexType value. */
     uint32_t index_buffer_offset;
-    void *index_buffer;         /* +0 borrowed MTL::Buffer*（ObjC 已 prepare） */
+    void *index_buffer;         /* Borrowed prepared MTL::Buffer*. */
 } MGLRenderCppReplayBatchCommand;
 
 typedef struct MGLRenderCppReplayBatch_t {
@@ -2676,15 +2658,14 @@ typedef struct MGLRenderCppReplayBatch_t {
 } MGLRenderCppReplayBatch;
 
 enum {
-    MGL_RENDER_CPP_REPLAY_BATCH_OK = 0,          /* 全部命令已由 C++ 绘制 */
-    MGL_RENDER_CPP_REPLAY_BATCH_NEEDS_OBJC = 1,  /* 有命令无法在 C++ 处理 */
-    MGL_RENDER_CPP_REPLAY_BATCH_ERROR = -1,      /* 参数非法（不应发生） */
+    MGL_RENDER_CPP_REPLAY_BATCH_OK = 0,
+    MGL_RENDER_CPP_REPLAY_BATCH_NEEDS_OBJC = 1,
+    MGL_RENDER_CPP_REPLAY_BATCH_ERROR = -1,
 };
 
-/* 契约：调用方必须已保证全部命令类型合法、元素命令 index_buffer 非空且
- * index_type != 0xFFFFFFFF、count 超限时直接回退 ObjC；因此本函数成功即
- * 全部绘制，失败（NEEDS_OBJC/ERROR）时 ObjC 必须整体回退原循环（不得部分
- * 重放）。 */
+/* The caller validates command kinds, index buffers, index types, and limits.
+ * A non-success result requires replaying the entire batch through the caller;
+ * partial fallback is not allowed. */
 int mglRenderCppReplayBatchDraws(void *render_encoder,
                                  const MGLRenderCppReplayBatch *batch,
                                  char *err,
@@ -2837,7 +2818,7 @@ int mglRenderCppSetRenderPassStateVisibility(
     uint32_t visibility_result_type);
 int mglRenderCppSetRenderPassStateDimensions(
     void *owner, uint64_t width, uint64_t height);
-/* P4.5 (item 1141): pending shared-event slot inside the C++ owner.
+/* pending shared-event slot inside the C++ owner.
  * `int` in these decls is GLsizei (GL signed 32-bit) — the C ABI matches. */
 int mglRenderCppCreatePendingEventOwner(void **owner_out);
 int mglRenderCppPendingEventPrepare(void *owner_handle, int sync_name,
@@ -2846,10 +2827,10 @@ int mglRenderCppPendingEventDetach(void *owner_handle,
                                    int *sync_name_out, void **event_out);
 void mglRenderCppPendingEventClear(void *owner_handle);
 void mglRenderCppDestroyPendingEventOwner(void **owner_handle);
-/* P4.5 (item 1141): detached-submission ownership guard. */
+/* detached-submission ownership guard. */
 int mglRenderCppCommandBufferSubmissionMatchesBuffer(void *submission_handle,
                                                      void *command_buffer);
-/* P4.5 (item 1141): current-CB sync tracking list inside the C++ owner. */
+/* current-CB sync tracking list inside the C++ owner. */
 int mglRenderCppCommandBufferOwnerAppendSync(void *owner_handle, Sync *sync);
 void mglRenderCppCommandBufferOwnerClearSyncs(void *owner_handle);
 int mglRenderCppGetRenderPassStateOwner(
@@ -3156,19 +3137,17 @@ int mglRenderCppDrawIndexedPrimitivesIndirect(
     void *indirect_buffer,
     uint64_t indirect_buffer_offset);
 
-/* P4.3a: draw 提交的统一 value-state plan。ObjC draw 入口（Draw/Batch/
- * BatchReplay/draw_encode/DrawSupport/Tessellation/Blit/swap-diagnostics）
- * 只构造 plan，然后单次调用 mglRenderCppEncodeDraw；最终 draw 提交全部由
- * C++ 完成。资源为 +0 borrowed。 */
+/* Unified value-state draw plan. Resources are borrowed and final draw
+ * encoding is owned by the C++ backend. */
 typedef struct MGLRenderCppDrawPlan_t {
     uint32_t kind;              /* MGL_RENDER_CPP_DRAW_* */
-    uint32_t primitive_type;    /* MTLPrimitiveType 以 uint 传 */
+    uint32_t primitive_type;    /* MTLPrimitiveType ABI value. */
     /* ARRAY: */
     uint64_t vertex_start;
     uint64_t vertex_count;
     /* INDEXED: */
     uint64_t index_count;
-    uint32_t index_type;        /* MTLIndexType 以 uint 传 */
+    uint32_t index_type;        /* MTLIndexType ABI value. */
     void *index_buffer;         /* +0 borrowed MTL::Buffer* */
     uint64_t index_buffer_offset;
     int64_t base_vertex;
@@ -3183,7 +3162,7 @@ typedef struct MGLRenderCppDrawPlan_t {
     uint64_t patch_index_buffer_offset;
     void *control_point_index_buffer;   /* +0 borrowed */
     uint64_t control_point_index_buffer_offset;
-    /* 通用: */
+    /* Common fields. */
     uint64_t instance_count;
     uint64_t base_instance;
 } MGLRenderCppDrawPlan;
@@ -3197,9 +3176,8 @@ enum {
     MGL_RENDER_CPP_DRAW_INDEXED_PATCHES = 6,
 };
 
-/* P4.3a: 单一 draw 提交入口。render_encoder 为 +0 borrowed
- * MTL::RenderCommandEncoder*。plan 校验失败（非法 kind/空 encoder/缺 buffer
- * 等）返回 -1 并写 err，调用方回退 ObjC 直接编码。 */
+/* Encodes one draw. render_encoder is borrowed. Invalid plans return -1 and
+ * populate err without encoding a partial draw. */
 int mglRenderCppEncodeDraw(void *render_encoder,
                            const MGLRenderCppDrawPlan *plan,
                            char *err,

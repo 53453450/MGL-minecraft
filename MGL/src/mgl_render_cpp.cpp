@@ -1,10 +1,19 @@
+/*
+ * SPDX-License-Identifier: LGPL-3.0-only
+ *
+ * This file was added after baseline commit
+ * 79d38f666336141d962109a864a6744bf66e438c and is licensed under
+ * LGPL-3.0-only by its respective copyright holder.
+ * See LICENSE and LICENSING.md.
+ */
+
 //------------------------------------------------------------------------------------------------
-// mgl_render_cpp.cpp — Metal-cpp 渲染门面与 renderer-owned PSO 缓存
+
 //
-// 本 TU 是 NS_PRIVATE_IMPLEMENTATION / MTL_PRIVATE_IMPLEMENTATION 的唯一定义点
-// （私有类/选择器符号由此产出）；其他 TU 仅 include mgl_metal_cpp.h 拿声明。
+
+
 //
-// 持有桥接后的 MTL::Device*，并逐步接管 renderer-owned Metal caches。
+
 //------------------------------------------------------------------------------------------------
 #define NS_PRIVATE_IMPLEMENTATION
 #define MTL_PRIVATE_IMPLEMENTATION
@@ -83,8 +92,8 @@ static_assert(MGLVertexFormatHalf ==
 namespace mgl {
 
 MTL::Device* wrapDevice(void* objcDevice) {
-    // MTL::Device* 与 id<MTLDevice> 指针同地址（metal-cpp 薄包装）。
-    // C++ 侧 +1 retain，所有权由渲染器持有；ObjC 侧保留自己那份。
+
+
     MTL::Device* device = static_cast<MTL::Device*>(objcDevice);
     if (device) {
         device->retain();
@@ -701,10 +710,7 @@ struct CommandQueueOwner {
     MTL::CommandQueue* queue = nullptr;
 };
 
-/* P4.5 (item 1141): the current-CB sync tracking list lives inside the
- * command-buffer owner (the ObjC MGLCommandState.currentCommandBufferSyncList
- * mirror is deleted).  Entries are never dereferenced here — Sync objects are
- * owned by the GL sync lifecycle. */
+
 struct CommandBufferSyncList {
     ~CommandBufferSyncList() { free(list); }
 
@@ -784,10 +790,7 @@ void snapshotCommandRecovery(
     state->recovery_mode = owner.recoveryMode ? 1u : 0u;
 }
 
-/* P4.5 (item 1141): the pending shared-event slot (event + GL sync name)
- * lives inside this owner; the ObjC MGLCommandState.currentEvent /
- * currentSyncName mirrors are deleted.  The event is created lazily through
- * the singleton renderer device (both gates — mglRenderCppInit always runs). */
+
 struct PendingEventOwner {
     ~PendingEventOwner() { if (event) event->release(); }
 
@@ -1417,7 +1420,7 @@ bool appendCullDistanceSegment(
 } // namespace mgl
 
 //------------------------------------------------------------------------------------------------
-// 纯 C 入口（mgl_render_cpp.h）
+
 //------------------------------------------------------------------------------------------------
 extern "C" {
 
@@ -4085,9 +4088,7 @@ uint32_t mglRenderCppEffectiveMTLPixelFormat(uint32_t pixel_format,
     return pixel_format;
 }
 
-/* Readback bytes-per-pixel table — mirrors mglMetalReadbackBytesPerPixel
- * (default 4 bytes).  Pixel format comes across the C ABI as its Apple
- * MTLPixelFormat numeric value. */
+
 extern "C"
 uint32_t mglRenderCppReadbackBytesPerPixel(uint32_t pixel_format) {
     switch (static_cast<MTL::PixelFormat>(pixel_format)) {
@@ -4126,8 +4127,7 @@ uint32_t mglRenderCppReadbackBytesPerPixel(uint32_t pixel_format) {
     }
 }
 
-/* Readback format classification — mirror mglMetalReadbackFormatIsBGRA8Compatible
- * (formats whose contents can be converted to BGRA8 for glReadPixels). */
+
 extern "C"
 int mglRenderCppReadbackFormatIsBGRA8Compatible(uint32_t pixel_format) {
     switch (static_cast<MTL::PixelFormat>(pixel_format)) {
@@ -4170,7 +4170,7 @@ int mglRenderCppReadbackFormatIsBGRA8Compatible(uint32_t pixel_format) {
     }
 }
 
-/* Integer-color classification — mirror mglMetalPixelFormatIsIntegerColor. */
+
 extern "C"
 int mglRenderCppPixelFormatIsIntegerColor(uint32_t pixel_format) {
     switch (static_cast<MTL::PixelFormat>(pixel_format)) {
@@ -4199,8 +4199,7 @@ int mglRenderCppPixelFormatIsIntegerColor(uint32_t pixel_format) {
     }
 }
 
-/* Signed-integer-color classification — mirror
- * mglMetalPixelFormatIsSignedIntegerColor. */
+
 extern "C"
 int mglRenderCppPixelFormatIsSignedIntegerColor(uint32_t pixel_format) {
     switch (static_cast<MTL::PixelFormat>(pixel_format)) {
@@ -4219,27 +4218,24 @@ int mglRenderCppPixelFormatIsSignedIntegerColor(uint32_t pixel_format) {
     }
 }
 
-/* P4.4: CPU→GPU 上传路径选路（纯决策，无 Metal 对象）。与
- * uploadTextureSliceViaBlit 的既有内联判定逐条件一致，见头文件契约。 */
+
 int mglRenderCppTextureUploadRoute(uint32_t texture_type,
                                    uint32_t storage_mode,
                                    int has_agx_3d_copy_bug) {
-    /* MTLTextureType ABI 数值（Apple 稳定）：Type1D=0，Type1DArray=1，
-     * Type3D=7。MTLStorageMode：Shared=0，Managed=1，Private=2。 */
+
     const uint32_t kMTLTextureType1D = 0u;
     const uint32_t kMTLTextureType1DArray = 1u;
     const uint32_t kMTLTextureType3D = 7u;
     const uint32_t kMTLStorageModePrivate = 2u;
 
-    /* 1D/1DArray 且非 Private：低频率路径，replaceRegion 安全。 */
+
     if ((texture_type == kMTLTextureType1D ||
          texture_type == kMTLTextureType1DArray) &&
         storage_mode != kMTLStorageModePrivate) {
         return MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_REPLACE_1D;
     }
 
-    /* 3D + AGX copyFromBuffer slice OOB bug：Private 拒绝（blit 已知坏），
-     * 其余走 replaceRegion（需紧凑重打包）。 */
+
     if (texture_type == kMTLTextureType3D && has_agx_3d_copy_bug) {
         if (storage_mode == kMTLStorageModePrivate) {
             return MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_REJECT;
@@ -4359,9 +4355,7 @@ int mglRenderCppBuildTextureUploadPlan(
     return 0;
 }
 
-/* GL_RGB9_E5 shared-exponent packing — faithful copy of the pure-C
- * mglPackRGBToSharedExp (pixel_utils.c); kept TU-local so this facade does
- * not need pixel_utils.h (ObjC-only header, not C++-clean). */
+
 static uint32_t mglCppPackRGBToSharedExp(double red, double green, double blue)
 {
     const int N     = 9;   /* mantissa bits */
@@ -4409,7 +4403,7 @@ static uint32_t mglCppPackRGBToSharedExp(double red, double green, double blue)
     return red_s | (green_s << 9) | (blue_s << 18) | ((uint32_t)exp_s << 27);
 }
 
-/* Packed row copy with optional Y-flip — mirrors mglMetalCopyRows. */
+
 extern "C"
 void mglRenderCppCopyRows(
     const void* src, uint64_t src_bytes_per_row,
@@ -4428,8 +4422,7 @@ void mglRenderCppCopyRows(
     }
 }
 
-/* Depth16Unorm / unpacked depth-float -> GL float rows — mirrors the
- * CPU convert loop in mglReadDepthTextureAsFloat. */
+
 extern "C"
 void mglRenderCppCopyDepthTextureBytesToFloat(
     const void* src, uint64_t src_bytes_per_row,
@@ -4461,8 +4454,7 @@ void mglRenderCppCopyDepthTextureBytesToFloat(
     }
 }
 
-/* Copy GL BGRA8 rows into a BGRA8-compatible Metal pixel format with
- * optional Y-flip — mirrors mglMetalCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes. */
+
 extern "C"
 int mglRenderCppCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(
     const void* src, uint64_t src_bytes_per_row,
@@ -4550,8 +4542,7 @@ int mglRenderCppCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(
     return 1;
 }
 
-/* IEEE-754 binary16 -> float — faithful copy of mglHalfToFloat
- * (pixel_utils.c); TU-local because pixel_utils.h is ObjC-only. */
+
 static float mglCppHalfToFloat(uint16_t value)
 {
     uint32_t sign = (uint32_t)(value >> 15u);
@@ -4568,8 +4559,7 @@ static float mglCppHalfToFloat(uint16_t value)
     return sign ? -result : result;
 }
 
-/* float -> IEEE-754 binary16 — faithful copy of mglFloatToHalf
- * (pixel_utils.c). */
+
 static uint16_t mglCppFloatToHalf(float value)
 {
     uint32_t f;
@@ -4608,7 +4598,7 @@ static uint16_t mglCppFloatToHalf(float value)
     return (uint16_t)(sign | ((uint32_t)exp << 10u) | (mant >> 13u));
 }
 
-/* float -> 11-bit unsigned float — faithful copy of mglFloatToFloat11. */
+
 static uint32_t mglCppFloatToFloat11(float v)
 {
     if (isnan(v)) return 0x7e0u;
@@ -4647,7 +4637,7 @@ static uint32_t mglCppFloatToFloat11(float v)
     return (exp << 6) | mant;
 }
 
-/* float -> 10-bit unsigned float — faithful copy of mglFloatToFloat10. */
+
 static uint32_t mglCppFloatToFloat10(float v)
 {
     if (isnan(v)) return 0x3f0u;
@@ -4686,8 +4676,7 @@ static uint32_t mglCppFloatToFloat10(float v)
     return (exp << 5) | mant;
 }
 
-/* N-bit mantissa + 5-bit exponent unsigned float unpack — faithful copy
- * of mglUnpackUnsignedFloatComponent (pixel_utils.c). */
+
 static float mglCppUnpackUnsignedFloatComponent(uint32_t value,
                                                uint32_t mantissa_bits)
 {
@@ -4707,8 +4696,7 @@ static float mglCppUnpackUnsignedFloatComponent(uint32_t value,
     return ldexpf(normalized, (int)exponent - 15);
 }
 
-/* Copy Metal texture bytes into GL BGRA8 with optional Y-flip —
- * mirrors mglMetalCopyTextureBytesToBGRA8. */
+
 extern "C"
 void mglRenderCppCopyTextureBytesToBGRA8(
     const void* src, uint64_t src_bytes_per_row,
@@ -5059,7 +5047,7 @@ static int mglCppReadbackFormatChannelMap(uint32_t format, int* slots,
     }
 }
 
-/* Pixel-type storage size — faithful copy of sizeForType (pixel_utils.c). */
+
 static uint32_t mglCppSizeForType(uint32_t type) {
     switch (type) {
         case GL_UNSIGNED_BYTE:
@@ -5095,8 +5083,7 @@ static uint32_t mglCppSizeForType(uint32_t type) {
     }
 }
 
-/* Component count — faithful copy of numComponentsForFormat
- * (pixel_utils.c).  static so it does not collide with the lib symbol. */
+
 static uint32_t mglCppNumComponentsForFormat(uint32_t format) {
     switch (format) {
         case GL_RED:
@@ -5256,8 +5243,7 @@ static int mglCppPixelTypeIsPacked(uint32_t type) {
     }
 }
 
-/* SNORM8 texture bytes -> GL format/type — mirrors the ObjC
- * sourceIsSnorm8 path of mglMetalCopyBGRA8CompatibleTextureBytesToGL. */
+
 extern "C"
 int mglRenderCppCopySnorm8TextureBytesToGL(
     const void* src, uint64_t src_bytes_per_row,
@@ -5369,8 +5355,7 @@ static int mglCppReadbackRGB10A2TypeAccepted(uint32_t type) {
     }
 }
 
-/* RGB10A2Unorm texture bytes -> GL format/type — mirrors the ObjC
- * sourceIsRGB10A2Direct path. */
+
 extern "C"
 int mglRenderCppCopyRGB10A2TextureBytesToGL(
     const void* src, uint64_t src_bytes_per_row,
@@ -5533,8 +5518,7 @@ static int mglCppReadbackRG11B10TypeAccepted(uint32_t type) {
     }
 }
 
-/* RG11B10Float texture bytes -> GL format/type — mirrors the ObjC
- * sourceIsRG11B10FloatDirect path. */
+
 extern "C"
 int mglRenderCppCopyRG11B10TextureBytesToGL(
     const void* src, uint64_t src_bytes_per_row,
@@ -5726,8 +5710,7 @@ static int mglCppWideSrcChannelCount(MTL::PixelFormat pf) {
     }
 }
 
-/* Decode one source channel — mirrors the ObjC 16/32-bit path
- * (SNORM is value/32767, no INT16_MIN special case). */
+
 static float mglCppRead16or32SourceFloat(const uint8_t* s, int idx,
                                          int is16u, int is16s, int is16f) {
     if (is16u) {
@@ -5750,8 +5733,7 @@ static float mglCppRead16or32SourceFloat(const uint8_t* s, int idx,
     return fv;
 }
 
-/* 16/32-bit texture bytes -> GL format/type — mirrors the ObjC
- * sourceIs16Bit/32BitFloat direct path. */
+
 extern "C"
 int mglRenderCppCopy16or32TextureBytesToGL(
     const void* src, uint64_t src_bytes_per_row,
@@ -6020,8 +6002,7 @@ static int mglCppReadbackUnorm8ScalarTypeAccepted(uint32_t type) {
     }
 }
 
-/* BGRA8/RGBA8 UNORM -> GL scalar types — mirrors the ObjC
- * scalar integer / half-float readback path. */
+
 extern "C"
 int mglRenderCppCopyUnorm8ScalarTextureBytesToGL(
     const void* src, uint64_t src_bytes_per_row,
@@ -6109,8 +6090,7 @@ int mglRenderCppCopyUnorm8ScalarTextureBytesToGL(
     return 1;
 }
 
-/* UNORM8 -> unsigned float pack — faithful copy of
- * mglPackUnsignedFloatFromUNorm8. */
+
 static uint32_t mglCppPackUnsignedFloatFromUNorm8(uint32_t value,
                                                  uint32_t mantissa_bits)
 {
@@ -6178,8 +6158,7 @@ static int mglCppReadbackUnorm8PackedTypeAccepted(uint32_t type) {
     }
 }
 
-/* BGRA8/RGBA8 UNORM -> GL packed types — mirrors the ObjC packed
- * readback path (BGRA/BGR only swap R/B; other formats keep RGBA). */
+
 extern "C"
 int mglRenderCppCopyUnorm8PackedTextureBytesToGL(
     const void* src, uint64_t src_bytes_per_row,
@@ -6289,8 +6268,7 @@ int mglRenderCppCopyUnorm8PackedTextureBytesToGL(
     return 1;
 }
 
-/* BGRA8/RGBA8 UNORM -> GL channel swizzle — mirrors the ObjC final
- * format switch (UNSIGNED_BYTE tail + leftover RGBA FLOAT). */
+
 extern "C"
 int mglRenderCppCopyUnorm8SwizzleTextureBytesToGL(
     const void* src, uint64_t src_bytes_per_row,
@@ -6411,7 +6389,7 @@ int mglRenderCppCopyUnorm8SwizzleTextureBytesToGL(
 }
 
 
-/* P4.4: little-endian packed read + unorm bit expansion (RGBA8 path). */
+/* little-endian packed read + unorm bit expansion (RGBA8 path). */
 static uint32_t mglCppReadPackedUploadLE(const uint8_t* src, size_t bytes) {
     uint32_t value = 0u;
     if (!src) return 0u;
@@ -6429,8 +6407,8 @@ static uint8_t mglCppExpandUNormBitsTo8(uint32_t value, uint32_t bits) {
     return (uint8_t)((value * 255u + (maxv / 2u)) / maxv);
 }
 
-/* P4.4: legacy packed GL formats -> RGBA8 (pure data transform). */
-/* P4.5 (item 1138): stage-binding copy-back encode + CPU-prefix sync.
+/* legacy packed GL formats -> RGBA8 (pure data transform). */
+/* stage-binding copy-back encode + CPU-prefix sync.
  * Pure validation/encode over the caller-bridged entries; the CB
  * sequencing (detach/commit/wait/AGX recovery) stays in the renderer. */
 extern "C"
@@ -6510,11 +6488,7 @@ int mglRenderCppBuildRuntimeArraySizes(
     }
     for (uint32_t i = 0; i < entry_count; i++) {
         const MGLRenderCppBufferSizeEntry& entry = entries[i];
-        /* Skip the runtime-array-size buffer slot itself and any slot at or
-         * beyond the ordinary user-buffer table cap
-         * (kMGLMaxMetalUserBufferCount).
-         * The size is truncated to uint32 exactly like the original ObjC
-         * cast — the AIR backend reads a uint32; sizes >= 2^32 wrap. */
+
         if (entry.metal_slot >= max_slot ||
             entry.metal_slot == runtime_buffer_index) {
             continue;
@@ -6527,10 +6501,7 @@ int mglRenderCppBuildRuntimeArraySizes(
     return 0;
 }
 
-/* P4.5 (item 1111): the compat-subsystem helpers the upload-prep path
- * calls.  mgl_texture_compat.h cannot be included here (its inline helpers
- * use ObjC-typed MTLPixelFormat), so declare the needed C API locally —
- * the signatures below are ABI-identical to the ObjC-side definitions. */
+
 extern "C" {
 GLuint sizeForInternalFormat(GLenum internalformat, GLenum format,
                              GLenum type);
@@ -6603,12 +6574,7 @@ int mglRenderCppTextureNeedsChannelExpansion(uint32_t internal_format,
     }
 }
 
-/* P4.5 (item 1111): RGB -> RGBA channel expansion (RGBA16/RGBA32 family
- * backed by RGBA variants).  Table + verification moved verbatim from
- * mgl_texture_compat.m's mglCreateChannelExpandedUpload (single source of
- * truth — the ObjC wrapper now delegates here).  malloc'd result; NULL on
- * bad args / unknown format.  C ABI (the mgl_render_cpp.h decls are inside
- * extern "C"). */
+
 extern "C"
 uint8_t* mglRenderCppCreateChannelExpandedUpload(
     uint32_t internal_format, uint32_t pixel_format, const void* src_data,
@@ -6709,9 +6675,7 @@ uint8_t* mglRenderCppCreateChannelExpandedUpload(
     return dst;
 }
 
-/* P4.5 (item 1171/1116): integer readback CPU conversion — pure data
- * transformation shared by both gates.  Semantics copied verbatim from
- * mglReadIntegerTextureAsRGBA32 (clamping per GL_INTEGER packing rules). */
+
 extern "C"
 int mglRenderCppConvertIntegerReadback(
     const MGLRenderCppIntegerReadbackConvertParams* p) {
@@ -6843,7 +6807,7 @@ int mglRenderCppConvertIntegerReadback(
     return 0;
 }
 
-/* P4.5 (item 1141/887): GL 4.6 section 11.2.2.2 patch discard predicate.
+/* GL 4.6 section 11.2.2.2 patch discard predicate.
  * This is evaluated before any tessellation level is clamped to one. */
 extern "C"
 bool mglRenderCppTessFactorsDiscardPatch(uint32_t gen_mode,
@@ -8323,12 +8287,7 @@ int mglRenderCppBlitFramebufferPlan(
     return 0;
 }
 
-/* GL 4.6 §11.2.2.2 subdivision-count rounding shared by both gates: the
- * isolines/point-mode TES eval-item accounting (mglRenderCppTessEvalItemsPerPatch)
- * and the ObjC native per-patch primitive counting (mglTessRoundLevelForSpacing
- * thin shell in MGLRenderer+Tessellation.m).  fractional_even rounds up to the
- * next even level (min 2), fractional_odd to the next odd; integer (and any
- * other spacing) keeps ceil(level). */
+
 extern "C"
 uint32_t mglRenderCppTessRoundLevelForSpacing(uint32_t spacing,
                                               uint32_t ceil_level) {
@@ -8450,9 +8409,7 @@ float mglRenderCppSnorm8ToFloat(int8_t value) {
     return (float)value / 127.0f;
 }
 
-/* GL type -> MTLVertexFormat for TES control-point stage inputs; matches the
- * ObjC mglTessControlPointFormat (MTLVertexFormatFloat=28 ... UInt4=39,
- * Invalid=0 — verified against the macOS SDK MTLVertexDescriptor.h). */
+
 extern "C"
 uint32_t mglRenderCppTessControlPointFormat(uint64_t gl_type) {
     switch (gl_type) {
@@ -8476,11 +8433,7 @@ uint32_t mglRenderCppTessControlPointFormat(uint64_t gl_type) {
     }
 }
 
-/* TES XFB compact vertex stride: sum of the transform-feedback varyings'
- * byte sizes, each resolved by name against the TES stage-output resource
- * list.  0 when the stride cannot be proven (no varyings, unknown field
- * type, or overflow) — mirrors the ObjC mglTESXFBVertexStride and the
- * packed-write lockstep with mglFixMSLTesAsComputeKernel. */
+
 extern "C"
 uint64_t mglRenderCppTESXFBVertexStride(const void* program_v) {
     const Program* program = (const Program*)program_v;
@@ -8655,7 +8608,7 @@ int mglRenderCppBuildLevelUploadOps(
     return 0;
 }
 
-/* P4.5 (item 1111): per-level CPU upload data preparation. */
+/* per-level CPU upload data preparation. */
 extern "C"
 int mglRenderCppTexturePrepareLevelUpload(
     const TextureLevel* level, uint32_t texture_type,
@@ -8986,7 +8939,7 @@ uint8_t* mglRenderCppCreateRGBA8ExpandedUpload(
     return dst;
 }
 
-/* P4.4: RGB->RGBA channel expansion into a caller-provided buffer. */
+/* RGB->RGBA channel expansion into a caller-provided buffer. */
 int mglRenderCppTextureExpandRGBToRGBA(const void* src, void* dst,
                                        size_t texel_count, size_t tex_width,
                                        size_t tex_height,
@@ -9019,7 +8972,7 @@ int mglRenderCppTextureExpandRGBToRGBA(const void* src, void* dst,
     return 0;
 }
 
-/* P4.4: tight-pack the 3D depth planes (pure data transform). */
+/* tight-pack the 3D depth planes (pure data transform). */
 void* mglRenderCppTextureRepackDepthPlanes(const void* bytes,
                                            size_t bytes_per_image,
                                            size_t expected_bytes_per_image,
@@ -9944,9 +9897,7 @@ int mglRenderCppCreateFunction(void* library,
     return 0;
 }
 
-/* P4.2: final/simple/safe descriptor builder 的 C ABI 入口。binary_archive
- * 为 +0 borrowed MTL::BinaryArchive*（可为 NULL）；PSO 创建与归档应用都在
- * mgl_air_loader.cpp 的共享 builder 内完成。 */
+
 int mglRenderCppCreateRenderPipelineFromState(
     void* vs_function,
     void* fs_function,
@@ -11577,9 +11528,7 @@ int mglRenderCppSetComputeThreadgroupMemoryLength(void* compute_encoder,
     return 0;
 }
 
-/* P4.5: compute 绑定 snapshot 重放（逐条 setComputeBuffer/setComputeBytes，
- * 与 mglRenderCppEncodeBindingSnapshot 的 render 版同构）。NULL buffer =
- * 槽位清除；NULL bytes / 坏 kind / 越界计数拒绝。 */
+
 int mglRenderCppEncodeComputeBindingSnapshot(
     void* compute_encoder,
     const MGLRenderCppComputeBindingSnapshot* snapshot,
@@ -11669,9 +11618,7 @@ int mglRenderCppDispatchComputeIndirect(void* compute_encoder,
     return 0;
 }
 
-/* P4.5: dispatch 参数 value-state plan。local size 0 解析为 1（与
- * mtlDispatchCompute 的 `x ? x : 1` 默认一致），一次 C ABI 调用完成
- * dispatchThreadgroups / dispatchThreadgroupsWithIndirectBuffer 编码。 */
+
 int mglRenderCppDispatchComputePlan(
     void* compute_encoder,
     const MGLRenderCppComputePlan* plan,
@@ -12097,9 +12044,7 @@ int mglRenderCppDispatchComputeThreads(void* compute_encoder,
     return 0;
 }
 
-/* P4.3e: GS/TES compute dispatch 编排。与逐条 SetCompute* / DispatchCompute /
- * EndComputeEncoder 完全等价（同一 encoder、同一顺序），一次 C ABI 调用完成
- * begin（建 encoder + pipeline + 槽位绑定）或 end（dispatch + endEncoding）。 */
+
 int mglRenderCppBeginComputeDispatch(
     void* command_buffer,
     const MGLRenderCppComputeDispatchSetup* setup,
@@ -13169,7 +13114,7 @@ int mglRenderCppCommitCommandBufferSubmission(void** submission_handle) {
     return 0;
 }
 
-/* P4.5 (item 1141): does the submission own exactly this command buffer?
+/* does the submission own exactly this command buffer?
  * Replaces the ObjC MGLCommandState.detachedCommandBuffer mirror used to
  * guard commit/release of a detached submission. */
 int mglRenderCppCommandBufferSubmissionMatchesBuffer(
@@ -14759,8 +14704,7 @@ int mglRenderCppDrawIndexedPrimitivesIndirect(
     return 0;
 }
 
-/* P4.3a: draw 提交的统一入口。按 plan.kind 分派到上面 6 个 per-call 实现；
- * 校验失败返回 -1（调用方回退 ObjC 直接编码，保持 gate-off 语义）。 */
+
 int mglRenderCppEncodeDraw(void* render_encoder,
                            const MGLRenderCppDrawPlan* plan,
                            char* err,
@@ -14950,10 +14894,7 @@ int mglRenderCppSetRenderBuffer(void* render_encoder,
     return 0;
 }
 
-/* P4.3b: 重放 per-draw binding snapshot。与逐条调用 mglRenderCppSetRenderBuffer
- * 完全等价（同一 encoder、同一顺序），但一次 C ABI 调用完成整个序列。
- * op 列表保留每个 stage 的精确 emit 顺序（buffer / bytes / nil-clear 交错，
- * 见 mgl_render_cpp.h 的 MGLRenderCppBindingOp 契约）。 */
+
 int mglRenderCppEncodeBindingSnapshot(
     void* render_encoder,
     const MGLRenderCppBindingSnapshot* snapshot,
@@ -15102,10 +15043,7 @@ int mglRenderCppEncodeResourceBindingSnapshotForRenderEncoderOwner(
         snapshot, err, errcap);
 }
 
-/* P4.3c: whole-batch simple replay。命令类型数值与 draw_command.h 的
- * MGLDrawCommandType 一致（GL 头不进入 C++ include 链，这里硬编码稳定
- * ABI 常量）。契约见 mgl_render_cpp.h —— 调用方已预校验，本函数只对
- * 「未知命令类型」返回 NEEDS_OBJC（调用方整体回退）。 */
+
 namespace {
 enum {
     kCmdDrawArrays = 0,
@@ -15136,12 +15074,12 @@ int mglRenderCppReplayBatchDraws(void* render_encoder,
     for (uint32_t i = 0; i < batch->command_count; i++) {
         const MGLRenderCppReplayBatchCommand* cmd = &batch->commands[i];
         if (cmd->count == 0) {
-            continue;   /* 与 ObjC 路径的空 draw 等价（Metal no-op） */
+            continue;
         }
         MGLRenderCppDrawPlan plan = {};
         plan.primitive_type = batch->primitive_type;
         switch (cmd->cmd_type) {
-            /* arrays 家族 */
+
             case kCmdDrawArrays:
             case kCmdDrawArraysInstanced:
             case kCmdDrawArraysInstancedBaseInstance:
@@ -15151,7 +15089,7 @@ int mglRenderCppReplayBatchDraws(void* render_encoder,
                 plan.instance_count = cmd->instance_count;
                 plan.base_instance = cmd->base_instance;
                 break;
-            /* elements 家族 */
+
             case kCmdDrawElements:
             case kCmdDrawElementsInstanced:
             case kCmdDrawElementsBaseVertex:

@@ -1,4 +1,14 @@
 /*
+ * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
+ *
+ * This file contains material from the Apache-2.0-licensed MGL baseline.
+ * Copyrightable modifications made after baseline commit
+ * 79d38f666336141d962109a864a6744bf66e438c are licensed under
+ * LGPL-3.0-only by their respective copyright holders.
+ * See LICENSE-APACHE-2.0, LICENSE, and LICENSING.md.
+ */
+
+/*
  * mgl_index_buffer.h
  * MGL
  *
@@ -288,7 +298,7 @@ MGLIndexMetalHandle mglPreparedElementIndexBuffer(MGLIndexMetalHandle device,
                                                    size_t *ioIndexBufferOffset,
                                                    uint64_t *outMetalIndexType);
 
-/* P3: mark the snapshot-pool slot holding buf's current Metal backing as
+/* Mark the snapshot-pool slot holding buf's current Metal backing as
  * encoded in the current frame, so it is not recycled until that frame's GPU
  * work completes.  Defined in MGLRenderer+Buffer.m. */
 void mglNoteBufferEncoded(Buffer *buf);

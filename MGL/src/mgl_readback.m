@@ -1,4 +1,14 @@
 /*
+ * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
+ *
+ * This file contains material from the Apache-2.0-licensed MGL baseline.
+ * Copyrightable modifications made after baseline commit
+ * 79d38f666336141d962109a864a6744bf66e438c are licensed under
+ * LGPL-3.0-only by their respective copyright holders.
+ * See LICENSE-APACHE-2.0, LICENSE, and LICENSING.md.
+ */
+
+/*
  * Copyright (C) Michael Larson on 1/6/2022
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -30,7 +40,7 @@
 
 BOOL mglMetalReadbackFormatIsBGRA8Compatible(uint32_t pixelFormat)
 {
-    /* P4.5 (item 1171): thin delegate — single source of truth in C++
+    /* thin delegate — single source of truth in C++
      * (mglRenderCppReadbackFormatIsBGRA8Compatible), shared by both gates. */
     return mglRenderCppReadbackFormatIsBGRA8Compatible(
                (uint32_t)pixelFormat) ? YES : NO;
@@ -38,7 +48,7 @@ BOOL mglMetalReadbackFormatIsBGRA8Compatible(uint32_t pixelFormat)
 
 BOOL mglMetalPixelFormatIsIntegerColor(uint32_t pixelFormat)
 {
-    /* P4.5 (item 1171): thin delegate — single source of truth in C++
+    /* thin delegate — single source of truth in C++
      * (mglRenderCppPixelFormatIsIntegerColor), shared by both gates. */
     return mglRenderCppPixelFormatIsIntegerColor(
                (uint32_t)pixelFormat) ? YES : NO;
@@ -46,7 +56,7 @@ BOOL mglMetalPixelFormatIsIntegerColor(uint32_t pixelFormat)
 
 BOOL mglMetalPixelFormatIsSignedIntegerColor(uint32_t pixelFormat)
 {
-    /* P4.5 (item 1171): thin delegate — single source of truth in C++
+    /* thin delegate — single source of truth in C++
      * (mglRenderCppPixelFormatIsSignedIntegerColor), shared by both gates. */
     return mglRenderCppPixelFormatIsSignedIntegerColor(
                (uint32_t)pixelFormat) ? YES : NO;
@@ -54,7 +64,7 @@ BOOL mglMetalPixelFormatIsSignedIntegerColor(uint32_t pixelFormat)
 
 NSUInteger mglMetalReadbackBytesPerPixel(uint32_t pixelFormat)
 {
-    /* P4.5 (item 1171): thin delegate — single source of truth in C++
+    /* thin delegate — single source of truth in C++
      * (mglRenderCppReadbackBytesPerPixel, pixel format as its Apple ABI
      * value), shared by both gates. */
     return (NSUInteger)mglRenderCppReadbackBytesPerPixel(
@@ -63,21 +73,21 @@ NSUInteger mglMetalReadbackBytesPerPixel(uint32_t pixelFormat)
 
 uint8_t mglMetalFloatToUnorm8(float value)
 {
-    /* P4.5 (item 1171): thin delegate — single source of truth in C++
+    /* thin delegate — single source of truth in C++
      * (mglRenderCppFloatToUnorm8), shared by both gates. */
     return mglRenderCppFloatToUnorm8(value);
 }
 
 float mglMetalSnorm16ToFloat(int16_t value)
 {
-    /* P4.5 (item 1171): thin delegate — single source of truth in C++
+    /* thin delegate — single source of truth in C++
      * (mglRenderCppSnorm16ToFloat), shared by both gates. */
     return mglRenderCppSnorm16ToFloat(value);
 }
 
 float mglMetalSnorm8ToFloat(int8_t value)
 {
-    /* P4.5 (item 1171): thin delegate — single source of truth in C++
+    /* thin delegate — single source of truth in C++
      * (mglRenderCppSnorm8ToFloat), shared by both gates. */
     return mglRenderCppSnorm8ToFloat(value);
 }
@@ -91,7 +101,7 @@ void mglMetalCopyTextureBytesToBGRA8(const uint8_t *src,
                                             uint32_t pixelFormat,
                                             BOOL flipY)
 {
-    /* P4.5 (item 1171): thin delegate — single source of truth in C++
+    /* thin delegate — single source of truth in C++
      * (mglRenderCppCopyTextureBytesToBGRA8), shared by both gates. */
     mglRenderCppCopyTextureBytesToBGRA8(
         src, (uint64_t)srcBytesPerRow,
@@ -115,12 +125,12 @@ BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
         return NO;
     }
 
-    /* P4.5 (item 1171): type-accept table in C++. */
+    /* type-accept table in C++. */
     if (!mglRenderCppReadbackGLTypeAccepted((uint32_t)type)) {
         return NO;
     }
 
-    /* P4.5 (item 1171): SNORM8 direct path in C++ (bypass lossy BGRA8). */
+    /* SNORM8 direct path in C++ (bypass lossy BGRA8). */
     BOOL sourceIsSnorm8 =
         (pixelFormat == MGLPixelFormatR8Snorm ||
          pixelFormat == MGLPixelFormatRG8Snorm ||
@@ -135,7 +145,7 @@ BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
             ? YES : NO;
     }
 
-    /* P4.5 (item 1171): RGB10A2 direct path in C++ (bypass lossy BGRA8). */
+    /* RGB10A2 direct path in C++ (bypass lossy BGRA8). */
     BOOL sourceIsRGB10A2Direct = (pixelFormat == MGLPixelFormatRGB10A2Unorm);
     if (sourceIsRGB10A2Direct &&
         (type == GL_UNSIGNED_BYTE || type == GL_BYTE ||
@@ -157,7 +167,7 @@ BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
             ? YES : NO;
     }
 
-    /* P4.5 (item 1171): RG11B10Float direct path in C++ (bypass lossy BGRA8). */
+    /* RG11B10Float direct path in C++ (bypass lossy BGRA8). */
     BOOL sourceIsRG11B10FloatDirect = (pixelFormat == MGLPixelFormatRG11B10Float);
     if (sourceIsRG11B10FloatDirect &&
         (type == GL_UNSIGNED_BYTE || type == GL_BYTE ||
@@ -178,7 +188,7 @@ BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
             ? YES : NO;
     }
 
-    /* P4.5 (item 1171): 16/32-bit direct path in C++ (bypass lossy BGRA8). */
+    /* 16/32-bit direct path in C++ (bypass lossy BGRA8). */
     BOOL sourceIs16BitUnorm =
         (pixelFormat == MGLPixelFormatR16Unorm ||
          pixelFormat == MGLPixelFormatRG16Unorm ||
@@ -260,7 +270,7 @@ BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
         return NO;
     }
 
-    /* P4.5 (item 1171): BGRA8/RGBA8 scalar readback in C++. */
+    /* BGRA8/RGBA8 scalar readback in C++. */
     if (type == GL_BYTE || type == GL_SHORT ||
         type == GL_INT || type == GL_UNSIGNED_INT ||
         type == GL_UNSIGNED_SHORT || type == GL_HALF_FLOAT ||
@@ -274,7 +284,7 @@ BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
             ? YES : NO;
     }
 
-    /* P4.5 (item 1171): BGRA8/RGBA8 packed readback in C++. */
+    /* BGRA8/RGBA8 packed readback in C++. */
     if (type == GL_UNSIGNED_BYTE_3_3_2 ||
         type == GL_UNSIGNED_BYTE_2_3_3_REV ||
         type == GL_UNSIGNED_SHORT_5_6_5 ||
@@ -298,7 +308,7 @@ BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
             ? YES : NO;
     }
 
-    /* P4.5 (item 1171): UNSIGNED_BYTE channel-swizzle tail in C++. */
+    /* UNSIGNED_BYTE channel-swizzle tail in C++. */
     return mglRenderCppCopyUnorm8SwizzleTextureBytesToGL(
                src, (uint64_t)srcBytesPerRow,
                dst, (uint64_t)dstBytesPerRow,
@@ -317,7 +327,7 @@ BOOL mglMetalCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(const uint8_t *src,
                                                                  uint32_t pixelFormat,
                                                                  BOOL flipY)
 {
-    /* P4.5 (item 1171): thin delegate — single source of truth in C++
+    /* thin delegate — single source of truth in C++
      * (mglRenderCppCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes), shared by
      * both gates.  Returns 0 on bad args / unsupported format. */
     return mglRenderCppCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(

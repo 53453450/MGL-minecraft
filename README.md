@@ -3,7 +3,7 @@ Language: 中文 | [English](README_EN.md)
 
 # MGL - Metal-GL
 
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-LGPL--3.0--only-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS-lightgrey.svg)]()
 [![OpenGL](https://img.shields.io/badge/OpenGL-4.6-green.svg)]()
 [![Metal](https://img.shields.io/badge/Metal-3.0-orange.svg)]()
@@ -17,6 +17,17 @@ Language: 中文 | [English](README_EN.md)
 - 这是一个纯粹的AI coding项目，如果你反感/厌恶AI代码，你可以离开此仓库
 - 本项目分支于MGL：https://github.com/openglonmetal/MGL
 - Minecraft(以下简称MC)是在mac上为数不多的运行较好的游戏之一，可是，MC可以长盛不衰的原因来自于它庞大的Mod社区，但是Apple 于2018年6 月在 WWDC 2018 上正式宣布弃用OpenGL与OpenCL，macOS的OpenGL支持永远停在了4.1版本，顶点着色器上限（GL_MAX_VERTEX_ATTRIBS）是16，这与现今的Mod社区严重脱节，部分mod与绝大多数的光影无法在macOS上运行。此项目将OpenGL提升至4.6，并将GL_MAX_VERTEX_ATTRIBS=30
+
+## 许可证
+
+本仓库按代码来源分别适用许可证。基线提交
+`79d38f666336141d962109a864a6744bf66e438c` 及其之前的原 MGL 代码继续使用
+[Apache License 2.0](LICENSE-APACHE-2.0)；该基线之后本存储库中的修改由相应版权
+持有人按 [LGPL-3.0-only](LICENSE) 授权。
+
+这不是对原 Apache-2.0 贡献的重新许可。包含两类内容的文件必须分别遵守适用于
+各部分的许可证。完整范围说明见 [LICENSING.md](LICENSING.md)，第三方组件继续使用
+其各自许可证。
 
 ## 要求
 
@@ -47,6 +58,10 @@ cd external
 # 依赖编译
 ./build_external.sh
 ```
+
+`clone_external.sh` 只会在依赖目录缺失时拉取 OpenGL-Registry、ezxml 和 Apple
+官方 [metal-cpp](https://github.com/apple/metal-cpp)。`external/glfw` 是本仓库的
+本地修改版本，不会从远端克隆或更新，构建时始终使用该目录。
 
 ### 3. 编译 MGL
 
@@ -94,7 +109,7 @@ MGL-minecraft/
 │       ├── get.c                # glGet/internalformat 查询
 │       ├── pixel_utils.c        # 像素格式与布局工具
 │       ├── rendering.c          # 渲染状态与 draw 调度
-│       ├── shaders.c            # GLSL/SPIR-V/MSL 转译入口
+│       ├── shaders.c            # GLSL frontend entry
 │       ├── tex_param.c          # 纹理参数与 internalformat 查询
 │       └── textures.c           # 纹理上传、清理、压缩格式路径
 ├── external/                    # SPIRV-Cross、SPIRV-Tools、glslang、GLFW 等依赖
@@ -108,7 +123,10 @@ MGL-minecraft/
 ├── Makefile                     # 唯一构建入口
 ├── README.md                    # 中文说明
 ├── README_EN.md                 # English README
-└── LICENSE                      # Apache 2.0 许可证
+├── LICENSE                      # 基线之后仓库修改的 LGPL 3.0 全文
+├── LICENSE-APACHE-2.0           # 原 MGL 代码的 Apache 2.0 全文
+├── LICENSE-GPL-3.0-only         # LGPL 3.0 引用的 GPL 3.0 全文
+└── LICENSING.md                 # 许可证范围与提交边界说明
 ```
 
 ## 核心模块说明
@@ -218,7 +236,3 @@ MGL_MIP_DIAG=1
 - [openglonmetal/MGL](https://github.com/openglonmetal/MGL) - MGL框架，没有它就没有MGL-minecraft
 - [Hexeption/MCP-Reborn](https://github.com/Hexeption/MCP-Reborn) 
 - [apitrace](https://github.com/apitrace/apitrace)
-
-## 许可证
-
-本项目采用 Apache License 2.0 许可证 - 详见 [LICENSE](LICENSE) 文件。

@@ -1,29 +1,14 @@
 /*
- * mgl_texture_compat.m
- * MGL
+ * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
  *
- * Implementation of the Texture Compatibility Subsystem.
- *
- * See mgl_texture_compat.h for the architectural rationale.  This module
- * owns the pure spec-compliance helpers for translating OpenGL texture
- * semantics to Metal:
- *   - Pixel format classification (depth/stencil, packed, data-kind).
- *   - Mipmap level dimension computation.
- *   - Sampled texture view creation for base_level > 0.
- *   - GL swizzle → Metal swizzle mapping (single-channel R8 expansion).
- *   - RGB → RGBA channel expansion for formats Metal does not support
- *     natively.
- *
- * The helpers here are pure: they do not touch the renderer ivar, the
- * command buffer, or the render encoder.  This makes them testable in
- * isolation and lets the texture-upload paths in MGLRenderer.m / MGLTextures.m
- * call them without dragging in renderer-internal state.
- *
- * External dependencies:
- *   - numComponentsForFormat / sizeForInternalFormat (pixel_utils.c) for
- *     GL format introspection.
- *   - Metal framework for MGLPixelFormat / MTLTexture / MTLTextureSwizzle.
+ * This file contains material from the Apache-2.0-licensed MGL baseline.
+ * Copyrightable modifications made after baseline commit
+ * 79d38f666336141d962109a864a6744bf66e438c are licensed under
+ * LGPL-3.0-only by their respective copyright holders.
+ * See LICENSE-APACHE-2.0, LICENSE, and LICENSING.md.
  */
+
+
 
 #import "mgl_texture_compat.h"
 #include "mgl_render_cpp.h"
@@ -41,8 +26,7 @@ const char *mglTextureDataKindName(MGLTextureDataKind kind)
 
 size_t mglMetalTextureLevelDimension(size_t base, size_t level)
 {
-    /* P4.5 (item 1141/887): mip 级维度循环在 C++
-     * （mglRenderCppMetalTextureLevelDimension，两门共用）。 */
+
     return (size_t)mglRenderCppMetalTextureLevelDimension(
         (uint64_t)base, (uint64_t)level);
 }
@@ -81,7 +65,7 @@ bool mglTextureUploadNeedsSingleChannelSwizzle(Texture *tex)
 uint8_t mglResolveR8SwizzledComponent(Texture *tex, GLenum swizzle, uint8_t red)
 {
     (void)tex;
-    /* P4.5 (item 1111): thin delegate — single source of truth in C++. */
+
     return mglRenderCppResolveR8SwizzledComponent((uint32_t)swizzle, red);
 }
 
@@ -97,8 +81,7 @@ uint8_t *mglCreateSingleChannelSwizzledUpload(Texture *tex,
         return NULL;
     }
 
-    /* P4.5 (item 1111): R8 1B/px → RGBA8 expand in C++.  Non-R8 still
-     * returns NULL so callers fall back to MTLTextureDescriptor.swizzle. */
+
     size_t outBPR = 0;
     size_t outBPI = 0;
     uint8_t *result = mglRenderCppCreateSingleChannelSwizzledUpload(
@@ -146,9 +129,7 @@ uint8_t *mglCreateChannelExpandedUpload(Texture *tex,
         return NULL;
     }
 
-    /* P4.5 (item 1111): 表格 + 校验 + 展开体在 C++
-     * （mglRenderCppCreateChannelExpandedUpload，纯数据变换，两门共用；
-     * 逐格式位布局与内联版逐字节一致）。 */
+
     size_t outBPR = 0;
     size_t outBPI = 0;
     uint8_t *result = mglRenderCppCreateChannelExpandedUpload(
@@ -176,9 +157,7 @@ uint8_t *mglCreateRGBA8ExpandedUpload(Texture *tex,
         return NULL;
     }
 
-    /* P4.4: 旧式 packed 格式 → RGBA8 的展开体在 C++
-     * （mglRenderCppCreateRGBA8ExpandedUpload，纯数据变换，两门共用；
-     * 逐格式位布局与内联版逐字节一致）。 */
+
     return mglRenderCppCreateRGBA8ExpandedUpload(
         srcData, width, height, srcBytesPerRow,
         (uint32_t)tex->internalformat, outBytesPerRow, outBytesPerImage);

@@ -1,3 +1,13 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
+ *
+ * This file contains material from the Apache-2.0-licensed MGL baseline.
+ * Copyrightable modifications made after baseline commit
+ * 79d38f666336141d962109a864a6744bf66e438c are licensed under
+ * LGPL-3.0-only by their respective copyright holders.
+ * See LICENSE-APACHE-2.0, LICENSE, and LICENSING.md.
+ */
+
 // MGLRenderer+BatchReplay.m
 // Batch replay, dynamic binding and sampler snapshot methods
 // extracted from MGLRenderer+Draw.m
@@ -1011,11 +1021,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     return fallback_ok;
 }
 
-/* P4.3c: 简单批的 C++ 整批重放。满足全部前置条件（无 dynamic binding /
- * sampler 快照 / cull-distance / primitive restart / 多边形模拟，元素命令
- * 索引缓冲可 prepare，命令数不超上限）时把命令解析成纯 C 数组交给
- * mglRenderCppReplayBatchDraws 一次绘制；任一条件不满足返回 NO，调用方
- * 整体回退 ObjC 逐命令循环（不得部分重放）。 */
+
 - (BOOL)tryReplaySimpleBatchWithCpp:(MGLDrawBatch *)batch
                             context:(GLMContext)glm_ctx
                       encodeContext:(const MGLEncodeContext *)encCtx
@@ -1042,7 +1048,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     if (batch->key.primitive_type == 0xFFu) {
         return NO;
     }
-    /* 多边形模拟（point/fan/line-loop/quads）逐命令特例，不走 C++。 */
+
     GLenum batchMode = batch->commands[0].mode;
     if (mglPolygonModePointForDrawMode(glm_ctx, batchMode) ||
         batchMode == GL_TRIANGLE_FAN || batchMode == GL_LINE_LOOP ||
@@ -1119,9 +1125,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     /* Mutable working copy: texture materialization may rotate the active
      * encoder, while the owner remains the stable encode target. */
     MGLEncodeContext liveEncCtx = *encCtx;
-    /* P4.3c: gate-on 下满足「简单批」条件的 batch 由 C++ 整批循环绘制
-     * （replay 执行 loop 的最小 surgery 版：数据仍是本 batch arena 的只读
-     * 快照，循环与最终 draw 在 C++；不满足时整体回退下方 ObjC 循环）。 */
+
     if ([self tryReplaySimpleBatchWithCpp:batch
                                   context:glm_ctx
                             encodeContext:&liveEncCtx]) {

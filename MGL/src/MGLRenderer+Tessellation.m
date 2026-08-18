@@ -1,3 +1,13 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
+ *
+ * This file contains material from the Apache-2.0-licensed MGL baseline.
+ * Copyrightable modifications made after baseline commit
+ * 79d38f666336141d962109a864a6744bf66e438c are licensed under
+ * LGPL-3.0-only by their respective copyright holders.
+ * See LICENSE-APACHE-2.0, LICENSE, and LICENSING.md.
+ */
+
 // MGLRenderer+Tessellation.m
 // Tessellation compute path (TCS/TES dispatch) extracted from MGLRenderer.m.
 // GL_PATCHES draws run as consecutive Metal compute encoders: the TCS kernel
@@ -438,7 +448,7 @@ typedef struct {
             binding->buffer = buffer;
             binding->offset = bindOffset;
             /* The GL buffer's Metal backing is about to be staged in a
-             * compute encoder: pin its snapshot-pool slot (P3). */
+             * compute encoder: pin its snapshot-pool slot. */
             mglNoteBufferEncoded(ptr);
             continue;
         }
@@ -573,13 +583,7 @@ typedef struct {
     return true;
 }
 
-/* Dispatch an AIR tessellation control shader (TCS) as a Metal compute kernel.
- * It writes tessellation factors to buffer(26) and per-patch output to buffer(27).
- * Indirect params (vertexCount, instanceCount) go in buffer(29).
- *
- * For shader_image_size tests the TCS kernel only needs storage images and
- * the tess-factor / indirect-param buffers — it has no vertex input.
- */
+
 - (void)bindPointSizeParamsToComputeEncoder:(id)computeEncoder
                                     program:(Program *)program
                                       stage:(int)stage
@@ -1069,10 +1073,7 @@ typedef struct {
     }
     memset(tcsOutputContents, 0, tcsOutSize);
     _tessellation.tcsOutputOffset = 0u;
-    /* TCS stage output (spvOut) binds at slot 28 — the same numeric slot as
-     * the TES patch-info constant, reused across disjoint encoders.  The
-     * TCS kernel's fixed ABI is stage_in(24) factors(26) patchOut(27)
-     * stageOut(28) indirect(29); see mgl_air_tess_abi.h. */
+
     if (!mglTessPlanBufferOrBind(
             &executionPlan,
             executionTemporaries, computeEncoder,
@@ -1240,30 +1241,19 @@ typedef struct {
     return true;
 }
 
-/* P4.5 (item 1141/887): TES XFB field byte size for a GL type (FLOAT/INT/
- * UINT + vec2/3/4; 0 for unsupported).  Single source of truth is
- * mglRenderCppTESXFBFieldByteSize (mgl_render_cpp.cpp) — kept in lockstep
- * with the packed writes injected by mglFixMSLTesAsComputeKernel; a zero
- * result means the renderer cannot prove the write stride. */
+
 static NSUInteger mglTESXFBFieldByteSize(GLenum glType)
 {
     return (NSUInteger)mglRenderCppTESXFBFieldByteSize((uint64_t)glType);
 }
 
-/* Keep this layout calculation in lockstep with the packed writes injected by
- * mglFixMSLTesAsComputeKernel.  A zero result means the renderer cannot prove
- * the write stride and must not copy temporary capture data into the GL store.
- * P4.5 (item 1141/887): single source of truth is
- * mglRenderCppTESXFBVertexStride (mgl_render_cpp.cpp) — this shell keeps
- * the two XFB stride call sites unchanged. */
+
 static NSUInteger mglTESXFBVertexStride(const Program *program)
 {
     return (NSUInteger)mglRenderCppTESXFBVertexStride((const void *)program);
 }
 
-/* P4.5 (item 1141/887): overflow-checked product for tessellation size
- * math.  Single source of truth is mglRenderCppCheckedProduct
- * (mgl_render_cpp.cpp) — this shell keeps the eight call sites unchanged. */
+
 static bool mglCheckedNSUIntegerProduct(NSUInteger a,
                                         NSUInteger b,
                                         NSUInteger *result)
@@ -1276,19 +1266,13 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
     return true;
 }
 
-/* GL 4.6 §11.2.2.2 subdivision count rounding: fractional_even rounds up
- * to the next even (min 2), fractional_odd to the next odd; integer (and
- * the default) keep ceil(level).  Must match the AIR TES compute generator
- * and the native-tess query accounting. */
+
 /* Per-patch expanded item count for the isolines/point-mode TES kernel.
  * Must stay in lockstep with the u/v decomposition injected by
  * mgl_air_backend.cpp (isTESCompute pre-main block).  Returns 0 when the
  * factor record is missing (caller falls back to 1). */
 
-/* P4.5 (item 1141/887): GL 4.6 §11.2.2.2 subdivision-count rounding.
- * Single source of truth is mglRenderCppTessRoundLevelForSpacing
- * (mgl_render_cpp.cpp) — this shell keeps the six native per-patch counting
- * call sites unchanged. */
+
 static GLuint mglTessRoundLevelForSpacing(GLenum spacing, GLuint ceilLevel)
 {
     return (GLuint)mglRenderCppTessRoundLevelForSpacing(
@@ -1298,9 +1282,7 @@ static GLuint mglTessRoundLevelForSpacing(GLenum spacing, GLuint ceilLevel)
 static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
                                           const void *factorRecord)
 {
-    /* P4.5 (item 1141/887): 逐 patch 展开 item 计数（isolines/point-mode
-     * TES 核的 u/v 分解 lockstep + discard 判定 + spacing 取整）在 C++
-     * （mglRenderCppTessEvalItemsPerPatch，纯数据变换，两门共用）。 */
+
     return (GLuint)mglRenderCppTessEvalItemsPerPatch(
         factorRecord,
         (uint32_t)(tesProgram ? tesProgram->tess_gen_mode : GL_TRIANGLES),
@@ -1651,13 +1633,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
                                 executionPlan:&executionPlan
                                  temporaries:executionTemporaries];
 
-    /* Fixed ABI buffers (backend mgl_air_tess_abi.h §3): stage_in(24) is
-     * the control point stream, factors(26) the quad-half records, patch
-     * inputs(27) the TCS per-patch output, stageOut(28) the expanded
-     * vertex records, indirect(29) the per-dispatch contract.  The stage_in
-     * offset is rebased per instance (TES-only captures lay out
-     * [instance][vertex]); the remaining ABI buffers are instance
-     * invariant. */
+
     /* Transform-feedback stream (slot 31): the kernel writes complete stage
      * records. The renderer gathers selected varyings into the compact GL XFB
      * layout and copies only the prefix containing complete primitives. */
@@ -1799,7 +1775,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
         }
     }
 
-    /* Dispatch per patch (item counts differ per patch).  The contract
+    /* Dispatch per patch.  The contract
      * {patch_id, gl_in_vertices, items, output_item_base} is written for
      * each dispatch; output_item_base spans instances first so each
      * instance owns a contiguous [instance*itemsPerInstance] span. */
@@ -2326,9 +2302,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
                                 executionPlan:&executionPlan
                                  temporaries:executionTemporaries];
 
-    /* Dispatch: one threadgroup per patch, 1 thread per threadgroup.
-     * gl_PrimitiveID → threadgroup_position_in_grid gives the patch index.
-     * TessCoord → thread_position_in_threadgroup is 0 (1 thread per TG). */
+
     const GLuint patchVertices = MAX(1u, contract->patch_vertices);
     const GLuint patchCount = MAX(1u, contract->patch_count);
 
@@ -2366,11 +2340,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
         }
     }
 
-    /* Bind TCS patch output buffer to buffer(27) for TES patchIn.
-     * TCS writes per-patch output to spvPatchOut (buffer 27 in TCS).  TES
-     * reads patchIn[...] from buffer(27).  Note: buffer 27 is reused for both
-     * TCS spvPatchOut and TES patchIn, which is correct since the data flows
-     * TCS → TES. */
+
     id tcsPatchOutBuffer = (__bridge id)
         mglRendererBackendGetTcsPatchOutBuffer(_backend);
     if (tcsPatchOutBuffer) {
@@ -2639,16 +2609,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
         }
     }
 
-    /* Update GL_PRIMITIVES_GENERATED query by reading the tess factor buffer
-     * and computing the number of primitives generated per patch.  The TES
-     * compute kernel dispatch above only runs TES once per patch (not per
-     * tessellated vertex), so we must manually compute the primitive count
-     * that the hardware tessellator would have produced.
-     *
-     * MTLQuadTessellationFactorsHalf = { half edge[4]; half inside[2]; } = 12 B.
-     * For triangles: primitives ≈ ceil(inside)² (rough estimate).
-     * For quads:      primitives ≈ 2 × ceil(inside0) × ceil(inside1).
-     * For isolines:   primitives ≈ ceil(edge[0]). */
+
     if (tessFactorBuffer) {
         const struct {
             uint16_t edge[4];
@@ -2671,8 +2632,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
             for (int i = 0; i < 2; i++) {
                 inside[i] = *(const __fp16 *)&tessFactors[p].inside[i];
             }
-            /* Zero/NaN factor: the patch is discarded and generates no
-             * primitives (GL 4.6 §11.2.2.2). */
+
             if (mglRenderCppTessFactorsDiscardPatch(
                     (uint32_t)genMode, edge, inside)) {
                 continue;

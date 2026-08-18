@@ -1,4 +1,14 @@
 /*
+ * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
+ *
+ * This file contains material from the Apache-2.0-licensed MGL baseline.
+ * Copyrightable modifications made after baseline commit
+ * 79d38f666336141d962109a864a6744bf66e438c are licensed under
+ * LGPL-3.0-only by their respective copyright holders.
+ * See LICENSE-APACHE-2.0, LICENSE, and LICENSING.md.
+ */
+
+/*
  * Copyright (C) Michael Larson on 1/6/2022
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -194,8 +204,7 @@ void mglMetalCopyRows(const uint8_t *src,
                       NSUInteger height,
                       BOOL flipY)
 {
-    /* P4.5 (item 1171): thin delegate — single source of truth in C++
-     * (mglRenderCppCopyRows), shared by both gates. */
+
     mglRenderCppCopyRows(
         src, (uint64_t)srcBytesPerRow,
         dst, (uint64_t)dstBytesPerRow,
@@ -208,8 +217,7 @@ void mglMetalCopyRows(const uint8_t *src,
 /* MGLBlitAxis struct + blit axis clipping helpers (mglClipBlitAxisToDestination,
  * mglClipBlitAxisToSource, mglClipBlitAxis) moved to mgl_blit_clip.h/.m. */
 
-/* mglMetalTextureLevelDimension now lives in mgl_texture_compat.m — see
- * mgl_texture_compat.h. */
+
 
 /* mglInitTraceLogIfNeeded / mglTraceLog / mglTraceLogExternal are now
  * declared in mgl_trace_log.h. */
@@ -309,7 +317,7 @@ NSRange mglRendererFindMSLEntryParameterClose(NSString *msl, const char *entryPo
  * calls during startup before the cache fills. */
 #define MGL_ENV_CACHE_CAPACITY 32
 static struct {
-    const char *name;   /* string literal address — key */
+    const char *name;
     BOOL value;
     BOOL default_on;    /* distinguishes mglEnvFlagEnabled vs DefaultOn */
     BOOL valid;
@@ -362,8 +370,7 @@ BOOL mglEnvFlagEnabled(const char *name)
     return mglEnvFlagEnabledCached(name, NO);
 }
 
-/* Unset/empty → YES (default ON); "0"/"false"/"no"/"off" → NO; other non-empty → YES.
- * Use for kill-switchable optimizations that should ship enabled. */
+
 BOOL mglEnvFlagEnabledDefaultOn(const char *name)
 {
     return mglEnvFlagEnabledCached(name, YES);
@@ -778,8 +785,7 @@ static void mglLogProgramResourceInterface(Program *program, int stage, int type
 
 void mglWriteProgramMSLDump(Program *program, NSString *reason)
 {
-    /* Early return when trace logging is disabled — avoids expensive MSL
-     * file I/O and resource interface logging that would be discarded. */
+
     if (!mglTraceLogIsEnabled()) {
         return;
     }
@@ -885,12 +891,7 @@ bool mglTraceShouldLogReplay(GLMContext traceCtx, Program *program)
     return mglIsFocusedLoadingProgram(programKey);
 }
 
-/* Y-Flip Subsystem decision logic (mglDecideYFlipForSampledRT,
- * mglProgramHasExistingFramebufferSampleYFlip, and the MGLYFlipDecision enum)
- * now lives in mgl_coordinate.m — see mgl_coordinate.h.  Keeping the decision
- * matrix in a dedicated module lets the VS/FS sampler-binding paths below
- * call a single unified query and makes the coordinate-compatibility
- * subsystem testable in isolation. */
+
 
 /* findTexture, isColorAttachment, getFBOAttachment declared in MGLRenderer_Private.h */
 
@@ -938,11 +939,7 @@ void mglMarkTextureLevelRenderTargetWrittenImpl(Texture *tex,
         tex->mtl_gl_sampled_dirty_mip_mask = UINT32_MAX;
     }
 
-    /* Y-Flip Authority: default to "not injected".  The draw-call path
-     * (markCurrentFramebufferColorAttachmentWrittenAtIndex) overwrites the
-     * low bit when the rendering program had VS Y-flip injection.  Clear/blit
-     * paths leave it 0, which is correct — they don't involve program
-     * injection and the RT holds Metal-top-origin data. */
+
     tex->mtl_render_yflip_authority = (tex->mtl_render_target_write_version << 1);
 
     if (tex->name == 8u && mglEnvFlagEnabled("MGL_TRACE_RT_WRITE_MARKS")) {
@@ -981,27 +978,13 @@ void mglMarkTextureLevelRenderTargetWrittenImpl(Texture *tex,
  * mglMetalUploadRowsForPixelFormat) moved to mgl_texture_compat.h as
  * static inline helpers. */
 
-/* Pixel format classification (mglMetalPixelFormatIsDepthOrStencil,
- * mglMetalPixelFormatIsPackedDepthStencil) and GL internal-format
- * classification (mglRendererGLInternalFormatLooksDepthOrStencil) now live
- * as static inline helpers in mgl_texture_compat.h — included above. */
 
-/* RT Sync gate helpers (mglTextureCanUseGLSampledRenderTargetCopy,
- * mglTextureIsAttachmentOfFramebuffer, mglFramebufferLooksLikeGLSampledCopyRenderTarget)
- * now live in mgl_rt_sync.m — see mgl_rt_sync.h.  The gate logic is pure
- * spec-compliance: any GL_TEXTURE_2D render target qualifies for a
- * Y-flipped sampled copy, regardless of size or game-specific heuristics. */
 
-/* MGLTextureDataKind enum and the data-kind helpers
- * (mglTextureDataKindForPixelFormat,
- *  mglTexturePixelFormatCompatibleWithExpectedDataKind,
- *  mglTextureDataKindName,
- *  mglRendererGLInternalFormatLooksDepthOrStencil) now live in
- * mgl_texture_compat.h — included above. */
 
-/* mglTextureDataKindForPixelFormat, mglTexturePixelFormatCompatibleWithExpectedDataKind,
- * mglTextureDataKindName, and mglRendererGLInternalFormatLooksDepthOrStencil
- * now live in mgl_texture_compat.m — see mgl_texture_compat.h. */
+
+
+
+
 
 BOOL mglRendererTextureLooksRecoverableSampled2D(GLMContext glctx,
                                                   Texture *tex,
@@ -1612,7 +1595,7 @@ Texture *mglFindFramebufferColorTexturePairedWithDepth(GLMContext glctx,
             Texture *verified = (Texture *)searchHashTable(&glctx->active_state->texture_table,
                                                             colorTexture->name);
             if (verified != colorTexture) {
-                /* Stale pointer — clear it and skip. */
+
                 colorAttachment->buf.tex = NULL;
                 colorAttachment->texture = 0u;
                 continue;
@@ -1731,8 +1714,7 @@ VertexArray *mglRendererGetValidatedVAO(GLMContext ctx, const char *where)
         return vao;
     }
 
-    /* Slow path: not in table — could be a transient_batch_vao or a
-     * dangling pointer.  Use the syscall to determine which. */
+
     if (!mglPointerRangeIsReadable(vao, sizeof(*vao))) {
         NSLog(@"MGL VAO INVALID in %s: vao=%p (unreadable object memory)",
               where ? where : "unknown", vao);
@@ -1775,7 +1757,7 @@ Buffer *mglRendererGetValidatedBuffer(GLMContext ctx, Buffer *candidate, const c
         return candidate;
     }
 
-    /* Slow path: not in table — could be transient_batch_buffer or dangling. */
+
     if (!mglPointerRangeIsReadable(candidate, sizeof(*candidate))) {
         NSLog(@"MGL BUFFER INVALID in %s: slot=%lu candidate=%p (unreadable object memory)",
               where ? where : "unknown", (unsigned long)slot, candidate);
@@ -1806,10 +1788,7 @@ bool mglRendererResolveVertexAttribBinding(GLMContext ctx,
     const VertexAttrib *attrib = &vao->attrib[attribute];
     Buffer *buffer = attrib->buffer;
     GLuint bindingIndex = attrib->buffer_bindingindex;
-    /* P4.5 (item 1141/887): ARB_vertex_attrib_binding 的 binding-table
-     * 覆盖决策（offset/stride/divisor）在 C++
-     * （mglRenderCppResolveVertexAttribBinding，两门共用；GL buffer
-     * 校验留在 ObjC）。 */
+
     const BufferBinding *tableBinding =
         (bindingIndex < MGL_MAX_VERTEX_ATTRIB_BINDINGS)
             ? &vao->bindings[bindingIndex] : NULL;
@@ -1881,7 +1860,7 @@ Framebuffer *mglRendererGetValidatedFramebuffer(GLMContext ctx, const char *wher
         return fbo;
     }
 
-    /* Slow path: not in table — do the syscall for diagnostics. */
+
     if (!mglPointerRangeIsReadable(fbo, sizeof(*fbo))) {
         NSLog(@"MGL FBO INVALID in %s: framebuffer=%p (not found in sane framebuffer_table or unreadable)",
               where ? where : "unknown", fbo);
@@ -2142,25 +2121,25 @@ int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
 // === GL-thread contract (lock replacement) ===
 //
 // The Metal layer is owned by a single thread.  METAL_LOCK/METAL_UNLOCK
-// (defined in MGLRenderer_Private.h) no longer acquire a lock — they expand
+
 // to MGL_ASSERT_GL_THREAD(), validating the single-thread contract in
 // Debug builds and compiling to nothing in Release.
 //
 // Former lock roles are now explicit thread-affinity roles:
 //
-// 1. GL calling thread — executes gl* entry points and all MGLRenderer
+
 //    state operations (draw/encode paths) including waitUntilCompleted
 //    (RenderPass.m commitFinish/wait paths).  May call
 //    recordGPUError/recordGPUSuccess (C++ command recovery owner).
 //
-// 2. Metal worker thread — addCompletedHandler: completion callbacks
+
 //    (commitCommandBufferWithAGXRecovery).  Only touches the
 //    thread-safe C++ command recovery owner;
 //    never runs MGLRenderer state operations.  May request resetMetalState
 //    via the _deviceResetRequested atomic flag (drained on the GL thread
 //    at the swap frame boundary).
 //
-// 3. Main queue — AppKit view geometry only: KVO/NSWindow notifications
+
 //    call mglMainThreadSyncViewGeometry, which publishes the geometry into
 //    the pending-drawable-size atomics.  The GL thread consumes the
 //    snapshot in mglApplyPendingDrawableSize.  Main queue never runs
@@ -2823,8 +2802,7 @@ void logDirtyBits(GLMContext ctx)
 
 #pragma mark textures
 
-/* mglStoredColorComponentsForTexture and mglMTLSwizzleForGLSwizzle now live
- * in mgl_texture_compat.m — see mgl_texture_compat.h. */
+
 
 
 /*
@@ -2836,8 +2814,7 @@ void logDirtyBits(GLMContext ctx)
  * coordinate space as GL (relative to the view's level 0).  When the window
  * covers the whole texture the original is returned (no overhead).
  */
-/* mglSampledTextureViewForBaseLevel now lives in mgl_texture_compat.m — see
- * mgl_texture_compat.h. */
+
 
 /* bindTexturesToCurrentRenderEncoder moved to MGLRenderer+Draw.m */
 
@@ -3051,32 +3028,9 @@ void logDirtyBits(GLMContext ctx)
 
 /* ensureWritableCommandBufferLocked: moved to MGLRenderer+RenderPass.m */
 
-/*
- * copyTextureUploadWithDedicatedCommandBuffer:... — texture upload blit path
- *
- * Texture upload is a GL command and must preserve call ordering with draws on the
- * same context; an independent CB must not leapfrog an uncommitted render CB
- * (otherwise the upload may complete before an already-encoded draw, breaking GL implicit ordering).
- *
- * Default mode (!kMGLUseDedicatedTextureUploadCommandBuffer): endRenderEncoding closes the open
- *   render encoder, then encodes the blit (copyFromBuffer:toTexture:) on the current CB, ensuring
- *   GPU-side ordering between the upload and draws within the same CB.
- * Dedicated mode (kMGLUseDedicatedTextureUploadCommandBuffer): encodes the blit on an independent CB,
- *   optionally using addCompletedHandler + semaphore for synchronous wait; this mode is only enabled
- *   when asynchronous upload is genuinely required.
- */
 
-/*
- * uploadTextureSliceViaBlit:... — single-slice texture upload dispatch
- *
- * Selects the upload path based on Metal texture type:
- *   - 1D / 1DArray: low frequency, uses replaceRegion (see the 1D branch comment below).
- *   - 3D: uses replaceRegion to avoid the AGX driver's copyFromBuffer slice OOB assertion (see the 3D branch comment below).
- *   - 2D / Array / Cube: must not use replaceRegion (unsafe when sampled by an in-flight CB); must take the blit
- *     path (allocates uploadBuffer below and calls copyTextureUploadWithDedicatedCommandBuffer),
- *     relying on GPU-side CB ordering to guarantee visibility ordering between upload and sampling.
- * A replaceRegion failure for 1D/3D falls back to the blit path.
- */
+
+
 
 
 /* newCommandBufferAndRenderEncoder moved to MGLRenderer+RenderPass.m */
@@ -3277,15 +3231,7 @@ void logDirtyBits(GLMContext ctx)
 
 /* teardownBatchReplayForContext:(GLMContext)glm_ctx moved to MGLRenderer+Draw.m */
 
-/*
- * RenderPass Sync domain (RenderPass Sync domain).
- *
- * Maps a DIRTY_FBO transition onto the Metal render pass: if the current
- * encoder already targets the bound framebuffer nothing changes (dirty bit
- * cleared); otherwise attachment textures are (re)bound and the encoder is
- * rotated. Callers gate on DIRTY_FBO before invoking. This is the single
- * owner of FBO-driven encoder rotation — processGLState no longer inlines it.
- */
+
 /* syncRenderPassStateForContext: moved to MGLRenderer+RenderPass.m */
 
 /* rotateRenderEncoderForCurrentFramebufferLocked moved to MGLRenderer+RenderPass.m */
@@ -3647,7 +3593,7 @@ void mglRendererCompatSwapBuffers(GLMContext glm_ctx)
         uint64_t committedGeneration = mglAdvanceFrameGeneration();
         /* Sweep the bound buffer maps so base/attrib/uniform/SSBO buffers that
          * were encoded this frame keep their pool slots pinned for the
-         * committed command buffer (P3 CoW snapshot reuse). */
+         * committed command buffer (copy-on-write snapshot reuse). */
         BufferMapList *boundLists[3] = {
             &MGL_STATE(glm_ctx)->vertex_buffer_map_list,
             &MGL_STATE(glm_ctx)->fragment_buffer_map_list,
@@ -4077,14 +4023,7 @@ void mglRendererCompatClearBuffer(GLMContext glm_ctx,
     }
 
     if (canReuseCurrentEncoder) {
-        /* Reuse the current encoder: set scissor + pipeline + params, draw
-         * the clear quad.  No encoder creation/destruction overhead.
-         *
-         * The clear draw touches exactly viewport, scissor, pipeline,
-         * depth-stencil (when clearing depth) and VS/FS buffer slot 0 —
-         * record those real values / invalidate those slots in the bind
-         * cache instead of invalidating everything, so textures, samplers
-         * and the other buffer slots keep their dedup state. */
+
         mglRenderCppBindingSetViewportForOwner(
             _bindingStateOwner,
             _renderPassManager.state->currentRenderEncoderOwner,
@@ -4253,12 +4192,7 @@ void mglRendererCompatClearBuffer(GLMContext glm_ctx,
     return result;
 }
 
-/* Copy GPU-written bytes back from the Metal buffer into the CPU shadow so
- * later glGetBufferSubData / glGetNamedBufferSubData reads return the shader
- * results (GL 4.6 §6.2).  The caller must have waited for the GPU (commit +
- * waitUntilCompleted) before this runs.  Mirrors the read side of
- * mtlMapUnmapBufferLocked: skips when the shadow holds un-uploaded CPU writes
- * (cpu_shadow_pending) or when the Metal buffer shares the shadow memory. */
+
 - (void)mtlReadBackBuffer:(GLMContext)glm_ctx buf:(Buffer *)buf offset:(size_t)offset size:(size_t)size
 {
     mglRenderCppReadBackBuffer(glm_ctx, buf, offset, size);
@@ -4304,16 +4238,7 @@ void mglRendererCompatClearBuffer(GLMContext glm_ctx,
 
 
 #pragma mark C interface to mtlGetTexImage
-/*
- * mtlGetTexImage: — texture image readback path
- *
- * Trigger: glGetTexImage reads back an entire texture level.
- * Guarantees: calls synchronizeRenderPassForTextureReadback on the target texture (if it is a render target,
- *             then endRenderEncoding + commit + waitUntilCompleted + newCommandBuffer);
- *             then endRenderEncoding + commit + waitUntilCompleted commits and waits on the dedicated blit CB
- *             (encoding copyFromTexture to the staging buffer), ensuring that all GPU writes to this texture
- *             (rendering / upload blit) have completed and are visible to the CPU before readback.
- */
+
 
 #pragma mark C interface to mtlGenerateMipmaps
 
@@ -4514,10 +4439,7 @@ Buffer *getIndirectBuffer(GLMContext ctx)
         return true;
     }
 
-    /* P4.5 (item 1138): 把 copy-back 条目桥接成 C-ABI 数组；校验 + blit
-     * 编码 + CPU 前缀同步在 C++（mglRenderCppEncodeStageBindingCopyBacks /
-     * mglRenderCppCopyBackCPUPrefix——纯数据/编码，两门共用；CB 排序
-     * （detach/commit/wait/AGX 恢复）仍在本方法）。 */
+
     MGLRenderCppCopyBackEntry entries[kMGLMaxBufferSlots];
     memset(entries, 0, sizeof(entries));
     uint32_t entryCount = 0;
@@ -4617,8 +4539,7 @@ Buffer *getIndirectBuffer(GLMContext ctx)
         return false;
     }
 
-    /* CPU 前缀同步（BufferSubData 的 CPU 快照保真 + 边界守卫 + memmove）
-     * 在 C++。失败时 entries[failedIndex] 携带诊断所需字段。 */
+
     uint32_t failedIndex = entryCount;
     if (mglRenderCppCopyBackCPUPrefix(entries, entryCount, &failedIndex) != 0) {
         const MGLRenderCppCopyBackEntry *failed =

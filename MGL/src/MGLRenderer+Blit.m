@@ -1,3 +1,13 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
+ *
+ * This file contains material from the Apache-2.0-licensed MGL baseline.
+ * Copyrightable modifications made after baseline commit
+ * 79d38f666336141d962109a864a6744bf66e438c are licensed under
+ * LGPL-3.0-only by their respective copyright holders.
+ * See LICENSE-APACHE-2.0, LICENSE, and LICENSING.md.
+ */
+
 // MGLRenderer+Blit.m
 // Blit/copy/resolve operations extracted from MGLRenderer.m
 
@@ -956,20 +966,7 @@ static id mglLookupCppAuxRenderPipeline(
     tex->mtl_gl_sampled_dirty_mip_mask = 0u;
 }
 
-/* Lazy refresh the Y-flipped sampled copy for `tex` if it is stale
- * (mtl_gl_sampled_write_version != mtl_render_target_write_version) and it
- * is safe to do so — i.e. the texture is NOT a color/depth attachment of
- * the currently-active render pass (Metal forbids reading a texture that
- * is being written in the same pass).
- *
- * UNUSED / DANGEROUS: callers inside bindTexturesToCurrentRenderEncoder
- * were removed because updateGLSampledRenderTargetCopyForTexture creates
- * its own renderCommandEncoder, which re-enters the Metal encoder during
- * a flush triggered by mglBindBufferRange and crashes AGX
- * (MTLReportFailure -> SIGABRT).  Retained as a helper in case a future
- * caller outside an active flush wants lazy refresh; it must never be
- * called from bindTexturesToCurrentRenderEncoder / processGLState /
- * flushDrawBuffer paths. */
+
 - (BOOL)lazyRefreshGLSampledRenderTargetCopyForTexture:(Texture *)tex
                                                  stage:(const char *)stage
                                                program:(GLuint)programName
@@ -985,7 +982,7 @@ static id mglLookupCppAuxRenderPipeline(
     if (tex->mtl_render_target_write_version == 0u) {
         return NO;
     }
-    /* Already fresh — nothing to do. */
+
     if (tex->mtl_gl_sampled_data &&
         tex->mtl_gl_sampled_write_version == tex->mtl_render_target_write_version) {
         return YES;
@@ -1072,12 +1069,7 @@ static id mglLookupCppAuxRenderPipeline(
         return nil;
     }
 
-    /* If the texture is a color/depth attachment of the current framebuffer,
-     * we CAN still repair: end the render pass (storeAction=Store preserves
-     * the content), blit a copy, then restore the render pass with
-     * loadAction=Load.  Previously this case returned nil, causing shaders
-     * that sample from the FBO color attachment (e.g. Forge EarlyDisplay)
-     * to read stale or undefined data — manifesting as missing UI elements. */
+
     if (isFbAttachment) {
         if (mglTraceLogIsEnabled()) {
             mglTraceLog("RT_SAMPLE_COPY_REPAIR_ATTEMPT stage=%s program=%u binding=%u unit=%u tex=%u label=\"%s\" reason=fb-attachment writeVer=%u rtVer=%u",
@@ -1199,9 +1191,7 @@ static id mglLookupCppAuxRenderPipeline(
     if (needsNewCopy) {
         [self releaseGLSampledRenderTargetCopyForTexture:tex];
 
-        /* Mirror the source RT's GL mip chain so textureLod / auto-mip
-         * sampling stay Y-flipped (ced1a99).  Cap to mglBlitTextureInfo(source).mipmap_level_count
-         * — Metal may derive more levels from dimensions than the atlas has. */
+
         MGLRenderCppTextureDescriptorState desc = {0};
         desc.texture_type = MGLTextureType2D;
         desc.pixel_format = mglBlitTextureInfo(source).pixel_format;
@@ -1253,28 +1243,7 @@ static id mglLookupCppAuxRenderPipeline(
         return NO;
     }
 
-    /* Y-flip blit each mip level independently.  MC 1.21.11's terrain atlas
-     * is a 5-level mipmapped RT whose mip 1-4 are NOT box-filtered downscales
-     * of level 0 — they are independently rendered by the sprite-animation
-     * pass (program 80) sampling a custom-mipped source atlas (986), so each
-     * mip level carries distinct, MipmapStrategy-filtered content (important
-     * for cutout alpha coverage on leaves etc.).  generateMipmapsForTexture
-     * would box-filter the flipped level 0 and overwrite those custom mip
-     * levels, corrupting them.  Instead, blit each source mip level into the
-     * matching destination mip level with a Y-flipped uvRect.
-     *
-     * Optimization: when the destination supports MGLTextureUsageShaderWrite,
-     * use a single MTLComputeCommandEncoder to dispatch all dirty mip levels
-     * (one dispatchThreads per level). This avoids creating one render encoder
-     * plus two texture views per mip level, the dominant CPU cost when the
-     * frame had 42 render encoders
-     * and ~60ms of render-encoder CPU time.  The compute kernel samples the
-     * source at an explicit level and writes the destination at an explicit
-     * level, so no per-level texture views are needed.
-     *
-     * Fallback: destinations created before MGLTextureUsageShaderWrite was
-     * added (or compute pipeline creation failure) use the original
-     * per-mip-render-encoder path. */
+
     NSUInteger mipLevels = MAX(copyLevelCount, 1u);
     if (mipLevels > mglBlitTextureInfo(destination).mipmap_level_count) {
         mipLevels = mglBlitTextureInfo(destination).mipmap_level_count;
@@ -1372,23 +1341,7 @@ static id mglLookupCppAuxRenderPipeline(
     }
 
     if (!useComputePath) {
-        /* Fallback: per-mip render-encoder path.  Used when the destination
-         * texture lacks MGLTextureUsageShaderWrite (created before the compute
-         * path was added) or the compute pipeline failed to initialize.
-         *
-         * Y-flip rationale: Metal and GL disagree on the texture Y origin.
-         * Metal's clip space puts gl_Position.y=+1 at the TOP (Metal row 0),
-         * and Metal's sampler reads v=0 at the TOP (row 0) too — so render and
-         * sample are internally consistent in Metal.  But GL apps sample with
-         * v=0 meaning "bottom" (GL lower-left origin), so a render target
-         * rendered by a GL shader then sampled by a GL shader comes out
-         * Y-inverted.  Flipping the copy once makes Metal row 0 hold the GL
-         * renderer's "bottom", restoring GL sampling semantics.
-         *
-         * uvRect={0,1,1,0} with the blit VS:
-         *   pos[0]=(-1,-1)[dest row max] -> uv=(0,0)[src row 0, top]
-         *   pos[2]=(-1,+1)[dest row 0]    -> uv=(0,1)[src row max, bottom]
-         * i.e. dest row 0 = src row max -> one row flip. */
+
         id pipeline = [self scaledBlitPipelineForPixelFormat:mglBlitTextureInfo(destination).pixel_format];
         if (!pipeline) {
             static uint64_t s_copySetupFailCount = 0;
@@ -2398,8 +2351,7 @@ static id mglLookupCppAuxRenderPipeline(
             return YES;
         }
 
-        /* P4.5 (item 1069/1141): 归一化源 UV（Metal Y-flip + 钳制 +
-         * 按方向标志交换）在 C++（mglRenderCppScaledBlitUVs，两门共用）。 */
+
         MGLRenderCppScaledBlitUVs uvs = {0};
         mglRenderCppScaledBlitUVs(
             (uint32_t)srcTexW, (uint32_t)srcTexH,
@@ -2441,9 +2393,7 @@ static id mglLookupCppAuxRenderPipeline(
         mglBlitSetRenderSampler(encoder, sampler,
                                 MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT, 0);
 
-        /* P4.5 (item 1069/1141): 目标 scissor 基数（floor/ceil + 钳制）
-         * 在 C++（mglRenderCppBlitScissorRect，两门共用；GL scissor 交集
-         * 保持内联）。 */
+
         MGLRenderCppBlitScissorRect scissorBase = {0};
         mglRenderCppBlitScissorRect(
             dstMinX, dstMaxX, scaledDstMetalY, dstH,
@@ -2592,7 +2542,7 @@ static id mglLookupCppAuxRenderPipeline(
     // When the source is also a render target, refresh its sampled copy
     // so future fragment-shader samples use the synchronized copy instead
     // of falling back to the direct texture (useCopy=0). Skip this when we
-    // performed an MSAA resolve — the resolved texture is a temporary and
+
     // must not become the sampled copy of the (multisample) source object.
     if (readTextureObject &&
         readTextureObject->is_render_target &&
@@ -2796,12 +2746,7 @@ static id mglLookupCppAuxRenderPipeline(
     NSUInteger dstTexW = mglMetalTextureLevelDimension(mglBlitTextureInfo(drawtexid).width, drawSubresource.level);
     NSUInteger dstTexH = mglMetalTextureLevelDimension(mglBlitTextureInfo(drawtexid).height, drawSubresource.level);
 
-    /* Multisample resolve: Metal's copyFromTexture and shader sampling cannot
-     * directly read from a multisample texture. When the source is multisample
-     * and the destination is single-sample, resolve the source to a temporary
-     * single-sample texture first, then continue the blit with the resolved
-     * texture as the source. This implements the GL spec's multisample→single-
-     * sample blit path (glBlitFramebuffer from an MSAA FBO to a non-MSAA FBO). */
+
     BOOL didMsaaResolve = NO;
     if (![self blitFramebufferResolveMsaaSource:&readtexid
                                         drawtexid:drawtexid
@@ -2826,11 +2771,7 @@ static id mglLookupCppAuxRenderPipeline(
         return;
     }
 
-    /* P4.5 (item 1069/1141): 裁剪后的区域数学 + 决策（方向/flip 标志、
-     * min/max/abs 范围、scaled 判定（格式转换/RT 同步/scissor/flip/尺寸
-     * 不匹配，1e-5 阈值同 mglNearlyEqual）、整数拷贝矩形、Metal Y-flip、
-     * scaled 路径目标 Y）在 C++（mglRenderCppBlitFramebufferPlan，两门
-     * 共用；-1 = 空区域）。 */
+
     MGLRenderCppBlitFramebufferPlan plan = {0};
     if (mglRenderCppBlitFramebufferPlan(
             axisX.src0, axisX.src1, axisY.src0, axisY.src1,
@@ -3486,18 +3427,7 @@ void mglRendererCompatBlitFramebuffer(GLMContext glm_ctx,
                             dstX:(GLint)dstX dstY:(GLint)dstY dstZ:(GLint)dstZ
                            width:(GLsizei)width height:(GLsizei)height depth:(GLsizei)depth
 {
-    /* CPU-to-CPU copy path.
-     * Only for same Metal pixel format — raw bit copy between different
-     * formats would corrupt CPU data (the bits would be interpreted
-     * incorrectly during CPU-path readback).  Different-format copies
-     * fall through to the Metal format-conversion path below, which
-     * sets metal_data_authoritative so the direct Metal readback paths
-     * (identity operations for matching format/type) are used.
-     * Avoids Metal blit entirely, so no metal_data_authoritative flag
-     * is needed — this prevents "wrong mipmap level" and "modified
-     * contents" errors.  Requires both textures to have CPU data and
-     * source must not be metal_data_authoritative (otherwise CPU data
-     * is stale). */
+
     if (!srcTex->metal_data_authoritative && !srcTex->is_render_target &&
         srcTex->faces && dstTex->faces &&
         (NSUInteger)srcLevel < srcTex->num_levels &&
@@ -3569,10 +3499,7 @@ void mglRendererCompatBlitFramebuffer(GLMContext glm_ctx,
                                rowBytes);
                     }
 
-                    /* Update Metal texture for this slice.
-                     * For Private storage textures (e.g. renderbuffers),
-                     * replaceRegion doesn't work — use a blit-from-buffer
-                     * instead. */
+
                     if (cpuCopyOK) {
                         NSUInteger mtlSlice = 0;
                         MGLRegionValue region;
@@ -3952,18 +3879,13 @@ void mglRendererCompatBlitFramebuffer(GLMContext glm_ctx,
             }
         }
 
-        /* For format conversion (different Metal pixel formats), there is
-         * no blit path alternative — silently skip. */
+
         return YES;
     }
     return NO;
 }
 
-/* 3D-texture-destination fallback for mtlCopyImageSubData.
- * Uses a buffer-mediated read-modify-write copy to avoid AGX driver bugs
- * with 3D texture blits.  Returns YES if the fallback was attempted
- * (caller should return — including error paths); NO to fall through to
- * the standard blit path. */
+
 - (BOOL)copyImageSubData3DFallback:(GLMContext)glm_ctx
                             srcTex:(Texture *)srcTex
                         srcTexture:(id)srcTexture
@@ -3999,11 +3921,7 @@ void mglRendererCompatBlitFramebuffer(GLMContext glm_ctx,
             return YES;
         }
 
-        /* The read-modify-write approach uses CPU data as the base and
-         * writes it back via replaceRegion.  When CPU bpp matches Metal
-         * bpp, the data can be used directly.  When they differ (e.g.
-         * GL_RGB12 → RGBA16Unorm), we convert source data to CPU format
-         * for the RMW, then expand back to Metal format for replaceRegion. */
+
         TextureLevel *earlyDstLevelInfo = NULL;
         if (dstTex->faces && dstTex->faces[0].levels &&
             (NSUInteger)dstLevel < dstTex->num_levels) {
@@ -4011,7 +3929,7 @@ void mglRendererCompatBlitFramebuffer(GLMContext glm_ctx,
         }
         if (!earlyDstLevelInfo || !earlyDstLevelInfo->data ||
             dstTex->metal_data_authoritative) {
-            /* No CPU data or Metal is authoritative — can't do RMW */
+
             return NO;  /* fall through to blit path */
         }
         bool bppMismatch = false;
@@ -4489,7 +4407,7 @@ void mglRendererCompatBlitFramebuffer(GLMContext glm_ctx,
                     free(stagingBuf);
 
                     if (readbackOK) {
-                        /* CPU data is now correct — clear authoritative flag */
+
                         for (int f = 0; f < 6; f++) {
                             if (dstTex->faces[f].levels) {
                                 dstTex->faces[f].levels[dstLevel].metal_data_authoritative = GL_FALSE;
@@ -4657,12 +4575,7 @@ void mglRendererCompatBlitFramebuffer(GLMContext glm_ctx,
         return;
     }
 
-    /* Ensure both textures have Metal backing and all pending CPU data
-     * uploads are flushed.  Always call bindMTLTexture (not just when
-     * mtl_data is NULL) so that dirty bits from recent glTexImage*D
-     * calls are processed — otherwise non-blitted mip levels may be
-     * missing from the Metal texture, causing readback to return stale
-     * or zero data after metal_data_authoritative is set. */
+
     if (![self bindMTLTexture:srcTex]) {
         mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
         return;
@@ -4776,10 +4689,7 @@ void mglRendererCompatBlitFramebuffer(GLMContext glm_ctx,
         dstDepthPlane = 0;
     }
 
-    /* Determine iteration count and per-blit depth.
-     * 3D → 3D: single blit with full depth (sourceSize.z = copyDepth).
-     * All other combinations: loop over depth, copying one slice/plane
-     * per iteration (sourceSize.z = 1). */
+
     NSUInteger iterations;
     NSUInteger srcSizeDepth;
 
@@ -4828,7 +4738,7 @@ void mglRendererCompatBlitFramebuffer(GLMContext glm_ctx,
                 curSrcSlice = srcSlice + i;
                 curDstSlice = dstSlice + i;
             }
-            /* For 3D → 3D, single blit with srcSizeDepth = copyDepth */
+
 
             mglBlitCopyTexture(
                 blitEncoder, srcTexture, curSrcSlice, (NSUInteger)srcLevel,
@@ -4865,13 +4775,7 @@ void mglRendererCompatBlitFramebuffer(GLMContext glm_ctx,
                                                               dstX:dstX dstY:dstY dstZ:dstZ
                                                              width:width height:height depth:depth];
 
-    /* Fallback: set per-texture authoritative for 3D destinations or
-     * readback failure (e.g. bpp mismatch between CPU and Metal formats).
-     * For 3D destinations with bpp mismatch, use per-level authoritative
-     * instead of per-texture — the 3D texture's CPU data was uploaded to
-     * Metal with format expansion at creation time, so non-blitted regions
-     * can be correctly read back from Metal.  Per-level avoids corrupting
-     * other mipmap levels ("wrong mipmap level" error). */
+
     if (!readbackDone) {
         if (dstType == MGLTextureType3D &&
             dstTex->faces && (NSUInteger)dstLevel < dstTex->num_levels &&

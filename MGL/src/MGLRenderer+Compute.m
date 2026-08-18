@@ -1,3 +1,13 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
+ *
+ * This file contains material from the Apache-2.0-licensed MGL baseline.
+ * Copyrightable modifications made after baseline commit
+ * 79d38f666336141d962109a864a6744bf66e438c are licensed under
+ * LGPL-3.0-only by their respective copyright holders.
+ * See LICENSE-APACHE-2.0, LICENSE, and LICENSING.md.
+ */
+
 // MGLRenderer+Compute.m
 // Compute dispatch methods extracted from MGLRenderer.m.
 // These methods do not depend on any file-scope static functions in MGLRenderer.m.
@@ -179,12 +189,7 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
         return false;
     }
 
-    /* P4.5（round 35）：compute 绑定 setter 序列 snapshot 化 —— 与 render
-     * binding snapshot 同构的 op 列表，gate-on 收集后一次 C ABI 重放（位置在
-     * 本函数末尾，保持「map 循环 emit → runtime-size buffer emit」顺序）；
-     * 任一校验失败路径先 flush 已收集 op 再 return false，与直接路径「已发生
-     * emit」对齐。gate-off 直接 mglComputeSetBuffer（A/B 对照）。copy-back
-     * 登记等书keeping 保持内联、两门一致。 */
+
     const BOOL useComputeBindingSnapshot = YES;
     BOOL snapshotOK = YES;
     MGLRenderCppComputeBindingSnapshot cbindSnapshot = {0};
@@ -367,7 +372,7 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
      * constant uint* buffer at MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX when a
      * shader uses .length() on unsized SSBO arrays.  The pure fill (slot
      * cap / self-slot exclusion / uint32 truncation) lives in the C++
-     * facade mglRenderCppBuildRuntimeArraySizes (P4.5, item 1138); the
+     * facade mglRenderCppBuildRuntimeArraySizes; the
      * ObjC side only extracts the per-buffer {slot, visible-size} pairs
      * from the GL buffer map. */
     {
@@ -418,9 +423,7 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
         }
     }
 
-    /* Flush any collected compute binding ops — the replay position (after
-     * the map loop and the runtime-size buffer emit) matches the direct
-     * path's encoder order exactly. */
+
     MGL_CBIND_FLUSH_SNAPSHOT();
 #undef MGL_CBIND_EMIT_BUFFER
 #undef MGL_CBIND_FLUSH_SNAPSHOT
@@ -464,11 +467,7 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
         return false;
     }
 
-    /* P4.5（round 36）：compute 纹理/sampler 绑定并入同一 binding snapshot
-     * （kind 2 = texture / 3 = sampler），gate-on 收集后一次重放；gate-off
-     * 直接 mglComputeSetTexture/mglComputeSetSampler（A/B 对照）。临时对象
-     * （level view / fallback sampler，gate-on __bridge_transfer 局部）经
-     * ctexTemporaries 强持有至末尾重放后才释放——禁止悬垂进延迟重放。 */
+
     const BOOL useComputeTextureSnapshot = YES;
     BOOL textureSnapshotOK = YES;
     MGLRenderCppComputeBindingSnapshot ctexSnapshot = {0};
@@ -817,8 +816,7 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
         }
     }
 
-    /* Flush any collected texture/sampler ops — the replay position (after
-     * the array passes) matches the direct path's encoder order. */
+
     MGL_CTEX_FLUSH_SNAPSHOT();
 #undef MGL_CTEX_EMIT_TEXTURE
 #undef MGL_CTEX_EMIT_SAMPLER
@@ -950,11 +948,7 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
     METAL_UNLOCK();
 }
 
-/* P4.5 (item 1147): 两条 compute dispatch 入口（direct/indirect）共享的
- * 编排主体——endRenderEncoding → ensureWritableCommandBuffer → 纹理绑定 →
- * compute encoder 创建 → processCompute → 程序解析 → 按 dispatch 类型编码
- * → encoder 结束 → copy-back flush → dirty bits。错误路径按调用点语义清理
- * 中间态（encoder 结束、copy-backs 清空）。返回 YES 成功 / NO 失败。 */
+
 - (BOOL)runComputeDispatchOrchestrationLocked:(GLMContext)glm_ctx
                                   dispatchKind:(uint32_t)dispatchKind
                                      groupsX:(GLuint)groups_x
@@ -1028,10 +1022,7 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
         return NO;
     }
 
-    /* P4.5: dispatch 参数 value-state plan —— ObjC 只传 groups + 未解析的
-     * local size（0 由 C++ 解析为 1，与 `x ? x : 1` 默认一致），gate-on
-     * 一次 C ABI 调用在 C++ 内完成 dispatchThreadgroups 编码；gate-off 走
-     * 原逐条 ObjC 路径作 A/B 对照。 */
+
     BOOL hasCopyBackEntries = NO;
     if (useExecutionPlan) {
         /* Copy-back resources are consumed by a following blit/CPU-visible
@@ -1098,8 +1089,7 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
         }
         [self clearStageBindingCopyBacks:&copyBacks];
     } else {
-        /* P4.5 (item 1141/887): 线程组尺寸 0->1 默认在 C++
-         * （mglRenderCppThreadgroupSize，两门共用）。 */
+
         MGLRenderCppThreadgroupSize tg = {0};
         mglRenderCppThreadgroupSize(
             ptr->local_workgroup_size.x, ptr->local_workgroup_size.y,
@@ -1137,13 +1127,7 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
         return NO;
     }
 
-    /* Fine-grained dirty bits instead of DIRTY_ALL.  Compute dispatch
-     * ends the render encoder, so the next draw must rebuild it.  DIRTY_STATE
-     * triggers newRenderEncoderLocked; DIRTY_FBO re-syncs the render pass;
-     * the remaining bits (matching kMGLFullReplayDirtyBits in MGLRenderer+Draw.m)
-     * re-bind all GL resources that the render encoder needs.  DIRTY_SHADER and
-     * DIRTY_DRAWABLE are intentionally excluded — DIRTY_SHADER is a per-program
-     * bit, and DIRTY_DRAWABLE only applies at context init. */
+
     mglMarkRendererDirtyBits(
         glm_ctx->active_state,
         DIRTY_STATE | DIRTY_FBO | DIRTY_PROGRAM | DIRTY_VAO |
@@ -1170,8 +1154,7 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
         return;
     }
 
-    /* P4.5 (item 1147): 共享编排主体在
-     * runComputeDispatchOrchestrationLocked:。 */
+
     if (![self runComputeDispatchOrchestrationLocked:glm_ctx
                                         dispatchKind:MGL_RENDER_CPP_COMPUTE_DISPATCH_DIRECT
                                            groupsX:groups_x
@@ -1259,8 +1242,7 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
         return;
     }
 
-    /* P4.5 (item 1147): 共享编排主体在
-     * runComputeDispatchOrchestrationLocked:。 */
+
     if (![self runComputeDispatchOrchestrationLocked:glm_ctx
                                         dispatchKind:MGL_RENDER_CPP_COMPUTE_DISPATCH_INDIRECT
                                            groupsX:0

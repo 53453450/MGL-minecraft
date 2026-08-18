@@ -1,4 +1,13 @@
 /*
+ * SPDX-License-Identifier: LGPL-3.0-only
+ *
+ * This file was added after baseline commit
+ * 79d38f666336141d962109a864a6744bf66e438c and is licensed under
+ * LGPL-3.0-only by its respective copyright holder.
+ * See LICENSE and LICENSING.md.
+ */
+
+/*
  * Copyright (C) Michael Larson on 1/6/2022
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -2211,7 +2220,7 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
         !cg.geometryPrimitiveId || cg.geometryMaxVertices == 0 ||
         cg.geometryRecordCount < 2) {
         cg.err = 1;
-        cg.errmsg = "GS AIR codegen: EmitVertex requires the P1 output ABI";
+        cg.errmsg = "GS AIR codegen: EmitVertex requires the  output ABI";
         return nullptr;
     }
     llvm::Value *pos = cg.lvalues.count("gl_Position")
@@ -3161,7 +3170,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             if (!cg.isGeometry || !cg.geometryCountPtr ||
                 !cg.geometryPrimitiveId) {
                 cg.err = 1;
-                cg.errmsg = "GS AIR codegen: EndPrimitive requires the P1 output ABI";
+                cg.errmsg = "GS AIR codegen: EndPrimitive requires the  output ABI";
                 return nullptr;
             }
             cg.b->CreateAlignedStore(cg.b->getInt32(0),
@@ -5810,7 +5819,7 @@ static bool translationUnitUsesRuntimeArrayLength(
     return false;
 }
 
-/* ---- legacy GLSL frontend wiring (item 753 follow-up) ----------------------
+/* ---- legacy GLSL frontend wiring ----------------------
  *
  * The AIR frontend parses core-profile GLSL 4.50 only (mgl_glsl_lexer/parser/
  * sema have no legacy tokens such as gl_TexCoord / texture2D / gl_FragData).
@@ -6436,7 +6445,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         for (int i = 0; i < 5; i++)
             paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
     } else if (isGS) {
-        /* P1 GS compute ABI (mgl_air_gs_abi.h): primitive input records,
+        /*  GS compute ABI (mgl_air_gs_abi.h): primitive input records,
          * expanded output records, one 28-byte counts record per work
          * item, the optional indexed gather stream, the gather params
          * constant, the transform-feedback stream(31) and its atomic

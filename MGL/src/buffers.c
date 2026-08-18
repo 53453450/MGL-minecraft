@@ -1,4 +1,14 @@
 /*
+ * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
+ *
+ * This file contains material from the Apache-2.0-licensed MGL baseline.
+ * Copyrightable modifications made after baseline commit
+ * 79d38f666336141d962109a864a6744bf66e438c are licensed under
+ * LGPL-3.0-only by their respective copyright holders.
+ * See LICENSE-APACHE-2.0, LICENSE, and LICENSING.md.
+ */
+
+/*
  * Copyright (C) Michael Larson on 1/6/2022
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -394,7 +404,7 @@ void mglReleaseBufferStorage(Buffer *buf)
     buf->mtl_uint16_expanded_src_hash = 0ull;
     buf->mtl_uint16_expanded_byte_count = 0u;
 
-    /* release CoW snapshot pool (P3) */
+    /* release CoW snapshot pool */
     mglSafeReleaseMetalObj(&buf->mtl_cow_pool);
     mglRenderCppReleaseBufferCowPool(buf);
 
@@ -1858,7 +1868,7 @@ kern_return_t initBufferData(GLMContext ctx, Buffer *ptr, GLsizeiptr size, const
                 {
                     mglBufferMarkAllocatedUninitialized(ptr, kInitBufferDataNull);
                 }
-                
+
                 return 0;
             }
         }
@@ -2070,7 +2080,7 @@ void mglBufferSubData(GLMContext ctx, GLenum target, GLintptr offset, GLsizeiptr
     ctx = mgl_sanitize_ctx(ctx, __FUNCTION__);
     if (!ctx)
         return;
-    
+
     GLuint index;
     Buffer * volatile ptr;  // volatile to prevent compiler optimizations
     uint64_t src_hash_for_meta = 0ull;
@@ -2117,7 +2127,7 @@ void mglBufferSubData(GLMContext ctx, GLenum target, GLintptr offset, GLsizeiptr
         fprintf(stderr, "MGL Error: mglBufferSubData: invalid target index %d\n", index);
         ERROR_RETURN(GL_INVALID_ENUM);
     }
-    
+
     ptr = mglGetBoundBufferForTarget(ctx, target);
     if (!ptr)
     {
@@ -2358,7 +2368,7 @@ void mglNamedBufferSubData(GLMContext ctx, GLuint buffer, GLintptr offset, GLsiz
             ERROR_RETURN(GL_INVALID_VALUE);
             return;
         }
-        
+
         // copy it to the backing and use processGLState to upload new data
         mglPrepareGpuWrittenBufferForCpuShadowWrite(ctx, ptr);
         memcpy((char*)ptr->data.buffer_data + offset, data, size);

@@ -1,3 +1,13 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
+ *
+ * This file contains material from the Apache-2.0-licensed MGL baseline.
+ * Copyrightable modifications made after baseline commit
+ * 79d38f666336141d962109a864a6744bf66e438c are licensed under
+ * LGPL-3.0-only by their respective copyright holders.
+ * See LICENSE-APACHE-2.0, LICENSE, and LICENSING.md.
+ */
+
 // MGLRenderer+Texture.m
 // Texture upload/download Metal path methods extracted from MGLRenderer.m
 
@@ -643,9 +653,7 @@ static void mglTextureCopyTextureToBuffer(
         const void *replaceBytes = bytes;
         void *tightlyPackedBytes = NULL;
         if (uploadPlan.requires_repack) {
-            /* P4.4: depth-plane repack 在 C++（mglRenderCppTextureRepackDepthPlanes
-             * —— 纯数据变换，两门共用，无 A/B 分歧）。溢出/分配失败返回 NULL，
-             * 与内联版逐点等价。 */
+
             tightlyPackedBytes = mglRenderCppTextureRepackDepthPlanes(
                 bytes, uploadPlan.normalized_bytes_per_image,
                 uploadPlan.expected_bytes_per_image, uploadPlan.copy_depth);
@@ -751,9 +759,7 @@ static void mglTextureCopyTextureToBuffer(
         return false;
     }
 
-    /* P4.5 (item 1111/1116): 逐 level 迭代 + 可上传判定 + 数据准备 + 短后备
-     * 分类在 C++（mglRenderCppBuildLevelUploadOps——纯数据变换，两门共用）；
-     * ObjC 只负责上传每个 op + 诊断日志 + 释放自有数据。单面（2D）专用。 */
+
     MGLRenderCppLevelUploadOp uploadOps[levelCount ? levelCount : 1u];
     uint32_t opCount = 0;
     uint32_t shortCount = 0;
@@ -880,12 +886,7 @@ static void mglTextureCopyTextureToBuffer(
           (unsigned)fbo->name);
 }
 
-/* P4.5 (item 1171): readback 共享序列——staging buffer 创建 + blit encoder +
- * copy + end（带异常清理）+ completion-wait（0.25s 超时 + error 状态）+ commit
- * + newCommandBuffer。颜色/深度两条 readPixels 路径的编排逐点一致，仅日志
- * 主语（logKind）与转换不同。返回共享 staging buffer（等待后 contents 可用）；
- * 失败返回 nil（已按调用点语义置 GL 错误）。outSuccess 为 NO 表示等待超时/
- * CB 错误（buffer 仍有效但内容不可信，调用方跳过转换）。 */
+
 - (id)readbackStageAndWaitTexture:(id)sourceTexture
                                  sourceLevel:(NSUInteger)sourceLevel
                                  sourceSlice:(NSUInteger)sourceSlice
@@ -1064,9 +1065,7 @@ static void mglTextureCopyTextureToBuffer(
         levelHeight = MAX((NSUInteger)1u, mglTextureInfo(sourceTexture).height >> sourceLevel);
     }
 
-    /* P4.5 (item 1141/887): readPixels 区域对 level 尺寸的裁剪（含空
-     * 判断与 Metal 源 Y 翻转）在 C++
-     * （mglRenderCppReadTextureRegionClip，两门共用）。 */
+
     MGLRenderCppReadTextureRegionClip clip = {0};
     mglRenderCppReadTextureRegionClip(
         (int64_t)region.origin.x, (int64_t)region.origin.y,
@@ -1233,9 +1232,7 @@ static void mglTextureCopyTextureToBuffer(
         levelHeight = MAX((NSUInteger)1u, mglTextureInfo(sourceTexture).height >> sourceLevel);
     }
 
-    /* P4.5 (item 1141/887): readPixels 区域对 level 尺寸的裁剪（含空
-     * 判断与 Metal 源 Y 翻转）在 C++
-     * （mglRenderCppReadTextureRegionClip，两门共用）。 */
+
     MGLRenderCppReadTextureRegionClip clip = {0};
     mglRenderCppReadTextureRegionClip(
         (int64_t)region.origin.x, (int64_t)region.origin.y,
@@ -1301,7 +1298,7 @@ static void mglTextureCopyTextureToBuffer(
     if (readbackSuccess) {
         uint8_t *dst = ((uint8_t *)pixelBytes) + dstOffset;
         if (sourceIsDepthStencil || sourceIsDepth16) {
-            /* P4.5 (item 1171): Depth16 / unpacked depth-float -> GL float. */
+            /* Depth16 / unpacked depth-float -> GL float. */
             mglRenderCppCopyDepthTextureBytesToFloat(
                 mglTextureBufferContents(readBuffer), (uint64_t)stagingBytesPerRow,
                 dst, (uint64_t)bytesPerRow,
@@ -1336,9 +1333,7 @@ static void mglTextureCopyTextureToBuffer(
                               slice:(NSUInteger)mtlSlice
                      isRenderTarget:(BOOL)isRenderTarget
 {
-    /* P4.5 (item 1171/1116): 源格式分类（19 项 uint32_t ->
-     * {分量数, 分量字节, 有符号, RGB10A2} 表）在 C++
-     * （mglRenderCppIntegerReadbackSourceClassify，纯分类，两门共用）。 */
+
     MGLRenderCppIntegerReadbackSource src = {0};
     mglRenderCppIntegerReadbackSourceClassify(
         (uint32_t)mglTextureInfo(sourceTexture).pixel_format, &src);
@@ -1364,10 +1359,7 @@ static void mglTextureCopyTextureToBuffer(
         mtlSlice = 0u;
     }
 
-    /* P4.5 (item 1171/1116): packed 类型表（10 项 GL packed type ->
-     * {位宽, 移位, 输出字节, 输出分量}）在 C++
-     * （mglRenderCppIntegerReadbackPackedTypeClassify，纯分类，两门共用）。
-     * packedTotalBits 已无读取方（round-54 转换迁移后为死变量），不迁移。 */
+
     MGLRenderCppIntegerPackedType packed = {0};
     mglRenderCppIntegerReadbackPackedTypeClassify((uint32_t)packedType, &packed);
     BOOL isPackedType = packed.is_packed != 0;
@@ -1463,10 +1455,7 @@ static void mglTextureCopyTextureToBuffer(
 
     NSUInteger dstX = (NSUInteger)(minX - (NSInteger)region.origin.x);
     NSUInteger dstY = (NSUInteger)(minY - (NSInteger)region.origin.y);
-    /* P4.5 (item 1171/1116): 像素级转换（分量提取 + GL_INTEGER 打包/钳制 +
-     * 行拷贝）在 C++（mglRenderCppConvertIntegerReadback——纯数据变换，两门
-     * 共用，语义与内联版逐点等价）。src/dst 参数与上面的 staging/等待逻辑
-     * 一致；blit 源 Y-flip 逻辑保持不变（isRenderTarget 条件）。 */
+
     MGLRenderCppIntegerReadbackConvertParams convert = {
         .src = (const uint8_t *)mglTextureBufferContents(readBuffer),
         .src_bytes_per_row = srcBytesPerRow,
@@ -1953,10 +1942,7 @@ static void mglTextureCopyTextureToBuffer(
     /* Integer texture readback path: when the source texture is an integer
      * format and the output format is GL_*_INTEGER, use the dedicated integer
      * readback function that handles packed types and component mapping. */
-    /* P4.5 (item 1171/1116): integer-readback 分类（源整数格式表 +
-     * GL_*_INTEGER 输出判定 + 分量映射（BGR/BGRA 序 + GREEN/BLUE/ALPHA
-     * 单分量兼容枚举）+ 按类型的分量字节数）在 C++
-     * （mglRenderCppIntegerReadbackClassify，纯分类，两门共用）。 */
+
     MGLRenderCppIntegerReadbackClassify classify = {0};
     mglRenderCppIntegerReadbackClassify(
         (uint32_t)mglTextureInfo(texture).pixel_format, (uint32_t)format, (uint32_t)type,
@@ -1996,10 +1982,7 @@ static void mglTextureCopyTextureToBuffer(
     // MGL_TEXTURE_STORAGE_PRIVATE textures cannot be read directly with getBytes:.
     // Use a blit-to-buffer path to convert GPU-private tiled memory to linear CPU memory.
     if (mglTextureInfo(texture).storage_mode == MGL_TEXTURE_STORAGE_PRIVATE) {
-        /* P4.5 (item 1171/1116): 直接 R32F 判定 + BGRA8 转换资格 + 源
-         * BGRA8 族判定 + row/image/total 字节计算（含非 BGRA8 源按源 bpp
-         * 计 pitch、depth>1 + bytesPerImage 情形）在 C++
-         * （mglRenderCppGetTexImagePlan，两门共用）。 */
+
         MGLRenderCppGetTexImagePlan plan = {0};
         mglRenderCppGetTexImagePlan(
             (uint32_t)mglTextureInfo(texture).pixel_format,
@@ -2118,9 +2101,7 @@ static void mglTextureCopyTextureToBuffer(
 
 	    @try {
 	        if (useBGRA8Conversion || (flipRenderTargetRows && readRegion.size.depth == 1u)) {
-	            /* P4.5 (item 1171/1116): row pitch（转换路径：非 BGRA8 源按
-	             * 源 bpp，BGRA8 源 4B；否则 bytesPerRow 或 width*max(dst,1)）
-	             * 在 C++（mglRenderCppGetTexImagePlan，与 private 路径共用）。 */
+
 	            MGLRenderCppGetTexImagePlan plan = {0};
 	            mglRenderCppGetTexImagePlan(
 	                (uint32_t)mglTextureInfo(texture).pixel_format,
@@ -2401,13 +2382,7 @@ static void mglTextureCopyTextureToBuffer(
         return;
     }
 
-    /* PBO source data is in CPU/client layout (e.g. 3 bytes/pixel for GL_RGB8).
-     * When the Metal destination has a different texel size (RGBA8 = 4, RGBA16* = 8,
-     * RGBA32* = 16), expand the PBO data into a staging buffer in Metal layout
-     * before the blit — otherwise sourceBytesPerRow (CPU pitch) mismatches the
-     * Metal texture's expected row stride and pixels shift / stripe.  The non-PBO
-     * path (mtlTexSubImageBytes) already expands; this mirrors it.  When no
-     * expansion is needed, fall through to the direct blit below. */
+
     if (tex->mtl_data) {
         id dstTexture = (__bridge id)(tex->mtl_data);
         uint32_t dstPixelFormat = mglTextureInfo(dstTexture).pixel_format;
@@ -2689,14 +2664,7 @@ static void mglTextureCopyTextureToBuffer(
             }
         }
     } else if (needsRGBA8Expand) {
-        /* GL_RGB8-family / packed RGB formats (CPU bpp < 4) -> Metal RGBA8
-         * (4 bytes/pixel).  Delegate to mglCreateRGBA8ExpandedUpload, which
-         * correctly unpacks every supported internal format (3:3:2, 5_6_5,
-         * 10_10_10, 4_4_4_4, ...) into RGBA8 — matching what every other
-         * upload path (createMTLTextureFromGLTexture, refreshMetalTextureCPUData,
-         * mtlCopyImageSubData) does.  Without this, 3-byte RGB8 source is
-         * uploaded directly into a 4-byte Metal texture, shifting pixels and
-         * producing vertical stripes. */
+
         for (NSUInteger z = 0; z < copyDepth; z++) {
             size_t sliceBaseOff = src_offset + (size_t)z * sourceImagePitch;
             size_t lastRowOff = sliceBaseOff + (size_t)(copyHeight - 1u) * src_pitch;
@@ -3046,7 +3014,7 @@ static void mglTextureCopyTextureToBuffer(
                                          tex:(Texture *)tex
                                  pixelFormat:(uint32_t)pixelFormat
 {
-        // No existing data — fill with safe initial contents
+
 
     if (mglTextureInfo(texture).width == 0 || mglTextureInfo(texture).height == 0 || mglTextureInfo(texture).width > 16384 || mglTextureInfo(texture).height > 16384) {
 
@@ -4732,9 +4700,7 @@ static void mglTextureCopyTextureToBuffer(
     tex_desc->has_swizzle = 1u;
 }
 
-/* mglTextureUploadNeedsSingleChannelSwizzle, mglResolveR8SwizzledComponent,
- * and mglCreateSingleChannelSwizzledUpload now live in mgl_texture_compat.m —
- * see mgl_texture_compat.h. */
+
 
 
 - (id) createMTLTextureFromGLTexture:(Texture *) tex
@@ -4897,9 +4863,7 @@ static void mglTextureCopyTextureToBuffer(
                        tex_type == MGLTextureType1DArray) ? 1 : height;
     if (tex_type == MGLTextureType2DMultisample ||
         tex_type == MGLTextureType2DMultisampleArray) {
-        /* Metal only supports a device-specific subset of sample counts.
-         * Apple Silicon (e.g. M4) only supports 1/2/4 — NOT 8.  Delegate to
-         * the AGX Capability Layer for centralized clamping. */
+
         NSUInteger samples = MAX((NSUInteger)2u, (NSUInteger)tex->samples);
         samples = MGLCapabilityClampSampleCount(&_capability, samples);
         tex_desc.sample_count = samples;
@@ -5299,9 +5263,7 @@ static void mglTextureCopyTextureToBuffer(
             NSUInteger expandedPackedBytes = expandedBytesPerRow * texHeight;
             expandedData = [NSMutableData dataWithLength:expandedPackedBytes];
             if (expandedData && expandedData.mutableBytes) {
-                /* P4.4: 通道扩展在 C++（mglRenderCppTextureExpandRGBToRGBA，
-                 * 纯数据变换，两门共用）。dst 由 NSMutableData 持有，生命周期
-                 * 仍 ARC 管理；与内联版逐 texel 等价。 */
+
                 if (mglRenderCppTextureExpandRGBToRGBA(
                         sourceBytes, expandedData.mutableBytes, texelCount,
                         texWidth, texHeight, srcCompBytes, dstCompBytes,

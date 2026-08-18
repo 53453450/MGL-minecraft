@@ -1,4 +1,14 @@
 /*
+ * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
+ *
+ * This file contains material from the Apache-2.0-licensed MGL baseline.
+ * Copyrightable modifications made after baseline commit
+ * 79d38f666336141d962109a864a6744bf66e438c are licensed under
+ * LGPL-3.0-only by their respective copyright holders.
+ * See LICENSE-APACHE-2.0, LICENSE, and LICENSING.md.
+ */
+
+/*
  * Copyright (C) Michael Larson on 1/6/2022
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -47,7 +57,7 @@ BOOL mglSnapshotSharedBufferRange(Buffer *ptr,
                                   NSUInteger offset,
                                   NSUInteger length);
 
-/* CoW snapshot pool (P3): frame-generation gates for reusing snapshot
+/* Copy-on-write snapshot pool: frame-generation gates for reusing snapshot
  * MTLBuffers after the GPU has finished reading them.  All pool entry points
  * run under METAL_LOCK; only mglRecordFrameCompleted runs on the Metal
  * completion thread. */

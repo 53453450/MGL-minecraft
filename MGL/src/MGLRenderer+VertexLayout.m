@@ -1,3 +1,13 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
+ *
+ * This file contains material from the Apache-2.0-licensed MGL baseline.
+ * Copyrightable modifications made after baseline commit
+ * 79d38f666336141d962109a864a6744bf66e438c are licensed under
+ * LGPL-3.0-only by their respective copyright holders.
+ * See LICENSE-APACHE-2.0, LICENSE, and LICENSING.md.
+ */
+
 // MGLRenderer+VertexLayout.m
 // Vertex descriptor and blend-state construction extracted from MGLRenderer+RenderPass.m
 
@@ -14,11 +24,7 @@ static uint32_t mglTessControlPointFormat(GLenum type)
 @implementation MGLRenderer (VertexLayout)
 
 
-/* Fill the only vertex-layout representation as C ABI value-state.
- * Attribute/layout state is written field-by-field into
- * MGLRenderCppPipelineDescriptorState 的 attrib_* 数组（C++ builder 按
- * attribute 升序迭代、同 buffer 的 layout 最后一次写入生效，与 ObjC
- * descriptor 的累积写入语义一致）。返回 NO 表示失败。 */
+
 - (BOOL)generateVertexDescriptorState:(MGLRenderCppPipelineDescriptorState *)state
 {
     if (!state) {
@@ -26,9 +32,7 @@ static uint32_t mglTessControlPointFormat(GLenum type)
     }
     state->attrib_count = 0u;
     if (_tessellation.nativeTESActive) {
-        /* Native TES: attribute 0 = position (Float4@0, buffer 0),
-         * layout 0 = TCS output stride /
-         * PerPatchControlPoint；TES 输入 varying 挂在 location+1。 */
+
         state->attrib_format[0] = mglDoubleVertexAttribFloatFormat(4u);
         state->attrib_offset[0] = 0u;
         state->attrib_buffer_index[0] = 0u;
@@ -88,8 +92,7 @@ static uint32_t mglTessControlPointFormat(GLenum type)
 
     maxAttribs = MAX_ATTRIBS;
 
-    /* 累积 layout stride（镜像 MTLVertexDescriptor.layouts[b].stride，初始
-     * 0；ObjC 生成路径以「== 0」判断是否首次写入）。 */
+
     NSUInteger layoutStride[31] = {0};
     bool attribsEnabledByApp = (vao->enabled_attribs != 0u);
     for (GLuint i = 0; i < maxAttribs; i++)

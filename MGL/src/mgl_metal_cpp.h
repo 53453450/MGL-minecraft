@@ -1,12 +1,19 @@
+/*
+ * SPDX-License-Identifier: LGPL-3.0-only
+ *
+ * This file was added after baseline commit
+ * 79d38f666336141d962109a864a6744bf66e438c and is licensed under
+ * LGPL-3.0-only by its respective copyright holder.
+ * See LICENSE and LICENSING.md.
+ */
+
 //------------------------------------------------------------------------------------------------
-// mgl_metal_cpp.h — Metal-cpp 头引入 + ObjC device 桥接（唯一公共头）
+// Shared metal-cpp includes and Objective-C device bridge.
 //
-// 私有实现宏（NS_PRIVATE_IMPLEMENTATION / MTL_PRIVATE_IMPLEMENTATION）只能在
-// 一个 TU 定义（mgl_render_cpp.cpp：include 本头之前定义宏，实现符号由此 TU
-// 产出）。其他 TU（如 mgl_air_loader.cpp）仅 include 本头 —— Metal.hpp 的方法
-// 实现均为 inline，重复 include 无重复符号问题。
+// The private implementation macros may be defined in exactly one translation
+// unit. mgl_render_cpp.cpp owns them; all other C++ files include declarations.
 //
-// 本头不暴露给 C 侧：C 边界一律走 mgl_render_cpp.h / mgl_air_loader.h 的纯 C 接口。
+// C callers use the opaque interfaces in mgl_render_cpp.h and mgl_air_loader.h.
 //------------------------------------------------------------------------------------------------
 #pragma once
 
@@ -15,9 +22,8 @@
 
 namespace mgl {
 
-// 桥接现有 ObjC id<MTLDevice>：C++ 侧 +1 retain，生命周期由渲染器持有，
-// mglRenderCppShutdown 时 Release；ObjC 侧保留自己那份，两侧各自 balance。
-// （MTL::Device* 与 id<MTLDevice> 指针同地址，reinterpret 桥接，DXMT 同款。）
+// Wraps an existing id<MTLDevice>. The C++ renderer retains and releases its
+// own reference independently from the Objective-C owner.
 MTL::Device* wrapDevice(void* objcDevice);
 
 } // namespace mgl

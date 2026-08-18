@@ -1,10 +1,10 @@
 #!/bin/bash
-# Clean the remaining external dependency build outputs.  The old
-# GLSL->SPIR-V->MSL toolchain (SPIRV-Tools / SPIRV-Cross / SPIRV-Headers /
-# glslang) is no longer built or linked by MGL.
-set -e
+# Clean build outputs produced from the repository-local modified GLFW.
+# metal-cpp is header-only and has no build output to remove.
+set -euo pipefail
 
-cd glfw
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR/glfw"
 cd build
 make clean
 cd ../..

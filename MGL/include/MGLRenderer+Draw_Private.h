@@ -1,4 +1,14 @@
 /*
+ * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
+ *
+ * This file contains material from the Apache-2.0-licensed MGL baseline.
+ * Copyrightable modifications made after baseline commit
+ * 79d38f666336141d962109a864a6744bf66e438c are licensed under
+ * LGPL-3.0-only by their respective copyright holders.
+ * See LICENSE-APACHE-2.0, LICENSE, and LICENSING.md.
+ */
+
+/*
  * Copyright (C) Michael Larson on 1/6/2022
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -217,7 +227,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
 @interface MGLRenderer ()
 
 /* Temporary backend operation targets. These remain private to the renderer
- * while P5.4 moves draw execution into the C++ backend. */
+ * while draw execution is owned by the C++ backend. */
 - (void)mtlDrawArrays:(GLMContext)ctx mode:(GLenum)mode
                  first:(GLint)first count:(GLsizei)count;
 - (void)mtlDrawElements:(GLMContext)ctx mode:(GLenum)mode

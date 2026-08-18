@@ -1,11 +1,11 @@
 #!/bin/bash
-# Install the remaining external dependencies into the system.  The old
-# GLSL->SPIR-V->MSL toolchain (SPIRV-Tools / SPIRV-Cross / SPIRV-Headers /
-# glslang) is no longer built, linked, or installed by MGL.  GLFW is
-# typically consumed from its local build directory instead.
-set -e
+# Install the repository-local modified GLFW build when a system installation
+# is explicitly required.  Normal MGL builds consume the local build directly;
+# header-only metal-cpp requires no installation.
+set -euo pipefail
 
-cd glfw
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR/glfw"
 cd build
 sudo make install
 cd ../..

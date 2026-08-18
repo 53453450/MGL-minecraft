@@ -1,4 +1,14 @@
 /*
+ * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
+ *
+ * This file contains material from the Apache-2.0-licensed MGL baseline.
+ * Copyrightable modifications made after baseline commit
+ * 79d38f666336141d962109a864a6744bf66e438c are licensed under
+ * LGPL-3.0-only by their respective copyright holders.
+ * See LICENSE-APACHE-2.0, LICENSE, and LICENSING.md.
+ */
+
+/*
  * Copyright (C) Michael Larson on 1/6/2022
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -26,7 +36,7 @@
 
 #import "MGLRenderer.h"
 
-/* P4.2: value-state 版顶点布局填充（完整定义见 mgl_air_loader.h）。 */
+/* Value-state vertex-layout input defined in mgl_air_loader.h. */
 typedef struct MGLRenderCppPipelineDescriptorState
     MGLRenderCppPipelineDescriptorState;
 

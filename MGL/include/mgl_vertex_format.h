@@ -1,4 +1,14 @@
 /*
+ * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
+ *
+ * This file contains material from the Apache-2.0-licensed MGL baseline.
+ * Copyrightable modifications made after baseline commit
+ * 79d38f666336141d962109a864a6744bf66e438c are licensed under
+ * LGPL-3.0-only by their respective copyright holders.
+ * See LICENSE-APACHE-2.0, LICENSE, and LICENSING.md.
+ */
+
+/*
  * mgl_vertex_format.h
  * MGL
  *
@@ -134,9 +144,8 @@ uint64_t mglVertexDescriptorSignature(const void *vertexDescriptor);
 /* FNV-1a hash of a MTLRenderPipelineDescriptor for pipeline cache keys. */
 uint64_t mglPipelineDescriptorSignature(const void *pipelineStateDescriptor);
 
-/* P4.2: value-state 版签名（MGLRenderCppPipelineDescriptorState 的完整定义
- * 在 mgl_air_loader.h）。哈希字段与顺序必须与 descriptor 版完全一致，保证
- * Metal-cpp 路径的 pipeline cache key 语义不变。 */
+/* Value-state signature. Field order must remain stable because it defines the
+ * pipeline-cache key. The complete state is defined in mgl_air_loader.h. */
 typedef struct MGLRenderCppPipelineDescriptorState
     MGLRenderCppPipelineDescriptorState;
 uint64_t mglVertexDescriptorSignatureFromState(

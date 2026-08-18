@@ -12,7 +12,7 @@ external/ezxml/
 *.dylib
 /.claude
 /docs
-/.workbuddy
+/.work-buddy
 /mgl-ssbo-20260805b/
 build_asan/
 build-asan-residual/

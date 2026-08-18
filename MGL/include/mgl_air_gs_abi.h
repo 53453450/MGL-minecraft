@@ -1,9 +1,16 @@
 /*
+ * SPDX-License-Identifier: LGPL-3.0-only
+ *
+ * This file was added after baseline commit
+ * 79d38f666336141d962109a864a6744bf66e438c and is licensed under
+ * LGPL-3.0-only by its respective copyright holder.
+ * See LICENSE and LICENSING.md.
+ */
+
+/*
  * mgl_air_gs_abi.h
  * MGL - fixed C ABI contract between the ObjC/C renderer runtime and the
  * AIR backend for the M3 geometry-shader compute-expansion path.
- *
- * Design doc: docs/AIR_M3_CPP_TODO.md §3 P0 ("固定 M3 runtime contract").
  *
  * The AIR GS kernel runs one compute work item per (input primitive x
  * invocation).  It consumes the vertex pre-pass records produced by the
@@ -206,7 +213,7 @@ MGL_AIR_STATIC_ASSERT(MGL_AIR_GS_COUNTS_RECORD_BYTES == 28u,
                       "counts record is 16-byte args + 12-byte scratch");
 
 /* =====================================================================
- * 4. Index-gather parameters (direct indexed GS draws, P1)
+ * 4. Index-gather parameters (direct indexed GS draws, )
  *
  * The array-draw path feeds the VS capture `first/count` directly.  The
  * indexed path must first gather `count` indices from the element buffer
@@ -230,7 +237,7 @@ typedef struct MGLAIRGSIndexGatherParams {
 } MGLAIRGSIndexGatherParams;
 
 /* =====================================================================
- * 5. GS transform-feedback records (P1, multi-stream 2026-08-12)
+ * 5. GS transform-feedback records (, multi-stream 2026-08-12)
  *
  * GS XFB output reuses the per-vertex record layout (position + varyings)
  * written by the GS kernel into a dedicated record buffer (slot 31), then
@@ -301,7 +308,7 @@ MGL_AIR_STATIC_ASSERT(MGL_AIR_GS_HEADER_RECORDS == 2u,
                       "GS record run header count is part of the ABI");
 
 /* =====================================================================
- * 7. Indexed-draw gather ABI (direct indexed GS, P1)
+ * 7. Indexed-draw gather ABI (direct indexed GS, )
  *
  * For glDrawElements* the renderer gathers the element stream on the CPU
  * into a compact uint32 `gather` array (one entry per input vertex of each

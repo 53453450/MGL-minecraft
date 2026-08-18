@@ -1,3 +1,13 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
+ *
+ * This file contains material from the Apache-2.0-licensed MGL baseline.
+ * Copyrightable modifications made after baseline commit
+ * 79d38f666336141d962109a864a6744bf66e438c are licensed under
+ * LGPL-3.0-only by their respective copyright holders.
+ * See LICENSE-APACHE-2.0, LICENSE, and LICENSING.md.
+ */
+
 #ifndef MGLPipelineCache_h
 #define MGLPipelineCache_h
 
@@ -9,8 +19,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 #define MGL_PIPELINE_CACHE_KEY_WORDS 7u
 
-/* P4.2: final/simple/safe pipeline descriptor 的 value-state（完整定义在
- * mgl_air_loader.h）。ObjC 只构造 value-state，不再组装平台对象。 */
+/* Value-state pipeline descriptor defined in mgl_air_loader.h. */
 typedef struct MGLRenderCppPipelineDescriptorState
     MGLRenderCppPipelineDescriptorState;
 typedef struct MGLRenderCppPipelineBlendState_t

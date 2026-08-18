@@ -1,3 +1,13 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
+ *
+ * This file contains material from the Apache-2.0-licensed MGL baseline.
+ * Copyrightable modifications made after baseline commit
+ * 79d38f666336141d962109a864a6744bf66e438c are licensed under
+ * LGPL-3.0-only by their respective copyright holders.
+ * See LICENSE-APACHE-2.0, LICENSE, and LICENSING.md.
+ */
+
 #import "MGLRenderPassManager.h"
 
 #import "mgl_draw_buffer.h"
@@ -183,7 +193,7 @@ static void mglRenderPassManagerStoreIdentity(
 
 - (BOOL)commitDetachedCommandBufferIfOwned:(void *)commandBuffer
 {
-    /* P4.5 (item 1141): ownership guard via the C++ submission. */
+    /* ownership guard via the C++ submission. */
     if (!commandBuffer || !_state.detachedCommandBufferSubmission ||
         mglRenderCppCommandBufferSubmissionMatchesBuffer(
             _state.detachedCommandBufferSubmission,
@@ -240,7 +250,7 @@ static void mglRenderPassManagerStoreIdentity(
 
 - (void)releaseDetachedCommandBufferIfOwned:(void *)commandBuffer
 {
-    /* P4.5 (item 1141): ownership guard via the C++ submission. */
+    /* ownership guard via the C++ submission. */
     if (!_state.detachedCommandBufferSubmission ||
         (commandBuffer &&
          mglRenderCppCommandBufferSubmissionMatchesBuffer(
@@ -254,7 +264,7 @@ static void mglRenderPassManagerStoreIdentity(
 
 - (BOOL)appendSyncToCurrentCommandBuffer:(Sync *)sync
 {
-    /* P4.5 (item 1141): the tracking list now lives inside the C++
+    /* the tracking list now lives inside the C++
      * command-buffer owner; this method is a thin adapter.  The list is
      * advisory only (never read by the wait paths), so the gate-off path
      * without an owner reports success as before. */
@@ -270,7 +280,7 @@ static void mglRenderPassManagerStoreIdentity(
 
 - (void)clearCurrentCommandBufferSyncListEntries
 {
-    /* P4.5 (item 1141): entries are never dereferenced — Sync objects are
+    /* entries are never dereferenced — Sync objects are
      * owned by the GL sync lifecycle. */
     if (!_state.currentCommandBufferOwner) {
         return;
@@ -281,7 +291,7 @@ static void mglRenderPassManagerStoreIdentity(
 - (void *)preparePendingEventWithDevice:(__unused void *)device
                                      syncName:(GLsizei)syncName
 {
-    /* P4.5 (item 1141): the pending event slot lives inside the C++
+    /* the pending event slot lives inside the C++
      * PendingEventOwner; this method is a thin adapter. */
     if (!_state.pendingEventOwner &&
         mglRenderCppCreatePendingEventOwner(&_state.pendingEventOwner) != 0) {
@@ -298,7 +308,7 @@ static void mglRenderPassManagerStoreIdentity(
 
 - (void *)detachPendingEventWithSyncName:(GLuint *)syncNameOut
 {
-    /* P4.5 (item 1141): transfers the owner's reference via __bridge_transfer. */
+    /* transfers the owner's reference via __bridge_transfer. */
     GLsizei syncName = 0;
     void *event = NULL;
     mglRenderCppPendingEventDetach(
@@ -314,7 +324,7 @@ static void mglRenderPassManagerStoreIdentity(
 
 - (void)clearPendingEvent
 {
-    /* P4.5 (item 1141): discard the pending event; the owner stays. */
+    /* discard the pending event; the owner stays. */
     if (_state.pendingEventOwner) {
         mglRenderCppPendingEventClear(_state.pendingEventOwner);
     }
@@ -322,7 +332,7 @@ static void mglRenderPassManagerStoreIdentity(
 
 - (void)installRenderEncoder:(void *)renderEncoder
 {
-    /* P4.5 (item 1141): the C++ RenderEncoderOwner is the single source on
+    /* the C++ RenderEncoderOwner is the single source on
      * BOTH gates — the ObjC mirror is gone; reads go through the getter. */
     /* new encoder — invalidate FBO match cache. */
     [self clearFboMatchCache];
@@ -405,7 +415,7 @@ static void mglRenderPassManagerStoreIdentity(
         return nil;
     }
 
-    /* P4.5 (item 1155): both gates share the C++ MDIScratchOwner — the ObjC
+    /* both gates share the C++ MDIScratchOwner — the ObjC
      * gate-off allocator and the mirror fields are gone.  The returned buffer
      * is a borrowed reference (the owner keeps it alive and may swap it on
      * growth, same lifetime contract as the old mirror). */
@@ -503,7 +513,7 @@ static void mglRenderPassManagerStoreIdentity(
     mglRenderCppDestroyRenderPassIdentityOwner(
         &_state.renderPassIdentityOwner);
 
-    /* P4.5 (item 1141): sync tracking list lives inside the C++ owner;
+    /* sync tracking list lives inside the C++ owner;
      * the owner destructor frees it. */
     mglRenderCppDestroyPendingEventOwner(&_state.pendingEventOwner);
     _state.currentDrawUsesRTSampledCopy = NO;

@@ -1,4 +1,14 @@
 /*
+ * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
+ *
+ * This file contains material from the Apache-2.0-licensed MGL baseline.
+ * Copyrightable modifications made after baseline commit
+ * 79d38f666336141d962109a864a6744bf66e438c are licensed under
+ * LGPL-3.0-only by their respective copyright holders.
+ * See LICENSE-APACHE-2.0, LICENSE, and LICENSING.md.
+ */
+
+/*
  * mgl_legacy_compat.c
  * MGL
  *
@@ -395,7 +405,7 @@ static const texture_fn_map_t s_texture_fn_map[] = {
  *   correspond to VS's gl_FrontColor / gl_FrontSecondaryColor respectively
  *   (selected by gl_FrontFacing in fixed-function GL).  We rename FS's
  *   gl_Color to _mglFrontColor so it links with VS's gl_FrontColor output.
- *   Back-face selection is not emulated (Phase 3 concern). */
+ *   Back-face selection is not emulated. */
 typedef struct {
     const char *legacy_name;
     const char *vs_name;

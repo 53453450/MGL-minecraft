@@ -1,6 +1,6 @@
 # MGL - Metal-GL
 
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-LGPL--3.0--only-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS-lightgrey.svg)]()
 [![OpenGL](https://img.shields.io/badge/OpenGL-4.6-green.svg)]()
 [![Metal](https://img.shields.io/badge/Metal-3.0-orange.svg)]()
@@ -20,6 +20,19 @@
 - Minecraft (MC) is one of the few games that run relatively well on macOS. However, its longevity largely comes from its massive modding community. Apple officially deprecated OpenGL and OpenCL at WWDC 2018 (June 2018), and macOS OpenGL support has been stuck at version 4.1 ever since. The vertex attribute limit (GL_MAX_VERTEX_ATTRIBS) is 16, which is far behind modern mod requirements. Many mods and most shader packs cannot run on macOS.  
 
   This project upgrades OpenGL support to 4.6 and increases `GL_MAX_VERTEX_ATTRIBS` to 30.
+
+## License
+
+Licensing in this repository follows code provenance. The original MGL code at
+and before baseline commit `79d38f666336141d962109a864a6744bf66e438c` remains
+under the [Apache License 2.0](LICENSE-APACHE-2.0). Modifications made in this
+repository after that baseline are licensed by their respective copyright
+holders under [LGPL-3.0-only](LICENSE).
+
+This does not relicense the original Apache-2.0 contributions. Files containing
+both kinds of material must comply with the license applicable to each portion.
+See [LICENSING.md](LICENSING.md) for the complete scope notice. Third-party
+components remain under their own licenses.
 
 ---
 
@@ -67,6 +80,11 @@ cd external
 ./build_external.sh
 ```
 
+`clone_external.sh` only fetches OpenGL-Registry, ezxml, and Apple's official
+[metal-cpp](https://github.com/apple/metal-cpp) when those directories are missing.
+`external/glfw` is the repository's locally modified checkout; it is never cloned
+or pulled from upstream and is always used for the build.
+
 ### 3. Build MGL
 
 ```bash
@@ -112,7 +130,7 @@ MGL-minecraft/
 │       ├── get.c                # glGet/internalformat queries
 │       ├── pixel_utils.c        # Pixel format and layout helpers
 │       ├── rendering.c          # Render state and draw dispatch
-│       ├── shaders.c            # GLSL/SPIR-V/MSL translation entry
+│       ├── shaders.c            # GLSL frontend entry
 │       ├── tex_param.c          # Texture parameters and internalformat queries
 │       └── textures.c           # Texture upload, clear, and compressed paths
 ├── external/                    # SPIRV-Cross, SPIRV-Tools, glslang, GLFW, etc.
@@ -126,7 +144,10 @@ MGL-minecraft/
 ├── Makefile                     # Sole build entry point
 ├── README.md                    # Chinese README
 ├── README_EN.md                 # English README
-└── LICENSE                      # Apache 2.0 License
+├── LICENSE                      # LGPL 3.0 text for repository changes after the baseline
+├── LICENSE-APACHE-2.0           # Apache 2.0 text for original MGL code
+├── LICENSE-GPL-3.0-only         # GPL 3.0 text incorporated by LGPL 3.0
+└── LICENSING.md                 # License scope and commit boundary notice
 ```
 
 ## Core Modules
@@ -225,7 +246,3 @@ After launch, look for `mgl-trace-<pid>.log` next to the MGL dylib.
 - [openglonmetal](https://github.com/openglonmetal/MGL) - Original MGL framework
 - [Hexeption/MCP-Reborn](https://github.com/Hexeption/MCP-Reborn) 
 - [apitrace](https://github.com/apitrace/apitrace)
-
-## License
-
-This project is licensed under the Apache License 2.0 – see the LICENSE file for details.

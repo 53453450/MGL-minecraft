@@ -1,3 +1,13 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
+ *
+ * This file contains material from the Apache-2.0-licensed MGL baseline.
+ * Copyrightable modifications made after baseline commit
+ * 79d38f666336141d962109a864a6744bf66e438c are licensed under
+ * LGPL-3.0-only by their respective copyright holders.
+ * See LICENSE-APACHE-2.0, LICENSE, and LICENSING.md.
+ */
+
 // MGLRenderer+DrawSupport.m
 // Draw validation, element-buffer resolution and rasterization helper
 // methods extracted from MGLRenderer+Draw.m
@@ -46,15 +56,7 @@ static BOOL mglDrawSupportEncodeContextIsActive(
         encodeContext->render_encoder_owner) == 1;
 }
 
-/* CPU index gather for direct indexed GS draws (mgl_air_gs_abi.h §7).
- * Reads `count` indices of `indexType` from indexBytes, splits the stream
- * at primitive-restart markers (dropping the incomplete primitive before a
- * marker), re-groups vertices into input primitives (dropping the trailing
- * incomplete group), and emits a per-instance uint32 gather array of raw
- * index values (baseVertex NOT applied — Metal's vertex_id for indexed
- * draws is the index value, and stage_in fetch applies baseVertex).
- * Fills *outGather (malloc'd; caller frees) and the count/max outputs.
- * Returns false (with *outGather NULL) if nothing can be gathered. */
+
 static bool mglGeometryGatherIndices(const uint8_t *indexBytes,
                                      GLenum indexType,
                                      GLsizei count,
@@ -67,9 +69,7 @@ static bool mglGeometryGatherIndices(const uint8_t *indexBytes,
                                      uint32_t *outPrimitiveCount,
                                      uint32_t *outMaxIndex)
 {
-    /* P4.5 (item 1141/887): 索引流 gather（BYTE/SHORT/INT 元素宽度、原始
-     * 重启、完整图元计数、尾不完整组丢弃）迁入 C++
-     * （mglRenderCppGeometryGatherIndices，两门共用；调用方释放 gather）。 */
+
     (void)baseVertex; /* gather stores raw index values (vertex_id) */
     if (!outGather || !outGatherCount || !outPrimitiveCount || !outMaxIndex) {
         return false;
@@ -415,8 +415,7 @@ static BOOL mglCheckedTessCaptureSize(GLsizei count, GLsizei instanceCount,
                                       NSUInteger *sizeOut,
                                       NSUInteger *offsetOut)
 {
-    /* P4.5 (item 1141/887): 溢出检查的 capture size 数学在 C++
-     * （mglRenderCppCheckedTessCaptureSize，纯数据变换，两门共用）。 */
+
     uint64_t size = 0u;
     uint64_t offset = 0u;
     if (mglRenderCppCheckedTessCaptureSize(
@@ -435,10 +434,7 @@ static BOOL mglNativeTESInterfaceSupported(Program *tcsProgram,
     if (!tesProgram) {
         return NO;
     }
-    /* P4.5 (item 1141/887): 模块/函数存在性 + point-mode/XFB 排除 +
-     * TRI/QUADS 门 + MTL::Function patchType/patchControlPointCount 一致
-     * 性判定在 C++（mglRenderCppNativeTESInterfaceSupported，经 bridge
-     * 读取 MTL::Function，两门共用）。 */
+
     return mglRenderCppNativeTESInterfaceSupported(
         tesProgram->modules[_TESS_EVALUATION_SHADER].mtl_function,
         (uint64_t)tesProgram->modules[_TESS_EVALUATION_SHADER].metallib_bytes,
@@ -461,8 +457,7 @@ static id mglDefaultTessFactorBuffer(id device,
         device, (NSUInteger)patchCount * stride,
         0u);
     if (!buffer || !mglDrawSupportBufferContents(buffer)) return nil;
-    /* P4.5 (item 1141/887): 默认 factor 填充在 C++（__fp16 打包，纯数据
-     * 变换，两门共用）。 */
+
     if (mglRenderCppFillDefaultTessFactorBuffer(
             (void *)mglDrawSupportBufferContents(buffer),
             (uint64_t)((NSUInteger)patchCount * stride),
@@ -528,8 +523,7 @@ static id mglNativeTessFactorBuffer(id device,
     if (!result || !mglDrawSupportBufferContents(result)) {
         return nil;
     }
-    /* P4.5 (item 1141/887): canonical->triangle 重打包在 C++
-     * （12B/patch -> 8B/patch，纯数据变换，两门共用）。 */
+
     if (mglRenderCppRepackTessFactorTriangles(
             (const void *)mglDrawSupportBufferContents(canonical), (uint64_t)mglDrawSupportBufferLength(canonical),
             (void *)mglDrawSupportBufferContents(result),
@@ -548,9 +542,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     if (!canonical || !mglDrawSupportBufferContents(canonical) || !tesProgram || patchCount == 0u) {
         return 0u;
     }
-    /* P4.5 (item 1141/887): 原生 primitive count（GL 4.6 §11.2.2.2 ceil
-     * 规则 + discard 判定）在 C++（mglRenderCppTessPrimitiveCount，纯数据
-     * 变换，两门共用）。 */
+
     return (GLuint64)mglRenderCppTessPrimitiveCount(
         (const void *)mglDrawSupportBufferContents(canonical), (uint64_t)mglDrawSupportBufferLength(canonical),
         patchCount, (uint32_t)tesProgram->tess_gen_mode,
@@ -944,11 +936,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     return capture;
 }
 
-/* Indexed variant of the VS capture for direct indexed GS draws
- * (mgl_air_gs_abi.h §7).  Runs indexed draws against the original
- * EBO so Metal's baseVertex is applied to stage_in fetch; the capture
- * kernel's vertex_id is the raw index value, so records are sparse
- * ([instance][vertex_id], span = maxIndex+1 per instance). */
+
 - (id)captureAIRVertexPositionsForGeometryIndexed:(GLMContext)drawCtx
                                                   indexBuffer:(id)indexBuffer
                                                     indexType:(uint64_t)indexType
@@ -1128,7 +1116,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
                   (unsigned)mode, (int)count, (int)instanceCount,
                   (unsigned)baseInstance);
         }
-        /* P0 contract: never drop a GS draw silently.  A draw whose mode
+        /*  contract: never drop a GS draw silently.  A draw whose mode
          * does not match the GS input topology is an invalid operation. */
         mglDispatchError(drawCtx, label ? label : "geometryDraw",
                          GL_INVALID_OPERATION);
@@ -1166,10 +1154,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         return YES;
     }
 
-    /* Indexed draws first gather the element stream (mgl_air_gs_abi.h §7):
-     * restart markers split the stream, vertices re-group into input
-     * primitives, and the resulting per-instance uint32 gather array carries
-     * raw index values so the GS kernel can locate sparse capture records. */
+
     uint32_t *gatherArray = NULL;
     uint32_t gatherCount = 0u;
     uint32_t gatherPrimitives = 0u;
@@ -1206,8 +1191,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
                                       inputVertices, &gatherArray,
                                       &gatherCount, &gatherPrimitives,
                                       &gatherMaxIndex)) {
-            /* Nothing drawable after gather/restart handling — a valid
-             * empty draw, not an error. */
+
             return YES;
         }
         captureIndexType = mglIndexTypeForGLType(indexType);
@@ -1246,8 +1230,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     const NSUInteger outputStride = mglAIRPerVertexStrideForResources(
         &program->shader_resources_list[_GEOMETRY_SHADER][_STAGE_OUTPUT_RES]);
     const uint32_t maxVertices = program->geometry_vertices_out;
-    /* Fixed ABI layout (mgl_air_gs_abi.h §2): 2 header records + the
-     * expanded primitive vertices per work item. */
+
     const MGLAIRGSOutputPrimitive gsAirOutput = gsOutputMode == GL_POINTS
         ? MGL_AIR_GS_OUT_POINTS
         : gsOutputMode == GL_LINE_STRIP ? MGL_AIR_GS_OUT_LINE_STRIP
@@ -1324,8 +1307,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         (NSUInteger)workItemCount * recordsPerPrimitive * outputStride;
     id output = mglDrawSupportCreateBuffer(
         _device, outputSize, 0u);
-    /* ABI (mgl_air_gs_abi.h §3): one 28-byte counts record per work item —
-     * 16-byte indirect args + 12 bytes kernel scratch. */
+
     const NSUInteger countsRecordBytes = MGL_AIR_GS_COUNTS_RECORD_BYTES;
     id counts = mglDrawSupportCreateBuffer(
         _device, (NSUInteger)workItemCount * countsRecordBytes,
@@ -1361,18 +1343,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     }
 
     MGLStageBindingCopyBackList stageCopyBacks = {0};
-    /* GS transform feedback (P1, mgl_air_gs_abi.h §5): when GL feedback
-     * is active the kernel appends output vertices to the slot-31 stream
-     * through the per-stream atomic meta cursors (slot 27).  Stream 0
-     * keeps the single-stream path: the GL store is bound directly only
-     * when the maximum possible capture fits, otherwise the kernel writes
-     * into a full-size temporary and only the prefix containing complete
-     * primitives is copied back.  Multi-stream programs share one physical
-     * slot-31 buffer split into per-stream segments (capture_base), one
-     * segment per used stream, copied back per stream afterward; the GL
-     * transform-feedback buffer i receives stream i (documented MGL
-     * mapping, stream s has a compact position+varyings record of
-     * geometry_stream_xfb_stride[s] bytes). */
+
     TransformFeedback *xfbState = MGL_STATE(drawCtx)->transform_feedback;
     const bool xfbActive = xfbState && xfbState->active && !xfbState->paused;
     id xfbTemporary = nil;
@@ -1577,17 +1548,13 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
                                        MGL_AIR_GS_SLOT_OUTPUT);
         mglDrawSupportSetComputeBuffer(compute, counts, 0u,
                                        MGL_AIR_GS_SLOT_COUNTS);
-        /* Gather ABI (mgl_air_gs_abi.h §7): the kernel always receives a
-         * gather slot + params; array draws bind gather_enabled=0 and a dummy
-         * gather buffer (counts works — the kernel never reads it). */
+
         mglDrawSupportSetComputeBuffer(compute,
                                        indexedDraw ? gatherBuf : counts, 0u,
                                        MGL_AIR_GS_SLOT_GATHER);
         mglDrawSupportSetComputeBytes(compute, &gparams, sizeof(gparams),
                                       MGL_AIR_GS_SLOT_GATHER_PARAMS);
-        /* XFB slots (mgl_air_gs_abi.h §5): the meta record is always bound
-         * (stride 0 disables capture in the kernel); the stream is bound only
-         * when capture is active. */
+
         if (xfbCaptureBuffer) {
             mglDrawSupportSetComputeBuffer(compute, xfbCaptureBuffer,
                                            xfbDestinationOffset,
@@ -1699,17 +1666,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     GLuint64 queryWritten = 0u;
     const MGLAIRGSXFBMeta *queryMeta = NULL;
     if (xfbActive && xfbMetaBuf && mglDrawSupportBufferContents(xfbMetaBuf)) {
-        /* The stage synchronization above made the atomic counters CPU
-         * visible; the written counter counts exactly the bytes the
-         * kernel stored, so culled primitives are excluded.
-         *
-         * Multi-stream (GL 4.6 §11.1.3.4): each stream's segment lives at
-         * streamPhysBase[s] in the temporary; copy each back to its GL XFB
-         * destination, rounded down to a whole-primitive prefix so partial
-         * records don't corrupt the GL-visible store.  Streams 1..3 are
-         * XFB-only and don't contribute to PRIMITIVES_GENERATED /
-         * TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN (stream 0 primitives only,
-         * GL 4.6 §13.2.4). */
+
         const MGLAIRGSXFBMeta *meta =
             (const MGLAIRGSXFBMeta *)mglDrawSupportBufferContents(xfbMetaBuf);
         queryMeta = meta;
@@ -1782,10 +1739,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         mglHasActiveIndexedPrimitiveQuery()) {
         queryMeta = (const MGLAIRGSXFBMeta *)mglDrawSupportBufferContents(xfbMetaBuf);
     }
-    /* Multi-stream (GL 4.6 §13.2.4.1): PRIMITIVES_GENERATED counts only
-     * stream 0 primitives (emitted to the rasterizer).  The static
-     * estimate above includes all streams' expanded vertices; replace
-     * it with the actual stream 0 visible count from the counts buffer. */
+
     if (multiStream && counts && mglDrawSupportBufferContents(counts)) {
         const uint32_t *cw = (const uint32_t *)mglDrawSupportBufferContents(counts);
         GLuint64 stream0Visible = 0u;
@@ -2346,8 +2300,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         }
     }
 
-    /* P4.5 (item 1141/887): viewport/scissor/framebuffer 交集判定（纯 CPU
-     * 数学，逐点等价）在 C++（mglRenderCppRasterizationIsEmpty，两门共用）。 */
+
     return mglRenderCppRasterizationIsEmpty(
                vx, vy, vw, vh,
                (uint32_t)passWidth, (uint32_t)passHeight,
@@ -2364,9 +2317,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         return;
     }
 
-    /* P4.5 (item 1141/887): 三角填充模式（GL_LINE -> lines）+ 非法
-     * polygon_mode 修复条件 + 按 polygon 模式的 depth-bias 使能判定在 C++
-     * （mglRenderCppPolygonOffsetDecision，纯决策，两门共用）。 */
+
     MGLRenderCppPolygonOffsetDecision decision = {0};
     mglRenderCppPolygonOffsetDecision(
         (uint32_t)mode,
@@ -2430,8 +2381,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     }
     explicitVertexCount = MIN(explicitVertexCount, 4u);
 
-    /* P4.5 (item 1141/887): 绘制模式 -> 图元顶点数表在 C++
-     * （mglRenderCppPrimitiveVertexCountForMode，两门共用）。 */
+
     uint32_t prim_vertex_count =
         mglRenderCppPrimitiveVertexCountForMode((uint32_t)mode);
 
@@ -2638,10 +2588,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         return YES;
     }
 
-    /* P0 contract (mgl_air_tess_abi.h): the whole GL_PATCHES draw is
-     * described by one value-state struct consumed by the TCS/TES
-     * dispatchers — no more threading six scalars and re-deriving
-     * per-patch layout numbers at each call site. */
+
     uint32_t restartIndex = 0u;
     bool restartEnabled = false;
     if (indexType != 0u) {
@@ -3001,7 +2948,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         }
         NSLog(@"MGL TESS ERROR: native AIR TES interface unsupported for program %u",
               (unsigned)tesProgram->name);
-        /* P0 contract: an unsupported tessellation draw must surface a GL
+        /*  contract: an unsupported tessellation draw must surface a GL
          * error, not silently drop the patch stream. */
         mglDispatchError(drawCtx, label ? label : "tessellationDraw",
                          GL_INVALID_OPERATION);
