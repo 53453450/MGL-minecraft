@@ -914,7 +914,12 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                  cmd->dynamic_texture_binding_count == 0)) {
         return true;
     }
-    if (!glm_ctx || !mglBatchReplayHasActiveEncoder(encCtx)) {
+    if (!glm_ctx || !encCtx) {
+        return false;
+    }
+    encCtx->render_encoder_owner =
+        _renderPassManager.state->currentRenderEncoderOwner;
+    if (!mglBatchReplayHasActiveEncoder(encCtx)) {
         return false;
     }
 
@@ -976,13 +981,28 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 touched_texture_units
                                                            context:glm_ctx
                                                      encodeContext:encCtx];
+        /* Texture binding may close and recreate the render encoder while
+         * materializing an RT-sampled texture.  The owner can be destroyed
+         * and reallocated, so refresh the handle before inspecting or using
+         * it again. */
+        encCtx->render_encoder_owner =
+            _renderPassManager.state->currentRenderEncoderOwner;
         if (!direct_texture_ok) {
             direct_texture_ok = [self bindTexturesToCurrentRenderEncoder:encCtx];
+            encCtx->render_encoder_owner =
+                _renderPassManager.state->currentRenderEncoderOwner;
             if (!direct_texture_ok) {
                 direct_texture_ok =
                     [self restoreRenderEncoderAfterTextureUploadForDraw:
-                        "dynamic-sampled-texture-bind"] &&
-                    [self bindTexturesToCurrentRenderEncoder:encCtx];
+                        "dynamic-sampled-texture-bind"];
+                encCtx->render_encoder_owner =
+                    _renderPassManager.state->currentRenderEncoderOwner;
+                if (direct_texture_ok) {
+                    direct_texture_ok =
+                        [self bindTexturesToCurrentRenderEncoder:encCtx];
+                    encCtx->render_encoder_owner =
+                        _renderPassManager.state->currentRenderEncoderOwner;
+                }
             }
         }
     }
@@ -990,17 +1010,22 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         return false;
     }
 
-    /* Texture materialization may have ended and recreated the render encoder
-     * (RT-sampled-copy path). The cached encoder is now stale; refresh it so
-     * per-draw buffer overrides and the draw itself target the live encoder. */
+    /* Keep all per-draw buffer overrides on the live encoder after texture
+     * materialization or storage-image binding has rotated its owner. */
+    encCtx->render_encoder_owner =
+        _renderPassManager.state->currentRenderEncoderOwner;
 
     bool direct_vertex_ok = cmd->dynamic_vertex_binding_count == 0 ||
         [self bindDynamicVertexArrayBuffersDirectly:draw_vao
                                             command:cmd
                                             context:glm_ctx
                                       encodeContext:encCtx];
+    encCtx->render_encoder_owner =
+        _renderPassManager.state->currentRenderEncoderOwner;
     bool direct_uniform_ok = cmd->dynamic_uniform_binding_count == 0 ||
         [self bindDynamicUniformRangesDirectly:cmd context:glm_ctx encodeContext:encCtx];
+    encCtx->render_encoder_owner =
+        _renderPassManager.state->currentRenderEncoderOwner;
     if (direct_vertex_ok && direct_uniform_ok) {
         return true;
     }
@@ -1012,10 +1037,16 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     if (cmd->dynamic_vertex_binding_count > 0) {
         MGL_STATE(glm_ctx)->vao = draw_vao;
     }
+    encCtx->render_encoder_owner =
+        _renderPassManager.state->currentRenderEncoderOwner;
     bool fallback_ok = [self mapBuffersToMTL] &&
         [self bindVertexBuffersToCurrentRenderEncoder:encCtx];
+    encCtx->render_encoder_owner =
+        _renderPassManager.state->currentRenderEncoderOwner;
     if (fallback_ok && cmd->dynamic_uniform_binding_count > 0) {
         fallback_ok = [self bindFragmentBuffersToCurrentRenderEncoder:encCtx];
+        encCtx->render_encoder_owner =
+            _renderPassManager.state->currentRenderEncoderOwner;
     }
     MGL_STATE(glm_ctx)->vao = saved_vao;
     return fallback_ok;
@@ -1123,8 +1154,10 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
              encodeContext:(const MGLEncodeContext *)encCtx
 {
     /* Mutable working copy: texture materialization may rotate the active
-     * encoder, while the owner remains the stable encode target. */
+     * encoder, so start from the render-pass manager's live owner. */
     MGLEncodeContext liveEncCtx = *encCtx;
+    liveEncCtx.render_encoder_owner =
+        _renderPassManager.state->currentRenderEncoderOwner;
 
     if ([self tryReplaySimpleBatch:batch
                                   context:glm_ctx
@@ -1133,6 +1166,10 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     }
     for (uint32_t i = 0; i < batch->command_count; i++) {
         MGLDrawCommand *cmd = &batch->commands[i];
+        /* A previous command may have rotated the render encoder.  Refresh at
+         * each command boundary before any replay helper checks the owner. */
+        liveEncCtx.render_encoder_owner =
+            _renderPassManager.state->currentRenderEncoderOwner;
         Program *batchProgram =
             mglResolveProgramForStageFromState(glm_ctx, _VERTEX_SHADER);
         BOOL capturedCullDistances = NO;
