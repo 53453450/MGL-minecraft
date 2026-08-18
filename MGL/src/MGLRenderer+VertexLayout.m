@@ -13,19 +13,19 @@
 
 #import "MGLRenderer_Private.h"
 #include "mgl_shader_abi.h"
-#include "mgl_air_loader.h"   /* MGLRenderCppPipelineDescriptorState */
+#include "mgl_air_loader.h"   /* MGLRenderPipelineDescriptorState */
 
 /* GL type -> Metal vertex-format value for TES control-point inputs. */
 static uint32_t mglTessControlPointFormat(GLenum type)
 {
-    return mglRenderCppTessControlPointFormat((uint64_t)type);
+    return mglRenderTessControlPointFormat((uint64_t)type);
 }
 
 @implementation MGLRenderer (VertexLayout)
 
 
 
-- (BOOL)generateVertexDescriptorState:(MGLRenderCppPipelineDescriptorState *)state
+- (BOOL)generateVertexDescriptorState:(MGLRenderPipelineDescriptorState *)state
 {
     if (!state) {
         return NO;

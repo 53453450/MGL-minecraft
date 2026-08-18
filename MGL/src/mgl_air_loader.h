@@ -25,7 +25,7 @@ extern "C" {
 
 /* Value-state input for render-pipeline construction. Objective-C fills this
  * structure without exposing MTLRenderPipelineDescriptor. */
-typedef struct MGLRenderCppPipelineDescriptorState {
+typedef struct MGLRenderPipelineDescriptorState {
     uint64_t vertex_program_instance;
     uint64_t vertex_program_generation;
     uint64_t fragment_program_instance;
@@ -63,10 +63,10 @@ typedef struct MGLRenderCppPipelineDescriptorState {
     uint32_t tessellation_control_point_index_type;
     uint32_t tessellation_factor_step_function;
     uint32_t tessellation_output_winding_order;
-} MGLRenderCppPipelineDescriptorState;
+} MGLRenderPipelineDescriptorState;
 
 /* Compatibility alias retained for existing callers. */
-typedef MGLRenderCppPipelineDescriptorState MGLPipelineDescriptorState;
+typedef MGLRenderPipelineDescriptorState MGLPipelineDescriptorState;
 
 /* device is an internal MTL::Device*. bytes contains a metallib image.
  * Returns 0 with an owned library on success. */
@@ -85,7 +85,7 @@ int mglAirCreateRenderPipeline(const void* device, void* vs_function, void* fs_f
  * rejects those records during serialization. */
 int mglAirCreateRenderPipelineWithArchive(
     const void* device, void* vs_function, void* fs_function,
-    const MGLRenderCppPipelineDescriptorState* desc, void* binary_archive,
+    const MGLRenderPipelineDescriptorState* desc, void* binary_archive,
     void** pso_out, char* err, size_t errcap);
 
 /* Creates the "main" compute pipeline from a borrowed MTL::Library*. The

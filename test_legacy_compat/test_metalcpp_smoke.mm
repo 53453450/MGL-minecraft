@@ -1,4 +1,4 @@
-// test_metalcpp_smoke.mm — Phase 0 验收：mglRenderCppInit 桥接现有 id<MTLDevice>
+// test_metalcpp_smoke.mm — Phase 0 验收：mglRenderInit 桥接现有 id<MTLDevice>
 // 拿到非空 MTL::Device*（void* 形式）无崩溃；shutdown 幂等；可重建。
 #import <Metal/Metal.h>
 #import <Foundation/Foundation.h>
@@ -9,7 +9,7 @@
 #include <mach/mach.h>
 #include <atomic>
 
-#include "mgl_render_cpp.h"
+#include "mgl_render.h"
 #include "mgl_renderer_backend.h"
 #include "mgl_air_loader.h"
 #include "mgl_aux_assets.h"
@@ -27,7 +27,7 @@ extern "C" void mglAirLoaderShutdown(void) {}
 extern "C" int mglAirLoadLibrary(const void *, const unsigned char *, size_t,
                                   void **, char *, size_t) { return -1; }
 extern "C" int mglAirCreateRenderPipelineWithArchive(
-    const void *, void *, void *, const MGLRenderCppPipelineDescriptorState *,
+    const void *, void *, void *, const MGLRenderPipelineDescriptorState *,
     void *, void **, char *, size_t) { return -1; }
 static uint64_t s_metalReleaseCount = 0;
 static uint64_t s_metalCreateCount = 0;
@@ -35,10 +35,10 @@ extern "C" void mglMetalCountRelease(int) { ++s_metalReleaseCount; }
 extern "C" void mglMetalCountCreate(int) { ++s_metalCreateCount; }
 extern "C" void mglRecordBufferCowSnapshot(uint64_t) {}
 
-static MGLRenderCppTextureDescriptorState
+static MGLRenderTextureDescriptorState
 smokeTextureDescriptorState(MTLTextureDescriptor *descriptor)
 {
-    MGLRenderCppTextureDescriptorState state = {};
+    MGLRenderTextureDescriptorState state = {};
     if (!descriptor) return state;
 
     state.texture_type = (uint32_t)descriptor.textureType;
@@ -280,7 +280,7 @@ static int verifyDirectRendererABI(id<MTLDevice> device) {
     void *commandOwner = reinterpret_cast<void *>(0x1110u);
     void *encoderOwner = reinterpret_cast<void *>(0x2220u);
     void *passOwner = reinterpret_cast<void *>(0x3330u);
-    if (mglRenderCppAttachRuntimeOwners(
+    if (mglRenderAttachRuntimeOwners(
             &context, commandOwner, encoderOwner, passOwner) != 0 ||
         mglRendererBackendGetOwner(
             backend, MGL_RENDERER_BACKEND_OWNER_COMMAND_BUFFER) != commandOwner ||
@@ -296,7 +296,7 @@ static int verifyDirectRendererABI(id<MTLDevice> device) {
         mglRendererBackendDestroy(&backend);
         return 1;
     }
-    mglRenderCppDetachRuntimeOwners(&context);
+    mglRenderDetachRuntimeOwners(&context);
     if (mglRendererBackendGetOwner(
             backend, MGL_RENDERER_BACKEND_OWNER_COMMAND_BUFFER) ||
         mglRendererBackendGetOwner(
@@ -316,12 +316,12 @@ static int verifyDirectRendererABI(id<MTLDevice> device) {
     return 0;
 }
 
-static MGLRenderCppRenderPassState renderPassStateWithColorTarget(
+static MGLRenderPassState renderPassStateWithColorTarget(
     id<MTLTexture> texture,
     MTLLoadAction loadAction,
     MTLStoreAction storeAction) {
-    MGLRenderCppRenderPassState state;
-    mglRenderCppInitDefaultRenderPassState(&state);
+    MGLRenderPassState state;
+    mglRenderInitDefaultRenderPassState(&state);
     state.color[0].attachment.texture = (__bridge void *)texture;
     state.color[0].attachment.load_action = (uint32_t)loadAction;
     state.color[0].attachment.store_action = (uint32_t)storeAction;
@@ -329,7 +329,7 @@ static MGLRenderCppRenderPassState renderPassStateWithColorTarget(
 }
 
 static void commandBufferCompletion(
-    void *, const MGLRenderCppCommandBufferState *state) {
+    void *, const MGLRenderCommandBufferState *state) {
     s_commandBufferCompletionStatus.store(
         state ? state->status : UINT32_MAX, std::memory_order_relaxed);
     s_commandBufferCompletionCount.fetch_add(1, std::memory_order_relaxed);
@@ -418,8 +418,8 @@ static int verifyBufferBinding(void) {
     buffer.data.buffer_data = (vm_address_t)(uintptr_t)source;
     buffer.storage_flags = GL_MAP_READ_BIT;
     char message[128] = {0};
-    if (mglRenderCppBindBufferStorage(&buffer, message, sizeof(message)) !=
-            MGL_RENDER_CPP_BUFFER_BOUND ||
+    if (mglRenderBindBufferStorage(&buffer, message, sizeof(message)) !=
+            MGL_RENDER_BUFFER_BOUND ||
         !buffer.data.mtl_data || buffer.data.mtl_owns_buffer_data) {
         fprintf(stderr, "FAIL: C++ buffer binder: %s\n",
                 message[0] ? message : "unknown");
@@ -436,28 +436,28 @@ static int verifyBufferBinding(void) {
     uint32_t gpuValues[4] = {51u, 52u, 53u, 54u};
     memcpy(metalBuffer.contents, gpuValues, sizeof(gpuValues));
     void *mapped = NULL;
-    if (mglRenderCppMapBufferStorage(
+    if (mglRenderMapBufferStorage(
             &buffer, 0, sizeof(gpuValues), GL_READ_ONLY, true,
             &mapped, message, sizeof(message)) !=
-            MGL_RENDER_CPP_BUFFER_OPERATION_HANDLED ||
+            MGL_RENDER_BUFFER_OPERATION_HANDLED ||
         mapped != source || memcmp(source, gpuValues, sizeof(gpuValues)) != 0) {
         fprintf(stderr, "FAIL: C++ buffer map/read synchronization\n");
         return 1;
     }
     uint32_t readbackValues[4] = {61u, 62u, 63u, 64u};
     memcpy(metalBuffer.contents, readbackValues, sizeof(readbackValues));
-    mglRenderCppReadBackBuffer(NULL, &buffer, 0, sizeof(readbackValues));
+    mglRenderReadBackBuffer(NULL, &buffer, 0, sizeof(readbackValues));
     if (memcmp(source, readbackValues, sizeof(readbackValues)) != 0) {
         fprintf(stderr, "FAIL: C++ buffer readback synchronization\n");
         return 1;
     }
     uint32_t cowValue = 71u;
     void *initialBacking = buffer.data.mtl_data;
-    mglRenderCppBufferSubData(NULL, &buffer, 0, sizeof(cowValue), &cowValue);
+    mglRenderBufferSubData(NULL, &buffer, 0, sizeof(cowValue), &cowValue);
     id<MTLBuffer> firstCowBuffer =
         (__bridge id<MTLBuffer>)buffer.data.mtl_data;
     if (s_legacyBufferSubDataCount != 0 ||
-        buffer.data.mtl_data == initialBacking || !buffer.mtl_cpp_cow_pool ||
+        buffer.data.mtl_data == initialBacking || !buffer.mtl_cow_pool ||
         source[0] != cowValue || !firstCowBuffer.contents ||
         memcmp(firstCowBuffer.contents, source, sizeof(source)) != 0) {
         fprintf(stderr, "FAIL: Metal-cpp split-shadow COW snapshot\n");
@@ -465,34 +465,34 @@ static int verifyBufferBinding(void) {
     }
 
     void *firstCowBacking = buffer.data.mtl_data;
-    uint64_t generation1 = mglRenderCppAdvanceBufferGeneration();
-    mglRenderCppNoteBufferEncoded(&buffer);
+    uint64_t generation1 = mglRenderAdvanceBufferGeneration();
+    mglRenderNoteBufferEncoded(&buffer);
     cowValue = 72u;
-    mglRenderCppBufferSubData(NULL, &buffer, 0, sizeof(cowValue), &cowValue);
+    mglRenderBufferSubData(NULL, &buffer, 0, sizeof(cowValue), &cowValue);
     void *secondCowBacking = buffer.data.mtl_data;
     if (secondCowBacking == firstCowBacking || source[0] != cowValue) {
         fprintf(stderr, "FAIL: in-flight COW slot was reused\n");
         return 1;
     }
 
-    uint64_t generation2 = mglRenderCppAdvanceBufferGeneration();
-    mglRenderCppNoteBufferEncoded(&buffer);
-    mglRenderCppRecordBufferGenerationCompleted(generation1);
+    uint64_t generation2 = mglRenderAdvanceBufferGeneration();
+    mglRenderNoteBufferEncoded(&buffer);
+    mglRenderRecordBufferGenerationCompleted(generation1);
     cowValue = 73u;
-    mglRenderCppBufferSubData(NULL, &buffer, 0, sizeof(cowValue), &cowValue);
+    mglRenderBufferSubData(NULL, &buffer, 0, sizeof(cowValue), &cowValue);
     if (buffer.data.mtl_data != firstCowBacking ||
-        mglRenderCppCompletedBufferGeneration() < generation1 ||
+        mglRenderCompletedBufferGeneration() < generation1 ||
         generation2 <= generation1) {
         fprintf(stderr, "FAIL: completed COW slot was not reused\n");
         return 1;
     }
-    mglRenderCppReleaseBufferMetalData(NULL, &buffer);
-    mglRenderCppReleaseBufferCowPool(&buffer);
+    mglRenderReleaseBufferMetalData(NULL, &buffer);
+    mglRenderReleaseBufferCowPool(&buffer);
     if (buffer.data.mtl_data != NULL) {
         fprintf(stderr, "FAIL: C++ buffer release did not clear backing\n");
         return 1;
     }
-    if (buffer.mtl_cpp_cow_pool != NULL) {
+    if (buffer.mtl_cow_pool != NULL) {
         fprintf(stderr, "FAIL: C++ buffer COW pool release did not clear state\n");
         return 1;
     }
@@ -502,10 +502,10 @@ static int verifyBufferBinding(void) {
     direct.size = sizeof(source);
     direct.data.buffer_size = sizeof(source);
     uint32_t directValues[4] = {81u, 82u, 83u, 84u};
-    if (mglRenderCppBufferSubDataStorage(
+    if (mglRenderBufferSubDataStorage(
             &direct, 0, sizeof(directValues), directValues,
             message, sizeof(message)) !=
-            MGL_RENDER_CPP_BUFFER_OPERATION_HANDLED ||
+            MGL_RENDER_BUFFER_OPERATION_HANDLED ||
         !direct.data.mtl_data) {
         fprintf(stderr, "FAIL: direct Metal buffer subdata: %s\n",
                 message[0] ? message : "unknown");
@@ -518,7 +518,7 @@ static int verifyBufferBinding(void) {
         fprintf(stderr, "FAIL: direct Metal buffer subdata contents\n");
         return 1;
     }
-    mglRenderCppReleaseBufferMetalData(NULL, &direct);
+    mglRenderReleaseBufferMetalData(NULL, &direct);
 
     uint32_t flushSource[4] = {91u, 92u, 93u, 94u};
     Buffer flushBuffer = {};
@@ -527,20 +527,20 @@ static int verifyBufferBinding(void) {
     flushBuffer.data.buffer_size = sizeof(flushSource);
     flushBuffer.data.buffer_data =
         (vm_address_t)(uintptr_t)flushSource;
-    if (mglRenderCppBindBufferStorage(
+    if (mglRenderBindBufferStorage(
             &flushBuffer, message, sizeof(message)) !=
-            MGL_RENDER_CPP_BUFFER_BOUND) {
+            MGL_RENDER_BUFFER_BOUND) {
         fprintf(stderr, "FAIL: range-flush buffer bind: %s\n", message);
         return 1;
     }
     void *flushInitialBacking = flushBuffer.data.mtl_data;
     flushSource[1] = 95u;
-    if (mglRenderCppFlushBufferRangeStorage(
+    if (mglRenderFlushBufferRangeStorage(
             &flushBuffer, sizeof(uint32_t), sizeof(uint32_t),
             message, sizeof(message)) !=
-            MGL_RENDER_CPP_BUFFER_OPERATION_HANDLED ||
+            MGL_RENDER_BUFFER_OPERATION_HANDLED ||
         flushBuffer.data.mtl_data == flushInitialBacking ||
-        !flushBuffer.mtl_cpp_cow_pool) {
+        !flushBuffer.mtl_cow_pool) {
         fprintf(stderr, "FAIL: C++ mapped range COW flush: %s\n",
                 message[0] ? message : "unknown");
         return 1;
@@ -552,8 +552,8 @@ static int verifyBufferBinding(void) {
         fprintf(stderr, "FAIL: C++ mapped range COW contents\n");
         return 1;
     }
-    mglRenderCppReleaseBufferMetalData(NULL, &flushBuffer);
-    mglRenderCppReleaseBufferCowPool(&flushBuffer);
+    mglRenderReleaseBufferMetalData(NULL, &flushBuffer);
+    mglRenderReleaseBufferCowPool(&flushBuffer);
 
     Buffer plainUniform = {};
     uint32_t uniformValue = 101u;
@@ -564,9 +564,9 @@ static int verifyBufferBinding(void) {
         (vm_address_t)(uintptr_t)&uniformValue;
     plainUniform.data.dirty_bits = DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR;
     plainUniform.plain_uniform_slot = GL_TRUE;
-    if (mglRenderCppUpdateDirtyBuffer(
+    if (mglRenderUpdateDirtyBuffer(
             &plainUniform, message, sizeof(message)) !=
-            MGL_RENDER_CPP_BUFFER_OPERATION_HANDLED ||
+            MGL_RENDER_BUFFER_OPERATION_HANDLED ||
         plainUniform.data.dirty_bits != 0 ||
         plainUniform.data.mtl_data != NULL) {
         fprintf(stderr, "FAIL: C++ plain-uniform dirty update\n");
@@ -582,9 +582,9 @@ static int verifyBufferBinding(void) {
         (vm_address_t)(uintptr_t)smallSource;
     smallDirty.data.dirty_bits = DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR;
     smallDirty.cpu_shadow_pending = GL_TRUE;
-    if (mglRenderCppUpdateDirtyBuffer(
+    if (mglRenderUpdateDirtyBuffer(
             &smallDirty, message, sizeof(message)) !=
-            MGL_RENDER_CPP_BUFFER_OPERATION_HANDLED ||
+            MGL_RENDER_BUFFER_OPERATION_HANDLED ||
         smallDirty.data.dirty_bits != 0 || smallDirty.cpu_shadow_pending ||
         !smallDirty.data.mtl_data) {
         fprintf(stderr, "FAIL: C++ small dirty update: %s\n", message);
@@ -600,15 +600,15 @@ static int verifyBufferBinding(void) {
     smallDirty.access_flags = GL_MAP_COHERENT_BIT;
     smallDirty.data.dirty_bits = DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR;
     smallSource[0] = 115u;
-    if (mglRenderCppUpdateDirtyBuffer(
+    if (mglRenderUpdateDirtyBuffer(
             &smallDirty, message, sizeof(message)) !=
-            MGL_RENDER_CPP_BUFFER_OPERATION_HANDLED ||
+            MGL_RENDER_BUFFER_OPERATION_HANDLED ||
         smallDirty.data.dirty_bits != DIRTY_BUFFER_DATA) {
         fprintf(stderr, "FAIL: C++ coherent small dirty state\n");
         return 1;
     }
-    mglRenderCppReleaseBufferMetalData(NULL, &smallDirty);
-    mglRenderCppReleaseBufferCowPool(&smallDirty);
+    mglRenderReleaseBufferMetalData(NULL, &smallDirty);
+    mglRenderReleaseBufferCowPool(&smallDirty);
 
     uint32_t largeSource[1024] = {};
     largeSource[0] = 121u;
@@ -620,9 +620,9 @@ static int verifyBufferBinding(void) {
         (vm_address_t)(uintptr_t)largeSource;
     largeDirty.data.dirty_bits = DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR;
     largeDirty.cpu_shadow_pending = GL_TRUE;
-    if (mglRenderCppUpdateDirtyBuffer(
+    if (mglRenderUpdateDirtyBuffer(
             &largeDirty, message, sizeof(message)) !=
-            MGL_RENDER_CPP_BUFFER_OPERATION_HANDLED ||
+            MGL_RENDER_BUFFER_OPERATION_HANDLED ||
         largeDirty.data.dirty_bits != 0 || largeDirty.cpu_shadow_pending ||
         !largeDirty.data.mtl_data) {
         fprintf(stderr, "FAIL: C++ large dirty update: %s\n", message);
@@ -636,15 +636,15 @@ static int verifyBufferBinding(void) {
         return 1;
     }
     largeDirty.data.dirty_bits = DIRTY_BUFFER_ADDR;
-    if (mglRenderCppUpdateDirtyBuffer(
+    if (mglRenderUpdateDirtyBuffer(
             &largeDirty, message, sizeof(message)) !=
-            MGL_RENDER_CPP_BUFFER_OPERATION_HANDLED ||
+            MGL_RENDER_BUFFER_OPERATION_HANDLED ||
         largeDirty.data.dirty_bits != 0) {
         fprintf(stderr, "FAIL: C++ address-only dirty update\n");
         return 1;
     }
-    mglRenderCppReleaseBufferMetalData(NULL, &largeDirty);
-    mglRenderCppReleaseBufferCowPool(&largeDirty);
+    mglRenderReleaseBufferMetalData(NULL, &largeDirty);
+    mglRenderReleaseBufferCowPool(&largeDirty);
 
     const size_t noCopyLength = 16384u;
     vm_address_t noCopyAddress = 0;
@@ -668,7 +668,7 @@ static int verifyBufferBinding(void) {
     noCopy.data.buffer_size = noCopyLength;
     noCopy.data.buffer_data = noCopyAddress;
     noCopy.storage_flags = GL_CLIENT_STORAGE_BIT;
-    mglRenderCppBindBuffer(NULL, &noCopy);
+    mglRenderBindBuffer(NULL, &noCopy);
     if (!noCopy.data.mtl_data || !noCopy.data.mtl_owns_buffer_data) {
         vm_deallocate((vm_map_t)mach_task_self(), noCopyAddress,
                       (vm_size_t)noCopyLength);
@@ -682,19 +682,19 @@ static int verifyBufferBinding(void) {
         return 1;
     }
     const uint8_t replacement[] = {0xa1, 0xb2, 0xc3, 0xd4};
-    mglRenderCppBufferSubData(
+    mglRenderBufferSubData(
         NULL, &noCopy, 4, sizeof(replacement), replacement);
     if (memcmp(noCopyBytes + 4, replacement, sizeof(replacement)) != 0) {
         fprintf(stderr, "FAIL: no-copy buffer subdata\n");
         return 1;
     }
-    void *noCopyMapped = mglRenderCppMapUnmapBuffer(
+    void *noCopyMapped = mglRenderMapUnmapBuffer(
         NULL, &noCopy, 0, sizeof(source), GL_READ_ONLY, true);
     if (noCopyMapped != noCopyBytes) {
         fprintf(stderr, "FAIL: no-copy buffer map address\n");
         return 1;
     }
-    mglRenderCppFlushBufferRange(
+    mglRenderFlushBufferRange(
         NULL, &noCopy, 0, (intptr_t)sizeof(source));
     if (s_legacyBufferBindCount != legacyBindBefore ||
         s_legacyBufferSubDataCount != legacySubDataBefore ||
@@ -703,7 +703,7 @@ static int verifyBufferBinding(void) {
         fprintf(stderr, "FAIL: no-copy buffer entered legacy callback\n");
         return 1;
     }
-    mglRenderCppReleaseBufferMetalData(NULL, &noCopy);
+    mglRenderReleaseBufferMetalData(NULL, &noCopy);
     return 0;
 }
 
@@ -713,7 +713,7 @@ static int verifyPackedStructBufferRing(void) {
     Buffer *slots[128] = {};
     const uint64_t createCountBefore = s_metalCreateCount;
     const uint64_t releaseCountBefore = s_metalReleaseCount;
-    slots[0] = mglRenderCppAcquirePackedStructBuffer(
+    slots[0] = mglRenderAcquirePackedStructBuffer(
         firstBytes, sizeof(firstBytes), message, sizeof(message));
     if (!slots[0] || !slots[0]->data.mtl_data ||
         slots[0]->size != 256 || slots[0]->data.buffer_size != 256 ||
@@ -745,7 +745,7 @@ static int verifyPackedStructBufferRing(void) {
     firstMetal = nil;
     for (size_t i = 1; i < 128; ++i) {
         uint32_t value = static_cast<uint32_t>(i);
-        slots[i] = mglRenderCppAcquirePackedStructBuffer(
+        slots[i] = mglRenderAcquirePackedStructBuffer(
             &value, sizeof(value), message, sizeof(message));
         if (!slots[i] || slots[i] == slots[0] ||
             slots[i]->name != (0xF0000000u | static_cast<GLuint>(i))) {
@@ -756,7 +756,7 @@ static int verifyPackedStructBufferRing(void) {
     }
 
     const uint32_t wrappedValue = 0xdecafbadU;
-    Buffer *wrapped = mglRenderCppAcquirePackedStructBuffer(
+    Buffer *wrapped = mglRenderAcquirePackedStructBuffer(
         &wrappedValue, sizeof(wrappedValue), message, sizeof(message));
     if (wrapped != slots[0] ||
         wrapped->data.mtl_data == firstBackingAddress ||
@@ -789,12 +789,12 @@ static int verifyVertexConversions(void) {
     doubleBuffer.data.buffer_size = sizeof(doubleSource);
     doubleBuffer.data.buffer_data =
         (vm_address_t)(uintptr_t)doubleSource;
-    MGLRenderCppVertexConversion conversion = {};
-    conversion.kind = MGL_RENDER_CPP_VERTEX_DOUBLE_TO_FLOAT;
+    MGLRenderVertexConversion conversion = {};
+    conversion.kind = MGL_RENDER_VERTEX_DOUBLE_TO_FLOAT;
     conversion.component_count = 2;
     conversion.source_type = GL_DOUBLE;
     conversion.stride = 2 * sizeof(double);
-    if (mglRenderCppConvertVertexBuffer(
+    if (mglRenderConvertVertexBuffer(
             &doubleBuffer, &conversion, &stride, &rawBuffer,
             message, sizeof(message)) != 0 || !rawBuffer || stride != 16) {
         fprintf(stderr, "FAIL: double vertex conversion: %s\n", message);
@@ -812,7 +812,7 @@ static int verifyVertexConversions(void) {
     }
     rawBuffer = NULL;
     uint64_t cachedStride = 0;
-    if (mglRenderCppConvertVertexBuffer(
+    if (mglRenderConvertVertexBuffer(
             &doubleBuffer, &conversion, &cachedStride, &rawBuffer,
             message, sizeof(message)) != 0 ||
         rawBuffer != (__bridge void *)doubleMetal || cachedStride != stride) {
@@ -833,12 +833,12 @@ static int verifyVertexConversions(void) {
     intBuffer.data.buffer_size = sizeof(intSource);
     intBuffer.data.buffer_data = (vm_address_t)(uintptr_t)intSource;
     conversion = {};
-    conversion.kind = MGL_RENDER_CPP_VERTEX_INT_TO_FLOAT;
+    conversion.kind = MGL_RENDER_VERTEX_INT_TO_FLOAT;
     conversion.component_count = 2;
     conversion.source_type = GL_INT;
     conversion.normalized = 1;
     rawBuffer = NULL;
-    if (mglRenderCppConvertVertexBuffer(
+    if (mglRenderConvertVertexBuffer(
             &intBuffer, &conversion, &stride, &rawBuffer,
             message, sizeof(message)) != 0 || !rawBuffer || stride != 8) {
         fprintf(stderr, "FAIL: int vertex conversion: %s\n", message);
@@ -858,11 +858,11 @@ static int verifyVertexConversions(void) {
     fixedBuffer.data.buffer_size = sizeof(fixedSource);
     fixedBuffer.data.buffer_data = (vm_address_t)(uintptr_t)fixedSource;
     conversion = {};
-    conversion.kind = MGL_RENDER_CPP_VERTEX_FIXED_TO_FLOAT;
+    conversion.kind = MGL_RENDER_VERTEX_FIXED_TO_FLOAT;
     conversion.component_count = 2;
     conversion.source_type = GL_FIXED;
     rawBuffer = NULL;
-    if (mglRenderCppConvertVertexBuffer(
+    if (mglRenderConvertVertexBuffer(
             &fixedBuffer, &conversion, &stride, &rawBuffer,
             message, sizeof(message)) != 0 || !rawBuffer || stride != 8) {
         fprintf(stderr, "FAIL: fixed vertex conversion: %s\n", message);
@@ -885,11 +885,11 @@ static int verifyVertexConversions(void) {
     packedBuffer.data.buffer_data =
         (vm_address_t)(uintptr_t)&packed1010102;
     conversion = {};
-    conversion.kind = MGL_RENDER_CPP_VERTEX_PACKED_1010102_TO_FLOAT;
+    conversion.kind = MGL_RENDER_VERTEX_PACKED_1010102_TO_FLOAT;
     conversion.component_count = 4;
     conversion.source_type = GL_UNSIGNED_INT_10_10_10_2;
     rawBuffer = NULL;
-    if (mglRenderCppConvertVertexBuffer(
+    if (mglRenderConvertVertexBuffer(
             &packedBuffer, &conversion, &stride, &rawBuffer,
             message, sizeof(message)) != 0 || !rawBuffer || stride != 16) {
         fprintf(stderr, "FAIL: packed 1010102 conversion: %s\n", message);
@@ -915,11 +915,11 @@ static int verifyVertexConversions(void) {
     packedFloatBuffer.data.buffer_data =
         (vm_address_t)(uintptr_t)&packed10f11f11f;
     conversion = {};
-    conversion.kind = MGL_RENDER_CPP_VERTEX_PACKED_10F11F11F_TO_FLOAT;
+    conversion.kind = MGL_RENDER_VERTEX_PACKED_10F11F11F_TO_FLOAT;
     conversion.component_count = 3;
     conversion.source_type = GL_UNSIGNED_INT_10F_11F_11F_REV;
     rawBuffer = NULL;
-    if (mglRenderCppConvertVertexBuffer(
+    if (mglRenderConvertVertexBuffer(
             &packedFloatBuffer, &conversion, &stride, &rawBuffer,
             message, sizeof(message)) != 0 || !rawBuffer || stride != 12) {
         fprintf(stderr, "FAIL: packed 10f11f11f conversion: %s\n", message);
@@ -942,13 +942,13 @@ static int verifyVertexConversions(void) {
     byteBuffer.data.buffer_size = sizeof(byteSource);
     byteBuffer.data.buffer_data = (vm_address_t)(uintptr_t)byteSource;
     conversion = {};
-    conversion.kind = MGL_RENDER_CPP_VERTEX_INTEGER_TO_32;
+    conversion.kind = MGL_RENDER_VERTEX_INTEGER_TO_32;
     conversion.component_count = 2;
     conversion.source_type = GL_UNSIGNED_BYTE;
     conversion.destination_signed = 1;
     conversion.stride = 2;
     rawBuffer = NULL;
-    if (mglRenderCppConvertVertexBuffer(
+    if (mglRenderConvertVertexBuffer(
             &byteBuffer, &conversion, &stride, &rawBuffer,
             message, sizeof(message)) != 0 || !rawBuffer || stride != 8) {
         fprintf(stderr, "FAIL: integer widening conversion: %s\n", message);
@@ -985,7 +985,7 @@ static int verifySamplerConversion(void) {
 
     char message[256] = {0};
     void *samplerPtr = NULL;
-    if (mglRenderCppCreateSamplerForGL(
+    if (mglRenderCreateSamplerForGL(
             &params, GL_TEXTURE_2D, &samplerPtr,
             message, sizeof(message)) != 0 || !samplerPtr) {
         fprintf(stderr, "FAIL: GL sampler conversion: %s\n",
@@ -1004,7 +1004,7 @@ static int verifySamplerConversion(void) {
     rectangle.wrap_t = GL_MIRRORED_REPEAT;
     rectangle.wrap_r = GL_CLAMP_TO_BORDER;
     samplerPtr = NULL;
-    if (mglRenderCppCreateSamplerForGL(
+    if (mglRenderCreateSamplerForGL(
             &rectangle, GL_TEXTURE_RECTANGLE, &samplerPtr,
             message, sizeof(message)) != 0 || !samplerPtr) {
         fprintf(stderr, "FAIL: rectangle sampler conversion: %s\n",
@@ -1018,7 +1018,7 @@ static int verifySamplerConversion(void) {
     TextureParameter invalid = params;
     invalid.min_filter = 0xdead;
     samplerPtr = NULL;
-    if (mglRenderCppCreateSamplerForGL(
+    if (mglRenderCreateSamplerForGL(
             &invalid, GL_TEXTURE_2D, &samplerPtr,
             message, sizeof(message)) == 0 || samplerPtr) {
         fprintf(stderr, "FAIL: invalid GL sampler filter was accepted\n");
@@ -1031,7 +1031,7 @@ static int verifySamplerConversion(void) {
     }
 
     samplerPtr = NULL;
-    if (mglRenderCppCreateDefaultSampler(&samplerPtr) != 0 || !samplerPtr) {
+    if (mglRenderCreateDefaultSampler(&samplerPtr) != 0 || !samplerPtr) {
         fprintf(stderr, "FAIL: default sampler creation\n");
         return 1;
     }
@@ -1053,14 +1053,14 @@ static int verifyAIRProgramClassification(void) {
     int failedStage = -1;
 
     program.shader_slots[_VERTEX_SHADER] = &shader;
-    if (mglRenderCppBindAIRProgram(&program, &failedStage, message,
+    if (mglRenderBindAIRProgram(&program, &failedStage, message,
                                    sizeof(message)) !=
-        MGL_RENDER_CPP_AIR_PROGRAM_NOT_APPLICABLE) {
+        MGL_RENDER_AIR_PROGRAM_NOT_APPLICABLE) {
         fprintf(stderr, "FAIL: legacy program was claimed by AIR binder\n");
         return 1;
     }
     program.dirty_bits = DIRTY_PROGRAM;
-    mglRenderCppBindProgram(NULL, &program);
+    mglRenderBindProgram(NULL, &program);
     if (s_legacyProgramBindCount != 0 ||
         (program.dirty_bits & DIRTY_PROGRAM) != 0u) {
         fprintf(stderr, "FAIL: non-AIR program reached legacy callback\n");
@@ -1072,9 +1072,9 @@ static int verifyAIRProgramClassification(void) {
     program.modules[_GEOMETRY_SHADER].metallib_bytes =
         reinterpret_cast<unsigned char *>(&program);
     program.modules[_GEOMETRY_SHADER].metallib_size = 1;
-    if (mglRenderCppBindAIRProgram(&program, &failedStage, message,
+    if (mglRenderBindAIRProgram(&program, &failedStage, message,
                                    sizeof(message)) !=
-            MGL_RENDER_CPP_AIR_PROGRAM_ERROR ||
+            MGL_RENDER_AIR_PROGRAM_ERROR ||
         failedStage != _GEOMETRY_SHADER) {
         fprintf(stderr, "FAIL: unsupported GS route was not rejected\n");
         return 1;
@@ -1090,9 +1090,9 @@ static int verifyResourceCreation(void) {
                                                        mipmapped:NO];
     textureDesc.usage = MTLTextureUsageShaderRead;
     void *texturePtr = NULL;
-    MGLRenderCppTextureDescriptorState textureState =
+    MGLRenderTextureDescriptorState textureState =
         smokeTextureDescriptorState(textureDesc);
-    if (mglRenderCppCreateTextureFromState(
+    if (mglRenderCreateTextureFromState(
             &textureState, "MGL Smoke Texture", &texturePtr) != 0 ||
         !texturePtr) {
         fprintf(stderr, "FAIL: texture creation facade\n");
@@ -1108,7 +1108,7 @@ static int verifyResourceCreation(void) {
     }
 
     void *simpleViewPtr = NULL;
-    if (mglRenderCppCreateTextureView(
+    if (mglRenderCreateTextureView(
             (__bridge void *)texture, (uint32_t)MTLPixelFormatRGBA8Unorm,
             &simpleViewPtr) != 0 || !simpleViewPtr) {
         fprintf(stderr, "FAIL: simple texture view facade\n");
@@ -1129,9 +1129,9 @@ static int verifyResourceCreation(void) {
                                                        mipmapped:YES];
     mipDesc.usage = MTLTextureUsageShaderRead | MTLTextureUsagePixelFormatView;
     void *mipTexturePtr = NULL;
-    MGLRenderCppTextureDescriptorState mipState =
+    MGLRenderTextureDescriptorState mipState =
         smokeTextureDescriptorState(mipDesc);
-    if (mglRenderCppCreateTextureFromState(
+    if (mglRenderCreateTextureFromState(
             &mipState, "MGL Smoke Mip Texture", &mipTexturePtr) != 0 ||
         !mipTexturePtr) {
         fprintf(stderr, "FAIL: mip texture creation facade\n");
@@ -1139,8 +1139,8 @@ static int verifyResourceCreation(void) {
     }
     id<MTLTexture> mipTexture =
         (__bridge_transfer id<MTLTexture>)mipTexturePtr;
-    MGLRenderCppTextureInfo mipInfo = {};
-    if (mglRenderCppGetTextureInfo((__bridge void *)mipTexture, &mipInfo) != 0 ||
+    MGLRenderTextureInfo mipInfo = {};
+    if (mglRenderGetTextureInfo((__bridge void *)mipTexture, &mipInfo) != 0 ||
         mipInfo.pixel_format != (uint32_t)mipTexture.pixelFormat ||
         mipInfo.texture_type != (uint32_t)mipTexture.textureType ||
         mipInfo.width != mipTexture.width ||
@@ -1153,7 +1153,7 @@ static int verifyResourceCreation(void) {
         return 1;
     }
     void *rangeViewPtr = NULL;
-    if (mglRenderCppCreateTextureViewRange(
+    if (mglRenderCreateTextureViewRange(
             (__bridge void *)mipTexture,
             (uint32_t)MTLPixelFormatRGBA8Unorm,
             (uint32_t)MTLTextureType2D,
@@ -1178,7 +1178,7 @@ static int verifyResourceCreation(void) {
     }
 
     void *textureBufferStoragePtr = NULL;
-    if (mglRenderCppCreateBuffer(
+    if (mglRenderCreateBuffer(
             4096, MTLResourceStorageModeShared,
             "MGL Smoke Texture Buffer", &textureBufferStoragePtr) != 0 ||
         !textureBufferStoragePtr) {
@@ -1194,9 +1194,9 @@ static int verifyResourceCreation(void) {
     textureBufferDesc.usage = MTLTextureUsageShaderRead;
     textureBufferDesc.storageMode = MTLStorageModeShared;
     void *bufferTexturePtr = NULL;
-    MGLRenderCppTextureDescriptorState textureBufferState =
+    MGLRenderTextureDescriptorState textureBufferState =
         smokeTextureDescriptorState(textureBufferDesc);
-    if (mglRenderCppCreateBufferTextureFromState(
+    if (mglRenderCreateBufferTextureFromState(
             (__bridge void *)textureBufferStorage, &textureBufferState, 0, 256,
             &bufferTexturePtr) != 0 || !bufferTexturePtr) {
         fprintf(stderr, "FAIL: buffer-backed texture facade\n");
@@ -1215,7 +1215,7 @@ static int verifyResourceCreation(void) {
     samplerDesc.label = @"MGL Smoke Sampler";
     samplerDesc.minFilter = MTLSamplerMinMagFilterLinear;
     void *samplerPtr = NULL;
-    if (mglRenderCppCreateSampler((__bridge void *)samplerDesc,
+    if (mglRenderCreateSampler((__bridge void *)samplerDesc,
                                   &samplerPtr) != 0 || !samplerPtr) {
         fprintf(stderr, "FAIL: sampler creation facade\n");
         return 1;
@@ -1232,7 +1232,7 @@ static int verifyResourceCreation(void) {
     depthDesc.depthCompareFunction = MTLCompareFunctionLessEqual;
     depthDesc.depthWriteEnabled = YES;
     void *depthStatePtr = NULL;
-    if (mglRenderCppCreateDepthStencilState((__bridge void *)depthDesc,
+    if (mglRenderCreateDepthStencilState((__bridge void *)depthDesc,
                                              &depthStatePtr) != 0 ||
         !depthStatePtr) {
         fprintf(stderr, "FAIL: depth-stencil creation facade\n");
@@ -1246,7 +1246,7 @@ static int verifyResourceCreation(void) {
     }
 
     void *eventPtr = NULL;
-    if (mglRenderCppCreateEvent(&eventPtr) != 0 || !eventPtr) {
+    if (mglRenderCreateEvent(&eventPtr) != 0 || !eventPtr) {
         fprintf(stderr, "FAIL: event creation facade\n");
         return 1;
     }
@@ -1281,9 +1281,9 @@ static int verifyTextureTransferFacade(void) {
     textureDesc.storageMode = MTLStorageModeShared;
     textureDesc.usage = MTLTextureUsageShaderRead;
     void *texturePtr = NULL;
-    MGLRenderCppTextureDescriptorState textureState =
+    MGLRenderTextureDescriptorState textureState =
         smokeTextureDescriptorState(textureDesc);
-    if (mglRenderCppCreateTextureFromState(
+    if (mglRenderCreateTextureFromState(
             &textureState, "MGL Smoke Texture Transfer", &texturePtr) != 0 ||
         !texturePtr) {
         fprintf(stderr, "FAIL: texture transfer texture creation\n");
@@ -1291,10 +1291,10 @@ static int verifyTextureTransferFacade(void) {
     }
     id<MTLTexture> texture =
         (__bridge_transfer id<MTLTexture>)texturePtr;
-    if (mglRenderCppTextureReplaceRegion(
+    if (mglRenderTextureReplaceRegion(
             (__bridge void *)texture, 0, 0, 0, width, height, 1,
             0, 0, source, bytesPerRow, 0, 0) != 0 ||
-        mglRenderCppTextureGetBytes(
+        mglRenderTextureGetBytes(
             (__bridge void *)texture, readback, bytesPerRow, 0,
             0, 0, 0, width, height, 1, 0, 0, 0) != 0 ||
         memcmp(source, readback, sizeof(source)) != 0) {
@@ -1314,9 +1314,9 @@ static int verifyTextureTransferFacade(void) {
     arrayDesc.storageMode = MTLStorageModeShared;
     arrayDesc.usage = MTLTextureUsageShaderRead;
     void *arrayTexturePtr = NULL;
-    MGLRenderCppTextureDescriptorState arrayState =
+    MGLRenderTextureDescriptorState arrayState =
         smokeTextureDescriptorState(arrayDesc);
-    if (mglRenderCppCreateTextureFromState(
+    if (mglRenderCreateTextureFromState(
             &arrayState, "MGL Smoke Array Texture Transfer",
             &arrayTexturePtr) != 0 ||
         !arrayTexturePtr) {
@@ -1326,10 +1326,10 @@ static int verifyTextureTransferFacade(void) {
     id<MTLTexture> arrayTexture =
         (__bridge_transfer id<MTLTexture>)arrayTexturePtr;
     memset(readback, 0, sizeof(readback));
-    if (mglRenderCppTextureReplaceRegion(
+    if (mglRenderTextureReplaceRegion(
             (__bridge void *)arrayTexture, 0, 0, 0, width, height, 1,
             0, 1, source, bytesPerRow, bytesPerImage, 1) != 0 ||
-        mglRenderCppTextureGetBytes(
+        mglRenderTextureGetBytes(
             (__bridge void *)arrayTexture, readback, bytesPerRow,
             bytesPerImage, 0, 0, 0, width, height, 1, 0, 1, 1) != 0 ||
         memcmp(source, readback, sizeof(source)) != 0) {
@@ -1355,7 +1355,7 @@ static int verifyNoCopyBufferFacade(void) {
     for (size_t i = 0; i < length; i++) bytes[i] = (uint8_t)(i ^ 0x5a);
 
     void *bufferPtr = NULL;
-    if (mglRenderCppCreateBufferWithBytesNoCopy(
+    if (mglRenderCreateBufferWithBytesNoCopy(
             bytes, length, MTLResourceStorageModeShared, "MGL Smoke NoCopy",
             1, &bufferPtr) != 0 || !bufferPtr) {
         vm_deallocate((vm_map_t)mach_task_self(), address, length);
@@ -1364,9 +1364,9 @@ static int verifyNoCopyBufferFacade(void) {
     }
     id<MTLBuffer> buffer =
         (__bridge_transfer id<MTLBuffer>)bufferPtr;
-    MGLRenderCppBufferInfo bufferInfo = {};
+    MGLRenderBufferInfo bufferInfo = {};
     const uint8_t *contents = (const uint8_t *)buffer.contents;
-    if (mglRenderCppGetBufferInfo((__bridge void *)buffer, &bufferInfo) != 0 ||
+    if (mglRenderGetBufferInfo((__bridge void *)buffer, &bufferInfo) != 0 ||
         bufferInfo.length != buffer.length ||
         !contents || buffer.length != length ||
         contents[0] != (uint8_t)0x5a ||
@@ -1437,10 +1437,10 @@ static int verifyAuxShaderAssets(void) {
     void *p1 = NULL, *p2 = NULL, *p3 = NULL;
 #define MGL_AUX_CREATE_RENDER(_asset, _fmt, _out)                          \
     do {                                                                   \
-        if (mglRenderCppGetOrCreateAuxRenderPipelineFromMetallib(          \
+        if (mglRenderGetOrCreateAuxRenderPipelineFromMetallib(          \
                 (_asset)->data, (_asset)->size, (_asset)->hash,            \
                 "mgl_scaled_blit_vs", "mgl_scaled_blit_fs",                \
-                MGL_RENDER_CPP_AUX_RENDER_SCALED_BLIT,                     \
+                MGL_RENDER_AUX_RENDER_SCALED_BLIT,                     \
                 (uint64_t)(uint32_t)(_fmt), (uint32_t)(_fmt), 0, 0,        \
                 MTLColorWriteMaskAll, 0, 1u, &(_out), message,             \
                 sizeof(message)) != 0 || !(_out)) {                        \
@@ -1467,34 +1467,34 @@ static int verifyAuxShaderAssets(void) {
     /* Compute PSO create + cache hit, plus variant split for msaa. */
     const MGLAuxShaderAsset *cs = mglAuxShaderAssetFind("scaled_blit_cs");
     void *cp1 = NULL, *cp2 = NULL, *mp0 = NULL, *mp1 = NULL;
-    if (mglRenderCppGetOrCreateAuxComputePipelineFromMetallib(
+    if (mglRenderGetOrCreateAuxComputePipelineFromMetallib(
             cs->data, cs->size, cs->hash, "mgl_scaled_blit_cs",
-            MGL_RENDER_CPP_AUX_COMPUTE_SCALED_BLIT, 1u,
+            MGL_RENDER_AUX_COMPUTE_SCALED_BLIT, 1u,
             &cp1, message, sizeof(message)) != 0 || !cp1) {
         fprintf(stderr, "FAIL: aux compute PSO create: %s\n",
                 message[0] ? message : "?");
         return 1;
     }
-    if (mglRenderCppGetOrCreateAuxComputePipelineFromMetallib(
+    if (mglRenderGetOrCreateAuxComputePipelineFromMetallib(
             cs->data, cs->size, cs->hash, "mgl_scaled_blit_cs",
-            MGL_RENDER_CPP_AUX_COMPUTE_SCALED_BLIT, 1u,
+            MGL_RENDER_AUX_COMPUTE_SCALED_BLIT, 1u,
             &cp2, message, sizeof(message)) != 0 || !cp2 || cp1 != cp2) {
         fprintf(stderr, "FAIL: aux compute PSO cache miss (same key)\n");
         return 1;
     }
     const MGLAuxShaderAsset *msaa =
         mglAuxShaderAssetFind("msaa_integer_resolve");
-    if (mglRenderCppGetOrCreateAuxComputePipelineFromMetallib(
+    if (mglRenderGetOrCreateAuxComputePipelineFromMetallib(
             msaa->data, msaa->size, msaa->hash, "mgl_msaa_resolve_uint",
-            MGL_RENDER_CPP_AUX_COMPUTE_MSAA_INTEGER_RESOLVE, 0u,
+            MGL_RENDER_AUX_COMPUTE_MSAA_INTEGER_RESOLVE, 0u,
             &mp0, message, sizeof(message)) != 0 || !mp0) {
         fprintf(stderr, "FAIL: msaa uint PSO create: %s\n",
                 message[0] ? message : "?");
         return 1;
     }
-    if (mglRenderCppGetOrCreateAuxComputePipelineFromMetallib(
+    if (mglRenderGetOrCreateAuxComputePipelineFromMetallib(
             msaa->data, msaa->size, msaa->hash, "mgl_msaa_resolve_int",
-            MGL_RENDER_CPP_AUX_COMPUTE_MSAA_INTEGER_RESOLVE, 1u,
+            MGL_RENDER_AUX_COMPUTE_MSAA_INTEGER_RESOLVE, 1u,
             &mp1, message, sizeof(message)) != 0 || !mp1 || mp0 == mp1) {
         fprintf(stderr, "FAIL: msaa int PSO create/variant split\n");
         return 1;
@@ -1507,10 +1507,10 @@ static int verifyAuxShaderAssets(void) {
     /* Fragment-less clear_rect: fsEntry NULL is a valid config. */
     const MGLAuxShaderAsset *clear = mglAuxShaderAssetFind("clear_rect");
     void *cr = NULL;
-    if (mglRenderCppGetOrCreateAuxRenderPipelineFromMetallib(
+    if (mglRenderGetOrCreateAuxRenderPipelineFromMetallib(
             clear->data, clear->size, clear->hash,
             "mgl_clear_rect_vs", NULL,
-            MGL_RENDER_CPP_AUX_RENDER_CLEAR_RECT, 0u,
+            MGL_RENDER_AUX_RENDER_CLEAR_RECT, 0u,
             MTLPixelFormatRGBA8Unorm, MTLPixelFormatDepth32Float, 0,
             MTLColorWriteMaskNone, 0, 1u,
             &cr, message, sizeof(message)) != 0 || !cr) {
@@ -1523,7 +1523,7 @@ static int verifyAuxShaderAssets(void) {
     /* Function resolver for descriptor-assembled paths (safe fallback). */
     const MGLAuxShaderAsset *safe = mglAuxShaderAssetFind("safe_fallback");
     void *vs = NULL, *fs = NULL;
-    if (mglRenderCppCreateAuxFunctions(
+    if (mglRenderCreateAuxFunctions(
             safe->data, safe->size, safe->hash,
             "mgl_safe_fallback_vs", "mgl_safe_fallback_fs",
             &vs, &fs, message, sizeof(message)) != 0 || !vs || !fs) {
@@ -1539,7 +1539,7 @@ static int verifyAuxShaderAssets(void) {
         return 1;
     }
     void *vsOnly = NULL, *fsOnly = (void *)0x1;
-    if (mglRenderCppCreateAuxFunctions(
+    if (mglRenderCreateAuxFunctions(
             blit->data, blit->size, blit->hash,
             "mgl_scaled_blit_vs", NULL,
             &vsOnly, &fsOnly, message, sizeof(message)) != 0 ||
@@ -1551,9 +1551,9 @@ static int verifyAuxShaderAssets(void) {
 
     /* Error paths: bad hash, unknown entry, empty row. */
     void *bad = NULL;
-    if (mglRenderCppGetOrCreateAuxComputePipelineFromMetallib(
+    if (mglRenderGetOrCreateAuxComputePipelineFromMetallib(
             cs->data, cs->size, cs->hash + 1, "mgl_scaled_blit_cs",
-            MGL_RENDER_CPP_AUX_COMPUTE_SCALED_BLIT, 0u, &bad,
+            MGL_RENDER_AUX_COMPUTE_SCALED_BLIT, 0u, &bad,
             message, sizeof(message)) == 0 || bad != NULL ||
         !strstr(message, "hash")) {
         fprintf(stderr, "FAIL: bad aux hash accepted\n");
@@ -1561,18 +1561,18 @@ static int verifyAuxShaderAssets(void) {
     }
     bad = NULL;
     message[0] = 0;
-    if (mglRenderCppGetOrCreateAuxComputePipelineFromMetallib(
+    if (mglRenderGetOrCreateAuxComputePipelineFromMetallib(
             cs->data, cs->size, cs->hash, "mgl_no_such_kernel",
-            MGL_RENDER_CPP_AUX_COMPUTE_SCALED_BLIT, 0u, &bad,
+            MGL_RENDER_AUX_COMPUTE_SCALED_BLIT, 0u, &bad,
             message, sizeof(message)) == 0 || bad != NULL) {
         fprintf(stderr, "FAIL: unknown aux entry accepted\n");
         return 1;
     }
     bad = NULL;
     message[0] = 0;
-    if (mglRenderCppGetOrCreateAuxComputePipelineFromMetallib(
+    if (mglRenderGetOrCreateAuxComputePipelineFromMetallib(
             NULL, 0, 0, "mgl_scaled_blit_cs",
-            MGL_RENDER_CPP_AUX_COMPUTE_SCALED_BLIT, 0u, &bad,
+            MGL_RENDER_AUX_COMPUTE_SCALED_BLIT, 0u, &bad,
             message, sizeof(message)) == 0 || bad != NULL) {
         fprintf(stderr, "FAIL: empty aux row accepted\n");
         return 1;
@@ -1597,7 +1597,7 @@ static int verifyCompilerAndBinaryArchive(void) {
     }
     void *vertexPtr = NULL;
     void *fragmentPtr = NULL;
-    if (mglRenderCppCreateAuxFunctions(
+    if (mglRenderCreateAuxFunctions(
             safe->data, safe->size, safe->hash,
             "mgl_safe_fallback_vs", "mgl_safe_fallback_fs",
             &vertexPtr, &fragmentPtr,
@@ -1622,7 +1622,7 @@ static int verifyCompilerAndBinaryArchive(void) {
     pipelineDesc.fragmentFunction = fragment;
     pipelineDesc.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA8Unorm;
     void *renderPipelinePtr = NULL;
-    if (mglRenderCppCreateRenderPipelineState(
+    if (mglRenderCreateRenderPipelineState(
             (__bridge void *)pipelineDesc, &renderPipelinePtr,
             message, sizeof(message)) != 0 || !renderPipelinePtr) {
         fprintf(stderr, "FAIL: precompiled render PSO: %s\n",
@@ -1636,9 +1636,9 @@ static int verifyCompilerAndBinaryArchive(void) {
         mglAuxShaderAssetFind("msaa_integer_resolve");
     void *computePipelinePtr = NULL;
     if (!msaa ||
-        mglRenderCppGetOrCreateAuxComputePipelineFromMetallib(
+        mglRenderGetOrCreateAuxComputePipelineFromMetallib(
             msaa->data, msaa->size, msaa->hash, "mgl_msaa_resolve_uint",
-            MGL_RENDER_CPP_AUX_COMPUTE_MSAA_INTEGER_RESOLVE, 0u,
+            MGL_RENDER_AUX_COMPUTE_MSAA_INTEGER_RESOLVE, 0u,
             &computePipelinePtr,
             message, sizeof(message)) != 0 || !computePipelinePtr) {
         fprintf(stderr, "FAIL: precompiled compute PSO: %s\n",
@@ -1652,7 +1652,7 @@ static int verifyCompilerAndBinaryArchive(void) {
     MTLBinaryArchiveDescriptor *archiveDesc =
         [[MTLBinaryArchiveDescriptor alloc] init];
     void *archivePtr = NULL;
-    if (mglRenderCppCreateBinaryArchive(
+    if (mglRenderCreateBinaryArchive(
             (__bridge void *)archiveDesc, "MGL Smoke Binary Archive",
             &archivePtr, message, sizeof(message)) != 0 || !archivePtr) {
         fprintf(stderr, "FAIL: binary archive creation facade: %s\n",
@@ -1664,7 +1664,7 @@ static int verifyCompilerAndBinaryArchive(void) {
 
     void *archivePipelinePtr = NULL;
     int archiveHit = -1;
-    if (mglRenderCppCreateRenderPipelineStateWithArchive(
+    if (mglRenderCreateRenderPipelineStateWithArchive(
             (__bridge void *)pipelineDesc, (__bridge void *)archive,
             &archivePipelinePtr, &archiveHit,
             message, sizeof(message)) != 0 || !archivePipelinePtr ||
@@ -1683,7 +1683,7 @@ static int verifyCompilerAndBinaryArchive(void) {
             [NSString stringWithFormat:@"mgl-metalcpp-smoke-%@.binaryarchive",
                                        NSUUID.UUID.UUIDString]];
     NSURL *archiveURL = [NSURL fileURLWithPath:archivePath];
-    if (mglRenderCppSerializeBinaryArchive(
+    if (mglRenderSerializeBinaryArchive(
             (__bridge void *)archive, (__bridge void *)archiveURL,
             message, sizeof(message)) != 0 ||
         ![NSFileManager.defaultManager fileExistsAtPath:archivePath]) {
@@ -1696,7 +1696,7 @@ static int verifyCompilerAndBinaryArchive(void) {
         [[MTLBinaryArchiveDescriptor alloc] init];
     loadedArchiveDesc.url = archiveURL;
     void *loadedArchivePtr = NULL;
-    if (mglRenderCppCreateBinaryArchive(
+    if (mglRenderCreateBinaryArchive(
             (__bridge void *)loadedArchiveDesc,
             "MGL Smoke Reloaded Binary Archive",
             &loadedArchivePtr, message, sizeof(message)) != 0 ||
@@ -1709,7 +1709,7 @@ static int verifyCompilerAndBinaryArchive(void) {
         (__bridge_transfer id<MTLBinaryArchive>)loadedArchivePtr;
     void *hitPipelinePtr = NULL;
     archiveHit = 0;
-    if (mglRenderCppCreateRenderPipelineStateWithArchive(
+    if (mglRenderCreateRenderPipelineStateWithArchive(
             (__bridge void *)pipelineDesc, (__bridge void *)loadedArchive,
             &hitPipelinePtr, &archiveHit,
             message, sizeof(message)) != 0 || !hitPipelinePtr ||
@@ -1753,7 +1753,7 @@ static int verifyPipelineCacheOwner(id<MTLDevice> device) {
     }
 
     void *owner = NULL;
-    if (mglRenderCppCreatePipelineCacheOwner(1, 1, 1, &owner) != 0 ||
+    if (mglRenderCreatePipelineCacheOwner(1, 1, 1, &owner) != 0 ||
         !owner) {
         fprintf(stderr, "FAIL: pipeline cache owner create\n");
         return 1;
@@ -1761,15 +1761,15 @@ static int verifyPipelineCacheOwner(id<MTLDevice> device) {
     int psoDedup = 0;
     int dsCache = 0;
     int binaryArchive = 0;
-    if (mglRenderCppGetPipelineCacheFlags(
+    if (mglRenderGetPipelineCacheFlags(
             owner, &psoDedup, &dsCache, &binaryArchive) != 0 ||
         !psoDedup || !dsCache || !binaryArchive) {
         fprintf(stderr, "FAIL: pipeline cache owner flags\n");
-        mglRenderCppDestroyPipelineCacheOwner(&owner);
+        mglRenderDestroyPipelineCacheOwner(&owner);
         return 1;
     }
 
-    MGLRenderCppPipelineBlendState blend = {
+    MGLRenderPipelineBlendState blend = {
         .source_rgb_factor = (uint32_t)MTLBlendFactorSourceAlpha,
         .destination_rgb_factor =
             (uint32_t)MTLBlendFactorOneMinusSourceAlpha,
@@ -1779,17 +1779,17 @@ static int verifyPipelineCacheOwner(id<MTLDevice> device) {
         .alpha_operation = (uint32_t)MTLBlendOperationMax,
         .color_write_mask = (uint32_t)MTLColorWriteMaskAll,
     };
-    MGLRenderCppPipelineBlendState blendSnapshot = {};
-    if (mglRenderCppSetPipelineBlendState(owner, 3, &blend) != 0 ||
-        mglRenderCppGetPipelineBlendState(
+    MGLRenderPipelineBlendState blendSnapshot = {};
+    if (mglRenderSetPipelineBlendState(owner, 3, &blend) != 0 ||
+        mglRenderGetPipelineBlendState(
             owner, 3, &blendSnapshot) != 0 ||
         memcmp(&blend, &blendSnapshot, sizeof(blend)) != 0) {
         fprintf(stderr, "FAIL: pipeline cache blend state\n");
-        mglRenderCppDestroyPipelineCacheOwner(&owner);
+        mglRenderDestroyPipelineCacheOwner(&owner);
         return 1;
     }
 
-    MGLRenderCppPipelineActiveState active = {
+    MGLRenderPipelineActiveState active = {
         .pipeline_state = (__bridge void *)pipeline,
         .vertex_function = (__bridge void *)vertex,
         .fragment_function = (__bridge void *)fragment,
@@ -1798,46 +1798,46 @@ static int verifyPipelineCacheOwner(id<MTLDevice> device) {
         .stencil_format = (uint32_t)MTLPixelFormatInvalid,
         .program_name = 77,
     };
-    uint64_t key[MGL_RENDER_CPP_PIPELINE_CACHE_KEY_WORDS] =
+    uint64_t key[MGL_RENDER_PIPELINE_CACHE_KEY_WORDS] =
         {77, 1, 2, 3, 4, 5, 6};
     uint32_t evicted = UINT32_MAX;
     /* P4.2: descriptor cache 已改为 value-state 版。 */
-    MGLRenderCppPipelineDescriptorState descriptorState = {};
+    MGLRenderPipelineDescriptorState descriptorState = {};
     descriptorState.color_count = 8;
     descriptorState.color_format[0] = (uint32_t)MTLPixelFormatRGBA8Unorm;
     descriptorState.depth_format = (uint32_t)MTLPixelFormatDepth32Float;
     descriptorState.raster_sample_count = 1;
-    if (mglRenderCppActivatePipelineState(owner, &active) != 0 ||
-        mglRenderCppStorePipeline(owner, key, &active, &evicted) != 0 ||
+    if (mglRenderActivatePipelineState(owner, &active) != 0 ||
+        mglRenderStorePipeline(owner, key, &active, &evicted) != 0 ||
         evicted != 0 ||
-        mglRenderCppStorePipelineDescriptorState(
+        mglRenderStorePipelineDescriptorState(
             owner, key, &descriptorState) != 0) {
         fprintf(stderr, "FAIL: pipeline cache owner store\n");
-        mglRenderCppDestroyPipelineCacheOwner(&owner);
+        mglRenderDestroyPipelineCacheOwner(&owner);
         return 1;
     }
 
-    MGLRenderCppPipelineActiveState activeSnapshot = {};
-    MGLRenderCppPipelineActiveState cached = {};
-    MGLRenderCppPipelineDescriptorState cachedState = {};
-    if (mglRenderCppGetPipelineActiveState(owner, &activeSnapshot) != 0 ||
+    MGLRenderPipelineActiveState activeSnapshot = {};
+    MGLRenderPipelineActiveState cached = {};
+    MGLRenderPipelineDescriptorState cachedState = {};
+    if (mglRenderGetPipelineActiveState(owner, &activeSnapshot) != 0 ||
         activeSnapshot.pipeline_state != (__bridge void *)pipeline ||
         activeSnapshot.vertex_function != (__bridge void *)vertex ||
         activeSnapshot.fragment_function != (__bridge void *)fragment ||
         activeSnapshot.program_name != 77 ||
-        mglRenderCppLookupPipeline(owner, key, &cached) != 1 ||
+        mglRenderLookupPipeline(owner, key, &cached) != 1 ||
         cached.pipeline_state != (__bridge void *)pipeline ||
         cached.vertex_function != (__bridge void *)vertex ||
         cached.fragment_function != (__bridge void *)fragment ||
-        mglRenderCppLookupPipelineDescriptorState(
+        mglRenderLookupPipelineDescriptorState(
             owner, key, &cachedState) != 1 ||
         memcmp(&cachedState, &descriptorState, sizeof(cachedState)) != 0) {
         fprintf(stderr, "FAIL: pipeline cache owner lookup\n");
-        mglRenderCppDestroyPipelineCacheOwner(&owner);
+        mglRenderDestroyPipelineCacheOwner(&owner);
         return 1;
     }
 
-    MGLRenderCppDepthStencilDescriptorState depth = {
+    MGLRenderDepthStencilDescriptorState depth = {
         .depth_compare_function = (uint32_t)MTLCompareFunctionLessEqual,
         .depth_write_enabled = 1,
         .front = {
@@ -1855,41 +1855,41 @@ static int verifyPipelineCacheOwner(id<MTLDevice> device) {
     void *depthState2 = NULL;
     int created1 = 0;
     int created2 = 0;
-    if (mglRenderCppGetOrCreateDepthStencilState(
+    if (mglRenderGetOrCreateDepthStencilState(
             owner, &depth, &depthState1, &created1) != 0 ||
-        mglRenderCppGetOrCreateDepthStencilState(
+        mglRenderGetOrCreateDepthStencilState(
             owner, &depth, &depthState2, &created2) != 0 ||
         !depthState1 || depthState1 != depthState2 || created1 != 1 ||
         created2 != 0) {
         fprintf(stderr, "FAIL: pipeline depth-stencil cache\n");
-        mglRenderCppDestroyPipelineCacheOwner(&owner);
+        mglRenderDestroyPipelineCacheOwner(&owner);
         return 1;
     }
 
-    mglRenderCppDisablePipelineBinaryArchive(owner);
-    if (mglRenderCppGetPipelineCacheFlags(
+    mglRenderDisablePipelineBinaryArchive(owner);
+    if (mglRenderGetPipelineCacheFlags(
             owner, NULL, NULL, &binaryArchive) != 0 || binaryArchive != 0 ||
-        mglRenderCppInvalidatePipelineActiveState(owner) != 0 ||
-        mglRenderCppGetPipelineActiveState(owner, &activeSnapshot) != 0 ||
+        mglRenderInvalidatePipelineActiveState(owner) != 0 ||
+        mglRenderGetPipelineActiveState(owner, &activeSnapshot) != 0 ||
         activeSnapshot.pipeline_state != NULL ||
         activeSnapshot.color0_format != (uint32_t)MTLPixelFormatInvalid) {
         fprintf(stderr, "FAIL: pipeline cache active invalidation\n");
-        mglRenderCppDestroyPipelineCacheOwner(&owner);
+        mglRenderDestroyPipelineCacheOwner(&owner);
         return 1;
     }
 
-    mglRenderCppResetPipelineCacheOwner(owner);
+    mglRenderResetPipelineCacheOwner(owner);
     cached = {};
     cachedState = {};
-    if (mglRenderCppLookupPipeline(owner, key, &cached) != 0 ||
-        mglRenderCppLookupPipelineDescriptorState(
+    if (mglRenderLookupPipeline(owner, key, &cached) != 0 ||
+        mglRenderLookupPipelineDescriptorState(
             owner, key, &cachedState) != 0 ||
         cachedState.color_format[0] != 0u) {
         fprintf(stderr, "FAIL: pipeline cache owner reset\n");
-        mglRenderCppDestroyPipelineCacheOwner(&owner);
+        mglRenderDestroyPipelineCacheOwner(&owner);
         return 1;
     }
-    mglRenderCppDestroyPipelineCacheOwner(&owner);
+    mglRenderDestroyPipelineCacheOwner(&owner);
     if (owner) {
         fprintf(stderr, "FAIL: pipeline cache owner destroy\n");
         return 1;
@@ -1930,19 +1930,19 @@ static int verifyPipelineArchiveOwner(id<MTLDevice> device) {
     int archiveHit = -1;
     int result = 1;
 
-    if (mglRenderCppCreatePipelineCacheOwner(1, 1, 1, &owner1) != 0 ||
+    if (mglRenderCreatePipelineCacheOwner(1, 1, 1, &owner1) != 0 ||
         !owner1 ||
-        mglRenderCppLoadPipelineBinaryArchive(
+        mglRenderLoadPipelineBinaryArchive(
             owner1, archiveKey, (__bridge void *)archiveURL, 0,
             &reused, message, sizeof(message)) != 0 || reused != 0 ||
-        mglRenderCppGetPipelineBinaryArchiveState(
+        mglRenderGetPipelineBinaryArchiveState(
             owner1, &enabled, &present) != 0 || !enabled || !present) {
         fprintf(stderr, "FAIL: pipeline archive owner create: %s\n",
                 message[0] ? message : "unknown");
         goto cleanup;
     }
 
-    if (mglRenderCppCreateRenderPipelineStateWithArchiveOwner(
+    if (mglRenderCreateRenderPipelineStateWithArchiveOwner(
             owner1, (__bridge void *)descriptor, &pipelinePtr,
             &archiveHit, message, sizeof(message)) != 0 || !pipelinePtr ||
         archiveHit != 0) {
@@ -1953,7 +1953,7 @@ static int verifyPipelineArchiveOwner(id<MTLDevice> device) {
     CFBridgingRelease(pipelinePtr);
     pipelinePtr = NULL;
 
-    if (mglRenderCppSerializePipelineBinaryArchive(
+    if (mglRenderSerializePipelineBinaryArchive(
             owner1, (__bridge void *)archiveURL,
             message, sizeof(message)) != 0 ||
         ![NSFileManager.defaultManager fileExistsAtPath:archivePath]) {
@@ -1963,12 +1963,12 @@ static int verifyPipelineArchiveOwner(id<MTLDevice> device) {
     }
 
     reused = 0;
-    if (mglRenderCppCreatePipelineCacheOwner(1, 1, 1, &owner2) != 0 ||
+    if (mglRenderCreatePipelineCacheOwner(1, 1, 1, &owner2) != 0 ||
         !owner2 ||
-        mglRenderCppLoadPipelineBinaryArchive(
+        mglRenderLoadPipelineBinaryArchive(
             owner2, archiveKey, (__bridge void *)archiveURL, 1,
             &reused, message, sizeof(message)) != 0 || reused != 1 ||
-        mglRenderCppGetPipelineBinaryArchiveState(
+        mglRenderGetPipelineBinaryArchiveState(
             owner2, &enabled, &present) != 0 || !enabled || !present) {
         fprintf(stderr, "FAIL: pipeline archive owner reuse: reused=%d %s\n",
                 reused, message[0] ? message : "unknown");
@@ -1976,7 +1976,7 @@ static int verifyPipelineArchiveOwner(id<MTLDevice> device) {
     }
 
     archiveHit = 0;
-    if (mglRenderCppCreateRenderPipelineStateWithArchiveOwner(
+    if (mglRenderCreateRenderPipelineStateWithArchiveOwner(
             owner2, (__bridge void *)descriptor, &pipelinePtr,
             &archiveHit, message, sizeof(message)) != 0 || !pipelinePtr ||
         archiveHit != 1) {
@@ -1987,8 +1987,8 @@ static int verifyPipelineArchiveOwner(id<MTLDevice> device) {
     CFBridgingRelease(pipelinePtr);
     pipelinePtr = NULL;
 
-    mglRenderCppDiscardPipelineBinaryArchive(owner2, archiveKey);
-    if (mglRenderCppGetPipelineBinaryArchiveState(
+    mglRenderDiscardPipelineBinaryArchive(owner2, archiveKey);
+    if (mglRenderGetPipelineBinaryArchiveState(
             owner2, &enabled, &present) != 0 || !enabled || present) {
         fprintf(stderr, "FAIL: pipeline archive owner discard\n");
         goto cleanup;
@@ -1997,8 +1997,8 @@ static int verifyPipelineArchiveOwner(id<MTLDevice> device) {
 
 cleanup:
     if (pipelinePtr) CFBridgingRelease(pipelinePtr);
-    mglRenderCppDestroyPipelineCacheOwner(&owner2);
-    mglRenderCppDestroyPipelineCacheOwner(&owner1);
+    mglRenderDestroyPipelineCacheOwner(&owner2);
+    mglRenderDestroyPipelineCacheOwner(&owner1);
     [NSFileManager.defaultManager removeItemAtURL:archiveURL error:NULL];
     if (result == 0) printf("PIPELINE_ARCHIVE_OWNER_OK\n");
     return result;
@@ -2040,19 +2040,19 @@ static int verifyBindingDedup(id<MTLDevice> device) {
     id<MTLCommandBuffer> commandBuffer = [queue commandBuffer];
     id<MTLRenderCommandEncoder> encoder =
         [commandBuffer renderCommandEncoderWithDescriptor:pass];
-    void *state = mglRenderCppBindingCreate(8);
+    void *state = mglRenderBindingCreate(8);
     if (!encoder || !state) return 1;
-    mglRenderCppBindingSetDepthStencilState(
+    mglRenderBindingSetDepthStencilState(
         state, (__bridge void *)depthState);
     void *ownedDepthState = NULL;
     void *ownedPipelineState = reinterpret_cast<void *>(1u);
-    if (mglRenderCppBindingGetDepthStencilState(
+    if (mglRenderBindingGetDepthStencilState(
             state, &ownedDepthState) != 0 ||
         ownedDepthState != (__bridge void *)depthState ||
-        mglRenderCppBindingGetPipelineState(
+        mglRenderBindingGetPipelineState(
             state, &ownedPipelineState) != 0 || ownedPipelineState) {
         fprintf(stderr, "FAIL: C++ pipeline/depth binding ownership\n");
-        mglRenderCppBindingDestroy(state);
+        mglRenderBindingDestroy(state);
         return 1;
     }
 
@@ -2061,170 +2061,170 @@ static int verifyBindingDedup(id<MTLDevice> device) {
 #define EXPECT_EMIT(call) do { \
     if ((call) != 1) { \
         fprintf(stderr, "FAIL: expected binding setter emit at line %d\n", __LINE__); \
-        mglRenderCppBindingDestroy(state); \
+        mglRenderBindingDestroy(state); \
         return 1; \
     } \
 } while (0)
 #define EXPECT_SKIP(call) do { \
     if ((call) != 0) { \
         fprintf(stderr, "FAIL: expected binding setter skip at line %d\n", __LINE__); \
-        mglRenderCppBindingDestroy(state); \
+        mglRenderBindingDestroy(state); \
         return 1; \
     } \
 } while (0)
 
-    if (mglRenderCppBindingRecordVertexBuffer(
+    if (mglRenderBindingRecordVertexBuffer(
             state, (__bridge void *)bindingBuffer, 16, 0) != 0 ||
-        mglRenderCppBindingRecordFragmentBuffer(
+        mglRenderBindingRecordFragmentBuffer(
             state, (__bridge void *)bindingBuffer, 32, 1) != 0 ||
-        mglRenderCppBindingUpdateVertexBuffer(
+        mglRenderBindingUpdateVertexBuffer(
             state, (__bridge void *)bindingBuffer, 64, 0) != 0 ||
-        mglRenderCppBindingUpdateFragmentBuffer(
+        mglRenderBindingUpdateFragmentBuffer(
             state, (__bridge void *)bindingBuffer, 96, 1) != 0 ||
-        mglRenderCppBindingInvalidateVertexBuffer(state, 0) != 0 ||
-        mglRenderCppBindingInvalidateFragmentBuffer(state, 1) != 0 ||
-        mglRenderCppBindingClearVertexBuffer(state, 0) != 0 ||
-        mglRenderCppBindingClearFragmentBuffer(state, 1) != 0) {
+        mglRenderBindingInvalidateVertexBuffer(state, 0) != 0 ||
+        mglRenderBindingInvalidateFragmentBuffer(state, 1) != 0 ||
+        mglRenderBindingClearVertexBuffer(state, 0) != 0 ||
+        mglRenderBindingClearFragmentBuffer(state, 1) != 0) {
         fprintf(stderr, "FAIL: buffer binding state API\n");
-        mglRenderCppBindingDestroy(state);
+        mglRenderBindingDestroy(state);
         return 1;
     }
-    mglRenderCppBindingOrVertexBufferMask(state, 1U << 2);
-    mglRenderCppBindingOrFragmentBufferMask(state, 1U << 3);
+    mglRenderBindingOrVertexBufferMask(state, 1U << 2);
+    mglRenderBindingOrFragmentBufferMask(state, 1U << 3);
     void *ownedVertexBuffer = NULL;
     void *ownedFragmentBuffer = NULL;
     uint64_t ownedVertexOffset = 0;
     uint64_t ownedFragmentOffset = 0;
-    if (mglRenderCppBindingRecordVertexBuffer(
+    if (mglRenderBindingRecordVertexBuffer(
             state, (__bridge void *)bindingBuffer, 48, 2) != 0 ||
-        mglRenderCppBindingRecordFragmentBuffer(
+        mglRenderBindingRecordFragmentBuffer(
             state, (__bridge void *)bindingBuffer, 80, 3) != 0 ||
-        mglRenderCppBindingGetBuffer(
-            state, MGL_RENDER_CPP_BINDING_STAGE_VERTEX, 2,
+        mglRenderBindingGetBuffer(
+            state, MGL_RENDER_BINDING_STAGE_VERTEX, 2,
             &ownedVertexBuffer, &ownedVertexOffset) != 0 ||
-        mglRenderCppBindingGetBuffer(
-            state, MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT, 3,
+        mglRenderBindingGetBuffer(
+            state, MGL_RENDER_BINDING_STAGE_FRAGMENT, 3,
             &ownedFragmentBuffer, &ownedFragmentOffset) != 0 ||
         ownedVertexBuffer != (__bridge void *)bindingBuffer ||
         ownedFragmentBuffer != (__bridge void *)bindingBuffer ||
         ownedVertexOffset != 48 || ownedFragmentOffset != 80) {
         fprintf(stderr, "FAIL: C++ buffer binding ownership\n");
-        mglRenderCppBindingDestroy(state);
+        mglRenderBindingDestroy(state);
         return 1;
     }
 
-    EXPECT_EMIT(mglRenderCppBindingSetTexture(
+    EXPECT_EMIT(mglRenderBindingSetTexture(
         state, (__bridge void *)encoder, (__bridge void *)shaderTexture,
-        MGL_RENDER_CPP_BINDING_STAGE_VERTEX, 0));
-    EXPECT_EMIT(mglRenderCppBindingSetTexture(
+        MGL_RENDER_BINDING_STAGE_VERTEX, 0));
+    EXPECT_EMIT(mglRenderBindingSetTexture(
         state, (__bridge void *)encoder, (__bridge void *)shaderTexture,
-        MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT, 0));
-    EXPECT_EMIT(mglRenderCppBindingSetSampler(
+        MGL_RENDER_BINDING_STAGE_FRAGMENT, 0));
+    EXPECT_EMIT(mglRenderBindingSetSampler(
         state, (__bridge void *)encoder, (__bridge void *)sampler,
-        MGL_RENDER_CPP_BINDING_STAGE_VERTEX, 0));
-    EXPECT_EMIT(mglRenderCppBindingSetSampler(
+        MGL_RENDER_BINDING_STAGE_VERTEX, 0));
+    EXPECT_EMIT(mglRenderBindingSetSampler(
         state, (__bridge void *)encoder, (__bridge void *)sampler,
-        MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT, 0));
+        MGL_RENDER_BINDING_STAGE_FRAGMENT, 0));
     void *vertexTexture = NULL;
     void *fragmentTexture = NULL;
     void *vertexSampler = NULL;
     void *fragmentSampler = NULL;
-    if (mglRenderCppBindingGetTexture(
-            state, MGL_RENDER_CPP_BINDING_STAGE_VERTEX, 0,
+    if (mglRenderBindingGetTexture(
+            state, MGL_RENDER_BINDING_STAGE_VERTEX, 0,
             &vertexTexture) != 0 ||
-        mglRenderCppBindingGetTexture(
-            state, MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT, 0,
+        mglRenderBindingGetTexture(
+            state, MGL_RENDER_BINDING_STAGE_FRAGMENT, 0,
             &fragmentTexture) != 0 ||
-        mglRenderCppBindingGetSampler(
-            state, MGL_RENDER_CPP_BINDING_STAGE_VERTEX, 0,
+        mglRenderBindingGetSampler(
+            state, MGL_RENDER_BINDING_STAGE_VERTEX, 0,
             &vertexSampler) != 0 ||
-        mglRenderCppBindingGetSampler(
-            state, MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT, 0,
+        mglRenderBindingGetSampler(
+            state, MGL_RENDER_BINDING_STAGE_FRAGMENT, 0,
             &fragmentSampler) != 0 ||
         vertexTexture != (__bridge void *)shaderTexture ||
         fragmentTexture != (__bridge void *)shaderTexture ||
         vertexSampler != (__bridge void *)sampler ||
         fragmentSampler != (__bridge void *)sampler) {
         fprintf(stderr, "FAIL: C++ texture/sampler binding ownership\n");
-        mglRenderCppBindingDestroy(state);
+        mglRenderBindingDestroy(state);
         return 1;
     }
-    EXPECT_EMIT(mglRenderCppBindingSetViewport(
+    EXPECT_EMIT(mglRenderBindingSetViewport(
         state, (__bridge void *)encoder, viewport.originX, viewport.originY,
         viewport.width, viewport.height, viewport.znear, viewport.zfar));
-    EXPECT_EMIT(mglRenderCppBindingSetScissor(
+    EXPECT_EMIT(mglRenderBindingSetScissor(
         state, (__bridge void *)encoder, scissor.x, scissor.y,
         scissor.width, scissor.height));
-    EXPECT_EMIT(mglRenderCppBindingSetTriangleFill(
+    EXPECT_EMIT(mglRenderBindingSetTriangleFill(
         state, (__bridge void *)encoder, (uint32_t)MTLTriangleFillModeLines));
 
-    mglRenderCppBindingSetValid(state, 1);
-    EXPECT_SKIP(mglRenderCppBindingSetTexture(
+    mglRenderBindingSetValid(state, 1);
+    EXPECT_SKIP(mglRenderBindingSetTexture(
         state, (__bridge void *)encoder, (__bridge void *)shaderTexture,
-        MGL_RENDER_CPP_BINDING_STAGE_VERTEX, 0));
-    EXPECT_SKIP(mglRenderCppBindingSetTexture(
+        MGL_RENDER_BINDING_STAGE_VERTEX, 0));
+    EXPECT_SKIP(mglRenderBindingSetTexture(
         state, (__bridge void *)encoder, (__bridge void *)shaderTexture,
-        MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT, 0));
-    EXPECT_SKIP(mglRenderCppBindingSetSampler(
+        MGL_RENDER_BINDING_STAGE_FRAGMENT, 0));
+    EXPECT_SKIP(mglRenderBindingSetSampler(
         state, (__bridge void *)encoder, (__bridge void *)sampler,
-        MGL_RENDER_CPP_BINDING_STAGE_VERTEX, 0));
-    EXPECT_SKIP(mglRenderCppBindingSetSampler(
+        MGL_RENDER_BINDING_STAGE_VERTEX, 0));
+    EXPECT_SKIP(mglRenderBindingSetSampler(
         state, (__bridge void *)encoder, (__bridge void *)sampler,
-        MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT, 0));
-    EXPECT_SKIP(mglRenderCppBindingSetViewport(
+        MGL_RENDER_BINDING_STAGE_FRAGMENT, 0));
+    EXPECT_SKIP(mglRenderBindingSetViewport(
         state, (__bridge void *)encoder, viewport.originX, viewport.originY,
         viewport.width, viewport.height, viewport.znear, viewport.zfar));
-    EXPECT_SKIP(mglRenderCppBindingSetScissor(
+    EXPECT_SKIP(mglRenderBindingSetScissor(
         state, (__bridge void *)encoder, scissor.x, scissor.y,
         scissor.width, scissor.height));
-    EXPECT_SKIP(mglRenderCppBindingSetTriangleFill(
+    EXPECT_SKIP(mglRenderBindingSetTriangleFill(
         state, (__bridge void *)encoder, (uint32_t)MTLTriangleFillModeLines));
 
-    mglRenderCppBindingInvalidate(state);
+    mglRenderBindingInvalidate(state);
     ownedVertexBuffer = reinterpret_cast<void *>(1u);
     ownedVertexOffset = UINT64_MAX;
-    if (mglRenderCppBindingGetBuffer(
-            state, MGL_RENDER_CPP_BINDING_STAGE_VERTEX, 2,
+    if (mglRenderBindingGetBuffer(
+            state, MGL_RENDER_BINDING_STAGE_VERTEX, 2,
             &ownedVertexBuffer, &ownedVertexOffset) != 0 ||
         ownedVertexBuffer || ownedVertexOffset != 0) {
         fprintf(stderr, "FAIL: C++ buffer binding invalidation\n");
-        mglRenderCppBindingDestroy(state);
+        mglRenderBindingDestroy(state);
         return 1;
     }
     ownedDepthState = reinterpret_cast<void *>(1u);
-    if (mglRenderCppBindingGetDepthStencilState(
+    if (mglRenderBindingGetDepthStencilState(
             state, &ownedDepthState) != 0 || ownedDepthState) {
         fprintf(stderr, "FAIL: C++ depth binding invalidation\n");
-        mglRenderCppBindingDestroy(state);
+        mglRenderBindingDestroy(state);
         return 1;
     }
     vertexTexture = reinterpret_cast<void *>(1u);
     vertexSampler = reinterpret_cast<void *>(1u);
-    if (mglRenderCppBindingGetTexture(
-            state, MGL_RENDER_CPP_BINDING_STAGE_VERTEX, 0,
+    if (mglRenderBindingGetTexture(
+            state, MGL_RENDER_BINDING_STAGE_VERTEX, 0,
             &vertexTexture) != 0 || vertexTexture ||
-        mglRenderCppBindingGetSampler(
-            state, MGL_RENDER_CPP_BINDING_STAGE_VERTEX, 0,
+        mglRenderBindingGetSampler(
+            state, MGL_RENDER_BINDING_STAGE_VERTEX, 0,
             &vertexSampler) != 0 || vertexSampler) {
         fprintf(stderr, "FAIL: C++ texture/sampler binding invalidation\n");
-        mglRenderCppBindingDestroy(state);
+        mglRenderBindingDestroy(state);
         return 1;
     }
-    EXPECT_EMIT(mglRenderCppBindingSetViewport(
+    EXPECT_EMIT(mglRenderBindingSetViewport(
         state, (__bridge void *)encoder, viewport.originX, viewport.originY,
         viewport.width, viewport.height, viewport.znear, viewport.zfar));
 
-    MGLRenderCppBindingStats stats = {};
-    if (mglRenderCppBindingGetStats(state, &stats) != 0) return 1;
-    const uint64_t expectedEmitted[MGL_RENDER_CPP_BINDING_SETTER_COUNT] =
+    MGLRenderBindingStats stats = {};
+    if (mglRenderBindingGetStats(state, &stats) != 0) return 1;
+    const uint64_t expectedEmitted[MGL_RENDER_BINDING_SETTER_COUNT] =
         {1, 1, 1, 1, 2, 1, 1};
-    for (uint32_t i = 0; i < MGL_RENDER_CPP_BINDING_SETTER_COUNT; i++) {
+    for (uint32_t i = 0; i < MGL_RENDER_BINDING_SETTER_COUNT; i++) {
         if (stats.emitted[i] != expectedEmitted[i] || stats.skipped[i] != 1) {
             fprintf(stderr,
                     "FAIL: binding stats index=%u emitted=%llu skipped=%llu\n",
                     i, (unsigned long long)stats.emitted[i],
                     (unsigned long long)stats.skipped[i]);
-            mglRenderCppBindingDestroy(state);
+            mglRenderBindingDestroy(state);
             return 1;
         }
     }
@@ -2235,10 +2235,10 @@ static int verifyBindingDedup(id<MTLDevice> device) {
     if (commandBuffer.status == MTLCommandBufferStatusError) {
         fprintf(stderr, "FAIL: binding command buffer: %s\n",
                 commandBuffer.error.localizedDescription.UTF8String);
-        mglRenderCppBindingDestroy(state);
+        mglRenderBindingDestroy(state);
         return 1;
     }
-    mglRenderCppBindingDestroy(state);
+    mglRenderBindingDestroy(state);
     printf("BINDING_DEDUP_OK emitted=8 skipped=7\n");
     printf("BINDING_TEXTURE_OWNER_OK\n");
     printf("BINDING_PIPELINE_OWNER_OK\n");
@@ -2263,7 +2263,7 @@ static int verifyComputeSetters(id<MTLDevice> device) {
 
     id<MTLCommandBuffer> commandBuffer = [queue commandBuffer];
     void *encoderPtr = NULL;
-    if (mglRenderCppCreateComputeEncoder((__bridge void *)commandBuffer,
+    if (mglRenderCreateComputeEncoder((__bridge void *)commandBuffer,
                                          &encoderPtr) != 0 || !encoderPtr) {
         fprintf(stderr, "FAIL: compute encoder facade\n");
         return 1;
@@ -2276,69 +2276,69 @@ static int verifyComputeSetters(id<MTLDevice> device) {
      * NULL buffer ops are legal slot clears.  No compute pipeline is needed
      * for setBuffer/setBytes encoding (only dispatch requires one). */
     {
-        MGLRenderCppComputeBindingSnapshot cbsnap = {};
+        MGLRenderComputeBindingSnapshot cbsnap = {};
         cbsnap.ops[cbsnap.op_count++] =
-            (MGLRenderCppComputeBindingOp){/* kind */ 0u, /* index */ 0,
+            (MGLRenderComputeBindingOp){/* kind */ 0u, /* index */ 0,
                 /* offset */ 16, /* buffer */ (__bridge void *)buffer,
                 /* bytes */ NULL, /* length */ 0u};
         cbsnap.ops[cbsnap.op_count++] =
-            (MGLRenderCppComputeBindingOp){/* kind */ 0u, /* index */ 1,
+            (MGLRenderComputeBindingOp){/* kind */ 0u, /* index */ 1,
                 /* offset */ 0, /* buffer */ NULL, /* bytes */ NULL,
                 /* length */ 0u}; /* NULL buffer = slot clear */
         cbsnap.ops[cbsnap.op_count++] =
-            (MGLRenderCppComputeBindingOp){/* kind */ 1u, /* index */ 2,
+            (MGLRenderComputeBindingOp){/* kind */ 1u, /* index */ 2,
                 /* offset */ 0, /* buffer */ NULL,
                 /* bytes */ "ABCD", /* length */ 4u};
         cbsnap.ops[cbsnap.op_count++] =
-            (MGLRenderCppComputeBindingOp){/* kind */ 2u, /* index */ 3,
+            (MGLRenderComputeBindingOp){/* kind */ 2u, /* index */ 3,
                 /* offset */ 0, /* buffer */ (__bridge void *)texture,
                 /* bytes */ NULL, /* length */ 0u};
         cbsnap.ops[cbsnap.op_count++] =
-            (MGLRenderCppComputeBindingOp){/* kind */ 3u, /* index */ 4,
+            (MGLRenderComputeBindingOp){/* kind */ 3u, /* index */ 4,
                 /* offset */ 0, /* buffer */ (__bridge void *)sampler,
                 /* bytes */ NULL, /* length */ 0u};
-        MGLRenderCppComputeBindingSnapshot cboverflow = cbsnap;
+        MGLRenderComputeBindingSnapshot cboverflow = cbsnap;
         cboverflow.op_count =
-            MGL_RENDER_CPP_COMPUTE_BINDING_SNAPSHOT_MAX_OPS + 1;
-        MGLRenderCppComputeBindingSnapshot cbnullBytes = cbsnap;
+            MGL_RENDER_COMPUTE_BINDING_SNAPSHOT_MAX_OPS + 1;
+        MGLRenderComputeBindingSnapshot cbnullBytes = cbsnap;
         cbnullBytes.ops[2].bytes = NULL;
-        MGLRenderCppComputeBindingSnapshot cbbadKind = cbsnap;
+        MGLRenderComputeBindingSnapshot cbbadKind = cbsnap;
         cbbadKind.ops[0].kind = 0xdead;
-        MGLRenderCppComputeBindingSnapshot cbnullTex = cbsnap;
+        MGLRenderComputeBindingSnapshot cbnullTex = cbsnap;
         cbnullTex.ops[3].buffer = NULL; /* NULL texture = slot clear */
         char cbError[128] = {0};
-        if (mglRenderCppEncodeComputeBindingSnapshot(
+        if (mglRenderEncodeComputeBindingSnapshot(
                 encoderPtr, &cbsnap, cbError, sizeof(cbError)) != 0 ||
-            mglRenderCppEncodeComputeBindingSnapshot(
+            mglRenderEncodeComputeBindingSnapshot(
                 encoderPtr, &cbnullTex, cbError, sizeof(cbError)) != 0 ||
-            mglRenderCppEncodeComputeBindingSnapshot(
+            mglRenderEncodeComputeBindingSnapshot(
                 NULL, &cbsnap, NULL, 0) != -1 ||
-            mglRenderCppEncodeComputeBindingSnapshot(
+            mglRenderEncodeComputeBindingSnapshot(
                 encoderPtr, &cboverflow, cbError, sizeof(cbError)) != -1 ||
-            mglRenderCppEncodeComputeBindingSnapshot(
+            mglRenderEncodeComputeBindingSnapshot(
                 encoderPtr, &cbnullBytes, cbError, sizeof(cbError)) != -1 ||
-            mglRenderCppEncodeComputeBindingSnapshot(
+            mglRenderEncodeComputeBindingSnapshot(
                 encoderPtr, &cbbadKind, cbError, sizeof(cbError)) != -1) {
             fprintf(stderr, "FAIL: compute binding snapshot err='%s'\n",
                     cbError);
-            mglRenderCppEndComputeEncoder(encoderPtr);
+            mglRenderEndComputeEncoder(encoderPtr);
             return 1;
         }
         printf("COMPUTE_BINDING_SNAPSHOT_OK\n");
     }
 
-    if (mglRenderCppSetComputeBuffer(encoderPtr, (__bridge void *)buffer,
+    if (mglRenderSetComputeBuffer(encoderPtr, (__bridge void *)buffer,
                                      16, 0) != 0 ||
-        mglRenderCppSetComputeTexture(encoderPtr, (__bridge void *)texture,
+        mglRenderSetComputeTexture(encoderPtr, (__bridge void *)texture,
                                       0) != 0 ||
-        mglRenderCppSetComputeSampler(encoderPtr, (__bridge void *)sampler,
+        mglRenderSetComputeSampler(encoderPtr, (__bridge void *)sampler,
                                       0) != 0 ||
-        mglRenderCppSetComputeThreadgroupMemoryLength(encoderPtr, 64, 0) != 0) {
+        mglRenderSetComputeThreadgroupMemoryLength(encoderPtr, 64, 0) != 0) {
         fprintf(stderr, "FAIL: compute setter facade\n");
-        mglRenderCppEndComputeEncoder(encoderPtr);
+        mglRenderEndComputeEncoder(encoderPtr);
         return 1;
     }
-    if (mglRenderCppEndComputeEncoder(encoderPtr) != 0) {
+    if (mglRenderEndComputeEncoder(encoderPtr) != 0) {
         fprintf(stderr, "FAIL: compute encoder end facade\n");
         return 1;
     }
@@ -2357,31 +2357,31 @@ static int verifyComputeSetters(id<MTLDevice> device) {
      * compute_dispatch_ssbo on both gates; here only the rejection paths are
      * asserted (all fail before touching the encoder). */
     {
-        MGLRenderCppComputePlan directPlan = {
-            .dispatch_kind = MGL_RENDER_CPP_COMPUTE_DISPATCH_DIRECT,
+        MGLRenderComputePlan directPlan = {
+            .dispatch_kind = MGL_RENDER_COMPUTE_DISPATCH_DIRECT,
             .groups_x = 2, .groups_y = 1, .groups_z = 1,
             .local_x = 4, .local_y = 1, .local_z = 1,
             .indirect_buffer = NULL, .indirect_offset = 0,
         };
-        MGLRenderCppComputePlan indirectPlan = {
-            .dispatch_kind = MGL_RENDER_CPP_COMPUTE_DISPATCH_INDIRECT,
+        MGLRenderComputePlan indirectPlan = {
+            .dispatch_kind = MGL_RENDER_COMPUTE_DISPATCH_INDIRECT,
             .groups_x = 0, .groups_y = 0, .groups_z = 0,
             .local_x = 8, .local_y = 1, .local_z = 1,
             .indirect_buffer = (__bridge void *)buffer,
             .indirect_offset = 0,
         };
-        MGLRenderCppComputePlan badKind = directPlan;
+        MGLRenderComputePlan badKind = directPlan;
         badKind.dispatch_kind = 0xdead;
-        MGLRenderCppComputePlan badIndirect = indirectPlan;
+        MGLRenderComputePlan badIndirect = indirectPlan;
         badIndirect.indirect_buffer = NULL;
         char planErr[64] = {0};
-        if (mglRenderCppDispatchComputePlan(
+        if (mglRenderDispatchComputePlan(
                 NULL, &directPlan, planErr, sizeof(planErr)) != -1 ||
-            mglRenderCppDispatchComputePlan(
+            mglRenderDispatchComputePlan(
                 NULL, NULL, planErr, sizeof(planErr)) != -1 ||
-            mglRenderCppDispatchComputePlan(
+            mglRenderDispatchComputePlan(
                 NULL, &badKind, planErr, sizeof(planErr)) != -1 ||
-            mglRenderCppDispatchComputePlan(
+            mglRenderDispatchComputePlan(
                 NULL, &badIndirect, planErr, sizeof(planErr)) != -1) {
             fprintf(stderr, "FAIL: compute dispatch plan rejection\n");
             return 1;
@@ -2399,24 +2399,24 @@ static int verifySyncCallbacks(id<MTLDevice> device) {
     Sync sync = {};
     sync.mtl_command_buffer = (void *)CFBridgingRetain(commandBuffer);
     [commandBuffer commit];
-    unsigned int status = mglRenderCppGetSyncStatus(NULL, &sync);
+    unsigned int status = mglRenderGetSyncStatus(NULL, &sync);
     if (status != GL_SIGNALED && status != GL_UNSIGNALED) {
         fprintf(stderr, "FAIL: invalid pre-wait sync status=0x%x\n", status);
-        mglRenderCppReleaseSync(NULL, &sync);
+        mglRenderReleaseSync(NULL, &sync);
         return 1;
     }
-    mglRenderCppWaitForSync(NULL, &sync);
+    mglRenderWaitForSync(NULL, &sync);
     if (sync.mtl_command_buffer || sync.mtl_event ||
-        mglRenderCppGetSyncStatus(NULL, &sync) != GL_SIGNALED) {
+        mglRenderGetSyncStatus(NULL, &sync) != GL_SIGNALED) {
         fprintf(stderr, "FAIL: sync wait did not release/signaled state\n");
-        mglRenderCppReleaseSync(NULL, &sync);
+        mglRenderReleaseSync(NULL, &sync);
         return 1;
     }
 
     Sync releaseOnly = {};
     id<MTLEvent> event = [device newEvent];
     if (event) releaseOnly.mtl_event = (void *)CFBridgingRetain(event);
-    mglRenderCppReleaseSync(NULL, &releaseOnly);
+    mglRenderReleaseSync(NULL, &releaseOnly);
     if (releaseOnly.mtl_event || releaseOnly.mtl_command_buffer) {
         fprintf(stderr, "FAIL: sync release did not clear resources\n");
         return 1;
@@ -2429,40 +2429,40 @@ static int verifySyncCallbacks(id<MTLDevice> device) {
     MGLRendererBackendHandle *backend = nullptr;
     Sync captured = {};
     if (smokeCreateBackend(device, &context, &backend) != 0 || !ownerQueue ||
-        mglRenderCppCreateCommandBufferOwner(
+        mglRenderCreateCommandBufferOwner(
             (__bridge void *)ownerQueue, &commandOwner, &current) != 0 ||
         !commandOwner || !current ||
-        mglRenderCppAttachRuntimeOwners(&context, commandOwner, NULL, NULL) != 0) {
+        mglRenderAttachRuntimeOwners(&context, commandOwner, NULL, NULL) != 0) {
         fprintf(stderr, "FAIL: sync capture owner fixture\n");
-        mglRenderCppDestroyCommandBufferOwner(&commandOwner);
+        mglRenderDestroyCommandBufferOwner(&commandOwner);
         mglRendererBackendDestroy(&backend);
         return 1;
     }
-    mglRenderCppGetSync(&context, &captured);
-    void *next = mglRenderCppCommandBufferOwnerGetCurrent(commandOwner);
+    mglRenderGetSync(&context, &captured);
+    void *next = mglRenderCommandBufferOwnerGetCurrent(commandOwner);
     unsigned int capturedStatus =
-        mglRenderCppGetSyncStatus(&context, &captured);
+        mglRenderGetSyncStatus(&context, &captured);
     if (!captured.mtl_command_buffer || !next || next == current ||
         (capturedStatus != GL_SIGNALED &&
          capturedStatus != GL_UNSIGNALED)) {
         fprintf(stderr, "FAIL: sync capture/owner rotation\n");
-        mglRenderCppReleaseSync(&context, &captured);
-        mglRenderCppDetachRuntimeOwners(&context);
-        mglRenderCppDestroyCommandBufferOwner(&commandOwner);
+        mglRenderReleaseSync(&context, &captured);
+        mglRenderDetachRuntimeOwners(&context);
+        mglRenderDestroyCommandBufferOwner(&commandOwner);
         mglRendererBackendDestroy(&backend);
         return 1;
     }
-    mglRenderCppWaitForSync(&context, &captured);
+    mglRenderWaitForSync(&context, &captured);
     if (captured.mtl_command_buffer || captured.mtl_event ||
-        mglRenderCppGetSyncStatus(&context, &captured) != GL_SIGNALED) {
+        mglRenderGetSyncStatus(&context, &captured) != GL_SIGNALED) {
         fprintf(stderr, "FAIL: captured sync wait/release\n");
-        mglRenderCppDetachRuntimeOwners(&context);
-        mglRenderCppDestroyCommandBufferOwner(&commandOwner);
+        mglRenderDetachRuntimeOwners(&context);
+        mglRenderDestroyCommandBufferOwner(&commandOwner);
         mglRendererBackendDestroy(&backend);
         return 1;
     }
-    mglRenderCppDetachRuntimeOwners(&context);
-    mglRenderCppDestroyCommandBufferOwner(&commandOwner);
+    mglRenderDetachRuntimeOwners(&context);
+    mglRenderDestroyCommandBufferOwner(&commandOwner);
     mglRendererBackendDestroy(&backend);
     printf("SYNC_CALLBACKS_OK\n");
     return 0;
@@ -2470,7 +2470,7 @@ static int verifySyncCallbacks(id<MTLDevice> device) {
 
 static int verifyCommandQueueOwner(void) {
     void *invalidQueue = reinterpret_cast<void *>(0x1u);
-    if (mglRenderCppResetCommandQueueOwner(NULL, 0, &invalidQueue) != -1 ||
+    if (mglRenderResetCommandQueueOwner(NULL, 0, &invalidQueue) != -1 ||
         invalidQueue != NULL) {
         fprintf(stderr, "FAIL: invalid command queue owner reset contract\n");
         return 1;
@@ -2478,40 +2478,40 @@ static int verifyCommandQueueOwner(void) {
 
     void *owner = NULL;
     void *queuePtr = NULL;
-    if (mglRenderCppCreateCommandQueueOwner(2, &owner, &queuePtr) != 0 ||
+    if (mglRenderCreateCommandQueueOwner(2, &owner, &queuePtr) != 0 ||
         !owner || !queuePtr) {
         fprintf(stderr, "FAIL: command queue owner create\n");
-        mglRenderCppDestroyCommandQueueOwner(&owner);
+        mglRenderDestroyCommandQueueOwner(&owner);
         return 1;
     }
 
     id<MTLCommandQueue> queue =
         (__bridge id<MTLCommandQueue>)queuePtr;
     void *commandBuffer = NULL;
-    if (!queue || mglRenderCppCreateCommandBuffer(
+    if (!queue || mglRenderCreateCommandBuffer(
             queuePtr, &commandBuffer) != 0 || !commandBuffer) {
         fprintf(stderr, "FAIL: command queue owner command buffer\n");
-        mglRenderCppDestroyCommandQueueOwner(&owner);
+        mglRenderDestroyCommandQueueOwner(&owner);
         return 1;
     }
 
     void *resetQueuePtr = NULL;
-    if (mglRenderCppResetCommandQueueOwner(
+    if (mglRenderResetCommandQueueOwner(
             owner, 0, &resetQueuePtr) != 0 || !resetQueuePtr) {
         fprintf(stderr, "FAIL: command queue owner reset\n");
-        mglRenderCppDestroyCommandQueueOwner(&owner);
+        mglRenderDestroyCommandQueueOwner(&owner);
         return 1;
     }
     queue = (__bridge id<MTLCommandQueue>)resetQueuePtr;
     commandBuffer = NULL;
-    if (!queue || mglRenderCppCreateCommandBuffer(
+    if (!queue || mglRenderCreateCommandBuffer(
             resetQueuePtr, &commandBuffer) != 0 || !commandBuffer) {
         fprintf(stderr, "FAIL: reset command queue command buffer\n");
-        mglRenderCppDestroyCommandQueueOwner(&owner);
+        mglRenderDestroyCommandQueueOwner(&owner);
         return 1;
     }
 
-    mglRenderCppDestroyCommandQueueOwner(&owner);
+    mglRenderDestroyCommandQueueOwner(&owner);
     if (owner) {
         fprintf(stderr, "FAIL: command queue owner destroy\n");
         return 1;
@@ -2525,24 +2525,24 @@ static int verifyCommandBufferOwner(id<MTLDevice> device) {
     void *queue = NULL;
     void *owner = NULL;
     void *commandBuffer = NULL;
-    if (mglRenderCppCreateCommandQueueOwner(
+    if (mglRenderCreateCommandQueueOwner(
             0, &queueOwner, &queue) != 0 || !queueOwner || !queue ||
-        mglRenderCppCreateCommandBufferOwner(
+        mglRenderCreateCommandBufferOwner(
             queue, &owner, &commandBuffer) != 0 || !owner ||
         !commandBuffer) {
         fprintf(stderr, "FAIL: command buffer owner create\n");
-        mglRenderCppDestroyCommandBufferOwner(&owner);
-        mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+        mglRenderDestroyCommandBufferOwner(&owner);
+        mglRenderDestroyCommandQueueOwner(&queueOwner);
         return 1;
     }
 
-    if (mglRenderCppCommandBufferOwnerBeginCommit(NULL) != -1 ||
-        mglRenderCppCommandBufferOwnerBeginCommit(owner) != 1 ||
-        mglRenderCppCommandBufferOwnerBeginCommit(owner) != 0) {
+    if (mglRenderCommandBufferOwnerBeginCommit(NULL) != -1 ||
+        mglRenderCommandBufferOwnerBeginCommit(owner) != 1 ||
+        mglRenderCommandBufferOwnerBeginCommit(owner) != 0) {
         fprintf(stderr, "FAIL: command buffer commit guard acquire\n");
-        mglRenderCppCommandBufferOwnerEndCommit(owner);
-        mglRenderCppDestroyCommandBufferOwner(&owner);
-        mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+        mglRenderCommandBufferOwnerEndCommit(owner);
+        mglRenderDestroyCommandBufferOwner(&owner);
+        mglRenderDestroyCommandQueueOwner(&queueOwner);
         return 1;
     }
 
@@ -2563,323 +2563,323 @@ static int verifyCommandBufferOwner(id<MTLDevice> device) {
     copyDescriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
     id<MTLTexture> copySource = [device newTextureWithDescriptor:copyDescriptor];
     id<MTLTexture> copyDestination = [device newTextureWithDescriptor:copyDescriptor];
-    MGLRenderCppRenderPassState renderPass =
+    MGLRenderPassState renderPass =
         renderPassStateWithColorTarget(
             target, MTLLoadActionClear, MTLStoreActionStore);
     void *renderEncoder = NULL;
     void *blitEncoder = NULL;
     void *computeEncoder = NULL;
     if (!device || !target || !depthTarget || !copySource || !copyDestination ||
-        mglRenderCppCommandBufferOwnerHasCurrent(NULL) != -1 ||
-        mglRenderCppCommandBufferOwnerHasCurrent(owner) != 1 ||
-        mglRenderCppCreateRenderEncoderFromCommandBufferOwnerState(
+        mglRenderCommandBufferOwnerHasCurrent(NULL) != -1 ||
+        mglRenderCommandBufferOwnerHasCurrent(owner) != 1 ||
+        mglRenderCreateRenderEncoderFromCommandBufferOwnerState(
             NULL, &renderPass, &renderEncoder) != -1 ||
-        mglRenderCppCreateRenderEncoderFromCommandBufferOwnerState(
+        mglRenderCreateRenderEncoderFromCommandBufferOwnerState(
             owner, NULL, &renderEncoder) != -1 ||
-        mglRenderCppCreateRenderEncoderFromCommandBufferOwnerState(
+        mglRenderCreateRenderEncoderFromCommandBufferOwnerState(
             owner, &renderPass, NULL) != -1 ||
-        mglRenderCppCreateRenderEncoderFromCommandBufferOwnerState(
+        mglRenderCreateRenderEncoderFromCommandBufferOwnerState(
             owner, &renderPass, &renderEncoder) != 0 || !renderEncoder ||
-        mglRenderCppEndRenderEncoder(renderEncoder) != 0 ||
-        mglRenderCppCreateBlitEncoderFromCommandBufferOwner(
+        mglRenderEndRenderEncoder(renderEncoder) != 0 ||
+        mglRenderCreateBlitEncoderFromCommandBufferOwner(
             NULL, &blitEncoder) != -1 ||
-        mglRenderCppCreateBlitEncoderFromCommandBufferOwner(
+        mglRenderCreateBlitEncoderFromCommandBufferOwner(
             owner, NULL) != -1 ||
-        mglRenderCppCreateBlitEncoderFromCommandBufferOwner(
+        mglRenderCreateBlitEncoderFromCommandBufferOwner(
             owner, &blitEncoder) != 0 || !blitEncoder ||
-        mglRenderCppEndBlitEncoder(blitEncoder) != 0 ||
-        mglRenderCppCopyMatchingTextureSubresourcesForCommandBufferOwner(
+        mglRenderEndBlitEncoder(blitEncoder) != 0 ||
+        mglRenderCopyMatchingTextureSubresourcesForCommandBufferOwner(
             NULL, (__bridge void *)copySource,
             (__bridge void *)copyDestination) != -1 ||
-        mglRenderCppCopyMatchingTextureSubresourcesForCommandBufferOwner(
+        mglRenderCopyMatchingTextureSubresourcesForCommandBufferOwner(
             owner, NULL, (__bridge void *)copyDestination) != -1 ||
-        mglRenderCppCopyMatchingTextureSubresourcesForCommandBufferOwner(
+        mglRenderCopyMatchingTextureSubresourcesForCommandBufferOwner(
             owner, (__bridge void *)copySource,
             (__bridge void *)copyDestination) != 0 ||
-        mglRenderCppEncodeBufferCopiesForCommandBufferOwner(
+        mglRenderEncodeBufferCopiesForCommandBufferOwner(
             NULL, NULL, 0) != -1 ||
-        mglRenderCppCreateComputeEncoderFromCommandBufferOwner(
+        mglRenderCreateComputeEncoderFromCommandBufferOwner(
             NULL, &computeEncoder) != -1 ||
-        mglRenderCppCreateComputeEncoderFromCommandBufferOwner(
+        mglRenderCreateComputeEncoderFromCommandBufferOwner(
             owner, NULL) != -1 ||
-        mglRenderCppCreateComputeEncoderFromCommandBufferOwner(
+        mglRenderCreateComputeEncoderFromCommandBufferOwner(
             owner, &computeEncoder) != 0 || !computeEncoder ||
-        mglRenderCppEndComputeEncoder(computeEncoder) != 0 ||
-        mglRenderCppBeginComputeDispatchForCommandBufferOwner(
+        mglRenderEndComputeEncoder(computeEncoder) != 0 ||
+        mglRenderBeginComputeDispatchForCommandBufferOwner(
             NULL, NULL, &computeEncoder, NULL, 0) != -1 ||
-        mglRenderCppEncodeMultisampleResolveForCommandBufferOwner(
-            NULL, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR,
+        mglRenderEncodeMultisampleResolveForCommandBufferOwner(
+            NULL, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
             NULL, 0, 0, 0, NULL, 0, 0, 0, 0) != -1 ||
-        mglRenderCppEncodeTextureUploadLayersForCommandBufferOwner(
+        mglRenderEncodeTextureUploadLayersForCommandBufferOwner(
             NULL, NULL, 0, 0, 0, 0, 0, 0, 0,
             NULL, 0, 0, 0, 0, 0, 0) != -1 ||
-        mglRenderCppEncodeColorClearForCommandBufferOwner(
+        mglRenderEncodeColorClearForCommandBufferOwner(
             NULL, (__bridge void *)target, 0, 0, 0,
             1.0, 0.0, 0.0, 1.0) != -1 ||
-        mglRenderCppEncodeColorClearForCommandBufferOwner(
+        mglRenderEncodeColorClearForCommandBufferOwner(
             owner, NULL, 0, 0, 0, 1.0, 0.0, 0.0, 1.0) != -1 ||
-        mglRenderCppEncodeColorClearForCommandBufferOwner(
+        mglRenderEncodeColorClearForCommandBufferOwner(
             owner, (__bridge void *)target, 0, 0, 0,
             1.0, 0.0, 0.0, 1.0) != 0 ||
-        mglRenderCppEncodeDepthClearForCommandBufferOwner(
+        mglRenderEncodeDepthClearForCommandBufferOwner(
             NULL, (__bridge void *)depthTarget, 0, 0, 0, 1.0) != -1 ||
-        mglRenderCppEncodeDepthClearForCommandBufferOwner(
+        mglRenderEncodeDepthClearForCommandBufferOwner(
             owner, NULL, 0, 0, 0, 1.0) != -1 ||
-        mglRenderCppEncodeDepthClearForCommandBufferOwner(
+        mglRenderEncodeDepthClearForCommandBufferOwner(
             owner, (__bridge void *)depthTarget, 0, 0, 0, 1.0) != 0) {
         fprintf(stderr, "FAIL: command buffer owner encoders\n");
-        mglRenderCppCommandBufferOwnerEndCommit(owner);
-        mglRenderCppDestroyCommandBufferOwner(&owner);
-        mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+        mglRenderCommandBufferOwnerEndCommit(owner);
+        mglRenderDestroyCommandBufferOwner(&owner);
+        mglRenderDestroyCommandQueueOwner(&queueOwner);
         return 1;
     }
 
-    MGLRenderCppCommandBufferState ownerState = {};
-    if (mglRenderCppGetCommandBufferOwnerState(NULL, &ownerState) != -1 ||
-        mglRenderCppGetCommandBufferOwnerState(owner, NULL) != -1 ||
-        mglRenderCppGetCommandBufferOwnerState(owner, &ownerState) != 0 ||
+    MGLRenderCommandBufferState ownerState = {};
+    if (mglRenderGetCommandBufferOwnerState(NULL, &ownerState) != -1 ||
+        mglRenderGetCommandBufferOwnerState(owner, NULL) != -1 ||
+        mglRenderGetCommandBufferOwnerState(owner, &ownerState) != 0 ||
         ownerState.status != MTLCommandBufferStatusNotEnqueued ||
         ownerState.has_error ||
-        mglRenderCppPresentDrawableForCommandBufferOwner(
+        mglRenderPresentDrawableForCommandBufferOwner(
             NULL, NULL, &ownerState) != -1 ||
-        mglRenderCppPresentDrawableForCommandBufferOwner(
+        mglRenderPresentDrawableForCommandBufferOwner(
             owner, NULL, &ownerState) != -1) {
         fprintf(stderr, "FAIL: command buffer owner state/present guards\n");
-        mglRenderCppDestroyCommandBufferOwner(&owner);
-        mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+        mglRenderDestroyCommandBufferOwner(&owner);
+        mglRenderDestroyCommandQueueOwner(&queueOwner);
         return 1;
     }
-    if (mglRenderCppEncodeWaitForEventForCommandBufferOwner(
+    if (mglRenderEncodeWaitForEventForCommandBufferOwner(
             NULL, NULL, 0u) != -1 ||
-        mglRenderCppEncodeWaitForEventForCommandBufferOwner(
+        mglRenderEncodeWaitForEventForCommandBufferOwner(
             owner, NULL, 1u) != -1) {
         fprintf(stderr, "FAIL: command buffer owner event wait guards\n");
-        mglRenderCppDestroyCommandBufferOwner(&owner);
-        mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+        mglRenderDestroyCommandBufferOwner(&owner);
+        mglRenderDestroyCommandQueueOwner(&queueOwner);
         return 1;
     }
-    mglRenderCppCommandBufferOwnerEndCommit(owner);
-    if (mglRenderCppCommandBufferOwnerBeginCommit(owner) != 1) {
+    mglRenderCommandBufferOwnerEndCommit(owner);
+    if (mglRenderCommandBufferOwnerBeginCommit(owner) != 1) {
         fprintf(stderr, "FAIL: command buffer commit guard release\n");
-        mglRenderCppDestroyCommandBufferOwner(&owner);
-        mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+        mglRenderDestroyCommandBufferOwner(&owner);
+        mglRenderDestroyCommandQueueOwner(&queueOwner);
         return 1;
     }
-    mglRenderCppCommandBufferOwnerEndCommit(owner);
+    mglRenderCommandBufferOwnerEndCommit(owner);
 
-    MGLRenderCppCommandBufferState classifyState = {};
-    MGLRenderCppCommandBufferCommitDecision commitDecision = {};
-    MGLRenderCppCommandBufferCompletionDecision completionDecision = {};
-    if (mglRenderCppClassifyCommandBufferCommit(NULL, &commitDecision) != -1 ||
-        mglRenderCppClassifyCommandBufferCommit(&classifyState, NULL) != -1 ||
-        mglRenderCppClassifyCommandBufferCompletion(NULL,
+    MGLRenderCommandBufferState classifyState = {};
+    MGLRenderCommandBufferCommitDecision commitDecision = {};
+    MGLRenderCommandBufferCompletionDecision completionDecision = {};
+    if (mglRenderClassifyCommandBufferCommit(NULL, &commitDecision) != -1 ||
+        mglRenderClassifyCommandBufferCommit(&classifyState, NULL) != -1 ||
+        mglRenderClassifyCommandBufferCompletion(NULL,
                                                      &completionDecision) != -1 ||
-        mglRenderCppClassifyCommandBufferCompletion(&classifyState,
+        mglRenderClassifyCommandBufferCompletion(&classifyState,
                                                      NULL) != -1) {
         fprintf(stderr, "FAIL: command buffer decision null guards\n");
-        mglRenderCppDestroyCommandBufferOwner(&owner);
-        mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+        mglRenderDestroyCommandBufferOwner(&owner);
+        mglRenderDestroyCommandQueueOwner(&queueOwner);
         return 1;
     }
     for (uint32_t status = MTLCommandBufferStatusNotEnqueued;
          status <= MTLCommandBufferStatusError; ++status) {
         classifyState.status = status;
         uint32_t expected = status < MTLCommandBufferStatusCommitted
-            ? MGL_RENDER_CPP_COMMAND_BUFFER_COMMIT_PROCEED
-            : MGL_RENDER_CPP_COMMAND_BUFFER_COMMIT_SKIP_ALREADY_COMMITTED;
-        if (mglRenderCppClassifyCommandBufferCommit(
+            ? MGL_RENDER_COMMAND_BUFFER_COMMIT_PROCEED
+            : MGL_RENDER_COMMAND_BUFFER_COMMIT_SKIP_ALREADY_COMMITTED;
+        if (mglRenderClassifyCommandBufferCommit(
                 &classifyState, &commitDecision) != 0 ||
             commitDecision.action != expected) {
             fprintf(stderr,
                     "FAIL: command buffer commit decision status=%u\n",
                     status);
-            mglRenderCppDestroyCommandBufferOwner(&owner);
-            mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+            mglRenderDestroyCommandBufferOwner(&owner);
+            mglRenderDestroyCommandQueueOwner(&queueOwner);
             return 1;
         }
     }
     classifyState = {};
-    if (mglRenderCppClassifyCommandBufferCompletion(
+    if (mglRenderClassifyCommandBufferCompletion(
             &classifyState, &completionDecision) != 0 ||
         completionDecision.has_error ||
         completionDecision.is_driver_rejection) {
         fprintf(stderr, "FAIL: command buffer completion success decision\n");
-        mglRenderCppDestroyCommandBufferOwner(&owner);
-        mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+        mglRenderDestroyCommandBufferOwner(&owner);
+        mglRenderDestroyCommandQueueOwner(&queueOwner);
         return 1;
     }
     classifyState.has_error = 1;
     classifyState.error_code = 4;
     snprintf(classifyState.error_domain, sizeof(classifyState.error_domain),
              "%s", "MTLCommandBufferErrorDomain");
-    if (mglRenderCppClassifyCommandBufferCompletion(
+    if (mglRenderClassifyCommandBufferCompletion(
             &classifyState, &completionDecision) != 0 ||
         !completionDecision.has_error ||
         !completionDecision.is_driver_rejection) {
         fprintf(stderr, "FAIL: command buffer driver rejection decision\n");
-        mglRenderCppDestroyCommandBufferOwner(&owner);
-        mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+        mglRenderDestroyCommandBufferOwner(&owner);
+        mglRenderDestroyCommandQueueOwner(&queueOwner);
         return 1;
     }
 
     id<MTLCommandBuffer> submitted =
         (__bridge id<MTLCommandBuffer>)commandBuffer;
-    MGLRenderCppCommandBufferState initialState = {};
-    MGLRenderCppCommandBufferState waitState = {};
+    MGLRenderCommandBufferState initialState = {};
+    MGLRenderCommandBufferState waitState = {};
     int *completionContext = new int(7);
-    if (mglRenderCppGetCommandBufferState(
+    if (mglRenderGetCommandBufferState(
             commandBuffer, &initialState) != 0 ||
         initialState.status != MTLCommandBufferStatusNotEnqueued ||
         initialState.has_error ||
-        mglRenderCppWaitCommandBufferState(commandBuffer, &waitState) != 1 ||
+        mglRenderWaitCommandBufferState(commandBuffer, &waitState) != 1 ||
         waitState.status != MTLCommandBufferStatusNotEnqueued ||
-        mglRenderCppWaitCommandBufferState(NULL, &waitState) != -1 ||
-        mglRenderCppWaitCommandBufferState(commandBuffer, NULL) != -1 ||
-        mglRenderCppAddCommandBufferCompletion(
+        mglRenderWaitCommandBufferState(NULL, &waitState) != -1 ||
+        mglRenderWaitCommandBufferState(commandBuffer, NULL) != -1 ||
+        mglRenderAddCommandBufferCompletion(
             commandBuffer, commandBufferCompletion, completionContext,
             destroyCommandBufferCompletionContext) != 0) {
         fprintf(stderr, "FAIL: command buffer state/completion setup\n");
         delete completionContext;
-        mglRenderCppDestroyCommandBufferOwner(&owner);
-        mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+        mglRenderDestroyCommandBufferOwner(&owner);
+        mglRenderDestroyCommandQueueOwner(&queueOwner);
         return 1;
     }
-    if (mglRenderCppAddCommandBufferOwnerCompletion(
+    if (mglRenderAddCommandBufferOwnerCompletion(
             NULL, commandBufferCompletion, NULL, NULL) != -1) {
         fprintf(stderr, "FAIL: command buffer owner completion guard\n");
-        mglRenderCppDestroyCommandBufferOwner(&owner);
-        mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+        mglRenderDestroyCommandBufferOwner(&owner);
+        mglRenderDestroyCommandQueueOwner(&queueOwner);
         return 1;
     }
     int *ownerCompletionContext = new int(8);
-    if (mglRenderCppAddCommandBufferOwnerCompletion(
+    if (mglRenderAddCommandBufferOwnerCompletion(
             owner, commandBufferCompletion, ownerCompletionContext,
             destroyCommandBufferCompletionContext) != 0) {
         fprintf(stderr, "FAIL: command buffer owner completion setup\n");
         delete ownerCompletionContext;
-        mglRenderCppDestroyCommandBufferOwner(&owner);
-        mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+        mglRenderDestroyCommandBufferOwner(&owner);
+        mglRenderDestroyCommandQueueOwner(&queueOwner);
         return 1;
     }
     void *submission = NULL;
     void *detached = NULL;
-    MGLRenderCppCommandBufferTransaction transaction = {};
-    if (mglRenderCppTakeCommandBufferSubmission(
+    MGLRenderCommandBufferTransaction transaction = {};
+    if (mglRenderTakeCommandBufferSubmission(
             owner, &submission, &detached) != 0 || !submission ||
         detached != commandBuffer ||
-        mglRenderCppCommandBufferOwnerHasCurrent(owner) != 0 ||
-        mglRenderCppGetCommandBufferOwnerState(owner, &ownerState) != -1 ||
-        mglRenderCppCreateRenderEncoderFromCommandBufferOwnerState(
+        mglRenderCommandBufferOwnerHasCurrent(owner) != 0 ||
+        mglRenderGetCommandBufferOwnerState(owner, &ownerState) != -1 ||
+        mglRenderCreateRenderEncoderFromCommandBufferOwnerState(
             owner, &renderPass, &renderEncoder) != -1 ||
-        mglRenderCppCreateBlitEncoderFromCommandBufferOwner(
+        mglRenderCreateBlitEncoderFromCommandBufferOwner(
             owner, &blitEncoder) != -1 ||
-        mglRenderCppCommandBufferSubmissionMatchesBuffer(
+        mglRenderCommandBufferSubmissionMatchesBuffer(
             submission, detached) != 1 ||
-        mglRenderCppCommandBufferSubmissionMatchesBuffer(
+        mglRenderCommandBufferSubmissionMatchesBuffer(
             submission, NULL) != -1 ||
-        mglRenderCppCommandBufferSubmissionMatchesBuffer(
+        mglRenderCommandBufferSubmissionMatchesBuffer(
             submission, (void *)(uintptr_t)0xdeadbeef) != 0) {
         fprintf(stderr, "FAIL: command buffer submission detach\n");
-        mglRenderCppDestroyCommandBufferSubmission(&submission);
-        mglRenderCppDestroyCommandBufferOwner(&owner);
-        mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+        mglRenderDestroyCommandBufferSubmission(&submission);
+        mglRenderDestroyCommandBufferOwner(&owner);
+        mglRenderDestroyCommandQueueOwner(&queueOwner);
         return 1;
     }
     void *mismatchedCommandBuffer = NULL;
-    if (mglRenderCppCreateCommandBuffer(
+    if (mglRenderCreateCommandBuffer(
             queue, &mismatchedCommandBuffer) != 0 ||
         !mismatchedCommandBuffer ||
-        mglRenderCppCommitCommandBufferTransaction(
+        mglRenderCommitCommandBufferTransaction(
             owner, &submission, mismatchedCommandBuffer, NULL, 0, &transaction) != -1 ||
         transaction.result !=
-            MGL_RENDER_CPP_COMMAND_BUFFER_TRANSACTION_ERROR ||
+            MGL_RENDER_COMMAND_BUFFER_TRANSACTION_ERROR ||
         !transaction.has_error || !submission ||
-        mglRenderCppCommandBufferOwnerBeginCommit(owner) != 1) {
+        mglRenderCommandBufferOwnerBeginCommit(owner) != 1) {
         fprintf(stderr, "FAIL: command buffer transaction mismatch guard\n");
-        mglRenderCppDestroyCommandBufferSubmission(&submission);
-        mglRenderCppDestroyCommandBufferOwner(&owner);
-        mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+        mglRenderDestroyCommandBufferSubmission(&submission);
+        mglRenderDestroyCommandBufferOwner(&owner);
+        mglRenderDestroyCommandQueueOwner(&queueOwner);
         return 1;
     }
-    mglRenderCppCommandBufferOwnerEndCommit(owner);
+    mglRenderCommandBufferOwnerEndCommit(owner);
     transaction = {};
-    if (mglRenderCppCommitCommandBufferTransaction(
+    if (mglRenderCommitCommandBufferTransaction(
             owner, &submission, detached, NULL, 0, &transaction) != 0 ||
         transaction.result !=
-            MGL_RENDER_CPP_COMMAND_BUFFER_TRANSACTION_COMMITTED ||
+            MGL_RENDER_COMMAND_BUFFER_TRANSACTION_COMMITTED ||
         !transaction.used_submission || transaction.has_error ||
         !transaction.current_command_buffer_created ||
         transaction.needs_new_command_buffer != 1u ||
-        mglRenderCppCommandBufferOwnerHasCurrent(owner) != 1 ||
-        !mglRenderCppCommandBufferOwnerGetCurrent(owner) || submission ||
-        mglRenderCppCommandBufferOwnerHasLastSubmitted(owner) != 1 ||
-        mglRenderCppWaitCommandBufferOwnerLastSubmitted(
+        mglRenderCommandBufferOwnerHasCurrent(owner) != 1 ||
+        !mglRenderCommandBufferOwnerGetCurrent(owner) || submission ||
+        mglRenderCommandBufferOwnerHasLastSubmitted(owner) != 1 ||
+        mglRenderWaitCommandBufferOwnerLastSubmitted(
             owner, &ownerState) != 0 ||
         ownerState.status != MTLCommandBufferStatusCompleted ||
-        mglRenderCppWaitCommandBufferState(detached, &waitState) != 0 ||
+        mglRenderWaitCommandBufferState(detached, &waitState) != 0 ||
         waitState.status != MTLCommandBufferStatusCompleted ||
         waitState.has_error ||
         submitted.status == MTLCommandBufferStatusError) {
         fprintf(stderr, "FAIL: command buffer submission commit\n");
-        mglRenderCppDestroyCommandBufferSubmission(&submission);
-        mglRenderCppDestroyCommandBufferOwner(&owner);
-        mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+        mglRenderDestroyCommandBufferSubmission(&submission);
+        mglRenderDestroyCommandBufferOwner(&owner);
+        mglRenderDestroyCommandQueueOwner(&queueOwner);
         return 1;
     }
     void *transactionCurrent = NULL;
     void *transactionCurrentAgain = (void *)(uintptr_t)0x1;
-    if (mglRenderCppCommandBufferOwnerConsumeTransactionCurrent(
+    if (mglRenderCommandBufferOwnerConsumeTransactionCurrent(
             owner, &transactionCurrent) != 1 ||
         !transactionCurrent ||
-        transactionCurrent != mglRenderCppCommandBufferOwnerGetCurrent(owner) ||
-        mglRenderCppCommandBufferOwnerConsumeTransactionCurrent(
+        transactionCurrent != mglRenderCommandBufferOwnerGetCurrent(owner) ||
+        mglRenderCommandBufferOwnerConsumeTransactionCurrent(
             owner, &transactionCurrentAgain) != 0 ||
         transactionCurrentAgain != NULL ||
-        mglRenderCppCommandBufferOwnerConsumeTransactionCurrent(
+        mglRenderCommandBufferOwnerConsumeTransactionCurrent(
             NULL, &transactionCurrentAgain) != -1 ||
-        mglRenderCppCommandBufferOwnerConsumeTransactionCurrent(
+        mglRenderCommandBufferOwnerConsumeTransactionCurrent(
             owner, NULL) != -1) {
         fprintf(stderr, "FAIL: command buffer transaction current consume\n");
-        mglRenderCppDestroyCommandBufferOwner(&owner);
-        mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+        mglRenderDestroyCommandBufferOwner(&owner);
+        mglRenderDestroyCommandQueueOwner(&queueOwner);
         return 1;
     }
     transaction = {};
-    if (mglRenderCppCommitCommandBufferTransaction(
+    if (mglRenderCommitCommandBufferTransaction(
             owner, NULL, detached, NULL, 0, &transaction) != 0 ||
         transaction.result !=
-            MGL_RENDER_CPP_COMMAND_BUFFER_TRANSACTION_SKIPPED ||
+            MGL_RENDER_COMMAND_BUFFER_TRANSACTION_SKIPPED ||
         transaction.has_error) {
         fprintf(stderr, "FAIL: command buffer transaction repeat guard\n");
-        mglRenderCppDestroyCommandBufferOwner(&owner);
-        mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+        mglRenderDestroyCommandBufferOwner(&owner);
+        mglRenderDestroyCommandQueueOwner(&queueOwner);
         return 1;
     }
 
     void *adoptedOwner = NULL;
-    void *adoptedCurrent = mglRenderCppCommandBufferOwnerGetCurrent(owner);
+    void *adoptedCurrent = mglRenderCommandBufferOwnerGetCurrent(owner);
     if (!adoptedCurrent ||
-        mglRenderCppCreateCommandBufferOwnerAdopt(
+        mglRenderCreateCommandBufferOwnerAdopt(
             adoptedCurrent, &adoptedOwner) != 0 || !adoptedOwner) {
         fprintf(stderr, "FAIL: command buffer adopted owner fixture\n");
-        mglRenderCppDestroyCommandBufferOwner(&adoptedOwner);
-        mglRenderCppDestroyCommandBufferOwner(&owner);
-        mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+        mglRenderDestroyCommandBufferOwner(&adoptedOwner);
+        mglRenderDestroyCommandBufferOwner(&owner);
+        mglRenderDestroyCommandQueueOwner(&queueOwner);
         return 1;
     }
-    mglRenderCppDiscardCommandBufferOwnerCurrent(adoptedOwner);
+    mglRenderDiscardCommandBufferOwnerCurrent(adoptedOwner);
     void *adoptedNext = NULL;
-    if (mglRenderCppCommandBufferOwnerCreateNext(
+    if (mglRenderCommandBufferOwnerCreateNext(
             adoptedOwner, &adoptedNext) != 1 || adoptedNext) {
         fprintf(stderr, "FAIL: adopted owner unexpectedly retained queue\n");
-        mglRenderCppDestroyCommandBufferOwner(&adoptedOwner);
-        mglRenderCppDestroyCommandBufferOwner(&owner);
-        mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+        mglRenderDestroyCommandBufferOwner(&adoptedOwner);
+        mglRenderDestroyCommandBufferOwner(&owner);
+        mglRenderDestroyCommandQueueOwner(&queueOwner);
         return 1;
     }
-    mglRenderCppDestroyCommandBufferOwner(&adoptedOwner);
-    MGLRenderCppCommandBufferState completedState = {};
-    if (mglRenderCppGetCommandBufferState(
+    mglRenderDestroyCommandBufferOwner(&adoptedOwner);
+    MGLRenderCommandBufferState completedState = {};
+    if (mglRenderGetCommandBufferState(
             detached, &completedState) != 0 ||
         completedState.status != MTLCommandBufferStatusCompleted ||
         completedState.has_error ||
@@ -2889,68 +2889,68 @@ static int verifyCommandBufferOwner(id<MTLDevice> device) {
         s_commandBufferCompletionStatus.load(std::memory_order_relaxed) !=
             MTLCommandBufferStatusCompleted) {
         fprintf(stderr, "FAIL: command buffer state/completion result\n");
-        mglRenderCppDestroyCommandBufferOwner(&owner);
-        mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+        mglRenderDestroyCommandBufferOwner(&owner);
+        mglRenderDestroyCommandQueueOwner(&queueOwner);
         return 1;
     }
 
     commandBuffer = NULL;
-    if (mglRenderCppResetCommandBufferOwner(
+    if (mglRenderResetCommandBufferOwner(
             owner, queue, &commandBuffer) != 0 || !commandBuffer) {
         fprintf(stderr, "FAIL: command buffer owner reset\n");
-        mglRenderCppDestroyCommandBufferOwner(&owner);
-        mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+        mglRenderDestroyCommandBufferOwner(&owner);
+        mglRenderDestroyCommandQueueOwner(&queueOwner);
         return 1;
     }
     submission = NULL;
     detached = NULL;
-    if (mglRenderCppTakeCommandBufferSubmission(
+    if (mglRenderTakeCommandBufferSubmission(
             owner, &submission, &detached) != 0 || !submission ||
         !detached ||
-        mglRenderCppCommandBufferSubmissionMatchesBuffer(
+        mglRenderCommandBufferSubmissionMatchesBuffer(
             submission, detached) != 1) {
         fprintf(stderr, "FAIL: command buffer submission detach\n");
-        mglRenderCppDestroyCommandBufferSubmission(&submission);
-        mglRenderCppDestroyCommandBufferOwner(&owner);
-        mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+        mglRenderDestroyCommandBufferSubmission(&submission);
+        mglRenderDestroyCommandBufferOwner(&owner);
+        mglRenderDestroyCommandQueueOwner(&queueOwner);
         return 1;
     }
     void *recoveryOwner = NULL;
-    MGLRenderCppCommandBufferTransaction recoveryTransaction = {};
-    if (mglRenderCppCreateCommandRecoveryOwner(&recoveryOwner) != 0 ||
-        mglRenderCppCommitCommandBufferTransaction(
+    MGLRenderCommandBufferTransaction recoveryTransaction = {};
+    if (mglRenderCreateCommandRecoveryOwner(&recoveryOwner) != 0 ||
+        mglRenderCommitCommandBufferTransaction(
             owner, &submission, detached, recoveryOwner, 0,
             &recoveryTransaction) != 0 ||
         recoveryTransaction.result !=
-            MGL_RENDER_CPP_COMMAND_BUFFER_TRANSACTION_COMMITTED ||
+            MGL_RENDER_COMMAND_BUFFER_TRANSACTION_COMMITTED ||
         !recoveryTransaction.completion_registered || submission) {
         fprintf(stderr, "FAIL: command buffer recovery transaction\n");
-        mglRenderCppDestroyCommandRecoveryOwner(&recoveryOwner);
-        mglRenderCppDestroyCommandBufferSubmission(&submission);
-        mglRenderCppDestroyCommandBufferOwner(&owner);
-        mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+        mglRenderDestroyCommandRecoveryOwner(&recoveryOwner);
+        mglRenderDestroyCommandBufferSubmission(&submission);
+        mglRenderDestroyCommandBufferOwner(&owner);
+        mglRenderDestroyCommandQueueOwner(&queueOwner);
         return 1;
     }
     /* The completion context owns a reference independent of this handle. */
-    mglRenderCppDestroyCommandRecoveryOwner(&recoveryOwner);
-    if (mglRenderCppWaitCommandBuffer(detached) != 0) {
+    mglRenderDestroyCommandRecoveryOwner(&recoveryOwner);
+    if (mglRenderWaitCommandBuffer(detached) != 0) {
         fprintf(stderr, "FAIL: command buffer recovery completion after owner destroy\n");
-        mglRenderCppDestroyCommandBufferOwner(&owner);
-        mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+        mglRenderDestroyCommandBufferOwner(&owner);
+        mglRenderDestroyCommandQueueOwner(&queueOwner);
         return 1;
     }
 
     commandBuffer = NULL;
-    if (mglRenderCppResetCommandBufferOwner(
+    if (mglRenderResetCommandBufferOwner(
             owner, queue, &commandBuffer) != 0 || !commandBuffer) {
         fprintf(stderr, "FAIL: command buffer owner discard fixture\n");
-        mglRenderCppDestroyCommandBufferOwner(&owner);
-        mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+        mglRenderDestroyCommandBufferOwner(&owner);
+        mglRenderDestroyCommandQueueOwner(&queueOwner);
         return 1;
     }
-    mglRenderCppDiscardCommandBufferOwnerCurrent(owner);
-    mglRenderCppDestroyCommandBufferOwner(&owner);
-    mglRenderCppDestroyCommandQueueOwner(&queueOwner);
+    mglRenderDiscardCommandBufferOwnerCurrent(owner);
+    mglRenderDestroyCommandBufferOwner(&owner);
+    mglRenderDestroyCommandQueueOwner(&queueOwner);
     if (owner || queueOwner) {
         fprintf(stderr, "FAIL: command buffer owner destroy\n");
         return 1;
@@ -2970,62 +2970,62 @@ static int verifyCommandBufferOwner(id<MTLDevice> device) {
 
 static int verifyCommandRecoveryOwner(void) {
     void *owner = NULL;
-    MGLRenderCppCommandRecoverySnapshot state = {};
-    MGLRenderCppCommandRecoverySuccess success = {};
-    MGLRenderCppCommandRecoverySkipDecision skip = {};
-    if (mglRenderCppCreateCommandRecoveryOwner(NULL) != -1 ||
-        mglRenderCppCommandRecoveryRecordError(NULL, 0.0, &state) != -1 ||
-        mglRenderCppCommandRecoveryRecordSuccess(NULL, 0.0, &success) != -1 ||
-        mglRenderCppCommandRecoveryClearMode(NULL) != -1 ||
-        mglRenderCppCommandRecoveryShouldSkip(NULL, 0.0, &skip) != -1 ||
-        mglRenderCppCreateCommandRecoveryOwner(&owner) != 0 || !owner ||
-        mglRenderCppCommandRecoveryRecordError(owner, 0.0, NULL) != -1 ||
-        mglRenderCppCommandRecoveryRecordSuccess(owner, 0.0, NULL) != -1 ||
-        mglRenderCppCommandRecoveryShouldSkip(owner, 0.0, NULL) != -1) {
+    MGLRenderCommandRecoverySnapshot state = {};
+    MGLRenderCommandRecoverySuccess success = {};
+    MGLRenderCommandRecoverySkipDecision skip = {};
+    if (mglRenderCreateCommandRecoveryOwner(NULL) != -1 ||
+        mglRenderCommandRecoveryRecordError(NULL, 0.0, &state) != -1 ||
+        mglRenderCommandRecoveryRecordSuccess(NULL, 0.0, &success) != -1 ||
+        mglRenderCommandRecoveryClearMode(NULL) != -1 ||
+        mglRenderCommandRecoveryShouldSkip(NULL, 0.0, &skip) != -1 ||
+        mglRenderCreateCommandRecoveryOwner(&owner) != 0 || !owner ||
+        mglRenderCommandRecoveryRecordError(owner, 0.0, NULL) != -1 ||
+        mglRenderCommandRecoveryRecordSuccess(owner, 0.0, NULL) != -1 ||
+        mglRenderCommandRecoveryShouldSkip(owner, 0.0, NULL) != -1) {
         fprintf(stderr, "FAIL: command recovery owner create/guards\n");
-        mglRenderCppDestroyCommandRecoveryOwner(&owner);
+        mglRenderDestroyCommandRecoveryOwner(&owner);
         return 1;
     }
 
     for (uint64_t count = 1; count <= 8; ++count) {
-        if (mglRenderCppCommandRecoveryRecordError(
+        if (mglRenderCommandRecoveryRecordError(
                 owner, 100.0, &state) != 0 ||
             state.consecutive_errors != count ||
             state.consecutive_successes != 0 ||
             state.last_error_time != 100.0) {
             fprintf(stderr, "FAIL: command recovery record error\n");
-            mglRenderCppDestroyCommandRecoveryOwner(&owner);
+            mglRenderDestroyCommandRecoveryOwner(&owner);
             return 1;
         }
     }
-    if (mglRenderCppCommandRecoveryShouldSkip(owner, 100.1, &skip) != 0 ||
+    if (mglRenderCommandRecoveryShouldSkip(owner, 100.1, &skip) != 0 ||
         !skip.should_skip || !skip.entered_recovery_mode ||
         skip.recovery_timed_out || !skip.state.recovery_mode ||
         skip.state.consecutive_errors != 8 ||
-        mglRenderCppCommandRecoveryShouldSkip(owner, 100.2, &skip) != 0 ||
+        mglRenderCommandRecoveryShouldSkip(owner, 100.2, &skip) != 0 ||
         !skip.should_skip || skip.entered_recovery_mode) {
         fprintf(stderr, "FAIL: command recovery skip threshold\n");
-        mglRenderCppDestroyCommandRecoveryOwner(&owner);
+        mglRenderDestroyCommandRecoveryOwner(&owner);
         return 1;
     }
 
-    if (mglRenderCppCommandRecoveryRecordSuccess(
+    if (mglRenderCommandRecoveryRecordSuccess(
             owner, 100.1, &success) != 0 ||
         success.sustained_recovery ||
         success.state.consecutive_successes != 1 ||
         !success.state.recovery_mode ||
-        mglRenderCppCommandRecoveryClearMode(owner) != 1 ||
-        mglRenderCppCommandRecoveryClearMode(owner) != 0) {
+        mglRenderCommandRecoveryClearMode(owner) != 1 ||
+        mglRenderCommandRecoveryClearMode(owner) != 0) {
         fprintf(stderr, "FAIL: command recovery first success clear\n");
-        mglRenderCppDestroyCommandRecoveryOwner(&owner);
+        mglRenderDestroyCommandRecoveryOwner(&owner);
         return 1;
     }
     for (uint32_t index = 0; index < 3; ++index) {
         double now = 100.2 + (double)index * 0.1;
-        if (mglRenderCppCommandRecoveryRecordSuccess(
+        if (mglRenderCommandRecoveryRecordSuccess(
                 owner, now, &success) != 0) {
             fprintf(stderr, "FAIL: command recovery sustained input\n");
-            mglRenderCppDestroyCommandRecoveryOwner(&owner);
+            mglRenderDestroyCommandRecoveryOwner(&owner);
             return 1;
         }
     }
@@ -3035,59 +3035,59 @@ static int verifyCommandRecoveryOwner(void) {
         success.state.consecutive_successes != 0 ||
         success.state.recovery_mode) {
         fprintf(stderr, "FAIL: command recovery sustained reset\n");
-        mglRenderCppDestroyCommandRecoveryOwner(&owner);
+        mglRenderDestroyCommandRecoveryOwner(&owner);
         return 1;
     }
 
-    if (mglRenderCppCommandRecoveryRecordError(owner, 200.0, &state) != 0 ||
-        mglRenderCppCommandRecoveryShouldSkip(owner, 204.0, &skip) != 0 ||
+    if (mglRenderCommandRecoveryRecordError(owner, 200.0, &state) != 0 ||
+        mglRenderCommandRecoveryShouldSkip(owner, 204.0, &skip) != 0 ||
         skip.should_skip || !skip.recovery_timed_out ||
         skip.previous_errors != 1 || skip.state.consecutive_errors != 0) {
         fprintf(stderr, "FAIL: command recovery timeout\n");
-        mglRenderCppDestroyCommandRecoveryOwner(&owner);
+        mglRenderDestroyCommandRecoveryOwner(&owner);
         return 1;
     }
 
-    MGLRenderCppCommandBufferState driverFailure = {};
+    MGLRenderCommandBufferState driverFailure = {};
     driverFailure.has_error = 1u;
     driverFailure.error_code = 4;
     snprintf(driverFailure.error_domain, sizeof(driverFailure.error_domain),
              "%s", "MTLCommandBufferErrorDomain");
-    MGLRenderCppCommandBufferTransaction failedTransaction = {};
-    if (mglRenderCppCommandRecoveryRecordTransactionFailure(
+    MGLRenderCommandBufferTransaction failedTransaction = {};
+    if (mglRenderCommandRecoveryRecordTransactionFailure(
             NULL, &driverFailure, &failedTransaction) != -1 ||
-        mglRenderCppCommandRecoveryRecordTransactionFailure(
+        mglRenderCommandRecoveryRecordTransactionFailure(
             owner, &driverFailure, NULL) != -1 ||
-        mglRenderCppCommandRecoveryRecordTransactionFailure(
+        mglRenderCommandRecoveryRecordTransactionFailure(
             owner, &driverFailure, &failedTransaction) != 0 ||
         failedTransaction.result !=
-            MGL_RENDER_CPP_COMMAND_BUFFER_TRANSACTION_ERROR ||
+            MGL_RENDER_COMMAND_BUFFER_TRANSACTION_ERROR ||
         !failedTransaction.has_error ||
         !failedTransaction.is_driver_rejection ||
         !failedTransaction.device_reset_requested ||
         !failedTransaction.recovery_error_recorded ||
         failedTransaction.recovery.consecutive_errors != 1 ||
-        mglRenderCppCommandRecoveryRecordTransactionFailure(
+        mglRenderCommandRecoveryRecordTransactionFailure(
             owner, &driverFailure, &failedTransaction) != 0 ||
         failedTransaction.recovery.consecutive_errors != 1) {
         fprintf(stderr, "FAIL: command recovery transaction failure\n");
-        mglRenderCppDestroyCommandRecoveryOwner(&owner);
+        mglRenderDestroyCommandRecoveryOwner(&owner);
         return 1;
     }
 
-    MGLRenderCppCommandBufferTransaction genericFailure = {};
-    if (mglRenderCppCommandRecoveryRecordTransactionFailure(
+    MGLRenderCommandBufferTransaction genericFailure = {};
+    if (mglRenderCommandRecoveryRecordTransactionFailure(
             owner, NULL, &genericFailure) != 0 ||
         !genericFailure.has_error || genericFailure.is_driver_rejection ||
         !genericFailure.device_reset_requested ||
         !genericFailure.recovery_error_recorded ||
         genericFailure.recovery.consecutive_errors != 2) {
         fprintf(stderr, "FAIL: generic command recovery transaction failure\n");
-        mglRenderCppDestroyCommandRecoveryOwner(&owner);
+        mglRenderDestroyCommandRecoveryOwner(&owner);
         return 1;
     }
 
-    mglRenderCppDestroyCommandRecoveryOwner(&owner);
+    mglRenderDestroyCommandRecoveryOwner(&owner);
     if (owner) {
         fprintf(stderr, "FAIL: command recovery owner destroy\n");
         return 1;
@@ -3099,17 +3099,17 @@ static int verifyCommandRecoveryOwner(void) {
 
 static int verifyCommandBufferCompletionProcess(void) {
     void *owner = NULL;
-    MGLRenderCppCommandBufferState state = {};
-    MGLRenderCppCommandBufferCompletionResult result = {};
-    if (mglRenderCppProcessCommandBufferCompletion(
+    MGLRenderCommandBufferState state = {};
+    MGLRenderCommandBufferCompletionResult result = {};
+    if (mglRenderProcessCommandBufferCompletion(
             NULL, &state, 0.0, &result) != -1 ||
-        mglRenderCppCreateCommandRecoveryOwner(&owner) != 0 || !owner ||
-        mglRenderCppProcessCommandBufferCompletion(
+        mglRenderCreateCommandRecoveryOwner(&owner) != 0 || !owner ||
+        mglRenderProcessCommandBufferCompletion(
             owner, NULL, 0.0, &result) != -1 ||
-        mglRenderCppProcessCommandBufferCompletion(
+        mglRenderProcessCommandBufferCompletion(
             owner, &state, 0.0, NULL) != -1) {
         fprintf(stderr, "FAIL: command completion process guards\n");
-        mglRenderCppDestroyCommandRecoveryOwner(&owner);
+        mglRenderDestroyCommandRecoveryOwner(&owner);
         return 1;
     }
 
@@ -3118,43 +3118,43 @@ static int verifyCommandBufferCompletionProcess(void) {
     snprintf(state.error_domain, sizeof(state.error_domain), "%s",
              "MTLCommandBufferErrorDomain");
     for (uint64_t count = 1; count <= 8; ++count) {
-        if (mglRenderCppProcessCommandBufferCompletion(
+        if (mglRenderProcessCommandBufferCompletion(
                 owner, &state, 300.0, &result) != 0 ||
             !result.decision.has_error ||
             !result.decision.is_driver_rejection ||
             result.state.consecutive_errors != count ||
             result.state.consecutive_successes != 0) {
             fprintf(stderr, "FAIL: command completion process error\n");
-            mglRenderCppDestroyCommandRecoveryOwner(&owner);
+            mglRenderDestroyCommandRecoveryOwner(&owner);
             return 1;
         }
     }
 
-    MGLRenderCppCommandRecoverySkipDecision skip = {};
-    if (mglRenderCppCommandRecoveryShouldSkip(owner, 300.1, &skip) != 0 ||
+    MGLRenderCommandRecoverySkipDecision skip = {};
+    if (mglRenderCommandRecoveryShouldSkip(owner, 300.1, &skip) != 0 ||
         !skip.entered_recovery_mode || !skip.state.recovery_mode) {
         fprintf(stderr, "FAIL: command completion process recovery setup\n");
-        mglRenderCppDestroyCommandRecoveryOwner(&owner);
+        mglRenderDestroyCommandRecoveryOwner(&owner);
         return 1;
     }
 
     state = {};
-    if (mglRenderCppProcessCommandBufferCompletion(
+    if (mglRenderProcessCommandBufferCompletion(
             owner, &state, 300.1, &result) != 0 ||
         result.decision.has_error || result.sustained_recovery ||
         !result.cleared_recovery_mode ||
         result.state.consecutive_successes != 1 ||
         result.state.recovery_mode) {
         fprintf(stderr, "FAIL: command completion process first success\n");
-        mglRenderCppDestroyCommandRecoveryOwner(&owner);
+        mglRenderDestroyCommandRecoveryOwner(&owner);
         return 1;
     }
     for (uint32_t index = 0; index < 3; ++index) {
         double now = 300.2 + (double)index * 0.1;
-        if (mglRenderCppProcessCommandBufferCompletion(
+        if (mglRenderProcessCommandBufferCompletion(
                 owner, &state, now, &result) != 0) {
             fprintf(stderr, "FAIL: command completion process sustained input\n");
-            mglRenderCppDestroyCommandRecoveryOwner(&owner);
+            mglRenderDestroyCommandRecoveryOwner(&owner);
             return 1;
         }
     }
@@ -3164,17 +3164,17 @@ static int verifyCommandBufferCompletionProcess(void) {
         result.state.consecutive_successes != 0 ||
         result.state.recovery_mode) {
         fprintf(stderr, "FAIL: command completion process sustained result\n");
-        mglRenderCppDestroyCommandRecoveryOwner(&owner);
+        mglRenderDestroyCommandRecoveryOwner(&owner);
         return 1;
     }
 
-    mglRenderCppDestroyCommandRecoveryOwner(&owner);
+    mglRenderDestroyCommandRecoveryOwner(&owner);
     printf("COMMAND_BUFFER_COMPLETION_PROCESS_OK\n");
     return 0;
 }
 
 /* Stub for sizeForInternalFormat (smoke does not link pixel_utils.c).
- * Expansion gates now live in mgl_render_cpp.cpp. */
+ * Expansion gates now live in mgl_render.cpp. */
 extern "C" {
 GLuint sizeForInternalFormat(GLenum internalformat, GLenum, GLenum) {
     switch (internalformat) {
@@ -3188,11 +3188,11 @@ GLuint sizeForInternalFormat(GLenum internalformat, GLenum, GLenum) {
 static int verifyCommandBufferGetterAndAdopt(void) {
     /* P4.5 (item 1141): owner getter + adopt — the gate-off fallback keeps
      * the owner as the single source on both gates. */
-    if (mglRenderCppCommandBufferOwnerGetCurrent(NULL) != NULL) {
+    if (mglRenderCommandBufferOwnerGetCurrent(NULL) != NULL) {
         fprintf(stderr, "FAIL: cb getter null owner\n");
         return 1;
     }
-    if (mglRenderCppCreateCommandBufferOwnerAdopt(NULL, NULL) != -1) {
+    if (mglRenderCreateCommandBufferOwnerAdopt(NULL, NULL) != -1) {
         fprintf(stderr, "FAIL: cb adopt bad args\n");
         return 1;
     }
@@ -3205,24 +3205,24 @@ static int verifyCommandBufferGetterAndAdopt(void) {
         return 1;
     }
     void *owner = NULL;
-    if (mglRenderCppCreateCommandBufferOwnerAdopt(
+    if (mglRenderCreateCommandBufferOwnerAdopt(
             (__bridge void *)objcCB, &owner) != 0 || !owner) {
         fprintf(stderr, "FAIL: cb adopt create\n");
         return 1;
     }
     id<MTLCommandBuffer> readBack =
-        (__bridge id<MTLCommandBuffer>)mglRenderCppCommandBufferOwnerGetCurrent(
+        (__bridge id<MTLCommandBuffer>)mglRenderCommandBufferOwnerGetCurrent(
             owner);
     if (readBack != objcCB) {
         fprintf(stderr, "FAIL: cb adopt identity\n");
         return 1;
     }
-    mglRenderCppDiscardCommandBufferOwnerCurrent(owner);
-    if (mglRenderCppCommandBufferOwnerGetCurrent(owner) != NULL) {
+    mglRenderDiscardCommandBufferOwnerCurrent(owner);
+    if (mglRenderCommandBufferOwnerGetCurrent(owner) != NULL) {
         fprintf(stderr, "FAIL: cb getter after discard\n");
         return 1;
     }
-    mglRenderCppDestroyCommandBufferOwner(&owner);
+    mglRenderDestroyCommandBufferOwner(&owner);
     if (owner != NULL) {
         fprintf(stderr, "FAIL: cb owner not cleared\n");
         return 1;
@@ -3233,7 +3233,7 @@ static int verifyCommandBufferGetterAndAdopt(void) {
 
 static int verifyRenderEncoderGetter(void) {
     /* P5: render encoders stay opaque; callers can only query owner state. */
-    if (mglRenderCppRenderEncoderOwnerHasCurrent(NULL) != 0) {
+    if (mglRenderEncoderOwnerHasCurrent(NULL) != 0) {
         fprintf(stderr, "FAIL: re owner null state\n");
         return 1;
     }
@@ -3256,30 +3256,30 @@ static int verifyRenderEncoderGetter(void) {
         return 1;
     }
     void *owner = NULL;
-    if (mglRenderCppCreateRenderEncoderOwner(
+    if (mglRenderCreateRenderEncoderOwner(
             (__bridge void *)encoder, &owner) != 0 || !owner) {
         fprintf(stderr, "FAIL: re owner create\n");
         return 1;
     }
-    if (mglRenderCppRenderEncoderOwnerHasCurrent(owner) != 1) {
+    if (mglRenderEncoderOwnerHasCurrent(owner) != 1) {
         fprintf(stderr, "FAIL: re owner missing current encoder\n");
         return 1;
     }
-    if (mglRenderCppSetRenderEncoderOwnerLabel(
+    if (mglRenderSetRenderEncoderOwnerLabel(
             NULL, "invalid") != -1 ||
-        mglRenderCppSetRenderEncoderOwnerLabel(
+        mglRenderSetRenderEncoderOwnerLabel(
             owner, NULL) != -1 ||
-        mglRenderCppSetRenderEncoderOwnerLabel(
+        mglRenderSetRenderEncoderOwnerLabel(
             owner, "Render Encoder Owner Smoke") != 0 ||
-        mglRenderCppEndRenderEncoderOwner(owner) != 0) {
+        mglRenderEndRenderEncoderOwner(owner) != 0) {
         fprintf(stderr, "FAIL: re owner end\n");
         return 1;
     }
-    if (mglRenderCppRenderEncoderOwnerHasCurrent(owner) != 0) {
+    if (mglRenderEncoderOwnerHasCurrent(owner) != 0) {
         fprintf(stderr, "FAIL: re owner still active after end\n");
         return 1;
     }
-    mglRenderCppDestroyRenderEncoderOwner(&owner);
+    mglRenderDestroyRenderEncoderOwner(&owner);
     if (owner != NULL) {
         fprintf(stderr, "FAIL: re owner not cleared\n");
         return 1;
@@ -3293,19 +3293,19 @@ static int verifyMDIScratchOwner(void) {
     /* P4.5 (item 1155): MDI scratch allocator — the ObjC gate-off allocator
      * now delegates to the same C++ owner. */
     void *owner = NULL;
-    if (mglRenderCppCreateMDIScratchOwner(&owner) != 0 || !owner) {
+    if (mglRenderCreateMDIScratchOwner(&owner) != 0 || !owner) {
         fprintf(stderr, "FAIL: mdi owner create\n");
         return 1;
     }
-    if (mglRenderCppAllocateMDIScratch(NULL, 16, 256, NULL, NULL, NULL) != -1 ||
-        mglRenderCppAllocateMDIScratch(owner, 0, 256, NULL, NULL, NULL) != -1 ||
-        mglRenderCppAllocateMDIScratch(owner, 16, 3, NULL, NULL, NULL) != -1) {
+    if (mglRenderAllocateMDIScratch(NULL, 16, 256, NULL, NULL, NULL) != -1 ||
+        mglRenderAllocateMDIScratch(owner, 0, 256, NULL, NULL, NULL) != -1 ||
+        mglRenderAllocateMDIScratch(owner, 16, 3, NULL, NULL, NULL) != -1) {
         fprintf(stderr, "FAIL: mdi bad args\n");
         return 1;
     }
     void *buffer = NULL;
     uint64_t offset = 0, capacity = 0;
-    if (mglRenderCppAllocateMDIScratch(
+    if (mglRenderAllocateMDIScratch(
             owner, 128, 256, &buffer, &offset, &capacity) != 0 ||
         !buffer || offset != 0 || capacity < 65536) {
         fprintf(stderr, "FAIL: mdi first alloc (off=%llu cap=%llu)\n",
@@ -3314,7 +3314,7 @@ static int verifyMDIScratchOwner(void) {
     }
     void *sameBuffer = NULL;
     uint64_t offset2 = 0;
-    if (mglRenderCppAllocateMDIScratch(
+    if (mglRenderAllocateMDIScratch(
             owner, 128, 256, &sameBuffer, &offset2, &capacity) != 0 ||
         sameBuffer != buffer || offset2 != 256) {
         fprintf(stderr, "FAIL: mdi second alloc (off=%llu)\n",
@@ -3323,14 +3323,14 @@ static int verifyMDIScratchOwner(void) {
     }
     void *grownBuffer = NULL;
     uint64_t offset3 = 0;
-    if (mglRenderCppAllocateMDIScratch(
+    if (mglRenderAllocateMDIScratch(
             owner, 200000, 256, &grownBuffer, &offset3, &capacity) != 0 ||
         !grownBuffer || offset3 != 0 || capacity < 200000) {
         fprintf(stderr, "FAIL: mdi grow (off=%llu cap=%llu)\n",
                 (unsigned long long)offset3, (unsigned long long)capacity);
         return 1;
     }
-    mglRenderCppDestroyMDIScratchOwner(&owner);
+    mglRenderDestroyMDIScratchOwner(&owner);
     if (owner != NULL) {
         fprintf(stderr, "FAIL: mdi owner not cleared\n");
         return 1;
@@ -3343,12 +3343,12 @@ static int verifyUInt8ToUInt16(void) {
     /* P.5 (item 1141): GL_UNSIGNED_BYTE -> UInt16 element expansion. */
     const uint8_t b[] = {0, 1, 0xff, 250, 5};
     uint16_t *idx = NULL; uint64_t n = 0;
-    if (mglRenderCppExpandUInt8ToUInt16(NULL, 3, &idx, &n) != -1 ||
-        mglRenderCppExpandUInt8ToUInt16(b, 0, &idx, &n) != -1) {
+    if (mglRenderExpandUInt8ToUInt16(NULL, 3, &idx, &n) != -1 ||
+        mglRenderExpandUInt8ToUInt16(b, 0, &idx, &n) != -1) {
         fprintf(stderr, "FAIL: u16 bad args\n");
         return 1;
     }
-    if (mglRenderCppExpandUInt8ToUInt16(b, 5, &idx, &n) != 0 ||
+    if (mglRenderExpandUInt8ToUInt16(b, 5, &idx, &n) != 0 ||
         n != 5 || idx[0]!=0 || idx[1]!=1 || idx[2]!=0xff || idx[3]!=250 || idx[4]!=5) {
         fprintf(stderr, "FAIL: u16 content\n");
         return 1;
@@ -3361,7 +3361,7 @@ static int verifyUInt8ToUInt16(void) {
 static int verifyArrayVariants(void) {
     /* P4.5 (item 1141/887): fan/strip/line-loop ARRAY emulations. */
     uint32_t *idx = NULL; uint64_t n = 0;
-    if (mglRenderCppExpandTriangleFanArrayIndices(5, &idx, &n) != 0 ||
+    if (mglRenderExpandTriangleFanArrayIndices(5, &idx, &n) != 0 ||
         n != 9 || idx[0]!=0 || idx[1]!=1 || idx[2]!=2 ||
         idx[3]!=0 || idx[4]!=2 || idx[5]!=3 ||
         idx[6]!=0 || idx[7]!=3 || idx[8]!=4) {
@@ -3369,7 +3369,7 @@ static int verifyArrayVariants(void) {
         return 1;
     }
     free(idx);
-    if (mglRenderCppExpandTriangleStripArrayIndices(5, &idx, &n) != 0 ||
+    if (mglRenderExpandTriangleStripArrayIndices(5, &idx, &n) != 0 ||
         n != 9 ||
         idx[0]!=0||idx[1]!=1||idx[2]!=2 ||
         idx[3]!=2||idx[4]!=1||idx[5]!=3 ||
@@ -3379,15 +3379,15 @@ static int verifyArrayVariants(void) {
     }
     free(idx);
     /* Line loop array firstVertex-relative. */
-    if (mglRenderCppExpandLineLoopArrayIndices(100, 3, &idx, &n) != 0 ||
+    if (mglRenderExpandLineLoopArrayIndices(100, 3, &idx, &n) != 0 ||
         n != 4 || idx[0]!=100||idx[1]!=101||idx[2]!=102||idx[3]!=100) {
         fprintf(stderr, "FAIL: line loop array\n");
         return 1;
     }
     free(idx);
-    if (mglRenderCppExpandTriangleFanArrayIndices(2, &idx, &n) != -1 ||
-        mglRenderCppExpandTriangleStripArrayIndices(2, &idx, &n) != -1 ||
-        mglRenderCppExpandLineLoopArrayIndices(0, 1, &idx, &n) != -1) {
+    if (mglRenderExpandTriangleFanArrayIndices(2, &idx, &n) != -1 ||
+        mglRenderExpandTriangleStripArrayIndices(2, &idx, &n) != -1 ||
+        mglRenderExpandLineLoopArrayIndices(0, 1, &idx, &n) != -1) {
         fprintf(stderr, "FAIL: array bad args\n");
         return 1;
     }
@@ -3398,7 +3398,7 @@ static int verifyArrayVariants(void) {
 static int verifyQuadLine(void) {
     /* P4.5 (item 1141/887): quad-array/element line-loop emulation (8/quad). */
     uint32_t *idx = NULL; uint64_t n = 0;
-    if (mglRenderCppExpandQuadArrayLineIndices(1, &idx, &n) != 0 ||
+    if (mglRenderExpandQuadArrayLineIndices(1, &idx, &n) != 0 ||
         n != 8 ||
         idx[0]!=0||idx[1]!=1||idx[2]!=1||idx[3]!=2||idx[4]!=2||idx[5]!=3||idx[6]!=3||idx[7]!=0) {
         fprintf(stderr, "FAIL: quad array line\n");
@@ -3406,15 +3406,15 @@ static int verifyQuadLine(void) {
     }
     free(idx);
     const uint16_t q[] = {10,20,30,40};
-    if (mglRenderCppExpandQuadElementLineIndices((const uint8_t*)q, 2, 1, &idx, &n) != 0 ||
+    if (mglRenderExpandQuadElementLineIndices((const uint8_t*)q, 2, 1, &idx, &n) != 0 ||
         n != 8 ||
         idx[0]!=10||idx[1]!=20||idx[2]!=20||idx[3]!=30||idx[4]!=30||idx[5]!=40||idx[6]!=40||idx[7]!=10) {
         fprintf(stderr, "FAIL: quad elem line\n");
         return 1;
     }
     free(idx);
-    if (mglRenderCppExpandQuadArrayLineIndices(0, &idx, &n) != -1 ||
-        mglRenderCppExpandQuadElementLineIndices(NULL, 2, 1, &idx, &n) != -1) {
+    if (mglRenderExpandQuadArrayLineIndices(0, &idx, &n) != -1 ||
+        mglRenderExpandQuadElementLineIndices(NULL, 2, 1, &idx, &n) != -1) {
         fprintf(stderr, "FAIL: quad line bad args\n");
         return 1;
     }
@@ -3425,7 +3425,7 @@ static int verifyQuadLine(void) {
 static int verifyExpandQuad(void) {
     /* P4.5 (item 1141/887): quad-array/quad-element emulation. */
     uint32_t *idx = NULL; uint64_t n = 0;
-    if (mglRenderCppExpandQuadArrayIndices(2, &idx, &n) != 0 ||
+    if (mglRenderExpandQuadArrayIndices(2, &idx, &n) != 0 ||
         n != 12 ||
         idx[0]!=0||idx[1]!=1||idx[2]!=2||idx[3]!=0||idx[4]!=2||idx[5]!=3 ||
         idx[6]!=4||idx[7]!=5||idx[8]!=6||idx[9]!=4||idx[10]!=6||idx[11]!=7) {
@@ -3434,7 +3434,7 @@ static int verifyExpandQuad(void) {
     }
     free(idx);
     const uint16_t q[] = {10,11,12,13, 20,21,22,23};
-    if (mglRenderCppExpandQuadElementIndices((const uint8_t*)q, 2, 2, &idx, &n) != 0 ||
+    if (mglRenderExpandQuadElementIndices((const uint8_t*)q, 2, 2, &idx, &n) != 0 ||
         n != 12 ||
         idx[0]!=10||idx[1]!=11||idx[2]!=12||idx[3]!=10||idx[4]!=12||idx[5]!=13 ||
         idx[6]!=20||idx[7]!=21||idx[8]!=22||idx[9]!=20||idx[10]!=22||idx[11]!=23) {
@@ -3442,8 +3442,8 @@ static int verifyExpandQuad(void) {
         return 1;
     }
     free(idx);
-    if (mglRenderCppExpandQuadArrayIndices(0, &idx, &n) != -1 ||
-        mglRenderCppExpandQuadElementIndices(NULL, 2, 1, &idx, &n) != -1) {
+    if (mglRenderExpandQuadArrayIndices(0, &idx, &n) != -1 ||
+        mglRenderExpandQuadElementIndices(NULL, 2, 1, &idx, &n) != -1) {
         fprintf(stderr, "FAIL: quad bad args\n");
         return 1;
     }
@@ -3455,7 +3455,7 @@ static int verifyExpandStripAndLineLoop(void) {
     /* P4.5 (item 1141/887): triangle-strip + LINE_LOOP element expansion. */
     const uint16_t s16[] = {0,1,2,3,4};  /* count-2 = 3 strips */
     uint32_t *idx = NULL; uint64_t n = 0;
-    if (mglRenderCppExpandTriangleStripIndices((const uint8_t*)s16, 2, 5, &idx, &n) != 0 ||
+    if (mglRenderExpandTriangleStripIndices((const uint8_t*)s16, 2, 5, &idx, &n) != 0 ||
         n != 9 ||
         idx[0]!=0||idx[1]!=1||idx[2]!=2 ||
         idx[3]!=2||idx[4]!=1||idx[5]!=3 ||
@@ -3465,21 +3465,21 @@ static int verifyExpandStripAndLineLoop(void) {
     }
     free(idx);
     const uint8_t l8[] = {7,8,9};
-    if (mglRenderCppExpandLineLoopIndices(l8, 1, 3, &idx, &n) != 0 ||
+    if (mglRenderExpandLineLoopIndices(l8, 1, 3, &idx, &n) != 0 ||
         n != 4 || idx[0]!=7||idx[1]!=8||idx[2]!=9||idx[3]!=7) {
         fprintf(stderr, "FAIL: loop\n");
         return 1;
     }
     free(idx);
     const uint8_t l8b[] = {5,6};
-    if (mglRenderCppExpandLineLoopIndices(l8b, 1, 2, &idx, &n) != 0 ||
+    if (mglRenderExpandLineLoopIndices(l8b, 1, 2, &idx, &n) != 0 ||
         n != 3 || idx[0]!=5||idx[1]!=6||idx[2]!=5) {
         fprintf(stderr, "FAIL: loop2\n");
         return 1;
     }
     free(idx);
-    if (mglRenderCppExpandTriangleStripIndices(NULL, 2, 5, &idx, &n) != -1 ||
-        mglRenderCppExpandLineLoopIndices(l8, 1, 1, &idx, &n) != -1) {
+    if (mglRenderExpandTriangleStripIndices(NULL, 2, 5, &idx, &n) != -1 ||
+        mglRenderExpandLineLoopIndices(l8, 1, 1, &idx, &n) != -1) {
         fprintf(stderr, "FAIL: strip/loop bad args\n");
         return 1;
     }
@@ -3491,13 +3491,13 @@ static int verifyExpandStripAndLineLoop(void) {
 static int verifyExpandTriangleFan(void) {
     /* P4.5 (item 1141/887): triangle-fan element emulation expansion. */
     uint32_t *idx = NULL; uint64_t n = 0;
-    if (mglRenderCppExpandTriangleFanIndices(NULL, 2, 4, &idx, &n) != -1) {
+    if (mglRenderExpandTriangleFanIndices(NULL, 2, 4, &idx, &n) != -1) {
         fprintf(stderr, "FAIL: fan bad args\n");
         return 1;
     }
     /* center=7; triangles (7,10,11),(7,11,12),(7,12,13) -> 9 indices. */
     const uint16_t u16[] = {7, 10, 11, 12, 13};
-    if (mglRenderCppExpandTriangleFanIndices((const uint8_t*)u16, 2, 5, &idx, &n) != 0 ||
+    if (mglRenderExpandTriangleFanIndices((const uint8_t*)u16, 2, 5, &idx, &n) != 0 ||
         n != 9 || idx[0]!=7 || idx[1]!=10 || idx[2]!=11 || idx[3]!=7 ||
         idx[4]!=11 || idx[5]!=12 || idx[6]!=7 || idx[7]!=12 || idx[8]!=13) {
         fprintf(stderr, "FAIL: fan content n=%llu\n", (unsigned long long)n);
@@ -3505,13 +3505,13 @@ static int verifyExpandTriangleFan(void) {
     }
     free(idx);
     const uint8_t u8[] = {0,1,2,3};
-    if (mglRenderCppExpandTriangleFanIndices(u8, 1, 4, &idx, &n) != 0 ||
+    if (mglRenderExpandTriangleFanIndices(u8, 1, 4, &idx, &n) != 0 ||
         n != 6 || idx[1]!=1 || idx[2]!=2 || idx[4]!=2) {
         fprintf(stderr, "FAIL: fan u8\n");
         return 1;
     }
     free(idx);
-    if (mglRenderCppExpandTriangleFanIndices(u8, 1, 2, &idx, &n) != -1) {
+    if (mglRenderExpandTriangleFanIndices(u8, 1, 2, &idx, &n) != -1) {
         fprintf(stderr, "FAIL: fan too short\n");
         return 1;
     }
@@ -3521,18 +3521,18 @@ static int verifyExpandTriangleFan(void) {
 
 static int verifyGLIndexValueRead(void) {
     /* P4.5 (item 1141): GL index element size + index-value read. */
-    if (mglRenderCppGLIndexElementSize(GL_UNSIGNED_BYTE) != 1 ||
-        mglRenderCppGLIndexElementSize(GL_UNSIGNED_SHORT) != 2 ||
-        mglRenderCppGLIndexElementSize(GL_UNSIGNED_INT) != 4 ||
-        mglRenderCppGLIndexElementSize(0xbad) != 0) {
+    if (mglRenderGLIndexElementSize(GL_UNSIGNED_BYTE) != 1 ||
+        mglRenderGLIndexElementSize(GL_UNSIGNED_SHORT) != 2 ||
+        mglRenderGLIndexElementSize(GL_UNSIGNED_INT) != 4 ||
+        mglRenderGLIndexElementSize(0xbad) != 0) {
         fprintf(stderr, "FAIL: index elem size\\n");
         return 1;
     }
     const uint8_t b[] = {3, 0, 1, 0}; /* UInt16 values: 3 then 1 */
-    if (mglRenderCppReadGLIndexValue(b, 1, 0) != 3 ||
-        mglRenderCppReadGLIndexValue(b, 2, 1) != 1 ||
-        mglRenderCppReadGLIndexValue(NULL, 1, 0) != 0 ||
-        mglRenderCppReadGLIndexValue(b, 0, 0) != 0) {
+    if (mglRenderReadGLIndexValue(b, 1, 0) != 3 ||
+        mglRenderReadGLIndexValue(b, 2, 1) != 1 ||
+        mglRenderReadGLIndexValue(NULL, 1, 0) != 0 ||
+        mglRenderReadGLIndexValue(b, 0, 0) != 0) {
         fprintf(stderr, "FAIL: read index value\\n");
         return 1;
     }
@@ -3542,15 +3542,15 @@ static int verifyGLIndexValueRead(void) {
 
 static int verifyGLTypeElementByteSize(void) {
     /* P4.5 (item 1144): GL type -> element byte size. */
-    if (mglRenderCppGLTypeElementByteSize(GL_FLOAT) != 4 ||
-        mglRenderCppGLTypeElementByteSize(GL_FLOAT_VEC2) != 8 ||
-        mglRenderCppGLTypeElementByteSize(GL_FLOAT_VEC3) != 12 ||
-        mglRenderCppGLTypeElementByteSize(GL_FLOAT_VEC4) != 16 ||
-        mglRenderCppGLTypeElementByteSize(GL_FLOAT_MAT2) != 8 ||
-        mglRenderCppGLTypeElementByteSize(GL_FLOAT_MAT3) != 12 ||
-        mglRenderCppGLTypeElementByteSize(GL_FLOAT_MAT4) != 16 ||
-        mglRenderCppGLTypeElementByteSize(GL_DOUBLE) != 8 ||
-        mglRenderCppGLTypeElementByteSize(0xfeed) != 4) {
+    if (mglRenderGLTypeElementByteSize(GL_FLOAT) != 4 ||
+        mglRenderGLTypeElementByteSize(GL_FLOAT_VEC2) != 8 ||
+        mglRenderGLTypeElementByteSize(GL_FLOAT_VEC3) != 12 ||
+        mglRenderGLTypeElementByteSize(GL_FLOAT_VEC4) != 16 ||
+        mglRenderGLTypeElementByteSize(GL_FLOAT_MAT2) != 8 ||
+        mglRenderGLTypeElementByteSize(GL_FLOAT_MAT3) != 12 ||
+        mglRenderGLTypeElementByteSize(GL_FLOAT_MAT4) != 16 ||
+        mglRenderGLTypeElementByteSize(GL_DOUBLE) != 8 ||
+        mglRenderGLTypeElementByteSize(0xfeed) != 4) {
         fprintf(stderr, "FAIL: gl type element byte size\\n");
         return 1;
     }
@@ -3561,11 +3561,11 @@ static int verifyGLTypeElementByteSize(void) {
 static int verifyPrimitiveRestartFixedIndex(void) {
     /* P4.5 (item 1141): fixed restart index by GL type. */
     uint32_t idx = 0;
-    if (mglRenderCppPrimitiveRestartFixedIndex(GL_UNSIGNED_BYTE, &idx) != 1 || idx != 0xffu ||
-        mglRenderCppPrimitiveRestartFixedIndex(GL_UNSIGNED_SHORT, &idx) != 1 || idx != 0xffffu ||
-        mglRenderCppPrimitiveRestartFixedIndex(GL_UNSIGNED_INT, &idx) != 1 || idx != 0xffffffffu ||
-        mglRenderCppPrimitiveRestartFixedIndex(0xdead, &idx) != 0 ||
-        mglRenderCppPrimitiveRestartFixedIndex(GL_UNSIGNED_BYTE, NULL) != -1) {
+    if (mglRenderPrimitiveRestartFixedIndex(GL_UNSIGNED_BYTE, &idx) != 1 || idx != 0xffu ||
+        mglRenderPrimitiveRestartFixedIndex(GL_UNSIGNED_SHORT, &idx) != 1 || idx != 0xffffu ||
+        mglRenderPrimitiveRestartFixedIndex(GL_UNSIGNED_INT, &idx) != 1 || idx != 0xffffffffu ||
+        mglRenderPrimitiveRestartFixedIndex(0xdead, &idx) != 0 ||
+        mglRenderPrimitiveRestartFixedIndex(GL_UNSIGNED_BYTE, NULL) != -1) {
         fprintf(stderr, "FAIL: fixed restart index\\n");
         return 1;
     }
@@ -3576,22 +3576,22 @@ static int verifyPrimitiveRestartFixedIndex(void) {
 static int verifyHashStepU64(void) {
     /* P4.5 (item 1144): FNV-1a single step = (h^v)*fF. */
     /* mglHashStepU64(0, 0) = 0*const = 0. */
-    uint64_t h = mglRenderCppHashStepU64(0, 0);
+    uint64_t h = mglRenderHashStepU64(0, 0);
     if (h != 0) { fprintf(stderr, "FAIL: hash 0,0\\n"); return 1; }
-    h = mglRenderCppHashStepU64(0, 1);
+    h = mglRenderHashStepU64(0, 1);
     if (h != 1099511628211ull) { fprintf(stderr, "FAIL: hash 0,1\\n"); return 1; }
-    h = mglRenderCppHashStepU64(1099511628211ull, 2);  /* (const^1^2) */
+    h = mglRenderHashStepU64(1099511628211ull, 2);  /* (const^1^2) */
     printf("HASH_STEP_U64_OK\\n");
     return 0;
 }
 
 static int verifyDoubleAttribFormat(void) {
     /* P4.5 (item 1141): double-attrib size -> MTL Fmt value. */
-    if (mglRenderCppDoubleVertexAttribFloatFormat(1) != 28 ||
-        mglRenderCppDoubleVertexAttribFloatFormat(2) != 29 ||
-        mglRenderCppDoubleVertexAttribFloatFormat(3) != 30 ||
-        mglRenderCppDoubleVertexAttribFloatFormat(4) != 31 ||
-        mglRenderCppDoubleVertexAttribFloatFormat(5) != 0) {
+    if (mglRenderDoubleVertexAttribFloatFormat(1) != 28 ||
+        mglRenderDoubleVertexAttribFloatFormat(2) != 29 ||
+        mglRenderDoubleVertexAttribFloatFormat(3) != 30 ||
+        mglRenderDoubleVertexAttribFloatFormat(4) != 31 ||
+        mglRenderDoubleVertexAttribFloatFormat(5) != 0) {
         fprintf(stderr, "FAIL: double attrib fmt\\n");
         return 1;
     }
@@ -3639,7 +3639,7 @@ static int verifyIntegerAttribConversionFormat(void) {
          MTLVertexFormatInvalid},
     };
     for (const IntegerAttribFormatCase &test : cases) {
-        uint32_t actual = mglRenderCppIntegerAttribConversionFormat(
+        uint32_t actual = mglRenderIntegerAttribConversionFormat(
             test.source_type, test.shader_type, test.size);
         if (actual != (uint32_t)test.expected) {
             fprintf(stderr,
@@ -3654,10 +3654,10 @@ static int verifyIntegerAttribConversionFormat(void) {
 
 static int verifyAlignStride(void) {
     /* P4.5 (item 1141): vertex stride aligned to 4. */
-    if (mglRenderCppAlignVertexStrideForMetal(0) != 0 ||
-        mglRenderCppAlignVertexStrideForMetal(4) != 4 ||
-        mglRenderCppAlignVertexStrideForMetal(2) != 4 ||
-        mglRenderCppAlignVertexStrideForMetal(9) != 12) {
+    if (mglRenderAlignVertexStrideForMetal(0) != 0 ||
+        mglRenderAlignVertexStrideForMetal(4) != 4 ||
+        mglRenderAlignVertexStrideForMetal(2) != 4 ||
+        mglRenderAlignVertexStrideForMetal(9) != 12) {
         fprintf(stderr, "FAIL: align stride\\n");
         return 1;
     }
@@ -3667,11 +3667,11 @@ static int verifyAlignStride(void) {
 
 static int verifyQuadTriangleCount(void) {
     /* P4.5 (item 1141): quad -> triangle index count arithmetic. */
-    if (mglRenderCppQuadTriangleIndexCount(0) != 0 ||
-        mglRenderCppQuadTriangleIndexCount(4) != 6 ||
-        mglRenderCppQuadTriangleIndexCount(8) != 12 ||
-        mglRenderCppQuadTriangleIndexCount(3) != 0 ||
-        mglRenderCppQuadTriangleIndexCount(1) != 0) {
+    if (mglRenderQuadTriangleIndexCount(0) != 0 ||
+        mglRenderQuadTriangleIndexCount(4) != 6 ||
+        mglRenderQuadTriangleIndexCount(8) != 12 ||
+        mglRenderQuadTriangleIndexCount(3) != 0 ||
+        mglRenderQuadTriangleIndexCount(1) != 0) {
         fprintf(stderr, "FAIL: quad tri count\\n");
         return 1;
     }
@@ -3681,20 +3681,20 @@ static int verifyQuadTriangleCount(void) {
 
 static int verifyDrawModePredicates(void) {
     /* P4.5 (item 1141): draw-mode classification predicates. */
-    if (mglRenderCppDrawModeProducesPolygons(GL_TRIANGLES) != 1 ||
-        mglRenderCppDrawModeProducesPolygons(GL_QUADS) != 1 ||
-        mglRenderCppDrawModeProducesPolygons(GL_LINES) != 0 ||
-        mglRenderCppDrawModeProducesPolygons(GL_POINTS) != 0) {
+    if (mglRenderDrawModeProducesPolygons(GL_TRIANGLES) != 1 ||
+        mglRenderDrawModeProducesPolygons(GL_QUADS) != 1 ||
+        mglRenderDrawModeProducesPolygons(GL_LINES) != 0 ||
+        mglRenderDrawModeProducesPolygons(GL_POINTS) != 0) {
         fprintf(stderr, "FAIL: draws polygons\\n");
         return 1;
     }
-    if (mglRenderCppPrimitiveModeHasDrawableSegment(GL_LINES, 1) != 0 ||
-        mglRenderCppPrimitiveModeHasDrawableSegment(GL_LINES, 2) != 1 ||
-        mglRenderCppPrimitiveModeHasDrawableSegment(GL_TRIANGLES, 2) != 0 ||
-        mglRenderCppPrimitiveModeHasDrawableSegment(GL_TRIANGLES, 3) != 1 ||
-        mglRenderCppPrimitiveModeHasDrawableSegment(GL_QUADS, 4) != 1 ||
-        mglRenderCppPrimitiveModeHasDrawableSegment(GL_POINTS, 0) != 0 ||
-        mglRenderCppPrimitiveModeHasDrawableSegment(GL_POINTS, 1) != 1) {
+    if (mglRenderPrimitiveModeHasDrawableSegment(GL_LINES, 1) != 0 ||
+        mglRenderPrimitiveModeHasDrawableSegment(GL_LINES, 2) != 1 ||
+        mglRenderPrimitiveModeHasDrawableSegment(GL_TRIANGLES, 2) != 0 ||
+        mglRenderPrimitiveModeHasDrawableSegment(GL_TRIANGLES, 3) != 1 ||
+        mglRenderPrimitiveModeHasDrawableSegment(GL_QUADS, 4) != 1 ||
+        mglRenderPrimitiveModeHasDrawableSegment(GL_POINTS, 0) != 0 ||
+        mglRenderPrimitiveModeHasDrawableSegment(GL_POINTS, 1) != 1) {
         fprintf(stderr, "FAIL: has drawable segment\\n");
         return 1;
     }
@@ -3704,18 +3704,18 @@ static int verifyDrawModePredicates(void) {
 
 static int verifyVertexAttribBytes(void) {
     /* P4.5 (item 1141): vertex-attribute component size + element bytes. */
-    uint32_t comp = mglRenderCppVertexAttribComponentSize(GL_UNSIGNED_BYTE);
-    uint32_t compf = mglRenderCppVertexAttribComponentSize(GL_FLOAT);
-    uint32_t compd = mglRenderCppVertexAttribComponentSize(GL_DOUBLE);
+    uint32_t comp = mglRenderVertexAttribComponentSize(GL_UNSIGNED_BYTE);
+    uint32_t compf = mglRenderVertexAttribComponentSize(GL_FLOAT);
+    uint32_t compd = mglRenderVertexAttribComponentSize(GL_DOUBLE);
     if (comp != 1 || compf != 4 || compd != 8 ||
-        mglRenderCppVertexAttribComponentSize(0xbad) != 0) {
+        mglRenderVertexAttribComponentSize(0xbad) != 0) {
         fprintf(stderr, "FAIL: attrib comp size\\n");
         return 1;
     }
-    if (mglRenderCppVertexAttribElementBytes(GL_FLOAT, 3) != 12 ||
-        mglRenderCppVertexAttribElementBytes(GL_UNSIGNED_INT_2_10_10_10_REV, 4) != 4 ||
-        mglRenderCppVertexAttribElementBytes(GL_FLOAT, 0) != 0 ||
-        mglRenderCppVertexAttribElementBytes(0xbad, 3) != 0) {
+    if (mglRenderVertexAttribElementBytes(GL_FLOAT, 3) != 12 ||
+        mglRenderVertexAttribElementBytes(GL_UNSIGNED_INT_2_10_10_10_REV, 4) != 4 ||
+        mglRenderVertexAttribElementBytes(GL_FLOAT, 0) != 0 ||
+        mglRenderVertexAttribElementBytes(0xbad, 3) != 0) {
         fprintf(stderr, "FAIL: attrib element bytes\\n");
         return 1;
     }
@@ -3726,19 +3726,19 @@ static int verifyVertexAttribBytes(void) {
 static int verifyComputeIndexByteOffset(void) {
     /* P.5 (item 1141): base + first*stride with overflow checks. */
     uint64_t out = 0u;
-    if (mglRenderCppComputeIndexByteOffset(10, 3, 4, &out) != 0 || out != 22) {
+    if (mglRenderComputeIndexByteOffset(10, 3, 4, &out) != 0 || out != 22) {
         fprintf(stderr, "FAIL: idx offset\\n");
         return 1;
     }
-    if (mglRenderCppComputeIndexByteOffset(0, 0, 7, &out) != 0 || out != 0) {
+    if (mglRenderComputeIndexByteOffset(0, 0, 7, &out) != 0 || out != 0) {
         fprintf(stderr, "FAIL: idx offset zero\\n");
         return 1;
     }
-    if (mglRenderCppComputeIndexByteOffset(0, 100, 0, &out) != -1) {
+    if (mglRenderComputeIndexByteOffset(0, 100, 0, &out) != -1) {
         fprintf(stderr, "FAIL: idx stride zero\\n");
         return 1;
     }
-    if (mglRenderCppComputeIndexByteOffset(0, 3, 4, NULL) != -1) {
+    if (mglRenderComputeIndexByteOffset(0, 3, 4, NULL) != -1) {
         fprintf(stderr, "FAIL: idx null out\\n");
         return 1;
     }
@@ -3750,22 +3750,22 @@ static int verifyComputePreparedByteOffset(void) {
     /* P4.5 (item 1141/887): prepared (Metal-side) byte-offset math.
      * GL_UNSIGNED_BYTE doubles; other types pass through; overflow caught. */
     uint64_t out = 0u;
-    if (mglRenderCppComputePreparedIndexByteOffset(GL_UNSIGNED_SHORT, 100, &out) != 0 ||
+    if (mglRenderComputePreparedIndexByteOffset(GL_UNSIGNED_SHORT, 100, &out) != 0 ||
         out != 100) {
         fprintf(stderr, "FAIL: prepared short pass-through\\n");
         return 1;
     }
-    if (mglRenderCppComputePreparedIndexByteOffset(GL_UNSIGNED_BYTE, 100, &out) != 0 ||
+    if (mglRenderComputePreparedIndexByteOffset(GL_UNSIGNED_BYTE, 100, &out) != 0 ||
         out != 200) {
         fprintf(stderr, "FAIL: prepared byte doubled\\n");
         return 1;
     }
-    if (mglRenderCppComputePreparedIndexByteOffset(GL_UNSIGNED_BYTE, 0, &out) != 0 ||
+    if (mglRenderComputePreparedIndexByteOffset(GL_UNSIGNED_BYTE, 0, &out) != 0 ||
         out != 0) {
         fprintf(stderr, "FAIL: prepared byte zero\\n");
         return 1;
     }
-    if (mglRenderCppComputePreparedIndexByteOffset(GL_UNSIGNED_SHORT, 100, NULL) != -1) {
+    if (mglRenderComputePreparedIndexByteOffset(GL_UNSIGNED_SHORT, 100, NULL) != -1) {
         fprintf(stderr, "FAIL: prepared null out\\n");
         return 1;
     }
@@ -3777,27 +3777,27 @@ static int verifyScanIndexRange(void) {
     /* P4.5 (item 1141/887): index-range scan ignoring restart (scalar outs). */
     const uint8_t b[] = {3, 1, 0xff, 4, 9};   /* elem width 1; no restart */
     uint32_t lo = 0, hi = 0; int valid = 0;
-    if (mglRenderCppScanIndexRangeIgnoringRestart(b, 1, 5, 0, 0, &lo, &hi, &valid) != 0 ||
+    if (mglRenderScanIndexRangeIgnoringRestart(b, 1, 5, 0, 0, &lo, &hi, &valid) != 0 ||
         !valid || lo != 1 || hi != 0xff) {
         fprintf(stderr, "FAIL: scan no-restart\\n");
         return 1;
     }
     /* Restart 0xff skipped -> hi=9. */
-    if (mglRenderCppScanIndexRangeIgnoringRestart(b, 1, 5, 1, 0xff, &lo, &hi, &valid) != 0 ||
+    if (mglRenderScanIndexRangeIgnoringRestart(b, 1, 5, 1, 0xff, &lo, &hi, &valid) != 0 ||
         !valid || lo != 1 || hi != 9) {
         fprintf(stderr, "FAIL: scan restart\\n");
         return 1;
     }
     /* All-restart -> invalid. */
     const uint8_t all[] = {0xff, 0xff};
-    if (mglRenderCppScanIndexRangeIgnoringRestart(all, 1, 2, 1, 0xff, &lo, &hi, &valid) != 0 ||
+    if (mglRenderScanIndexRangeIgnoringRestart(all, 1, 2, 1, 0xff, &lo, &hi, &valid) != 0 ||
         valid != 0) {
         fprintf(stderr, "FAIL: scan all-restart\\n");
         return 1;
     }
     /* Bad args. */
-    if (mglRenderCppScanIndexRangeIgnoringRestart(NULL, 1, 5, 0, 0, &lo, &hi, &valid) != -1 ||
-        mglRenderCppScanIndexRangeIgnoringRestart(b, 1, 5, 0, 0, NULL, &hi, &valid) != -1) {
+    if (mglRenderScanIndexRangeIgnoringRestart(NULL, 1, 5, 0, 0, &lo, &hi, &valid) != -1 ||
+        mglRenderScanIndexRangeIgnoringRestart(b, 1, 5, 0, 0, NULL, &hi, &valid) != -1) {
         fprintf(stderr, "FAIL: scan bad args\\n");
         return 1;
     }
@@ -3807,8 +3807,8 @@ static int verifyScanIndexRange(void) {
 
 static int verifyGeometryGather(void) {
     /* P4.4 (item 1141/887): geometry gather indices. */
-    MGLRenderCppGeometryGatherResult r = {0};
-    if (mglRenderCppGeometryGatherIndices(NULL, 2, 4, 0, 0, 3, &r) != -1) {
+    MGLRenderGeometryGatherResult r = {0};
+    if (mglRenderGeometryGatherIndices(NULL, 2, 4, 0, 0, 3, &r) != -1) {
         fprintf(stderr, "FAIL: gather bad args\n");
         return 1;
     }
@@ -3818,8 +3818,8 @@ static int verifyGeometryGather(void) {
         uint32_t count, int restartEnabled, uint32_t restartIndex,
         const uint32_t *expected, uint32_t expectedCount,
         uint32_t expectedPrimitives, uint32_t expectedMax) -> int {
-        MGLRenderCppGeometryGatherResult result = {0};
-        int rc = mglRenderCppGeometryGatherIndices(
+        MGLRenderGeometryGatherResult result = {0};
+        int rc = mglRenderGeometryGatherIndices(
             (const uint8_t *)indices, elemWidth, count, restartEnabled,
             restartIndex, 3u, &result);
         bool matches = rc == 0 && result.gather &&
@@ -3886,7 +3886,7 @@ static int verifyGeometryGather(void) {
         return 1;
     }
     const uint8_t u8[] = {0,1}; /* too short for a patch -> no primitives replace */
-    if (mglRenderCppGeometryGatherIndices(u8, 1, 2, 0, 0, 3, &r) != -1) {
+    if (mglRenderGeometryGatherIndices(u8, 1, 2, 0, 0, 3, &r) != -1) {
         fprintf(stderr, "FAIL: gather incomplete reject\n");
         return 1;
     }
@@ -3896,34 +3896,34 @@ static int verifyGeometryGather(void) {
 
 static int verifyReadTextureRegionClip(void) {
     /* P4.5 (item 1141/887): readPixels region-vs-level clip. */
-    MGLRenderCppReadTextureRegionClip c = {0};
-    if (mglRenderCppReadTextureRegionClip(0, 0, 10, 10, 100, 100, NULL) != -1) {
+    MGLRenderReadTextureRegionClip c = {0};
+    if (mglRenderReadTextureRegionClip(0, 0, 10, 10, 100, 100, NULL) != -1) {
         fprintf(stderr, "FAIL: clip bad args\n");
         return 1;
     }
     /* Fully inside. */
-    if (mglRenderCppReadTextureRegionClip(2, 3, 10, 10, 100, 100, &c) != 0 ||
+    if (mglRenderReadTextureRegionClip(2, 3, 10, 10, 100, 100, &c) != 0 ||
         c.copy_w != 10 || c.copy_h != 10 || c.dst_x != 0 || c.dst_y != 0 ||
         c.metal_src_x != 2 || c.metal_src_y != 87 || c.empty) {
         fprintf(stderr, "FAIL: clip inside\n");
         return 1;
     }
     /* Partially outside right/top. */
-    if (mglRenderCppReadTextureRegionClip(90, 90, 20, 20, 100, 100, &c) != 0 ||
+    if (mglRenderReadTextureRegionClip(90, 90, 20, 20, 100, 100, &c) != 0 ||
         c.copy_w != 10 || c.copy_h != 10 || c.dst_x != 0 || c.dst_y != 0 ||
         c.metal_src_x != 90 || c.metal_src_y != 0 || c.empty) {
         fprintf(stderr, "FAIL: clip partial\n");
         return 1;
     }
     /* Negative origin clips to zero. */
-    if (mglRenderCppReadTextureRegionClip(-5, -5, 10, 10, 100, 100, &c) != 0 ||
+    if (mglRenderReadTextureRegionClip(-5, -5, 10, 10, 100, 100, &c) != 0 ||
         c.copy_w != 5 || c.copy_h != 5 || c.dst_x != 5 || c.dst_y != 5 ||
         c.metal_src_x != 0 || c.metal_src_y != 95 || c.empty) {
         fprintf(stderr, "FAIL: clip negative\n");
         return 1;
     }
     /* Fully outside -> empty. */
-    if (mglRenderCppReadTextureRegionClip(200, 200, 10, 10, 100, 100, &c) != 0 ||
+    if (mglRenderReadTextureRegionClip(200, 200, 10, 10, 100, 100, &c) != 0 ||
         !c.empty) {
         fprintf(stderr, "FAIL: clip empty\n");
         return 1;
@@ -3934,14 +3934,14 @@ static int verifyReadTextureRegionClip(void) {
 
 static int verifyLevelDimension(void) {
     /* P4.5 (item 1141/887): mip level -> level dimension halving. */
-    if (mglRenderCppMetalTextureLevelDimension(1024, 0) != 1024 ||
-        mglRenderCppMetalTextureLevelDimension(1024, 1) != 512 ||
-        mglRenderCppMetalTextureLevelDimension(1024, 10) != 1 ||
-        mglRenderCppMetalTextureLevelDimension(1024, 99) != 1 ||
-        mglRenderCppMetalTextureLevelDimension(1, 0) != 1 ||
-        mglRenderCppMetalTextureLevelDimension(0, 0) != 1 ||
-        mglRenderCppMetalTextureLevelDimension(64, 2) != 16 ||
-        mglRenderCppMetalTextureLevelDimension(65, 1) != 32) {
+    if (mglRenderMetalTextureLevelDimension(1024, 0) != 1024 ||
+        mglRenderMetalTextureLevelDimension(1024, 1) != 512 ||
+        mglRenderMetalTextureLevelDimension(1024, 10) != 1 ||
+        mglRenderMetalTextureLevelDimension(1024, 99) != 1 ||
+        mglRenderMetalTextureLevelDimension(1, 0) != 1 ||
+        mglRenderMetalTextureLevelDimension(0, 0) != 1 ||
+        mglRenderMetalTextureLevelDimension(64, 2) != 16 ||
+        mglRenderMetalTextureLevelDimension(65, 1) != 32) {
         fprintf(stderr, "FAIL: level dimension\n");
         return 1;
     }
@@ -3950,44 +3950,44 @@ static int verifyLevelDimension(void) {
 }
 
 static int verifyLayerPixelFormat(void) {
-    if (!mglRenderCppMetalLayerPixelFormatIsSupported(
+    if (!mglRenderMetalLayerPixelFormatIsSupported(
             (uint32_t)MTLPixelFormatBGRA8Unorm) ||
-        !mglRenderCppMetalLayerPixelFormatIsSupported(
+        !mglRenderMetalLayerPixelFormatIsSupported(
             (uint32_t)MTLPixelFormatBGRA8Unorm_sRGB) ||
-        mglRenderCppMetalLayerPixelFormatIsSupported(
+        mglRenderMetalLayerPixelFormatIsSupported(
             (uint32_t)MTLPixelFormatRGBA8Unorm) ||
-        mglRenderCppMetalLayerPixelFormatIsSupported(
+        mglRenderMetalLayerPixelFormatIsSupported(
             (uint32_t)MTLPixelFormatInvalid)) {
         fprintf(stderr, "FAIL: layer pixel format support\n");
         return 1;
     }
-    if (mglRenderCppSRGBPixelFormat((uint32_t)MTLPixelFormatRGBA8Unorm) !=
+    if (mglRenderSRGBPixelFormat((uint32_t)MTLPixelFormatRGBA8Unorm) !=
             (uint32_t)MTLPixelFormatRGBA8Unorm_sRGB ||
-        mglRenderCppSRGBPixelFormat((uint32_t)MTLPixelFormatBGRA8Unorm) !=
+        mglRenderSRGBPixelFormat((uint32_t)MTLPixelFormatBGRA8Unorm) !=
             (uint32_t)MTLPixelFormatBGRA8Unorm_sRGB ||
-        mglRenderCppSRGBPixelFormat((uint32_t)MTLPixelFormatRGBA8Unorm_sRGB) !=
+        mglRenderSRGBPixelFormat((uint32_t)MTLPixelFormatRGBA8Unorm_sRGB) !=
             (uint32_t)MTLPixelFormatRGBA8Unorm_sRGB ||
-        mglRenderCppSRGBPixelFormat((uint32_t)MTLPixelFormatR8Unorm) !=
+        mglRenderSRGBPixelFormat((uint32_t)MTLPixelFormatR8Unorm) !=
             (uint32_t)MTLPixelFormatR8Unorm) {
         fprintf(stderr, "FAIL: sRGB pixel format map\n");
         return 1;
     }
-    if (mglRenderCppLinearPixelFormat((uint32_t)MTLPixelFormatRGBA8Unorm_sRGB) !=
+    if (mglRenderLinearPixelFormat((uint32_t)MTLPixelFormatRGBA8Unorm_sRGB) !=
             (uint32_t)MTLPixelFormatRGBA8Unorm ||
-        mglRenderCppLinearPixelFormat((uint32_t)MTLPixelFormatBGRA8Unorm_sRGB) !=
+        mglRenderLinearPixelFormat((uint32_t)MTLPixelFormatBGRA8Unorm_sRGB) !=
             (uint32_t)MTLPixelFormatBGRA8Unorm ||
-        mglRenderCppLinearPixelFormat((uint32_t)MTLPixelFormatRGBA8Unorm) !=
+        mglRenderLinearPixelFormat((uint32_t)MTLPixelFormatRGBA8Unorm) !=
             (uint32_t)MTLPixelFormatRGBA8Unorm) {
         fprintf(stderr, "FAIL: linear pixel format map\n");
         return 1;
     }
-    if (mglRenderCppEffectiveMTLPixelFormat(
+    if (mglRenderEffectiveMTLPixelFormat(
             (uint32_t)MTLPixelFormatBGRA8Unorm_sRGB, GL_SKIP_DECODE_EXT) !=
             (uint32_t)MTLPixelFormatBGRA8Unorm ||
-        mglRenderCppEffectiveMTLPixelFormat(
+        mglRenderEffectiveMTLPixelFormat(
             (uint32_t)MTLPixelFormatBGRA8Unorm_sRGB, GL_DECODE_EXT) !=
             (uint32_t)MTLPixelFormatBGRA8Unorm_sRGB ||
-        mglRenderCppEffectiveMTLPixelFormat(
+        mglRenderEffectiveMTLPixelFormat(
             (uint32_t)MTLPixelFormatBGRA8Unorm_sRGB, 0u) !=
             (uint32_t)MTLPixelFormatBGRA8Unorm_sRGB) {
         fprintf(stderr, "FAIL: effective sRGB decode\n");
@@ -3999,24 +3999,24 @@ static int verifyLayerPixelFormat(void) {
 
 static int verifyComputeThreadgroupSize(void) {
     /* P4.5 (item 1147/887): compute threadgroup 0->1 fallback. */
-    MGLRenderCppThreadgroupSize t = {0};
-    if (mglRenderCppThreadgroupSize(16, 8, 1, NULL) != -1) {
+    MGLRenderThreadgroupSize t = {0};
+    if (mglRenderThreadgroupSize(16, 8, 1, NULL) != -1) {
         fprintf(stderr, "FAIL: tg bad args\n");
         return 1;
     }
-    if (mglRenderCppThreadgroupSize(16, 8, 1, &t) != 0 ||
+    if (mglRenderThreadgroupSize(16, 8, 1, &t) != 0 ||
         t.x != 16 || t.y != 8 || t.z != 1) {
         fprintf(stderr, "FAIL: tg passthrough\n");
         return 1;
     }
     /* Zero components resolve to 1. */
-    if (mglRenderCppThreadgroupSize(0, 0, 0, &t) != 0 ||
+    if (mglRenderThreadgroupSize(0, 0, 0, &t) != 0 ||
         t.x != 1 || t.y != 1 || t.z != 1) {
         fprintf(stderr, "FAIL: tg zeros\n");
         return 1;
     }
     /* Mixed. */
-    if (mglRenderCppThreadgroupSize(32, 0, 4, &t) != 0 ||
+    if (mglRenderThreadgroupSize(32, 0, 4, &t) != 0 ||
         t.x != 32 || t.y != 1 || t.z != 4) {
         fprintf(stderr, "FAIL: tg mixed\n");
         return 1;
@@ -4027,22 +4027,22 @@ static int verifyComputeThreadgroupSize(void) {
 
 static int verifyMetalTypeTables(void) {
     /* P4.5 (item 1141/887): GL mode/index -> Metal type numbering. */
-    if (mglRenderCppMTLPrimitiveTypeForGLMode(GL_POINTS) != 0 ||
-        mglRenderCppMTLPrimitiveTypeForGLMode(GL_LINES) != 1 ||
-        mglRenderCppMTLPrimitiveTypeForGLMode(GL_LINE_STRIP) != 2 ||
-        mglRenderCppMTLPrimitiveTypeForGLMode(GL_TRIANGLES) != 3 ||
-        mglRenderCppMTLPrimitiveTypeForGLMode(GL_TRIANGLE_STRIP) != 4 ||
-        mglRenderCppMTLPrimitiveTypeForGLMode(GL_LINE_LOOP) != 0xFFFFFFFFu ||
-        mglRenderCppMTLPrimitiveTypeForGLMode(GL_QUADS) != 0xFFFFFFFFu ||
-        mglRenderCppMTLPrimitiveTypeForGLMode(GL_PATCHES) != 0xFFFFFFFFu ||
-        mglRenderCppMTLPrimitiveTypeForGLMode(0x1234) != 0xFFFFFFFFu) {
+    if (mglRenderMTLPrimitiveTypeForGLMode(GL_POINTS) != 0 ||
+        mglRenderMTLPrimitiveTypeForGLMode(GL_LINES) != 1 ||
+        mglRenderMTLPrimitiveTypeForGLMode(GL_LINE_STRIP) != 2 ||
+        mglRenderMTLPrimitiveTypeForGLMode(GL_TRIANGLES) != 3 ||
+        mglRenderMTLPrimitiveTypeForGLMode(GL_TRIANGLE_STRIP) != 4 ||
+        mglRenderMTLPrimitiveTypeForGLMode(GL_LINE_LOOP) != 0xFFFFFFFFu ||
+        mglRenderMTLPrimitiveTypeForGLMode(GL_QUADS) != 0xFFFFFFFFu ||
+        mglRenderMTLPrimitiveTypeForGLMode(GL_PATCHES) != 0xFFFFFFFFu ||
+        mglRenderMTLPrimitiveTypeForGLMode(0x1234) != 0xFFFFFFFFu) {
         fprintf(stderr, "FAIL: prim type table\n");
         return 1;
     }
-    if (mglRenderCppMTLIndexTypeForGLType(GL_UNSIGNED_BYTE) != 0 ||
-        mglRenderCppMTLIndexTypeForGLType(GL_UNSIGNED_SHORT) != 0 ||
-        mglRenderCppMTLIndexTypeForGLType(GL_UNSIGNED_INT) != 1 ||
-        mglRenderCppMTLIndexTypeForGLType(0x1234) != 0xFFFFFFFFu) {
+    if (mglRenderMTLIndexTypeForGLType(GL_UNSIGNED_BYTE) != 0 ||
+        mglRenderMTLIndexTypeForGLType(GL_UNSIGNED_SHORT) != 0 ||
+        mglRenderMTLIndexTypeForGLType(GL_UNSIGNED_INT) != 1 ||
+        mglRenderMTLIndexTypeForGLType(0x1234) != 0xFFFFFFFFu) {
         fprintf(stderr, "FAIL: index type table\n");
         return 1;
     }
@@ -4073,7 +4073,7 @@ static int verifyShaderResourceTextureTypes(void) {
         {"null", 0u, MGL_IMAGE_DIM_2D, 1u, 1u, 0u},
     };
     for (const TextureTypeCase &test : cases) {
-        uint32_t actual = mglRenderCppTextureTypeForShaderResource(
+        uint32_t actual = mglRenderTextureTypeForShaderResource(
             test.present, test.dimension, test.arrayed, test.multisampled);
         if (actual != test.expected) {
             fprintf(stderr,
@@ -4205,8 +4205,8 @@ static int verifyTextureCreationTargetPlans(void) {
     };
 
     for (const TextureTargetPlanCase &test : cases) {
-        MGLRenderCppTextureTargetPlan plan = {};
-        if (mglRenderCppTextureTargetPlan(
+        MGLRenderTextureTargetPlan plan = {};
+        if (mglRenderTextureTargetPlan(
                 (uint32_t)test.target, test.samples, &plan) != 0 ||
             plan.texture_type != (uint32_t)test.expected_type ||
             plan.num_faces != test.expected_faces ||
@@ -4223,19 +4223,19 @@ static int verifyTextureCreationTargetPlans(void) {
         }
     }
 
-    MGLRenderCppTextureTargetPlan invalid = {
+    MGLRenderTextureTargetPlan invalid = {
         UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX};
-    if (mglRenderCppTextureTargetPlan(UINT32_MAX, 1u, &invalid) != -1 ||
+    if (mglRenderTextureTargetPlan(UINT32_MAX, 1u, &invalid) != -1 ||
         invalid.texture_type != 0u || invalid.num_faces != 0u ||
         invalid.is_array != 0u || invalid.texture_1d_backed_by_2d != 0u ||
         invalid.texture_1d_array_backed_by_2d_array != 0u ||
-        mglRenderCppTextureTargetPlan(GL_TEXTURE_2D, 1u, NULL) != -1) {
+        mglRenderTextureTargetPlan(GL_TEXTURE_2D, 1u, NULL) != -1) {
         fprintf(stderr, "FAIL: texture target plan invalid arguments\n");
         return 1;
     }
 
-    MGLRenderCppTextureSubUploadPlan sub = {};
-    if (mglRenderCppTextureSubUploadPlan(
+    MGLRenderTextureSubUploadPlan sub = {};
+    if (mglRenderTextureSubUploadPlan(
             GL_TEXTURE_1D_ARRAY, (uint32_t)MTLTextureType2DArray, 9u,
             1u, 3u, 7u, 4u, 2u, 1u, 16u, 16u, &sub) != 0 ||
         sub.destination_base_slice != 3u || sub.destination_x != 1u ||
@@ -4246,7 +4246,7 @@ static int verifyTextureCreationTargetPlans(void) {
         fprintf(stderr, "FAIL: 1D-array texture sub-upload plan\n");
         return 1;
     }
-    if (mglRenderCppTextureSubUploadPlan(
+    if (mglRenderTextureSubUploadPlan(
             GL_TEXTURE_3D, (uint32_t)MTLTextureType3D, 9u,
             1u, 2u, 3u, 4u, 5u, 6u, 16u, 80u, &sub) != 0 ||
         sub.destination_base_slice != 0u || sub.destination_x != 1u ||
@@ -4257,7 +4257,7 @@ static int verifyTextureCreationTargetPlans(void) {
         fprintf(stderr, "FAIL: 3D texture sub-upload plan\n");
         return 1;
     }
-    if (mglRenderCppTextureSubUploadPlan(
+    if (mglRenderTextureSubUploadPlan(
             GL_TEXTURE_2D_ARRAY, (uint32_t)MTLTextureType2DArray, 9u,
             1u, 2u, 3u, 4u, 5u, 2u, 16u, 80u, &sub) != 0 ||
         sub.destination_base_slice != 3u || sub.destination_x != 1u ||
@@ -4268,7 +4268,7 @@ static int verifyTextureCreationTargetPlans(void) {
         fprintf(stderr, "FAIL: 2D-array texture sub-upload plan\n");
         return 1;
     }
-    if (mglRenderCppTextureSubUploadPlan(
+    if (mglRenderTextureSubUploadPlan(
             GL_TEXTURE_CUBE_MAP, (uint32_t)MTLTextureTypeCube, 5u,
             1u, 2u, 0u, 4u, 5u, 1u, 16u, 80u, &sub) != 0 ||
         sub.destination_base_slice != 5u || sub.destination_y != 2u ||
@@ -4276,28 +4276,28 @@ static int verifyTextureCreationTargetPlans(void) {
         fprintf(stderr, "FAIL: cube texture sub-upload plan\n");
         return 1;
     }
-    MGLRenderCppTextureSubUploadPlan rejected = {
+    MGLRenderTextureSubUploadPlan rejected = {
         UINT64_MAX, UINT64_MAX, UINT64_MAX, UINT64_MAX, UINT64_MAX,
         UINT64_MAX, UINT64_MAX, UINT64_MAX, UINT64_MAX};
-    if (mglRenderCppTextureSubUploadPlan(
+    if (mglRenderTextureSubUploadPlan(
             GL_TEXTURE_2D, (uint32_t)MTLTextureType2D, 0u,
             0u, 0u, 0u, 1u, 1u, 1u, 4u, 4u, NULL) != -1 ||
-        mglRenderCppTextureSubUploadPlan(
+        mglRenderTextureSubUploadPlan(
             GL_TEXTURE_2D, (uint32_t)MTLTextureType2D, 0u,
             0u, 0u, 0u, 0u, 1u, 1u, 4u, 4u, &rejected) != -1 ||
-        mglRenderCppTextureSubUploadPlan(
+        mglRenderTextureSubUploadPlan(
             GL_TEXTURE_2D, (uint32_t)MTLTextureType2D, 0u,
             0u, 0u, 0u, 1u, 0u, 1u, 4u, 4u, &rejected) != -1 ||
-        mglRenderCppTextureSubUploadPlan(
+        mglRenderTextureSubUploadPlan(
             GL_TEXTURE_2D, (uint32_t)MTLTextureType2D, 0u,
             0u, 0u, 0u, 1u, 1u, 0u, 4u, 4u, &rejected) != -1 ||
-        mglRenderCppTextureSubUploadPlan(
+        mglRenderTextureSubUploadPlan(
             GL_TEXTURE_2D, (uint32_t)MTLTextureType2D, 0u,
             0u, 0u, 0u, 1u, 1u, 1u, 0u, 4u, &rejected) != -1 ||
-        mglRenderCppTextureSubUploadPlan(
+        mglRenderTextureSubUploadPlan(
             GL_TEXTURE_2D, (uint32_t)MTLTextureType2D, 0u,
             0u, 0u, 0u, 1u, 1u, 1u, 4u, 0u, &rejected) != -1 ||
-        mglRenderCppTextureSubUploadPlan(
+        mglRenderTextureSubUploadPlan(
             GL_TEXTURE_1D_ARRAY, (uint32_t)MTLTextureType2DArray, 0u,
             0u, UINT64_MAX, 0u, 1u, 2u, 1u, 4u, 4u,
             &rejected) != -1 ||
@@ -4331,7 +4331,7 @@ static int verifyTextureTargetIndices(void) {
         {"Buffer", MTLTextureTypeTextureBuffer, _TEXTURE_BUFFER},
     };
     for (const TextureTargetIndexCase &test : cases) {
-        int32_t actual = mglRenderCppTextureIndexForMetalType(
+        int32_t actual = mglRenderTextureIndexForMetalType(
             (uint32_t)test.type);
         if (actual != test.expected) {
             fprintf(stderr,
@@ -4340,7 +4340,7 @@ static int verifyTextureTargetIndices(void) {
             return 1;
         }
     }
-    if (mglRenderCppTextureIndexForMetalType(UINT32_MAX) != -1) {
+    if (mglRenderTextureIndexForMetalType(UINT32_MAX) != -1) {
         fprintf(stderr, "FAIL: texture target index invalid type\n");
         return 1;
     }
@@ -4354,40 +4354,40 @@ static int verifyTextureDataKinds(void) {
         MTLPixelFormat format;
         uint32_t expected;
     } cases[] = {
-        {"R8Sint", MTLPixelFormatR8Sint, MGL_RENDER_CPP_TEXTURE_DATA_KIND_SINT},
-        {"RG8Sint", MTLPixelFormatRG8Sint, MGL_RENDER_CPP_TEXTURE_DATA_KIND_SINT},
-        {"RGBA8Sint", MTLPixelFormatRGBA8Sint, MGL_RENDER_CPP_TEXTURE_DATA_KIND_SINT},
-        {"R16Sint", MTLPixelFormatR16Sint, MGL_RENDER_CPP_TEXTURE_DATA_KIND_SINT},
-        {"RG16Sint", MTLPixelFormatRG16Sint, MGL_RENDER_CPP_TEXTURE_DATA_KIND_SINT},
-        {"RGBA16Sint", MTLPixelFormatRGBA16Sint, MGL_RENDER_CPP_TEXTURE_DATA_KIND_SINT},
-        {"R32Sint", MTLPixelFormatR32Sint, MGL_RENDER_CPP_TEXTURE_DATA_KIND_SINT},
-        {"RG32Sint", MTLPixelFormatRG32Sint, MGL_RENDER_CPP_TEXTURE_DATA_KIND_SINT},
-        {"RGBA32Sint", MTLPixelFormatRGBA32Sint, MGL_RENDER_CPP_TEXTURE_DATA_KIND_SINT},
-        {"R8Uint", MTLPixelFormatR8Uint, MGL_RENDER_CPP_TEXTURE_DATA_KIND_UINT},
-        {"RG8Uint", MTLPixelFormatRG8Uint, MGL_RENDER_CPP_TEXTURE_DATA_KIND_UINT},
-        {"RGBA8Uint", MTLPixelFormatRGBA8Uint, MGL_RENDER_CPP_TEXTURE_DATA_KIND_UINT},
-        {"R16Uint", MTLPixelFormatR16Uint, MGL_RENDER_CPP_TEXTURE_DATA_KIND_UINT},
-        {"RG16Uint", MTLPixelFormatRG16Uint, MGL_RENDER_CPP_TEXTURE_DATA_KIND_UINT},
-        {"RGBA16Uint", MTLPixelFormatRGBA16Uint, MGL_RENDER_CPP_TEXTURE_DATA_KIND_UINT},
-        {"R32Uint", MTLPixelFormatR32Uint, MGL_RENDER_CPP_TEXTURE_DATA_KIND_UINT},
-        {"RG32Uint", MTLPixelFormatRG32Uint, MGL_RENDER_CPP_TEXTURE_DATA_KIND_UINT},
-        {"RGBA32Uint", MTLPixelFormatRGBA32Uint, MGL_RENDER_CPP_TEXTURE_DATA_KIND_UINT},
-        {"RGB10A2Uint", MTLPixelFormatRGB10A2Uint, MGL_RENDER_CPP_TEXTURE_DATA_KIND_UINT},
-        {"Invalid", MTLPixelFormatInvalid, MGL_RENDER_CPP_TEXTURE_DATA_KIND_UNKNOWN},
-        {"Depth16", MTLPixelFormatDepth16Unorm, MGL_RENDER_CPP_TEXTURE_DATA_KIND_DEPTH},
-        {"Depth32", MTLPixelFormatDepth32Float, MGL_RENDER_CPP_TEXTURE_DATA_KIND_DEPTH},
+        {"R8Sint", MTLPixelFormatR8Sint, MGL_RENDER_TEXTURE_DATA_KIND_SINT},
+        {"RG8Sint", MTLPixelFormatRG8Sint, MGL_RENDER_TEXTURE_DATA_KIND_SINT},
+        {"RGBA8Sint", MTLPixelFormatRGBA8Sint, MGL_RENDER_TEXTURE_DATA_KIND_SINT},
+        {"R16Sint", MTLPixelFormatR16Sint, MGL_RENDER_TEXTURE_DATA_KIND_SINT},
+        {"RG16Sint", MTLPixelFormatRG16Sint, MGL_RENDER_TEXTURE_DATA_KIND_SINT},
+        {"RGBA16Sint", MTLPixelFormatRGBA16Sint, MGL_RENDER_TEXTURE_DATA_KIND_SINT},
+        {"R32Sint", MTLPixelFormatR32Sint, MGL_RENDER_TEXTURE_DATA_KIND_SINT},
+        {"RG32Sint", MTLPixelFormatRG32Sint, MGL_RENDER_TEXTURE_DATA_KIND_SINT},
+        {"RGBA32Sint", MTLPixelFormatRGBA32Sint, MGL_RENDER_TEXTURE_DATA_KIND_SINT},
+        {"R8Uint", MTLPixelFormatR8Uint, MGL_RENDER_TEXTURE_DATA_KIND_UINT},
+        {"RG8Uint", MTLPixelFormatRG8Uint, MGL_RENDER_TEXTURE_DATA_KIND_UINT},
+        {"RGBA8Uint", MTLPixelFormatRGBA8Uint, MGL_RENDER_TEXTURE_DATA_KIND_UINT},
+        {"R16Uint", MTLPixelFormatR16Uint, MGL_RENDER_TEXTURE_DATA_KIND_UINT},
+        {"RG16Uint", MTLPixelFormatRG16Uint, MGL_RENDER_TEXTURE_DATA_KIND_UINT},
+        {"RGBA16Uint", MTLPixelFormatRGBA16Uint, MGL_RENDER_TEXTURE_DATA_KIND_UINT},
+        {"R32Uint", MTLPixelFormatR32Uint, MGL_RENDER_TEXTURE_DATA_KIND_UINT},
+        {"RG32Uint", MTLPixelFormatRG32Uint, MGL_RENDER_TEXTURE_DATA_KIND_UINT},
+        {"RGBA32Uint", MTLPixelFormatRGBA32Uint, MGL_RENDER_TEXTURE_DATA_KIND_UINT},
+        {"RGB10A2Uint", MTLPixelFormatRGB10A2Uint, MGL_RENDER_TEXTURE_DATA_KIND_UINT},
+        {"Invalid", MTLPixelFormatInvalid, MGL_RENDER_TEXTURE_DATA_KIND_UNKNOWN},
+        {"Depth16", MTLPixelFormatDepth16Unorm, MGL_RENDER_TEXTURE_DATA_KIND_DEPTH},
+        {"Depth32", MTLPixelFormatDepth32Float, MGL_RENDER_TEXTURE_DATA_KIND_DEPTH},
         {"Depth24Stencil8", MTLPixelFormatDepth24Unorm_Stencil8,
-         MGL_RENDER_CPP_TEXTURE_DATA_KIND_DEPTH},
+         MGL_RENDER_TEXTURE_DATA_KIND_DEPTH},
         {"Depth32Stencil8", MTLPixelFormatDepth32Float_Stencil8,
-         MGL_RENDER_CPP_TEXTURE_DATA_KIND_DEPTH},
-        {"Stencil8", MTLPixelFormatStencil8, MGL_RENDER_CPP_TEXTURE_DATA_KIND_FLOAT},
+         MGL_RENDER_TEXTURE_DATA_KIND_DEPTH},
+        {"Stencil8", MTLPixelFormatStencil8, MGL_RENDER_TEXTURE_DATA_KIND_FLOAT},
         {"RGBA8Unorm", MTLPixelFormatRGBA8Unorm,
-         MGL_RENDER_CPP_TEXTURE_DATA_KIND_FLOAT},
+         MGL_RENDER_TEXTURE_DATA_KIND_FLOAT},
         {"RGBA16Float", MTLPixelFormatRGBA16Float,
-         MGL_RENDER_CPP_TEXTURE_DATA_KIND_FLOAT},
+         MGL_RENDER_TEXTURE_DATA_KIND_FLOAT},
     };
     for (const TextureDataKindCase &test : cases) {
-        uint32_t actual = mglRenderCppTextureDataKindForPixelFormat(
+        uint32_t actual = mglRenderTextureDataKindForPixelFormat(
             (uint32_t)test.format);
         if (actual != test.expected) {
             fprintf(stderr,
@@ -4396,69 +4396,69 @@ static int verifyTextureDataKinds(void) {
             return 1;
         }
     }
-    if (mglRenderCppTextureDataKindForPixelFormat(UINT32_MAX) !=
-        MGL_RENDER_CPP_TEXTURE_DATA_KIND_FLOAT) {
+    if (mglRenderTextureDataKindForPixelFormat(UINT32_MAX) !=
+        MGL_RENDER_TEXTURE_DATA_KIND_FLOAT) {
         fprintf(stderr, "FAIL: texture data kind unknown default\n");
         return 1;
     }
-    if (strcmp(mglRenderCppTextureDataKindName(
-                   MGL_RENDER_CPP_TEXTURE_DATA_KIND_FLOAT),
+    if (strcmp(mglRenderTextureDataKindName(
+                   MGL_RENDER_TEXTURE_DATA_KIND_FLOAT),
                "float") != 0 ||
-        strcmp(mglRenderCppTextureDataKindName(
-                   MGL_RENDER_CPP_TEXTURE_DATA_KIND_SINT),
+        strcmp(mglRenderTextureDataKindName(
+                   MGL_RENDER_TEXTURE_DATA_KIND_SINT),
                "sint") != 0 ||
-        strcmp(mglRenderCppTextureDataKindName(
-                   MGL_RENDER_CPP_TEXTURE_DATA_KIND_UINT),
+        strcmp(mglRenderTextureDataKindName(
+                   MGL_RENDER_TEXTURE_DATA_KIND_UINT),
                "uint") != 0 ||
-        strcmp(mglRenderCppTextureDataKindName(
-                   MGL_RENDER_CPP_TEXTURE_DATA_KIND_DEPTH),
+        strcmp(mglRenderTextureDataKindName(
+                   MGL_RENDER_TEXTURE_DATA_KIND_DEPTH),
                "depth") != 0 ||
-        strcmp(mglRenderCppTextureDataKindName(
-                   MGL_RENDER_CPP_TEXTURE_DATA_KIND_UNKNOWN),
+        strcmp(mglRenderTextureDataKindName(
+                   MGL_RENDER_TEXTURE_DATA_KIND_UNKNOWN),
                "unknown") != 0 ||
-        strcmp(mglRenderCppTextureDataKindName(0xdeadbeefu), "unknown") != 0) {
+        strcmp(mglRenderTextureDataKindName(0xdeadbeefu), "unknown") != 0) {
         fprintf(stderr, "FAIL: texture data kind name\n");
         return 1;
     }
-    if (!mglRenderCppMetalPixelFormatIsDepthOrStencil(
+    if (!mglRenderMetalPixelFormatIsDepthOrStencil(
             (uint32_t)MTLPixelFormatDepth16Unorm) ||
-        !mglRenderCppMetalPixelFormatIsDepthOrStencil(
+        !mglRenderMetalPixelFormatIsDepthOrStencil(
             (uint32_t)MTLPixelFormatStencil8) ||
-        mglRenderCppMetalPixelFormatIsDepthOrStencil(
+        mglRenderMetalPixelFormatIsDepthOrStencil(
             (uint32_t)MTLPixelFormatRGBA8Unorm) ||
-        !mglRenderCppMetalPixelFormatIsPackedDepthStencil(
+        !mglRenderMetalPixelFormatIsPackedDepthStencil(
             (uint32_t)MTLPixelFormatDepth24Unorm_Stencil8) ||
-        mglRenderCppMetalPixelFormatIsPackedDepthStencil(
+        mglRenderMetalPixelFormatIsPackedDepthStencil(
             (uint32_t)MTLPixelFormatDepth32Float) ||
-        !mglRenderCppGLInternalFormatLooksDepthOrStencil(GL_DEPTH_COMPONENT24) ||
-        !mglRenderCppGLInternalFormatLooksDepthOrStencil(GL_STENCIL_INDEX8) ||
-        mglRenderCppGLInternalFormatLooksDepthOrStencil(GL_RGBA8)) {
+        !mglRenderGLInternalFormatLooksDepthOrStencil(GL_DEPTH_COMPONENT24) ||
+        !mglRenderGLInternalFormatLooksDepthOrStencil(GL_STENCIL_INDEX8) ||
+        mglRenderGLInternalFormatLooksDepthOrStencil(GL_RGBA8)) {
         fprintf(stderr, "FAIL: texture depth/stencil classification\n");
         return 1;
     }
-    if (!mglRenderCppTexturePixelFormatCompatibleWithExpectedDataKind(
+    if (!mglRenderTexturePixelFormatCompatibleWithExpectedDataKind(
             (uint32_t)MTLPixelFormatRGBA8Unorm,
-            MGL_RENDER_CPP_TEXTURE_DATA_KIND_FLOAT) ||
-        mglRenderCppTexturePixelFormatCompatibleWithExpectedDataKind(
+            MGL_RENDER_TEXTURE_DATA_KIND_FLOAT) ||
+        mglRenderTexturePixelFormatCompatibleWithExpectedDataKind(
             (uint32_t)MTLPixelFormatRGBA8Unorm,
-            MGL_RENDER_CPP_TEXTURE_DATA_KIND_SINT) ||
-        !mglRenderCppTexturePixelFormatCompatibleWithExpectedDataKind(
+            MGL_RENDER_TEXTURE_DATA_KIND_SINT) ||
+        !mglRenderTexturePixelFormatCompatibleWithExpectedDataKind(
             (uint32_t)MTLPixelFormatRGBA8Unorm,
-            MGL_RENDER_CPP_TEXTURE_DATA_KIND_UNKNOWN)) {
+            MGL_RENDER_TEXTURE_DATA_KIND_UNKNOWN)) {
         fprintf(stderr, "FAIL: texture data kind compatibility\n");
         return 1;
     }
-    if (mglRenderCppMetalCompressedBlockHeight(
+    if (mglRenderMetalCompressedBlockHeight(
             (uint32_t)MTLPixelFormatBC1_RGBA) != 4u ||
-        mglRenderCppMetalCompressedBlockHeight(
+        mglRenderMetalCompressedBlockHeight(
             (uint32_t)MTLPixelFormatASTC_6x6_LDR) != 6u ||
-        mglRenderCppMetalCompressedBlockHeight(
+        mglRenderMetalCompressedBlockHeight(
             (uint32_t)MTLPixelFormatRGBA8Unorm) != 1u ||
-        mglRenderCppMetalUploadRowsForPixelFormat(
+        mglRenderMetalUploadRowsForPixelFormat(
             (uint32_t)MTLPixelFormatBC1_RGBA, 1u) != 1u ||
-        mglRenderCppMetalUploadRowsForPixelFormat(
+        mglRenderMetalUploadRowsForPixelFormat(
             (uint32_t)MTLPixelFormatBC1_RGBA, 5u) != 2u ||
-        mglRenderCppMetalUploadRowsForPixelFormat(
+        mglRenderMetalUploadRowsForPixelFormat(
             (uint32_t)MTLPixelFormatRGBA8Unorm, 0u) != 1u) {
         fprintf(stderr, "FAIL: compressed texture upload row math\n");
         return 1;
@@ -4471,33 +4471,33 @@ static int verifyTextureDataKinds(void) {
 
 static int verifyVertexAttribResolve(void) {
     /* P4.5 (item 1141/887): ARB_vertex_attrib_binding resolve. */
-    MGLRenderCppVertexAttribResolve r = {0};
-    if (mglRenderCppResolveVertexAttribBinding(0, 0, 0, 0, 0, 0, 0, 0, NULL) != -1) {
+    MGLRenderVertexAttribResolve r = {0};
+    if (mglRenderResolveVertexAttribBinding(0, 0, 0, 0, 0, 0, 0, 0, NULL) != -1) {
         fprintf(stderr, "FAIL: vattrib bad args\n");
         return 1;
     }
     /* No table buffer -> legacy attrib values (including -1 offset). */
-    if (mglRenderCppResolveVertexAttribBinding(0, 0, 0, 0, -1, 12, 0, 1, &r) != 0 ||
+    if (mglRenderResolveVertexAttribBinding(0, 0, 0, 0, -1, 12, 0, 1, &r) != 0 ||
         r.use_binding_table || r.binding_offset != -1 || r.stride != 12 ||
         r.divisor != 1) {
         fprintf(stderr, "FAIL: vattrib legacy\n");
         return 1;
     }
     /* Table buffer with stride -> table values. */
-    if (mglRenderCppResolveVertexAttribBinding(3, 1, 512, 32, -1, 12, 2, 1, &r) != 0 ||
+    if (mglRenderResolveVertexAttribBinding(3, 1, 512, 32, -1, 12, 2, 1, &r) != 0 ||
         !r.use_binding_table || r.binding_offset != 512 || r.stride != 32 ||
         r.divisor != 2) {
         fprintf(stderr, "FAIL: vattrib table\n");
         return 1;
     }
     /* Table buffer with zero stride -> falls back to the attrib stride. */
-    if (mglRenderCppResolveVertexAttribBinding(3, 1, 512, 0, -1, 12, 2, 1, &r) != 0 ||
+    if (mglRenderResolveVertexAttribBinding(3, 1, 512, 0, -1, 12, 2, 1, &r) != 0 ||
         r.stride != 12 || r.divisor != 2) {
         fprintf(stderr, "FAIL: vattrib zero stride\n");
         return 1;
     }
     /* Out-of-range binding index -> legacy. */
-    if (mglRenderCppResolveVertexAttribBinding(64, 1, 512, 32, -1, 12, 2, 1, &r) != 0 ||
+    if (mglRenderResolveVertexAttribBinding(64, 1, 512, 32, -1, 12, 2, 1, &r) != 0 ||
         r.use_binding_table || r.binding_offset != -1 || r.stride != 12) {
         fprintf(stderr, "FAIL: vattrib oob\n");
         return 1;
@@ -4510,29 +4510,29 @@ static int verifyBufferShadowUploadRange(void) {
     /* P4.5 (item 1141/887): shadow-upload range math. */
     uint64_t off = 0, len = 0;
     /* Not a GPU write target -> whole limit. */
-    if (mglRenderCppBufferShadowUploadRange(0, 0, 0, 4096, &off, &len) != 0 ||
+    if (mglRenderBufferShadowUploadRange(0, 0, 0, 4096, &off, &len) != 0 ||
         off != 0 || len != 4096) {
         fprintf(stderr, "FAIL: shadow whole\n");
         return 1;
     }
     /* GPU write target, span inside the limit. */
-    if (mglRenderCppBufferShadowUploadRange(1, 128, 512, 4096, &off, &len) != 0 ||
+    if (mglRenderBufferShadowUploadRange(1, 128, 512, 4096, &off, &len) != 0 ||
         off != 128 || len != 384) {
         fprintf(stderr, "FAIL: shadow span\n");
         return 1;
     }
     /* Span exceeding the limit clamps. */
-    if (mglRenderCppBufferShadowUploadRange(1, 128, 8192, 4096, &off, &len) != 0 ||
+    if (mglRenderBufferShadowUploadRange(1, 128, 8192, 4096, &off, &len) != 0 ||
         off != 128 || len != 3968) {
         fprintf(stderr, "FAIL: shadow clamp\n");
         return 1;
     }
     /* Empty / invalid spans reject. */
-    if (mglRenderCppBufferShadowUploadRange(1, -1, 512, 4096, &off, &len) != -1 ||
-        mglRenderCppBufferShadowUploadRange(1, 512, 512, 4096, &off, &len) != -1 ||
-        mglRenderCppBufferShadowUploadRange(1, 128, 64, 4096, &off, &len) != -1 ||
-        mglRenderCppBufferShadowUploadRange(0, 0, 0, 0, &off, &len) != -1 ||
-        mglRenderCppBufferShadowUploadRange(0, 0, 0, 4096, NULL, NULL) != -1) {
+    if (mglRenderBufferShadowUploadRange(1, -1, 512, 4096, &off, &len) != -1 ||
+        mglRenderBufferShadowUploadRange(1, 512, 512, 4096, &off, &len) != -1 ||
+        mglRenderBufferShadowUploadRange(1, 128, 64, 4096, &off, &len) != -1 ||
+        mglRenderBufferShadowUploadRange(0, 0, 0, 0, &off, &len) != -1 ||
+        mglRenderBufferShadowUploadRange(0, 0, 0, 4096, NULL, NULL) != -1) {
         fprintf(stderr, "FAIL: shadow reject\n");
         return 1;
     }
@@ -4542,34 +4542,34 @@ static int verifyBufferShadowUploadRange(void) {
 
 static int verifyPolygonOffsetAndPrimCount(void) {
     /* P4.5 (item 1141/887): polygon-offset decision + prim vertex counts. */
-    MGLRenderCppPolygonOffsetDecision d = {0};
-    if (mglRenderCppPolygonOffsetDecision(0, 0, 0, 0, 0, 0, 0, NULL) != -1) {
+    MGLRenderPolygonOffsetDecision d = {0};
+    if (mglRenderPolygonOffsetDecision(0, 0, 0, 0, 0, 0, 0, NULL) != -1) {
         fprintf(stderr, "FAIL: poloff bad args\n");
         return 1;
     }
     /* No ctx -> all off. */
-    if (mglRenderCppPolygonOffsetDecision(0, 0, 1, GL_FILL, 1, 1, 1, &d) != 0 ||
+    if (mglRenderPolygonOffsetDecision(0, 0, 1, GL_FILL, 1, 1, 1, &d) != 0 ||
         d.triangle_fill_mode || d.needs_polygon_mode_repair ||
         d.enable_depth_bias) {
         fprintf(stderr, "FAIL: poloff no ctx\n");
         return 1;
     }
     /* FILL + cap_fill -> bias on, no repair, fill mode. */
-    if (mglRenderCppPolygonOffsetDecision(0, 1, 1, GL_FILL, 0, 0, 1, &d) != 0 ||
+    if (mglRenderPolygonOffsetDecision(0, 1, 1, GL_FILL, 0, 0, 1, &d) != 0 ||
         d.triangle_fill_mode || d.needs_polygon_mode_repair ||
         !d.enable_depth_bias) {
         fprintf(stderr, "FAIL: poloff fill\n");
         return 1;
     }
     /* LINE -> lines fill mode + cap_line bias. */
-    if (mglRenderCppPolygonOffsetDecision(0, 1, 1, GL_LINE, 0, 1, 0, &d) != 0 ||
+    if (mglRenderPolygonOffsetDecision(0, 1, 1, GL_LINE, 0, 1, 0, &d) != 0 ||
         !d.triangle_fill_mode || d.needs_polygon_mode_repair ||
         !d.enable_depth_bias) {
         fprintf(stderr, "FAIL: poloff line\n");
         return 1;
     }
     /* POINT -> cap_point bias, no repair. */
-    if (mglRenderCppPolygonOffsetDecision(0, 1, 1, GL_POINT, 1, 0, 0, &d) != 0 ||
+    if (mglRenderPolygonOffsetDecision(0, 1, 1, GL_POINT, 1, 0, 0, &d) != 0 ||
         d.triangle_fill_mode || d.needs_polygon_mode_repair ||
         !d.enable_depth_bias) {
         fprintf(stderr, "FAIL: poloff point\n");
@@ -4578,27 +4578,27 @@ static int verifyPolygonOffsetAndPrimCount(void) {
     /* Invalid mode 0x9999 -> repair; the bias switch's default falls
      * through to cap_fill (the original repairs to GL_FILL first, so the
      * enable result is the same). */
-    if (mglRenderCppPolygonOffsetDecision(0, 1, 1, 0x9999, 0, 0, 1, &d) != 0 ||
+    if (mglRenderPolygonOffsetDecision(0, 1, 1, 0x9999, 0, 0, 1, &d) != 0 ||
         !d.needs_polygon_mode_repair || !d.enable_depth_bias) {
         fprintf(stderr, "FAIL: poloff repair\n");
         return 1;
     }
     /* Non-polygon mode (GL_POINTS) -> all off even with caps. */
-    if (mglRenderCppPolygonOffsetDecision(GL_POINTS, 1, 0, GL_FILL, 0, 0, 1, &d) != 0 ||
+    if (mglRenderPolygonOffsetDecision(GL_POINTS, 1, 0, GL_FILL, 0, 0, 1, &d) != 0 ||
         d.enable_depth_bias || d.triangle_fill_mode) {
         fprintf(stderr, "FAIL: poloff non-polygon\n");
         return 1;
     }
 
-    if (mglRenderCppPrimitiveVertexCountForMode(GL_TRIANGLES) != 3 ||
-        mglRenderCppPrimitiveVertexCountForMode(GL_TRIANGLE_STRIP) != 3 ||
-        mglRenderCppPrimitiveVertexCountForMode(GL_TRIANGLE_FAN) != 3 ||
-        mglRenderCppPrimitiveVertexCountForMode(GL_LINES) != 2 ||
-        mglRenderCppPrimitiveVertexCountForMode(GL_LINE_STRIP) != 2 ||
-        mglRenderCppPrimitiveVertexCountForMode(GL_LINE_LOOP) != 2 ||
-        mglRenderCppPrimitiveVertexCountForMode(GL_QUADS) != 4 ||
-        mglRenderCppPrimitiveVertexCountForMode(GL_POINTS) != 1 ||
-        mglRenderCppPrimitiveVertexCountForMode(0x1234) != 1) {
+    if (mglRenderPrimitiveVertexCountForMode(GL_TRIANGLES) != 3 ||
+        mglRenderPrimitiveVertexCountForMode(GL_TRIANGLE_STRIP) != 3 ||
+        mglRenderPrimitiveVertexCountForMode(GL_TRIANGLE_FAN) != 3 ||
+        mglRenderPrimitiveVertexCountForMode(GL_LINES) != 2 ||
+        mglRenderPrimitiveVertexCountForMode(GL_LINE_STRIP) != 2 ||
+        mglRenderPrimitiveVertexCountForMode(GL_LINE_LOOP) != 2 ||
+        mglRenderPrimitiveVertexCountForMode(GL_QUADS) != 4 ||
+        mglRenderPrimitiveVertexCountForMode(GL_POINTS) != 1 ||
+        mglRenderPrimitiveVertexCountForMode(0x1234) != 1) {
         fprintf(stderr, "FAIL: prim count table\n");
         return 1;
     }
@@ -4608,51 +4608,51 @@ static int verifyPolygonOffsetAndPrimCount(void) {
 
 static int verifyScaledBlitUVsAndScissor(void) {
     /* P4.5 (item 1069/1141): scaled-blit UVs + destination scissor base. */
-    MGLRenderCppScaledBlitUVs u = {0};
-    if (mglRenderCppScaledBlitUVs(0, 0, 0, 0, 0, 0, 1, 1, 1, 1, NULL) != -1) {
+    MGLRenderScaledBlitUVs u = {0};
+    if (mglRenderScaledBlitUVs(0, 0, 0, 0, 0, 0, 1, 1, 1, 1, NULL) != -1) {
         fprintf(stderr, "FAIL: uvs bad args\n");
         return 1;
     }
     /* 100x100 tex, src 10..30 x 10..30, all forward -> uv 0.1..0.3,
      * uvTop (metal) = (100-30)/100 = 0.7, bottom = 0.9. */
-    if (mglRenderCppScaledBlitUVs(100, 100, 10, 30, 10, 30, 1, 1, 1, 1, &u) != 0 ||
+    if (mglRenderScaledBlitUVs(100, 100, 10, 30, 10, 30, 1, 1, 1, 1, &u) != 0 ||
         fabs(u.uv_left - 0.1f) > 1e-6 || fabs(u.uv_right - 0.3f) > 1e-6 ||
         fabs(u.uv_top - 0.7f) > 1e-6 || fabs(u.uv_bottom - 0.9f) > 1e-6) {
         fprintf(stderr, "FAIL: uvs basic\n");
         return 1;
     }
     /* Source X flipped vs destination -> uvLeft/uvRight swap. */
-    if (mglRenderCppScaledBlitUVs(100, 100, 10, 30, 10, 30, 0, 1, 1, 1, &u) != 0 ||
+    if (mglRenderScaledBlitUVs(100, 100, 10, 30, 10, 30, 0, 1, 1, 1, &u) != 0 ||
         fabs(u.uv_left - 0.3f) > 1e-6 || fabs(u.uv_right - 0.1f) > 1e-6) {
         fprintf(stderr, "FAIL: uvs x swap\n");
         return 1;
     }
     /* Source Y flipped -> uvTop/uvBottom swap. */
-    if (mglRenderCppScaledBlitUVs(100, 100, 10, 30, 10, 30, 1, 0, 1, 1, &u) != 0 ||
+    if (mglRenderScaledBlitUVs(100, 100, 10, 30, 10, 30, 1, 0, 1, 1, &u) != 0 ||
         fabs(u.uv_top - 0.9f) > 1e-6 || fabs(u.uv_bottom - 0.7f) > 1e-6) {
         fprintf(stderr, "FAIL: uvs y swap\n");
         return 1;
     }
     /* Out-of-range source clamps to [0,1]. */
-    if (mglRenderCppScaledBlitUVs(100, 100, -50, 150, 0, 10, 1, 1, 1, 1, &u) != 0 ||
+    if (mglRenderScaledBlitUVs(100, 100, -50, 150, 0, 10, 1, 1, 1, 1, &u) != 0 ||
         fabs(u.uv_left - 0.0f) > 1e-6 || fabs(u.uv_right - 1.0f) > 1e-6) {
         fprintf(stderr, "FAIL: uvs clamp\n");
         return 1;
     }
 
-    MGLRenderCppBlitScissorRect s = {0};
-    if (mglRenderCppBlitScissorRect(0, 0, 0, 0, 0, 0, NULL) != -1) {
+    MGLRenderBlitScissorRect s = {0};
+    if (mglRenderBlitScissorRect(0, 0, 0, 0, 0, 0, NULL) != -1) {
         fprintf(stderr, "FAIL: scissor bad args\n");
         return 1;
     }
     /* dst 10..30, metalY 70, h 20 -> 10..30 x 70..90 on 100x100. */
-    if (mglRenderCppBlitScissorRect(10, 30, 70, 20, 100, 100, &s) != 0 ||
+    if (mglRenderBlitScissorRect(10, 30, 70, 20, 100, 100, &s) != 0 ||
         s.x0 != 10 || s.x1 != 30 || s.y0 != 70 || s.y1 != 90) {
         fprintf(stderr, "FAIL: scissor basic\n");
         return 1;
     }
     /* Out-of-range clamps: dst -5..105 on 100 wide -> 0..100. */
-    if (mglRenderCppBlitScissorRect(-5, 105, -10, 120, 100, 100, &s) != 0 ||
+    if (mglRenderBlitScissorRect(-5, 105, -10, 120, 100, 100, &s) != 0 ||
         s.x0 != 0 || s.x1 != 100 || s.y0 != 0 || s.y1 != 100) {
         fprintf(stderr, "FAIL: scissor clamp\n");
         return 1;
@@ -4663,14 +4663,14 @@ static int verifyScaledBlitUVsAndScissor(void) {
 
 static int verifyBlitFramebufferPlan(void) {
     /* P4.5 (item 1069/1141): glBlitFramebuffer region math + decisions. */
-    MGLRenderCppBlitFramebufferPlan p = {0};
-    if (mglRenderCppBlitFramebufferPlan(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    MGLRenderBlitFramebufferPlan p = {0};
+    if (mglRenderBlitFramebufferPlan(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                                         0, 0, 0, NULL) != -1) {
         fprintf(stderr, "FAIL: blit plan bad args\n");
         return 1;
     }
     /* Identity blit 0..10 -> 0..10 on 100x100 tex, no conversions. */
-    if (mglRenderCppBlitFramebufferPlan(
+    if (mglRenderBlitFramebufferPlan(
             0, 10, 0, 10, 0, 10, 0, 10, 100, 100, 100, 100,
             0, 0, 0, &p) != 0 ||
         p.src_x_forward != 1 || p.dst_x_forward != 1 ||
@@ -4683,7 +4683,7 @@ static int verifyBlitFramebufferPlan(void) {
         return 1;
     }
     /* Y-flipped source (src 10..0) -> needs scaled. */
-    if (mglRenderCppBlitFramebufferPlan(
+    if (mglRenderBlitFramebufferPlan(
             0, 10, 10, 0, 0, 10, 0, 10, 100, 100, 100, 100,
             0, 0, 0, &p) != 0 ||
         p.src_y_forward != 0 || p.blit_needs_flip != 1 ||
@@ -4694,14 +4694,14 @@ static int verifyBlitFramebufferPlan(void) {
     }
     /* Size mismatch 10 -> 20 (scaled) with epsilon edge: 10 vs 10.000005
      * stays direct. */
-    if (mglRenderCppBlitFramebufferPlan(
+    if (mglRenderBlitFramebufferPlan(
             0, 10, 0, 10, 0, 20, 0, 20, 100, 100, 100, 100,
             0, 0, 0, &p) != 0 ||
         p.needs_scaled_blit != 1 || p.copy_w != 10) {
         fprintf(stderr, "FAIL: blit plan scaled\n");
         return 1;
     }
-    if (mglRenderCppBlitFramebufferPlan(
+    if (mglRenderBlitFramebufferPlan(
             0, 10, 0, 10, 0, 10.000005, 0, 10, 100, 100, 100, 100,
             0, 0, 0, &p) != 0 ||
         p.needs_scaled_blit != 0) {
@@ -4709,14 +4709,14 @@ static int verifyBlitFramebufferPlan(void) {
         return 1;
     }
     /* Scissor forces scaled. */
-    if (mglRenderCppBlitFramebufferPlan(
+    if (mglRenderBlitFramebufferPlan(
             0, 10, 0, 10, 0, 10, 0, 10, 100, 100, 100, 100,
             0, 0, 1, &p) != 0 || p.needs_scaled_blit != 1) {
         fprintf(stderr, "FAIL: blit plan scissor\n");
         return 1;
     }
     /* Zero-extent clipped region -> -1. */
-    if (mglRenderCppBlitFramebufferPlan(
+    if (mglRenderBlitFramebufferPlan(
             5, 5, 0, 10, 0, 10, 0, 10, 100, 100, 100, 100,
             0, 0, 0, &p) != -1) {
         fprintf(stderr, "FAIL: blit plan empty\n");
@@ -4728,14 +4728,14 @@ static int verifyBlitFramebufferPlan(void) {
 
 static int verifyPackedTypeClassify(void) {
     /* P4.5 (item 1171/1116): packed-type classification. */
-    MGLRenderCppIntegerPackedType p = {0};
-    if (mglRenderCppIntegerReadbackPackedTypeClassify(0, NULL) != -1) {
+    MGLRenderIntegerPackedType p = {0};
+    if (mglRenderIntegerReadbackPackedTypeClassify(0, NULL) != -1) {
         fprintf(stderr, "FAIL: packed bad args\n");
         return 1;
     }
     /* GL_UNSIGNED_BYTE_3_3_2 (0x8032) -> 1B, 3 comps, widths 3/3/2,
      * shifts 5/2/0. */
-    if (mglRenderCppIntegerReadbackPackedTypeClassify(0x8032, &p) != 0 ||
+    if (mglRenderIntegerReadbackPackedTypeClassify(0x8032, &p) != 0 ||
         !p.is_packed || p.output_bytes != 1u || p.output_components != 3u ||
         p.bit_widths[0] != 3 || p.bit_widths[2] != 2 ||
         p.shifts[0] != 5 || p.shifts[2] != 0) {
@@ -4743,7 +4743,7 @@ static int verifyPackedTypeClassify(void) {
         return 1;
     }
     /* GL_UNSIGNED_INT_2_10_10_10_REV (0x8368) -> 4B, 4 comps, rev order. */
-    if (mglRenderCppIntegerReadbackPackedTypeClassify(0x8368, &p) != 0 ||
+    if (mglRenderIntegerReadbackPackedTypeClassify(0x8368, &p) != 0 ||
         p.output_bytes != 4u || p.output_components != 4u ||
         p.shifts[0] != 0 || p.shifts[1] != 10 ||
         p.shifts[2] != 20 || p.shifts[3] != 30) {
@@ -4751,20 +4751,20 @@ static int verifyPackedTypeClassify(void) {
         return 1;
     }
     /* GL_UNSIGNED_SHORT_5_6_5 (0x8363) -> 2B, 3 comps. */
-    if (mglRenderCppIntegerReadbackPackedTypeClassify(0x8363, &p) != 0 ||
+    if (mglRenderIntegerReadbackPackedTypeClassify(0x8363, &p) != 0 ||
         p.output_bytes != 2u || p.output_components != 3u ||
         p.bit_widths[1] != 6 || p.shifts[0] != 11) {
         fprintf(stderr, "FAIL: packed 5_6_5\n");
         return 1;
     }
     /* GL_UNSIGNED_INT_8_8_8_8_REV (0x8367) -> 4B, little-endian order. */
-    if (mglRenderCppIntegerReadbackPackedTypeClassify(0x8367, &p) != 0 ||
+    if (mglRenderIntegerReadbackPackedTypeClassify(0x8367, &p) != 0 ||
         p.output_bytes != 4u || p.shifts[0] != 0 || p.shifts[3] != 24) {
         fprintf(stderr, "FAIL: packed 8_8_8_8_rev\n");
         return 1;
     }
     /* Unknown type -> not packed. */
-    if (mglRenderCppIntegerReadbackPackedTypeClassify(0x1234, &p) != 0 ||
+    if (mglRenderIntegerReadbackPackedTypeClassify(0x1234, &p) != 0 ||
         p.is_packed) {
         fprintf(stderr, "FAIL: packed unknown\n");
         return 1;
@@ -4775,48 +4775,48 @@ static int verifyPackedTypeClassify(void) {
 
 static int verifyIntegerReadbackSourceClassify(void) {
     /* P4.5 (item 1171/1116): integer-readback source classification. */
-    MGLRenderCppIntegerReadbackSource s = {0};
-    if (mglRenderCppIntegerReadbackSourceClassify(0, NULL) != -1) {
+    MGLRenderIntegerReadbackSource s = {0};
+    if (mglRenderIntegerReadbackSourceClassify(0, NULL) != -1) {
         fprintf(stderr, "FAIL: src classify bad args\n");
         return 1;
     }
     /* R8Uint = 13 -> 1 comp, 1B, unsigned. */
-    if (mglRenderCppIntegerReadbackSourceClassify(13u, &s) != 0 ||
+    if (mglRenderIntegerReadbackSourceClassify(13u, &s) != 0 ||
         !s.recognized || s.component_count != 1u || s.component_bytes != 1u ||
         s.source_signed) {
         fprintf(stderr, "FAIL: src r8uint\n");
         return 1;
     }
     /* RG8Sint = 34 -> 2 comps, 1B, signed. */
-    if (mglRenderCppIntegerReadbackSourceClassify(34u, &s) != 0 ||
+    if (mglRenderIntegerReadbackSourceClassify(34u, &s) != 0 ||
         s.component_count != 2u || s.component_bytes != 1u ||
         !s.source_signed) {
         fprintf(stderr, "FAIL: src rg8sint\n");
         return 1;
     }
     /* RGBA32Uint = 123 -> 4 comps, 4B, unsigned. */
-    if (mglRenderCppIntegerReadbackSourceClassify(123u, &s) != 0 ||
+    if (mglRenderIntegerReadbackSourceClassify(123u, &s) != 0 ||
         s.component_count != 4u || s.component_bytes != 4u ||
         s.source_signed || s.source_rgb10a2_uint) {
         fprintf(stderr, "FAIL: src rgba32uint\n");
         return 1;
     }
     /* RGBA16Sint = 114 -> 4 comps, 2B, signed. */
-    if (mglRenderCppIntegerReadbackSourceClassify(114u, &s) != 0 ||
+    if (mglRenderIntegerReadbackSourceClassify(114u, &s) != 0 ||
         s.component_count != 4u || s.component_bytes != 2u ||
         !s.source_signed) {
         fprintf(stderr, "FAIL: src rgba16sint\n");
         return 1;
     }
     /* RGB10A2Uint = 91 -> 4 comps, 4B, rgb10a2. */
-    if (mglRenderCppIntegerReadbackSourceClassify(91u, &s) != 0 ||
+    if (mglRenderIntegerReadbackSourceClassify(91u, &s) != 0 ||
         s.component_count != 4u || s.component_bytes != 4u ||
         !s.source_rgb10a2_uint) {
         fprintf(stderr, "FAIL: src rgb10a2\n");
         return 1;
     }
     /* R32Float = 55 -> not recognized. */
-    if (mglRenderCppIntegerReadbackSourceClassify(55u, &s) != 0 ||
+    if (mglRenderIntegerReadbackSourceClassify(55u, &s) != 0 ||
         s.recognized) {
         fprintf(stderr, "FAIL: src unknown\n");
         return 1;
@@ -4827,13 +4827,13 @@ static int verifyIntegerReadbackSourceClassify(void) {
 
 static int verifyGetTexImagePlan(void) {
     /* P4.5 (item 1171/1116): mtlGetTexImage staging plan. */
-    MGLRenderCppGetTexImagePlan p = {0};
-    if (mglRenderCppGetTexImagePlan(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL) != -1) {
+    MGLRenderGetTexImagePlan p = {0};
+    if (mglRenderGetTexImagePlan(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL) != -1) {
         fprintf(stderr, "FAIL: plan bad args\n");
         return 1;
     }
     /* R32Float (55) + RED + FLOAT -> direct read; row = width*max(dst,1). */
-    if (mglRenderCppGetTexImagePlan(55u, GL_RED, GL_FLOAT, 8, 4, 1, 4, 4,
+    if (mglRenderGetTexImagePlan(55u, GL_RED, GL_FLOAT, 8, 4, 1, 4, 4,
                                     1, 0, 0, 0, &p) != 0 ||
         !p.direct_r32_float_read || p.use_bgra8_conversion ||
         p.row_bytes != 32 || p.image_bytes != 128 || p.total_bytes != 128) {
@@ -4842,7 +4842,7 @@ static int verifyGetTexImagePlan(void) {
     }
     /* RGBA8Unorm (70) + RGBA + UNSIGNED_BYTE -> bgra8 conv, source is
      * bgra8 family -> row = width*4. */
-    if (mglRenderCppGetTexImagePlan(70u, GL_RGBA, GL_UNSIGNED_BYTE, 8, 4, 1,
+    if (mglRenderGetTexImagePlan(70u, GL_RGBA, GL_UNSIGNED_BYTE, 8, 4, 1,
                                     4, 4, 1, 0, 0, 0, &p) != 0 ||
         !p.use_bgra8_conversion || !p.source_is_bgra8 ||
         p.row_bytes != 32) {
@@ -4851,7 +4851,7 @@ static int verifyGetTexImagePlan(void) {
     }
     /* RGBA32Float (125) + RGBA + FLOAT -> bgra8 conv but NOT bgra8 family:
      * row = width*sourceBpp(16). */
-    if (mglRenderCppGetTexImagePlan(125u, GL_RGBA, GL_FLOAT, 8, 4, 1, 16, 16,
+    if (mglRenderGetTexImagePlan(125u, GL_RGBA, GL_FLOAT, 8, 4, 1, 16, 16,
                                     1, 0, 0, 0, &p) != 0 ||
         !p.use_bgra8_conversion || p.source_is_bgra8 ||
         p.row_bytes != 128 || p.image_bytes != 512) {
@@ -4859,14 +4859,14 @@ static int verifyGetTexImagePlan(void) {
         return 1;
     }
     /* bytesPerRow fallback when not converting. */
-    if (mglRenderCppGetTexImagePlan(125u, GL_RGBA, GL_FLOAT, 8, 4, 1, 16, 16,
+    if (mglRenderGetTexImagePlan(125u, GL_RGBA, GL_FLOAT, 8, 4, 1, 16, 16,
                                     0, 64, 0, 0, &p) != 0 ||
         p.use_bgra8_conversion || p.row_bytes != 64) {
         fprintf(stderr, "FAIL: plan bpr fallback\n");
         return 1;
     }
     /* Private storage + depth>1 + bytesPerImage -> total = bpi*depth. */
-    if (mglRenderCppGetTexImagePlan(70u, GL_RGBA, GL_UNSIGNED_BYTE, 8, 4, 6,
+    if (mglRenderGetTexImagePlan(70u, GL_RGBA, GL_UNSIGNED_BYTE, 8, 4, 6,
                                     4, 4, 0, 64, 1024, 1, &p) != 0 ||
         p.use_bgra8_conversion || p.total_bytes != 6144) {
         fprintf(stderr, "FAIL: plan private depth\n");
@@ -4878,15 +4878,15 @@ static int verifyGetTexImagePlan(void) {
 
 static int verifyIntegerReadbackClassify(void) {
     /* P4.5 (item 1171/1116): integer-readback classification. */
-    MGLRenderCppIntegerReadbackClassify c = {0};
-    if (mglRenderCppIntegerReadbackClassify(0, 0, 0, NULL) != -1) {
+    MGLRenderIntegerReadbackClassify c = {0};
+    if (mglRenderIntegerReadbackClassify(0, 0, 0, NULL) != -1) {
         fprintf(stderr, "FAIL: classify bad args\n");
         return 1;
     }
     /* RGBA8Uint (MTLPixelFormatRGBA8Uint = 73) + RGBA_INTEGER + UNSIGNED_INT
      * -> 4 comps, identity map, 4B. */
     c.output_components = 0;
-    if (mglRenderCppIntegerReadbackClassify(
+    if (mglRenderIntegerReadbackClassify(
             73u, GL_RGBA_INTEGER, GL_UNSIGNED_INT, &c) != 0 ||
         !c.source_is_integer_texture || !c.output_is_integer_format ||
         c.output_components != 4u || c.output_component_bytes != 4u ||
@@ -4896,7 +4896,7 @@ static int verifyIntegerReadbackClassify(void) {
         return 1;
     }
     /* RG8Sint (34) + RG_INTEGER + BYTE -> 2 comps, 1B, map {0,1,-1,-1}. */
-    if (mglRenderCppIntegerReadbackClassify(
+    if (mglRenderIntegerReadbackClassify(
             34u, GL_RG_INTEGER, GL_BYTE, &c) != 0 ||
         c.output_components != 2u || c.output_component_bytes != 1u ||
         c.component_map[1] != 1 || c.component_map[2] != -1) {
@@ -4904,7 +4904,7 @@ static int verifyIntegerReadbackClassify(void) {
         return 1;
     }
     /* BGRA_INTEGER -> {2,1,0,3}.  RGBA8Sint = 74. */
-    if (mglRenderCppIntegerReadbackClassify(
+    if (mglRenderIntegerReadbackClassify(
             74u, GL_BGRA_INTEGER, GL_UNSIGNED_SHORT, &c) != 0 ||
         c.output_components != 4u || c.output_component_bytes != 2u ||
         c.component_map[0] != 2 || c.component_map[1] != 1 ||
@@ -4914,7 +4914,7 @@ static int verifyIntegerReadbackClassify(void) {
     }
     /* GREEN_INTEGER compat enum (0x8d95) -> 1 comp from channel 1.
      * RGBA16Sint = 114. */
-    if (mglRenderCppIntegerReadbackClassify(
+    if (mglRenderIntegerReadbackClassify(
             114u, 0x8d95, GL_UNSIGNED_BYTE, &c) != 0 ||
         c.output_components != 1u || c.output_component_bytes != 1u ||
         c.component_map[0] != 1) {
@@ -4922,13 +4922,13 @@ static int verifyIntegerReadbackClassify(void) {
         return 1;
     }
     /* R32Float (55) + RED + FLOAT -> not a source integer texture. */
-    if (mglRenderCppIntegerReadbackClassify(
+    if (mglRenderIntegerReadbackClassify(
             55u, GL_RED, GL_FLOAT, &c) != 0 || c.source_is_integer_texture) {
         fprintf(stderr, "FAIL: classify r32float\n");
         return 1;
     }
     /* RGBA8Uint + RGBA (non-integer output) -> output flag clear. */
-    if (mglRenderCppIntegerReadbackClassify(
+    if (mglRenderIntegerReadbackClassify(
             73u, GL_RGBA, GL_UNSIGNED_BYTE, &c) != 0 ||
         c.output_is_integer_format) {
         fprintf(stderr, "FAIL: classify non-integer output\n");
@@ -4940,41 +4940,41 @@ static int verifyIntegerReadbackClassify(void) {
 
 static int verifyRasterizationIsEmpty(void) {
     /* P4.5 (item 1141/887): viewport/scissor/framebuffer intersection. */
-    if (mglRenderCppRasterizationIsEmpty(0, 0, 0, 10, 100, 100, 0, 0, 0, 0, 0) != 1) {
+    if (mglRenderRasterizationIsEmpty(0, 0, 0, 10, 100, 100, 0, 0, 0, 0, 0) != 1) {
         fprintf(stderr, "FAIL: raster empty zero viewport\n");
         return 1;
     }
-    if (mglRenderCppRasterizationIsEmpty(0, 0, 10, 10, 0, 0, 0, 0, 0, 0, 0) != 0) {
+    if (mglRenderRasterizationIsEmpty(0, 0, 10, 10, 0, 0, 0, 0, 0, 0, 0) != 0) {
         fprintf(stderr, "FAIL: raster empty zero pass\n");
         return 1;
     }
-    if (mglRenderCppRasterizationIsEmpty(200, 0, 10, 10, 100, 100, 0, 0, 0, 0, 0) != 1) {
+    if (mglRenderRasterizationIsEmpty(200, 0, 10, 10, 100, 100, 0, 0, 0, 0, 0) != 1) {
         fprintf(stderr, "FAIL: raster empty viewport outside\n");
         return 1;
     }
     /* Partially outside: [-5,5) x [-5,5) does intersect [0,100)^2 -> not empty. */
-    if (mglRenderCppRasterizationIsEmpty(-5, -5, 10, 10, 100, 100, 0, 0, 0, 0, 0) != 0) {
+    if (mglRenderRasterizationIsEmpty(-5, -5, 10, 10, 100, 100, 0, 0, 0, 0, 0) != 0) {
         fprintf(stderr, "FAIL: raster empty viewport partial\n");
         return 1;
     }
     /* Fully negative: [-15,-5) -> vx1 <= 0 -> empty. */
-    if (mglRenderCppRasterizationIsEmpty(-15, -5, 10, 10, 100, 100, 0, 0, 0, 0, 0) != 1) {
+    if (mglRenderRasterizationIsEmpty(-15, -5, 10, 10, 100, 100, 0, 0, 0, 0, 0) != 1) {
         fprintf(stderr, "FAIL: raster empty viewport negative\n");
         return 1;
     }
-    if (mglRenderCppRasterizationIsEmpty(10, 10, 50, 50, 100, 100, 0, 0, 0, 0, 0) != 0) {
+    if (mglRenderRasterizationIsEmpty(10, 10, 50, 50, 100, 100, 0, 0, 0, 0, 0) != 0) {
         fprintf(stderr, "FAIL: raster empty viewport inside\n");
         return 1;
     }
-    if (mglRenderCppRasterizationIsEmpty(10, 10, 50, 50, 100, 100, 1, 0, 0, 0, 0) != 1) {
+    if (mglRenderRasterizationIsEmpty(10, 10, 50, 50, 100, 100, 1, 0, 0, 0, 0) != 1) {
         fprintf(stderr, "FAIL: raster empty zero scissor\n");
         return 1;
     }
-    if (mglRenderCppRasterizationIsEmpty(10, 10, 50, 50, 100, 100, 1, 200, 200, 10, 10) != 1) {
+    if (mglRenderRasterizationIsEmpty(10, 10, 50, 50, 100, 100, 1, 200, 200, 10, 10) != 1) {
         fprintf(stderr, "FAIL: raster empty scissor outside\n");
         return 1;
     }
-    if (mglRenderCppRasterizationIsEmpty(10, 10, 50, 50, 100, 100, 1, 5, 5, 20, 20) != 0) {
+    if (mglRenderRasterizationIsEmpty(10, 10, 50, 50, 100, 100, 1, 5, 5, 20, 20) != 0) {
         fprintf(stderr, "FAIL: raster empty scissor inside\n");
         return 1;
     }
@@ -4987,42 +4987,42 @@ static int verifyNativeTESInterfaceGuards(void) {
      * (all return before the MTL::Function patchType read, which cannot be
      * constructed in the smoke). */
     void *fn = (void *)(uintptr_t)0x1;
-    if (mglRenderCppNativeTESInterfaceSupported(
+    if (mglRenderNativeTESInterfaceSupported(
             NULL, 64, 0, 0, GL_TRIANGLES, NULL, 0, 0) != 0) {
         fprintf(stderr, "FAIL: TES iface null function\n");
         return 1;
     }
-    if (mglRenderCppNativeTESInterfaceSupported(
+    if (mglRenderNativeTESInterfaceSupported(
             fn, 0, 0, 0, GL_TRIANGLES, NULL, 0, 0) != 0) {
         fprintf(stderr, "FAIL: TES iface no metallib\n");
         return 1;
     }
-    if (mglRenderCppNativeTESInterfaceSupported(
+    if (mglRenderNativeTESInterfaceSupported(
             fn, 64, 1, 0, GL_TRIANGLES, NULL, 0, 0) != 0) {
         fprintf(stderr, "FAIL: TES iface point mode\n");
         return 1;
     }
-    if (mglRenderCppNativeTESInterfaceSupported(
+    if (mglRenderNativeTESInterfaceSupported(
             fn, 64, 0, 1, GL_TRIANGLES, NULL, 0, 0) != 0) {
         fprintf(stderr, "FAIL: TES iface xfb\n");
         return 1;
     }
-    if (mglRenderCppNativeTESInterfaceSupported(
+    if (mglRenderNativeTESInterfaceSupported(
             fn, 64, 0, 0, GL_ISOLINES, NULL, 0, 0) != 0) {
         fprintf(stderr, "FAIL: TES iface gen mode\n");
         return 1;
     }
-    if (mglRenderCppNativeTESInterfaceSupported(
+    if (mglRenderNativeTESInterfaceSupported(
             fn, 64, 0, 0, GL_TRIANGLES, fn, 0, 4) != 0) {
         fprintf(stderr, "FAIL: TES iface tcs no metallib\n");
         return 1;
     }
-    if (mglRenderCppNativeTESInterfaceSupported(
+    if (mglRenderNativeTESInterfaceSupported(
             fn, 64, 0, 0, GL_TRIANGLES, fn, 64, 0) != 0) {
         fprintf(stderr, "FAIL: TES iface tcs zero vertices\n");
         return 1;
     }
-    if (mglRenderCppNativeTESInterfaceSupported(
+    if (mglRenderNativeTESInterfaceSupported(
             fn, 64, 0, 0, GL_TRIANGLES, fn, 64, 33) != 0) {
         fprintf(stderr, "FAIL: TES iface tcs vertices > 32\n");
         return 1;
@@ -5036,45 +5036,45 @@ static int verifyTessEvalItemsAndCaptureSize(void) {
     /* patch record: edge {1,2,0,0} inside {0.5, 0.5} — 0.5=0x3800, 1.0=0x3C00,
      * 2.0=0x4000, 2.5=0x4100. */
     uint16_t rec[6] = {0x3C00, 0x4000, 0x4200, 0x4400, 0x3800, 0x3800};
-    if (mglRenderCppTessEvalItemsPerPatch(rec, GL_ISOLINES, 0, 0) != 4) {
+    if (mglRenderTessEvalItemsPerPatch(rec, GL_ISOLINES, 0, 0) != 4) {
         fprintf(stderr, "FAIL: eval items isolines\n");
         return 1;
     }
     /* quad point-mode: i0=0.5->1, i1=2.5->3, spacing 0 (passthrough) -> 3. */
     rec[5] = 0x4100;
-    if (mglRenderCppTessEvalItemsPerPatch(rec, GL_QUADS, 0, 1) != 3) {
+    if (mglRenderTessEvalItemsPerPatch(rec, GL_QUADS, 0, 1) != 3) {
         fprintf(stderr, "FAIL: eval items quad point\n");
         return 1;
     }
     /* triangle point-mode: i0=2.5 -> n=3 -> 9. */
     rec[4] = 0x4100;
-    if (mglRenderCppTessEvalItemsPerPatch(rec, GL_TRIANGLES, 0, 1) != 9) {
+    if (mglRenderTessEvalItemsPerPatch(rec, GL_TRIANGLES, 0, 1) != 9) {
         fprintf(stderr, "FAIL: eval items tri point\n");
         return 1;
     }
     /* non-point quad -> 0. */
-    if (mglRenderCppTessEvalItemsPerPatch(rec, GL_QUADS, 0, 0) != 0) {
+    if (mglRenderTessEvalItemsPerPatch(rec, GL_QUADS, 0, 0) != 0) {
         fprintf(stderr, "FAIL: eval items non-point\n");
         return 1;
     }
     /* discarded (edge0 = 0) -> 0. */
     rec[0] = 0;
-    if (mglRenderCppTessEvalItemsPerPatch(rec, GL_TRIANGLES, 0, 1) != 0 ||
-        mglRenderCppTessEvalItemsPerPatch(NULL, GL_TRIANGLES, 0, 1) != 0) {
+    if (mglRenderTessEvalItemsPerPatch(rec, GL_TRIANGLES, 0, 1) != 0 ||
+        mglRenderTessEvalItemsPerPatch(NULL, GL_TRIANGLES, 0, 1) != 0) {
         fprintf(stderr, "FAIL: eval items discard/null\n");
         return 1;
     }
 
     uint64_t size = 0, offset = 0;
-    if (mglRenderCppCheckedTessCaptureSize(3, 5, 32, 16, &size, &offset) != 0 ||
+    if (mglRenderCheckedTessCaptureSize(3, 5, 32, 16, &size, &offset) != 0 ||
         size != 480 || offset != 0) {
         fprintf(stderr, "FAIL: capture size basic\n");
         return 1;
     }
-    if (mglRenderCppCheckedTessCaptureSize(0, 5, 32, 16, &size, &offset) != -1 ||
-        mglRenderCppCheckedTessCaptureSize(3, 5, 8, 16, &size, &offset) != -1 ||
-        mglRenderCppCheckedTessCaptureSize(INT64_MAX, 2, 32, 16, &size, &offset) != -1 ||
-        mglRenderCppCheckedTessCaptureSize(3, 5, 32, 16, NULL, NULL) != -1) {
+    if (mglRenderCheckedTessCaptureSize(0, 5, 32, 16, &size, &offset) != -1 ||
+        mglRenderCheckedTessCaptureSize(3, 5, 8, 16, &size, &offset) != -1 ||
+        mglRenderCheckedTessCaptureSize(INT64_MAX, 2, 32, 16, &size, &offset) != -1 ||
+        mglRenderCheckedTessCaptureSize(3, 5, 32, 16, NULL, NULL) != -1) {
         fprintf(stderr, "FAIL: capture size bad args\n");
         return 1;
     }
@@ -5087,27 +5087,27 @@ static int verifyTessFactorDiscardPredicate(void) {
      * native primitive accounting and TES compute eval-item accounting. */
     float edge[4] = {1.0f, 2.0f, 3.0f, 4.0f};
     float inside[2] = {1.0f, 2.0f};
-    if (mglRenderCppTessFactorsDiscardPatch(
+    if (mglRenderTessFactorsDiscardPatch(
             GL_TRIANGLES, edge, inside)) {
         fprintf(stderr, "FAIL: tess discard triangle valid\n");
         return 1;
     }
     edge[2] = 0.0f;
-    if (!mglRenderCppTessFactorsDiscardPatch(
+    if (!mglRenderTessFactorsDiscardPatch(
             GL_TRIANGLES, edge, inside)) {
         fprintf(stderr, "FAIL: tess discard triangle edge\n");
         return 1;
     }
     edge[2] = 3.0f;
     inside[0] = NAN;
-    if (!mglRenderCppTessFactorsDiscardPatch(
+    if (!mglRenderTessFactorsDiscardPatch(
             GL_TRIANGLES, edge, inside)) {
         fprintf(stderr, "FAIL: tess discard triangle nan\n");
         return 1;
     }
     inside[0] = 1.0f;
     inside[1] = 0.0f;
-    if (!mglRenderCppTessFactorsDiscardPatch(GL_QUADS, edge, inside)) {
+    if (!mglRenderTessFactorsDiscardPatch(GL_QUADS, edge, inside)) {
         fprintf(stderr, "FAIL: tess discard quad inside\n");
         return 1;
     }
@@ -5116,15 +5116,15 @@ static int verifyTessFactorDiscardPredicate(void) {
     edge[3] = NAN;
     inside[0] = 0.0f;
     inside[1] = NAN;
-    if (mglRenderCppTessFactorsDiscardPatch(GL_ISOLINES, edge, inside)) {
+    if (mglRenderTessFactorsDiscardPatch(GL_ISOLINES, edge, inside)) {
         fprintf(stderr, "FAIL: tess discard isolines unrelated levels\n");
         return 1;
     }
     edge[1] = -1.0f;
-    if (!mglRenderCppTessFactorsDiscardPatch(GL_ISOLINES, edge, inside) ||
-        !mglRenderCppTessFactorsDiscardPatch(
+    if (!mglRenderTessFactorsDiscardPatch(GL_ISOLINES, edge, inside) ||
+        !mglRenderTessFactorsDiscardPatch(
             GL_TRIANGLES, NULL, inside) ||
-        !mglRenderCppTessFactorsDiscardPatch(
+        !mglRenderTessFactorsDiscardPatch(
             GL_TRIANGLES, edge, NULL)) {
         fprintf(stderr, "FAIL: tess discard isolines/null\n");
         return 1;
@@ -5137,23 +5137,23 @@ static int verifyTessRoundLevelForSpacing(void) {
     /* P4.5 (item 1141/887): GL 4.6 §11.2.2.2 subdivision-count rounding.
      * fractional_even -> next even, min 2; fractional_odd -> next odd;
      * integer/other spacing keeps ceil(level). */
-    if (mglRenderCppTessRoundLevelForSpacing(GL_FRACTIONAL_EVEN, 1) != 2 ||
-        mglRenderCppTessRoundLevelForSpacing(GL_FRACTIONAL_EVEN, 2) != 2 ||
-        mglRenderCppTessRoundLevelForSpacing(GL_FRACTIONAL_EVEN, 3) != 4 ||
-        mglRenderCppTessRoundLevelForSpacing(GL_FRACTIONAL_EVEN, 4) != 4 ||
-        mglRenderCppTessRoundLevelForSpacing(GL_FRACTIONAL_EVEN, 5) != 6) {
+    if (mglRenderTessRoundLevelForSpacing(GL_FRACTIONAL_EVEN, 1) != 2 ||
+        mglRenderTessRoundLevelForSpacing(GL_FRACTIONAL_EVEN, 2) != 2 ||
+        mglRenderTessRoundLevelForSpacing(GL_FRACTIONAL_EVEN, 3) != 4 ||
+        mglRenderTessRoundLevelForSpacing(GL_FRACTIONAL_EVEN, 4) != 4 ||
+        mglRenderTessRoundLevelForSpacing(GL_FRACTIONAL_EVEN, 5) != 6) {
         fprintf(stderr, "FAIL: round level even\n");
         return 1;
     }
-    if (mglRenderCppTessRoundLevelForSpacing(GL_FRACTIONAL_ODD, 1) != 1 ||
-        mglRenderCppTessRoundLevelForSpacing(GL_FRACTIONAL_ODD, 2) != 3 ||
-        mglRenderCppTessRoundLevelForSpacing(GL_FRACTIONAL_ODD, 3) != 3 ||
-        mglRenderCppTessRoundLevelForSpacing(GL_FRACTIONAL_ODD, 4) != 5) {
+    if (mglRenderTessRoundLevelForSpacing(GL_FRACTIONAL_ODD, 1) != 1 ||
+        mglRenderTessRoundLevelForSpacing(GL_FRACTIONAL_ODD, 2) != 3 ||
+        mglRenderTessRoundLevelForSpacing(GL_FRACTIONAL_ODD, 3) != 3 ||
+        mglRenderTessRoundLevelForSpacing(GL_FRACTIONAL_ODD, 4) != 5) {
         fprintf(stderr, "FAIL: round level odd\n");
         return 1;
     }
-    if (mglRenderCppTessRoundLevelForSpacing(GL_EQUAL, 5) != 5 ||
-        mglRenderCppTessRoundLevelForSpacing(0xfeed, 7) != 7) {
+    if (mglRenderTessRoundLevelForSpacing(GL_EQUAL, 5) != 5 ||
+        mglRenderTessRoundLevelForSpacing(0xfeed, 7) != 7) {
         fprintf(stderr, "FAIL: round level passthrough\n");
         return 1;
     }
@@ -5164,26 +5164,26 @@ static int verifyTessRoundLevelForSpacing(void) {
 static int verifyCheckedProductAndXFBFieldByteSize(void) {
     /* P4.5 (item 1141/887): overflow-checked product + TES XFB field size. */
     uint64_t out = 0;
-    if (mglRenderCppCheckedProduct(0, 5, &out) != 0 || out != 0) {
+    if (mglRenderCheckedProduct(0, 5, &out) != 0 || out != 0) {
         fprintf(stderr, "FAIL: checked product zero\n");
         return 1;
     }
-    if (mglRenderCppCheckedProduct(3, 5, &out) != 0 || out != 15) {
+    if (mglRenderCheckedProduct(3, 5, &out) != 0 || out != 15) {
         fprintf(stderr, "FAIL: checked product basic\n");
         return 1;
     }
-    if (mglRenderCppCheckedProduct(UINT64_MAX, 2, &out) != -1 ||
-        mglRenderCppCheckedProduct(1, 0, NULL) != -1) {
+    if (mglRenderCheckedProduct(UINT64_MAX, 2, &out) != -1 ||
+        mglRenderCheckedProduct(1, 0, NULL) != -1) {
         fprintf(stderr, "FAIL: checked product overflow/bad args\n");
         return 1;
     }
-    if (mglRenderCppTESXFBFieldByteSize(GL_FLOAT) != 4 ||
-        mglRenderCppTESXFBFieldByteSize(GL_INT) != 4 ||
-        mglRenderCppTESXFBFieldByteSize(GL_UNSIGNED_INT_VEC2) != 8 ||
-        mglRenderCppTESXFBFieldByteSize(GL_FLOAT_VEC3) != 12 ||
-        mglRenderCppTESXFBFieldByteSize(GL_INT_VEC4) != 16 ||
-        mglRenderCppTESXFBFieldByteSize(GL_FLOAT_MAT4) != 0 ||
-        mglRenderCppTESXFBFieldByteSize(0xfeed) != 0) {
+    if (mglRenderTESXFBFieldByteSize(GL_FLOAT) != 4 ||
+        mglRenderTESXFBFieldByteSize(GL_INT) != 4 ||
+        mglRenderTESXFBFieldByteSize(GL_UNSIGNED_INT_VEC2) != 8 ||
+        mglRenderTESXFBFieldByteSize(GL_FLOAT_VEC3) != 12 ||
+        mglRenderTESXFBFieldByteSize(GL_INT_VEC4) != 16 ||
+        mglRenderTESXFBFieldByteSize(GL_FLOAT_MAT4) != 0 ||
+        mglRenderTESXFBFieldByteSize(0xfeed) != 0) {
         fprintf(stderr, "FAIL: xfb field byte size\n");
         return 1;
     }
@@ -5194,35 +5194,35 @@ static int verifyCheckedProductAndXFBFieldByteSize(void) {
 static int verifyFloatUnpack(void) {
     /* P4.5 (item 1141/887): 11-bit / 10-bit unsigned float unpacking
      * (GL_UNSIGNED_INT_10F_11F_11F_REV CPU decode). */
-    if (mglRenderCppFloat11ToFloat(0u) != 0.0f ||
-        mglRenderCppFloat11ToFloat(0x3C0u) != 1.0f ||
-        mglRenderCppFloat11ToFloat(0x440u) != 4.0f) {
+    if (mglRenderFloat11ToFloat(0u) != 0.0f ||
+        mglRenderFloat11ToFloat(0x3C0u) != 1.0f ||
+        mglRenderFloat11ToFloat(0x440u) != 4.0f) {
         fprintf(stderr, "FAIL: float11 normalized\n");
         return 1;
     }
-    if (fabsf(mglRenderCppFloat11ToFloat(0x0001u) -
+    if (fabsf(mglRenderFloat11ToFloat(0x0001u) -
               (float)(1.0 / 64.0) * (float)(1.0 / 16384.0)) > 1e-12f) {
         fprintf(stderr, "FAIL: float11 denormal\n");
         return 1;
     }
-    if (!isinf(mglRenderCppFloat11ToFloat(0x7C0u)) ||
-        !isnan(mglRenderCppFloat11ToFloat(0x7FFu))) {
+    if (!isinf(mglRenderFloat11ToFloat(0x7C0u)) ||
+        !isnan(mglRenderFloat11ToFloat(0x7FFu))) {
         fprintf(stderr, "FAIL: float11 inf/nan\n");
         return 1;
     }
-    if (mglRenderCppFloat10ToFloat(0u) != 0.0f ||
-        mglRenderCppFloat10ToFloat(0x1E0u) != 1.0f ||
-        mglRenderCppFloat10ToFloat(0x260u) != 16.0f) {
+    if (mglRenderFloat10ToFloat(0u) != 0.0f ||
+        mglRenderFloat10ToFloat(0x1E0u) != 1.0f ||
+        mglRenderFloat10ToFloat(0x260u) != 16.0f) {
         fprintf(stderr, "FAIL: float10 normalized\n");
         return 1;
     }
-    if (fabsf(mglRenderCppFloat10ToFloat(0x0001u) -
+    if (fabsf(mglRenderFloat10ToFloat(0x0001u) -
               (float)(1.0 / 32.0) * (float)(1.0 / 16384.0)) > 1e-12f) {
         fprintf(stderr, "FAIL: float10 denormal\n");
         return 1;
     }
-    if (!isinf(mglRenderCppFloat10ToFloat(0x3E0u)) ||
-        !isnan(mglRenderCppFloat10ToFloat(0x3FFu))) {
+    if (!isinf(mglRenderFloat10ToFloat(0x3E0u)) ||
+        !isnan(mglRenderFloat10ToFloat(0x3FFu))) {
         fprintf(stderr, "FAIL: float10 inf/nan\n");
         return 1;
     }
@@ -5233,67 +5233,67 @@ static int verifyFloatUnpack(void) {
 static int verifyReadbackScalarConvert(void) {
     /* P4.5 (item 1171): CPU readback scalar converters — float->unorm8
      * round-to-nearest (0.5 up), snorm16/8 decode with INT_MIN -> -1.0. */
-    if (mglRenderCppFloatToUnorm8(-0.1f) != 0u ||
-        mglRenderCppFloatToUnorm8(0.0f) != 0u ||
-        mglRenderCppFloatToUnorm8(0.5f) != 128u ||   /* 127.5 + 0.5 = 128 */
-        mglRenderCppFloatToUnorm8(0.75f) != 191u ||  /* 191.25 + 0.5 = 191 */
-        mglRenderCppFloatToUnorm8(1.0f) != 255u ||
-        mglRenderCppFloatToUnorm8(2.0f) != 255u ||
-        mglRenderCppFloatToUnorm8(NAN) != 0u) {
+    if (mglRenderFloatToUnorm8(-0.1f) != 0u ||
+        mglRenderFloatToUnorm8(0.0f) != 0u ||
+        mglRenderFloatToUnorm8(0.5f) != 128u ||   /* 127.5 + 0.5 = 128 */
+        mglRenderFloatToUnorm8(0.75f) != 191u ||  /* 191.25 + 0.5 = 191 */
+        mglRenderFloatToUnorm8(1.0f) != 255u ||
+        mglRenderFloatToUnorm8(2.0f) != 255u ||
+        mglRenderFloatToUnorm8(NAN) != 0u) {
         fprintf(stderr, "FAIL: float->unorm8\n");
         return 1;
     }
-    if (mglRenderCppSnorm16ToFloat(0) != 0.0f ||
-        fabsf(mglRenderCppSnorm16ToFloat(32767) - 1.0f) > 1e-6f ||
-        mglRenderCppSnorm16ToFloat(INT16_MIN) != -1.0f ||
-        fabsf(mglRenderCppSnorm16ToFloat(-16384) - (-16384.0f / 32767.0f)) > 1e-6f) {
+    if (mglRenderSnorm16ToFloat(0) != 0.0f ||
+        fabsf(mglRenderSnorm16ToFloat(32767) - 1.0f) > 1e-6f ||
+        mglRenderSnorm16ToFloat(INT16_MIN) != -1.0f ||
+        fabsf(mglRenderSnorm16ToFloat(-16384) - (-16384.0f / 32767.0f)) > 1e-6f) {
         fprintf(stderr, "FAIL: snorm16\n");
         return 1;
     }
-    if (mglRenderCppSnorm8ToFloat(0) != 0.0f ||
-        fabsf(mglRenderCppSnorm8ToFloat(127) - 1.0f) > 1e-6f ||
-        mglRenderCppSnorm8ToFloat(INT8_MIN) != -1.0f ||
-        fabsf(mglRenderCppSnorm8ToFloat(-64) - (-64.0f / 127.0f)) > 1e-6f) {
+    if (mglRenderSnorm8ToFloat(0) != 0.0f ||
+        fabsf(mglRenderSnorm8ToFloat(127) - 1.0f) > 1e-6f ||
+        mglRenderSnorm8ToFloat(INT8_MIN) != -1.0f ||
+        fabsf(mglRenderSnorm8ToFloat(-64) - (-64.0f / 127.0f)) > 1e-6f) {
         fprintf(stderr, "FAIL: snorm8\n");
         return 1;
     }
     /* Readback bytes-per-pixel table (MTLPixelFormat ABI values). */
-    if (mglRenderCppReadbackBytesPerPixel((uint32_t)MTLPixelFormatRGBA32Float) != 16u ||
-        mglRenderCppReadbackBytesPerPixel((uint32_t)MTLPixelFormatR8Unorm) != 1u ||
-        mglRenderCppReadbackBytesPerPixel((uint32_t)MTLPixelFormatR16Unorm) != 2u ||
-        mglRenderCppReadbackBytesPerPixel((uint32_t)MTLPixelFormatRG8Unorm) != 2u ||
-        mglRenderCppReadbackBytesPerPixel((uint32_t)MTLPixelFormatABGR4Unorm) != 2u ||
-        mglRenderCppReadbackBytesPerPixel((uint32_t)MTLPixelFormatRG32Float) != 8u ||
-        mglRenderCppReadbackBytesPerPixel((uint32_t)MTLPixelFormatRGBA16Unorm) != 8u ||
-        mglRenderCppReadbackBytesPerPixel((uint32_t)MTLPixelFormatR8Sint) != 1u ||
-        mglRenderCppReadbackBytesPerPixel((uint32_t)MTLPixelFormatRG8Uint) != 2u ||
-        mglRenderCppReadbackBytesPerPixel((uint32_t)MTLPixelFormatRGBA8Snorm) != 4u ||
-        mglRenderCppReadbackBytesPerPixel((uint32_t)MTLPixelFormatRGBA8Unorm) != 4u ||
-        mglRenderCppReadbackBytesPerPixel((uint32_t)0x7FFFFFFFu) != 4u) { /* unknown -> 4 */
+    if (mglRenderReadbackBytesPerPixel((uint32_t)MTLPixelFormatRGBA32Float) != 16u ||
+        mglRenderReadbackBytesPerPixel((uint32_t)MTLPixelFormatR8Unorm) != 1u ||
+        mglRenderReadbackBytesPerPixel((uint32_t)MTLPixelFormatR16Unorm) != 2u ||
+        mglRenderReadbackBytesPerPixel((uint32_t)MTLPixelFormatRG8Unorm) != 2u ||
+        mglRenderReadbackBytesPerPixel((uint32_t)MTLPixelFormatABGR4Unorm) != 2u ||
+        mglRenderReadbackBytesPerPixel((uint32_t)MTLPixelFormatRG32Float) != 8u ||
+        mglRenderReadbackBytesPerPixel((uint32_t)MTLPixelFormatRGBA16Unorm) != 8u ||
+        mglRenderReadbackBytesPerPixel((uint32_t)MTLPixelFormatR8Sint) != 1u ||
+        mglRenderReadbackBytesPerPixel((uint32_t)MTLPixelFormatRG8Uint) != 2u ||
+        mglRenderReadbackBytesPerPixel((uint32_t)MTLPixelFormatRGBA8Snorm) != 4u ||
+        mglRenderReadbackBytesPerPixel((uint32_t)MTLPixelFormatRGBA8Unorm) != 4u ||
+        mglRenderReadbackBytesPerPixel((uint32_t)0x7FFFFFFFu) != 4u) { /* unknown -> 4 */
         fprintf(stderr, "FAIL: readback bpp table\n");
         return 1;
     }
     /* Format classification tables. */
-    if (!mglRenderCppReadbackFormatIsBGRA8Compatible((uint32_t)MTLPixelFormatRGBA8Unorm) ||
-        !mglRenderCppReadbackFormatIsBGRA8Compatible((uint32_t)MTLPixelFormatRGBA32Float) ||
-        !mglRenderCppReadbackFormatIsBGRA8Compatible((uint32_t)MTLPixelFormatRGBA8Uint) ||
-        mglRenderCppReadbackFormatIsBGRA8Compatible((uint32_t)MTLPixelFormatDepth32Float) ||
-        mglRenderCppReadbackFormatIsBGRA8Compatible((uint32_t)0x7FFFFFFFu)) {
+    if (!mglRenderReadbackFormatIsBGRA8Compatible((uint32_t)MTLPixelFormatRGBA8Unorm) ||
+        !mglRenderReadbackFormatIsBGRA8Compatible((uint32_t)MTLPixelFormatRGBA32Float) ||
+        !mglRenderReadbackFormatIsBGRA8Compatible((uint32_t)MTLPixelFormatRGBA8Uint) ||
+        mglRenderReadbackFormatIsBGRA8Compatible((uint32_t)MTLPixelFormatDepth32Float) ||
+        mglRenderReadbackFormatIsBGRA8Compatible((uint32_t)0x7FFFFFFFu)) {
         fprintf(stderr, "FAIL: bgra8-compatible table\n");
         return 1;
     }
-    if (!mglRenderCppPixelFormatIsIntegerColor((uint32_t)MTLPixelFormatRGBA8Uint) ||
-        !mglRenderCppPixelFormatIsIntegerColor((uint32_t)MTLPixelFormatR32Sint) ||
-        !mglRenderCppPixelFormatIsIntegerColor((uint32_t)MTLPixelFormatRGB10A2Uint) ||
-        mglRenderCppPixelFormatIsIntegerColor((uint32_t)MTLPixelFormatRGBA8Unorm) ||
-        mglRenderCppPixelFormatIsIntegerColor((uint32_t)MTLPixelFormatDepth32Float)) {
+    if (!mglRenderPixelFormatIsIntegerColor((uint32_t)MTLPixelFormatRGBA8Uint) ||
+        !mglRenderPixelFormatIsIntegerColor((uint32_t)MTLPixelFormatR32Sint) ||
+        !mglRenderPixelFormatIsIntegerColor((uint32_t)MTLPixelFormatRGB10A2Uint) ||
+        mglRenderPixelFormatIsIntegerColor((uint32_t)MTLPixelFormatRGBA8Unorm) ||
+        mglRenderPixelFormatIsIntegerColor((uint32_t)MTLPixelFormatDepth32Float)) {
         fprintf(stderr, "FAIL: integer-color table\n");
         return 1;
     }
-    if (!mglRenderCppPixelFormatIsSignedIntegerColor((uint32_t)MTLPixelFormatRGBA32Sint) ||
-        !mglRenderCppPixelFormatIsSignedIntegerColor((uint32_t)MTLPixelFormatR8Sint) ||
-        mglRenderCppPixelFormatIsSignedIntegerColor((uint32_t)MTLPixelFormatRGBA8Uint) ||
-        mglRenderCppPixelFormatIsSignedIntegerColor((uint32_t)MTLPixelFormatRGBA8Unorm)) {
+    if (!mglRenderPixelFormatIsSignedIntegerColor((uint32_t)MTLPixelFormatRGBA32Sint) ||
+        !mglRenderPixelFormatIsSignedIntegerColor((uint32_t)MTLPixelFormatR8Sint) ||
+        mglRenderPixelFormatIsSignedIntegerColor((uint32_t)MTLPixelFormatRGBA8Uint) ||
+        mglRenderPixelFormatIsSignedIntegerColor((uint32_t)MTLPixelFormatRGBA8Unorm)) {
         fprintf(stderr, "FAIL: signed-integer-color table\n");
         return 1;
     }
@@ -5302,7 +5302,7 @@ static int verifyReadbackScalarConvert(void) {
         uint8_t src[2][4] = {{10, 20, 30, 40}, {50, 60, 70, 80}};
         uint8_t dst[2][4] = {{0, 0, 0, 0}, {0, 0, 0, 0}};
         /* RGBA8Unorm: BGRA8 source maps to RGBA order (B,G,R,A -> R,G,B,A). */
-        if (mglRenderCppCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(
+        if (mglRenderCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(
                 src, 4u, dst, 4u, 1u, 2u,
                 (uint32_t)MTLPixelFormatRGBA8Unorm, 0) != 1 ||
             dst[0][0] != 30 || dst[0][1] != 20 || dst[0][2] != 10 ||
@@ -5314,7 +5314,7 @@ static int verifyReadbackScalarConvert(void) {
         }
         /* flipY reverses the row order. */
         memset(dst, 0, sizeof(dst));
-        if (mglRenderCppCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(
+        if (mglRenderCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(
                 src, 4u, dst, 4u, 1u, 2u,
                 (uint32_t)MTLPixelFormatRGBA8Unorm, 1) != 1 ||
             dst[0][0] != 70 || dst[1][0] != 30) {
@@ -5323,7 +5323,7 @@ static int verifyReadbackScalarConvert(void) {
         }
         /* BGRA8Unorm keeps the byte order. */
         memset(dst, 0, sizeof(dst));
-        if (mglRenderCppCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(
+        if (mglRenderCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(
                 src, 4u, dst, 4u, 1u, 2u,
                 (uint32_t)MTLPixelFormatBGRA8Unorm, 0) != 1 ||
             dst[0][0] != 10 || dst[0][1] != 20 || dst[0][2] != 30 ||
@@ -5333,7 +5333,7 @@ static int verifyReadbackScalarConvert(void) {
         }
         /* RGB10A2Unorm: 8-bit values expand to 10/2-bit packed little-endian. */
         memset(dst, 0, sizeof(dst));
-        if (mglRenderCppCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(
+        if (mglRenderCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(
                 src, 4u, dst, 4u, 1u, 1u,
                 (uint32_t)MTLPixelFormatRGB10A2Unorm, 0) != 1) {
             fprintf(stderr, "FAIL: bgra8->rgb10a2 rc\n");
@@ -5352,13 +5352,13 @@ static int verifyReadbackScalarConvert(void) {
             return 1;
         }
         /* Bad args / unsupported format. */
-        if (mglRenderCppCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(
+        if (mglRenderCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(
                 NULL, 4u, dst, 4u, 1u, 1u,
                 (uint32_t)MTLPixelFormatRGBA8Unorm, 0) != 0 ||
-            mglRenderCppCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(
+            mglRenderCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(
                 src, 3u, dst, 4u, 1u, 1u,     /* srcBytesPerRow too small */
                 (uint32_t)MTLPixelFormatRGBA8Unorm, 0) != 0 ||
-            mglRenderCppCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(
+            mglRenderCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(
                 src, 4u, dst, 4u, 1u, 1u,
                 (uint32_t)MTLPixelFormatDepth32Float, 0) != 0) {
             fprintf(stderr, "FAIL: bgra8 rows bad args\n");
@@ -5370,7 +5370,7 @@ static int verifyReadbackScalarConvert(void) {
         uint8_t rgba[2][4] = {{10, 20, 30, 40}, {50, 60, 70, 80}};
         uint8_t dst[2][4] = {{0, 0, 0, 0}, {0, 0, 0, 0}};
         /* RGBA8Unorm: R,G,B,A -> B,G,R,A. */
-        mglRenderCppCopyTextureBytesToBGRA8(
+        mglRenderCopyTextureBytesToBGRA8(
             rgba, 4u, dst, 4u, 1u, 2u,
             (uint32_t)MTLPixelFormatRGBA8Unorm, 0);
         if (dst[0][0] != 30 || dst[0][1] != 20 || dst[0][2] != 10 ||
@@ -5381,7 +5381,7 @@ static int verifyReadbackScalarConvert(void) {
             return 1;
         }
         memset(dst, 0, sizeof(dst));
-        mglRenderCppCopyTextureBytesToBGRA8(
+        mglRenderCopyTextureBytesToBGRA8(
             rgba, 4u, dst, 4u, 1u, 2u,
             (uint32_t)MTLPixelFormatRGBA8Unorm, 1);
         if (dst[0][0] != 70 || dst[1][0] != 30) {
@@ -5391,7 +5391,7 @@ static int verifyReadbackScalarConvert(void) {
         /* BGRA8Unorm is not a decoded source: memcpy 4 bytes as-is. */
         uint8_t bgra[4] = {11, 22, 33, 44};
         memset(dst, 0, sizeof(dst));
-        mglRenderCppCopyTextureBytesToBGRA8(
+        mglRenderCopyTextureBytesToBGRA8(
             bgra, 4u, dst, 4u, 1u, 1u,
             (uint32_t)MTLPixelFormatBGRA8Unorm, 0);
         if (dst[0][0] != 11 || dst[0][1] != 22 || dst[0][2] != 33 ||
@@ -5402,7 +5402,7 @@ static int verifyReadbackScalarConvert(void) {
         /* R8Unorm: R -> B channel, A=255. */
         uint8_t r8 = 90;
         memset(dst, 0, sizeof(dst));
-        mglRenderCppCopyTextureBytesToBGRA8(
+        mglRenderCopyTextureBytesToBGRA8(
             &r8, 1u, dst, 4u, 1u, 1u,
             (uint32_t)MTLPixelFormatR8Unorm, 0);
         if (dst[0][0] != 0 || dst[0][1] != 0 || dst[0][2] != 90 ||
@@ -5413,7 +5413,7 @@ static int verifyReadbackScalarConvert(void) {
         /* RGB10A2Unorm: R=1023, G=0, B=0, A=3 -> BGRA (0,0,255,255). */
         uint32_t rgb10 = 1023u | (3u << 30);
         memset(dst, 0, sizeof(dst));
-        mglRenderCppCopyTextureBytesToBGRA8(
+        mglRenderCopyTextureBytesToBGRA8(
             &rgb10, 4u, dst, 4u, 1u, 1u,
             (uint32_t)MTLPixelFormatRGB10A2Unorm, 0);
         if (dst[0][0] != 0 || dst[0][1] != 0 || dst[0][2] != 255 ||
@@ -5424,7 +5424,7 @@ static int verifyReadbackScalarConvert(void) {
         /* BGR5A1Unorm: B=31, G=31, R=0, A=1 -> (255,255,0,255). */
         uint16_t bgr5 = 31u | (31u << 5) | (1u << 15);
         memset(dst, 0, sizeof(dst));
-        mglRenderCppCopyTextureBytesToBGRA8(
+        mglRenderCopyTextureBytesToBGRA8(
             &bgr5, 2u, dst, 4u, 1u, 1u,
             (uint32_t)MTLPixelFormatBGR5A1Unorm, 0);
         if (dst[0][0] != 255 || dst[0][1] != 255 || dst[0][2] != 0 ||
@@ -5435,7 +5435,7 @@ static int verifyReadbackScalarConvert(void) {
         /* RGBA32Float: (1,0,0,1) -> BGRA (0,0,255,255). */
         float rgba32[4] = {1.0f, 0.0f, 0.0f, 1.0f};
         memset(dst, 0, sizeof(dst));
-        mglRenderCppCopyTextureBytesToBGRA8(
+        mglRenderCopyTextureBytesToBGRA8(
             rgba32, 16u, dst, 4u, 1u, 1u,
             (uint32_t)MTLPixelFormatRGBA32Float, 0);
         if (dst[0][0] != 0 || dst[0][1] != 0 || dst[0][2] != 255 ||
@@ -5446,7 +5446,7 @@ static int verifyReadbackScalarConvert(void) {
         /* RGB9E5: exp=15, mant_r=256 -> 256 * 2^(15-24) = 0.5 -> R=128. */
         uint32_t rgb9e5 = 256u | (15u << 27);
         memset(dst, 0, sizeof(dst));
-        mglRenderCppCopyTextureBytesToBGRA8(
+        mglRenderCopyTextureBytesToBGRA8(
             &rgb9e5, 4u, dst, 4u, 1u, 1u,
             (uint32_t)MTLPixelFormatRGB9E5Float, 0);
         if (dst[0][0] != 0 || dst[0][1] != 0 || dst[0][2] != 128 ||
@@ -5457,10 +5457,10 @@ static int verifyReadbackScalarConvert(void) {
         }
         /* Bad args leave dest unchanged. */
         uint8_t sentinel[4] = {1, 2, 3, 4};
-        mglRenderCppCopyTextureBytesToBGRA8(
+        mglRenderCopyTextureBytesToBGRA8(
             NULL, 4u, sentinel, 4u, 1u, 1u,
             (uint32_t)MTLPixelFormatRGBA8Unorm, 0);
-        mglRenderCppCopyTextureBytesToBGRA8(
+        mglRenderCopyTextureBytesToBGRA8(
             rgba, 4u, sentinel, 4u, 0u, 1u,
             (uint32_t)MTLPixelFormatRGBA8Unorm, 0);
         if (sentinel[0] != 1 || sentinel[1] != 2 || sentinel[2] != 3 ||
@@ -5470,19 +5470,19 @@ static int verifyReadbackScalarConvert(void) {
         }
     }
     /* GL readback type-accept table + SNORM8 direct path. */
-    if (!mglRenderCppReadbackGLTypeAccepted((uint32_t)GL_UNSIGNED_BYTE) ||
-        !mglRenderCppReadbackGLTypeAccepted((uint32_t)GL_FLOAT) ||
-        !mglRenderCppReadbackGLTypeAccepted(
+    if (!mglRenderReadbackGLTypeAccepted((uint32_t)GL_UNSIGNED_BYTE) ||
+        !mglRenderReadbackGLTypeAccepted((uint32_t)GL_FLOAT) ||
+        !mglRenderReadbackGLTypeAccepted(
             (uint32_t)GL_UNSIGNED_INT_2_10_10_10_REV) ||
-        mglRenderCppReadbackGLTypeAccepted((uint32_t)GL_DEPTH_COMPONENT) ||
-        mglRenderCppReadbackGLTypeAccepted(0u)) {
+        mglRenderReadbackGLTypeAccepted((uint32_t)GL_DEPTH_COMPONENT) ||
+        mglRenderReadbackGLTypeAccepted(0u)) {
         fprintf(stderr, "FAIL: readback type-accept\n");
         return 1;
     }
     {
         int8_t r8 = 127;
         float fdst = 0.0f;
-        if (mglRenderCppCopySnorm8TextureBytesToGL(
+        if (mglRenderCopySnorm8TextureBytesToGL(
                 &r8, 1u, &fdst, 4u, 1u, 1u,
                 (uint32_t)MTLPixelFormatR8Snorm,
                 (uint32_t)GL_RED, (uint32_t)GL_FLOAT, 0) != 1 ||
@@ -5491,7 +5491,7 @@ static int verifyReadbackScalarConvert(void) {
             return 1;
         }
         int8_t bdst = 0;
-        if (mglRenderCppCopySnorm8TextureBytesToGL(
+        if (mglRenderCopySnorm8TextureBytesToGL(
                 &r8, 1u, &bdst, 1u, 1u, 1u,
                 (uint32_t)MTLPixelFormatR8Snorm,
                 (uint32_t)GL_RED, (uint32_t)GL_BYTE, 0) != 1 ||
@@ -5502,7 +5502,7 @@ static int verifyReadbackScalarConvert(void) {
         int8_t rgba[2][4] = {{127, 0, -128, 127}, {0, 127, 0, 127}};
         float bgra[2][4];
         memset(bgra, 0, sizeof(bgra));
-        if (mglRenderCppCopySnorm8TextureBytesToGL(
+        if (mglRenderCopySnorm8TextureBytesToGL(
                 rgba, 4u, bgra, 16u, 1u, 2u,
                 (uint32_t)MTLPixelFormatRGBA8Snorm,
                 (uint32_t)GL_BGRA, (uint32_t)GL_FLOAT, 0) != 1 ||
@@ -5514,7 +5514,7 @@ static int verifyReadbackScalarConvert(void) {
             return 1;
         }
         memset(bgra, 0, sizeof(bgra));
-        if (mglRenderCppCopySnorm8TextureBytesToGL(
+        if (mglRenderCopySnorm8TextureBytesToGL(
                 rgba, 4u, bgra, 16u, 1u, 2u,
                 (uint32_t)MTLPixelFormatRGBA8Snorm,
                 (uint32_t)GL_BGRA, (uint32_t)GL_FLOAT, 1) != 1 ||
@@ -5523,11 +5523,11 @@ static int verifyReadbackScalarConvert(void) {
             fprintf(stderr, "FAIL: snorm8 flipY\n");
             return 1;
         }
-        if (mglRenderCppCopySnorm8TextureBytesToGL(
+        if (mglRenderCopySnorm8TextureBytesToGL(
                 rgba, 4u, bgra, 16u, 1u, 1u,
                 (uint32_t)MTLPixelFormatRGBA8Unorm,
                 (uint32_t)GL_RGBA, (uint32_t)GL_FLOAT, 0) != 0 ||
-            mglRenderCppCopySnorm8TextureBytesToGL(
+            mglRenderCopySnorm8TextureBytesToGL(
                 NULL, 4u, bgra, 16u, 1u, 1u,
                 (uint32_t)MTLPixelFormatRGBA8Snorm,
                 (uint32_t)GL_RGBA, (uint32_t)GL_FLOAT, 0) != 0) {
@@ -5539,7 +5539,7 @@ static int verifyReadbackScalarConvert(void) {
     {
         uint32_t src = 1023u | (3u << 30); /* R=1023, G=0, B=0, A=3 */
         float rgba[4] = {0, 0, 0, 0};
-        if (mglRenderCppCopyRGB10A2TextureBytesToGL(
+        if (mglRenderCopyRGB10A2TextureBytesToGL(
                 &src, 4u, rgba, 16u, 1u, 1u,
                 (uint32_t)MTLPixelFormatRGB10A2Unorm,
                 (uint32_t)GL_RGBA, (uint32_t)GL_FLOAT, 0) != 1 ||
@@ -5549,7 +5549,7 @@ static int verifyReadbackScalarConvert(void) {
             return 1;
         }
         float bgra[4] = {0, 0, 0, 0};
-        if (mglRenderCppCopyRGB10A2TextureBytesToGL(
+        if (mglRenderCopyRGB10A2TextureBytesToGL(
                 &src, 4u, bgra, 16u, 1u, 1u,
                 (uint32_t)MTLPixelFormatRGB10A2Unorm,
                 (uint32_t)GL_BGRA, (uint32_t)GL_FLOAT, 0) != 1 ||
@@ -5559,7 +5559,7 @@ static int verifyReadbackScalarConvert(void) {
             return 1;
         }
         uint32_t rev = 0;
-        if (mglRenderCppCopyRGB10A2TextureBytesToGL(
+        if (mglRenderCopyRGB10A2TextureBytesToGL(
                 &src, 4u, &rev, 4u, 1u, 1u,
                 (uint32_t)MTLPixelFormatRGB10A2Unorm,
                 (uint32_t)GL_RGBA, (uint32_t)GL_UNSIGNED_INT_2_10_10_10_REV,
@@ -5569,7 +5569,7 @@ static int verifyReadbackScalarConvert(void) {
             return 1;
         }
         uint32_t msb = 0;
-        if (mglRenderCppCopyRGB10A2TextureBytesToGL(
+        if (mglRenderCopyRGB10A2TextureBytesToGL(
                 &src, 4u, &msb, 4u, 1u, 1u,
                 (uint32_t)MTLPixelFormatRGB10A2Unorm,
                 (uint32_t)GL_RGBA, (uint32_t)GL_UNSIGNED_INT_10_10_10_2,
@@ -5579,7 +5579,7 @@ static int verifyReadbackScalarConvert(void) {
             return 1;
         }
         uint8_t ub[4] = {0, 0, 0, 0};
-        if (mglRenderCppCopyRGB10A2TextureBytesToGL(
+        if (mglRenderCopyRGB10A2TextureBytesToGL(
                 &src, 4u, ub, 4u, 1u, 1u,
                 (uint32_t)MTLPixelFormatRGB10A2Unorm,
                 (uint32_t)GL_RGBA, (uint32_t)GL_UNSIGNED_BYTE, 0) != 1 ||
@@ -5590,7 +5590,7 @@ static int verifyReadbackScalarConvert(void) {
         uint32_t rows[2] = {1023u | (3u << 30), 0u};
         float flip[2][4];
         memset(flip, 0, sizeof(flip));
-        if (mglRenderCppCopyRGB10A2TextureBytesToGL(
+        if (mglRenderCopyRGB10A2TextureBytesToGL(
                 rows, 4u, flip, 16u, 1u, 2u,
                 (uint32_t)MTLPixelFormatRGB10A2Unorm,
                 (uint32_t)GL_RGBA, (uint32_t)GL_FLOAT, 1) != 1 ||
@@ -5599,11 +5599,11 @@ static int verifyReadbackScalarConvert(void) {
             fprintf(stderr, "FAIL: rgb10a2 flipY\n");
             return 1;
         }
-        if (mglRenderCppCopyRGB10A2TextureBytesToGL(
+        if (mglRenderCopyRGB10A2TextureBytesToGL(
                 &src, 4u, rgba, 16u, 1u, 1u,
                 (uint32_t)MTLPixelFormatRGBA8Unorm,
                 (uint32_t)GL_RGBA, (uint32_t)GL_FLOAT, 0) != 0 ||
-            mglRenderCppCopyRGB10A2TextureBytesToGL(
+            mglRenderCopyRGB10A2TextureBytesToGL(
                 NULL, 4u, rgba, 16u, 1u, 1u,
                 (uint32_t)MTLPixelFormatRGB10A2Unorm,
                 (uint32_t)GL_RGBA, (uint32_t)GL_FLOAT, 0) != 0) {
@@ -5615,7 +5615,7 @@ static int verifyReadbackScalarConvert(void) {
     {
         uint32_t src = 0x3C0u; /* R=1.0 float11, G=0, B=0 */
         uint32_t ident = 0;
-        if (mglRenderCppCopyRG11B10TextureBytesToGL(
+        if (mglRenderCopyRG11B10TextureBytesToGL(
                 &src, 4u, &ident, 4u, 1u, 1u,
                 (uint32_t)MTLPixelFormatRG11B10Float,
                 (uint32_t)GL_RGB, (uint32_t)GL_UNSIGNED_INT_10F_11F_11F_REV,
@@ -5625,7 +5625,7 @@ static int verifyReadbackScalarConvert(void) {
             return 1;
         }
         float red = 0.0f;
-        if (mglRenderCppCopyRG11B10TextureBytesToGL(
+        if (mglRenderCopyRG11B10TextureBytesToGL(
                 &src, 4u, &red, 4u, 1u, 1u,
                 (uint32_t)MTLPixelFormatRG11B10Float,
                 (uint32_t)GL_RED, (uint32_t)GL_FLOAT, 0) != 1 ||
@@ -5634,7 +5634,7 @@ static int verifyReadbackScalarConvert(void) {
             return 1;
         }
         float bgra[4] = {0, 0, 0, 0};
-        if (mglRenderCppCopyRG11B10TextureBytesToGL(
+        if (mglRenderCopyRG11B10TextureBytesToGL(
                 &src, 4u, bgra, 16u, 1u, 1u,
                 (uint32_t)MTLPixelFormatRG11B10Float,
                 (uint32_t)GL_BGRA, (uint32_t)GL_FLOAT, 0) != 1 ||
@@ -5644,7 +5644,7 @@ static int verifyReadbackScalarConvert(void) {
             return 1;
         }
         uint8_t ub[4] = {0, 0, 0, 0};
-        if (mglRenderCppCopyRG11B10TextureBytesToGL(
+        if (mglRenderCopyRG11B10TextureBytesToGL(
                 &src, 4u, ub, 4u, 1u, 1u,
                 (uint32_t)MTLPixelFormatRG11B10Float,
                 (uint32_t)GL_RGBA, (uint32_t)GL_UNSIGNED_BYTE, 0) != 1 ||
@@ -5653,7 +5653,7 @@ static int verifyReadbackScalarConvert(void) {
             return 1;
         }
         uint32_t bgr_pack = 0xffffffffu;
-        if (mglRenderCppCopyRG11B10TextureBytesToGL(
+        if (mglRenderCopyRG11B10TextureBytesToGL(
                 &src, 4u, &bgr_pack, 4u, 1u, 1u,
                 (uint32_t)MTLPixelFormatRG11B10Float,
                 (uint32_t)GL_BGR, (uint32_t)GL_UNSIGNED_INT_10F_11F_11F_REV,
@@ -5666,7 +5666,7 @@ static int verifyReadbackScalarConvert(void) {
         uint32_t rows[2] = {0x3C0u, 0u};
         float flip[2];
         memset(flip, 0, sizeof(flip));
-        if (mglRenderCppCopyRG11B10TextureBytesToGL(
+        if (mglRenderCopyRG11B10TextureBytesToGL(
                 rows, 4u, flip, 4u, 1u, 2u,
                 (uint32_t)MTLPixelFormatRG11B10Float,
                 (uint32_t)GL_RED, (uint32_t)GL_FLOAT, 1) != 1 ||
@@ -5675,11 +5675,11 @@ static int verifyReadbackScalarConvert(void) {
             fprintf(stderr, "FAIL: rg11b10 flipY\n");
             return 1;
         }
-        if (mglRenderCppCopyRG11B10TextureBytesToGL(
+        if (mglRenderCopyRG11B10TextureBytesToGL(
                 &src, 4u, &red, 4u, 1u, 1u,
                 (uint32_t)MTLPixelFormatRGBA8Unorm,
                 (uint32_t)GL_RED, (uint32_t)GL_FLOAT, 0) != 0 ||
-            mglRenderCppCopyRG11B10TextureBytesToGL(
+            mglRenderCopyRG11B10TextureBytesToGL(
                 NULL, 4u, &red, 4u, 1u, 1u,
                 (uint32_t)MTLPixelFormatRG11B10Float,
                 (uint32_t)GL_RED, (uint32_t)GL_FLOAT, 0) != 0) {
@@ -5691,7 +5691,7 @@ static int verifyReadbackScalarConvert(void) {
     {
         uint16_t r16 = 65535;
         float red = 0.0f;
-        if (mglRenderCppCopy16or32TextureBytesToGL(
+        if (mglRenderCopy16or32TextureBytesToGL(
                 &r16, 2u, &red, 4u, 1u, 1u,
                 (uint32_t)MTLPixelFormatR16Unorm,
                 (uint32_t)GL_RED, (uint32_t)GL_FLOAT, 0) != 1 ||
@@ -5700,7 +5700,7 @@ static int verifyReadbackScalarConvert(void) {
             return 1;
         }
         uint8_t ub = 0;
-        if (mglRenderCppCopy16or32TextureBytesToGL(
+        if (mglRenderCopy16or32TextureBytesToGL(
                 &r16, 2u, &ub, 1u, 1u, 1u,
                 (uint32_t)MTLPixelFormatR16Unorm,
                 (uint32_t)GL_RED, (uint32_t)GL_UNSIGNED_BYTE, 0) != 1 ||
@@ -5709,7 +5709,7 @@ static int verifyReadbackScalarConvert(void) {
             return 1;
         }
         float rgba[4] = {0, 0, 0, 0};
-        if (mglRenderCppCopy16or32TextureBytesToGL(
+        if (mglRenderCopy16or32TextureBytesToGL(
                 &r16, 2u, rgba, 16u, 1u, 1u,
                 (uint32_t)MTLPixelFormatR16Unorm,
                 (uint32_t)GL_RGBA, (uint32_t)GL_FLOAT, 0) != 1 ||
@@ -5720,7 +5720,7 @@ static int verifyReadbackScalarConvert(void) {
         }
         uint16_t rgba16[4] = {65535, 0, 0, 65535};
         float bgra[4] = {0, 0, 0, 0};
-        if (mglRenderCppCopy16or32TextureBytesToGL(
+        if (mglRenderCopy16or32TextureBytesToGL(
                 rgba16, 8u, bgra, 16u, 1u, 1u,
                 (uint32_t)MTLPixelFormatRGBA16Unorm,
                 (uint32_t)GL_BGRA, (uint32_t)GL_FLOAT, 0) != 1 ||
@@ -5730,7 +5730,7 @@ static int verifyReadbackScalarConvert(void) {
             return 1;
         }
         uint16_t packed565 = 0;
-        if (mglRenderCppCopy16or32TextureBytesToGL(
+        if (mglRenderCopy16or32TextureBytesToGL(
                 rgba16, 8u, &packed565, 2u, 1u, 1u,
                 (uint32_t)MTLPixelFormatRGBA16Unorm,
                 (uint32_t)GL_RGB, (uint32_t)GL_UNSIGNED_SHORT_5_6_5,
@@ -5741,7 +5741,7 @@ static int verifyReadbackScalarConvert(void) {
         }
         uint16_t h1 = 0x3C00; /* half 1.0 */
         red = 0.0f;
-        if (mglRenderCppCopy16or32TextureBytesToGL(
+        if (mglRenderCopy16or32TextureBytesToGL(
                 &h1, 2u, &red, 4u, 1u, 1u,
                 (uint32_t)MTLPixelFormatR16Float,
                 (uint32_t)GL_RED, (uint32_t)GL_FLOAT, 0) != 1 ||
@@ -5751,7 +5751,7 @@ static int verifyReadbackScalarConvert(void) {
         }
         float f32 = 1.0f;
         red = 0.0f;
-        if (mglRenderCppCopy16or32TextureBytesToGL(
+        if (mglRenderCopy16or32TextureBytesToGL(
                 &f32, 4u, &red, 4u, 1u, 1u,
                 (uint32_t)MTLPixelFormatR32Float,
                 (uint32_t)GL_RED, (uint32_t)GL_FLOAT, 0) != 1 ||
@@ -5761,7 +5761,7 @@ static int verifyReadbackScalarConvert(void) {
         }
         int16_t s16 = 32767;
         red = 0.0f;
-        if (mglRenderCppCopy16or32TextureBytesToGL(
+        if (mglRenderCopy16or32TextureBytesToGL(
                 &s16, 2u, &red, 4u, 1u, 1u,
                 (uint32_t)MTLPixelFormatR16Snorm,
                 (uint32_t)GL_RED, (uint32_t)GL_FLOAT, 0) != 1 ||
@@ -5772,7 +5772,7 @@ static int verifyReadbackScalarConvert(void) {
         uint16_t rows[2] = {65535, 0};
         float flip[2];
         memset(flip, 0, sizeof(flip));
-        if (mglRenderCppCopy16or32TextureBytesToGL(
+        if (mglRenderCopy16or32TextureBytesToGL(
                 rows, 2u, flip, 4u, 1u, 2u,
                 (uint32_t)MTLPixelFormatR16Unorm,
                 (uint32_t)GL_RED, (uint32_t)GL_FLOAT, 1) != 1 ||
@@ -5781,11 +5781,11 @@ static int verifyReadbackScalarConvert(void) {
             fprintf(stderr, "FAIL: r16unorm flipY\n");
             return 1;
         }
-        if (mglRenderCppCopy16or32TextureBytesToGL(
+        if (mglRenderCopy16or32TextureBytesToGL(
                 &r16, 2u, &red, 4u, 1u, 1u,
                 (uint32_t)MTLPixelFormatRGBA8Unorm,
                 (uint32_t)GL_RED, (uint32_t)GL_FLOAT, 0) != 0 ||
-            mglRenderCppCopy16or32TextureBytesToGL(
+            mglRenderCopy16or32TextureBytesToGL(
                 NULL, 2u, &red, 4u, 1u, 1u,
                 (uint32_t)MTLPixelFormatR16Unorm,
                 (uint32_t)GL_RED, (uint32_t)GL_FLOAT, 0) != 0) {
@@ -5797,7 +5797,7 @@ static int verifyReadbackScalarConvert(void) {
     {
         uint8_t bgra[4] = {0, 0, 255, 255}; /* B,G,R,A → logical R=255 */
         float red = 0.0f;
-        if (mglRenderCppCopyUnorm8ScalarTextureBytesToGL(
+        if (mglRenderCopyUnorm8ScalarTextureBytesToGL(
                 bgra, 4u, &red, 4u, 1u, 1u,
                 (uint32_t)MTLPixelFormatBGRA8Unorm,
                 (uint32_t)GL_RED, (uint32_t)GL_FLOAT, 0) != 1 ||
@@ -5806,7 +5806,7 @@ static int verifyReadbackScalarConvert(void) {
             return 1;
         }
         float rgba[4] = {0, 0, 0, 0};
-        if (mglRenderCppCopyUnorm8ScalarTextureBytesToGL(
+        if (mglRenderCopyUnorm8ScalarTextureBytesToGL(
                 bgra, 4u, rgba, 16u, 1u, 1u,
                 (uint32_t)MTLPixelFormatBGRA8Unorm,
                 (uint32_t)GL_RGBA, (uint32_t)GL_FLOAT, 0) != 1 ||
@@ -5816,7 +5816,7 @@ static int verifyReadbackScalarConvert(void) {
             return 1;
         }
         float out_bgra[4] = {0, 0, 0, 0};
-        if (mglRenderCppCopyUnorm8ScalarTextureBytesToGL(
+        if (mglRenderCopyUnorm8ScalarTextureBytesToGL(
                 bgra, 4u, out_bgra, 16u, 1u, 1u,
                 (uint32_t)MTLPixelFormatBGRA8Unorm,
                 (uint32_t)GL_BGRA, (uint32_t)GL_FLOAT, 0) != 1 ||
@@ -5828,7 +5828,7 @@ static int verifyReadbackScalarConvert(void) {
         }
         uint8_t rgba8[4] = {255, 0, 0, 255};
         red = 0.0f;
-        if (mglRenderCppCopyUnorm8ScalarTextureBytesToGL(
+        if (mglRenderCopyUnorm8ScalarTextureBytesToGL(
                 rgba8, 4u, &red, 4u, 1u, 1u,
                 (uint32_t)MTLPixelFormatRGBA8Unorm,
                 (uint32_t)GL_RED, (uint32_t)GL_FLOAT, 0) != 1 ||
@@ -5837,7 +5837,7 @@ static int verifyReadbackScalarConvert(void) {
             return 1;
         }
         uint16_t us = 0;
-        if (mglRenderCppCopyUnorm8ScalarTextureBytesToGL(
+        if (mglRenderCopyUnorm8ScalarTextureBytesToGL(
                 bgra, 4u, &us, 2u, 1u, 1u,
                 (uint32_t)MTLPixelFormatBGRA8Unorm,
                 (uint32_t)GL_RED, (uint32_t)GL_UNSIGNED_SHORT, 0) != 1 ||
@@ -5846,7 +5846,7 @@ static int verifyReadbackScalarConvert(void) {
             return 1;
         }
         int8_t sb = 0;
-        if (mglRenderCppCopyUnorm8ScalarTextureBytesToGL(
+        if (mglRenderCopyUnorm8ScalarTextureBytesToGL(
                 bgra, 4u, &sb, 1u, 1u, 1u,
                 (uint32_t)MTLPixelFormatBGRA8Unorm,
                 (uint32_t)GL_RED, (uint32_t)GL_BYTE, 0) != 1 ||
@@ -5855,7 +5855,7 @@ static int verifyReadbackScalarConvert(void) {
             return 1;
         }
         uint16_t half = 0;
-        if (mglRenderCppCopyUnorm8ScalarTextureBytesToGL(
+        if (mglRenderCopyUnorm8ScalarTextureBytesToGL(
                 bgra, 4u, &half, 2u, 1u, 1u,
                 (uint32_t)MTLPixelFormatBGRA8Unorm,
                 (uint32_t)GL_RED, (uint32_t)GL_HALF_FLOAT, 0) != 1 ||
@@ -5866,7 +5866,7 @@ static int verifyReadbackScalarConvert(void) {
         uint8_t rows[8] = {0, 0, 255, 255, 0, 0, 0, 255};
         float flip[2];
         memset(flip, 0, sizeof(flip));
-        if (mglRenderCppCopyUnorm8ScalarTextureBytesToGL(
+        if (mglRenderCopyUnorm8ScalarTextureBytesToGL(
                 rows, 4u, flip, 4u, 1u, 2u,
                 (uint32_t)MTLPixelFormatBGRA8Unorm,
                 (uint32_t)GL_RED, (uint32_t)GL_FLOAT, 1) != 1 ||
@@ -5875,15 +5875,15 @@ static int verifyReadbackScalarConvert(void) {
             fprintf(stderr, "FAIL: unorm8 scalar flipY\n");
             return 1;
         }
-        if (mglRenderCppCopyUnorm8ScalarTextureBytesToGL(
+        if (mglRenderCopyUnorm8ScalarTextureBytesToGL(
                 bgra, 4u, &red, 4u, 1u, 1u,
                 (uint32_t)MTLPixelFormatBGRA8Unorm,
                 (uint32_t)GL_RED, (uint32_t)GL_UNSIGNED_BYTE, 0) != 0 ||
-            mglRenderCppCopyUnorm8ScalarTextureBytesToGL(
+            mglRenderCopyUnorm8ScalarTextureBytesToGL(
                 bgra, 4u, &red, 4u, 1u, 1u,
                 (uint32_t)MTLPixelFormatR16Unorm,
                 (uint32_t)GL_RED, (uint32_t)GL_FLOAT, 0) != 0 ||
-            mglRenderCppCopyUnorm8ScalarTextureBytesToGL(
+            mglRenderCopyUnorm8ScalarTextureBytesToGL(
                 NULL, 4u, &red, 4u, 1u, 1u,
                 (uint32_t)MTLPixelFormatBGRA8Unorm,
                 (uint32_t)GL_RED, (uint32_t)GL_FLOAT, 0) != 0) {
@@ -5895,7 +5895,7 @@ static int verifyReadbackScalarConvert(void) {
     {
         uint8_t bgra[4] = {0, 0, 255, 255}; /* B,G,R,A → logical R=255 */
         uint16_t rgb565 = 0;
-        if (mglRenderCppCopyUnorm8PackedTextureBytesToGL(
+        if (mglRenderCopyUnorm8PackedTextureBytesToGL(
                 bgra, 4u, &rgb565, 2u, 1u, 1u,
                 (uint32_t)MTLPixelFormatBGRA8Unorm,
                 (uint32_t)GL_RGB, (uint32_t)GL_UNSIGNED_SHORT_5_6_5,
@@ -5905,7 +5905,7 @@ static int verifyReadbackScalarConvert(void) {
             return 1;
         }
         uint16_t bgr565 = 0;
-        if (mglRenderCppCopyUnorm8PackedTextureBytesToGL(
+        if (mglRenderCopyUnorm8PackedTextureBytesToGL(
                 bgra, 4u, &bgr565, 2u, 1u, 1u,
                 (uint32_t)MTLPixelFormatBGRA8Unorm,
                 (uint32_t)GL_BGR, (uint32_t)GL_UNSIGNED_SHORT_5_6_5,
@@ -5915,7 +5915,7 @@ static int verifyReadbackScalarConvert(void) {
             return 1;
         }
         uint32_t rev8888 = 0;
-        if (mglRenderCppCopyUnorm8PackedTextureBytesToGL(
+        if (mglRenderCopyUnorm8PackedTextureBytesToGL(
                 bgra, 4u, &rev8888, 4u, 1u, 1u,
                 (uint32_t)MTLPixelFormatBGRA8Unorm,
                 (uint32_t)GL_RGBA, (uint32_t)GL_UNSIGNED_INT_8_8_8_8_REV,
@@ -5925,7 +5925,7 @@ static int verifyReadbackScalarConvert(void) {
             return 1;
         }
         uint32_t rev210 = 0;
-        if (mglRenderCppCopyUnorm8PackedTextureBytesToGL(
+        if (mglRenderCopyUnorm8PackedTextureBytesToGL(
                 bgra, 4u, &rev210, 4u, 1u, 1u,
                 (uint32_t)MTLPixelFormatBGRA8Unorm,
                 (uint32_t)GL_RGBA, (uint32_t)GL_UNSIGNED_INT_2_10_10_10_REV,
@@ -5936,7 +5936,7 @@ static int verifyReadbackScalarConvert(void) {
         }
         uint8_t rgba8[4] = {255, 0, 0, 255};
         uint16_t rgba565 = 0;
-        if (mglRenderCppCopyUnorm8PackedTextureBytesToGL(
+        if (mglRenderCopyUnorm8PackedTextureBytesToGL(
                 rgba8, 4u, &rgba565, 2u, 1u, 1u,
                 (uint32_t)MTLPixelFormatRGBA8Unorm,
                 (uint32_t)GL_RGB, (uint32_t)GL_UNSIGNED_SHORT_5_6_5,
@@ -5947,7 +5947,7 @@ static int verifyReadbackScalarConvert(void) {
         }
         uint8_t rows[8] = {0, 0, 255, 255, 0, 0, 0, 255};
         uint16_t flip[2] = {0, 0};
-        if (mglRenderCppCopyUnorm8PackedTextureBytesToGL(
+        if (mglRenderCopyUnorm8PackedTextureBytesToGL(
                 rows, 4u, flip, 2u, 1u, 2u,
                 (uint32_t)MTLPixelFormatBGRA8Unorm,
                 (uint32_t)GL_RGB, (uint32_t)GL_UNSIGNED_SHORT_5_6_5,
@@ -5957,16 +5957,16 @@ static int verifyReadbackScalarConvert(void) {
                     flip[0], flip[1]);
             return 1;
         }
-        if (mglRenderCppCopyUnorm8PackedTextureBytesToGL(
+        if (mglRenderCopyUnorm8PackedTextureBytesToGL(
                 bgra, 4u, &rgb565, 2u, 1u, 1u,
                 (uint32_t)MTLPixelFormatBGRA8Unorm,
                 (uint32_t)GL_RGB, (uint32_t)GL_FLOAT, 0) != 0 ||
-            mglRenderCppCopyUnorm8PackedTextureBytesToGL(
+            mglRenderCopyUnorm8PackedTextureBytesToGL(
                 bgra, 4u, &rgb565, 2u, 1u, 1u,
                 (uint32_t)MTLPixelFormatR16Unorm,
                 (uint32_t)GL_RGB, (uint32_t)GL_UNSIGNED_SHORT_5_6_5,
                 0) != 0 ||
-            mglRenderCppCopyUnorm8PackedTextureBytesToGL(
+            mglRenderCopyUnorm8PackedTextureBytesToGL(
                 NULL, 4u, &rgb565, 2u, 1u, 1u,
                 (uint32_t)MTLPixelFormatBGRA8Unorm,
                 (uint32_t)GL_RGB, (uint32_t)GL_UNSIGNED_SHORT_5_6_5,
@@ -5979,7 +5979,7 @@ static int verifyReadbackScalarConvert(void) {
     {
         uint8_t bgra[4] = {0, 0, 255, 255}; /* B,G,R,A → logical R=255 */
         uint8_t rgba[4] = {0, 0, 0, 0};
-        if (mglRenderCppCopyUnorm8SwizzleTextureBytesToGL(
+        if (mglRenderCopyUnorm8SwizzleTextureBytesToGL(
                 bgra, 4u, rgba, 4u, 1u, 1u,
                 (uint32_t)MTLPixelFormatBGRA8Unorm,
                 (uint32_t)GL_RGBA, (uint32_t)GL_UNSIGNED_BYTE, 0) != 1 ||
@@ -5988,7 +5988,7 @@ static int verifyReadbackScalarConvert(void) {
             return 1;
         }
         uint8_t out_bgra[4] = {1, 1, 1, 1};
-        if (mglRenderCppCopyUnorm8SwizzleTextureBytesToGL(
+        if (mglRenderCopyUnorm8SwizzleTextureBytesToGL(
                 bgra, 4u, out_bgra, 4u, 1u, 1u,
                 (uint32_t)MTLPixelFormatBGRA8Unorm,
                 (uint32_t)GL_BGRA, (uint32_t)GL_UNSIGNED_BYTE, 0) != 1 ||
@@ -5998,7 +5998,7 @@ static int verifyReadbackScalarConvert(void) {
             return 1;
         }
         uint8_t rgb[3] = {0, 0, 0};
-        if (mglRenderCppCopyUnorm8SwizzleTextureBytesToGL(
+        if (mglRenderCopyUnorm8SwizzleTextureBytesToGL(
                 bgra, 4u, rgb, 3u, 1u, 1u,
                 (uint32_t)MTLPixelFormatBGRA8Unorm,
                 (uint32_t)GL_RGB, (uint32_t)GL_UNSIGNED_BYTE, 0) != 1 ||
@@ -6007,12 +6007,12 @@ static int verifyReadbackScalarConvert(void) {
             return 1;
         }
         uint8_t red = 0, blue = 255;
-        if (mglRenderCppCopyUnorm8SwizzleTextureBytesToGL(
+        if (mglRenderCopyUnorm8SwizzleTextureBytesToGL(
                 bgra, 4u, &red, 1u, 1u, 1u,
                 (uint32_t)MTLPixelFormatBGRA8Unorm,
                 (uint32_t)GL_RED, (uint32_t)GL_UNSIGNED_BYTE, 0) != 1 ||
             red != 255 ||
-            mglRenderCppCopyUnorm8SwizzleTextureBytesToGL(
+            mglRenderCopyUnorm8SwizzleTextureBytesToGL(
                 bgra, 4u, &blue, 1u, 1u, 1u,
                 (uint32_t)MTLPixelFormatBGRA8Unorm,
                 (uint32_t)GL_BLUE, (uint32_t)GL_UNSIGNED_BYTE, 0) != 1 ||
@@ -6022,7 +6022,7 @@ static int verifyReadbackScalarConvert(void) {
         }
         uint8_t rgba8[4] = {255, 0, 0, 255};
         uint8_t bgr[3] = {0, 0, 0};
-        if (mglRenderCppCopyUnorm8SwizzleTextureBytesToGL(
+        if (mglRenderCopyUnorm8SwizzleTextureBytesToGL(
                 rgba8, 4u, bgr, 3u, 1u, 1u,
                 (uint32_t)MTLPixelFormatRGBA8Unorm,
                 (uint32_t)GL_BGR, (uint32_t)GL_UNSIGNED_BYTE, 0) != 1 ||
@@ -6032,7 +6032,7 @@ static int verifyReadbackScalarConvert(void) {
         }
         uint8_t rows[8] = {0, 0, 255, 255, 0, 0, 0, 255};
         uint8_t flip[2] = {1, 1};
-        if (mglRenderCppCopyUnorm8SwizzleTextureBytesToGL(
+        if (mglRenderCopyUnorm8SwizzleTextureBytesToGL(
                 rows, 4u, flip, 1u, 1u, 2u,
                 (uint32_t)MTLPixelFormatBGRA8Unorm,
                 (uint32_t)GL_RED, (uint32_t)GL_UNSIGNED_BYTE, 1) != 1 ||
@@ -6040,11 +6040,11 @@ static int verifyReadbackScalarConvert(void) {
             fprintf(stderr, "FAIL: unorm8 swizzle flipY\n");
             return 1;
         }
-        if (mglRenderCppCopyUnorm8SwizzleTextureBytesToGL(
+        if (mglRenderCopyUnorm8SwizzleTextureBytesToGL(
                 bgra, 4u, rgba, 4u, 1u, 1u,
                 (uint32_t)MTLPixelFormatR16Unorm,
                 (uint32_t)GL_RGBA, (uint32_t)GL_UNSIGNED_BYTE, 0) != 0 ||
-            mglRenderCppCopyUnorm8SwizzleTextureBytesToGL(
+            mglRenderCopyUnorm8SwizzleTextureBytesToGL(
                 NULL, 4u, rgba, 4u, 1u, 1u,
                 (uint32_t)MTLPixelFormatBGRA8Unorm,
                 (uint32_t)GL_RGBA, (uint32_t)GL_UNSIGNED_BYTE, 0) != 0) {
@@ -6056,26 +6056,26 @@ static int verifyReadbackScalarConvert(void) {
     {
         uint8_t src[8] = {1, 2, 3, 4, 5, 6, 7, 8};
         uint8_t dst[8] = {0};
-        mglRenderCppCopyRows(src, 4u, dst, 4u, 4u, 2u, 0);
+        mglRenderCopyRows(src, 4u, dst, 4u, 4u, 2u, 0);
         if (memcmp(dst, src, 8) != 0) {
             fprintf(stderr, "FAIL: copy rows identity\n");
             return 1;
         }
         memset(dst, 0, sizeof(dst));
-        mglRenderCppCopyRows(src, 4u, dst, 4u, 4u, 2u, 1);
+        mglRenderCopyRows(src, 4u, dst, 4u, 4u, 2u, 1);
         if (memcmp(dst, src + 4, 4) != 0 || memcmp(dst + 4, src, 4) != 0) {
             fprintf(stderr, "FAIL: copy rows flipY\n");
             return 1;
         }
         uint8_t sentinel[4] = {9, 9, 9, 9};
-        mglRenderCppCopyRows(NULL, 4u, sentinel, 4u, 4u, 1u, 0);
+        mglRenderCopyRows(NULL, 4u, sentinel, 4u, 4u, 1u, 0);
         if (sentinel[0] != 9) {
             fprintf(stderr, "FAIL: copy rows bad args\n");
             return 1;
         }
         uint16_t d16[2] = {0, 65535};
         float df[2] = {1.0f, 1.0f};
-        mglRenderCppCopyDepthTextureBytesToFloat(
+        mglRenderCopyDepthTextureBytesToFloat(
             d16, 2u, df, 4u, 1u, 2u, 2u, 1, 1);
         if (fabsf(df[0] - 1.0f) > 1e-6f || fabsf(df[1]) > 1e-6f) {
             fprintf(stderr, "FAIL: depth16 -> float flipY\n");
@@ -6083,7 +6083,7 @@ static int verifyReadbackScalarConvert(void) {
         }
         float srcf[2] = {0.25f, 0.75f};
         float dstf[2] = {0, 0};
-        mglRenderCppCopyDepthTextureBytesToFloat(
+        mglRenderCopyDepthTextureBytesToFloat(
             srcf, 4u, dstf, 4u, 1u, 2u, 4u, 0, 0);
         if (fabsf(dstf[0] - 0.25f) > 1e-6f ||
             fabsf(dstf[1] - 0.75f) > 1e-6f) {
@@ -6098,33 +6098,33 @@ static int verifyReadbackScalarConvert(void) {
 static int verifyTessControlPointFormat(void) {
     /* P4.5 (item 1141/887): GL type -> MTLVertexFormat for TES control
      * points.  Assert against the ObjC SDK constants (no magic numbers). */
-    if (mglRenderCppTessControlPointFormat(GL_FLOAT) !=
+    if (mglRenderTessControlPointFormat(GL_FLOAT) !=
             (uint32_t)MTLVertexFormatFloat ||
-        mglRenderCppTessControlPointFormat(GL_FLOAT_VEC2) !=
+        mglRenderTessControlPointFormat(GL_FLOAT_VEC2) !=
             (uint32_t)MTLVertexFormatFloat2 ||
-        mglRenderCppTessControlPointFormat(GL_FLOAT_VEC3) !=
+        mglRenderTessControlPointFormat(GL_FLOAT_VEC3) !=
             (uint32_t)MTLVertexFormatFloat3 ||
-        mglRenderCppTessControlPointFormat(GL_FLOAT_VEC4) !=
+        mglRenderTessControlPointFormat(GL_FLOAT_VEC4) !=
             (uint32_t)MTLVertexFormatFloat4 ||
-        mglRenderCppTessControlPointFormat(GL_INT) !=
+        mglRenderTessControlPointFormat(GL_INT) !=
             (uint32_t)MTLVertexFormatInt ||
-        mglRenderCppTessControlPointFormat(GL_INT_VEC2) !=
+        mglRenderTessControlPointFormat(GL_INT_VEC2) !=
             (uint32_t)MTLVertexFormatInt2 ||
-        mglRenderCppTessControlPointFormat(GL_INT_VEC3) !=
+        mglRenderTessControlPointFormat(GL_INT_VEC3) !=
             (uint32_t)MTLVertexFormatInt3 ||
-        mglRenderCppTessControlPointFormat(GL_INT_VEC4) !=
+        mglRenderTessControlPointFormat(GL_INT_VEC4) !=
             (uint32_t)MTLVertexFormatInt4 ||
-        mglRenderCppTessControlPointFormat(GL_UNSIGNED_INT) !=
+        mglRenderTessControlPointFormat(GL_UNSIGNED_INT) !=
             (uint32_t)MTLVertexFormatUInt ||
-        mglRenderCppTessControlPointFormat(GL_BOOL_VEC2) !=
+        mglRenderTessControlPointFormat(GL_BOOL_VEC2) !=
             (uint32_t)MTLVertexFormatUInt2 ||
-        mglRenderCppTessControlPointFormat(GL_UNSIGNED_INT_VEC3) !=
+        mglRenderTessControlPointFormat(GL_UNSIGNED_INT_VEC3) !=
             (uint32_t)MTLVertexFormatUInt3 ||
-        mglRenderCppTessControlPointFormat(GL_BOOL_VEC4) !=
+        mglRenderTessControlPointFormat(GL_BOOL_VEC4) !=
             (uint32_t)MTLVertexFormatUInt4 ||
-        mglRenderCppTessControlPointFormat(GL_FLOAT_MAT4) !=
+        mglRenderTessControlPointFormat(GL_FLOAT_MAT4) !=
             (uint32_t)MTLVertexFormatInvalid ||
-        mglRenderCppTessControlPointFormat(0xfeed) !=
+        mglRenderTessControlPointFormat(0xfeed) !=
             (uint32_t)MTLVertexFormatInvalid) {
         fprintf(stderr, "FAIL: tess control point format\n");
         return 1;
@@ -6150,27 +6150,27 @@ static int verifyTESXFBVertexStride(void) {
     p.shader_resources_list[_TESS_EVALUATION_SHADER][_STAGE_OUTPUT_RES] = outputs;
     strcpy(p.transform_feedback_varying_names[0], "pos");
     strcpy(p.transform_feedback_varying_names[1], "col");
-    if (mglRenderCppTESXFBVertexStride(&p) != 28) {
+    if (mglRenderTESXFBVertexStride(&p) != 28) {
         fprintf(stderr, "FAIL: xfb stride basic\n");
         return 1;
     }
     /* Unknown varying name -> cannot prove stride -> 0. */
     strcpy(p.transform_feedback_varying_names[1], "nope");
-    if (mglRenderCppTESXFBVertexStride(&p) != 0) {
+    if (mglRenderTESXFBVertexStride(&p) != 0) {
         fprintf(stderr, "FAIL: xfb stride unknown field\n");
         return 1;
     }
     /* Unsupported field type (matrix) -> 0. */
     strcpy(p.transform_feedback_varying_names[1], "col");
     res[1].gl_type = GL_FLOAT_MAT4;
-    if (mglRenderCppTESXFBVertexStride(&p) != 0) {
+    if (mglRenderTESXFBVertexStride(&p) != 0) {
         fprintf(stderr, "FAIL: xfb stride unsupported type\n");
         return 1;
     }
     /* No varyings / NULL program -> 0. */
     p.transform_feedback_varying_count = 0;
-    if (mglRenderCppTESXFBVertexStride(&p) != 0 ||
-        mglRenderCppTESXFBVertexStride(NULL) != 0) {
+    if (mglRenderTESXFBVertexStride(&p) != 0 ||
+        mglRenderTESXFBVertexStride(NULL) != 0) {
         fprintf(stderr, "FAIL: xfb stride empty/null\n");
         return 1;
     }
@@ -6186,7 +6186,7 @@ static int verifyTessFactorTransforms(void) {
     /* Fill: 2 patches x 12B canonical records. */
     uint8_t fill[24];
     memset(fill, 0xAA, sizeof(fill));
-    if (mglRenderCppFillDefaultTessFactorBuffer(
+    if (mglRenderFillDefaultTessFactorBuffer(
             fill, sizeof(fill), outer, inner, 2) != 0) {
         fprintf(stderr, "FAIL: tess fill rc\n");
         return 1;
@@ -6206,9 +6206,9 @@ static int verifyTessFactorTransforms(void) {
             }
         }
     }
-    if (mglRenderCppFillDefaultTessFactorBuffer(
+    if (mglRenderFillDefaultTessFactorBuffer(
             fill, 11, outer, inner, 2) != -1 ||
-        mglRenderCppFillDefaultTessFactorBuffer(
+        mglRenderFillDefaultTessFactorBuffer(
             NULL, sizeof(fill), outer, inner, 2) != -1) {
         fprintf(stderr, "FAIL: tess fill bad args\n");
         return 1;
@@ -6219,7 +6219,7 @@ static int verifyTessFactorTransforms(void) {
                           700, 800, 900, 1000, 1100, 1200};
     uint8_t tri[16];
     memset(tri, 0xBB, sizeof(tri));
-    if (mglRenderCppRepackTessFactorTriangles(
+    if (mglRenderRepackTessFactorTriangles(
             canon, sizeof(canon), tri, sizeof(tri), 2) != 0) {
         fprintf(stderr, "FAIL: tess repack rc\n");
         return 1;
@@ -6230,9 +6230,9 @@ static int verifyTessFactorTransforms(void) {
         fprintf(stderr, "FAIL: tess repack values\n");
         return 1;
     }
-    if (mglRenderCppRepackTessFactorTriangles(
+    if (mglRenderRepackTessFactorTriangles(
             canon, sizeof(canon), tri, 7, 2) != -1 ||
-        mglRenderCppRepackTessFactorTriangles(
+        mglRenderRepackTessFactorTriangles(
             NULL, sizeof(canon), tri, sizeof(tri), 2) != -1) {
         fprintf(stderr, "FAIL: tess repack bad args\n");
         return 1;
@@ -6246,19 +6246,19 @@ static int verifyTessFactorTransforms(void) {
     for (int i = 0; i < 4; i++) factors[i] = 0x3C00; /* __fp16 1.0 */
     factors[4] = 0x3800; /* __fp16 0.5 */
     factors[5] = 0x3800;
-    if (mglRenderCppTessPrimitiveCount(
+    if (mglRenderTessPrimitiveCount(
             factors, sizeof(factors), 2, GL_TRIANGLES, 3) != 3) {
         fprintf(stderr, "FAIL: tess primcount triangles\n");
         return 1;
     }
-    if (mglRenderCppTessPrimitiveCount(
+    if (mglRenderTessPrimitiveCount(
             factors, sizeof(factors), 2, GL_QUADS, 1) != 2) {
         fprintf(stderr, "FAIL: tess primcount quads\n");
         return 1;
     }
-    if (mglRenderCppTessPrimitiveCount(
+    if (mglRenderTessPrimitiveCount(
             NULL, sizeof(factors), 2, GL_TRIANGLES, 1) != 0 ||
-        mglRenderCppTessPrimitiveCount(
+        mglRenderTessPrimitiveCount(
             factors, 7, 2, GL_TRIANGLES, 1) != 0) {
         fprintf(stderr, "FAIL: tess primcount bad args\n");
         return 1;
@@ -6276,7 +6276,7 @@ static int verifyIntegerReadbackConvert(void) {
     uint8_t src1[8] = {1, 2, 3, 4, 5, 6, 7, 8};
     uint32_t dst1[8] = {0};
     int map1[4] = {0, 1, 2, 3};
-    MGLRenderCppIntegerReadbackConvertParams p1 = {
+    MGLRenderIntegerReadbackConvertParams p1 = {
         .src = src1, .src_bytes_per_row = 8,
         .source_component_count = 4, .source_component_bytes = 1,
         .source_signed = 0, .source_rgb10a2_uint = 0,
@@ -6288,7 +6288,7 @@ static int verifyIntegerReadbackConvert(void) {
         .is_packed_type = 0, .packed_bit_widths = packed_bit_widths,
         .packed_shifts = packed_shifts, .packed_output_bytes = 4,
     };
-    if (mglRenderCppConvertIntegerReadback(&p1) != 0 ||
+    if (mglRenderConvertIntegerReadback(&p1) != 0 ||
         dst1[0] != 1 || dst1[1] != 2 || dst1[2] != 3 || dst1[3] != 4 ||
         dst1[4] != 5 || dst1[5] != 6 || dst1[6] != 7 || dst1[7] != 8) {
         fprintf(stderr, "FAIL: integer readback non-packed\n");
@@ -6297,7 +6297,7 @@ static int verifyIntegerReadbackConvert(void) {
 
     /* Case 2: packed 2_10_10_10_REV. */
     uint32_t dst2 = 0;
-    MGLRenderCppIntegerReadbackConvertParams p2 = p1;
+    MGLRenderIntegerReadbackConvertParams p2 = p1;
     p2.copy_w = 1;
     p2.dst = (uint8_t *)&dst2;
     p2.dst_bytes_per_row = 4;
@@ -6305,7 +6305,7 @@ static int verifyIntegerReadbackConvert(void) {
     p2.packed_type = GL_UNSIGNED_INT_2_10_10_10_REV;
     p2.is_packed_type = 1;
     p2.packed_output_bytes = 4;
-    if (mglRenderCppConvertIntegerReadback(&p2) != 0 ||
+    if (mglRenderConvertIntegerReadback(&p2) != 0 ||
         dst2 != (1u | (2u << 10) | (3u << 20) | (3u << 30))) {
         fprintf(stderr, "FAIL: integer readback packed (got 0x%x)\n", dst2);
         return 1;
@@ -6317,7 +6317,7 @@ static int verifyIntegerReadbackConvert(void) {
     uint8_t src3[1] = {255};
     uint8_t dst3 = 0;
     int map3[1] = {0};
-    MGLRenderCppIntegerReadbackConvertParams p3 = {
+    MGLRenderIntegerReadbackConvertParams p3 = {
         .src = src3, .src_bytes_per_row = 1,
         .source_component_count = 1, .source_component_bytes = 1,
         .source_signed = 0, .source_rgb10a2_uint = 0,
@@ -6329,20 +6329,20 @@ static int verifyIntegerReadbackConvert(void) {
         .is_packed_type = 0, .packed_bit_widths = packed_bit_widths,
         .packed_shifts = packed_shifts, .packed_output_bytes = 1,
     };
-    if (mglRenderCppConvertIntegerReadback(&p3) != 0 || dst3 != 127) {
+    if (mglRenderConvertIntegerReadback(&p3) != 0 || dst3 != 127) {
         fprintf(stderr, "FAIL: integer readback unsigned clamp (got %u)\n", dst3);
         return 1;
     }
     src3[0] = 200;
     p3.source_signed = 1;
-    if (mglRenderCppConvertIntegerReadback(&p3) != 0 || dst3 != 200) {
+    if (mglRenderConvertIntegerReadback(&p3) != 0 || dst3 != 200) {
         fprintf(stderr, "FAIL: integer readback signed in-range (got %u)\n", dst3);
         return 1;
     }
 
     /* Case 4: bad args. */
-    if (mglRenderCppConvertIntegerReadback(NULL) != -1 ||
-        mglRenderCppConvertIntegerReadback(&p1) != 0) {
+    if (mglRenderConvertIntegerReadback(NULL) != -1 ||
+        mglRenderConvertIntegerReadback(&p1) != 0) {
         fprintf(stderr, "FAIL: integer readback bad args\n");
         return 1;
     }
@@ -6352,7 +6352,7 @@ static int verifyIntegerReadbackConvert(void) {
 
 static int verifyLevelUploadOps(void) {
     /* P4.5 (item 1116): the dirty-level loop's iteration + classification
-     * moved to mglRenderCppBuildLevelUploadOps. */
+     * moved to mglRenderBuildLevelUploadOps. */
     uint8_t backingA[64];
     for (size_t i = 0; i < sizeof(backingA); i++) backingA[i] = (uint8_t)(i + 1);
     TextureLevel levels[3] = {0};
@@ -6373,9 +6373,9 @@ static int verifyLevelUploadOps(void) {
     levels[2] = levels[0]; /* incomplete: no pitch -> silently skipped */
     levels[2].pitch = 0;
 
-    MGLRenderCppLevelUploadOp ops[3];
+    MGLRenderLevelUploadOp ops[3];
     uint32_t opCount = 99, shortCount = 99, badCount = 99;
-    if (mglRenderCppBuildLevelUploadOps(
+    if (mglRenderBuildLevelUploadOps(
             levels, 3, (uint32_t)MTLTextureType2D,
             GL_RGBA8, (uint32_t)MTLPixelFormatRGBA8Unorm,
             ops, 3, &opCount, &shortCount, &badCount) != 0 ||
@@ -6391,14 +6391,14 @@ static int verifyLevelUploadOps(void) {
         fprintf(stderr, "FAIL: upload op fields\n");
         return 1;
     }
-    if (mglRenderCppBuildLevelUploadOps(
+    if (mglRenderBuildLevelUploadOps(
             levels, 3, (uint32_t)MTLTextureType2D,
             GL_RGBA8, (uint32_t)MTLPixelFormatRGBA8Unorm,
             ops, 2, &opCount, &shortCount, &badCount) != -1) {
         fprintf(stderr, "FAIL: upload ops capacity\n");
         return 1;
     }
-    if (mglRenderCppBuildLevelUploadOps(
+    if (mglRenderBuildLevelUploadOps(
             NULL, 0, (uint32_t)MTLTextureType2D,
             GL_RGBA8, (uint32_t)MTLPixelFormatRGBA8Unorm,
             ops, 3, &opCount, &shortCount, &badCount) != -1) {
@@ -6412,17 +6412,17 @@ static int verifyLevelUploadOps(void) {
 static int verifyCopyBackEncode(void) {
     /* P4.5 (item 1138): stage-binding copy-back validation / encode. */
     /* Validation only (NULL encoder). */
-    MGLRenderCppCopyBackEntry bad[1];
+    MGLRenderCopyBackEntry bad[1];
     bad[0].temporary = (void *)(uintptr_t)0x1;
     bad[0].destination = (void *)(uintptr_t)0x2;
     bad[0].destination_offset = 0;
     bad[0].length = 0; /* empty -> skipped */
-    if (mglRenderCppEncodeStageBindingCopyBacks(bad, 1, NULL) != 0) {
+    if (mglRenderEncodeStageBindingCopyBacks(bad, 1, NULL) != 0) {
         fprintf(stderr, "FAIL: copy-back empty entry\n");
         return 1;
     }
-    if (mglRenderCppEncodeStageBindingCopyBacks(NULL, 1, NULL) != -1 ||
-        mglRenderCppEncodeStageBindingCopyBacks(NULL, 0, NULL) != 0) {
+    if (mglRenderEncodeStageBindingCopyBacks(NULL, 1, NULL) != -1 ||
+        mglRenderEncodeStageBindingCopyBacks(NULL, 0, NULL) != 0) {
         fprintf(stderr, "FAIL: copy-back bad args\n");
         return 1;
     }
@@ -6441,7 +6441,7 @@ static int verifyCopyBackEncode(void) {
         fprintf(stderr, "FAIL: copy-back buffers\n");
         return 1;
     }
-    MGLRenderCppCopyBackEntry good[2];
+    MGLRenderCopyBackEntry good[2];
     good[0].temporary = (__bridge void *)temp;
     good[0].destination = (__bridge void *)dest;
     good[0].destination_buffer = NULL;
@@ -6452,15 +6452,15 @@ static int verifyCopyBackEncode(void) {
     good[1].destination_buffer = NULL;
     good[1].destination_offset = 32;
     good[1].length = 16;
-    if (mglRenderCppEncodeStageBindingCopyBacks(good, 2, (__bridge void *)blit) != 0) {
+    if (mglRenderEncodeStageBindingCopyBacks(good, 2, (__bridge void *)blit) != 0) {
         fprintf(stderr, "FAIL: copy-back encode\n");
         return 1;
     }
     /* Out-of-bounds: length exceeds the destination remaining space. */
-    MGLRenderCppCopyBackEntry oob = good[0];
+    MGLRenderCopyBackEntry oob = good[0];
     oob.destination_offset = 48;
     oob.length = 32; /* 48+32 > 64 */
-    if (mglRenderCppEncodeStageBindingCopyBacks(&oob, 1, (__bridge void *)blit) != -1) {
+    if (mglRenderEncodeStageBindingCopyBacks(&oob, 1, (__bridge void *)blit) != -1) {
         fprintf(stderr, "FAIL: copy-back OOB not rejected\n");
         return 1;
     }
@@ -6480,10 +6480,10 @@ static int verifyCopyBackEncode(void) {
     glBuffer.data.buffer_data = (vm_address_t)(uintptr_t)cpuShadow;
     glBuffer.ever_written = GL_FALSE;
     glBuffer.cpu_shadow_pending = GL_TRUE;
-    MGLRenderCppCopyBackEntry sync = good[0];
+    MGLRenderCopyBackEntry sync = good[0];
     sync.destination_buffer = &glBuffer;
     uint32_t failedIndex = 99;
-    if (mglRenderCppCopyBackCPUPrefix(&sync, 1, &failedIndex) != 0 ||
+    if (mglRenderCopyBackCPUPrefix(&sync, 1, &failedIndex) != 0 ||
         failedIndex != 1) {
         fprintf(stderr, "FAIL: copy-back cpu prefix rc (idx=%u)\n", failedIndex);
         return 1;
@@ -6496,9 +6496,9 @@ static int verifyCopyBackEncode(void) {
         return 1;
     }
     /* CPU prefix failure: offset beyond the GL snapshot. */
-    MGLRenderCppCopyBackEntry badSync = sync;
+    MGLRenderCopyBackEntry badSync = sync;
     badSync.destination_offset = 100;
-    if (mglRenderCppCopyBackCPUPrefix(&badSync, 1, &failedIndex) != -1 ||
+    if (mglRenderCopyBackCPUPrefix(&badSync, 1, &failedIndex) != -1 ||
         failedIndex != 0) {
         fprintf(stderr, "FAIL: copy-back cpu prefix OOB not rejected\n");
         return 1;
@@ -6509,19 +6509,19 @@ static int verifyCopyBackEncode(void) {
 
 static int verifyRuntimeArraySizes(void) {
     /* P4.5 (item 1138): runtime-array-size SSBO sizing constants fill. */
-    MGLRenderCppBufferSizeEntry entries[5];
+    MGLRenderBufferSizeEntry entries[5];
     uint32_t sizes[32];
     memset(sizes, 0xA5, sizeof(sizes));
 
     /* Bad args. */
-    if (mglRenderCppBuildRuntimeArraySizes(NULL, 1, 25u, 31u, sizes, 32) != -1 ||
-        mglRenderCppBuildRuntimeArraySizes(entries, 0, 25u, 31u, NULL, 32) != -1 ||
-        mglRenderCppBuildRuntimeArraySizes(entries, 0, 25u, 31u, sizes, 30) != -1) {
+    if (mglRenderBuildRuntimeArraySizes(NULL, 1, 25u, 31u, sizes, 32) != -1 ||
+        mglRenderBuildRuntimeArraySizes(entries, 0, 25u, 31u, NULL, 32) != -1 ||
+        mglRenderBuildRuntimeArraySizes(entries, 0, 25u, 31u, sizes, 30) != -1) {
         fprintf(stderr, "FAIL: runtime-array-size bad args\n");
         return 1;
     }
     /* NULL entries with count 0 is fine. */
-    if (mglRenderCppBuildRuntimeArraySizes(NULL, 0, 25u, 31u, sizes, 32) != 0) {
+    if (mglRenderBuildRuntimeArraySizes(NULL, 0, 25u, 31u, sizes, 32) != 0) {
         fprintf(stderr, "FAIL: runtime-array-size null-empty\n");
         return 1;
     }
@@ -6532,7 +6532,7 @@ static int verifyRuntimeArraySizes(void) {
     entries[2].metal_slot = 31;  entries[2].visible_size = 777;   /* cap -> skip */
     entries[3].metal_slot = 8;   entries[3].visible_size = 0x100000000ULL; /* truncates to 0 */
     entries[4].metal_slot = 16;  entries[4].visible_size = 64;
-    if (mglRenderCppBuildRuntimeArraySizes(entries, 5, 25u, 31u, sizes, 32) != 0 ||
+    if (mglRenderBuildRuntimeArraySizes(entries, 5, 25u, 31u, sizes, 32) != 0 ||
         sizes[3] != 4096 || sizes[8] != 0 || sizes[16] != 64 ||
         sizes[25] != 0 || sizes[31] != 0 || sizes[0] != 0 || sizes[30] != 0) {
         fprintf(stderr, "FAIL: runtime-array-size fill\n");
@@ -6738,8 +6738,8 @@ static int verifyLevelUploadPrep(void) {
     level2d.data_size = 64;
     uint8_t backing2d[64] = {0};
     level2d.data = (vm_address_t)(uintptr_t)backing2d;
-    MGLRenderCppLevelUploadPrep prep = {0};
-    if (mglRenderCppTexturePrepareLevelUpload(
+    MGLRenderLevelUploadPrep prep = {0};
+    if (mglRenderTexturePrepareLevelUpload(
             &level2d, (uint32_t)MTLTextureType2D,
             GL_RGBA8, (uint32_t)MTLPixelFormatRGBA8Unorm, &prep) != 0 ||
         prep.data != backing2d || prep.bytes_per_row != 16 ||
@@ -6752,7 +6752,7 @@ static int verifyLevelUploadPrep(void) {
     TextureLevel level3d = level2d;
     level3d.depth = 3;
     level3d.data_size = 192;
-    if (mglRenderCppTexturePrepareLevelUpload(
+    if (mglRenderTexturePrepareLevelUpload(
             &level3d, (uint32_t)MTLTextureType3D,
             GL_RGBA8, (uint32_t)MTLPixelFormatRGBA8Unorm, &prep) != 0 ||
         prep.copy_depth != 3 || prep.bytes_per_image != 64 ||
@@ -6767,7 +6767,7 @@ static int verifyLevelUploadPrep(void) {
     levelRgb.pitch = 12;
     levelRgb.data_size = sizeof(rgb);
     levelRgb.data = (vm_address_t)(uintptr_t)rgb;
-    if (mglRenderCppTexturePrepareLevelUpload(
+    if (mglRenderTexturePrepareLevelUpload(
             &levelRgb, (uint32_t)MTLTextureType2D,
             GL_RGB8, (uint32_t)MTLPixelFormatRGBA8Unorm, &prep) != 0 ||
         prep.owns_data != 1 || prep.bytes_per_row != 16 ||
@@ -6795,7 +6795,7 @@ static int verifyLevelUploadPrep(void) {
     level16.pitch = 12;
     level16.data_size = sizeof(rgb16);
     level16.data = (vm_address_t)(uintptr_t)rgb16;
-    if (mglRenderCppTexturePrepareLevelUpload(
+    if (mglRenderTexturePrepareLevelUpload(
             &level16, (uint32_t)MTLTextureType2D,
             GL_RGB16, (uint32_t)MTLPixelFormatRGBA16Unorm, &prep) != 0 ||
         prep.owns_data != 1 || prep.bytes_per_row != 16) {
@@ -6817,7 +6817,7 @@ static int verifyLevelUploadPrep(void) {
      * parity with the ObjC guard), so the level uploads clamped. */
     TextureLevel shortLevel = level2d;
     shortLevel.data_size = 16;
-    int rc = mglRenderCppTexturePrepareLevelUpload(
+    int rc = mglRenderTexturePrepareLevelUpload(
         &shortLevel, (uint32_t)MTLTextureType2D,
         GL_RGBA8, (uint32_t)MTLPixelFormatRGBA8Unorm, &prep);
     if (rc != 0 || prep.bytes_per_image != 16 || prep.copy_depth != 1 ||
@@ -6826,9 +6826,9 @@ static int verifyLevelUploadPrep(void) {
         return 1;
     }
     /* Bad args. */
-    if (mglRenderCppTexturePrepareLevelUpload(
+    if (mglRenderTexturePrepareLevelUpload(
             NULL, 0, GL_RGBA8, 0, &prep) != -1 ||
-        mglRenderCppTexturePrepareLevelUpload(
+        mglRenderTexturePrepareLevelUpload(
             &level2d, 0, GL_RGBA8, 0, NULL) != -1) {
         fprintf(stderr, "FAIL: prep bad args\n");
         return 1;
@@ -6840,80 +6840,80 @@ static int verifyLevelUploadPrep(void) {
 static int verifyPendingEventOwner(void) {
     /* P4.5 (item 1141): pending shared-event slot inside the C++ owner. */
     void *owner = NULL;
-    if (mglRenderCppCreatePendingEventOwner(&owner) != 0 || !owner) {
+    if (mglRenderCreatePendingEventOwner(&owner) != 0 || !owner) {
         fprintf(stderr, "FAIL: create pending-event owner\n");
         return 1;
     }
     void *first = NULL;
-    if (mglRenderCppPendingEventPrepare(owner, 7, &first) != 0 || !first) {
+    if (mglRenderPendingEventPrepare(owner, 7, &first) != 0 || !first) {
         fprintf(stderr, "FAIL: prepare event\n");
-        mglRenderCppDestroyPendingEventOwner(&owner);
+        mglRenderDestroyPendingEventOwner(&owner);
         return 1;
     }
     /* Re-prepare reuses the same event and updates the name. */
     void *second = NULL;
-    if (mglRenderCppPendingEventPrepare(owner, 9, &second) != 0 ||
+    if (mglRenderPendingEventPrepare(owner, 9, &second) != 0 ||
         second != first) {
         fprintf(stderr, "FAIL: prepare reuse\n");
-        mglRenderCppDestroyPendingEventOwner(&owner);
+        mglRenderDestroyPendingEventOwner(&owner);
         return 1;
     }
     /* Detach transfers ownership; the slot empties. */
     int name = 0;
     void *detached = NULL;
-    if (mglRenderCppPendingEventDetach(owner, &name, &detached) != 0 ||
+    if (mglRenderPendingEventDetach(owner, &name, &detached) != 0 ||
         !detached || detached != first || name != 9) {
         fprintf(stderr, "FAIL: detach (name=%d event=%p first=%p)\n",
                 name, detached, first);
-        mglRenderCppDestroyPendingEventOwner(&owner);
+        mglRenderDestroyPendingEventOwner(&owner);
         return 1;
     }
     detached = NULL;
     name = 0;
-    if (mglRenderCppPendingEventDetach(owner, &name, &detached) != 0 ||
+    if (mglRenderPendingEventDetach(owner, &name, &detached) != 0 ||
         detached != NULL || name != 0) {
         fprintf(stderr, "FAIL: detach after empty\n");
-        mglRenderCppDestroyPendingEventOwner(&owner);
+        mglRenderDestroyPendingEventOwner(&owner);
         return 1;
     }
     /* After clear, prepare creates a fresh event. */
-    if (mglRenderCppPendingEventPrepare(owner, 1, &first) != 0 || !first) {
+    if (mglRenderPendingEventPrepare(owner, 1, &first) != 0 || !first) {
         fprintf(stderr, "FAIL: prepare after detach\n");
-        mglRenderCppDestroyPendingEventOwner(&owner);
+        mglRenderDestroyPendingEventOwner(&owner);
         return 1;
     }
-    mglRenderCppPendingEventClear(owner);
+    mglRenderPendingEventClear(owner);
     /* The slot must be empty after clear (detach returns nothing). */
     void *post_clear = NULL;
     int post_name = 123;
-    if (mglRenderCppPendingEventDetach(owner, &post_name, &post_clear) != 0 ||
+    if (mglRenderPendingEventDetach(owner, &post_name, &post_clear) != 0 ||
         post_clear != NULL || post_name != 0) {
         fprintf(stderr, "FAIL: slot not empty after clear\n");
-        mglRenderCppDestroyPendingEventOwner(&owner);
+        mglRenderDestroyPendingEventOwner(&owner);
         return 1;
     }
     /* Prepare after clear works and records the new name. */
-    if (mglRenderCppPendingEventPrepare(owner, 2, &post_clear) != 0 ||
+    if (mglRenderPendingEventPrepare(owner, 2, &post_clear) != 0 ||
         !post_clear) {
         fprintf(stderr, "FAIL: fresh event after clear\n");
-        mglRenderCppDestroyPendingEventOwner(&owner);
+        mglRenderDestroyPendingEventOwner(&owner);
         return 1;
     }
-    if (mglRenderCppPendingEventDetach(owner, &post_name, &post_clear) != 0 ||
+    if (mglRenderPendingEventDetach(owner, &post_name, &post_clear) != 0 ||
         !post_clear || post_name != 2) {
         fprintf(stderr, "FAIL: detach name after clear\n");
-        mglRenderCppDestroyPendingEventOwner(&owner);
+        mglRenderDestroyPendingEventOwner(&owner);
         return 1;
     }
     /* Bad-arg rejections. */
-    if (mglRenderCppPendingEventPrepare(NULL, 1, &post_clear) != -1 ||
-        mglRenderCppPendingEventDetach(NULL, &name, &post_clear) != -1 ||
-        mglRenderCppCreatePendingEventOwner(NULL) != -1) {
+    if (mglRenderPendingEventPrepare(NULL, 1, &post_clear) != -1 ||
+        mglRenderPendingEventDetach(NULL, &name, &post_clear) != -1 ||
+        mglRenderCreatePendingEventOwner(NULL) != -1) {
         fprintf(stderr, "FAIL: bad-arg rejections\n");
-        mglRenderCppDestroyPendingEventOwner(&owner);
+        mglRenderDestroyPendingEventOwner(&owner);
         return 1;
     }
-    mglRenderCppDestroyPendingEventOwner(&owner);
+    mglRenderDestroyPendingEventOwner(&owner);
     if (owner != NULL) {
         fprintf(stderr, "FAIL: owner not cleared\n");
         return 1;
@@ -6924,20 +6924,20 @@ static int verifyPendingEventOwner(void) {
 
 static int verifyRenderPassIdentityOwner(void) {
     void *owner = NULL;
-    if (mglRenderCppCreateRenderPassIdentityOwner(&owner) != 0 || !owner) {
+    if (mglRenderCreateRenderPassIdentityOwner(&owner) != 0 || !owner) {
         fprintf(stderr, "FAIL: render-pass identity owner create\n");
         return 1;
     }
-    MGLRenderCppRenderPassIdentityState identity = {};
+    MGLRenderPassIdentityState identity = {};
     identity.framebuffer = reinterpret_cast<void *>(0x1234u);
     identity.framebuffer_name = 37u;
     identity.draw_buffer = GL_COLOR_ATTACHMENT0;
     identity.draw_buffer_count = 2u;
     identity.draw_buffers[0] = GL_COLOR_ATTACHMENT0;
     identity.draw_buffers[1] = GL_COLOR_ATTACHMENT1;
-    MGLRenderCppRenderPassIdentityState snapshot = {};
-    if (mglRenderCppUpdateRenderPassIdentity(owner, &identity) != 0 ||
-        mglRenderCppGetRenderPassIdentity(owner, &snapshot) != 0 ||
+    MGLRenderPassIdentityState snapshot = {};
+    if (mglRenderUpdateRenderPassIdentity(owner, &identity) != 0 ||
+        mglRenderGetRenderPassIdentity(owner, &snapshot) != 0 ||
         snapshot.framebuffer != identity.framebuffer ||
         snapshot.framebuffer_name != identity.framebuffer_name ||
         snapshot.draw_buffer != identity.draw_buffer ||
@@ -6945,42 +6945,42 @@ static int verifyRenderPassIdentityOwner(void) {
         snapshot.draw_buffers[0] != identity.draw_buffers[0] ||
         snapshot.draw_buffers[1] != identity.draw_buffers[1]) {
         fprintf(stderr, "FAIL: render-pass identity snapshot\n");
-        mglRenderCppDestroyRenderPassIdentityOwner(&owner);
+        mglRenderDestroyRenderPassIdentityOwner(&owner);
         return 1;
     }
-    MGLRenderCppFboMatchCacheState cache = {37u, 91u, 1};
-    MGLRenderCppFboMatchCacheState cacheSnapshot = {};
-    if (mglRenderCppSetFboMatchCache(owner, &cache) != 0 ||
-        mglRenderCppGetFboMatchCache(owner, &cacheSnapshot) != 0 ||
+    MGLRenderFboMatchCacheState cache = {37u, 91u, 1};
+    MGLRenderFboMatchCacheState cacheSnapshot = {};
+    if (mglRenderSetFboMatchCache(owner, &cache) != 0 ||
+        mglRenderGetFboMatchCache(owner, &cacheSnapshot) != 0 ||
         cacheSnapshot.fbo_name != cache.fbo_name ||
         cacheSnapshot.generation != cache.generation ||
         cacheSnapshot.result != 1) {
         fprintf(stderr, "FAIL: render-pass identity cache\n");
-        mglRenderCppDestroyRenderPassIdentityOwner(&owner);
+        mglRenderDestroyRenderPassIdentityOwner(&owner);
         return 1;
     }
-    mglRenderCppClearFboMatchCache(owner);
-    if (mglRenderCppGetFboMatchCache(owner, &cacheSnapshot) != 1) {
+    mglRenderClearFboMatchCache(owner);
+    if (mglRenderGetFboMatchCache(owner, &cacheSnapshot) != 1) {
         fprintf(stderr, "FAIL: render-pass identity cache clear\n");
-        mglRenderCppDestroyRenderPassIdentityOwner(&owner);
+        mglRenderDestroyRenderPassIdentityOwner(&owner);
         return 1;
     }
-    identity.draw_buffer_count = MGL_RENDER_CPP_MAX_COLOR_ATTACHMENTS + 1u;
-    if (mglRenderCppUpdateRenderPassIdentity(owner, &identity) == 0) {
+    identity.draw_buffer_count = MGL_RENDER_MAX_COLOR_ATTACHMENTS + 1u;
+    if (mglRenderUpdateRenderPassIdentity(owner, &identity) == 0) {
         fprintf(stderr, "FAIL: render-pass identity accepted invalid count\n");
-        mglRenderCppDestroyRenderPassIdentityOwner(&owner);
+        mglRenderDestroyRenderPassIdentityOwner(&owner);
         return 1;
     }
     identity = {};
-    if (mglRenderCppUpdateRenderPassIdentity(owner, &identity) != 0 ||
-        mglRenderCppGetRenderPassIdentity(owner, &snapshot) != 0 ||
+    if (mglRenderUpdateRenderPassIdentity(owner, &identity) != 0 ||
+        mglRenderGetRenderPassIdentity(owner, &snapshot) != 0 ||
         snapshot.framebuffer || snapshot.framebuffer_name ||
         snapshot.draw_buffer_count) {
         fprintf(stderr, "FAIL: render-pass identity reset\n");
-        mglRenderCppDestroyRenderPassIdentityOwner(&owner);
+        mglRenderDestroyRenderPassIdentityOwner(&owner);
         return 1;
     }
-    mglRenderCppDestroyRenderPassIdentityOwner(&owner);
+    mglRenderDestroyRenderPassIdentityOwner(&owner);
     if (owner) {
         fprintf(stderr, "FAIL: render-pass identity owner destroy\n");
         return 1;
@@ -6991,10 +6991,10 @@ static int verifyRenderPassIdentityOwner(void) {
 
 static int verifyRenderPassStateOwner(id<MTLDevice> device) {
     void *defaultOwner = NULL;
-    MGLRenderCppRenderPassState defaultState = {};
-    if (mglRenderCppCreateDefaultRenderPassStateOwner(&defaultOwner) != 0 ||
+    MGLRenderPassState defaultState = {};
+    if (mglRenderCreateDefaultRenderPassStateOwner(&defaultOwner) != 0 ||
         !defaultOwner ||
-        mglRenderCppGetRenderPassStateOwner(
+        mglRenderGetRenderPassStateOwner(
             defaultOwner, &defaultState) != 0 ||
         defaultState.color[0].attachment.store_action !=
             MTLStoreActionStore ||
@@ -7003,10 +7003,10 @@ static int verifyRenderPassStateOwner(id<MTLDevice> device) {
         defaultState.depth.clear_depth != 1.0 ||
         defaultState.stencil.attachment.store_action != MTLStoreActionStore) {
         fprintf(stderr, "FAIL: render-pass state owner defaults\n");
-        mglRenderCppDestroyRenderPassStateOwner(&defaultOwner);
+        mglRenderDestroyRenderPassStateOwner(&defaultOwner);
         return 1;
     }
-    mglRenderCppDestroyRenderPassStateOwner(&defaultOwner);
+    mglRenderDestroyRenderPassStateOwner(&defaultOwner);
 
     MTLTextureDescriptor *descriptor = [MTLTextureDescriptor
         texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
@@ -7015,7 +7015,7 @@ static int verifyRenderPassStateOwner(id<MTLDevice> device) {
     id<MTLTexture> texture = [device newTextureWithDescriptor:descriptor];
     __weak id<MTLTexture> weakTexture = texture;
     void *textureRaw = (__bridge void *)texture;
-    MGLRenderCppRenderPassState state = {};
+    MGLRenderPassState state = {};
     state.render_target_width = 17u;
     state.render_target_height = 19u;
     state.default_raster_sample_count = 1u;
@@ -7026,9 +7026,9 @@ static int verifyRenderPassStateOwner(id<MTLDevice> device) {
     state.sample_position_count = 1u;
     state.sample_positions[0] = {0.5f, 0.5f};
     void *owner = NULL;
-    MGLRenderCppRenderPassState snapshot = {};
-    if (mglRenderCppCreateRenderPassStateOwner(&state, &owner) != 0 ||
-        !owner || mglRenderCppGetRenderPassStateOwner(owner, &snapshot) != 0 ||
+    MGLRenderPassState snapshot = {};
+    if (mglRenderCreateRenderPassStateOwner(&state, &owner) != 0 ||
+        !owner || mglRenderGetRenderPassStateOwner(owner, &snapshot) != 0 ||
         snapshot.render_target_width != 17u ||
         snapshot.render_target_height != 19u ||
         snapshot.color[0].attachment.texture !=
@@ -7037,34 +7037,34 @@ static int verifyRenderPassStateOwner(id<MTLDevice> device) {
         snapshot.sample_position_count != 1u ||
         snapshot.sample_positions[0].x != 0.5f) {
         fprintf(stderr, "FAIL: render-pass state owner create/snapshot\n");
-        mglRenderCppDestroyRenderPassStateOwner(&owner);
+        mglRenderDestroyRenderPassStateOwner(&owner);
         return 1;
     }
     texture = nil;
     if (!weakTexture) {
         fprintf(stderr, "FAIL: render-pass state owner did not retain texture\n");
-        mglRenderCppDestroyRenderPassStateOwner(&owner);
+        mglRenderDestroyRenderPassStateOwner(&owner);
         return 1;
     }
-    MGLRenderCppRenderPassAttachmentState attachment =
+    MGLRenderPassAttachmentState attachment =
         snapshot.color[0].attachment;
     id<MTLBuffer> visibility =
         [device newBufferWithLength:64 options:MTLResourceStorageModeShared];
     __weak id<MTLBuffer> weakVisibility = visibility;
-    if (mglRenderCppSetRenderPassStateAttachmentTexture(
-            owner, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR,
+    if (mglRenderSetRenderPassStateAttachmentTexture(
+            owner, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
             0u, NULL, 3u, 0u, 0u, 0u) != 0 ||
-        mglRenderCppSetRenderPassStateAttachmentActions(
-            owner, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0u,
+        mglRenderSetRenderPassStateAttachmentActions(
+            owner, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0u,
             MTLLoadActionDontCare, MTLStoreActionDontCare, 7u) != 0 ||
-        mglRenderCppSetRenderPassStateColorClear(
+        mglRenderSetRenderPassStateColorClear(
             owner, 0u, 0.5, 0.25, 0.125, 1.0) != 0 ||
-        mglRenderCppSetRenderPassStateDepthClear(owner, 0.75) != 0 ||
-        mglRenderCppSetRenderPassStateStencilClear(owner, 37u) != 0 ||
-        mglRenderCppSetRenderPassStateVisibility(
+        mglRenderSetRenderPassStateDepthClear(owner, 0.75) != 0 ||
+        mglRenderSetRenderPassStateStencilClear(owner, 37u) != 0 ||
+        mglRenderSetRenderPassStateVisibility(
             owner, (__bridge void *)visibility, 3u) != 0 ||
-        mglRenderCppSetRenderPassStateDimensions(owner, 23u, 29u) != 0 ||
-        mglRenderCppGetRenderPassStateOwner(owner, &snapshot) != 0 ||
+        mglRenderSetRenderPassStateDimensions(owner, 23u, 29u) != 0 ||
+        mglRenderGetRenderPassStateOwner(owner, &snapshot) != 0 ||
         snapshot.render_target_width != 23u ||
         snapshot.render_target_height != 29u ||
         snapshot.color[0].attachment.texture ||
@@ -7081,12 +7081,12 @@ static int verifyRenderPassStateOwner(id<MTLDevice> device) {
         snapshot.visibility_result_buffer != (__bridge void *)visibility ||
         snapshot.visibility_result_type != 3u) {
         fprintf(stderr, "FAIL: render-pass state owner native mutation\n");
-        mglRenderCppDestroyRenderPassStateOwner(&owner);
+        mglRenderDestroyRenderPassStateOwner(&owner);
         return 1;
     }
     if (weakTexture) {
         fprintf(stderr, "FAIL: render-pass state owner did not release texture\n");
-        mglRenderCppDestroyRenderPassStateOwner(&owner);
+        mglRenderDestroyRenderPassStateOwner(&owner);
         return 1;
     }
 
@@ -7099,10 +7099,10 @@ static int verifyRenderPassStateOwner(id<MTLDevice> device) {
         id<MTLTexture> layeredTexture =
             [device newTextureWithDescriptor:textureDescriptor];
         if (!layeredTexture ||
-            mglRenderCppSetRenderPassStateAttachmentTexture(
-                owner, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0u,
+            mglRenderSetRenderPassStateAttachmentTexture(
+                owner, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0u,
                 (__bridge void *)layeredTexture, level, 5u, 7u, 1u) != 0 ||
-            mglRenderCppGetRenderPassStateOwner(owner, &snapshot) != 0 ||
+            mglRenderGetRenderPassStateOwner(owner, &snapshot) != 0 ||
             snapshot.color[0].attachment.texture !=
                 (__bridge void *)layeredTexture ||
             snapshot.color[0].attachment.level != level ||
@@ -7116,10 +7116,10 @@ static int verifyRenderPassStateOwner(id<MTLDevice> device) {
                     (unsigned long long)snapshot.render_target_array_length);
             return 1;
         }
-        if (mglRenderCppSetRenderPassStateAttachmentTexture(
-                owner, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0u,
+        if (mglRenderSetRenderPassStateAttachmentTexture(
+                owner, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0u,
                 (__bridge void *)layeredTexture, level, 2u, 3u, 0u) != 0 ||
-            mglRenderCppGetRenderPassStateOwner(owner, &snapshot) != 0 ||
+            mglRenderGetRenderPassStateOwner(owner, &snapshot) != 0 ||
             snapshot.color[0].attachment.slice != 2u ||
             snapshot.color[0].attachment.depth_plane != 3u ||
             snapshot.render_target_array_length != 0u) {
@@ -7155,7 +7155,7 @@ static int verifyRenderPassStateOwner(id<MTLDevice> device) {
         verifyLayeredAttachment("cube", cubeDescriptor, 0u, 6u) != 0 ||
         verifyLayeredAttachment("cube-array", cubeArrayDescriptor, 0u, 12u) != 0 ||
         verifyLayeredAttachment("3d-mip", volumeDescriptor, 1u, 2u) != 0) {
-        mglRenderCppDestroyRenderPassStateOwner(&owner);
+        mglRenderDestroyRenderPassStateOwner(&owner);
         return 1;
     }
 
@@ -7170,79 +7170,79 @@ static int verifyRenderPassStateOwner(id<MTLDevice> device) {
     id<MTLTexture> shortArrayTexture =
         [device newTextureWithDescriptor:shortArrayDescriptor];
     if (!longArrayTexture || !shortArrayTexture ||
-        mglRenderCppSetRenderPassStateAttachmentTexture(
-            owner, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0u,
+        mglRenderSetRenderPassStateAttachmentTexture(
+            owner, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0u,
             (__bridge void *)longArrayTexture, 0u, 0u, 0u, 1u) != 0 ||
-        mglRenderCppSetRenderPassStateAttachmentTexture(
-            owner, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0u,
+        mglRenderSetRenderPassStateAttachmentTexture(
+            owner, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0u,
             (__bridge void *)shortArrayTexture, 0u, 0u, 0u, 1u) != 0 ||
-        mglRenderCppGetRenderPassStateOwner(owner, &snapshot) != 0 ||
+        mglRenderGetRenderPassStateOwner(owner, &snapshot) != 0 ||
         snapshot.render_target_array_length != 2u ||
         snapshot.color[0].attachment.slice != 0u ||
         snapshot.depth.attachment.slice != 0u) {
         fprintf(stderr, "FAIL: render-pass layered common array length\n");
-        mglRenderCppDestroyRenderPassStateOwner(&owner);
+        mglRenderDestroyRenderPassStateOwner(&owner);
         return 1;
     }
-    if (mglRenderCppSetRenderPassStateAttachmentTexture(
-            owner, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0u,
+    if (mglRenderSetRenderPassStateAttachmentTexture(
+            owner, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0u,
             NULL, 0u, 0u, 0u, 0u) != 0 ||
-        mglRenderCppSetRenderPassStateAttachmentTexture(
-            owner, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0u,
+        mglRenderSetRenderPassStateAttachmentTexture(
+            owner, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0u,
             NULL, 0u, 0u, 0u, 0u) != 0) {
         fprintf(stderr, "FAIL: render-pass layered attachment cleanup\n");
-        mglRenderCppDestroyRenderPassStateOwner(&owner);
+        mglRenderDestroyRenderPassStateOwner(&owner);
         return 1;
     }
 
     visibility = nil;
     if (!weakVisibility ||
-        mglRenderCppSetRenderPassStateVisibility(owner, NULL, 0u) != 0 ||
-        mglRenderCppGetRenderPassStateOwner(owner, &snapshot) != 0 ||
+        mglRenderSetRenderPassStateVisibility(owner, NULL, 0u) != 0 ||
+        mglRenderGetRenderPassStateOwner(owner, &snapshot) != 0 ||
         snapshot.visibility_result_buffer != NULL ||
         snapshot.visibility_result_type != 0u) {
         fprintf(stderr, "FAIL: render-pass state owner visibility ownership\n");
-        mglRenderCppDestroyRenderPassStateOwner(&owner);
+        mglRenderDestroyRenderPassStateOwner(&owner);
         return 1;
     }
-    if (mglRenderCppSetRenderPassStateAttachment(
-            owner, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR,
-            MGL_RENDER_CPP_MAX_COLOR_ATTACHMENTS, &attachment) == 0 ||
-        mglRenderCppSetRenderPassStateAttachment(
+    if (mglRenderSetRenderPassStateAttachment(
+            owner, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
+            MGL_RENDER_MAX_COLOR_ATTACHMENTS, &attachment) == 0 ||
+        mglRenderSetRenderPassStateAttachment(
             owner, 0xffffffffu, 0u, &attachment) == 0 ||
-        mglRenderCppSetRenderPassStateAttachmentTexture(
-            owner, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR,
-            MGL_RENDER_CPP_MAX_COLOR_ATTACHMENTS, NULL, 0u, 0u, 0u, 0u) == 0 ||
-        mglRenderCppSetRenderPassStateAttachmentTexture(
+        mglRenderSetRenderPassStateAttachmentTexture(
+            owner, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
+            MGL_RENDER_MAX_COLOR_ATTACHMENTS, NULL, 0u, 0u, 0u, 0u) == 0 ||
+        mglRenderSetRenderPassStateAttachmentTexture(
             owner, 0xffffffffu, 0u, NULL, 0u, 0u, 0u, 0u) == 0) {
         fprintf(stderr, "FAIL: render-pass state owner accepted invalid attachment\n");
-        mglRenderCppDestroyRenderPassStateOwner(&owner);
+        mglRenderDestroyRenderPassStateOwner(&owner);
         return 1;
     }
-    if (mglRenderCppSetRenderPassStateAttachmentActions(
-            owner, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR,
-            MGL_RENDER_CPP_MAX_COLOR_ATTACHMENTS, MTLLoadActionLoad,
+    if (mglRenderSetRenderPassStateAttachmentActions(
+            owner, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
+            MGL_RENDER_MAX_COLOR_ATTACHMENTS, MTLLoadActionLoad,
             MTLStoreActionStore, 0u) == 0 ||
-        mglRenderCppSetRenderPassStateAttachmentActions(
+        mglRenderSetRenderPassStateAttachmentActions(
             owner, 0xffffffffu, 0u, MTLLoadActionLoad,
             MTLStoreActionStore, 0u) == 0 ||
-        mglRenderCppSetRenderPassStateColorClear(
-            owner, MGL_RENDER_CPP_MAX_COLOR_ATTACHMENTS,
+        mglRenderSetRenderPassStateColorClear(
+            owner, MGL_RENDER_MAX_COLOR_ATTACHMENTS,
             0.0, 0.0, 0.0, 0.0) == 0) {
         fprintf(stderr, "FAIL: render-pass state owner accepted invalid values\n");
-        mglRenderCppDestroyRenderPassStateOwner(&owner);
+        mglRenderDestroyRenderPassStateOwner(&owner);
         return 1;
     }
-    state.sample_position_count = MGL_RENDER_CPP_MAX_SAMPLE_POSITIONS + 1u;
+    state.sample_position_count = MGL_RENDER_MAX_SAMPLE_POSITIONS + 1u;
     void *invalidOwner = NULL;
-    if (mglRenderCppCreateRenderPassStateOwner(
+    if (mglRenderCreateRenderPassStateOwner(
             &state, &invalidOwner) == 0 || invalidOwner) {
         fprintf(stderr, "FAIL: render-pass state owner accepted invalid samples\n");
-        mglRenderCppDestroyRenderPassStateOwner(&invalidOwner);
-        mglRenderCppDestroyRenderPassStateOwner(&owner);
+        mglRenderDestroyRenderPassStateOwner(&invalidOwner);
+        mglRenderDestroyRenderPassStateOwner(&owner);
         return 1;
     }
-    mglRenderCppDestroyRenderPassStateOwner(&owner);
+    mglRenderDestroyRenderPassStateOwner(&owner);
     if (owner) {
         fprintf(stderr, "FAIL: render-pass state owner destroy\n");
         return 1;
@@ -7257,21 +7257,21 @@ static int verifyTextureStagingOwner(void) {
     };
     void *owner = NULL;
     void *bufferRaw = NULL;
-    if (mglRenderCppCreateTextureStagingOwner(
+    if (mglRenderCreateTextureStagingOwner(
             values, sizeof(values), MTLResourceStorageModeShared,
             &owner, &bufferRaw) != 0 || !owner || !bufferRaw) {
         fprintf(stderr, "FAIL: texture staging owner create\n");
-        mglRenderCppDestroyTextureStagingOwner(&owner);
+        mglRenderDestroyTextureStagingOwner(&owner);
         return 1;
     }
     id<MTLBuffer> buffer = (__bridge id<MTLBuffer>)bufferRaw;
     if (buffer.length < sizeof(values) ||
         memcmp(buffer.contents, values, sizeof(values)) != 0) {
         fprintf(stderr, "FAIL: texture staging owner contents\n");
-        mglRenderCppDestroyTextureStagingOwner(&owner);
+        mglRenderDestroyTextureStagingOwner(&owner);
         return 1;
     }
-    mglRenderCppDestroyTextureStagingOwner(&owner);
+    mglRenderDestroyTextureStagingOwner(&owner);
     if (owner) {
         fprintf(stderr, "FAIL: texture staging owner destroy\n");
         return 1;
@@ -7287,12 +7287,12 @@ static int verifyTextureUploadEncoding(id<MTLDevice> device) {
     };
     void *stagingOwner = NULL;
     void *stagingBuffer = NULL;
-    if (mglRenderCppCreateTextureStagingOwner(
+    if (mglRenderCreateTextureStagingOwner(
             pixels, sizeof(pixels), MTLResourceStorageModeShared,
             &stagingOwner, &stagingBuffer) != 0 ||
         !stagingOwner || !stagingBuffer) {
         fprintf(stderr, "FAIL: texture upload encoding staging\n");
-        mglRenderCppDestroyTextureStagingOwner(&stagingOwner);
+        mglRenderDestroyTextureStagingOwner(&stagingOwner);
         return 1;
     }
 
@@ -7304,18 +7304,18 @@ static int verifyTextureUploadEncoding(id<MTLDevice> device) {
     id<MTLCommandQueue> queue = [device newCommandQueue];
     id<MTLCommandBuffer> commandBuffer = [queue commandBuffer];
     if (!texture || !queue || !commandBuffer ||
-        mglRenderCppEncodeTextureUpload(
+        mglRenderEncodeTextureUpload(
             (__bridge void *)commandBuffer, stagingBuffer, 0,
             8, sizeof(pixels), 2, 2, 1,
             (__bridge void *)texture, 0, 0, 0, 0, 0) != 0) {
         fprintf(stderr, "FAIL: texture upload encoding setup\n");
-        mglRenderCppDestroyTextureStagingOwner(&stagingOwner);
+        mglRenderDestroyTextureStagingOwner(&stagingOwner);
         return 1;
     }
 
     /* The encoded command must retain the source after the C++ staging
      * owner releases its +1 reference. */
-    mglRenderCppDestroyTextureStagingOwner(&stagingOwner);
+    mglRenderDestroyTextureStagingOwner(&stagingOwner);
     [commandBuffer commit];
     [commandBuffer waitUntilCompleted];
     uint8_t readback[sizeof(pixels)] = {0};
@@ -7355,20 +7355,20 @@ static int verifyTextureUploadEncoding(id<MTLDevice> device) {
     id<MTLCommandBuffer> clearCommandBuffer = [queue commandBuffer];
     if (!clearTexture || !depthTexture || !multisampleTexture ||
         !resolveTexture || !clearCommandBuffer ||
-        mglRenderCppEncodeColorClear(
+        mglRenderEncodeColorClear(
             (__bridge void *)clearCommandBuffer,
             (__bridge void *)clearTexture, 0, 0, 0,
             1.0, 0.0, 0.0, 1.0) != 0 ||
-        mglRenderCppEncodeDepthClear(
+        mglRenderEncodeDepthClear(
             (__bridge void *)clearCommandBuffer,
             (__bridge void *)depthTexture, 0, 0, 0, 0.25) != 0 ||
-        mglRenderCppEncodeColorClear(
+        mglRenderEncodeColorClear(
             (__bridge void *)clearCommandBuffer,
             (__bridge void *)multisampleTexture, 0, 0, 0,
             0.0, 1.0, 0.0, 1.0) != 0 ||
-        mglRenderCppEncodeMultisampleResolve(
+        mglRenderEncodeMultisampleResolve(
             (__bridge void *)clearCommandBuffer,
-            MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR,
+            MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
             (__bridge void *)multisampleTexture, 0, 0, 0,
             (__bridge void *)resolveTexture, 0, 0, 0, 0) != 0) {
         fprintf(stderr, "FAIL: render-pass clear encoding setup\n");
@@ -7405,21 +7405,21 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
     textureDescriptor.usage = MTLTextureUsageRenderTarget;
     id<MTLTexture> texture =
         [device newTextureWithDescriptor:textureDescriptor];
-    MGLRenderCppRenderPassState state = renderPassStateWithColorTarget(
+    MGLRenderPassState state = renderPassStateWithColorTarget(
         texture, MTLLoadActionClear, MTLStoreActionStore);
     void *stateOwner = NULL;
     void *stateEncoder = NULL;
     void *adoptedStateEncoderOwner = NULL;
     if (!commandBuffer || !texture ||
-        mglRenderCppCreateRenderPassStateOwner(&state, &stateOwner) != 0 ||
-        !stateOwner || mglRenderCppCreateRenderEncoderFromStateOwner(
+        mglRenderCreateRenderPassStateOwner(&state, &stateOwner) != 0 ||
+        !stateOwner || mglRenderCreateRenderEncoderFromStateOwner(
             (__bridge void *)commandBuffer, stateOwner, &stateEncoder) != 0 ||
-        !stateEncoder || mglRenderCppCreateRenderEncoderOwner(
+        !stateEncoder || mglRenderCreateRenderEncoderOwner(
             stateEncoder, &adoptedStateEncoderOwner) != 0 ||
         !adoptedStateEncoderOwner) {
         fprintf(stderr, "FAIL: render-pass state owner encoder\n");
-        mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
-        mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
+        mglRenderDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
+        mglRenderDestroyRenderPassStateOwner(&stateOwner);
         return 1;
     }
 
@@ -7444,44 +7444,44 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
             fprintf(stderr, "FAIL: draw plan pipeline: %s\n",
                     drawPipelineError.localizedDescription.UTF8String
                         ?: "unknown");
-            mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
-            mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
+            mglRenderDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
+            mglRenderDestroyRenderPassStateOwner(&stateOwner);
             return 1;
         }
-        if (mglRenderCppSetRenderPipelineState(
+        if (mglRenderSetRenderPipelineState(
                 stateEncoder, (__bridge void *)drawPipeline) != 0) {
             fprintf(stderr, "FAIL: draw plan pipeline bind\n");
-            mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
-            mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
+            mglRenderDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
+            mglRenderDestroyRenderPassStateOwner(&stateOwner);
             return 1;
         }
-        MGLRenderCppDrawPlan draw = {
-            .kind = MGL_RENDER_CPP_DRAW_ARRAY,
+        MGLRenderDrawPlan draw = {
+            .kind = MGL_RENDER_DRAW_ARRAY,
             .primitive_type = (uint32_t)MTLPrimitiveTypeTriangleStrip,
             .vertex_start = 0,
             .vertex_count = 4,
             .instance_count = 1,
             .base_instance = 0,
         };
-        MGLRenderCppDrawPlan badKind = draw;
+        MGLRenderDrawPlan badKind = draw;
         badKind.kind = 0xdead;
-        MGLRenderCppDrawPlan noInstance = draw;
+        MGLRenderDrawPlan noInstance = draw;
         noInstance.instance_count = 0;
         char drawError[128] = {0};
-        if (mglRenderCppEncodeDraw(stateEncoder, &draw,
+        if (mglRenderEncodeDraw(stateEncoder, &draw,
                                    drawError, sizeof(drawError)) != 0 ||
-            mglRenderCppEncodeDrawForRenderEncoderOwner(
+            mglRenderEncodeDrawForRenderEncoderOwner(
                 adoptedStateEncoderOwner, &draw,
                 drawError, sizeof(drawError)) != 0 ||
-            mglRenderCppEncodeDraw(NULL, &draw, NULL, 0) != -1 ||
-            mglRenderCppEncodeDrawForRenderEncoderOwner(
+            mglRenderEncodeDraw(NULL, &draw, NULL, 0) != -1 ||
+            mglRenderEncodeDrawForRenderEncoderOwner(
                 NULL, &draw, NULL, 0) != -1 ||
-            mglRenderCppEncodeDraw(stateEncoder, &badKind,
+            mglRenderEncodeDraw(stateEncoder, &badKind,
                                    drawError, sizeof(drawError)) != -1 ||
-            mglRenderCppEncodeDraw(stateEncoder, &noInstance, NULL, 0) != -1) {
+            mglRenderEncodeDraw(stateEncoder, &noInstance, NULL, 0) != -1) {
             fprintf(stderr, "FAIL: draw plan encode\n");
-            mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
-            mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
+            mglRenderDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
+            mglRenderDestroyRenderPassStateOwner(&stateOwner);
             return 1;
         }
         printf("DRAW_PLAN_ENCODE_OK\n");
@@ -7495,54 +7495,54 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
             [device newBufferWithLength:64 options:MTLResourceStorageModeShared];
         if (!snapshotBuffer) {
             fprintf(stderr, "FAIL: binding snapshot buffer\n");
-            mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
-            mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
+            mglRenderDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
+            mglRenderDestroyRenderPassStateOwner(&stateOwner);
             return 1;
         }
-        MGLRenderCppBindingSnapshot snap = {};
+        MGLRenderBindingSnapshot snap = {};
         snap.vertex_ops[snap.vertex_op_count++] =
-            (MGLRenderCppBindingOp){
+            (MGLRenderBindingOp){
                 /* kind */ 0u, /* index */ 0, /* offset */ 0,
                 /* buffer */ (__bridge void *)snapshotBuffer,
                 /* bytes */ NULL, /* length */ 0u};
         snap.fragment_ops[snap.fragment_op_count++] =
-            (MGLRenderCppBindingOp){
+            (MGLRenderBindingOp){
                 /* kind */ 0u, /* index */ 1, /* offset */ 16,
                 /* buffer */ (__bridge void *)snapshotBuffer,
                 /* bytes */ NULL, /* length */ 0u};
         snap.fragment_ops[snap.fragment_op_count++] =
-            (MGLRenderCppBindingOp){
+            (MGLRenderBindingOp){
                 /* kind */ 1u, /* index */ 2, /* offset */ 0,
                 /* buffer */ NULL,
                 /* bytes */ "abcd", /* length */ 4u};
-        MGLRenderCppBindingSnapshot overflow = snap;
+        MGLRenderBindingSnapshot overflow = snap;
         overflow.vertex_op_count =
-            MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_OPS + 1;
-        MGLRenderCppBindingSnapshot nullBytes = snap;
+            MGL_RENDER_BINDING_SNAPSHOT_MAX_OPS + 1;
+        MGLRenderBindingSnapshot nullBytes = snap;
         nullBytes.fragment_ops[1].bytes = NULL;
-        MGLRenderCppBindingSnapshot badKind = snap;
+        MGLRenderBindingSnapshot badKind = snap;
         badKind.vertex_ops[0].kind = 0xdead;
-        MGLRenderCppBindingSnapshot nullClear = snap;
+        MGLRenderBindingSnapshot nullClear = snap;
         nullClear.vertex_ops[0].buffer = NULL;
         char snapError[128] = {0};
-        if (mglRenderCppEncodeBindingSnapshot(
+        if (mglRenderEncodeBindingSnapshot(
                 stateEncoder, &snap, snapError, sizeof(snapError)) != 0 ||
-            mglRenderCppEncodeBindingSnapshotForRenderEncoderOwner(
+            mglRenderEncodeBindingSnapshotForRenderEncoderOwner(
                 adoptedStateEncoderOwner, &snap,
                 snapError, sizeof(snapError)) != 0 ||
-            mglRenderCppEncodeBindingSnapshot(NULL, &snap, NULL, 0) != -1 ||
-            mglRenderCppEncodeBindingSnapshot(
+            mglRenderEncodeBindingSnapshot(NULL, &snap, NULL, 0) != -1 ||
+            mglRenderEncodeBindingSnapshot(
                 stateEncoder, &overflow, snapError, sizeof(snapError)) != -1 ||
-            mglRenderCppEncodeBindingSnapshot(
+            mglRenderEncodeBindingSnapshot(
                 stateEncoder, &nullBytes, snapError, sizeof(snapError)) != -1 ||
-            mglRenderCppEncodeBindingSnapshot(
+            mglRenderEncodeBindingSnapshot(
                 stateEncoder, &badKind, snapError, sizeof(snapError)) != -1 ||
-            mglRenderCppEncodeBindingSnapshot(
+            mglRenderEncodeBindingSnapshot(
                 stateEncoder, &nullClear, snapError, sizeof(snapError)) != 0) {
             fprintf(stderr, "FAIL: binding snapshot encode err='%s'\n",
                     snapError);
-            mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
-            mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
+            mglRenderDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
+            mglRenderDestroyRenderPassStateOwner(&stateOwner);
             return 1;
         }
         printf("BINDING_SNAPSHOT_OK\n");
@@ -7551,7 +7551,7 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
     /* P4.3 binding resource snapshot: the C++ binding owner consumes ordered
      * texture/sampler ops and rejects malformed snapshots before draw. */
     {
-        void *bindingOwner = mglRenderCppBindingCreate(8);
+        void *bindingOwner = mglRenderBindingCreate(8);
         MTLTextureDescriptor *resourceTextureDesc =
             [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:
                 MTLPixelFormatRGBA8Unorm width:1 height:1 mipmapped:NO];
@@ -7560,50 +7560,50 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
         MTLSamplerDescriptor *resourceSamplerDesc = [MTLSamplerDescriptor new];
         id<MTLSamplerState> resourceSampler =
             [device newSamplerStateWithDescriptor:resourceSamplerDesc];
-        MGLRenderCppResourceBindingSnapshot resourceSnap = {};
+        MGLRenderResourceBindingSnapshot resourceSnap = {};
         resourceSnap.vertex_ops[resourceSnap.vertex_op_count++] =
-            (MGLRenderCppResourceBindingOp){
-                MGL_RENDER_CPP_RESOURCE_BINDING_TEXTURE, 0u,
+            (MGLRenderResourceBindingOp){
+                MGL_RENDER_RESOURCE_BINDING_TEXTURE, 0u,
                 (__bridge void *)resourceTexture};
         resourceSnap.vertex_ops[resourceSnap.vertex_op_count++] =
-            (MGLRenderCppResourceBindingOp){
-                MGL_RENDER_CPP_RESOURCE_BINDING_SAMPLER, 0u,
+            (MGLRenderResourceBindingOp){
+                MGL_RENDER_RESOURCE_BINDING_SAMPLER, 0u,
                 (__bridge void *)resourceSampler};
         resourceSnap.fragment_ops[resourceSnap.fragment_op_count++] =
-            (MGLRenderCppResourceBindingOp){
-                MGL_RENDER_CPP_RESOURCE_BINDING_TEXTURE, 1u,
+            (MGLRenderResourceBindingOp){
+                MGL_RENDER_RESOURCE_BINDING_TEXTURE, 1u,
                 (__bridge void *)resourceTexture};
-        MGLRenderCppResourceBindingSnapshot overflow = resourceSnap;
+        MGLRenderResourceBindingSnapshot overflow = resourceSnap;
         overflow.vertex_op_count =
-            MGL_RENDER_CPP_RESOURCE_BINDING_SNAPSHOT_MAX_OPS + 1u;
-        MGLRenderCppResourceBindingSnapshot badKind = resourceSnap;
+            MGL_RENDER_RESOURCE_BINDING_SNAPSHOT_MAX_OPS + 1u;
+        MGLRenderResourceBindingSnapshot badKind = resourceSnap;
         badKind.vertex_ops[0].kind = 0xdead;
         char resourceError[128] = {0};
         if (!bindingOwner || !resourceTexture || !resourceSampler ||
-            mglRenderCppEncodeResourceBindingSnapshot(
+            mglRenderEncodeResourceBindingSnapshot(
                 bindingOwner, stateEncoder, &resourceSnap,
                 resourceError, sizeof(resourceError)) != 0 ||
-            mglRenderCppEncodeResourceBindingSnapshotForRenderEncoderOwner(
+            mglRenderEncodeResourceBindingSnapshotForRenderEncoderOwner(
                 bindingOwner, adoptedStateEncoderOwner, &resourceSnap,
                 resourceError, sizeof(resourceError)) != 0 ||
-            mglRenderCppEncodeResourceBindingSnapshot(
+            mglRenderEncodeResourceBindingSnapshot(
                 NULL, stateEncoder, &resourceSnap, NULL, 0) != -1 ||
-            mglRenderCppEncodeResourceBindingSnapshot(
+            mglRenderEncodeResourceBindingSnapshot(
                 bindingOwner, NULL, &resourceSnap, NULL, 0) != -1 ||
-            mglRenderCppEncodeResourceBindingSnapshot(
+            mglRenderEncodeResourceBindingSnapshot(
                 bindingOwner, stateEncoder, &overflow,
                 resourceError, sizeof(resourceError)) != -1 ||
-            mglRenderCppEncodeResourceBindingSnapshot(
+            mglRenderEncodeResourceBindingSnapshot(
                 bindingOwner, stateEncoder, &badKind,
                 resourceError, sizeof(resourceError)) != -1) {
             fprintf(stderr, "FAIL: resource binding snapshot err='%s'\n",
                     resourceError);
-            mglRenderCppBindingDestroy(bindingOwner);
-            mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
-            mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
+            mglRenderBindingDestroy(bindingOwner);
+            mglRenderDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
+            mglRenderDestroyRenderPassStateOwner(&stateOwner);
             return 1;
         }
-        mglRenderCppBindingDestroy(bindingOwner);
+        mglRenderBindingDestroy(bindingOwner);
         printf("RESOURCE_BINDING_SNAPSHOT_OK\n");
     }
 
@@ -7613,34 +7613,34 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
      * private → REJECT; 3D + AGX bug + shared → REPLACE_3D; everything else
      * → BLIT. */
     {
-        if (mglRenderCppTextureUploadRoute(
+        if (mglRenderTextureUploadRoute(
                 (uint32_t)MTLTextureType1D, (uint32_t)MTLStorageModeShared, 0) !=
-                MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_REPLACE_1D ||
-            mglRenderCppTextureUploadRoute(
+                MGL_RENDER_TEXTURE_UPLOAD_ROUTE_REPLACE_1D ||
+            mglRenderTextureUploadRoute(
                 (uint32_t)MTLTextureType1DArray,
                 (uint32_t)MTLStorageModeManaged, 0) !=
-                MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_REPLACE_1D ||
-            mglRenderCppTextureUploadRoute(
+                MGL_RENDER_TEXTURE_UPLOAD_ROUTE_REPLACE_1D ||
+            mglRenderTextureUploadRoute(
                 (uint32_t)MTLTextureType1D, (uint32_t)MTLStorageModePrivate, 0) !=
-                MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_BLIT ||
-            mglRenderCppTextureUploadRoute(
+                MGL_RENDER_TEXTURE_UPLOAD_ROUTE_BLIT ||
+            mglRenderTextureUploadRoute(
                 (uint32_t)MTLTextureType3D, (uint32_t)MTLStorageModePrivate, 1) !=
-                MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_REJECT ||
-            mglRenderCppTextureUploadRoute(
+                MGL_RENDER_TEXTURE_UPLOAD_ROUTE_REJECT ||
+            mglRenderTextureUploadRoute(
                 (uint32_t)MTLTextureType3D, (uint32_t)MTLStorageModeShared, 1) !=
-                MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_REPLACE_3D ||
-            mglRenderCppTextureUploadRoute(
+                MGL_RENDER_TEXTURE_UPLOAD_ROUTE_REPLACE_3D ||
+            mglRenderTextureUploadRoute(
                 (uint32_t)MTLTextureType3D, (uint32_t)MTLStorageModeShared, 0) !=
-                MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_BLIT ||
-            mglRenderCppTextureUploadRoute(
+                MGL_RENDER_TEXTURE_UPLOAD_ROUTE_BLIT ||
+            mglRenderTextureUploadRoute(
                 (uint32_t)MTLTextureType2D, (uint32_t)MTLStorageModeShared, 0) !=
-                MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_BLIT ||
-            mglRenderCppTextureUploadRoute(
+                MGL_RENDER_TEXTURE_UPLOAD_ROUTE_BLIT ||
+            mglRenderTextureUploadRoute(
                 (uint32_t)MTLTextureTypeCube, (uint32_t)MTLStorageModePrivate, 1) !=
-                MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_BLIT) {
+                MGL_RENDER_TEXTURE_UPLOAD_ROUTE_BLIT) {
             fprintf(stderr, "FAIL: texture upload route\n");
-            mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
-            mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
+            mglRenderDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
+            mglRenderDestroyRenderPassStateOwner(&stateOwner);
             return 1;
         }
         printf("TEXTURE_UPLOAD_ROUTE_OK\n");
@@ -7650,13 +7650,13 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
      * compressed rows, 3D padded planes, array/cube stride normalization,
      * destination subresources, and the staging allocation ceiling. */
     {
-        MGLRenderCppTextureUploadPlan plan = {};
-        if (mglRenderCppBuildTextureUploadPlan(
+        MGLRenderTextureUploadPlan plan = {};
+        if (mglRenderBuildTextureUploadPlan(
                 GL_TEXTURE_1D, (uint32_t)MTLTextureType2D,
                 (uint32_t)MTLStorageModeShared,
                 (uint32_t)MTLPixelFormatRGBA8Unorm, 0,
                 16u, 0u, 0u, 64u, 64u, 2u, 9u, &plan) != 0 ||
-            plan.route != MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_REPLACE_1D ||
+            plan.route != MGL_RENDER_TEXTURE_UPLOAD_ROUTE_REPLACE_1D ||
             plan.replace_region_dimension != 2u || plan.replace_use_slice ||
             plan.normalized_height != 1u || plan.normalized_depth != 1u ||
             plan.expected_bytes_per_image != 64u ||
@@ -7667,12 +7667,12 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
             return 1;
         }
 
-        if (mglRenderCppBuildTextureUploadPlan(
+        if (mglRenderBuildTextureUploadPlan(
                 GL_TEXTURE_1D_ARRAY, (uint32_t)MTLTextureType2DArray,
                 (uint32_t)MTLStorageModeManaged,
                 (uint32_t)MTLPixelFormatRGBA8Unorm, 0,
                 16u, 7u, 1u, 64u, 448u, 3u, 5u, &plan) != 0 ||
-            plan.route != MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_REPLACE_1D ||
+            plan.route != MGL_RENDER_TEXTURE_UPLOAD_ROUTE_REPLACE_1D ||
             plan.replace_region_dimension != 2u || !plan.replace_use_slice ||
             plan.normalized_height != 1u ||
             plan.normalized_bytes_per_image != 64u ||
@@ -7681,12 +7681,12 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
             return 1;
         }
 
-        if (mglRenderCppBuildTextureUploadPlan(
+        if (mglRenderBuildTextureUploadPlan(
                 GL_TEXTURE_3D, (uint32_t)MTLTextureType3D,
                 (uint32_t)MTLStorageModeShared,
                 (uint32_t)MTLPixelFormatRGBA8Unorm, 1,
                 4u, 4u, 3u, 16u, 80u, 1u, 7u, &plan) != 0 ||
-            plan.route != MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_REPLACE_3D ||
+            plan.route != MGL_RENDER_TEXTURE_UPLOAD_ROUTE_REPLACE_3D ||
             plan.replace_region_dimension != 3u || !plan.requires_repack ||
             plan.upload_rows != 4u ||
             plan.expected_bytes_per_image != 64u ||
@@ -7697,12 +7697,12 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
             return 1;
         }
 
-        if (mglRenderCppBuildTextureUploadPlan(
+        if (mglRenderBuildTextureUploadPlan(
                 GL_TEXTURE_CUBE_MAP, (uint32_t)MTLTextureTypeCube,
                 (uint32_t)MTLStorageModePrivate,
                 (uint32_t)MTLPixelFormatRGBA8Unorm, 1,
                 4u, 4u, 8u, 16u, 256u, 0u, 5u, &plan) != 0 ||
-            plan.route != MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_BLIT ||
+            plan.route != MGL_RENDER_TEXTURE_UPLOAD_ROUTE_BLIT ||
             plan.normalized_bytes_per_image != 64u ||
             plan.copy_depth != 1u || plan.buffer_size != 64u ||
             plan.destination_slice != 5u) {
@@ -7710,7 +7710,7 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
             return 1;
         }
 
-        if (mglRenderCppBuildTextureUploadPlan(
+        if (mglRenderBuildTextureUploadPlan(
                 GL_TEXTURE_2D, (uint32_t)MTLTextureType2D,
                 (uint32_t)MTLStorageModePrivate,
                 (uint32_t)MTLPixelFormatBC1_RGBA, 0,
@@ -7723,30 +7723,30 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
         }
 
         const uint64_t maxStaging = 512ull * 1024ull * 1024ull;
-        if (mglRenderCppBuildTextureUploadPlan(
+        if (mglRenderBuildTextureUploadPlan(
                 GL_TEXTURE_2D, (uint32_t)MTLTextureType2D,
                 (uint32_t)MTLStorageModePrivate,
                 (uint32_t)MTLPixelFormatRGBA8Unorm, 0,
                 1u, 1u, 1u, maxStaging, maxStaging, 0u, 0u,
                 &plan) != 0 || plan.buffer_size != maxStaging ||
-            mglRenderCppBuildTextureUploadPlan(
+            mglRenderBuildTextureUploadPlan(
                 GL_TEXTURE_2D, (uint32_t)MTLTextureType2D,
                 (uint32_t)MTLStorageModePrivate,
                 (uint32_t)MTLPixelFormatRGBA8Unorm, 0,
                 1u, 1u, 1u, maxStaging + 1u, maxStaging + 1u,
                 0u, 0u, &plan) != -1 ||
-            mglRenderCppBuildTextureUploadPlan(
+            mglRenderBuildTextureUploadPlan(
                 GL_TEXTURE_2D, (uint32_t)MTLTextureType2D,
                 (uint32_t)MTLStorageModePrivate,
                 (uint32_t)MTLPixelFormatBC1_RGBA, 0,
                 1u, 5u, 1u, UINT64_MAX, UINT64_MAX,
                 0u, 0u, &plan) != -1 ||
-            mglRenderCppBuildTextureUploadPlan(
+            mglRenderBuildTextureUploadPlan(
                 GL_TEXTURE_2D, (uint32_t)MTLTextureType2D,
                 (uint32_t)MTLStorageModePrivate,
                 (uint32_t)MTLPixelFormatRGBA8Unorm, 0,
                 1u, 1u, 1u, 64u, 63u, 0u, 0u, &plan) != -1 ||
-            mglRenderCppBuildTextureUploadPlan(
+            mglRenderBuildTextureUploadPlan(
                 GL_TEXTURE_2D, (uint32_t)MTLTextureType2D,
                 (uint32_t)MTLStorageModePrivate,
                 (uint32_t)MTLPixelFormatRGBA8Unorm, 0,
@@ -7769,7 +7769,7 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
                 src[z * kBPI + i] = (uint8_t)(z * 40u + i);
             }
         }
-        void *packed = mglRenderCppTextureRepackDepthPlanes(
+        void *packed = mglRenderTextureRepackDepthPlanes(
             src, kBPI, kTight, kDepth);
         if (!packed) {
             fprintf(stderr, "FAIL: texture repack returned NULL\n");
@@ -7788,10 +7788,10 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
             }
         }
         free(packed);
-        if (mglRenderCppTextureRepackDepthPlanes(NULL, kBPI, kTight, 1) != NULL ||
-            mglRenderCppTextureRepackDepthPlanes(src, kBPI, kTight, 0) != NULL ||
-            mglRenderCppTextureRepackDepthPlanes(src, kTight - 1, kTight, 1) != NULL ||
-            mglRenderCppTextureRepackDepthPlanes(src, kBPI, 0, 1) != NULL) {
+        if (mglRenderTextureRepackDepthPlanes(NULL, kBPI, kTight, 1) != NULL ||
+            mglRenderTextureRepackDepthPlanes(src, kBPI, kTight, 0) != NULL ||
+            mglRenderTextureRepackDepthPlanes(src, kTight - 1, kTight, 1) != NULL ||
+            mglRenderTextureRepackDepthPlanes(src, kBPI, 0, 1) != NULL) {
             fprintf(stderr, "FAIL: texture repack bad-arg rejection\n");
             return 1;
         }
@@ -7805,7 +7805,7 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
         const uint8_t src8[] = {10, 20, 30, 40, 50, 60, 70, 80, 90};
         uint8_t dst8[4 * 4];
         memset(dst8, 0xAA, sizeof(dst8));
-        if (mglRenderCppTextureExpandRGBToRGBA(
+        if (mglRenderTextureExpandRGBToRGBA(
                 src8, dst8, 3, 2, 2, 1, 1, 255) != 0) {
             fprintf(stderr, "FAIL: texture expand 8-bit returned error\n");
             return 1;
@@ -7826,7 +7826,7 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
             7, 8, 9, 10, 11, 12
         };
         uint8_t dst16[2 * 8];
-        if (mglRenderCppTextureExpandRGBToRGBA(
+        if (mglRenderTextureExpandRGBToRGBA(
                 src16, dst16, 2, 2, 1, 2, 2, 65535) != 0) {
             fprintf(stderr, "FAIL: texture expand 16-bit returned error\n");
             return 1;
@@ -7839,13 +7839,13 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
             fprintf(stderr, "FAIL: texture expand 16-bit layout mismatch\n");
             return 1;
         }
-        if (mglRenderCppTextureExpandRGBToRGBA(
+        if (mglRenderTextureExpandRGBToRGBA(
                 NULL, dst8, 3, 2, 2, 1, 1, 255) != -1 ||
-            mglRenderCppTextureExpandRGBToRGBA(
+            mglRenderTextureExpandRGBToRGBA(
                 src8, NULL, 3, 2, 2, 1, 1, 255) != -1 ||
-            mglRenderCppTextureExpandRGBToRGBA(
+            mglRenderTextureExpandRGBToRGBA(
                 src8, dst8, 3, 0, 2, 1, 1, 255) != -1 ||
-            mglRenderCppTextureExpandRGBToRGBA(
+            mglRenderTextureExpandRGBToRGBA(
                 src8, dst8, 3, 2, 2, 0, 1, 255) != -1) {
             fprintf(stderr, "FAIL: texture expand bad-arg rejection\n");
             return 1;
@@ -7860,7 +7860,7 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
         const uint8_t src565[] = {0xFF, 0xFF};
         uint8_t dst565[4];
         size_t bpr = 0, bpi = 0;
-        uint8_t *out = mglRenderCppCreateRGBA8ExpandedUpload(
+        uint8_t *out = mglRenderCreateRGBA8ExpandedUpload(
             src565, 1, 1, 2, GL_RGB565, &bpr, &bpi);
         if (!out || bpr != 4 || bpi != 4) {
             fprintf(stderr, "FAIL: rgba8 expand RGB565 alloc\n");
@@ -7879,7 +7879,7 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
 
         /* RGB8 3 texels 1x3: alpha 255. */
         const uint8_t src8[] = {1, 2, 3, 4, 5, 6, 7, 8, 9};
-        out = mglRenderCppCreateRGBA8ExpandedUpload(
+        out = mglRenderCreateRGBA8ExpandedUpload(
             src8, 3, 1, 3 * 3, GL_RGB8, &bpr, &bpi);
         if (!out || bpi != 12) {
             fprintf(stderr, "FAIL: rgba8 expand RGB8 alloc\n");
@@ -7900,7 +7900,7 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
 
         /* RGBA4: packed 4_4_4_4 (R bits 12-15): 0xFFFF -> all 255. */
         const uint8_t src444[] = {0xFF, 0xFF};
-        out = mglRenderCppCreateRGBA8ExpandedUpload(
+        out = mglRenderCreateRGBA8ExpandedUpload(
             src444, 1, 1, 2, GL_RGBA4, &bpr, &bpi);
         if (!out) {
             fprintf(stderr, "FAIL: rgba8 expand RGBA4 alloc\n");
@@ -7915,13 +7915,13 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
         }
         free(out);
 
-        if (mglRenderCppCreateRGBA8ExpandedUpload(
+        if (mglRenderCreateRGBA8ExpandedUpload(
                 NULL, 1, 1, 2, GL_RGB565, &bpr, &bpi) != NULL ||
-            mglRenderCppCreateRGBA8ExpandedUpload(
+            mglRenderCreateRGBA8ExpandedUpload(
                 src565, 0, 1, 2, GL_RGB565, &bpr, &bpi) != NULL ||
-            mglRenderCppCreateRGBA8ExpandedUpload(
+            mglRenderCreateRGBA8ExpandedUpload(
                 src565, 1, 1, 1, GL_RGB565, &bpr, &bpi) != NULL ||
-            mglRenderCppCreateRGBA8ExpandedUpload(
+            mglRenderCreateRGBA8ExpandedUpload(
                 src565, 1, 1, 2, 0xdeadbeefu, &bpr, &bpi) != NULL) {
             fprintf(stderr, "FAIL: rgba8 expand bad-arg rejection\n");
             return 1;
@@ -7931,20 +7931,20 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
 
     /* P4.5 (item 1111): R8 swizzle resolve + single-channel expand. */
     {
-        if (mglRenderCppResolveR8SwizzledComponent(GL_RED, 0x80) != 0x80 ||
-            mglRenderCppResolveR8SwizzledComponent(GL_ONE, 0x10) != 0xff ||
-            mglRenderCppResolveR8SwizzledComponent(GL_ALPHA, 0x10) != 0xff ||
-            mglRenderCppResolveR8SwizzledComponent(GL_GREEN, 0x80) != 0x00 ||
-            mglRenderCppResolveR8SwizzledComponent(GL_BLUE, 0x80) != 0x00 ||
-            mglRenderCppResolveR8SwizzledComponent(GL_ZERO, 0x80) != 0x00 ||
-            mglRenderCppResolveR8SwizzledComponent(0xdeadbeefu, 0x80) != 0x00) {
+        if (mglRenderResolveR8SwizzledComponent(GL_RED, 0x80) != 0x80 ||
+            mglRenderResolveR8SwizzledComponent(GL_ONE, 0x10) != 0xff ||
+            mglRenderResolveR8SwizzledComponent(GL_ALPHA, 0x10) != 0xff ||
+            mglRenderResolveR8SwizzledComponent(GL_GREEN, 0x80) != 0x00 ||
+            mglRenderResolveR8SwizzledComponent(GL_BLUE, 0x80) != 0x00 ||
+            mglRenderResolveR8SwizzledComponent(GL_ZERO, 0x80) != 0x00 ||
+            mglRenderResolveR8SwizzledComponent(0xdeadbeefu, 0x80) != 0x00) {
             fprintf(stderr, "FAIL: r8 swizzle resolve\n");
             return 1;
         }
 
         const uint8_t src[] = {0x80, 0xFF};
         size_t bpr = 0, bpi = 0;
-        uint8_t *out = mglRenderCppCreateSingleChannelSwizzledUpload(
+        uint8_t *out = mglRenderCreateSingleChannelSwizzledUpload(
             GL_R8, GL_RED, GL_ZERO, GL_ZERO, GL_ONE,
             src, 2, 1, 2, &bpr, &bpi);
         if (!out || bpr != 8 || bpi != 8) {
@@ -7965,7 +7965,7 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
 
         /* src_bytes_per_row > width: second row starts at offset 4. */
         const uint8_t srcPad[] = {0x11, 0x00, 0x00, 0x00, 0x22};
-        out = mglRenderCppCreateSingleChannelSwizzledUpload(
+        out = mglRenderCreateSingleChannelSwizzledUpload(
             GL_R8, GL_RED, GL_RED, GL_RED, GL_RED,
             srcPad, 1, 2, 4, &bpr, &bpi);
         if (!out || bpr != 4 || bpi != 8 ||
@@ -7977,13 +7977,13 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
         }
         free(out);
 
-        if (mglRenderCppCreateSingleChannelSwizzledUpload(
+        if (mglRenderCreateSingleChannelSwizzledUpload(
                 GL_R16, GL_RED, GL_ZERO, GL_ZERO, GL_ONE,
                 src, 2, 1, 2, &bpr, &bpi) != NULL ||
-            mglRenderCppCreateSingleChannelSwizzledUpload(
+            mglRenderCreateSingleChannelSwizzledUpload(
                 GL_R8, GL_RED, GL_ZERO, GL_ZERO, GL_ONE,
                 NULL, 2, 1, 2, &bpr, &bpi) != NULL ||
-            mglRenderCppCreateSingleChannelSwizzledUpload(
+            mglRenderCreateSingleChannelSwizzledUpload(
                 GL_R8, GL_RED, GL_ZERO, GL_ZERO, GL_ONE,
                 src, 0, 1, 2, &bpr, &bpi) != NULL) {
             fprintf(stderr, "FAIL: r8 swizzle bad-arg rejection\n");
@@ -7994,22 +7994,22 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
 
     /* P4.5 (item 1111): R-only upload-swizzle gate. */
     {
-        if (mglRenderCppTextureUploadNeedsSingleChannelSwizzle(GL_R8, 0) != 0 ||
-            mglRenderCppTextureUploadNeedsSingleChannelSwizzle(GL_R8, 1) != 1 ||
-            mglRenderCppTextureUploadNeedsSingleChannelSwizzle(GL_R8_SNORM, 1) != 1 ||
-            mglRenderCppTextureUploadNeedsSingleChannelSwizzle(GL_R16, 1) != 1 ||
-            mglRenderCppTextureUploadNeedsSingleChannelSwizzle(GL_R16_SNORM, 1) != 1 ||
-            mglRenderCppTextureUploadNeedsSingleChannelSwizzle(GL_R16F, 1) != 1 ||
-            mglRenderCppTextureUploadNeedsSingleChannelSwizzle(GL_R32F, 1) != 1 ||
-            mglRenderCppTextureUploadNeedsSingleChannelSwizzle(GL_R8I, 1) != 1 ||
-            mglRenderCppTextureUploadNeedsSingleChannelSwizzle(GL_R8UI, 1) != 1 ||
-            mglRenderCppTextureUploadNeedsSingleChannelSwizzle(GL_R16I, 1) != 1 ||
-            mglRenderCppTextureUploadNeedsSingleChannelSwizzle(GL_R16UI, 1) != 1 ||
-            mglRenderCppTextureUploadNeedsSingleChannelSwizzle(GL_R32I, 1) != 1 ||
-            mglRenderCppTextureUploadNeedsSingleChannelSwizzle(GL_R32UI, 1) != 1 ||
-            mglRenderCppTextureUploadNeedsSingleChannelSwizzle(GL_RG8, 1) != 0 ||
-            mglRenderCppTextureUploadNeedsSingleChannelSwizzle(GL_RGBA8, 1) != 0 ||
-            mglRenderCppTextureUploadNeedsSingleChannelSwizzle(0u, 1) != 0) {
+        if (mglRenderTextureUploadNeedsSingleChannelSwizzle(GL_R8, 0) != 0 ||
+            mglRenderTextureUploadNeedsSingleChannelSwizzle(GL_R8, 1) != 1 ||
+            mglRenderTextureUploadNeedsSingleChannelSwizzle(GL_R8_SNORM, 1) != 1 ||
+            mglRenderTextureUploadNeedsSingleChannelSwizzle(GL_R16, 1) != 1 ||
+            mglRenderTextureUploadNeedsSingleChannelSwizzle(GL_R16_SNORM, 1) != 1 ||
+            mglRenderTextureUploadNeedsSingleChannelSwizzle(GL_R16F, 1) != 1 ||
+            mglRenderTextureUploadNeedsSingleChannelSwizzle(GL_R32F, 1) != 1 ||
+            mglRenderTextureUploadNeedsSingleChannelSwizzle(GL_R8I, 1) != 1 ||
+            mglRenderTextureUploadNeedsSingleChannelSwizzle(GL_R8UI, 1) != 1 ||
+            mglRenderTextureUploadNeedsSingleChannelSwizzle(GL_R16I, 1) != 1 ||
+            mglRenderTextureUploadNeedsSingleChannelSwizzle(GL_R16UI, 1) != 1 ||
+            mglRenderTextureUploadNeedsSingleChannelSwizzle(GL_R32I, 1) != 1 ||
+            mglRenderTextureUploadNeedsSingleChannelSwizzle(GL_R32UI, 1) != 1 ||
+            mglRenderTextureUploadNeedsSingleChannelSwizzle(GL_RG8, 1) != 0 ||
+            mglRenderTextureUploadNeedsSingleChannelSwizzle(GL_RGBA8, 1) != 0 ||
+            mglRenderTextureUploadNeedsSingleChannelSwizzle(0u, 1) != 0) {
             fprintf(stderr, "FAIL: r-only swizzle gate\n");
             return 1;
         }
@@ -8018,16 +8018,16 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
 
     /* P4.5 (item 1111): stored color-component count. */
     {
-        if (mglRenderCppStoredColorComponents(GL_RED) != 1 ||
-            mglRenderCppStoredColorComponents(GL_R8) != 1 ||
-            mglRenderCppStoredColorComponents(GL_DEPTH_COMPONENT) != 1 ||
-            mglRenderCppStoredColorComponents(GL_RG8) != 2 ||
-            mglRenderCppStoredColorComponents(0x190A) != 2 ||
-            mglRenderCppStoredColorComponents(GL_RGB8) != 3 ||
-            mglRenderCppStoredColorComponents(GL_BGR) != 3 ||
-            mglRenderCppStoredColorComponents(GL_RGBA8) != 4 ||
-            mglRenderCppStoredColorComponents(GL_BGRA) != 4 ||
-            mglRenderCppStoredColorComponents(GL_RGB10_A2) != 4) {
+        if (mglRenderStoredColorComponents(GL_RED) != 1 ||
+            mglRenderStoredColorComponents(GL_R8) != 1 ||
+            mglRenderStoredColorComponents(GL_DEPTH_COMPONENT) != 1 ||
+            mglRenderStoredColorComponents(GL_RG8) != 2 ||
+            mglRenderStoredColorComponents(0x190A) != 2 ||
+            mglRenderStoredColorComponents(GL_RGB8) != 3 ||
+            mglRenderStoredColorComponents(GL_BGR) != 3 ||
+            mglRenderStoredColorComponents(GL_RGBA8) != 4 ||
+            mglRenderStoredColorComponents(GL_BGRA) != 4 ||
+            mglRenderStoredColorComponents(GL_RGB10_A2) != 4) {
             fprintf(stderr, "FAIL: stored color components\n");
             return 1;
         }
@@ -8041,19 +8041,19 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
         const uint32_t bgra8 = (uint32_t)MTLPixelFormatBGRA8Unorm;
         const uint32_t rgba16 = (uint32_t)MTLPixelFormatRGBA16Float;
         const uint32_t rgba32 = (uint32_t)MTLPixelFormatRGBA32Float;
-        if (mglRenderCppTextureInternalFormatNeedsRGBA8Expansion(GL_RGB8, rgba8) != 1 ||
-            mglRenderCppTextureInternalFormatNeedsRGBA8Expansion(GL_SRGB8, rgba8) != 1 ||
-            mglRenderCppTextureInternalFormatNeedsRGBA8Expansion(GL_RGB565, rgba8) != 1 ||
-            mglRenderCppTextureInternalFormatNeedsRGBA8Expansion(GL_RGB8_SNORM, rgba8s) != 1 ||
-            mglRenderCppTextureInternalFormatNeedsRGBA8Expansion(GL_R3_G3_B2, rgba8) != 1 ||
-            mglRenderCppTextureInternalFormatNeedsRGBA8Expansion(GL_RGBA8, rgba8) != 0 ||
-            mglRenderCppTextureInternalFormatNeedsRGBA8Expansion(GL_RGB8, bgra8) != 0 ||
-            mglRenderCppTextureNeedsChannelExpansion(GL_RGB16, rgba16) != 1 ||
-            mglRenderCppTextureNeedsChannelExpansion(GL_RGB16F, rgba16) != 1 ||
-            mglRenderCppTextureNeedsChannelExpansion(GL_RGB32F, rgba32) != 1 ||
-            mglRenderCppTextureNeedsChannelExpansion(GL_RGB12, rgba16) != 1 ||
-            mglRenderCppTextureNeedsChannelExpansion(GL_RGB8, rgba16) != 0 ||
-            mglRenderCppTextureNeedsChannelExpansion(GL_RGB16, rgba8) != 0) {
+        if (mglRenderTextureInternalFormatNeedsRGBA8Expansion(GL_RGB8, rgba8) != 1 ||
+            mglRenderTextureInternalFormatNeedsRGBA8Expansion(GL_SRGB8, rgba8) != 1 ||
+            mglRenderTextureInternalFormatNeedsRGBA8Expansion(GL_RGB565, rgba8) != 1 ||
+            mglRenderTextureInternalFormatNeedsRGBA8Expansion(GL_RGB8_SNORM, rgba8s) != 1 ||
+            mglRenderTextureInternalFormatNeedsRGBA8Expansion(GL_R3_G3_B2, rgba8) != 1 ||
+            mglRenderTextureInternalFormatNeedsRGBA8Expansion(GL_RGBA8, rgba8) != 0 ||
+            mglRenderTextureInternalFormatNeedsRGBA8Expansion(GL_RGB8, bgra8) != 0 ||
+            mglRenderTextureNeedsChannelExpansion(GL_RGB16, rgba16) != 1 ||
+            mglRenderTextureNeedsChannelExpansion(GL_RGB16F, rgba16) != 1 ||
+            mglRenderTextureNeedsChannelExpansion(GL_RGB32F, rgba32) != 1 ||
+            mglRenderTextureNeedsChannelExpansion(GL_RGB12, rgba16) != 1 ||
+            mglRenderTextureNeedsChannelExpansion(GL_RGB8, rgba16) != 0 ||
+            mglRenderTextureNeedsChannelExpansion(GL_RGB16, rgba8) != 0) {
             fprintf(stderr, "FAIL: channel expansion gates\n");
             return 1;
         }
@@ -8062,44 +8062,44 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
 
     /* P4.5 (item 1111): GL swizzle → Metal TextureSwizzle ABI. */
     {
-        if (mglRenderCppMTLSwizzleForGLSwizzle(GL_ZERO, 4) !=
+        if (mglRenderMTLSwizzleForGLSwizzle(GL_ZERO, 4) !=
                 (uint32_t)MTLTextureSwizzleZero ||
-            mglRenderCppMTLSwizzleForGLSwizzle(GL_ONE, 4) !=
+            mglRenderMTLSwizzleForGLSwizzle(GL_ONE, 4) !=
                 (uint32_t)MTLTextureSwizzleOne ||
-            mglRenderCppMTLSwizzleForGLSwizzle(GL_RED, 4) !=
+            mglRenderMTLSwizzleForGLSwizzle(GL_RED, 4) !=
                 (uint32_t)MTLTextureSwizzleRed ||
-            mglRenderCppMTLSwizzleForGLSwizzle(GL_GREEN, 4) !=
+            mglRenderMTLSwizzleForGLSwizzle(GL_GREEN, 4) !=
                 (uint32_t)MTLTextureSwizzleGreen ||
-            mglRenderCppMTLSwizzleForGLSwizzle(GL_BLUE, 4) !=
+            mglRenderMTLSwizzleForGLSwizzle(GL_BLUE, 4) !=
                 (uint32_t)MTLTextureSwizzleBlue ||
-            mglRenderCppMTLSwizzleForGLSwizzle(GL_ALPHA, 4) !=
+            mglRenderMTLSwizzleForGLSwizzle(GL_ALPHA, 4) !=
                 (uint32_t)MTLTextureSwizzleAlpha) {
             fprintf(stderr, "FAIL: gl→mtl swizzle identity\n");
             return 1;
         }
         /* R-only: G/B → Zero, A → One. */
-        if (mglRenderCppMTLSwizzleForGLSwizzle(GL_RED, 1) !=
+        if (mglRenderMTLSwizzleForGLSwizzle(GL_RED, 1) !=
                 (uint32_t)MTLTextureSwizzleRed ||
-            mglRenderCppMTLSwizzleForGLSwizzle(GL_GREEN, 1) !=
+            mglRenderMTLSwizzleForGLSwizzle(GL_GREEN, 1) !=
                 (uint32_t)MTLTextureSwizzleZero ||
-            mglRenderCppMTLSwizzleForGLSwizzle(GL_BLUE, 1) !=
+            mglRenderMTLSwizzleForGLSwizzle(GL_BLUE, 1) !=
                 (uint32_t)MTLTextureSwizzleZero ||
-            mglRenderCppMTLSwizzleForGLSwizzle(GL_ALPHA, 1) !=
+            mglRenderMTLSwizzleForGLSwizzle(GL_ALPHA, 1) !=
                 (uint32_t)MTLTextureSwizzleOne) {
             fprintf(stderr, "FAIL: gl→mtl swizzle R-only gate\n");
             return 1;
         }
         /* RG: B → Zero, A → One. */
-        if (mglRenderCppMTLSwizzleForGLSwizzle(GL_GREEN, 2) !=
+        if (mglRenderMTLSwizzleForGLSwizzle(GL_GREEN, 2) !=
                 (uint32_t)MTLTextureSwizzleGreen ||
-            mglRenderCppMTLSwizzleForGLSwizzle(GL_BLUE, 2) !=
+            mglRenderMTLSwizzleForGLSwizzle(GL_BLUE, 2) !=
                 (uint32_t)MTLTextureSwizzleZero ||
-            mglRenderCppMTLSwizzleForGLSwizzle(GL_ALPHA, 2) !=
+            mglRenderMTLSwizzleForGLSwizzle(GL_ALPHA, 2) !=
                 (uint32_t)MTLTextureSwizzleOne) {
             fprintf(stderr, "FAIL: gl→mtl swizzle RG gate\n");
             return 1;
         }
-        if (mglRenderCppMTLSwizzleForGLSwizzle(0xdeadbeefu, 4) !=
+        if (mglRenderMTLSwizzleForGLSwizzle(0xdeadbeefu, 4) !=
                 (uint32_t)MTLTextureSwizzleZero) {
             fprintf(stderr, "FAIL: gl→mtl swizzle unknown\n");
             return 1;
@@ -8109,13 +8109,13 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
 
     /* P4.5 (item 1111): min-filter uses-mipmaps gate. */
     {
-        if (mglRenderCppTextureMinFilterUsesMipmaps(GL_NEAREST_MIPMAP_NEAREST) != 1 ||
-            mglRenderCppTextureMinFilterUsesMipmaps(GL_LINEAR_MIPMAP_NEAREST) != 1 ||
-            mglRenderCppTextureMinFilterUsesMipmaps(GL_NEAREST_MIPMAP_LINEAR) != 1 ||
-            mglRenderCppTextureMinFilterUsesMipmaps(GL_LINEAR_MIPMAP_LINEAR) != 1 ||
-            mglRenderCppTextureMinFilterUsesMipmaps(GL_NEAREST) != 0 ||
-            mglRenderCppTextureMinFilterUsesMipmaps(GL_LINEAR) != 0 ||
-            mglRenderCppTextureMinFilterUsesMipmaps(0u) != 0) {
+        if (mglRenderTextureMinFilterUsesMipmaps(GL_NEAREST_MIPMAP_NEAREST) != 1 ||
+            mglRenderTextureMinFilterUsesMipmaps(GL_LINEAR_MIPMAP_NEAREST) != 1 ||
+            mglRenderTextureMinFilterUsesMipmaps(GL_NEAREST_MIPMAP_LINEAR) != 1 ||
+            mglRenderTextureMinFilterUsesMipmaps(GL_LINEAR_MIPMAP_LINEAR) != 1 ||
+            mglRenderTextureMinFilterUsesMipmaps(GL_NEAREST) != 0 ||
+            mglRenderTextureMinFilterUsesMipmaps(GL_LINEAR) != 0 ||
+            mglRenderTextureMinFilterUsesMipmaps(0u) != 0) {
             fprintf(stderr, "FAIL: min-filter uses-mipmaps\n");
             return 1;
         }
@@ -8129,11 +8129,11 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
             [device newBufferWithLength:64 options:MTLResourceStorageModeShared];
         if (!replayIndexBuffer) {
             fprintf(stderr, "FAIL: replay batch index buffer\n");
-            mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
-            mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
+            mglRenderDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
+            mglRenderDestroyRenderPassStateOwner(&stateOwner);
             return 1;
         }
-        MGLRenderCppReplayBatchCommand replayCmds[2] = {
+        MGLRenderReplayBatchCommand replayCmds[2] = {
             {
                 .cmd_type = 0,   /* MGL_CMD_DRAW_ARRAYS */
                 .first = 0,
@@ -8149,35 +8149,35 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
                 .index_buffer_offset = 0,
             },
         };
-        MGLRenderCppReplayBatch replayBatch = {
+        MGLRenderReplayBatch replayBatch = {
             .primitive_type = (uint32_t)MTLPrimitiveTypeTriangle,
             .command_count = 2,
             .commands = replayCmds,
         };
-        MGLRenderCppReplayBatch unknownType = replayBatch;
+        MGLRenderReplayBatch unknownType = replayBatch;
         unknownType.commands = replayCmds;
-        MGLRenderCppReplayBatchCommand unknownCmd = replayCmds[0];
+        MGLRenderReplayBatchCommand unknownCmd = replayCmds[0];
         unknownCmd.cmd_type = 0x7f;
-        MGLRenderCppReplayBatchCommand badCmd[1] = {unknownCmd};
+        MGLRenderReplayBatchCommand badCmd[1] = {unknownCmd};
         unknownType.commands = badCmd;
         unknownType.command_count = 1;
-        MGLRenderCppReplayBatch emptyBatch = replayBatch;
+        MGLRenderReplayBatch emptyBatch = replayBatch;
         emptyBatch.command_count = 0;
         char replayError[128] = {0};
-        if (mglRenderCppReplayBatchDraws(
+        if (mglRenderReplayBatchDraws(
                 stateEncoder, &replayBatch, replayError,
-                sizeof(replayError)) != MGL_RENDER_CPP_REPLAY_BATCH_OK ||
-            mglRenderCppReplayBatchDraws(
+                sizeof(replayError)) != MGL_RENDER_REPLAY_BATCH_OK ||
+            mglRenderReplayBatchDraws(
                 stateEncoder, &unknownType, NULL, 0) !=
-                MGL_RENDER_CPP_REPLAY_BATCH_NEEDS_OBJC ||
-            mglRenderCppReplayBatchDraws(
+                MGL_RENDER_REPLAY_BATCH_NEEDS_OBJC ||
+            mglRenderReplayBatchDraws(
                 stateEncoder, &emptyBatch, NULL, 0) !=
-                MGL_RENDER_CPP_REPLAY_BATCH_ERROR ||
-            mglRenderCppReplayBatchDraws(NULL, &replayBatch, NULL, 0) !=
-                MGL_RENDER_CPP_REPLAY_BATCH_ERROR) {
+                MGL_RENDER_REPLAY_BATCH_ERROR ||
+            mglRenderReplayBatchDraws(NULL, &replayBatch, NULL, 0) !=
+                MGL_RENDER_REPLAY_BATCH_ERROR) {
             fprintf(stderr, "FAIL: replay batch draws\n");
-            mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
-            mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
+            mglRenderDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
+            mglRenderDestroyRenderPassStateOwner(&stateOwner);
             return 1;
         }
         printf("REPLAY_BATCH_OK\n");
@@ -8190,15 +8190,15 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
         void *csPipeline = NULL;
         char csMessage[512] = {0};
         if (!cs ||
-            mglRenderCppGetOrCreateAuxComputePipelineFromMetallib(
+            mglRenderGetOrCreateAuxComputePipelineFromMetallib(
                 cs->data, cs->size, cs->hash, "mgl_scaled_blit_cs",
-                MGL_RENDER_CPP_AUX_COMPUTE_SCALED_BLIT, 1u,
+                MGL_RENDER_AUX_COMPUTE_SCALED_BLIT, 1u,
                 &csPipeline, csMessage, sizeof(csMessage)) != 0 ||
             !csPipeline) {
             fprintf(stderr, "FAIL: compute dispatch PSO: %s\n",
                     csMessage[0] ? csMessage : "?");
-            mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
-            mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
+            mglRenderDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
+            mglRenderDestroyRenderPassStateOwner(&stateOwner);
             return 1;
         }
         id<MTLCommandQueue> cdQueue = [device newCommandQueue];
@@ -8209,11 +8209,11 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
         if (!cdQueue || !cdCommandBuffer || !computeScratch) {
             fprintf(stderr, "FAIL: compute dispatch resources\n");
             CFRelease(csPipeline);
-            mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
-            mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
+            mglRenderDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
+            mglRenderDestroyRenderPassStateOwner(&stateOwner);
             return 1;
         }
-        MGLRenderCppComputeDispatchSetup setup = {
+        MGLRenderComputeDispatchSetup setup = {
             .pipeline = csPipeline,
             .buffer_count = 1,
             .buffers = { { (__bridge void *)computeScratch, 0, 0 } },
@@ -8224,49 +8224,49 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
         char cdError[128] = {0};
         const uint32_t groups[3] = { 1, 1, 1 };
         const uint32_t threads[3] = { 1, 1, 1 };
-        if (mglRenderCppBeginComputeDispatch(
+        if (mglRenderBeginComputeDispatch(
                 (__bridge void *)cdCommandBuffer, &setup, &computeEncoder,
                 cdError, sizeof(cdError)) != 0 || !computeEncoder ||
-            mglRenderCppEndComputeDispatch(
+            mglRenderEndComputeDispatch(
                 computeEncoder, groups, threads, cdError, sizeof(cdError)) != 0 ||
-            mglRenderCppBeginComputeDispatch(
+            mglRenderBeginComputeDispatch(
                 NULL, &setup, &computeEncoder, NULL, 0) != -1 ||
-            mglRenderCppEndComputeDispatch(
+            mglRenderEndComputeDispatch(
                 NULL, groups, threads, NULL, 0) != -1) {
             fprintf(stderr, "FAIL: compute dispatch begin/end\n");
             CFRelease(csPipeline);
-            mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
-            mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
+            mglRenderDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
+            mglRenderDestroyRenderPassStateOwner(&stateOwner);
             return 1;
         }
 
         /* P4.5: owner-aware compute execution plan.  The owner path must
          * create the encoder, replay the ordered bindings, dispatch, and end
          * encoding without lending the current command buffer to ObjC. */
-        MGLRenderCppComputeBindingSnapshot ownerSnapshot = {};
+        MGLRenderComputeBindingSnapshot ownerSnapshot = {};
         ownerSnapshot.ops[ownerSnapshot.op_count++] =
-            (MGLRenderCppComputeBindingOp){0u, 0u, 0u,
+            (MGLRenderComputeBindingOp){0u, 0u, 0u,
                 (__bridge void *)computeScratch, NULL, 0u};
         ownerSnapshot.ops[ownerSnapshot.op_count++] =
-            (MGLRenderCppComputeBindingOp){1u, 1u, 0u, NULL, "ABCD", 4u};
-        MGLRenderCppComputeExecutionPlan ownerPlan = {};
+            (MGLRenderComputeBindingOp){1u, 1u, 0u, NULL, "ABCD", 4u};
+        MGLRenderComputeExecutionPlan ownerPlan = {};
         ownerPlan.pipeline = csPipeline;
-        ownerPlan.dispatch = (MGLRenderCppComputePlan){
-            .dispatch_kind = MGL_RENDER_CPP_COMPUTE_DISPATCH_DIRECT,
+        ownerPlan.dispatch = (MGLRenderComputePlan){
+            .dispatch_kind = MGL_RENDER_COMPUTE_DISPATCH_DIRECT,
             .groups_x = 1u, .groups_y = 1u, .groups_z = 1u,
             .local_x = 1u, .local_y = 1u, .local_z = 1u,
         };
-        MGLRenderCppComputeExecutionPlan sequencePlan = ownerPlan;
-        sequencePlan.dispatch = (MGLRenderCppComputePlan){};
+        MGLRenderComputeExecutionPlan sequencePlan = ownerPlan;
+        sequencePlan.dispatch = (MGLRenderComputePlan){};
         sequencePlan.dispatch_op_count = 0u;
-        MGLRenderCppComputePlan sequenceDispatch = {
-            .dispatch_kind = MGL_RENDER_CPP_COMPUTE_DISPATCH_DIRECT,
+        MGLRenderComputePlan sequenceDispatch = {
+            .dispatch_kind = MGL_RENDER_COMPUTE_DISPATCH_DIRECT,
             .groups_x = 1u, .groups_y = 1u, .groups_z = 1u,
             .local_x = 1u, .local_y = 1u, .local_z = 1u,
         };
-        if (mglRenderCppAppendComputeDispatchToPlan(
+        if (mglRenderAppendComputeDispatchToPlan(
                 &sequencePlan, &sequenceDispatch, NULL, 0) != 0 ||
-            mglRenderCppAppendComputeDispatchToPlan(
+            mglRenderAppendComputeDispatchToPlan(
                 &sequencePlan, &sequenceDispatch, NULL, 0) != 0 ||
             sequencePlan.dispatch_op_count != 2u ||
             sequencePlan.dispatch_ops[0].binding_op_count !=
@@ -8274,40 +8274,40 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
             fprintf(stderr, "FAIL: compute dispatch sequence plan\n");
             return 1;
         }
-        ownerPlan.barrier_scope = MGL_RENDER_CPP_COMPUTE_BARRIER_BUFFERS;
+        ownerPlan.barrier_scope = MGL_RENDER_COMPUTE_BARRIER_BUFFERS;
         char ownerError[128] = {0};
-        if (mglRenderCppAppendComputeBindingSnapshotToPlan(
+        if (mglRenderAppendComputeBindingSnapshotToPlan(
                 &ownerPlan, &ownerSnapshot, ownerError,
                 sizeof(ownerError)) != 0 || ownerPlan.binding_op_count != 2u ||
-            mglRenderCppAppendComputeBindingSnapshotToPlan(
+            mglRenderAppendComputeBindingSnapshotToPlan(
                 NULL, &ownerSnapshot, NULL, 0) != -1) {
             fprintf(stderr, "FAIL: compute execution plan append: %s\n",
                     ownerError);
             CFRelease(csPipeline);
-            mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
-            mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
+            mglRenderDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
+            mglRenderDestroyRenderPassStateOwner(&stateOwner);
             return 1;
         }
         void *executionOwner = NULL;
         void *executionCommandBuffer = NULL;
-        if (mglRenderCppCreateCommandBufferOwner(
+        if (mglRenderCreateCommandBufferOwner(
                 (__bridge void *)cdQueue, &executionOwner,
                 &executionCommandBuffer) != 0 || !executionOwner ||
             !executionCommandBuffer ||
-            mglRenderCppEncodeComputeExecutionPlanForCommandBufferOwner(
+            mglRenderEncodeComputeExecutionPlanForCommandBufferOwner(
                 executionOwner, &ownerPlan, ownerError,
                 sizeof(ownerError)) != 0 ||
-            mglRenderCppCommitCommandBuffer(executionCommandBuffer) != 0 ||
-            mglRenderCppWaitCommandBuffer(executionCommandBuffer) != 0) {
+            mglRenderCommitCommandBuffer(executionCommandBuffer) != 0 ||
+            mglRenderWaitCommandBuffer(executionCommandBuffer) != 0) {
             fprintf(stderr, "FAIL: owner compute execution plan: %s\n",
                     ownerError[0] ? ownerError : "command failure");
-            mglRenderCppDestroyCommandBufferOwner(&executionOwner);
+            mglRenderDestroyCommandBufferOwner(&executionOwner);
             CFRelease(csPipeline);
-            mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
-            mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
+            mglRenderDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
+            mglRenderDestroyRenderPassStateOwner(&stateOwner);
             return 1;
         }
-        mglRenderCppDestroyCommandBufferOwner(&executionOwner);
+        mglRenderDestroyCommandBufferOwner(&executionOwner);
 
         /* Unified compute transaction: C++ owns plan encode, copy-back blit,
          * submit/wait and CPU-prefix visibility.  The ObjC-facing result has
@@ -8327,7 +8327,7 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
         Buffer cpuDestination = {};
         cpuDestination.data.buffer_data = (vm_address_t)cpuPrefix;
         cpuDestination.data.buffer_size = sizeof(cpuPrefix);
-        MGLRenderCppCopyBackEntry transactionCopy = {
+        MGLRenderCopyBackEntry transactionCopy = {
             .temporary = (__bridge void *)copySource,
             .destination = (__bridge void *)copyDestination,
             .destination_buffer = &cpuDestination,
@@ -8336,134 +8336,134 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
         };
         executionOwner = NULL;
         executionCommandBuffer = NULL;
-        MGLRenderCppComputeExecutionResult executionResult = {};
+        MGLRenderComputeExecutionResult executionResult = {};
         if (!copySource || !copyDestination ||
-            mglRenderCppCreateCommandBufferOwner(
+            mglRenderCreateCommandBufferOwner(
                 (__bridge void *)cdQueue, &executionOwner,
                 &executionCommandBuffer) != 0 ||
-            mglRenderCppExecuteComputeExecutionPlan(
+            mglRenderExecuteComputeExecutionPlan(
                 executionOwner, NULL, &ownerPlan, &transactionCopy, 1u, 0u,
                 &executionResult, ownerError, sizeof(ownerError)) != 0 ||
             !executionResult.submitted ||
             !executionResult.cpu_prefix_synchronized ||
             executionResult.failed_copy_back_index != 1u ||
             executionResult.transaction.current_command_buffer_created != 1u ||
-            mglRenderCppCommandBufferOwnerConsumeTransactionCurrent(
+            mglRenderCommandBufferOwnerConsumeTransactionCurrent(
                 executionOwner, &executionCommandBuffer) != 1 ||
             !executionCommandBuffer ||
             memcmp(cpuPrefix + 4, copySourceBytes, 12u) != 0) {
             fprintf(stderr, "FAIL: compute owner copy-back transaction: %s\n",
                     ownerError[0] ? ownerError : "transaction mismatch");
-            mglRenderCppDestroyCommandBufferOwner(&executionOwner);
+            mglRenderDestroyCommandBufferOwner(&executionOwner);
             CFRelease(csPipeline);
-            mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
-            mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
+            mglRenderDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
+            mglRenderDestroyRenderPassStateOwner(&stateOwner);
             return 1;
         }
-        mglRenderCppDestroyCommandBufferOwner(&executionOwner);
+        mglRenderDestroyCommandBufferOwner(&executionOwner);
 
         /* OOB copy-back is rejected before compute/blit encoding. */
-        MGLRenderCppCopyBackEntry badTransactionCopy = transactionCopy;
+        MGLRenderCopyBackEntry badTransactionCopy = transactionCopy;
         badTransactionCopy.length = 64u;
         executionOwner = NULL;
         executionCommandBuffer = NULL;
-        executionResult = (MGLRenderCppComputeExecutionResult){};
-        if (mglRenderCppCreateCommandBufferOwner(
+        executionResult = (MGLRenderComputeExecutionResult){};
+        if (mglRenderCreateCommandBufferOwner(
                 (__bridge void *)cdQueue, &executionOwner,
                 &executionCommandBuffer) != 0 ||
-            mglRenderCppExecuteComputeExecutionPlan(
+            mglRenderExecuteComputeExecutionPlan(
                 executionOwner, NULL, &ownerPlan, &badTransactionCopy, 1u, 0u,
                 &executionResult, ownerError, sizeof(ownerError)) != -1 ||
             executionResult.failed_copy_back_index != 0u ||
             executionResult.submitted != 0u) {
             fprintf(stderr, "FAIL: compute owner copy-back OOB rejection: %s\n",
                     ownerError[0] ? ownerError : "accepted invalid range");
-            mglRenderCppDestroyCommandBufferOwner(&executionOwner);
+            mglRenderDestroyCommandBufferOwner(&executionOwner);
             CFRelease(csPipeline);
-            mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
-            mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
+            mglRenderDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
+            mglRenderDestroyRenderPassStateOwner(&stateOwner);
             return 1;
         }
-        mglRenderCppDestroyCommandBufferOwner(&executionOwner);
+        mglRenderDestroyCommandBufferOwner(&executionOwner);
         printf("COMPUTE_EXECUTION_TRANSACTION_OK\n");
 
         /* Barrier scope is value-state validated before an encoder is
          * created; malformed plans must fail closed. */
-        MGLRenderCppComputeExecutionPlan invalidBarrierPlan = ownerPlan;
+        MGLRenderComputeExecutionPlan invalidBarrierPlan = ownerPlan;
         invalidBarrierPlan.barrier_scope = 8u;
         executionOwner = NULL;
         executionCommandBuffer = NULL;
-        if (mglRenderCppCreateCommandBufferOwner(
+        if (mglRenderCreateCommandBufferOwner(
                 (__bridge void *)cdQueue, &executionOwner,
                 &executionCommandBuffer) != 0 ||
-            mglRenderCppEncodeComputeExecutionPlanForCommandBufferOwner(
+            mglRenderEncodeComputeExecutionPlanForCommandBufferOwner(
                 executionOwner, &invalidBarrierPlan, ownerError,
                 sizeof(ownerError)) != -1) {
             fprintf(stderr, "FAIL: compute barrier scope validation: %s\n",
                     ownerError[0] ? ownerError : "accepted invalid scope");
-            mglRenderCppDestroyCommandBufferOwner(&executionOwner);
+            mglRenderDestroyCommandBufferOwner(&executionOwner);
             CFRelease(csPipeline);
-            mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
-            mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
+            mglRenderDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
+            mglRenderDestroyRenderPassStateOwner(&stateOwner);
             return 1;
         }
-        mglRenderCppDestroyCommandBufferOwner(&executionOwner);
+        mglRenderDestroyCommandBufferOwner(&executionOwner);
 
         /* Indirect dispatch uses the same owner facade and validates the
          * indirect buffer path independently of the direct plan above. */
-        MGLRenderCppComputeExecutionPlan indirectPlan = ownerPlan;
+        MGLRenderComputeExecutionPlan indirectPlan = ownerPlan;
         indirectPlan.binding_op_count = 0u;
         indirectPlan.dispatch.dispatch_kind =
-            MGL_RENDER_CPP_COMPUTE_DISPATCH_INDIRECT;
+            MGL_RENDER_COMPUTE_DISPATCH_INDIRECT;
         indirectPlan.dispatch.indirect_buffer =
             (__bridge void *)computeScratch;
         indirectPlan.dispatch.indirect_offset = 0u;
         executionOwner = NULL;
         executionCommandBuffer = NULL;
-        if (mglRenderCppCreateCommandBufferOwner(
+        if (mglRenderCreateCommandBufferOwner(
                 (__bridge void *)cdQueue, &executionOwner,
                 &executionCommandBuffer) != 0 || !executionOwner ||
-            mglRenderCppEncodeComputeExecutionPlanForCommandBufferOwner(
+            mglRenderEncodeComputeExecutionPlanForCommandBufferOwner(
                 executionOwner, &indirectPlan, ownerError,
                 sizeof(ownerError)) != 0 ||
-            mglRenderCppCommitCommandBuffer(executionCommandBuffer) != 0 ||
-            mglRenderCppWaitCommandBuffer(executionCommandBuffer) != 0) {
+            mglRenderCommitCommandBuffer(executionCommandBuffer) != 0 ||
+            mglRenderWaitCommandBuffer(executionCommandBuffer) != 0) {
             fprintf(stderr, "FAIL: owner indirect execution plan: %s\n",
                     ownerError[0] ? ownerError : "command failure");
-            mglRenderCppDestroyCommandBufferOwner(&executionOwner);
+            mglRenderDestroyCommandBufferOwner(&executionOwner);
             CFRelease(csPipeline);
-            mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
-            mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
+            mglRenderDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
+            mglRenderDestroyRenderPassStateOwner(&stateOwner);
             return 1;
         }
-        mglRenderCppDestroyCommandBufferOwner(&executionOwner);
+        mglRenderDestroyCommandBufferOwner(&executionOwner);
         printf("COMPUTE_EXECUTION_PLAN_OK\n");
         CFRelease(csPipeline);
         [cdCommandBuffer commit];
         [cdCommandBuffer waitUntilCompleted];
         if (cdCommandBuffer.status == MTLCommandBufferStatusError) {
             fprintf(stderr, "FAIL: compute dispatch command buffer\n");
-            mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
-            mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
+            mglRenderDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
+            mglRenderDestroyRenderPassStateOwner(&stateOwner);
             return 1;
         }
         printf("COMPUTE_DISPATCH_OK\n");
     }
 
-    int ownerHasBefore = mglRenderCppRenderEncoderOwnerHasCurrent(
+    int ownerHasBefore = mglRenderEncoderOwnerHasCurrent(
         adoptedStateEncoderOwner);
-    int ownerViewport = mglRenderCppSetRenderViewportForOwner(
+    int ownerViewport = mglRenderSetRenderViewportForOwner(
         adoptedStateEncoderOwner, 0.0, 0.0, 2.0, 2.0, 0.0, 1.0);
-    int ownerScissor = mglRenderCppSetRenderScissorForOwner(
+    int ownerScissor = mglRenderSetRenderScissorForOwner(
         adoptedStateEncoderOwner, 0u, 0u, 2u, 2u);
-    int ownerClip = mglRenderCppSetDepthClipModeForOwner(
+    int ownerClip = mglRenderSetDepthClipModeForOwner(
         adoptedStateEncoderOwner, (uint32_t)MTLDepthClipModeClip);
-    int ownerStencil = mglRenderCppSetStencilReferenceValuesForOwner(
+    int ownerStencil = mglRenderSetStencilReferenceValuesForOwner(
         adoptedStateEncoderOwner, 0u, 0u);
-    int ownerEnd = mglRenderCppEndRenderEncoderOwner(adoptedStateEncoderOwner);
-    int ownerHasAfter = mglRenderCppRenderEncoderOwnerHasCurrent(
+    int ownerEnd = mglRenderEndRenderEncoderOwner(adoptedStateEncoderOwner);
+    int ownerHasAfter = mglRenderEncoderOwnerHasCurrent(
         adoptedStateEncoderOwner);
-    int ownerAfterSetter = mglRenderCppSetRenderScissorForOwner(
+    int ownerAfterSetter = mglRenderSetRenderScissorForOwner(
         adoptedStateEncoderOwner, 0u, 0u, 1u, 1u);
     if (ownerHasBefore != 1 || ownerViewport != 0 || ownerScissor != 0 ||
         ownerClip != 0 || ownerStencil != 0 || ownerEnd != 0 ||
@@ -8473,32 +8473,32 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
                 ownerHasBefore, ownerViewport, ownerScissor, ownerClip,
                 ownerStencil, ownerEnd, ownerHasAfter, ownerAfterSetter);
         fprintf(stderr, "FAIL: render-pass state owner encoder end\n");
-        mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
-        mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
+        mglRenderDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
+        mglRenderDestroyRenderPassStateOwner(&stateOwner);
         return 1;
     }
-    mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
-    mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
+    mglRenderDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
+    mglRenderDestroyRenderPassStateOwner(&stateOwner);
     void *owner = NULL;
     void *encoder = NULL;
-    if (mglRenderCppCreateRenderEncoderOwnerFromState(
+    if (mglRenderCreateRenderEncoderOwnerFromState(
             (__bridge void *)commandBuffer, &state,
             &owner, &encoder) != 0 || !owner || !encoder ||
-        mglRenderCppEndRenderEncoderOwner(owner) != 0 ||
-        mglRenderCppEndRenderEncoderOwner(owner) != 0) {
+        mglRenderEndRenderEncoderOwner(owner) != 0 ||
+        mglRenderEndRenderEncoderOwner(owner) != 0) {
         fprintf(stderr, "FAIL: render encoder owner create/end\n");
-        mglRenderCppDestroyRenderEncoderOwner(&owner);
+        mglRenderDestroyRenderEncoderOwner(&owner);
         return 1;
     }
     void *adoptedOwner = NULL;
-    if (mglRenderCppCreateRenderEncoderOwner(
+    if (mglRenderCreateRenderEncoderOwner(
             encoder, &adoptedOwner) != 0 || !adoptedOwner) {
         fprintf(stderr, "FAIL: render encoder adopt owner\n");
-        mglRenderCppDestroyRenderEncoderOwner(&owner);
+        mglRenderDestroyRenderEncoderOwner(&owner);
         return 1;
     }
-    mglRenderCppDestroyRenderEncoderOwner(&adoptedOwner);
-    mglRenderCppDestroyRenderEncoderOwner(&owner);
+    mglRenderDestroyRenderEncoderOwner(&adoptedOwner);
+    mglRenderDestroyRenderEncoderOwner(&owner);
     [commandBuffer commit];
     [commandBuffer waitUntilCompleted];
     if (owner || commandBuffer.status == MTLCommandBufferStatusError) {
@@ -8512,13 +8512,13 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
 static int verifyQueryUtilities(id<MTLDevice> device) {
     void *queryOwner = NULL;
     void *visibilityPtr = NULL;
-    if (mglRenderCppCreateQueryStateOwner(256u, &queryOwner) != 0 ||
+    if (mglRenderCreateQueryStateOwner(256u, &queryOwner) != 0 ||
         !queryOwner ||
-        mglRenderCppBeginSampleQuery(
+        mglRenderBeginSampleQuery(
             queryOwner, 1u, "MGL Smoke Visibility",
             &visibilityPtr) != 0 || !visibilityPtr) {
         fprintf(stderr, "FAIL: query state owner create/begin\n");
-        mglRenderCppDestroyQueryStateOwner(&queryOwner);
+        mglRenderDestroyQueryStateOwner(&queryOwner);
         return 1;
     }
     id<MTLBuffer> visibility =
@@ -8529,23 +8529,23 @@ static int verifyQueryUtilities(id<MTLDevice> device) {
     uint32_t mode1 = 0;
     uint64_t offset0 = UINT64_MAX;
     uint64_t offset1 = UINT64_MAX;
-    if (mglRenderCppIsSampleQueryActive(queryOwner, &active) != 0 ||
+    if (mglRenderIsSampleQueryActive(queryOwner, &active) != 0 ||
         active != 1u ||
-        mglRenderCppAcquireSampleQuerySlot(
+        mglRenderAcquireSampleQuerySlot(
             queryOwner, &mode0, &offset0) != 0 ||
-        mglRenderCppAcquireSampleQuerySlot(
+        mglRenderAcquireSampleQuerySlot(
             queryOwner, &mode1, &offset1) != 0 ||
         mode0 != MTLVisibilityResultModeCounting ||
         mode1 != MTLVisibilityResultModeCounting ||
         offset0 != 0u || offset1 != sizeof(uint64_t)) {
         fprintf(stderr, "FAIL: query state owner active/slots\n");
-        mglRenderCppDestroyQueryStateOwner(&queryOwner);
+        mglRenderDestroyQueryStateOwner(&queryOwner);
         return 1;
     }
     visibility = nil;
     if (!weakVisibility) {
         fprintf(stderr, "FAIL: query state owner did not retain buffer\n");
-        mglRenderCppDestroyQueryStateOwner(&queryOwner);
+        mglRenderDestroyQueryStateOwner(&queryOwner);
         return 1;
     }
     visibility = weakVisibility;
@@ -8553,14 +8553,14 @@ static int verifyQueryUtilities(id<MTLDevice> device) {
         (uint64_t *)visibility.contents;
     visibilitySlots[0] = 3u;
     visibilitySlots[1] = 5u;
-    mglRenderCppEndSampleQuery(queryOwner);
+    mglRenderEndSampleQuery(queryOwner);
     uint64_t queryResult = 0;
-    if (mglRenderCppIsSampleQueryActive(queryOwner, &active) != 0 ||
+    if (mglRenderIsSampleQueryActive(queryOwner, &active) != 0 ||
         active != 0u ||
-        mglRenderCppGetSampleQueryResult(
+        mglRenderGetSampleQueryResult(
             queryOwner, &queryResult) != 0 || queryResult != 8u) {
         fprintf(stderr, "FAIL: query state owner end/result\n");
-        mglRenderCppDestroyQueryStateOwner(&queryOwner);
+        mglRenderDestroyQueryStateOwner(&queryOwner);
         return 1;
     }
 
@@ -8573,77 +8573,77 @@ static int verifyQueryUtilities(id<MTLDevice> device) {
     id<MTLTexture> target = [device newTextureWithDescriptor:targetDesc];
     id<MTLCommandQueue> queue = [device newCommandQueue];
     id<MTLCommandBuffer> commandBuffer = [queue commandBuffer];
-    MGLRenderCppRenderPassState renderPassState =
+    MGLRenderPassState renderPassState =
         renderPassStateWithColorTarget(
             target, MTLLoadActionDontCare, MTLStoreActionDontCare);
     renderPassState.visibility_result_buffer =
         (__bridge void *)visibility;
     void *encoder = NULL;
     void *encoderOwner = NULL;
-    if (mglRenderCppCreateRenderEncoderFromState(
+    if (mglRenderCreateRenderEncoderFromState(
             (__bridge void *)commandBuffer, &renderPassState, &encoder) != 0 ||
-        !encoder || mglRenderCppCreateRenderEncoderOwner(
+        !encoder || mglRenderCreateRenderEncoderOwner(
             encoder, &encoderOwner) != 0 || !encoderOwner ||
-        mglRenderCppSetVisibilityResultModeForRenderEncoderOwner(
+        mglRenderSetVisibilityResultModeForRenderEncoderOwner(
             encoderOwner,
             (uint32_t)MTLVisibilityResultModeBoolean, 0) != 0) {
         fprintf(stderr, "FAIL: visibility mode owner facade\n");
-        mglRenderCppDestroyRenderEncoderOwner(&encoderOwner);
-        mglRenderCppDestroyQueryStateOwner(&queryOwner);
+        mglRenderDestroyRenderEncoderOwner(&encoderOwner);
+        mglRenderDestroyQueryStateOwner(&queryOwner);
         return 1;
     }
-    if (mglRenderCppEndRenderEncoderOwner(encoderOwner) != 0) {
+    if (mglRenderEndRenderEncoderOwner(encoderOwner) != 0) {
         fprintf(stderr, "FAIL: visibility render encoder end\n");
-        mglRenderCppDestroyRenderEncoderOwner(&encoderOwner);
-        mglRenderCppDestroyQueryStateOwner(&queryOwner);
+        mglRenderDestroyRenderEncoderOwner(&encoderOwner);
+        mglRenderDestroyQueryStateOwner(&queryOwner);
         return 1;
     }
-    mglRenderCppDestroyRenderEncoderOwner(&encoderOwner);
+    mglRenderDestroyRenderEncoderOwner(&encoderOwner);
     [commandBuffer commit];
     [commandBuffer waitUntilCompleted];
     if (commandBuffer.status == MTLCommandBufferStatusError) {
         fprintf(stderr, "FAIL: query utility command buffer: %s\n",
                 commandBuffer.error.localizedDescription.UTF8String);
-        mglRenderCppDestroyQueryStateOwner(&queryOwner);
+        mglRenderDestroyQueryStateOwner(&queryOwner);
         return 1;
     }
 
     uint64_t cpuTimestamp = 0;
     uint64_t gpuTimestamp = 0;
-    if (mglRenderCppSampleTimestamps(&cpuTimestamp, &gpuTimestamp) != 0 ||
+    if (mglRenderSampleTimestamps(&cpuTimestamp, &gpuTimestamp) != 0 ||
         cpuTimestamp == 0 || gpuTimestamp == 0) {
         fprintf(stderr, "FAIL: timestamp facade cpu=%llu gpu=%llu\n",
                 (unsigned long long)cpuTimestamp,
                 (unsigned long long)gpuTimestamp);
-        mglRenderCppDestroyQueryStateOwner(&queryOwner);
+        mglRenderDestroyQueryStateOwner(&queryOwner);
         return 1;
     }
     GLMContextRec callbackContext = {};
     const int flushCountBeforeTimestamp = s_legacyFlushCount;
-    uint64_t callbackTimestamp = mglRenderCppGetGPUTimestamp(
+    uint64_t callbackTimestamp = mglRenderGetGPUTimestamp(
         &callbackContext);
     if (callbackTimestamp == 0 ||
         s_legacyFlushCount != flushCountBeforeTimestamp ||
-        mglRenderCppGetGPUTimestamp(NULL) != 0) {
+        mglRenderGetGPUTimestamp(NULL) != 0) {
         fprintf(stderr,
                 "FAIL: GPU timestamp callback timestamp=%llu flush=%d finish=%d\n",
                 (unsigned long long)callbackTimestamp,
                 s_legacyFlushCount, s_legacyFlushFinish ? 1 : 0);
-        mglRenderCppDestroyQueryStateOwner(&queryOwner);
+        mglRenderDestroyQueryStateOwner(&queryOwner);
         return 1;
     }
     printf("GPU_TIMESTAMP_CALLBACK_OK\n");
     uint64_t elapsed = 0;
-    if (mglRenderCppBeginTimerQuery(queryOwner) != 0 ||
-        mglRenderCppEndTimerQuery(queryOwner, &elapsed) != 0) {
+    if (mglRenderBeginTimerQuery(queryOwner) != 0 ||
+        mglRenderEndTimerQuery(queryOwner, &elapsed) != 0) {
         fprintf(stderr, "FAIL: query state owner timer\n");
-        mglRenderCppDestroyQueryStateOwner(&queryOwner);
+        mglRenderDestroyQueryStateOwner(&queryOwner);
         return 1;
     }
     MGLRendererBackendHandle *callbackBackend = nullptr;
     if (smokeCreateBackend(device, &callbackContext, &callbackBackend) != 0) {
         fprintf(stderr, "FAIL: timer callback backend\n");
-        mglRenderCppDestroyQueryStateOwner(&queryOwner);
+        mglRenderDestroyQueryStateOwner(&queryOwner);
         return 1;
     }
     const int flushCountBeforeTimer = s_legacyFlushCount;
@@ -8656,13 +8656,13 @@ static int verifyQueryUtilities(id<MTLDevice> device) {
                 (unsigned long long)callbackElapsed,
                 s_legacyFlushCount, s_legacyFlushFinish ? 1 : 0);
         mglRendererBackendDestroy(&callbackBackend);
-        mglRenderCppDestroyQueryStateOwner(&queryOwner);
+        mglRenderDestroyQueryStateOwner(&queryOwner);
         return 1;
     }
     mglRendererBackendDestroy(&callbackBackend);
     printf("TIMER_QUERY_CALLBACKS_OK\n");
     visibility = nil;
-    mglRenderCppDestroyQueryStateOwner(&queryOwner);
+    mglRenderDestroyQueryStateOwner(&queryOwner);
     if (queryOwner) {
         fprintf(stderr, "FAIL: query state owner destroy\n");
         return 1;
@@ -8727,7 +8727,7 @@ static int verifyRawRenderAndBlitFacade(id<MTLDevice> device) {
                             options:MTLResourceStorageModeShared];
     void *uploadPtr = NULL;
     id<MTLBuffer> upload = nil;
-    if (mglRenderCppCreateBufferWithBytes(
+    if (mglRenderCreateBufferWithBytes(
             sourcePixels, sizeof(sourcePixels),
             MTLResourceStorageModeShared, "smoke upload", &uploadPtr) == 0 &&
         uploadPtr) {
@@ -8753,34 +8753,34 @@ static int verifyRawRenderAndBlitFacade(id<MTLDevice> device) {
     void *indirectCommand = NULL;
     vector_float4 scale = {1.0f, 1.0f, 0.0f, 0.0f};
     vector_float4 tint = {1.0f, 1.0f, 1.0f, 1.0f};
-    MGLRenderCppRenderPassState renderPassState =
+    MGLRenderPassState renderPassState =
         renderPassStateWithColorTarget(
             target, MTLLoadActionDontCare, MTLStoreActionStore);
-    if (mglRenderCppCreateRenderEncoderFromState(
+    if (mglRenderCreateRenderEncoderFromState(
             (__bridge void *)commandBuffer, &renderPassState,
             &renderEncoder) != 0 ||
         !renderEncoder ||
-        mglRenderCppSetRenderPipelineState(
+        mglRenderSetRenderPipelineState(
             renderEncoder, (__bridge void *)pipeline) != 0 ||
-        mglRenderCppSetRenderBytes(
+        mglRenderSetRenderBytes(
             renderEncoder, &scale, sizeof(scale),
-            MGL_RENDER_CPP_BINDING_STAGE_VERTEX, 0) != 0 ||
-        mglRenderCppSetRenderBytes(
+            MGL_RENDER_BINDING_STAGE_VERTEX, 0) != 0 ||
+        mglRenderSetRenderBytes(
             renderEncoder, &tint, sizeof(tint),
-            MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT, 0) != 0 ||
-        mglRenderCppSetRenderTexture(
+            MGL_RENDER_BINDING_STAGE_FRAGMENT, 0) != 0 ||
+        mglRenderSetRenderTexture(
             renderEncoder, (__bridge void *)sourceTexture,
-            MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT, 0) != 0 ||
-        mglRenderCppSetRenderSampler(
+            MGL_RENDER_BINDING_STAGE_FRAGMENT, 0) != 0 ||
+        mglRenderSetRenderSampler(
             renderEncoder, (__bridge void *)sampler,
-            MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT, 0) != 0 ||
-        mglRenderCppSetRenderViewport(
+            MGL_RENDER_BINDING_STAGE_FRAGMENT, 0) != 0 ||
+        mglRenderSetRenderViewport(
             renderEncoder, 0.0, 0.0, 4.0, 4.0, 0.0, 1.0) != 0 ||
-        mglRenderCppSetRenderScissor(renderEncoder, 0, 0, 4, 4) != 0 ||
-        mglRenderCppDrawPrimitives(
+        mglRenderSetRenderScissor(renderEncoder, 0, 0, 4, 4) != 0 ||
+        mglRenderDrawPrimitives(
             renderEncoder, (uint32_t)MTLPrimitiveTypeTriangleStrip,
             0, 4, 1, 0) != 0 ||
-        mglRenderCppCreateIndirectCommandBuffer(
+        mglRenderCreateIndirectCommandBuffer(
             (uint32_t)MTLIndirectCommandTypeDraw, 1, 1, 0, 0, 1,
             MTLResourceStorageModePrivate, &indirectBufferPtr) != 0 ||
         !indirectBufferPtr) {
@@ -8789,40 +8789,40 @@ static int verifyRawRenderAndBlitFacade(id<MTLDevice> device) {
     }
     id<MTLIndirectCommandBuffer> indirectBuffer =
         (__bridge_transfer id<MTLIndirectCommandBuffer>)indirectBufferPtr;
-    if (mglRenderCppResetIndirectCommandBuffer(
+    if (mglRenderResetIndirectCommandBuffer(
             (__bridge void *)indirectBuffer, 0, 1) != 0 ||
-        mglRenderCppGetIndirectRenderCommand(
+        mglRenderGetIndirectRenderCommand(
             (__bridge void *)indirectBuffer, 0, &indirectCommand) != 0 ||
         !indirectCommand ||
-        mglRenderCppSetIndirectDraw(
+        mglRenderSetIndirectDraw(
             indirectCommand, (uint32_t)MTLPrimitiveTypeTriangleStrip,
             0, 4, 1, 0) != 0 ||
-        mglRenderCppEndRenderEncoder(renderEncoder) != 0) {
+        mglRenderEndRenderEncoder(renderEncoder) != 0) {
         fprintf(stderr, "FAIL: indirect command buffer facade\n");
         return 1;
     }
 
     void *blitEncoder = NULL;
-    if (mglRenderCppCreateBlitEncoder((__bridge void *)commandBuffer,
+    if (mglRenderCreateBlitEncoder((__bridge void *)commandBuffer,
                                       &blitEncoder) != 0 ||
         !blitEncoder ||
-        mglRenderCppBlitCopyBuffer(
+        mglRenderBlitCopyBuffer(
             blitEncoder, (__bridge void *)upload, 0,
             (__bridge void *)bufferCopy, 0, sizeof(sourcePixels)) != 0 ||
-        mglRenderCppBlitCopyBufferToTexture(
+        mglRenderBlitCopyBufferToTexture(
             blitEncoder, (__bridge void *)upload, 0, 16,
             sizeof(sourcePixels), 4, 4, 1,
             (__bridge void *)sourceTexture, 0, 0, 0, 0, 0) != 0 ||
-        mglRenderCppBlitGenerateMipmaps(
+        mglRenderBlitGenerateMipmaps(
             blitEncoder, (__bridge void *)sourceTexture) != 0 ||
-        mglRenderCppBlitCopyTextureToBuffer(
+        mglRenderBlitCopyTextureToBuffer(
             blitEncoder, (__bridge void *)sourceTexture, 0, 0, 0, 0, 0,
             4, 4, 1, (__bridge void *)uploadReadback, 0, 256,
             256 * 4) != 0 ||
-        mglRenderCppBlitCopyTextureToBuffer(
+        mglRenderBlitCopyTextureToBuffer(
             blitEncoder, (__bridge void *)target, 0, 0, 0, 0, 0,
             4, 4, 1, (__bridge void *)readback, 0, 256, 256 * 4) != 0 ||
-        mglRenderCppEndBlitEncoder(blitEncoder) != 0) {
+        mglRenderEndBlitEncoder(blitEncoder) != 0) {
         fprintf(stderr, "FAIL: texture-to-buffer blit facade\n");
         return 1;
     }
@@ -9371,12 +9371,12 @@ int main(void) {
             return 2; // 无 GPU 环境，跳过（非失败）
         }
 
-        int rc = mglRenderCppInit((__bridge void*)device);
+        int rc = mglRenderInit((__bridge void*)device);
         if (rc != 0) {
-            fprintf(stderr, "FAIL: mglRenderCppInit rc=%d\n", rc);
+            fprintf(stderr, "FAIL: mglRenderInit rc=%d\n", rc);
             return 1;
         }
-        if (mglRenderCppIsInitialized() != 1) {
+        if (mglRenderIsInitialized() != 1) {
             fprintf(stderr, "FAIL: renderer not initialized after init\n");
             return 1;
         }
@@ -9474,13 +9474,13 @@ int main(void) {
         if (verifyPlatformRendererShell() != 0) return 1;
 
         // 多 context 引用同一 device：重复 init 增加一个 renderer user。
-        if (mglRenderCppInit((__bridge void*)device) != 0) {
+        if (mglRenderInit((__bridge void*)device) != 0) {
             fprintf(stderr, "FAIL: shared-device init\n");
             return 1;
         }
 
         const uint32_t teardownValue = 0x10203040u;
-        Buffer *teardownSlot = mglRenderCppAcquirePackedStructBuffer(
+        Buffer *teardownSlot = mglRenderAcquirePackedStructBuffer(
             &teardownValue, sizeof(teardownValue), NULL, 0);
         if (!teardownSlot || !teardownSlot->data.mtl_data) {
             fprintf(stderr, "FAIL: packed struct teardown fixture\n");
@@ -9488,28 +9488,28 @@ int main(void) {
         }
         const uint64_t releaseCountBeforeShutdown = s_metalReleaseCount;
 
-        mglRenderCppShutdown();
-        if (mglRenderCppIsInitialized() != 1 ||
+        mglRenderShutdown();
+        if (mglRenderIsInitialized() != 1 ||
             s_metalReleaseCount != releaseCountBeforeShutdown) {
             fprintf(stderr,
                     "FAIL: first shutdown dropped shared renderer state\n");
             return 1;
         }
-        mglRenderCppShutdown();
-        if (mglRenderCppIsInitialized() != 0 ||
+        mglRenderShutdown();
+        if (mglRenderIsInitialized() != 0 ||
             s_metalReleaseCount != releaseCountBeforeShutdown + 128) {
             fprintf(stderr,
                     "FAIL: final shutdown did not clear renderer state\n");
             return 1;
         }
-        mglRenderCppShutdown(); // 二次 shutdown 幂等
+        mglRenderShutdown(); // 二次 shutdown 幂等
 
         // 重建
-        if (mglRenderCppInit((__bridge void*)device) != 0) {
+        if (mglRenderInit((__bridge void*)device) != 0) {
             fprintf(stderr, "FAIL: reinit\n");
             return 1;
         }
-        mglRenderCppShutdown();
+        mglRenderShutdown();
 
         printf("SMOKE_DONE\n");
     }

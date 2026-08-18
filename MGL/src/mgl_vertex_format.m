@@ -11,9 +11,9 @@
 
 
 #import "mgl_vertex_format.h"
-#import "mgl_render_cpp.h"
+#import "mgl_render.h"
 
-#include "mgl_air_loader.h"   /* MGLRenderCppPipelineDescriptorState */
+#include "mgl_air_loader.h"   /* MGLRenderPipelineDescriptorState */
 
 #include <string.h>
 
@@ -21,7 +21,7 @@
 
 const char *mglVertexFormatName(uint32_t format)
 {
-    return mglRenderCppVertexFormatName(format);
+    return mglRenderVertexFormatName(format);
 }
 
 bool mglIntegerAttribNeedsConversion(GLenum srcType,
@@ -29,7 +29,7 @@ bool mglIntegerAttribNeedsConversion(GLenum srcType,
                                      GLuint size,
                                      void *outFormat)
 {
-    uint32_t format = mglRenderCppIntegerAttribConversionFormat(
+    uint32_t format = mglRenderIntegerAttribConversionFormat(
         (uint64_t)srcType, (uint64_t)shaderGlType, (uint32_t)size);
     if (outFormat) {
         *(uint32_t *)outFormat = format;
@@ -103,12 +103,12 @@ double mglDecodeVertexAttribComponent(const uint8_t *src,
 
 uint64_t mglVertexDescriptorSignature(const void *vertexDescriptor)
 {
-    return mglRenderCppVertexDescriptorSignature(vertexDescriptor);
+    return mglRenderVertexDescriptorSignature(vertexDescriptor);
 }
 
 uint64_t mglPipelineDescriptorSignature(const void *pipelineStateDescriptor)
 {
-    return mglRenderCppPipelineDescriptorSignature(pipelineStateDescriptor);
+    return mglRenderPipelineDescriptorSignature(pipelineStateDescriptor);
 }
 
 uint32_t mglMaybeInvertMTLWinding(uint32_t winding, bool invert)
@@ -122,7 +122,7 @@ uint32_t mglMaybeInvertMTLWinding(uint32_t winding, bool invert)
 
 
 uint64_t mglVertexDescriptorSignatureFromState(
-    const MGLRenderCppPipelineDescriptorState *state)
+    const MGLRenderPipelineDescriptorState *state)
 {
     uint64_t hash = 1469598103934665603ull;
     if (!state) {
@@ -160,7 +160,7 @@ uint64_t mglVertexDescriptorSignatureFromState(
 }
 
 uint64_t mglPipelineDescriptorSignatureFromState(
-    const MGLRenderCppPipelineDescriptorState *state)
+    const MGLRenderPipelineDescriptorState *state)
 {
     uint64_t hash = 1469598103934665603ull;
     if (!state) {

@@ -625,7 +625,7 @@ test-mcrepro: $(build_dir)/test_mcrepro
 # Metal-cpp initialization smoke gate. Device bridging and repeated
 # initialization/shutdown must remain stable.
 $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
-	MGL/src/mgl_render_cpp.cpp MGL/src/mgl_render_cpp.h \
+	MGL/src/mgl_render.cpp MGL/src/mgl_render.h \
 	MGL/src/mgl_renderer_backend.cpp MGL/src/mgl_renderer_backend.h \
 	MGL/src/MGLPlatformRendererShell.m MGL/include/MGLPlatformRendererShell.h \
 	MGL/src/mgl_aux_assets.c \
@@ -634,7 +634,7 @@ $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
 	$(LLVM_CXX) -x objective-c++ -fobjc-arc -g -O0 $(LLVM_CXXFLAGS) $(LLVM_LDFLAGS) \
 		-framework Cocoa -framework Foundation -framework QuartzCore -framework Metal \
 		test_legacy_compat/test_metalcpp_smoke.mm \
-		MGL/src/mgl_render_cpp.cpp \
+		MGL/src/mgl_render.cpp \
 		MGL/src/mgl_renderer_backend.cpp \
 		MGL/src/MGLPlatformRendererShell.m \
 		MGL/src/mgl_aux_assets.c \

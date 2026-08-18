@@ -21,14 +21,14 @@
 #import "MGLRenderer+SwapDiagnostics_Private.h"
 #import "MGLRenderer+Blit_Private.h"
 #include "mgl_env_flag.h"
-#include "mgl_render_cpp.h"
+#include "mgl_render.h"
 
 typedef void (^MGLSwapCommandCompletionBlock)(
-    const MGLRenderCppCommandBufferState *state);
+    const MGLRenderCommandBufferState *state);
 
 static void mglSwapCommandCompletionCallback(
     void *context,
-    const MGLRenderCppCommandBufferState *state)
+    const MGLRenderCommandBufferState *state)
 {
     MGLSwapCommandCompletionBlock block =
         (__bridge MGLSwapCommandCompletionBlock)context;
@@ -48,7 +48,7 @@ static int mglSwapAddCommandBufferOwnerCompletion(
     if (!owner || !block) return -1;
     MGLSwapCommandCompletionBlock copied = [block copy];
     void *context = (__bridge_retained void *)copied;
-    int result = mglRenderCppAddCommandBufferOwnerCompletion(
+    int result = mglRenderAddCommandBufferOwnerCompletion(
         owner,
         mglSwapCommandCompletionCallback,
         context,
@@ -59,11 +59,11 @@ static int mglSwapAddCommandBufferOwnerCompletion(
 
 static id mglSwapDiagnosticsCreateBuffer(NSUInteger length)
 {
-    void *bufferCPP = NULL;
-    if (mglRenderCppCreateBuffer(
+    void *buffer = NULL;
+    if (mglRenderCreateBuffer(
             length, 0u,
-            "MGL Swap Diagnostic Sample", &bufferCPP) == 0 && bufferCPP) {
-        return (__bridge_transfer id)bufferCPP;
+            "MGL Swap Diagnostic Sample", &buffer) == 0 && buffer) {
+        return (__bridge_transfer id)buffer;
     }
     return nil;
 }
@@ -73,11 +73,11 @@ static id mglSwapDiagnosticsCreateRenderEncoder(
     id colorTexture)
 {
     if (!commandBufferOwner || !colorTexture) return nil;
-    MGLRenderCppRenderPassState state = {0};
+    MGLRenderPassState state = {0};
     state.color[0].attachment.texture = (__bridge void *)colorTexture;
     state.color[0].attachment.load_action = 0u;
     state.color[0].attachment.store_action = 1u;
-    return (__bridge id)mglRenderCppCreateRenderEncoderBorrowed(
+    return (__bridge id)mglRenderCreateRenderEncoderBorrowed(
         commandBufferOwner, &state);
 }
 
@@ -85,7 +85,7 @@ static void mglSwapDiagnosticsSetRenderPipeline(
     id encoder,
     id pipeline)
 {
-    (void)mglRenderCppSetRenderPipelineState(
+    (void)mglRenderSetRenderPipelineState(
         (__bridge void *)encoder, (__bridge void *)pipeline);
 }
 
@@ -95,7 +95,7 @@ static void mglSwapDiagnosticsSetRenderBytes(
     NSUInteger length,
     uint32_t stage)
 {
-    (void)mglRenderCppSetRenderBytes(
+    (void)mglRenderSetRenderBytes(
         (__bridge void *)encoder, bytes, length, stage, 0);
 }
 
@@ -103,18 +103,18 @@ static void mglSwapDiagnosticsSetFragmentTexture(
     id encoder,
     id texture)
 {
-    (void)mglRenderCppSetRenderTexture(
+    (void)mglRenderSetRenderTexture(
         (__bridge void *)encoder, (__bridge void *)texture,
-        MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT, 0);
+        MGL_RENDER_BINDING_STAGE_FRAGMENT, 0);
 }
 
 static void mglSwapDiagnosticsSetFragmentSampler(
     id encoder,
     id sampler)
 {
-    (void)mglRenderCppSetRenderSampler(
+    (void)mglRenderSetRenderSampler(
         (__bridge void *)encoder, (__bridge void *)sampler,
-        MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT, 0);
+        MGL_RENDER_BINDING_STAGE_FRAGMENT, 0);
 }
 
 static void mglSwapDiagnosticsSetViewport(
@@ -122,7 +122,7 @@ static void mglSwapDiagnosticsSetViewport(
     double width,
     double height)
 {
-    (void)mglRenderCppSetRenderViewport(
+    (void)mglRenderSetRenderViewport(
         (__bridge void *)encoder, 0.0, 0.0, width, height, 0.0, 1.0);
 }
 
@@ -131,15 +131,15 @@ static void mglSwapDiagnosticsSetScissor(
     NSUInteger width,
     NSUInteger height)
 {
-    (void)mglRenderCppSetRenderScissor(
+    (void)mglRenderSetRenderScissor(
         (__bridge void *)encoder, 0u, 0u, width, height);
 }
 
 static void mglSwapDiagnosticsDrawTriangleStrip(id encoder)
 {
-    (void)mglRenderCppEncodeDraw((__bridge void *)encoder,
-        &(MGLRenderCppDrawPlan){
-            .kind = MGL_RENDER_CPP_DRAW_ARRAY,
+    (void)mglRenderEncodeDraw((__bridge void *)encoder,
+        &(MGLRenderDrawPlan){
+            .kind = MGL_RENDER_DRAW_ARRAY,
             .primitive_type = 4u,
             .vertex_start = 0,
             .vertex_count = 4,
@@ -150,13 +150,13 @@ static void mglSwapDiagnosticsDrawTriangleStrip(id encoder)
 
 static void mglSwapDiagnosticsEndRenderEncoder(id encoder)
 {
-    (void)mglRenderCppEndRenderEncoder((__bridge void *)encoder);
+    (void)mglRenderEndRenderEncoder((__bridge void *)encoder);
 }
 
 static id mglSwapDiagnosticsCreateBlitEncoder(
     void *commandBufferOwner)
 {
-    return (__bridge id)mglRenderCppCreateBlitEncoderBorrowed(
+    return (__bridge id)mglRenderCreateBlitEncoderBorrowed(
         commandBufferOwner);
 }
 
@@ -171,7 +171,7 @@ static void mglSwapDiagnosticsCopyTextureToBuffer(
     NSUInteger bytesPerRow,
     NSUInteger bytesPerImage)
 {
-    (void)mglRenderCppBlitCopyTextureToBuffer(
+    (void)mglRenderBlitCopyTextureToBuffer(
         (__bridge void *)encoder, (__bridge void *)texture, 0, 0,
         originX, originY, 0u, width, height, 1u,
         (__bridge void *)buffer, 0, bytesPerRow, bytesPerImage);
@@ -179,7 +179,7 @@ static void mglSwapDiagnosticsCopyTextureToBuffer(
 
 static void mglSwapDiagnosticsEndBlitEncoder(id encoder)
 {
-    (void)mglRenderCppEndBlitEncoder((__bridge void *)encoder);
+    (void)mglRenderEndBlitEncoder((__bridge void *)encoder);
 }
 
 @implementation MGLRenderer (SwapDiagnostics)
@@ -189,14 +189,14 @@ static void mglSwapDiagnosticsEndBlitEncoder(id encoder)
                                       swapCall:(uint64_t)swapCall
                                     traceSwap:(bool)traceSwap
 {
-    MGLRenderCppTextureInfo sourceInfo = {0};
-    MGLRenderCppTextureInfo drawableInfo = {0};
+    MGLRenderTextureInfo sourceInfo = {0};
+    MGLRenderTextureInfo drawableInfo = {0};
     if (rpColor0) {
-        (void)mglRenderCppGetTextureInfo(
+        (void)mglRenderGetTextureInfo(
             (__bridge const void *)rpColor0, &sourceInfo);
     }
     if (drawableTexture) {
-        (void)mglRenderCppGetTextureInfo(
+        (void)mglRenderGetTextureInfo(
             (__bridge const void *)drawableTexture, &drawableInfo);
     }
     // Diagnostic + compatibility path:
@@ -251,10 +251,10 @@ static void mglSwapDiagnosticsEndBlitEncoder(id encoder)
                         mglSwapDiagnosticsSetRenderPipeline(copyEncoder, pipeline);
                         mglSwapDiagnosticsSetRenderBytes(
                             copyEncoder, &params, sizeof(params),
-                            MGL_RENDER_CPP_BINDING_STAGE_VERTEX);
+                            MGL_RENDER_BINDING_STAGE_VERTEX);
                         mglSwapDiagnosticsSetRenderBytes(
                             copyEncoder, &params, sizeof(params),
-                            MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT);
+                            MGL_RENDER_BINDING_STAGE_FRAGMENT);
                         mglSwapDiagnosticsSetFragmentTexture(copyEncoder, rpColor0);
                         mglSwapDiagnosticsSetFragmentSampler(copyEncoder, sampler);
                         mglSwapDiagnosticsSetViewport(
@@ -318,8 +318,8 @@ static void mglSwapDiagnosticsEndBlitEncoder(id encoder)
                     return;
                 }
 
-                MGLRenderCppTextureInfo sampleInfo = {0};
-                if (mglRenderCppGetTextureInfo(
+                MGLRenderTextureInfo sampleInfo = {0};
+                if (mglRenderGetTextureInfo(
                         (__bridge const void *)sampleTexture, &sampleInfo) != 0) {
                     return;
                 }
@@ -394,12 +394,12 @@ static void mglSwapDiagnosticsEndBlitEncoder(id encoder)
                 NSUInteger sampleTexHeight = (NSUInteger)sampleInfo.height;
                 NSUInteger sampleOriginX = clampedOriginX;
                 NSUInteger sampleOriginY = clampedOriginY;
-                (void)mglRenderCppAddBufferDebugMarker(
+                (void)mglRenderAddBufferDebugMarker(
                     (__bridge void *)sampleBuffer,
                     "mgl_swap_sample", 0u, sampleBytesPerImage);
                 mglSwapAddCommandBufferOwnerCompletion(
                     _renderPassManager.state->currentCommandBufferOwner,
-                    ^(const MGLRenderCppCommandBufferState *sampleState) {
+                    ^(const MGLRenderCommandBufferState *sampleState) {
                     NSString *sampleError = sampleState->has_error
                         ? [NSString stringWithFormat:@"%s (domain=%s code=%lld)",
                              sampleState->error_description,
@@ -408,7 +408,7 @@ static void mglSwapDiagnosticsEndBlitEncoder(id encoder)
                         : nil;
                     void *sampleContents = NULL;
                     uint64_t sampleBufferLength = 0;
-                    (void)mglRenderCppGetBufferContents(
+                    (void)mglRenderGetBufferContents(
                         (__bridge void *)sampleBuffer,
                         &sampleContents, &sampleBufferLength);
                     const uint8_t *p = sampleBufferLength >= sampleBytesPerImage
@@ -505,14 +505,14 @@ static void mglSwapDiagnosticsEndBlitEncoder(id encoder)
                 });
             };
 
-        MGLRenderCppTextureInfo sourceInfo = {0};
-        MGLRenderCppTextureInfo drawableInfo = {0};
+        MGLRenderTextureInfo sourceInfo = {0};
+        MGLRenderTextureInfo drawableInfo = {0};
         if (rpColor0) {
-            (void)mglRenderCppGetTextureInfo(
+            (void)mglRenderGetTextureInfo(
                 (__bridge const void *)rpColor0, &sourceInfo);
         }
         if (drawableTexture) {
-            (void)mglRenderCppGetTextureInfo(
+            (void)mglRenderGetTextureInfo(
                 (__bridge const void *)drawableTexture, &drawableInfo);
         }
         scheduleTextureSample(rpColor0, @"src.tl", 0u, 0u);

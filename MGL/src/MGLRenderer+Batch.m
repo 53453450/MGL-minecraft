@@ -17,11 +17,11 @@
 #import "mgl_frame_activity.h"
 #import "mgl_sampler_compat.h"
 #include "mgl_env_flag.h"
-#include "mgl_render_cpp.h"
+#include "mgl_render.h"
 
 static BOOL mglBatchHasActiveEncoder(void *owner)
 {
-    return mglRenderCppRenderEncoderOwnerHasCurrent(owner) != 0;
+    return mglRenderEncoderOwnerHasCurrent(owner) != 0;
 }
 
 static void *mglBatchEncoderTraceToken(void *owner)
@@ -29,11 +29,11 @@ static void *mglBatchEncoderTraceToken(void *owner)
     return owner;
 }
 
-static MGLRenderCppTextureInfo mglBatchTextureInfo(id texture)
+static MGLRenderTextureInfo mglBatchTextureInfo(id texture)
 {
-    MGLRenderCppTextureInfo info = {0};
+    MGLRenderTextureInfo info = {0};
     if (texture) {
-        (void)mglRenderCppGetTextureInfo((__bridge void *)texture, &info);
+        (void)mglRenderGetTextureInfo((__bridge void *)texture, &info);
     }
     return info;
 }
@@ -49,8 +49,8 @@ static void mglBatchDrawIndexedPrimitives(
     NSInteger baseVertex,
     NSUInteger baseInstance)
 {
-    const MGLRenderCppDrawPlan plan = {
-            .kind = MGL_RENDER_CPP_DRAW_INDEXED,
+    const MGLRenderDrawPlan plan = {
+            .kind = MGL_RENDER_DRAW_INDEXED,
             .primitive_type = (uint32_t)primitiveType,
             .index_count = indexCount,
             .index_type = (uint32_t)indexType,
@@ -60,7 +60,7 @@ static void mglBatchDrawIndexedPrimitives(
             .base_vertex = baseVertex,
             .base_instance = baseInstance,
         };
-    (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
+    (void)mglRenderEncodeDrawForRenderEncoderOwner(
         renderEncoderOwner, &plan, NULL, 0);
 }
 
@@ -73,8 +73,8 @@ static void mglBatchDrawIndexedPrimitivesIndirect(
     id indirectBuffer,
     NSUInteger indirectBufferOffset)
 {
-    const MGLRenderCppDrawPlan plan = {
-            .kind = MGL_RENDER_CPP_DRAW_INDEXED_INDIRECT,
+    const MGLRenderDrawPlan plan = {
+            .kind = MGL_RENDER_DRAW_INDEXED_INDIRECT,
             .primitive_type = (uint32_t)primitiveType,
             .index_type = (uint32_t)indexType,
             .index_buffer = (__bridge void *)indexBuffer,
@@ -82,7 +82,7 @@ static void mglBatchDrawIndexedPrimitivesIndirect(
             .indirect_buffer = (__bridge void *)indirectBuffer,
             .indirect_buffer_offset = indirectBufferOffset,
         };
-    (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
+    (void)mglRenderEncodeDrawForRenderEncoderOwner(
         renderEncoderOwner, &plan, NULL, 0);
 }
 
@@ -90,14 +90,14 @@ static id mglBatchCreateIndirectCommandBuffer(
     BOOL indexed,
     NSUInteger maxCommandCount)
 {
-    void *bufferCPP = NULL;
+    void *buffer = NULL;
     uint32_t commandTypes = indexed
         ? (uint32_t)2u
         : (uint32_t)1u;
-    if (mglRenderCppCreateIndirectCommandBuffer(
+    if (mglRenderCreateIndirectCommandBuffer(
             commandTypes, 1, 1, 0, 0, maxCommandCount,
-            32u, &bufferCPP) == 0 && bufferCPP) {
-        return (__bridge_transfer id)bufferCPP;
+            32u, &buffer) == 0 && buffer) {
+        return (__bridge_transfer id)buffer;
     }
     return nil;
 }
@@ -106,7 +106,7 @@ static void mglBatchResetIndirectCommandBuffer(
     id indirectBuffer,
     NSRange range)
 {
-    (void)mglRenderCppResetIndirectCommandBuffer(
+    (void)mglRenderResetIndirectCommandBuffer(
         (__bridge void *)indirectBuffer, range.location, range.length);
 }
 
@@ -114,11 +114,11 @@ static id mglBatchIndirectRenderCommand(
     id indirectBuffer,
     NSUInteger index)
 {
-    void *commandCPP = NULL;
-    if (mglRenderCppGetIndirectRenderCommand(
-            (__bridge void *)indirectBuffer, index, &commandCPP) == 0 &&
-        commandCPP) {
-        return (__bridge id)commandCPP;
+    void *command = NULL;
+    if (mglRenderGetIndirectRenderCommand(
+            (__bridge void *)indirectBuffer, index, &command) == 0 &&
+        command) {
+        return (__bridge id)command;
     }
     return nil;
 }
@@ -134,7 +134,7 @@ static void mglBatchSetIndirectDrawIndexed(
     NSInteger baseVertex,
     NSUInteger baseInstance)
 {
-    (void)mglRenderCppSetIndirectDrawIndexed(
+    (void)mglRenderSetIndirectDrawIndexed(
         (__bridge void *)command, (uint32_t)primitiveType, indexCount,
         (uint32_t)indexType, (__bridge void *)indexBuffer,
         indexBufferOffset, instanceCount, baseVertex, baseInstance);
@@ -148,7 +148,7 @@ static void mglBatchSetIndirectDraw(
     NSUInteger instanceCount,
     NSUInteger baseInstance)
 {
-    (void)mglRenderCppSetIndirectDraw(
+    (void)mglRenderSetIndirectDraw(
         (__bridge void *)command, (uint32_t)primitiveType, vertexStart,
         vertexCount, instanceCount, baseInstance);
 }
@@ -159,7 +159,7 @@ static void mglBatchUseRenderResource(
     uint32_t usage,
     uint32_t stages)
 {
-    (void)mglRenderCppUseRenderResourceForOwner(
+    (void)mglRenderUseRenderResourceForOwner(
         renderEncoderOwner, (__bridge void *)resource,
         (uint32_t)usage, (uint32_t)stages);
 }
@@ -169,7 +169,7 @@ static void mglBatchExecuteIndirectCommands(
     id indirectBuffer,
     NSRange range)
 {
-    (void)mglRenderCppExecuteIndirectCommandsForOwner(
+    (void)mglRenderExecuteIndirectCommandsForOwner(
         renderEncoderOwner, (__bridge void *)indirectBuffer,
         range.location, range.length);
 }
@@ -228,13 +228,13 @@ static void mglBatchExecuteIndirectCommands(
             id depthMTL = (rtDepth && rtDepth->mtl_data)
                 ? (__bridge id)(rtDepth->mtl_data)
                 : nil;
-            id rpColor0 = (__bridge id)mglRenderCppGetRenderPassAttachmentTextureOwner(
+            id rpColor0 = (__bridge id)mglRenderGetRenderPassAttachmentTextureOwner(
                 _renderPassManager.state->renderPassStateOwner,
-                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0);
-            id rpDepth = (__bridge id)mglRenderCppGetRenderPassAttachmentTextureOwner(
+                MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0);
+            id rpDepth = (__bridge id)mglRenderGetRenderPassAttachmentTextureOwner(
                 _renderPassManager.state->renderPassStateOwner,
-                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0);
-            MGLRenderCppTextureInfo colorInfo =
+                MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0);
+            MGLRenderTextureInfo colorInfo =
                 mglBatchTextureInfo(colorMTL);
             mglTraceLog("RT_SAMPLE_COPY_WRITE_MARK hit=%llu fbo=%u program=%u rtTex=%u label=\"%s\" depthTex=%u depthLabel=\"%s\" viewport=%d,%d,%d,%d scissor(en=%d box=%d,%d,%d,%d) depth(test=%d write=%d func=0x%x) blend=%d cull=%d colorMask=%d%d%d%d level=%u texInit(ever=%u full=%u source=%u) levels=%u mips=%u mipmapped=%u mtlColor=%p fmt=%lu size=%lux%lu rpColor=%p rpDepth=%p depthMTL=%p",
                         (unsigned long long)hit,
@@ -343,9 +343,9 @@ static void mglBatchExecuteIndirectCommands(
             continue;
         }
         for (GLuint colorSlot = 0u; colorSlot < MAX_COLOR_ATTACHMENTS; colorSlot++) {
-            if ((__bridge id)mglRenderCppGetRenderPassAttachmentTextureOwner(
+            if ((__bridge id)mglRenderGetRenderPassAttachmentTextureOwner(
                     _renderPassManager.state->renderPassStateOwner,
-                    MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR,
+                    MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
                     colorSlot) == mtlTex) {
                 [self markCurrentFramebufferColorAttachmentWrittenAtIndex:attachmentIndex];
                 break;
@@ -420,7 +420,7 @@ static void mglBatchExecuteIndirectCommands(
 
 - (void)invalidateLastBoundState
 {
-    mglRenderCppBindingInvalidate(_bindingStateOwner);
+    mglRenderBindingInvalidate(_bindingStateOwner);
 }
 
 /* DUAL-PROXY INVARIANT HELPERS: see MGLRenderer_Private.h.
@@ -457,32 +457,32 @@ static void mglBatchExecuteIndirectCommands(
 
 - (void)recordLastBoundVertexBuffer:(id)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index
 {
-    mglRenderCppBindingRecordVertexBuffer(
+    mglRenderBindingRecordVertexBuffer(
         _bindingStateOwner, (__bridge void *)buffer, offset, (uint32_t)index);
 }
 
 - (void)recordLastBoundFragmentBuffer:(id)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index
 {
-    mglRenderCppBindingRecordFragmentBuffer(
+    mglRenderBindingRecordFragmentBuffer(
         _bindingStateOwner, (__bridge void *)buffer, offset, (uint32_t)index);
 }
 
 - (void)invalidateLastBoundVertexBufferAtIndex:(NSUInteger)index
 {
-    mglRenderCppBindingInvalidateVertexBuffer(
+    mglRenderBindingInvalidateVertexBuffer(
         _bindingStateOwner, (uint32_t)index);
 }
 
 - (void)invalidateLastBoundFragmentBufferAtIndex:(NSUInteger)index
 {
-    mglRenderCppBindingInvalidateFragmentBuffer(
+    mglRenderBindingInvalidateFragmentBuffer(
         _bindingStateOwner, (uint32_t)index);
 }
 
 - (void)setViewportIfNeeded:(MGLViewportValue)viewport
 {
     void *owner = _renderPassManager.state->currentRenderEncoderOwner;
-    mglRenderCppBindingSetViewportForOwner(
+    mglRenderBindingSetViewportForOwner(
         _bindingStateOwner, owner, viewport.origin_x, viewport.origin_y,
         viewport.width, viewport.height, viewport.znear, viewport.zfar);
 }
@@ -490,14 +490,14 @@ static void mglBatchExecuteIndirectCommands(
 - (void)setScissorRectIfNeeded:(MGLScissorRectValue)rect
 {
     void *owner = _renderPassManager.state->currentRenderEncoderOwner;
-    mglRenderCppBindingSetScissorForOwner(
+    mglRenderBindingSetScissorForOwner(
         _bindingStateOwner, owner, rect.x, rect.y, rect.width, rect.height);
 }
 
 - (void)setTriangleFillModeIfNeeded:(uint32_t)mode
 {
     void *owner = _renderPassManager.state->currentRenderEncoderOwner;
-    mglRenderCppBindingSetTriangleFillForOwner(
+    mglRenderBindingSetTriangleFillForOwner(
         _bindingStateOwner, owner, (uint32_t)mode);
 }
 
@@ -621,12 +621,12 @@ static void mglBatchExecuteIndirectCommands(
         mglPointerRangeIsReadable(fbo, sizeof(*fbo))) {
         fboName = fbo->name;
     }
-    id rpColor0 = (__bridge id)mglRenderCppGetRenderPassAttachmentTextureOwner(
+    id rpColor0 = (__bridge id)mglRenderGetRenderPassAttachmentTextureOwner(
                 _renderPassManager.state->renderPassStateOwner,
-                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0);
-    id rpDepth = (__bridge id)mglRenderCppGetRenderPassAttachmentTextureOwner(
+                MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0);
+    id rpDepth = (__bridge id)mglRenderGetRenderPassAttachmentTextureOwner(
                 _renderPassManager.state->renderPassStateOwner,
-                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0);
+                MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0);
     GLMState *snapshot = batch->state_snapshot ? (GLMState *)batch->state_snapshot : NULL;
     GLuint snapshotFBOName = 0u;
     if (snapshot &&
@@ -757,14 +757,14 @@ static void mglBatchExecuteIndirectCommands(
         mglPointerRangeIsReadable(fbo, sizeof(*fbo))) {
         fboName = fbo->name;
     }
-    id rpColor0 = (__bridge id)mglRenderCppGetRenderPassAttachmentTextureOwner(
+    id rpColor0 = (__bridge id)mglRenderGetRenderPassAttachmentTextureOwner(
                 _renderPassManager.state->renderPassStateOwner,
-                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0);
-    id rpDepth = (__bridge id)mglRenderCppGetRenderPassAttachmentTextureOwner(
+                MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0);
+    id rpDepth = (__bridge id)mglRenderGetRenderPassAttachmentTextureOwner(
                 _renderPassManager.state->renderPassStateOwner,
-                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0);
-    MGLRenderCppTextureInfo rpColorInfo = mglBatchTextureInfo(rpColor0);
-    MGLRenderCppTextureInfo rpDepthInfo = mglBatchTextureInfo(rpDepth);
+                MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0);
+    MGLRenderTextureInfo rpColorInfo = mglBatchTextureInfo(rpColor0);
+    MGLRenderTextureInfo rpDepthInfo = mglBatchTextureInfo(rpDepth);
     Program *vertexProgram = mglResolveProgramForStageFromState(glm_ctx, _VERTEX_SHADER);
     Program *fragmentProgram = mglResolveProgramForStageFromState(glm_ctx, _FRAGMENT_SHADER);
     FBOAttachment *color0Attachment = (fbo && (fbo->color_attachment_bitfield & 1u))
@@ -841,21 +841,21 @@ static void mglBatchExecuteIndirectCommands(
                 (unsigned long)rpColorInfo.height,
                 (unsigned long)rpDepthInfo.width,
                 (unsigned long)rpDepthInfo.height,
-                mglLoadActionName((uint32_t)mglRenderCppRenderPassLoadActionForTrace(
+                mglLoadActionName((uint32_t)mglRenderPassLoadActionForTrace(
                     _renderPassManager.state->renderPassStateOwner,
-                    MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0,
+                    MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0,
                     0u)),
-                mglStoreActionName((uint32_t)mglRenderCppRenderPassStoreActionForTrace(
+                mglStoreActionName((uint32_t)mglRenderPassStoreActionForTrace(
                     _renderPassManager.state->renderPassStateOwner,
-                    MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0,
+                    MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0,
                     0u)),
-                mglLoadActionName((uint32_t)mglRenderCppRenderPassLoadActionForTrace(
+                mglLoadActionName((uint32_t)mglRenderPassLoadActionForTrace(
                     _renderPassManager.state->renderPassStateOwner,
-                    MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0,
+                    MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0,
                     0u)),
-                mglStoreActionName((uint32_t)mglRenderCppRenderPassStoreActionForTrace(
+                mglStoreActionName((uint32_t)mglRenderPassStoreActionForTrace(
                     _renderPassManager.state->renderPassStateOwner,
-                    MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0,
+                    MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0,
                     0u)),
                 color0Attachment ? (unsigned)color0Attachment->texture : 0u,
                 color0Attachment ? (unsigned)color0Attachment->textarget : 0u,
@@ -1106,7 +1106,7 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
                 lastKeyValid &&
                 lastExecuteOk &&
                 !lastWasStreamBatch &&
-                mglRenderCppRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 0 &&
+                mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 0 &&
                 mglBindingStateIsValid(_bindingStateOwner) &&
                 mglStateKeysEqual(&batch->key, &lastKey) &&
                 wantAbsoluteVertexOffsets == _batching.absoluteVertexBindingOffsets &&
@@ -1116,7 +1116,7 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
                        lastKeyValid && lastExecuteOk && !lastWasStreamBatch) {
                 /* Attribute the skip failure to its first breaking condition
                  * (in evaluation order) so Plan-B can target the real cause. */
-                if (mglRenderCppRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) == 0) {
+                if (mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) == 0) {
                     MGL_PERF_INC(g_mglSkipFailNoEncoderSinceSwap);
                 } else if (!mglBindingStateIsValid(_bindingStateOwner)) {
                     MGL_PERF_INC(g_mglSkipFailBindInvalidSinceSwap);
@@ -1388,7 +1388,7 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
     BOOL prevKeyValid = (prevKey != NULL);
     BOOL canDelta = _batching.dirtyKeyDeltaEnabled &&
                     prevKeyValid &&
-                    mglRenderCppRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 0 &&
+                    mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 0 &&
                     mglBindingStateIsValid(_bindingStateOwner);
 
     if (canDelta) {
@@ -1443,16 +1443,16 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
     Framebuffer *replayFBO = MGL_STATE(glm_ctx)->framebuffer;
     if ((replayFBO && (replayFBO->dirty_bits & DIRTY_FBO_BINDING)) ||
         (prevKeyValid && prevKey->fbo_name != batch->key.fbo_name) ||
-        (mglRenderCppRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 0 &&
+        (mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 0 &&
          ![self currentRenderPassMatchesCurrentFramebuffer])) {
         replayDirtyBits |= DIRTY_FBO;
     }
     /* Empty encoder cannot delta-bind — force full domains. */
-    if (mglRenderCppRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) == 0 || !mglBindingStateIsValid(_bindingStateOwner)) {
+    if (mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) == 0 || !mglBindingStateIsValid(_bindingStateOwner)) {
         replayDirtyBits = kMGLFullReplayDirtyBits |
                           ((replayDirtyBits & DIRTY_FBO) ? DIRTY_FBO : 0);
         if ((replayFBO && (replayFBO->dirty_bits & DIRTY_FBO_BINDING)) ||
-            (mglRenderCppRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 0 &&
+            (mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 0 &&
              ![self currentRenderPassMatchesCurrentFramebuffer])) {
             replayDirtyBits |= DIRTY_FBO;
         } else if (prevKeyValid && prevKey->fbo_name != batch->key.fbo_name) {
@@ -1809,7 +1809,7 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
     }
     void *indirectArgsContents = NULL;
     uint64_t indirectArgsLength = 0;
-    if (mglRenderCppGetBufferContents(
+    if (mglRenderGetBufferContents(
             (__bridge void *)indirectArgsBuffer, &indirectArgsContents,
             &indirectArgsLength) != 0 ||
         indirectArgsOffset > indirectArgsLength ||

@@ -9,7 +9,7 @@
 
 #import "MGLPlatformRendererShell.h"
 #import <Metal/Metal.h>
-#include "mgl_render_cpp.h"
+#include "mgl_render.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -37,7 +37,7 @@
     if (!device) return NO;
 
     const uint32_t fallbackPixelFormat = 80u;
-    uint32_t pixelFormat = mglRenderCppMetalLayerPixelFormatIsSupported(
+    uint32_t pixelFormat = mglRenderMetalLayerPixelFormatIsSupported(
         requestedPixelFormat) ? requestedPixelFormat : fallbackPixelFormat;
     CAMetalLayer *layer = [[CAMetalLayer alloc] init];
     if (!layer) return NO;

@@ -47,11 +47,11 @@ typedef struct MGLBlitColorState {
     double scaledDstMetalY;
 } MGLBlitColorState;
 
-static MGLRenderCppTextureInfo mglBlitTextureInfo(id texture)
+static MGLRenderTextureInfo mglBlitTextureInfo(id texture)
 {
-    MGLRenderCppTextureInfo info = {0};
+    MGLRenderTextureInfo info = {0};
     if (texture) {
-        (void)mglRenderCppGetTextureInfo((__bridge void *)texture, &info);
+        (void)mglRenderGetTextureInfo((__bridge void *)texture, &info);
     }
     return info;
 }
@@ -88,7 +88,7 @@ static id mglBlitCreateBuffer(id device,
 {
     (void)device;
     void *buffer = NULL;
-    if (mglRenderCppCreateBuffer(length, options, NULL, &buffer) == 0 &&
+    if (mglRenderCreateBuffer(length, options, NULL, &buffer) == 0 &&
         buffer) {
         return (__bridge_transfer id)buffer;
     }
@@ -103,7 +103,7 @@ static id mglBlitCreateBufferWithBytes(
 {
     (void)device;
     void *buffer = NULL;
-    if (mglRenderCppCreateBufferWithBytes(bytes, length, options, NULL,
+    if (mglRenderCreateBufferWithBytes(bytes, length, options, NULL,
                                           &buffer) == 0 && buffer) {
         return (__bridge_transfer id)buffer;
     }
@@ -112,11 +112,11 @@ static id mglBlitCreateBufferWithBytes(
 
 static id mglBlitCreateTexture(
     id device,
-    const MGLRenderCppTextureDescriptorState *descriptor)
+    const MGLRenderTextureDescriptorState *descriptor)
 {
     (void)device;
     void *texture = NULL;
-    if (mglRenderCppCreateTextureFromState(
+    if (mglRenderCreateTextureFromState(
             descriptor, NULL, &texture) == 0 &&
         texture) {
         return (__bridge_transfer id)texture;
@@ -132,7 +132,7 @@ static id mglBlitCreateTextureView(
     NSRange slices)
 {
     void *view = NULL;
-    if (mglRenderCppCreateTextureViewRange(
+    if (mglRenderCreateTextureViewRange(
             (__bridge void *)texture, (uint32_t)pixelFormat,
             (uint32_t)textureType, levels.location, levels.length,
             slices.location, slices.length, 0, 0, 0, 0, 0,
@@ -151,7 +151,7 @@ static void mglBlitReplaceTextureRegion(id texture,
                                         NSUInteger bytesPerImage,
                                         BOOL useSlice)
 {
-    (void)mglRenderCppTextureReplaceRegion(
+    (void)mglRenderTextureReplaceRegion(
         (__bridge void *)texture,
         region.origin.x, region.origin.y, region.origin.z,
         region.size.width, region.size.height, region.size.depth,
@@ -168,7 +168,7 @@ static void mglBlitGetTextureBytes(id texture,
                                    NSUInteger slice,
                                    BOOL useSlice)
 {
-    (void)mglRenderCppTextureGetBytes(
+    (void)mglRenderTextureGetBytes(
         (__bridge void *)texture, bytes, bytesPerRow, bytesPerImage,
         region.origin.x, region.origin.y, region.origin.z,
         region.size.width, region.size.height, region.size.depth,
@@ -181,7 +181,7 @@ static id mglBlitCreateSampler(
 {
     (void)device;
     void *sampler = NULL;
-    if (mglRenderCppCreateFilterSampler(nearest, &sampler) == 0 && sampler) {
+    if (mglRenderCreateFilterSampler(nearest, &sampler) == 0 && sampler) {
         return (__bridge_transfer id)sampler;
     }
     return nil;
@@ -189,11 +189,11 @@ static id mglBlitCreateSampler(
 
 static id mglBlitCreateDepthStencilState(
     id device,
-    const MGLRenderCppDepthStencilDescriptorState *descriptor)
+    const MGLRenderDepthStencilDescriptorState *descriptor)
 {
     (void)device;
     void *state = NULL;
-    if (mglRenderCppCreateDepthStencilStateFromState(
+    if (mglRenderCreateDepthStencilStateFromState(
             descriptor, &state) == 0 && state) {
         return (__bridge_transfer id)state;
     }
@@ -202,11 +202,11 @@ static id mglBlitCreateDepthStencilState(
 
 static id mglBlitCreateRenderEncoder(
     MGLRenderPassManager *renderPassManager,
-    const MGLRenderCppRenderPassState *state)
+    const MGLRenderPassState *state)
 {
     if (!state) return nil;
     void *encoder = NULL;
-    if (mglRenderCppCreateRenderEncoderFromCommandBufferOwnerState(
+    if (mglRenderCreateRenderEncoderFromCommandBufferOwnerState(
             renderPassManager.state->currentCommandBufferOwner,
             state, &encoder) == 0 && encoder) {
         return (__bridge id)encoder;
@@ -214,14 +214,14 @@ static id mglBlitCreateRenderEncoder(
     return nil;
 }
 
-static MGLRenderCppRenderPassState mglBlitDefaultRenderPassState(void)
+static MGLRenderPassState mglBlitDefaultRenderPassState(void)
 {
-    MGLRenderCppRenderPassState state;
-    mglRenderCppInitDefaultRenderPassState(&state);
+    MGLRenderPassState state;
+    mglRenderInitDefaultRenderPassState(&state);
     return state;
 }
 
-static MGLRenderCppRenderPassAttachmentState mglBlitRenderPassAttachment(
+static MGLRenderPassAttachmentState mglBlitRenderPassAttachment(
     id texture,
     NSUInteger level,
     NSUInteger slice,
@@ -229,7 +229,7 @@ static MGLRenderCppRenderPassAttachmentState mglBlitRenderPassAttachment(
     uint32_t loadAction,
     uint32_t storeAction)
 {
-    MGLRenderCppRenderPassAttachmentState attachment = {0};
+    MGLRenderPassAttachmentState attachment = {0};
     attachment.texture = (__bridge void *)texture;
     attachment.level = level;
     attachment.slice = slice;
@@ -242,20 +242,20 @@ static MGLRenderCppRenderPassAttachmentState mglBlitRenderPassAttachment(
 static void mglBlitEndRenderEncoder(id encoder)
 {
     if (!encoder) return;
-    (void)mglRenderCppEndRenderEncoder((__bridge void *)encoder);
+    (void)mglRenderEndRenderEncoder((__bridge void *)encoder);
 }
 
 static void mglBlitSetRenderPipeline(id encoder,
                                      id pipeline)
 {
-    (void)mglRenderCppSetRenderPipelineState(
+    (void)mglRenderSetRenderPipelineState(
         (__bridge void *)encoder, (__bridge void *)pipeline);
 }
 
 static void mglBlitSetDepthStencil(id encoder,
                                    id state)
 {
-    (void)mglRenderCppSetRenderDepthStencilState(
+    (void)mglRenderSetRenderDepthStencilState(
         (__bridge void *)encoder, (__bridge void *)state);
 }
 
@@ -265,7 +265,7 @@ static void mglBlitSetRenderBytes(id encoder,
                                   uint32_t stage,
                                   NSUInteger index)
 {
-    (void)mglRenderCppSetRenderBytes(
+    (void)mglRenderSetRenderBytes(
         (__bridge void *)encoder, bytes, length, stage, (uint32_t)index);
 }
 
@@ -274,7 +274,7 @@ static void mglBlitSetRenderTexture(id encoder,
                                     uint32_t stage,
                                     NSUInteger index)
 {
-    (void)mglRenderCppSetRenderTexture(
+    (void)mglRenderSetRenderTexture(
         (__bridge void *)encoder, (__bridge void *)texture, stage,
         (uint32_t)index);
 }
@@ -284,7 +284,7 @@ static void mglBlitSetRenderSampler(id encoder,
                                     uint32_t stage,
                                     NSUInteger index)
 {
-    (void)mglRenderCppSetRenderSampler(
+    (void)mglRenderSetRenderSampler(
         (__bridge void *)encoder, (__bridge void *)sampler, stage,
         (uint32_t)index);
 }
@@ -292,7 +292,7 @@ static void mglBlitSetRenderSampler(id encoder,
 static void mglBlitSetRenderViewport(id encoder,
                                      MGLViewportValue viewport)
 {
-    (void)mglRenderCppSetRenderViewport(
+    (void)mglRenderSetRenderViewport(
         (__bridge void *)encoder, viewport.origin_x, viewport.origin_y,
         viewport.width, viewport.height, viewport.znear, viewport.zfar);
 }
@@ -300,7 +300,7 @@ static void mglBlitSetRenderViewport(id encoder,
 static void mglBlitSetRenderScissor(id encoder,
                                     MGLScissorRectValue rect)
 {
-    (void)mglRenderCppSetRenderScissor(
+    (void)mglRenderSetRenderScissor(
         (__bridge void *)encoder, rect.x, rect.y, rect.width, rect.height);
 }
 
@@ -309,9 +309,9 @@ static void mglBlitDrawPrimitives(id encoder,
                                   NSUInteger vertexStart,
                                   NSUInteger vertexCount)
 {
-    (void)mglRenderCppEncodeDraw((__bridge void *)encoder,
-        &(MGLRenderCppDrawPlan){
-            .kind = MGL_RENDER_CPP_DRAW_ARRAY,
+    (void)mglRenderEncodeDraw((__bridge void *)encoder,
+        &(MGLRenderDrawPlan){
+            .kind = MGL_RENDER_DRAW_ARRAY,
             .primitive_type = (uint32_t)primitiveType,
             .vertex_start = vertexStart,
             .vertex_count = vertexCount,
@@ -323,13 +323,13 @@ static void mglBlitDrawPrimitives(id encoder,
 static void mglBlitEndComputeEncoder(id encoder)
 {
     if (!encoder) return;
-    (void)mglRenderCppEndComputeEncoder((__bridge void *)encoder);
+    (void)mglRenderEndComputeEncoder((__bridge void *)encoder);
 }
 
 static void mglBlitSetComputePipeline(id encoder,
                                       id pipeline)
 {
-    (void)mglRenderCppSetComputePipelineState(
+    (void)mglRenderSetComputePipelineState(
         (__bridge void *)encoder, (__bridge void *)pipeline);
 }
 
@@ -337,7 +337,7 @@ static void mglBlitSetComputeTexture(id encoder,
                                      id texture,
                                      NSUInteger index)
 {
-    (void)mglRenderCppSetComputeTexture(
+    (void)mglRenderSetComputeTexture(
         (__bridge void *)encoder, (__bridge void *)texture,
         (uint32_t)index);
 }
@@ -347,7 +347,7 @@ static void mglBlitSetComputeBytes(id encoder,
                                    NSUInteger length,
                                    NSUInteger index)
 {
-    (void)mglRenderCppSetComputeBytes(
+    (void)mglRenderSetComputeBytes(
         (__bridge void *)encoder, bytes, length, (uint32_t)index);
 }
 
@@ -355,7 +355,7 @@ static void mglBlitDispatchThreads(id encoder,
                                     MGLSizeValue threads,
                                     MGLSizeValue threadgroup)
 {
-    (void)mglRenderCppDispatchComputeThreads(
+    (void)mglRenderDispatchComputeThreads(
             (__bridge void *)encoder,
             (uint32_t)threads.width, (uint32_t)threads.height,
             (uint32_t)threads.depth,
@@ -366,7 +366,7 @@ static void mglBlitDispatchThreads(id encoder,
 static void mglBlitEndBlitEncoder(id encoder)
 {
     if (!encoder) return;
-    (void)mglRenderCppEndBlitEncoder((__bridge void *)encoder);
+    (void)mglRenderEndBlitEncoder((__bridge void *)encoder);
 }
 
 static void mglBlitCopyTexture(id encoder,
@@ -380,7 +380,7 @@ static void mglBlitCopyTexture(id encoder,
                                NSUInteger destinationLevel,
                                MGLOriginValue destinationOrigin)
 {
-    (void)mglRenderCppBlitCopyTexture(
+    (void)mglRenderBlitCopyTexture(
             (__bridge void *)encoder, (__bridge void *)source, sourceSlice,
             sourceLevel, sourceOrigin.x, sourceOrigin.y, sourceOrigin.z,
             sourceSize.width, sourceSize.height, sourceSize.depth,
@@ -399,7 +399,7 @@ static void mglBlitCopyTextureToBuffer(id encoder,
                                        NSUInteger bytesPerRow,
                                        NSUInteger bytesPerImage)
 {
-    (void)mglRenderCppBlitCopyTextureToBuffer(
+    (void)mglRenderBlitCopyTextureToBuffer(
             (__bridge void *)encoder, (__bridge void *)source, sourceSlice,
             sourceLevel, sourceOrigin.x, sourceOrigin.y, sourceOrigin.z,
             sourceSize.width, sourceSize.height, sourceSize.depth,
@@ -418,7 +418,7 @@ static void mglBlitCopyBufferToTexture(id encoder,
                                        NSUInteger destinationLevel,
                                        MGLOriginValue destinationOrigin)
 {
-    (void)mglRenderCppBlitCopyBufferToTexture(
+    (void)mglRenderBlitCopyBufferToTexture(
             (__bridge void *)encoder, (__bridge void *)source, sourceOffset,
             bytesPerRow, bytesPerImage, sourceSize.width, sourceSize.height,
             sourceSize.depth, (__bridge void *)destination, destinationSlice,
@@ -431,22 +431,22 @@ static void mglBlitSynchronizeTexture(id encoder,
                                       NSUInteger slice,
                                       NSUInteger level)
 {
-    (void)mglRenderCppBlitSynchronizeTexture(
+    (void)mglRenderBlitSynchronizeTexture(
         (__bridge void *)encoder, (__bridge void *)texture, slice, level);
 }
 
-static id mglLookupCppAuxComputePipeline(
+static id mglLookupAuxComputePipeline(
     uint32_t kind, uint64_t variant)
 {
     void *pipeline = NULL;
-    if (mglRenderCppGetOrCreateAuxComputePipeline(
+    if (mglRenderGetOrCreateAuxComputePipeline(
             NULL, kind, variant, &pipeline, NULL, 0) == 0 && pipeline) {
         return (__bridge_transfer id)pipeline;
     }
     return nil;
 }
 
-static id mglCreateCppAuxComputePipelineFromAsset(
+static id mglCreateAuxComputePipelineFromAsset(
     const char *assetName, const char *entryName,
     uint32_t kind, uint64_t variant, NSError **error)
 {
@@ -463,7 +463,7 @@ static id mglCreateCppAuxComputePipelineFromAsset(
     }
     void *pipeline = NULL;
     char message[512] = {0};
-    if (mglRenderCppGetOrCreateAuxComputePipelineFromMetallib(
+    if (mglRenderGetOrCreateAuxComputePipelineFromMetallib(
             asset->data, asset->size, asset->hash, entryName,
             kind, variant, &pipeline, message, sizeof(message)) == 0 &&
         pipeline) {
@@ -481,7 +481,7 @@ static id mglCreateCppAuxComputePipelineFromAsset(
     return nil;
 }
 
-static id mglCreateCppAuxRenderPipelineFromAsset(
+static id mglCreateAuxRenderPipelineFromAsset(
     const char *assetName, const char *vsEntry, const char *fsEntry,
     uint32_t kind, uint64_t variant,
     uint32_t colorFormat, uint32_t depthFormat,
@@ -502,7 +502,7 @@ static id mglCreateCppAuxRenderPipelineFromAsset(
     void *pipeline = NULL;
     char message[512] = {0};
     int icbEnabled = mgl_env_flag_enabled("MGL_ENABLE_ICB_PIPELINES");
-    if (mglRenderCppGetOrCreateAuxRenderPipelineFromMetallib(
+    if (mglRenderGetOrCreateAuxRenderPipelineFromMetallib(
             asset->data, asset->size, asset->hash,
             vsEntry, fsEntry, kind, variant,
             (uint32_t)colorFormat, (uint32_t)depthFormat,
@@ -523,7 +523,7 @@ static id mglCreateCppAuxRenderPipelineFromAsset(
     return nil;
 }
 
-static id mglLookupCppAuxRenderPipeline(
+static id mglLookupAuxRenderPipeline(
     uint32_t kind, uint64_t variant,
     uint32_t colorFormat, uint32_t depthFormat,
     uint32_t stencilFormat, uint32_t colorWriteMask,
@@ -531,7 +531,7 @@ static id mglLookupCppAuxRenderPipeline(
 {
     void *pipeline = NULL;
     int icbEnabled = mgl_env_flag_enabled("MGL_ENABLE_ICB_PIPELINES");
-    if (mglRenderCppGetOrCreateAuxRenderPipeline(
+    if (mglRenderGetOrCreateAuxRenderPipeline(
             NULL, NULL, kind, variant, (uint32_t)colorFormat,
             (uint32_t)depthFormat, (uint32_t)stencilFormat,
             (uint32_t)colorWriteMask, icbEnabled, rasterSampleCount,
@@ -576,17 +576,17 @@ static id mglLookupCppAuxRenderPipeline(
 
     uint64_t variant = (uint64_t)pixelFormat;
     id cached =
-        mglLookupCppAuxRenderPipeline(
-            MGL_RENDER_CPP_AUX_RENDER_SCALED_BLIT, variant,
+        mglLookupAuxRenderPipeline(
+            MGL_RENDER_AUX_RENDER_SCALED_BLIT, variant,
             pixelFormat, MGLPixelFormatInvalid, MGLPixelFormatInvalid,
             MGLColorWriteMaskAll, 1u);
     if (cached) return cached;
 
     NSError *error = nil;
     id pipeline =
-        mglCreateCppAuxRenderPipelineFromAsset(
+        mglCreateAuxRenderPipelineFromAsset(
             "scaled_blit", "mgl_scaled_blit_vs", "mgl_scaled_blit_fs",
-            MGL_RENDER_CPP_AUX_RENDER_SCALED_BLIT, variant,
+            MGL_RENDER_AUX_RENDER_SCALED_BLIT, variant,
             pixelFormat, MGLPixelFormatInvalid, MGLPixelFormatInvalid,
             MGLColorWriteMaskAll, 1u, &error);
     if (!pipeline) {
@@ -619,16 +619,16 @@ static id mglLookupCppAuxRenderPipeline(
     }
 
     id cached =
-        mglLookupCppAuxComputePipeline(
-            MGL_RENDER_CPP_AUX_COMPUTE_SCALED_BLIT,
+        mglLookupAuxComputePipeline(
+            MGL_RENDER_AUX_COMPUTE_SCALED_BLIT,
             (uint64_t)pixelFormat);
     if (cached) return cached;
 
     NSError *error = nil;
     id pipeline =
-        mglCreateCppAuxComputePipelineFromAsset(
+        mglCreateAuxComputePipelineFromAsset(
             "scaled_blit_cs", "mgl_scaled_blit_cs",
-            MGL_RENDER_CPP_AUX_COMPUTE_SCALED_BLIT,
+            MGL_RENDER_AUX_COMPUTE_SCALED_BLIT,
             (uint64_t)pixelFormat, &error);
     if (!pipeline) {
         NSLog(@"MGL ERROR: scaled blit asset compute pipeline create failed pixelFormat=%lu error=%@",
@@ -653,18 +653,18 @@ static id mglLookupCppAuxRenderPipeline(
     uint64_t variant = ((uint64_t)pixelFormat << 1) |
                        (stencilFormat != MGLPixelFormatInvalid ? 1u : 0u);
     id cached =
-        mglLookupCppAuxRenderPipeline(
-            MGL_RENDER_CPP_AUX_RENDER_SCALED_DEPTH_BLIT, variant,
+        mglLookupAuxRenderPipeline(
+            MGL_RENDER_AUX_RENDER_SCALED_DEPTH_BLIT, variant,
             MGLPixelFormatInvalid, pixelFormat, stencilFormat,
             MGLColorWriteMaskNone, 1u);
     if (cached) return cached;
 
     NSError *error = nil;
     id pipeline =
-        mglCreateCppAuxRenderPipelineFromAsset(
+        mglCreateAuxRenderPipelineFromAsset(
             "scaled_depth_blit", "mgl_scaled_depth_blit_vs",
             "mgl_scaled_depth_blit_fs",
-            MGL_RENDER_CPP_AUX_RENDER_SCALED_DEPTH_BLIT, variant,
+            MGL_RENDER_AUX_RENDER_SCALED_DEPTH_BLIT, variant,
             MGLPixelFormatInvalid, pixelFormat, stencilFormat,
             MGLColorWriteMaskNone, 1u, &error);
     if (!pipeline) {
@@ -683,16 +683,16 @@ static id mglLookupCppAuxRenderPipeline(
     const char *entryName = signedInteger
         ? "mgl_msaa_resolve_int" : "mgl_msaa_resolve_uint";
     id cached =
-        mglLookupCppAuxComputePipeline(
-            MGL_RENDER_CPP_AUX_COMPUTE_MSAA_INTEGER_RESOLVE,
+        mglLookupAuxComputePipeline(
+            MGL_RENDER_AUX_COMPUTE_MSAA_INTEGER_RESOLVE,
             signedInteger ? 1u : 0u);
     if (cached) return cached;
 
     NSError *error = nil;
     id pipeline =
-        mglCreateCppAuxComputePipelineFromAsset(
+        mglCreateAuxComputePipelineFromAsset(
             "msaa_integer_resolve", entryName,
-            MGL_RENDER_CPP_AUX_COMPUTE_MSAA_INTEGER_RESOLVE,
+            MGL_RENDER_AUX_COMPUTE_MSAA_INTEGER_RESOLVE,
             signedInteger ? 1u : 0u, &error);
     if (!pipeline) {
         NSLog(@"MGL ERROR: MSAA integer resolve asset pipeline create failed signed=%d error=%@",
@@ -731,7 +731,7 @@ static id mglLookupCppAuxRenderPipeline(
     }
 
     id encoder =
-        (__bridge id)mglRenderCppCreateComputeEncoderBorrowed(
+        (__bridge id)mglRenderCreateComputeEncoderBorrowed(
             _renderPassManager.state->currentCommandBufferOwner);
     if (!encoder) {
         NSLog(@"MGL WARN: failed to create MSAA integer resolve encoder for %s",
@@ -751,8 +751,8 @@ static id mglLookupCppAuxRenderPipeline(
     mglBlitSetComputeBytes(encoder, &params, sizeof(params), 0);
 
     MGLSizeValue threads = mglBlitSize(size.width, size.height, 1u);
-    NSUInteger w = MIN((NSUInteger)16u, mglRenderCppComputePipelineMaxTotalThreads((__bridge void *)pipeline));
-    NSUInteger h = MAX((NSUInteger)1u, MIN((NSUInteger)16u, mglRenderCppComputePipelineMaxTotalThreads((__bridge void *)pipeline) / w));
+    NSUInteger w = MIN((NSUInteger)16u, mglRenderComputePipelineMaxTotalThreads((__bridge void *)pipeline));
+    NSUInteger h = MAX((NSUInteger)1u, MIN((NSUInteger)16u, mglRenderComputePipelineMaxTotalThreads((__bridge void *)pipeline) / w));
     MGLSizeValue threadgroup = mglBlitSize(w, h, 1u);
     mglBlitDispatchThreads(encoder, threads, threadgroup);
     mglBlitEndComputeEncoder(encoder);
@@ -784,7 +784,7 @@ static id mglLookupCppAuxRenderPipeline(
         return nil;
     }
 
-    MGLRenderCppTextureDescriptorState desc = {0};
+    MGLRenderTextureDescriptorState desc = {0};
     desc.texture_type = MGLTextureType2D;
     desc.pixel_format = mglBlitTextureInfo(sourceTexture).pixel_format;
     desc.width = mglBlitTextureInfo(sourceTexture).width;
@@ -815,11 +815,11 @@ static id mglLookupCppAuxRenderPipeline(
 
     BOOL resolvesDepth =
         mglMetalPixelFormatIsDepthOrStencil(mglBlitTextureInfo(sourceTexture).pixel_format);
-    if (mglRenderCppEncodeMultisampleResolveForCommandBufferOwner(
+    if (mglRenderEncodeMultisampleResolveForCommandBufferOwner(
             _renderPassManager.state->currentCommandBufferOwner,
             resolvesDepth
-                ? MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH
-                : MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR,
+                ? MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH
+                : MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
             (__bridge void *)sourceTexture, sourceLevel, sourceSlice,
             sourceDepthPlane, (__bridge void *)resolvedTexture,
             0, 0, 0,
@@ -843,7 +843,7 @@ static id mglLookupCppAuxRenderPipeline(
         return sourceTexture;
     }
 
-    MGLRenderCppTextureDescriptorState desc = {0};
+    MGLRenderTextureDescriptorState desc = {0};
     desc.texture_type = MGLTextureType2D;
     desc.pixel_format = MGLPixelFormatDepth32Float;
     desc.width = mglBlitTextureInfo(sourceTexture).width;
@@ -882,7 +882,7 @@ static id mglLookupCppAuxRenderPipeline(
     params.forceOpaqueAlpha = 0.0f;
     params._padding = (vector_float3){0.0f, 0.0f, 0.0f};
 
-    MGLRenderCppRenderPassState passState =
+    MGLRenderPassState passState =
         mglBlitDefaultRenderPassState();
     passState.depth.attachment = mglBlitRenderPassAttachment(
         depthTexture, 0u, 0u, 0u, MGLLoadActionDontCare,
@@ -898,13 +898,13 @@ static id mglLookupCppAuxRenderPipeline(
     mglBlitSetRenderPipeline(encoder, pipeline);
     mglBlitSetDepthStencil(encoder, [self clearRectDepthState]);
     mglBlitSetRenderBytes(encoder, &params, sizeof(params),
-                          MGL_RENDER_CPP_BINDING_STAGE_VERTEX, 0);
+                          MGL_RENDER_BINDING_STAGE_VERTEX, 0);
     mglBlitSetRenderBytes(encoder, &params, sizeof(params),
-                          MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT, 0);
+                          MGL_RENDER_BINDING_STAGE_FRAGMENT, 0);
     mglBlitSetRenderTexture(encoder, sourceTexture,
-                            MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT, 0);
+                            MGL_RENDER_BINDING_STAGE_FRAGMENT, 0);
     mglBlitSetRenderSampler(encoder, sampler,
-                            MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT, 0);
+                            MGL_RENDER_BINDING_STAGE_FRAGMENT, 0);
     mglBlitSetRenderViewport(encoder, (MGLViewportValue){
         .origin_x = 0.0,
         .origin_y = 0.0,
@@ -1085,7 +1085,7 @@ static id mglLookupCppAuxRenderPipeline(
     }
 
     BOOL hadRenderEncoder =
-        mglRenderCppRenderEncoderOwnerHasCurrent(
+        mglRenderEncoderOwnerHasCurrent(
             _renderPassManager.state->currentRenderEncoderOwner) == 1;
     if (hadRenderEncoder) {
         [self endRenderEncodingLocked];
@@ -1110,7 +1110,7 @@ static id mglLookupCppAuxRenderPipeline(
     }
 
     if (hadRenderEncoder &&
-        mglRenderCppRenderEncoderOwnerHasCurrent(
+        mglRenderEncoderOwnerHasCurrent(
             _renderPassManager.state->currentRenderEncoderOwner) != 1) {
         if (![self restoreRenderEncoderAfterTextureUploadForDraw:"sample_gate_miss_repair"]) {
             return nil;
@@ -1192,7 +1192,7 @@ static id mglLookupCppAuxRenderPipeline(
         [self releaseGLSampledRenderTargetCopyForTexture:tex];
 
 
-        MGLRenderCppTextureDescriptorState desc = {0};
+        MGLRenderTextureDescriptorState desc = {0};
         desc.texture_type = MGLTextureType2D;
         desc.pixel_format = mglBlitTextureInfo(source).pixel_format;
         desc.width = mglBlitTextureInfo(source).width;
@@ -1287,7 +1287,7 @@ static id mglLookupCppAuxRenderPipeline(
 
     if (useComputePath) {
         id computeEncoder =
-            (__bridge id)mglRenderCppCreateComputeEncoderBorrowed(
+            (__bridge id)mglRenderCreateComputeEncoderBorrowed(
                 _renderPassManager.state->currentCommandBufferOwner);
         if (!computeEncoder) {
             static uint64_t s_computeEncoderFailCount = 0;
@@ -1310,10 +1310,10 @@ static id mglLookupCppAuxRenderPipeline(
             mglBlitSetComputeTexture(computeEncoder, source, 0);
             mglBlitSetComputeTexture(computeEncoder, destination, 1);
 
-            NSUInteger tgW = MIN((NSUInteger)16u, mglRenderCppComputePipelineMaxTotalThreads((__bridge void *)computePipeline));
+            NSUInteger tgW = MIN((NSUInteger)16u, mglRenderComputePipelineMaxTotalThreads((__bridge void *)computePipeline));
             NSUInteger tgH = MAX((NSUInteger)1u,
                                  MIN((NSUInteger)16u,
-                                     mglRenderCppComputePipelineMaxTotalThreads((__bridge void *)computePipeline) / tgW));
+                                     mglRenderComputePipelineMaxTotalThreads((__bridge void *)computePipeline) / tgW));
             MGLSizeValue threadgroup = mglBlitSize(tgW, tgH, 1u);
 
             for (NSUInteger lvl = 0u; lvl < mipLevels; lvl++) {
@@ -1390,7 +1390,7 @@ static id mglLookupCppAuxRenderPipeline(
                     }
                 }
 
-                MGLRenderCppRenderPassState copyState =
+                MGLRenderPassState copyState =
                     mglBlitDefaultRenderPassState();
                 copyState.color[0].attachment =
                     mglBlitRenderPassAttachment(
@@ -1416,13 +1416,13 @@ static id mglLookupCppAuxRenderPipeline(
 
                 mglBlitSetRenderPipeline(copyEncoder, pipeline);
                 mglBlitSetRenderBytes(copyEncoder, &params, sizeof(params),
-                                      MGL_RENDER_CPP_BINDING_STAGE_VERTEX, 0);
+                                      MGL_RENDER_BINDING_STAGE_VERTEX, 0);
                 mglBlitSetRenderBytes(copyEncoder, &params, sizeof(params),
-                                      MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT, 0);
+                                      MGL_RENDER_BINDING_STAGE_FRAGMENT, 0);
                 mglBlitSetRenderTexture(copyEncoder, srcLvl,
-                                        MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT, 0);
+                                        MGL_RENDER_BINDING_STAGE_FRAGMENT, 0);
                 mglBlitSetRenderSampler(copyEncoder, sampler,
-                                        MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT, 0);
+                                        MGL_RENDER_BINDING_STAGE_FRAGMENT, 0);
                 mglBlitSetRenderViewport(copyEncoder, (MGLViewportValue){
                     .origin_x = 0.0,
                     .origin_y = 0.0,
@@ -1494,8 +1494,8 @@ static id mglLookupCppAuxRenderPipeline(
                        ((uint64_t)(writesColor ? 1u : 0u) << 32) |
                        ((uint64_t)(writesDepth ? 1u : 0u) << 33);
     id cached =
-        mglLookupCppAuxRenderPipeline(
-            MGL_RENDER_CPP_AUX_RENDER_CLEAR_RECT, variant,
+        mglLookupAuxRenderPipeline(
+            MGL_RENDER_AUX_RENDER_CLEAR_RECT, variant,
             colorFormat, depthFormat, MGLPixelFormatInvalid,
             writesColor ? MGLColorWriteMaskAll : MGLColorWriteMaskNone,
             1u);
@@ -1503,10 +1503,10 @@ static id mglLookupCppAuxRenderPipeline(
 
     NSError *error = nil;
     id pipeline =
-        mglCreateCppAuxRenderPipelineFromAsset(
+        mglCreateAuxRenderPipelineFromAsset(
             "clear_rect", "mgl_clear_rect_vs",
             writesColor ? "mgl_clear_rect_fs" : NULL,
-            MGL_RENDER_CPP_AUX_RENDER_CLEAR_RECT, variant,
+            MGL_RENDER_AUX_RENDER_CLEAR_RECT, variant,
             colorFormat, depthFormat, MGLPixelFormatInvalid,
             writesColor ? MGLColorWriteMaskAll : MGLColorWriteMaskNone,
             1u, &error);
@@ -1530,7 +1530,7 @@ static id mglLookupCppAuxRenderPipeline(
         return cached;
     }
 
-    MGLRenderCppDepthStencilDescriptorState desc = {0};
+    MGLRenderDepthStencilDescriptorState desc = {0};
     desc.depth_compare_function = MGLCompareFunctionAlways;
     desc.depth_write_enabled = 1u;
     id depthState =
@@ -1612,7 +1612,7 @@ static id mglLookupCppAuxRenderPipeline(
                     }
 
                     if (resolvedAny) {
-                        MGLRenderCppRenderPassState resolveState =
+                        MGLRenderPassState resolveState =
                             mglBlitDefaultRenderPassState();
                         if (depthStencilMask & GL_DEPTH_BUFFER_BIT) {
                             resolveState.depth.attachment =
@@ -1709,7 +1709,7 @@ static id mglLookupCppAuxRenderPipeline(
                                                                    mtlTexture:depthDrawTexture];
                             }
                             id depthBlit =
-                                (__bridge id)mglRenderCppCreateBlitEncoderBorrowed(
+                                (__bridge id)mglRenderCreateBlitEncoderBorrowed(
                                     _renderPassManager.state->currentCommandBufferOwner);
                             if (depthBlit) {
                                 NSUInteger sourceMetalY =
@@ -1778,7 +1778,7 @@ static id mglLookupCppAuxRenderPipeline(
                                 BOOL isPackedDepthStencil =
                                     mglMetalPixelFormatIsPackedDepthStencil(mglBlitTextureInfo(depthDrawTexture).pixel_format);
 
-                                MGLRenderCppRenderPassState scaledDepthState =
+                                MGLRenderPassState scaledDepthState =
                                     mglBlitDefaultRenderPassState();
                                 scaledDepthState.depth.attachment =
                                     mglBlitRenderPassAttachment(
@@ -1831,18 +1831,18 @@ static id mglLookupCppAuxRenderPipeline(
 
                                     mglBlitSetRenderBytes(depthEncoder, &params,
                                                           sizeof(params),
-                                                          MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
+                                                          MGL_RENDER_BINDING_STAGE_VERTEX,
                                                           0);
                                     mglBlitSetRenderBytes(depthEncoder, &params,
                                                           sizeof(params),
-                                                          MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT,
+                                                          MGL_RENDER_BINDING_STAGE_FRAGMENT,
                                                           0);
                                     mglBlitSetRenderTexture(depthEncoder,
                                                             depthReadTexture,
-                                                            MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT,
+                                                            MGL_RENDER_BINDING_STAGE_FRAGMENT,
                                                             0);
                                     mglBlitSetRenderSampler(depthEncoder, sampler,
-                                                            MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT,
+                                                            MGL_RENDER_BINDING_STAGE_FRAGMENT,
                                                             0);
 
                                     /* Set viewport to the destination region in
@@ -2097,7 +2097,7 @@ static id mglLookupCppAuxRenderPipeline(
     if (mglBlitTextureInfo(readtexid).sample_count > 1u &&
         mglBlitTextureInfo(drawtexid).sample_count <= 1u &&
         !mglMetalPixelFormatIsIntegerColor(mglBlitTextureInfo(readtexid).pixel_format)) {
-        MGLRenderCppTextureDescriptorState resolveDesc = {0};
+        MGLRenderTextureDescriptorState resolveDesc = {0};
         resolveDesc.texture_type = MGLTextureType2D;
         resolveDesc.pixel_format = mglBlitTextureInfo(readtexid).pixel_format;
         resolveDesc.width = srcTexW;
@@ -2117,9 +2117,9 @@ static id mglLookupCppAuxRenderPipeline(
         }
 
         BOOL resolveEncoded =
-            mglRenderCppEncodeMultisampleResolveForCommandBufferOwner(
+            mglRenderEncodeMultisampleResolveForCommandBufferOwner(
                 _renderPassManager.state->currentCommandBufferOwner,
-                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR,
+                MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
                 (__bridge void *)readtexid, readSubresource.level,
                 readSubresource.slice, readSubresource.depthPlane,
                 (__bridge void *)resolveTex, 0, 0, 0, 0) == 0;
@@ -2128,7 +2128,7 @@ static id mglLookupCppAuxRenderPipeline(
         /* Synchronize the resolved texture so the subsequent blit/shader can
          * read it on a tile-based Apple GPU without stale tile memory. */
         id syncBlit =
-            (__bridge id)mglRenderCppCreateBlitEncoderBorrowed(
+            (__bridge id)mglRenderCreateBlitEncoderBorrowed(
                 _renderPassManager.state->currentCommandBufferOwner);
         if (syncBlit) {
             mglBlitSynchronizeTexture(syncBlit, resolveTex, 0, 0);
@@ -2258,7 +2258,7 @@ static id mglLookupCppAuxRenderPipeline(
         }
 
         id integerBlit =
-            (__bridge id)mglRenderCppCreateBlitEncoderBorrowed(
+            (__bridge id)mglRenderCreateBlitEncoderBorrowed(
                 _renderPassManager.state->currentCommandBufferOwner);
         if (!integerBlit) {
             NSLog(@"MGL WARN: mtlBlitFramebuffer failed to create integer direct blit encoder");
@@ -2352,8 +2352,8 @@ static id mglLookupCppAuxRenderPipeline(
         }
 
 
-        MGLRenderCppScaledBlitUVs uvs = {0};
-        mglRenderCppScaledBlitUVs(
+        MGLRenderScaledBlitUVs uvs = {0};
+        mglRenderScaledBlitUVs(
             (uint32_t)srcTexW, (uint32_t)srcTexH,
             srcMinX, srcMaxX, srcMinY, srcMaxY,
             srcXForward ? 1 : 0, srcYForward ? 1 : 0,
@@ -2369,7 +2369,7 @@ static id mglLookupCppAuxRenderPipeline(
         params.forceOpaqueAlpha = (drawfbo == NULL && drawtexid == (_drawable ? [self mglDrawableTexture] : nil)) ? 1.0f : 0.0f;
         params._padding = (vector_float3){0.0f, 0.0f, 0.0f};
 
-        MGLRenderCppRenderPassState scaledState =
+        MGLRenderPassState scaledState =
             mglBlitDefaultRenderPassState();
         scaledState.color[0].attachment = mglBlitRenderPassAttachment(
             drawtexid, drawSubresource.level, drawSubresource.slice,
@@ -2385,17 +2385,17 @@ static id mglLookupCppAuxRenderPipeline(
 
         mglBlitSetRenderPipeline(encoder, pipeline);
         mglBlitSetRenderBytes(encoder, &params, sizeof(params),
-                              MGL_RENDER_CPP_BINDING_STAGE_VERTEX, 0);
+                              MGL_RENDER_BINDING_STAGE_VERTEX, 0);
         mglBlitSetRenderBytes(encoder, &params, sizeof(params),
-                              MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT, 0);
+                              MGL_RENDER_BINDING_STAGE_FRAGMENT, 0);
         mglBlitSetRenderTexture(encoder, readtexid,
-                                MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT, 0);
+                                MGL_RENDER_BINDING_STAGE_FRAGMENT, 0);
         mglBlitSetRenderSampler(encoder, sampler,
-                                MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT, 0);
+                                MGL_RENDER_BINDING_STAGE_FRAGMENT, 0);
 
 
-        MGLRenderCppBlitScissorRect scissorBase = {0};
-        mglRenderCppBlitScissorRect(
+        MGLRenderBlitScissorRect scissorBase = {0};
+        mglRenderBlitScissorRect(
             dstMinX, dstMaxX, scaledDstMetalY, dstH,
             (uint32_t)dstTexW, (uint32_t)dstTexH, &scissorBase);
         NSInteger scissorX0 = (NSInteger)scissorBase.x0;
@@ -2488,7 +2488,7 @@ static id mglLookupCppAuxRenderPipeline(
     // start blit encoder
     id blitCommandEncoder;
     blitCommandEncoder =
-        (__bridge id)mglRenderCppCreateBlitEncoderBorrowed(
+        (__bridge id)mglRenderCreateBlitEncoderBorrowed(
             _renderPassManager.state->currentCommandBufferOwner);
     if (!blitCommandEncoder) {
         NSLog(@"MGL WARN: mtlBlitFramebuffer failed to create blit encoder");
@@ -2649,7 +2649,7 @@ static id mglLookupCppAuxRenderPipeline(
         isColorAttachment(glm_ctx, readAttachment) &&
         (readFBOAttachment->clear_bitmask & GL_COLOR_BUFFER_BIT)) {
         BOOL clearEncoded =
-            mglRenderCppEncodeColorClearForCommandBufferOwner(
+            mglRenderEncodeColorClearForCommandBufferOwner(
                 _renderPassManager.state->currentCommandBufferOwner,
                 (__bridge void *)readtexid, readSubresource.level,
                 readSubresource.slice, readSubresource.depthPlane,
@@ -2772,8 +2772,8 @@ static id mglLookupCppAuxRenderPipeline(
     }
 
 
-    MGLRenderCppBlitFramebufferPlan plan = {0};
-    if (mglRenderCppBlitFramebufferPlan(
+    MGLRenderBlitFramebufferPlan plan = {0};
+    if (mglRenderBlitFramebufferPlan(
             axisX.src0, axisX.src1, axisY.src0, axisY.src1,
             axisX.dst0, axisX.dst1, axisY.dst0, axisY.dst1,
             (uint32_t)srcTexW, (uint32_t)srcTexH,
@@ -3058,7 +3058,7 @@ void mglRendererCompatBlitFramebuffer(GLMContext glm_ctx,
         return NO;
     }
 
-    if (mglRenderCppTextureIsFramebufferOnly(srcTexObj->mtl_data)) {
+    if (mglRenderTextureIsFramebufferOnly(srcTexObj->mtl_data)) {
         return NO;
     }
 
@@ -3112,7 +3112,7 @@ void mglRendererCompatBlitFramebuffer(GLMContext glm_ctx,
     }
 
     id blitEncoder =
-        (__bridge id)mglRenderCppCreateBlitEncoderBorrowed(
+        (__bridge id)mglRenderCreateBlitEncoderBorrowed(
             _renderPassManager.state->currentCommandBufferOwner);
     if (!blitEncoder) {
         mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
@@ -3369,7 +3369,7 @@ void mglRendererCompatBlitFramebuffer(GLMContext glm_ctx,
     }
 
     id readEncoder =
-        (__bridge id)mglRenderCppCreateBlitEncoderBorrowed(
+        (__bridge id)mglRenderCreateBlitEncoderBorrowed(
             _renderPassManager.state->currentCommandBufferOwner);
     if (!readEncoder) {
         return NO;
@@ -3394,14 +3394,14 @@ void mglRendererCompatBlitFramebuffer(GLMContext glm_ctx,
     }
 
     [self flushCommandBuffer:YES];
-    MGLRenderCppCommandBufferState readState = {0};
+    MGLRenderCommandBufferState readState = {0};
     if ([_renderPassManager waitForLastSubmittedCommandBuffer:&readState] != 0 ||
         readState.has_error) {
         return NO;
     }
     void *stagingContents = NULL;
     uint64_t stagingLength = 0;
-    if (mglRenderCppGetBufferContents((__bridge void *)stagingBuffer,
+    if (mglRenderGetBufferContents((__bridge void *)stagingBuffer,
                                       &stagingContents,
                                       &stagingLength) != 0 ||
         !stagingContents || stagingLength < totalBytes) {
@@ -3621,7 +3621,7 @@ void mglRendererCompatBlitFramebuffer(GLMContext glm_ctx,
                                     MGLResourceStorageModeShared);
                             if (stagingBuf) {
                                 id uploadEncoder =
-                                    (__bridge id)mglRenderCppCreateBlitEncoderBorrowed(
+                                    (__bridge id)mglRenderCreateBlitEncoderBorrowed(
                                         _renderPassManager.state->currentCommandBufferOwner);
                                 if (uploadEncoder) {
                                     mglBlitCopyBufferToTexture(
@@ -4093,7 +4093,7 @@ void mglRendererCompatBlitFramebuffer(GLMContext glm_ctx,
                             return YES;
                         }
                         id readEncoder =
-                            (__bridge id)mglRenderCppCreateBlitEncoderBorrowed(
+                            (__bridge id)mglRenderCreateBlitEncoderBorrowed(
                                 _renderPassManager.state->currentCommandBufferOwner);
                         if (!readEncoder) {
                             free(stagingBytes);
@@ -4110,7 +4110,7 @@ void mglRendererCompatBlitFramebuffer(GLMContext glm_ctx,
                         [self flushCommandBuffer:YES];
                         void *sliceContents = NULL;
                         uint64_t sliceLength = 0;
-                        if (mglRenderCppGetBufferContents(
+                        if (mglRenderGetBufferContents(
                                 (__bridge void *)sliceBuffer,
                                 &sliceContents, &sliceLength) != 0 ||
                             !sliceContents || sliceLength < imageBytes) {
@@ -4708,7 +4708,7 @@ void mglRendererCompatBlitFramebuffer(GLMContext glm_ctx,
     }
 
     id blitEncoder =
-        (__bridge id)mglRenderCppCreateBlitEncoderBorrowed(
+        (__bridge id)mglRenderCreateBlitEncoderBorrowed(
             _renderPassManager.state->currentCommandBufferOwner);
     if (!blitEncoder) {
         NSLog(@"MGL ERROR: mtlCopyImageSubData failed to create blit encoder");

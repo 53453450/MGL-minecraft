@@ -43,7 +43,7 @@
  * Sync, GLMState, MGLBatchPath, MGLDrawBatch, MAX_COLOR_ATTACHMENTS,
  * TEXTURE_UNITS, and GL types (GLenum, GLuint, GLsizei, ...). */
 #include "glm_context.h"
-#include "mgl_render_cpp.h"
+#include "mgl_render.h"
 #include "mgl_renderer_backend.h"
 #import "mgl_capability.h"          // ivar type: MGLCapability
 #import "mgl_texture_compat.h"      // MGLTextureDataKind
@@ -106,7 +106,7 @@ static inline MGLRenderer *mglRendererForContext(GLMContext context)
 static inline BOOL mglBindingStateIsValid(void *owner)
 {
     uint32_t valid = 0;
-    return owner && mglRenderCppBindingGetValid(owner, &valid) == 0 && valid;
+    return owner && mglRenderBindingGetValid(owner, &valid) == 0 && valid;
 }
 
 static inline BOOL mglBindingStateBufferMatches(void *owner,
@@ -117,7 +117,7 @@ static inline BOOL mglBindingStateBufferMatches(void *owner,
 {
     void *current = NULL;
     uint64_t currentOffset = 0;
-    return owner && mglRenderCppBindingGetBuffer(
+    return owner && mglRenderBindingGetBuffer(
                         owner, stage, index, &current, &currentOffset) == 0 &&
            current == buffer && currentOffset == offset;
 }
@@ -126,14 +126,14 @@ static inline BOOL mglBindingStatePipelineMatches(void *owner, void *pipeline)
 {
     void *current = NULL;
     return owner &&
-           mglRenderCppBindingGetPipelineState(owner, &current) == 0 &&
+           mglRenderBindingGetPipelineState(owner, &current) == 0 &&
            current == pipeline;
 }
 
 static inline int mglBindingStateTextureSlotCount(void *owner)
 {
     uint64_t mask[2] = {0, 0};
-    if (!owner || mglRenderCppBindingGetTextureSlotMask(owner, mask) != 0) {
+    if (!owner || mglRenderBindingGetTextureSlotMask(owner, mask) != 0) {
         return 0;
     }
     return __builtin_popcountll(mask[0]) + __builtin_popcountll(mask[1]);

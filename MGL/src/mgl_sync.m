@@ -33,7 +33,7 @@
  */
 
 #import "mgl_sync.h"
-#import "mgl_render_cpp.h"
+#import "mgl_render.h"
 
 /* === Render-pass attachment subresource === */
 
@@ -97,34 +97,34 @@ MGLMetalAttachmentSubresource mglMetalAttachmentSubresourceForAttachment(const F
 bool mglMetalRenderPassColorAttachmentMatchesSubresource(const void *descriptor,
                                                          MGLMetalAttachmentSubresource subresource)
 {
-    return mglRenderCppRenderPassAttachmentMatchesSubresource(descriptor, &subresource);
+    return mglRenderPassAttachmentMatchesSubresource(descriptor, &subresource);
 }
 
 bool mglMetalRenderPassDepthAttachmentMatchesSubresource(const void *descriptor,
                                                          MGLMetalAttachmentSubresource subresource)
 {
-    return mglRenderCppRenderPassAttachmentMatchesSubresource(descriptor, &subresource);
+    return mglRenderPassAttachmentMatchesSubresource(descriptor, &subresource);
 }
 
 bool mglMetalRenderPassStencilAttachmentMatchesSubresource(const void *descriptor,
                                                            MGLMetalAttachmentSubresource subresource)
 {
-    return mglRenderCppRenderPassAttachmentMatchesSubresource(descriptor, &subresource);
+    return mglRenderPassAttachmentMatchesSubresource(descriptor, &subresource);
 }
 
 /* === Metal enum naming (for trace logging) === */
 
 const char *mglCommandBufferStatusName(uint32_t status)
 {
-    return mglRenderCppCommandBufferStatusName(status);
+    return mglRenderCommandBufferStatusName(status);
 }
 
 const char *mglLoadActionName(uint32_t action)
 {
-    return mglRenderCppLoadActionName(action);
+    return mglRenderLoadActionName(action);
 }
 
 const char *mglStoreActionName(uint32_t action)
 {
-    return mglRenderCppStoreActionName(action);
+    return mglRenderStoreActionName(action);
 }

@@ -46,14 +46,14 @@ extern "C" {
 
 /* Private Metal-cpp value facades used by the inline compatibility names.
  * Keep declarations local instead of making this public header depend on
- * MGL/src/mgl_render_cpp.h. */
-int mglRenderCppMetalPixelFormatIsDepthOrStencil(uint32_t pixel_format);
-int mglRenderCppMetalPixelFormatIsPackedDepthStencil(uint32_t pixel_format);
-int mglRenderCppGLInternalFormatLooksDepthOrStencil(uint32_t internal_format);
-int mglRenderCppTexturePixelFormatCompatibleWithExpectedDataKind(
+ * MGL/src/mgl_render.h. */
+int mglRenderMetalPixelFormatIsDepthOrStencil(uint32_t pixel_format);
+int mglRenderMetalPixelFormatIsPackedDepthStencil(uint32_t pixel_format);
+int mglRenderGLInternalFormatLooksDepthOrStencil(uint32_t internal_format);
+int mglRenderTexturePixelFormatCompatibleWithExpectedDataKind(
     uint32_t pixel_format, uint32_t expected_kind);
-uint64_t mglRenderCppMetalCompressedBlockHeight(uint32_t pixel_format);
-uint64_t mglRenderCppMetalUploadRowsForPixelFormat(uint32_t pixel_format,
+uint64_t mglRenderMetalCompressedBlockHeight(uint32_t pixel_format);
+uint64_t mglRenderMetalUploadRowsForPixelFormat(uint32_t pixel_format,
                                                    uint64_t pixel_height);
 
 /* === Pixel format classification ===
@@ -65,7 +65,7 @@ uint64_t mglRenderCppMetalUploadRowsForPixelFormat(uint32_t pixel_format,
  * Metal pixel format. */
 static inline bool mglMetalPixelFormatIsDepthOrStencil(uint32_t format)
 {
-    return mglRenderCppMetalPixelFormatIsDepthOrStencil(
+    return mglRenderMetalPixelFormatIsDepthOrStencil(
         (uint32_t)format) != 0;
 }
 
@@ -74,7 +74,7 @@ static inline bool mglMetalPixelFormatIsDepthOrStencil(uint32_t format)
  * depth and stencil attachments must share the same texture. */
 static inline bool mglMetalPixelFormatIsPackedDepthStencil(uint32_t format)
 {
-    return mglRenderCppMetalPixelFormatIsPackedDepthStencil(
+    return mglRenderMetalPixelFormatIsPackedDepthStencil(
         (uint32_t)format) != 0;
 }
 
@@ -83,7 +83,7 @@ static inline bool mglMetalPixelFormatIsPackedDepthStencil(uint32_t format)
  * paths and to skip color-only fallbacks. */
 static inline bool mglRendererGLInternalFormatLooksDepthOrStencil(GLenum internalformat)
 {
-    return mglRenderCppGLInternalFormatLooksDepthOrStencil(
+    return mglRenderGLInternalFormatLooksDepthOrStencil(
         (uint32_t)internalformat) != 0;
 }
 
@@ -109,7 +109,7 @@ MGLTextureDataKind mglTextureDataKindForPixelFormat(uint32_t pixelFormat);
 static inline bool mglTexturePixelFormatCompatibleWithExpectedDataKind(uint32_t pixelFormat,
                                                                       MGLTextureDataKind expectedKind)
 {
-    return mglRenderCppTexturePixelFormatCompatibleWithExpectedDataKind(
+    return mglRenderTexturePixelFormatCompatibleWithExpectedDataKind(
         (uint32_t)pixelFormat, (uint32_t)expectedKind) != 0;
 }
 
@@ -214,7 +214,7 @@ uint32_t mglEffectiveMTLPixelFormatForTexture(uint32_t fmt, Texture *tex);
  * their Y dimension (5/6/8/10/12); uncompressed formats return 1. */
 static inline size_t mglMetalCompressedBlockHeight(uint32_t pixelFormat)
 {
-    return (size_t)mglRenderCppMetalCompressedBlockHeight(
+    return (size_t)mglRenderMetalCompressedBlockHeight(
         (uint32_t)pixelFormat);
 }
 
@@ -223,7 +223,7 @@ static inline size_t mglMetalCompressedBlockHeight(uint32_t pixelFormat)
  * For compressed formats the height is rounded up to the block height. */
 static inline size_t mglMetalUploadRowsForPixelFormat(uint32_t pixelFormat, size_t pixelHeight)
 {
-    return (size_t)mglRenderCppMetalUploadRowsForPixelFormat(
+    return (size_t)mglRenderMetalUploadRowsForPixelFormat(
         (uint32_t)pixelFormat, (uint64_t)pixelHeight);
 }
 

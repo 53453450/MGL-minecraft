@@ -234,7 +234,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     _gpuRecovery.commandRecoveryOwner = mglRendererBackendGetOwner(
         _backend, MGL_RENDERER_BACKEND_OWNER_RECOVERY);
     NSLog(@"MGL INFO: Metal-cpp renderer backend ready (%p)", _backend);
-    mglRenderCppAttachRuntimeOwners(
+    mglRenderAttachRuntimeOwners(
         glm_ctx,
         _renderPassManager.state->currentCommandBufferOwner,
         _renderPassManager.state->currentRenderEncoderOwner,
@@ -249,7 +249,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     // PROPER AGX VIRTUALIZATION DETECTION: Maintain Metal functionality with virtualization compatibility
     BOOL isVirtualized = _capability.isVirtualized;
     char deviceName[128];
-    (void)mglRenderCppGetDeviceIdentity(
+    (void)mglRenderGetDeviceIdentity(
         (__bridge const void *)_device, NULL,
         deviceName, sizeof(deviceName));
 
@@ -355,8 +355,8 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     // Create initial command buffer for AGX safety
     @try {
         [_renderPassManager installNewCommandBufferFromQueue:(__bridge void *)_commandQueue];
-        MGLRenderCppCommandBufferState commandState = {0};
-        if (!mglRenderCppCommandBufferOwnerHasState(
+        MGLRenderCommandBufferState commandState = {0};
+        if (!mglRenderCommandBufferOwnerHasState(
                 _renderPassManager.state->currentCommandBufferOwner,
                 &commandState)) {
             NSLog(@"MGL ERROR: Failed to create initial Metal command buffer");
@@ -380,8 +380,8 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         return NO;
     }
 
-    MGLRenderCppCommandBufferState commandState = {0};
-    return mglRenderCppCommandBufferOwnerHasState(
+    MGLRenderCommandBufferState commandState = {0};
+    return mglRenderCommandBufferOwnerHasState(
         _renderPassManager.state->currentCommandBufferOwner,
         &commandState);
 }
@@ -539,15 +539,15 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
          * releasing the underlying Metal resources below. */
         [self invalidateLastBoundState];
         // Cleanup command buffer and encoder
-        MGLRenderCppCommandBufferState commandState = {0};
-        if (mglRenderCppCommandBufferOwnerHasState(
+        MGLRenderCommandBufferState commandState = {0};
+        if (mglRenderCommandBufferOwnerHasState(
                 _renderPassManager.state->currentCommandBufferOwner,
                 &commandState)) {
             NSLog(@"MGL INFO: Releasing current command buffer");
             [_renderPassManager discardCurrentCommandBuffer];
         }
 
-        if (mglRenderCppRenderEncoderOwnerHasCurrent(
+        if (mglRenderEncoderOwnerHasCurrent(
                 _renderPassManager.state->currentRenderEncoderOwner) == 1) {
             NSLog(@"MGL INFO: Releasing current render encoder");
             [_renderPassManager clearCurrentRenderEncoder];
@@ -564,7 +564,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         [_renderPassManager shutdown];
         _renderPassManager = nil;
 
-        mglRenderCppDetachRuntimeOwners(ctx);
+        mglRenderDetachRuntimeOwners(ctx);
 
         if (_pipelineCache) {
             if (_pipelineCache.state->pipelineState) {

@@ -18,8 +18,8 @@
 #define NS_PRIVATE_IMPLEMENTATION
 #define MTL_PRIVATE_IMPLEMENTATION
 
-#include "mgl_metal_cpp.h"
-#include "mgl_render_cpp.h"
+#include "mgl_metal.h"
+#include "mgl_render.h"
 #include "mgl_renderer_backend.h"
 #include "mgl_air_loader.h"
 #include "mgl_aux_assets.h"
@@ -103,7 +103,7 @@ MTL::Device* wrapDevice(void* objcDevice) {
 
 namespace {
 
-constexpr uint32_t kMGLCppMaxBufferSlots = 31;
+constexpr uint32_t kMGLMaxBufferSlots = 31;
 constexpr size_t kPackedStructBufferCapacity = 128;
 constexpr size_t kMinimumStageBindingSize = 256;
 
@@ -224,7 +224,7 @@ struct AuxRenderPipelineKey {
 };
 
 struct PipelineCacheKey {
-    std::array<uint64_t, MGL_RENDER_CPP_PIPELINE_CACHE_KEY_WORDS> words{};
+    std::array<uint64_t, MGL_RENDER_PIPELINE_CACHE_KEY_WORDS> words{};
 
     bool operator<(const PipelineCacheKey& other) const {
         return words < other.words;
@@ -260,7 +260,7 @@ struct PipelineCacheEntry {
 };
 
 struct PipelineCacheDescriptorEntry {
-    MGLRenderCppPipelineDescriptorState state{};
+    MGLRenderPipelineDescriptorState state{};
 };
 
 struct PipelineCacheDepthStencilEntry {
@@ -314,25 +314,25 @@ struct PipelineCacheOwner {
     }
 
     static PipelineCacheKey makeKey(
-        const uint64_t words[MGL_RENDER_CPP_PIPELINE_CACHE_KEY_WORDS]) {
+        const uint64_t words[MGL_RENDER_PIPELINE_CACHE_KEY_WORDS]) {
         PipelineCacheKey key;
         if (words) {
             std::copy(words,
-                      words + MGL_RENDER_CPP_PIPELINE_CACHE_KEY_WORDS,
+                      words + MGL_RENDER_PIPELINE_CACHE_KEY_WORDS,
                       key.words.begin());
         }
         return key;
     }
 
     static DepthStencilCacheKey makeDepthStencilKey(
-        const MGLRenderCppDepthStencilDescriptorState& descriptor) {
+        const MGLRenderDepthStencilDescriptorState& descriptor) {
         DepthStencilCacheKey key;
         key.words[0] = descriptor.depth_compare_function;
         key.words[1] = descriptor.depth_write_enabled;
-        const MGLRenderCppStencilDescriptorState* stencils[] = {
+        const MGLRenderStencilDescriptorState* stencils[] = {
             &descriptor.front, &descriptor.back};
         size_t cursor = 2;
-        for (const MGLRenderCppStencilDescriptorState* stencil : stencils) {
+        for (const MGLRenderStencilDescriptorState* stencil : stencils) {
             key.words[cursor++] = stencil->present;
             key.words[cursor++] = stencil->compare_function;
             key.words[cursor++] = stencil->read_mask;
@@ -362,13 +362,13 @@ struct PipelineCacheOwner {
     bool binaryArchiveEnabled = false;
     MTL::BinaryArchive* binaryArchive = nullptr;
     std::string binaryArchiveKey;
-    MGLRenderCppPipelineActiveState active{
+    MGLRenderPipelineActiveState active{
         nullptr, nullptr, nullptr,
         static_cast<uint32_t>(MTL::PixelFormatInvalid),
         static_cast<uint32_t>(MTL::PixelFormatInvalid),
         static_cast<uint32_t>(MTL::PixelFormatInvalid), 0};
-    std::array<MGLRenderCppPipelineBlendState,
-               MGL_RENDER_CPP_PIPELINE_COLOR_ATTACHMENTS> blend{};
+    std::array<MGLRenderPipelineBlendState,
+               MGL_RENDER_PIPELINE_COLOR_ATTACHMENTS> blend{};
     std::map<PipelineCacheKey, std::unique_ptr<PipelineCacheEntry>>
         pipelineCache;
     std::list<PipelineCacheKey> pipelineCacheLRU;
@@ -515,10 +515,10 @@ bool vertexConversionSource(Buffer* source,
 BufferCowPool* bufferCowPool(Buffer* owner, bool create) {
     if (!owner) return nullptr;
     BufferCowPool* pool =
-        static_cast<BufferCowPool*>(owner->mtl_cpp_cow_pool);
+        static_cast<BufferCowPool*>(owner->mtl_cow_pool);
     if (!pool && create) {
         pool = new (std::nothrow) BufferCowPool();
-        owner->mtl_cpp_cow_pool = pool;
+        owner->mtl_cow_pool = pool;
     }
     return pool;
 }
@@ -589,10 +589,10 @@ void installBufferCowSnapshot(Buffer* owner,
 
 struct BindingState {
     explicit BindingState(uint32_t textureSlotCount)
-        : vertexBuffers(kMGLCppMaxBufferSlots, nullptr),
-          fragmentBuffers(kMGLCppMaxBufferSlots, nullptr),
-          vertexBufferOffsets(kMGLCppMaxBufferSlots, 0),
-          fragmentBufferOffsets(kMGLCppMaxBufferSlots, 0),
+        : vertexBuffers(kMGLMaxBufferSlots, nullptr),
+          fragmentBuffers(kMGLMaxBufferSlots, nullptr),
+          vertexBufferOffsets(kMGLMaxBufferSlots, 0),
+          fragmentBufferOffsets(kMGLMaxBufferSlots, 0),
           vertexTextures(textureSlotCount, nullptr),
           fragmentTextures(textureSlotCount, nullptr),
           vertexSamplers(textureSlotCount, nullptr),
@@ -676,10 +676,10 @@ struct BindingState {
     MTL::ScissorRect scissor = {0, 0, 0, 0};
     MTL::TriangleFillMode triangleFillMode = MTL::TriangleFillModeFill;
     bool valid = false;
-    MGLRenderCppBindingStats stats = {};
+    MGLRenderBindingStats stats = {};
 };
 
-struct RendererCpp {
+struct Renderer {
     MTL::Device* device = nullptr;
     uint32_t users = 0;
     std::mutex mutex;
@@ -782,7 +782,7 @@ void releaseCommandRecoveryOwner(CommandBufferRecoveryOwner* owner) {
 
 void snapshotCommandRecovery(
     const CommandBufferRecoveryOwner& owner,
-    MGLRenderCppCommandRecoverySnapshot* state) {
+    MGLRenderCommandRecoverySnapshot* state) {
     if (!state) return;
     state->consecutive_errors = owner.consecutiveErrors;
     state->consecutive_successes = owner.consecutiveSuccesses;
@@ -817,8 +817,8 @@ struct MDIScratchOwner {
 };
 
 struct RenderPassIdentityOwner {
-    MGLRenderCppRenderPassIdentityState state{};
-    MGLRenderCppFboMatchCacheState cache{};
+    MGLRenderPassIdentityState state{};
+    MGLRenderFboMatchCacheState cache{};
     bool cache_valid = false;
 };
 
@@ -831,9 +831,9 @@ void releaseRenderPassObject(void* object) {
 }
 
 void retainRenderPassStateResources(
-    const MGLRenderCppRenderPassState& state) {
+    const MGLRenderPassState& state) {
     for (uint32_t index = 0;
-         index < MGL_RENDER_CPP_MAX_COLOR_ATTACHMENTS; ++index) {
+         index < MGL_RENDER_MAX_COLOR_ATTACHMENTS; ++index) {
         retainRenderPassObject(state.color[index].attachment.texture);
         retainRenderPassObject(state.color[index].attachment.resolve_texture);
     }
@@ -846,9 +846,9 @@ void retainRenderPassStateResources(
 }
 
 void releaseRenderPassStateResources(
-    const MGLRenderCppRenderPassState& state) {
+    const MGLRenderPassState& state) {
     for (uint32_t index = 0;
-         index < MGL_RENDER_CPP_MAX_COLOR_ATTACHMENTS; ++index) {
+         index < MGL_RENDER_MAX_COLOR_ATTACHMENTS; ++index) {
         releaseRenderPassObject(state.color[index].attachment.texture);
         releaseRenderPassObject(state.color[index].attachment.resolve_texture);
     }
@@ -865,7 +865,7 @@ struct RenderPassStateOwner {
         releaseRenderPassStateResources(state);
     }
 
-    MGLRenderCppRenderPassState state{};
+    MGLRenderPassState state{};
 };
 
 struct QueryStateOwner {
@@ -908,7 +908,7 @@ void copyString(NS::String* string, char* out, size_t capacity) {
 
 int snapshotCommandBufferState(
     MTL::CommandBuffer* commandBuffer,
-    MGLRenderCppCommandBufferState* state) {
+    MGLRenderCommandBufferState* state) {
     if (!commandBuffer || !state) return -1;
     memset(state, 0, sizeof(*state));
     state->status = static_cast<uint32_t>(commandBuffer->status());
@@ -942,9 +942,9 @@ struct CommandBufferCompletionContext {
         destroyContext = nullptr;
     }
 
-    void configure(MGLRenderCppCommandBufferCompletion completionCallback,
+    void configure(MGLRenderCommandBufferCompletion completionCallback,
                    void* callbackContext,
-                   MGLRenderCppDestroyContext destroyFunction) {
+                   MGLRenderDestroyContext destroyFunction) {
         std::lock_guard<std::mutex> lock(mutex);
         completed = false;
         callback = completionCallback;
@@ -954,7 +954,7 @@ struct CommandBufferCompletionContext {
 
     void destroy() {
         void* value = nullptr;
-        MGLRenderCppDestroyContext destroyFunction = nullptr;
+        MGLRenderDestroyContext destroyFunction = nullptr;
         {
             std::lock_guard<std::mutex> lock(mutex);
             value = std::exchange(context, nullptr);
@@ -964,10 +964,10 @@ struct CommandBufferCompletionContext {
     }
 
     void complete(MTL::CommandBuffer* commandBuffer) {
-        MGLRenderCppCommandBufferState state = {};
+        MGLRenderCommandBufferState state = {};
         snapshotCommandBufferState(commandBuffer, &state);
         void* callbackContext = nullptr;
-        MGLRenderCppCommandBufferCompletion completionCallback = nullptr;
+        MGLRenderCommandBufferCompletion completionCallback = nullptr;
         {
             std::lock_guard<std::mutex> lock(mutex);
             if (completed) return;
@@ -985,16 +985,16 @@ struct CommandBufferCompletionContext {
     std::mutex mutex;
     std::atomic<uint32_t> references{1u};
     bool completed = false;
-    MGLRenderCppCommandBufferCompletion callback = nullptr;
+    MGLRenderCommandBufferCompletion callback = nullptr;
     void* context = nullptr;
-    MGLRenderCppDestroyContext destroyContext = nullptr;
+    MGLRenderDestroyContext destroyContext = nullptr;
 };
 
 /* C auto-cleanup may call renderer shutdown after ordinary C++ static
  * destruction. Keep the container alive for the process and release Metal
  * objects only from the explicit shutdown boundary. */
-RendererCpp& renderer() {
-    static RendererCpp* instance = new RendererCpp();
+Renderer& renderer() {
+    static Renderer* instance = new Renderer();
     return *instance;
 }
 
@@ -1010,7 +1010,7 @@ void copyError(NS::Error* error, char* out, size_t capacity) {
     snprintf(out, capacity, "unknown Metal error");
 }
 
-void releasePipelineCaches(RendererCpp& renderer) {
+void releasePipelineCaches(Renderer& renderer) {
     for (auto& entry : renderer.computePipelines) {
         if (entry.second) entry.second->release();
     }
@@ -1037,14 +1037,14 @@ void releasePipelineCaches(RendererCpp& renderer) {
     renderer.convertedVertexBuffers.clear();
 }
 
-void releaseBindingStates(RendererCpp& renderer) {
+void releaseBindingStates(Renderer& renderer) {
     for (BindingState* state : renderer.bindingStates) {
         delete state;
     }
     renderer.bindingStates.clear();
 }
 
-void releasePackedStructBuffers(RendererCpp& renderer) {
+void releasePackedStructBuffers(Renderer& renderer) {
     for (Buffer*& buffer : renderer.packedStructBuffers) {
         if (!buffer) continue;
         releaseBridgedObject(&buffer->data.mtl_data);
@@ -1074,7 +1074,7 @@ bool scissorEqual(const MTL::ScissorRect& lhs, const MTL::ScissorRect& rhs) {
 }
 
 MTL::TextureDescriptor* newTextureDescriptor(
-    const MGLRenderCppTextureDescriptorState* state) {
+    const MGLRenderTextureDescriptorState* state) {
     if (!state || state->width == 0 || state->height == 0 ||
         state->depth == 0 || state->mipmap_level_count == 0 ||
         state->sample_count == 0 || state->array_length == 0) {
@@ -1125,7 +1125,7 @@ MTL::TextureDescriptor* newTextureDescriptor(
 
 void applyRenderPassAttachmentState(
     MTL::RenderPassAttachmentDescriptor* attachment,
-    const MGLRenderCppRenderPassAttachmentState& state) {
+    const MGLRenderPassAttachmentState& state) {
     attachment->setTexture(static_cast<MTL::Texture*>(state.texture));
     attachment->setResolveTexture(
         static_cast<MTL::Texture*>(state.resolve_texture));
@@ -1148,7 +1148,7 @@ void applyRenderPassAttachmentState(
 }
 
 MTL::RenderPassDescriptor* newRenderPassDescriptor(
-    const MGLRenderCppRenderPassState* state) {
+    const MGLRenderPassState* state) {
     if (!state) return nullptr;
     MTL::RenderPassDescriptor* descriptor =
         MTL::RenderPassDescriptor::alloc()->init();
@@ -1157,7 +1157,7 @@ MTL::RenderPassDescriptor* newRenderPassDescriptor(
     MTL::RenderPassColorAttachmentDescriptorArray* colors =
         descriptor->colorAttachments();
     for (uint32_t index = 0;
-         index < MGL_RENDER_CPP_MAX_COLOR_ATTACHMENTS; ++index) {
+         index < MGL_RENDER_MAX_COLOR_ATTACHMENTS; ++index) {
         MTL::RenderPassColorAttachmentDescriptor* attachment =
             colors->object(index);
         applyRenderPassAttachmentState(attachment,
@@ -1212,9 +1212,9 @@ MTL::RenderPassDescriptor* newRenderPassDescriptor(
 
     const uint32_t sampleCount = std::min(
         state->sample_position_count,
-        static_cast<uint32_t>(MGL_RENDER_CPP_MAX_SAMPLE_POSITIONS));
+        static_cast<uint32_t>(MGL_RENDER_MAX_SAMPLE_POSITIONS));
     if (sampleCount > 0) {
-        MTL::SamplePosition positions[MGL_RENDER_CPP_MAX_SAMPLE_POSITIONS];
+        MTL::SamplePosition positions[MGL_RENDER_MAX_SAMPLE_POSITIONS];
         for (uint32_t index = 0; index < sampleCount; ++index) {
             positions[index] = MTL::SamplePosition::Make(
                 state->sample_positions[index].x,
@@ -1225,10 +1225,10 @@ MTL::RenderPassDescriptor* newRenderPassDescriptor(
     return descriptor;
 }
 
-MGLRenderCppRenderPassState defaultRenderPassState() {
-    MGLRenderCppRenderPassState state = {};
+MGLRenderPassState defaultRenderPassState() {
+    MGLRenderPassState state = {};
     for (uint32_t index = 0;
-         index < MGL_RENDER_CPP_MAX_COLOR_ATTACHMENTS; ++index) {
+         index < MGL_RENDER_MAX_COLOR_ATTACHMENTS; ++index) {
         state.color[index].attachment.store_action =
             static_cast<uint32_t>(MTL::StoreActionStore);
         state.color[index].clear_alpha = 1.0;
@@ -1247,7 +1247,7 @@ struct CullDistanceIndexPlan {
     }
 
     MTL::Buffer* indexBuffer = nullptr;
-    std::vector<MGLRenderCppCullDistancePrimitive> primitives;
+    std::vector<MGLRenderCullDistancePrimitive> primitives;
 };
 
 bool readCullDistanceSourceIndex(const uint8_t* bytes,
@@ -1275,7 +1275,7 @@ bool readCullDistanceSourceIndex(const uint8_t* bytes,
 
 bool appendCullDistancePrimitive(
     std::vector<uint32_t>& expanded,
-    std::vector<MGLRenderCppCullDistancePrimitive>& primitives,
+    std::vector<MGLRenderCullDistancePrimitive>& primitives,
     MTL::PrimitiveType primitiveType,
     const uint32_t* vertices,
     uint32_t vertexCount,
@@ -1288,7 +1288,7 @@ bool appendCullDistancePrimitive(
         return false;
     }
 
-    MGLRenderCppCullDistancePrimitive primitive = {};
+    MGLRenderCullDistancePrimitive primitive = {};
     primitive.vertex_count = vertexCount;
     primitive.primitive_type = static_cast<uint32_t>(primitiveType);
     primitive.index_count = indexCount;
@@ -1325,7 +1325,7 @@ bool appendCullDistanceSegment(
     bool polygonLineMode,
     int64_t baseVertex,
     std::vector<uint32_t>& expanded,
-    std::vector<MGLRenderCppCullDistancePrimitive>& primitives) {
+    std::vector<MGLRenderCullDistancePrimitive>& primitives) {
     const size_t count = end - begin;
     auto append = [&](MTL::PrimitiveType primitiveType,
                       std::initializer_list<size_t> vertexOffsets,
@@ -1424,17 +1424,17 @@ bool appendCullDistanceSegment(
 //------------------------------------------------------------------------------------------------
 extern "C" {
 
-void mglRenderCppInitDefaultRenderPassState(
-    MGLRenderCppRenderPassState* state_out) {
+void mglRenderInitDefaultRenderPassState(
+    MGLRenderPassState* state_out) {
     if (!state_out) return;
     *state_out = mgl::defaultRenderPassState();
 }
 
-int mglRenderCppInit(void* objc_device) {
+int mglRenderInit(void* objc_device) {
     if (!objc_device) {
         return -1;
     }
-    mgl::RendererCpp& renderer = mgl::renderer();
+    mgl::Renderer& renderer = mgl::renderer();
     std::lock_guard<std::mutex> lock(renderer.mutex);
     if (renderer.device) {
         /* A process may own more than one GL context. They must share the
@@ -1452,8 +1452,8 @@ int mglRenderCppInit(void* objc_device) {
     return 0;
 }
 
-void mglRenderCppShutdown(void) {
-    mgl::RendererCpp& renderer = mgl::renderer();
+void mglRenderShutdown(void) {
+    mgl::Renderer& renderer = mgl::renderer();
     {
         std::lock_guard<std::mutex> lock(renderer.mutex);
         if (renderer.users > 1) {
@@ -1472,19 +1472,19 @@ void mglRenderCppShutdown(void) {
     }
 }
 
-int mglRenderCppIsInitialized(void) {
-    mgl::RendererCpp& renderer = mgl::renderer();
+int mglRenderIsInitialized(void) {
+    mgl::Renderer& renderer = mgl::renderer();
     std::lock_guard<std::mutex> lock(renderer.mutex);
     return renderer.device && renderer.users > 0 ? 1 : 0;
 }
 
-int mglRenderCppQueryCapability(void* device_ref,
-                                MGLRenderCppCapabilityState* state_out) {
+int mglRenderQueryCapability(void* device_ref,
+                                MGLRenderCapabilityState* state_out) {
     if (!device_ref || !state_out) return -1;
     MTL::Device* device = static_cast<MTL::Device*>(device_ref);
     if (!device) return -1;
 
-    MGLRenderCppCapabilityState state = {};
+    MGLRenderCapabilityState state = {};
     NS::String* name_string = device->name();
     const char* name = name_string ? name_string->utf8String() : nullptr;
     const bool virtualized = name && std::strstr(name, "AGX") != nullptr;
@@ -1531,7 +1531,7 @@ int mglRenderCppQueryCapability(void* device_ref,
     return 0;
 }
 
-int mglRenderCppLoadAIRMainFunction(const unsigned char* bytes,
+int mglRenderLoadAIRMainFunction(const unsigned char* bytes,
                                     size_t size,
                                     void** library_out,
                                     void** function_out,
@@ -1543,7 +1543,7 @@ int mglRenderCppLoadAIRMainFunction(const unsigned char* bytes,
         if (err && errcap) snprintf(err, errcap, "bad args");
         return -1;
     }
-    mgl::RendererCpp& renderer = mgl::renderer();
+    mgl::Renderer& renderer = mgl::renderer();
     std::lock_guard<std::mutex> lock(renderer.mutex);
     if (!renderer.device) {
         if (err && errcap) snprintf(err, errcap, "renderer not initialized");
@@ -1553,26 +1553,26 @@ int mglRenderCppLoadAIRMainFunction(const unsigned char* bytes,
         renderer.device, bytes, size, library_out, function_out, err, errcap);
 }
 
-void mglRenderCppDeleteMTLObj(GLMContext glm_ctx, void* object) {
+void mglRenderDeleteMTLObj(GLMContext glm_ctx, void* object) {
     (void)glm_ctx;
     mgl::releaseBridgedObject(&object);
 }
 
-void mglRenderCppReleaseBufferMetalData(GLMContext glm_ctx, Buffer* buffer) {
+void mglRenderReleaseBufferMetalData(GLMContext glm_ctx, Buffer* buffer) {
     if (!buffer || !buffer->data.mtl_data) return;
     (void)glm_ctx;
     mgl::releaseBridgedObject(&buffer->data.mtl_data);
 }
 
-void mglRenderCppReleaseBufferCowPool(Buffer* buffer) {
-    if (!buffer || !buffer->mtl_cpp_cow_pool) return;
+void mglRenderReleaseBufferCowPool(Buffer* buffer) {
+    if (!buffer || !buffer->mtl_cow_pool) return;
     mgl::BufferCowPool* pool =
-        static_cast<mgl::BufferCowPool*>(buffer->mtl_cpp_cow_pool);
-    buffer->mtl_cpp_cow_pool = nullptr;
+        static_cast<mgl::BufferCowPool*>(buffer->mtl_cow_pool);
+    buffer->mtl_cow_pool = nullptr;
     delete pool;
 }
 
-Buffer* mglRenderCppAcquirePackedStructBuffer(const void* data,
+Buffer* mglRenderAcquirePackedStructBuffer(const void* data,
                                                size_t size,
                                                char* err,
                                                size_t errcap) {
@@ -1582,7 +1582,7 @@ Buffer* mglRenderCppAcquirePackedStructBuffer(const void* data,
         return nullptr;
     }
 
-    mgl::RendererCpp& renderer = mgl::renderer();
+    mgl::Renderer& renderer = mgl::renderer();
     std::lock_guard<std::mutex> lock(renderer.mutex);
     if (!renderer.device) {
         if (err && errcap) snprintf(err, errcap, "renderer is not initialized");
@@ -1645,12 +1645,12 @@ Buffer* mglRenderCppAcquirePackedStructBuffer(const void* data,
     return slot;
 }
 
-uint64_t mglRenderCppAdvanceBufferGeneration(void) {
+uint64_t mglRenderAdvanceBufferGeneration(void) {
     return mgl::gBufferFrameGeneration.fetch_add(
                1, std::memory_order_acq_rel) + 1;
 }
 
-void mglRenderCppRecordBufferGenerationCompleted(uint64_t generation) {
+void mglRenderRecordBufferGenerationCompleted(uint64_t generation) {
     uint64_t completed =
         mgl::gBufferCompletedGeneration.load(std::memory_order_relaxed);
     while (generation > completed &&
@@ -1660,11 +1660,11 @@ void mglRenderCppRecordBufferGenerationCompleted(uint64_t generation) {
     }
 }
 
-uint64_t mglRenderCppCompletedBufferGeneration(void) {
+uint64_t mglRenderCompletedBufferGeneration(void) {
     return mgl::gBufferCompletedGeneration.load(std::memory_order_acquire);
 }
 
-void mglRenderCppNoteBufferEncoded(Buffer* buffer) {
+void mglRenderNoteBufferEncoded(Buffer* buffer) {
     if (!buffer || !buffer->data.mtl_data) return;
     mgl::BufferCowPool* pool = mgl::bufferCowPool(buffer, false);
     if (!pool) return;
@@ -1680,7 +1680,7 @@ void mglRenderCppNoteBufferEncoded(Buffer* buffer) {
     }
 }
 
-int mglRenderCppSnapshotSharedDirtyBuffer(Buffer* buffer,
+int mglRenderSnapshotSharedDirtyBuffer(Buffer* buffer,
                                           void** metal_buffer_out,
                                           char* err,
                                           size_t errcap) {
@@ -1749,13 +1749,13 @@ int mglRenderCppSnapshotSharedDirtyBuffer(Buffer* buffer,
     }
 
     mgl::installBufferCowSnapshot(buffer, snapshot);
-    mglRenderCppNoteBufferEncoded(buffer);
+    mglRenderNoteBufferEncoded(buffer);
     mglRecordBufferCowSnapshot(metalLength);
     *metal_buffer_out = buffer->data.mtl_data;
     return 0;
 }
 
-int mglRenderCppSnapshotSharedBufferRange(Buffer* buffer,
+int mglRenderSnapshotSharedBufferRange(Buffer* buffer,
                                           size_t offset,
                                           size_t length,
                                           void** metal_buffer_out,
@@ -1813,13 +1813,13 @@ int mglRenderCppSnapshotSharedBufferRange(Buffer* buffer,
     memcpy(static_cast<uint8_t*>(snapshot.buffer->contents()) + offset,
            cpuData + offset, length);
     mgl::installBufferCowSnapshot(buffer, snapshot);
-    mglRenderCppNoteBufferEncoded(buffer);
+    mglRenderNoteBufferEncoded(buffer);
     mglRecordBufferCowSnapshot(metalLength);
     *metal_buffer_out = buffer->data.mtl_data;
     return 0;
 }
 
-int mglRenderCppBindBufferStorage(Buffer* buffer,
+int mglRenderBindBufferStorage(Buffer* buffer,
                                   char* err,
                                   size_t errcap) {
     constexpr size_t kMaxSafeBufferSize =
@@ -1827,7 +1827,7 @@ int mglRenderCppBindBufferStorage(Buffer* buffer,
     if (err && errcap) err[0] = '\0';
     if (!buffer) {
         if (err && errcap) snprintf(err, errcap, "null buffer");
-        return MGL_RENDER_CPP_BUFFER_ERROR;
+        return MGL_RENDER_BUFFER_ERROR;
     }
 
     if (buffer->size <= 0 ||
@@ -1837,7 +1837,7 @@ int mglRenderCppBindBufferStorage(Buffer* buffer,
                      static_cast<size_t>(buffer->size));
         }
         buffer->data.mtl_data = nullptr;
-        return MGL_RENDER_CPP_BUFFER_ERROR;
+        return MGL_RENDER_BUFFER_ERROR;
     }
 
     uint64_t options = static_cast<uint64_t>(MTL::ResourceStorageModeShared);
@@ -1861,7 +1861,7 @@ int mglRenderCppBindBufferStorage(Buffer* buffer,
             snprintf(err, errcap, "transient buffer has no CPU backing");
         }
         buffer->data.mtl_data = nullptr;
-        return MGL_RENDER_CPP_BUFFER_ERROR;
+        return MGL_RENDER_BUFFER_ERROR;
     }
     if (buffer->transient_batch_buffer) {
         allocationSize = static_cast<size_t>(buffer->size);
@@ -1881,7 +1881,7 @@ int mglRenderCppBindBufferStorage(Buffer* buffer,
                      static_cast<unsigned>(buffer->name));
         }
         buffer->data.mtl_data = nullptr;
-        return MGL_RENDER_CPP_BUFFER_ERROR;
+        return MGL_RENDER_BUFFER_ERROR;
     }
     if (clientStorage) {
         allocationSize = static_cast<size_t>(buffer->size);
@@ -1890,12 +1890,12 @@ int mglRenderCppBindBufferStorage(Buffer* buffer,
     void* metalBuffer = nullptr;
     mglMetalCountCreate(mgl::kMetalKindBuffer);
     int result = noCopy
-        ? mglRenderCppCreateBufferWithBytesNoCopy(
+        ? mglRenderCreateBufferWithBytesNoCopy(
               bytes, allocationSize, options, nullptr, 1, &metalBuffer)
         : (bytes
-            ? mglRenderCppCreateBufferWithBytes(
+            ? mglRenderCreateBufferWithBytes(
                   bytes, allocationSize, options, nullptr, &metalBuffer)
-            : mglRenderCppCreateBuffer(
+            : mglRenderCreateBuffer(
                   allocationSize, options, nullptr, &metalBuffer));
     if (result != 0 || !metalBuffer) {
         if (err && errcap) {
@@ -1903,37 +1903,37 @@ int mglRenderCppBindBufferStorage(Buffer* buffer,
                      allocationSize);
         }
         buffer->data.mtl_data = nullptr;
-        return MGL_RENDER_CPP_BUFFER_ERROR;
+        return MGL_RENDER_BUFFER_ERROR;
     }
 
     buffer->data.mtl_data = metalBuffer;
     buffer->data.mtl_owns_buffer_data = noCopy ? GL_TRUE : GL_FALSE;
     if (!bytes) buffer->data.buffer_data = 0;
-    return MGL_RENDER_CPP_BUFFER_BOUND;
+    return MGL_RENDER_BUFFER_BOUND;
 }
 
-int mglRenderCppUpdateDirtyBuffer(Buffer* buffer,
+int mglRenderUpdateDirtyBuffer(Buffer* buffer,
                                   char* err,
                                   size_t errcap) {
     if (err && errcap) err[0] = '\0';
     if (!buffer) {
         if (err && errcap) snprintf(err, errcap, "null buffer");
-        return MGL_RENDER_CPP_BUFFER_OPERATION_ERROR;
+        return MGL_RENDER_BUFFER_OPERATION_ERROR;
     }
 
     auto ensureMetalBuffer = [&]() -> int {
         if (buffer->data.mtl_data) {
-            return MGL_RENDER_CPP_BUFFER_OPERATION_HANDLED;
+            return MGL_RENDER_BUFFER_OPERATION_HANDLED;
         }
         const int bindResult =
-            mglRenderCppBindBufferStorage(buffer, err, errcap);
-        if (bindResult == MGL_RENDER_CPP_BUFFER_BOUND) {
-            return MGL_RENDER_CPP_BUFFER_OPERATION_HANDLED;
+            mglRenderBindBufferStorage(buffer, err, errcap);
+        if (bindResult == MGL_RENDER_BUFFER_BOUND) {
+            return MGL_RENDER_BUFFER_OPERATION_HANDLED;
         }
-        if (bindResult == MGL_RENDER_CPP_BUFFER_NOT_APPLICABLE) {
-            return MGL_RENDER_CPP_BUFFER_OPERATION_NOT_APPLICABLE;
+        if (bindResult == MGL_RENDER_BUFFER_NOT_APPLICABLE) {
+            return MGL_RENDER_BUFFER_OPERATION_NOT_APPLICABLE;
         }
-        return MGL_RENDER_CPP_BUFFER_OPERATION_ERROR;
+        return MGL_RENDER_BUFFER_OPERATION_ERROR;
     };
 
     if (buffer->plain_uniform_slot && !buffer->data.mtl_data &&
@@ -1941,25 +1941,25 @@ int mglRenderCppUpdateDirtyBuffer(Buffer* buffer,
         buffer->size <= 4096) {
         buffer->data.dirty_bits &=
             ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
-        return MGL_RENDER_CPP_BUFFER_OPERATION_HANDLED;
+        return MGL_RENDER_BUFFER_OPERATION_HANDLED;
     }
 
     if (buffer->size < 4096) {
         if ((buffer->data.dirty_bits & DIRTY_BUFFER_ADDR) &&
             !buffer->data.mtl_data) {
             const int result = ensureMetalBuffer();
-            if (result != MGL_RENDER_CPP_BUFFER_OPERATION_HANDLED) {
+            if (result != MGL_RENDER_BUFFER_OPERATION_HANDLED) {
                 return result;
             }
         }
 
         if ((buffer->data.dirty_bits & DIRTY_BUFFER_DATA) == 0) {
             buffer->data.dirty_bits &= ~DIRTY_BUFFER_ADDR;
-            return MGL_RENDER_CPP_BUFFER_OPERATION_HANDLED;
+            return MGL_RENDER_BUFFER_OPERATION_HANDLED;
         }
 
         const int bindResult = ensureMetalBuffer();
-        if (bindResult != MGL_RENDER_CPP_BUFFER_OPERATION_HANDLED) {
+        if (bindResult != MGL_RENDER_BUFFER_OPERATION_HANDLED) {
             return bindResult;
         }
 
@@ -1967,14 +1967,14 @@ int mglRenderCppUpdateDirtyBuffer(Buffer* buffer,
             static_cast<MTL::Buffer*>(buffer->data.mtl_data);
         MTL::Buffer* bufferBeforeSnapshot = metalBuffer;
         void* snapshotBuffer = nullptr;
-        if (mglRenderCppSnapshotSharedDirtyBuffer(
+        if (mglRenderSnapshotSharedDirtyBuffer(
                 buffer, &snapshotBuffer, err, errcap) != 0) {
-            return MGL_RENDER_CPP_BUFFER_OPERATION_ERROR;
+            return MGL_RENDER_BUFFER_OPERATION_ERROR;
         }
         metalBuffer = static_cast<MTL::Buffer*>(snapshotBuffer);
         if (!metalBuffer) {
             if (err && errcap) snprintf(err, errcap, "missing Metal buffer");
-            return MGL_RENDER_CPP_BUFFER_OPERATION_ERROR;
+            return MGL_RENDER_BUFFER_OPERATION_ERROR;
         }
 
         const size_t metalLength = static_cast<size_t>(metalBuffer->length());
@@ -2031,17 +2031,17 @@ int mglRenderCppUpdateDirtyBuffer(Buffer* buffer,
                 ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
             buffer->cpu_shadow_pending = GL_FALSE;
         }
-        return MGL_RENDER_CPP_BUFFER_OPERATION_HANDLED;
+        return MGL_RENDER_BUFFER_OPERATION_HANDLED;
     }
 
     if ((buffer->data.dirty_bits & DIRTY_BUFFER_ADDR) != 0) {
         const int bindResult = ensureMetalBuffer();
-        if (bindResult != MGL_RENDER_CPP_BUFFER_OPERATION_HANDLED) {
+        if (bindResult != MGL_RENDER_BUFFER_OPERATION_HANDLED) {
             return bindResult;
         }
         if ((buffer->data.dirty_bits & DIRTY_BUFFER_DATA) == 0) {
             buffer->data.dirty_bits &= ~DIRTY_BUFFER_ADDR;
-            return MGL_RENDER_CPP_BUFFER_OPERATION_HANDLED;
+            return MGL_RENDER_BUFFER_OPERATION_HANDLED;
         }
     }
 
@@ -2051,22 +2051,22 @@ int mglRenderCppUpdateDirtyBuffer(Buffer* buffer,
                      "buffer %u has no dirty CPU or Metal backing",
                      static_cast<unsigned>(buffer->name));
         }
-        return MGL_RENDER_CPP_BUFFER_OPERATION_ERROR;
+        return MGL_RENDER_BUFFER_OPERATION_ERROR;
     }
 
     const int bindResult = ensureMetalBuffer();
-    if (bindResult != MGL_RENDER_CPP_BUFFER_OPERATION_HANDLED) {
+    if (bindResult != MGL_RENDER_BUFFER_OPERATION_HANDLED) {
         return bindResult;
     }
     void* snapshotBuffer = nullptr;
-    if (mglRenderCppSnapshotSharedDirtyBuffer(
+    if (mglRenderSnapshotSharedDirtyBuffer(
             buffer, &snapshotBuffer, err, errcap) != 0) {
-        return MGL_RENDER_CPP_BUFFER_OPERATION_ERROR;
+        return MGL_RENDER_BUFFER_OPERATION_ERROR;
     }
     MTL::Buffer* metalBuffer = static_cast<MTL::Buffer*>(snapshotBuffer);
     if (!metalBuffer) {
         if (err && errcap) snprintf(err, errcap, "missing Metal buffer");
-        return MGL_RENDER_CPP_BUFFER_OPERATION_ERROR;
+        return MGL_RENDER_BUFFER_OPERATION_ERROR;
     }
 
     const size_t metalLength = static_cast<size_t>(metalBuffer->length());
@@ -2100,21 +2100,21 @@ int mglRenderCppUpdateDirtyBuffer(Buffer* buffer,
         buffer->data.dirty_bits = 0;
         buffer->cpu_shadow_pending = GL_FALSE;
     }
-    return MGL_RENDER_CPP_BUFFER_OPERATION_HANDLED;
+    return MGL_RENDER_BUFFER_OPERATION_HANDLED;
 }
 
-void mglRenderCppBindBuffer(GLMContext glm_ctx, Buffer* buffer) {
+void mglRenderBindBuffer(GLMContext glm_ctx, Buffer* buffer) {
     char error[256] = {};
-    int result = mglRenderCppBindBufferStorage(
+    int result = mglRenderBindBufferStorage(
         buffer, error, sizeof(error));
-    if (result == MGL_RENDER_CPP_BUFFER_BOUND) return;
+    if (result == MGL_RENDER_BUFFER_BOUND) return;
     fprintf(stderr,
             "MGL ERROR: Metal-cpp buffer bind failed buffer=%u: %s\n",
             buffer ? (unsigned)buffer->name : 0u,
             error[0] ? error : "unknown error");
 }
 
-int mglRenderCppBufferSubDataStorage(Buffer* buffer,
+int mglRenderBufferSubDataStorage(Buffer* buffer,
                                      size_t offset,
                                      size_t size,
                                      const void* bytes,
@@ -2123,12 +2123,12 @@ int mglRenderCppBufferSubDataStorage(Buffer* buffer,
     if (err && errcap) err[0] = '\0';
     if (!buffer) {
         if (err && errcap) snprintf(err, errcap, "null buffer");
-        return MGL_RENDER_CPP_BUFFER_OPERATION_ERROR;
+        return MGL_RENDER_BUFFER_OPERATION_ERROR;
     }
-    if (size == 0) return MGL_RENDER_CPP_BUFFER_OPERATION_HANDLED;
+    if (size == 0) return MGL_RENDER_BUFFER_OPERATION_HANDLED;
     if (!bytes) {
         if (err && errcap) snprintf(err, errcap, "null source bytes");
-        return MGL_RENDER_CPP_BUFFER_OPERATION_ERROR;
+        return MGL_RENDER_BUFFER_OPERATION_ERROR;
     }
 
     uint8_t* cpuBase = buffer->data.buffer_data >= 0x1000u
@@ -2136,12 +2136,12 @@ int mglRenderCppBufferSubDataStorage(Buffer* buffer,
               static_cast<uintptr_t>(buffer->data.buffer_data))
         : nullptr;
     if (!buffer->data.mtl_data) {
-        int bindResult = mglRenderCppBindBufferStorage(buffer, err, errcap);
-        if (bindResult == MGL_RENDER_CPP_BUFFER_NOT_APPLICABLE) {
-            return MGL_RENDER_CPP_BUFFER_OPERATION_NOT_APPLICABLE;
+        int bindResult = mglRenderBindBufferStorage(buffer, err, errcap);
+        if (bindResult == MGL_RENDER_BUFFER_NOT_APPLICABLE) {
+            return MGL_RENDER_BUFFER_OPERATION_NOT_APPLICABLE;
         }
-        if (bindResult != MGL_RENDER_CPP_BUFFER_BOUND) {
-            return MGL_RENDER_CPP_BUFFER_OPERATION_ERROR;
+        if (bindResult != MGL_RENDER_BUFFER_BOUND) {
+            return MGL_RENDER_BUFFER_OPERATION_ERROR;
         }
     }
 
@@ -2155,20 +2155,20 @@ int mglRenderCppBufferSubDataStorage(Buffer* buffer,
                      "range offset=%zu size=%zu exceeds Metal length=%zu",
                      offset, size, metalLength);
         }
-        return MGL_RENDER_CPP_BUFFER_OPERATION_ERROR;
+        return MGL_RENDER_BUFFER_OPERATION_ERROR;
     }
     if (!metalBase) {
         if (err && errcap) snprintf(err, errcap, "Metal buffer has no contents");
-        return MGL_RENDER_CPP_BUFFER_OPERATION_ERROR;
+        return MGL_RENDER_BUFFER_OPERATION_ERROR;
     }
 
     MTL::Buffer* bufferBeforeSnapshot = metalBuffer;
     if (cpuBase && cpuBase != metalBase) {
         memmove(cpuBase + offset, bytes, size);
         void* snapshotBuffer = nullptr;
-        if (mglRenderCppSnapshotSharedDirtyBuffer(
+        if (mglRenderSnapshotSharedDirtyBuffer(
                 buffer, &snapshotBuffer, err, errcap) != 0) {
-            return MGL_RENDER_CPP_BUFFER_OPERATION_ERROR;
+            return MGL_RENDER_BUFFER_OPERATION_ERROR;
         }
         metalBuffer = static_cast<MTL::Buffer*>(snapshotBuffer);
         metalBase = metalBuffer
@@ -2176,7 +2176,7 @@ int mglRenderCppBufferSubDataStorage(Buffer* buffer,
             : nullptr;
         if (!metalBuffer || !metalBase) {
             if (err && errcap) snprintf(err, errcap, "snapshot has no contents");
-            return MGL_RENDER_CPP_BUFFER_OPERATION_ERROR;
+            return MGL_RENDER_BUFFER_OPERATION_ERROR;
         }
     }
 
@@ -2186,25 +2186,25 @@ int mglRenderCppBufferSubDataStorage(Buffer* buffer,
             metalBuffer->didModifyRange(NS::Range::Make(offset, size));
         }
     }
-    return MGL_RENDER_CPP_BUFFER_OPERATION_HANDLED;
+    return MGL_RENDER_BUFFER_OPERATION_HANDLED;
 }
 
-void mglRenderCppBufferSubData(GLMContext glm_ctx,
+void mglRenderBufferSubData(GLMContext glm_ctx,
                                Buffer* buffer,
                                size_t offset,
                                size_t size,
                                const void* bytes) {
     char error[256] = {};
-    int result = mglRenderCppBufferSubDataStorage(
+    int result = mglRenderBufferSubDataStorage(
         buffer, offset, size, bytes, error, sizeof(error));
-    if (result == MGL_RENDER_CPP_BUFFER_OPERATION_HANDLED) return;
+    if (result == MGL_RENDER_BUFFER_OPERATION_HANDLED) return;
     fprintf(stderr,
             "MGL ERROR: Metal-cpp buffer subdata failed buffer=%u: %s\n",
             buffer ? (unsigned)buffer->name : 0u,
             error[0] ? error : "unknown error");
 }
 
-int mglRenderCppMapBufferStorage(Buffer* buffer,
+int mglRenderMapBufferStorage(Buffer* buffer,
                                  size_t offset,
                                  size_t size,
                                  unsigned int access,
@@ -2216,16 +2216,16 @@ int mglRenderCppMapBufferStorage(Buffer* buffer,
     if (err && errcap) err[0] = '\0';
     if (!buffer || !mapped_out) {
         if (err && errcap) snprintf(err, errcap, "bad arguments");
-        return MGL_RENDER_CPP_BUFFER_OPERATION_ERROR;
+        return MGL_RENDER_BUFFER_OPERATION_ERROR;
     }
 
     if (!buffer->data.mtl_data) {
-        int bindResult = mglRenderCppBindBufferStorage(buffer, err, errcap);
-        if (bindResult == MGL_RENDER_CPP_BUFFER_NOT_APPLICABLE) {
-            return MGL_RENDER_CPP_BUFFER_OPERATION_NOT_APPLICABLE;
+        int bindResult = mglRenderBindBufferStorage(buffer, err, errcap);
+        if (bindResult == MGL_RENDER_BUFFER_NOT_APPLICABLE) {
+            return MGL_RENDER_BUFFER_OPERATION_NOT_APPLICABLE;
         }
-        if (bindResult != MGL_RENDER_CPP_BUFFER_BOUND) {
-            return MGL_RENDER_CPP_BUFFER_OPERATION_ERROR;
+        if (bindResult != MGL_RENDER_BUFFER_BOUND) {
+            return MGL_RENDER_BUFFER_OPERATION_ERROR;
         }
     }
 
@@ -2237,7 +2237,7 @@ int mglRenderCppMapBufferStorage(Buffer* buffer,
             snprintf(err, errcap, "offset=%zu beyond Metal length=%zu",
                      offset, metalLength);
         }
-        return MGL_RENDER_CPP_BUFFER_OPERATION_ERROR;
+        return MGL_RENDER_BUFFER_OPERATION_ERROR;
     }
     const size_t safeLength = std::min(size, metalLength - offset);
     uint8_t* metalBase = static_cast<uint8_t*>(metalBuffer->contents());
@@ -2260,17 +2260,17 @@ int mglRenderCppMapBufferStorage(Buffer* buffer,
         } else {
             *mapped_out = metalBase ? metalBase + offset : nullptr;
         }
-        return MGL_RENDER_CPP_BUFFER_OPERATION_HANDLED;
+        return MGL_RENDER_BUFFER_OPERATION_HANDLED;
     }
 
     if (!cpuBase &&
         metalBuffer->storageMode() == MTL::StorageModeManaged) {
         metalBuffer->didModifyRange(NS::Range::Make(offset, safeLength));
     }
-    return MGL_RENDER_CPP_BUFFER_OPERATION_HANDLED;
+    return MGL_RENDER_BUFFER_OPERATION_HANDLED;
 }
 
-void* mglRenderCppMapUnmapBuffer(GLMContext glm_ctx,
+void* mglRenderMapUnmapBuffer(GLMContext glm_ctx,
                                  Buffer* buffer,
                                  size_t offset,
                                  size_t size,
@@ -2278,9 +2278,9 @@ void* mglRenderCppMapUnmapBuffer(GLMContext glm_ctx,
                                  bool map) {
     void* mapped = nullptr;
     char error[256] = {};
-    int result = mglRenderCppMapBufferStorage(
+    int result = mglRenderMapBufferStorage(
         buffer, offset, size, access, map, &mapped, error, sizeof(error));
-    if (result == MGL_RENDER_CPP_BUFFER_OPERATION_HANDLED) return mapped;
+    if (result == MGL_RENDER_BUFFER_OPERATION_HANDLED) return mapped;
     fprintf(stderr,
             "MGL ERROR: Metal-cpp buffer map failed buffer=%u: %s\n",
             buffer ? (unsigned)buffer->name : 0u,
@@ -2288,7 +2288,7 @@ void* mglRenderCppMapUnmapBuffer(GLMContext glm_ctx,
     return nullptr;
 }
 
-void mglRenderCppReadBackBuffer(GLMContext glm_ctx,
+void mglRenderReadBackBuffer(GLMContext glm_ctx,
                                 Buffer* buffer,
                                 size_t offset,
                                 size_t size) {
@@ -2319,7 +2319,7 @@ void mglRenderCppReadBackBuffer(GLMContext glm_ctx,
     memcpy(cpuBase + offset, metalBase + offset, safeLength);
 }
 
-int mglRenderCppFlushBufferRangeStorage(Buffer* buffer,
+int mglRenderFlushBufferRangeStorage(Buffer* buffer,
                                          intptr_t offset,
                                          intptr_t length,
                                          char* err,
@@ -2327,18 +2327,18 @@ int mglRenderCppFlushBufferRangeStorage(Buffer* buffer,
     if (err && errcap) err[0] = '\0';
     if (!buffer || offset < 0 || length < 0) {
         if (err && errcap) snprintf(err, errcap, "bad buffer or signed range");
-        return MGL_RENDER_CPP_BUFFER_OPERATION_ERROR;
+        return MGL_RENDER_BUFFER_OPERATION_ERROR;
     }
-    if (length == 0) return MGL_RENDER_CPP_BUFFER_OPERATION_HANDLED;
+    if (length == 0) return MGL_RENDER_BUFFER_OPERATION_HANDLED;
 
     bool created = false;
     if (!buffer->data.mtl_data) {
-        int bindResult = mglRenderCppBindBufferStorage(buffer, err, errcap);
-        if (bindResult == MGL_RENDER_CPP_BUFFER_NOT_APPLICABLE) {
-            return MGL_RENDER_CPP_BUFFER_OPERATION_NOT_APPLICABLE;
+        int bindResult = mglRenderBindBufferStorage(buffer, err, errcap);
+        if (bindResult == MGL_RENDER_BUFFER_NOT_APPLICABLE) {
+            return MGL_RENDER_BUFFER_OPERATION_NOT_APPLICABLE;
         }
-        if (bindResult != MGL_RENDER_CPP_BUFFER_BOUND) {
-            return MGL_RENDER_CPP_BUFFER_OPERATION_ERROR;
+        if (bindResult != MGL_RENDER_BUFFER_BOUND) {
+            return MGL_RENDER_BUFFER_OPERATION_ERROR;
         }
         created = true;
     }
@@ -2354,15 +2354,15 @@ int mglRenderCppFlushBufferRangeStorage(Buffer* buffer,
                      "range offset=%zu length=%zu exceeds Metal length=%zu",
                      safeOffset, safeLength, metalLength);
         }
-        return MGL_RENDER_CPP_BUFFER_OPERATION_ERROR;
+        return MGL_RENDER_BUFFER_OPERATION_ERROR;
     }
 
     if (!created) {
         void* snapshotBuffer = nullptr;
-        if (mglRenderCppSnapshotSharedBufferRange(
+        if (mglRenderSnapshotSharedBufferRange(
                 buffer, safeOffset, safeLength, &snapshotBuffer,
                 err, errcap) != 0) {
-            return MGL_RENDER_CPP_BUFFER_OPERATION_ERROR;
+            return MGL_RENDER_BUFFER_OPERATION_ERROR;
         }
         metalBuffer = static_cast<MTL::Buffer*>(snapshotBuffer);
     }
@@ -2371,26 +2371,26 @@ int mglRenderCppFlushBufferRangeStorage(Buffer* buffer,
         metalBuffer->didModifyRange(
             NS::Range::Make(safeOffset, safeLength));
     }
-    return MGL_RENDER_CPP_BUFFER_OPERATION_HANDLED;
+    return MGL_RENDER_BUFFER_OPERATION_HANDLED;
 }
 
-void mglRenderCppFlushBufferRange(GLMContext glm_ctx,
+void mglRenderFlushBufferRange(GLMContext glm_ctx,
                                   Buffer* buffer,
                                   intptr_t offset,
                                   intptr_t length) {
     char error[256] = {};
-    int result = mglRenderCppFlushBufferRangeStorage(
+    int result = mglRenderFlushBufferRangeStorage(
         buffer, offset, length, error, sizeof(error));
-    if (result == MGL_RENDER_CPP_BUFFER_OPERATION_HANDLED) return;
+    if (result == MGL_RENDER_BUFFER_OPERATION_HANDLED) return;
     fprintf(stderr,
             "MGL ERROR: Metal-cpp buffer range flush failed buffer=%u: %s\n",
             buffer ? (unsigned)buffer->name : 0u,
             error[0] ? error : "unknown error");
 }
 
-int mglRenderCppConvertVertexBuffer(
+int mglRenderConvertVertexBuffer(
     Buffer* sourceBuffer,
-    const MGLRenderCppVertexConversion* conversion,
+    const MGLRenderVertexConversion* conversion,
     uint64_t* convertedStrideOut,
     void** convertedBufferOut,
     char* err,
@@ -2403,7 +2403,7 @@ int mglRenderCppConvertVertexBuffer(
         if (err && errcap) snprintf(err, errcap, "bad arguments");
         return -1;
     }
-    if (conversion->kind > MGL_RENDER_CPP_VERTEX_INTEGER_TO_32) {
+    if (conversion->kind > MGL_RENDER_VERTEX_INTEGER_TO_32) {
         if (err && errcap) {
             snprintf(err, errcap, "unknown conversion kind=%u",
                      conversion->kind);
@@ -2443,13 +2443,13 @@ int mglRenderCppConvertVertexBuffer(
     size_t defaultStride = 0;
     size_t minimumConvertedStride = 0;
     switch (kind) {
-        case MGL_RENDER_CPP_VERTEX_DOUBLE_TO_FLOAT:
+        case MGL_RENDER_VERTEX_DOUBLE_TO_FLOAT:
             if (componentCount == 0 || componentCount > 4) goto bad_components;
             sourceComponentSize = sizeof(double);
             defaultStride = componentCount * sizeof(double);
             minimumConvertedStride = componentCount * sizeof(float);
             break;
-        case MGL_RENDER_CPP_VERTEX_INT_TO_FLOAT:
+        case MGL_RENDER_VERTEX_INT_TO_FLOAT:
             if (componentCount == 0 || componentCount > 4) goto bad_components;
             if (conversion->source_type != GL_INT &&
                 conversion->source_type != GL_UNSIGNED_INT) {
@@ -2460,25 +2460,25 @@ int mglRenderCppConvertVertexBuffer(
             defaultStride = componentCount * sizeof(uint32_t);
             minimumConvertedStride = 0;
             break;
-        case MGL_RENDER_CPP_VERTEX_FIXED_TO_FLOAT:
+        case MGL_RENDER_VERTEX_FIXED_TO_FLOAT:
             if (componentCount == 0 || componentCount > 4) goto bad_components;
             sourceComponentSize = sizeof(int32_t);
             defaultStride = componentCount * sizeof(int32_t);
             minimumConvertedStride = componentCount * sizeof(float);
             break;
-        case MGL_RENDER_CPP_VERTEX_PACKED_1010102_TO_FLOAT:
+        case MGL_RENDER_VERTEX_PACKED_1010102_TO_FLOAT:
             componentCount = 4;
             sourceComponentSize = sizeof(uint32_t);
             defaultStride = sizeof(uint32_t);
             minimumConvertedStride = 4u * sizeof(float);
             break;
-        case MGL_RENDER_CPP_VERTEX_PACKED_10F11F11F_TO_FLOAT:
+        case MGL_RENDER_VERTEX_PACKED_10F11F11F_TO_FLOAT:
             componentCount = 3;
             sourceComponentSize = sizeof(uint32_t);
             defaultStride = sizeof(uint32_t);
             minimumConvertedStride = 3u * sizeof(float);
             break;
-        case MGL_RENDER_CPP_VERTEX_INTEGER_TO_32:
+        case MGL_RENDER_VERTEX_INTEGER_TO_32:
             if (componentCount == 0 || componentCount > 4) goto bad_components;
             sourceComponentSize =
                 mgl::vertexComponentSize(conversion->source_type);
@@ -2510,7 +2510,7 @@ int mglRenderCppConvertVertexBuffer(
         }
 
         size_t convertedStrideBase = originalStride;
-        if (kind == MGL_RENDER_CPP_VERTEX_INTEGER_TO_32) {
+        if (kind == MGL_RENDER_VERTEX_INTEGER_TO_32) {
             convertedStrideBase = minimumConvertedStride;
         } else if (minimumConvertedStride > convertedStrideBase) {
             convertedStrideBase = minimumConvertedStride;
@@ -2549,7 +2549,7 @@ int mglRenderCppConvertVertexBuffer(
         key.normalized = conversion->normalized;
         key.destinationSigned = conversion->destination_signed;
 
-        mgl::RendererCpp& renderer = mgl::renderer();
+        mgl::Renderer& renderer = mgl::renderer();
         {
             std::lock_guard<std::mutex> lock(renderer.mutex);
             if (!renderer.device) {
@@ -2575,9 +2575,9 @@ int mglRenderCppConvertVertexBuffer(
         }
 
         const bool preservesVertexBytes =
-            kind == MGL_RENDER_CPP_VERTEX_DOUBLE_TO_FLOAT ||
-            kind == MGL_RENDER_CPP_VERTEX_INT_TO_FLOAT ||
-            kind == MGL_RENDER_CPP_VERTEX_FIXED_TO_FLOAT;
+            kind == MGL_RENDER_VERTEX_DOUBLE_TO_FLOAT ||
+            kind == MGL_RENDER_VERTEX_INT_TO_FLOAT ||
+            kind == MGL_RENDER_VERTEX_FIXED_TO_FLOAT;
         for (size_t vertex = 0; vertex < vertexCount; ++vertex) {
             const size_t sourceOffset = vertex * originalStride;
             const size_t destinationOffset = vertex * convertedStride;
@@ -2590,9 +2590,9 @@ int mglRenderCppConvertVertexBuffer(
                        sourceBase + sourceOffset, copyBytes);
             }
 
-            if (kind == MGL_RENDER_CPP_VERTEX_DOUBLE_TO_FLOAT ||
-                kind == MGL_RENDER_CPP_VERTEX_INT_TO_FLOAT ||
-                kind == MGL_RENDER_CPP_VERTEX_FIXED_TO_FLOAT) {
+            if (kind == MGL_RENDER_VERTEX_DOUBLE_TO_FLOAT ||
+                kind == MGL_RENDER_VERTEX_INT_TO_FLOAT ||
+                kind == MGL_RENDER_VERTEX_FIXED_TO_FLOAT) {
                 const size_t inputBytes =
                     componentCount * sourceComponentSize;
                 const size_t outputBytes = componentCount * sizeof(float);
@@ -2608,11 +2608,11 @@ int mglRenderCppConvertVertexBuffer(
                     const uint8_t* componentBytes =
                         sourceBase + sourceOffset + relativeOffset +
                         component * sourceComponentSize;
-                    if (kind == MGL_RENDER_CPP_VERTEX_DOUBLE_TO_FLOAT) {
+                    if (kind == MGL_RENDER_VERTEX_DOUBLE_TO_FLOAT) {
                         double value = 0.0;
                         memcpy(&value, componentBytes, sizeof(value));
                         values[component] = static_cast<float>(value);
-                    } else if (kind == MGL_RENDER_CPP_VERTEX_FIXED_TO_FLOAT) {
+                    } else if (kind == MGL_RENDER_VERTEX_FIXED_TO_FLOAT) {
                         int32_t value = 0;
                         memcpy(&value, componentBytes, sizeof(value));
                         values[component] = static_cast<float>(
@@ -2642,8 +2642,8 @@ int mglRenderCppConvertVertexBuffer(
                 continue;
             }
 
-            if (kind == MGL_RENDER_CPP_VERTEX_PACKED_1010102_TO_FLOAT ||
-                kind == MGL_RENDER_CPP_VERTEX_PACKED_10F11F11F_TO_FLOAT) {
+            if (kind == MGL_RENDER_VERTEX_PACKED_1010102_TO_FLOAT ||
+                kind == MGL_RENDER_VERTEX_PACKED_10F11F11F_TO_FLOAT) {
                 if (relativeOffset > remaining ||
                     sizeof(uint32_t) > remaining - relativeOffset) {
                     continue;
@@ -2658,7 +2658,7 @@ int mglRenderCppConvertVertexBuffer(
                        sourceBase + sourceOffset + relativeOffset,
                        sizeof(packed));
                 float values[4] = {};
-                if (kind == MGL_RENDER_CPP_VERTEX_PACKED_1010102_TO_FLOAT) {
+                if (kind == MGL_RENDER_VERTEX_PACKED_1010102_TO_FLOAT) {
                     values[0] = static_cast<float>((packed >> 22) & 0x3ffu) /
                                 1023.0f;
                     values[1] = static_cast<float>((packed >> 12) & 0x3ffu) /
@@ -2734,7 +2734,7 @@ int mglRenderCppConvertVertexBuffer(
         }
 
         void* createdObject = nullptr;
-        if (mglRenderCppCreateBufferWithBytes(
+        if (mglRenderCreateBufferWithBytes(
                 converted.data(), convertedLength,
                 static_cast<uint64_t>(MTL::ResourceStorageModeShared),
                 nullptr, &createdObject) != 0 || !createdObject) {
@@ -2782,7 +2782,7 @@ bad_components:
     return -1;
 }
 
-int mglRenderCppBindAIRProgram(Program* program,
+int mglRenderBindAIRProgram(Program* program,
                                int* failed_stage_out,
                                char* err,
                                size_t errcap) {
@@ -2791,7 +2791,7 @@ int mglRenderCppBindAIRProgram(Program* program,
     MTL::Device* device = mgl::renderer().device;
     if (!program || !device) {
         if (err && errcap) snprintf(err, errcap, "renderer is not initialized");
-        return MGL_RENDER_CPP_AIR_PROGRAM_ERROR;
+        return MGL_RENDER_AIR_PROGRAM_ERROR;
     }
     program->dirty_bits &= ~DIRTY_PROGRAM;
 
@@ -2808,16 +2808,16 @@ int mglRenderCppBindAIRProgram(Program* program,
                              "unsupported geometry shader route %u",
                              (unsigned)program->gs_route);
                 }
-                return MGL_RENDER_CPP_AIR_PROGRAM_ERROR;
+                return MGL_RENDER_AIR_PROGRAM_ERROR;
             }
         }
         MGLShaderModule* spirv = &program->modules[stage];
         if (!spirv->metallib_bytes || spirv->metallib_size == 0u) {
-            return MGL_RENDER_CPP_AIR_PROGRAM_NOT_APPLICABLE;
+            return MGL_RENDER_AIR_PROGRAM_NOT_APPLICABLE;
         }
         hasAIRStage = true;
     }
-    if (!hasAIRStage) return MGL_RENDER_CPP_AIR_PROGRAM_NOT_APPLICABLE;
+    if (!hasAIRStage) return MGL_RENDER_AIR_PROGRAM_NOT_APPLICABLE;
 
     for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; ++stage) {
         Shader* shader = program->shader_slots[stage];
@@ -2834,7 +2834,7 @@ int mglRenderCppBindAIRProgram(Program* program,
                     &spirv->mtl_library, &spirv->mtl_function,
                     err, errcap) != 0) {
                 if (failed_stage_out) *failed_stage_out = stage;
-                return MGL_RENDER_CPP_AIR_PROGRAM_ERROR;
+                return MGL_RENDER_AIR_PROGRAM_ERROR;
             }
         }
 
@@ -2851,7 +2851,7 @@ int mglRenderCppBindAIRProgram(Program* program,
                     &spirv->mtl_tess_capture_function,
                     err, errcap) != 0) {
                 if (failed_stage_out) *failed_stage_out = stage;
-                return MGL_RENDER_CPP_AIR_PROGRAM_ERROR;
+                return MGL_RENDER_AIR_PROGRAM_ERROR;
             }
         }
         if (stage == _VERTEX_SHADER &&
@@ -2867,27 +2867,27 @@ int mglRenderCppBindAIRProgram(Program* program,
                     &spirv->mtl_cull_capture_function,
                     err, errcap) != 0) {
                 if (failed_stage_out) *failed_stage_out = stage;
-                return MGL_RENDER_CPP_AIR_PROGRAM_ERROR;
+                return MGL_RENDER_AIR_PROGRAM_ERROR;
             }
         }
     }
-    return MGL_RENDER_CPP_AIR_PROGRAM_BOUND;
+    return MGL_RENDER_AIR_PROGRAM_BOUND;
 }
 
-void mglRenderCppBindProgram(GLMContext glm_ctx, Program* program) {
+void mglRenderBindProgram(GLMContext glm_ctx, Program* program) {
     (void)glm_ctx;
     int failedStage = -1;
     char error[256] = {};
-    int result = mglRenderCppBindAIRProgram(
+    int result = mglRenderBindAIRProgram(
         program, &failedStage, error, sizeof(error));
-    if (result == MGL_RENDER_CPP_AIR_PROGRAM_BOUND) return;
+    if (result == MGL_RENDER_AIR_PROGRAM_BOUND) return;
     fprintf(stderr,
             "MGL ERROR: Metal-cpp program bind failed program=%u "
             "stage=%d: %s\n",
             program ? (unsigned)program->name : 0u, failedStage,
             error[0]
                 ? error
-                : (result == MGL_RENDER_CPP_AIR_PROGRAM_NOT_APPLICABLE
+                : (result == MGL_RENDER_AIR_PROGRAM_NOT_APPLICABLE
                        ? "linked program has no AIR metallib"
                        : "unknown error"));
 }
@@ -2906,7 +2906,7 @@ void* rendererOwner(GLMContext context, MGLRendererBackendOwnerKind kind) {
 
 } // namespace
 
-void mglRenderCppGetSync(GLMContext glm_ctx, Sync* sync) {
+void mglRenderGetSync(GLMContext glm_ctx, Sync* sync) {
     if (!sync) return;
 
     mgl::releaseBridgedObject(&sync->mtl_command_buffer);
@@ -2918,27 +2918,27 @@ void mglRenderCppGetSync(GLMContext glm_ctx, Sync* sync) {
     void* render_owner = rendererOwner(
         glm_ctx, MGL_RENDERER_BACKEND_OWNER_RENDER_ENCODER);
     if (render_owner &&
-        mglRenderCppRenderEncoderOwnerHasCurrent(render_owner) == 1 &&
-        mglRenderCppEndRenderEncoderOwner(render_owner) != 0) {
+        mglRenderEncoderOwnerHasCurrent(render_owner) == 1 &&
+        mglRenderEndRenderEncoderOwner(render_owner) != 0) {
         return;
     }
 
-    MGLRenderCppCommandBufferState state = {};
-    if (mglRenderCppGetCommandBufferOwnerState(command_owner, &state) != 0 ||
+    MGLRenderCommandBufferState state = {};
+    if (mglRenderGetCommandBufferOwnerState(command_owner, &state) != 0 ||
         state.status !=
             static_cast<uint32_t>(MTL::CommandBufferStatusNotEnqueued) ||
         state.has_error) {
         void* next = nullptr;
-        (void)mglRenderCppCommandBufferOwnerCreateNext(command_owner, &next);
+        (void)mglRenderCommandBufferOwnerCreateNext(command_owner, &next);
         return;
     }
 
     void* submission = nullptr;
     void* command_buffer = nullptr;
-    if (mglRenderCppTakeCommandBufferSubmission(
+    if (mglRenderTakeCommandBufferSubmission(
             command_owner, &submission, &command_buffer) != 0 ||
         !submission || !command_buffer) {
-        mglRenderCppDestroyCommandBufferSubmission(&submission);
+        mglRenderDestroyCommandBufferSubmission(&submission);
         return;
     }
 
@@ -2947,32 +2947,32 @@ void mglRenderCppGetSync(GLMContext glm_ctx, Sync* sync) {
     command->retain();
     sync->mtl_command_buffer = command;
 
-    MGLRenderCppCommandBufferTransaction transaction = {};
-    int result = mglRenderCppCommitCommandBufferTransaction(
+    MGLRenderCommandBufferTransaction transaction = {};
+    int result = mglRenderCommitCommandBufferTransaction(
         command_owner, &submission, command_buffer,
         rendererOwner(glm_ctx, MGL_RENDERER_BACKEND_OWNER_RECOVERY),
         0u, &transaction);
-    mglRenderCppDestroyCommandBufferSubmission(&submission);
+    mglRenderDestroyCommandBufferSubmission(&submission);
     if (result != 0 &&
         transaction.result !=
-            MGL_RENDER_CPP_COMMAND_BUFFER_TRANSACTION_COMMITTED) {
+            MGL_RENDER_COMMAND_BUFFER_TRANSACTION_COMMITTED) {
         mgl::releaseBridgedObject(&sync->mtl_command_buffer);
     }
 }
 
-void mglRenderCppWaitForSync(GLMContext glm_ctx, Sync* sync) {
+void mglRenderWaitForSync(GLMContext glm_ctx, Sync* sync) {
     (void)glm_ctx;
     if (!sync) return;
     if (sync->mtl_command_buffer) {
-        MGLRenderCppCommandBufferState state = {};
-        (void)mglRenderCppWaitCommandBufferState(
+        MGLRenderCommandBufferState state = {};
+        (void)mglRenderWaitCommandBufferState(
             sync->mtl_command_buffer, &state);
         mgl::releaseBridgedObject(&sync->mtl_command_buffer);
     }
     mgl::releaseBridgedObject(&sync->mtl_event);
 }
 
-unsigned int mglRenderCppGetSyncStatus(GLMContext glm_ctx, Sync* sync) {
+unsigned int mglRenderGetSyncStatus(GLMContext glm_ctx, Sync* sync) {
     (void)glm_ctx;
     if (!sync || !sync->mtl_command_buffer) return GL_SIGNALED;
     MTL::CommandBuffer* commandBuffer =
@@ -2982,44 +2982,44 @@ unsigned int mglRenderCppGetSyncStatus(GLMContext glm_ctx, Sync* sync) {
         : GL_UNSIGNALED;
 }
 
-void mglRenderCppReleaseSync(GLMContext glm_ctx, Sync* sync) {
+void mglRenderReleaseSync(GLMContext glm_ctx, Sync* sync) {
     (void)glm_ctx;
     if (!sync) return;
     mgl::releaseBridgedObject(&sync->mtl_command_buffer);
     mgl::releaseBridgedObject(&sync->mtl_event);
 }
 
-void mglRenderCppFlush(GLMContext glm_ctx, bool finish) {
+void mglRenderFlush(GLMContext glm_ctx, bool finish) {
     void* command_owner = rendererOwner(
         glm_ctx, MGL_RENDERER_BACKEND_OWNER_COMMAND_BUFFER);
     if (!command_owner) return;
 
     Sync boundary = {};
-    mglRenderCppGetSync(glm_ctx, &boundary);
+    mglRenderGetSync(glm_ctx, &boundary);
     if (finish) {
         if (boundary.mtl_command_buffer) {
-            mglRenderCppWaitForSync(glm_ctx, &boundary);
+            mglRenderWaitForSync(glm_ctx, &boundary);
         } else {
-            MGLRenderCppCommandBufferState state = {};
-            (void)mglRenderCppWaitCommandBufferOwnerLastSubmitted(
+            MGLRenderCommandBufferState state = {};
+            (void)mglRenderWaitCommandBufferOwnerLastSubmitted(
                 command_owner, &state);
         }
     } else {
-        mglRenderCppReleaseSync(glm_ctx, &boundary);
+        mglRenderReleaseSync(glm_ctx, &boundary);
     }
 }
 
-void mglRenderCppInvalidateRenderPass(GLMContext glm_ctx) {
+void mglRenderInvalidateRenderPass(GLMContext glm_ctx) {
     void* render_owner = rendererOwner(
         glm_ctx, MGL_RENDERER_BACKEND_OWNER_RENDER_ENCODER);
     if (!render_owner) return;
-    if (mglRenderCppRenderEncoderOwnerHasCurrent(render_owner) == 1) {
-        (void)mglRenderCppEndRenderEncoderOwner(render_owner);
+    if (mglRenderEncoderOwnerHasCurrent(render_owner) == 1) {
+        (void)mglRenderEndRenderEncoderOwner(render_owner);
     }
 }
 
 
-int mglRenderCppAttachRuntimeOwners(GLMContext glm_ctx,
+int mglRenderAttachRuntimeOwners(GLMContext glm_ctx,
                                     void* command_buffer_owner,
                                     void* render_encoder_owner,
                                     void* render_pass_state_owner) {
@@ -3031,14 +3031,14 @@ int mglRenderCppAttachRuntimeOwners(GLMContext glm_ctx,
         : -1;
 }
 
-void mglRenderCppDetachRuntimeOwners(GLMContext glm_ctx) {
+void mglRenderDetachRuntimeOwners(GLMContext glm_ctx) {
     if (MGLRendererBackendHandle* backend = rendererBackend(glm_ctx)) {
         (void)mglRendererBackendAttachRuntimeOwners(
             backend, nullptr, nullptr, nullptr);
     }
 }
 
-uint64_t mglRenderCppGetGPUTimestamp(GLMContext glm_ctx) {
+uint64_t mglRenderGetGPUTimestamp(GLMContext glm_ctx) {
     if (!glm_ctx) return 0;
 
     /* The GL semantic layer establishes the ordering boundary before entering
@@ -3046,19 +3046,19 @@ uint64_t mglRenderCppGetGPUTimestamp(GLMContext glm_ctx) {
      * ObjC renderer bridge. */
     uint64_t cpu_timestamp = 0;
     uint64_t gpu_timestamp = 0;
-    return mglRenderCppSampleTimestamps(
+    return mglRenderSampleTimestamps(
                &cpu_timestamp, &gpu_timestamp) == 0
         ? gpu_timestamp : 0;
 }
 
-void mglRenderCppBeginSampleQueryCallback(GLMContext glm_ctx,
+void mglRenderBeginSampleQueryCallback(GLMContext glm_ctx,
                                           unsigned int target) {
     void* query_owner = rendererOwner(
         glm_ctx, MGL_RENDERER_BACKEND_OWNER_QUERY);
     if (!query_owner) return;
 
     void* visibility_buffer = nullptr;
-    if (mglRenderCppBeginSampleQuery(
+    if (mglRenderBeginSampleQuery(
             query_owner,
             target == GL_SAMPLES_PASSED ? 1u : 0u,
             "MGL Visibility Result", &visibility_buffer) != 0 ||
@@ -3068,17 +3068,17 @@ void mglRenderCppBeginSampleQueryCallback(GLMContext glm_ctx,
 
     uint32_t mode = 0;
     uint64_t offset = 0;
-    if (mglRenderCppAcquireSampleQuerySlot(
+    if (mglRenderAcquireSampleQuerySlot(
             query_owner, &mode, &offset) != 0) {
         return;
     }
 
     bool pass_has_visibility = false;
-    MGLRenderCppRenderPassState pass = {};
+    MGLRenderPassState pass = {};
     void* render_pass_owner = rendererOwner(
         glm_ctx, MGL_RENDERER_BACKEND_OWNER_RENDER_PASS);
     if (render_pass_owner &&
-        mglRenderCppGetRenderPassStateOwner(
+        mglRenderGetRenderPassStateOwner(
             render_pass_owner, &pass) == 0) {
         pass_has_visibility = pass.visibility_result_buffer != nullptr;
     }
@@ -3086,17 +3086,17 @@ void mglRenderCppBeginSampleQueryCallback(GLMContext glm_ctx,
     void* render_owner = rendererOwner(
         glm_ctx, MGL_RENDERER_BACKEND_OWNER_RENDER_ENCODER);
     if (!render_owner ||
-        mglRenderCppRenderEncoderOwnerHasCurrent(render_owner) != 1) {
+        mglRenderEncoderOwnerHasCurrent(render_owner) != 1) {
         return;
     }
     if (!pass_has_visibility ||
-        mglRenderCppSetVisibilityResultModeForRenderEncoderOwner(
+        mglRenderSetVisibilityResultModeForRenderEncoderOwner(
             render_owner, mode, offset) != 0) {
-        (void)mglRenderCppEndRenderEncoderOwner(render_owner);
+        (void)mglRenderEndRenderEncoderOwner(render_owner);
     }
 }
 
-uint64_t mglRenderCppEndSampleQueryCallback(GLMContext glm_ctx) {
+uint64_t mglRenderEndSampleQueryCallback(GLMContext glm_ctx) {
     void* query_owner = rendererOwner(
         glm_ctx, MGL_RENDERER_BACKEND_OWNER_QUERY);
     if (!query_owner) return 0;
@@ -3104,50 +3104,50 @@ uint64_t mglRenderCppEndSampleQueryCallback(GLMContext glm_ctx) {
     void* render_owner = rendererOwner(
         glm_ctx, MGL_RENDERER_BACKEND_OWNER_RENDER_ENCODER);
     if (render_owner &&
-        mglRenderCppRenderEncoderOwnerHasCurrent(render_owner) == 1) {
-        (void)mglRenderCppEndRenderEncoderOwner(render_owner);
+        mglRenderEncoderOwnerHasCurrent(render_owner) == 1) {
+        (void)mglRenderEndRenderEncoderOwner(render_owner);
     }
-    mglRenderCppEndSampleQuery(query_owner);
+    mglRenderEndSampleQuery(query_owner);
 
     void* visibility_buffer = nullptr;
-    if (mglRenderCppGetQueryVisibilityBuffer(
+    if (mglRenderGetQueryVisibilityBuffer(
             query_owner, &visibility_buffer) == 0 &&
         visibility_buffer) {
         Sync boundary = {};
-        mglRenderCppGetSync(glm_ctx, &boundary);
-        mglRenderCppWaitForSync(glm_ctx, &boundary);
+        mglRenderGetSync(glm_ctx, &boundary);
+        mglRenderWaitForSync(glm_ctx, &boundary);
     }
 
     uint64_t result = 0;
-    return mglRenderCppGetSampleQueryResult(
+    return mglRenderGetSampleQueryResult(
                query_owner, &result) == 0
         ? result : 0;
 }
 
-void mglRenderCppBeginTimerQueryCallback(GLMContext glm_ctx) {
+void mglRenderBeginTimerQueryCallback(GLMContext glm_ctx) {
     void* query_owner = rendererOwner(
         glm_ctx, MGL_RENDERER_BACKEND_OWNER_QUERY);
-    if (!query_owner || mglRenderCppBeginTimerQuery(query_owner) != 0) {
+    if (!query_owner || mglRenderBeginTimerQuery(query_owner) != 0) {
         fprintf(stderr, "MGL ERROR: failed to begin Metal-cpp timer query\n");
     }
 }
 
-uint64_t mglRenderCppEndTimerQueryCallback(GLMContext glm_ctx) {
+uint64_t mglRenderEndTimerQueryCallback(GLMContext glm_ctx) {
     void* query_owner = rendererOwner(
         glm_ctx, MGL_RENDERER_BACKEND_OWNER_QUERY);
     uint64_t elapsed = 0;
     return query_owner &&
-           mglRenderCppEndTimerQuery(query_owner, &elapsed) == 0
+           mglRenderEndTimerQuery(query_owner, &elapsed) == 0
         ? elapsed : 0;
 }
 
-int mglRenderCppCreateBuffer(uint64_t length,
+int mglRenderCreateBuffer(uint64_t length,
                              uint64_t resource_options,
                              const char* label,
                              void** buffer_out) {
     if (buffer_out) *buffer_out = nullptr;
     if (!buffer_out || length == 0) return -1;
-    mgl::RendererCpp& renderer = mgl::renderer();
+    mgl::Renderer& renderer = mgl::renderer();
     std::lock_guard<std::mutex> lock(renderer.mutex);
     if (!renderer.device) return -1;
     MTL::Buffer* buffer = renderer.device->newBuffer(
@@ -3162,14 +3162,14 @@ int mglRenderCppCreateBuffer(uint64_t length,
     return 0;
 }
 
-int mglRenderCppCreateBufferWithBytes(const void* bytes,
+int mglRenderCreateBufferWithBytes(const void* bytes,
                                       uint64_t length,
                                       uint64_t resource_options,
                                       const char* label,
                                       void** buffer_out) {
     if (buffer_out) *buffer_out = nullptr;
     if (!buffer_out || !bytes || length == 0) return -1;
-    mgl::RendererCpp& renderer = mgl::renderer();
+    mgl::Renderer& renderer = mgl::renderer();
     std::lock_guard<std::mutex> lock(renderer.mutex);
     if (!renderer.device) return -1;
     MTL::Buffer* buffer = renderer.device->newBuffer(
@@ -3184,7 +3184,7 @@ int mglRenderCppCreateBufferWithBytes(const void* bytes,
     return 0;
 }
 
-int mglRenderCppGetBufferContents(void *buffer,
+int mglRenderGetBufferContents(void *buffer,
                                   void **contents_out,
                                   uint64_t *length_out) {
     if (contents_out) *contents_out = nullptr;
@@ -3196,8 +3196,8 @@ int mglRenderCppGetBufferContents(void *buffer,
     return *contents_out ? 0 : -1;
 }
 
-int mglRenderCppGetBufferInfo(const void *buffer,
-                              MGLRenderCppBufferInfo *info_out) {
+int mglRenderGetBufferInfo(const void *buffer,
+                              MGLRenderBufferInfo *info_out) {
     if (info_out) *info_out = {};
     const MTL::Buffer *object = static_cast<const MTL::Buffer *>(buffer);
     if (!object || !info_out) return -1;
@@ -3205,7 +3205,7 @@ int mglRenderCppGetBufferInfo(const void *buffer,
     return 0;
 }
 
-int mglRenderCppAddBufferDebugMarker(void *buffer,
+int mglRenderAddBufferDebugMarker(void *buffer,
                                      const char *marker,
                                      uint64_t location,
                                      uint64_t length) {
@@ -3220,8 +3220,8 @@ int mglRenderCppAddBufferDebugMarker(void *buffer,
     return 0;
 }
 
-int mglRenderCppGetTextureInfo(const void *texture,
-                               MGLRenderCppTextureInfo *info_out) {
+int mglRenderGetTextureInfo(const void *texture,
+                               MGLRenderTextureInfo *info_out) {
     if (info_out) *info_out = {};
     const MTL::Texture *object = static_cast<const MTL::Texture *>(texture);
     if (!object || !info_out) return -1;
@@ -3238,12 +3238,12 @@ int mglRenderCppGetTextureInfo(const void *texture,
     return 0;
 }
 
-int mglRenderCppTextureIsFramebufferOnly(const void *texture) {
+int mglRenderTextureIsFramebufferOnly(const void *texture) {
     const MTL::Texture *object = static_cast<const MTL::Texture *>(texture);
     return object && object->isFramebufferOnly() ? 1 : 0;
 }
 
-int mglRenderCppCreateTextureStagingOwner(
+int mglRenderCreateTextureStagingOwner(
     const void* bytes,
     uint64_t length,
     uint64_t resource_options,
@@ -3253,7 +3253,7 @@ int mglRenderCppCreateTextureStagingOwner(
     if (buffer_out) *buffer_out = nullptr;
     if (!owner_out || !buffer_out || !bytes || length == 0) return -1;
     void* rawBuffer = nullptr;
-    if (mglRenderCppCreateBufferWithBytes(
+    if (mglRenderCreateBufferWithBytes(
             bytes, length, resource_options, "MGL.texture_staging",
             &rawBuffer) != 0 || !rawBuffer) {
         return -1;
@@ -3270,7 +3270,7 @@ int mglRenderCppCreateTextureStagingOwner(
     return 0;
 }
 
-void mglRenderCppDestroyTextureStagingOwner(void** owner_handle) {
+void mglRenderDestroyTextureStagingOwner(void** owner_handle) {
     if (!owner_handle || !*owner_handle) return;
     mgl::TextureStagingOwner* owner =
         static_cast<mgl::TextureStagingOwner*>(*owner_handle);
@@ -3278,7 +3278,7 @@ void mglRenderCppDestroyTextureStagingOwner(void** owner_handle) {
     delete owner;
 }
 
-int mglRenderCppCreateBufferWithBytesNoCopy(const void* bytes,
+int mglRenderCreateBufferWithBytesNoCopy(const void* bytes,
                                             uint64_t length,
                                             uint64_t resource_options,
                                             const char* label,
@@ -3286,7 +3286,7 @@ int mglRenderCppCreateBufferWithBytesNoCopy(const void* bytes,
                                             void** buffer_out) {
     if (buffer_out) *buffer_out = nullptr;
     if (!buffer_out || !bytes || length == 0) return -1;
-    mgl::RendererCpp& renderer = mgl::renderer();
+    mgl::Renderer& renderer = mgl::renderer();
     std::lock_guard<std::mutex> lock(renderer.mutex);
     if (!renderer.device) return -1;
 
@@ -3321,13 +3321,13 @@ int mglRenderCppCreateBufferWithBytesNoCopy(const void* bytes,
     return 0;
 }
 
-int mglRenderCppCreateTextureFromState(
-    const MGLRenderCppTextureDescriptorState* texture_descriptor,
+int mglRenderCreateTextureFromState(
+    const MGLRenderTextureDescriptorState* texture_descriptor,
     const char* label,
     void** texture_out) {
     if (texture_out) *texture_out = nullptr;
     if (!texture_descriptor || !texture_out) return -1;
-    mgl::RendererCpp& renderer = mgl::renderer();
+    mgl::Renderer& renderer = mgl::renderer();
     std::lock_guard<std::mutex> lock(renderer.mutex);
     if (!renderer.device) return -1;
     MTL::TextureDescriptor* descriptor =
@@ -3344,9 +3344,9 @@ int mglRenderCppCreateTextureFromState(
     return 0;
 }
 
-static MGLRenderCppTextureDescriptorState
-mglRenderCppReadTextureDescriptor(MTL::TextureDescriptor* descriptor) {
-    MGLRenderCppTextureDescriptorState state = {};
+static MGLRenderTextureDescriptorState
+mglRenderReadTextureDescriptor(MTL::TextureDescriptor* descriptor) {
+    MGLRenderTextureDescriptorState state = {};
     if (!descriptor) return state;
     state.texture_type = static_cast<uint32_t>(descriptor->textureType());
     state.pixel_format = static_cast<uint32_t>(descriptor->pixelFormat());
@@ -3377,20 +3377,20 @@ mglRenderCppReadTextureDescriptor(MTL::TextureDescriptor* descriptor) {
     return state;
 }
 
-int mglRenderCppCreateTextureFromDescriptor(
+int mglRenderCreateTextureFromDescriptor(
     void* descriptor_handle,
     const char* label,
     void** texture_out) {
     auto* descriptor =
         reinterpret_cast<MTL::TextureDescriptor*>(descriptor_handle);
-    MGLRenderCppTextureDescriptorState state =
-        mglRenderCppReadTextureDescriptor(descriptor);
-    return mglRenderCppCreateTextureFromState(&state, label, texture_out);
+    MGLRenderTextureDescriptorState state =
+        mglRenderReadTextureDescriptor(descriptor);
+    return mglRenderCreateTextureFromState(&state, label, texture_out);
 }
 
-int mglRenderCppCreateBufferTextureFromState(
+int mglRenderCreateBufferTextureFromState(
     void* buffer,
-    const MGLRenderCppTextureDescriptorState* texture_descriptor,
+    const MGLRenderTextureDescriptorState* texture_descriptor,
     uint64_t offset,
     uint64_t bytes_per_row,
     void** texture_out) {
@@ -3412,20 +3412,20 @@ int mglRenderCppCreateBufferTextureFromState(
     return 0;
 }
 
-int mglRenderCppCreateBufferTextureFromDescriptor(
+int mglRenderCreateBufferTextureFromDescriptor(
     void* buffer,
     void* descriptor_handle,
     uint64_t offset,
     uint64_t bytes_per_row,
     void** texture_out) {
-    MGLRenderCppTextureDescriptorState state =
-        mglRenderCppReadTextureDescriptor(
+    MGLRenderTextureDescriptorState state =
+        mglRenderReadTextureDescriptor(
             reinterpret_cast<MTL::TextureDescriptor*>(descriptor_handle));
-    return mglRenderCppCreateBufferTextureFromState(
+    return mglRenderCreateBufferTextureFromState(
         buffer, &state, offset, bytes_per_row, texture_out);
 }
 
-int mglRenderCppCreateTextureView(void* texture,
+int mglRenderCreateTextureView(void* texture,
                                   uint32_t pixel_format,
                                   void** texture_view_out) {
     if (texture_view_out) *texture_view_out = nullptr;
@@ -3438,7 +3438,7 @@ int mglRenderCppCreateTextureView(void* texture,
     return 0;
 }
 
-int mglRenderCppCreateTextureViewRange(
+int mglRenderCreateTextureViewRange(
     void* texture,
     uint32_t pixel_format,
     uint32_t texture_type,
@@ -3481,7 +3481,7 @@ int mglRenderCppCreateTextureViewRange(
     return 0;
 }
 
-int mglRenderCppSampledTextureViewForBaseLevel(
+int mglRenderSampledTextureViewForBaseLevel(
     Texture *texture_object,
     void *source_texture,
     void **view_out) {
@@ -3519,21 +3519,21 @@ int mglRenderCppSampledTextureViewForBaseLevel(
     if (type == MTL::TextureTypeCube || type == MTL::TextureTypeCubeArray) {
         slice_count *= 6u;
     }
-    const uint32_t components = mglRenderCppStoredColorComponents(texture_object->internalformat);
-    const uint32_t swizzle_red = mglRenderCppMTLSwizzleForGLSwizzle(
+    const uint32_t components = mglRenderStoredColorComponents(texture_object->internalformat);
+    const uint32_t swizzle_red = mglRenderMTLSwizzleForGLSwizzle(
         texture_object->params.swizzle_r, components);
-    const uint32_t swizzle_green = mglRenderCppMTLSwizzleForGLSwizzle(
+    const uint32_t swizzle_green = mglRenderMTLSwizzleForGLSwizzle(
         texture_object->params.swizzle_g, components);
-    const uint32_t swizzle_blue = mglRenderCppMTLSwizzleForGLSwizzle(
+    const uint32_t swizzle_blue = mglRenderMTLSwizzleForGLSwizzle(
         texture_object->params.swizzle_b, components);
-    const uint32_t swizzle_alpha = mglRenderCppMTLSwizzleForGLSwizzle(
+    const uint32_t swizzle_alpha = mglRenderMTLSwizzleForGLSwizzle(
         texture_object->params.swizzle_a, components);
     const bool identity = swizzle_red == static_cast<uint32_t>(MTL::TextureSwizzleRed) &&
                           swizzle_green == static_cast<uint32_t>(MTL::TextureSwizzleGreen) &&
                           swizzle_blue == static_cast<uint32_t>(MTL::TextureSwizzleBlue) &&
                           swizzle_alpha == static_cast<uint32_t>(MTL::TextureSwizzleAlpha);
     void *view_handle = nullptr;
-    if (mglRenderCppCreateTextureViewRange(
+    if (mglRenderCreateTextureViewRange(
             source_texture, static_cast<uint32_t>(source->pixelFormat()),
             static_cast<uint32_t>(type), base, level_count, 0u, slice_count,
             identity ? 0 : 1, swizzle_red, swizzle_green, swizzle_blue,
@@ -3554,7 +3554,7 @@ int mglRenderCppSampledTextureViewForBaseLevel(
     return 0;
 }
 
-int mglRenderCppTextureReplaceRegion(void* texture,
+int mglRenderTextureReplaceRegion(void* texture,
                                      uint64_t x,
                                      uint64_t y,
                                      uint64_t z,
@@ -3592,7 +3592,7 @@ int mglRenderCppTextureReplaceRegion(void* texture,
     return 0;
 }
 
-int mglRenderCppTextureGetBytes(void* texture,
+int mglRenderTextureGetBytes(void* texture,
                                 void* bytes,
                                 uint64_t bytes_per_row,
                                 uint64_t bytes_per_image,
@@ -3630,10 +3630,10 @@ int mglRenderCppTextureGetBytes(void* texture,
 }
 
 extern "C"
-int mglRenderCppTextureTargetPlan(
+int mglRenderTextureTargetPlan(
     uint32_t gl_target,
     uint32_t sample_count,
-    MGLRenderCppTextureTargetPlan* plan_out) {
+    MGLRenderTextureTargetPlan* plan_out) {
     if (!plan_out) return -1;
     *plan_out = {};
     plan_out->num_faces = 1u;
@@ -3701,7 +3701,7 @@ int mglRenderCppTextureTargetPlan(
 }
 
 extern "C"
-int mglRenderCppTextureSubUploadPlan(
+int mglRenderTextureSubUploadPlan(
     uint32_t gl_target,
     uint32_t texture_type,
     uint64_t requested_slice,
@@ -3713,7 +3713,7 @@ int mglRenderCppTextureSubUploadPlan(
     uint64_t depth,
     uint64_t source_bytes_per_row,
     uint64_t source_bytes_per_image,
-    MGLRenderCppTextureSubUploadPlan* plan_out) {
+    MGLRenderTextureSubUploadPlan* plan_out) {
     if (!plan_out || width == 0u || height == 0u || depth == 0u ||
         source_bytes_per_row == 0u || source_bytes_per_image == 0u) {
         return -1;
@@ -3780,7 +3780,7 @@ int mglRenderCppTextureSubUploadPlan(
 }
 
 extern "C"
-uint32_t mglRenderCppTextureTypeForShaderResource(
+uint32_t mglRenderTextureTypeForShaderResource(
     uint32_t has_resource,
     uint32_t image_dim,
     uint32_t image_arrayed,
@@ -3812,7 +3812,7 @@ uint32_t mglRenderCppTextureTypeForShaderResource(
 }
 
 extern "C"
-int32_t mglRenderCppTextureIndexForMetalType(uint32_t texture_type) {
+int32_t mglRenderTextureIndexForMetalType(uint32_t texture_type) {
     switch (static_cast<MTL::TextureType>(texture_type)) {
         case MTL::TextureType1D:
             return _TEXTURE_1D;
@@ -3840,7 +3840,7 @@ int32_t mglRenderCppTextureIndexForMetalType(uint32_t texture_type) {
 }
 
 extern "C"
-uint32_t mglRenderCppTextureDataKindForPixelFormat(uint32_t pixel_format) {
+uint32_t mglRenderTextureDataKindForPixelFormat(uint32_t pixel_format) {
     switch (static_cast<MTL::PixelFormat>(pixel_format)) {
         case MTL::PixelFormatR8Sint:
         case MTL::PixelFormatRG8Sint:
@@ -3851,7 +3851,7 @@ uint32_t mglRenderCppTextureDataKindForPixelFormat(uint32_t pixel_format) {
         case MTL::PixelFormatR32Sint:
         case MTL::PixelFormatRG32Sint:
         case MTL::PixelFormatRGBA32Sint:
-            return MGL_RENDER_CPP_TEXTURE_DATA_KIND_SINT;
+            return MGL_RENDER_TEXTURE_DATA_KIND_SINT;
 
         case MTL::PixelFormatR8Uint:
         case MTL::PixelFormatRG8Uint:
@@ -3863,24 +3863,24 @@ uint32_t mglRenderCppTextureDataKindForPixelFormat(uint32_t pixel_format) {
         case MTL::PixelFormatRG32Uint:
         case MTL::PixelFormatRGBA32Uint:
         case MTL::PixelFormatRGB10A2Uint:
-            return MGL_RENDER_CPP_TEXTURE_DATA_KIND_UINT;
+            return MGL_RENDER_TEXTURE_DATA_KIND_UINT;
 
         case MTL::PixelFormatInvalid:
-            return MGL_RENDER_CPP_TEXTURE_DATA_KIND_UNKNOWN;
+            return MGL_RENDER_TEXTURE_DATA_KIND_UNKNOWN;
 
         case MTL::PixelFormatDepth16Unorm:
         case MTL::PixelFormatDepth32Float:
         case MTL::PixelFormatDepth24Unorm_Stencil8:
         case MTL::PixelFormatDepth32Float_Stencil8:
-            return MGL_RENDER_CPP_TEXTURE_DATA_KIND_DEPTH;
+            return MGL_RENDER_TEXTURE_DATA_KIND_DEPTH;
 
         default:
-            return MGL_RENDER_CPP_TEXTURE_DATA_KIND_FLOAT;
+            return MGL_RENDER_TEXTURE_DATA_KIND_FLOAT;
     }
 }
 
 extern "C"
-int mglRenderCppMetalPixelFormatIsDepthOrStencil(uint32_t pixel_format) {
+int mglRenderMetalPixelFormatIsDepthOrStencil(uint32_t pixel_format) {
     switch (static_cast<MTL::PixelFormat>(pixel_format)) {
         case MTL::PixelFormatDepth16Unorm:
         case MTL::PixelFormatDepth32Float:
@@ -3894,7 +3894,7 @@ int mglRenderCppMetalPixelFormatIsDepthOrStencil(uint32_t pixel_format) {
 }
 
 extern "C"
-int mglRenderCppMetalPixelFormatIsPackedDepthStencil(uint32_t pixel_format) {
+int mglRenderMetalPixelFormatIsPackedDepthStencil(uint32_t pixel_format) {
     switch (static_cast<MTL::PixelFormat>(pixel_format)) {
         case MTL::PixelFormatDepth24Unorm_Stencil8:
         case MTL::PixelFormatDepth32Float_Stencil8:
@@ -3905,7 +3905,7 @@ int mglRenderCppMetalPixelFormatIsPackedDepthStencil(uint32_t pixel_format) {
 }
 
 extern "C"
-int mglRenderCppGLInternalFormatLooksDepthOrStencil(uint32_t internal_format) {
+int mglRenderGLInternalFormatLooksDepthOrStencil(uint32_t internal_format) {
     switch (internal_format) {
         case GL_DEPTH_COMPONENT:
         case GL_DEPTH_COMPONENT16:
@@ -3924,17 +3924,17 @@ int mglRenderCppGLInternalFormatLooksDepthOrStencil(uint32_t internal_format) {
 }
 
 extern "C"
-int mglRenderCppTexturePixelFormatCompatibleWithExpectedDataKind(
+int mglRenderTexturePixelFormatCompatibleWithExpectedDataKind(
     uint32_t pixel_format, uint32_t expected_kind) {
-    if (expected_kind == MGL_RENDER_CPP_TEXTURE_DATA_KIND_UNKNOWN) {
+    if (expected_kind == MGL_RENDER_TEXTURE_DATA_KIND_UNKNOWN) {
         return 1;
     }
-    return mglRenderCppTextureDataKindForPixelFormat(pixel_format) ==
+    return mglRenderTextureDataKindForPixelFormat(pixel_format) ==
            expected_kind;
 }
 
 extern "C"
-uint64_t mglRenderCppMetalCompressedBlockHeight(uint32_t pixel_format) {
+uint64_t mglRenderMetalCompressedBlockHeight(uint32_t pixel_format) {
     switch (static_cast<MTL::PixelFormat>(pixel_format)) {
         case MTL::PixelFormatBC1_RGBA:
         case MTL::PixelFormatBC1_RGBA_sRGB:
@@ -4004,11 +4004,11 @@ uint64_t mglRenderCppMetalCompressedBlockHeight(uint32_t pixel_format) {
 }
 
 extern "C"
-uint64_t mglRenderCppMetalUploadRowsForPixelFormat(uint32_t pixel_format,
+uint64_t mglRenderMetalUploadRowsForPixelFormat(uint32_t pixel_format,
                                                    uint64_t pixel_height) {
     const uint64_t height = pixel_height ? pixel_height : 1u;
     const uint64_t block_height =
-        mglRenderCppMetalCompressedBlockHeight(pixel_format);
+        mglRenderMetalCompressedBlockHeight(pixel_format);
     if (block_height <= 1u) {
         return height;
     }
@@ -4016,15 +4016,15 @@ uint64_t mglRenderCppMetalUploadRowsForPixelFormat(uint32_t pixel_format,
 }
 
 extern "C"
-const char* mglRenderCppTextureDataKindName(uint32_t kind) {
+const char* mglRenderTextureDataKindName(uint32_t kind) {
     switch (kind) {
-        case MGL_RENDER_CPP_TEXTURE_DATA_KIND_FLOAT:
+        case MGL_RENDER_TEXTURE_DATA_KIND_FLOAT:
             return "float";
-        case MGL_RENDER_CPP_TEXTURE_DATA_KIND_SINT:
+        case MGL_RENDER_TEXTURE_DATA_KIND_SINT:
             return "sint";
-        case MGL_RENDER_CPP_TEXTURE_DATA_KIND_UINT:
+        case MGL_RENDER_TEXTURE_DATA_KIND_UINT:
             return "uint";
-        case MGL_RENDER_CPP_TEXTURE_DATA_KIND_DEPTH:
+        case MGL_RENDER_TEXTURE_DATA_KIND_DEPTH:
             return "depth";
         default:
             return "unknown";
@@ -4032,7 +4032,7 @@ const char* mglRenderCppTextureDataKindName(uint32_t kind) {
 }
 
 extern "C"
-int mglRenderCppTextureMinFilterUsesMipmaps(uint32_t min_filter) {
+int mglRenderTextureMinFilterUsesMipmaps(uint32_t min_filter) {
     switch (min_filter) {
         case GL_NEAREST_MIPMAP_NEAREST:
         case GL_LINEAR_MIPMAP_NEAREST:
@@ -4045,7 +4045,7 @@ int mglRenderCppTextureMinFilterUsesMipmaps(uint32_t min_filter) {
 }
 
 extern "C"
-int mglRenderCppMetalLayerPixelFormatIsSupported(uint32_t pixel_format) {
+int mglRenderMetalLayerPixelFormatIsSupported(uint32_t pixel_format) {
     switch (static_cast<MTL::PixelFormat>(pixel_format)) {
         case MTL::PixelFormatBGRA8Unorm:
         case MTL::PixelFormatBGRA8Unorm_sRGB:
@@ -4056,7 +4056,7 @@ int mglRenderCppMetalLayerPixelFormatIsSupported(uint32_t pixel_format) {
 }
 
 extern "C"
-uint32_t mglRenderCppSRGBPixelFormat(uint32_t pixel_format) {
+uint32_t mglRenderSRGBPixelFormat(uint32_t pixel_format) {
     switch (static_cast<MTL::PixelFormat>(pixel_format)) {
         case MTL::PixelFormatRGBA8Unorm:
             return (uint32_t)MTL::PixelFormatRGBA8Unorm_sRGB;
@@ -4068,7 +4068,7 @@ uint32_t mglRenderCppSRGBPixelFormat(uint32_t pixel_format) {
 }
 
 extern "C"
-uint32_t mglRenderCppLinearPixelFormat(uint32_t pixel_format) {
+uint32_t mglRenderLinearPixelFormat(uint32_t pixel_format) {
     switch (static_cast<MTL::PixelFormat>(pixel_format)) {
         case MTL::PixelFormatRGBA8Unorm_sRGB:
             return (uint32_t)MTL::PixelFormatRGBA8Unorm;
@@ -4080,17 +4080,17 @@ uint32_t mglRenderCppLinearPixelFormat(uint32_t pixel_format) {
 }
 
 extern "C"
-uint32_t mglRenderCppEffectiveMTLPixelFormat(uint32_t pixel_format,
+uint32_t mglRenderEffectiveMTLPixelFormat(uint32_t pixel_format,
                                             uint32_t srgb_decode_ext) {
     if (srgb_decode_ext == GL_SKIP_DECODE_EXT) {
-        return mglRenderCppLinearPixelFormat(pixel_format);
+        return mglRenderLinearPixelFormat(pixel_format);
     }
     return pixel_format;
 }
 
 
 extern "C"
-uint32_t mglRenderCppReadbackBytesPerPixel(uint32_t pixel_format) {
+uint32_t mglRenderReadbackBytesPerPixel(uint32_t pixel_format) {
     switch (static_cast<MTL::PixelFormat>(pixel_format)) {
         case MTL::PixelFormatRGBA32Float:
             return (uint32_t)(sizeof(float) * 4u);
@@ -4129,7 +4129,7 @@ uint32_t mglRenderCppReadbackBytesPerPixel(uint32_t pixel_format) {
 
 
 extern "C"
-int mglRenderCppReadbackFormatIsBGRA8Compatible(uint32_t pixel_format) {
+int mglRenderReadbackFormatIsBGRA8Compatible(uint32_t pixel_format) {
     switch (static_cast<MTL::PixelFormat>(pixel_format)) {
         case MTL::PixelFormatBGRA8Unorm:
         case MTL::PixelFormatBGRA8Unorm_sRGB:
@@ -4172,7 +4172,7 @@ int mglRenderCppReadbackFormatIsBGRA8Compatible(uint32_t pixel_format) {
 
 
 extern "C"
-int mglRenderCppPixelFormatIsIntegerColor(uint32_t pixel_format) {
+int mglRenderPixelFormatIsIntegerColor(uint32_t pixel_format) {
     switch (static_cast<MTL::PixelFormat>(pixel_format)) {
         case MTL::PixelFormatR8Uint:
         case MTL::PixelFormatR8Sint:
@@ -4201,7 +4201,7 @@ int mglRenderCppPixelFormatIsIntegerColor(uint32_t pixel_format) {
 
 
 extern "C"
-int mglRenderCppPixelFormatIsSignedIntegerColor(uint32_t pixel_format) {
+int mglRenderPixelFormatIsSignedIntegerColor(uint32_t pixel_format) {
     switch (static_cast<MTL::PixelFormat>(pixel_format)) {
         case MTL::PixelFormatR8Sint:
         case MTL::PixelFormatR16Sint:
@@ -4219,7 +4219,7 @@ int mglRenderCppPixelFormatIsSignedIntegerColor(uint32_t pixel_format) {
 }
 
 
-int mglRenderCppTextureUploadRoute(uint32_t texture_type,
+int mglRenderTextureUploadRoute(uint32_t texture_type,
                                    uint32_t storage_mode,
                                    int has_agx_3d_copy_bug) {
 
@@ -4232,22 +4232,22 @@ int mglRenderCppTextureUploadRoute(uint32_t texture_type,
     if ((texture_type == kMTLTextureType1D ||
          texture_type == kMTLTextureType1DArray) &&
         storage_mode != kMTLStorageModePrivate) {
-        return MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_REPLACE_1D;
+        return MGL_RENDER_TEXTURE_UPLOAD_ROUTE_REPLACE_1D;
     }
 
 
     if (texture_type == kMTLTextureType3D && has_agx_3d_copy_bug) {
         if (storage_mode == kMTLStorageModePrivate) {
-            return MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_REJECT;
+            return MGL_RENDER_TEXTURE_UPLOAD_ROUTE_REJECT;
         }
-        return MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_REPLACE_3D;
+        return MGL_RENDER_TEXTURE_UPLOAD_ROUTE_REPLACE_3D;
     }
 
-    return MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_BLIT;
+    return MGL_RENDER_TEXTURE_UPLOAD_ROUTE_BLIT;
 }
 
 extern "C"
-int mglRenderCppBuildTextureUploadPlan(
+int mglRenderBuildTextureUploadPlan(
     uint32_t gl_target,
     uint32_t texture_type,
     uint32_t storage_mode,
@@ -4260,7 +4260,7 @@ int mglRenderCppBuildTextureUploadPlan(
     uint64_t bytes_per_image,
     uint64_t destination_level,
     uint64_t destination_slice,
-    MGLRenderCppTextureUploadPlan* plan_out) {
+    MGLRenderTextureUploadPlan* plan_out) {
     if (!plan_out) return -1;
     *plan_out = {};
     if (width == 0u || bytes_per_row == 0u || bytes_per_image == 0u) {
@@ -4277,13 +4277,13 @@ int mglRenderCppBuildTextureUploadPlan(
         type == MTL::TextureType2DArray || type == MTL::TextureType1DArray ||
         type == MTL::TextureType2DMultisampleArray;
 
-    MGLRenderCppTextureUploadPlan plan = {};
+    MGLRenderTextureUploadPlan plan = {};
     plan.normalized_height = logical_1d
         ? 1u
         : std::max<uint64_t>(height, 1u);
     plan.normalized_depth = std::max<uint64_t>(depth, 1u);
     plan.copy_depth = is_3d ? plan.normalized_depth : 1u;
-    plan.upload_rows = mglRenderCppMetalUploadRowsForPixelFormat(
+    plan.upload_rows = mglRenderMetalUploadRowsForPixelFormat(
         pixel_format, plan.normalized_height);
     if (plan.upload_rows == 0u ||
         bytes_per_row > std::numeric_limits<uint64_t>::max() /
@@ -4303,7 +4303,7 @@ int mglRenderCppBuildTextureUploadPlan(
     const uint32_t private_mode =
         static_cast<uint32_t>(MTL::StorageModePrivate);
     if (logical_1d && storage_mode != private_mode) {
-        plan.route = MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_REPLACE_1D;
+        plan.route = MGL_RENDER_TEXTURE_UPLOAD_ROUTE_REPLACE_1D;
         plan.replace_region_dimension =
             (type == MTL::TextureType1D || type == MTL::TextureType1DArray)
                 ? 1u
@@ -4311,13 +4311,13 @@ int mglRenderCppBuildTextureUploadPlan(
         plan.replace_use_slice = logical_1d_array ||
                                  type == MTL::TextureType1DArray;
     } else {
-        plan.route = static_cast<uint32_t>(mglRenderCppTextureUploadRoute(
+        plan.route = static_cast<uint32_t>(mglRenderTextureUploadRoute(
             texture_type, storage_mode, has_agx_3d_copy_bug));
-        if (plan.route == MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_REPLACE_1D) {
+        if (plan.route == MGL_RENDER_TEXTURE_UPLOAD_ROUTE_REPLACE_1D) {
             plan.replace_region_dimension = 1u;
             plan.replace_use_slice = type == MTL::TextureType1DArray;
         } else if (plan.route ==
-                   MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_REPLACE_3D) {
+                   MGL_RENDER_TEXTURE_UPLOAD_ROUTE_REPLACE_3D) {
             plan.replace_region_dimension = 3u;
             plan.requires_repack =
                 plan.normalized_bytes_per_image !=
@@ -4325,12 +4325,12 @@ int mglRenderCppBuildTextureUploadPlan(
         }
     }
 
-    if (plan.route == MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_REJECT) {
+    if (plan.route == MGL_RENDER_TEXTURE_UPLOAD_ROUTE_REJECT) {
         *plan_out = plan;
         return 0;
     }
 
-    if (plan.route == MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_REPLACE_3D) {
+    if (plan.route == MGL_RENDER_TEXTURE_UPLOAD_ROUTE_REPLACE_3D) {
         if (plan.requires_repack &&
             plan.copy_depth > std::numeric_limits<uint64_t>::max() /
                                   plan.expected_bytes_per_image) {
@@ -4356,7 +4356,7 @@ int mglRenderCppBuildTextureUploadPlan(
 }
 
 
-static uint32_t mglCppPackRGBToSharedExp(double red, double green, double blue)
+static uint32_t mglPackRGBToSharedExp(double red, double green, double blue)
 {
     const int N     = 9;   /* mantissa bits */
     const int B     = 15;  /* exponent bias */
@@ -4405,7 +4405,7 @@ static uint32_t mglCppPackRGBToSharedExp(double red, double green, double blue)
 
 
 extern "C"
-void mglRenderCppCopyRows(
+void mglRenderCopyRows(
     const void* src, uint64_t src_bytes_per_row,
     void* dst, uint64_t dst_bytes_per_row,
     uint64_t row_bytes, uint64_t height, int flip_y) {
@@ -4424,7 +4424,7 @@ void mglRenderCppCopyRows(
 
 
 extern "C"
-void mglRenderCppCopyDepthTextureBytesToFloat(
+void mglRenderCopyDepthTextureBytesToFloat(
     const void* src, uint64_t src_bytes_per_row,
     void* dst, uint64_t dst_bytes_per_row,
     uint64_t width, uint64_t height,
@@ -4456,7 +4456,7 @@ void mglRenderCppCopyDepthTextureBytesToFloat(
 
 
 extern "C"
-int mglRenderCppCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(
+int mglRenderCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(
     const void* src, uint64_t src_bytes_per_row,
     void* dst, uint64_t dst_bytes_per_row,
     uint64_t width, uint64_t height,
@@ -4523,7 +4523,7 @@ int mglRenderCppCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(
             } else if (destinationIsRGB9E5) {
                 /* GL_RGB9_E5 packs three 9-bit mantissas and a 5-bit shared
                  * exponent into a 32-bit word.  Source is BGRA8. */
-                uint32_t packed = mglCppPackRGBToSharedExp(
+                uint32_t packed = mglPackRGBToSharedExp(
                     (double)r / 255.0, (double)g / 255.0,
                     (double)b / 255.0);
                 d[0] = (uint8_t)(packed & 0xFF);
@@ -4543,7 +4543,7 @@ int mglRenderCppCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(
 }
 
 
-static float mglCppHalfToFloat(uint16_t value)
+static float mglHalfToFloat(uint16_t value)
 {
     uint32_t sign = (uint32_t)(value >> 15u);
     uint32_t exponent = (value >> 10u) & 31u;
@@ -4560,7 +4560,7 @@ static float mglCppHalfToFloat(uint16_t value)
 }
 
 
-static uint16_t mglCppFloatToHalf(float value)
+static uint16_t mglFloatToHalf(float value)
 {
     uint32_t f;
     memcpy(&f, &value, sizeof(f));
@@ -4599,7 +4599,7 @@ static uint16_t mglCppFloatToHalf(float value)
 }
 
 
-static uint32_t mglCppFloatToFloat11(float v)
+static uint32_t mglFloatToFloat11(float v)
 {
     if (isnan(v)) return 0x7e0u;
     if (v <= 0.0f) return 0u;
@@ -4638,7 +4638,7 @@ static uint32_t mglCppFloatToFloat11(float v)
 }
 
 
-static uint32_t mglCppFloatToFloat10(float v)
+static uint32_t mglFloatToFloat10(float v)
 {
     if (isnan(v)) return 0x3f0u;
     if (v <= 0.0f) return 0u;
@@ -4677,7 +4677,7 @@ static uint32_t mglCppFloatToFloat10(float v)
 }
 
 
-static float mglCppUnpackUnsignedFloatComponent(uint32_t value,
+static float mglUnpackUnsignedFloatComponent(uint32_t value,
                                                uint32_t mantissa_bits)
 {
     if (mantissa_bits == 0u || mantissa_bits > 23u) return 0.0f;
@@ -4698,7 +4698,7 @@ static float mglCppUnpackUnsignedFloatComponent(uint32_t value,
 
 
 extern "C"
-void mglRenderCppCopyTextureBytesToBGRA8(
+void mglRenderCopyTextureBytesToBGRA8(
     const void* src, uint64_t src_bytes_per_row,
     void* dst, uint64_t dst_bytes_per_row,
     uint64_t width, uint64_t height,
@@ -4767,38 +4767,38 @@ void mglRenderCppCopyTextureBytesToBGRA8(
             if (sourceIsRGBA32Float) {
                 const float* s = reinterpret_cast<const float*>(
                     srcRow + (x * sizeof(float) * 4u));
-                d[0] = mglRenderCppFloatToUnorm8(s[2]);
-                d[1] = mglRenderCppFloatToUnorm8(s[1]);
-                d[2] = mglRenderCppFloatToUnorm8(s[0]);
-                d[3] = mglRenderCppFloatToUnorm8(s[3]);
+                d[0] = mglRenderFloatToUnorm8(s[2]);
+                d[1] = mglRenderFloatToUnorm8(s[1]);
+                d[2] = mglRenderFloatToUnorm8(s[0]);
+                d[3] = mglRenderFloatToUnorm8(s[3]);
             } else if (sourceIsRGBA16Float) {
                 uint16_t components[4] = {0u, 0u, 0u, 0u};
                 memcpy(components, srcRow + x * sizeof(components),
                        sizeof(components));
-                d[0] = mglRenderCppFloatToUnorm8(
-                    mglCppHalfToFloat(components[2]));
-                d[1] = mglRenderCppFloatToUnorm8(
-                    mglCppHalfToFloat(components[1]));
-                d[2] = mglRenderCppFloatToUnorm8(
-                    mglCppHalfToFloat(components[0]));
-                d[3] = mglRenderCppFloatToUnorm8(
-                    mglCppHalfToFloat(components[3]));
+                d[0] = mglRenderFloatToUnorm8(
+                    mglHalfToFloat(components[2]));
+                d[1] = mglRenderFloatToUnorm8(
+                    mglHalfToFloat(components[1]));
+                d[2] = mglRenderFloatToUnorm8(
+                    mglHalfToFloat(components[0]));
+                d[3] = mglRenderFloatToUnorm8(
+                    mglHalfToFloat(components[3]));
             } else if (sourceIsRG11B10Float) {
                 uint32_t packed = 0u;
                 memcpy(&packed, srcRow + x * sizeof(packed), sizeof(packed));
-                d[0] = mglRenderCppFloatToUnorm8(
-                    mglCppUnpackUnsignedFloatComponent(packed >> 22u, 5u));
-                d[1] = mglRenderCppFloatToUnorm8(
-                    mglCppUnpackUnsignedFloatComponent(packed >> 11u, 6u));
-                d[2] = mglRenderCppFloatToUnorm8(
-                    mglCppUnpackUnsignedFloatComponent(packed, 6u));
+                d[0] = mglRenderFloatToUnorm8(
+                    mglUnpackUnsignedFloatComponent(packed >> 22u, 5u));
+                d[1] = mglRenderFloatToUnorm8(
+                    mglUnpackUnsignedFloatComponent(packed >> 11u, 6u));
+                d[2] = mglRenderFloatToUnorm8(
+                    mglUnpackUnsignedFloatComponent(packed, 6u));
                 d[3] = 255u;
             } else if (sourceIsRG32Float) {
                 const float* s = reinterpret_cast<const float*>(
                     srcRow + (x * sizeof(float) * 2u));
                 d[0] = 0u;
-                d[1] = mglRenderCppFloatToUnorm8(s[1]);
-                d[2] = mglRenderCppFloatToUnorm8(s[0]);
+                d[1] = mglRenderFloatToUnorm8(s[1]);
+                d[2] = mglRenderFloatToUnorm8(s[0]);
                 d[3] = 255u;
             } else if (sourceIsR32Float) {
                 float component = 0.0f;
@@ -4806,17 +4806,17 @@ void mglRenderCppCopyTextureBytesToBGRA8(
                        sizeof(component));
                 d[0] = 0u;
                 d[1] = 0u;
-                d[2] = mglRenderCppFloatToUnorm8(component);
+                d[2] = mglRenderFloatToUnorm8(component);
                 d[3] = 255u;
             } else if (sourceIsRG16Float) {
                 uint16_t components[2] = {0u, 0u};
                 memcpy(components, srcRow + x * sizeof(components),
                        sizeof(components));
                 d[0] = 0u;
-                d[1] = mglRenderCppFloatToUnorm8(
-                    mglCppHalfToFloat(components[1]));
-                d[2] = mglRenderCppFloatToUnorm8(
-                    mglCppHalfToFloat(components[0]));
+                d[1] = mglRenderFloatToUnorm8(
+                    mglHalfToFloat(components[1]));
+                d[2] = mglRenderFloatToUnorm8(
+                    mglHalfToFloat(components[0]));
                 d[3] = 255u;
             } else if (sourceIsR16Float) {
                 uint16_t component = 0u;
@@ -4824,7 +4824,7 @@ void mglRenderCppCopyTextureBytesToBGRA8(
                        sizeof(component));
                 d[0] = 0u;
                 d[1] = 0u;
-                d[2] = mglRenderCppFloatToUnorm8(mglCppHalfToFloat(component));
+                d[2] = mglRenderFloatToUnorm8(mglHalfToFloat(component));
                 d[3] = 255u;
             } else if (sourceIsRGBA16Unorm) {
                 uint16_t components[4] = {0u, 0u, 0u, 0u};
@@ -4854,23 +4854,23 @@ void mglRenderCppCopyTextureBytesToBGRA8(
                 int16_t components[4] = {0, 0, 0, 0};
                 memcpy(components, srcRow + x * sizeof(components),
                        sizeof(components));
-                d[0] = mglRenderCppFloatToUnorm8(
-                    mglRenderCppSnorm16ToFloat(components[2]));
-                d[1] = mglRenderCppFloatToUnorm8(
-                    mglRenderCppSnorm16ToFloat(components[1]));
-                d[2] = mglRenderCppFloatToUnorm8(
-                    mglRenderCppSnorm16ToFloat(components[0]));
-                d[3] = mglRenderCppFloatToUnorm8(
-                    mglRenderCppSnorm16ToFloat(components[3]));
+                d[0] = mglRenderFloatToUnorm8(
+                    mglRenderSnorm16ToFloat(components[2]));
+                d[1] = mglRenderFloatToUnorm8(
+                    mglRenderSnorm16ToFloat(components[1]));
+                d[2] = mglRenderFloatToUnorm8(
+                    mglRenderSnorm16ToFloat(components[0]));
+                d[3] = mglRenderFloatToUnorm8(
+                    mglRenderSnorm16ToFloat(components[3]));
             } else if (sourceIsRG16Snorm) {
                 int16_t components[2] = {0, 0};
                 memcpy(components, srcRow + x * sizeof(components),
                        sizeof(components));
                 d[0] = 0u;
-                d[1] = mglRenderCppFloatToUnorm8(
-                    mglRenderCppSnorm16ToFloat(components[1]));
-                d[2] = mglRenderCppFloatToUnorm8(
-                    mglRenderCppSnorm16ToFloat(components[0]));
+                d[1] = mglRenderFloatToUnorm8(
+                    mglRenderSnorm16ToFloat(components[1]));
+                d[2] = mglRenderFloatToUnorm8(
+                    mglRenderSnorm16ToFloat(components[0]));
                 d[3] = 255u;
             } else if (sourceIsR16Snorm) {
                 int16_t component = 0;
@@ -4878,8 +4878,8 @@ void mglRenderCppCopyTextureBytesToBGRA8(
                        sizeof(component));
                 d[0] = 0u;
                 d[1] = 0u;
-                d[2] = mglRenderCppFloatToUnorm8(
-                    mglRenderCppSnorm16ToFloat(component));
+                d[2] = mglRenderFloatToUnorm8(
+                    mglRenderSnorm16ToFloat(component));
                 d[3] = 255u;
             } else if (sourceIsBGR10A2) {
                 uint32_t packed = 0u;
@@ -4931,28 +4931,28 @@ void mglRenderCppCopyTextureBytesToBGRA8(
                 int8_t s = (int8_t)srcRow[x];
                 d[0] = 0u;
                 d[1] = 0u;
-                d[2] = mglRenderCppFloatToUnorm8(mglRenderCppSnorm8ToFloat(s));
+                d[2] = mglRenderFloatToUnorm8(mglRenderSnorm8ToFloat(s));
                 d[3] = 255u;
             } else if (sourceIsRG8Snorm || sourceIsRG8Sint) {
                 const int8_t* s = reinterpret_cast<const int8_t*>(
                     srcRow + x * 2u);
                 d[0] = 0u;
-                d[1] = mglRenderCppFloatToUnorm8(
-                    mglRenderCppSnorm8ToFloat(s[1]));
-                d[2] = mglRenderCppFloatToUnorm8(
-                    mglRenderCppSnorm8ToFloat(s[0]));
+                d[1] = mglRenderFloatToUnorm8(
+                    mglRenderSnorm8ToFloat(s[1]));
+                d[2] = mglRenderFloatToUnorm8(
+                    mglRenderSnorm8ToFloat(s[0]));
                 d[3] = 255u;
             } else if (sourceIsRGBA8Snorm || sourceIsRGBA8Sint) {
                 const int8_t* s = reinterpret_cast<const int8_t*>(
                     srcRow + x * 4u);
-                d[0] = mglRenderCppFloatToUnorm8(
-                    mglRenderCppSnorm8ToFloat(s[2]));
-                d[1] = mglRenderCppFloatToUnorm8(
-                    mglRenderCppSnorm8ToFloat(s[1]));
-                d[2] = mglRenderCppFloatToUnorm8(
-                    mglRenderCppSnorm8ToFloat(s[0]));
-                d[3] = mglRenderCppFloatToUnorm8(
-                    mglRenderCppSnorm8ToFloat(s[3]));
+                d[0] = mglRenderFloatToUnorm8(
+                    mglRenderSnorm8ToFloat(s[2]));
+                d[1] = mglRenderFloatToUnorm8(
+                    mglRenderSnorm8ToFloat(s[1]));
+                d[2] = mglRenderFloatToUnorm8(
+                    mglRenderSnorm8ToFloat(s[0]));
+                d[3] = mglRenderFloatToUnorm8(
+                    mglRenderSnorm8ToFloat(s[3]));
             } else if (sourceIsR8Uint) {
                 d[0] = 0u;
                 d[1] = 0u;
@@ -4983,9 +4983,9 @@ void mglRenderCppCopyTextureBytesToBGRA8(
                 float rf = (float)mant_r * scale;
                 float gf = (float)mant_g * scale;
                 float bf = (float)mant_b * scale;
-                d[0] = mglRenderCppFloatToUnorm8(bf);
-                d[1] = mglRenderCppFloatToUnorm8(gf);
-                d[2] = mglRenderCppFloatToUnorm8(rf);
+                d[0] = mglRenderFloatToUnorm8(bf);
+                d[1] = mglRenderFloatToUnorm8(gf);
+                d[2] = mglRenderFloatToUnorm8(rf);
                 d[3] = 255u;
             } else {
                 const uint8_t* s = srcRow + (x * 4u);
@@ -4999,7 +4999,7 @@ void mglRenderCppCopyTextureBytesToBGRA8(
 }
 
 extern "C"
-int mglRenderCppReadbackGLTypeAccepted(uint32_t type) {
+int mglRenderReadbackGLTypeAccepted(uint32_t type) {
     switch (type) {
         case GL_UNSIGNED_BYTE:
         case GL_UNSIGNED_INT_8_8_8_8:
@@ -5029,7 +5029,7 @@ int mglRenderCppReadbackGLTypeAccepted(uint32_t type) {
     }
 }
 
-static int mglCppReadbackFormatChannelMap(uint32_t format, int* slots,
+static int mglReadbackFormatChannelMap(uint32_t format, int* slots,
                                           int src_idx[4]) {
     if (!slots || !src_idx) return 0;
     src_idx[0] = src_idx[1] = src_idx[2] = src_idx[3] = 0;
@@ -5048,7 +5048,7 @@ static int mglCppReadbackFormatChannelMap(uint32_t format, int* slots,
 }
 
 
-static uint32_t mglCppSizeForType(uint32_t type) {
+static uint32_t mglSizeForType(uint32_t type) {
     switch (type) {
         case GL_UNSIGNED_BYTE:
         case GL_BYTE:
@@ -5084,7 +5084,7 @@ static uint32_t mglCppSizeForType(uint32_t type) {
 }
 
 
-static uint32_t mglCppNumComponentsForFormat(uint32_t format) {
+static uint32_t mglNumComponentsForFormat(uint32_t format) {
     switch (format) {
         case GL_RED:
         case GL_RED_INTEGER:
@@ -5219,7 +5219,7 @@ static uint32_t mglCppNumComponentsForFormat(uint32_t format) {
     }
 }
 
-static int mglCppPixelTypeIsPacked(uint32_t type) {
+static int mglPixelTypeIsPacked(uint32_t type) {
     switch (type) {
         case GL_UNSIGNED_BYTE_3_3_2:
         case GL_UNSIGNED_BYTE_2_3_3_REV:
@@ -5245,7 +5245,7 @@ static int mglCppPixelTypeIsPacked(uint32_t type) {
 
 
 extern "C"
-int mglRenderCppCopySnorm8TextureBytesToGL(
+int mglRenderCopySnorm8TextureBytesToGL(
     const void* src, uint64_t src_bytes_per_row,
     void* dst, uint64_t dst_bytes_per_row,
     uint64_t width, uint64_t height,
@@ -5262,13 +5262,13 @@ int mglRenderCppCopySnorm8TextureBytesToGL(
 
     int slots = 0;
     int src_idx[4] = {0, 0, 0, 0};
-    if (!mglCppReadbackFormatChannelMap(format, &slots, src_idx)) {
+    if (!mglReadbackFormatChannelMap(format, &slots, src_idx)) {
         return 0;
     }
 
-    uint64_t src_bpp = mglRenderCppReadbackBytesPerPixel(pixel_format);
-    uint32_t comp_bytes = mglCppSizeForType(type);
-    uint64_t dst_pixel_bytes = mglCppPixelTypeIsPacked(type)
+    uint64_t src_bpp = mglRenderReadbackBytesPerPixel(pixel_format);
+    uint32_t comp_bytes = mglSizeForType(type);
+    uint64_t dst_pixel_bytes = mglPixelTypeIsPacked(type)
         ? (uint64_t)comp_bytes
         : (uint64_t)comp_bytes * (uint64_t)slots;
     if (dst_pixel_bytes == 0u || dst_bytes_per_row < width * dst_pixel_bytes) {
@@ -5290,7 +5290,7 @@ int mglRenderCppCopySnorm8TextureBytesToGL(
                 int idx = src_idx[c];
                 if (idx >= src_channels) idx = src_channels - 1;
                 int8_t sv = s[idx];
-                float fv = mglRenderCppSnorm8ToFloat(sv);
+                float fv = mglRenderSnorm8ToFloat(sv);
                 uint8_t* out = dp + (uint64_t)c * (uint64_t)comp_bytes;
                 if (type == GL_BYTE) {
                     int32_t iv = (int32_t)lroundf(fv * 127.0f);
@@ -5305,7 +5305,7 @@ int mglRenderCppCopySnorm8TextureBytesToGL(
                 } else if (type == GL_FLOAT) {
                     memcpy(out, &fv, sizeof(fv));
                 } else if (type == GL_HALF_FLOAT) {
-                    uint16_t iv = mglCppFloatToHalf(fv);
+                    uint16_t iv = mglFloatToHalf(fv);
                     memcpy(out, &iv, sizeof(iv));
                 } else if (type == GL_SHORT) {
                     int32_t iv = (int32_t)lroundf(fv * 32767.0f);
@@ -5334,7 +5334,7 @@ int mglRenderCppCopySnorm8TextureBytesToGL(
     return 1;
 }
 
-static int mglCppReadbackRGB10A2TypeAccepted(uint32_t type) {
+static int mglReadbackRGB10A2TypeAccepted(uint32_t type) {
     switch (type) {
         case GL_UNSIGNED_BYTE:
         case GL_BYTE:
@@ -5357,7 +5357,7 @@ static int mglCppReadbackRGB10A2TypeAccepted(uint32_t type) {
 
 
 extern "C"
-int mglRenderCppCopyRGB10A2TextureBytesToGL(
+int mglRenderCopyRGB10A2TextureBytesToGL(
     const void* src, uint64_t src_bytes_per_row,
     void* dst, uint64_t dst_bytes_per_row,
     uint64_t width, uint64_t height,
@@ -5367,19 +5367,19 @@ int mglRenderCppCopyRGB10A2TextureBytesToGL(
     }
     const MTL::PixelFormat pf = static_cast<MTL::PixelFormat>(pixel_format);
     if (pf != MTL::PixelFormatRGB10A2Unorm ||
-        !mglCppReadbackRGB10A2TypeAccepted(type)) {
+        !mglReadbackRGB10A2TypeAccepted(type)) {
         return 0;
     }
 
     int slots = 0;
     int src_idx[4] = {0, 0, 0, 0};
-    if (!mglCppReadbackFormatChannelMap(format, &slots, src_idx)) {
+    if (!mglReadbackFormatChannelMap(format, &slots, src_idx)) {
         return 0;
     }
 
     const uint64_t src_bpp = 4u;
-    uint32_t comp_bytes = mglCppSizeForType(type);
-    uint64_t dst_pixel_bytes = mglCppPixelTypeIsPacked(type)
+    uint32_t comp_bytes = mglSizeForType(type);
+    uint64_t dst_pixel_bytes = mglPixelTypeIsPacked(type)
         ? (uint64_t)comp_bytes
         : (uint64_t)comp_bytes * (uint64_t)slots;
     if (dst_pixel_bytes == 0u || dst_bytes_per_row < width * dst_pixel_bytes) {
@@ -5422,7 +5422,7 @@ int mglRenderCppCopyRGB10A2TextureBytesToGL(
                     ? (float)rgb10a2_vals[src_idx[1]] / 1023.0f : 0.0f;
                 float bf = (slots > 2)
                     ? (float)rgb10a2_vals[src_idx[2]] / 1023.0f : 0.0f;
-                uint32_t out = mglCppPackRGBToSharedExp(rf, gf, bf);
+                uint32_t out = mglPackRGBToSharedExp(rf, gf, bf);
                 memcpy(dst_row + (x * dst_pixel_bytes), &out, sizeof(out));
             } else if (type == GL_UNSIGNED_INT_8_8_8_8) {
                 uint8_t r8 = (uint8_t)((uint64_t)rgb10a2_vals[src_idx[0]] *
@@ -5488,7 +5488,7 @@ int mglRenderCppCopyRGB10A2TextureBytesToGL(
                     } else if (type == GL_FLOAT) {
                         memcpy(out, &fv, sizeof(fv));
                     } else {
-                        uint16_t iv = mglCppFloatToHalf(fv);
+                        uint16_t iv = mglFloatToHalf(fv);
                         memcpy(out, &iv, sizeof(iv));
                     }
                 }
@@ -5498,7 +5498,7 @@ int mglRenderCppCopyRGB10A2TextureBytesToGL(
     return 1;
 }
 
-static int mglCppReadbackRG11B10TypeAccepted(uint32_t type) {
+static int mglReadbackRG11B10TypeAccepted(uint32_t type) {
     switch (type) {
         case GL_UNSIGNED_BYTE:
         case GL_BYTE:
@@ -5520,7 +5520,7 @@ static int mglCppReadbackRG11B10TypeAccepted(uint32_t type) {
 
 
 extern "C"
-int mglRenderCppCopyRG11B10TextureBytesToGL(
+int mglRenderCopyRG11B10TextureBytesToGL(
     const void* src, uint64_t src_bytes_per_row,
     void* dst, uint64_t dst_bytes_per_row,
     uint64_t width, uint64_t height,
@@ -5530,12 +5530,12 @@ int mglRenderCppCopyRG11B10TextureBytesToGL(
     }
     const MTL::PixelFormat pf = static_cast<MTL::PixelFormat>(pixel_format);
     if (pf != MTL::PixelFormatRG11B10Float ||
-        !mglCppReadbackRG11B10TypeAccepted(type)) {
+        !mglReadbackRG11B10TypeAccepted(type)) {
         return 0;
     }
 
     const uint64_t src_bpp = 4u;
-    uint32_t comp_bytes = mglCppSizeForType(type);
+    uint32_t comp_bytes = mglSizeForType(type);
     if (type == GL_UNSIGNED_INT_10F_11F_11F_REV && format == GL_RGB) {
         if (dst_bytes_per_row < width * src_bpp) {
             return 0;
@@ -5553,11 +5553,11 @@ int mglRenderCppCopyRG11B10TextureBytesToGL(
 
     int slots = 0;
     int src_idx[4] = {0, 0, 0, 0};
-    if (!mglCppReadbackFormatChannelMap(format, &slots, src_idx)) {
+    if (!mglReadbackFormatChannelMap(format, &slots, src_idx)) {
         return 0;
     }
 
-    uint64_t dst_pixel_bytes = mglCppPixelTypeIsPacked(type)
+    uint64_t dst_pixel_bytes = mglPixelTypeIsPacked(type)
         ? (uint64_t)comp_bytes
         : (uint64_t)comp_bytes * (uint64_t)slots;
     if (dst_pixel_bytes == 0u || dst_bytes_per_row < width * dst_pixel_bytes) {
@@ -5574,9 +5574,9 @@ int mglRenderCppCopyRG11B10TextureBytesToGL(
             uint32_t packed = 0u;
             memcpy(&packed, src_row + (x * src_bpp), sizeof(packed));
             float float_vals[4] = {
-                mglCppUnpackUnsignedFloatComponent(packed, 6u),
-                mglCppUnpackUnsignedFloatComponent(packed >> 11u, 6u),
-                mglCppUnpackUnsignedFloatComponent(packed >> 22u, 5u),
+                mglUnpackUnsignedFloatComponent(packed, 6u),
+                mglUnpackUnsignedFloatComponent(packed >> 11u, 6u),
+                mglUnpackUnsignedFloatComponent(packed >> 22u, 5u),
                 1.0f
             };
 
@@ -5584,35 +5584,35 @@ int mglRenderCppCopyRG11B10TextureBytesToGL(
                 float r = float_vals[src_idx[0]];
                 float g = (slots > 1) ? float_vals[src_idx[1]] : 0.0f;
                 float b = (slots > 2) ? float_vals[src_idx[2]] : 0.0f;
-                uint32_t out = (mglCppFloatToFloat11(r) & 0x7ffu) |
-                               ((mglCppFloatToFloat11(g) & 0x7ffu) << 11u) |
-                               ((mglCppFloatToFloat10(b) & 0x3ffu) << 22u);
+                uint32_t out = (mglFloatToFloat11(r) & 0x7ffu) |
+                               ((mglFloatToFloat11(g) & 0x7ffu) << 11u) |
+                               ((mglFloatToFloat10(b) & 0x3ffu) << 22u);
                 memcpy(dst_row + (x * dst_pixel_bytes), &out, sizeof(out));
             } else if (type == GL_UNSIGNED_INT_5_9_9_9_REV) {
                 float r = float_vals[src_idx[0]];
                 float g = (slots > 1) ? float_vals[src_idx[1]] : 0.0f;
                 float b = (slots > 2) ? float_vals[src_idx[2]] : 0.0f;
-                uint32_t out = mglCppPackRGBToSharedExp(r, g, b);
+                uint32_t out = mglPackRGBToSharedExp(r, g, b);
                 memcpy(dst_row + (x * dst_pixel_bytes), &out, sizeof(out));
             } else if (type == GL_UNSIGNED_INT_8_8_8_8) {
-                uint8_t r8 = mglRenderCppFloatToUnorm8(float_vals[src_idx[0]]);
+                uint8_t r8 = mglRenderFloatToUnorm8(float_vals[src_idx[0]]);
                 uint8_t g8 = (slots > 1)
-                    ? mglRenderCppFloatToUnorm8(float_vals[src_idx[1]]) : 0u;
+                    ? mglRenderFloatToUnorm8(float_vals[src_idx[1]]) : 0u;
                 uint8_t b8 = (slots > 2)
-                    ? mglRenderCppFloatToUnorm8(float_vals[src_idx[2]]) : 0u;
+                    ? mglRenderFloatToUnorm8(float_vals[src_idx[2]]) : 0u;
                 uint8_t a8 = (slots > 3)
-                    ? mglRenderCppFloatToUnorm8(float_vals[src_idx[3]]) : 0u;
+                    ? mglRenderFloatToUnorm8(float_vals[src_idx[3]]) : 0u;
                 uint32_t out = ((uint32_t)r8 << 24u) | ((uint32_t)g8 << 16u) |
                                ((uint32_t)b8 << 8u) | a8;
                 memcpy(dst_row + (x * dst_pixel_bytes), &out, sizeof(out));
             } else if (type == GL_UNSIGNED_INT_8_8_8_8_REV) {
-                uint8_t r8 = mglRenderCppFloatToUnorm8(float_vals[src_idx[0]]);
+                uint8_t r8 = mglRenderFloatToUnorm8(float_vals[src_idx[0]]);
                 uint8_t g8 = (slots > 1)
-                    ? mglRenderCppFloatToUnorm8(float_vals[src_idx[1]]) : 0u;
+                    ? mglRenderFloatToUnorm8(float_vals[src_idx[1]]) : 0u;
                 uint8_t b8 = (slots > 2)
-                    ? mglRenderCppFloatToUnorm8(float_vals[src_idx[2]]) : 0u;
+                    ? mglRenderFloatToUnorm8(float_vals[src_idx[2]]) : 0u;
                 uint8_t a8 = (slots > 3)
-                    ? mglRenderCppFloatToUnorm8(float_vals[src_idx[3]]) : 0u;
+                    ? mglRenderFloatToUnorm8(float_vals[src_idx[3]]) : 0u;
                 uint32_t out = r8 | ((uint32_t)g8 << 8u) |
                                ((uint32_t)b8 << 16u) | ((uint32_t)a8 << 24u);
                 memcpy(dst_row + (x * dst_pixel_bytes), &out, sizeof(out));
@@ -5648,7 +5648,7 @@ int mglRenderCppCopyRG11B10TextureBytesToGL(
                     } else if (type == GL_FLOAT) {
                         memcpy(out, &fv, sizeof(fv));
                     } else {
-                        uint16_t iv = mglCppFloatToHalf(fv);
+                        uint16_t iv = mglFloatToHalf(fv);
                         memcpy(out, &iv, sizeof(iv));
                     }
                 }
@@ -5658,7 +5658,7 @@ int mglRenderCppCopyRG11B10TextureBytesToGL(
     return 1;
 }
 
-static int mglCppReadback16or32TypeAccepted(uint32_t type) {
+static int mglReadback16or32TypeAccepted(uint32_t type) {
     switch (type) {
         case GL_UNSIGNED_BYTE:
         case GL_BYTE:
@@ -5688,7 +5688,7 @@ static int mglCppReadback16or32TypeAccepted(uint32_t type) {
     }
 }
 
-static int mglCppWideSrcChannelCount(MTL::PixelFormat pf) {
+static int mglWideSrcChannelCount(MTL::PixelFormat pf) {
     switch (pf) {
         case MTL::PixelFormatR32Float:
         case MTL::PixelFormatR16Unorm:
@@ -5711,7 +5711,7 @@ static int mglCppWideSrcChannelCount(MTL::PixelFormat pf) {
 }
 
 
-static float mglCppRead16or32SourceFloat(const uint8_t* s, int idx,
+static float mglRead16or32SourceFloat(const uint8_t* s, int idx,
                                          int is16u, int is16s, int is16f) {
     if (is16u) {
         uint16_t uv = 0;
@@ -5726,7 +5726,7 @@ static float mglCppRead16or32SourceFloat(const uint8_t* s, int idx,
     if (is16f) {
         uint16_t hv = 0;
         memcpy(&hv, s + (uint64_t)idx * 2u, sizeof(hv));
-        return mglCppHalfToFloat(hv);
+        return mglHalfToFloat(hv);
     }
     float fv = 0.0f;
     memcpy(&fv, s + (uint64_t)idx * 4u, sizeof(fv));
@@ -5735,7 +5735,7 @@ static float mglCppRead16or32SourceFloat(const uint8_t* s, int idx,
 
 
 extern "C"
-int mglRenderCppCopy16or32TextureBytesToGL(
+int mglRenderCopy16or32TextureBytesToGL(
     const void* src, uint64_t src_bytes_per_row,
     void* dst, uint64_t dst_bytes_per_row,
     uint64_t width, uint64_t height,
@@ -5761,31 +5761,31 @@ int mglRenderCppCopy16or32TextureBytesToGL(
          pf == MTL::PixelFormatRG32Float ||
          pf == MTL::PixelFormatRGBA32Float);
     if (!(is16u || is16s || is16f || is32f) ||
-        !mglCppReadback16or32TypeAccepted(type)) {
+        !mglReadback16or32TypeAccepted(type)) {
         return 0;
     }
 
-    const uint64_t src_bpp = mglRenderCppReadbackBytesPerPixel(pixel_format);
-    int src_channels = mglCppWideSrcChannelCount(pf);
+    const uint64_t src_bpp = mglRenderReadbackBytesPerPixel(pixel_format);
+    int src_channels = mglWideSrcChannelCount(pf);
     if (src_bpp == 0u || src_channels == 0) {
         return 0;
     }
 
     int slots = 0;
     int src_idx[4] = {0, 0, 0, 0};
-    if (!mglCppReadbackFormatChannelMap(format, &slots, src_idx)) {
+    if (!mglReadbackFormatChannelMap(format, &slots, src_idx)) {
         return 0;
     }
 
-    uint32_t comp_bytes = mglCppSizeForType(type);
-    uint64_t dst_pixel_bytes = mglCppPixelTypeIsPacked(type)
+    uint32_t comp_bytes = mglSizeForType(type);
+    uint64_t dst_pixel_bytes = mglPixelTypeIsPacked(type)
         ? (uint64_t)comp_bytes
         : (uint64_t)comp_bytes * (uint64_t)slots;
     if (dst_pixel_bytes == 0u || dst_bytes_per_row < width * dst_pixel_bytes) {
         return 0;
     }
 
-    const int output_is_packed = mglCppPixelTypeIsPacked(type);
+    const int output_is_packed = mglPixelTypeIsPacked(type);
     const uint8_t* src_bytes = static_cast<const uint8_t*>(src);
     uint8_t* dst_bytes = static_cast<uint8_t*>(dst);
     for (uint64_t y = 0; y < height; y++) {
@@ -5801,7 +5801,7 @@ int mglRenderCppCopy16or32TextureBytesToGL(
                 for (int c = 0; c < slots; ++c) {
                     int idx = src_idx[c];
                     if (idx >= src_channels) idx = src_channels - 1;
-                    fvals[c] = mglCppRead16or32SourceFloat(
+                    fvals[c] = mglRead16or32SourceFloat(
                         s, idx, is16u, is16s, is16f);
                 }
                 if (slots < 4) {
@@ -5931,15 +5931,15 @@ int mglRenderCppCopy16or32TextureBytesToGL(
                     float r = fvals[0] < 0.0f ? 0.0f : fvals[0];
                     float g = (slots > 1) ? (fvals[1] < 0.0f ? 0.0f : fvals[1]) : 0.0f;
                     float b = (slots > 2) ? (fvals[2] < 0.0f ? 0.0f : fvals[2]) : 0.0f;
-                    uint32_t packed = mglCppFloatToFloat11(r) |
-                                      (mglCppFloatToFloat11(g) << 11) |
-                                      (mglCppFloatToFloat10(b) << 22);
+                    uint32_t packed = mglFloatToFloat11(r) |
+                                      (mglFloatToFloat11(g) << 11) |
+                                      (mglFloatToFloat10(b) << 22);
                     memcpy(dp, &packed, sizeof(packed));
                 } else if (type == GL_UNSIGNED_INT_5_9_9_9_REV) {
                     float r = fvals[0] < 0.0f ? 0.0f : fvals[0];
                     float g = (slots > 1) ? (fvals[1] < 0.0f ? 0.0f : fvals[1]) : 0.0f;
                     float b = (slots > 2) ? (fvals[2] < 0.0f ? 0.0f : fvals[2]) : 0.0f;
-                    uint32_t packed = mglCppPackRGBToSharedExp(r, g, b);
+                    uint32_t packed = mglPackRGBToSharedExp(r, g, b);
                     memcpy(dp, &packed, sizeof(packed));
                 }
                 continue;
@@ -5948,7 +5948,7 @@ int mglRenderCppCopy16or32TextureBytesToGL(
             for (int c = 0; c < slots; ++c) {
                 int idx = src_idx[c];
                 if (idx >= src_channels) idx = src_channels - 1;
-                float fv = mglCppRead16or32SourceFloat(
+                float fv = mglRead16or32SourceFloat(
                     s, idx, is16u, is16s, is16f);
                 uint8_t* out = dp + (uint64_t)c * (uint64_t)comp_bytes;
                 if (type == GL_UNSIGNED_BYTE) {
@@ -5978,7 +5978,7 @@ int mglRenderCppCopy16or32TextureBytesToGL(
                 } else if (type == GL_FLOAT) {
                     memcpy(out, &fv, sizeof(fv));
                 } else {
-                    uint16_t iv = mglCppFloatToHalf(fv);
+                    uint16_t iv = mglFloatToHalf(fv);
                     memcpy(out, &iv, sizeof(iv));
                 }
             }
@@ -5987,7 +5987,7 @@ int mglRenderCppCopy16or32TextureBytesToGL(
     return 1;
 }
 
-static int mglCppReadbackUnorm8ScalarTypeAccepted(uint32_t type) {
+static int mglReadbackUnorm8ScalarTypeAccepted(uint32_t type) {
     switch (type) {
         case GL_BYTE:
         case GL_SHORT:
@@ -6004,7 +6004,7 @@ static int mglCppReadbackUnorm8ScalarTypeAccepted(uint32_t type) {
 
 
 extern "C"
-int mglRenderCppCopyUnorm8ScalarTextureBytesToGL(
+int mglRenderCopyUnorm8ScalarTextureBytesToGL(
     const void* src, uint64_t src_bytes_per_row,
     void* dst, uint64_t dst_bytes_per_row,
     uint64_t width, uint64_t height,
@@ -6020,17 +6020,17 @@ int mglRenderCppCopyUnorm8ScalarTextureBytesToGL(
         (pf == MTL::PixelFormatBGRA8Unorm ||
          pf == MTL::PixelFormatBGRA8Unorm_sRGB);
     if ((!source_is_rgba && !source_is_bgra) ||
-        !mglCppReadbackUnorm8ScalarTypeAccepted(type)) {
+        !mglReadbackUnorm8ScalarTypeAccepted(type)) {
         return 0;
     }
 
     int slots = 0;
     int src_idx[4] = {0, 0, 0, 0};
-    if (!mglCppReadbackFormatChannelMap(format, &slots, src_idx)) {
+    if (!mglReadbackFormatChannelMap(format, &slots, src_idx)) {
         return 0;
     }
 
-    uint32_t comp_bytes = mglCppSizeForType(type);
+    uint32_t comp_bytes = mglSizeForType(type);
     uint64_t dst_pixel_bytes = (uint64_t)comp_bytes * (uint64_t)slots;
     if (dst_pixel_bytes == 0u || dst_bytes_per_row < width * dst_pixel_bytes) {
         return 0;
@@ -6081,7 +6081,7 @@ int mglRenderCppCopyUnorm8ScalarTextureBytesToGL(
                     float fv = (float)v / 255.0f;
                     memcpy(out, &fv, sizeof(fv));
                 } else {
-                    uint16_t iv = mglCppFloatToHalf((float)v / 255.0f);
+                    uint16_t iv = mglFloatToHalf((float)v / 255.0f);
                     memcpy(out, &iv, sizeof(iv));
                 }
             }
@@ -6091,7 +6091,7 @@ int mglRenderCppCopyUnorm8ScalarTextureBytesToGL(
 }
 
 
-static uint32_t mglCppPackUnsignedFloatFromUNorm8(uint32_t value,
+static uint32_t mglPackUnsignedFloatFromUNorm8(uint32_t value,
                                                  uint32_t mantissa_bits)
 {
     if (value == 0u || mantissa_bits == 0u || mantissa_bits > 23u) {
@@ -6136,7 +6136,7 @@ static uint32_t mglCppPackUnsignedFloatFromUNorm8(uint32_t value,
     return ((uint32_t)exponent << mantissa_bits) | (mantissa & mantissa_mask);
 }
 
-static int mglCppReadbackUnorm8PackedTypeAccepted(uint32_t type) {
+static int mglReadbackUnorm8PackedTypeAccepted(uint32_t type) {
     switch (type) {
         case GL_UNSIGNED_BYTE_3_3_2:
         case GL_UNSIGNED_BYTE_2_3_3_REV:
@@ -6160,7 +6160,7 @@ static int mglCppReadbackUnorm8PackedTypeAccepted(uint32_t type) {
 
 
 extern "C"
-int mglRenderCppCopyUnorm8PackedTextureBytesToGL(
+int mglRenderCopyUnorm8PackedTextureBytesToGL(
     const void* src, uint64_t src_bytes_per_row,
     void* dst, uint64_t dst_bytes_per_row,
     uint64_t width, uint64_t height,
@@ -6176,11 +6176,11 @@ int mglRenderCppCopyUnorm8PackedTextureBytesToGL(
         (pf == MTL::PixelFormatBGRA8Unorm ||
          pf == MTL::PixelFormatBGRA8Unorm_sRGB);
     if ((!source_is_rgba && !source_is_bgra) ||
-        !mglCppReadbackUnorm8PackedTypeAccepted(type)) {
+        !mglReadbackUnorm8PackedTypeAccepted(type)) {
         return 0;
     }
 
-    uint64_t dst_pixel_bytes = (uint64_t)mglCppSizeForType(type);
+    uint64_t dst_pixel_bytes = (uint64_t)mglSizeForType(type);
     if (dst_pixel_bytes == 0u || dst_bytes_per_row < width * dst_pixel_bytes) {
         return 0;
     }
@@ -6254,12 +6254,12 @@ int mglRenderCppCopyUnorm8PackedTextureBytesToGL(
                 uint32_t packed = r10 | (g10 << 10u) | (b10 << 20u) | (a2 << 30u);
                 memcpy(d, &packed, sizeof(packed));
             } else if (type == GL_UNSIGNED_INT_10F_11F_11F_REV) {
-                uint32_t packed = mglCppPackUnsignedFloatFromUNorm8(rr, 6u) |
-                                  (mglCppPackUnsignedFloatFromUNorm8(gg, 6u) << 11u) |
-                                  (mglCppPackUnsignedFloatFromUNorm8(bb, 5u) << 22u);
+                uint32_t packed = mglPackUnsignedFloatFromUNorm8(rr, 6u) |
+                                  (mglPackUnsignedFloatFromUNorm8(gg, 6u) << 11u) |
+                                  (mglPackUnsignedFloatFromUNorm8(bb, 5u) << 22u);
                 memcpy(d, &packed, sizeof(packed));
             } else if (type == GL_UNSIGNED_INT_5_9_9_9_REV) {
-                uint32_t packed = mglCppPackRGBToSharedExp(
+                uint32_t packed = mglPackRGBToSharedExp(
                     (double)rr / 255.0, (double)gg / 255.0, (double)bb / 255.0);
                 memcpy(d, &packed, sizeof(packed));
             }
@@ -6270,7 +6270,7 @@ int mglRenderCppCopyUnorm8PackedTextureBytesToGL(
 
 
 extern "C"
-int mglRenderCppCopyUnorm8SwizzleTextureBytesToGL(
+int mglRenderCopyUnorm8SwizzleTextureBytesToGL(
     const void* src, uint64_t src_bytes_per_row,
     void* dst, uint64_t dst_bytes_per_row,
     uint64_t width, uint64_t height,
@@ -6291,13 +6291,13 @@ int mglRenderCppCopyUnorm8SwizzleTextureBytesToGL(
 
     int slots = 0;
     int src_idx[4] = {0, 0, 0, 0};
-    if (!mglCppReadbackFormatChannelMap(format, &slots, src_idx)) {
+    if (!mglReadbackFormatChannelMap(format, &slots, src_idx)) {
         return 0;
     }
     (void)src_idx;
 
-    uint32_t comp_bytes = mglCppSizeForType(type);
-    uint64_t dst_pixel_bytes = mglCppPixelTypeIsPacked(type)
+    uint32_t comp_bytes = mglSizeForType(type);
+    uint64_t dst_pixel_bytes = mglPixelTypeIsPacked(type)
         ? (uint64_t)comp_bytes
         : (uint64_t)comp_bytes * (uint64_t)slots;
     if (dst_pixel_bytes == 0u || dst_bytes_per_row < width * dst_pixel_bytes) {
@@ -6390,7 +6390,7 @@ int mglRenderCppCopyUnorm8SwizzleTextureBytesToGL(
 
 
 /* little-endian packed read + unorm bit expansion (RGBA8 path). */
-static uint32_t mglCppReadPackedUploadLE(const uint8_t* src, size_t bytes) {
+static uint32_t mglReadPackedUploadLE(const uint8_t* src, size_t bytes) {
     uint32_t value = 0u;
     if (!src) return 0u;
     if (bytes > sizeof(value)) bytes = sizeof(value);
@@ -6400,7 +6400,7 @@ static uint32_t mglCppReadPackedUploadLE(const uint8_t* src, size_t bytes) {
     return value;
 }
 
-static uint8_t mglCppExpandUNormBitsTo8(uint32_t value, uint32_t bits) {
+static uint8_t mglExpandUNormBitsTo8(uint32_t value, uint32_t bits) {
     if (bits == 0u) return 0u;
     if (bits >= 8u) return (uint8_t)(value >> (bits - 8u));
     uint32_t maxv = (1u << bits) - 1u;
@@ -6412,12 +6412,12 @@ static uint8_t mglCppExpandUNormBitsTo8(uint32_t value, uint32_t bits) {
  * Pure validation/encode over the caller-bridged entries; the CB
  * sequencing (detach/commit/wait/AGX recovery) stays in the renderer. */
 extern "C"
-int mglRenderCppEncodeStageBindingCopyBacks(
-    const MGLRenderCppCopyBackEntry* entries, uint32_t count,
+int mglRenderEncodeStageBindingCopyBacks(
+    const MGLRenderCopyBackEntry* entries, uint32_t count,
     void* blit_encoder) {
     if (!entries && count) return -1;
     for (uint32_t i = 0; i < count; i++) {
-        const MGLRenderCppCopyBackEntry& entry = entries[i];
+        const MGLRenderCopyBackEntry& entry = entries[i];
         if (entry.length == 0) continue;
         MTL::Buffer* temporary =
             static_cast<MTL::Buffer*>(const_cast<void*>(entry.temporary));
@@ -6431,7 +6431,7 @@ int mglRenderCppEncodeStageBindingCopyBacks(
             return -1;
         }
         if (blit_encoder &&
-            mglRenderCppBlitCopyBuffer(
+            mglRenderBlitCopyBuffer(
                 blit_encoder, const_cast<void*>(entry.temporary), 0,
                 const_cast<void*>(entry.destination),
                 entry.destination_offset, entry.length) != 0) {
@@ -6442,13 +6442,13 @@ int mglRenderCppEncodeStageBindingCopyBacks(
 }
 
 extern "C"
-int mglRenderCppCopyBackCPUPrefix(
-    const MGLRenderCppCopyBackEntry* entries, uint32_t count,
+int mglRenderCopyBackCPUPrefix(
+    const MGLRenderCopyBackEntry* entries, uint32_t count,
     uint32_t* failed_index_out) {
     if (failed_index_out) *failed_index_out = count;
     if (!entries && count) return -1;
     for (uint32_t i = 0; i < count; i++) {
-        const MGLRenderCppCopyBackEntry& entry = entries[i];
+        const MGLRenderCopyBackEntry& entry = entries[i];
         if (entry.length == 0 || !entry.destination_buffer) continue;
         Buffer* buffer =
             static_cast<Buffer*>(const_cast<void*>(entry.destination_buffer));
@@ -6478,8 +6478,8 @@ int mglRenderCppCopyBackCPUPrefix(
 }
 
 extern "C"
-int mglRenderCppBuildRuntimeArraySizes(
-    const MGLRenderCppBufferSizeEntry* entries, uint32_t entry_count,
+int mglRenderBuildRuntimeArraySizes(
+    const MGLRenderBufferSizeEntry* entries, uint32_t entry_count,
     uint32_t runtime_buffer_index, uint32_t max_slot,
     uint32_t* out_sizes, uint32_t out_capacity) {
     if (!out_sizes || out_capacity < max_slot ||
@@ -6487,7 +6487,7 @@ int mglRenderCppBuildRuntimeArraySizes(
         return -1;
     }
     for (uint32_t i = 0; i < entry_count; i++) {
-        const MGLRenderCppBufferSizeEntry& entry = entries[i];
+        const MGLRenderBufferSizeEntry& entry = entries[i];
 
         if (entry.metal_slot >= max_slot ||
             entry.metal_slot == runtime_buffer_index) {
@@ -6508,7 +6508,7 @@ GLuint sizeForInternalFormat(GLenum internalformat, GLenum format,
 }
 
 extern "C"
-int mglRenderCppTextureInternalFormatNeedsRGBA8Expansion(
+int mglRenderTextureInternalFormatNeedsRGBA8Expansion(
     uint32_t internal_format, uint32_t pixel_format) {
     const MTL::PixelFormat pf = static_cast<MTL::PixelFormat>(pixel_format);
     const bool is_rgba8_variant =
@@ -6542,7 +6542,7 @@ int mglRenderCppTextureInternalFormatNeedsRGBA8Expansion(
 }
 
 extern "C"
-int mglRenderCppTextureNeedsChannelExpansion(uint32_t internal_format,
+int mglRenderTextureNeedsChannelExpansion(uint32_t internal_format,
                                              uint32_t pixel_format) {
     const MTL::PixelFormat pf = static_cast<MTL::PixelFormat>(pixel_format);
     const bool is_rgba16_variant =
@@ -6576,7 +6576,7 @@ int mglRenderCppTextureNeedsChannelExpansion(uint32_t internal_format,
 
 
 extern "C"
-uint8_t* mglRenderCppCreateChannelExpandedUpload(
+uint8_t* mglRenderCreateChannelExpandedUpload(
     uint32_t internal_format, uint32_t pixel_format, const void* src_data,
     size_t width, size_t height, size_t src_bytes_per_row,
     size_t* out_bytes_per_row, size_t* out_bytes_per_image) {
@@ -6677,8 +6677,8 @@ uint8_t* mglRenderCppCreateChannelExpandedUpload(
 
 
 extern "C"
-int mglRenderCppConvertIntegerReadback(
-    const MGLRenderCppIntegerReadbackConvertParams* p) {
+int mglRenderConvertIntegerReadback(
+    const MGLRenderIntegerReadbackConvertParams* p) {
     if (!p || !p->src || !p->dst || !p->component_map ||
         !p->packed_bit_widths || !p->packed_shifts) {
         return -1;
@@ -6810,7 +6810,7 @@ int mglRenderCppConvertIntegerReadback(
 /* GL 4.6 section 11.2.2.2 patch discard predicate.
  * This is evaluated before any tessellation level is clamped to one. */
 extern "C"
-bool mglRenderCppTessFactorsDiscardPatch(uint32_t gen_mode,
+bool mglRenderTessFactorsDiscardPatch(uint32_t gen_mode,
                                          const float* edge,
                                          const float* inside) {
     if (!edge || !inside) {
@@ -6836,7 +6836,7 @@ bool mglRenderCppTessFactorsDiscardPatch(uint32_t gen_mode,
 }
 
 extern "C"
-int mglRenderCppFillDefaultTessFactorBuffer(
+int mglRenderFillDefaultTessFactorBuffer(
     void* dst, uint64_t dst_bytes,
     const float* outer_levels, const float* inner_levels,
     uint32_t patch_count) {
@@ -6858,7 +6858,7 @@ int mglRenderCppFillDefaultTessFactorBuffer(
 }
 
 extern "C"
-int mglRenderCppRepackTessFactorTriangles(
+int mglRenderRepackTessFactorTriangles(
     const void* src, uint64_t src_bytes,
     void* dst, uint64_t dst_bytes,
     uint32_t patch_count) {
@@ -6883,7 +6883,7 @@ int mglRenderCppRepackTessFactorTriangles(
 }
 
 extern "C"
-uint64_t mglRenderCppTessPrimitiveCount(
+uint64_t mglRenderTessPrimitiveCount(
     const void* factors, uint64_t bytes,
     uint32_t patch_count, uint32_t tess_gen_mode,
     uint32_t instance_count) {
@@ -6902,7 +6902,7 @@ uint64_t mglRenderCppTessPrimitiveCount(
         for (int i = 0; i < 2; i++) {
             inside[i] = *(const __fp16*)&record[4 + i];
         }
-        if (mglRenderCppTessFactorsDiscardPatch(tess_gen_mode, edge, inside)) {
+        if (mglRenderTessFactorsDiscardPatch(tess_gen_mode, edge, inside)) {
             continue;
         }
         float inside0 = fmaxf(inside[0], 1.0f);
@@ -6916,7 +6916,7 @@ uint64_t mglRenderCppTessPrimitiveCount(
 }
 
 extern "C"
-int mglRenderCppNativeTESInterfaceSupported(
+int mglRenderNativeTESInterfaceSupported(
     void* tes_function, uint64_t tes_metallib_bytes,
     uint32_t tes_gen_point_mode, uint32_t tes_xfb_varying_count,
     uint32_t tes_gen_mode,
@@ -6952,7 +6952,7 @@ int mglRenderCppNativeTESInterfaceSupported(
 }
 
 extern "C"
-int mglRenderCppRasterizationIsEmpty(
+int mglRenderRasterizationIsEmpty(
     int32_t vx, int32_t vy, int32_t vw, int32_t vh,
     uint32_t pass_width, uint32_t pass_height,
     int32_t scissor_enabled,
@@ -6988,8 +6988,8 @@ int mglRenderCppRasterizationIsEmpty(
 }
 
 extern "C"
-int mglRenderCppIntegerReadbackSourceClassify(
-    uint32_t pixel_format, MGLRenderCppIntegerReadbackSource* out) {
+int mglRenderIntegerReadbackSourceClassify(
+    uint32_t pixel_format, MGLRenderIntegerReadbackSource* out) {
     if (!out) return -1;
     out->component_count = 0;
     out->component_bytes = 0;
@@ -7080,8 +7080,8 @@ int mglRenderCppIntegerReadbackSourceClassify(
 }
 
 extern "C"
-int mglRenderCppIntegerReadbackPackedTypeClassify(
-    uint32_t packed_type, MGLRenderCppIntegerPackedType* out) {
+int mglRenderIntegerReadbackPackedTypeClassify(
+    uint32_t packed_type, MGLRenderIntegerPackedType* out) {
     if (!out) return -1;
     out->is_packed = 0;
     for (int i = 0; i < 4; i++) {
@@ -7194,9 +7194,9 @@ int mglRenderCppIntegerReadbackPackedTypeClassify(
 }
 
 extern "C"
-int mglRenderCppIntegerReadbackClassify(
+int mglRenderIntegerReadbackClassify(
     uint32_t pixel_format, uint32_t gl_format, uint32_t gl_type,
-    MGLRenderCppIntegerReadbackClassify* out) {
+    MGLRenderIntegerReadbackClassify* out) {
     if (!out) return -1;
     out->source_is_integer_texture = 0;
     out->output_is_integer_format = 0;
@@ -7302,14 +7302,14 @@ int mglRenderCppIntegerReadbackClassify(
 }
 
 extern "C"
-int mglRenderCppGetTexImagePlan(
+int mglRenderGetTexImagePlan(
     uint32_t pixel_format, uint32_t gl_format, uint32_t gl_type,
     uint32_t width, uint32_t height, uint32_t depth,
     uint32_t dst_pixel_bytes, uint32_t source_bpp,
     int bgra8_format_compatible,
     uint32_t bytes_per_row, uint32_t bytes_per_image,
     int storage_private,
-    MGLRenderCppGetTexImagePlan* out) {
+    MGLRenderGetTexImagePlan* out) {
     if (!out) return -1;
     out->direct_r32_float_read =
         (pixel_format == MTL::PixelFormatR32Float &&
@@ -7351,7 +7351,7 @@ static inline uint32_t MGLRenderReadIndexBytes(const uint8_t* bytes, int w, uint
 }
 
 extern "C"
-uint32_t mglRenderCppGLIndexElementSize(uint64_t gl_index_type) {
+uint32_t mglRenderGLIndexElementSize(uint64_t gl_index_type) {
     if (gl_index_type == GL_UNSIGNED_BYTE) return 1u;
     if (gl_index_type == GL_UNSIGNED_SHORT) return 2u;
     if (gl_index_type == GL_UNSIGNED_INT) return 4u;
@@ -7359,7 +7359,7 @@ uint32_t mglRenderCppGLIndexElementSize(uint64_t gl_index_type) {
 }
 
 extern "C"
-uint32_t mglRenderCppReadGLIndexValue(const uint8_t* bytes, uint32_t elem_width,
+uint32_t mglRenderReadGLIndexValue(const uint8_t* bytes, uint32_t elem_width,
                                       uint64_t element_index) {
     if (!bytes || elem_width == 0u) {
         return 0u;
@@ -7383,7 +7383,7 @@ uint32_t mglRenderCppReadGLIndexValue(const uint8_t* bytes, uint32_t elem_width,
 }
 
 extern "C"
-uint32_t mglRenderCppVertexAttribComponentSize(uint64_t gl_type) {
+uint32_t mglRenderVertexAttribComponentSize(uint64_t gl_type) {
     switch (gl_type) {
         case GL_BYTE:
         case GL_UNSIGNED_BYTE:
@@ -7407,14 +7407,14 @@ uint32_t mglRenderCppVertexAttribComponentSize(uint64_t gl_type) {
 }
 
 extern "C"
-uint64_t mglRenderCppVertexAttribElementBytes(uint64_t gl_type, uint32_t size) {
+uint64_t mglRenderVertexAttribElementBytes(uint64_t gl_type, uint32_t size) {
     switch (gl_type) {
         case GL_INT_2_10_10_10_REV:
         case GL_UNSIGNED_INT_2_10_10_10_REV:
         case GL_UNSIGNED_INT_10_10_10_2:
             return 4u;
         default: {
-            const uint32_t comp = mglRenderCppVertexAttribComponentSize(gl_type);
+            const uint32_t comp = mglRenderVertexAttribComponentSize(gl_type);
             if (comp == 0u || size == 0u) {
                 return 0u;
             }
@@ -7424,7 +7424,7 @@ uint64_t mglRenderCppVertexAttribElementBytes(uint64_t gl_type, uint32_t size) {
 }
 
 extern "C"
-int mglRenderCppDrawModeProducesPolygons(uint64_t gl_mode) {
+int mglRenderDrawModeProducesPolygons(uint64_t gl_mode) {
     switch (gl_mode) {
         case GL_TRIANGLES:
         case GL_TRIANGLE_STRIP:
@@ -7437,7 +7437,7 @@ int mglRenderCppDrawModeProducesPolygons(uint64_t gl_mode) {
 }
 
 extern "C"
-int mglRenderCppPrimitiveModeHasDrawableSegment(uint64_t gl_mode,
+int mglRenderPrimitiveModeHasDrawableSegment(uint64_t gl_mode,
                                                 uint64_t index_count) {
     switch (gl_mode) {
         case GL_POINTS:
@@ -7458,7 +7458,7 @@ int mglRenderCppPrimitiveModeHasDrawableSegment(uint64_t gl_mode,
 }
 
 extern "C"
-uint64_t mglRenderCppQuadTriangleIndexCount(uint64_t source_vertex_count) {
+uint64_t mglRenderQuadTriangleIndexCount(uint64_t source_vertex_count) {
     const uint64_t quad_count = source_vertex_count / 4u;
     if (quad_count > (uint64_t)(SIZE_MAX / 6u)) {
         return 0u;
@@ -7467,12 +7467,12 @@ uint64_t mglRenderCppQuadTriangleIndexCount(uint64_t source_vertex_count) {
 }
 
 extern "C"
-uint64_t mglRenderCppAlignVertexStrideForMetal(uint64_t stride) {
+uint64_t mglRenderAlignVertexStrideForMetal(uint64_t stride) {
     return (stride + 3u) & ~(uint64_t)3u;
 }
 
 extern "C"
-uint32_t mglRenderCppDoubleVertexAttribFloatFormat(uint32_t size) {
+uint32_t mglRenderDoubleVertexAttribFloatFormat(uint32_t size) {
     /* MTLVertexFormat Float/Float2/Float3/Float4 = 28/29/30/31. */
     switch (size) {
         case 1u: return 28u;
@@ -7484,7 +7484,7 @@ uint32_t mglRenderCppDoubleVertexAttribFloatFormat(uint32_t size) {
 }
 
 extern "C"
-uint32_t mglRenderCppIntegerAttribConversionFormat(
+uint32_t mglRenderIntegerAttribConversionFormat(
     uint64_t src_type,
     uint64_t shader_gl_type,
     uint32_t size) {
@@ -7533,12 +7533,12 @@ uint32_t mglRenderCppIntegerAttribConversionFormat(
 }
 
 extern "C"
-uint64_t mglRenderCppHashStepU64(uint64_t hash, uint64_t value) {
+uint64_t mglRenderHashStepU64(uint64_t hash, uint64_t value) {
     return (hash ^ value) * 1099511628211ull;
 }
 
 extern "C"
-int mglRenderCppPrimitiveRestartFixedIndex(uint64_t gl_index_type, uint32_t* out) {
+int mglRenderPrimitiveRestartFixedIndex(uint64_t gl_index_type, uint32_t* out) {
     if (!out) {
         return -1;
     }
@@ -7551,7 +7551,7 @@ int mglRenderCppPrimitiveRestartFixedIndex(uint64_t gl_index_type, uint32_t* out
 }
 
 extern "C"
-uint32_t mglRenderCppGLTypeElementByteSize(uint64_t gl_type) {
+uint32_t mglRenderGLTypeElementByteSize(uint64_t gl_type) {
     switch (gl_type) {
         case GL_FLOAT: case GL_INT: case GL_UNSIGNED_INT: case GL_BOOL:
             return 4u;
@@ -7579,7 +7579,7 @@ uint32_t mglRenderCppGLTypeElementByteSize(uint64_t gl_type) {
 }
 
 extern "C"
-int mglRenderCppScanIndexRangeIgnoringRestart(
+int mglRenderScanIndexRangeIgnoringRestart(
     const uint8_t* bytes, uint32_t elem_width, uint32_t count,
     int restart_enabled, uint32_t restart_index,
     uint32_t* out_min, uint32_t* out_max, int* out_valid) {
@@ -7605,7 +7605,7 @@ int mglRenderCppScanIndexRangeIgnoringRestart(
 }
 
 extern "C"
-int mglRenderCppComputePreparedIndexByteOffset(
+int mglRenderComputePreparedIndexByteOffset(
     uint64_t gl_index_type, uint64_t gl_byte_offset,
     uint64_t* out_prepared_offset) {
     if (!out_prepared_offset) {
@@ -7624,7 +7624,7 @@ int mglRenderCppComputePreparedIndexByteOffset(
 }
 
 extern "C"
-int mglRenderCppComputeIndexByteOffset(
+int mglRenderComputeIndexByteOffset(
     uint64_t base_byte_offset, uint64_t first_element, uint64_t index_stride,
     uint64_t* out_byte_offset) {
     if (!out_byte_offset || index_stride == 0u) {
@@ -7642,7 +7642,7 @@ int mglRenderCppComputeIndexByteOffset(
 }
 
 extern "C"
-int mglRenderCppExpandUInt8ToUInt16(
+int mglRenderExpandUInt8ToUInt16(
     const uint8_t* bytes, uint32_t byte_count, uint16_t** out, uint64_t* out_count) {
     if (!bytes || byte_count == 0u || !out || !out_count) {
         return -1;
@@ -7663,7 +7663,7 @@ int mglRenderCppExpandUInt8ToUInt16(
 }
 
 extern "C"
-int mglRenderCppExpandTriangleFanArrayIndices(
+int mglRenderExpandTriangleFanArrayIndices(
     uint32_t vertex_count, uint32_t** out_indices, uint64_t* out_count) {
     if (vertex_count < 3u || !out_indices || !out_count) {
         return -1;
@@ -7688,7 +7688,7 @@ int mglRenderCppExpandTriangleFanArrayIndices(
 }
 
 extern "C"
-int mglRenderCppExpandTriangleStripArrayIndices(
+int mglRenderExpandTriangleStripArrayIndices(
     uint32_t vertex_count, uint32_t** out_indices, uint64_t* out_count) {
     if (vertex_count < 3u || !out_indices || !out_count) {
         return -1;
@@ -7713,7 +7713,7 @@ int mglRenderCppExpandTriangleStripArrayIndices(
 }
 
 extern "C"
-int mglRenderCppExpandLineLoopArrayIndices(
+int mglRenderExpandLineLoopArrayIndices(
     uint32_t first_vertex, uint32_t vertex_count,
     uint32_t** out_indices, uint64_t* out_count) {
     if (vertex_count < 2u || !out_indices || !out_count) {
@@ -7738,7 +7738,7 @@ int mglRenderCppExpandLineLoopArrayIndices(
 }
 
 extern "C"
-int mglRenderCppExpandQuadArrayLineIndices(
+int mglRenderExpandQuadArrayLineIndices(
     uint32_t quad_count, uint32_t** out_indices, uint64_t* out_count) {
     if (quad_count == 0u || !out_indices || !out_count) {
         return -1;
@@ -7767,7 +7767,7 @@ int mglRenderCppExpandQuadArrayLineIndices(
 }
 
 extern "C"
-int mglRenderCppExpandQuadElementLineIndices(
+int mglRenderExpandQuadElementLineIndices(
     const uint8_t* bytes, uint32_t elem_width, uint32_t quad_count,
     uint32_t** out_indices, uint64_t* out_count) {
     if (!bytes || quad_count == 0u || !out_indices || !out_count) {
@@ -7799,7 +7799,7 @@ int mglRenderCppExpandQuadElementLineIndices(
 
 extern "C"
 int
-mglRenderCppExpandQuadArrayIndices(
+mglRenderExpandQuadArrayIndices(
     uint32_t quad_count, uint32_t** out_indices, uint64_t* out_count) {
     if (quad_count == 0u || !out_indices || !out_count) {
         return -1;
@@ -7832,7 +7832,7 @@ mglRenderCppExpandQuadArrayIndices(
 }
 
 extern "C"
-int mglRenderCppExpandQuadElementIndices(
+int mglRenderExpandQuadElementIndices(
     const uint8_t* bytes, uint32_t elem_width, uint32_t quad_count,
     uint32_t** out_indices, uint64_t* out_count) {
     if (!bytes || quad_count == 0u || !out_indices || !out_count) {
@@ -7867,7 +7867,7 @@ int mglRenderCppExpandQuadElementIndices(
 }
 
 extern "C"
-int mglRenderCppExpandTriangleStripIndices(
+int mglRenderExpandTriangleStripIndices(
     const uint8_t* bytes, uint32_t elem_width, uint32_t count,
     uint32_t** out_indices, uint64_t* out_count) {
     if (!bytes || count < 3u || !out_indices || !out_count) {
@@ -7896,7 +7896,7 @@ int mglRenderCppExpandTriangleStripIndices(
 }
 
 extern "C"
-int mglRenderCppExpandLineLoopIndices(
+int mglRenderExpandLineLoopIndices(
     const uint8_t* bytes, uint32_t elem_width, uint32_t count,
     uint32_t** out_indices, uint64_t* out_count) {
     if (!bytes || count < 2u || !out_indices || !out_count) {
@@ -7918,7 +7918,7 @@ int mglRenderCppExpandLineLoopIndices(
 }
 
 extern "C"
-int mglRenderCppExpandTriangleFanIndices(
+int mglRenderExpandTriangleFanIndices(
     const uint8_t* bytes, uint32_t elem_width, uint32_t count,
     uint32_t** out_indices, uint64_t* out_count) {
     if (!bytes || count < 3u || !out_indices || !out_count) {
@@ -7948,14 +7948,14 @@ int mglRenderCppExpandTriangleFanIndices(
 }
 
 extern "C"
-int mglRenderCppGeometryGatherIndices(
+int mglRenderGeometryGatherIndices(
     const uint8_t* bytes,
     uint32_t elem_width,
     uint32_t count,
     int restart_enabled,
     uint32_t restart_index,
     uint32_t input_vertices,
-    MGLRenderCppGeometryGatherResult* out) {
+    MGLRenderGeometryGatherResult* out) {
     if (!bytes || count == 0u || input_vertices == 0u || !out) {
         return -1;
     }
@@ -8010,11 +8010,11 @@ int mglRenderCppGeometryGatherIndices(
 }
 
 extern "C"
-int mglRenderCppReadTextureRegionClip(
+int mglRenderReadTextureRegionClip(
     int64_t region_x, int64_t region_y,
     int64_t region_w, int64_t region_h,
     int64_t level_width, int64_t level_h,
-    MGLRenderCppReadTextureRegionClip* out) {
+    MGLRenderReadTextureRegionClip* out) {
     if (!out) return -1;
     const int64_t max_x = region_x + region_w;
     const int64_t max_y = region_y + region_h;
@@ -8035,9 +8035,9 @@ int mglRenderCppReadTextureRegionClip(
 }
 
 extern "C"
-int mglRenderCppThreadgroupSize(
+int mglRenderThreadgroupSize(
     uint32_t local_x, uint32_t local_y, uint32_t local_z,
-    MGLRenderCppThreadgroupSize* out) {
+    MGLRenderThreadgroupSize* out) {
     if (!out) return -1;
     out->x = local_x ? local_x : 1u;
     out->y = local_y ? local_y : 1u;
@@ -8046,7 +8046,7 @@ int mglRenderCppThreadgroupSize(
 }
 
 extern "C"
-uint32_t mglRenderCppMTLPrimitiveTypeForGLMode(uint32_t mode) {
+uint32_t mglRenderMTLPrimitiveTypeForGLMode(uint32_t mode) {
     switch (mode) {
         case GL_POINTS: return 0u;          /* MTLPrimitiveTypePoint */
         case GL_LINES: return 1u;           /* MTLPrimitiveTypeLine */
@@ -8059,7 +8059,7 @@ uint32_t mglRenderCppMTLPrimitiveTypeForGLMode(uint32_t mode) {
 }
 
 extern "C"
-uint32_t mglRenderCppMTLIndexTypeForGLType(uint32_t gl_type) {
+uint32_t mglRenderMTLIndexTypeForGLType(uint32_t gl_type) {
     switch (gl_type) {
         case GL_UNSIGNED_BYTE:
         case GL_UNSIGNED_SHORT:
@@ -8072,7 +8072,7 @@ uint32_t mglRenderCppMTLIndexTypeForGLType(uint32_t gl_type) {
 }
 
 extern "C"
-uint64_t mglRenderCppMetalTextureLevelDimension(uint64_t base, uint64_t level) {
+uint64_t mglRenderMetalTextureLevelDimension(uint64_t base, uint64_t level) {
     const uint64_t one = 1u;
     uint64_t value = base > one ? base : one;
     while (level-- > 0u && value > one) {
@@ -8082,12 +8082,12 @@ uint64_t mglRenderCppMetalTextureLevelDimension(uint64_t base, uint64_t level) {
 }
 
 extern "C"
-int mglRenderCppResolveVertexAttribBinding(
+int mglRenderResolveVertexAttribBinding(
     uint32_t binding_index, int binding_has_buffer,
     int64_t binding_offset, uint32_t binding_stride,
     int64_t attrib_binding_offset, uint32_t attrib_stride,
     uint32_t binding_divisor, uint32_t attrib_divisor,
-    MGLRenderCppVertexAttribResolve* out) {
+    MGLRenderVertexAttribResolve* out) {
     if (!out) return -1;
     if (binding_index < MGL_MAX_VERTEX_ATTRIB_BINDINGS &&
         binding_has_buffer) {
@@ -8105,7 +8105,7 @@ int mglRenderCppResolveVertexAttribBinding(
 }
 
 extern "C"
-int mglRenderCppBufferShadowUploadRange(
+int mglRenderBufferShadowUploadRange(
     int gpu_write_target, int64_t written_min, int64_t written_max,
     uint64_t limit, uint64_t* out_offset, uint64_t* out_length) {
     if (!out_offset || !out_length) return -1;
@@ -8130,11 +8130,11 @@ int mglRenderCppBufferShadowUploadRange(
 }
 
 extern "C"
-int mglRenderCppPolygonOffsetDecision(
+int mglRenderPolygonOffsetDecision(
     uint32_t mode, int has_ctx, int produces_polygons,
     uint32_t polygon_mode,
     int cap_point, int cap_line, int cap_fill,
-    MGLRenderCppPolygonOffsetDecision* out) {
+    MGLRenderPolygonOffsetDecision* out) {
     if (!out) return -1;
     const int polygons = (has_ctx && produces_polygons) ? 1 : 0;
     out->triangle_fill_mode =
@@ -8165,7 +8165,7 @@ int mglRenderCppPolygonOffsetDecision(
 }
 
 extern "C"
-uint32_t mglRenderCppPrimitiveVertexCountForMode(uint32_t mode) {
+uint32_t mglRenderPrimitiveVertexCountForMode(uint32_t mode) {
     switch (mode) {
         case GL_TRIANGLES:
         case GL_TRIANGLE_STRIP:
@@ -8184,12 +8184,12 @@ uint32_t mglRenderCppPrimitiveVertexCountForMode(uint32_t mode) {
 }
 
 extern "C"
-int mglRenderCppScaledBlitUVs(
+int mglRenderScaledBlitUVs(
     uint32_t src_tex_w, uint32_t src_tex_h,
     double src_min_x, double src_max_x, double src_min_y, double src_max_y,
     int src_x_forward, int src_y_forward,
     int dst_x_forward, int dst_y_forward,
-    MGLRenderCppScaledBlitUVs* out) {
+    MGLRenderScaledBlitUVs* out) {
     if (!out) return -1;
     const float invSrcW = src_tex_w ? (1.0f / (float)src_tex_w) : 0.0f;
     const float invSrcH = src_tex_h ? (1.0f / (float)src_tex_h) : 0.0f;
@@ -8215,11 +8215,11 @@ int mglRenderCppScaledBlitUVs(
 }
 
 extern "C"
-int mglRenderCppBlitScissorRect(
+int mglRenderBlitScissorRect(
     double dst_min_x, double dst_max_x,
     double scaled_dst_metal_y, double dst_h,
     uint32_t dst_tex_w, uint32_t dst_tex_h,
-    MGLRenderCppBlitScissorRect* out) {
+    MGLRenderBlitScissorRect* out) {
     if (!out) return -1;
     const double scaledDstMetalBottom = scaled_dst_metal_y + dst_h;
     int64_t x0 = (int64_t)floor(dst_min_x + 0.00001);
@@ -8238,14 +8238,14 @@ int mglRenderCppBlitScissorRect(
 }
 
 extern "C"
-int mglRenderCppBlitFramebufferPlan(
+int mglRenderBlitFramebufferPlan(
     double src_x0, double src_x1, double src_y0, double src_y1,
     double dst_x0, double dst_x1, double dst_y0, double dst_y1,
     uint32_t src_tex_w, uint32_t src_tex_h,
     uint32_t dst_tex_w, uint32_t dst_tex_h,
     int needs_format_conversion_blit, int needs_render_target_sync_blit,
     int scissor_test_enabled,
-    MGLRenderCppBlitFramebufferPlan* out) {
+    MGLRenderBlitFramebufferPlan* out) {
     if (!out) return -1;
     out->src_x_forward = src_x1 >= src_x0 ? 1 : 0;
     out->src_y_forward = src_y1 >= src_y0 ? 1 : 0;
@@ -8289,7 +8289,7 @@ int mglRenderCppBlitFramebufferPlan(
 
 
 extern "C"
-uint32_t mglRenderCppTessRoundLevelForSpacing(uint32_t spacing,
+uint32_t mglRenderTessRoundLevelForSpacing(uint32_t spacing,
                                               uint32_t ceil_level) {
     if (spacing == GL_FRACTIONAL_EVEN) {
         const uint32_t r = (ceil_level & 1u) ? ceil_level + 1u : ceil_level;
@@ -8306,7 +8306,7 @@ uint32_t mglRenderCppTessRoundLevelForSpacing(uint32_t spacing,
  * stride contract injected by mglFixMSLTesAsComputeKernel: a zero result
  * means the renderer cannot prove the write stride.  Shared by both gates. */
 extern "C"
-uint64_t mglRenderCppTESXFBFieldByteSize(uint64_t gl_type) {
+uint64_t mglRenderTESXFBFieldByteSize(uint64_t gl_type) {
     switch (gl_type) {
         case GL_FLOAT:
         case GL_INT:
@@ -8333,7 +8333,7 @@ uint64_t mglRenderCppTESXFBFieldByteSize(uint64_t gl_type) {
  * mglCheckedNSUIntegerProduct ((a != 0 && b > UINT64_MAX / a) rejects).
  * Returns 0 with *result set on success, -1 on bad args / overflow. */
 extern "C"
-int mglRenderCppCheckedProduct(uint64_t a, uint64_t b, uint64_t* result) {
+int mglRenderCheckedProduct(uint64_t a, uint64_t b, uint64_t* result) {
     if (!result || (a != 0u && b > UINT64_MAX / a)) {
         return -1;
     }
@@ -8345,7 +8345,7 @@ int mglRenderCppCheckedProduct(uint64_t a, uint64_t b, uint64_t* result) {
  * 5-bit exponent, 6-bit mantissa, no sign; exponent bias 15.  Denormalized
  * values use 2^(1-15) * mant/64, exp==31 is inf (mant==0) or NaN. */
 extern "C"
-float mglRenderCppFloat11ToFloat(uint32_t val) {
+float mglRenderFloat11ToFloat(uint32_t val) {
     if (val == 0u) {
         return 0.0f;
     }
@@ -8362,7 +8362,7 @@ float mglRenderCppFloat11ToFloat(uint32_t val) {
 /* 10-bit unsigned float unpack: 5-bit exponent, 5-bit mantissa, no sign;
  * exponent bias 15.  Denormalized values use 2^(1-15) * mant/32. */
 extern "C"
-float mglRenderCppFloat10ToFloat(uint32_t val) {
+float mglRenderFloat10ToFloat(uint32_t val) {
     if (val == 0u) {
         return 0.0f;
     }
@@ -8379,7 +8379,7 @@ float mglRenderCppFloat10ToFloat(uint32_t val) {
 /* Float -> unorm8 with round-to-nearest (0.5 rounds up); matches
  * mglMetalFloatToUnorm8 exactly. */
 extern "C"
-uint8_t mglRenderCppFloatToUnorm8(float value) {
+uint8_t mglRenderFloatToUnorm8(float value) {
     if (!(value > 0.0f)) {
         return 0u;
     }
@@ -8392,7 +8392,7 @@ uint8_t mglRenderCppFloatToUnorm8(float value) {
 /* Snorm16 decode: INT16_MIN maps to -1.0 exactly; matches
  * mglMetalSnorm16ToFloat. */
 extern "C"
-float mglRenderCppSnorm16ToFloat(int16_t value) {
+float mglRenderSnorm16ToFloat(int16_t value) {
     if (value == INT16_MIN) {
         return -1.0f;
     }
@@ -8402,7 +8402,7 @@ float mglRenderCppSnorm16ToFloat(int16_t value) {
 /* Snorm8 decode: INT8_MIN maps to -1.0 exactly; matches
  * mglMetalSnorm8ToFloat. */
 extern "C"
-float mglRenderCppSnorm8ToFloat(int8_t value) {
+float mglRenderSnorm8ToFloat(int8_t value) {
     if (value == INT8_MIN) {
         return -1.0f;
     }
@@ -8411,7 +8411,7 @@ float mglRenderCppSnorm8ToFloat(int8_t value) {
 
 
 extern "C"
-uint32_t mglRenderCppTessControlPointFormat(uint64_t gl_type) {
+uint32_t mglRenderTessControlPointFormat(uint64_t gl_type) {
     switch (gl_type) {
         case GL_FLOAT: return (uint32_t)MTL::VertexFormatFloat;
         case GL_FLOAT_VEC2: return (uint32_t)MTL::VertexFormatFloat2;
@@ -8435,7 +8435,7 @@ uint32_t mglRenderCppTessControlPointFormat(uint64_t gl_type) {
 
 
 extern "C"
-uint64_t mglRenderCppTESXFBVertexStride(const void* program_v) {
+uint64_t mglRenderTESXFBVertexStride(const void* program_v) {
     const Program* program = (const Program*)program_v;
     if (!program || program->transform_feedback_varying_count <= 0) {
         return 0u;
@@ -8456,7 +8456,7 @@ uint64_t mglRenderCppTESXFBVertexStride(const void* program_v) {
             }
         }
         const uint64_t field_bytes =
-            output ? mglRenderCppTESXFBFieldByteSize(output->gl_type) : 0u;
+            output ? mglRenderTESXFBFieldByteSize(output->gl_type) : 0u;
         if (field_bytes == 0u || stride > UINT64_MAX - field_bytes) {
             return 0u;
         }
@@ -8466,7 +8466,7 @@ uint64_t mglRenderCppTESXFBVertexStride(const void* program_v) {
 }
 
 extern "C"
-uint32_t mglRenderCppTessEvalItemsPerPatch(
+uint32_t mglRenderTessEvalItemsPerPatch(
     const void* factor_record, uint32_t gen_mode, uint32_t spacing,
     uint32_t point_mode) {
     if (!factor_record) return 0u;
@@ -8483,7 +8483,7 @@ uint32_t mglRenderCppTessEvalItemsPerPatch(
         for (int i = 0; i < 2; i++) {
             inside[i] = *(const __fp16*)&tf->inside[i];
         }
-        if (mglRenderCppTessFactorsDiscardPatch(gen_mode, edge, inside)) {
+        if (mglRenderTessFactorsDiscardPatch(gen_mode, edge, inside)) {
             return 0u;
         }
     }
@@ -8499,19 +8499,19 @@ uint32_t mglRenderCppTessEvalItemsPerPatch(
     if (point_mode && gen_mode == GL_QUADS) {
         float i1 = *(const __fp16*)&tf->inside[1];
         if (i1 < 1.0f) i1 = 1.0f;
-        return mglRenderCppTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(i0)) *
-               mglRenderCppTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(i1));
+        return mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(i0)) *
+               mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(i1));
     }
     if (point_mode) {
         const uint32_t n =
-            mglRenderCppTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(i0));
+            mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(i0));
         return n * n;
     }
     return 0u;
 }
 
 extern "C"
-int mglRenderCppCheckedTessCaptureSize(
+int mglRenderCheckedTessCaptureSize(
     int64_t count, int64_t instance_count, uint64_t stride,
     uint64_t min_stride, uint64_t* size_out, uint64_t* offset_out) {
     if (count <= 0 || instance_count <= 0 || stride < min_stride ||
@@ -8531,10 +8531,10 @@ int mglRenderCppCheckedTessCaptureSize(
 }
 
 extern "C"
-int mglRenderCppBuildLevelUploadOps(
+int mglRenderBuildLevelUploadOps(
     const TextureLevel* levels, uint32_t level_count,
     uint32_t texture_type, uint32_t internal_format, uint32_t pixel_format,
-    MGLRenderCppLevelUploadOp* ops, uint32_t ops_capacity,
+    MGLRenderLevelUploadOp* ops, uint32_t ops_capacity,
     uint32_t* op_count_out, uint32_t* short_backing_out, uint32_t* bad_out) {
     if (op_count_out) *op_count_out = 0;
     if (short_backing_out) *short_backing_out = 0;
@@ -8566,11 +8566,11 @@ int mglRenderCppBuildLevelUploadOps(
         }
         if (!(l->has_initialized_data || l->ever_written)) continue;
 
-        MGLRenderCppLevelUploadPrep prep = {0};
-        int prepResult = mglRenderCppTexturePrepareLevelUpload(
+        MGLRenderLevelUploadPrep prep = {0};
+        int prepResult = mglRenderTexturePrepareLevelUpload(
             l, texture_type, internal_format, pixel_format, &prep);
         if (prepResult == -2) {
-            MGLRenderCppLevelUploadOp& op = ops[op_count++];
+            MGLRenderLevelUploadOp& op = ops[op_count++];
             op.level = level;
             op.kind = 1u;
             op.width = 0;
@@ -8589,7 +8589,7 @@ int mglRenderCppBuildLevelUploadOps(
             bad_count++;
             continue;
         }
-        MGLRenderCppLevelUploadOp& op = ops[op_count++];
+        MGLRenderLevelUploadOp& op = ops[op_count++];
         op.level = level;
         op.kind = 0u;
         op.width = MAX((uint32_t)1u, (uint32_t)l->width);
@@ -8610,10 +8610,10 @@ int mglRenderCppBuildLevelUploadOps(
 
 /* per-level CPU upload data preparation. */
 extern "C"
-int mglRenderCppTexturePrepareLevelUpload(
+int mglRenderTexturePrepareLevelUpload(
     const TextureLevel* level, uint32_t texture_type,
     uint32_t internal_format, uint32_t pixel_format,
-    MGLRenderCppLevelUploadPrep* out) {
+    MGLRenderLevelUploadPrep* out) {
     if (out) {
         memset(out, 0, sizeof(*out));
     }
@@ -8645,11 +8645,11 @@ int mglRenderCppTexturePrepareLevelUpload(
     uint64_t bpr = bytes_per_row;
     uint64_t bpi = bytes_per_image;
     void* expanded = nullptr;
-    if (mglRenderCppTextureInternalFormatNeedsRGBA8Expansion(
+    if (mglRenderTextureInternalFormatNeedsRGBA8Expansion(
             internal_format, pixel_format)) {
         size_t ebpr = 0;
         size_t ebpi = 0;
-        expanded = mglRenderCppCreateRGBA8ExpandedUpload(
+        expanded = mglRenderCreateRGBA8ExpandedUpload(
             src_data, (size_t)width, (size_t)height,
             (size_t)bytes_per_row, internal_format, &ebpr, &ebpi);
         if (expanded) {
@@ -8657,11 +8657,11 @@ int mglRenderCppTexturePrepareLevelUpload(
             bpr = ebpr;
             bpi = ebpi;
         }
-    } else if (mglRenderCppTextureNeedsChannelExpansion(
+    } else if (mglRenderTextureNeedsChannelExpansion(
                    internal_format, pixel_format)) {
         size_t ebpr = 0;
         size_t ebpi = 0;
-        expanded = mglRenderCppCreateChannelExpandedUpload(
+        expanded = mglRenderCreateChannelExpandedUpload(
             internal_format, pixel_format, src_data, (size_t)width,
             (size_t)height, (size_t)bytes_per_row, &ebpr, &ebpi);
         if (expanded) {
@@ -8678,7 +8678,7 @@ int mglRenderCppTexturePrepareLevelUpload(
 }
 
 extern "C"
-uint8_t mglRenderCppResolveR8SwizzledComponent(uint32_t swizzle, uint8_t red) {
+uint8_t mglRenderResolveR8SwizzledComponent(uint32_t swizzle, uint8_t red) {
     switch (swizzle) {
         case GL_RED: return red;
         case GL_ALPHA:
@@ -8692,7 +8692,7 @@ uint8_t mglRenderCppResolveR8SwizzledComponent(uint32_t swizzle, uint8_t red) {
 }
 
 extern "C"
-int mglRenderCppTextureUploadNeedsSingleChannelSwizzle(uint32_t internal_format,
+int mglRenderTextureUploadNeedsSingleChannelSwizzle(uint32_t internal_format,
                                                        int swizzled) {
     if (!swizzled) {
         return 0;
@@ -8717,13 +8717,13 @@ int mglRenderCppTextureUploadNeedsSingleChannelSwizzle(uint32_t internal_format,
 }
 
 extern "C"
-uint32_t mglRenderCppStoredColorComponents(uint32_t internal_format) {
-    uint32_t components = mglCppNumComponentsForFormat(internal_format);
+uint32_t mglRenderStoredColorComponents(uint32_t internal_format) {
+    uint32_t components = mglNumComponentsForFormat(internal_format);
     return components > 0u ? components : 4u;
 }
 
 extern "C"
-uint32_t mglRenderCppMTLSwizzleForGLSwizzle(uint32_t gl_swizzle,
+uint32_t mglRenderMTLSwizzleForGLSwizzle(uint32_t gl_swizzle,
                                             uint32_t components) {
     switch (gl_swizzle) {
         case GL_ZERO:
@@ -8755,7 +8755,7 @@ uint32_t mglRenderCppMTLSwizzleForGLSwizzle(uint32_t gl_swizzle,
 }
 
 extern "C"
-uint8_t* mglRenderCppCreateSingleChannelSwizzledUpload(
+uint8_t* mglRenderCreateSingleChannelSwizzledUpload(
     uint32_t internal_format,
     uint32_t swizzle_r, uint32_t swizzle_g,
     uint32_t swizzle_b, uint32_t swizzle_a,
@@ -8791,10 +8791,10 @@ uint8_t* mglRenderCppCreateSingleChannelSwizzledUpload(
         for (size_t x = 0; x < width; x++) {
             uint8_t red = src_row[x];
             uint8_t* out = dst_row + (x * 4u);
-            out[0] = mglRenderCppResolveR8SwizzledComponent(swizzle_r, red);
-            out[1] = mglRenderCppResolveR8SwizzledComponent(swizzle_g, red);
-            out[2] = mglRenderCppResolveR8SwizzledComponent(swizzle_b, red);
-            out[3] = mglRenderCppResolveR8SwizzledComponent(swizzle_a, red);
+            out[0] = mglRenderResolveR8SwizzledComponent(swizzle_r, red);
+            out[1] = mglRenderResolveR8SwizzledComponent(swizzle_g, red);
+            out[2] = mglRenderResolveR8SwizzledComponent(swizzle_b, red);
+            out[3] = mglRenderResolveR8SwizzledComponent(swizzle_a, red);
         }
     }
 
@@ -8803,7 +8803,7 @@ uint8_t* mglRenderCppCreateSingleChannelSwizzledUpload(
     return dst;
 }
 
-uint8_t* mglRenderCppCreateRGBA8ExpandedUpload(
+uint8_t* mglRenderCreateRGBA8ExpandedUpload(
     const void* src_data, size_t width, size_t height,
     size_t src_bytes_per_row, uint32_t internal_format,
     size_t* out_bytes_per_row, size_t* out_bytes_per_image) {
@@ -8863,7 +8863,7 @@ uint8_t* mglRenderCppCreateRGBA8ExpandedUpload(
         uint8_t* dst_row = dst + row * dst_bytes_per_row;
         for (size_t x = 0; x < width; x++) {
             const uint8_t* src_pixel = src_row + x * src_pixel_bytes;
-            uint32_t packed = mglCppReadPackedUploadLE(src_pixel,
+            uint32_t packed = mglReadPackedUploadLE(src_pixel,
                                                        src_pixel_bytes);
             uint8_t r = 0u, g = 0u, b = 0u, a = 0xffu;
             switch (internal_format) {
@@ -8889,38 +8889,38 @@ uint8_t* mglRenderCppCreateRGBA8ExpandedUpload(
                     a = 1u; /* 1 in integer */
                     break;
                 case GL_R3_G3_B2:
-                    r = mglCppExpandUNormBitsTo8((packed >> 5u) & 0x7u, 3u);
-                    g = mglCppExpandUNormBitsTo8((packed >> 2u) & 0x7u, 3u);
-                    b = mglCppExpandUNormBitsTo8(packed & 0x3u, 2u);
+                    r = mglExpandUNormBitsTo8((packed >> 5u) & 0x7u, 3u);
+                    g = mglExpandUNormBitsTo8((packed >> 2u) & 0x7u, 3u);
+                    b = mglExpandUNormBitsTo8(packed & 0x3u, 2u);
                     break;
                 case GL_RGB4:
                 case GL_RGB5:
                 case GL_RGB565:
-                    r = mglCppExpandUNormBitsTo8((packed >> 11u) & 0x1fu, 5u);
-                    g = mglCppExpandUNormBitsTo8((packed >> 5u) & 0x3fu, 6u);
-                    b = mglCppExpandUNormBitsTo8(packed & 0x1fu, 5u);
+                    r = mglExpandUNormBitsTo8((packed >> 11u) & 0x1fu, 5u);
+                    g = mglExpandUNormBitsTo8((packed >> 5u) & 0x3fu, 6u);
+                    b = mglExpandUNormBitsTo8(packed & 0x1fu, 5u);
                     break;
                 case GL_RGB10:
-                    r = mglCppExpandUNormBitsTo8(packed & 0x3ffu, 10u);
-                    g = mglCppExpandUNormBitsTo8((packed >> 10u) & 0x3ffu, 10u);
-                    b = mglCppExpandUNormBitsTo8((packed >> 20u) & 0x3ffu, 10u);
+                    r = mglExpandUNormBitsTo8(packed & 0x3ffu, 10u);
+                    g = mglExpandUNormBitsTo8((packed >> 10u) & 0x3ffu, 10u);
+                    b = mglExpandUNormBitsTo8((packed >> 20u) & 0x3ffu, 10u);
                     break;
                 case GL_RGB12:
-                    r = mglCppExpandUNormBitsTo8(packed & 0xfffu, 12u);
-                    g = mglCppExpandUNormBitsTo8((packed >> 12u) & 0xfffu, 12u);
-                    b = mglCppExpandUNormBitsTo8((packed >> 24u) & 0xfffu, 12u);
+                    r = mglExpandUNormBitsTo8(packed & 0xfffu, 12u);
+                    g = mglExpandUNormBitsTo8((packed >> 12u) & 0xfffu, 12u);
+                    b = mglExpandUNormBitsTo8((packed >> 24u) & 0xfffu, 12u);
                     break;
                 case GL_RGBA2:
                 case GL_RGBA4:
-                    r = mglCppExpandUNormBitsTo8((packed >> 12u) & 0xfu, 4u);
-                    g = mglCppExpandUNormBitsTo8((packed >> 8u) & 0xfu, 4u);
-                    b = mglCppExpandUNormBitsTo8((packed >> 4u) & 0xfu, 4u);
-                    a = mglCppExpandUNormBitsTo8(packed & 0xfu, 4u);
+                    r = mglExpandUNormBitsTo8((packed >> 12u) & 0xfu, 4u);
+                    g = mglExpandUNormBitsTo8((packed >> 8u) & 0xfu, 4u);
+                    b = mglExpandUNormBitsTo8((packed >> 4u) & 0xfu, 4u);
+                    a = mglExpandUNormBitsTo8(packed & 0xfu, 4u);
                     break;
                 case GL_RGB5_A1:
-                    r = mglCppExpandUNormBitsTo8((packed >> 11u) & 0x1fu, 5u);
-                    g = mglCppExpandUNormBitsTo8((packed >> 6u) & 0x1fu, 5u);
-                    b = mglCppExpandUNormBitsTo8((packed >> 1u) & 0x1fu, 5u);
+                    r = mglExpandUNormBitsTo8((packed >> 11u) & 0x1fu, 5u);
+                    g = mglExpandUNormBitsTo8((packed >> 6u) & 0x1fu, 5u);
+                    b = mglExpandUNormBitsTo8((packed >> 1u) & 0x1fu, 5u);
                     a = (packed & 0x1u) ? 0xffu : 0x00u;
                     break;
                 default:
@@ -8940,7 +8940,7 @@ uint8_t* mglRenderCppCreateRGBA8ExpandedUpload(
 }
 
 /* RGB->RGBA channel expansion into a caller-provided buffer. */
-int mglRenderCppTextureExpandRGBToRGBA(const void* src, void* dst,
+int mglRenderTextureExpandRGBToRGBA(const void* src, void* dst,
                                        size_t texel_count, size_t tex_width,
                                        size_t tex_height,
                                        size_t src_comp_bytes,
@@ -8973,7 +8973,7 @@ int mglRenderCppTextureExpandRGBToRGBA(const void* src, void* dst,
 }
 
 /* tight-pack the 3D depth planes (pure data transform). */
-void* mglRenderCppTextureRepackDepthPlanes(const void* bytes,
+void* mglRenderTextureRepackDepthPlanes(const void* bytes,
                                            size_t bytes_per_image,
                                            size_t expected_bytes_per_image,
                                            size_t copy_depth) {
@@ -8998,13 +8998,13 @@ void* mglRenderCppTextureRepackDepthPlanes(const void* bytes,
     return packed;
 }
 
-int mglRenderCppCreateSampler(void* sampler_descriptor,
+int mglRenderCreateSampler(void* sampler_descriptor,
                               void** sampler_out) {
     if (sampler_out) *sampler_out = nullptr;
     MTL::SamplerDescriptor* descriptor =
         static_cast<MTL::SamplerDescriptor*>(sampler_descriptor);
     if (!descriptor || !sampler_out) return -1;
-    mgl::RendererCpp& renderer = mgl::renderer();
+    mgl::Renderer& renderer = mgl::renderer();
     std::lock_guard<std::mutex> lock(renderer.mutex);
     if (!renderer.device) return -1;
     MTL::SamplerState* sampler = renderer.device->newSamplerState(descriptor);
@@ -9013,17 +9013,17 @@ int mglRenderCppCreateSampler(void* sampler_descriptor,
     return 0;
 }
 
-int mglRenderCppCreateDefaultSampler(void** sampler_out) {
+int mglRenderCreateDefaultSampler(void** sampler_out) {
     if (sampler_out) *sampler_out = nullptr;
     if (!sampler_out) return -1;
     MTL::SamplerDescriptor* descriptor = MTL::SamplerDescriptor::alloc()->init();
     if (!descriptor) return -1;
-    int result = mglRenderCppCreateSampler(descriptor, sampler_out);
+    int result = mglRenderCreateSampler(descriptor, sampler_out);
     descriptor->release();
     return result;
 }
 
-int mglRenderCppCreateFilterSampler(uint32_t nearest, void** sampler_out) {
+int mglRenderCreateFilterSampler(uint32_t nearest, void** sampler_out) {
     if (sampler_out) *sampler_out = nullptr;
     if (!sampler_out) return -1;
     MTL::SamplerDescriptor* descriptor = MTL::SamplerDescriptor::alloc()->init();
@@ -9037,12 +9037,12 @@ int mglRenderCppCreateFilterSampler(uint32_t nearest, void** sampler_out) {
     descriptor->setSAddressMode(MTL::SamplerAddressModeClampToEdge);
     descriptor->setTAddressMode(MTL::SamplerAddressModeClampToEdge);
     descriptor->setRAddressMode(MTL::SamplerAddressModeClampToEdge);
-    int result = mglRenderCppCreateSampler(descriptor, sampler_out);
+    int result = mglRenderCreateSampler(descriptor, sampler_out);
     descriptor->release();
     return result;
 }
 
-int mglRenderCppCreateSamplerForGL(const TextureParameter* params,
+int mglRenderCreateSamplerForGL(const TextureParameter* params,
                                    uint32_t target,
                                    void** sampler_out,
                                    char* err,
@@ -9184,7 +9184,7 @@ int mglRenderCppCreateSamplerForGL(const TextureParameter* params,
         return -1;
     }
 
-    mgl::RendererCpp& renderer = mgl::renderer();
+    mgl::Renderer& renderer = mgl::renderer();
     std::lock_guard<std::mutex> lock(renderer.mutex);
     if (!renderer.device) {
         if (err && errcap) snprintf(err, errcap,
@@ -9238,13 +9238,13 @@ int mglRenderCppCreateSamplerForGL(const TextureParameter* params,
     return 0;
 }
 
-int mglRenderCppCreateDepthStencilState(void* depth_stencil_descriptor,
+int mglRenderCreateDepthStencilState(void* depth_stencil_descriptor,
                                         void** depth_stencil_state_out) {
     if (depth_stencil_state_out) *depth_stencil_state_out = nullptr;
     MTL::DepthStencilDescriptor* descriptor =
         static_cast<MTL::DepthStencilDescriptor*>(depth_stencil_descriptor);
     if (!descriptor || !depth_stencil_state_out) return -1;
-    mgl::RendererCpp& renderer = mgl::renderer();
+    mgl::Renderer& renderer = mgl::renderer();
     std::lock_guard<std::mutex> lock(renderer.mutex);
     if (!renderer.device) return -1;
     MTL::DepthStencilState* state =
@@ -9254,9 +9254,9 @@ int mglRenderCppCreateDepthStencilState(void* depth_stencil_descriptor,
     return 0;
 }
 
-static MGLRenderCppStencilDescriptorState
-mglRenderCppDescribeStencilDescriptor(const MTL::StencilDescriptor *descriptor) {
-    MGLRenderCppStencilDescriptorState state = {};
+static MGLRenderStencilDescriptorState
+mglRenderDescribeStencilDescriptor(const MTL::StencilDescriptor *descriptor) {
+    MGLRenderStencilDescriptorState state = {};
     if (!descriptor) return state;
     state.present = 1u;
     state.compare_function = static_cast<uint32_t>(descriptor->stencilCompareFunction());
@@ -9271,9 +9271,9 @@ mglRenderCppDescribeStencilDescriptor(const MTL::StencilDescriptor *descriptor) 
     return state;
 }
 
-int mglRenderCppDescribeDepthStencilDescriptor(
+int mglRenderDescribeDepthStencilDescriptor(
     const void *depth_stencil_descriptor,
-    MGLRenderCppDepthStencilDescriptorState *state_out) {
+    MGLRenderDepthStencilDescriptorState *state_out) {
     if (!state_out) return -1;
     *state_out = {};
     const MTL::DepthStencilDescriptor *descriptor =
@@ -9282,14 +9282,14 @@ int mglRenderCppDescribeDepthStencilDescriptor(
     state_out->depth_compare_function =
         static_cast<uint32_t>(descriptor->depthCompareFunction());
     state_out->depth_write_enabled = descriptor->isDepthWriteEnabled() ? 1u : 0u;
-    state_out->front = mglRenderCppDescribeStencilDescriptor(
+    state_out->front = mglRenderDescribeStencilDescriptor(
         descriptor->frontFaceStencil());
-    state_out->back = mglRenderCppDescribeStencilDescriptor(
+    state_out->back = mglRenderDescribeStencilDescriptor(
         descriptor->backFaceStencil());
     return 0;
 }
 
-int mglRenderCppGetDeviceIdentity(const void *device,
+int mglRenderGetDeviceIdentity(const void *device,
                                   uint64_t *registry_id_out,
                                   char *name_out,
                                   size_t name_capacity) {
@@ -9309,8 +9309,8 @@ int mglRenderCppGetDeviceIdentity(const void *device,
     return 0;
 }
 
-static MTL::StencilDescriptor* mglRenderCppBuildStencilDescriptor(
-    const MGLRenderCppStencilDescriptorState& state) {
+static MTL::StencilDescriptor* mglRenderBuildStencilDescriptor(
+    const MGLRenderStencilDescriptorState& state) {
     if (!state.present) return nullptr;
     MTL::StencilDescriptor* descriptor =
         MTL::StencilDescriptor::alloc()->init();
@@ -9330,9 +9330,9 @@ static MTL::StencilDescriptor* mglRenderCppBuildStencilDescriptor(
     return descriptor;
 }
 
-static MTL::DepthStencilState* mglRenderCppCreateDepthStencilFromStateLocked(
-    mgl::RendererCpp& renderer,
-    const MGLRenderCppDepthStencilDescriptorState& state) {
+static MTL::DepthStencilState* mglRenderCreateDepthStencilFromStateLocked(
+    mgl::Renderer& renderer,
+    const MGLRenderDepthStencilDescriptorState& state) {
     if (!renderer.device) return nullptr;
     MTL::DepthStencilDescriptor* descriptor =
         MTL::DepthStencilDescriptor::alloc()->init();
@@ -9341,9 +9341,9 @@ static MTL::DepthStencilState* mglRenderCppCreateDepthStencilFromStateLocked(
         static_cast<MTL::CompareFunction>(state.depth_compare_function));
     descriptor->setDepthWriteEnabled(state.depth_write_enabled != 0);
     MTL::StencilDescriptor* front =
-        mglRenderCppBuildStencilDescriptor(state.front);
+        mglRenderBuildStencilDescriptor(state.front);
     MTL::StencilDescriptor* back =
-        mglRenderCppBuildStencilDescriptor(state.back);
+        mglRenderBuildStencilDescriptor(state.back);
     if (state.front.present && !front) {
         descriptor->release();
         if (back) back->release();
@@ -9364,21 +9364,21 @@ static MTL::DepthStencilState* mglRenderCppCreateDepthStencilFromStateLocked(
     return result;
 }
 
-int mglRenderCppCreateDepthStencilStateFromState(
-    const MGLRenderCppDepthStencilDescriptorState* descriptor,
+int mglRenderCreateDepthStencilStateFromState(
+    const MGLRenderDepthStencilDescriptorState* descriptor,
     void** depth_stencil_state_out) {
     if (depth_stencil_state_out) *depth_stencil_state_out = nullptr;
     if (!descriptor || !depth_stencil_state_out) return -1;
-    mgl::RendererCpp& renderer = mgl::renderer();
+    mgl::Renderer& renderer = mgl::renderer();
     std::lock_guard<std::mutex> lock(renderer.mutex);
     MTL::DepthStencilState* state =
-        mglRenderCppCreateDepthStencilFromStateLocked(renderer, *descriptor);
+        mglRenderCreateDepthStencilFromStateLocked(renderer, *descriptor);
     if (!state) return -1;
     *depth_stencil_state_out = state;
     return 0;
 }
 
-int mglRenderCppCreatePipelineCacheOwner(
+int mglRenderCreatePipelineCacheOwner(
     int pso_dedup_enabled,
     int depth_stencil_cache_enabled,
     int binary_archive_enabled,
@@ -9398,21 +9398,21 @@ int mglRenderCppCreatePipelineCacheOwner(
     }
 }
 
-void mglRenderCppDestroyPipelineCacheOwner(void** owner_handle) {
+void mglRenderDestroyPipelineCacheOwner(void** owner_handle) {
     if (!owner_handle || !*owner_handle) return;
     auto* owner = static_cast<mgl::PipelineCacheOwner*>(*owner_handle);
     *owner_handle = nullptr;
     delete owner;
 }
 
-void mglRenderCppResetPipelineCacheOwner(void* owner_handle) {
+void mglRenderResetPipelineCacheOwner(void* owner_handle) {
     auto* owner = static_cast<mgl::PipelineCacheOwner*>(owner_handle);
     if (!owner) return;
     std::lock_guard<std::mutex> lock(owner->mutex);
     owner->clearCaches();
 }
 
-int mglRenderCppGetPipelineCacheFlags(
+int mglRenderGetPipelineCacheFlags(
     void* owner_handle,
     int* pso_dedup_enabled_out,
     int* depth_stencil_cache_enabled_out,
@@ -9433,7 +9433,7 @@ int mglRenderCppGetPipelineCacheFlags(
     return 0;
 }
 
-void mglRenderCppDisablePipelineBinaryArchive(void* owner_handle) {
+void mglRenderDisablePipelineBinaryArchive(void* owner_handle) {
     auto* owner = static_cast<mgl::PipelineCacheOwner*>(owner_handle);
     if (!owner) return;
     std::lock_guard<std::mutex> lock(owner->mutex);
@@ -9441,7 +9441,7 @@ void mglRenderCppDisablePipelineBinaryArchive(void* owner_handle) {
     owner->clearBinaryArchive();
 }
 
-int mglRenderCppGetPipelineBinaryArchiveState(
+int mglRenderGetPipelineBinaryArchiveState(
     void* owner_handle, int* enabled_out, int* present_out) {
     auto* owner = static_cast<mgl::PipelineCacheOwner*>(owner_handle);
     if (enabled_out) *enabled_out = 0;
@@ -9453,7 +9453,7 @@ int mglRenderCppGetPipelineBinaryArchiveState(
     return 0;
 }
 
-int mglRenderCppLoadPipelineBinaryArchive(
+int mglRenderLoadPipelineBinaryArchive(
     void* owner_handle,
     const char* cache_key,
     void* url,
@@ -9467,7 +9467,7 @@ int mglRenderCppLoadPipelineBinaryArchive(
     if (err && errcap) err[0] = '\0';
     if (!owner || !cache_key || !cache_key[0] || !archiveURL) return -1;
 
-    mgl::RendererCpp& renderer = mgl::renderer();
+    mgl::Renderer& renderer = mgl::renderer();
     std::scoped_lock lock(renderer.mutex, owner->mutex);
     if (!renderer.device || !owner->binaryArchiveEnabled) return -1;
 
@@ -9504,7 +9504,7 @@ int mglRenderCppLoadPipelineBinaryArchive(
     return 0;
 }
 
-int mglRenderCppSerializePipelineBinaryArchive(
+int mglRenderSerializePipelineBinaryArchive(
     void* owner_handle, void* url, char* err, size_t errcap) {
     auto* owner = static_cast<mgl::PipelineCacheOwner*>(owner_handle);
     auto* archiveURL = static_cast<NS::URL*>(url);
@@ -9528,11 +9528,11 @@ int mglRenderCppSerializePipelineBinaryArchive(
     return 0;
 }
 
-void mglRenderCppDiscardPipelineBinaryArchive(
+void mglRenderDiscardPipelineBinaryArchive(
     void* owner_handle, const char* cache_key) {
     auto* owner = static_cast<mgl::PipelineCacheOwner*>(owner_handle);
     if (!owner) return;
-    mgl::RendererCpp& renderer = mgl::renderer();
+    mgl::Renderer& renderer = mgl::renderer();
     std::scoped_lock lock(renderer.mutex, owner->mutex);
     std::string key = cache_key && cache_key[0]
         ? std::string(cache_key) : owner->binaryArchiveKey;
@@ -9544,8 +9544,8 @@ void mglRenderCppDiscardPipelineBinaryArchive(
     }
 }
 
-int mglRenderCppGetPipelineActiveState(
-    void* owner_handle, MGLRenderCppPipelineActiveState* state_out) {
+int mglRenderGetPipelineActiveState(
+    void* owner_handle, MGLRenderPipelineActiveState* state_out) {
     auto* owner = static_cast<mgl::PipelineCacheOwner*>(owner_handle);
     if (!owner || !state_out) return -1;
     std::lock_guard<std::mutex> lock(owner->mutex);
@@ -9553,7 +9553,7 @@ int mglRenderCppGetPipelineActiveState(
     return 0;
 }
 
-int mglRenderCppInvalidatePipelineActiveState(void* owner_handle) {
+int mglRenderInvalidatePipelineActiveState(void* owner_handle) {
     auto* owner = static_cast<mgl::PipelineCacheOwner*>(owner_handle);
     if (!owner) return -1;
     std::lock_guard<std::mutex> lock(owner->mutex);
@@ -9570,7 +9570,7 @@ int mglRenderCppInvalidatePipelineActiveState(void* owner_handle) {
     return 0;
 }
 
-int mglRenderCppSetPipelineActiveObject(void* owner_handle,
+int mglRenderSetPipelineActiveObject(void* owner_handle,
                                         void* pipeline_state) {
     auto* owner = static_cast<mgl::PipelineCacheOwner*>(owner_handle);
     if (!owner) return -1;
@@ -9581,8 +9581,8 @@ int mglRenderCppSetPipelineActiveObject(void* owner_handle,
     return 0;
 }
 
-int mglRenderCppActivatePipelineState(
-    void* owner_handle, const MGLRenderCppPipelineActiveState* state) {
+int mglRenderActivatePipelineState(
+    void* owner_handle, const MGLRenderPipelineActiveState* state) {
     auto* owner = static_cast<mgl::PipelineCacheOwner*>(owner_handle);
     if (!owner || !state) return -1;
     std::lock_guard<std::mutex> lock(owner->mutex);
@@ -9596,12 +9596,12 @@ int mglRenderCppActivatePipelineState(
     return 0;
 }
 
-int mglRenderCppSetPipelineBlendState(
+int mglRenderSetPipelineBlendState(
     void* owner_handle, uint32_t attachment,
-    const MGLRenderCppPipelineBlendState* state) {
+    const MGLRenderPipelineBlendState* state) {
     auto* owner = static_cast<mgl::PipelineCacheOwner*>(owner_handle);
     if (!owner || !state ||
-        attachment >= MGL_RENDER_CPP_PIPELINE_COLOR_ATTACHMENTS) {
+        attachment >= MGL_RENDER_PIPELINE_COLOR_ATTACHMENTS) {
         return -1;
     }
     std::lock_guard<std::mutex> lock(owner->mutex);
@@ -9609,12 +9609,12 @@ int mglRenderCppSetPipelineBlendState(
     return 0;
 }
 
-int mglRenderCppGetPipelineBlendState(
+int mglRenderGetPipelineBlendState(
     void* owner_handle, uint32_t attachment,
-    MGLRenderCppPipelineBlendState* state_out) {
+    MGLRenderPipelineBlendState* state_out) {
     auto* owner = static_cast<mgl::PipelineCacheOwner*>(owner_handle);
     if (!owner || !state_out ||
-        attachment >= MGL_RENDER_CPP_PIPELINE_COLOR_ATTACHMENTS) {
+        attachment >= MGL_RENDER_PIPELINE_COLOR_ATTACHMENTS) {
         return -1;
     }
     std::lock_guard<std::mutex> lock(owner->mutex);
@@ -9622,9 +9622,9 @@ int mglRenderCppGetPipelineBlendState(
     return 0;
 }
 
-int mglRenderCppGetOrCreateDepthStencilState(
+int mglRenderGetOrCreateDepthStencilState(
     void* owner_handle,
-    const MGLRenderCppDepthStencilDescriptorState* descriptor,
+    const MGLRenderDepthStencilDescriptorState* descriptor,
     void** depth_stencil_state_out,
     int* created_out) {
     if (depth_stencil_state_out) *depth_stencil_state_out = nullptr;
@@ -9642,10 +9642,10 @@ int mglRenderCppGetOrCreateDepthStencilState(
         return 0;
     }
 
-    mgl::RendererCpp& renderer = mgl::renderer();
+    mgl::Renderer& renderer = mgl::renderer();
     std::lock_guard<std::mutex> rendererLock(renderer.mutex);
     MTL::DepthStencilState* state =
-        mglRenderCppCreateDepthStencilFromStateLocked(renderer, *descriptor);
+        mglRenderCreateDepthStencilFromStateLocked(renderer, *descriptor);
     if (!state) return -1;
     std::unique_ptr<mgl::PipelineCacheDepthStencilEntry> entry(
         new (std::nothrow) mgl::PipelineCacheDepthStencilEntry());
@@ -9672,10 +9672,10 @@ int mglRenderCppGetOrCreateDepthStencilState(
     return 0;
 }
 
-int mglRenderCppLookupPipeline(
+int mglRenderLookupPipeline(
     void* owner_handle,
-    const uint64_t key_words[MGL_RENDER_CPP_PIPELINE_CACHE_KEY_WORDS],
-    MGLRenderCppPipelineActiveState* state_out) {
+    const uint64_t key_words[MGL_RENDER_PIPELINE_CACHE_KEY_WORDS],
+    MGLRenderPipelineActiveState* state_out) {
     auto* owner = static_cast<mgl::PipelineCacheOwner*>(owner_handle);
     if (!owner || !key_words || !state_out) return -1;
     std::lock_guard<std::mutex> lock(owner->mutex);
@@ -9691,10 +9691,10 @@ int mglRenderCppLookupPipeline(
     return 1;
 }
 
-int mglRenderCppStorePipeline(
+int mglRenderStorePipeline(
     void* owner_handle,
-    const uint64_t key_words[MGL_RENDER_CPP_PIPELINE_CACHE_KEY_WORDS],
-    const MGLRenderCppPipelineActiveState* state,
+    const uint64_t key_words[MGL_RENDER_PIPELINE_CACHE_KEY_WORDS],
+    const MGLRenderPipelineActiveState* state,
     uint32_t* evicted_out) {
     if (evicted_out) *evicted_out = 0;
     auto* owner = static_cast<mgl::PipelineCacheOwner*>(owner_handle);
@@ -9736,10 +9736,10 @@ int mglRenderCppStorePipeline(
     }
 }
 
-int mglRenderCppLookupPipelineDescriptorState(
+int mglRenderLookupPipelineDescriptorState(
     void* owner_handle,
-    const uint64_t key_words[MGL_RENDER_CPP_PIPELINE_CACHE_KEY_WORDS],
-    MGLRenderCppPipelineDescriptorState* state_out) {
+    const uint64_t key_words[MGL_RENDER_PIPELINE_CACHE_KEY_WORDS],
+    MGLRenderPipelineDescriptorState* state_out) {
     if (state_out) *state_out = {};
     auto* owner = static_cast<mgl::PipelineCacheOwner*>(owner_handle);
     if (!owner || !key_words || !state_out) return -1;
@@ -9753,10 +9753,10 @@ int mglRenderCppLookupPipelineDescriptorState(
     return 1;
 }
 
-int mglRenderCppStorePipelineDescriptorState(
+int mglRenderStorePipelineDescriptorState(
     void* owner_handle,
-    const uint64_t key_words[MGL_RENDER_CPP_PIPELINE_CACHE_KEY_WORDS],
-    const MGLRenderCppPipelineDescriptorState* state) {
+    const uint64_t key_words[MGL_RENDER_PIPELINE_CACHE_KEY_WORDS],
+    const MGLRenderPipelineDescriptorState* state) {
     auto* owner = static_cast<mgl::PipelineCacheOwner*>(owner_handle);
     if (!owner || !key_words || !state) return -1;
     std::unique_ptr<mgl::PipelineCacheDescriptorEntry> entry(
@@ -9782,7 +9782,7 @@ int mglRenderCppStorePipelineDescriptorState(
     }
 }
 
-int mglRenderCppCreatePendingEventOwner(void** owner_out) {
+int mglRenderCreatePendingEventOwner(void** owner_out) {
     if (owner_out) *owner_out = nullptr;
     if (!owner_out) return -1;
     mgl::PendingEventOwner* owner = new (std::nothrow) mgl::PendingEventOwner();
@@ -9793,7 +9793,7 @@ int mglRenderCppCreatePendingEventOwner(void** owner_out) {
 
 /* Prepare: create-or-reuse the pending event and record the GL sync name.
  * Returns a BORROWED event pointer (the owner keeps its reference). */
-int mglRenderCppPendingEventPrepare(void* owner_handle,
+int mglRenderPendingEventPrepare(void* owner_handle,
                                     GLsizei sync_name,
                                     void** event_out) {
     if (event_out) *event_out = nullptr;
@@ -9801,7 +9801,7 @@ int mglRenderCppPendingEventPrepare(void* owner_handle,
         static_cast<mgl::PendingEventOwner*>(owner_handle);
     if (!owner || !event_out) return -1;
     if (!owner->event) {
-        mgl::RendererCpp& renderer = mgl::renderer();
+        mgl::Renderer& renderer = mgl::renderer();
         std::lock_guard<std::mutex> lock(renderer.mutex);
         if (!renderer.device) return -1;
         MTL::Event* event = renderer.device->newEvent();
@@ -9815,7 +9815,7 @@ int mglRenderCppPendingEventPrepare(void* owner_handle,
 
 /* Detach: transfer the owner's reference to the caller
  * (the ObjC side bridges it with __bridge_transfer) and clear the slot. */
-int mglRenderCppPendingEventDetach(void* owner_handle,
+int mglRenderPendingEventDetach(void* owner_handle,
                                    GLsizei* sync_name_out,
                                    void** event_out) {
     if (event_out) *event_out = nullptr;
@@ -9833,7 +9833,7 @@ int mglRenderCppPendingEventDetach(void* owner_handle,
 }
 
 /* Clear: discard the pending event (owner keeps its allocation). */
-void mglRenderCppPendingEventClear(void* owner_handle) {
+void mglRenderPendingEventClear(void* owner_handle) {
     mgl::PendingEventOwner* owner =
         static_cast<mgl::PendingEventOwner*>(owner_handle);
     if (!owner) return;
@@ -9844,7 +9844,7 @@ void mglRenderCppPendingEventClear(void* owner_handle) {
     owner->sync_name = 0;
 }
 
-void mglRenderCppDestroyPendingEventOwner(void** owner_handle) {
+void mglRenderDestroyPendingEventOwner(void** owner_handle) {
     if (!owner_handle || !*owner_handle) return;
     mgl::PendingEventOwner* owner =
         static_cast<mgl::PendingEventOwner*>(*owner_handle);
@@ -9852,10 +9852,10 @@ void mglRenderCppDestroyPendingEventOwner(void** owner_handle) {
     delete owner;
 }
 
-int mglRenderCppCreateEvent(void** event_out) {
+int mglRenderCreateEvent(void** event_out) {
     if (event_out) *event_out = nullptr;
     if (!event_out) return -1;
-    mgl::RendererCpp& renderer = mgl::renderer();
+    mgl::Renderer& renderer = mgl::renderer();
     std::lock_guard<std::mutex> lock(renderer.mutex);
     if (!renderer.device) return -1;
     MTL::Event* event = renderer.device->newEvent();
@@ -9864,7 +9864,7 @@ int mglRenderCppCreateEvent(void** event_out) {
     return 0;
 }
 
-int mglRenderCppCreateFunction(void* library,
+int mglRenderCreateFunction(void* library,
                                const char* name,
                                void* function_constant_values,
                                void** function_out,
@@ -9898,10 +9898,10 @@ int mglRenderCppCreateFunction(void* library,
 }
 
 
-int mglRenderCppCreateRenderPipelineFromState(
+int mglRenderCreateRenderPipelineFromState(
     void* vs_function,
     void* fs_function,
-    const MGLRenderCppPipelineDescriptorState* state,
+    const MGLRenderPipelineDescriptorState* state,
     void* binary_archive,
     void** pipeline_out,
     char* err,
@@ -9912,7 +9912,7 @@ int mglRenderCppCreateRenderPipelineFromState(
         if (err && errcap) snprintf(err, errcap, "bad args");
         return -1;
     }
-    mgl::RendererCpp& renderer = mgl::renderer();
+    mgl::Renderer& renderer = mgl::renderer();
     std::lock_guard<std::mutex> lock(renderer.mutex);
     if (!renderer.device) {
         if (err && errcap) snprintf(err, errcap, "Metal-cpp renderer is not initialized");
@@ -9923,11 +9923,11 @@ int mglRenderCppCreateRenderPipelineFromState(
         pipeline_out, err, errcap);
 }
 
-int mglRenderCppCreateRenderPipelineFromStateWithArchiveOwner(
+int mglRenderCreateRenderPipelineFromStateWithArchiveOwner(
     void* owner_handle,
     void* vs_function,
     void* fs_function,
-    const MGLRenderCppPipelineDescriptorState* state,
+    const MGLRenderPipelineDescriptorState* state,
     void** pipeline_out,
     char* err,
     size_t errcap) {
@@ -9940,13 +9940,13 @@ int mglRenderCppCreateRenderPipelineFromStateWithArchiveOwner(
             archive->retain();
         }
     }
-    int result = mglRenderCppCreateRenderPipelineFromState(
+    int result = mglRenderCreateRenderPipelineFromState(
         vs_function, fs_function, state, archive, pipeline_out, err, errcap);
     if (archive) archive->release();
     return result;
 }
 
-int mglRenderCppCreateRenderPipelineState(
+int mglRenderCreateRenderPipelineState(
     void* render_pipeline_descriptor,
     void** pipeline_out,
     char* err,
@@ -9958,7 +9958,7 @@ int mglRenderCppCreateRenderPipelineState(
             render_pipeline_descriptor);
     if (!descriptor || !pipeline_out) return -1;
 
-    mgl::RendererCpp& renderer = mgl::renderer();
+    mgl::Renderer& renderer = mgl::renderer();
     std::lock_guard<std::mutex> lock(renderer.mutex);
     if (!renderer.device) return -1;
 
@@ -9973,7 +9973,7 @@ int mglRenderCppCreateRenderPipelineState(
     return 0;
 }
 
-int mglRenderCppCreateRenderPipelineStateWithArchive(
+int mglRenderCreateRenderPipelineStateWithArchive(
     void* render_pipeline_descriptor,
     void* binary_archive,
     void** pipeline_out,
@@ -9990,7 +9990,7 @@ int mglRenderCppCreateRenderPipelineStateWithArchive(
         static_cast<MTL::BinaryArchive*>(binary_archive);
     if (!descriptor || !pipeline_out) return -1;
 
-    mgl::RendererCpp& renderer = mgl::renderer();
+    mgl::Renderer& renderer = mgl::renderer();
     std::lock_guard<std::mutex> lock(renderer.mutex);
     if (!renderer.device) return -1;
 
@@ -10031,7 +10031,7 @@ int mglRenderCppCreateRenderPipelineStateWithArchive(
     return 0;
 }
 
-int mglRenderCppCreateRenderPipelineStateWithArchiveOwner(
+int mglRenderCreateRenderPipelineStateWithArchiveOwner(
     void* owner_handle,
     void* render_pipeline_descriptor,
     void** pipeline_out,
@@ -10049,16 +10049,16 @@ int mglRenderCppCreateRenderPipelineStateWithArchiveOwner(
         }
     }
     int result = archive
-        ? mglRenderCppCreateRenderPipelineStateWithArchive(
+        ? mglRenderCreateRenderPipelineStateWithArchive(
               render_pipeline_descriptor, archive, pipeline_out,
               archive_hit_out, err, errcap)
-        : mglRenderCppCreateRenderPipelineState(
+        : mglRenderCreateRenderPipelineState(
               render_pipeline_descriptor, pipeline_out, err, errcap);
     if (archive) archive->release();
     return result;
 }
 
-int mglRenderCppCreateComputePipelineState(void* function,
+int mglRenderCreateComputePipelineState(void* function,
                                            void** pipeline_out,
                                            char* err,
                                            size_t errcap) {
@@ -10068,7 +10068,7 @@ int mglRenderCppCreateComputePipelineState(void* function,
         static_cast<MTL::Function*>(function);
     if (!computeFunction || !pipeline_out) return -1;
 
-    mgl::RendererCpp& renderer = mgl::renderer();
+    mgl::Renderer& renderer = mgl::renderer();
     std::lock_guard<std::mutex> lock(renderer.mutex);
     if (!renderer.device) return -1;
 
@@ -10083,14 +10083,14 @@ int mglRenderCppCreateComputePipelineState(void* function,
     return 0;
 }
 
-uint32_t mglRenderCppComputePipelineMaxTotalThreads(void *pipeline) {
+uint32_t mglRenderComputePipelineMaxTotalThreads(void *pipeline) {
     if (!pipeline) return 0;
     return static_cast<uint32_t>(
         static_cast<MTL::ComputePipelineState *>(pipeline)
             ->maxTotalThreadsPerThreadgroup());
 }
 
-int mglRenderCppCreateBinaryArchive(void* binary_archive_descriptor,
+int mglRenderCreateBinaryArchive(void* binary_archive_descriptor,
                                     const char* label,
                                     void** binary_archive_out,
                                     char* err,
@@ -10100,7 +10100,7 @@ int mglRenderCppCreateBinaryArchive(void* binary_archive_descriptor,
     MTL::BinaryArchiveDescriptor* descriptor =
         static_cast<MTL::BinaryArchiveDescriptor*>(binary_archive_descriptor);
     if (!descriptor || !binary_archive_out) return -1;
-    mgl::RendererCpp& renderer = mgl::renderer();
+    mgl::Renderer& renderer = mgl::renderer();
     std::lock_guard<std::mutex> lock(renderer.mutex);
     if (!renderer.device) return -1;
 
@@ -10119,7 +10119,7 @@ int mglRenderCppCreateBinaryArchive(void* binary_archive_descriptor,
     return 0;
 }
 
-int mglRenderCppSerializeBinaryArchive(void* binary_archive,
+int mglRenderSerializeBinaryArchive(void* binary_archive,
                                        void* url,
                                        char* err,
                                        size_t errcap) {
@@ -10136,7 +10136,7 @@ int mglRenderCppSerializeBinaryArchive(void* binary_archive,
     return 0;
 }
 
-int mglRenderCppSetVisibilityResultMode(void* render_encoder,
+int mglRenderSetVisibilityResultMode(void* render_encoder,
                                         uint32_t mode,
                                         uint64_t offset) {
     MTL::RenderCommandEncoder* encoder =
@@ -10148,28 +10148,28 @@ int mglRenderCppSetVisibilityResultMode(void* render_encoder,
     return 0;
 }
 
-int mglRenderCppSetVisibilityResultModeForRenderEncoderOwner(
+int mglRenderSetVisibilityResultModeForRenderEncoderOwner(
     void* render_encoder_owner,
     uint32_t mode,
     uint64_t offset) {
     mgl::RenderEncoderOwner* owner =
         static_cast<mgl::RenderEncoderOwner*>(render_encoder_owner);
     if (!owner || !owner->encoder || owner->ended) return -1;
-    return mglRenderCppSetVisibilityResultMode(
+    return mglRenderSetVisibilityResultMode(
         owner->encoder, mode, offset);
 }
 
-int mglRenderCppSampleTimestamps(uint64_t* cpu_timestamp_out,
+int mglRenderSampleTimestamps(uint64_t* cpu_timestamp_out,
                                  uint64_t* gpu_timestamp_out) {
     if (!cpu_timestamp_out || !gpu_timestamp_out) return -1;
-    mgl::RendererCpp& renderer = mgl::renderer();
+    mgl::Renderer& renderer = mgl::renderer();
     std::lock_guard<std::mutex> lock(renderer.mutex);
     if (!renderer.device) return -1;
     renderer.device->sampleTimestamps(cpu_timestamp_out, gpu_timestamp_out);
     return 0;
 }
 
-int mglRenderCppCreateQueryStateOwner(uint32_t visibility_slot_count,
+int mglRenderCreateQueryStateOwner(uint32_t visibility_slot_count,
                                       void** owner_out) {
     if (owner_out) *owner_out = nullptr;
     if (!owner_out || visibility_slot_count == 0) return -1;
@@ -10181,7 +10181,7 @@ int mglRenderCppCreateQueryStateOwner(uint32_t visibility_slot_count,
     return 0;
 }
 
-int mglRenderCppBeginSampleQuery(void* owner_handle,
+int mglRenderBeginSampleQuery(void* owner_handle,
                                  uint32_t counting,
                                  const char* buffer_label,
                                  void** visibility_buffer_out) {
@@ -10193,7 +10193,7 @@ int mglRenderCppBeginSampleQuery(void* owner_handle,
         return -1;
     }
     if (!owner->visibilityBuffer) {
-        mgl::RendererCpp& renderer = mgl::renderer();
+        mgl::Renderer& renderer = mgl::renderer();
         std::lock_guard<std::mutex> lock(renderer.mutex);
         if (!renderer.device) return -1;
         const uint64_t byteLength =
@@ -10218,7 +10218,7 @@ int mglRenderCppBeginSampleQuery(void* owner_handle,
     return 0;
 }
 
-int mglRenderCppGetQueryVisibilityBuffer(void* owner_handle,
+int mglRenderGetQueryVisibilityBuffer(void* owner_handle,
                                          void** visibility_buffer_out) {
     if (visibility_buffer_out) *visibility_buffer_out = nullptr;
     mgl::QueryStateOwner* owner =
@@ -10230,13 +10230,13 @@ int mglRenderCppGetQueryVisibilityBuffer(void* owner_handle,
     return 0;
 }
 
-void mglRenderCppEndSampleQuery(void* owner_handle) {
+void mglRenderEndSampleQuery(void* owner_handle) {
     mgl::QueryStateOwner* owner =
         static_cast<mgl::QueryStateOwner*>(owner_handle);
     if (owner) owner->sampleQueryActive = false;
 }
 
-int mglRenderCppIsSampleQueryActive(void* owner_handle,
+int mglRenderIsSampleQueryActive(void* owner_handle,
                                     uint32_t* active_out) {
     if (active_out) *active_out = 0;
     mgl::QueryStateOwner* owner =
@@ -10246,7 +10246,7 @@ int mglRenderCppIsSampleQueryActive(void* owner_handle,
     return 0;
 }
 
-int mglRenderCppAcquireSampleQuerySlot(void* owner_handle,
+int mglRenderAcquireSampleQuerySlot(void* owner_handle,
                                        uint32_t* mode_out,
                                        uint64_t* offset_out) {
     if (mode_out) *mode_out = 0;
@@ -10271,7 +10271,7 @@ int mglRenderCppAcquireSampleQuerySlot(void* owner_handle,
     return 0;
 }
 
-int mglRenderCppGetSampleQueryResult(void* owner_handle,
+int mglRenderGetSampleQueryResult(void* owner_handle,
                                      uint64_t* result_out) {
     if (result_out) *result_out = 0;
     mgl::QueryStateOwner* owner =
@@ -10289,13 +10289,13 @@ int mglRenderCppGetSampleQueryResult(void* owner_handle,
     return 0;
 }
 
-int mglRenderCppBeginTimerQuery(void* owner_handle) {
+int mglRenderBeginTimerQuery(void* owner_handle) {
     mgl::QueryStateOwner* owner =
         static_cast<mgl::QueryStateOwner*>(owner_handle);
     if (!owner) return -1;
     uint64_t cpuTimestamp = 0;
     uint64_t gpuTimestamp = 0;
-    if (mglRenderCppSampleTimestamps(
+    if (mglRenderSampleTimestamps(
             &cpuTimestamp, &gpuTimestamp) != 0) {
         return -1;
     }
@@ -10303,7 +10303,7 @@ int mglRenderCppBeginTimerQuery(void* owner_handle) {
     return 0;
 }
 
-int mglRenderCppEndTimerQuery(void* owner_handle,
+int mglRenderEndTimerQuery(void* owner_handle,
                               uint64_t* elapsed_out) {
     if (elapsed_out) *elapsed_out = 0;
     mgl::QueryStateOwner* owner =
@@ -10311,7 +10311,7 @@ int mglRenderCppEndTimerQuery(void* owner_handle,
     if (!owner || !elapsed_out) return -1;
     uint64_t cpuTimestamp = 0;
     uint64_t gpuTimestamp = 0;
-    if (mglRenderCppSampleTimestamps(
+    if (mglRenderSampleTimestamps(
             &cpuTimestamp, &gpuTimestamp) != 0) {
         return -1;
     }
@@ -10321,7 +10321,7 @@ int mglRenderCppEndTimerQuery(void* owner_handle,
     return 0;
 }
 
-void mglRenderCppDestroyQueryStateOwner(void** owner_handle) {
+void mglRenderDestroyQueryStateOwner(void** owner_handle) {
     if (!owner_handle || !*owner_handle) return;
     mgl::QueryStateOwner* owner =
         static_cast<mgl::QueryStateOwner*>(*owner_handle);
@@ -10329,7 +10329,7 @@ void mglRenderCppDestroyQueryStateOwner(void** owner_handle) {
     delete owner;
 }
 
-int mglRenderCppGetOrCreateComputePipeline(
+int mglRenderGetOrCreateComputePipeline(
     void* function,
     uint64_t program_instance,
     uint64_t program_generation,
@@ -10344,7 +10344,7 @@ int mglRenderCppGetOrCreateComputePipeline(
         return -1;
     }
 
-    mgl::RendererCpp& renderer = mgl::renderer();
+    mgl::Renderer& renderer = mgl::renderer();
     std::lock_guard<std::mutex> lock(renderer.mutex);
     if (!renderer.device) {
         if (err && errcap) snprintf(err, errcap, "Metal-cpp renderer is not initialized");
@@ -10414,16 +10414,16 @@ int mglGetOrCreateProgramComputePipeline(Program* program,
         if (err && errcap) snprintf(err, errcap, "compiled compute function is unavailable");
         return -1;
     }
-    return mglRenderCppGetOrCreateComputePipeline(
+    return mglRenderGetOrCreateComputePipeline(
         spirv->mtl_function,
         program->pipeline_cache_instance_id,
         program->pipeline_cache_generation,
         static_cast<uint32_t>(stage), 1, pipeline_out, err, errcap);
 }
 
-void mglRenderCppInvalidateProgramPipelines(uint64_t program_instance) {
+void mglRenderInvalidateProgramPipelines(uint64_t program_instance) {
     if (program_instance == 0) return;
-    mgl::RendererCpp& renderer = mgl::renderer();
+    mgl::Renderer& renderer = mgl::renderer();
     std::lock_guard<std::mutex> lock(renderer.mutex);
     size_t invalidated = 0;
     for (auto it = renderer.computePipelines.begin();
@@ -10450,7 +10450,7 @@ namespace {
  * Validates the table row (non-empty) and the FNV-1a fingerprint before
  * loading from bytes.  The library is owned by the renderer until shutdown;
  * the returned pointer is borrowed.  Assumes renderer.mutex is held. */
-MTL::Library* loadAuxLibraryLocked(mgl::RendererCpp& renderer,
+MTL::Library* loadAuxLibraryLocked(mgl::Renderer& renderer,
                                    const unsigned char* bytes,
                                    size_t size,
                                    uint64_t asset_hash,
@@ -10521,9 +10521,9 @@ MTL::Function* newAuxEntryFunction(MTL::Library* library,
     return function;
 }
 
-/* Core of mglRenderCppGetOrCreateAuxComputePipeline: lookup/create against the
+/* Core of mglRenderGetOrCreateAuxComputePipeline: lookup/create against the
  * renderer-lifetime cache.  Assumes renderer.mutex is held. */
-int getOrCreateAuxComputePipelineLocked(mgl::RendererCpp& renderer,
+int getOrCreateAuxComputePipelineLocked(mgl::Renderer& renderer,
                                         void* function,
                                         uint32_t kind,
                                         uint64_t variant,
@@ -10565,10 +10565,10 @@ int getOrCreateAuxComputePipelineLocked(mgl::RendererCpp& renderer,
     return 0;
 }
 
-/* Core of mglRenderCppGetOrCreateAuxRenderPipeline: descriptor assembly plus
+/* Core of mglRenderGetOrCreateAuxRenderPipeline: descriptor assembly plus
  * lookup/create against the renderer-lifetime cache.  Assumes renderer.mutex
  * is held. */
-int getOrCreateAuxRenderPipelineLocked(mgl::RendererCpp& renderer,
+int getOrCreateAuxRenderPipelineLocked(mgl::Renderer& renderer,
                                        void* vertex_function,
                                        void* fragment_function,
                                        uint32_t kind,
@@ -10598,7 +10598,7 @@ int getOrCreateAuxRenderPipelineLocked(mgl::RendererCpp& renderer,
         return 0;
     }
     if (!vertex_function || (!fragment_function &&
-                             kind != MGL_RENDER_CPP_AUX_RENDER_CLEAR_RECT)) {
+                             kind != MGL_RENDER_AUX_RENDER_CLEAR_RECT)) {
         return 1;
     }
 
@@ -10649,7 +10649,7 @@ int getOrCreateAuxRenderPipelineLocked(mgl::RendererCpp& renderer,
 
 }  // namespace
 
-int mglRenderCppGetOrCreateAuxComputePipeline(
+int mglRenderGetOrCreateAuxComputePipeline(
     void* function,
     uint32_t kind,
     uint64_t variant,
@@ -10662,7 +10662,7 @@ int mglRenderCppGetOrCreateAuxComputePipeline(
         return -1;
     }
 
-    mgl::RendererCpp& renderer = mgl::renderer();
+    mgl::Renderer& renderer = mgl::renderer();
     std::lock_guard<std::mutex> lock(renderer.mutex);
     if (!renderer.device) {
         if (err && errcap) snprintf(err, errcap, "Metal-cpp renderer is not initialized");
@@ -10672,7 +10672,7 @@ int mglRenderCppGetOrCreateAuxComputePipeline(
         renderer, function, kind, variant, pipeline_out, err, errcap);
 }
 
-int mglRenderCppGetOrCreateAuxRenderPipeline(
+int mglRenderGetOrCreateAuxRenderPipeline(
     void* vertex_function,
     void* fragment_function,
     uint32_t kind,
@@ -10691,7 +10691,7 @@ int mglRenderCppGetOrCreateAuxRenderPipeline(
         if (err && errcap) snprintf(err, errcap, "bad args");
         return -1;
     }
-    mgl::RendererCpp& renderer = mgl::renderer();
+    mgl::Renderer& renderer = mgl::renderer();
     std::lock_guard<std::mutex> lock(renderer.mutex);
     if (!renderer.device) {
         if (err && errcap) snprintf(err, errcap, "Metal-cpp renderer is not initialized");
@@ -10703,7 +10703,7 @@ int mglRenderCppGetOrCreateAuxRenderPipeline(
         icb_enabled, raster_sample_count, pipeline_out, err, errcap);
 }
 
-int mglRenderCppGetOrCreateAuxComputePipelineFromMetallib(
+int mglRenderGetOrCreateAuxComputePipelineFromMetallib(
     const unsigned char* bytes,
     size_t size,
     uint64_t asset_hash,
@@ -10718,7 +10718,7 @@ int mglRenderCppGetOrCreateAuxComputePipelineFromMetallib(
         if (err && errcap) snprintf(err, errcap, "bad args");
         return -1;
     }
-    mgl::RendererCpp& renderer = mgl::renderer();
+    mgl::Renderer& renderer = mgl::renderer();
     std::lock_guard<std::mutex> lock(renderer.mutex);
     if (!renderer.device) {
         if (err && errcap) snprintf(err, errcap, "Metal-cpp renderer is not initialized");
@@ -10736,7 +10736,7 @@ int mglRenderCppGetOrCreateAuxComputePipelineFromMetallib(
     return result;
 }
 
-int mglRenderCppGetOrCreateAuxRenderPipelineFromMetallib(
+int mglRenderGetOrCreateAuxRenderPipelineFromMetallib(
     const unsigned char* bytes,
     size_t size,
     uint64_t asset_hash,
@@ -10759,7 +10759,7 @@ int mglRenderCppGetOrCreateAuxRenderPipelineFromMetallib(
         if (err && errcap) snprintf(err, errcap, "bad args");
         return -1;
     }
-    mgl::RendererCpp& renderer = mgl::renderer();
+    mgl::Renderer& renderer = mgl::renderer();
     std::lock_guard<std::mutex> lock(renderer.mutex);
     if (!renderer.device) {
         if (err && errcap) snprintf(err, errcap, "Metal-cpp renderer is not initialized");
@@ -10789,7 +10789,7 @@ int mglRenderCppGetOrCreateAuxRenderPipelineFromMetallib(
     return result;
 }
 
-int mglRenderCppCreateAuxFunctions(
+int mglRenderCreateAuxFunctions(
     const unsigned char* bytes,
     size_t size,
     uint64_t asset_hash,
@@ -10805,7 +10805,7 @@ int mglRenderCppCreateAuxFunctions(
         if (err && errcap) snprintf(err, errcap, "bad args");
         return -1;
     }
-    mgl::RendererCpp& renderer = mgl::renderer();
+    mgl::Renderer& renderer = mgl::renderer();
     std::lock_guard<std::mutex> lock(renderer.mutex);
     if (!renderer.device) {
         if (err && errcap) snprintf(err, errcap, "Metal-cpp renderer is not initialized");
@@ -10832,21 +10832,21 @@ int mglRenderCppCreateAuxFunctions(
     return 0;
 }
 
-void* mglRenderCppBindingCreate(uint32_t max_texture_slots) {
+void* mglRenderBindingCreate(uint32_t max_texture_slots) {
     if (max_texture_slots == 0 || max_texture_slots > 128) return nullptr;
     mgl::BindingState* state =
         new (std::nothrow) mgl::BindingState(max_texture_slots);
     if (!state) return nullptr;
-    mgl::RendererCpp& renderer = mgl::renderer();
+    mgl::Renderer& renderer = mgl::renderer();
     std::lock_guard<std::mutex> lock(renderer.mutex);
     renderer.bindingStates.insert(state);
     return state;
 }
 
-void mglRenderCppBindingDestroy(void* binding_state) {
+void mglRenderBindingDestroy(void* binding_state) {
     mgl::BindingState* state = static_cast<mgl::BindingState*>(binding_state);
     if (!state) return;
-    mgl::RendererCpp& renderer = mgl::renderer();
+    mgl::Renderer& renderer = mgl::renderer();
     std::lock_guard<std::mutex> lock(renderer.mutex);
     auto found = renderer.bindingStates.find(state);
     if (found == renderer.bindingStates.end()) return;
@@ -10856,45 +10856,45 @@ void mglRenderCppBindingDestroy(void* binding_state) {
                 "texture=%llu/%llu sampler=%llu/%llu "
                 "viewport=%llu/%llu scissor=%llu/%llu fill=%llu/%llu\n",
                 static_cast<unsigned long long>(
-                    state->stats.emitted[MGL_RENDER_CPP_BINDING_VERTEX_TEXTURE] +
-                    state->stats.emitted[MGL_RENDER_CPP_BINDING_FRAGMENT_TEXTURE]),
+                    state->stats.emitted[MGL_RENDER_BINDING_VERTEX_TEXTURE] +
+                    state->stats.emitted[MGL_RENDER_BINDING_FRAGMENT_TEXTURE]),
                 static_cast<unsigned long long>(
-                    state->stats.skipped[MGL_RENDER_CPP_BINDING_VERTEX_TEXTURE] +
-                    state->stats.skipped[MGL_RENDER_CPP_BINDING_FRAGMENT_TEXTURE]),
+                    state->stats.skipped[MGL_RENDER_BINDING_VERTEX_TEXTURE] +
+                    state->stats.skipped[MGL_RENDER_BINDING_FRAGMENT_TEXTURE]),
                 static_cast<unsigned long long>(
-                    state->stats.emitted[MGL_RENDER_CPP_BINDING_VERTEX_SAMPLER] +
-                    state->stats.emitted[MGL_RENDER_CPP_BINDING_FRAGMENT_SAMPLER]),
+                    state->stats.emitted[MGL_RENDER_BINDING_VERTEX_SAMPLER] +
+                    state->stats.emitted[MGL_RENDER_BINDING_FRAGMENT_SAMPLER]),
                 static_cast<unsigned long long>(
-                    state->stats.skipped[MGL_RENDER_CPP_BINDING_VERTEX_SAMPLER] +
-                    state->stats.skipped[MGL_RENDER_CPP_BINDING_FRAGMENT_SAMPLER]),
+                    state->stats.skipped[MGL_RENDER_BINDING_VERTEX_SAMPLER] +
+                    state->stats.skipped[MGL_RENDER_BINDING_FRAGMENT_SAMPLER]),
                 static_cast<unsigned long long>(
-                    state->stats.emitted[MGL_RENDER_CPP_BINDING_VIEWPORT]),
+                    state->stats.emitted[MGL_RENDER_BINDING_VIEWPORT]),
                 static_cast<unsigned long long>(
-                    state->stats.skipped[MGL_RENDER_CPP_BINDING_VIEWPORT]),
+                    state->stats.skipped[MGL_RENDER_BINDING_VIEWPORT]),
                 static_cast<unsigned long long>(
-                    state->stats.emitted[MGL_RENDER_CPP_BINDING_SCISSOR]),
+                    state->stats.emitted[MGL_RENDER_BINDING_SCISSOR]),
                 static_cast<unsigned long long>(
-                    state->stats.skipped[MGL_RENDER_CPP_BINDING_SCISSOR]),
+                    state->stats.skipped[MGL_RENDER_BINDING_SCISSOR]),
                 static_cast<unsigned long long>(
-                    state->stats.emitted[MGL_RENDER_CPP_BINDING_TRIANGLE_FILL]),
+                    state->stats.emitted[MGL_RENDER_BINDING_TRIANGLE_FILL]),
                 static_cast<unsigned long long>(
-                    state->stats.skipped[MGL_RENDER_CPP_BINDING_TRIANGLE_FILL]));
+                    state->stats.skipped[MGL_RENDER_BINDING_TRIANGLE_FILL]));
     }
     renderer.bindingStates.erase(found);
     delete state;
 }
 
-void mglRenderCppBindingInvalidate(void* binding_state) {
+void mglRenderBindingInvalidate(void* binding_state) {
     mgl::BindingState* state = static_cast<mgl::BindingState*>(binding_state);
     if (state) state->invalidate();
 }
 
-void mglRenderCppBindingSetValid(void* binding_state, int valid) {
+void mglRenderBindingSetValid(void* binding_state, int valid) {
     mgl::BindingState* state = static_cast<mgl::BindingState*>(binding_state);
     if (state) state->valid = valid != 0;
 }
 
-int mglRenderCppBindingGetValid(void* binding_state, uint32_t* valid_out) {
+int mglRenderBindingGetValid(void* binding_state, uint32_t* valid_out) {
     if (valid_out) *valid_out = 0;
     mgl::BindingState* state = static_cast<mgl::BindingState*>(binding_state);
     if (!state || !valid_out) return -1;
@@ -10902,7 +10902,7 @@ int mglRenderCppBindingGetValid(void* binding_state, uint32_t* valid_out) {
     return 0;
 }
 
-int mglRenderCppBindingGetTextureSlotMask(void* binding_state,
+int mglRenderBindingGetTextureSlotMask(void* binding_state,
                                           uint64_t mask_out[2]) {
     if (mask_out) {
         mask_out[0] = 0;
@@ -10945,7 +10945,7 @@ int clearBufferSlot(std::vector<MTL::Buffer*>& buffers,
 
 } // namespace
 
-int mglRenderCppBindingRecordVertexBuffer(void* binding_state,
+int mglRenderBindingRecordVertexBuffer(void* binding_state,
                                           void* buffer,
                                           uint64_t offset,
                                           uint32_t index) {
@@ -10956,7 +10956,7 @@ int mglRenderCppBindingRecordVertexBuffer(void* binding_state,
                                     buffer, offset, index, true) : -1;
 }
 
-int mglRenderCppBindingRecordFragmentBuffer(void* binding_state,
+int mglRenderBindingRecordFragmentBuffer(void* binding_state,
                                             void* buffer,
                                             uint64_t offset,
                                             uint32_t index) {
@@ -10967,7 +10967,7 @@ int mglRenderCppBindingRecordFragmentBuffer(void* binding_state,
                                     buffer, offset, index, true) : -1;
 }
 
-int mglRenderCppBindingInvalidateVertexBuffer(void* binding_state,
+int mglRenderBindingInvalidateVertexBuffer(void* binding_state,
                                               uint32_t index) {
     mgl::BindingState* state = static_cast<mgl::BindingState*>(binding_state);
     if (!state || index >= state->vertexBuffers.size()) return -1;
@@ -10978,7 +10978,7 @@ int mglRenderCppBindingInvalidateVertexBuffer(void* binding_state,
     return 0;
 }
 
-int mglRenderCppBindingInvalidateFragmentBuffer(void* binding_state,
+int mglRenderBindingInvalidateFragmentBuffer(void* binding_state,
                                                 uint32_t index) {
     mgl::BindingState* state = static_cast<mgl::BindingState*>(binding_state);
     if (!state || index >= state->fragmentBuffers.size()) return -1;
@@ -10989,7 +10989,7 @@ int mglRenderCppBindingInvalidateFragmentBuffer(void* binding_state,
     return 0;
 }
 
-int mglRenderCppBindingUpdateVertexBuffer(void* binding_state,
+int mglRenderBindingUpdateVertexBuffer(void* binding_state,
                                           void* buffer,
                                           uint64_t offset,
                                           uint32_t index) {
@@ -11000,7 +11000,7 @@ int mglRenderCppBindingUpdateVertexBuffer(void* binding_state,
                                     buffer, offset, index, false) : -1;
 }
 
-int mglRenderCppBindingUpdateFragmentBuffer(void* binding_state,
+int mglRenderBindingUpdateFragmentBuffer(void* binding_state,
                                             void* buffer,
                                             uint64_t offset,
                                             uint32_t index) {
@@ -11011,21 +11011,21 @@ int mglRenderCppBindingUpdateFragmentBuffer(void* binding_state,
                                     buffer, offset, index, false) : -1;
 }
 
-int mglRenderCppBindingClearVertexBuffer(void* binding_state,
+int mglRenderBindingClearVertexBuffer(void* binding_state,
                                          uint32_t index) {
     mgl::BindingState* state = static_cast<mgl::BindingState*>(binding_state);
     return state ? clearBufferSlot(state->vertexBuffers,
                                    state->vertexBufferOffsets, index, 0) : -1;
 }
 
-int mglRenderCppBindingClearFragmentBuffer(void* binding_state,
+int mglRenderBindingClearFragmentBuffer(void* binding_state,
                                            uint32_t index) {
     mgl::BindingState* state = static_cast<mgl::BindingState*>(binding_state);
     return state ? clearBufferSlot(state->fragmentBuffers,
                                    state->fragmentBufferOffsets, index, 0) : -1;
 }
 
-int mglRenderCppBindingGetBuffer(void* binding_state,
+int mglRenderBindingGetBuffer(void* binding_state,
                                  uint32_t stage,
                                  uint32_t index,
                                  void** buffer_out,
@@ -11034,14 +11034,14 @@ int mglRenderCppBindingGetBuffer(void* binding_state,
     if (offset_out) *offset_out = 0;
     mgl::BindingState* state = static_cast<mgl::BindingState*>(binding_state);
     if (!state || !buffer_out || !offset_out ||
-        stage > MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT) {
+        stage > MGL_RENDER_BINDING_STAGE_FRAGMENT) {
         return -1;
     }
     const std::vector<MTL::Buffer*>& buffers =
-        stage == MGL_RENDER_CPP_BINDING_STAGE_VERTEX
+        stage == MGL_RENDER_BINDING_STAGE_VERTEX
             ? state->vertexBuffers : state->fragmentBuffers;
     const std::vector<uint64_t>& offsets =
-        stage == MGL_RENDER_CPP_BINDING_STAGE_VERTEX
+        stage == MGL_RENDER_BINDING_STAGE_VERTEX
             ? state->vertexBufferOffsets : state->fragmentBufferOffsets;
     if (index >= buffers.size()) return -1;
     *buffer_out = buffers[index];
@@ -11049,19 +11049,19 @@ int mglRenderCppBindingGetBuffer(void* binding_state,
     return 0;
 }
 
-void mglRenderCppBindingOrVertexBufferMask(void* binding_state,
+void mglRenderBindingOrVertexBufferMask(void* binding_state,
                                            uint32_t mask) {
     mgl::BindingState* state = static_cast<mgl::BindingState*>(binding_state);
     if (state) state->vertexBufferMask |= mask;
 }
 
-void mglRenderCppBindingOrFragmentBufferMask(void* binding_state,
+void mglRenderBindingOrFragmentBufferMask(void* binding_state,
                                              uint32_t mask) {
     mgl::BindingState* state = static_cast<mgl::BindingState*>(binding_state);
     if (state) state->fragmentBufferMask |= mask;
 }
 
-void mglRenderCppBindingSetPipelineState(void* binding_state,
+void mglRenderBindingSetPipelineState(void* binding_state,
                                          void* pipeline_state) {
     mgl::BindingState* state = static_cast<mgl::BindingState*>(binding_state);
     if (state) {
@@ -11071,7 +11071,7 @@ void mglRenderCppBindingSetPipelineState(void* binding_state,
     }
 }
 
-void mglRenderCppBindingSetDepthStencilState(void* binding_state,
+void mglRenderBindingSetDepthStencilState(void* binding_state,
                                              void* depth_stencil_state) {
     mgl::BindingState* state = static_cast<mgl::BindingState*>(binding_state);
     if (state) {
@@ -11081,7 +11081,7 @@ void mglRenderCppBindingSetDepthStencilState(void* binding_state,
     }
 }
 
-int mglRenderCppBindingGetPipelineState(void* binding_state,
+int mglRenderBindingGetPipelineState(void* binding_state,
                                         void** pipeline_state_out) {
     if (pipeline_state_out) *pipeline_state_out = nullptr;
     mgl::BindingState* state = static_cast<mgl::BindingState*>(binding_state);
@@ -11090,7 +11090,7 @@ int mglRenderCppBindingGetPipelineState(void* binding_state,
     return 0;
 }
 
-int mglRenderCppBindingGetDepthStencilState(
+int mglRenderBindingGetDepthStencilState(
     void* binding_state,
     void** depth_stencil_state_out) {
     if (depth_stencil_state_out) *depth_stencil_state_out = nullptr;
@@ -11100,17 +11100,17 @@ int mglRenderCppBindingGetDepthStencilState(
     return 0;
 }
 
-void mglRenderCppBindingSetCullMode(void* binding_state, uint32_t mode) {
+void mglRenderBindingSetCullMode(void* binding_state, uint32_t mode) {
     mgl::BindingState* state = static_cast<mgl::BindingState*>(binding_state);
     if (state) state->lastCullMode = static_cast<MTL::CullMode>(mode);
 }
 
-void mglRenderCppBindingSetWinding(void* binding_state, uint32_t winding) {
+void mglRenderBindingSetWinding(void* binding_state, uint32_t winding) {
     mgl::BindingState* state = static_cast<mgl::BindingState*>(binding_state);
     if (state) state->lastWinding = static_cast<MTL::Winding>(winding);
 }
 
-void mglRenderCppBindingSetDepthBias(void* binding_state,
+void mglRenderBindingSetDepthBias(void* binding_state,
                                      float bias,
                                      float clamp,
                                      float slope_scale) {
@@ -11121,7 +11121,7 @@ void mglRenderCppBindingSetDepthBias(void* binding_state,
     state->lastDepthSlopeScale = slope_scale;
 }
 
-void mglRenderCppBindingSetBlendColor(void* binding_state,
+void mglRenderBindingSetBlendColor(void* binding_state,
                                       float red,
                                       float green,
                                       float blue,
@@ -11134,7 +11134,7 @@ void mglRenderCppBindingSetBlendColor(void* binding_state,
     state->lastBlendColorAlpha = alpha;
 }
 
-int mglRenderCppBindingSetPipelineIfNeeded(void* binding_state,
+int mglRenderBindingSetPipelineIfNeeded(void* binding_state,
                                            void* render_encoder,
                                            void* pipeline_state) {
     mgl::BindingState* state = static_cast<mgl::BindingState*>(binding_state);
@@ -11151,7 +11151,7 @@ int mglRenderCppBindingSetPipelineIfNeeded(void* binding_state,
     return emitted ? 1 : 0;
 }
 
-int mglRenderCppBindingSetDepthStencilIfNeeded(void* binding_state,
+int mglRenderBindingSetDepthStencilIfNeeded(void* binding_state,
                                                void* render_encoder,
                                                void* depth_stencil_state) {
     mgl::BindingState* state = static_cast<mgl::BindingState*>(binding_state);
@@ -11169,7 +11169,7 @@ int mglRenderCppBindingSetDepthStencilIfNeeded(void* binding_state,
     return emitted ? 1 : 0;
 }
 
-int mglRenderCppBindingSetCullIfNeeded(void* binding_state,
+int mglRenderBindingSetCullIfNeeded(void* binding_state,
                                        void* render_encoder,
                                        uint32_t mode) {
     mgl::BindingState* state = static_cast<mgl::BindingState*>(binding_state);
@@ -11185,7 +11185,7 @@ int mglRenderCppBindingSetCullIfNeeded(void* binding_state,
     return emitted ? 1 : 0;
 }
 
-int mglRenderCppBindingSetWindingIfNeeded(void* binding_state,
+int mglRenderBindingSetWindingIfNeeded(void* binding_state,
                                           void* render_encoder,
                                           uint32_t winding) {
     mgl::BindingState* state = static_cast<mgl::BindingState*>(binding_state);
@@ -11201,7 +11201,7 @@ int mglRenderCppBindingSetWindingIfNeeded(void* binding_state,
     return emitted ? 1 : 0;
 }
 
-int mglRenderCppBindingSetDepthBiasIfNeeded(void* binding_state,
+int mglRenderBindingSetDepthBiasIfNeeded(void* binding_state,
                                             void* render_encoder,
                                             float bias,
                                             float clamp,
@@ -11222,7 +11222,7 @@ int mglRenderCppBindingSetDepthBiasIfNeeded(void* binding_state,
     return emitted ? 1 : 0;
 }
 
-int mglRenderCppBindingSetBlendColorIfNeeded(void* binding_state,
+int mglRenderBindingSetBlendColorIfNeeded(void* binding_state,
                                              void* render_encoder,
                                              float red,
                                              float green,
@@ -11246,7 +11246,7 @@ int mglRenderCppBindingSetBlendColorIfNeeded(void* binding_state,
     return emitted ? 1 : 0;
 }
 
-int mglRenderCppBindingSetTexture(void* binding_state,
+int mglRenderBindingSetTexture(void* binding_state,
                                  void* render_encoder,
                                  void* texture,
                                  uint32_t stage,
@@ -11254,7 +11254,7 @@ int mglRenderCppBindingSetTexture(void* binding_state,
     mgl::BindingState* state = static_cast<mgl::BindingState*>(binding_state);
     MTL::RenderCommandEncoder* encoder =
         static_cast<MTL::RenderCommandEncoder*>(render_encoder);
-    if (!state || !encoder || stage > MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT ||
+    if (!state || !encoder || stage > MGL_RENDER_BINDING_STAGE_FRAGMENT ||
         index >= state->vertexTextures.size()) {
         return -1;
     }
@@ -11264,15 +11264,15 @@ int mglRenderCppBindingSetTexture(void* binding_state,
         state->textureSlotMask[1] |= 1ull << (index - 64u);
     }
     std::vector<MTL::Texture*>& slots =
-        stage == MGL_RENDER_CPP_BINDING_STAGE_VERTEX
+        stage == MGL_RENDER_BINDING_STAGE_VERTEX
             ? state->vertexTextures : state->fragmentTextures;
     MTL::Texture* newTexture = static_cast<MTL::Texture*>(texture);
     const bool emitted = !state->valid || slots[index] != newTexture;
-    const uint32_t setter = stage == MGL_RENDER_CPP_BINDING_STAGE_VERTEX
-        ? MGL_RENDER_CPP_BINDING_VERTEX_TEXTURE
-        : MGL_RENDER_CPP_BINDING_FRAGMENT_TEXTURE;
+    const uint32_t setter = stage == MGL_RENDER_BINDING_STAGE_VERTEX
+        ? MGL_RENDER_BINDING_VERTEX_TEXTURE
+        : MGL_RENDER_BINDING_FRAGMENT_TEXTURE;
     if (emitted) {
-        if (stage == MGL_RENDER_CPP_BINDING_STAGE_VERTEX) {
+        if (stage == MGL_RENDER_BINDING_STAGE_VERTEX) {
             encoder->setVertexTexture(newTexture, index);
         } else {
             encoder->setFragmentTexture(newTexture, index);
@@ -11283,7 +11283,7 @@ int mglRenderCppBindingSetTexture(void* binding_state,
     return emitted ? 1 : 0;
 }
 
-int mglRenderCppBindingSetSampler(void* binding_state,
+int mglRenderBindingSetSampler(void* binding_state,
                                  void* render_encoder,
                                  void* sampler,
                                  uint32_t stage,
@@ -11291,7 +11291,7 @@ int mglRenderCppBindingSetSampler(void* binding_state,
     mgl::BindingState* state = static_cast<mgl::BindingState*>(binding_state);
     MTL::RenderCommandEncoder* encoder =
         static_cast<MTL::RenderCommandEncoder*>(render_encoder);
-    if (!state || !encoder || stage > MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT ||
+    if (!state || !encoder || stage > MGL_RENDER_BINDING_STAGE_FRAGMENT ||
         index >= state->vertexSamplers.size()) {
         return -1;
     }
@@ -11301,15 +11301,15 @@ int mglRenderCppBindingSetSampler(void* binding_state,
         state->textureSlotMask[1] |= 1ull << (index - 64u);
     }
     std::vector<MTL::SamplerState*>& slots =
-        stage == MGL_RENDER_CPP_BINDING_STAGE_VERTEX
+        stage == MGL_RENDER_BINDING_STAGE_VERTEX
             ? state->vertexSamplers : state->fragmentSamplers;
     MTL::SamplerState* newSampler = static_cast<MTL::SamplerState*>(sampler);
     const bool emitted = !state->valid || slots[index] != newSampler;
-    const uint32_t setter = stage == MGL_RENDER_CPP_BINDING_STAGE_VERTEX
-        ? MGL_RENDER_CPP_BINDING_VERTEX_SAMPLER
-        : MGL_RENDER_CPP_BINDING_FRAGMENT_SAMPLER;
+    const uint32_t setter = stage == MGL_RENDER_BINDING_STAGE_VERTEX
+        ? MGL_RENDER_BINDING_VERTEX_SAMPLER
+        : MGL_RENDER_BINDING_FRAGMENT_SAMPLER;
     if (emitted) {
-        if (stage == MGL_RENDER_CPP_BINDING_STAGE_VERTEX) {
+        if (stage == MGL_RENDER_BINDING_STAGE_VERTEX) {
             encoder->setVertexSamplerState(newSampler, index);
         } else {
             encoder->setFragmentSamplerState(newSampler, index);
@@ -11320,43 +11320,43 @@ int mglRenderCppBindingSetSampler(void* binding_state,
     return emitted ? 1 : 0;
 }
 
-int mglRenderCppBindingGetTexture(void* binding_state,
+int mglRenderBindingGetTexture(void* binding_state,
                                   uint32_t stage,
                                   uint32_t index,
                                   void** texture_out) {
     if (texture_out) *texture_out = nullptr;
     mgl::BindingState* state = static_cast<mgl::BindingState*>(binding_state);
     if (!state || !texture_out ||
-        stage > MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT ||
+        stage > MGL_RENDER_BINDING_STAGE_FRAGMENT ||
         index >= state->vertexTextures.size()) {
         return -1;
     }
     const std::vector<MTL::Texture*>& slots =
-        stage == MGL_RENDER_CPP_BINDING_STAGE_VERTEX
+        stage == MGL_RENDER_BINDING_STAGE_VERTEX
             ? state->vertexTextures : state->fragmentTextures;
     *texture_out = slots[index];
     return 0;
 }
 
-int mglRenderCppBindingGetSampler(void* binding_state,
+int mglRenderBindingGetSampler(void* binding_state,
                                   uint32_t stage,
                                   uint32_t index,
                                   void** sampler_out) {
     if (sampler_out) *sampler_out = nullptr;
     mgl::BindingState* state = static_cast<mgl::BindingState*>(binding_state);
     if (!state || !sampler_out ||
-        stage > MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT ||
+        stage > MGL_RENDER_BINDING_STAGE_FRAGMENT ||
         index >= state->vertexSamplers.size()) {
         return -1;
     }
     const std::vector<MTL::SamplerState*>& slots =
-        stage == MGL_RENDER_CPP_BINDING_STAGE_VERTEX
+        stage == MGL_RENDER_BINDING_STAGE_VERTEX
             ? state->vertexSamplers : state->fragmentSamplers;
     *sampler_out = slots[index];
     return 0;
 }
 
-int mglRenderCppBindingSetViewport(void* binding_state,
+int mglRenderBindingSetViewport(void* binding_state,
                                   void* render_encoder,
                                   double origin_x,
                                   double origin_y,
@@ -11377,11 +11377,11 @@ int mglRenderCppBindingSetViewport(void* binding_state,
         state->viewports[0] = viewport;
         state->viewportCount = 1;
     }
-    mgl::recordBindingResult(*state, MGL_RENDER_CPP_BINDING_VIEWPORT, emitted);
+    mgl::recordBindingResult(*state, MGL_RENDER_BINDING_VIEWPORT, emitted);
     return emitted ? 1 : 0;
 }
 
-int mglRenderCppBindingSetViewports(void* binding_state,
+int mglRenderBindingSetViewports(void* binding_state,
                                     void* render_encoder,
                                     const double* viewports,
                                     uint64_t count) {
@@ -11410,11 +11410,11 @@ int mglRenderCppBindingSetViewports(void* binding_state,
         state->viewportCount = count;
         state->viewport = vps[0];
     }
-    mgl::recordBindingResult(*state, MGL_RENDER_CPP_BINDING_VIEWPORT, !same);
+    mgl::recordBindingResult(*state, MGL_RENDER_BINDING_VIEWPORT, !same);
     return same ? 0 : 1;
 }
 
-int mglRenderCppBindingSetScissor(void* binding_state,
+int mglRenderBindingSetScissor(void* binding_state,
                                  void* render_encoder,
                                  uint64_t x,
                                  uint64_t y,
@@ -11433,11 +11433,11 @@ int mglRenderCppBindingSetScissor(void* binding_state,
         encoder->setScissorRect(scissor);
         state->scissor = scissor;
     }
-    mgl::recordBindingResult(*state, MGL_RENDER_CPP_BINDING_SCISSOR, emitted);
+    mgl::recordBindingResult(*state, MGL_RENDER_BINDING_SCISSOR, emitted);
     return emitted ? 1 : 0;
 }
 
-int mglRenderCppBindingSetTriangleFill(void* binding_state,
+int mglRenderBindingSetTriangleFill(void* binding_state,
                                       void* render_encoder,
                                       uint32_t mode) {
     mgl::BindingState* state = static_cast<mgl::BindingState*>(binding_state);
@@ -11451,19 +11451,19 @@ int mglRenderCppBindingSetTriangleFill(void* binding_state,
         state->triangleFillMode = fillMode;
     }
     mgl::recordBindingResult(
-        *state, MGL_RENDER_CPP_BINDING_TRIANGLE_FILL, emitted);
+        *state, MGL_RENDER_BINDING_TRIANGLE_FILL, emitted);
     return emitted ? 1 : 0;
 }
 
-int mglRenderCppBindingGetStats(void* binding_state,
-                               MGLRenderCppBindingStats* stats_out) {
+int mglRenderBindingGetStats(void* binding_state,
+                               MGLRenderBindingStats* stats_out) {
     mgl::BindingState* state = static_cast<mgl::BindingState*>(binding_state);
     if (!state || !stats_out) return -1;
     memcpy(stats_out, &state->stats, sizeof(*stats_out));
     return 0;
 }
 
-int mglRenderCppSetComputePipelineState(void* compute_encoder,
+int mglRenderSetComputePipelineState(void* compute_encoder,
                                         void* pipeline_state) {
     MTL::ComputeCommandEncoder* encoder =
         static_cast<MTL::ComputeCommandEncoder*>(compute_encoder);
@@ -11474,7 +11474,7 @@ int mglRenderCppSetComputePipelineState(void* compute_encoder,
     return 0;
 }
 
-int mglRenderCppSetComputeBuffer(void* compute_encoder,
+int mglRenderSetComputeBuffer(void* compute_encoder,
                                  void* buffer,
                                  uint64_t offset,
                                  uint32_t index) {
@@ -11486,7 +11486,7 @@ int mglRenderCppSetComputeBuffer(void* compute_encoder,
     return 0;
 }
 
-int mglRenderCppSetComputeTexture(void* compute_encoder,
+int mglRenderSetComputeTexture(void* compute_encoder,
                                   void* texture,
                                   uint32_t index) {
     MTL::ComputeCommandEncoder* encoder =
@@ -11496,7 +11496,7 @@ int mglRenderCppSetComputeTexture(void* compute_encoder,
     return 0;
 }
 
-int mglRenderCppSetComputeSampler(void* compute_encoder,
+int mglRenderSetComputeSampler(void* compute_encoder,
                                   void* sampler,
                                   uint32_t index) {
     MTL::ComputeCommandEncoder* encoder =
@@ -11506,7 +11506,7 @@ int mglRenderCppSetComputeSampler(void* compute_encoder,
     return 0;
 }
 
-int mglRenderCppSetComputeBytes(void* compute_encoder,
+int mglRenderSetComputeBytes(void* compute_encoder,
                                 const void* bytes,
                                 size_t length,
                                 uint32_t index) {
@@ -11517,7 +11517,7 @@ int mglRenderCppSetComputeBytes(void* compute_encoder,
     return 0;
 }
 
-int mglRenderCppSetComputeThreadgroupMemoryLength(void* compute_encoder,
+int mglRenderSetComputeThreadgroupMemoryLength(void* compute_encoder,
                                                   uint64_t length,
                                                   uint32_t index) {
     MTL::ComputeCommandEncoder* encoder =
@@ -11529,9 +11529,9 @@ int mglRenderCppSetComputeThreadgroupMemoryLength(void* compute_encoder,
 }
 
 
-int mglRenderCppEncodeComputeBindingSnapshot(
+int mglRenderEncodeComputeBindingSnapshot(
     void* compute_encoder,
-    const MGLRenderCppComputeBindingSnapshot* snapshot,
+    const MGLRenderComputeBindingSnapshot* snapshot,
     char* err,
     size_t errcap) {
     if (err && errcap) err[0] = '\0';
@@ -11542,12 +11542,12 @@ int mglRenderCppEncodeComputeBindingSnapshot(
     MTL::ComputeCommandEncoder* encoder =
         static_cast<MTL::ComputeCommandEncoder*>(compute_encoder);
     if (snapshot->op_count >
-        MGL_RENDER_CPP_COMPUTE_BINDING_SNAPSHOT_MAX_OPS) {
+        MGL_RENDER_COMPUTE_BINDING_SNAPSHOT_MAX_OPS) {
         if (err && errcap) snprintf(err, errcap, "snapshot count overflow");
         return -1;
     }
     for (uint32_t i = 0; i < snapshot->op_count; i++) {
-        const MGLRenderCppComputeBindingOp* op = &snapshot->ops[i];
+        const MGLRenderComputeBindingOp* op = &snapshot->ops[i];
         if (op->kind == 0) {
             /* kind 0: set buffer; NULL buffer clears the slot. */
             encoder->setBuffer(static_cast<MTL::Buffer*>(op->buffer),
@@ -11579,7 +11579,7 @@ int mglRenderCppEncodeComputeBindingSnapshot(
     return 0;
 }
 
-int mglRenderCppDispatchCompute(void* compute_encoder,
+int mglRenderDispatchCompute(void* compute_encoder,
                                 uint32_t groups_x,
                                 uint32_t groups_y,
                                 uint32_t groups_z,
@@ -11598,7 +11598,7 @@ int mglRenderCppDispatchCompute(void* compute_encoder,
     return 0;
 }
 
-int mglRenderCppDispatchComputeIndirect(void* compute_encoder,
+int mglRenderDispatchComputeIndirect(void* compute_encoder,
                                         void* indirect_buffer,
                                         uint64_t indirect_offset,
                                         uint32_t threads_x,
@@ -11619,9 +11619,9 @@ int mglRenderCppDispatchComputeIndirect(void* compute_encoder,
 }
 
 
-int mglRenderCppDispatchComputePlan(
+int mglRenderDispatchComputePlan(
     void* compute_encoder,
-    const MGLRenderCppComputePlan* plan,
+    const MGLRenderComputePlan* plan,
     char* err,
     size_t errcap) {
     if (err && errcap) err[0] = '\0';
@@ -11636,13 +11636,13 @@ int mglRenderCppDispatchComputePlan(
     const uint32_t local_z = plan->local_z ? plan->local_z : 1u;
     MTL::Size threads = MTL::Size(local_x, local_y, local_z);
 
-    if (plan->dispatch_kind == MGL_RENDER_CPP_COMPUTE_DISPATCH_DIRECT) {
+    if (plan->dispatch_kind == MGL_RENDER_COMPUTE_DISPATCH_DIRECT) {
         encoder->dispatchThreadgroups(
             MTL::Size(plan->groups_x, plan->groups_y, plan->groups_z),
             threads);
         return 0;
     }
-    if (plan->dispatch_kind == MGL_RENDER_CPP_COMPUTE_DISPATCH_INDIRECT) {
+    if (plan->dispatch_kind == MGL_RENDER_COMPUTE_DISPATCH_INDIRECT) {
         MTL::Buffer* buffer = static_cast<MTL::Buffer*>(plan->indirect_buffer);
         if (!buffer) {
             if (err && errcap) {
@@ -11659,9 +11659,9 @@ int mglRenderCppDispatchComputePlan(
     return -1;
 }
 
-int mglRenderCppAppendComputeBindingSnapshotToPlan(
-    MGLRenderCppComputeExecutionPlan* plan,
-    const MGLRenderCppComputeBindingSnapshot* snapshot,
+int mglRenderAppendComputeBindingSnapshotToPlan(
+    MGLRenderComputeExecutionPlan* plan,
+    const MGLRenderComputeBindingSnapshot* snapshot,
     char* err,
     size_t errcap) {
     if (err && errcap) err[0] = '\0';
@@ -11669,16 +11669,16 @@ int mglRenderCppAppendComputeBindingSnapshotToPlan(
         if (err && errcap) snprintf(err, errcap, "bad compute plan args");
         return -1;
     }
-    if (snapshot->op_count > MGL_RENDER_CPP_COMPUTE_BINDING_SNAPSHOT_MAX_OPS ||
-        plan->binding_op_count > MGL_RENDER_CPP_COMPUTE_EXECUTION_MAX_OPS ||
+    if (snapshot->op_count > MGL_RENDER_COMPUTE_BINDING_SNAPSHOT_MAX_OPS ||
+        plan->binding_op_count > MGL_RENDER_COMPUTE_EXECUTION_MAX_OPS ||
         snapshot->op_count >
-            MGL_RENDER_CPP_COMPUTE_EXECUTION_MAX_OPS -
+            MGL_RENDER_COMPUTE_EXECUTION_MAX_OPS -
                 plan->binding_op_count) {
         if (err && errcap) snprintf(err, errcap, "compute execution op overflow");
         return -1;
     }
     for (uint32_t i = 0; i < snapshot->op_count; i++) {
-        const MGLRenderCppComputeBindingOp* op = &snapshot->ops[i];
+        const MGLRenderComputeBindingOp* op = &snapshot->ops[i];
         if (op->kind > 3u || (op->kind == 1u && !op->bytes)) {
             if (err && errcap) {
                 snprintf(err, errcap, "invalid compute binding op %u", i);
@@ -11690,25 +11690,25 @@ int mglRenderCppAppendComputeBindingSnapshotToPlan(
     return 0;
 }
 
-int mglRenderCppAppendComputeDispatchToPlan(
-    MGLRenderCppComputeExecutionPlan* plan,
-    const MGLRenderCppComputePlan* dispatch,
+int mglRenderAppendComputeDispatchToPlan(
+    MGLRenderComputeExecutionPlan* plan,
+    const MGLRenderComputePlan* dispatch,
     char* err,
     size_t errcap) {
     if (err && errcap) err[0] = '\0';
     if (!plan || !dispatch ||
         plan->dispatch_op_count >=
-            MGL_RENDER_CPP_COMPUTE_EXECUTION_MAX_DISPATCHES) {
+            MGL_RENDER_COMPUTE_EXECUTION_MAX_DISPATCHES) {
         if (err && errcap) snprintf(err, errcap, "compute dispatch sequence overflow");
         return -1;
     }
-    if (dispatch->dispatch_kind == MGL_RENDER_CPP_COMPUTE_DISPATCH_DIRECT) {
+    if (dispatch->dispatch_kind == MGL_RENDER_COMPUTE_DISPATCH_DIRECT) {
         if (!dispatch->groups_x || !dispatch->groups_y || !dispatch->groups_z) {
             if (err && errcap) snprintf(err, errcap, "zero compute dispatch groups");
             return -1;
         }
     } else if (dispatch->dispatch_kind ==
-               MGL_RENDER_CPP_COMPUTE_DISPATCH_INDIRECT) {
+               MGL_RENDER_COMPUTE_DISPATCH_INDIRECT) {
         if (!dispatch->indirect_buffer) {
             if (err && errcap) snprintf(err, errcap, "null indirect buffer");
             return -1;
@@ -11718,16 +11718,16 @@ int mglRenderCppAppendComputeDispatchToPlan(
                                     dispatch->dispatch_kind);
         return -1;
     }
-    MGLRenderCppComputeDispatchEntry* entry =
+    MGLRenderComputeDispatchEntry* entry =
         &plan->dispatch_ops[plan->dispatch_op_count++];
     entry->binding_op_count = plan->binding_op_count;
     entry->dispatch = *dispatch;
     return 0;
 }
 
-static int mglRenderCppEncodeComputeDispatchOnEncoder(
+static int mglRenderEncodeComputeDispatchOnEncoder(
     MTL::ComputeCommandEncoder* encoder,
-    const MGLRenderCppComputePlan* dispatch,
+    const MGLRenderComputePlan* dispatch,
     char* err,
     size_t errcap) {
     if (!encoder || !dispatch) return -1;
@@ -11735,7 +11735,7 @@ static int mglRenderCppEncodeComputeDispatchOnEncoder(
     const uint32_t local_y = dispatch->local_y ? dispatch->local_y : 1u;
     const uint32_t local_z = dispatch->local_z ? dispatch->local_z : 1u;
     const MTL::Size threads(local_x, local_y, local_z);
-    if (dispatch->dispatch_kind == MGL_RENDER_CPP_COMPUTE_DISPATCH_DIRECT) {
+    if (dispatch->dispatch_kind == MGL_RENDER_COMPUTE_DISPATCH_DIRECT) {
         if (!dispatch->groups_x || !dispatch->groups_y || !dispatch->groups_z) {
             if (err && errcap) snprintf(err, errcap, "zero compute dispatch groups");
             return -1;
@@ -11746,7 +11746,7 @@ static int mglRenderCppEncodeComputeDispatchOnEncoder(
             threads);
         return 0;
     }
-    if (dispatch->dispatch_kind == MGL_RENDER_CPP_COMPUTE_DISPATCH_INDIRECT) {
+    if (dispatch->dispatch_kind == MGL_RENDER_COMPUTE_DISPATCH_INDIRECT) {
         MTL::Buffer* indirect =
             static_cast<MTL::Buffer*>(dispatch->indirect_buffer);
         if (!indirect) {
@@ -11763,9 +11763,9 @@ static int mglRenderCppEncodeComputeDispatchOnEncoder(
     return -1;
 }
 
-int mglRenderCppEncodeComputeExecutionPlanForCommandBufferOwner(
+int mglRenderEncodeComputeExecutionPlanForCommandBufferOwner(
     void* command_buffer_owner,
-    const MGLRenderCppComputeExecutionPlan* plan,
+    const MGLRenderComputeExecutionPlan* plan,
     char* err,
     size_t errcap) {
     if (err && errcap) err[0] = '\0';
@@ -11773,25 +11773,25 @@ int mglRenderCppEncodeComputeExecutionPlanForCommandBufferOwner(
         if (err && errcap) snprintf(err, errcap, "bad compute execution plan");
         return -1;
     }
-    if (plan->binding_op_count > MGL_RENDER_CPP_COMPUTE_EXECUTION_MAX_OPS) {
+    if (plan->binding_op_count > MGL_RENDER_COMPUTE_EXECUTION_MAX_OPS) {
         if (err && errcap) snprintf(err, errcap, "compute execution op overflow");
         return -1;
     }
     if (plan->dispatch_op_count >
-        MGL_RENDER_CPP_COMPUTE_EXECUTION_MAX_DISPATCHES) {
+        MGL_RENDER_COMPUTE_EXECUTION_MAX_DISPATCHES) {
         if (err && errcap) snprintf(err, errcap, "compute dispatch sequence overflow");
         return -1;
     }
     const uint32_t validBarrierScope =
-        MGL_RENDER_CPP_COMPUTE_BARRIER_BUFFERS |
-        MGL_RENDER_CPP_COMPUTE_BARRIER_TEXTURES |
-        MGL_RENDER_CPP_COMPUTE_BARRIER_RENDER_TARGETS;
+        MGL_RENDER_COMPUTE_BARRIER_BUFFERS |
+        MGL_RENDER_COMPUTE_BARRIER_TEXTURES |
+        MGL_RENDER_COMPUTE_BARRIER_RENDER_TARGETS;
     if (plan->barrier_scope & ~validBarrierScope) {
         if (err && errcap) snprintf(err, errcap, "invalid compute barrier scope");
         return -1;
     }
     for (uint32_t i = 0; i < plan->binding_op_count; i++) {
-        const MGLRenderCppComputeBindingOp* op = &plan->binding_ops[i];
+        const MGLRenderComputeBindingOp* op = &plan->binding_ops[i];
         if (op->kind > 3u || (op->kind == 1u && !op->bytes)) {
             if (err && errcap) {
                 snprintf(err, errcap, "invalid compute binding op %u", i);
@@ -11801,7 +11801,7 @@ int mglRenderCppEncodeComputeExecutionPlanForCommandBufferOwner(
     }
     if (plan->dispatch_op_count == 0 &&
         plan->dispatch.dispatch_kind ==
-            MGL_RENDER_CPP_COMPUTE_DISPATCH_DIRECT &&
+            MGL_RENDER_COMPUTE_DISPATCH_DIRECT &&
         (!plan->dispatch.groups_x || !plan->dispatch.groups_y ||
          !plan->dispatch.groups_z)) {
         if (err && errcap) snprintf(err, errcap, "zero compute dispatch groups");
@@ -11809,16 +11809,16 @@ int mglRenderCppEncodeComputeExecutionPlanForCommandBufferOwner(
     }
     if (plan->dispatch_op_count == 0 &&
         plan->dispatch.dispatch_kind ==
-            MGL_RENDER_CPP_COMPUTE_DISPATCH_INDIRECT &&
+            MGL_RENDER_COMPUTE_DISPATCH_INDIRECT &&
         !plan->dispatch.indirect_buffer) {
         if (err && errcap) snprintf(err, errcap, "null indirect buffer");
         return -1;
     }
     if (plan->dispatch_op_count == 0 &&
         plan->dispatch.dispatch_kind !=
-            MGL_RENDER_CPP_COMPUTE_DISPATCH_DIRECT &&
+            MGL_RENDER_COMPUTE_DISPATCH_DIRECT &&
         plan->dispatch.dispatch_kind !=
-            MGL_RENDER_CPP_COMPUTE_DISPATCH_INDIRECT) {
+            MGL_RENDER_COMPUTE_DISPATCH_INDIRECT) {
         if (err && errcap) {
             snprintf(err, errcap, "bad dispatch kind %u",
                      plan->dispatch.dispatch_kind);
@@ -11827,29 +11827,29 @@ int mglRenderCppEncodeComputeExecutionPlanForCommandBufferOwner(
     }
     uint32_t previousDispatchBindingCount = 0u;
     for (uint32_t i = 0; i < plan->dispatch_op_count; i++) {
-        const MGLRenderCppComputeDispatchEntry* entry = &plan->dispatch_ops[i];
+        const MGLRenderComputeDispatchEntry* entry = &plan->dispatch_ops[i];
         if (entry->binding_op_count < previousDispatchBindingCount ||
             entry->binding_op_count > plan->binding_op_count) {
             if (err && errcap) snprintf(err, errcap, "invalid dispatch ordering %u", i);
             return -1;
         }
         if (entry->dispatch.dispatch_kind ==
-                MGL_RENDER_CPP_COMPUTE_DISPATCH_DIRECT &&
+                MGL_RENDER_COMPUTE_DISPATCH_DIRECT &&
             (!entry->dispatch.groups_x || !entry->dispatch.groups_y ||
              !entry->dispatch.groups_z)) {
             if (err && errcap) snprintf(err, errcap, "zero compute dispatch groups");
             return -1;
         }
         if (entry->dispatch.dispatch_kind ==
-                MGL_RENDER_CPP_COMPUTE_DISPATCH_INDIRECT &&
+                MGL_RENDER_COMPUTE_DISPATCH_INDIRECT &&
             !entry->dispatch.indirect_buffer) {
             if (err && errcap) snprintf(err, errcap, "null indirect buffer");
             return -1;
         }
         if (entry->dispatch.dispatch_kind !=
-                MGL_RENDER_CPP_COMPUTE_DISPATCH_DIRECT &&
+                MGL_RENDER_COMPUTE_DISPATCH_DIRECT &&
             entry->dispatch.dispatch_kind !=
-                MGL_RENDER_CPP_COMPUTE_DISPATCH_INDIRECT) {
+                MGL_RENDER_COMPUTE_DISPATCH_INDIRECT) {
             if (err && errcap) snprintf(err, errcap, "bad dispatch kind %u",
                                         entry->dispatch.dispatch_kind);
             return -1;
@@ -11876,7 +11876,7 @@ int mglRenderCppEncodeComputeExecutionPlanForCommandBufferOwner(
     for (uint32_t i = 0; i <= plan->binding_op_count; i++) {
         while (nextDispatch < plan->dispatch_op_count &&
                plan->dispatch_ops[nextDispatch].binding_op_count == i) {
-            if (mglRenderCppEncodeComputeDispatchOnEncoder(
+            if (mglRenderEncodeComputeDispatchOnEncoder(
                     encoder, &plan->dispatch_ops[nextDispatch].dispatch,
                     err, errcap) != 0) {
                 encoder->endEncoding();
@@ -11885,7 +11885,7 @@ int mglRenderCppEncodeComputeExecutionPlanForCommandBufferOwner(
             nextDispatch++;
         }
         if (i == plan->binding_op_count) break;
-        const MGLRenderCppComputeBindingOp* op = &plan->binding_ops[i];
+        const MGLRenderComputeBindingOp* op = &plan->binding_ops[i];
         switch (op->kind) {
             case 0u:
                 encoder->setBuffer(static_cast<MTL::Buffer*>(op->buffer),
@@ -11918,12 +11918,12 @@ int mglRenderCppEncodeComputeExecutionPlanForCommandBufferOwner(
     }
 
     if (plan->dispatch_op_count == 0 &&
-        mglRenderCppEncodeComputeDispatchOnEncoder(
+        mglRenderEncodeComputeDispatchOnEncoder(
             encoder, &plan->dispatch, err, errcap) != 0) {
         encoder->endEncoding();
         return -1;
     }
-    if (plan->barrier_scope != MGL_RENDER_CPP_COMPUTE_BARRIER_NONE) {
+    if (plan->barrier_scope != MGL_RENDER_COMPUTE_BARRIER_NONE) {
         encoder->memoryBarrier(static_cast<MTL::BarrierScope>(
             plan->barrier_scope));
     }
@@ -11932,14 +11932,14 @@ int mglRenderCppEncodeComputeExecutionPlanForCommandBufferOwner(
 }
 
 extern "C"
-int mglRenderCppExecuteComputeExecutionPlan(
+int mglRenderExecuteComputeExecutionPlan(
     void* command_buffer_owner,
     void* recovery_owner,
-    const MGLRenderCppComputeExecutionPlan* plan,
-    const MGLRenderCppCopyBackEntry* copy_backs,
+    const MGLRenderComputeExecutionPlan* plan,
+    const MGLRenderCopyBackEntry* copy_backs,
     uint32_t copy_back_count,
     uint32_t require_cpu_visibility,
-    MGLRenderCppComputeExecutionResult* result,
+    MGLRenderComputeExecutionResult* result,
     char* err,
     size_t errcap) {
     if (err && errcap) err[0] = '\0';
@@ -11954,11 +11954,11 @@ int mglRenderCppExecuteComputeExecutionPlan(
     }
 
     /* Reject malformed copy-backs before opening the compute encoder. */
-    if (mglRenderCppEncodeStageBindingCopyBacks(
+    if (mglRenderEncodeStageBindingCopyBacks(
             copy_backs, copy_back_count, nullptr) != 0) {
         if (err && errcap) snprintf(err, errcap, "invalid compute copy-back");
         for (uint32_t i = 0; i < copy_back_count; i++) {
-            const MGLRenderCppCopyBackEntry& entry = copy_backs[i];
+            const MGLRenderCopyBackEntry& entry = copy_backs[i];
             if (!entry.length) continue;
             MTL::Buffer* temporary = static_cast<MTL::Buffer*>(
                 const_cast<void*>(entry.temporary));
@@ -11974,7 +11974,7 @@ int mglRenderCppExecuteComputeExecutionPlan(
         }
         return -1;
     }
-    if (mglRenderCppEncodeComputeExecutionPlanForCommandBufferOwner(
+    if (mglRenderEncodeComputeExecutionPlanForCommandBufferOwner(
             command_buffer_owner, plan, err, errcap) != 0) {
         return -1;
     }
@@ -11998,7 +11998,7 @@ int mglRenderCppExecuteComputeExecutionPlan(
             if (err && errcap) snprintf(err, errcap, "compute copy-back encoder failed");
             return -1;
         }
-        int encode_result = mglRenderCppEncodeStageBindingCopyBacks(
+        int encode_result = mglRenderEncodeStageBindingCopyBacks(
             copy_backs, copy_back_count, blit);
         blit->endEncoding();
         if (encode_result != 0) {
@@ -12008,14 +12008,14 @@ int mglRenderCppExecuteComputeExecutionPlan(
     }
 
     result->submitted = 1u;
-    if (mglRenderCppCommitCommandBufferTransaction(
+    if (mglRenderCommitCommandBufferTransaction(
             command_buffer_owner, nullptr, command_buffer, recovery_owner,
             1u, &result->transaction) != 0 ||
         result->transaction.has_error) {
         if (err && errcap) snprintf(err, errcap, "compute submit/wait failed");
         return -1;
     }
-    if (mglRenderCppCopyBackCPUPrefix(
+    if (mglRenderCopyBackCPUPrefix(
             copy_backs, copy_back_count,
             &result->failed_copy_back_index) != 0) {
         if (err && errcap) snprintf(err, errcap, "compute CPU prefix sync failed");
@@ -12025,7 +12025,7 @@ int mglRenderCppExecuteComputeExecutionPlan(
     return 0;
 }
 
-int mglRenderCppDispatchComputeThreads(void* compute_encoder,
+int mglRenderDispatchComputeThreads(void* compute_encoder,
                                        uint32_t threads_x,
                                        uint32_t threads_y,
                                        uint32_t threads_z,
@@ -12045,9 +12045,9 @@ int mglRenderCppDispatchComputeThreads(void* compute_encoder,
 }
 
 
-int mglRenderCppBeginComputeDispatch(
+int mglRenderBeginComputeDispatch(
     void* command_buffer,
-    const MGLRenderCppComputeDispatchSetup* setup,
+    const MGLRenderComputeDispatchSetup* setup,
     void** compute_encoder_out,
     char* err,
     size_t errcap) {
@@ -12057,8 +12057,8 @@ int mglRenderCppBeginComputeDispatch(
         if (err && errcap) snprintf(err, errcap, "bad args");
         return -1;
     }
-    if (setup->buffer_count > MGL_RENDER_CPP_COMPUTE_DISPATCH_MAX_BUFFERS ||
-        setup->bytes_count > MGL_RENDER_CPP_COMPUTE_DISPATCH_MAX_BYTES) {
+    if (setup->buffer_count > MGL_RENDER_COMPUTE_DISPATCH_MAX_BUFFERS ||
+        setup->bytes_count > MGL_RENDER_COMPUTE_DISPATCH_MAX_BYTES) {
         if (err && errcap) snprintf(err, errcap, "setup count overflow");
         return -1;
     }
@@ -12074,7 +12074,7 @@ int mglRenderCppBeginComputeDispatch(
             static_cast<MTL::ComputePipelineState*>(setup->pipeline));
     }
     for (uint32_t i = 0; i < setup->buffer_count; i++) {
-        const MGLRenderCppComputeBufferEntry* entry = &setup->buffers[i];
+        const MGLRenderComputeBufferEntry* entry = &setup->buffers[i];
         if (!entry->buffer) {
             encoder->endEncoding();
             if (err && errcap) {
@@ -12087,7 +12087,7 @@ int mglRenderCppBeginComputeDispatch(
             static_cast<NS::UInteger>(entry->offset), entry->index);
     }
     for (uint32_t i = 0; i < setup->bytes_count; i++) {
-        const MGLRenderCppComputeBytesEntry* entry = &setup->bytes[i];
+        const MGLRenderComputeBytesEntry* entry = &setup->bytes[i];
         if (!entry->bytes || entry->length == 0) {
             encoder->endEncoding();
             if (err && errcap) {
@@ -12101,9 +12101,9 @@ int mglRenderCppBeginComputeDispatch(
     return 0;
 }
 
-int mglRenderCppBeginComputeDispatchForCommandBufferOwner(
+int mglRenderBeginComputeDispatchForCommandBufferOwner(
     void* command_buffer_owner,
-    const MGLRenderCppComputeDispatchSetup* setup,
+    const MGLRenderComputeDispatchSetup* setup,
     void** compute_encoder_out,
     char* err,
     size_t errcap) {
@@ -12114,11 +12114,11 @@ int mglRenderCppBeginComputeDispatchForCommandBufferOwner(
         if (compute_encoder_out) *compute_encoder_out = nullptr;
         return -1;
     }
-    return mglRenderCppBeginComputeDispatch(
+    return mglRenderBeginComputeDispatch(
         owner->current, setup, compute_encoder_out, err, errcap);
 }
 
-int mglRenderCppEndComputeDispatch(void* compute_encoder,
+int mglRenderEndComputeDispatch(void* compute_encoder,
                                    const uint32_t groups[3],
                                    const uint32_t threads[3],
                                    char* err,
@@ -12139,7 +12139,7 @@ int mglRenderCppEndComputeDispatch(void* compute_encoder,
     return 0;
 }
 
-int mglRenderCppCreateComputeEncoder(void* command_buffer,
+int mglRenderCreateComputeEncoder(void* command_buffer,
                                      void** compute_encoder_out) {
     if (compute_encoder_out) *compute_encoder_out = nullptr;
     MTL::CommandBuffer* command =
@@ -12151,7 +12151,7 @@ int mglRenderCppCreateComputeEncoder(void* command_buffer,
     return 0;
 }
 
-int mglRenderCppEndComputeEncoder(void* compute_encoder) {
+int mglRenderEndComputeEncoder(void* compute_encoder) {
     MTL::ComputeCommandEncoder* encoder =
         static_cast<MTL::ComputeCommandEncoder*>(compute_encoder);
     if (!encoder) return -1;
@@ -12159,7 +12159,7 @@ int mglRenderCppEndComputeEncoder(void* compute_encoder) {
     return 0;
 }
 
-int mglRenderCppCreateCommandBuffer(void* command_queue,
+int mglRenderCreateCommandBuffer(void* command_queue,
                                     void** command_buffer_out) {
     if (command_buffer_out) *command_buffer_out = nullptr;
     MTL::CommandQueue* queue =
@@ -12171,27 +12171,27 @@ int mglRenderCppCreateCommandBuffer(void* command_queue,
     return 0;
 }
 
-int mglRenderCppGetCommandBufferState(
+int mglRenderGetCommandBufferState(
     void* command_buffer,
-    MGLRenderCppCommandBufferState* state_out) {
+    MGLRenderCommandBufferState* state_out) {
     if (state_out) memset(state_out, 0, sizeof(*state_out));
     return mgl::snapshotCommandBufferState(
         static_cast<MTL::CommandBuffer*>(command_buffer), state_out);
 }
 
-const char *mglRenderCppCommandBufferErrorDescription(
-    const MGLRenderCppCommandBufferState* state) {
+const char *mglRenderCommandBufferErrorDescription(
+    const MGLRenderCommandBufferState* state) {
     return state && state->has_error && state->error_description[0]
         ? state->error_description : "unknown command-buffer error";
 }
 
-uint32_t mglRenderCppCommandBufferStatus(void* command_buffer) {
-    MGLRenderCppCommandBufferState state = {};
-    return mglRenderCppGetCommandBufferState(command_buffer, &state) == 0
+uint32_t mglRenderCommandBufferStatus(void* command_buffer) {
+    MGLRenderCommandBufferState state = {};
+    return mglRenderGetCommandBufferState(command_buffer, &state) == 0
         ? state.status : static_cast<uint32_t>(MTL::CommandBufferStatusError);
 }
 
-int mglRenderCppGetCommandBufferLabel(const void *command_buffer,
+int mglRenderGetCommandBufferLabel(const void *command_buffer,
                                       char *label_out,
                                       size_t label_capacity) {
     if (label_out && label_capacity) label_out[0] = '\0';
@@ -12205,7 +12205,7 @@ int mglRenderCppGetCommandBufferLabel(const void *command_buffer,
     return 0;
 }
 
-int mglRenderCppSetCommandBufferLabel(void *command_buffer,
+int mglRenderSetCommandBufferLabel(void *command_buffer,
                                       const char *label) {
     MTL::CommandBuffer* object = static_cast<MTL::CommandBuffer*>(command_buffer);
     if (!object || !label) return -1;
@@ -12213,9 +12213,9 @@ int mglRenderCppSetCommandBufferLabel(void *command_buffer,
     return 0;
 }
 
-int mglRenderCppClassifyCommandBufferCommit(
-    const MGLRenderCppCommandBufferState* state,
-    MGLRenderCppCommandBufferCommitDecision* decision_out) {
+int mglRenderClassifyCommandBufferCommit(
+    const MGLRenderCommandBufferState* state,
+    MGLRenderCommandBufferCommitDecision* decision_out) {
     if (decision_out) memset(decision_out, 0, sizeof(*decision_out));
     if (!state || !decision_out) return -1;
 
@@ -12225,10 +12225,10 @@ int mglRenderCppClassifyCommandBufferCommit(
     if (state->status >=
         static_cast<uint32_t>(MTL::CommandBufferStatusCommitted)) {
         decision_out->action =
-            MGL_RENDER_CPP_COMMAND_BUFFER_COMMIT_SKIP_ALREADY_COMMITTED;
+            MGL_RENDER_COMMAND_BUFFER_COMMIT_SKIP_ALREADY_COMMITTED;
     } else {
         decision_out->action =
-            MGL_RENDER_CPP_COMMAND_BUFFER_COMMIT_PROCEED;
+            MGL_RENDER_COMMAND_BUFFER_COMMIT_PROCEED;
     }
     return 0;
 }
@@ -12242,7 +12242,7 @@ double commandRecoveryNowSeconds() {
 
 void snapshotCommandRecoveryOwner(
     mgl::CommandBufferRecoveryOwner* owner,
-    MGLRenderCppCommandRecoverySnapshot* state) {
+    MGLRenderCommandRecoverySnapshot* state) {
     if (!owner || !state) return;
     std::lock_guard<std::mutex> lock(owner->mutex);
     mgl::snapshotCommandRecovery(*owner, state);
@@ -12250,17 +12250,17 @@ void snapshotCommandRecoveryOwner(
 
 int applyCommandRecoveryFailure(
     mgl::CommandBufferRecoveryOwner* owner,
-    const MGLRenderCppCommandBufferState* state,
+    const MGLRenderCommandBufferState* state,
     bool request_reset,
-    MGLRenderCppCommandBufferTransaction* transaction) {
+    MGLRenderCommandBufferTransaction* transaction) {
     if (!owner || !transaction) return -1;
     if (transaction->recovery_error_recorded) {
         snapshotCommandRecoveryOwner(owner, &transaction->recovery);
         return 0;
     }
 
-    MGLRenderCppCommandBufferCompletionDecision decision = {};
-    if (state && mglRenderCppClassifyCommandBufferCompletion(
+    MGLRenderCommandBufferCompletionDecision decision = {};
+    if (state && mglRenderClassifyCommandBufferCompletion(
                      state, &decision) != 0) {
         return -1;
     }
@@ -12306,11 +12306,11 @@ struct CommandRecoveryCompletionContext {
 
 void processCommandRecoveryCompletionLocked(
     CommandRecoveryCompletionContext* completion,
-    const MGLRenderCppCommandBufferState* state,
-    MGLRenderCppCommandBufferCompletionResult* result_out) {
+    const MGLRenderCommandBufferState* state,
+    MGLRenderCommandBufferCompletionResult* result_out) {
     if (!completion || !completion->owner || !state) return;
-    MGLRenderCppCommandBufferCompletionDecision decision = {};
-    if (mglRenderCppClassifyCommandBufferCompletion(state, &decision) != 0) {
+    MGLRenderCommandBufferCompletionDecision decision = {};
+    if (mglRenderClassifyCommandBufferCompletion(state, &decision) != 0) {
         return;
     }
 
@@ -12325,8 +12325,8 @@ void processCommandRecoveryCompletionLocked(
         return;
     }
 
-    MGLRenderCppCommandBufferCompletionResult result = {};
-    if (mglRenderCppProcessCommandBufferCompletion(
+    MGLRenderCommandBufferCompletionResult result = {};
+    if (mglRenderProcessCommandBufferCompletion(
             completion->owner, state, commandRecoveryNowSeconds(), &result) != 0) {
         return;
     }
@@ -12342,7 +12342,7 @@ void processCommandRecoveryCompletionLocked(
 }
 
 void commandRecoveryCompletion(void* context,
-                               const MGLRenderCppCommandBufferState* state) {
+                               const MGLRenderCommandBufferState* state) {
     processCommandRecoveryCompletionLocked(
         static_cast<CommandRecoveryCompletionContext*>(context), state,
         nullptr);
@@ -12370,7 +12370,7 @@ int addCommandBufferRecoveryCompletion(
         context->retain();
         *context_out = context;
     }
-    int result = mglRenderCppAddCommandBufferCompletion(
+    int result = mglRenderAddCommandBufferCompletion(
         command_buffer, commandRecoveryCompletion, context,
         destroyCommandRecoveryCompletionContext);
     if (result != 0) {
@@ -12386,8 +12386,8 @@ int addCommandBufferRecoveryCompletion(
 int applyCommandRecoveryTransactionFailure(
     CommandRecoveryCompletionContext* completion,
     mgl::CommandBufferRecoveryOwner* owner,
-    const MGLRenderCppCommandBufferState* state,
-    MGLRenderCppCommandBufferTransaction* transaction) {
+    const MGLRenderCommandBufferState* state,
+    MGLRenderCommandBufferTransaction* transaction) {
     if (!owner || !transaction) return 0;
     if (!completion) {
         return applyCommandRecoveryFailure(owner, state, true, transaction);
@@ -12419,16 +12419,16 @@ struct ScopedRecoveryCompletionContext {
 }  // namespace
 
 extern "C"
-int mglRenderCppCommitCommandBufferTransaction(
+int mglRenderCommitCommandBufferTransaction(
     void* owner_handle,
     void** submission_handle,
     void* command_buffer,
     void* recovery_owner,
     uint32_t wait_for_completion,
-    MGLRenderCppCommandBufferTransaction* result_out) {
+    MGLRenderCommandBufferTransaction* result_out) {
     if (result_out) memset(result_out, 0, sizeof(*result_out));
     if (!command_buffer || !result_out) return -1;
-    result_out->result = MGL_RENDER_CPP_COMMAND_BUFFER_TRANSACTION_ERROR;
+    result_out->result = MGL_RENDER_COMMAND_BUFFER_TRANSACTION_ERROR;
 
     MTL::CommandBuffer* command =
         static_cast<MTL::CommandBuffer*>(command_buffer);
@@ -12441,17 +12441,17 @@ int mglRenderCppCommitCommandBufferTransaction(
         return -1;
     }
 
-    MGLRenderCppCommandBufferCommitDecision decision = {};
-    if (mglRenderCppClassifyCommandBufferCommit(
+    MGLRenderCommandBufferCommitDecision decision = {};
+    if (mglRenderClassifyCommandBufferCommit(
             &result_out->before, &decision) != 0) {
         applyCommandRecoveryTransactionFailure(
             nullptr, recovery, &result_out->before, result_out);
         return -1;
     }
     if (decision.action ==
-        MGL_RENDER_CPP_COMMAND_BUFFER_COMMIT_SKIP_ALREADY_COMMITTED) {
+        MGL_RENDER_COMMAND_BUFFER_COMMIT_SKIP_ALREADY_COMMITTED) {
         result_out->result =
-            MGL_RENDER_CPP_COMMAND_BUFFER_TRANSACTION_SKIPPED;
+            MGL_RENDER_COMMAND_BUFFER_TRANSACTION_SKIPPED;
         result_out->after = result_out->before;
         if (result_out->before.has_error && recovery) {
             applyCommandRecoveryFailure(
@@ -12464,7 +12464,7 @@ int mglRenderCppCommitCommandBufferTransaction(
 
     bool commit_guard_acquired = false;
     if (owner_handle) {
-        int guard = mglRenderCppCommandBufferOwnerBeginCommit(owner_handle);
+        int guard = mglRenderCommandBufferOwnerBeginCommit(owner_handle);
         if (guard < 0) {
             applyCommandRecoveryTransactionFailure(
                 nullptr, recovery, &result_out->before, result_out);
@@ -12472,7 +12472,7 @@ int mglRenderCppCommitCommandBufferTransaction(
         }
         if (guard == 0) {
             result_out->result =
-                MGL_RENDER_CPP_COMMAND_BUFFER_TRANSACTION_NESTED;
+                MGL_RENDER_COMMAND_BUFFER_TRANSACTION_NESTED;
             result_out->after = result_out->before;
             if (recovery) {
                 snapshotCommandRecoveryOwner(recovery,
@@ -12488,14 +12488,14 @@ int mglRenderCppCommitCommandBufferTransaction(
         bool* acquired = nullptr;
         ~CommitGuard() {
             if (owner && acquired && *acquired) {
-                mglRenderCppCommandBufferOwnerEndCommit(owner);
+                mglRenderCommandBufferOwnerEndCommit(owner);
                 *acquired = false;
             }
         }
     } commit_guard{owner_handle, &commit_guard_acquired};
 
     if (submission_handle && *submission_handle &&
-        mglRenderCppCommandBufferSubmissionMatchesBuffer(
+        mglRenderCommandBufferSubmissionMatchesBuffer(
             *submission_handle, command_buffer) != 1) {
         result_out->after = result_out->before;
         applyCommandRecoveryTransactionFailure(
@@ -12517,10 +12517,10 @@ int mglRenderCppCommitCommandBufferTransaction(
     result_out->completion_registered = recovery ? 1u : 0u;
     try {
         if (submission_handle && *submission_handle &&
-            mglRenderCppCommandBufferSubmissionMatchesBuffer(
+            mglRenderCommandBufferSubmissionMatchesBuffer(
                 *submission_handle, command_buffer) == 1) {
             result_out->used_submission = 1u;
-            commit_result = mglRenderCppCommitCommandBufferSubmission(
+            commit_result = mglRenderCommitCommandBufferSubmission(
                 submission_handle);
         } else {
             command->commit();
@@ -12552,7 +12552,7 @@ int mglRenderCppCommitCommandBufferTransaction(
             static_cast<mgl::CommandBufferOwner*>(owner_handle), command);
     }
     result_out->result =
-        MGL_RENDER_CPP_COMMAND_BUFFER_TRANSACTION_COMMITTED;
+        MGL_RENDER_COMMAND_BUFFER_TRANSACTION_COMMITTED;
     result_out->needs_new_command_buffer = 1u;
     if (wait_for_completion) {
         result_out->waited = 1u;
@@ -12571,8 +12571,8 @@ int mglRenderCppCommitCommandBufferTransaction(
             if (!recovery) result_out->has_error = 1u;
             return -1;
         }
-        MGLRenderCppCommandBufferCompletionDecision completionDecision = {};
-        if (mglRenderCppClassifyCommandBufferCompletion(
+        MGLRenderCommandBufferCompletionDecision completionDecision = {};
+        if (mglRenderClassifyCommandBufferCompletion(
                 &result_out->completion, &completionDecision) != 0) {
             applyCommandRecoveryTransactionFailure(
                 recovery_completion.context, recovery,
@@ -12584,7 +12584,7 @@ int mglRenderCppCommitCommandBufferTransaction(
         result_out->is_driver_rejection =
             completionDecision.is_driver_rejection;
         if (recovery_completion.context) {
-            MGLRenderCppCommandBufferCompletionResult completionResult = {};
+            MGLRenderCommandBufferCompletionResult completionResult = {};
             processCommandRecoveryCompletionLocked(
                 recovery_completion.context, &result_out->completion,
                 &completionResult);
@@ -12594,7 +12594,7 @@ int mglRenderCppCommitCommandBufferTransaction(
         }
         if (recovery) {
             result_out->device_reset_requested =
-                mglRenderCppCommandRecoveryTakeResetRequest(
+                mglRenderCommandRecoveryTakeResetRequest(
                     recovery_owner) == 1 ? 1u : 0u;
         }
         if (result_out->has_error) return -1;
@@ -12605,7 +12605,7 @@ int mglRenderCppCommitCommandBufferTransaction(
      * buffers have no queue and keep the legacy reset adapter. */
     if (owner_handle) {
         void* next = nullptr;
-        int nextResult = mglRenderCppCommandBufferOwnerCreateNext(
+        int nextResult = mglRenderCommandBufferOwnerCreateNext(
             owner_handle, &next);
         if (nextResult == 0 && next) {
             result_out->current_command_buffer_created = 1u;
@@ -12624,9 +12624,9 @@ int mglRenderCppCommitCommandBufferTransaction(
     return 0;
 }
 
-int mglRenderCppClassifyCommandBufferCompletion(
-    const MGLRenderCppCommandBufferState* state,
-    MGLRenderCppCommandBufferCompletionDecision* decision_out) {
+int mglRenderClassifyCommandBufferCompletion(
+    const MGLRenderCommandBufferState* state,
+    MGLRenderCommandBufferCompletionDecision* decision_out) {
     if (decision_out) memset(decision_out, 0, sizeof(*decision_out));
     if (!state || !decision_out) return -1;
 
@@ -12639,7 +12639,7 @@ int mglRenderCppClassifyCommandBufferCompletion(
     return 0;
 }
 
-int mglRenderCppCreateCommandRecoveryOwner(void** owner_out) {
+int mglRenderCreateCommandRecoveryOwner(void** owner_out) {
     if (owner_out) *owner_out = nullptr;
     if (!owner_out) return -1;
     mgl::CommandBufferRecoveryOwner* owner =
@@ -12649,7 +12649,7 @@ int mglRenderCppCreateCommandRecoveryOwner(void** owner_out) {
     return 0;
 }
 
-void mglRenderCppDestroyCommandRecoveryOwner(void** owner_handle) {
+void mglRenderDestroyCommandRecoveryOwner(void** owner_handle) {
     if (!owner_handle || !*owner_handle) return;
     mgl::CommandBufferRecoveryOwner* owner =
         static_cast<mgl::CommandBufferRecoveryOwner*>(*owner_handle);
@@ -12657,10 +12657,10 @@ void mglRenderCppDestroyCommandRecoveryOwner(void** owner_handle) {
     releaseCommandRecoveryOwner(owner);
 }
 
-int mglRenderCppCommandRecoveryRecordError(
+int mglRenderCommandRecoveryRecordError(
     void* owner_handle,
     double now,
-    MGLRenderCppCommandRecoverySnapshot* state_out) {
+    MGLRenderCommandRecoverySnapshot* state_out) {
     if (state_out) memset(state_out, 0, sizeof(*state_out));
     mgl::CommandBufferRecoveryOwner* owner =
         static_cast<mgl::CommandBufferRecoveryOwner*>(owner_handle);
@@ -12673,23 +12673,23 @@ int mglRenderCppCommandRecoveryRecordError(
     return 0;
 }
 
-int mglRenderCppCommandRecoveryRecordTransactionFailure(
+int mglRenderCommandRecoveryRecordTransactionFailure(
     void* owner_handle,
-    const MGLRenderCppCommandBufferState* state,
-    MGLRenderCppCommandBufferTransaction* transaction_inout) {
+    const MGLRenderCommandBufferState* state,
+    MGLRenderCommandBufferTransaction* transaction_inout) {
     mgl::CommandBufferRecoveryOwner* owner =
         static_cast<mgl::CommandBufferRecoveryOwner*>(owner_handle);
     if (!owner || !transaction_inout) return -1;
     transaction_inout->result =
-        MGL_RENDER_CPP_COMMAND_BUFFER_TRANSACTION_ERROR;
+        MGL_RENDER_COMMAND_BUFFER_TRANSACTION_ERROR;
     return applyCommandRecoveryFailure(
         owner, state, true, transaction_inout);
 }
 
-int mglRenderCppCommandRecoveryRecordSuccess(
+int mglRenderCommandRecoveryRecordSuccess(
     void* owner_handle,
     double now,
-    MGLRenderCppCommandRecoverySuccess* result_out) {
+    MGLRenderCommandRecoverySuccess* result_out) {
     if (result_out) memset(result_out, 0, sizeof(*result_out));
     mgl::CommandBufferRecoveryOwner* owner =
         static_cast<mgl::CommandBufferRecoveryOwner*>(owner_handle);
@@ -12711,7 +12711,7 @@ int mglRenderCppCommandRecoveryRecordSuccess(
     return 0;
 }
 
-int mglRenderCppCommandRecoveryClearMode(void* owner_handle) {
+int mglRenderCommandRecoveryClearMode(void* owner_handle) {
     mgl::CommandBufferRecoveryOwner* owner =
         static_cast<mgl::CommandBufferRecoveryOwner*>(owner_handle);
     if (!owner) return -1;
@@ -12721,10 +12721,10 @@ int mglRenderCppCommandRecoveryClearMode(void* owner_handle) {
     return 1;
 }
 
-int mglRenderCppCommandRecoveryShouldSkip(
+int mglRenderCommandRecoveryShouldSkip(
     void* owner_handle,
     double now,
-    MGLRenderCppCommandRecoverySkipDecision* decision_out) {
+    MGLRenderCommandRecoverySkipDecision* decision_out) {
     if (decision_out) memset(decision_out, 0, sizeof(*decision_out));
     mgl::CommandBufferRecoveryOwner* owner =
         static_cast<mgl::CommandBufferRecoveryOwner*>(owner_handle);
@@ -12746,25 +12746,25 @@ int mglRenderCppCommandRecoveryShouldSkip(
     return 0;
 }
 
-int mglRenderCppProcessCommandBufferCompletion(
+int mglRenderProcessCommandBufferCompletion(
     void* owner_handle,
-    const MGLRenderCppCommandBufferState* state,
+    const MGLRenderCommandBufferState* state,
     double now,
-    MGLRenderCppCommandBufferCompletionResult* result_out) {
+    MGLRenderCommandBufferCompletionResult* result_out) {
     if (result_out) memset(result_out, 0, sizeof(*result_out));
     if (!owner_handle || !state || !result_out) return -1;
-    if (mglRenderCppClassifyCommandBufferCompletion(
+    if (mglRenderClassifyCommandBufferCompletion(
             state, &result_out->decision) != 0) {
         return -1;
     }
 
     if (result_out->decision.has_error) {
-        return mglRenderCppCommandRecoveryRecordError(
+        return mglRenderCommandRecoveryRecordError(
             owner_handle, now, &result_out->state);
     }
 
-    MGLRenderCppCommandRecoverySuccess success = {};
-    if (mglRenderCppCommandRecoveryRecordSuccess(
+    MGLRenderCommandRecoverySuccess success = {};
+    if (mglRenderCommandRecoveryRecordSuccess(
             owner_handle, now, &success) != 0) {
         return -1;
     }
@@ -12776,21 +12776,21 @@ int mglRenderCppProcessCommandBufferCompletion(
     /* Keep this as a distinct owner operation. The legacy completion path
      * acquired its recovery lock once in recordGPUSuccess and once again to
      * clear recovery mode on the first successful completion. */
-    int cleared = mglRenderCppCommandRecoveryClearMode(owner_handle);
+    int cleared = mglRenderCommandRecoveryClearMode(owner_handle);
     if (cleared < 0) return -1;
     result_out->cleared_recovery_mode = (uint32_t)cleared;
     if (cleared == 1) result_out->state.recovery_mode = 0;
     return 0;
 }
 
-int mglRenderCppAddCommandBufferRecoveryCompletion(
+int mglRenderAddCommandBufferRecoveryCompletion(
     void* command_buffer,
     void* recovery_owner) {
     return addCommandBufferRecoveryCompletion(
         command_buffer, recovery_owner, nullptr);
 }
 
-int mglRenderCppCommandRecoveryTakeResetRequest(void* recovery_owner) {
+int mglRenderCommandRecoveryTakeResetRequest(void* recovery_owner) {
     mgl::CommandBufferRecoveryOwner* owner =
         static_cast<mgl::CommandBufferRecoveryOwner*>(recovery_owner);
     if (!owner) return -1;
@@ -12800,11 +12800,11 @@ int mglRenderCppCommandRecoveryTakeResetRequest(void* recovery_owner) {
     return 1;
 }
 
-int mglRenderCppAddCommandBufferCompletion(
+int mglRenderAddCommandBufferCompletion(
     void* command_buffer,
-    MGLRenderCppCommandBufferCompletion callback,
+    MGLRenderCommandBufferCompletion callback,
     void* context,
-    MGLRenderCppDestroyContext destroy_context) {
+    MGLRenderDestroyContext destroy_context) {
     MTL::CommandBuffer* commandBuffer =
         static_cast<MTL::CommandBuffer*>(command_buffer);
     if (!commandBuffer || !callback) return -1;
@@ -12851,19 +12851,19 @@ int mglRenderCppAddCommandBufferCompletion(
     return 0;
 }
 
-int mglRenderCppAddCommandBufferOwnerCompletion(
+int mglRenderAddCommandBufferOwnerCompletion(
     void* owner_handle,
-    MGLRenderCppCommandBufferCompletion callback,
+    MGLRenderCommandBufferCompletion callback,
     void* context,
-    MGLRenderCppDestroyContext destroy_context) {
+    MGLRenderDestroyContext destroy_context) {
     mgl::CommandBufferOwner* owner =
         static_cast<mgl::CommandBufferOwner*>(owner_handle);
     if (!owner || !owner->current) return -1;
-    return mglRenderCppAddCommandBufferCompletion(
+    return mglRenderAddCommandBufferCompletion(
         owner->current, callback, context, destroy_context);
 }
 
-int mglRenderCppCreateCommandBufferOwner(void* command_queue,
+int mglRenderCreateCommandBufferOwner(void* command_queue,
                                          void** owner_out,
                                          void** command_buffer_out) {
     if (owner_out) *owner_out = nullptr;
@@ -12888,7 +12888,7 @@ int mglRenderCppCreateCommandBufferOwner(void* command_queue,
     return 0;
 }
 
-int mglRenderCppResetCommandBufferOwner(void* owner_handle,
+int mglRenderResetCommandBufferOwner(void* owner_handle,
                                         void* command_queue,
                                         void** command_buffer_out) {
     if (command_buffer_out) *command_buffer_out = nullptr;
@@ -12914,7 +12914,7 @@ int mglRenderCppResetCommandBufferOwner(void* owner_handle,
 }
 
 extern "C"
-int mglRenderCppCreateCommandBufferOwnerAdopt(void* command_buffer,
+int mglRenderCreateCommandBufferOwnerAdopt(void* command_buffer,
                                               void** owner_out) {
     if (owner_out) *owner_out = nullptr;
     MTL::CommandBuffer* commandBuffer =
@@ -12930,19 +12930,19 @@ int mglRenderCppCreateCommandBufferOwnerAdopt(void* command_buffer,
 }
 
 extern "C"
-void* mglRenderCppCommandBufferOwnerGetCurrent(void* owner_handle) {
+void* mglRenderCommandBufferOwnerGetCurrent(void* owner_handle) {
     mgl::CommandBufferOwner* owner =
         static_cast<mgl::CommandBufferOwner*>(owner_handle);
     return owner ? static_cast<void*>(owner->current) : nullptr;
 }
 
-int mglRenderCppCommandBufferOwnerHasCurrent(void* owner_handle) {
+int mglRenderCommandBufferOwnerHasCurrent(void* owner_handle) {
     mgl::CommandBufferOwner* owner =
         static_cast<mgl::CommandBufferOwner*>(owner_handle);
     return owner ? (owner->current ? 1 : 0) : -1;
 }
 
-int mglRenderCppCommandBufferOwnerCreateNext(
+int mglRenderCommandBufferOwnerCreateNext(
     void* owner_handle,
     void** command_buffer_out) {
     if (command_buffer_out) *command_buffer_out = nullptr;
@@ -12974,9 +12974,9 @@ int mglRenderCppCommandBufferOwnerCreateNext(
     return 0;
 }
 
-int mglRenderCppGetCommandBufferOwnerState(
+int mglRenderGetCommandBufferOwnerState(
     void* owner_handle,
-    MGLRenderCppCommandBufferState* state_out) {
+    MGLRenderCommandBufferState* state_out) {
     if (state_out) memset(state_out, 0, sizeof(*state_out));
     mgl::CommandBufferOwner* owner =
         static_cast<mgl::CommandBufferOwner*>(owner_handle);
@@ -12984,21 +12984,21 @@ int mglRenderCppGetCommandBufferOwnerState(
     return mgl::snapshotCommandBufferState(owner->current, state_out);
 }
 
-int mglRenderCppCommandBufferOwnerHasLastSubmitted(void* owner_handle) {
+int mglRenderCommandBufferOwnerHasLastSubmitted(void* owner_handle) {
     mgl::CommandBufferOwner* owner =
         static_cast<mgl::CommandBufferOwner*>(owner_handle);
     return owner ? (owner->lastSubmitted ? 1 : 0) : -1;
 }
 
-int mglRenderCppWaitCommandBufferState(
+int mglRenderWaitCommandBufferState(
     void* command_buffer,
-    MGLRenderCppCommandBufferState* state_out) {
+    MGLRenderCommandBufferState* state_out) {
     if (state_out) memset(state_out, 0, sizeof(*state_out));
     MTL::CommandBuffer* command =
         static_cast<MTL::CommandBuffer*>(command_buffer);
     if (!command || !state_out) return -1;
 
-    MGLRenderCppCommandBufferState before = {};
+    MGLRenderCommandBufferState before = {};
     if (mgl::snapshotCommandBufferState(command, &before) != 0) return -1;
     if (before.status ==
         static_cast<uint32_t>(MTL::CommandBufferStatusNotEnqueued)) {
@@ -13018,29 +13018,29 @@ int mglRenderCppWaitCommandBufferState(
     return state_out->has_error ? -1 : 0;
 }
 
-int mglRenderCppWaitCommandBufferOwnerLastSubmitted(
+int mglRenderWaitCommandBufferOwnerLastSubmitted(
     void* owner_handle,
-    MGLRenderCppCommandBufferState* state_out) {
+    MGLRenderCommandBufferState* state_out) {
     if (state_out) memset(state_out, 0, sizeof(*state_out));
     mgl::CommandBufferOwner* owner =
         static_cast<mgl::CommandBufferOwner*>(owner_handle);
     if (!owner || !state_out) return -1;
     MTL::CommandBuffer* commandBuffer = owner->lastSubmitted;
     if (!commandBuffer) return 1;
-    return mglRenderCppWaitCommandBufferState(commandBuffer, state_out);
+    return mglRenderWaitCommandBufferState(commandBuffer, state_out);
 }
 
-int mglRenderCppPresentDrawableForCommandBufferOwner(
+int mglRenderPresentDrawableForCommandBufferOwner(
     void* owner_handle,
     void* drawable,
-    MGLRenderCppCommandBufferState* state_out) {
+    MGLRenderCommandBufferState* state_out) {
     if (state_out) memset(state_out, 0, sizeof(*state_out));
     mgl::CommandBufferOwner* owner =
         static_cast<mgl::CommandBufferOwner*>(owner_handle);
     MTL::Drawable* surface = static_cast<MTL::Drawable*>(drawable);
     if (!owner || !owner->current || !surface) return -1;
 
-    MGLRenderCppCommandBufferState state = {};
+    MGLRenderCommandBufferState state = {};
     if (mgl::snapshotCommandBufferState(owner->current, &state) != 0) {
         return -1;
     }
@@ -13053,7 +13053,7 @@ int mglRenderCppPresentDrawableForCommandBufferOwner(
     return 0;
 }
 
-int mglRenderCppEncodeWaitForEventForCommandBufferOwner(
+int mglRenderEncodeWaitForEventForCommandBufferOwner(
     void* owner_handle,
     void* event,
     uint64_t value) {
@@ -13061,7 +13061,7 @@ int mglRenderCppEncodeWaitForEventForCommandBufferOwner(
         static_cast<mgl::CommandBufferOwner*>(owner_handle);
     MTL::Event* metal_event = static_cast<MTL::Event*>(event);
     if (!owner || !owner->current || !metal_event || value == 0u) return -1;
-    MGLRenderCppCommandBufferState state = {};
+    MGLRenderCommandBufferState state = {};
     if (mgl::snapshotCommandBufferState(owner->current, &state) != 0 ||
         state.status !=
             static_cast<uint32_t>(MTL::CommandBufferStatusNotEnqueued)) {
@@ -13071,7 +13071,7 @@ int mglRenderCppEncodeWaitForEventForCommandBufferOwner(
     return 0;
 }
 
-void mglRenderCppDiscardCommandBufferOwnerCurrent(void* owner_handle) {
+void mglRenderDiscardCommandBufferOwnerCurrent(void* owner_handle) {
     mgl::CommandBufferOwner* owner =
         static_cast<mgl::CommandBufferOwner*>(owner_handle);
     if (!owner || !owner->current) return;
@@ -13081,7 +13081,7 @@ void mglRenderCppDiscardCommandBufferOwnerCurrent(void* owner_handle) {
     owner->syncs.reset();
 }
 
-int mglRenderCppTakeCommandBufferSubmission(void* owner_handle,
+int mglRenderTakeCommandBufferSubmission(void* owner_handle,
                                              void** submission_out,
                                              void** command_buffer_out) {
     if (submission_out) *submission_out = nullptr;
@@ -13103,7 +13103,7 @@ int mglRenderCppTakeCommandBufferSubmission(void* owner_handle,
     return 0;
 }
 
-int mglRenderCppCommitCommandBufferSubmission(void** submission_handle) {
+int mglRenderCommitCommandBufferSubmission(void** submission_handle) {
     if (!submission_handle || !*submission_handle) return -1;
     mgl::CommandBufferSubmission* submission =
         static_cast<mgl::CommandBufferSubmission*>(*submission_handle);
@@ -13117,7 +13117,7 @@ int mglRenderCppCommitCommandBufferSubmission(void** submission_handle) {
 /* does the submission own exactly this command buffer?
  * Replaces the ObjC MGLCommandState.detachedCommandBuffer mirror used to
  * guard commit/release of a detached submission. */
-int mglRenderCppCommandBufferSubmissionMatchesBuffer(
+int mglRenderCommandBufferSubmissionMatchesBuffer(
     void* submission_handle, void* command_buffer) {
     mgl::CommandBufferSubmission* submission =
         static_cast<mgl::CommandBufferSubmission*>(submission_handle);
@@ -13128,7 +13128,7 @@ int mglRenderCppCommandBufferSubmissionMatchesBuffer(
                : 0;
 }
 
-void mglRenderCppDestroyCommandBufferSubmission(void** submission_handle) {
+void mglRenderDestroyCommandBufferSubmission(void** submission_handle) {
     if (!submission_handle || !*submission_handle) return;
     mgl::CommandBufferSubmission* submission =
         static_cast<mgl::CommandBufferSubmission*>(*submission_handle);
@@ -13136,7 +13136,7 @@ void mglRenderCppDestroyCommandBufferSubmission(void** submission_handle) {
     delete submission;
 }
 
-int mglRenderCppCommandBufferOwnerAppendSync(void* owner_handle,
+int mglRenderCommandBufferOwnerAppendSync(void* owner_handle,
                                                  Sync* sync) {
     mgl::CommandBufferOwner* owner =
         static_cast<mgl::CommandBufferOwner*>(owner_handle);
@@ -13160,14 +13160,14 @@ int mglRenderCppCommandBufferOwnerAppendSync(void* owner_handle,
     return 0;
 }
 
-void mglRenderCppCommandBufferOwnerClearSyncs(void* owner_handle) {
+void mglRenderCommandBufferOwnerClearSyncs(void* owner_handle) {
     mgl::CommandBufferOwner* owner =
         static_cast<mgl::CommandBufferOwner*>(owner_handle);
     if (!owner) return;
     owner->syncs.reset();
 }
 
-int mglRenderCppCommandBufferOwnerBeginCommit(void* owner_handle) {
+int mglRenderCommandBufferOwnerBeginCommit(void* owner_handle) {
     mgl::CommandBufferOwner* owner =
         static_cast<mgl::CommandBufferOwner*>(owner_handle);
     if (!owner) return -1;
@@ -13176,7 +13176,7 @@ int mglRenderCppCommandBufferOwnerBeginCommit(void* owner_handle) {
     return 1;
 }
 
-void mglRenderCppCommandBufferOwnerEndCommit(void* owner_handle) {
+void mglRenderCommandBufferOwnerEndCommit(void* owner_handle) {
     mgl::CommandBufferOwner* owner =
         static_cast<mgl::CommandBufferOwner*>(owner_handle);
     if (!owner) return;
@@ -13184,7 +13184,7 @@ void mglRenderCppCommandBufferOwnerEndCommit(void* owner_handle) {
 }
 
 extern "C"
-int mglRenderCppCommandBufferOwnerConsumeTransactionCurrent(
+int mglRenderCommandBufferOwnerConsumeTransactionCurrent(
     void* owner_handle,
     void** command_buffer_out) {
     if (command_buffer_out) *command_buffer_out = nullptr;
@@ -13192,7 +13192,7 @@ int mglRenderCppCommandBufferOwnerConsumeTransactionCurrent(
         static_cast<mgl::CommandBufferOwner*>(owner_handle);
     if (!owner || !command_buffer_out) return -1;
     if (!owner->transaction_created_current || !owner->current) return 0;
-    MGLRenderCppCommandBufferState state = {};
+    MGLRenderCommandBufferState state = {};
     if (mgl::snapshotCommandBufferState(owner->current, &state) != 0 ||
         state.status != static_cast<uint32_t>(MTL::CommandBufferStatusNotEnqueued)) {
         owner->transaction_created_current = false;
@@ -13204,7 +13204,7 @@ int mglRenderCppCommandBufferOwnerConsumeTransactionCurrent(
     return 1;
 }
 
-void mglRenderCppDestroyCommandBufferOwner(void** owner_handle) {
+void mglRenderDestroyCommandBufferOwner(void** owner_handle) {
     if (!owner_handle || !*owner_handle) return;
     mgl::CommandBufferOwner* owner =
         static_cast<mgl::CommandBufferOwner*>(*owner_handle);
@@ -13212,13 +13212,13 @@ void mglRenderCppDestroyCommandBufferOwner(void** owner_handle) {
     delete owner;
 }
 
-int mglRenderCppCreateCommandQueueOwner(uint32_t max_command_buffers,
+int mglRenderCreateCommandQueueOwner(uint32_t max_command_buffers,
                                         void** owner_out,
                                         void** command_queue_out) {
     if (owner_out) *owner_out = nullptr;
     if (command_queue_out) *command_queue_out = nullptr;
     if (!owner_out || !command_queue_out) return -1;
-    mgl::RendererCpp& renderer = mgl::renderer();
+    mgl::Renderer& renderer = mgl::renderer();
     std::lock_guard<std::mutex> lock(renderer.mutex);
     if (!renderer.device) return -1;
     mgl::CommandQueueOwner* owner =
@@ -13237,14 +13237,14 @@ int mglRenderCppCreateCommandQueueOwner(uint32_t max_command_buffers,
     return 0;
 }
 
-int mglRenderCppResetCommandQueueOwner(void* owner_handle,
+int mglRenderResetCommandQueueOwner(void* owner_handle,
                                        uint32_t max_command_buffers,
                                        void** command_queue_out) {
     if (command_queue_out) *command_queue_out = nullptr;
     mgl::CommandQueueOwner* owner =
         static_cast<mgl::CommandQueueOwner*>(owner_handle);
     if (!owner || !command_queue_out) return -1;
-    mgl::RendererCpp& renderer = mgl::renderer();
+    mgl::Renderer& renderer = mgl::renderer();
     std::lock_guard<std::mutex> lock(renderer.mutex);
     if (!renderer.device) return -1;
     MTL::CommandQueue* queue = max_command_buffers
@@ -13257,7 +13257,7 @@ int mglRenderCppResetCommandQueueOwner(void* owner_handle,
     return 0;
 }
 
-void mglRenderCppDestroyCommandQueueOwner(void** owner_handle) {
+void mglRenderDestroyCommandQueueOwner(void** owner_handle) {
     if (!owner_handle || !*owner_handle) return;
     mgl::CommandQueueOwner* owner =
         static_cast<mgl::CommandQueueOwner*>(*owner_handle);
@@ -13265,7 +13265,7 @@ void mglRenderCppDestroyCommandQueueOwner(void** owner_handle) {
     delete owner;
 }
 
-int mglRenderCppCreateMDIScratchOwner(void** owner_out) {
+int mglRenderCreateMDIScratchOwner(void** owner_out) {
     if (owner_out) *owner_out = nullptr;
     if (!owner_out) return -1;
     mgl::MDIScratchOwner* owner =
@@ -13275,7 +13275,7 @@ int mglRenderCppCreateMDIScratchOwner(void** owner_out) {
     return 0;
 }
 
-int mglRenderCppAllocateMDIScratch(void* owner_handle,
+int mglRenderAllocateMDIScratch(void* owner_handle,
                                    uint64_t length,
                                    uint64_t alignment,
                                    void** buffer_out,
@@ -13313,7 +13313,7 @@ int mglRenderCppAllocateMDIScratch(void* owner_handle,
         if (nextCapacity > std::numeric_limits<NS::UInteger>::max()) {
             return -1;
         }
-        mgl::RendererCpp& renderer = mgl::renderer();
+        mgl::Renderer& renderer = mgl::renderer();
         std::lock_guard<std::mutex> lock(renderer.mutex);
         if (!renderer.device) return -1;
         MTL::Buffer* next = renderer.device->newBuffer(
@@ -13334,7 +13334,7 @@ int mglRenderCppAllocateMDIScratch(void* owner_handle,
     return 0;
 }
 
-void mglRenderCppResetMDIScratchOwner(void* owner_handle) {
+void mglRenderResetMDIScratchOwner(void* owner_handle) {
     mgl::MDIScratchOwner* owner =
         static_cast<mgl::MDIScratchOwner*>(owner_handle);
     if (!owner) return;
@@ -13344,7 +13344,7 @@ void mglRenderCppResetMDIScratchOwner(void* owner_handle) {
     owner->offset = 0;
 }
 
-void mglRenderCppDestroyMDIScratchOwner(void** owner_handle) {
+void mglRenderDestroyMDIScratchOwner(void** owner_handle) {
     if (!owner_handle || !*owner_handle) return;
     mgl::MDIScratchOwner* owner =
         static_cast<mgl::MDIScratchOwner*>(*owner_handle);
@@ -13352,7 +13352,7 @@ void mglRenderCppDestroyMDIScratchOwner(void** owner_handle) {
     delete owner;
 }
 
-int mglRenderCppCommitCommandBuffer(void* command_buffer) {
+int mglRenderCommitCommandBuffer(void* command_buffer) {
     MTL::CommandBuffer* command =
         static_cast<MTL::CommandBuffer*>(command_buffer);
     if (!command) return -1;
@@ -13360,14 +13360,14 @@ int mglRenderCppCommitCommandBuffer(void* command_buffer) {
     return 0;
 }
 
-int mglRenderCppWaitCommandBuffer(void* command_buffer) {
-    MGLRenderCppCommandBufferState state = {};
-    return mglRenderCppWaitCommandBufferState(command_buffer, &state);
+int mglRenderWaitCommandBuffer(void* command_buffer) {
+    MGLRenderCommandBufferState state = {};
+    return mglRenderWaitCommandBufferState(command_buffer, &state);
 }
 
-int mglRenderCppCreateRenderEncoderFromState(
+int mglRenderCreateRenderEncoderFromState(
     void* command_buffer,
-    const MGLRenderCppRenderPassState* render_pass,
+    const MGLRenderPassState* render_pass,
     void** render_encoder_out) {
     if (render_encoder_out) *render_encoder_out = nullptr;
     MTL::CommandBuffer* command =
@@ -13384,7 +13384,7 @@ int mglRenderCppCreateRenderEncoderFromState(
     return 0;
 }
 
-int mglRenderCppEncodeColorClear(void* command_buffer,
+int mglRenderEncodeColorClear(void* command_buffer,
                                  void* texture,
                                  uint64_t level,
                                  uint64_t slice,
@@ -13394,7 +13394,7 @@ int mglRenderCppEncodeColorClear(void* command_buffer,
                                  double blue,
                                  double alpha) {
     if (!command_buffer || !texture) return -1;
-    MGLRenderCppRenderPassState state = mgl::defaultRenderPassState();
+    MGLRenderPassState state = mgl::defaultRenderPassState();
     state.color[0].attachment.texture = texture;
     state.color[0].attachment.level = level;
     state.color[0].attachment.slice = slice;
@@ -13406,7 +13406,7 @@ int mglRenderCppEncodeColorClear(void* command_buffer,
     state.color[0].clear_blue = blue;
     state.color[0].clear_alpha = alpha;
     void* encoder_handle = nullptr;
-    if (mglRenderCppCreateRenderEncoderFromState(
+    if (mglRenderCreateRenderEncoderFromState(
             command_buffer, &state, &encoder_handle) != 0 ||
         !encoder_handle) {
         return -1;
@@ -13415,7 +13415,7 @@ int mglRenderCppEncodeColorClear(void* command_buffer,
     return 0;
 }
 
-int mglRenderCppEncodeColorClearForCommandBufferOwner(
+int mglRenderEncodeColorClearForCommandBufferOwner(
     void* command_buffer_owner,
     void* texture,
     uint64_t level,
@@ -13428,19 +13428,19 @@ int mglRenderCppEncodeColorClearForCommandBufferOwner(
     mgl::CommandBufferOwner* owner =
         static_cast<mgl::CommandBufferOwner*>(command_buffer_owner);
     if (!owner || !owner->current) return -1;
-    return mglRenderCppEncodeColorClear(
+    return mglRenderEncodeColorClear(
         owner->current, texture, level, slice, depth_plane,
         red, green, blue, alpha);
 }
 
-int mglRenderCppEncodeDepthClear(void* command_buffer,
+int mglRenderEncodeDepthClear(void* command_buffer,
                                  void* texture,
                                  uint64_t level,
                                  uint64_t slice,
                                  uint64_t depth_plane,
                                  double clear_depth) {
     if (!command_buffer || !texture) return -1;
-    MGLRenderCppRenderPassState state = mgl::defaultRenderPassState();
+    MGLRenderPassState state = mgl::defaultRenderPassState();
     state.depth.attachment.texture = texture;
     state.depth.attachment.level = level;
     state.depth.attachment.slice = slice;
@@ -13449,7 +13449,7 @@ int mglRenderCppEncodeDepthClear(void* command_buffer,
         static_cast<uint32_t>(MTL::LoadActionClear);
     state.depth.clear_depth = clear_depth;
     void* encoder_handle = nullptr;
-    if (mglRenderCppCreateRenderEncoderFromState(
+    if (mglRenderCreateRenderEncoderFromState(
             command_buffer, &state, &encoder_handle) != 0 ||
         !encoder_handle) {
         return -1;
@@ -13458,7 +13458,7 @@ int mglRenderCppEncodeDepthClear(void* command_buffer,
     return 0;
 }
 
-int mglRenderCppEncodeDepthClearForCommandBufferOwner(
+int mglRenderEncodeDepthClearForCommandBufferOwner(
     void* command_buffer_owner,
     void* texture,
     uint64_t level,
@@ -13468,11 +13468,11 @@ int mglRenderCppEncodeDepthClearForCommandBufferOwner(
     mgl::CommandBufferOwner* owner =
         static_cast<mgl::CommandBufferOwner*>(command_buffer_owner);
     if (!owner || !owner->current) return -1;
-    return mglRenderCppEncodeDepthClear(
+    return mglRenderEncodeDepthClear(
         owner->current, texture, level, slice, depth_plane, clear_depth);
 }
 
-int mglRenderCppEncodeMultisampleResolve(
+int mglRenderEncodeMultisampleResolve(
     void* command_buffer,
     uint32_t attachment_kind,
     void* source_texture,
@@ -13485,17 +13485,17 @@ int mglRenderCppEncodeMultisampleResolve(
     uint64_t resolve_depth_plane,
     uint32_t resolve_filter) {
     if (!command_buffer || !source_texture || !resolve_texture) return -1;
-    MGLRenderCppRenderPassState state = mgl::defaultRenderPassState();
-    MGLRenderCppRenderPassAttachmentState* attachment = nullptr;
+    MGLRenderPassState state = mgl::defaultRenderPassState();
+    MGLRenderPassAttachmentState* attachment = nullptr;
     switch (attachment_kind) {
-    case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR:
+    case MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR:
         attachment = &state.color[0].attachment;
         break;
-    case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH:
+    case MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH:
         attachment = &state.depth.attachment;
         state.depth.resolve_filter = resolve_filter;
         break;
-    case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL:
+    case MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL:
         attachment = &state.stencil.attachment;
         state.stencil.resolve_filter = resolve_filter;
         break;
@@ -13514,7 +13514,7 @@ int mglRenderCppEncodeMultisampleResolve(
     attachment->store_action =
         static_cast<uint32_t>(MTL::StoreActionMultisampleResolve);
     void* encoder_handle = nullptr;
-    if (mglRenderCppCreateRenderEncoderFromState(
+    if (mglRenderCreateRenderEncoderFromState(
             command_buffer, &state, &encoder_handle) != 0 ||
         !encoder_handle) {
         return -1;
@@ -13523,7 +13523,7 @@ int mglRenderCppEncodeMultisampleResolve(
     return 0;
 }
 
-int mglRenderCppEncodeMultisampleResolveForCommandBufferOwner(
+int mglRenderEncodeMultisampleResolveForCommandBufferOwner(
     void* command_buffer_owner,
     uint32_t attachment_kind,
     void* source_texture,
@@ -13538,16 +13538,16 @@ int mglRenderCppEncodeMultisampleResolveForCommandBufferOwner(
     mgl::CommandBufferOwner* owner =
         static_cast<mgl::CommandBufferOwner*>(command_buffer_owner);
     if (!owner || !owner->current) return -1;
-    return mglRenderCppEncodeMultisampleResolve(
+    return mglRenderEncodeMultisampleResolve(
         owner->current, attachment_kind, source_texture, source_level,
         source_slice, source_depth_plane, resolve_texture, resolve_level,
         resolve_slice, resolve_depth_plane, resolve_filter);
 }
 
-static int mglRenderCppResetRenderEncoderOwnerImpl(
+static int mglRenderResetRenderEncoderOwnerImpl(
     mgl::RenderEncoderOwner* owner,
     void* command_buffer,
-    const MGLRenderCppRenderPassState* render_pass,
+    const MGLRenderPassState* render_pass,
     void** render_encoder_out) {
     if (render_encoder_out) *render_encoder_out = nullptr;
     MTL::CommandBuffer* command =
@@ -13568,9 +13568,9 @@ static int mglRenderCppResetRenderEncoderOwnerImpl(
     return 0;
 }
 
-int mglRenderCppCreateRenderEncoderOwnerFromState(
+int mglRenderCreateRenderEncoderOwnerFromState(
     void* command_buffer,
-    const MGLRenderCppRenderPassState* render_pass,
+    const MGLRenderPassState* render_pass,
     void** owner_out,
     void** render_encoder_out) {
     if (owner_out) *owner_out = nullptr;
@@ -13579,7 +13579,7 @@ int mglRenderCppCreateRenderEncoderOwnerFromState(
     mgl::RenderEncoderOwner* owner =
         new (std::nothrow) mgl::RenderEncoderOwner();
     if (!owner) return -1;
-    if (mglRenderCppResetRenderEncoderOwnerImpl(
+    if (mglRenderResetRenderEncoderOwnerImpl(
             owner, command_buffer, render_pass, render_encoder_out) != 0) {
         delete owner;
         return -1;
@@ -13588,17 +13588,17 @@ int mglRenderCppCreateRenderEncoderOwnerFromState(
     return 0;
 }
 
-int mglRenderCppResetRenderEncoderOwnerFromState(
+int mglRenderResetRenderEncoderOwnerFromState(
     void* owner_handle,
     void* command_buffer,
-    const MGLRenderCppRenderPassState* render_pass,
+    const MGLRenderPassState* render_pass,
     void** render_encoder_out) {
-    return mglRenderCppResetRenderEncoderOwnerImpl(
+    return mglRenderResetRenderEncoderOwnerImpl(
         static_cast<mgl::RenderEncoderOwner*>(owner_handle),
         command_buffer, render_pass, render_encoder_out);
 }
 
-int mglRenderCppCreateRenderEncoderOwner(
+int mglRenderCreateRenderEncoderOwner(
     void* render_encoder,
     void** owner_out) {
     if (owner_out) *owner_out = nullptr;
@@ -13614,7 +13614,7 @@ int mglRenderCppCreateRenderEncoderOwner(
     return 0;
 }
 
-int mglRenderCppResetRenderEncoderOwner(
+int mglRenderResetRenderEncoderOwner(
     void* owner_handle,
     void* render_encoder) {
     mgl::RenderEncoderOwner* owner =
@@ -13629,7 +13629,7 @@ int mglRenderCppResetRenderEncoderOwner(
     return 0;
 }
 
-int mglRenderCppEndRenderEncoderOwner(void* owner_handle) {
+int mglRenderEndRenderEncoderOwner(void* owner_handle) {
     mgl::RenderEncoderOwner* owner =
         static_cast<mgl::RenderEncoderOwner*>(owner_handle);
     if (!owner) return -1;
@@ -13643,7 +13643,7 @@ int mglRenderCppEndRenderEncoderOwner(void* owner_handle) {
     return 0;
 }
 
-static void* mglRenderCppActiveRenderEncoder(void* owner_handle) {
+static void* mglRenderActiveRenderEncoder(void* owner_handle) {
     mgl::RenderEncoderOwner* owner =
         static_cast<mgl::RenderEncoderOwner*>(owner_handle);
     return owner && owner->encoder && !owner->ended
@@ -13651,13 +13651,13 @@ static void* mglRenderCppActiveRenderEncoder(void* owner_handle) {
         : nullptr;
 }
 
-int mglRenderCppRenderEncoderOwnerHasCurrent(void* owner_handle) {
+int mglRenderEncoderOwnerHasCurrent(void* owner_handle) {
     mgl::RenderEncoderOwner* owner =
         static_cast<mgl::RenderEncoderOwner*>(owner_handle);
     return owner && owner->encoder && !owner->ended ? 1 : 0;
 }
 
-int mglRenderCppSetRenderEncoderOwnerLabel(void* owner_handle,
+int mglRenderSetRenderEncoderOwnerLabel(void* owner_handle,
                                            const char* label) {
     mgl::RenderEncoderOwner* owner =
         static_cast<mgl::RenderEncoderOwner*>(owner_handle);
@@ -13667,7 +13667,7 @@ int mglRenderCppSetRenderEncoderOwnerLabel(void* owner_handle,
     return 0;
 }
 
-void mglRenderCppDestroyRenderEncoderOwner(void** owner_handle) {
+void mglRenderDestroyRenderEncoderOwner(void** owner_handle) {
     if (!owner_handle || !*owner_handle) return;
     mgl::RenderEncoderOwner* owner =
         static_cast<mgl::RenderEncoderOwner*>(*owner_handle);
@@ -13675,7 +13675,7 @@ void mglRenderCppDestroyRenderEncoderOwner(void** owner_handle) {
     delete owner;
 }
 
-int mglRenderCppCreateRenderPassIdentityOwner(void** owner_out) {
+int mglRenderCreateRenderPassIdentityOwner(void** owner_out) {
     if (owner_out) *owner_out = nullptr;
     if (!owner_out) return -1;
     mgl::RenderPassIdentityOwner* owner =
@@ -13685,13 +13685,13 @@ int mglRenderCppCreateRenderPassIdentityOwner(void** owner_out) {
     return 0;
 }
 
-int mglRenderCppUpdateRenderPassIdentity(
+int mglRenderUpdateRenderPassIdentity(
     void* owner_handle,
-    const MGLRenderCppRenderPassIdentityState* state) {
+    const MGLRenderPassIdentityState* state) {
     mgl::RenderPassIdentityOwner* owner =
         static_cast<mgl::RenderPassIdentityOwner*>(owner_handle);
     if (!owner || !state ||
-        state->draw_buffer_count > MGL_RENDER_CPP_MAX_COLOR_ATTACHMENTS) {
+        state->draw_buffer_count > MGL_RENDER_MAX_COLOR_ATTACHMENTS) {
         return -1;
     }
     owner->state = *state;
@@ -13700,9 +13700,9 @@ int mglRenderCppUpdateRenderPassIdentity(
     return 0;
 }
 
-int mglRenderCppGetRenderPassIdentity(
+int mglRenderGetRenderPassIdentity(
     void* owner_handle,
-    MGLRenderCppRenderPassIdentityState* state_out) {
+    MGLRenderPassIdentityState* state_out) {
     mgl::RenderPassIdentityOwner* owner =
         static_cast<mgl::RenderPassIdentityOwner*>(owner_handle);
     if (!owner || !state_out) return -1;
@@ -13710,9 +13710,9 @@ int mglRenderCppGetRenderPassIdentity(
     return 0;
 }
 
-int mglRenderCppSetFboMatchCache(
+int mglRenderSetFboMatchCache(
     void* owner_handle,
-    const MGLRenderCppFboMatchCacheState* cache) {
+    const MGLRenderFboMatchCacheState* cache) {
     mgl::RenderPassIdentityOwner* owner =
         static_cast<mgl::RenderPassIdentityOwner*>(owner_handle);
     if (!owner || !cache || cache->fbo_name == 0) return -1;
@@ -13722,9 +13722,9 @@ int mglRenderCppSetFboMatchCache(
     return 0;
 }
 
-int mglRenderCppGetFboMatchCache(
+int mglRenderGetFboMatchCache(
     void* owner_handle,
-    MGLRenderCppFboMatchCacheState* cache_out) {
+    MGLRenderFboMatchCacheState* cache_out) {
     mgl::RenderPassIdentityOwner* owner =
         static_cast<mgl::RenderPassIdentityOwner*>(owner_handle);
     if (!owner || !cache_out || !owner->cache_valid) return 1;
@@ -13732,7 +13732,7 @@ int mglRenderCppGetFboMatchCache(
     return 0;
 }
 
-void mglRenderCppClearFboMatchCache(void* owner_handle) {
+void mglRenderClearFboMatchCache(void* owner_handle) {
     mgl::RenderPassIdentityOwner* owner =
         static_cast<mgl::RenderPassIdentityOwner*>(owner_handle);
     if (!owner) return;
@@ -13740,7 +13740,7 @@ void mglRenderCppClearFboMatchCache(void* owner_handle) {
     owner->cache_valid = false;
 }
 
-void mglRenderCppDestroyRenderPassIdentityOwner(void** owner_handle) {
+void mglRenderDestroyRenderPassIdentityOwner(void** owner_handle) {
     if (!owner_handle || !*owner_handle) return;
     mgl::RenderPassIdentityOwner* owner =
         static_cast<mgl::RenderPassIdentityOwner*>(*owner_handle);
@@ -13748,12 +13748,12 @@ void mglRenderCppDestroyRenderPassIdentityOwner(void** owner_handle) {
     delete owner;
 }
 
-int mglRenderCppCreateRenderPassStateOwner(
-    const MGLRenderCppRenderPassState* state,
+int mglRenderCreateRenderPassStateOwner(
+    const MGLRenderPassState* state,
     void** owner_out) {
     if (owner_out) *owner_out = nullptr;
     if (!state || !owner_out ||
-        state->sample_position_count > MGL_RENDER_CPP_MAX_SAMPLE_POSITIONS) {
+        state->sample_position_count > MGL_RENDER_MAX_SAMPLE_POSITIONS) {
         return -1;
     }
     mgl::RenderPassStateOwner* owner =
@@ -13765,37 +13765,37 @@ int mglRenderCppCreateRenderPassStateOwner(
     return 0;
 }
 
-int mglRenderCppCreateDefaultRenderPassStateOwner(void** owner_out) {
-    MGLRenderCppRenderPassState state = mgl::defaultRenderPassState();
-    return mglRenderCppCreateRenderPassStateOwner(&state, owner_out);
+int mglRenderCreateDefaultRenderPassStateOwner(void** owner_out) {
+    MGLRenderPassState state = mgl::defaultRenderPassState();
+    return mglRenderCreateRenderPassStateOwner(&state, owner_out);
 }
 
-int mglRenderCppSetRenderPassStateAttachment(
+int mglRenderSetRenderPassStateAttachment(
     void* owner_handle,
     uint32_t attachment_kind,
     uint32_t color_index,
-    const MGLRenderCppRenderPassAttachmentState* attachment) {
+    const MGLRenderPassAttachmentState* attachment) {
     mgl::RenderPassStateOwner* owner =
         static_cast<mgl::RenderPassStateOwner*>(owner_handle);
     if (!owner || !attachment) return -1;
 
-    MGLRenderCppRenderPassAttachmentState* destination = nullptr;
+    MGLRenderPassAttachmentState* destination = nullptr;
     switch (attachment_kind) {
-    case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR:
-        if (color_index >= MGL_RENDER_CPP_MAX_COLOR_ATTACHMENTS) return -1;
+    case MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR:
+        if (color_index >= MGL_RENDER_MAX_COLOR_ATTACHMENTS) return -1;
         destination = &owner->state.color[color_index].attachment;
         break;
-    case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH:
+    case MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH:
         destination = &owner->state.depth.attachment;
         break;
-    case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL:
+    case MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL:
         destination = &owner->state.stencil.attachment;
         break;
     default:
         return -1;
     }
 
-    MGLRenderCppRenderPassAttachmentState next = *attachment;
+    MGLRenderPassAttachmentState next = *attachment;
     mgl::retainRenderPassObject(next.texture);
     mgl::retainRenderPassObject(next.resolve_texture);
     mgl::releaseRenderPassObject(destination->texture);
@@ -13804,7 +13804,7 @@ int mglRenderCppSetRenderPassStateAttachment(
     return 0;
 }
 
-static uint64_t mglRenderCppRenderTargetLayerCount(
+static uint64_t mglRenderTargetLayerCount(
     MTL::Texture* texture,
     uint64_t level) {
     if (!texture) return 0u;
@@ -13818,27 +13818,27 @@ static uint64_t mglRenderCppRenderTargetLayerCount(
     case MTL::TextureTypeCubeArray:
         return static_cast<uint64_t>(texture->arrayLength()) * 6u;
     case MTL::TextureType3D:
-        return mglRenderCppMetalTextureLevelDimension(
+        return mglRenderMetalTextureLevelDimension(
             static_cast<uint64_t>(texture->depth()), level);
     default:
         return 1u;
     }
 }
 
-static uint64_t mglRenderCppRenderPassArrayLength(
-    const MGLRenderCppRenderPassState& state) {
+static uint64_t mglRenderPassArrayLength(
+    const MGLRenderPassState& state) {
     uint64_t commonArrayLength = 0u;
     auto accumulate = [&commonArrayLength](
-                          const MGLRenderCppRenderPassAttachmentState& attachment) {
+                          const MGLRenderPassAttachmentState& attachment) {
         MTL::Texture* texture = static_cast<MTL::Texture*>(attachment.texture);
         uint64_t layerCount =
-            mglRenderCppRenderTargetLayerCount(texture, attachment.level);
+            mglRenderTargetLayerCount(texture, attachment.level);
         if (layerCount == 0u) return;
         commonArrayLength = commonArrayLength == 0u
             ? layerCount
             : std::min(commonArrayLength, layerCount);
     };
-    for (uint32_t i = 0u; i < MGL_RENDER_CPP_MAX_COLOR_ATTACHMENTS; ++i) {
+    for (uint32_t i = 0u; i < MGL_RENDER_MAX_COLOR_ATTACHMENTS; ++i) {
         accumulate(state.color[i].attachment);
     }
     accumulate(state.depth.attachment);
@@ -13846,7 +13846,7 @@ static uint64_t mglRenderCppRenderPassArrayLength(
     return commonArrayLength;
 }
 
-int mglRenderCppSetRenderPassStateAttachmentTexture(
+int mglRenderSetRenderPassStateAttachmentTexture(
     void* owner_handle,
     uint32_t attachment_kind,
     uint32_t color_index,
@@ -13859,16 +13859,16 @@ int mglRenderCppSetRenderPassStateAttachmentTexture(
         static_cast<mgl::RenderPassStateOwner*>(owner_handle);
     if (!owner) return -1;
 
-    MGLRenderCppRenderPassAttachmentState* destination = nullptr;
+    MGLRenderPassAttachmentState* destination = nullptr;
     switch (attachment_kind) {
-    case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR:
-        if (color_index >= MGL_RENDER_CPP_MAX_COLOR_ATTACHMENTS) return -1;
+    case MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR:
+        if (color_index >= MGL_RENDER_MAX_COLOR_ATTACHMENTS) return -1;
         destination = &owner->state.color[color_index].attachment;
         break;
-    case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH:
+    case MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH:
         destination = &owner->state.depth.attachment;
         break;
-    case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL:
+    case MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL:
         destination = &owner->state.stencil.attachment;
         break;
     default:
@@ -13884,7 +13884,7 @@ int mglRenderCppSetRenderPassStateAttachmentTexture(
 
     if (layered) {
         owner->state.render_target_array_length =
-            mglRenderCppRenderPassArrayLength(owner->state);
+            mglRenderPassArrayLength(owner->state);
         destination->slice = 0u;
         destination->depth_plane = 0u;
     } else {
@@ -13893,7 +13893,7 @@ int mglRenderCppSetRenderPassStateAttachmentTexture(
     return 0;
 }
 
-int mglRenderCppSetRenderPassStateAttachmentActions(
+int mglRenderSetRenderPassStateAttachmentActions(
     void* owner_handle,
     uint32_t attachment_kind,
     uint32_t color_index,
@@ -13904,16 +13904,16 @@ int mglRenderCppSetRenderPassStateAttachmentActions(
         static_cast<mgl::RenderPassStateOwner*>(owner_handle);
     if (!owner) return -1;
 
-    MGLRenderCppRenderPassAttachmentState* attachment = nullptr;
+    MGLRenderPassAttachmentState* attachment = nullptr;
     switch (attachment_kind) {
-    case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR:
-        if (color_index >= MGL_RENDER_CPP_MAX_COLOR_ATTACHMENTS) return -1;
+    case MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR:
+        if (color_index >= MGL_RENDER_MAX_COLOR_ATTACHMENTS) return -1;
         attachment = &owner->state.color[color_index].attachment;
         break;
-    case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH:
+    case MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH:
         attachment = &owner->state.depth.attachment;
         break;
-    case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL:
+    case MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL:
         attachment = &owner->state.stencil.attachment;
         break;
     default:
@@ -13926,7 +13926,7 @@ int mglRenderCppSetRenderPassStateAttachmentActions(
     return 0;
 }
 
-int mglRenderCppSetRenderPassStateColorClear(
+int mglRenderSetRenderPassStateColorClear(
     void* owner_handle,
     uint32_t color_index,
     double red,
@@ -13935,10 +13935,10 @@ int mglRenderCppSetRenderPassStateColorClear(
     double alpha) {
     mgl::RenderPassStateOwner* owner =
         static_cast<mgl::RenderPassStateOwner*>(owner_handle);
-    if (!owner || color_index >= MGL_RENDER_CPP_MAX_COLOR_ATTACHMENTS) {
+    if (!owner || color_index >= MGL_RENDER_MAX_COLOR_ATTACHMENTS) {
         return -1;
     }
-    MGLRenderCppRenderPassColorState& color = owner->state.color[color_index];
+    MGLRenderPassColorState& color = owner->state.color[color_index];
     color.clear_red = red;
     color.clear_green = green;
     color.clear_blue = blue;
@@ -13946,7 +13946,7 @@ int mglRenderCppSetRenderPassStateColorClear(
     return 0;
 }
 
-int mglRenderCppSetRenderPassStateDepthClear(
+int mglRenderSetRenderPassStateDepthClear(
     void* owner_handle,
     double clear_depth) {
     mgl::RenderPassStateOwner* owner =
@@ -13956,7 +13956,7 @@ int mglRenderCppSetRenderPassStateDepthClear(
     return 0;
 }
 
-int mglRenderCppSetRenderPassStateStencilClear(
+int mglRenderSetRenderPassStateStencilClear(
     void* owner_handle,
     uint32_t clear_stencil) {
     mgl::RenderPassStateOwner* owner =
@@ -13966,7 +13966,7 @@ int mglRenderCppSetRenderPassStateStencilClear(
     return 0;
 }
 
-int mglRenderCppSetRenderPassStateVisibility(
+int mglRenderSetRenderPassStateVisibility(
     void* owner_handle,
     void* visibility_result_buffer,
     uint32_t visibility_result_type) {
@@ -13980,7 +13980,7 @@ int mglRenderCppSetRenderPassStateVisibility(
     return 0;
 }
 
-int mglRenderCppSetRenderPassStateDimensions(
+int mglRenderSetRenderPassStateDimensions(
     void* owner_handle,
     uint64_t width,
     uint64_t height) {
@@ -13992,9 +13992,9 @@ int mglRenderCppSetRenderPassStateDimensions(
     return 0;
 }
 
-int mglRenderCppGetRenderPassStateOwner(
+int mglRenderGetRenderPassStateOwner(
     void* owner_handle,
-    MGLRenderCppRenderPassState* state_out) {
+    MGLRenderPassState* state_out) {
     mgl::RenderPassStateOwner* owner =
         static_cast<mgl::RenderPassStateOwner*>(owner_handle);
     if (!owner || !state_out) return -1;
@@ -14002,33 +14002,33 @@ int mglRenderCppGetRenderPassStateOwner(
     return 0;
 }
 
-int mglRenderCppCommandBufferOwnerHasState(
+int mglRenderCommandBufferOwnerHasState(
     void* owner_handle,
-    MGLRenderCppCommandBufferState* state_out) {
+    MGLRenderCommandBufferState* state_out) {
     return owner_handle && state_out &&
-               mglRenderCppGetCommandBufferOwnerState(owner_handle, state_out) == 0
+               mglRenderGetCommandBufferOwnerState(owner_handle, state_out) == 0
         ? 1 : 0;
 }
 
-int mglRenderCppGetRenderPassAttachmentStateOwner(
+int mglRenderGetRenderPassAttachmentStateOwner(
     void* owner_handle,
     uint32_t attachment_kind,
     uint32_t color_index,
-    MGLRenderCppRenderPassAttachmentState* attachment_out) {
+    MGLRenderPassAttachmentState* attachment_out) {
     mgl::RenderPassStateOwner* owner =
         static_cast<mgl::RenderPassStateOwner*>(owner_handle);
     if (!owner || !attachment_out) return -1;
 
-    const MGLRenderCppRenderPassAttachmentState* attachment = nullptr;
+    const MGLRenderPassAttachmentState* attachment = nullptr;
     switch (attachment_kind) {
-        case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR:
-            if (color_index >= MGL_RENDER_CPP_MAX_COLOR_ATTACHMENTS) return -1;
+        case MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR:
+            if (color_index >= MGL_RENDER_MAX_COLOR_ATTACHMENTS) return -1;
             attachment = &owner->state.color[color_index].attachment;
             break;
-        case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH:
+        case MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH:
             attachment = &owner->state.depth.attachment;
             break;
-        case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL:
+        case MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL:
             attachment = &owner->state.stencil.attachment;
             break;
         default:
@@ -14038,7 +14038,7 @@ int mglRenderCppGetRenderPassAttachmentStateOwner(
     return 0;
 }
 
-int mglRenderCppCreateRenderEncoderFromStateOwner(
+int mglRenderCreateRenderEncoderFromStateOwner(
     void* command_buffer,
     void* owner_handle,
     void** render_encoder_out) {
@@ -14048,77 +14048,77 @@ int mglRenderCppCreateRenderEncoderFromStateOwner(
         if (render_encoder_out) *render_encoder_out = nullptr;
         return -1;
     }
-    return mglRenderCppCreateRenderEncoderFromState(
+    return mglRenderCreateRenderEncoderFromState(
         command_buffer, &owner->state, render_encoder_out);
 }
 
-int mglRenderCppCreateRenderEncoderFromCommandBufferOwnerState(
+int mglRenderCreateRenderEncoderFromCommandBufferOwnerState(
     void* command_buffer_owner,
-    const MGLRenderCppRenderPassState* render_pass,
+    const MGLRenderPassState* render_pass,
     void** render_encoder_out) {
     if (render_encoder_out) *render_encoder_out = nullptr;
     mgl::CommandBufferOwner* owner =
         static_cast<mgl::CommandBufferOwner*>(command_buffer_owner);
     if (!owner || !owner->current) return -1;
-    return mglRenderCppCreateRenderEncoderFromState(
+    return mglRenderCreateRenderEncoderFromState(
         owner->current, render_pass, render_encoder_out);
 }
 
-void* mglRenderCppCreateRenderEncoderBorrowed(
+void* mglRenderCreateRenderEncoderBorrowed(
     void* command_buffer_owner,
-    const MGLRenderCppRenderPassState* render_pass) {
+    const MGLRenderPassState* render_pass) {
     void* encoder = nullptr;
-    return mglRenderCppCreateRenderEncoderFromCommandBufferOwnerState(
+    return mglRenderCreateRenderEncoderFromCommandBufferOwnerState(
                command_buffer_owner, render_pass, &encoder) == 0
         ? encoder : nullptr;
 }
 
-void* mglRenderCppCreateBlitEncoderBorrowed(void* command_buffer_owner) {
+void* mglRenderCreateBlitEncoderBorrowed(void* command_buffer_owner) {
     void* encoder = nullptr;
-    return mglRenderCppCreateBlitEncoderFromCommandBufferOwner(
+    return mglRenderCreateBlitEncoderFromCommandBufferOwner(
                command_buffer_owner, &encoder) == 0
         ? encoder : nullptr;
 }
 
-void* mglRenderCppCreateComputeEncoderBorrowed(void* command_buffer_owner) {
+void* mglRenderCreateComputeEncoderBorrowed(void* command_buffer_owner) {
     void* encoder = nullptr;
-    return mglRenderCppCreateComputeEncoderFromCommandBufferOwner(
+    return mglRenderCreateComputeEncoderFromCommandBufferOwner(
                command_buffer_owner, &encoder) == 0
         ? encoder : nullptr;
 }
 
-static MGLRenderCppRenderPassAttachmentState*
-mglRenderCppAttachmentForOwner(
+static MGLRenderPassAttachmentState*
+mglRenderAttachmentForOwner(
     mgl::RenderPassStateOwner* owner,
     uint32_t attachment_kind,
     uint32_t color_index) {
     if (!owner) return nullptr;
     switch (attachment_kind) {
-        case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR:
-            return color_index < MGL_RENDER_CPP_MAX_COLOR_ATTACHMENTS
+        case MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR:
+            return color_index < MGL_RENDER_MAX_COLOR_ATTACHMENTS
                 ? &owner->state.color[color_index].attachment : nullptr;
-        case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH:
+        case MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH:
             return &owner->state.depth.attachment;
-        case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL:
+        case MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL:
             return &owner->state.stencil.attachment;
         default:
             return nullptr;
     }
 }
 
-void* mglRenderCppGetRenderPassAttachmentTextureOwner(
+void* mglRenderGetRenderPassAttachmentTextureOwner(
     void* owner_handle, uint32_t attachment_kind, uint32_t color_index) {
     auto* owner = static_cast<mgl::RenderPassStateOwner*>(owner_handle);
-    auto* attachment = mglRenderCppAttachmentForOwner(
+    auto* attachment = mglRenderAttachmentForOwner(
         owner, attachment_kind, color_index);
     return attachment ? attachment->texture : nullptr;
 }
 
-int mglRenderCppGetRenderPassAttachmentSubresourceOwner(
+int mglRenderGetRenderPassAttachmentSubresourceOwner(
     void* owner_handle, uint32_t attachment_kind, uint32_t color_index,
     uint64_t* level_out, uint64_t* slice_out, uint64_t* depth_plane_out) {
     auto* owner = static_cast<mgl::RenderPassStateOwner*>(owner_handle);
-    auto* attachment = mglRenderCppAttachmentForOwner(
+    auto* attachment = mglRenderAttachmentForOwner(
         owner, attachment_kind, color_index);
     if (!attachment) return -1;
     if (level_out) *level_out = attachment->level;
@@ -14127,7 +14127,7 @@ int mglRenderCppGetRenderPassAttachmentSubresourceOwner(
     return 0;
 }
 
-int mglRenderCppGetRenderTargetSizeOwner(
+int mglRenderGetRenderTargetSizeOwner(
     void* owner_handle, uint64_t* width_out, uint64_t* height_out) {
     auto* owner = static_cast<mgl::RenderPassStateOwner*>(owner_handle);
     if (!owner) return -1;
@@ -14136,11 +14136,11 @@ int mglRenderCppGetRenderTargetSizeOwner(
     return 0;
 }
 
-int mglRenderCppRenderPassUsesColorTextureOwner(
+int mglRenderPassUsesColorTextureOwner(
     void* owner_handle, void* texture, uint32_t* attachment_index_out) {
     auto* owner = static_cast<mgl::RenderPassStateOwner*>(owner_handle);
     if (!owner || !texture) return 0;
-    for (uint32_t index = 0; index < MGL_RENDER_CPP_MAX_COLOR_ATTACHMENTS; ++index) {
+    for (uint32_t index = 0; index < MGL_RENDER_MAX_COLOR_ATTACHMENTS; ++index) {
         if (owner->state.color[index].attachment.texture == texture) {
             if (attachment_index_out) *attachment_index_out = index;
             return 1;
@@ -14149,12 +14149,12 @@ int mglRenderCppRenderPassUsesColorTextureOwner(
     return 0;
 }
 
-int mglRenderCppGetRenderPassAttachmentActionsOwner(
+int mglRenderGetRenderPassAttachmentActionsOwner(
     void* owner_handle, uint32_t attachment_kind, uint32_t color_index,
     uint32_t* load_action_out, uint32_t* store_action_out,
     uint64_t* store_action_options_out) {
     auto* owner = static_cast<mgl::RenderPassStateOwner*>(owner_handle);
-    auto* attachment = mglRenderCppAttachmentForOwner(
+    auto* attachment = mglRenderAttachmentForOwner(
         owner, attachment_kind, color_index);
     if (!attachment) return -1;
     if (load_action_out) *load_action_out = attachment->load_action;
@@ -14165,27 +14165,27 @@ int mglRenderCppGetRenderPassAttachmentActionsOwner(
     return 0;
 }
 
-uint32_t mglRenderCppRenderPassLoadActionForTrace(
+uint32_t mglRenderPassLoadActionForTrace(
     void* owner_handle, uint32_t attachment_kind, uint32_t color_index,
     uint32_t default_load_action) {
     uint32_t load_action = 0;
-    return mglRenderCppGetRenderPassAttachmentActionsOwner(
+    return mglRenderGetRenderPassAttachmentActionsOwner(
                owner_handle, attachment_kind, color_index,
                &load_action, nullptr, nullptr) == 0
         ? load_action : default_load_action;
 }
 
-uint32_t mglRenderCppRenderPassStoreActionForTrace(
+uint32_t mglRenderPassStoreActionForTrace(
     void* owner_handle, uint32_t attachment_kind, uint32_t color_index,
     uint32_t default_store_action) {
     uint32_t store_action = 0;
-    return mglRenderCppGetRenderPassAttachmentActionsOwner(
+    return mglRenderGetRenderPassAttachmentActionsOwner(
                owner_handle, attachment_kind, color_index,
                nullptr, &store_action, nullptr) == 0
         ? store_action : default_store_action;
 }
 
-void mglRenderCppDestroyRenderPassStateOwner(void** owner_handle) {
+void mglRenderDestroyRenderPassStateOwner(void** owner_handle) {
     if (!owner_handle || !*owner_handle) return;
     mgl::RenderPassStateOwner* owner =
         static_cast<mgl::RenderPassStateOwner*>(*owner_handle);
@@ -14193,7 +14193,7 @@ void mglRenderCppDestroyRenderPassStateOwner(void** owner_handle) {
     delete owner;
 }
 
-int mglRenderCppEndRenderEncoder(void* render_encoder) {
+int mglRenderEndRenderEncoder(void* render_encoder) {
     MTL::RenderCommandEncoder* encoder =
         static_cast<MTL::RenderCommandEncoder*>(render_encoder);
     if (!encoder) return -1;
@@ -14201,7 +14201,7 @@ int mglRenderCppEndRenderEncoder(void* render_encoder) {
     return 0;
 }
 
-int mglRenderCppCreateBlitEncoder(void* command_buffer,
+int mglRenderCreateBlitEncoder(void* command_buffer,
                                   void** blit_encoder_out) {
     if (blit_encoder_out) *blit_encoder_out = nullptr;
     MTL::CommandBuffer* command =
@@ -14213,18 +14213,18 @@ int mglRenderCppCreateBlitEncoder(void* command_buffer,
     return 0;
 }
 
-int mglRenderCppCreateBlitEncoderFromCommandBufferOwner(
+int mglRenderCreateBlitEncoderFromCommandBufferOwner(
     void* command_buffer_owner,
     void** blit_encoder_out) {
     if (blit_encoder_out) *blit_encoder_out = nullptr;
     mgl::CommandBufferOwner* owner =
         static_cast<mgl::CommandBufferOwner*>(command_buffer_owner);
     if (!owner || !owner->current) return -1;
-    return mglRenderCppCreateBlitEncoder(
+    return mglRenderCreateBlitEncoder(
         owner->current, blit_encoder_out);
 }
 
-int mglRenderCppCopyMatchingTextureSubresourcesForCommandBufferOwner(
+int mglRenderCopyMatchingTextureSubresourcesForCommandBufferOwner(
     void* command_buffer_owner,
     void* source_texture,
     void* destination_texture) {
@@ -14267,9 +14267,9 @@ int mglRenderCppCopyMatchingTextureSubresourcesForCommandBufferOwner(
     return 0;
 }
 
-int mglRenderCppEncodeBufferCopiesForCommandBufferOwner(
+int mglRenderEncodeBufferCopiesForCommandBufferOwner(
     void* command_buffer_owner,
-    const MGLRenderCppBufferCopyEntry* entries,
+    const MGLRenderBufferCopyEntry* entries,
     uint32_t entry_count) {
     mgl::CommandBufferOwner* owner =
         static_cast<mgl::CommandBufferOwner*>(command_buffer_owner);
@@ -14277,7 +14277,7 @@ int mglRenderCppEncodeBufferCopiesForCommandBufferOwner(
         return -1;
     }
     for (uint32_t i = 0; i < entry_count; ++i) {
-        const MGLRenderCppBufferCopyEntry& entry = entries[i];
+        const MGLRenderBufferCopyEntry& entry = entries[i];
         MTL::Buffer* source = static_cast<MTL::Buffer*>(entry.source_buffer);
         MTL::Buffer* destination =
             static_cast<MTL::Buffer*>(entry.destination_buffer);
@@ -14293,7 +14293,7 @@ int mglRenderCppEncodeBufferCopiesForCommandBufferOwner(
         owner->current->blitCommandEncoder();
     if (!encoder) return -1;
     for (uint32_t i = 0; i < entry_count; ++i) {
-        const MGLRenderCppBufferCopyEntry& entry = entries[i];
+        const MGLRenderBufferCopyEntry& entry = entries[i];
         encoder->copyFromBuffer(
             static_cast<MTL::Buffer*>(entry.source_buffer),
             static_cast<NS::UInteger>(entry.source_offset),
@@ -14305,18 +14305,18 @@ int mglRenderCppEncodeBufferCopiesForCommandBufferOwner(
     return 0;
 }
 
-int mglRenderCppCreateComputeEncoderFromCommandBufferOwner(
+int mglRenderCreateComputeEncoderFromCommandBufferOwner(
     void* command_buffer_owner,
     void** compute_encoder_out) {
     if (compute_encoder_out) *compute_encoder_out = nullptr;
     mgl::CommandBufferOwner* owner =
         static_cast<mgl::CommandBufferOwner*>(command_buffer_owner);
     if (!owner || !owner->current) return -1;
-    return mglRenderCppCreateComputeEncoder(
+    return mglRenderCreateComputeEncoder(
         owner->current, compute_encoder_out);
 }
 
-int mglRenderCppEndBlitEncoder(void* blit_encoder) {
+int mglRenderEndBlitEncoder(void* blit_encoder) {
     MTL::BlitCommandEncoder* encoder =
         static_cast<MTL::BlitCommandEncoder*>(blit_encoder);
     if (!encoder) return -1;
@@ -14324,7 +14324,7 @@ int mglRenderCppEndBlitEncoder(void* blit_encoder) {
     return 0;
 }
 
-int mglRenderCppEncodeTextureUploadLayers(
+int mglRenderEncodeTextureUploadLayers(
     void* command_buffer,
     void* source_buffer,
     uint64_t source_offset,
@@ -14429,7 +14429,7 @@ int mglRenderCppEncodeTextureUploadLayers(
     return 0;
 }
 
-int mglRenderCppEncodeTextureUploadLayersForCommandBufferOwner(
+int mglRenderEncodeTextureUploadLayersForCommandBufferOwner(
     void* command_buffer_owner,
     void* source_buffer,
     uint64_t source_offset,
@@ -14449,7 +14449,7 @@ int mglRenderCppEncodeTextureUploadLayersForCommandBufferOwner(
     mgl::CommandBufferOwner* owner =
         static_cast<mgl::CommandBufferOwner*>(command_buffer_owner);
     if (!owner || !owner->current) return -1;
-    return mglRenderCppEncodeTextureUploadLayers(
+    return mglRenderEncodeTextureUploadLayers(
         owner->current, source_buffer, source_offset, source_bytes_per_row,
         source_bytes_per_image, source_layer_stride, source_width,
         source_height, source_depth, destination_texture,
@@ -14457,7 +14457,7 @@ int mglRenderCppEncodeTextureUploadLayersForCommandBufferOwner(
         destination_x, destination_y, destination_z);
 }
 
-int mglRenderCppEncodeTextureUpload(void* command_buffer,
+int mglRenderEncodeTextureUpload(void* command_buffer,
                                     void* source_buffer,
                                     uint64_t source_offset,
                                     uint64_t source_bytes_per_row,
@@ -14471,14 +14471,14 @@ int mglRenderCppEncodeTextureUpload(void* command_buffer,
                                     uint64_t destination_x,
                                     uint64_t destination_y,
                                     uint64_t destination_z) {
-    return mglRenderCppEncodeTextureUploadLayers(
+    return mglRenderEncodeTextureUploadLayers(
         command_buffer, source_buffer, source_offset, source_bytes_per_row,
         source_bytes_per_image, 0u, source_width, source_height, source_depth,
         destination_texture, destination_slice, 1u, destination_level,
         destination_x, destination_y, destination_z);
 }
 
-int mglRenderCppBlitCopyBuffer(void* blit_encoder,
+int mglRenderBlitCopyBuffer(void* blit_encoder,
                                void* source_buffer,
                                uint64_t source_offset,
                                void* destination_buffer,
@@ -14497,7 +14497,7 @@ int mglRenderCppBlitCopyBuffer(void* blit_encoder,
     return 0;
 }
 
-int mglRenderCppBlitCopyBufferToTexture(void* blit_encoder,
+int mglRenderBlitCopyBufferToTexture(void* blit_encoder,
                                         void* source_buffer,
                                         uint64_t source_offset,
                                         uint64_t source_bytes_per_row,
@@ -14532,7 +14532,7 @@ int mglRenderCppBlitCopyBufferToTexture(void* blit_encoder,
     return 0;
 }
 
-int mglRenderCppBlitSynchronizeTexture(void* blit_encoder,
+int mglRenderBlitSynchronizeTexture(void* blit_encoder,
                                        void* texture,
                                        uint64_t slice,
                                        uint64_t level) {
@@ -14545,7 +14545,7 @@ int mglRenderCppBlitSynchronizeTexture(void* blit_encoder,
     return 0;
 }
 
-int mglRenderCppBlitGenerateMipmaps(void* blit_encoder,
+int mglRenderBlitGenerateMipmaps(void* blit_encoder,
                                     void* texture) {
     MTL::BlitCommandEncoder* encoder =
         static_cast<MTL::BlitCommandEncoder*>(blit_encoder);
@@ -14555,7 +14555,7 @@ int mglRenderCppBlitGenerateMipmaps(void* blit_encoder,
     return 0;
 }
 
-int mglRenderCppBlitCopyTexture(void* blit_encoder,
+int mglRenderBlitCopyTexture(void* blit_encoder,
                                 void* source_texture,
                                 uint64_t source_slice,
                                 uint64_t source_level,
@@ -14591,7 +14591,7 @@ int mglRenderCppBlitCopyTexture(void* blit_encoder,
     return 0;
 }
 
-int mglRenderCppBlitCopyTextureToBuffer(
+int mglRenderBlitCopyTextureToBuffer(
     void* blit_encoder,
     void* source_texture,
     uint64_t source_slice,
@@ -14627,7 +14627,7 @@ int mglRenderCppBlitCopyTextureToBuffer(
     return 0;
 }
 
-int mglRenderCppDrawPrimitives(void* render_encoder,
+int mglRenderDrawPrimitives(void* render_encoder,
                                uint32_t primitive_type,
                                uint64_t vertex_start,
                                uint64_t vertex_count,
@@ -14645,7 +14645,7 @@ int mglRenderCppDrawPrimitives(void* render_encoder,
     return 0;
 }
 
-int mglRenderCppDrawIndexedPrimitives(void* render_encoder,
+int mglRenderDrawIndexedPrimitives(void* render_encoder,
                                       uint32_t primitive_type,
                                       uint64_t index_count,
                                       uint32_t index_type,
@@ -14669,7 +14669,7 @@ int mglRenderCppDrawIndexedPrimitives(void* render_encoder,
     return 0;
 }
 
-int mglRenderCppDrawPrimitivesIndirect(void* render_encoder,
+int mglRenderDrawPrimitivesIndirect(void* render_encoder,
                                        uint32_t primitive_type,
                                        void* indirect_buffer,
                                        uint64_t indirect_buffer_offset) {
@@ -14683,7 +14683,7 @@ int mglRenderCppDrawPrimitivesIndirect(void* render_encoder,
     return 0;
 }
 
-int mglRenderCppDrawIndexedPrimitivesIndirect(
+int mglRenderDrawIndexedPrimitivesIndirect(
     void* render_encoder,
     uint32_t primitive_type,
     uint32_t index_type,
@@ -14705,8 +14705,8 @@ int mglRenderCppDrawIndexedPrimitivesIndirect(
 }
 
 
-int mglRenderCppEncodeDraw(void* render_encoder,
-                           const MGLRenderCppDrawPlan* plan,
+int mglRenderEncodeDraw(void* render_encoder,
+                           const MGLRenderDrawPlan* plan,
                            char* err,
                            size_t errcap) {
     if (err && errcap) err[0] = '\0';
@@ -14715,34 +14715,34 @@ int mglRenderCppEncodeDraw(void* render_encoder,
         return -1;
     }
     switch (plan->kind) {
-        case MGL_RENDER_CPP_DRAW_ARRAY:
-            return mglRenderCppDrawPrimitives(
+        case MGL_RENDER_DRAW_ARRAY:
+            return mglRenderDrawPrimitives(
                 render_encoder, plan->primitive_type,
                 plan->vertex_start, plan->vertex_count,
                 plan->instance_count, plan->base_instance);
-        case MGL_RENDER_CPP_DRAW_INDEXED:
-            return mglRenderCppDrawIndexedPrimitives(
+        case MGL_RENDER_DRAW_INDEXED:
+            return mglRenderDrawIndexedPrimitives(
                 render_encoder, plan->primitive_type,
                 plan->index_count, plan->index_type, plan->index_buffer,
                 plan->index_buffer_offset, plan->instance_count,
                 plan->base_vertex, plan->base_instance);
-        case MGL_RENDER_CPP_DRAW_ARRAY_INDIRECT:
-            return mglRenderCppDrawPrimitivesIndirect(
+        case MGL_RENDER_DRAW_ARRAY_INDIRECT:
+            return mglRenderDrawPrimitivesIndirect(
                 render_encoder, plan->primitive_type,
                 plan->indirect_buffer, plan->indirect_buffer_offset);
-        case MGL_RENDER_CPP_DRAW_INDEXED_INDIRECT:
-            return mglRenderCppDrawIndexedPrimitivesIndirect(
+        case MGL_RENDER_DRAW_INDEXED_INDIRECT:
+            return mglRenderDrawIndexedPrimitivesIndirect(
                 render_encoder, plan->primitive_type, plan->index_type,
                 plan->index_buffer, plan->index_buffer_offset,
                 plan->indirect_buffer, plan->indirect_buffer_offset);
-        case MGL_RENDER_CPP_DRAW_PATCHES:
-            return mglRenderCppDrawPatches(
+        case MGL_RENDER_DRAW_PATCHES:
+            return mglRenderDrawPatches(
                 render_encoder, plan->control_point_count, plan->patch_start,
                 plan->patch_count, plan->patch_index_buffer,
                 plan->patch_index_buffer_offset, plan->instance_count,
                 plan->base_instance);
-        case MGL_RENDER_CPP_DRAW_INDEXED_PATCHES:
-            return mglRenderCppDrawIndexedPatches(
+        case MGL_RENDER_DRAW_INDEXED_PATCHES:
+            return mglRenderDrawIndexedPatches(
                 render_encoder, plan->control_point_count, plan->patch_start,
                 plan->patch_count, plan->patch_index_buffer,
                 plan->patch_index_buffer_offset,
@@ -14758,17 +14758,17 @@ int mglRenderCppEncodeDraw(void* render_encoder,
     }
 }
 
-int mglRenderCppEncodeDrawForRenderEncoderOwner(
+int mglRenderEncodeDrawForRenderEncoderOwner(
     void* render_encoder_owner,
-    const MGLRenderCppDrawPlan* plan,
+    const MGLRenderDrawPlan* plan,
     char* err,
     size_t errcap) {
-    return mglRenderCppEncodeDraw(
-        mglRenderCppActiveRenderEncoder(render_encoder_owner),
+    return mglRenderEncodeDraw(
+        mglRenderActiveRenderEncoder(render_encoder_owner),
         plan, err, errcap);
 }
 
-int mglRenderCppCreateCullDistanceIndexPlan(
+int mglRenderCreateCullDistanceIndexPlan(
     void* device,
     const void* source_indices,
     uint32_t source_index_type,
@@ -14832,7 +14832,7 @@ int mglRenderCppCreateCullDistanceIndexPlan(
         if (expanded.size() > SIZE_MAX / sizeof(uint32_t)) return -1;
         MTL::Device* metalDevice = static_cast<MTL::Device*>(device);
         if (!metalDevice) {
-            mgl::RendererCpp& renderer = mgl::renderer();
+            mgl::Renderer& renderer = mgl::renderer();
             std::lock_guard<std::mutex> lock(renderer.mutex);
             metalDevice = renderer.device;
             if (!metalDevice) return -1;
@@ -14855,10 +14855,10 @@ int mglRenderCppCreateCullDistanceIndexPlan(
     return 0;
 }
 
-int mglRenderCppGetCullDistanceIndexPrimitive(
+int mglRenderGetCullDistanceIndexPrimitive(
     void* owner,
     uint64_t primitive_index,
-    MGLRenderCppCullDistancePrimitive* primitive_out) {
+    MGLRenderCullDistancePrimitive* primitive_out) {
     mgl::CullDistanceIndexPlan* plan =
         static_cast<mgl::CullDistanceIndexPlan*>(owner);
     if (!plan || !primitive_out ||
@@ -14869,22 +14869,22 @@ int mglRenderCppGetCullDistanceIndexPrimitive(
     return 0;
 }
 
-void mglRenderCppDestroyCullDistanceIndexPlan(void** owner) {
+void mglRenderDestroyCullDistanceIndexPlan(void** owner) {
     if (!owner || !*owner) return;
     delete static_cast<mgl::CullDistanceIndexPlan*>(*owner);
     *owner = nullptr;
 }
 
-int mglRenderCppSetRenderBuffer(void* render_encoder,
+int mglRenderSetRenderBuffer(void* render_encoder,
                                 void* buffer,
                                 uint64_t offset,
                                 uint32_t stage,
                                 uint32_t index) {
     MTL::RenderCommandEncoder* encoder =
         static_cast<MTL::RenderCommandEncoder*>(render_encoder);
-    if (!encoder || stage > MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT) return -1;
+    if (!encoder || stage > MGL_RENDER_BINDING_STAGE_FRAGMENT) return -1;
     MTL::Buffer* resource = static_cast<MTL::Buffer*>(buffer);
-    if (stage == MGL_RENDER_CPP_BINDING_STAGE_VERTEX) {
+    if (stage == MGL_RENDER_BINDING_STAGE_VERTEX) {
         encoder->setVertexBuffer(resource, static_cast<NS::UInteger>(offset),
                                  index);
     } else {
@@ -14895,9 +14895,9 @@ int mglRenderCppSetRenderBuffer(void* render_encoder,
 }
 
 
-int mglRenderCppEncodeBindingSnapshot(
+int mglRenderEncodeBindingSnapshot(
     void* render_encoder,
-    const MGLRenderCppBindingSnapshot* snapshot,
+    const MGLRenderBindingSnapshot* snapshot,
     char* err,
     size_t errcap) {
     if (err && errcap) err[0] = '\0';
@@ -14908,14 +14908,14 @@ int mglRenderCppEncodeBindingSnapshot(
     MTL::RenderCommandEncoder* encoder =
         static_cast<MTL::RenderCommandEncoder*>(render_encoder);
     if (snapshot->vertex_op_count >
-            MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_OPS ||
+            MGL_RENDER_BINDING_SNAPSHOT_MAX_OPS ||
         snapshot->fragment_op_count >
-            MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_OPS) {
+            MGL_RENDER_BINDING_SNAPSHOT_MAX_OPS) {
         if (err && errcap) snprintf(err, errcap, "snapshot count overflow");
         return -1;
     }
     for (uint32_t i = 0; i < snapshot->vertex_op_count; i++) {
-        const MGLRenderCppBindingOp* op = &snapshot->vertex_ops[i];
+        const MGLRenderBindingOp* op = &snapshot->vertex_ops[i];
         if (op->kind == 0) {
             /* kind 0: set buffer; NULL buffer clears the slot (the ObjC
              * skip paths emit nil clears through the same op). */
@@ -14938,7 +14938,7 @@ int mglRenderCppEncodeBindingSnapshot(
         }
     }
     for (uint32_t i = 0; i < snapshot->fragment_op_count; i++) {
-        const MGLRenderCppBindingOp* op = &snapshot->fragment_ops[i];
+        const MGLRenderBindingOp* op = &snapshot->fragment_ops[i];
         if (op->kind == 0) {
             encoder->setFragmentBuffer(
                 static_cast<MTL::Buffer*>(op->buffer),
@@ -14961,20 +14961,20 @@ int mglRenderCppEncodeBindingSnapshot(
     return 0;
 }
 
-int mglRenderCppEncodeBindingSnapshotForRenderEncoderOwner(
+int mglRenderEncodeBindingSnapshotForRenderEncoderOwner(
     void* render_encoder_owner,
-    const MGLRenderCppBindingSnapshot* snapshot,
+    const MGLRenderBindingSnapshot* snapshot,
     char* err,
     size_t errcap) {
-    return mglRenderCppEncodeBindingSnapshot(
-        mglRenderCppActiveRenderEncoder(render_encoder_owner),
+    return mglRenderEncodeBindingSnapshot(
+        mglRenderActiveRenderEncoder(render_encoder_owner),
         snapshot, err, errcap);
 }
 
-int mglRenderCppEncodeResourceBindingSnapshot(
+int mglRenderEncodeResourceBindingSnapshot(
     void* binding_state,
     void* render_encoder,
-    const MGLRenderCppResourceBindingSnapshot* snapshot,
+    const MGLRenderResourceBindingSnapshot* snapshot,
     char* err,
     size_t errcap) {
     if (err && errcap) err[0] = '\0';
@@ -14983,25 +14983,25 @@ int mglRenderCppEncodeResourceBindingSnapshot(
         return -1;
     }
     if (snapshot->vertex_op_count >
-            MGL_RENDER_CPP_RESOURCE_BINDING_SNAPSHOT_MAX_OPS ||
+            MGL_RENDER_RESOURCE_BINDING_SNAPSHOT_MAX_OPS ||
         snapshot->fragment_op_count >
-            MGL_RENDER_CPP_RESOURCE_BINDING_SNAPSHOT_MAX_OPS) {
+            MGL_RENDER_RESOURCE_BINDING_SNAPSHOT_MAX_OPS) {
         if (err && errcap) snprintf(err, errcap, "snapshot count overflow");
         return -1;
     }
 
-    const auto encodeStage = [&](const MGLRenderCppResourceBindingOp* ops,
+    const auto encodeStage = [&](const MGLRenderResourceBindingOp* ops,
                                  uint32_t count,
                                  uint32_t stage) -> int {
         for (uint32_t i = 0; i < count; ++i) {
-            const MGLRenderCppResourceBindingOp& op = ops[i];
+            const MGLRenderResourceBindingOp& op = ops[i];
             int result = -1;
-            if (op.kind == MGL_RENDER_CPP_RESOURCE_BINDING_TEXTURE) {
-                result = mglRenderCppBindingSetTexture(
+            if (op.kind == MGL_RENDER_RESOURCE_BINDING_TEXTURE) {
+                result = mglRenderBindingSetTexture(
                     binding_state, render_encoder, op.resource, stage,
                     op.index);
-            } else if (op.kind == MGL_RENDER_CPP_RESOURCE_BINDING_SAMPLER) {
-                result = mglRenderCppBindingSetSampler(
+            } else if (op.kind == MGL_RENDER_RESOURCE_BINDING_SAMPLER) {
+                result = mglRenderBindingSetSampler(
                     binding_state, render_encoder, op.resource, stage,
                     op.index);
             } else {
@@ -15024,22 +15024,22 @@ int mglRenderCppEncodeResourceBindingSnapshot(
     };
 
     if (encodeStage(snapshot->vertex_ops, snapshot->vertex_op_count,
-                    MGL_RENDER_CPP_BINDING_STAGE_VERTEX) != 0) {
+                    MGL_RENDER_BINDING_STAGE_VERTEX) != 0) {
         return -1;
     }
     return encodeStage(snapshot->fragment_ops, snapshot->fragment_op_count,
-                       MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT);
+                       MGL_RENDER_BINDING_STAGE_FRAGMENT);
 }
 
-int mglRenderCppEncodeResourceBindingSnapshotForRenderEncoderOwner(
+int mglRenderEncodeResourceBindingSnapshotForRenderEncoderOwner(
     void* binding_state,
     void* render_encoder_owner,
-    const MGLRenderCppResourceBindingSnapshot* snapshot,
+    const MGLRenderResourceBindingSnapshot* snapshot,
     char* err,
     size_t errcap) {
-    return mglRenderCppEncodeResourceBindingSnapshot(
+    return mglRenderEncodeResourceBindingSnapshot(
         binding_state,
-        mglRenderCppActiveRenderEncoder(render_encoder_owner),
+        mglRenderActiveRenderEncoder(render_encoder_owner),
         snapshot, err, errcap);
 }
 
@@ -15058,32 +15058,32 @@ enum {
 };
 }
 
-int mglRenderCppReplayBatchDraws(void* render_encoder,
-                                 const MGLRenderCppReplayBatch* batch,
+int mglRenderReplayBatchDraws(void* render_encoder,
+                                 const MGLRenderReplayBatch* batch,
                                  char* err,
                                  size_t errcap) {
     if (err && errcap) err[0] = '\0';
     if (!render_encoder || !batch || !batch->commands ||
         batch->command_count == 0) {
         if (err && errcap) snprintf(err, errcap, "bad args");
-        return MGL_RENDER_CPP_REPLAY_BATCH_ERROR;
+        return MGL_RENDER_REPLAY_BATCH_ERROR;
     }
-    if (batch->command_count > MGL_RENDER_CPP_REPLAY_BATCH_MAX_COMMANDS) {
-        return MGL_RENDER_CPP_REPLAY_BATCH_NEEDS_OBJC;
+    if (batch->command_count > MGL_RENDER_REPLAY_BATCH_MAX_COMMANDS) {
+        return MGL_RENDER_REPLAY_BATCH_NEEDS_OBJC;
     }
     for (uint32_t i = 0; i < batch->command_count; i++) {
-        const MGLRenderCppReplayBatchCommand* cmd = &batch->commands[i];
+        const MGLRenderReplayBatchCommand* cmd = &batch->commands[i];
         if (cmd->count == 0) {
             continue;
         }
-        MGLRenderCppDrawPlan plan = {};
+        MGLRenderDrawPlan plan = {};
         plan.primitive_type = batch->primitive_type;
         switch (cmd->cmd_type) {
 
             case kCmdDrawArrays:
             case kCmdDrawArraysInstanced:
             case kCmdDrawArraysInstancedBaseInstance:
-                plan.kind = MGL_RENDER_CPP_DRAW_ARRAY;
+                plan.kind = MGL_RENDER_DRAW_ARRAY;
                 plan.vertex_start = static_cast<uint64_t>(cmd->first);
                 plan.vertex_count = cmd->count;
                 plan.instance_count = cmd->instance_count;
@@ -15103,9 +15103,9 @@ int mglRenderCppReplayBatchDraws(void* render_encoder,
                                  "replay command %u: unready index buffer",
                                  i);
                     }
-                    return MGL_RENDER_CPP_REPLAY_BATCH_NEEDS_OBJC;
+                    return MGL_RENDER_REPLAY_BATCH_NEEDS_OBJC;
                 }
-                plan.kind = MGL_RENDER_CPP_DRAW_INDEXED;
+                plan.kind = MGL_RENDER_DRAW_INDEXED;
                 plan.index_count = cmd->count;
                 plan.index_type = cmd->index_type;
                 plan.index_buffer = cmd->index_buffer;
@@ -15120,19 +15120,19 @@ int mglRenderCppReplayBatchDraws(void* render_encoder,
                              "replay command %u: unknown cmd_type %u",
                              i, cmd->cmd_type);
                 }
-                return MGL_RENDER_CPP_REPLAY_BATCH_NEEDS_OBJC;
+                return MGL_RENDER_REPLAY_BATCH_NEEDS_OBJC;
         }
-        if (mglRenderCppEncodeDraw(render_encoder, &plan, err, errcap) != 0) {
+        if (mglRenderEncodeDraw(render_encoder, &plan, err, errcap) != 0) {
             if (err && errcap && !err[0]) {
                 snprintf(err, errcap, "replay command %u encode failed", i);
             }
-            return MGL_RENDER_CPP_REPLAY_BATCH_NEEDS_OBJC;
+            return MGL_RENDER_REPLAY_BATCH_NEEDS_OBJC;
         }
     }
-    return MGL_RENDER_CPP_REPLAY_BATCH_OK;
+    return MGL_RENDER_REPLAY_BATCH_OK;
 }
 
-int mglRenderCppSetRenderBytes(void* render_encoder,
+int mglRenderSetRenderBytes(void* render_encoder,
                                const void* bytes,
                                size_t length,
                                uint32_t stage,
@@ -15140,10 +15140,10 @@ int mglRenderCppSetRenderBytes(void* render_encoder,
     MTL::RenderCommandEncoder* encoder =
         static_cast<MTL::RenderCommandEncoder*>(render_encoder);
     if (!encoder || (!bytes && length != 0) ||
-        stage > MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT) {
+        stage > MGL_RENDER_BINDING_STAGE_FRAGMENT) {
         return -1;
     }
-    if (stage == MGL_RENDER_CPP_BINDING_STAGE_VERTEX) {
+    if (stage == MGL_RENDER_BINDING_STAGE_VERTEX) {
         encoder->setVertexBytes(bytes, static_cast<NS::UInteger>(length), index);
     } else {
         encoder->setFragmentBytes(bytes, static_cast<NS::UInteger>(length),
@@ -15152,7 +15152,7 @@ int mglRenderCppSetRenderBytes(void* render_encoder,
     return 0;
 }
 
-int mglRenderCppSetRenderPipelineState(void* render_encoder,
+int mglRenderSetRenderPipelineState(void* render_encoder,
                                        void* pipeline_state) {
     MTL::RenderCommandEncoder* encoder =
         static_cast<MTL::RenderCommandEncoder*>(render_encoder);
@@ -15163,7 +15163,7 @@ int mglRenderCppSetRenderPipelineState(void* render_encoder,
     return 0;
 }
 
-int mglRenderCppSetRenderDepthStencilState(void* render_encoder,
+int mglRenderSetRenderDepthStencilState(void* render_encoder,
                                            void* depth_stencil_state) {
     MTL::RenderCommandEncoder* encoder =
         static_cast<MTL::RenderCommandEncoder*>(render_encoder);
@@ -15174,15 +15174,15 @@ int mglRenderCppSetRenderDepthStencilState(void* render_encoder,
     return 0;
 }
 
-int mglRenderCppSetRenderTexture(void* render_encoder,
+int mglRenderSetRenderTexture(void* render_encoder,
                                  void* texture,
                                  uint32_t stage,
                                  uint32_t index) {
     MTL::RenderCommandEncoder* encoder =
         static_cast<MTL::RenderCommandEncoder*>(render_encoder);
-    if (!encoder || stage > MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT) return -1;
+    if (!encoder || stage > MGL_RENDER_BINDING_STAGE_FRAGMENT) return -1;
     MTL::Texture* resource = static_cast<MTL::Texture*>(texture);
-    if (stage == MGL_RENDER_CPP_BINDING_STAGE_VERTEX) {
+    if (stage == MGL_RENDER_BINDING_STAGE_VERTEX) {
         encoder->setVertexTexture(resource, index);
     } else {
         encoder->setFragmentTexture(resource, index);
@@ -15190,15 +15190,15 @@ int mglRenderCppSetRenderTexture(void* render_encoder,
     return 0;
 }
 
-int mglRenderCppSetRenderSampler(void* render_encoder,
+int mglRenderSetRenderSampler(void* render_encoder,
                                  void* sampler,
                                  uint32_t stage,
                                  uint32_t index) {
     MTL::RenderCommandEncoder* encoder =
         static_cast<MTL::RenderCommandEncoder*>(render_encoder);
-    if (!encoder || stage > MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT) return -1;
+    if (!encoder || stage > MGL_RENDER_BINDING_STAGE_FRAGMENT) return -1;
     MTL::SamplerState* resource = static_cast<MTL::SamplerState*>(sampler);
-    if (stage == MGL_RENDER_CPP_BINDING_STAGE_VERTEX) {
+    if (stage == MGL_RENDER_BINDING_STAGE_VERTEX) {
         encoder->setVertexSamplerState(resource, index);
     } else {
         encoder->setFragmentSamplerState(resource, index);
@@ -15206,7 +15206,7 @@ int mglRenderCppSetRenderSampler(void* render_encoder,
     return 0;
 }
 
-int mglRenderCppSetRenderViewport(void* render_encoder,
+int mglRenderSetRenderViewport(void* render_encoder,
                                   double origin_x,
                                   double origin_y,
                                   double width,
@@ -15221,7 +15221,7 @@ int mglRenderCppSetRenderViewport(void* render_encoder,
     return 0;
 }
 
-int mglRenderCppSetRenderScissor(void* render_encoder,
+int mglRenderSetRenderScissor(void* render_encoder,
                                  uint64_t x,
                                  uint64_t y,
                                  uint64_t width,
@@ -15233,7 +15233,7 @@ int mglRenderCppSetRenderScissor(void* render_encoder,
     return 0;
 }
 
-int mglRenderCppSetDepthClipMode(void* render_encoder, uint32_t mode) {
+int mglRenderSetDepthClipMode(void* render_encoder, uint32_t mode) {
     MTL::RenderCommandEncoder* encoder =
         static_cast<MTL::RenderCommandEncoder*>(render_encoder);
     if (!encoder) return -1;
@@ -15241,7 +15241,7 @@ int mglRenderCppSetDepthClipMode(void* render_encoder, uint32_t mode) {
     return 0;
 }
 
-int mglRenderCppSetStencilReferenceValues(void* render_encoder,
+int mglRenderSetStencilReferenceValues(void* render_encoder,
                                           uint32_t front_reference,
                                           uint32_t back_reference) {
     MTL::RenderCommandEncoder* encoder =
@@ -15251,7 +15251,7 @@ int mglRenderCppSetStencilReferenceValues(void* render_encoder,
     return 0;
 }
 
-int mglRenderCppSetTessellationFactorBuffer(void* render_encoder,
+int mglRenderSetTessellationFactorBuffer(void* render_encoder,
                                             void* buffer,
                                             uint64_t offset,
                                             uint64_t instance_stride) {
@@ -15265,96 +15265,96 @@ int mglRenderCppSetTessellationFactorBuffer(void* render_encoder,
     return 0;
 }
 
-int mglRenderCppSetRenderBufferForOwner(void* render_encoder_owner,
+int mglRenderSetRenderBufferForOwner(void* render_encoder_owner,
                                         void* buffer,
                                         uint64_t offset,
                                         uint32_t stage,
                                         uint32_t index) {
-    return mglRenderCppSetRenderBuffer(
-        mglRenderCppActiveRenderEncoder(render_encoder_owner),
+    return mglRenderSetRenderBuffer(
+        mglRenderActiveRenderEncoder(render_encoder_owner),
         buffer, offset, stage, index);
 }
 
-int mglRenderCppBindingSetTextureForOwner(void* binding_state,
+int mglRenderBindingSetTextureForOwner(void* binding_state,
                                          void* render_encoder_owner,
                                          void* texture,
                                          uint32_t stage,
                                          uint32_t index) {
-    return mglRenderCppBindingSetTexture(
-        binding_state, mglRenderCppActiveRenderEncoder(render_encoder_owner),
+    return mglRenderBindingSetTexture(
+        binding_state, mglRenderActiveRenderEncoder(render_encoder_owner),
         texture, stage, index);
 }
 
-int mglRenderCppBindingSetSamplerForOwner(void* binding_state,
+int mglRenderBindingSetSamplerForOwner(void* binding_state,
                                          void* render_encoder_owner,
                                          void* sampler,
                                          uint32_t stage,
                                          uint32_t index) {
-    return mglRenderCppBindingSetSampler(
-        binding_state, mglRenderCppActiveRenderEncoder(render_encoder_owner),
+    return mglRenderBindingSetSampler(
+        binding_state, mglRenderActiveRenderEncoder(render_encoder_owner),
         sampler, stage, index);
 }
 
-int mglRenderCppBindingSetPipelineIfNeededForOwner(
+int mglRenderBindingSetPipelineIfNeededForOwner(
     void* binding_state,
     void* render_encoder_owner,
     void* pipeline_state) {
-    return mglRenderCppBindingSetPipelineIfNeeded(
-        binding_state, mglRenderCppActiveRenderEncoder(render_encoder_owner),
+    return mglRenderBindingSetPipelineIfNeeded(
+        binding_state, mglRenderActiveRenderEncoder(render_encoder_owner),
         pipeline_state);
 }
 
-int mglRenderCppBindingSetDepthStencilIfNeededForOwner(
+int mglRenderBindingSetDepthStencilIfNeededForOwner(
     void* binding_state,
     void* render_encoder_owner,
     void* depth_stencil_state) {
-    return mglRenderCppBindingSetDepthStencilIfNeeded(
-        binding_state, mglRenderCppActiveRenderEncoder(render_encoder_owner),
+    return mglRenderBindingSetDepthStencilIfNeeded(
+        binding_state, mglRenderActiveRenderEncoder(render_encoder_owner),
         depth_stencil_state);
 }
 
-int mglRenderCppBindingSetCullIfNeededForOwner(
+int mglRenderBindingSetCullIfNeededForOwner(
     void* binding_state,
     void* render_encoder_owner,
     uint32_t mode) {
-    return mglRenderCppBindingSetCullIfNeeded(
-        binding_state, mglRenderCppActiveRenderEncoder(render_encoder_owner),
+    return mglRenderBindingSetCullIfNeeded(
+        binding_state, mglRenderActiveRenderEncoder(render_encoder_owner),
         mode);
 }
 
-int mglRenderCppBindingSetWindingIfNeededForOwner(
+int mglRenderBindingSetWindingIfNeededForOwner(
     void* binding_state,
     void* render_encoder_owner,
     uint32_t winding) {
-    return mglRenderCppBindingSetWindingIfNeeded(
-        binding_state, mglRenderCppActiveRenderEncoder(render_encoder_owner),
+    return mglRenderBindingSetWindingIfNeeded(
+        binding_state, mglRenderActiveRenderEncoder(render_encoder_owner),
         winding);
 }
 
-int mglRenderCppBindingSetBlendColorIfNeededForOwner(
+int mglRenderBindingSetBlendColorIfNeededForOwner(
     void* binding_state,
     void* render_encoder_owner,
     float red,
     float green,
     float blue,
     float alpha) {
-    return mglRenderCppBindingSetBlendColorIfNeeded(
-        binding_state, mglRenderCppActiveRenderEncoder(render_encoder_owner),
+    return mglRenderBindingSetBlendColorIfNeeded(
+        binding_state, mglRenderActiveRenderEncoder(render_encoder_owner),
         red, green, blue, alpha);
 }
 
-int mglRenderCppBindingSetDepthBiasIfNeededForOwner(
+int mglRenderBindingSetDepthBiasIfNeededForOwner(
     void* binding_state,
     void* render_encoder_owner,
     float depth_bias,
     float clamp,
     float slope_scale) {
-    return mglRenderCppBindingSetDepthBiasIfNeeded(
-        binding_state, mglRenderCppActiveRenderEncoder(render_encoder_owner),
+    return mglRenderBindingSetDepthBiasIfNeeded(
+        binding_state, mglRenderActiveRenderEncoder(render_encoder_owner),
         depth_bias, clamp, slope_scale);
 }
 
-int mglRenderCppBindingSetViewportForOwner(void* binding_state,
+int mglRenderBindingSetViewportForOwner(void* binding_state,
                                           void* render_encoder_owner,
                                           double origin_x,
                                           double origin_y,
@@ -15362,130 +15362,130 @@ int mglRenderCppBindingSetViewportForOwner(void* binding_state,
                                           double height,
                                           double znear,
                                           double zfar) {
-    return mglRenderCppBindingSetViewport(
-        binding_state, mglRenderCppActiveRenderEncoder(render_encoder_owner),
+    return mglRenderBindingSetViewport(
+        binding_state, mglRenderActiveRenderEncoder(render_encoder_owner),
         origin_x, origin_y, width, height, znear, zfar);
 }
 
-int mglRenderCppBindingSetViewportsForOwner(void* binding_state,
+int mglRenderBindingSetViewportsForOwner(void* binding_state,
                                             void* render_encoder_owner,
                                             const double* viewports,
                                             uint64_t count) {
-    return mglRenderCppBindingSetViewports(
-        binding_state, mglRenderCppActiveRenderEncoder(render_encoder_owner),
+    return mglRenderBindingSetViewports(
+        binding_state, mglRenderActiveRenderEncoder(render_encoder_owner),
         viewports, count);
 }
 
-int mglRenderCppBindingSetScissorForOwner(void* binding_state,
+int mglRenderBindingSetScissorForOwner(void* binding_state,
                                          void* render_encoder_owner,
                                          uint64_t x,
                                          uint64_t y,
                                          uint64_t width,
                                          uint64_t height) {
-    return mglRenderCppBindingSetScissor(
-        binding_state, mglRenderCppActiveRenderEncoder(render_encoder_owner),
+    return mglRenderBindingSetScissor(
+        binding_state, mglRenderActiveRenderEncoder(render_encoder_owner),
         x, y, width, height);
 }
 
-int mglRenderCppBindingSetTriangleFillForOwner(void* binding_state,
+int mglRenderBindingSetTriangleFillForOwner(void* binding_state,
                                               void* render_encoder_owner,
                                               uint32_t mode) {
-    return mglRenderCppBindingSetTriangleFill(
-        binding_state, mglRenderCppActiveRenderEncoder(render_encoder_owner),
+    return mglRenderBindingSetTriangleFill(
+        binding_state, mglRenderActiveRenderEncoder(render_encoder_owner),
         mode);
 }
 
-int mglRenderCppSetRenderBytesForOwner(void* render_encoder_owner,
+int mglRenderSetRenderBytesForOwner(void* render_encoder_owner,
                                        const void* bytes,
                                        size_t length,
                                        uint32_t stage,
                                        uint32_t index) {
-    return mglRenderCppSetRenderBytes(
-        mglRenderCppActiveRenderEncoder(render_encoder_owner),
+    return mglRenderSetRenderBytes(
+        mglRenderActiveRenderEncoder(render_encoder_owner),
         bytes, length, stage, index);
 }
 
-int mglRenderCppSetRenderPipelineStateForOwner(void* render_encoder_owner,
+int mglRenderSetRenderPipelineStateForOwner(void* render_encoder_owner,
                                                void* pipeline_state) {
-    return mglRenderCppSetRenderPipelineState(
-        mglRenderCppActiveRenderEncoder(render_encoder_owner),
+    return mglRenderSetRenderPipelineState(
+        mglRenderActiveRenderEncoder(render_encoder_owner),
         pipeline_state);
 }
 
-int mglRenderCppSetRenderDepthStencilStateForOwner(
+int mglRenderSetRenderDepthStencilStateForOwner(
     void* render_encoder_owner,
     void* depth_stencil_state) {
-    return mglRenderCppSetRenderDepthStencilState(
-        mglRenderCppActiveRenderEncoder(render_encoder_owner),
+    return mglRenderSetRenderDepthStencilState(
+        mglRenderActiveRenderEncoder(render_encoder_owner),
         depth_stencil_state);
 }
 
-int mglRenderCppSetRenderTextureForOwner(void* render_encoder_owner,
+int mglRenderSetRenderTextureForOwner(void* render_encoder_owner,
                                          void* texture,
                                          uint32_t stage,
                                          uint32_t index) {
-    return mglRenderCppSetRenderTexture(
-        mglRenderCppActiveRenderEncoder(render_encoder_owner),
+    return mglRenderSetRenderTexture(
+        mglRenderActiveRenderEncoder(render_encoder_owner),
         texture, stage, index);
 }
 
-int mglRenderCppSetRenderSamplerForOwner(void* render_encoder_owner,
+int mglRenderSetRenderSamplerForOwner(void* render_encoder_owner,
                                          void* sampler,
                                          uint32_t stage,
                                          uint32_t index) {
-    return mglRenderCppSetRenderSampler(
-        mglRenderCppActiveRenderEncoder(render_encoder_owner),
+    return mglRenderSetRenderSampler(
+        mglRenderActiveRenderEncoder(render_encoder_owner),
         sampler, stage, index);
 }
 
-int mglRenderCppSetRenderViewportForOwner(void* render_encoder_owner,
+int mglRenderSetRenderViewportForOwner(void* render_encoder_owner,
                                           double origin_x,
                                           double origin_y,
                                           double width,
                                           double height,
                                           double znear,
                                           double zfar) {
-    return mglRenderCppSetRenderViewport(
-        mglRenderCppActiveRenderEncoder(render_encoder_owner),
+    return mglRenderSetRenderViewport(
+        mglRenderActiveRenderEncoder(render_encoder_owner),
         origin_x, origin_y, width, height, znear, zfar);
 }
 
-int mglRenderCppSetRenderScissorForOwner(void* render_encoder_owner,
+int mglRenderSetRenderScissorForOwner(void* render_encoder_owner,
                                          uint64_t x,
                                          uint64_t y,
                                          uint64_t width,
                                          uint64_t height) {
-    return mglRenderCppSetRenderScissor(
-        mglRenderCppActiveRenderEncoder(render_encoder_owner),
+    return mglRenderSetRenderScissor(
+        mglRenderActiveRenderEncoder(render_encoder_owner),
         x, y, width, height);
 }
 
-int mglRenderCppSetDepthClipModeForOwner(void* render_encoder_owner,
+int mglRenderSetDepthClipModeForOwner(void* render_encoder_owner,
                                          uint32_t mode) {
-    return mglRenderCppSetDepthClipMode(
-        mglRenderCppActiveRenderEncoder(render_encoder_owner), mode);
+    return mglRenderSetDepthClipMode(
+        mglRenderActiveRenderEncoder(render_encoder_owner), mode);
 }
 
-int mglRenderCppSetStencilReferenceValuesForOwner(
+int mglRenderSetStencilReferenceValuesForOwner(
     void* render_encoder_owner,
     uint32_t front_reference,
     uint32_t back_reference) {
-    return mglRenderCppSetStencilReferenceValues(
-        mglRenderCppActiveRenderEncoder(render_encoder_owner),
+    return mglRenderSetStencilReferenceValues(
+        mglRenderActiveRenderEncoder(render_encoder_owner),
         front_reference, back_reference);
 }
 
-int mglRenderCppSetTessellationFactorBufferForOwner(
+int mglRenderSetTessellationFactorBufferForOwner(
     void* render_encoder_owner,
     void* buffer,
     uint64_t offset,
     uint64_t instance_stride) {
-    return mglRenderCppSetTessellationFactorBuffer(
-        mglRenderCppActiveRenderEncoder(render_encoder_owner),
+    return mglRenderSetTessellationFactorBuffer(
+        mglRenderActiveRenderEncoder(render_encoder_owner),
         buffer, offset, instance_stride);
 }
 
-int mglRenderCppDrawPatches(void* render_encoder,
+int mglRenderDrawPatches(void* render_encoder,
                             uint64_t control_point_count,
                             uint64_t patch_start,
                             uint64_t patch_count,
@@ -15507,7 +15507,7 @@ int mglRenderCppDrawPatches(void* render_encoder,
     return 0;
 }
 
-int mglRenderCppDrawIndexedPatches(void* render_encoder,
+int mglRenderDrawIndexedPatches(void* render_encoder,
                                    uint64_t control_point_count,
                                    uint64_t patch_start,
                                    uint64_t patch_count,
@@ -15534,7 +15534,7 @@ int mglRenderCppDrawIndexedPatches(void* render_encoder,
     return 0;
 }
 
-int mglRenderCppCreateIndirectCommandBuffer(
+int mglRenderCreateIndirectCommandBuffer(
     uint32_t command_types,
     int inherit_pipeline_state,
     int inherit_buffers,
@@ -15545,7 +15545,7 @@ int mglRenderCppCreateIndirectCommandBuffer(
     void** indirect_buffer_out) {
     if (indirect_buffer_out) *indirect_buffer_out = nullptr;
     if (!indirect_buffer_out || max_command_count == 0) return -1;
-    mgl::RendererCpp& renderer = mgl::renderer();
+    mgl::Renderer& renderer = mgl::renderer();
     std::lock_guard<std::mutex> lock(renderer.mutex);
     if (!renderer.device) return -1;
     MTL::IndirectCommandBufferDescriptor* allocated =
@@ -15568,7 +15568,7 @@ int mglRenderCppCreateIndirectCommandBuffer(
     return 0;
 }
 
-int mglRenderCppResetIndirectCommandBuffer(void* indirect_buffer,
+int mglRenderResetIndirectCommandBuffer(void* indirect_buffer,
                                            uint64_t location,
                                            uint64_t length) {
     MTL::IndirectCommandBuffer* buffer =
@@ -15578,7 +15578,7 @@ int mglRenderCppResetIndirectCommandBuffer(void* indirect_buffer,
     return 0;
 }
 
-int mglRenderCppGetIndirectRenderCommand(void* indirect_buffer,
+int mglRenderGetIndirectRenderCommand(void* indirect_buffer,
                                          uint64_t command_index,
                                          void** command_out) {
     if (command_out) *command_out = nullptr;
@@ -15592,7 +15592,7 @@ int mglRenderCppGetIndirectRenderCommand(void* indirect_buffer,
     return 0;
 }
 
-int mglRenderCppSetIndirectDrawIndexed(void* indirect_command,
+int mglRenderSetIndirectDrawIndexed(void* indirect_command,
                                        uint32_t primitive_type,
                                        uint64_t index_count,
                                        uint32_t index_type,
@@ -15613,7 +15613,7 @@ int mglRenderCppSetIndirectDrawIndexed(void* indirect_command,
     return 0;
 }
 
-int mglRenderCppSetIndirectDraw(void* indirect_command,
+int mglRenderSetIndirectDraw(void* indirect_command,
                                 uint32_t primitive_type,
                                 uint64_t vertex_start,
                                 uint64_t vertex_count,
@@ -15628,7 +15628,7 @@ int mglRenderCppSetIndirectDraw(void* indirect_command,
     return 0;
 }
 
-int mglRenderCppUseRenderResource(void* render_encoder,
+int mglRenderUseRenderResource(void* render_encoder,
                                   void* resource,
                                   uint32_t usage,
                                   uint32_t stages) {
@@ -15641,7 +15641,7 @@ int mglRenderCppUseRenderResource(void* render_encoder,
     return 0;
 }
 
-int mglRenderCppExecuteIndirectCommands(void* render_encoder,
+int mglRenderExecuteIndirectCommands(void* render_encoder,
                                         void* indirect_buffer,
                                         uint64_t location,
                                         uint64_t length) {
@@ -15654,35 +15654,35 @@ int mglRenderCppExecuteIndirectCommands(void* render_encoder,
     return 0;
 }
 
-int mglRenderCppReplayBatchDrawsForRenderEncoderOwner(
+int mglRenderReplayBatchDrawsForRenderEncoderOwner(
     void* render_encoder_owner,
-    const MGLRenderCppReplayBatch* batch,
+    const MGLRenderReplayBatch* batch,
     char* err,
     size_t errcap) {
-    return mglRenderCppReplayBatchDraws(
-        mglRenderCppActiveRenderEncoder(render_encoder_owner),
+    return mglRenderReplayBatchDraws(
+        mglRenderActiveRenderEncoder(render_encoder_owner),
         batch, err, errcap);
 }
 
-int mglRenderCppUseRenderResourceForOwner(void* render_encoder_owner,
+int mglRenderUseRenderResourceForOwner(void* render_encoder_owner,
                                           void* resource,
                                           uint32_t usage,
                                           uint32_t stages) {
-    return mglRenderCppUseRenderResource(
-        mglRenderCppActiveRenderEncoder(render_encoder_owner),
+    return mglRenderUseRenderResource(
+        mglRenderActiveRenderEncoder(render_encoder_owner),
         resource, usage, stages);
 }
 
-int mglRenderCppExecuteIndirectCommandsForOwner(void* render_encoder_owner,
+int mglRenderExecuteIndirectCommandsForOwner(void* render_encoder_owner,
                                                  void* indirect_buffer,
                                                  uint64_t location,
                                                  uint64_t length) {
-    return mglRenderCppExecuteIndirectCommands(
-        mglRenderCppActiveRenderEncoder(render_encoder_owner),
+    return mglRenderExecuteIndirectCommands(
+        mglRenderActiveRenderEncoder(render_encoder_owner),
         indirect_buffer, location, length);
 }
 
-const char *mglRenderCppVertexFormatName(uint32_t format) {
+const char *mglRenderVertexFormatName(uint32_t format) {
     switch (static_cast<MTL::VertexFormat>(format)) {
         case MTL::VertexFormatFloat: return "Float";
         case MTL::VertexFormatFloat2: return "Float2";
@@ -15718,7 +15718,7 @@ const char *mglRenderCppVertexFormatName(uint32_t format) {
     }
 }
 
-uint64_t mglRenderCppVertexDescriptorSignature(const void *descriptor) {
+uint64_t mglRenderVertexDescriptorSignature(const void *descriptor) {
     const MTL::VertexDescriptor *vertex =
         static_cast<const MTL::VertexDescriptor *>(descriptor);
     uint64_t hash = 1469598103934665603ull;
@@ -15728,57 +15728,57 @@ uint64_t mglRenderCppVertexDescriptorSignature(const void *descriptor) {
     for (uint32_t i = 0; i < 32u; ++i) {
         MTL::VertexAttributeDescriptor *attrib = attributes ? attributes->object(i) : nullptr;
         if (!attrib) continue;
-        hash = mglRenderCppHashStepU64(hash, static_cast<uint64_t>(attrib->format()));
-        hash = mglRenderCppHashStepU64(hash, static_cast<uint64_t>(attrib->offset()));
-        hash = mglRenderCppHashStepU64(hash, static_cast<uint64_t>(attrib->bufferIndex()));
+        hash = mglRenderHashStepU64(hash, static_cast<uint64_t>(attrib->format()));
+        hash = mglRenderHashStepU64(hash, static_cast<uint64_t>(attrib->offset()));
+        hash = mglRenderHashStepU64(hash, static_cast<uint64_t>(attrib->bufferIndex()));
     }
     for (uint32_t i = 0; i < 31u; ++i) {
         MTL::VertexBufferLayoutDescriptor *layout = layouts ? layouts->object(i) : nullptr;
         if (!layout) continue;
-        hash = mglRenderCppHashStepU64(hash, static_cast<uint64_t>(layout->stride()));
-        hash = mglRenderCppHashStepU64(hash, static_cast<uint64_t>(layout->stepFunction()));
-        hash = mglRenderCppHashStepU64(hash, static_cast<uint64_t>(layout->stepRate()));
+        hash = mglRenderHashStepU64(hash, static_cast<uint64_t>(layout->stride()));
+        hash = mglRenderHashStepU64(hash, static_cast<uint64_t>(layout->stepFunction()));
+        hash = mglRenderHashStepU64(hash, static_cast<uint64_t>(layout->stepRate()));
     }
     return hash;
 }
 
-uint64_t mglRenderCppPipelineDescriptorSignature(const void *descriptor) {
+uint64_t mglRenderPipelineDescriptorSignature(const void *descriptor) {
     const MTL::RenderPipelineDescriptor *pipeline =
         static_cast<const MTL::RenderPipelineDescriptor *>(descriptor);
     uint64_t hash = 1469598103934665603ull;
     if (!pipeline) return hash;
-    hash = mglRenderCppHashStepU64(hash, pipeline->rasterSampleCount());
-    hash = mglRenderCppHashStepU64(hash, pipeline->isRasterizationEnabled());
-    hash = mglRenderCppHashStepU64(hash, pipeline->isAlphaToCoverageEnabled());
-    hash = mglRenderCppHashStepU64(hash, pipeline->isAlphaToOneEnabled());
-    hash = mglRenderCppHashStepU64(hash, pipeline->depthAttachmentPixelFormat());
-    hash = mglRenderCppHashStepU64(hash, pipeline->stencilAttachmentPixelFormat());
-    hash = mglRenderCppHashStepU64(hash, pipeline->tessellationPartitionMode());
-    hash = mglRenderCppHashStepU64(hash, pipeline->maxTessellationFactor());
-    hash = mglRenderCppHashStepU64(hash, pipeline->isTessellationFactorScaleEnabled());
-    hash = mglRenderCppHashStepU64(hash, pipeline->tessellationFactorFormat());
-    hash = mglRenderCppHashStepU64(hash, pipeline->tessellationControlPointIndexType());
-    hash = mglRenderCppHashStepU64(hash, pipeline->tessellationFactorStepFunction());
-    hash = mglRenderCppHashStepU64(hash, pipeline->tessellationOutputWindingOrder());
+    hash = mglRenderHashStepU64(hash, pipeline->rasterSampleCount());
+    hash = mglRenderHashStepU64(hash, pipeline->isRasterizationEnabled());
+    hash = mglRenderHashStepU64(hash, pipeline->isAlphaToCoverageEnabled());
+    hash = mglRenderHashStepU64(hash, pipeline->isAlphaToOneEnabled());
+    hash = mglRenderHashStepU64(hash, pipeline->depthAttachmentPixelFormat());
+    hash = mglRenderHashStepU64(hash, pipeline->stencilAttachmentPixelFormat());
+    hash = mglRenderHashStepU64(hash, pipeline->tessellationPartitionMode());
+    hash = mglRenderHashStepU64(hash, pipeline->maxTessellationFactor());
+    hash = mglRenderHashStepU64(hash, pipeline->isTessellationFactorScaleEnabled());
+    hash = mglRenderHashStepU64(hash, pipeline->tessellationFactorFormat());
+    hash = mglRenderHashStepU64(hash, pipeline->tessellationControlPointIndexType());
+    hash = mglRenderHashStepU64(hash, pipeline->tessellationFactorStepFunction());
+    hash = mglRenderHashStepU64(hash, pipeline->tessellationOutputWindingOrder());
     MTL::RenderPipelineColorAttachmentDescriptorArray *attachments = pipeline->colorAttachments();
     for (uint32_t i = 0; i < 8u; ++i) {
         MTL::RenderPipelineColorAttachmentDescriptor *attachment =
             attachments ? attachments->object(i) : nullptr;
         if (!attachment) continue;
-        hash = mglRenderCppHashStepU64(hash, attachment->pixelFormat());
-        hash = mglRenderCppHashStepU64(hash, attachment->isBlendingEnabled());
-        hash = mglRenderCppHashStepU64(hash, attachment->sourceRGBBlendFactor());
-        hash = mglRenderCppHashStepU64(hash, attachment->destinationRGBBlendFactor());
-        hash = mglRenderCppHashStepU64(hash, attachment->rgbBlendOperation());
-        hash = mglRenderCppHashStepU64(hash, attachment->sourceAlphaBlendFactor());
-        hash = mglRenderCppHashStepU64(hash, attachment->destinationAlphaBlendFactor());
-        hash = mglRenderCppHashStepU64(hash, attachment->alphaBlendOperation());
-        hash = mglRenderCppHashStepU64(hash, attachment->writeMask());
+        hash = mglRenderHashStepU64(hash, attachment->pixelFormat());
+        hash = mglRenderHashStepU64(hash, attachment->isBlendingEnabled());
+        hash = mglRenderHashStepU64(hash, attachment->sourceRGBBlendFactor());
+        hash = mglRenderHashStepU64(hash, attachment->destinationRGBBlendFactor());
+        hash = mglRenderHashStepU64(hash, attachment->rgbBlendOperation());
+        hash = mglRenderHashStepU64(hash, attachment->sourceAlphaBlendFactor());
+        hash = mglRenderHashStepU64(hash, attachment->destinationAlphaBlendFactor());
+        hash = mglRenderHashStepU64(hash, attachment->alphaBlendOperation());
+        hash = mglRenderHashStepU64(hash, attachment->writeMask());
     }
     return hash;
 }
 
-bool mglRenderCppRenderPassAttachmentMatchesSubresource(
+bool mglRenderPassAttachmentMatchesSubresource(
     const void *descriptor,
     const MGLMetalAttachmentSubresource *subresource) {
     const MTL::RenderPassAttachmentDescriptor *attachment =
@@ -15789,7 +15789,7 @@ bool mglRenderCppRenderPassAttachmentMatchesSubresource(
            static_cast<uint64_t>(attachment->depthPlane()) == subresource->depthPlane;
 }
 
-const char *mglRenderCppCommandBufferStatusName(uint32_t status) {
+const char *mglRenderCommandBufferStatusName(uint32_t status) {
     switch (static_cast<MTL::CommandBufferStatus>(status)) {
         case MTL::CommandBufferStatusNotEnqueued: return "NotEnqueued";
         case MTL::CommandBufferStatusEnqueued: return "Enqueued";
@@ -15801,7 +15801,7 @@ const char *mglRenderCppCommandBufferStatusName(uint32_t status) {
     }
 }
 
-const char *mglRenderCppLoadActionName(uint32_t action) {
+const char *mglRenderLoadActionName(uint32_t action) {
     switch (static_cast<MTL::LoadAction>(action)) {
         case MTL::LoadActionDontCare: return "DontCare";
         case MTL::LoadActionLoad: return "Load";
@@ -15810,7 +15810,7 @@ const char *mglRenderCppLoadActionName(uint32_t action) {
     }
 }
 
-const char *mglRenderCppStoreActionName(uint32_t action) {
+const char *mglRenderStoreActionName(uint32_t action) {
     switch (static_cast<MTL::StoreAction>(action)) {
         case MTL::StoreActionDontCare: return "DontCare";
         case MTL::StoreActionStore: return "Store";

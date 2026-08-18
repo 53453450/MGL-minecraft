@@ -15,7 +15,7 @@ P4 command lifecycle 已完成；本文后续标为 2026-08-16 的段落是迁�
   与 reset 决策。skipped-error、同步 transaction failure 和异步 completion 通过同一
   recovery completion context 串行化，避免同一失败被 GL 线程与 completion worker
   重复计数。
-- `.m` 中 `mglRenderCppCommandBufferOwnerGetCurrent` 为 0；`MGLRenderPassManager.m`
+- `.m` 中 `mglRenderCommandBufferOwnerGetCurrent` 为 0；`MGLRenderPassManager.m`
   只保留 owner C ABI adapter，不再实现 gate-on command-buffer lifecycle 策略。
 - ObjC 保留平台日志、GL problematic-state 清理、最终 reset hook 和
   `MGL_USE_METALCPP=0` A/B adapter。这些是 P5 前的壳，不是 gate-on lifecycle owner。
@@ -58,10 +58,10 @@ current-command-buffer getter 已归零。ObjC AGX recovery 方法保留的内�
 
 ## completion/error 分类切片
 
-- `mglRenderCppClassifyCommandBufferCommit` 把提交前状态归类为 proceed 或
+- `mglRenderClassifyCommandBufferCommit` 把提交前状态归类为 proceed 或
   already-committed skip；Error 延续原枚举顺序落入后一类。ObjC 保留日志、
   异常捕获和实际 commit fallback。
-- `mglRenderCppClassifyCommandBufferCompletion` 统一识别普通成功、一般错误及
+- `mglRenderClassifyCommandBufferCompletion` 统一识别普通成功、一般错误及
   `MTLCommandBufferErrorDomain/code 4` driver rejection。后续编排切片已把错误
   计数迁入 C++ owner；ObjC 仍拥有 2 秒节流与 deferred device reset 策略。
 - `CommandBufferRecoveryOwner` 接管原 `_gpuRecovery` 中的 error/success 计数、
@@ -71,7 +71,7 @@ current-command-buffer getter 已归零。ObjC AGX recovery 方法保留的内�
 
 ## completion/error-recovery 编排切片（2026-08-16）
 
-`mglRenderCppProcessCommandBufferCompletion` 现在把一次 completion 的分类和
+`mglRenderProcessCommandBufferCompletion` 现在把一次 completion 的分类和
 recovery owner 状态更新封装为单一 value-state 结果。它保留原顺序：错误完成只
 记录 error；成功完成先执行 `RecordSuccess`，再单独执行 `ClearMode`。因此首个
 成功 completion 清 mode 与 sustained 4-success reset 仍是两个可观察结果，未被
@@ -84,8 +84,8 @@ driver-rejection 节流、`deviceResetRequested` 发布、异常捕获和实际 
 
 ## swap-present owner-aware 切片（2026-08-16）
 
-`mglRenderCppGetCommandBufferOwnerState` 与
-`mglRenderCppPresentDrawableForCommandBufferOwner` 让 gate-on 不再为 swap 的
+`mglRenderGetCommandBufferOwnerState` 与
+`mglRenderPresentDrawableForCommandBufferOwner` 让 gate-on 不再为 swap 的
 status 检查和 present 借出 raw current command buffer。gate-off adapter 仍执行
 原 ObjC `status` / `presentDrawable:`，包括原有异常传播。
 
@@ -129,8 +129,8 @@ C++ facade。该切片没有接触 `CommandBufferOwner`、提交/完成回调或
 ## GPU timestamp callback 边界（2026-08-16）
 
 `GLMMetalFuncs.mtlGetGPUTimestamp` 的 gate-on 入口已直连
-`mglRenderCppGetGPUTimestamp`，GL timestamp ordering 由 C++
-`mglRenderCppFlush(ctx, true)` 通过 command owner 建立提交/等待边界，再在 C++
+`mglRenderGetGPUTimestamp`，GL timestamp ordering 由 C++
+`mglRenderFlush(ctx, true)` 通过 command owner 建立提交/等待边界，再在 C++
 采样 timestamp；smoke 明确断言不会调用 legacy `mtlFlush`。
 
 render encoder 结束和 pending draw replay 仍要求上层 GL 语义在进入 callback 前
@@ -140,7 +140,7 @@ render encoder 结束和 pending draw replay 仍要求上层 GL 语义在进入 
 ## Timer-query callback 边界（2026-08-16）
 
 `GLMMetalFuncs.mtlBeginTimerQuery` 和 `mtlEndTimerQuery` 的 gate-on 入口已直连
-C++ callback。C++ 侧用 `RendererCpp.queryStateOwners` 以 `GLMContext` 为 key
+C++ callback。C++ 侧用 `Renderer.queryStateOwners` 以 `GLMContext` 为 key
 保存非拥有的 `QueryStateOwner` 指针，并用独立 mutex 保护 registry；renderer
 lifecycle 在 owner 创建后注册、销毁前注销。该 mutex 只保护查找/注册表，不把
 query owner 的内部操作或整个 GL 调用变成跨线程安全事务。
@@ -152,7 +152,7 @@ renderer 外层 `METAL_LOCK` 已串行化，以及 `QueryStateOwner` 在 callbac
 
 ## Completion wrapper 的 TSan 边界（2026-08-16）
 
-`mglRenderCppAddCommandBufferCompletion` 直接注册
+`mglRenderAddCommandBufferCompletion` 直接注册
 `MTL::CommandBufferHandler` block。2026-08-17 修订后，block 只捕获 raw heap
 context；注册路径和 completion worker 各持一份原子引用。callback/context/destroy
 字段通过同一 mutex 的 `configure`/`complete` 发布和读取，避免 block copy helper
@@ -161,7 +161,7 @@ wrapper，注册失败保留原 ABI 的 caller-context ownership。
 
 ## Owner transaction 增量边界（2026-08-16）
 
-`mglRenderCppCommitCommandBufferTransaction` 现已作为 gate-on 的统一提交入口：
+`mglRenderCommitCommandBufferTransaction` 现已作为 gate-on 的统一提交入口：
 它验证 detached submission 与 command buffer 的对应关系，持有 C++ commit guard，
 注册 recovery completion，并按请求执行 commit/wait，返回提交前、提交后和完成后的
 value-state。compute stage copy-back 已通过该入口完成跨 command buffer 的 detach、
@@ -169,7 +169,7 @@ commit 和等待；gate-off 仍走原 ObjC 路径。
 
 transaction 现在也负责在 C++ queue owner 上创建 next current command buffer，
 并通过 recovery completion latch deferred-reset request；fence 与
-last-submitted wait 共用 `mglRenderCppWaitCommandBufferState`。它仍不改变 GL
+last-submitted wait 共用 `mglRenderWaitCommandBufferState`。它仍不改变 GL
 线程和外层 `METAL_LOCK` 前提；ObjC 保留平台日志、最终
 `clearProblematicGPUState`/reset hook、gate-off adapter 和少量 borrowed getter
 清理工作。

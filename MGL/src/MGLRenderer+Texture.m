@@ -14,7 +14,7 @@
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+Texture_Private.h"
 #include "mgl_env_flag.h"
-#include "mgl_render_cpp.h"
+#include "mgl_render.h"
 
 enum {
     MGL_TEXTURE_RESOURCE_STORAGE_SHARED = 0u,
@@ -28,11 +28,11 @@ enum {
 };
 
 typedef void (^MGLTextureCommandCompletionBlock)(
-    const MGLRenderCppCommandBufferState *state);
+    const MGLRenderCommandBufferState *state);
 
 static void mglTextureCommandCompletionCallback(
     void *context,
-    const MGLRenderCppCommandBufferState *state)
+    const MGLRenderCommandBufferState *state)
 {
     MGLTextureCommandCompletionBlock block =
         (__bridge MGLTextureCommandCompletionBlock)context;
@@ -52,7 +52,7 @@ static int mglTextureAddCommandBufferCompletion(
     if (!commandBuffer || !block) return -1;
     MGLTextureCommandCompletionBlock copied = [block copy];
     void *context = (__bridge_retained void *)copied;
-    int result = mglRenderCppAddCommandBufferCompletion(
+    int result = mglRenderAddCommandBufferCompletion(
         commandBuffer,
         mglTextureCommandCompletionCallback,
         context,
@@ -206,7 +206,7 @@ static id mglTextureCreateBuffer(id device,
 {
     (void)device;
     void *buffer = NULL;
-    if (mglRenderCppCreateBuffer(length, options, NULL, &buffer) == 0 &&
+    if (mglRenderCreateBuffer(length, options, NULL, &buffer) == 0 &&
         buffer) {
         return (__bridge_transfer id)buffer;
     }
@@ -221,7 +221,7 @@ static id mglTextureCreateBufferWithBytes(
 {
     (void)device;
     void *buffer = NULL;
-    if (mglRenderCppCreateBufferWithBytes(bytes, length, options, NULL,
+    if (mglRenderCreateBufferWithBytes(bytes, length, options, NULL,
                                           &buffer) == 0 && buffer) {
         return (__bridge_transfer id)buffer;
     }
@@ -230,11 +230,11 @@ static id mglTextureCreateBufferWithBytes(
 
 static id mglTextureCreateTexture(
     id device,
-    const MGLRenderCppTextureDescriptorState *descriptor)
+    const MGLRenderTextureDescriptorState *descriptor)
 {
     (void)device;
     void *texture = NULL;
-    if (mglRenderCppCreateTextureFromState(
+    if (mglRenderCreateTextureFromState(
             descriptor, NULL, &texture) == 0 &&
         texture) {
         return (__bridge_transfer id)texture;
@@ -244,12 +244,12 @@ static id mglTextureCreateTexture(
 
 static id mglTextureCreateBufferTexture(
     id buffer,
-    const MGLRenderCppTextureDescriptorState *descriptor,
+    const MGLRenderTextureDescriptorState *descriptor,
     NSUInteger offset,
     NSUInteger bytesPerRow)
 {
     void *texture = NULL;
-    if (mglRenderCppCreateBufferTextureFromState(
+    if (mglRenderCreateBufferTextureFromState(
             (__bridge void *)buffer, descriptor,
             offset, bytesPerRow,
             &texture) == 0 && texture) {
@@ -267,7 +267,7 @@ static void mglTextureReplaceRegion(id texture,
                                     NSUInteger bytesPerImage,
                                     BOOL useSlice)
 {
-    if (mglRenderCppTextureReplaceRegion(
+    if (mglRenderTextureReplaceRegion(
             (__bridge void *)texture,
             region.origin.x, region.origin.y, region.origin.z,
             region.size.width, region.size.height, region.size.depth,
@@ -288,7 +288,7 @@ static void mglTextureGetBytes(id texture,
                                NSUInteger slice,
                                BOOL useSlice)
 {
-    if (mglRenderCppTextureGetBytes(
+    if (mglRenderTextureGetBytes(
             (__bridge void *)texture, bytes, bytesPerRow, bytesPerImage,
             region.origin.x, region.origin.y, region.origin.z,
             region.size.width, region.size.height, region.size.depth,
@@ -303,7 +303,7 @@ static id mglTextureCreateSampler(id device)
 {
     (void)device;
     void *sampler = NULL;
-    if (mglRenderCppCreateDefaultSampler(&sampler) == 0 && sampler) {
+    if (mglRenderCreateDefaultSampler(&sampler) == 0 && sampler) {
         return (__bridge_transfer id)sampler;
     }
     return nil;
@@ -313,11 +313,11 @@ static id mglTextureCreateCommandBuffer(
     id queue)
 {
     if (!queue) return nil;
-    void *commandBufferCPP = NULL;
-    if (mglRenderCppCreateCommandBuffer((__bridge void *)queue,
-                                         &commandBufferCPP) == 0 &&
-        commandBufferCPP) {
-        return (__bridge id)commandBufferCPP;
+    void *commandBuffer = NULL;
+    if (mglRenderCreateCommandBuffer((__bridge void *)queue,
+                                         &commandBuffer) == 0 &&
+        commandBuffer) {
+        return (__bridge id)commandBuffer;
     }
     return nil;
 }
@@ -326,10 +326,10 @@ static id mglTextureCreateBlitEncoder(
     id commandBuffer)
 {
     if (!commandBuffer) return nil;
-    void *encoderCPP = NULL;
-    if (mglRenderCppCreateBlitEncoder((__bridge void *)commandBuffer,
-                                       &encoderCPP) == 0 && encoderCPP) {
-        return (__bridge id)encoderCPP;
+    void *encoder = NULL;
+    if (mglRenderCreateBlitEncoder((__bridge void *)commandBuffer,
+                                       &encoder) == 0 && encoder) {
+        return (__bridge id)encoder;
     }
     return nil;
 }
@@ -340,20 +340,20 @@ static id mglTextureCreateBlitEncoder(
 static id mglTextureCreateCurrentBlitEncoder(
     void *commandBufferOwner)
 {
-    return (__bridge id)mglRenderCppCreateBlitEncoderBorrowed(
+    return (__bridge id)mglRenderCreateBlitEncoderBorrowed(
         commandBufferOwner);
 }
 
 static void mglTextureEndBlitEncoder(id encoder)
 {
     if (!encoder) return;
-    (void)mglRenderCppEndBlitEncoder((__bridge void *)encoder);
+    (void)mglRenderEndBlitEncoder((__bridge void *)encoder);
 }
 
 static void mglTextureCommitCommandBuffer(id commandBuffer)
 {
     if (!commandBuffer) return;
-    if (mglRenderCppCommitCommandBuffer(
+    if (mglRenderCommitCommandBuffer(
             (__bridge void *)commandBuffer) != 0) {
         NSLog(@"MGL ERROR: Metal-cpp texture command-buffer commit failed");
     }
@@ -362,23 +362,23 @@ static void mglTextureCommitCommandBuffer(id commandBuffer)
 static void mglTextureWaitCommandBuffer(id commandBuffer)
 {
     if (!commandBuffer) return;
-    if (mglRenderCppWaitCommandBuffer(
+    if (mglRenderWaitCommandBuffer(
             (__bridge void *)commandBuffer) != 0) {
         NSLog(@"MGL ERROR: Metal-cpp texture command-buffer wait failed");
     }
 }
 
-static MGLRenderCppTextureInfo mglTextureInfo(id texture)
+static MGLRenderTextureInfo mglTextureInfo(id texture)
 {
-    MGLRenderCppTextureInfo info = {0};
-    if (texture) (void)mglRenderCppGetTextureInfo((__bridge void *)texture, &info);
+    MGLRenderTextureInfo info = {0};
+    if (texture) (void)mglRenderGetTextureInfo((__bridge void *)texture, &info);
     return info;
 }
 
 static uint64_t mglTextureBufferLength(id buffer)
 {
-    MGLRenderCppBufferInfo info = {0};
-    return buffer && mglRenderCppGetBufferInfo((__bridge void *)buffer, &info) == 0
+    MGLRenderBufferInfo info = {0};
+    return buffer && mglRenderGetBufferInfo((__bridge void *)buffer, &info) == 0
         ? info.length : 0u;
 }
 
@@ -386,7 +386,7 @@ static void *mglTextureBufferContents(id buffer)
 {
     void *contents = NULL;
     uint64_t length = 0u;
-    return buffer && mglRenderCppGetBufferContents((__bridge void *)buffer,
+    return buffer && mglRenderGetBufferContents((__bridge void *)buffer,
                                                    &contents, &length) == 0
         ? contents : NULL;
 }
@@ -403,7 +403,7 @@ static void mglTextureCopyTextureToBuffer(
     NSUInteger bytesPerRow,
     NSUInteger bytesPerImage)
 {
-    (void)mglRenderCppBlitCopyTextureToBuffer(
+    (void)mglRenderBlitCopyTextureToBuffer(
             (__bridge void *)encoder, (__bridge void *)source, sourceSlice,
             sourceLevel, sourceOrigin.x, sourceOrigin.y, sourceOrigin.z,
             sourceSize.width, sourceSize.height, sourceSize.depth,
@@ -452,7 +452,7 @@ static void mglTextureCopyTextureToBuffer(
             return false;
         }
 
-        if (mglRenderCppEncodeTextureUploadLayersForCommandBufferOwner(
+        if (mglRenderEncodeTextureUploadLayersForCommandBufferOwner(
                 _renderPassManager.state->currentCommandBufferOwner,
                 (__bridge void *)sourceBuffer, sourceOffset,
                 sourceBytesPerRow, sourceBytesPerImage, sourceLayerStride,
@@ -479,14 +479,14 @@ static void mglTextureCopyTextureToBuffer(
 
     if (reason) {
         NSString *label = [NSString stringWithFormat:@"MGL.%s", reason];
-        (void)mglRenderCppSetCommandBufferLabel(
+        (void)mglRenderSetCommandBufferLabel(
             (__bridge void *)uploadCB, label.UTF8String);
     } else {
-        (void)mglRenderCppSetCommandBufferLabel(
+        (void)mglRenderSetCommandBufferLabel(
             (__bridge void *)uploadCB, "MGL.texture_upload");
     }
 
-    if (mglRenderCppEncodeTextureUploadLayers(
+    if (mglRenderEncodeTextureUploadLayers(
             (__bridge void *)uploadCB, (__bridge void *)sourceBuffer,
             sourceOffset, sourceBytesPerRow, sourceBytesPerImage,
             sourceLayerStride,
@@ -507,12 +507,12 @@ static void mglTextureCopyTextureToBuffer(
     __weak typeof(self) weakSelf = self;
     mglTextureAddCommandBufferCompletion(
         (__bridge void *)uploadCB,
-        ^(const MGLRenderCppCommandBufferState *uploadState) {
+        ^(const MGLRenderCommandBufferState *uploadState) {
         if (uploadState->has_error) {
             uploadError = YES;
             NSLog(@"MGL ERROR: dedicated upload command buffer failed (%s): %s",
                   reason ? reason : "texture_upload",
-                  mglRenderCppCommandBufferErrorDescription(uploadState));
+                  mglRenderCommandBufferErrorDescription(uploadState));
             [weakSelf recordGPUError];
         }
 
@@ -562,8 +562,8 @@ static void mglTextureCopyTextureToBuffer(
     }
 
     uint32_t textureType = mglTextureInfo(texture).texture_type;
-    MGLRenderCppTextureUploadPlan uploadPlan = {0};
-    if (mglRenderCppBuildTextureUploadPlan(
+    MGLRenderTextureUploadPlan uploadPlan = {0};
+    if (mglRenderBuildTextureUploadPlan(
             (uint32_t)texTarget, (uint32_t)textureType,
             (uint32_t)mglTextureInfo(texture).usage, (uint32_t)mglTextureInfo(texture).pixel_format,
             MGLCapabilityHasBug(&_capability,
@@ -603,7 +603,7 @@ static void mglTextureCopyTextureToBuffer(
      *   draws via mglFlushPendingDrawsBeforeTextureWrite, avoiding ordering races between
      *   the upload and uncommitted render command buffers;
      * - Only available for shared storage; Private storage (e.g. MSAA) must fall back to the blit path. */
-    if (uploadRoute == MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_REPLACE_1D) {
+    if (uploadRoute == MGL_RENDER_TEXTURE_UPLOAD_ROUTE_REPLACE_1D) {
         @try {
             MGLRegionValue region = uploadPlan.replace_region_dimension == 1u
                 ? mglTextureRegion1D(0, width)
@@ -649,12 +649,12 @@ static void mglTextureCopyTextureToBuffer(
      * - The route already rejects private storage while the bug marker is up;
      *   reaching this branch means the upload is shared and must use
      *   replaceRegion (never the known-bad blit). */
-    if (uploadRoute == MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_REPLACE_3D) {
+    if (uploadRoute == MGL_RENDER_TEXTURE_UPLOAD_ROUTE_REPLACE_3D) {
         const void *replaceBytes = bytes;
         void *tightlyPackedBytes = NULL;
         if (uploadPlan.requires_repack) {
 
-            tightlyPackedBytes = mglRenderCppTextureRepackDepthPlanes(
+            tightlyPackedBytes = mglRenderTextureRepackDepthPlanes(
                 bytes, uploadPlan.normalized_bytes_per_image,
                 uploadPlan.expected_bytes_per_image, uploadPlan.copy_depth);
             if (!tightlyPackedBytes) {
@@ -685,7 +685,7 @@ static void mglTextureCopyTextureToBuffer(
     /* 3D + Private while the AGX copyFromBuffer workaround is required:
      * rejected by the C++ route (blit is known-bad and replaceRegion does
      * not support private storage). */
-    if (uploadRoute == MGL_RENDER_CPP_TEXTURE_UPLOAD_ROUTE_REJECT) {
+    if (uploadRoute == MGL_RENDER_TEXTURE_UPLOAD_ROUTE_REJECT) {
         NSLog(@"MGL WARNING: Rejecting private 3D upload while AGX copyFromBuffer workaround is required (tex=%u level=%lu)",
               (unsigned)texName, (unsigned long)level);
         return false;
@@ -705,14 +705,14 @@ static void mglTextureCopyTextureToBuffer(
     void *stagingOwner = NULL;
     void *borrowedStagingBuffer = NULL;
     __unsafe_unretained id uploadBuffer = nil;
-    if (mglRenderCppCreateTextureStagingOwner(
+    if (mglRenderCreateTextureStagingOwner(
             bytes, uploadPlan.buffer_size, MGL_TEXTURE_RESOURCE_STORAGE_SHARED,
             &stagingOwner, &borrowedStagingBuffer) == 0 &&
         stagingOwner && borrowedStagingBuffer) {
         uploadBuffer = (__bridge id)borrowedStagingBuffer;
     }
     if (!uploadBuffer) {
-        mglRenderCppDestroyTextureStagingOwner(&stagingOwner);
+        mglRenderDestroyTextureStagingOwner(&stagingOwner);
         NSLog(@"MGL WARNING: Failed to allocate upload buffer for texture blit");
         return false;
     }
@@ -731,7 +731,7 @@ static void mglTextureCopyTextureToBuffer(
                                                                 reason:"texture_upload_blit"];
     /* The encoded blit retains its source resource until command-buffer
      * completion; release the C++ staging owner as soon as encoding ends. */
-    mglRenderCppDestroyTextureStagingOwner(&stagingOwner);
+    mglRenderDestroyTextureStagingOwner(&stagingOwner);
     if (!uploaded) {
         NSLog(@"MGL WARNING: Dedicated texture upload failed (level=%lu slice=%lu)",
               (unsigned long)level, (unsigned long)slice);
@@ -760,11 +760,11 @@ static void mglTextureCopyTextureToBuffer(
     }
 
 
-    MGLRenderCppLevelUploadOp uploadOps[levelCount ? levelCount : 1u];
+    MGLRenderLevelUploadOp uploadOps[levelCount ? levelCount : 1u];
     uint32_t opCount = 0;
     uint32_t shortCount = 0;
     uint32_t badCount = 0;
-    if (mglRenderCppBuildLevelUploadOps(
+    if (mglRenderBuildLevelUploadOps(
             tex->faces[0].levels, levelCount,
             (uint32_t)mglTextureInfo(texture).texture_type,
             (uint32_t)tex->internalformat,
@@ -777,7 +777,7 @@ static void mglTextureCopyTextureToBuffer(
     bool uploadedAny = false;
     bool failedAny = (shortCount + badCount) > 0;
     for (uint32_t i = 0; i < opCount; i++) {
-        MGLRenderCppLevelUploadOp *op = &uploadOps[i];
+        MGLRenderLevelUploadOp *op = &uploadOps[i];
         if (op->kind == 1u) {
             static uint64_t s_shortBackingLogs = 0;
             uint64_t hit = ++s_shortBackingLogs;
@@ -845,7 +845,7 @@ static void mglTextureCopyTextureToBuffer(
         return;
     }
 
-    if (mglRenderCppEncodeColorClearForCommandBufferOwner(
+    if (mglRenderEncodeColorClearForCommandBufferOwner(
             _renderPassManager.state->currentCommandBufferOwner,
             (__bridge void *)texture, 0, 0, 0,
             ctx->state.default_clear_color[0],
@@ -871,7 +871,7 @@ static void mglTextureCopyTextureToBuffer(
 
     MGLMetalAttachmentSubresource subresource =
         mglMetalAttachmentSubresourceForAttachment(attachment);
-    if (mglRenderCppEncodeColorClearForCommandBufferOwner(
+    if (mglRenderEncodeColorClearForCommandBufferOwner(
             _renderPassManager.state->currentCommandBufferOwner,
             (__bridge void *)texture, subresource.level,
             subresource.slice, subresource.depthPlane,
@@ -906,7 +906,7 @@ static void mglTextureCopyTextureToBuffer(
     id readBuffer = mglTextureCreateBuffer(
         _device, stagingSize, MGL_TEXTURE_RESOURCE_STORAGE_SHARED);
     id blitEncoder = readBuffer
-        ? (__bridge id)mglRenderCppCreateBlitEncoderBorrowed(
+        ? (__bridge id)mglRenderCreateBlitEncoderBorrowed(
               _renderPassManager.state->currentCommandBufferOwner)
         : nil;
     if (!readBuffer || !blitEncoder) {
@@ -947,7 +947,7 @@ static void mglTextureCopyTextureToBuffer(
     id readbackCommandBuffer =
         (__bridge id)[_renderPassManager
             detachCurrentCommandBufferForSubmission];
-    MGLRenderCppCommandBufferTransaction readbackTransaction = {0};
+    MGLRenderCommandBufferTransaction readbackTransaction = {0};
     int readbackTransactionResult = [_renderPassManager
         commitCommandBufferTransaction:(__bridge void *)readbackCommandBuffer
         recoveryOwner:_gpuRecovery.commandRecoveryOwner
@@ -967,7 +967,7 @@ static void mglTextureCopyTextureToBuffer(
         NSLog(@"MGL WARNING: readPixels %s command buffer failed for %s: %s; returning zeroed data",
               logKind ? logKind : "readback",
               reason ? reason : "unknown",
-              mglRenderCppCommandBufferErrorDescription(
+              mglRenderCommandBufferErrorDescription(
                   &readbackTransaction.completion));
         mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
         if (outSuccess) {
@@ -1002,7 +1002,7 @@ static void mglTextureCopyTextureToBuffer(
         return sourceTexture != nil;
     }
 
-    if (mglRenderCppTextureIsFramebufferOnly((__bridge void *)sourceTexture)) {
+    if (mglRenderTextureIsFramebufferOnly((__bridge void *)sourceTexture)) {
         static uint64_t s_framebufferOnlyReadCount = 0;
         uint64_t hit = ++s_framebufferOnlyReadCount;
         if (hit <= 16ull || (hit % 256ull) == 0ull) {
@@ -1066,8 +1066,8 @@ static void mglTextureCopyTextureToBuffer(
     }
 
 
-    MGLRenderCppReadTextureRegionClip clip = {0};
-    mglRenderCppReadTextureRegionClip(
+    MGLRenderReadTextureRegionClip clip = {0};
+    mglRenderReadTextureRegionClip(
         (int64_t)region.origin.x, (int64_t)region.origin.y,
         (int64_t)region.size.width, (int64_t)region.size.height,
         (int64_t)levelWidth, (int64_t)levelHeight, &clip);
@@ -1233,8 +1233,8 @@ static void mglTextureCopyTextureToBuffer(
     }
 
 
-    MGLRenderCppReadTextureRegionClip clip = {0};
-    mglRenderCppReadTextureRegionClip(
+    MGLRenderReadTextureRegionClip clip = {0};
+    mglRenderReadTextureRegionClip(
         (int64_t)region.origin.x, (int64_t)region.origin.y,
         (int64_t)region.size.width, (int64_t)region.size.height,
         (int64_t)levelWidth, (int64_t)levelHeight, &clip);
@@ -1299,7 +1299,7 @@ static void mglTextureCopyTextureToBuffer(
         uint8_t *dst = ((uint8_t *)pixelBytes) + dstOffset;
         if (sourceIsDepthStencil || sourceIsDepth16) {
             /* Depth16 / unpacked depth-float -> GL float. */
-            mglRenderCppCopyDepthTextureBytesToFloat(
+            mglRenderCopyDepthTextureBytesToFloat(
                 mglTextureBufferContents(readBuffer), (uint64_t)stagingBytesPerRow,
                 dst, (uint64_t)bytesPerRow,
                 (uint64_t)copyW, (uint64_t)copyH,
@@ -1334,8 +1334,8 @@ static void mglTextureCopyTextureToBuffer(
                      isRenderTarget:(BOOL)isRenderTarget
 {
 
-    MGLRenderCppIntegerReadbackSource src = {0};
-    mglRenderCppIntegerReadbackSourceClassify(
+    MGLRenderIntegerReadbackSource src = {0};
+    mglRenderIntegerReadbackSourceClassify(
         (uint32_t)mglTextureInfo(sourceTexture).pixel_format, &src);
     if (!src.recognized) {
         mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
@@ -1360,8 +1360,8 @@ static void mglTextureCopyTextureToBuffer(
     }
 
 
-    MGLRenderCppIntegerPackedType packed = {0};
-    mglRenderCppIntegerReadbackPackedTypeClassify((uint32_t)packedType, &packed);
+    MGLRenderIntegerPackedType packed = {0};
+    mglRenderIntegerReadbackPackedTypeClassify((uint32_t)packedType, &packed);
     BOOL isPackedType = packed.is_packed != 0;
     uint32_t packedBitWidths[4] = {
         packed.bit_widths[0], packed.bit_widths[1],
@@ -1409,7 +1409,7 @@ static void mglTextureCopyTextureToBuffer(
     id readBuffer = mglTextureCreateBuffer(
         _device, stagingSize, MGL_TEXTURE_RESOURCE_STORAGE_SHARED);
     id blit = readBuffer
-        ? (__bridge id)mglRenderCppCreateBlitEncoderBorrowed(
+        ? (__bridge id)mglRenderCreateBlitEncoderBorrowed(
               _renderPassManager.state->currentCommandBufferOwner)
         : nil;
     if (!readBuffer || !blit) {
@@ -1440,7 +1440,7 @@ static void mglTextureCopyTextureToBuffer(
     id integerReadbackCommandBuffer =
         (__bridge id)[_renderPassManager
             detachCurrentCommandBufferForSubmission];
-    MGLRenderCppCommandBufferTransaction integerReadbackTransaction = {0};
+    MGLRenderCommandBufferTransaction integerReadbackTransaction = {0};
     int integerReadbackResult = [_renderPassManager
         commitCommandBufferTransaction:(__bridge void *)integerReadbackCommandBuffer
         recoveryOwner:_gpuRecovery.commandRecoveryOwner
@@ -1456,7 +1456,7 @@ static void mglTextureCopyTextureToBuffer(
     NSUInteger dstX = (NSUInteger)(minX - (NSInteger)region.origin.x);
     NSUInteger dstY = (NSUInteger)(minY - (NSInteger)region.origin.y);
 
-    MGLRenderCppIntegerReadbackConvertParams convert = {
+    MGLRenderIntegerReadbackConvertParams convert = {
         .src = (const uint8_t *)mglTextureBufferContents(readBuffer),
         .src_bytes_per_row = srcBytesPerRow,
         .source_component_count = (uint32_t)componentCount,
@@ -1479,7 +1479,7 @@ static void mglTextureCopyTextureToBuffer(
         .packed_shifts = packedShifts,
         .packed_output_bytes = (uint32_t)packedOutputBytes,
     };
-    if (mglRenderCppConvertIntegerReadback(&convert) != 0) {
+    if (mglRenderConvertIntegerReadback(&convert) != 0) {
         [self newCommandBuffer];
         return NO;
     }
@@ -1499,7 +1499,7 @@ static void mglTextureCopyTextureToBuffer(
 
     MGLMetalAttachmentSubresource subresource =
         mglMetalAttachmentSubresourceForAttachment(attachment);
-    if (mglRenderCppEncodeDepthClearForCommandBufferOwner(
+    if (mglRenderEncodeDepthClearForCommandBufferOwner(
             _renderPassManager.state->currentCommandBufferOwner,
             (__bridge void *)texture, subresource.level,
             subresource.slice, subresource.depthPlane,
@@ -1518,7 +1518,7 @@ static void mglTextureCopyTextureToBuffer(
         return;
     }
 
-    if (mglRenderCppEncodeDepthClearForCommandBufferOwner(
+    if (mglRenderEncodeDepthClearForCommandBufferOwner(
             _renderPassManager.state->currentCommandBufferOwner,
             (__bridge void *)texture, 0, 0, 0,
             ctx->state.var.depth_clear_value) == 0) {
@@ -1882,7 +1882,7 @@ static void mglTextureCopyTextureToBuffer(
         return;
     }
 
-    if (mglRenderCppTextureIsFramebufferOnly((__bridge void *)texture)) {
+    if (mglRenderTextureIsFramebufferOnly((__bridge void *)texture)) {
         NSLog(@"MGL ERROR: Cannot read from framebuffer only texture %u\n", tex->name);
         mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
         return;
@@ -1897,7 +1897,7 @@ static void mglTextureCopyTextureToBuffer(
      * reading back. Without this, getBytes may return stale/zero data because
      * the blit encoding the upload is still in the uncommitted command buffer. */
     [self endRenderEncoding];
-    if (mglRenderCppCommandBufferOwnerHasCurrent(
+    if (mglRenderCommandBufferOwnerHasCurrent(
             _renderPassManager.state->currentCommandBufferOwner) == 1) {
         id pendingCB =
             (__bridge id)[_renderPassManager
@@ -1908,12 +1908,12 @@ static void mglTextureCopyTextureToBuffer(
         } @catch (NSException *e) {
             NSLog(@"MGL WARNING: mtlGetTexImage pre-readback flush failed: %@", e.reason);
         }
-        MGLRenderCppCommandBufferState pendingState = {0};
-        (void)mglRenderCppGetCommandBufferState(
+        MGLRenderCommandBufferState pendingState = {0};
+        (void)mglRenderGetCommandBufferState(
             (__bridge void *)pendingCB, &pendingState);
         if (pendingState.has_error) {
             NSLog(@"MGL WARNING: mtlGetTexImage pre-readback command buffer error: %s",
-                  mglRenderCppCommandBufferErrorDescription(&pendingState));
+                  mglRenderCommandBufferErrorDescription(&pendingState));
         }
         [self newCommandBuffer];
     }
@@ -1943,8 +1943,8 @@ static void mglTextureCopyTextureToBuffer(
      * format and the output format is GL_*_INTEGER, use the dedicated integer
      * readback function that handles packed types and component mapping. */
 
-    MGLRenderCppIntegerReadbackClassify classify = {0};
-    mglRenderCppIntegerReadbackClassify(
+    MGLRenderIntegerReadbackClassify classify = {0};
+    mglRenderIntegerReadbackClassify(
         (uint32_t)mglTextureInfo(texture).pixel_format, (uint32_t)format, (uint32_t)type,
         &classify);
 
@@ -1983,8 +1983,8 @@ static void mglTextureCopyTextureToBuffer(
     // Use a blit-to-buffer path to convert GPU-private tiled memory to linear CPU memory.
     if (mglTextureInfo(texture).storage_mode == MGL_TEXTURE_STORAGE_PRIVATE) {
 
-        MGLRenderCppGetTexImagePlan plan = {0};
-        mglRenderCppGetTexImagePlan(
+        MGLRenderGetTexImagePlan plan = {0};
+        mglRenderGetTexImagePlan(
             (uint32_t)mglTextureInfo(texture).pixel_format,
             (uint32_t)format,
             (uint32_t)type,
@@ -2033,12 +2033,12 @@ static void mglTextureCopyTextureToBuffer(
         mglTextureCommitCommandBuffer(blitCB);
         mglTextureWaitCommandBuffer(blitCB);
 
-        MGLRenderCppCommandBufferState blitState = {0};
-        (void)mglRenderCppGetCommandBufferState(
+        MGLRenderCommandBufferState blitState = {0};
+        (void)mglRenderGetCommandBufferState(
             (__bridge void *)blitCB, &blitState);
         if (blitState.has_error) {
             NSLog(@"MGL ERROR: mtlGetTexImage blit failed for texture %u: %s",
-                  tex->name, mglRenderCppCommandBufferErrorDescription(&blitState));
+                  tex->name, mglRenderCommandBufferErrorDescription(&blitState));
             mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
             return;
         }
@@ -2102,8 +2102,8 @@ static void mglTextureCopyTextureToBuffer(
 	    @try {
 	        if (useBGRA8Conversion || (flipRenderTargetRows && readRegion.size.depth == 1u)) {
 
-	            MGLRenderCppGetTexImagePlan plan = {0};
-	            mglRenderCppGetTexImagePlan(
+	            MGLRenderGetTexImagePlan plan = {0};
+	            mglRenderGetTexImagePlan(
 	                (uint32_t)mglTextureInfo(texture).pixel_format,
 	                (uint32_t)format,
 	                (uint32_t)type,
@@ -2209,7 +2209,7 @@ static void mglTextureCopyTextureToBuffer(
     }
 
     @try {
-        if (mglRenderCppBlitGenerateMipmaps(
+        if (mglRenderBlitGenerateMipmaps(
                 (__bridge void *)blitCommandEncoder,
                 (__bridge void *)texture) != 0) {
             [NSException raise:@"MGLGenerateMipmapsError"
@@ -2263,8 +2263,8 @@ static void mglTextureCopyTextureToBuffer(
     }
 
     uint32_t textureType = mglTextureInfo(texture).texture_type;
-    MGLRenderCppTextureSubUploadPlan uploadPlan = {0};
-    if (mglRenderCppTextureSubUploadPlan(
+    MGLRenderTextureSubUploadPlan uploadPlan = {0};
+    if (mglRenderTextureSubUploadPlan(
             (uint32_t)tex->target, (uint32_t)textureType, (uint64_t)slice,
             (uint64_t)xoffset, (uint64_t)yoffset, (uint64_t)zoffset,
             (uint64_t)width, (uint64_t)height, (uint64_t)depth,
@@ -4691,7 +4691,7 @@ static void mglTextureCopyTextureToBuffer(
 }
 
 
-- (void)swizzleTexDesc:(MGLRenderCppTextureDescriptorState *)tex_desc forTex:(Texture*)tex
+- (void)swizzleTexDesc:(MGLRenderTextureDescriptorState *)tex_desc forTex:(Texture*)tex
 {
     tex_desc->swizzle_red = mglMTLSwizzleForGLSwizzle(tex, tex->params.swizzle_r);
     tex_desc->swizzle_green = mglMTLSwizzleForGLSwizzle(tex, tex->params.swizzle_g);
@@ -4738,7 +4738,7 @@ static void mglTextureCopyTextureToBuffer(
 
     NSUInteger width, height, depth;
 
-    MGLRenderCppTextureDescriptorState tex_desc = {0};
+    MGLRenderTextureDescriptorState tex_desc = {0};
     uint32_t tex_type;
     uint32_t pixelFormat;
     uint num_faces;
@@ -4754,8 +4754,8 @@ static void mglTextureCopyTextureToBuffer(
     upload_level_count = 0;
     storageMipmapped = NO;
 
-    MGLRenderCppTextureTargetPlan targetPlan = {0};
-    if (mglRenderCppTextureTargetPlan(
+    MGLRenderTextureTargetPlan targetPlan = {0};
+    if (mglRenderTextureTargetPlan(
             (uint32_t)tex->target,
             (uint32_t)tex->samples,
             &targetPlan) != 0) {
@@ -5264,7 +5264,7 @@ static void mglTextureCopyTextureToBuffer(
             expandedData = [NSMutableData dataWithLength:expandedPackedBytes];
             if (expandedData && expandedData.mutableBytes) {
 
-                if (mglRenderCppTextureExpandRGBToRGBA(
+                if (mglRenderTextureExpandRGBToRGBA(
                         sourceBytes, expandedData.mutableBytes, texelCount,
                         texWidth, texHeight, srcCompBytes, dstCompBytes,
                         alphaDefault) != 0) {
@@ -5303,7 +5303,7 @@ static void mglTextureCopyTextureToBuffer(
     mglTraceFormatBytes(sourceBytes, (size_t)MIN((NSUInteger)tex->texture_buffer_size, (NSUInteger)64), sourceHead, sizeof(sourceHead));
     mglTraceFormatBytes(uploadBytes, (size_t)MIN(packedBytes, (NSUInteger)64), uploadHead, sizeof(uploadHead));
 
-    MGLRenderCppTextureDescriptorState bufferDesc = {
+    MGLRenderTextureDescriptorState bufferDesc = {
         .texture_type = MGLTextureType2D,
         .pixel_format = bufferPixelFormat,
         .width = texWidth, .height = texHeight, .depth = 1u,
@@ -5606,7 +5606,7 @@ static void mglTextureCopyTextureToBuffer(
              fallbackFormat == MGLPixelFormatDepth32Float_Stencil8 ||
              fallbackFormat == MGLPixelFormatStencil8);
 
-        MGLRenderCppTextureDescriptorState fallbackDesc = {
+        MGLRenderTextureDescriptorState fallbackDesc = {
             .texture_type = MGLTextureType2D,
             .pixel_format = fallbackFormat,
             .width = MAX(tex->width, 1), .height = MAX(tex->height, 1),
@@ -5740,7 +5740,7 @@ static void mglTextureCopyTextureToBuffer(
     mglMetalCountCreate(MGLMetalKindSampler);
     void *sampler = NULL;
     char error[256] = {0};
-    if (mglRenderCppCreateSamplerForGL(
+    if (mglRenderCreateSamplerForGL(
             tex_param, target, &sampler, error, sizeof(error)) == 0 &&
         sampler) {
         return (__bridge_transfer id)sampler;
@@ -5759,7 +5759,7 @@ static void mglTextureCopyTextureToBuffer(
         return cached;
     }
 
-    MGLRenderCppTextureDescriptorState desc = {
+    MGLRenderTextureDescriptorState desc = {
         .texture_type = MGLTextureType2D,
         .pixel_format = MGLPixelFormatRGBA8Unorm,
         .width = 1u, .height = 1u, .depth = 1u,
@@ -5796,7 +5796,7 @@ static void mglTextureCopyTextureToBuffer(
         return cached;
     }
 
-    MGLRenderCppTextureDescriptorState desc = {
+    MGLRenderTextureDescriptorState desc = {
         .texture_type = MGLTextureTypeCube,
         .pixel_format = MGLPixelFormatRGBA8Unorm,
         .width = 1u, .height = 1u, .depth = 1u,
@@ -5862,7 +5862,7 @@ static void mglTextureCopyTextureToBuffer(
         return nil;
     }
 
-    MGLRenderCppTextureDescriptorState desc = {
+    MGLRenderTextureDescriptorState desc = {
         .texture_type = MGLTextureTypeTextureBuffer,
         .pixel_format = MGLPixelFormatRGBA8Sint,
         .width = kFallbackTexelCount, .height = 1u, .depth = 1u,
@@ -5923,7 +5923,7 @@ static void mglTextureCopyTextureToBuffer(
         return nil;
     }
 
-    MGLRenderCppTextureDescriptorState desc = {
+    MGLRenderTextureDescriptorState desc = {
         .texture_type = textureType,
         .pixel_format = pixelFormat,
         .width = 1u, .height = 1u, .depth = 1u,
@@ -5993,7 +5993,7 @@ static void mglTextureCopyTextureToBuffer(
 
 - (int)textureIndexForExpectedMetalType:(uint32_t)expectedType
 {
-    return (int)mglRenderCppTextureIndexForMetalType((uint32_t)expectedType);
+    return (int)mglRenderTextureIndexForMetalType((uint32_t)expectedType);
 }
 
 - (GLuint)textureUnitForSampledResource:(MGLShaderResource *)sampledResource
@@ -6248,8 +6248,8 @@ static void mglTextureCopyTextureToBuffer(
         return;
     }
 
-    MGLRenderCppTextureInfo textureInfo = {0};
-    if (mglRenderCppGetTextureInfo((__bridge void *)texture,
+    MGLRenderTextureInfo textureInfo = {0};
+    if (mglRenderGetTextureInfo((__bridge void *)texture,
                                    &textureInfo) != 0) {
         return;
     }
@@ -6345,8 +6345,8 @@ static void mglTextureCopyTextureToBuffer(
         }
     }
 
-    MGLRenderCppCommandBufferState sampledState = {0};
-    (void)mglRenderCppGetCommandBufferState(
+    MGLRenderCommandBufferState sampledState = {0};
+    (void)mglRenderGetCommandBufferState(
         (__bridge void *)cb, &sampledState);
     NSString *sampledError = sampledState.has_error
         ? [NSString stringWithFormat:@"%s (domain=%s code=%lld)",

@@ -14,7 +14,7 @@
 #import <Foundation/Foundation.h>
 
 #include "glm_context.h"
-#include "mgl_render_cpp.h"
+#include "mgl_render.h"
 
 typedef struct MGLCommandState_t {
     void *_Nullable renderPassIdentityOwner;
@@ -67,9 +67,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (int)commitCommandBufferTransaction:(void * _Nullable)commandBuffer
                          recoveryOwner:(nullable void *)recoveryOwner
                      waitForCompletion:(BOOL)waitForCompletion
-                                result:(MGLRenderCppCommandBufferTransaction *)result;
+                                result:(MGLRenderCommandBufferTransaction *)result;
 - (BOOL)hasLastSubmittedCommandBuffer;
-- (int)waitForLastSubmittedCommandBuffer:(MGLRenderCppCommandBufferState *)state;
+- (int)waitForLastSubmittedCommandBuffer:(MGLRenderCommandBufferState *)state;
 - (void * _Nullable)consumeTransactionCreatedCurrentCommandBuffer;
 - (void)releaseDetachedCommandBufferIfOwned:(void * _Nullable)commandBuffer;
 - (BOOL)appendSyncToCurrentCommandBuffer:(Sync *)sync;

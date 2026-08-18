@@ -81,7 +81,7 @@ static id mglTessCreateBuffer(id device,
 {
     (void)device;
     void *buffer = NULL;
-    if (mglRenderCppCreateBuffer(length, options, NULL, &buffer) == 0 &&
+    if (mglRenderCreateBuffer(length, options, NULL, &buffer) == 0 &&
         buffer) {
         return (__bridge_transfer id)buffer;
     }
@@ -96,7 +96,7 @@ static id mglTessCreateBufferWithBytes(
 {
     (void)device;
     void *buffer = NULL;
-    if (mglRenderCppCreateBufferWithBytes(bytes, length, options, NULL,
+    if (mglRenderCreateBufferWithBytes(bytes, length, options, NULL,
                                           &buffer) == 0 && buffer) {
         return (__bridge_transfer id)buffer;
     }
@@ -107,7 +107,7 @@ static id mglTessCreateSampler(id device)
 {
     (void)device;
     void *sampler = NULL;
-    if (mglRenderCppCreateDefaultSampler(&sampler) == 0 && sampler) {
+    if (mglRenderCreateDefaultSampler(&sampler) == 0 && sampler) {
         return (__bridge_transfer id)sampler;
     }
     return nil;
@@ -115,8 +115,8 @@ static id mglTessCreateSampler(id device)
 
 static uint64_t mglTessBufferLength(id buffer)
 {
-    MGLRenderCppBufferInfo info = {0};
-    return buffer && mglRenderCppGetBufferInfo((__bridge void *)buffer, &info) == 0
+    MGLRenderBufferInfo info = {0};
+    return buffer && mglRenderGetBufferInfo((__bridge void *)buffer, &info) == 0
         ? info.length : 0u;
 }
 
@@ -125,15 +125,15 @@ static void *mglTessBufferContents(id buffer)
     void *contents = NULL;
     uint64_t length = 0u;
     return buffer &&
-        mglRenderCppGetBufferContents((__bridge void *)buffer,
+        mglRenderGetBufferContents((__bridge void *)buffer,
                                       &contents, &length) == 0
         ? contents : NULL;
 }
 
-static bool mglTessTextureInfo(id texture, MGLRenderCppTextureInfo *info)
+static bool mglTessTextureInfo(id texture, MGLRenderTextureInfo *info)
 {
     return texture && info &&
-        mglRenderCppGetTextureInfo((__bridge void *)texture, info) == 0;
+        mglRenderGetTextureInfo((__bridge void *)texture, info) == 0;
 }
 
 static id mglTessCreateTextureLevelView(
@@ -141,10 +141,10 @@ static id mglTessCreateTextureLevelView(
     NSUInteger level,
     NSUInteger sliceCount)
 {
-    MGLRenderCppTextureInfo info = {0};
+    MGLRenderTextureInfo info = {0};
     if (!mglTessTextureInfo(texture, &info)) return nil;
     void *view = NULL;
-    if (mglRenderCppCreateTextureViewRange(
+    if (mglRenderCreateTextureViewRange(
             (__bridge void *)texture, info.pixel_format,
             info.texture_type, level, 1, 0, sliceCount,
             0, 0, 0, 0, 0, &view) == 0 && view) {
@@ -160,9 +160,9 @@ static void mglTessSetRenderVertexBuffer(id encoder,
                                          NSUInteger index)
 {
     (void)encoder;
-    (void)mglRenderCppSetRenderBufferForOwner(
+    (void)mglRenderSetRenderBufferForOwner(
         renderEncoderOwner, (__bridge void *)buffer, offset,
-        MGL_RENDER_CPP_BINDING_STAGE_VERTEX, (uint32_t)index);
+        MGL_RENDER_BINDING_STAGE_VERTEX, (uint32_t)index);
 }
 
 static void mglTessDrawPrimitives(id encoder,
@@ -173,8 +173,8 @@ static void mglTessDrawPrimitives(id encoder,
                                   NSUInteger instanceCount,
                                   NSUInteger baseInstance)
 {
-    const MGLRenderCppDrawPlan plan = {
-            .kind = MGL_RENDER_CPP_DRAW_ARRAY,
+    const MGLRenderDrawPlan plan = {
+            .kind = MGL_RENDER_DRAW_ARRAY,
             .primitive_type = (uint32_t)type,
             .vertex_start = vertexStart,
             .vertex_count = vertexCount,
@@ -182,22 +182,22 @@ static void mglTessDrawPrimitives(id encoder,
             .base_instance = baseInstance,
         };
     (void)encoder;
-    (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
+    (void)mglRenderEncodeDrawForRenderEncoderOwner(
         renderEncoderOwner, &plan, NULL, 0);
 }
 
 static bool mglTessEncodeBufferCopiesForOwner(
     void *commandBufferOwner,
-    const MGLRenderCppBufferCopyEntry *entries,
+    const MGLRenderBufferCopyEntry *entries,
     uint32_t entryCount)
 {
     if (!commandBufferOwner || !entries || entryCount == 0u) return false;
-    return mglRenderCppEncodeBufferCopiesForCommandBufferOwner(
+    return mglRenderEncodeBufferCopiesForCommandBufferOwner(
         commandBufferOwner, entries, entryCount) == 0;
 }
 
 static bool mglTessAppendComputeResourceOp(
-    MGLRenderCppComputeExecutionPlan *plan,
+    MGLRenderComputeExecutionPlan *plan,
     NSMutableArray *temporaries,
     uint32_t kind,
     id resource,
@@ -205,11 +205,11 @@ static bool mglTessAppendComputeResourceOp(
     NSUInteger index)
 {
     if (!plan || kind > 3u ||
-        plan->binding_op_count >= MGL_RENDER_CPP_COMPUTE_EXECUTION_MAX_OPS) {
+        plan->binding_op_count >= MGL_RENDER_COMPUTE_EXECUTION_MAX_OPS) {
         return false;
     }
     plan->binding_ops[plan->binding_op_count++] =
-        (MGLRenderCppComputeBindingOp){
+        (MGLRenderComputeBindingOp){
             .kind = kind,
             .index = (uint32_t)index,
             .offset = (uint64_t)offset,
@@ -222,7 +222,7 @@ static bool mglTessAppendComputeResourceOp(
 }
 
 static bool mglTessAppendComputeBytesOp(
-    MGLRenderCppComputeExecutionPlan *plan,
+    MGLRenderComputeExecutionPlan *plan,
     NSMutableArray *temporaries,
     const void *bytes,
     NSUInteger length,
@@ -230,14 +230,14 @@ static bool mglTessAppendComputeBytesOp(
 {
     if (!plan || !temporaries || !bytes || length == 0u ||
         length > UINT32_MAX ||
-        plan->binding_op_count >= MGL_RENDER_CPP_COMPUTE_EXECUTION_MAX_OPS) {
+        plan->binding_op_count >= MGL_RENDER_COMPUTE_EXECUTION_MAX_OPS) {
         return false;
     }
     NSData *storage = [NSData dataWithBytes:bytes length:length];
     if (!storage) return false;
     [temporaries addObject:storage];
     plan->binding_ops[plan->binding_op_count++] =
-        (MGLRenderCppComputeBindingOp){
+        (MGLRenderComputeBindingOp){
             .kind = 1u,
             .index = (uint32_t)index,
             .offset = 0u,
@@ -249,7 +249,7 @@ static bool mglTessAppendComputeBytesOp(
 }
 
 static bool mglTessPlanBufferOrBind(
-    MGLRenderCppComputeExecutionPlan *plan,
+    MGLRenderComputeExecutionPlan *plan,
     NSMutableArray *temporaries,
     id encoder,
     id buffer,
@@ -262,7 +262,7 @@ static bool mglTessPlanBufferOrBind(
 }
 
 static bool mglTessPlanTextureOrBind(
-    MGLRenderCppComputeExecutionPlan *plan,
+    MGLRenderComputeExecutionPlan *plan,
     NSMutableArray *temporaries,
     id encoder,
     id texture,
@@ -274,7 +274,7 @@ static bool mglTessPlanTextureOrBind(
 }
 
 static bool mglTessPlanSamplerOrBind(
-    MGLRenderCppComputeExecutionPlan *plan,
+    MGLRenderComputeExecutionPlan *plan,
     NSMutableArray *temporaries,
     id encoder,
     id sampler,
@@ -286,7 +286,7 @@ static bool mglTessPlanSamplerOrBind(
 }
 
 static bool mglTessPlanBytesOrBind(
-    MGLRenderCppComputeExecutionPlan *plan,
+    MGLRenderComputeExecutionPlan *plan,
     NSMutableArray *temporaries,
     id encoder,
     const void *bytes,
@@ -299,7 +299,7 @@ static bool mglTessPlanBytesOrBind(
 }
 
 static bool mglTessPlanDispatchOrBind(
-    MGLRenderCppComputeExecutionPlan *plan,
+    MGLRenderComputeExecutionPlan *plan,
     id encoder,
     uint32_t groupsX,
     uint32_t groupsY,
@@ -308,8 +308,8 @@ static bool mglTessPlanDispatchOrBind(
     uint32_t localY,
     uint32_t localZ)
 {
-    MGLRenderCppComputePlan dispatch = {
-        .dispatch_kind = MGL_RENDER_CPP_COMPUTE_DISPATCH_DIRECT,
+    MGLRenderComputePlan dispatch = {
+        .dispatch_kind = MGL_RENDER_COMPUTE_DISPATCH_DIRECT,
         .groups_x = groupsX,
         .groups_y = groupsY,
         .groups_z = groupsZ,
@@ -320,7 +320,7 @@ static bool mglTessPlanDispatchOrBind(
         .indirect_offset = 0u,
     };
     (void)encoder;
-    return mglRenderCppAppendComputeDispatchToPlan(
+    return mglRenderAppendComputeDispatchToPlan(
         plan, &dispatch, NULL, 0) == 0;
 }
 
@@ -525,22 +525,22 @@ typedef struct {
     if (!needsInitializationBlit) {
         return true;
     }
-    MGLRenderCppCommandBufferState commandState = {0};
-    if (!mglRenderCppCommandBufferOwnerHasState(
+    MGLRenderCommandBufferState commandState = {0};
+    if (!mglRenderCommandBufferOwnerHasState(
             _renderPassManager.state->currentCommandBufferOwner,
             &commandState) ||
         commandState.status != MGL_TESS_COMMAND_STATUS_NOT_ENQUEUED) {
         return false;
     }
 
-    MGLRenderCppBufferCopyEntry copyEntries[kMGLMaxBufferSlots] = {0};
+    MGLRenderBufferCopyEntry copyEntries[kMGLMaxBufferSlots] = {0};
     uint32_t copyEntryCount = 0u;
     for (NSUInteger i = 0; i < kMGLMaxBufferSlots; i++) {
         MGLTessStageBufferBinding *binding = &bindings->slots[i];
         if (binding->initialization_length == 0) {
             continue;
         }
-        copyEntries[copyEntryCount++] = (MGLRenderCppBufferCopyEntry){
+        copyEntries[copyEntryCount++] = (MGLRenderBufferCopyEntry){
             .source_buffer = (__bridge void *)binding->initialization_source,
             .source_offset = binding->initialization_source_offset,
             .destination_buffer = (__bridge void *)binding->buffer,
@@ -555,7 +555,7 @@ typedef struct {
 
 - (bool)bindPreparedTessStageBufferBindings:(const MGLTessStageBufferBindingList *)bindings
                            toComputeEncoder:(id)computeCommandEncoder
-                              executionPlan:(MGLRenderCppComputeExecutionPlan *)executionPlan
+                              executionPlan:(MGLRenderComputeExecutionPlan *)executionPlan
                                temporaries:(NSMutableArray *)temporaries
 {
     MGL_ASSERT_GL_THREAD();
@@ -587,7 +587,7 @@ typedef struct {
 - (void)bindPointSizeParamsToComputeEncoder:(id)computeEncoder
                                     program:(Program *)program
                                       stage:(int)stage
-                              executionPlan:(MGLRenderCppComputeExecutionPlan *)executionPlan
+                              executionPlan:(MGLRenderComputeExecutionPlan *)executionPlan
                                temporaries:(NSMutableArray *)temporaries
 {
     MGL_ASSERT_GL_THREAD();
@@ -852,7 +852,7 @@ typedef struct {
      * encoder on the command buffer, and Metal forbids two encoders
      * on the same command buffer simultaneously.  End any active render
      * encoder first for the same reason. */
-    if (mglRenderCppRenderEncoderOwnerHasCurrent(
+    if (mglRenderEncoderOwnerHasCurrent(
             _renderPassManager.state->currentRenderEncoderOwner) == 1) {
         [self endRenderEncoding];
     }
@@ -861,8 +861,8 @@ typedef struct {
      * before processGLState() (which normally creates the command buffer),
      * and prior operations (glBufferData, glEndQuery, etc.) may have
      * committed the previous command buffer. */
-    MGLRenderCppCommandBufferState commandState = {0};
-    if (!mglRenderCppCommandBufferOwnerHasState(
+    MGLRenderCommandBufferState commandState = {0};
+    if (!mglRenderCommandBufferOwnerHasState(
             _renderPassManager.state->currentCommandBufferOwner,
             &commandState) ||
         commandState.status >= MGL_TESS_COMMAND_STATUS_COMMITTED) {
@@ -905,7 +905,7 @@ typedef struct {
         return false;
     }
 
-    MGLRenderCppComputeExecutionPlan executionPlan = {0};
+    MGLRenderComputeExecutionPlan executionPlan = {0};
     NSMutableArray *executionTemporaries = [NSMutableArray array];
     id computeEncoder = nil;
     executionPlan.pipeline = (__bridge void *)tcsPipeline;
@@ -936,7 +936,7 @@ typedef struct {
             texture = (__bridge id)(ptr->mtl_data);
             GLuint imgLevel = MGL_STATE(ctx)->image_units[glUnit].level;
             if (imgLevel > 0u && texture) {
-                MGLRenderCppTextureInfo textureInfo = {0};
+                MGLRenderTextureInfo textureInfo = {0};
                 if (!mglTessTextureInfo(texture, &textureInfo)) {
                     [self clearStageBindingCopyBacks:&stageCopyBacks];
                     return false;
@@ -1199,13 +1199,13 @@ typedef struct {
     }
 
     {
-        MGLRenderCppCopyBackEntry copyBackEntries[kMGLMaxBufferSlots] = {0};
+        MGLRenderCopyBackEntry copyBackEntries[kMGLMaxBufferSlots] = {0};
         uint32_t copyBackEntryCount = 0u;
         for (NSUInteger slot = 0; slot < kMGLMaxBufferSlots; slot++) {
             MGLStageBindingCopyBack *entry = &stageCopyBacks.slots[slot];
             if (entry->length == 0u) continue;
             copyBackEntries[copyBackEntryCount++] =
-                (MGLRenderCppCopyBackEntry){
+                (MGLRenderCopyBackEntry){
                     .temporary = entry->temporary,
                     .destination = entry->destination,
                     .destination_buffer = entry->destination_buffer,
@@ -1213,10 +1213,10 @@ typedef struct {
                     .length = entry->length,
                 };
         }
-        executionPlan.barrier_scope = MGL_RENDER_CPP_COMPUTE_BARRIER_BUFFERS;
-        MGLRenderCppComputeExecutionResult executionResult = {0};
+        executionPlan.barrier_scope = MGL_RENDER_COMPUTE_BARRIER_BUFFERS;
+        MGLRenderComputeExecutionResult executionResult = {0};
         char executionError[256] = {0};
-        if (mglRenderCppExecuteComputeExecutionPlan(
+        if (mglRenderExecuteComputeExecutionPlan(
                 _renderPassManager.state->currentCommandBufferOwner,
                 _gpuRecovery.commandRecoveryOwner,
                 &executionPlan, copyBackEntries, copyBackEntryCount, 1u,
@@ -1244,13 +1244,13 @@ typedef struct {
 
 static NSUInteger mglTESXFBFieldByteSize(GLenum glType)
 {
-    return (NSUInteger)mglRenderCppTESXFBFieldByteSize((uint64_t)glType);
+    return (NSUInteger)mglRenderTESXFBFieldByteSize((uint64_t)glType);
 }
 
 
 static NSUInteger mglTESXFBVertexStride(const Program *program)
 {
-    return (NSUInteger)mglRenderCppTESXFBVertexStride((const void *)program);
+    return (NSUInteger)mglRenderTESXFBVertexStride((const void *)program);
 }
 
 
@@ -1259,7 +1259,7 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
                                         NSUInteger *result)
 {
     uint64_t out = 0u;
-    if (mglRenderCppCheckedProduct((uint64_t)a, (uint64_t)b, &out) != 0) {
+    if (mglRenderCheckedProduct((uint64_t)a, (uint64_t)b, &out) != 0) {
         return false;
     }
     *result = (NSUInteger)out;
@@ -1275,7 +1275,7 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
 
 static GLuint mglTessRoundLevelForSpacing(GLenum spacing, GLuint ceilLevel)
 {
-    return (GLuint)mglRenderCppTessRoundLevelForSpacing(
+    return (GLuint)mglRenderTessRoundLevelForSpacing(
         (uint32_t)spacing, (uint32_t)ceilLevel);
 }
 
@@ -1283,7 +1283,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
                                           const void *factorRecord)
 {
 
-    return (GLuint)mglRenderCppTessEvalItemsPerPatch(
+    return (GLuint)mglRenderTessEvalItemsPerPatch(
         factorRecord,
         (uint32_t)(tesProgram ? tesProgram->tess_gen_mode : GL_TRIANGLES),
         (uint32_t)(tesProgram ? tesProgram->tess_gen_spacing : 0),
@@ -1447,12 +1447,12 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     memset(outContents, 0, outSize);
 
     /* PASS 1: pre-resolve textures before opening the compute encoder. */
-    if (mglRenderCppRenderEncoderOwnerHasCurrent(
+    if (mglRenderEncoderOwnerHasCurrent(
             _renderPassManager.state->currentRenderEncoderOwner) == 1) {
         [self endRenderEncoding];
     }
-    MGLRenderCppCommandBufferState commandState = {0};
-    if (!mglRenderCppCommandBufferOwnerHasState(
+    MGLRenderCommandBufferState commandState = {0};
+    if (!mglRenderCommandBufferOwnerHasState(
             _renderPassManager.state->currentCommandBufferOwner,
             &commandState) ||
         commandState.status >= MGL_TESS_COMMAND_STATUS_COMMITTED) {
@@ -1496,7 +1496,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
         return false;
     }
 
-    MGLRenderCppComputeExecutionPlan executionPlan = {0};
+    MGLRenderComputeExecutionPlan executionPlan = {0};
     NSMutableArray *executionTemporaries = [NSMutableArray array];
     id computeEncoder = nil;
     executionPlan.pipeline = (__bridge void *)tesPipeline;
@@ -1872,13 +1872,13 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     }
     free(patchBases);
     {
-        MGLRenderCppCopyBackEntry copyBackEntries[kMGLMaxBufferSlots] = {0};
+        MGLRenderCopyBackEntry copyBackEntries[kMGLMaxBufferSlots] = {0};
         uint32_t copyBackEntryCount = 0u;
         for (NSUInteger slot = 0; slot < kMGLMaxBufferSlots; slot++) {
             MGLStageBindingCopyBack *entry = &stageCopyBacks.slots[slot];
             if (entry->length == 0u) continue;
             copyBackEntries[copyBackEntryCount++] =
-                (MGLRenderCppCopyBackEntry){
+                (MGLRenderCopyBackEntry){
                     .temporary = entry->temporary,
                     .destination = entry->destination,
                     .destination_buffer = entry->destination_buffer,
@@ -1886,10 +1886,10 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
                     .length = entry->length,
                 };
         }
-        executionPlan.barrier_scope = MGL_RENDER_CPP_COMPUTE_BARRIER_BUFFERS;
-        MGLRenderCppComputeExecutionResult executionResult = {0};
+        executionPlan.barrier_scope = MGL_RENDER_COMPUTE_BARRIER_BUFFERS;
+        MGLRenderComputeExecutionResult executionResult = {0};
         char executionError[256] = {0};
-        if (mglRenderCppExecuteComputeExecutionPlan(
+        if (mglRenderExecuteComputeExecutionPlan(
                 _renderPassManager.state->currentCommandBufferOwner,
                 _gpuRecovery.commandRecoveryOwner,
                 &executionPlan, copyBackEntries, copyBackEntryCount, 1u,
@@ -1917,13 +1917,13 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
         if (!mglCheckedNSUIntegerProduct(xfbCopiedVertices, varyingCount,
                                          &copyCapacity) ||
             copyCapacity > UINT32_MAX ||
-            copyCapacity > SIZE_MAX / sizeof(MGLRenderCppBufferCopyEntry)) {
+            copyCapacity > SIZE_MAX / sizeof(MGLRenderBufferCopyEntry)) {
             NSLog(@"MGL TESS XFB: copy plan size overflow");
             return false;
         }
-        MGLRenderCppBufferCopyEntry *xfbCopies = copyCapacity
-            ? (MGLRenderCppBufferCopyEntry *)calloc(
-                  copyCapacity, sizeof(MGLRenderCppBufferCopyEntry))
+        MGLRenderBufferCopyEntry *xfbCopies = copyCapacity
+            ? (MGLRenderBufferCopyEntry *)calloc(
+                  copyCapacity, sizeof(MGLRenderBufferCopyEntry))
             : NULL;
         if (copyCapacity && !xfbCopies) {
             NSLog(@"MGL TESS XFB: copy plan allocation failed");
@@ -1956,7 +1956,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
                     (NSUInteger)output->location * 16u;
                 NSUInteger destinationOffset = xfbCopyDestinationOffset +
                     vertex * xfbCompactStride + compactOffset;
-                xfbCopies[xfbCopyCount++] = (MGLRenderCppBufferCopyEntry){
+                xfbCopies[xfbCopyCount++] = (MGLRenderBufferCopyEntry){
                     .source_buffer = (__bridge void *)xfbTemporary,
                     .source_offset = sourceOffset,
                     .destination_buffer = (__bridge void *)xfbCopyDestination,
@@ -2025,7 +2025,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     _tessellation.tessComputeProgram = tesProgram;
     BOOL stateReady = [self processGLState:true];
     if (!stateReady ||
-        mglRenderCppRenderEncoderOwnerHasCurrent(
+        mglRenderEncoderOwnerHasCurrent(
             _renderPassManager.state->currentRenderEncoderOwner) != 1 ||
         [self currentDrawRasterizationIsEmpty]) {
         _tessellation.tessComputeActive = NO;
@@ -2117,14 +2117,14 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
 
     /* PASS 1: Pre-resolve all Metal textures that the TES kernel needs.
      * Must happen before opening any encoder (same reason as TCS). */
-    if (mglRenderCppRenderEncoderOwnerHasCurrent(
+    if (mglRenderEncoderOwnerHasCurrent(
             _renderPassManager.state->currentRenderEncoderOwner) == 1) {
         [self endRenderEncoding];
     }
 
     /* Ensure a writable command buffer exists (same reason as TCS). */
-    MGLRenderCppCommandBufferState commandState = {0};
-    if (!mglRenderCppCommandBufferOwnerHasState(
+    MGLRenderCommandBufferState commandState = {0};
+    if (!mglRenderCommandBufferOwnerHasState(
             _renderPassManager.state->currentCommandBufferOwner,
             &commandState) ||
         commandState.status >= MGL_TESS_COMMAND_STATUS_COMMITTED) {
@@ -2167,7 +2167,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
         return false;
     }
 
-    MGLRenderCppComputeExecutionPlan executionPlan = {0};
+    MGLRenderComputeExecutionPlan executionPlan = {0};
     NSMutableArray *executionTemporaries = [NSMutableArray array];
     id computeEncoder = nil;
     executionPlan.pipeline = (__bridge void *)tesPipeline;
@@ -2198,7 +2198,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
             texture = (__bridge id)(ptr->mtl_data);
             GLuint imgLevel = MGL_STATE(ctx)->image_units[glUnit].level;
             if (imgLevel > 0u && texture) {
-                MGLRenderCppTextureInfo textureInfo = {0};
+                MGLRenderTextureInfo textureInfo = {0};
                 if (!mglTessTextureInfo(texture, &textureInfo)) {
                     [self clearStageBindingCopyBacks:&stageCopyBacks];
                     return false;
@@ -2543,13 +2543,13 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     _currentCBHasWork = YES;
 
     {
-        MGLRenderCppCopyBackEntry copyBackEntries[kMGLMaxBufferSlots] = {0};
+        MGLRenderCopyBackEntry copyBackEntries[kMGLMaxBufferSlots] = {0};
         uint32_t copyBackEntryCount = 0u;
         for (NSUInteger slot = 0; slot < kMGLMaxBufferSlots; slot++) {
             MGLStageBindingCopyBack *entry = &stageCopyBacks.slots[slot];
             if (entry->length == 0u) continue;
             copyBackEntries[copyBackEntryCount++] =
-                (MGLRenderCppCopyBackEntry){
+                (MGLRenderCopyBackEntry){
                     .temporary = entry->temporary,
                     .destination = entry->destination,
                     .destination_buffer = entry->destination_buffer,
@@ -2558,11 +2558,11 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
                 };
         }
         executionPlan.barrier_scope = copyBackEntryCount
-            ? MGL_RENDER_CPP_COMPUTE_BARRIER_BUFFERS
-            : MGL_RENDER_CPP_COMPUTE_BARRIER_NONE;
-        MGLRenderCppComputeExecutionResult executionResult = {0};
+            ? MGL_RENDER_COMPUTE_BARRIER_BUFFERS
+            : MGL_RENDER_COMPUTE_BARRIER_NONE;
+        MGLRenderComputeExecutionResult executionResult = {0};
         char executionError[256] = {0};
-        if (mglRenderCppExecuteComputeExecutionPlan(
+        if (mglRenderExecuteComputeExecutionPlan(
                 _renderPassManager.state->currentCommandBufferOwner,
                 _gpuRecovery.commandRecoveryOwner,
                 &executionPlan, copyBackEntries, copyBackEntryCount, 0u,
@@ -2581,7 +2581,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     }
 
     if (xfbCopyBytes > 0u) {
-        const MGLRenderCppBufferCopyEntry xfbCopy = {
+        const MGLRenderBufferCopyEntry xfbCopy = {
             .source_buffer = (__bridge void *)xfbTemporary,
             .source_offset = 0u,
             .destination_buffer = (__bridge void *)xfbCopyDestination,
@@ -2633,7 +2633,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
                 inside[i] = *(const __fp16 *)&tessFactors[p].inside[i];
             }
 
-            if (mglRenderCppTessFactorsDiscardPatch(
+            if (mglRenderTessFactorsDiscardPatch(
                     (uint32_t)genMode, edge, inside)) {
                 continue;
             }

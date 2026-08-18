@@ -213,11 +213,9 @@ typedef struct Buffer_t {
     uint32_t    scan_cache_restart_index;
     uint8_t     scan_cache_restart_enabled;
     uint8_t     scan_cache_valid;
-    /* ObjC A/B baseline CoW pool. */
+    /* Backend-owned CoW pool. This is an opaque C++ allocation, not a CF object;
+     * release it only through mglRenderReleaseBufferCowPool. */
     void *mtl_cow_pool;
-    /* Metal-cpp CoW pool. This is an opaque C++ allocation, not a CF object;
-     * release it only through mglRenderCppReleaseBufferCowPool. */
-    void *mtl_cpp_cow_pool;
     void *mapped_ptr;
     GLboolean transient_batch_buffer;
     /* Program-owned storage for a default-block (glUniform*) location.  Small

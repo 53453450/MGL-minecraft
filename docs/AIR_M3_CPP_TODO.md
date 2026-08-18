@@ -2,7 +2,7 @@
 
 > 当前快照：2026-08-18（M3 单路径收口完成）。
 > 生产源码不再读取迁移期开关，command/resource/encoder 操作通过 C++ owner facade；
-> `mgl_render_cpp_objc.h`、`MGLMetal*Ref` 和 smoke 对 transition adapter 的依赖已删除。
+> `mgl_render_objc.h`、`MGLMetal*Ref` 和 smoke 对 transition adapter 的依赖已删除。
 > 施工期 checker 与 baseline 脚本已在 M3 完成后删除，不再作为长期维护接口；
 > 当前验证入口为 `make -j4 lib`、`make test-all` 和 `git diff --check`。
 > 历史阶段编号、checker 和 A/B 数字仅保留在下方完成记录，不代表当前验证契约。
@@ -25,7 +25,7 @@ M3 完成必须同时满足以下四项，不能只以 smoke 或单个 draw case
 2. GLSL 到运行时只保留自研 frontend -> MGLIR -> AIR -> metallib 路径；删除动态
    MSL fallback、glslang、SPIRV-Cross 和 SPIRV-Tools 的源码/构建依赖。
 3. Metal renderer 的资源所有权、pipeline/pass/binding/draw/submit 主体由
-   `mgl_render_cpp.cpp` 持有；C ABI 不暴露 `MTL::*`，Metal-cpp implementation
+   `mgl_render.cpp` 持有；C ABI 不暴露 `MTL::*`，Metal-cpp implementation
    macros 只在该 TU 定义。
 4. Metal-cpp 过渡 gate 和 tessellation 过渡 gate 删除；ObjC 只保留 AppKit、
    `NSView`、`CAMetalLayer` 等平台外壳。
@@ -62,7 +62,7 @@ M3 完成必须同时满足以下四项，不能只以 smoke 或单个 draw case
   protocol/descriptor 类型和直接 Metal selector 均下沉到 C++ owner。
 - `MGLPipelineCache.h` 的设备、pipeline/function、descriptor、格式和 blend 参数已
   改为 opaque `void *`/value `uint64_t`/`uint32_t`；descriptor value-state 读取、
-  depth/stencil 创建和设备身份查询均通过 `mgl_render_cpp.cpp`，缓存状态由 C++ owner
+  depth/stencil 创建和设备身份查询均通过 `mgl_render.cpp`，缓存状态由 C++ owner
   持有。
 - `mgl_index_buffer.m` 已删除并由 `mgl_index_buffer.cpp` 接管；primitive-emulation
   index cache、UInt8 展开、source/readback 生命周期和 Metal buffer retain/release
@@ -71,7 +71,7 @@ M3 完成必须同时满足以下四项，不能只以 smoke 或单个 draw case
   `NS_ENUM(NSUInteger, ...)` 指针被 32-bit 写入破坏。
 - `mgl_draw_encode.m` 的公共/私有入口已改为 opaque handle、数值 primitive/index
   enum 和 C `bool`；它只保留 GL primitive emulation/validation，draw 提交统一走
-  `mglRenderCppEncodeDrawForRenderEncoderOwner`。
+  `mglRenderEncodeDrawForRenderEncoderOwner`。
 - 施工期 checker 曾覆盖 gate/legacy bridge/ref typedef、adapter 文件、
   implementation macro 唯一性、backend/platform roots、render-pass/pipeline-cache
   私有头 opaque 约束和 Objective-C command operation。M3 完成后这些脚本已删除，
@@ -153,7 +153,7 @@ P0「固定 M3 runtime contract」已交付并全绿验证：
 
 ### 2.2 已完成并应保留的 Metal-cpp 基础
 
-- `mgl_render_cpp.cpp` 是唯一 `NS_PRIVATE_IMPLEMENTATION` /
+- `mgl_render.cpp` 是唯一 `NS_PRIVATE_IMPLEMENTATION` /
   `MTL_PRIVATE_IMPLEMENTATION` TU；其他 C++ TU 只包含声明。
 - C/ObjC 边界使用基础类型、value state 和 opaque owner，不在 C ABI 中泄漏
   `MTL::*`。
@@ -161,7 +161,7 @@ P0「固定 M3 runtime contract」已交付并全绿验证：
   render encoder、render-pass state/identity、binding state、query state、pipeline
   cache、buffer COW/map/readback、texture descriptor/transfer/staging、sampler、
   depth-stencil、render/compute/blit encoder setters 和 draw dispatch。
-- mipmap 生成已通过 `mglRenderCppBlitGenerateMipmaps` 进入 C++ blit facade。
+- mipmap 生成已通过 `mglRenderBlitGenerateMipmaps` 进入 C++ blit facade。
 - Metal-cpp smoke 已覆盖资源 ownership、command lifecycle、render-pass state、
   binding dedup、texture upload/readback、mipmap encode、ICB 和 raw render/blit。
 
@@ -551,7 +551,7 @@ test-metalcpp 和 `git diff --check` 全绿。
   有 TCS 时 = `tess_control_output_vertices`，无 TCS 时 = GL 默认 3。
   `mglNativeTESInterfaceSupported` 放宽为接受非零 patchControlPointCount
   （须与 TCS 输出顶点数一致）。
-- **Metal-cpp**：新增 `mglRenderCppDrawIndexedPatches` facade（
+- **Metal-cpp**：新增 `mglRenderDrawIndexedPatches` facade（
   numberOfPatchControlPoints 是首参数）+ ObjC wrapper `mglDrawSupportDrawIndexedPatches`。
 - **ObjC**：`handleTessellationPatchDrawIfNeeded:` 拆 indexed 分支——无 TCS +
   单 instance 时用 `captureAIRVertexPositionsForGeometryIndexed:`（sparse records
@@ -701,11 +701,11 @@ MSL API 和未纳入构建的第三方目录；必须按下面的依赖顺序收
 
 | 旧入口 | 现有 source | 预编译函数 | C++ cache kind |
 |---|---|---|---|
-| `scaledBlitPipelineForPixelFormat:` | `MGL/aux_shaders/scaled_blit.metal` | `mgl_scaled_blit_vs/fs` | `MGL_RENDER_CPP_AUX_RENDER_SCALED_BLIT` |
-| `scaledBlitComputePipelineForPixelFormat:` | `scaled_blit_cs.metal` | `mgl_scaled_blit_cs` | `MGL_RENDER_CPP_AUX_COMPUTE_SCALED_BLIT` |
-| `scaledDepthBlitPipelineForPixelFormat:` | `scaled_depth_blit.metal` | `mgl_scaled_depth_blit_vs/fs` | `MGL_RENDER_CPP_AUX_RENDER_SCALED_DEPTH_BLIT` |
-| `msaaIntegerResolvePipelineForSigned:` | `msaa_integer_resolve.metal` | `mgl_msaa_resolve_uint/int` | `MGL_RENDER_CPP_AUX_COMPUTE_MSAA_INTEGER_RESOLVE` |
-| `clearRectPipelineForColorFormat:` | `clear_rect.metal` | `mgl_clear_rect_vs/fs` | `MGL_RENDER_CPP_AUX_RENDER_CLEAR_RECT` |
+| `scaledBlitPipelineForPixelFormat:` | `MGL/aux_shaders/scaled_blit.metal` | `mgl_scaled_blit_vs/fs` | `MGL_RENDER_AUX_RENDER_SCALED_BLIT` |
+| `scaledBlitComputePipelineForPixelFormat:` | `scaled_blit_cs.metal` | `mgl_scaled_blit_cs` | `MGL_RENDER_AUX_COMPUTE_SCALED_BLIT` |
+| `scaledDepthBlitPipelineForPixelFormat:` | `scaled_depth_blit.metal` | `mgl_scaled_depth_blit_vs/fs` | `MGL_RENDER_AUX_RENDER_SCALED_DEPTH_BLIT` |
+| `msaaIntegerResolvePipelineForSigned:` | `msaa_integer_resolve.metal` | `mgl_msaa_resolve_uint/int` | `MGL_RENDER_AUX_COMPUTE_MSAA_INTEGER_RESOLVE` |
+| `clearRectPipelineForColorFormat:` | `clear_rect.metal` | `mgl_clear_rect_vs/fs` | `MGL_RENDER_AUX_RENDER_CLEAR_RECT` |
 
 - [x] 在 `MGL/aux_shaders/` 增加可复现的 SDK build 规则：`.metal` 只作为
   **构建期输入**，由当前 `SDK_ROOT` 生成目标架构 metallib，再生成只读的
@@ -715,12 +715,12 @@ MSL API 和未纳入构建的第三方目录；必须按下面的依赖顺序收
   的只读字节表，Makefile 的 `build/aux/*.metallib` + `gen_aux_assets.py` 规则
   在 `.metal`/MANIFEST 变更时重生成。`scripts/check_air_only.sh` 通过：
   MGL/src 全量符号扫描 0 命中 `newLibraryWithSource|mglCompileMSL`。）
-- [x] 在 `mgl_render_cpp.h/.cpp` 增加
-  `mglRenderCppGetOrCreateAux{Render,Compute}PipelineFromMetallib`（或同等
+- [x] 在 `mgl_render.h/.cpp` 增加
+  `mglRenderGetOrCreateAux{Render,Compute}PipelineFromMetallib`（或同等
   命名）入口：C ABI 只传 `const void *bytes/size`、kind、variant、格式/写掩码，
   C++ 内完成 `NS::Data -> MTL::Library -> MTL::Function -> PSO`，并由
   renderer-lifetime cache 持有唯一 owner。不得把 `MTL::*` 放入 C ABI。
-  （2026-08-14 核验：`mgl_render_cpp.h:502-566` 四个入口齐全，均以
+  （2026-08-14 核验：`mgl_render.h:502-566` 四个入口齐全，均以
   bytes/size/kind/variant/format 为参；`asset_hash` 参与校验。）
 - [x] 将 `MGLRenderer+Blit.m:691-1055`、`:1944-2050` 改为“查缓存 -> 传 asset
   -> C++ 创建 PSO”；保留 ObjC gate 仅用于 P3 迁移期 A/B，gate-on 不得出现
@@ -729,7 +729,7 @@ MSL API 和未纳入构建的第三方目录；必须按下面的依赖顺序收
 - [x] 为每个 helper 增加尺寸/entry/hash 校验；asset 缺失时返回明确 GL error，
   不回退到 source compiler。补充 `test_metalcpp_smoke.mm` 的 5 类 helper
   lookup/create/cache-hit 和错误路径信号。
-  （2026-08-14 核验：`mglRenderCppGetOrCreateAux*FromMetallib` 内部对
+  （2026-08-14 核验：`mglRenderGetOrCreateAux*FromMetallib` 内部对
   asset_hash/library/function/error 路径全部校验并返回 -1；smoke 表覆盖
   scaled_blit/scaled_blit_cs/scaled_depth_blit/msaa_integer_resolve/clear_rect/
   safe_fallback 六类 entry。）
@@ -779,10 +779,10 @@ rg -n "newLibraryWithSource|safeVertexShader|safeFragmentShader" MGL/src MGL/inc
    pipeline cache 的 value-key、archive 和 C++ owner API。
 2. `MGL/include/mgl_msl_compiler.h` / `MGL/src/mgl_msl_compiler.m`：整组删除；
    `MGLRenderer.m` 的 `compileShader:` / `newFunctionFromLibrary:source:` 及
-   `MGLRenderer+RenderPass_Private.h` 声明同步删除。`mglRenderCppCreateFunction`
+   `MGLRenderer+RenderPass_Private.h` 声明同步删除。`mglRenderCreateFunction`
    等“从已加载 metallib 取函数”的 API 保留。
-3. `MGL/src/mgl_render_cpp.h/.cpp`：删除仅服务 source 编译的
-   `mglRenderCppCreateMetal4Compiler`、`mglRenderCppCompileLibrary`；保留
+3. `MGL/src/mgl_render.h/.cpp`：删除仅服务 source 编译的
+   `mglRenderCreateMetal4Compiler`、`mglRenderCompileLibrary`；保留
    `mglAirLoadLibrary`、precompiled asset loader 和 PSO/cache API。
 4. `test_legacy_compat/test_metalcpp_smoke.mm`：把 source compile smoke 改成
    precompiled metallib load/function/PSO smoke；禁止通过测试保留生产 source
@@ -909,7 +909,7 @@ git diff --check
 > `.m` 源文件为边界；每完成一个单元**同时删除对应 ObjC 状态**，绝不保留双 owner。
 >
 > P4 起点历史基线（2026-08-13 实测；不代表 2026-08-17 当前状态）：
-> - `mgl_render_cpp.h` 已有 223 个纯 C facade 函数；owner 已覆盖 device / command
+> - `mgl_render.h` 已有 223 个纯 C facade 函数；owner 已覆盖 device / command
 >   queue / command buffer（含 submission、detached、completion、error
 >   recovery）/ render encoder / render pass identity+FBO-match cache / render
 >   pass state / MDI scratch / query state / binding state / pipeline cache
@@ -927,8 +927,8 @@ git diff --check
 
 1. **先搬状态、后搬行为**：同一单元的 ObjC 权威状态只有一个 owner；迁移后旧
    owner 字段/方法当场删除（以 `git rm` 该字段或 `rg` 计数归零为验收）。
-2. 新增 C ABI **只进 `mgl_render_cpp.h`**（纯 C、`uint`/`void*`/value-state）；
-   `MTL::*` 只出现在 `mgl_render_cpp.cpp`。ObjC 侧只做「GL 状态 → value-state
+2. 新增 C ABI **只进 `mgl_render.h`**（纯 C、`uint`/`void*`/value-state）；
+   `MTL::*` 只出现在 `mgl_render.cpp`。ObjC 侧只做「GL 状态 → value-state
    plan」的转换，不做 Metal 对象操作。
 3. 每个单元拆四类 API，禁止把整个单元塞进单一「大 selector」：
    `CreateXxxOwner` / `BuildXxxPlan` / `EncodeXxx` / `EndXxxAndCommit`。
@@ -943,17 +943,17 @@ git diff --check
 
 | 单元 | P4 起点 ObjC 权威状态 | P4 起点已有 C++ owner / facade | 2026-08-17 处置 |
 |---|---|---|---|
-| render pass | `MGLCommandState`：renderPassDescriptor、identity 镜像（framebuffer/drawbuffer）、dontCareFrameGeneration、lastFboMatch*、transientDepthTexture、fallbackRenderTarget、currentDrawUsesRTSampledCopy、blitOperationComplete、currentEvent/currentSyncName | `renderPassIdentityOwner`（`mglRenderCppCreateRenderPassIdentityOwner`/`Update/Get`/FboMatchCache）、`renderPassStateOwner`（`CreateDefaultRenderPassStateOwner`）、`mglRenderCppCreateRenderEncoderFromStateOwner` | P4 已收口；gate-on state/identity/encoder 由 owner 管理 |
-| pipeline | `MGLPipelineCacheState`：pipelineState+formats、pipelineStateCache/LRU、descriptorCache、depthStencilStateCache、binaryArchive、dsCacheEnabled、psoDedupEnabled | `_cppOwner`（`mglRenderCppCreatePipelineCacheOwner` 全家：Lookup/Store Pipeline*、`CreateRenderPipelineState`、`CreateBinaryArchive`/`Serialize`、depth-stencil owner 编解码） | P4 已收口；final/simple/safe builder 与 archive 生命周期在 C++ |
-| command lifecycle | `MGLCommandState`：仅保留 GL 兼容状态；current/detached/submission/completion 由 owner 持有 | `mglRenderCppCommitCommandBufferTransaction` + `CommandBufferRecoveryOwner` | P4 已收口；P5 删除 gate-off/recovery 壳 |
-| encoder | `currentRenderEncoder`/`currentRenderEncoderOwner` | `mglRenderCppResetRenderEncoderOwner`/`EndRenderEncoderOwner` | P4 已收口；P5 删除 gate-off getter/setter 壳 |
-| MDI scratch | `mdiArgsScratchBuffer/Offset/Capacity` | `mglRenderCppMDIScratchOwner`（Create/Allocate/Destroy） | P4 owner 已收口；P5 删除 gate-off 壳 |
-| binding | `MGLRenderer+BindingState.m` GL 语义解析 + `_bindingStateOwner` | ordered snapshot + `mglRenderCppBinding*` setter 家族（texture/sampler/viewport/scissor/fill mask/dedup stats） | P4 已收口；P5 删除 gate-off setter 壳 |
-| draw dispatch | `MGLRenderer+Draw.m`/`+DrawSupport.m` GL 语义解析与 gate-off adapter | `mglRenderCppDrawPlan`、`mglRenderCppIndirectCommandBuffer*`、GS/TES compute dispatch | P4 已收口；P5 删除 gate-off draw 壳 |
-| texture/blit | `_blit.*PipelineCache`（6 个 NSDictionary）、`_resourceFallback.*`、上传/读回/mipmap 调度 | P3.1 asset PSO + `mglRenderCppBlit*`、`mglRenderCppTextureReplaceRegion/GetBytes`、`mglRenderCppBlitGenerateMipmaps` | P4 已收口；P5 删除 gate-off adapter |
-| compute | `MGLRenderer+Compute.m` GL reflection/visible-size 解析 | `MGLRenderCppComputeExecutionPlan`、owner transaction、barrier/copy-back/CPU-prefix facade | P4 已收口；P5 删除 gate-off adapter |
-| query/sync | `MGLRenderer+QuerySync.m` 剩余 owner-dependent 部分 | `mglRenderCppQueryStateOwner`（Begin/End sample+visibility、timer、timestamp）、`mglRenderCppWaitForSync/GetSyncStatus/ReleaseSync` | P4 已收口；ObjC 只留 GL 语义和 gate-off adapter |
-| callbacks | `GLMMetalFuncs` 53 个纯 C ABI 入口 | `mglRenderCppInstallMetalCallbacks` + opaque callback runtime | P4 已收口：19 strict + 34 pure adapter + 0 legacy；P5 删除 bridge 壳 |
+| render pass | `MGLCommandState`：renderPassDescriptor、identity 镜像（framebuffer/drawbuffer）、dontCareFrameGeneration、lastFboMatch*、transientDepthTexture、fallbackRenderTarget、currentDrawUsesRTSampledCopy、blitOperationComplete、currentEvent/currentSyncName | `renderPassIdentityOwner`（`mglRenderCreateRenderPassIdentityOwner`/`Update/Get`/FboMatchCache）、`renderPassStateOwner`（`CreateDefaultRenderPassStateOwner`）、`mglRenderCreateRenderEncoderFromStateOwner` | P4 已收口；gate-on state/identity/encoder 由 owner 管理 |
+| pipeline | `MGLPipelineCacheState`：pipelineState+formats、pipelineStateCache/LRU、descriptorCache、depthStencilStateCache、binaryArchive、dsCacheEnabled、psoDedupEnabled | `_owner`（`mglRenderCreatePipelineCacheOwner` 全家：Lookup/Store Pipeline*、`CreateRenderPipelineState`、`CreateBinaryArchive`/`Serialize`、depth-stencil owner 编解码） | P4 已收口；final/simple/safe builder 与 archive 生命周期在 C++ |
+| command lifecycle | `MGLCommandState`：仅保留 GL 兼容状态；current/detached/submission/completion 由 owner 持有 | `mglRenderCommitCommandBufferTransaction` + `CommandBufferRecoveryOwner` | P4 已收口；P5 删除 gate-off/recovery 壳 |
+| encoder | `currentRenderEncoder`/`currentRenderEncoderOwner` | `mglRenderResetRenderEncoderOwner`/`EndRenderEncoderOwner` | P4 已收口；P5 删除 gate-off getter/setter 壳 |
+| MDI scratch | `mdiArgsScratchBuffer/Offset/Capacity` | `mglRenderMDIScratchOwner`（Create/Allocate/Destroy） | P4 owner 已收口；P5 删除 gate-off 壳 |
+| binding | `MGLRenderer+BindingState.m` GL 语义解析 + `_bindingStateOwner` | ordered snapshot + `mglRenderBinding*` setter 家族（texture/sampler/viewport/scissor/fill mask/dedup stats） | P4 已收口；P5 删除 gate-off setter 壳 |
+| draw dispatch | `MGLRenderer+Draw.m`/`+DrawSupport.m` GL 语义解析与 gate-off adapter | `mglRenderDrawPlan`、`mglRenderIndirectCommandBuffer*`、GS/TES compute dispatch | P4 已收口；P5 删除 gate-off draw 壳 |
+| texture/blit | `_blit.*PipelineCache`（6 个 NSDictionary）、`_resourceFallback.*`、上传/读回/mipmap 调度 | P3.1 asset PSO + `mglRenderBlit*`、`mglRenderTextureReplaceRegion/GetBytes`、`mglRenderBlitGenerateMipmaps` | P4 已收口；P5 删除 gate-off adapter |
+| compute | `MGLRenderer+Compute.m` GL reflection/visible-size 解析 | `MGLRenderComputeExecutionPlan`、owner transaction、barrier/copy-back/CPU-prefix facade | P4 已收口；P5 删除 gate-off adapter |
+| query/sync | `MGLRenderer+QuerySync.m` 剩余 owner-dependent 部分 | `mglRenderQueryStateOwner`（Begin/End sample+visibility、timer、timestamp）、`mglRenderWaitForSync/GetSyncStatus/ReleaseSync` | P4 已收口；ObjC 只留 GL 语义和 gate-off adapter |
+| callbacks | `GLMMetalFuncs` 53 个纯 C ABI 入口 | `mglRenderInstallMetalCallbacks` + opaque callback runtime | P4 已收口：19 strict + 34 pure adapter + 0 legacy；P5 删除 bridge 壳 |
 
 - [x] `make check-air-only` 在 P4 全程必须保持 OK（回归 P3 提交后状态）。
   （2026-08-14：本轮 P4.3 后续提交后复跑仍 OK；每次 P4 子批次合入前复跑。）
@@ -983,7 +983,7 @@ git diff --check
 | mgl_sync.m | 2 | Texture | 平台语义（readback 纹理检视，1054 GL 语义层残余） |
 | MGLRenderer+GPURecovery.m | 2 | RCE/CommandBuffer | 平台语义（AGX 恢复 commit 包装，1054 明示保留） |
 | MGLRenderer+QuerySync.m | 7 | CommandBuffer/Event | 平台语义（fence/事件生命周期 + CB 等待，1054 GL 语义层残余） |
-| mgl_texture_compat.m | 7 | Texture | 平台语义（视图创建已有 C++-first 路径 mglRenderCppCreateTextureViewRange，gate-off 需 ObjC fallback） |
+| mgl_texture_compat.m | 7 | Texture | 平台语义（视图创建已有 C++-first 路径 mglRenderCreateTextureViewRange，gate-off 需 ObjC fallback） |
 | MGLPipelineCache.m | 31 | DepthStencil/Function/Pipeline/Archive | 随 1055/1115（pipeline 缓存迁 C++ builder 后收口） |
 | MGLRenderPassManager.m | 24 | CommandBuffer/Event/Buffer | item 1099（command lifecycle 收口后归零） |
 | MGLRenderer+RenderPass.m | 158 | Texture/Function/Library/Pipeline | item 1099（render pass 读取已 owner-first，写入侧收口） |
@@ -1018,23 +1018,23 @@ P5 1737 为终态兜底。
 - [x] render pass 状态全量 value-state 化：attachment texture/slice/level、
   load/store actions、clear color/depth/stencil、renderTargetWidth/Height/
   ArrayLength、sampleCount、visibility buffer 全部经
-  `mglRenderCppUpdateRenderPassState(owner, &state)` 写入；
-  ObjC 只保留 `MGLRenderCppRenderPassState` 快照（只读）。
+  `mglRenderUpdateRenderPassState(owner, &state)` 写入；
+  ObjC 只保留 `MGLRenderPassState` 快照（只读）。
   （2026-08-14 核验：写路径已 owner-first（P4.1f 起
   `mglRenderPassSetPersistent*Attachment`/size/clear 写 owner）；读取全部经
   owner-first helper（`mglRenderPassAttachmentTextureFor` 等先 owner 后镜像）；
   RenderPass.m 的 25 处 `renderPassDescriptor.` 全部位于 owner-first helper 的
   gate-off fallback 或 gate-off 镜像写分支（P5 删 gate 时归零）。）
-- [x] encoder 创建只走 `mglRenderCppCreateRenderEncoderFromStateOwner`；
+- [x] encoder 创建只走 `mglRenderCreateRenderEncoderFromStateOwner`；
   ObjC 侧删 `renderCommandEncoderWithDescriptor:` 回退分支里对 descriptor 的组装。
   （2026-08-14 核验：`createRenderEncoderWithDescriptor:` gate-on 只走
-  `mglRenderCppCreateRenderEncoderFromStateOwner`；ObjC 回退仅在 gate-off 或
+  `mglRenderCreateRenderEncoderFromStateOwner`；ObjC 回退仅在 gate-off 或
   C++ 失败时触发，且 gate-on 下 descriptor 为 nil → 回退不可达。删除随 P5。）
 - [x] FBO match cache / dont-care frame generation / transient depth /
   RTSampledCopy 的 ObjC 镜像字段删除，统一由 C++ owner 维护
-  （`mglRenderCppSetFboMatchCache` 等已有入口）。
+  （`mglRenderSetFboMatchCache` 等已有入口）。
   （2026-08-14 关闭：**FBO match cache 已完成** —— gate-on 写 identity
-  owner（`mglRenderCppSetFboMatchCache`/`ClearFboMatchCache`），
+  owner（`mglRenderSetFboMatchCache`/`ClearFboMatchCache`），
   `lastFboMatch*` 镜像仅剩 gate-off 基线。dontCareFrameGeneration /
   transientDepthTexture+W/H / currentDrawUsesRTSampledCopy+
   fallbackRenderTargetTexture 核验为 GL 线程渲染器「活跃决策态」
@@ -1072,8 +1072,8 @@ P5 1737 为终态兜底。
 #### P4.2 pipeline descriptor builder + binary archive
 
 > ✅ **2026-08-13 完成**（见下文 P4.2 完成记录）：gate-on 的 final/simple/safe
-> descriptor 组装已全部迁入 C++ builder（`mglRenderCppCreateRenderPipelineFromState`），
-> ObjC 只构造 `MGLRenderCppPipelineDescriptorState` value-state；descriptor cache
+> descriptor 组装已全部迁入 C++ builder（`mglRenderCreateRenderPipelineFromState`），
+> ObjC 只构造 `MGLRenderPipelineDescriptorState` value-state；descriptor cache
 > 改为 value-state 版；二进制归档在 C++ builder 内先 lookup，miss 才 add。
 > gate-off 回退保留
 > （A/B regression 54/0/2 双门一致）。
@@ -1084,18 +1084,18 @@ render PSO cache 全部在 C++；ObjC 不再组装 `MTLRenderPipelineDescriptor`
 - [x] final descriptor：把 `MGLRenderer+RenderPass.m` 的 descriptor 组装
   （blend state、vertex descriptor、depth-stencil、tessellation 字段、
   inputPrimitiveTopology、color write mask）逐字段搬进
-  `mgl_render_cpp.cpp` 的 builder；ObjC 侧只传 `MGLRenderCppPipelineDescriptorState`。
+  `mgl_render.cpp` 的 builder；ObjC 侧只传 `MGLRenderPipelineDescriptorState`。
   （2026-08-13：`generatePipelineDescriptorState:` /
   `generateVertexDescriptorState:` 直接构造 value-state，`mglAirCreateRenderPipeline`
   的共享 builder 组装 `MTL::RenderPipelineDescriptor`；`mglCreateAIRRenderPipelineCpp`
   的 descriptor→state 转换已删除。）
 - [x] simple fallback / safe fallback：同样在 C++ 内完成（复用 P3.2 的
-  `mglRenderCppCreateAuxFunctions` + `MGLRenderCppPipelineDescriptorState`）；
+  `mglRenderCreateAuxFunctions` + `MGLRenderPipelineDescriptorState`）；
   ObjC 侧删除 `simpleDescriptor`/`safeDescriptor` 的手工组装。
   （2026-08-13：gate-on 的 simple/safe 分支构造降级 state 后走同一 C++ builder；
   `air_pipeline_safe_fallback` 回归双门绿。）
 - [x] binary archive：`MGLPipelineCache` 的 load/save/apply/add 生命周期迁入
-  C++ owner（`mglRenderCppCreateBinaryArchive` /
+  C++ owner（`mglRenderCreateBinaryArchive` /
   `SerializeBinaryArchive` 已有入口）；ObjC 侧只保留
   `binaryArchiveURL` 等路径计算。
   （2026-08-16 终局收口：`mglAirCreateRenderPipelineWithArchive` 与 gate-off
@@ -1115,32 +1115,32 @@ P5 删 gate 时清零。A/B regression 54/0/2 —— 56 测试，含 P4.1e2 新�
 
 #### P4.3 draw encode plan + batch replay + ICB/MDI + GS/TES dispatch
 
-> ✅ **2026-08-17 完成**：`MGLRenderCppDrawPlan`、ordered binding snapshot、
+> ✅ **2026-08-17 完成**：`MGLRenderDrawPlan`、ordered binding snapshot、
 > replay/ICB/MDI facade 与 GS/TES execution plan 均已接线；下方分段说明保留各
 > 历史切片的当时边界，当前结论以每项末尾的 2026-08-17 收口记录为准。
 
 目标：draw validation 之后的 **encode plan → batch replay → ICB/MDI →
 GS/TES dispatch → 最终 draw 提交** 整体作为 C++ 完成操作迁入。
 
-- [x] 定义 `MGLRenderCppDrawPlan` value-state（mode/first/count/instanceCount/
+- [x] 定义 `MGLRenderDrawPlan` value-state（mode/first/count/instanceCount/
   baseVertex/baseInstance/indices 指针或 gather 结果）；ObjC draw 入口只做
-  validation + plan 构造，然后单次调用 C++ `mglRenderCppEncodeDraw(ctx, plan,
+  validation + plan 构造，然后单次调用 C++ `mglRenderEncodeDraw(ctx, plan,
   encoderOwner, pipelineOwner, bindingOwner)`。
   （2026-08-13 P4.3a：plan 覆盖 ARRAY/INDEXED/ARRAY_INDIRECT/INDEXED_INDIRECT/
-  PATCHES/INDEXED_PATCHES 六形态；`mglRenderCppEncodeDraw(render_encoder,
+  PATCHES/INDEXED_PATCHES 六形态；`mglRenderEncodeDraw(render_encoder,
   plan, err, errcap)` 分派到 per-call facade；owner 参数与 binding 消费留待
   P4.3b/c。）
 - [x] binding：`MGLRenderer+BindingState.m` 从按名/按 stage 的重复绑定逻辑改为
   消费 program reflection + GL binding plan（`mgl_buffer_plan` /
   `mgl_shader_resource` 已有数据），把「资源→Metal slot」的 setter 序列迁入
-  C++（`mglRenderCppBinding*` setter 家族已有 223 facade 中的一部分）；
-  每 draw 一个 `mglRenderCppBindingSnapshot`，C++ binding owner 直接消费。
+  C++（`mglRenderBinding*` setter 家族已有 223 facade 中的一部分）；
+  每 draw 一个 `mglRenderBindingSnapshot`，C++ binding owner 直接消费。
   （2026-08-15 进度：P4.3b 收口 —— snapshot 契约升级为有序 op 列表
   （buffer/bytes/nil-clear 交错保序），主 vertex/fragment 绑定循环的全部
   emit 已 gate-on 收集 + 单次 C++ 重放，与两条 batch fast path 同构；见
   P4.3b 收口完成记录。2026-08-16 追加 fragment fallback 段 snapshot 化，
   vertex attrib/fallback/point-size 与 fragment fallback 的 gate-on setter
-  序列现统一经 `mglRenderCppEncodeBindingSnapshot` 重放；剩余为
+  序列现统一经 `mglRenderEncodeBindingSnapshot` 重放；剩余为
   纹理/sampler 等绑定段和 88 处 id&lt;MTL 的逐段迁出，随 item 1014。）
   （2026-08-17 收口：ordered resource snapshot 已覆盖 buffer/bytes/texture/sampler、
   nil-clear、temporary view 与 fallback sampler；gate-on 由 binding owner 按原顺序
@@ -1150,20 +1150,20 @@ GS/TES dispatch → 最终 draw 提交** 整体作为 C++ 完成操作迁入。
 - [x] batch replay：把 `MGLRenderer+Batch.m`/`+BatchReplay.m` 的 replay 决策
   （batch 准入、切段、快照消费）迁入 C++（输入是现有 batch arena 的只读
   snapshot 数据）；或先保持数据在 ObjC、把「replay 执行 loop」迁入 C+
-  （最小 surgery 版）。所有 batch 相关 draw 必须走同一 `mglRenderCppEncodeDraw`。
+  （最小 surgery 版）。所有 batch 相关 draw 必须走同一 `mglRenderEncodeDraw`。
   （2026-08-13 P4.3a 前置：Batch/BatchReplay 的 draw 提交已与 Draw 共用
   plan 入口；P4.3b：两条 direct binding fast path 走 binding snapshot；
-  **P4.3c：简单批整批重放落地** —— `mglRenderCppReplayBatchDraws` 在 C++
+  **P4.3c：简单批整批重放落地** —— `mglRenderReplayBatchDraws` 在 C++
   循环构造 plan 并 EncodeDraw，数据仍是 ObjC batch arena 只读快照，特例批
   整体回退 ObjC 循环（见 P4.3c 完成记录）。）
 - [x] ICB/MDI：`MGLRenderer+DrawSupport.m` 的 indirect command buffer reset /
-  setIndirectDraw 流程统一走已有 `mglRenderCppResetIndirectCommandBuffer` /
-  `mglRenderCppSetIndirectDraw`；MDI 从 CPU 逐条转发改为 GPU-visible
+  setIndirectDraw 流程统一走已有 `mglRenderResetIndirectCommandBuffer` /
+  `mglRenderSetIndirectDraw`；MDI 从 CPU 逐条转发改为 GPU-visible
   ICB（P3.4 保留的 scratch owner 复用）。
   （2026-08-13 验证：ICB 全套 facade 已在 gate-on 接线 —— Batch.m 的
   Create/Reset/GetIndirectRenderCommand/SetIndirectDraw(Indexed)/
   UseRenderResource/ExecuteIndirectCommands 全部经 C++；MDI 的
-  `mglRenderCppMDIScratchOwner`（Create/Allocate/Reset）由
+  `mglRenderMDIScratchOwner`（Create/Allocate/Reset）由
   MGLRenderPassManager.m 持有、`mdiArgumentScratchBufferWithLength:` 包装，
   MDI 批的最终 draw 走 P4.3a 的 plan 化 indirect wrapper。GPU-visible ICB
   MDI 替换 CPU 逐条转发留作后续（GS/TES/XFB 依赖 CPU 读回的路径不受影响）。）
@@ -1172,14 +1172,14 @@ GS/TES dispatch → 最终 draw 提交** 整体作为 C++ 完成操作迁入。
   attach 迁入 C++；ObjC 只剩「确认走 AIR GS/TES」的判定与 plan 构建。
   （2026-08-13 P4.3a 前置：TES native drawPatches/drawIndexedPatches 已进
   plan 的 PATCHES/INDEXED_PATCHES 形态；**P4.3e 已交付 GS 部分** ——
-  `MGLRenderCppBeginComputeDispatch`/`EndComputeDispatch` 接管 GS kernel
+  `MGLRenderBeginComputeDispatch`/`EndComputeDispatch` 接管 GS kernel
   dispatch 的固定序列（encoder/pipeline/ABI 槽位/dispatch），GL 资源绑定仍
   在 begin/end 之间经 C++ facade 完成（见 P4.3e 完成记录）。TES compute
   dispatch 与 P4.1e3 跨 CB 可见性未解项同域，待其修复后按同一模式迁移。）
   （2026-08-14 完成：P4.1e3 修复（6c6b1cd）后，`dispatchAIRTessEvalCompute`
-  按 GS 同模式落地（commit 5320bed）——`MGLRenderCppComputeDispatchSetup`
+  按 GS 同模式落地（commit 5320bed）——`MGLRenderComputeDispatchSetup`
   携带不变 ABI 槽位（pipeline + factors(26)/patch inputs(27)/stageOut(28)），
-  encoder 经 `mglRenderCppBeginComputeDispatch` 打开；GL 资源绑定
+  encoder 经 `mglRenderBeginComputeDispatch` 打开；GL 资源绑定
   （storage/sampled 纹理、stage 缓冲、per-instance stage_in(24) rebase、
   gather/contract bytes、XFB(31)）在 begin/end 间经 C++ facade；gate-off
   fallback 保持原 ObjC 序列（A/B 基线）。全套件 63/0/2/65 双门一致。）
@@ -1203,33 +1203,33 @@ creation 和 encoder selector）迁入 C++；与 P3.1 的 asset PSO 共用基座
 - [x] `MGLRenderer+Texture.m` 的全量上传路径（含 3D/slice/非对齐 padding、
   cloud-faces texel buffer 特判）统一走 C++ plan；
   `mglReplaceRegion`/`mglCopyFromBuffer` 在 C++ 内按 storage mode 选路。
-  （2026-08-16 完成：`MGLRenderCppTextureUploadPlan` 统一 logical 1D/1D-array
+  （2026-08-16 完成：`MGLRenderTextureUploadPlan` 统一 logical 1D/1D-array
   backing、compressed upload rows、3D padded-plane repack、array/cube
   bytes-per-image 归一、512 MiB staging 上限与 destination level/slice；
   `uploadTextureSliceViaBlit` 只消费 plan。ordered/dedicated 两条路径均无条件走
-  `mglRenderCppEncodeTextureUploadLayers`，上传 staging 与 `replaceRegion` 也统一
+  `mglRenderEncodeTextureUploadLayers`，上传 staging 与 `replaceRegion` 也统一
   由 C++ facade 执行，删除 ObjC `copyFromBuffer:toTexture:` fallback。
   `TEXTURE_UPLOAD_PLAN_OK` 覆盖正常/溢出/短 stride/压缩格式边界；normal 与
   ASan A/B 四跑均 73/0/2、无 sanitizer 报告；TSan 留待 command lifecycle
   收口后的 P4 整体终验。）
-- [x] readback 走 COW snapshot + blit（已有 `mglRenderCppBlitCopyTextureToBuffer`），
+- [x] readback 走 COW snapshot + blit（已有 `mglRenderBlitCopyTextureToBuffer`），
   ObjC 删除 CPU-memcpy 路径。
-  （2026-08-14 核验：私有存储纹理 readback 经 staging + `mglRenderCppBlitCopyTextureToBuffer`
-  走 C++（Texture.m:332）；CPU 读 `mglTextureGetBytes` → `mglRenderCppTextureGetBytes`
+  （2026-08-14 核验：私有存储纹理 readback 经 staging + `mglRenderBlitCopyTextureToBuffer`
+  走 C++（Texture.m:332）；CPU 读 `mglTextureGetBytes` → `mglRenderTextureGetBytes`
   （gate-on）。ObjC getBytes 仅剩 gate-off fallback。剩 P4.4 终局验收：
   `rg -l "id<MTLTexture>"` 只命中白名单外壳（item 880）。）
-- [x] mipmap 生成：已有 `mglRenderCppBlitGenerateMipmaps` 入口，把
+- [x] mipmap 生成：已有 `mglRenderBlitGenerateMipmaps` 入口，把
   `MGLRenderer+Blit.m`/`+Texture.m` 的调用点全部替换为 C++ facade。
   （2026-08-14 核验：唯一生成点 mtlGenerateMipmaps 已 gate-on 走
-  `mglRenderCppBlitGenerateMipmaps`（Texture.m:2608）；Blit.m 命中仅为注释。）
+  `mglRenderBlitGenerateMipmaps`（Texture.m:2608）；Blit.m 命中仅为注释。）
 - [x] scaled blit / integer-MSAA resolve / scissored clear：把 encoder 编排
   （bind PSO → setBytes → draw/dispatch → end）迁入 C++（P3.1 asset PSO +
   owner facade 组合）。
   （2026-08-14 核验：三段均 gate-on 走 C++ —— PSO 经
-  `mglCreateCppAuxRenderPipelineFromAsset`（P3.1 asset 基座），编码经
+  `mglCreateAuxRenderPipelineFromAsset`（P3.1 asset 基座），编码经
   `mglBlitSetRenderBytes/SetRenderTexture/SetRenderScissor`（
-  mglRenderCppSetRender* facade）+ `mglBlitDrawPrimitives`（统一 draw plan
-  P4.3a）；integer-MSAA resolve 经 `mglRenderCppEncodeMultisampleResolve`。）
+  mglRenderSetRender* facade）+ `mglBlitDrawPrimitives`（统一 draw plan
+  P4.3a）；integer-MSAA resolve 经 `mglRenderEncodeMultisampleResolve`。）
 
 验收：texture/blit 回归（3D、slices、mipmap、clip、integer-MSAA、RTT）A/B
 全绿；`rg -l "id<MTLTexture>" MGL/src --glob '*.m'` 只命中白名单外壳。
@@ -1237,22 +1237,22 @@ creation 和 encoder selector）迁入 C++；与 P3.1 的 asset PSO 共用基座
 #### P4.5 compute dispatch + command lifecycle + query/sync + callbacks 收口
 
 - [x] compute：`MGLRenderer+Compute.m` 的 resource plan、copy-back、barrier 与
-  command-buffer sequencing 迁入 C++（`mglRenderCppDispatchCompute` +
-  encoder owner）；ObjC 只传 `MGLRenderCppComputePlan` value-state。
-  （2026-08-15 首切片：dispatch 参数 value-state plan——`MGLRenderCppComputePlan`
-  + `mglRenderCppDispatchComputePlan`，DIRECT/INDIRECT 一次编码、local 0→1
+  command-buffer sequencing 迁入 C++（`mglRenderDispatchCompute` +
+  encoder owner）；ObjC 只传 `MGLRenderComputePlan` value-state。
+  （2026-08-15 首切片：dispatch 参数 value-state plan——`MGLRenderComputePlan`
+  + `mglRenderDispatchComputePlan`，DIRECT/INDIRECT 一次编码、local 0→1
   解析，两条 dispatch 路径已接；随 item 1138。剩余：processCompute resource
   plan、copy-back（flushStageBindingCopyBacks 的深 ObjC 编排）、barrier、
   CB sequencing。）
   （2026-08-16 追加切片，commit 973d240：runtime-array-size SSBO sizing
-  常量填充迁入 C++ —— `mglRenderCppBuildRuntimeArraySizes`（纯 CPU：
+  常量填充迁入 C++ —— `mglRenderBuildRuntimeArraySizes`（纯 CPU：
   slot 上限/自槽排除/uint32 截断），ObjC 只剩 GL 侧 {slot, visible-size}
   抽取，两门共用单一事实源；smoke `RUNTIME_ARRAY_SIZES_OK`；A/B regression
   71/0/2 双门一致。）
-  （2026-08-17 收口：`MGLRenderCppComputeExecutionPlan` 统一 ordered resources、
+  （2026-08-17 收口：`MGLRenderComputeExecutionPlan` 统一 ordered resources、
   direct/indirect dispatch、buffer barrier、copy-back 和 CPU visibility；
-  `mglRenderCppExecuteComputeExecutionPlan` 通过 command owner transaction 提交、
-  等待并在完成后执行 `mglRenderCppCopyBackCPUPrefix`。smoke 覆盖 barrier ordering、
+  `mglRenderExecuteComputeExecutionPlan` 通过 command owner transaction 提交、
+  等待并在完成后执行 `mglRenderCopyBackCPUPrefix`。smoke 覆盖 barrier ordering、
   indirect dispatch、runtime-array sizing、copy-back OOB/CPU visibility 与 owner
   failure。）
 - [x] command lifecycle：`MGLRenderPassManager` 的 currentCommandBuffer /
@@ -1263,18 +1263,18 @@ creation 和 encoder selector）迁入 C++；与 P3.1 的 asset PSO 共用基座
   detached submission、sync list、pending event 和 commit guard 现均由 C++
   owner 持有。completion 的纯分类及 error/success 计数、recovery mode、
   timeout/threshold 同步现也由 `CommandBufferRecoveryOwner` 持有；
-  `mglRenderCppProcessCommandBufferCompletion` 已统一 completion 分类、owner
+  `mglRenderProcessCommandBufferCompletion` 已统一 completion 分类、owner
   记账与首成功 clear-mode 的结果编排。实际 gate-on commit/wait、completion
   注册、next-current 创建和 reset-request latch 已进入 owner transaction；ObjC
   保留平台日志、最终 deferred reset hook、problematic-state 清理和 gate-off
   adapter。
-  swap-present 已通过 `mglRenderCppGetCommandBufferOwnerState` 与
-  `mglRenderCppPresentDrawableForCommandBufferOwner` 直接消费 owner，删除旧 raw
-  `mglRenderCppPresentDrawable(command_buffer, ...)`；gate-off 仍由 ObjC adapter
+  swap-present 已通过 `mglRenderGetCommandBufferOwnerState` 与
+  `mglRenderPresentDrawableForCommandBufferOwner` 直接消费 owner，删除旧 raw
+  `mglRenderPresentDrawable(command_buffer, ...)`；gate-off 仍由 ObjC adapter
   执行原 `presentDrawable:`。
   fence wait 与 last-submitted wait 现共用
-  `mglRenderCppWaitCommandBufferState` value-state API。
-  （2026-08-17 收口：`.m` 中 `mglRenderCppCommandBufferOwnerGetCurrent` 为 0；
+  `mglRenderWaitCommandBufferState` value-state API。
+  （2026-08-17 收口：`.m` 中 `mglRenderCommandBufferOwnerGetCurrent` 为 0；
   gate-on 的 commit/wait/completion/recovery/next-current 均由 transaction/owner
   管理。ObjC 只保留日志、GL problematic-state 清理、最终 reset hook 与 gate-off
   adapter；GL 线程和外层 `METAL_LOCK` 前提不变。最终审计进一步把 queue 初始化和
@@ -1284,9 +1284,9 @@ creation 和 encoder selector）迁入 C++；与 P3.1 的 asset PSO 共用基座
   fence、finish/flush 全部走 C++（QueryStateOwner facade 已有）；ObjC 只留
   GL 语义层。
   （2026-08-14 关闭：查询 100% C++ —— QueryStateOwner 全量 facade
-  （`mglRenderCppGetQueryVisibilityBuffer` 等 12+ 调用点，sample/timer/
+  （`mglRenderGetQueryVisibilityBuffer` 等 12+ 调用点，sample/timer/
   timestamp 全覆盖）；fence 走 C++：`mglRenderCommandBufferStatus` 状态读 +
-  `mglRenderCppTakeCommandBufferSubmission` submission owner 摘取，
+  `mglRenderTakeCommandBufferSubmission` submission owner 摘取，
   `mtlWaitForSync`/`mtlGetSyncStatus` 均以 C++ CB-state + `mglQuerySyncWaitCommandBuffer`
   为准。剩余 ObjC 恰为条目保留的 GL 语义层：AGX 错误恢复提交包装
   （历史切片当时的 `commitCommandBufferWithAGXRecovery:` 提交 facade 尚无恢复
@@ -1329,9 +1329,9 @@ git diff --check
 
 P5 终态判据：`GLMMetalFuncs` 53 个入口全部在 C++ 或纯 C 适配列；
 `MGLRenderPassManager`/`MGLPipelineCache`/render-draw categories 无 Metal 对象或
-descriptor 类型；`mgl_render_cpp_objc.h`、旧 ref typedef、transition adapter 和
+descriptor 类型；`mgl_render_objc.h`、旧 ref typedef、transition adapter 和
 gate/fallback 分支均不存在；Metal-cpp implementation macro 只在
-`mgl_render_cpp.cpp` 定义。
+`mgl_render.cpp` 定义。
 
 ### P4 完成记录追加（2026-08-17：非回归项终验）
 
@@ -1343,7 +1343,7 @@ gate/fallback 分支均不存在；Metal-cpp implementation macro 只在
   最终所有权复核又删除了 `GPURecovery.m` 的 transaction 前 status 分类与同步失败
   `recordGPUError` 重复记账；skipped-error、transaction failure 与异步 completion
   现在由 C++ recovery context 串行化并至多应用一次。ObjC `@catch` 只通过
-  `mglRenderCppCommandRecoveryRecordTransactionFailure` 把平台异常转换为 value-state，
+  `mglRenderCommandRecoveryRecordTransactionFailure` 把平台异常转换为 value-state，
   再发布 C++ 返回的 reset latch。
 - compute/binding/draw：execution plan、ordered resource snapshot、barrier/copy-back、
   CPU visibility 和 owner draw/setter facade 全部接线；gate-on 无直接 encoder draw。
@@ -1365,7 +1365,7 @@ gate/fallback 分支均不存在；Metal-cpp implementation macro 只在
 
 **item 1116/887（texture compat 深分类）切片**：
 `mglTextureDataKindForPixelFormat` 的 Metal pixel-format 分类表迁入
-`mglRenderCppTextureDataKindForPixelFormat`：
+`mglRenderTextureDataKindForPixelFormat`：
 - C ABI 只接收/返回 `uint32_t`，用 0..4 表示 unknown/float/sint/uint/depth；
   `MTL::PixelFormat*` 只出现在唯一 metal-cpp implementation TU；
 - `mgl_texture_compat.m` 保留同名薄代理，把返回值转回既有
@@ -1428,8 +1428,8 @@ attachments 直接组合为一个 render pass。GL 合法组合需要显式 fall
 ### P4 完成记录追加（2026-08-16，commit 6a9f989：texture creation target plan 迁 C++）
 
 **item 1116/887（texture creation 分类）切片**：纹理创建时的 GL target /
-renderbuffer sample-count switch 迁入纯 C ABI `MGLRenderCppTextureTargetPlan` +
-`mglRenderCppTextureTargetPlan`：
+renderbuffer sample-count switch 迁入纯 C ABI `MGLRenderTextureTargetPlan` +
+`mglRenderTextureTargetPlan`：
 - C++ 统一返回 Metal texture type、face 数、array 标志，以及 1D→2D、
   1D-array→2D-array backing 标志；C ABI 不暴露 `MTL::*`；
 - 覆盖 1D/1D-array/2D/rectangle/2D-array/2D-MS/2D-MS-array/3D/cube/
@@ -1486,14 +1486,14 @@ renderbuffer sample-count switch 迁入纯 C ABI `MGLRenderCppTextureTargetPlan`
   `TEXTURE_CREATION_TARGET_PLAN_OK`）；`check-air-only` 与 `git diff --check`
   通过。
 - metal-cpp implementation macro 的真实 `#define` 仍只在
-  `MGL/src/mgl_render_cpp.cpp`；严格 `id<MTL` census 仍为 15 个 `.m`，广义
+  `MGL/src/mgl_render.cpp`；严格 `id<MTL` census 仍为 15 个 `.m`，广义
   `MTL*` census 仍为 30 个 `.m`。本批不宣称 P4/P5 完成。
 
 ### P4 完成记录追加（2026-08-15，commit 6a9f989：ProgramBinding texture-type 映射迁 C++——item 1014/887 切片）
 
 **item 1014/887（BindingState 深分类）切片**：AIR reflection 的
 `image_dim / image_arrayed / image_multisampled` 到 Metal texture-type ABI 值的
-映射迁入 `mglRenderCppTextureTypeForShaderResource`：
+映射迁入 `mglRenderTextureTypeForShaderResource`：
 - C ABI 仅暴露 `uint32_t` 值；Metal-cpp 实现直接使用 `MTL::TextureType*` 枚举，
   ObjC consumer 到真正绑定纹理时才显式转换为 `MTLTextureType`；
 - `MGLRenderer+ProgramBinding.m` 与私有头的两个 query/helper 统一返回
@@ -1512,7 +1512,7 @@ renderbuffer sample-count switch 迁入纯 C ABI `MGLRenderCppTextureTargetPlan`
 **item 1141/887（Tessellation/DrawSupport 深分类）切片**：GL 4.6
 §11.2.2.2 的 patch discard 判定（适用 outer/inner tessellation level
 非正或 NaN 时丢弃，必须发生在 clamp-to-1 前）迁入
-`mglRenderCppTessFactorsDiscardPatch`：
+`mglRenderTessFactorsDiscardPatch`：
 - native primitive count 与 isolines/point-mode TES eval-item 计数直接复用
   C++ 真源；`MGLRenderer+Tessellation.m` 的逐 patch 查询也直接调用 facade；
 - 删除 ObjC `mglTessFactorsDiscardPatch` 实现、DrawSupport 的无用 extern，
@@ -1531,9 +1531,9 @@ renderbuffer sample-count switch 迁入纯 C ABI `MGLRenderCppTextureTargetPlan`
 **item 1141/887（Tessellation 深分类）切片**：`mglTESXFBVertexStride`
 （按名把 transform-feedback varyings 解析到 TES stage-output 资源列表、
 累加字段字节和；0 = 无法证明写步长）迁入
-`mglRenderCppTESXFBVertexStride`（`const void *program`，两门共用）：
+`mglRenderTESXFBVertexStride`（`const void *program`，两门共用）：
 - 与 mglFixMSLTesAsComputeKernel 的 packed-write lockstep 不变；内部直接
-  复用上一切片的 `mglRenderCppTESXFBFieldByteSize`（单一事实源链）；
+  复用上一切片的 `mglRenderTESXFBFieldByteSize`（单一事实源链）；
 - ObjC 静态变薄委托壳（dispatch/XFB 两个调用点不变）；
 - smoke TES_XFB_STRIDE_OK：栈构造 fake Program——pos(vec4)+col(vec3)=28、
   未知 varying 名 → 0、矩阵字段类型 → 0、无 varyings/NULL → 0。
@@ -1548,7 +1548,7 @@ renderbuffer sample-count switch 迁入纯 C ABI `MGLRenderCppTextureTargetPlan`
 **item 1141/887（VertexLayout 深分类）切片**：`mglTessControlPointFormat`
 （GL 类型 → TES 控制点 stage-input 的 MTLVertexFormat 表：Float/Float2/3/4、
 Int/Int2/3/4、UInt/UInt2/3/4、其余 Invalid）迁入
-`mglRenderCppTessControlPointFormat`（两门共用）：
+`mglRenderTessControlPointFormat`（两门共用）：
 - 值用 metal-cpp `MTL::VertexFormat*` 常量（与 macOS SDK
   MTLVertexDescriptor.h 逐值核对：Float=28 … UInt4=39、Invalid=0，无魔法
   数字——规避 round-31 硬编码 ABI 常量错误教训）；
@@ -1565,7 +1565,7 @@ Int/Int2/3/4、UInt/UInt2/3/4、其余 Invalid）迁入
 **item 1141/887（Buffer 深分类）切片**：`mglFloat11ToFloat` /
 `mglFloat10ToFloat`（GL_UNSIGNED_INT_10F_11F_11F_REV 顶点数据的 CPU 解包：
 11-bit 6 位尾数 / 10-bit 5 位尾数，无符号、5 位指数偏置 15）迁入
-`mglRenderCppFloat11ToFloat` / `mglRenderCppFloat10ToFloat`（两门共用）：
+`mglRenderFloat11ToFloat` / `mglRenderFloat10ToFloat`（两门共用）：
 - 语义逐点等价（含 denormal 2^(1-15)·mant/2^m、exp==31 的 inf/NaN、
   ldexpf 归一化路径）；
 - ObjC 两个静态变薄委托壳（packed 转换 3 个调用点 783-785 不变）；
@@ -1579,12 +1579,12 @@ Int/Int2/3/4、UInt/UInt2/3/4、其余 Invalid）迁入
 
 **item 1141/887（Tessellation 深分类）切片**，两个 Tessellation.m 纯 CPU
 helper 迁入 C++（两门共用单一事实源，ObjC 侧变薄委托壳、调用点不变）：
-- `mglRenderCppTESXFBFieldByteSize`——GL 类型 → TES XFB 字段字节大小表
+- `mglRenderTESXFBFieldByteSize`——GL 类型 → TES XFB 字段字节大小表
   （FLOAT/INT/UINT=4、vec2=8、vec3=12、vec4=16、其余 0；与
   mglFixMSLTesAsComputeKernel 注入的 packed-write stride 契约 lockstep，
   0 表示无法证明写步长、不得回拷）。ObjC `mglTESXFBFieldByteSize` 变薄
   委托（2 个调用点：mglTESXFBVertexStride + XFB copy 循环）；
-- `mglRenderCppCheckedProduct`——溢出检查乘积（`a!=0 && b>UINT64_MAX/a`
+- `mglRenderCheckedProduct`——溢出检查乘积（`a!=0 && b>UINT64_MAX/a`
   拒绝，与 mglCheckedNSUIntegerProduct 逐点等价），返回 0/-1。
   ObjC `mglCheckedNSUIntegerProduct` 变薄委托（8 个调用点：capture/XFB
   outSize 等 size 数学）；
@@ -1600,10 +1600,10 @@ helper 迁入 C++（两门共用单一事实源，ObjC 侧变薄委托壳、调�
 **item 1141/887（Tessellation 深分类）切片**：`mglTessRoundLevelForSpacing`
 （GL 4.6 §11.2.2.2 细分计数取整——FRACTIONAL_EVEN 取偶（最小 2）、
 FRACTIONAL_ODD 取奇、其余保持 ceil(level)）此前有**两份逐行一致实现**
-（`mglRenderCppTessEvalItemsPerPatch` 的 TU 内静态 + `MGLRenderer+Tessellation.m`
+（`mglRenderTessEvalItemsPerPatch` 的 TU 内静态 + `MGLRenderer+Tessellation.m`
 的 ObjC 静态），去重为单一事实源：
-- C++：TU 内静态提升为公开 facade `mglRenderCppTessRoundLevelForSpacing`
-  （extern "C"，`mgl_render_cpp.h` 声明），`mglRenderCppTessEvalItemsPerPatch`
+- C++：TU 内静态提升为公开 facade `mglRenderTessRoundLevelForSpacing`
+  （extern "C"，`mgl_render.h` 声明），`mglRenderTessEvalItemsPerPatch`
   的三处内部调用改用新名；
 - ObjC：`MGLRenderer+Tessellation.m` 的静态 `mglTessRoundLevelForSpacing` 变
   薄委托壳（6 个 native per-patch 计数调用点 2501-2521 不变）；
@@ -1625,7 +1625,7 @@ FRACTIONAL_ODD 取奇、其余保持 ceil(level)）此前有**两份逐行一致
 
 **item 1144/887（uniform/attrib 字节大小）切片**：
 `mglGLTypeElementByteSize`（FLOAT/vec/mat/double 的元素字节大小映射）迁入
-`mglRenderCppGLTypeElementByteSize`：
+`mglRenderGLTypeElementByteSize`：
 - header（extern "C"）内联变薄委托壳；调用方 mgl_buffer_plan.c 与
   MGLRenderer+Buffer.m（含 C `.c` 编译单元，经 extern "C" 符号链接）不变；
 - 说明：此切片 C++ 分支与 ObjC 逐个 case 完全一致（含
@@ -1641,7 +1641,7 @@ FRACTIONAL_ODD 取奇、其余保持 ceil(level)）此前有**两份逐行一致
 **item 1141/887（restart 索引）切片**：
 `mglPrimitiveRestartIndexForType` 的 fixed-index 分支（GL_UNSIGNED_BYTE/
 SHORT/INT → 0xff/0xffff/0xffffffff，其他类型 false）迁入
-`mglRenderCppPrimitiveRestartFixedIndex`：
+`mglRenderPrimitiveRestartFixedIndex`：
 - ObjC 内联保留 cap 读取（primitive_restart / _fixed_index）+ 非固定索引
   (var.primitive_restart_index) 分支；fixed 分支改调 C++；
 - smoke RESTART_FIXED_INDEX_OK：三个类型+未知+NULL。
@@ -1653,7 +1653,7 @@ SHORT/INT → 0xff/0xffff/0xffffffff，其他类型 false）迁入
 
 **item 1144/887（哈希）切片**：
 `mglHashStepU64`（64 位 FNV-1a 单步：`(h^v)*1099511628211`）迁入
-`mglRenderCppHashStepU64`：
+`mglRenderHashStepU64`：
 - 头文件内联变薄委托壳；thermal pipeline/vertex-descriptor signature 循环调用不变；
 - smoke HASH_STEP_U64_OK：(0,0)→0、(0,1)→常数。
 - 验证：A/B 双门 66/0/2/68 判定逐条一致；ASan 双门 66/0/2/68 零报告；
@@ -1665,7 +1665,7 @@ SHORT/INT → 0xff/0xffff/0xffffffff，其他类型 false）迁入
 **item 1141/887（顶点格式映射）切片**：
 `mglDoubleVertexAttribFloatFormat`（double 属性尺寸→MTLVertexFormat
 Float/Float2/3/4，Metal 无 double 顶点格式）迁入
-`mglRenderCppDoubleVertexAttribFloatFormat`（uint32→MTL 常量 28-31/0）：
+`mglRenderDoubleVertexAttribFloatFormat`（uint32→MTL 常量 28-31/0）：
 - 头文件内联变薄委托壳（返回 (MTLVertexFormat) 强转）；
 - smoke DOUBLE_ATTRIB_FORMAT_OK：1/2/3/4→28/29/30/31、5→0。
 - 验证：A/B 双门 66/0/2/68 判定逐条一致；ASan 双门 66/0/2/68 零报告；
@@ -1676,7 +1676,7 @@ Float/Float2/3/4，Metal 无 double 顶点格式）迁入
 
 **item 1141/887（stride 对齐）切片**：
 `mglAlignVertexStrideForMetal`（`(stride+3)&~3`，Metal 4 字节最小对齐）迁入
-`mglRenderCppAlignVertexStrideForMetal`（uint64_t）：
+`mglRenderAlignVertexStrideForMetal`（uint64_t）：
 - 头文件内联变薄委托壳，调用方无需改动；
 - smoke ALIGN_STRIDE_OK：0/4/2→0/4/4、9→12。
 - 验证：A/B 双门 66/0/2/68 判定逐条一致；ASan 双门 66/0/2/68 零报告；
@@ -1687,7 +1687,7 @@ Float/Float2/3/4，Metal 无 double 顶点格式）迁入
 
 **item 1141/887（quad 索引计数）切片**：
 `mglQuadTriangleIndexCount`（每 4 顶点→6 索引，带溢出检查）迁入
-`mglRenderCppQuadTriangleIndexCount`（uint64_t）：
+`mglRenderQuadTriangleIndexCount`（uint64_t）：
 - 头文件内联变薄委托壳，调用方（mgl_index_buffer.m 两处）无需改动；
 - smoke QUAD_TRIANGLE_COUNT_OK：0/4/8→0/6/12、3/1→0。
 - 验证：A/B 双门 66/0/2/68 判定逐条一致；ASan 双门 66/0/2/68 零报告；
@@ -1699,7 +1699,7 @@ Float/Float2/3/4，Metal 无 double 顶点格式）迁入
 **item 1147/887（绘制模式分类）切片**：
 `mglDrawModeProducesPolygons`（模式是否产生多边形）与
 `mglPrimitiveModeHasDrawableSegment`（模式+顶点数是否产生可绘制段）迁入
-`mglRenderCppDrawModeProducesPolygons` / `mglRenderCppPrimitiveModeHasDrawableSegment`：
+`mglRenderDrawModeProducesPolygons` / `mglRenderPrimitiveModeHasDrawableSegment`：
 - 头文件内联变薄委托壳（各 case 与 ObjC 逐位一致），50+ 绘制点调用方无需改动；
 - smoke DRAW_MODE_PREDICATES_OK：polygons 真值表 + 各段阈值（line≥2, tri≥3, quad≥4）。
 - 验证：A/B 双门 66/0/2/68 判定逐条一致；ASan 双门 66/0/2/68 零报告；
@@ -1711,7 +1711,7 @@ Float/Float2/3/4，Metal 无 double 顶点格式）迁入
 **item 1147/887（顶点属性映射）切片**：
 `mglVertexAttribComponentSize`（GL 类型→1/2/4/8 字节）与
 `mglVertexAttribElementBytes`（类型×size，packed 10_10_10_2 特判）迁入
-`mglRenderCppVertexAttribComponentSize` / `mglRenderCppVertexAttribElementBytes`
+`mglRenderVertexAttribComponentSize` / `mglRenderVertexAttribElementBytes`
 （各 case 与 ObjC 逐位一致）：
 - 头文件内联变薄委托壳，全部调用方（DrawSupport / Tessellation /
   BindingState / Draw / Buffer / Renderer）无需改动；
@@ -1726,7 +1726,7 @@ Float/Float2/3/4，Metal 无 double 顶点格式）迁入
 **item 1147/887（索引读取）切片**：
 `mglGLIndexElementSize` / `mglReadGLIndexValue`（BYTE/SHORT/INT 尺寸 + 逐
 索引值 memcpy 安全读取；5 个 .m 文件共用）迁入
-`mglRenderCppGLIndexElementSize` / `mglRenderCppReadGLIndexValue`（uint8*，
+`mglRenderGLIndexElementSize` / `mglRenderReadGLIndexValue`（uint8*，
 宽度 1/2/4）：
 - 头文件内联变薄委托壳，全部调用方（Draw / draw_encode / Tessellation /
   index_buffer / Renderer）无需改动；
@@ -1739,7 +1739,7 @@ Float/Float2/3/4，Metal 无 double 顶点格式）迁入
 
 **item 1141/887（字节偏移）切片**：
 `mglComputeIndexByteOffset`（`baseByteOffset + firstElement*indexStride`，
-带溢出检查）的纯算术迁入 `mglRenderCppComputeIndexByteOffset`（uint64_t）
+带溢出检查）的纯算术迁入 `mglRenderComputeIndexByteOffset`（uint64_t）
 - 头文件内联变为薄委托壳，调用方 mgl_draw_encode.m 无需改动；
 - smoke COMPUTE_INDEX_BYTE_OFFSET_OK：10+3×4=22、全零、stride 为 0→-1、
   NULL out→-1。
@@ -1752,7 +1752,7 @@ Float/Float2/3/4，Metal 无 double 顶点格式）迁入
 **item 1141/887（字节偏移）切片**：
 `mglComputePreparedIndexByteOffset`（GL 字节偏移 → Metal prepared 偏移；
 GL_UNSIGNED_BYTE 展开为 UInt16 故偏移翻倍，其余类型直通）的纯算术迁入
-`mglRenderCppComputePreparedIndexByteOffset`（uint64_t 索引，无新结构体）：
+`mglRenderComputePreparedIndexByteOffset`（uint64_t 索引，无新结构体）：
 - 头文件内联变为薄委托壳；
 - smoke COMPUTE_PREPARED_BYTE_OFFSET_OK：unsigned_short 直通=100、
   unsigned_byte 翻倍=200、零偏移、NULL out→-1。
@@ -1764,7 +1764,7 @@ GL_UNSIGNED_BYTE 展开为 UInt16 故偏移翻倍，其余类型直通）的纯�
 
 **item 1141/887（索引扫描）切片**：
 `mglScanIndexRangeIgnoringRestart`（跳过 restart 标记的 min/max 扫描）迁入
-`mglRenderCppScanIndexRangeIgnoringRestart`（纯 CPU、标量 out 参数，无新
+`mglRenderScanIndexRangeIgnoringRestart`（纯 CPU、标量 out 参数，无新
 结构体，`mgl_index_buffer.h` 保持无外部依赖）：
 - 头文件内联 `mglScanIndexRangeIgnoringRestart` 变为薄委托壳，两条调用路径
   （Draw.m 元素校验 + DrawSupport.m cull-distance 元素绘制）都经同一 C++
@@ -1779,7 +1779,7 @@ GL_UNSIGNED_BYTE 展开为 UInt16 故偏移翻倍，其余类型直通）的纯�
 
 **item 1141/887（元素索引）切片**：`mglNewUInt16IndexBufferFromUInt8`（把
 GL_UNSIGNED_BYTE 元素缓冲逐字节转成 UInt16）迁入
-`mglRenderCppExpandUInt8ToUInt16`：
+`mglRenderExpandUInt8ToUInt16`：
 - ObjC 构建器消费 C++ 输出并 memcpy 进 Metal 缓冲；
 - smoke EXPAND_U16_OK：(0,1,0xff,250,5) 直通、坏参。
 - 验证：A/B 双门 66/0/2/68 判定逐条一致；ASan 双门 66/0/2/68 零报告；
@@ -1793,7 +1793,7 @@ GL_UNSIGNED_BYTE 元素缓冲逐字节转成 UInt16）迁入
 
 **item 1141/887（元素/数组仿真）切片**：`mglNewTriangleFanArrayIndexBuffer` /
 `mglNewTriangleStripArrayIndexBuffer` / `mglNewLineLoopArrayIndexBuffer`
-三者的展开逻辑迁入 `mglRenderCppExpandTriangleFanArrayIndices`（数组：
+三者的展开逻辑迁入 `mglRenderExpandTriangleFanArrayIndices`（数组：
 (0,tri+1,tri+2)）/ `ExpandTriangleStripArrayIndices`（数组：交替 offset）/
 `ExpandLineLoopArrayIndices`(firstVertex+i 再闭合 firstVertex)：
 - ObjC 构建器保留 array-variant 缓存 + Metal 分配，从 C++ 输出 memcpy；
@@ -1809,9 +1809,9 @@ GL_UNSIGNED_BYTE 元素缓冲逐字节转成 UInt16）迁入
 **item 1141/887（元素仿真）切片**：`mglNewQuadArrayLineIndexBuffer` 与
 `mglNewQuadElementLineIndexBuffer`（每个 quad 8 个索引：
 array `a,a+1,a+1,a+2,a+2,a+3,a+3,a`；element `i0,i1,i1,i2,i2,i3,i3,i0`）
-迁入 `mglRenderCppExpandQuadArrayLineIndices` / `ExpandQuadElementLineIndices`：
+迁入 `mglRenderExpandQuadArrayLineIndices` / `ExpandQuadElementLineIndices`：
 - 初版 cpp 插入时 heredoc 被污染生成废码（SyntaxError），header 已加声明但
-  cpp 无定义——重建干净插入，并用 `mglRenderCpp...`（非误拼
+  cpp 无定义——重建干净插入，并用 `mglRender...`（非误拼
   `mglRenderCopy...`）修正一次名字；
 - ObjC 构建器保留数组缓存 + Metal 分配，从 C++ 输出 memcpy。
 - smoke EXPAND_QUAD_LINE_OK：1 个数组 quad -> 8、1 个元素 quad、坏参。
@@ -1824,9 +1824,9 @@ array `a,a+1,a+1,a+2,a+2,a+3,a+3,a`；element `i0,i1,i1,i2,i2,i3,i3,i0`）
 
 **item 1141/887（元素仿真）切片**：`mglNewQuadArrayIndexBuffer` 与
 `mglNewQuadElementIndexBuffer` 的 per-quad 展开迁入 C++：
-- `mglRenderCppExpandQuadArrayIndices`：数组每 4 顶点 -> (a,a+1,a+2,
+- `mglRenderExpandQuadArrayIndices`：数组每 4 顶点 -> (a,a+1,a+2,
   a,a+2,a+3)（2 三角形）；
-- `mglRenderCppExpandQuadElementIndices`：读 i0..i3 -> (i0,i1,i2,i0,i2,
+- `mglRenderExpandQuadElementIndices`：读 i0..i3 -> (i0,i1,i2,i0,i2,
   i3)；
 - ObjC 构建器保留数组变体缓存并分配 Metal 缓冲，从 C++ 输出填充；
 - smoke EXPAND_QUAD_OK：2 个数组 quad -> 12 索引、2 个元素 quad、
@@ -1841,8 +1841,8 @@ array `a,a+1,a+1,a+2,a+2,a+3,a+3,a`；element `i0,i1,i1,i2,i2,i3,i3,i0`）
 
 **item 1141/887（元素仿真 GPU）切片**：`mglNewTriangleStripElementIndexBuffer`
 （first/second 交替偏移、count-2 三角形）与 `mglNewLineLoopElementIndexBuffer`
-（拷贝 + 闭合）的生成逻辑迁入 `mglRenderCppExpandTriangleStripIndices` /
-`mglRenderCppExpandLineLoopIndices`：
+（拷贝 + 闭合）的生成逻辑迁入 `mglRenderExpandTriangleStripIndices` /
+`mglRenderExpandLineLoopIndices`：
 - 与扇形共用字节读器 `MGLRenderReadIndexBytes`（BYTE=1/SHORT=2/INT=4）；
 - 交替偏移逐点等价（tri & 1 的 first/second 选择）；
 - OBJ buffer 构建器消费 C++ 展开并 memcpy 进 Metal 索引缓冲；
@@ -1857,7 +1857,7 @@ array `a,a+1,a+1,a+2,a+2,a+3,a+3,a`；element `i0,i1,i1,i2,i2,i3,i3,i0`）
 
 **item 1141/887（元素仿真 GPU）切片**：`mglNewTriangleFanElementIndexBuffer`
 的 CPU 索引生成（中心 + 线性子索引三元组，count-2 个三角形、全 uint32）
-迁入 `mglRenderCppExpandTriangleFanIndices`（malloc'd 数组 + 数）；
+迁入 `mglRenderExpandTriangleFanIndices`（malloc'd 数组 + 数）；
 ObjC buffer 构建器把 C++ 结果 memcpy 进 Metal 索引 buffer：
 - 元素宽度按 indexType（BYTE=1/SHORT=2/INT=4），语义与
   mglReadGLIndexValue 逐点等价；
@@ -1873,7 +1873,7 @@ ObjC buffer 构建器把 C++ 结果 memcpy 进 Metal 索引 buffer：
 
 **item 1141/887（DrawSupport indexed-PATCHES）切片**：`mglGeometryGatherIndices`
 （BYTE/SHORT/INT 元素宽度、原始图元重启、完整图元计数、尾不完整组丢弃）
-迁入 `mglRenderCppGeometryGatherIndices`（净 CPU，结果单结构体返回；
+迁入 `mglRenderGeometryGatherIndices`（净 CPU，结果单结构体返回；
 调用方释放 gather 数组）：
 - 两个 indexed-PATCHES gather 调用点共用 ObjC 薄壳（由 indexType 定元素
   宽度再调 C++）；
@@ -1906,7 +1906,7 @@ triangles-in `[0,1,R,2,3,4]` 会错误跨段组成 `[0,1,2]`。现于 restart �
 **item 1141/887（Texture 深分类）切片**：两处重复的 readPixels 区域裁剪
 （源区域对 level 尺寸钳制、dest 偏移原点、翻转后的 Metal 源 Y、以及
 `copyW<=0 || copyH<=0` 空判断）——BGRA8 彩色 read 与 depth/float read
-共用——合一成 `mglRenderCppReadTextureRegionClip`：
+共用——合一成 `mglRenderReadTextureRegionClip`：
 - 语义逐点等价（min/max 钳制、metalSrcY = levelHeight - clipY、
   empty 标志即原空判断）；
 - smoke READ_TEXTURE_REGION_CLIP_OK：内部、右/上越界（Y 翻转
@@ -1922,7 +1922,7 @@ triangles-in `[0,1,R,2,3,4]` 会错误跨段组成 `[0,1,2]`。现于 restart �
 
 **item 1141/887（纹理兼容 CPU 纯函数）切片**：`mglMetalTextureLevelDimension`
 的半切循环（base 的最大 2^level 因子，下限 1）迁入
-`mglRenderCppMetalTextureLevelDimension`（纯计算，两门共用）：
+`mglRenderMetalTextureLevelDimension`（纯计算，两门共用）：
 - ObjC 帮手保留 extern 链接——Texture/Blit/RenderPass/ReadTexImage 多个
   调用点按名使用，转 C++ 结果；
 - header 声明 uint64_t、cpp 初版误返 uint32_t 触发 conflicting types 已
@@ -1938,9 +1938,9 @@ triangles-in `[0,1,R,2,3,4]` 会错误跨段组成 `[0,1,2]`。现于 restart �
 
 **item 1141/887（compute dispatch）切片**：dispatch 回退路径的线程组尺寸
 推导（local workgroup 组件为 0 -> 1，即 `x ? x : 1` 默认）迁入
-`mglRenderCppThreadgroupSize`（纯计算，两门共用）：
-- 初版 header 声明名写成了 mglRenderCpp**Compute**ThreadgroupSize 而
-  cpp/m 用 mglRenderCppThreadgroupSize——链接器未报（未走到）但 ObjC
+`mglRenderThreadgroupSize`（纯计算，两门共用）：
+- 初版 header 声明名写成了 mglRender**Compute**ThreadgroupSize 而
+  cpp/m 用 mglRenderThreadgroupSize——链接器未报（未走到）但 ObjC
   TU 编译报隐式声明，已统一名字；
 - smoke COMPUTE_THREADGROUP_SIZE_OK：透传（16,8,1）、全零 -> (1,1,1)、
   混合（32,0,4 -> (32,1,4)）、NULL out。
@@ -1952,10 +1952,10 @@ triangles-in `[0,1,R,2,3,4]` 会错误跨段组成 `[0,1,2]`。现于 restart �
 ### P4 完成记录追加（2026-08-15，commit bf779b8：Metal 图元/索引类型表迁 C++——item 1141/887 切片）
 
 **item 1141/887（渲染器壳 CPU）切片**，两张 GL->Metal 数值表迁 C++：
-- `mglRenderCppMTLPrimitiveTypeForGLMode`——GL 模式 -> MTLPrimitiveType
+- `mglRenderMTLPrimitiveTypeForGLMode`——GL 模式 -> MTLPrimitiveType
   编号（0=Point/1=Line/2=LineStrip/3=Triangle/4=TriangleStrip；
   LINE_LOOP/邻接/扇形/QUADS/PATCHES -> 0xFFFFFFFF err）；
-- `mglRenderCppMTLIndexTypeForGLType`——BYTE/SHORT -> UInt16(0)，
+- `mglRenderMTLIndexTypeForGLType`——BYTE/SHORT -> UInt16(0)，
   INT -> UInt32(1)，其他 -> err；
 - 壳内 `getMTLPrimitiveType`/`getMTLIndexType` 保留 C 链接（其他文件按名
   调用），转 C++ 数值 + 强转回 MTL 枚举；
@@ -1969,7 +1969,7 @@ triangles-in `[0,1,R,2,3,4]` 会错误跨段组成 `[0,1,2]`。现于 restart �
 ### P4 完成记录追加（2026-08-15，commit 3c1f7ce：ARB_vertex_attrib_binding 解析迁 C++——item 1141/887 切片）
 
 **item 1141/887（渲染器壳 CPU）切片**：`mglRendererResolveVertexAttribBinding`
-的 binding-table 覆盖决策迁入 `mglRenderCppResolveVertexAttribBinding`
+的 binding-table 覆盖决策迁入 `mglRenderResolveVertexAttribBinding`
 （纯决策，两门共用）：
 - bindingIndex < MGL_MAX_VERTEX_ATTRIB_BINDINGS 且 binding 有 buffer 时用
   table 的 offset/stride/divisor；table stride 为 0 回退 attrib stride；
@@ -1987,7 +1987,7 @@ triangles-in `[0,1,R,2,3,4]` 会错误跨段组成 `[0,1,2]`。现于 restart �
 **item 1141/887（Buffer 深分类）切片**：`mglBufferShadowUploadRange` 的范围
 数学（gpu_write_target 时按 recorded written_min/max 跨度钳制到 limit，
 否则整个 limit；空跨度/零长拒绝）迁入
-`mglRenderCppBufferShadowUploadRange`（纯范围计算，两门共用）：
+`mglRenderBufferShadowUploadRange`（纯范围计算，两门共用）：
 - 两个上传调用点（CoW snapshot 覆盖 + in-place 上传）共用薄包装；
 - 边界语义逐点等价：written_min<0 或 written_max<=written_min 拒绝；
   MIN(x, limit) 钳制；clampedMax - offset。
@@ -2002,10 +2002,10 @@ triangles-in `[0,1,R,2,3,4]` 会错误跨段组成 `[0,1,2]`。现于 restart �
 ### P4 完成记录追加（2026-08-15，commit 7de54e1：polygon-offset 决策 + 图元顶点数表迁 C++——item 1141/887 切片）
 
 **item 1141/887（DrawSupport 深分类）切片**，两段纯 CPU：
-- `mglRenderCppPolygonOffsetDecision`——applyPolygonOffsetForDrawMode 的
+- `mglRenderPolygonOffsetDecision`——applyPolygonOffsetForDrawMode 的
   三角填充模式（GL_LINE -> lines）+ 非法 polygon_mode 修复条件 +
   按 polygon 模式的 depth-bias 使能（POINT/LINE/FILL 三个 cap 标志）；
-- `mglRenderCppPrimitiveVertexCountForMode`——GL 绘制模式 -> 图元顶点数
+- `mglRenderPrimitiveVertexCountForMode`——GL 绘制模式 -> 图元顶点数
   表（cull-distance 仿真参数；未知模式 1）。
 - 中途修正：(a) 修复条件原语义是 GL_LINE 分支**之后**的 else-if——初版
   C++ 未排除 GL_LINE 导致 LINE 模式误报修复，补上； (b) 修复分支的 bias
@@ -2022,9 +2022,9 @@ triangles-in `[0,1,R,2,3,4]` 会错误跨段组成 `[0,1,2]`。现于 restart �
 
 **item 1069/1141（Blit 深分类）切片**：blitFramebufferScaledColorWithState
 的两段纯 CPU 数学迁入 C++（两门共用）：
-- `mglRenderCppScaledBlitUVs`——归一化源 UV（Metal Y-flip + [0,1] 钳制 +
+- `mglRenderScaledBlitUVs`——归一化源 UV（Metal Y-flip + [0,1] 钳制 +
   按 src/dst 方向标志交换 uvLeft/Right、uvTop/Bottom）；
-- `mglRenderCppBlitScissorRect`——目标 scissor 基数（floor+0.00001 /
+- `mglRenderBlitScissorRect`——目标 scissor 基数（floor+0.00001 /
   ceil-0.00001 + 钳制到目标纹理范围）；GL scissor 交集与 encoder 调用
   保持内联 ObjC；
 - MGLScaledBlitParams.uvRect 直接从 C++ 结果填。
@@ -2039,7 +2039,7 @@ triangles-in `[0,1,R,2,3,4]` 会错误跨段组成 `[0,1,2]`。现于 restart �
 ### P4 完成记录追加（2026-08-15，commit 41b1ea5：glBlitFramebuffer 区域 plan 迁 C++——item 1069/1141 切片）
 
 **item 1069/1141（Blit 深分类）切片**：mtlBlitFramebuffer 裁剪后的区域
-数学 + 决策迁入 `mglRenderCppBlitFramebufferPlan`（纯 CPU plan，两门
+数学 + 决策迁入 `mglRenderBlitFramebufferPlan`（纯 CPU plan，两门
 共用；-1 = 零范围空区域）：
 - 方向/flip 标志（4 轴）+ blitNeedsFlip；
 - min/max/abs 范围（srcMin/Max、dstMin/Max、srcW/H、dstW/H）；
@@ -2065,7 +2065,7 @@ triangles-in `[0,1,R,2,3,4]` 会错误跨段组成 `[0,1,2]`。现于 restart �
 的 10 项 GL packed 类型表（3_3_2 / 2_3_3_REV / 5_6_5(+REV) /
 4_4_4_4(+REV) / 5_5_5_1 / 1_5_5_5_REV / 8_8_8_8(+REV) /
 10_10_10_2 / 2_10_10_10_REV）迁入
-`mglRenderCppIntegerReadbackPackedTypeClassify`（纯分类，两门共用）：
+`mglRenderIntegerReadbackPackedTypeClassify`（纯分类，两门共用）：
 - ObjC 方法保留喂给转换参数的局部量（位宽/移位/输出字节）与 packed 的
   输出分量覆盖；`packedTotalBits` 已无读取方（round-54 转换迁移后的死
   变量），不迁移；
@@ -2083,7 +2083,7 @@ triangles-in `[0,1,R,2,3,4]` 会错误跨段组成 `[0,1,2]`。现于 restart �
 
 **item 1171/1116（Texture 深分类）切片**：`mglReadIntegerTextureAsRGBA32`
 头部的 19 项 MTLPixelFormat -> {分量数, 分量字节, 有符号, RGB10A2} 表迁入
-`mglRenderCppIntegerReadbackSourceClassify`（纯分类，两门共用）：
+`mglRenderIntegerReadbackSourceClassify`（纯分类，两门共用）：
 - metal-cpp PixelFormat 值逐一对照 macOS SDK MTLPixelFormat.h 验证
   （RGBA32Uint=123 等一致）；
 - ObjC 方法保留 unknown 格式的错误分发（mglDispatchError + return NO）。
@@ -2099,7 +2099,7 @@ triangles-in `[0,1,R,2,3,4]` 会错误跨段组成 `[0,1,2]`。现于 restart �
 
 **item 1171/1116（Texture 深分类）切片**：mtlGetTexImage 的 staging plan
 决策（原 private-storage blit 路径与非 private getBytes 路径**两份逐字
-重复**）迁入 `mglRenderCppGetTexImagePlan` 两路共用：
+重复**）迁入 `mglRenderGetTexImagePlan` 两路共用：
 - 直接 R32F 读判定 + BGRA8 转换资格（dst 字节 + 单层 + 非直接 +
   格式兼容）+ 源 BGRA8 族判定 + row/image/total 字节计算（转换路径：
   非 BGRA8 源按源 bpp、BGRA8 源 4B；否则 bytesPerRow 或 width*max(dst,1)；
@@ -2119,8 +2119,8 @@ triangles-in `[0,1,R,2,3,4]` 会错误跨段组成 `[0,1,2]`。现于 restart �
 **item 1171/1116（Texture 深分类）切片**：mtlGetTexImage 的 integer-readback
 分类（19 格式源整数表 + GL_*_INTEGER 输出判定 + 每格式分量映射（BGR/BGRA
 序 + GREEN/BLUE/ALPHA 单分量兼容枚举 0x8d95/96/97）+ 按类型分量字节数）
-迁入 `mglRenderCppIntegerReadbackClassify`（纯分类，两门共用）：
-- 输出 `MGLRenderCppIntegerReadbackClassify`（两个布尔 + components +
+迁入 `mglRenderIntegerReadbackClassify`（纯分类，两门共用）：
+- 输出 `MGLRenderIntegerReadbackClassify`（两个布尔 + components +
   component_map[4] + component_bytes）；
 - ObjC 侧 mtlGetTexImage 保留区域数学，分类委托后直接传 component_map；
 - 注意：metal-cpp 的 MTL::PixelFormat 值与 macOS MTLPixelFormat 编号一致
@@ -2138,7 +2138,7 @@ triangles-in `[0,1,R,2,3,4]` 会错误跨段组成 `[0,1,2]`。现于 restart �
 
 **item 1141/887（DrawSupport 深分类）切片**：`currentDrawRasterizationIsEmpty`
 的 viewport/scissor/framebuffer 交集判定（per-draw 光栅化空提前退出）迁入
-`mglRenderCppRasterizationIsEmpty`（纯 CPU 数学，两门共用）：
+`mglRenderRasterizationIsEmpty`（纯 CPU 数学，两门共用）：
 - 零 viewport → 空；零 pass 尺寸 → 非空（调用方先解析 pass 尺寸）；
   完全在外/负向（vx1<=0 等）→ 空；部分在外 → 非空（与原语义逐点一致）；
   scissor 使能时零尺寸/完全在外 → 空；
@@ -2156,7 +2156,7 @@ triangles-in `[0,1,R,2,3,4]` 会错误跨段组成 `[0,1,2]`。现于 restart �
 ### P4 完成记录追加（2026-08-15，commit 454acf5：native TES 接口支持判定迁 C++——item 1141/887 切片）
 
 **item 1141/887（DrawSupport 深分类）切片**：`mglNativeTESInterfaceSupported`
-判定迁入 `mglRenderCppNativeTESInterfaceSupported`（经 bridge 读取
+判定迁入 `mglRenderNativeTESInterfaceSupported`（经 bridge 读取
 MTL::Function 的 patchType/patchControlPointCount）：
 - 模块/函数存在性 + point-mode/XFB 排除 + TRI/QUADS 门 + TCS 顶点数
   (0/32) 约束 + patchType 期望（QUADS→Quad/TRI→Triangle）+ 控制点计数
@@ -2175,15 +2175,15 @@ MTL::Function 的 patchType/patchControlPointCount）：
 ### P4 完成记录追加（2026-08-15，commit 720dc29：TES eval-items + checked capture size 迁 C++——item 1141/887 切片）
 
 **item 1141/887（Tessellation/DrawSupport 深分类）切片**：
-- `mglRenderCppTessEvalItemsPerPatch`——isolines/point-mode TES 核的逐
+- `mglRenderTessEvalItemsPerPatch`——isolines/point-mode TES 核的逐
   patch 展开 item 计数（与 mgl_air_backend.cpp 的 u/v 分解 lockstep；
   discard 当时经 ObjC `mglTessFactorsDiscardPatch`，已由 2026-08-15
-  后续切片收口为 `mglRenderCppTessFactorsDiscardPatch`；spacing 取整
+  后续切片收口为 `mglRenderTessFactorsDiscardPatch`；spacing 取整
   （FRACTIONAL_EVEN/ODD）为 TU 内静态）。Tessellation.m 的
   `mglAIRTessEvalItemsPerPatch`
   变薄包装（3 个调用点不变）；`mglTessRoundLevelForSpacing` ObjC 静态
   保留（另一调用点 native per-patch 计数仍用）。
-- `mglRenderCppCheckedTessCaptureSize`——溢出检查的 capture size 数学
+- `mglRenderCheckedTessCaptureSize`——溢出检查的 capture size 数学
   （records×stride + min_stride 下限 + __builtin_mul_overflow）。
 - smoke TESS_EVAL_ITEMS_AND_SIZE_OK：isolines（1×2×2=4）、quad/tri
   point-mode、非 point 返回 0、discard/null、size 基础 + 4 个坏参。
@@ -2200,11 +2200,11 @@ MTL::Function 的 patchType/patchControlPointCount）：
 
 **item 1141/887（DrawSupport 深分类）切片**：三个 tess-factor CPU helper
 迁入 C++（纯数据变换，两门共用）：
-- `mglRenderCppFillDefaultTessFactorBuffer`——默认 canonical factor 填充
+- `mglRenderFillDefaultTessFactorBuffer`——默认 canonical factor 填充
   （12B/patch：4×outer + 2×inner __fp16 打包）；
-- `mglRenderCppRepackTessFactorTriangles`——canonical→triangle 重打包
+- `mglRenderRepackTessFactorTriangles`——canonical→triangle 重打包
   （12B/patch → 8B/patch，out = in0..2 + in4）；
-- `mglRenderCppTessPrimitiveCount`——原生 primitive count（GL 4.6
+- `mglRenderTessPrimitiveCount`——原生 primitive count（GL 4.6
   §11.2.2.2 ceil 规则 + MAX(inside,1) 钳制 + 每 patch ≥1，discard 判定经
   当时的 ObjC `mglTessFactorsDiscardPatch` C 函数；该反向依赖与 smoke
   stub 已由 2026-08-15 后续切片删除）。
@@ -2240,7 +2240,7 @@ wait（含 error 状态）+ commit + newCommandBuffer）提取为
 
 **item 1171（readback）/1116 切片**：`mglReadIntegerTextureAsRGBA32` 的
 逐像素转换（分量提取 + GL_INTEGER 打包/钳制 + 行拷贝，~125 行纯 CPU
-数据变换）逐行迁入 `mglRenderCppConvertIntegerReadback`（两门共用）：
+数据变换）逐行迁入 `mglRenderConvertIntegerReadback`（两门共用）：
 - ObjC 只剩参数装配（staging/blit/completion/wait 序列 + isRenderTarget
   源 Y-flip 保持 renderer 侧）；
 - packedBitWidths/packedShifts 声明改 uint32_t[4]（NSUInteger[4] 不可直接
@@ -2261,10 +2261,10 @@ wait（含 error 状态）+ commit + newCommandBuffer）提取为
 
 **item 1171（readback 纯 CPU 转换）切片**：三个 CPU 像素标量转换器迁入 C++
 facade（两门共用单一事实源，ObjC 侧变薄委托壳、调用点不变——同
-`mglRenderCppFloat11ToFloat`（e647836）模式）：
-- `mglRenderCppFloatToUnorm8`——float→unorm8 取整（`value*255+0.5` 截断，
+`mglRenderFloat11ToFloat`（e647836）模式）：
+- `mglRenderFloatToUnorm8`——float→unorm8 取整（`value*255+0.5` 截断，
   非正→0、≥1→255、NaN→0，与原 `mglMetalFloatToUnorm8` 逐点一致）；
-- `mglRenderCppSnorm16ToFloat` / `mglRenderCppSnorm8ToFloat`——snorm 解码，
+- `mglRenderSnorm16ToFloat` / `mglRenderSnorm8ToFloat`——snorm 解码，
   INT16_MIN/INT8_MIN→-1.0，其余 `value/32767`、`value/127`。
 - `mgl_readback.m` 的 `mglMetalFloatToUnorm8` / `mglMetalSnorm16ToFloat` /
   `mglMetalSnorm8ToFloat` 变为薄委托；调用方（`mglMetalCopyTextureBytesToBGRA8`
@@ -2280,8 +2280,8 @@ facade（两门共用单一事实源，ObjC 侧变薄委托壳、调用点不变
 
 **item 1171（readback 纯 CPU 表）续切片**：`mglMetalReadbackBytesPerPixel`
 （MTLPixelFormat → 每像素字节表，default 4B）迁入
-`mglRenderCppReadbackBytesPerPixel`（uint32 pixel-format ABI 值进出，与
-`mglRenderCppTextureDataKindForPixelFormat` 同型；两门共用单一事实源）：
+`mglRenderReadbackBytesPerPixel`（uint32 pixel-format ABI 值进出，与
+`mglRenderTextureDataKindForPixelFormat` 同型；两门共用单一事实源）：
 - ObjC `mglMetalReadbackBytesPerPixel` 变薄委托壳；全部 10+ 调用点
   （Texture.m staging/readback、Blit.m framebuffer blit）不变；
 - smoke `READBACK_SCALAR_CONVERT_OK` 扩展 BPP 表断言（RGBA32Float=16、
@@ -2295,10 +2295,10 @@ facade（两门共用单一事实源，ObjC 侧变薄委托壳、调用点不变
 
 **item 1171（readback 纯 CPU 分类）续切片**：三个 MTLPixelFormat→布尔分类表
 迁入 C++ facade（uint32 pixel-format ABI 值进、1/0 出，与
-`mglRenderCppTextureDataKindForPixelFormat` 同型；两门共用单一事实源）：
-- `mglRenderCppReadbackFormatIsBGRA8Compatible`——BGRA8 可转换格式集；
-- `mglRenderCppPixelFormatIsIntegerColor`——整数颜色格式集；
-- `mglRenderCppPixelFormatIsSignedIntegerColor`——有符号整数颜色格式集。
+`mglRenderTextureDataKindForPixelFormat` 同型；两门共用单一事实源）：
+- `mglRenderReadbackFormatIsBGRA8Compatible`——BGRA8 可转换格式集；
+- `mglRenderPixelFormatIsIntegerColor`——整数颜色格式集；
+- `mglRenderPixelFormatIsSignedIntegerColor`——有符号整数颜色格式集。
 - `mgl_readback.m` 的 `mglMetalReadbackFormatIsBGRA8Compatible` /
   `mglMetalPixelFormatIsIntegerColor` / `mglMetalPixelFormatIsSignedIntegerColor`
   变薄委托壳；调用方（Texture.m / Blit.m readback 与 blit 路径）不变。
@@ -2313,7 +2313,7 @@ facade（两门共用单一事实源，ObjC 侧变薄委托壳、调用点不变
 **item 1171（readback 纯 CPU 数据变换）续切片**：`mglMetalCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes`
 （GL BGRA8 行 → BGRA8 兼容 Metal 像素格式：RGBA8Unorm / BGRA8Unorm /
 RGB9E5Float / RGB10A2Unorm / BGR10A2Unorm，可选 Y-flip；纯指针+位打包，零
-Metal/ObjC 调用）迁入 `mglRenderCppCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes`
+Metal/ObjC 调用）迁入 `mglRenderCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes`
 （两门共用单一事实源）：
 - ObjC 变薄委托壳；调用方（Texture.m / Blit.m）不变；
 - RGB9E5 打包以 TU 内静态忠实拷贝 `mglPackRGBToSharedExp`（pixel_utils.h 是
@@ -2332,7 +2332,7 @@ Metal/ObjC 调用）迁入 `mglRenderCppCopyGLBGRA8RowsToBGRA8CompatibleTextureB
 （Metal 纹理字节 → GL BGRA8：RGBA8/BGRA8、R/RG/RGBA 8/16/32 unorm/snorm/
 int/uint/float、RGB9E5、RGB10A2/BGR10A2、BGR5A1、ABGR4、RG11B10、
 half/float 变体，可选 Y-flip；纯指针+格式解码，零 Metal/ObjC 调用）迁入
-`mglRenderCppCopyTextureBytesToBGRA8`（两门共用单一事实源）：
+`mglRenderCopyTextureBytesToBGRA8`（两门共用单一事实源）：
 - ObjC 变薄委托壳；调用方（Texture.m / readback 路径）不变；
 - half 与 11/10-bit unsigned float unpack 以 TU 内静态忠实拷贝
   `mglHalfToFloat` / `mglUnpackUnsignedFloatComponent`（pixel_utils.h 是
@@ -2350,8 +2350,8 @@ half/float 变体，可选 Y-flip；纯指针+格式解码，零 Metal/ObjC 调�
 
 **item 1171（readback 纯 CPU 数据变换）续切片**：
 `mglMetalCopyBGRA8CompatibleTextureBytesToGL` 拆出两块共用事实源：
-- `mglRenderCppReadbackGLTypeAccepted`——GL pixel type 接受表；
-- `mglRenderCppCopySnorm8TextureBytesToGL`——R8/RG8/RGBA8 SNORM 直接
+- `mglRenderReadbackGLTypeAccepted`——GL pixel type 接受表；
+- `mglRenderCopySnorm8TextureBytesToGL`——R8/RG8/RGBA8 SNORM 直接
   转到 GL format/type（绕过有损 BGRA8），含 format 通道映射、
   packed/scalar dest 步长、可选 Y-flip。
 - ObjC 入口只剩 type 委托 + SNORM 薄转发；其余旁路仍在 ObjC。
@@ -2365,11 +2365,11 @@ half/float 变体，可选 Y-flip；纯指针+格式解码，零 Metal/ObjC 调�
 ### P4 完成记录追加（2026-08-16，commit 0a169e6：RGB10A2 直接转码迁 C++——item 1171 切片）
 
 **item 1171（readback 纯 CPU 数据变换）续切片**：
-`mglRenderCppCopyRGB10A2TextureBytesToGL` 承接 ObjC
+`mglRenderCopyRGB10A2TextureBytesToGL` 承接 ObjC
 `sourceIsRGB10A2Direct` 路径（绕过有损 BGRA8）：
 - 覆盖 UNSIGNED_BYTE/BYTE/SHORT/INT/FLOAT/HALF 与
   10_10_10_2 / 2_10_10_10_REV / 5_9_9_9_REV / 8_8_8_8(_REV)；
-- 复用已有 format 通道映射、packed dest 步长、`mglCppPackRGBToSharedExp`；
+- 复用已有 format 通道映射、packed dest 步长、`mglPackRGBToSharedExp`；
 - ObjC 只剩 type 门 + 薄转发。
 - smoke：RGBA/BGRA float、2_10_10_10_REV 位精确、10_10_10_2 MSB、
   UNSIGNED_BYTE、flipY、坏参。
@@ -2381,7 +2381,7 @@ half/float 变体，可选 Y-flip；纯指针+格式解码，零 Metal/ObjC 调�
 ### P4 完成记录追加（2026-08-16，commit be0d569：RG11B10 直接转码迁 C++——item 1171 切片）
 
 **item 1171（readback 纯 CPU 数据变换）续切片**：
-`mglRenderCppCopyRG11B10TextureBytesToGL` 承接 ObjC
+`mglRenderCopyRG11B10TextureBytesToGL` 承接 ObjC
 `sourceIsRG11B10FloatDirect` 路径（绕过有损 BGRA8）：
 - 覆盖 UNSIGNED_BYTE/BYTE/SHORT/INT/FLOAT/HALF 与
   10F_11F_11F_REV / 5_9_9_9_REV / 8_8_8_8(_REV)；
@@ -2400,7 +2400,7 @@ half/float 变体，可选 Y-flip；纯指针+格式解码，零 Metal/ObjC 调�
 ### P4 完成记录追加（2026-08-16，commit 3b3c24a：16/32-bit 直接转码迁 C++——item 1171 切片）
 
 **item 1171（readback 纯 CPU 数据变换）续切片**：
-`mglRenderCppCopy16or32TextureBytesToGL` 承接 ObjC
+`mglRenderCopy16or32TextureBytesToGL` 承接 ObjC
 R16/RG16/RGBA16 Unorm/Snorm/Float 与 R32/RG32/RGBA32 Float
 直接路径（绕过有损 BGRA8）：
 - 覆盖 UNSIGNED_BYTE/BYTE/SHORT/INT/FLOAT/HALF 与
@@ -2420,7 +2420,7 @@ R16/RG16/RGBA16 Unorm/Snorm/Float 与 R32/RG32/RGBA32 Float
 ### P4 完成记录追加（2026-08-16，commit d413116：BGRA8/RGBA8 标量 readback 迁 C++——item 1171 切片）
 
 **item 1171（readback 纯 CPU 数据变换）续切片**：
-`mglRenderCppCopyUnorm8ScalarTextureBytesToGL` 承接 ObjC
+`mglRenderCopyUnorm8ScalarTextureBytesToGL` 承接 ObjC
 BGRA8/RGBA8 UNORM → BYTE/SHORT/INT/UINT/USHORT/HALF/FLOAT：
 - 源通道按 RGBA vs BGRA 展开为逻辑 RGBA，再按 format 重排；
 - 缩放与 ObjC 一致（u16=`v*257`，u32=`v*16843009`，
@@ -2436,7 +2436,7 @@ BGRA8/RGBA8 UNORM → BYTE/SHORT/INT/UINT/USHORT/HALF/FLOAT：
 ### P4 完成记录追加（2026-08-16，commit 5270432：BGRA8/RGBA8 packed readback 迁 C++——item 1171 切片）
 
 **item 1171（readback 纯 CPU 数据变换）续切片**：
-`mglRenderCppCopyUnorm8PackedTextureBytesToGL` 承接 ObjC
+`mglRenderCopyUnorm8PackedTextureBytesToGL` 承接 ObjC
 BGRA8/RGBA8 UNORM → packed types：
 - 仅 `GL_BGRA`/`GL_BGR` 交换 R/B，其余 format 保持逻辑 RGBA
   （含 GREEN/BLUE/ALPHA，与 ObjC 一致，不走单通道抽取）；
@@ -2455,7 +2455,7 @@ BGRA8/RGBA8 UNORM → packed types：
 ### P4 完成记录追加（2026-08-16，commit a50c114：UNSIGNED_BYTE 通道重排迁 C++——item 1171 切片）
 
 **item 1171（readback 纯 CPU 数据变换）续切片**：
-`mglRenderCppCopyUnorm8SwizzleTextureBytesToGL` 承接 ObjC
+`mglRenderCopyUnorm8SwizzleTextureBytesToGL` 承接 ObjC
 `CopyBGRA8CompatibleTextureBytesToGL` 收尾 format switch
 （UNSIGNED_BYTE 通道重排 + 遗留 RGBA FLOAT 分支）：
 - BGRA/RGBA/BGR/RGB/RG/RED/GREEN/BLUE/ALPHA 与 ObjC 一致；
@@ -2474,10 +2474,10 @@ BGRA8/RGBA8 UNORM → packed types：
 ### P4 完成记录追加（2026-08-16，commit 6aa27db：行拷贝 + depth readback CPU 转码迁 C++——item 1171 切片）
 
 **item 1171（readback 纯 CPU 数据变换）续切片**：
-- `mglRenderCppCopyRows` 承接 `mglMetalCopyRows`（逐行 memcpy + 可选
+- `mglRenderCopyRows` 承接 `mglMetalCopyRows`（逐行 memcpy + 可选
   Y-flip）；ObjC 变薄委托，Texture getTexImage / depth float 直通调用点
   不变。
-- `mglRenderCppCopyDepthTextureBytesToFloat` 承接
+- `mglRenderCopyDepthTextureBytesToFloat` 承接
   `mglReadDepthTextureAsFloat` 的 Depth16 / unpacked depth-float → GL
   float 循环（与 ObjC 一样默认 flipY）。
 - smoke `READBACK_SCALAR_CONVERT_OK` 扩展：行拷贝直通/flipY/坏参、
@@ -2490,9 +2490,9 @@ BGRA8/RGBA8 UNORM → packed types：
 ### P4 完成记录追加（2026-08-16，commit 0c7895d：R8 swizzle expand 迁 C++——item 1111 切片）
 
 **item 1111（纹理 swizzle 纯 CPU）切片**：
-- `mglRenderCppResolveR8SwizzledComponent` 承接
+- `mglRenderResolveR8SwizzledComponent` 承接
   `mglResolveR8SwizzledComponent`（tex 未用，只看 swizzle + red）。
-- `mglRenderCppCreateSingleChannelSwizzledUpload` 承接
+- `mglRenderCreateSingleChannelSwizzledUpload` 承接
   `mglCreateSingleChannelSwizzledUpload`：仅 `GL_R8` 1B/px → RGBA8，
   四通道走 resolve；非 R8 / 坏参 / 512MiB 上限返回 NULL。
 - ObjC 变薄委托，Texture* 抽取 internalformat + 四个 swizzle 后转发。
@@ -2508,10 +2508,10 @@ BGRA8/RGBA8 UNORM → packed types：
 ### P4 完成记录追加（2026-08-16，commit 482b0f4：layer / sRGB pixel-format 表迁 C++——item 1111/887 切片）
 
 **item 1111/887（纹理 pixel-format 纯 CPU 表）切片**：
-- `mglRenderCppMetalLayerPixelFormatIsSupported`：仅 BGRA8 / BGRA8_sRGB。
-- `mglRenderCppSRGBPixelFormat` / `mglRenderCppLinearPixelFormat`：
+- `mglRenderMetalLayerPixelFormatIsSupported`：仅 BGRA8 / BGRA8_sRGB。
+- `mglRenderSRGBPixelFormat` / `mglRenderLinearPixelFormat`：
   RGBA8 / BGRA8 互转，其余原样返回。
-- `mglRenderCppEffectiveMTLPixelFormat`：`srgb_decode_ext ==
+- `mglRenderEffectiveMTLPixelFormat`：`srgb_decode_ext ==
   GL_SKIP_DECODE_EXT` 时降到 linear；0 / DECODE 不变。
 - ObjC 四个函数变薄委托；Effective 只抽 `tex->params.srgb_decode_ext`。
 - smoke `LAYER_PIXEL_FORMAT_OK`。
@@ -2525,7 +2525,7 @@ BGRA8/RGBA8 UNORM → packed types：
 ### P4 完成记录追加（2026-08-16，commit 71102f0：R-only swizzle 门迁 C++——item 1111 切片）
 
 **item 1111（纹理 swizzle 纯 CPU 表）切片**：
-- `mglRenderCppTextureUploadNeedsSingleChannelSwizzle` 承接
+- `mglRenderTextureUploadNeedsSingleChannelSwizzle` 承接
   `mglTextureUploadNeedsSingleChannelSwizzle`：`swizzled==0` → 0，
   否则 GL_R* 格式表（R8/R16/R32 及 SNORM/F/I/UI）。
 - ObjC 只抽 internalformat + swizzled 后转发。
@@ -2539,10 +2539,10 @@ BGRA8/RGBA8 UNORM → packed types：
 ### P4 完成记录追加（2026-08-16，commit e994c3e：stored-components 迁 C++——item 1111 切片）
 
 **item 1111（纹理分量计数纯 CPU 表）切片**：
-- TU 内 `mglCppNumComponentsForFormat` 忠实拷贝 `pixel_utils.c` 的
+- TU 内 `mglNumComponentsForFormat` 忠实拷贝 `pixel_utils.c` 的
   `numComponentsForFormat`（static，避免与 lib 符号冲突；core 未声明
   的 legacy 枚举用同一组十六进制）。
-- `mglRenderCppStoredColorComponents` 承接
+- `mglRenderStoredColorComponents` 承接
   `mglStoredColorComponentsForTexture` 的 format→count（>0 否则 4）。
 - ObjC 只保留 null-tex → 4，其余转发。
 - smoke `STORED_COLOR_COMPONENTS_OK`。
@@ -2555,8 +2555,8 @@ BGRA8/RGBA8 UNORM → packed types：
 ### P4 完成记录追加（2026-08-16，commit 77a93d4：RGB channel-expansion gates 迁 C++——item 1111 切片）
 
 **item 1111（纹理展开门纯 CPU 表）切片**：
-- `mglRenderCppTextureInternalFormatNeedsRGBA8Expansion` /
-  `mglRenderCppTextureNeedsChannelExpansion` 承接 ObjC 两表；
+- `mglRenderTextureInternalFormatNeedsRGBA8Expansion` /
+  `mglRenderTextureNeedsChannelExpansion` 承接 ObjC 两表；
   upload-prep 内直接调用 C++，不再经 ObjC 符号。
 - smoke stub 删除，改走同一事实源；`CHANNEL_EXPANSION_GATE_OK`。
 - 验证：A/B 双门均 71/0/2/73；test-metalcpp SMOKE_DONE；
@@ -2565,7 +2565,7 @@ BGRA8/RGBA8 UNORM → packed types：
 ### P4 完成记录追加（2026-08-16，commit bc7fee0：GL→MTL swizzle 映射迁 C++——item 1111 切片）
 
 **item 1111（纹理 swizzle 纯 CPU）切片**：
-- `mglRenderCppMTLSwizzleForGLSwizzle` 承接
+- `mglRenderMTLSwizzleForGLSwizzle` 承接
   `mglMTLSwizzleForGLSwizzle`（components 门控缺通道 → Zero /
   Alpha→One；未知枚举 → Zero + stderr）。
 - ObjC 只算 components 后转发；C ABI 返回 uint32_t（Metal
@@ -2580,7 +2580,7 @@ BGRA8/RGBA8 UNORM → packed types：
 ### P4 完成记录追加（2026-08-16，commit 5bde0fc：min-filter mipmaps 门迁 C++——item 1111 切片）
 
 **item 1111（纹理 min-filter 纯 CPU 表）切片**：
-- `mglRenderCppTextureMinFilterUsesMipmaps` 承接
+- `mglRenderTextureMinFilterUsesMipmaps` 承接
   `mglTextureMinFilterUsesMipmaps`（四个 MIPMAP_* → 1，其余 0）。
 - ObjC static 变薄委托。
 - smoke `MIN_FILTER_MIPMAPS_OK`。
@@ -2592,7 +2592,7 @@ BGRA8/RGBA8 UNORM → packed types：
 ### P4 完成记录追加（2026-08-16，commit de04778：texture data-kind name 迁 C++——item 1111 切片）
 
 **item 1111（纹理 data-kind 纯 CPU 表）切片**：
-- `mglRenderCppTextureDataKindName` 承接 `mglTextureDataKindName`
+- `mglRenderTextureDataKindName` 承接 `mglTextureDataKindName`
   （float/sint/uint/depth/unknown 静态字面量）。
 - ObjC 变薄委托；smoke `TEXTURE_DATA_KIND_OK` 扩展 name 断言。
 - 验证：A/B 双门均 71/0/2/73；test-metalcpp SMOKE_DONE；
@@ -2606,8 +2606,8 @@ BGRA8/RGBA8 UNORM → packed types：
 
 **item 1014（binding auxiliary segment）切片**：
 - `bindFragmentFallbackBuffersToCurrentRenderEncoder:` 现在与 fragment 主
-  binding loop 共用 `MGLRenderCppBindingSnapshot`；gate-on 收集 buffer/clear
-  op 后在 fallback 段末一次交给 `mglRenderCppEncodeBindingSnapshot`，保持
+  binding loop 共用 `MGLRenderBindingSnapshot`；gate-on 收集 buffer/clear
+  op 后在 fallback 段末一次交给 `mglRenderEncodeBindingSnapshot`，保持
   主循环 → fallback 的 encoder 顺序。
 - gate-off 仍调用原 ObjC setter；dedup cache 更新、fallback buffer、全槽
   safety-net 和统计路径均保持不变。
@@ -2639,7 +2639,7 @@ BGRA8/RGBA8 UNORM → packed types：
 ### P4 完成记录追加（2026-08-16：command commit guard owner 化——item 1051/1141 切片）
 
 - `CommandBufferOwner` 新增 `commit_in_progress`，通过
-  `mglRenderCppCommandBufferOwnerBeginCommit/EndCommit` 管理；首次 begin 返回
+  `mglRenderCommandBufferOwnerBeginCommit/EndCommit` 管理；首次 begin 返回
   1、嵌套返回 0、空 owner 返回 -1。
 - `MGLRenderPassManager` 的 begin/end 方法变为薄适配，删除
   `MGLCommandState.isCommittingCommandBuffer`；shutdown 在销毁 owner 前结束
@@ -2651,8 +2651,8 @@ BGRA8/RGBA8 UNORM → packed types：
 
 ### P4 完成记录追加（2026-08-16：command completion/error value-state 分类——item 1051 切片）
 
-- 新增 `mglRenderCppClassifyCommandBufferCommit` 与
-  `mglRenderCppClassifyCommandBufferCompletion`：提交状态判定和
+- 新增 `mglRenderClassifyCommandBufferCommit` 与
+  `mglRenderClassifyCommandBufferCompletion`：提交状态判定和
   `MTLCommandBufferErrorDomain/code 4` driver-rejection 识别迁入 C++，
   `MGLRenderer+GPURecovery.m` 只消费分类结果并保留现有日志、错误计数、节流、
   deferred reset、异常捕获和 commit fallback。
@@ -2668,8 +2668,8 @@ BGRA8/RGBA8 UNORM → packed types：
 
 ### P4 完成记录追加（2026-08-16：completion/error-recovery 编排 facade——item 1051 切片）
 
-- 新增 `mglRenderCppProcessCommandBufferCompletion`：C++ 统一执行完成状态分类、
-  recovery owner 的 error/success 记账，并返回 `MGLRenderCppCommandBufferCompletionResult`
+- 新增 `mglRenderProcessCommandBufferCompletion`：C++ 统一执行完成状态分类、
+  recovery owner 的 error/success 记账，并返回 `MGLRenderCommandBufferCompletionResult`
   value-state。`MGLRenderer+GPURecovery.m` 的 completion block 只消费结果做日志、
   driver-rejection 节流和 deferred reset，不再直接编排 owner 状态机。
 - success 路径仍严格调用 `RecordSuccess` 后再调用独立的 `ClearMode`，保留原
@@ -2686,10 +2686,10 @@ BGRA8/RGBA8 UNORM → packed types：
 
 **item 1111（纹理格式纯 CPU 分类）切片**：
 
-- 新增 `mglRenderCppMetalPixelFormatIsDepthOrStencil`、
-  `mglRenderCppMetalPixelFormatIsPackedDepthStencil`、
-  `mglRenderCppGLInternalFormatLooksDepthOrStencil` 和
-  `mglRenderCppTexturePixelFormatCompatibleWithExpectedDataKind` 四个 C ABI
+- 新增 `mglRenderMetalPixelFormatIsDepthOrStencil`、
+  `mglRenderMetalPixelFormatIsPackedDepthStencil`、
+  `mglRenderGLInternalFormatLooksDepthOrStencil` 和
+  `mglRenderTexturePixelFormatCompatibleWithExpectedDataKind` 四个 C ABI
   facade；实现只使用 `uint32_t` enum value，不把 `MTL::*` 类型暴露到 ABI。
 - `mgl_texture_compat.h` 的 ObjC inline 名称保留，但只做薄包装；depth/stencil、
   packed attachment 和 sampler data-kind compatibility 的分类表不再在 ObjC
@@ -2710,9 +2710,9 @@ BGRA8/RGBA8 UNORM → packed types：
 
 **item 1111（压缩纹理上传行数纯 CPU 表）切片**：
 
-- 新增 `mglRenderCppMetalCompressedBlockHeight` 和
-  `mglRenderCppMetalUploadRowsForPixelFormat`；BC/ASTC block-height 表和
-  `pixelHeight` 的 min-1、block 向上取整逻辑统一在 `mgl_render_cpp.cpp`。
+- 新增 `mglRenderMetalCompressedBlockHeight` 和
+  `mglRenderMetalUploadRowsForPixelFormat`；BC/ASTC block-height 表和
+  `pixelHeight` 的 min-1、block 向上取整逻辑统一在 `mgl_render.cpp`。
 - `mgl_texture_compat.h` 保留原 `NSUInteger` helper 名称，仅转换为
   `uint64_t` C ABI 结果；删除 header 内重复的 Metal pixel-format switch。
 - smoke 新增 `TEXTURE_COMPRESSED_ROWS_OK`，覆盖 BC1、ASTC 6x6、未压缩格式、
@@ -2726,11 +2726,11 @@ BGRA8/RGBA8 UNORM → packed types：
 ### P4 完成记录追加（2026-08-16：GPU timestamp callback 直连 C++——item 1051/1197 切片）
 
 - `GLMMetalFuncs.mtlGetGPUTimestamp` 在 gate-on 且 C++ device 可用时改为
-  `mglRenderCppGetGPUTimestamp`，直连 C++ callback 数由 11 增至 12，剩余 41。
+  `mglRenderGetGPUTimestamp`，直连 C++ callback 数由 11 增至 12，剩余 41。
 - C++ callback 先通过原 `mtlFlush(ctx, true)` 适配列执行 GL ordering 所要求的
-  flush+wait，再调用 `mglRenderCppSampleTimestamps` 返回 GPU timestamp；无效
+  flush+wait，再调用 `mglRenderSampleTimestamps` 返回 GPU timestamp；无效
   context/bridge 返回 0，保持旧 C bridge 的防御边界。
-- 为避免让 `mgl_render_cpp.cpp` 依赖完整 `GLMContext` 布局，新增纯 C
+- 为避免让 `mgl_render.cpp` 依赖完整 `GLMContext` 布局，新增纯 C
   `mglContextHasValidMetalBridge` 查询；C++ 继续只持有 opaque context pointer。
 - gate-off 仍调用 `MGLRenderer+QuerySync.m -mtlGetGPUTimestamp:`；gate-on 的
   flush 仍进入 ObjC `flushCommandBuffer:YES`、commit/AGX recovery 和等待策略。
@@ -2742,19 +2742,19 @@ BGRA8/RGBA8 UNORM → packed types：
 
 ### P4 完成记录追加（2026-08-16：swap-present owner-aware facade——item 1051 切片）
 
-- 新增 `mglRenderCppGetCommandBufferOwnerState`：gate-on 的 swap presentation
+- 新增 `mglRenderGetCommandBufferOwnerState`：gate-on 的 swap presentation
   状态检查直接从 `CommandBufferOwner` 输出 value-state，不再先把 current buffer
   借给 `MGLRenderer.m` 再查询 status。
-- 新增 `mglRenderCppPresentDrawableForCommandBufferOwner`：C++ 从 owner 取 current、
+- 新增 `mglRenderPresentDrawableForCommandBufferOwner`：C++ 从 owner 取 current、
   验证 `NotEnqueued` 并编码 present；删除旧 raw
-  `mglRenderCppPresentDrawable(command_buffer, drawable)` API。
-- `mgl_render_cpp_objc.h` 的 adapter 明确分门：gate-on 走 owner-aware C++ facade，
+  `mglRenderPresentDrawable(command_buffer, drawable)` API。
+- `mgl_render_objc.h` 的 adapter 明确分门：gate-on 走 owner-aware C++ facade，
   gate-off 仍借用 current 并调用原 ObjC `presentDrawable:`，异常继续传播到 swap
   外层 `@catch`。finalized-buffer rotate、drawable 校验、commit 和日志顺序未改。
 - smoke `COMMAND_BUFFER_OWNER_PRESENT_OK` 覆盖 owner state、空参、detach 后无
   current 等边界；真实 present 由 A/B regression 的 swap 路径覆盖。
 - `MGLRenderer.m` 的 direct
-  `mglRenderCppCommandBufferOwnerGetCurrent` 匹配行从本切片前 15 降至 10；剩余
+  `mglRenderCommandBufferOwnerGetCurrent` 匹配行从本切片前 15 降至 10；剩余
   是诊断日志、非 present command 调度与后续适配列，不在本切片机械替换。
 - status-check/present 仍依赖原 GL-thread + `METAL_LOCK` 串行前提，不新增跨线程
   原子性；该原 ObjC 限制记录于
@@ -2766,16 +2766,16 @@ BGRA8/RGBA8 UNORM → packed types：
 
 ### P4 完成记录追加（2026-08-16：command-owner encoder facade——item 1051 窄切片）
 
-- 新增 `mglRenderCppCreateRenderEncoderFromCommandBufferOwnerState` 与
-  `mglRenderCppCreateBlitEncoderFromCommandBufferOwner`；gate-on 的 scissored
+- 新增 `mglRenderCreateRenderEncoderFromCommandBufferOwnerState` 与
+  `mglRenderCreateBlitEncoderFromCommandBufferOwner`；gate-on 的 scissored
   clear 和 stage copy-back 现在直接从 `CommandBufferOwner.current` 创建 encoder，
   不再先把 current command buffer 借到 `MGLRenderer.m`。
-- `mgl_render_cpp_objc.h` 增加统一 owner-first encoder adapter：gate-on 成功路径
+- `mgl_render_objc.h` 增加统一 owner-first encoder adapter：gate-on 成功路径
   不暴露 current，gate-off 以及 C++ facade 失败时保留 ObjC descriptor/encoder
   fallback。空 owner、空 state、空输出和 detached owner 均返回错误，不改变
   原有清理与 copy-back 失败路径。
 - `MGLRenderer.m` 的 direct
-  `mglRenderCppCommandBufferOwnerGetCurrent` 匹配从前一切片的 10 降至 4，
+  `mglRenderCommandBufferOwnerGetCurrent` 匹配从前一切片的 10 降至 4，
   剩余 4 处全部是 `mglLogStateSnapshot` 诊断日志；`GPURecovery.m`、
   `QuerySync.m`、`Lifecycle.m` 仍为 0。adapter 中保留的 4 处 getter 仅用于
   gate-off/失败回退，属于后续适配列，不宣称 command lifecycle 已完全迁出。
@@ -2822,14 +2822,14 @@ BGRA8/RGBA8 UNORM → packed types：
 ### P4 完成记录追加（2026-08-16：timer-query callbacks + completion TSan 修复——item 1051/1197 切片）
 
 - `GLMMetalFuncs.mtlBeginTimerQuery` / `mtlEndTimerQuery` 在 gate-on 且 C++
-  device 可用时直连 `mglRenderCppBeginTimerQueryCallback` /
-  `mglRenderCppEndTimerQueryCallback`；C++ 侧以独立 mutex 保护按 `GLMContext`
+  device 可用时直连 `mglRenderBeginTimerQueryCallback` /
+  `mglRenderEndTimerQueryCallback`；C++ 侧以独立 mutex 保护按 `GLMContext`
   索引的非拥有 `QueryStateOwner` registry，lifecycle 在创建后注册、销毁前注销。
 - callback 先保留原 `mtlFlush(ctx, true)` 适配列，故 render-encoder 结束、commit、
   wait、异常捕获和 AGX recovery 仍是 ObjC 高层策略；GL-thread、外层
   `METAL_LOCK` 和 owner 生命周期前提已写入
   `docs/P4_COMMAND_LIFECYCLE_LIMITATIONS_2026-08-16.md`。
-- `mglRenderCppAddCommandBufferCompletion` 改用直接的
+- `mglRenderAddCommandBufferCompletion` 改用直接的
   `MTL::CommandBufferHandler` block 按值捕获 `shared_ptr`，移除
   `HandlerFunction`/`std::function` `__block` 竞态；TSan 原报告消失。
 - 为 clean 状态下 `test-all` 的 standalone binary 增加统一 `build/` order-only
@@ -2844,7 +2844,7 @@ BGRA8/RGBA8 UNORM → packed types：
 
 **item 1116（纹理全量上传）切片**：单面（2D）dirty-level 循环的迭代 +
 has-uploadable CPU 数据判定（内联，compat 头是 ObjC 类型不可入 C++ TU）+
-逐 level 分类（上传 op / 短后备 / 坏参）迁入 `mglRenderCppBuildLevelUploadOps`：
+逐 level 分类（上传 op / 短后备 / 坏参）迁入 `mglRenderBuildLevelUploadOps`：
 - 逐 level 运行 round-46 的 prep，压缩成 op 列表（短后备 op 携带
   have/need 字节供诊断日志；stale/incomplete level 静默跳过——与 ObjC
   基线一致）；
@@ -2899,7 +2899,7 @@ typedef 适配列下白名单（与 40-42 轮同模式，非 deep 迁移）：
 
 **item 1155 第二个大镜像删除（该 item 收口）**：ObjC `currentRenderEncoder`
 镜像字段移除：
-- `mglRenderCppRenderEncoderOwnerGetCurrent`（借用返回 owner->encoder；
+- `mglRenderEncoderOwnerGetCurrent`（借用返回 owner->encoder；
   end 后指针保留至 destroy——与旧镜像的 end 语义一致，clear 是独立步骤）；
 - `installRenderEncoder` 无条件维护 owner（双门）；`endCurrentRenderEncoder`
   经 getter 读取；`clearCurrentRenderEncoder` 仅销毁 owner；
@@ -2919,8 +2919,8 @@ typedef 适配列下白名单（与 40-42 轮同模式，非 deep 迁移）：
 ### P4 完成记录追加（2026-08-15，commit c955bd5：currentCommandBuffer 镜像删除——C++ owner 双门单源——item 1141/1155 切片）
 
 **item 1155 大镜像之一删除**：ObjC `currentCommandBuffer` 镜像字段移除：
-- `mglRenderCppCommandBufferOwnerGetCurrent`（借用返回 owner->current）+
-  `mglRenderCppCreateCommandBufferOwnerAdopt`（gate-off 回退：把 ObjC 创建的
+- `mglRenderCommandBufferOwnerGetCurrent`（借用返回 owner->current）+
+  `mglRenderCreateCommandBufferOwnerAdopt`（gate-off 回退：把 ObjC 创建的
   CB 收养进 owner——即使 C++ 创建路径失败，getter 读取仍正确）；
 - `installNewCommandBufferFromQueue` / `detachCurrentCommandBufferForSubmission`
   / `discardCurrentCommandBuffer` 与 manager 内部读取（createRenderEncoder
@@ -2962,10 +2962,10 @@ typedef 适配列下白名单（与 40-42 轮同模式，非 deep 迁移）：
 
 **item 1138（compute copy-back）切片**：`flushStageBindingCopyBacks:` 的
 校验 + blit 编码循环 + CPU 前缀 memmove 迁入 C++：
-- `mglRenderCppEncodeStageBindingCopyBacks`（C-ABI 条目数组——ObjC 侧桥接
+- `mglRenderEncodeStageBindingCopyBacks`（C-ABI 条目数组——ObjC 侧桥接
   buffer 指针；边界检查 vs Metal buffer length；blit_encoder 为 NULL 时仅
   校验——保持原「先校验后建 encoder」顺序）；
-- `mglRenderCppCopyBackCPUPrefix`（守卫 + memmove + ever_written /
+- `mglRenderCopyBackCPUPrefix`（守卫 + memmove + ever_written /
   cpu_shadow_pending 副作用 + failed_index 输出供诊断日志）；
 - CB 排序（detach / AGX 恢复提交 / wait / newCommandBufferLocked）仍在
   ObjC（commitCommandBufferWithAGXRecovery 是刻意保留的恢复语义）。
@@ -2982,11 +2982,11 @@ typedef 适配列下白名单（与 40-42 轮同模式，非 deep 迁移）：
 
 **item 1111（纹理执行体）收口**：dirty-level 循环的逐 level CPU 数据准备迁入
 C++（纯数据变换，两门共用）：
-- `mglRenderCppTexturePrepareLevelUpload`：几何计算（pitch/height MIN 钳制、
+- `mglRenderTexturePrepareLevelUpload`：几何计算（pitch/height MIN 钳制、
   3D copy_depth）、短后备守卫（-2——数学上不可达，防御性保 A/B 一致）、
-  RGBA8/通道展开选择与执行；返回 0/-1/-2 + `MGLRenderCppLevelUploadPrep`
+  RGBA8/通道展开选择与执行；返回 0/-1/-2 + `MGLRenderLevelUploadPrep`
   （data 借用或自有 + owns_data）；
-- `mglRenderCppCreateChannelExpandedUpload`：RGBA16/RGBA32 展开表 + 校验
+- `mglRenderCreateChannelExpandedUpload`：RGBA16/RGBA32 展开表 + 校验
   从 mgl_texture_compat.m 逐字迁入（mglCreateChannelExpandedUpload 变
   薄委托——单一事实源，双门共用）；needs-check 两 helper 的 pixelFormat
   参数改 uint32_t（ABI 不变，C++ TU 可调用）；
@@ -3005,7 +3005,7 @@ C++（纯数据变换，两门共用）：
 
 **item 1141（命令生命周期）第三切片**：`MGLCommandState.detachedCommandBuffer`
 （void* 镜像）删除——它只用于 commit/release 的归属校验：
-- 新增 `mglRenderCppCommandBufferSubmissionMatchesBuffer`（submission 持有的
+- 新增 `mglRenderCommandBufferSubmissionMatchesBuffer`（submission 持有的
   MTL::CommandBuffer 与传入指针按指针相等比较，1/0/-1）；
 - commitDetachedCommandBufferIfOwned / releaseDetachedCommandBufferIfOwned
   的守卫改调 C++；detach 的镜像写/清 3 处删除。
@@ -3022,8 +3022,8 @@ C++（纯数据变换，两门共用）：
 
 **item 1141（命令生命周期）第二切片**：`MGLCommandState.currentEvent` /
 `currentSyncName` 镜像删除，迁入 C++ `PendingEventOwner`（event + GL sync name）：
-- 新增 `mglRenderCppCreatePendingEventOwner` / `PendingEventPrepare`（懒创建 +
-  复用，经单例 renderer device——mglRenderCppInit 双门都运行，event 创建路径
+- 新增 `mglRenderCreatePendingEventOwner` / `PendingEventPrepare`（懒创建 +
+  复用，经单例 renderer device——mglRenderInit 双门都运行，event 创建路径
   双门一致）/ `PendingEventDetach`（所有权转移给调用方，ObjC 侧 __bridge_transfer）/
   `PendingEventClear` / `DestroyPendingEventOwner`；坏参 -1；
 - ObjC prepare/detach/clear 三方法变薄适配（device 参数 __unused）；静态
@@ -3046,7 +3046,7 @@ C++（纯数据变换，两门共用）：
 迁入 C++ `CommandBufferOwner`：
 - C++ 侧新增 `CommandBufferSyncList`（Sync** 数组 + count/size，析构 free；
   reset 清空条目；owner reset/discard 时自动 reset）；
-- 新增 `mglRenderCppCommandBufferOwnerAppendSync` / `mglRenderCppCommandBufferOwnerClearSyncs`
+- 新增 `mglRenderCommandBufferOwnerAppendSync` / `mglRenderCommandBufferOwnerClearSyncs`
   （含扩容溢出防护）；
 - ObjC `appendSyncToCurrentCommandBuffer:` / `clearCurrentCommandBufferSyncListEntries`
   变薄适配（gate-off 无 owner 时 append 报成功——列表仅作记录、等待路径从不
@@ -3075,7 +3075,7 @@ id<MTLTexture>）全部改用 MGLMetal*Ref typedef——GL 语义层与 A/B 兜�
 
 ### P4 完成记录追加（2026-08-15，commit 1d000fc：Metal ref typedef 适配列 + 两个壳模块出列）
 
-**item 887 白名单推进**：`mgl_render_cpp_objc.h` 新增 P4 适配列 typedef
+**item 887 白名单推进**：`mgl_render_objc.h` 新增 P4 适配列 typedef
 （MGLMetalDeviceRef / BufferRef / TextureRef / RenderCommandEncoderRef /
 ComputeCommandEncoderRef / BlitCommandEncoderRef / CommandBufferRef /
 FunctionRef / RenderPipelineStateRef / ComputePipelineStateRef /
@@ -3096,9 +3096,9 @@ DepthStencilStateRef / SamplerStateRef——语义与 id<MTL*> 完全一致：st
 
 **item 1157/887 小切片**：
 - `mglRenderPassUsesColorTexture`（mgl_sync.m 的 mirror fallback 查询）迁入
-  C++：新增 `mglRenderCppRenderPassUsesColorTexture`（MTL::RenderPassDescriptor
+  C++：新增 `mglRenderPassUsesColorTexture`（MTL::RenderPassDescriptor
   的 colorAttachments 遍历，命中写 index 返回 1 / 未中 0 / 坏参 -1）；
-  mgl_render_cpp_objc.h 的 ForState 内联包装的 fallback 改调 C++ 入口，
+  mgl_render_objc.h 的 ForState 内联包装的 fallback 改调 C++ 入口，
   ObjC 函数与 mgl_sync.h 声明删除。
 - `MGLCapabilityInit` 签名改 `void *deviceRef`（header 提供
   MGLMetalDeviceRef typedef + mglCapabilityDeviceRef bridge helper），
@@ -3113,7 +3113,7 @@ DepthStencilStateRef / SamplerStateRef——语义与 id<MTL*> 完全一致：st
 ### P4 完成记录追加（2026-08-15，commit e78eb1c：旧式 packed 格式 RGBA8 展开迁入 C++）
 
 **item 1111 第三个执行体切片：mglCreateRGBA8ExpandedUpload（dirty-level 循环
-调用的两个展开 helper 之一）** —— 新增 `mglRenderCppCreateRGBA8ExpandedUpload`
+调用的两个展开 helper 之一）** —— 新增 `mglRenderCreateRGBA8ExpandedUpload`
 （R3_G3_B2 / RGB4/5/565 / RGB10/12 / RGBA2/4 / RGB5_A1 / RGB8 变体的逐格式
 位展开 + unorm 取整，含 512MB 尺寸上限与坏参拒绝），替换 mgl_texture_compat.m
 的内联体；ObjC wrapper 保留签名与
@@ -3134,7 +3134,7 @@ mglExpandUNormBitsTo8 已随迁删除（无其他引用）。两门共用，无 
 ### P4 完成记录追加（2026-08-15，commit bc0a0b0：CloudFaces 通道扩展迁入 C++）
 
 **item 1111 第二个执行体切片：texel buffer 2D fallback（CloudFaces 路径）的
-RGB→RGBA 通道扩展** —— 新增 `mglRenderCppTextureExpandRGBToRGBA`（纯数据
+RGB→RGBA 通道扩展** —— 新增 `mglRenderTextureExpandRGBToRGBA`（纯数据
 变换，写入调用方提供的 dst buffer，ObjC 用 NSMutableData 保持 ARC 生命周期
 管理；src 每 texel 3×comp，dst 每 texel 4×comp，alpha 取默认值低字节，超出
 texel_count 的尾 texel 置零，坏参返回 -1）。替换内联逐 texel 扩展循环；与
@@ -3154,7 +3154,7 @@ ObjC。
 ### P4 完成记录追加（2026-08-15，commit bd0780e：3D 纹理 depth-plane 重打包迁入 C++）
 
 **item 1111 第一个执行体切片：REPLACE_3D 分支的 3D depth-plane 重打包** ——
-新增 `mglRenderCppTextureRepackDepthPlanes`（纯数据变换：strided
+新增 `mglRenderTextureRepackDepthPlanes`（纯数据变换：strided
 bytesPerImage → tight bpr*height 布局；参数非法/溢出/分配失败返回 NULL），
 替换 ObjC 内联 malloc+逐 plane memcpy 循环。两门共用同一 helper，无 A/B
 分歧；replaceRegion 调用与 @try/@catch 回退仍留 ObjC。
@@ -3192,9 +3192,9 @@ sampled 数组 pass texture+sampler、storage-image 数组 pass texture）gate-o
 ### P4 完成记录追加（2026-08-15，commit 77d96ed：compute 绑定 snapshot + snapshot 临时 buffer 生命周期修复）
 
 **item 1138 下一个切片：bindBuffersToComputeEncoder 的 setter 序列
-snapshot 化** —— 新增 `MGLRenderCppComputeBindingSnapshot`（与 render 版同构
+snapshot 化** —— 新增 `MGLRenderComputeBindingSnapshot`（与 render 版同构
 的 op 列表：kind 0 = setBuffer / NULL = 槽位清除，kind 1 = setBytes）+
-`mglRenderCppEncodeComputeBindingSnapshot`（逐条重放；坏 kind / NULL bytes /
+`mglRenderEncodeComputeBindingSnapshot`（逐条重放；坏 kind / NULL bytes /
 越界计数拒绝）。3 个 emit 点（isolated、普通 map、runtime-array-size
 sizeBuffer）在 gate-on 收集，函数末尾一次重放；3 个校验失败路径先 flush 再
 return false。GS/TES P4.3e 路径（DrawSupport.m:1725）与用户 compute 共用此
@@ -3203,7 +3203,7 @@ return false。GS/TES P4.3e 路径（DrawSupport.m:1725）与用户 compute 共�
 **顺带修复一个 REAL gate-on 崩溃（air_geometry_resources 全套跑必炸）**：
 runtime-size `sizeBuffer` 是块级局部（gate-on 经 __bridge_transfer 拥有），
 块结束即释放，而它的 op 等到函数末尾才重放 → 重放时悬垂 → objc_retain
-EXC_BAD_ACCESS（ASan 定位：mglRenderCppEncodeComputeBindingSnapshot ←
+EXC_BAD_ACCESS（ASan 定位：mglRenderEncodeComputeBindingSnapshot ←
 bindBuffersToComputeEncoder ← handleGeometryDrawIfNeeded）。修复：sizeBuffer
 emit 后立即 flush（编码器当场 retain）。单跑该测试不炸（状态无关，全套
 1-15 前缀才触发）——ASan 全栈是唯一可靠的定位手段。
@@ -3228,7 +3228,7 @@ flush，编码器当场 retain）：
 **item 1056 主绑定 pass 收口：fallback 段（2 个直接 setVertexBuffer 点）与
 point-size 段（1 个 setVertexBytes 点）也改走 binding snapshot** —— 至此
 主 per-draw 顶点绑定 pass 全链路（map 循环 → VAO attrib → fallback →
-point-size）在 gate-on 全部经 `mglRenderCppEncodeBindingSnapshot` 一次或
+point-size）在 gate-on 全部经 `mglRenderEncodeBindingSnapshot` 一次或
 多次重放，`BindingState.m` 主流程直接 setter 调用点归零（仅剩宏的 gate-off
 else 分支与 helper 定义）。
 - 两个方法各新增 snapshot 参数（fallback：bindingSnapshot/useSnapshot；
@@ -3236,7 +3236,7 @@ else 分支与 helper 定义）。
   2×float bytes op 的 scratch 拷贝），各自方法内定义指针版宏并就地重放：
   重放位置 = 各方法结束处，顺序 = map-replay → attrib-replay →
   fallback-replay → point-size-replay，与直接路径逐点一致。
-- 书keeping（mglRenderCppBindingUpdateVertexBuffer / invalidateLastBound /
+- 书keeping（mglRenderBindingUpdateVertexBuffer / invalidateLastBound /
   PERF_INC / anyBindingPresent / baseBindingPresent）全部保持内联、两门一致。
 - item 1056 绑定段全部完成；剩余（随 item 1014 跟踪）为 BindingState.m
   的 88 个 `id<MTL` 残留（绑定状态 owner 内部结构，P5 级迁移）。
@@ -3258,7 +3258,7 @@ binding snapshot**（round 30 主 map 循环 snapshot 的延续）。
   「map 循环 emit → attrib emit → fallback → point-size」顺序逐点一致；
   4 个校验失败 `return false` 前先 flush 已收集 op（否则早期失败会丢
   attrib 段已发生的 emit，破坏 encoder 状态与 dedup 缓存一致性）。
-- 书keeping（mglRenderCppBindingUpdateVertexBuffer / mglNoteBufferEncoded /
+- 书keeping（mglRenderBindingUpdateVertexBuffer / mglNoteBufferEncoded /
   PERF_INC / anyBindingPresent / 转换缓存）全部保持内联、两门一致。
 - 剩余（item 1056）：fallback 段（2 个直接 setVertexBuffer 点）与
   point-size 段（1 个 setVertexBytes 点）仍在直接路径，下一切片处理。
@@ -3270,10 +3270,10 @@ binding snapshot**（round 30 主 map 循环 snapshot 的延续）。
 ### P4 完成记录追加（2026-08-15，commit 0a5259b：compute dispatch plan 首切片 + smoke 修复）
 
 **P4.5 item 1138 第一个切片：dispatch 参数 value-state plan。**
-- `MGLRenderCppComputePlan`（mgl_render_cpp.h）+ `mglRenderCppDispatchComputePlan`
-  （mgl_render_cpp.cpp）：DIRECT / INDIRECT 两种 dispatch 一次 C ABI 编码；
+- `MGLRenderComputePlan`（mgl_render.h）+ `mglRenderDispatchComputePlan`
+  （mgl_render.cpp）：DIRECT / INDIRECT 两种 dispatch 一次 C ABI 编码；
   local size 0 在 C++ 内解析为 1（与既有 `x ? x : 1` 默认一致）。为
-  「ObjC 只传 MGLRenderCppComputePlan value-state」定型。
+  「ObjC 只传 MGLRenderComputePlan value-state」定型。
 - MGLRenderer+Compute.m 的 mtlDispatchComputeLocked / mtlDispatchComputeIndirectLocked
   尾部改为 gate-on 组装 plan + 单次 C++ 调用；gate-off 保留原逐条 ObjC 路径作
   A/B 对照（两分支产生完全相同的结果；顺带删除了直接路径里冗余的
@@ -3287,7 +3287,7 @@ binding snapshot**（round 30 主 map 循环 snapshot 的延续）。
 「翻译器单测」只覆盖 test_legacy_compat 的 193 项；本轮跑通后抓到两个存量 bug）：**
 - round 30 测试 bug：BINDING_SNAPSHOT 的 nullBytes 用例写的是
   `fragment_ops[2]`（越界幻影 op，复放为合法 clear）应为 `fragment_ops[1]`。
-- **round 31 真实 bug：`mglRenderCppTextureUploadRoute` 硬编码的 MTL ABI
+- **round 31 真实 bug：`mglRenderTextureUploadRoute` 硬编码的 MTL ABI
   常量错误**——MTLTextureType1DArray 实为 1（误写 3）、MTLTextureType3D
   实为 7（误写 5）、MTLStorageModePrivate 实为 2（误写 0）。gate-on 对
   1DArray/3D/Cube 上传误判（1DArray Shared → BLIT 而非 REPLACE_1D；3D
@@ -3305,7 +3305,7 @@ check-air-only OK；`git diff --check` 干净。
 
 - **读取侧（149 → 25 处）**：`MGLRenderer+RenderPass.m` 全部
   `MTLRenderPassDescriptor` 读取改为 owner-first 快照 helper
-  （`mglRenderCppGetRenderPassStateOwner` 优先、ObjC 镜像 gate-off 回退）：
+  （`mglRenderGetRenderPassStateOwner` 优先、ObjC 镜像 gate-off 回退）：
   texture / load-store actions / clear color-depth-stencil / render target
   尺寸 / visibilityResultType。新增 helper 组（`mglRenderPass*For` 共 13 个
   静态函数）落在 `mglRenderPassGetPersistent*` 附近。metric：视觉验证用
@@ -3357,7 +3357,7 @@ box 重置回整幅 pass（GL 4.6 §14.6.1 允许空 box 裁剪全部 fragment�
   无 gl_Layer 输出对照；本提交最初用它固定当时的已知限制（slice-1 绑定仍画到
   layer 0）。**2026-08-16 已更新为修复后的正向断言**：slice 1 draw/clear 只改
   slice 1，并证明 slice 0 保持原图像。
-- [x] scissor dedup 排查结论：`mglRenderCppBindingSetScissor` 的
+- [x] scissor dedup 排查结论：`mglRenderBindingSetScissor` 的
   `state->valid`/scissorEqual dedup 在修复后不再涉事（无 dedup 的强制 emit
   实验同样失败→失败在值本身而非 setter dedup；dedup 保留）。
 - **未解项（转 P4.4 专项）**：gate-on 单写 + **isolines/point_mode**（TES
@@ -3404,7 +3404,7 @@ box 重置回整幅 pass（GL 4.6 §14.6.1 允许空 box 裁剪全部 fragment�
   MGL_TESS_DIAG 复现「VBO contents == 某绑定 buffer contents」的精确时刻；
   ② 检查 `updateDirtyBuffer` / `mapBuffersToMTL` 在 DIRTY_ALL 下的 buffer
   重建路径（是否把 VBO 的 mtl_data 换成复用内存）；③ 关注
-  `mglRenderCppCreateBuffer`（gate-on 的 newBuffer 包装）与 COW 池的地址
+  `mglRenderCreateBuffer`（gate-on 的 newBuffer 包装）与 COW 池的地址
   复用交互。
 
 **✅ P4.1e3 系列问题收官（2026-08-14，commit 6c6b1cd）**：后续建议 ① 的插桩
@@ -3436,9 +3436,9 @@ spill-victim 家族：修复后 **10 连跑全套件（gate-on ×8 + gate-off ×
   **双写已拆**：`mglRenderPassSetPersistentAttachment` 为 gate-on 纯 C++ 写 /
   gate-off 纯镜像写（无任何双写路径）；gate-on 下 `renderPassDescriptor` 保持
   nil（P4.1f），当时的 `renderTargetArrayLength` 上限与 `attachment.slice=0`
-  语义由 C++ owner 在 `mglRenderCppSetRenderPassStateAttachmentTexture` 内维护，
-  encoder 创建（`mglRenderCppCreateRenderEncoderFromStateOwner`）从 owner 读取
-  `render_target_array_length`（mgl_render_cpp.cpp:1027）。镜像侧两处写入仅存于
+  语义由 C++ owner 在 `mglRenderSetRenderPassStateAttachmentTexture` 内维护，
+  encoder 创建（`mglRenderCreateRenderEncoderFromStateOwner`）从 owner 读取
+  `render_target_array_length`（mgl_render.cpp:1027）。镜像侧两处写入仅存于
   gate-off A/B 基线（RenderPass.m:649 / ~660），随 P5 gate 删除。）
   - **处置**：gate-on 世界 0 处镜像写（全库仅 RenderPass.m:649 一处
     `renderTargetArrayLength` 写 = gate-off 基线）；该条随 P5 与 ObjC 基线
@@ -3485,9 +3485,9 @@ probe 1 缺失）。
   缓冲区内容无关）。
 - 结论：分歧发生在 GPU 可见输入（VS capture 缓冲内容或 kernel 读到的
   控制点流），与累积的 in-flight command buffer / COW 池 slot 复用时机
-  相关（test-metalcpp 的池复用断言路径 `mglRenderCppCreateBuffer`）。
+  相关（test-metalcpp 的池复用断言路径 `mglRenderCreateBuffer`）。
   修复方向：检查 capture/outBuffer/gather 缓冲的生命周期与
-  `mglRenderCppCreateBuffer` 池复用是否在旧命令缓冲提交前被覆写。
+  `mglRenderCreateBuffer` 池复用是否在旧命令缓冲提交前被覆写。
   当前规避：新回归注册在 isolines 块之后（套件 57/0/2 稳定）。
 
 **✅ 遗留 bug 根因已定位并修复（2026-08-14 收官，commit 6c6b1cd）**：
@@ -3515,7 +3515,7 @@ draw（native 或 point-mode compute 皆可）确定性光栅化错乱**，程�
 - 失败 draw 上屏像素是**上一 draw 的 n=3 tesscoord 颜色**（(5/6,5/6)），
   证明 passthrough raster 读到陈旧 outBuffer 记录；
 - 二进制 pipeline archive（~/Library/Caches/MGL/…）移除以排除缓存 kernel
-  干扰后仍复现；glFinish 分隔 CB、fresh newBuffer（mglRenderCppCreateBuffer
+  干扰后仍复现；glFinish 分隔 CB、fresh newBuffer（mglRenderCreateBuffer
   无池）、CPU 参数逐字段一致均排除。
 - 触发条件与分配尺寸/内容无关，与**同一测试内的 tessellation draw 序号**
   相关；非 tess draw 插入不重置。规避：`air_tessellation_factors_spacing`
@@ -3528,11 +3528,11 @@ draw（native 或 point-mode compute 皆可）确定性光栅化错乱**，程�
 （nil），所有跨文件的 render-pass 读取改为 owner-first；回归 A/B 双门
 54/0/2 全绿（含 3 次重复跑验证稳定性）。
 
-**共享访问器**（`mgl_render_cpp_objc.h`，供 RenderPass/Batch/Draw/
+**共享访问器**（`mgl_render_objc.h`，供 RenderPass/Batch/Draw/
 DrawSupport/BindingState/QuerySync/MGLRenderer.m 共用）：
 - `mglRenderPassUsesMetalCpp()` —— 统一 gate 定义（原 RenderPass.m 的
   static 版本删除，避免两处实现漂移）。
-- `mglRenderCppGetRenderPassState(owner,&state)` —— owner-first 读 C++
+- `mglRenderGetRenderPassState(owner,&state)` —— owner-first 读 C++
   状态。
 - `mglRenderPassAttachmentTextureForState` / `AttachmentSubresourceForState`
   / `RenderTargetSizeForState` / `UsesColorTextureForState` /
@@ -3602,7 +3602,7 @@ test-dirty-hash PASS、test-benchmark smoke PASS、check-air-only OK、
 ### P4 完成记录追加（2026-08-15，commit 48501b0：上传路径选路 C++ 化）
 
 **P4.4 item 1111 第一个切片：CPU→GPU 上传路径的「storage mode 选路」迁入
-C++** —— `mglRenderCppTextureUploadRoute`（纯决策函数，无 Metal 对象参与，
+C++** —— `mglRenderTextureUploadRoute`（纯决策函数，无 Metal 对象参与，
 texture_type / storage_mode 传 MTLTextureType / MTLStorageMode 的 ABI 数值）：
 1D/1DArray 且非 Private → REPLACE_1D；3D 且 AGX copyFromBuffer slice OOB bug
 生效时 Private → REJECT、其余 → REPLACE_3D；其余（2D/2DArray/Cube/1D-Private…）
@@ -3619,8 +3619,8 @@ texture_type / storage_mode 传 MTLTextureType / MTLStorageMode 的 ABI 数值�
   3D+bug+shared → REPLACE_3D；3D 无 bug → BLIT；2D/Cube → BLIT）。
 - 验证：A/B 双门 65/0/2/67 + ASan 双门 65/0/2/67 零报告；翻译器单测
   193/193；check-air-only OK；git diff --check 干净。
-- 后续状态：2026-08-16 已由完整 `MGLRenderCppTextureUploadPlan`、既有
-  `mglRenderCppBuildLevelUploadOps` 和 `mglRenderCppTextureExpandRGBToRGBA`
+- 后续状态：2026-08-16 已由完整 `MGLRenderTextureUploadPlan`、既有
+  `mglRenderBuildLevelUploadOps` 和 `mglRenderTextureExpandRGBToRGBA`
   收口，见 P4.4 顶层完成说明。
 
 ### P4 完成记录追加（2026-08-15，commit 67b5f42：主绑定路径 snapshot 化）
@@ -3629,14 +3629,14 @@ texture_type / storage_mode 传 MTLTextureType / MTLStorageMode 的 ABI 数值�
 snapshot 化** —— item 1056 的下一个切片。此前 P4.3b 只覆盖两条 batch fast
 path；本轮把 vertex/fragment 主绑定循环（bindVertexBuffersToCurrentRenderEncoder /
 bindFragmentBuffersToCurrentRenderEncoder）的全部 emit 也统一走
-mglRenderCppEncodeBindingSnapshot，一次 C ABI 调用完成整个 setter 序列。
-- snapshot 契约升级（mgl_render_cpp.h）：`MGLRenderCppBindingBufferEntry`
-  双数组改为**有序 op 列表**（MGLRenderCppBindingOp，
-  MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_OPS=32，每 stage 独立数组），保留同一
+mglRenderEncodeBindingSnapshot，一次 C ABI 调用完成整个 setter 序列。
+- snapshot 契约升级（mgl_render.h）：`MGLRenderBindingBufferEntry`
+  双数组改为**有序 op 列表**（MGLRenderBindingOp，
+  MGL_RENDER_BINDING_SNAPSHOT_MAX_OPS=32，每 stage 独立数组），保留同一
   stage 内 buffer / bytes / nil-clear 的**精确交错顺序**（同 slot 先 clear
   后 set 等场景必须保序）。kind 0=set buffer（buffer==NULL 即 clear，等价
-  mglRenderCppSetRenderBuffer(nil)）；kind 1=set bytes（bytes 借用，重放返回前
-  有效）。mgl_render_cpp.cpp 重放逐 op 调 setVertexBuffer/setVertexBytes/
+  mglRenderSetRenderBuffer(nil)）；kind 1=set bytes（bytes 借用，重放返回前
+  有效）。mgl_render.cpp 重放逐 op 调 setVertexBuffer/setVertexBytes/
   setFragmentBuffer/setFragmentBytes；NULL buffer 由"错误"改为合法 clear。
 - 两条 P4.3b batch 收集点（MGLRenderer+BatchReplay.m
   bindDynamicVertexArrayBuffersDirectly / bindDynamicUniformRangesDirectly）
@@ -3927,7 +3927,7 @@ gl_Vertex 入 builtin 表（`in vec4 gl_Vertex;`）。配套：`airPrepareLegacy
 
 **TES compute dispatch 按 P4.3e 同模式落地（item 997 收口）**：
 `dispatchAIRTessEvalCompute` 的固定序列（encoder + pipeline + ABI 槽位
-factor/patch/out）经 `mglRenderCppBeginComputeDispatch` 一次交给 C++
+factor/patch/out）经 `mglRenderBeginComputeDispatch` 一次交给 C++
 （setup 3 buffer，≤16 cap）；GL 资源绑定留在 begin/end 之间经 facade；
 gate-off fallback 保持原 ObjC 序列。全套件 63/0/2/65 双门一致（含
 air_tessellation 家族）。
@@ -3964,9 +3964,9 @@ texture2D() 采样红 1x1 纹理；双门 A/B 一致。translator 独立套件 1
 builder；ObjC 不再构造 `MTLRenderPipelineDescriptor`（value-state 直出）。
 
 - **value-state**：`MGLPipelineDescriptorState` 更名为
-  `MGLRenderCppPipelineDescriptorState`（`mgl_air_loader.h`，旧名 typedef 兼容）；
-  `mgl_render_cpp.h` 前向声明 + 新 facade
-  `mglRenderCppCreateRenderPipelineFromState(vs, fs, state, archive, out, err, cap)`
+  `MGLRenderPipelineDescriptorState`（`mgl_air_loader.h`，旧名 typedef 兼容）；
+  `mgl_render.h` 前向声明 + 新 facade
+  `mglRenderCreateRenderPipelineFromState(vs, fs, state, archive, out, err, cap)`
   —— ObjC 传 value-state + 函数指针 + 归档，C++ 完成
   `MTL::RenderPipelineDescriptor` 组装。
 - **C++ builder**（`mgl_air_loader.cpp`）：`buildRenderPipelineDescriptor` +
@@ -3989,13 +3989,13 @@ builder；ObjC 不再构造 `MTLRenderPipelineDescriptor`（value-state 直出�
 - **签名**：`mglVertexDescriptorSignatureFromState` /
   `mglPipelineDescriptorSignatureFromState`（mgl_vertex_format.m）哈希字段/顺序
   与 descriptor 版一致（layout 取「最后写它的 attrib」，镜像累积写入语义）。
-- **descriptor cache 改 value-state**：`mglRenderCppLookupPipelineDescriptorState` /
+- **descriptor cache 改 value-state**：`mglRenderLookupPipelineDescriptorState` /
   `StorePipelineDescriptorState` 取代 pointer-based 版（原 C++ 侧把 ObjC
   descriptor 当 `MTL::*` 存取的 type-confused 隐患消除）；
   `MGLPipelineCache` 新增 `pipelineDescriptorStateForWords:state:` /
   `storePipelineDescriptorState:forWords:`；gate-off 的 ObjC descriptor 字典保留。
 - **miss 路径**：新 `buildPipelineStateOnCacheMissWithState:` —— final/simple/safe
-  三套降级 state + `mglRenderCppCreateRenderPipelineFromState`；GPU recovery /
+  三套降级 state + `mglRenderCreateRenderPipelineFromState`；GPU recovery /
   interface-mismatch / `MGL_FORCE_SAFE_FALLBACK_PIPELINE` 测试钩子语义与 ObjC
   版一致；`mglCreateAIRRenderPipelineCpp`（descriptor→state 转换）已删除。
 - **踩坑**：①非 TES pipeline 的 `max_tessellation_factor=0` 直接
@@ -4018,19 +4018,19 @@ builder；ObjC 不再构造 `MTLRenderPipelineDescriptor`（value-state 直出�
 
 ### P4.3a 完成记录（2026-08-13）
 
-**交付**：draw 提交的统一 C ABI —— `MGLRenderCppDrawPlan` + `mglRenderCppEncodeDraw`。
+**交付**：draw 提交的统一 C ABI —— `MGLRenderDrawPlan` + `mglRenderEncodeDraw`。
 
-- **plan 定义**（mgl_render_cpp.h）：六种 kind —— `MGL_RENDER_CPP_DRAW_ARRAY`
+- **plan 定义**（mgl_render.h）：六种 kind —— `MGL_RENDER_DRAW_ARRAY`
   （vertex_start/vertex_count）、`DRAW_INDEXED`（index_count/index_type/
   index_buffer/index_buffer_offset/base_vertex）、`DRAW_ARRAY_INDIRECT` 与
   `DRAW_INDEXED_INDIRECT`（indirect_buffer/offset）、`DRAW_PATCHES` 与
   `DRAW_INDEXED_PATCHES`（control_point_count/patch_start/patch_count/
   patch_index_buffer/control_point_index_buffer）；通用 instance_count/
   base_instance。资源全部 +0 borrowed。
-- **EncodeDraw**（mgl_render_cpp.cpp）：按 kind 分派到既有 per-call facade
-  （mglRenderCppDrawPrimitives 家族），非法 kind/空 encoder/缺 buffer 返回
+- **EncodeDraw**（mgl_render.cpp）：按 kind 分派到既有 per-call facade
+  （mglRenderDrawPrimitives 家族），非法 kind/空 encoder/缺 buffer 返回
   -1 并写 err —— 调用方回退 ObjC 直接编码，gate-off 语义不变。
-- **ObjC 桥**（mgl_render_cpp_objc.h）：`mglRenderCppTryEncodeDraw(encoder,
+- **ObjC 桥**（mgl_render_objc.h）：`mglRenderTryEncodeDraw(encoder,
   plan)` inline —— 内部做 gate 检查（MGL_USE_METALCPP + device），返回 YES
   表示已由 C++ 提交。
 - **wrapper 收敛**（9 个文件 22 个 wrapper）：Draw.m（4）、BatchReplay.m（4）、
@@ -4052,15 +4052,15 @@ builder；ObjC 不再构造 `MTLRenderPipelineDescriptor`（value-state 直出�
 
 ### P4.3b 完成记录（2026-08-13）
 
-**交付**：per-draw binding snapshot —— `MGLRenderCppBindingSnapshot` +
-`mglRenderCppEncodeBindingSnapshot`，batch replay 两条 direct 绑定快路径的
+**交付**：per-draw binding snapshot —— `MGLRenderBindingSnapshot` +
+`mglRenderEncodeBindingSnapshot`，batch replay 两条 direct 绑定快路径的
 setter 序列迁入 C++。
 
-- **snapshot 定义**（mgl_render_cpp.h）：vertex/fragment buffer 绑定条目
-  （`MGLRenderCppBindingBufferEntry`：buffer +0 borrowed / offset / Metal slot），
-  各最多 `MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_BUFFERS`（31）条。
-- **EncodeBindingSnapshot**（mgl_render_cpp.cpp）：在 C++ 内按序重放
-  `setVertexBuffer`/`setFragmentBuffer` —— 与逐条 `mglRenderCppSetRenderBuffer`
+- **snapshot 定义**（mgl_render.h）：vertex/fragment buffer 绑定条目
+  （`MGLRenderBindingBufferEntry`：buffer +0 borrowed / offset / Metal slot），
+  各最多 `MGL_RENDER_BINDING_SNAPSHOT_MAX_BUFFERS`（31）条。
+- **EncodeBindingSnapshot**（mgl_render.cpp）：在 C++ 内按序重放
+  `setVertexBuffer`/`setFragmentBuffer` —— 与逐条 `mglRenderSetRenderBuffer`
   完全等价，但一次 C ABI 调用完成整个序列；count 溢出 / NULL 条目 / 空
   encoder 返回 -1。
 - **接入**（MGLRenderer+BatchReplay.m 两条 fast path）：
@@ -4089,18 +4089,18 @@ setter 序列迁入 C++。
 版：数据仍是 ObjC batch arena 的只读快照（`MGLDrawCommand[]`），循环与最终
 draw 在 C++。
 
-- **C ABI**（mgl_render_cpp.h）：`MGLRenderCppReplayBatchCommand`（cmd_type /
+- **C ABI**（mgl_render.h）：`MGLRenderReplayBatchCommand`（cmd_type /
   first / count / instance_count / base_vertex / base_instance / index_type /
-  index_buffer_offset / index_buffer）+ `MGLRenderCppReplayBatch`
+  index_buffer_offset / index_buffer）+ `MGLRenderReplayBatch`
   （primitive_type / command_count / commands 数组，上限 128）+
-  `mglRenderCppReplayBatchDraws(encoder, batch, err, cap)` → OK / NEEDS_OBJC /
+  `mglRenderReplayBatchDraws(encoder, batch, err, cap)` → OK / NEEDS_OBJC /
   ERROR。契约：调用方预校验全部命令，成功即全部绘制；NEEDS_OBJC 时调用方
   必须整体回退 ObjC 循环（不得部分重放）。
-- **C++ 实现**（mgl_render_cpp.cpp）：逐命令构造 `MGLRenderCppDrawPlan`
+- **C++ 实现**（mgl_render.cpp）：逐命令构造 `MGLRenderDrawPlan`
   （arrays 家族 → ARRAY，elements 家族 → INDEXED，硬编码 draw_command.h 的
   稳定 ABI 常量，GL 头不进 C++ include 链），count==0 跳过，EncodeDraw 提交；
   未知类型 / 索引未就绪返回 NEEDS_OBJC。
-- **ObjC 接线**（MGLRenderer+BatchReplay.m）：`tryReplaySimpleBatchWithCpp:`
+- **ObjC 接线**（MGLRenderer+BatchReplay.m）：`tryReplaySimpleBatch:`
   在 `issueDirectBatch:` 开头先行 —— 前置条件：gate-on、命令数 ∈ (0,128]、
   程序无 cull-distance、`caps.primitive_restart` 关闭、批无 dynamic
   vertex/uniform/texture binding 与 sampler 快照、primitive_type 有效、mode
@@ -4109,8 +4109,8 @@ draw 在 C++。
   UInt16），任一失败整体回退。
 - **smoke**：`REPLAY_BATCH_OK` —— 2 命令（array + indexed）整批重放成功；
   未知 cmd_type → NEEDS_OBJC；空批 / NULL encoder → ERROR。
-- **覆盖验证**：lldb 断点 `mglRenderCppReplayBatchDraws` 在 gate-on regression
-  运行中命中（`issueDirectBatch:` → `tryReplaySimpleBatchWithCpp:` 调用链），
+- **覆盖验证**：lldb 断点 `mglRenderReplayBatchDraws` 在 gate-on regression
+  运行中命中（`issueDirectBatch:` → `tryReplaySimpleBatch:` 调用链），
   证明 C++ replay 路径真实执行而非静默 fallback。
 - **验证**：regression A/B 均 54 PASS / 0 FAIL / 2 SKIP（56 测试，含
   multibatch_same_fbo）+ test-mglair / gtest 42/42 / test-metalcpp
@@ -4123,15 +4123,15 @@ draw 在 C++。
 ### P4.3e 完成记录（2026-08-13）
 
 **交付**：GS compute dispatch 编排的固定序列迁入 C++ ——
-`MGLRenderCppComputeDispatchSetup` + `mglRenderCppBeginComputeDispatch` /
-`mglRenderCppEndComputeDispatch`，接入 `handleGeometryDrawIfNeeded:` 的 GS
+`MGLRenderComputeDispatchSetup` + `mglRenderBeginComputeDispatch` /
+`mglRenderEndComputeDispatch`，接入 `handleGeometryDrawIfNeeded:` 的 GS
 kernel dispatch（air_geometry* / XFB 路径）。
 
-- **C ABI**（mgl_render_cpp.h/.cpp）：setup 携带 pipeline（+0 borrowed）+ 至多
+- **C ABI**（mgl_render.h/.cpp）：setup 携带 pipeline（+0 borrowed）+ 至多
   16 条 buffer 条目 + 4 条 bytes 条目；begin 一次完成「创建 compute encoder
   + setComputePipelineState + 槽位绑定」（encoder +0 borrowed，CB 持有），
   end 一次完成 dispatchThreadgroups + endEncoding。与逐条
-  mglRenderCppSetCompute* / DispatchCompute / EndComputeEncoder 完全等价。
+  mglRenderSetCompute* / DispatchCompute / EndComputeEncoder 完全等价。
 - **ObjC 接线**（MGLRenderer+DrawSupport.m，GS kernel dispatch）：
   gate-on 构建 setup（INPUT/OUTPUT/COUNTS/GATHER/GATHER_PARAMS/XFB/XFB_META
   七个 ABI 槽位，XFB stream 槽按 xfbCaptureBuffer 条件包含）+ begin；
@@ -4142,7 +4142,7 @@ kernel dispatch（air_geometry* / XFB 路径）。
 - **smoke**：`COMPUTE_DISPATCH_OK` —— 独立 CB 上 begin（scaled_blit_cs PSO +
   buffer + bytes）→ end（1×1×1 dispatch）成功并提交；NULL CB / NULL encoder
   拒绝。
-- **覆盖验证**：lldb 断点 `mglRenderCppBeginComputeDispatch` 在 gate-on
+- **覆盖验证**：lldb 断点 `mglRenderBeginComputeDispatch` 在 gate-on
   regression 运行中命中（`handleGeometryDrawIfNeeded:` ← `mtlDrawArraysLocked:`），
   GS compute dispatch 编排真实走 C++。
 - **验证**：regression A/B 均 54 PASS / 0 FAIL / 2 SKIP（56 测试，含
@@ -4159,7 +4159,7 @@ kernel dispatch（air_geometry* / XFB 路径）。
 
 ### P4 收口增量记录（2026-08-16：owner transaction + gate-on copy-back 接线）
 
-- `mglRenderCppCommitCommandBufferTransaction` 将一次 detached command-buffer
+- `mglRenderCommitCommandBufferTransaction` 将一次 detached command-buffer
   提交表示为 value-state：提交前/后/完成状态、submission ownership、completion
   注册、wait、driver rejection、reset request 和是否需要下一个 current CB。
   submission 与 command buffer 不匹配时 fail-closed；RAII commit guard 保证
@@ -4167,7 +4167,7 @@ kernel dispatch（air_geometry* / XFB 路径）。
 - `MGLRenderer+GPURecovery.m` 的 gate-on 提交和
   `flushStageBindingCopyBacks:` 的 gate-on 等待均通过该 owner transaction；
   gate-off 继续使用 ObjC fallback。C++ copy-back validation、blit encode 和
-  `mglRenderCppCopyBackCPUPrefix` 不回退。
+  `mglRenderCopyBackCPUPrefix` 不回退。
 - recovery completion context 对 `CommandBufferRecoveryOwner` 增加独立引用，
   因此 owner handle 销毁后 completion 仍可安全完成；`addCompletedHandler`
   异常路径会释放 context。该修复只覆盖 C++ wrapper 生命周期，不覆盖 ObjC
@@ -4276,7 +4276,7 @@ kernel dispatch（air_geometry* / XFB 路径）。
   否则重放拿悬垂指针」，compute buffer 亦然（MGLRenderer+Compute.m:346-353）；
   只剩 fragment 段二者皆无（既无 flush 也无 strong 临时数组登记）。**触发**：
   `MGL_USE_METALCPP=1` 下片段 uniform/SSBO 因 map 过短进入 isolated 分支且
-  快照 cap 未满、坚持到函数尾重放 → `mglRenderCppEncodeBindingSnapshot` 向
+  快照 cap 未满、坚持到函数尾重放 → `mglRenderEncodeBindingSnapshot` 向
   encoder `setFragmentBuffer(悬垂的 isolated)`。**修法**：与顶点段同款——emit
   后立即 `MGL_FBIND_FLUSH_SNAPSHOT();`，或方法级强数组持有 isolated 至末尾
    重放。属 77d96ed 已修并警示的「临时 buffer 生命周期」漏网点。
@@ -4318,18 +4318,18 @@ kernel dispatch（air_geometry* / XFB 路径）。
 - **确认无 bug（对照审计排除项，勿再提）**：① `mgl_sized_colors` refactor
   （mgl_pixel_format.c:1407-1444，把 `mglClearTexInternalFormatIsColor` 拆出
   `mglSizedColorInternalFormatValid`）语义保持——除了上注 P1 的 depth32 遗漏；
-  ② 纹理子上传 plan/encode（mglRenderCppTextureSubUploadPlan :3082 与
-  `mglRenderCppEncodeTextureUploadLayers`）slice/mip/layer 数学正确，C ABI
+  ② 纹理子上传 plan/encode（mglRenderTextureSubUploadPlan :3082 与
+  `mglRenderEncodeTextureUploadLayers`）slice/mip/layer 数学正确，C ABI
   类型不泄漏 `MTL::*`/`id<>`，`GL_TEX_1D_ARRAY`/`2D_ARRAY` 的
   yoffset/(zoffset,dep) 映射是对旧单 slice 逻辑的**真实修复**；③
   `mgl_air_backend.cpp:2214` 的 "EmitVertex requires the P1 output ABI" 是**防御
   前置守卫**（`emitGeometryVertex` 已完整实现），不是未实现桩——与 `MEMORY.md`
   记录的 GS EmitVertex/TES gl_in 缺口已闭合（59ef83e）一致，勿当 bug 复报；
   ④ Metal-cpp 实现宏 `NS_PRIVATE_IMPLEMENTATION`/`MTL_PRIVATE_IMPLEMENTATION`
-  仍只在 `mgl_render_cpp.cpp:9-10` 定义（`rg MTL_PRIVATE_IMPLEMENTATION` 仅该
-  TU 命中）；`mgl_render_cpp.h` 声明与 `mgl_render_cpp.cpp` 定义基本一一对应
+  仍只在 `mgl_render.cpp:9-10` 定义（`rg MTL_PRIVATE_IMPLEMENTATION` 仅该
+  TU 命中）；`mgl_render.h` 声明与 `mgl_render.cpp` 定义基本一一对应
   （无缺失 facade）；⑤ BatchReplay/DrawSupport/MGLRenderer.m 残留的直接
-  `drawPrimitives` 调用均为 **gate-off A/B 回退**（`mglRenderCppTryEncodeDraw`
+  `drawPrimitives` 调用均为 **gate-off A/B 回退**（`mglRenderTryEncodeDraw`
   返回 NO 才走），与 P4.3a 记录一致（gate-on 零直接调用）。
 
 ### P5 - 删除迁移壳与 gate
@@ -4337,7 +4337,7 @@ kernel dispatch（air_geometry* / XFB 路径）。
 - [x] 将 Metal-cpp 固化为唯一生产路径；生产源码不再读取 `MGL_USE_METALCPP`。
 - [x] 删除所有生产 gate/fallback 分支、旧 `MGLMetal*Ref` typedef 和共享
       Objective-C completion adapter。
-- [x] 删除 `mgl_render_cpp_objc.h` 过渡 adapter；standalone smoke 只包含纯 C ABI。
+- [x] 删除 `mgl_render_objc.h` 过渡 adapter；standalone smoke 只包含纯 C ABI。
 - [x] 删除 `mgl_metal_bridge.m/.h` 和 `GLMMetalFuncs` ObjC bridge；对外纯 C
       `GLMMetalFuncs` ABI 保持不变。
 - [x] 保留仍承担 GL 调度的 renderer 分类作为薄 Objective-C 适配层；其 Metal
@@ -4365,12 +4365,12 @@ kernel dispatch（air_geometry* / XFB 路径）。
 ### P5 当前完成记录追加（2026-08-18：value-state 类型岛与 sampled-view owner）
 
 - `mgl_sync.{h,m}` 已去除 Foundation/Metal 依赖；attachment subresource、descriptor
-  比较和状态/load/store 命名均通过 `mgl_render_cpp.cpp` 的 opaque C ABI 完成。
+  比较和状态/load/store 命名均通过 `mgl_render.cpp` 的 opaque C ABI 完成。
 - `mgl_vertex_format.{h,m}` 的格式名称、descriptor signature、winding inversion 和
   integer conversion 已改为整数 value-state；Metal descriptor 读取集中在 C++ owner。
 - `mgl_texture_compat.{h,m}` 的 pixel-format/swizzle/扩展上传接口改为纯整数 ABI；
   BASE/MAX_LEVEL sampled texture view 的 view 创建、缓存 retain/release 和 source
-  metadata 查询已统一进入 `mglRenderCppSampledTextureViewForBaseLevel`。
+  metadata 查询已统一进入 `mglRenderSampledTextureViewForBaseLevel`。
 - 施工期审计覆盖了已完成 value-state island 的 Metal 类型，以及 sampled-view
   backend owner facade。当前生产 gate、过渡 adapter、旧 ref typedef 和直接
   Objective-C command operation 仍保持零命中。
@@ -4388,8 +4388,8 @@ kernel dispatch（air_geometry* / XFB 路径）。
 
 - `MGLRenderer+RenderPass.m` 的 transient/fallback texture、depth/stencil state、
   texture 元数据、drawable texture 和 clear value 已全部改为
-  `MGLRenderCppTextureDescriptorState`、`MGLRenderCppDepthStencilDescriptorState`、
-  `MGLRenderCppTextureInfo` 与 opaque C ABI；render-pass encoder 继续由 C++ owner
+  `MGLRenderTextureDescriptorState`、`MGLRenderDepthStencilDescriptorState`、
+  `MGLRenderTextureInfo` 与 opaque C ABI；render-pass encoder 继续由 C++ owner
   创建和结束。
 - `MGLRenderer+Blit.m` 的 buffer/texture/sampler/depth-state 创建、texture
   readback、MSAA resolve、scaled blit 和 copy/resolve geometry 已移除 Metal
@@ -4402,12 +4402,12 @@ kernel dispatch（air_geometry* / XFB 路径）。
   Metal-cpp TU 通过 `static_assert` 对这些数值与 SDK 枚举逐项校验。
 - `mgl_readback.m`、`mgl_state_compat.m` 和 renderer categories 不再导入
   `Metal/Metal.h`；`isFramebufferOnly` 查询经
-  `mglRenderCppTextureIsFramebufferOnly` owner facade，避免通用 `id` 重新承担
+  `mglRenderTextureIsFramebufferOnly` owner facade，避免通用 `id` 重新承担
   Metal selector。
 - `MGLRenderer+RenderPass_Private.h` 的 drawable 参数降为 opaque `id`；施工期审计
   已覆盖 RenderPass、Blit 及其私有头。生产源码无 gate、bridge、旧
   callback/ref typedef 或过渡 adapter，Metal-cpp implementation macro 仍只位于
-  `MGL/src/mgl_render_cpp.cpp`。
+  `MGL/src/mgl_render.cpp`。
 
 当前 stripped 终态 census（注释先剥离，2026-08-18）：非平台 `.m` 和私有头的
 `id<MTL...>`、Metal descriptor、Metal-cpp 类型及直接 Metal selector 均为 0；唯一
@@ -4415,7 +4415,7 @@ kernel dispatch（air_geometry* / XFB 路径）。
 AppKit 生命周期。可复现审计命令：
 
 ```sh
-rg -n 'MGL_USE_METALCPP|mgl_render_cpp_objc|MGLMetal[A-Za-z]+Ref|MGLRendererMetalBridge' \
+rg -n 'MGL_USE_METALCPP|mgl_render_objc|MGLMetal[A-Za-z]+Ref|MGLRendererMetalBridge' \
   MGL/src MGL/include Makefile test_legacy_compat benchmark
 perl -0pe 's{/\*.*?\*/}{}gs; s{//[^\n]*}{}g' MGL/src/*.m MGL/include/*.h | \
   rg -n 'id[[:space:]]*<MTL|MTL[A-Z][A-Za-z]+Descriptor|MTL::'
@@ -4458,15 +4458,15 @@ sanitizer/build 目录仍视为用户资产，不由本次迁移清理。
   `__bridge_transfer id` 的 +1 返回契约，packed-struct/snapshot helper 删除未使用的
   device 参数，buffer CoW/snapshot generation 继续由 C++ backend 持有。
 - `MGLRenderer+Binding.m` 不再创建 sampler descriptor 或直接读取 texture
-  usage/mipmap/dimensions；`MGLRenderCppTextureInfo` 新增 `usage` 与
+  usage/mipmap/dimensions；`MGLRenderTextureInfo` 新增 `usage` 与
   `mipmap_level_count` value-state，默认 sampler 由
-  `mglRenderCppCreateDefaultSampler` 创建并以 +1 opaque handle 返回。
+  `mglRenderCreateDefaultSampler` 创建并以 +1 opaque handle 返回。
 - `MGLRenderer+VertexLayout.m` 的 vertex format、step function、blend 和 color-write
   mask 全部写入整数 value-state；共享 vertex/blend helper 的私有返回类型同步改为
   `uint32_t`。Buffer、Binding、VertexLayout 均已纳入施工期边界审计。
 - `MGLRenderer+Compute.m` 已清除 Metal 类型、descriptor 和资源属性读取；buffer
-  length 及 texture pixel-format/type/array-length 通过 `MGLRenderCppBufferInfo` /
-  `MGLRenderCppTextureInfo` 查询，level view、默认 sampler 和 dispatch 继续由 C++
+  length 及 texture pixel-format/type/array-length 通过 `MGLRenderBufferInfo` /
+  `MGLRenderTextureInfo` 查询，level view、默认 sampler 和 dispatch 继续由 C++
   facade 创建或编码。compute encoder/pipeline/function/temporary 仅以 opaque `id`
   持有，`MTLSize` 已改为显式 x/y/z value-state；Compute 已纳入施工期边界审计。
 
@@ -4522,7 +4522,7 @@ rg -n "id[[:space:]]*<MTL|MTL[A-Z][A-Za-z]+Descriptor|MTL::" \
 - RenderPass、Blit、platform/recovery、buffer、binding、vertex-layout、compute、
   texture/sync value-state islands 以及 index-buffer owner 均已接入 C++ backend；
   Objective-C renderer 仅保留 GL 语义编排和 `MGLPlatformRendererShell` 平台壳。
-- `MGL_USE_METALCPP`、旧 bridge/ref typedef、`mgl_render_cpp_objc.h`、直接
+- `MGL_USE_METALCPP`、旧 bridge/ref typedef、`mgl_render_objc.h`、直接
   Objective-C Metal command operation 和失效 P4 callback/fallback 契约均为零命中。
 - `MGLPipelineCacheState` 仅保存 nullable `void *` 借用句柄；设备、pipeline、
   function 和缓存对象的 retain/release 均由 C++ owner 负责，ObjC wrapper 不再持有
@@ -4553,7 +4553,7 @@ rg -n "id[[:space:]]*<MTL|MTL[A-Z][A-Za-z]+Descriptor|MTL::" \
 当前终态审计命令：
 
 ```sh
-rg -n 'MGL_USE_METALCPP|mgl_render_cpp_objc|MGLMetal[A-Za-z]+Ref|MGLRendererMetalBridge' \
+rg -n 'MGL_USE_METALCPP|mgl_render_objc|MGLMetal[A-Za-z]+Ref|MGLRendererMetalBridge' \
   MGL/src MGL/include Makefile test_legacy_compat benchmark
 for f in MGL/src/*.m MGL/include/*.h; do
   hits=$(perl -0pe 's{/\*.*?\*/}{}gs; s{//[^\n]*}{}g' "$f" |

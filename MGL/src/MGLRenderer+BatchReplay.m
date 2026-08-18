@@ -17,14 +17,14 @@
 #import "mgl_byte_hash.h"
 #import "mgl_frame_activity.h"
 #include "mgl_env_flag.h"
-#include "mgl_render_cpp.h"
+#include "mgl_render.h"
 
 static const NSUInteger kMaxFragmentSamplerSlots = 16;
 
 static BOOL mglBatchReplayHasActiveEncoder(const MGLEncodeContext *encCtx)
 {
     if (!encCtx) return NO;
-    return mglRenderCppRenderEncoderOwnerHasCurrent(
+    return mglRenderEncoderOwnerHasCurrent(
         encCtx->render_encoder_owner) != 0;
 }
 
@@ -36,25 +36,25 @@ static void *mglBatchReplayEncoderTraceToken(
 }
 
 static bool mglBatchReplayCollectResourceBinding(
-    MGLRenderCppResourceBindingSnapshot *snapshot,
+    MGLRenderResourceBindingSnapshot *snapshot,
     uint32_t stage,
     uint32_t kind,
     void *resource,
     uint32_t index)
 {
-    if (!snapshot || stage > MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT ||
-        kind > MGL_RENDER_CPP_RESOURCE_BINDING_SAMPLER) {
+    if (!snapshot || stage > MGL_RENDER_BINDING_STAGE_FRAGMENT ||
+        kind > MGL_RENDER_RESOURCE_BINDING_SAMPLER) {
         return false;
     }
-    uint32_t *count = stage == MGL_RENDER_CPP_BINDING_STAGE_VERTEX
+    uint32_t *count = stage == MGL_RENDER_BINDING_STAGE_VERTEX
         ? &snapshot->vertex_op_count : &snapshot->fragment_op_count;
-    MGLRenderCppResourceBindingOp *ops =
-        stage == MGL_RENDER_CPP_BINDING_STAGE_VERTEX
+    MGLRenderResourceBindingOp *ops =
+        stage == MGL_RENDER_BINDING_STAGE_VERTEX
             ? snapshot->vertex_ops : snapshot->fragment_ops;
-    if (*count >= MGL_RENDER_CPP_RESOURCE_BINDING_SNAPSHOT_MAX_OPS) {
+    if (*count >= MGL_RENDER_RESOURCE_BINDING_SNAPSHOT_MAX_OPS) {
         return false;
     }
-    ops[(*count)++] = (MGLRenderCppResourceBindingOp){
+    ops[(*count)++] = (MGLRenderResourceBindingOp){
         .kind = kind,
         .index = index,
         .resource = resource,
@@ -70,15 +70,15 @@ static void mglBatchReplayDrawPrimitives(
     NSUInteger instanceCount,
     NSUInteger baseInstance)
 {
-    const MGLRenderCppDrawPlan plan = {
-            .kind = MGL_RENDER_CPP_DRAW_ARRAY,
+    const MGLRenderDrawPlan plan = {
+            .kind = MGL_RENDER_DRAW_ARRAY,
             .primitive_type = (uint32_t)primitiveType,
             .vertex_start = vertexStart,
             .vertex_count = vertexCount,
             .instance_count = instanceCount,
             .base_instance = baseInstance,
         };
-    (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
+    (void)mglRenderEncodeDrawForRenderEncoderOwner(
         renderEncoderOwner, &plan, NULL, 0);
 }
 
@@ -93,8 +93,8 @@ static void mglBatchReplayDrawIndexedPrimitives(
     NSInteger baseVertex,
     NSUInteger baseInstance)
 {
-    const MGLRenderCppDrawPlan plan = {
-            .kind = MGL_RENDER_CPP_DRAW_INDEXED,
+    const MGLRenderDrawPlan plan = {
+            .kind = MGL_RENDER_DRAW_INDEXED,
             .primitive_type = (uint32_t)primitiveType,
             .index_count = indexCount,
             .index_type = (uint32_t)indexType,
@@ -104,7 +104,7 @@ static void mglBatchReplayDrawIndexedPrimitives(
             .base_vertex = baseVertex,
             .base_instance = baseInstance,
         };
-    (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
+    (void)mglRenderEncodeDrawForRenderEncoderOwner(
         renderEncoderOwner, &plan, NULL, 0);
 }
 
@@ -114,13 +114,13 @@ static void mglBatchReplayDrawPrimitivesIndirect(
     id indirectBuffer,
     NSUInteger indirectBufferOffset)
 {
-    const MGLRenderCppDrawPlan plan = {
-            .kind = MGL_RENDER_CPP_DRAW_ARRAY_INDIRECT,
+    const MGLRenderDrawPlan plan = {
+            .kind = MGL_RENDER_DRAW_ARRAY_INDIRECT,
             .primitive_type = (uint32_t)primitiveType,
             .indirect_buffer = (__bridge void *)indirectBuffer,
             .indirect_buffer_offset = indirectBufferOffset,
         };
-    (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
+    (void)mglRenderEncodeDrawForRenderEncoderOwner(
         renderEncoderOwner, &plan, NULL, 0);
 }
 
@@ -133,8 +133,8 @@ static void mglBatchReplayDrawIndexedPrimitivesIndirect(
     id indirectBuffer,
     NSUInteger indirectBufferOffset)
 {
-    const MGLRenderCppDrawPlan plan = {
-            .kind = MGL_RENDER_CPP_DRAW_INDEXED_INDIRECT,
+    const MGLRenderDrawPlan plan = {
+            .kind = MGL_RENDER_DRAW_INDEXED_INDIRECT,
             .primitive_type = (uint32_t)primitiveType,
             .index_type = (uint32_t)indexType,
             .index_buffer = (__bridge void *)indexBuffer,
@@ -142,7 +142,7 @@ static void mglBatchReplayDrawIndexedPrimitivesIndirect(
             .indirect_buffer = (__bridge void *)indirectBuffer,
             .indirect_buffer_offset = indirectBufferOffset,
         };
-    (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
+    (void)mglRenderEncodeDrawForRenderEncoderOwner(
         renderEncoderOwner, &plan, NULL, 0);
 }
 
@@ -271,7 +271,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     }
     void *indirectArgsContents = NULL;
     uint64_t indirectArgsLength = 0;
-    if (mglRenderCppGetBufferContents(
+    if (mglRenderGetBufferContents(
             (__bridge void *)indirectArgsBuffer, &indirectArgsContents,
             &indirectArgsLength) != 0 ||
         indirectArgsOffset > indirectArgsLength ||
@@ -499,8 +499,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
 
         id metal_buffer =
             (__bridge id)(draw_buffer->data.mtl_data);
-        MGLRenderCppBufferInfo metalBufferInfo = {0};
-        if (mglRenderCppGetBufferInfo((__bridge void *)metal_buffer,
+        MGLRenderBufferInfo metalBufferInfo = {0};
+        if (mglRenderGetBufferInfo((__bridge void *)metal_buffer,
                                       &metalBufferInfo) != 0) {
             return false;
         }
@@ -512,23 +512,23 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         }
 
         /* Collect the ordered binding updates for one C++ owner replay. */
-        MGLRenderCppBindingSnapshot snapshot = {0};
+        MGLRenderBindingSnapshot snapshot = {0};
         for (GLuint stream = 0; stream < resolved_slot_count; stream++) {
             NSUInteger metal_slot = (NSUInteger)resolved_slots[stream];
             if (!mglBindingStateIsValid(_bindingStateOwner) ||
                 !mglBindingStateBufferMatches(
-                    _bindingStateOwner, MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
+                    _bindingStateOwner, MGL_RENDER_BINDING_STAGE_VERTEX,
                     (__bridge void *)metal_buffer, dynamic_offset,
                     (uint32_t)metal_slot)) {
-                mglRenderCppBindingUpdateVertexBuffer(
+                mglRenderBindingUpdateVertexBuffer(
                     _bindingStateOwner, (__bridge void *)metal_buffer,
                     dynamic_offset, (uint32_t)metal_slot);
                 MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
                 mglNoteBufferEncoded(draw_buffer);
                 if (snapshot.vertex_op_count <
-                    MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_OPS) {
+                    MGL_RENDER_BINDING_SNAPSHOT_MAX_OPS) {
                     snapshot.vertex_ops[snapshot.vertex_op_count++] =
-                        (MGLRenderCppBindingOp){
+                        (MGLRenderBindingOp){
                             /* kind */ 0u,
                             /* index */ (uint32_t)metal_slot,
                             /* offset */ dynamic_offset,
@@ -541,7 +541,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             }
         }
         if (snapshot.vertex_op_count > 0) {
-            mglRenderCppEncodeBindingSnapshotForRenderEncoderOwner(
+            mglRenderEncodeBindingSnapshotForRenderEncoderOwner(
                 encCtx->render_encoder_owner, &snapshot, NULL, 0);
         }
     }
@@ -559,7 +559,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     const int stages[2] = { _VERTEX_SHADER, _FRAGMENT_SHADER };
 
     /* Preserve the original setter order in a single C++ owner replay. */
-    MGLRenderCppBindingSnapshot snapshot = {0};
+    MGLRenderBindingSnapshot snapshot = {0};
 
     for (uint8_t dynamic_index = 0;
          dynamic_index < cmd->dynamic_uniform_binding_count;
@@ -577,8 +577,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
 
         id metal_buffer =
             (__bridge id)(slot->buf->data.mtl_data);
-        MGLRenderCppBufferInfo metalBufferInfo = {0};
-        if (mglRenderCppGetBufferInfo((__bridge void *)metal_buffer,
+        MGLRenderBufferInfo metalBufferInfo = {0};
+        if (mglRenderGetBufferInfo((__bridge void *)metal_buffer,
                                       &metalBufferInfo) != 0) {
             return false;
         }
@@ -626,19 +626,19 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                     if (!mglBindingStateIsValid(_bindingStateOwner) ||
                         !mglBindingStateBufferMatches(
                             _bindingStateOwner,
-                            MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
+                            MGL_RENDER_BINDING_STAGE_VERTEX,
                             (__bridge void *)metal_buffer, start,
                             (uint32_t)metal_slot)) {
-                        mglRenderCppBindingUpdateVertexBuffer(
+                        mglRenderBindingUpdateVertexBuffer(
                             _bindingStateOwner, (__bridge void *)metal_buffer,
                             start, (uint32_t)metal_slot);
                         MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
                         mglNoteBufferEncoded(slot->buf);
                         if (snapshot.vertex_op_count <
-                            MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_OPS) {
+                            MGL_RENDER_BINDING_SNAPSHOT_MAX_OPS) {
                             snapshot.vertex_ops[
                                 snapshot.vertex_op_count++] =
-                                (MGLRenderCppBindingOp){
+                                (MGLRenderBindingOp){
                                     /* kind */ 0u,
                                     /* index */ (uint32_t)metal_slot,
                                     /* offset */ start,
@@ -653,19 +653,19 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                     if (!mglBindingStateIsValid(_bindingStateOwner) ||
                         !mglBindingStateBufferMatches(
                             _bindingStateOwner,
-                            MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT,
+                            MGL_RENDER_BINDING_STAGE_FRAGMENT,
                             (__bridge void *)metal_buffer, start,
                             (uint32_t)metal_slot)) {
-                        mglRenderCppBindingUpdateFragmentBuffer(
+                        mglRenderBindingUpdateFragmentBuffer(
                             _bindingStateOwner, (__bridge void *)metal_buffer,
                             start, (uint32_t)metal_slot);
                         MGL_PERF_INC(g_mglSetFragmentBufferCallsSinceSwap);
                         mglNoteBufferEncoded(slot->buf);
                         if (snapshot.fragment_op_count <
-                            MGL_RENDER_CPP_BINDING_SNAPSHOT_MAX_OPS) {
+                            MGL_RENDER_BINDING_SNAPSHOT_MAX_OPS) {
                             snapshot.fragment_ops[
                                 snapshot.fragment_op_count++] =
-                                (MGLRenderCppBindingOp){
+                                (MGLRenderBindingOp){
                                     /* kind */ 0u,
                                     /* index */ (uint32_t)metal_slot,
                                     /* offset */ start,
@@ -681,7 +681,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         }
     }
     if (snapshot.vertex_op_count > 0 || snapshot.fragment_op_count > 0) {
-        mglRenderCppEncodeBindingSnapshotForRenderEncoderOwner(
+        mglRenderEncodeBindingSnapshotForRenderEncoderOwner(
             encCtx->render_encoder_owner, &snapshot, NULL, 0);
     }
     return true;
@@ -693,7 +693,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
 {
     if (!touched_units || !glm_ctx ||
         !mglBatchReplayHasActiveEncoder(encCtx)) return false;
-    MGLRenderCppResourceBindingSnapshot snapshot = {0};
+    MGLRenderResourceBindingSnapshot snapshot = {0};
 
     for (int stage_index = 0; stage_index < 2; stage_index++) {
         int stage = stage_index == 0 ? _VERTEX_SHADER : _FRAGMENT_SHADER;
@@ -747,9 +747,9 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             id texture =
                 (__bridge id)texture_object->mtl_data;
             texture = (__bridge id)mglSampledTextureViewForBaseLevel(texture_object, (__bridge void *)texture);
-            MGLRenderCppTextureInfo textureInfo = {0};
+            MGLRenderTextureInfo textureInfo = {0};
             if (!texture ||
-                mglRenderCppGetTextureInfo((__bridge void *)texture,
+                mglRenderGetTextureInfo((__bridge void *)texture,
                                            &textureInfo) != 0 ||
                 (expected_type != 0 &&
                  textureInfo.texture_type != expected_type) ||
@@ -759,11 +759,11 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             }
 
             uint32_t binding_stage = stage == _VERTEX_SHADER
-                ? MGL_RENDER_CPP_BINDING_STAGE_VERTEX
-                : MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT;
+                ? MGL_RENDER_BINDING_STAGE_VERTEX
+                : MGL_RENDER_BINDING_STAGE_FRAGMENT;
             if (!mglBatchReplayCollectResourceBinding(
                     &snapshot, binding_stage,
-                    MGL_RENDER_CPP_RESOURCE_BINDING_TEXTURE,
+                    MGL_RENDER_RESOURCE_BINDING_TEXTURE,
                     (__bridge void *)texture, metal_slot)) {
                 return false;
             }
@@ -788,14 +788,14 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 if (sampler_slot >= kMaxFragmentSamplerSlots) return false;
                 if (!mglBatchReplayCollectResourceBinding(
                         &snapshot, binding_stage,
-                        MGL_RENDER_CPP_RESOURCE_BINDING_SAMPLER,
+                        MGL_RENDER_RESOURCE_BINDING_SAMPLER,
                         (__bridge void *)sampler, sampler_slot)) {
                     return false;
                 }
             }
         }
     }
-    return mglRenderCppEncodeResourceBindingSnapshotForRenderEncoderOwner(
+    return mglRenderEncodeResourceBindingSnapshotForRenderEncoderOwner(
         _bindingStateOwner, encCtx->render_encoder_owner,
         &snapshot, NULL, 0) == 0;
 }
@@ -847,7 +847,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     const MGLSamplerSnapshotSet *set =
         &cb->sampler_snapshot_sets[cmd->sampler_snapshot_id];
     if (set->count > MGL_MAX_SAMPLER_SNAPSHOT_ENTRIES) return false;
-    MGLRenderCppResourceBindingSnapshot snapshot = {0};
+    MGLRenderResourceBindingSnapshot snapshot = {0};
 
     for (uint8_t i = 0; i < set->count; i++) {
         const MGLSamplerSnapshotEntry *entry = &set->entries[i];
@@ -887,20 +887,20 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
 
         uint32_t bindingStage;
         if (entry->stage == _VERTEX_SHADER) {
-            bindingStage = MGL_RENDER_CPP_BINDING_STAGE_VERTEX;
+            bindingStage = MGL_RENDER_BINDING_STAGE_VERTEX;
         } else if (entry->stage == _FRAGMENT_SHADER) {
-            bindingStage = MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT;
+            bindingStage = MGL_RENDER_BINDING_STAGE_FRAGMENT;
         } else {
             return false;
         }
         if (!mglBatchReplayCollectResourceBinding(
                 &snapshot, bindingStage,
-                MGL_RENDER_CPP_RESOURCE_BINDING_SAMPLER,
+                MGL_RENDER_RESOURCE_BINDING_SAMPLER,
                 (__bridge void *)sampler, entry->metal_slot)) {
             return false;
         }
     }
-    return mglRenderCppEncodeResourceBindingSnapshotForRenderEncoderOwner(
+    return mglRenderEncodeResourceBindingSnapshotForRenderEncoderOwner(
         _bindingStateOwner, encCtx->render_encoder_owner,
         &snapshot, NULL, 0) == 0;
 }
@@ -1022,13 +1022,13 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
 }
 
 
-- (BOOL)tryReplaySimpleBatchWithCpp:(MGLDrawBatch *)batch
+- (BOOL)tryReplaySimpleBatch:(MGLDrawBatch *)batch
                             context:(GLMContext)glm_ctx
                       encodeContext:(const MGLEncodeContext *)encCtx
 {
     if (!mglBatchReplayHasActiveEncoder(encCtx) || !batch ||
         batch->command_count == 0 ||
-        batch->command_count > MGL_RENDER_CPP_REPLAY_BATCH_MAX_COMMANDS) {
+        batch->command_count > MGL_RENDER_REPLAY_BATCH_MAX_COMMANDS) {
         return NO;
     }
     Program *batchProgram =
@@ -1056,11 +1056,11 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         return NO;
     }
 
-    MGLRenderCppReplayBatchCommand cmds[MGL_RENDER_CPP_REPLAY_BATCH_MAX_COMMANDS];
+    MGLRenderReplayBatchCommand cmds[MGL_RENDER_REPLAY_BATCH_MAX_COMMANDS];
     for (uint32_t i = 0; i < batch->command_count; i++) {
         MGLDrawCommand *cmd = &batch->commands[i];
-        MGLRenderCppReplayBatchCommand *out = &cmds[i];
-        *out = (MGLRenderCppReplayBatchCommand){
+        MGLRenderReplayBatchCommand *out = &cmds[i];
+        *out = (MGLRenderReplayBatchCommand){
             .cmd_type = (uint32_t)cmd->type,
             .first = cmd->first,
             .count = (uint32_t)cmd->count,
@@ -1109,14 +1109,14 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         }
     }
 
-    MGLRenderCppReplayBatch replayBatch = {
+    MGLRenderReplayBatch replayBatch = {
         .primitive_type = (uint32_t)batch->key.primitive_type,
         .command_count = batch->command_count,
         .commands = cmds,
     };
-    return mglRenderCppReplayBatchDrawsForRenderEncoderOwner(
+    return mglRenderReplayBatchDrawsForRenderEncoderOwner(
         encCtx->render_encoder_owner, &replayBatch, NULL, 0) ==
-        MGL_RENDER_CPP_REPLAY_BATCH_OK;
+        MGL_RENDER_REPLAY_BATCH_OK;
 }
 
 - (void)issueDirectBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx
@@ -1126,7 +1126,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
      * encoder, while the owner remains the stable encode target. */
     MGLEncodeContext liveEncCtx = *encCtx;
 
-    if ([self tryReplaySimpleBatchWithCpp:batch
+    if ([self tryReplaySimpleBatch:batch
                                   context:glm_ctx
                             encodeContext:&liveEncCtx]) {
         return;
@@ -1169,7 +1169,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         }
         if (capturedCullDistances) {
             if (![self processGLState:true] ||
-                mglRenderCppRenderEncoderOwnerHasCurrent(
+                mglRenderEncoderOwnerHasCurrent(
                     _renderPassManager.state->currentRenderEncoderOwner) == 0) {
                 [self traceReplayCommand:batch
                                  command:cmd

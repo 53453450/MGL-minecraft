@@ -14,11 +14,11 @@
 #include "mgl_env_flag.h"
 
 static BOOL mglRenderPassManagerCommandBufferState(
-    void *owner, MGLRenderCppCommandBufferState *stateOut)
+    void *owner, MGLRenderCommandBufferState *stateOut)
 {
     if (stateOut) memset(stateOut, 0, sizeof(*stateOut));
     return owner && stateOut &&
-           mglRenderCppGetCommandBufferOwnerState(owner, stateOut) == 0;
+           mglRenderGetCommandBufferOwnerState(owner, stateOut) == 0;
 }
 
 static id mglRenderPassManagerCreateCommandBuffer(
@@ -27,9 +27,9 @@ static id mglRenderPassManagerCreateCommandBuffer(
     if (!owner || !commandQueue) return nil;
     void *commandBuffer = NULL;
     int result = *owner
-        ? mglRenderCppResetCommandBufferOwner(
+        ? mglRenderResetCommandBufferOwner(
               *owner, (__bridge void *)commandQueue, &commandBuffer)
-        : mglRenderCppCreateCommandBufferOwner(
+        : mglRenderCreateCommandBufferOwner(
               (__bridge void *)commandQueue, owner, &commandBuffer);
     return result == 0 && commandBuffer
         ? (__bridge id)commandBuffer
@@ -38,11 +38,11 @@ static id mglRenderPassManagerCreateCommandBuffer(
 
 static id
 mglRenderPassManagerCreateRenderEncoder(
-    void *commandBufferOwner, const MGLRenderCppRenderPassState *state)
+    void *commandBufferOwner, const MGLRenderPassState *state)
 {
     if (!commandBufferOwner || !state) return nil;
     void *encoder = NULL;
-    return mglRenderCppCreateRenderEncoderFromCommandBufferOwnerState(
+    return mglRenderCreateRenderEncoderFromCommandBufferOwnerState(
                commandBufferOwner, state, &encoder) == 0 && encoder
         ? (__bridge id)encoder
         : nil;
@@ -52,7 +52,7 @@ static void mglRenderPassManagerSyncRuntimeOwners(MGLCommandState *state)
 {
     GLMContext context = state ? state->runtimeContext : NULL;
     if (!context) return;
-    mglRenderCppAttachRuntimeOwners(
+    mglRenderAttachRuntimeOwners(
         context,
         state->currentCommandBufferOwner,
         state->currentRenderEncoderOwner,
@@ -61,7 +61,7 @@ static void mglRenderPassManagerSyncRuntimeOwners(MGLCommandState *state)
 
 static void mglRenderPassManagerSyncIdentityView(
     MGLCommandState *commandState,
-    const MGLRenderCppRenderPassIdentityState *identity)
+    const MGLRenderPassIdentityState *identity)
 {
     commandState->renderPassFramebuffer = (Framebuffer *)identity->framebuffer;
     commandState->renderPassFramebufferName = identity->framebuffer_name;
@@ -74,17 +74,17 @@ static void mglRenderPassManagerSyncIdentityView(
 
 static void mglRenderPassManagerStoreIdentity(
     MGLCommandState *commandState,
-    const MGLRenderCppRenderPassIdentityState *identity)
+    const MGLRenderPassIdentityState *identity)
 {
     if (!commandState->renderPassIdentityOwner &&
-        mglRenderCppCreateRenderPassIdentityOwner(
+        mglRenderCreateRenderPassIdentityOwner(
             &commandState->renderPassIdentityOwner) != 0) {
         commandState->renderPassIdentityOwner = NULL;
     }
     if (commandState->renderPassIdentityOwner &&
-        mglRenderCppUpdateRenderPassIdentity(
+        mglRenderUpdateRenderPassIdentity(
             commandState->renderPassIdentityOwner, identity) != 0) {
-        mglRenderCppDestroyRenderPassIdentityOwner(
+        mglRenderDestroyRenderPassIdentityOwner(
             &commandState->renderPassIdentityOwner);
     }
     mglRenderPassManagerSyncIdentityView(commandState, identity);
@@ -109,7 +109,7 @@ static void mglRenderPassManagerStoreIdentity(
 - (void)setRuntimeContext:(GLMContext)context
 {
     if (_state.runtimeContext && _state.runtimeContext != context) {
-        mglRenderCppDetachRuntimeOwners(_state.runtimeContext);
+        mglRenderDetachRuntimeOwners(_state.runtimeContext);
     }
     _state.runtimeContext = context;
     mglRenderPassManagerSyncRuntimeOwners(&_state);
@@ -120,7 +120,7 @@ static void mglRenderPassManagerStoreIdentity(
     /* render pass identity changed — invalidate FBO match cache. */
     [self clearFboMatchCache];
     GLMState *activeState = context ? context->active_state : NULL;
-    MGLRenderCppRenderPassIdentityState identity = {0};
+    MGLRenderPassIdentityState identity = {0};
     identity.framebuffer = activeState ? activeState->framebuffer : NULL;
     identity.framebuffer_name = identity.framebuffer
         ? ((Framebuffer *)identity.framebuffer)->name
@@ -142,7 +142,7 @@ static void mglRenderPassManagerStoreIdentity(
 {
     /* render pass ended — invalidate FBO match cache. */
     [self clearFboMatchCache];
-    MGLRenderCppRenderPassIdentityState identity = {0};
+    MGLRenderPassIdentityState identity = {0};
     for (uint32_t index = 0; index < MAX_COLOR_ATTACHMENTS; index++) {
         identity.draw_buffers[index] = GL_NONE;
     }
@@ -159,7 +159,7 @@ static void mglRenderPassManagerStoreIdentity(
             (__bridge id)commandQueue);
     }
     if (!commandBuffer) {
-        mglRenderCppDestroyCommandBufferOwner(
+        mglRenderDestroyCommandBufferOwner(
             &_state.currentCommandBufferOwner);
     }
     [self resetMDIScratch];
@@ -170,10 +170,10 @@ static void mglRenderPassManagerStoreIdentity(
 - (void *)detachCurrentCommandBufferForSubmission
 {
     if (!_state.currentCommandBufferOwner) return nil;
-    mglRenderCppDestroyCommandBufferSubmission(
+    mglRenderDestroyCommandBufferSubmission(
         &_state.detachedCommandBufferSubmission);
     void *detachedBuffer = NULL;
-    if (mglRenderCppTakeCommandBufferSubmission(
+    if (mglRenderTakeCommandBufferSubmission(
             _state.currentCommandBufferOwner,
             &_state.detachedCommandBufferSubmission,
             &detachedBuffer) != 0 || !detachedBuffer) {
@@ -185,7 +185,7 @@ static void mglRenderPassManagerStoreIdentity(
 
 - (void)discardCurrentCommandBuffer
 {
-    mglRenderCppDiscardCommandBufferOwnerCurrent(
+    mglRenderDiscardCommandBufferOwnerCurrent(
         _state.currentCommandBufferOwner);
     [self resetMDIScratch];
     mglRenderPassManagerSyncRuntimeOwners(&_state);
@@ -195,12 +195,12 @@ static void mglRenderPassManagerStoreIdentity(
 {
     /* ownership guard via the C++ submission. */
     if (!commandBuffer || !_state.detachedCommandBufferSubmission ||
-        mglRenderCppCommandBufferSubmissionMatchesBuffer(
+        mglRenderCommandBufferSubmissionMatchesBuffer(
             _state.detachedCommandBufferSubmission,
             commandBuffer) != 1) {
         return NO;
     }
-    if (mglRenderCppCommitCommandBufferSubmission(
+    if (mglRenderCommitCommandBufferSubmission(
             &_state.detachedCommandBufferSubmission) != 0) {
         return NO;
     }
@@ -210,9 +210,9 @@ static void mglRenderPassManagerStoreIdentity(
 - (int)commitCommandBufferTransaction:(void *)commandBuffer
                          recoveryOwner:(void *)recoveryOwner
                      waitForCompletion:(BOOL)waitForCompletion
-                                result:(MGLRenderCppCommandBufferTransaction *)result
+                                result:(MGLRenderCommandBufferTransaction *)result
 {
-    int transactionResult = mglRenderCppCommitCommandBufferTransaction(
+    int transactionResult = mglRenderCommitCommandBufferTransaction(
         _state.currentCommandBufferOwner,
         &_state.detachedCommandBufferSubmission,
         commandBuffer,
@@ -225,20 +225,20 @@ static void mglRenderPassManagerStoreIdentity(
 
 - (BOOL)hasLastSubmittedCommandBuffer
 {
-    return mglRenderCppCommandBufferOwnerHasLastSubmitted(
+    return mglRenderCommandBufferOwnerHasLastSubmitted(
         _state.currentCommandBufferOwner) == 1;
 }
 
-- (int)waitForLastSubmittedCommandBuffer:(MGLRenderCppCommandBufferState *)state
+- (int)waitForLastSubmittedCommandBuffer:(MGLRenderCommandBufferState *)state
 {
-    return mglRenderCppWaitCommandBufferOwnerLastSubmitted(
+    return mglRenderWaitCommandBufferOwnerLastSubmitted(
         _state.currentCommandBufferOwner, state);
 }
 
 - (void *)consumeTransactionCreatedCurrentCommandBuffer
 {
     void *commandBuffer = NULL;
-    if (mglRenderCppCommandBufferOwnerConsumeTransactionCurrent(
+    if (mglRenderCommandBufferOwnerConsumeTransactionCurrent(
             _state.currentCommandBufferOwner, &commandBuffer) != 1 ||
         !commandBuffer) {
         return nil;
@@ -253,12 +253,12 @@ static void mglRenderPassManagerStoreIdentity(
     /* ownership guard via the C++ submission. */
     if (!_state.detachedCommandBufferSubmission ||
         (commandBuffer &&
-         mglRenderCppCommandBufferSubmissionMatchesBuffer(
+         mglRenderCommandBufferSubmissionMatchesBuffer(
              _state.detachedCommandBufferSubmission,
              commandBuffer) != 1)) {
         return;
     }
-    mglRenderCppDestroyCommandBufferSubmission(
+    mglRenderDestroyCommandBufferSubmission(
         &_state.detachedCommandBufferSubmission);
 }
 
@@ -274,7 +274,7 @@ static void mglRenderPassManagerStoreIdentity(
     if (!_state.currentCommandBufferOwner) {
         return YES;
     }
-    return mglRenderCppCommandBufferOwnerAppendSync(
+    return mglRenderCommandBufferOwnerAppendSync(
                _state.currentCommandBufferOwner, sync) == 0;
 }
 
@@ -285,7 +285,7 @@ static void mglRenderPassManagerStoreIdentity(
     if (!_state.currentCommandBufferOwner) {
         return;
     }
-    mglRenderCppCommandBufferOwnerClearSyncs(_state.currentCommandBufferOwner);
+    mglRenderCommandBufferOwnerClearSyncs(_state.currentCommandBufferOwner);
 }
 
 - (void *)preparePendingEventWithDevice:(__unused void *)device
@@ -294,12 +294,12 @@ static void mglRenderPassManagerStoreIdentity(
     /* the pending event slot lives inside the C++
      * PendingEventOwner; this method is a thin adapter. */
     if (!_state.pendingEventOwner &&
-        mglRenderCppCreatePendingEventOwner(&_state.pendingEventOwner) != 0) {
+        mglRenderCreatePendingEventOwner(&_state.pendingEventOwner) != 0) {
         _state.pendingEventOwner = NULL;
         return nil;
     }
     void *event = NULL;
-    if (mglRenderCppPendingEventPrepare(
+    if (mglRenderPendingEventPrepare(
             _state.pendingEventOwner, syncName, &event) != 0 || !event) {
         return nil;
     }
@@ -311,7 +311,7 @@ static void mglRenderPassManagerStoreIdentity(
     /* transfers the owner's reference via __bridge_transfer. */
     GLsizei syncName = 0;
     void *event = NULL;
-    mglRenderCppPendingEventDetach(
+    mglRenderPendingEventDetach(
         _state.pendingEventOwner, &syncName, &event);
     if (syncNameOut) {
         *syncNameOut = (GLuint)syncName;
@@ -326,7 +326,7 @@ static void mglRenderPassManagerStoreIdentity(
 {
     /* discard the pending event; the owner stays. */
     if (_state.pendingEventOwner) {
-        mglRenderCppPendingEventClear(_state.pendingEventOwner);
+        mglRenderPendingEventClear(_state.pendingEventOwner);
     }
 }
 
@@ -338,18 +338,18 @@ static void mglRenderPassManagerStoreIdentity(
     [self clearFboMatchCache];
     if (renderEncoder) {
         int result = _state.currentRenderEncoderOwner
-            ? mglRenderCppResetRenderEncoderOwner(
+            ? mglRenderResetRenderEncoderOwner(
                   _state.currentRenderEncoderOwner,
                   renderEncoder)
-            : mglRenderCppCreateRenderEncoderOwner(
+            : mglRenderCreateRenderEncoderOwner(
                   renderEncoder,
                   &_state.currentRenderEncoderOwner);
         if (result != 0) {
-            mglRenderCppDestroyRenderEncoderOwner(
+            mglRenderDestroyRenderEncoderOwner(
                 &_state.currentRenderEncoderOwner);
         }
     } else {
-        mglRenderCppDestroyRenderEncoderOwner(
+        mglRenderDestroyRenderEncoderOwner(
             &_state.currentRenderEncoderOwner);
     }
     mglRenderPassManagerSyncRuntimeOwners(&_state);
@@ -360,8 +360,8 @@ static void mglRenderPassManagerStoreIdentity(
     if (!_state.currentCommandBufferOwner || !_state.renderPassStateOwner) {
         return nil;
     }
-    MGLRenderCppRenderPassState renderPassState = {0};
-    if (mglRenderCppGetRenderPassStateOwner(
+    MGLRenderPassState renderPassState = {0};
+    if (mglRenderGetRenderPassStateOwner(
             _state.renderPassStateOwner, &renderPassState) != 0) {
         return nil;
     }
@@ -373,9 +373,9 @@ static void mglRenderPassManagerStoreIdentity(
 - (void)endCurrentRenderEncoder
 {
     if (!_state.currentRenderEncoderOwner ||
-        mglRenderCppRenderEncoderOwnerHasCurrent(
+        mglRenderEncoderOwnerHasCurrent(
             _state.currentRenderEncoderOwner) != 1) return;
-    (void)mglRenderCppEndRenderEncoderOwner(
+    (void)mglRenderEndRenderEncoderOwner(
         _state.currentRenderEncoderOwner);
 }
 
@@ -383,20 +383,20 @@ static void mglRenderPassManagerStoreIdentity(
 {
     /* encoder ended — invalidate FBO match cache. */
     [self clearFboMatchCache];
-    mglRenderCppDestroyRenderEncoderOwner(
+    mglRenderDestroyRenderEncoderOwner(
         &_state.currentRenderEncoderOwner);
     mglRenderPassManagerSyncRuntimeOwners(&_state);
 }
 
 - (BOOL)beginCommandBufferCommit
 {
-    return mglRenderCppCommandBufferOwnerBeginCommit(
+    return mglRenderCommandBufferOwnerBeginCommit(
                _state.currentCommandBufferOwner) == 1;
 }
 
 - (void)endCommandBufferCommit
 {
-    mglRenderCppCommandBufferOwnerEndCommit(
+    mglRenderCommandBufferOwnerEndCommit(
         _state.currentCommandBufferOwner);
 }
 
@@ -407,7 +407,7 @@ static void mglRenderPassManagerStoreIdentity(
     if (offsetOut) {
         *offsetOut = 0;
     }
-    MGLRenderCppCommandBufferState commandBufferState = {0};
+    MGLRenderCommandBufferState commandBufferState = {0};
     if (!device ||
         !mglRenderPassManagerCommandBufferState(
             _state.currentCommandBufferOwner, &commandBufferState) ||
@@ -420,13 +420,13 @@ static void mglRenderPassManagerStoreIdentity(
      * is a borrowed reference (the owner keeps it alive and may swap it on
      * growth, same lifetime contract as the old mirror). */
     if (!_state.mdiArgsScratchOwner &&
-        mglRenderCppCreateMDIScratchOwner(&_state.mdiArgsScratchOwner) != 0) {
+        mglRenderCreateMDIScratchOwner(&_state.mdiArgsScratchOwner) != 0) {
         return nil;
     }
     void *buffer = NULL;
     uint64_t offset = 0;
     uint64_t capacity = 0;
-    if (mglRenderCppAllocateMDIScratch(
+    if (mglRenderAllocateMDIScratch(
             _state.mdiArgsScratchOwner, (uint64_t)length, 256u,
             &buffer, &offset, &capacity) != 0 || !buffer ||
         offset > NSUIntegerMax) {
@@ -438,16 +438,16 @@ static void mglRenderPassManagerStoreIdentity(
 
 - (void)resetMDIScratch
 {
-    mglRenderCppDestroyMDIScratchOwner(&_state.mdiArgsScratchOwner);
+    mglRenderDestroyMDIScratchOwner(&_state.mdiArgsScratchOwner);
 }
 
 - (void)installNewRenderPassDescriptor
 {
     /* new descriptor — invalidate FBO match cache. */
     [self clearFboMatchCache];
-    mglRenderCppDestroyRenderPassStateOwner(
+    mglRenderDestroyRenderPassStateOwner(
         &_state.renderPassStateOwner);
-    if (mglRenderCppCreateDefaultRenderPassStateOwner(
+    if (mglRenderCreateDefaultRenderPassStateOwner(
             &_state.renderPassStateOwner) != 0) {
         _state.renderPassStateOwner = NULL;
     }
@@ -459,19 +459,19 @@ static void mglRenderPassManagerStoreIdentity(
                      generation:(uint64_t)generation
 {
     if (_state.renderPassIdentityOwner && fboName != 0u) {
-        MGLRenderCppFboMatchCacheState cache = {
+        MGLRenderFboMatchCacheState cache = {
             .fbo_name = fboName,
             .generation = generation,
             .result = result,
         };
-        mglRenderCppSetFboMatchCache(
+        mglRenderSetFboMatchCache(
             _state.renderPassIdentityOwner, &cache);
     }
 }
 
 - (void)clearFboMatchCache
 {
-    mglRenderCppClearFboMatchCache(_state.renderPassIdentityOwner);
+    mglRenderClearFboMatchCache(_state.renderPassIdentityOwner);
 }
 
 - (void)setTraceReplayFlushId:(uint64_t)flushId batchIndex:(uint32_t)batchIndex
@@ -499,23 +499,23 @@ static void mglRenderPassManagerStoreIdentity(
 
 - (void)shutdown
 {
-    mglRenderCppDestroyRenderPassStateOwner(
+    mglRenderDestroyRenderPassStateOwner(
         &_state.renderPassStateOwner);
     mglRenderPassManagerSyncRuntimeOwners(&_state);
     [self clearCurrentRenderEncoder];
     [self discardCurrentCommandBuffer];
-    mglRenderCppDestroyMDIScratchOwner(&_state.mdiArgsScratchOwner);
+    mglRenderDestroyMDIScratchOwner(&_state.mdiArgsScratchOwner);
     [self releaseDetachedCommandBufferIfOwned:nil];
     [self endCommandBufferCommit];
-    mglRenderCppDestroyCommandBufferOwner(
+    mglRenderDestroyCommandBufferOwner(
         &_state.currentCommandBufferOwner);
     [self clearRenderPassIdentity];
-    mglRenderCppDestroyRenderPassIdentityOwner(
+    mglRenderDestroyRenderPassIdentityOwner(
         &_state.renderPassIdentityOwner);
 
     /* sync tracking list lives inside the C++ owner;
      * the owner destructor frees it. */
-    mglRenderCppDestroyPendingEventOwner(&_state.pendingEventOwner);
+    mglRenderDestroyPendingEventOwner(&_state.pendingEventOwner);
     _state.currentDrawUsesRTSampledCopy = NO;
 }
 

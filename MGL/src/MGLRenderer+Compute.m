@@ -15,7 +15,7 @@
 #import "MGLRenderer_Private.h"
 #import "mgl_compute_pipeline_cache.h"
 #include "mgl_env_flag.h"
-#include "mgl_render_cpp.h"
+#include "mgl_render.h"
 
 enum {
     MGL_COMPUTE_TEXTURE_TYPE_CUBE = 5u,
@@ -28,7 +28,7 @@ static id mglComputeCreateBufferWithBytes(
     uint64_t resourceOptions)
 {
     void *buffer = NULL;
-    if (mglRenderCppCreateBufferWithBytes(bytes, length, resourceOptions, NULL,
+    if (mglRenderCreateBufferWithBytes(bytes, length, resourceOptions, NULL,
                                           &buffer) == 0 && buffer) {
         return (__bridge_transfer id)buffer;
     }
@@ -38,7 +38,7 @@ static id mglComputeCreateBufferWithBytes(
 static id mglComputeCreateDefaultSampler(void)
 {
     void *sampler = NULL;
-    if (mglRenderCppCreateDefaultSampler(&sampler) == 0 && sampler) {
+    if (mglRenderCreateDefaultSampler(&sampler) == 0 && sampler) {
         return (__bridge_transfer id)sampler;
     }
     return nil;
@@ -46,8 +46,8 @@ static id mglComputeCreateDefaultSampler(void)
 
 static id mglComputeCreateTextureLevelView(id texture, NSUInteger level)
 {
-    MGLRenderCppTextureInfo info = {0};
-    if (mglRenderCppGetTextureInfo((__bridge void *)texture, &info) != 0) {
+    MGLRenderTextureInfo info = {0};
+    if (mglRenderGetTextureInfo((__bridge void *)texture, &info) != 0) {
         return nil;
     }
     uint64_t sliceCount = info.array_length;
@@ -56,7 +56,7 @@ static id mglComputeCreateTextureLevelView(id texture, NSUInteger level)
         sliceCount *= 6u;
     }
     void *view = NULL;
-    if (mglRenderCppCreateTextureViewRange(
+    if (mglRenderCreateTextureViewRange(
             (__bridge void *)texture, info.pixel_format, info.texture_type,
             level, 1, 0, sliceCount,
             0, 0, 0, 0, 0, &view) == 0 && view) {
@@ -70,7 +70,7 @@ static void mglComputeSetBuffer(id encoder,
                                 NSUInteger offset,
                                 NSUInteger index)
 {
-    (void)mglRenderCppSetComputeBuffer(
+    (void)mglRenderSetComputeBuffer(
         (__bridge void *)encoder, (__bridge void *)buffer,
         (uint64_t)offset, (uint32_t)index);
 }
@@ -79,7 +79,7 @@ static void mglComputeSetTexture(id encoder,
                                  id texture,
                                  NSUInteger index)
 {
-    (void)mglRenderCppSetComputeTexture(
+    (void)mglRenderSetComputeTexture(
         (__bridge void *)encoder, (__bridge void *)texture,
         (uint32_t)index);
 }
@@ -88,14 +88,14 @@ static void mglComputeSetSampler(id encoder,
                                  id sampler,
                                  NSUInteger index)
 {
-    (void)mglRenderCppSetComputeSampler(
+    (void)mglRenderSetComputeSampler(
         (__bridge void *)encoder, (__bridge void *)sampler,
         (uint32_t)index);
 }
 
 static void mglComputeSetPipeline(id encoder, id pipeline)
 {
-    (void)mglRenderCppSetComputePipelineState(
+    (void)mglRenderSetComputePipelineState(
         (__bridge void *)encoder, (__bridge void *)pipeline);
 }
 
@@ -107,7 +107,7 @@ static void mglComputeDispatch(id encoder,
                                uint32_t threadsY,
                                uint32_t threadsZ)
 {
-    (void)mglRenderCppDispatchCompute(
+    (void)mglRenderDispatchCompute(
         (__bridge void *)encoder, groupsX, groupsY, groupsZ,
         threadsX, threadsY, threadsZ);
 }
@@ -119,14 +119,14 @@ static void mglComputeDispatchIndirect(id encoder,
                                        uint32_t threadsY,
                                        uint32_t threadsZ)
 {
-    (void)mglRenderCppDispatchComputeIndirect(
+    (void)mglRenderDispatchComputeIndirect(
         (__bridge void *)encoder, (__bridge void *)buffer,
         (uint64_t)offset, threadsX, threadsY, threadsZ);
 }
 
 static void mglComputeEndEncoder(id encoder)
 {
-    (void)mglRenderCppEndComputeEncoder((__bridge void *)encoder);
+    (void)mglRenderEndComputeEncoder((__bridge void *)encoder);
 }
 
 @interface MGLRenderer (ComputeLocked)
@@ -181,7 +181,7 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
 - (bool) bindBuffersToComputeEncoder:(id) computeCommandEncoder
                                 stage:(int)stage
                               copyBacks:(MGLStageBindingCopyBackList *)copyBacks
-                          executionPlan:(MGLRenderCppComputeExecutionPlan *)executionPlan
+                          executionPlan:(MGLRenderComputeExecutionPlan *)executionPlan
                            temporaries:(NSMutableArray *)temporaries
 {
     if ((!computeCommandEncoder && !executionPlan) || !copyBacks) {
@@ -192,21 +192,21 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
 
     const BOOL useComputeBindingSnapshot = YES;
     BOOL snapshotOK = YES;
-    MGLRenderCppComputeBindingSnapshot cbindSnapshot = {0};
+    MGLRenderComputeBindingSnapshot cbindSnapshot = {0};
 #define MGL_CBIND_FLUSH_SNAPSHOT()                                              \
     do {                                                                        \
         if (useComputeBindingSnapshot && cbindSnapshot.op_count > 0) {          \
             if (executionPlan) {                                                \
-                if (mglRenderCppAppendComputeBindingSnapshotToPlan(             \
+                if (mglRenderAppendComputeBindingSnapshotToPlan(             \
                         executionPlan, &cbindSnapshot, NULL, 0) != 0) {         \
                     snapshotOK = NO;                                            \
                 }                                                               \
             } else {                                                            \
-                snapshotOK = mglRenderCppEncodeComputeBindingSnapshot(          \
+                snapshotOK = mglRenderEncodeComputeBindingSnapshot(          \
                     (__bridge void *)computeCommandEncoder, &cbindSnapshot,    \
                     NULL, 0) == 0 && snapshotOK;                                 \
             }                                                                   \
-            cbindSnapshot = (MGLRenderCppComputeBindingSnapshot){0};            \
+            cbindSnapshot = (MGLRenderComputeBindingSnapshot){0};            \
         }                                                                       \
     } while (0)
 
@@ -221,11 +221,11 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
     do {                                                                        \
         if (useComputeBindingSnapshot) {                                        \
             if (cbindSnapshot.op_count >=                                       \
-                MGL_RENDER_CPP_COMPUTE_BINDING_SNAPSHOT_MAX_OPS) {              \
+                MGL_RENDER_COMPUTE_BINDING_SNAPSHOT_MAX_OPS) {              \
                 MGL_CBIND_FLUSH_SNAPSHOT();                                     \
             }                                                                   \
             cbindSnapshot.ops[cbindSnapshot.op_count++] =                       \
-                (MGLRenderCppComputeBindingOp){/* kind */ 0u,                   \
+                (MGLRenderComputeBindingOp){/* kind */ 0u,                   \
                                                /* index */ (uint32_t)(slot),    \
                                                /* offset */ (uint64_t)(off),    \
                                                /* buffer */ (void *)(bufPtr),   \
@@ -297,9 +297,9 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
         id buffer = ptr->data.mtl_data
             ? (__bridge id)(ptr->data.mtl_data)
             : nil;
-        MGLRenderCppBufferInfo bufferInfo = {0};
+        MGLRenderBufferInfo bufferInfo = {0};
         const BOOL hasBufferInfo = buffer &&
-            mglRenderCppGetBufferInfo((__bridge void *)buffer, &bufferInfo) == 0;
+            mglRenderGetBufferInfo((__bridge void *)buffer, &bufferInfo) == 0;
 
         NSUInteger requiredBytes =
             mglRendererGetProgramBindingRequiredSize(ctx, stage, (int)map->resource_type, (int)map->resource_index);
@@ -372,7 +372,7 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
      * constant uint* buffer at MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX when a
      * shader uses .length() on unsized SSBO arrays.  The pure fill (slot
      * cap / self-slot exclusion / uint32 truncation) lives in the C++
-     * facade mglRenderCppBuildRuntimeArraySizes; the
+     * facade mglRenderBuildRuntimeArraySizes; the
      * ObjC side only extracts the per-buffer {slot, visible-size} pairs
      * from the GL buffer map. */
     {
@@ -384,7 +384,7 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
             uint32_t sizeConstants[kMGLMaxMetalVertexBufferCount];
             memset(sizeConstants, 0, sizeof(sizeConstants));
 
-            MGLRenderCppBufferSizeEntry entries[32]; /* MAX_MAPPED_BUFFERS */
+            MGLRenderBufferSizeEntry entries[32]; /* MAX_MAPPED_BUFFERS */
             uint32_t entryCount = 0;
             for (int i = 0; i < bufferMap->count && entryCount < 32; i++)
             {
@@ -400,7 +400,7 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
                 entryCount++;
             }
 
-            if (mglRenderCppBuildRuntimeArraySizes(
+            if (mglRenderBuildRuntimeArraySizes(
                     entries, entryCount,
                     runtimeSizeSlot,
                     kMGLMaxMetalVertexBufferCount,
@@ -445,7 +445,7 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
 
 - (bool) bindTexturesToComputeEncoder:(id) computeCommandEncoder
                                  stage:(int)stage
-                         executionPlan:(MGLRenderCppComputeExecutionPlan *)executionPlan
+                         executionPlan:(MGLRenderComputeExecutionPlan *)executionPlan
                           temporaries:(NSMutableArray *)temporaries
 {
     GLuint count;
@@ -470,7 +470,7 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
 
     const BOOL useComputeTextureSnapshot = YES;
     BOOL textureSnapshotOK = YES;
-    MGLRenderCppComputeBindingSnapshot ctexSnapshot = {0};
+    MGLRenderComputeBindingSnapshot ctexSnapshot = {0};
     NSMutableArray *ctexTemporaries = temporaries;
 #define MGL_CTEX_RETAIN_TEMP(obj)                                               \
     do {                                                                        \
@@ -484,16 +484,16 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
     do {                                                                        \
         if (useComputeTextureSnapshot && ctexSnapshot.op_count > 0) {           \
             if (executionPlan) {                                                \
-                if (mglRenderCppAppendComputeBindingSnapshotToPlan(             \
+                if (mglRenderAppendComputeBindingSnapshotToPlan(             \
                         executionPlan, &ctexSnapshot, NULL, 0) != 0) {          \
                     textureSnapshotOK = NO;                                     \
                 }                                                               \
             } else {                                                            \
-                textureSnapshotOK = mglRenderCppEncodeComputeBindingSnapshot(    \
+                textureSnapshotOK = mglRenderEncodeComputeBindingSnapshot(    \
                     (__bridge void *)computeCommandEncoder, &ctexSnapshot,     \
                     NULL, 0) == 0 && textureSnapshotOK;                          \
             }                                                                   \
-            ctexSnapshot = (MGLRenderCppComputeBindingSnapshot){0};             \
+            ctexSnapshot = (MGLRenderComputeBindingSnapshot){0};             \
         }                                                                       \
     } while (0)
 
@@ -501,11 +501,11 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
     do {                                                                        \
         if (useComputeTextureSnapshot) {                                        \
             if (ctexSnapshot.op_count >=                                        \
-                MGL_RENDER_CPP_COMPUTE_BINDING_SNAPSHOT_MAX_OPS) {              \
+                MGL_RENDER_COMPUTE_BINDING_SNAPSHOT_MAX_OPS) {              \
                 MGL_CTEX_FLUSH_SNAPSHOT();                                      \
             }                                                                   \
             ctexSnapshot.ops[ctexSnapshot.op_count++] =                         \
-                (MGLRenderCppComputeBindingOp){/* kind */ 2u,                   \
+                (MGLRenderComputeBindingOp){/* kind */ 2u,                   \
                                                /* index */ (uint32_t)(slot),    \
                                                /* offset */ 0,                  \
                                                /* buffer */ (void *)(texPtr),   \
@@ -521,11 +521,11 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
     do {                                                                        \
         if (useComputeTextureSnapshot) {                                        \
             if (ctexSnapshot.op_count >=                                        \
-                MGL_RENDER_CPP_COMPUTE_BINDING_SNAPSHOT_MAX_OPS) {              \
+                MGL_RENDER_COMPUTE_BINDING_SNAPSHOT_MAX_OPS) {              \
                 MGL_CTEX_FLUSH_SNAPSHOT();                                      \
             }                                                                   \
             ctexSnapshot.ops[ctexSnapshot.op_count++] =                         \
-                (MGLRenderCppComputeBindingOp){/* kind */ 3u,                   \
+                (MGLRenderComputeBindingOp){/* kind */ 3u,                   \
                                                /* index */ (uint32_t)(slot),    \
                                                /* offset */ 0,                  \
                                                /* buffer */ (void *)(smpPtr),   \
@@ -847,7 +847,7 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
 
 - (bool)processCompute:(id)computeCommandEncoder
              copyBacks:(MGLStageBindingCopyBackList *)copyBacks
-         executionPlan:(MGLRenderCppComputeExecutionPlan *)executionPlan
+         executionPlan:(MGLRenderComputeExecutionPlan *)executionPlan
           temporaries:(NSMutableArray *)temporaries
 {
     // from https://developer.apple.com/library/archive/documentation/Miscellaneous/Conceptual/MetalProgrammingGuide/Compute-Ctx/Compute-Ctx.html#//apple_ref/doc/uid/TP40014221-CH6-SW1
@@ -983,13 +983,13 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
 
     MGLStageBindingCopyBackList copyBacks = {0};
     const BOOL useExecutionPlan = YES;
-    MGLRenderCppComputeExecutionPlan executionPlan = {0};
+    MGLRenderComputeExecutionPlan executionPlan = {0};
     NSMutableArray *executionTemporaries = useExecutionPlan
         ? [NSMutableArray array] : nil;
     id computeCommandEncoder = nil;
     if (!useExecutionPlan) {
         computeCommandEncoder =
-            (__bridge id)mglRenderCppCreateComputeEncoderBorrowed(
+            (__bridge id)mglRenderCreateComputeEncoderBorrowed(
                 _renderPassManager.state->currentCommandBufferOwner);
         if (!computeCommandEncoder) {
             NSLog(@"MGL ERROR: Failed to create compute command encoder for %s",
@@ -1036,9 +1036,9 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
             }
         }
         executionPlan.barrier_scope = hasCopyBackEntries
-            ? MGL_RENDER_CPP_COMPUTE_BARRIER_BUFFERS
-            : MGL_RENDER_CPP_COMPUTE_BARRIER_NONE;
-        executionPlan.dispatch = (MGLRenderCppComputePlan){
+            ? MGL_RENDER_COMPUTE_BARRIER_BUFFERS
+            : MGL_RENDER_COMPUTE_BARRIER_NONE;
+        executionPlan.dispatch = (MGLRenderComputePlan){
             .dispatch_kind = dispatchKind,
             .groups_x = groups_x,
             .groups_y = groups_y,
@@ -1050,13 +1050,13 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
                 ? (__bridge void *)indirectBuffer : NULL,
             .indirect_offset = indirectOffset,
         };
-        MGLRenderCppCopyBackEntry copyBackEntries[kMGLMaxBufferSlots] = {0};
+        MGLRenderCopyBackEntry copyBackEntries[kMGLMaxBufferSlots] = {0};
         uint32_t copyBackEntryCount = 0;
         for (NSUInteger slot = 0; slot < kMGLMaxBufferSlots; slot++) {
             MGLStageBindingCopyBack *entry = &copyBacks.slots[slot];
             if (entry->length == 0) continue;
             copyBackEntries[copyBackEntryCount++] =
-                (MGLRenderCppCopyBackEntry){
+                (MGLRenderCopyBackEntry){
                     .temporary = entry->temporary,
                     .destination = entry->destination,
                     .destination_buffer = entry->destination_buffer,
@@ -1064,9 +1064,9 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
                     .length = entry->length,
                 };
         }
-        MGLRenderCppComputeExecutionResult executionResult = {0};
+        MGLRenderComputeExecutionResult executionResult = {0};
         char executionError[256] = {0};
-        if (mglRenderCppExecuteComputeExecutionPlan(
+        if (mglRenderExecuteComputeExecutionPlan(
                 _renderPassManager.state->currentCommandBufferOwner,
                 _gpuRecovery.commandRecoveryOwner,
                 &executionPlan,
@@ -1090,11 +1090,11 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
         [self clearStageBindingCopyBacks:&copyBacks];
     } else {
 
-        MGLRenderCppThreadgroupSize tg = {0};
-        mglRenderCppThreadgroupSize(
+        MGLRenderThreadgroupSize tg = {0};
+        mglRenderThreadgroupSize(
             ptr->local_workgroup_size.x, ptr->local_workgroup_size.y,
             ptr->local_workgroup_size.z, &tg);
-        if (dispatchKind == MGL_RENDER_CPP_COMPUTE_DISPATCH_DIRECT) {
+        if (dispatchKind == MGL_RENDER_COMPUTE_DISPATCH_DIRECT) {
             mglComputeDispatch(computeCommandEncoder,
                                groups_x, groups_y, groups_z,
                                tg.x, tg.y, tg.z);
@@ -1156,7 +1156,7 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
 
 
     if (![self runComputeDispatchOrchestrationLocked:glm_ctx
-                                        dispatchKind:MGL_RENDER_CPP_COMPUTE_DISPATCH_DIRECT
+                                        dispatchKind:MGL_RENDER_COMPUTE_DISPATCH_DIRECT
                                            groupsX:groups_x
                                            groupsY:groups_y
                                            groupsZ:groups_z
@@ -1228,8 +1228,8 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
 
     NSUInteger indirectOffset = (NSUInteger)indirect;
     NSUInteger indirectArgBytes = 3u * sizeof(uint32_t);
-    MGLRenderCppBufferInfo indirectBufferInfo = {0};
-    if (mglRenderCppGetBufferInfo((__bridge void *)indirectBuffer,
+    MGLRenderBufferInfo indirectBufferInfo = {0};
+    if (mglRenderGetBufferInfo((__bridge void *)indirectBuffer,
                                   &indirectBufferInfo) != 0 ||
         indirectOffset > indirectBufferInfo.length ||
         indirectArgBytes > (indirectBufferInfo.length - indirectOffset)) {
@@ -1244,7 +1244,7 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
 
 
     if (![self runComputeDispatchOrchestrationLocked:glm_ctx
-                                        dispatchKind:MGL_RENDER_CPP_COMPUTE_DISPATCH_INDIRECT
+                                        dispatchKind:MGL_RENDER_COMPUTE_DISPATCH_INDIRECT
                                            groupsX:0
                                            groupsY:0
                                            groupsZ:0

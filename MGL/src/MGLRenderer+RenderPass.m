@@ -28,21 +28,21 @@ typedef struct MGLRenderPassClearColorValue {
     double alpha;
 } MGLRenderPassClearColorValue;
 
-static MGLRenderCppTextureInfo mglRenderPassTextureInfo(id texture)
+static MGLRenderTextureInfo mglRenderPassTextureInfo(id texture)
 {
-    MGLRenderCppTextureInfo info = {0};
+    MGLRenderTextureInfo info = {0};
     if (texture) {
-        (void)mglRenderCppGetTextureInfo((__bridge void *)texture, &info);
+        (void)mglRenderGetTextureInfo((__bridge void *)texture, &info);
     }
     return info;
 }
 
-static MGLRenderCppRenderPassIdentityState mglRenderPassIdentitySnapshot(
+static MGLRenderPassIdentityState mglRenderPassIdentitySnapshot(
     const MGLCommandState *commandState)
 {
-    MGLRenderCppRenderPassIdentityState identity = {0};
+    MGLRenderPassIdentityState identity = {0};
     if (commandState && commandState->renderPassIdentityOwner &&
-        mglRenderCppGetRenderPassIdentity(
+        mglRenderGetRenderPassIdentity(
             commandState->renderPassIdentityOwner, &identity) == 0) {
         return identity;
     }
@@ -50,10 +50,10 @@ static MGLRenderCppRenderPassIdentityState mglRenderPassIdentitySnapshot(
 }
 
 static id mglRenderPassCreateTexture(
-    const MGLRenderCppTextureDescriptorState *descriptor)
+    const MGLRenderTextureDescriptorState *descriptor)
 {
     void *texture = NULL;
-    if (mglRenderCppCreateTextureFromState(
+    if (mglRenderCreateTextureFromState(
             descriptor, NULL, &texture) == 0 &&
         texture) {
         return (__bridge_transfer id)texture;
@@ -105,7 +105,7 @@ static id mglRenderPassCreateBufferWithBytes(
 {
     (void)device;
     void *buffer = NULL;
-    if (mglRenderCppCreateBufferWithBytes(bytes, length, options, NULL,
+    if (mglRenderCreateBufferWithBytes(bytes, length, options, NULL,
                                           &buffer) == 0 && buffer) {
         return (__bridge_transfer id)buffer;
     }
@@ -114,7 +114,7 @@ static id mglRenderPassCreateBufferWithBytes(
 
 static void mglRenderPassWaitCommandBuffer(id commandBuffer)
 {
-    if (mglRenderCppWaitCommandBuffer(
+    if (mglRenderWaitCommandBuffer(
             (__bridge void *)commandBuffer) != 0) {
         NSLog(@"MGL ERROR: Metal-cpp render-pass wait failed");
     }
@@ -122,10 +122,10 @@ static void mglRenderPassWaitCommandBuffer(id commandBuffer)
 
 static bool mglRenderPassGetPersistentState(
     const MGLCommandState *commandState,
-    MGLRenderCppRenderPassState *stateOut)
+    MGLRenderPassState *stateOut)
 {
     return commandState && stateOut && commandState->renderPassStateOwner &&
-           mglRenderCppGetRenderPassStateOwner(
+           mglRenderGetRenderPassStateOwner(
                commandState->renderPassStateOwner, stateOut) == 0;
 }
 
@@ -133,20 +133,20 @@ static bool mglRenderPassGetPersistentAttachmentState(
     const MGLCommandState *commandState,
     uint32_t attachmentKind,
     NSUInteger colorIndex,
-    MGLRenderCppRenderPassAttachmentState *attachmentOut)
+    MGLRenderPassAttachmentState *attachmentOut)
 {
     if (!attachmentOut) return false;
-    MGLRenderCppRenderPassState state = {0};
+    MGLRenderPassState state = {0};
     if (!mglRenderPassGetPersistentState(commandState, &state)) return false;
     switch (attachmentKind) {
-        case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR:
+        case MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR:
             if (colorIndex >= MAX_COLOR_ATTACHMENTS) return false;
             *attachmentOut = state.color[colorIndex].attachment;
             return true;
-        case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH:
+        case MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH:
             *attachmentOut = state.depth.attachment;
             return true;
-        case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL:
+        case MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL:
             *attachmentOut = state.stencil.attachment;
             return true;
         default:
@@ -154,20 +154,20 @@ static bool mglRenderPassGetPersistentAttachmentState(
     }
 }
 
-static const MGLRenderCppRenderPassAttachmentState *
+static const MGLRenderPassAttachmentState *
 mglRenderPassAttachmentStateFromSnapshot(
-    const MGLRenderCppRenderPassState *state,
+    const MGLRenderPassState *state,
     uint32_t attachmentKind,
     NSUInteger colorIndex)
 {
     if (!state) return NULL;
     switch (attachmentKind) {
-        case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR:
+        case MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR:
             return colorIndex < MAX_COLOR_ATTACHMENTS
                 ? &state->color[colorIndex].attachment : NULL;
-        case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH:
+        case MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH:
             return &state->depth.attachment;
-        case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL:
+        case MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL:
             return &state->stencil.attachment;
         default:
             return NULL;
@@ -175,11 +175,11 @@ mglRenderPassAttachmentStateFromSnapshot(
 }
 
 static id mglRenderPassTextureFromSnapshot(
-    const MGLRenderCppRenderPassState *state,
+    const MGLRenderPassState *state,
     uint32_t attachmentKind,
     NSUInteger colorIndex)
 {
-    const MGLRenderCppRenderPassAttachmentState *attachment =
+    const MGLRenderPassAttachmentState *attachment =
         mglRenderPassAttachmentStateFromSnapshot(
             state, attachmentKind, colorIndex);
     return attachment && attachment->texture
@@ -187,12 +187,12 @@ static id mglRenderPassTextureFromSnapshot(
 }
 
 static bool mglRenderPassSnapshotAttachmentMatchesSubresource(
-    const MGLRenderCppRenderPassState *state,
+    const MGLRenderPassState *state,
     uint32_t attachmentKind,
     NSUInteger colorIndex,
     MGLMetalAttachmentSubresource subresource)
 {
-    const MGLRenderCppRenderPassAttachmentState *attachment =
+    const MGLRenderPassAttachmentState *attachment =
         mglRenderPassAttachmentStateFromSnapshot(
             state, attachmentKind, colorIndex);
     return attachment &&
@@ -207,7 +207,7 @@ static id mglRenderPassAttachmentTextureFor(
     uint32_t attachmentKind,
     NSUInteger colorIndex)
 {
-    MGLRenderCppRenderPassAttachmentState attachment = {0};
+    MGLRenderPassAttachmentState attachment = {0};
     if (mglRenderPassGetPersistentAttachmentState(
             commandState, attachmentKind, colorIndex, &attachment)) {
         return attachment.texture
@@ -220,7 +220,7 @@ static id mglRenderPassColorTextureFor(
     const MGLCommandState *commandState, NSUInteger colorIndex)
 {
     return mglRenderPassAttachmentTextureFor(
-        commandState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR,
+        commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
         colorIndex);
 }
 
@@ -228,14 +228,14 @@ static id mglRenderPassDepthTextureFor(
     const MGLCommandState *commandState)
 {
     return mglRenderPassAttachmentTextureFor(
-        commandState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0u);
+        commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0u);
 }
 
 static id mglRenderPassStencilTextureFor(
     const MGLCommandState *commandState)
 {
     return mglRenderPassAttachmentTextureFor(
-        commandState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0u);
+        commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0u);
 }
 
 /* Owner-first load/store actions and clear values for one attachment. */
@@ -247,7 +247,7 @@ static BOOL mglRenderPassActionsFor(
     uint32_t *storeActionOut,
     uint64_t *storeActionOptionsOut)
 {
-    MGLRenderCppRenderPassAttachmentState attachment = {0};
+    MGLRenderPassAttachmentState attachment = {0};
     if (mglRenderPassGetPersistentAttachmentState(
             commandState, attachmentKind, colorIndex, &attachment)) {
         if (loadActionOut) *loadActionOut = (uint32_t)attachment.load_action;
@@ -268,12 +268,12 @@ static BOOL mglRenderPassClearValuesFor(
     double *clearDepthOut,
     uint32_t *clearStencilOut)
 {
-    MGLRenderCppRenderPassState state = {0};
+    MGLRenderPassState state = {0};
     if (!mglRenderPassGetPersistentState(commandState, &state)) return NO;
     switch (attachmentKind) {
-        case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR: {
+        case MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR: {
             if (colorIndex >= MAX_COLOR_ATTACHMENTS) return NO;
-            const MGLRenderCppRenderPassColorState *color =
+            const MGLRenderPassColorState *color =
                 &state.color[colorIndex];
             if (clearColorOut) {
                 clearColorOut[0] = color->clear_red;
@@ -283,10 +283,10 @@ static BOOL mglRenderPassClearValuesFor(
             }
             return YES;
         }
-        case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH:
+        case MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH:
             if (clearDepthOut) *clearDepthOut = state.depth.clear_depth;
             return YES;
-        case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL:
+        case MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL:
             if (clearStencilOut) *clearStencilOut = state.stencil.clear_stencil;
             return YES;
         default:
@@ -299,7 +299,7 @@ static BOOL mglRenderPassRenderTargetSizeFor(
     uint64_t *widthOut,
     uint64_t *heightOut)
 {
-    MGLRenderCppRenderPassState state = {0};
+    MGLRenderPassState state = {0};
     if (!mglRenderPassGetPersistentState(commandState, &state)) return NO;
     if (widthOut) *widthOut = state.render_target_width;
     if (heightOut) *heightOut = state.render_target_height;
@@ -362,7 +362,7 @@ static MGLRenderPassClearColorValue mglRenderPassClearColorFor(
 {
     double rgba[4] = {0.0, 0.0, 0.0, 0.0};
     if (mglRenderPassClearValuesFor(
-            commandState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR,
+            commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
             colorIndex, rgba, NULL, NULL)) {
         return (MGLRenderPassClearColorValue){rgba[0], rgba[1], rgba[2], rgba[3]};
     }
@@ -374,7 +374,7 @@ static double mglRenderPassClearDepthFor(
 {
     double depth = 0.0;
     if (mglRenderPassClearValuesFor(
-            commandState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0u,
+            commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0u,
             NULL, &depth, NULL)) {
         return depth;
     }
@@ -386,7 +386,7 @@ static uint32_t mglRenderPassClearStencilFor(
 {
     uint32_t stencil = 0u;
     if (mglRenderPassClearValuesFor(
-            commandState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0u,
+            commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0u,
             NULL, NULL, &stencil)) {
         return stencil;
     }
@@ -396,7 +396,7 @@ static uint32_t mglRenderPassClearStencilFor(
 static uint32_t mglRenderPassVisibilityResultTypeFor(
     const MGLCommandState *commandState)
 {
-    MGLRenderCppRenderPassState state = {0};
+    MGLRenderPassState state = {0};
     if (mglRenderPassGetPersistentState(commandState, &state)) {
         return state.visibility_result_type;
     }
@@ -415,7 +415,7 @@ static void mglRenderPassSetPersistentAttachment(
 {
 
     if (commandState && commandState->renderPassStateOwner) {
-        mglRenderCppSetRenderPassStateAttachmentTexture(
+        mglRenderSetRenderPassStateAttachmentTexture(
             commandState->renderPassStateOwner, attachmentKind,
             (uint32_t)colorIndex, (__bridge void *)texture,
             level, slice, depthPlane, layered ? 1u : 0u);
@@ -428,7 +428,7 @@ static void mglRenderPassSetPersistentDimensions(
     NSUInteger height)
 {
     if (commandState && commandState->renderPassStateOwner) {
-        mglRenderCppSetRenderPassStateDimensions(
+        mglRenderSetRenderPassStateDimensions(
             commandState->renderPassStateOwner, width, height);
     }
 }
@@ -441,13 +441,13 @@ static void mglRenderPassSetPersistentActions(
     uint32_t storeAction)
 {
     if (!commandState) return;
-    MGLRenderCppRenderPassAttachmentState state = {0};
+    MGLRenderPassAttachmentState state = {0};
     if (!mglRenderPassGetPersistentAttachmentState(
             commandState, attachmentKind, colorIndex, &state)) {
         return;
     }
     if (commandState->renderPassStateOwner) {
-        mglRenderCppSetRenderPassStateAttachmentActions(
+        mglRenderSetRenderPassStateAttachmentActions(
             commandState->renderPassStateOwner, attachmentKind,
             (uint32_t)colorIndex, (uint32_t)loadAction,
             (uint32_t)storeAction, state.store_action_options);
@@ -461,7 +461,7 @@ static void mglRenderPassSetPersistentLoadAction(
     uint32_t loadAction)
 {
     uint32_t storeAction = MGLStoreActionDontCare;
-    MGLRenderCppRenderPassAttachmentState state = {0};
+    MGLRenderPassAttachmentState state = {0};
     if (mglRenderPassGetPersistentAttachmentState(
             commandState, attachmentKind, colorIndex, &state)) {
         storeAction = (uint32_t)state.store_action;
@@ -479,7 +479,7 @@ static void mglRenderPassSetPersistentStoreAction(
     uint32_t storeAction)
 {
     uint32_t loadAction = MGLLoadActionDontCare;
-    MGLRenderCppRenderPassAttachmentState state = {0};
+    MGLRenderPassAttachmentState state = {0};
     if (mglRenderPassGetPersistentAttachmentState(
             commandState, attachmentKind, colorIndex, &state)) {
         loadAction = (uint32_t)state.load_action;
@@ -499,7 +499,7 @@ static void mglRenderPassSetPersistentColorClear(
         return;
     }
     if (commandState->renderPassStateOwner) {
-        mglRenderCppSetRenderPassStateColorClear(
+        mglRenderSetRenderPassStateColorClear(
             commandState->renderPassStateOwner, (uint32_t)colorIndex,
             clearColor.red, clearColor.green, clearColor.blue,
             clearColor.alpha);
@@ -511,7 +511,7 @@ static void mglRenderPassSetPersistentDepthClear(
     double clearDepth)
 {
     if (commandState && commandState->renderPassStateOwner) {
-        mglRenderCppSetRenderPassStateDepthClear(
+        mglRenderSetRenderPassStateDepthClear(
             commandState->renderPassStateOwner, clearDepth);
     }
 }
@@ -521,7 +521,7 @@ static void mglRenderPassSetPersistentStencilClear(
     uint32_t clearStencil)
 {
     if (commandState && commandState->renderPassStateOwner) {
-        mglRenderCppSetRenderPassStateStencilClear(
+        mglRenderSetRenderPassStateStencilClear(
             commandState->renderPassStateOwner, clearStencil);
     }
 }
@@ -561,17 +561,17 @@ static bool mglLoadAIRMainFunction(const unsigned char *bytes,
         if (errorText && errorCap) snprintf(errorText, errorCap, "bad args");
         return false;
     }
-    void *libraryCPP = NULL;
-    void *functionCPP = NULL;
-    if (mglRenderCppLoadAIRMainFunction(
-            bytes, size, &libraryCPP, &functionCPP,
-            errorText, errorCap) != 0 || !libraryCPP || !functionCPP) {
+    void *libraryHandle = NULL;
+    void *functionHandle = NULL;
+    if (mglRenderLoadAIRMainFunction(
+            bytes, size, &libraryHandle, &functionHandle,
+            errorText, errorCap) != 0 || !libraryHandle || !functionHandle) {
         return false;
     }
     id library =
-        (__bridge_transfer id)libraryCPP;
+        (__bridge_transfer id)libraryHandle;
     id function =
-        (__bridge_transfer id)functionCPP;
+        (__bridge_transfer id)functionHandle;
     *libraryOut = library;
     *functionOut = function;
     return true;
@@ -840,14 +840,14 @@ output->name, (unsigned)i,
 - (void)mtlInvalidateRenderPass:(GLMContext)glm_ctx
 {
     if (!glm_ctx || glm_ctx != ctx ||
-        mglRenderCppRenderEncoderOwnerHasCurrent(
+        mglRenderEncoderOwnerHasCurrent(
             _renderPassManager.state->currentRenderEncoderOwner) != 1) {
         return;
     }
 
 
     Framebuffer *curFbo = MGL_STATE(glm_ctx)->framebuffer;
-    MGLRenderCppRenderPassIdentityState identity =
+    MGLRenderPassIdentityState identity =
         mglRenderPassIdentitySnapshot(_renderPassManager.state);
     if (curFbo == identity.framebuffer &&
         MGL_STATE(glm_ctx)->draw_buffer == identity.draw_buffer) {
@@ -928,9 +928,9 @@ output->name, (unsigned)i,
 
 
     if (fbo != NULL && fboName != 0u) {
-        MGLRenderCppFboMatchCacheState cache = {0};
+        MGLRenderFboMatchCacheState cache = {0};
         if (_renderPassManager.state->renderPassIdentityOwner &&
-            mglRenderCppGetFboMatchCache(
+            mglRenderGetFboMatchCache(
                 _renderPassManager.state->renderPassIdentityOwner,
                 &cache) == 0 &&
             cache.fbo_name == fboName &&
@@ -953,13 +953,13 @@ output->name, (unsigned)i,
 
 - (bool)mglRenderPassMatchesFramebufferImpl:(Framebuffer *)fbo name:(GLuint)fboName
 {
-    MGLRenderCppRenderPassState passState = {0};
+    MGLRenderPassState passState = {0};
     bool hasPassState =
         mglRenderPassGetPersistentState(_renderPassManager.state, &passState);
     if (!ctx || !hasPassState) {
         return true;
     }
-    MGLRenderCppRenderPassIdentityState identity =
+    MGLRenderPassIdentityState identity =
         mglRenderPassIdentitySnapshot(_renderPassManager.state);
     if (identity.framebuffer != fbo ||
         identity.framebuffer_name != fboName ||
@@ -977,7 +977,7 @@ output->name, (unsigned)i,
         GLuint mgl_drawbuffer = mglDefaultDrawBufferIndexForGL(MGL_STATE(ctx)->draw_buffer);
         id expectedColor0 = nil;
         id actualColor0 = mglRenderPassTextureFromSnapshot(
-            &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0);
+            &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0);
 
         if (mgl_drawbuffer == _FRONT) {
             expectedColor0 = _drawable ? [self mglDrawableTexture] : nil;
@@ -1018,9 +1018,9 @@ output->name, (unsigned)i,
         }
 
         id actualDepth = mglRenderPassTextureFromSnapshot(
-            &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0);
+            &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0);
         id actualStencil = mglRenderPassTextureFromSnapshot(
-            &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0);
+            &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0);
         if (actualDepth != expectedDepth) {
             return false;
         }
@@ -1058,7 +1058,7 @@ output->name, (unsigned)i,
         }
 
         id actual = mglRenderPassTextureFromSnapshot(
-            &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR,
+            &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
             colorSlot);
         if (actual != expected) {
             return false;
@@ -1067,7 +1067,7 @@ output->name, (unsigned)i,
         if (attachment && actual) {
             MGLMetalAttachmentSubresource subresource = mglMetalAttachmentSubresourceForAttachment(attachment);
             bool matches = mglRenderPassSnapshotAttachmentMatchesSubresource(
-                &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR,
+                &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
                 colorSlot, subresource);
             if (!matches) {
                 return false;
@@ -1077,7 +1077,7 @@ output->name, (unsigned)i,
         id nextColor = nil;
         if (i + 1u < MAX_COLOR_ATTACHMENTS) {
             nextColor = mglRenderPassTextureFromSnapshot(
-                &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR,
+                &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
                 i + 1u);
         }
         if (i + 1u >= MAX_COLOR_ATTACHMENTS ||
@@ -1099,14 +1099,14 @@ output->name, (unsigned)i,
         expectedDepth = depthTex ? (__bridge id)(depthTex->mtl_data) : nil;
     }
     id actualDepth = mglRenderPassTextureFromSnapshot(
-        &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0);
+        &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0);
     if (actualDepth != expectedDepth) {
         return false;
     }
     if (fbo->depth.texture && expectedDepth) {
         MGLMetalAttachmentSubresource subresource = mglMetalAttachmentSubresourceForAttachment(&fbo->depth);
         bool matches = mglRenderPassSnapshotAttachmentMatchesSubresource(
-            &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH,
+            &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH,
             0, subresource);
         if (!matches) {
             return false;
@@ -1125,14 +1125,14 @@ output->name, (unsigned)i,
         expectedStencil = stencilTex ? (__bridge id)(stencilTex->mtl_data) : nil;
     }
     id actualStencil = mglRenderPassTextureFromSnapshot(
-        &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0);
+        &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0);
     if (actualStencil != expectedStencil) {
         return false;
     }
     if (fbo->stencil.texture && expectedStencil) {
         MGLMetalAttachmentSubresource subresource = mglMetalAttachmentSubresourceForAttachment(&fbo->stencil);
         bool matches = mglRenderPassSnapshotAttachmentMatchesSubresource(
-            &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL,
+            &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL,
             0, subresource);
         if (!matches) {
             return false;
@@ -1148,7 +1148,7 @@ output->name, (unsigned)i,
         return true;
     }
 
-    if (mglRenderCppRenderEncoderOwnerHasCurrent(
+    if (mglRenderEncoderOwnerHasCurrent(
             _renderPassManager.state->currentRenderEncoderOwner) != 1) {
         return true;
     }
@@ -1205,7 +1205,7 @@ output->name, (unsigned)i,
 
 - (void)endRenderPassIfFramebufferChangedForNonDraw:(uint64_t)processCall
 {
-    if (!ctx || mglRenderCppRenderEncoderOwnerHasCurrent(
+    if (!ctx || mglRenderEncoderOwnerHasCurrent(
                     _renderPassManager.state->currentRenderEncoderOwner) != 1) {
         return;
     }
@@ -1249,11 +1249,11 @@ output->name, (unsigned)i,
 
 - (bool)restoreRenderEncoderAfterTextureUploadForDraw:(const char *)reason
 {
-    if (mglRenderCppRenderEncoderOwnerHasCurrent(
+    if (mglRenderEncoderOwnerHasCurrent(
             _renderPassManager.state->currentRenderEncoderOwner) == 1) {
         return true;
     }
-    MGLRenderCppRenderPassState passState = {0};
+    MGLRenderPassState passState = {0};
     bool hasPassState =
         mglRenderPassGetPersistentState(_renderPassManager.state, &passState);
     if (!ctx || !hasPassState) {
@@ -1274,28 +1274,28 @@ output->name, (unsigned)i,
 
     for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
         id texture = mglRenderPassTextureFromSnapshot(
-            &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, i);
+            &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, i);
         if (texture) {
             mglRenderPassSetPersistentActions(
                 _renderPassManager.state,
-                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, i,
+                MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, i,
                 MGLLoadActionLoad, MGLStoreActionStore);
         }
     }
     id depthTexture = mglRenderPassTextureFromSnapshot(
-        &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0);
+        &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0);
     if (depthTexture) {
         mglRenderPassSetPersistentActions(
             _renderPassManager.state,
-            MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0,
+            MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0,
             MGLLoadActionLoad, MGLStoreActionStore);
     }
     id stencilTexture = mglRenderPassTextureFromSnapshot(
-        &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0);
+        &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0);
     if (stencilTexture) {
         mglRenderPassSetPersistentActions(
             _renderPassManager.state,
-            MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0,
+            MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0,
             MGLLoadActionLoad, MGLStoreActionStore);
     }
 
@@ -1311,14 +1311,14 @@ output->name, (unsigned)i,
         [self recordGPUError];
         return false;
     }
-    if (mglRenderCppRenderEncoderOwnerHasCurrent(
+    if (mglRenderEncoderOwnerHasCurrent(
             _renderPassManager.state->currentRenderEncoderOwner) != 1) {
         NSLog(@"MGL ERROR: restoring render encoder after texture upload returned nil encoder reason=%s",
               reason ? reason : "(null)");
         [self recordGPUError];
         return false;
     }
-    mglRenderCppSetRenderEncoderOwnerLabel(
+    mglRenderSetRenderEncoderOwnerLabel(
         _renderPassManager.state->currentRenderEncoderOwner,
         "GL Render Encoder");
     /* When trace is disabled, skip the full-struct memset and trace call
@@ -1347,7 +1347,7 @@ output->name, (unsigned)i,
     }
 
     @try {
-        if (mglRenderCppBindingSetPipelineIfNeededForOwner(
+        if (mglRenderBindingSetPipelineIfNeededForOwner(
                 _bindingStateOwner,
                 _renderPassManager.state->currentRenderEncoderOwner,
                 _pipelineCache.state->pipelineState) > 0) {
@@ -1427,12 +1427,12 @@ output->name, (unsigned)i,
 
     int failedStage = -1;
     char bindError[256] = {0};
-    int bindResult = mglRenderCppBindAIRProgram(
+    int bindResult = mglRenderBindAIRProgram(
         ptr, &failedStage, bindError, sizeof(bindError));
-    if (bindResult == MGL_RENDER_CPP_AIR_PROGRAM_BOUND) {
+    if (bindResult == MGL_RENDER_AIR_PROGRAM_BOUND) {
         return true;
     }
-    if (bindResult == MGL_RENDER_CPP_AIR_PROGRAM_ERROR) {
+    if (bindResult == MGL_RENDER_AIR_PROGRAM_ERROR) {
         NSLog(@"MGL ERROR: Failed to bind AIR program=%u stage=%d: %s",
               (unsigned)ptr->name, failedStage,
               bindError[0] ? bindError : "?");
@@ -1590,7 +1590,7 @@ output->name, (unsigned)i,
 
     if (useDepthState || useStencilState)
     {
-        MGLRenderCppDepthStencilDescriptorState dsDesc = {0};
+        MGLRenderDepthStencilDescriptorState dsDesc = {0};
         /* MTLDepthStencilDescriptor initializes depth comparison to Always.
          * Preserve that default for stencil-only passes; leaving the value
          * zero would map to Never and reject every fragment before stencil. */
@@ -1660,7 +1660,7 @@ output->name, (unsigned)i,
 
         id dsState = [_pipelineCache depthStencilStateForValueState:&dsDesc];
 
-        if (mglRenderCppBindingSetDepthStencilIfNeededForOwner(
+        if (mglRenderBindingSetDepthStencilIfNeededForOwner(
                 _bindingStateOwner,
                 _renderPassManager.state->currentRenderEncoderOwner,
                 (__bridge void *)dsState) > 0) {
@@ -1668,7 +1668,7 @@ output->name, (unsigned)i,
             MGL_PERF_INC(g_mglDepthStencilStateSkipsSinceSwap);
         }
         if (useStencilState) {
-            mglRenderCppSetStencilReferenceValuesForOwner(
+            mglRenderSetStencilReferenceValuesForOwner(
                 _renderPassManager.state->currentRenderEncoderOwner,
                 (uint32_t)state->var.stencil_ref,
                 (uint32_t)state->var.stencil_back_ref);
@@ -1676,14 +1676,14 @@ output->name, (unsigned)i,
     }
     else
     {
-        MGLRenderCppDepthStencilDescriptorState disabledDSDesc = {0};
+        MGLRenderDepthStencilDescriptorState disabledDSDesc = {0};
         disabledDSDesc.depth_compare_function = MGLCompareFunctionAlways;
         disabledDSDesc.depth_write_enabled = 0u;
 
         id disabledDSState =
             [_pipelineCache depthStencilStateForValueState:&disabledDSDesc];
         if (disabledDSState) {
-            if (mglRenderCppBindingSetDepthStencilIfNeededForOwner(
+            if (mglRenderBindingSetDepthStencilIfNeededForOwner(
                     _bindingStateOwner,
                     _renderPassManager.state->currentRenderEncoderOwner,
                     (__bridge void *)disabledDSState) > 0) {
@@ -1698,7 +1698,7 @@ output->name, (unsigned)i,
         float bcGreen = state->var.blend_color[1];
         float bcBlue  = state->var.blend_color[2];
         float bcAlpha = state->var.blend_color[3];
-        mglRenderCppBindingSetBlendColorIfNeededForOwner(
+        mglRenderBindingSetBlendColorIfNeededForOwner(
             _bindingStateOwner,
             _renderPassManager.state->currentRenderEncoderOwner,
             bcRed, bcGreen, bcBlue, bcAlpha);
@@ -1735,28 +1735,28 @@ output->name, (unsigned)i,
                 cull_mode = MGLCullModeNone;
         }
 
-        mglRenderCppBindingSetCullIfNeededForOwner(
+        mglRenderBindingSetCullIfNeededForOwner(
             _bindingStateOwner,
             _renderPassManager.state->currentRenderEncoderOwner,
             (uint32_t)cull_mode);
         uint32_t _winding =
             mglMaybeInvertMTLWinding(mglMTLWindingForGL(state->var.front_face),
                                      state->var.clip_origin == GL_UPPER_LEFT);
-        mglRenderCppBindingSetWindingIfNeededForOwner(
+        mglRenderBindingSetWindingIfNeededForOwner(
             _bindingStateOwner,
             _renderPassManager.state->currentRenderEncoderOwner,
             (uint32_t)_winding);
     }
     else
     {
-        mglRenderCppBindingSetCullIfNeededForOwner(
+        mglRenderBindingSetCullIfNeededForOwner(
             _bindingStateOwner,
             _renderPassManager.state->currentRenderEncoderOwner,
             (uint32_t)MGLCullModeNone);
         uint32_t _winding =
             mglMaybeInvertMTLWinding(mglMTLWindingForGL(state->var.front_face),
                                      state->var.clip_origin == GL_UPPER_LEFT);
-        mglRenderCppBindingSetWindingIfNeededForOwner(
+        mglRenderBindingSetWindingIfNeededForOwner(
             _bindingStateOwner,
             _renderPassManager.state->currentRenderEncoderOwner,
             (uint32_t)_winding);
@@ -1793,7 +1793,7 @@ output->name, (unsigned)i,
 
     if (state->caps.depth_clamp)
     {
-        mglRenderCppSetDepthClipModeForOwner(
+        mglRenderSetDepthClipModeForOwner(
             _renderPassManager.state->currentRenderEncoderOwner,
             (uint32_t)MGLDepthClipModeClamp);
     }
@@ -1805,14 +1805,14 @@ output->name, (unsigned)i,
         float _bias = state->var.polygon_offset_units;
         float _slope = state->var.polygon_offset_factor;
         float _clamp = 0.0f;
-        mglRenderCppBindingSetDepthBiasIfNeededForOwner(
+        mglRenderBindingSetDepthBiasIfNeededForOwner(
             _bindingStateOwner,
             _renderPassManager.state->currentRenderEncoderOwner,
             _bias, _clamp, _slope);
     }
     else
     {
-        mglRenderCppBindingSetDepthBiasIfNeededForOwner(
+        mglRenderBindingSetDepthBiasIfNeededForOwner(
             _bindingStateOwner,
             _renderPassManager.state->currentRenderEncoderOwner,
             0.0f, 0.0f, 0.0f);
@@ -2094,10 +2094,10 @@ output->name, (unsigned)i,
                           (unsigned long)(c0 ? mglRenderPassTextureInfo(c0).pixel_format : MGLPixelFormatInvalid),
                           d0,
                           (unsigned long)(d0 ? mglRenderPassTextureInfo(d0).pixel_format : MGLPixelFormatInvalid),
-                          mglLoadActionName(mglRenderPassLoadActionFor(_renderPassManager.state, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0, MGLLoadActionDontCare)),
-                          mglStoreActionName(mglRenderPassStoreActionFor(_renderPassManager.state, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0, MGLStoreActionDontCare)),
-                          mglLoadActionName(mglRenderPassLoadActionFor(_renderPassManager.state, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0, MGLLoadActionDontCare)),
-                          mglStoreActionName(mglRenderPassStoreActionFor(_renderPassManager.state, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0, MGLStoreActionDontCare)),
+                          mglLoadActionName(mglRenderPassLoadActionFor(_renderPassManager.state, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0, MGLLoadActionDontCare)),
+                          mglStoreActionName(mglRenderPassStoreActionFor(_renderPassManager.state, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0, MGLStoreActionDontCare)),
+                          mglLoadActionName(mglRenderPassLoadActionFor(_renderPassManager.state, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0, MGLLoadActionDontCare)),
+                          mglStoreActionName(mglRenderPassStoreActionFor(_renderPassManager.state, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0, MGLStoreActionDontCare)),
                           state->var.clip_origin,
                           state->caps.scissor_test ? 1 : 0,
                           rawSx, rawSy, rawSw, rawSh,
@@ -2236,7 +2236,7 @@ output->name, (unsigned)i,
                     viewports[vi * 6 + 4] = state->var.depth_range[0];
                     viewports[vi * 6 + 5] = state->var.depth_range[1];
                 }
-                mglRenderCppBindingSetViewportsForOwner(
+                mglRenderBindingSetViewportsForOwner(
                     _bindingStateOwner,
                     _renderPassManager.state->currentRenderEncoderOwner,
                     viewports, (uint64_t)MGL_MAX_VIEWPORTS);
@@ -2251,7 +2251,7 @@ output->name, (unsigned)i,
                     viewports[vi * 6 + 4] = state->var.depth_range[0];
                     viewports[vi * 6 + 5] = state->var.depth_range[1];
                 }
-                mglRenderCppBindingSetViewportsForOwner(
+                mglRenderBindingSetViewportsForOwner(
                     _bindingStateOwner,
                     _renderPassManager.state->currentRenderEncoderOwner,
                     viewports, (uint64_t)MGL_MAX_VIEWPORTS);
@@ -2339,7 +2339,7 @@ output->name, (unsigned)i,
                 mglMetalAttachmentSubresourceForAttachment(&fbo->color_attachments[attachmentIndex]);
             mglRenderPassSetPersistentAttachment(
                 _renderPassManager.state,
-                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, colorSlot,
+                MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, colorSlot,
                 mglApplySRGBStateToRenderTarget(
                     (__bridge id _Nullable)(tex->mtl_data), ctx),
                 subresource.level, subresource.slice,
@@ -2402,7 +2402,7 @@ output->name, (unsigned)i,
                 mglMetalAttachmentSubresourceForAttachment(&fbo->depth);
             mglRenderPassSetPersistentAttachment(
                 _renderPassManager.state,
-                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0,
+                MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0,
                 (__bridge id _Nullable)(tex->mtl_data),
                 subresource.level, subresource.slice,
                 subresource.depthPlane, fbo->depth.layered);
@@ -2424,7 +2424,7 @@ output->name, (unsigned)i,
                 mglMetalAttachmentSubresourceForAttachment(&fbo->stencil);
             mglRenderPassSetPersistentAttachment(
                 _renderPassManager.state,
-                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0,
+                MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0,
                 (__bridge id _Nullable)(tex->mtl_data),
                 subresource.level, subresource.slice,
                 subresource.depthPlane, fbo->stencil.layered);
@@ -2535,7 +2535,7 @@ output->name, (unsigned)i,
         }
         else
         {
-            MGLRenderCppTextureInfo textureInfo = mglRenderPassTextureInfo(texture);
+            MGLRenderTextureInfo textureInfo = mglRenderPassTextureInfo(texture);
             depth_texture = [self newDrawBufferWithCustomSize:depthFormat
                                                    isDepthStencil:true
                                                      customSize:CGSizeMake(textureInfo.width,
@@ -2580,7 +2580,7 @@ output->name, (unsigned)i,
         }
         else
         {
-            MGLRenderCppTextureInfo textureInfo = mglRenderPassTextureInfo(texture);
+            MGLRenderTextureInfo textureInfo = mglRenderPassTextureInfo(texture);
             stencil_texture = [self newDrawBufferWithCustomSize:stencilFormat
                                                      isDepthStencil:true
                                                        customSize:CGSizeMake(textureInfo.width,
@@ -2594,15 +2594,15 @@ output->name, (unsigned)i,
 
     mglRenderPassSetPersistentAttachment(
         _renderPassManager.state,
-        MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0,
+        MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0,
         mglApplySRGBStateToRenderTarget(texture, ctx), 0, 0, 0, NO);
     mglRenderPassSetPersistentAttachment(
         _renderPassManager.state,
-        MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0,
+        MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0,
         depth_texture, 0, 0, 0, NO);
     mglRenderPassSetPersistentAttachment(
         _renderPassManager.state,
-        MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0,
+        MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0,
         stencil_texture, 0, 0, 0, NO);
 
     mglRenderPassSetPersistentDimensions(
@@ -2636,7 +2636,7 @@ output->name, (unsigned)i,
                     ctx, &cachedDepthWidth, &cachedDepthHeight);
             if (!transientDepth || cachedDepthWidth != depthWidth ||
                 cachedDepthHeight != depthHeight) {
-                MGLRenderCppTextureDescriptorState depthDesc = {0};
+                MGLRenderTextureDescriptorState depthDesc = {0};
                 depthDesc.texture_type = MGLTextureType2D;
                 depthDesc.pixel_format = MGLPixelFormatDepth32Float;
                 depthDesc.width = depthWidth;
@@ -2680,12 +2680,12 @@ output->name, (unsigned)i,
             if (transientDepth) {
                 mglRenderPassSetPersistentAttachment(
                     _renderPassManager.state,
-                    MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0,
+                    MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0,
                     transientDepth,
                     0, 0, 0, NO);
                 mglRenderPassSetPersistentActions(
                     _renderPassManager.state,
-                    MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0,
+                    MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0,
                     MGLLoadActionClear, MGLStoreActionDontCare);
                 mglRenderPassSetPersistentDepthClear(
                     _renderPassManager.state,
@@ -2716,7 +2716,7 @@ output->name, (unsigned)i,
             ((fbo->color_attachment_bitfield >> attachmentIndex) & 1u) == 0u) {
             mglRenderPassSetPersistentLoadAction(
                 _renderPassManager.state,
-                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, colorSlot,
+                MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, colorSlot,
                 MGLLoadActionLoad);
             continue;
         }
@@ -2776,7 +2776,7 @@ output->name, (unsigned)i,
                                                att->clear_color[3]});
             mglRenderPassSetPersistentActions(
                 _renderPassManager.state,
-                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, colorSlot,
+                MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, colorSlot,
                 MGLLoadActionClear, MGLStoreActionStore);
 
             att->clear_bitmask &= ~GL_COLOR_BUFFER_BIT;
@@ -2790,12 +2790,12 @@ output->name, (unsigned)i,
 
             mglRenderPassSetPersistentLoadAction(
                 _renderPassManager.state,
-                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, colorSlot,
+                MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, colorSlot,
                 MGLLoadActionDontCare);
         } else {
             mglRenderPassSetPersistentLoadAction(
                 _renderPassManager.state,
-                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, colorSlot,
+                MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, colorSlot,
                 MGLLoadActionLoad);
         }
     }
@@ -2813,18 +2813,18 @@ output->name, (unsigned)i,
             _renderPassManager.state, fbo->depth.clear_color[0]);
         mglRenderPassSetPersistentActions(
             _renderPassManager.state,
-            MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0,
+            MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0,
             MGLLoadActionClear, MGLStoreActionStore);
         fbo->depth.clear_bitmask &= ~GL_DEPTH_BUFFER_BIT;
     } else {
         mglRenderPassSetPersistentLoadAction(
             _renderPassManager.state,
-            MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0,
+            MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0,
             MGLLoadActionLoad);
         if (mglRenderPassDepthTextureFor(_renderPassManager.state)) {
             mglRenderPassSetPersistentStoreAction(
                 _renderPassManager.state,
-                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0,
+                MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0,
                 MGLStoreActionStore);
         }
     }
@@ -2835,18 +2835,18 @@ output->name, (unsigned)i,
             (uint32_t)fbo->stencil.clear_color[0]);
         mglRenderPassSetPersistentActions(
             _renderPassManager.state,
-            MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0,
+            MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0,
             MGLLoadActionClear, MGLStoreActionStore);
         fbo->stencil.clear_bitmask &= ~GL_STENCIL_BUFFER_BIT;
     } else {
         mglRenderPassSetPersistentLoadAction(
             _renderPassManager.state,
-            MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0,
+            MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0,
             MGLLoadActionLoad);
         if (mglRenderPassStencilTextureFor(_renderPassManager.state)) {
             mglRenderPassSetPersistentStoreAction(
                 _renderPassManager.state,
-                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0,
+                MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0,
                 MGLStoreActionStore);
         }
     }
@@ -2865,13 +2865,13 @@ output->name, (unsigned)i,
                                            MGL_STATE(ctx)->default_clear_color[3]});
         mglRenderPassSetPersistentActions(
             _renderPassManager.state,
-            MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0,
+            MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0,
             MGLLoadActionClear, MGLStoreActionStore);
         MGL_STATE(ctx)->default_fbo_clear_bitmask &= ~GL_COLOR_BUFFER_BIT;
     } else {
         mglRenderPassSetPersistentLoadAction(
             _renderPassManager.state,
-            MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0,
+            MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0,
             MGLLoadActionLoad);
         static uint64_t s_defaultFboLoadLogCount = 0;
         uint64_t hit = ++s_defaultFboLoadLogCount;
@@ -2889,18 +2889,18 @@ output->name, (unsigned)i,
             MGL_STATE(ctx)->var.depth_clear_value);
         mglRenderPassSetPersistentActions(
             _renderPassManager.state,
-            MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0,
+            MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0,
             MGLLoadActionClear, MGLStoreActionStore);
         MGL_STATE(ctx)->default_fbo_clear_bitmask &= ~GL_DEPTH_BUFFER_BIT;
     } else {
         mglRenderPassSetPersistentLoadAction(
             _renderPassManager.state,
-            MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0,
+            MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0,
             MGLLoadActionLoad);
         if (mglRenderPassDepthTextureFor(_renderPassManager.state)) {
             mglRenderPassSetPersistentStoreAction(
                 _renderPassManager.state,
-                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0,
+                MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0,
                 MGLStoreActionStore);
         }
     }
@@ -2911,18 +2911,18 @@ output->name, (unsigned)i,
             MGL_STATE(ctx)->var.stencil_clear_value);
         mglRenderPassSetPersistentActions(
             _renderPassManager.state,
-            MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0,
+            MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0,
             MGLLoadActionClear, MGLStoreActionStore);
         MGL_STATE(ctx)->default_fbo_clear_bitmask &= ~GL_STENCIL_BUFFER_BIT;
     } else {
         mglRenderPassSetPersistentLoadAction(
             _renderPassManager.state,
-            MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0,
+            MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0,
             MGLLoadActionLoad);
         if (mglRenderPassStencilTextureFor(_renderPassManager.state)) {
             mglRenderPassSetPersistentStoreAction(
                 _renderPassManager.state,
-                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0,
+                MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0,
                 MGLStoreActionStore);
         }
     }
@@ -2948,9 +2948,9 @@ output->name, (unsigned)i,
               (unsigned)fboColorClearCount,
               (unsigned)fboColorClearMask,
               (unsigned)fboColorAttachment0ClearMask,
-              mglLoadActionName(mglRenderPassLoadActionFor(_renderPassManager.state, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0, MGLLoadActionDontCare)),
-              mglLoadActionName(mglRenderPassLoadActionFor(_renderPassManager.state, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0, MGLLoadActionDontCare)),
-              mglLoadActionName(mglRenderPassLoadActionFor(_renderPassManager.state, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0, MGLLoadActionDontCare)),
+              mglLoadActionName(mglRenderPassLoadActionFor(_renderPassManager.state, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0, MGLLoadActionDontCare)),
+              mglLoadActionName(mglRenderPassLoadActionFor(_renderPassManager.state, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0, MGLLoadActionDontCare)),
+              mglLoadActionName(mglRenderPassLoadActionFor(_renderPassManager.state, MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0, MGLLoadActionDontCare)),
               c0.red,
               c0.green,
               c0.blue,
@@ -2962,7 +2962,7 @@ output->name, (unsigned)i,
             BOOL clearResolveInteresting =
                 (fboColorClearCount != 0) ||
                 (fboColorAttachment0ClearMask != 0) ||
-                (mglRenderPassLoadActionFor(_renderPassManager.state, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0, MGLLoadActionDontCare) == MGLLoadActionClear) ||
+                (mglRenderPassLoadActionFor(_renderPassManager.state, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0, MGLLoadActionDontCare) == MGLLoadActionClear) ||
                 (fboDepthClearMaskBefore & GL_DEPTH_BUFFER_BIT) ||
                 (!fbo && (defaultClearMask & GL_DEPTH_BUFFER_BIT));
             if (clearResolveInteresting) {
@@ -3000,12 +3000,12 @@ output->name, (unsigned)i,
 	                        (unsigned)MGL_STATE(ctx)->default_fbo_clear_bitmask,
 	                        (unsigned)fboDepthClearMaskBefore,
 	                        (unsigned)fboStencilClearMaskBefore,
-	                        mglLoadActionName(mglRenderPassLoadActionFor(_renderPassManager.state, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0, MGLLoadActionDontCare)),
-	                        mglStoreActionName(mglRenderPassStoreActionFor(_renderPassManager.state, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0, MGLStoreActionDontCare)),
-	                        mglLoadActionName(mglRenderPassLoadActionFor(_renderPassManager.state, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0, MGLLoadActionDontCare)),
-	                        mglStoreActionName(mglRenderPassStoreActionFor(_renderPassManager.state, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0, MGLStoreActionDontCare)),
-	                        mglLoadActionName(mglRenderPassLoadActionFor(_renderPassManager.state, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0, MGLLoadActionDontCare)),
-	                        mglStoreActionName(mglRenderPassStoreActionFor(_renderPassManager.state, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0, MGLStoreActionDontCare)),
+	                        mglLoadActionName(mglRenderPassLoadActionFor(_renderPassManager.state, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0, MGLLoadActionDontCare)),
+	                        mglStoreActionName(mglRenderPassStoreActionFor(_renderPassManager.state, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0, MGLStoreActionDontCare)),
+	                        mglLoadActionName(mglRenderPassLoadActionFor(_renderPassManager.state, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0, MGLLoadActionDontCare)),
+	                        mglStoreActionName(mglRenderPassStoreActionFor(_renderPassManager.state, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0, MGLStoreActionDontCare)),
+	                        mglLoadActionName(mglRenderPassLoadActionFor(_renderPassManager.state, MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0, MGLLoadActionDontCare)),
+	                        mglStoreActionName(mglRenderPassStoreActionFor(_renderPassManager.state, MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0, MGLStoreActionDontCare)),
 	                        c0Tex,
 	                        (unsigned long)(c0Tex ? mglRenderPassTextureInfo(c0Tex).pixel_format : MGLPixelFormatInvalid),
 	                        (unsigned long)(c0Tex ? mglRenderPassTextureInfo(c0Tex).width : 0),
@@ -3033,7 +3033,7 @@ output->name, (unsigned)i,
 {
     mglRenderPassSetPersistentStoreAction(
         _renderPassManager.state,
-        MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0,
+        MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0,
         MGLStoreActionStore);
 
     if (kMGLDiagnosticStateLogs && traceRenderEncoder) {
@@ -3052,20 +3052,20 @@ output->name, (unsigned)i,
               (unsigned long)(c0Tex ? mglRenderPassTextureInfo(c0Tex).usage : 0),
               (unsigned long)(c0Tex ? mglRenderPassTextureInfo(c0Tex).width : 0),
               (unsigned long)(c0Tex ? mglRenderPassTextureInfo(c0Tex).height : 0),
-              mglLoadActionName(mglRenderPassLoadActionFor(_renderPassManager.state, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0, MGLLoadActionDontCare)),
-              mglStoreActionName(mglRenderPassStoreActionFor(_renderPassManager.state, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0, MGLStoreActionDontCare)),
+              mglLoadActionName(mglRenderPassLoadActionFor(_renderPassManager.state, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0, MGLLoadActionDontCare)),
+              mglStoreActionName(mglRenderPassStoreActionFor(_renderPassManager.state, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0, MGLStoreActionDontCare)),
               dTex,
               (unsigned long)(dTex ? mglRenderPassTextureInfo(dTex).pixel_format : MGLPixelFormatInvalid),
               (unsigned long)(dTex ? mglRenderPassTextureInfo(dTex).width : 0),
               (unsigned long)(dTex ? mglRenderPassTextureInfo(dTex).height : 0),
-              mglLoadActionName(mglRenderPassLoadActionFor(_renderPassManager.state, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0, MGLLoadActionDontCare)),
-              mglStoreActionName(mglRenderPassStoreActionFor(_renderPassManager.state, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0, MGLStoreActionDontCare)),
+              mglLoadActionName(mglRenderPassLoadActionFor(_renderPassManager.state, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0, MGLLoadActionDontCare)),
+              mglStoreActionName(mglRenderPassStoreActionFor(_renderPassManager.state, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0, MGLStoreActionDontCare)),
               sTex,
               (unsigned long)(sTex ? mglRenderPassTextureInfo(sTex).pixel_format : MGLPixelFormatInvalid),
               (unsigned long)(sTex ? mglRenderPassTextureInfo(sTex).width : 0),
               (unsigned long)(sTex ? mglRenderPassTextureInfo(sTex).height : 0),
-              mglLoadActionName(mglRenderPassLoadActionFor(_renderPassManager.state, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0, MGLLoadActionDontCare)),
-              mglStoreActionName(mglRenderPassStoreActionFor(_renderPassManager.state, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0, MGLStoreActionDontCare)));
+              mglLoadActionName(mglRenderPassLoadActionFor(_renderPassManager.state, MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0, MGLLoadActionDontCare)),
+              mglStoreActionName(mglRenderPassStoreActionFor(_renderPassManager.state, MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0, MGLStoreActionDontCare)));
     }
 
     // create a render encoder from the renderpass descriptor
@@ -3096,7 +3096,7 @@ output->name, (unsigned)i,
         id fallbackRenderTarget =
             mglRenderPassFallbackRenderTarget(ctx);
         if (!fallbackRenderTarget) {
-            MGLRenderCppTextureDescriptorState fbDesc = {0};
+            MGLRenderTextureDescriptorState fbDesc = {0};
             fbDesc.texture_type = MGLTextureType2D;
             fbDesc.pixel_format = MGLPixelFormatBGRA8Unorm;
             fbDesc.width = 1;
@@ -3121,12 +3121,12 @@ output->name, (unsigned)i,
             NSLog(@"MGL WARNING: Render pass had no attachments; binding 1x1 fallback color target");
             mglRenderPassSetPersistentAttachment(
                 _renderPassManager.state,
-                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0,
+                MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0,
                 fallbackRenderTarget,
                 0, 0, 0, NO);
             mglRenderPassSetPersistentActions(
                 _renderPassManager.state,
-                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0,
+                MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0,
                 MGLLoadActionLoad, MGLStoreActionStore);
             mglRenderPassSetPersistentDimensions(
                 _renderPassManager.state, 1, 1);
@@ -3144,14 +3144,14 @@ output->name, (unsigned)i,
             NSLog(@"MGL WARNING: colorAttachment[%d] usage=0x%lx lacks RenderTarget; clearing attachment to avoid Metal assert",
                   i, (unsigned long)mglRenderPassTextureInfo(attTex).usage);
             NSUInteger clearLevel = 0u, clearSlice = 0u, clearDepthPlane = 0u;
-            mglRenderCppGetRenderPassAttachmentSubresourceOwner(
+            mglRenderGetRenderPassAttachmentSubresourceOwner(
                 _renderPassManager.state->renderPassStateOwner,
-                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, i,
+                MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, i,
                 (uint64_t *)&clearLevel, (uint64_t *)&clearSlice,
                 (uint64_t *)&clearDepthPlane);
             mglRenderPassSetPersistentAttachment(
                 _renderPassManager.state,
-                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, i,
+                MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, i,
                 nil, clearLevel, clearSlice, clearDepthPlane, NO);
         }
     }
@@ -3163,26 +3163,26 @@ output->name, (unsigned)i,
             if (mglRenderPassColorTextureFor(_renderPassManager.state, i)) {
                 NSLog(@"MGL WARNING: colorAttachment[0] missing; remapping colorAttachment[%d] -> [0]", i);
                 NSUInteger srcLevel = 0u, srcSlice = 0u, srcDepthPlane = 0u;
-                mglRenderCppGetRenderPassAttachmentSubresourceOwner(
+                mglRenderGetRenderPassAttachmentSubresourceOwner(
                     _renderPassManager.state->renderPassStateOwner,
-                    MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, i,
+                    MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, i,
                     (uint64_t *)&srcLevel, (uint64_t *)&srcSlice,
                     (uint64_t *)&srcDepthPlane);
                 mglRenderPassSetPersistentAttachment(
                     _renderPassManager.state,
-                    MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0,
+                    MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0,
                     mglRenderPassColorTextureFor(_renderPassManager.state, i),
                     srcLevel, srcSlice, srcDepthPlane, NO);
                 mglRenderPassSetPersistentActions(
                     _renderPassManager.state,
-                    MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0,
+                    MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0,
                     (uint32_t)mglRenderPassLoadActionFor(
                         _renderPassManager.state,
-                        MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, i,
+                        MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, i,
                         MGLLoadActionLoad),
                     (uint32_t)mglRenderPassStoreActionFor(
                         _renderPassManager.state,
-                        MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, i,
+                        MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, i,
                         MGLStoreActionStore));
                 break;
             }
@@ -3194,7 +3194,7 @@ output->name, (unsigned)i,
         id fallbackRenderTarget =
             mglRenderPassFallbackRenderTarget(ctx);
         if (!fallbackRenderTarget) {
-            MGLRenderCppTextureDescriptorState fbDesc = {0};
+            MGLRenderTextureDescriptorState fbDesc = {0};
             fbDesc.texture_type = MGLTextureType2D;
             fbDesc.pixel_format = MGLPixelFormatBGRA8Unorm;
             fbDesc.width = 1;
@@ -3218,12 +3218,12 @@ output->name, (unsigned)i,
             NSLog(@"MGL WARNING: colorAttachment[0] unavailable; binding 1x1 fallback");
             mglRenderPassSetPersistentAttachment(
                 _renderPassManager.state,
-                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0,
+                MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0,
                 fallbackRenderTarget,
                 0, 0, 0, NO);
             mglRenderPassSetPersistentActions(
                 _renderPassManager.state,
-                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0,
+                MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0,
                 MGLLoadActionLoad, MGLStoreActionStore);
             if (mglRenderPassRenderTargetWidthFor(_renderPassManager.state) == 0 || mglRenderPassRenderTargetHeightFor(_renderPassManager.state) == 0) {
                 mglRenderPassSetPersistentDimensions(
@@ -3279,8 +3279,8 @@ output->name, (unsigned)i,
 - (bool) createRenderEncoderLocked:(uint64_t)renderEncoderCall
 {
     // CRITICAL FIX: Validate command buffer state before creating render encoder
-    MGLRenderCppCommandBufferState commandState = {0};
-    if (!mglRenderCppCommandBufferOwnerHasState(
+    MGLRenderCommandBufferState commandState = {0};
+    if (!mglRenderCommandBufferOwnerHasState(
             _renderPassManager.state->currentCommandBufferOwner,
             &commandState)) {
         NSLog(@"MGL ERROR: Cannot create render encoder - command buffer is NULL");
@@ -3289,7 +3289,7 @@ output->name, (unsigned)i,
     }
 
     // Check if command buffer already has an active encoder (Metal API violation)
-    if (mglRenderCppRenderEncoderOwnerHasCurrent(
+    if (mglRenderEncoderOwnerHasCurrent(
             _renderPassManager.state->currentRenderEncoderOwner) == 1) {
         NSLog(@"MGL WARNING: Active render encoder detected - ending it before creating new one");
         [self endRenderEncodingLocked];
@@ -3306,7 +3306,7 @@ output->name, (unsigned)i,
             return false;
         }
 
-        if (!mglRenderCppCommandBufferOwnerHasState(
+        if (!mglRenderCommandBufferOwnerHasState(
                 _renderPassManager.state->currentCommandBufferOwner,
                 &commandState)) {
             NSLog(@"MGL ERROR: newCommandBuffer returned without a current command buffer");
@@ -3366,14 +3366,14 @@ output->name, (unsigned)i,
 	                            (unsigned long)(c0 ? mglRenderPassTextureInfo(c0).pixel_format : MGLPixelFormatInvalid),
 	                            (unsigned long)(c0 ? mglRenderPassTextureInfo(c0).width : 0),
 	                            (unsigned long)(c0 ? mglRenderPassTextureInfo(c0).height : 0),
-	                            mglLoadActionName(mglRenderPassLoadActionFor(_renderPassManager.state, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0, MGLLoadActionDontCare)),
-	                            mglStoreActionName(mglRenderPassStoreActionFor(_renderPassManager.state, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0, MGLStoreActionDontCare)),
+	                            mglLoadActionName(mglRenderPassLoadActionFor(_renderPassManager.state, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0, MGLLoadActionDontCare)),
+	                            mglStoreActionName(mglRenderPassStoreActionFor(_renderPassManager.state, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0, MGLStoreActionDontCare)),
 	                            depth,
 	                            (unsigned long)(depth ? mglRenderPassTextureInfo(depth).pixel_format : MGLPixelFormatInvalid),
 	                            (unsigned long)(depth ? mglRenderPassTextureInfo(depth).width : 0),
 	                            (unsigned long)(depth ? mglRenderPassTextureInfo(depth).height : 0),
-	                            mglLoadActionName(mglRenderPassLoadActionFor(_renderPassManager.state, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0, MGLLoadActionDontCare)),
-	                            mglStoreActionName(mglRenderPassStoreActionFor(_renderPassManager.state, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0, MGLStoreActionDontCare)),
+	                            mglLoadActionName(mglRenderPassLoadActionFor(_renderPassManager.state, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0, MGLLoadActionDontCare)),
+	                            mglStoreActionName(mglRenderPassStoreActionFor(_renderPassManager.state, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0, MGLStoreActionDontCare)),
 	                            mglRenderPassClearDepthFor(_renderPassManager.state, 0.0),
 	                            (ctx && MGL_STATE(ctx)->caps.depth_test) ? 1 : 0,
 	                            (ctx && MGL_STATE(ctx)->var.depth_writemask) ? 1 : 0,
@@ -3388,12 +3388,12 @@ output->name, (unsigned)i,
          * owner state so the GPU accumulates a fresh count. */
         void *queryVisibilityBuffer = NULL;
         if (_queryStateOwner &&
-            mglRenderCppGetQueryVisibilityBuffer(
+            mglRenderGetQueryVisibilityBuffer(
                 _queryStateOwner, &queryVisibilityBuffer) == 0 &&
             queryVisibilityBuffer) {
             uint32_t visibilityResultType =
                 mglRenderPassVisibilityResultTypeFor(_renderPassManager.state);
-            mglRenderCppSetRenderPassStateVisibility(
+            mglRenderSetRenderPassStateVisibility(
                 _renderPassManager.state->renderPassStateOwner,
                 queryVisibilityBuffer, visibilityResultType);
         }
@@ -3402,7 +3402,7 @@ output->name, (unsigned)i,
                 (__bridge id)[_renderPassManager
                     createRenderEncoder];
             [_renderPassManager installRenderEncoder:(__bridge void *)renderEncoder];
-            if (mglRenderCppRenderEncoderOwnerHasCurrent(
+            if (mglRenderEncoderOwnerHasCurrent(
                     _renderPassManager.state->currentRenderEncoderOwner) != 1) {
             NSLog(@"MGL ERROR: Failed to create render encoder - invalid render pass state or command buffer");
             NSLog(@"MGL DEBUG: Command buffer owner: %p, Render pass state owner: %p",
@@ -3415,14 +3415,14 @@ output->name, (unsigned)i,
          * pass when a sample query is active. MTLVisibilityResultModeBoolean
          * writes 1 to the buffer if any samples pass per-fragment tests. */
         if (_queryStateOwner &&
-            mglRenderCppRenderEncoderOwnerHasCurrent(
+            mglRenderEncoderOwnerHasCurrent(
                 _renderPassManager.state->currentRenderEncoderOwner) == 1) {
             uint32_t visibilityMode = 0;
             uint64_t visibilityOffset = 0;
-            if (mglRenderCppAcquireSampleQuerySlot(
+            if (mglRenderAcquireSampleQuerySlot(
                     _queryStateOwner, &visibilityMode,
                     &visibilityOffset) == 0) {
-                mglRenderCppSetVisibilityResultModeForRenderEncoderOwner(
+                mglRenderSetVisibilityResultModeForRenderEncoderOwner(
                     _renderPassManager.state->currentRenderEncoderOwner,
                     visibilityMode, visibilityOffset);
             }
@@ -3454,7 +3454,7 @@ output->name, (unsigned)i,
         [_renderPassManager clearCurrentRenderEncoder];
         return false;
     }
-    mglRenderCppSetRenderEncoderOwnerLabel(
+    mglRenderSetRenderEncoderOwnerLabel(
         _renderPassManager.state->currentRenderEncoderOwner,
         "GL Render Encoder");
 	    {
@@ -3499,14 +3499,14 @@ output->name, (unsigned)i,
 	                            (unsigned long)(c0 ? mglRenderPassTextureInfo(c0).pixel_format : MGLPixelFormatInvalid),
 	                            (unsigned long)(c0 ? mglRenderPassTextureInfo(c0).width : 0),
 	                            (unsigned long)(c0 ? mglRenderPassTextureInfo(c0).height : 0),
-	                            mglLoadActionName(mglRenderPassLoadActionFor(_renderPassManager.state, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0, MGLLoadActionDontCare)),
-	                            mglStoreActionName(mglRenderPassStoreActionFor(_renderPassManager.state, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0, MGLStoreActionDontCare)),
+	                            mglLoadActionName(mglRenderPassLoadActionFor(_renderPassManager.state, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0, MGLLoadActionDontCare)),
+	                            mglStoreActionName(mglRenderPassStoreActionFor(_renderPassManager.state, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0, MGLStoreActionDontCare)),
 	                            depth,
 	                            (unsigned long)(depth ? mglRenderPassTextureInfo(depth).pixel_format : MGLPixelFormatInvalid),
 	                            (unsigned long)(depth ? mglRenderPassTextureInfo(depth).width : 0),
 	                            (unsigned long)(depth ? mglRenderPassTextureInfo(depth).height : 0),
-	                            mglLoadActionName(mglRenderPassLoadActionFor(_renderPassManager.state, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0, MGLLoadActionDontCare)),
-	                            mglStoreActionName(mglRenderPassStoreActionFor(_renderPassManager.state, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0, MGLStoreActionDontCare)),
+	                            mglLoadActionName(mglRenderPassLoadActionFor(_renderPassManager.state, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0, MGLLoadActionDontCare)),
+	                            mglStoreActionName(mglRenderPassStoreActionFor(_renderPassManager.state, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0, MGLStoreActionDontCare)),
 	                            mglRenderPassClearDepthFor(_renderPassManager.state, 0.0),
 	                            (ctx && MGL_STATE(ctx)->caps.depth_test) ? 1 : 0,
 	                            (ctx && MGL_STATE(ctx)->var.depth_writemask) ? 1 : 0,
@@ -3548,7 +3548,7 @@ output->name, (unsigned)i,
     }
 
     // CRITICAL SAFETY: Check command buffer before creating render encoder
-    if (mglRenderCppCommandBufferOwnerHasCurrent(
+    if (mglRenderCommandBufferOwnerHasCurrent(
             _renderPassManager.state->currentCommandBufferOwner) != 1) {
         // Attempt recovery: create a new command buffer instead of failing immediately
         if ([self newCommandBufferLocked]) {
@@ -3683,7 +3683,7 @@ output->name, (unsigned)i,
     // Metal API requires ending encoders before creating new command buffers
 
     // STEP 0: End any existing render encoder to prevent MTLReleaseAssertionFailure
-    if (mglRenderCppRenderEncoderOwnerHasCurrent(
+    if (mglRenderEncoderOwnerHasCurrent(
             _renderPassManager.state->currentRenderEncoderOwner) == 1) {
         if (kMGLVerboseFrameLoopLogs) {
             NSLog(@"MGL INFO: Ending existing render encoder before creating new command buffer");
@@ -3744,8 +3744,8 @@ output->name, (unsigned)i,
         _currentCBHasWork = NO;
 
         // AGX Driver Validation: Check if the command buffer is immediately invalid
-        MGLRenderCppCommandBufferState initialState = {0};
-        if (!mglRenderCppCommandBufferOwnerHasState(
+        MGLRenderCommandBufferState initialState = {0};
+        if (!mglRenderCommandBufferOwnerHasState(
                 _renderPassManager.state->currentCommandBufferOwner,
                 &initialState)) {
             NSLog(@"MGL AGX CRITICAL: New command buffer owner has no current buffer");
@@ -3754,7 +3754,7 @@ output->name, (unsigned)i,
         }
         if (initialState.has_error) {
             NSLog(@"MGL AGX WARNING: New command buffer has immediate error: %s",
-                  mglRenderCppCommandBufferErrorDescription(&initialState));
+                  mglRenderCommandBufferErrorDescription(&initialState));
             [self recordGPUError];
             // Don't return false immediately - AGX sometimes creates error-state buffers that recover
         }
@@ -3770,12 +3770,12 @@ output->name, (unsigned)i,
 
         // Additional AGX validation: Check for buffer properties that cause rejections
         memset(&initialState, 0, sizeof(initialState));
-        (void)mglRenderCppCommandBufferOwnerHasState(
+        (void)mglRenderCommandBufferOwnerHasState(
             _renderPassManager.state->currentCommandBufferOwner,
             &initialState);
         if (initialState.has_error) {
             NSLog(@"MGL AGX WARNING: Command buffer has immediate error: %s",
-                  mglRenderCppCommandBufferErrorDescription(&initialState));
+                  mglRenderCommandBufferErrorDescription(&initialState));
             [self recordGPUError];
             [_renderPassManager discardCurrentCommandBuffer];
             [self resetMetalState];
@@ -3839,7 +3839,7 @@ output->name, (unsigned)i,
         }
 
         // ADDITIONAL SAFETY: Validate command buffer is still valid before encoding
-        if (mglRenderCppCommandBufferOwnerHasCurrent(
+        if (mglRenderCommandBufferOwnerHasCurrent(
                 _renderPassManager.state->currentCommandBufferOwner) != 1) {
             NSLog(@"MGL ERROR: Command buffer became NULL before event wait encoding");
             return false;
@@ -3848,7 +3848,7 @@ output->name, (unsigned)i,
         @try {
             NSLog(@"MGL INFO: Encoding safe event wait: event=%p, syncName=%u",
                   cachedEvent, cachedSyncName);
-            if (mglRenderCppEncodeWaitForEventForCommandBufferOwner(
+            if (mglRenderEncodeWaitForEventForCommandBufferOwner(
                     _renderPassManager.state->currentCommandBufferOwner,
                     (__bridge void *)cachedEvent, cachedSyncName) != 0) {
                 NSLog(@"MGL ERROR: Event wait owner facade rejected the request");
@@ -3876,8 +3876,8 @@ output->name, (unsigned)i,
 
 - (bool)ensureWritableCommandBufferLocked:(const char *)reason
 {
-    MGLRenderCppCommandBufferState commandState = {0};
-    if (!mglRenderCppCommandBufferOwnerHasState(
+    MGLRenderCommandBufferState commandState = {0};
+    if (!mglRenderCommandBufferOwnerHasState(
             _renderPassManager.state->currentCommandBufferOwner,
             &commandState)) {
         if (kMGLDiagnosticStateLogs) {
@@ -3887,7 +3887,7 @@ output->name, (unsigned)i,
             NSLog(@"MGL ERROR: Failed to create command buffer for %s", reason ? reason : "operation");
             return false;
         }
-        if (!mglRenderCppCommandBufferOwnerHasState(
+        if (!mglRenderCommandBufferOwnerHasState(
                 _renderPassManager.state->currentCommandBufferOwner,
                 &commandState)) {
             NSLog(@"MGL ERROR: Created command buffer owner has no current buffer for %s",
@@ -3907,7 +3907,7 @@ output->name, (unsigned)i,
         }
 
         memset(&commandState, 0, sizeof(commandState));
-        if (!mglRenderCppCommandBufferOwnerHasState(
+        if (!mglRenderCommandBufferOwnerHasState(
                 _renderPassManager.state->currentCommandBufferOwner,
                 &commandState) ||
             commandState.status >= MGLCommandBufferStatusCommitted) {
@@ -3961,7 +3961,7 @@ output->name, (unsigned)i,
 /* Build the renderer pipeline as C ABI value-state. Color/depth/stencil,
  * blend, vertex layout, tessellation, rasterization, topology, and sample
  * count are consumed by the C++ pipeline builder. */
-- (BOOL)generatePipelineDescriptorState:(MGLRenderCppPipelineDescriptorState *)state
+- (BOOL)generatePipelineDescriptorState:(MGLRenderPipelineDescriptorState *)state
                          vertexFunction:(id *)vertexFunctionOut
                        fragmentFunction:(id *)fragmentFunctionOut
 {
@@ -4360,7 +4360,7 @@ output->name, (unsigned)i,
             state->color_write_mask[i] = 0u;
             continue;
         }
-        MGLRenderCppPipelineBlendState blend = {0};
+        MGLRenderPipelineBlendState blend = {0};
         if (![_pipelineCache blendStateForAttachment:(NSUInteger)i out:&blend]) {
             NSLog(@"MGL PIPELINE DESC fail: blend state unavailable for attachment %d", i);
             return NO;
@@ -4487,7 +4487,7 @@ output->name, (unsigned)i,
 
     [self invalidateLastBoundState];
 
-    if (mglRenderCppRenderEncoderOwnerHasCurrent(
+    if (mglRenderEncoderOwnerHasCurrent(
             _renderPassManager.state->currentRenderEncoderOwner) == 1)
     {
         /* An active render encoder means work was encoded into the current
@@ -4576,7 +4576,7 @@ output->name, (unsigned)i,
 
 - (BOOL)currentRenderPassUsesTexture:(id)texture
 {
-    if (!texture || mglRenderCppRenderEncoderOwnerHasCurrent(
+    if (!texture || mglRenderEncoderOwnerHasCurrent(
                         _renderPassManager.state->currentRenderEncoderOwner) != 1) {
         return NO;
     }
@@ -4608,8 +4608,8 @@ output->name, (unsigned)i,
 
     [self endRenderEncoding];
 
-    MGLRenderCppCommandBufferState commandState = {0};
-    if (!mglRenderCppCommandBufferOwnerHasState(
+    MGLRenderCommandBufferState commandState = {0};
+    if (!mglRenderCommandBufferOwnerHasState(
             _renderPassManager.state->currentCommandBufferOwner,
             &commandState)) {
         BOOL ok = [self newCommandBuffer];
@@ -4637,13 +4637,13 @@ output->name, (unsigned)i,
         return NO;
     }
 
-    MGLRenderCppCommandBufferState committedState = {0};
-    (void)mglRenderCppGetCommandBufferState(
+    MGLRenderCommandBufferState committedState = {0};
+    (void)mglRenderGetCommandBufferState(
         (__bridge void *)commandBufferToCommit, &committedState);
     if (committedState.has_error) {
         NSLog(@"MGL ERROR: render pass texture readback sync failed (%s): %s",
               reason ? reason : "texture_readback",
-              mglRenderCppCommandBufferErrorDescription(&committedState));
+              mglRenderCommandBufferErrorDescription(&committedState));
         [self recordGPUError];
         [self newCommandBuffer];
         return NO;
@@ -4670,7 +4670,7 @@ output->name, (unsigned)i,
             NSLog(@"MGL CRITICAL: Re-creating Metal command buffer");
             [_renderPassManager installNewCommandBufferFromQueue:(__bridge void *)_commandQueue];
 
-            if (mglRenderCppCommandBufferOwnerHasCurrent(
+            if (mglRenderCommandBufferOwnerHasCurrent(
                     _renderPassManager.state->currentCommandBufferOwner) != 1) {
                 NSLog(@"MGL CRITICAL: Failed to create new command buffer during recovery");
             }
@@ -4876,12 +4876,12 @@ output->name, (unsigned)i,
 
     // Keep command buffer lifecycle healthy: if the active one is already finalized,
     // rotate to a fresh buffer before any state processing.
-    MGLRenderCppCommandBufferState processCommandState = {0};
-    int processHasCommand = mglRenderCppGetCommandBufferOwnerState(
+    MGLRenderCommandBufferState processCommandState = {0};
+    int processHasCommand = mglRenderGetCommandBufferOwnerState(
         _renderPassManager.state->currentCommandBufferOwner,
         &processCommandState) == 0;
     if (processHasCommand &&
-        mglRenderCppRenderEncoderOwnerHasCurrent(
+        mglRenderEncoderOwnerHasCurrent(
             _renderPassManager.state->currentRenderEncoderOwner) != 1) {
         uint32_t preStatus =
             (uint32_t)processCommandState.status;
@@ -4928,7 +4928,7 @@ output->name, (unsigned)i,
                                                             work:&resourceSyncWork]);
 
     // Ensure a render encoder exists for draw commands.
-    if (mglRenderCppRenderEncoderOwnerHasCurrent(
+    if (mglRenderEncoderOwnerHasCurrent(
             _renderPassManager.state->currentRenderEncoderOwner) != 1) {
         static uint64_t s_nilEncoderRecoveryCount = 0;
         uint64_t nilHit = ++s_nilEncoderRecoveryCount;
@@ -5019,7 +5019,7 @@ output->name, (unsigned)i,
     RETURN_FALSE_ON_FAILURE([self validateRenderPassAttachmentsAndPipelineFormatsLocked:traceProcess]);
 
     @try {
-        if (mglRenderCppBindingSetPipelineIfNeededForOwner(
+        if (mglRenderBindingSetPipelineIfNeededForOwner(
                 _bindingStateOwner,
                 _renderPassManager.state->currentRenderEncoderOwner,
                 _pipelineCache.state->pipelineState) > 0) {
@@ -5074,10 +5074,10 @@ output->name, (unsigned)i,
             0.0f,
             0.0f
         };
-        mglRenderCppSetRenderBytesForOwner(
+        mglRenderSetRenderBytesForOwner(
             _renderPassManager.state->currentRenderEncoderOwner,
             &fragCoordParams, sizeof(fragCoordParams),
-            MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT,
+            MGL_RENDER_BINDING_STAGE_FRAGMENT,
             kMGLFragCoordParamsBufferIndex);
         [self invalidateLastBoundFragmentBufferAtIndex:kMGLFragCoordParamsBufferIndex];
     }
@@ -5102,18 +5102,18 @@ output->name, (unsigned)i,
             }
             lodBiasArr[unit] = bias;
         }
-        mglRenderCppSetRenderBytesForOwner(
+        mglRenderSetRenderBytesForOwner(
             _renderPassManager.state->currentRenderEncoderOwner,
             lodBiasArr, sizeof(lodBiasArr),
-            MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT,
+            MGL_RENDER_BINDING_STAGE_FRAGMENT,
             kMGLLodBiasBufferIndex);
         [self invalidateLastBoundFragmentBufferAtIndex:kMGLLodBiasBufferIndex];
 
 
-        mglRenderCppSetRenderBytesForOwner(
+        mglRenderSetRenderBytesForOwner(
             _renderPassManager.state->currentRenderEncoderOwner,
             &biasmax, sizeof(biasmax),
-            MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT,
+            MGL_RENDER_BINDING_STAGE_FRAGMENT,
             kMGLLodBiasMaxBufferIndex);
         [self invalidateLastBoundFragmentBufferAtIndex:kMGLLodBiasMaxBufferIndex];
     }
@@ -5247,7 +5247,7 @@ output->name, (unsigned)i,
             RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList: &MGL_STATE(ctx)->fragment_buffer_map_list]);
             if (work) work->updatedBaseLists = true;
 
-            if (mglRenderCppRenderEncoderOwnerHasCurrent(
+            if (mglRenderEncoderOwnerHasCurrent(
                     _renderPassManager.state->currentRenderEncoderOwner) != 1) {
                 RETURN_FALSE_ON_FAILURE(
                     [self newRenderEncoderLockedWithReason:MGL_ENC_REASON_VAO]);
@@ -5269,7 +5269,7 @@ output->name, (unsigned)i,
         }
         else if (MGL_STATE(ctx)->dirty_bits & DIRTY_RENDER_STATE)
         {
-            if (mglRenderCppRenderEncoderOwnerHasCurrent(
+            if (mglRenderEncoderOwnerHasCurrent(
                     _renderPassManager.state->currentRenderEncoderOwner) != 1)
             {
                 RETURN_FALSE_ON_FAILURE(
@@ -5507,7 +5507,7 @@ stencil_format_ok:;
                 _pipelineCache.state->pipelineState)) {
                 MGL_PERF_INC(g_mglPSODedupHitsSinceSwap);
             } else {
-                mglRenderCppBindingSetPipelineState(_bindingStateOwner, NULL);
+                mglRenderBindingSetPipelineState(_bindingStateOwner, NULL);
                 MGL_PERF_INC(g_mglPSODedupMissesSinceSwap);
             }
             CFTimeInterval now = CFAbsoluteTimeGetCurrent();
@@ -5571,7 +5571,7 @@ stencil_format_ok:;
 
             if (!skipPipelineBuild) {
             // Build the only renderer pipeline representation: C ABI value-state.
-            MGLRenderCppPipelineDescriptorState psoState = {0};
+            MGLRenderPipelineDescriptorState psoState = {0};
             id psoVertexFunction = nil;
             id psoFragmentFunction = nil;
             uint32_t builtColor0Format = (uint32_t)MGLPixelFormatInvalid;
@@ -5750,7 +5750,7 @@ stencil_format_ok:;
 
 /* Build final/simple/safe PSO variants from value-state in the C++ builder.
  * The same owner also handles descriptor caching and binary archives. */
-- (bool)buildPipelineStateOnCacheMissWithState:(const MGLRenderCppPipelineDescriptorState *)pipelineState
+- (bool)buildPipelineStateOnCacheMissWithState:(const MGLRenderPipelineDescriptorState *)pipelineState
                                 vertexFunction:(id)vertexFunction
                               fragmentFunction:(id)fragmentFunction
                                   cacheKeyWords:(const uint64_t *)pipelineCacheKeyWords
@@ -5771,12 +5771,12 @@ stencil_format_ok:;
     GLuint currentFBOName = currentFBO ? currentFBO->name : 0;
 
 
-    MGLRenderCppPipelineDescriptorState finalState = *pipelineState;
+    MGLRenderPipelineDescriptorState finalState = *pipelineState;
     BOOL stateFromCache = NO;
 
     /* Check descriptor state cache on PSO miss; cache new states for reuse. */
     if (pipelineCacheKeyWords) {
-        MGLRenderCppPipelineDescriptorState cachedState = {0};
+        MGLRenderPipelineDescriptorState cachedState = {0};
         if ([_pipelineCache pipelineDescriptorStateForWords:pipelineCacheKeyWords
                                                       state:&cachedState]) {
             /* Descriptor cache hit - reuse cached state instead of regenerating */
@@ -5797,7 +5797,7 @@ stencil_format_ok:;
     }
 
     MGL_PERF_INC(g_mglPipelineCacheMissesSinceSwap);
-    MGLRenderCppPipelineDescriptorState successfulState = {0};
+    MGLRenderPipelineDescriptorState successfulState = {0};
     BOOL haveSuccessfulState = NO;
     id previousPipelineState = (__bridge id)_pipelineCache.state->pipelineState;
     id compiledPSO = nil;
@@ -5987,7 +5987,7 @@ stencil_format_ok:;
                     // Simplify the state to avoid complex shader compilation issues
 
 
-                    MGLRenderCppPipelineDescriptorState simpleState = finalState;
+                    MGLRenderPipelineDescriptorState simpleState = finalState;
                     simpleState.blending_enabled_mask = 0;
                     simpleState.alpha_to_coverage_enabled = 0;
                     simpleState.alpha_to_one_enabled = 0;
@@ -6049,7 +6049,7 @@ stencil_format_ok:;
         NSLog(@"MGL INFO: VIRTUALIZED AGX - Creating ultimate fallback pipeline for virtualization safety");
 
         @try {
-            MGLRenderCppPipelineDescriptorState safeState = {0};
+            MGLRenderPipelineDescriptorState safeState = {0};
             safeState.color_count = MAX_COLOR_ATTACHMENTS;
             safeState.rasterization_enabled = 1;
             uint32_t safeColor0Format = (uint32_t)finalState.color_format[0];
@@ -6075,7 +6075,7 @@ stencil_format_ok:;
             void *safeFS = NULL;
             char libError[512] = {0};
             if (!safe || !safe->data || safe->size == 0 ||
-                mglRenderCppCreateAuxFunctions(
+                mglRenderCreateAuxFunctions(
                     safe->data, safe->size, safe->hash,
                     "mgl_safe_fallback_vs", "mgl_safe_fallback_fs",
                     &safeVS, &safeFS,
@@ -6185,7 +6185,7 @@ stencil_format_ok:;
 - (void)insertPipelineStateIntoCacheWithWords:(const uint64_t *)pipelineCacheKeyWords
                                   pipelineSig:(uint64_t)pipelineSig
                                    vertexSig:(uint64_t)vertexSig
-                                        state:(const MGLRenderCppPipelineDescriptorState *)state
+                                        state:(const MGLRenderPipelineDescriptorState *)state
                                vertexFunction:(id)vertexFunction
                              fragmentFunction:(id)fragmentFunction
                                 stateFromCache:(BOOL)stateFromCache
@@ -6215,7 +6215,7 @@ stencil_format_ok:;
  * that needs it. */
 - (bool) bindBufferSizeConstantsForRenderEncoder
 {
-    if (mglRenderCppRenderEncoderOwnerHasCurrent(
+    if (mglRenderEncoderOwnerHasCurrent(
             _renderPassManager.state->currentRenderEncoderOwner) != 1) {
         return true;
     }
@@ -6256,10 +6256,10 @@ stencil_format_ok:;
             }
         }
         if (vertexSizeBuffer) {
-            mglRenderCppSetRenderBufferForOwner(
+            mglRenderSetRenderBufferForOwner(
                 _renderPassManager.state->currentRenderEncoderOwner,
                 (__bridge void *)vertexSizeBuffer, 0,
-                MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
+                MGL_RENDER_BINDING_STAGE_VERTEX,
                 MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX);
             [self recordLastBoundVertexBuffer:vertexSizeBuffer
                                        offset:0
@@ -6304,10 +6304,10 @@ stencil_format_ok:;
             }
         }
         if (fragmentSizeBuffer) {
-            mglRenderCppSetRenderBufferForOwner(
+            mglRenderSetRenderBufferForOwner(
                 _renderPassManager.state->currentRenderEncoderOwner,
                 (__bridge void *)fragmentSizeBuffer, 0,
-                MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT,
+                MGL_RENDER_BINDING_STAGE_FRAGMENT,
                 MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX);
             [self recordLastBoundFragmentBuffer:fragmentSizeBuffer
                                          offset:0
@@ -6329,7 +6329,7 @@ stencil_format_ok:;
      * through its value-state API keeps completion lifetime out of the
      * renderer's ObjC ivar mirror and preserves the old outside-lock wait. */
     if (finish) {
-        MGLRenderCppCommandBufferState finishState = {0};
+        MGLRenderCommandBufferState finishState = {0};
         int waitResult = [_renderPassManager
             waitForLastSubmittedCommandBuffer:&finishState];
         if (waitResult < 0 || finishState.has_error) {
@@ -6355,7 +6355,7 @@ stencil_format_ok:;
 
     /* If processGLStateLocked: left a render encoder active, mark the CB as
      * having work so the commit below is not skipped. */
-    if (mglRenderCppRenderEncoderOwnerHasCurrent(
+    if (mglRenderEncoderOwnerHasCurrent(
             _renderPassManager.state->currentRenderEncoderOwner) == 1) {
         _currentCBHasWork = YES;
     }
@@ -6382,8 +6382,8 @@ stencil_format_ok:;
         return;
     }
 
-    MGLRenderCppCommandBufferState currentState = {0};
-    if (!mglRenderCppCommandBufferOwnerHasState(
+    MGLRenderCommandBufferState currentState = {0};
+    if (!mglRenderCommandBufferOwnerHasState(
             _renderPassManager.state->currentCommandBufferOwner,
             &currentState)) {
         NSLog(@"MGL WARNING: No current command buffer in flushCommandBuffer");
@@ -6400,10 +6400,10 @@ stencil_format_ok:;
         return;
     }
 
-    MGLRenderCppCommandBufferState preCommitState = currentState;
+    MGLRenderCommandBufferState preCommitState = currentState;
     if (preCommitState.has_error) {
         NSLog(@"MGL ERROR: Command buffer has error before commit: %s",
-              mglRenderCppCommandBufferErrorDescription(&preCommitState));
+              mglRenderCommandBufferErrorDescription(&preCommitState));
         [self cleanupCommandBuffer];
         return;
     }
@@ -6438,7 +6438,7 @@ stencil_format_ok:;
     GLMState *state = MGL_STATE(glm_ctx);
     Framebuffer *framebuffer = mglRendererGetValidatedFramebuffer(glm_ctx, "processGLState.dirtyFBO");
     BOOL framebufferBindingDirty = framebuffer && (framebuffer->dirty_bits & DIRTY_FBO_BINDING);
-    if (mglRenderCppRenderEncoderOwnerHasCurrent(
+    if (mglRenderEncoderOwnerHasCurrent(
             _renderPassManager.state->currentRenderEncoderOwner) == 1 &&
         !framebufferBindingDirty &&
         [self currentRenderPassMatchesCurrentFramebuffer]) {

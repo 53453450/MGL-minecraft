@@ -47,9 +47,9 @@ extern "C" {
 #endif
 
 /* Forward decls: the draw-mode classification logic lives in
- * mgl_render_cpp.cpp (both gates); the inlines below delegate to it. */
-int mglRenderCppDrawModeProducesPolygons(uint64_t gl_mode);
-int mglRenderCppPrimitiveModeHasDrawableSegment(uint64_t gl_mode,
+ * mgl_render.cpp (both gates); the inlines below delegate to it. */
+int mglRenderDrawModeProducesPolygons(uint64_t gl_mode);
+int mglRenderPrimitiveModeHasDrawableSegment(uint64_t gl_mode,
                                                 uint64_t index_count);
 
 /* Returns true if `mode` with `indexCount` vertices produces at least one
@@ -58,7 +58,7 @@ int mglRenderCppPrimitiveModeHasDrawableSegment(uint64_t gl_mode,
 static inline bool mglPrimitiveModeHasDrawableSegment(
     GLenum mode, NSUInteger indexCount)
 {
-    return mglRenderCppPrimitiveModeHasDrawableSegment((uint64_t)mode,
+    return mglRenderPrimitiveModeHasDrawableSegment((uint64_t)mode,
                                                        (uint64_t)indexCount) != 0;
 }
 
@@ -66,7 +66,7 @@ static inline bool mglPrimitiveModeHasDrawableSegment(
  * that are subject to glPolygonMode point/line emulation. */
 static inline BOOL mglDrawModeProducesPolygons(GLenum mode)
 {
-    return mglRenderCppDrawModeProducesPolygons((uint64_t)mode) != 0;
+    return mglRenderDrawModeProducesPolygons((uint64_t)mode) != 0;
 }
 
 /* Returns YES if the context's polygon_mode is GL_POINT and `mode` produces

@@ -25,7 +25,7 @@ static void *mglDrawSupportBufferContents(id buffer)
 {
     void *contents = NULL;
     uint64_t length = 0;
-    if (!buffer || mglRenderCppGetBufferContents(
+    if (!buffer || mglRenderGetBufferContents(
             (__bridge void *)buffer, &contents, &length) != 0) {
         return NULL;
     }
@@ -34,16 +34,16 @@ static void *mglDrawSupportBufferContents(id buffer)
 
 static uint64_t mglDrawSupportBufferLength(id buffer)
 {
-    MGLRenderCppBufferInfo info = {0};
-    return buffer && mglRenderCppGetBufferInfo(
+    MGLRenderBufferInfo info = {0};
+    return buffer && mglRenderGetBufferInfo(
         (__bridge void *)buffer, &info) == 0 ? info.length : 0u;
 }
 
-static MGLRenderCppTextureInfo mglDrawSupportTextureInfo(id texture)
+static MGLRenderTextureInfo mglDrawSupportTextureInfo(id texture)
 {
-    MGLRenderCppTextureInfo info = {0};
+    MGLRenderTextureInfo info = {0};
     if (texture) {
-        (void)mglRenderCppGetTextureInfo((__bridge void *)texture, &info);
+        (void)mglRenderGetTextureInfo((__bridge void *)texture, &info);
     }
     return info;
 }
@@ -52,7 +52,7 @@ static BOOL mglDrawSupportEncodeContextIsActive(
     const MGLEncodeContext *encodeContext)
 {
     if (!encodeContext) return NO;
-    return mglRenderCppRenderEncoderOwnerHasCurrent(
+    return mglRenderEncoderOwnerHasCurrent(
         encodeContext->render_encoder_owner) == 1;
 }
 
@@ -76,8 +76,8 @@ static bool mglGeometryGatherIndices(const uint8_t *indexBytes,
     }
     const uint32_t elemBytes = indexType == GL_UNSIGNED_BYTE ? 1u
         : indexType == GL_UNSIGNED_SHORT ? 2u : 4u;
-    MGLRenderCppGeometryGatherResult result = {0};
-    if (mglRenderCppGeometryGatherIndices(
+    MGLRenderGeometryGatherResult result = {0};
+    if (mglRenderGeometryGatherIndices(
             indexBytes, elemBytes, (uint32_t)count,
             restartEnabled ? 1 : 0, restartIndex, inputVertices,
             &result) != 0) {
@@ -97,7 +97,7 @@ static id mglDrawSupportCreateBuffer(
 {
     (void)device;
     void *buffer = NULL;
-    if (mglRenderCppCreateBuffer(length, options, NULL, &buffer) == 0 &&
+    if (mglRenderCreateBuffer(length, options, NULL, &buffer) == 0 &&
         buffer) {
         return (__bridge_transfer id)buffer;
     }
@@ -112,7 +112,7 @@ static id mglDrawSupportCreateBufferWithBytes(
 {
     (void)device;
     void *buffer = NULL;
-    if (mglRenderCppCreateBufferWithBytes(bytes, length, options, NULL,
+    if (mglRenderCreateBufferWithBytes(bytes, length, options, NULL,
                                           &buffer) == 0 && buffer) {
         return (__bridge_transfer id)buffer;
     }
@@ -122,7 +122,7 @@ static id mglDrawSupportCreateBufferWithBytes(
 static id mglDrawSupportCreateBlitEncoder(
     void *commandBufferOwner)
 {
-    return (__bridge id)mglRenderCppCreateBlitEncoderBorrowed(
+    return (__bridge id)mglRenderCreateBlitEncoderBorrowed(
         commandBufferOwner);
 }
 
@@ -133,14 +133,14 @@ static void mglDrawSupportBlitCopyBuffer(id encoder,
                                          NSUInteger destinationOffset,
                                          NSUInteger size)
 {
-    (void)mglRenderCppBlitCopyBuffer(
+    (void)mglRenderBlitCopyBuffer(
         (__bridge void *)encoder, (__bridge void *)source, sourceOffset,
         (__bridge void *)destination, destinationOffset, size);
 }
 
 static void mglDrawSupportEndBlitEncoder(id encoder)
 {
-    (void)mglRenderCppEndBlitEncoder((__bridge void *)encoder);
+    (void)mglRenderEndBlitEncoder((__bridge void *)encoder);
 }
 
 static void mglDrawSupportSetVertexBuffer(
@@ -149,9 +149,9 @@ static void mglDrawSupportSetVertexBuffer(
     NSUInteger offset,
     NSUInteger index)
 {
-    (void)mglRenderCppSetRenderBufferForOwner(
+    (void)mglRenderSetRenderBufferForOwner(
         renderEncoderOwner, (__bridge void *)buffer, offset,
-        MGL_RENDER_CPP_BINDING_STAGE_VERTEX, (uint32_t)index);
+        MGL_RENDER_BINDING_STAGE_VERTEX, (uint32_t)index);
 }
 
 static void mglDrawSupportSetVertexBytes(
@@ -160,9 +160,9 @@ static void mglDrawSupportSetVertexBytes(
     NSUInteger length,
     NSUInteger index)
 {
-    (void)mglRenderCppSetRenderBytesForOwner(
+    (void)mglRenderSetRenderBytesForOwner(
         renderEncoderOwner, bytes, length,
-        MGL_RENDER_CPP_BINDING_STAGE_VERTEX, (uint32_t)index);
+        MGL_RENDER_BINDING_STAGE_VERTEX, (uint32_t)index);
 }
 
 static void mglDrawSupportDrawIndexedPrimitives(
@@ -175,9 +175,9 @@ static void mglDrawSupportDrawIndexedPrimitives(
     NSInteger baseVertex,
     NSUInteger baseInstance)
 {
-    (void)mglRenderCppEncodeDrawForRenderEncoderOwner(renderEncoderOwner,
-        &(MGLRenderCppDrawPlan){
-            .kind = MGL_RENDER_CPP_DRAW_INDEXED,
+    (void)mglRenderEncodeDrawForRenderEncoderOwner(renderEncoderOwner,
+        &(MGLRenderDrawPlan){
+            .kind = MGL_RENDER_DRAW_INDEXED,
             .primitive_type = (uint32_t)primitiveType,
             .index_count = indexCount,
             .index_type = (uint32_t)MGL_DRAW_INDEX_UINT32,
@@ -202,8 +202,8 @@ static void mglDrawSupportDrawIndexedPrimitivesType(
     NSInteger baseVertex,
     NSUInteger baseInstance)
 {
-    MGLRenderCppDrawPlan plan = {
-            .kind = MGL_RENDER_CPP_DRAW_INDEXED,
+    MGLRenderDrawPlan plan = {
+            .kind = MGL_RENDER_DRAW_INDEXED,
             .primitive_type = (uint32_t)primitiveType,
             .index_count = indexCount,
             .index_type = (uint32_t)indexType,
@@ -213,7 +213,7 @@ static void mglDrawSupportDrawIndexedPrimitivesType(
             .base_vertex = baseVertex,
             .base_instance = baseInstance,
         };
-    (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
+    (void)mglRenderEncodeDrawForRenderEncoderOwner(
         renderEncoderOwner, &plan, NULL, 0);
 }
 
@@ -225,15 +225,15 @@ static void mglDrawSupportDrawPrimitives(
     NSUInteger instanceCount,
     NSUInteger baseInstance)
 {
-    MGLRenderCppDrawPlan plan = {
-            .kind = MGL_RENDER_CPP_DRAW_ARRAY,
+    MGLRenderDrawPlan plan = {
+            .kind = MGL_RENDER_DRAW_ARRAY,
             .primitive_type = (uint32_t)primitiveType,
             .vertex_start = vertexStart,
             .vertex_count = vertexCount,
             .instance_count = instanceCount,
             .base_instance = baseInstance,
         };
-    (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
+    (void)mglRenderEncodeDrawForRenderEncoderOwner(
         renderEncoderOwner, &plan, NULL, 0);
 }
 
@@ -243,20 +243,20 @@ static void mglDrawSupportDrawPrimitivesIndirect(
     id indirectBuffer,
     NSUInteger indirectBufferOffset)
 {
-    MGLRenderCppDrawPlan plan = {
-            .kind = MGL_RENDER_CPP_DRAW_ARRAY_INDIRECT,
+    MGLRenderDrawPlan plan = {
+            .kind = MGL_RENDER_DRAW_ARRAY_INDIRECT,
             .primitive_type = (uint32_t)primitiveType,
             .indirect_buffer = (__bridge void *)indirectBuffer,
             .indirect_buffer_offset = indirectBufferOffset,
         };
-    (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
+    (void)mglRenderEncodeDrawForRenderEncoderOwner(
         renderEncoderOwner, &plan, NULL, 0);
 }
 
 static id mglDrawSupportCreateComputeEncoder(
     void *commandBufferOwner)
 {
-    return (__bridge id)mglRenderCppCreateComputeEncoderBorrowed(
+    return (__bridge id)mglRenderCreateComputeEncoderBorrowed(
         commandBufferOwner);
 }
 
@@ -264,7 +264,7 @@ static void mglDrawSupportSetComputePipeline(
     id encoder,
     id pipeline)
 {
-    (void)mglRenderCppSetComputePipelineState((__bridge void *)encoder,
+    (void)mglRenderSetComputePipelineState((__bridge void *)encoder,
                                               (__bridge void *)pipeline);
 }
 
@@ -274,7 +274,7 @@ static void mglDrawSupportSetComputeBuffer(
     NSUInteger offset,
     NSUInteger index)
 {
-    (void)mglRenderCppSetComputeBuffer((__bridge void *)encoder,
+    (void)mglRenderSetComputeBuffer((__bridge void *)encoder,
                                        (__bridge void *)buffer, offset,
                                        (uint32_t)index);
 }
@@ -285,7 +285,7 @@ static void mglDrawSupportSetComputeBytes(
     NSUInteger length,
     NSUInteger index)
 {
-    (void)mglRenderCppSetComputeBytes((__bridge void *)encoder, bytes,
+    (void)mglRenderSetComputeBytes((__bridge void *)encoder, bytes,
                                       length, (uint32_t)index);
 }
 
@@ -298,7 +298,7 @@ static void mglDrawSupportDispatchCompute(
     uint32_t threadsY,
     uint32_t threadsZ)
 {
-    (void)mglRenderCppDispatchCompute(
+    (void)mglRenderDispatchCompute(
         (__bridge void *)encoder, groupsX, groupsY, groupsZ,
         threadsX, threadsY, threadsZ);
 }
@@ -306,7 +306,7 @@ static void mglDrawSupportDispatchCompute(
 static void mglDrawSupportEndComputeEncoder(
     id encoder)
 {
-    (void)mglRenderCppEndComputeEncoder((__bridge void *)encoder);
+    (void)mglRenderEndComputeEncoder((__bridge void *)encoder);
 }
 
 static void mglDrawSupportSetTessellationFactors(
@@ -315,7 +315,7 @@ static void mglDrawSupportSetTessellationFactors(
     NSUInteger offset,
     NSUInteger instanceStride)
 {
-    (void)mglRenderCppSetTessellationFactorBufferForOwner(
+    (void)mglRenderSetTessellationFactorBufferForOwner(
         renderEncoderOwner, (__bridge void *)buffer, offset, instanceStride);
 }
 
@@ -329,8 +329,8 @@ static void mglDrawSupportDrawPatches(
     NSUInteger instanceCount,
     NSUInteger baseInstance)
 {
-    MGLRenderCppDrawPlan plan = {
-            .kind = MGL_RENDER_CPP_DRAW_PATCHES,
+    MGLRenderDrawPlan plan = {
+            .kind = MGL_RENDER_DRAW_PATCHES,
             .primitive_type = (uint32_t)MGL_DRAW_PRIMITIVE_TRIANGLE,
             .control_point_count = controlPointCount,
             .patch_start = patchStart,
@@ -340,7 +340,7 @@ static void mglDrawSupportDrawPatches(
             .instance_count = instanceCount,
             .base_instance = baseInstance,
         };
-    (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
+    (void)mglRenderEncodeDrawForRenderEncoderOwner(
         renderEncoderOwner, &plan, NULL, 0);
 }
 
@@ -356,8 +356,8 @@ static void mglDrawSupportDrawIndexedPatches(
     NSUInteger instanceCount,
     NSUInteger baseInstance)
 {
-    MGLRenderCppDrawPlan plan = {
-            .kind = MGL_RENDER_CPP_DRAW_INDEXED_PATCHES,
+    MGLRenderDrawPlan plan = {
+            .kind = MGL_RENDER_DRAW_INDEXED_PATCHES,
             .primitive_type = (uint32_t)MGL_DRAW_PRIMITIVE_TRIANGLE,
             .control_point_count = controlPointCount,
             .patch_start = patchStart,
@@ -371,7 +371,7 @@ static void mglDrawSupportDrawIndexedPatches(
             .instance_count = instanceCount,
             .base_instance = baseInstance,
         };
-    (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
+    (void)mglRenderEncodeDrawForRenderEncoderOwner(
         renderEncoderOwner, &plan, NULL, 0);
 }
 
@@ -418,7 +418,7 @@ static BOOL mglCheckedTessCaptureSize(GLsizei count, GLsizei instanceCount,
 
     uint64_t size = 0u;
     uint64_t offset = 0u;
-    if (mglRenderCppCheckedTessCaptureSize(
+    if (mglRenderCheckedTessCaptureSize(
             (int64_t)count, (int64_t)instanceCount, (uint64_t)stride,
             (uint64_t)MGL_AIR_PER_VERTEX_STRIDE, &size, &offset) != 0) {
         return NO;
@@ -435,7 +435,7 @@ static BOOL mglNativeTESInterfaceSupported(Program *tcsProgram,
         return NO;
     }
 
-    return mglRenderCppNativeTESInterfaceSupported(
+    return mglRenderNativeTESInterfaceSupported(
         tesProgram->modules[_TESS_EVALUATION_SHADER].mtl_function,
         (uint64_t)tesProgram->modules[_TESS_EVALUATION_SHADER].metallib_bytes,
         (uint32_t)tesProgram->tess_gen_point_mode,
@@ -458,7 +458,7 @@ static id mglDefaultTessFactorBuffer(id device,
         0u);
     if (!buffer || !mglDrawSupportBufferContents(buffer)) return nil;
 
-    if (mglRenderCppFillDefaultTessFactorBuffer(
+    if (mglRenderFillDefaultTessFactorBuffer(
             (void *)mglDrawSupportBufferContents(buffer),
             (uint64_t)((NSUInteger)patchCount * stride),
             state->var.patch_default_outer_level,
@@ -524,7 +524,7 @@ static id mglNativeTessFactorBuffer(id device,
         return nil;
     }
 
-    if (mglRenderCppRepackTessFactorTriangles(
+    if (mglRenderRepackTessFactorTriangles(
             (const void *)mglDrawSupportBufferContents(canonical), (uint64_t)mglDrawSupportBufferLength(canonical),
             (void *)mglDrawSupportBufferContents(result),
             (uint64_t)((NSUInteger)patchCount * triangleStride),
@@ -543,7 +543,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         return 0u;
     }
 
-    return (GLuint64)mglRenderCppTessPrimitiveCount(
+    return (GLuint64)mglRenderTessPrimitiveCount(
         (const void *)mglDrawSupportBufferContents(canonical), (uint64_t)mglDrawSupportBufferLength(canonical),
         patchCount, (uint32_t)tesProgram->tess_gen_mode,
         instanceCount);
@@ -585,7 +585,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     _tessellation.cullDistanceCaptureActive = YES;
     drawCtx->state.dirty_bits = DIRTY_ALL;
     if (![self processGLState:true] ||
-        mglRenderCppRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 1) {
+        mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 1) {
         _tessellation.cullDistanceCaptureActive = NO;
         drawCtx->state.dirty_bits = DIRTY_ALL;
         return NO;
@@ -633,7 +633,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         : indexType == GL_UNSIGNED_SHORT ? 2u : 4u;
     uint32_t scanMin = 0u, scanMax = 0u;
     int scanValid = 0;
-    if (mglRenderCppScanIndexRangeIgnoringRestart(
+    if (mglRenderScanIndexRangeIgnoringRestart(
             indexBytes, elemWidth, (uint32_t)count,
             restartEnabled ? 1 : 0, restartIndex,
             &scanMin, &scanMax, &scanValid) != 0 || !scanValid) {
@@ -676,7 +676,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
                                           instanceCount:instanceCount
                                            baseInstance:baseInstance] ||
             ![self processGLState:true] ||
-            mglRenderCppRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 1) {
+            mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 1) {
             return YES;
         }
     }
@@ -839,7 +839,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     void *planOwner = NULL;
     void *indexBufferHandle = NULL;
     uint64_t primitiveCount = 0u;
-    if (mglRenderCppCreateCullDistanceIndexPlan(
+    if (mglRenderCreateCullDistanceIndexPlan(
             (__bridge void *)_device, indexBytes, indexType,
             (uint64_t)count, mode,
             restartEnabled ? 1 : 0, restartIndex, baseVertex,
@@ -853,8 +853,8 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     @try {
         for (uint64_t primitiveIndex = 0u;
              primitiveIndex < primitiveCount; ++primitiveIndex) {
-            MGLRenderCppCullDistancePrimitive primitive = {0};
-            if (mglRenderCppGetCullDistanceIndexPrimitive(
+            MGLRenderCullDistancePrimitive primitive = {0};
+            if (mglRenderGetCullDistanceIndexPrimitive(
                     planOwner, primitiveIndex, &primitive) != 0) {
                 break;
             }
@@ -874,7 +874,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
                 (NSUInteger)baseInstance);
         }
     } @finally {
-        mglRenderCppDestroyCullDistanceIndexPlan(&planOwner);
+        mglRenderDestroyCullDistanceIndexPlan(&planOwner);
     }
     return YES;
 }
@@ -914,7 +914,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     _tessellation.tessVertexCaptureActive = YES;
     drawCtx->state.dirty_bits = DIRTY_ALL;
     if (![self processGLState:true] ||
-        mglRenderCppRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 1) {
+        mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 1) {
         _tessellation.tessVertexCaptureActive = NO;
         return nil;
     }
@@ -977,7 +977,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     _tessellation.tessVertexCaptureActive = YES;
     drawCtx->state.dirty_bits = DIRTY_ALL;
     if (![self processGLState:true] ||
-        mglRenderCppRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 1) {
+        mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 1) {
         _tessellation.tessVertexCaptureActive = NO;
         return nil;
     }
@@ -1293,8 +1293,8 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         return YES;
     }
 
-    MGLRenderCppCommandBufferState commandState = {0};
-    if (!mglRenderCppCommandBufferOwnerHasState(
+    MGLRenderCommandBufferState commandState = {0};
+    if (!mglRenderCommandBufferOwnerHasState(
             _renderPassManager.state->currentCommandBufferOwner,
             &commandState) ||
         commandState.status >= 2u) {
@@ -1500,7 +1500,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     }
     const BOOL cppDispatch = YES;
     id compute = nil;
-    MGLRenderCppComputeExecutionPlan executionPlan = {0};
+    MGLRenderComputeExecutionPlan executionPlan = {0};
     NSMutableArray *executionTemporaries = cppDispatch
         ? [NSMutableArray array] : nil;
     if (cppDispatch) {
@@ -1508,7 +1508,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
 #define MGL_GS_PLAN_BUFFER(resource, bindingOffset, bindingIndex)                \
         do {                                                                     \
             executionPlan.binding_ops[executionPlan.binding_op_count++] =        \
-                (MGLRenderCppComputeBindingOp){                                  \
+                (MGLRenderComputeBindingOp){                                  \
                     0u, (uint32_t)(bindingIndex),                                \
                     (uint64_t)(bindingOffset), (__bridge void *)(resource),      \
                     NULL, 0u};                                                   \
@@ -1516,7 +1516,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
 #define MGL_GS_PLAN_BYTES(data, dataLength, bindingIndex)                        \
         do {                                                                     \
             executionPlan.binding_ops[executionPlan.binding_op_count++] =        \
-                (MGLRenderCppComputeBindingOp){                                  \
+                (MGLRenderComputeBindingOp){                                  \
                     1u, (uint32_t)(bindingIndex), 0u, NULL,                      \
                     (data), (uint32_t)(dataLength)};                             \
         } while (0)
@@ -1579,13 +1579,13 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         return YES;
     }
     if (cppDispatch) {
-        MGLRenderCppCopyBackEntry copyBackEntries[kMGLMaxBufferSlots] = {0};
+        MGLRenderCopyBackEntry copyBackEntries[kMGLMaxBufferSlots] = {0};
         uint32_t copyBackEntryCount = 0u;
         for (NSUInteger slot = 0; slot < kMGLMaxBufferSlots; slot++) {
             MGLStageBindingCopyBack *entry = &stageCopyBacks.slots[slot];
             if (entry->length == 0) continue;
             copyBackEntries[copyBackEntryCount++] =
-                (MGLRenderCppCopyBackEntry){
+                (MGLRenderCopyBackEntry){
                     .temporary = entry->temporary,
                     .destination = entry->destination,
                     .destination_buffer = entry->destination_buffer,
@@ -1593,8 +1593,8 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
                     .length = entry->length,
                 };
         }
-        executionPlan.dispatch = (MGLRenderCppComputePlan){
-            .dispatch_kind = MGL_RENDER_CPP_COMPUTE_DISPATCH_DIRECT,
+        executionPlan.dispatch = (MGLRenderComputePlan){
+            .dispatch_kind = MGL_RENDER_COMPUTE_DISPATCH_DIRECT,
             .groups_x = (uint32_t)workItemCount,
             .groups_y = 1u,
             .groups_z = 1u,
@@ -1603,13 +1603,13 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
             .local_z = 1u,
         };
         executionPlan.barrier_scope = copyBackEntryCount
-            ? MGL_RENDER_CPP_COMPUTE_BARRIER_BUFFERS
-            : MGL_RENDER_CPP_COMPUTE_BARRIER_NONE;
+            ? MGL_RENDER_COMPUTE_BARRIER_BUFFERS
+            : MGL_RENDER_COMPUTE_BARRIER_NONE;
         const BOOL requireCPUVisibility =
             xfbActive || mglHasActiveIndexedPrimitiveQuery();
-        MGLRenderCppComputeExecutionResult executionResult = {0};
+        MGLRenderComputeExecutionResult executionResult = {0};
         char executionError[256] = {0};
-        if (mglRenderCppExecuteComputeExecutionPlan(
+        if (mglRenderExecuteComputeExecutionPlan(
                 _renderPassManager.state->currentCommandBufferOwner,
                 _gpuRecovery.commandRecoveryOwner,
                 &executionPlan, copyBackEntries, copyBackEntryCount,
@@ -1763,13 +1763,13 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         return YES;
     }
     if (![self processGLState:true] ||
-        mglRenderCppRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 1 ||
+        mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 1 ||
         [self currentDrawRasterizationIsEmpty] ||
         [self currentDrawModeIsFullyCulled:gsOutputMode]) {
         if (getenv("MGL_GS_DIAG")) {
             NSLog(@"MGL GS DIAG raster-skip: pgl=%d enc=%d empty=%d cull=%d",
                   [self processGLState:true] ? 1 : 0,
-                  mglRenderCppRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) == 1 ? 1 : 0,
+                  mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) == 1 ? 1 : 0,
                   [self currentDrawRasterizationIsEmpty] ? 1 : 0,
                   [self currentDrawModeIsFullyCulled:gsOutputMode] ? 1 : 0);
         }
@@ -2229,7 +2229,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
      * dispatching into these Metal entry points. If processGLState has just
      * rebuilt a render encoder, keep it; a second flush can discard the fresh
      * pass and make state restoration fail for CPU-emulated indirect modes. */
-    if (mglRenderCppRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) == 1) {
+    if (mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) == 1) {
         return YES;
     }
 
@@ -2239,7 +2239,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
               label ? label : "indirect emulation");
         return NO;
     }
-    if (mglRenderCppRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 1) {
+    if (mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 1) {
         NSLog(@"MGL WARNING: %s skipped because CPU-read synchronization left no render encoder",
               label ? label : "indirect emulation");
         return NO;
@@ -2260,16 +2260,16 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
 
     NSUInteger passWidth = 0;
     NSUInteger passHeight = 0;
-    mglRenderCppGetRenderTargetSizeOwner(
+    mglRenderGetRenderTargetSizeOwner(
         _renderPassManager.state->renderPassStateOwner,
         (uint64_t *)&passWidth, (uint64_t *)&passHeight);
     if (passWidth == 0 || passHeight == 0) {
         for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
-            id color = (__bridge id)mglRenderCppGetRenderPassAttachmentTextureOwner(
+            id color = (__bridge id)mglRenderGetRenderPassAttachmentTextureOwner(
                 _renderPassManager.state->renderPassStateOwner,
-                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, i);
+                MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, i);
             if (color) {
-                MGLRenderCppTextureInfo info =
+                MGLRenderTextureInfo info =
                     mglDrawSupportTextureInfo(color);
                 passWidth = info.width;
                 passHeight = info.height;
@@ -2277,22 +2277,22 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
             }
         }
         if (passWidth == 0 || passHeight == 0) {
-            id depth = (__bridge id)mglRenderCppGetRenderPassAttachmentTextureOwner(
+            id depth = (__bridge id)mglRenderGetRenderPassAttachmentTextureOwner(
                 _renderPassManager.state->renderPassStateOwner,
-                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0);
+                MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0);
             if (depth) {
-                MGLRenderCppTextureInfo info =
+                MGLRenderTextureInfo info =
                     mglDrawSupportTextureInfo(depth);
                 passWidth = info.width;
                 passHeight = info.height;
             }
         }
         if (passWidth == 0 || passHeight == 0) {
-            id stencil = (__bridge id)mglRenderCppGetRenderPassAttachmentTextureOwner(
+            id stencil = (__bridge id)mglRenderGetRenderPassAttachmentTextureOwner(
                 _renderPassManager.state->renderPassStateOwner,
-                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0);
+                MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0);
             if (stencil) {
-                MGLRenderCppTextureInfo info =
+                MGLRenderTextureInfo info =
                     mglDrawSupportTextureInfo(stencil);
                 passWidth = info.width;
                 passHeight = info.height;
@@ -2301,7 +2301,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     }
 
 
-    return mglRenderCppRasterizationIsEmpty(
+    return mglRenderRasterizationIsEmpty(
                vx, vy, vw, vh,
                (uint32_t)passWidth, (uint32_t)passHeight,
                MGL_STATE(ctx)->caps.scissor_test ? 1 : 0,
@@ -2313,13 +2313,13 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
 
 - (void)applyPolygonOffsetForDrawMode:(GLenum)mode
 {
-    if (mglRenderCppRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 1) {
+    if (mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 1) {
         return;
     }
 
 
-    MGLRenderCppPolygonOffsetDecision decision = {0};
-    mglRenderCppPolygonOffsetDecision(
+    MGLRenderPolygonOffsetDecision decision = {0};
+    mglRenderPolygonOffsetDecision(
         (uint32_t)mode,
         ctx ? 1 : 0,
         mglDrawModeProducesPolygons(mode) ? 1 : 0,
@@ -2342,12 +2342,12 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         float _bias = MGL_STATE(ctx)->var.polygon_offset_units;
         float _slope = MGL_STATE(ctx)->var.polygon_offset_factor;
         float _clamp = 0.0f;
-        mglRenderCppBindingSetDepthBiasIfNeededForOwner(
+        mglRenderBindingSetDepthBiasIfNeededForOwner(
             _bindingStateOwner,
             _renderPassManager.state->currentRenderEncoderOwner,
             _bias, _clamp, _slope);
     } else {
-        mglRenderCppBindingSetDepthBiasIfNeededForOwner(
+        mglRenderBindingSetDepthBiasIfNeededForOwner(
             _bindingStateOwner,
             _renderPassManager.state->currentRenderEncoderOwner,
             0.0f, 0.0f, 0.0f);
@@ -2383,7 +2383,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
 
 
     uint32_t prim_vertex_count =
-        mglRenderCppPrimitiveVertexCountForMode((uint32_t)mode);
+        mglRenderPrimitiveVertexCountForMode((uint32_t)mode);
 
     id captureBuffer = (__bridge id)
         mglRendererBackendGetCullDistanceCaptureBuffer(_backend);
@@ -2809,7 +2809,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         drawCtx->state.dirty_bits = DIRTY_ALL;
 
         BOOL stateReady = [self processGLState:true];
-        if (!stateReady || mglRenderCppRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 1) {
+        if (!stateReady || mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 1) {
             _tessellation.nativeTESActive = NO;
             _tessellation.nativeTESProgram = NULL;
             (void)mglRendererBackendSetTessVertexCaptureBuffer(_backend, NULL);

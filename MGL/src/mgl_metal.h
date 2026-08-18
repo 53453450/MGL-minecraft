@@ -11,9 +11,9 @@
 // Shared metal-cpp includes and Objective-C device bridge.
 //
 // The private implementation macros may be defined in exactly one translation
-// unit. mgl_render_cpp.cpp owns them; all other C++ files include declarations.
+// unit. mgl_render.cpp owns them; all other C++ files include declarations.
 //
-// C callers use the opaque interfaces in mgl_render_cpp.h and mgl_air_loader.h.
+// C callers use the opaque interfaces in mgl_render.h and mgl_air_loader.h.
 //------------------------------------------------------------------------------------------------
 #pragma once
 

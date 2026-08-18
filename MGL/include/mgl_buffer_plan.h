@@ -57,8 +57,8 @@
 extern "C" {
 #endif
 
-/* Forward decl: GL type -> element byte size mapping lives in mgl_render_cpp.cpp. */
-uint32_t mglRenderCppGLTypeElementByteSize(uint64_t gl_type);
+/* Forward decl: GL type -> element byte size mapping lives in mgl_render.cpp. */
+uint32_t mglRenderGLTypeElementByteSize(uint64_t gl_type);
 
 /* ------------------------------------------------------------------ */
 /* Plan entry flags                                                    */
@@ -195,7 +195,7 @@ static inline GLuint mglPlainStructLocStep(const MGLShaderResource *res)
  * stride for plain struct uniform members lacking ArrayStride decorations. */
 static inline GLuint mglGLTypeElementByteSize(GLuint gl_type)
 {
-    return (GLuint)mglRenderCppGLTypeElementByteSize((uint64_t)gl_type);
+    return (GLuint)mglRenderGLTypeElementByteSize((uint64_t)gl_type);
 }
 
 #ifdef __cplusplus

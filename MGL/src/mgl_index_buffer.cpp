@@ -13,9 +13,9 @@
 // values. All MTL::Buffer creation, contents access, cache ownership, and
 // release operations live in this translation unit.
 
-#include "mgl_metal_cpp.h"
+#include "mgl_metal.h"
 #include "mgl_index_buffer.h"
-#include "mgl_render_cpp.h"
+#include "mgl_render.h"
 #include "mgl_types_buffer.h"
 #include "mgl_safety.h"
 
@@ -53,7 +53,7 @@ void *newBuffer(void *device, size_t bytes, void **contents_out) {
     if (contents_out) *contents_out = nullptr;
     if (!device || bytes == 0u) return nullptr;
     void *buffer = nullptr;
-    if (mglRenderCppCreateBuffer(
+    if (mglRenderCreateBuffer(
             static_cast<uint64_t>(bytes),
             static_cast<uint64_t>(MTL::ResourceStorageModeShared),
             "MGL.index_emulation", &buffer) != 0 || !buffer) {
@@ -62,7 +62,7 @@ void *newBuffer(void *device, size_t bytes, void **contents_out) {
     if (contents_out) {
         void *contents = nullptr;
         uint64_t length = 0;
-        if (mglRenderCppGetBufferContents(buffer, &contents, &length) != 0 ||
+        if (mglRenderGetBufferContents(buffer, &contents, &length) != 0 ||
             !contents || length < bytes) {
             releaseObject(buffer);
             return nullptr;
@@ -164,7 +164,7 @@ MGLIndexMetalHandle mglNewTriangleFanArrayIndexBuffer(
     }
     const size_t count = (vertex_count - 2u) * 3u;
     return cachedPrefix(device, g_fan, vertex_count, count,
-                        mglRenderCppExpandTriangleFanArrayIndices,
+                        mglRenderExpandTriangleFanArrayIndices,
                         static_cast<uint32_t>(vertex_count), out_count);
 }
 
@@ -176,7 +176,7 @@ MGLIndexMetalHandle mglNewTriangleStripArrayIndexBuffer(
     }
     const size_t count = (vertex_count - 2u) * 3u;
     return cachedPrefix(device, g_strip, vertex_count, count,
-                        mglRenderCppExpandTriangleStripArrayIndices,
+                        mglRenderExpandTriangleStripArrayIndices,
                         static_cast<uint32_t>(vertex_count), out_count);
 }
 
@@ -189,7 +189,7 @@ MGLIndexMetalHandle mglNewQuadArrayIndexBuffer(
     const uint32_t quads = static_cast<uint32_t>(vertex_count / 4u);
     const size_t count = static_cast<size_t>(quads) * 6u;
     return cachedPrefix(device, g_quad, vertex_count, count,
-                        mglRenderCppExpandQuadArrayIndices, quads, out_count);
+                        mglRenderExpandQuadArrayIndices, quads, out_count);
 }
 
 MGLIndexMetalHandle mglNewQuadArrayLineIndexBuffer(
@@ -201,7 +201,7 @@ MGLIndexMetalHandle mglNewQuadArrayLineIndexBuffer(
     const uint32_t quads = static_cast<uint32_t>(vertex_count / 4u);
     const size_t count = static_cast<size_t>(quads) * 8u;
     return cachedPrefix(device, g_quad_line, vertex_count, count,
-                        mglRenderCppExpandQuadArrayLineIndices, quads, out_count);
+                        mglRenderExpandQuadArrayLineIndices, quads, out_count);
 }
 
 MGLIndexMetalHandle mglNewLineLoopArrayIndexBuffer(
@@ -224,7 +224,7 @@ MGLIndexMetalHandle mglNewLineLoopArrayIndexBuffer(
     }
     uint32_t *expanded = nullptr;
     uint64_t count = 0;
-    if (mglRenderCppExpandLineLoopArrayIndices(
+    if (mglRenderExpandLineLoopArrayIndices(
             static_cast<uint32_t>(first), static_cast<uint32_t>(vertex_count),
             &expanded, &count) != 0 || count == 0u) {
         std::free(expanded);
@@ -254,21 +254,21 @@ MGLIndexMetalHandle mglNewTriangleFanElementIndexBuffer(
     MGLIndexMetalHandle device, const uint8_t *source, GLenum type,
     size_t count, size_t *out_count) {
     return expandElement(device, source, type, count, out_count,
-                          mglRenderCppExpandTriangleFanIndices);
+                          mglRenderExpandTriangleFanIndices);
 }
 
 MGLIndexMetalHandle mglNewTriangleStripElementIndexBuffer(
     MGLIndexMetalHandle device, const uint8_t *source, GLenum type,
     size_t count, size_t *out_count) {
     return expandElement(device, source, type, count, out_count,
-                          mglRenderCppExpandTriangleStripIndices);
+                          mglRenderExpandTriangleStripIndices);
 }
 
 MGLIndexMetalHandle mglNewLineLoopElementIndexBuffer(
     MGLIndexMetalHandle device, const uint8_t *source, GLenum type,
     size_t count, size_t *out_count) {
     return expandElement(device, source, type, count, out_count,
-                          mglRenderCppExpandLineLoopIndices);
+                          mglRenderExpandLineLoopIndices);
 }
 
 MGLIndexMetalHandle mglNewQuadElementIndexBuffer(
@@ -280,7 +280,7 @@ MGLIndexMetalHandle mglNewQuadElementIndexBuffer(
     if (!device || !source || width == 0u || quads == 0u || quads > UINT32_MAX) return nullptr;
     uint32_t *expanded = nullptr;
     uint64_t count = 0;
-    if (mglRenderCppExpandQuadElementIndices(
+    if (mglRenderExpandQuadElementIndices(
             source, width, static_cast<uint32_t>(quads), &expanded, &count) != 0) {
         std::free(expanded);
         return nullptr;
@@ -300,7 +300,7 @@ MGLIndexMetalHandle mglNewQuadElementLineIndexBuffer(
     if (!device || !source || width == 0u || quads == 0u || quads > UINT32_MAX) return nullptr;
     uint32_t *expanded = nullptr;
     uint64_t count = 0;
-    if (mglRenderCppExpandQuadElementLineIndices(
+    if (mglRenderExpandQuadElementLineIndices(
             source, width, static_cast<uint32_t>(quads), &expanded, &count) != 0) {
         std::free(expanded);
         return nullptr;
@@ -316,7 +316,7 @@ MGLIndexMetalHandle mglNewUInt16IndexBufferFromUInt8(
     if (!device || !source || count == 0u || count > UINT32_MAX) return nullptr;
     uint16_t *expanded = nullptr;
     uint64_t expanded_count = 0;
-    if (mglRenderCppExpandUInt8ToUInt16(
+    if (mglRenderExpandUInt8ToUInt16(
             source, static_cast<uint32_t>(count), &expanded, &expanded_count) != 0) {
         std::free(expanded);
         return nullptr;
@@ -343,7 +343,7 @@ const uint8_t *mglReadableBufferBytes(Buffer *gl_buffer,
     }
     void *contents = nullptr;
     uint64_t length = 0;
-    if (metal_buffer && mglRenderCppGetBufferContents(
+    if (metal_buffer && mglRenderGetBufferContents(
             metal_buffer, &contents, &length) == 0 && contents && length) {
         if (out_count) *out_count = static_cast<size_t>(length);
         return static_cast<const uint8_t *>(contents);

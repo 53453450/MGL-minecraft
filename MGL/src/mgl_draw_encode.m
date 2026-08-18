@@ -21,7 +21,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include "mgl_env_flag.h"
-#include "mgl_render_cpp.h"
+#include "mgl_render.h"
 
 static void mglDrawEncodePrimitives(void *renderEncoderOwner,
                                     uint32_t primitiveType,
@@ -30,8 +30,8 @@ static void mglDrawEncodePrimitives(void *renderEncoderOwner,
                                     size_t instanceCount,
                                     size_t baseInstance)
 {
-    const MGLRenderCppDrawPlan plan = {
-            .kind = MGL_RENDER_CPP_DRAW_ARRAY,
+    const MGLRenderDrawPlan plan = {
+            .kind = MGL_RENDER_DRAW_ARRAY,
             .primitive_type = (uint32_t)primitiveType,
             .vertex_start = vertexStart,
             .vertex_count = vertexCount,
@@ -39,7 +39,7 @@ static void mglDrawEncodePrimitives(void *renderEncoderOwner,
             .base_instance = baseInstance,
         };
     if (!renderEncoderOwner) return;
-    (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
+    (void)mglRenderEncodeDrawForRenderEncoderOwner(
         renderEncoderOwner, &plan, NULL, 0);
 }
 
@@ -53,8 +53,8 @@ static void mglDrawEncodeIndexed(void *renderEncoderOwner,
                                  int64_t baseVertex,
                                  size_t baseInstance)
 {
-    const MGLRenderCppDrawPlan plan = {
-            .kind = MGL_RENDER_CPP_DRAW_INDEXED,
+    const MGLRenderDrawPlan plan = {
+            .kind = MGL_RENDER_DRAW_INDEXED,
             .primitive_type = (uint32_t)primitiveType,
             .index_count = indexCount,
             .index_type = (uint32_t)indexType,
@@ -65,7 +65,7 @@ static void mglDrawEncodeIndexed(void *renderEncoderOwner,
             .base_instance = baseInstance,
         };
     if (!renderEncoderOwner) return;
-    (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
+    (void)mglRenderEncodeDrawForRenderEncoderOwner(
         renderEncoderOwner, &plan, NULL, 0);
 }
 

@@ -11,12 +11,12 @@
 // AIR metallib -> MTL::Library -> PSO implementation using metal-cpp.
 //
 // This TU does not define the metal-cpp implementation macros. They belong to
-// mgl_render_cpp.cpp; this file only consumes the shared declarations.
+// mgl_render.cpp; this file only consumes the shared declarations.
 //
 // This loader creates render and compute PSOs, maintains the render-pipeline
 // cache, and handles optional binary-archive lookups.
 //------------------------------------------------------------------------------------------------
-#include "mgl_metal_cpp.h"
+#include "mgl_metal.h"
 #include "mgl_air_loader.h"
 #include "mgl_env_flag.h"
 
@@ -36,7 +36,7 @@ PSOCache& psoCache() {
 }
 
 std::string pipelineKey(const void* vs, const void* fs,
-                        const MGLRenderCppPipelineDescriptorState* d) {
+                        const MGLRenderPipelineDescriptorState* d) {
     std::string key;
     key.reserve(sizeof(vs) + sizeof(fs) + sizeof(*d));
     key.append(reinterpret_cast<const char*>(&vs), sizeof(vs));
@@ -65,7 +65,7 @@ bool isPackedDepthStencil(uint32_t format) {
 
 // Normalizes depth and stencil formats when one attachment uses a packed
 // format. Metal requires both attachments to reference the shared format.
-void normalizeDepthStencilFormats(MGLRenderCppPipelineDescriptorState* desc) {
+void normalizeDepthStencilFormats(MGLRenderPipelineDescriptorState* desc) {
     uint32_t depth = desc->depth_format;
     uint32_t stencil = desc->stencil_format;
     if (depth == static_cast<uint32_t>(MTL::PixelFormatInvalid) ||
@@ -87,7 +87,7 @@ void normalizeDepthStencilFormats(MGLRenderCppPipelineDescriptorState* desc) {
 // attachments receive their write-mask and blend state; indirect command
 // buffers are enabled only when explicitly requested by the caller.
 MTL::RenderPipelineDescriptor* buildRenderPipelineDescriptor(
-    const MGLRenderCppPipelineDescriptorState* desc) {
+    const MGLRenderPipelineDescriptorState* desc) {
     MTL::RenderPipelineDescriptor* rpd =
         MTL::RenderPipelineDescriptor::alloc()->init();
     if (!rpd) {
@@ -188,7 +188,7 @@ MTL::RenderPipelineDescriptor* buildRenderPipelineDescriptor(
 // newly compiled state only on a miss, keeping archive updates incremental.
 int createRenderPipelineInternal(
     MTL::Device* dev, MTL::Function* vsFn, MTL::Function* fsFn,
-    const MGLRenderCppPipelineDescriptorState* desc, MTL::BinaryArchive* archive,
+    const MGLRenderPipelineDescriptorState* desc, MTL::BinaryArchive* archive,
     void** pso_out, char* err, size_t errcap) {
     if (pso_out) *pso_out = nullptr;
     if (!dev || !vsFn || !desc || !pso_out) {
@@ -196,7 +196,7 @@ int createRenderPipelineInternal(
         return -1;
     }
 
-    MGLRenderCppPipelineDescriptorState state = *desc;
+    MGLRenderPipelineDescriptorState state = *desc;
     normalizeDepthStencilFormats(&state);
 
     std::string key = pipelineKey(vsFn, fsFn, &state);
@@ -334,7 +334,7 @@ int mglAirCreateRenderPipeline(const void* device, void* vs_function, void* fs_f
 
 int mglAirCreateRenderPipelineWithArchive(
     const void* device, void* vs_function, void* fs_function,
-    const MGLRenderCppPipelineDescriptorState* desc, void* binary_archive,
+    const MGLRenderPipelineDescriptorState* desc, void* binary_archive,
     void** pso_out, char* err, size_t errcap) {
     if (!device || !vs_function || !desc || !pso_out) {
         if (err && errcap) snprintf(err, errcap, "bad args");

@@ -11,29 +11,29 @@
 
 
 #import "mgl_texture_compat.h"
-#include "mgl_render_cpp.h"
+#include "mgl_render.h"
 
 MGLTextureDataKind mglTextureDataKindForPixelFormat(uint32_t pixelFormat)
 {
-    return (MGLTextureDataKind)mglRenderCppTextureDataKindForPixelFormat(
+    return (MGLTextureDataKind)mglRenderTextureDataKindForPixelFormat(
         (uint32_t)pixelFormat);
 }
 
 const char *mglTextureDataKindName(MGLTextureDataKind kind)
 {
-    return mglRenderCppTextureDataKindName((uint32_t)kind);
+    return mglRenderTextureDataKindName((uint32_t)kind);
 }
 
 size_t mglMetalTextureLevelDimension(size_t base, size_t level)
 {
 
-    return (size_t)mglRenderCppMetalTextureLevelDimension(
+    return (size_t)mglRenderMetalTextureLevelDimension(
         (uint64_t)base, (uint64_t)level);
 }
 
 void *mglSampledTextureViewForBaseLevel(Texture *ptr, void *texture)
 {
-    (void)mglRenderCppSampledTextureViewForBaseLevel(ptr, texture, &texture);
+    (void)mglRenderSampledTextureViewForBaseLevel(ptr, texture, &texture);
     return texture;
 }
 
@@ -42,14 +42,14 @@ size_t mglStoredColorComponentsForTexture(Texture *tex)
     if (!tex) {
         return 4;
     }
-    return (size_t)mglRenderCppStoredColorComponents(
+    return (size_t)mglRenderStoredColorComponents(
         (uint32_t)tex->internalformat);
 }
 
 uint32_t mglMTLSwizzleForGLSwizzle(Texture *tex, GLenum swizzle)
 {
     size_t components = mglStoredColorComponentsForTexture(tex);
-    return mglRenderCppMTLSwizzleForGLSwizzle(
+    return mglRenderMTLSwizzleForGLSwizzle(
         (uint32_t)swizzle, (uint32_t)components);
 }
 
@@ -58,7 +58,7 @@ bool mglTextureUploadNeedsSingleChannelSwizzle(Texture *tex)
     if (!tex) {
         return false;
     }
-    return mglRenderCppTextureUploadNeedsSingleChannelSwizzle(
+    return mglRenderTextureUploadNeedsSingleChannelSwizzle(
         (uint32_t)tex->internalformat, tex->params.swizzled ? 1 : 0) != 0;
 }
 
@@ -66,7 +66,7 @@ uint8_t mglResolveR8SwizzledComponent(Texture *tex, GLenum swizzle, uint8_t red)
 {
     (void)tex;
 
-    return mglRenderCppResolveR8SwizzledComponent((uint32_t)swizzle, red);
+    return mglRenderResolveR8SwizzledComponent((uint32_t)swizzle, red);
 }
 
 uint8_t *mglCreateSingleChannelSwizzledUpload(Texture *tex,
@@ -84,7 +84,7 @@ uint8_t *mglCreateSingleChannelSwizzledUpload(Texture *tex,
 
     size_t outBPR = 0;
     size_t outBPI = 0;
-    uint8_t *result = mglRenderCppCreateSingleChannelSwizzledUpload(
+    uint8_t *result = mglRenderCreateSingleChannelSwizzledUpload(
         (uint32_t)tex->internalformat,
         (uint32_t)tex->params.swizzle_r,
         (uint32_t)tex->params.swizzle_g,
@@ -102,14 +102,14 @@ uint8_t *mglCreateSingleChannelSwizzledUpload(Texture *tex,
 bool mglTextureInternalFormatNeedsRGBA8Expansion(GLenum internalformat,
                                                  uint32_t pixelFormat)
 {
-    return mglRenderCppTextureInternalFormatNeedsRGBA8Expansion(
+    return mglRenderTextureInternalFormatNeedsRGBA8Expansion(
         (uint32_t)internalformat, pixelFormat) != 0;
 }
 
 bool mglTextureNeedsChannelExpansion(GLenum internalformat,
                                      uint32_t pixelFormat)
 {
-    return mglRenderCppTextureNeedsChannelExpansion(
+    return mglRenderTextureNeedsChannelExpansion(
         (uint32_t)internalformat, pixelFormat) != 0;
 }
 
@@ -132,7 +132,7 @@ uint8_t *mglCreateChannelExpandedUpload(Texture *tex,
 
     size_t outBPR = 0;
     size_t outBPI = 0;
-    uint8_t *result = mglRenderCppCreateChannelExpandedUpload(
+    uint8_t *result = mglRenderCreateChannelExpandedUpload(
         (uint32_t)tex->internalformat, (uint32_t)pixelFormat,
         srcData, (size_t)width, (size_t)height, (size_t)srcBytesPerRow,
         &outBPR, &outBPI);
@@ -158,7 +158,7 @@ uint8_t *mglCreateRGBA8ExpandedUpload(Texture *tex,
     }
 
 
-    return mglRenderCppCreateRGBA8ExpandedUpload(
+    return mglRenderCreateRGBA8ExpandedUpload(
         srcData, width, height, srcBytesPerRow,
         (uint32_t)tex->internalformat, outBytesPerRow, outBytesPerImage);
 }
@@ -168,21 +168,21 @@ uint8_t *mglCreateRGBA8ExpandedUpload(Texture *tex,
 
 bool mglMetalLayerPixelFormatIsSupported(uint32_t pixelFormat)
 {
-    return mglRenderCppMetalLayerPixelFormatIsSupported(pixelFormat) != 0;
+    return mglRenderMetalLayerPixelFormatIsSupported(pixelFormat) != 0;
 }
 
 uint32_t mglSRGBPixelFormat(uint32_t fmt)
 {
-    return mglRenderCppSRGBPixelFormat(fmt);
+    return mglRenderSRGBPixelFormat(fmt);
 }
 
 uint32_t mglLinearPixelFormat(uint32_t fmt)
 {
-    return mglRenderCppLinearPixelFormat(fmt);
+    return mglRenderLinearPixelFormat(fmt);
 }
 
 uint32_t mglEffectiveMTLPixelFormatForTexture(uint32_t fmt, Texture *tex)
 {
     uint32_t decode = tex ? (uint32_t)tex->params.srgb_decode_ext : 0u;
-    return mglRenderCppEffectiveMTLPixelFormat(fmt, decode);
+    return mglRenderEffectiveMTLPixelFormat(fmt, decode);
 }

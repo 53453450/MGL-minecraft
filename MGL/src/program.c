@@ -52,7 +52,7 @@
 #include "mgl_sampler_compat.h"
 #include "mgl_buffer_plan.h"
 #include "mgl_shader_resource.h"
-#include "mgl_render_cpp.h"
+#include "mgl_render.h"
 
 
 static _Atomic uint64_t mglNextMSLTextureCacheInstanceID = 1u;
@@ -324,7 +324,7 @@ void mglFreeProgram(GLMContext ctx, Program *ptr)
      * so no owned allocations beyond the array itself). */
     mglFreeActiveUniformCache(ptr);
 
-    mglRenderCppInvalidateProgramPipelines(
+    mglRenderInvalidateProgramPipelines(
         ptr->pipeline_cache_instance_id);
 
     mglSafeReleaseMetalObj((void **)&ptr->mtl_data);
@@ -1198,7 +1198,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
 
     /* C++ compute PSOs retain functions from the previous link generation.
      * Drop them before stage objects and metallib libraries are replaced. */
-    mglRenderCppInvalidateProgramPipelines(
+    mglRenderInvalidateProgramPipelines(
         pptr->pipeline_cache_instance_id);
 
     pptr->uses_vertex_id = GL_FALSE;

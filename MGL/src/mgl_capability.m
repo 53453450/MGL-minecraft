@@ -16,7 +16,7 @@
  */
 
 #include "mgl_capability.h"
-#include "mgl_render_cpp.h"
+#include "mgl_render.h"
 #import <string.h>
 
 void MGLCapabilityInit(MGLCapability *cap, void *deviceRef)
@@ -24,8 +24,8 @@ void MGLCapabilityInit(MGLCapability *cap, void *deviceRef)
     if (!cap) return;
     memset(cap, 0, sizeof(*cap));
     cap->device = deviceRef;
-    MGLRenderCppCapabilityState state = {0};
-    if (mglRenderCppQueryCapability(deviceRef, &state) != 0) return;
+    MGLRenderCapabilityState state = {0};
+    if (mglRenderQueryCapability(deviceRef, &state) != 0) return;
     cap->family = (MGLGPUFamily)state.family;
     cap->isVirtualized = state.is_virtualized != 0;
     cap->supports8xMSAA = state.supports8x_msaa != 0;

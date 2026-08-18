@@ -13,7 +13,7 @@
 
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+Blit_Private.h"
-#include "mgl_render_cpp.h"
+#include "mgl_render.h"
 
 void mglRendererCompatBindTexture(GLMContext glm_ctx,
                                   Texture *texture)
@@ -26,7 +26,7 @@ void mglRendererCompatBindTexture(GLMContext glm_ctx,
 static id mglBindingCreateDefaultSampler(void)
 {
     void *sampler = NULL;
-    if (mglRenderCppCreateDefaultSampler(&sampler) == 0 && sampler) {
+    if (mglRenderCreateDefaultSampler(&sampler) == 0 && sampler) {
         return (__bridge_transfer id)sampler;
     }
     return nil;
@@ -44,9 +44,9 @@ static id mglBindingCreateDefaultSampler(void)
 - (void) bindMTLBufferLocked:(Buffer *)ptr
 {
     char bindError[256] = {0};
-    int bindResult = mglRenderCppBindBufferStorage(
+    int bindResult = mglRenderBindBufferStorage(
         ptr, bindError, sizeof(bindError));
-    if (bindResult != MGL_RENDER_CPP_BUFFER_BOUND) {
+    if (bindResult != MGL_RENDER_BUFFER_BOUND) {
         NSLog(@"MGL ERROR: Metal-cpp buffer bind failed buffer=%u: %s",
               ptr ? (unsigned)ptr->name : 0u,
               bindError[0] ? bindError : "?");
@@ -75,9 +75,9 @@ static id mglBindingCreateDefaultSampler(void)
     // re-uploading potentially stale CPU data.
     if (tex->mtl_data && tex->is_render_target) {
         id existingTexture = (__bridge id)(tex->mtl_data);
-        MGLRenderCppTextureInfo existingInfo = {0};
+        MGLRenderTextureInfo existingInfo = {0};
         BOOL hasExistingInfo = existingTexture &&
-            mglRenderCppGetTextureInfo((__bridge void *)existingTexture,
+            mglRenderGetTextureInfo((__bridge void *)existingTexture,
                                        &existingInfo) == 0;
         if (existingTexture && !hasExistingInfo) {
             NSLog(@"MGL ERROR: Failed to query texture %u metadata before render-target transition",
@@ -111,9 +111,9 @@ static id mglBindingCreateDefaultSampler(void)
             // DIRTY_TEXTURE_DATA so that createMTLTextureFromGLTexture
             // skips CPU data upload — we'll blit GPU data instead.
             id newTexture = [self createMTLTextureFromGLTexture:tex];
-            MGLRenderCppTextureInfo newInfo = {0};
+            MGLRenderTextureInfo newInfo = {0};
             BOOL dimensionsMatch = newTexture &&
-                mglRenderCppGetTextureInfo((__bridge void *)newTexture,
+                mglRenderGetTextureInfo((__bridge void *)newTexture,
                                            &newInfo) == 0 &&
                 newInfo.width == existingInfo.width &&
                 newInfo.height == existingInfo.height &&
@@ -124,7 +124,7 @@ static id mglBindingCreateDefaultSampler(void)
                 // is_render_target transition.
                 [self endRenderEncodingLocked];
                 if ([self ensureWritableCommandBufferLocked:"is_render_target_blit"]) {
-                    if (mglRenderCppCopyMatchingTextureSubresourcesForCommandBufferOwner(
+                    if (mglRenderCopyMatchingTextureSubresourcesForCommandBufferOwner(
                             _renderPassManager.state->currentCommandBufferOwner,
                             (__bridge void *)oldTexture,
                             (__bridge void *)newTexture) != 0) {
@@ -256,9 +256,9 @@ static id mglBindingCreateDefaultSampler(void)
 
     if (mglMipDiagEnabled()) {
         id mtlTex = (__bridge id)(tex->mtl_data);
-        MGLRenderCppTextureInfo textureInfo = {0};
+        MGLRenderTextureInfo textureInfo = {0};
         BOOL hasTextureInfo = mtlTex &&
-            mglRenderCppGetTextureInfo((__bridge void *)mtlTex, &textureInfo) == 0;
+            mglRenderGetTextureInfo((__bridge void *)mtlTex, &textureInfo) == 0;
         uint64_t signature = 1469598103934665603ULL;
         signature = mglMipDiagMixState(signature, (uint64_t)(uintptr_t)tex->mtl_data);
         signature = mglMipDiagMixState(

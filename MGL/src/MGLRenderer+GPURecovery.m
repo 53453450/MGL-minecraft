@@ -41,8 +41,8 @@
         static NSUInteger maxErrorsPerWindow = 3;
 
         // Get current error tracking from command buffer if available
-        MGLRenderCppCommandBufferState currentState = {0};
-        BOOL hasCurrentCommandBuffer = mglRenderCppCommandBufferOwnerHasState(
+        MGLRenderCommandBufferState currentState = {0};
+        BOOL hasCurrentCommandBuffer = mglRenderCommandBufferOwnerHasState(
             _renderPassManager.state->currentCommandBufferOwner,
             &currentState);
         if (hasCurrentCommandBuffer &&
@@ -78,7 +78,7 @@
         // Check for virtualization environment changes
         if (@available(macOS 11.0, *)) {
             uint64_t registryID = 0;
-            (void)mglRenderCppGetDeviceIdentity(
+            (void)mglRenderGetDeviceIdentity(
                 (__bridge const void *)_device, &registryID, NULL, 0);
             // Device registry ID changes indicate virtualization issues
             if (registryID == 0) {
@@ -113,8 +113,8 @@
 {
     // PROPER FIX: Safe command buffer cleanup
     @try {
-        MGLRenderCppCommandBufferState currentState = {0};
-        if (mglRenderCppCommandBufferOwnerHasState(
+        MGLRenderCommandBufferState currentState = {0};
+        if (mglRenderCommandBufferOwnerHasState(
                 _renderPassManager.state->currentCommandBufferOwner,
                 &currentState)) {
             if (currentState.status == MGL_COMMAND_BUFFER_STATUS_COMMITTED) {
@@ -127,7 +127,7 @@
             [_renderPassManager discardCurrentCommandBuffer];
         }
 
-        if (mglRenderCppRenderEncoderOwnerHasCurrent(
+        if (mglRenderEncoderOwnerHasCurrent(
                 _renderPassManager.state->currentRenderEncoderOwner) == 1) {
             [_renderPassManager endCurrentRenderEncoder];
             [_renderPassManager clearCurrentRenderEncoder];
@@ -192,18 +192,18 @@
 
     if (traceCommit) {
         char commandBufferLabel[128];
-        (void)mglRenderCppGetCommandBufferLabel(
+        (void)mglRenderGetCommandBufferLabel(
             (__bridge const void *)commandBuffer,
             commandBufferLabel, sizeof(commandBufferLabel));
         mglTraceLogNSString(@"MGL TRACE commit.begin call=%llu cb=%p status=%s label=%s",
               (unsigned long long)commitCall,
               commandBuffer,
               mglCommandBufferStatusName(
-                  mglRenderCppCommandBufferStatus(
+                  mglRenderCommandBufferStatus(
                       (__bridge void *)commandBuffer)),
               commandBufferLabel);
     }
-    MGLRenderCppCommandBufferTransaction transaction = {0};
+    MGLRenderCommandBufferTransaction transaction = {0};
     @try {
         int transactionResult = [_renderPassManager
             commitCommandBufferTransaction:(__bridge void *)commandBuffer
@@ -211,7 +211,7 @@
             waitForCompletion:NO
             result:&transaction];
         if (transaction.result ==
-            MGL_RENDER_CPP_COMMAND_BUFFER_TRANSACTION_NESTED) {
+            MGL_RENDER_COMMAND_BUFFER_TRANSACTION_NESTED) {
             NSLog(@"MGL AGX WARNING: Commit already in progress, skipping nested commit");
             if (traceCommit) {
                 mglTraceLogNSString(@"MGL TRACE commit.skip.nested call=%llu",
@@ -220,7 +220,7 @@
             return;
         }
         if (transaction.result ==
-            MGL_RENDER_CPP_COMMAND_BUFFER_TRANSACTION_SKIPPED) {
+            MGL_RENDER_COMMAND_BUFFER_TRANSACTION_SKIPPED) {
             if (transaction.has_error) {
                 NSLog(@"MGL AGX WARNING: C++ transaction skipped failed command buffer: %s (domain=%s code=%lld, consecutive=%llu)",
                       transaction.before.error_description,
@@ -254,7 +254,7 @@
     } @catch (NSException *exception) {
         NSLog(@"MGL AGX ERROR: C++ command-buffer transaction exception: %@",
               exception);
-        if (mglRenderCppCommandRecoveryRecordTransactionFailure(
+        if (mglRenderCommandRecoveryRecordTransactionFailure(
                 _gpuRecovery.commandRecoveryOwner, NULL, &transaction) == 0 &&
             transaction.device_reset_requested) {
             atomic_store_explicit(&_deviceResetRequested, true,
@@ -278,8 +278,8 @@
 - (BOOL)shouldSkipGPUOperations
 {
     NSTimeInterval currentTime = [[NSDate date] timeIntervalSince1970];
-    MGLRenderCppCommandRecoverySkipDecision decision = {0};
-    if (mglRenderCppCommandRecoveryShouldSkip(
+    MGLRenderCommandRecoverySkipDecision decision = {0};
+    if (mglRenderCommandRecoveryShouldSkip(
             _gpuRecovery.commandRecoveryOwner, currentTime, &decision) != 0) {
         return NO;
     }
@@ -301,8 +301,8 @@
     NSLog(@"MGL AGX: Clearing problematic GPU state for recovery");
 
     // Clear current problematic resources
-    MGLRenderCppCommandBufferState currentState = {0};
-    if (mglRenderCppCommandBufferOwnerHasState(
+    MGLRenderCommandBufferState currentState = {0};
+    if (mglRenderCommandBufferOwnerHasState(
             _renderPassManager.state->currentCommandBufferOwner,
             &currentState)) {
         [_renderPassManager discardCurrentCommandBuffer];
@@ -314,8 +314,8 @@
 
 - (void)recordGPUError
 {
-    MGLRenderCppCommandRecoverySnapshot state = {0};
-    if (mglRenderCppCommandRecoveryRecordError(
+    MGLRenderCommandRecoverySnapshot state = {0};
+    if (mglRenderCommandRecoveryRecordError(
             _gpuRecovery.commandRecoveryOwner,
             [[NSDate date] timeIntervalSince1970], &state) == 0) {
         NSLog(@"MGL AGX: Recorded GPU error (%llu consecutive)",
@@ -325,8 +325,8 @@
 
 - (void)recordGPUSuccess
 {
-    MGLRenderCppCommandRecoverySuccess result = {0};
-    if (mglRenderCppCommandRecoveryRecordSuccess(
+    MGLRenderCommandRecoverySuccess result = {0};
+    if (mglRenderCommandRecoveryRecordSuccess(
             _gpuRecovery.commandRecoveryOwner,
             [[NSDate date] timeIntervalSince1970], &result) == 0 &&
         result.sustained_recovery) {

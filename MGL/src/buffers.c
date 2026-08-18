@@ -43,7 +43,7 @@
 #include "pixel_utils.h"
 #include "mgl_safety.h"
 #include "mgl_frame_activity.h"
-#include "mgl_render_cpp.h"
+#include "mgl_render.h"
 
 // Used to recover from a corrupted context pointer (e.g. small non-NULL values like 0x2f)
 extern void mgl_lazy_init(void);
@@ -404,9 +404,8 @@ void mglReleaseBufferStorage(Buffer *buf)
     buf->mtl_uint16_expanded_src_hash = 0ull;
     buf->mtl_uint16_expanded_byte_count = 0u;
 
-    /* release CoW snapshot pool */
-    mglSafeReleaseMetalObj(&buf->mtl_cow_pool);
-    mglRenderCppReleaseBufferCowPool(buf);
+    /* release the backend-owned CoW snapshot pool */
+    mglRenderReleaseBufferCowPool(buf);
 
     /* A no-copy MTLBuffer may remain alive in an in-flight command buffer.
      * Its deallocator owns the old VM range after this point. */

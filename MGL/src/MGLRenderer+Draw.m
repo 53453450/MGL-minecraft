@@ -15,11 +15,11 @@
 #import "MGLRenderer+Draw_Private.h"
 #import "mgl_frame_activity.h"
 #include "mgl_env_flag.h"
-#include "mgl_render_cpp.h"
+#include "mgl_render.h"
 
 static BOOL mglDrawHasActiveEncoder(void *owner)
 {
-    return mglRenderCppRenderEncoderOwnerHasCurrent(owner) != 0;
+    return mglRenderEncoderOwnerHasCurrent(owner) != 0;
 }
 
 static void *mglDrawEncoderTraceToken(void *owner)
@@ -34,15 +34,15 @@ static void mglDrawPrimitives(void *renderEncoderOwner,
                               NSUInteger instanceCount,
                               NSUInteger baseInstance)
 {
-    const MGLRenderCppDrawPlan plan = {
-            .kind = MGL_RENDER_CPP_DRAW_ARRAY,
+    const MGLRenderDrawPlan plan = {
+            .kind = MGL_RENDER_DRAW_ARRAY,
             .primitive_type = (uint32_t)primitiveType,
             .vertex_start = vertexStart,
             .vertex_count = vertexCount,
             .instance_count = instanceCount,
             .base_instance = baseInstance,
         };
-    (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
+    (void)mglRenderEncodeDrawForRenderEncoderOwner(
         renderEncoderOwner, &plan, NULL, 0);
 }
 
@@ -56,8 +56,8 @@ static void mglDrawIndexedPrimitives(void *renderEncoderOwner,
                                      NSInteger baseVertex,
                                      NSUInteger baseInstance)
 {
-    const MGLRenderCppDrawPlan plan = {
-            .kind = MGL_RENDER_CPP_DRAW_INDEXED,
+    const MGLRenderDrawPlan plan = {
+            .kind = MGL_RENDER_DRAW_INDEXED,
             .primitive_type = (uint32_t)primitiveType,
             .index_count = indexCount,
             .index_type = (uint32_t)indexType,
@@ -67,7 +67,7 @@ static void mglDrawIndexedPrimitives(void *renderEncoderOwner,
             .base_vertex = baseVertex,
             .base_instance = baseInstance,
         };
-    (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
+    (void)mglRenderEncodeDrawForRenderEncoderOwner(
         renderEncoderOwner, &plan, NULL, 0);
 }
 
@@ -76,13 +76,13 @@ static void mglDrawPrimitivesIndirect(void *renderEncoderOwner,
                                       id indirectBuffer,
                                       NSUInteger indirectBufferOffset)
 {
-    const MGLRenderCppDrawPlan plan = {
-            .kind = MGL_RENDER_CPP_DRAW_ARRAY_INDIRECT,
+    const MGLRenderDrawPlan plan = {
+            .kind = MGL_RENDER_DRAW_ARRAY_INDIRECT,
             .primitive_type = (uint32_t)primitiveType,
             .indirect_buffer = (__bridge void *)indirectBuffer,
             .indirect_buffer_offset = indirectBufferOffset,
         };
-    (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
+    (void)mglRenderEncodeDrawForRenderEncoderOwner(
         renderEncoderOwner, &plan, NULL, 0);
 }
 
@@ -95,8 +95,8 @@ static void mglDrawIndexedPrimitivesIndirect(
     id indirectBuffer,
     NSUInteger indirectBufferOffset)
 {
-    const MGLRenderCppDrawPlan plan = {
-            .kind = MGL_RENDER_CPP_DRAW_INDEXED_INDIRECT,
+    const MGLRenderDrawPlan plan = {
+            .kind = MGL_RENDER_DRAW_INDEXED_INDIRECT,
             .primitive_type = (uint32_t)primitiveType,
             .index_type = (uint32_t)indexType,
             .index_buffer = (__bridge void *)indexBuffer,
@@ -104,7 +104,7 @@ static void mglDrawIndexedPrimitivesIndirect(
             .indirect_buffer = (__bridge void *)indirectBuffer,
             .indirect_buffer_offset = indirectBufferOffset,
         };
-    (void)mglRenderCppEncodeDrawForRenderEncoderOwner(
+    (void)mglRenderEncodeDrawForRenderEncoderOwner(
         renderEncoderOwner, &plan, NULL, 0);
 }
 
@@ -502,11 +502,11 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
     }
     [self applyPolygonOffsetForDrawMode:mode];
     // Additional safety check after processGLState
-    if (mglRenderCppRenderEncoderOwnerHasCurrent(
+    if (mglRenderEncoderOwnerHasCurrent(
             _renderPassManager.state->currentRenderEncoderOwner) != 1) {
         // One recovery attempt to avoid persistent "No current render encoder" failure loops.
         [self newRenderEncoderLockedWithReason:MGL_ENC_REASON_DRAW];
-        if (mglRenderCppRenderEncoderOwnerHasCurrent(
+        if (mglRenderEncoderOwnerHasCurrent(
                 _renderPassManager.state->currentRenderEncoderOwner) != 1) {
             no_render_encoder_count++;
             if (no_render_encoder_count <= 8 || (no_render_encoder_count % 1000) == 0) {
@@ -536,31 +536,31 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
         uint32_t rpColor0Format = 0u;
         uint32_t rpDepthFormat = 0u;
         uint32_t rpStencilFormat = 0u;
-        MGLRenderCppRenderPassAttachmentState colorAttachment = {0};
-        MGLRenderCppRenderPassAttachmentState depthAttachment = {0};
-        MGLRenderCppRenderPassAttachmentState stencilAttachment = {0};
-        (void)mglRenderCppGetRenderPassAttachmentStateOwner(
+        MGLRenderPassAttachmentState colorAttachment = {0};
+        MGLRenderPassAttachmentState depthAttachment = {0};
+        MGLRenderPassAttachmentState stencilAttachment = {0};
+        (void)mglRenderGetRenderPassAttachmentStateOwner(
             _renderPassManager.state->renderPassStateOwner,
-            MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0, &colorAttachment);
-        (void)mglRenderCppGetRenderPassAttachmentStateOwner(
+            MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0, &colorAttachment);
+        (void)mglRenderGetRenderPassAttachmentStateOwner(
             _renderPassManager.state->renderPassStateOwner,
-            MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0, &depthAttachment);
-        (void)mglRenderCppGetRenderPassAttachmentStateOwner(
+            MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0, &depthAttachment);
+        (void)mglRenderGetRenderPassAttachmentStateOwner(
             _renderPassManager.state->renderPassStateOwner,
-            MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0, &stencilAttachment);
+            MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0, &stencilAttachment);
         id rpColor0 = (__bridge id)colorAttachment.texture;
         id rpDepth = (__bridge id)depthAttachment.texture;
         id rpStencil = (__bridge id)stencilAttachment.texture;
-        MGLRenderCppTextureInfo textureInfo = {0};
-        if (rpColor0 && mglRenderCppGetTextureInfo(
+        MGLRenderTextureInfo textureInfo = {0};
+        if (rpColor0 && mglRenderGetTextureInfo(
                 (__bridge void *)rpColor0, &textureInfo) == 0) {
             rpColor0Format = textureInfo.pixel_format;
         }
-        if (rpDepth && mglRenderCppGetTextureInfo(
+        if (rpDepth && mglRenderGetTextureInfo(
                 (__bridge void *)rpDepth, &textureInfo) == 0) {
             rpDepthFormat = textureInfo.pixel_format;
         }
-        if (rpStencil && mglRenderCppGetTextureInfo(
+        if (rpStencil && mglRenderGetTextureInfo(
                 (__bridge void *)rpStencil, &textureInfo) == 0) {
             rpStencilFormat = textureInfo.pixel_format;
         }
@@ -594,13 +594,13 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
         }
 
         @try {
-            if (mglRenderCppSetRenderPipelineStateForOwner(
+            if (mglRenderSetRenderPipelineStateForOwner(
                     _renderPassManager.state->currentRenderEncoderOwner,
                     _pipelineCache.state->pipelineState) != 0) {
                 NSLog(@"MGL ERROR: mtlDrawArrays - C++ pipeline recovery setter failed");
                 return;
             }
-            mglRenderCppBindingSetPipelineState(
+            mglRenderBindingSetPipelineState(
                 _bindingStateOwner,
                 _pipelineCache.state->pipelineState);
             MGL_PERF_INC(g_mglSetRenderPipelineStateCallsSinceSwap);
@@ -1191,14 +1191,14 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
         }
         return;
     }
-    MGLRenderCppBufferInfo indexBufferInfo = {0};
-    if (mglRenderCppGetBufferInfo((__bridge void *)indexBuffer,
+    MGLRenderBufferInfo indexBufferInfo = {0};
+    if (mglRenderGetBufferInfo((__bridge void *)indexBuffer,
                                   &indexBufferInfo) != 0) {
         return;
     }
     void *indexBufferContents = NULL;
     uint64_t indexBufferContentsLength = 0;
-    (void)mglRenderCppGetBufferContents(
+    (void)mglRenderGetBufferContents(
         (__bridge void *)indexBuffer, &indexBufferContents,
         &indexBufferContentsLength);
 
@@ -1620,8 +1620,8 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
                 return NO;
             }
 
-            MGLRenderCppBufferInfo attribBufferInfo = {0};
-            if (mglRenderCppGetBufferInfo(
+            MGLRenderBufferInfo attribBufferInfo = {0};
+            if (mglRenderGetBufferInfo(
                     (__bridge void *)attribMetalBuffer,
                     &attribBufferInfo) != 0) {
                 return NO;
@@ -1690,14 +1690,14 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
                          traceDraw:(bool)traceDraw
                       traceLogDraw:(BOOL)traceLogDraw
 {
-    MGLRenderCppBufferInfo indexBufferInfo = {0};
-    if (mglRenderCppGetBufferInfo((__bridge void *)indexBuffer,
+    MGLRenderBufferInfo indexBufferInfo = {0};
+    if (mglRenderGetBufferInfo((__bridge void *)indexBuffer,
                                   &indexBufferInfo) != 0) {
         return;
     }
     void *indexBufferContents = NULL;
     uint64_t indexBufferContentsLength = 0;
-    (void)mglRenderCppGetBufferContents(
+    (void)mglRenderGetBufferContents(
         (__bridge void *)indexBuffer, &indexBufferContents,
         &indexBufferContentsLength);
     if (traceDraw || indexOffset != 0u) {
@@ -1849,7 +1849,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
                         id vb = (__bridge id)(vbo->data.mtl_data);
                         void *vbContents = NULL;
                         uint64_t vbLength = 0;
-                        if (mglRenderCppGetBufferContents(
+                        if (mglRenderGetBufferContents(
                                 (__bridge void *)vb, &vbContents,
                                 &vbLength) == 0) {
                             vboBytes = (const uint8_t *)vbContents;

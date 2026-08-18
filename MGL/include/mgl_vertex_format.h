@@ -56,64 +56,64 @@ extern "C" {
 #endif
 
 /* Forward decls: the GL index element-size / read-index-value logic lives in
- * mgl_render_cpp.cpp (both gates); the inlines below delegate to it. */
-uint32_t mglRenderCppGLIndexElementSize(uint64_t gl_index_type);
-uint32_t mglRenderCppReadGLIndexValue(const uint8_t *bytes, uint32_t elem_width,
+ * mgl_render.cpp (both gates); the inlines below delegate to it. */
+uint32_t mglRenderGLIndexElementSize(uint64_t gl_index_type);
+uint32_t mglRenderReadGLIndexValue(const uint8_t *bytes, uint32_t elem_width,
                                       uint64_t element_index);
-uint32_t mglRenderCppVertexAttribComponentSize(uint64_t gl_type);
-uint64_t mglRenderCppVertexAttribElementBytes(uint64_t gl_type, uint32_t size);
-uint64_t mglRenderCppAlignVertexStrideForMetal(uint64_t stride);
-uint32_t mglRenderCppDoubleVertexAttribFloatFormat(uint32_t size);
-uint32_t mglRenderCppIntegerAttribConversionFormat(
+uint32_t mglRenderVertexAttribComponentSize(uint64_t gl_type);
+uint64_t mglRenderVertexAttribElementBytes(uint64_t gl_type, uint32_t size);
+uint64_t mglRenderAlignVertexStrideForMetal(uint64_t stride);
+uint32_t mglRenderDoubleVertexAttribFloatFormat(uint32_t size);
+uint32_t mglRenderIntegerAttribConversionFormat(
     uint64_t src_type, uint64_t shader_gl_type, uint32_t size);
-const char *mglRenderCppVertexFormatName(uint32_t format);
-uint64_t mglRenderCppVertexDescriptorSignature(const void *descriptor);
-uint64_t mglRenderCppPipelineDescriptorSignature(const void *descriptor);
+const char *mglRenderVertexFormatName(uint32_t format);
+uint64_t mglRenderVertexDescriptorSignature(const void *descriptor);
+uint64_t mglRenderPipelineDescriptorSignature(const void *descriptor);
 
 /* === Vertex format mapping (static inline, hot-path) === */
 
 /* GL vertex attribute component size in bytes (1/2/4/8).  Returns 0 for
- * unknown types.  Pure logic lives in mgl_render_cpp.cpp. */
+ * unknown types.  Pure logic lives in mgl_render.cpp. */
 static inline size_t mglVertexAttribComponentSize(GLenum type)
 {
-    return (size_t)mglRenderCppVertexAttribComponentSize((uint64_t)type);
+    return (size_t)mglRenderVertexAttribComponentSize((uint64_t)type);
 }
 
 /* GL index element size in bytes (1/2/4).  Returns 0 for unknown types. */
 static inline NSUInteger mglGLIndexElementSize(GLenum type)
 {
-    return (NSUInteger)mglRenderCppGLIndexElementSize((uint64_t)type);
+    return (NSUInteger)mglRenderGLIndexElementSize((uint64_t)type);
 }
 
 /* Reads a single GL index value from a byte buffer.  Returns 0 for NULL
- * buffer or unknown type.  Pure logic lives in mgl_render_cpp.cpp. */
+ * buffer or unknown type.  Pure logic lives in mgl_render.cpp. */
 static inline uint32_t mglReadGLIndexValue(const uint8_t *indexBytes,
                                            GLenum type,
                                            NSUInteger elementIndex)
 {
-    return mglRenderCppReadGLIndexValue(
+    return mglRenderReadGLIndexValue(
         indexBytes, (uint32_t)mglGLIndexElementSize(type), (uint64_t)elementIndex);
 }
 
 /* Total bytes for a vertex attrib element (type × size), with special
  * handling for packed 10_10_10_2 formats.  Returns 0 for unknown.
- * Pure logic lives in mgl_render_cpp.cpp. */
+ * Pure logic lives in mgl_render.cpp. */
 static inline size_t mglVertexAttribElementBytes(GLenum type, GLuint size)
 {
-    return (size_t)mglRenderCppVertexAttribElementBytes((uint64_t)type, (uint32_t)size);
+    return (size_t)mglRenderVertexAttribElementBytes((uint64_t)type, (uint32_t)size);
 }
 
 /* Maps a GL double attrib size to the corresponding MTLVertexFormat (Float
  * variants, since Metal has no double vertex formats). */
 static inline uint32_t mglDoubleVertexAttribFloatFormat(GLuint size)
 {
-    return mglRenderCppDoubleVertexAttribFloatFormat((uint32_t)size);
+    return mglRenderDoubleVertexAttribFloatFormat((uint32_t)size);
 }
 
 /* Aligns a vertex stride to Metal's 4-byte minimum alignment. */
 static inline NSUInteger mglAlignVertexStrideForMetal(NSUInteger stride)
 {
-    return (NSUInteger)mglRenderCppAlignVertexStrideForMetal((uint64_t)stride);
+    return (NSUInteger)mglRenderAlignVertexStrideForMetal((uint64_t)stride);
 }
 
 /* === Vertex format mapping (extern) === */
@@ -146,12 +146,12 @@ uint64_t mglPipelineDescriptorSignature(const void *pipelineStateDescriptor);
 
 /* Value-state signature. Field order must remain stable because it defines the
  * pipeline-cache key. The complete state is defined in mgl_air_loader.h. */
-typedef struct MGLRenderCppPipelineDescriptorState
-    MGLRenderCppPipelineDescriptorState;
+typedef struct MGLRenderPipelineDescriptorState
+    MGLRenderPipelineDescriptorState;
 uint64_t mglVertexDescriptorSignatureFromState(
-    const MGLRenderCppPipelineDescriptorState *state);
+    const MGLRenderPipelineDescriptorState *state);
 uint64_t mglPipelineDescriptorSignatureFromState(
-    const MGLRenderCppPipelineDescriptorState *state);
+    const MGLRenderPipelineDescriptorState *state);
 
 /* Inverts MTLWinding (CW↔CCW) when `invert` is true; otherwise returns
  * winding unchanged. */

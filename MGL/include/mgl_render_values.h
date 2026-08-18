@@ -10,7 +10,7 @@
 /*
  * Pure-C renderer value state shared by the Objective-C GL orchestration
  * layer and the Metal-cpp backend.  These values are the stable numeric ABI
- * consumed by mgl_render_cpp.cpp; no Metal framework type crosses this header.
+ * consumed by mgl_render.cpp; no Metal framework type crosses this header.
  */
 
 #ifndef MGL_RENDER_VALUES_H

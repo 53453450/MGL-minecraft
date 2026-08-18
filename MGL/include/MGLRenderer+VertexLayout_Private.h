@@ -37,12 +37,12 @@
 #import "MGLRenderer.h"
 
 /* Value-state vertex-layout input defined in mgl_air_loader.h. */
-typedef struct MGLRenderCppPipelineDescriptorState
-    MGLRenderCppPipelineDescriptorState;
+typedef struct MGLRenderPipelineDescriptorState
+    MGLRenderPipelineDescriptorState;
 
 @interface MGLRenderer ()
 
-- (BOOL)generateVertexDescriptorState:(MGLRenderCppPipelineDescriptorState *)state;
+- (BOOL)generateVertexDescriptorState:(MGLRenderPipelineDescriptorState *)state;
 - (void)updateBlendStateCache;
 
 @end

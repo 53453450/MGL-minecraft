@@ -16,19 +16,19 @@
 #import "MGLRenderer+Buffer_Private.h"
 #import "mgl_buffer_plan.h"
 #include "mgl_env_flag.h"
-#include "mgl_render_cpp.h"
+#include "mgl_render.h"
 
 static id mglBufferCreateConvertedVertexBuffer(
     Buffer *sourceBuffer,
     const MGLResolvedVertexAttribBinding *resolved,
-    MGLRenderCppVertexConversionKind kind,
+    MGLRenderVertexConversionKind kind,
     GLuint componentCount,
     GLenum sourceType,
     GLboolean normalized,
     BOOL destinationSigned,
     NSUInteger *outStride)
 {
-    MGLRenderCppVertexConversion conversion = {0};
+    MGLRenderVertexConversion conversion = {0};
     conversion.kind = (uint32_t)kind;
     conversion.component_count = componentCount;
     conversion.source_type = sourceType;
@@ -41,7 +41,7 @@ static id mglBufferCreateConvertedVertexBuffer(
     uint64_t convertedStride = 0;
     void *convertedBuffer = NULL;
     char error[256] = {0};
-    if (mglRenderCppConvertVertexBuffer(
+    if (mglRenderConvertVertexBuffer(
             sourceBuffer, &conversion, &convertedStride, &convertedBuffer,
             error, sizeof(error)) != 0 || !convertedBuffer) {
         NSLog(@"MGL BUFFER ERROR: Metal-cpp vertex conversion failed buffer=%u kind=%u: %s",
@@ -70,7 +70,7 @@ static id mglBufferCreateConvertedVertexBuffer(
         return nil;
     }
     return mglBufferCreateConvertedVertexBuffer(
-        sourceBuffer, resolved, MGL_RENDER_CPP_VERTEX_DOUBLE_TO_FLOAT,
+        sourceBuffer, resolved, MGL_RENDER_VERTEX_DOUBLE_TO_FLOAT,
         componentCount, GL_DOUBLE, GL_FALSE, NO, outStride);
 }
 
@@ -96,7 +96,7 @@ static id mglBufferCreateConvertedVertexBuffer(
         return nil;
     }
     return mglBufferCreateConvertedVertexBuffer(
-        sourceBuffer, resolved, MGL_RENDER_CPP_VERTEX_INT_TO_FLOAT,
+        sourceBuffer, resolved, MGL_RENDER_VERTEX_INT_TO_FLOAT,
         componentCount, type, normalized, NO, outStride);
 }
 
@@ -117,7 +117,7 @@ static id mglBufferCreateConvertedVertexBuffer(
         return nil;
     }
     return mglBufferCreateConvertedVertexBuffer(
-        sourceBuffer, resolved, MGL_RENDER_CPP_VERTEX_FIXED_TO_FLOAT,
+        sourceBuffer, resolved, MGL_RENDER_VERTEX_FIXED_TO_FLOAT,
         componentCount, GL_FIXED, GL_FALSE, NO, outStride);
 }
 
@@ -138,7 +138,7 @@ static id mglBufferCreateConvertedVertexBuffer(
         return nil;
     }
     return mglBufferCreateConvertedVertexBuffer(
-        sourceBuffer, resolved, MGL_RENDER_CPP_VERTEX_PACKED_1010102_TO_FLOAT,
+        sourceBuffer, resolved, MGL_RENDER_VERTEX_PACKED_1010102_TO_FLOAT,
         4u, GL_UNSIGNED_INT_10_10_10_2, GL_TRUE, NO, outStride);
 }
 
@@ -159,7 +159,7 @@ static id mglBufferCreateConvertedVertexBuffer(
         return nil;
     }
     return mglBufferCreateConvertedVertexBuffer(
-        sourceBuffer, resolved, MGL_RENDER_CPP_VERTEX_PACKED_10F11F11F_TO_FLOAT,
+        sourceBuffer, resolved, MGL_RENDER_VERTEX_PACKED_10F11F11F_TO_FLOAT,
         3u, GL_UNSIGNED_INT_10F_11F_11F_REV, GL_FALSE, NO, outStride);
 }
 
@@ -181,7 +181,7 @@ static id mglBufferCreateConvertedVertexBuffer(
         return nil;
     }
     return mglBufferCreateConvertedVertexBuffer(
-        sourceBuffer, resolved, MGL_RENDER_CPP_VERTEX_INTEGER_TO_32,
+        sourceBuffer, resolved, MGL_RENDER_VERTEX_INTEGER_TO_32,
         componentCount, srcType, GL_FALSE, dstIsInt, outStride);
 }
 
@@ -210,7 +210,7 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                                          size_t size)
 {
     char error[256] = {0};
-    Buffer *buffer = mglRenderCppAcquirePackedStructBuffer(
+    Buffer *buffer = mglRenderAcquirePackedStructBuffer(
         data, size, error, sizeof(error));
     if (!buffer) {
         NSLog(@"MGL ERROR: Metal-cpp packed struct buffer failed: %s",
@@ -1412,26 +1412,26 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
 
 uint64_t mglAdvanceFrameGeneration(void)
 {
-    return mglRenderCppAdvanceBufferGeneration();
+    return mglRenderAdvanceBufferGeneration();
 }
 
 void mglRecordFrameCompleted(uint64_t generation)
 {
-    mglRenderCppRecordBufferGenerationCompleted(generation);
+    mglRenderRecordBufferGenerationCompleted(generation);
 }
 
 /* Mark the slot holding buf's current Metal backing as encoded in the current
  * generation, so it is not recycled until that frame's GPU work completes. */
 void mglNoteBufferEncoded(Buffer *buf)
 {
-    mglRenderCppNoteBufferEncoded(buf);
+    mglRenderNoteBufferEncoded(buf);
 }
 
 BOOL mglSnapshotSharedDirtyBuffer(Buffer *ptr, id *bufferPtr)
 {
     void *metalBuffer = NULL;
     char error[256] = {0};
-    if (mglRenderCppSnapshotSharedDirtyBuffer(
+    if (mglRenderSnapshotSharedDirtyBuffer(
             ptr, &metalBuffer, error, sizeof(error)) != 0) {
         NSLog(@"MGL BUFFER ERROR: Metal-cpp dirty snapshot failed buffer=%u: %s",
               ptr ? ptr->name : 0u, error[0] ? error : "?");
@@ -1450,7 +1450,7 @@ BOOL mglSnapshotSharedBufferRange(Buffer *ptr,
 {
     void *metalBuffer = NULL;
     char error[256] = {0};
-    if (mglRenderCppSnapshotSharedBufferRange(
+    if (mglRenderSnapshotSharedBufferRange(
             ptr, offset, length, &metalBuffer, error, sizeof(error)) != 0) {
         NSLog(@"MGL BUFFER ERROR: Metal-cpp range snapshot failed buffer=%u: %s",
               ptr ? ptr->name : 0u, error[0] ? error : "?");
@@ -1465,8 +1465,8 @@ BOOL mglSnapshotSharedBufferRange(Buffer *ptr,
 - (bool) updateDirtyBuffer:(Buffer *)ptr
 {
     char error[256] = {0};
-    int result = mglRenderCppUpdateDirtyBuffer(ptr, error, sizeof(error));
-    if (result == MGL_RENDER_CPP_BUFFER_OPERATION_HANDLED) {
+    int result = mglRenderUpdateDirtyBuffer(ptr, error, sizeof(error));
+    if (result == MGL_RENDER_BUFFER_OPERATION_HANDLED) {
         return true;
     }
     NSLog(@"MGL BUFFER ERROR: Metal-cpp dirty update failed buffer=%u: %s",

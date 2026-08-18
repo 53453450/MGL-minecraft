@@ -54,7 +54,7 @@
 #include "draw_command.h"
 #include "mgl_frame_activity.h"
 #include "mgl_pixel_format.h"
-#include "mgl_render_cpp.h"
+#include "mgl_render.h"
 #include "mgl_texture_debug.h"
 #include "mgl_texture_transfer.h"
 
@@ -1469,9 +1469,9 @@ static void mglTextureTargetLevelDimensions(GLenum target,
                                             GLuint *out_height,
                                             GLuint *out_depth)
 {
-    GLuint width = (GLuint)mglRenderCppMetalTextureLevelDimension(base_width, level);
-    GLuint height = (GLuint)mglRenderCppMetalTextureLevelDimension(base_height, level);
-    GLuint depth = (GLuint)mglRenderCppMetalTextureLevelDimension(base_depth, level);
+    GLuint width = (GLuint)mglRenderMetalTextureLevelDimension(base_width, level);
+    GLuint height = (GLuint)mglRenderMetalTextureLevelDimension(base_height, level);
+    GLuint depth = (GLuint)mglRenderMetalTextureLevelDimension(base_depth, level);
 
     switch (target) {
         case GL_TEXTURE_1D:

@@ -20,12 +20,12 @@ NS_ASSUME_NONNULL_BEGIN
 #define MGL_PIPELINE_CACHE_KEY_WORDS 7u
 
 /* Value-state pipeline descriptor defined in mgl_air_loader.h. */
-typedef struct MGLRenderCppPipelineDescriptorState
-    MGLRenderCppPipelineDescriptorState;
-typedef struct MGLRenderCppPipelineBlendState_t
-    MGLRenderCppPipelineBlendState;
-typedef struct MGLRenderCppDepthStencilDescriptorState_t
-    MGLRenderCppDepthStencilDescriptorState;
+typedef struct MGLRenderPipelineDescriptorState
+    MGLRenderPipelineDescriptorState;
+typedef struct MGLRenderPipelineBlendState_t
+    MGLRenderPipelineBlendState;
+typedef struct MGLRenderDepthStencilDescriptorState_t
+    MGLRenderDepthStencilDescriptorState;
 
 NS_ASSUME_NONNULL_END
 
@@ -52,7 +52,7 @@ NS_ASSUME_NONNULL_BEGIN
 @private
     MGLPipelineCacheState _state;
     void *_device;
-    void *_cppOwner;
+    void *_owner;
     BOOL _binaryArchiveRequested;
 }
 
@@ -67,7 +67,7 @@ NS_ASSUME_NONNULL_BEGIN
                      binaryArchiveEnabled:(BOOL)binaryArchiveEnabled;
 
 - (nullable id)depthStencilStateForValueState:
-    (const MGLRenderCppDepthStencilDescriptorState *)state;
+    (const MGLRenderDepthStencilDescriptorState *)state;
 /* Typed cache path backed exclusively by the C++ pipeline-cache owner. */
 - (BOOL)lookupPipelineForWords:(const uint64_t * _Nonnull)words
                       pipeline:(id _Nullable * _Nonnull)pipelineOut
@@ -76,17 +76,17 @@ NS_ASSUME_NONNULL_BEGIN
 /* Descriptor cache value-state lookup. A hit copies state and returns YES. */
 - (BOOL)pipelineDescriptorStateForWords:
     (const uint64_t * _Nonnull)words
-      state:(MGLRenderCppPipelineDescriptorState * _Nonnull)stateOut;
+      state:(MGLRenderPipelineDescriptorState * _Nonnull)stateOut;
 - (NSUInteger)storePipeline:(id)pipeline
               vertexFunction:(nullable id)vertexFunction
             fragmentFunction:(nullable id)fragmentFunction
                     forWords:(const uint64_t * _Nonnull)words;
 - (void)storePipelineDescriptorState:
-    (const MGLRenderCppPipelineDescriptorState * _Nonnull)state
+    (const MGLRenderPipelineDescriptorState * _Nonnull)state
                             forWords:(const uint64_t * _Nonnull)words;
 /* Blend state lookup from the C++ owner. */
 - (BOOL)blendStateForAttachment:(NSUInteger)index
-                            out:(MGLRenderCppPipelineBlendState * _Nonnull)outState;
+                            out:(MGLRenderPipelineBlendState * _Nonnull)outState;
 
 - (void)loadBinaryArchive;
 - (void)saveBinaryArchive;
@@ -94,7 +94,7 @@ NS_ASSUME_NONNULL_BEGIN
  * back to ordinary compilation and is then added exactly once; incomplete
  * descriptors bypass the archive. */
 - (int)createRenderPipelineFromState:
-    (const MGLRenderCppPipelineDescriptorState * _Nonnull)state
+    (const MGLRenderPipelineDescriptorState * _Nonnull)state
     vertexFunction:(void * _Nonnull)vertexFunction
     fragmentFunction:(void * _Nullable)fragmentFunction
     pipelineOut:(void * _Nullable * _Nonnull)pipelineOut

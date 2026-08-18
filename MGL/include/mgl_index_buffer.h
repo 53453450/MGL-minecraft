@@ -28,7 +28,7 @@
  *   - glcorearb.h (GL enums, GLuint/GLsizei)
  *   - glm_context.h (Buffer, GLMContext)
  *   - mgl_vertex_format.h (mglGLIndexElementSize, mglReadGLIndexValue)
- *   - opaque Metal handles owned by mgl_render_cpp.cpp
+ *   - opaque Metal handles owned by mgl_render.cpp
  */
 
 #ifndef MGL_INDEX_BUFFER_H
@@ -60,24 +60,24 @@ typedef void *MGLIndexMetalHandle;
 extern "C" {
 #endif
 
-/* Forward decl: the pure scan lives in mgl_render_cpp.cpp (both gates); the
+/* Forward decl: the pure scan lives in mgl_render.cpp (both gates); the
  * inline helper below is a thin gate-agnostic shim so every caller — the
  * element draw validation in Draw.m and the DrawSupport cull-distance path —
  * exercises the same C++ implementation. */
-int mglRenderCppScanIndexRangeIgnoringRestart(
+int mglRenderScanIndexRangeIgnoringRestart(
     const uint8_t *bytes, uint32_t elem_width, uint32_t count,
     int restart_enabled, uint32_t restart_index,
     uint32_t *out_min, uint32_t *out_max, int *out_valid);
 
-int mglRenderCppPrimitiveRestartFixedIndex(uint64_t gl_index_type, uint32_t *out);
+int mglRenderPrimitiveRestartFixedIndex(uint64_t gl_index_type, uint32_t *out);
 
-int mglRenderCppComputePreparedIndexByteOffset(uint64_t gl_index_type,
+int mglRenderComputePreparedIndexByteOffset(uint64_t gl_index_type,
                                                uint64_t gl_byte_offset,
                                                uint64_t *out_prepared_offset);
 
-uint64_t mglRenderCppQuadTriangleIndexCount(uint64_t source_vertex_count);
+uint64_t mglRenderQuadTriangleIndexCount(uint64_t source_vertex_count);
 
-int mglRenderCppComputeIndexByteOffset(uint64_t base_byte_offset,
+int mglRenderComputeIndexByteOffset(uint64_t base_byte_offset,
                                        uint64_t first_element,
                                        uint64_t index_stride,
                                        uint64_t *out_byte_offset);
@@ -102,7 +102,7 @@ static inline bool mglScanIndexRangeIgnoringRestart(const uint8_t *indexBytes,
         : indexType == GL_UNSIGNED_SHORT ? 2u : 4u;
     uint32_t lo = 0u, hi = 0u;
     int valid = 0;
-    if (mglRenderCppScanIndexRangeIgnoringRestart(
+    if (mglRenderScanIndexRangeIgnoringRestart(
             indexBytes, elemWidth, (uint32_t)(count > 0 ? count : 0),
             primitiveRestartEnabled ? 1 : 0, restartIndex,
             &lo, &hi, &valid) != 0 || !valid) {
@@ -127,7 +127,7 @@ static inline bool mglPrimitiveRestartIndexForType(GLMContext ctx,
 
     uint32_t restartIndex = 0u;
     if (ctx->active_state->caps.primitive_restart_fixed_index) {
-        if (mglRenderCppPrimitiveRestartFixedIndex((uint64_t)indexType,
+        if (mglRenderPrimitiveRestartFixedIndex((uint64_t)indexType,
                                                    &restartIndex) != 1) {
             return false;
         }
@@ -146,7 +146,7 @@ static inline bool mglPrimitiveRestartIndexForType(GLMContext ctx,
  * Returns 0 on overflow. */
 static inline NSUInteger mglQuadTriangleIndexCount(NSUInteger sourceIndexCount)
 {
-    uint64_t c = mglRenderCppQuadTriangleIndexCount((uint64_t)sourceIndexCount);
+    uint64_t c = mglRenderQuadTriangleIndexCount((uint64_t)sourceIndexCount);
     if (c > (uint64_t)NSUIntegerMax) {
         return 0u;
     }
@@ -154,7 +154,7 @@ static inline NSUInteger mglQuadTriangleIndexCount(NSUInteger sourceIndexCount)
 }
 
 /* Computes baseByteOffset + firstElement * indexStride with overflow checks.
- * Pure arithmetic; the logic lives in mgl_render_cpp.cpp and this inline is a
+ * Pure arithmetic; the logic lives in mgl_render.cpp and this inline is a
  * thin delegating shim. */
 static inline bool mglComputeIndexByteOffset(NSUInteger baseByteOffset,
                                              NSUInteger firstElement,
@@ -165,7 +165,7 @@ static inline bool mglComputeIndexByteOffset(NSUInteger baseByteOffset,
         return false;
     }
     uint64_t out = 0u;
-    int r = mglRenderCppComputeIndexByteOffset(
+    int r = mglRenderComputeIndexByteOffset(
         (uint64_t)baseByteOffset, (uint64_t)firstElement, (uint64_t)indexStride, &out);
     if (r != 0) {
         return false;
@@ -178,7 +178,7 @@ static inline bool mglComputeIndexByteOffset(NSUInteger baseByteOffset,
 /* Computes the prepared (Metal-side) byte offset for a GL element buffer.
  * GL_UNSIGNED_BYTE indices are expanded to UInt16, so the byte offset is
  * doubled; other index types pass through unchanged.  Pure arithmetic; the
- * logic lives in mgl_render_cpp.cpp and this inline is a thin delegating
+ * logic lives in mgl_render.cpp and this inline is a thin delegating
  * shim. */
 static inline bool mglComputePreparedIndexByteOffset(GLenum glIndexType,
                                                     NSUInteger glByteOffset,
@@ -187,7 +187,7 @@ static inline bool mglComputePreparedIndexByteOffset(GLenum glIndexType,
     uint64_t out = 0u;
     uint64_t type = glIndexType;
     uint64_t off = (uint64_t)glByteOffset;
-    int ok = mglRenderCppComputePreparedIndexByteOffset(type, off, &out);
+    int ok = mglRenderComputePreparedIndexByteOffset(type, off, &out);
     if (ok != 0 || !outPreparedByteOffset) {
         return false;
     }

@@ -16,9 +16,9 @@
 #include <vector>
 
 #include "glm_context.h"
-#include "mgl_metal_cpp.h"
+#include "mgl_metal.h"
 #include "mgl_program_resource.h"
-#include "mgl_render_cpp.h"
+#include "mgl_render.h"
 #include "mgl_shader_resource.h"
 
 extern "C" Program *mglResolveProgramForStageFromState(
@@ -373,17 +373,17 @@ static void mglRendererBackendReleaseOwnedState(
         if (texture) texture->release();
     }
     backend->proactive_textures.clear();
-    mglRenderCppDestroyCommandQueueOwner(&backend->command_queue_owner);
+    mglRenderDestroyCommandQueueOwner(&backend->command_queue_owner);
     backend->command_queue = nullptr;
-    mglRenderCppBindingDestroy(backend->binding_owner);
+    mglRenderBindingDestroy(backend->binding_owner);
     backend->binding_owner = nullptr;
-    mglRenderCppDestroyQueryStateOwner(&backend->query_owner);
-    mglRenderCppDestroyCommandRecoveryOwner(&backend->recovery_owner);
+    mglRenderDestroyQueryStateOwner(&backend->query_owner);
+    mglRenderDestroyCommandRecoveryOwner(&backend->recovery_owner);
     backend->command_buffer_owner = nullptr;
     backend->render_encoder_owner = nullptr;
     backend->render_pass_state_owner = nullptr;
     if (backend->renderer_initialized) {
-        mglRenderCppShutdown();
+        mglRenderShutdown();
         backend->renderer_initialized = false;
     }
     if (backend->device) {
@@ -533,7 +533,7 @@ extern "C" int mglRendererBackendCreate(
     backend->context = info->context;
     backend->device = static_cast<MTL::Device *>(info->objc_device);
     backend->device->retain();
-    if (mglRenderCppInit(info->objc_device) != 0) {
+    if (mglRenderInit(info->objc_device) != 0) {
         backend->device->release();
         backend->device = nullptr;
         delete backend;
@@ -542,11 +542,11 @@ extern "C" int mglRendererBackendCreate(
     backend->renderer_initialized = true;
 
     backend->binding_owner =
-        mglRenderCppBindingCreate(info->binding_slot_count);
+        mglRenderBindingCreate(info->binding_slot_count);
     if (!backend->binding_owner ||
-        mglRenderCppCreateQueryStateOwner(
+        mglRenderCreateQueryStateOwner(
             info->query_capacity, &backend->query_owner) != 0 ||
-        mglRenderCppCreateCommandRecoveryOwner(
+        mglRenderCreateCommandRecoveryOwner(
             &backend->recovery_owner) != 0) {
         mglRendererBackendReleaseOwnedState(backend);
         delete backend;
@@ -586,9 +586,9 @@ extern "C" int mglRendererBackendResetCommandQueue(
     backend->command_queue = nullptr;
     void *queue = nullptr;
     int result = backend->command_queue_owner
-        ? mglRenderCppResetCommandQueueOwner(
+        ? mglRenderResetCommandQueueOwner(
               backend->command_queue_owner, max_command_buffers, &queue)
-        : mglRenderCppCreateCommandQueueOwner(
+        : mglRenderCreateCommandQueueOwner(
               max_command_buffers, &backend->command_queue_owner, &queue);
     if (result != 0 || !queue) return -1;
     backend->command_queue = static_cast<MTL::CommandQueue *>(queue);
@@ -1450,9 +1450,9 @@ extern "C" int mglRendererBackendShutdown(
     }
 
     if (command_owner &&
-        mglRenderCppCommandBufferOwnerHasLastSubmitted(command_owner) == 1) {
-        MGLRenderCppCommandBufferState state = {};
-        int wait_result = mglRenderCppWaitCommandBufferOwnerLastSubmitted(
+        mglRenderCommandBufferOwnerHasLastSubmitted(command_owner) == 1) {
+        MGLRenderCommandBufferState state = {};
+        int wait_result = mglRenderWaitCommandBufferOwnerLastSubmitted(
             command_owner, &state);
         if (result_out) {
             result_out->waited_for_last_submission = 1;
@@ -1493,7 +1493,7 @@ extern "C" void mglRendererBackendDestroy(
 
 extern "C" void mglRendererBindBuffer(GLMContext context, Buffer *buffer)
 {
-    mglRenderCppBindBuffer(context, buffer);
+    mglRenderBindBuffer(context, buffer);
 }
 
 extern "C" void mglRendererBindTexture(GLMContext context, Texture *texture)
@@ -1504,44 +1504,44 @@ extern "C" void mglRendererBindTexture(GLMContext context, Texture *texture)
 
 extern "C" void mglRendererBindProgram(GLMContext context, Program *program)
 {
-    mglRenderCppBindProgram(context, program);
+    mglRenderBindProgram(context, program);
 }
 
 extern "C" void mglRendererDeleteMetalObject(GLMContext context, void *object)
 {
-    mglRenderCppDeleteMTLObj(context, object);
+    mglRenderDeleteMTLObj(context, object);
 }
 
 extern "C" void mglRendererReleaseBufferMetalData(
     GLMContext context, Buffer *buffer)
 {
-    mglRenderCppReleaseBufferMetalData(context, buffer);
+    mglRenderReleaseBufferMetalData(context, buffer);
 }
 
 extern "C" void mglRendererGetSync(GLMContext context, Sync *sync)
 {
-    mglRenderCppGetSync(context, sync);
+    mglRenderGetSync(context, sync);
 }
 
 extern "C" void mglRendererWaitForSync(GLMContext context, Sync *sync)
 {
-    mglRenderCppWaitForSync(context, sync);
+    mglRenderWaitForSync(context, sync);
 }
 
 extern "C" uint32_t mglRendererGetSyncStatus(
     GLMContext context, Sync *sync)
 {
-    return mglRenderCppGetSyncStatus(context, sync);
+    return mglRenderGetSyncStatus(context, sync);
 }
 
 extern "C" void mglRendererReleaseSync(GLMContext context, Sync *sync)
 {
-    mglRenderCppReleaseSync(context, sync);
+    mglRenderReleaseSync(context, sync);
 }
 
 extern "C" void mglRendererFlush(GLMContext context, bool finish)
 {
-    mglRenderCppFlush(context, finish);
+    mglRenderFlush(context, finish);
 }
 
 extern "C" void mglRendererSwapBuffers(GLMContext context)
@@ -1558,7 +1558,7 @@ extern "C" void mglRendererFlushDrawBuffer(GLMContext context)
 
 extern "C" void mglRendererInvalidateRenderPass(GLMContext context)
 {
-    mglRenderCppInvalidateRenderPass(context);
+    mglRenderInvalidateRenderPass(context);
 }
 
 extern "C" void mglRendererClearBuffer(
@@ -1585,27 +1585,27 @@ extern "C" void mglRendererBufferSubData(
     GLMContext context, Buffer *buffer,
     size_t offset, size_t size, const void *bytes)
 {
-    mglRenderCppBufferSubData(context, buffer, offset, size, bytes);
+    mglRenderBufferSubData(context, buffer, offset, size, bytes);
 }
 
 extern "C" void *mglRendererMapUnmapBuffer(
     GLMContext context, Buffer *buffer, size_t offset, size_t size,
     uint32_t access, bool map)
 {
-    return mglRenderCppMapUnmapBuffer(
+    return mglRenderMapUnmapBuffer(
         context, buffer, offset, size, access, map);
 }
 
 extern "C" void mglRendererReadBackBuffer(
     GLMContext context, Buffer *buffer, size_t offset, size_t size)
 {
-    mglRenderCppReadBackBuffer(context, buffer, offset, size);
+    mglRenderReadBackBuffer(context, buffer, offset, size);
 }
 
 extern "C" void mglRendererFlushBufferRange(
     GLMContext context, Buffer *buffer, intptr_t offset, intptr_t length)
 {
-    mglRenderCppFlushBufferRange(context, buffer, offset, length);
+    mglRenderFlushBufferRange(context, buffer, offset, length);
 }
 
 extern "C" void mglRendererReadDrawable(
@@ -1751,27 +1751,27 @@ extern "C" void mglRendererDispatchComputeIndirect(
 extern "C" void mglRendererBeginSampleQuery(
     GLMContext context, uint32_t target)
 {
-    mglRenderCppBeginSampleQueryCallback(context, target);
+    mglRenderBeginSampleQueryCallback(context, target);
 }
 
 extern "C" uint64_t mglRendererEndSampleQuery(GLMContext context)
 {
-    return mglRenderCppEndSampleQueryCallback(context);
+    return mglRenderEndSampleQueryCallback(context);
 }
 
 extern "C" void mglRendererBeginTimerQuery(GLMContext context)
 {
-    mglRenderCppBeginTimerQueryCallback(context);
+    mglRenderBeginTimerQueryCallback(context);
 }
 
 extern "C" uint64_t mglRendererEndTimerQuery(GLMContext context)
 {
-    return mglRenderCppEndTimerQueryCallback(context);
+    return mglRenderEndTimerQueryCallback(context);
 }
 
 extern "C" uint64_t mglRendererGetGPUTimestamp(GLMContext context)
 {
-    return mglRenderCppGetGPUTimestamp(context);
+    return mglRenderGetGPUTimestamp(context);
 }
 
 namespace {
@@ -1822,7 +1822,7 @@ MGLShaderResource *mglRendererProgramResource(GLMContext context,
 extern "C" uint32_t mglDeclaredTextureTypeFromResource(
     const MGLShaderResource *resource)
 {
-    return mglRenderCppTextureTypeForShaderResource(
+    return mglRenderTextureTypeForShaderResource(
         resource != nullptr,
         resource ? static_cast<uint32_t>(resource->image_dim) : 0u,
         resource ? static_cast<uint32_t>(resource->image_arrayed) : 0u,
