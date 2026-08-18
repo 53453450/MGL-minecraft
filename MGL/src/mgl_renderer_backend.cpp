@@ -19,50 +19,50 @@ extern "C" void mglRendererPlatformBackendWillDestroy(
 extern "C" void mglRendererCompatDispatchCompute(GLMContext context,
     unsigned int groups_x, unsigned int groups_y, unsigned int groups_z);
 extern "C" void mglRendererCompatDispatchComputeIndirect(GLMContext context, intptr_t indirect);
-extern "C" void mglRendererCompatDrawArrays(GLMContext context,
+extern "C" void mglRendererDrawArrays(GLMContext context,
     uint32_t mode, int32_t first, int32_t count);
-extern "C" void mglRendererCompatDrawElements(GLMContext context,
+extern "C" void mglRendererDrawElements(GLMContext context,
     uint32_t mode, int32_t count, uint32_t type, const void *indices);
-extern "C" void mglRendererCompatDrawRangeElements(GLMContext context, uint32_t mode,
+extern "C" void mglRendererDrawRangeElements(GLMContext context, uint32_t mode,
     uint32_t start, uint32_t end, int32_t count, uint32_t type,
     const void *indices);
-extern "C" void mglRendererCompatDrawArraysInstanced(GLMContext context, uint32_t mode,
+extern "C" void mglRendererDrawArraysInstanced(GLMContext context, uint32_t mode,
     int32_t first, int32_t count, int32_t instance_count);
-extern "C" void mglRendererCompatDrawElementsInstanced(GLMContext context, uint32_t mode,
+extern "C" void mglRendererDrawElementsInstanced(GLMContext context, uint32_t mode,
     int32_t count, uint32_t type, const void *indices,
     int32_t instance_count);
-extern "C" void mglRendererCompatDrawElementsBaseVertex(GLMContext context, uint32_t mode,
+extern "C" void mglRendererDrawElementsBaseVertex(GLMContext context, uint32_t mode,
     int32_t count, uint32_t type, const void *indices, int32_t base_vertex);
-extern "C" void mglRendererCompatDrawRangeElementsBaseVertex(GLMContext context, uint32_t mode,
+extern "C" void mglRendererDrawRangeElementsBaseVertex(GLMContext context, uint32_t mode,
     uint32_t start, uint32_t end, int32_t count, uint32_t type,
     const void *indices, int32_t base_vertex);
-extern "C" void mglRendererCompatDrawElementsInstancedBaseVertex(GLMContext context, uint32_t mode,
+extern "C" void mglRendererDrawElementsInstancedBaseVertex(GLMContext context, uint32_t mode,
     int32_t count, uint32_t type, const void *indices,
     int32_t instance_count, int32_t base_vertex);
-extern "C" void mglRendererCompatDrawArraysIndirect(GLMContext context,
+extern "C" void mglRendererDrawArraysIndirect(GLMContext context,
     uint32_t mode, const void *indirect);
-extern "C" void mglRendererCompatDrawElementsIndirect(GLMContext context,
+extern "C" void mglRendererDrawElementsIndirect(GLMContext context,
     uint32_t mode, uint32_t type, const void *indirect);
-extern "C" void mglRendererCompatDrawArraysInstancedBaseInstance(GLMContext context, uint32_t mode,
+extern "C" void mglRendererDrawArraysInstancedBaseInstance(GLMContext context, uint32_t mode,
     int32_t first, int32_t count, int32_t instance_count,
     uint32_t base_instance);
-extern "C" void mglRendererCompatDrawElementsInstancedBaseInstance(GLMContext context, uint32_t mode,
+extern "C" void mglRendererDrawElementsInstancedBaseInstance(GLMContext context, uint32_t mode,
     int32_t count, uint32_t type, const void *indices,
     int32_t instance_count, uint32_t base_instance);
-extern "C" void mglRendererCompatDrawElementsInstancedBaseVertexBaseInstance(GLMContext context, uint32_t mode,
+extern "C" void mglRendererDrawElementsInstancedBaseVertexBaseInstance(GLMContext context, uint32_t mode,
     int32_t count, uint32_t type, const void *indices,
     int32_t instance_count, int32_t base_vertex, uint32_t base_instance);
-extern "C" void mglRendererCompatMultiDrawArrays(GLMContext context, uint32_t mode,
+extern "C" void mglRendererMultiDrawArrays(GLMContext context, uint32_t mode,
     const int32_t *firsts, const int32_t *counts, int32_t draw_count);
-extern "C" void mglRendererCompatMultiDrawElements(GLMContext context, uint32_t mode,
+extern "C" void mglRendererMultiDrawElements(GLMContext context, uint32_t mode,
     const int32_t *counts, uint32_t type, const void *const *indices,
     int32_t draw_count);
-extern "C" void mglRendererCompatMultiDrawElementsBaseVertex(GLMContext context, uint32_t mode,
+extern "C" void mglRendererMultiDrawElementsBaseVertex(GLMContext context, uint32_t mode,
     const int32_t *counts, uint32_t type, const void *const *indices,
     int32_t draw_count, const int32_t *base_vertices);
-extern "C" void mglRendererCompatMultiDrawArraysIndirect(GLMContext context, uint32_t mode,
+extern "C" void mglRendererMultiDrawArraysIndirect(GLMContext context, uint32_t mode,
     const void *indirect, int32_t draw_count, int32_t stride);
-extern "C" void mglRendererCompatMultiDrawElementsIndirect(GLMContext context, uint32_t mode, uint32_t type,
+extern "C" void mglRendererMultiDrawElementsIndirect(GLMContext context, uint32_t mode, uint32_t type,
     const void *indirect, int32_t draw_count, int32_t stride);
 extern "C" void mglRendererCompatBindTexture(GLMContext context, Texture *texture);
 extern "C" void mglRendererCompatFlushDrawBuffer(GLMContext context);
@@ -1717,186 +1717,6 @@ extern "C" void mglRendererCopyImageSubData(
             destination_texture, destination_level,
             destination_x, destination_y, destination_z,
             width, height, depth);
-    }
-}
-
-extern "C" void mglRendererDrawArrays(
-    GLMContext context, uint32_t mode, int32_t first, int32_t count)
-{
-    void *platform_shell = mglRendererBackendPlatformShell(context);
-    if (platform_shell) mglRendererCompatDrawArrays(context, mode, first, count);
-}
-
-extern "C" void mglRendererDrawElements(
-    GLMContext context, uint32_t mode, int32_t count,
-    uint32_t type, const void *indices)
-{
-    void *platform_shell = mglRendererBackendPlatformShell(context);
-    if (platform_shell) {
-        mglRendererCompatDrawElements(context, mode, count, type, indices);
-    }
-}
-
-extern "C" void mglRendererDrawRangeElements(
-    GLMContext context, uint32_t mode, uint32_t start, uint32_t end,
-    int32_t count, uint32_t type, const void *indices)
-{
-    void *platform_shell = mglRendererBackendPlatformShell(context);
-    if (platform_shell) {
-        mglRendererCompatDrawRangeElements(context, mode, start, end, count, type, indices);
-    }
-}
-
-extern "C" void mglRendererDrawArraysInstanced(
-    GLMContext context, uint32_t mode, int32_t first, int32_t count,
-    int32_t instance_count)
-{
-    void *platform_shell = mglRendererBackendPlatformShell(context);
-    if (platform_shell) {
-        mglRendererCompatDrawArraysInstanced(context, mode, first, count, instance_count);
-    }
-}
-
-extern "C" void mglRendererDrawElementsInstanced(
-    GLMContext context, uint32_t mode, int32_t count, uint32_t type,
-    const void *indices, int32_t instance_count)
-{
-    void *platform_shell = mglRendererBackendPlatformShell(context);
-    if (platform_shell) {
-        mglRendererCompatDrawElementsInstanced(context, mode, count, type, indices, instance_count);
-    }
-}
-
-extern "C" void mglRendererDrawElementsBaseVertex(
-    GLMContext context, uint32_t mode, int32_t count, uint32_t type,
-    const void *indices, int32_t base_vertex)
-{
-    void *platform_shell = mglRendererBackendPlatformShell(context);
-    if (platform_shell) {
-        mglRendererCompatDrawElementsBaseVertex(context, mode, count, type, indices, base_vertex);
-    }
-}
-
-extern "C" void mglRendererDrawRangeElementsBaseVertex(
-    GLMContext context, uint32_t mode, uint32_t start, uint32_t end,
-    int32_t count, uint32_t type, const void *indices, int32_t base_vertex)
-{
-    void *platform_shell = mglRendererBackendPlatformShell(context);
-    if (platform_shell) {
-        mglRendererCompatDrawRangeElementsBaseVertex(context, mode, start, end, count, type,
-            indices, base_vertex);
-    }
-}
-
-extern "C" void mglRendererDrawElementsInstancedBaseVertex(
-    GLMContext context, uint32_t mode, int32_t count, uint32_t type,
-    const void *indices, int32_t instance_count, int32_t base_vertex)
-{
-    void *platform_shell = mglRendererBackendPlatformShell(context);
-    if (platform_shell) {
-        mglRendererCompatDrawElementsInstancedBaseVertex(context, mode, count, type, indices,
-            instance_count, base_vertex);
-    }
-}
-
-extern "C" void mglRendererDrawArraysIndirect(
-    GLMContext context, uint32_t mode, const void *indirect)
-{
-    void *platform_shell = mglRendererBackendPlatformShell(context);
-    if (platform_shell) mglRendererCompatDrawArraysIndirect(context, mode, indirect);
-}
-
-extern "C" void mglRendererDrawElementsIndirect(
-    GLMContext context, uint32_t mode, uint32_t type, const void *indirect)
-{
-    void *platform_shell = mglRendererBackendPlatformShell(context);
-    if (platform_shell) {
-        mglRendererCompatDrawElementsIndirect(context, mode, type, indirect);
-    }
-}
-
-extern "C" void mglRendererDrawArraysInstancedBaseInstance(
-    GLMContext context, uint32_t mode, int32_t first, int32_t count,
-    int32_t instance_count, uint32_t base_instance)
-{
-    void *platform_shell = mglRendererBackendPlatformShell(context);
-    if (platform_shell) {
-        mglRendererCompatDrawArraysInstancedBaseInstance(context, mode, first, count, instance_count, base_instance);
-    }
-}
-
-extern "C" void mglRendererDrawElementsInstancedBaseInstance(
-    GLMContext context, uint32_t mode, int32_t count, uint32_t type,
-    const void *indices, int32_t instance_count, uint32_t base_instance)
-{
-    void *platform_shell = mglRendererBackendPlatformShell(context);
-    if (platform_shell) {
-        mglRendererCompatDrawElementsInstancedBaseInstance(context, mode, count, type, indices,
-            instance_count, base_instance);
-    }
-}
-
-extern "C" void mglRendererDrawElementsInstancedBaseVertexBaseInstance(
-    GLMContext context, uint32_t mode, int32_t count, uint32_t type,
-    const void *indices, int32_t instance_count, int32_t base_vertex,
-    uint32_t base_instance)
-{
-    void *platform_shell = mglRendererBackendPlatformShell(context);
-    if (platform_shell) {
-        mglRendererCompatDrawElementsInstancedBaseVertexBaseInstance(context, mode, count, type, indices,
-            instance_count, base_vertex, base_instance);
-    }
-}
-
-extern "C" void mglRendererMultiDrawArrays(
-    GLMContext context, uint32_t mode,
-    const int32_t *firsts, const int32_t *counts, int32_t draw_count)
-{
-    void *platform_shell = mglRendererBackendPlatformShell(context);
-    if (platform_shell) {
-        mglRendererCompatMultiDrawArrays(context, mode, firsts, counts, draw_count);
-    }
-}
-
-extern "C" void mglRendererMultiDrawElements(
-    GLMContext context, uint32_t mode, const int32_t *counts,
-    uint32_t type, const void *const *indices, int32_t draw_count)
-{
-    void *platform_shell = mglRendererBackendPlatformShell(context);
-    if (platform_shell) {
-        mglRendererCompatMultiDrawElements(context, mode, counts, type, indices, draw_count);
-    }
-}
-
-extern "C" void mglRendererMultiDrawElementsBaseVertex(
-    GLMContext context, uint32_t mode, const int32_t *counts,
-    uint32_t type, const void *const *indices, int32_t draw_count,
-    const int32_t *base_vertices)
-{
-    void *platform_shell = mglRendererBackendPlatformShell(context);
-    if (platform_shell) {
-        mglRendererCompatMultiDrawElementsBaseVertex(context, mode, counts, type, indices,
-            draw_count, base_vertices);
-    }
-}
-
-extern "C" void mglRendererMultiDrawArraysIndirect(
-    GLMContext context, uint32_t mode, const void *indirect,
-    int32_t draw_count, int32_t stride)
-{
-    void *platform_shell = mglRendererBackendPlatformShell(context);
-    if (platform_shell) {
-        mglRendererCompatMultiDrawArraysIndirect(context, mode, indirect, draw_count, stride);
-    }
-}
-
-extern "C" void mglRendererMultiDrawElementsIndirect(
-    GLMContext context, uint32_t mode, uint32_t type,
-    const void *indirect, int32_t draw_count, int32_t stride)
-{
-    void *platform_shell = mglRendererBackendPlatformShell(context);
-    if (platform_shell) {
-        mglRendererCompatMultiDrawElementsIndirect(context, mode, type, indirect, draw_count, stride);
     }
 }
 

@@ -607,7 +607,7 @@ MCREPRO_COBJ := $(patsubst MGL/src/%.c,$(build_dir)/mcrepro_%.o,$(MCREPRO_CSRC))
 
 $(build_dir)/mcrepro_%.o: MGL/src/%.c
 	$(LLVM_CXX) -x c -std=c11 -g -O0 -isysroot $(SDK_ROOT) -IMGL/include \
-		-IMGL/include/GL -c $< -o $@
+		-IMGL/include/GL -IMGL/src -c $< -o $@
 
 $(build_dir)/test_mcrepro: test_legacy_compat/test_mcrepro.mm \
 	MGL/src/mgl_air_backend.cpp MGL/src/mgl_metallib_writer.cpp \

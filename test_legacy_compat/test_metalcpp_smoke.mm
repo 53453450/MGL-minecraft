@@ -168,37 +168,37 @@ extern "C" void mglRendererCompatDispatchComputeIndirect(GLMContext, intptr_t in
     if (indirect == 64) ++s_operationComputeIndirectCount;
 }
 
-extern "C" void mglRendererCompatDrawArrays(GLMContext, uint32_t mode, int32_t first, int32_t count) {
+extern "C" void mglRendererDrawArrays(GLMContext, uint32_t mode, int32_t first, int32_t count) {
     if (mode == GL_TRIANGLES && first == 5 && count == 6) {
         ++s_operationDrawCount;
     }
 }
-extern "C" void mglRendererCompatDrawElements(GLMContext, uint32_t, int32_t, uint32_t, const void *) {}
-extern "C" void mglRendererCompatDrawRangeElements(GLMContext, uint32_t, uint32_t, uint32_t,
+extern "C" void mglRendererDrawElements(GLMContext, uint32_t, int32_t, uint32_t, const void *) {}
+extern "C" void mglRendererDrawRangeElements(GLMContext, uint32_t, uint32_t, uint32_t,
     int32_t, uint32_t, const void *) {}
-extern "C" void mglRendererCompatDrawArraysInstanced(GLMContext, uint32_t, int32_t, int32_t, int32_t) {}
-extern "C" void mglRendererCompatDrawElementsInstanced(GLMContext, uint32_t, int32_t, uint32_t,
+extern "C" void mglRendererDrawArraysInstanced(GLMContext, uint32_t, int32_t, int32_t, int32_t) {}
+extern "C" void mglRendererDrawElementsInstanced(GLMContext, uint32_t, int32_t, uint32_t,
     const void *, int32_t) {}
-extern "C" void mglRendererCompatDrawElementsBaseVertex(GLMContext, uint32_t, int32_t, uint32_t,
+extern "C" void mglRendererDrawElementsBaseVertex(GLMContext, uint32_t, int32_t, uint32_t,
     const void *, int32_t) {}
-extern "C" void mglRendererCompatDrawRangeElementsBaseVertex(GLMContext, uint32_t, uint32_t, uint32_t,
+extern "C" void mglRendererDrawRangeElementsBaseVertex(GLMContext, uint32_t, uint32_t, uint32_t,
     int32_t, uint32_t, const void *, int32_t) {}
-extern "C" void mglRendererCompatDrawElementsInstancedBaseVertex(GLMContext, uint32_t, int32_t, uint32_t,
+extern "C" void mglRendererDrawElementsInstancedBaseVertex(GLMContext, uint32_t, int32_t, uint32_t,
     const void *, int32_t, int32_t) {}
-extern "C" void mglRendererCompatDrawArraysIndirect(GLMContext, uint32_t, const void *) {}
-extern "C" void mglRendererCompatDrawElementsIndirect(GLMContext, uint32_t, uint32_t, const void *) {}
-extern "C" void mglRendererCompatDrawArraysInstancedBaseInstance(GLMContext, uint32_t, int32_t, int32_t, int32_t, uint32_t) {}
-extern "C" void mglRendererCompatDrawElementsInstancedBaseInstance(GLMContext, uint32_t, int32_t, uint32_t,
+extern "C" void mglRendererDrawArraysIndirect(GLMContext, uint32_t, const void *) {}
+extern "C" void mglRendererDrawElementsIndirect(GLMContext, uint32_t, uint32_t, const void *) {}
+extern "C" void mglRendererDrawArraysInstancedBaseInstance(GLMContext, uint32_t, int32_t, int32_t, int32_t, uint32_t) {}
+extern "C" void mglRendererDrawElementsInstancedBaseInstance(GLMContext, uint32_t, int32_t, uint32_t,
     const void *, int32_t, uint32_t) {}
-extern "C" void mglRendererCompatDrawElementsInstancedBaseVertexBaseInstance(GLMContext, uint32_t, int32_t, uint32_t,
+extern "C" void mglRendererDrawElementsInstancedBaseVertexBaseInstance(GLMContext, uint32_t, int32_t, uint32_t,
     const void *, int32_t, int32_t, uint32_t) {}
-extern "C" void mglRendererCompatMultiDrawArrays(GLMContext, uint32_t, const int32_t *, const int32_t *, int32_t) {}
-extern "C" void mglRendererCompatMultiDrawElements(GLMContext, uint32_t, const int32_t *, uint32_t,
+extern "C" void mglRendererMultiDrawArrays(GLMContext, uint32_t, const int32_t *, const int32_t *, int32_t) {}
+extern "C" void mglRendererMultiDrawElements(GLMContext, uint32_t, const int32_t *, uint32_t,
     const void *const *, int32_t) {}
-extern "C" void mglRendererCompatMultiDrawElementsBaseVertex(GLMContext, uint32_t, const int32_t *, uint32_t,
+extern "C" void mglRendererMultiDrawElementsBaseVertex(GLMContext, uint32_t, const int32_t *, uint32_t,
     const void *const *, int32_t, const int32_t *) {}
-extern "C" void mglRendererCompatMultiDrawArraysIndirect(GLMContext, uint32_t, const void *, int32_t, int32_t) {}
-extern "C" void mglRendererCompatMultiDrawElementsIndirect(GLMContext, uint32_t, uint32_t, const void *, int32_t, int32_t) {}
+extern "C" void mglRendererMultiDrawArraysIndirect(GLMContext, uint32_t, const void *, int32_t, int32_t) {}
+extern "C" void mglRendererMultiDrawElementsIndirect(GLMContext, uint32_t, uint32_t, const void *, int32_t, int32_t) {}
 
 extern "C" void mglRendererCompatBindTexture(GLMContext, Texture *) {}
 extern "C" void mglRendererCompatFlushDrawBuffer(GLMContext) {}

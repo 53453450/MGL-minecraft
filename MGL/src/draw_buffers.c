@@ -1651,11 +1651,15 @@ static void mglDrawDispatch(GLMContext ctx, const MGLDrawCommand *cmd)
 
     /* Geometry expansion rotates render/compute encoders and therefore cannot
      * be replayed as an ordinary deferred render draw.  Preserve ordering by
-     * draining older commands, then let the renderer's GS helper run the AIR
+     * draining older commands only when a deferred batch actually exists;
+     * calling the full flush entry point for an empty batch needlessly breaks
+     * the current defer window.  The renderer's GS helper then runs the AIR
      * compute route for both array and indexed shapes (P1). */
     Program *geometryProgram = mglCurrentExpandedGeometryDrawProgram(ctx);
     if (geometryProgram) {
-        mglFlushCommandBuffer(ctx);
+        if (ctx->draw_command_buffer.batch_count > 0u) {
+            mglFlushCommandBuffer(ctx);
+        }
         switch (cmd->type) {
             case MGL_CMD_DRAW_ARRAYS:
                 mglRendererDrawArrays(
