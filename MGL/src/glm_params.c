@@ -553,9 +553,11 @@ void getMacOSDefaults(GLMContext glm_ctx)
     glm_ctx->state.var.max_transform_feedback_separate_attribs = 4;
     glm_ctx->state.var.max_transform_feedback_separate_components = 4;
     glm_ctx->state.var.max_transform_feedback_buffers = 4;
-    glm_ctx->state.var.max_geometry_output_vertices = 0;
-    glm_ctx->state.var.max_geometry_total_output_components = 0;
-    glm_ctx->state.var.max_geometry_shader_invocations = 0;
+    /* GS compute expansion supports the GL minimums and up to the fixed
+     * AIR record budget used by the renderer. */
+    glm_ctx->state.var.max_geometry_output_vertices = 1024;
+    glm_ctx->state.var.max_geometry_total_output_components = 1024;
+    glm_ctx->state.var.max_geometry_shader_invocations = 32;
     glm_ctx->state.var.min_program_texture_gather_offset = (GLuint)-8; /* -8 as unsigned */
     glm_ctx->state.var.max_program_texture_gather_offset = 7;
     glm_ctx->state.var.max_shader_storage_block_size = 134217728; /* 128 MB */

@@ -20,6 +20,8 @@
 #include "mgl_shader_abi.h"
 #include "mgl_air_gs_abi.h"
 #include "mgl_air_tess_abi.h"
+#include "mgl_aux_assets.h"
+#include "mgl_program_reflection.h"
 
 static void *mglDrawSupportBufferContents(id buffer)
 {
@@ -88,6 +90,175 @@ static bool mglGeometryGatherIndices(const uint8_t *indexBytes,
     *outPrimitiveCount = result.primitive_count;
     *outMaxIndex = result.max_index;
     return true;
+}
+
+/* Build the primitive input stream for a GS draw.  The GS kernel consumes a
+ * complete, fixed-width primitive per work item, so array strips/fans/loops
+ * and indexed restart segments are normalized here to the same gather ABI.
+ * Values remain raw vertex ids: indexed capture applies baseVertex, while
+ * array capture uses first_vertex to address its [first, first + count) span. */
+static bool mglGeometryGatherTopology(const uint8_t *indexBytes,
+                                      GLenum indexType,
+                                      GLsizei count,
+                                      GLint first,
+                                      bool indexed,
+                                      bool restartEnabled,
+                                      uint32_t restartIndex,
+                                      GLenum mode,
+                                      uint32_t **outGather,
+                                      uint32_t *outGatherCount,
+                                      uint32_t *outPrimitiveCount,
+                                      uint32_t *outMaxIndex)
+{
+    if (!outGather || !outGatherCount || !outPrimitiveCount ||
+        !outMaxIndex || count <= 0 || (indexed && !indexBytes) ||
+        (!indexed && first < 0)) {
+        return false;
+    }
+    const uint32_t n = (uint32_t)count;
+    const uint32_t elemBytes = indexType == GL_UNSIGNED_BYTE ? 1u
+        : indexType == GL_UNSIGNED_SHORT ? 2u : 4u;
+    if ((size_t)n > SIZE_MAX / sizeof(uint32_t) ||
+        (size_t)n > SIZE_MAX / (6u * sizeof(uint32_t))) return false;
+    uint32_t *source = malloc((size_t)n * sizeof(*source));
+    uint32_t *segment = malloc((size_t)n * sizeof(*segment));
+    uint32_t *gather = malloc((size_t)n * 6u * sizeof(*gather));
+    if (!source || !segment || !gather) {
+        free(source); free(segment); free(gather);
+        return false;
+    }
+    uint32_t maxIndex = 0u;
+    for (uint32_t i = 0u; i < n; i++) {
+        uint32_t value;
+        if (!indexed) {
+            const int64_t v = (int64_t)first + (int64_t)i;
+            if (v < 0 || (uint64_t)v > UINT32_MAX) {
+                free(source); free(segment); free(gather);
+                return false;
+            }
+            value = (uint32_t)v;
+        } else if (elemBytes == 1u) {
+            value = indexBytes[i];
+        } else if (elemBytes == 2u) {
+            value = ((const uint16_t *)indexBytes)[i];
+        } else {
+            value = ((const uint32_t *)indexBytes)[i];
+        }
+        source[i] = value;
+        if (!(indexed && restartEnabled && value == restartIndex) &&
+            value > maxIndex) maxIndex = value;
+    }
+
+    uint32_t gathered = 0u;
+    uint32_t primitives = 0u;
+    uint32_t segmentCount = 0u;
+    const bool restartMode = indexed && restartEnabled;
+    const uint32_t primitiveWidth =
+        (mode == GL_POINTS) ? 1u
+        : (mode == GL_LINES || mode == GL_LINE_STRIP ||
+           mode == GL_LINE_LOOP) ? 2u
+        : (mode == GL_LINES_ADJACENCY) ? 4u
+        : (mode == GL_TRIANGLES_ADJACENCY) ? 6u : 3u;
+
+    /* Emit one restart-delimited segment according to the GL topology. */
+    #define EMIT(v) do { gather[gathered++] = (v); } while (0)
+    #define EMIT_SEGMENT() do {                                                \
+        if (segmentCount > 0u) {                                               \
+            if (mode == GL_POINTS) {                                           \
+                for (uint32_t q = 0u; q < segmentCount; q++) {                 \
+                    EMIT(segment[q]); primitives++;                           \
+                }                                                                  \
+            } else if (mode == GL_LINES || mode == GL_TRIANGLES ||             \
+                       mode == GL_LINES_ADJACENCY ||                           \
+                       mode == GL_TRIANGLES_ADJACENCY) {                       \
+                const uint32_t groups = segmentCount / primitiveWidth;         \
+                for (uint32_t q = 0u; q < groups; q++) {                        \
+                    for (uint32_t k = 0u; k < primitiveWidth; k++)             \
+                        EMIT(segment[q * primitiveWidth + k]);                 \
+                    primitives++;                                               \
+                }                                                                  \
+            } else if (mode == GL_LINE_STRIP_ADJACENCY) {                       \
+                /* Each line uses two adjacent vertices on either side of      \
+                 * the central line and the next primitive advances by two. */  \
+                for (uint32_t q = 0u; q + 3u < segmentCount; q += 2u) {         \
+                    for (uint32_t k = 0u; k < 4u; k++)                           \
+                        EMIT(segment[q + k]);                                   \
+                    primitives++;                                               \
+                }                                                                  \
+            } else if (mode == GL_TRIANGLE_STRIP_ADJACENCY) {                   \
+                /* Triangle-strip adjacency has the same two-vertex stride,  \
+                 * with a six-vertex window for each triangle. */               \
+                for (uint32_t q = 0u; q + 5u < segmentCount; q += 2u) {         \
+                    for (uint32_t k = 0u; k < 6u; k++)                           \
+                        EMIT(segment[q + k]);                                   \
+                    primitives++;                                               \
+                }                                                                  \
+            } else if (mode == GL_LINE_STRIP) {                                \
+                for (uint32_t q = 0u; q + 1u < segmentCount; q++) {            \
+                    EMIT(segment[q]); EMIT(segment[q + 1u]); primitives++;     \
+                }                                                                  \
+            } else if (mode == GL_LINE_LOOP) {                                  \
+                if (segmentCount >= 2u) {                                      \
+                    for (uint32_t q = 0u; q + 1u < segmentCount; q++) {         \
+                        EMIT(segment[q]); EMIT(segment[q + 1u]); primitives++;  \
+                    }                                                              \
+                    EMIT(segment[segmentCount - 1u]); EMIT(segment[0u]);         \
+                    primitives++;                                               \
+                }                                                                  \
+            } else if (mode == GL_TRIANGLE_STRIP) {                             \
+                for (uint32_t q = 0u; q + 2u < segmentCount; q++) {             \
+                    EMIT(segment[q]); EMIT(segment[q + 1u]); EMIT(segment[q + 2u]); \
+                    primitives++;                                               \
+                }                                                                  \
+            } else if (mode == GL_TRIANGLE_FAN) {                               \
+                for (uint32_t q = 1u; q + 1u < segmentCount; q++) {             \
+                    EMIT(segment[0u]); EMIT(segment[q]); EMIT(segment[q + 1u]); \
+                    primitives++;                                               \
+                }                                                                  \
+            }                                                                      \
+        }                                                                          \
+        segmentCount = 0u;                                                         \
+    } while (0)
+    for (uint32_t i = 0u; i < n; i++) {
+        if (restartMode && source[i] == restartIndex) {
+            EMIT_SEGMENT();
+        } else {
+            segment[segmentCount++] = source[i];
+        }
+    }
+    EMIT_SEGMENT();
+    #undef EMIT_SEGMENT
+    #undef EMIT
+    free(source);
+    free(segment);
+    if (gathered == 0u || primitives == 0u) {
+        free(gather);
+        return false;
+    }
+    *outGather = gather;
+    *outGatherCount = gathered;
+    *outPrimitiveCount = primitives;
+    *outMaxIndex = maxIndex;
+    return true;
+}
+
+static bool mglGeometryInputModeAccepts(GLenum gsMode, GLenum drawMode)
+{
+    switch (gsMode) {
+        case GL_POINTS: return drawMode == GL_POINTS;
+        case GL_LINES: return drawMode == GL_LINES ||
+                              drawMode == GL_LINE_STRIP ||
+                              drawMode == GL_LINE_LOOP;
+        case GL_LINES_ADJACENCY: return drawMode == GL_LINES_ADJACENCY ||
+                                          drawMode == GL_LINE_STRIP_ADJACENCY;
+        case GL_TRIANGLES: return drawMode == GL_TRIANGLES ||
+                                  drawMode == GL_TRIANGLE_STRIP ||
+                                  drawMode == GL_TRIANGLE_FAN;
+        case GL_TRIANGLES_ADJACENCY:
+            return drawMode == GL_TRIANGLES_ADJACENCY ||
+                   drawMode == GL_TRIANGLE_STRIP_ADJACENCY;
+        default: return false;
+    }
 }
 
 static id mglDrawSupportCreateBuffer(
@@ -382,7 +553,12 @@ extern void mglRecordActivePrimitiveQueryDrawIndexed(GLMContext ctx,
                                                       GLuint index,
                                                       GLuint64 generated,
                                                       GLuint64 written);
+extern void mglRecordActiveGeometryShaderQueryDraw(GLMContext ctx,
+                                                    GLuint64 invocations,
+                                                    GLuint64 primitives);
 extern GLboolean mglHasActiveIndexedPrimitiveQuery(void);
+extern GLboolean mglHasActivePrimitiveQuery(void);
+extern GLboolean mglHasActiveGeometryShaderQuery(void);
 
 static void mglRecordGeometryPrimitiveQueries(
     GLMContext ctx,
@@ -391,19 +567,26 @@ static void mglRecordGeometryPrimitiveQueries(
     BOOL xfbActive,
     const MGLAIRGSXFBMeta *meta,
     uint32_t streamCount,
-    const NSUInteger *streamStride)
+    const NSUInteger *bufferWritten,
+    const NSUInteger *bufferStride,
+    GLuint64 geometryInvocations)
 {
+    mglRecordActiveGeometryShaderQueryDraw(
+        ctx, geometryInvocations, generatedStream0);
     mglRecordActivePrimitiveQueryDraw(
         ctx, generatedStream0, xfbActive ? writtenStream0 : 0u);
-    if (!meta || !streamStride) return;
+    if (!meta || !bufferWritten || !bufferStride) return;
     if (streamCount > MGL_AIR_GS_MAX_STREAMS) {
         streamCount = MGL_AIR_GS_MAX_STREAMS;
     }
     for (uint32_t s = 1u; s < streamCount; s++) {
+        /* Indexed stream s query: generated stays in the meta; written is
+         * the ordered scatter's whole-primitive bytes for buffer s divided
+         * by its per-record stride (streams > 0 are points, vpp = 1). */
         GLuint64 written = 0u;
-        if (xfbActive && streamStride[s] > 0u) {
-            written = meta->stream[s].written /
-                      (GLuint64)streamStride[s];
+        if (xfbActive && bufferStride[s] > 0u) {
+            written = (GLuint64)bufferWritten[s] /
+                      (GLuint64)bufferStride[s];
         }
         mglRecordActivePrimitiveQueryDrawIndexed(
             ctx, s, (GLuint64)meta->stream[s].generated, written);
@@ -1067,19 +1250,11 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     if (!program || !geometryShader) {
         return NO;
     }
-    if (getenv("MGL_GS_DIAG")) {
-        NSLog(@"MGL GS DIAG enter program=%u mode=0x%x count=%d first=%d",
-              (unsigned)program->name, (unsigned)mode, (int)count, (int)first);
-    }
     /* Keep the old narrow passthrough optimization.  It does not need a
-     * compute expansion and remains a normal VS->FS draw. */
-    const char *geometrySource = geometryShader->src;
-    if (geometrySource && strstr(geometrySource, "EmitVertex()") &&
-        strstr(geometrySource, "EndPrimitive()") &&
-        strstr(geometrySource, "gl_Position = gl_in[n_vertex_index].gl_Position") &&
-        !strstr(geometrySource, "gl_PrimitiveID") &&
-        !strstr(geometrySource, "gl_Layer") &&
-        !strstr(geometrySource, "gl_ViewportIndex")) {
+     * compute expansion and remains a normal VS->FS draw.  Programs with
+     * transform-feedback varyings never qualify: the bypass would skip
+     * the capture entirely. */
+    if (mglProgramHasPassthroughGeometryShader(program)) {
         return NO;
     }
     GLenum gsInputMode = program->geometry_input_type;
@@ -1094,26 +1269,30 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         gsOutputMode != GL_TRIANGLE_STRIP) {
         gsOutputMode = GL_TRIANGLE_STRIP;
     }
-    GLuint inputVertices = gsInputMode == GL_POINTS ? 1u
-        : gsInputMode == GL_LINES ? 2u
-        : gsInputMode == GL_LINES_ADJACENCY ? 4u
-        : (gsInputMode == GL_TRIANGLES_ADJACENCY) ? 6u : 3u;
     uint32_t outputPrimitive = gsOutputMode == GL_POINTS
         ? MGL_DRAW_PRIMITIVE_POINT
         : gsOutputMode == GL_LINE_STRIP ? MGL_DRAW_PRIMITIVE_LINE
         : MGL_DRAW_PRIMITIVE_TRIANGLE;
     const BOOL indexedDraw = (indexType != 0u);
-    if (mode != gsInputMode || count <= 0 || instanceCount <= 0 ||
-        (!indexedDraw && (first < 0 ||
-                          (count % (GLsizei)inputVertices) != 0))) {
+    if (getenv("MGL_GS_DIAG")) {
+        NSLog(@"MGL GS DIAG topology mode=0x%x gsIn=0x%x gsOut=0x%x indexed=%d count=%d first=%d",
+              (unsigned)mode, (unsigned)gsInputMode, (unsigned)gsOutputMode,
+              indexedDraw ? 1 : 0, (int)count, (int)first);
+    }
+    if (!mglGeometryInputModeAccepts(gsInputMode, mode) || count <= 0 ||
+        instanceCount <= 0 || (!indexedDraw && first < 0)) {
+        if (getenv("MGL_GS_DIAG")) {
+            NSLog(@"MGL GS DIAG topology rejected mode=0x%x gsIn=0x%x",
+                  (unsigned)mode, (unsigned)gsInputMode);
+        }
         static uint64_t unsupportedDrawCount = 0;
         uint64_t hit = ++unsupportedDrawCount;
         if (hit <= 16ull || (hit % 512ull) == 0ull) {
             NSLog(@"MGL GS ERROR: blocking unsupported %s draw %@ "
-                   "mode=0x%x count=%d instances=%d baseInstance=%u",
+                   "mode=0x%x gsIn=0x%x count=%d instances=%d baseInstance=%u",
                   indexedDraw ? "indexed" : "array",
                   label ? [NSString stringWithUTF8String:label] : @"draw",
-                  (unsigned)mode, (int)count, (int)instanceCount,
+                  (unsigned)mode, (unsigned)gsInputMode, (int)count, (int)instanceCount,
                   (unsigned)baseInstance);
         }
         /*  contract: never drop a GS draw silently.  A draw whose mode
@@ -1124,7 +1303,6 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     }
     if (program->gs_route != MGL_GS_ROUTE_COMPUTE ||
         !program->modules[_GEOMETRY_SHADER].metallib_bytes ||
-        program->geometry_vertices_out == 0u ||
         program->geometry_vertices_out > 1024u) {
         static uint64_t unsupportedCount = 0;
         uint64_t hit = ++unsupportedCount;
@@ -1166,38 +1344,39 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     id gatherBuf = nil;
     MGLAIRGSGatherParams gparams;
     memset(&gparams, 0, sizeof(gparams));
-    if (indexedDraw) {
-        Buffer *ebo = getElementBuffer(drawCtx);
-        if (!ebo || ![self processBuffer:ebo] || !ebo->data.mtl_data) {
+    {
+        Buffer *ebo = indexedDraw ? getElementBuffer(drawCtx) : NULL;
+        if (indexedDraw &&
+            (!ebo || ![self processBuffer:ebo] || !ebo->data.mtl_data)) {
             mglDispatchError(drawCtx, label ? label : "geometryDraw",
                              GL_INVALID_OPERATION);
             return YES;
         }
-        eboMetal = (__bridge id)ebo->data.mtl_data;
-        indexOffsetBytes = (NSUInteger)(uintptr_t)indices;
-        indexBytes = mglElementIndexSourceForDraw(ebo, eboMetal, indexType,
-                                                  indexOffsetBytes, count);
-        if (!indexBytes) {
-            mglDispatchError(drawCtx, label ? label : "geometryDraw",
-                             GL_INVALID_OPERATION);
-            return YES;
+        if (indexedDraw) {
+            eboMetal = (__bridge id)ebo->data.mtl_data;
+            indexOffsetBytes = (NSUInteger)(uintptr_t)indices;
+            indexBytes = mglElementIndexSourceForDraw(
+                ebo, eboMetal, indexType, indexOffsetBytes, count);
+            if (!indexBytes) {
+                mglDispatchError(drawCtx, label ? label : "geometryDraw",
+                                 GL_INVALID_OPERATION);
+                return YES;
+            }
         }
         uint32_t restartIndex = 0u;
-        bool restartEnabled = false;
-        restartEnabled = mglPrimitiveRestartIndexForType(
-            drawCtx, indexType, &restartIndex);
-        if (!mglGeometryGatherIndices(indexBytes, indexType, count,
-                                      baseVertex, restartEnabled, restartIndex,
-                                      inputVertices, &gatherArray,
-                                      &gatherCount, &gatherPrimitives,
-                                      &gatherMaxIndex)) {
-
+        const bool restartEnabled = indexedDraw &&
+            mglPrimitiveRestartIndexForType(drawCtx, indexType, &restartIndex);
+        if (!mglGeometryGatherTopology(
+                indexBytes, indexType, count, first, indexedDraw,
+                restartEnabled, restartIndex, mode, &gatherArray,
+                &gatherCount, &gatherPrimitives, &gatherMaxIndex)) {
+            /* Incomplete primitive groups are valid GL draws with no
+             * invocations. */
             return YES;
         }
-        captureIndexType = mglIndexTypeForGLType(indexType);
+        if (indexedDraw) captureIndexType = mglIndexTypeForGLType(indexType);
         gatherBuf = mglDrawSupportCreateBufferWithBytes(
-            _device, gatherArray, (NSUInteger)gatherCount * 4u,
-            0u);
+            _device, gatherArray, (NSUInteger)gatherCount * 4u, 0u);
         free(gatherArray);
         gatherArray = NULL;
         if (!gatherBuf) {
@@ -1205,14 +1384,24 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
                              GL_OUT_OF_MEMORY);
             return YES;
         }
-        gparams.vertices_per_instance = gatherMaxIndex + 1u;
+        gparams.vertices_per_instance = indexedDraw
+            ? gatherMaxIndex + 1u : (uint32_t)count;
         gparams.primitives_per_instance = gatherPrimitives;
-        gparams.first_vertex = 0u;
+        gparams.first_vertex = indexedDraw ? 0u : (uint32_t)first;
         gparams.gather_enabled = 1u;
+        if (getenv("MGL_GS_DIAG")) {
+            NSLog(@"MGL GS DIAG gather mode=0x%x indexed=%d first=%d count=%d gathered=%u prims=%u max=%u params={%u,%u,%u,%u}",
+                  (unsigned)mode, indexedDraw ? 1 : 0, (int)first, (int)count,
+                  (unsigned)gatherCount, (unsigned)gatherPrimitives,
+                  (unsigned)gatherMaxIndex,
+                  (unsigned)gparams.vertices_per_instance,
+                  (unsigned)gparams.primitives_per_instance,
+                  (unsigned)gparams.first_vertex,
+                  (unsigned)gparams.gather_enabled);
+        }
     }
 
-    const GLuint primitiveCount = indexedDraw
-        ? gatherPrimitives : (GLuint)count / inputVertices;
+    const GLuint primitiveCount = (GLuint)gatherPrimitives;
     if ((GLuint)instanceCount > UINT32_MAX / primitiveCount) {
         mglDispatchError(drawCtx, label ? label : "geometryDraw",
                          GL_OUT_OF_MEMORY);
@@ -1229,7 +1418,11 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     const GLuint workItemCount = drawPrimitiveCount * invocationCount;
     const NSUInteger outputStride = mglAIRPerVertexStrideForResources(
         &program->shader_resources_list[_GEOMETRY_SHADER][_STAGE_OUTPUT_RES]);
-    const uint32_t maxVertices = program->geometry_vertices_out;
+    /* Keep a zero-output GS on the same ABI: the backend emits no expanded
+     * records, but each work item still owns the two header records used by
+     * the indirect-draw layout. */
+    const uint32_t maxVertices = program->geometry_vertices_out > 0u
+        ? program->geometry_vertices_out : 1u;
 
     const MGLAIRGSOutputPrimitive gsAirOutput = gsOutputMode == GL_POINTS
         ? MGL_AIR_GS_OUT_POINTS
@@ -1275,7 +1468,6 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         drawCtx->state.dirty_bits = DIRTY_ALL;
         return YES;
     }
-
     void *pipelineHandle = NULL;
     char pipelineError[512] = {0};
     int pipelineResult = mglGetOrCreateProgramComputePipeline(
@@ -1346,149 +1538,269 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
 
     TransformFeedback *xfbState = MGL_STATE(drawCtx)->transform_feedback;
     const bool xfbActive = xfbState && xfbState->active && !xfbState->paused;
+
+    /* ---- GL4 ordered multi-buffer XFB (mgl_air_gs_abi.h §5b) ----
+     * Replace the prototype per-stream atomic-cursor capture with a
+     * per-*buffer* layout driven by the link-time scatter plan
+     * (Program.transform_feedback_layout[]).  Records are scattered by the
+     * pass-2 aux kernel in emission order with whole-primitive cross-buffer
+     * truncation. */
+    const bool gsSeparate =
+        program->transform_feedback_buffer_mode == GL_SEPARATE_ATTRIBS;
+
+    /* Per-buffer scatter plan (indexed by transform-feedback buffer 0..3). */
+    MGLAIRGSXFBScatterParams scatterParams;
+    memset(&scatterParams, 0, sizeof(scatterParams));
+    for (uint32_t b = 0u; b < MGL_AIR_GS_MAX_STREAMS; b++) {
+        scatterParams.buffer_stream[b] = MGL_AIR_GS_XFB_NO_STREAM;
+    }
+    /* Per-buffer GL binding state for copy-back (indexed by buffer index). */
+    NSUInteger bufferCapBytes[MGL_AIR_GS_MAX_STREAMS] = {0u};
+    NSUInteger bufferPhysBase[MGL_AIR_GS_MAX_STREAMS] = {0u};
+    NSUInteger bufferDstOffset[MGL_AIR_GS_MAX_STREAMS] = {0u};
+    NSUInteger bufferRemaining[MGL_AIR_GS_MAX_STREAMS] = {0u};
+    id bufferDstMTL[MGL_AIR_GS_MAX_STREAMS] = {nil};
+    uint32_t xfbBufferCount = 0u;
+
     id xfbTemporary = nil;
-    id xfbCaptureBuffer = nil;
-    id xfbDestinationMTL = nil;
-    NSUInteger xfbDestinationOffset = 0u;
-    NSUInteger xfbRemainingVisibleBytes = 0u;
-    NSUInteger xfbMaxCaptureBytes = 0u;
+    id xfbCaptureBuffer = nil;   /* slot-31 capture (always the temporary) */
+    id xfbVisBuffer = nil;       /* pass-1 per-(work-item, buffer) bytes    */
+    id xfbOffsetBuffer = nil;    /* CPU prefix offsets for pass 2           */
+    id xfbWrittenBuffer = nil;   /* pass-2 per-(work-item, buffer) written  */
+    id scatterPipeline = nil;
+
+    if (xfbActive) {
+        /* Build the field descriptors from the link-time scatter plan.  For
+         * each captured (non-builtin) varying, locate its GS output resource
+         * to recover the layout(location) that fixes the pass-1 stage-out
+         * record source offset (MGL_AIR_PER_VERTEX_STRIDE + location*16).
+         * The destination offset is the link plan's per-buffer component
+         * offset verbatim: component offsets are per buffer and the link
+         * validation keeps one feeding stream per buffer, so no regrouping
+         * is needed; the loop only bakes the buffer->stream map the pass-2
+         * scatter uses to attribute stage-out records to streams. */
+        MGLShaderResourceList *gsOutputs =
+            &program->shader_resources_list[_GEOMETRY_SHADER]
+                                           [_STAGE_OUTPUT_RES];
+        uint32_t fieldCount = 0u;
+        for (uint32_t s = 0u; s < MGL_AIR_GS_MAX_STREAMS; s++) {
+            for (GLsizei vi = 0;
+                 vi < program->transform_feedback_varying_count &&
+                 fieldCount < MGL_AIR_GS_XFB_MAX_FIELDS;
+                 vi++) {
+                const MGLTransformFeedbackVaryingPlan *plan =
+                    &program->transform_feedback_layout[vi];
+                if (plan->builtin || plan->component_count == 0u) continue;
+                if ((uint32_t)plan->stream != s) continue;
+                if (plan->buffer_index >= MGL_AIR_GS_MAX_STREAMS) continue;
+                const char *name =
+                    program->transform_feedback_varying_names[vi];
+                if (!name || !name[0]) continue;
+                char baseName[96];
+                strncpy(baseName, name, sizeof(baseName) - 1);
+                baseName[sizeof(baseName) - 1] = '\0';
+                char *bracket = strchr(baseName, '[');
+                if (bracket) *bracket = '\0';
+                GLuint location = UINT32_MAX;
+                for (GLuint j = 0u; j < gsOutputs->count; j++) {
+                    if (gsOutputs->list[j].name &&
+                        strcmp(gsOutputs->list[j].name, baseName) == 0) {
+                        location = gsOutputs->list[j].location;
+                        break;
+                    }
+                }
+                if (location == UINT32_MAX) continue;
+                MGLAIRGSXFBFieldDesc *fd = &scatterParams.fields[fieldCount++];
+                fd->buffer_index = plan->buffer_index;
+                fd->src_offset =
+                    MGL_AIR_PER_VERTEX_STRIDE + location * 16u;
+                fd->dst_offset = plan->component_offset * 4u;
+                fd->byte_count = plan->component_count * 4u;
+                scatterParams.buffer_stream[plan->buffer_index] = s;
+                if (plan->buffer_index + 1u > xfbBufferCount) {
+                    xfbBufferCount = plan->buffer_index + 1u;
+                }
+            }
+        }
+        scatterParams.field_count = fieldCount;
+
+        /* Per-buffer record stride = max end offset of its captured fields
+         * (GL 4.6 §13.2.4 records are tightly packed per buffer). */
+        for (uint32_t f = 0u; f < fieldCount; f++) {
+            const MGLAIRGSXFBFieldDesc *fd = &scatterParams.fields[f];
+            uint32_t end = fd->dst_offset + fd->byte_count;
+            if (end > scatterParams.buffers[fd->buffer_index].stride) {
+                scatterParams.buffers[fd->buffer_index].stride = end;
+            }
+        }
+
+        if (getenv("MGL_GS_XFB_DIAG")) {
+            NSLog(@"MGL GS XFB DIAG fields=%u buffers=%u varyings=%d mode=0x%x",
+                  fieldCount, xfbBufferCount,
+                  program->transform_feedback_varying_count,
+                  program->transform_feedback_buffer_mode);
+            for (uint32_t f = 0u; f < fieldCount; f++) {
+                NSLog(@"  field[%u] buf=%u src=%u dst=%u bytes=%u", f,
+                      scatterParams.fields[f].buffer_index,
+                      scatterParams.fields[f].src_offset,
+                      scatterParams.fields[f].dst_offset,
+                      scatterParams.fields[f].byte_count);
+            }
+        }
+
+        /* Resolve each active buffer's GL binding, visible capacity and
+         * session write offset.  Always capture into a fresh temporary so the
+         * pass-2 scatter writes ordered records independent of the GL store
+         * address; copy-back moves them afterwards. */
+        NSUInteger physTotal = 0u;
+        for (uint32_t b = 0u; b < xfbBufferCount; b++) {
+            if (scatterParams.buffers[b].stride == 0u) continue;
+            BufferBaseTarget *slot = &MGL_STATE(drawCtx)
+                ->buffer_base[_TRANSFORM_FEEDBACK_BUFFER].buffers[b];
+            if (!slot->buf) {
+                if (getenv("MGL_GS_XFB_DIAG"))
+                    NSLog(@"MGL GS XFB DIAG buffer[%u] no bound GL buffer", b);
+                continue;
+            }
+            if (!slot->buf->data.mtl_data) {
+                [self bindMTLBuffer:slot->buf];
+            }
+            id mtl = (__bridge id)(slot->buf->data.mtl_data);
+            if (!mtl) {
+                if (getenv("MGL_GS_XFB_DIAG"))
+                    NSLog(@"MGL GS XFB DIAG buffer[%u] no MTL backing", b);
+                continue;
+            }
+            BufferMap map = {0};
+            map.buf = slot->buf;
+            map.offset = slot->offset;
+            map.size = slot->size;
+            NSUInteger visible = mglBufferMapVisibleBackingBytes(
+                &map, (size_t)mglDrawSupportBufferLength(mtl));
+            NSUInteger sessionOffset = 0u;
+            if (xfbState->buffer_write_offsets[b] <= (GLuint64)NSUIntegerMax) {
+                sessionOffset = (NSUInteger)xfbState->buffer_write_offsets[b];
+            }
+            if (sessionOffset > visible || slot->offset < 0 ||
+                (NSUInteger)slot->offset > NSUIntegerMax - sessionOffset) {
+                if (getenv("MGL_GS_XFB_DIAG"))
+                    NSLog(@"MGL GS XFB DIAG buffer[%u] offset overflow "
+                          "vis=%lu sessOff=%lu slotOff=%lld", b,
+                          (unsigned long)visible, (unsigned long)sessionOffset,
+                          (long long)slot->offset);
+                continue;
+            }
+            bufferRemaining[b] = visible - sessionOffset;
+            bufferDstOffset[b] = (NSUInteger)slot->offset + sessionOffset;
+            bufferDstMTL[b] = mtl;
+            NSUInteger maxCap = (NSUInteger)workItemCount * expandedVertices *
+                                scatterParams.buffers[b].stride;
+            bufferCapBytes[b] = MIN(maxCap, bufferRemaining[b]);
+            if (bufferCapBytes[b] > (NSUInteger)UINT32_MAX) {
+                bufferCapBytes[b] = (NSUInteger)UINT32_MAX;
+            }
+            bufferPhysBase[b] = physTotal;
+            physTotal += bufferCapBytes[b];
+            scatterParams.buffers[b].capacity_bytes =
+                (uint32_t)bufferCapBytes[b];
+            scatterParams.buffers[b].capture_base =
+                (uint32_t)MIN(bufferPhysBase[b], (NSUInteger)UINT32_MAX);
+        }
+        if (getenv("MGL_GS_XFB_DIAG")) {
+            for (uint32_t b = 0u; b < xfbBufferCount; b++) {
+                NSLog(@"  buffer[%u] stride=%u cap=%u base=%u physTotal=%lu dstMTL=%@",
+                      b, scatterParams.buffers[b].stride,
+                      scatterParams.buffers[b].capacity_bytes,
+                      scatterParams.buffers[b].capture_base,
+                      (unsigned long)physTotal, bufferDstMTL[b]);
+            }
+        }
+        scatterParams.buffer_count = xfbBufferCount;
+        scatterParams.work_item_count = (uint32_t)workItemCount;
+        scatterParams.stage_out_stride = (uint32_t)outputStride;
+        scatterParams.records_per_primitive = (uint32_t)recordsPerPrimitive;
+        scatterParams.vertices_per_primitive =
+            (uint32_t)(outputPrimitive == MGL_DRAW_PRIMITIVE_POINT
+                           ? 1u
+                           : (outputPrimitive == MGL_DRAW_PRIMITIVE_LINE
+                                  ? 2u
+                                  : 3u));
+        scatterParams.expanded_offset_records = MGL_AIR_GS_HEADER_RECORDS;
+
+        if (physTotal > 0u && xfbBufferCount > 0u) {
+            xfbTemporary = mglDrawSupportCreateBuffer(_device, physTotal, 0u);
+            if (xfbTemporary) {
+                memset(mglDrawSupportBufferContents(xfbTemporary), 0,
+                       physTotal);
+                xfbCaptureBuffer = xfbTemporary;
+            }
+            const NSUInteger visBytes =
+                (NSUInteger)workItemCount * MGL_AIR_GS_MAX_STREAMS *
+                sizeof(uint32_t);
+            xfbVisBuffer = mglDrawSupportCreateBuffer(_device, visBytes, 0u);
+            xfbOffsetBuffer = mglDrawSupportCreateBuffer(_device, visBytes, 0u);
+            xfbWrittenBuffer =
+                mglDrawSupportCreateBuffer(_device, visBytes, 0u);
+            if (xfbVisBuffer && mglDrawSupportBufferContents(xfbVisBuffer)) {
+                memset(mglDrawSupportBufferContents(xfbVisBuffer), 0,
+                       visBytes);
+            }
+            if (xfbWrittenBuffer &&
+                mglDrawSupportBufferContents(xfbWrittenBuffer)) {
+                memset(mglDrawSupportBufferContents(xfbWrittenBuffer), 0,
+                       visBytes);
+            }
+            const MGLAuxShaderAsset *scatterAsset =
+                mglAuxShaderAssetFind("gs_xfb_scatter");
+            if (scatterAsset && scatterAsset->data) {
+                void *scatterHandle = NULL;
+                char scatterError[256] = {0};
+                if (mglRenderGetOrCreateAuxComputePipelineFromMetallib(
+                        scatterAsset->data, scatterAsset->size,
+                        scatterAsset->hash, "mgl_gs_xfb_scatter",
+                        MGL_RENDER_AUX_COMPUTE_GS_XFB_SCATTER, 0u,
+                        &scatterHandle, scatterError,
+                        sizeof(scatterError)) == 0 &&
+                    scatterHandle) {
+                    scatterPipeline = (__bridge_transfer id)scatterHandle;
+                } else {
+                    NSLog(@"MGL GS XFB ERROR: scatter pipeline failed: %s",
+                          scatterError[0] ? scatterError : "unknown");
+                }
+            }
+            if (!xfbTemporary || !xfbVisBuffer || !xfbOffsetBuffer ||
+                !xfbWrittenBuffer || !scatterPipeline) {
+                drawCtx->state.dirty_bits = DIRTY_ALL;
+                mglDispatchError(drawCtx, label ? label : "geometryDraw",
+                                 GL_OUT_OF_MEMORY);
+                return YES;
+            }
+        }
+    }
+    /* Back-compat locals referenced by the query/copy-back tail below. */
+    NSUInteger xfbDestinationMTL_unused = 0u; (void)xfbDestinationMTL_unused;
+    NSUInteger streamStride[MGL_AIR_GS_MAX_STREAMS] = {0u};
+    NSUInteger bufferStride[MGL_AIR_GS_MAX_STREAMS] = {0u};
+    for (uint32_t b = 0u; b < MGL_AIR_GS_MAX_STREAMS; b++) {
+        streamStride[b] = scatterParams.buffers[b].stride;
+        bufferStride[b] = scatterParams.buffers[b].stride;
+    }
     const uint32_t gsStreamCount =
         program->geometry_stream_count > 0u ? program->geometry_stream_count
                                             : 1u;
     const bool multiStream = gsStreamCount > 1u;
-    NSUInteger streamPhysBase[MGL_AIR_GS_MAX_STREAMS] = {0u};
-    NSUInteger streamCapBytes[MGL_AIR_GS_MAX_STREAMS] = {0u};
-    NSUInteger streamDstOffset[MGL_AIR_GS_MAX_STREAMS] = {0u};
-    NSUInteger streamRemaining[MGL_AIR_GS_MAX_STREAMS] = {0u};
-    id streamDstMTL[MGL_AIR_GS_MAX_STREAMS] = {nil};
-    NSUInteger streamStride[MGL_AIR_GS_MAX_STREAMS] = {0u};
-    if (xfbActive) {
-        streamStride[0] = outputStride;
-        for (uint32_t s = 1u; s < gsStreamCount; s++) {
-            streamStride[s] = program->geometry_stream_xfb_stride[s];
-        }
-        if (multiStream) {
-            NSUInteger physTotal = 0u;
-            for (uint32_t s = 0u; s < gsStreamCount; s++) {
-                BufferBaseTarget *slot = &MGL_STATE(drawCtx)
-                    ->buffer_base[_TRANSFORM_FEEDBACK_BUFFER].buffers[s];
-                if (!slot->buf) {
-                    streamStride[s] = 0u;
-                    continue;
-                }
-                if (!slot->buf->data.mtl_data) {
-                    [self bindMTLBuffer:slot->buf];
-                }
-                id mtl = (__bridge id)(
-                    slot->buf->data.mtl_data);
-                if (!mtl) continue;
-                BufferMap map = {0};
-                map.buf = slot->buf;
-                map.offset = slot->offset;
-                map.size = slot->size;
-                NSUInteger visible = mglBufferMapVisibleBackingBytes(
-                    &map, (size_t)mglDrawSupportBufferLength(mtl));
-                NSUInteger sessionOffset = 0u;
-                if (xfbState->buffer_write_offsets[s] <=
-                    (GLuint64)NSUIntegerMax) {
-                    sessionOffset =
-                        (NSUInteger)xfbState->buffer_write_offsets[s];
-                }
-                if (sessionOffset > visible || slot->offset < 0 ||
-                    (NSUInteger)slot->offset >
-                        NSUIntegerMax - sessionOffset) {
-                    continue;
-                }
-                streamRemaining[s] = visible - sessionOffset;
-                streamDstOffset[s] = (NSUInteger)slot->offset + sessionOffset;
-                streamDstMTL[s] = mtl;
-                NSUInteger maxCap = (s == 0u)
-                    ? (NSUInteger)workItemCount * expandedVertices *
-                          streamStride[0]
-                    : (NSUInteger)workItemCount *
-                          (program->geometry_vertices_out > 0u
-                               ? program->geometry_vertices_out : 1u) *
-                          streamStride[s];
-                streamCapBytes[s] = MIN(maxCap, streamRemaining[s]);
-                if (streamCapBytes[s] > (NSUInteger)UINT32_MAX) {
-                    streamCapBytes[s] = (NSUInteger)UINT32_MAX;
-                }
-                streamPhysBase[s] = physTotal;
-                physTotal += streamCapBytes[s];
-            }
-            if (physTotal > 0u) {
-                xfbTemporary = mglDrawSupportCreateBuffer(
-                    _device, physTotal, 0u);
-                if (xfbTemporary) {
-                    memset(mglDrawSupportBufferContents(xfbTemporary), 0, physTotal);
-                    xfbCaptureBuffer = xfbTemporary;
-                }
-            }
-        } else {
-            xfbMaxCaptureBytes =
-                (NSUInteger)workItemCount * expandedVertices * outputStride;
-            BufferBaseTarget *xfbSlot = &MGL_STATE(drawCtx)
-                ->buffer_base[_TRANSFORM_FEEDBACK_BUFFER].buffers[0];
-            if (xfbSlot->buf) {
-                if (!xfbSlot->buf->data.mtl_data) {
-                    [self bindMTLBuffer:xfbSlot->buf];
-                }
-                id xfbMTL =
-                    (__bridge id)(xfbSlot->buf->data.mtl_data);
-                if (xfbMTL) {
-                    BufferMap xfbMap = {0};
-                    xfbMap.buf = xfbSlot->buf;
-                    xfbMap.offset = xfbSlot->offset;
-                    xfbMap.size = xfbSlot->size;
-                    NSUInteger visibleBytes = mglBufferMapVisibleBackingBytes(
-                        &xfbMap, (size_t)mglDrawSupportBufferLength(xfbMTL));
-                    NSUInteger sessionOffset = 0u;
-                    if (xfbState->buffer_write_offsets[0] <=
-                        (GLuint64)NSUIntegerMax) {
-                        sessionOffset =
-                            (NSUInteger)xfbState->buffer_write_offsets[0];
-                    }
-                    if (sessionOffset <= visibleBytes && xfbSlot->offset >= 0 &&
-                        (NSUInteger)xfbSlot->offset <=
-                            NSUIntegerMax - sessionOffset) {
-                        xfbRemainingVisibleBytes = visibleBytes - sessionOffset;
-                        xfbDestinationOffset =
-                            (NSUInteger)xfbSlot->offset + sessionOffset;
-                        if (xfbMaxCaptureBytes <= xfbRemainingVisibleBytes) {
-                            xfbCaptureBuffer = xfbMTL;
-                            xfbDestinationMTL = xfbMTL;
-                            xfbSlot->buf->ever_written = GL_TRUE;
-                        } else {
-                            xfbTemporary = mglDrawSupportCreateBuffer(
-                                _device, xfbMaxCaptureBytes,
-                                0u);
-                            if (xfbTemporary) {
-                                memset(mglDrawSupportBufferContents(xfbTemporary), 0,
-                                       xfbMaxCaptureBytes);
-                                xfbCaptureBuffer = xfbTemporary;
-                                xfbDestinationMTL = xfbMTL;
-                            }
-                        }
-                        streamDstMTL[0] = xfbDestinationMTL;
-                        streamDstOffset[0] = xfbDestinationOffset;
-                        streamRemaining[0] = xfbRemainingVisibleBytes;
-                        streamCapBytes[0] = MIN(xfbMaxCaptureBytes,
-                                                xfbRemainingVisibleBytes);
-                    }
-                }
-            }
-        }
-    }
+    (void)gsSeparate;
     MGLAIRGSXFBMeta xfbMeta;
     memset(&xfbMeta, 0, sizeof(xfbMeta));
     for (uint32_t s = 0u; s < MGL_AIR_GS_MAX_STREAMS; s++) {
         xfbMeta.stream[s].stride = (xfbCaptureBuffer && streamStride[s] > 0u &&
-                                    streamCapBytes[s] > 0u)
+                                    bufferCapBytes[s] > 0u)
             ? (uint32_t)streamStride[s] : 0u;
         xfbMeta.stream[s].capacity_bytes =
-            (uint32_t)MIN(streamCapBytes[s], (NSUInteger)UINT32_MAX);
+            (uint32_t)MIN(bufferCapBytes[s], (NSUInteger)UINT32_MAX);
         xfbMeta.stream[s].capture_base =
-            (uint32_t)MIN(streamPhysBase[s], (NSUInteger)UINT32_MAX);
+            (uint32_t)MIN(bufferPhysBase[s], (NSUInteger)UINT32_MAX);
+        xfbMeta.buffer_stream[s] = scatterParams.buffer_stream[s];
     }
     id xfbMetaBuf = mglDrawSupportCreateBufferWithBytes(
         _device, &xfbMeta, sizeof(xfbMeta), 0u);
@@ -1523,13 +1835,15 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         MGL_GS_PLAN_BUFFER(input, inputOffset, MGL_AIR_GS_SLOT_INPUT);
         MGL_GS_PLAN_BUFFER(output, 0u, MGL_AIR_GS_SLOT_OUTPUT);
         MGL_GS_PLAN_BUFFER(counts, 0u, MGL_AIR_GS_SLOT_COUNTS);
-        MGL_GS_PLAN_BUFFER(indexedDraw ? gatherBuf : counts, 0u,
+        MGL_GS_PLAN_BUFFER(gatherBuf ? gatherBuf : counts, 0u,
                            MGL_AIR_GS_SLOT_GATHER);
         if (xfbCaptureBuffer) {
-            MGL_GS_PLAN_BUFFER(xfbCaptureBuffer, xfbDestinationOffset,
-                               MGL_AIR_GS_SLOT_XFB);
+            MGL_GS_PLAN_BUFFER(xfbCaptureBuffer, 0u, MGL_AIR_GS_SLOT_XFB);
         }
         MGL_GS_PLAN_BUFFER(xfbMetaBuf, 0u, MGL_AIR_GS_SLOT_XFB_META);
+        if (xfbVisBuffer) {
+            MGL_GS_PLAN_BUFFER(xfbVisBuffer, 0u, MGL_AIR_GS_SLOT_XFB_VIS);
+        }
         MGL_GS_PLAN_BYTES(&gparams, sizeof(gparams),
                           MGL_AIR_GS_SLOT_GATHER_PARAMS);
 #undef MGL_GS_PLAN_BYTES
@@ -1550,18 +1864,21 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
                                        MGL_AIR_GS_SLOT_COUNTS);
 
         mglDrawSupportSetComputeBuffer(compute,
-                                       indexedDraw ? gatherBuf : counts, 0u,
+                                       gatherBuf ? gatherBuf : counts, 0u,
                                        MGL_AIR_GS_SLOT_GATHER);
         mglDrawSupportSetComputeBytes(compute, &gparams, sizeof(gparams),
                                       MGL_AIR_GS_SLOT_GATHER_PARAMS);
 
         if (xfbCaptureBuffer) {
-            mglDrawSupportSetComputeBuffer(compute, xfbCaptureBuffer,
-                                           xfbDestinationOffset,
+            mglDrawSupportSetComputeBuffer(compute, xfbCaptureBuffer, 0u,
                                            MGL_AIR_GS_SLOT_XFB);
         }
         mglDrawSupportSetComputeBuffer(compute, xfbMetaBuf, 0u,
                                        MGL_AIR_GS_SLOT_XFB_META);
+        if (xfbVisBuffer) {
+            mglDrawSupportSetComputeBuffer(compute, xfbVisBuffer, 0u,
+                                           MGL_AIR_GS_SLOT_XFB_VIS);
+        }
     }
     bool buffersOK = [self bindBuffersToComputeEncoder:compute
                                                    stage:_GEOMETRY_SHADER
@@ -1572,6 +1889,14 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
                                                                 stage:_GEOMETRY_SHADER
                                                         executionPlan:cppDispatch ? &executionPlan : NULL
                                                          temporaries:executionTemporaries];
+    if (getenv("MGL_GS_DIAG") && cppDispatch) {
+        for (uint32_t bi = 0; bi < executionPlan.binding_op_count; bi++) {
+            const MGLRenderComputeBindingOp *op = &executionPlan.binding_ops[bi];
+            NSLog(@"MGL GS DIAG binding[%u] kind=%u slot=%u offset=%llu buffer=%p",
+                  (unsigned)bi, (unsigned)op->kind, (unsigned)op->index,
+                  (unsigned long long)op->offset, op->buffer);
+        }
+    }
     if (!buffersOK || !texturesOK) {
         if (compute) mglDrawSupportEndComputeEncoder(compute);
         [self clearStageBindingCopyBacks:&stageCopyBacks];
@@ -1606,14 +1931,16 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
             ? MGL_RENDER_COMPUTE_BARRIER_BUFFERS
             : MGL_RENDER_COMPUTE_BARRIER_NONE;
         const BOOL requireCPUVisibility =
-            xfbActive || mglHasActiveIndexedPrimitiveQuery();
+            xfbActive || mglHasActiveIndexedPrimitiveQuery() ||
+            mglHasActivePrimitiveQuery() || mglHasActiveGeometryShaderQuery();
+        const BOOL gsDiagnostic = getenv("MGL_GS_DIAG") != NULL;
         MGLRenderComputeExecutionResult executionResult = {0};
         char executionError[256] = {0};
         if (mglRenderExecuteComputeExecutionPlan(
                 _renderPassManager.state->currentCommandBufferOwner,
                 _gpuRecovery.commandRecoveryOwner,
                 &executionPlan, copyBackEntries, copyBackEntryCount,
-                requireCPUVisibility ? 1u : 0u, &executionResult,
+                (requireCPUVisibility || gsDiagnostic) ? 1u : 0u, &executionResult,
                 executionError, sizeof(executionError)) != 0) {
             if (executionResult.transaction.device_reset_requested) {
                 atomic_store_explicit(&_deviceResetRequested, true,
@@ -1632,9 +1959,73 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         mglDrawSupportEndComputeEncoder(compute);
         if (![self flushStageBindingCopyBacks:&stageCopyBacks
                          requireCPUVisibility:(xfbActive ||
-                                               mglHasActiveIndexedPrimitiveQuery())]) {
+                                               mglHasActiveIndexedPrimitiveQuery() ||
+                                               mglHasActivePrimitiveQuery() ||
+                                               mglHasActiveGeometryShaderQuery())]) {
             drawCtx->state.dirty_bits = DIRTY_ALL;
             return YES;
+        }
+    }
+    if (getenv("MGL_GS_DIAG")) {
+        const uint32_t *countWords =
+            (const uint32_t *)mglDrawSupportBufferContents(counts);
+        const uint8_t *inputBytes =
+            (const uint8_t *)mglDrawSupportBufferContents(input);
+        const uint8_t *outputBytes =
+            (const uint8_t *)mglDrawSupportBufferContents(output);
+        NSLog(@"MGL GS DIAG records inputStride=%lu outputStride=%lu recordsPerPrimitive=%lu workItems=%u",
+              (unsigned long)mglAIRPerVertexStrideForResources(
+                  &program->shader_resources_list[_VERTEX_SHADER][_STAGE_OUTPUT_RES]),
+              (unsigned long)outputStride, (unsigned long)recordsPerPrimitive,
+              (unsigned)workItemCount);
+        for (GLuint wi = 0u; wi < MIN(workItemCount, 4u); wi++) {
+            const uint32_t *cw = countWords
+                ? countWords + (NSUInteger)wi * MGL_AIR_GS_COUNTS_RECORD_WORDS
+                : NULL;
+            NSLog(@"MGL GS DIAG counts[%u]={%u,%u,%u,%u,%u,%u,%u}",
+                  (unsigned)wi,
+                  cw ? cw[0] : 0u, cw ? cw[1] : 0u, cw ? cw[2] : 0u,
+                  cw ? cw[3] : 0u, cw ? cw[4] : 0u, cw ? cw[5] : 0u,
+                  cw ? cw[6] : 0u);
+            if (inputBytes) {
+                const float *pos = (const float *)(inputBytes +
+                    (NSUInteger)wi * (NSUInteger)gparams.vertices_per_instance *
+                    mglAIRPerVertexStrideForResources(
+                        &program->shader_resources_list[_VERTEX_SHADER][_STAGE_OUTPUT_RES]));
+                NSLog(@"MGL GS DIAG input[%u].pos={%g,%g,%g,%g}",
+                      (unsigned)wi, pos[0], pos[1], pos[2], pos[3]);
+                const NSUInteger inputStride =
+                    mglAIRPerVertexStrideForResources(
+                        &program->shader_resources_list[_VERTEX_SHADER][_STAGE_OUTPUT_RES]);
+                for (uint32_t slot = 0u; slot < MIN((uint32_t)gsInputMode == GL_LINES_ADJACENCY ? 4u : 3u, 6u); slot++) {
+                    const float *slotPos = (const float *)(inputBytes +
+                        ((NSUInteger)wi * (NSUInteger)gparams.vertices_per_instance +
+                         (NSUInteger)slot) * inputStride);
+                    NSLog(@"MGL GS DIAG inputRecord[%u].slot[%u].pos={%g,%g,%g,%g}",
+                          (unsigned)wi, (unsigned)slot,
+                          slotPos[0], slotPos[1], slotPos[2], slotPos[3]);
+                }
+            }
+            if (outputBytes) {
+                const float *pos = (const float *)(outputBytes +
+                    ((NSUInteger)wi * recordsPerPrimitive +
+                     MGL_AIR_GS_HEADER_RECORDS) * outputStride);
+                NSLog(@"MGL GS DIAG output[%u].pos={%g,%g,%g,%g}",
+                      (unsigned)wi, pos[0], pos[1], pos[2], pos[3]);
+                for (uint32_t record = 0u; record < MIN((uint32_t)recordsPerPrimitive, 8u); record++) {
+                    const float *recordPos = (const float *)(outputBytes +
+                        ((NSUInteger)wi * recordsPerPrimitive + record) * outputStride);
+                    NSLog(@"MGL GS DIAG outputRecord[%u].slot[%u].pos={%g,%g,%g,%g}",
+                          (unsigned)wi, (unsigned)record,
+                          recordPos[0], recordPos[1], recordPos[2], recordPos[3]);
+                    const float *recordV0 = (const float *)((const uint8_t *)recordPos + 64u);
+                    const float *recordV1 = (const float *)((const uint8_t *)recordPos + 80u);
+                    NSLog(@"MGL GS DIAG outputRecord[%u].slot[%u].v0={%g,%g,%g,%g} v1={%g,%g,%g,%g}",
+                          (unsigned)wi, (unsigned)record,
+                          recordV0[0], recordV0[1], recordV0[2], recordV0[3],
+                          recordV1[0], recordV1[1], recordV1[2], recordV1[3]);
+                }
+            }
         }
     }
     _geometry.expansionActive = YES;
@@ -1655,6 +2046,101 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     }
     drawCtx->state.dirty_bits = DIRTY_ALL;
 
+    /* ---- GL4 ordered XFB: CPU prefix-sum + pass-2 scatter ----
+     * pass 1 (above) filled the visibility buffer; compute per-buffer
+     * exclusive prefix offsets and run the ordered scatter kernel.  The
+     * pass-1 transaction already waited for CPU visibility (requireCPUVisibility
+     * includes xfbActive), so the visibility contents are stable here. */
+    NSUInteger bufferWritten[MGL_AIR_GS_MAX_STREAMS] = {0u};
+    if (xfbActive && xfbVisBuffer && xfbOffsetBuffer && xfbWrittenBuffer &&
+        scatterPipeline && xfbCaptureBuffer &&
+        mglDrawSupportBufferContents(xfbVisBuffer) &&
+        mglDrawSupportBufferContents(xfbOffsetBuffer) &&
+        mglDrawSupportBufferContents(xfbWrittenBuffer)) {
+        uint32_t *vis =
+            (uint32_t *)mglDrawSupportBufferContents(xfbVisBuffer);
+        uint32_t *offsets =
+            (uint32_t *)mglDrawSupportBufferContents(xfbOffsetBuffer);
+        /* Exclusive prefix-sum per buffer across work items. */
+        for (uint32_t b = 0u; b < xfbBufferCount; b++) {
+            uint32_t running = 0u;
+            for (uint32_t w = 0u; w < (uint32_t)workItemCount; w++) {
+                uint32_t idx = w * MGL_AIR_GS_MAX_STREAMS + b;
+                offsets[idx] = running;
+                running += vis[idx];
+            }
+        }
+        /* Run pass 2 as its own compute transaction on the scatter PSO. */
+        MGLRenderComputeExecutionPlan scatterPlan = {0};
+        scatterPlan.pipeline = (__bridge void *)scatterPipeline;
+        uint32_t scatterOp = 0u;
+#define MGL_GS_SCATTER_BYTES(data, dataLength, bindingIndex)                  \
+        do {                                                                  \
+            scatterPlan.binding_ops[scatterOp++] =                           \
+                (MGLRenderComputeBindingOp){                                 \
+                    1u, (uint32_t)(bindingIndex), 0u, NULL,                  \
+                    (data), (uint32_t)(dataLength)};                          \
+        } while (0)
+#define MGL_GS_SCATTER_BUFFER(resource, bindingOffset, bindingIndex)         \
+        do {                                                                  \
+            scatterPlan.binding_ops[scatterOp++] =                           \
+                (MGLRenderComputeBindingOp){                                 \
+                    0u, (uint32_t)(bindingIndex),                            \
+                    (uint64_t)(bindingOffset), (__bridge void *)(resource),  \
+                    NULL, 0u};                                                \
+        } while (0)
+        MGL_GS_SCATTER_BYTES(&scatterParams, sizeof(scatterParams),
+                             MGL_AIR_GS_XFB_SCATTER_PARAMS_SLOT);
+        MGL_GS_SCATTER_BUFFER(xfbVisBuffer, 0u, MGL_AIR_GS_XFB_SCATTER_VIS_SLOT);
+        MGL_GS_SCATTER_BUFFER(xfbOffsetBuffer, 0u,
+                              MGL_AIR_GS_XFB_SCATTER_OFFSET_SLOT);
+        MGL_GS_SCATTER_BUFFER(output, 0u, MGL_AIR_GS_XFB_SCATTER_STAGE_OUT_SLOT);
+        MGL_GS_SCATTER_BUFFER(xfbCaptureBuffer, 0u,
+                              MGL_AIR_GS_XFB_SCATTER_XFB_SLOT);
+        MGL_GS_SCATTER_BUFFER(xfbWrittenBuffer, 0u,
+                              MGL_AIR_GS_XFB_SCATTER_WRITTEN_SLOT);
+#undef MGL_GS_SCATTER_BYTES
+#undef MGL_GS_SCATTER_BUFFER
+        scatterPlan.binding_op_count = scatterOp;
+        scatterPlan.dispatch = (MGLRenderComputePlan){
+            .dispatch_kind = MGL_RENDER_COMPUTE_DISPATCH_DIRECT,
+            .groups_x = (uint32_t)workItemCount,
+            .groups_y = 1u,
+            .groups_z = 1u,
+            .local_x = 1u,
+            .local_y = 1u,
+            .local_z = 1u,
+        };
+        scatterPlan.barrier_scope = MGL_RENDER_COMPUTE_BARRIER_BUFFERS;
+        MGLRenderComputeExecutionResult scatterResult = {0};
+        char scatterError[256] = {0};
+        if (mglRenderExecuteComputeExecutionPlan(
+                _renderPassManager.state->currentCommandBufferOwner,
+                _gpuRecovery.commandRecoveryOwner,
+                &scatterPlan, NULL, 0u, 1u, &scatterResult,
+                scatterError, sizeof(scatterError)) != 0) {
+            if (scatterResult.transaction.device_reset_requested) {
+                atomic_store_explicit(&_deviceResetRequested, true,
+                                      memory_order_release);
+            }
+            NSLog(@"MGL GS XFB ERROR: scatter transaction failed: %s",
+                  scatterError[0] ? scatterError : "unknown error");
+            drawCtx->state.dirty_bits = DIRTY_ALL;
+            return YES;
+        }
+        /* Reduce the per-(work-item, buffer) written counters. */
+        const uint32_t *written =
+            (const uint32_t *)mglDrawSupportBufferContents(xfbWrittenBuffer);
+        for (uint32_t b = 0u; b < xfbBufferCount; b++) {
+            NSUInteger total = 0u;
+            for (uint32_t w = 0u; w < (uint32_t)workItemCount; w++) {
+                total += (NSUInteger)written[
+                    w * MGL_AIR_GS_MAX_STREAMS + b];
+            }
+            bufferWritten[b] = total;
+        }
+    }
+
     GLuint64 queryGenerated =
         outputPrimitive == MGL_DRAW_PRIMITIVE_POINT
             ? (GLuint64)workItemCount * expandedVertices
@@ -1670,27 +2156,18 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         const MGLAIRGSXFBMeta *meta =
             (const MGLAIRGSXFBMeta *)mglDrawSupportBufferContents(xfbMetaBuf);
         queryMeta = meta;
-        NSUInteger writtenBytesStream0 = (NSUInteger)meta->stream[0].written;
+        /* Ordered multi-buffer copy-back: blit each buffer's written segment
+         * (already whole-primitive truncated by the scatter kernel) back to
+         * its GL XFB target and advance the session write offset. */
         if (xfbTemporary) {
-            /* Slow path (single- or multi-stream): the kernel captured into
-             * a temporary; copy each stream's segment back to its GL XFB
-             * buffer.  The fast path (direct bind, no temporary) skips this
-             * and only advances the write offset below. */
             id xfbBlit = nil;
-            for (uint32_t s = 0u; s < gsStreamCount; s++) {
-                if (!streamDstMTL[s] || streamStride[s] == 0u) continue;
-                NSUInteger w = (NSUInteger)meta->stream[s].written;
-                if (w == 0u) continue;
-                NSUInteger pbytes = (s == 0u)
-                    ? (NSUInteger)vpp * outputStride
-                    : streamStride[s];  /* streams > 0 are points-only (vpp=1) */
-                NSUInteger copyBytes = pbytes > 0u
-                    ? (w / pbytes) * pbytes : 0u;
-                if (streamRemaining[s] < copyBytes) {
-                    copyBytes = streamRemaining[s] > pbytes
-                        ? (streamRemaining[s] / pbytes) * pbytes
-                        : 0u;
-                }
+            for (uint32_t b = 0u; b < xfbBufferCount; b++) {
+                if (!bufferDstMTL[b] || scatterParams.buffers[b].stride == 0u)
+                    continue;
+                NSUInteger copyBytes = bufferWritten[b];
+                if (copyBytes == 0u) continue;
+                if (copyBytes > bufferRemaining[b])
+                    copyBytes = bufferRemaining[b];
                 if (copyBytes == 0u) continue;
                 if (!xfbBlit) {
                     xfbBlit = mglDrawSupportCreateBlitEncoder(
@@ -1703,51 +2180,43 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
                     }
                 }
                 mglDrawSupportBlitCopyBuffer(xfbBlit, xfbTemporary,
-                                             streamPhysBase[s],
-                                             streamDstMTL[s],
-                                             streamDstOffset[s], copyBytes);
+                                             bufferPhysBase[b],
+                                             bufferDstMTL[b],
+                                             bufferDstOffset[b], copyBytes);
                 BufferBaseTarget *slot = &MGL_STATE(drawCtx)
-                    ->buffer_base[_TRANSFORM_FEEDBACK_BUFFER].buffers[s];
+                    ->buffer_base[_TRANSFORM_FEEDBACK_BUFFER].buffers[b];
                 if (slot->buf) slot->buf->ever_written = GL_TRUE;
                 const GLuint64 currentOffset =
-                    xfbState->buffer_write_offsets[s];
-                xfbState->buffer_write_offsets[s] =
+                    xfbState->buffer_write_offsets[b];
+                xfbState->buffer_write_offsets[b] =
                     (GLuint64)copyBytes > UINT64_MAX - currentOffset
                         ? UINT64_MAX
                         : currentOffset + (GLuint64)copyBytes;
-                if (s == 0u) writtenBytesStream0 = copyBytes;
             }
             if (xfbBlit) mglDrawSupportEndBlitEncoder(xfbBlit);
-        } else if (writtenBytesStream0 > 0u) {
-            /* Fast path (single-stream direct bind): the kernel wrote
-             * straight into the GL XFB buffer; just advance the offset. */
-            const GLuint64 currentOffset =
-                xfbState->buffer_write_offsets[0];
-            xfbState->buffer_write_offsets[0] =
-                (GLuint64)writtenBytesStream0 > UINT64_MAX - currentOffset
-                    ? UINT64_MAX
-                    : currentOffset + (GLuint64)writtenBytesStream0;
         }
-        queryWritten = (outputStride > 0u && vpp > 0u)
-            ? (GLuint64)writtenBytesStream0 /
-                  ((GLuint64)outputStride * vpp) : 0u;
-        /* A non-indexed primitive query addresses stream 0.  Indexed query
-         * results for streams 1..3 are recorded from each stream's counters
-         * below, after the common stream-0 result is finalized. */
+        /* stream 0 (non-indexed) written primitives come from buffer 0's
+         * written bytes; the buffer-0 record stride is the per-primitive
+         * packed size for the captured stream-0 varyings. */
+        const NSUInteger buffer0PrimBytes =
+            (NSUInteger)vpp * scatterParams.buffers[0].stride;
+        queryWritten = buffer0PrimBytes > 0u
+            ? (GLuint64)bufferWritten[0] / buffer0PrimBytes : 0u;
+        /* Indexed stream>0 generated counters stay in the meta. */
     }
     if (!queryMeta && xfbMetaBuf && mglDrawSupportBufferContents(xfbMetaBuf) &&
-        mglHasActiveIndexedPrimitiveQuery()) {
+        (mglHasActiveIndexedPrimitiveQuery() ||
+         mglHasActivePrimitiveQuery() ||
+         mglHasActiveGeometryShaderQuery())) {
         queryMeta = (const MGLAIRGSXFBMeta *)mglDrawSupportBufferContents(xfbMetaBuf);
     }
-
-    if (multiStream && counts && mglDrawSupportBufferContents(counts)) {
-        const uint32_t *cw = (const uint32_t *)mglDrawSupportBufferContents(counts);
-        GLuint64 stream0Visible = 0u;
-        for (GLuint w = 0u; w < workItemCount; w++) {
-            stream0Visible += (GLuint64)cw[
-                w * MGL_AIR_GS_COUNTS_RECORD_WORDS + 0];
-        }
-        queryGenerated = (vpp > 0u) ? stream0Visible / vpp : 0u;
+    if (queryMeta) {
+        /* GL 4.6 PRIMITIVES_GENERATED: list primitives emitted by the GS
+         * including culled ones, counted kernel-side into the meta.  This
+         * replaces both the max-expansion estimate (wrong whenever the
+         * shader emits fewer than max_vertices) and the visible-record sum
+         * (which excludes culled primitives). */
+        queryGenerated = (GLuint64)queryMeta->stream[0].generated;
     }
     if (xfbActive && MGL_STATE(drawCtx)->caps.rasterizer_discard) {
         /* GL_RASTERIZER_DISCARD: no pixels by definition; the compute
@@ -1756,7 +2225,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         _currentCBHasWork = YES;
         mglRecordGeometryPrimitiveQueries(
             drawCtx, queryGenerated, queryWritten, xfbActive, queryMeta,
-            gsStreamCount, streamStride);
+            gsStreamCount, bufferWritten, bufferStride, workItemCount);
         _geometry.expansionActive = NO;
         _geometry.program = NULL;
         drawCtx->state.dirty_bits = DIRTY_ALL;
@@ -1766,18 +2235,12 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 1 ||
         [self currentDrawRasterizationIsEmpty] ||
         [self currentDrawModeIsFullyCulled:gsOutputMode]) {
-        if (getenv("MGL_GS_DIAG")) {
-            NSLog(@"MGL GS DIAG raster-skip: pgl=%d enc=%d empty=%d cull=%d",
-                  [self processGLState:true] ? 1 : 0,
-                  mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) == 1 ? 1 : 0,
-                  [self currentDrawRasterizationIsEmpty] ? 1 : 0,
-                  [self currentDrawModeIsFullyCulled:gsOutputMode] ? 1 : 0);
-        }
-        if (xfbActive || mglHasActiveIndexedPrimitiveQuery()) {
+        if (xfbActive || mglHasActiveIndexedPrimitiveQuery() ||
+            mglHasActiveGeometryShaderQuery()) {
             _currentCBHasWork = YES;
             mglRecordGeometryPrimitiveQueries(
                 drawCtx, queryGenerated, queryWritten, xfbActive, queryMeta,
-                gsStreamCount, streamStride);
+                gsStreamCount, bufferWritten, bufferStride, workItemCount);
         }
         _geometry.expansionActive = NO;
         _geometry.program = NULL;
@@ -1786,28 +2249,6 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     }
 
     [self applyPolygonOffsetForDrawMode:gsOutputMode];
-    if (getenv("MGL_GS_DIAG")) {
-        const uint32_t *cw = (const uint32_t *)mglDrawSupportBufferContents(counts);
-        const float *ow = (const float *)mglDrawSupportBufferContents(output);
-        NSLog(@"MGL GS DIAG draw loop: workItemCount=%u outputStride=%lu "
-              "recordsPerPrimitive=%lu outputPrimitive=%d",
-              (unsigned)workItemCount, (unsigned long)outputStride,
-              (unsigned long)recordsPerPrimitive, (int)outputPrimitive);
-        for (GLuint p = 0u; p < workItemCount && p < 4u; p++) {
-            NSUInteger off = ((NSUInteger)p * recordsPerPrimitive +
-                              MGL_AIR_GS_HEADER_RECORDS) * outputStride;
-            const float *pos = (const float *)(
-                (const uint8_t *)mglDrawSupportBufferContents(output) + off);
-            NSLog(@"MGL GS DIAG prim=%u counts(vertex=%u inst=%u baseV=%u "
-                  "baseI=%u) pos[0]=(%g,%g,%g,%g)",
-                  (unsigned)p, cw[p * MGL_AIR_GS_COUNTS_RECORD_WORDS + 0],
-                  cw[p * MGL_AIR_GS_COUNTS_RECORD_WORDS + 1],
-                  cw[p * MGL_AIR_GS_COUNTS_RECORD_WORDS + 2],
-                  cw[p * MGL_AIR_GS_COUNTS_RECORD_WORDS + 3],
-                  pos[0], pos[1], pos[2], pos[3]);
-        }
-        (void)ow;
-    }
     for (GLuint primitive = 0u; primitive < workItemCount; primitive++) {
         NSUInteger offset =
             ((NSUInteger)primitive * recordsPerPrimitive +
@@ -1820,7 +2261,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     _currentCBHasWork = YES;
     mglRecordGeometryPrimitiveQueries(
         drawCtx, queryGenerated, queryWritten, xfbActive, queryMeta,
-        gsStreamCount, streamStride);
+        gsStreamCount, bufferWritten, bufferStride, workItemCount);
     _geometry.expansionActive = NO;
     _geometry.program = NULL;
     drawCtx->state.dirty_bits = DIRTY_ALL;

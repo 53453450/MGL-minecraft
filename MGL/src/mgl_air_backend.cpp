@@ -175,6 +175,7 @@ struct Codegen {
     llvm::Value *geometryGatherParamsPtr = nullptr; /* GS gather params    */
     llvm::Value *geometryXfbPtr = nullptr;  /* GS XFB stream, buffer(31)   */
     llvm::Value *geometryXfbMetaPtr = nullptr; /* GS XFB meta, buffer(27)  */
+    llvm::Value *geometryXfbVisPtr = nullptr;  /* GS XFB visibility, buffer(30) */
     llvm::Value *tessGatherPtr = nullptr;     /* TES compute gather stream */
     llvm::Value *tessGatherParamsPtr = nullptr; /* TES compute gather params*/
     llvm::Value *xfbOutPtr = nullptr;   /* TES compute XFB stream, buffer(31) */
@@ -1970,6 +1971,13 @@ static llvm::Value *geometryRecordPtr(Codegen &cg, llvm::Value *record)
 static void storeGeometryPosition(Codegen &cg, llvm::Value *record,
                                   llvm::Value *position)
 {
+    if (getenv("MGL_GS_DIAG_CONST")) {
+        position = llvm::ConstantVector::get({
+            llvm::ConstantFP::get(llvm::Type::getFloatTy(*cg.ctx), 0.25),
+            llvm::ConstantFP::get(llvm::Type::getFloatTy(*cg.ctx), 0.5),
+            llvm::ConstantFP::get(llvm::Type::getFloatTy(*cg.ctx), 0.75),
+            llvm::ConstantFP::get(llvm::Type::getFloatTy(*cg.ctx), 1.0)});
+    }
     llvm::Type *v4 = llvm::FixedVectorType::get(
         llvm::Type::getFloatTy(*cg.ctx), 4);
     llvm::Value *p = cg.b->CreateBitCast(
@@ -2214,6 +2222,26 @@ static void copyGeometryVaryingsSelected(Codegen &cg, llvm::Value *dst,
     }
 }
 
+/* Accumulate GS-generated primitives for stream 0 (GL 4.6
+ * PRIMITIVES_GENERATED): counts list primitives EMITTED by the shader,
+ * including primitives later culled by gl_CullDistance (culling happens
+ * after generation).  The counter lives in the XFB meta block
+ * (MGLAIRGSXFBStreamMeta::generated, stream slot 0) and is read back by
+ * the renderer for the primitive queries. */
+static void geometryStream0GeneratedAdd(Codegen &cg, llvm::Value *count)
+{
+    if (!cg.geometryXfbMetaPtr) return;
+    llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
+    llvm::Value *metaBase = cg.b->CreateBitCast(
+        cg.geometryXfbMetaPtr, i32->getPointerTo(1));
+    /* stream block 0, generated at word 3. */
+    llvm::Value *generatedPtr = cg.b->CreateGEP(
+        i32, metaBase, cg.b->getInt32(3));
+    cg.b->CreateAtomicRMW(llvm::AtomicRMWInst::Add, generatedPtr, count,
+                          llvm::MaybeAlign(),
+                          llvm::AtomicOrdering::Monotonic);
+}
+
 static llvm::Value *emitGeometryVertex(Codegen &cg)
 {
     if (!cg.isGeometry || !cg.geometryOutputPtr || !cg.geometryCountPtr ||
@@ -2225,8 +2253,11 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
     }
     llvm::Value *pos = cg.lvalues.count("gl_Position")
         ? cg.lvalues["gl_Position"]
-        : llvm::UndefValue::get(llvm::FixedVectorType::get(
-              llvm::Type::getFloatTy(*cg.ctx), 4));
+        : llvm::ConstantVector::get({
+              llvm::ConstantFP::get(llvm::Type::getFloatTy(*cg.ctx), 0.0),
+              llvm::ConstantFP::get(llvm::Type::getFloatTy(*cg.ctx), 0.0),
+              llvm::ConstantFP::get(llvm::Type::getFloatTy(*cg.ctx), 0.0),
+              llvm::ConstantFP::get(llvm::Type::getFloatTy(*cg.ctx), 1.0)});
     pos = coerceScalar(cg, pos, MGLIR_SCALAR_FLOAT);
     llvm::Type *v4 = llvm::FixedVectorType::get(
         llvm::Type::getFloatTy(*cg.ctx), 4);
@@ -2283,6 +2314,7 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
         cg.b->CreateAlignedStore(
             cg.b->CreateAdd(emitCount, cg.b->getInt32(1)),
             emitCountPtr, llvm::Align(4));
+        geometryStream0GeneratedAdd(cg, cg.b->getInt32(1));
         cg.b->CreateBr(doneBB);
         cg.b->SetInsertPoint(doneBB);
         return cg.b->getInt32(0);
@@ -2331,6 +2363,7 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
         cg.b->CreateAlignedStore(
             cg.b->CreateAdd(outputCount, lineIncrement),
             outputCountPtr, llvm::Align(4));
+        geometryStream0GeneratedAdd(cg, cg.b->getInt32(1));
         cg.b->CreateBr(advanceBB);
 
         cg.b->SetInsertPoint(advanceBB);
@@ -2430,6 +2463,7 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
     cg.b->CreateAlignedStore(
         cg.b->CreateAdd(outputCount, triangleIncrement),
         outputCountPtr, llvm::Align(4));
+    geometryStream0GeneratedAdd(cg, cg.b->getInt32(1));
     cg.b->CreateBr(advanceBB);
 
     cg.b->SetInsertPoint(advanceBB);
@@ -2461,42 +2495,36 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
     return llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), 0);
 }
 
-/* Store the XFB capture record of `stream` (position + that stream's
- * varyings in ascending location order, one 16-byte slot each) to the
- * byte pointer `dst`.  Stream 0 keeps the batch path below (full
- * stage-out records); streams > 0 write compact per-stream records. */
-static void storeGeometryXFBStreamVaryings(Codegen &cg, llvm::Value *dst,
-                                           int32_t stream)
+/* Write this stream's captured varyings into the stage-out record at their
+ * location*16 slots (the same field offsets the rasterization record uses),
+ * restricted to OUTPUT symbols on `stream`.  Pass 2 later repacks these to
+ * the link-time component offsets; the pass-1 record keeps the location
+ * layout so one stage-out buffer serves every stream and rasterization. */
+static void storeGeometryStageOutStreamVaryings(Codegen &cg,
+                                                llvm::Value *record,
+                                                int32_t stream)
 {
     if (!cg.auxSyms) return;
-    std::vector<VarSym *> selected;
     for (VarSym &v : *cg.auxSyms) {
-        if (v.kind == VarSym::OUTPUT && v.location != UINT32_MAX &&
-            v.stream == stream) {
-            selected.push_back(&v);
-        }
-    }
-    std::sort(selected.begin(), selected.end(),
-              [](const VarSym *a, const VarSym *b) {
-                  return a->location < b->location;
-              });
-    llvm::Value *bytePtr = dst;
-    for (size_t i = 0; i < selected.size(); i++) {
-        VarSym *v = selected[i];
-        llvm::Type *ty = llvmType(v->type, *cg.ctx);
-        llvm::Value *value = cg.lvalues.count(v->name)
-            ? cg.lvalues[v->name] : llvm::UndefValue::get(ty);
+        if (v.kind != VarSym::OUTPUT || v.location == UINT32_MAX) continue;
+        if (v.stream != stream) continue;
+        llvm::Type *ty = llvmType(v.type, *cg.ctx);
+        llvm::Value *value = cg.lvalues.count(v.name)
+            ? cg.lvalues[v.name] : llvm::UndefValue::get(ty);
         llvm::Value *p = cg.b->CreateGEP(
-            cg.b->getInt8Ty(), bytePtr, cg.b->getInt64(i * 16u));
+            cg.b->getInt8Ty(), geometryRecordPtr(cg, record),
+            cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE + v.location * 16u));
         p = cg.b->CreateBitCast(p, ty->getPointerTo(1));
         cg.b->CreateAlignedStore(value, p, llvm::Align(4));
     }
 }
 
-/* EmitVertex on stream > 0 (GLSL 4.60 §8.13): streams above 0 are never
- * rasterized; the vertex is appended to that stream's transform-feedback
- * segment only, through the same atomic cursor protocol as the stream 0
- * batch path.  Only legal with points output (checked at the call site). */
+/* EmitStreamVertex on stream > 0 (GLSL 4.60 §8.13, GL4 ordered terminal
+ * state): the vertex is appended to this work item's stage-out record run at
+ * a deterministic per-stream index (no GPU-atomic cursor), and the
+ * per-(work-item, stream) visible byte count is accumulated into the
+ * visibility buffer (slot 30) for the CPU prefix-sum and the pass-2 ordered
+ * scatter.  Streams above 0 remain points-only. */
 static llvm::Value *emitGeometryStreamVertex(Codegen &cg, int32_t stream)
 {
     if (!cg.isGeometry || !cg.geometryOutputPtr || !cg.geometryCountPtr ||
@@ -2532,83 +2560,116 @@ static llvm::Value *emitGeometryStreamVertex(Codegen &cg, int32_t stream)
     cg.b->CreateCondBr(canEmit, emitBB, doneBB);
     cg.b->SetInsertPoint(emitBB);
 
-    /* Culled primitives contribute nothing (same policy as the stream 0
-     * batch path, GL 4.6 §13.2.4). */
-    llvm::Value *culled = geometryPrimitiveCulled(cg, {cullDistances});
-    llvm::BasicBlock *appendBB = llvm::BasicBlock::Create(
-        *cg.ctx, "gs_stream_append", cg.fn);
-    cg.b->CreateCondBr(culled, doneBB, appendBB);
-    cg.b->SetInsertPoint(appendBB);
-
     llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
     llvm::Type *i64 = llvm::Type::getInt64Ty(*cg.ctx);
     llvm::Value *metaBase = cg.b->CreateBitCast(
         cg.geometryXfbMetaPtr, i32->getPointerTo(1));
-    /* Stream block offset: MGLAIRGSXFBStreamMeta is 32 bytes, with
-     * stride@0 capacity@4 capture_base@8 generated@12 cursor@16
-     * written@24. */
-    llvm::Value *blockOff = cg.b->getInt32(stream * 8u); /* 32B in u32 words */
+    /* Stream block offset: MGLAIRGSXFBStreamMeta is 16 bytes, with
+     * stride@0 capacity@4 capture_base@8 generated@12. */
+    llvm::Value *blockOff = cg.b->getInt32(stream * 4u); /* 16B in u32 words */
     if (stream > 0) {
-        /* Non-zero streams are currently points-only. Count each visible
-         * emitted point independently of XFB capture so indexed
-         * PRIMITIVES_GENERATED remains meaningful when no XFB buffer is bound. */
+        /* Non-zero streams are currently points-only.  Count every emitted
+         * point — including culled ones, which are still generated (GL 4.6
+         * PRIMITIVES_GENERATED counts primitives before culling) — so the
+         * indexed query stays meaningful when no XFB buffer is bound. */
         llvm::Value *generatedPtr = cg.b->CreateGEP(
             i32, metaBase, cg.b->CreateAdd(blockOff, cg.b->getInt32(3)));
         cg.b->CreateAtomicRMW(llvm::AtomicRMWInst::Add, generatedPtr,
                               cg.b->getInt32(1), llvm::MaybeAlign(),
                               llvm::AtomicOrdering::Monotonic);
     }
-    llvm::Value *stride = cg.b->CreateAlignedLoad(
-        i32, cg.b->CreateGEP(i32, metaBase, blockOff), llvm::Align(4));
-    llvm::Value *captureOn = cg.b->CreateICmpNE(stride, cg.b->getInt32(0));
-    llvm::BasicBlock *xfbOnBB = llvm::BasicBlock::Create(
-        *cg.ctx, "gs_stream_xfb_on", cg.fn);
-    cg.b->CreateCondBr(captureOn, xfbOnBB, doneBB);
-    cg.b->SetInsertPoint(xfbOnBB);
 
-    llvm::Value *size = cg.b->CreateZExt(stride, i64);
-    /* 32-bit device atomics (AGX compiler service rejects 64-bit
-     * atomicrmw); any single stream caps at 2^32 bytes per draw. */
-    llvm::Value *cursorPtr = cg.b->CreateGEP(
-        i32, metaBase, cg.b->CreateAdd(blockOff, cg.b->getInt32(4)));
-    llvm::Value *reserved32 = cg.b->CreateAtomicRMW(
-        llvm::AtomicRMWInst::Add, cursorPtr, stride,
-        llvm::MaybeAlign(), llvm::AtomicOrdering::Monotonic);
-    llvm::Value *reserved = cg.b->CreateZExt(reserved32, i64);
-    llvm::Value *capacity = cg.b->CreateZExt(
-        cg.b->CreateAlignedLoad(
+    /* Culled primitives contribute nothing to the capture (same policy as
+     * the stream 0 batch path, GL 4.6 §13.2.4). */
+    llvm::Value *culled = geometryPrimitiveCulled(cg, {cullDistances});
+    llvm::BasicBlock *appendBB = llvm::BasicBlock::Create(
+        *cg.ctx, "gs_stream_append", cg.fn);
+    cg.b->CreateCondBr(culled, doneBB, appendBB);
+    cg.b->SetInsertPoint(appendBB);
+    /* GL4 ordered terminal state (mgl_air_gs_abi.h §5b): a captured
+     * (stride != 0) stream emission appends its record at the deterministic
+     * descending index recordCount-1-cursor inside the work item's stage-out
+     * run, stamped with its stream id (MGL_AIR_PER_VERTEX_STREAM_OFFSET) so
+     * the pass-2 scatter can attribute records to streams in emission order.
+     * Stream 0 keeps the ascending [2, 2+vertex_count) region for the
+     * rasterizing indirect draw, so this path must NOT touch counter 0.
+     * The global emit guard above bounds stream-0 + stream>0 records to the
+     * expanded region, so the two regions never overlap.  An uncaptured
+     * stream emits no record but still counts generated primitives (above)
+     * for the indexed query. */
+    /* Attribute this emission to the buffers fed by this stream
+     * (meta.buffer_stream; the link plan keeps one stream per buffer):
+     * the record is captured when at least one fed buffer has capture on,
+     * and the visible bytes accumulate per fed buffer (a stream may feed
+     * several buffers via gl_NextBuffer).  buffer_stream lives in the
+     * meta words right after the four 8-word stream blocks. */
+    llvm::Value *captured = nullptr;
+    llvm::Value *fedStride[MGL_AIR_GS_MAX_STREAMS] = {nullptr};
+    llvm::Value *fedPred[MGL_AIR_GS_MAX_STREAMS] = {nullptr};
+    for (uint32_t buf = 0; buf < MGL_AIR_GS_MAX_STREAMS; buf++) {
+        llvm::Value *bs = cg.b->CreateAlignedLoad(
             i32, cg.b->CreateGEP(i32, metaBase,
-                                 cg.b->CreateAdd(blockOff, cg.b->getInt32(1))),
-            llvm::Align(4)),
-        i64);
-    llvm::Value *end = cg.b->CreateAdd(reserved, size);
-    llvm::Value *fits = cg.b->CreateICmpULE(end, capacity);
-    llvm::BasicBlock *xfbWriteBB = llvm::BasicBlock::Create(
-        *cg.ctx, "gs_stream_xfb_write", cg.fn);
-    cg.b->CreateCondBr(fits, xfbWriteBB, doneBB);
-    cg.b->SetInsertPoint(xfbWriteBB);
-    {
-        llvm::Value *writtenPtr = cg.b->CreateGEP(
-            i32, metaBase, cg.b->CreateAdd(blockOff, cg.b->getInt32(6)));
-        cg.b->CreateAtomicRMW(llvm::AtomicRMWInst::Add, writtenPtr, stride,
-                              llvm::MaybeAlign(),
-                              llvm::AtomicOrdering::Monotonic);
-        llvm::Value *base = cg.b->CreateAlignedLoad(
-            i32, cg.b->CreateGEP(i32, metaBase,
-                                 cg.b->CreateAdd(blockOff, cg.b->getInt32(2))),
+                                 cg.b->getInt32(16u + buf)), llvm::Align(4));
+        llvm::Value *match = cg.b->CreateICmpEQ(
+            bs, cg.b->getInt32((uint32_t)stream));
+        llvm::Value *bsStride = cg.b->CreateAlignedLoad(
+            i32, cg.b->CreateGEP(i32, metaBase, cg.b->getInt32(buf * 4u)),
             llvm::Align(4));
-        llvm::Value *dst = cg.b->CreateGEP(
-            cg.b->getInt8Ty(), cg.geometryXfbPtr,
-            cg.b->CreateAdd(cg.b->CreateZExt(base, i64), reserved));
-        llvm::Value *dst16 = cg.b->CreateBitCast(
-            dst, v4->getPointerTo(1));
-        cg.b->CreateAlignedStore(pos, dst16, llvm::Align(16));
-        /* Varyings start after the 16-byte position slot (stride is
-         * 16 + count*16 per mgl_air_gs_abi.h §5). */
-        llvm::Value *varyingDst = cg.b->CreateGEP(
-            cg.b->getInt8Ty(), dst, cg.b->getInt64(16));
-        storeGeometryXFBStreamVaryings(cg, varyingDst, stream);
+        llvm::Value *on = cg.b->CreateAnd(
+            match, cg.b->CreateICmpNE(bsStride, cg.b->getInt32(0)));
+        fedStride[buf] = bsStride;
+        fedPred[buf] = on;
+        captured = captured ? cg.b->CreateOr(captured, on) : on;
     }
+    llvm::BasicBlock *captureBB = llvm::BasicBlock::Create(
+        *cg.ctx, "gs_stream_capture", cg.fn);
+    llvm::BasicBlock *tailBB = llvm::BasicBlock::Create(
+        *cg.ctx, "gs_stream_tail", cg.fn);
+    cg.b->CreateCondBr(captured, captureBB, tailBB);
+    cg.b->SetInsertPoint(captureBB);
+
+    llvm::Value *cursorPtr = geometryCounterPtr(cg, MGL_AIR_GS_COUNT_STREAM);
+    llvm::Value *cursor = cg.b->CreateAlignedLoad(
+        i32, cursorPtr, llvm::Align(4));
+    llvm::Value *record = cg.b->CreateSub(
+        cg.b->getInt32(cg.geometryRecordCount - 1u), cursor);
+    storeGeometryPosition(cg, record, pos);
+    storeGeometryStageOutStreamVaryings(cg, record, stream);
+    {
+        /* Stamp the stream id for the pass-2 scatter. */
+        llvm::Value *base = geometryRecordPtr(cg, record);
+        llvm::Value *stampPtr = cg.b->CreateBitCast(
+            cg.b->CreateGEP(cg.b->getInt8Ty(), base,
+                            cg.b->getInt64(MGL_AIR_PER_VERTEX_STREAM_OFFSET)),
+            i32->getPointerTo(1));
+        cg.b->CreateAlignedStore(cg.b->getInt32((uint32_t)stream), stampPtr,
+                                 llvm::Align(4));
+    }
+    cg.b->CreateAlignedStore(cg.b->CreateAdd(cursor, cg.b->getInt32(1)),
+                             cursorPtr, llvm::Align(4));
+
+    /* vis[workItem * MGL_AIR_GS_MAX_STREAMS + b] += stride[b] for every
+     * buffer fed by this stream. */
+    if (cg.geometryXfbVisPtr && cg.geometryWorkItemId) {
+        llvm::Value *visBase = cg.b->CreateBitCast(
+            cg.geometryXfbVisPtr, i32->getPointerTo(1));
+        llvm::Value *visRun = cg.b->CreateMul(
+            cg.geometryWorkItemId,
+            cg.b->getInt32(MGL_AIR_GS_MAX_STREAMS));
+        for (uint32_t buf = 0; buf < MGL_AIR_GS_MAX_STREAMS; buf++) {
+            llvm::Value *add = cg.b->CreateSelect(
+                fedPred[buf], fedStride[buf], cg.b->getInt32(0));
+            llvm::Value *visPtr = cg.b->CreateGEP(
+                i32, visBase,
+                cg.b->CreateAdd(visRun, cg.b->getInt32(buf)));
+            llvm::Value *cur = cg.b->CreateAlignedLoad(i32, visPtr,
+                                                       llvm::Align(4));
+            cg.b->CreateAlignedStore(cg.b->CreateAdd(cur, add), visPtr,
+                                     llvm::Align(4));
+        }
+    }
+    cg.b->CreateBr(tailBB);
+    cg.b->SetInsertPoint(tailBB);
     llvm::Value *strip = cg.b->CreateAlignedLoad(
         cg.b->getInt32Ty(), geometryCounterPtr(cg, 1), llvm::Align(4));
     cg.b->CreateAlignedStore(
@@ -2637,6 +2698,29 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                      e->u.literal.value);
     }
     case MGL_EXPR_VAR_REF: {
+        /* GLSL exposes geometry limits as compile-time constants.  These
+         * values describe the capability contract advertised by MGL and the
+         * fixed AIR geometry expansion budget. */
+        if (strcmp(e->u.var_ref.name, "gl_MaxGeometryInputComponents") == 0)
+            return cg.b->getInt32(64);
+        if (strcmp(e->u.var_ref.name, "gl_MaxGeometryOutputComponents") == 0)
+            return cg.b->getInt32(128);
+        if (strcmp(e->u.var_ref.name, "gl_MaxGeometryTextureImageUnits") == 0)
+            return cg.b->getInt32(16);
+        if (strcmp(e->u.var_ref.name, "gl_MaxGeometryOutputVertices") == 0)
+            return cg.b->getInt32(1024);
+        if (strcmp(e->u.var_ref.name, "gl_MaxGeometryTotalOutputComponents") == 0)
+            return cg.b->getInt32(1024);
+        if (strcmp(e->u.var_ref.name, "gl_MaxGeometryUniformComponents") == 0)
+            return cg.b->getInt32(4096);
+        if (strcmp(e->u.var_ref.name, "gl_MaxGeometryAtomicCounters") == 0)
+            return cg.b->getInt32(0);
+        if (strcmp(e->u.var_ref.name, "gl_MaxGeometryAtomicCounterBuffers") == 0)
+            return cg.b->getInt32(0);
+        if (strcmp(e->u.var_ref.name, "gl_MaxGeometryImageUniforms") == 0)
+            return cg.b->getInt32(0);
+        if (strcmp(e->u.var_ref.name, "gl_MaxGeometryShaderInvocations") == 0)
+            return cg.b->getInt32(32);
         if (strcmp(e->u.var_ref.name, "gl_Position") == 0) {
             if (!cg.position.written) {
                 cg.position.name = "gl_Position";
@@ -2755,6 +2839,15 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 cg.lvalues["gl_ClipDistance"] = arr;
             }
             return cg.lvalues["gl_ClipDistance"];
+        }
+        if (strcmp(e->u.var_ref.name, "gl_Layer") == 0 ||
+            strcmp(e->u.var_ref.name, "gl_ViewportIndex") == 0) {
+            /* Out-variable read-back: the value last written this
+             * invocation; 0 before any write (GL 4.6 §11.1.3.5/§11.1.3.6). */
+            if (!cg.lvalues.count(e->u.var_ref.name)) {
+                cg.lvalues[e->u.var_ref.name] = cg.b->getInt32(0);
+            }
+            return cg.lvalues[e->u.var_ref.name];
         }
         if (strcmp(e->u.var_ref.name, "gl_InvocationID") == 0) {
             if (cg.isGeometry && cg.geometryInvocationId)
@@ -3090,6 +3183,11 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     cg.b->CreateSub(boundSize, cg.b->getInt32(tailOffset)),
                     cg.b->getInt32(0));
                 return cg.b->CreateUDiv(available, cg.b->getInt32(stride));
+            }
+            if (object && object->kind == MGL_EXPR_VAR_REF &&
+                strcmp(object->u.var_ref.name, "gl_in") == 0 &&
+                cg.isGeometry) {
+                return cg.b->getInt32(cg.geometryInputVertices);
             }
             MType array = exprType(cg, object, mod, locals);
             if (array.arr != 0)
@@ -3879,6 +3977,35 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         return res;
     }
     case MGL_EXPR_ASSIGN: {
+        const bool diagAssign = getenv("MGL_GS_DIAG_ASSIGN") && cg.isGeometry;
+        if (diagAssign) {
+            fprintf(stderr, "MGL GS ASSIGN begin lhsKind=%d rhsKind=%d block=%s lvalues=",
+                    e->u.assign.lhs ? (int)e->u.assign.lhs->kind : -1,
+                    e->u.assign.rhs ? (int)e->u.assign.rhs->kind : -1,
+                    cg.b->GetInsertBlock()->getName().str().c_str());
+            for (const auto &kv : cg.lvalues) fprintf(stderr, "%s,", kv.first.c_str());
+            fprintf(stderr, " lhs=");
+            if (e->u.assign.lhs) {
+                const MGLExpr *path = e->u.assign.lhs;
+                while (path && (path->kind == MGL_EXPR_MEMBER ||
+                                path->kind == MGL_EXPR_INDEX)) {
+                    if (path->kind == MGL_EXPR_MEMBER) {
+                        fprintf(stderr, ".%s", path->u.member.field);
+                        path = path->u.member.object;
+                    } else {
+                        fprintf(stderr, "[]");
+                        path = path->u.index.object;
+                    }
+                }
+                if (path && path->kind == MGL_EXPR_VAR_REF)
+                    fprintf(stderr, "%s", path->u.var_ref.name);
+                else
+                    fprintf(stderr, "<nonvar>");
+            } else {
+                fprintf(stderr, "<null>");
+            }
+            fprintf(stderr, "\n");
+        }
         llvm::Value *v = emitExpr(cg, e->u.assign.rhs, mod, locals);
         if (!v) return nullptr;
         llvm::Value *rhsV = v;
@@ -4157,6 +4284,11 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             }
             cg.position.written = true;
             cg.lvalues[name] = v;
+            if (diagAssign)
+                fprintf(stderr, "MGL GS ASSIGN gl_Position rhs=%s typeId=%u block=%s\n",
+                        v->getName().str().c_str(),
+                        (unsigned)v->getType()->getTypeID(),
+                        cg.b->GetInsertBlock()->getName().str().c_str());
             return v;
         }
         if (strcmp(name, "gl_PointSize") == 0) {
@@ -5926,6 +6058,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         strstr(esrc, "gl_CullDistance") != nullptr;
     const bool usesCullDistance = isVS && !isCapture &&
                                   sourceUsesCullDistance;
+    if (isGS && getenv("MGL_GS_DIAG_SOURCE"))
+        fprintf(stderr, "MGL GS SOURCE BEGIN\n%s\nMGL GS SOURCE END\n", esrc);
     MGLTranslationUnit *tu = mglGLSLParse(esrc, strlen(esrc));
     if (!tu) {
         if (err_buf && err_cap) snprintf(err_buf, err_cap, "parse: out of memory");
@@ -5995,10 +6129,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             mglGLSLTranslationUnitDestroy(tu);
             return -1;
         }
-        if (tu->layout_max_vertices <= 0 || tu->layout_max_vertices > 1024) {
+        if (tu->layout_max_vertices < 0 || tu->layout_max_vertices > 1024) {
             if (err_buf && err_cap)
                 snprintf(err_buf, err_cap,
-                         "GS AIR codegen: max_vertices must be in the range 1..1024");
+                         "GS AIR codegen: max_vertices must be in the range 0..1024");
             mglIRModuleDestroy(&mod);
             mglGLSLTranslationUnitDestroy(tu);
             return -1;
@@ -6460,6 +6594,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
          * (0 = capture off) disables capture at runtime. */
         paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
         paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
+        /* GL4 ordered XFB (mgl_air_gs_abi.h §5b): the per-(work-item,
+         * buffer) visibility buffer this work item writes for the CPU
+         * prefix-sum. */
+        paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
     }
     if (isTESCompute) {
         /* isolines/point-mode TES kernel ABI: stage_in(24) factors(26)
@@ -6721,6 +6859,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         cg.geometryGatherParamsPtr = fn->getArg(argSlot++);
         cg.geometryXfbPtr = fn->getArg(argSlot++);
         cg.geometryXfbMetaPtr = fn->getArg(argSlot++);
+        cg.geometryXfbVisPtr = fn->getArg(argSlot++);
     }
     if (isTessCapture) {
         cg.cullParams = fn->getArg(argSlot++);
@@ -6814,8 +6953,11 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         default: cg.geometryInputVertices = 3u; break;
         }
         cg.geometryOutputType = tu->layout_primitive_out;
-        cg.geometryMaxVertices = tu->layout_max_vertices > 0
-            ? (uint32_t)tu->layout_max_vertices : 1u;
+        /* A zero/unspecified max_vertices GS is a valid no-output program.
+         * Keep the zero in the codegen state so EmitVertex remains rejected,
+         * while the ABI still allocates its two header records below. */
+        cg.geometryMaxVertices = tu->layout_max_vertices >= 0
+            ? (uint32_t)tu->layout_max_vertices : 0u;
         /* Fixed ABI layout (mgl_air_gs_abi.h): the output record run is
          * 2 header records + the expanded primitive vertices. */
         const MGLAIRGSOutputPrimitive outPrim =
@@ -7284,25 +7426,42 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     /* Terminate if the body's last statement was a return. */
     if (cg.err != 2) {
         if (isKernel) {
-            if (isGS && cg.geometryXfbPtr && cg.geometryXfbMetaPtr &&
+            if (isGS && cg.geometryXfbMetaPtr &&
                 cg.geometryCountPtr && cg.geometryWorkItemId) {
-                /* ABI (mgl_air_gs_abi.h §5): append this work item's
-                 * visible expanded vertices to the XFB stream (slot 31)
-                 * through the atomic meta cursor (slot 27).  Capture is
-                 * off when the runtime pre-wrote stride == 0; culled
-                 * primitives (visible == 0) contribute nothing, matching
-                 * GL 4.6 §13.2.4.  The record run is 2 header records +
-                 * the visible expanded vertices, so source record i lives
-                 * at output record i + 2. */
+                /* GL4 ordered terminal state (mgl_air_gs_abi.h §5b): the
+                 * stream-0 XFB path no longer appends through a GPU-atomic
+                 * cursor.  Instead the epilogue accumulates this work item's
+                 * visible stream-0 bytes into the visibility buffer (slot 26)
+                 * at a deterministic per-work-item index; the CPU prefix-sum
+                 * and the pass-2 scatter copy the records in emission order.
+                 * The visible count is the final stream-0 outputCount (draw
+                 * param word 0), read back from the counts record, and it is
+                 * attributed to every buffer fed by stream 0 (a single-stream
+                 * program may split varyings across buffers with
+                 * gl_NextBuffer).  The rasterization records stay in the
+                 * stage-out run untouched. */
                 llvm::Type *i32 = llvm::Type::getInt32Ty(ctx);
                 llvm::Type *i64 = llvm::Type::getInt64Ty(ctx);
                 llvm::Value *metaBase = b.CreateBitCast(
                     cg.geometryXfbMetaPtr, i32->getPointerTo(1));
-                llvm::Value *stride = b.CreateAlignedLoad(
-                    i32, b.CreateGEP(i32, metaBase, b.getInt32(0)),
-                    llvm::Align(4));
-                llvm::Value *captureOn = b.CreateICmpNE(
-                    stride, b.getInt32(0));
+                llvm::Value *fedStride[MGL_AIR_GS_MAX_STREAMS] = {nullptr};
+                llvm::Value *fedPred[MGL_AIR_GS_MAX_STREAMS] = {nullptr};
+                llvm::Value *captureOn = nullptr;
+                for (uint32_t buf = 0; buf < MGL_AIR_GS_MAX_STREAMS; buf++) {
+                    llvm::Value *bs = b.CreateAlignedLoad(
+                        i32, b.CreateGEP(i32, metaBase, b.getInt32(16u + buf)),
+                        llvm::Align(4));
+                    llvm::Value *match = b.CreateICmpEQ(bs, b.getInt32(0));
+                    llvm::Value *bsStride = b.CreateAlignedLoad(
+                        i32, b.CreateGEP(i32, metaBase,
+                                         b.getInt32(buf * 4u)),
+                        llvm::Align(4));
+                    llvm::Value *on = b.CreateAnd(
+                        match, b.CreateICmpNE(bsStride, b.getInt32(0)));
+                    fedStride[buf] = bsStride;
+                    fedPred[buf] = on;
+                    captureOn = captureOn ? b.CreateOr(captureOn, on) : on;
+                }
                 llvm::BasicBlock *xfbOnBB = llvm::BasicBlock::Create(
                     ctx, "gs_xfb_on", cg.fn);
                 llvm::BasicBlock *xfbSkipBB = llvm::BasicBlock::Create(
@@ -7319,59 +7478,35 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     llvm::Align(4));
                 llvm::Value *hasVisible = b.CreateICmpNE(
                     visible, b.getInt32(0));
-                llvm::BasicBlock *xfbReserveBB = llvm::BasicBlock::Create(
-                    ctx, "gs_xfb_reserve", cg.fn);
-                b.CreateCondBr(hasVisible, xfbReserveBB, xfbSkipBB);
-                b.SetInsertPoint(xfbReserveBB);
-                llvm::Value *size64 = b.CreateMul(
-                    b.CreateZExt(visible, i64),
-                    b.getInt64(cg.stageOutStride));
-                /* AGX compiler service crashes on 64-bit atomicrmw; use
-                 * 32-bit device atomics.  The counters live in the 32-bit
-                 * halves of the meta cursor/written u64 fields, so any
-                 * single draw can capture at most 2^32 bytes. */
-                llvm::Value *size32 = b.CreateTrunc(size64, i32);
-                /* Stream 0 block (MGLAIRGSXFBStreamMeta): stride@0
-                 * capacity@4 capture_base@8 cursor@16 written@24. */
-                llvm::Value *cursorPtr = b.CreateGEP(
-                    i32, metaBase, b.getInt32(4));
-                llvm::Value *reserved32 = b.CreateAtomicRMW(
-                    llvm::AtomicRMWInst::Add, cursorPtr, size32,
-                    llvm::MaybeAlign(), llvm::AtomicOrdering::Monotonic);
-                llvm::Value *reserved = b.CreateZExt(reserved32, i64);
-                llvm::Value *capacity = b.CreateZExt(
-                    b.CreateAlignedLoad(
-                        i32, b.CreateGEP(i32, metaBase, b.getInt32(1)),
-                        llvm::Align(4)),
-                    i64);
-                llvm::Value *end = b.CreateAdd(reserved, size64);
-                llvm::Value *fits = b.CreateICmpULE(end, capacity);
-                llvm::BasicBlock *xfbWriteBB = llvm::BasicBlock::Create(
-                    ctx, "gs_xfb_write", cg.fn);
-                b.CreateCondBr(fits, xfbWriteBB, xfbSkipBB);
-                b.SetInsertPoint(xfbWriteBB);
-                {
-                    llvm::Value *writtenPtr = b.CreateGEP(
-                        i32, metaBase, b.getInt32(6));
-                    b.CreateAtomicRMW(llvm::AtomicRMWInst::Add, writtenPtr,
-                                      size32, llvm::MaybeAlign(),
-                                      llvm::AtomicOrdering::Monotonic);
-                    /* The visible records are contiguous in the output
-                     * stream starting at record 2 (2 header records + the
-                     * visible expanded vertices), so one variable-length
-                     * copy moves the whole run.  A per-record PHI loop
-                     * trips an InstCombine crash (visitPHINode SIGBUS) in
-                     * the in-tree LLVM build, so avoid it here. */
-                    llvm::Value *src = geometryRecordPtr(
-                        cg, b.getInt32(2));
-                    llvm::Value *base = b.CreateAlignedLoad(
-                        i32, b.CreateGEP(i32, metaBase, b.getInt32(2)),
-                        llvm::Align(4));
-                    llvm::Value *dst = b.CreateGEP(
-                        b.getInt8Ty(), cg.geometryXfbPtr,
-                        b.CreateAdd(b.CreateZExt(base, i64), reserved));
-                    b.CreateMemCpy(dst, llvm::Align(16), src,
-                                   llvm::Align(16), size64);
+                llvm::BasicBlock *xfbVisBB = llvm::BasicBlock::Create(
+                    ctx, "gs_xfb_vis", cg.fn);
+                b.CreateCondBr(hasVisible, xfbVisBB, xfbSkipBB);
+                b.SetInsertPoint(xfbVisBB);
+                if (cg.geometryXfbVisPtr) {
+                    /* vis[workItem * 4 + b] += visible * stride[b] for every
+                     * buffer fed by stream 0.  Accumulate (never overwrite):
+                     * EmitStreamVertex may already have accumulated bytes
+                     * for buffers fed by streams > 0 earlier in this same
+                     * thread. */
+                    llvm::Value *visBase = b.CreateBitCast(
+                        cg.geometryXfbVisPtr, i32->getPointerTo(1));
+                    llvm::Value *visRun = b.CreateMul(
+                        cg.geometryWorkItemId,
+                        b.getInt32(MGL_AIR_GS_MAX_STREAMS));
+                    for (uint32_t buf = 0; buf < MGL_AIR_GS_MAX_STREAMS;
+                         buf++) {
+                        llvm::Value *add = b.CreateSelect(
+                            fedPred[buf],
+                            b.CreateMul(visible, fedStride[buf]),
+                            b.getInt32(0));
+                        llvm::Value *visPtr = b.CreateGEP(
+                            i32, visBase,
+                            b.CreateAdd(visRun, b.getInt32(buf)));
+                        llvm::Value *cur = b.CreateAlignedLoad(
+                            i32, visPtr, llvm::Align(4));
+                        b.CreateAlignedStore(b.CreateAdd(cur, add), visPtr,
+                                             llvm::Align(4));
+                    }
                 }
                 b.CreateBr(xfbSkipBB);
                 b.SetInsertPoint(xfbSkipBB);
@@ -7940,16 +8075,16 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         uint32_t arg = (hasBuffer ? 1u : 0u) + ssboCount + uboCount +
                        (needsBufferSizeBuffer ? 1u : 0u) + 2u * texCount +
                        imageCount;
-        /* Fixed ABI slots (mgl_air_gs_abi.h §1/§7): input, output, counts,
-         * indexed gather stream, gather params, XFB stream and XFB meta.
-         * The gather buffer is read-only; the params constant is
-         * read-only; the XFB stream/meta are read_write (kernel appends
-         * visible vertices and atomically advances the cursor). */
-        const uint32_t locs[7] = {24u, 28u, 29u, 30u, 25u, 31u, 27u};
-        const char *names[7] = {"gs_input", "gs_output", "gs_count",
+        /* Fixed ABI slots (mgl_air_gs_abi.h §1/§5b/§7): input, output,
+         * counts, indexed gather stream, gather params, XFB stream, XFB
+         * meta, and the ordered-scatter visibility buffer.  The gather
+         * buffer and params constant are read-only; output/counts/XFB/
+         * visibility are read_write. */
+        const uint32_t locs[8] = {24u, 28u, 29u, 30u, 25u, 31u, 27u, 26u};
+        const char *names[8] = {"gs_input", "gs_output", "gs_count",
                                 "gs_gather", "gs_gather_params",
-                                "gs_xfb_out", "gs_xfb_meta"};
-        for (int i = 0; i < 7; i++) {
+                                "gs_xfb_out", "gs_xfb_meta", "gs_xfb_vis"};
+        for (int i = 0; i < 8; i++) {
             argNodes.push_back(llvm::MDNode::get(ctx, {
                 llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                     llvm::Type::getInt32Ty(ctx), arg++)),
@@ -7959,8 +8094,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     llvm::Type::getInt32Ty(ctx), locs[i])),
                 llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                     llvm::Type::getInt32Ty(ctx), 1)),
-                llvm::MDString::get(ctx, i <= 4 ? (i == 0 ? "air.read" : "air.read_write")
-                                                : "air.read_write"),
+                llvm::MDString::get(ctx, (i == 0 || i == 3 || i == 4)
+                                                ? "air.read" : "air.read_write"),
                 llvm::MDString::get(ctx, "air.address_space"),
                 llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                     llvm::Type::getInt32Ty(ctx), 1)),
@@ -7975,7 +8110,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         ((isVS || isTES || isKernel) ? (hasBuffer ? 1 : 0) : 0) + ssboCount +
         uboCount + (needsBufferSizeBuffer ? 1 : 0) + 2 * texCount + imageCount;
     if (isTCS) mArgSlot += 5;
-    else if (isGS) mArgSlot += 7;  /* input/output/counts/gather/params/xfb/xfb-meta */
+    else if (isGS) mArgSlot += 8;  /* input/output/counts/gather/params/xfb/xfb-meta/xfb-vis */
     else if (isTESCompute) mArgSlot += 8; /* stage_in/factors/patches/out/indirect/gather/params/xfb */
     if (isVS) {
         /* Vertex attribute metadata already emitted above. */

@@ -1396,6 +1396,7 @@ static int verifyAuxShaderAssets(void) {
         {"msaa_integer_resolve", "mgl_msaa_resolve_uint", 2},
         {"clear_rect", "mgl_clear_rect_vs", 2},
         {"safe_fallback", "mgl_safe_fallback_vs", 2},
+        {"gs_xfb_scatter", "mgl_gs_xfb_scatter", 1},
     };
     char message[1024] = {0};
 

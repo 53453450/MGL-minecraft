@@ -7,3 +7,4 @@ scaled_depth_blit|scaled_depth_blit.metal|mgl_scaled_depth_blit_vs,mgl_scaled_de
 msaa_integer_resolve|msaa_integer_resolve.metal|mgl_msaa_resolve_uint,mgl_msaa_resolve_int
 clear_rect|clear_rect.metal|mgl_clear_rect_vs,mgl_clear_rect_fs
 safe_fallback|safe_fallback.metal|mgl_safe_fallback_vs,mgl_safe_fallback_fs
+gs_xfb_scatter|gs_xfb_scatter.metal|mgl_gs_xfb_scatter

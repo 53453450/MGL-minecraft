@@ -72,6 +72,15 @@ enum {
      * encoders are disjoint. */
     MGL_AIR_GS_SLOT_XFB    = 31,
 
+    /* GS XFB ordered-scatter visibility buffer (section 5b): one u32 per
+     * work item per XFB buffer, written by the pass-1 kernel.  Slot 26 is
+     * unused by the GS ABI (tess factor slot lives in the TCS/TES kernels,
+     * never in this encoder), so the visibility buffer must NOT share the
+     * gather slot (30): an indexed draw binds gather and visibility in the
+     * same pass-1 dispatch and identical Metal indices would alias.  Kept
+     * below 32 for the AGX 5-bit compiler mask. */
+    MGL_AIR_GS_SLOT_XFB_VIS = 26,
+
     /* GS XFB meta record (section 5): capacity/stride words written by the
      * renderer plus the GPU-atomic write cursor / written-byte counters.
      * Kept below 32: the AGX compiler encodes buffer slots in a 5-bit
@@ -195,8 +204,9 @@ typedef struct MGLAIRGSIndirectArgs {
 /* Kernel scratch counter indices inside the record (offsets 16/20/24). */
 enum {
     MGL_AIR_GS_COUNT_VERTEX_COUNT = 0, /* visible expanded vertex count  */
-    MGL_AIR_GS_COUNT_STRIP         = 1, /* rolling strip emit count       */
-    MGL_AIR_GS_COUNT_EMITTED       = 2, /* total EmitVertex calls         */
+    MGL_AIR_GS_COUNT_STRIP         = 1, /* rolling strip emit count      */
+    MGL_AIR_GS_COUNT_EMITTED       = 2, /* total EmitVertex calls        */
+    MGL_AIR_GS_COUNT_STREAM        = 3, /* stream>0 record cursor        */
 };
 
 MGL_AIR_STATIC_ASSERT(sizeof(MGLAIRGSIndirectArgs) == 16u,
@@ -248,23 +258,24 @@ typedef struct MGLAIRGSIndexGatherParams {
  * Streams 0..3 (GL 4.6 §11.1.3.4, GLSL 4.60 §4.3.8.2/§8.13): only stream 0
  * is rasterized; streams 1..3 exist solely for transform feedback and are
  * only legal when the output primitive type is points.  The single
- * physical slot-31 buffer is split into per-stream segments
- * (capture_base = byte offset of the segment); each stream owns one
- * MGLAIRGSXFBStreamMeta with its own emitted-point, atomic cursor, and
- * written counters.  The emitted-point counter is independent of capture so
- * indexed PRIMITIVES_GENERATED remains valid when no XFB buffer is bound.
+ * physical slot-31 buffer is split into per-buffer segments
+ * (capture_base = byte offset of the segment); each buffer owns one
+ * MGLAIRGSXFBStreamMeta.  The emitted-point counter is independent of
+ * capture so indexed PRIMITIVES_GENERATED remains valid when no XFB
+ * buffer is bound.
  *
  * The GS expanded output is variable-length (culled primitives contribute
- * nothing, GL 4.6 §13.2.4), so the kernel appends the visible expanded
- * vertices of each work item through a GPU-atomic cursor instead of a
- * compile-time fixed offset.  Slot 27 carries the 4-stream meta block:
- * the renderer pre-writes `stride` (0 disables capture) and `capacity`
- * (GL-visible store bytes available from the bound offset) per stream;
- * the kernel atomically reserves `visible * stride` bytes at the stream's
- * `cursor`, stores the visible records only when the reservation fits,
- * and counts the actually written bytes in `written`.
+ * nothing, GL 4.6 §13.2.4).  Slot 27 carries the 4-buffer meta block plus
+ * the buffer->stream feeding map: the renderer pre-writes `stride`
+ * (0 disables capture), `capacity` (GL-visible store bytes available from
+ * the bound offset) and `capture_base` per buffer.  Record emission order
+ * and whole-primitive truncation are handled by the ordered 2-pass path
+ * in section 5b below; the meta block carries no GPU cursors.
  * ===================================================================== */
 #define MGL_AIR_GS_MAX_STREAMS 4u
+
+/* buffer_stream[] sentinel: buffer not fed by any stream. */
+#define MGL_AIR_GS_XFB_NO_STREAM 0xFFFFFFFFu
 
 typedef struct MGLAIRGSXFBStreamMeta {
     uint32_t stride;          /* bytes per XFB vertex; 0 = capture off    */
@@ -272,26 +283,131 @@ typedef struct MGLAIRGSXFBStreamMeta {
     uint32_t capture_base;    /* byte offset of this stream's segment in
                                * the slot-31 buffer (renderer preset)     */
     uint32_t generated;       /* emitted visible points (stream > 0 query) */
-    uint64_t cursor;          /* atomic reservation cursor (GPU written)  */
-    uint64_t written;         /* atomic written-byte counter (GPU written)*/
 } MGLAIRGSXFBStreamMeta;
 
 typedef struct MGLAIRGSXFBMeta {
     MGLAIRGSXFBStreamMeta stream[MGL_AIR_GS_MAX_STREAMS];
+    /* Feeding stream per XFB buffer (link plan keeps one stream per
+     * buffer).  The pass-1 kernel attributes visibility bytes to buffers
+     * through this map: stream-0's epilogue accumulates word0 * stride[b]
+     * into every buffer whose feeding stream is 0, and EmitStreamVertex(s)
+     * accumulates into the buffers fed by s.  0xFFFFFFFF = unfed buffer. */
+    uint32_t buffer_stream[MGL_AIR_GS_MAX_STREAMS];
 } MGLAIRGSXFBMeta;
 
-MGL_AIR_STATIC_ASSERT(sizeof(MGLAIRGSXFBStreamMeta) == 32u,
-                      "GS XFB stream meta is 12 + 4 generated + 8 + 8 bytes");
+MGL_AIR_STATIC_ASSERT(sizeof(MGLAIRGSXFBStreamMeta) == 16u,
+                      "GS XFB stream meta is 4 x 32-bit words");
 MGL_AIR_STATIC_ASSERT(offsetof(MGLAIRGSXFBStreamMeta, stride) == 0u,
                       "stride must lead the stream meta");
 MGL_AIR_STATIC_ASSERT(offsetof(MGLAIRGSXFBStreamMeta, generated) == 12u,
                       "generated counter must remain in the ABI padding word");
-MGL_AIR_STATIC_ASSERT(offsetof(MGLAIRGSXFBStreamMeta, cursor) == 16u,
-                      "cursor must be 64-bit aligned at offset 16");
-MGL_AIR_STATIC_ASSERT(offsetof(MGLAIRGSXFBStreamMeta, written) == 24u,
-                      "written must be 64-bit aligned at offset 24");
-MGL_AIR_STATIC_ASSERT(sizeof(MGLAIRGSXFBMeta) == 128u,
-                      "GS XFB meta is 4 x 32-byte stream blocks");
+MGL_AIR_STATIC_ASSERT(sizeof(MGLAIRGSXFBMeta) == 80u,
+                      "GS XFB meta is 4 x 16-byte stream blocks + 16-byte map");
+
+/* =====================================================================
+ * 5b. Ordered GL4 XFB scatter ABI (GL4 终态)
+ *
+ * The prototype XFB path appended records through a GPU-atomic cursor, which
+ * does not preserve emission order across work items (Metal compute thread
+ * groups execute in undefined order) and tears primitives at the capacity
+ * boundary.  GL 4.6 §13.2.4 requires records to land in primitive emission
+ * order and truncation to drop a whole primitive atomically across every
+ * buffer it feeds.  The terminal-state path is therefore two passes:
+ *
+ *   Pass 1 (the existing GS expansion kernel): expands each work item's
+ *     primitives into the slot-28 stage-out record run as before, and instead
+ *     of appending to slot 31 writes per-(work-item, buffer) visible byte
+ *     counts into a visibility buffer (one u32 per work item per buffer).
+ *
+ *   CPU (renderer): reads the visibility buffer, computes an exclusive
+ *     prefix-sum per XFB buffer over work items, and writes per-(work-item,
+ *     buffer) destination byte offsets into an offset table.
+ *
+ *   Pass 2 (gs_xfb_scatter aux kernel): one work item per thread reads its
+ *     visible counts and prefix offsets, applies whole-primitive cross-buffer
+ *     truncation (a primitive is written only if it fits in every buffer it
+ *     feeds, which is atomic because offsets are ordered), repacks each
+ *     captured varying to its link-time component offset, and copies the
+ *     records into the slot-31 XFB stream in emission order.
+ *
+ * Buffer-index mapping: records are scattered per *transform-feedback buffer
+ * index* (0..3 from the link-time scatter plan), not per GS output stream.
+ * A single stream's varyings may target multiple buffers (gl_NextBuffer), and
+ * SEPARATE_ATTRIBS assigns one buffer per varying.
+ * ===================================================================== */
+
+/* Pass 2 (gs_xfb_scatter aux metallib kernel) is a standalone compute kernel
+ * whose buffer indices must stay in [0, 30] (Metal kernel limit), so it does
+ * NOT reuse the pass-1 slot-31 XFB index.  The renderer binds the slot-31
+ * XFB stream to the scatter kernel's buffer(4) and the per-(work-item,
+ * buffer) written counters to buffer(5); the stage-out records move to
+ * buffer(3) for this kernel, and the packed params/visibility/offset table
+ * take the low slots 0/1/2. */
+#define MGL_AIR_GS_XFB_SCATTER_PARAMS_SLOT 0u
+#define MGL_AIR_GS_XFB_SCATTER_VIS_SLOT    1u
+#define MGL_AIR_GS_XFB_SCATTER_OFFSET_SLOT 2u
+#define MGL_AIR_GS_XFB_SCATTER_STAGE_OUT_SLOT 3u
+#define MGL_AIR_GS_XFB_SCATTER_XFB_SLOT    4u
+#define MGL_AIR_GS_XFB_SCATTER_WRITTEN_SLOT 5u
+
+/* Maximum captured varyings one program may scatter (matches MAX_ATTRIBS). */
+#define MGL_AIR_GS_XFB_MAX_FIELDS 30u
+
+/* Per-buffer control block for the ordered scatter. */
+typedef struct MGLAIRGSXFBBufferMeta {
+    uint32_t stride;          /* record bytes for this buffer; 0 = unused   */
+    uint32_t capacity_bytes;  /* store capacity from the bound offset       */
+    uint32_t capture_base;    /* byte offset of this buffer's slot-31 segment */
+    uint32_t written;         /* pass-2 written-byte counter (GPU written)  */
+} MGLAIRGSXFBBufferMeta;
+
+MGL_AIR_STATIC_ASSERT(sizeof(MGLAIRGSXFBBufferMeta) == 16u,
+                      "ordered XFB buffer meta is four 32-bit words");
+
+/* One captured varying's repack descriptor (link-time scatter plan baked to
+ * bytes).  The scatter kernel copies `byte_count` bytes from the stage-out
+ * record field at `src_offset` to the XFB record field at `dst_offset` in
+ * buffer `buffer_index`. */
+typedef struct MGLAIRGSXFBFieldDesc {
+    uint32_t buffer_index;    /* destination XFB buffer 0..3                */
+    uint32_t src_offset;      /* byte offset in the pass-1 stage-out record */
+    uint32_t dst_offset;      /* byte offset in the buffer's XFB record     */
+    uint32_t byte_count;      /* captured bytes (component_count * 4)       */
+} MGLAIRGSXFBFieldDesc;
+
+MGL_AIR_STATIC_ASSERT(sizeof(MGLAIRGSXFBFieldDesc) == 16u,
+                      "ordered XFB field descriptor is four 32-bit words");
+
+/* Pass-2 parameter block (bound at MGL_AIR_GS_XFB_SCATTER_PARAMS_SLOT). */
+typedef struct MGLAIRGSXFBScatterParams {
+    uint32_t work_item_count;             /* pass-1 work items              */
+    uint32_t stage_out_stride;            /* pass-1 record bytes            */
+    uint32_t records_per_primitive;       /* pass-1 records per work item   */
+    uint32_t vertices_per_primitive;      /* expanded verts per primitive   */
+    uint32_t field_count;                 /* active entries in fields[]     */
+    uint32_t buffer_count;                /* active entries in buffers[]    */
+    uint32_t expanded_offset_records;     /* header records before expanded */
+    uint32_t _pad;
+    /* Feeding stream per XFB buffer (link plan guarantees one stream per
+     * buffer, program.c mglValidateTransformFeedbackVaryings).  The pass-2
+     * scatter walks a stage-out record only for the buffers whose feeding
+     * stream matches the record's stream (region for stream 0, stamp for
+     * streams > 0).  0xFFFFFFFF = buffer not fed by any stream. */
+    uint32_t buffer_stream[MGL_AIR_GS_MAX_STREAMS];
+    MGLAIRGSXFBBufferMeta buffers[MGL_AIR_GS_MAX_STREAMS];
+    MGLAIRGSXFBFieldDesc  fields[MGL_AIR_GS_XFB_MAX_FIELDS];
+} MGLAIRGSXFBScatterParams;
+
+MGL_AIR_STATIC_ASSERT(offsetof(MGLAIRGSXFBScatterParams, buffers) == 48u,
+                      "buffer metas follow the 12-word header");
+MGL_AIR_STATIC_ASSERT(offsetof(MGLAIRGSXFBScatterParams, fields) == 112u,
+                      "field descriptors follow 48 + 4*16 bytes");
+
+/* Visibility buffer layout: workItemCount * MGL_AIR_GS_MAX_STREAMS u32, with
+ * entry [w * 4 + b] = bytes work item w would write to buffer b.  The offset
+ * table has the same layout; entry [w * 4 + b] = the exclusive prefix-sum of
+ * that buffer's visible bytes over work items < w (pass-2 destination). */
+#define MGL_AIR_GS_XFB_VIS_STRIDE MGL_AIR_GS_MAX_STREAMS
 
 /* =====================================================================
  * 6. Static layout invariants shared with the AIR backend

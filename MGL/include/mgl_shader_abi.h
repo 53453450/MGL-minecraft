@@ -95,6 +95,10 @@ enum {
      * §11.1.3.5/§11.1.3.6 tie them to the same value). */
     MGL_AIR_PER_VERTEX_LAYER_OFFSET = 40,
     MGL_AIR_PER_VERTEX_VIEWPORT_INDEX_OFFSET = 44,
+    /* GS multi-stream XFB: stream id stamped by EmitStreamVertex so the
+     * pass-2 scatter can attribute each record to its stream (GL 4.6
+     * §11.1.3.4).  Stream-0 records are identified by region, not stamp. */
+    MGL_AIR_PER_VERTEX_STREAM_OFFSET = 48,
     MGL_AIR_PER_VERTEX_STRIDE = 64,
 };
 

@@ -1349,20 +1349,16 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
             (pptr->geometry_output_type == GL_POINTS ||
              pptr->geometry_output_type == GL_LINE_STRIP ||
              pptr->geometry_output_type == GL_TRIANGLE_STRIP) &&
-            pptr->geometry_vertices_out > 0u &&
             pptr->geometry_vertices_out <= 1024u &&
             pptr->geometry_invocations > 0u &&
-            pptr->geometry_invocations <= 32u &&
-            (pptr->transform_feedback_varying_count == 0 ||
-             pptr->transform_feedback_buffer_mode ==
-                 GL_INTERLEAVED_ATTRIBS);
+            pptr->geometry_invocations <= 32u;
         /* GS expansion uses the shared compute-stage binders for UBOs,
          * SSBOs, atomics, sampled textures and storage images.  Resource
-         * presence is therefore no longer a route restriction.  XFB is
-         * supported through the interleaved single-store subset (the
-         * kernel writes one complete stage-out record per visible
-         * vertex into the slot-31 stream); SEPARATE_ATTRIBS stays on the
-         * unsupported path. */
+         * presence is therefore no longer a route restriction.  XFB runs
+         * the GL4 ordered 2-pass path (mgl_air_gs_abi.h §5b): pass 1 packs
+         * per-stream records into the stage-out run, pass 2 scatters them
+         * by the link-time plan; INTERLEAVED and SEPARATE modes are the
+         * same per-buffer packing, so both route here. */
         pptr->gs_route = computeRoute
             ? MGL_GS_ROUTE_COMPUTE : MGL_GS_ROUTE_UNSUPPORTED;
         if (!computeRoute) {
@@ -2193,6 +2189,35 @@ void mglGetProgramiv(GLMContext ctx, GLuint program, GLenum pname, GLint *params
             /* MGL links synchronously, so every program is always complete by
              * the time this query is issued. */
             *params = GL_TRUE;
+            break;
+        case GL_TRANSFORM_FEEDBACK_VARYINGS:        /* 0x8C83 */
+        case GL_TRANSFORM_FEEDBACK_BUFFER_MODE:     /* 0x8C7F */
+        case GL_TRANSFORM_FEEDBACK_VARYING_MAX_LENGTH: /* 0x8C76 */
+            /* ARB_transform_feedback3 reflection.  Special names
+             * (gl_NextBuffer, gl_SkipComponentsN) count as varyings. */
+            if (!pptr->link_success) {
+                ERROR_RETURN(GL_INVALID_OPERATION);
+                return;
+            }
+            if (pname == GL_TRANSFORM_FEEDBACK_VARYINGS) {
+                *params = pptr->transform_feedback_varying_count;
+            } else if (pname == GL_TRANSFORM_FEEDBACK_BUFFER_MODE) {
+                /* 0 means never specified with glTransformFeedbackVaryings;
+                 * the spec default is GL_INTERLEAVED_ATTRIBS. */
+                *params = pptr->transform_feedback_buffer_mode != 0
+                    ? (GLint)pptr->transform_feedback_buffer_mode
+                    : (GLint)GL_INTERLEAVED_ATTRIBS;
+            } else {
+                GLint maxLen = 0;
+                for (GLsizei vi = 0;
+                     vi < pptr->transform_feedback_varying_count; vi++) {
+                    const char *vname =
+                        pptr->transform_feedback_varying_names[vi];
+                    GLint len = vname ? (GLint)strlen(vname) + 1 : 0;
+                    if (len > maxLen) maxLen = len;
+                }
+                *params = maxLen;
+            }
             break;
         default:
             fprintf(stderr, "mglGetProgramiv: unhandled pname 0x%x\n", pname);

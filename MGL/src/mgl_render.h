@@ -1759,6 +1759,7 @@ enum {
     MGL_RENDER_AUX_RENDER_SCALED_BLIT = 3,
     MGL_RENDER_AUX_RENDER_SCALED_DEPTH_BLIT = 4,
     MGL_RENDER_AUX_RENDER_CLEAR_RECT = 5,
+    MGL_RENDER_AUX_COMPUTE_GS_XFB_SCATTER = 6,
 };
 
 /* Lookup or create a renderer-lifetime auxiliary compute PSO. Passing a NULL
