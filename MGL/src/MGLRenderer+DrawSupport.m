@@ -1841,13 +1841,13 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
             MGL_GS_PLAN_BUFFER(xfbCaptureBuffer, 0u, MGL_AIR_GS_SLOT_XFB);
         }
         MGL_GS_PLAN_BUFFER(xfbMetaBuf, 0u, MGL_AIR_GS_SLOT_XFB_META);
-        if (xfbVisBuffer) {
-            MGL_GS_PLAN_BUFFER(xfbVisBuffer, 0u, MGL_AIR_GS_SLOT_XFB_VIS);
-        }
+        /* The kernel always declares the visibility slot; bind a harmless
+         * buffer when XFB is inactive so reads never touch unbound
+         * memory (Metal validation asserts on the missing binding). */
+        MGL_GS_PLAN_BUFFER(xfbVisBuffer ? xfbVisBuffer : counts, 0u,
+                           MGL_AIR_GS_SLOT_XFB_VIS);
         MGL_GS_PLAN_BYTES(&gparams, sizeof(gparams),
                           MGL_AIR_GS_SLOT_GATHER_PARAMS);
-#undef MGL_GS_PLAN_BYTES
-#undef MGL_GS_PLAN_BUFFER
     } else {
         compute = mglDrawSupportCreateComputeEncoder(
             _renderPassManager.state->currentCommandBufferOwner);
@@ -1875,10 +1875,12 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         }
         mglDrawSupportSetComputeBuffer(compute, xfbMetaBuf, 0u,
                                        MGL_AIR_GS_SLOT_XFB_META);
-        if (xfbVisBuffer) {
-            mglDrawSupportSetComputeBuffer(compute, xfbVisBuffer, 0u,
-                                           MGL_AIR_GS_SLOT_XFB_VIS);
-        }
+        /* The kernel always declares the visibility slot; bind a harmless
+         * buffer when XFB is inactive so reads never touch unbound
+         * memory (Metal validation asserts on the missing binding). */
+        mglDrawSupportSetComputeBuffer(
+            compute, xfbVisBuffer ? xfbVisBuffer : counts, 0u,
+            MGL_AIR_GS_SLOT_XFB_VIS);
     }
     bool buffersOK = [self bindBuffersToComputeEncoder:compute
                                                    stage:_GEOMETRY_SHADER
@@ -2239,9 +2241,11 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         return YES;
     }
     if (getenv("MGL_GS_DIAG"))
-        NSLog(@"MGL GS DIAG rasterize-check empty=%d culled=%d",
+        NSLog(@"MGL GS DIAG rasterize-check empty=%d culled=%d enc=%d",
               (int)[self currentDrawRasterizationIsEmpty],
-              (int)[self currentDrawModeIsFullyCulled:gsOutputMode]);
+              (int)[self currentDrawModeIsFullyCulled:gsOutputMode],
+              (int)mglRenderEncoderOwnerHasCurrent(
+                  _renderPassManager.state->currentRenderEncoderOwner));
     if (![self processGLState:true] ||
         mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 1 ||
         [self currentDrawRasterizationIsEmpty] ||
@@ -2260,6 +2264,11 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     }
 
     [self applyPolygonOffsetForDrawMode:gsOutputMode];
+    if (getenv("MGL_GS_DIAG")) {
+        const uint32_t *cw = (const uint32_t *)mglDrawSupportBufferContents(counts);
+        NSLog(@"MGL GS DIAG draw counts w0..6: %u %u %u %u %u %u %u outputBuf=%p",
+              cw[0], cw[1], cw[2], cw[3], cw[4], cw[5], cw[6], output);
+    }
     for (GLuint primitive = 0u; primitive < workItemCount; primitive++) {
         NSUInteger offset =
             ((NSUInteger)primitive * recordsPerPrimitive +
