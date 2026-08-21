@@ -355,16 +355,3 @@ void mglBridgeSkippedGeometryShaderVaryings(Program *program)
         &program->shader_resources_list[_GEOMETRY_SHADER][_STAGE_OUTPUT_RES],
         &program->shader_resources_list[_FRAGMENT_SHADER][_STAGE_INPUT_RES]);
 }
-
-GLboolean mglProgramHasPassthroughGeometryShader(Program *program)
-{
-    const char *src = program && program->shader_slots[_GEOMETRY_SHADER]
-        ? program->shader_slots[_GEOMETRY_SHADER]->src : NULL;
-    if (!src) return GL_FALSE;
-    return strstr(src, "EmitVertex()") &&
-           strstr(src, "EndPrimitive()") &&
-           strstr(src, "gl_Position = gl_in[n_vertex_index].gl_Position") &&
-           !strstr(src, "gl_PrimitiveID") &&
-           !strstr(src, "gl_Layer") &&
-           !strstr(src, "gl_ViewportIndex");
-}

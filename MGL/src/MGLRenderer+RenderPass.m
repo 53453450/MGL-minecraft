@@ -18,6 +18,7 @@
 #include "mgl_renderer_backend.h"
 #include "mgl_env_flag.h"
 #include "mgl_shader_abi.h"
+#include "mgl_program_reflection.h"
 
 #import <objc/message.h>
 
@@ -526,27 +527,16 @@ static void mglRenderPassSetPersistentStencilClear(
     }
 }
 
-static bool mglGeometryShaderIsPassthrough(const Shader *shader)
-{
-    const char *src = shader ? shader->src : NULL;
-    if (!src) {
-        return false;
-    }
-
-    /* Metal has no geometry stage.  A few CTS paths insert a geometry shader
-     * whose only job is to re-emit each input vertex unchanged while copying
-     * clip/cull distance arrays.  Those programs are equivalent to running
-     * the VS->FS pipeline directly, and blocking them regresses otherwise
-     * valid cull-distance coverage.  Keep this deliberately narrow so real
-     * geometry expansion/rewriting remains unsupported instead of being
-     * silently misrendered. */
-    return strstr(src, "EmitVertex()") &&
-           strstr(src, "EndPrimitive()") &&
-           strstr(src, "gl_Position = gl_in[n_vertex_index].gl_Position") &&
-           !strstr(src, "gl_PrimitiveID") &&
-           !strstr(src, "gl_Layer") &&
-           !strstr(src, "gl_ViewportIndex");
-}
+/* Passthrough geometry detection lives in mgl_program_reflection.c
+ * (mglProgramHasPassthroughGeometryShader): a geometry shader whose only
+ * job is to re-emit each input vertex unchanged.  Metal has no geometry
+ * stage; a few CTS paths insert such a shader while copying clip/cull
+ * distance arrays.  Those programs are equivalent to running the VS->FS
+ * pipeline directly, and blocking them regresses otherwise valid
+ * cull-distance coverage.  The predicate is deliberately narrow and
+ * excludes transform-feedback programs (the bypass would drop capture),
+ * so real geometry expansion/rewriting remains unsupported instead of
+ * being silently misrendered. */
 
 static bool mglLoadAIRMainFunction(const unsigned char *bytes,
                                    size_t size,
@@ -586,6 +576,14 @@ static const char *mglGeometryPassthroughType(GLenum type)
         case GL_FLOAT_VEC2: return "vec2";
         case GL_FLOAT_VEC3: return "vec3";
         case GL_FLOAT_VEC4: return "vec4";
+        case GL_INT: return "int";
+        case GL_INT_VEC2: return "ivec2";
+        case GL_INT_VEC3: return "ivec3";
+        case GL_INT_VEC4: return "ivec4";
+        case GL_UNSIGNED_INT: return "uint";
+        case GL_UNSIGNED_INT_VEC2: return "uvec2";
+        case GL_UNSIGNED_INT_VEC3: return "uvec3";
+        case GL_UNSIGNED_INT_VEC4: return "uvec4";
         default: return NULL;
     }
 }
@@ -593,12 +591,44 @@ static const char *mglGeometryPassthroughType(GLenum type)
 static const char *mglGeometryPassthroughSwizzle(GLenum type)
 {
     switch (type) {
-        case GL_FLOAT: return ".x";
-        case GL_FLOAT_VEC2: return ".xy";
-        case GL_FLOAT_VEC3: return ".xyz";
-        case GL_FLOAT_VEC4: return "";
+        case GL_FLOAT:
+        case GL_INT:
+        case GL_UNSIGNED_INT: return ".x";
+        case GL_FLOAT_VEC2:
+        case GL_INT_VEC2:
+        case GL_UNSIGNED_INT_VEC2: return ".xy";
+        case GL_FLOAT_VEC3:
+        case GL_INT_VEC3:
+        case GL_UNSIGNED_INT_VEC3: return ".xyz";
+        case GL_FLOAT_VEC4:
+        case GL_INT_VEC4:
+        case GL_UNSIGNED_INT_VEC4: return "";
         default: return NULL;
     }
+}
+
+/* Read-back conversion for integer varyings: the stage-out record stores
+ * raw bits, so integer components need floatBitsToInt/Uint; float varyings
+ * need none.  GLSL also requires the `flat` qualifier on integer
+ * varyings. */
+static const char *mglGeometryPassthroughConversion(GLenum type)
+{
+    switch (type) {
+        case GL_INT:
+        case GL_INT_VEC2:
+        case GL_INT_VEC3:
+        case GL_INT_VEC4: return "floatBitsToInt";
+        case GL_UNSIGNED_INT:
+        case GL_UNSIGNED_INT_VEC2:
+        case GL_UNSIGNED_INT_VEC3:
+        case GL_UNSIGNED_INT_VEC4: return "floatBitsToUint";
+        default: return NULL;
+    }
+}
+
+static bool mglGeometryPassthroughNeedsFlat(GLenum type)
+{
+    return mglGeometryPassthroughConversion(type) != NULL;
 }
 
 - (BOOL)ensureAIRGeometryPassthroughFunctionForProgram:(Program *)program
@@ -635,8 +665,11 @@ static const char *mglGeometryPassthroughSwizzle(GLenum type)
                   (unsigned)output->gl_type);
             return NO;
         }
-        [source appendFormat:@"layout(location = %u) out %s %s;\n",
-                             (unsigned)output->location, type, output->name];
+        [source appendFormat:@"layout(location = %u) %sout %s %s;\n",
+                             (unsigned)output->location,
+                             mglGeometryPassthroughNeedsFlat(output->gl_type)
+                                 ? "flat " : "",
+                             type, output->name];
     }
     [source appendFormat:
         @"void main() {\n"
@@ -666,19 +699,28 @@ static const char *mglGeometryPassthroughSwizzle(GLenum type)
          if (output->stream > 0) continue;
          const char *swizzle = mglGeometryPassthroughSwizzle(output->gl_type);
          if (!swizzle || !output->name) return NO;
-         [source appendFormat:
-             @"    vec4 mgl_slot_%u = "
-              "mgl_gs_output.records[mgl_base + %u];\n"
-              "    %s = mgl_slot_%u%s;\n",
-             (unsigned)i,
-             (unsigned)(MGL_AIR_PER_VERTEX_STRIDE / 16u + output->location),
-output->name, (unsigned)i,
-             swizzle];
+         const char *convert =
+             mglGeometryPassthroughConversion(output->gl_type);
+         if (convert) {
+             [source appendFormat:
+                 @"    vec4 mgl_slot_%u = "
+                  "mgl_gs_output.records[mgl_base + %u];\n"
+                  "    %s = %s(mgl_slot_%u%s);\n",
+                 (unsigned)i,
+                 (unsigned)(MGL_AIR_PER_VERTEX_STRIDE / 16u + output->location),
+                 output->name, convert, (unsigned)i, swizzle];
+         } else {
+             [source appendFormat:
+                 @"    vec4 mgl_slot_%u = "
+                  "mgl_gs_output.records[mgl_base + %u];\n"
+                  "    %s = mgl_slot_%u%s;\n",
+                 (unsigned)i,
+                 (unsigned)(MGL_AIR_PER_VERTEX_STRIDE / 16u + output->location),
+                 output->name, (unsigned)i,
+                 swizzle];
+         }
     }
     [source appendString:@"}\n"];
-    if (getenv("MGL_GS_DIAG")) {
-        NSLog(@"MGL GS DIAG passthrough source:\n%@", source);
-    }
     unsigned char *bytes = NULL;
     size_t size = 0u;
     char errorText[512] = {0};
@@ -1448,7 +1490,7 @@ output->name, (unsigned)i,
         if (shader)
         {
             if (i == _GEOMETRY_SHADER) {
-                if (mglGeometryShaderIsPassthrough(shader)) {
+                if (mglProgramHasPassthroughGeometryShader(ptr)) {
                     static uint64_t s_passthroughGeometryShaderSkipCount = 0;
                     uint64_t hit = ++s_passthroughGeometryShaderSkipCount;
                     if (hit <= 16ull || (hit % 512ull) == 0ull) {
@@ -4094,22 +4136,27 @@ output->name, (unsigned)i,
 
 
     {
-        BOOL needsLayerTopology = NO;
+        /* A compute-routed geometry shader is rasterized by the generated
+         * passthrough vertex function.  Metal therefore needs the output
+         * primitive class on the render pipeline, even when the GLSL GS does
+         * not write gl_Layer/gl_ViewportIndex.  Without it, point/line list
+         * draws retain the unspecified topology used by ordinary VS draws. */
+        BOOL needsExplicitTopology = geometryExpansion;
         Shader *vsSlot = vertexProgram ? vertexProgram->shader_slots[_VERTEX_SHADER] : NULL;
         if (vsSlot && vsSlot->src &&
             (strstr(vsSlot->src, "gl_Layer") ||
              strstr(vsSlot->src, "gl_ViewportIndex"))) {
-            needsLayerTopology = YES;
+            needsExplicitTopology = YES;
         }
-        if (!needsLayerTopology && vertexProgram) {
+        if (!needsExplicitTopology && vertexProgram) {
             Shader *gsSlot = vertexProgram->shader_slots[_GEOMETRY_SHADER];
             if (gsSlot && gsSlot->src &&
                 (strstr(gsSlot->src, "gl_Layer") ||
                  strstr(gsSlot->src, "gl_ViewportIndex"))) {
-                needsLayerTopology = YES;
+                needsExplicitTopology = YES;
             }
         }
-        if (needsLayerTopology) {
+        if (needsExplicitTopology) {
             switch (_lastDrawPrimitiveMode) {
                 case GL_POINTS:
                     state->input_primitive_topology =
@@ -4351,6 +4398,7 @@ output->name, (unsigned)i,
 
     state->alpha_to_coverage_enabled = MGL_STATE(ctx)->caps.sample_alpha_to_coverage ? 1 : 0;
     state->alpha_to_one_enabled = MGL_STATE(ctx)->caps.sample_alpha_to_one ? 1 : 0;
+
 
     for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
         if (state->color_format[i] == (uint32_t)MGLPixelFormatInvalid) {

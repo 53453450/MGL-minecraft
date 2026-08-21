@@ -25,6 +25,7 @@
 #include "mgl_aux_assets.h"
 #include "mgl_compute_pipeline_cache.h"
 #include "mgl_env_flag.h"
+#include "mgl_program_reflection.h"
 #include "mgl_types_buffer.h"
 #include "mgl_types_texture.h"
 #include "mgl_types_program.h"
@@ -141,18 +142,6 @@ void releaseBridgedObject(void** slot) {
     *slot = nullptr;
     mglMetalCountRelease(metalObjectKind(object));
     static_cast<NS::Object*>(object)->release();
-}
-
-bool geometryShaderIsPassthrough(const Shader* shader) {
-    const char* source = shader ? shader->src : nullptr;
-    if (!source) return false;
-    return std::strstr(source, "EmitVertex()") &&
-           std::strstr(source, "EndPrimitive()") &&
-           std::strstr(source,
-                       "gl_Position = gl_in[n_vertex_index].gl_Position") &&
-           !std::strstr(source, "gl_PrimitiveID") &&
-           !std::strstr(source, "gl_Layer") &&
-           !std::strstr(source, "gl_ViewportIndex");
 }
 
 int loadAIRMainFunction(MTL::Device* device,
@@ -2800,7 +2789,7 @@ int mglRenderBindAIRProgram(Program* program,
         Shader* shader = program->shader_slots[stage];
         if (!shader) continue;
         if (stage == _GEOMETRY_SHADER) {
-            if (mgl::geometryShaderIsPassthrough(shader)) continue;
+            if (mglProgramHasPassthroughGeometryShader(program)) continue;
             if (program->gs_route != MGL_GS_ROUTE_COMPUTE) {
                 if (failed_stage_out) *failed_stage_out = stage;
                 if (err && errcap) {
@@ -2822,7 +2811,7 @@ int mglRenderBindAIRProgram(Program* program,
     for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; ++stage) {
         Shader* shader = program->shader_slots[stage];
         if (!shader || (stage == _GEOMETRY_SHADER &&
-                        mgl::geometryShaderIsPassthrough(shader))) {
+                        mglProgramHasPassthroughGeometryShader(program))) {
             continue;
         }
         MGLShaderModule* spirv = &program->modules[stage];
