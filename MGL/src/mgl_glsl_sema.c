@@ -1568,6 +1568,27 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                  * viewport-index words and the raster vertex outputs. */
                 return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_INT));
             }
+            if (strncmp(e->u.var_ref.name, "gl_MaxGeometry", 14) == 0) {
+                /* Geometry limits are compile-time integer constants in
+                 * GLSL.  Keep them scalar ints for expression typing; the
+                 * AIR backend supplies their target capability values. */
+                static const char *const names[] = {
+                    "gl_MaxGeometryInputComponents",
+                    "gl_MaxGeometryOutputComponents",
+                    "gl_MaxGeometryTextureImageUnits",
+                    "gl_MaxGeometryOutputVertices",
+                    "gl_MaxGeometryTotalOutputComponents",
+                    "gl_MaxGeometryUniformComponents",
+                    "gl_MaxGeometryAtomicCounters",
+                    "gl_MaxGeometryAtomicCounterBuffers",
+                    "gl_MaxGeometryImageUniforms",
+                    "gl_MaxGeometryShaderInvocations",
+                };
+                for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
+                    if (strcmp(e->u.var_ref.name, names[i]) == 0)
+                        return scratch_type(s,
+                            mglIRTypeScalar(MGLIR_SCALAR_INT));
+            }
             if (strcmp(e->u.var_ref.name, "gl_in") == 0) {
                 /* gl_PerVertex interface array (TCS/TES/GS). */
                 return gl_in_out_array(s);
@@ -1686,6 +1707,15 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                                 root->kind == MGL_EXPR_INDEX)) {
                     root = root->kind == MGL_EXPR_MEMBER
                         ? root->u.member.object : root->u.index.object;
+                }
+                /* Geometry stage interface arrays are runtime-shaped in the
+                 * IR so the same gl_PerVertex type can be shared by stages,
+                 * but their length is fixed by the input topology. */
+                if (root && root->kind == MGL_EXPR_VAR_REF &&
+                    strcmp(root->u.var_ref.name, "gl_in") == 0 &&
+                    s->stage == MGL_STAGE_GEOMETRY) {
+                    return scratch_type(s,
+                                        mglIRTypeScalar(MGLIR_SCALAR_INT));
                 }
                 Sym *owner = root && root->kind == MGL_EXPR_VAR_REF
                     ? symtab_lookup(tab, root->u.var_ref.name) : NULL;

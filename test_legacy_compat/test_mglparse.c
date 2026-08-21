@@ -129,6 +129,35 @@ static void test_expr_path(void)
     }
 }
 
+static void test_precision_statements(void)
+{
+    const char *src =
+        "#version 460 core\n"
+        "precision lowp int;\n"
+        "precision mediump float;\n"
+        "precision highp sampler2D;\n"
+        "lowp int low_value;\n"
+        "mediump float medium_value;\n"
+        "highp uint high_value;\n"
+        "void main() { medium_value = 1.0; }\n";
+    MGLTranslationUnit *tu = mglGLSLParse(src, strlen(src));
+    CHECK(tu != NULL, "precision TU");
+    CHECK(tu->error == NULL, "precision statements accepted");
+    CHECK(tu->decl_count == 4,
+          "precision statements do not create declarations");
+    if (tu && tu->decl_count >= 3) {
+        CHECK(tu->decls[0]->type->precision == MGL_AST_PRECISION_LOWP,
+              "lowp declaration precision");
+        CHECK(tu->decls[1]->type->precision == MGL_AST_PRECISION_MEDIUMP,
+              "mediump declaration precision");
+        CHECK(tu->decls[2]->type->precision == MGL_AST_PRECISION_HIGHP,
+              "highp declaration precision");
+    }
+    if (tu) {
+        mglGLSLTranslationUnitDestroy(tu);
+    }
+}
+
 static void test_error_report(void)
 {
     const char *src = "void main( { }\n"; /* missing ')' */
@@ -146,6 +175,7 @@ int main(void)
     test_hello();
     test_fragment();
     test_expr_path();
+    test_precision_statements();
     test_error_report();
     printf("\n%d/%d passed\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;
