@@ -55,7 +55,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 82
+#define MAX_TESTS 83
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -12806,6 +12806,77 @@ cleanup:
 }
 
 
+/* AIR argument metadata must be ordered by parameter index: a fragment
+ * shader with both a plain uniform (buffer argument) and a varying
+ * (fragment_input value argument) used to emit the buffer node first,
+ * breaking the rasterizer varying link (colors read as 0). */
+static int test_fs_varying_with_plain_uniform(unsigned char *pixels,
+                                              const char *out_path)
+{
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "layout(location=0) out vec3 c3;\n"
+        "void main() { c3 = vec3(1.0, 0.0, 0.0);\n"
+        "  gl_PointSize = 1.0;\n"
+        "  gl_Position = vec4(position, 0.0, 1.0); }\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "uniform ivec2 sz;\n"
+        "layout(location=0) in vec3 c3;\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(c3, 1.0) + float(sz.x) * 1e-7; }\n";
+    static const float pos[2] = { 0.0f, 0.5f };
+
+    GLuint fbo = 0u, tex = 0u, vao = 0u, vbo = 0u, program = 0u;
+    int result = 1;
+    fbo = make_fbo(REG_W, REG_H, &tex);
+    if (!fbo) goto cleanup;
+    program = link_program(vs, fs);
+    if (!program) goto cleanup;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof pos, pos, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
+    glUseProgram(program);
+    glUniform2i(glGetUniformLocation(program, "sz"), REG_W, REG_H);
+    glDrawArrays(GL_POINTS, 0, 1);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+
+    {
+        int red = 0;
+        for (int y = 0; y < REG_H; y++)
+            for (int x = 0; x < REG_W; x++) {
+                const unsigned char *q = &pixels[(y * REG_W + x) * 4];
+                if (q[0] > 200 && q[1] < 50) red++;
+            }
+        if (red != 1) {
+            fprintf(stderr,
+                    "fs_varying_with_plain_uniform: %d red pixels, "
+                    "expected 1\n", red);
+            goto cleanup;
+        }
+    }
+
+    result = 0;
+
+cleanup:
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (program) glDeleteProgram(program);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (tex) glDeleteTextures(1, &tex);
+    return result;
+}
+
 /* KHR-GL46.geometry_shader.rendering lines-in/line_strip-out replica:
  * one horizontal input line, GS expands it into three line strips
  * (CTS rendering family shape).  Verifies the expanded primitives
@@ -13276,6 +13347,8 @@ static const TestCase TESTS[] = {
                     test_air_geometry_points_grid),
     SELF_CHECK_TEST("air_geometry_lines_expand",
                     test_air_geometry_lines_expand),
+    SELF_CHECK_TEST("fs_varying_with_plain_uniform",
+                    test_fs_varying_with_plain_uniform),
     /* depth_test/stencil use probe-style fns (test_depth_probe /
      * test_stencil_probe): hardcoded per-program values.
      * uniform_alias gates the cross-stage uniform-location fix (program.c

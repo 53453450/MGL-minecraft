@@ -8548,6 +8548,26 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             llvm::MDString::get(ctx, "air.arg_name"),
             llvm::MDString::get(ctx, "vid")}));
     }
+    /* Metal expects the argument list ordered by parameter index; the
+     * emission order above mixes buffers and value args (e.g. a fragment
+     * shader's uniform buffer node precedes its fragment_input node even
+     * though the value parameter comes first in the signature).  Sort
+     * stably by the leading argument-index integer. */
+    std::stable_sort(argNodes.begin(), argNodes.end(),
+                     [](const llvm::Metadata *a, const llvm::Metadata *b) {
+                         auto idx = [](const llvm::Metadata *m) -> long {
+                             auto *n = llvm::dyn_cast<llvm::MDNode>(m);
+                             if (!n || n->getNumOperands() == 0) return -1;
+                             auto *c =
+                                 llvm::dyn_cast<llvm::ConstantAsMetadata>(
+                                     n->getOperand(0).get());
+                             if (!c) return -1;
+                             auto *ci = llvm::dyn_cast<llvm::ConstantInt>(
+                                 c->getValue());
+                             return ci ? (long)ci->getZExtValue() : -1;
+                         };
+                         return idx(a) < idx(b);
+                     });
     std::vector<llvm::Metadata *> stageElems = {
         llvm::ValueAsMetadata::get(fn),
         llvm::MDNode::get(ctx, outNodes)};

@@ -721,6 +721,9 @@ static bool mglGeometryPassthroughNeedsFlat(GLenum type)
          }
     }
     [source appendString:@"}\n"];
+    if (getenv("MGL_GS_DIAG")) {
+        NSLog(@"MGL GS DIAG passthrough VS source:\n%@", source);
+    }
     unsigned char *bytes = NULL;
     size_t size = 0u;
     char errorText[512] = {0};
@@ -851,6 +854,9 @@ static bool mglGeometryPassthroughNeedsFlat(GLenum type)
             swizzle];
     }
     [source appendString:@"}\n"];
+    if (getenv("MGL_GS_DIAG")) {
+        NSLog(@"MGL GS DIAG passthrough VS source:\n%@", source);
+    }
     unsigned char *bytes = NULL;
     size_t size = 0u;
     char errorText[512] = {0};

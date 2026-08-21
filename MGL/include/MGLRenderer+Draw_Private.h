@@ -99,7 +99,8 @@ static const BOOL kMGLDiagnosticStateLogs = NO;
 static const BOOL kMGLDrawSubmitDiagnostics = NO;
 
 /* === Draw binding/validation constants === */
-static const BOOL kMGLVerboseBindLogs = NO;
+static inline BOOL kMGLVerboseBindLogsFn(void) { return getenv("MGL_VERBOSE_BIND") != NULL; }
+#define kMGLVerboseBindLogs kMGLVerboseBindLogsFn()
 static const NSUInteger kMGLMinimumStageBindingSize = 256;
 static const NSUInteger kMGLDefaultStageFallbackBufferSize = 4096;
 /* Stack scratch used to zero-pad small inline stage bindings up to the size the

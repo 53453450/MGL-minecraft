@@ -2263,6 +2263,23 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         return YES;
     }
 
+    /* The GS compute dispatch ended the render encoder and processGLState
+     * rebuilt it, but the dirty-domain resource sync may have been marked
+     * done for the *previous* encoder. Rebind fragment-stage buffers
+     * (plain uniforms etc.) on the fresh encoder before the indirect
+     * draws, or the fragment shader reads unbound slots. */
+    {
+        /* The binding-state dedup still reflects the pre-compute encoder;
+         * clear the fragment table so the rebind below is not skipped. */
+        for (uint32_t slot = 0u; slot < 31u; slot++)
+            mglRenderBindingClearFragmentBuffer(_bindingStateOwner, slot);
+        MGLEncodeContext gsEncCtx = {
+            .render_encoder_owner =
+                _renderPassManager.state->currentRenderEncoderOwner,
+        };
+        [self bindFragmentBuffersToCurrentRenderEncoder:&gsEncCtx];
+        [self bindBufferSizeConstantsForRenderEncoder];
+    }
     [self applyPolygonOffsetForDrawMode:gsOutputMode];
     if (getenv("MGL_GS_DIAG")) {
         const uint32_t *cw = (const uint32_t *)mglDrawSupportBufferContents(counts);
