@@ -12818,6 +12818,7 @@ static int test_air_geometry_lines_expand(unsigned char *pixels,
         "#version 450 core\n"
         "layout(location=0) in vec2 position;\n"
         "layout(location=1) in vec4 color;\n"
+        "uniform ivec2 renderingTargetSize;\n"
         "out vec4 vs_gs_color[2];\n"
         "void main() { vs_gs_color[0] = color;\n"
         "  vs_gs_color[1] = color;\n"

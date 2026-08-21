@@ -4103,6 +4103,7 @@ static bool mglGeometryPassthroughNeedsFlat(GLenum type)
         : vertexProgram->modules[vertexStage].mtl_function;
     id vertexFunction = (__bridge id)vertexFunctionPtr;
 
+
     id fragmentFunction = fragmentProgram
         ? (__bridge id)fragmentProgram->modules[_FRAGMENT_SHADER].mtl_function
         : nil;

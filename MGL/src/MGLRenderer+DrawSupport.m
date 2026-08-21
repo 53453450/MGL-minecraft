@@ -1895,6 +1895,13 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
             NSLog(@"MGL GS DIAG binding[%u] kind=%u slot=%u offset=%llu buffer=%p",
                   (unsigned)bi, (unsigned)op->kind, (unsigned)op->index,
                   (unsigned long long)op->offset, op->buffer);
+            if (op->kind == 0u && op->index == 0u && op->buffer) {
+                const float *f = (const float *)mglDrawSupportBufferContents(
+                    (__bridge id)op->buffer);
+                const int32_t *iw = (const int32_t *)f;
+                NSLog(@"MGL GS DIAG uniform slot0 words: %d %d %d %d %d %d %d %d",
+                      iw[0], iw[1], iw[2], iw[3], iw[4], iw[5], iw[6], iw[7]);
+            }
         }
     }
     if (!buffersOK || !texturesOK) {
@@ -2231,6 +2238,10 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         drawCtx->state.dirty_bits = DIRTY_ALL;
         return YES;
     }
+    if (getenv("MGL_GS_DIAG"))
+        NSLog(@"MGL GS DIAG rasterize-check empty=%d culled=%d",
+              (int)[self currentDrawRasterizationIsEmpty],
+              (int)[self currentDrawModeIsFullyCulled:gsOutputMode]);
     if (![self processGLState:true] ||
         mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 1 ||
         [self currentDrawRasterizationIsEmpty] ||
