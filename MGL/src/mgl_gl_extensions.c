@@ -175,6 +175,7 @@ typedef struct QueryObject_t {
 	GLboolean saw_draw;
 	GLboolean sample_result_known;
 	GLboolean primitive_result_known;
+	GLboolean pipeline_result_known;
 	GLboolean timer_result_known;  /* GL_TIME_ELAPSED: backend produced a real GPU result */
 	GLuint64 result;
 } QueryObject;
@@ -333,6 +334,65 @@ void mglRecordActiveSampleQueryDraw(GLMContext ctx)
 		 * read back from the Metal visibility result buffer in mglEndQuery. */
 		q->saw_draw = GL_TRUE;
 	}
+
+	/* Pipeline-statistics queries do not have a Metal visibility query.  Keep
+	 * the existing deterministic fallback semantics for draw paths that do not
+	 * provide a stage-specific counter, but still mark the query as having seen
+	 * a draw.  GS dispatches replace the fallback with exact values below. */
+	for (int slot = 6; slot <= 16; slot++)
+	{
+		QueryObject *q = mgl_find_query(s_active_query_by_target[slot][0]);
+		if (!q || !q->active)
+			continue;
+		q->saw_draw = GL_TRUE;
+	}
+}
+
+void mglRecordActiveGeometryShaderQueryDraw(GLMContext ctx,
+	                                       GLuint64 invocations,
+	                                       GLuint64 primitives)
+{
+	(void)ctx;
+	mgl_init_query_table_if_needed();
+	const int invocation_slot =
+		mgl_query_target_slot(GL_GEOMETRY_SHADER_INVOCATIONS);
+	const int primitive_slot =
+		mgl_query_target_slot(GL_GEOMETRY_SHADER_PRIMITIVES_EMITTED);
+
+	QueryObject *invocation_query =
+		mgl_find_query(s_active_query_by_target[invocation_slot][0]);
+	if (invocation_query && invocation_query->active &&
+		invocation_query->target == GL_GEOMETRY_SHADER_INVOCATIONS)
+	{
+		invocation_query->saw_draw = GL_TRUE;
+		invocation_query->pipeline_result_known = GL_TRUE;
+		invocation_query->result += invocations;
+	}
+
+	QueryObject *primitive_query =
+		mgl_find_query(s_active_query_by_target[primitive_slot][0]);
+	if (primitive_query && primitive_query->active &&
+		primitive_query->target == GL_GEOMETRY_SHADER_PRIMITIVES_EMITTED)
+	{
+		primitive_query->saw_draw = GL_TRUE;
+		primitive_query->pipeline_result_known = GL_TRUE;
+		primitive_query->result += primitives;
+	}
+}
+
+GLboolean mglHasActiveGeometryShaderQuery(void)
+{
+	mgl_init_query_table_if_needed();
+	const int slots[] = {
+		mgl_query_target_slot(GL_GEOMETRY_SHADER_INVOCATIONS),
+		mgl_query_target_slot(GL_GEOMETRY_SHADER_PRIMITIVES_EMITTED),
+	};
+	for (size_t i = 0; i < sizeof(slots) / sizeof(slots[0]); i++) {
+		QueryObject *q = mgl_find_query(s_active_query_by_target[slots[i]][0]);
+		if (q && q->active)
+			return GL_TRUE;
+	}
+	return GL_FALSE;
 }
 
 void mglRecordActivePrimitiveQueryDrawIndexed(GLMContext ctx,
@@ -383,6 +443,15 @@ GLboolean mglHasActiveIndexedPrimitiveQuery(void)
 			return GL_TRUE;
 	}
 	return GL_FALSE;
+}
+
+/* Non-indexed (stream 0) PRIMITIVES_GENERATED / TF_PRIMITIVES_WRITTEN. */
+GLboolean mglHasActivePrimitiveQuery(void)
+{
+	mgl_init_query_table_if_needed();
+	return (s_active_query_by_target[3][0] != 0u ||
+	        s_active_query_by_target[4][0] != 0u)
+	       ? GL_TRUE : GL_FALSE;
 }
 
 GLboolean mglShouldSkipConditionalRender(GLMContext ctx)
@@ -455,11 +524,10 @@ static void mgl_finish_query_result(QueryObject *q)
 			if (!q->primitive_result_known)
 				q->result = q->saw_draw ? 1u : 0u;
 			break;
-		/* GL_ARB_pipeline_statistics_query targets.  MGL does not sample
-		 * real GPU stage counters, so report a deterministic nonzero value
-		 * when a draw occurred within the query's begin/end interval.  This
-		 * satisfies the GL_QUERY_COUNTER_BITS / begin-query API gates and
-		 * the nonzero-when-drawn value checks. */
+		/* GL_ARB_pipeline_statistics_query targets.  Most stages retain the
+		 * deterministic fallback because MGL has no native stage counters;
+		 * geometry-shader queries are replaced with exact GS dispatch counts
+		 * when pipeline_result_known is set. */
 		case GL_VERTICES_SUBMITTED:
 		case GL_PRIMITIVES_SUBMITTED:
 		case GL_VERTEX_SHADER_INVOCATIONS:
@@ -471,7 +539,8 @@ static void mgl_finish_query_result(QueryObject *q)
 		case GL_COMPUTE_SHADER_INVOCATIONS:
 		case GL_CLIPPING_INPUT_PRIMITIVES:
 		case GL_CLIPPING_OUTPUT_PRIMITIVES:
-			q->result = q->saw_draw ? 1u : 0u;
+			if (!q->pipeline_result_known)
+				q->result = q->saw_draw ? 1u : 0u;
 			break;
 		case GL_TIME_ELAPSED:
 			/* Real GPU elapsed time is set by the renderer backend in
@@ -1597,6 +1666,7 @@ static void mglBeginQueryAtIndex(GLMContext ctx, GLenum target,
 	q->saw_draw = GL_FALSE;
 	q->sample_result_known = GL_FALSE;
 	q->primitive_result_known = GL_FALSE;
+	q->pipeline_result_known = GL_FALSE;
 	q->timer_result_known = GL_FALSE;
 	q->result = 0;
 	s_active_query_by_target[slot][index] = id;
@@ -3407,6 +3477,36 @@ static GLboolean mgl_tf_is_builtin_name(const char *name)
 	return GL_FALSE;
 }
 
+/* Name-match a transform-feedback varying against a stage's resource list,
+ * comparing base names ("arr[0]" matches resource "arr").  Used for the
+ * REFERENCED_BY_*_SHADER properties of GL_TRANSFORM_FEEDBACK_VARYING
+ * resources (GL 4.6 §7.3.1: TRUE when the stage produces or consumes the
+ * varying). */
+static GLboolean mgl_tf_stage_references_varying(Program *pptr,
+                                                 const char *name,
+                                                 int stage,
+                                                 int resource_kind)
+{
+	if (!pptr || !name)
+		return GL_FALSE;
+	if (!(pptr->attached_shader_mask & SHADER_MASK_BIT(stage)))
+		return GL_FALSE;
+	MGLShaderResourceList *list =
+		&pptr->shader_resources_list[stage][resource_kind];
+	const char *bracket = strchr(name, '[');
+	size_t base_len = bracket ? (size_t)(bracket - name) : strlen(name);
+	for (GLuint i = 0; list->list && i < list->count; i++)
+	{
+		MGLShaderResource *res = &list->list[i];
+		if (!res->name)
+			continue;
+		if (strncmp(res->name, name, base_len) == 0 &&
+		    res->name[base_len] == '\0')
+			return GL_TRUE;
+	}
+	return GL_FALSE;
+}
+
 /* gl_NextBuffer -> 0, gl_SkipComponentsN -> N. */
 static GLuint mgl_tf_builtin_array_size(const char *name)
 {
@@ -4308,19 +4408,29 @@ void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInter
 							params[out_idx++] = 1;
 						break;
 					case GL_REFERENCED_BY_VERTEX_SHADER:
-						params[out_idx++] = (pptr->attached_shader_mask & VERTEX_SHADER_MASK_BIT) ? GL_TRUE : GL_FALSE;
+						params[out_idx++] = is_builtin ? GL_FALSE :
+							mgl_tf_stage_references_varying(pptr, vname,
+								_VERTEX_SHADER, _STAGE_OUTPUT_RES);
 						break;
 					case GL_REFERENCED_BY_TESS_CONTROL_SHADER:
-						params[out_idx++] = (pptr->attached_shader_mask & TESS_CONTROL_SHADER_MASK_BIT) ? GL_TRUE : GL_FALSE;
+						params[out_idx++] = is_builtin ? GL_FALSE :
+							mgl_tf_stage_references_varying(pptr, vname,
+								_TESS_CONTROL_SHADER, _STAGE_OUTPUT_RES);
 						break;
 					case GL_REFERENCED_BY_TESS_EVALUATION_SHADER:
-						params[out_idx++] = (pptr->attached_shader_mask & TESS_EVALUATION_SHADER_MASK_BIT) ? GL_TRUE : GL_FALSE;
+						params[out_idx++] = is_builtin ? GL_FALSE :
+							mgl_tf_stage_references_varying(pptr, vname,
+								_TESS_EVALUATION_SHADER, _STAGE_OUTPUT_RES);
 						break;
 					case GL_REFERENCED_BY_GEOMETRY_SHADER:
-						params[out_idx++] = (pptr->attached_shader_mask & GEOMETRY_SHADER_MASK_BIT) ? GL_TRUE : GL_FALSE;
+						params[out_idx++] = is_builtin ? GL_FALSE :
+							mgl_tf_stage_references_varying(pptr, vname,
+								_GEOMETRY_SHADER, _STAGE_OUTPUT_RES);
 						break;
 					case GL_REFERENCED_BY_FRAGMENT_SHADER:
-						params[out_idx++] = GL_FALSE;
+						params[out_idx++] = is_builtin ? GL_FALSE :
+							mgl_tf_stage_references_varying(pptr, vname,
+								_FRAGMENT_SHADER, _STAGE_INPUT_RES);
 						break;
 					case GL_REFERENCED_BY_COMPUTE_SHADER:
 						params[out_idx++] = GL_FALSE;
@@ -5086,8 +5196,63 @@ GLint mglGetSubroutineUniformLocation(GLMContext ctx, GLuint program, GLenum sha
 }
 void mglGetTransformFeedbackVarying(GLMContext ctx, GLuint program, GLuint index, GLsizei bufSize, GLsizei *length, GLsizei *size, GLenum *type, GLchar *name)
 {
-	mgl_unimplemented(ctx, __FUNCTION__);
-	(void)ctx;
+	/* ARB_transform_feedback3: special names (gl_NextBuffer,
+	 * gl_SkipComponentsN) count as varyings for TRANSFORM_FEEDBACK_VARYINGS
+	 * and for indexing here; gl_NextBuffer reports size=0/type=NONE,
+	 * gl_SkipComponentsN reports size=N/type=NONE. */
+	Program *pptr = findProgram(ctx, program);
+	ERROR_CHECK_RETURN(pptr, GL_INVALID_VALUE);
+	if (!pptr->link_success)
+	{
+		ERROR_RETURN(GL_INVALID_OPERATION);
+		return;
+	}
+	if (index >= (GLuint)pptr->transform_feedback_varying_count)
+	{
+		ERROR_RETURN(GL_INVALID_VALUE);
+		return;
+	}
+	const char *vname = pptr->transform_feedback_varying_names[index];
+	if (!vname)
+		vname = "";
+
+	GLenum outType = GL_NONE;
+	GLint outSize = 0;
+	if (mgl_tf_is_builtin_name(vname))
+	{
+		outSize = (GLint)mgl_tf_builtin_array_size(vname);
+	}
+	else
+	{
+		GLboolean isElement = GL_FALSE;
+		MGLShaderResource *varying =
+			mgl_tf_find_varying_output(pptr, vname, &isElement);
+		if (varying)
+		{
+			outType = varying->gl_type;
+			outSize = (!isElement && varying->is_array &&
+				   strchr(vname, '[') == NULL)
+				? (GLint)(varying->gl_array_size > 0
+					  ? varying->gl_array_size : 1)
+				: 1;
+		}
+	}
+	if (size)
+		*size = outSize;
+	if (type)
+		*type = outType;
+	GLsizei written = 0;
+	if (name && bufSize > 0)
+	{
+		size_t vlen = strlen(vname);
+		size_t copy = vlen < (size_t)(bufSize - 1)
+			? vlen : (size_t)(bufSize - 1);
+		memcpy(name, vname, copy);
+		name[copy] = '\0';
+		written = (GLsizei)copy;
+	}
+	if (length)
+		*length = written;
 }
 
 void mglGetTransformFeedbacki64_v(GLMContext ctx, GLuint xfb, GLenum pname, GLuint index, GLint64 *param)
