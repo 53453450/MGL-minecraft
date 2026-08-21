@@ -36,7 +36,7 @@ M3 完成必须同时满足以下四项，不能只以 smoke 或单个 draw case
 |---|---|---|
 | AIR VS/FS/CS | 已接入 | frontend、reflection、metallib、PSO 和 runtime tests 已通过 |
 | AIR TCS/TES | 大部分完成 | TCS kernel、TES post-tess vertex、varying/resource ABI 已有；native triangle/quad 支持 array/indexed/instanced/indirect 和非 indexed multi-patch；isolines/point-mode 走 TES compute expansion + passthrough vertex，isolines 几何按 GL 4.6 §11.2.2.3（n 行 edge v、m 段/行、每段 1 线 2 顶点），XFB 经 slot 31 捕获并与光栅化并存（见 P2E） |
-| AIR GS | 大部分完成 | compute route、全部输入/输出拓扑、invocation、varying、resource、instancing、**direct indexed（P1）**、**indirect（P1）**、**multi-draw（P1）**、**XFB（P1，单 stream INTERLEAVED，slot 31 捕获 + slot 27 原子 meta）**、**gl_Layer/gl_ViewportIndex（2026-08-12，`air_geometry_layer_viewport` 回归）**、**多 stream 原型（2026-08-12，`air_geometry_multi_stream_xfb` 回归）** 已有；**XFB link-time layout plan（2026-08-16）** 已有；剩余 SEPARATE_ATTRIBS capture execution、规范化 multi-stream capacity/order、整图元截断/保序、passthrough-XFB 与 default-stream reflection 闭环 |
+| AIR GS | 大部分完成 | compute route、全部输入/输出拓扑、invocation、varying、resource、instancing、**direct indexed（P1）**、**indirect（P1）**、**multi-draw（P1）**、**XFB（GL4 终态 2026-08-20：ordered 2-pass scatter、varying→buffer binding、整图元跨 buffer 原子截断、严格保序、SEPARATE_ATTRIBS、multi-stream、passthrough+XFB 捕获闭环、TF 反射 API 闭环）**、**gl_Layer/gl_ViewportIndex（2026-08-12，2026-08-21 补读回）**、**多 stream（2026-08-12 原型，2026-08-20 终态）**、**PRIMITIVES_GENERATED 内核侧精确计数含 culled（2026-08-21）**、**passthrough 整数 varying（2026-08-21）** 已有；**XFB link-time layout plan（2026-08-16）** 已有；KHR-GL46 geometry_shader CTS 首轮 32/136（详见 docs/GS_XFB_GL4_CTS_PROGRESS_2026-08-21.md） |
 | 旧 SPIR-V 构建链 | 已完全脱离（2026-08-14 核验） | `external/` 无 glslang/SPIRV-*；`mgl_msl_compiler.*`/`test_msl_bindings` 已删；生产源码无动态编译链符号；SPIRV 命名已迁为中性（`MGLShaderModule`/`MGLShaderResource`，旧名仅留 alias）；干净 clone `make` 即构建，且始终使用仓库内修改版 GLFW |
 | Metal-cpp 基础设施 | 单路径 | 纯 C facade、owner、resource creation、encoder setters、draw/blit/compute wrappers 与 command transaction 已接线 |
 | C++ renderer | 单路径收口 | 生产 gate、旧 ref typedef、过渡 adapter 和直接 ObjC Metal 操作已删除；平台对象由 `MGLPlatformRendererShell` 唯一持有；非平台 ObjC/私有头的 Metal 对象与 descriptor census 为零 |
@@ -216,21 +216,25 @@ P0「固定 M3 runtime contract」已交付并全绿验证：
   `layered` 语义选路：`glFramebufferTextureLayer` 保留 `slice/depthPlane` 且
   `renderTargetArrayLength=0`；whole-level layered attachment 才归零 base
   slice/depthPlane，并启用 `render_target_array_index`。）
-- [ ] 完成 GL4 multi-stream XFB 终态语义。（2026-08-12 已有原型子集：
+- [x] 完成 GL4 multi-stream XFB 终态语义。（2026-08-12 已有原型子集：
   `EmitStreamVertex` / `EndStreamPrimitive` 支持 stream 0-3；stream 0 光栅化 +
-  XFB，stream 1-3 仅 XFB；per-stream meta
-  cursor 在 `MGLAIRGSXFBMeta` 内分块，copy-back 按流独立回拷；passthrough
-  vertex 过滤 stream>0 varying 防 location 冲突；`storeGeometryVaryings` /
+  XFB，stream 1-3 仅 XFB；passthrough vertex 过滤 stream>0 varying 防
+  location 冲突；`storeGeometryVaryings` /
   `copyGeometryVaryings` / `copyGeometryVaryingsSelected` 跳过 stream!=0
-  varying 避免覆盖。**非终态**：仍采用 `stream s -> buffer s`、
-  per-stream 独立容量截断和 order-agnostic 写入，尚未实现 GL4 varying binding/
-  整图元跨 binding 原子截断与保序。非 indexed query 已在
-  2026-08-16 修正为 stream 0 的 `3/3`；同日补齐 primitive query 的
-  `(target,index)` 状态，支持 stream 0-3 的 `glBeginQueryIndexed` /
-  `glEndQueryIndexed`，并在 GS meta 中记录 stream>0 的 emitted-point counter，
-  因而 XFB active 与 inactive 两种路径均可验证 stream 1 query `3/3`。
-  当前 stream>0 仍受 points-only 原型约束，不能将该切片视为 GL4 终态。现有
-  `air_geometry_multi_stream_xfb` 只作为原型回归，终态需重写。）
+  varying 避免覆盖。**2026-08-20 终态**：改为 ordered 2-pass（§5b）——pass 1
+  kernel 把 stream 0 记录升序写在 stage-out run 前段、stream>0 记录降序写在
+  后段并盖 stream 戳（`MGL_AIR_PER_VERTEX_STREAM_OFFSET`），按
+  `meta.buffer_stream[]` 把可见字节累积进 slot 26 visibility buffer；CPU
+  对每 buffer 求 exclusive prefix；pass 2 `gs_xfb_scatter`（预编译 aux
+  asset）按 link-time layout plan 的 per-buffer component offset 紧凑重排，
+  整图元跨 buffer 原子截断（一个图元在所有目标 buffer 都装得下才写），
+  copy-back 按 written 前缀回拷。varying→buffer 绑定消费
+  `transform_feedback_layout[]`（buffer_index/component_offset/stream），
+  stream 0 可多 buffer（gl_NextBuffer），link 验证保证 buffer→stream 唯一。
+  SEPARATE_ATTRIBS 放开（program.c computeRoute gate 移除），与
+  INTERLEAVED 共用同一 per-buffer 打包路径。非 indexed query 保持
+  stream 0 计数；indexed query 由 meta generated（stream>0 发射即计数，
+  与 capture 解耦）。）
 - [x] 接入 GS transform feedback，包括 offset/stride、overflow、rasterizer-discard
   和 query 统计。（2026-08-11：单 stream GL_INTERLEAVED_ATTRIBS 已接入——kernel
   按 gl_CullDistance 剔除语义经 slot 31 追加捕获、slot 27 原子 meta cursor 紧凑
@@ -260,15 +264,15 @@ P0「固定 M3 runtime contract」已交付并全绿验证：
   layer 1；单层 slice 语义由 `air_renderpass_layer_slice` 独立正向覆盖）
 - [x] `air_geometry_xfb`（2026-08-11：points-in/triangle-strip-out，两可见段 +
   剔除段，pixel probe + query 2/2、3/2 + FLT 记录/前缀校验）
-- [ ] `air_geometry_multi_stream_xfb` GL4 终态回归（2026-08-12 已有
-  points-in/points-out 双流原型，
-  stream 0 光栅化 + XFB buffer 0（80B stage-out record），stream 1 仅 XFB
-  buffer 1（32B compact record）；非 indexed query 已按 stream 0 验证
-  PRIMITIVES_GENERATED=3 / TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN=3；
-  2026-08-16 又验证 stream 1 的 indexed query 在 XFB active/inactive 两条路径
-  均为 `3/3`（generated/written 或 generated-only）；
-  order-agnostic XFB 验证。仍需按 link-time layout plan 与
-  GL4 query/capacity/order 规则重写后再勾选。）
+- [x] `air_geometry_multi_stream_xfb` GL4 终态回归（2026-08-12 已有
+  points-in/points-out 双流原型；
+  2026-08-16 验证 stream 1 的 indexed query 在 XFB active/inactive 两条路径
+  均为 `3/3`；**2026-08-20 终态重写**：双 buffer 紧凑 record（每 buffer 仅
+  所声明 varying，vec2 = 2 floats/record），严格保序逐记录断言（替代
+  order-agnostic 集合匹配），非 indexed query 保持 stream 0 的 3/3）。
+  同日新增 `air_geometry_xfb_truncate`（跨 buffer 原子截断：buffer 1 只装
+  一个图元时 buffer 0 也不得多写 + 1.5 图元容量只落一个整图元，无 torn
+  record）与 `air_geometry_separate_xfb`（SEPARATE_ATTRIBS 执行捕获）。）
 - [x] `air_geometry_cull_distance`（2026-08-14：GS 逐发射顶点写
   gl_CullDistance——all-negative 剔除 / all-positive 可见 / mixed
   (+1,-1,+1) 按 GL 规则可见；glDrawArrays(GL_POINTS)（direct 批路径）+

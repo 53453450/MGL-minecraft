@@ -55,7 +55,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 75
+#define MAX_TESTS 80
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -10798,16 +10798,15 @@ cleanup:
 static int test_air_geometry_xfb(unsigned char *pixels,
                                  const char *out_path)
 {
-    /* P1 GS transform-feedback coverage (mgl_air_gs_abi.h §5): points
-     * in, triangle_strip out, one triangle per input point.  The GS
-     * kernel appends each work item's visible expanded vertices to the
-     * slot-31 XFB stream through the atomic meta cursor.
+    /* P1 GS transform-feedback coverage (mgl_air_gs_abi.h §5/§5b): points
+     * in, triangle_strip out, one triangle per input point.  The GL4
+     * ordered path captures compact per-buffer records: only the listed
+     * varying (tf_pos, vec2, 2 floats per record) in strict emission
+     * order.
      *
      * First segment (2 points): both triangles visible → 6 captured
-     * records of one full stage-out record each (stride 20 floats, same
-     * layout as the TES XFB path), queries PRIMITIVES_GENERATED=2 /
-     * PRIMITIVES_WRITTEN=2, and without GL_RASTERIZER_DISCARD the
-     * triangles must also rasterize.
+     * records, queries PRIMITIVES_GENERATED=2 / PRIMITIVES_WRITTEN=2, and
+     * without GL_RASTERIZER_DISCARD the triangles must also rasterize.
      *
      * Second segment (3 points): the third point (x < -0.2) emits a
      * fully culled triangle (gl_CullDistance=-1) → GL 4.6 §13.2.4 a
@@ -10940,8 +10939,9 @@ static int test_air_geometry_xfb(unsigned char *pixels,
         }
     }
     {
-        /* 2 triangles x 3 vertices, one full stage-out record each
-         * (stride 20 floats): position at 0..3, tf_pos at 16..17. */
+        /* 2 triangles x 3 vertices, compact per-buffer records (GL 4.6
+         * §13.2.4): only the listed varying (tf_pos, vec2) is captured,
+         * tightly packed at 2 floats per record in strict emission order. */
         GLfloat data[4096 / 4];
         GLenum err = GL_NO_ERROR;
         while ((err = glGetError()) != GL_NO_ERROR) { }
@@ -10952,32 +10952,19 @@ static int test_air_geometry_xfb(unsigned char *pixels,
             fprintf(stderr, "air_geometry_xfb: readback FAIL\n");
             goto cleanup;
         }
-        static const float exp[2][3][2] = {
-            { {-0.25f, -0.3f}, { 0.05f, -0.3f}, {-0.1f, 0.0f} },
-            { { 0.35f, -0.3f}, { 0.65f, -0.3f}, { 0.5f, 0.0f} },
-        };
         static const float expTf[2][2] = { {-0.1f, -0.3f}, {0.5f, -0.3f} };
         for (int r = 0; r < 6; r++) {
-            const int tri = r / 3, vtx = r % 3;
-            const float rx = data[r * 20 + 0];
-            const float ry = data[r * 20 + 1];
-            const float tx = data[r * 20 + 16];
-            const float ty = data[r * 20 + 17];
-            if (!(rx - exp[tri][vtx][0] > -1e-3f &&
-                  rx - exp[tri][vtx][0] < 1e-3f &&
-                  ry - exp[tri][vtx][1] > -1e-3f &&
-                  ry - exp[tri][vtx][1] < 1e-3f &&
-                  tx - expTf[tri][0] > -1e-3f &&
+            const int tri = r / 3;
+            const float tx = data[r * 2 + 0];
+            const float ty = data[r * 2 + 1];
+            if (!(tx - expTf[tri][0] > -1e-3f &&
                   tx - expTf[tri][0] < 1e-3f &&
                   ty - expTf[tri][1] > -1e-3f &&
                   ty - expTf[tri][1] < 1e-3f)) {
                 fprintf(stderr,
-                        "air_geometry_xfb: record %d pos=(%g,%g) "
-                        "tf=(%g,%g), expected tri %d vtx %d at "
-                        "(%g,%g)/(%g,%g)\n",
-                        r, rx, ry, tx, ty, tri, vtx,
-                        exp[tri][vtx][0], exp[tri][vtx][1],
-                        expTf[tri][0], expTf[tri][1]);
+                        "air_geometry_xfb: record %d tf=(%g,%g), "
+                        "expected tri %d at (%g,%g)\n",
+                        r, tx, ty, tri, expTf[tri][0], expTf[tri][1]);
                 goto cleanup;
             }
         }
@@ -11028,34 +11015,22 @@ static int test_air_geometry_xfb(unsigned char *pixels,
             fprintf(stderr, "air_geometry_xfb: segment 2 readback FAIL\n");
             goto cleanup;
         }
-        static const float v0[3][2] = {
-            {-0.05f, -0.5f}, {0.25f, -0.5f}, {0.1f, -0.2f},
-        };
-        static const float v1[3][2] = {
-            {0.55f, -0.5f}, {0.85f, -0.5f}, {0.7f, -0.2f},
-        };
         for (int r = 0; r < 6; r++) {
-            const int tri = r / 3, vtx = r % 3;
-            const float exx = tri == 0 ? v0[vtx][0] : v1[vtx][0];
-            const float exy = tri == 0 ? v0[vtx][1] : v1[vtx][1];
+            const int tri = r / 3;
             const float efx = tri == 0 ? 0.1f : 0.7f;
             const float efy = -0.5f;
-            const float rx = seg2[r * 20 + 0];
-            const float ry = seg2[r * 20 + 1];
-            const float tx = seg2[r * 20 + 16];
-            const float ty = seg2[r * 20 + 17];
-            if (!(rx - exx > -1e-3f && rx - exx < 1e-3f &&
-                  ry - exy > -1e-3f && ry - exy < 1e-3f &&
-                  tx - efx > -1e-3f && tx - efx < 1e-3f &&
+            const float tx = seg2[r * 2 + 0];
+            const float ty = seg2[r * 2 + 1];
+            if (!(tx - efx > -1e-3f && tx - efx < 1e-3f &&
                   ty - efy > -1e-3f && ty - efy < 1e-3f)) {
                 fprintf(stderr,
                         "air_geometry_xfb: segment 2 record %d "
-                        "pos=(%g,%g) tf=(%g,%g), expected (%g,%g)/(%g,%g)\n",
-                        r, rx, ry, tx, ty, exx, exy, efx, efy);
+                        "tf=(%g,%g), expected (%g,%g)\n",
+                        r, tx, ty, efx, efy);
                 goto cleanup;
             }
         }
-        for (int w = 6 * 20; w < 4096 / 4; w++) {
+        for (int w = 6 * 2; w < 4096 / 4; w++) {
             if (seg2[w] != 0.0f) {
                 fprintf(stderr,
                         "air_geometry_xfb: segment 2 culled primitive "
@@ -11176,6 +11151,290 @@ static int test_air_xfb_link_layout(unsigned char *pixels,
         }
     }
     return 0;
+}
+
+/* Transform-feedback reflection API surface (ARB_transform_feedback3):
+ * glGetProgramiv(GL_TRANSFORM_FEEDBACK_VARYINGS / BUFFER_MODE /
+ * VARYING_MAX_LENGTH) and glGetTransformFeedbackVarying, including the
+ * special names gl_NextBuffer / gl_SkipComponentsN (counted and
+ * indexable, reporting type NONE with sizes 0 / N) and the
+ * default-stream program (no layout(stream) qualifier anywhere, so the
+ * whole capture is stream 0). */
+static int test_air_xfb_reflection(unsigned char *pixels,
+                                   const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "out vec4 x;\n"
+        "out vec2 y;\n"
+        "void main() {\n"
+        "  x = vec4(1.0); y = vec2(0.5);\n"
+        "  gl_Position = vec4(0.0, 0.0, 0.0, 1.0);\n"
+        "}\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(0.0, 1.0, 0.0, 1.0); }\n";
+    static const char *interleaved[] = {
+        "x", "gl_NextBuffer", "gl_SkipComponents2", "y"
+    };
+    static const char *separate[] = { "x", "y" };
+
+    GLuint program = 0u, vs_sh = 0u, fs_sh = 0u;
+    int result = 1;
+
+    /* Case 1: interleaved with special names. */
+    vs_sh = compile_shader(GL_VERTEX_SHADER, vs);
+    fs_sh = compile_shader(GL_FRAGMENT_SHADER, fs);
+    if (!vs_sh || !fs_sh) goto cleanup;
+    program = glCreateProgram();
+    if (!program) goto cleanup;
+    glAttachShader(program, vs_sh);
+    glAttachShader(program, fs_sh);
+    glTransformFeedbackVaryings(program, 4, interleaved,
+                                GL_INTERLEAVED_ATTRIBS);
+    glLinkProgram(program);
+    glDeleteShader(vs_sh); vs_sh = 0u;
+    glDeleteShader(fs_sh); fs_sh = 0u;
+    {
+        GLint ok = 0;
+        glGetProgramiv(program, GL_LINK_STATUS, &ok);
+        if (!ok) goto cleanup;
+    }
+    {
+        static const struct {
+            const char *name;
+            GLint size;
+            GLenum type;
+        } exp[4] = {
+            {"x", 1, GL_FLOAT_VEC4},
+            {"gl_NextBuffer", 0, GL_NONE},
+            {"gl_SkipComponents2", 2, GL_NONE},
+            {"y", 1, GL_FLOAT_VEC2},
+        };
+        GLint count = 0, mode = 0, maxLen = 0;
+        glGetProgramiv(program, GL_TRANSFORM_FEEDBACK_VARYINGS, &count);
+        glGetProgramiv(program, GL_TRANSFORM_FEEDBACK_BUFFER_MODE, &mode);
+        glGetProgramiv(program, GL_TRANSFORM_FEEDBACK_VARYING_MAX_LENGTH,
+                       &maxLen);
+        if (count != 4 || mode != GL_INTERLEAVED_ATTRIBS || maxLen != 19) {
+            fprintf(stderr,
+                    "air_xfb_reflection: programiv got count=%d "
+                    "mode=0x%x maxLen=%d, expected 4/0x8c8c/19\n",
+                    count, mode, maxLen);
+            goto cleanup;
+        }
+        for (GLuint i = 0; i < 4; i++) {
+            char name[64] = {0};
+            GLsizei length = -1, size = -1;
+            GLenum type = 0;
+            glGetTransformFeedbackVarying(program, i, sizeof(name),
+                                          &length, &size, &type, name);
+            if (strcmp(name, exp[i].name) != 0 ||
+                length != (GLsizei)strlen(exp[i].name) ||
+                size != exp[i].size || type != exp[i].type) {
+                fprintf(stderr,
+                        "air_xfb_reflection: varying %u got "
+                        "\"%s\"/%d/0x%x, expected \"%s\"/%d/0x%x\n",
+                        i, name, size, type,
+                        exp[i].name, exp[i].size, exp[i].type);
+                goto cleanup;
+            }
+        }
+        /* index past the end -> GL_INVALID_VALUE, outputs unmodified */
+        while (glGetError() != GL_NO_ERROR) { }
+        {
+            char name[8] = {'z', 0};
+            GLsizei length = 77;
+            glGetTransformFeedbackVarying(program, 4, sizeof(name),
+                                          &length, NULL, NULL, name);
+            if (glGetError() != GL_INVALID_VALUE || length != 77 ||
+                name[0] != 'z') {
+                fprintf(stderr,
+                        "air_xfb_reflection: overflow index did not raise "
+                        "INVALID_VALUE cleanly\n");
+                goto cleanup;
+            }
+        }
+        /* REFERENCED_BY_* (GL 4.6 §7.3.1): "x"/"y" are written by the VS
+         * only; the FS does not consume them. */
+        {
+            static const GLenum props[3] = {
+                GL_REFERENCED_BY_VERTEX_SHADER,
+                GL_REFERENCED_BY_GEOMETRY_SHADER,
+                GL_REFERENCED_BY_FRAGMENT_SHADER,
+            };
+            GLint vals[3] = {-1, -1, -1};
+            glGetProgramResourceiv(program, GL_TRANSFORM_FEEDBACK_VARYING,
+                                   0, 3, props, 3, NULL, vals);
+            if (vals[0] != GL_TRUE || vals[1] != GL_FALSE ||
+                vals[2] != GL_FALSE) {
+                fprintf(stderr,
+                        "air_xfb_reflection: referenced_by \"x\" got "
+                        "%d/%d/%d, expected TRUE/FALSE/FALSE\n",
+                        vals[0], vals[1], vals[2]);
+                goto cleanup;
+            }
+        }
+    }
+    glDeleteProgram(program); program = 0u;
+
+    /* Case 2: SEPARATE mode reported back. */
+    vs_sh = compile_shader(GL_VERTEX_SHADER, vs);
+    fs_sh = compile_shader(GL_FRAGMENT_SHADER, fs);
+    if (!vs_sh || !fs_sh) goto cleanup;
+    program = glCreateProgram();
+    if (!program) goto cleanup;
+    glAttachShader(program, vs_sh);
+    glAttachShader(program, fs_sh);
+    glTransformFeedbackVaryings(program, 2, separate, GL_SEPARATE_ATTRIBS);
+    glLinkProgram(program);
+    glDeleteShader(vs_sh); vs_sh = 0u;
+    glDeleteShader(fs_sh); fs_sh = 0u;
+    {
+        GLint ok = 0, count = 0, mode = 0;
+        glGetProgramiv(program, GL_LINK_STATUS, &ok);
+        if (!ok) goto cleanup;
+        glGetProgramiv(program, GL_TRANSFORM_FEEDBACK_VARYINGS, &count);
+        glGetProgramiv(program, GL_TRANSFORM_FEEDBACK_BUFFER_MODE, &mode);
+        if (count != 2 || mode != GL_SEPARATE_ATTRIBS) {
+            fprintf(stderr,
+                    "air_xfb_reflection: separate got count=%d mode=0x%x, "
+                    "expected 2/0x8c8d\n", count, mode);
+            goto cleanup;
+        }
+    }
+    glDeleteProgram(program); program = 0u;
+
+    /* Case 3: program with no transform feedback -> spec defaults. */
+    vs_sh = compile_shader(GL_VERTEX_SHADER, vs);
+    fs_sh = compile_shader(GL_FRAGMENT_SHADER, fs);
+    if (!vs_sh || !fs_sh) goto cleanup;
+    program = glCreateProgram();
+    if (!program) goto cleanup;
+    glAttachShader(program, vs_sh);
+    glAttachShader(program, fs_sh);
+    glLinkProgram(program);
+    glDeleteShader(vs_sh); vs_sh = 0u;
+    glDeleteShader(fs_sh); fs_sh = 0u;
+    {
+        GLint ok = 0, count = -1, mode = -1, maxLen = -1;
+        glGetProgramiv(program, GL_LINK_STATUS, &ok);
+        if (!ok) goto cleanup;
+        glGetProgramiv(program, GL_TRANSFORM_FEEDBACK_VARYINGS, &count);
+        glGetProgramiv(program, GL_TRANSFORM_FEEDBACK_BUFFER_MODE, &mode);
+        glGetProgramiv(program, GL_TRANSFORM_FEEDBACK_VARYING_MAX_LENGTH,
+                       &maxLen);
+        if (count != 0 || mode != GL_INTERLEAVED_ATTRIBS || maxLen != 0) {
+            fprintf(stderr,
+                    "air_xfb_reflection: defaults got %d/0x%x/%d, "
+                    "expected 0/0x8c8c/0\n", count, mode, maxLen);
+            goto cleanup;
+        }
+        /* Unlinked program -> INVALID_OPERATION on both queries. */
+        {
+            GLuint raw = glCreateProgram();
+            GLint scratch = 0;
+            while (glGetError() != GL_NO_ERROR) { }
+            glGetProgramiv(raw, GL_TRANSFORM_FEEDBACK_VARYINGS, &scratch);
+            GLenum e1 = glGetError();
+            glGetTransformFeedbackVarying(raw, 0, 0, NULL, NULL, NULL, NULL);
+            GLenum e2 = glGetError();
+            glDeleteProgram(raw);
+            if (e1 != GL_INVALID_OPERATION ||
+                e2 != GL_INVALID_OPERATION) {
+                fprintf(stderr,
+                        "air_xfb_reflection: unlinked errors 0x%x/0x%x, "
+                        "expected INVALID_OPERATION twice\n", e1, e2);
+                goto cleanup;
+            }
+        }
+    }
+
+    result = 0;
+
+    /* Case 4: GS writes the captured varying with NO stream qualifier
+     * (default stream 0); the FS consumes it.  REFERENCED_BY_VERTEX is
+     * FALSE (the VS outputs only v_g), GEOMETRY TRUE, FRAGMENT TRUE. */
+    {
+        static const char *vs4 =
+            "#version 450 core\n"
+            "layout(location=0) out vec2 v_g;\n"
+            "void main() {\n"
+            "  v_g = vec2(0.5);\n"
+            "  gl_Position = vec4(0.0, 0.0, 0.0, 1.0);\n"
+            "}\n";
+        static const char *gs4 =
+            "#version 450 core\n"
+            "layout(points) in;\n"
+            "layout(points, max_vertices=1) out;\n"
+            "layout(location=0) in vec2 v_g[];\n"
+            "layout(location=0) out vec2 g_out;\n"
+            "void main() {\n"
+            "  g_out = v_g[0];\n"
+            "  gl_Position = gl_in[0].gl_Position;\n"
+            "  EmitVertex();\n"
+            "  EndPrimitive();\n"
+            "}\n";
+        static const char *fs4 =
+            "#version 450 core\n"
+            "layout(location=0) in vec2 g_out;\n"
+            "layout(location=0) out vec4 frag;\n"
+            "void main() { frag = vec4(g_out, 0.0, 1.0); }\n";
+        static const char *vary4[] = { "g_out" };
+        GLuint shaders4[3] = {
+            compile_shader(GL_VERTEX_SHADER, vs4),
+            compile_shader(GL_GEOMETRY_SHADER, gs4),
+            compile_shader(GL_FRAGMENT_SHADER, fs4),
+        };
+        if (!shaders4[0] || !shaders4[1] || !shaders4[2]) goto case4_done;
+        program = glCreateProgram();
+        if (!program) goto case4_done;
+        for (int i = 0; i < 3; i++) glAttachShader(program, shaders4[i]);
+        glTransformFeedbackVaryings(program, 1, vary4,
+                                    GL_INTERLEAVED_ATTRIBS);
+        glLinkProgram(program);
+        for (int i = 0; i < 3; i++) glDeleteShader(shaders4[i]);
+        {
+            GLint ok = 0;
+            glGetProgramiv(program, GL_LINK_STATUS, &ok);
+            if (ok) {
+                static const GLenum props[3] = {
+                    GL_REFERENCED_BY_VERTEX_SHADER,
+                    GL_REFERENCED_BY_GEOMETRY_SHADER,
+                    GL_REFERENCED_BY_FRAGMENT_SHADER,
+                };
+                GLint vals[3] = {-1, -1, -1};
+                glGetProgramResourceiv(program,
+                                       GL_TRANSFORM_FEEDBACK_VARYING,
+                                       0, 3, props, 3, NULL, vals);
+                if (vals[0] != GL_FALSE || vals[1] != GL_TRUE ||
+                    vals[2] != GL_TRUE) {
+                    fprintf(stderr,
+                            "air_xfb_reflection: GS referenced_by got "
+                            "%d/%d/%d, expected FALSE/TRUE/TRUE\n",
+                            vals[0], vals[1], vals[2]);
+                    result = 1;
+                }
+            } else {
+                fprintf(stderr,
+                        "air_xfb_reflection: case 4 link failed\n");
+                result = 1;
+            }
+        }
+        glDeleteProgram(program);
+        program = 0u;
+    }
+case4_done:
+    if (result != 0) goto cleanup;
+
+cleanup:
+    if (program) glDeleteProgram(program);
+    if (vs_sh) glDeleteShader(vs_sh);
+    if (fs_sh) glDeleteShader(fs_sh);
+    return result;
 }
 
 /* GS multi-stream transform feedback (P1, GL 4.6 §11.1.3.4): points in,
@@ -11396,48 +11655,31 @@ static int test_air_geometry_multi_stream_xfb(unsigned char *pixels,
                     "air_geometry_multi_stream_xfb: stream 0 readback FAIL\n");
             goto cleanup;
         }
-        /* XFB records may arrive out of order because Metal compute
-         * does not guarantee thread-group execution order and the GS
-         * kernel uses an atomic cursor to reserve XFB space.  Validate
-         * that all expected records are present, regardless of order. */
+        /* GL4 ordered XFB (mgl_air_gs_abi.h §5b): compact per-buffer
+         * records in strict emission order — the pass-2 scatter writes
+         * records of work item w before w+1.  Each record is exactly the
+         * captured varying (s0_data, vec2): 2 floats. */
         static const float expPos[3][2] = {
             { -0.5f, -0.3f }, { 0.0f, -0.3f }, { 0.5f, -0.3f },
         };
-        int matched[3] = { 0, 0, 0 };
         for (int r = 0; r < 3; r++) {
-            float rx = data[r * 20 + 0];
-            float ry = data[r * 20 + 1];
-            float sx = data[r * 20 + 16];
-            float sy = data[r * 20 + 17];
-            int found = 0;
-            for (int e = 0; e < 3; e++) {
-                if (matched[e]) continue;
-                if (rx - expPos[e][0] > -1e-3f &&
-                    rx - expPos[e][0] < 1e-3f &&
-                    ry - expPos[e][1] > -1e-3f &&
-                    ry - expPos[e][1] < 1e-3f &&
-                    sx - expPos[e][0] > -1e-3f &&
-                    sx - expPos[e][0] < 1e-3f &&
-                    sy - expPos[e][1] > -1e-3f &&
-                    sy - expPos[e][1] < 1e-3f) {
-                    matched[e] = 1;
-                    found = 1;
-                    break;
-                }
-            }
-            if (!found) {
+            float sx = data[r * 2 + 0];
+            float sy = data[r * 2 + 1];
+            if (!(sx - expPos[r][0] > -1e-3f &&
+                  sx - expPos[r][0] < 1e-3f &&
+                  sy - expPos[r][1] > -1e-3f &&
+                  sy - expPos[r][1] < 1e-3f)) {
                 fprintf(stderr,
                         "air_geometry_multi_stream_xfb: stream 0 record %d "
-                        "pos=(%g,%g) s0_data=(%g,%g) has no match\n",
-                        r, rx, ry, sx, sy);
+                        "s0_data=(%g,%g), expected (%g,%g)\n",
+                        r, sx, sy, expPos[r][0], expPos[r][1]);
                 goto cleanup;
             }
         }
     }
 
-    /* Stream 1 XFB: compact records (32B = 8 floats per record).
-     * position at float 0..3, s1_data at float 4..5.
-     * s1_data = p + (0.5, 0). */
+    /* Stream 1 XFB: compact records (s1_data, vec2 = 2 floats) in strict
+     * emission order.  s1_data = p + (0.5, 0). */
     {
         GLfloat data[4096 / 4];
         GLenum err = GL_NO_ERROR;
@@ -11450,37 +11692,20 @@ static int test_air_geometry_multi_stream_xfb(unsigned char *pixels,
                     "air_geometry_multi_stream_xfb: stream 1 readback FAIL\n");
             goto cleanup;
         }
-        /* Same order-agnostic validation as stream 0 (see comment above). */
         static const float expPos[3][2] = {
             { 0.0f, -0.3f }, { 0.5f, -0.3f }, { 1.0f, -0.3f },
         };
-        int matched[3] = { 0, 0, 0 };
         for (int r = 0; r < 3; r++) {
-            float rx = data[r * 8 + 0];
-            float ry = data[r * 8 + 1];
-            float sx = data[r * 8 + 4];
-            float sy = data[r * 8 + 5];
-            int found = 0;
-            for (int e = 0; e < 3; e++) {
-                if (matched[e]) continue;
-                if (rx - expPos[e][0] > -1e-3f &&
-                    rx - expPos[e][0] < 1e-3f &&
-                    ry - expPos[e][1] > -1e-3f &&
-                    ry - expPos[e][1] < 1e-3f &&
-                    sx - expPos[e][0] > -1e-3f &&
-                    sx - expPos[e][0] < 1e-3f &&
-                    sy - expPos[e][1] > -1e-3f &&
-                    sy - expPos[e][1] < 1e-3f) {
-                    matched[e] = 1;
-                    found = 1;
-                    break;
-                }
-            }
-            if (!found) {
+            float sx = data[r * 2 + 0];
+            float sy = data[r * 2 + 1];
+            if (!(sx - expPos[r][0] > -1e-3f &&
+                  sx - expPos[r][0] < 1e-3f &&
+                  sy - expPos[r][1] > -1e-3f &&
+                  sy - expPos[r][1] < 1e-3f)) {
                 fprintf(stderr,
                         "air_geometry_multi_stream_xfb: stream 1 record %d "
-                        "pos=(%g,%g) s1_data=(%g,%g) has no match\n",
-                        r, rx, ry, sx, sy);
+                        "s1_data=(%g,%g), expected (%g,%g)\n",
+                        r, sx, sy, expPos[r][0], expPos[r][1]);
                 goto cleanup;
             }
         }
@@ -11508,6 +11733,677 @@ cleanup:
  * GS writes gl_Layer=1 into a whole-level layered framebuffer, or
  * gl_ViewportIndex=1 into a regular framebuffer.  The expanded triangle must
  * land on framebuffer layer 1 / the second viewport respectively. */
+/* GL4 whole-primitive atomic truncation (mgl_air_gs_abi.h §5b): a
+ * primitive lands only if it fits in EVERY buffer it feeds (GL 4.6
+ * §13.2.4).  GS emits one triangle per input point; tf_a -> buffer 0,
+ * tf_b -> buffer 1 (gl_NextBuffer), so each primitive needs 24 bytes in
+ * both buffers (3 vertices x vec2).
+ * Segment 1: buffer 1 holds exactly one primitive while buffer 0 could
+ * hold two -> only the first primitive may land in EITHER buffer
+ * (cross-buffer atomicity), and PRIMITIVES_WRITTEN counts it once.
+ * Segment 2: both buffers hold 1.5 primitives -> exactly one whole
+ * primitive lands; the half-fitting tail must leave zero bytes. */
+static int test_air_geometry_xfb_truncate(unsigned char *pixels,
+                                          const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "void main() { gl_Position = vec4(position, 0.0, 1.0); }\n";
+    static const char *gs =
+        "#version 450 core\n"
+        "layout(points) in;\n"
+        "layout(triangle_strip, max_vertices=3) out;\n"
+        "layout(location=0) out vec2 tf_a;\n"
+        "layout(location=1) out vec2 tf_b;\n"
+        "void main() {\n"
+        "  vec2 p = gl_in[0].gl_Position.xy;\n"
+        "  for (int i = 0; i < 3; i++) {\n"
+        "    tf_a = p;\n"
+        "    tf_b = p + vec2(0.1, 0.1);\n"
+        "    gl_Position = vec4(p, 0.0, 1.0);\n"
+        "    EmitVertex();\n"
+        "  }\n"
+        "  EndPrimitive();\n"
+        "}\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(0.0, 1.0, 0.0, 1.0); }\n";
+    static const char *varyings[] = { "tf_a", "gl_NextBuffer", "tf_b" };
+    static const float positions[6] = {
+        -0.7f, -0.3f, 0.0f, -0.3f, 0.7f, -0.3f,
+    };
+
+    GLuint fbo = 0u, color = 0u, vao = 0u, vbo = 0u;
+    GLuint tbo0 = 0u, tbo1 = 0u, gen_q = 0u, wr_q = 0u, program = 0u;
+    int result = 1;
+    fbo = make_fbo(REG_W, REG_H, &color);
+    if (!fbo) goto cleanup;
+
+    GLuint shaders[3] = {
+        compile_shader(GL_VERTEX_SHADER, vs),
+        compile_shader(GL_GEOMETRY_SHADER, gs),
+        compile_shader(GL_FRAGMENT_SHADER, fs),
+    };
+    if (!shaders[0] || !shaders[1] || !shaders[2]) goto cleanup;
+    program = glCreateProgram();
+    if (!program) goto cleanup;
+    for (int i = 0; i < 3; i++) glAttachShader(program, shaders[i]);
+    glTransformFeedbackVaryings(program, 3, varyings,
+                                GL_INTERLEAVED_ATTRIBS);
+    glLinkProgram(program);
+    for (int i = 0; i < 3; i++) glDeleteShader(shaders[i]);
+    {
+        GLint ok = 0;
+        glGetProgramiv(program, GL_LINK_STATUS, &ok);
+        if (!ok) {
+            char log[2048];
+            glGetProgramInfoLog(program, sizeof(log), NULL, log);
+            fprintf(stderr, "air_geometry_xfb_truncate: link FAIL: %s\n",
+                    log);
+            goto cleanup;
+        }
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(positions), positions,
+                 GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
+    glGenQueries(1, &gen_q);
+    glGenQueries(1, &wr_q);
+    glUseProgram(program);
+    glEnable(GL_RASTERIZER_DISCARD);
+    glGenBuffers(1, &tbo0);
+    glGenBuffers(1, &tbo1);
+
+    /* Segment 1: buffer 0 = 2 primitives, buffer 1 = 1 primitive. */
+    glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, tbo0);
+    glBufferData(GL_TRANSFORM_FEEDBACK_BUFFER, 48, NULL, GL_STATIC_READ);
+    glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, tbo0);
+    glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, tbo1);
+    glBufferData(GL_TRANSFORM_FEEDBACK_BUFFER, 24, NULL, GL_STATIC_READ);
+    glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 1, tbo1);
+    glBeginTransformFeedback(GL_TRIANGLES);
+    glBeginQuery(GL_PRIMITIVES_GENERATED, gen_q);
+    glBeginQuery(GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN, wr_q);
+    glDrawArrays(GL_POINTS, 0, 3);
+    glEndQuery(GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN);
+    glEndQuery(GL_PRIMITIVES_GENERATED);
+    glEndTransformFeedback();
+    glFinish();
+    {
+        GLuint generated = 0u, written = 0u;
+        glGetQueryObjectuiv(gen_q, GL_QUERY_RESULT, &generated);
+        glGetQueryObjectuiv(wr_q, GL_QUERY_RESULT, &written);
+        if (generated != 3u || written != 1u) {
+            fprintf(stderr,
+                    "air_geometry_xfb_truncate: segment 1 query got "
+                    "generated=%u written=%u, expected 3/1\n",
+                    generated, written);
+            goto cleanup;
+        }
+    }
+    {
+        /* Cross-buffer atomicity: buffer 0 had room for 2 primitives but
+         * must hold only the first because buffer 1 is full. */
+        GLfloat d0[12] = {0}, d1[6] = {0};
+        glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, tbo0);
+        glGetBufferSubData(GL_TRANSFORM_FEEDBACK_BUFFER, 0, sizeof(d0), d0);
+        glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, tbo1);
+        glGetBufferSubData(GL_TRANSFORM_FEEDBACK_BUFFER, 0, sizeof(d1), d1);
+        for (int r = 0; r < 3; r++) {
+            if (!(d0[r * 2] - -0.7f > -1e-3f && d0[r * 2] - -0.7f < 1e-3f &&
+                  d0[r * 2 + 1] - -0.3f > -1e-3f &&
+                  d0[r * 2 + 1] - -0.3f < 1e-3f &&
+                  d1[r * 2] - -0.6f > -1e-3f && d1[r * 2] - -0.6f < 1e-3f &&
+                  d1[r * 2 + 1] - -0.2f > -1e-3f &&
+                  d1[r * 2 + 1] - -0.2f < 1e-3f)) {
+                fprintf(stderr,
+                        "air_geometry_xfb_truncate: segment 1 record %d "
+                        "a=(%g,%g) b=(%g,%g)\n",
+                        r, d0[r * 2], d0[r * 2 + 1],
+                        d1[r * 2], d1[r * 2 + 1]);
+                goto cleanup;
+            }
+        }
+        for (int w = 6; w < 12; w++) {
+            if (d0[w] != 0.0f) {
+                fprintf(stderr,
+                        "air_geometry_xfb_truncate: segment 1 torn "
+                        "primitive at buffer 0 float %d (%g)\n",
+                        w, d0[w]);
+                goto cleanup;
+            }
+        }
+    }
+
+    /* Segment 2: both buffers = 1.5 primitives -> one whole primitive. */
+    {
+        GLfloat zeros[9] = {0};
+        glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, tbo0);
+        glBufferData(GL_TRANSFORM_FEEDBACK_BUFFER, 36, zeros,
+                     GL_STATIC_READ);
+        glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, tbo0);
+        glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, tbo1);
+        glBufferData(GL_TRANSFORM_FEEDBACK_BUFFER, 36, zeros,
+                     GL_STATIC_READ);
+        glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 1, tbo1);
+        glBeginTransformFeedback(GL_TRIANGLES);
+        glBeginQuery(GL_PRIMITIVES_GENERATED, gen_q);
+        glBeginQuery(GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN, wr_q);
+        glDrawArrays(GL_POINTS, 0, 3);
+        glEndQuery(GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN);
+        glEndQuery(GL_PRIMITIVES_GENERATED);
+        glEndTransformFeedback();
+        glFinish();
+    }
+    {
+        GLuint generated = 0u, written = 0u;
+        glGetQueryObjectuiv(gen_q, GL_QUERY_RESULT, &generated);
+        glGetQueryObjectuiv(wr_q, GL_QUERY_RESULT, &written);
+        if (generated != 3u || written != 1u) {
+            fprintf(stderr,
+                    "air_geometry_xfb_truncate: segment 2 query got "
+                    "generated=%u written=%u, expected 3/1\n",
+                    generated, written);
+            goto cleanup;
+        }
+    }
+    {
+        GLfloat d0[9] = {0}, d1[9] = {0};
+        glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, tbo0);
+        glGetBufferSubData(GL_TRANSFORM_FEEDBACK_BUFFER, 0, sizeof(d0), d0);
+        glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, tbo1);
+        glGetBufferSubData(GL_TRANSFORM_FEEDBACK_BUFFER, 0, sizeof(d1), d1);
+        for (int r = 0; r < 3; r++) {
+            if (!(d0[r * 2] - -0.7f > -1e-3f && d0[r * 2] - -0.7f < 1e-3f &&
+                  d1[r * 2] - -0.6f > -1e-3f && d1[r * 2] - -0.6f < 1e-3f)) {
+                fprintf(stderr,
+                        "air_geometry_xfb_truncate: segment 2 record %d "
+                        "a=(%g,%g) b=(%g,%g)\n",
+                        r, d0[r * 2], d0[r * 2 + 1],
+                        d1[r * 2], d1[r * 2 + 1]);
+                goto cleanup;
+            }
+        }
+        for (int w = 6; w < 9; w++) {
+            if (d0[w] != 0.0f || d1[w] != 0.0f) {
+                fprintf(stderr,
+                        "air_geometry_xfb_truncate: segment 2 torn "
+                        "primitive at float %d (%g/%g)\n",
+                        w, d0[w], d1[w]);
+                goto cleanup;
+            }
+        }
+        for (int r = 0; r < 3; r++) {
+            if (!(d0[r * 2 + 1] - -0.3f > -1e-3f &&
+                  d0[r * 2 + 1] - -0.3f < 1e-3f &&
+                  d1[r * 2 + 1] - -0.2f > -1e-3f &&
+                  d1[r * 2 + 1] - -0.2f < 1e-3f)) {
+                fprintf(stderr,
+                        "air_geometry_xfb_truncate: segment 2 record %d "
+                        "a=(%g,%g) b=(%g,%g)\n",
+                        r, d0[r * 2], d0[r * 2 + 1],
+                        d1[r * 2], d1[r * 2 + 1]);
+                goto cleanup;
+            }
+        }
+    }
+
+    result = 0;
+
+cleanup:
+    glDisable(GL_RASTERIZER_DISCARD);
+    if (wr_q) glDeleteQueries(1, &wr_q);
+    if (gen_q) glDeleteQueries(1, &gen_q);
+    if (tbo1) glDeleteBuffers(1, &tbo1);
+    if (tbo0) glDeleteBuffers(1, &tbo0);
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (program) glDeleteProgram(program);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    return result;
+}
+
+/* GL_SEPARATE_ATTRIBS execution coverage (mgl_air_gs_abi.h §5b): each
+ * varying captures to its own buffer (varying i -> buffer i), packed at
+ * offset 0.  This exercises the same ordered per-buffer scatter as the
+ * interleaved path with one varying per buffer.  3 points in, one point
+ * out each; records must land in strict emission order. */
+static int test_air_geometry_separate_xfb(unsigned char *pixels,
+                                          const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "void main() { gl_Position = vec4(position, 0.0, 1.0); }\n";
+    static const char *gs =
+        "#version 450 core\n"
+        "layout(points) in;\n"
+        "layout(points, max_vertices=1) out;\n"
+        "layout(location=0) out vec2 sep_a;\n"
+        "layout(location=1) out vec4 sep_b;\n"
+        "void main() {\n"
+        "  vec2 p = gl_in[0].gl_Position.xy;\n"
+        "  sep_a = p;\n"
+        "  sep_b = vec4(p, 0.25, 0.75);\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "  EmitVertex();\n"
+        "  EndPrimitive();\n"
+        "}\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(0.0, 1.0, 0.0, 1.0); }\n";
+    static const char *varyings[] = { "sep_a", "sep_b" };
+    static const float positions[6] = {
+        -0.6f, -0.2f, 0.1f, 0.4f, 0.8f, -0.5f,
+    };
+
+    GLuint fbo = 0u, color = 0u, vao = 0u, vbo = 0u;
+    GLuint tbo0 = 0u, tbo1 = 0u, gen_q = 0u, wr_q = 0u, program = 0u;
+    int result = 1;
+    fbo = make_fbo(REG_W, REG_H, &color);
+    if (!fbo) goto cleanup;
+
+    GLuint shaders[3] = {
+        compile_shader(GL_VERTEX_SHADER, vs),
+        compile_shader(GL_GEOMETRY_SHADER, gs),
+        compile_shader(GL_FRAGMENT_SHADER, fs),
+    };
+    if (!shaders[0] || !shaders[1] || !shaders[2]) goto cleanup;
+    program = glCreateProgram();
+    if (!program) goto cleanup;
+    for (int i = 0; i < 3; i++) glAttachShader(program, shaders[i]);
+    glTransformFeedbackVaryings(program, 2, varyings,
+                                GL_SEPARATE_ATTRIBS);
+    glLinkProgram(program);
+    for (int i = 0; i < 3; i++) glDeleteShader(shaders[i]);
+    {
+        GLint ok = 0;
+        glGetProgramiv(program, GL_LINK_STATUS, &ok);
+        if (!ok) {
+            char log[2048];
+            glGetProgramInfoLog(program, sizeof(log), NULL, log);
+            fprintf(stderr, "air_geometry_separate_xfb: link FAIL: %s\n",
+                    log);
+            goto cleanup;
+        }
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(positions), positions,
+                 GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
+    glGenQueries(1, &gen_q);
+    glGenQueries(1, &wr_q);
+    glUseProgram(program);
+    glEnable(GL_RASTERIZER_DISCARD);
+
+    glGenBuffers(1, &tbo0);
+    glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, tbo0);
+    glBufferData(GL_TRANSFORM_FEEDBACK_BUFFER, 64, NULL, GL_STATIC_READ);
+    glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, tbo0);
+    glGenBuffers(1, &tbo1);
+    glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, tbo1);
+    glBufferData(GL_TRANSFORM_FEEDBACK_BUFFER, 128, NULL, GL_STATIC_READ);
+    glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 1, tbo1);
+
+    glBeginTransformFeedback(GL_POINTS);
+    glBeginQuery(GL_PRIMITIVES_GENERATED, gen_q);
+    glBeginQuery(GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN, wr_q);
+    glDrawArrays(GL_POINTS, 0, 3);
+    glEndQuery(GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN);
+    glEndQuery(GL_PRIMITIVES_GENERATED);
+    glEndTransformFeedback();
+    glFinish();
+    {
+        GLuint generated = 0u, written = 0u;
+        glGetQueryObjectuiv(gen_q, GL_QUERY_RESULT, &generated);
+        glGetQueryObjectuiv(wr_q, GL_QUERY_RESULT, &written);
+        if (generated != 3u || written != 3u) {
+            fprintf(stderr,
+                    "air_geometry_separate_xfb: query got generated=%u "
+                    "written=%u, expected 3/3\n", generated, written);
+            goto cleanup;
+        }
+    }
+    {
+        GLfloat d0[6] = {0}, d1[12] = {0};
+        glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, tbo0);
+        glGetBufferSubData(GL_TRANSFORM_FEEDBACK_BUFFER, 0, sizeof(d0), d0);
+        glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, tbo1);
+        glGetBufferSubData(GL_TRANSFORM_FEEDBACK_BUFFER, 0, sizeof(d1), d1);
+        for (int r = 0; r < 3; r++) {
+            const float px = positions[r * 2], py = positions[r * 2 + 1];
+            if (!(d0[r * 2] - px > -1e-3f && d0[r * 2] - px < 1e-3f &&
+                  d0[r * 2 + 1] - py > -1e-3f &&
+                  d0[r * 2 + 1] - py < 1e-3f &&
+                  d1[r * 4] - px > -1e-3f && d1[r * 4] - px < 1e-3f &&
+                  d1[r * 4 + 1] - py > -1e-3f &&
+                  d1[r * 4 + 1] - py < 1e-3f &&
+                  d1[r * 4 + 2] - 0.25f > -1e-3f &&
+                  d1[r * 4 + 2] - 0.25f < 1e-3f &&
+                  d1[r * 4 + 3] - 0.75f > -1e-3f &&
+                  d1[r * 4 + 3] - 0.75f < 1e-3f)) {
+                fprintf(stderr,
+                        "air_geometry_separate_xfb: record %d a=(%g,%g) "
+                        "b=(%g,%g,%g,%g), expected p=(%g,%g)\n",
+                        r, d0[r * 2], d0[r * 2 + 1],
+                        d1[r * 4], d1[r * 4 + 1], d1[r * 4 + 2],
+                        d1[r * 4 + 3], px, py);
+                goto cleanup;
+            }
+        }
+    }
+
+    result = 0;
+
+cleanup:
+    glDisable(GL_RASTERIZER_DISCARD);
+    if (wr_q) glDeleteQueries(1, &wr_q);
+    if (gen_q) glDeleteQueries(1, &gen_q);
+    if (tbo1) glDeleteBuffers(1, &tbo1);
+    if (tbo0) glDeleteBuffers(1, &tbo0);
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (program) glDeleteProgram(program);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    return result;
+}
+
+/* Passthrough GS + XFB (mgl_program_reflection.c): a passthrough geometry
+ * shader (re-emits gl_in unchanged, the Minecraft/CTS marker pattern) is
+ * normally bypassed into a plain VS->FS draw.  With transform feedback
+ * active the bypass would silently drop the capture, so the program must
+ * run the GS compute expansion instead.  One triangle in, three captured
+ * records of the forwarded varying out. */
+static int test_air_geometry_passthrough_xfb(unsigned char *pixels,
+                                             const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "layout(location=0) out vec2 v_data;\n"
+        "void main() {\n"
+        "  v_data = position + vec2(0.25, 0.25);\n"
+        "  gl_Position = vec4(position, 0.0, 1.0);\n"
+        "}\n";
+    static const char *gs =
+        "#version 450 core\n"
+        "layout(triangles) in;\n"
+        "layout(triangle_strip, max_vertices=3) out;\n"
+        "layout(location=0) in vec2 v_data[];\n"
+        "layout(location=0) out vec2 g_data;\n"
+        "void main() {\n"
+        "  for (int n_vertex_index = 0; n_vertex_index < 3;\n"
+        "       n_vertex_index++) {\n"
+        "    g_data = v_data[n_vertex_index];\n"
+        "    gl_Position = gl_in[n_vertex_index].gl_Position;\n"
+        "    EmitVertex();\n"
+        "  }\n"
+        "  EndPrimitive();\n"
+        "}\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(0.0, 1.0, 0.0, 1.0); }\n";
+    static const char *tf_varying = "g_data";
+    static const float positions[6] = {
+        -0.5f, -0.5f, 0.5f, -0.5f, 0.0f, 0.5f,
+    };
+
+    GLuint fbo = 0u, color = 0u, vao = 0u, vbo = 0u, tbo = 0u;
+    GLuint gen_q = 0u, wr_q = 0u, program = 0u;
+    int result = 1;
+    fbo = make_fbo(REG_W, REG_H, &color);
+    if (!fbo) goto cleanup;
+
+    GLuint shaders[3] = {
+        compile_shader(GL_VERTEX_SHADER, vs),
+        compile_shader(GL_GEOMETRY_SHADER, gs),
+        compile_shader(GL_FRAGMENT_SHADER, fs),
+    };
+    if (!shaders[0] || !shaders[1] || !shaders[2]) goto cleanup;
+    program = glCreateProgram();
+    if (!program) goto cleanup;
+    for (int i = 0; i < 3; i++) glAttachShader(program, shaders[i]);
+    glTransformFeedbackVaryings(program, 1, &tf_varying,
+                                GL_INTERLEAVED_ATTRIBS);
+    glLinkProgram(program);
+    for (int i = 0; i < 3; i++) glDeleteShader(shaders[i]);
+    {
+        GLint ok = 0;
+        glGetProgramiv(program, GL_LINK_STATUS, &ok);
+        if (!ok) {
+            char log[2048];
+            glGetProgramInfoLog(program, sizeof(log), NULL, log);
+            fprintf(stderr,
+                    "air_geometry_passthrough_xfb: link FAIL: %s\n", log);
+            goto cleanup;
+        }
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(positions), positions,
+                 GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
+    glGenQueries(1, &gen_q);
+    glGenQueries(1, &wr_q);
+    glUseProgram(program);
+    glEnable(GL_RASTERIZER_DISCARD);
+
+    glGenBuffers(1, &tbo);
+    glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, tbo);
+    glBufferData(GL_TRANSFORM_FEEDBACK_BUFFER, 256, NULL, GL_STATIC_READ);
+    glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, tbo);
+
+    glBeginTransformFeedback(GL_TRIANGLES);
+    glBeginQuery(GL_PRIMITIVES_GENERATED, gen_q);
+    glBeginQuery(GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN, wr_q);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glEndQuery(GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN);
+    glEndQuery(GL_PRIMITIVES_GENERATED);
+    glEndTransformFeedback();
+    glFinish();
+    {
+        GLuint generated = 0u, written = 0u;
+        glGetQueryObjectuiv(gen_q, GL_QUERY_RESULT, &generated);
+        glGetQueryObjectuiv(wr_q, GL_QUERY_RESULT, &written);
+        if (generated != 1u || written != 1u) {
+            fprintf(stderr,
+                    "air_geometry_passthrough_xfb: query got generated=%u "
+                    "written=%u, expected 1/1\n", generated, written);
+            goto cleanup;
+        }
+    }
+    {
+        GLfloat data[6] = {0};
+        glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, tbo);
+        glGetBufferSubData(GL_TRANSFORM_FEEDBACK_BUFFER, 0, sizeof(data),
+                           data);
+        if (glGetError() != GL_NO_ERROR) {
+            fprintf(stderr,
+                    "air_geometry_passthrough_xfb: readback FAIL\n");
+            goto cleanup;
+        }
+        for (int r = 0; r < 3; r++) {
+            const float ex = positions[r * 2] + 0.25f;
+            const float ey = positions[r * 2 + 1] + 0.25f;
+            if (!(data[r * 2] - ex > -1e-3f && data[r * 2] - ex < 1e-3f &&
+                  data[r * 2 + 1] - ey > -1e-3f &&
+                  data[r * 2 + 1] - ey < 1e-3f)) {
+                fprintf(stderr,
+                        "air_geometry_passthrough_xfb: record %d "
+                        "g_data=(%g,%g), expected (%g,%g)\n",
+                        r, data[r * 2], data[r * 2 + 1], ex, ey);
+                goto cleanup;
+            }
+        }
+    }
+
+    result = 0;
+
+cleanup:
+    glDisable(GL_RASTERIZER_DISCARD);
+    if (wr_q) glDeleteQueries(1, &wr_q);
+    if (gen_q) glDeleteQueries(1, &gen_q);
+    if (tbo) glDeleteBuffers(1, &tbo);
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (program) glDeleteProgram(program);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    return result;
+}
+
+/* Layered GS repro (KHR-GL46.geometry_shader.layered_rendering shape):
+ * points in, triangle_strip out, uniform-gated gl_Layer writes with
+ * gl_Layer read-back into a flat int varying, one point emitting 24
+ * vertices across 6 strip primitives.  Verifies the expansion emits the
+ * full vertex count and the flat int varying reaches the FS through the
+ * passthrough stage. */
+static int test_air_geometry_layered_repro(unsigned char *pixels,
+                                           const char *out_path)
+{
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "layout(location=0) out vec2 v_pos;\n"
+        "void main() { v_pos = position; gl_Position = vec4(position, 0.0, 1.0); }\n";
+    static const char *gs =
+        "#version 450 core\n"
+        "layout(points) in;\n"
+        "layout(triangle_strip, max_vertices=96) out;\n"
+        "layout(location=0) in vec2 v_pos[];\n"
+        "layout(location=0) flat out int layer_id;\n"
+        "uniform int provoking_vertex_index;\n"
+        "void main() {\n"
+        "  for (int n = 0; n < 6; ++n) {\n"
+        "    if (provoking_vertex_index == 0 ||\n"
+        "        provoking_vertex_index == 1) gl_Layer = n;\n"
+        "    layer_id = gl_Layer;\n"
+        "    gl_Position = vec4(v_pos[0], 0.0, 1.0);\n"
+        "    EmitVertex();\n"
+        "    layer_id = gl_Layer;\n"
+        "    gl_Position = vec4(v_pos[0] + 0.1, 0.0, 1.0);\n"
+        "    EmitVertex();\n"
+        "    layer_id = gl_Layer;\n"
+        "    gl_Position = vec4(v_pos[0] + 0.2, 0.0, 1.0);\n"
+        "    EmitVertex();\n"
+        "    layer_id = gl_Layer;\n"
+        "    gl_Position = vec4(v_pos[0] + 0.3, 0.0, 1.0);\n"
+        "    EmitVertex();\n"
+        "    EndPrimitive();\n"
+        "  }\n"
+        "}\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(location=0) flat in int layer_id;\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(float(layer_id) / 5.0, 1.0, 0.0, 1.0); }\n";
+    static const float positions[2] = { 0.0f, 0.0f };
+
+    GLuint fbo = 0u, color = 0u, vao = 0u, vbo = 0u, program = 0u;
+    GLuint gen_q = 0u;
+    int result = 1;
+    fbo = make_fbo(REG_W, REG_H, &color);
+    if (!fbo) goto cleanup;
+
+    GLuint shaders[3] = {
+        compile_shader(GL_VERTEX_SHADER, vs),
+        compile_shader(GL_GEOMETRY_SHADER, gs),
+        compile_shader(GL_FRAGMENT_SHADER, fs),
+    };
+    if (!shaders[0] || !shaders[1] || !shaders[2]) goto cleanup;
+    program = glCreateProgram();
+    if (!program) goto cleanup;
+    for (int i = 0; i < 3; i++) glAttachShader(program, shaders[i]);
+    glLinkProgram(program);
+    for (int i = 0; i < 3; i++) glDeleteShader(shaders[i]);
+    {
+        GLint ok = 0;
+        glGetProgramiv(program, GL_LINK_STATUS, &ok);
+        if (!ok) {
+            char log[2048];
+            glGetProgramInfoLog(program, sizeof(log), NULL, log);
+            fprintf(stderr, "air_geometry_layered_repro: link FAIL: %s\n",
+                    log);
+            goto cleanup;
+        }
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(positions), positions,
+                 GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
+    glGenQueries(1, &gen_q);
+    glUseProgram(program);
+    {
+        GLint pvi = glGetUniformLocation(program, "provoking_vertex_index");
+        glUniform1i(pvi, 0);
+    }
+    glBeginQuery(GL_PRIMITIVES_GENERATED, gen_q);
+    glDrawArrays(GL_POINTS, 0, 1);
+    glEndQuery(GL_PRIMITIVES_GENERATED);
+    glFinish();
+    {
+        GLuint generated = 0u;
+        glGetQueryObjectuiv(gen_q, GL_QUERY_RESULT, &generated);
+        /* 6 iterations x 1 strip of 4 vertices = 12 list triangles;
+         * PRIMITIVES_GENERATED counts GS-emitted primitives including
+         * any culled ones (GL 4.6), from the kernel-side counter. */
+        if (generated != 12u) {
+            fprintf(stderr,
+                    "air_geometry_layered_repro: generated=%u, "
+                    "expected 12\n", generated);
+            goto cleanup;
+        }
+    }
+
+    result = 0;
+
+cleanup:
+    if (gen_q) glDeleteQueries(1, &gen_q);
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (program) glDeleteProgram(program);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    return result;
+}
+
 static int test_air_geometry_layer_viewport(unsigned char *pixels,
                                             const char *out_path)
 {
@@ -12063,6 +12959,15 @@ static const TestCase TESTS[] = {
                     test_air_tessellation_cull_distance),
     SELF_CHECK_TEST("air_geometry_xfb", test_air_geometry_xfb),
     SELF_CHECK_TEST("air_xfb_link_layout", test_air_xfb_link_layout),
+    SELF_CHECK_TEST("air_xfb_reflection", test_air_xfb_reflection),
+    SELF_CHECK_TEST("air_geometry_xfb_truncate",
+                    test_air_geometry_xfb_truncate),
+    SELF_CHECK_TEST("air_geometry_separate_xfb",
+                    test_air_geometry_separate_xfb),
+    SELF_CHECK_TEST("air_geometry_passthrough_xfb",
+                    test_air_geometry_passthrough_xfb),
+    SELF_CHECK_TEST("air_geometry_layered_repro",
+                    test_air_geometry_layered_repro),
     SELF_CHECK_TEST("air_geometry_multi_stream_xfb",
                     test_air_geometry_multi_stream_xfb),
     SELF_CHECK_TEST("air_geometry_layer_viewport",
