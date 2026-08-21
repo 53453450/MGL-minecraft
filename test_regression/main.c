@@ -55,7 +55,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 80
+#define MAX_TESTS 82
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -12327,7 +12327,7 @@ static int test_air_geometry_layered_repro(unsigned char *pixels,
         "layout(location=0) flat in int layer_id;\n"
         "layout(location=0) out vec4 frag;\n"
         "void main() { frag = vec4(float(layer_id) / 5.0, 1.0, 0.0, 1.0); }\n";
-    static const float positions[2] = { 0.0f, 0.0f };
+    static const float positions[2] = { 0.0f, 0.5f };
 
     GLuint fbo = 0u, color = 0u, vao = 0u, vbo = 0u, program = 0u;
     GLuint gen_q = 0u;
@@ -12659,6 +12659,260 @@ cleanup:
     return result;
 }
 
+/* KHR-GL46.geometry_shader.rendering.points_input_points_output replica:
+ * one input point, GS emits a 3x3 grid of points via gl_Position offsets
+ * (no EndPrimitive; points topology ends at implicit primitive end). */
+static int test_air_geometry_points_grid(unsigned char *pixels,
+                                         const char *out_path)
+{
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "layout(location=1) in vec3 color;\n"
+        "out vec3 vs_gs_color[1];\n"
+        "void main() { vs_gs_color[0] = color;\n"
+        "  gl_Position = vec4(position, 0.0, 1.0); }\n";
+    static const char *gs =
+        "#version 450 core\n"
+        "layout(points) in;\n"
+        "layout(points, max_vertices=9) out;\n"
+        "in vec3 vs_gs_color[1];\n"
+        "out vec3 gs_fs_color;\n"
+        "uniform ivec2 renderingTargetSize;\n"
+        "void main() {\n"
+        "  float dx = 2.0 / float(renderingTargetSize.x);\n"
+        "  float dy = 2.0 / float(renderingTargetSize.y);\n"
+        "  for (int i = -1; i <= 1; ++i)\n"
+        "    for (int j = -1; j <= 1; ++j) {\n"
+        "      gs_fs_color = vs_gs_color[0];\n"
+        "      gl_Position = gl_in[0].gl_Position\n"
+        "        + vec4(i * dx, j * dy, 0, 0);\n"
+        "      EmitVertex();\n"
+        "    }\n"
+        "}\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(location=0) in vec3 gs_fs_color;\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(gs_fs_color, 1.0); }\n";
+    static const float positions[2] = { 0.0f, 0.5f };
+    static const float colors[3] = { 0.25f, 0.5f, 0.75f };
+
+    GLuint fbo = 0u, color = 0u, vao = 0u, vbo = 0u, vbo_c = 0u, program = 0u;
+    int result = 1;
+    fbo = make_fbo(REG_W, REG_H, &color);
+    if (!fbo) goto cleanup;
+    program = link_program_with_geometry(vs, gs, fs);
+    if (!program) goto cleanup;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(positions), positions,
+                 GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
+    glGenBuffers(1, &vbo_c);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo_c);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(colors), colors, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 0, (void *)0);
+    glUseProgram(program);
+    glUniform2i(glGetUniformLocation(program, "renderingTargetSize"),
+                REG_W, REG_H);
+    glDrawArrays(GL_POINTS, 0, 1);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+
+    /* All 9 emitted points rasterize with the vertex color (0.25,0.5,0.75
+     * -> 64,128,191): exactly 9 pixels, each matching within 1 LSB. */
+    {
+        int found = 0;
+        for (int y = 0; y < REG_H; y++)
+            for (int x = 0; x < REG_W; x++) {
+                const unsigned char *q = &pixels[(y * REG_W + x) * 4];
+                if (!q[0] && !q[1] && !q[2]) continue;
+                found++;
+                if (abs(q[0] - 64) > 1 || abs(q[1] - 128) > 1 ||
+                    abs(q[2] - 191) > 1 || q[3] != 255) {
+                    fprintf(stderr,
+                            "air_geometry_points_grid: pixel (%d,%d) got "
+                            "(%d,%d,%d,%d), expected (64,128,191,255)\n",
+                            x, y, q[0], q[1], q[2], q[3]);
+                    goto cleanup;
+                }
+            }
+        if (found != 9) {
+            fprintf(stderr,
+                    "air_geometry_points_grid: %d nonzero pixels, "
+                    "expected 9\n", found);
+            goto cleanup;
+        }
+    }
+
+    /* Control: the same center point drawn without a geometry shader
+     * must land on the same pixel as the GS-emitted center point. */
+    {
+        int gx = -1, gy = -1;
+        for (int y = 0; y < REG_H; y++)
+            for (int x = 0; x < REG_W; x++) {
+                const unsigned char *q = &pixels[(y * REG_W + x) * 4];
+                if (q[0] && q[1]) { gx = x; gy = y; }
+            }
+        static const char *vs2 =
+            "#version 450 core\n"
+            "layout(location=0) in vec2 position;\n"
+            "void main() { gl_Position = vec4(position, 0.0, 1.0); }\n";
+        static const char *fs2 =
+            "#version 450 core\n"
+            "layout(location=0) out vec4 frag;\n"
+            "void main() { frag = vec4(1.0, 0.0, 0.0, 1.0); }\n";
+        GLuint prog2 = link_program(vs2, fs2);
+        if (prog2) {
+            glUseProgram(prog2);
+            glDrawArrays(GL_POINTS, 0, 1);
+            glFinish();
+            glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+            for (int y = 0; y < REG_H; y++)
+                for (int x = 0; x < REG_W; x++) {
+                    const unsigned char *q = &pixels[(y * REG_W + x) * 4];
+                    if (q[0] > 200 && !q[1] && gx >= 0 && (x != gx || y != gy))
+                        {
+                            fprintf(stderr,
+                                    "points_grid: no-GS point (%d,%d) vs GS "
+                                    "center (%d,%d)\n", x, y, gx, gy);
+                            glDeleteProgram(prog2);
+                            goto cleanup;
+                        }
+                }
+        }
+        if (prog2) glDeleteProgram(prog2);
+    }
+
+    result = 0;
+
+cleanup:
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (vbo_c) glDeleteBuffers(1, &vbo_c);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (program) glDeleteProgram(program);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    return result;
+}
+
+
+/* KHR-GL46.geometry_shader.rendering lines-in/line_strip-out replica:
+ * one horizontal input line, GS expands it into three line strips
+ * (CTS rendering family shape).  Verifies the expanded primitives
+ * actually rasterize. */
+static int test_air_geometry_lines_expand(unsigned char *pixels,
+                                          const char *out_path)
+{
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "layout(location=1) in vec4 color;\n"
+        "out vec4 vs_gs_color[2];\n"
+        "void main() { vs_gs_color[0] = color;\n"
+        "  vs_gs_color[1] = color;\n"
+        "  gl_Position = vec4(position, 0.0, 1.0); }\n";
+    static const char *gs =
+        "#version 450 core\n"
+        "layout(lines) in;\n"
+        "layout(line_strip, max_vertices=6) out;\n"
+        "in vec4 vs_gs_color[2];\n"
+        "out vec4 gs_fs_color;\n"
+        "uniform ivec2 renderingTargetSize;\n"
+        "void main() {\n"
+        "  float dy = 2.0 / float(renderingTargetSize.y);\n"
+        "  vec4 start_pos = gl_in[0].gl_Position;\n"
+        "  vec4 end_pos   = gl_in[1].gl_Position;\n"
+        "  vec4 col = mix(vs_gs_color[0], vs_gs_color[1], 0.5);\n"
+        "  for (int k = -1; k <= 1; ++k) {\n"
+        "    gs_fs_color = col;\n"
+        "    gl_Position = vec4(start_pos.x, start_pos.y + k * dy, 0, 1);\n"
+        "    EmitVertex();\n"
+        "    gs_fs_color = col;\n"
+        "    gl_Position = vec4(end_pos.x, end_pos.y + k * dy, 0, 1);\n"
+        "    EmitVertex();\n"
+        "    EndPrimitive();\n"
+        "  }\n"
+        "}\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(location=0) in vec4 gs_fs_color;\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = gs_fs_color; }\n";
+    static const float positions[4] = { -0.5f, 0.5f, 0.5f, 0.5f };
+    static const float colors[8] = { 0.1f, 0.2f, 0.3f, 0.4f,
+                                     0.1f, 0.2f, 0.3f, 0.4f };
+
+    GLuint fbo = 0u, color = 0u, vao = 0u, vbo = 0u, vbo_c = 0u, program = 0u;
+    int result = 1;
+    fbo = make_fbo(REG_W, REG_H, &color);
+    if (!fbo) goto cleanup;
+    program = link_program_with_geometry(vs, gs, fs);
+    if (!program) goto cleanup;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(positions), positions,
+                 GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
+    glGenBuffers(1, &vbo_c);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo_c);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(colors), colors, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, 0, (void *)0);
+    glUseProgram(program);
+    glUniform2i(glGetUniformLocation(program, "renderingTargetSize"),
+                REG_W, REG_H);
+    glDrawArrays(GL_LINES, 0, 2);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+
+    /* Three horizontal 1px lines across the middle half of the FBO. */
+    {
+        int rows[3] = { 95, 96, 97 };  /* readback rows are bottom-origin */
+        for (int r = 0; r < 3; r++) {
+            int y = rows[r];
+            int lit = 0;
+            for (int x = 0; x < REG_W; x++) {
+                const unsigned char *q = &pixels[(y * REG_W + x) * 4];
+                if (q[0] || q[1] || q[2]) lit++;
+            }
+            if (lit < 32) {
+                fprintf(stderr,
+                        "air_geometry_lines_expand: row %d has %d lit "
+                        "pixels, expected >= 32\n", y, lit);
+
+                goto cleanup;
+            }
+        }
+    }
+
+    result = 0;
+
+cleanup:
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (vbo_c) glDeleteBuffers(1, &vbo_c);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (program) glDeleteProgram(program);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    return result;
+}
 /* P3.2: safe-fallback pipeline built from the precompiled safe_fallback
  * metallib asset — no runtime source compilation in the emergency path.
  *
@@ -12883,7 +13137,6 @@ static int test_air_geometry_buffer_slot_conflict(unsigned char *pixels,
     }
     return 0;
 }
-
 /* ------------------------------------------------------------------ */
 /* Test registry                                                      */
 /* ------------------------------------------------------------------ */
@@ -13018,6 +13271,10 @@ static const TestCase TESTS[] = {
                     test_framebuffer_texture_layer_validation),
     SELF_CHECK_TEST("framebuffer_cube_layer_slice",
                     test_framebuffer_cube_layer_slice),
+    SELF_CHECK_TEST("air_geometry_points_grid",
+                    test_air_geometry_points_grid),
+    SELF_CHECK_TEST("air_geometry_lines_expand",
+                    test_air_geometry_lines_expand),
     /* depth_test/stencil use probe-style fns (test_depth_probe /
      * test_stencil_probe): hardcoded per-program values.
      * uniform_alias gates the cross-stage uniform-location fix (program.c

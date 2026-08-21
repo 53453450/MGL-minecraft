@@ -6223,17 +6223,20 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         } else if (isTCS && (q & MGL_AST_Q_IN)) {
             v.kind = VarSym::VARYING;
             if (!v.isPatch && s->type->kind == MGLIR_TYPE_ARRAY &&
-                s->type->elem_type)
+                s->type->elem_type) {
                 v.type = typeFromIR(s->type->elem_type);
+            }
         } else if (isTCS && (q & MGL_AST_Q_OUT)) {
             v.kind = VarSym::OUTPUT;
             if (!v.isPatch && s->type->kind == MGLIR_TYPE_ARRAY &&
-                s->type->elem_type)
+                s->type->elem_type) {
                 v.type = typeFromIR(s->type->elem_type);
+            }
         } else if (isGS && (q & MGL_AST_Q_IN)) {
             v.kind = VarSym::VARYING;
-            if (s->type->kind == MGLIR_TYPE_ARRAY && s->type->elem_type)
+            if (s->type->kind == MGLIR_TYPE_ARRAY && s->type->elem_type) {
                 v.type = typeFromIR(s->type->elem_type);
+            }
         } else if (isGS && (q & MGL_AST_Q_OUT)) {
             v.kind = VarSym::OUTPUT;
             if (v.stream < 0) {
@@ -6243,13 +6246,12 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             if (v.stream < 0 || v.stream >= MGL_AIR_GS_MAX_STREAMS) {
                 v.stream = 0;
             }
-        } else if (isKernel && !isTESCompute) {
-            continue;   /* plain compute has no stage varyings */
         } else if (isTES && (q & MGL_AST_Q_IN)) {
             v.kind = VarSym::CONTROL_POINT_INPUT;
             if (!v.isPatch && s->type->kind == MGLIR_TYPE_ARRAY &&
-                s->type->elem_type)
+                s->type->elem_type) {
                 v.type = typeFromIR(s->type->elem_type);
+            }
         } else if (isVS && (q & MGL_AST_Q_IN)) {
             v.kind = VarSym::ATTR;
         } else if ((isVS || isTES) && (q & MGL_AST_Q_OUT)) {
@@ -6825,6 +6827,16 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
          * pre-registered aggregate.  Register an undef aggregate so the
          * indexed-assign path can build into it; assembleReturn picks up
          * the final value. */
+        for (VarSym &v : syms) {
+            if (v.kind != VarSym::VARYING) continue;
+            cg.lvalues[v.name] =
+                llvm::UndefValue::get(llvmType(v.type, ctx));
+        }
+    }
+    if (isVS && isCapture) {
+        /* Capture variants write varyings into the capture record; indexed
+         * writes into array varyings (e.g. out vec4 v[2]) need the same
+         * pre-registered undef aggregate as the non-capture path. */
         for (VarSym &v : syms) {
             if (v.kind != VarSym::VARYING) continue;
             cg.lvalues[v.name] =
@@ -7581,11 +7593,24 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 }
                 if (!isTessCapture) {
                     for (uint32_t i = 0; i < cg.varyings.size(); i++) {
-                        llvm::Value *vv =
-                            cg.lvalues.count(cg.varyings[i]->name)
-                                ? cg.lvalues[cg.varyings[i]->name]
-                                : llvm::UndefValue::get(cg.retElems[ri]);
-                        rec = b.CreateInsertValue(rec, vv, ri++);
+                        VarSym *var = cg.varyings[i];
+                        llvm::Value *base =
+                            cg.lvalues.count(var->name)
+                                ? cg.lvalues[var->name]
+                                : llvm::UndefValue::get(llvmType(var->type, ctx));
+                        if (var->type.isArray()) {
+                            /* Flattened record: one field per element,
+                             * matching retElems construction. */
+                            uint32_t n = (uint32_t)var->type.arr;
+                            for (uint32_t k = 0; k < n; k++) {
+                                llvm::Value *el = base;
+                                if (base->getType()->isArrayTy())
+                                    el = b.CreateExtractValue(base, k);
+                                rec = b.CreateInsertValue(rec, el, ri++);
+                            }
+                        } else {
+                            rec = b.CreateInsertValue(rec, base, ri++);
+                        }
                     }
                 }
             } else if (!isCullCapture) {
@@ -7636,10 +7661,17 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     b.CreateMul(vid, b.getInt64(recStride)));
                 for (VarSym *varying : cg.varyings) {
                     if (!varying || varying->location == UINT32_MAX) continue;
-                    llvm::Type *varyingTy = llvmType(varying->type, ctx);
+                    /* GS/TES stage-in arrays index by primitive vertex,
+                     * so each per-vertex record stores element 0 only. */
+                    MType mt = varying->type;
+                    const bool wasArray = mt.isArray() && mt.arr > 0;
+                    if (wasArray) mt.arr = 0;
+                    llvm::Type *varyingTy = llvmType(mt, ctx);
                     llvm::Value *value = cg.lvalues.count(varying->name)
                         ? cg.lvalues[varying->name]
                         : llvm::UndefValue::get(varyingTy);
+                    if (wasArray && value->getType()->isArrayTy())
+                        value = b.CreateExtractValue(value, 0u);
                     llvm::Value *vp = b.CreateGEP(
                         b.getInt8Ty(), recordBase,
                         b.getInt64(MGL_AIR_PER_VERTEX_STRIDE +
