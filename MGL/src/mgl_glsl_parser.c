@@ -1289,7 +1289,9 @@ static MGLDecl *parse_declaration(MGLParser *p)
     d->layout_binding = -1;    /* "unspecified", per mgl_glsl_ast.h */
     d->layout_vertices = -1;   /* TCS: layout(vertices=N), unspecified */
     d->layout_max_vertices = -1; /* GS: layout(max_vertices=N), unspecified */
-    d->layout_invocations = 1; /* GS: layout(invocations=N), GLSL default 1 */
+    /* -1 = unspecified; a later stage-level declaration must not
+     * overwrite an earlier explicit invocations value with this default. */
+    d->layout_invocations = -1;
     d->layout_stream = -1;   /* GS output stream, -1 = unspecified (0) */
     d->layout_primitive = MGL_AST_TES_DEFAULT;      /* TES mode / GS in topology */
     d->layout_primitive_out = MGL_AST_GS_OUT_DEFAULT;
