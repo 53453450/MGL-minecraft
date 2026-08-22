@@ -729,6 +729,14 @@ static bool mglGeometryPassthroughNeedsFlat(GLenum type)
         mglShaderFree(bytes);
         return NO;
     }
+    if (getenv("MGL_DUMP_AIR")) {
+        FILE *f = fopen("/tmp/poison_ptvs.air", "wb");
+        if (f) {
+            fwrite(bytes, 1, size, f);
+            fclose(f);
+            fprintf(stderr, "MGL DUMP: ptvs.air %zu bytes\n", size);
+        }
+    }
     id library = nil;
     id function = nil;
     BOOL loaded = mglLoadAIRMainFunction(

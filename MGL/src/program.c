@@ -1125,6 +1125,30 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
     }
     pptr->modules[stage].metallib_bytes = bytes;
     pptr->modules[stage].metallib_size = size;
+    if (getenv("MGL_DUMP_AIR") && stage == _GEOMETRY_SHADER) {
+        FILE *f = fopen("/tmp/poison_gs.air", "wb");
+        if (f) {
+            fwrite(bytes, 1, size, f);
+            fclose(f);
+            fprintf(stderr, "MGL DUMP: gs.air %zu bytes\n", size);
+        }
+    }
+    if (getenv("MGL_DUMP_AIR") && stage == _VERTEX_SHADER) {
+        FILE *f = fopen("/tmp/poison_vs.air", "wb");
+        if (f) {
+            fwrite(bytes, 1, size, f);
+            fclose(f);
+            fprintf(stderr, "MGL DUMP: vs.air %zu bytes\n", size);
+        }
+    }
+    if (getenv("MGL_DUMP_AIR") && stage == _FRAGMENT_SHADER) {
+        FILE *f = fopen("/tmp/poison_fs.air", "wb");
+        if (f) {
+            fwrite(bytes, 1, size, f);
+            fclose(f);
+            fprintf(stderr, "MGL DUMP: fs.air %zu bytes\n", size);
+        }
+    }
     pptr->modules[stage].needs_runtime_array_size_buffer =
         stage_info.needs_runtime_array_size_buffer ? GL_TRUE : GL_FALSE;
     if (stage == _VERTEX_SHADER) {
