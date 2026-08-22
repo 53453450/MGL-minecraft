@@ -7873,7 +7873,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     llvm::Type::getInt32Ty(ctx), loc++)),
                 llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                     llvm::Type::getInt32Ty(ctx), 1)),
-                llvm::MDString::get(ctx, "air.read_write"),
+                llvm::MDString::get(ctx, isVS ? "air.read" : "air.read_write"),
                 llvm::MDString::get(ctx, "air.address_space"),
                 llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                     llvm::Type::getInt32Ty(ctx), 1)),
