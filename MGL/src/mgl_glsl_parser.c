@@ -1487,6 +1487,28 @@ more_qualifiers:
             d->layout_primitive = MGL_AST_TES_DEFAULT;
             d->layout_primitive_out = MGL_AST_GS_OUT_POINTS;
         }
+        /* GL 4.6 §11.1.2gs: a second geometry output-primitive or
+         * max_vertices declaration with a different value is a link-time
+         * error; reject it at parse time so the program fails to build. */
+        /* layout_max_vertices is calloc-cleared, so 0 doubles as
+         * "not declared yet" here (a real max_vertices=0 GS is the
+         * degenerate no-output program the backend already handles). */
+        if (d->layout_max_vertices >= 0 &&
+            tu->layout_max_vertices > 0 &&
+            tu->layout_max_vertices != d->layout_max_vertices) {
+            parse_error(p, "conflicting max_vertices declarations (%d vs %d)",
+                        tu->layout_max_vertices, d->layout_max_vertices);
+        }
+        if (d->layout_primitive_out != MGL_AST_GS_OUT_DEFAULT &&
+            tu->layout_primitive_out != MGL_AST_GS_OUT_DEFAULT &&
+            tu->layout_primitive_out != d->layout_primitive_out) {
+            parse_error(p, "conflicting geometry output primitive declarations");
+        }
+        if (d->layout_primitive != MGL_AST_TES_DEFAULT &&
+            tu->layout_primitive != MGL_AST_TES_DEFAULT &&
+            tu->layout_primitive != d->layout_primitive) {
+            parse_error(p, "conflicting geometry input primitive declarations");
+        }
         if (d->layout_vertices >= 0)          tu->layout_vertices = d->layout_vertices;
         if (d->layout_max_vertices >= 0)      tu->layout_max_vertices = d->layout_max_vertices;
         if (d->layout_invocations >= 1)       tu->layout_invocations = d->layout_invocations;

@@ -1175,6 +1175,55 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
     return 1;
 }
 
+/* GL 4.6 §7.4.1 / §11.3.1: the vertex-output and geometry-input
+ * interfaces must agree on type, interpolation qualifier and (for
+ * explicitly sized arrays) array size.  A GS input with no matching VS
+ * output is legal and reads undefined values. */
+static GLboolean mglValidateGeometryInterface(Program *pptr)
+{
+    if (!pptr ||
+        (pptr->attached_shader_mask & (1u << _GEOMETRY_SHADER)) == 0u) {
+        return GL_TRUE;
+    }
+
+    GLuint input_verts;
+    switch (pptr->geometry_input_type) {
+    case GL_POINTS:               input_verts = 1u; break;
+    case GL_LINES:                input_verts = 2u; break;
+    case GL_LINE_STRIP:           input_verts = 2u; break;
+    case GL_LINES_ADJACENCY:      input_verts = 4u; break;
+    case GL_LINE_STRIP_ADJACENCY: input_verts = 4u; break;
+    case GL_TRIANGLES:            input_verts = 3u; break;
+    case GL_TRIANGLE_STRIP:       input_verts = 3u; break;
+    case GL_TRIANGLES_ADJACENCY:  input_verts = 6u; break;
+    default:                      input_verts = 3u; break;
+    }
+
+    const MGLShaderResourceList *gsIn =
+        &pptr->shader_resources_list[_GEOMETRY_SHADER][_STAGE_INPUT_RES];
+    const MGLShaderResourceList *vsOut =
+        &pptr->shader_resources_list[_VERTEX_SHADER][_STAGE_OUTPUT_RES];
+    for (GLuint gi = 0u; gi < gsIn->count; gi++) {
+        const MGLShaderResource *in = &gsIn->list[gi];
+        if (!in->name || in->name[0] == '\0') continue;
+        if (strncmp(in->name, "gl_", 3) == 0) continue;
+        if (in->is_array && in->gl_array_size > 0 &&
+            (GLuint)in->gl_array_size != input_verts) {
+            return GL_FALSE;
+        }
+        for (GLuint vo = 0u; vo < vsOut->count; vo++) {
+            const MGLShaderResource *out = &vsOut->list[vo];
+            if (!out->name || strcmp(out->name, in->name) != 0) continue;
+            /* Interpolation qualifiers do not participate in the
+             * VS->GS interface match (they are only enforced for FS
+             * inputs), so only the type is compared here. */
+            if (out->gl_type != in->gl_type) return GL_FALSE;
+            break;
+        }
+    }
+    return GL_TRUE;
+}
+
 void mglLinkProgram(GLMContext ctx, GLuint program)
 {
     Program *pptr;
@@ -1291,6 +1340,14 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
     }
 
     if (!link_ok) {
+        return;
+    }
+
+    if (!mglValidateGeometryInterface(pptr)) {
+        fprintf(stderr,
+                "MGL WARNING: mglLinkProgram failed program %u: vertex "
+                "output / geometry input interface mismatch\n",
+                pptr->name);
         return;
     }
 

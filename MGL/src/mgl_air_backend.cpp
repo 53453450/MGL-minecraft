@@ -1676,6 +1676,18 @@ static llvm::Value *emitPerVertexLoad(Codegen &cg, const MGLExpr *e,
         }
         llvm::Value *iv = emitExpr(cg, index, mod, locals);
         if (!iv) return nullptr;
+        /* A constant gl_in[] index at or past the declared input-primitive
+         * vertex count is a compile-time error (GL 4.6 §11.3.1); without
+         * this check CTS more_input_vertices expects the build to fail. */
+        if (auto *ci = llvm::dyn_cast<llvm::ConstantInt>(iv)) {
+            if (ci->getZExtValue() >= (uint64_t)cg.geometryInputVertices) {
+                cg.err = 1;
+                cg.errmsg =
+                    "GS codegen: gl_in index out of range for the input "
+                    "primitive";
+                return nullptr;
+            }
+        }
         iv = coerceScalar(cg, iv, MGLIR_SCALAR_UINT);
         llvm::Value *record = geometryInputRecordIndex(cg, iv);
         llvm::Value *off = cg.b->CreateMul(
