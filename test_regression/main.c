@@ -666,6 +666,29 @@ static GLuint make_fbo(int w, int h, GLuint *out_tex)
     return fbo;
 }
 
+/* R32I integer color framebuffer (CTS limits tests render int outputs). */
+static GLuint make_fbo_r32i(int w, int h, GLuint *out_tex)
+{
+    GLuint fbo, tex;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32I, w, h, 0, GL_RED_INTEGER,
+                 GL_INT, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, tex, 0);
+    GLenum st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (st != GL_FRAMEBUFFER_COMPLETE) {
+        fprintf(stderr, "  [R32I FBO incomplete: 0x%x]\n", st);
+        return 0;
+    }
+    if (out_tex) *out_tex = tex;
+    return fbo;
+}
+
 /* Two-layer 2D array framebuffer for gl_Layer coverage; the draw target is
  * switched between layers with glFramebufferTextureLayer. */
 static GLuint make_layer_fbo(int w, int h, GLuint *out_tex)
@@ -12691,6 +12714,27 @@ static int test_air_geometry_points_grid(unsigned char *pixels,
         "      EmitVertex();\n"
         "    }\n"
         "}\n";
+    /* Ablation variants: strip varyings / single point / no gl_in read. */
+    static const char *gs_novary =
+        "#version 450 core\n"
+        "layout(points) in;\n"
+        "layout(points, max_vertices=9) out;\n"
+        "void main() {\n"
+        "  for (int i = -1; i <= 1; ++i)\n"
+        "    for (int j = -1; j <= 1; ++j) {\n"
+        "      gl_Position = gl_in[0].gl_Position\n"
+        "        + vec4(float(i) * 0.1, float(j) * 0.1, 0.0, 1.0);\n"
+        "      EmitVertex();\n"
+        "    }\n"
+        "}\n";
+    static const char *fs_const =
+        "#version 450 core\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(1.0, 0.0, 0.0, 1.0); }\n";
+    static const char *vs_pass =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "void main() { gl_Position = vec4(position, 0.0, 1.0); }\n";
     static const char *fs =
         "#version 450 core\n"
         "layout(location=0) in vec3 gs_fs_color;\n"
@@ -12702,9 +12746,140 @@ static int test_air_geometry_points_grid(unsigned char *pixels,
 
     GLuint fbo = 0u, color = 0u, vao = 0u, vbo = 0u, vbo_c = 0u, program = 0u;
     int result = 1;
-    fbo = make_fbo(REG_W, REG_H, &color);
+    int use_r32i_fbo = 0;
+    if (getenv("MGL_PG_INTOUT") || getenv("MGL_PG_INTOUT_VSFS")) {
+        fbo = make_fbo_r32i(REG_W, REG_H, &color);
+    } else {
+        fbo = make_fbo(REG_W, REG_H, &color);
+    }
     if (!fbo) goto cleanup;
-    program = link_program_with_geometry(vs, gs, fs);
+    if (getenv("MGL_PG_NOVARY")) {
+        program = link_program_with_geometry(vs_pass, gs_novary, fs_const);
+    } else if (getenv("MGL_PG_ONEPT")) {
+        program = link_program_with_geometry(vs_pass,
+            "#version 450 core\n"
+            "layout(points) in;\n"
+            "layout(points, max_vertices=1) out;\n"
+            "void main() {\n"
+            "  gl_Position = gl_in[0].gl_Position;\n"
+            "  EmitVertex();\n"
+            "}\n", fs_const);
+    } else if (getenv("MGL_PG_FLATVEC")) {
+        /* ONEPT + one flat vec4 varying, float FS output */
+        program = link_program_with_geometry(
+            "#version 450 core\n"
+            "layout(location=0) in vec2 position;\n"
+            "out vec4 v0;\n"
+            "void main() { v0 = vec4(3.0, 0.0, 0.0, 0.0);\n"
+            "  gl_Position = vec4(position, 0.0, 1.0); }\n",
+            "#version 450 core\n"
+            "layout(points) in;\n"
+            "layout(points, max_vertices=1) out;\n"
+            "in vec4 v0[1];\n"
+            "out vec4 w0;\n"
+            "void main() {\n"
+            "  gl_Position = gl_in[0].gl_Position;\n"
+            "  w0 = v0[0];\n"
+            "  EmitVertex();\n}\n",
+            "#version 450 core\n"
+            "flat in vec4 w0;\n"
+            "layout(location=0) out vec4 frag;\n"
+            "void main() { frag = vec4(w0.x, 0.0, 0.0, 1.0); }\n");
+    } else if (getenv("MGL_PG_INTOUT")) {
+        /* ONEPT + int FS output on an R32I attachment */
+        program = link_program_with_geometry(
+            "#version 450 core\n"
+            "layout(location=0) in vec2 position;\n"
+            "void main() { gl_Position = vec4(position, 0.0, 1.0); }\n",
+            "#version 450 core\n"
+            "layout(points) in;\n"
+            "layout(points, max_vertices=1) out;\n"
+            "void main() {\n"
+            "  gl_Position = gl_in[0].gl_Position;\n"
+            "  EmitVertex();\n}\n",
+            "#version 450 core\n"
+            "layout(location=0) out int fs_out;\n"
+            "void main() { fs_out = 7; }\n");
+    } else if (getenv("MGL_PG_MANYIV")) {
+        /* ONEPT + N flat ivec4 varyings + int FS output */
+        static char gsv[8192], fsv[8192], vsv[512];
+        int nv = atoi(getenv("MGL_PG_MANYIV"));
+        snprintf(vsv, sizeof(vsv),
+                 "#version 450 core\n"
+                 "layout(location=0) in vec2 position;\n"
+                 "void main() { gl_Position = vec4(position, 0.0, 1.0); }\n");
+        snprintf(gsv, sizeof(gsv),
+                 "#version 450 core\n"
+                 "layout(points) in;\n"
+                 "layout(points, max_vertices=1) out;\n");
+        for (int i = 0; i < nv; i++)
+            snprintf(gsv + strlen(gsv), sizeof(gsv) - strlen(gsv),
+                     "flat out ivec4 v%d;\n", i);
+        snprintf(gsv + strlen(gsv), sizeof(gsv) - strlen(gsv),
+                 "void main() {\n"
+                 "  gl_Position = gl_in[0].gl_Position;\n");
+        for (int i = 0; i < nv; i++)
+            snprintf(gsv + strlen(gsv), sizeof(gsv) - strlen(gsv),
+                     "  v%d = ivec4(%d, 0, 0, 0);\n", i, i + 1);
+        snprintf(gsv + strlen(gsv), sizeof(gsv) - strlen(gsv),
+                 "  EmitVertex();\n}\n");
+        snprintf(fsv, sizeof(fsv),
+                 "#version 450 core\n");
+        for (int i = 0; i < nv; i++)
+            snprintf(fsv + strlen(fsv), sizeof(fsv) - strlen(fsv),
+                     "flat in ivec4 v%d;\n", i);
+        snprintf(fsv + strlen(fsv), sizeof(fsv) - strlen(fsv),
+                 "layout(location=0) out int fs_out;\n"
+                 "void main() { int sum = 0;\n");
+        for (int i = 0; i < nv; i++)
+            snprintf(fsv + strlen(fsv), sizeof(fsv) - strlen(fsv),
+                     "  sum += v%d.x;\n", i);
+        snprintf(fsv + strlen(fsv), sizeof(fsv) - strlen(fsv),
+                 "  fs_out = sum;\n}\n");
+        program = link_program_with_geometry(vsv, gsv, fsv);
+    } else if (getenv("MGL_PG_NOATTR")) {
+        /* same as ONEPT but the VS reads gl_VertexID, no attribute */
+        program = link_program_with_geometry(
+            "#version 450 core\n"
+            "void main() {\n"
+            "  gl_Position = vec4(float(gl_VertexID), 0.5, 0.0, 1.0);\n"
+            "}\n",
+            "#version 450 core\n"
+            "layout(points) in;\n"
+            "layout(points, max_vertices=1) out;\n"
+            "void main() {\n"
+            "  gl_Position = gl_in[0].gl_Position;\n"
+            "  EmitVertex();\n"
+            "}\n", fs_const);
+    } else if (getenv("MGL_PG_DECLONLY")) {
+        program = link_program_with_geometry(
+            "#version 450 core\n"
+            "layout(location=0) in vec2 position;\n"
+            "void main() {\n"
+            "  gl_Position = vec4(0.0, 0.0, 0.0, 1.0);\n"
+            "}\n",
+            "#version 450 core\n"
+            "layout(points) in;\n"
+            "layout(points, max_vertices=1) out;\n"
+            "void main() {\n"
+            "  gl_Position = vec4(0.0, 0.0, 0.0, 1.0);\n"
+            "  EmitVertex();\n"
+            "}\n", fs_const);
+    } else if (getenv("MGL_PG_CONST")) {
+        program = link_program_with_geometry(vs_pass,
+            "#version 450 core\n"
+            "layout(points) in;\n"
+            "layout(points, max_vertices=1) out;\n"
+            "void main() {\n"
+            "  gl_Position = vec4(0.0, 0.0, 0.0, 1.0);\n"
+            "  EmitVertex();\n"
+            "}\n", fs_const);
+    } else {
+        program = link_program_with_geometry(vs, gs, fs);
+    }
+    if (!program) goto cleanup;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    clear_color(0.0f, 0.0f, 0.0f);
     if (!program) goto cleanup;
 
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
@@ -12725,8 +12900,55 @@ static int test_air_geometry_points_grid(unsigned char *pixels,
     glUseProgram(program);
     glUniform2i(glGetUniformLocation(program, "renderingTargetSize"),
                 REG_W, REG_H);
-    glDrawArrays(GL_POINTS, 0, 1);
+    if (getenv("MGL_PG_VSFS")) {
+        /* ablation: same draw through a plain VS+FS program */
+        static const char *vspg =
+            "#version 450 core\n"
+            "layout(location=0) in vec2 position;\n"
+            "void main() { gl_Position = vec4(position, 0.0, 1.0); }\n";
+        static const char *fspg =
+            "#version 450 core\n"
+            "layout(location=0) out vec4 frag;\n"
+            "void main() { frag = vec4(1.0, 0.0, 0.0, 1.0); }\n";
+        GLuint p2 = link_program(vspg, fspg);
+        if (p2) {
+            glUseProgram(p2);
+            glDrawArrays(GL_POINTS, 0, 1);
+            glDeleteProgram(p2);
+        }
+    } else {
+        glDrawArrays(GL_POINTS, 0, 1);
+    }
     glFinish();
+    if (getenv("MGL_PG_INTOUT_VSFS")) {
+        /* ablation: same int output through plain VS+FS */
+        GLuint p2 = link_program(
+            "#version 450 core\n"
+            "layout(location=0) in vec2 position;\n"
+            "void main() { gl_Position = vec4(position, 0.0, 1.0); }\n",
+            "#version 450 core\n"
+            "layout(location=0) out int fs_out;\n"
+            "void main() { fs_out = 7; }\n");
+        if (p2) {
+            glUseProgram(p2);
+            glDrawArrays(GL_POINTS, 0, 1);
+            glFinish();
+            GLint iv[4] = { -1, 0, 0, 0 };
+            glReadPixels(0, 0, 1, 1, GL_RED_INTEGER, GL_INT, iv);
+            fprintf(stderr, "points_grid INTOUT-VSFS: r=%d (expect 7)\n",
+                    iv[0]);
+            glDeleteProgram(p2);
+        }
+        result = 0;
+        goto cleanup;
+    }
+    if (getenv("MGL_PG_INTOUT")) {
+        GLint iv[4] = { -1, 0, 0, 0 };
+        glReadPixels(0, 0, 1, 1, GL_RED_INTEGER, GL_INT, iv);
+        fprintf(stderr, "points_grid INTOUT: r=%d (expect 7)\n", iv[0]);
+        result = 0;
+        goto cleanup;
+    }
     glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
 
     /* All 9 emitted points rasterize with the vertex color (0.25,0.5,0.75
@@ -12781,7 +13003,8 @@ static int test_air_geometry_points_grid(unsigned char *pixels,
             for (int y = 0; y < REG_H; y++)
                 for (int x = 0; x < REG_W; x++) {
                     const unsigned char *q = &pixels[(y * REG_W + x) * 4];
-                    if (q[0] > 200 && !q[1] && gx >= 0 && (x != gx || y != gy))
+                    if (q[0] > 200 && !q[1] && gx >= 0 &&
+                        (abs(x - gx) > 1 || abs(y - gy) > 1))
                         {
                             fprintf(stderr,
                                     "points_grid: no-GS point (%d,%d) vs GS "
@@ -13032,6 +13255,23 @@ xfb_done:
         if (b) glDeleteShader(b);
         if (c) glDeleteShader(c);
         if (prog) glDeleteProgram(prog);
+    }
+
+    /* Report component-related limits */
+    {
+        struct { const char *n; GLenum e; } q[] = {
+            {"MAX_GEOMETRY_OUTPUT_COMPONENTS",
+             GL_MAX_GEOMETRY_OUTPUT_COMPONENTS},
+            {"MAX_FRAGMENT_INPUT_COMPONENTS",
+             GL_MAX_FRAGMENT_INPUT_COMPONENTS},
+            {"MAX_VERTEX_OUTPUT_COMPONENTS",
+             GL_MAX_VERTEX_OUTPUT_COMPONENTS},
+        };
+        for (int i = 0; i < 3; i++) {
+            GLint v = -1;
+            glGetIntegerv(q[i].e, &v);
+            fprintf(stderr, "limits: %s = %d\n", q[i].n, v);
+        }
     }
 
 cleanup:

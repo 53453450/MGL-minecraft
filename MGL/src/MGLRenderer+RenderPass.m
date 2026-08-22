@@ -676,12 +676,6 @@ static bool mglGeometryPassthroughNeedsFlat(GLenum type)
          "    int mgl_base = gl_VertexID * %lu;\n"
          "    gl_Position = mgl_gs_output.records[mgl_base];\n",
          (unsigned long)vec4Stride];
-    if (outputPrimitive == MGLPrimitiveTypePoint) {
-        [source appendString:
-            @"    vec4 mgl_point_size = "
-             "mgl_gs_output.records[mgl_base + 1];\n"
-             "    gl_PointSize = mgl_point_size.x;\n"];
-    }
     Shader *mgl_gs = program->shader_slots[_GEOMETRY_SHADER];
     if (mgl_gs && mgl_gs->src &&
         (strstr(mgl_gs->src, "gl_Layer") ||
@@ -4143,27 +4137,15 @@ static bool mglGeometryPassthroughNeedsFlat(GLenum type)
 
 
     {
-        /* A compute-routed geometry shader is rasterized by the generated
-         * passthrough vertex function.  Metal therefore needs the output
-         * primitive class on the render pipeline, even when the GLSL GS does
-         * not write gl_Layer/gl_ViewportIndex.  Without it, point/line list
-         * draws retain the unspecified topology used by ordinary VS draws. */
-        BOOL needsExplicitTopology = geometryExpansion;
-        Shader *vsSlot = vertexProgram ? vertexProgram->shader_slots[_VERTEX_SHADER] : NULL;
-        if (vsSlot && vsSlot->src &&
-            (strstr(vsSlot->src, "gl_Layer") ||
-             strstr(vsSlot->src, "gl_ViewportIndex"))) {
-            needsExplicitTopology = YES;
-        }
-        if (!needsExplicitTopology && vertexProgram) {
-            Shader *gsSlot = vertexProgram->shader_slots[_GEOMETRY_SHADER];
-            if (gsSlot && gsSlot->src &&
-                (strstr(gsSlot->src, "gl_Layer") ||
-                 strstr(gsSlot->src, "gl_ViewportIndex"))) {
-                needsExplicitTopology = YES;
-            }
-        }
-        if (needsExplicitTopology) {
+        /* Metal requires the pipeline's primitive topology class to match
+         * the drawn primitive type: an unspecified-class pipeline silently
+         * drops point draws.  A compute-routed geometry expansion always
+         * gets its output class explicitly.  For ordinary draws only the
+         * point case is forced: leaving triangles on the historical
+         * unspecified value keeps programs that write gl_PointSize while
+         * drawing triangles linkable (Metal rejects a triangle-class
+         * pipeline whose vertex function writes point size). */
+        if (geometryExpansion || _lastDrawPrimitiveMode == GL_POINTS) {
             switch (_lastDrawPrimitiveMode) {
                 case GL_POINTS:
                     state->input_primitive_topology =

@@ -168,6 +168,7 @@ uint64_t mglPipelineDescriptorSignatureFromState(
     }
 
     hash = mglHashStepU64(hash, (uint64_t)state->raster_sample_count);
+    hash = mglHashStepU64(hash, (uint64_t)state->input_primitive_topology);
     hash = mglHashStepU64(hash, (uint64_t)state->rasterization_enabled);
     hash = mglHashStepU64(hash, (uint64_t)state->alpha_to_coverage_enabled);
     hash = mglHashStepU64(hash, (uint64_t)state->alpha_to_one_enabled);
