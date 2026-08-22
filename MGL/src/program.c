@@ -961,6 +961,28 @@ static bool mglValidateTransformFeedbackVaryings(GLMContext ctx, Program *pptr)
             }
         }
 
+        /* Built-in per-vertex outputs are capturable (GL 4.6 §13.2.4)
+         * even though the reflection lists only user varyings. */
+        if (strcmp(baseName, "gl_Position") == 0 ||
+            strcmp(baseName, "gl_PointSize") == 0) {
+            GLuint components = strcmp(baseName, "gl_Position") == 0 ? 4u : 1u;
+            if (pptr->transform_feedback_buffer_mode == GL_SEPARATE_ATTRIBS &&
+                components > maxSeparateComponents)
+                return false;
+            pptr->transform_feedback_layout[i].buffer_index = buffer;
+            pptr->transform_feedback_layout[i].component_offset =
+                bufferOffsets[buffer];
+            pptr->transform_feedback_layout[i].component_count = components;
+            /* Built-in per-vertex outputs feed stream 0 like any other
+             * captured varying. */
+            pptr->transform_feedback_layout[i].stream = 0;
+            pptr->transform_feedback_layout[i].builtin = GL_TRUE;
+            if (pptr->transform_feedback_buffer_mode ==
+                GL_INTERLEAVED_ATTRIBS)
+                bufferOffsets[buffer] += components;
+            continue;
+        }
+
         MGLShaderResource *output = NULL;
         for (GLuint j = 0u; j < outputs->count; j++) {
             if (outputs->list[j].name &&
@@ -1217,8 +1239,33 @@ static GLboolean mglValidateGeometryInterface(Program *pptr)
             /* Interpolation qualifiers do not participate in the
              * VS->GS interface match (they are only enforced for FS
              * inputs), so only the type is compared here. */
-            if (out->gl_type != in->gl_type) return GL_FALSE;
+            if (out->gl_type != in->gl_type) {
+                return GL_FALSE;
+            }
             break;
+        }
+    }
+    /* GL 4.6 §13.8.x: two outputs sharing one explicit location alias,
+     * which is only legal for dual-source blending (distinct index).
+     * Reject same-location different-name pairs in the GS output list. */
+    const MGLShaderResourceList *gsOut =
+        &pptr->shader_resources_list[_GEOMETRY_SHADER][_STAGE_OUTPUT_RES];
+    for (GLuint a = 0u; a < gsOut->count; a++) {
+        const MGLShaderResource *ra = &gsOut->list[a];
+        if (!ra->name || ra->name[0] == '\0') continue;
+        if (strncmp(ra->name, "gl_", 3) == 0) continue;
+        for (GLuint b = a + 1u; b < gsOut->count; b++) {
+            const MGLShaderResource *rb = &gsOut->list[b];
+            if (!rb->name || rb->name[0] == '\0') continue;
+            if (strncmp(rb->name, "gl_", 3) == 0) continue;
+            if (strcmp(ra->name, rb->name) == 0) continue;
+            /* Different streams have independent per-stream outputs, so
+             * they may reuse the same location. */
+            if (ra->stream == rb->stream &&
+                ra->location == rb->location &&
+                ra->location_index == rb->location_index) {
+                return GL_FALSE;
+            }
         }
     }
     return GL_TRUE;

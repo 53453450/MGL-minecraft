@@ -1611,7 +1611,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
                  vi++) {
                 const MGLTransformFeedbackVaryingPlan *plan =
                     &program->transform_feedback_layout[vi];
-                if (plan->builtin || plan->component_count == 0u) continue;
+                if (plan->component_count == 0u) continue;
                 if ((uint32_t)plan->stream != s) continue;
                 if (plan->buffer_index >= MGL_AIR_GS_MAX_STREAMS) continue;
                 const char *name =
@@ -1630,11 +1630,23 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
                         break;
                     }
                 }
-                if (location == UINT32_MAX) continue;
+                /* Built-in per-vertex outputs copy from the record's
+                 * fixed per-vertex slots instead of a varying slot. */
+                NSUInteger srcOffset;
+                if (strcmp(baseName, "gl_Position") == 0 &&
+                    plan->builtin) {
+                    srcOffset = MGL_AIR_PER_VERTEX_POSITION_OFFSET;
+                } else if (strcmp(baseName, "gl_PointSize") == 0 &&
+                           plan->builtin) {
+                    srcOffset = MGL_AIR_PER_VERTEX_POINT_SIZE_OFFSET;
+                } else {
+                    if (location == UINT32_MAX) continue;
+                    srcOffset =
+                        MGL_AIR_PER_VERTEX_STRIDE + location * 16u;
+                }
                 MGLAIRGSXFBFieldDesc *fd = &scatterParams.fields[fieldCount++];
                 fd->buffer_index = plan->buffer_index;
-                fd->src_offset =
-                    MGL_AIR_PER_VERTEX_STRIDE + location * 16u;
+                fd->src_offset = (uint32_t)srcOffset;
                 fd->dst_offset = plan->component_offset * 4u;
                 fd->byte_count = plan->component_count * 4u;
                 scatterParams.buffer_stream[plan->buffer_index] = s;
