@@ -989,25 +989,11 @@ static bool mglBindingStateFlushResourceBindings(
         Buffer *attribBuffer = resolved.buffer;
         const VertexAttrib *attribState = resolved.attrib;
 
-        if (!mglRendererBufferHasDrawableContents(attribBuffer)) {
-            NSLog(@"MGL VBIND BLOCK draw: attrib=%u uses buffer=%u that was allocated but never populated "
-                  "(initSource=%u mapped=%u access=0x%x accessFlags=0x%x hasInitialized=%u written=[%lld,%lld) lastOff=%lld lastSize=%lld lastSrc=%p hash=0x%016llx)",
-                  attrib,
-                  attribBuffer->name,
-                  (unsigned)attribBuffer->last_init_source,
-                  (unsigned)attribBuffer->mapped,
-                  (unsigned)attribBuffer->access,
-                  (unsigned)attribBuffer->access_flags,
-                  (unsigned)attribBuffer->has_initialized_data,
-                  (long long)attribBuffer->written_min,
-                  (long long)attribBuffer->written_max,
-                  (long long)attribBuffer->last_write_offset,
-                  (long long)attribBuffer->last_write_size,
-                  attribBuffer->last_write_src_ptr,
-                  (unsigned long long)attribBuffer->last_write_src_hash);
-            MGL_VATTR_FLUSH_SNAPSHOT();
-            return false;
-        }
+        /* GL 4.6 §6.2.3: storage defined via glBufferData(size, NULL) has
+         * undefined-but-valid contents, so vertex fetch may proceed.  No
+         * draw-blocking check here: fall through to the regular binding
+         * path, which maps the Metal backing on demand and keeps
+         * lazily-populated buffers working. */
 
         if (resolved.binding_offset < 0) {
             NSLog(@"MGL VBIND BLOCK draw: attrib=%u buffer=%u negative bindingOffset=%lld",
