@@ -631,6 +631,28 @@ static bool mglGeometryPassthroughNeedsFlat(GLenum type)
     return mglGeometryPassthroughConversion(type) != NULL;
 }
 
+/* The stage-out record stores every varying as a full vec4 slot, so a GS
+ * output's reflected gl_type is promoted to the record width.  When the
+ * fragment shader consumes the varying with a narrower declared type
+ * (legal GL: GS out vec3 + FS in vec3), the passthrough VS must declare
+ * the interface with the fragment type -- Metal rejects a pipeline whose
+ * vertex output type differs from the fragment input. */
+static GLenum mglPassthroughDeclType(
+    const MGLShaderResourceList *fsInputs,
+    const MGLShaderResource *output)
+{
+    for (GLuint fi = 0; fsInputs && fsInputs->list && fi < fsInputs->count;
+         fi++) {
+        const MGLShaderResource *in = &fsInputs->list[fi];
+        if (in->name && output->name &&
+            strcmp(in->name, output->name) == 0 &&
+            in->gl_type != output->gl_type) {
+            return in->gl_type;
+        }
+    }
+    return output->gl_type;
+}
+
 - (BOOL)ensureAIRGeometryPassthroughFunctionForProgram:(Program *)program
                                        outputPrimitive:(uint32_t)outputPrimitive
 {
@@ -654,12 +676,28 @@ static bool mglGeometryPassthroughNeedsFlat(GLenum type)
          "layout(std430, binding = 0) buffer MGLGSOutput {\n"
          "    vec4 records[];\n"
          "} mgl_gs_output;\n"];
+    /* The stage-out record stores every varying as a full vec4 slot, so the
+     * reflected gl_type of a GS output is promoted to the record width.
+     * The passthrough VS must declare the interface with the *fragment
+     * shader's* input type instead: Metal rejects a pipeline whose vertex
+     * output type differs from the fragment input (e.g. record-promoted
+     * vec4 vs a declared vec3). */
+    const MGLShaderResourceList *fsInputs =
+        &program->shader_resources_list[_FRAGMENT_SHADER][_STAGE_INPUT_RES];
+
     for (GLuint i = 0; outputs->list && i < outputs->count; i++) {
         MGLShaderResource *output = &outputs->list[i];
         if (output->is_per_patch) continue;
 
         if (output->stream > 0) continue;
-        const char *type = mglGeometryPassthroughType(output->gl_type);
+        if (getenv("MGL_DUMP_AIR"))
+            fprintf(stderr,
+                    "MGL PTVS varying: name=%s gl_type=0x%x loc=%u\n",
+                    output->name ? output->name : "?",
+                    (unsigned)output->gl_type,
+                    (unsigned)output->location);
+        GLenum declType = mglPassthroughDeclType(fsInputs, output);
+        const char *type = mglGeometryPassthroughType(declType);
         if (!type || !output->name) {
             NSLog(@"MGL GS ERROR: unsupported passthrough varying type 0x%x",
                   (unsigned)output->gl_type);
@@ -691,7 +729,8 @@ static bool mglGeometryPassthroughNeedsFlat(GLenum type)
          MGLShaderResource *output = &outputs->list[i];
          if (output->is_per_patch) continue;
          if (output->stream > 0) continue;
-         const char *swizzle = mglGeometryPassthroughSwizzle(output->gl_type);
+         GLenum declType = mglPassthroughDeclType(fsInputs, output);
+         const char *swizzle = mglGeometryPassthroughSwizzle(declType);
          if (!swizzle || !output->name) return NO;
          const char *convert =
              mglGeometryPassthroughConversion(output->gl_type);
