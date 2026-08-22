@@ -2883,6 +2883,11 @@ void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
      */
     BufferBaseTarget *uniformSlot = &program->plain_uniform_buffers[location];
     Buffer *buf = uniformSlot->buf;
+    if (getenv("MGL_DIAG_UNIFORM_UPLOAD"))
+        fprintf(stderr, "MGL UNIFORM UPLOAD prog=%u loc=%d size=%lld w0=%u w1=%u\n",
+                (unsigned)program->name, location, (long long)size,
+                size >= 4 ? *(const uint32_t *)ptr : 0u,
+                size >= 8 ? *((const uint32_t *)ptr + 1) : 0u);
     Buffer *prevUniformBuf = uniformSlot->buf;
     GLsizeiptr prevUniformSize = uniformSlot->size;
 

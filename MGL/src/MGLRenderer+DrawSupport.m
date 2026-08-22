@@ -1216,12 +1216,29 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
             }
         }
     }
+    /* Metal has no UInt8 index type: GL_UNSIGNED_BYTE streams must be
+     * expanded to UInt16 before the indexed capture draw, or Metal reads
+     * byte pairs as garbage indices and every record past index 0 is lost. */
+    id drawIndexBuffer = sanitizedIndexBuffer;
+    NSUInteger drawIndexOffset = sanitizedIndexOffset;
+    uint64_t mtlIndexType = mglIndexTypeForGLType((GLenum)indexType);
+    if ((GLuint)mtlIndexType != 0xFFFFFFFFu) {
+        NSUInteger preparedOffset = sanitizedIndexOffset;
+        uint64_t preparedType = mtlIndexType;
+        id prepared = mglPreparedElementIndexBuffer(
+            _device, NULL, sanitizedIndexBuffer, (GLenum)indexType,
+            &preparedOffset, &preparedType);
+        if (prepared) {
+            drawIndexBuffer = prepared;
+            drawIndexOffset = preparedOffset;
+            mtlIndexType = preparedType;
+        }
+    }
     mglDrawSupportDrawIndexedPrimitivesType(
-        _renderPassManager.state->currentRenderEncoderOwner, MGL_DRAW_PRIMITIVE_POINT, (NSUInteger)count, indexType,
-        sanitizedIndexBuffer, sanitizedIndexOffset, (NSUInteger)instanceCount,
+        _renderPassManager.state->currentRenderEncoderOwner, MGL_DRAW_PRIMITIVE_POINT, (NSUInteger)count, mtlIndexType,
+        drawIndexBuffer, drawIndexOffset, (NSUInteger)instanceCount,
         (NSInteger)baseVertex, (NSUInteger)baseInstance);
-    _currentCBHasWork = YES;
-    [self endRenderEncoding];
+    _currentCBHasWork = YES;    [self endRenderEncoding];
     _tessellation.tessVertexCaptureActive = NO;
     drawCtx->state.dirty_bits = DIRTY_ALL;
     if (outOffset) *outOffset = captureOffset;
@@ -1275,9 +1292,11 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         : MGL_DRAW_PRIMITIVE_TRIANGLE;
     const BOOL indexedDraw = (indexType != 0u);
     if (getenv("MGL_GS_DIAG")) {
-        NSLog(@"MGL GS DIAG topology mode=0x%x gsIn=0x%x gsOut=0x%x indexed=%d count=%d first=%d",
+        NSLog(@"MGL GS DIAG topology mode=0x%x gsIn=0x%x gsOut=0x%x indexed=%d count=%d first=%d vertsOut=%u route=%d",
               (unsigned)mode, (unsigned)gsInputMode, (unsigned)gsOutputMode,
-              indexedDraw ? 1 : 0, (int)count, (int)first);
+              indexedDraw ? 1 : 0, (int)count, (int)first,
+              (unsigned)program->geometry_vertices_out,
+              (int)program->gs_route);
     }
     if (!mglGeometryInputModeAccepts(gsInputMode, mode) || count <= 0 ||
         instanceCount <= 0 || (!indexedDraw && first < 0)) {
@@ -1340,7 +1359,6 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     const uint8_t *indexBytes = NULL;
     id eboMetal = nil;
     NSUInteger indexOffsetBytes = 0u;
-    uint64_t captureIndexType = MGL_DRAW_INDEX_UINT32;
     id gatherBuf = nil;
     MGLAIRGSGatherParams gparams;
     memset(&gparams, 0, sizeof(gparams));
@@ -1374,7 +1392,6 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
              * invocations. */
             return YES;
         }
-        if (indexedDraw) captureIndexType = mglIndexTypeForGLType(indexType);
         gatherBuf = mglDrawSupportCreateBufferWithBytes(
             _device, gatherArray, (NSUInteger)gatherCount * 4u, 0u);
         free(gatherArray);
@@ -1447,7 +1464,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     if (indexedDraw) {
         input = [self captureAIRVertexPositionsForGeometryIndexed:drawCtx
                                                       indexBuffer:eboMetal
-                                                        indexType:captureIndexType
+                                                        indexType:indexType
                                                       indexOffset:indexOffsetBytes
                                                             count:count
                                                         baseVertex:baseVertex
@@ -1484,7 +1501,6 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         drawCtx->state.dirty_bits = DIRTY_ALL;
         return YES;
     }
-
     MGLRenderCommandBufferState commandState = {0};
     if (!mglRenderCommandBufferOwnerHasState(
             _renderPassManager.state->currentCommandBufferOwner,
@@ -1499,6 +1515,11 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         (NSUInteger)workItemCount * recordsPerPrimitive * outputStride;
     id output = mglDrawSupportCreateBuffer(
         _device, outputSize, 0u);
+    if (getenv("MGL_GS_DIAG"))
+        NSLog(@"MGL GS DIAG outputSize=%lu stride=%lu recordsPerPrim=%lu workItems=%u mtlLen=%@",
+              (unsigned long)outputSize, (unsigned long)outputStride,
+              (unsigned long)recordsPerPrimitive, (unsigned)workItemCount,
+              [output valueForKey:@"length"]);
 
     const NSUInteger countsRecordBytes = MGL_AIR_GS_COUNTS_RECORD_BYTES;
     id counts = mglDrawSupportCreateBuffer(
@@ -1635,9 +1656,10 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         }
 
         if (getenv("MGL_GS_XFB_DIAG")) {
-            NSLog(@"MGL GS XFB DIAG fields=%u buffers=%u varyings=%d mode=0x%x",
-                  fieldCount, xfbBufferCount,
-                  program->transform_feedback_varying_count,
+            fprintf(stderr,
+                    "MGL GS XFB DIAG fields=%u buffers=%u varyings=%d mode=0x%x\n",
+                    fieldCount, xfbBufferCount,
+                    program->transform_feedback_varying_count,
                   program->transform_feedback_buffer_mode);
             for (uint32_t f = 0u; f < fieldCount; f++) {
                 NSLog(@"  field[%u] buf=%u src=%u dst=%u bytes=%u", f,
@@ -1810,7 +1832,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
                          GL_OUT_OF_MEMORY);
         return YES;
     }
-    const BOOL cppDispatch = YES;
+    const BOOL cppDispatch = getenv("MGL_GS_LEGACY_DISPATCH") ? NO : YES;
     id compute = nil;
     MGLRenderComputeExecutionPlan executionPlan = {0};
     NSMutableArray *executionTemporaries = cppDispatch
@@ -1881,6 +1903,21 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         mglDrawSupportSetComputeBuffer(
             compute, xfbVisBuffer ? xfbVisBuffer : counts, 0u,
             MGL_AIR_GS_SLOT_XFB_VIS);
+    }
+    if (getenv("MGL_GS_DIAG")) {
+        Program *gp = mglResolveProgramForStageFromState(drawCtx, _GEOMETRY_SHADER);
+        NSLog(@"MGL GS DIAG GS uniform-constant resources: %u",
+              gp ? gp->shader_resources_list[_GEOMETRY_SHADER][_UNIFORM_CONSTANT_RES].count : 0u);
+    }
+    if (getenv("MGL_GPU_CAPTURE")) {
+        id desc = [self mglCaptureDescriptorForDevice:_device
+                                          outputPath:[NSString stringWithUTF8String:getenv("MGL_GPU_CAPTURE")]];
+        NSError *capErr = nil;
+        if (desc && [self mglStartCaptureWithDescriptor:desc error:&capErr]) {
+            NSLog(@"MGL GPU capture started -> %s", getenv("MGL_GPU_CAPTURE"));
+        } else {
+            NSLog(@"MGL GPU capture start failed: %@", capErr.localizedDescription);
+        }
     }
     bool buffersOK = [self bindBuffersToComputeEncoder:compute
                                                    stage:_GEOMETRY_SHADER
@@ -2268,7 +2305,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
      * done for the *previous* encoder. Rebind fragment-stage buffers
      * (plain uniforms etc.) on the fresh encoder before the indirect
      * draws, or the fragment shader reads unbound slots. */
-    {
+    if (!getenv("MGL_ABLATE_GS_REBIND")) {
         /* The binding-state dedup still reflects the pre-compute encoder;
          * clear the fragment table so the rebind below is not skipped. */
         for (uint32_t slot = 0u; slot < 31u; slot++)
@@ -2281,21 +2318,121 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         [self bindBufferSizeConstantsForRenderEncoder];
     }
     [self applyPolygonOffsetForDrawMode:gsOutputMode];
+    if (getenv("MGL_SYNC_AFTER_GS")) {
+        [self flushCommandBuffer:YES];
+        NSLog(@"MGL GS sync: flushed after compute");
+    }
     if (getenv("MGL_GS_DIAG")) {
         const uint32_t *cw = (const uint32_t *)mglDrawSupportBufferContents(counts);
         NSLog(@"MGL GS DIAG draw counts w0..6: %u %u %u %u %u %u %u outputBuf=%p",
               cw[0], cw[1], cw[2], cw[3], cw[4], cw[5], cw[6], output);
+        for (NSUInteger w = 0u; w < workItemCount; w++)
+            NSLog(@"MGL GS DIAG counts[%lu] full: %u %u %u %u %u %u %u",
+                  (unsigned long)w,
+                  cw[w * MGL_AIR_GS_COUNTS_RECORD_WORDS],
+                  cw[w * MGL_AIR_GS_COUNTS_RECORD_WORDS + 1],
+                  cw[w * MGL_AIR_GS_COUNTS_RECORD_WORDS + 2],
+                  cw[w * MGL_AIR_GS_COUNTS_RECORD_WORDS + 3],
+                  cw[w * MGL_AIR_GS_COUNTS_RECORD_WORDS + 4],
+                  cw[w * MGL_AIR_GS_COUNTS_RECORD_WORDS + 5],
+                  cw[w * MGL_AIR_GS_COUNTS_RECORD_WORDS + 6]);
+        {
+            const float *of = (const float *)mglDrawSupportBufferContents(output);
+            NSLog(@"MGL GS DIAG output floats [1040B]=%g,%g,%g,%g [1920B]=%g,%g [2800B]=%g,%g",
+                  of[260], of[261], of[262], of[263],
+                  of[480], of[481], of[700], of[701]);
+        }
     }
-    for (GLuint primitive = 0u; primitive < workItemCount; primitive++) {
+    if (getenv("MGL_GS_SINGLE_DRAW")) {
+        /* bisect: one draw over all records; header records carry pos=0
+         * and are clipped away by the rasterizer. */
+        const uint32_t totalVerts =
+            (uint32_t)(workItemCount * recordsPerPrimitive) -
+            MGL_AIR_GS_HEADER_RECORDS;
+        uint32_t *cw1 = (uint32_t *)mglDrawSupportBufferContents(counts);
+        cw1[0] = totalVerts;
+        cw1[1] = 1u;
+        mglDrawSupportSetVertexBuffer(
+            _renderPassManager.state->currentRenderEncoderOwner, output,
+            MGL_AIR_GS_HEADER_RECORDS * outputStride, 0u);
+        mglDrawSupportDrawPrimitives(
+            _renderPassManager.state->currentRenderEncoderOwner,
+            outputPrimitive, 0u, totalVerts, 1u, 0u);
+        goto after_gs_draws;
+    }
+    if (getenv("MGL_GS_COPY_DRAW")) {
+        /* bisect: copy each work item's records to a fresh offset-0 buffer
+         * (CPU readback -> newBufferWithBytes) and draw from that. */
+        const uint8_t *src = (const uint8_t *)mglDrawSupportBufferContents(output);
+        for (GLuint w = 0u; w < workItemCount; w++) {
+            NSUInteger srcOff =
+                ((NSUInteger)w * recordsPerPrimitive +
+                 MGL_AIR_GS_HEADER_RECORDS) * outputStride;
+            NSUInteger bytes = (NSUInteger)9u * outputStride;
+            id sub = mglDrawSupportCreateBufferWithBytes(
+                _device, src + srcOff, bytes, 0u);
+            const uint32_t *cwv = (const uint32_t *)mglDrawSupportBufferContents(counts);
+            mglDrawSupportSetVertexBuffer(
+                _renderPassManager.state->currentRenderEncoderOwner, sub, 0u, 0u);
+            mglDrawSupportDrawPrimitives(
+                _renderPassManager.state->currentRenderEncoderOwner,
+                outputPrimitive, 0u,
+                cwv ? cwv[w * MGL_AIR_GS_COUNTS_RECORD_WORDS] : 0u, 1u, 0u);
+        }
+        goto after_gs_draws;
+    }
+    const char *onlyPrim = getenv("MGL_GS_ONLY_PRIM");
+    for (GLuint iter = 0u; iter < workItemCount; iter++) {
+        GLuint primitive = getenv("MGL_GS_REVERSE_DRAW")
+            ? (workItemCount - 1u - iter) : iter;
+        if (onlyPrim && (GLint)primitive != atoi(onlyPrim)) continue;
+        const char *offOverride = getenv("MGL_GS_DRAW_OFFSET");
         NSUInteger offset =
             ((NSUInteger)primitive * recordsPerPrimitive +
              MGL_AIR_GS_HEADER_RECORDS) * outputStride;
+        if (offOverride) offset = (NSUInteger)atol(offOverride);
+        if (getenv("MGL_GS_VSTART_DRAW")) {
+            /* bisect: bind at 0 and use indirect vertexStart to select the
+             * work item's records (gl_VertexID starts at vertexStart). */
+            static uint32_t *cwStart = NULL;
+            cwStart = (uint32_t *)mglDrawSupportBufferContents(counts);
+            cwStart[primitive * MGL_AIR_GS_COUNTS_RECORD_WORDS + 2] =
+                primitive * (uint32_t)recordsPerPrimitive + 2u;
+            offset = 0u;
+        }
         mglDrawSupportSetVertexBuffer(_renderPassManager.state->currentRenderEncoderOwner, output, offset, 0u);
+        if (getenv("MGL_GS_DIRECT_DRAW")) {
+            const uint32_t *cw2 = (const uint32_t *)mglDrawSupportBufferContents(counts);
+            mglDrawSupportDrawPrimitives(
+                _renderPassManager.state->currentRenderEncoderOwner, outputPrimitive,
+                0u, cw2 ? cw2[primitive * MGL_AIR_GS_COUNTS_RECORD_WORDS] : 0u,
+                1u, 0u);
+        } else if (getenv("MGL_GS_DRAW_VCOUNT")) {
+            mglDrawSupportDrawPrimitives(
+                _renderPassManager.state->currentRenderEncoderOwner, outputPrimitive,
+                0u, (NSUInteger)atol(getenv("MGL_GS_DRAW_VCOUNT")), 1u, 0u);
+        } else
         mglDrawSupportDrawPrimitivesIndirect(
             _renderPassManager.state->currentRenderEncoderOwner, outputPrimitive, counts,
-            (NSUInteger)primitive * countsRecordBytes);
+            (offOverride ? 0u : (NSUInteger)primitive * countsRecordBytes));
+        if (getenv("MGL_GS_DIAG")) {
+            NSLog(@"MGL GS DIAG pre-draw prim=%u enc=%d",
+                  primitive,
+                  (int)mglRenderEncoderOwnerHasCurrent(
+                      _renderPassManager.state->currentRenderEncoderOwner));
+            const float *op = (const float *)((const uint8_t *)mglDrawSupportBufferContents(output) + offset);
+            NSLog(@"MGL GS DIAG draw prim=%u offset=%lu firstRec={%g,%g,%g,%g}",
+                  primitive, (unsigned long)offset,
+                  op[0], op[1], op[2], op[3], 0.0);
+        }
     }
+after_gs_draws:
     _currentCBHasWork = YES;
+    if (getenv("MGL_GPU_CAPTURE")) {
+        [self flushCommandBuffer:YES];
+        [self mglStopCapture];
+        NSLog(@"MGL GPU capture stopped");
+    }
     mglRecordGeometryPrimitiveQueries(
         drawCtx, queryGenerated, queryWritten, xfbActive, queryMeta,
         gsStreamCount, bufferWritten, bufferStride, workItemCount);
@@ -3172,7 +3309,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
                         id capture = [self
                             captureAIRVertexPositionsForGeometryIndexed:drawCtx
                                                             indexBuffer:eboMetal
-                                                              indexType:mglIndexTypeForGLType(indexType)
+                                                              indexType:indexType
                                                             indexOffset:indexOffsetBytes
                                                                   count:count
                                                               baseVertex:baseVertex
