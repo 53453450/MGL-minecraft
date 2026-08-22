@@ -12697,7 +12697,8 @@ static int test_air_geometry_points_grid(unsigned char *pixels,
         "layout(location=0) out vec4 frag;\n"
         "void main() { frag = vec4(gs_fs_color, 1.0); }\n";
     static const float positions[2] = { 0.0f, 0.5f };
-    static const float colors[3] = { 0.25f, 0.5f, 0.75f };
+    static const float colors[12] = { 0.25f, 0.5f, 0.75f, 0.25f, 0.5f, 0.75f,
+                                      0.25f, 0.5f, 0.75f, 0.25f, 0.5f, 0.75f };
 
     GLuint fbo = 0u, color = 0u, vao = 0u, vbo = 0u, vbo_c = 0u, program = 0u;
     int result = 1;
