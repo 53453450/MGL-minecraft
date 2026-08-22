@@ -55,7 +55,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 83
+#define MAX_TESTS 84
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -12882,6 +12882,162 @@ cleanup:
  * one horizontal input line, GS expands it into three line strips
  * (CTS rendering family shape).  Verifies the expanded primitives
  * actually rasterize. */
+/* CTS-derived regressions for GS link/query/XFB-builtin semantics. */
+static int test_gs_link_semantics(unsigned char *pixels,
+                                  const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    int result = 1;
+
+    /* layout(invocations=N) must reach GL_GEOMETRY_SHADER_INVOCATIONS. */
+    {
+        static const char *vs =
+            "#version 460 core\n"
+            "void main() { gl_Position = vec4(1.0); }\n";
+        static const char *gs =
+            "#version 460 core\n"
+            "layout(points, invocations=10) in;\n"
+            "layout(points, max_vertices=1) out;\n"
+            "void main() {\n"
+            "    gl_Position = gl_in[0].gl_Position;\n"
+            "    EmitVertex(); EndPrimitive();\n"
+            "}\n";
+        static const char *fs =
+            "#version 460 core\n"
+            "layout(location=0) out vec4 frag;\n"
+            "void main() { frag = vec4(1.0); }\n";
+        GLuint prog = glCreateProgram();
+        GLuint a = compile_shader(GL_VERTEX_SHADER, vs);
+        GLuint b = compile_shader(GL_GEOMETRY_SHADER, gs);
+        GLuint c = compile_shader(GL_FRAGMENT_SHADER, fs);
+        if (!a || !b || !c) goto invocations_done;
+        glAttachShader(prog, a);
+        glAttachShader(prog, b);
+        glAttachShader(prog, c);
+        glLinkProgram(prog);
+        {
+            GLint ok = 0;
+            GLint inv = -1;
+            glGetProgramiv(prog, GL_LINK_STATUS, &ok);
+            glGetProgramiv(prog, GL_GEOMETRY_SHADER_INVOCATIONS, &inv);
+            if (!ok || inv != 10) {
+                fprintf(stderr,
+                        "gs_link_semantics: invocations query got %d\n",
+                        inv);
+                goto invocations_done;
+            }
+        }
+        result = 0;
+    invocations_done:
+        if (a) glDeleteShader(a);
+        if (b) glDeleteShader(b);
+        if (c) glDeleteShader(c);
+        if (prog) glDeleteProgram(prog);
+    }
+    if (result != 0) return result;
+
+    /* Capturing gl_Position through a GS must write the TF buffer and
+     * count primitives. */
+    {
+        static const char *vs =
+            "#version 460 core\n"
+            "void main() { gl_Position = vec4(1.0); }\n";
+        static const char *gs =
+            "#version 460 core\n"
+            "layout(points) in;\n"
+            "layout(points, max_vertices=8) out;\n"
+            "void main() {\n"
+            "    for (int n = 0; n < 8; ++n) {\n"
+            "        gl_Position = vec4(1.0f / (float(n) + 1.0f), 0.0, 0.0, 1.0);\n"
+            "        EmitVertex();\n"
+            "    }\n"
+            "    EndPrimitive();\n"
+            "}\n";
+        static const char *fs =
+            "#version 460 core\n"
+            "layout(location=0) out vec4 frag;\n"
+            "void main() { frag = vec4(1.0); }\n";
+        GLuint prog = glCreateProgram();
+        GLuint a = compile_shader(GL_VERTEX_SHADER, vs);
+        GLuint b = compile_shader(GL_GEOMETRY_SHADER, gs);
+        GLuint c = compile_shader(GL_FRAGMENT_SHADER, fs);
+        GLuint tfb = 0u, vao = 0u;
+        GLuint query = 0u;
+        if (!a || !b || !c) goto xfb_done;
+        glAttachShader(prog, a);
+        glAttachShader(prog, b);
+        glAttachShader(prog, c);
+        {
+            const char *tfv = "gl_Position";
+            glTransformFeedbackVaryings(prog, 1, &tfv,
+                                        GL_SEPARATE_ATTRIBS);
+        }
+        glLinkProgram(prog);
+        {
+            GLint ok = 0;
+            glGetProgramiv(prog, GL_LINK_STATUS, &ok);
+            if (!ok) {
+                fprintf(stderr,
+                        "gs_link_semantics: gl_Position XFB link failed\n");
+                goto xfb_done;
+            }
+        }
+        glGenVertexArrays(1, &vao);
+        glBindVertexArray(vao);
+        glGenBuffers(1, &tfb);
+        glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, tfb);
+        {
+            GLfloat zeros[32] = {0};
+            glBufferData(GL_TRANSFORM_FEEDBACK_BUFFER, sizeof(zeros),
+                         zeros, GL_STATIC_READ);
+        }
+        glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, tfb);
+        glGenQueries(1, &query);
+        glUseProgram(prog);
+        glBeginTransformFeedback(GL_POINTS);
+        glBeginQuery(GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN, query);
+        glDrawArrays(GL_POINTS, 0, 1);
+        glEndTransformFeedback();
+        glEndQuery(GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN);
+        {
+            GLfloat got[8] = {0};
+            GLuint wval = 0u;
+            glGetQueryObjectuiv(query, GL_QUERY_RESULT, &wval);
+            glGetNamedBufferSubData(tfb, 0, sizeof(got), got);
+            /* One input point fans out to 8 emitted point primitives. */
+            if (wval != 8u) {
+                fprintf(stderr,
+                        "gs_link_semantics: tf written=%u expect 8\n",
+                        wval);
+                result = 5;
+                goto xfb_done;
+            }
+            /* Record n=0 wrote position (1, 0, 0, 1). */
+            if (got[0] != 1.0f || got[3] != 1.0f) {
+                fprintf(stderr,
+                        "gs_link_semantics: tf r0={%.3f %.3f %.3f %.3f}\n",
+                        got[0], got[1], got[2], got[3]);
+                result = 6;
+                goto xfb_done;
+            }
+        }
+        result = 0;
+
+xfb_done:
+        if (query) glDeleteQueries(1, &query);
+        if (tfb) glDeleteBuffers(1, &tfb);
+        if (vao) glDeleteVertexArrays(1, &vao);
+        if (a) glDeleteShader(a);
+        if (b) glDeleteShader(b);
+        if (c) glDeleteShader(c);
+        if (prog) glDeleteProgram(prog);
+    }
+
+cleanup:
+    return result;
+}
+
 static int test_air_geometry_lines_expand(unsigned char *pixels,
                                           const char *out_path)
 {
@@ -13346,6 +13502,7 @@ static const TestCase TESTS[] = {
                     test_framebuffer_cube_layer_slice),
     SELF_CHECK_TEST("air_geometry_points_grid",
                     test_air_geometry_points_grid),
+    SELF_CHECK_TEST("gs_link_semantics", test_gs_link_semantics),
     SELF_CHECK_TEST("air_geometry_lines_expand",
                     test_air_geometry_lines_expand),
     SELF_CHECK_TEST("fs_varying_with_plain_uniform",
