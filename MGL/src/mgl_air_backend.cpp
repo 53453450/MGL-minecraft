@@ -7564,7 +7564,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             llvm::Value *pos = cg.lvalues.count("gl_Position")
                                    ? cg.lvalues["gl_Position"]
                                    : llvm::UndefValue::get(cg.retElems[0]);
-            pos = fixClipZ(cg, pos);
+            /* Raw GL clip space: gl_in consumers and XFB captures of
+             * gl_Position must observe the shader-written z; the Metal
+             * [0,1] depth remap happens where records feed rasterization
+             * (GS EmitVertex / TES stage-out stores). */
             if (!isCullCapture && recTy->isStructTy()) {
                 rec = b.CreateInsertValue(rec, pos, 0);
                 uint32_t ri = 1;
