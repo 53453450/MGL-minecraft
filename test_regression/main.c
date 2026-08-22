@@ -12749,6 +12749,9 @@ static int test_air_geometry_points_grid(unsigned char *pixels,
     int use_r32i_fbo = 0;
     if (getenv("MGL_PG_INTOUT") || getenv("MGL_PG_INTOUT_VSFS")) {
         fbo = make_fbo_r32i(REG_W, REG_H, &color);
+    } else if (getenv("MGL_PG_CTSLINES")) {
+        /* CTS runs in a 256x256 surface with a 45x45 viewport */
+        fbo = make_fbo(256, 256, &color);
     } else {
         fbo = make_fbo(REG_W, REG_H, &color);
     }
@@ -12837,6 +12840,68 @@ static int test_air_geometry_points_grid(unsigned char *pixels,
         snprintf(fsv + strlen(fsv), sizeof(fsv) - strlen(fsv),
                  "  fs_out = sum;\n}\n");
         program = link_program_with_geometry(vsv, gsv, fsv);
+    } else if (getenv("MGL_PG_CTSLINES")) {
+        /* CTS lines_input_line_strip_output_line_strip_drawcall shape */
+        program = link_program_with_geometry(
+            "#version 450 core\n"
+            "layout(location=0) in vec4 position;\n"
+            "uniform ivec2 renderingTargetSize;\n"
+            "out vec4 vs_gs_color[1];\n"
+            "void main() {\n"
+            "    gl_Position = position;\n"
+            "    switch (gl_VertexID) {\n"
+            "        case 0:\n"
+            "        case 4: vs_gs_color[0] = vec4(1, 0, 0, 0); break;\n"
+            "        case 1: vs_gs_color[0] = vec4(0, 1, 0, 0); break;\n"
+            "        case 2: vs_gs_color[0] = vec4(0, 0, 1, 0); break;\n"
+            "        case 3: vs_gs_color[0] = vec4(0, 0, 0, 1); break;\n"
+            "        default: vs_gs_color[0] = vec4(0.0); break;\n"
+            "    }\n"
+            "}\n",
+            "#version 450 core\n"
+            "layout(lines) in;\n"
+            "layout(line_strip, max_vertices=6) out;\n"
+            "in vec4 vs_gs_color[2];\n"
+            "out vec4 gs_fs_color;\n"
+            "uniform ivec2 renderingTargetSize;\n"
+            "void main() {\n"
+            "    float dx = 2.0 / float(renderingTargetSize.x);\n"
+            "    float dy = 2.0 / float(renderingTargetSize.y);\n"
+            "    vec4 start_pos = gl_in[0].gl_Position;\n"
+            "    vec4 end_pos   = gl_in[1].gl_Position;\n"
+            "    vec4 mid_col   = mix(vs_gs_color[0], vs_gs_color[1], 0.5);\n"
+            "    if (start_pos.x != end_pos.x) {\n"
+            "        gl_Position = vec4(-1.0, start_pos.y + dy, 0, 1);\n"
+            "        gs_fs_color = mid_col; EmitVertex();\n"
+            "        gl_Position = vec4(1.0, end_pos.y + dy, 0, 1);\n"
+            "        gs_fs_color = mid_col; EmitVertex(); EndPrimitive();\n"
+            "        gl_Position = vec4(-1.0, start_pos.y, 0, 1);\n"
+            "        gs_fs_color = mid_col; EmitVertex();\n"
+            "        gl_Position = vec4(1.0, end_pos.y, 0, 1);\n"
+            "        gs_fs_color = mid_col; EmitVertex(); EndPrimitive();\n"
+            "        gl_Position = vec4(-1.0, start_pos.y - dy, 0, 1);\n"
+            "        gs_fs_color = mid_col; EmitVertex();\n"
+            "        gl_Position = vec4(1.0, end_pos.y - dy, 0, 1);\n"
+            "        gs_fs_color = mid_col; EmitVertex(); EndPrimitive();\n"
+            "    } else {\n"
+            "        gl_Position = vec4(start_pos.x - dx, start_pos.y, 0, 1);\n"
+            "        gs_fs_color = mid_col; EmitVertex();\n"
+            "        gl_Position = vec4(end_pos.x - dx, end_pos.y, 0, 1);\n"
+            "        gs_fs_color = mid_col; EmitVertex(); EndPrimitive();\n"
+            "        gl_Position = vec4(start_pos.x, start_pos.y, 0, 1);\n"
+            "        gs_fs_color = mid_col; EmitVertex();\n"
+            "        gl_Position = vec4(end_pos.x, end_pos.y, 0, 1);\n"
+            "        gs_fs_color = mid_col; EmitVertex(); EndPrimitive();\n"
+            "        gl_Position = vec4(start_pos.x + dx, start_pos.y, 0, 1);\n"
+            "        gs_fs_color = mid_col; EmitVertex();\n"
+            "        gl_Position = vec4(end_pos.x + dx, end_pos.y, 0, 1);\n"
+            "        gs_fs_color = mid_col; EmitVertex(); EndPrimitive();\n"
+            "    }\n"
+            "}\n",
+            "#version 450 core\n"
+            "layout(location = 0) in vec4 gs_fs_color;\n"
+            "layout(location=0) out vec4 frag;\n"
+                        "void main() { frag = vec4(1.0, 0.0, 0.0, 1.0); }\n");
     } else if (getenv("MGL_PG_NOATTR")) {
         /* same as ONEPT but the VS reads gl_VertexID, no attribute */
         program = link_program_with_geometry(
@@ -12892,11 +12957,68 @@ static int test_air_geometry_points_grid(unsigned char *pixels,
                  GL_STATIC_DRAW);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
+    if (getenv("MGL_PG_CTSLINES")) {
+        float cts_pos[8 * 4];
+        for (int n = 0; n < 8; n++) {
+            cts_pos[n * 4 + 0] =
+                -1.0f + (((float)(3 + 7 * n)) + 0.5f) / 45.0f * 2.0f;
+            cts_pos[n * 4 + 1] = -1.0f + (3.5f / 45.0f) * 2.0f;
+            cts_pos[n * 4 + 2] = 0.0f;
+            cts_pos[n * 4 + 3] = 1.0f;
+        }
+        glBufferData(GL_ARRAY_BUFFER, sizeof(cts_pos), cts_pos,
+                     GL_STATIC_DRAW);
+        glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 0, (void *)0);
+        glDisableVertexAttribArray(1);
+    } else {
     glGenBuffers(1, &vbo_c);
     glBindBuffer(GL_ARRAY_BUFFER, vbo_c);
     glBufferData(GL_ARRAY_BUFFER, sizeof(colors), colors, GL_STATIC_DRAW);
     glEnableVertexAttribArray(1);
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 0, (void *)0);
+    }
+    if (getenv("MGL_PG_CTSLINES")) {
+        glUseProgram(program);
+        glUniform2i(glGetUniformLocation(program, "renderingTargetSize"),
+                    45, 45);
+        glViewport(0, 0, 45, 45);
+        glDrawArrays(GL_LINE_STRIP, 0, 8);
+        glFinish();
+        unsigned char px[45 * 45 * 4];
+        memset(px, 0, sizeof(px));
+        glReadPixels(0, 0, 45, 45, GL_RGBA, GL_UNSIGNED_BYTE, px);
+        int lit = 0, lit_a = 0, first = -1;
+        for (int i = 0; i < 45 * 45; i++) {
+            if (px[i * 4] || px[i * 4 + 1] || px[i * 4 + 2]) {
+                lit++;
+                if (first < 0) first = i;
+            }
+            if (px[i * 4 + 3] && (i % 7 == 0)) lit_a++;
+        }
+        fprintf(stderr,
+                "cts_lines_shape: lit=%d lit_a~%d first=%d "
+                "rgba=%d,%d,%d,%d\n",
+                lit, lit_a, first,
+                first >= 0 ? px[first * 4] : px[0],
+                first >= 0 ? px[first * 4 + 1] : px[1],
+                first >= 0 ? px[first * 4 + 2] : px[2],
+                first >= 0 ? px[first * 4 + 3] : px[3]);
+        {
+            /* per-column lit histogram across all rows */
+            int colhit[45] = {0};
+            for (int yy = 0; yy < 45; yy++)
+                for (int xx = 0; xx < 45; xx++) {
+                    const unsigned char *q = &px[(yy * 45 + xx) * 4];
+                    if (q[0] || q[1] || q[2]) colhit[xx]++;
+                }
+            fprintf(stderr, "cols:");
+            for (int xx = 0; xx < 45; xx++)
+                fprintf(stderr, " %d", colhit[xx]);
+            fprintf(stderr, "\n");
+        }
+        result = 0;
+        goto cleanup;
+    }
     glUseProgram(program);
     glUniform2i(glGetUniformLocation(program, "renderingTargetSize"),
                 REG_W, REG_H);
@@ -13313,11 +13435,17 @@ static int test_air_geometry_lines_expand(unsigned char *pixels,
         "    EndPrimitive();\n"
         "  }\n"
         "}\n";
-    static const char *fs =
+    static const char *fs_le_a =
         "#version 450 core\n"
         "layout(location=0) in vec4 gs_fs_color;\n"
         "layout(location=0) out vec4 frag;\n"
         "void main() { frag = gs_fs_color; }\n";
+    static const char *fs_le_v3 =
+        "#version 450 core\n"
+        "layout(location=0) in vec3 gs_fs_color;\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(gs_fs_color, 1.0); }\n";
+    const char *fs = getenv("MGL_LE_FS_V3") ? fs_le_v3 : fs_le_a;
     static const float positions[4] = { -0.5f, 0.5f, 0.5f, 0.5f };
     static const float colors[8] = { 0.1f, 0.2f, 0.3f, 0.4f,
                                      0.1f, 0.2f, 0.3f, 0.4f };
