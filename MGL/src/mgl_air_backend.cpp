@@ -5303,6 +5303,13 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
 
         std::map<std::string, llvm::Value *> elseL;
         if (bbElse) {
+            /* Restart from the pre-if values: branch bodies are mutually
+             * exclusive, so a value computed inside the then branch (a phi
+             * in a then-side merge block) does not dominate the else side.
+             * Letting the else body see it produced phi operands on
+             * non-dominating edges -- invalid IR that crashed the AGX
+             * compiler (MTLCompilerService SIGSEGV). */
+            cg.lvalues = snap;
             cg.err = 0;
             cg.b->SetInsertPoint(bbElse);
             emitStmt(cg, st->u.ifs.else_, mod, locals);
