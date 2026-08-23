@@ -467,10 +467,21 @@ typedef struct MGLAIRGSGatherParams {
     uint32_t primitives_per_instance; /* primitives per instance            */
     uint32_t first_vertex;            /* capture firstVertex (0 for indexed)*/
     uint32_t gather_enabled;          /* 0 = array path, 1 = indexed path   */
+    uint32_t stage_in_stride;         /* bytes between captured records. The
+                                      * capture writes one record per VS
+                                      * output varying slot, so its layout
+                                      * comes from the *vertex* stage's
+                                      * output list and can be wider than
+                                      * what this GS declares as inputs. */
+    /* Map this GS's declared input varying locations to the capture
+     * record offsets the vertex stage actually used (index = GS input
+     * location, value = capture offset / 16).  0 marks an unmapped slot
+     * and falls back to the identity mapping. */
+    uint32_t loc_map[32];
 } MGLAIRGSGatherParams;
 
-MGL_AIR_STATIC_ASSERT(sizeof(MGLAIRGSGatherParams) == 16u,
-                      "GS gather params is four 32-bit words");
+MGL_AIR_STATIC_ASSERT(sizeof(MGLAIRGSGatherParams) == 148u,
+                      "GS gather params is stride word plus a 32-entry map");
 MGL_AIR_STATIC_ASSERT(offsetof(MGLAIRGSGatherParams, vertices_per_instance) == 0u,
                       "vertices_per_instance must lead the params");
 MGL_AIR_STATIC_ASSERT(MGL_AIR_GS_SLOT_GATHER == 30u,

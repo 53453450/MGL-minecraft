@@ -1624,10 +1624,59 @@ static llvm::Value *emitTessStageArrayLoad(
         record = tessStageRecordIndex(cg, index, true);
         base = cg.stageInPtr;
     }
+    llvm::Value *stride = nullptr;
+    if (cg.isGeometry && cg.geometryGatherParamsPtr) {
+        /* The capture writes one record per *vertex-stage* output varying
+         * slot, so the record span comes from the VS output list and can
+         * be wider than this GS's declared inputs (e.g. a flat
+         * instance_id the GS never consumes).  The renderer publishes the
+         * real capture stride in gather params word 4. */
+        llvm::Type *i32ty = llvm::Type::getInt32Ty(*cg.ctx);
+        stride = cg.b->CreateAlignedLoad(
+            i32ty,
+            cg.b->CreateGEP(i32ty,
+                            cg.b->CreateBitCast(cg.geometryGatherParamsPtr,
+                                                i32ty->getPointerTo(1)),
+                            cg.b->getInt32(4)),
+            llvm::Align(4));
+    } else {
+        stride = cg.b->getInt32(cg.stageInStride);
+    }
+    llvm::Value *varyOff = nullptr;
+    if (cg.isGeometry && cg.geometryGatherParamsPtr &&
+        sym->location < 32u) {
+        /* The capture lays records out by the *vertex* stage's output
+         * locations, which need not match this GS's input locations (a
+         * flat helper output like instance_id shifts every later slot).
+         * The renderer publishes the per-location map in the gather
+         * params (word 5 + location); 0 marks unmapped and falls back to
+         * the identity mapping. */
+        llvm::Type *i32ty = llvm::Type::getInt32Ty(*cg.ctx);
+        llvm::Value *mapped = cg.b->CreateAlignedLoad(
+            i32ty,
+            cg.b->CreateGEP(i32ty,
+                            cg.b->CreateBitCast(cg.geometryGatherParamsPtr,
+                                                i32ty->getPointerTo(1)),
+                            cg.b->getInt32(5 + (int)sym->location)),
+            llvm::Align(4));
+        /* renderer stores vs_loc + 1; 0 marks unmapped and falls back to
+         * the identity mapping. */
+        mapped = cg.b->CreateSelect(
+            cg.b->CreateICmpEQ(mapped, cg.b->getInt32(0)),
+            cg.b->getInt32(sym->location),
+            cg.b->CreateSub(mapped, cg.b->getInt32(1)));
+        varyOff = cg.b->CreateAdd(
+            cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE),
+            cg.b->CreateMul(cg.b->CreateZExt(mapped, cg.b->getInt64Ty()),
+                            cg.b->getInt64(16u)));
+    } else {
+        varyOff = cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE +
+                                 sym->location * 16u);
+    }
     llvm::Value *off = cg.b->CreateAdd(
         cg.b->CreateMul(cg.b->CreateZExt(record, cg.b->getInt64Ty()),
-                        cg.b->getInt64(cg.stageInStride)),
-        cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE + sym->location * 16u));
+                        cg.b->CreateZExt(stride, cg.b->getInt64Ty())),
+        varyOff);
     llvm::Type *ty = llvmType(sym->type, *cg.ctx);
     llvm::Value *p = cg.b->CreateGEP(cg.b->getInt8Ty(), base, off);
     p = cg.b->CreateBitCast(p, ty->getPointerTo(1));
@@ -1690,9 +1739,24 @@ static llvm::Value *emitPerVertexLoad(Codegen &cg, const MGLExpr *e,
         }
         iv = coerceScalar(cg, iv, MGLIR_SCALAR_UINT);
         llvm::Value *record = geometryInputRecordIndex(cg, iv);
+        llvm::Value *stride = nullptr;
+        if (cg.geometryGatherParamsPtr) {
+            /* Runtime capture stride from gather params word 4; see
+             * emitTessStageArrayLoad for why this cannot be a constant. */
+            llvm::Type *i32ty = llvm::Type::getInt32Ty(*cg.ctx);
+            stride = cg.b->CreateAlignedLoad(
+                i32ty,
+                cg.b->CreateGEP(i32ty,
+                                cg.b->CreateBitCast(cg.geometryGatherParamsPtr,
+                                                    i32ty->getPointerTo(1)),
+                                cg.b->getInt32(4)),
+                llvm::Align(4));
+        } else {
+            stride = cg.b->getInt32(cg.stageInStride);
+        }
         llvm::Value *off = cg.b->CreateMul(
             cg.b->CreateZExt(record, cg.b->getInt64Ty()),
-            cg.b->getInt64(cg.stageInStride));
+            cg.b->CreateZExt(stride, cg.b->getInt64Ty()));
         off = cg.b->CreateAdd(off,
                               cg.b->getInt64(perVertexFieldOffset(field)));
         llvm::Value *p = cg.b->CreateGEP(cg.b->getInt8Ty(),

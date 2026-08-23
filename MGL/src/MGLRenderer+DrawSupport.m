@@ -1107,6 +1107,11 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     };
     mglDrawSupportSetVertexBytes(
         _renderPassManager.state->currentRenderEncoderOwner, captureParams, sizeof(captureParams), 28u);
+    if (getenv("MGL_GS_DIAG")) {
+        NSLog(@"MGL GS DIAG capture-draw POINT first=%d count=%d instances=%d baseInst=%u stride=%lu size=%lu",
+              (int)first, (int)count, (int)instanceCount, baseInstance,
+              (unsigned long)captureStride, (unsigned long)captureSize);
+    }
     mglDrawSupportDrawPrimitives(_renderPassManager.state->currentRenderEncoderOwner, MGL_DRAW_PRIMITIVE_POINT,
                                  (NSUInteger)first, (NSUInteger)count,
                                  (NSUInteger)instanceCount,
@@ -1485,6 +1490,86 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         drawCtx->state.dirty_bits = DIRTY_ALL;
         return YES;
     }
+    /* Publish the capture record stride the kernels must use when walking
+     * gl_in records.  The capture writes one record per *vertex-stage*
+     * output varying slot, so its layout comes from the VS output list and
+     * can be wider than what this GS declares as inputs (e.g. a flat
+     * instance_id the GS never reads).  A stride mismatch made every
+     * gl_in[N>0] read land inside the wrong record. */
+    Program *captureVS = mglResolveProgramForStageFromState(drawCtx, _VERTEX_SHADER);
+    if (captureVS) {
+        gparams.stage_in_stride =
+            mglAIRPerVertexStrideForResources(
+                &captureVS->shader_resources_list[_VERTEX_SHADER]
+                                                 [_STAGE_OUTPUT_RES]);
+    }
+    if (getenv("MGL_GS_STRIDE_FORCE"))
+        gparams.stage_in_stride =
+            (uint32_t)atol(getenv("MGL_GS_STRIDE_FORCE"));
+    /* Publish the GS-input -> capture-offset location map.  The capture
+     * lays records out by the *vertex* stage's output locations; a VS
+     * output the GS never declares (a flat helper like instance_id) shifts
+     * every later slot, so reading by the GS's own locations lands in the
+     * wrong fields.  loc_map[gs_loc] = vs_loc + 1; 0 falls back to
+     * identity inside the kernel. */
+    {
+        memset(gparams.loc_map, 0, sizeof(gparams.loc_map));
+        const MGLShaderResourceList *gsInputs =
+            &program->shader_resources_list[_GEOMETRY_SHADER][_STAGE_INPUT_RES];
+        const MGLShaderResourceList *vsOutputs =
+            captureVS ? &captureVS->shader_resources_list[_VERTEX_SHADER]
+                                                        [_STAGE_OUTPUT_RES]
+                      : NULL;
+        for (GLuint gi = 0u;
+             gsInputs && vsOutputs && gsInputs->list && gi < gsInputs->count;
+             gi++) {
+            const MGLShaderResource *in = &gsInputs->list[gi];
+            if (in->is_per_patch || !in->name || in->location >= 32u)
+                continue;
+            GLuint nameLen = (GLuint)strlen(in->name);
+            const char *bracket = strchr(in->name, '[');
+            if (bracket) nameLen = (GLuint)(bracket - in->name);
+            for (GLuint vi = 0u; vi < vsOutputs->count && vsOutputs->list;
+                 vi++) {
+                const MGLShaderResource *out = &vsOutputs->list[vi];
+                if (out->is_per_patch || !out->name)
+                    continue;
+                GLuint outLen = (GLuint)strlen(out->name);
+                const char *ob = strchr(out->name, '[');
+                if (ob) outLen = (GLuint)(ob - out->name);
+                if (nameLen == outLen &&
+                    strncmp(in->name, out->name, nameLen) == 0) {
+                    gparams.loc_map[in->location] = out->location + 1u;
+                    break;
+                }
+            }
+        }
+    }
+    if (getenv("MGL_GS_DIAG")) {
+        const MGLShaderResourceList *gsIn2 =
+            &program->shader_resources_list[_GEOMETRY_SHADER][_STAGE_INPUT_RES];
+        const MGLShaderResourceList *vsOut2 =
+            captureVS ? &captureVS->shader_resources_list[_VERTEX_SHADER]
+                                                        [_STAGE_OUTPUT_RES]
+                      : NULL;
+        for (GLuint gi2 = 0u; gsIn2 && gsIn2->list && gi2 < gsIn2->count; gi2++)
+            NSLog(@"MGL GS DIAG gsIn[%u] name=%s loc=%u active=%d",
+                  gi2, gsIn2->list[gi2].name ?: "?",
+                  gsIn2->list[gi2].location,
+                  (int)gsIn2->list[gi2].resource_active);
+        for (GLuint vi2 = 0u; vsOut2 && vsOut2->list && vi2 < vsOut2->count; vi2++)
+            NSLog(@"MGL GS DIAG vsOut[%u] name=%s loc=%u active=%d",
+                  vi2, vsOut2->list[vi2].name ?: "?",
+                  vsOut2->list[vi2].location,
+                  (int)vsOut2->list[vi2].resource_active);
+    }
+    if (getenv("MGL_GS_DIAG"))
+        NSLog(@"MGL GS DIAG gparams={%u,%u,%u,%u,%u} loc_map[0..3]={%u,%u,%u,%u}",
+              gparams.vertices_per_instance, gparams.primitives_per_instance,
+              gparams.first_vertex, gparams.gather_enabled,
+              gparams.stage_in_stride,
+              gparams.loc_map[0], gparams.loc_map[1],
+              gparams.loc_map[2], gparams.loc_map[3]);
     void *pipelineHandle = NULL;
     char pipelineError[512] = {0};
     int pipelineResult = mglGetOrCreateProgramComputePipeline(
@@ -2412,7 +2497,19 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
                 primitive * (uint32_t)recordsPerPrimitive + 2u;
             offset = 0u;
         }
-        mglDrawSupportSetVertexBuffer(_renderPassManager.state->currentRenderEncoderOwner, output, offset, 0u);
+        id ptvsSource = output;
+        NSUInteger ptvsOffset = offset;
+        if (getenv("MGL_GS_BIND_INPUT")) {
+            /* Diagnostic: point the passthrough VS at the capture buffer
+             * instead of the kernel output so the rendered image shows
+             * what the GPU actually wrote per input vertex.  An explicit
+             * MGL_GS_DRAW_OFFSET still wins, for byte-range scans. */
+            ptvsSource = input;
+            if (!getenv("MGL_GS_DRAW_OFFSET"))
+                ptvsOffset = inputOffset;
+            offset = 0u;
+        }
+        mglDrawSupportSetVertexBuffer(_renderPassManager.state->currentRenderEncoderOwner, ptvsSource, ptvsOffset, 0u);
         if (getenv("MGL_GS_DIRECT_DRAW")) {
             const uint32_t *cw2 = (const uint32_t *)mglDrawSupportBufferContents(counts);
             mglDrawSupportDrawPrimitives(
@@ -2439,6 +2536,41 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         }
     }
 after_gs_draws:
+    if (getenv("MGL_GS_POST_DIAG")) {
+        /* Dump the output records after the frame's GPU work completes
+         * (the caller's glFinish/ReadPixels drains the encoders), so the
+         * CPU view reflects what the rasterizing draws actually read. */
+        [self flushCommandBuffer:YES];
+        const uint8_t *outBytes =
+            (const uint8_t *)mglDrawSupportBufferContents(output);
+        NSLog(@"MGL GS POST-DIAG outputStride=%lu recordsPerPrim=%lu",
+              (unsigned long)outputStride, (unsigned long)recordsPerPrimitive);
+        if (input) {
+            const uint8_t *inBytes =
+                (const uint8_t *)mglDrawSupportBufferContents(input);
+            NSUInteger inStride = mglAIRPerVertexStrideForResources(
+                &program->shader_resources_list[_VERTEX_SHADER][_STAGE_OUTPUT_RES]);
+            for (GLuint vtx = 0u; vtx < MIN((GLuint)count, 6u); vtx++) {
+                const float *p = (const float *)(inBytes +
+                    (NSUInteger)(vtx + (GLuint)first) * inStride);
+                NSLog(@"MGL GS POST-DIAG in.cap[%u] pos={%g,%g,%g,%g} vary@64={%g,%g,%g,%g} @80={%g,%g,%g,%g}",
+                      (unsigned)(vtx + (GLuint)first),
+                      p[0], p[1], p[2], p[3], p[16], p[17], p[18], p[19],
+                      p[20], p[21], p[22], p[23]);
+            }
+        }
+        for (GLuint wi = 0u; wi < MIN(workItemCount, 4u); wi++) {
+            for (GLuint rec = 0u; rec < MIN(recordsPerPrimitive, 9u); rec++) {
+                const float *p = (const float *)(outBytes +
+                    ((NSUInteger)wi * recordsPerPrimitive + rec) * outputStride);
+                NSLog(@"MGL GS POST-DIAG out[%u].rec[%u] pos={%g,%g,%g,%g} ps=%g cull=%g,%g vary={%g,%g,%g,%g}",
+                      (unsigned)wi, (unsigned)rec,
+                      p[0], p[1], p[2], p[3],
+                      p[4], p[5], p[6],
+                      p[16], p[17], p[18], p[19]);
+            }
+        }
+    }
     _currentCBHasWork = YES;
     if (getenv("MGL_GPU_CAPTURE")) {
         [self flushCommandBuffer:YES];

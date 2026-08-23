@@ -714,6 +714,44 @@ static GLenum mglPassthroughDeclType(
          "    int mgl_base = gl_VertexID * %lu;\n"
          "    gl_Position = mgl_gs_output.records[mgl_base];\n",
          (unsigned long)vec4Stride];
+    if (getenv("MGL_GS_PROBE")) {
+        /* Pixel probe: R = vertex id, G = GPU-read position.y remapped,
+         * B = GPU-read varying.r.  Renders the real positions so the
+         * geometry stays identifiable. */
+        [source appendString:
+            @"    vec4 mgl_probe_pos = mgl_gs_output.records[mgl_base];\n"
+             "    vec4 mgl_probe_col = mgl_gs_output.records[mgl_base + 4];\n"
+             "    gl_Position = mgl_probe_pos;\n"
+             "    gs_fs_color = vec4(float(gl_VertexID) / 6.0,\n"
+             "                        mgl_probe_pos.y * 0.5 + 0.5,\n"
+             "                        abs(mgl_probe_col.r), 1.0);\n"
+             "    return;\n"];
+    }
+    if (getenv("MGL_GS_PROBE_VID")) {
+        /* Probe 2: ignore the SSBO entirely; geometry is derived from
+         * gl_VertexID alone (six points spread horizontally at mid
+         * height).  Correct render => vertex ids / draw are sane and the
+         * defect is in the SSBO read path. */
+        [source appendString:
+            @"    float mgl_vid = float(gl_VertexID);\n"
+             "    gl_Position = vec4(mgl_vid / 3.0 - 1.0, 0.25, 0.0, 1.0);\n"
+             "    gs_fs_color = vec4(mgl_vid / 6.0, 1.0, 0.0, 1.0);\n"
+             "    return;\n"];
+    }
+    if (getenv("MGL_GS_PROBE_WAVE")) {
+        /* Probe 3: oscilloscope.  Vertex x is fixed by vid; the polyline
+         * y traces records[mgl_base].x as read on the GPU, and color
+         * carries .y/.z/.w.  One render reconstructs every slot the
+         * passthrough VS actually sees. */
+        [source appendString:
+            @"    float mgl_vid = float(gl_VertexID);\n"
+             "    vec4 mgl_p0 = mgl_gs_output.records[mgl_base];\n"
+             "    gl_Position = vec4(mgl_vid / 3.0 - 1.0, mgl_p0.x, 0.0, 1.0);\n"
+             "    gs_fs_color = vec4(mgl_p0.y * 0.5 + 0.5,\n"
+             "                       mgl_p0.z * 0.5 + 0.5,\n"
+             "                       mgl_p0.w * 0.5 + 0.5, 1.0);\n"
+             "    return;\n"];
+    }
     Shader *mgl_gs = program->shader_slots[_GEOMETRY_SHADER];
     if (mgl_gs && mgl_gs->src &&
         (strstr(mgl_gs->src, "gl_Layer") ||
