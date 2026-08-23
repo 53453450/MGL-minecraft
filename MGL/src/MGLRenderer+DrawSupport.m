@@ -178,9 +178,11 @@ static bool mglGeometryGatherTopology(const uint8_t *indexBytes,
                     primitives++;                                               \
                 }                                                                  \
             } else if (mode == GL_LINE_STRIP_ADJACENCY) {                       \
-                /* Each line uses two adjacent vertices on either side of      \
-                 * the central line and the next primitive advances by two. */  \
-                for (uint32_t q = 0u; q + 3u < segmentCount; q += 2u) {         \
+                /* Each lines_adjacency primitive is the four vertices          \
+                 * starting at its first member; GL 4.6 10.4.2.2 strips        \
+                 * adjacency advance by ONE vertex per primitive (a            \
+                 * two-vertex stride halves the emitted lines). */              \
+                for (uint32_t q = 0u; q + 3u < segmentCount; q++) {             \
                     for (uint32_t k = 0u; k < 4u; k++)                           \
                         EMIT(segment[q + k]);                                   \
                     primitives++;                                               \
