@@ -685,11 +685,18 @@ static GLenum mglPassthroughDeclType(
     const MGLShaderResourceList *fsInputs =
         &program->shader_resources_list[_FRAGMENT_SHADER][_STAGE_INPUT_RES];
 
+    BOOL hasPointSize = NO;
     for (GLuint i = 0; outputs->list && i < outputs->count; i++) {
         MGLShaderResource *output = &outputs->list[i];
         if (output->is_per_patch) continue;
 
         if (output->stream > 0) continue;
+        /* gl_PointSize is a built-in: it cannot carry a layout(location)
+         * redeclaration.  The kernel parks it in slot 1.x; main() only
+         * forwards it when the GS actually declared it, because the
+         * pipeline builder rejects a vertex stage that writes point size
+         * on a Line/Triangle topology. */
+        if (strcmp(output->name, "gl_PointSize") == 0) hasPointSize = YES;
         if (getenv("MGL_DUMP_AIR"))
             fprintf(stderr,
                     "MGL PTVS varying: name=%s gl_type=0x%x loc=%u\n",
@@ -714,6 +721,16 @@ static GLenum mglPassthroughDeclType(
          "    int mgl_base = gl_VertexID * %lu;\n"
          "    gl_Position = mgl_gs_output.records[mgl_base];\n",
          (unsigned long)vec4Stride];
+    if (hasPointSize) {
+        /* Forward the kernel's point size (slot 1.x).  Only emitted when
+         * the GS declared gl_PointSize -- the pipeline builder rejects a
+         * vertex stage writing point size on a Line/Triangle topology.
+         * Two-step load: the frontend rejects a member access directly on
+         * an SSBO array element. */
+        [source appendString:
+            @"    vec4 mgl_point_size = mgl_gs_output.records[mgl_base + 1];\n"
+             "    gl_PointSize = mgl_point_size.x;\n"];
+    }
     if (getenv("MGL_GS_PROBE")) {
         /* Pixel probe: R = vertex id, G = GPU-read position.y remapped,
          * B = GPU-read varying.r.  Renders the real positions so the
