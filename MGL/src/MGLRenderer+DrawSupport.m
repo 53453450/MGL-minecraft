@@ -207,9 +207,17 @@ static bool mglGeometryGatherTopology(const uint8_t *indexBytes,
                 }                                                                  \
             } else if (mode == GL_TRIANGLE_STRIP) {                             \
                 for (uint32_t q = 0u; q + 2u < segmentCount; q++) {             \
-                    EMIT(segment[q]); EMIT(segment[q + 1u]); EMIT(segment[q + 2u]); \
+                    /* GL 4.6 10.4.2.2: odd strip triangles swap their first    \
+                     * two vertices so every triangle keeps one winding; the    \
+                     * geometry shader must see the swapped order too. */       \
+                    if (q & 1u) {                                               \
+                        EMIT(segment[q + 1u]); EMIT(segment[q]);                \
+                    } else {                                                    \
+                        EMIT(segment[q]); EMIT(segment[q + 1u]);                \
+                    }                                                           \
+                    EMIT(segment[q + 2u]);                                      \
                     primitives++;                                               \
-                }                                                                  \
+                }                                                               \
             } else if (mode == GL_TRIANGLE_FAN) {                               \
                 for (uint32_t q = 1u; q + 1u < segmentCount; q++) {             \
                     EMIT(segment[0u]); EMIT(segment[q]); EMIT(segment[q + 1u]); \
