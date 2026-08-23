@@ -1164,6 +1164,22 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
                 capture_err, sizeof capture_err) == 0) {
             pptr->modules[stage].metallib_tess_capture_bytes = capture_bytes;
             pptr->modules[stage].metallib_tess_capture_size = capture_size;
+            if (getenv("MGL_DUMP_AIR")) {
+                FILE *f = fopen("/tmp/poison_capvar.air", "wb");
+                if (f) {
+                    fwrite(capture_bytes, 1, capture_size, f);
+                    fclose(f);
+                    FILE *fsrc =
+                        fopen("/tmp/poison_capvar_src.glsl", "wb");
+                    if (fsrc) {
+                        fwrite(shader->src, 1, strlen(shader->src), fsrc);
+                        fclose(fsrc);
+                    }
+                    fprintf(stderr,
+                            "MGL DUMP: capvar.air %zu bytes\n",
+                            capture_size);
+                }
+            }
         } else {
             fprintf(stderr,
                     "MGL WARNING: AIR tess VS capture compile failed "
