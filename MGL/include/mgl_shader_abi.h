@@ -102,14 +102,51 @@ enum {
     MGL_AIR_PER_VERTEX_STRIDE = 64,
 };
 
+/* Byte layout of one per-vertex record.  The kernel and the renderer
+ * address every field through the MGL_AIR_PER_VERTEX_* offsets above;
+ * this struct mirrors those constants for documentation and static
+ * checking.
+ *
+ * cull_distance[5]/[6]/[7] share their bytes with layer /
+ * viewport_index / stream: the three built-ins are stored only for
+ * shaders that use them, and such shaders never also emit six or more
+ * cull distances, so the overlap cannot corrupt live data. */
 typedef struct MGLAIRPerVertexRecord {
-    float position[4];
-    float point_size;
-    float cull_distance[MGL_AIR_PER_VERTEX_CULL_DISTANCE_COUNT];
-    int32_t layer;
-    int32_t viewport_index;
-    uint32_t reserved;
+    float position[4];          /* @0                                    */
+    float point_size;           /* @16                                   */
+    float cull_distance_lo[5];  /* @20 .. @39                            */
+    int32_t layer;              /* @40  aliases cull_distance[5]         */
+    int32_t viewport_index;     /* @44  aliases cull_distance[6]         */
+    uint32_t stream;            /* @48  aliases cull_distance[7]         */
+    float cull_distance_hi[3];  /* @52 .. @63                            */
 } MGLAIRPerVertexRecord;
+
+#include <stddef.h>
+#if defined(__cplusplus)
+#define MGL_AIR_VA_STATIC_ASSERT(c, m) static_assert(c, m)
+#else
+#define MGL_AIR_VA_STATIC_ASSERT(c, m) _Static_assert(c, m)
+#endif
+MGL_AIR_VA_STATIC_ASSERT(offsetof(MGLAIRPerVertexRecord, position) ==
+                  MGL_AIR_PER_VERTEX_POSITION_OFFSET,
+              "position offset drift");
+MGL_AIR_VA_STATIC_ASSERT(offsetof(MGLAIRPerVertexRecord, point_size) ==
+                  MGL_AIR_PER_VERTEX_POINT_SIZE_OFFSET,
+              "point_size offset drift");
+MGL_AIR_VA_STATIC_ASSERT(offsetof(MGLAIRPerVertexRecord, cull_distance_lo) ==
+                  MGL_AIR_PER_VERTEX_CULL_DISTANCE_OFFSET,
+              "cull_distance offset drift");
+MGL_AIR_VA_STATIC_ASSERT(offsetof(MGLAIRPerVertexRecord, layer) ==
+                  MGL_AIR_PER_VERTEX_LAYER_OFFSET,
+              "layer offset must match the kernel's store offset");
+MGL_AIR_VA_STATIC_ASSERT(offsetof(MGLAIRPerVertexRecord, viewport_index) ==
+                  MGL_AIR_PER_VERTEX_VIEWPORT_INDEX_OFFSET,
+              "viewport_index offset must match the kernel's store offset");
+MGL_AIR_VA_STATIC_ASSERT(offsetof(MGLAIRPerVertexRecord, stream) ==
+                  MGL_AIR_PER_VERTEX_STREAM_OFFSET,
+              "stream offset must match the kernel's stamp offset");
+MGL_AIR_VA_STATIC_ASSERT(sizeof(MGLAIRPerVertexRecord) == MGL_AIR_PER_VERTEX_STRIDE,
+              "record size drift");
 
 static inline uint32_t mglAIRPerVertexStrideForResources(
     const MGLShaderResourceList *resources)
