@@ -2087,6 +2087,14 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
                 break;
             }
 
+            /* GL_COLOR_ATTACHMENTi spellings beyond the implementation
+             * limit raise INVALID_OPERATION on this entry point (GL 4.6
+             * 9.2); non-color enums stay INVALID_ENUM. */
+            if (attachment >= GL_COLOR_ATTACHMENT0)
+            {
+                ERROR_RETURN(GL_INVALID_OPERATION);
+                return;
+            }
             fprintf(stderr,
                     "MGL ERROR: framebufferTexture invalid attachment=0x%x maxColor=%u target=0x%x texture=%u textarget=0x%x level=%d\n",
                     attachment,
@@ -2120,6 +2128,16 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
         if (effective_textarget == GL_NONE && tex)
         {
             effective_textarget = tex->target;
+        }
+
+        if (texture && !tex && textarget == GL_NONE)
+        {
+            /* glFramebufferTexture / glNamedFramebufferTexture require an
+             * existing texture object when texture is nonzero (GL 4.6
+             * 9.2).  The 1D/2D/3D entry points keep their legacy
+             * by-name placeholder behaviour above. */
+            STATE(error) = GL_INVALID_VALUE;
+            return;
         }
 
         if (effective_textarget == GL_TEXTURE_BUFFER ||
