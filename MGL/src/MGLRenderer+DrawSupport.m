@@ -188,13 +188,36 @@ static bool mglGeometryGatherTopology(const uint8_t *indexBytes,
                     primitives++;                                               \
                 }                                                                  \
             } else if (mode == GL_TRIANGLE_STRIP_ADJACENCY) {                   \
-                /* Triangle-strip adjacency has the same two-vertex stride,  \
-                 * with a six-vertex window for each triangle. */               \
-                for (uint32_t q = 0u; q + 5u < segmentCount; q += 2u) {         \
-                    for (uint32_t k = 0u; k < 6u; k++)                           \
-                        EMIT(segment[q + k]);                                   \
+                /* GL 4.6 10.1.14 + table 10.1: each triangles_adjacency   \
+                 * primitive takes a six-vertex window, but its adjacency \
+                 * vertices reach outside that window (even triangles     \
+                 * borrow the previous window's first vertex, odd ones    \
+                 * the next window's), and odd triangles swap their first \
+                 * two core vertices.  Emit the exact gl_in order. */     \
+                uint32_t tri = 0u;                                              \
+                for (uint32_t q = 0u; q + 5u < segmentCount; q += 2u, tri++) {  \
+                    uint32_t last = (q + 6u >= segmentCount);                   \
+                    if (tri == 0u) {                                            \
+                        /* first: core 1,3,5; adj 2,7,4 */                      \
+                        EMIT(segment[q]); EMIT(segment[q + 1u]);                \
+                        EMIT(segment[q + 2u]);                                  \
+                        EMIT(last ? segment[q + 5u] : segment[q + 6u]);         \
+                        EMIT(segment[q + 4u]); EMIT(segment[q + 3u]);           \
+                    } else if (tri & 1u) {                                      \
+                        /* odd: core 2i+3,2i+1,2i+5; adj 2i-1,2i+4,2i+7 */      \
+                        EMIT(segment[q + 2u]); EMIT(segment[q - 2u]);           \
+                        EMIT(segment[q]);                                       \
+                        EMIT(segment[q + 3u]); EMIT(segment[q + 4u]);           \
+                        EMIT(last ? segment[q + 5u] : segment[q + 6u]);         \
+                    } else {                                                    \
+                        /* even: core 2i+1,2i+3,2i+5; adj 2i-1,2i+6,2i+4 */     \
+                        EMIT(segment[q]); EMIT(segment[q - 2u]);                \
+                        EMIT(segment[q + 2u]);                                  \
+                        EMIT(last ? segment[q + 5u] : segment[q + 6u]);         \
+                        EMIT(segment[q + 4u]); EMIT(segment[q + 3u]);           \
+                    }                                                           \
                     primitives++;                                               \
-                }                                                                  \
+                }                                                               \
             } else if (mode == GL_LINE_STRIP) {                                \
                 for (uint32_t q = 0u; q + 1u < segmentCount; q++) {            \
                     EMIT(segment[q]); EMIT(segment[q + 1u]); primitives++;     \
