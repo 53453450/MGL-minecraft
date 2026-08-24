@@ -5801,25 +5801,43 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
         cg.breakStack.pop_back();
 
         cg.b->SetInsertPoint(bbEnd);
-        for (auto &kv : snap) {
-            llvm::Value *v = kv.second;
+        /* Merge over the union of pre-switch lvalues and anything first
+         * assigned inside the switch (builtins like gl_Position are only
+         * added to cg.lvalues when a case assigns them).  A name absent
+         * from snap enters with an undefined value on edges where it was
+         * never written. */
+        std::set<std::string> mergeNames;
+        for (auto &kv : snap) mergeNames.insert(kv.first);
+        for (auto &kv : cg.lvalues) mergeNames.insert(kv.first);
+        for (const auto &name : mergeNames) {
+            llvm::Value *v = nullptr;
+            auto sit = snap.find(name);
+            if (sit != snap.end()) {
+                v = sit->second;
+            } else {
+                auto lit = cg.lvalues.find(name);
+                v = lit != cg.lvalues.end()
+                        ? llvm::UndefValue::get(lit->second->getType())
+                        : llvm::UndefValue::get(
+                              llvm::Type::getVoidTy(*cg.ctx));
+            }
             llvm::PHINode *e = cg.b->CreatePHI(
                 v->getType(),
                 1 + brk.snaps.size() + (lastTail ? 1 : 0) +
                     (defEntry ? 0 : 1),
-                kv.first);
+                name);
             /* No default label: the last check block falls through to
              * the exit carrying the entry values. */
             if (!defEntry)
                 e->addIncoming(v, check);
             if (lastTail)
-                e->addIncoming(cg.lvalues[kv.first], lastTail);
+                e->addIncoming(cg.lvalues[name], lastTail);
             for (auto &bs : brk.snaps) {
-                auto it = bs.second.find(kv.first);
+                auto it = bs.second.find(name);
                 e->addIncoming(it != bs.second.end() ? it->second : v,
                                bs.first);
             }
-            cg.lvalues[kv.first] = e;
+            cg.lvalues[name] = e;
         }
         cg.err = savedErr;
         break;
