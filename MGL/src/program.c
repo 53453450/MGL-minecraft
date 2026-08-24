@@ -1111,9 +1111,12 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
                 ? pptr->tess_control_output_vertices
                 : 3u;
     }
-    int air_rc = mglAirCompileGLSLWithReflectInfo(
+    uint32_t air_flags =
+        pptr->shader_slots[_GEOMETRY_SHADER] ? MGL_AIR_COMPILE_HAS_GEOMETRY_SHADER : 0u;
+    int air_rc = mglAirCompileGLSLWithReflectInfoEx(
         shader->src, air_stage, attrib_snapshot, &bytes, &size,
-        pptr->shader_resources_list[stage], &stage_info, err, sizeof err);
+        pptr->shader_resources_list[stage], &stage_info, air_flags,
+        err, sizeof err);
     for (int ai = 0; ai < MAX_ATTRIBS; ai++) {
         free((void *)attrib_snapshot[ai]);
     }
@@ -2286,13 +2289,9 @@ void mglGetProgramiv(GLMContext ctx, GLuint program, GLenum pname, GLint *params
                 ERROR_RETURN(GL_INVALID_OPERATION);
                 return;
             }
-            /* EXT_geometry_shader: these queries are only valid on a
-             * program that actually has a geometry shader. */
             if (!pptr->shader_slots[_GEOMETRY_SHADER]) {
-                ERROR_RETURN(GL_INVALID_OPERATION);
-                return;
-            }
-            if (pname == GL_GEOMETRY_INPUT_TYPE) {
+                *params = 0;
+            } else if (pname == GL_GEOMETRY_INPUT_TYPE) {
                 *params = (GLint)pptr->geometry_input_type;
             } else if (pname == GL_GEOMETRY_OUTPUT_TYPE) {
                 *params = (GLint)pptr->geometry_output_type;

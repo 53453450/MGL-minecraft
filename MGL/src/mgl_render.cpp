@@ -13871,17 +13871,12 @@ int mglRenderSetRenderPassStateAttachmentTexture(
     destination->slice = slice;
     destination->depth_plane = depth_plane;
 
+    owner->state.render_target_array_length =
+        mglRenderPassArrayLength(owner->state);
     if (layered) {
-        owner->state.render_target_array_length =
-            mglRenderPassArrayLength(owner->state);
         destination->slice = 0u;
         destination->depth_plane = 0u;
     }
-    /* GL 4.6 9.8: framebuffer layeredness is sticky -- once any
-     * attachment is layered, later non-layered depth/stencil attachments
-     * must not zero the array length an earlier array color attachment
-     * established.  Attachments keep their own depth_plane so a plain 2D
-     * depth target rides the layered pass at its attached layer. */
     return 0;
 }
 

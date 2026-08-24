@@ -99,16 +99,6 @@ enum {
      * pass-2 scatter can attribute each record to its stream (GL 4.6
      * §11.1.3.4).  Stream-0 records are identified by region, not stamp. */
     MGL_AIR_PER_VERTEX_STREAM_OFFSET = 48,
-    /* GS-written gl_PrimitiveID carried to the fragment stage through the
-     * passthrough vertex function.  Shares bytes with the tail of the
-     * cull-distance region; a shader never writes both six-plus cull
-     * distances and gl_PrimitiveID. */
-    MGL_AIR_PER_VERTEX_PRIMITIVE_ID_OFFSET = 52,
-    /* Reserved varying location used to ferry gl_PrimitiveID from the
-     * passthrough vertex function to the fragment stage when a geometry
-     * shader is present (the fragment's air.primitive_id input cannot be
-     * fed by hardware on the compute-expansion path). */
-    MGL_AIR_PRIMITIVE_ID_LOCATION = 31,
     MGL_AIR_PER_VERTEX_STRIDE = 64,
 };
 
@@ -230,22 +220,6 @@ int mglAirCompileGLSLWithReflectInfo(
     unsigned char **metallib_out, size_t *size_out,
     MGLShaderResourceList lists[MGL_MAX_SHADER_RESOURCES], MGLAIRStageInfo *stage_info,
     char *err_buf, size_t err_cap);
-
-/* Flags for mglAirCompileGLSLWithReflectInfoEx. */
-enum {
-    MGL_AIR_COMPILE_HAS_GEOMETRY_SHADER = 1u << 0,
-};
-
-/* Same as mglAirCompileGLSLWithReflectInfo with pipeline-shape flags.
- * has_gs switches the fragment stage's gl_PrimitiveID input from the
- * hardware air.primitive_id feed (no GS) to a flat varying at
- * MGL_AIR_PRIMITIVE_ID_LOCATION supplied by the passthrough vertex
- * function (GS expansion path). */
-int mglAirCompileGLSLWithReflectInfoEx(
-    const char *src, int stage, const char *const *attrib_names,
-    unsigned char **metallib_out, size_t *size_out,
-    MGLShaderResourceList lists[MGL_MAX_SHADER_RESOURCES], MGLAIRStageInfo *stage_info,
-    uint32_t flags, char *err_buf, size_t err_cap);
 
 /* Free bytes returned by mglShaderCompileGLSL. */
 void mglShaderFree(void *bytes);
