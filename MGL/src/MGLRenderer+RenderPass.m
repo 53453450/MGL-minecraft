@@ -607,6 +607,21 @@ static const char *mglGeometryPassthroughSwizzle(GLenum type)
     }
 }
 
+static const char *mglGeometryPassthroughFloatType(GLenum type)
+{
+    switch (type) {
+        case GL_INT:
+        case GL_UNSIGNED_INT: return "float";
+        case GL_INT_VEC2:
+        case GL_UNSIGNED_INT_VEC2: return "vec2";
+        case GL_INT_VEC3:
+        case GL_UNSIGNED_INT_VEC3: return "vec3";
+        case GL_INT_VEC4:
+        case GL_UNSIGNED_INT_VEC4: return "vec4";
+        default: return NULL;
+    }
+}
+
 /* Read-back conversion for integer varyings: the stage-out record stores
  * raw bits, so integer components need floatBitsToInt/Uint; float varyings
  * need none.  GLSL also requires the `flat` qualifier on integer
@@ -721,7 +736,13 @@ static GLenum mglPassthroughDeclType(
                     (unsigned)output->gl_type,
                     (unsigned)output->location);
         GLenum declType = mglPassthroughDeclType(fsInputs, output);
-        const char *type = mglGeometryPassthroughType(declType);
+        /* Integer varyings ride as float carriers (the AIR backend pairs
+         * this with an fptosi at the fragment entry; raw int attributes do
+         * not survive the GS-expansion pipeline plumbing). */
+        const char *type =
+            mglGeometryPassthroughConversion(declType)
+                ? mglGeometryPassthroughFloatType(declType)
+                : mglGeometryPassthroughType(declType);
         if (!type || !output->name) {
             NSLog(@"MGL GS ERROR: unsupported passthrough varying type 0x%x",
                   (unsigned)output->gl_type);
@@ -794,7 +815,10 @@ static GLenum mglPassthroughDeclType(
              "    return;\n"];
     }
     Shader *mgl_gs = program->shader_slots[_GEOMETRY_SHADER];
-    if (mgl_gs && mgl_gs->src &&
+    if (getenv("MGL_PTVS_NO_SPECIALS")) {
+        /* Diagnostic: omit the layer/viewport special outputs entirely so
+         * the vertex return carries only position + user varyings. */
+    } else if (mgl_gs && mgl_gs->src &&
         (strstr(mgl_gs->src, "gl_Layer") ||
          strstr(mgl_gs->src, "gl_ViewportIndex"))) {
 
@@ -817,7 +841,7 @@ static GLenum mglPassthroughDeclType(
              [source appendFormat:
                  @"    vec4 mgl_slot_%u = "
                   "mgl_gs_output.records[mgl_base + %u];\n"
-                  "    %s = %s(mgl_slot_%u%s);\n",
+                  "    %s = float(%s(mgl_slot_%u%s));\n",
                  (unsigned)i,
                  (unsigned)(MGL_AIR_PER_VERTEX_STRIDE / 16u + output->location),
                  output->name, convert, (unsigned)i, swizzle];

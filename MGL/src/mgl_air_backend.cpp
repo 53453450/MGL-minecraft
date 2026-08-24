@@ -236,6 +236,23 @@ bool scalarIsFloat(MGLIRScalar s) {
            s == MGLIR_SCALAR_HALF;
 }
 
+/* GS-expansion fragment stages carry integer varyings through float
+ * attributes: the raw int bit patterns do not survive Metal's attribute
+ * plumbing (small magnitudes are denormals in float interpretation and
+ * the values arrive zeroed / truncated).  Both interface sides instead
+ * exchange sitofp-exact floats (|v| < 2^24) and the fragment body
+ * converts back once at entry. */
+static bool varyingUsesFloatCarrier(const MType &t, bool has_gs) {
+    return has_gs && !scalarIsFloat(t.scalar) &&
+           t.scalar != MGLIR_SCALAR_BOOL;
+}
+
+static MType floatCarrierType(const MType &t) {
+    MType f = t;
+    f.scalar = MGLIR_SCALAR_FLOAT;
+    return f;
+}
+
 llvm::Type *llvmScalar(MGLIRScalar s, llvm::LLVMContext &ctx) {
     switch (s) {
     case MGLIR_SCALAR_BOOL: return llvm::Type::getInt1Ty(ctx);
@@ -6795,10 +6812,14 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                  * stage-in members; the setup binds one arg per element). */
                 MType el = v.type;
                 el.arr = 0;
+                MType iface = varyingUsesFloatCarrier(v.type, has_gs)
+                    ? floatCarrierType(el) : el;
                 for (uint32_t k = 0; k < (uint32_t)v.type.arr; k++)
-                    paramTys.push_back(llvmType(el, ctx));
+                    paramTys.push_back(llvmType(iface, ctx));
             } else {
-                paramTys.push_back(llvmType(v.type, ctx));
+                paramTys.push_back(llvmType(
+                    varyingUsesFloatCarrier(v.type, has_gs)
+                        ? floatCarrierType(v.type) : v.type, ctx));
             }
         }
     }
@@ -7045,12 +7066,28 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 uint32_t n = (uint32_t)v.type.arr;
                 for (uint32_t k = 0; k < n; k++) {
                     llvm::Value *arg = fn->getArg(argSlot++);
+                    if (varyingUsesFloatCarrier(el, has_gs)) {
+                        /* Round before converting: the carrier may pick up
+                         * interpolation epsilon even when marked flat. */
+                        arg = cg.b->CreateUnaryIntrinsic(
+                            llvm::Intrinsic::round, arg);
+                        arg = cg.b->CreateFPToSI(
+                            arg, llvmType(el, ctx));
+                    }
                     agg = cg.b->CreateInsertValue(agg, arg, k);
                 }
                 cg.lvalues[v.name] = agg;
                 (void)el;
             } else {
-                cg.lvalues[v.name] = fn->getArg(argSlot++);
+                llvm::Value *arg = fn->getArg(argSlot++);
+                if (varyingUsesFloatCarrier(v.type, has_gs)) {
+                    /* Round before converting: the carrier may pick up
+                     * interpolation epsilon even when marked flat. */
+                    arg = cg.b->CreateUnaryIntrinsic(
+                        llvm::Intrinsic::round, arg);
+                    arg = cg.b->CreateFPToSI(arg, llvmType(v.type, ctx));
+                }
+                cg.lvalues[v.name] = arg;
             }
         }
     }
@@ -8460,16 +8497,24 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     } else if (!isKernel) {
         auto emitFSVarying = [&](const std::string &tagName,
                                  const MType &mt, uint32_t argIdx) {
+            bool carrier = varyingUsesFloatCarrier(mt, has_gs);
+            const MType &iface = carrier ? floatCarrierType(mt) : mt;
             std::vector<llvm::Metadata *> elems = {
                 llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                     llvm::Type::getInt32Ty(ctx), argIdx)),
                 llvm::MDString::get(ctx, "air.fragment_input"),
                 llvm::MDString::get(ctx,
-                                    airGenerated(tagName, mt)),
-                llvm::MDString::get(ctx, "air.center"),
-                llvm::MDString::get(ctx, "air.perspective"),
+                                    airGenerated(tagName, iface)),
+                llvm::MDString::get(ctx,
+                                    carrier || !scalarIsFloat(mt.scalar)
+                                        ? "air.flat"
+                                        : "air.center"),
+                llvm::MDString::get(ctx,
+                                    carrier || !scalarIsFloat(mt.scalar)
+                                        ? "air.no_perspective"
+                                        : "air.perspective"),
                 llvm::MDString::get(ctx, "air.arg_type_name"),
-                llvm::MDString::get(ctx, mslTypeName(mt)),
+                llvm::MDString::get(ctx, mslTypeName(iface)),
                 llvm::MDString::get(ctx, "air.arg_name"),
                 llvm::MDString::get(ctx, tagName)};
             argNodes.push_back(llvm::MDNode::get(ctx, elems));
