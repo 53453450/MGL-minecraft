@@ -693,17 +693,7 @@ static GLenum mglPassthroughDeclType(
      * topology, while Points-topology programs expect the real size. */
     Shader *mgl_gs_for_ps = program->shader_slots[_GEOMETRY_SHADER];
     BOOL hasPointSize = mgl_gs_for_ps && mgl_gs_for_ps->src &&
-                        strstr(mgl_gs_for_ps->src, "gl_PointSize") != NULL;
-    /* GS-written gl_PrimitiveID is parked at record offset 52 (vec4 slot 3,
-     * component y) and ferried to the fragment stage as a flat int varying
-     * at the reserved location below. */
-    BOOL hasPrimitiveId = mgl_gs_for_ps && mgl_gs_for_ps->src &&
-                          strstr(mgl_gs_for_ps->src, "gl_PrimitiveID") != NULL;
-    if (hasPrimitiveId) {
-        [source appendFormat:
-            @"layout(location = %u) flat out int mgl_primitive_id;\n",
-             (unsigned)MGL_AIR_PRIMITIVE_ID_LOCATION];
-    }    for (GLuint i = 0; outputs->list && i < outputs->count; i++) {
+                        strstr(mgl_gs_for_ps->src, "gl_PointSize") != NULL;    for (GLuint i = 0; outputs->list && i < outputs->count; i++) {
         MGLShaderResource *output = &outputs->list[i];
         if (output->is_per_patch) continue;
 
@@ -747,13 +737,6 @@ static GLenum mglPassthroughDeclType(
         [source appendString:
             @"    vec4 mgl_point_size = mgl_gs_output.records[mgl_base + 1];\n"
              "    gl_PointSize = mgl_point_size.x;\n"];
-    }
-    if (hasPrimitiveId) {
-        /* Two-step load: the frontend rejects a member access directly on
-         * an SSBO array element. */
-        [source appendString:
-            @"    vec4 mgl_prim_vec = mgl_gs_output.records[mgl_base + 3];\n"
-             "    mgl_primitive_id = floatBitsToInt(mgl_prim_vec.y);\n"];
     }
     if (getenv("MGL_GS_PROBE")) {
         /* Pixel probe: R = vertex id, G = GPU-read position.y remapped,

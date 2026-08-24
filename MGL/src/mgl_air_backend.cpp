@@ -208,7 +208,6 @@ struct Codegen {
     bool usesClipDistance = false;       /* vertex writes gl_ClipDistance */
     bool pointSize = false;              /* vertex: writes gl_PointSize */
     bool layerViewport = false;          /* writes gl_Layer / gl_ViewportIndex */
-    bool primitiveIdWritten = false;     /* writes gl_PrimitiveID (GS out) */
     std::map<std::string, llvm::Value *> ssboPtrs;  /* SSBO instance -> buffer */
     std::map<std::string, uint32_t> ssboSlots;      /* SSBO instance -> Metal slot */
     std::map<std::string, llvm::Value *> uboPtrs;   /* uniform block -> buffer */
@@ -2146,66 +2145,6 @@ static void storeGeometryViewportIndex(Codegen &cg, llvm::Value *record,
     cg.b->CreateAlignedStore(viewportIndex, p, llvm::Align(4));
 }
 
-/* gl_PrimitiveID written by the GS rides at offset 52 so the fragment
- * stage can receive it through the passthrough vertex function (flat).
- * Unwritten records keep whatever the strip cache held; the renderer's
- * PTVS only forwards it for programs that declared gl_PrimitiveID. */
-static void copyGeometryPrimitiveIdSelected(Codegen &cg, llvm::Value *dst,
-                                            uint32_t falseRecord,
-                                            uint32_t trueRecord,
-                                            llvm::Value *condition)
-{
-    auto load = [&](uint32_t rec) {
-        llvm::Value *p = cg.b->CreateGEP(
-            cg.b->getInt8Ty(), geometryRecordPtr(cg, cg.b->getInt32(rec)),
-            cg.b->getInt64(MGL_AIR_PER_VERTEX_PRIMITIVE_ID_OFFSET));
-        p = cg.b->CreateBitCast(p, cg.b->getInt32Ty()->getPointerTo(1));
-        return cg.b->CreateAlignedLoad(cg.b->getInt32Ty(), p,
-                                       llvm::Align(4));
-    };
-    llvm::Value *v =
-        cg.b->CreateSelect(condition, load(trueRecord), load(falseRecord));
-    llvm::Value *p = cg.b->CreateGEP(
-        cg.b->getInt8Ty(), geometryRecordPtr(cg, dst),
-        cg.b->getInt64(MGL_AIR_PER_VERTEX_PRIMITIVE_ID_OFFSET));
-    p = cg.b->CreateBitCast(p, cg.b->getInt32Ty()->getPointerTo(1));
-    cg.b->CreateAlignedStore(v, p, llvm::Align(4));
-}
-
-static llvm::Value *loadGeometryPrimitiveId(Codegen &cg, uint32_t record)
-{
-    llvm::Value *p = cg.b->CreateGEP(
-        cg.b->getInt8Ty(), geometryRecordPtr(cg, cg.b->getInt32(record)),
-        cg.b->getInt64(MGL_AIR_PER_VERTEX_PRIMITIVE_ID_OFFSET));
-    p = cg.b->CreateBitCast(p, cg.b->getInt32Ty()->getPointerTo(1));
-    return cg.b->CreateAlignedLoad(cg.b->getInt32Ty(), p, llvm::Align(4));
-}
-
-static void copyGeometryPrimitiveId(Codegen &cg, llvm::Value *dst,
-                                    uint32_t src)
-{
-    llvm::Value *v = loadGeometryPrimitiveId(cg, src);
-    llvm::Value *p = cg.b->CreateGEP(
-        cg.b->getInt8Ty(), geometryRecordPtr(cg, dst),
-        cg.b->getInt64(MGL_AIR_PER_VERTEX_PRIMITIVE_ID_OFFSET));
-    p = cg.b->CreateBitCast(p, cg.b->getInt32Ty()->getPointerTo(1));
-    cg.b->CreateAlignedStore(v, p, llvm::Align(4));
-}
-
-static void storeGeometryPrimitiveId(Codegen &cg, llvm::Value *record)
-{
-    auto it = cg.lvalues.find("gl_PrimitiveID");
-    if (!cg.primitiveIdWritten || it == cg.lvalues.end()) return;
-    llvm::Value *v = it->second;
-    if (v->getType() != cg.b->getInt32Ty())
-        v = cg.b->CreateZExtOrTrunc(v, cg.b->getInt32Ty());
-    llvm::Value *p = cg.b->CreateGEP(
-        cg.b->getInt8Ty(), geometryRecordPtr(cg, record),
-        cg.b->getInt64(MGL_AIR_PER_VERTEX_PRIMITIVE_ID_OFFSET));
-    p = cg.b->CreateBitCast(p, cg.b->getInt32Ty()->getPointerTo(1));
-    cg.b->CreateAlignedStore(v, p, llvm::Align(4));
-}
-
 static llvm::Value *loadGeometryLayer(Codegen &cg, uint32_t record)
 {
     llvm::Value *p = cg.b->CreateGEP(
@@ -2439,7 +2378,6 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
         storeGeometryVaryings(cg, outputRecord);
         storeGeometryLayer(cg, outputRecord, layer);
         storeGeometryViewportIndex(cg, outputRecord, viewportIndex);
-        storeGeometryPrimitiveId(cg, outputRecord);
         llvm::Value *visibleIncrement = cg.b->CreateSelect(
             geometryPrimitiveCulled(cg, {cullDistances}),
             cg.b->getInt32(0), cg.b->getInt32(1));
@@ -2482,7 +2420,6 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
         storeGeometryCullDistances(cg, outputRecord, previousCull);
         storeGeometryLayer(cg, outputRecord, previousLayer);
         storeGeometryViewportIndex(cg, outputRecord, previousViewport);
-        copyGeometryPrimitiveId(cg, outputRecord, 0);
         copyGeometryVaryings(cg, outputRecord, 0);
         storeGeometryPosition(cg,
             cg.b->CreateAdd(outputRecord, cg.b->getInt32(1)), pos);
@@ -2494,8 +2431,6 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
             cg.b->CreateAdd(outputRecord, cg.b->getInt32(1)), layer);
         storeGeometryViewportIndex(cg,
             cg.b->CreateAdd(outputRecord, cg.b->getInt32(1)), viewportIndex);
-        storeGeometryPrimitiveId(cg,
-            cg.b->CreateAdd(outputRecord, cg.b->getInt32(1)));
         storeGeometryVaryings(
             cg, cg.b->CreateAdd(outputRecord, cg.b->getInt32(1)));
         llvm::Value *lineIncrement = cg.b->CreateSelect(
@@ -2513,10 +2448,7 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
         storeGeometryCullDistances(cg, cg.b->getInt32(0), cullDistances);
         storeGeometryLayer(cg, cg.b->getInt32(0), layer);
         storeGeometryViewportIndex(cg, cg.b->getInt32(0), viewportIndex);
-        copyGeometryPrimitiveId(cg, cg.b->getInt32(0), 1);
-        storeGeometryPrimitiveId(cg, cg.b->getInt32(1));
         storeGeometryVaryings(cg, cg.b->getInt32(0));
-        storeGeometryPrimitiveId(cg, cg.b->getInt32(1));
         cg.b->CreateAlignedStore(
             cg.b->CreateAdd(stripCount, cg.b->getInt32(1)),
             stripCountPtr, llvm::Align(4));
@@ -2575,7 +2507,7 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
     storeGeometryCullDistances(cg, outputRecord, firstCull);
     storeGeometryLayer(cg, outputRecord, firstLayer);
     storeGeometryViewportIndex(cg, outputRecord, firstViewport);
-    copyGeometryPrimitiveIdSelected(cg, outputRecord, 0, 1, odd);
+    copyGeometryVaryingsSelected(cg, outputRecord, 0, 1, odd);
     storeGeometryPosition(cg,
         cg.b->CreateAdd(outputRecord, cg.b->getInt32(1)), second);
     storeGeometryPointSize(cg,
@@ -2586,8 +2518,6 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
         cg.b->CreateAdd(outputRecord, cg.b->getInt32(1)), secondLayer);
     storeGeometryViewportIndex(cg,
         cg.b->CreateAdd(outputRecord, cg.b->getInt32(1)), secondViewport);
-    copyGeometryPrimitiveIdSelected(
-        cg, cg.b->CreateAdd(outputRecord, cg.b->getInt32(1)), 1, 0, odd);
     copyGeometryVaryingsSelected(
         cg, cg.b->CreateAdd(outputRecord, cg.b->getInt32(1)), 1, 0, odd);
     storeGeometryPosition(cg,
@@ -2600,8 +2530,6 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
         cg.b->CreateAdd(outputRecord, cg.b->getInt32(2)), layer);
     storeGeometryViewportIndex(cg,
         cg.b->CreateAdd(outputRecord, cg.b->getInt32(2)), viewportIndex);
-    storeGeometryPrimitiveId(cg,
-        cg.b->CreateAdd(outputRecord, cg.b->getInt32(2)));
     storeGeometryVaryings(
         cg, cg.b->CreateAdd(outputRecord, cg.b->getInt32(2)));
     llvm::Value *triangleIncrement = cg.b->CreateSelect(
@@ -2625,14 +2553,12 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
     storeGeometryCullDistances(cg, cg.b->getInt32(0), previousCull1ForNext);
     storeGeometryLayer(cg, cg.b->getInt32(0), previousLayer1ForNext);
     storeGeometryViewportIndex(cg, cg.b->getInt32(0), previousViewport1ForNext);
-    copyGeometryPrimitiveId(cg, cg.b->getInt32(0), 1);
     copyGeometryVaryings(cg, cg.b->getInt32(0), 1);
     storeGeometryPosition(cg, cg.b->getInt32(1), pos);
     storeGeometryPointSize(cg, cg.b->getInt32(1), pointSize);
     storeGeometryCullDistances(cg, cg.b->getInt32(1), cullDistances);
     storeGeometryLayer(cg, cg.b->getInt32(1), layer);
     storeGeometryViewportIndex(cg, cg.b->getInt32(1), viewportIndex);
-    storeGeometryPrimitiveId(cg, cg.b->getInt32(1));
     storeGeometryVaryings(cg, cg.b->getInt32(1));
     cg.b->CreateAlignedStore(
         cg.b->CreateAdd(stripCount, cg.b->getInt32(1)),
@@ -2991,8 +2917,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             return cg.lvalues["gl_ClipDistance"];
         }
         if (strcmp(e->u.var_ref.name, "gl_Layer") == 0 ||
-            strcmp(e->u.var_ref.name, "gl_ViewportIndex") == 0 ||
-            strcmp(e->u.var_ref.name, "gl_PrimitiveID") == 0) {
+            strcmp(e->u.var_ref.name, "gl_ViewportIndex") == 0) {
             /* Out-variable read-back: the value last written this
              * invocation; 0 before any write (GL 4.6 §11.1.3.5/§11.1.3.6). */
             if (!cg.lvalues.count(e->u.var_ref.name)) {
@@ -3667,38 +3592,6 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             llvm::Value *mb = emitMathBuiltin(cg, e, name, mod, locals);
             if (mb) return mb;
         }
-        {
-            /* floatBitsToInt/Uint and intBitsToFloat/uintBitsToFloat are
-             * pure bitcasts between float and 32-bit int representations. */
-            if (strcmp(name, "floatBitsToInt") == 0 ||
-                strcmp(name, "floatBitsToUint") == 0 ||
-                strcmp(name, "intBitsToFloat") == 0 ||
-                strcmp(name, "uintBitsToFloat") == 0) {
-                if (e->u.call.arg_count != 1) {
-                    cg.err = 1;
-                    cg.errmsg = std::string("codegen: '") + name +
-                                "' expects 1 argument";
-                    return nullptr;
-                }
-                llvm::Value *a0 =
-                    emitExpr(cg, e->u.call.args[0], mod, locals);
-                if (!a0) return nullptr;
-                bool toInt = name[0] == 'f';
-                llvm::Type *src = a0->getType();
-                auto i32 = [&] { return llvm::Type::getInt32Ty(*cg.ctx); };
-                auto f32 = [&] { return llvm::Type::getFloatTy(*cg.ctx); };
-                llvm::Type *dst;
-                if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(src)) {
-                    dst = toInt ? (llvm::Type *)llvm::FixedVectorType::get(
-                                      i32(), vt->getNumElements())
-                                : (llvm::Type *)llvm::FixedVectorType::get(
-                                      f32(), vt->getNumElements());
-                } else {
-                    dst = toInt ? (llvm::Type *)i32() : (llvm::Type *)f32();
-                }
-                return cg.b->CreateBitCast(a0, dst);
-            }
-        }
         /* Storage-image operations use the same texture handle table as
          * sampled textures but have no sampler parameter.  Keep the M3
          * implementation deliberately narrow to the image2D float form
@@ -4336,27 +4229,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             }
             const char *name = rootE->u.var_ref.name;
             if (!cg.lvalues.count(name)) {
-                /* First write through a member/index path to a name that
-                 * has not been materialized yet (e.g. "out vec4 result;"
-                 * written as result.x = ...).  Lazily start it as an
-                 * undefined aggregate of its declared type, mirroring the
-                 * plain-assignment path. */
-                llvm::Type *aggTy = nullptr;
-                auto lit = locals.find(name);
-                if (lit != locals.end())
-                    aggTy = llvmType(lit->second, *cg.ctx);
-                else {
-                    const MGLIRSymbol *sym = findSymbol(mod, name);
-                    if (sym)
-                        aggTy = llvmType(typeFromIR(sym->type), *cg.ctx);
-                }
-                if (!aggTy) {
-                    cg.err = 1;
-                    cg.errmsg = std::string("codegen: unknown lvalue '") +
-                                name + "'";
-                    return nullptr;
-                }
-                cg.lvalues[name] = llvm::UndefValue::get(aggTy);
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: unknown lvalue '") + name +
+                            "'";
+                return nullptr;
             }
             llvm::Value *agg = cg.lvalues[name];
             if (e->u.assign.op != MGL_OP_ASSIGN) {
@@ -4494,15 +4370,6 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         if (strcmp(name, "gl_PointSize") == 0) {
             cg.pointSize = true;
             cg.lvalues[name] = coerceScalar(cg, v, MGLIR_SCALAR_FLOAT);
-            return v;
-        }
-        if (strcmp(name, "gl_PrimitiveID") == 0) {
-            if (!cg.isGeometry) {
-                cg.err = 1;
-                return nullptr;
-            }
-            cg.primitiveIdWritten = true;
-            cg.lvalues[name] = coerceScalar(cg, v, MGLIR_SCALAR_INT);
             return v;
         }
         if (strcmp(name, "gl_Layer") == 0 ||
@@ -6257,7 +6124,7 @@ static char *airPrepareLegacySource(const char *src, int air_stage) {
 }
 
 static int compileGLSLImpl(const char *src, int stage, int capture,
-                           bool has_gs, const char *const *attrib_names,
+                           const char *const *attrib_names,
                            uint32_t tessPatchVertices,
                            unsigned char **metallib_out, size_t *size_out,
                            char *err_buf, size_t err_cap) {
@@ -8532,34 +8399,14 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 llvm::MDString::get(ctx, "gl_PointCoord")}));
         }
         if (usesPrimitiveId) {
-            if (stage == MGL_STAGE_FRAGMENT && has_gs) {
-                /* GS expansion path: the id arrives as a flat int varying
-                 * written by the passthrough vertex function at
-                 * MGL_AIR_PRIMITIVE_ID_LOCATION. */
-                argNodes.push_back(llvm::MDNode::get(ctx, {
-                    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                        llvm::Type::getInt32Ty(ctx), mArgSlot++)),
-                    llvm::MDString::get(ctx, "air.stage_input"),
-                    llvm::MDString::get(ctx, "air.location_index"),
-                    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                        llvm::Type::getInt32Ty(ctx),
-                        MGL_AIR_PRIMITIVE_ID_LOCATION)),
-                    llvm::MDString::get(ctx, "air.flat"),
-                    llvm::MDString::get(ctx, "air.no_perspective"),
-                    llvm::MDString::get(ctx, "air.arg_type_name"),
-                    llvm::MDString::get(ctx, "int"),
-                    llvm::MDString::get(ctx, "air.arg_name"),
-                    llvm::MDString::get(ctx, "gl_PrimitiveID")}));
-            } else {
-                argNodes.push_back(llvm::MDNode::get(ctx, {
-                    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                        llvm::Type::getInt32Ty(ctx), mArgSlot++)),
-                    llvm::MDString::get(ctx, "air.primitive_id"),
-                    llvm::MDString::get(ctx, "air.arg_type_name"),
-                    llvm::MDString::get(ctx, "uint"),
-                    llvm::MDString::get(ctx, "air.arg_name"),
-                    llvm::MDString::get(ctx, "gl_PrimitiveID")}));
-            }
+            argNodes.push_back(llvm::MDNode::get(ctx, {
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), mArgSlot++)),
+                llvm::MDString::get(ctx, "air.primitive_id"),
+                llvm::MDString::get(ctx, "air.arg_type_name"),
+                llvm::MDString::get(ctx, "uint"),
+                llvm::MDString::get(ctx, "air.arg_name"),
+                llvm::MDString::get(ctx, "gl_PrimitiveID")}));
         }
         if (usesSampleID) {
             argNodes.push_back(llvm::MDNode::get(ctx, {
@@ -8948,8 +8795,7 @@ extern "C" int mglShaderCompileGLSL(const char *src, int stage,
                                     unsigned char **metallib_out,
                                     size_t *size_out, char *err_buf,
                                     size_t err_cap) {
-    return compileGLSLImpl(src, stage, 0, /*has_gs=*/false, nullptr, 0u,
-                           metallib_out,
+    return compileGLSLImpl(src, stage, 0, nullptr, 0u, metallib_out,
                            size_out, err_buf, err_cap);
 }
 
@@ -8961,24 +8807,21 @@ extern "C" int mglShaderCompileGLSLCapture(const char *src,
                                            unsigned char **metallib_out,
                                            size_t *size_out, char *err_buf,
                                            size_t err_cap) {
-    return compileGLSLImpl(src, MGL_STAGE_VERTEX, 1, /*has_gs=*/false, nullptr,
-                           0u,
+    return compileGLSLImpl(src, MGL_STAGE_VERTEX, 1, nullptr, 0u,
                            metallib_out, size_out, err_buf, err_cap);
 }
 
 extern "C" int mglShaderCompileGLSLTessCapture(
     const char *src, unsigned char **metallib_out, size_t *size_out,
     char *err_buf, size_t err_cap) {
-    return compileGLSLImpl(src, MGL_STAGE_VERTEX, 2, /*has_gs=*/false, nullptr,
-                           0u,
+    return compileGLSLImpl(src, MGL_STAGE_VERTEX, 2, nullptr, 0u,
                            metallib_out, size_out, err_buf, err_cap);
 }
 
 extern "C" int mglShaderCompileGLSLCullDistanceCapture(
     const char *src, unsigned char **metallib_out, size_t *size_out,
     char *err_buf, size_t err_cap) {
-    return compileGLSLImpl(src, MGL_STAGE_VERTEX, 3, /*has_gs=*/false, nullptr,
-                           0u,
+    return compileGLSLImpl(src, MGL_STAGE_VERTEX, 3, nullptr, 0u,
                            metallib_out, size_out, err_buf, err_cap);
 }
 
@@ -9142,12 +8985,11 @@ extern "C" int mglAirReflectGLSLStageInfo(
     return 0;
 }
 
-extern "C" int mglAirCompileGLSLWithReflectInfoEx(
+extern "C" int mglAirCompileGLSLWithReflectInfo(
     const char *src, int stage, const char *const *attrib_names,
     unsigned char **metallib_out, size_t *size_out,
     MGLShaderResourceList lists[MGL_MAX_SHADER_RESOURCES], MGLAIRStageInfo *stage_info,
-    uint32_t flags, char *err_buf, size_t err_cap) {
-    bool has_gs = (flags & MGL_AIR_COMPILE_HAS_GEOMETRY_SHADER) != 0;
+    char *err_buf, size_t err_cap) {
     if (!src || !metallib_out || !size_out) {
         if (err_buf && err_cap) snprintf(err_buf, err_cap, "bad args");
         return -1;
@@ -9194,19 +9036,9 @@ extern "C" int mglAirCompileGLSLWithReflectInfoEx(
     mglIRModuleDestroy(&mod);
     mglGLSLTranslationUnitDestroy(tu);
 
-    return compileGLSLImpl(esrc, stage, 0, has_gs, attrib_names,
+    return compileGLSLImpl(esrc, stage, 0, attrib_names,
                            tessPatchVertices,
                            metallib_out, size_out, err_buf, err_cap);
-}
-
-extern "C" int mglAirCompileGLSLWithReflectInfo(
-    const char *src, int stage, const char *const *attrib_names,
-    unsigned char **metallib_out, size_t *size_out,
-    MGLShaderResourceList lists[MGL_MAX_SHADER_RESOURCES], MGLAIRStageInfo *stage_info,
-    char *err_buf, size_t err_cap) {
-    return mglAirCompileGLSLWithReflectInfoEx(
-        src, stage, attrib_names, metallib_out, size_out, lists,
-        stage_info, 0u, err_buf, err_cap);
 }
 
 extern "C" int mglAirCompileGLSLWithReflect(
