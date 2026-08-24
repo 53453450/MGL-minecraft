@@ -685,8 +685,15 @@ static GLenum mglPassthroughDeclType(
     const MGLShaderResourceList *fsInputs =
         &program->shader_resources_list[_FRAGMENT_SHADER][_STAGE_INPUT_RES];
 
-    BOOL hasPointSize = NO;
-    for (GLuint i = 0; outputs->list && i < outputs->count; i++) {
+    /* gl_PointSize never appears in the reflected output list (all gl_
+     * builtins are filtered during reflection), so detect it straight from
+     * the GS source -- the same gate the AIR backend uses for its
+     * point-size store.  Forwarding matters because the pipeline builder
+     * rejects a vertex stage writing point size on a Line/Triangle
+     * topology, while Points-topology programs expect the real size. */
+    Shader *mgl_gs_for_ps = program->shader_slots[_GEOMETRY_SHADER];
+    BOOL hasPointSize = mgl_gs_for_ps && mgl_gs_for_ps->src &&
+                        strstr(mgl_gs_for_ps->src, "gl_PointSize") != NULL;    for (GLuint i = 0; outputs->list && i < outputs->count; i++) {
         MGLShaderResource *output = &outputs->list[i];
         if (output->is_per_patch) continue;
 
@@ -696,7 +703,7 @@ static GLenum mglPassthroughDeclType(
          * forwards it when the GS actually declared it, because the
          * pipeline builder rejects a vertex stage that writes point size
          * on a Line/Triangle topology. */
-        if (strcmp(output->name, "gl_PointSize") == 0) hasPointSize = YES;
+        if (strcmp(output->name, "gl_PointSize") == 0) continue;
         if (getenv("MGL_DUMP_AIR"))
             fprintf(stderr,
                     "MGL PTVS varying: name=%s gl_type=0x%x loc=%u\n",
