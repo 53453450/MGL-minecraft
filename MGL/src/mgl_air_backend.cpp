@@ -4229,10 +4229,27 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             }
             const char *name = rootE->u.var_ref.name;
             if (!cg.lvalues.count(name)) {
-                cg.err = 1;
-                cg.errmsg = std::string("codegen: unknown lvalue '") + name +
-                            "'";
-                return nullptr;
+                /* First write through a member/index path to a name that
+                 * has not been materialized yet (e.g. "out vec4 result;"
+                 * written as result.x = ...).  Lazily start it as an
+                 * undefined aggregate of its declared type, mirroring the
+                 * plain-assignment path. */
+                llvm::Type *aggTy = nullptr;
+                auto lit = locals.find(name);
+                if (lit != locals.end())
+                    aggTy = llvmType(lit->second, *cg.ctx);
+                else {
+                    const MGLIRSymbol *sym = findSymbol(mod, name);
+                    if (sym)
+                        aggTy = llvmType(typeFromIR(sym->type), *cg.ctx);
+                }
+                if (!aggTy) {
+                    cg.err = 1;
+                    cg.errmsg = std::string("codegen: unknown lvalue '") +
+                                name + "'";
+                    return nullptr;
+                }
+                cg.lvalues[name] = llvm::UndefValue::get(aggTy);
             }
             llvm::Value *agg = cg.lvalues[name];
             if (e->u.assign.op != MGL_OP_ASSIGN) {
