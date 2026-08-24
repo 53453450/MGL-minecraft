@@ -99,6 +99,12 @@ enum {
      * pass-2 scatter can attribute each record to its stream (GL 4.6
      * §11.1.3.4).  Stream-0 records are identified by region, not stamp. */
     MGL_AIR_PER_VERTEX_STREAM_OFFSET = 48,
+    /* GS-written gl_PrimitiveID (aliases cull_distance_hi[0]); ferried to
+     * the fragment stage through the reserved varying location below. */
+    MGL_AIR_PER_VERTEX_PRIMITIVE_ID_OFFSET = 52,
+    /* Reserved varying location carrying gl_PrimitiveID from the geometry
+     * passthrough vertex function to the fragment shader. */
+    MGL_AIR_PRIMITIVE_ID_LOCATION = 31,
     MGL_AIR_PER_VERTEX_STRIDE = 64,
 };
 
@@ -220,6 +226,19 @@ int mglAirCompileGLSLWithReflectInfo(
     unsigned char **metallib_out, size_t *size_out,
     MGLShaderResourceList lists[MGL_MAX_SHADER_RESOURCES], MGLAIRStageInfo *stage_info,
     char *err_buf, size_t err_cap);
+
+/* mglAirCompileGLSLWithReflectInfoEx flags */
+enum {
+    MGL_AIR_COMPILE_HAS_GEOMETRY_SHADER = 1u << 0,
+};
+
+/* Same as above plus stage-composition flags (bit0: a geometry shader is
+ * attached, which changes fragment-stage gl_PrimitiveID lowering). */
+int mglAirCompileGLSLWithReflectInfoEx(
+    const char *src, int stage, const char *const *attrib_names,
+    unsigned char **metallib_out, size_t *size_out,
+    MGLShaderResourceList lists[MGL_MAX_SHADER_RESOURCES], MGLAIRStageInfo *stage_info,
+    uint32_t flags, char *err_buf, size_t err_cap);
 
 /* Free bytes returned by mglShaderCompileGLSL. */
 void mglShaderFree(void *bytes);
