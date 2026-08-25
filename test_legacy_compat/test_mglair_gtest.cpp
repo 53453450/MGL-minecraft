@@ -795,6 +795,42 @@ TEST(Reflect, VertexResources) {
     mglGLSLTranslationUnitDestroy(tu);
 }
 
+TEST(Reflect, UniformBlockInstanceArray) {
+    static const char *src =
+        "#version 460 core\n"
+        "layout(points) in;\n"
+        "layout(points, max_vertices = 1) out;\n"
+        "layout(binding = 3) uniform UniformBlock { int entry; } blocks[4];\n"
+        "void main() { gl_Position = vec4(float(blocks[3].entry)); EmitVertex(); }\n";
+    MGLTranslationUnit *tu = nullptr;
+    MGLIRModule *mod = semacheck(src, MGL_STAGE_GEOMETRY, &tu);
+    ASSERT_NE(nullptr, mod);
+    MGLShaderResourceList lists[MGL_MAX_SHADER_RESOURCES] = {{0}};
+    ASSERT_EQ(0, mglAirReflectModule(mod, MGL_STAGE_GEOMETRY, nullptr,
+                                     lists, nullptr, 0));
+
+    ASSERT_EQ(1u, lists[_UNIFORM_BUFFER_RES].count);
+    const MGLShaderResource &block = lists[_UNIFORM_BUFFER_RES].list[0];
+    EXPECT_STREQ("blocks", block.name);
+    EXPECT_EQ(4u, block.ubo_array_size);
+    EXPECT_TRUE(block.ubo_is_array);
+    EXPECT_EQ(0u, block.binding);
+    EXPECT_EQ(3u, block.gl_binding);
+    ASSERT_NE(nullptr, block.ubo_array_bindings);
+    for (GLuint element = 0; element < 4; element++) {
+        EXPECT_EQ(3u + element, block.ubo_array_bindings[element]);
+    }
+    ASSERT_EQ(1u, block.ubo_member_count);
+    EXPECT_STREQ("entry", block.ubo_members[0].name);
+    EXPECT_EQ(GL_INT, block.ubo_members[0].gl_type);
+    EXPECT_EQ(16u, block.required_size);
+    EXPECT_EQ(0u, lists[_UNIFORM_CONSTANT_RES].count);
+
+    mglAirReflectDestroy(lists);
+    mglIRModuleDestroy(mod);
+    mglGLSLTranslationUnitDestroy(tu);
+}
+
 TEST(Reflect, ComputeResources) {
     static const char *src =
         "#version 460 core\n"

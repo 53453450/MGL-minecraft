@@ -180,6 +180,21 @@ GLint mglAirGLArraySizeFromIR(const MGLIRType *t)
     return 1;
 }
 
+static const MGLIRType *air_uniform_block_type(const MGLIRType *type)
+{
+    if (type && type->kind == MGLIR_TYPE_ARRAY) {
+        type = type->elem_type;
+    }
+    return type && type->kind == MGLIR_TYPE_STRUCT && type->member_count > 0
+        ? type : NULL;
+}
+
+static GLuint air_uniform_block_element_count(const MGLIRType *type)
+{
+    return type && type->kind == MGLIR_TYPE_ARRAY && type->array_size > 1u
+        ? type->array_size : 1u;
+}
+
 static void push_resource(MGLShaderResourceList *list, const MGLIRSymbol *s,
                           const MGLIRType *type, GLuint location,
                           GLuint binding, int stage)
@@ -392,7 +407,7 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
         } else if ((q & MGL_AST_Q_UNIFORM) &&
                    t->kind != MGLIR_TYPE_SAMPLER &&
                    t->kind != MGLIR_TYPE_IMAGE && !s->block_name &&
-                   !(t->kind == MGLIR_TYPE_STRUCT && t->member_count > 0)) {
+                   !air_uniform_block_type(t)) {
             hasPlain = 1;
         }
     }
@@ -488,15 +503,34 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
             if (s->block_name) {
                 continue;   /* block member: covered by the block resource */
             }
-            if (t->kind == MGLIR_TYPE_STRUCT && t->member_count > 0) {
-                /* Uniform block: independent resource with members. */
-                push_resource(&lists[_UNIFORM_BUFFER_RES], s, t, location,
-                              ubo_binding++, stage);
-                if (s->binding != UINT32_MAX) {
-                    lists[_UNIFORM_BUFFER_RES].list[
-                        lists[_UNIFORM_BUFFER_RES].count - 1].gl_binding =
-                        s->binding;
+            const MGLIRType *block_type = air_uniform_block_type(t);
+            if (block_type) {
+                /* A block instance array is one GL block per element, backed
+                 * by consecutive Metal buffer arguments.  Keep one reflected
+                 * resource with per-element binding metadata so the common
+                 * buffer mapper expands it at draw time. */
+                GLuint block_count = air_uniform_block_element_count(t);
+                push_resource(&lists[_UNIFORM_BUFFER_RES], s, block_type,
+                              location, ubo_binding, stage);
+                MGLShaderResource *last =
+                    &lists[_UNIFORM_BUFFER_RES].list[
+                        lists[_UNIFORM_BUFFER_RES].count - 1];
+                last->ubo_array_size = block_count;
+                last->ubo_is_array = block_count > 1u ? GL_TRUE : GL_FALSE;
+                if (block_count > 1u) {
+                    last->ubo_array_bindings = (GLuint *)calloc(
+                        block_count, sizeof(*last->ubo_array_bindings));
                 }
+                GLuint first_binding = s->binding != UINT32_MAX
+                    ? s->binding : ubo_binding;
+                last->gl_binding = first_binding;
+                if (last->ubo_array_bindings) {
+                    for (GLuint element = 0; element < block_count; element++) {
+                        last->ubo_array_bindings[element] =
+                            first_binding + element;
+                    }
+                }
+                ubo_binding += block_count;
                 continue;
             }
             /* Plain uniform: collect into the packed aggregate. */
