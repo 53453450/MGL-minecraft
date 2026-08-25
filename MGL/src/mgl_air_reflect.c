@@ -433,14 +433,17 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
         uint32_t q = s->qualifiers;
         GLuint location = s->location != UINT32_MAX ? s->location : UINT32_MAX;
 
-        /* GS interface-block instances flatten into per-member varying
+        /* Interface-block instances flatten into per-member varying
          * symbols (each with block_name set); the struct-typed instance
-         * symbol itself is not an interface resource. */
+         * symbol itself is not an interface resource — EXCEPT GS input
+         * instances, which reflect so link validation can enforce that
+         * the instance is arrayed (GL 4.6 §11.1.3.9). */
         if (!s->block_name && (q & (MGL_AST_Q_IN | MGL_AST_Q_OUT)) &&
             !(q & (MGL_AST_Q_UNIFORM | MGL_AST_Q_BUFFER)) &&
             (t->kind == MGLIR_TYPE_STRUCT ||
              (t->kind == MGLIR_TYPE_ARRAY && t->elem_type &&
-              t->elem_type->kind == MGLIR_TYPE_STRUCT))) {
+              t->elem_type->kind == MGLIR_TYPE_STRUCT)) &&
+            !(stage == MGL_STAGE_GEOMETRY && (q & MGL_AST_Q_IN))) {
             continue;
         }
 

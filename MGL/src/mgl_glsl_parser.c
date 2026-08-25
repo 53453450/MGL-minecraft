@@ -82,6 +82,15 @@ static char *expand_object_macros(const char *src, size_t len)
     char *out = (char *)malloc(out_cap);
     if (!out) return NULL;
 
+    /* Conditional-compilation state, mirroring preprocess_tokens(): a
+     * #define inside an inactive branch must not shadow one from the
+     * active branch, and expansion must use the macros visible at each
+     * point (single pass, current table). */
+    enum { PP_MAX_DEPTH = 32 };
+    int pp_active[PP_MAX_DEPTH];
+    int pp_parent[PP_MAX_DEPTH];
+    int pp_depth = 0;
+
     size_t pos = 0;
     while (pos < len) {
         size_t line_start = pos;
@@ -92,6 +101,61 @@ static char *expand_object_macros(const char *src, size_t len)
         size_t p = line_start;
         while (p < line_end && (src[p] == ' ' || src[p] == '\t' ||
                                 src[p] == '\r')) p++;
+        int is_directive = p < line_end && src[p] == '#';
+        int cur_active = (pp_depth == 0) ? 1 : pp_active[pp_depth - 1];
+        if (is_directive) {
+            const char *d = src + p;
+            size_t dn = line_end - p;
+            int is_ifdef = dn >= 6 && memcmp(d, "#ifdef", 6) == 0 &&
+                           (dn == 6 || d[6] == ' ' || d[6] == '\t');
+            int is_ifndef = dn >= 7 && memcmp(d, "#ifndef", 7) == 0 &&
+                            (dn == 7 || d[7] == ' ' || d[7] == '\t');
+            int is_else = dn >= 5 && memcmp(d, "#else", 5) == 0 &&
+                          (dn == 5 || d[5] == ' ' || d[5] == '\t');
+            int is_endif = dn >= 6 && memcmp(d, "#endif", 6) == 0 &&
+                           (dn == 6 || d[6] == ' ' || d[6] == '\t');
+            /* Conditional directives are fully resolved HERE and dropped
+             * from the output: expand_object_macros runs before lexing,
+             * so a later pass cannot re-evaluate them against the pruned
+             * stream.  Only the surviving branch's text (and its #define
+             * records) continue below. */
+            if (is_ifdef || is_ifndef) {
+                int cond = 0;
+                size_t kw = is_ifdef ? 6u : 7u;
+                const char *np = d + kw;
+                const char *nend = d + dn;
+                while (np < nend && (*np == ' ' || *np == '\t')) np++;
+                const char *nstart = np;
+                while (np < nend && *np != ' ' && *np != '\t')
+                    np++;
+                size_t nl = (size_t)(np - nstart);
+                for (size_t m = 0; m < macro_count; m++) {
+                    if (strlen(macros[m].name) == nl &&
+                        memcmp(macros[m].name, nstart, nl) == 0) {
+                        cond = 1;
+                        break;
+                    }
+                }
+                if (pp_depth < PP_MAX_DEPTH) {
+                    pp_parent[pp_depth] = cur_active;
+                    pp_active[pp_depth] =
+                        cur_active && (is_ifdef ? cond : !cond);
+                    pp_depth++;
+                }
+                continue;
+            }
+            if (is_else) {
+                if (pp_depth > 0)
+                    pp_active[pp_depth - 1] =
+                        pp_parent[pp_depth - 1] && !pp_active[pp_depth - 1];
+                continue;
+            }
+            if (is_endif) {
+                if (pp_depth > 0) pp_depth--;
+                continue;
+            }
+        }
+        if (!cur_active) continue;
         int is_define = p + 7 <= line_end && src[p] == '#' &&
                         memcmp(src + p + 1, "define", 6) == 0 &&
                         (p + 7 == line_end || isspace((unsigned char)src[p + 7]));
@@ -224,6 +288,10 @@ static char *expand_object_macros(const char *src, size_t len)
         }
     }
     out[out_len] = '\0';
+    if (getenv("MGL_IB_DEBUG")) {
+        fprintf(stderr, "PP expand done out_len=%zu macros=%zu\n",
+                out_len, macro_count);
+    }
     macro_free_all(macros, macro_count);
     return out;
 }

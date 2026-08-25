@@ -2278,9 +2278,12 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
             d->struct_members && d->struct_member_count > 0 &&
             (d->qualifiers & (MGL_AST_Q_IN | MGL_AST_Q_OUT)) &&
             !(d->qualifiers & (MGL_AST_Q_UNIFORM | MGL_AST_Q_BUFFER));
-        if ((is_anon_block ||
-             (is_interface_block && s->stage == MGL_STAGE_GEOMETRY)) &&
-            global) {
+        int flatten_iface =
+            is_interface_block &&
+            (s->stage == MGL_STAGE_GEOMETRY ||
+             (s->stage == MGL_STAGE_VERTEX &&
+              (d->qualifiers & MGL_AST_Q_OUT)));
+        if ((is_anon_block || flatten_iface) && global) {
             MGLIRType *bt = t;
             if (bt->kind == MGLIR_TYPE_ARRAY && bt->elem_type) {
                 /* An instance array (`} vertex[1];`) wraps the block type;

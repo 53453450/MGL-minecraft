@@ -4493,6 +4493,32 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             }
         }
 
+        /* Interface-block member write: instance.field = v (VS/TES out
+         * blocks flatten to per-member VARYING symbols, so this is an
+         * ordinary varying lvalue store keyed by the member name). */
+        if (lhs->kind == MGL_EXPR_MEMBER &&
+            lhs->u.member.object &&
+            lhs->u.member.object->kind == MGL_EXPR_VAR_REF) {
+            const char *instName = lhs->u.member.object->u.var_ref.name;
+            VarSym *member = codegenStageSymbol(
+                cg, lhs->u.member.field, VarSym::VARYING);
+            if (member && !cg.isGeometry && !cg.isTessControl &&
+                member->location != UINT32_MAX &&
+                member->blockName == instName) {
+                if (e->u.assign.op != MGL_OP_ASSIGN) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: compound interface-block member "
+                                "assignment unsupported";
+                    return nullptr;
+                }
+                llvm::Type *ty = llvmType(member->type, *cg.ctx);
+                if (v->getType() != ty)
+                    v = coerceScalar(cg, v, member->type.scalar);
+                cg.lvalues[member->name] = v;
+                return v;
+            }
+        }
+
         if (lhs->kind == MGL_EXPR_INDEX || lhs->kind == MGL_EXPR_MEMBER) {
             /* Indexed/swizzled lvalue: x[i] = v / v.xy = w / m[i][j] = v. */
             if (const MGLIRSymbol *sb = ssboRootSym(lhs, mod)) {

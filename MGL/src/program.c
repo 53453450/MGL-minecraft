@@ -1272,6 +1272,13 @@ static GLboolean mglValidateGeometryInterface(Program *pptr)
         const MGLShaderResource *in = &gsIn->list[gi];
         if (!in->name || in->name[0] == '\0') continue;
         if (strncmp(in->name, "gl_", 3) == 0) continue;
+        /* GL 4.6 §11.1.3.9: geometry shader user inputs must be declared
+         * as arrays (per-input-vertex); a scalar input is a link error.
+         * Interface-block members are exempt — their instance carries
+         * the per-vertex dimension. */
+        if (!in->block_member && !in->is_array) {
+            return GL_FALSE;
+        }
         /* Interface-block members carry their own ordinary array
          * dimension; only the block instance itself is indexed by the
          * input-vertex count. */
