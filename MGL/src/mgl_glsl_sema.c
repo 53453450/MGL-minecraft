@@ -2283,6 +2283,16 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
             (s->stage == MGL_STAGE_GEOMETRY ||
              (s->stage == MGL_STAGE_VERTEX &&
               (d->qualifiers & MGL_AST_Q_OUT)));
+        /* GL 4.6 §11.1.3.9: a geometry shader input interface-block
+         * instance must be declared arrayed; a bare instance leaves
+         * per-vertex member reads ambiguous. */
+        if (is_interface_block && (d->qualifiers & MGL_AST_Q_IN) &&
+            s->stage == MGL_STAGE_GEOMETRY && global && d->array_count == 0) {
+            sema_error(s, d->line,
+                       "geometry shader input interface block instance '%s' "
+                       "must be declared as an array",
+                       var_name);
+        }
         if ((is_anon_block || flatten_iface) && global) {
             MGLIRType *bt = t;
             if (bt->kind == MGLIR_TYPE_ARRAY && bt->elem_type) {

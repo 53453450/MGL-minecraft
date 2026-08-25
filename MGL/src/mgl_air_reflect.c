@@ -435,15 +435,12 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
 
         /* Interface-block instances flatten into per-member varying
          * symbols (each with block_name set); the struct-typed instance
-         * symbol itself is not an interface resource — EXCEPT GS input
-         * instances, which reflect so link validation can enforce that
-         * the instance is arrayed (GL 4.6 §11.1.3.9). */
+         * symbol itself is not an interface resource. */
         if (!s->block_name && (q & (MGL_AST_Q_IN | MGL_AST_Q_OUT)) &&
             !(q & (MGL_AST_Q_UNIFORM | MGL_AST_Q_BUFFER)) &&
             (t->kind == MGLIR_TYPE_STRUCT ||
              (t->kind == MGLIR_TYPE_ARRAY && t->elem_type &&
-              t->elem_type->kind == MGLIR_TYPE_STRUCT)) &&
-            !(stage == MGL_STAGE_GEOMETRY && (q & MGL_AST_Q_IN))) {
+              t->elem_type->kind == MGLIR_TYPE_STRUCT))) {
             continue;
         }
 
