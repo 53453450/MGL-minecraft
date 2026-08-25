@@ -1749,6 +1749,22 @@ static int parse_precision_statement(MGLParser *p)
  * dropping tokens of inactive branches; #define names are recorded so
  * #ifdef evaluates them (macro bodies are not expanded here).  #version/
  * #extension/#pragma directives are kept. */
+/* Extract the identifier after a directive keyword, bounded by the
+ * directive token (one source line): scanning past the token would run
+ * into following lines and swallow the whole file as the "name". */
+static size_t pp_directive_name(const char *d, size_t n, size_t kw,
+                                const char **nm_out)
+{
+    const char *p = d + kw;
+    const char *end = d + n;
+    while (p < end && (*p == ' ' || *p == '\t')) p++;
+    const char *start = p;
+    while (p < end && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r')
+        p++;
+    *nm_out = start;
+    return (size_t)(p - start);
+}
+
 static void preprocess_tokens(MGLTokenStream *ts)
 {
     enum { MAX_DEPTH = 32, MAX_DEFS = 64, MAX_NAME = 63 };
@@ -1774,9 +1790,8 @@ static void preprocess_tokens(MGLTokenStream *ts)
             if (depth >= MAX_DEPTH) break;
             int cond = 0;
             if (cur_active) {
-                const char *nm = d + 6;
-                while (*nm == ' ') nm++;
-                size_t nl = strcspn(nm, " \t");
+                const char *nm;
+                size_t nl = pp_directive_name(d, n, 6, &nm);
                 for (uint32_t k = 0; k < def_count; k++) {
                     if (strlen(defs[k]) == nl && memcmp(defs[k], nm, nl) == 0) {
                         cond = 1;
@@ -1794,9 +1809,8 @@ static void preprocess_tokens(MGLTokenStream *ts)
             if (depth >= MAX_DEPTH) break;
             int cond = 1;
             if (cur_active) {
-                const char *nm = d + 7;
-                while (*nm == ' ') nm++;
-                size_t nl = strcspn(nm, " \t");
+                const char *nm;
+                size_t nl = pp_directive_name(d, n, 7, &nm);
                 for (uint32_t k = 0; k < def_count; k++) {
                     if (strlen(defs[k]) == nl && memcmp(defs[k], nm, nl) == 0) {
                         cond = 0;
@@ -1823,11 +1837,10 @@ static void preprocess_tokens(MGLTokenStream *ts)
             continue;
         }
         if (n >= 7 && memcmp(d, "#define", 7) == 0 &&
-            (n == 7 || d[7] == ' ')) {
+            (n == 7 || d[7] == ' ' || d[7] == '\t')) {
             if (cur_active) {
-                const char *nm = d + 7;
-                while (*nm == ' ') nm++;
-                size_t nl = strcspn(nm, " \t");
+                const char *nm;
+                size_t nl = pp_directive_name(d, n, 7, &nm);
                 if (nl > 0 && nl <= MAX_NAME && def_count < MAX_DEFS) {
                     memcpy(defs[def_count], nm, nl);
                     defs[def_count][nl] = 0;
@@ -1838,9 +1851,8 @@ static void preprocess_tokens(MGLTokenStream *ts)
         }
         if (n >= 6 && memcmp(d, "#undef", 6) == 0 &&
             (n == 6 || d[6] == ' ')) {
-            const char *nm = d + 6;
-            while (*nm == ' ') nm++;
-            size_t nl = strcspn(nm, " \t");
+            const char *nm;
+            size_t nl = pp_directive_name(d, n, 6, &nm);
             for (uint32_t k = 0; k < def_count; k++) {
                 if (strlen(defs[k]) == nl && memcmp(defs[k], nm, nl) == 0) {
                     memmove(&defs[k], &defs[k + 1],
