@@ -988,19 +988,19 @@ typedef struct {
 } BiFn;
 
 static const BiFn kBuiltins[] = {
-    { "texture",    3, { BI_ARG_S2D,   BI_ARG_VEC2, BI_ARG_FLOAT }, BI_RET_VEC4 },
-    { "textureProj", 2, { BI_ARG_S2D, BI_ARG_VEC4 }, BI_RET_VEC4 },
-    { "texture",    3, { BI_ARG_S3D,   BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_VEC4 },
-    { "texture",    3, { BI_ARG_SCUBE, BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_VEC4 },
-    { "texture",    2, { BI_ARG_S2D,   BI_ARG_VEC2 }, BI_RET_VEC4 },
-    { "texture",    2, { BI_ARG_S3D,   BI_ARG_VEC3 }, BI_RET_VEC4 },
-    { "texture",    2, { BI_ARG_SCUBE, BI_ARG_VEC3 }, BI_RET_VEC4 },
-    { "textureLod", 3, { BI_ARG_S2D,   BI_ARG_VEC2, BI_ARG_FLOAT }, BI_RET_VEC4 },
-    { "textureGrad", 4, { BI_ARG_S2D, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_VEC2 }, BI_RET_VEC4 },
+    { "texture",    3, { BI_ARG_S2D,   BI_ARG_VEC2, BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "textureProj", 2, { BI_ARG_S2D, BI_ARG_VEC4 }, BI_RET_SAMP },
+    { "texture",    3, { BI_ARG_S3D,   BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "texture",    3, { BI_ARG_SCUBE, BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "texture",    2, { BI_ARG_S2D,   BI_ARG_VEC2 }, BI_RET_SAMP },
+    { "texture",    2, { BI_ARG_S3D,   BI_ARG_VEC3 }, BI_RET_SAMP },
+    { "texture",    2, { BI_ARG_SCUBE, BI_ARG_VEC3 }, BI_RET_SAMP },
+    { "textureLod", 3, { BI_ARG_S2D,   BI_ARG_VEC2, BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "textureGrad", 4, { BI_ARG_S2D, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_VEC2 }, BI_RET_SAMP },
     { "dFdx", 1, { BI_ARG_GENF }, BI_RET_GENF },
     { "dFdy", 1, { BI_ARG_GENF }, BI_RET_GENF },
-    { "textureLod", 3, { BI_ARG_S3D,   BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_VEC4 },
-    { "textureLod", 3, { BI_ARG_SCUBE, BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_VEC4 },
+    { "textureLod", 3, { BI_ARG_S3D,   BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "textureLod", 3, { BI_ARG_SCUBE, BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_SAMP },
     { "textureSize", 2, { BI_ARG_S2D,   BI_ARG_FLOAT }, BI_RET_IVEC2 },
     { "texelFetch", 3, { BI_ARG_S2D, BI_ARG_GENI, BI_ARG_INT }, BI_RET_SAMP },
     { "texelFetch", 3, { BI_ARG_SBUF, BI_ARG_INT, BI_ARG_INT }, BI_RET_SAMP },
@@ -2268,11 +2268,29 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
                 sym->type_owned = 0;
             }
         }
-        if (is_anon_block && global) {
-            /* Anonymous-block members are referenced directly in the
-             * shader body; register each as a uniform symbol carrying its
-             * owning block and member index. */
+        /* GS named interface-block instances flatten exactly like
+         * anonymous blocks: the backend and reflector consume per-member
+         * varying symbols (each with its own location), while the
+         * struct-typed instance symbol itself is skipped there.  The
+         * shader body keeps addressing members through
+         * `instance[k].field`. */
+        int is_interface_block =
+            d->struct_members && d->struct_member_count > 0 &&
+            (d->qualifiers & (MGL_AST_Q_IN | MGL_AST_Q_OUT)) &&
+            !(d->qualifiers & (MGL_AST_Q_UNIFORM | MGL_AST_Q_BUFFER));
+        if ((is_anon_block ||
+             (is_interface_block && s->stage == MGL_STAGE_GEOMETRY)) &&
+            global) {
             MGLIRType *bt = t;
+            if (bt->kind == MGLIR_TYPE_ARRAY && bt->elem_type) {
+                /* An instance array (`} vertex[1];`) wraps the block type;
+                 * every element shares the same per-member varyings, the
+                 * record index selects the input vertex at read time. */
+                bt = bt->elem_type;
+            }
+            if (bt->kind != MGLIR_TYPE_STRUCT) {
+                return;
+            }
             for (uint32_t m = 0; m < bt->member_count; m++) {
                 MGLIRSymbol *ms = (MGLIRSymbol *)calloc(1, sizeof(*ms));
                 if (!ms) break;

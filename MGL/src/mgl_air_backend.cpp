@@ -122,6 +122,7 @@ struct VarSym {
     uint32_t bufferOffset = 0;
     uint32_t location = UINT32_MAX;
     int32_t stream = 0;          /* GS output stream for OUTPUT vars */
+    std::string blockName;       /* owning interface block, or empty */
     bool isPatch = false;
     bool written = false;
 };
@@ -1618,6 +1619,161 @@ static bool emitPatchVaryingStore(Codegen &cg, const VarSym &sym,
 static llvm::Value *geometryInputRecordIndex(Codegen &cg,
                                              llvm::Value *vertexIndex);
 
+/* Load one varying slot from a GS stage-in record.  The record stride
+ * comes from the gather params at runtime (the capture lays records out
+ * by the *vertex* stage's output locations, which can be wider than this
+ * GS's declared inputs), and the member location maps through loc_map
+ * (renderer stores vs_loc + 1; 0 marks unmapped and falls back to the
+ * identity mapping). */
+static llvm::Value *loadGeometryInputVarying(Codegen &cg,
+                                             const VarSym &sym,
+                                             llvm::Value *slotLocation,
+                                             llvm::Value *record,
+                                             llvm::Value *base)
+{
+    llvm::Type *i32ty = llvm::Type::getInt32Ty(*cg.ctx);
+    llvm::Value *stride = cg.b->CreateAlignedLoad(
+        i32ty,
+        cg.b->CreateGEP(i32ty,
+                        cg.b->CreateBitCast(cg.geometryGatherParamsPtr,
+                                            i32ty->getPointerTo(1)),
+                        cg.b->getInt32(4)),
+        llvm::Align(4));
+    /* Map this location through loc_map (renderer stores vs_loc + 1; 0
+     * marks unmapped and falls back to the identity mapping).  Locations
+     * beyond the 32-entry map keep the identity. */
+    llvm::Value *inMap = cg.b->CreateICmpULT(slotLocation,
+                                             cg.b->getInt32(32u));
+    llvm::Value *raw = cg.b->CreateAlignedLoad(
+        i32ty,
+        cg.b->CreateGEP(i32ty,
+                        cg.b->CreateBitCast(cg.geometryGatherParamsPtr,
+                                            i32ty->getPointerTo(1)),
+                        cg.b->CreateAdd(cg.b->getInt32(5), slotLocation)),
+        llvm::Align(4));
+    llvm::Value *decoded = cg.b->CreateSelect(
+        cg.b->CreateICmpEQ(raw, cg.b->getInt32(0)),
+        slotLocation,
+        cg.b->CreateSub(raw, cg.b->getInt32(1)));
+    llvm::Value *mapped = cg.b->CreateSelect(inMap, decoded, slotLocation);
+    llvm::Value *varyOff = cg.b->CreateAdd(
+        cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE),
+        cg.b->CreateMul(cg.b->CreateZExt(mapped, cg.b->getInt64Ty()),
+                        cg.b->getInt64(16u)));
+    llvm::Value *off = cg.b->CreateAdd(
+        cg.b->CreateMul(cg.b->CreateZExt(record, cg.b->getInt64Ty()),
+                        cg.b->CreateZExt(stride, cg.b->getInt64Ty())),
+        varyOff);
+    /* Array block members occupy one slot per element; every caller loads
+     * exactly one element, so strip the array dimension for the type. */
+    MType elemType = sym.type;
+    elemType.arr = 0;
+    llvm::Type *ty = llvmType(elemType, *cg.ctx);
+    llvm::Value *p = cg.b->CreateGEP(cg.b->getInt8Ty(), base, off);
+    p = cg.b->CreateBitCast(p, ty->getPointerTo(1));
+    return cg.b->CreateAlignedLoad(ty, p, llvm::Align(4));
+}
+
+/* Interface-block GS input member: instance[k].field (or instance.field).
+ * Sema flattens named in-block members into VARYING symbols whose
+ * block_name identifies the owning instance; the read is the same
+ * stage-in record load as plain array varyings. */
+static llvm::Value *emitGeometryBlockLoad(
+    Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
+    const std::map<std::string, MType> &locals)
+{
+    if (!cg.isGeometry || !e || e->kind != MGL_EXPR_MEMBER ||
+        !cg.geometryInputPtr || !cg.geometryPrimitiveId ||
+        !cg.geometryGatherParamsPtr) {
+        return nullptr;
+    }
+    const MGLExpr *obj = e->u.member.object;
+    const char *instName = nullptr;
+    llvm::Value *vertexIndex = nullptr;
+    if (obj && obj->kind == MGL_EXPR_VAR_REF) {
+        instName = obj->u.var_ref.name;
+        vertexIndex = cg.b->getInt32(0);
+    } else if (obj && obj->kind == MGL_EXPR_INDEX &&
+               obj->u.index.object &&
+               obj->u.index.object->kind == MGL_EXPR_VAR_REF) {
+        instName = obj->u.index.object->u.var_ref.name;
+        vertexIndex = emitExpr(cg, obj->u.index.index, mod, locals);
+        if (!vertexIndex) return nullptr;
+    } else {
+        return nullptr;
+    }
+    VarSym *member =
+        codegenStageSymbol(cg, e->u.member.field, VarSym::VARYING);
+    if (!member || member->location == UINT32_MAX ||
+        member->blockName != instName || member->type.isArray()) {
+        /* Array members are handled by the INDEX case so the trailing
+         * element index selects the record slot. */
+        return nullptr;
+    }
+    vertexIndex = coerceScalar(cg, vertexIndex, MGLIR_SCALAR_UINT);
+    llvm::Value *record = geometryInputRecordIndex(cg, vertexIndex);
+    if (!record) return nullptr;
+    return loadGeometryInputVarying(
+        cg, *member, cg.b->getInt32(member->location), record,
+        cg.geometryInputPtr);
+}
+
+/* Array interface-block member with the full access chain in hand:
+ * inst[k].field[e] loads element slot (base location + e) of input
+ * vertex k's stage-in record. */
+static llvm::Value *emitGeometryBlockArrayLoad(
+    Codegen &cg, const MGLExpr *indexExpr, const MGLIRModule *mod,
+    const std::map<std::string, MType> &locals)
+{
+    /* Stage-level info for return assembly. */    if (!cg.isGeometry || !indexExpr || indexExpr->kind != MGL_EXPR_INDEX ||
+        !indexExpr->u.index.object ||
+        indexExpr->u.index.object->kind != MGL_EXPR_MEMBER ||
+        !cg.geometryInputPtr || !cg.geometryPrimitiveId ||
+        !cg.geometryGatherParamsPtr) {
+        return nullptr;
+    }
+    const MGLExpr *memberE = indexExpr->u.index.object;
+    const MGLExpr *obj = memberE->u.member.object;
+    const char *instName = nullptr;
+    llvm::Value *vertexIndex = nullptr;
+    if (obj && obj->kind == MGL_EXPR_VAR_REF) {
+        instName = obj->u.var_ref.name;
+        vertexIndex = cg.b->getInt32(0);
+    } else if (obj && obj->kind == MGL_EXPR_INDEX &&
+               obj->u.index.object &&
+               obj->u.index.object->kind == MGL_EXPR_VAR_REF) {
+        instName = obj->u.index.object->u.var_ref.name;
+        vertexIndex = emitExpr(cg, obj->u.index.index, mod, locals);
+        if (!vertexIndex) return nullptr;
+    } else {
+        return nullptr;
+    }
+    VarSym *member =
+        codegenStageSymbol(cg, memberE->u.member.field, VarSym::VARYING);
+    /* Stage-level info for return assembly. */    if (!member || member->location == UINT32_MAX ||
+        member->blockName != instName || !member->type.isArray()) {
+        return nullptr;
+    }
+    llvm::Value *element = emitExpr(cg, indexExpr->u.index.index,
+                                    mod, locals);
+    if (!element) return nullptr;
+    element = coerceScalar(cg, element, MGLIR_SCALAR_UINT);
+    if (auto *ci = llvm::dyn_cast<llvm::ConstantInt>(element)) {
+        if (ci->getZExtValue() >= member->type.arr) {
+            cg.err = 1;
+            cg.errmsg = "codegen: interface-block array index out of range";
+            return nullptr;
+        }
+    }
+    vertexIndex = coerceScalar(cg, vertexIndex, MGLIR_SCALAR_UINT);
+    llvm::Value *record = geometryInputRecordIndex(cg, vertexIndex);
+    if (!record) return nullptr;
+    llvm::Value *slot = cg.b->CreateAdd(
+        cg.b->getInt32(member->location), element);
+    return loadGeometryInputVarying(cg, *member, slot, record,
+                                    cg.geometryInputPtr);
+}
+
 static llvm::Value *emitTessStageArrayLoad(
     Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
     const std::map<std::string, MType> &locals)
@@ -1642,59 +1798,14 @@ static llvm::Value *emitTessStageArrayLoad(
         record = tessStageRecordIndex(cg, index, true);
         base = cg.stageInPtr;
     }
-    llvm::Value *stride = nullptr;
-    if (cg.isGeometry && cg.geometryGatherParamsPtr) {
-        /* The capture writes one record per *vertex-stage* output varying
-         * slot, so the record span comes from the VS output list and can
-         * be wider than this GS's declared inputs (e.g. a flat
-         * instance_id the GS never consumes).  The renderer publishes the
-         * real capture stride in gather params word 4. */
-        llvm::Type *i32ty = llvm::Type::getInt32Ty(*cg.ctx);
-        stride = cg.b->CreateAlignedLoad(
-            i32ty,
-            cg.b->CreateGEP(i32ty,
-                            cg.b->CreateBitCast(cg.geometryGatherParamsPtr,
-                                                i32ty->getPointerTo(1)),
-                            cg.b->getInt32(4)),
-            llvm::Align(4));
-    } else {
-        stride = cg.b->getInt32(cg.stageInStride);
-    }
-    llvm::Value *varyOff = nullptr;
-    if (cg.isGeometry && cg.geometryGatherParamsPtr &&
-        sym->location < 32u) {
-        /* The capture lays records out by the *vertex* stage's output
-         * locations, which need not match this GS's input locations (a
-         * flat helper output like instance_id shifts every later slot).
-         * The renderer publishes the per-location map in the gather
-         * params (word 5 + location); 0 marks unmapped and falls back to
-         * the identity mapping. */
-        llvm::Type *i32ty = llvm::Type::getInt32Ty(*cg.ctx);
-        llvm::Value *mapped = cg.b->CreateAlignedLoad(
-            i32ty,
-            cg.b->CreateGEP(i32ty,
-                            cg.b->CreateBitCast(cg.geometryGatherParamsPtr,
-                                                i32ty->getPointerTo(1)),
-                            cg.b->getInt32(5 + (int)sym->location)),
-            llvm::Align(4));
-        /* renderer stores vs_loc + 1; 0 marks unmapped and falls back to
-         * the identity mapping. */
-        mapped = cg.b->CreateSelect(
-            cg.b->CreateICmpEQ(mapped, cg.b->getInt32(0)),
-            cg.b->getInt32(sym->location),
-            cg.b->CreateSub(mapped, cg.b->getInt32(1)));
-        varyOff = cg.b->CreateAdd(
-            cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE),
-            cg.b->CreateMul(cg.b->CreateZExt(mapped, cg.b->getInt64Ty()),
-                            cg.b->getInt64(16u)));
-    } else {
-        varyOff = cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE +
-                                 sym->location * 16u);
+    if (cg.isGeometry) {
+        return loadGeometryInputVarying(cg, *sym, cg.b->getInt32(sym->location),
+                                        record, base);
     }
     llvm::Value *off = cg.b->CreateAdd(
         cg.b->CreateMul(cg.b->CreateZExt(record, cg.b->getInt64Ty()),
-                        cg.b->CreateZExt(stride, cg.b->getInt64Ty())),
-        varyOff);
+                        cg.b->getInt64(cg.stageInStride)),
+        cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE + sym->location * 16u));
     llvm::Type *ty = llvmType(sym->type, *cg.ctx);
     llvm::Value *p = cg.b->CreateGEP(cg.b->getInt8Ty(), base, off);
     p = cg.b->CreateBitCast(p, ty->getPointerTo(1));
@@ -3132,6 +3243,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             if (llvm::Value *pv = emitPerVertexLoad(cg, e, mod, locals))
                 return pv;
             if (cg.err) return nullptr;
+            if (llvm::Value *blk =
+                    emitGeometryBlockLoad(cg, e, mod, locals))
+                return blk;
+            if (cg.err) return nullptr;
         }
         if (const MGLIRSymbol *sb = ssboRootSym(e, mod))
             return emitSSBORead(cg, e, sb, mod, locals);
@@ -3204,6 +3319,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
     case MGL_EXPR_INDEX: {
         /* Matrix[i] yields a column vector (GLSL 4.60 5.5), vector[i] a
          * component; the index may be a constant or a runtime value. */
+        if (llvm::Value *blockElem =
+                emitGeometryBlockArrayLoad(cg, e, mod, locals))
+            return blockElem;
+        if (cg.err) return nullptr;
         if (llvm::Value *stageValue =
                 emitTessStageArrayLoad(cg, e, mod, locals))
             return stageValue;
@@ -4000,6 +4119,31 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 llvm::Value *pw = cg.b->CreateVectorSplat(2, w);
                 uv = cg.b->CreateFDiv(xy, pw);
             }
+            const MGLIRSymbol *sampsym = findSymbol(mod, sa->u.var_ref.name);
+            MGLIRScalar texel = sampsym && sampsym->type &&
+                                        sampsym->type->kind ==
+                                            MGLIR_TYPE_SAMPLER
+                                    ? sampsym->type->tex_storage
+                                    : MGLIR_SCALAR_FLOAT;
+            auto sampledRetType = [&](llvm::Type *vecTy) {
+                return llvm::StructType::get(*cg.ctx,
+                                             {vecTy, cg.b->getInt8Ty()});
+            };
+            /* Integer samplers return integer texels; the AIR intrinsic
+             * suffix carries the format (reference:
+             * texture2d<int, sample>.sample). */
+            auto sampledIntrinsic =
+                [&](const char *floatName) -> std::string {
+                std::string n(floatName);
+                std::string from = ".v4f32";
+                size_t pos = n.find(from);
+                if (pos != std::string::npos) {
+                    n.replace(pos, from.size(),
+                              texel == MGLIR_SCALAR_INT ? ".s.v4i32"
+                                                        : ".u.v4i32");
+                }
+                return n;
+            };
             if (strcmp(name, "textureGrad") == 0) {
                 llvm::Value *dPdx = emitExpr(cg, e->u.call.args[2], mod,
                                              locals);
@@ -4007,11 +4151,13 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                              locals);
                 if (!dPdx || !dPdy) return nullptr;
                 llvm::Type *v2i32 = llvm::FixedVectorType::get(i32, 2);
-                llvm::Type *v4f32 = llvm::FixedVectorType::get(f32, 4);
-                llvm::Type *retTy = llvm::StructType::get(
-                    *cg.ctx, {v4f32, cg.b->getInt8Ty()});
+                llvm::Type *vecTy =
+                    texel == MGLIR_SCALAR_FLOAT
+                        ? (llvm::Type *)llvm::FixedVectorType::get(f32, 4)
+                        : (llvm::Type *)llvm::FixedVectorType::get(i32, 4);
                 llvm::Value *r = callAirFn(
-                    cg, "air.sample_texture_2d_grad.v4f32", retTy,
+                    cg, sampledIntrinsic("air.sample_texture_2d_grad.v4f32").c_str(),
+                    sampledRetType(vecTy),
                     {tex, smp, uv, dPdx, dPdy,
                      llvm::ConstantFP::get(f32, 0.0), cg.b->getInt1(false),
                      llvm::Constant::getNullValue(v2i32),
@@ -4027,13 +4173,14 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 explicitLod = true;
             }
             llvm::Type *v2i32 = llvm::FixedVectorType::get(i32, 2);
-            llvm::Type *v4f32 = llvm::FixedVectorType::get(f32, 4);
-            llvm::Type *retTy =
-                llvm::StructType::get(*cg.ctx, {v4f32, cg.b->getInt8Ty()});
-            llvm::Value *r = callAirFn(
-                cg, is3d ? "air.sample_texture_3d.v4f32"
-                         : "air.sample_texture_2d.v4f32",
-                retTy,
+            llvm::Type *vecTy = texel == MGLIR_SCALAR_FLOAT
+                ? (llvm::Type *)llvm::FixedVectorType::get(f32, 4)
+                : (llvm::Type *)llvm::FixedVectorType::get(i32, 4);
+            llvm::Type *retTy = sampledRetType(vecTy);
+            const char *baseName = is3d ? "air.sample_texture_3d.v4f32"
+                                        : "air.sample_texture_2d.v4f32";
+            llvm::Value *r = callAirFn(cg, sampledIntrinsic(baseName).c_str(),
+                                   retTy,
                 {tex, smp, uv, cg.b->getInt1(true),
                  llvm::Constant::getNullValue(v2i32),
                  cg.b->getInt1(explicitLod),
@@ -6501,11 +6648,27 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             s->location == UINT32_MAX) {
             continue;
         }
+        /* GS interface-block instances flatten into per-member VARYING
+         * symbols (block_name set); the struct-typed instance symbol
+         * itself carries no interface storage. */
+        {
+            const MGLIRType *it = s->type;
+            bool structShaped =
+                it->kind == MGLIR_TYPE_STRUCT ||
+                (it->kind == MGLIR_TYPE_ARRAY && it->elem_type &&
+                 it->elem_type->kind == MGLIR_TYPE_STRUCT);
+            if (!s->block_name && structShaped &&
+                (s->qualifiers & (MGL_AST_Q_IN | MGL_AST_Q_OUT)) &&
+                !(s->qualifiers & (MGL_AST_Q_UNIFORM | MGL_AST_Q_BUFFER))) {
+                continue;
+            }
+        }
         VarSym v;
         v.name = s->name;
         v.type = typeFromIR(s->type);
         v.location = s->location;
         v.stream = s->stream;
+        v.blockName = s->block_name ? s->block_name : "";
         uint32_t q = s->qualifiers;
         v.isPatch = (q & MGL_AST_Q_PATCH) != 0;
         if (q & MGL_AST_Q_UNIFORM) {
@@ -6535,7 +6698,12 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             }
         } else if (isGS && (q & MGL_AST_Q_IN)) {
             v.kind = VarSym::VARYING;
-            if (s->type->kind == MGLIR_TYPE_ARRAY && s->type->elem_type) {
+            /* Plain gl_in-style input arrays index by input vertex; keep
+             * the element type.  Interface-block members (block_name set)
+             * keep their array shape: indexing selects the element slot
+             * at base location + index. */
+            if (!s->block_name &&
+                s->type->kind == MGLIR_TYPE_ARRAY && s->type->elem_type) {
                 v.type = typeFromIR(s->type->elem_type);
             }
         } else if (isGS && (q & MGL_AST_Q_OUT)) {
@@ -6580,7 +6748,11 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 uint32_t &next = v.isPatch
                     ? nextPatchInputLocation : nextInputLocation;
                 if (v.location == UINT32_MAX) v.location = next;
-                next = std::max(next, v.location + 1u);
+                /* Interface-block array members span one location per
+                 * element (each element is its own record slot). */
+                uint32_t span = (!v.blockName.empty() && v.type.isArray())
+                    ? v.type.arr : 1u;
+                next = std::max(next, v.location + span);
             }
             if (output) {
                 uint32_t &next = v.isPatch
@@ -8003,17 +8175,39 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     b.CreateMul(vid, b.getInt64(recStride)));
                 for (VarSym *varying : cg.varyings) {
                     if (!varying || varying->location == UINT32_MAX) continue;
-                    /* GS/TES stage-in arrays index by primitive vertex,
-                     * so each per-vertex record stores element 0 only. */
+                    /* Plain stage-in arrays index by primitive vertex, so
+                     * each per-vertex record stores element 0 only.
+                     * Interface-block array members carry one distinct
+                     * value per element: store each element in its own
+                     * consecutive location slot. */
                     MType mt = varying->type;
                     const bool wasArray = mt.isArray() && mt.arr > 0;
+                    const bool blockArray =
+                        wasArray && !varying->blockName.empty();
                     if (wasArray) mt.arr = 0;
                     llvm::Type *varyingTy = llvmType(mt, ctx);
                     llvm::Value *value = cg.lvalues.count(varying->name)
                         ? cg.lvalues[varying->name]
-                        : llvm::UndefValue::get(varyingTy);
-                    if (wasArray && value->getType()->isArrayTy())
+                        : llvm::UndefValue::get(llvmType(varying->type, ctx));
+                    if (wasArray && !blockArray &&
+                        value->getType()->isArrayTy())
                         value = b.CreateExtractValue(value, 0u);
+                    if (blockArray) {
+                        for (uint32_t ei = 0; ei < varying->type.arr; ++ei) {
+                            llvm::Value *elem =
+                                value->getType()->isArrayTy()
+                                    ? b.CreateExtractValue(value, ei)
+                                    : value;
+                            llvm::Value *vp = b.CreateGEP(
+                                b.getInt8Ty(), recordBase,
+                                b.getInt64(MGL_AIR_PER_VERTEX_STRIDE +
+                                           (varying->location + ei) * 16u));
+                            vp = b.CreateBitCast(
+                                vp, varyingTy->getPointerTo(1));
+                            b.CreateAlignedStore(elem, vp, llvm::Align(4));
+                        }
+                        continue;
+                    }
                     llvm::Value *vp = b.CreateGEP(
                         b.getInt8Ty(), recordBase,
                         b.getInt64(MGL_AIR_PER_VERTEX_STRIDE +
@@ -8299,6 +8493,16 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             const MGLIRSymbol *tss = findSymbol(&mod, v.name.c_str());
             bool is3d = tss && tss->type->kind == MGLIR_TYPE_SAMPLER &&
                         tss->type->tex_kind == MGLIR_TEX_3D;
+            const char *texelName = "float";
+            if (tss && tss->type->kind == MGLIR_TYPE_SAMPLER) {
+                if (tss->type->tex_storage == MGLIR_SCALAR_INT)
+                    texelName = "int";
+                else if (tss->type->tex_storage == MGLIR_SCALAR_UINT)
+                    texelName = "uint";
+            }
+            std::string sampledType = is3d ? "texture3d<" : "texture2d<";
+            sampledType += texelName;
+            sampledType += ", sample>";
             argNodes.push_back(llvm::MDNode::get(ctx, {
                 llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                     llvm::Type::getInt32Ty(ctx), texArg++)),
@@ -8310,8 +8514,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     llvm::Type::getInt32Ty(ctx), 1)),
                 llvm::MDString::get(ctx, "air.sample"),
                 llvm::MDString::get(ctx, "air.arg_type_name"),
-                llvm::MDString::get(ctx, is3d ? "texture3d<float, sample>"
-                                              : "texture2d<float, sample>"),
+                llvm::MDString::get(ctx, sampledType.c_str()),
                 llvm::MDString::get(ctx, "air.arg_name"),
                 llvm::MDString::get(ctx, v.name)}));
             argNodes.push_back(llvm::MDNode::get(ctx, {

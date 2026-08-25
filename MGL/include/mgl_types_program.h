@@ -208,6 +208,11 @@ typedef struct MGLShaderResource_t {
      * stream 0 outputs.  Streams > 0 are transform-feedback only and must
      * be excluded from the rasterizing passthrough vertex function. */
     GLint   stream;
+    /* True for interface-block member varyings: their array dimension is
+     * an ordinary member array, not the per-input-vertex instance array
+     * dimension, so geometry-interface validation must not compare it
+     * against the input-vertex count. */
+    GLboolean block_member;
     /* UBO member uniforms (only valid for _UNIFORM_BUFFER_RES). */
     SpirvUBOMember       *ubo_members;
     GLuint                ubo_member_count;

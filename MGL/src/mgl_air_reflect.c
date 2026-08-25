@@ -194,6 +194,7 @@ static void push_resource(MGLShaderResourceList *list, const MGLIRSymbol *s,
     r.gl_array_size = mglAirGLArraySizeFromIR(type);
     r.is_array = (type->kind == MGLIR_TYPE_ARRAY) ? GL_TRUE : GL_FALSE;
     r.is_per_patch = (s->qualifiers & MGL_AST_Q_PATCH) ? GL_TRUE : GL_FALSE;
+    r.block_member = s->block_name ? GL_TRUE : GL_FALSE;
     r.stream = (s->stream >= 0) ? s->stream : 0;
     r.num_array_dims = (type->kind == MGLIR_TYPE_ARRAY) ? 1u : 0u;
     r.uniform_location = -1;
@@ -405,6 +406,9 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
      * texture location indices. */
     uint32_t texture_binding = 0;
     uint32_t sampler_binding = 0;
+    /* Extra auto-location stride consumed by interface-block array
+     * members (one location per element, see the Q_IN branch below). */
+    uint32_t gs_input_span_pad = 0;
     for (uint32_t i = 0; i < mod->symbol_count; i++) {
         const MGLIRSymbol *s = mod->symbols[i];
         /* gl_-prefixed symbols are backend builtins (stage I/O like
@@ -428,6 +432,17 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
         const MGLIRType *t = s->type;
         uint32_t q = s->qualifiers;
         GLuint location = s->location != UINT32_MAX ? s->location : UINT32_MAX;
+
+        /* GS interface-block instances flatten into per-member varying
+         * symbols (each with block_name set); the struct-typed instance
+         * symbol itself is not an interface resource. */
+        if (!s->block_name && (q & (MGL_AST_Q_IN | MGL_AST_Q_OUT)) &&
+            !(q & (MGL_AST_Q_UNIFORM | MGL_AST_Q_BUFFER)) &&
+            (t->kind == MGLIR_TYPE_STRUCT ||
+             (t->kind == MGLIR_TYPE_ARRAY && t->elem_type &&
+              t->elem_type->kind == MGLIR_TYPE_STRUCT))) {
+            continue;
+        }
 
         if (q & MGL_AST_Q_UNIFORM) {
             if (t->kind == MGLIR_TYPE_SAMPLER) {
@@ -516,10 +531,18 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
             if (want != UINT32_MAX) {
                 location = want;
             } else if (location == UINT32_MAX) {
-                location = lists[_STAGE_INPUT_RES].count;
+                location = lists[_STAGE_INPUT_RES].count +
+                           gs_input_span_pad;
             }
             push_resource(&lists[_STAGE_INPUT_RES], s, t, location, 0,
                           stage);
+            /* Interface-block array members occupy one location per
+             * element; keep the auto sequence past the span so later
+             * members land beyond them (mirrors the AIR backend). */
+            if (stage == MGL_STAGE_GEOMETRY && s->block_name &&
+                t->kind == MGLIR_TYPE_ARRAY && t->array_size > 1u) {
+                gs_input_span_pad += t->array_size - 1u;
+            }
         } else if (q & MGL_AST_Q_OUT) {
             if (location == UINT32_MAX) {
                 location = lists[_STAGE_OUTPUT_RES].count;

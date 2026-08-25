@@ -1272,7 +1272,10 @@ static GLboolean mglValidateGeometryInterface(Program *pptr)
         const MGLShaderResource *in = &gsIn->list[gi];
         if (!in->name || in->name[0] == '\0') continue;
         if (strncmp(in->name, "gl_", 3) == 0) continue;
-        if (in->is_array && in->gl_array_size > 0 &&
+        /* Interface-block members carry their own ordinary array
+         * dimension; only the block instance itself is indexed by the
+         * input-vertex count. */
+        if (!in->block_member && in->is_array && in->gl_array_size > 0 &&
             (GLuint)in->gl_array_size != input_verts) {
             return GL_FALSE;
         }
