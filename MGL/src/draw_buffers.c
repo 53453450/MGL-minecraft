@@ -476,6 +476,27 @@ bool validate_program(GLMContext ctx)
         }
     }
 
+    /* GL 4.6 §11.4: a draw issued while a program pipeline without an
+     * active vertex shader stage is bound (and any graphics stage is
+     * present) generates INVALID_OPERATION. */
+    if (!program && !ctx->state.program_name) {
+        ProgramPipeline *pipeline = ctx->state.program_pipeline;
+        if (pipeline) {
+            bool has_vs = pipeline->stage_programs[_VERTEX_SHADER] != NULL;
+            bool has_any_graphics =
+                pipeline->stage_programs[_TESS_CONTROL_SHADER] != NULL ||
+                pipeline->stage_programs[_TESS_EVALUATION_SHADER] != NULL ||
+                pipeline->stage_programs[_GEOMETRY_SHADER] != NULL ||
+                pipeline->stage_programs[_FRAGMENT_SHADER] != NULL;
+            if (!has_vs && has_any_graphics) {
+                fprintf(stderr,
+                        "MGL WARNING: draw rejected: bound program pipeline "
+                        "has no active vertex shader\n");
+                return false;
+            }
+        }
+    }
+
     if (program) {
         if (program->shader_slots[_GEOMETRY_SHADER]) {
             static uint64_t s_geometryShaderProgramNoticeCount = 0;
