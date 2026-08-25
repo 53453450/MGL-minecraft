@@ -542,6 +542,12 @@ static MGLTypeSpec *parse_type_spec(MGLParser *p)
     } else if (n >= 5 && memcmp(s, "image", 5) == 0) {
         ts->base = MGL_AST_TYPE_IMAGE;
         ts->name = dup_token_text(p, t);
+    } else if (n >= 6 && memcmp(s, "iimage", 6) == 0) {
+        ts->base = MGL_AST_TYPE_IMAGE;
+        ts->name = dup_token_text(p, t);
+    } else if (n >= 6 && memcmp(s, "uimage", 6) == 0) {
+        ts->base = MGL_AST_TYPE_IMAGE;
+        ts->name = dup_token_text(p, t);
     } else if (n == 4 && s[0] == 'v' && s[1] == 'e' && s[2] == 'c' &&
                s[3] >= '1' && s[3] <= '4') {
         ts->vec_size = s[3] - '0';
@@ -1332,6 +1338,13 @@ more_qualifiers:
             d->qualifiers |= MGL_AST_Q_INVARIANT;
         } else if (eat_ident(p, "precise")) {
             d->qualifiers |= MGL_AST_Q_PRECISE;
+        } else if (eat_ident(p, "readonly") ||
+                   eat_ident(p, "writeonly") ||
+                   eat_ident(p, "coherent") ||
+                   eat_ident(p, "volatile") ||
+                   eat_ident(p, "restrict")) {
+            /* Image memory qualifiers constrain legal shader access but do
+             * not change the declaration's storage or interface shape. */
         } else if (at_ident(p, "lowp") || at_ident(p, "mediump") ||
                    at_ident(p, "highp")) {
             /* precision qualifier consumed; recorded on the type later */

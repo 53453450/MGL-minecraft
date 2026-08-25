@@ -86,6 +86,38 @@ static id mglRenderPassFallbackRenderTarget(
             mglRenderPassBackend(context));
 }
 
+static id mglRenderPassFallbackRenderTargetForSize(
+    GLMContext context, NSUInteger width, NSUInteger height)
+{
+    width = MAX(width, 1u);
+    height = MAX(height, 1u);
+    id texture = mglRenderPassFallbackRenderTarget(context);
+    MGLRenderTextureInfo info = mglRenderPassTextureInfo(texture);
+    if (texture && info.width == width && info.height == height) {
+        return texture;
+    }
+
+    MGLRenderTextureDescriptorState desc = {0};
+    desc.texture_type = MGLTextureType2D;
+    desc.pixel_format = MGLPixelFormatBGRA8Unorm;
+    desc.width = width;
+    desc.height = height;
+    desc.depth = 1;
+    desc.mipmap_level_count = 1;
+    desc.sample_count = 1;
+    desc.array_length = 1;
+    desc.usage = MGLTextureUsageRenderTarget | MGLTextureUsageShaderRead;
+    desc.storage_mode = MGLStorageModeShared;
+    id replacement = mglRenderPassCreateTexture(&desc);
+    if (!replacement ||
+        mglRendererBackendSetFallbackRenderTargetTexture(
+            mglRenderPassBackend(context),
+            (__bridge void *)replacement) != 0) {
+        return nil;
+    }
+    return mglRenderPassFallbackRenderTarget(context);
+}
+
 static id mglRenderPassTransientDepthTexture(
     GLMContext context, NSUInteger *widthOut, NSUInteger *heightOut)
 {
@@ -838,13 +870,15 @@ static GLenum mglPassthroughDeclType(
          const char *convert =
              mglGeometryPassthroughConversion(output->gl_type);
          if (convert) {
+             const char *carrierType =
+                 mglGeometryPassthroughFloatType(declType);
              [source appendFormat:
                  @"    vec4 mgl_slot_%u = "
                   "mgl_gs_output.records[mgl_base + %u];\n"
-                  "    %s = float(%s(mgl_slot_%u%s));\n",
+                  "    %s = %s(%s(mgl_slot_%u%s));\n",
                  (unsigned)i,
                  (unsigned)(MGL_AIR_PER_VERTEX_STRIDE / 16u + output->location),
-                 output->name, convert, (unsigned)i, swizzle];
+                 output->name, carrierType, convert, (unsigned)i, swizzle];
          } else {
              [source appendFormat:
                  @"    vec4 mgl_slot_%u = "
@@ -3285,32 +3319,19 @@ static GLenum mglPassthroughDeclType(
     }
 
     if (!hasOutputAttachment) {
+        Framebuffer *fbo = MGL_STATE(ctx)->framebuffer;
+        NSUInteger fallbackWidth = fbo && fbo->default_width > 0
+            ? (NSUInteger)fbo->default_width : 1u;
+        NSUInteger fallbackHeight = fbo && fbo->default_height > 0
+            ? (NSUInteger)fbo->default_height : 1u;
         id fallbackRenderTarget =
-            mglRenderPassFallbackRenderTarget(ctx);
-        if (!fallbackRenderTarget) {
-            MGLRenderTextureDescriptorState fbDesc = {0};
-            fbDesc.texture_type = MGLTextureType2D;
-            fbDesc.pixel_format = MGLPixelFormatBGRA8Unorm;
-            fbDesc.width = 1;
-            fbDesc.height = 1;
-            fbDesc.depth = 1;
-            fbDesc.mipmap_level_count = 1;
-            fbDesc.sample_count = 1;
-            fbDesc.array_length = 1;
-            fbDesc.usage = MGLTextureUsageRenderTarget | MGLTextureUsageShaderRead;
-            fbDesc.storage_mode = MGLStorageModeShared;
-            fallbackRenderTarget = mglRenderPassCreateTexture(&fbDesc);
-            if (mglRendererBackendSetFallbackRenderTargetTexture(
-                    mglRenderPassBackend(ctx),
-                    (__bridge void *)fallbackRenderTarget) != 0) {
-                fallbackRenderTarget = nil;
-            } else {
-                fallbackRenderTarget = mglRenderPassFallbackRenderTarget(ctx);
-            }
-        }
+            mglRenderPassFallbackRenderTargetForSize(
+                ctx, fallbackWidth, fallbackHeight);
 
         if (fallbackRenderTarget) {
-            NSLog(@"MGL WARNING: Render pass had no attachments; binding 1x1 fallback color target");
+            NSLog(@"MGL WARNING: Render pass had no attachments; binding %lux%lu fallback color target",
+                  (unsigned long)fallbackWidth,
+                  (unsigned long)fallbackHeight);
             mglRenderPassSetPersistentAttachment(
                 _renderPassManager.state,
                 MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0,
@@ -3321,7 +3342,7 @@ static GLenum mglPassthroughDeclType(
                 MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0,
                 MGLLoadActionLoad, MGLStoreActionStore);
             mglRenderPassSetPersistentDimensions(
-                _renderPassManager.state, 1, 1);
+                _renderPassManager.state, fallbackWidth, fallbackHeight);
         } else {
             NSLog(@"MGL ERROR: Failed to allocate fallback render target texture");
             [self recordGPUError];
@@ -3383,31 +3404,18 @@ static GLenum mglPassthroughDeclType(
 
     // Ultimate slot-0 fallback to keep draw path alive and avoid black frame.
     if (!hasOutputAttachment && !mglRenderPassColorTextureFor(_renderPassManager.state, 0)) {
+        Framebuffer *fbo = MGL_STATE(ctx)->framebuffer;
+        NSUInteger fallbackWidth = fbo && fbo->default_width > 0
+            ? (NSUInteger)fbo->default_width : 1u;
+        NSUInteger fallbackHeight = fbo && fbo->default_height > 0
+            ? (NSUInteger)fbo->default_height : 1u;
         id fallbackRenderTarget =
-            mglRenderPassFallbackRenderTarget(ctx);
-        if (!fallbackRenderTarget) {
-            MGLRenderTextureDescriptorState fbDesc = {0};
-            fbDesc.texture_type = MGLTextureType2D;
-            fbDesc.pixel_format = MGLPixelFormatBGRA8Unorm;
-            fbDesc.width = 1;
-            fbDesc.height = 1;
-            fbDesc.depth = 1;
-            fbDesc.mipmap_level_count = 1;
-            fbDesc.sample_count = 1;
-            fbDesc.array_length = 1;
-            fbDesc.usage = MGLTextureUsageRenderTarget | MGLTextureUsageShaderRead;
-            fbDesc.storage_mode = MGLStorageModeShared;
-            fallbackRenderTarget = mglRenderPassCreateTexture(&fbDesc);
-            if (mglRendererBackendSetFallbackRenderTargetTexture(
-                    mglRenderPassBackend(ctx),
-                    (__bridge void *)fallbackRenderTarget) != 0) {
-                fallbackRenderTarget = nil;
-            } else {
-                fallbackRenderTarget = mglRenderPassFallbackRenderTarget(ctx);
-            }
-        }
+            mglRenderPassFallbackRenderTargetForSize(
+                ctx, fallbackWidth, fallbackHeight);
         if (fallbackRenderTarget) {
-            NSLog(@"MGL WARNING: colorAttachment[0] unavailable; binding 1x1 fallback");
+            NSLog(@"MGL WARNING: colorAttachment[0] unavailable; binding %lux%lu fallback",
+                  (unsigned long)fallbackWidth,
+                  (unsigned long)fallbackHeight);
             mglRenderPassSetPersistentAttachment(
                 _renderPassManager.state,
                 MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0,
@@ -3417,10 +3425,8 @@ static GLenum mglPassthroughDeclType(
                 _renderPassManager.state,
                 MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0,
                 MGLLoadActionLoad, MGLStoreActionStore);
-            if (mglRenderPassRenderTargetWidthFor(_renderPassManager.state) == 0 || mglRenderPassRenderTargetHeightFor(_renderPassManager.state) == 0) {
-                mglRenderPassSetPersistentDimensions(
-                    _renderPassManager.state, 1, 1);
-            }
+            mglRenderPassSetPersistentDimensions(
+                _renderPassManager.state, fallbackWidth, fallbackHeight);
         } else {
             NSLog(@"MGL ERROR: Unable to allocate fallback colorAttachment[0] texture");
             [self recordGPUError];

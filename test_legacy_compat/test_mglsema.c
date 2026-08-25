@@ -510,6 +510,28 @@ static void test_builtins(void)
     teardown();
 }
 
+static void test_image2d_array_store(void)
+{
+    analyze_ex("#version 440 core\n"
+               "layout(rgba32i, binding = 0) writeonly uniform highp "
+               "iimage2DArray array_image;\n"
+               "void main() {\n"
+               "    imageStore(array_image, ivec3(1, 2, 3), "
+               "ivec4(0, 255, 0, 0));\n"
+               "}\n",
+               MGL_STAGE_FRAGMENT, &module, &errors, &error_count);
+    CHECK(error_count == 0,
+          "integer image2DArray imageStore accepted");
+    MGLIRSymbol *image = find_sym("array_image");
+    CHECK(image && image->type && image->type->kind == MGLIR_TYPE_IMAGE,
+          "array image lowered as storage image");
+    CHECK(image && image->type &&
+          image->type->tex_kind == MGLIR_TEX_2D_ARRAY &&
+          image->type->tex_storage == MGLIR_SCALAR_INT,
+          "array image preserves 2D-array signed storage type");
+    teardown();
+}
+
 static void test_constructors(void)
 {
     analyze("#version 450 core\n"
@@ -586,6 +608,7 @@ int main(void)
     test_integer_vector_types();
     test_matrix_arith();
     test_builtins();
+    test_image2d_array_store();
     test_constructors();
     test_interface_ok();
     test_interface_mismatch();

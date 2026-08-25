@@ -158,6 +158,32 @@ static void test_precision_statements(void)
     }
 }
 
+static void test_image_memory_qualifiers(void)
+{
+    const char *src =
+        "#version 440 core\n"
+        "layout(rgba32i, binding = 0) writeonly uniform highp "
+        "iimage2DArray array_image;\n"
+        "void main() {}\n";
+    MGLTranslationUnit *tu = mglGLSLParse(src, strlen(src));
+    CHECK(tu != NULL, "image qualifier TU created");
+    CHECK(tu && tu->error == NULL,
+          "image memory qualifier and integer array image accepted");
+    if (tu && tu->decl_count >= 1) {
+        MGLDecl *image = tu->decls[0];
+        CHECK((image->qualifiers & MGL_AST_Q_UNIFORM) != 0,
+              "image remains uniform");
+        CHECK(image->type && image->type->base == MGL_AST_TYPE_IMAGE,
+              "iimage2DArray classified as image");
+        CHECK(image->type && image->type->name &&
+              strcmp(image->type->name, "iimage2DArray") == 0,
+              "integer array image typename preserved");
+    }
+    if (tu) {
+        mglGLSLTranslationUnitDestroy(tu);
+    }
+}
+
 static void test_error_report(void)
 {
     const char *src = "void main( { }\n"; /* missing ')' */
@@ -176,6 +202,7 @@ int main(void)
     test_fragment();
     test_expr_path();
     test_precision_statements();
+    test_image_memory_qualifiers();
     test_error_report();
     printf("\n%d/%d passed\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;

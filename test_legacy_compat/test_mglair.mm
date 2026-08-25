@@ -211,6 +211,21 @@ static const char *kFS =
     "    fragColor = vec4(vUV + corr, 0.5 + (sel2 - 2.0) - off + corr2 + swcorr, 1.0);\n"
     "}\n";
 
+static const char *kFSMultipleTargets =
+    "#version 460 core\n"
+    "layout(location = 0) out vec4 color0;\n"
+    "layout(location = 1) out vec4 color1;\n"
+    "void main() { color0 = vec4(1.0); color1 = vec4(0.5); }\n";
+
+static const char *kFSImage2DArray =
+    "#version 460 core\n"
+    "layout(rgba32i, binding = 0) writeonly uniform highp "
+    "iimage2DArray array_image;\n"
+    "out vec4 color;\n"
+    "void main() {\n"
+    "    imageStore(array_image, ivec3(1, 2, 3), ivec4(0, 255, 0, 0));\n"
+    "}\n";
+
 static const char *kCS =
     "#version 460 core\n"
     "layout(local_size_x = 1) in;\n"
@@ -292,8 +307,10 @@ static const char *kGS =
     "#version 450 core\n"
     "layout(triangles) in;\n"
     "layout(triangle_strip, max_vertices=6) out;\n"
+    "layout(location = 0) out vec4 emitted_value;\n"
     "void emit_input(int i) {\n"
     "    gl_Position = gl_in[i].gl_Position;\n"
+    "    emitted_value = vec4(float(i + 1));\n"
     "    gl_PointSize = gl_in[i].gl_PointSize; EmitVertex();\n"
     "}\n"
     "void main() {\n"
@@ -534,6 +551,72 @@ int main(int argc, const char *argv[]) {
         }
         printf("PSO_OK\n");
 
+        /* Multiple named fragment outputs must become a struct return with one
+         * air.render_target entry per explicit layout(location). */
+        {
+            unsigned char *mrtBytes = NULL;
+            size_t mrtSize = 0;
+            if (mglShaderCompileGLSL(kFSMultipleTargets, MGL_STAGE_FRAGMENT,
+                                     &mrtBytes, &mrtSize,
+                                     err, sizeof err) != 0) {
+                fprintf(stderr, "MRT_COMPILE_FAIL: %s\n", err);
+                return 1;
+            }
+            id<MTLLibrary> mrtLib = loadLibrary(
+                dev, mrtBytes, mrtSize, "mrt-fragment");
+            mglShaderFree(mrtBytes);
+            id<MTLFunction> mrtFn = [mrtLib newFunctionWithName:@"main"];
+            MTLRenderPipelineDescriptor *mrtPD =
+                [MTLRenderPipelineDescriptor new];
+            mrtPD.vertexFunction = vsFn;
+            mrtPD.fragmentFunction = mrtFn;
+            mrtPD.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA8Unorm;
+            mrtPD.colorAttachments[1].pixelFormat = MTLPixelFormatRGBA8Unorm;
+            mrtPD.vertexDescriptor = vd;
+            NSError *mrtErr = nil;
+            id<MTLRenderPipelineState> mrtPSO =
+                [dev newRenderPipelineStateWithDescriptor:mrtPD error:&mrtErr];
+            if (!mrtFn || !mrtPSO) {
+                fprintf(stderr, "MRT_PSO_FAIL: %s\n",
+                        mrtErr.localizedDescription.UTF8String ?: "?");
+                return 1;
+            }
+            printf("MRT_PSO_OK\n");
+        }
+
+        /* Integer image2DArray writes use a texture2d_array<int, read_write>
+         * argument and the signed array-write AIR intrinsic. */
+        {
+            unsigned char *imageBytes = NULL;
+            size_t imageSize = 0;
+            if (mglShaderCompileGLSL(kFSImage2DArray, MGL_STAGE_FRAGMENT,
+                                     &imageBytes, &imageSize,
+                                     err, sizeof err) != 0) {
+                fprintf(stderr, "IMAGE2DA_COMPILE_FAIL: %s\n", err);
+                return 1;
+            }
+            id<MTLLibrary> imageLib = loadLibrary(
+                dev, imageBytes, imageSize, "image2da-fragment");
+            mglShaderFree(imageBytes);
+            id<MTLFunction> imageFn = [imageLib newFunctionWithName:@"main"];
+            MTLRenderPipelineDescriptor *imagePD =
+                [MTLRenderPipelineDescriptor new];
+            imagePD.vertexFunction = vsFn;
+            imagePD.fragmentFunction = imageFn;
+            imagePD.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA8Unorm;
+            imagePD.vertexDescriptor = vd;
+            NSError *imageErr = nil;
+            id<MTLRenderPipelineState> imagePSO =
+                [dev newRenderPipelineStateWithDescriptor:imagePD
+                                                    error:&imageErr];
+            if (!imageFn || !imagePSO) {
+                fprintf(stderr, "IMAGE2DA_PSO_FAIL: %s\n",
+                        imageErr.localizedDescription.UTF8String ?: "?");
+                return 1;
+            }
+            printf("IMAGE2DA_PSO_OK\n");
+        }
+
         /* CullDistance uses two hidden vertex buffers (slots 29/28) and
          * vertex_id metadata.  Building a real PSO catches malformed AIR
          * argument metadata that container-only tests cannot see. */
@@ -771,6 +854,125 @@ int main(int argc, const char *argv[]) {
                 }
             }
             printf("RUNTIME_LENGTH_OK\n");
+        }
+
+        /* Geometry P1 compute expansion: one triangle thread reads three
+         * fixed input records and expands two separately-ended strips into a
+         * six-vertex triangle list.  The user varying check pins the copies
+         * from both rolling-cache records, including each triangle's first
+         * vertex. */
+        {
+            unsigned char *gsBytes = NULL;
+            size_t gsSize = 0;
+            if (mglShaderCompileGLSL(kGS, MGL_STAGE_GEOMETRY,
+                                     &gsBytes, &gsSize,
+                                     err, sizeof err) != 0) {
+                fprintf(stderr, "gs compile FAIL: %s\n", err);
+                return 1;
+            }
+            id<MTLLibrary> gsLib = loadLibrary(dev, gsBytes, gsSize, "gs");
+            mglShaderFree(gsBytes);
+            if (!gsLib) return 1;
+            id<MTLFunction> gsFn = [gsLib newFunctionWithName:@"main"];
+            if (!gsFn) {
+                fprintf(stderr, "newFunctionWithName FAIL (gs)\n");
+                return 1;
+            }
+            NSError *gsErr = nil;
+            id<MTLComputePipelineState> gsPso =
+                [dev newComputePipelineStateWithFunction:gsFn error:&gsErr];
+            if (!gsPso) {
+                fprintf(stderr, "GS_PSO_FAIL: %s\n",
+                        gsErr.localizedDescription.UTF8String ?: "?");
+                return 1;
+            }
+            float gsIn[3][MGL_AIR_PER_VERTEX_STRIDE / sizeof(float)] = {
+                {-1.0f, -1.0f, 0.0f, 1.0f, 2.0f},
+                { 1.0f, -1.0f, 0.0f, 1.0f, 4.0f},
+                {-1.0f,  1.0f, 0.0f, 1.0f, 6.0f},
+            };
+            id<MTLBuffer> gsInput = [dev newBufferWithBytes:gsIn
+                                                      length:sizeof gsIn
+                                                     options:MTLResourceStorageModeShared];
+            const size_t gsStride = MGL_AIR_PER_VERTEX_STRIDE + 16u;
+            const size_t gsStrideFloats = gsStride / sizeof(float);
+            id<MTLBuffer> gsOutput = [dev newBufferWithLength:
+                                                       14 * gsStride
+                                                       options:MTLResourceStorageModeShared];
+            id<MTLBuffer> gsCount = [dev newBufferWithLength:
+                                                      MGL_AIR_GS_COUNTS_RECORD_BYTES
+                                                      options:MTLResourceStorageModeShared];
+            MGLAIRGSGatherParams gsGatherParams = {};
+            gsGatherParams.vertices_per_instance = 3u;
+            gsGatherParams.primitives_per_instance = 1u;
+            gsGatherParams.stage_in_stride = MGL_AIR_PER_VERTEX_STRIDE;
+            const uint32_t gsGatherIndices[3] = {0u, 1u, 2u};
+            id<MTLBuffer> gsGather = [dev newBufferWithBytes:gsGatherIndices
+                                                     length:sizeof gsGatherIndices
+                                                    options:MTLResourceStorageModeShared];
+            id<MTLBuffer> gsXfb = [dev newBufferWithLength:gsStride
+                                                   options:MTLResourceStorageModeShared];
+            MGLAIRGSXFBMeta gsXfbMeta = {};
+            id<MTLBuffer> gsMeta = [dev newBufferWithBytes:&gsXfbMeta
+                                                    length:sizeof gsXfbMeta
+                                                   options:MTLResourceStorageModeShared];
+            id<MTLBuffer> gsVisibility = [dev newBufferWithLength:4u
+                                                          options:MTLResourceStorageModeShared];
+            memset(gsOutput.contents, 0, gsOutput.length);
+            memset(gsCount.contents, 0, gsCount.length);
+            id<MTLCommandBuffer> gcb = [cq commandBuffer];
+            id<MTLComputeCommandEncoder> genc = [gcb computeCommandEncoder];
+            [genc setComputePipelineState:gsPso];
+            [genc setBuffer:gsInput offset:0 atIndex:MGL_AIR_GS_SLOT_INPUT];
+            [genc setBuffer:gsOutput offset:0 atIndex:MGL_AIR_GS_SLOT_OUTPUT];
+            [genc setBuffer:gsCount offset:0 atIndex:MGL_AIR_GS_SLOT_COUNTS];
+            [genc setBuffer:gsGather offset:0 atIndex:MGL_AIR_GS_SLOT_GATHER];
+            [genc setBytes:&gsGatherParams length:sizeof gsGatherParams
+                   atIndex:MGL_AIR_GS_SLOT_GATHER_PARAMS];
+            [genc setBuffer:gsXfb offset:0 atIndex:MGL_AIR_GS_SLOT_XFB];
+            [genc setBuffer:gsMeta offset:0 atIndex:MGL_AIR_GS_SLOT_XFB_META];
+            [genc setBuffer:gsVisibility offset:0
+                   atIndex:MGL_AIR_GS_SLOT_XFB_VIS];
+            [genc dispatchThreads:MTLSizeMake(1, 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+            [genc endEncoding];
+            [gcb commit];
+            [gcb waitUntilCompleted];
+            if (gcb.status == MTLCommandBufferStatusError) {
+                fprintf(stderr, "GS_DISPATCH_FAIL: %s\n",
+                        gcb.error.localizedDescription.UTF8String ?: "?");
+                return 1;
+            }
+            float *gsOut = (float *)gsOutput.contents +
+                2 * gsStrideFloats;
+            const float expectedX[6] = {-1.0f, 1.0f, -1.0f,
+                                        -1.0f, 1.0f, -1.0f};
+            const float expectedPoint[6] = {2.0f, 4.0f, 6.0f,
+                                            6.0f, 4.0f, 2.0f};
+            const float expectedVarying[6] = {1.0f, 2.0f, 3.0f,
+                                              3.0f, 2.0f, 1.0f};
+            bool gsValuesOK = *(uint32_t *)gsCount.contents == 6u;
+            for (size_t vertex = 0; vertex < 6u; vertex++) {
+                const float *record = gsOut + vertex * gsStrideFloats;
+                gsValuesOK = gsValuesOK &&
+                    fabsf(record[0] - expectedX[vertex]) <= 1e-5f &&
+                    fabsf(record[4] - expectedPoint[vertex]) <= 1e-5f &&
+                    fabsf(record[MGL_AIR_PER_VERTEX_STRIDE / sizeof(float)] -
+                          expectedVarying[vertex]) <= 1e-5f;
+            }
+            if (!gsValuesOK) {
+                fprintf(stderr, "GS_VALUE_FAIL: count=%u",
+                        *(uint32_t *)gsCount.contents);
+                for (size_t vertex = 0; vertex < 6u; vertex++) {
+                    const float *record = gsOut + vertex * gsStrideFloats;
+                    fprintf(stderr, " p%zu=(%f;%f;%f)", vertex,
+                            record[0], record[4],
+                            record[MGL_AIR_PER_VERTEX_STRIDE / sizeof(float)]);
+                }
+                fprintf(stderr, "\n");
+                return 1;
+            }
+            printf("GS_OK\n");
         }
 
         /* TCS compute kernel: copy two patches of fixed gl_PerVertex records
@@ -1025,93 +1227,6 @@ int main(int argc, const char *argv[]) {
                 return 1;
             }
             printf("TES_OK\n");
-        }
-
-        /* Geometry P1 compute expansion: one triangle thread reads three
-         * fixed 32-byte per-vertex records and expands two separately-ended
-         * strips into a six-vertex triangle list. */
-        {
-            unsigned char *gsBytes = NULL;
-            size_t gsSize = 0;
-            if (mglShaderCompileGLSL(kGS, MGL_STAGE_GEOMETRY,
-                                     &gsBytes, &gsSize,
-                                     err, sizeof err) != 0) {
-                fprintf(stderr, "gs compile FAIL: %s\n", err);
-                return 1;
-            }
-            id<MTLLibrary> gsLib = loadLibrary(dev, gsBytes, gsSize, "gs");
-            mglShaderFree(gsBytes);
-            if (!gsLib) return 1;
-            id<MTLFunction> gsFn = [gsLib newFunctionWithName:@"main"];
-            if (!gsFn) {
-                fprintf(stderr, "newFunctionWithName FAIL (gs)\n");
-                return 1;
-            }
-            NSError *gsErr = nil;
-            id<MTLComputePipelineState> gsPso =
-                [dev newComputePipelineStateWithFunction:gsFn error:&gsErr];
-            if (!gsPso) {
-                fprintf(stderr, "GS_PSO_FAIL: %s\n",
-                        gsErr.localizedDescription.UTF8String ?: "?");
-                return 1;
-            }
-            float gsIn[3][MGL_AIR_PER_VERTEX_STRIDE / sizeof(float)] = {
-                {-1.0f, -1.0f, 0.0f, 1.0f, 2.0f},
-                { 1.0f, -1.0f, 0.0f, 1.0f, 4.0f},
-                {-1.0f,  1.0f, 0.0f, 1.0f, 6.0f},
-            };
-            id<MTLBuffer> gsInput = [dev newBufferWithBytes:gsIn
-                                                      length:sizeof gsIn
-                                                     options:MTLResourceStorageModeShared];
-            id<MTLBuffer> gsOutput = [dev newBufferWithLength:
-                                                       14 * MGL_AIR_PER_VERTEX_STRIDE
-                                                       options:MTLResourceStorageModeShared];
-            id<MTLBuffer> gsCount = [dev newBufferWithLength:16
-                                                      options:MTLResourceStorageModeShared];
-            memset(gsOutput.contents, 0, gsOutput.length);
-            memset(gsCount.contents, 0, gsCount.length);
-            id<MTLCommandBuffer> gcb = [cq commandBuffer];
-            id<MTLComputeCommandEncoder> genc = [gcb computeCommandEncoder];
-            [genc setComputePipelineState:gsPso];
-            [genc setBuffer:gsInput offset:0 atIndex:24];
-            [genc setBuffer:gsOutput offset:0 atIndex:28];
-            [genc setBuffer:gsCount offset:0 atIndex:29];
-            [genc dispatchThreads:MTLSizeMake(1, 1, 1)
-              threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
-            [genc endEncoding];
-            [gcb commit];
-            [gcb waitUntilCompleted];
-            if (gcb.status == MTLCommandBufferStatusError) {
-                fprintf(stderr, "GS_DISPATCH_FAIL: %s\n",
-                        gcb.error.localizedDescription.UTF8String ?: "?");
-                return 1;
-            }
-            float *gsOut = (float *)gsOutput.contents +
-                2 * (MGL_AIR_PER_VERTEX_STRIDE / sizeof(float));
-            if (*(uint32_t *)gsCount.contents != 6u ||
-                fabsf(gsOut[0] + 1.0f) > 1e-5f ||
-                fabsf(gsOut[16] - 1.0f) > 1e-5f ||
-                fabsf(gsOut[32] + 1.0f) > 1e-5f ||
-                fabsf(gsOut[48] + 1.0f) > 1e-5f ||
-                fabsf(gsOut[64] - 1.0f) > 1e-5f ||
-                fabsf(gsOut[80] + 1.0f) > 1e-5f ||
-                fabsf(gsOut[4] - 2.0f) > 1e-5f ||
-                fabsf(gsOut[20] - 4.0f) > 1e-5f ||
-                fabsf(gsOut[36] - 6.0f) > 1e-5f ||
-                fabsf(gsOut[52] - 6.0f) > 1e-5f ||
-                fabsf(gsOut[68] - 4.0f) > 1e-5f ||
-                fabsf(gsOut[84] - 2.0f) > 1e-5f) {
-                fprintf(stderr, "GS_VALUE_FAIL: count=%u p0=(%f,%f;%f) p1=(%f,%f;%f) p2=(%f,%f;%f) p3=(%f,%f;%f) p4=(%f,%f;%f) p5=(%f,%f;%f)\n",
-                        *(uint32_t *)gsCount.contents,
-                        gsOut[0], gsOut[1], gsOut[4],
-                        gsOut[16], gsOut[17], gsOut[20],
-                        gsOut[32], gsOut[33], gsOut[36],
-                        gsOut[48], gsOut[49], gsOut[52],
-                        gsOut[64], gsOut[65], gsOut[68],
-                        gsOut[80], gsOut[81], gsOut[84]);
-                return 1;
-            }
-            printf("GS_OK\n");
         }
 
         /* Runtime-array `.length()` in fixed compute ABIs: the size table is

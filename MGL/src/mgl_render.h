@@ -2688,6 +2688,8 @@ typedef struct MGLRenderPassAttachmentState_t {
     uint64_t resolve_depth_plane;
     uint32_t load_action;
     uint32_t store_action;
+    uint32_t layered;
+    uint32_t _padding;
     uint64_t store_action_options;
 } MGLRenderPassAttachmentState;
 

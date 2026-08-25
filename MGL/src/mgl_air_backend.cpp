@@ -217,7 +217,7 @@ struct Codegen {
     std::map<std::string, uint32_t> bufferOffsets;  /* uniform name -> byte offset */
     std::map<std::string, llvm::Value *> lvalues;   /* register values */
     std::vector<VarSym *> varyings;      /* vertex out / fragment in, decl order */
-    VarSym *fragOutput = nullptr;        /* fragment out vec4 */
+    std::vector<VarSym *> fragOutputs;   /* fragment outputs, return-field order */
     VarSym position;                     /* gl_Position */
     llvm::Type *retTy = nullptr;         /* stage return type */
     std::vector<llvm::Type *> retElems;  /* VS struct fields (incl. position) */
@@ -2593,6 +2593,7 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
     storeGeometryLayer(cg, outputRecord, firstLayer);
     storeGeometryViewportIndex(cg, outputRecord, firstViewport);
     copyGeometryPrimitiveIdSelected(cg, outputRecord, 0, 1, odd);
+    copyGeometryVaryingsSelected(cg, outputRecord, 0, 1, odd);
     storeGeometryPosition(cg,
         cg.b->CreateAdd(outputRecord, cg.b->getInt32(1)), second);
     storeGeometryPointSize(cg,
@@ -3716,10 +3717,9 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 return cg.b->CreateBitCast(a0, dst);
             }
         }
-        /* Storage-image operations use the same texture handle table as
-         * sampled textures but have no sampler parameter.  Keep the M3
-         * implementation deliberately narrow to the image2D float form
-         * accepted by the frontend table above. */
+        /* Storage-image operations use the texture handle table but have no
+         * sampler parameter.  image2D keeps the original float path; the
+         * array write path below mirrors Metal's texture2d_array integer ABI. */
         if (strcmp(name, "imageStore") == 0 ||
             strcmp(name, "imageLoad") == 0 ||
             strcmp(name, "imageSize") == 0) {
@@ -3732,11 +3732,13 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 return nullptr;
             }
             const MGLIRSymbol *is = findSymbol(mod, ia->u.var_ref.name);
+            bool is2DArray = is && is->type->kind == MGLIR_TYPE_IMAGE &&
+                             is->type->tex_kind == MGLIR_TEX_2D_ARRAY;
             if (!is || is->type->kind != MGLIR_TYPE_IMAGE ||
-                is->type->tex_kind != MGLIR_TEX_2D) {
+                (is->type->tex_kind != MGLIR_TEX_2D && !is2DArray)) {
                 cg.err = 1;
                 cg.errmsg = std::string("codegen: ") + name +
-                    " currently requires image2D";
+                    " currently requires image2D or image2DArray";
                 return nullptr;
             }
             llvm::Value *tex = samplerTexValue(cg, ia->u.var_ref.name);
@@ -3749,7 +3751,15 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
             llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
             llvm::Type *v2i32 = llvm::FixedVectorType::get(i32, 2);
+            llvm::Type *v3i32 = llvm::FixedVectorType::get(i32, 3);
             llvm::Type *v4f32 = llvm::FixedVectorType::get(f32, 4);
+            llvm::Type *v4i32 = llvm::FixedVectorType::get(i32, 4);
+            if (is2DArray && strcmp(name, "imageStore") != 0) {
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: ") + name +
+                    " image2DArray is not implemented yet";
+                return nullptr;
+            }
             if (strcmp(name, "imageSize") == 0) {
                 llvm::Value *w = callAirFn(cg, "air.get_width_texture_2d",
                                            i32, {tex, cg.b->getInt32(0)});
@@ -3762,7 +3772,17 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             llvm::Value *coord = emitExpr(cg, e->u.call.args[1], mod, locals);
             if (!coord) return nullptr;
             coord = coerceScalar(cg, coord, MGLIR_SCALAR_INT);
-            if (coord->getType() != v2i32) {
+            llvm::Value *layer = nullptr;
+            if (is2DArray) {
+                if (coord->getType() != v3i32) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: image2DArray coordinate must be ivec3";
+                    return nullptr;
+                }
+                layer = cg.b->CreateExtractElement(coord, cg.b->getInt32(2));
+                coord = cg.b->CreateShuffleVector(
+                    coord, llvm::UndefValue::get(coord->getType()), {0, 1});
+            } else if (coord->getType() != v2i32) {
                 cg.err = 1;
                 cg.errmsg = std::string("codegen: ") + name +
                     " image2D coordinate must be ivec2";
@@ -3778,6 +3798,22 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             }
             llvm::Value *value = emitExpr(cg, e->u.call.args[2], mod, locals);
             if (!value) return nullptr;
+            if (is2DArray) {
+                if (value->getType() != v4i32 ||
+                    (is->type->tex_storage != MGLIR_SCALAR_INT &&
+                     is->type->tex_storage != MGLIR_SCALAR_UINT)) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: integer image2DArray store requires ivec4/uvec4";
+                    return nullptr;
+                }
+                const char *intrinsic = is->type->tex_storage == MGLIR_SCALAR_UINT
+                    ? "air.write_texture_2d_array.u.v4i32"
+                    : "air.write_texture_2d_array.s.v4i32";
+                return callAirFn(cg, intrinsic,
+                                 llvm::Type::getVoidTy(*cg.ctx),
+                                 {tex, coord, layer, value,
+                                  cg.b->getInt32(0), cg.b->getInt32(3)});
+            }
             value = coerceScalar(cg, value, MGLIR_SCALAR_FLOAT);
             if (value->getType() != v4f32) {
                 cg.err = 1;
@@ -5361,37 +5397,51 @@ llvm::Value *assembleReturn(Codegen &cg) {
                                : llvm::UndefValue::get(cg.retTy);
         return applyCullDistance(cg, fixClipZ(cg, pos));
     }
-    VarSym *out = nullptr;
-    for (VarSym &v : *cg.auxSyms)
-        if (v.kind == VarSym::OUTPUT) { out = &v; break; }
-    llvm::Value *color = (out && cg.lvalues.count(out->name))
-        ? cg.lvalues[out->name] : llvm::UndefValue::get(cg.retTy);
-    if (out && out->type.isArray()) {
+    VarSym *arrayOut = nullptr;
+    for (VarSym &v : *cg.auxSyms) {
+        if (v.kind == VarSym::OUTPUT && v.type.isArray()) {
+            arrayOut = &v;
+            break;
+        }
+    }
+    if (arrayOut) {
+        llvm::Value *color = cg.lvalues.count(arrayOut->name)
+            ? cg.lvalues[arrayOut->name]
+            : llvm::UndefValue::get(llvmType(arrayOut->type, *cg.ctx));
         /* gl_FragData[i]: extract each element into the struct return. */
         llvm::Value *ret = llvm::UndefValue::get(cg.retTy);
-        for (uint32_t i = 0; i < (uint32_t)out->type.arr; i++)
+        for (uint32_t i = 0; i < (uint32_t)arrayOut->type.arr; i++)
             ret = cg.b->CreateInsertValue(
                 ret, cg.b->CreateExtractValue(color, i), i);
         if (cg.hasFragDepth) {
             llvm::Value *depth = cg.lvalues.count("gl_FragDepth")
                 ? cg.lvalues["gl_FragDepth"]
                 : llvm::ConstantFP::get(llvm::Type::getFloatTy(*cg.ctx), 1.0);
-            ret = cg.b->CreateInsertValue(ret, depth, out->type.arr);
+            ret = cg.b->CreateInsertValue(ret, depth, arrayOut->type.arr);
         }
         return ret;
     }
-    if (cg.hasFragDepth) {
-        /* Struct return: color + [[depth(any)]] member.  An unwritten
-         * gl_FragDepth keeps 1.0 (the depth(any) contract: shaders that
-         * reference the builtin control the depth). */
+    if (cg.fragOutputs.size() > 1u || cg.hasFragDepth) {
         llvm::Value *ret = llvm::UndefValue::get(cg.retTy);
-        ret = cg.b->CreateInsertValue(ret, color, 0);
-        llvm::Value *depth = cg.lvalues.count("gl_FragDepth")
-            ? cg.lvalues["gl_FragDepth"]
-            : llvm::ConstantFP::get(llvm::Type::getFloatTy(*cg.ctx), 1.0);
-        return cg.b->CreateInsertValue(ret, depth, 1);
+        uint32_t field = 0u;
+        for (VarSym *out : cg.fragOutputs) {
+            llvm::Value *color = cg.lvalues.count(out->name)
+                ? cg.lvalues[out->name]
+                : llvm::UndefValue::get(llvmType(out->type, *cg.ctx));
+            ret = cg.b->CreateInsertValue(ret, color, field++);
+        }
+        if (cg.fragOutputs.empty()) field = 1u;
+        if (cg.hasFragDepth) {
+            llvm::Value *depth = cg.lvalues.count("gl_FragDepth")
+                ? cg.lvalues["gl_FragDepth"]
+                : llvm::ConstantFP::get(llvm::Type::getFloatTy(*cg.ctx), 1.0);
+            ret = cg.b->CreateInsertValue(ret, depth, field);
+        }
+        return ret;
     }
-    return color;
+    VarSym *out = cg.fragOutputs.empty() ? nullptr : cg.fragOutputs[0];
+    return (out && cg.lvalues.count(out->name))
+        ? cg.lvalues[out->name] : llvm::UndefValue::get(cg.retTy);
 }
 
 void emitCompound(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
@@ -6523,7 +6573,9 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             bool input = ((isTCS || isGS) && v.kind == VarSym::VARYING) ||
                          (isTES && v.kind == VarSym::CONTROL_POINT_INPUT);
             bool output = ((isVS || isTES) && v.kind == VarSym::VARYING) ||
-                          ((isTCS || isGS) && v.kind == VarSym::OUTPUT);
+                          ((isTCS || isGS) && v.kind == VarSym::OUTPUT) ||
+                          (!isVS && !isTES && !isKernel &&
+                           v.kind == VarSym::OUTPUT);
             if (input) {
                 uint32_t &next = v.isPatch
                     ? nextPatchInputLocation : nextInputLocation;
@@ -6617,6 +6669,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     /* Vertex return: { position, varyings... }; fragment: { output }. */
     std::vector<llvm::Type *> retElems;
     std::vector<VarSym *> varyings;
+    std::vector<VarSym *> fragOutputs;
     llvm::Type *retTy = nullptr;
     /* Built-in detection mirrors the legacy path's strstr over the source
      * (gl_FragCoord -> fragment position arg; gl_PointSize -> point_size
@@ -6704,36 +6757,46 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     } else if (isKernel) {
         retTy = llvm::Type::getVoidTy(ctx);
     } else {
-        VarSym *out = nullptr;
+        VarSym *arrayOutput = nullptr;
         for (VarSym &v : syms) {
-            if (v.kind == VarSym::OUTPUT) { out = &v; break; }
+            if (v.kind != VarSym::OUTPUT) continue;
+            if (v.type.isArray()) {
+                arrayOutput = &v;
+                break;
+            }
+            fragOutputs.push_back(&v);
         }
-        if (out && out->type.isArray()) {
+        std::sort(fragOutputs.begin(), fragOutputs.end(),
+                  [](const VarSym *a, const VarSym *b) {
+                      return a->location < b->location;
+                  });
+        if (arrayOutput) {
             /* gl_FragData[i]: array fragment outputs are flattened into
              * per-element color outputs (MSL forbids array members in
              * render-target structs — same constraint as array varyings).
              * Each element becomes a float4 [[color(i)]] member. */
             std::vector<llvm::Type *> fields;
-            for (uint32_t i = 0; i < (uint32_t)out->type.arr; i++)
+            for (uint32_t i = 0; i < (uint32_t)arrayOutput->type.arr; i++)
                 fields.push_back(llvm::FixedVectorType::get(
                     llvm::Type::getFloatTy(ctx), 4));
             if (usesFragDepth)
                 fields.push_back(llvm::Type::getFloatTy(ctx));
             retTy = llvm::StructType::get(ctx, fields);
-        } else if (usesFragDepth) {
-            /* Fragment functions write depth through the [[depth(any)]]
-             * member of a struct return (see aux_shaders/scaled_depth_blit
-             * for the reference MSL shape). */
+        } else if (fragOutputs.size() > 1u || usesFragDepth) {
             std::vector<llvm::Type *> fields;
-            fields.push_back(out ? llvmType(out->type, ctx)
-                                 : llvm::FixedVectorType::get(
-                                       llvm::Type::getFloatTy(ctx), 4));
-            fields.push_back(llvm::Type::getFloatTy(ctx));
+            for (VarSym *out : fragOutputs)
+                fields.push_back(llvmType(out->type, ctx));
+            if (fields.empty())
+                fields.push_back(llvm::FixedVectorType::get(
+                    llvm::Type::getFloatTy(ctx), 4));
+            if (usesFragDepth)
+                fields.push_back(llvm::Type::getFloatTy(ctx));
             retTy = llvm::StructType::get(ctx, fields);
         } else {
-            retTy = out ? llvmType(out->type, ctx)
-                        : llvm::FixedVectorType::get(
-                              llvm::Type::getFloatTy(ctx), 4);
+            retTy = !fragOutputs.empty()
+                ? llvmType(fragOutputs[0]->type, ctx)
+                : llvm::FixedVectorType::get(
+                      llvm::Type::getFloatTy(ctx), 4);
         }
     }
 
@@ -6758,6 +6821,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         if (isVS && v.kind == VarSym::ATTR) attrCount++;
     llvm::StructType *texTy2d =
         llvm::StructType::create(ctx, "struct._texture_2d_t");
+    llvm::StructType *texTy2dArray =
+        llvm::StructType::create(ctx, "struct._texture_2d_array_t");
     llvm::StructType *texTy3d =
         llvm::StructType::create(ctx, "struct._texture_3d_t");
     llvm::StructType *texTyBuf =
@@ -6802,7 +6867,9 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         const MGLIRSymbol *ts = findSymbol(&mod, v.name.c_str());
         MGLIRTexKind tk = ts && ts->type->kind == MGLIR_TYPE_IMAGE
             ? ts->type->tex_kind : MGLIR_TEX_2D;
-        llvm::StructType *tt = (tk == MGLIR_TEX_3D) ? texTy3d : texTy2d;
+        llvm::StructType *tt = (tk == MGLIR_TEX_3D) ? texTy3d
+                             : (tk == MGLIR_TEX_2D_ARRAY) ? texTy2dArray
+                             : texTy2d;
         paramTys.push_back(tt->getPointerTo(1));
     }
     for (VarSym &v : syms) {
@@ -7264,6 +7331,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     cg.retTy = retTy;
     cg.retElems = retElems;
     cg.varyings = varyings;
+    cg.fragOutputs = fragOutputs;
     cg.auxSyms = &syms;
 
     /* User-defined functions (fog helpers etc.): create the LLVM
@@ -8265,6 +8333,18 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             const MGLIRSymbol *iss = findSymbol(&mod, v.name.c_str());
             bool is3d = iss && iss->type->kind == MGLIR_TYPE_IMAGE &&
                         iss->type->tex_kind == MGLIR_TEX_3D;
+            bool is2dArray = iss && iss->type->kind == MGLIR_TYPE_IMAGE &&
+                             iss->type->tex_kind == MGLIR_TEX_2D_ARRAY;
+            const char *imageType = is3d
+                ? "texture3d<float, access::read_write>"
+                : "texture2d<float, access::read_write>";
+            if (is2dArray) {
+                imageType = iss->type->tex_storage == MGLIR_SCALAR_INT
+                    ? "texture2d_array<int, read_write>"
+                    : iss->type->tex_storage == MGLIR_SCALAR_UINT
+                        ? "texture2d_array<uint, read_write>"
+                        : "texture2d_array<float, read_write>";
+            }
             argNodes.push_back(llvm::MDNode::get(ctx, {
                 llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                     llvm::Type::getInt32Ty(ctx), texArg++)),
@@ -8276,9 +8356,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     llvm::Type::getInt32Ty(ctx), 1)),
                 llvm::MDString::get(ctx, "air.read_write"),
                 llvm::MDString::get(ctx, "air.arg_type_name"),
-                llvm::MDString::get(ctx, is3d
-                    ? "texture3d<float, access::read_write>"
-                    : "texture2d<float, access::read_write>"),
+                llvm::MDString::get(ctx, imageType),
                 llvm::MDString::get(ctx, "air.arg_name"),
                 llvm::MDString::get(ctx, v.name)}));
         }
@@ -8716,36 +8794,42 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             }
         }
     } else if (!isKernel) {
-        VarSym *out = nullptr;
-        for (VarSym &v : syms)
-            if (v.kind == VarSym::OUTPUT) { out = &v; break; }
-        if (out) {
-            if (out->type.isArray()) {
-                /* gl_FragData[i]: one render_target node per element with
-                 * (member index, color index) constants. */
-                for (uint32_t i = 0; i < (uint32_t)out->type.arr; i++) {
-                    std::string elName = std::string(out->name) + "_" +
-                                         std::to_string(i);
-                    outNodes.push_back(llvm::MDNode::get(ctx, {
-                        llvm::MDString::get(ctx, "air.render_target"),
-                        llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                            llvm::Type::getInt32Ty(ctx), i)),
-                        llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                            llvm::Type::getInt32Ty(ctx), 0)),
-                        llvm::MDString::get(ctx, "air.arg_type_name"),
-                        llvm::MDString::get(ctx, "float4"),
-                        llvm::MDString::get(ctx, "air.arg_name"),
-                        llvm::MDString::get(ctx, elName.c_str())}));
-                }
-            } else {
+        VarSym *arrayOut = nullptr;
+        for (VarSym &v : syms) {
+            if (v.kind == VarSym::OUTPUT && v.type.isArray()) {
+                arrayOut = &v;
+                break;
+            }
+        }
+        if (arrayOut) {
+            /* gl_FragData[i]: one render_target node per element with
+             * (member index, color index) constants. */
+            for (uint32_t i = 0; i < (uint32_t)arrayOut->type.arr; i++) {
+                std::string elName = std::string(arrayOut->name) + "_" +
+                                     std::to_string(i);
                 outNodes.push_back(llvm::MDNode::get(ctx, {
                     llvm::MDString::get(ctx, "air.render_target"),
                     llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                        llvm::Type::getInt32Ty(ctx), 0)),
+                        llvm::Type::getInt32Ty(ctx), i)),
                     llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                         llvm::Type::getInt32Ty(ctx), 0)),
                     llvm::MDString::get(ctx, "air.arg_type_name"),
-                    llvm::MDString::get(ctx, mslTypeName(out->type))}));
+                    llvm::MDString::get(ctx, "float4"),
+                    llvm::MDString::get(ctx, "air.arg_name"),
+                    llvm::MDString::get(ctx, elName.c_str())}));
+            }
+        } else {
+            for (VarSym *out : fragOutputs) {
+                outNodes.push_back(llvm::MDNode::get(ctx, {
+                    llvm::MDString::get(ctx, "air.render_target"),
+                    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(ctx), out->location)),
+                    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(ctx), 0)),
+                    llvm::MDString::get(ctx, "air.arg_type_name"),
+                    llvm::MDString::get(ctx, mslTypeName(out->type)),
+                    llvm::MDString::get(ctx, "air.arg_name"),
+                    llvm::MDString::get(ctx, out->name)}));
             }
         }
         if (usesFragDepth) {
