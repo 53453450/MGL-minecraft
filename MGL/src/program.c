@@ -1443,6 +1443,23 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         return;
     }
 
+    /* GL 4.6 §11.4.3: a non-separable program that contains any of
+     * TCS/TES/GS/FS must also contain a vertex shader to link. */
+    {
+        const GLuint graphics_without_vs =
+            (1u << _TESS_CONTROL_SHADER) | (1u << _TESS_EVALUATION_SHADER) |
+            (1u << _GEOMETRY_SHADER) | (1u << _FRAGMENT_SHADER);
+        if (!pptr->program_separable &&
+            (pptr->attached_shader_mask & graphics_without_vs) &&
+            !(pptr->attached_shader_mask & (1u << _VERTEX_SHADER))) {
+            fprintf(stderr,
+                    "MGL WARNING: mglLinkProgram failed program %u: "
+                    "no vertex shader attached for a non-separable program\n",
+                    pptr->name);
+            return;
+        }
+    }
+
     if (!mglValidateGeometryInterface(pptr)) {
         fprintf(stderr,
                 "MGL WARNING: mglLinkProgram failed program %u: vertex "
@@ -2295,13 +2312,15 @@ void mglGetProgramiv(GLMContext ctx, GLuint program, GLenum pname, GLint *params
         case GL_GEOMETRY_OUTPUT_TYPE:       /* 0x8918 */
         case GL_GEOMETRY_VERTICES_OUT:      /* 0x8916 */
         case GL_GEOMETRY_SHADER_INVOCATIONS:/* 0x887F */
-            if (!pptr->link_success) {
+            if (!pptr->link_success ||
+                !pptr->shader_slots[_GEOMETRY_SHADER]) {
+                /* GL 4.6 §22.2: these pnames are geometry-shader state;
+                 * querying them on a program with no linked geometry
+                 * shader generates INVALID_OPERATION (not zero). */
                 ERROR_RETURN(GL_INVALID_OPERATION);
                 return;
             }
-            if (!pptr->shader_slots[_GEOMETRY_SHADER]) {
-                *params = 0;
-            } else if (pname == GL_GEOMETRY_INPUT_TYPE) {
+            if (pname == GL_GEOMETRY_INPUT_TYPE) {
                 *params = (GLint)pptr->geometry_input_type;
             } else if (pname == GL_GEOMETRY_OUTPUT_TYPE) {
                 *params = (GLint)pptr->geometry_output_type;
