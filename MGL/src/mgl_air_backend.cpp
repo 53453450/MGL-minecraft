@@ -4412,9 +4412,45 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         case MGL_OP_INC:
         case MGL_OP_DEC: {
             if (e->u.unary.operand->kind != MGL_EXPR_VAR_REF) {
-                cg.err = 1;
-                cg.errmsg = std::string("codegen: ++/-- requires a variable");
-                return nullptr;
+                /* SSBO member/index lvalues read-modify-write through the
+                 * device pointer; other non-variable forms stay
+                 * unsupported. */
+                const MGLIRSymbol *sb =
+                    ssboRootSym(e->u.unary.operand, mod);
+                if (!sb) {
+                    cg.err = 1;
+                    cg.errmsg =
+                        std::string("codegen: ++/-- requires a variable");
+                    return nullptr;
+                }
+                const MGLIRType *sty = nullptr;
+                llvm::Value *sp = ssboAddress(cg, e->u.unary.operand, sb,
+                                              mod, locals, &sty);
+                if (!sp) return nullptr;
+                llvm::Type *slt = llvmType(typeFromIR(sty), *cg.ctx);
+                llvm::Align salign(16);
+                if (auto *vt =
+                        llvm::dyn_cast<llvm::FixedVectorType>(slt)) {
+                    uint64_t w = vt->getElementCount().getFixedValue();
+                    if (w == 1) salign = llvm::Align(4);
+                    else if (w == 2) salign = llvm::Align(8);
+                } else if (slt->isFloatTy() || slt->isIntegerTy(32)) {
+                    salign = llvm::Align(4);
+                }
+                sp = cg.b->CreateBitCast(sp, slt->getPointerTo(1));
+                llvm::Value *cur =
+                    cg.b->CreateAlignedLoad(slt, sp, salign);
+                bool sfp = slt->isFPOrFPVectorTy();
+                llvm::Constant *sone = sfp
+                    ? llvm::ConstantFP::get(slt, 1.0)
+                    : llvm::ConstantInt::get(slt, 1);
+                llvm::Value *nv = (e->u.unary.op == MGL_OP_INC)
+                    ? (sfp ? cg.b->CreateFAdd(cur, sone)
+                           : cg.b->CreateAdd(cur, sone))
+                    : (sfp ? cg.b->CreateFSub(cur, sone)
+                           : cg.b->CreateSub(cur, sone));
+                cg.b->CreateAlignedStore(nv, sp, salign);
+                return e->u.unary.prefix ? nv : cur;
             }
             const char *name = e->u.unary.operand->u.var_ref.name;
             auto it = cg.lvalues.find(name);

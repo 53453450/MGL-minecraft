@@ -450,6 +450,10 @@ void getMacOSDefaults(GLMContext glm_ctx)
         glm_ctx->state.var.max_tess_evaluation_shader_storage_blocks > MAX_BINDABLE_BUFFERS) {
         glm_ctx->state.var.max_tess_evaluation_shader_storage_blocks = 8;
     }
+    /* Geometry SSBOs ride the same Metal compute expansion path as
+     * TCS/TES; the host backend reports 0 here.  Left at the queried
+     * value until the GL_BUFFER_VARIABLE REFERENCED_BY_* query path is
+     * implemented — enabling it exposes that gap in CTS program_resource. */
     if (glm_ctx->state.var.max_geometry_shader_storage_blocks != 0 &&
         (glm_ctx->state.var.max_geometry_shader_storage_blocks < 8 ||
          glm_ctx->state.var.max_geometry_shader_storage_blocks > MAX_BINDABLE_BUFFERS)) {
@@ -465,6 +469,13 @@ void getMacOSDefaults(GLMContext glm_ctx)
         glm_ctx->state.var.max_shader_storage_buffer_bindings = MAX_BINDABLE_BUFFERS;
     }
     glGetIntegerv(GL_SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT,&glm_ctx->state.var.shader_storage_buffer_offset_alignment);
+    if (glm_ctx->state.var.shader_storage_buffer_offset_alignment == 0 ||
+        glm_ctx->state.var.shader_storage_buffer_offset_alignment > 4096) {
+        fprintf(stderr,
+                "MGL WARNING: init repaired GL_SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT=%u -> 256\n",
+                glm_ctx->state.var.shader_storage_buffer_offset_alignment);
+        glm_ctx->state.var.shader_storage_buffer_offset_alignment = 256;
+    }
     glGetIntegerv(GL_TEXTURE_BUFFER_OFFSET_ALIGNMENT,&glm_ctx->state.var.texture_buffer_offset_alignment);
     if (glm_ctx->state.var.texture_buffer_offset_alignment == 0 ||
         glm_ctx->state.var.texture_buffer_offset_alignment == 0x01010101 ||
