@@ -802,6 +802,10 @@ static GLsizei mgl_program_resource_name_with_array(const MGLShaderResource *res
 	                "%s", res->name);
 }
 
+static GLboolean mgl_program_stage_source_references(Program *pptr,
+	                                                    int target_stage,
+	                                                    const char *name);
+
 static GLboolean mgl_program_block_seen_before(Program *pptr, int res_type, int target_stage, GLuint target_index)
 {
 	if (!pptr || target_stage < 0 || target_stage >= _MAX_SHADER_TYPES)
@@ -835,9 +839,20 @@ static GLboolean mgl_program_block_referenced_by_stage(Program *pptr, int res_ty
 
 	MGLShaderResourceList *resources =
 		&pptr->shader_resources_list[query_stage][res_type];
+	if (pptr->shader_slots[query_stage] && pptr->shader_slots[query_stage]->src &&
+	    block->ubo_members && block->ubo_member_count > 0) {
+		for (GLuint m = 0; m < block->ubo_member_count; m++) {
+			const char *member = block->ubo_members[m].name;
+			if (member && mgl_program_stage_source_references(pptr, query_stage, member))
+				return GL_TRUE;
+		}
+		return GL_FALSE;
+	}
 	for (GLuint i = 0; resources->list && i < resources->count; i++)
 	{
-		if (mgl_program_uniform_block_identity_matches(block, &resources->list[i]))
+		if (mgl_program_uniform_block_identity_matches(block, &resources->list[i]) ||
+		    (block->gl_binding == resources->list[i].gl_binding &&
+		     block->ubo_member_count == resources->list[i].ubo_member_count))
 			return GL_TRUE;
 	}
 
@@ -1364,14 +1379,65 @@ static GLboolean mgl_program_uniform_referenced_by_stage(Program *pptr, const ch
 	return GL_FALSE;
 }
 
-static GLboolean mgl_program_active_uniform_referenced_by_stage(const MGLShaderResource *res,
+/* Reflection aggregates plain uniforms into a synthetic block for Metal, so
+ * the presence of a member in a stage resource list does not prove that the
+ * GLSL stage actually reads it.  Use the stage source body for the API's
+ * per-stage reference query; declarations and comments before main() are
+ * intentionally ignored. */
+static GLboolean mgl_program_stage_source_references(Program *pptr,
+	                                                    int target_stage,
+	                                                    const char *name)
+{
+	if (!pptr || !name || target_stage < 0 || target_stage >= _MAX_SHADER_TYPES)
+		return GL_FALSE;
+	Shader *shader = pptr->shader_slots[target_stage];
+	if (!shader || !shader->src)
+		return GL_FALSE;
+	const char *body = strstr(shader->src, "void main");
+	if (!body)
+		body = shader->src;
+	return strstr(body, name) ? GL_TRUE : GL_FALSE;
+}
+
+static GLboolean mgl_program_active_uniform_referenced_by_stage(Program *pptr,
+                                                                const MGLShaderResource *res,
                                                                 int res_stage,
+                                                                int res_type,
                                                                 int target_stage)
 {
 	if (!res || target_stage < 0 || target_stage >= _MAX_SHADER_TYPES)
 		return GL_FALSE;
 	if (res->ubo_member)
+	{
+		/* Active-uniform enumeration de-duplicates blocks shared by several
+		 * shader stages, so res_stage is only the first owner encountered. */
+		if (res_type == _UNIFORM_BUFFER_RES)
+			return mgl_program_block_referenced_by_stage(pptr, res_type, res,
+			                                            target_stage);
+		if (res_type == _UNIFORM_CONSTANT_RES && pptr &&
+		    res->ubo_member->query_name)
+		{
+			MGLShaderResourceList *resources =
+				&pptr->shader_resources_list[target_stage][res_type];
+			if (pptr->shader_slots[target_stage] &&
+			    pptr->shader_slots[target_stage]->src)
+			return mgl_program_stage_source_references(pptr, target_stage,
+			                                          res->ubo_member->query_name);
+			for (GLuint i = 0; resources->list && i < resources->count; i++)
+			{
+				MGLShaderResource *candidate = &resources->list[i];
+				for (GLuint m = 0; candidate->ubo_members &&
+				     m < candidate->ubo_member_count; m++)
+				{
+					if (candidate->ubo_members[m].query_name &&
+					    strcmp(candidate->ubo_members[m].query_name,
+					           res->ubo_member->query_name) == 0)
+						return GL_TRUE;
+				}
+			}
+		}
 		return res_stage == target_stage ? GL_TRUE : GL_FALSE;
+	}
 	return GL_FALSE;
 }
 
@@ -1537,32 +1603,32 @@ static GLboolean mgl_get_program_uniform_resourceiv(GLMContext ctx,
 				break;
 			case GL_REFERENCED_BY_VERTEX_SHADER:
 				params[i] = res->ubo_member
-					? mgl_program_active_uniform_referenced_by_stage(res, stage, _VERTEX_SHADER)
+					? mgl_program_active_uniform_referenced_by_stage(pptr, res, stage, res_type, _VERTEX_SHADER)
 					: mgl_program_uniform_referenced_by_stage(pptr, res->name, _VERTEX_SHADER);
 				break;
 			case GL_REFERENCED_BY_FRAGMENT_SHADER:
 				params[i] = res->ubo_member
-					? mgl_program_active_uniform_referenced_by_stage(res, stage, _FRAGMENT_SHADER)
+					? mgl_program_active_uniform_referenced_by_stage(pptr, res, stage, res_type, _FRAGMENT_SHADER)
 					: mgl_program_uniform_referenced_by_stage(pptr, res->name, _FRAGMENT_SHADER);
 				break;
 			case GL_REFERENCED_BY_GEOMETRY_SHADER:
 				params[i] = res->ubo_member
-					? mgl_program_active_uniform_referenced_by_stage(res, stage, _GEOMETRY_SHADER)
+					? mgl_program_active_uniform_referenced_by_stage(pptr, res, stage, res_type, _GEOMETRY_SHADER)
 					: mgl_program_uniform_referenced_by_stage(pptr, res->name, _GEOMETRY_SHADER);
 				break;
 			case GL_REFERENCED_BY_TESS_CONTROL_SHADER:
 				params[i] = res->ubo_member
-					? mgl_program_active_uniform_referenced_by_stage(res, stage, _TESS_CONTROL_SHADER)
+					? mgl_program_active_uniform_referenced_by_stage(pptr, res, stage, res_type, _TESS_CONTROL_SHADER)
 					: mgl_program_uniform_referenced_by_stage(pptr, res->name, _TESS_CONTROL_SHADER);
 				break;
 			case GL_REFERENCED_BY_TESS_EVALUATION_SHADER:
 				params[i] = res->ubo_member
-					? mgl_program_active_uniform_referenced_by_stage(res, stage, _TESS_EVALUATION_SHADER)
+					? mgl_program_active_uniform_referenced_by_stage(pptr, res, stage, res_type, _TESS_EVALUATION_SHADER)
 					: mgl_program_uniform_referenced_by_stage(pptr, res->name, _TESS_EVALUATION_SHADER);
 				break;
 			case GL_REFERENCED_BY_COMPUTE_SHADER:
 				params[i] = res->ubo_member
-					? mgl_program_active_uniform_referenced_by_stage(res, stage, _COMPUTE_SHADER)
+					? mgl_program_active_uniform_referenced_by_stage(pptr, res, stage, res_type, _COMPUTE_SHADER)
 					: mgl_program_uniform_referenced_by_stage(pptr, res->name, _COMPUTE_SHADER);
 				break;
 			case GL_LOCATION:
@@ -1891,6 +1957,10 @@ void mglClearBufferiv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GLi
 				STATE(default_clear_color[3]) = (GLfloat)value[3];
 			}
 			mglMarkStateDirtyBits(ctx->active_state, DIRTY_FBO | DIRTY_STATE);
+			/* Integer clear values are stored on the attachment above, but the
+			 * caller may immediately rebind the texture through another FBO.
+			 * Materialize the clear now, matching glClearBufferfv/glClear. */
+			mglRendererClearBuffer(ctx, 0, GL_COLOR_BUFFER_BIT);
 			break;
 		case GL_STENCIL:
 			if (drawbuffer != 0)
@@ -1957,6 +2027,7 @@ void mglClearBufferuiv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GL
 			STATE(default_clear_color[3]) = (GLfloat)value[3];
 		}
 		mglMarkStateDirtyBits(ctx->active_state, DIRTY_FBO | DIRTY_STATE);
+		mglRendererClearBuffer(ctx, 0, GL_COLOR_BUFFER_BIT);
 		return;
 	}
 	ERROR_RETURN(GL_INVALID_ENUM);
@@ -4824,8 +4895,8 @@ void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInter
 				             res_type == _STORAGE_BUFFER_RES)
 					? ((res_type == _STORAGE_BUFFER_RES ||
 					    res->ubo_array_element == 0)
-						? mgl_program_block_referenced_by_stage(pptr, res_type, res, _GEOMETRY_SHADER)
-						: GL_FALSE)
+					? mgl_program_block_referenced_by_stage(pptr, res_type, res, _GEOMETRY_SHADER)
+					: GL_FALSE)
 					: ((stage == _GEOMETRY_SHADER) ? GL_TRUE : GL_FALSE);
 				break;
 			case GL_REFERENCED_BY_TESS_CONTROL_SHADER:

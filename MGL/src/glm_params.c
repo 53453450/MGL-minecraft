@@ -557,6 +557,12 @@ void getMacOSDefaults(GLMContext glm_ctx)
      * AIR record budget used by the renderer. */
     glm_ctx->state.var.max_geometry_output_vertices = 1024;
     glm_ctx->state.var.max_geometry_total_output_components = 1024;
+    /* Headless CGL can report zero for geometry-stage limits even though the
+     * advertised 4.6 context must expose the GLSL minimums. */
+    if (glm_ctx->state.var.max_geometry_texture_image_units < 16)
+        glm_ctx->state.var.max_geometry_texture_image_units = 16;
+    if (glm_ctx->state.var.max_geometry_uniform_components < 1024)
+        glm_ctx->state.var.max_geometry_uniform_components = 1024;
     glm_ctx->state.var.max_geometry_shader_invocations = 32;
     glm_ctx->state.var.min_program_texture_gather_offset = (GLuint)-8; /* -8 as unsigned */
     glm_ctx->state.var.max_program_texture_gather_offset = 7;

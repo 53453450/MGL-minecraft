@@ -192,7 +192,10 @@ MGLShaderResource *mglFindSamplerResourceForMetalBinding(Program *program,
         MGLShaderResourceList *resources = &program->shader_resources_list[stage][resType];
         for (GLuint i = 0; resources->list && i < resources->count; i++) {
             MGLShaderResource *res = &resources->list[i];
-            if (res->binding == metalBinding &&
+            GLuint elementCount = res->gl_array_size > 1
+                ? (GLuint)res->gl_array_size : 1u;
+            if (metalBinding >= res->binding &&
+                metalBinding - res->binding < elementCount &&
                 mglRendererResourceLooksSamplerLike(res, resType)) {
                 return res;
             }

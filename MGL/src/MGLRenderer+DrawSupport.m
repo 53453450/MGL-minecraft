@@ -1283,6 +1283,187 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     return capture;
 }
 
+- (BOOL)handleVertexTransformFeedbackDrawIfNeeded:(GLMContext)drawCtx
+                                               mode:(GLenum)mode
+                                              first:(GLint)first
+                                              count:(GLsizei)count
+                                      instanceCount:(GLsizei)instanceCount
+                                       baseInstance:(GLuint)baseInstance
+{
+    if (!drawCtx || mode != GL_POINTS || first < 0 || count <= 0 ||
+        instanceCount <= 0) {
+        return NO;
+    }
+    TransformFeedback *xfb = MGL_STATE(drawCtx)->transform_feedback;
+    if (!xfb || !xfb->active || xfb->paused ||
+        xfb->primitive_mode != mode) {
+        return NO;
+    }
+    Program *program = mglResolveProgramForStageFromState(
+        drawCtx, _VERTEX_SHADER);
+    if (!program || program->shader_slots[_GEOMETRY_SHADER] ||
+        program->shader_slots[_TESS_CONTROL_SHADER] ||
+        program->shader_slots[_TESS_EVALUATION_SHADER] ||
+        !program->transform_feedback_layout_valid ||
+        program->transform_feedback_varying_count <= 0) {
+        return NO;
+    }
+
+    const MGLShaderResourceList *outputs =
+        &program->shader_resources_list[_VERTEX_SHADER][_STAGE_OUTPUT_RES];
+    NSUInteger bufferStride[MGL_MAX_TRANSFORM_FEEDBACK_BUFFERS] = {0u};
+    NSUInteger sourceOffset[MAX_ATTRIBS] = {0u};
+    BOOL hasSource[MAX_ATTRIBS] = {NO};
+    GLuint bufferCount = program->transform_feedback_layout_buffer_count;
+    if (bufferCount == 0u || bufferCount > MGL_MAX_TRANSFORM_FEEDBACK_BUFFERS) {
+        return NO;
+    }
+
+    for (GLsizei varying = 0;
+         varying < program->transform_feedback_varying_count;
+         varying++) {
+        const MGLTransformFeedbackVaryingPlan *plan =
+            &program->transform_feedback_layout[varying];
+        if (plan->buffer_index >= bufferCount || plan->stream > 0 ||
+            plan->component_count > 4u) {
+            return NO;
+        }
+        NSUInteger end = ((NSUInteger)plan->component_offset +
+                          (NSUInteger)plan->component_count) * sizeof(uint32_t);
+        if (end > bufferStride[plan->buffer_index]) {
+            bufferStride[plan->buffer_index] = end;
+        }
+        if (plan->component_count == 0u || plan->stream < 0) {
+            continue;
+        }
+
+        const char *name = program->transform_feedback_varying_names[varying];
+        if (!name || !name[0]) return NO;
+        if (strcmp(name, "gl_Position") == 0 && plan->builtin) {
+            sourceOffset[varying] = MGL_AIR_PER_VERTEX_POSITION_OFFSET;
+            hasSource[varying] = YES;
+            continue;
+        }
+        if (strcmp(name, "gl_PointSize") == 0 && plan->builtin) {
+            sourceOffset[varying] = MGL_AIR_PER_VERTEX_POINT_SIZE_OFFSET;
+            hasSource[varying] = YES;
+            continue;
+        }
+        if (strchr(name, '[')) {
+            return NO;
+        }
+        const MGLShaderResource *output = NULL;
+        for (GLuint i = 0u; outputs->list && i < outputs->count; i++) {
+            if (outputs->list[i].name &&
+                strcmp(outputs->list[i].name, name) == 0) {
+                output = &outputs->list[i];
+                break;
+            }
+        }
+        if (!output || output->is_array || output->location >= 0x0fffffffu) {
+            return NO;
+        }
+        sourceOffset[varying] = MGL_AIR_PER_VERTEX_STRIDE +
+                                (NSUInteger)output->location * 16u;
+        hasSource[varying] = YES;
+    }
+
+    NSUInteger captureOffset = 0u;
+    id capture = [self captureAIRVertexPositionsForTessellation:drawCtx
+                                                          first:first
+                                                          count:count
+                                                  instanceCount:instanceCount
+                                                   baseInstance:baseInstance
+                                                     outOffset:&captureOffset];
+    if (!capture) return NO;
+    _currentCBHasWork = YES;
+    [self flushCommandBuffer:YES];
+
+    const uint8_t *captureBytes =
+        (const uint8_t *)mglDrawSupportBufferContents(capture);
+    NSUInteger captureStride = mglAIRPerVertexStrideForResources(outputs);
+    uint64_t recordCount64 = (uint64_t)(uint32_t)count *
+                             (uint64_t)(uint32_t)instanceCount;
+    if (!captureBytes || recordCount64 > NSUIntegerMax) {
+        return YES;
+    }
+    NSUInteger recordCount = (NSUInteger)recordCount64;
+
+    for (GLuint buffer = 0u; buffer < bufferCount; buffer++) {
+        if (bufferStride[buffer] == 0u) continue;
+        BufferBaseTarget *slot =
+            &MGL_STATE(drawCtx)->buffer_base[_TRANSFORM_FEEDBACK_BUFFER]
+                                        .buffers[buffer];
+        if (!slot->buf || slot->offset < 0) continue;
+        BufferMap map = {0};
+        map.buf = slot->buf;
+        map.offset = slot->offset;
+        map.size = slot->size;
+        NSUInteger visible = mglBufferMapVisibleBackingBytes(
+            &map, slot->buf->size > 0 ? (size_t)slot->buf->size : 0u);
+        NSUInteger sessionOffset = xfb->buffer_write_offsets[buffer] <=
+                (GLuint64)NSUIntegerMax
+            ? (NSUInteger)xfb->buffer_write_offsets[buffer] : visible;
+        if (sessionOffset >= visible) continue;
+        NSUInteger capacity = (visible - sessionOffset) / bufferStride[buffer];
+        NSUInteger writtenRecords = MIN(recordCount, capacity);
+        if (writtenRecords == 0u ||
+            writtenRecords > NSUIntegerMax / bufferStride[buffer]) {
+            continue;
+        }
+        NSUInteger writtenBytes = writtenRecords * bufferStride[buffer];
+        uint8_t *packed = (uint8_t *)calloc(1u, writtenBytes);
+        if (!packed) {
+            mglDispatchError(drawCtx, "vertexTransformFeedback",
+                             GL_OUT_OF_MEMORY);
+            return YES;
+        }
+        for (NSUInteger record = 0u; record < writtenRecords; record++) {
+            const uint8_t *srcRecord = captureBytes + captureOffset +
+                                       record * captureStride;
+            uint8_t *dstRecord = packed + record * bufferStride[buffer];
+            for (GLsizei varying = 0;
+                 varying < program->transform_feedback_varying_count;
+                 varying++) {
+                const MGLTransformFeedbackVaryingPlan *plan =
+                    &program->transform_feedback_layout[varying];
+                if (plan->buffer_index != buffer || !hasSource[varying]) {
+                    continue;
+                }
+                memcpy(dstRecord + (NSUInteger)plan->component_offset * 4u,
+                       srcRecord + sourceOffset[varying],
+                       (NSUInteger)plan->component_count * 4u);
+            }
+        }
+        NSUInteger destinationOffset = (NSUInteger)slot->offset + sessionOffset;
+        mglRendererBufferSubData(drawCtx, slot->buf, destinationOffset,
+                                 writtenBytes, packed);
+        free(packed);
+        slot->buf->ever_written = GL_TRUE;
+        slot->buf->has_initialized_data = GL_TRUE;
+        slot->buf->gpu_write_target = GL_TRUE;
+        slot->buf->last_init_source = kInitMapWrite;
+        slot->buf->last_write_offset = (GLintptr)destinationOffset;
+        slot->buf->last_write_size = (GLsizeiptr)writtenBytes;
+        if (slot->buf->written_min < 0 ||
+            (GLintptr)destinationOffset < slot->buf->written_min) {
+            slot->buf->written_min = (GLintptr)destinationOffset;
+        }
+        GLintptr writeEnd = (GLintptr)(destinationOffset + writtenBytes);
+        if (slot->buf->written_max < 0 || writeEnd > slot->buf->written_max) {
+            slot->buf->written_max = writeEnd;
+        }
+        xfb->buffer_write_offsets[buffer] += (GLuint64)writtenBytes;
+    }
+
+    xfb->primitives_generated += (GLuint64)recordCount;
+    xfb->primitives_written += (GLuint64)recordCount;
+    mglRecordActivePrimitiveQueryDraw(drawCtx, (GLuint64)recordCount,
+                                      (GLuint64)recordCount);
+    drawCtx->state.dirty_bits = DIRTY_ALL;
+    return YES;
+}
+
 - (BOOL)handleGeometryDrawIfNeeded:(GLMContext)drawCtx
                               mode:(GLenum)mode
                              first:(GLint)first
@@ -2140,68 +2321,6 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
                                                mglHasActiveGeometryShaderQuery())]) {
             drawCtx->state.dirty_bits = DIRTY_ALL;
             return YES;
-        }
-    }
-    if (getenv("MGL_GS_DIAG")) {
-        const uint32_t *countWords =
-            (const uint32_t *)mglDrawSupportBufferContents(counts);
-        const uint8_t *inputBytes =
-            (const uint8_t *)mglDrawSupportBufferContents(input);
-        const uint8_t *outputBytes =
-            (const uint8_t *)mglDrawSupportBufferContents(output);
-        NSLog(@"MGL GS DIAG records inputStride=%lu outputStride=%lu recordsPerPrimitive=%lu workItems=%u",
-              (unsigned long)mglAIRPerVertexStrideForResources(
-                  &program->shader_resources_list[_VERTEX_SHADER][_STAGE_OUTPUT_RES]),
-              (unsigned long)outputStride, (unsigned long)recordsPerPrimitive,
-              (unsigned)workItemCount);
-        for (GLuint wi = 0u; wi < MIN(workItemCount, 4u); wi++) {
-            const uint32_t *cw = countWords
-                ? countWords + (NSUInteger)wi * MGL_AIR_GS_COUNTS_RECORD_WORDS
-                : NULL;
-            NSLog(@"MGL GS DIAG counts[%u]={%u,%u,%u,%u,%u,%u,%u}",
-                  (unsigned)wi,
-                  cw ? cw[0] : 0u, cw ? cw[1] : 0u, cw ? cw[2] : 0u,
-                  cw ? cw[3] : 0u, cw ? cw[4] : 0u, cw ? cw[5] : 0u,
-                  cw ? cw[6] : 0u);
-            if (inputBytes) {
-                const float *pos = (const float *)(inputBytes +
-                    (NSUInteger)wi * (NSUInteger)gparams.vertices_per_instance *
-                    mglAIRPerVertexStrideForResources(
-                        &program->shader_resources_list[_VERTEX_SHADER][_STAGE_OUTPUT_RES]));
-                NSLog(@"MGL GS DIAG input[%u].pos={%g,%g,%g,%g}",
-                      (unsigned)wi, pos[0], pos[1], pos[2], pos[3]);
-                const NSUInteger inputStride =
-                    mglAIRPerVertexStrideForResources(
-                        &program->shader_resources_list[_VERTEX_SHADER][_STAGE_OUTPUT_RES]);
-                for (uint32_t slot = 0u; slot < MIN((uint32_t)gsInputMode == GL_LINES_ADJACENCY ? 4u : 3u, 6u); slot++) {
-                    const float *slotPos = (const float *)(inputBytes +
-                        ((NSUInteger)wi * (NSUInteger)gparams.vertices_per_instance +
-                         (NSUInteger)slot) * inputStride);
-                    NSLog(@"MGL GS DIAG inputRecord[%u].slot[%u].pos={%g,%g,%g,%g}",
-                          (unsigned)wi, (unsigned)slot,
-                          slotPos[0], slotPos[1], slotPos[2], slotPos[3]);
-                }
-            }
-            if (outputBytes) {
-                const float *pos = (const float *)(outputBytes +
-                    ((NSUInteger)wi * recordsPerPrimitive +
-                     MGL_AIR_GS_HEADER_RECORDS) * outputStride);
-                NSLog(@"MGL GS DIAG output[%u].pos={%g,%g,%g,%g}",
-                      (unsigned)wi, pos[0], pos[1], pos[2], pos[3]);
-                for (uint32_t record = 0u; record < MIN((uint32_t)recordsPerPrimitive, 8u); record++) {
-                    const float *recordPos = (const float *)(outputBytes +
-                        ((NSUInteger)wi * recordsPerPrimitive + record) * outputStride);
-                    NSLog(@"MGL GS DIAG outputRecord[%u].slot[%u].pos={%g,%g,%g,%g}",
-                          (unsigned)wi, (unsigned)record,
-                          recordPos[0], recordPos[1], recordPos[2], recordPos[3]);
-                    const float *recordV0 = (const float *)((const uint8_t *)recordPos + 64u);
-                    const float *recordV1 = (const float *)((const uint8_t *)recordPos + 80u);
-                    NSLog(@"MGL GS DIAG outputRecord[%u].slot[%u].v0={%g,%g,%g,%g} v1={%g,%g,%g,%g}",
-                          (unsigned)wi, (unsigned)record,
-                          recordV0[0], recordV0[1], recordV0[2], recordV0[3],
-                          recordV1[0], recordV1[1], recordV1[2], recordV1[3]);
-                }
-            }
         }
     }
     _geometry.expansionActive = YES;

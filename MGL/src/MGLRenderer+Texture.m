@@ -375,6 +375,39 @@ static MGLRenderTextureInfo mglTextureInfo(id texture)
     return info;
 }
 
+/* CPU shadow storage uses five bytes per texel for GL_DEPTH32F_STENCIL8
+ * (float depth plus one stencil byte), while Metal's packed depth/stencil
+ * upload layout uses an eight-byte texel with stencil at byte 4. */
+static void *mglCreateDepthStencilMetalUpload(
+    Texture *tex, uint32_t pixelFormat, const uint8_t *src,
+    NSUInteger width, NSUInteger height, NSUInteger srcBytesPerRow,
+    NSUInteger *outBytesPerRow, NSUInteger *outBytesPerImage)
+{
+    if (outBytesPerRow) *outBytesPerRow = 0;
+    if (outBytesPerImage) *outBytesPerImage = 0;
+    if (!tex || !src || width == 0 || height == 0 || srcBytesPerRow == 0 ||
+        tex->internalformat != GL_DEPTH32F_STENCIL8 ||
+        pixelFormat != MGLPixelFormatDepth32Float_Stencil8 ||
+        srcBytesPerRow < width * 5u || srcBytesPerRow >= width * 8u) {
+        return NULL;
+    }
+    NSUInteger dstBytesPerRow = width * 8u;
+    NSUInteger dstBytesPerImage = dstBytesPerRow * height;
+    uint8_t *dst = calloc(1u, dstBytesPerImage);
+    if (!dst) return NULL;
+    for (NSUInteger y = 0; y < height; ++y) {
+        const uint8_t *srcRow = src + y * srcBytesPerRow;
+        uint8_t *dstRow = dst + y * dstBytesPerRow;
+        for (NSUInteger x = 0; x < width; ++x) {
+            memcpy(dstRow + x * 8u, srcRow + x * 5u, 4u);
+            dstRow[x * 8u + 4u] = srcRow[x * 5u + 4u];
+        }
+    }
+    if (outBytesPerRow) *outBytesPerRow = dstBytesPerRow;
+    if (outBytesPerImage) *outBytesPerImage = dstBytesPerImage;
+    return dst;
+}
+
 static uint64_t mglTextureBufferLength(id buffer)
 {
     MGLRenderBufferInfo info = {0};
@@ -576,6 +609,21 @@ static void mglTextureCopyTextureToBuffer(
         return false;
     }
 
+    if (mglTraceLogIsEnabled() &&
+        (mglTextureInfo(texture).pixel_format == MGLPixelFormatDepth32Float_Stencil8 ||
+         mglTextureInfo(texture).pixel_format == MGLPixelFormatDepth24Unorm_Stencil8) &&
+        (texTarget == GL_TEXTURE_2D_ARRAY || texTarget == GL_TEXTURE_3D)) {
+        const uint8_t *probe = (const uint8_t *)bytes;
+        mglTraceLog("TEXTURE_UPLOAD_DS tex=%u target=0x%x fmt=%lu slice=%lu level=%lu size=%lux%lu bpr=%lu bpi=%lu first=%02x %02x %02x %02x %02x %02x %02x %02x next=%02x %02x %02x %02x %02x %02x %02x %02x",
+                    (unsigned)texName, (unsigned)texTarget,
+                    (unsigned long)mglTextureInfo(texture).pixel_format,
+                    (unsigned long)slice, (unsigned long)level,
+                    (unsigned long)width, (unsigned long)height,
+                    (unsigned long)bytesPerRow, (unsigned long)bytesPerImage,
+                    probe[0], probe[1], probe[2], probe[3], probe[4], probe[5], probe[6], probe[7],
+                    probe[8], probe[9], probe[10], probe[11], probe[12], probe[13], probe[14], probe[15]);
+    }
+
     if (textureType == MGLTextureTypeCube || textureType == MGLTextureTypeCubeArray) {
         static uint64_t s_cubeUploadLogs = 0;
         uint64_t hit = ++s_cubeUploadLogs;
@@ -596,6 +644,24 @@ static void mglTextureCopyTextureToBuffer(
     }
 
     const uint32_t uploadRoute = uploadPlan.route;
+
+    /* Shared packed depth/stencil textures can be updated directly.  This
+     * preserves the stencil plane on Metal drivers where blit uploads of
+     * Depth32Float_Stencil8 update only the depth plane. */
+    if ((mglTextureInfo(texture).pixel_format == MGLPixelFormatDepth32Float_Stencil8 ||
+         mglTextureInfo(texture).pixel_format == MGLPixelFormatDepth24Unorm_Stencil8) &&
+        mglTextureInfo(texture).storage_mode != MGL_TEXTURE_STORAGE_PRIVATE) {
+        @try {
+            mglTextureReplaceRegion(texture,
+                                    mglTextureRegion2D(0, 0, width, uploadPlan.normalized_height),
+                                    level, slice, bytes, bytesPerRow,
+                                    uploadPlan.normalized_bytes_per_image, YES);
+            return true;
+        } @catch (NSException *exception) {
+            NSLog(@"MGL WARNING: depth/stencil replaceRegion upload failed tex=%u: %@",
+                  (unsigned)texName, exception.reason);
+        }
+    }
 
     /* 1D texture upload via replaceRegion branch:
      * - 1D textures are a low-frequency update path; replaceRegion is safe in this scenario;
@@ -3739,6 +3805,20 @@ static void mglTextureCopyTextureToBuffer(
 
                     }
 
+                    NSUInteger dsBytesPerRow = 0;
+                    NSUInteger dsBytesPerImage = 0;
+                    void *dsUploadData = mglCreateDepthStencilMetalUpload(
+                        tex, pixelFormat, (const uint8_t *)layerSrcData,
+                        lvlWidth, uploadSliceHeight, effectiveBytesPerRow,
+                        &dsBytesPerRow, &dsBytesPerImage);
+                    if (dsUploadData) {
+                        free(expandedUploadData);
+                        expandedUploadData = dsUploadData;
+                        layerSrcData = dsUploadData;
+                        effectiveBytesPerRow = dsBytesPerRow;
+                        effectiveBytesPerImage = dsBytesPerImage;
+                    }
+
 
                     NSUInteger alignment = [self getOptimalAlignmentForPixelFormat:pixelFormat];
 
@@ -4359,6 +4439,21 @@ static void mglTextureCopyTextureToBuffer(
                                     effectiveBytesPerImage = expandedBytesPerImage;
                                     addr = (uintptr_t)srcData;
                                 }
+                            }
+
+                            NSUInteger dsBytesPerRow = 0;
+                            NSUInteger dsBytesPerImage = 0;
+                            void *dsUploadData = mglCreateDepthStencilMetalUpload(
+                                tex, pixelFormat, (const uint8_t *)srcData,
+                                width, uploadSliceHeight, effectiveBytesPerRow,
+                                &dsBytesPerRow, &dsBytesPerImage);
+                            if (dsUploadData) {
+                                free(expandedUploadData);
+                                expandedUploadData = dsUploadData;
+                                srcData = dsUploadData;
+                                effectiveBytesPerRow = dsBytesPerRow;
+                                effectiveBytesPerImage = dsBytesPerImage;
+                                addr = (uintptr_t)srcData;
                             }
 
                             NSUInteger alignment = [self getOptimalAlignmentForPixelFormat:pixelFormat];
@@ -6031,7 +6126,9 @@ static void mglTextureCopyTextureToBuffer(
         sampledResource->sampler_unit_explicit &&
         sampledResource->sampler_unit >= 0 &&
         sampledResource->sampler_unit < TEXTURE_UNITS) {
-        return (GLuint)sampledResource->sampler_unit;
+        GLuint element = metalBinding >= sampledResource->binding
+            ? metalBinding - sampledResource->binding : 0u;
+        return (GLuint)sampledResource->sampler_unit + element;
     }
 
     if (metalBinding >= TEXTURE_UNITS) {
@@ -6067,7 +6164,9 @@ static void mglTextureCopyTextureToBuffer(
         !sampledResource->sampler_unit_explicit &&
         sampledResource->sampler_unit >= 0 &&
         sampledResource->sampler_unit < TEXTURE_UNITS) {
-        return (GLuint)sampledResource->sampler_unit;
+        GLuint element = metalBinding >= sampledResource->binding
+            ? metalBinding - sampledResource->binding : 0u;
+        return (GLuint)sampledResource->sampler_unit + element;
     }
 
     if (defaultUnit >= 0 && defaultUnit < TEXTURE_UNITS) {

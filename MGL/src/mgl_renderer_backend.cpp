@@ -1812,7 +1812,22 @@ MGLShaderResource *mglRendererProgramResource(GLMContext context,
     Program *program = mglResolveProgramForStageFromState(context, stage);
     if (!program) return nullptr;
     MGLShaderResourceList *list = &program->shader_resources_list[stage][type];
-    if (index < 0 || index >= static_cast<int32_t>(list->count)) return nullptr;
+    if (index < 0) return nullptr;
+    if (type == _SAMPLED_IMAGE_RES) {
+        int32_t ordinal = index;
+        for (GLuint i = 0; i < list->count; i++) {
+            MGLShaderResource *resource = &list->list[i];
+            int32_t elements = resource->gl_array_size > 1
+                ? resource->gl_array_size : 1;
+            if (ordinal < elements) {
+                if (program_out) *program_out = program;
+                return resource;
+            }
+            ordinal -= elements;
+        }
+        return nullptr;
+    }
+    if (index >= static_cast<int32_t>(list->count)) return nullptr;
     if (program_out) *program_out = program;
     return &list->list[index];
 }
@@ -1857,8 +1872,13 @@ extern "C" int32_t mglRendererGetProgramBindingCount(
         return 0;
     }
     Program *program = mglResolveProgramForStageFromState(context, stage);
-    return program ? static_cast<int32_t>(
-        program->shader_resources_list[stage][type].count) : 0;
+    if (!program) return 0;
+    MGLShaderResourceList *list = &program->shader_resources_list[stage][type];
+    if (type != _SAMPLED_IMAGE_RES) return static_cast<int32_t>(list->count);
+    int32_t total = 0;
+    for (GLuint i = 0; i < list->count; i++)
+        total += list->list[i].gl_array_size > 1 ? list->list[i].gl_array_size : 1;
+    return total;
 }
 
 extern "C" int32_t mglRendererGetProgramBinding(
@@ -1867,7 +1887,23 @@ extern "C" int32_t mglRendererGetProgramBinding(
     if (!mglRendererProgramResourceTypeIsSupported(type, true)) return 0;
     MGLShaderResource *resource = mglRendererProgramResource(
         context, stage, type, index, nullptr);
-    return resource ? static_cast<int32_t>(resource->binding) : 0;
+    if (!resource) return 0;
+    if (type == _SAMPLED_IMAGE_RES) {
+        Program *program = nullptr;
+        MGLShaderResource *base = mglRendererProgramResource(context, stage, type, index, &program);
+        if (base && program) {
+            int32_t ordinal = index;
+            MGLShaderResourceList *list = &program->shader_resources_list[stage][type];
+            for (GLuint i = 0; i < list->count; i++) {
+                int32_t elements = list->list[i].gl_array_size > 1 ? list->list[i].gl_array_size : 1;
+                if (&list->list[i] == base) {
+                    return static_cast<int32_t>(base->binding + (ordinal < elements ? ordinal : 0));
+                }
+                ordinal -= elements;
+            }
+        }
+    }
+    return static_cast<int32_t>(resource->binding);
 }
 
 extern "C" int32_t mglRendererGetProgramGLBinding(
@@ -1875,7 +1911,22 @@ extern "C" int32_t mglRendererGetProgramGLBinding(
 {
     MGLShaderResource *resource = mglRendererProgramResource(
         context, stage, type, index, nullptr);
-    return resource ? static_cast<int32_t>(resource->gl_binding) : 0;
+    if (!resource) return 0;
+    if (type == _SAMPLED_IMAGE_RES) {
+        Program *program = nullptr;
+        MGLShaderResource *base = mglRendererProgramResource(context, stage, type, index, &program);
+        if (base && program) {
+            int32_t ordinal = index;
+            MGLShaderResourceList *list = &program->shader_resources_list[stage][type];
+            for (GLuint i = 0; i < list->count; i++) {
+                int32_t elements = list->list[i].gl_array_size > 1 ? list->list[i].gl_array_size : 1;
+                if (&list->list[i] == base)
+                    return static_cast<int32_t>(base->gl_binding + (ordinal < elements ? ordinal : 0));
+                ordinal -= elements;
+            }
+        }
+    }
+    return static_cast<int32_t>(resource->gl_binding);
 }
 
 extern "C" int32_t mglRendererGetProgramLocation(

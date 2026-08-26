@@ -291,7 +291,26 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
          * buffer.  Small plain-uniform slots deliberately do not carry one
          * (see updateDirtyBuffer); create it from the current CPU shadow
          * instead of falling through to a zero-filled isolated binding. */
+        if (ptr->data.mtl_data) {
+            MGLRenderBufferInfo existingInfo = {0};
+            if (mglRenderGetBufferInfo(ptr->data.mtl_data, &existingInfo) == 0 &&
+                ptr->size > 0 && existingInfo.length < (uint64_t)ptr->size) {
+                /* A plain-uniform buffer may grow after another stage has
+                 * materialized a short backing store.  The dirty-update path
+                 * preserves the old Metal allocation, so drop it here and
+                 * let bindMTLBuffer recreate it at the new GL size. */
+                mglRenderReleaseBufferMetalData(ctx, ptr);
+            }
+        }
         if (!ptr->data.mtl_data) {
+            [self bindMTLBuffer:ptr];
+        } else if (ptr->data.dirty_bits & (DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR)) {
+            /* A plain uniform slot can first be materialized for a smaller
+             * stage (for example the vertex shader) and later grow when the
+             * geometry shader uploads a large array.  Refresh the Metal
+             * backing before checking its visible length; otherwise the
+             * undersized old buffer is isolated and the newly uploaded suffix
+             * is silently read as zero. */
             [self bindMTLBuffer:ptr];
         }
         id buffer = ptr->data.mtl_data
@@ -561,16 +580,34 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
             for (int i=0; i < (int)count && textures_to_be_mapped > 0; i++)
             {
                 MGLShaderResource *resource = NULL;
+                GLuint resourceElement = 0u;
                 GLuint metalBinding = mglRendererGetProgramBinding(ctx, stage, spvc_type, i);
                 GLuint glUnit = 0u;
                 Texture *ptr = NULL;
 
                 if (computeProgram &&
                     spvc_type >= 0 && spvc_type < MGL_MAX_SHADER_RESOURCES &&
-                    i >= 0 &&
-                    i < (int)computeProgram->shader_resources_list[stage][spvc_type].count) {
-                    resource = &computeProgram->shader_resources_list[stage][spvc_type].list[i];
-                    metalBinding = mglMetalResourceSlot(resource);
+                    i >= 0) {
+                    MGLShaderResourceList *resourceList =
+                        &computeProgram->shader_resources_list[stage][spvc_type];
+                    if (spvc_type == _SAMPLED_IMAGE_RES) {
+                        GLuint ordinal = (GLuint)i;
+                        for (GLuint ri = 0; ri < resourceList->count; ri++) {
+                            MGLShaderResource *candidate = &resourceList->list[ri];
+                            GLuint elements = candidate->gl_array_size > 1
+                                ? (GLuint)candidate->gl_array_size : 1u;
+                            if (ordinal < elements) {
+                                resource = candidate;
+                                resourceElement = ordinal;
+                                metalBinding = candidate->binding + ordinal;
+                                break;
+                            }
+                            ordinal -= elements;
+                        }
+                    } else if (i < (int)resourceList->count) {
+                        resource = &resourceList->list[i];
+                        metalBinding = mglMetalResourceSlot(resource);
+                    }
                 }
 
                 if (metalBinding >= TEXTURE_UNITS ||
@@ -686,7 +723,8 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
                     if (gl_texture_type == _TEXTURE &&
                         (!resource || resource->has_combined_sampler)) {
                         GLuint samplerBinding = resource
-                            ? mglMetalCombinedSamplerSlot(resource)
+                            ? mglMetalCombinedSamplerSlotForElement(resource,
+                                                                    resourceElement)
                             : metalBinding;
                         MGL_CTEX_EMIT_SAMPLER(samplerBinding,
                                               (__bridge void *)sampler);

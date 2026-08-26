@@ -238,6 +238,7 @@ bool mglConvertTextureRectToCPU(GLenum internalformat,
      * (e.g. R11F_G11F_B10F mantissa bits being cleared) and is the critical
      * performance path for common uncompressed formats (RGBA8+UB, RGBA32F, etc). */
     if (storage_pixel_size == src_pixel_size && !swap_bytes &&
+        !mglInternalFormatIsCombinedDepthStencil(internalformat) &&
         (mglIsIdentityPackedFormat(internalformat, format, type) ||
          mglIsIdentityUncompressedFormat(internalformat, format, type))) {
         size_t dst_img_size = 0u;
@@ -293,6 +294,83 @@ bool mglConvertTextureRectToCPU(GLenum internalformat,
                     uint8_t tmp = px[0];
                     px[0] = px[2];
                     px[2] = tmp;
+                }
+            }
+        }
+        return true;
+    }
+
+    /* Combined depth/stencil formats have a Metal-facing layout that is not
+     * component-wise: Depth32Float_Stencil8 stores a float depth at byte 0
+     * and stencil at byte 4 (with trailing padding), while Depth24Unorm_Stencil8
+     * stores packed depth/stencil in four bytes.  Handle this before the
+     * generic component layout, which otherwise treats the transfer as an
+     * identity 8-byte blob and leaves stencil in the wrong byte. */
+    if (mglInternalFormatIsCombinedDepthStencil(internalformat) &&
+        format == GL_DEPTH_STENCIL &&
+        (type == GL_UNSIGNED_INT_24_8 ||
+         type == GL_FLOAT_32_UNSIGNED_INT_24_8_REV)) {
+        size_t dst_img_size = 0u;
+        if (!mglMulSizeT(lvl->pitch, (size_t)lvl->height, &dst_img_size)) {
+            return false;
+        }
+        if (src_image_size == 0u &&
+            !mglMulSizeT(src_pitch, (size_t)height, &src_image_size)) {
+            return false;
+        }
+        uint8_t *dst_base = (uint8_t *)lvl->data +
+                            ((size_t)zoffset * dst_img_size) +
+                            ((size_t)yoffset * lvl->pitch) +
+                            ((size_t)xoffset * storage_pixel_size);
+        const size_t src_pixel_bytes = sizeForFormatType(format, type);
+        const size_t elem_size = mglPixelTypeDatumBytes(type);
+        for (GLsizei z = 0; z < depth; ++z) {
+            const uint8_t *src_slice = src_base + ((size_t)z * src_image_size);
+            uint8_t *dst_slice = dst_base + ((size_t)z * dst_img_size);
+            for (GLsizei y = 0; y < height; ++y) {
+                const uint8_t *src_row = src_slice + ((size_t)y * src_pitch);
+                uint8_t *dst_row = dst_slice + ((size_t)y * lvl->pitch);
+                for (GLsizei x = 0; x < width; ++x) {
+                    const uint8_t *src_pixel = src_row + ((size_t)x * src_pixel_bytes);
+                    uint8_t *dst_pixel = dst_row + ((size_t)x * storage_pixel_size);
+                    uint8_t swapped[16];
+                    const uint8_t *read_pixel = src_pixel;
+                    if (swap_bytes && elem_size > 1u &&
+                        src_pixel_bytes <= sizeof(swapped)) {
+                        memcpy(swapped, src_pixel, src_pixel_bytes);
+                        mglSwapPixelBytes(swapped, src_pixel_bytes, elem_size);
+                        read_pixel = swapped;
+                    }
+                    memset(dst_pixel, 0, storage_pixel_size);
+                    if (internalformat == GL_DEPTH32F_STENCIL8) {
+                        GLfloat depth_value = 0.0f;
+                        uint32_t stencil_word = 0u;
+                        if (type == GL_FLOAT_32_UNSIGNED_INT_24_8_REV) {
+                            memcpy(&depth_value, read_pixel, sizeof(depth_value));
+                            memcpy(&stencil_word, read_pixel + sizeof(depth_value), sizeof(stencil_word));
+                        } else {
+                            uint32_t packed = 0u;
+                            memcpy(&packed, read_pixel, sizeof(packed));
+                            depth_value = (GLfloat)(packed >> 8) / 16777215.0f;
+                            stencil_word = packed;
+                        }
+                        memcpy(dst_pixel, &depth_value, sizeof(depth_value));
+                        if (storage_pixel_size >= 5u)
+                            dst_pixel[4] = (uint8_t)(stencil_word & 0xffu);
+                    } else {
+                        uint32_t packed = 0u;
+                        if (type == GL_UNSIGNED_INT_24_8) {
+                            memcpy(&packed, read_pixel, sizeof(packed));
+                        } else {
+                            GLfloat depth_value = 0.0f;
+                            memcpy(&depth_value, read_pixel, sizeof(depth_value));
+                            uint32_t stencil_word = 0u;
+                            memcpy(&stencil_word, read_pixel + sizeof(depth_value), sizeof(stencil_word));
+                            packed = ((uint32_t)(depth_value * 16777215.0f + 0.5f) << 8) |
+                                      (stencil_word & 0xffu);
+                        }
+                        memcpy(dst_pixel, &packed, sizeof(packed));
+                    }
                 }
             }
         }

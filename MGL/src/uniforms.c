@@ -3044,6 +3044,8 @@ void mglUniform1iv(GLMContext ctx, GLint location, GLsizei count, const GLint *v
     if (count > 0 && value &&
         (mglUniformValueProbeSkipped() || mglPointerRangeIsReadable(value, sizeof(*value))) &&
         mglSetSamplerUniformUnit(ctx, location, value[0])) {
+        for (GLsizei i = 1; i < count; i++)
+            mglSetSamplerUniformUnit(ctx, location + i, value[i]);
         return;
     }
 
@@ -3065,6 +3067,10 @@ void mglUniform1uiv(GLMContext ctx, GLint location, GLsizei count, const GLuint 
         (mglUniformValueProbeSkipped() || mglPointerRangeIsReadable(value, sizeof(*value))) &&
         value[0] <= (GLuint)INT_MAX &&
         mglSetSamplerUniformUnit(ctx, location, (GLint)value[0])) {
+        for (GLsizei i = 1; i < count; i++) {
+            if (value[i] <= (GLuint)INT_MAX)
+                mglSetSamplerUniformUnit(ctx, location + i, (GLint)value[i]);
+        }
         return;
     }
 

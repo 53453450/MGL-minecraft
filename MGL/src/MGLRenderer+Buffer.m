@@ -414,6 +414,19 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                             if (!mbuf || !mbuf->data.buffer_data || mbuf->size <= 0) {
                                 continue;
                             }
+                            if (ai == 0 &&
+                                (size_t)mbuf->size >=
+                                    (size_t)sm->member_size * elem_stride) {
+                                size_t copy_size = (size_t)mbuf->size;
+                                if ((size_t)member_offset + copy_size > struct_size)
+                                    copy_size = struct_size - (size_t)member_offset;
+                                if (copy_size > 0) {
+                                    memcpy(packed + member_offset,
+                                           (const void *)(uintptr_t)mbuf->data.buffer_data,
+                                           copy_size);
+                                }
+                                break;
+                            }
                             size_t copy_size = (size_t)mbuf->size;
                             if (copy_size > (size_t)elem_stride) {
                                 copy_size = (size_t)elem_stride;
@@ -896,6 +909,24 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                                     }
                                     if (!mbuf || !mbuf->data.buffer_data || mbuf->size <= 0) {
                                         continue;
+                                    }
+                                    /* glUniform*iv/fv uploads an entire array
+                                     * to the base location in one buffer.  In
+                                     * that form, copy the contiguous payload
+                                     * once instead of treating it as only the
+                                     * first leaf and zeroing the suffix. */
+                                    if (ai == 0 &&
+                                        (size_t)mbuf->size >=
+                                            (size_t)member->size * elem_stride) {
+                                        size_t copy_size = (size_t)mbuf->size;
+                                        if ((size_t)member_offset + copy_size > struct_size)
+                                            copy_size = struct_size - (size_t)member_offset;
+                                        if (copy_size > 0) {
+                                            memcpy(packed + member_offset,
+                                                   (const void *)(uintptr_t)mbuf->data.buffer_data,
+                                                   copy_size);
+                                        }
+                                        break;
                                     }
                                     size_t copy_size = (size_t)mbuf->size;
                                     if (copy_size > (size_t)elem_stride) {

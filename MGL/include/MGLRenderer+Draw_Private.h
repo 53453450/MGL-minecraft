@@ -478,6 +478,12 @@ typedef struct {
                                instanceCount:(GLsizei)instanceCount
                                 baseInstance:(GLuint)baseInstance
                                        label:(const char *)label;
+- (BOOL)handleVertexTransformFeedbackDrawIfNeeded:(GLMContext)drawCtx
+                                               mode:(GLenum)mode
+                                              first:(GLint)first
+                                              count:(GLsizei)count
+                                      instanceCount:(GLsizei)instanceCount
+                                       baseInstance:(GLuint)baseInstance;
 - (BOOL)handleGeometryDrawIfNeeded:(GLMContext)drawCtx
                               mode:(GLenum)mode
                              first:(GLint)first

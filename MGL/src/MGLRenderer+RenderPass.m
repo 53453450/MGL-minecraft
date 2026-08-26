@@ -1839,6 +1839,19 @@ static GLenum mglPassthroughDeclType(
 
         if (useStencilState)
         {
+            if (mglTraceLogIsEnabled()) {
+                mglTraceLog("STENCIL_STATE fbo=%u func=0x%x back=0x%x ref=%u backRef=%u readMask=0x%x backReadMask=0x%x writeMask=0x%x attachment=%p layered=%d",
+                            (unsigned)mglRendererSafeFramebufferName(ctx),
+                            (unsigned)state->var.stencil_func,
+                            (unsigned)state->var.stencil_back_func,
+                            (unsigned)state->var.stencil_ref,
+                            (unsigned)state->var.stencil_back_ref,
+                            (unsigned)state->var.stencil_value_mask,
+                            (unsigned)state->var.stencil_back_value_mask,
+                            (unsigned)state->var.stencil_writemask,
+                            mglRenderPassStencilTextureFor(_renderPassManager.state),
+                            (int)(MGL_STATE(ctx)->framebuffer ? MGL_STATE(ctx)->framebuffer->stencil.layered : 0));
+            }
             {
                 if (!mglIsValidGLCompareFunction(state->var.stencil_func)) {
                     mglLogRenderStateRepair("stencil_func", state->var.stencil_func, GL_ALWAYS);
@@ -1851,6 +1864,9 @@ static GLenum mglPassthroughDeclType(
                     mglMTLCompareFunctionForGL(state->var.stencil_func,
                                                MGLCompareFunctionAlways,
                                                "front-stencil");
+                if (mglEnvFlagEnabled("MGL_FORCE_STENCIL_ALWAYS")) {
+                    dsDesc.front.compare_function = MGLCompareFunctionAlways;
+                }
                 dsDesc.front.stencil_failure_operation =
                     [self mtlStencilOpForGLOp:state->var.stencil_fail];
                 dsDesc.front.depth_failure_operation =
@@ -1873,6 +1889,9 @@ static GLenum mglPassthroughDeclType(
                     mglMTLCompareFunctionForGL(state->var.stencil_back_func,
                                                MGLCompareFunctionAlways,
                                                "back-stencil");
+                if (mglEnvFlagEnabled("MGL_FORCE_STENCIL_ALWAYS")) {
+                    dsDesc.back.compare_function = MGLCompareFunctionAlways;
+                }
                 dsDesc.back.stencil_failure_operation =
                     [self mtlStencilOpForGLOp:state->var.stencil_back_fail];
                 dsDesc.back.depth_failure_operation =
@@ -3541,7 +3560,9 @@ static GLenum mglPassthroughDeclType(
 	            if (mglTraceLogIsEnabled()) {
 	                id c0 = mglRenderPassColorTextureFor(_renderPassManager.state, 0);
 	                id depth = mglRenderPassDepthTextureFor(_renderPassManager.state);
-	                mglTraceLog("RENDERPASS_PRE_CREATE hit=%llu call=%llu program=%u fbo=%u drawBuf=0x%x readBuf=0x%x "
+                MGLRenderPassState rpSnapshot = {0};
+                (void)mglRenderPassGetPersistentState(_renderPassManager.state, &rpSnapshot);
+                mglTraceLog("RENDERPASS_PRE_CREATE hit=%llu call=%llu program=%u fbo=%u drawBuf=0x%x readBuf=0x%x arrayLen=%lu colorLayered=%d depthLayered=%d stencilLayered=%d "
 	                            "viewport=%d,%d,%d,%d scissor(test=%d box=%d,%d,%d,%d) "
 	                            "c0=%p fmt=%lu size=%lux%lu la/sa=%s/%s depth=%p fmt=%lu size=%lux%lu la/sa=%s/%s clearDepth=%.6f "
 	                            "depthState(test=%d write=%d func=0x%x) pending(default=0x%x depth=0x%x)",
@@ -3549,8 +3570,12 @@ static GLenum mglPassthroughDeclType(
 	                            (unsigned long long)renderEncoderCall,
 	                            (unsigned)(ctx ? mglCurrentRenderProgramKey(ctx) : 0u),
 	                            (unsigned)(ctx ? mglRendererSafeFramebufferName(ctx) : 0u),
-	                            (unsigned)(ctx ? MGL_STATE(ctx)->draw_buffer : 0u),
-	                            (unsigned)(ctx ? MGL_STATE(ctx)->read_buffer : 0u),
+                            (unsigned)(ctx ? MGL_STATE(ctx)->draw_buffer : 0u),
+                            (unsigned)(ctx ? MGL_STATE(ctx)->read_buffer : 0u),
+                            (unsigned long)rpSnapshot.render_target_array_length,
+                            (int)rpSnapshot.color[0].attachment.layered,
+                            (int)rpSnapshot.depth.attachment.layered,
+                            (int)rpSnapshot.stencil.attachment.layered,
 	                            (int)(ctx ? MGL_STATE(ctx)->viewport[0] : 0),
 	                            (int)(ctx ? MGL_STATE(ctx)->viewport[1] : 0),
 	                            (int)(ctx ? MGL_STATE(ctx)->viewport[2] : 0),
@@ -4500,7 +4525,6 @@ static GLenum mglPassthroughDeclType(
         }
         state->color_format[0] = (uint32_t)fallbackColor0;
     }
-
 
     /* Resolve the pipeline sample count from the C++ render-pass state. */
     NSUInteger resolvedSampleCount = 1;

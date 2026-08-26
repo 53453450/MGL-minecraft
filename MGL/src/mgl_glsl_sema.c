@@ -1017,6 +1017,7 @@ static const BiFn kBuiltins[] = {
     { "distance",  2, { BI_ARG_GENF, BI_ARG_GENF }, BI_RET_FLOAT },
     { "dot",       2, { BI_ARG_GENF, BI_ARG_GENF }, BI_RET_FLOAT },
     { "floatBitsToInt", 1, { BI_ARG_GENF }, BI_RET_GENI },
+    { "floatBitsToUint", 1, { BI_ARG_GENF }, BI_RET_GENI },
     { "abs",       1, { BI_ARG_GENI }, BI_RET_GENI },
     { "abs",       1, { BI_ARG_GENF }, BI_RET_GENF },
     { "min",       2, { BI_ARG_GENI, BI_ARG_GENI }, BI_RET_GENI },

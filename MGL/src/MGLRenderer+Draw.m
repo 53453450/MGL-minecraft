@@ -438,6 +438,14 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
                                                  label:"drawArrays"]) {
         return;
     }
+    if ([self handleVertexTransformFeedbackDrawIfNeeded:ctx
+                                                       mode:mode
+                                                      first:first
+                                                      count:count
+                                              instanceCount:1
+                                               baseInstance:0u]) {
+        return;
+    }
 
     if ([self processGLStateLocked: true] == false) {
         process_state_fail_count++;

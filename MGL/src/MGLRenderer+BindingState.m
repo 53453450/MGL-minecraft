@@ -2490,17 +2490,31 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         Program *currentProgram = vertexProgram;
         MGLShaderResource *sampledResource = NULL;
         const char *sampledName = "";
-        if (currentProgram &&
-            i < currentProgram->shader_resources_list[vertexStage][_SAMPLED_IMAGE_RES].count) {
-            sampledResource = &currentProgram->shader_resources_list[vertexStage][_SAMPLED_IMAGE_RES].list[i];
-            sampledName = sampledResource->name;
+        if (currentProgram) {
+            MGLShaderResourceList *list =
+                &currentProgram->shader_resources_list[vertexStage][_SAMPLED_IMAGE_RES];
+            GLuint ordinal = i;
+            for (GLuint ri = 0; ri < list->count; ri++) {
+                GLuint elements = list->list[ri].gl_array_size > 1
+                    ? (GLuint)list->list[ri].gl_array_size : 1u;
+                if (ordinal < elements) {
+                    sampledResource = &list->list[ri];
+                    break;
+                }
+                ordinal -= elements;
+            }
+            if (sampledResource) sampledName = sampledResource->name;
         }
         /* read binding/gl_binding directly from the already-resolved
          * MGLShaderResource instead of re-resolving the program per query. When
          * sampledResource is NULL (no program / index OOR), mirror the
          * query-method semantics of returning 0. */
-        GLuint spirvBinding = sampledResource ? sampledResource->binding : 0u;
-        GLuint glBinding = sampledResource ? sampledResource->gl_binding : 0u;
+        GLuint spirvBinding = sampledResource
+            ? (GLuint)mglRendererGetProgramBinding(ctx, vertexStage,
+                                                   _SAMPLED_IMAGE_RES, (int32_t)i) : 0u;
+        GLuint glBinding = sampledResource
+            ? (GLuint)mglRendererGetProgramGLBinding(ctx, vertexStage,
+                                                     _SAMPLED_IMAGE_RES, (int32_t)i) : 0u;
         if (spirvBinding >= TEXTURE_UNITS || glBinding >= TEXTURE_UNITS) {
             continue;
         }
@@ -2983,15 +2997,29 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         Program *sampleProgram = fragmentProgram;
         MGLShaderResource *sampledResource = NULL;
         const char *sampledName = "";
-        if (sampleProgram &&
-            i < sampleProgram->shader_resources_list[_FRAGMENT_SHADER][_SAMPLED_IMAGE_RES].count) {
-            sampledResource = &sampleProgram->shader_resources_list[_FRAGMENT_SHADER][_SAMPLED_IMAGE_RES].list[i];
-            sampledName = sampledResource->name;
+        if (sampleProgram) {
+            MGLShaderResourceList *list =
+                &sampleProgram->shader_resources_list[_FRAGMENT_SHADER][_SAMPLED_IMAGE_RES];
+            GLuint ordinal = i;
+            for (GLuint ri = 0; ri < list->count; ri++) {
+                GLuint elements = list->list[ri].gl_array_size > 1
+                    ? (GLuint)list->list[ri].gl_array_size : 1u;
+                if (ordinal < elements) {
+                    sampledResource = &list->list[ri];
+                    break;
+                }
+                ordinal -= elements;
+            }
+            if (sampledResource) sampledName = sampledResource->name;
         }
         /* read binding/gl_binding directly from the already-resolved
          * MGLShaderResource instead of re-resolving the program per query. */
-        GLuint spirvBinding = sampledResource ? sampledResource->binding : 0u;
-        GLuint glBinding = sampledResource ? sampledResource->gl_binding : 0u;
+        GLuint spirvBinding = sampledResource
+            ? (GLuint)mglRendererGetProgramBinding(ctx, _FRAGMENT_SHADER,
+                                                   _SAMPLED_IMAGE_RES, (int32_t)i) : 0u;
+        GLuint glBinding = sampledResource
+            ? (GLuint)mglRendererGetProgramGLBinding(ctx, _FRAGMENT_SHADER,
+                                                     _SAMPLED_IMAGE_RES, (int32_t)i) : 0u;
         if (spirvBinding >= TEXTURE_UNITS || glBinding >= TEXTURE_UNITS) {
             continue;
         }

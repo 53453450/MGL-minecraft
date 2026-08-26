@@ -205,7 +205,15 @@ static void push_resource(MGLShaderResourceList *list, const MGLIRSymbol *s,
     r.location = location;
     r.gl_binding = binding;
     r.binding = binding;
-    r.gl_type = mglAirGLTypeFromIR(type);
+    /* Resource reflection keeps the top-level array type for array size and
+     * binding expansion, but sampler/image metadata must come from its
+     * element type.  mglAirGLTypeFromIR(array) has no sampler case and would
+     * otherwise silently report GL_FLOAT, causing integer texture arrays to
+     * bind float fallback textures. */
+    const MGLIRType *value_type = type;
+    while (value_type && value_type->kind == MGLIR_TYPE_ARRAY)
+        value_type = value_type->elem_type;
+    r.gl_type = mglAirGLTypeFromIR(value_type ? value_type : type);
     r.gl_array_size = mglAirGLArraySizeFromIR(type);
     r.is_array = (type->kind == MGLIR_TYPE_ARRAY) ? GL_TRUE : GL_FALSE;
     r.is_per_patch = (s->qualifiers & MGL_AST_Q_PATCH) ? GL_TRUE : GL_FALSE;
@@ -215,9 +223,9 @@ static void push_resource(MGLShaderResourceList *list, const MGLIRSymbol *s,
     r.uniform_location = -1;
     r.sampler_unit = 0;
     r.sampler_unit_explicit = GL_FALSE;
-    if (type->kind == MGLIR_TYPE_SAMPLER ||
-        type->kind == MGLIR_TYPE_IMAGE) {
-        switch (type->tex_kind) {
+    if (value_type && (value_type->kind == MGLIR_TYPE_SAMPLER ||
+                       value_type->kind == MGLIR_TYPE_IMAGE)) {
+        switch (value_type->tex_kind) {
         case MGLIR_TEX_1D:
         case MGLIR_TEX_1D_ARRAY:
             r.image_dim = MGL_IMAGE_DIM_1D;
@@ -244,19 +252,19 @@ static void push_resource(MGLShaderResourceList *list, const MGLIRSymbol *s,
             break;
         }
         r.image_arrayed =
-            type->tex_kind == MGLIR_TEX_1D_ARRAY ||
-            type->tex_kind == MGLIR_TEX_2D_ARRAY ||
-            type->tex_kind == MGLIR_TEX_CUBE_ARRAY ||
-            type->tex_kind == MGLIR_TEX_2D_MS_ARRAY;
+            value_type->tex_kind == MGLIR_TEX_1D_ARRAY ||
+            value_type->tex_kind == MGLIR_TEX_2D_ARRAY ||
+            value_type->tex_kind == MGLIR_TEX_CUBE_ARRAY ||
+            value_type->tex_kind == MGLIR_TEX_2D_MS_ARRAY;
         r.image_multisampled =
-            type->tex_kind == MGLIR_TEX_2D_MS ||
-            type->tex_kind == MGLIR_TEX_2D_MS_ARRAY ||
-            type->tex_kind == MGLIR_TEX_SUBPASS_MS;
-        r.texture_data_kind = type->tex_depth
+            value_type->tex_kind == MGLIR_TEX_2D_MS ||
+            value_type->tex_kind == MGLIR_TEX_2D_MS_ARRAY ||
+            value_type->tex_kind == MGLIR_TEX_SUBPASS_MS;
+        r.texture_data_kind = value_type->tex_depth
             ? MGL_SHADER_TEXTURE_DATA_DEPTH
-            : type->tex_storage == MGLIR_SCALAR_INT
+            : value_type->tex_storage == MGLIR_SCALAR_INT
                 ? MGL_SHADER_TEXTURE_DATA_SINT
-                : type->tex_storage == MGLIR_SCALAR_UINT
+                : value_type->tex_storage == MGLIR_SCALAR_UINT
                     ? MGL_SHADER_TEXTURE_DATA_UINT
                     : MGL_SHADER_TEXTURE_DATA_FLOAT;
     }
@@ -400,13 +408,16 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
         }
         uint32_t q = s->qualifiers;
         const MGLIRType *t = s->type;
+        const MGLIRType *base_t = t;
+        while (base_t && base_t->kind == MGLIR_TYPE_ARRAY)
+            base_t = base_t->elem_type;
         if (isVS && (q & MGL_AST_Q_IN)) {
             attrCount++;
         } else if (q & MGL_AST_Q_BUFFER) {
             ssboCount++;
         } else if ((q & MGL_AST_Q_UNIFORM) &&
-                   t->kind != MGLIR_TYPE_SAMPLER &&
-                   t->kind != MGLIR_TYPE_IMAGE && !s->block_name &&
+                   base_t && base_t->kind != MGLIR_TYPE_SAMPLER &&
+                   base_t->kind != MGLIR_TYPE_IMAGE && !s->block_name &&
                    !air_uniform_block_type(t)) {
             hasPlain = 1;
         }
@@ -445,6 +456,9 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
             continue;
         }
         const MGLIRType *t = s->type;
+        const MGLIRType *base_t = t;
+        while (base_t && base_t->kind == MGLIR_TYPE_ARRAY)
+            base_t = base_t->elem_type;
         uint32_t q = s->qualifiers;
         GLuint location = s->location != UINT32_MAX ? s->location : UINT32_MAX;
 
@@ -460,7 +474,7 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
         }
 
         if (q & MGL_AST_Q_UNIFORM) {
-            if (t->kind == MGLIR_TYPE_SAMPLER) {
+            if (base_t && base_t->kind == MGLIR_TYPE_SAMPLER) {
                 push_resource(&lists[_SAMPLED_IMAGE_RES], s, t, location,
                               texture_binding, stage);
                 MGLShaderResource *last =
@@ -483,11 +497,13 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                         ? (GLint)s->location
                         : mglSyntheticSamplerUniformLocation(
                               stage, _SAMPLED_IMAGE_RES, sampler_binding);
-                texture_binding++;
-                sampler_binding++;
+                GLuint elements = mglAirGLArraySizeFromIR(t);
+                if (elements < 1u) elements = 1u;
+                texture_binding += elements;
+                sampler_binding += elements;
                 continue;
             }
-            if (t->kind == MGLIR_TYPE_IMAGE) {
+            if (base_t && base_t->kind == MGLIR_TYPE_IMAGE) {
                 push_resource(&lists[_STORAGE_IMAGE_RES], s, t, location,
                               texture_binding, stage);
                 MGLShaderResource *last =
@@ -497,7 +513,9 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                 if (s->binding != UINT32_MAX) {
                     last->gl_binding = s->binding;
                 }
-                texture_binding++;
+                GLuint elements = mglAirGLArraySizeFromIR(t);
+                if (elements < 1u) elements = 1u;
+                texture_binding += elements;
                 continue;
             }
             if (s->block_name) {
