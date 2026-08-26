@@ -805,6 +805,11 @@ static GLsizei mgl_program_resource_name_with_array(const MGLShaderResource *res
 static GLboolean mgl_program_stage_source_references(Program *pptr,
 	                                                    int target_stage,
 	                                                    const char *name);
+static const char *mgl_program_stage_source_body(Program *pptr,
+                                                 int target_stage);
+static GLboolean mgl_program_qualified_member_referenced(const char *body,
+                                                         const char *instance,
+                                                         const char *member);
 
 static GLboolean mgl_program_block_seen_before(Program *pptr, int res_type, int target_stage, GLuint target_index)
 {
@@ -841,9 +846,24 @@ static GLboolean mgl_program_block_referenced_by_stage(Program *pptr, int res_ty
 		&pptr->shader_resources_list[query_stage][res_type];
 	if (pptr->shader_slots[query_stage] && pptr->shader_slots[query_stage]->src &&
 	    block->ubo_members && block->ubo_member_count > 0) {
+		const char *body = mgl_program_stage_source_body(pptr, query_stage);
+		const GLboolean have_instance =
+			block->ubo_has_instance_name && block->ubo_instance_name;
 		for (GLuint m = 0; m < block->ubo_member_count; m++) {
 			const char *member = block->ubo_members[m].name;
-			if (member && mgl_program_stage_source_references(pptr, query_stage, member))
+			if (!member)
+				continue;
+			/* With the instance name known, require a qualified access so
+			 * an unrelated identifier that merely shares the member's name
+			 * cannot fake a reference. */
+			GLboolean referenced =
+				have_instance
+					? (body && mgl_program_qualified_member_referenced(
+					               body, block->ubo_instance_name, member))
+					: mgl_program_stage_source_references(pptr,
+					                                      query_stage,
+					                                      member);
+			if (referenced)
 				return GL_TRUE;
 		}
 		return GL_FALSE;
@@ -1384,6 +1404,18 @@ static GLboolean mgl_program_uniform_referenced_by_stage(Program *pptr, const ch
  * GLSL stage actually reads it.  Use the stage source body for the API's
  * per-stage reference query; declarations and comments before main() are
  * intentionally ignored. */
+static const char *mgl_program_stage_source_body(Program *pptr,
+                                                 int target_stage)
+{
+	if (!pptr || target_stage < 0 || target_stage >= _MAX_SHADER_TYPES)
+		return NULL;
+	Shader *shader = pptr->shader_slots[target_stage];
+	if (!shader || !shader->src)
+		return NULL;
+	const char *body = strstr(shader->src, "void main");
+	return body ? body : shader->src;
+}
+
 static GLboolean mgl_program_source_name_is_referenced(const char *body, const char *name)
 {
 	if (!body || !name || !name[0])
@@ -1414,18 +1446,53 @@ static GLboolean mgl_program_source_name_is_referenced(const char *body, const c
 	return GL_FALSE;
 }
 
+/* Stricter member check when the block instance name is known: accept only
+ * qualified accesses ("<instance>.<member>", optionally through array
+ * subscripts), never a bare identifier that merely shares the member's
+ * name. */
+static GLboolean mgl_program_qualified_member_referenced(const char *body,
+                                                         const char *instance,
+                                                         const char *member)
+{
+	if (!body || !instance || !instance[0] || !member || !member[0])
+		return GL_FALSE;
+
+	const size_t inst_len = strlen(instance);
+	for (const char *p = strstr(body, instance); p; p = strstr(p + 1, instance))
+	{
+		const char prev = (p == body) ? '\0' : p[-1];
+		const GLboolean prev_ok = !((prev >= 'a' && prev <= 'z') ||
+		                            (prev >= 'A' && prev <= 'Z') ||
+		                            (prev >= '0' && prev <= '9') || prev == '_');
+		if (!prev_ok)
+			continue;
+		const char *q = p + inst_len;
+		while (*q == '[')
+		{
+			q = strchr(q, ']');
+			if (!q)
+				break;
+			++q;
+		}
+		if (!q || *q != '.' || strncmp(q + 1, member, strlen(member)) != 0)
+			continue;
+		const char next = q[1 + strlen(member)];
+		const GLboolean next_ok = !((next >= 'a' && next <= 'z') ||
+		                            (next >= 'A' && next <= 'Z') ||
+		                            (next >= '0' && next <= '9') || next == '_');
+		if (next_ok)
+			return GL_TRUE;
+	}
+	return GL_FALSE;
+}
+
 static GLboolean mgl_program_stage_source_references(Program *pptr,
 	                                                    int target_stage,
 	                                                    const char *name)
 {
-	if (!pptr || !name || target_stage < 0 || target_stage >= _MAX_SHADER_TYPES)
+	const char *body = mgl_program_stage_source_body(pptr, target_stage);
+	if (!body || !name || !name[0])
 		return GL_FALSE;
-	Shader *shader = pptr->shader_slots[target_stage];
-	if (!shader || !shader->src)
-		return GL_FALSE;
-	const char *body = strstr(shader->src, "void main");
-	if (!body)
-		body = shader->src;
 	return mgl_program_source_name_is_referenced(body, name);
 }
 
