@@ -1257,10 +1257,18 @@ static bool mglCPUFeedbackCaptureGate(GLMContext ctx,
     /* A bound program pipeline supersedes the program object binding, so
      * resolve the vertex-stage program from the pipeline when one is active
      * (GL spec §2.11.1: useProgram(0) + bindProgramPipeline keeps draws
-     * valid). */
+     * valid).  A pipeline carrying GS/tessellation stages needs those
+     * stages executed on the GPU path, so CPU passthrough capture must not
+     * swallow such draws. */
     Program *program = NULL;
     if (ctx->state.program_pipeline) {
-        program = ctx->state.program_pipeline->stage_programs[_VERTEX_SHADER];
+        ProgramPipeline *pipeline = ctx->state.program_pipeline;
+        if (pipeline->stage_programs[_GEOMETRY_SHADER] ||
+            pipeline->stage_programs[_TESS_CONTROL_SHADER] ||
+            pipeline->stage_programs[_TESS_EVALUATION_SHADER]) {
+            return false;
+        }
+        program = pipeline->stage_programs[_VERTEX_SHADER];
     } else {
         program = ctx->state.program;
     }

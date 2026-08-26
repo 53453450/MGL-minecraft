@@ -1349,22 +1349,53 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
             hasSource[varying] = YES;
             continue;
         }
-        if (strchr(name, '[')) {
-            return NO;
+        /* Single-element capture ("v[2]") shifts the record slot by the
+         * element index; whole-array names still span multiple slots and
+         * stay unsupported here. */
+        char baseName[96];
+        const char *bracket = strchr(name, '[');
+        GLuint arrayElement = 0u;
+        if (bracket) {
+            char *end = NULL;
+            unsigned long parsed = strtoul(bracket + 1, &end, 10);
+            size_t baseLen = (size_t)(bracket - name);
+            if (!end || *end != ']' || end[1] != '\0' || baseLen == 0u ||
+                baseLen >= sizeof(baseName)) {
+                return NO;
+            }
+            memcpy(baseName, name, baseLen);
+            baseName[baseLen] = '\0';
+            arrayElement = (GLuint)parsed;
+        } else {
+            size_t nameLen = strlen(name);
+            if (nameLen >= sizeof(baseName)) return NO;
+            memcpy(baseName, name, nameLen + 1u);
         }
         const MGLShaderResource *output = NULL;
         for (GLuint i = 0u; outputs->list && i < outputs->count; i++) {
             if (outputs->list[i].name &&
-                strcmp(outputs->list[i].name, name) == 0) {
+                strcmp(outputs->list[i].name, baseName) == 0) {
                 output = &outputs->list[i];
                 break;
             }
         }
-        if (!output || output->is_array || output->location >= 0x0fffffffu) {
+        if (!output || output->location >= 0x0fffffffu) {
+            return NO;
+        }
+        GLuint recordSlot = output->location;
+        if (bracket) {
+            if (!output->is_array ||
+                arrayElement >= (GLuint)((output->gl_array_size > 0)
+                                             ? output->gl_array_size
+                                             : 1)) {
+                return NO;
+            }
+            recordSlot += arrayElement;
+        } else if (output->is_array) {
             return NO;
         }
         sourceOffset[varying] = MGL_AIR_PER_VERTEX_STRIDE +
-                                (NSUInteger)output->location * 16u;
+                                (NSUInteger)recordSlot * 16u;
         hasSource[varying] = YES;
     }
 
@@ -1388,13 +1419,21 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         return YES;
     }
     NSUInteger recordCount = (NSUInteger)recordCount64;
+    /* GL semantics: once any active buffer runs out of room, further
+     * primitives are neither written nor counted by
+     * TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN (PRIMITIVES_GENERATED keeps
+     * counting).  Track the capped count across all buffers. */
+    NSUInteger writtenTotal = recordCount;
 
     for (GLuint buffer = 0u; buffer < bufferCount; buffer++) {
         if (bufferStride[buffer] == 0u) continue;
         BufferBaseTarget *slot =
             &MGL_STATE(drawCtx)->buffer_base[_TRANSFORM_FEEDBACK_BUFFER]
                                         .buffers[buffer];
-        if (!slot->buf || slot->offset < 0) continue;
+        if (!slot->buf || slot->offset < 0) {
+            writtenTotal = 0;
+            continue;
+        }
         BufferMap map = {0};
         map.buf = slot->buf;
         map.offset = slot->offset;
@@ -1404,12 +1443,19 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         NSUInteger sessionOffset = xfb->buffer_write_offsets[buffer] <=
                 (GLuint64)NSUIntegerMax
             ? (NSUInteger)xfb->buffer_write_offsets[buffer] : visible;
-        if (sessionOffset >= visible) continue;
+        if (sessionOffset >= visible) {
+            writtenTotal = 0;
+            continue;
+        }
         NSUInteger capacity = (visible - sessionOffset) / bufferStride[buffer];
         NSUInteger writtenRecords = MIN(recordCount, capacity);
         if (writtenRecords == 0u ||
             writtenRecords > NSUIntegerMax / bufferStride[buffer]) {
+            writtenTotal = 0;
             continue;
+        }
+        if (writtenRecords < writtenTotal) {
+            writtenTotal = writtenRecords;
         }
         NSUInteger writtenBytes = writtenRecords * bufferStride[buffer];
         uint8_t *packed = (uint8_t *)calloc(1u, writtenBytes);
@@ -1484,9 +1530,9 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     }
 
     xfb->primitives_generated += (GLuint64)recordCount;
-    xfb->primitives_written += (GLuint64)recordCount;
+    xfb->primitives_written += (GLuint64)writtenTotal;
     mglRecordActivePrimitiveQueryDraw(drawCtx, (GLuint64)recordCount,
-                                      (GLuint64)recordCount);
+                                      (GLuint64)writtenTotal);
     drawCtx->state.dirty_bits = DIRTY_ALL;
     return YES;
 }
