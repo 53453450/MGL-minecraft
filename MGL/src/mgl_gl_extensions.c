@@ -1384,6 +1384,36 @@ static GLboolean mgl_program_uniform_referenced_by_stage(Program *pptr, const ch
  * GLSL stage actually reads it.  Use the stage source body for the API's
  * per-stage reference query; declarations and comments before main() are
  * intentionally ignored. */
+static GLboolean mgl_program_source_name_is_referenced(const char *body, const char *name)
+{
+	if (!body || !name || !name[0])
+		return GL_FALSE;
+
+	/* The query name may be a block member; reference sites qualify it with
+	 * the block instance ("uni_colors.red").  Match the identifier as a
+	 * whole so "model" does not hit "uni_model_view_projection", while a
+	 * qualified access ("<instance>.<member>") still counts as a use. */
+	const char *leaf = strrchr(name, '.');
+	leaf = leaf ? leaf + 1 : name;
+
+	const size_t leaf_len = strlen(leaf);
+	for (const char *p = strstr(body, leaf); p; p = strstr(p + 1, leaf))
+	{
+		const char prev = (p == body) ? '\0' : p[-1];
+		const char next = p[leaf_len];
+		const GLboolean prev_ok = !((prev >= 'a' && prev <= 'z') ||
+		                            (prev >= 'A' && prev <= 'Z') ||
+		                            (prev >= '0' && prev <= '9') ||
+		                            prev == '_');
+		const GLboolean next_ok = !((next >= 'a' && next <= 'z') ||
+		                            (next >= 'A' && next <= 'Z') ||
+		                            (next >= '0' && next <= '9') || next == '_');
+		if (prev_ok && next_ok)
+			return GL_TRUE;
+	}
+	return GL_FALSE;
+}
+
 static GLboolean mgl_program_stage_source_references(Program *pptr,
 	                                                    int target_stage,
 	                                                    const char *name)
@@ -1396,7 +1426,7 @@ static GLboolean mgl_program_stage_source_references(Program *pptr,
 	const char *body = strstr(shader->src, "void main");
 	if (!body)
 		body = shader->src;
-	return strstr(body, name) ? GL_TRUE : GL_FALSE;
+	return mgl_program_source_name_is_referenced(body, name);
 }
 
 static GLboolean mgl_program_active_uniform_referenced_by_stage(Program *pptr,

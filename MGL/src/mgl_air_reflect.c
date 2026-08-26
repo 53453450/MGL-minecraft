@@ -195,6 +195,32 @@ static GLuint air_uniform_block_element_count(const MGLIRType *type)
         ? type->array_size : 1u;
 }
 
+/* GL names interface blocks by the block name, not the instance: for
+ * `uniform Colors { ... } uni_colors;` GetProgramResourceIndex(GL_UNIFORM_BLOCK)
+ * must find "Colors".  The reflected symbol is named after the instance, so
+ * rename the resource to the block name and keep the instance aside for
+ * consumers that need to qualify member access. */
+static void apply_block_interface_name(MGLShaderResource *res,
+                                       const MGLIRType *type,
+                                       const char *instance_name)
+{
+    const MGLIRType *block_type = air_uniform_block_type(type);
+    if (!block_type || !block_type->name || !block_type->name[0] ||
+        !res->name || strcmp(res->name, block_type->name) == 0) {
+        return;
+    }
+    char *renamed = strdup(block_type->name);
+    if (!renamed) {
+        return;
+    }
+    free((void *)res->name);
+    res->name = renamed;
+    if (instance_name && instance_name[0]) {
+        res->ubo_instance_name = strdup(instance_name);
+        res->ubo_has_instance_name = res->ubo_instance_name ? GL_TRUE : GL_FALSE;
+    }
+}
+
 static void push_resource(MGLShaderResourceList *list, const MGLIRSymbol *s,
                           const MGLIRType *type, GLuint location,
                           GLuint binding, int stage)
@@ -533,6 +559,7 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                 MGLShaderResource *last =
                     &lists[_UNIFORM_BUFFER_RES].list[
                         lists[_UNIFORM_BUFFER_RES].count - 1];
+                apply_block_interface_name(last, t, s->name);
                 last->ubo_array_size = block_count;
                 last->ubo_is_array = block_count > 1u ? GL_TRUE : GL_FALSE;
                 if (block_count > 1u) {
@@ -571,9 +598,12 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
         if (q & MGL_AST_Q_BUFFER) {
             push_resource(&lists[_STORAGE_BUFFER_RES], s, t, location,
                           ssbo_binding++, stage);
+            MGLShaderResource *ssbo_last =
+                &lists[_STORAGE_BUFFER_RES].list[
+                    lists[_STORAGE_BUFFER_RES].count - 1];
+            apply_block_interface_name(ssbo_last, t, s->name);
             if (s->binding != UINT32_MAX) {
-                lists[_STORAGE_BUFFER_RES].list[
-                    lists[_STORAGE_BUFFER_RES].count - 1].gl_binding = s->binding;
+                ssbo_last->gl_binding = s->binding;
             }
         } else if (q & MGL_AST_Q_IN) {
             /* Desired location: explicit bindings, stable names, then
