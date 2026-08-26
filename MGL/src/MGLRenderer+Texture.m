@@ -612,7 +612,8 @@ static void mglTextureCopyTextureToBuffer(
     if (mglTraceLogIsEnabled() &&
         (mglTextureInfo(texture).pixel_format == MGLPixelFormatDepth32Float_Stencil8 ||
          mglTextureInfo(texture).pixel_format == MGLPixelFormatDepth24Unorm_Stencil8) &&
-        (texTarget == GL_TEXTURE_2D_ARRAY || texTarget == GL_TEXTURE_3D)) {
+        (texTarget == GL_TEXTURE_2D_ARRAY || texTarget == GL_TEXTURE_3D) &&
+        bytesPerRow >= 16) {
         const uint8_t *probe = (const uint8_t *)bytes;
         mglTraceLog("TEXTURE_UPLOAD_DS tex=%u target=0x%x fmt=%lu slice=%lu level=%lu size=%lux%lu bpr=%lu bpi=%lu first=%02x %02x %02x %02x %02x %02x %02x %02x next=%02x %02x %02x %02x %02x %02x %02x %02x",
                     (unsigned)texName, (unsigned)texTarget,
@@ -2967,6 +2968,24 @@ static void mglTextureCopyTextureToBuffer(
 
                 }
 
+            }
+
+            /* Combined depth/stencil CPU shadows use a packed layout
+             * (DEPTH32F_STENCIL8 = 5 bytes/texel) while the Metal texture
+             * expects 8 bytes/texel with stencil at byte 4; repack here so
+             * the non-array refresh path matches the dirty/array paths. */
+            NSUInteger dsBytesPerRow = 0;
+            NSUInteger dsBytesPerImage = 0;
+            void *dsUploadData = mglCreateDepthStencilMetalUpload(
+                tex, pixelFormat, (const uint8_t *)srcData,
+                lvlWidth, MAX((NSUInteger)lvlHeight, 1UL),
+                bytesPerRow, &dsBytesPerRow, &dsBytesPerImage);
+            if (dsUploadData) {
+                free(expandedUploadData);
+                expandedUploadData = dsUploadData;
+                srcData = dsUploadData;
+                bytesPerRow = dsBytesPerRow;
+                bytesPerImage = dsBytesPerImage;
             }
 
             NSUInteger alignment = [self getOptimalAlignmentForPixelFormat:pixelFormat];
