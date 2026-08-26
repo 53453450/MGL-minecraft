@@ -2293,6 +2293,11 @@ static void storeGeometryViewportIndex(Codegen &cg, llvm::Value *record,
 
 /* gl_PrimitiveID written by the GS rides at offset 52 so the fragment
  * stage can receive it through the passthrough vertex function (flat).
+ * The record holds a float carrier (sitofp of the id): Apple's AGX
+ * compiler segfaults in InstCombine when a flat int stage_input that is
+ * actually read crosses into the fragment stage, so the id travels as a
+ * float and the FS entry converts it back with round+fptosi.  Every
+ * reader/writer of this slot must use the same carrier type.
  * Unwritten records keep whatever the strip cache held; the renderer's
  * PTVS only forwards it for programs that declared gl_PrimitiveID. */
 static void copyGeometryPrimitiveIdSelected(Codegen &cg, llvm::Value *dst,
@@ -2304,8 +2309,8 @@ static void copyGeometryPrimitiveIdSelected(Codegen &cg, llvm::Value *dst,
         llvm::Value *p = cg.b->CreateGEP(
             cg.b->getInt8Ty(), geometryRecordPtr(cg, cg.b->getInt32(rec)),
             cg.b->getInt64(MGL_AIR_PER_VERTEX_PRIMITIVE_ID_OFFSET));
-        p = cg.b->CreateBitCast(p, cg.b->getInt32Ty()->getPointerTo(1));
-        return cg.b->CreateAlignedLoad(cg.b->getInt32Ty(), p,
+        p = cg.b->CreateBitCast(p, cg.b->getFloatTy()->getPointerTo(1));
+        return cg.b->CreateAlignedLoad(cg.b->getFloatTy(), p,
                                        llvm::Align(4));
     };
     llvm::Value *v =
@@ -2313,7 +2318,7 @@ static void copyGeometryPrimitiveIdSelected(Codegen &cg, llvm::Value *dst,
     llvm::Value *p = cg.b->CreateGEP(
         cg.b->getInt8Ty(), geometryRecordPtr(cg, dst),
         cg.b->getInt64(MGL_AIR_PER_VERTEX_PRIMITIVE_ID_OFFSET));
-    p = cg.b->CreateBitCast(p, cg.b->getInt32Ty()->getPointerTo(1));
+    p = cg.b->CreateBitCast(p, cg.b->getFloatTy()->getPointerTo(1));
     cg.b->CreateAlignedStore(v, p, llvm::Align(4));
 }
 
@@ -2322,8 +2327,8 @@ static llvm::Value *loadGeometryPrimitiveId(Codegen &cg, uint32_t record)
     llvm::Value *p = cg.b->CreateGEP(
         cg.b->getInt8Ty(), geometryRecordPtr(cg, cg.b->getInt32(record)),
         cg.b->getInt64(MGL_AIR_PER_VERTEX_PRIMITIVE_ID_OFFSET));
-    p = cg.b->CreateBitCast(p, cg.b->getInt32Ty()->getPointerTo(1));
-    return cg.b->CreateAlignedLoad(cg.b->getInt32Ty(), p, llvm::Align(4));
+    p = cg.b->CreateBitCast(p, cg.b->getFloatTy()->getPointerTo(1));
+    return cg.b->CreateAlignedLoad(cg.b->getFloatTy(), p, llvm::Align(4));
 }
 
 static void copyGeometryPrimitiveId(Codegen &cg, llvm::Value *dst,
@@ -2333,7 +2338,7 @@ static void copyGeometryPrimitiveId(Codegen &cg, llvm::Value *dst,
     llvm::Value *p = cg.b->CreateGEP(
         cg.b->getInt8Ty(), geometryRecordPtr(cg, dst),
         cg.b->getInt64(MGL_AIR_PER_VERTEX_PRIMITIVE_ID_OFFSET));
-    p = cg.b->CreateBitCast(p, cg.b->getInt32Ty()->getPointerTo(1));
+    p = cg.b->CreateBitCast(p, cg.b->getFloatTy()->getPointerTo(1));
     cg.b->CreateAlignedStore(v, p, llvm::Align(4));
 }
 
@@ -2344,10 +2349,11 @@ static void storeGeometryPrimitiveId(Codegen &cg, llvm::Value *record)
     llvm::Value *v = it->second;
     if (v->getType() != cg.b->getInt32Ty())
         v = cg.b->CreateZExtOrTrunc(v, cg.b->getInt32Ty());
+    v = cg.b->CreateSIToFP(v, cg.b->getFloatTy());
     llvm::Value *p = cg.b->CreateGEP(
         cg.b->getInt8Ty(), geometryRecordPtr(cg, record),
         cg.b->getInt64(MGL_AIR_PER_VERTEX_PRIMITIVE_ID_OFFSET));
-    p = cg.b->CreateBitCast(p, cg.b->getInt32Ty()->getPointerTo(1));
+    p = cg.b->CreateBitCast(p, cg.b->getFloatTy()->getPointerTo(1));
     cg.b->CreateAlignedStore(v, p, llvm::Align(4));
 }
 
@@ -7290,7 +7296,9 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             paramTys.push_back(llvm::FixedVectorType::get(
                 llvm::Type::getFloatTy(ctx), 2));
         if (usesPrimitiveId)
-            paramTys.push_back(llvm::Type::getInt32Ty(ctx));
+            paramTys.push_back((stage == MGL_STAGE_FRAGMENT && has_gs)
+                ? llvm::Type::getFloatTy(ctx)
+                : llvm::Type::getInt32Ty(ctx));
         if (usesSampleID)
             paramTys.push_back(llvm::Type::getInt32Ty(ctx));
     }
@@ -7604,8 +7612,18 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             cg.lvalues["gl_FrontFacing"] = fn->getArg(argSlot++);
         if (usesPointCoord)
             cg.lvalues["gl_PointCoord"] = fn->getArg(argSlot++);
-        if (usesPrimitiveId)
-            cg.lvalues["gl_PrimitiveID"] = fn->getArg(argSlot++);
+        if (usesPrimitiveId) {
+            llvm::Value *primitiveArg = fn->getArg(argSlot++);
+            if (stage == MGL_STAGE_FRAGMENT && has_gs) {
+                /* The id arrives as a float carrier (see
+                 * storeGeometryPrimitiveId); convert back for shader math. */
+                primitiveArg = cg.b->CreateFPToSI(
+                    cg.b->CreateUnaryIntrinsic(llvm::Intrinsic::round,
+                                               primitiveArg),
+                    cg.b->getInt32Ty());
+            }
+            cg.lvalues["gl_PrimitiveID"] = primitiveArg;
+        }
         if (usesSampleID)
             cg.lvalues["gl_SampleID"] = fn->getArg(argSlot++);
     }
@@ -9069,21 +9087,25 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         }
         if (usesPrimitiveId) {
             if (stage == MGL_STAGE_FRAGMENT && has_gs) {
-                /* GS expansion path: the id arrives as a flat int varying
-                 * written by the passthrough vertex function at
-                 * MGL_AIR_PRIMITIVE_ID_LOCATION. */
+                /* GS expansion path: the id arrives as a flat float carrier
+                 * written by the passthrough vertex function, which declares
+                 * its output as vertex_output + generated(<name>f).  The FS
+                 * input must pair with that exact generated() name — a
+                 * location-indexed stage_input here crashes Apple's compiler
+                 * once the input is actually read. */
+                /* Base name must match the passthrough vertex function's
+                 * output variable ("mgl_primitive_id", see
+                 * MGLRenderer+RenderPass.m) so the generated() names pair. */
+                MType carrierType;
                 argNodes.push_back(llvm::MDNode::get(ctx, {
                     llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                         llvm::Type::getInt32Ty(ctx), mArgSlot++)),
-                    llvm::MDString::get(ctx, "air.stage_input"),
-                    llvm::MDString::get(ctx, "air.location_index"),
-                    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                        llvm::Type::getInt32Ty(ctx),
-                        MGL_AIR_PRIMITIVE_ID_LOCATION)),
+                    llvm::MDString::get(ctx, "air.fragment_input"),
+                    llvm::MDString::get(
+                        ctx, airGenerated("mgl_primitive_id", carrierType)),
                     llvm::MDString::get(ctx, "air.flat"),
-                    llvm::MDString::get(ctx, "air.no_perspective"),
                     llvm::MDString::get(ctx, "air.arg_type_name"),
-                    llvm::MDString::get(ctx, "int"),
+                    llvm::MDString::get(ctx, "float"),
                     llvm::MDString::get(ctx, "air.arg_name"),
                     llvm::MDString::get(ctx, "gl_PrimitiveID")}));
             } else {

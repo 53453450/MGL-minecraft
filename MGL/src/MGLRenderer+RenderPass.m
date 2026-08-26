@@ -747,8 +747,11 @@ static GLenum mglPassthroughDeclType(
     BOOL hasPrimitiveId = mgl_gs_for_ps && mgl_gs_for_ps->src &&
                           strstr(mgl_gs_for_ps->src, "gl_PrimitiveID") != NULL;
     if (hasPrimitiveId) {
+        /* Float carrier: the GS kernel stores sitofp(id) and a flat int
+         * stage_input that is actually read crashes Apple's AGX compiler
+         * (see storeGeometryPrimitiveId). */
         [source appendFormat:
-            @"layout(location = %u) flat out int mgl_primitive_id;\n",
+            @"layout(location = %u) flat out float mgl_primitive_id;\n",
              (unsigned)MGL_AIR_PRIMITIVE_ID_LOCATION];
     }    for (GLuint i = 0; outputs->list && i < outputs->count; i++) {
         MGLShaderResource *output = &outputs->list[i];
@@ -803,10 +806,11 @@ static GLenum mglPassthroughDeclType(
     }
     if (hasPrimitiveId) {
         /* Two-step load: the frontend rejects a member access directly on
-         * an SSBO array element. */
+         * an SSBO array element.  The record already holds the float
+         * carrier, so forward it unchanged. */
         [source appendString:
             @"    vec4 mgl_prim_vec = mgl_gs_output.records[mgl_base + 3];\n"
-             "    mgl_primitive_id = floatBitsToInt(mgl_prim_vec.y);\n"];
+             "    mgl_primitive_id = mgl_prim_vec.y;\n"];
     }
     if (getenv("MGL_GS_PROBE")) {
         /* Pixel probe: R = vertex id, G = GPU-read position.y remapped,
