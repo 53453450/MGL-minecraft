@@ -451,9 +451,10 @@ void getMacOSDefaults(GLMContext glm_ctx)
         glm_ctx->state.var.max_tess_evaluation_shader_storage_blocks = 8;
     }
     /* Geometry SSBOs ride the same Metal compute expansion path as
-     * TCS/TES; the host backend reports 0 here.  Left at the queried
-     * value until the GL_BUFFER_VARIABLE REFERENCED_BY_* query path is
-     * implemented — enabling it exposes that gap in CTS program_resource. */
+     * TCS/TES; the host backend reports 0 here.  Kept disabled until the
+     * compute ABI assigns stable buffer indices when user SSBOs share the
+     * kernel with the fixed GS expansion arguments — with both present the
+     * kernel currently emits zero records (see api.max_shader_storage_blocks). */
     if (glm_ctx->state.var.max_geometry_shader_storage_blocks != 0 &&
         (glm_ctx->state.var.max_geometry_shader_storage_blocks < 8 ||
          glm_ctx->state.var.max_geometry_shader_storage_blocks > MAX_BINDABLE_BUFFERS)) {

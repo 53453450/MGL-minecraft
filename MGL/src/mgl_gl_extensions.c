@@ -3164,6 +3164,41 @@ static GLint mgl_program_buffer_variable_find_by_name(Program *pptr, const char 
 				{
 					if (strcmp(qname, name) == 0)
 						return (GLint)ordinal;
+					/* Buffer variables are also addressed as
+					 * "<block>.<member>" (GL 4.6 §7.3.1); the reflected
+					 * query name is the bare member. */
+					if (block->name && block->name[0])
+					{
+						size_t bl = strlen(block->name);
+						if (strncmp(name, block->name, bl) == 0 &&
+						    name[bl] == '.' &&
+						    strcmp(name + bl + 1, qname) == 0)
+							return (GLint)ordinal;
+						/* "Block.member" vs "Block.member[0]" */
+						if (strncmp(name, block->name, bl) == 0 &&
+						    name[bl] == '.')
+						{
+							const char *tail = name + bl + 1;
+							size_t tl = strlen(tail);
+							size_t ql = strlen(qname);
+							if (ql > tl && strncmp(qname, tail, tl) == 0)
+							{
+								const char *sfx = qname + tl;
+								GLboolean zeros = GL_TRUE;
+								while (*sfx)
+								{
+									if (strncmp(sfx, "[0]", 3) != 0)
+									{
+										zeros = GL_FALSE;
+										break;
+									}
+									sfx += 3;
+								}
+								if (zeros)
+									return (GLint)ordinal;
+							}
+						}
+					}
 					/* Allow matching "Block.member" or "Block.member[0][0]"
 					 * to "Block.member[0][0][0]" — the query name may omit
 					 * trailing [0] suffixes per GL spec. */
