@@ -1438,6 +1438,33 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         NSUInteger destinationOffset = (NSUInteger)slot->offset + sessionOffset;
         mglRendererBufferSubData(drawCtx, slot->buf, destinationOffset,
                                  writtenBytes, packed);
+        /* The renderer's subdata routes through the shadow/snapshot pair,
+         * so the live Metal allocation may lag until the next snapshot
+         * flush while glMapBufferRange serves from it directly.  Mirror
+         * the bytes into the live allocation now; XFB capture is a
+         * synchronous CPU-side operation by definition here. */
+        if (slot->buf->data.mtl_data) {
+            MGLRenderBufferInfo liveInfo = {0};
+            if (mglRenderGetBufferInfo(slot->buf->data.mtl_data,
+                                       &liveInfo) == 0 &&
+                destinationOffset + writtenBytes <= liveInfo.length) {
+                uint8_t *liveBase = (uint8_t *)mglDrawSupportBufferContents(
+                    (__bridge id)(slot->buf->data.mtl_data));
+                if (liveBase) {
+                    memcpy(liveBase + destinationOffset, packed,
+                           writtenBytes);
+                }
+            }
+        }
+        /* The renderer's subdata writes straight to the Metal allocation
+         * and leaves the CPU shadow untouched; a later glMapBufferRange
+         * served from the shadow would otherwise observe pre-capture
+         * bytes. */
+        if (slot->buf->data.buffer_data &&
+            (size_t)slot->buf->size >= destinationOffset + writtenBytes) {
+            memcpy((uint8_t *)slot->buf->data.buffer_data + destinationOffset,
+                   packed, writtenBytes);
+        }
         free(packed);
         slot->buf->ever_written = GL_TRUE;
         slot->buf->has_initialized_data = GL_TRUE;

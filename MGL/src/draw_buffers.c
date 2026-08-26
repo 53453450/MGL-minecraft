@@ -1254,7 +1254,16 @@ static bool mglCPUFeedbackCaptureGate(GLMContext ctx,
         return false;
     }
 
-    Program *program = ctx->state.program;
+    /* A bound program pipeline supersedes the program object binding, so
+     * resolve the vertex-stage program from the pipeline when one is active
+     * (GL spec §2.11.1: useProgram(0) + bindProgramPipeline keeps draws
+     * valid). */
+    Program *program = NULL;
+    if (ctx->state.program_pipeline) {
+        program = ctx->state.program_pipeline->stage_programs[_VERTEX_SHADER];
+    } else {
+        program = ctx->state.program;
+    }
     if (!program ||
         program->transform_feedback_varying_count <= 0 ||
         (program->transform_feedback_buffer_mode != GL_INTERLEAVED_ATTRIBS &&
@@ -1746,8 +1755,28 @@ static void mglDrawDispatch(GLMContext ctx, const MGLDrawCommand *cmd)
         }
     }
 
-    /* S14: deferred path — record command for batch replay */
-    if (ctx->draw_defer_enabled) {
+    /* S14: deferred path — record command for batch replay.  Transform
+     * feedback capture is stateful and ordered: the renderer's per-vertex
+     * capture handler only runs on the immediate path, so a capturable
+     * draw (points, vertex-stage-only program with an XFB layout) must not
+     * be parked in a replay batch whose handlers skip the capture. */
+    bool xfbImmediate = false;
+    if (ctx->state.transform_feedback &&
+        ctx->state.transform_feedback->active &&
+        !ctx->state.transform_feedback->paused &&
+        ctx->state.transform_feedback->primitive_mode == cmd->mode &&
+        cmd->type == MGL_CMD_DRAW_ARRAYS) {
+        Program *vs_prog = ctx->state.program_pipeline
+            ? ctx->state.program_pipeline->stage_programs[_VERTEX_SHADER]
+            : (ctx->state.program_name != 0u ? ctx->state.program : NULL);
+        xfbImmediate = vs_prog &&
+                       !vs_prog->shader_slots[_GEOMETRY_SHADER] &&
+                       !vs_prog->shader_slots[_TESS_CONTROL_SHADER] &&
+                       !vs_prog->shader_slots[_TESS_EVALUATION_SHADER] &&
+                       vs_prog->transform_feedback_layout_valid &&
+                       vs_prog->transform_feedback_varying_count > 0;
+    }
+    if (ctx->draw_defer_enabled && !xfbImmediate) {
         mglTraceLogExternal("DRAW_DISPATCH_FRONTEND type=%u mode=0x%x first=%d count=%d "
                             "inst=%d bv=%d bi=%u program=%u defer=1",
                             (unsigned)cmd->type, (unsigned)cmd->mode, (int)cmd->first,
