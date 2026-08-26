@@ -3314,6 +3314,24 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     }
                     elemIndex = coerceScalar(cg, elemIndex,
                                              MGLIR_SCALAR_UINT);
+                    /* Out-of-range dynamic indices are undefined in GLSL;
+                     * clamp so a bad runtime index cannot select a wild
+                     * buffer pointer from the element alloca. */
+                    {
+                        uint32_t elemCount =
+                            ov->type->kind == MGLIR_TYPE_ARRAY &&
+                                    ov->type->array_size > 0
+                                ? ov->type->array_size
+                                : 1u;
+                        elemIndex = cg.b->CreateBinaryIntrinsic(
+                            llvm::Intrinsic::umax,
+                            elemIndex,
+                            cg.b->getInt32(0));
+                        elemIndex = cg.b->CreateBinaryIntrinsic(
+                            llvm::Intrinsic::umin,
+                            elemIndex,
+                            cg.b->getInt32(elemCount - 1u));
+                    }
                     llvm::Value *gep = cg.b->CreateGEP(
                         tyIt->second, slotIt->second,
                         {cg.b->getInt64(0),
