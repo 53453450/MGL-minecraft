@@ -1753,6 +1753,8 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
                            outOffset:&inputOffset];
     }
     if (!input) {
+        mglDispatchError(drawCtx, label ? label : "geometryDraw",
+                         GL_INVALID_OPERATION);
         drawCtx->state.dirty_bits = DIRTY_ALL;
         return YES;
     }
@@ -1885,7 +1887,6 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     memset(mglDrawSupportBufferContents(counts), 0,
            (size_t)workItemCount * countsRecordBytes);
     memset(mglDrawSupportBufferContents(output), 0, outputSize);
-    memset(mglDrawSupportBufferContents(counts), 0, (NSUInteger)workItemCount * countsRecordBytes);
     /* Preset the draw parameters the kernel never touches: instance_count=1,
      * base_vertex=0, base_instance=0 (memset already zeroed the rest). */
     {
@@ -2573,25 +2574,33 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         const GLuint64 maxGenerated =
             (GLuint64)workItemCount * (GLuint64)maxGeneratedPerWorkItem;
         if (outputPrimitive == MGL_DRAW_PRIMITIVE_POINT) {
-            /* Points: sum per-work-item EmitVertex counts from the counts
-             * record (includes culled emissions).  Meta atomics are not
-             * reliable for CPU readback on every commit path. */
-            const uint32_t *cw =
-                (const uint32_t *)mglDrawSupportBufferContents(counts);
-            const uint32_t emitWord =
-                MGL_AIR_GS_COUNTS_ARGS_WORDS +
-                (uint32_t)(MGL_AIR_GS_COUNT_EMITTED - 1u);
-            GLuint64 emitSum = 0u;
-            for (GLuint w = 0u; w < workItemCount; w++) {
-                emitSum += cw[w * MGL_AIR_GS_COUNTS_RECORD_WORDS + emitWord];
-            }
-            if (emitSum > 0u && emitSum <= maxGenerated) {
-                queryGenerated = emitSum;
+            /* Stream-0 generated: prefer meta when available (emitSum counts
+             * all streams' EmitVertex calls).  Fall back to per-work-item
+             * emit totals when meta was not populated for this draw. */
+            if (queryMeta) {
+                const GLuint64 metaGen =
+                    (GLuint64)queryMeta->stream[0].generated;
+                if (metaGen <= maxGenerated) {
+                    queryGenerated = metaGen;
+                }
+            } else {
+                const uint32_t *cw =
+                    (const uint32_t *)mglDrawSupportBufferContents(counts);
+                const uint32_t emitWord =
+                    MGL_AIR_GS_COUNTS_ARGS_WORDS +
+                    (uint32_t)(MGL_AIR_GS_COUNT_EMITTED - 1u);
+                GLuint64 emitSum = 0u;
+                for (GLuint w = 0u; w < workItemCount; w++) {
+                    emitSum += cw[w * MGL_AIR_GS_COUNTS_RECORD_WORDS + emitWord];
+                }
+                if (emitSum <= maxGenerated) {
+                    queryGenerated = emitSum;
+                }
             }
         } else if (queryMeta) {
             const GLuint64 metaGen =
                 (GLuint64)queryMeta->stream[0].generated;
-            if (metaGen > 0u && metaGen <= maxGenerated) {
+            if (metaGen <= maxGenerated) {
                 queryGenerated = metaGen;
             }
         }
@@ -2620,6 +2629,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         [self currentDrawRasterizationIsEmpty] ||
         [self currentDrawModeIsFullyCulled:gsOutputMode]) {
         if (xfbActive || mglHasActiveIndexedPrimitiveQuery() ||
+            mglHasActivePrimitiveQuery() ||
             mglHasActiveGeometryShaderQuery()) {
             _currentCBHasWork = YES;
             mglRecordGeometryPrimitiveQueries(
@@ -3881,6 +3891,13 @@ after_gs_draws:
                                   tcsOutputBuffer
                                                    offset:patchOffset
                                                   atIndex:0u];
+                        GLuint patchInfoWords[3] = {
+                            patchVertices, _tessellation.tcsOutVertices, p,
+                        };
+                        if (patchInfoWords[1] == 0u) patchInfoWords[1] = patchVertices;
+                        mglDrawSupportSetVertexBytes(
+                            _renderPassManager.state->currentRenderEncoderOwner,
+                            patchInfoWords, sizeof(patchInfoWords), 28u);
                         mglDrawSupportDrawPatches(
                             _renderPassManager.state->currentRenderEncoderOwner, _tessellation.tcsOutVertices, p, 1u,
                             nil, 0u, 1u,
