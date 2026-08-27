@@ -100,8 +100,8 @@ enum {
      * pass-2 scatter can attribute each record to its stream (GL 4.6
      * §11.1.3.4).  Stream-0 records are identified by region, not stamp. */
     MGL_AIR_PER_VERTEX_STREAM_OFFSET = 48,
-    /* GS-written gl_PrimitiveID (aliases cull_distance_hi[0]); ferried to
-     * the fragment stage through the reserved varying location below. */
+    /* GS-written gl_PrimitiveID at a dedicated offset; ferried to the
+     * fragment stage through the reserved varying location below. */
     MGL_AIR_PER_VERTEX_PRIMITIVE_ID_OFFSET = 52,
     /* Reserved varying location carrying gl_PrimitiveID from the geometry
      * passthrough vertex function to the fragment shader. */
@@ -114,10 +114,9 @@ enum {
  * this struct mirrors those constants for documentation and static
  * checking.
  *
- * cull_distance[5]/[6]/[7] share their bytes with layer /
- * viewport_index / stream: the three built-ins are stored only for
- * shaders that use them, and such shaders never also emit six or more
- * cull distances, so the overlap cannot corrupt live data. */
+ * cull_distance[5]/[6]/[7] share bytes with layer / viewport_index /
+ * stream when those built-ins are used; shaders that emit six or more
+ * cull distances cannot also write the overlapping built-ins. */
 typedef struct MGLAIRPerVertexRecord {
     float position[4];          /* @0                                    */
     float point_size;           /* @16                                   */

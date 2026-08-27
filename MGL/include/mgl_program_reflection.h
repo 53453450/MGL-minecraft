@@ -48,11 +48,7 @@ MGLShaderResource *mglFindVaryingByLocation(MGLShaderResourceList *list,
                                         const MGLShaderResource *type_peer);
 void mglBridgeSkippedGeometryShaderVaryings(Program *program);
 
-/* Geometry shaders always execute.  A source-string "passthrough"
- * heuristic used to skip the compute expansion (plain VS->FS), which
- * dropped GS outputs/side effects and left GEOMETRY_SHADER_INVOCATIONS /
- * GEOMETRY_SHADER_PRIMITIVES_EMITTED at zero.  The identifier is kept so
- * existing call sites compile; it is never true. */
+/* Geometry shaders always use the compute expansion path. */
 static inline GLboolean mglProgramHasPassthroughGeometryShader(
     Program *program)
 {
