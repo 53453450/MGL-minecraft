@@ -88,10 +88,11 @@ static id mglRenderPassFallbackRenderTarget(
 
 static id mglRenderPassFallbackRenderTargetForSize(
     GLMContext context, NSUInteger width, NSUInteger height,
-    NSUInteger layerCount)
+    NSUInteger layerCount, NSUInteger sampleCount)
 {
     width = MAX(width, 1u);
     height = MAX(height, 1u);
+    sampleCount = MAX(sampleCount, 1u);
     const BOOL layered = layerCount > 0u;
     const NSUInteger arrayLength = layered ? MAX(layerCount, 1u) : 1u;
     const uint32_t textureType = layered
@@ -101,7 +102,8 @@ static id mglRenderPassFallbackRenderTargetForSize(
     MGLRenderTextureInfo info = mglRenderPassTextureInfo(texture);
     if (texture && info.width == width && info.height == height &&
         info.array_length == arrayLength &&
-        info.texture_type == textureType) {
+        info.texture_type == textureType &&
+        info.sample_count == sampleCount) {
         return texture;
     }
 
@@ -112,7 +114,7 @@ static id mglRenderPassFallbackRenderTargetForSize(
     desc.height = height;
     desc.depth = 1;
     desc.mipmap_level_count = 1;
-    desc.sample_count = 1;
+    desc.sample_count = sampleCount;
     desc.array_length = arrayLength;
     desc.usage = MGLTextureUsageRenderTarget | MGLTextureUsageShaderRead;
     desc.storage_mode = MGLStorageModeShared;
@@ -852,12 +854,29 @@ static GLenum mglPassthroughDeclType(
              "    return;\n"];
     }
     Shader *mgl_gs = program->shader_slots[_GEOMETRY_SHADER];
+    Shader *mgl_fs = program->shader_slots[_FRAGMENT_SHADER];
+    BOOL fsNeedsLayer = NO;
+    BOOL fsNeedsViewport = NO;
+    for (GLuint fi = 0; fsInputs && fsInputs->list && fi < fsInputs->count;
+         fi++) {
+        const MGLShaderResource *in = &fsInputs->list[fi];
+        if (!in->name) continue;
+        if (strcmp(in->name, "gl_Layer") == 0) fsNeedsLayer = YES;
+        if (strcmp(in->name, "gl_ViewportIndex") == 0) fsNeedsViewport = YES;
+    }
+    if (mgl_fs && mgl_fs->src) {
+        if (!fsNeedsLayer && strstr(mgl_fs->src, "gl_Layer"))
+            fsNeedsLayer = YES;
+        if (!fsNeedsViewport && strstr(mgl_fs->src, "gl_ViewportIndex"))
+            fsNeedsViewport = YES;
+    }
     if (getenv("MGL_PTVS_NO_SPECIALS")) {
         /* Diagnostic: omit the layer/viewport special outputs entirely so
          * the vertex return carries only position + user varyings. */
     } else if (mgl_gs && mgl_gs->src &&
         (strstr(mgl_gs->src, "gl_Layer") ||
-         strstr(mgl_gs->src, "gl_ViewportIndex"))) {
+         strstr(mgl_gs->src, "gl_ViewportIndex") ||
+         fsNeedsLayer || fsNeedsViewport)) {
 
         [source appendString:
             @"    vec4 mgl_layer_vp = "
@@ -3340,9 +3359,12 @@ static GLenum mglPassthroughDeclType(
             ? (NSUInteger)fbo->default_height : 1u;
         NSUInteger fallbackLayers = fbo && fbo->default_layers > 0
             ? (NSUInteger)fbo->default_layers : 0u;
+        NSUInteger fallbackSamples = fbo && fbo->default_samples > 0
+            ? (NSUInteger)fbo->default_samples : 1u;
         id fallbackRenderTarget =
             mglRenderPassFallbackRenderTargetForSize(
-                ctx, fallbackWidth, fallbackHeight, fallbackLayers);
+                ctx, fallbackWidth, fallbackHeight, fallbackLayers,
+                fallbackSamples);
 
         if (fallbackRenderTarget) {
             NSLog(@"MGL WARNING: Render pass had no attachments; binding %lux%lu fallback color target",
@@ -3427,9 +3449,12 @@ static GLenum mglPassthroughDeclType(
             ? (NSUInteger)fbo->default_height : 1u;
         NSUInteger fallbackLayers = fbo && fbo->default_layers > 0
             ? (NSUInteger)fbo->default_layers : 0u;
+        NSUInteger fallbackSamples = fbo && fbo->default_samples > 0
+            ? (NSUInteger)fbo->default_samples : 1u;
         id fallbackRenderTarget =
             mglRenderPassFallbackRenderTargetForSize(
-                ctx, fallbackWidth, fallbackHeight, fallbackLayers);
+                ctx, fallbackWidth, fallbackHeight, fallbackLayers,
+                fallbackSamples);
         if (fallbackRenderTarget) {
             NSLog(@"MGL WARNING: colorAttachment[0] unavailable; binding %lux%lu fallback",
                   (unsigned long)fallbackWidth,
