@@ -3237,9 +3237,11 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         }
         if (strcmp(e->u.var_ref.name, "gl_Layer") == 0 ||
             strcmp(e->u.var_ref.name, "gl_ViewportIndex") == 0 ||
-            strcmp(e->u.var_ref.name, "gl_PrimitiveID") == 0) {
+            (strcmp(e->u.var_ref.name, "gl_PrimitiveID") == 0 &&
+             !cg.isTessControl && !cg.isTessEval)) {
             /* Out-variable read-back: the value last written this
-             * invocation; 0 before any write (GL 4.6 §11.1.3.5/§11.1.3.6). */
+             * invocation; 0 before any write (GL 4.6 §11.1.3.5/§11.1.3.6).
+             * Tess stages read gl_PrimitiveID as a patch input builtin. */
             if (!cg.lvalues.count(e->u.var_ref.name)) {
                 cg.lvalues[e->u.var_ref.name] = cg.b->getInt32(0);
             }
@@ -3270,6 +3272,9 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         if (strcmp(e->u.var_ref.name, "gl_PrimitiveID") == 0) {
             if (cg.lvalues.count("gl_PrimitiveID"))
                 return cg.lvalues["gl_PrimitiveID"];
+            if (cg.isTessControl && cg.workGroupPos)
+                return cg.b->CreateExtractElement(cg.workGroupPos,
+                                                   cg.b->getInt32(0));
             if (cg.patchId)
                 return cg.patchId;
             if (!cg.patchPos) {
@@ -7528,7 +7533,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     else if (isKernel) {
         paramTys.push_back(llvm::FixedVectorType::get(
             llvm::Type::getInt32Ty(ctx), 3));
-        if (usesWorkGroupID)
+        if (usesWorkGroupID || isTCS)
             paramTys.push_back(llvm::FixedVectorType::get(
                 llvm::Type::getInt32Ty(ctx), 3));
     }
@@ -7559,7 +7564,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         if (usesSampleID)
             paramTys.push_back(llvm::Type::getInt32Ty(ctx));
     }
-    if (isTCS || isTESCompute)
+    if (isTESCompute)
         paramTys.push_back(llvm::FixedVectorType::get(
             llvm::Type::getInt32Ty(ctx), 3));
     llvm::FunctionType *ft = llvm::FunctionType::get(retTy, paramTys, false);
@@ -7846,8 +7851,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         llvm::Value *pos = fn->getArg(argSlot++);
         if (isTCS) cg.invocationPos = pos;
         else cg.threadPos = pos;
-        if (usesWorkGroupID)
+        if (usesWorkGroupID || isTCS)
             cg.workGroupPos = fn->getArg(argSlot++);
+        if (isTCS && cg.workGroupPos)
+            cg.patchPos = cg.workGroupPos;
     }
     else if (isTES && !isTESCompute) {
         cg.patchControlPtr = fn->getArg(argSlot++);
@@ -7914,7 +7921,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             }
         }
     }
-    if (isTCS)
+    if (isTESCompute)
         cg.patchPos = fn->getArg(argSlot++);
     if (isGS) {
         cg.geometryWorkItemId = cg.threadPos
@@ -8327,8 +8334,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             inv, llvm::ConstantInt::get(inv->getType(), 0));
         b.CreateCondBr(isZero, writeBB, doneBB);
         b.SetInsertPoint(writeBB);
-        llvm::Value *patch = b.CreateExtractElement(cg.patchPos,
-                                                     b.getInt32(0));
+        llvm::Value *patch =
+            cg.isTessControl && cg.workGroupPos
+                ? cg.b->CreateExtractElement(cg.workGroupPos, cg.b->getInt32(0))
+                : cg.b->CreateExtractElement(cg.patchPos, cg.b->getInt32(0));
         llvm::Value *factorOff = b.CreateMul(
             b.CreateZExt(patch, b.getInt64Ty()), b.getInt64(12));
         llvm::Value *factorBase = b.CreateGEP(
