@@ -12538,6 +12538,30 @@ static int test_air_geometry_layer_viewport(unsigned char *pixels,
             goto cleanup;
             }
         }
+        /* Writing only gl_Layer must not alias onto gl_ViewportIndex.
+         * Viewport 1 is the left half; viewport 0 is the full target.
+         * NDC origin under viewport 0 is the framebuffer center. */
+        glViewport(0, 0, REG_W, REG_H);
+        glViewportIndexedf(1, 0.0f, 0.0f, (GLfloat)REG_W / 2.0f,
+                           (GLfloat)REG_H);
+        glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, color, 0);
+        clear_color(0.0f, 0.0f, 0.0f);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glFinish();
+        glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, color, 0, 1);
+        glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        {
+            int cx = REG_W / 2, cy = REG_H / 2;
+            const unsigned char *pp = &pixels[(cy * REG_W + cx) * 4];
+            if (pp[1] < 180) {
+                fprintf(stderr,
+                        "air_geometry_layer_viewport: layer-only VS used "
+                        "viewport 1 (center (%d,%d,%d)); expected viewport 0\n",
+                        pp[0], pp[1], pp[2]);
+                goto cleanup;
+            }
+        }
+        glViewport(0, 0, REG_W, REG_H);
     }
     glBindFramebuffer(GL_FRAMEBUFFER, 0u);
 

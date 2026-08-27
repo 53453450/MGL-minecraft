@@ -5657,16 +5657,14 @@ llvm::Value *assembleReturn(Codegen &cg) {
                     ri++);
             }
             if (cg.layerViewport) {
-                /* GL 4.6 §11.1.3.5/§11.1.3.6 tie layer and viewport index
-                 * to the same value when only one is written. */
-                const bool hasLayer = cg.lvalues.count("gl_Layer") != 0;
-                const bool hasViewport = cg.lvalues.count("gl_ViewportIndex") != 0;
-                llvm::Value *layer = hasLayer
+                /* GLSL 4.60 §7.1.4 / GL 4.6 §13.8.1: unwritten gl_Layer
+                 * and gl_ViewportIndex stay 0 independently. VS writing
+                 * gl_Layer is an ARB_shader_viewport_layer_array-like
+                 * extension; the two builtins must not alias. */
+                llvm::Value *layer = cg.lvalues.count("gl_Layer")
                     ? cg.lvalues["gl_Layer"] : cg.b->getInt32(0);
-                llvm::Value *viewportIndex = hasViewport
+                llvm::Value *viewportIndex = cg.lvalues.count("gl_ViewportIndex")
                     ? cg.lvalues["gl_ViewportIndex"] : cg.b->getInt32(0);
-                if (hasLayer && !hasViewport) viewportIndex = layer;
-                if (hasViewport && !hasLayer) layer = viewportIndex;
                 ret = cg.b->CreateInsertValue(ret, layer, ri++);
                 ret = cg.b->CreateInsertValue(ret, viewportIndex, ri++);
             }
