@@ -408,6 +408,99 @@ static void *mglCreateDepthStencilMetalUpload(
     return dst;
 }
 
+/* AGX blit uploads of packed depth/stencil textures update the depth plane
+ * only.  Upload the stencil bytes separately through an X32_Stencil8 view. */
+static bool mglUploadPackedDepthStencilStencilPlane(
+    id texture,
+    GLuint texName,
+    const void *packedBytes,
+    NSUInteger width,
+    NSUInteger height,
+    NSUInteger bytesPerRow,
+    NSUInteger level,
+    NSUInteger slice)
+{
+    if (!texture || !packedBytes || width == 0 || height == 0) {
+        return false;
+    }
+    const uint32_t parentFormat =
+        (uint32_t)mglTextureInfo(texture).pixel_format;
+    if (parentFormat != MGLPixelFormatDepth32Float_Stencil8 &&
+        parentFormat != MGLPixelFormatDepth24Unorm_Stencil8) {
+        return false;
+    }
+
+    void *metalUpload = NULL;
+    const void *srcBytes = packedBytes;
+    NSUInteger srcBytesPerRow = bytesPerRow;
+    if (bytesPerRow >= width * 8u) {
+        /* Already Metal packed layout. */
+    } else if (bytesPerRow >= width * 5u &&
+               parentFormat == MGLPixelFormatDepth32Float_Stencil8) {
+        srcBytesPerRow = width * 8u;
+        const NSUInteger repackBytes = srcBytesPerRow * height;
+        metalUpload = calloc(1u, repackBytes);
+        if (!metalUpload) return false;
+        const uint8_t *srcBase = (const uint8_t *)packedBytes;
+        uint8_t *dstBase = (uint8_t *)metalUpload;
+        for (NSUInteger y = 0; y < height; ++y) {
+            const uint8_t *srcRow = srcBase + y * bytesPerRow;
+            uint8_t *dstRow = dstBase + y * srcBytesPerRow;
+            for (NSUInteger x = 0; x < width; ++x) {
+                memcpy(dstRow + x * 8u, srcRow + x * 5u, 4u);
+                dstRow[x * 8u + 4u] = srcRow[x * 5u + 4u];
+            }
+        }
+        srcBytes = metalUpload;
+    } else {
+        return false;
+    }
+
+    NSUInteger stencilBytesPerRow = width * 4u;
+    NSUInteger stencilBytesPerImage = stencilBytesPerRow * height;
+    uint8_t *stencilBytes = (uint8_t *)calloc(1u, stencilBytesPerImage);
+    if (!stencilBytes) {
+        free(metalUpload);
+        return false;
+    }
+
+    const uint8_t *srcBase = (const uint8_t *)srcBytes;
+    for (NSUInteger y = 0; y < height; ++y) {
+        const uint8_t *srcRow = srcBase + y * srcBytesPerRow;
+        uint8_t *dstRow = stencilBytes + y * stencilBytesPerRow;
+        for (NSUInteger x = 0; x < width; ++x) {
+            dstRow[x * 4u] = srcRow[x * 8u + 4u];
+        }
+    }
+    free(metalUpload);
+
+    void *stencilViewRaw = NULL;
+    const uint32_t viewType =
+        (uint32_t)mglTextureInfo(texture).texture_type;
+    bool uploaded = false;
+    if (mglRenderCreateTextureViewRange(
+            (__bridge void *)texture,
+            MGLPixelFormatX32_Stencil8, viewType,
+            level, 1u, slice, 1u, 0, 0, 0, 0, 0,
+            &stencilViewRaw) == 0 && stencilViewRaw) {
+        id stencilView = (__bridge_transfer id)stencilViewRaw;
+        @try {
+            mglTextureReplaceRegion(
+                stencilView,
+                mglTextureRegion2D(0, 0, width, height),
+                0u, 0u, stencilBytes, stencilBytesPerRow,
+                stencilBytesPerImage, NO);
+            uploaded = true;
+        } @catch (NSException *exception) {
+            NSLog(@"MGL WARNING: depth/stencil stencil-plane upload failed tex=%u slice=%lu: %@",
+                  (unsigned)texName, (unsigned long)slice,
+                  exception.reason);
+        }
+    }
+    free(stencilBytes);
+    return uploaded;
+}
+
 static uint64_t mglTextureBufferLength(id buffer)
 {
     MGLRenderBufferInfo info = {0};
@@ -657,6 +750,11 @@ static void mglTextureCopyTextureToBuffer(
                                     mglTextureRegion2D(0, 0, width, uploadPlan.normalized_height),
                                     level, slice, bytes, bytesPerRow,
                                     uploadPlan.normalized_bytes_per_image, YES);
+            if (bytesPerRow >= width * 5u) {
+                (void)mglUploadPackedDepthStencilStencilPlane(
+                    texture, texName, bytes, width,
+                    uploadPlan.normalized_height, bytesPerRow, level, slice);
+            }
             return true;
         } @catch (NSException *exception) {
             NSLog(@"MGL WARNING: depth/stencil replaceRegion upload failed tex=%u: %@",
@@ -802,8 +900,18 @@ static void mglTextureCopyTextureToBuffer(
     if (!uploaded) {
         NSLog(@"MGL WARNING: Dedicated texture upload failed (level=%lu slice=%lu)",
               (unsigned long)level, (unsigned long)slice);
+        return false;
     }
-    return uploaded;
+    if ((mglTextureInfo(texture).pixel_format ==
+             MGLPixelFormatDepth32Float_Stencil8 ||
+         mglTextureInfo(texture).pixel_format ==
+             MGLPixelFormatDepth24Unorm_Stencil8) &&
+        bytesPerRow >= width * 5u) {
+        (void)mglUploadPackedDepthStencilStencilPlane(
+            texture, texName, bytes, width,
+            uploadPlan.normalized_height, bytesPerRow, level, slice);
+    }
+    return true;
 }
 
 - (bool)uploadFullCPUTextureDataIntoTexture:(Texture *)tex
@@ -3711,18 +3819,8 @@ static void mglTextureCopyTextureToBuffer(
 
                 NSUInteger backingBytes = tex->faces[face].levels[level].data_size;
 
-                if (num_layers > 1 && backingBytes >= (NSUInteger)num_layers) {
-
-                    NSUInteger dividedLayerBytes = backingBytes / (NSUInteger)num_layers;
-
-                    if (dividedLayerBytes >= logicalBytesPerImage) {
-
-                        logicalBytesPerImage = dividedLayerBytes;
-
-                    }
-
-                }
-
+                /* data_size is page-rounded; do not treat the slack as layer
+                 * stride or reads land in the wrong slice. */
 
                 NSUInteger requiredArrayBytes = 0;
 
@@ -4375,12 +4473,8 @@ static void mglTextureCopyTextureToBuffer(
                         return YES;
                     }
                     logicalBytesPerImage = bytesPerRow * uploadSliceRows;
-                    if (num_layers > 1 && backingBytes >= (NSUInteger)num_layers) {
-                        NSUInteger dividedLayerBytes = backingBytes / (NSUInteger)num_layers;
-                        if (dividedLayerBytes >= logicalBytesPerImage) {
-                            logicalBytesPerImage = dividedLayerBytes;
-                        }
-                    }
+                    /* data_size is page-rounded; do not treat the slack as
+                     * layer stride or reads land in the wrong slice. */
                     NSUInteger requiredArrayBytes = 0;
                     NSUInteger safeLayerCount = MAX((NSUInteger)num_layers, 1UL);
                     if (logicalBytesPerImage == 0 ||
@@ -4968,7 +5062,10 @@ static void mglTextureCopyTextureToBuffer(
     }
 
     mipmapped = storageMipmapped;
-    upload_level_count = mipmapped ? effective_mipmap_levels : tex->num_levels;
+    /* GL may allocate num_levels>1 for a single-base-level image; only walk
+     * mips that were actually populated unless the texture is mipmapped. */
+    upload_level_count =
+        (mipmapped && tex->mipmapped) ? effective_mipmap_levels : 1u;
 
     tex_desc.texture_type = tex_type;
     tex_desc.pixel_format = pixelFormat;
