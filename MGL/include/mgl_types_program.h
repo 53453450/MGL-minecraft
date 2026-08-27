@@ -282,6 +282,7 @@ typedef struct Program_t {
     GLenum geometry_input_type;
     GLenum geometry_output_type;
     GLuint geometry_vertices_out;
+    GLboolean geometry_max_vertices_specified;
     GLuint geometry_invocations;
     /* GS multi-stream XFB layout (GL 4.6 §11.1.3.4): stream s captures to
      * transform-feedback buffer s with a compact position+varyings record

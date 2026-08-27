@@ -87,25 +87,33 @@ static id mglRenderPassFallbackRenderTarget(
 }
 
 static id mglRenderPassFallbackRenderTargetForSize(
-    GLMContext context, NSUInteger width, NSUInteger height)
+    GLMContext context, NSUInteger width, NSUInteger height,
+    NSUInteger layerCount)
 {
     width = MAX(width, 1u);
     height = MAX(height, 1u);
+    const BOOL layered = layerCount > 0u;
+    const NSUInteger arrayLength = layered ? MAX(layerCount, 1u) : 1u;
+    const uint32_t textureType = layered
+        ? (uint32_t)MGLTextureType2DArray
+        : (uint32_t)MGLTextureType2D;
     id texture = mglRenderPassFallbackRenderTarget(context);
     MGLRenderTextureInfo info = mglRenderPassTextureInfo(texture);
-    if (texture && info.width == width && info.height == height) {
+    if (texture && info.width == width && info.height == height &&
+        info.array_length == arrayLength &&
+        info.texture_type == textureType) {
         return texture;
     }
 
     MGLRenderTextureDescriptorState desc = {0};
-    desc.texture_type = MGLTextureType2D;
+    desc.texture_type = textureType;
     desc.pixel_format = MGLPixelFormatBGRA8Unorm;
     desc.width = width;
     desc.height = height;
     desc.depth = 1;
     desc.mipmap_level_count = 1;
     desc.sample_count = 1;
-    desc.array_length = 1;
+    desc.array_length = arrayLength;
     desc.usage = MGLTextureUsageRenderTarget | MGLTextureUsageShaderRead;
     desc.storage_mode = MGLStorageModeShared;
     id replacement = mglRenderPassCreateTexture(&desc);
@@ -559,16 +567,9 @@ static void mglRenderPassSetPersistentStencilClear(
     }
 }
 
-/* Passthrough geometry detection lives in mgl_program_reflection.c
- * (mglProgramHasPassthroughGeometryShader): a geometry shader whose only
- * job is to re-emit each input vertex unchanged.  Metal has no geometry
- * stage; a few CTS paths insert such a shader while copying clip/cull
- * distance arrays.  Those programs are equivalent to running the VS->FS
- * pipeline directly, and blocking them regresses otherwise valid
- * cull-distance coverage.  The predicate is deliberately narrow and
- * excludes transform-feedback programs (the bypass would drop capture),
- * so real geometry expansion/rewriting remains unsupported instead of
- * being silently misrendered. */
+/* Geometry shaders always execute through the AIR compute expansion.
+ * A source-string "passthrough" skip used to drop the GS stage (plain
+ * VS->FS), which left invocation / primitives-emitted queries at zero. */
 
 static bool mglLoadAIRMainFunction(const unsigned char *bytes,
                                    size_t size,
@@ -1678,16 +1679,6 @@ static GLenum mglPassthroughDeclType(
         if (shader)
         {
             if (i == _GEOMETRY_SHADER) {
-                if (mglProgramHasPassthroughGeometryShader(ptr)) {
-                    static uint64_t s_passthroughGeometryShaderSkipCount = 0;
-                    uint64_t hit = ++s_passthroughGeometryShaderSkipCount;
-                    if (hit <= 16ull || (hit % 512ull) == 0ull) {
-                        NSLog(@"MGL INFO: Skipping passthrough geometry shader for Metal program=%u hit=%llu",
-                              (unsigned)ptr->name,
-                              (unsigned long long)hit);
-                    }
-                    continue;
-                }
                 if (ptr->gs_route == MGL_GS_ROUTE_COMPUTE &&
                     ptr->modules[i].metallib_bytes &&
                     ptr->modules[i].metallib_size > 0u) {
@@ -3347,9 +3338,11 @@ static GLenum mglPassthroughDeclType(
             ? (NSUInteger)fbo->default_width : 1u;
         NSUInteger fallbackHeight = fbo && fbo->default_height > 0
             ? (NSUInteger)fbo->default_height : 1u;
+        NSUInteger fallbackLayers = fbo && fbo->default_layers > 0
+            ? (NSUInteger)fbo->default_layers : 0u;
         id fallbackRenderTarget =
             mglRenderPassFallbackRenderTargetForSize(
-                ctx, fallbackWidth, fallbackHeight);
+                ctx, fallbackWidth, fallbackHeight, fallbackLayers);
 
         if (fallbackRenderTarget) {
             NSLog(@"MGL WARNING: Render pass had no attachments; binding %lux%lu fallback color target",
@@ -3359,7 +3352,7 @@ static GLenum mglPassthroughDeclType(
                 _renderPassManager.state,
                 MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0,
                 fallbackRenderTarget,
-                0, 0, 0, NO);
+                0, 0, 0, fallbackLayers > 0u ? YES : NO);
             mglRenderPassSetPersistentActions(
                 _renderPassManager.state,
                 MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0,
@@ -3432,9 +3425,11 @@ static GLenum mglPassthroughDeclType(
             ? (NSUInteger)fbo->default_width : 1u;
         NSUInteger fallbackHeight = fbo && fbo->default_height > 0
             ? (NSUInteger)fbo->default_height : 1u;
+        NSUInteger fallbackLayers = fbo && fbo->default_layers > 0
+            ? (NSUInteger)fbo->default_layers : 0u;
         id fallbackRenderTarget =
             mglRenderPassFallbackRenderTargetForSize(
-                ctx, fallbackWidth, fallbackHeight);
+                ctx, fallbackWidth, fallbackHeight, fallbackLayers);
         if (fallbackRenderTarget) {
             NSLog(@"MGL WARNING: colorAttachment[0] unavailable; binding %lux%lu fallback",
                   (unsigned long)fallbackWidth,
@@ -3443,7 +3438,7 @@ static GLenum mglPassthroughDeclType(
                 _renderPassManager.state,
                 MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0,
                 fallbackRenderTarget,
-                0, 0, 0, NO);
+                0, 0, 0, fallbackLayers > 0u ? YES : NO);
             mglRenderPassSetPersistentActions(
                 _renderPassManager.state,
                 MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0,

@@ -1543,9 +1543,7 @@ static Program *mglCurrentGeometryDrawProgram(GLMContext ctx)
 
 static Program *mglCurrentExpandedGeometryDrawProgram(GLMContext ctx)
 {
-    Program *program = mglCurrentGeometryDrawProgram(ctx);
-    return program && !mglProgramHasPassthroughGeometryShader(program)
-        ? program : NULL;
+    return mglCurrentGeometryDrawProgram(ctx);
 }
 
 /* The 8-step unified draw frontend (S1-S11 + S14/S15). */

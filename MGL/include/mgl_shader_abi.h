@@ -67,6 +67,7 @@ typedef struct MGLAIRStageInfo {
     uint32_t geometry_input_type;
     uint32_t geometry_output_type;
     uint32_t geometry_vertices_out;
+    uint32_t geometry_max_vertices_specified; /* 1 if layout(max_vertices) present */
     uint32_t geometry_invocations;
     uint32_t uses_cull_distance;
     uint32_t cull_distance_count;

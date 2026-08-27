@@ -2789,7 +2789,6 @@ int mglRenderBindAIRProgram(Program* program,
         Shader* shader = program->shader_slots[stage];
         if (!shader) continue;
         if (stage == _GEOMETRY_SHADER) {
-            if (mglProgramHasPassthroughGeometryShader(program)) continue;
             if (program->gs_route != MGL_GS_ROUTE_COMPUTE) {
                 if (failed_stage_out) *failed_stage_out = stage;
                 if (err && errcap) {
@@ -2810,8 +2809,7 @@ int mglRenderBindAIRProgram(Program* program,
 
     for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; ++stage) {
         Shader* shader = program->shader_slots[stage];
-        if (!shader || (stage == _GEOMETRY_SHADER &&
-                        mglProgramHasPassthroughGeometryShader(program))) {
+        if (!shader) {
             continue;
         }
         MGLShaderModule* spirv = &program->modules[stage];

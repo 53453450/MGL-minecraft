@@ -3622,8 +3622,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 llvm::Value *sv = emitExpr(
                     cg, e->u.call.args[0], mod, locals);
                 if (!sv) return nullptr;
+                uint64_t stream = 0;
                 if (auto *ci = llvm::dyn_cast<llvm::ConstantInt>(sv)) {
-                    if (ci->getZExtValue() >= MGL_AIR_GS_MAX_STREAMS) {
+                    stream = ci->getZExtValue();
+                    if (stream >= MGL_AIR_GS_MAX_STREAMS) {
                         cg.err = 1;
                         cg.errmsg = "GS AIR codegen: stream must be in [0, 3]";
                         return nullptr;
@@ -3633,6 +3635,21 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     cg.errmsg = "GS AIR codegen: stream must be a constant expression";
                     return nullptr;
                 }
+                if (!cg.isGeometry || !cg.geometryCountPtr ||
+                    !cg.geometryPrimitiveId) {
+                    cg.err = 1;
+                    cg.errmsg = "GS AIR codegen: EndStreamPrimitive requires the GS output ABI";
+                    return nullptr;
+                }
+                /* Stream 0 owns the raster strip counter.  Streams > 0 are
+                 * points-only; EndStreamPrimitive there must not reset
+                 * stream 0's strip. */
+                if (stream == 0) {
+                    cg.b->CreateAlignedStore(cg.b->getInt32(0),
+                                             geometryCounterPtr(cg, 1),
+                                             llvm::Align(4));
+                }
+                return llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), 0);
             } else if (e->u.call.arg_count != 0) {
                 cg.err = 1;
                 cg.errmsg = "GS AIR codegen: EndPrimitive takes no arguments";
@@ -5693,16 +5710,14 @@ llvm::Value *assembleReturn(Codegen &cg) {
                     ri++);
             }
             if (cg.layerViewport) {
-                /* GL 4.6 §11.1.3.5/§11.1.3.6 tie layer and viewport index
-                 * to the same value when only one is written. */
-                const bool hasLayer = cg.lvalues.count("gl_Layer") != 0;
-                const bool hasViewport = cg.lvalues.count("gl_ViewportIndex") != 0;
-                llvm::Value *layer = hasLayer
+                /* GLSL 4.60 §7.1.4 / GL 4.6 §13.8.1: unwritten gl_Layer
+                 * and gl_ViewportIndex stay 0 independently. VS writing
+                 * gl_Layer is an ARB_shader_viewport_layer_array-like
+                 * extension; the two builtins must not alias. */
+                llvm::Value *layer = cg.lvalues.count("gl_Layer")
                     ? cg.lvalues["gl_Layer"] : cg.b->getInt32(0);
-                llvm::Value *viewportIndex = hasViewport
+                llvm::Value *viewportIndex = cg.lvalues.count("gl_ViewportIndex")
                     ? cg.lvalues["gl_ViewportIndex"] : cg.b->getInt32(0);
-                if (hasLayer && !hasViewport) viewportIndex = layer;
-                if (hasViewport && !hasLayer) layer = viewportIndex;
                 ret = cg.b->CreateInsertValue(ret, layer, ri++);
                 ret = cg.b->CreateInsertValue(ret, viewportIndex, ri++);
             }
@@ -6765,7 +6780,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             mglGLSLTranslationUnitDestroy(tu);
             return -1;
         }
-        if (tu->layout_max_vertices < 0 || tu->layout_max_vertices > 1024) {
+        if (tu->layout_max_vertices > 1024) {
             if (err_buf && err_cap)
                 snprintf(err_buf, err_cap,
                          "GS AIR codegen: max_vertices must be in the range 0..1024");
@@ -7057,6 +7072,11 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     const bool usesPrimitiveId =
         !isVS && !isTES && !isKernel &&
         strstr(esrc, "gl_PrimitiveID") != nullptr;
+    const bool usesLayer =
+        !isVS && !isTES && !isKernel && strstr(esrc, "gl_Layer") != nullptr;
+    const bool usesViewportIndex =
+        !isVS && !isTES && !isKernel &&
+        strstr(esrc, "gl_ViewportIndex") != nullptr;
     const bool usesSampleID =
         !isVS && !isTES && !isKernel &&
         strstr(esrc, "gl_SampleID") != nullptr;
@@ -7353,6 +7373,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             paramTys.push_back((stage == MGL_STAGE_FRAGMENT && has_gs)
                 ? llvm::Type::getFloatTy(ctx)
                 : llvm::Type::getInt32Ty(ctx));
+        if (usesLayer)
+            paramTys.push_back(llvm::Type::getInt32Ty(ctx));
+        if (usesViewportIndex)
+            paramTys.push_back(llvm::Type::getInt32Ty(ctx));
         if (usesSampleID)
             paramTys.push_back(llvm::Type::getInt32Ty(ctx));
     }
@@ -7678,6 +7702,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             }
             cg.lvalues["gl_PrimitiveID"] = primitiveArg;
         }
+        if (usesLayer)
+            cg.lvalues["gl_Layer"] = fn->getArg(argSlot++);
+        if (usesViewportIndex)
+            cg.lvalues["gl_ViewportIndex"] = fn->getArg(argSlot++);
         if (usesSampleID)
             cg.lvalues["gl_SampleID"] = fn->getArg(argSlot++);
     }
@@ -9100,9 +9128,11 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 emitFSVarying(v.name, v.type, mArgSlot++);
             }
         }
-        if (usesFragCoord || usesFrontFacing) {
-            /* The fragment builtins sit after the varyings and the
-             * optional buffer in the arg order; skip that slot once. */
+        if (usesFragCoord || usesFrontFacing || usesPointCoord ||
+            usesPrimitiveId || usesLayer || usesViewportIndex ||
+            usesSampleID) {
+            /* Fragment builtins sit after the varyings and the optional
+             * uniform buffer in the arg order; skip that slot once. */
             if (hasBuffer) mArgSlot++;
         }
         if (usesFragCoord) {
@@ -9172,6 +9202,26 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     llvm::MDString::get(ctx, "air.arg_name"),
                     llvm::MDString::get(ctx, "gl_PrimitiveID")}));
             }
+        }
+        if (usesLayer) {
+            argNodes.push_back(llvm::MDNode::get(ctx, {
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), mArgSlot++)),
+                llvm::MDString::get(ctx, "air.render_target_array_index"),
+                llvm::MDString::get(ctx, "air.arg_type_name"),
+                llvm::MDString::get(ctx, "uint"),
+                llvm::MDString::get(ctx, "air.arg_name"),
+                llvm::MDString::get(ctx, "gl_Layer")}));
+        }
+        if (usesViewportIndex) {
+            argNodes.push_back(llvm::MDNode::get(ctx, {
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), mArgSlot++)),
+                llvm::MDString::get(ctx, "air.viewport_array_index"),
+                llvm::MDString::get(ctx, "air.arg_type_name"),
+                llvm::MDString::get(ctx, "uint"),
+                llvm::MDString::get(ctx, "air.arg_name"),
+                llvm::MDString::get(ctx, "gl_ViewportIndex")}));
         }
         if (usesSampleID) {
             argNodes.push_back(llvm::MDNode::get(ctx, {
@@ -9690,6 +9740,8 @@ static void fillStageInfo(const MGLTranslationUnit *tu,
         }
         stage_info->geometry_vertices_out = tu->layout_max_vertices > 0
             ? static_cast<uint32_t>(tu->layout_max_vertices) : 0u;
+        stage_info->geometry_max_vertices_specified =
+            tu->layout_max_vertices >= 0 ? 1u : 0u;
         stage_info->geometry_invocations = tu->layout_invocations > 0
             ? static_cast<uint32_t>(tu->layout_invocations) : 1u;
         /* Per-stream output layout: count the OUTPUT varyings per stream

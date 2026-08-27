@@ -1559,13 +1559,6 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     if (!program || !geometryShader) {
         return NO;
     }
-    /* Keep the old narrow passthrough optimization.  It does not need a
-     * compute expansion and remains a normal VS->FS draw.  Programs with
-     * transform-feedback varyings never qualify: the bypass would skip
-     * the capture entirely. */
-    if (mglProgramHasPassthroughGeometryShader(program)) {
-        return NO;
-    }
     GLenum gsInputMode = program->geometry_input_type;
     if (gsInputMode != GL_POINTS && gsInputMode != GL_LINES &&
         gsInputMode != GL_LINES_ADJACENCY &&
@@ -1608,20 +1601,6 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         }
         /*  contract: never drop a GS draw silently.  A draw whose mode
          * does not match the GS input topology is an invalid operation. */
-        mglDispatchError(drawCtx, label ? label : "geometryDraw",
-                         GL_INVALID_OPERATION);
-        return YES;
-    }
-    if (program->gs_route != MGL_GS_ROUTE_COMPUTE ||
-        !program->modules[_GEOMETRY_SHADER].metallib_bytes ||
-        program->geometry_vertices_out > 1024u) {
-        static uint64_t unsupportedCount = 0;
-        uint64_t hit = ++unsupportedCount;
-        if (hit <= 16ull || (hit % 512ull) == 0ull) {
-            NSLog(@"MGL GS ERROR: blocking %@; AIR compute route unavailable program=%u",
-                  label ? [NSString stringWithUTF8String:label] : @"draw",
-                  (unsigned)program->name);
-        }
         mglDispatchError(drawCtx, label ? label : "geometryDraw",
                          GL_INVALID_OPERATION);
         return YES;

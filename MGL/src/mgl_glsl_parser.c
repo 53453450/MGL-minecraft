@@ -1533,8 +1533,20 @@ more_qualifiers:
                         d->layout_vertices = (int32_t)cur_double(p);
                     } else if (n == 12 && memcmp(s, "max_vertices", 12) == 0) {
                         d->layout_max_vertices = (int32_t)cur_double(p);
+                        if (d->layout_max_vertices < 0) {
+                            parse_error(p,
+                                "layout(max_vertices) must be >= 0 at line %u",
+                                tk_line(p));
+                        }
                     } else if (n == 11 && memcmp(s, "invocations", 11) == 0) {
                         d->layout_invocations = (int32_t)cur_double(p);
+                        /* GLSL 4.60 §4.4.1.2: invocations <= 0 is a
+                         * compile-time error (not silently defaulted to 1). */
+                        if (d->layout_invocations <= 0) {
+                            parse_error(p,
+                                "layout(invocations) must be greater than zero at line %u",
+                                tk_line(p));
+                        }
                     } else if (n == 6 && memcmp(s, "stream", 6) == 0) {
                         d->layout_stream = (int32_t)cur_double(p);
                     }
@@ -1573,11 +1585,10 @@ more_qualifiers:
         /* GL 4.6 §11.1.2gs: a second geometry output-primitive or
          * max_vertices declaration with a different value is a link-time
          * error; reject it at parse time so the program fails to build. */
-        /* layout_max_vertices is calloc-cleared, so 0 doubles as
-         * "not declared yet" here (a real max_vertices=0 GS is the
-         * degenerate no-output program the backend already handles). */
+        /* TU layout_max_vertices is -1 until declared (explicit 0 is a
+         * degenerate no-output program). */
         if (d->layout_max_vertices >= 0 &&
-            tu->layout_max_vertices > 0 &&
+            tu->layout_max_vertices >= 0 &&
             tu->layout_max_vertices != d->layout_max_vertices) {
             parse_error(p, "conflicting max_vertices declarations (%d vs %d)",
                         tu->layout_max_vertices, d->layout_max_vertices);
@@ -2090,6 +2101,7 @@ MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
         return NULL;
     }
     tu->layout_stream = -1; /* GS default output stream unspecified (0) */
+    tu->layout_max_vertices = -1; /* GS: unspecified until layout() */
 
     MGLParser p;
     memset(&p, 0, sizeof(p));

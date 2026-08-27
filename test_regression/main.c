@@ -12152,12 +12152,10 @@ cleanup:
     return result;
 }
 
-/* Passthrough GS + XFB (mgl_program_reflection.c): a passthrough geometry
- * shader (re-emits gl_in unchanged, the Minecraft/CTS marker pattern) is
- * normally bypassed into a plain VS->FS draw.  With transform feedback
- * active the bypass would silently drop the capture, so the program must
- * run the GS compute expansion instead.  One triangle in, three captured
- * records of the forwarded varying out. */
+/* Passthrough GS + XFB: a geometry shader that re-emits gl_in unchanged
+ * still runs the GS compute expansion (no source-string bypass).  With
+ * transform feedback active the expansion must capture the forwarded
+ * varying.  One triangle in, three captured records. */
 static int test_air_geometry_passthrough_xfb(unsigned char *pixels,
                                              const char *out_path)
 {
@@ -12296,6 +12294,90 @@ cleanup:
     if (wr_q) glDeleteQueries(1, &wr_q);
     if (gen_q) glDeleteQueries(1, &gen_q);
     if (tbo) glDeleteBuffers(1, &tbo);
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (program) glDeleteProgram(program);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    return result;
+}
+
+/* A Minecraft/CTS-style passthrough GS (re-emits gl_in unchanged) must
+ * still execute: GEOMETRY_SHADER_INVOCATIONS / PRIMITIVES_EMITTED count
+ * the invocation and the emitted triangle. */
+static int test_air_geometry_passthrough_queries(unsigned char *pixels,
+                                                 const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "void main() { gl_Position = vec4(position, 0.0, 1.0); }\n";
+    static const char *gs =
+        "#version 450 core\n"
+        "layout(triangles) in;\n"
+        "layout(triangle_strip, max_vertices=3) out;\n"
+        "void main() {\n"
+        "  for (int n_vertex_index = 0; n_vertex_index < 3;\n"
+        "       n_vertex_index++) {\n"
+        "    gl_Position = gl_in[n_vertex_index].gl_Position;\n"
+        "    EmitVertex();\n"
+        "  }\n"
+        "  EndPrimitive();\n"
+        "}\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(0.0, 1.0, 0.0, 1.0); }\n";
+    static const float positions[6] = {
+        -0.5f, -0.5f, 0.5f, -0.5f, 0.0f, 0.5f,
+    };
+
+    GLuint fbo = 0u, color = 0u, vao = 0u, vbo = 0u;
+    GLuint inv_q = 0u, prim_q = 0u, program = 0u;
+    int result = 1;
+    fbo = make_fbo(REG_W, REG_H, &color);
+    if (!fbo) goto cleanup;
+    program = link_program_with_geometry(vs, gs, fs);
+    if (!program) goto cleanup;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(positions), positions,
+                 GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
+    glGenQueries(1, &inv_q);
+    glGenQueries(1, &prim_q);
+    glUseProgram(program);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glBeginQuery(GL_GEOMETRY_SHADER_INVOCATIONS, inv_q);
+    glBeginQuery(GL_GEOMETRY_SHADER_PRIMITIVES_EMITTED, prim_q);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glEndQuery(GL_GEOMETRY_SHADER_PRIMITIVES_EMITTED);
+    glEndQuery(GL_GEOMETRY_SHADER_INVOCATIONS);
+    glFinish();
+    {
+        GLuint invocations = 0u, primitives = 0u;
+        glGetQueryObjectuiv(inv_q, GL_QUERY_RESULT, &invocations);
+        glGetQueryObjectuiv(prim_q, GL_QUERY_RESULT, &primitives);
+        if (invocations != 1u || primitives != 1u) {
+            fprintf(stderr,
+                    "air_geometry_passthrough_queries: invocations=%u "
+                    "primitives=%u; expected 1/1\n",
+                    invocations, primitives);
+            goto cleanup;
+        }
+    }
+    result = 0;
+
+cleanup:
+    if (inv_q) glDeleteQueries(1, &inv_q);
+    if (prim_q) glDeleteQueries(1, &prim_q);
     if (vbo) glDeleteBuffers(1, &vbo);
     if (vao) glDeleteVertexArrays(1, &vao);
     if (program) glDeleteProgram(program);
@@ -12538,6 +12620,30 @@ static int test_air_geometry_layer_viewport(unsigned char *pixels,
             goto cleanup;
             }
         }
+        /* Writing only gl_Layer must not alias onto gl_ViewportIndex.
+         * Viewport 1 is the left half; viewport 0 is the full target.
+         * NDC origin under viewport 0 is the framebuffer center. */
+        glViewport(0, 0, REG_W, REG_H);
+        glViewportIndexedf(1, 0.0f, 0.0f, (GLfloat)REG_W / 2.0f,
+                           (GLfloat)REG_H);
+        glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, color, 0);
+        clear_color(0.0f, 0.0f, 0.0f);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glFinish();
+        glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, color, 0, 1);
+        glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        {
+            int cx = REG_W / 2, cy = REG_H / 2;
+            const unsigned char *pp = &pixels[(cy * REG_W + cx) * 4];
+            if (pp[1] < 180) {
+                fprintf(stderr,
+                        "air_geometry_layer_viewport: layer-only VS used "
+                        "viewport 1 (center (%d,%d,%d)); expected viewport 0\n",
+                        pp[0], pp[1], pp[2]);
+                goto cleanup;
+            }
+        }
+        glViewport(0, 0, REG_W, REG_H);
     }
     glBindFramebuffer(GL_FRAMEBUFFER, 0u);
 
@@ -13235,6 +13341,133 @@ static int test_gs_link_semantics(unsigned char *pixels,
     (void)out_path;
     int result = 1;
 
+    /* GLSL 4.60 §4.4.1.2: layout(invocations<=0) is a compile-time error. */
+    {
+        static const char *gs =
+            "#version 460 core\n"
+            "layout(points, invocations=0) in;\n"
+            "layout(points, max_vertices=1) out;\n"
+            "void main() { gl_Position = gl_in[0].gl_Position; EmitVertex(); }\n";
+        GLuint s = glCreateShader(GL_GEOMETRY_SHADER);
+        glShaderSource(s, 1, &gs, NULL);
+        glCompileShader(s);
+        GLint ok = 1;
+        glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
+        if (ok) {
+            fprintf(stderr,
+                    "gs_link_semantics: layout(invocations=0) compiled\n");
+            glDeleteShader(s);
+            return 1;
+        }
+        glDeleteShader(s);
+    }
+
+    /* GL 4.6 §11.3.2: missing max_vertices fails link, not compile. */
+    {
+        static const char *vs =
+            "#version 460 core\n"
+            "void main() { gl_Position = vec4(1.0); }\n";
+        static const char *gs =
+            "#version 460 core\n"
+            "layout(points) in;\n"
+            "layout(points) out;\n"
+            "void main() { gl_Position = gl_in[0].gl_Position; EmitVertex(); }\n";
+        static const char *fs =
+            "#version 460 core\n"
+            "layout(location=0) out vec4 frag;\n"
+            "void main() { frag = vec4(1.0); }\n";
+        GLuint a = compile_shader(GL_VERTEX_SHADER, vs);
+        GLuint b = glCreateShader(GL_GEOMETRY_SHADER);
+        glShaderSource(b, 1, &gs, NULL);
+        glCompileShader(b);
+        GLint compiled = 0;
+        glGetShaderiv(b, GL_COMPILE_STATUS, &compiled);
+        GLuint c = compile_shader(GL_FRAGMENT_SHADER, fs);
+        GLuint prog = glCreateProgram();
+        int local_fail = 0;
+        if (!a || !compiled || !c || !prog) {
+            fprintf(stderr,
+                    "gs_link_semantics: missing max_vertices compile failed "
+                    "(compiled=%d)\n", compiled);
+            local_fail = 1;
+        } else {
+            glAttachShader(prog, a);
+            glAttachShader(prog, b);
+            glAttachShader(prog, c);
+            glLinkProgram(prog);
+            GLint linked = 1;
+            glGetProgramiv(prog, GL_LINK_STATUS, &linked);
+            if (linked) {
+                fprintf(stderr,
+                        "gs_link_semantics: missing max_vertices linked\n");
+                local_fail = 1;
+            }
+        }
+        if (a) glDeleteShader(a);
+        if (b) glDeleteShader(b);
+        if (c) glDeleteShader(c);
+        if (prog) glDeleteProgram(prog);
+        if (local_fail) return 1;
+    }
+
+    {
+        GLint layerConv = 0, vpConv = 0;
+        glGetIntegerv(GL_LAYER_PROVOKING_VERTEX, &layerConv);
+        glGetIntegerv(GL_VIEWPORT_INDEX_PROVOKING_VERTEX, &vpConv);
+        if (layerConv != (GLint)GL_UNDEFINED_VERTEX ||
+            vpConv != (GLint)GL_UNDEFINED_VERTEX) {
+            fprintf(stderr,
+                    "gs_link_semantics: provoking vertex query "
+                    "layer=0x%x viewport=0x%x; expected UNDEFINED_VERTEX\n",
+                    layerConv, vpConv);
+            return 1;
+        }
+    }
+
+    /* Invocations above the compute-expansion limit must fail at link,
+     * not become a draw-time INVALID_OPERATION. */
+    {
+        static const char *vs =
+            "#version 460 core\n"
+            "void main() { gl_Position = vec4(1.0); }\n";
+        static const char *gs =
+            "#version 460 core\n"
+            "layout(points, invocations=33) in;\n"
+            "layout(points, max_vertices=1) out;\n"
+            "void main() { gl_Position = gl_in[0].gl_Position; EmitVertex(); }\n";
+        static const char *fs =
+            "#version 460 core\n"
+            "layout(location=0) out vec4 frag;\n"
+            "void main() { frag = vec4(1.0); }\n";
+        GLuint a = compile_shader(GL_VERTEX_SHADER, vs);
+        GLuint b = compile_shader(GL_GEOMETRY_SHADER, gs);
+        GLuint c = compile_shader(GL_FRAGMENT_SHADER, fs);
+        GLuint prog = glCreateProgram();
+        int local_fail = 0;
+        if (!a || !b || !c || !prog) {
+            fprintf(stderr,
+                    "gs_link_semantics: invocations=33 compile failed\n");
+            local_fail = 1;
+        } else {
+            glAttachShader(prog, a);
+            glAttachShader(prog, b);
+            glAttachShader(prog, c);
+            glLinkProgram(prog);
+            GLint linked = 1;
+            glGetProgramiv(prog, GL_LINK_STATUS, &linked);
+            if (linked) {
+                fprintf(stderr,
+                        "gs_link_semantics: invocations=33 linked\n");
+                local_fail = 1;
+            }
+        }
+        if (a) glDeleteShader(a);
+        if (b) glDeleteShader(b);
+        if (c) glDeleteShader(c);
+        if (prog) glDeleteProgram(prog);
+        if (local_fail) return 1;
+    }
+
     /* layout(invocations=N) must reach GL_GEOMETRY_SHADER_INVOCATIONS. */
     {
         static const char *vs =
@@ -13397,6 +13630,148 @@ xfb_done:
     }
 
 cleanup:
+    return result;
+}
+
+/* GL 4.6 §9.2.1: a no-attachment FBO with FRAMEBUFFER_DEFAULT_LAYERS != 0
+ * is layered.  Drawing a VS that writes gl_Layer must not raise an error. */
+static int test_no_attachment_layered_fbo(unsigned char *pixels,
+                                          const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "void main() { gl_Position = vec4(position, 0.0, 1.0); gl_Layer = 1; }\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(0.0, 1.0, 0.0, 1.0); }\n";
+    static const float tri[6] = { -0.5f, -0.5f, 0.5f, -0.5f, 0.0f, 0.5f };
+    GLuint fbo = 0u, vao = 0u, vbo = 0u, program = 0u;
+    int result = 1;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferParameteri(GL_FRAMEBUFFER, GL_FRAMEBUFFER_DEFAULT_WIDTH, 8);
+    glFramebufferParameteri(GL_FRAMEBUFFER, GL_FRAMEBUFFER_DEFAULT_HEIGHT, 8);
+    glFramebufferParameteri(GL_FRAMEBUFFER, GL_FRAMEBUFFER_DEFAULT_LAYERS, 2);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        fprintf(stderr,
+                "no_attachment_layered_fbo: FBO incomplete with default layers\n");
+        goto cleanup;
+    }
+    {
+        GLint layers = 0;
+        glGetFramebufferParameteriv(GL_FRAMEBUFFER,
+                                    GL_FRAMEBUFFER_DEFAULT_LAYERS, &layers);
+        if (layers != 2) {
+            fprintf(stderr,
+                    "no_attachment_layered_fbo: DEFAULT_LAYERS query got %d\n",
+                    layers);
+            goto cleanup;
+        }
+    }
+    program = link_program(vs, fs);
+    if (!program) goto cleanup;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(tri), tri, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
+    glUseProgram(program);
+    drain_gl_errors();
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    {
+        GLenum err = glGetError();
+        if (err != GL_NO_ERROR) {
+            fprintf(stderr,
+                    "no_attachment_layered_fbo: draw error 0x%x\n", err);
+            goto cleanup;
+        }
+    }
+    result = 0;
+
+cleanup:
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (program) glDeleteProgram(program);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0u);
+    return result;
+}
+
+/* GLSL 4.60 §7.1.5: FS in int gl_Layer is the value written by the
+ * previous stage, not a local 0.  A VS writing gl_Layer=1 must make the
+ * FS see 1 on that layer. */
+static int test_fs_gl_layer_input(unsigned char *pixels,
+                                  const char *out_path)
+{
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "void main() { gl_Position = vec4(position, 0.0, 1.0); gl_Layer = 1; }\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() {\n"
+        "  frag = (gl_Layer == 1) ? vec4(0.0, 1.0, 0.0, 1.0)\n"
+        "                         : vec4(1.0, 0.0, 0.0, 1.0);\n"
+        "}\n";
+    static const float tri[6] = { -0.5f, -0.5f, 0.5f, -0.5f, 0.0f, 0.5f };
+    GLuint fbo = 0u, color = 0u, vao = 0u, vbo = 0u, program = 0u;
+    int result = 1;
+    glGenFramebuffers(1, &fbo);
+    glGenTextures(1, &color);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, color);
+    glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA8, REG_W, REG_H, 2, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, color, 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        fprintf(stderr, "fs_gl_layer_input: FBO incomplete\n");
+        goto cleanup;
+    }
+    program = link_program(vs, fs);
+    if (!program) goto cleanup;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(tri), tri, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
+    glUseProgram(program);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, color, 0, 1);
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        int cx = REG_W / 2, cy = REG_H / 2;
+        const unsigned char *pp = &pixels[(cy * REG_W + cx) * 4];
+        if (pp[1] < 180 || pp[0] > 40) {
+            fprintf(stderr,
+                    "fs_gl_layer_input: layer 1 center (%d,%d,%d); "
+                    "expected green from FS gl_Layer==1\n",
+                    pp[0], pp[1], pp[2]);
+            goto cleanup;
+        }
+    }
+    result = 0;
+
+cleanup:
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (program) glDeleteProgram(program);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
     return result;
 }
 
@@ -13816,6 +14191,8 @@ static const TestCase TESTS[] = {
                     test_air_geometry_separate_xfb),
     SELF_CHECK_TEST("air_geometry_passthrough_xfb",
                     test_air_geometry_passthrough_xfb),
+    SELF_CHECK_TEST("air_geometry_passthrough_queries",
+                    test_air_geometry_passthrough_queries),
     SELF_CHECK_TEST("air_geometry_layered_repro",
                     test_air_geometry_layered_repro),
     SELF_CHECK_TEST("air_geometry_multi_stream_xfb",
@@ -13871,6 +14248,9 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("air_geometry_points_grid",
                     test_air_geometry_points_grid),
     SELF_CHECK_TEST("gs_link_semantics", test_gs_link_semantics),
+    SELF_CHECK_TEST("no_attachment_layered_fbo",
+                    test_no_attachment_layered_fbo),
+    SELF_CHECK_TEST("fs_gl_layer_input", test_fs_gl_layer_input),
     SELF_CHECK_TEST("air_geometry_lines_expand",
                     test_air_geometry_lines_expand),
     SELF_CHECK_TEST("fs_varying_with_plain_uniform",

@@ -1091,6 +1091,8 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
         pptr->geometry_input_type = stage_info.geometry_input_type;
         pptr->geometry_output_type = stage_info.geometry_output_type;
         pptr->geometry_vertices_out = stage_info.geometry_vertices_out;
+        pptr->geometry_max_vertices_specified =
+            stage_info.geometry_max_vertices_specified ? GL_TRUE : GL_FALSE;
         pptr->geometry_invocations = stage_info.geometry_invocations;
         pptr->geometry_stream_count = stage_info.gs_stream_count;
         for (uint32_t si = 0; si < 4u; si++) {
@@ -1228,6 +1230,8 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
         pptr->geometry_input_type = stage_info.geometry_input_type;
         pptr->geometry_output_type = stage_info.geometry_output_type;
         pptr->geometry_vertices_out = stage_info.geometry_vertices_out;
+        pptr->geometry_max_vertices_specified =
+            stage_info.geometry_max_vertices_specified ? GL_TRUE : GL_FALSE;
         pptr->geometry_invocations = stage_info.geometry_invocations;
         pptr->geometry_stream_count = stage_info.gs_stream_count;
         for (uint32_t si = 0; si < 4u; si++) {
@@ -1468,6 +1472,17 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         return;
     }
 
+    /* GL 4.6 §11.3.2: a program fails to link if max_vertices is not
+     * specified in any geometry compilation unit. */
+    if ((pptr->attached_shader_mask & GEOMETRY_SHADER_MASK_BIT) &&
+        !pptr->geometry_max_vertices_specified) {
+        fprintf(stderr,
+                "MGL WARNING: mglLinkProgram failed program %u: "
+                "geometry shader missing layout(max_vertices)\n",
+                pptr->name);
+        return;
+    }
+
     /* Validate transform feedback varyings: the link must fail if any
      * captured varying is not an active output of the program. */
     if (!mglValidateTransformFeedbackVaryings(ctx, pptr)) {
@@ -1536,21 +1551,17 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         pptr->gs_route = computeRoute
             ? MGL_GS_ROUTE_COMPUTE : MGL_GS_ROUTE_UNSUPPORTED;
         if (!computeRoute) {
-            static uint64_t s_gsUnsupportedNotice = 0;
-            uint64_t hit = ++s_gsUnsupportedNotice;
-            if (hit <= 4ull) {
-                fprintf(stderr,
-                        "MGL WARNING: program %u geometry shader is outside "
-                        "the AIR compute-expansion subset "
-                        "(air=%d in=0x%x out=0x%x max=%u inv=%u xfb=%d)\n",
-                        pptr->name,
-                        pptr->modules[_GEOMETRY_SHADER].metallib_bytes != NULL,
-                        pptr->geometry_input_type,
-                        pptr->geometry_output_type,
-                        pptr->geometry_vertices_out,
-                        pptr->geometry_invocations,
-                        pptr->transform_feedback_varying_count);
-            }
+            fprintf(stderr,
+                    "MGL WARNING: mglLinkProgram failed program %u: "
+                    "geometry shader is outside the AIR compute-expansion "
+                    "subset (air=%d in=0x%x out=0x%x max=%u inv=%u)\n",
+                    pptr->name,
+                    pptr->modules[_GEOMETRY_SHADER].metallib_bytes != NULL,
+                    pptr->geometry_input_type,
+                    pptr->geometry_output_type,
+                    pptr->geometry_vertices_out,
+                    pptr->geometry_invocations);
+            return;
         }
     } else {
         pptr->gs_route = MGL_GS_ROUTE_NONE;
