@@ -3858,14 +3858,14 @@ after_gs_draws:
                 id tcsPatchOutBuffer =
                     (__bridge id)
                         mglRendererBackendGetTcsPatchOutBuffer(_backend);
-                if (tcsPatchOutBuffer) {
-                    mglDrawSupportSetVertexBuffer(
-                        _renderPassManager.state->currentRenderEncoderOwner,
-                        tcsPatchOutBuffer, 0u, 27u);
-                    [self recordLastBoundVertexBuffer:
-                              tcsPatchOutBuffer
-                                               offset:0u
-                                              atIndex:27u];
+                const BOOL perPatchNativeResources = (tcsPatchOutBuffer != nil);
+                const NSUInteger nativeFactorStride =
+                    tesProgram->tess_gen_mode == GL_QUADS ? 12u : 8u;
+                NSUInteger patchOutStride = 16u;
+                if (perPatchNativeResources && tcsProgram) {
+                    patchOutStride = mglAIRPatchVaryingStride(
+                        &tcsProgram->shader_resources_list[_TESS_CONTROL_SHADER]
+                                                         [_STAGE_OUTPUT_RES]);
                 }
                 if (_tessellation.tessIndexedDraw) {
                     id controlPointIndexBuffer =
@@ -3898,10 +3898,29 @@ after_gs_draws:
                         mglDrawSupportSetVertexBytes(
                             _renderPassManager.state->currentRenderEncoderOwner,
                             patchInfoWords, sizeof(patchInfoWords), 28u);
-                        mglDrawSupportDrawPatches(
-                            _renderPassManager.state->currentRenderEncoderOwner, _tessellation.tcsOutVertices, p, 1u,
-                            nil, 0u, 1u,
-                            (NSUInteger)baseInstance + (NSUInteger)i);
+                        if (perPatchNativeResources) {
+                            mglDrawSupportSetVertexBuffer(
+                                _renderPassManager.state->currentRenderEncoderOwner,
+                                tcsPatchOutBuffer,
+                                (NSUInteger)p * patchOutStride, 27u);
+                            [self recordLastBoundVertexBuffer:
+                                      tcsPatchOutBuffer
+                                                   offset:(NSUInteger)p * patchOutStride
+                                                  atIndex:27u];
+                            mglDrawSupportSetTessellationFactors(
+                                _renderPassManager.state->currentRenderEncoderOwner,
+                                nativeFactors,
+                                (NSUInteger)p * nativeFactorStride, 0u);
+                            mglDrawSupportDrawPatches(
+                                _renderPassManager.state->currentRenderEncoderOwner, _tessellation.tcsOutVertices, 0u, 1u,
+                                nil, 0u, 1u,
+                                (NSUInteger)baseInstance + (NSUInteger)i);
+                        } else {
+                            mglDrawSupportDrawPatches(
+                                _renderPassManager.state->currentRenderEncoderOwner, _tessellation.tcsOutVertices, p, 1u,
+                                nil, 0u, 1u,
+                                (NSUInteger)baseInstance + (NSUInteger)i);
+                        }
                     }
                 }
             }
