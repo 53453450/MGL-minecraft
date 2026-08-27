@@ -1882,6 +1882,8 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
                          GL_OUT_OF_MEMORY);
         return YES;
     }
+    memset(mglDrawSupportBufferContents(counts), 0,
+           (size_t)workItemCount * countsRecordBytes);
     memset(mglDrawSupportBufferContents(output), 0, outputSize);
     memset(mglDrawSupportBufferContents(counts), 0, (NSUInteger)workItemCount * countsRecordBytes);
     /* Preset the draw parameters the kernel never touches: instance_count=1,
@@ -2197,6 +2199,8 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     }
     const BOOL cppDispatch = getenv("MGL_GS_LEGACY_DISPATCH") ? NO : YES;
     id compute = nil;
+    MGLRenderComputeExecutionResult executionResult = {0};
+    BOOL gsQueryCountersReady = NO;
     MGLRenderComputeExecutionPlan executionPlan = {0};
     NSMutableArray *executionTemporaries = cppDispatch
         ? [NSMutableArray array] : nil;
@@ -2343,7 +2347,6 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
             xfbActive || mglHasActiveIndexedPrimitiveQuery() ||
             mglHasActivePrimitiveQuery() || mglHasActiveGeometryShaderQuery();
         const BOOL gsDiagnostic = getenv("MGL_GS_DIAG") != NULL;
-        MGLRenderComputeExecutionResult executionResult = {0};
         char executionError[256] = {0};
         if (mglRenderExecuteComputeExecutionPlan(
                 _renderPassManager.state->currentCommandBufferOwner,
@@ -2361,6 +2364,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
             drawCtx->state.dirty_bits = DIRTY_ALL;
             return YES;
         }
+        gsQueryCountersReady = executionResult.transaction.waited != 0;
         [self clearStageBindingCopyBacks:&stageCopyBacks];
     } else {
         mglDrawSupportDispatchCompute(
@@ -2374,6 +2378,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
             drawCtx->state.dirty_bits = DIRTY_ALL;
             return YES;
         }
+        gsQueryCountersReady = YES;
     }
     _geometry.expansionActive = YES;
     _geometry.program = program;
@@ -2557,13 +2562,39 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
          mglHasActiveGeometryShaderQuery())) {
         queryMeta = (const MGLAIRGSXFBMeta *)mglDrawSupportBufferContents(xfbMetaBuf);
     }
-    if (queryMeta) {
-        /* GL 4.6 PRIMITIVES_GENERATED: list primitives emitted by the GS
-         * including culled ones, counted kernel-side into the meta.  This
-         * replaces both the max-expansion estimate (wrong whenever the
-         * shader emits fewer than max_vertices) and the visible-record sum
-         * (which excludes culled primitives). */
-        queryGenerated = (GLuint64)queryMeta->stream[0].generated;
+    if (gsQueryCountersReady && counts &&
+        mglDrawSupportBufferContents(counts)) {
+        const uint32_t maxGeneratedPerWorkItem =
+            gsAirOutput == MGL_AIR_GS_OUT_POINTS
+                ? maxVertices
+                : gsAirOutput == MGL_AIR_GS_OUT_LINE_STRIP
+                    ? (maxVertices > 1u ? maxVertices - 1u : 0u)
+                    : (maxVertices > 2u ? maxVertices - 2u : 0u);
+        const GLuint64 maxGenerated =
+            (GLuint64)workItemCount * (GLuint64)maxGeneratedPerWorkItem;
+        if (outputPrimitive == MGL_DRAW_PRIMITIVE_POINT) {
+            /* Points: sum per-work-item EmitVertex counts from the counts
+             * record (includes culled emissions).  Meta atomics are not
+             * reliable for CPU readback on every commit path. */
+            const uint32_t *cw =
+                (const uint32_t *)mglDrawSupportBufferContents(counts);
+            const uint32_t emitWord =
+                MGL_AIR_GS_COUNTS_ARGS_WORDS +
+                (uint32_t)(MGL_AIR_GS_COUNT_EMITTED - 1u);
+            GLuint64 emitSum = 0u;
+            for (GLuint w = 0u; w < workItemCount; w++) {
+                emitSum += cw[w * MGL_AIR_GS_COUNTS_RECORD_WORDS + emitWord];
+            }
+            if (emitSum > 0u && emitSum <= maxGenerated) {
+                queryGenerated = emitSum;
+            }
+        } else if (queryMeta) {
+            const GLuint64 metaGen =
+                (GLuint64)queryMeta->stream[0].generated;
+            if (metaGen > 0u && metaGen <= maxGenerated) {
+                queryGenerated = metaGen;
+            }
+        }
     }
     if (xfbActive && MGL_STATE(drawCtx)->caps.rasterizer_discard) {
         /* GL_RASTERIZER_DISCARD: no pixels by definition; the compute

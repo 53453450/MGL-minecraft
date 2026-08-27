@@ -2603,7 +2603,6 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
         cg.b->CreateAlignedStore(
             cg.b->CreateAdd(emitCount, cg.b->getInt32(1)),
             emitCountPtr, llvm::Align(4));
-        geometryStream0GeneratedAdd(cg, cg.b->getInt32(1));
         cg.b->CreateBr(doneBB);
         cg.b->SetInsertPoint(doneBB);
         return cg.b->getInt32(0);
@@ -8351,6 +8350,17 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                                      llvm::Align(4));
                 b.CreateAlignedStore(b.getInt32(0), baseInstance,
                                      llvm::Align(4));
+                if (cg.geometryXfbMetaPtr &&
+                    cg.geometryOutputType == MGL_AST_GS_OUT_POINTS) {
+                    llvm::Value *emitCount = b.CreateAlignedLoad(
+                        b.getInt32Ty(),
+                        b.CreateGEP(
+                            b.getInt32Ty(), p,
+                            b.getInt32(MGL_AIR_GS_COUNTS_ARGS_WORDS +
+                                       (MGL_AIR_GS_COUNT_EMITTED - 1u))),
+                        llvm::Align(4));
+                    geometryStream0GeneratedAdd(cg, emitCount);
+                }
             }
             b.CreateRetVoid();
         } else if (isCapture) {
