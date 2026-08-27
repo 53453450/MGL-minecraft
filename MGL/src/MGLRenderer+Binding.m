@@ -119,23 +119,54 @@ static id mglBindingCreateDefaultSampler(void)
                 newInfo.height == existingInfo.height &&
                 newInfo.depth == existingInfo.depth;
             if (oldTexture && dimensionsMatch) {
-                // Blit GPU data from old texture to new texture to preserve
-                // any writes (e.g. imageStore) that occurred before the
-                // is_render_target transition.
-                [self endRenderEncodingLocked];
-                if ([self ensureWritableCommandBufferLocked:"is_render_target_blit"]) {
-                    if (mglRenderCopyMatchingTextureSubresourcesForCommandBufferOwner(
-                            _renderPassManager.state->currentCommandBufferOwner,
-                            (__bridge void *)oldTexture,
-                            (__bridge void *)newTexture) != 0) {
-                        NSLog(@"MGL ERROR: Metal-cpp render-target preservation blit failed texture=%u",
-                              tex->name);
-                        tex->dirty_bits |= DIRTY_TEXTURE_DATA;
-                        return false;
-                    }
-                }
                 tex->mtl_data = (void *)CFBridgingRetain(newTexture);
-                tex->dirty_bits = 0;
+                const BOOL packedDepthStencil =
+                    tex->internalformat == GL_DEPTH32F_STENCIL8 ||
+                    tex->internalformat == GL_DEPTH24_STENCIL8;
+                if (packedDepthStencil) {
+                    const BOOL isArray =
+                        tex->target == GL_TEXTURE_2D_ARRAY ||
+                        tex->target == GL_TEXTURE_CUBE_MAP_ARRAY ||
+                        tex->target == GL_TEXTURE_1D_ARRAY ||
+                        tex->target == GL_TEXTURE_CUBE_MAP ||
+                        tex->target == GL_TEXTURE_3D;
+                    BOOL allLevelsUploaded = YES;
+                    const GLuint levelCount = (GLuint)MIN(
+                        newInfo.mipmap_level_count,
+                        tex->num_levels ? tex->num_levels : 1u);
+                    if ([self uploadDirtyCPUTextureData:tex
+                                                   metal:newTexture
+                                             pixelFormat:(uint32_t)newInfo.pixel_format
+                                               numFaces:1
+                                       uploadLevelCount:levelCount
+                                                isArray:isArray
+                                     texture1DBackedBy2D:NO
+                               texture1DArrayBackedBy2DArray:NO
+                                                texType:(uint32_t)newInfo.texture_type
+                                    outAllLevelsUploaded:&allLevelsUploaded] &&
+                        allLevelsUploaded) {
+                        tex->dirty_bits &= ~DIRTY_TEXTURE_DATA;
+                    } else {
+                        tex->dirty_bits |= DIRTY_TEXTURE_DATA;
+                    }
+                } else {
+                    // Blit GPU data from old texture to new texture to preserve
+                    // any writes (e.g. imageStore) that occurred before the
+                    // is_render_target transition.
+                    [self endRenderEncodingLocked];
+                    if ([self ensureWritableCommandBufferLocked:"is_render_target_blit"]) {
+                        if (mglRenderCopyMatchingTextureSubresourcesForCommandBufferOwner(
+                                _renderPassManager.state->currentCommandBufferOwner,
+                                (__bridge void *)oldTexture,
+                                (__bridge void *)newTexture) != 0) {
+                            NSLog(@"MGL ERROR: Metal-cpp render-target preservation blit failed texture=%u",
+                                  tex->name);
+                            tex->dirty_bits |= DIRTY_TEXTURE_DATA;
+                            return false;
+                        }
+                    }
+                    tex->dirty_bits = 0;
+                }
             } else {
                 // Fallback: use the old CPU-data-upload path
                 tex->dirty_bits |= DIRTY_TEXTURE_DATA;
@@ -156,10 +187,50 @@ static id mglBindingCreateDefaultSampler(void)
             !storageShapeChanged &&
             (tex->dirty_bits & DIRTY_TEXTURE_DATA) != 0) {
             id existingTexture = (__bridge id)(tex->mtl_data);
-            if (existingTexture &&
-                [self uploadFullCPUTextureDataIntoTexture:tex
-                                                     metal:existingTexture
-                                                    reason:"bindMTLTexture.dirtyData"]) {
+            BOOL uploadedDirty = NO;
+            if (existingTexture) {
+                if (tex->target == GL_TEXTURE_2D) {
+                    MGLRenderTextureInfo metalInfo = {0};
+                    if (mglRenderGetTextureInfo((__bridge void *)existingTexture,
+                                                   &metalInfo) == 0 &&
+                        metalInfo.texture_type == MGLTextureType2D) {
+                        uploadedDirty =
+                            [self uploadFullCPUTextureDataIntoTexture:tex
+                                                                metal:existingTexture
+                                                               reason:"bindMTLTexture.dirtyData"];
+                    }
+                }
+                if (!uploadedDirty) {
+                    MGLRenderTextureInfo metalInfo = {0};
+                    if (mglRenderGetTextureInfo((__bridge void *)existingTexture,
+                                                   &metalInfo) == 0) {
+                        const BOOL isArray =
+                            tex->target == GL_TEXTURE_2D_ARRAY ||
+                            tex->target == GL_TEXTURE_CUBE_MAP_ARRAY ||
+                            tex->target == GL_TEXTURE_1D_ARRAY ||
+                            tex->target == GL_TEXTURE_CUBE_MAP ||
+                            tex->target == GL_TEXTURE_3D;
+                        BOOL allLevelsUploaded = YES;
+                        const GLuint levelCount = (GLuint)MIN(
+                            metalInfo.mipmap_level_count,
+                            tex->num_levels ? tex->num_levels : 1u);
+                        uploadedDirty =
+                            [self uploadDirtyCPUTextureData:tex
+                                                       metal:existingTexture
+                                                 pixelFormat:(uint32_t)metalInfo.pixel_format
+                                                   numFaces:1
+                                           uploadLevelCount:levelCount
+                                                    isArray:isArray
+                                         texture1DBackedBy2D:NO
+                                   texture1DArrayBackedBy2DArray:NO
+                                                    texType:(uint32_t)metalInfo.texture_type
+                                        outAllLevelsUploaded:&allLevelsUploaded] &&
+                            allLevelsUploaded;
+                    }
+                }
+            }
+            if (uploadedDirty) {
+                tex->dirty_bits &= ~DIRTY_TEXTURE_DATA;
                 textureNeedsRebuild =
                     (tex->dirty_bits & (DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_DATA | DIRTY_TEXTURE_ACCESS)) != 0;
                 samplerNeedsRebuild =
