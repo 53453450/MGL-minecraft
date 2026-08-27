@@ -48,28 +48,16 @@ MGLShaderResource *mglFindVaryingByLocation(MGLShaderResourceList *list,
                                         const MGLShaderResource *type_peer);
 void mglBridgeSkippedGeometryShaderVaryings(Program *program);
 
-/* Narrow Minecraft/CTS passthrough-GS detection (re-emits gl_in
- * unchanged, no layer/viewport/primitive-id).  Such a program normally
- * bypasses the GS compute expansion entirely (plain VS->FS draw).  A
- * program with transform-feedback varyings must NOT take the bypass:
- * the bypassed draw never runs the GS compute expansion and the CPU
- * feedback path rejects GS-attached programs, so the capture would be
- * silently lost.  static inline so the standalone Metal-cpp smoke
- * binary (which does not link mgl_program_reflection.c) shares the
- * single predicate. */
+/* Geometry shaders always execute.  A source-string "passthrough"
+ * heuristic used to skip the compute expansion (plain VS->FS), which
+ * dropped GS outputs/side effects and left GEOMETRY_SHADER_INVOCATIONS /
+ * GEOMETRY_SHADER_PRIMITIVES_EMITTED at zero.  The identifier is kept so
+ * existing call sites compile; it is never true. */
 static inline GLboolean mglProgramHasPassthroughGeometryShader(
     Program *program)
 {
-    const char *src = program && program->shader_slots[_GEOMETRY_SHADER]
-        ? program->shader_slots[_GEOMETRY_SHADER]->src : NULL;
-    if (!src) return GL_FALSE;
-    if (program->transform_feedback_varying_count > 0) return GL_FALSE;
-    return strstr(src, "EmitVertex()") &&
-           strstr(src, "EndPrimitive()") &&
-           strstr(src, "gl_Position = gl_in[n_vertex_index].gl_Position") &&
-           !strstr(src, "gl_PrimitiveID") &&
-           !strstr(src, "gl_Layer") &&
-           !strstr(src, "gl_ViewportIndex");
+    (void)program;
+    return GL_FALSE;
 }
 
 #ifdef __cplusplus

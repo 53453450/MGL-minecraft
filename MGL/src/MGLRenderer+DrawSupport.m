@@ -1559,13 +1559,6 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     if (!program || !geometryShader) {
         return NO;
     }
-    /* Keep the old narrow passthrough optimization.  It does not need a
-     * compute expansion and remains a normal VS->FS draw.  Programs with
-     * transform-feedback varyings never qualify: the bypass would skip
-     * the capture entirely. */
-    if (mglProgramHasPassthroughGeometryShader(program)) {
-        return NO;
-    }
     GLenum gsInputMode = program->geometry_input_type;
     if (gsInputMode != GL_POINTS && gsInputMode != GL_LINES &&
         gsInputMode != GL_LINES_ADJACENCY &&

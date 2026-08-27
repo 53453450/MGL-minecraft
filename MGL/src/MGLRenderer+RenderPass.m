@@ -559,16 +559,9 @@ static void mglRenderPassSetPersistentStencilClear(
     }
 }
 
-/* Passthrough geometry detection lives in mgl_program_reflection.c
- * (mglProgramHasPassthroughGeometryShader): a geometry shader whose only
- * job is to re-emit each input vertex unchanged.  Metal has no geometry
- * stage; a few CTS paths insert such a shader while copying clip/cull
- * distance arrays.  Those programs are equivalent to running the VS->FS
- * pipeline directly, and blocking them regresses otherwise valid
- * cull-distance coverage.  The predicate is deliberately narrow and
- * excludes transform-feedback programs (the bypass would drop capture),
- * so real geometry expansion/rewriting remains unsupported instead of
- * being silently misrendered. */
+/* Geometry shaders always execute through the AIR compute expansion.
+ * A source-string "passthrough" skip used to drop the GS stage (plain
+ * VS->FS), which left invocation / primitives-emitted queries at zero. */
 
 static bool mglLoadAIRMainFunction(const unsigned char *bytes,
                                    size_t size,
@@ -1678,16 +1671,6 @@ static GLenum mglPassthroughDeclType(
         if (shader)
         {
             if (i == _GEOMETRY_SHADER) {
-                if (mglProgramHasPassthroughGeometryShader(ptr)) {
-                    static uint64_t s_passthroughGeometryShaderSkipCount = 0;
-                    uint64_t hit = ++s_passthroughGeometryShaderSkipCount;
-                    if (hit <= 16ull || (hit % 512ull) == 0ull) {
-                        NSLog(@"MGL INFO: Skipping passthrough geometry shader for Metal program=%u hit=%llu",
-                              (unsigned)ptr->name,
-                              (unsigned long long)hit);
-                    }
-                    continue;
-                }
                 if (ptr->gs_route == MGL_GS_ROUTE_COMPUTE &&
                     ptr->modules[i].metallib_bytes &&
                     ptr->modules[i].metallib_size > 0u) {

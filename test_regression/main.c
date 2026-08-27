@@ -12152,12 +12152,10 @@ cleanup:
     return result;
 }
 
-/* Passthrough GS + XFB (mgl_program_reflection.c): a passthrough geometry
- * shader (re-emits gl_in unchanged, the Minecraft/CTS marker pattern) is
- * normally bypassed into a plain VS->FS draw.  With transform feedback
- * active the bypass would silently drop the capture, so the program must
- * run the GS compute expansion instead.  One triangle in, three captured
- * records of the forwarded varying out. */
+/* Passthrough GS + XFB: a geometry shader that re-emits gl_in unchanged
+ * still runs the GS compute expansion (no source-string bypass).  With
+ * transform feedback active the expansion must capture the forwarded
+ * varying.  One triangle in, three captured records. */
 static int test_air_geometry_passthrough_xfb(unsigned char *pixels,
                                              const char *out_path)
 {
@@ -12296,6 +12294,90 @@ cleanup:
     if (wr_q) glDeleteQueries(1, &wr_q);
     if (gen_q) glDeleteQueries(1, &gen_q);
     if (tbo) glDeleteBuffers(1, &tbo);
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (program) glDeleteProgram(program);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    return result;
+}
+
+/* A Minecraft/CTS-style passthrough GS (re-emits gl_in unchanged) must
+ * still execute: GEOMETRY_SHADER_INVOCATIONS / PRIMITIVES_EMITTED count
+ * the invocation and the emitted triangle. */
+static int test_air_geometry_passthrough_queries(unsigned char *pixels,
+                                                 const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "void main() { gl_Position = vec4(position, 0.0, 1.0); }\n";
+    static const char *gs =
+        "#version 450 core\n"
+        "layout(triangles) in;\n"
+        "layout(triangle_strip, max_vertices=3) out;\n"
+        "void main() {\n"
+        "  for (int n_vertex_index = 0; n_vertex_index < 3;\n"
+        "       n_vertex_index++) {\n"
+        "    gl_Position = gl_in[n_vertex_index].gl_Position;\n"
+        "    EmitVertex();\n"
+        "  }\n"
+        "  EndPrimitive();\n"
+        "}\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(0.0, 1.0, 0.0, 1.0); }\n";
+    static const float positions[6] = {
+        -0.5f, -0.5f, 0.5f, -0.5f, 0.0f, 0.5f,
+    };
+
+    GLuint fbo = 0u, color = 0u, vao = 0u, vbo = 0u;
+    GLuint inv_q = 0u, prim_q = 0u, program = 0u;
+    int result = 1;
+    fbo = make_fbo(REG_W, REG_H, &color);
+    if (!fbo) goto cleanup;
+    program = link_program_with_geometry(vs, gs, fs);
+    if (!program) goto cleanup;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(positions), positions,
+                 GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
+    glGenQueries(1, &inv_q);
+    glGenQueries(1, &prim_q);
+    glUseProgram(program);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glBeginQuery(GL_GEOMETRY_SHADER_INVOCATIONS, inv_q);
+    glBeginQuery(GL_GEOMETRY_SHADER_PRIMITIVES_EMITTED, prim_q);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glEndQuery(GL_GEOMETRY_SHADER_PRIMITIVES_EMITTED);
+    glEndQuery(GL_GEOMETRY_SHADER_INVOCATIONS);
+    glFinish();
+    {
+        GLuint invocations = 0u, primitives = 0u;
+        glGetQueryObjectuiv(inv_q, GL_QUERY_RESULT, &invocations);
+        glGetQueryObjectuiv(prim_q, GL_QUERY_RESULT, &primitives);
+        if (invocations != 1u || primitives != 1u) {
+            fprintf(stderr,
+                    "air_geometry_passthrough_queries: invocations=%u "
+                    "primitives=%u; expected 1/1\n",
+                    invocations, primitives);
+            goto cleanup;
+        }
+    }
+    result = 0;
+
+cleanup:
+    if (inv_q) glDeleteQueries(1, &inv_q);
+    if (prim_q) glDeleteQueries(1, &prim_q);
     if (vbo) glDeleteBuffers(1, &vbo);
     if (vao) glDeleteVertexArrays(1, &vao);
     if (program) glDeleteProgram(program);
@@ -13909,6 +13991,8 @@ static const TestCase TESTS[] = {
                     test_air_geometry_separate_xfb),
     SELF_CHECK_TEST("air_geometry_passthrough_xfb",
                     test_air_geometry_passthrough_xfb),
+    SELF_CHECK_TEST("air_geometry_passthrough_queries",
+                    test_air_geometry_passthrough_queries),
     SELF_CHECK_TEST("air_geometry_layered_repro",
                     test_air_geometry_layered_repro),
     SELF_CHECK_TEST("air_geometry_multi_stream_xfb",
