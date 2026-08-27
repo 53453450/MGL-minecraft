@@ -13575,6 +13575,77 @@ cleanup:
     return result;
 }
 
+/* GL 4.6 §9.2.1: a no-attachment FBO with FRAMEBUFFER_DEFAULT_LAYERS != 0
+ * is layered.  Drawing a VS that writes gl_Layer must not raise an error. */
+static int test_no_attachment_layered_fbo(unsigned char *pixels,
+                                          const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "void main() { gl_Position = vec4(position, 0.0, 1.0); gl_Layer = 1; }\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(0.0, 1.0, 0.0, 1.0); }\n";
+    static const float tri[6] = { -0.5f, -0.5f, 0.5f, -0.5f, 0.0f, 0.5f };
+    GLuint fbo = 0u, vao = 0u, vbo = 0u, program = 0u;
+    int result = 1;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferParameteri(GL_FRAMEBUFFER, GL_FRAMEBUFFER_DEFAULT_WIDTH, 8);
+    glFramebufferParameteri(GL_FRAMEBUFFER, GL_FRAMEBUFFER_DEFAULT_HEIGHT, 8);
+    glFramebufferParameteri(GL_FRAMEBUFFER, GL_FRAMEBUFFER_DEFAULT_LAYERS, 2);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        fprintf(stderr,
+                "no_attachment_layered_fbo: FBO incomplete with default layers\n");
+        goto cleanup;
+    }
+    {
+        GLint layers = 0;
+        glGetFramebufferParameteriv(GL_FRAMEBUFFER,
+                                    GL_FRAMEBUFFER_DEFAULT_LAYERS, &layers);
+        if (layers != 2) {
+            fprintf(stderr,
+                    "no_attachment_layered_fbo: DEFAULT_LAYERS query got %d\n",
+                    layers);
+            goto cleanup;
+        }
+    }
+    program = link_program(vs, fs);
+    if (!program) goto cleanup;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(tri), tri, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
+    glUseProgram(program);
+    drain_gl_errors();
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    {
+        GLenum err = glGetError();
+        if (err != GL_NO_ERROR) {
+            fprintf(stderr,
+                    "no_attachment_layered_fbo: draw error 0x%x\n", err);
+            goto cleanup;
+        }
+    }
+    result = 0;
+
+cleanup:
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (program) glDeleteProgram(program);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0u);
+    return result;
+}
+
 static int test_air_geometry_lines_expand(unsigned char *pixels,
                                           const char *out_path)
 {
@@ -14048,6 +14119,8 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("air_geometry_points_grid",
                     test_air_geometry_points_grid),
     SELF_CHECK_TEST("gs_link_semantics", test_gs_link_semantics),
+    SELF_CHECK_TEST("no_attachment_layered_fbo",
+                    test_no_attachment_layered_fbo),
     SELF_CHECK_TEST("air_geometry_lines_expand",
                     test_air_geometry_lines_expand),
     SELF_CHECK_TEST("fs_varying_with_plain_uniform",
