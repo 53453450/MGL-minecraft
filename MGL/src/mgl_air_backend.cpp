@@ -7019,6 +7019,11 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     const bool usesPrimitiveId =
         !isVS && !isTES && !isKernel &&
         strstr(esrc, "gl_PrimitiveID") != nullptr;
+    const bool usesLayer =
+        !isVS && !isTES && !isKernel && strstr(esrc, "gl_Layer") != nullptr;
+    const bool usesViewportIndex =
+        !isVS && !isTES && !isKernel &&
+        strstr(esrc, "gl_ViewportIndex") != nullptr;
     const bool usesSampleID =
         !isVS && !isTES && !isKernel &&
         strstr(esrc, "gl_SampleID") != nullptr;
@@ -7315,6 +7320,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             paramTys.push_back((stage == MGL_STAGE_FRAGMENT && has_gs)
                 ? llvm::Type::getFloatTy(ctx)
                 : llvm::Type::getInt32Ty(ctx));
+        if (usesLayer)
+            paramTys.push_back(llvm::Type::getInt32Ty(ctx));
+        if (usesViewportIndex)
+            paramTys.push_back(llvm::Type::getInt32Ty(ctx));
         if (usesSampleID)
             paramTys.push_back(llvm::Type::getInt32Ty(ctx));
     }
@@ -7640,6 +7649,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             }
             cg.lvalues["gl_PrimitiveID"] = primitiveArg;
         }
+        if (usesLayer)
+            cg.lvalues["gl_Layer"] = fn->getArg(argSlot++);
+        if (usesViewportIndex)
+            cg.lvalues["gl_ViewportIndex"] = fn->getArg(argSlot++);
         if (usesSampleID)
             cg.lvalues["gl_SampleID"] = fn->getArg(argSlot++);
     }
@@ -9062,9 +9075,11 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 emitFSVarying(v.name, v.type, mArgSlot++);
             }
         }
-        if (usesFragCoord || usesFrontFacing) {
-            /* The fragment builtins sit after the varyings and the
-             * optional buffer in the arg order; skip that slot once. */
+        if (usesFragCoord || usesFrontFacing || usesPointCoord ||
+            usesPrimitiveId || usesLayer || usesViewportIndex ||
+            usesSampleID) {
+            /* Fragment builtins sit after the varyings and the optional
+             * uniform buffer in the arg order; skip that slot once. */
             if (hasBuffer) mArgSlot++;
         }
         if (usesFragCoord) {
@@ -9134,6 +9149,26 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     llvm::MDString::get(ctx, "air.arg_name"),
                     llvm::MDString::get(ctx, "gl_PrimitiveID")}));
             }
+        }
+        if (usesLayer) {
+            argNodes.push_back(llvm::MDNode::get(ctx, {
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), mArgSlot++)),
+                llvm::MDString::get(ctx, "air.render_target_array_index"),
+                llvm::MDString::get(ctx, "air.arg_type_name"),
+                llvm::MDString::get(ctx, "uint"),
+                llvm::MDString::get(ctx, "air.arg_name"),
+                llvm::MDString::get(ctx, "gl_Layer")}));
+        }
+        if (usesViewportIndex) {
+            argNodes.push_back(llvm::MDNode::get(ctx, {
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), mArgSlot++)),
+                llvm::MDString::get(ctx, "air.viewport_array_index"),
+                llvm::MDString::get(ctx, "air.arg_type_name"),
+                llvm::MDString::get(ctx, "uint"),
+                llvm::MDString::get(ctx, "air.arg_name"),
+                llvm::MDString::get(ctx, "gl_ViewportIndex")}));
         }
         if (usesSampleID) {
             argNodes.push_back(llvm::MDNode::get(ctx, {

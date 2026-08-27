@@ -672,6 +672,19 @@ TEST(Metallib, GeometryMissingMaxVerticesIsUnspecified) {
     EXPECT_EQ(0, r.rc) << r.err;
 }
 
+TEST(Metallib, FragmentReadsLayerAndViewportIndex) {
+    static const char *kFS =
+        "#version 450 core\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() {\n"
+        "  frag = vec4(float(gl_Layer), float(gl_ViewportIndex), 0.0, 1.0);\n"
+        "}\n";
+    CompileResult r = compile(kFS, MGL_STAGE_FRAGMENT);
+    EXPECT_EQ(0, r.rc) << r.err;
+    ASSERT_FALSE(r.bytes.empty());
+    EXPECT_EQ(0, memcmp(r.bytes.data(), "MTLB", 4));
+}
+
 TEST(Metallib, GeometryAirKernelPositionExpansion) {
     static const char *kGS =
         "#version 450 core\n"

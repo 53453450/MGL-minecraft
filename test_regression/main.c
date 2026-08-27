@@ -13646,6 +13646,77 @@ cleanup:
     return result;
 }
 
+/* GLSL 4.60 §7.1.5: FS in int gl_Layer is the value written by the
+ * previous stage, not a local 0.  A VS writing gl_Layer=1 must make the
+ * FS see 1 on that layer. */
+static int test_fs_gl_layer_input(unsigned char *pixels,
+                                  const char *out_path)
+{
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "void main() { gl_Position = vec4(position, 0.0, 1.0); gl_Layer = 1; }\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() {\n"
+        "  frag = (gl_Layer == 1) ? vec4(0.0, 1.0, 0.0, 1.0)\n"
+        "                         : vec4(1.0, 0.0, 0.0, 1.0);\n"
+        "}\n";
+    static const float tri[6] = { -0.5f, -0.5f, 0.5f, -0.5f, 0.0f, 0.5f };
+    GLuint fbo = 0u, color = 0u, vao = 0u, vbo = 0u, program = 0u;
+    int result = 1;
+    glGenFramebuffers(1, &fbo);
+    glGenTextures(1, &color);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, color);
+    glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA8, REG_W, REG_H, 2, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, color, 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        fprintf(stderr, "fs_gl_layer_input: FBO incomplete\n");
+        goto cleanup;
+    }
+    program = link_program(vs, fs);
+    if (!program) goto cleanup;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(tri), tri, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
+    glUseProgram(program);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, color, 0, 1);
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        int cx = REG_W / 2, cy = REG_H / 2;
+        const unsigned char *pp = &pixels[(cy * REG_W + cx) * 4];
+        if (pp[1] < 180 || pp[0] > 40) {
+            fprintf(stderr,
+                    "fs_gl_layer_input: layer 1 center (%d,%d,%d); "
+                    "expected green from FS gl_Layer==1\n",
+                    pp[0], pp[1], pp[2]);
+            goto cleanup;
+        }
+    }
+    result = 0;
+
+cleanup:
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (program) glDeleteProgram(program);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    return result;
+}
+
 static int test_air_geometry_lines_expand(unsigned char *pixels,
                                           const char *out_path)
 {
@@ -14121,6 +14192,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("gs_link_semantics", test_gs_link_semantics),
     SELF_CHECK_TEST("no_attachment_layered_fbo",
                     test_no_attachment_layered_fbo),
+    SELF_CHECK_TEST("fs_gl_layer_input", test_fs_gl_layer_input),
     SELF_CHECK_TEST("air_geometry_lines_expand",
                     test_air_geometry_lines_expand),
     SELF_CHECK_TEST("fs_varying_with_plain_uniform",
