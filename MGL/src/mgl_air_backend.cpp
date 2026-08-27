@@ -39,6 +39,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <algorithm>
+#include <functional>
 #include <initializer_list>
 #include <map>
 #include <memory>
@@ -252,6 +253,15 @@ bool scalarIsFloat(MGLIRScalar s) {
 static bool varyingUsesFloatCarrier(const MType &t, bool has_gs) {
     return has_gs && !scalarIsFloat(t.scalar) &&
            t.scalar != MGLIR_SCALAR_BOOL;
+}
+
+static llvm::Value *decodeFloatCarrier(Codegen &cg, llvm::Value *arg,
+                                       MGLIRScalar scalar,
+                                       llvm::Type *destTy) {
+    arg = cg.b->CreateUnaryIntrinsic(llvm::Intrinsic::round, arg);
+    if (scalar == MGLIR_SCALAR_UINT)
+        return cg.b->CreateFPToUI(arg, destTy);
+    return cg.b->CreateFPToSI(arg, destTy);
 }
 
 static MType floatCarrierType(const MType &t) {
@@ -1070,6 +1080,87 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
 static llvm::Value *emitMatrixBuiltin(Codegen &cg, const MGLExpr *e,
                                       const char *name, const MGLIRModule *mod,
                                       const std::map<std::string, MType> &locals);
+
+/* Select one element from a compile-time array of values by dynamic index.
+ * Switch+phi avoids deep select chains that crash Metal when large sampler
+ * arrays are indexed inside loops. */
+static llvm::Value *selectArrayElement(Codegen &cg, llvm::Value *index,
+                                       const std::vector<llvm::Value *> &values) {
+    if (values.empty()) return nullptr;
+    if (values.size() == 1) return values[0];
+    llvm::Function *fn = cg.b->GetInsertBlock()->getParent();
+    llvm::BasicBlock *defaultBB =
+        llvm::BasicBlock::Create(*cg.ctx, "arr.def", fn);
+    llvm::BasicBlock *mergeBB =
+        llvm::BasicBlock::Create(*cg.ctx, "arr.merge", fn);
+    llvm::SwitchInst *sw = cg.b->CreateSwitch(
+        index, defaultBB, (unsigned)values.size());
+    std::vector<llvm::BasicBlock *> caseBBs(values.size());
+    for (size_t i = 0; i < values.size(); ++i) {
+        caseBBs[i] = llvm::BasicBlock::Create(*cg.ctx, "arr.case", fn);
+        sw->addCase(cg.b->getInt32((uint32_t)i), caseBBs[i]);
+    }
+    cg.b->SetInsertPoint(defaultBB);
+    cg.b->CreateBr(mergeBB);
+    llvm::PHINode *phi = llvm::PHINode::Create(
+        values[0]->getType(), (unsigned)(values.size() + 1), "arr.phi",
+        mergeBB);
+    phi->addIncoming(values.back(), defaultBB);
+    for (size_t i = 0; i < values.size(); ++i) {
+        cg.b->SetInsertPoint(caseBBs[i]);
+        cg.b->CreateBr(mergeBB);
+        phi->addIncoming(values[i], caseBBs[i]);
+    }
+    cg.b->SetInsertPoint(mergeBB);
+    return phi;
+}
+
+/* Sample from a sampler array by index without phi-selecting texture or
+ * sampler pointers (Metal's compiler crashes on those inside loops).
+ * Phi merges scalar texel components only, not AIR sample aggregates.
+ * Uses an LLVM switch so AIR/MSL matches the handwritten for+switch
+ * pattern that compiles for R32Uint + usampler arrays. */
+static llvm::Value *sampleArrayElementBySwitch(
+    Codegen &cg, llvm::Value *index,
+    const std::vector<llvm::Value *> &texValues,
+    const std::vector<llvm::Value *> &smpValues, llvm::Type *scalarTy,
+    const std::function<llvm::Value *(llvm::Value *, llvm::Value *)>
+        &emitSampleScalar) {
+    if (texValues.empty()) return nullptr;
+    size_t n = texValues.size();
+    if (n == 1)
+        return emitSampleScalar(texValues[0],
+                                smpValues.empty() ? nullptr : smpValues[0]);
+    llvm::Function *fn = cg.b->GetInsertBlock()->getParent();
+    llvm::BasicBlock *mergeBB =
+        llvm::BasicBlock::Create(*cg.ctx, "samp.merge", fn);
+    llvm::BasicBlock *defBB =
+        llvm::BasicBlock::Create(*cg.ctx, "samp.def", fn);
+    llvm::PHINode *phi = llvm::PHINode::Create(
+        scalarTy, (unsigned)(n + 1), "samp.phi", mergeBB);
+    std::vector<llvm::BasicBlock *> caseBBs(n);
+    for (size_t i = 0; i < n; ++i)
+        caseBBs[i] = llvm::BasicBlock::Create(*cg.ctx, "samp.case", fn);
+    llvm::SwitchInst *sw =
+        cg.b->CreateSwitch(index, defBB, (unsigned)n);
+    for (size_t i = 0; i < n; ++i)
+        sw->addCase(cg.b->getInt32((uint32_t)i), caseBBs[i]);
+    for (size_t i = 0; i < n; ++i) {
+        cg.b->SetInsertPoint(caseBBs[i]);
+        llvm::Value *val = emitSampleScalar(
+            texValues[i], smpValues.empty() ? nullptr : smpValues[i]);
+        cg.b->CreateBr(mergeBB);
+        phi->addIncoming(val, caseBBs[i]);
+    }
+    cg.b->SetInsertPoint(defBB);
+    llvm::Value *defVal = emitSampleScalar(
+        texValues.back(),
+        smpValues.empty() ? nullptr : smpValues.back());
+    cg.b->CreateBr(mergeBB);
+    phi->addIncoming(defVal, defBB);
+    cg.b->SetInsertPoint(mergeBB);
+    return phi;
+}
 
 /* Dynamic read of obj[idx]: matrix -> column (select chain over the
  * columns, since extractvalue needs a constant index), vector ->
@@ -2533,8 +2624,7 @@ static void geometryStream0GeneratedAdd(Codegen &cg, llvm::Value *count)
 static llvm::Value *emitGeometryVertex(Codegen &cg)
 {
     if (!cg.isGeometry || !cg.geometryOutputPtr || !cg.geometryCountPtr ||
-        !cg.geometryPrimitiveId || cg.geometryMaxVertices == 0 ||
-        cg.geometryRecordCount < 2) {
+        !cg.geometryPrimitiveId || cg.geometryRecordCount < 2) {
         cg.err = 1;
         cg.errmsg = "GS AIR codegen: EmitVertex requires the  output ABI";
         return nullptr;
@@ -2573,15 +2663,19 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
         *cg.ctx, "gs_emit", cg.fn);
     llvm::BasicBlock *doneBB = llvm::BasicBlock::Create(
         *cg.ctx, "gs_emit_done", cg.fn);
-    cg.b->CreateCondBr(canEmit, emitBB, doneBB);
+        cg.b->CreateCondBr(canEmit, emitBB, doneBB);
     cg.b->SetInsertPoint(emitBB);
 
-    llvm::Value *stripCount = cg.b->CreateAlignedLoad(
-        cg.b->getInt32Ty(), stripCountPtr, llvm::Align(4));
+    if (cg.geometryOutputType == MGL_AST_GS_OUT_POINTS &&
+        cg.geometryXfbMetaPtr) {
+        geometryStream0GeneratedAdd(cg, cg.b->getInt32(1));
+    }
 
     if (cg.geometryOutputType == MGL_AST_GS_OUT_POINTS) {
         llvm::Value *outputCount = cg.b->CreateAlignedLoad(
             cg.b->getInt32Ty(), outputCountPtr, llvm::Align(4));
+        llvm::Value *stripCount = cg.b->CreateAlignedLoad(
+            cg.b->getInt32Ty(), stripCountPtr, llvm::Align(4));
         llvm::Value *outputRecord = cg.b->CreateAdd(
             outputCount, cg.b->getInt32(2));
         storeGeometryPosition(cg, outputRecord, pos);
@@ -2607,6 +2701,9 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
         cg.b->SetInsertPoint(doneBB);
         return cg.b->getInt32(0);
     }
+
+    llvm::Value *stripCount = cg.b->CreateAlignedLoad(
+        cg.b->getInt32Ty(), stripCountPtr, llvm::Align(4));
 
     if (cg.geometryOutputType == MGL_AST_GS_OUT_LINE_STRIP) {
         llvm::Value *hasLine = cg.b->CreateICmpUGE(
@@ -2663,10 +2760,8 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
         storeGeometryCullDistances(cg, cg.b->getInt32(0), cullDistances);
         storeGeometryLayer(cg, cg.b->getInt32(0), layer);
         storeGeometryViewportIndex(cg, cg.b->getInt32(0), viewportIndex);
-        copyGeometryPrimitiveId(cg, cg.b->getInt32(0), 1);
-        storeGeometryPrimitiveId(cg, cg.b->getInt32(1));
+        storeGeometryPrimitiveId(cg, cg.b->getInt32(0));
         storeGeometryVaryings(cg, cg.b->getInt32(0));
-        storeGeometryPrimitiveId(cg, cg.b->getInt32(1));
         cg.b->CreateAlignedStore(
             cg.b->CreateAdd(stripCount, cg.b->getInt32(1)),
             stripCountPtr, llvm::Align(4));
@@ -2829,8 +2924,7 @@ static void storeGeometryStageOutStreamVaryings(Codegen &cg,
 static llvm::Value *emitGeometryStreamVertex(Codegen &cg, int32_t stream)
 {
     if (!cg.isGeometry || !cg.geometryOutputPtr || !cg.geometryCountPtr ||
-        !cg.geometryPrimitiveId || cg.geometryMaxVertices == 0 ||
-        !cg.geometryXfbPtr || !cg.geometryXfbMetaPtr) {
+        !cg.geometryPrimitiveId || !cg.geometryXfbPtr || !cg.geometryXfbMetaPtr) {
         cg.err = 1;
         cg.errmsg = "GS AIR codegen: EmitStreamVertex requires the M3 XFB ABI";
         return nullptr;
@@ -4149,36 +4243,54 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             }
             llvm::Value *tex = nullptr;
             llvm::Value *smp = nullptr;
+            bool dynamicSamplerArray = false;
+            llvm::Value *arrayIndex = nullptr;
+            const std::vector<llvm::Value *> *texArray = nullptr;
+            const std::vector<llvm::Value *> *smpArray = nullptr;
             if (sa->kind == MGL_EXPR_INDEX) {
                 llvm::Value *index = emitExpr(cg, sa->u.index.index, mod, locals);
                 if (!index) return nullptr;
                 index = coerceScalar(cg, index, MGLIR_SCALAR_INT);
-                auto selectArrayElement = [&](const std::vector<llvm::Value *> &values) -> llvm::Value * {
-                    if (values.empty()) return nullptr;
-                    llvm::Value *selected = values.back();
-                    for (size_t n = values.size() - 1; n-- > 0;) {
-                        llvm::Value *match = cg.b->CreateICmpEQ(
-                            index, cg.b->getInt32((uint32_t)n));
-                        selected = cg.b->CreateSelect(match, values[n], selected);
-                    }
-                    return selected;
-                };
                 auto ti = cg.texArrayValues.find(samplerName);
                 auto si = cg.smpArrayValues.find(samplerName);
-                if (ti != cg.texArrayValues.end()) tex = selectArrayElement(ti->second);
-                if (si != cg.smpArrayValues.end()) smp = selectArrayElement(si->second);
+                if (ti == cg.texArrayValues.end()) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: texture argument must be a sampler2D "
+                                "variable";
+                    return nullptr;
+                }
+                if (auto *ci = llvm::dyn_cast<llvm::ConstantInt>(index)) {
+                    uint32_t k = (uint32_t)ci->getZExtValue();
+                    if (k < ti->second.size()) {
+                        tex = ti->second[k];
+                        if (si != cg.smpArrayValues.end() &&
+                            k < si->second.size())
+                            smp = si->second[k];
+                    } else if (!ti->second.empty()) {
+                        tex = ti->second.back();
+                        if (si != cg.smpArrayValues.end() &&
+                            !si->second.empty())
+                            smp = si->second.back();
+                    }
+                } else {
+                    dynamicSamplerArray = true;
+                    arrayIndex = index;
+                    texArray = &ti->second;
+                    if (si != cg.smpArrayValues.end())
+                        smpArray = &si->second;
+                }
             } else {
                 tex = samplerTexValue(cg, samplerName);
                 auto si = cg.smpValues.find(samplerName);
                 if (si != cg.smpValues.end()) smp = si->second;
             }
-            if (!tex) {
+            if (!dynamicSamplerArray && !tex) {
                 cg.err = 1;
                 cg.errmsg = "codegen: texture argument must be a sampler2D "
                             "variable";
                 return nullptr;
             }
-            if (!smp) {
+            if (!smp && !dynamicSamplerArray) {
                 /* Function parameter: use the read sampler
                  * (filtered sampling inside helpers is not wired). */
                 llvm::Type *smpT = llvm::StructType::get(
@@ -4197,6 +4309,8 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
             llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
             if (strcmp(name, "textureSize") == 0) {
+                if (dynamicSamplerArray)
+                    tex = selectArrayElement(cg, arrayIndex, *texArray);
                 llvm::Value *lod = emitExpr(cg, e->u.call.args[1], mod,
                                             locals);
                 if (!lod) return nullptr;
@@ -4294,14 +4408,50 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     texel == MGLIR_SCALAR_FLOAT
                         ? (llvm::Type *)llvm::FixedVectorType::get(f32, 4)
                         : (llvm::Type *)llvm::FixedVectorType::get(i32, 4);
-                llvm::Value *r = callAirFn(
-                    cg, sampledIntrinsic("air.sample_texture_2d_grad.v4f32").c_str(),
-                    sampledRetType(vecTy),
-                    {tex, smp, uv, dPdx, dPdy,
-                     llvm::ConstantFP::get(f32, 0.0), cg.b->getInt1(false),
-                     llvm::Constant::getNullValue(v2i32),
-                     cg.b->getInt32(0)});
-                return cg.b->CreateExtractValue(r, 0);
+                auto doGradSampleVec =
+                    [&](llvm::Value *t, llvm::Value *s) -> llvm::Value * {
+                    llvm::Value *sp = s;
+                    if (!sp) {
+                        llvm::Type *smpT = llvm::StructType::get(
+                            *cg.ctx, "struct._sampler_t");
+                        sp = callAirFn(cg, "air.get_read_sampler",
+                                        smpT->getPointerTo(2), {});
+                    }
+                    llvm::Value *r = callAirFn(
+                        cg,
+                        sampledIntrinsic(
+                            "air.sample_texture_2d_grad.v4f32")
+                            .c_str(),
+                        sampledRetType(vecTy),
+                        {t, sp, uv, dPdx, dPdy,
+                         llvm::ConstantFP::get(f32, 0.0),
+                         cg.b->getInt1(false),
+                         llvm::Constant::getNullValue(v2i32),
+                         cg.b->getInt32(0)});
+                    return cg.b->CreateExtractValue(r, 0);
+                };
+                if (dynamicSamplerArray) {
+                    std::vector<llvm::Value *> smps =
+                        smpArray ? *smpArray
+                                 : std::vector<llvm::Value *>();
+                    llvm::Type *laneTy =
+                        texel == MGLIR_SCALAR_FLOAT ? f32 : i32;
+                    auto doGradLane =
+                        [&](llvm::Value *t,
+                            llvm::Value *s) -> llvm::Value * {
+                        llvm::Value *v = doGradSampleVec(t, s);
+                        return cg.b->CreateExtractElement(
+                            v, cg.b->getInt64(0));
+                    };
+                    llvm::Value *lane = sampleArrayElementBySwitch(
+                        cg, arrayIndex, *texArray, smps, laneTy,
+                        doGradLane);
+                    llvm::Value *out =
+                        llvm::ConstantAggregateZero::get(vecTy);
+                    return cg.b->CreateInsertElement(
+                        out, lane, cg.b->getInt64(0));
+                }
+                return doGradSampleVec(tex, smp);
             }
             llvm::Value *lod = nullptr;
             bool explicitLod = false;
@@ -4318,16 +4468,44 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             llvm::Type *retTy = sampledRetType(vecTy);
             const char *baseName = is3d ? "air.sample_texture_3d.v4f32"
                                         : "air.sample_texture_2d.v4f32";
-            llvm::Value *r = callAirFn(cg, sampledIntrinsic(baseName).c_str(),
-                                   retTy,
-                {tex, smp, uv, cg.b->getInt1(true),
-                 llvm::Constant::getNullValue(v2i32),
-                 cg.b->getInt1(explicitLod),
-                 lod ? lod
-                     : llvm::ConstantFP::get(f32, 0.0),
-                 llvm::ConstantFP::get(f32, 0.0),
-                 cg.b->getInt32(0)});
-            return cg.b->CreateExtractValue(r, 0);
+            auto doSampleVec =
+                [&](llvm::Value *t, llvm::Value *s) -> llvm::Value * {
+                llvm::Value *sp = s;
+                if (!sp) {
+                    llvm::Type *smpT = llvm::StructType::get(
+                        *cg.ctx, "struct._sampler_t");
+                    sp = callAirFn(cg, "air.get_read_sampler",
+                                    smpT->getPointerTo(2), {});
+                }
+                llvm::Value *r = callAirFn(
+                    cg, sampledIntrinsic(baseName).c_str(), retTy,
+                    {t, sp, uv, cg.b->getInt1(true),
+                     llvm::Constant::getNullValue(v2i32),
+                     cg.b->getInt1(explicitLod),
+                     lod ? lod : llvm::ConstantFP::get(f32, 0.0),
+                     llvm::ConstantFP::get(f32, 0.0),
+                     cg.b->getInt32(0)});
+                return cg.b->CreateExtractValue(r, 0);
+            };
+            if (dynamicSamplerArray) {
+                std::vector<llvm::Value *> smps =
+                    smpArray ? *smpArray : std::vector<llvm::Value *>();
+                llvm::Type *laneTy =
+                    texel == MGLIR_SCALAR_FLOAT ? f32 : i32;
+                auto doSampleLane =
+                    [&](llvm::Value *t, llvm::Value *s) -> llvm::Value * {
+                    llvm::Value *v = doSampleVec(t, s);
+                    return cg.b->CreateExtractElement(
+                        v, cg.b->getInt64(0));
+                };
+                llvm::Value *lane = sampleArrayElementBySwitch(
+                    cg, arrayIndex, *texArray, smps, laneTy, doSampleLane);
+                llvm::Value *out =
+                    llvm::ConstantAggregateZero::get(vecTy);
+                return cg.b->CreateInsertElement(
+                    out, lane, cg.b->getInt64(0));
+            }
+            return doSampleVec(tex, smp);
         }
         /* atomicAdd(ssbo_lvalue, value): monotonic RMW on device memory. */
         if (strcmp(name, "atomicAdd") == 0) {
@@ -7071,6 +7249,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     const bool usesPrimitiveId =
         !isVS && !isTES && !isKernel &&
         strstr(esrc, "gl_PrimitiveID") != nullptr;
+    const bool tesUsesPrimitiveId =
+        isTES && !isKernel && strstr(esrc, "gl_PrimitiveID") != nullptr;
     const bool usesLayer =
         !isVS && !isTES && !isKernel && strstr(esrc, "gl_Layer") != nullptr;
     const bool usesViewportIndex =
@@ -7571,12 +7751,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 for (uint32_t k = 0; k < n; k++) {
                     llvm::Value *arg = fn->getArg(argSlot++);
                     if (varyingUsesFloatCarrier(el, has_gs)) {
-                        /* Round before converting: the carrier may pick up
-                         * interpolation epsilon even when marked flat. */
-                        arg = cg.b->CreateUnaryIntrinsic(
-                            llvm::Intrinsic::round, arg);
-                        arg = cg.b->CreateFPToSI(
-                            arg, llvmType(el, ctx));
+                        arg = decodeFloatCarrier(cg, arg, el.scalar,
+                                                 llvmType(el, ctx));
                     }
                     agg = cg.b->CreateInsertValue(agg, arg, k);
                 }
@@ -7585,11 +7761,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             } else {
                 llvm::Value *arg = fn->getArg(argSlot++);
                 if (varyingUsesFloatCarrier(v.type, has_gs)) {
-                    /* Round before converting: the carrier may pick up
-                     * interpolation epsilon even when marked flat. */
-                    arg = cg.b->CreateUnaryIntrinsic(
-                        llvm::Intrinsic::round, arg);
-                    arg = cg.b->CreateFPToSI(arg, llvmType(v.type, ctx));
+                    arg = decodeFloatCarrier(cg, arg, v.type.scalar,
+                                             llvmType(v.type, ctx));
                 }
                 cg.lvalues[v.name] = arg;
             }
@@ -7680,6 +7853,17 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         cg.patchControlPtr = fn->getArg(argSlot++);
         cg.tessCoord = fn->getArg(argSlot++);
         cg.patchId = fn->getArg(argSlot++);
+        /* Per-patch native draws report patch_id 0; the runtime stamps the
+         * global patch index in mgl_patch_info[2] for shaders using
+         * gl_PrimitiveID (GL 4.6 §13.2.3). */
+        if (tesUsesPrimitiveId && cg.indirectPtr) {
+            llvm::Value *info = cg.b->CreateBitCast(
+                cg.indirectPtr, cg.b->getInt32Ty()->getPointerTo(1));
+            cg.lvalues["gl_PrimitiveID"] = cg.b->CreateAlignedLoad(
+                cg.b->getInt32Ty(),
+                cg.b->CreateGEP(cg.b->getInt32Ty(), info, cg.b->getInt32(2)),
+                llvm::Align(4));
+        }
     } else {
         if (hasBuffer)
             cg.bufferPtr = fn->getArg(argSlot++);
@@ -8350,17 +8534,6 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                                      llvm::Align(4));
                 b.CreateAlignedStore(b.getInt32(0), baseInstance,
                                      llvm::Align(4));
-                if (cg.geometryXfbMetaPtr &&
-                    cg.geometryOutputType == MGL_AST_GS_OUT_POINTS) {
-                    llvm::Value *emitCount = b.CreateAlignedLoad(
-                        b.getInt32Ty(),
-                        b.CreateGEP(
-                            b.getInt32Ty(), p,
-                            b.getInt32(MGL_AIR_GS_COUNTS_ARGS_WORDS +
-                                       (MGL_AIR_GS_COUNT_EMITTED - 1u))),
-                        llvm::Align(4));
-                    geometryStream0GeneratedAdd(cg, emitCount);
-                }
             }
             b.CreateRetVoid();
         } else if (isCapture) {
@@ -8640,15 +8813,21 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             /* fragment: [ssbo..., ubo..., tex/smp pairs..., varyings...,
              * buffer, fragCoord?] */
             idx = ssboCount + uboCount + (needsBufferSizeBuffer ? 1 : 0);
-            for (VarSym &v : syms)
-                if (v.kind == VarSym::TEXTURE)
-                    idx += 2;
+            for (VarSym &v : syms) {
+                if (v.kind == VarSym::TEXTURE) {
+                    uint32_t elements =
+                        v.type.arr > 0 ? (uint32_t)v.type.arr : 1u;
+                    idx += 2u * elements;
+                }
+            }
             for (VarSym &v : syms)
                 if (v.kind == VarSym::IMAGE)
                     idx++;
-            for (VarSym &v : syms)
-                if (!isVS && !isTES && !isKernel && v.kind == VarSym::VARYING)
-                    idx++;
+            for (VarSym &v : syms) {
+                if (isVS || isTES || isKernel || v.kind != VarSym::VARYING)
+                    continue;
+                idx += v.type.isArray() ? (uint32_t)v.type.arr : 1u;
+            }
         }
         std::vector<llvm::Metadata *> structFields;
         for (const Uniform &u : uniforms) {
@@ -9545,11 +9724,6 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             llvm::Type::getInt32Ty(ctx), 0))}));
     addModuleFlags(&module);
 
-    /* D1: LLVM optimization pipeline (SROA -> EarlyCSE -> InstCombine ->
-     * AlwaysInliner -> DCE), mirroring the DXMT runOptimizationPasses
-     * subset from the AIR design.  Runs before bitcode serialization so
-     * newLibraryWithData compiles a leaner module (lower first-PSO
-     * latency).  MGL_DUMP_IR=1 dumps the optimized IR. */
     {
         llvm::LoopAnalysisManager LAM;
         llvm::FunctionAnalysisManager FAM;
