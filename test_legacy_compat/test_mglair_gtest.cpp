@@ -643,7 +643,33 @@ TEST(Metallib, GeometryStageInfo) {
     EXPECT_EQ((uint32_t)GL_LINES_ADJACENCY, info.geometry_input_type);
     EXPECT_EQ((uint32_t)GL_LINE_STRIP, info.geometry_output_type);
     EXPECT_EQ(7u, info.geometry_vertices_out);
+    EXPECT_EQ(1u, info.geometry_max_vertices_specified);
     EXPECT_EQ(3u, info.geometry_invocations);
+}
+
+TEST(Metallib, GeometryInvocationsMustBePositive) {
+    static const char *kGS =
+        "#version 450 core\n"
+        "layout(points, invocations=0) in;\n"
+        "layout(points, max_vertices=1) out;\n"
+        "void main() { gl_Position = gl_in[0].gl_Position; EmitVertex(); }\n";
+    CompileResult r = compile(kGS, MGL_STAGE_GEOMETRY);
+    EXPECT_NE(0, r.rc);
+}
+
+TEST(Metallib, GeometryMissingMaxVerticesIsUnspecified) {
+    static const char *kGS =
+        "#version 450 core\n"
+        "layout(points) in;\n"
+        "layout(points) out;\n"
+        "void main() { gl_Position = gl_in[0].gl_Position; EmitVertex(); }\n";
+    MGLAIRStageInfo info = {};
+    char err[512] = {0};
+    ASSERT_EQ(0, mglAirReflectGLSLStageInfo(
+        kGS, MGL_STAGE_GEOMETRY, &info, err, sizeof(err))) << err;
+    EXPECT_EQ(0u, info.geometry_max_vertices_specified);
+    CompileResult r = compile(kGS, MGL_STAGE_GEOMETRY);
+    EXPECT_EQ(0, r.rc) << r.err;
 }
 
 TEST(Metallib, GeometryAirKernelPositionExpansion) {

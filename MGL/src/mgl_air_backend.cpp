@@ -6727,7 +6727,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             mglGLSLTranslationUnitDestroy(tu);
             return -1;
         }
-        if (tu->layout_max_vertices < 0 || tu->layout_max_vertices > 1024) {
+        if (tu->layout_max_vertices > 1024) {
             if (err_buf && err_cap)
                 snprintf(err_buf, err_cap,
                          "GS AIR codegen: max_vertices must be in the range 0..1024");
@@ -9652,6 +9652,8 @@ static void fillStageInfo(const MGLTranslationUnit *tu,
         }
         stage_info->geometry_vertices_out = tu->layout_max_vertices > 0
             ? static_cast<uint32_t>(tu->layout_max_vertices) : 0u;
+        stage_info->geometry_max_vertices_specified =
+            tu->layout_max_vertices >= 0 ? 1u : 0u;
         stage_info->geometry_invocations = tu->layout_invocations > 0
             ? static_cast<uint32_t>(tu->layout_invocations) : 1u;
         /* Per-stream output layout: count the OUTPUT varyings per stream

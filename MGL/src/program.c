@@ -1091,6 +1091,8 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
         pptr->geometry_input_type = stage_info.geometry_input_type;
         pptr->geometry_output_type = stage_info.geometry_output_type;
         pptr->geometry_vertices_out = stage_info.geometry_vertices_out;
+        pptr->geometry_max_vertices_specified =
+            stage_info.geometry_max_vertices_specified ? GL_TRUE : GL_FALSE;
         pptr->geometry_invocations = stage_info.geometry_invocations;
         pptr->geometry_stream_count = stage_info.gs_stream_count;
         for (uint32_t si = 0; si < 4u; si++) {
@@ -1228,6 +1230,8 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
         pptr->geometry_input_type = stage_info.geometry_input_type;
         pptr->geometry_output_type = stage_info.geometry_output_type;
         pptr->geometry_vertices_out = stage_info.geometry_vertices_out;
+        pptr->geometry_max_vertices_specified =
+            stage_info.geometry_max_vertices_specified ? GL_TRUE : GL_FALSE;
         pptr->geometry_invocations = stage_info.geometry_invocations;
         pptr->geometry_stream_count = stage_info.gs_stream_count;
         for (uint32_t si = 0; si < 4u; si++) {
@@ -1464,6 +1468,17 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         fprintf(stderr,
                 "MGL WARNING: mglLinkProgram failed program %u: vertex "
                 "output / geometry input interface mismatch\n",
+                pptr->name);
+        return;
+    }
+
+    /* GL 4.6 §11.3.2: a program fails to link if max_vertices is not
+     * specified in any geometry compilation unit. */
+    if ((pptr->attached_shader_mask & GEOMETRY_SHADER_MASK_BIT) &&
+        !pptr->geometry_max_vertices_specified) {
+        fprintf(stderr,
+                "MGL WARNING: mglLinkProgram failed program %u: "
+                "geometry shader missing layout(max_vertices)\n",
                 pptr->name);
         return;
     }

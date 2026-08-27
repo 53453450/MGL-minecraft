@@ -195,6 +195,40 @@ static void test_error_report(void)
     }
 }
 
+static void test_gs_layout_errors(void)
+{
+    const char *zero_inv =
+        "#version 450 core\n"
+        "layout(points, invocations=0) in;\n"
+        "layout(points, max_vertices=1) out;\n"
+        "void main() { }\n";
+    MGLTranslationUnit *tu = mglGLSLParse(zero_inv, strlen(zero_inv));
+    CHECK(tu != NULL, "invocations=0 still returns TU");
+    CHECK(tu && tu->error != NULL, "invocations=0 is a parse error");
+    if (tu) mglGLSLTranslationUnitDestroy(tu);
+
+    const char *ok_inv =
+        "#version 450 core\n"
+        "layout(points, invocations=2) in;\n"
+        "layout(points, max_vertices=1) out;\n"
+        "void main() { }\n";
+    tu = mglGLSLParse(ok_inv, strlen(ok_inv));
+    CHECK(tu != NULL && tu->error == NULL, "invocations=2 parses");
+    CHECK(tu && tu->layout_invocations == 2, "invocations=2 recorded");
+    CHECK(tu && tu->layout_max_vertices == 1, "max_vertices=1 recorded");
+    if (tu) mglGLSLTranslationUnitDestroy(tu);
+
+    const char *missing_max =
+        "#version 450 core\n"
+        "layout(points) in;\n"
+        "layout(points) out;\n"
+        "void main() { }\n";
+    tu = mglGLSLParse(missing_max, strlen(missing_max));
+    CHECK(tu != NULL && tu->error == NULL, "missing max_vertices still parses");
+    CHECK(tu && tu->layout_max_vertices < 0, "max_vertices unspecified is -1");
+    if (tu) mglGLSLTranslationUnitDestroy(tu);
+}
+
 int main(void)
 {
     printf("MGLGLSL parser skeleton tests\n");
@@ -204,6 +238,7 @@ int main(void)
     test_precision_statements();
     test_image_memory_qualifiers();
     test_error_report();
+    test_gs_layout_errors();
     printf("\n%d/%d passed\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;
 }

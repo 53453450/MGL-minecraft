@@ -13259,6 +13259,75 @@ static int test_gs_link_semantics(unsigned char *pixels,
     (void)out_path;
     int result = 1;
 
+    /* GLSL 4.60 §4.4.1.2: layout(invocations<=0) is a compile-time error. */
+    {
+        static const char *gs =
+            "#version 460 core\n"
+            "layout(points, invocations=0) in;\n"
+            "layout(points, max_vertices=1) out;\n"
+            "void main() { gl_Position = gl_in[0].gl_Position; EmitVertex(); }\n";
+        GLuint s = glCreateShader(GL_GEOMETRY_SHADER);
+        glShaderSource(s, 1, &gs, NULL);
+        glCompileShader(s);
+        GLint ok = 1;
+        glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
+        if (ok) {
+            fprintf(stderr,
+                    "gs_link_semantics: layout(invocations=0) compiled\n");
+            glDeleteShader(s);
+            return 1;
+        }
+        glDeleteShader(s);
+    }
+
+    /* GL 4.6 §11.3.2: missing max_vertices fails link, not compile. */
+    {
+        static const char *vs =
+            "#version 460 core\n"
+            "void main() { gl_Position = vec4(1.0); }\n";
+        static const char *gs =
+            "#version 460 core\n"
+            "layout(points) in;\n"
+            "layout(points) out;\n"
+            "void main() { gl_Position = gl_in[0].gl_Position; EmitVertex(); }\n";
+        static const char *fs =
+            "#version 460 core\n"
+            "layout(location=0) out vec4 frag;\n"
+            "void main() { frag = vec4(1.0); }\n";
+        GLuint a = compile_shader(GL_VERTEX_SHADER, vs);
+        GLuint b = glCreateShader(GL_GEOMETRY_SHADER);
+        glShaderSource(b, 1, &gs, NULL);
+        glCompileShader(b);
+        GLint compiled = 0;
+        glGetShaderiv(b, GL_COMPILE_STATUS, &compiled);
+        GLuint c = compile_shader(GL_FRAGMENT_SHADER, fs);
+        GLuint prog = glCreateProgram();
+        int local_fail = 0;
+        if (!a || !compiled || !c || !prog) {
+            fprintf(stderr,
+                    "gs_link_semantics: missing max_vertices compile failed "
+                    "(compiled=%d)\n", compiled);
+            local_fail = 1;
+        } else {
+            glAttachShader(prog, a);
+            glAttachShader(prog, b);
+            glAttachShader(prog, c);
+            glLinkProgram(prog);
+            GLint linked = 1;
+            glGetProgramiv(prog, GL_LINK_STATUS, &linked);
+            if (linked) {
+                fprintf(stderr,
+                        "gs_link_semantics: missing max_vertices linked\n");
+                local_fail = 1;
+            }
+        }
+        if (a) glDeleteShader(a);
+        if (b) glDeleteShader(b);
+        if (c) glDeleteShader(c);
+        if (prog) glDeleteProgram(prog);
+        if (local_fail) return 1;
+    }
+
     /* layout(invocations=N) must reach GL_GEOMETRY_SHADER_INVOCATIONS. */
     {
         static const char *vs =
