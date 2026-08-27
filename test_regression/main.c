@@ -13410,6 +13410,64 @@ static int test_gs_link_semantics(unsigned char *pixels,
         if (local_fail) return 1;
     }
 
+    {
+        GLint layerConv = 0, vpConv = 0;
+        glGetIntegerv(GL_LAYER_PROVOKING_VERTEX, &layerConv);
+        glGetIntegerv(GL_VIEWPORT_INDEX_PROVOKING_VERTEX, &vpConv);
+        if (layerConv != (GLint)GL_UNDEFINED_VERTEX ||
+            vpConv != (GLint)GL_UNDEFINED_VERTEX) {
+            fprintf(stderr,
+                    "gs_link_semantics: provoking vertex query "
+                    "layer=0x%x viewport=0x%x; expected UNDEFINED_VERTEX\n",
+                    layerConv, vpConv);
+            return 1;
+        }
+    }
+
+    /* Invocations above the compute-expansion limit must fail at link,
+     * not become a draw-time INVALID_OPERATION. */
+    {
+        static const char *vs =
+            "#version 460 core\n"
+            "void main() { gl_Position = vec4(1.0); }\n";
+        static const char *gs =
+            "#version 460 core\n"
+            "layout(points, invocations=33) in;\n"
+            "layout(points, max_vertices=1) out;\n"
+            "void main() { gl_Position = gl_in[0].gl_Position; EmitVertex(); }\n";
+        static const char *fs =
+            "#version 460 core\n"
+            "layout(location=0) out vec4 frag;\n"
+            "void main() { frag = vec4(1.0); }\n";
+        GLuint a = compile_shader(GL_VERTEX_SHADER, vs);
+        GLuint b = compile_shader(GL_GEOMETRY_SHADER, gs);
+        GLuint c = compile_shader(GL_FRAGMENT_SHADER, fs);
+        GLuint prog = glCreateProgram();
+        int local_fail = 0;
+        if (!a || !b || !c || !prog) {
+            fprintf(stderr,
+                    "gs_link_semantics: invocations=33 compile failed\n");
+            local_fail = 1;
+        } else {
+            glAttachShader(prog, a);
+            glAttachShader(prog, b);
+            glAttachShader(prog, c);
+            glLinkProgram(prog);
+            GLint linked = 1;
+            glGetProgramiv(prog, GL_LINK_STATUS, &linked);
+            if (linked) {
+                fprintf(stderr,
+                        "gs_link_semantics: invocations=33 linked\n");
+                local_fail = 1;
+            }
+        }
+        if (a) glDeleteShader(a);
+        if (b) glDeleteShader(b);
+        if (c) glDeleteShader(c);
+        if (prog) glDeleteProgram(prog);
+        if (local_fail) return 1;
+    }
+
     /* layout(invocations=N) must reach GL_GEOMETRY_SHADER_INVOCATIONS. */
     {
         static const char *vs =

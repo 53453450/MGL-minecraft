@@ -1605,20 +1605,6 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
                          GL_INVALID_OPERATION);
         return YES;
     }
-    if (program->gs_route != MGL_GS_ROUTE_COMPUTE ||
-        !program->modules[_GEOMETRY_SHADER].metallib_bytes ||
-        program->geometry_vertices_out > 1024u) {
-        static uint64_t unsupportedCount = 0;
-        uint64_t hit = ++unsupportedCount;
-        if (hit <= 16ull || (hit % 512ull) == 0ull) {
-            NSLog(@"MGL GS ERROR: blocking %@; AIR compute route unavailable program=%u",
-                  label ? [NSString stringWithUTF8String:label] : @"draw",
-                  (unsigned)program->name);
-        }
-        mglDispatchError(drawCtx, label ? label : "geometryDraw",
-                         GL_INVALID_OPERATION);
-        return YES;
-    }
     if (![self bindMTLProgram:program] ||
         !program->modules[_GEOMETRY_SHADER].mtl_function) {
         NSLog(@"MGL GS ERROR: failed to load AIR kernel program=%u",

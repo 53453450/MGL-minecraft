@@ -1551,21 +1551,17 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         pptr->gs_route = computeRoute
             ? MGL_GS_ROUTE_COMPUTE : MGL_GS_ROUTE_UNSUPPORTED;
         if (!computeRoute) {
-            static uint64_t s_gsUnsupportedNotice = 0;
-            uint64_t hit = ++s_gsUnsupportedNotice;
-            if (hit <= 4ull) {
-                fprintf(stderr,
-                        "MGL WARNING: program %u geometry shader is outside "
-                        "the AIR compute-expansion subset "
-                        "(air=%d in=0x%x out=0x%x max=%u inv=%u xfb=%d)\n",
-                        pptr->name,
-                        pptr->modules[_GEOMETRY_SHADER].metallib_bytes != NULL,
-                        pptr->geometry_input_type,
-                        pptr->geometry_output_type,
-                        pptr->geometry_vertices_out,
-                        pptr->geometry_invocations,
-                        pptr->transform_feedback_varying_count);
-            }
+            fprintf(stderr,
+                    "MGL WARNING: mglLinkProgram failed program %u: "
+                    "geometry shader is outside the AIR compute-expansion "
+                    "subset (air=%d in=0x%x out=0x%x max=%u inv=%u)\n",
+                    pptr->name,
+                    pptr->modules[_GEOMETRY_SHADER].metallib_bytes != NULL,
+                    pptr->geometry_input_type,
+                    pptr->geometry_output_type,
+                    pptr->geometry_vertices_out,
+                    pptr->geometry_invocations);
+            return;
         }
     } else {
         pptr->gs_route = MGL_GS_ROUTE_NONE;

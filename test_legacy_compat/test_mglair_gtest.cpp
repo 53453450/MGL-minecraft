@@ -685,6 +685,21 @@ TEST(Metallib, FragmentReadsLayerAndViewportIndex) {
     EXPECT_EQ(0, memcmp(r.bytes.data(), "MTLB", 4));
 }
 
+TEST(Metallib, GeometryEndStreamPrimitiveHonorsStream) {
+    static const char *kGS =
+        "#version 450 core\n"
+        "layout(points) in;\n"
+        "layout(points, max_vertices=2) out;\n"
+        "void main() {\n"
+        "  gl_Position = gl_in[0].gl_Position;\n"
+        "  EmitVertex();\n"
+        "  EndPrimitive();\n"
+        "  EndStreamPrimitive(1);\n"
+        "}\n";
+    CompileResult r = compile(kGS, MGL_STAGE_GEOMETRY);
+    EXPECT_EQ(0, r.rc) << r.err;
+}
+
 TEST(Metallib, GeometryAirKernelPositionExpansion) {
     static const char *kGS =
         "#version 450 core\n"

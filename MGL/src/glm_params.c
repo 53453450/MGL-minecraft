@@ -351,8 +351,11 @@ void getMacOSDefaults(GLMContext glm_ctx)
     }
     glGetIntegerv(GL_VIEWPORT_SUBPIXEL_BITS,&glm_ctx->state.var.viewport_subpixel_bits);
     glGetIntegerv(GL_VIEWPORT_BOUNDS_RANGE,&glm_ctx->state.var.viewport_bounds_range);
-    glGetIntegerv(GL_LAYER_PROVOKING_VERTEX,&glm_ctx->state.var.layer_provoking_vertex);
-    glGetIntegerv(GL_VIEWPORT_INDEX_PROVOKING_VERTEX,&glm_ctx->state.var.viewport_index_provoking_vertex);
+    /* GL 4.6 §11.3.4.6: the query must match the vertex convention used
+     * for gl_Layer / gl_ViewportIndex.  MGL does not implement a defined
+     * first/last convention, so report UNDEFINED_VERTEX. */
+    glm_ctx->state.var.layer_provoking_vertex = GL_UNDEFINED_VERTEX;
+    glm_ctx->state.var.viewport_index_provoking_vertex = GL_UNDEFINED_VERTEX;
     glGetIntegerv(GL_MIN_MAP_BUFFER_ALIGNMENT,&glm_ctx->state.var.min_map_buffer_alignment);
     glGetIntegerv(GL_MAX_VERTEX_ATOMIC_COUNTERS,&glm_ctx->state.var.max_vertex_atomic_counters);
     glGetIntegerv(GL_MAX_TESS_CONTROL_ATOMIC_COUNTERS,&glm_ctx->state.var.max_tess_control_atomic_counters);

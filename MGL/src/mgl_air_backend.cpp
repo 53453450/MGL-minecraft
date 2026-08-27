@@ -3622,8 +3622,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 llvm::Value *sv = emitExpr(
                     cg, e->u.call.args[0], mod, locals);
                 if (!sv) return nullptr;
+                uint64_t stream = 0;
                 if (auto *ci = llvm::dyn_cast<llvm::ConstantInt>(sv)) {
-                    if (ci->getZExtValue() >= MGL_AIR_GS_MAX_STREAMS) {
+                    stream = ci->getZExtValue();
+                    if (stream >= MGL_AIR_GS_MAX_STREAMS) {
                         cg.err = 1;
                         cg.errmsg = "GS AIR codegen: stream must be in [0, 3]";
                         return nullptr;
@@ -3633,6 +3635,21 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     cg.errmsg = "GS AIR codegen: stream must be a constant expression";
                     return nullptr;
                 }
+                if (!cg.isGeometry || !cg.geometryCountPtr ||
+                    !cg.geometryPrimitiveId) {
+                    cg.err = 1;
+                    cg.errmsg = "GS AIR codegen: EndStreamPrimitive requires the GS output ABI";
+                    return nullptr;
+                }
+                /* Stream 0 owns the raster strip counter.  Streams > 0 are
+                 * points-only; EndStreamPrimitive there must not reset
+                 * stream 0's strip. */
+                if (stream == 0) {
+                    cg.b->CreateAlignedStore(cg.b->getInt32(0),
+                                             geometryCounterPtr(cg, 1),
+                                             llvm::Align(4));
+                }
+                return llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), 0);
             } else if (e->u.call.arg_count != 0) {
                 cg.err = 1;
                 cg.errmsg = "GS AIR codegen: EndPrimitive takes no arguments";
