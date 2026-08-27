@@ -553,9 +553,13 @@ static void mglTextureCopyTextureToBuffer(
     const uint32_t viewType = mglDepthStencilPlaneViewType(
         (uint32_t)mglTextureInfo(texture).texture_type);
     bool uploaded = false;
+    const uint32_t stencilViewFormat =
+        parentFormat == MGLPixelFormatDepth24Unorm_Stencil8
+            ? MGLPixelFormatX24_Stencil8
+            : MGLPixelFormatX32_Stencil8;
     if (mglRenderCreateTextureViewRange(
             (__bridge void *)texture,
-            MGLPixelFormatX32_Stencil8, viewType,
+            stencilViewFormat, viewType,
             level, 1u, slice, 1u, 0, 0, 0, 0, 0,
             &stencilViewRaw) == 0 && stencilViewRaw) {
         id stencilView = (__bridge_transfer id)stencilViewRaw;
