@@ -52,6 +52,23 @@
 #define MGL_VERBOSE_FBO_LOGS 0
 #endif
 
+/* GL 4.6 §9.2.1: DEFAULT_LAYERS and DEFAULT_SAMPLES must not exceed
+ * implementation limits. */
+static GLboolean mglDefaultFramebufferParamValid(GLMContext ctx, GLenum pname,
+                                                 GLint param)
+{
+    if (param < 0)
+        return GL_FALSE;
+    switch (pname) {
+    case GL_FRAMEBUFFER_DEFAULT_LAYERS:
+        return (GLuint)param <= ctx->state.var.max_framebuffer_layers;
+    case GL_FRAMEBUFFER_DEFAULT_SAMPLES:
+        return (GLuint)param <= ctx->state.var.max_framebuffer_samples;
+    default:
+        return GL_TRUE;
+    }
+}
+
 extern GLuint textureIndexFromTarget(GLMContext ctx, GLenum target);
 extern Texture *newTexObj(GLMContext ctx, GLenum target);
 extern Texture *findTexture(GLMContext ctx, GLuint texture);
@@ -3214,16 +3231,14 @@ void mglFramebufferParameteri(GLMContext ctx, GLenum target, GLenum pname, GLint
             fbo->default_height = param;
             break;
         case GL_FRAMEBUFFER_DEFAULT_LAYERS:
-            if (param < 0) {
-                ERROR_RETURN(GL_INVALID_VALUE);
-            }
-            fbo->default_layers = param;
-            break;
         case GL_FRAMEBUFFER_DEFAULT_SAMPLES:
-            if (param < 0) {
+            if (!mglDefaultFramebufferParamValid(ctx, pname, param)) {
                 ERROR_RETURN(GL_INVALID_VALUE);
             }
-            fbo->default_samples = param;
+            if (pname == GL_FRAMEBUFFER_DEFAULT_LAYERS)
+                fbo->default_layers = param;
+            else
+                fbo->default_samples = param;
             break;
         case GL_FRAMEBUFFER_DEFAULT_FIXED_SAMPLE_LOCATIONS:
             fbo->default_fixed_sample_locations = param ? GL_TRUE : GL_FALSE;
@@ -3482,18 +3497,15 @@ void mglNamedFramebufferParameteri(GLMContext ctx, GLuint framebuffer, GLenum pn
             fbo->default_height = param;
             break;
         case GL_FRAMEBUFFER_DEFAULT_LAYERS:
-            if (param < 0) {
-                ERROR_RETURN(GL_INVALID_VALUE);
-                return;
-            }
-            fbo->default_layers = param;
-            break;
         case GL_FRAMEBUFFER_DEFAULT_SAMPLES:
-            if (param < 0) {
+            if (!mglDefaultFramebufferParamValid(ctx, pname, param)) {
                 ERROR_RETURN(GL_INVALID_VALUE);
                 return;
             }
-            fbo->default_samples = param;
+            if (pname == GL_FRAMEBUFFER_DEFAULT_LAYERS)
+                fbo->default_layers = param;
+            else
+                fbo->default_samples = param;
             break;
         case GL_FRAMEBUFFER_DEFAULT_FIXED_SAMPLE_LOCATIONS:
             fbo->default_fixed_sample_locations = param ? GL_TRUE : GL_FALSE;
