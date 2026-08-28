@@ -119,7 +119,7 @@ struct VarSym {
     std::string name;
     MType type;
     enum Kind { ATTR, CONTROL_POINT_INPUT, VARYING, OUTPUT, BUFFER, SSBO,
-                UBO, TEXTURE, IMAGE, LOCAL } kind = LOCAL;
+                UBO, TEXTURE, IMAGE, ATOMIC_COUNTER, LOCAL } kind = LOCAL;
     uint32_t bufferOffset = 0;
     uint32_t location = UINT32_MAX;
     int32_t stream = 0;          /* GS output stream for OUTPUT vars */
@@ -212,11 +212,13 @@ struct Codegen {
     bool layerViewport = false;          /* writes gl_Layer / gl_ViewportIndex */
     bool primitiveIdWritten = false;     /* writes gl_PrimitiveID (GS out) */
     std::map<std::string, llvm::Value *> ssboPtrs;  /* SSBO instance -> buffer */
+    std::map<std::string, llvm::Value *> acPtrs;  /* atomic_uint -> ACBO */
     /* UBO instance arrays: element pointers stashed in an entry-block
      * alloca so member reads can index by runtime value. */
     std::map<std::string, llvm::Value *> uboElemSlot;
     std::map<std::string, llvm::Type *> uboElemArrTy;
     std::map<std::string, uint32_t> ssboSlots;      /* SSBO instance -> Metal slot */
+    std::map<std::string, uint32_t> acSlots;        /* atomic_uint -> Metal slot */
     std::map<std::string, llvm::Value *> uboPtrs;   /* uniform block -> buffer */
     std::map<std::string, llvm::Value *> texValues;  /* sampler name -> texture */
     std::map<std::string, llvm::Value *> smpValues;  /* sampler name -> sampler */
@@ -422,9 +424,15 @@ int collectUniforms(const MGLIRModule *mod, std::vector<Uniform> *out,
         MGLIRSymbol *s = mod->symbols[i];
         if (s->is_function || !(s->qualifiers & MGL_AST_Q_UNIFORM))
             continue;
-        if (s->type->kind == MGLIR_TYPE_SAMPLER ||
-            s->type->kind == MGLIR_TYPE_IMAGE) {
-            continue;   /* texture/sampler params are separate AIR args */
+        const MGLIRType *ut = s->type;
+        while (ut->kind == MGLIR_TYPE_ARRAY && ut->elem_type)
+            ut = ut->elem_type;
+        if (ut->kind == MGLIR_TYPE_SAMPLER ||
+            ut->kind == MGLIR_TYPE_IMAGE ||
+            ut->kind == MGLIR_TYPE_ATOMIC_COUNTER) {
+            continue;   /* texture/sampler/atomic-counter params are separate
+                         * AIR args; packing them into the plain uniform blob
+                         * would desync reflection offsets. */
         }
         /* Uniform blocks (struct types, including instance arrays) and their
          * anonymous-block members are independent device buffers, not part
@@ -1117,27 +1125,33 @@ static llvm::Value *selectArrayElement(Codegen &cg, llvm::Value *index,
 
 /* Sample from a sampler array by index without phi-selecting texture or
  * sampler pointers (Metal's compiler crashes on those inside loops).
- * Phi merges scalar texel components only, not AIR sample aggregates.
- * Uses an LLVM switch so AIR/MSL matches the handwritten for+switch
- * pattern that compiles for R32Uint + usampler arrays. */
+ * One switch case performs exactly one sample; each texel component then
+ * merges through its own scalar phi, so AIR sample aggregates are never
+ * phi operands while every component of the result is populated. */
 static llvm::Value *sampleArrayElementBySwitch(
     Codegen &cg, llvm::Value *index,
     const std::vector<llvm::Value *> &texValues,
-    const std::vector<llvm::Value *> &smpValues, llvm::Type *scalarTy,
+    const std::vector<llvm::Value *> &smpValues, llvm::Type *resultVecTy,
     const std::function<llvm::Value *(llvm::Value *, llvm::Value *)>
-        &emitSampleScalar) {
+        &emitSample) {
     if (texValues.empty()) return nullptr;
     size_t n = texValues.size();
     if (n == 1)
-        return emitSampleScalar(texValues[0],
-                                smpValues.empty() ? nullptr : smpValues[0]);
+        return emitSample(texValues[0],
+                          smpValues.empty() ? nullptr : smpValues[0]);
+    auto *vecTy = llvm::cast<llvm::FixedVectorType>(resultVecTy);
+    llvm::Type *laneTy = vecTy->getElementType();
+    const unsigned lanes = vecTy->getNumElements();
     llvm::Function *fn = cg.b->GetInsertBlock()->getParent();
     llvm::BasicBlock *mergeBB =
         llvm::BasicBlock::Create(*cg.ctx, "samp.merge", fn);
     llvm::BasicBlock *defBB =
         llvm::BasicBlock::Create(*cg.ctx, "samp.def", fn);
-    llvm::PHINode *phi = llvm::PHINode::Create(
-        scalarTy, (unsigned)(n + 1), "samp.phi", mergeBB);
+    std::vector<llvm::PHINode *> lanePhis(lanes);
+    for (unsigned c = 0; c < lanes; ++c) {
+        lanePhis[c] = llvm::PHINode::Create(
+            laneTy, (unsigned)(n + 1), "samp.lane", mergeBB);
+    }
     std::vector<llvm::BasicBlock *> caseBBs(n);
     for (size_t i = 0; i < n; ++i)
         caseBBs[i] = llvm::BasicBlock::Create(*cg.ctx, "samp.case", fn);
@@ -1145,21 +1159,30 @@ static llvm::Value *sampleArrayElementBySwitch(
         cg.b->CreateSwitch(index, defBB, (unsigned)n);
     for (size_t i = 0; i < n; ++i)
         sw->addCase(cg.b->getInt32((uint32_t)i), caseBBs[i]);
+    auto fillLanes = [&](llvm::Value *val, llvm::BasicBlock *fromBB) {
+        for (unsigned c = 0; c < lanes; ++c) {
+            lanePhis[c]->addIncoming(
+                cg.b->CreateExtractElement(val, (uint64_t)c), fromBB);
+        }
+    };
     for (size_t i = 0; i < n; ++i) {
         cg.b->SetInsertPoint(caseBBs[i]);
-        llvm::Value *val = emitSampleScalar(
+        llvm::Value *val = emitSample(
             texValues[i], smpValues.empty() ? nullptr : smpValues[i]);
+        fillLanes(val, caseBBs[i]);
         cg.b->CreateBr(mergeBB);
-        phi->addIncoming(val, caseBBs[i]);
     }
     cg.b->SetInsertPoint(defBB);
-    llvm::Value *defVal = emitSampleScalar(
+    llvm::Value *defVal = emitSample(
         texValues.back(),
         smpValues.empty() ? nullptr : smpValues.back());
+    fillLanes(defVal, defBB);
     cg.b->CreateBr(mergeBB);
-    phi->addIncoming(defVal, defBB);
     cg.b->SetInsertPoint(mergeBB);
-    return phi;
+    llvm::Value *out = llvm::UndefValue::get(vecTy);
+    for (unsigned c = 0; c < lanes; ++c)
+        out = cg.b->CreateInsertElement(out, lanePhis[c], (uint64_t)c);
+    return out;
 }
 
 /* Dynamic read of obj[idx]: matrix -> column (select chain over the
@@ -1510,6 +1533,58 @@ llvm::Value *ssboAddress(Codegen &cg, const MGLExpr *e,
     }
     *outTy = ty;
     return cg.b->CreateGEP(cg.b->getInt8Ty(), base, cg.b->getInt64(off));
+}
+
+llvm::Value *emitAtomicCounterAddress(
+    Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
+    const std::map<std::string, MType> &locals)
+{
+    const char *rootName = nullptr;
+    const MGLExpr *indexExpr = nullptr;
+    if (e->kind == MGL_EXPR_VAR_REF) {
+        rootName = e->u.var_ref.name;
+    } else if (e->kind == MGL_EXPR_INDEX && e->u.index.object &&
+               e->u.index.object->kind == MGL_EXPR_VAR_REF) {
+        rootName = e->u.index.object->u.var_ref.name;
+        indexExpr = e->u.index.index;
+    } else {
+        cg.err = 1;
+        cg.errmsg = "codegen: atomic counter lvalue required";
+        return nullptr;
+    }
+    auto it = cg.acPtrs.find(rootName);
+    if (it == cg.acPtrs.end()) {
+        cg.err = 1;
+        cg.errmsg = std::string("codegen: unknown atomic counter '") +
+                    rootName + "'";
+        return nullptr;
+    }
+    const MGLIRSymbol *s = findSymbol(mod, rootName);
+    uint32_t baseOff = (s && s->offset != UINT32_MAX) ? s->offset : 0u;
+    llvm::Value *base = it->second;
+    llvm::Value *off = cg.b->getInt32(baseOff);
+    if (indexExpr) {
+        llvm::Value *idx = emitExpr(cg, indexExpr, mod, locals);
+        if (!idx) return nullptr;
+        idx = coerceScalar(cg, idx, MGLIR_SCALAR_INT);
+        /* Out-of-range dynamic indices are undefined in GLSL; clamp so a bad
+         * runtime index cannot address past the declared counter array. */
+        if (s && s->type->kind == MGLIR_TYPE_ARRAY &&
+            s->type->array_size > 0u) {
+            uint32_t elemCount = s->type->array_size;
+            idx = cg.b->CreateBinaryIntrinsic(
+                llvm::Intrinsic::umax, idx, cg.b->getInt32(0));
+            idx = cg.b->CreateBinaryIntrinsic(
+                llvm::Intrinsic::umin, idx,
+                cg.b->getInt32(elemCount - 1u));
+        }
+        off = cg.b->CreateAdd(
+            off, cg.b->CreateMul(idx, cg.b->getInt32(4), "", true, true));
+    }
+    llvm::Value *p =
+        cg.b->CreateGEP(cg.b->getInt8Ty(), base, off);
+    return cg.b->CreateBitCast(
+        p, llvm::Type::getInt32Ty(*cg.ctx)->getPointerTo(1));
 }
 
 llvm::Value *emitSSBORead(Codegen &cg, const MGLExpr *e,
@@ -3351,6 +3426,15 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             }
         }
         if (s->qualifiers & MGL_AST_Q_UNIFORM) {
+            const MGLIRType *ut = s->type;
+            while (ut && ut->kind == MGLIR_TYPE_ARRAY)
+                ut = ut->elem_type;
+            if (ut && ut->kind == MGLIR_TYPE_ATOMIC_COUNTER) {
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: atomic_uint '") +
+                            s->name + "' cannot be loaded directly";
+                return nullptr;
+            }
             v.kind = VarSym::BUFFER;
         } else if ((s->qualifiers & MGL_AST_Q_IN) && cg.isVS) {
             v.kind = VarSym::ATTR;
@@ -4108,6 +4192,21 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 return nullptr;
             }
             if (strcmp(name, "imageLoad") == 0) {
+                MGLIRScalar storage = is->type->tex_storage;
+                if (storage == MGLIR_SCALAR_INT ||
+                    storage == MGLIR_SCALAR_UINT) {
+                    llvm::Type *v4i32 = llvm::FixedVectorType::get(i32, 4);
+                    llvm::Type *retTy = llvm::StructType::get(
+                        *cg.ctx, {v4i32, cg.b->getInt8Ty()});
+                    const char *intrinsic =
+                        storage == MGLIR_SCALAR_UINT
+                            ? "air.read_texture_2d.u.v4i32"
+                            : "air.read_texture_2d.s.v4i32";
+                    llvm::Value *r = callAirFn(cg, intrinsic, retTy,
+                        {tex, coord, cg.b->getInt32(0),
+                         cg.b->getInt32(3)});
+                    return cg.b->CreateExtractValue(r, 0);
+                }
                 llvm::Type *retTy = llvm::StructType::get(
                     *cg.ctx, {v4f32, cg.b->getInt8Ty()});
                 llvm::Value *r = callAirFn(cg, "air.read_texture_2d.v4f32",
@@ -4439,22 +4538,9 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     std::vector<llvm::Value *> smps =
                         smpArray ? *smpArray
                                  : std::vector<llvm::Value *>();
-                    llvm::Type *laneTy =
-                        texel == MGLIR_SCALAR_FLOAT ? f32 : i32;
-                    auto doGradLane =
-                        [&](llvm::Value *t,
-                            llvm::Value *s) -> llvm::Value * {
-                        llvm::Value *v = doGradSampleVec(t, s);
-                        return cg.b->CreateExtractElement(
-                            v, cg.b->getInt64(0));
-                    };
-                    llvm::Value *lane = sampleArrayElementBySwitch(
-                        cg, arrayIndex, *texArray, smps, laneTy,
-                        doGradLane);
-                    llvm::Value *out =
-                        llvm::ConstantAggregateZero::get(vecTy);
-                    return cg.b->CreateInsertElement(
-                        out, lane, cg.b->getInt64(0));
+                    return sampleArrayElementBySwitch(
+                        cg, arrayIndex, *texArray, smps, vecTy,
+                        doGradSampleVec);
                 }
                 return doGradSampleVec(tex, smp);
             }
@@ -4495,22 +4581,55 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             if (dynamicSamplerArray) {
                 std::vector<llvm::Value *> smps =
                     smpArray ? *smpArray : std::vector<llvm::Value *>();
-                llvm::Type *laneTy =
-                    texel == MGLIR_SCALAR_FLOAT ? f32 : i32;
-                auto doSampleLane =
-                    [&](llvm::Value *t, llvm::Value *s) -> llvm::Value * {
-                    llvm::Value *v = doSampleVec(t, s);
-                    return cg.b->CreateExtractElement(
-                        v, cg.b->getInt64(0));
-                };
-                llvm::Value *lane = sampleArrayElementBySwitch(
-                    cg, arrayIndex, *texArray, smps, laneTy, doSampleLane);
-                llvm::Value *out =
-                    llvm::ConstantAggregateZero::get(vecTy);
-                return cg.b->CreateInsertElement(
-                    out, lane, cg.b->getInt64(0));
+                return sampleArrayElementBySwitch(
+                    cg, arrayIndex, *texArray, smps, vecTy, doSampleVec);
             }
             return doSampleVec(tex, smp);
+        }
+        /* atomicCounterIncrement(counter): monotonic RMW on device memory. */
+        if (strcmp(name, "atomicCounterIncrement") == 0) {
+            if (e->u.call.arg_count != 1) {
+                cg.err = 1;
+                cg.errmsg = "codegen: atomicCounterIncrement expects 1 argument";
+                return nullptr;
+            }
+            llvm::Value *p = emitAtomicCounterAddress(
+                cg, e->u.call.args[0], mod, locals);
+            if (!p) return nullptr;
+            /* GLSL 4.60 8.11: returns the value previously in the counter. */
+            return cg.b->CreateAtomicRMW(
+                llvm::AtomicRMWInst::Add, p, cg.b->getInt32(1),
+                llvm::MaybeAlign(), llvm::AtomicOrdering::Monotonic);
+        }
+        /* atomicCounterDecrement(counter): monotonic RMW on device memory. */
+        if (strcmp(name, "atomicCounterDecrement") == 0) {
+            if (e->u.call.arg_count != 1) {
+                cg.err = 1;
+                cg.errmsg = "codegen: atomicCounterDecrement expects 1 argument";
+                return nullptr;
+            }
+            llvm::Value *p = emitAtomicCounterAddress(
+                cg, e->u.call.args[0], mod, locals);
+            if (!p) return nullptr;
+            /* GLSL 4.60 8.11: returns the value previously in the counter. */
+            return cg.b->CreateAtomicRMW(
+                llvm::AtomicRMWInst::Sub, p, cg.b->getInt32(1),
+                llvm::MaybeAlign(), llvm::AtomicOrdering::Monotonic);
+        }
+        /* atomicCounter(counter): non-modifying read of device memory. */
+        if (strcmp(name, "atomicCounter") == 0) {
+            if (e->u.call.arg_count != 1) {
+                cg.err = 1;
+                cg.errmsg = "codegen: atomicCounter expects 1 argument";
+                return nullptr;
+            }
+            llvm::Value *p = emitAtomicCounterAddress(
+                cg, e->u.call.args[0], mod, locals);
+            if (!p) return nullptr;
+            llvm::LoadInst *load =
+                cg.b->CreateLoad(cg.b->getInt32Ty(), p, "acval");
+            load->setAtomic(llvm::AtomicOrdering::Monotonic);
+            return load;
         }
         /* atomicAdd(ssbo_lvalue, value): monotonic RMW on device memory. */
         if (strcmp(name, "atomicAdd") == 0) {
@@ -4546,6 +4665,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             auto fit = cg.userFns->find(key);
             if (fit != cg.userFns->end()) {
                 uint64_t hidden = cg.uboPtrs.size() + cg.ssboPtrs.size() +
+                                  cg.acPtrs.size() +
                                   (cg.bufferSizePtr ? 1u : 0u) +
                                   (cg.isGeometry ? 8u : 0u);
                 if (e->u.call.arg_count + hidden !=
@@ -4583,6 +4703,8 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 for (const auto &kv : cg.uboPtrs)
                     args.push_back(kv.second);
                 for (const auto &kv : cg.ssboPtrs)
+                    args.push_back(kv.second);
+                for (const auto &kv : cg.acPtrs)
                     args.push_back(kv.second);
                 if (cg.bufferSizePtr)
                     args.push_back(cg.bufferSizePtr);
@@ -7064,6 +7186,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 v.kind = VarSym::TEXTURE;
             } else if (ut->kind == MGLIR_TYPE_IMAGE) {
                 v.kind = VarSym::IMAGE;
+            } else if (ut->kind == MGLIR_TYPE_ATOMIC_COUNTER ||
+                       (ut->kind == MGLIR_TYPE_ARRAY && ut->elem_type &&
+                        ut->elem_type->kind == MGLIR_TYPE_ATOMIC_COUNTER)) {
+                v.kind = VarSym::ATOMIC_COUNTER;
             } else if (ut->kind == MGLIR_TYPE_STRUCT &&
                        ut->member_count > 0) {
                 v.kind = VarSym::UBO;
@@ -7150,13 +7276,15 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             }
         }
     }
-    uint32_t ssboCount = 0, uboCount = 0, texCount = 0, imageCount = 0;
+    uint32_t ssboCount = 0, uboCount = 0, acCount = 0, texCount = 0, imageCount = 0;
     for (VarSym &v : syms) {
         if (v.kind == VarSym::SSBO) {
             ssboCount++;
         } else if (v.kind == VarSym::UBO) {
             const MGLIRSymbol *us = findSymbol(&mod, v.name.c_str());
             uboCount += uniformBlockElementCount(us ? us->type : nullptr);
+        } else if (v.kind == VarSym::ATOMIC_COUNTER) {
+            acCount++;
         } else if (v.kind == VarSym::TEXTURE) {
             texCount += v.type.arr > 0 ? (uint32_t)v.type.arr : 1u;
         } else if (v.kind == VarSym::IMAGE) {
@@ -7421,7 +7549,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     if ((isVS || isTES || isKernel) && hasBuffer)
         paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
     for (VarSym &v : syms)
-        if (v.kind == VarSym::SSBO || v.kind == VarSym::UBO) {
+        if (v.kind == VarSym::SSBO || v.kind == VarSym::UBO ||
+            v.kind == VarSym::ATOMIC_COUNTER) {
             const MGLIRSymbol *us = findSymbol(&mod, v.name.c_str());
             uint32_t uelems = v.kind == VarSym::UBO
                 ? uniformBlockElementCount(us ? us->type : nullptr) : 1u;
@@ -7596,7 +7725,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         else {
             /* fragment: buffer sits after varyings, before the optional
              * fragCoord position arg */
-            bufIdx = (isCapture ? 1 : 0) + ssboCount + uboCount +
+            bufIdx = (isCapture ? 1 : 0) + ssboCount + uboCount + acCount +
                      (needsBufferSizeBuffer ? 1 : 0) + 2 * texCount +
                      imageCount;
             for (VarSym &v : syms)
@@ -7628,12 +7757,16 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 ssboIdx++;
             }
         }
+        for (VarSym &v : syms) {
+            if (v.kind != VarSym::ATOMIC_COUNTER) continue;
+            fn->addParamAttr(ssboIdx++, llvm::Attribute::AttrKind::NoAlias);
+        }
     }
     if (needsBufferSizeBuffer) {
         unsigned sizeIdx = (isCapture ? 1 : 0) +
                            (isVS && !isCapture ? attrCount : 0) +
                            ((isVS || isTES || isKernel) && hasBuffer ? 1 : 0) +
-                           ssboCount + uboCount;
+                           ssboCount + uboCount + acCount;
         fn->addParamAttr(sizeIdx, llvm::Attribute::AttrKind::NoAlias);
         fn->addParamAttr(sizeIdx, llvm::Attribute::AttrKind::ReadOnly);
     }
@@ -7710,6 +7843,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         cg.uboElemArrTy[v.name] = arrTy;
         cg.uboPtrs[v.name] = agg; /* unused for arrays; kept non-null */
     }
+    for (VarSym &v : syms) {
+        if (v.kind != VarSym::ATOMIC_COUNTER) continue;
+        cg.acPtrs[v.name] = fn->getArg(argSlot++);
+    }
     if (needsBufferSizeBuffer)
         cg.bufferSizePtr = fn->getArg(argSlot++);
     for (VarSym &v : syms) {
@@ -7739,6 +7876,11 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         for (VarSym &v : syms) {
             if (v.kind != VarSym::SSBO) continue;
             cg.ssboSlots[v.name] = location++;
+        }
+        location += uboCount;
+        for (VarSym &v : syms) {
+            if (v.kind != VarSym::ATOMIC_COUNTER) continue;
+            cg.acSlots[v.name] = location++;
         }
     }
     for (VarSym &v : syms) {
@@ -8014,6 +8156,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             pts.push_back(kv.second->getType());
         for (const auto &kv : cg.ssboPtrs)
             pts.push_back(llvm::Type::getInt8PtrTy(ctx, 1));
+        for (const auto &kv : cg.acPtrs)
+            pts.push_back(llvm::Type::getInt8PtrTy(ctx, 1));
         if (cg.bufferSizePtr)
             pts.push_back(llvm::Type::getInt32PtrTy(ctx, 2));
         if (isGS) {
@@ -8086,6 +8230,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         fc.pointSize = cg.pointSize;
         fc.ssboPtrs = cg.ssboPtrs;
         fc.ssboSlots = cg.ssboSlots;
+        fc.acPtrs = cg.acPtrs;
+        fc.acSlots = cg.acSlots;
         fc.uboPtrs = cg.uboPtrs;
         fc.texValues = cg.texValues;
         fc.smpValues = cg.smpValues;
@@ -8119,6 +8265,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             }
             for (const auto &kv : cg.ssboPtrs)
                 fc.ssboPtrs[kv.first] = f->getArg(hidx++);
+            for (const auto &kv : cg.acPtrs)
+                fc.acPtrs[kv.first] = f->getArg(hidx++);
             if (cg.bufferSizePtr)
                 fc.bufferSizePtr = f->getArg(hidx++);
             if (isGS) {
@@ -8153,22 +8301,27 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
 
     cg.userFns = &userFns;
     std::map<std::string, MType> locals;
-    /* Global const initializers (e.g. Mojang's `const vec3[]
-     * vertices = vec3[](...)` and GLSL 1.10 builtin constants like
-     * `const int gl_MaxDrawBuffers = 8;`): evaluate into cg.lvalues
-     * before main so references fold to the SSA constant instead of
-     * loading an unbound uniform slot. */
+    /* Global initializers (const arrays/scalars and other file-scope
+     * variables with constant initializers such as `int counter = 0;`):
+     * evaluate into cg.lvalues before main so references fold to SSA
+     * values instead of reading undef/unbound slots. */
     for (uint32_t i = 0; i < tu->decl_count; i++) {
         MGLDecl *d = tu->decls[i];
         if (!d || !d->name || d->body || !d->init) continue;
         const MGLIRSymbol *gs = findSymbol(&mod, d->name);
         if (!gs || gs->is_function) continue;
+        if (gs->qualifiers & (MGL_AST_Q_UNIFORM | MGL_AST_Q_BUFFER |
+                              MGL_AST_Q_IN | MGL_AST_Q_OUT |
+                              MGL_AST_Q_INOUT | MGL_AST_Q_SHARED)) {
+            continue;
+        }
         MType gt = typeFromIR(gs->type);
-        if (!gt.isArray() &&
-            !(gs->qualifiers & MGL_AST_Q_CONST)) continue;
+        const bool isConst = (gs->qualifiers & MGL_AST_Q_CONST) != 0;
+        if (gt.isArray() && !isConst) continue;
         llvm::Value *gv = emitExpr(cg, d->init, &mod, locals);
         if (!gv) break;
         cg.lvalues[d->name] = gv;
+        locals[d->name] = gt;
     }
     if (isTCS) {
         cg.lvalues["gl_TessLevelOuter"] = llvm::UndefValue::get(
@@ -8710,7 +8863,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     const uint32_t sizeBufferArg =
         (isCapture ? 1u : 0u) + (isVS && !isCapture ? attrCount : 0u) +
         (((isVS || isTES || isKernel) && hasBuffer) ? 1u : 0u) +
-        ssboCount + uboCount;
+        ssboCount + uboCount + acCount;
     if (isVS && !isCapture) {
         /* Vertex attributes are the first value arguments (Metal ABI:
          * stage_in value args precede buffers/textures). */
@@ -8821,7 +8974,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         } else {
             /* fragment: [ssbo..., ubo..., tex/smp pairs..., varyings...,
              * buffer, fragCoord?] */
-            idx = ssboCount + uboCount + (needsBufferSizeBuffer ? 1 : 0);
+            idx = ssboCount + uboCount + acCount + (needsBufferSizeBuffer ? 1 : 0);
             for (VarSym &v : syms) {
                 if (v.kind == VarSym::TEXTURE) {
                     uint32_t elements =
@@ -8956,6 +9109,47 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             }
         }
     }
+    /* Atomic counter buffers: one device buffer per atomic_uint instance. */
+    {
+        uint32_t loc = (isCapture ? 1 : 0) +
+                       ((isVS || isTES || isKernel) ? (hasBuffer ? 1 : 0) : 0) +
+                       ssboCount + uboCount + (isCapture ? 0 : attrCount) +
+                       userBufferLocationBase;
+        uint32_t acArg = loc;
+        for (VarSym &v : syms) {
+            if (v.kind != VarSym::ATOMIC_COUNTER) continue;
+            const MGLIRSymbol *ac = findSymbol(&mod, v.name.c_str());
+            uint32_t elements = 1u;
+            if (ac && ac->type->kind == MGLIR_TYPE_ARRAY &&
+                ac->type->array_size > 0u) {
+                elements = ac->type->array_size;
+            }
+            uint32_t bsize = elements * 4u;
+            argNodes.push_back(llvm::MDNode::get(ctx, {
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), acArg++)),
+                llvm::MDString::get(ctx, "air.buffer"),
+                llvm::MDString::get(ctx, "air.location_index"),
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), loc++)),
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), 1)),
+                llvm::MDString::get(ctx, "air.read_write"),
+                llvm::MDString::get(ctx, "air.address_space"),
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), 1)),
+                llvm::MDString::get(ctx, "air.arg_type_size"),
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), bsize)),
+                llvm::MDString::get(ctx, "air.arg_type_align_size"),
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), 4)),
+                llvm::MDString::get(ctx, "air.arg_type_name"),
+                llvm::MDString::get(ctx, v.name),
+                llvm::MDString::get(ctx, "air.arg_name"),
+                llvm::MDString::get(ctx, v.name)}));
+        }
+    }
     if (needsBufferSizeBuffer) {
         llvm::Type *i32 = llvm::Type::getInt32Ty(ctx);
         argNodes.push_back(llvm::MDNode::get(ctx, {
@@ -8983,7 +9177,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         uint32_t texLoc = 0, smpLoc = 0;
         uint32_t texArg = (isCapture ? 1 : 0) +
                        ((isVS || isTES || isKernel) ? (hasBuffer ? 1 : 0) : 0) +
-                          ssboCount + uboCount +
+                          ssboCount + uboCount + acCount +
                           (needsBufferSizeBuffer ? 1 : 0) +
                           (isCapture ? 0 : attrCount);
         for (VarSym &v : syms) {
@@ -9055,6 +9249,11 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     : iss->type->tex_storage == MGLIR_SCALAR_UINT
                         ? "texture2d_array<uint, read_write>"
                         : "texture2d_array<float, read_write>";
+            } else if (!is3d && iss) {
+                if (iss->type->tex_storage == MGLIR_SCALAR_INT)
+                    imageType = "texture2d<int, access::read_write>";
+                else if (iss->type->tex_storage == MGLIR_SCALAR_UINT)
+                    imageType = "texture2d<uint, access::read_write>";
             }
             argNodes.push_back(llvm::MDNode::get(ctx, {
                 llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
@@ -9078,7 +9277,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
          * stage_in value args sit at even slots (Metal rejects odd-slot
          * value args directly after a buffer with "Unsupported attribute
          * type"). */
-        uint32_t mArgSlot = 1 + (hasBuffer ? 1 : 0) + ssboCount + uboCount +
+        uint32_t mArgSlot = 1 + (hasBuffer ? 1 : 0) + ssboCount + uboCount + acCount +
                             (needsBufferSizeBuffer ? 1 : 0) + 2 * texCount +
                             imageCount;
         uint32_t attrLoc = 0;
@@ -9103,7 +9302,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         }
     }
     if (isTCS) {
-        uint32_t arg = (hasBuffer ? 1u : 0u) + ssboCount + uboCount +
+        uint32_t arg = (hasBuffer ? 1u : 0u) + ssboCount + uboCount + acCount +
                        (needsBufferSizeBuffer ? 1u : 0u) + 2u * texCount +
                        imageCount;
         const uint32_t locs[5] = {24u, 26u, 27u, 28u, 29u};
@@ -9136,7 +9335,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
          * items_per_patch, output_offset}), the optional indexed gather
          * stream(30)/params(25), and the optional transform-feedback
          * stream(31). */
-        uint32_t arg = (hasBuffer ? 1u : 0u) + ssboCount + uboCount +
+        uint32_t arg = (hasBuffer ? 1u : 0u) + ssboCount + uboCount + acCount +
                        (needsBufferSizeBuffer ? 1u : 0u) + 2u * texCount +
                        imageCount;
         const uint32_t locs[8] = {24u, 26u, 27u, 28u, 29u, 30u, 25u, 31u};
@@ -9167,7 +9366,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 llvm::MDString::get(ctx, names[i])}));
         }
     } else if (isGS) {
-        uint32_t arg = (hasBuffer ? 1u : 0u) + ssboCount + uboCount +
+        uint32_t arg = (hasBuffer ? 1u : 0u) + ssboCount + uboCount + acCount +
                        (needsBufferSizeBuffer ? 1u : 0u) + 2u * texCount +
                        imageCount;
         /* Fixed ABI slots (mgl_air_gs_abi.h §1/§5b/§7): input, output,

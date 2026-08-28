@@ -55,7 +55,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 87
+#define MAX_TESTS 89
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -2102,6 +2102,95 @@ static int verify_sampler_switch_pixels(const unsigned char *pixels,
         }
     }
     return 0;
+}
+
+/* Dynamic sampler-array indexing must surface every texel component: the
+ * switch-based decode originally phi-merged only component 0 and returned
+ * zeros for .yzw.  Three solid-color textures behind sampler2D u_tex[3],
+ * selected by a runtime uniform; each draw must show that texture's full
+ * RGBA (alpha included, since .w was one of the dropped channels). */
+static int test_sampler_array_rgba(unsigned char *pixels, const char *out_path)
+{
+    (void)out_path;
+    static const unsigned char colors[3][4] = {
+        { 255,   0,   0, 255 },
+        {   0, 255,   0, 128 },
+        {  16,  32, 240, 255 },
+    };
+    static const char *vs =
+        "#version 330 core\n"
+        "layout(location=0) in vec2 p;\n"
+        "void main(){ gl_Position=vec4(p,0.0,1.0); }\n";
+    static const char *fs =
+        "#version 330 core\n"
+        "uniform sampler2D u_tex[3];\n"
+        "uniform int u_idx;\n"
+        "out vec4 frag;\n"
+        "void main(){ frag = texture(u_tex[u_idx], vec2(0.5)); }\n";
+    static const float cover[6] = {
+        -1.0f, -1.0f,  3.0f, -1.0f,  -1.0f, 3.0f,
+    };
+
+    GLuint fbo, fbo_tex;
+    fbo = make_fbo(REG_W, REG_H, &fbo_tex);
+    if (!fbo) return 1;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    clear_color(0.0f, 0.0f, 0.0f);
+
+    GLuint prog = link_program(vs, fs);
+    if (!prog) return 2;
+    glUseProgram(prog);
+    for (int i = 0; i < 3; i++) {
+        char name[32];
+        snprintf(name, sizeof(name), "u_tex[%d]", i);
+        glUniform1i(glGetUniformLocation(prog, name), i);
+    }
+    GLint idx_loc = glGetUniformLocation(prog, "u_idx");
+    if (idx_loc < 0) return 3;
+
+    GLuint texs[3] = {0, 0, 0};
+    glGenTextures(3, texs);
+    for (int i = 0; i < 3; i++) {
+        glActiveTexture(GL_TEXTURE0 + i);
+        glBindTexture(GL_TEXTURE_2D, texs[i]);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0,
+                     GL_RGBA, GL_UNSIGNED_BYTE, colors[i]);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    }
+    glActiveTexture(GL_TEXTURE0);
+
+    GLuint vao, vbo;
+    make_pos2_vao(cover, sizeof(cover), &vao, &vbo);
+    glBindVertexArray(vao);
+
+    int result = 0;
+    const int px = REG_W / 2, py = REG_H / 2;
+    for (int i = 0; i < 3; i++) {
+        glUniform1i(idx_loc, i);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glFinish();
+        glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        const unsigned char *got = &pixels[(py * REG_W + px) * 4];
+        for (int c = 0; c < 4; c++) {
+            int delta = (int)got[c] - (int)colors[i][c];
+            if (delta < -2 || delta > 2) {
+                fprintf(stderr,
+                        "sampler_array_rgba: idx=%d component %d expected %u, "
+                        "got %u\n", i, c, colors[i][c], got[c]);
+                result = 4;
+                break;
+            }
+        }
+    }
+
+    glDeleteVertexArrays(1, &vao);
+    glDeleteBuffers(1, &vbo);
+    glDeleteTextures(3, texs);
+    glDeleteProgram(prog);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &fbo_tex);
+    return result;
 }
 
 static int command_buffer_counts_equal(const MGLCommandBuffer *cb,
@@ -14031,6 +14120,295 @@ cleanup:
  * Twenty-four SSBOs occupy user slots 0..23 and remain valid.  Adding the
  * twenty-fifth assigns user slot 24, which is MGL_AIR_GS_SLOT_INPUT and must
  * fail the link before the renderer can silently overwrite either binding. */
+static int test_air_geometry_atomic_counter(unsigned char *pixels,
+                                            const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 460 core\n"
+        "void main() { gl_Position = vec4(0.0, 0.0, 0.0, 1.0); }\n";
+    static const char *gs =
+        "#version 460 core\n"
+        "layout(points) in;\n"
+        "layout(points, max_vertices=1) out;\n"
+        "layout(binding=0) uniform atomic_uint counter;\n"
+        "void main() {\n"
+        "  atomicCounterIncrement(counter);\n"
+        "  gl_Position = vec4(0.0, 0.0, 0.0, 1.0);\n"
+        "  EmitVertex();\n"
+        "}\n";
+    static const char *fs =
+        "#version 460 core\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(0.0, 1.0, 0.0, 1.0); }\n";
+
+    GLuint program = 0u, vao = 0u, acbo = 0u, retSsbo = 0u;
+    int result = 1;
+    uint32_t counterValue = 0u;
+
+    program = link_program_with_geometry(vs, gs, fs);
+    if (!program) {
+        fprintf(stderr, "air_geometry_atomic_counter: link failed\n");
+        goto cleanup;
+    }
+
+    glGenBuffers(1, &acbo);
+    glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, acbo);
+    glBufferData(GL_ATOMIC_COUNTER_BUFFER, sizeof(counterValue), &counterValue,
+                 GL_DYNAMIC_COPY);
+    glBindBufferBase(GL_ATOMIC_COUNTER_BUFFER, 0, acbo);
+
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glUseProgram(program);
+
+    /* GLSL 4.60 8.11: atomicCounterIncrement returns the pre-increment value. */
+    {
+        static const char *vs_ret =
+            "#version 460 core\n"
+            "void main() { gl_Position = vec4(0.0, 0.0, 0.0, 1.0); }\n";
+        static const char *gs_ret =
+            "#version 460 core\n"
+            "layout(points) in;\n"
+            "layout(points, max_vertices=1) out;\n"
+            "layout(binding=0) uniform atomic_uint counter;\n"
+            "layout(std430, binding=1) buffer Ret { uint ret; } retBuf;\n"
+            "void main() {\n"
+            "  retBuf.ret = atomicCounterIncrement(counter);\n"
+            "  gl_Position = vec4(0.0, 0.0, 0.0, 1.0);\n"
+            "  EmitVertex();\n"
+            "}\n";
+        GLuint program_ret = link_program_with_geometry(vs_ret, gs_ret, fs);
+        uint32_t retValue = 0xffffffffu;
+
+        if (!program_ret) {
+            fprintf(stderr,
+                    "air_geometry_atomic_counter: return-value link failed\n");
+            goto cleanup;
+        }
+        glGenBuffers(1, &retSsbo);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, retSsbo);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(retValue), &retValue,
+                     GL_DYNAMIC_COPY);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, retSsbo);
+
+        counterValue = 0u;
+        glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, acbo);
+        glBufferData(GL_ATOMIC_COUNTER_BUFFER, sizeof(counterValue),
+                     &counterValue, GL_DYNAMIC_COPY);
+        glBindBufferBase(GL_ATOMIC_COUNTER_BUFFER, 0, acbo);
+
+        glUseProgram(program_ret);
+        glDrawArrays(GL_POINTS, 0, 1);
+        glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, acbo);
+        glGetBufferSubData(GL_ATOMIC_COUNTER_BUFFER, 0, sizeof(counterValue),
+                           &counterValue);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, retSsbo);
+        glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(retValue),
+                           &retValue);
+        if (retValue != 0u || counterValue != 1u) {
+            fprintf(stderr,
+                    "air_geometry_atomic_counter: first increment expected "
+                    "ret=0 counter=1, got ret=%u counter=%u\n",
+                    retValue, counterValue);
+            glDeleteProgram(program_ret);
+            goto cleanup;
+        }
+
+        glDrawArrays(GL_POINTS, 0, 1);
+        glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, acbo);
+        glGetBufferSubData(GL_ATOMIC_COUNTER_BUFFER, 0, sizeof(counterValue),
+                           &counterValue);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, retSsbo);
+        glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(retValue),
+                           &retValue);
+        if (retValue != 1u || counterValue != 2u) {
+            fprintf(stderr,
+                    "air_geometry_atomic_counter: second increment expected "
+                    "ret=1 counter=2, got ret=%u counter=%u\n",
+                    retValue, counterValue);
+            glDeleteProgram(program_ret);
+            goto cleanup;
+        }
+
+        {
+            static const char *gs_dec =
+                "#version 460 core\n"
+                "layout(points) in;\n"
+                "layout(points, max_vertices=1) out;\n"
+                "layout(binding=0) uniform atomic_uint counter;\n"
+                "layout(std430, binding=1) buffer Ret { uint ret; } retBuf;\n"
+                "void main() {\n"
+                "  retBuf.ret = atomicCounterDecrement(counter);\n"
+                "  gl_Position = vec4(0.0, 0.0, 0.0, 1.0);\n"
+                "  EmitVertex();\n"
+                "}\n";
+            GLuint program_dec = link_program_with_geometry(vs_ret, gs_dec, fs);
+            if (!program_dec) {
+                fprintf(stderr,
+                        "air_geometry_atomic_counter: decrement link failed\n");
+                glDeleteProgram(program_ret);
+                goto cleanup;
+            }
+            counterValue = 5u;
+            glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, acbo);
+            glBufferData(GL_ATOMIC_COUNTER_BUFFER, sizeof(counterValue),
+                         &counterValue, GL_DYNAMIC_COPY);
+            glUseProgram(program_dec);
+            glDrawArrays(GL_POINTS, 0, 1);
+            glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, acbo);
+            glGetBufferSubData(GL_ATOMIC_COUNTER_BUFFER, 0, sizeof(counterValue),
+                               &counterValue);
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, retSsbo);
+            glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(retValue),
+                               &retValue);
+            glDeleteProgram(program_dec);
+            if (retValue != 5u || counterValue != 4u) {
+                fprintf(stderr,
+                        "air_geometry_atomic_counter: decrement expected "
+                        "ret=5 counter=4, got ret=%u counter=%u\n",
+                        retValue, counterValue);
+                glDeleteProgram(program_ret);
+                goto cleanup;
+            }
+        }
+
+        {
+            static const char *gs_read =
+                "#version 460 core\n"
+                "layout(points) in;\n"
+                "layout(points, max_vertices=1) out;\n"
+                "layout(binding=0) uniform atomic_uint counter;\n"
+                "layout(std430, binding=1) buffer Ret { uint ret; } retBuf;\n"
+                "void main() {\n"
+                "  retBuf.ret = atomicCounter(counter);\n"
+                "  gl_Position = vec4(0.0, 0.0, 0.0, 1.0);\n"
+                "  EmitVertex();\n"
+                "}\n";
+            GLuint program_read = link_program_with_geometry(vs_ret, gs_read, fs);
+            if (!program_read) {
+                fprintf(stderr,
+                        "air_geometry_atomic_counter: read link failed\n");
+                glDeleteProgram(program_ret);
+                goto cleanup;
+            }
+            counterValue = 7u;
+            glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, acbo);
+            glBufferData(GL_ATOMIC_COUNTER_BUFFER, sizeof(counterValue),
+                         &counterValue, GL_DYNAMIC_COPY);
+            glUseProgram(program_read);
+            glDrawArrays(GL_POINTS, 0, 1);
+            glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, acbo);
+            glGetBufferSubData(GL_ATOMIC_COUNTER_BUFFER, 0, sizeof(counterValue),
+                               &counterValue);
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, retSsbo);
+            glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(retValue),
+                               &retValue);
+            glDeleteProgram(program_read);
+            if (retValue != 7u || counterValue != 7u) {
+                fprintf(stderr,
+                        "air_geometry_atomic_counter: read expected "
+                        "ret=7 counter=7, got ret=%u counter=%u\n",
+                        retValue, counterValue);
+                glDeleteProgram(program_ret);
+                goto cleanup;
+            }
+        }
+
+        glDeleteProgram(program_ret);
+        glUseProgram(program);
+    }
+
+    counterValue = 0u;
+    glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, acbo);
+    glBufferData(GL_ATOMIC_COUNTER_BUFFER, sizeof(counterValue), &counterValue,
+                 GL_DYNAMIC_COPY);
+    glBindBufferBase(GL_ATOMIC_COUNTER_BUFFER, 0, acbo);
+    glDrawArrays(GL_POINTS, 0, 4);
+
+    glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, acbo);
+    glGetBufferSubData(GL_ATOMIC_COUNTER_BUFFER, 0, sizeof(counterValue),
+                       &counterValue);
+    if (counterValue != 4u) {
+        fprintf(stderr,
+                "air_geometry_atomic_counter: expected counter=4, got %u\n",
+                counterValue);
+        goto cleanup;
+    }
+
+    {
+        static const char *vs2 =
+            "#version 460 core\n"
+            "flat out int vertex_id;\n"
+            "void main() {\n"
+            "  vertex_id = gl_VertexID;\n"
+            "  gl_Position = vec4(0.0, 0.0, 0.0, 1.0);\n"
+            "}\n";
+        static const char *gs2 =
+            "#version 460 core\n"
+            "layout(points) in;\n"
+            "layout(points, max_vertices=1) out;\n"
+            "uniform int n_loop_iterations;\n"
+            "flat in int vertex_id[];\n"
+            "layout(binding=0) uniform atomic_uint acs[8];\n"
+            "void main() {\n"
+            "  for (int counter_id = 1; counter_id <= n_loop_iterations; ++counter_id) {\n"
+            "    if ((vertex_id[0] % counter_id) == 0)\n"
+            "      atomicCounterIncrement(acs[counter_id - 1]);\n"
+            "  }\n"
+            "  gl_Position = vec4(0.0, 0.0, 0.0, 1.0);\n"
+            "  EmitVertex();\n"
+            "}\n";
+        GLuint program2 = link_program_with_geometry(vs2, gs2, fs);
+        uint32_t counters[8] = {0u};
+        if (!program2) {
+            fprintf(stderr, "air_geometry_atomic_counter: array link failed\n");
+            goto cleanup;
+        }
+        glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, acbo);
+        glBufferData(GL_ATOMIC_COUNTER_BUFFER, sizeof(counters), counters,
+                     GL_DYNAMIC_COPY);
+        glBindBufferBase(GL_ATOMIC_COUNTER_BUFFER, 0, acbo);
+        glUseProgram(program2);
+        glUniform1i(glGetUniformLocation(program2, "n_loop_iterations"), 8);
+        glDrawArrays(GL_POINTS, 0, 4);
+        {
+            void *mapped = glMapBufferRange(
+                GL_ATOMIC_COUNTER_BUFFER, 0, sizeof(counters), GL_MAP_READ_BIT);
+            if (!mapped) {
+                fprintf(stderr, "air_geometry_atomic_counter: map failed\n");
+                glDeleteProgram(program2);
+                goto cleanup;
+            }
+            memcpy(counters, mapped, sizeof(counters));
+            glUnmapBuffer(GL_ATOMIC_COUNTER_BUFFER);
+        }
+        for (int n_ac = 0; n_ac < 8; n_ac++) {
+            unsigned expected = 0u;
+            for (int v = 0; v < 4; v++) {
+                if ((v % (n_ac + 1)) == 0) expected++;
+            }
+            if (counters[n_ac] != expected) {
+                fprintf(stderr,
+                        "air_geometry_atomic_counter: acs[%d] expected %u got %u\n",
+                        n_ac, expected, counters[n_ac]);
+                glDeleteProgram(program2);
+                goto cleanup;
+            }
+        }
+        glDeleteProgram(program2);
+    }
+    result = 0;
+
+cleanup:
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (retSsbo) glDeleteBuffers(1, &retSsbo);
+    if (acbo) glDeleteBuffers(1, &acbo);
+    if (program) glDeleteProgram(program);
+    return result;
+}
+
 static int test_air_geometry_buffer_slot_conflict(unsigned char *pixels,
                                                   const char *out_path)
 {
@@ -14141,6 +14519,8 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("air_cull_distance", test_air_cull_distance),
     SELF_CHECK_TEST("air_geometry_varying", test_air_geometry_varying),
     SELF_CHECK_TEST("air_geometry_resources", test_air_geometry_resources),
+    SELF_CHECK_TEST("air_geometry_atomic_counter",
+                    test_air_geometry_atomic_counter),
     SELF_CHECK_TEST("air_geometry_buffer_slot_conflict",
                     test_air_geometry_buffer_slot_conflict),
     SELF_CHECK_TEST("air_geometry_instancing", test_air_geometry_instancing),
@@ -14213,6 +14593,7 @@ static const TestCase TESTS[] = {
                     test_sampler_same_value_no_flush),
     SELF_CHECK_TEST("sampler_invalid_no_flush",
                     test_sampler_invalid_no_flush),
+    SELF_CHECK_TEST("sampler_array_rgba", test_sampler_array_rgba),
     SELF_CHECK_TEST("sampler_snapshot_overflow",
                     test_sampler_snapshot_overflow),
     EXPLICIT_SELF_CHECK_TEST("sampler_cache_rss_soak",

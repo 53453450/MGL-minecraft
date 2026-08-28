@@ -623,7 +623,7 @@ static MGLIRType *resolve_type_spec(Sema *s, SymTab *tab, const MGLTypeSpec *ts)
         return mglIRTypeImage(kind, storage, 0);
     }
     case MGL_AST_TYPE_ATOMIC_UINT:
-        return mglIRTypeVector(MGLIR_SCALAR_UINT, 1); /* placeholder */
+        return mglIRTypeAtomicCounter();
     default:
         return NULL;
     }
@@ -962,6 +962,7 @@ typedef enum {
     BI_ARG_IVEC3,     /* ivec3 */
     BI_ARG_IVEC4,     /* ivec4 */
     BI_ARG_UVEC4,     /* uvec4 */
+    BI_ARG_ATOMIC,    /* atomic_uint */
 } BiArgKind;
 
 typedef enum {
@@ -1099,6 +1100,9 @@ static const BiFn kBuiltins[] = {
     { "unpackHalf2x16",  1, { BI_ARG_INT }, BI_RET_VEC2 },
     /* atomic (compute) */
     { "atomicAdd", 2, { BI_ARG_GENI, BI_ARG_GENI }, BI_RET_GENI },
+    { "atomicCounterIncrement", 1, { BI_ARG_ATOMIC }, BI_RET_UINT },
+    { "atomicCounterDecrement", 1, { BI_ARG_ATOMIC }, BI_RET_UINT },
+    { "atomicCounter", 1, { BI_ARG_ATOMIC }, BI_RET_UINT },
     /* geometry shader (M3): statement-only, void */
     { "EmitVertex",          0, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF }, BI_RET_VOID },
     { "EndPrimitive",        0, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF }, BI_RET_VOID },
@@ -1221,6 +1225,8 @@ static int bif_arg_matches(const MGLIRType *t, BiArgKind k, uint32_t *gen_dim)
     case BI_ARG_UVEC4:
         return t->kind == MGLIR_TYPE_VECTOR && t->cols == 4 &&
                t->scalar == MGLIR_SCALAR_UINT;
+    case BI_ARG_ATOMIC:
+        return t->kind == MGLIR_TYPE_ATOMIC_COUNTER;
     default:
         return 0;
     }

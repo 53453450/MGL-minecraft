@@ -27,6 +27,7 @@
 
 #include "mgl_uniform_reflection.h"
 #include "glm_limits.h" /* MAX_ATTRIBS: attrib_names contract size */
+#include "mgl_types_buffer.h" /* MAX_BINDABLE_BUFFERS */
 
 GLuint mglAirGLTypeFromIR(const MGLIRType *t)
 {
@@ -54,6 +55,8 @@ GLuint mglAirGLTypeFromIR(const MGLIRType *t)
     }
     case MGLIR_TYPE_MATRIX:
         return (GLuint)(GL_FLOAT_MAT2 + (t->cols - 2));
+    case MGLIR_TYPE_ATOMIC_COUNTER:
+        return GL_UNSIGNED_INT_ATOMIC_COUNTER;
     case MGLIR_TYPE_SAMPLER: {
         const GLboolean is_int = t->tex_storage == MGLIR_SCALAR_INT;
         const GLboolean is_uint = t->tex_storage == MGLIR_SCALAR_UINT;
@@ -411,7 +414,7 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
     int isVS = (stage == MGL_STAGE_VERTEX);
     uint32_t user_buffer_base =
         (stage == MGL_STAGE_TESS_EVALUATION) ? 1u : 0u;
-    uint32_t attrCount = 0, ssboCount = 0, hasPlain = 0;
+    uint32_t attrCount = 0, ssboCount = 0, uboSlotCount = 0, acCount = 0, hasPlain = 0;
     for (uint32_t i = 0; i < mod->symbol_count; i++) {
         const MGLIRSymbol *s = mod->symbols[i];
         /* gl_-prefixed symbols are backend builtins (stage I/O like
@@ -439,11 +442,18 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
             base_t = base_t->elem_type;
         if (isVS && (q & MGL_AST_Q_IN)) {
             attrCount++;
+        } else if ((q & MGL_AST_Q_UNIFORM) &&
+                   base_t && base_t->kind == MGLIR_TYPE_ATOMIC_COUNTER) {
+            acCount++;
         } else if (q & MGL_AST_Q_BUFFER) {
             ssboCount++;
         } else if ((q & MGL_AST_Q_UNIFORM) &&
+                   air_uniform_block_type(t)) {
+            uboSlotCount += air_uniform_block_element_count(t);
+        } else if ((q & MGL_AST_Q_UNIFORM) &&
                    base_t && base_t->kind != MGLIR_TYPE_SAMPLER &&
-                   base_t->kind != MGLIR_TYPE_IMAGE && !s->block_name &&
+                   base_t && base_t->kind != MGLIR_TYPE_IMAGE &&
+                   base_t->kind != MGLIR_TYPE_ATOMIC_COUNTER && !s->block_name &&
                    !air_uniform_block_type(t)) {
             hasPlain = 1;
         }
@@ -451,8 +461,18 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
     uint32_t ssbo_binding = user_buffer_base +
         (isVS ? (hasPlain + attrCount)
               : ((stage == MGL_STAGE_COMPUTE ||
-                  stage == MGL_STAGE_TESS_EVALUATION) ? hasPlain : 0));
+                  stage == MGL_STAGE_TESS_EVALUATION ||
+                  stage == MGL_STAGE_GEOMETRY) ? hasPlain : 0));
     uint32_t ubo_binding = ssbo_binding + ssboCount;
+    uint32_t ac_binding = ubo_binding + uboSlotCount;
+    if (acCount > 0u && ac_binding + acCount > MAX_BINDABLE_BUFFERS) {
+        if (err && errCap) {
+            snprintf(err, errCap,
+                     "atomic counter Metal slots exceed MAX_BINDABLE_BUFFERS");
+        }
+        mglAirReflectDestroy(lists);
+        return -1;
+    }
 
     /* Sampler bindings increment per sampler, matching the AIR metadata
      * texture location indices. */
@@ -542,6 +562,25 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                 GLuint elements = mglAirGLArraySizeFromIR(t);
                 if (elements < 1u) elements = 1u;
                 texture_binding += elements;
+                continue;
+            }
+            if (base_t && base_t->kind == MGLIR_TYPE_ATOMIC_COUNTER) {
+                push_resource(&lists[_ATOMIC_COUNTER_RES], s, t, location,
+                              ac_binding++, stage);
+                MGLShaderResource *last =
+                    &lists[_ATOMIC_COUNTER_RES].list[
+                        lists[_ATOMIC_COUNTER_RES].count - 1];
+                if (s->binding != UINT32_MAX) {
+                    last->gl_binding = s->binding;
+                } else {
+                    last->gl_binding = 0;
+                }
+                last->location = s->offset != UINT32_MAX ? s->offset : 0u;
+                {
+                    GLuint elements = mglAirGLArraySizeFromIR(t);
+                    if (elements < 1u) elements = 1u;
+                    last->required_size = elements * (GLuint)sizeof(GLuint);
+                }
                 continue;
             }
             if (s->block_name) {

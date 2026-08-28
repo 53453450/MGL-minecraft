@@ -139,6 +139,7 @@ MGLIRType *mglIRTypeStruct(MGLIRType *const *members, const char *const *names,
                            uint32_t count, const char *name);
 MGLIRType *mglIRTypeSampler(MGLIRTexKind kind, MGLIRScalar storage, int depth);
 MGLIRType *mglIRTypeImage(MGLIRTexKind kind, MGLIRScalar storage, uint32_t gl_format);
+MGLIRType *mglIRTypeAtomicCounter(void);
 
 /* Compute layout in place (fills size/alignment/array_stride/member offsets).
  * Returns MGLIR_LAYOUT_* on success or -1 on error.  mtl satisfies

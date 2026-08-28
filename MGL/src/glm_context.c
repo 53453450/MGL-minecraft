@@ -369,6 +369,12 @@ GLMContext createGLMContext(GLenum format, GLenum type,
     if (STATE(var.max_combined_atomic_counters) < 8) {
         STATE(var.max_combined_atomic_counters) = 8;
     }
+    if (STATE(var.max_geometry_atomic_counters) < 8) {
+        STATE(var.max_geometry_atomic_counters) = 8;
+    }
+    if (STATE(var.max_geometry_atomic_counter_buffers) < 8) {
+        STATE(var.max_geometry_atomic_counter_buffers) = 8;
+    }
 
     /* Ensure max_element_index meets minimum */
     if (STATE(var.max_element_index) == 0 ||

@@ -454,18 +454,23 @@ void getMacOSDefaults(GLMContext glm_ctx)
         glm_ctx->state.var.max_tess_evaluation_shader_storage_blocks = 8;
     }
     /* Geometry SSBOs ride the same Metal compute expansion path as
-     * TCS/TES; the host backend reports 0 here.  Kept disabled until the
-     * compute ABI assigns stable buffer indices when user SSBOs share the
-     * kernel with the fixed GS expansion arguments — with both present the
-     * kernel currently emits zero records (see api.max_shader_storage_blocks). */
-    if (glm_ctx->state.var.max_geometry_shader_storage_blocks != 0 &&
-        (glm_ctx->state.var.max_geometry_shader_storage_blocks < 8 ||
-         glm_ctx->state.var.max_geometry_shader_storage_blocks > MAX_BINDABLE_BUFFERS)) {
+     * TCS/TES; the host backend reports 0 here.  User SSBOs occupy
+     * Metal slots 0..23 (see mgl_air_gs_abi.h / air_geometry_buffer_slot_conflict). */
+    if (glm_ctx->state.var.max_geometry_shader_storage_blocks < 8 ||
+        glm_ctx->state.var.max_geometry_shader_storage_blocks > MAX_BINDABLE_BUFFERS) {
         glm_ctx->state.var.max_geometry_shader_storage_blocks = 8;
     }
     if (glm_ctx->state.var.max_combined_shader_storage_blocks < 8 ||
         glm_ctx->state.var.max_combined_shader_storage_blocks > MAX_BINDABLE_BUFFERS) {
         glm_ctx->state.var.max_combined_shader_storage_blocks = MAX_BINDABLE_BUFFERS;
+    }
+    /* Geometry atomic counters ride the same GS compute expansion path as SSBOs;
+     * the host backend reports 0 here. */
+    if (glm_ctx->state.var.max_geometry_atomic_counters < 8) {
+        glm_ctx->state.var.max_geometry_atomic_counters = 8;
+    }
+    if (glm_ctx->state.var.max_combined_atomic_counters < 8) {
+        glm_ctx->state.var.max_combined_atomic_counters = 8;
     }
     glGetIntegerv(GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS,&glm_ctx->state.var.max_shader_storage_buffer_bindings);
     if (glm_ctx->state.var.max_shader_storage_buffer_bindings == 0 ||
@@ -550,7 +555,11 @@ void getMacOSDefaults(GLMContext glm_ctx)
     glm_ctx->state.var.max_vertex_atomic_counter_buffers = MAX_BINDABLE_BUFFERS;
     glm_ctx->state.var.max_tess_control_atomic_counter_buffers = MAX_BINDABLE_BUFFERS;
     glm_ctx->state.var.max_tess_evaluation_atomic_counter_buffers = MAX_BINDABLE_BUFFERS;
-    glm_ctx->state.var.max_geometry_atomic_counter_buffers = 0;
+    /* Same GS compute path caveat as max_geometry_atomic_counters above. */
+    if (glm_ctx->state.var.max_geometry_atomic_counter_buffers < 8 ||
+        glm_ctx->state.var.max_geometry_atomic_counter_buffers > MAX_BINDABLE_BUFFERS) {
+        glm_ctx->state.var.max_geometry_atomic_counter_buffers = 8;
+    }
     glm_ctx->state.var.max_fragment_atomic_counter_buffers = MAX_BINDABLE_BUFFERS;
     glm_ctx->state.var.max_combined_atomic_counter_buffers = MAX_BINDABLE_BUFFERS;
     glm_ctx->state.var.max_atomic_counter_buffer_bindings = MAX_BINDABLE_BUFFERS;
@@ -560,7 +569,7 @@ void getMacOSDefaults(GLMContext glm_ctx)
     glm_ctx->state.var.max_vertex_image_uniforms = 8;
     glm_ctx->state.var.max_tess_control_image_uniforms = 8;
     glm_ctx->state.var.max_tess_evaluation_image_uniforms = 8;
-    glm_ctx->state.var.max_geometry_image_uniforms = 0;
+    glm_ctx->state.var.max_geometry_image_uniforms = 8;
     glm_ctx->state.var.max_fragment_image_uniforms = 8;
     glm_ctx->state.var.max_combined_image_uniforms = 40;
     glm_ctx->state.var.max_compute_image_uniforms = 8;

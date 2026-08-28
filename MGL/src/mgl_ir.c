@@ -342,6 +342,17 @@ MGLIRType *mglIRTypeImage(MGLIRTexKind kind, MGLIRScalar storage, uint32_t gl_fo
     return t;
 }
 
+MGLIRType *mglIRTypeAtomicCounter(void)
+{
+    MGLIRType *t = (MGLIRType *)calloc(1, sizeof(*t));
+    if (!t) {
+        return NULL;
+    }
+    t->kind = MGLIR_TYPE_ATOMIC_COUNTER;
+    t->scalar = MGLIR_SCALAR_UINT;
+    return t;
+}
+
 int mglIRComputeLayout(MGLIRType *type, MGLIRLayoutStd layout, uint32_t *size)
 {
     if (!type) {

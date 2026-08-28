@@ -1913,6 +1913,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
 
     TransformFeedback *xfbState = MGL_STATE(drawCtx)->transform_feedback;
     const bool xfbActive = xfbState && xfbState->active && !xfbState->paused;
+    const BOOL xfbDiag = getenv("MGL_GS_XFB_DIAG") != NULL;
 
     /* ---- GL4 ordered multi-buffer XFB (mgl_air_gs_abi.h §5b) ----
      * Replace the prototype per-stream atomic-cursor capture with a
@@ -2021,7 +2022,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
             }
         }
 
-        if (getenv("MGL_GS_XFB_DIAG")) {
+        if (xfbDiag) {
             fprintf(stderr,
                     "MGL GS XFB DIAG fields=%u buffers=%u varyings=%d mode=0x%x\n",
                     fieldCount, xfbBufferCount,
@@ -2046,7 +2047,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
             BufferBaseTarget *slot = &MGL_STATE(drawCtx)
                 ->buffer_base[_TRANSFORM_FEEDBACK_BUFFER].buffers[b];
             if (!slot->buf) {
-                if (getenv("MGL_GS_XFB_DIAG"))
+                if (xfbDiag)
                     NSLog(@"MGL GS XFB DIAG buffer[%u] no bound GL buffer", b);
                 continue;
             }
@@ -2055,7 +2056,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
             }
             id mtl = (__bridge id)(slot->buf->data.mtl_data);
             if (!mtl) {
-                if (getenv("MGL_GS_XFB_DIAG"))
+                if (xfbDiag)
                     NSLog(@"MGL GS XFB DIAG buffer[%u] no MTL backing", b);
                 continue;
             }
@@ -2071,7 +2072,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
             }
             if (sessionOffset > visible || slot->offset < 0 ||
                 (NSUInteger)slot->offset > NSUIntegerMax - sessionOffset) {
-                if (getenv("MGL_GS_XFB_DIAG"))
+                if (xfbDiag)
                     NSLog(@"MGL GS XFB DIAG buffer[%u] offset overflow "
                           "vis=%lu sessOff=%lu slotOff=%lld", b,
                           (unsigned long)visible, (unsigned long)sessionOffset,
@@ -2094,7 +2095,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
             scatterParams.buffers[b].capture_base =
                 (uint32_t)MIN(bufferPhysBase[b], (NSUInteger)UINT32_MAX);
         }
-        if (getenv("MGL_GS_XFB_DIAG")) {
+        if (xfbDiag) {
             for (uint32_t b = 0u; b < xfbBufferCount; b++) {
                 NSLog(@"  buffer[%u] stride=%u cap=%u base=%u physTotal=%lu dstMTL=%@",
                       b, scatterParams.buffers[b].stride,
@@ -2414,6 +2415,20 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
             (uint32_t *)mglDrawSupportBufferContents(xfbVisBuffer);
         uint32_t *offsets =
             (uint32_t *)mglDrawSupportBufferContents(xfbOffsetBuffer);
+        if (xfbDiag && counts &&
+            mglDrawSupportBufferContents(counts) && output &&
+            mglDrawSupportBufferContents(output)) {
+            const uint32_t *cw =
+                (const uint32_t *)mglDrawSupportBufferContents(counts);
+            const float *outPos = (const float *)
+                mglDrawSupportBufferContents(output);
+            outPos += (MGL_AIR_GS_HEADER_RECORDS * outputStride) /
+                      sizeof(float);
+            NSLog(@"MGL GS XFB DIAG pass1 vertex_count=%u emit=%u vis[0]=%u "
+                  "out.pos={%g,%g,%g,%g}",
+                  cw[0], cw[MGL_AIR_GS_COUNTS_ARGS_WORDS + 2u], vis[0],
+                  outPos[0], outPos[1], outPos[2], outPos[3]);
+        }
         /* Exclusive prefix-sum per buffer across work items. */
         for (uint32_t b = 0u; b < xfbBufferCount; b++) {
             uint32_t running = 0u;
