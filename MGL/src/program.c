@@ -1483,6 +1483,47 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         return;
     }
 
+    /* GL 4.6 §7.4/§11.1.3.9: a program fails to link if a geometry shader
+     * references more atomic counters, or atomic counter buffer binding
+     * points, than the per-stage limits advertise. */
+    if ((pptr->attached_shader_mask & GEOMETRY_SHADER_MASK_BIT)) {
+        const MGLShaderResourceList *acs =
+            &pptr->shader_resources_list[_GEOMETRY_SHADER]
+                                        [_ATOMIC_COUNTER_RES];
+        GLuint total_counters = 0u;
+        GLuint distinct_bindings = 0u;
+        GLboolean binding_seen[MAX_BINDABLE_BUFFERS] = {GL_FALSE};
+        for (GLuint i = 0u; i < acs->count; i++) {
+            const MGLShaderResource *ac = &acs->list[i];
+            GLuint elems = ac->gl_array_size > 0u ? ac->gl_array_size : 1u;
+            total_counters += elems;
+            GLuint b = ac->gl_binding;
+            if (b < MAX_BINDABLE_BUFFERS && !binding_seen[b]) {
+                binding_seen[b] = GL_TRUE;
+                distinct_bindings++;
+            }
+        }
+        if (total_counters >
+            (GLuint)ctx->state.var.max_geometry_atomic_counters) {
+            fprintf(stderr,
+                    "MGL WARNING: mglLinkProgram failed program %u: "
+                    "geometry shader uses %u atomic counters, limit %d\n",
+                    pptr->name, total_counters,
+                    ctx->state.var.max_geometry_atomic_counters);
+            return;
+        }
+        if (distinct_bindings >
+            (GLuint)ctx->state.var.max_geometry_atomic_counter_buffers) {
+            fprintf(stderr,
+                    "MGL WARNING: mglLinkProgram failed program %u: "
+                    "geometry shader uses %u atomic counter buffers, "
+                    "limit %d\n",
+                    pptr->name, distinct_bindings,
+                    ctx->state.var.max_geometry_atomic_counter_buffers);
+            return;
+        }
+    }
+
     /* Validate transform feedback varyings: the link must fail if any
      * captured varying is not an active output of the program. */
     if (!mglValidateTransformFeedbackVaryings(ctx, pptr)) {

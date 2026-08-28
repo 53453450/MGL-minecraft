@@ -56,6 +56,11 @@ typedef struct Sema {
     MGLIRType **tmp_types;
     uint32_t tmp_count;
     uint32_t tmp_cap;
+    /* GLSL 4.60 §4.4.2.3: per-binding default offset for atomic_uint
+     * declarations (indexed by layout(binding=N); no declared maximum is
+     * enforced by the spec, so indices beyond this table keep the counter
+     * at its explicit offset only). */
+    uint32_t ac_default_offset[128];
 } Sema;
 
 static MGLIRType *scratch_type(Sema *s, MGLIRType *t)
@@ -2252,6 +2257,31 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
             isym->binding = (d->layout_binding >= 0)
                                 ? (uint32_t)d->layout_binding
                                 : UINT32_MAX;
+            /* GLSL 4.60 §4.4.2.3: an atomic_uint takes its buffer offset
+             * from layout(offset=N) or the per-binding default, which then
+             * advances by the counter size (4 bytes). */
+            {
+                const MGLIRType *at = t;
+                while (at && at->kind == MGLIR_TYPE_ARRAY)
+                    at = at->elem_type;
+                if (at && at->kind == MGLIR_TYPE_ATOMIC_COUNTER) {
+                    uint32_t bind = isym->binding != UINT32_MAX
+                                        ? isym->binding : 0u;
+                    if (d->layout_offset >= 0) {
+                        isym->offset = (uint32_t)d->layout_offset;
+                    } else if (bind < 128u) {
+                        isym->offset = s->ac_default_offset[bind];
+                    } else {
+                        isym->offset = 0u;
+                    }
+                    uint32_t elems = 1u;
+                    if (t->kind == MGLIR_TYPE_ARRAY && t->array_size > 0u)
+                        elems = t->array_size;
+                    uint32_t next = isym->offset + elems * 4u;
+                    if (bind < 128u)
+                        s->ac_default_offset[bind] = next;
+                }
+            }
             isym->location = (d->layout_location >= 0)
                                  ? (uint32_t)d->layout_location
                                  : UINT32_MAX;

@@ -1481,6 +1481,15 @@ const MGLIRType *ssboExprType(const MGLExpr *e, const MGLIRSymbol *sb,
     return ty;
 }
 
+/* Byte size of one scalar component (SSBO component addressing). */
+static uint32_t mglAirScalarByteSize(MGLIRScalar s) {
+    switch (s) {
+    case MGLIR_SCALAR_DOUBLE: return 8u;
+    case MGLIR_SCALAR_VOID: return 0u;
+    default: return 4u;   /* bool / int / uint / float / half */
+    }
+}
+
 /* Byte address of a member/index chain rooted at an SSBO instance; the
  * member type is returned in *outTy. */
 llvm::Value *ssboAddress(Codegen &cg, const MGLExpr *e,
@@ -1500,6 +1509,32 @@ llvm::Value *ssboAddress(Codegen &cg, const MGLExpr *e,
     uint32_t off = 0;
     for (const MGLExpr *pe : path) {
         if (pe->kind == MGL_EXPR_MEMBER) {
+            /* A swizzle on a vector-typed element selects one component:
+             * address the scalar in place instead of falling into the
+             * struct-member lookup (which would reject it) — but only for
+             * single-component swizzles; a multi-component swizzle cannot
+             * be addressed as one contiguous scalar. */
+            if (ty->kind == MGLIR_TYPE_VECTOR) {
+                std::vector<uint32_t> comps;
+                if (!swizzleIndices(pe->u.member.field, &comps) ||
+                    comps.size() != 1u) {
+                    cg.err = 1;
+                    cg.errmsg =
+                        "codegen: only single-component swizzles are "
+                        "supported on SSBO vector members";
+                    return nullptr;
+                }
+                if (comps[0] >= ty->cols) {
+                    cg.err = 1;
+                    cg.errmsg = std::string("codegen: swizzle '") +
+                                pe->u.member.field +
+                                "' out of range for SSBO vector member";
+                    return nullptr;
+                }
+                off += comps[0] * mglAirScalarByteSize(ty->scalar);
+                ty = mglIRTypeScalar(ty->scalar);
+                continue;
+            }
             uint32_t mi = 0;
             const MGLIRType *mt = nullptr;
             for (uint32_t i = 0; i < ty->member_count; i++)
@@ -1519,6 +1554,30 @@ llvm::Value *ssboAddress(Codegen &cg, const MGLExpr *e,
         } else {
             llvm::Value *idx = emitExpr(cg, pe->u.index.index, mod, locals);
             if (!idx) return nullptr;
+            /* An index on a vector-typed element selects one scalar
+             * component.  The previous code treated it as another array
+             * hop and walked into the vector's NULL elem_type, which
+             * crashed typeFromIR downstream (SIGSEGV reachable from any
+             * shader doing g_buffer.vec[expr][component]). */
+            if (ty->kind == MGLIR_TYPE_VECTOR) {
+                uint32_t scalarSize = mglAirScalarByteSize(ty->scalar);
+                idx = cg.b->CreateSExtOrTrunc(idx, cg.b->getInt64Ty());
+                base = cg.b->CreateGEP(
+                    cg.b->getInt8Ty(), base,
+                    cg.b->CreateAdd(cg.b->getInt64(off),
+                                    cg.b->CreateMul(
+                                        idx, cg.b->getInt64(scalarSize))));
+                off = 0;
+                ty = mglIRTypeScalar(ty->scalar);
+                continue;
+            }
+            if (ty->kind != MGLIR_TYPE_ARRAY) {
+                cg.err = 1;
+                cg.errmsg =
+                    "codegen: SSBO member cannot be indexed by this "
+                    "expression";
+                return nullptr;
+            }
             uint32_t stride = ty->layout.array_stride;
             if (!stride) stride = ty->layout.size;
             idx = cg.b->CreateSExtOrTrunc(idx, cg.b->getInt64Ty());
@@ -3183,12 +3242,17 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             return cg.b->getInt32(1024);
         if (strcmp(e->u.var_ref.name, "gl_MaxGeometryUniformComponents") == 0)
             return cg.b->getInt32(4096);
+        /* Atomic counters / image uniforms ride the GS compute expansion;
+         * glm_params floors these limits at 8 (mgl_air_reflect.c assigns
+         * Metal slots on the same budget), so the shader-visible constants
+         * must match the glGetIntegerv values (GLSL 4.60 §7.4 requires
+         * the two to agree). */
         if (strcmp(e->u.var_ref.name, "gl_MaxGeometryAtomicCounters") == 0)
-            return cg.b->getInt32(0);
+            return cg.b->getInt32(8);
         if (strcmp(e->u.var_ref.name, "gl_MaxGeometryAtomicCounterBuffers") == 0)
-            return cg.b->getInt32(0);
+            return cg.b->getInt32(8);
         if (strcmp(e->u.var_ref.name, "gl_MaxGeometryImageUniforms") == 0)
-            return cg.b->getInt32(0);
+            return cg.b->getInt32(8);
         if (strcmp(e->u.var_ref.name, "gl_MaxGeometryShaderInvocations") == 0)
             return cg.b->getInt32(32);
         if (strcmp(e->u.var_ref.name, "gl_Position") == 0) {
@@ -4611,10 +4675,15 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             llvm::Value *p = emitAtomicCounterAddress(
                 cg, e->u.call.args[0], mod, locals);
             if (!p) return nullptr;
-            /* GLSL 4.60 8.11: returns the value previously in the counter. */
-            return cg.b->CreateAtomicRMW(
+            /* GLSL 4.60 §8.11: atomicCounterDecrement returns the value
+             * *resulting from* the decrement (post-decrement), unlike
+             * atomicCounterIncrement which returns the pre-increment
+             * value.  AtomicRMW::Sub yields the old value, so subtract
+             * one more. */
+            llvm::Value *old = cg.b->CreateAtomicRMW(
                 llvm::AtomicRMWInst::Sub, p, cg.b->getInt32(1),
                 llvm::MaybeAlign(), llvm::AtomicOrdering::Monotonic);
+            return cg.b->CreateSub(old, cg.b->getInt32(1));
         }
         /* atomicCounter(counter): non-modifying read of device memory. */
         if (strcmp(name, "atomicCounter") == 0) {

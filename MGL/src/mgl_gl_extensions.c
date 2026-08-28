@@ -3334,6 +3334,14 @@ void mglGetActiveAtomicCounterBufferiv(GLMContext ctx, GLuint program, GLuint bu
 			if (res->gl_binding != bufferIndex) {
 				continue;
 			}
+			/* Shared preambles declare counters in every stage; only a
+			 * use inside the stage's main body makes the buffer
+			 * "referenced" by that stage (same activity rule as the
+			 * block interfaces, GL 4.6 §7.3.1). */
+			if (!mgl_program_stage_source_references(pptr, stage,
+			                                        res->name)) {
+				continue;
+			}
 			active_count++;
 			referenced_by_stage[stage] = GL_TRUE;
 			GLuint offset = res->location != 0xffffffffu ? res->location : 0u;
@@ -4764,7 +4772,13 @@ void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInter
 							&pptr->shader_resources_list[query_stage][_ATOMIC_COUNTER_RES];
 						for (GLuint j = 0; j < list->count; j++)
 						{
-							if (list->list[j].gl_binding == target_binding)
+							if (list->list[j].gl_binding == target_binding &&
+							    /* Activity: the counter must be used in
+							     * this stage's main body, not merely
+							     * declared by a shared preamble. */
+							    mgl_program_stage_source_references(
+							        pptr, query_stage,
+							        list->list[j].name))
 							{
 								referenced = GL_TRUE;
 								break;

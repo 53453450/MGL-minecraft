@@ -1361,6 +1361,7 @@ static MGLDecl *parse_declaration(MGLParser *p)
     d->line = line;
     d->layout_location = -1;   /* "unspecified", per mgl_glsl_ast.h */
     d->layout_binding = -1;    /* "unspecified", per mgl_glsl_ast.h */
+    d->layout_offset = -1;     /* atomic-counter offset, -1 = unspecified */
     d->layout_vertices = -1;   /* TCS: layout(vertices=N), unspecified */
     d->layout_max_vertices = -1; /* GS: layout(max_vertices=N), unspecified */
     /* -1 = unspecified; a later stage-level declaration must not
@@ -1529,6 +1530,10 @@ more_qualifiers:
                         d->layout_location = (int32_t)cur_double(p);
                     } else if (n == 7 && memcmp(s, "binding", 7) == 0) {
                         d->layout_binding = (int32_t)cur_double(p);
+                    } else if (n == 6 && memcmp(s, "offset", 6) == 0) {
+                        /* GLSL 4.60 §4.4.2.3: explicit atomic-counter
+                         * buffer offset. */
+                        d->layout_offset = (int32_t)cur_double(p);
                     } else if (n == 8 && memcmp(s, "vertices", 8) == 0) {
                         d->layout_vertices = (int32_t)cur_double(p);
                     } else if (n == 12 && memcmp(s, "max_vertices", 12) == 0) {

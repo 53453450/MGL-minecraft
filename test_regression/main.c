@@ -14264,10 +14264,12 @@ static int test_air_geometry_atomic_counter(unsigned char *pixels,
             glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(retValue),
                                &retValue);
             glDeleteProgram(program_dec);
-            if (retValue != 5u || counterValue != 4u) {
+            /* GLSL 4.60 8.11: atomicCounterDecrement returns the
+             * post-decrement value (4 when the counter held 5). */
+            if (retValue != 4u || counterValue != 4u) {
                 fprintf(stderr,
                         "air_geometry_atomic_counter: decrement expected "
-                        "ret=5 counter=4, got ret=%u counter=%u\n",
+                        "ret=4 counter=4, got ret=%u counter=%u\n",
                         retValue, counterValue);
                 glDeleteProgram(program_ret);
                 goto cleanup;

@@ -297,6 +297,8 @@ struct MGLDecl {
     uint32_t matrix_major; /* MGL_AST_MATRIX_* */
     int32_t layout_location; /* layout(location=N), -1 if unspecified */
     int32_t layout_binding;  /* layout(binding=N), -1 if unspecified */
+    int32_t layout_offset;   /* layout(offset=N) atomic-counter byte
+                              * offset, -1 if unspecified */
     /* Tessellation/geometry layout (M3).  -1/0 = unspecified. */
     int32_t  layout_vertices;       /* TCS: layout(vertices=N) */
     uint32_t layout_primitive;      /* TES: MGL_AST_TES_* ; GS in: MGL_AST_GS_IN_* */
