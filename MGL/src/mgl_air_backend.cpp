@@ -497,6 +497,24 @@ llvm::Value *broadcastTo(Codegen &cg, llvm::Value *v, llvm::Type *vecTy);
 /* Constant-fold a numeric binary op when both operands are constants of
  * the same type; returns null when folding is not possible.  Mirrors the
  * runtime signedness/comparison semantics of emitNumericBinOp. */
+/* GLSL 4.60 §5.9: == / != on vector operands yield a scalar bool
+ * (all lanes equal / any lane differs).  Relational operators keep
+ * their vector (bvec) results for any()/all()/equal(). */
+static llvm::Value *scalarizeBoolCompare(Codegen &cg, uint32_t op,
+                                         llvm::Value *cmp) {
+    if (op != MGL_OP_EQ && op != MGL_OP_NE) return cmp;
+    if (!cmp->getType()->isVectorTy()) return cmp;
+    auto *vt = llvm::cast<llvm::FixedVectorType>(cmp->getType());
+    uint32_t n = (uint32_t)vt->getElementCount().getFixedValue();
+    llvm::Value *acc = cg.b->CreateExtractElement(cmp, (uint64_t)0);
+    for (uint32_t i = 1; i < n; i++) {
+        llvm::Value *lane = cg.b->CreateExtractElement(cmp, (uint64_t)i);
+        acc = op == MGL_OP_EQ ? cg.b->CreateAnd(acc, lane)
+                              : cg.b->CreateOr(acc, lane);
+    }
+    return acc;
+}
+
 llvm::Value *tryFoldConst(Codegen &cg, uint32_t op, llvm::Value *l,
                           llvm::Value *r, bool uns) {
     auto *lc = llvm::dyn_cast<llvm::Constant>(l);
@@ -531,13 +549,15 @@ llvm::Value *tryFoldConst(Codegen &cg, uint32_t op, llvm::Value *l,
     case MGL_OP_OR:  llo = llvm::Instruction::Or; break;
     case MGL_OP_XOR: llo = llvm::Instruction::Xor; break;
     case MGL_OP_EQ:
-        return llvm::ConstantExpr::getCompare(fp ? llvm::CmpInst::FCMP_OEQ
-                                                 : llvm::CmpInst::ICMP_EQ,
-                                              lc, rc);
+        return scalarizeBoolCompare(cg, op,
+            llvm::ConstantExpr::getCompare(fp ? llvm::CmpInst::FCMP_OEQ
+                                              : llvm::CmpInst::ICMP_EQ,
+                                           lc, rc));
     case MGL_OP_NE:
-        return llvm::ConstantExpr::getCompare(fp ? llvm::CmpInst::FCMP_ONE
-                                                 : llvm::CmpInst::ICMP_NE,
-                                              lc, rc);
+        return scalarizeBoolCompare(cg, op,
+            llvm::ConstantExpr::getCompare(fp ? llvm::CmpInst::FCMP_ONE
+                                              : llvm::CmpInst::ICMP_NE,
+                                           lc, rc));
     case MGL_OP_LT:
         return llvm::ConstantExpr::getCompare(
             fp ? llvm::CmpInst::FCMP_OLT
@@ -613,7 +633,8 @@ llvm::Value *emitNumericBinOp(Codegen &cg, uint32_t op, llvm::Value *l,
                      : uns ? llvm::CmpInst::ICMP_UGE : llvm::CmpInst::ICMP_SGE; break;
     default: return nullptr;
     }
-    return fp ? cg.b->CreateFCmp(pred, l, r) : cg.b->CreateICmp(pred, l, r);
+    return scalarizeBoolCompare(
+        cg, op, fp ? cg.b->CreateFCmp(pred, l, r) : cg.b->CreateICmp(pred, l, r));
 }
 
 /* Broadcast a scalar to a vector type; identity if already matching. */
@@ -3637,6 +3658,17 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         if (!swizzleIndices(e->u.member.field, &idx)) { cg.err = 1; return nullptr; }
         llvm::Value *obj = emitExpr(cg, e->u.member.object, mod, locals);
         if (!obj) return nullptr;
+        if (!obj->getType()->isVectorTy()) {
+            /* Member access on a non-vector (e.g. a struct-typed member
+             * of a uniform block, whose aggregate reads are not wired
+             * yet): fail with a diagnostic instead of an invalid
+             * ExtractElement on an aggregate (SIGSEGV in LLVM). */
+            cg.err = 1;
+            cg.errmsg = std::string("codegen: member '") +
+                        e->u.member.field +
+                        "' of a non-vector value is not supported";
+            return nullptr;
+        }
         if (idx.size() == 1)
             return cg.b->CreateExtractElement(obj,
                 llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), idx[0]));
@@ -8323,6 +8355,12 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             pt.scalar = (MGLIRScalar)(pd->type ? pd->type->base
                                                : MGL_AST_TYPE_FLOAT);
             if (pd->type && pd->type->vec_size) pt.vec = pd->type->vec_size;
+            /* Matrix parameters must carry their shape or m[i]/m[i][j]
+             * inside the function body fail the index type check. */
+            if (pd->type && pd->type->mat_cols > 1) {
+                pt.cols = pd->type->mat_cols;
+                pt.rows = pd->type->mat_rows;
+            }
             flocals[pd->name] = pt;
             fc.lvalues[pd->name] = f->getArg(p);
         }
