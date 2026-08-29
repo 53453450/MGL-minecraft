@@ -1328,6 +1328,64 @@ static GLboolean mglValidateGeometryInterface(Program *pptr)
     return GL_TRUE;
 }
 
+/* GL 4.6 §7.7.2: two distinct atomic counter uniforms in the same program
+ * that share an atomic counter buffer binding must not have overlapping
+ * [offset, offset + size) byte ranges.  The same counter name declared in
+ * several stages refers to one counter and is exempt.  Reflection stores
+ * the counter's byte offset in resource->location and its byte size in
+ * resource->required_size. */
+static bool mglValidateAtomicCounterOffsetOverlap(Program *pptr)
+{
+    if (!pptr) {
+        return false;
+    }
+
+    for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
+        const MGLShaderResourceList *acs =
+            &pptr->shader_resources_list[stage][_ATOMIC_COUNTER_RES];
+        for (GLuint i = 0u; i < acs->count; i++) {
+            const MGLShaderResource *a = &acs->list[i];
+            GLuint a_size = (GLuint)a->required_size;
+            if (a_size == 0u) {
+                a_size = (GLuint)sizeof(GLuint);
+            }
+            for (int stage2 = stage; stage2 < _MAX_SHADER_TYPES; stage2++) {
+                const MGLShaderResourceList *bcs =
+                    &pptr->shader_resources_list[stage2][_ATOMIC_COUNTER_RES];
+                for (GLuint j = (stage2 == stage) ? i + 1u : 0u;
+                     j < bcs->count; j++) {
+                    const MGLShaderResource *b = &bcs->list[j];
+                    if (a->gl_binding != b->gl_binding) {
+                        continue;
+                    }
+                    if (a->name && b->name && strcmp(a->name, b->name) == 0) {
+                        continue;
+                    }
+                    GLuint b_size = (GLuint)b->required_size;
+                    if (b_size == 0u) {
+                        b_size = (GLuint)sizeof(GLuint);
+                    }
+                    if (a->location < b->location + b_size &&
+                        b->location < a->location + a_size) {
+                        fprintf(stderr,
+                                "MGL WARNING: mglLinkProgram failed program %u: "
+                                "atomic counters '%s' (offset %u) and '%s' (offset %u) "
+                                "overlap on binding %u\n",
+                                pptr->name,
+                                a->name ? a->name : "(null)",
+                                a->location,
+                                b->name ? b->name : "(null)",
+                                b->location,
+                                a->gl_binding);
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    return true;
+}
+
 void mglLinkProgram(GLMContext ctx, GLuint program)
 {
     Program *pptr;
@@ -1809,6 +1867,12 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         if (binding_error) {
             return;
         }
+    }
+
+    /* GL 4.6 §7.7.2: distinct atomic counters sharing a binding must not
+     * overlap in the counter buffer. */
+    if (!mglValidateAtomicCounterOffsetOverlap(pptr)) {
+        return;
     }
 
     pptr->link_success = GL_TRUE;

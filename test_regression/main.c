@@ -55,7 +55,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 89
+#define MAX_TESTS 91
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -14116,6 +14116,141 @@ cleanup:
     return result;
 }
 
+/* Diagnostic probe: GEOMETRY_SHADER_PRIMITIVES_EMITTED across instanced /
+ * indirect / base-vertex / base-instance draw variants.  Mirrors the CTS
+ * pipeline-statistics functional GS case (points-in points-out GS emitting 3
+ * vertices per input primitive, GL_TRIANGLES draws). */
+static int test_gs_query_instanced_probe(unsigned char *pixels,
+                                         const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) in float position;\n"
+        "void main() { gl_Position = vec4(position, 0.0, 0.0, 1.0); }\n";
+    static const char *gs =
+        "#version 450 core\n"
+        "layout(triangles) in;\n"
+        "layout(points, max_vertices=8) out;\n"
+        "void main() {\n"
+        "  for (int n = 0; n < 3; ++n) {\n"
+        "    gl_Position = vec4(float(n) * 0.1, 0.0, 0.0, 1.0);\n"
+        "    EmitVertex();\n"
+        "  }\n"
+        "  EndPrimitive();\n"
+        "}\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(0.0, 1.0, 0.0, 1.0); }\n";
+
+    /* 1 input triangle per instance; the GS emits 3 points per triangle. */
+    static const float positions[6] = {
+        -0.5f, 0.0f, 0.5f, 0.0f, 0.0f, 0.5f,
+    };
+    static const GLuint indices[3] = { 2u, 1u, 0u };
+
+    GLuint fbo = 0u, color = 0u, vao = 0u, vbo = 0u, ibo = 0u;
+    GLuint q = 0u, program = 0u;
+    int result = 1;
+    fbo = make_fbo(REG_W, REG_H, &color);
+    if (!fbo) goto cleanup;
+    program = link_program_with_geometry(vs, gs, fs);
+    if (!program) goto cleanup;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(positions), positions,
+                 GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 1, GL_FLOAT, GL_FALSE, 0, (void *)0);
+    glGenBuffers(1, &ibo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices,
+                 GL_STATIC_DRAW);
+    glGenQueries(1, &q);
+    glUseProgram(program);
+    clear_color(0.0f, 0.0f, 0.0f);
+
+    {
+        struct {
+            const char *name;
+            int use_base_vertex;
+            int use_base_instance;
+            int use_indirect;
+        } variants[] = {
+            { "drawElements             ", 0, 0, 0 },
+            { "drawElementsInstanced    ", 0, 0, 0 },
+            { "basevertex=1             ", 1, 0, 0 },
+            { "baseinstance=1           ", 0, 1, 0 },
+            { "basevertex=1 baseinst=1  ", 1, 1, 0 },
+            { "drawElementsIndirect     ", 1, 1, 1 },
+        };
+        for (unsigned vi = 0; vi < sizeof(variants) / sizeof(variants[0]);
+             vi++) {
+            GLuint emitted = 0u;
+            glBeginQuery(GL_GEOMETRY_SHADER_PRIMITIVES_EMITTED, q);
+            if (variants[vi].use_indirect) {
+                /* DrawElementsIndirect buffer layout:
+                 * count, primcount, first, basevertex, baseinstance. */
+                GLuint args[5] = { 3u, 4u, 0u, 1u, 1u };
+                GLuint indirect_buf = 0u;
+                glGenBuffers(1, &indirect_buf);
+                glBindBuffer(GL_DRAW_INDIRECT_BUFFER, indirect_buf);
+                glBufferData(GL_DRAW_INDIRECT_BUFFER, sizeof(args), args,
+                             GL_STATIC_DRAW);
+                glDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_INT, (void *)0);
+                glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
+                glDeleteBuffers(1, &indirect_buf);
+            } else if (variants[vi].use_base_vertex &&
+                       variants[vi].use_base_instance) {
+                glDrawElementsInstancedBaseVertexBaseInstance(
+                    GL_TRIANGLES, 3, GL_UNSIGNED_INT, (void *)0, 4, 1, 1);
+            } else if (variants[vi].use_base_vertex) {
+                glDrawElementsInstancedBaseVertex(GL_TRIANGLES, 3,
+                                                  GL_UNSIGNED_INT, (void *)0,
+                                                  4, 1);
+            } else if (variants[vi].use_base_instance) {
+                glDrawElementsInstancedBaseInstance(GL_TRIANGLES, 3,
+                                                    GL_UNSIGNED_INT,
+                                                    (void *)0, 4, 1);
+            } else if (vi == 1) {
+                glDrawElementsInstanced(GL_TRIANGLES, 3, GL_UNSIGNED_INT,
+                                        (void *)0, 4);
+            } else {
+                glDrawElements(GL_TRIANGLES, 3, GL_UNSIGNED_INT, (void *)0);
+            }
+            glEndQuery(GL_GEOMETRY_SHADER_PRIMITIVES_EMITTED);
+            glFinish();
+            glGetQueryObjectuiv(q, GL_QUERY_RESULT, &emitted);
+            /* Expected: 1 triangle x 4 instances x 3 emitted = 12
+             * (non-instanced drawElements: 1 x 3 = 3). */
+            GLuint expected = variants[vi].name[0] == 'd' && vi == 0 ? 3u : 12u;
+            fprintf(stderr, "gs_query_instanced_probe: %s emitted=%u "
+                    "expected=%u %s\n",
+                    variants[vi].name, emitted, expected,
+                    emitted == expected ? "OK" : "MISMATCH");
+            if (emitted != expected)
+                result = 2;
+        }
+    }
+
+    result = 0;
+cleanup:
+    if (q) glDeleteQueries(1, &q);
+    if (program) glDeleteProgram(program);
+    if (ibo) glDeleteBuffers(1, &ibo);
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    return result;
+}
+
 /* Link-time guard for the GS compute ABI's reserved Metal buffer slots.
  * Twenty-four SSBOs occupy user slots 0..23 and remain valid.  Adding the
  * twenty-fifth assigns user slot 24, which is MGL_AIR_GS_SLOT_INPUT and must
@@ -14411,6 +14546,203 @@ cleanup:
     return result;
 }
 
+/* GL 4.6 §7.7.2 / GLSL 4.60 §4.4.6 atomic-counter declaration and link
+ * validation (CTS replicas: shader_atomic_counters negative-* cases and the
+ * layout_location invalid compute case). */
+static int test_air_atomic_counter_validation(unsigned char *pixels,
+                                              const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    int result = 1;
+
+    /* layout(location=N) on atomic_uint: compile-time error.  CTS checks
+     * both the fragment form and the compute form. */
+    {
+        static const char *fs =
+            "#version 460 core\n"
+            "layout(location=2, binding=0) uniform atomic_uint u_atomic;\n"
+            "layout(location=0) out uvec4 o_color;\n"
+            "void main() { o_color = uvec4(atomicCounterIncrement(u_atomic)); }\n";
+        static const char *cs =
+            "#version 460 core\n"
+            "layout(location=2, binding=0) uniform atomic_uint u_atomic;\n"
+            "layout(local_size_x=1, local_size_y=1, local_size_z=1) in;\n"
+            "layout(binding=0) buffer Output { uint value; } sb_out;\n"
+            "void main() { sb_out.value = atomicCounterIncrement(u_atomic); }\n";
+        const char *sources[2] = { fs, cs };
+        const GLenum types[2] = { GL_FRAGMENT_SHADER, GL_COMPUTE_SHADER };
+        for (int i = 0; i < 2; i++) {
+            GLuint s = compile_shader(types[i], sources[i]);
+            if (s) {
+                fprintf(stderr,
+                        "air_atomic_counter_validation: layout(location) atomic "
+                        "counter compiled (type 0x%x)\n", types[i]);
+                glDeleteShader(s);
+                return 1;
+            }
+        }
+    }
+
+    /* atomic_uint inside an interface block: compile-time error. */
+    {
+        static const char *fs =
+            "#version 430 core\n"
+            "layout(location=0) out uvec4 o_color;\n"
+            "uniform Block {\n"
+            "  layout(binding=0, offset=0) uniform atomic_uint ac_counter0;\n"
+            "};\n"
+            "void main() { o_color = uvec4(atomicCounterIncrement(ac_counter0)); }\n";
+        GLuint s = compile_shader(GL_FRAGMENT_SHADER, fs);
+        if (s) {
+            fprintf(stderr,
+                    "air_atomic_counter_validation: atomic counter in uniform "
+                    "block compiled\n");
+            glDeleteShader(s);
+            return 1;
+        }
+    }
+
+    /* Unsized atomic counter array: compile-time error. */
+    {
+        static const char *fs =
+            "#version 450 core\n"
+            "layout(location=0) out uvec4 o_color;\n"
+            "layout(binding=0, offset=4) uniform atomic_uint ac_counter[];\n"
+            "void main() { o_color = uvec4(atomicCounterIncrement(ac_counter[0])); }\n";
+        GLuint s = compile_shader(GL_FRAGMENT_SHADER, fs);
+        if (s) {
+            fprintf(stderr,
+                    "air_atomic_counter_validation: unsized atomic counter "
+                    "array compiled\n");
+            glDeleteShader(s);
+            return 1;
+        }
+    }
+
+    /* Explicit offset that pushes the counter past
+     * GL_MAX_ATOMIC_COUNTER_BUFFER_SIZE: compile-time error; the last
+     * fitting offset must still compile. */
+    {
+        static const char *too_big =
+            "#version 420 core\n"
+            "layout(location=0) out uvec4 o_color;\n"
+            "layout(binding=0, offset=16384) uniform atomic_uint ac_big;\n"
+            "void main() { o_color = uvec4(atomicCounterIncrement(ac_big)); }\n";
+        static const char *fits =
+            "#version 420 core\n"
+            "layout(location=0) out uvec4 o_color;\n"
+            "layout(binding=0, offset=16380) uniform atomic_uint ac_fit;\n"
+            "void main() { o_color = uvec4(atomicCounterIncrement(ac_fit)); }\n";
+        GLuint s = compile_shader(GL_FRAGMENT_SHADER, too_big);
+        if (s) {
+            fprintf(stderr,
+                    "air_atomic_counter_validation: offset 16384 compiled\n");
+            glDeleteShader(s);
+            return 1;
+        }
+        s = compile_shader(GL_FRAGMENT_SHADER, fits);
+        if (!s) {
+            fprintf(stderr,
+                    "air_atomic_counter_validation: offset 16380 (last fitting) "
+                    "failed to compile\n");
+            return 1;
+        }
+        glDeleteShader(s);
+    }
+
+    /* Two distinct counters sharing binding+offset: link must fail
+     * (CTS negative-glsl replica). */
+    {
+        static const char *vs =
+            "#version 420 core\n"
+            "layout(location=0) in vec4 i_vertex;\n"
+            "void main() { gl_Position = i_vertex; }\n";
+        static const char *fs =
+            "#version 420 core\n"
+            "layout(location=0) out uvec4 o_color[4];\n"
+            "layout(binding=0, offset=4) uniform atomic_uint ac_counter0;\n"
+            "layout(binding=0, offset=4) uniform atomic_uint ac_counter2;\n"
+            "void main() {\n"
+            "  o_color[0] = uvec4(atomicCounterIncrement(ac_counter0));\n"
+            "  o_color[2] = uvec4(atomicCounterIncrement(ac_counter2));\n"
+            "}\n";
+        GLuint a = compile_shader(GL_VERTEX_SHADER, vs);
+        GLuint b = compile_shader(GL_FRAGMENT_SHADER, fs);
+        GLuint prog = glCreateProgram();
+        int local_fail = 0;
+        if (!a || !b || !prog) {
+            fprintf(stderr,
+                    "air_atomic_counter_validation: overlap replica compile "
+                    "failed unexpectedly\n");
+            local_fail = 1;
+        } else {
+            glAttachShader(prog, a);
+            glAttachShader(prog, b);
+            glLinkProgram(prog);
+            GLint linked = 1;
+            glGetProgramiv(prog, GL_LINK_STATUS, &linked);
+            if (linked) {
+                fprintf(stderr,
+                        "air_atomic_counter_validation: overlapping counters "
+                        "linked\n");
+                local_fail = 1;
+            }
+        }
+        if (a) glDeleteShader(a);
+        if (b) glDeleteShader(b);
+        if (prog) glDeleteProgram(prog);
+        if (local_fail) return 1;
+    }
+
+    /* The same counter declared in two stages (same name, same binding and
+     * offset) is one counter: the link must succeed. */
+    {
+        static const char *vs =
+            "#version 420 core\n"
+            "layout(binding=0, offset=0) uniform atomic_uint ac_counter;\n"
+            "layout(location=0) in vec4 i_vertex;\n"
+            "void main() {\n"
+            "  atomicCounterIncrement(ac_counter);\n"
+            "  gl_Position = i_vertex;\n"
+            "}\n";
+        static const char *fs =
+            "#version 420 core\n"
+            "layout(binding=0, offset=0) uniform atomic_uint ac_counter;\n"
+            "layout(location=0) out uvec4 o_color;\n"
+            "void main() { o_color = uvec4(atomicCounterIncrement(ac_counter)); }\n";
+        GLuint a = compile_shader(GL_VERTEX_SHADER, vs);
+        GLuint b = compile_shader(GL_FRAGMENT_SHADER, fs);
+        GLuint prog = glCreateProgram();
+        int local_fail = 0;
+        if (!a || !b || !prog) {
+            fprintf(stderr,
+                    "air_atomic_counter_validation: shared-counter compile "
+                    "failed unexpectedly\n");
+            local_fail = 1;
+        } else {
+            glAttachShader(prog, a);
+            glAttachShader(prog, b);
+            glLinkProgram(prog);
+            GLint linked = 0;
+            glGetProgramiv(prog, GL_LINK_STATUS, &linked);
+            if (!linked) {
+                fprintf(stderr,
+                        "air_atomic_counter_validation: same counter in VS+FS "
+                        "must link\n");
+                local_fail = 1;
+            }
+        }
+        if (a) glDeleteShader(a);
+        if (b) glDeleteShader(b);
+        if (prog) glDeleteProgram(prog);
+        if (local_fail) return 1;
+    }
+
+    result = 0;
+    return result;
+}
+
 static int test_air_geometry_buffer_slot_conflict(unsigned char *pixels,
                                                   const char *out_path)
 {
@@ -14521,8 +14853,11 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("air_cull_distance", test_air_cull_distance),
     SELF_CHECK_TEST("air_geometry_varying", test_air_geometry_varying),
     SELF_CHECK_TEST("air_geometry_resources", test_air_geometry_resources),
+    SELF_CHECK_TEST("gs_query_instanced_probe", test_gs_query_instanced_probe),
     SELF_CHECK_TEST("air_geometry_atomic_counter",
                     test_air_geometry_atomic_counter),
+    SELF_CHECK_TEST("air_atomic_counter_validation",
+                    test_air_atomic_counter_validation),
     SELF_CHECK_TEST("air_geometry_buffer_slot_conflict",
                     test_air_geometry_buffer_slot_conflict),
     SELF_CHECK_TEST("air_geometry_instancing", test_air_geometry_instancing),

@@ -37,6 +37,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* GL_MAX_ATOMIC_COUNTER_BUFFER_SIZE advertised by the GL implementation
+ * (glm_params.c).  GL 4.6 §7.7.2 makes an offset that would grow the bound
+ * buffer beyond this limit a compile-time error, which the pure frontend
+ * must enforce without a context handle, so the value is mirrored here.
+ * Keep the two in sync. */
+#define MGL_SEMA_MAX_ATOMIC_COUNTER_BUFFER_SIZE 16384u
+
 /* ------------------------------------------------------------------ */
 /* Diagnostics                                                         */
 /* ------------------------------------------------------------------ */
@@ -2099,6 +2106,17 @@ static void layout_block(Sema *s, const MGLDecl *d, MGLIRType *block_type)
     }
     for (uint32_t i = 0; i < block_type->member_count; i++) {
         MGLIRType *member = block_type->members[i];
+        /* GL 4.6 §7.7.2: atomic counters may only be declared at global
+         * scope; a block member of atomic_uint type is an error. */
+        const MGLIRType *mbase = member;
+        while (mbase && mbase->kind == MGLIR_TYPE_ARRAY)
+            mbase = mbase->elem_type;
+        if (mbase && mbase->kind == MGLIR_TYPE_ATOMIC_COUNTER) {
+            sema_error(s, d->line,
+                       "atomic counter '%s' cannot be declared inside an interface block",
+                       block_type->member_names[i]
+                           ? block_type->member_names[i] : "?");
+        }
         if (member && member->kind == MGLIR_TYPE_ARRAY &&
             member->array_size == 0 &&
             (!(d->qualifiers & MGL_AST_Q_BUFFER) ||
@@ -2227,6 +2245,39 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
     if (!var_name) {
         mglIRTypeDestroy(t);
         return;
+    }
+    /* GL 4.6 §7.7.2 / GLSL 4.60 §4.4.6: atomic counters live at global
+     * scope only, cannot carry layout(location), and an explicit offset
+     * must keep the whole counter inside MAX_ATOMIC_COUNTER_BUFFER_SIZE. */
+    {
+        const MGLIRType *at = t;
+        while (at && at->kind == MGLIR_TYPE_ARRAY)
+            at = at->elem_type;
+        if (at && at->kind == MGLIR_TYPE_ATOMIC_COUNTER) {
+            if (d->layout_location >= 0) {
+                sema_error(s, d->line,
+                           "layout(location = %d) is not allowed for atomic counter '%s'",
+                           d->layout_location, var_name);
+            }
+            if (t->kind == MGLIR_TYPE_ARRAY && t->array_size == 0u) {
+                sema_error(s, d->line,
+                           "atomic counter array '%s' must be declared with a size",
+                           var_name);
+            }
+            if (d->layout_offset >= 0) {
+                uint32_t elems = 1u;
+                if (t->kind == MGLIR_TYPE_ARRAY && t->array_size > 0u)
+                    elems = t->array_size;
+                if ((uint64_t)(uint32_t)d->layout_offset +
+                        (uint64_t)elems * 4u >
+                    MGL_SEMA_MAX_ATOMIC_COUNTER_BUFFER_SIZE) {
+                    sema_error(s, d->line,
+                               "atomic counter '%s' offset %d with %u element(s) "
+                               "exceeds the maximum atomic counter buffer size",
+                               var_name, d->layout_offset, elems);
+                }
+            }
+        }
     }
     Sym *existing = symtab_lookup_local(tab, var_name);
     if (existing != NULL && existing->kind != SYM_STRUCT) {
