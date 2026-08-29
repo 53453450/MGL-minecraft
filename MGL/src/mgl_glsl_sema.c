@@ -2452,8 +2452,12 @@ static void analyze_decl(Sema *s, SymTab *tab, const MGLDecl *d, int global)
     }
     if (d->body || d->params) {
         analyze_function(s, tab, d);
-    } else {
-        analyze_variable(s, tab, d, global);
+        return;
+    }
+    /* Comma-separated declarators (`uniform int a, b;`): every node is a
+     * distinct symbol sharing the first node's type spec. */
+    for (const MGLDecl *cur = d; cur; cur = cur->next_declarator) {
+        analyze_variable(s, tab, cur, global);
     }
 }
 

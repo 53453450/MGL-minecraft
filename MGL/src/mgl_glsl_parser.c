@@ -1751,17 +1751,34 @@ more_qualifiers:
             if (!param) {
                 break;
             }
-            if (eat_ident(p, "in")) {
-                param->qualifiers |= MGL_AST_Q_IN;
-            } else if (eat_ident(p, "out")) {
-                param->qualifiers |= MGL_AST_Q_OUT;
-            } else if (eat_ident(p, "inout")) {
-                param->qualifiers |= MGL_AST_Q_IN | MGL_AST_Q_OUT;
+            /* parameter_qualifier + precision_qualifier in either order
+             * (GLSL 4.60 §6.1): `in highp float a` / `highp in float a`. */
+            uint32_t param_prec = MGL_AST_PRECISION_NONE;
+            for (;;) {
+                if (eat_ident(p, "in")) {
+                    param->qualifiers |= MGL_AST_Q_IN;
+                } else if (eat_ident(p, "out")) {
+                    param->qualifiers |= MGL_AST_Q_OUT;
+                } else if (eat_ident(p, "inout")) {
+                    param->qualifiers |= MGL_AST_Q_IN | MGL_AST_Q_OUT;
+                } else if (at_ident(p, "lowp") || at_ident(p, "mediump") ||
+                           at_ident(p, "highp")) {
+                    if (param_prec == MGL_AST_PRECISION_NONE) {
+                        param_prec = eat_precision_qualifier(p);
+                    } else {
+                        (void)eat_precision_qualifier(p);
+                    }
+                } else {
+                    break;
+                }
             }
             param->type = parse_type_spec(p);
             if (!param->type) {
                 free(param);
                 break;
+            }
+            if (param_prec != MGL_AST_PRECISION_NONE) {
+                param->type->precision = param_prec;
             }
             if (at_any_ident(p)) {
                 param->name = dup_current(p);
@@ -1796,9 +1813,57 @@ more_qualifiers:
         return d;
     }
 
-    /* initializer */
-    if (eat_punct(p, "=")) {
-        d->init = parse_expression(p);
+    /* Comma-separated additional declarators share the declaration's
+     * type spec, qualifiers and layout header (GLSL 4.60 §4.1: `int a,
+     * b[2], c = 3;`).  Each node owns its name, array dims and
+     * initializer; the type spec itself stays owned by the first
+     * declarator. */
+    {
+        MGLDecl *tail = d;
+        for (;;) {
+            if (eat_punct(p, "=")) {
+                tail->init = parse_expression(p);
+            }
+            if (!eat_punct(p, ",")) {
+                break;
+            }
+            MGLDecl *nd = (MGLDecl *)calloc(1, sizeof(*nd));
+            if (!nd) {
+                break;
+            }
+            *nd = *tail;
+            nd->next_declarator = NULL;
+            nd->type_shared = 1;       /* type owned by the first node */
+            nd->name = NULL;
+            nd->array_dims = NULL;
+            nd->array_count = 0;
+            nd->init = NULL;
+            nd->body = NULL;
+            nd->params = NULL;
+            nd->param_count = 0;
+            nd->return_type = NULL;
+            nd->struct_members = NULL;
+            nd->struct_member_count = 0;
+            nd->line = tk_line(p);
+            if (!at_any_ident(p)) {
+                parse_error(p, "expected identifier at line %u", tk_line(p));
+                free_decl(nd);
+                break;
+            }
+            nd->name = dup_current(p);
+            advance(p);
+            while (ops_at(p, "[")) {
+                advance(p);
+                uint32_t sz = parse_array_extent(p);
+                expect_punct(p, "]");
+                nd->array_dims = (uint32_t *)realloc(
+                    nd->array_dims,
+                    (nd->array_count + 1) * sizeof(uint32_t));
+                nd->array_dims[nd->array_count++] = sz;
+            }
+            tail->next_declarator = nd;
+            tail = nd;
+        }
     }
 
     expect_punct(p, ";");
@@ -2304,7 +2369,9 @@ static void free_decl(MGLDecl *d)
         return;
     }
     free(d->name);
-    free_type_spec(d->type);
+    if (!d->type_shared) {
+        free_type_spec(d->type);
+    }
     free(d->array_dims);
     free_expr(d->init);
     free_stmt(d->body);
@@ -2317,5 +2384,8 @@ static void free_decl(MGLDecl *d)
         free_decl(d->struct_members[i]);
     }
     free(d->struct_members);
+    /* Comma-separated sibling declarators form a singly linked chain. */
+    MGLDecl *next = d->next_declarator;
     free(d);
+    free_decl(next);
 }

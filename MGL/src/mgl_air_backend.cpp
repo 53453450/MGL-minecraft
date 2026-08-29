@@ -6184,7 +6184,9 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
         emitExpr(cg, st->u.expr.expr, mod, *locals);
         break;
     case MGL_STMT_DECL: {
-        MGLDecl *d = st->u.decl.decl;
+        /* Comma-separated declarators (`int a = 0, b = 1;`): every node
+         * declares its own local. */
+        for (MGLDecl *d = st->u.decl.decl; d; d = d->next_declarator) {
         MType t;
         if (d->type && d->type->base <= MGL_AST_TYPE_DOUBLE) {
             t.scalar = (MGLIRScalar)d->type->base;
@@ -6209,6 +6211,7 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
             cg.lvalues[d->name] = v;
         }
         (*locals)[d->name] = t;
+        }
         break;
     }
     case MGL_STMT_RETURN: {
@@ -6935,8 +6938,11 @@ static bool stmtUsesRuntimeArrayLength(const MGLStmt *st,
     case MGL_STMT_EXPR:
         return exprUsesRuntimeArrayLength(st->u.expr.expr, mod);
     case MGL_STMT_DECL:
-        return st->u.decl.decl &&
-               exprUsesRuntimeArrayLength(st->u.decl.decl->init, mod);
+        for (const MGLDecl *d = st->u.decl.decl; d; d = d->next_declarator) {
+            if (d->init && exprUsesRuntimeArrayLength(d->init, mod))
+                return true;
+        }
+        return false;
     case MGL_STMT_IF:
         return exprUsesRuntimeArrayLength(st->u.ifs.cond, mod) ||
                stmtUsesRuntimeArrayLength(st->u.ifs.then, mod) ||
@@ -6968,9 +6974,11 @@ static bool translationUnitUsesRuntimeArrayLength(
     for (uint32_t i = 0; i < tu->decl_count; i++) {
         const MGLDecl *d = tu->decls[i];
         if (!d) continue;
-        if (exprUsesRuntimeArrayLength(d->init, mod) ||
-            stmtUsesRuntimeArrayLength(d->body, mod))
-            return true;
+        for (const MGLDecl *cur = d; cur; cur = cur->next_declarator) {
+            if (exprUsesRuntimeArrayLength(cur->init, mod) ||
+                stmtUsesRuntimeArrayLength(cur->body, mod))
+                return true;
+        }
     }
     return false;
 }

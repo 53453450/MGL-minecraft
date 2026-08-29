@@ -319,6 +319,11 @@ struct MGLDecl {
     MGLDecl **struct_members; /* struct/block members or NULL */
     uint32_t struct_member_count;
     uint32_t line;
+    /* Comma-separated sibling declarator (`int a, b;`).  Chain nodes share
+     * the first declarator's MGLTypeSpec (type_shared) and declaration
+     * header; each node owns its name, array dims and initializer. */
+    struct MGLDecl *next_declarator;
+    int type_shared;       /* 1 = type owned by the first declarator */
 };
 
 /* Entire shader translation unit. */
