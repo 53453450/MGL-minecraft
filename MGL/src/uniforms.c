@@ -2550,21 +2550,38 @@ void mglGetActiveUniformBlockiv(GLMContext ctx, GLuint program, GLuint uniformBl
         case GL_UNIFORM_BLOCK_ACTIVE_UNIFORM_INDICES:
             /* Compute global active-uniform indices for each UBO member.
              * The caller provides a buffer sized for
-             * GL_UNIFORM_BLOCK_ACTIVE_UNIFORMS entries. */
+             * GL_UNIFORM_BLOCK_ACTIVE_UNIFORMS entries.
+             * Members are matched by (block-scoped) member name, not by
+             * pointer: per-stage block resources are distinct objects and
+             * the de-duplicated active-uniform cache keeps only the first
+             * owner's copy.  Unmatched tail entries get -1 so callers
+             * never read uninitialized indices. */
             if (block->ubo_members && block->ubo_member_count > 0) {
                 GLint total = mglProgramActiveUniformCount(ptr);
                 GLuint member_idx = 0;
                 for (GLint ui = 0; ui < total && member_idx < block->ubo_member_count; ui++) {
                     MGLShaderResource *res = mglProgramActiveUniformAt(ptr, (GLuint)ui, NULL, NULL);
-                    if (res && res->ubo_member) {
-                        /* Check this member belongs to our block. */
-                        for (GLuint m = 0; m < block->ubo_member_count; m++) {
-                            if (res->ubo_member == &block->ubo_members[m]) {
-                                params[member_idx++] = ui;
-                                break;
-                            }
+                    if (!res || !res->ubo_member) {
+                        continue;
+                    }
+                    const char *qn = res->ubo_member->query_name
+                                         ? res->ubo_member->query_name
+                                         : res->ubo_member->name;
+                    if (!qn) {
+                        continue;
+                    }
+                    for (GLuint m = 0; m < block->ubo_member_count; m++) {
+                        const char *bq = block->ubo_members[m].query_name
+                                             ? block->ubo_members[m].query_name
+                                             : block->ubo_members[m].name;
+                        if (bq && strcmp(bq, qn) == 0) {
+                            params[member_idx++] = ui;
+                            break;
                         }
                     }
+                }
+                for (GLuint k = member_idx; k < block->ubo_member_count; k++) {
+                    params[k] = -1;
                 }
             }
             break;

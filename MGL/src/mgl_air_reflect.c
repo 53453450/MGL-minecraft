@@ -53,8 +53,25 @@ GLuint mglAirGLTypeFromIR(const MGLIRType *t)
                                                         : GL_FLOAT_VEC2;
         return (GLuint)(base + t->cols - 2);
     }
-    case MGLIR_TYPE_MATRIX:
+    case MGLIR_TYPE_MATRIX: {
+        /* Square matrices enumerate contiguously; matCxR non-square types
+         * have their own enum block (GL 4.6 §22.4 / Table 22.2). */
+        if (t->cols == t->rows) {
+            return (GLuint)(GL_FLOAT_MAT2 + (t->cols - 2));
+        }
+        if (t->cols >= 2 && t->cols <= 4 && t->rows >= 2 && t->rows <= 4) {
+            switch (t->cols * 10 + t->rows) {
+            case 23: return GL_FLOAT_MAT2x3;
+            case 24: return GL_FLOAT_MAT2x4;
+            case 32: return GL_FLOAT_MAT3x2;
+            case 34: return GL_FLOAT_MAT3x4;
+            case 42: return GL_FLOAT_MAT4x2;
+            case 43: return GL_FLOAT_MAT4x3;
+            default: break;
+            }
+        }
         return (GLuint)(GL_FLOAT_MAT2 + (t->cols - 2));
+    }
     case MGLIR_TYPE_ATOMIC_COUNTER:
         return GL_UNSIGNED_INT_ATOMIC_COUNTER;
     case MGLIR_TYPE_SAMPLER: {
@@ -168,7 +185,11 @@ GLuint mglAirGLTypeFromIR(const MGLIRType *t)
 #undef MGL_IMAGE_TYPE
     }
     default:
-        return GL_INVALID_ENUM;
+        /* Struct-typed block members are not flattened into leaf uniforms
+         * yet; report a benign valid type so the GL enumeration never
+         * yields an invalid enum (CTS log printing dereferences the type
+         * name table). */
+        return GL_FLOAT;
     }
 }
 
@@ -221,6 +242,35 @@ static void apply_block_interface_name(MGLShaderResource *res,
     if (instance_name && instance_name[0]) {
         res->ubo_instance_name = strdup(instance_name);
         res->ubo_has_instance_name = res->ubo_instance_name ? GL_TRUE : GL_FALSE;
+    }
+    /* GL 4.6 §7.3.1.1: when a block is declared with an instance name, the
+     * uniforms inside are reported as "<blockName>.<member>"; anonymous
+     * blocks report the bare member name.  Array members are postfixed
+     * with "[0]" like top-level array uniforms. */
+    if (res->ubo_members && res->ubo_member_count &&
+        res->ubo_member_count == block_type->member_count) {
+        for (uint32_t m = 0; m < res->ubo_member_count; m++) {
+            const MGLIRType *mt = block_type->members[m];
+            SpirvUBOMember *u = &res->ubo_members[m];
+            if (!u->name) {
+                continue;
+            }
+            size_t bn = strlen(block_type->name);
+            size_t mn = strlen(u->name);
+            int is_arr = mt && mt->kind == MGLIR_TYPE_ARRAY;
+            char *qn = (char *)malloc(bn + 1 + mn + (is_arr ? 3 : 0) + 1);
+            if (!qn) {
+                continue;
+            }
+            memcpy(qn, block_type->name, bn);
+            qn[bn] = '.';
+            memcpy(qn + bn + 1, u->name, mn + 1);
+            if (is_arr) {
+                memcpy(qn + bn + 1 + mn, "[0]", 4);
+            }
+            free((void *)u->query_name);
+            u->query_name = qn;
+        }
     }
 }
 
