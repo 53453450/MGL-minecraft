@@ -3233,6 +3233,252 @@ static llvm::Value *emitGeometryStreamVertex(Codegen &cg, int32_t stream)
     return llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), 0);
 }
 
+/* ---- Uniform-block member chains ------------------------------------- */
+
+/* Collect the member/index chain of `e` (outermost first) and the root
+ * block symbol.  `rootIndex` (if any) is the trailing index that selects
+ * an instance-array element rather than walking the block layout. */
+static const MGLIRSymbol *blockChainRoot(const MGLExpr *e,
+                                         const MGLExpr *chain[16],
+                                         uint32_t *chain_len,
+                                         const MGLExpr **rootIndex,
+                                         const MGLIRModule *mod) {
+    const MGLExpr *cur = e;
+    uint32_t n = 0;
+    while (cur && n < 16 &&
+           (cur->kind == MGL_EXPR_MEMBER || cur->kind == MGL_EXPR_INDEX)) {
+        chain[n++] = cur;
+        cur = cur->kind == MGL_EXPR_MEMBER ? cur->u.member.object
+                                           : cur->u.index.object;
+    }
+    if (!cur || cur->kind != MGL_EXPR_VAR_REF) {
+        return nullptr;
+    }
+    *rootIndex = nullptr;
+    if (n > 0 && chain[n - 1]->kind == MGL_EXPR_INDEX &&
+        chain[n - 1]->u.index.object &&
+        chain[n - 1]->u.index.object->kind == MGL_EXPR_VAR_REF) {
+        *rootIndex = chain[n - 1];
+        n--;
+    }
+    *chain_len = n;
+    const MGLIRSymbol *ov = findSymbol(mod, cur->u.var_ref.name);
+    if (!ov || ov->is_function || !(ov->qualifiers & MGL_AST_Q_UNIFORM)) {
+        return nullptr;
+    }
+    return ov;
+}
+
+/* Type-level walk of a uniform-block member chain; returns the leaf type
+ * or nullptr when the expression is not a resolvable block access. */
+static const MGLIRType *blockMemberLeafType(const MGLExpr *e,
+                                            const MGLIRModule *mod) {
+    const MGLExpr *chain[16];
+    uint32_t chain_len = 0;
+    const MGLExpr *rootIndex = nullptr;
+    const MGLIRSymbol *ov = blockChainRoot(e, chain, &chain_len, &rootIndex,
+                                           mod);
+    if (!ov) {
+        return nullptr;
+    }
+    const MGLIRType *ct = ov->type;
+    if (ct && ct->kind == MGLIR_TYPE_ARRAY) {
+        ct = ct->elem_type;
+    }
+    uint32_t start = rootIndex ? 1u : 0u;
+    for (uint32_t ci = start; ci < chain_len && ct; ci++) {
+        const MGLExpr *node = chain[chain_len - 1 - ci]; /* innermost first */
+        if (node->kind == MGL_EXPR_MEMBER) {
+            if (ct->kind != MGLIR_TYPE_STRUCT) {
+                return nullptr; /* swizzle: not a block-layout step */
+            }
+            const MGLIRType *mt = nullptr;
+            for (uint32_t m = 0; m < ct->member_count; m++) {
+                if (!strcmp(ct->member_names[m], node->u.member.field)) {
+                    mt = ct->members[m];
+                    break;
+                }
+            }
+            ct = mt;
+        } else {
+            if (ct->kind != MGLIR_TYPE_ARRAY || !ct->elem_type) {
+                return nullptr;
+            }
+            ct = ct->elem_type;
+        }
+    }
+    return ct;
+}
+
+/* Emit a uniform-block member chain read: walk the member/index path over
+ * the block's struct layout and load the leaf at the accumulated byte
+ * offset (static member offsets + runtime array-index strides).  Trailing
+ * swizzles / vector component indexes apply to the loaded leaf. */
+static llvm::Value *emitBlockMemberChain(Codegen &cg, const MGLExpr *e,
+                                         llvm::Value *base,
+                                         const MGLIRType *ubStruct,
+                                         const char *objName,
+                                         const MGLIRModule *mod,
+                                         const std::map<std::string, MType>
+                                             &locals) {
+    const MGLExpr *chain[16];
+    uint32_t chain_len = 0;
+    const MGLExpr *rootIndex = nullptr;
+    if (!blockChainRoot(e, chain, &chain_len, &rootIndex, mod)) {
+        cg.err = 1;
+        cg.errmsg = std::string("codegen: uniform block '") + objName +
+                    "' member path did not resolve";
+        return nullptr;
+    }
+    const MGLIRType *ct = ubStruct;
+    uint64_t soff = 0;
+    llvm::Value *dynOff = nullptr;
+    llvm::Value *v = nullptr; /* set once the leaf is loaded */
+    MType vt;
+    for (uint32_t ci = 0; ci < chain_len; ci++) {
+        const MGLExpr *node = chain[chain_len - 1 - ci]; /* innermost first */
+        if (!v) {
+            bool stepped = false;
+            if (node->kind == MGL_EXPR_MEMBER &&
+                ct && ct->kind == MGLIR_TYPE_STRUCT) {
+                const MGLIRType *mt = nullptr;
+                uint32_t moff = 0;
+                for (uint32_t m = 0; m < ct->member_count; m++) {
+                    if (!strcmp(ct->member_names[m],
+                                node->u.member.field)) {
+                        mt = ct->members[m];
+                        moff = ct->member_offsets
+                                   ? ct->member_offsets[m]
+                                   : 0;
+                        break;
+                    }
+                }
+                if (!mt) {
+                    cg.err = 1;
+                    cg.errmsg = std::string("codegen: uniform block '") +
+                                objName + "' has no member '" +
+                                node->u.member.field + "'";
+                    return nullptr;
+                }
+                soff += moff;
+                ct = mt;
+                stepped = true;
+            } else if (node->kind == MGL_EXPR_INDEX &&
+                       ct && ct->kind == MGLIR_TYPE_ARRAY &&
+                       ct->elem_type) {
+                llvm::Value *idx = emitExpr(cg, node->u.index.index, mod,
+                                            locals);
+                if (!idx) return nullptr;
+                idx = coerceScalar(cg, idx, MGLIR_SCALAR_INT);
+                llvm::Value *i64 = cg.b->CreateSExt(idx, cg.b->getInt64Ty());
+                uint32_t stride = ct->layout.array_stride > 0
+                                      ? (uint32_t)ct->layout.array_stride
+                                      : 0u;
+                llvm::Value *byte =
+                    cg.b->CreateMul(i64, cg.b->getInt64(stride));
+                dynOff = dynOff ? cg.b->CreateAdd(dynOff, byte) : byte;
+                ct = ct->elem_type;
+                stepped = true;
+            }
+            if (stepped) {
+                continue;
+            }
+            /* Leaf boundary: the remaining outer nodes are swizzles or
+             * component selects on the loaded value. */
+            if (!ct || ct->kind == MGLIR_TYPE_STRUCT) {
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: uniform block '") + objName +
+                            "' whole-struct members are not readable";
+                return nullptr;
+            }
+            llvm::Value *off = cg.b->getInt64(soff);
+            if (dynOff) off = cg.b->CreateAdd(off, dynOff);
+            vt = typeFromIR(ct);
+            llvm::Type *t = llvmType(vt, *cg.ctx);
+            llvm::Value *p = cg.b->CreateGEP(cg.b->getInt8Ty(), base, off);
+            llvm::Align align(16);
+            if (auto *fvt = llvm::dyn_cast<llvm::FixedVectorType>(t)) {
+                uint64_t w = fvt->getElementCount().getFixedValue();
+                if (w == 1) align = llvm::Align(4);
+                else if (w == 2) align = llvm::Align(8);
+            } else if (t->isFloatTy() || t->isIntegerTy(32)) {
+                align = llvm::Align(4);
+            }
+            p = cg.b->CreateBitCast(p, t->getPointerTo(1));
+            v = cg.b->CreateAlignedLoad(t, p, align);
+        }
+        /* Post-leaf: swizzle / component selection on the loaded value. */
+        if (node->kind == MGL_EXPR_MEMBER) {
+            std::vector<uint32_t> sidx;
+            if (!swizzleIndices(node->u.member.field, &sidx)) {
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: invalid swizzle '") +
+                            node->u.member.field + "'";
+                return nullptr;
+            }
+            if (sidx.size() == 1) {
+                v = cg.b->CreateExtractElement(
+                    v, cg.b->getInt32(sidx[0]));
+                vt.vec = 0;
+            } else {
+                llvm::SmallVector<llvm::Constant *, 4> mask;
+                for (uint32_t s : sidx)
+                    mask.push_back(cg.b->getInt32(s));
+                v = cg.b->CreateShuffleVector(
+                    v, llvm::UndefValue::get(v->getType()),
+                    llvm::ConstantVector::get(mask));
+                vt.vec = sidx.size();
+            }
+            continue;
+        }
+        /* INDEX: matrix column or vector component. */
+        llvm::Value *idx = emitExpr(cg, node->u.index.index, mod, locals);
+        if (!idx) return nullptr;
+        llvm::Value *r = emitIndexValue(cg, v, vt, idx);
+        if (!r) {
+            cg.err = 1;
+            cg.errmsg = "codegen: indexing this type is not supported on a "
+                        "block member";
+            return nullptr;
+        }
+        v = r;
+        if (vt.isMatrix()) {
+            MType col;
+            col.scalar = vt.scalar;
+            col.vec = vt.rows;
+            vt = col;
+        } else if (vt.isArray()) {
+            vt.arr = 0;
+        } else {
+            vt.vec = 0;
+        }
+    }
+    if (!v) {
+        if (!ct || ct->kind == MGLIR_TYPE_STRUCT) {
+            cg.err = 1;
+            cg.errmsg = std::string("codegen: uniform block '") + objName +
+                        "' whole-struct members are not readable";
+            return nullptr;
+        }
+        llvm::Value *off = cg.b->getInt64(soff);
+        if (dynOff) off = cg.b->CreateAdd(off, dynOff);
+        vt = typeFromIR(ct);
+        llvm::Type *t = llvmType(vt, *cg.ctx);
+        llvm::Value *p = cg.b->CreateGEP(cg.b->getInt8Ty(), base, off);
+        llvm::Align align(16);
+        if (auto *fvt = llvm::dyn_cast<llvm::FixedVectorType>(t)) {
+            uint64_t w = fvt->getElementCount().getFixedValue();
+            if (w == 1) align = llvm::Align(4);
+            else if (w == 2) align = llvm::Align(8);
+        } else if (t->isFloatTy() || t->isIntegerTy(32)) {
+            align = llvm::Align(4);
+        }
+        p = cg.b->CreateBitCast(p, t->getPointerTo(1));
+        v = cg.b->CreateAlignedLoad(t, p, align);
+    }
+    return v;
+}
+
 llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                       const std::map<std::string, MType> &locals) {
     switch (e->kind) {
@@ -3544,19 +3790,12 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
          * uni_block_array[N].entry (each instance-array element is a separate
          * GL uniform block and therefore a separate Metal buffer argument). */
         {
-            const MGLExpr *ubObj = e->u.member.object;
-            const char *objName = nullptr;
-            llvm::Value *elemIndex = nullptr;
-            if (ubObj && ubObj->kind == MGL_EXPR_VAR_REF) {
-                objName = ubObj->u.var_ref.name;
-            } else if (ubObj && ubObj->kind == MGL_EXPR_INDEX &&
-                       ubObj->u.index.object &&
-                       ubObj->u.index.object->kind == MGL_EXPR_VAR_REF) {
-                objName = ubObj->u.index.object->u.var_ref.name;
-                elemIndex = emitExpr(cg, ubObj->u.index.index, mod, locals);
-                if (!elemIndex) return nullptr;
-            }
-            const MGLIRSymbol *ov = objName ? findSymbol(mod, objName) : nullptr;
+            const MGLExpr *chain[16];
+            uint32_t chain_len = 0;
+            const MGLExpr *rootIndexExpr = nullptr;
+            const MGLIRSymbol *ov = blockChainRoot(e, chain, &chain_len,
+                                                   &rootIndexExpr, mod);
+            const char *objName = (ov && ov->name) ? ov->name : nullptr;
             const MGLIRType *ubStruct =
                 ov && ov->type->kind == MGLIR_TYPE_ARRAY && ov->type->elem_type
                     ? ov->type->elem_type
@@ -3566,7 +3805,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 ubStruct && ubStruct->kind == MGLIR_TYPE_STRUCT &&
                 ubStruct->member_count > 0) {
                 llvm::Value *base = nullptr;
-                if (elemIndex) {
+                if (rootIndexExpr) {
                     /* Instance array: each element binds its own device
                      * buffer; pick it through the entry alloca. */
                     auto slotIt = cg.uboElemSlot.find(objName);
@@ -3579,6 +3818,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                             objName + "' has no element buffers";
                         return nullptr;
                     }
+                    llvm::Value *elemIndex =
+                        emitExpr(cg, rootIndexExpr->u.index.index, mod,
+                                 locals);
+                    if (!elemIndex) return nullptr;
                     elemIndex = coerceScalar(cg, elemIndex,
                                              MGLIR_SCALAR_UINT);
                     /* Out-of-range dynamic indices are undefined in GLSL;
@@ -3618,39 +3861,8 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                 objName + "' has no device buffer";
                     return nullptr;
                 }
-                const MGLIRType *mt = nullptr;
-                uint32_t moff = 0;
-                for (uint32_t m = 0; m < ubStruct->member_count; m++) {
-                    if (strcmp(ubStruct->member_names[m],
-                               e->u.member.field) == 0) {
-                        mt = ubStruct->members[m];
-                        moff = ubStruct->member_offsets
-                                   ? ubStruct->member_offsets[m]
-                                   : 0;
-                        break;
-                    }
-                }
-                if (!mt) {
-                    cg.err = 1;
-                    cg.errmsg = std::string("codegen: uniform block '") +
-                                objName + "' has no member '" +
-                                e->u.member.field + "'";
-                    return nullptr;
-                }
-                llvm::Value *off = cg.b->getInt64(moff);
-                llvm::Type *t = llvmType(typeFromIR(mt), *cg.ctx);
-                llvm::Value *p = cg.b->CreateGEP(cg.b->getInt8Ty(), base,
-                                                 off);
-                llvm::Align align(16);
-                if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(t)) {
-                    uint64_t w = vt->getElementCount().getFixedValue();
-                    if (w == 1) align = llvm::Align(4);
-                    else if (w == 2) align = llvm::Align(8);
-                } else if (t->isFloatTy() || t->isIntegerTy(32)) {
-                    align = llvm::Align(4);
-                }
-                p = cg.b->CreateBitCast(p, t->getPointerTo(1));
-                return cg.b->CreateAlignedLoad(t, p, align);
+                return emitBlockMemberChain(cg, e, base, ubStruct, objName,
+                                            mod, locals);
             }
         }
         /* Swizzle only in M1. */
@@ -5422,6 +5634,12 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             break;
         }
         std::vector<uint32_t> idx;
+        /* Uniform-block member chain: the leaf IR type is the expression
+         * type (the chain already includes every .field / [i] step). */
+        if (const MGLIRType *leaf = blockMemberLeafType(e, mod)) {
+            t = typeFromIR(leaf);
+            break;
+        }
         MType base = exprType(cg, e->u.member.object, mod, locals);
         if (swizzleIndices(e->u.member.field, &idx))
             t = swizzleType(base, idx.size());
