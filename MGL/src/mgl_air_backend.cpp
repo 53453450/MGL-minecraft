@@ -3285,7 +3285,19 @@ static const MGLIRType *blockMemberLeafType(const MGLExpr *e,
     if (ct && ct->kind == MGLIR_TYPE_ARRAY) {
         ct = ct->elem_type;
     }
-    uint32_t start = rootIndex ? 1u : 0u;
+    /* Only descend into a uniform block (struct / array-of-struct).  Plain
+     * uniform arrays and vectors are not blocks and must fall through to the
+     * normal swizzle path in exprType().  Without this guard a plain
+     * `uniform vec4 arr[N]; arr[i].xyz` would resolve to the element type
+     * (vec4) instead of letting exprType swizzle it to vec3. */
+    if (!ct || ct->kind != MGLIR_TYPE_STRUCT) {
+        return nullptr;
+    }
+    /* chain_len already excludes the (possibly stripped) rootIndex node, so
+     * walk every remaining member/index step from the block root.  The
+     * start offset must stay 0 — the stripped INDEX is not part of the
+     * traversable member path. */
+    uint32_t start = 0u;
     for (uint32_t ci = start; ci < chain_len && ct; ci++) {
         const MGLExpr *node = chain[chain_len - 1 - ci]; /* innermost first */
         if (node->kind == MGL_EXPR_MEMBER) {
