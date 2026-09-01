@@ -68,6 +68,21 @@ static id mglBindingCreateDefaultSampler(void)
         tex->dirty_bits |= DIRTY_TEXTURE_DATA;
     }
 
+    if (tex->mtl_data &&
+        (tex->target == GL_TEXTURE_2D_ARRAY ||
+         tex->target == GL_TEXTURE_CUBE_MAP_ARRAY ||
+         tex->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY)) {
+        MGLRenderTextureInfo existingInfo = {0};
+        if (mglRenderGetTextureInfo(tex->mtl_data, &existingInfo) == 0) {
+            const uint64_t expectedLayers = MAX((uint64_t)tex->depth, 1u);
+            if (existingInfo.array_length < expectedLayers ||
+                existingInfo.width != (uint64_t)tex->width ||
+                existingInfo.height != (uint64_t)tex->height) {
+                tex->dirty_bits |= DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_DATA;
+            }
+        }
+    }
+
     // If this texture is now used as a render target but was previously created
     // without render-target usage, force a recreate with proper usage flags.
     // When the old texture already has GPU-written data (e.g. from imageStore

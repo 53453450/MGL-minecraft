@@ -816,6 +816,27 @@ static void mglTextureCopyTextureToBuffer(
         return uploaded;
     }
 
+    /* Shared 2D array uploads via replaceRegion: the blit path can leave array
+     * slices unpopulated on some AGX drivers when uploading CPU data during
+     * initial texture creation.  Shared storage is safe here because bind
+     * happens before the first draw that samples this texture. */
+    if (textureType == MGLTextureType2DArray &&
+        mglTextureInfo(texture).storage_mode != MGL_TEXTURE_STORAGE_PRIVATE) {
+        @try {
+            mglTextureReplaceRegion(
+                texture,
+                mglTextureRegion2D(0, 0, width, uploadPlan.normalized_height),
+                uploadPlan.destination_level, uploadPlan.destination_slice,
+                bytes, bytesPerRow, uploadPlan.normalized_bytes_per_image, YES);
+            return true;
+        } @catch (NSException *exception) {
+            NSLog(@"MGL WARNING: 2D array replaceRegion upload failed (tex=%u level=%lu slice=%lu): %@",
+                  (unsigned)texName, (unsigned long)level,
+                  (unsigned long)slice, exception.reason);
+            return false;
+        }
+    }
+
     /* 1D texture upload via replaceRegion branch:
      * - 1D textures are a low-frequency update path; replaceRegion is safe in this scenario;
      * - Before entering this function, the caller has already flushed CPU-side deferred

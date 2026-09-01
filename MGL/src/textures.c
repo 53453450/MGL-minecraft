@@ -2768,9 +2768,11 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
             // uninitialized tex
             initBaseTexLevel(ctx, tex, internalformat, width, height, depth);
         }
-        else if (width != tex->width || height != tex->height || internalformat != tex->internalformat)
+        else if (width != tex->width || height != tex->height ||
+                 depth != (GLsizei)tex->depth ||
+                 internalformat != tex->internalformat)
         {
-            // invalidate texture because the base level width / height / internal format are being changed...
+            // invalidate texture because the base level width / height / depth / internal format are being changed...
             invalidateTexture(ctx, tex);
 
             initBaseTexLevel(ctx, tex, internalformat, width, height, depth);
