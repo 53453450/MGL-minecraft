@@ -215,7 +215,9 @@ static const MGLIRType *air_uniform_block_type(const MGLIRType *type)
 
 static GLuint air_uniform_block_element_count(const MGLIRType *type)
 {
-    return type && type->kind == MGLIR_TYPE_ARRAY && type->array_size > 1u
+    /* Length-1 instance arrays still need one Metal buffer slot and
+     * `name[0].member` codegen against element slots. */
+    return type && type->kind == MGLIR_TYPE_ARRAY && type->array_size > 0u
         ? type->array_size : 1u;
 }
 
@@ -578,7 +580,7 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
             acCount++;
         } else if (q & MGL_AST_Q_BUFFER) {
             ssboCount++;
-        } else if ((q & MGL_AST_Q_UNIFORM) &&
+        } else if ((q & MGL_AST_Q_UNIFORM) && !s->block_name &&
                    air_uniform_block_type(t)) {
             uboSlotCount += air_uniform_block_element_count(t);
         } else if ((q & MGL_AST_Q_UNIFORM) &&
@@ -732,8 +734,10 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                         lists[_UNIFORM_BUFFER_RES].count - 1];
                 apply_block_interface_name(last, t, s->name);
                 last->ubo_array_size = block_count;
-                last->ubo_is_array = block_count > 1u ? GL_TRUE : GL_FALSE;
-                if (block_count > 1u) {
+                last->ubo_is_array =
+                    (t->kind == MGLIR_TYPE_ARRAY && t->array_size > 0u)
+                        ? GL_TRUE : GL_FALSE;
+                if (last->ubo_is_array) {
                     last->ubo_array_bindings = (GLuint *)calloc(
                         block_count, sizeof(*last->ubo_array_bindings));
                 }
