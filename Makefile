@@ -561,19 +561,19 @@ $(build_dir)/test_mgllex: test_legacy_compat/test_mgllex.c MGL/src/mgl_glsl_lexe
 test-mgllex: $(build_dir)/test_mgllex
 	$(build_dir)/test_mgllex
 
-$(build_dir)/test_mglparse: test_legacy_compat/test_mglparse.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c
+$(build_dir)/test_mglparse: test_legacy_compat/test_mglparse.c MGL/src/mgl_glsl_cpp.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c
 	$(APPLE_CLANG) -isysroot $(SDK_ROOT) -Wall -Wextra -Werror -gfull -O0 \
 		-IMGL/include \
-		test_legacy_compat/test_mglparse.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c \
+		test_legacy_compat/test_mglparse.c MGL/src/mgl_glsl_cpp.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c \
 		-o $@
 
 test-mglparse: $(build_dir)/test_mglparse
 	$(build_dir)/test_mglparse
 
-$(build_dir)/test_mglsema: test_legacy_compat/test_mglsema.c MGL/src/mgl_glsl_sema.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c MGL/src/mgl_ir.c
+$(build_dir)/test_mglsema: test_legacy_compat/test_mglsema.c MGL/src/mgl_glsl_sema.c MGL/src/mgl_glsl_cpp.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c MGL/src/mgl_ir.c
 	$(APPLE_CLANG) -isysroot $(SDK_ROOT) -Wall -Wextra -Werror -gfull -O0 \
 		-IMGL/include -IMGL/include/GL \
-		test_legacy_compat/test_mglsema.c MGL/src/mgl_glsl_sema.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c MGL/src/mgl_ir.c \
+		test_legacy_compat/test_mglsema.c MGL/src/mgl_glsl_sema.c MGL/src/mgl_glsl_cpp.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c MGL/src/mgl_ir.c \
 		-o $@
 
 test-mglsema: $(build_dir)/test_mglsema
@@ -583,7 +583,7 @@ $(build_dir)/test_mglair: test_legacy_compat/test_mglair.mm \
 	MGL/src/mgl_air_backend.cpp MGL/src/mgl_metallib_writer.cpp \
 	MGL/src/mgl_legacy_compat.c MGL/include/mgl_legacy_compat.h \
 	MGL/src/mgl_air_reflect.c MGL/src/mgl_glsl_sema.c \
-	MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c \
+	MGL/src/mgl_glsl_cpp.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c \
 	MGL/src/mgl_ir.c
 	$(LLVM_CXX) -x objective-c++ -fobjc-arc -gfull -O0 $(LLVM_CXXFLAGS) $(LLVM_LDFLAGS) \
 		-framework Cocoa -framework Foundation -framework Metal \
@@ -591,7 +591,7 @@ $(build_dir)/test_mglair: test_legacy_compat/test_mglair.mm \
 		MGL/src/mgl_air_backend.cpp MGL/src/mgl_metallib_writer.cpp \
 		MGL/src/mgl_legacy_compat.c \
 		MGL/src/mgl_air_reflect.c MGL/src/mgl_glsl_sema.c \
-		MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c \
+		MGL/src/mgl_glsl_cpp.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c \
 		MGL/src/mgl_ir.c \
 		-o $@
 
@@ -601,7 +601,7 @@ test-mglair: $(build_dir)/test_mglair
 # MC-style shader repro: anonymous std140 UBO blocks + samplers through the
 # AIR backend.  C sources build as C (they are not valid C++).
 MCREPRO_CSRC := MGL/src/mgl_air_reflect.c MGL/src/mgl_glsl_sema.c \
-	MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c MGL/src/mgl_ir.c \
+	MGL/src/mgl_glsl_cpp.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c MGL/src/mgl_ir.c \
 	MGL/src/mgl_legacy_compat.c
 MCREPRO_COBJ := $(patsubst MGL/src/%.c,$(build_dir)/mcrepro_%.o,$(MCREPRO_CSRC))
 
@@ -656,14 +656,14 @@ $(build_dir)/test_mglair_gtest: test_legacy_compat/test_mglair_gtest.cpp \
 	MGL/src/mgl_air_backend.cpp MGL/src/mgl_metallib_writer.cpp \
 	MGL/src/mgl_legacy_compat.c MGL/include/mgl_legacy_compat.h \
 	MGL/src/mgl_air_reflect.c MGL/src/mgl_glsl_sema.c \
-	MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c \
+	MGL/src/mgl_glsl_cpp.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c \
 	MGL/src/mgl_ir.c
 	$(LLVM_CXX) -x c++ $(LLVM_CXXFLAGS) $(GTEST_CXXFLAGS) $(LLVM_LDFLAGS) \
 		test_legacy_compat/test_mglair_gtest.cpp \
 		MGL/src/mgl_air_backend.cpp MGL/src/mgl_metallib_writer.cpp \
 		MGL/src/mgl_legacy_compat.c \
 		MGL/src/mgl_air_reflect.c MGL/src/mgl_glsl_sema.c \
-		MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c \
+		MGL/src/mgl_glsl_cpp.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c \
 		MGL/src/mgl_ir.c \
 		-x none $(GTEST_LIBS) -o $@
 

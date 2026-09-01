@@ -32,6 +32,7 @@
 
 #include "mgl_glsl_parser.h"
 #include "mgl_glsl_lexer.h"
+#include "mgl_glsl_cpp.h"
 
 #include <ctype.h>
 #include <stdarg.h>
@@ -42,259 +43,6 @@
 #define MGL_MAX_TOKENS 131072
 #define MGL_MAX_DIMS 8
 
-typedef struct MGLObjectMacro {
-    char *name;
-    char *replacement;
-} MGLObjectMacro;
-
-static int is_ident_start_char(char c)
-{
-    return isalpha((unsigned char)c) || c == '_';
-}
-
-static int is_ident_char(char c)
-{
-    return isalnum((unsigned char)c) || c == '_';
-}
-
-static void macro_free_all(MGLObjectMacro *macros, size_t count)
-{
-    for (size_t i = 0; i < count; i++) {
-        free(macros[i].name);
-        free(macros[i].replacement);
-    }
-    free(macros);
-}
-
-/* The GLSL frontend intentionally has no general C preprocessor.  Desktop
- * GLSL nevertheless uses object-like #define constants pervasively (often
- * for gl_in[] indices and loop bounds).  Expand those definitions while
- * preserving every source newline so diagnostics and source locations remain
- * stable.  Function-like macros, token pasting, and stringification are not
- * GLSL language features and are left untouched. */
-static char *expand_object_macros(const char *src, size_t len)
-{
-    MGLObjectMacro *macros = NULL;
-    size_t macro_count = 0;
-    size_t macro_cap = 0;
-    size_t out_cap = len + 1;
-    size_t out_len = 0;
-    char *out = (char *)malloc(out_cap);
-    if (!out) return NULL;
-
-    /* Conditional-compilation state, mirroring preprocess_tokens(): a
-     * #define inside an inactive branch must not shadow one from the
-     * active branch, and expansion must use the macros visible at each
-     * point (single pass, current table). */
-    enum { PP_MAX_DEPTH = 32 };
-    int pp_active[PP_MAX_DEPTH];
-    int pp_parent[PP_MAX_DEPTH];
-    int pp_depth = 0;
-
-    size_t pos = 0;
-    while (pos < len) {
-        size_t line_start = pos;
-        while (pos < len && src[pos] != '\n') pos++;
-        size_t line_end = pos;
-        if (pos < len) pos++;
-
-        size_t p = line_start;
-        while (p < line_end && (src[p] == ' ' || src[p] == '\t' ||
-                                src[p] == '\r')) p++;
-        int is_directive = p < line_end && src[p] == '#';
-        int cur_active = (pp_depth == 0) ? 1 : pp_active[pp_depth - 1];
-        if (is_directive) {
-            const char *d = src + p;
-            size_t dn = line_end - p;
-            int is_ifdef = dn >= 6 && memcmp(d, "#ifdef", 6) == 0 &&
-                           (dn == 6 || d[6] == ' ' || d[6] == '\t');
-            int is_ifndef = dn >= 7 && memcmp(d, "#ifndef", 7) == 0 &&
-                            (dn == 7 || d[7] == ' ' || d[7] == '\t');
-            int is_else = dn >= 5 && memcmp(d, "#else", 5) == 0 &&
-                          (dn == 5 || d[5] == ' ' || d[5] == '\t');
-            int is_endif = dn >= 6 && memcmp(d, "#endif", 6) == 0 &&
-                           (dn == 6 || d[6] == ' ' || d[6] == '\t');
-            /* Conditional directives are fully resolved HERE and dropped
-             * from the output: expand_object_macros runs before lexing,
-             * so a later pass cannot re-evaluate them against the pruned
-             * stream.  Only the surviving branch's text (and its #define
-             * records) continue below. */
-            if (is_ifdef || is_ifndef) {
-                int cond = 0;
-                size_t kw = is_ifdef ? 6u : 7u;
-                const char *np = d + kw;
-                const char *nend = d + dn;
-                while (np < nend && (*np == ' ' || *np == '\t')) np++;
-                const char *nstart = np;
-                while (np < nend && *np != ' ' && *np != '\t')
-                    np++;
-                size_t nl = (size_t)(np - nstart);
-                for (size_t m = 0; m < macro_count; m++) {
-                    if (strlen(macros[m].name) == nl &&
-                        memcmp(macros[m].name, nstart, nl) == 0) {
-                        cond = 1;
-                        break;
-                    }
-                }
-                if (pp_depth < PP_MAX_DEPTH) {
-                    pp_parent[pp_depth] = cur_active;
-                    pp_active[pp_depth] =
-                        cur_active && (is_ifdef ? cond : !cond);
-                    pp_depth++;
-                }
-                continue;
-            }
-            if (is_else) {
-                if (pp_depth > 0)
-                    pp_active[pp_depth - 1] =
-                        pp_parent[pp_depth - 1] && !pp_active[pp_depth - 1];
-                continue;
-            }
-            if (is_endif) {
-                if (pp_depth > 0) pp_depth--;
-                continue;
-            }
-        }
-        if (!cur_active) continue;
-        int is_define = p + 7 <= line_end && src[p] == '#' &&
-                        memcmp(src + p + 1, "define", 6) == 0 &&
-                        (p + 7 == line_end || isspace((unsigned char)src[p + 7]));
-        /* Keep all other directives intact so preprocess_tokens() can apply
-         * conditional compilation after lexing. */
-        if (!is_define && p < line_end && src[p] == '#') {
-            size_t copy_len = pos - line_start;
-            while (out_len + copy_len + 1 >= out_cap) {
-                out_cap *= 2;
-                char *no = (char *)realloc(out, out_cap);
-                if (!no) { free(out); macro_free_all(macros, macro_count); return NULL; }
-                out = no;
-            }
-            memcpy(out + out_len, src + line_start, copy_len);
-            out_len += copy_len;
-            continue;
-        }
-        if (is_define) {
-            p += 7;
-            while (p < line_end && isspace((unsigned char)src[p])) p++;
-            size_t name_start = p;
-            if (p < line_end && is_ident_start_char(src[p])) {
-                p++;
-                while (p < line_end && is_ident_char(src[p])) p++;
-                size_t name_len = p - name_start;
-                /* In C/GLSL preprocessing a function-like macro requires
-                 * '(' immediately after the name; whitespace means an
-                 * object-like replacement whose value may itself begin with
-                 * parentheses (the common `#define N (0)` form). */
-                const int function_like =
-                    p < line_end && src[p] == '(';
-                if (!function_like) {
-                    while (p < line_end && isspace((unsigned char)src[p])) p++;
-                    size_t repl_start = p;
-                    size_t repl_len = line_end - repl_start;
-                    char *name = (char *)malloc(name_len + 1);
-                    char *repl = (char *)malloc(repl_len + 1);
-                    if (!name || !repl) {
-                        free(name); free(repl); free(out);
-                        macro_free_all(macros, macro_count);
-                        return NULL;
-                    }
-                    memcpy(name, src + name_start, name_len); name[name_len] = '\0';
-                    memcpy(repl, src + repl_start, repl_len); repl[repl_len] = '\0';
-                    size_t found = macro_count;
-                    for (size_t i = 0; i < macro_count; i++) {
-                        if (strcmp(macros[i].name, name) == 0) { found = i; break; }
-                    }
-                    if (found == macro_count) {
-                        if (macro_count == macro_cap) {
-                            size_t nc = macro_cap ? macro_cap * 2 : 16;
-                            MGLObjectMacro *nm = (MGLObjectMacro *)realloc(
-                                macros, nc * sizeof(*macros));
-                            if (!nm) {
-                                free(name); free(repl); free(out);
-                                macro_free_all(macros, macro_count);
-                                return NULL;
-                            }
-                            macros = nm; macro_cap = nc;
-                        }
-                        macros[macro_count].name = name;
-                        macros[macro_count].replacement = repl;
-                        macro_count++;
-                    } else {
-                        free(macros[found].name);
-                        free(macros[found].replacement);
-                        macros[found].name = name;
-                        macros[found].replacement = repl;
-                    }
-                    /* Preserve the directive; preprocess_tokens() records
-                     * its name for #ifdef while the replacement is used by
-                     * ordinary source lines below. */
-                    size_t copy_len = pos - line_start;
-                    while (out_len + copy_len + 1 >= out_cap) {
-                        out_cap *= 2;
-                        char *no = (char *)realloc(out, out_cap);
-                        if (!no) { free(out); macro_free_all(macros, macro_count); return NULL; }
-                        out = no;
-                    }
-                    memcpy(out + out_len, src + line_start, copy_len);
-                    out_len += copy_len;
-                    continue;
-                }
-            }
-        }
-
-        for (size_t i = line_start; i < line_end;) {
-            if (is_ident_start_char(src[i])) {
-                size_t j = i + 1;
-                while (j < line_end && is_ident_char(src[j])) j++;
-                size_t n = j - i;
-                const char *replacement = NULL;
-                size_t replacement_len = 0;
-                for (size_t m = 0; m < macro_count; m++) {
-                    if (strlen(macros[m].name) == n &&
-                        memcmp(macros[m].name, src + i, n) == 0) {
-                        replacement = macros[m].replacement;
-                        replacement_len = strlen(replacement);
-                        break;
-                    }
-                }
-                if (!replacement) { replacement = src + i; replacement_len = n; }
-                while (out_len + replacement_len + 1 >= out_cap) {
-                    out_cap *= 2;
-                    char *no = (char *)realloc(out, out_cap);
-                    if (!no) { free(out); macro_free_all(macros, macro_count); return NULL; }
-                    out = no;
-                }
-                memcpy(out + out_len, replacement, replacement_len);
-                out_len += replacement_len;
-                i = j;
-            } else {
-                if (out_len + 2 >= out_cap) {
-                    out_cap *= 2;
-                    char *no = (char *)realloc(out, out_cap);
-                    if (!no) { free(out); macro_free_all(macros, macro_count); return NULL; }
-                    out = no;
-                }
-                out[out_len++] = src[i++];
-            }
-        }
-        if (pos <= len) {
-            if (out_len + 2 >= out_cap) {
-                out_cap *= 2;
-                char *no = (char *)realloc(out, out_cap);
-                if (!no) { free(out); macro_free_all(macros, macro_count); return NULL; }
-                out = no;
-            }
-            out[out_len++] = '\n';
-        }
-    }
-    out[out_len] = '\0';
-    if (getenv("MGL_IB_DEBUG")) {
-        fprintf(stderr, "PP expand done out_len=%zu macros=%zu\n",
-                out_len, macro_count);
-    }
-    macro_free_all(macros, macro_count);
-    return out;
-}
 
 /* ----------------------------------------------------------------- */
 /* Token stream                                                       */
@@ -312,10 +60,12 @@ static int tokenize(MGLTokenStream *ts, const char *src, size_t len)
 {
     ts->cap = 4096;
     ts->tok = (MGLGLSLToken *)malloc((size_t)ts->cap * sizeof(MGLGLSLToken));
-    ts->src = expand_object_macros(src, len);
+    ts->src = (char *)malloc(len + 1);
     if (!ts->tok || !ts->src) {
         return -1;
     }
+    memcpy(ts->src, src, len);
+    ts->src[len] = '\0';
     ts->src_len = strlen(ts->src);
     ts->count = 0;
 
@@ -2187,13 +1937,27 @@ static __attribute__((unused)) char *preprocess_macros(const char *src, size_t l
 
 MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
 {
-    const char *esrc = src;
-    size_t elen = len;
+    char pperr[256];
+    char *ppsrc;
     MGLTokenStream ts;
     memset(&ts, 0, sizeof(ts));
-    if (tokenize(&ts, esrc, elen) != 0) {
+    pperr[0] = 0;
+    ppsrc = mglGLSLPreprocess(src, len, pperr, sizeof(pperr));
+    if (!ppsrc) {
+        MGLTranslationUnit *etu = (MGLTranslationUnit *)calloc(1, sizeof(*etu));
+        if (!etu) {
+            return NULL;
+        }
+        etu->layout_stream = -1;
+        etu->layout_max_vertices = -1;
+        etu->error = strdup(pperr[0] ? pperr : "preprocessor error");
+        return etu;
+    }
+    if (tokenize(&ts, ppsrc, strlen(ppsrc)) != 0) {
+        free(ppsrc);
         return NULL;
     }
+    free(ppsrc);
     preprocess_tokens(&ts);
 
     MGLTranslationUnit *tu = (MGLTranslationUnit *)calloc(1, sizeof(*tu));

@@ -6100,6 +6100,13 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                    strcmp(name, "distance") == 0 ||
                    strcmp(name, "dot") == 0) {
             t.scalar = MGLIR_SCALAR_FLOAT;
+        } else if (strcmp(name, "lessThanEqual") == 0) {
+            t.scalar = MGLIR_SCALAR_BOOL;
+            if (e->u.call.arg_count > 0)
+                t.vec = exprType(cg, e->u.call.args[0], mod, locals).vec;
+        } else if (strcmp(name, "all") == 0) {
+            t.scalar = MGLIR_SCALAR_BOOL;
+            t.vec = 0;
         }
         break;
     }
@@ -6144,6 +6151,38 @@ static llvm::Value *emitMathBuiltin(Codegen &cg, const MGLExpr *e,
     llvm::Value *a0 = nullptr, *a1 = nullptr, *a2 = nullptr;
     (void)a1;
     (void)a2;
+
+    if (strcmp(name, "lessThanEqual") == 0) {
+        if (!need(2)) {
+            return nullptr;
+        }
+        a0 = farg(0);
+        a1 = farg(1);
+        if (!a0 || !a1) {
+            return nullptr;
+        }
+        return cg.b->CreateFCmp(llvm::CmpInst::FCMP_OLE, a0, a1);
+    }
+    if (strcmp(name, "all") == 0) {
+        if (!need(1)) {
+            return nullptr;
+        }
+        a0 = arg(0);
+        if (!a0) {
+            return nullptr;
+        }
+        if (!a0->getType()->isVectorTy()) {
+            return a0;
+        }
+        auto *vt = llvm::cast<llvm::FixedVectorType>(a0->getType());
+        uint32_t n = (uint32_t)vt->getElementCount().getFixedValue();
+        llvm::Value *acc = cg.b->CreateExtractElement(a0, (uint64_t)0);
+        for (uint32_t i = 1; i < n; i++) {
+            acc = cg.b->CreateAnd(
+                acc, cg.b->CreateExtractElement(a0, (uint64_t)i));
+        }
+        return acc;
+    }
 
     if (strcmp(name, "floatBitsToInt") == 0 ||
         strcmp(name, "floatBitsToUint") == 0) {

@@ -1026,13 +1026,16 @@ typedef enum {
     BI_ARG_IVEC4,     /* ivec4 */
     BI_ARG_UVEC4,     /* uvec4 */
     BI_ARG_ATOMIC,    /* atomic_uint */
+    BI_ARG_BVEC,      /* bool/bvec2/3/4 */
 } BiArgKind;
 
 typedef enum {
     BI_RET_FLOAT,   /* scalar float */
     BI_RET_UINT,    /* scalar uint */
+    BI_RET_BOOL,    /* scalar bool */
     BI_RET_GENF,    /* float genType matching the gen args */
     BI_RET_GENI,    /* int/uint genType matching the gen args */
+    BI_RET_BVEC,    /* bvec matching the gen args */
     BI_RET_VEC2,    /* vec2 */
     BI_RET_VEC3,    /* vec3 */
     BI_RET_VEC4,    /* vec4 */
@@ -1084,6 +1087,8 @@ static const BiFn kBuiltins[] = {
     { "floatBitsToUint", 1, { BI_ARG_GENF }, BI_RET_GENI },
     { "abs",       1, { BI_ARG_GENI }, BI_RET_GENI },
     { "abs",       1, { BI_ARG_GENF }, BI_RET_GENF },
+    { "lessThanEqual", 2, { BI_ARG_GENF, BI_ARG_GENF }, BI_RET_BVEC },
+    { "all",       1, { BI_ARG_BVEC }, BI_RET_BOOL },
     { "min",       2, { BI_ARG_GENI, BI_ARG_GENI }, BI_RET_GENI },
     { "min",       2, { BI_ARG_GENI, BI_ARG_INT }, BI_RET_GENI },
     { "min",       2, { BI_ARG_GENF, BI_ARG_GENF }, BI_RET_GENF },
@@ -1290,6 +1295,19 @@ static int bif_arg_matches(const MGLIRType *t, BiArgKind k, uint32_t *gen_dim)
                t->scalar == MGLIR_SCALAR_UINT;
     case BI_ARG_ATOMIC:
         return t->kind == MGLIR_TYPE_ATOMIC_COUNTER;
+    case BI_ARG_BVEC:
+        if (t->scalar != MGLIR_SCALAR_BOOL) {
+            return 0;
+        }
+        if (t->kind == MGLIR_TYPE_VECTOR) {
+            *gen_dim = t->cols;
+            return 1;
+        }
+        if (t->kind == MGLIR_TYPE_SCALAR) {
+            *gen_dim = 1;
+            return 1;
+        }
+        return 0;
     default:
         return 0;
     }
@@ -1348,6 +1366,11 @@ static MGLIRType *builtin_call_type(const char *name,
             return mglIRTypeScalar(MGLIR_SCALAR_FLOAT);
         case BI_RET_UINT:
             return mglIRTypeScalar(MGLIR_SCALAR_UINT);
+        case BI_RET_BOOL:
+            return mglIRTypeScalar(MGLIR_SCALAR_BOOL);
+        case BI_RET_BVEC:
+            return gen_dim > 1 ? mglIRTypeVector(MGLIR_SCALAR_BOOL, gen_dim)
+                               : mglIRTypeScalar(MGLIR_SCALAR_BOOL);
         case BI_RET_VEC2:
             return mglIRTypeVector(MGLIR_SCALAR_FLOAT, 2);
         case BI_RET_VEC3:

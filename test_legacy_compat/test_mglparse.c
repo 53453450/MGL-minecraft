@@ -13,6 +13,7 @@
  *     -o build/test_mglparse
  */
 #include "mgl_glsl_parser.h"
+#include "mgl_glsl_cpp.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -299,6 +300,85 @@ static void test_gs_layout_errors(void)
     if (tu) mglGLSLTranslationUnitDestroy(tu);
 }
 
+static int parse_ok(const char *src)
+{
+    MGLTranslationUnit *tu = mglGLSLParse(src, strlen(src));
+    int ok = tu && tu->error == NULL;
+    if (tu) {
+        mglGLSLTranslationUnitDestroy(tu);
+    }
+    return ok;
+}
+
+static int parse_fails(const char *src)
+{
+    MGLTranslationUnit *tu = mglGLSLParse(src, strlen(src));
+    int ok = tu && tu->error != NULL;
+    if (tu) {
+        mglGLSLTranslationUnitDestroy(tu);
+    }
+    return ok;
+}
+
+static int pp_contains(const char *src, const char *needle)
+{
+    char err[256];
+    char *out = mglGLSLPreprocess(src, strlen(src), err, sizeof(err));
+    int ok;
+    if (!out) {
+        printf("    pp error: %s\n", err);
+        return 0;
+    }
+    ok = strstr(out, needle) != NULL;
+    if (!ok) {
+        printf("    pp out: [%s]\n", out);
+    }
+    free(out);
+    return ok;
+}
+
+static void test_preprocessor(void)
+{
+    CHECK(pp_contains("#version 450\n#define A 3\nint x = A;\n", "3"),
+          "object macro expands");
+    CHECK(pp_contains("#version 450\n#define F(x) x\nint x = F(7);\n", "7"),
+          "function macro expands");
+    CHECK(pp_contains("#version 450\n#define P(a,b) a##b\nfloat varfoo;\n"
+                      "float x = P(var, foo);\n",
+                      "varfoo"),
+          "token pasting ##");
+    CHECK(pp_contains("#version 330\n#if 1 + 2 * 3 == 7\nint x = 1;\n"
+                      "#else\nint x = 0;\n#endif\n",
+                      "x = 1"),
+          "#if * binds tighter than +");
+    CHECK(pp_contains("#version 330\n#if 1 || UNDEF\nint x = 1;\n"
+                      "#else\nint x = 0;\n#endif\n",
+                      "x = 1"),
+          "#if 1 || undefined is taken");
+    CHECK(parse_ok("#version 330\n#if UNDEF\nint x = 1;\n#endif\n"
+                      "void main() {}\n"),
+          "undefined #if identifier is 0");
+    CHECK(parse_fails("#version 330\n#defin AAA\nvoid main() {}\n"),
+          "unknown directive fails");
+    CHECK(parse_fails("#version 330\n#define GL_VALUE 1\nvoid main() {}\n"),
+          "GL_ reserved name fails");
+    CHECK(parse_fails("#version 330\n#define S(a) #a\nvoid main() {}\n"),
+          "stringification is rejected");
+    CHECK(parse_fails("precision mediump float;\n#version 330\nvoid main() {}\n"),
+          "#version not first fails");
+    CHECK(parse_fails("#version 329\nvoid main() {}\n"),
+          "unsupported #version fails");
+    CHECK(parse_fails("#version 330\n#define VALUE (AAA - 1.0)\n"
+                      "#define VALUE (AAA- 1.0)\nvoid main() {}\n"),
+          "redefinition whitespace differs");
+    CHECK(parse_ok("#version 450 core\n#define VALUE\n"
+                   "void main() { float x = VALUE - 1.0; }\n"),
+          "empty object macro");
+    CHECK(parse_ok("#version 450 core\n#define A(X) var##X\n"
+                   "void main() { float varfoo = 1.0; float y = A(foo); }\n"),
+          "token paste identifier compiles");
+}
+
 int main(void)
 {
     printf("MGLGLSL parser skeleton tests\n");
@@ -310,6 +390,7 @@ int main(void)
     test_declarator_lists_and_param_precision();
     test_error_report();
     test_gs_layout_errors();
+    test_preprocessor();
     printf("\n%d/%d passed\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;
 }
