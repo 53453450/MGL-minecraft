@@ -1617,6 +1617,12 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                 return scratch_type(s,
                                     mglIRTypeVector(MGLIR_SCALAR_UINT, 3));
             }
+            if (strcmp(e->u.var_ref.name, "gl_NumWorkGroups") == 0) {
+                /* Compute built-in; the AIR backend maps it to the
+                 * threadgroups_per_grid kernel argument. */
+                return scratch_type(s,
+                                    mglIRTypeVector(MGLIR_SCALAR_UINT, 3));
+            }
             if (strcmp(e->u.var_ref.name, "gl_VertexID") == 0) {
                 /* Vertex built-in; the AIR backend maps it to a
                  * vertex_id argument (capture variants). */

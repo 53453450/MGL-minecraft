@@ -161,6 +161,7 @@ struct Codegen {
     llvm::Value *bufferSizePtr = nullptr; /* constant uint*, buffer(25) */
     llvm::Value *threadPos = nullptr;    /* compute: <3 x i32> grid position */
     llvm::Value *workGroupPos = nullptr; /* compute: <3 x i32> group position */
+    llvm::Value *numWorkGroups = nullptr; /* compute: <3 x i32> dispatch grid */
     llvm::Value *invocationPos = nullptr; /* TCS: <3 x i32> threadgroup position */
     llvm::Value *patchPos = nullptr;      /* TCS: <3 x i32> threadgroup grid position */
     llvm::Value *stageInPtr = nullptr;   /* TCS gl_in replacement, buffer(24) */
@@ -285,13 +286,14 @@ llvm::Type *llvmScalar(MGLIRScalar s, llvm::LLVMContext &ctx) {
 
 llvm::Type *llvmType(const MType &t, llvm::LLVMContext &ctx) {
     llvm::Type *s = llvmScalar(t.scalar, ctx);
+    /* Arrays-of-matrices: arr takes precedence over the matrix shape. */
+    if (t.isArray()) {
+        MType el = t;
+        el.arr = 0;
+        return llvm::ArrayType::get(llvmType(el, ctx), t.arr);
+    }
     if (t.isMatrix())
         return llvm::ArrayType::get(llvm::FixedVectorType::get(s, t.rows), t.cols);
-    if (t.isArray()) {
-        llvm::Type *elt = t.vec ? (llvm::Type *)llvm::FixedVectorType::get(s, t.vec)
-                                : s;
-        return llvm::ArrayType::get(elt, t.arr);
-    }
     if (t.vec)
         return llvm::FixedVectorType::get(s, t.vec);
     return s;
@@ -321,10 +323,17 @@ llvm::Value *coerceScalar(Codegen &cg, llvm::Value *v, MGLIRScalar want) {
             return cg.b->CreateUIToFP(v, vt(llvm::Type::getFloatTy(ctx)));
         return cg.b->CreateSIToFP(v, vt(llvm::Type::getFloatTy(ctx)));
     }
+    /* bool before the generic float→int path so float→bool is a compare,
+     * not FPToSI to i32 (which would then fail to match i1 uses). */
+    if (want == MGLIR_SCALAR_BOOL) {
+        if (curFP)
+            return cg.b->CreateFCmpUNE(v, llvm::Constant::getNullValue(cur));
+        if (cur->getScalarSizeInBits() == 1)
+            return v;
+        return cg.b->CreateICmpNE(v, llvm::Constant::getNullValue(cur));
+    }
     if (curFP)
         return cg.b->CreateFPToSI(v, vt(llvm::Type::getInt32Ty(ctx)));
-    if (want == MGLIR_SCALAR_BOOL)
-        return cg.b->CreateICmpNE(v, llvm::Constant::getNullValue(cur));
     /* int: widen bool to i32, otherwise identity. */
     if (cur->getScalarSizeInBits() == 1)
         return cg.b->CreateZExt(v, vt(llvm::Type::getInt32Ty(ctx)));
@@ -343,6 +352,7 @@ std::string airTypeMangle(const MType &t) {
     switch (t.scalar) {
     case MGLIR_SCALAR_INT:  elem = "i"; break;
     case MGLIR_SCALAR_UINT: elem = "j"; break;
+    case MGLIR_SCALAR_BOOL: elem = "b"; break;
     default:                elem = "f"; break;
     }
     if (!t.vec) return elem;
@@ -369,6 +379,7 @@ std::string mslTypeName(const MType &t) {
     switch (t.scalar) {
     case MGLIR_SCALAR_INT:   return t.vec ? "int" + std::to_string(t.vec) : "int";
     case MGLIR_SCALAR_UINT:  return t.vec ? "uint" + std::to_string(t.vec) : "uint";
+    case MGLIR_SCALAR_BOOL:  return t.vec ? "bool" + std::to_string(t.vec) : "bool";
     default: break;
     }
     if (!t.vec) return "float";
@@ -396,7 +407,14 @@ MType typeFromIR(const MGLIRType *t) {
         }
         if (el) {
             r.scalar = el->scalar;
-            if (el->kind == MGLIR_TYPE_VECTOR) r.vec = el->cols;
+            if (el->kind == MGLIR_TYPE_VECTOR) {
+                r.vec = el->cols;
+            } else if (el->kind == MGLIR_TYPE_MATRIX) {
+                /* matNxM[K] must keep cols/rows so llvmType builds
+                 * [K x [N x <M x float>]], not float[K]. */
+                r.cols = el->cols;
+                r.rows = el->rows;
+            }
         }
         break;
     }
@@ -3714,6 +3732,15 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 return nullptr;
             }
             return cg.workGroupPos;
+        }
+        if (strcmp(e->u.var_ref.name, "gl_NumWorkGroups") == 0) {
+            if (!cg.numWorkGroups) {
+                cg.err = 1;
+                cg.errmsg = "codegen: gl_NumWorkGroups requires a compute "
+                            "stage";
+                return nullptr;
+            }
+            return cg.numWorkGroups;
         }
         if (strcmp(e->u.var_ref.name, "gl_VertexID") == 0) {
             if (!cg.vertexId) {
@@ -8164,6 +8191,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         strstr(esrc, "gl_SampleID") != nullptr;
     const bool usesWorkGroupID =
         isCompute && strstr(esrc, "gl_WorkGroupID") != nullptr;
+    const bool usesNumWorkGroups =
+        isCompute && strstr(esrc, "gl_NumWorkGroups") != nullptr;
     const bool usesPointSize =
         (isVS || isTES) && strstr(esrc, "gl_PointSize") != nullptr;
     const bool usesClipDistance =
@@ -8433,6 +8462,9 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         paramTys.push_back(llvm::FixedVectorType::get(
             llvm::Type::getInt32Ty(ctx), 3));
         if (usesWorkGroupID || isTCS)
+            paramTys.push_back(llvm::FixedVectorType::get(
+                llvm::Type::getInt32Ty(ctx), 3));
+        if (usesNumWorkGroups)
             paramTys.push_back(llvm::FixedVectorType::get(
                 llvm::Type::getInt32Ty(ctx), 3));
     }
@@ -8765,6 +8797,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         else cg.threadPos = pos;
         if (usesWorkGroupID || isTCS)
             cg.workGroupPos = fn->getArg(argSlot++);
+        if (usesNumWorkGroups)
+            cg.numWorkGroups = fn->getArg(argSlot++);
         if (isTCS && cg.workGroupPos)
             cg.patchPos = cg.workGroupPos;
     }
@@ -8968,6 +9002,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         fc.bufferPtr = cg.bufferPtr;
         fc.threadPos = cg.threadPos;
         fc.workGroupPos = cg.workGroupPos;
+        fc.numWorkGroups = cg.numWorkGroups;
         fc.invocationPos = cg.invocationPos;
         fc.patchPos = cg.patchPos;
         fc.stageInPtr = cg.stageInPtr;
@@ -10428,6 +10463,19 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 llvm::MDString::get(ctx, "uint3"),
                 llvm::MDString::get(ctx, "air.arg_name"),
                 llvm::MDString::get(ctx, "threadgroup_position_in_grid")}));
+        }
+        if (usesNumWorkGroups) {
+            uint32_t numWorkGroupsSlot = mArgSlot + 1u;
+            if (isTCS || isTESCompute || usesWorkGroupID)
+                numWorkGroupsSlot++;
+            argNodes.push_back(llvm::MDNode::get(ctx, {
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), numWorkGroupsSlot)),
+                llvm::MDString::get(ctx, "air.threadgroups_per_grid"),
+                llvm::MDString::get(ctx, "air.arg_type_name"),
+                llvm::MDString::get(ctx, "uint3"),
+                llvm::MDString::get(ctx, "air.arg_name"),
+                llvm::MDString::get(ctx, "threadgroups_per_grid")}));
         }
     }
 
