@@ -1016,6 +1016,7 @@ typedef enum {
     BI_ARG_MAT3,    /* mat3 */
     BI_ARG_MAT4,    /* mat4 */
     BI_ARG_S2D,     /* sampler2D */
+    BI_ARG_S2DA,    /* sampler2DArray */
     BI_ARG_S3D,     /* sampler3D */
     BI_ARG_SCUBE,   /* samplerCube */
     BI_ARG_SBUF,      /* samplerBuffer */
@@ -1070,6 +1071,8 @@ static const BiFn kBuiltins[] = {
     { "textureLod", 3, { BI_ARG_SCUBE, BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_SAMP },
     { "textureSize", 2, { BI_ARG_S2D,   BI_ARG_FLOAT }, BI_RET_IVEC2 },
     { "texelFetch", 3, { BI_ARG_S2D, BI_ARG_GENI, BI_ARG_INT }, BI_RET_SAMP },
+    { "texelFetch", 3, { BI_ARG_S2DA, BI_ARG_IVEC3, BI_ARG_INT }, BI_RET_SAMP },
+    { "texelFetch", 3, { BI_ARG_S3D, BI_ARG_IVEC3, BI_ARG_INT }, BI_RET_SAMP },
     { "texelFetch", 3, { BI_ARG_SBUF, BI_ARG_INT, BI_ARG_INT }, BI_RET_SAMP },
     { "texelFetch", 2, { BI_ARG_SBUF, BI_ARG_INT }, BI_RET_SAMP },
     { "imageLoad", 2, { BI_ARG_I2D, BI_ARG_GENI }, BI_RET_SAMP },
@@ -1278,6 +1281,9 @@ static int bif_arg_matches(const MGLIRType *t, BiArgKind k, uint32_t *gen_dim)
     case BI_ARG_S2D:
         return t->kind == MGLIR_TYPE_SAMPLER && t->tex_kind == MGLIR_TEX_2D &&
                !t->tex_depth;
+    case BI_ARG_S2DA:
+        return t->kind == MGLIR_TYPE_SAMPLER &&
+               t->tex_kind == MGLIR_TEX_2D_ARRAY && !t->tex_depth;
     case BI_ARG_S3D:
         return t->kind == MGLIR_TYPE_SAMPLER && t->tex_kind == MGLIR_TEX_3D &&
                !t->tex_depth;

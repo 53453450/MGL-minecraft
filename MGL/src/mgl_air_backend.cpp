@@ -4949,7 +4949,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                              {tex, coord, value, cg.b->getInt32(0),
                               cg.b->getInt32(3)});
         }
-        /* texelFetch(sampler, ivec2, lod): unfiltered read. */
+        /* texelFetch(sampler, ivecP, lod): unfiltered read. */
         if (strcmp(name, "texelFetch") == 0) {
             if (e->u.call.arg_count != 3 && e->u.call.arg_count != 2) {
                 cg.err = 1;
@@ -4971,8 +4971,19 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 return nullptr;
             }
             const MGLIRSymbol *ts = findSymbol(mod, sa->u.var_ref.name);
-            bool isBuf = ts && ts->type->kind == MGLIR_TYPE_SAMPLER &&
-                         ts->type->tex_kind == MGLIR_TEX_BUFFER;
+            const MGLIRType *sampleType = ts ? ts->type : nullptr;
+            if (sampleType && sampleType->kind == MGLIR_TYPE_ARRAY &&
+                sampleType->elem_type)
+                sampleType = sampleType->elem_type;
+            MGLIRTexKind texKind = sampleType &&
+                                           sampleType->kind == MGLIR_TYPE_SAMPLER
+                                       ? sampleType->tex_kind
+                                       : MGLIR_TEX_2D;
+            MGLIRScalar texel =
+                sampleType && sampleType->kind == MGLIR_TYPE_SAMPLER
+                    ? sampleType->tex_storage
+                    : MGLIR_SCALAR_FLOAT;
+            bool isBuf = texKind == MGLIR_TEX_BUFFER;
             if (isBuf) {
                 if (e->u.call.arg_count != 2) {
                     cg.err = 1;
@@ -4999,7 +5010,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             }
             if (e->u.call.arg_count != 3) {
                 cg.err = 1;
-                cg.errmsg = "codegen: texelFetch on a sampler2D expects 3 "
+                cg.errmsg = "codegen: texelFetch on a sampler expects 3 "
                             "arguments";
                 return nullptr;
             }
@@ -5014,14 +5025,64 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                         smp->getPointerTo(2), {});
             llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
             llvm::Type *v2i32 = llvm::FixedVectorType::get(i32, 2);
-            llvm::Type *v4f32 = llvm::FixedVectorType::get(
-                llvm::Type::getFloatTy(*cg.ctx), 4);
+            llvm::Type *v3i32 = llvm::FixedVectorType::get(i32, 3);
+            llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+            llvm::Type *vecTy =
+                texel == MGLIR_SCALAR_FLOAT
+                    ? (llvm::Type *)llvm::FixedVectorType::get(f32, 4)
+                    : (llvm::Type *)llvm::FixedVectorType::get(i32, 4);
             llvm::Type *retTy =
-                llvm::StructType::get(*cg.ctx, {v4f32, cg.b->getInt8Ty()});
-            llvm::Value *r = callAirFn(
-                cg, "air.read_texture_2d.v4f32", retTy,
-                {tex, rs, coord, llvm::Constant::getNullValue(v2i32),
-                 lod, cg.b->getInt32(0)});
+                llvm::StructType::get(*cg.ctx, {vecTy, cg.b->getInt8Ty()});
+            auto readIntrinsic = [&](const char *floatName) -> std::string {
+                if (texel == MGLIR_SCALAR_FLOAT) {
+                    return floatName;
+                }
+                std::string n(floatName);
+                const char *from = ".v4f32";
+                const char *to = texel == MGLIR_SCALAR_INT ? ".s.v4i32"
+                                                           : ".u.v4i32";
+                size_t pos = n.find(from);
+                if (pos != std::string::npos) {
+                    n.replace(pos, strlen(from), to);
+                }
+                return n;
+            };
+            llvm::Value *r = nullptr;
+            if (texKind == MGLIR_TEX_2D_ARRAY) {
+                if (coord->getType() != v3i32) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: texelFetch on a sampler2DArray "
+                                "expects ivec3 coordinates";
+                    return nullptr;
+                }
+                llvm::Value *layer =
+                    cg.b->CreateExtractElement(coord, cg.b->getInt32(2));
+                coord = cg.b->CreateShuffleVector(
+                    coord, llvm::UndefValue::get(coord->getType()),
+                    {0, 1});
+                r = callAirFn(
+                    cg,
+                    readIntrinsic("air.read_texture_2d_array.v4f32").c_str(),
+                    retTy,
+                    {tex, rs, coord, layer, lod, cg.b->getInt32(0)});
+            } else if (texKind == MGLIR_TEX_3D) {
+                if (coord->getType() != v3i32) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: texelFetch on a sampler3D expects "
+                                "ivec3 coordinates";
+                    return nullptr;
+                }
+                r = callAirFn(
+                    cg, readIntrinsic("air.read_texture_3d.v4f32").c_str(),
+                    retTy,
+                    {tex, rs, coord, lod, cg.b->getInt32(0)});
+            } else {
+                r = callAirFn(
+                    cg, readIntrinsic("air.read_texture_2d.v4f32").c_str(),
+                    retTy,
+                    {tex, rs, coord, llvm::Constant::getNullValue(v2i32),
+                     lod, cg.b->getInt32(0)});
+            }
             return cg.b->CreateExtractValue(r, 0);
         }
         /* texture / textureLod / textureSize: the sampler argument maps
@@ -6127,7 +6188,12 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                    strcmp(name, "distance") == 0 ||
                    strcmp(name, "dot") == 0) {
             t.scalar = MGLIR_SCALAR_FLOAT;
-        } else if (strcmp(name, "lessThanEqual") == 0) {
+        } else if (strcmp(name, "lessThanEqual") == 0 ||
+                   strcmp(name, "lessThan") == 0 ||
+                   strcmp(name, "greaterThan") == 0 ||
+                   strcmp(name, "greaterThanEqual") == 0 ||
+                   strcmp(name, "equal") == 0 ||
+                   strcmp(name, "notEqual") == 0) {
             t.scalar = MGLIR_SCALAR_BOOL;
             if (e->u.call.arg_count > 0)
                 t.vec = exprType(cg, e->u.call.args[0], mod, locals).vec;
@@ -6189,6 +6255,41 @@ static llvm::Value *emitMathBuiltin(Codegen &cg, const MGLExpr *e,
             return nullptr;
         }
         return cg.b->CreateFCmp(llvm::CmpInst::FCMP_OLE, a0, a1);
+    }
+    if (strcmp(name, "lessThan") == 0 || strcmp(name, "greaterThan") == 0 ||
+        strcmp(name, "greaterThanEqual") == 0 ||
+        strcmp(name, "equal") == 0 || strcmp(name, "notEqual") == 0) {
+        if (!need(2)) {
+            return nullptr;
+        }
+        a0 = arg(0);
+        a1 = arg(1);
+        if (!a0 || !a1) {
+            return nullptr;
+        }
+        llvm::CmpInst::Predicate fPred = llvm::CmpInst::FCMP_OLT;
+        llvm::CmpInst::Predicate iPred = llvm::CmpInst::ICMP_SLT;
+        if (strcmp(name, "greaterThan") == 0) {
+            fPred = llvm::CmpInst::FCMP_OGT;
+            iPred = llvm::CmpInst::ICMP_SGT;
+        } else if (strcmp(name, "greaterThanEqual") == 0) {
+            fPred = llvm::CmpInst::FCMP_OGE;
+            iPred = llvm::CmpInst::ICMP_SGE;
+        } else if (strcmp(name, "equal") == 0) {
+            fPred = llvm::CmpInst::FCMP_OEQ;
+            iPred = llvm::CmpInst::ICMP_EQ;
+        } else if (strcmp(name, "notEqual") == 0) {
+            fPred = llvm::CmpInst::FCMP_ONE;
+            iPred = llvm::CmpInst::ICMP_NE;
+        }
+        if (a0->getType()->isFPOrFPVectorTy()) {
+            a0 = coerceScalar(cg, a0, MGLIR_SCALAR_FLOAT);
+            a1 = coerceScalar(cg, a1, MGLIR_SCALAR_FLOAT);
+            return cg.b->CreateFCmp(fPred, a0, a1);
+        }
+        a0 = coerceScalar(cg, a0, MGLIR_SCALAR_INT);
+        a1 = coerceScalar(cg, a1, MGLIR_SCALAR_INT);
+        return cg.b->CreateICmp(iPred, a0, a1);
     }
     if (strcmp(name, "all") == 0) {
         if (!need(1)) {
