@@ -6234,7 +6234,6 @@ stencil_format_ok:;
                     simpleState.alpha_to_one_enabled = 0;
                     simpleState.raster_sample_count = 0;
                     for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
-                        simpleState.color_write_mask[i] = 0;
                         simpleState.source_rgb_blend_factor[i] = 0;
                         simpleState.destination_rgb_blend_factor[i] = 0;
                         simpleState.source_alpha_blend_factor[i] = 0;
@@ -6242,6 +6241,7 @@ stencil_format_ok:;
                         simpleState.rgb_blend_operation[i] = 0;
                         simpleState.alpha_blend_operation[i] = 0;
                         if (i > 0) {
+                            simpleState.color_write_mask[i] = 0;
                             simpleState.color_format[i] = (uint32_t)MGLPixelFormatInvalid;
                         }
                     }
