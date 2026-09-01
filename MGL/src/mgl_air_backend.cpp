@@ -3417,7 +3417,20 @@ static llvm::Value *emitBlockMemberChain(Codegen &cg, const MGLExpr *e,
                 align = llvm::Align(4);
             }
             p = cg.b->CreateBitCast(p, t->getPointerTo(1));
-            v = cg.b->CreateAlignedLoad(t, p, align);
+            if (vt.vec && vt.scalar == MGLIR_SCALAR_BOOL) {
+                /* Same bvecN word-load rule as the final leaf load. */
+                llvm::Type *wordsTy = llvm::FixedVectorType::get(
+                    llvm::Type::getInt32Ty(*cg.ctx), vt.vec);
+                p = cg.b->CreateBitCast(p, wordsTy->getPointerTo(1));
+                llvm::Value *words =
+                    cg.b->CreateAlignedLoad(wordsTy, p, align);
+                v = cg.b->CreateICmpNE(
+                    words, llvm::ConstantAggregateZero::get(wordsTy));
+                /* Fall through: this node (e.g. a trailing .x) still needs
+                 * the post-leaf swizzle/component handling. */
+            } else {
+                v = cg.b->CreateAlignedLoad(t, p, align);
+            }
         }
         /* Post-leaf: swizzle / component selection on the loaded value. */
         if (node->kind == MGL_EXPR_MEMBER) {
@@ -3486,6 +3499,19 @@ static llvm::Value *emitBlockMemberChain(Codegen &cg, const MGLExpr *e,
             align = llvm::Align(4);
         }
         p = cg.b->CreateBitCast(p, t->getPointerTo(1));
+        if (vt.vec && vt.scalar == MGLIR_SCALAR_BOOL) {
+            /* bvecN members live as 4-byte words in the block (GL 4.6
+             * §7.6.2.2 std140 bool packing).  An <N x i1> vector load
+             * crashes MTLCompilerService; load the words and truncate to
+             * i1 lanes (any nonzero word is true). */
+            llvm::Type *wordsTy = llvm::FixedVectorType::get(
+                llvm::Type::getInt32Ty(*cg.ctx), vt.vec);
+            p = cg.b->CreateBitCast(p, wordsTy->getPointerTo(1));
+            llvm::Value *words = cg.b->CreateAlignedLoad(wordsTy, p, align);
+            v = cg.b->CreateICmpNE(
+                words, llvm::ConstantAggregateZero::get(wordsTy));
+            return v;
+        }
         v = cg.b->CreateAlignedLoad(t, p, align);
     }
     return v;
