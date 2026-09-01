@@ -572,8 +572,17 @@ static void test_constructors(void)
     analyze("#version 450 core\n"
             "void main() {\n"
             "    vec2 a = vec2(mat2(1.0));\n"
+            "    vec3 b = vec3(vec4(1.0, 2.0, 3.0, 4.0));\n"
             "}\n");
-    CHECK(error_count == 1, "vec2(mat2) rejected");
+    CHECK(error_count == 0, "matrix/extra-component vector ctors clean");
+    teardown();
+
+    analyze("#version 450 core\n"
+            "void main() {\n"
+            "    vec2 a = vec2(mat2(1.0), 1.0);\n"
+            "}\n");
+    CHECK(error_count == 1, "vec2 extra unused arg rejected");
+    CHECK(has_error("unused extra arguments"), "unused arg message");
     teardown();
 
     analyze("#version 450 core\n"

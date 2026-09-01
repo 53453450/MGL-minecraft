@@ -1398,6 +1398,11 @@ static int constructor_components(const MGLIRType *at)
     if (at->kind == MGLIR_TYPE_VECTOR) {
         return (int)at->cols;
     }
+    /* GLSL 4.60 §5.4.2: a matrix argument is a column-major sequence of
+     * components (columns consumed in order). */
+    if (at->kind == MGLIR_TYPE_MATRIX) {
+        return (int)(at->cols * at->rows);
+    }
     return -1;
 }
 
@@ -1411,7 +1416,8 @@ static int constructor_components(const MGLIRType *at)
 static int constructor_scalar_convert(const MGLIRType *from, MGLIRScalar to_sc)
 {
     if (!from || (from->kind != MGLIR_TYPE_SCALAR &&
-                  from->kind != MGLIR_TYPE_VECTOR)) {
+                  from->kind != MGLIR_TYPE_VECTOR &&
+                  from->kind != MGLIR_TYPE_MATRIX)) {
         return 0;
     }
     return from->scalar != MGLIR_SCALAR_VOID && to_sc != MGLIR_SCALAR_VOID;
@@ -1436,21 +1442,13 @@ static int check_constructor(Sema *s, uint32_t line, const char *tname,
     }
     if (t->kind == MGLIR_TYPE_VECTOR) {
         uint32_t n = t->cols;
-        if (argc == 1 && ats[0]) {
-            int c = constructor_components(ats[0]);
-            if (ats[0]->kind == MGLIR_TYPE_SCALAR && c == 1) {
-                /* broadcast: vec2(1.0) */
-                return constructor_scalar_convert(ats[0], t->scalar);
-            }
-            if (c == (int)n) {
-                /* single vector of the right size */
-                return constructor_scalar_convert(ats[0], t->scalar);
-            }
-            sema_error(s, line,
-                       "constructor 'vec%u' cannot take a single %s argument",
-                       n, ir_type_str(ats[0], (char[64]){0}, 64));
-            return 0;
+        if (argc == 1 && ats[0] && ats[0]->kind == MGLIR_TYPE_SCALAR) {
+            /* broadcast: vec2(1.0) */
+            return constructor_scalar_convert(ats[0], t->scalar);
         }
+        /* Consume arguments left to right until every destination component
+         * is initialized. Extra components in the last used argument are
+         * ignored; extra unused arguments are an error (GLSL 4.60 §5.4.2). */
         uint32_t total = 0;
         for (uint32_t i = 0; i < argc; i++) {
             int c = ats[i] ? constructor_components(ats[i]) : -1;
@@ -1460,15 +1458,12 @@ static int check_constructor(Sema *s, uint32_t line, const char *tname,
                            n, ats[i] ? ir_type_str(ats[i], (char[64]){0}, 64) : "?");
                 return 0;
             }
-            total += (uint32_t)c;
-        }
-        if (total != n) {
-            sema_error(s, line,
-                       "constructor 'vec%u' from %u component(s), expected %u",
-                       n, total, n);
-            return 0;
-        }
-        for (uint32_t i = 0; i < argc; i++) {
+            if (total >= n) {
+                sema_error(s, line,
+                           "constructor 'vec%u' has unused extra arguments",
+                           n);
+                return 0;
+            }
             if (!constructor_scalar_convert(ats[i], t->scalar)) {
                 char sa[64], sb[64];
                 sema_error(s, line,
@@ -1478,6 +1473,13 @@ static int check_constructor(Sema *s, uint32_t line, const char *tname,
                            ir_type_str(t, sb, sizeof(sb)));
                 return 0;
             }
+            total += (uint32_t)c;
+        }
+        if (total < n) {
+            sema_error(s, line,
+                       "constructor 'vec%u' from %u component(s), expected %u",
+                       n, total, n);
+            return 0;
         }
         return 1;
     }

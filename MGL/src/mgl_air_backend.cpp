@@ -4547,38 +4547,77 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             llvm::Type *eltTy = llvmScalar(velt, *cg.ctx);
             llvm::Type *vt = llvm::FixedVectorType::get(eltTy, vlanes);
             llvm::Value *res = llvm::UndefValue::get(vt);
+            auto coerceComp = [&](llvm::Value *x) -> llvm::Value * {
+                if (velt == MGLIR_SCALAR_BOOL) {
+                    if (x->getType()->isFloatingPointTy())
+                        return cg.b->CreateFCmpUNE(
+                            x, llvm::ConstantFP::get(x->getType(), 0.0));
+                    if (x->getType()->isIntegerTy(1))
+                        return x;
+                    return cg.b->CreateICmpNE(
+                        x, llvm::Constant::getNullValue(x->getType()));
+                }
+                return coerceScalar(cg, x, velt);
+            };
+            auto insertComp = [&](llvm::Value *x, uint32_t slot) {
+                x = coerceComp(x);
+                return cg.b->CreateInsertElement(
+                    res, x,
+                    llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx),
+                                           slot));
+            };
             uint32_t slot = 0;
-            for (uint32_t a = 0; a < e->u.call.arg_count; a++) {
+            for (uint32_t a = 0; a < e->u.call.arg_count && slot < vlanes;
+                 a++) {
                 llvm::Value *arg = emitExpr(cg, e->u.call.args[a], mod, locals);
                 if (!arg) return nullptr;
-                if (!arg->getType()->isVectorTy()) {
+                if (auto *arrTy = llvm::dyn_cast<llvm::ArrayType>(
+                        arg->getType())) {
+                    /* Matrix: column-major component stream (GLSL 4.60 §5.4.2). */
+                    uint32_t ncols = (uint32_t)arrTy->getNumElements();
+                    llvm::Type *colElt = arrTy->getElementType();
+                    uint32_t nrows = 1;
+                    if (auto *cv = llvm::dyn_cast<llvm::FixedVectorType>(colElt))
+                        nrows = (uint32_t)cv->getNumElements();
+                    for (uint32_t c = 0; c < ncols && slot < vlanes; c++) {
+                        llvm::Value *col = cg.b->CreateExtractValue(arg, c);
+                        if (col->getType()->isVectorTy()) {
+                            for (uint32_t r = 0; r < nrows && slot < vlanes;
+                                 r++, slot++) {
+                                llvm::Value *x = cg.b->CreateExtractElement(
+                                    col,
+                                    llvm::ConstantInt::get(
+                                        llvm::Type::getInt32Ty(*cg.ctx), r));
+                                res = insertComp(x, slot);
+                            }
+                        } else {
+                            res = insertComp(col, slot++);
+                        }
+                    }
+                } else if (!arg->getType()->isVectorTy()) {
                     /* Single scalar argument broadcasts (GLSL 4.60 5.4.2);
                      * otherwise one component per scalar. */
-                    arg = coerceScalar(cg, arg, velt);
                     if (e->u.call.arg_count == 1) {
+                        llvm::Value *s = coerceComp(arg);
                         for (uint32_t lane = 0; lane < vlanes; lane++)
-                            res = cg.b->CreateInsertElement(res, arg,
+                            res = cg.b->CreateInsertElement(
+                                res, s,
                                 llvm::ConstantInt::get(
                                     llvm::Type::getInt32Ty(*cg.ctx), lane));
                         return res;
                     }
-                    res = cg.b->CreateInsertElement(res, arg,
-                        llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx),
-                                               slot++));
+                    res = insertComp(arg, slot++);
                 } else {
-                    arg = coerceScalar(cg, arg, velt);
                     llvm::FixedVectorType *argTy =
                         llvm::cast<llvm::FixedVectorType>(arg->getType());
                     uint32_t argLanes = (uint32_t)argTy->getElementCount()
                                                     .getFixedValue();
                     for (uint32_t lane = 0;
                          lane < argLanes && slot < vlanes; lane++, slot++) {
-                        llvm::Value *x = cg.b->CreateExtractElement(arg,
-                            llvm::ConstantInt::get(
-                                llvm::Type::getInt32Ty(*cg.ctx), lane));
-                        res = cg.b->CreateInsertElement(res, x,
-                            llvm::ConstantInt::get(
-                                llvm::Type::getInt32Ty(*cg.ctx), slot));
+                        llvm::Value *x = cg.b->CreateExtractElement(
+                            arg, llvm::ConstantInt::get(
+                                     llvm::Type::getInt32Ty(*cg.ctx), lane));
+                        res = insertComp(x, slot);
                     }
                 }
             }
