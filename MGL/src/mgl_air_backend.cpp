@@ -132,6 +132,8 @@ struct LoopCtx {
     llvm::BasicBlock *condBB = nullptr;  /* do-while continue target */
     llvm::BasicBlock *endBB = nullptr;   /* break target */
     llvm::BasicBlock *incrBB = nullptr;  /* merge block; while/for continue target */
+    llvm::BasicBlock *condExitBB = nullptr; /* false-condition exit (after side effects) */
+    std::map<std::string, llvm::Value *> condExitSnap;
     std::map<std::string, llvm::PHINode *> phis;
     std::vector<std::pair<llvm::BasicBlock *,
                           std::map<std::string, llvm::Value *>>> contSnaps;
@@ -7032,9 +7034,15 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
                 cg.errmsg = "codegen: do-while condition must be a scalar bool";
                 return;
             }
+            for (auto &n : names)
+                lc.condExitSnap[n] = cg.lvalues[n];
+            lc.condExitBB =
+                llvm::BasicBlock::Create(*cg.ctx, "loop.cond.exit", cg.fn);
             for (auto &kv : lc.phis)
                 kv.second->addIncoming(cg.lvalues[kv.first], bbCond);
-            cg.b->CreateCondBr(cond, bbBody, bbEnd);
+            cg.b->CreateCondBr(cond, bbBody, lc.condExitBB);
+            cg.b->SetInsertPoint(lc.condExitBB);
+            cg.b->CreateBr(bbEnd);
         } else {
             llvm::Value *cond = st->kind == MGL_STMT_FOR
                 ? (st->u.loop.cond ? emitExpr(cg, st->u.loop.cond, mod,
@@ -7055,6 +7063,9 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
                 if (auto *cint = llvm::dyn_cast<llvm::ConstantInt>(cond);
                     cint && !cint->getValue().getBoolValue()) {
                     llvm::BasicBlock *cur = cg.b->GetInsertBlock();
+                    for (auto &n : names)
+                        lc.condExitSnap[n] = cg.lvalues[n];
+                    lc.condExitBB = cur;
                     cg.b->SetInsertPoint(bbBody);
                     cg.b->CreateUnreachable();
                     cg.b->SetInsertPoint(bbIncr);
@@ -7063,7 +7074,14 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
                     cg.b->CreateBr(bbEnd);
                     bodyDead = true;
                 } else {
-                    cg.b->CreateCondBr(cond, bbBody, bbEnd);
+                    for (auto &n : names)
+                        lc.condExitSnap[n] = cg.lvalues[n];
+                    lc.condExitBB =
+                        llvm::BasicBlock::Create(*cg.ctx, "loop.cond.exit",
+                                                 cg.fn);
+                    cg.b->CreateCondBr(cond, bbBody, lc.condExitBB);
+                    cg.b->SetInsertPoint(lc.condExitBB);
+                    cg.b->CreateBr(bbEnd);
                 }
             } else {
                 cg.b->CreateBr(bbBody);
@@ -7112,9 +7130,15 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
             llvm::Value *v = st->kind == MGL_STMT_DO_WHILE
                                  ? cg.lvalues[n]
                                  : lc.phis[n];
+            unsigned nIn = (unsigned)brk.snaps.size() +
+                           (lc.condExitBB ? 1u : 0u);
             llvm::PHINode *e =
-                cg.b->CreatePHI(v->getType(), 1 + brk.snaps.size(), n);
-            e->addIncoming(v, bbCond);
+                cg.b->CreatePHI(v->getType(), nIn, n);
+            if (lc.condExitBB) {
+                auto it = lc.condExitSnap.find(n);
+                e->addIncoming(it != lc.condExitSnap.end() ? it->second : v,
+                               lc.condExitBB);
+            }
             for (auto &bs : brk.snaps) {
                 auto it = bs.second.find(n);
                 e->addIncoming(it != bs.second.end() ? it->second : v,
