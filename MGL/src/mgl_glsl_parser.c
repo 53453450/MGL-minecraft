@@ -1219,20 +1219,30 @@ static MGLStmt *parse_statement(MGLParser *p)
             return NULL;
         }
         expect_punct(p, "(");
-        if (!ops_at(p, ";")) {
-            if (at_decl_start(p)) {
-                s->u.loop.init = parse_decl_stmt(p, line);
-            } else {
-                s->u.loop.init = parse_statement(p);
+        if (ops_at(p, ";")) {
+            advance(p);
+        } else if (at_decl_start(p)) {
+            s->u.loop.init = parse_decl_stmt(p, line);
+        } else {
+            MGLExpr *e = parse_expression(p);
+            expect_punct(p, ";");
+            MGLStmt *init = stmt_alloc(p, MGL_STMT_EXPR, line);
+            if (init) {
+                init->u.expr.expr = e;
             }
+            s->u.loop.init = init;
         }
-        /* skip cond only when the ";" directly precedes ")" */
         if (!ops_at(p, ";")) {
             s->u.loop.cond = parse_expression(p);
         }
         expect_punct(p, ";");
-        if (!ops_at(p, ")") && !ops_at(p, ";")) {
-            s->u.loop.incr = parse_expression(p);
+        if (!ops_at(p, ")")) {
+            if (!ops_at(p, ";")) {
+                s->u.loop.incr = parse_expression(p);
+            }
+            if (ops_at(p, ";")) {
+                advance(p);
+            }
         }
         expect_punct(p, ")");
         s->u.loop.body = parse_statement(p);
