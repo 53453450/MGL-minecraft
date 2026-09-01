@@ -15766,39 +15766,102 @@ static int test_air_ubo_pso_bisect(unsigned char *pixels,
     }
     glUseProgram(prog);
 
+    if (getenv("MGL_UBO_PSO_DUMP")) {
+        static const GLenum kOffProp[] = { GL_OFFSET };
+        static const char *members[] = {
+            "blockA.a", "blockB.b.a", "blockB.b.c",
+        };
+        for (size_t mi = 0; mi < sizeof(members) / sizeof(members[0]); mi++) {
+            GLuint idx = glGetProgramResourceIndex(
+                prog, GL_BUFFER_VARIABLE, members[mi]);
+            GLint off = -1;
+            if (idx != GL_INVALID_INDEX) {
+                glGetProgramResourceiv(prog, GL_BUFFER_VARIABLE, idx, 1,
+                                       kOffProp, 1, NULL, &off);
+            }
+            fprintf(stderr, "air_ubo_pso_bisect: reflect %s idx=%u offset=%d\n",
+                    members[mi], idx, off);
+        }
+        for (int stage = 0; stage < 2; stage++) {
+            static const GLenum ifc[] = {
+                GL_VERTEX_SHADER, GL_FRAGMENT_SHADER
+            };
+            static const char *blocks[] = { "BlockA", "BlockB" };
+            for (size_t bi = 0; bi < 2; bi++) {
+                GLuint idx = glGetProgramResourceIndex(
+                    prog, GL_UNIFORM_BLOCK, blocks[bi]);
+                if (idx == GL_INVALID_INDEX) continue;
+                static const GLenum props[] = {
+                    GL_BUFFER_BINDING, GL_BUFFER_DATA_SIZE
+                };
+                GLint vals[2];
+                glGetProgramResourceiv(prog, GL_UNIFORM_BLOCK, idx, 2,
+                                       props, 2, NULL, vals);
+                fprintf(stderr,
+                        "air_ubo_pso_bisect: %s %s binding=%d size=%d\n",
+                        stage ? "FS" : "VS", blocks[bi], vals[0], vals[1]);
+            }
+        }
+    }
+
     GLuint ubos[2];
     glGenBuffers(2, ubos);
     /* CTS reference values at the std140 offsets our reflection reports
      * (BlockA 160B: a@0, b.a@16, b.b[4]@64, b.c@128, c@144;
      *  BlockB 224B: a@0, b.a@32, b.b.a@48, b.b.b[4]@96, b.b.c@160,
      *               b.c@176, d@208). */
-    static const float blockA[40] = {
-        2.0f, 0, 0, 0,                                    /* a + pad   */
-        0.0f, 6.0f, 5.0f, 0, -6.0f, 5.0f, 5.0f, 0,        /* b.a col0/1 */
-        8.0f, 0.0f, -2.0f, 0,                             /* b.a col2  */
-        0.0f, 2.0f, 0, 0,  9.0f, -1.0f, 0, 0,             /* b.b[0/1]  */
-        -4.0f, -9.0f, 0, 0,  6.0f, 2.0f, 0, 0,            /* b.b[2/3]  */
-        -8.0f, -2.0f, 3.0f, 7.0f,                         /* b.c       */
-        3.0f, 1.0f, 4.0f, 0,                              /* c uvec3   */
+    /* Pack UBO blobs as raw uint32 words so int/uint/bvec fields get correct
+     * bit patterns (float[] breaks ivec2/uvec3/uint members). */
+    static const uint32_t blockA_words[40] = {
+        0x40000000u, 0u, 0u, 0u,                           /* a @0        */
+        0u, 0x40c00000u, 0x40a00000u, 0u,                 /* b.a col0    */
+        0xC0c00000u, 0x40a00000u, 0x40a00000u, 0u,        /* b.a col1    */
+        0x41000000u, 0u, 0xC0000000u, 0u,                 /* b.a col2    */
+        0u, 2u, 0u, 0u,                                   /* b.b[0] @64  */
+        9u, 0xFFFFFFFFu, 0u, 0u,                          /* b.b[1] @80  */
+        0xFFFFFFFCu, 0xFFFFFFF7u, 0u, 0u,                 /* b.b[2] @96  */
+        6u, 2u, 0u, 0u,                                    /* b.b[3] @112 */
+        0xC1000000u, 0xC0000000u, 0x40400000u, 0x40E00000u, /* b.c       */
+        3u, 1u, 4u, 0u,                                   /* c uvec3     */
     };
-    static const float blockB[56] = {
-        3.0f, -7.0f, 0, 0,  -8.0f, -4.0f, 0, 0,           /* a mat2    */
-        0, 0, 0, 0, 0, 0, 0, 0,                           /* pad to 32 */
-        7.0f, 0, 0, 0,                                    /* b.a uint  */
-        5.0f, 1.0f, 2.0f, 0, -2.0f, -9.0f, -8.0f, 0,      /* b.b.a c0/1*/
-        8.0f, 0.0f, 1.0f, 0,                              /* b.b.a c2  */
-        -7.0f, 4.0f, 0, 0,  6.0f, 1.0f, 0, 0,             /* b.b.b[0/1]*/
-        -4.0f, 4.0f, 0, 0,  9.0f, -5.0f, 0, 0,            /* b.b.b[2/3]*/
-        -3.0f, -5.0f, 9.0f, 2.0f,                         /* b.b.c     */
-        0.0f, 1.0f, 1.0f, 0.0f,                           /* b.c bvec4 */
-        0.0f, 0, 0, 0,                                    /* d bool    */
+    static const uint32_t blockB_words[56] = {
+        0x40400000u, 0xC0E00000u, 0u, 0u,                 /* a mat2 col0 */
+        0xC1000000u, 0xC0800000u, 0u, 0u,                 /* a mat2 col1 */
+        7u, 0u, 0u, 0u,                                    /* b.a @32     */
+        0x40A00000u, 0x3F800000u, 0x40000000u, 0u,        /* b.b.a col0  */
+        0xC0000000u, 0xC1100000u, 0xC1000000u, 0u,        /* b.b.a col1  */
+        0x41000000u, 0u, 0x3F800000u, 0u,                  /* b.b.a col2  */
+        0xFFFFFFF9u, 4u, 0u, 0u,                          /* b.b.b[0]@96 */
+        6u, 1u, 0u, 0u,                                    /* b.b.b[1]@112*/
+        0xFFFFFFFCu, 4u, 0u, 0u,                          /* b.b.b[2]@128*/
+        9u, 0xFFFFFFFBu, 0u, 0u,                          /* b.b.b[3]@144*/
+        0xC0400000u, 0xC0A00000u, 0x41100000u, 0x40000000u, /* b.b.c     */
+        0u, 0x3F800000u, 0x3F800000u, 0u,                 /* b.c @176    */
+        0u, 0u, 0u, 0u,                                    /* d @208      */
+        0u, 0u, 0u, 0u,                                    /* pad to 224B */
     };
     glBindBuffer(GL_UNIFORM_BUFFER, ubos[0]);
-    glBufferData(GL_UNIFORM_BUFFER, sizeof(blockA), blockA, GL_STATIC_DRAW);
+    glBufferData(GL_UNIFORM_BUFFER, sizeof(blockA_words), blockA_words,
+                 GL_STATIC_DRAW);
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, ubos[0]);
     glBindBuffer(GL_UNIFORM_BUFFER, ubos[1]);
-    glBufferData(GL_UNIFORM_BUFFER, sizeof(blockB), blockB, GL_STATIC_DRAW);
+    glBufferData(GL_UNIFORM_BUFFER, sizeof(blockB_words), blockB_words,
+                 GL_STATIC_DRAW);
     glBindBufferBase(GL_UNIFORM_BUFFER, 1, ubos[1]);
+
+    if (getenv("MGL_UBO_PSO_DUMP")) {
+        fprintf(stderr, "air_ubo_pso_bisect: blockB cpu word@8=%u (b.a) word@44=%u (b.c.x)\n",
+                blockB_words[8], blockB_words[44]);
+        glBindBuffer(GL_UNIFORM_BUFFER, ubos[1]);
+        const uint32_t *gpu = (const uint32_t *)glMapBufferRange(
+            GL_UNIFORM_BUFFER, 0, sizeof(blockB_words), GL_MAP_READ_BIT);
+        if (gpu) {
+            fprintf(stderr,
+                    "air_ubo_pso_bisect: blockB gpu word@8=%u word@44=%u\n",
+                    gpu[8], gpu[44]);
+            glUnmapBuffer(GL_UNIFORM_BUFFER);
+        }
+    }
 
     static const float verts[] = { -1.0f, -1.0f,  1.0f, -1.0f,  0.0f, 1.0f };
     GLuint vao;
@@ -15817,7 +15880,16 @@ static int test_air_ubo_pso_bisect(unsigned char *pixels,
     const unsigned char *px = pixels + (REG_H / 2 * REG_W + REG_W / 2) * 4;
     fprintf(stderr, "air_ubo_pso_bisect: variant %d center pixel r=%u g=%u b=%u\n",
             v, px[0], px[1], px[2]);
-    if (px[0] < 128 || px[1] < 128 || px[2] < 128) {
+    if (v == 33) {
+        /* Probe outputs float(blockB.b.c.x); reference b.c.x is false. */
+        if (px[0] < 128 || px[1] < 128 || px[2] >= 128) {
+            fprintf(stderr,
+                    "air_ubo_pso_bisect: variant 33 probe failed "
+                    "(r=%u g=%u b=%u)\n",
+                    px[0], px[1], px[2]);
+            result = 1;
+        }
+    } else if (px[0] < 128 || px[1] < 128 || px[2] < 128) {
         fprintf(stderr,
                 "air_ubo_pso_bisect: variant %d compare failed (r=%u g=%u b=%u)\n",
                 v, px[0], px[1], px[2]);

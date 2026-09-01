@@ -52,6 +52,28 @@ static uint32_t mglBindingStateTextureType(id texture)
     return mglBindingStateTextureInfo(texture).texture_type;
 }
 
+/* UBOs use the reflected block size (not the generic 256-byte stage floor).
+ * When the client bound the whole store but it is shorter than the padded
+ * reflection size, require only the bytes actually visible in the binding. */
+static NSUInteger mglRequiredBindingBytesForMap(const BufferMap *map,
+                                                NSUInteger reflectedRequiredBytes)
+{
+    if (map && map->resource_type == _UNIFORM_BUFFER_RES &&
+        reflectedRequiredBytes > 0) {
+        GLsizeiptr visible = mglBufferMapVisibleSize(map);
+        if (visible > 0 &&
+            (NSUInteger)visible < reflectedRequiredBytes) {
+            return (NSUInteger)visible;
+        }
+        return reflectedRequiredBytes;
+    }
+    NSUInteger required = kMGLMinimumStageBindingSize;
+    if (reflectedRequiredBytes > required) {
+        required = reflectedRequiredBytes;
+    }
+    return required;
+}
+
 static uint64_t mglBindingStateTextureWidth(id texture)
 {
     return mglBindingStateTextureInfo(texture).width;
@@ -558,9 +580,8 @@ static bool mglBindingStateFlushResourceBindings(
             reflectedRequiredBytes = map->has_metal_binding
                 ? mglRendererGetProgramBindingRequiredSize(ctx, vertexStage, (int)map->resource_type, (int)map->resource_index)
                 : mglRendererGetProgramBindingRequiredSizeForStage(ctx, vertexStage, glBindingIndex);
-            if (reflectedRequiredBytes > requiredBindingBytes) {
-                requiredBindingBytes = reflectedRequiredBytes;
-            }
+            requiredBindingBytes =
+                mglRequiredBindingBytesForMap(map, reflectedRequiredBytes);
         }
 
 
@@ -757,12 +778,14 @@ static bool mglBindingStateFlushResourceBindings(
         return false;
     }
 
-    [self bindVertexFallbackBuffersToCurrentRenderEncoder:activeProgram
-                                      anyBindingPresent:anyBindingPresent
-                                      baseBindingPresent:baseBindingPresent
-                                          encodeContext:encCtx
-                                       bindingSnapshot:&vbindSnapshot
-                                           useSnapshot:useVertexBindingSnapshot];
+    if (mapCount > 0) {
+        [self bindVertexFallbackBuffersToCurrentRenderEncoder:activeProgram
+                                          anyBindingPresent:anyBindingPresent
+                                          baseBindingPresent:baseBindingPresent
+                                              encodeContext:encCtx
+                                           bindingSnapshot:&vbindSnapshot
+                                               useSnapshot:useVertexBindingSnapshot];
+    }
 
     [self bindPointSizeParamsIfNeeded:anyBindingPresent
                         encodeContext:encCtx
@@ -1882,9 +1905,8 @@ static bool mglBindingStateFlushResourceBindings(
                 reflectedRequiredBytes = map->has_metal_binding
                     ? mglRendererGetProgramBindingRequiredSize(ctx, _FRAGMENT_SHADER, (int)map->resource_type, (int)map->resource_index)
                     : mglRendererGetProgramBindingRequiredSizeForStage(ctx, _FRAGMENT_SHADER, glBindingIndex);
-                if (reflectedRequiredBytes > requiredBindingBytes) {
-                    requiredBindingBytes = reflectedRequiredBytes;
-                }
+                requiredBindingBytes =
+                    mglRequiredBindingBytesForMap(map, reflectedRequiredBytes);
             }
 
 
@@ -2059,12 +2081,14 @@ static bool mglBindingStateFlushResourceBindings(
         fbindByteScratchUsed = 0;
     }
 
-    [self bindFragmentFallbackBuffersToCurrentRenderEncoder:activeProgram
-                                         anyBindingPresent:anyBindingPresent
-                                         baseBindingPresent:baseBindingPresent
-                                             encodeContext:encCtx
-                                         bindingSnapshot:&snapshot
-                                             useSnapshot:useBindingSnapshot];
+    if (mapCount > 0) {
+        [self bindFragmentFallbackBuffersToCurrentRenderEncoder:activeProgram
+                                             anyBindingPresent:anyBindingPresent
+                                             baseBindingPresent:baseBindingPresent
+                                                 encodeContext:encCtx
+                                             bindingSnapshot:&snapshot
+                                                 useSnapshot:useBindingSnapshot];
+    }
 
     /* Fallback bindings are real Metal slots and must be included in the
      * worker snapshot. */

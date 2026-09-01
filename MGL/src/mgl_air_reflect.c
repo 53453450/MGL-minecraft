@@ -595,6 +595,7 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                   stage == MGL_STAGE_TESS_EVALUATION ||
                   stage == MGL_STAGE_GEOMETRY) ? hasPlain : 0));
     uint32_t ubo_binding = ssbo_binding + ssboCount;
+    uint32_t gl_ubo_binding = 0;
     uint32_t ac_binding = ubo_binding + uboSlotCount;
     if (acCount > 0u && ac_binding + acCount > MAX_BINDABLE_BUFFERS) {
         if (err && errCap) {
@@ -736,15 +737,16 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                     last->ubo_array_bindings = (GLuint *)calloc(
                         block_count, sizeof(*last->ubo_array_bindings));
                 }
-                GLuint first_binding = s->binding != UINT32_MAX
-                    ? s->binding : ubo_binding;
-                last->gl_binding = first_binding;
+                GLuint gl_block_binding = s->binding != UINT32_MAX
+                    ? s->binding : gl_ubo_binding;
+                last->gl_binding = gl_block_binding;
                 if (last->ubo_array_bindings) {
                     for (GLuint element = 0; element < block_count; element++) {
                         last->ubo_array_bindings[element] =
-                            first_binding + element;
+                            gl_block_binding + element;
                     }
                 }
+                gl_ubo_binding += block_count;
                 ubo_binding += block_count;
                 continue;
             }

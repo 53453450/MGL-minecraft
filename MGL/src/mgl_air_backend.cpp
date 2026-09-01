@@ -3512,6 +3512,34 @@ static llvm::Value *emitBlockMemberChain(Codegen &cg, const MGLExpr *e,
                 words, llvm::ConstantAggregateZero::get(wordsTy));
             return v;
         }
+        if (ct->kind == MGLIR_TYPE_MATRIX) {
+            /* std140/std430 matrices are arrays of column (or row) vectors
+             * with matrix_stride padding.  A contiguous LLVM array load
+             * would skip the pad and mis-read every column after the first. */
+            uint32_t stride = ct->layout.matrix_stride;
+            if (stride == 0) {
+                /* Nested matrix types sometimes arrive without a filled
+                 * layout (clone before layout_block).  UBO path is std140:
+                 * column stride rounds up to 16. */
+                uint32_t base = (vt.rows <= 2u ? vt.rows : 4u) * 4u;
+                stride = (base + 15u) & ~15u;
+            }
+            uint32_t count = vt.cols;
+            llvm::Type *colTy = llvm::FixedVectorType::get(
+                llvmScalar(vt.scalar, *cg.ctx), vt.rows);
+            v = llvm::UndefValue::get(t);
+            for (uint32_t c = 0; c < count; c++) {
+                llvm::Value *colOff =
+                    cg.b->CreateAdd(off, cg.b->getInt64((uint64_t)c * stride));
+                llvm::Value *cp = cg.b->CreateGEP(cg.b->getInt8Ty(), base,
+                                                  colOff);
+                cp = cg.b->CreateBitCast(cp, colTy->getPointerTo(1));
+                llvm::Value *col =
+                    cg.b->CreateAlignedLoad(colTy, cp, llvm::Align(16));
+                v = cg.b->CreateInsertValue(v, col, c);
+            }
+            return v;
+        }
         v = cg.b->CreateAlignedLoad(t, p, align);
     }
     return v;
@@ -3942,6 +3970,64 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         if (cg.err) return nullptr;
         if (const MGLIRSymbol *sb = ssboRootSym(e, mod))
             return emitSSBORead(cg, e, sb, mod, locals);
+        /* Uniform-block array/vector indexing must stay on the block chain
+         * path so std140 array_stride is applied.  Falling through to
+         * load-whole-array + ExtractValue packs elements tightly and
+         * mis-reads ivec2/vec2 arrays (stride 8 instead of 16). */
+        {
+            const MGLExpr *chain[16];
+            uint32_t chain_len = 0;
+            const MGLExpr *rootIndexExpr = nullptr;
+            const MGLIRSymbol *ov = blockChainRoot(e, chain, &chain_len,
+                                                   &rootIndexExpr, mod);
+            const char *objName = (ov && ov->name) ? ov->name : nullptr;
+            const MGLIRType *ubStruct =
+                ov && ov->type->kind == MGLIR_TYPE_ARRAY && ov->type->elem_type
+                    ? ov->type->elem_type
+                    : (ov ? ov->type : nullptr);
+            if (ov && !ov->is_function &&
+                (ov->qualifiers & MGL_AST_Q_UNIFORM) &&
+                ubStruct && ubStruct->kind == MGLIR_TYPE_STRUCT &&
+                ubStruct->member_count > 0) {
+                llvm::Value *base = nullptr;
+                if (rootIndexExpr) {
+                    auto slotIt = cg.uboElemSlot.find(objName);
+                    auto tyIt = cg.uboElemArrTy.find(objName);
+                    if (slotIt == cg.uboElemSlot.end() ||
+                        tyIt == cg.uboElemArrTy.end()) {
+                        cg.err = 1;
+                        cg.errmsg =
+                            std::string("codegen: uniform block array '") +
+                            objName + "' has no element slots";
+                        return nullptr;
+                    }
+                    llvm::Value *elemIndex =
+                        emitExpr(cg, rootIndexExpr->u.index.index, mod,
+                                 locals);
+                    if (!elemIndex) return nullptr;
+                    llvm::Value *gep = cg.b->CreateInBoundsGEP(
+                        tyIt->second, slotIt->second,
+                        {cg.b->getInt64(0),
+                         cg.b->CreateZExt(elemIndex,
+                                          cg.b->getInt64Ty())});
+                    base = cg.b->CreateLoad(
+                        llvm::Type::getInt8Ty(*cg.ctx)->getPointerTo(1),
+                        gep);
+                } else {
+                    base = cg.uboPtrs.count(objName)
+                               ? cg.uboPtrs[objName]
+                               : nullptr;
+                }
+                if (!base) {
+                    cg.err = 1;
+                    cg.errmsg = std::string("codegen: uniform block '") +
+                                objName + "' has no device buffer";
+                    return nullptr;
+                }
+                return emitBlockMemberChain(cg, e, base, ubStruct, objName,
+                                            mod, locals);
+            }
+        }
         const MGLExpr *idxE = e->u.index.index;
         if (cg.isTessEval && e->u.index.object &&
             e->u.index.object->kind == MGL_EXPR_VAR_REF) {
