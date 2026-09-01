@@ -5463,6 +5463,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         }
     }
     case MGL_EXPR_BINARY: {
+        if (e->u.binary.op == MGL_OP_COMMA) {
+            if (!emitExpr(cg, e->u.binary.lhs, mod, locals)) return nullptr;
+            return emitExpr(cg, e->u.binary.rhs, mod, locals);
+        }
         llvm::Value *l = emitExpr(cg, e->u.binary.lhs, mod, locals);
         llvm::Value *r = emitExpr(cg, e->u.binary.rhs, mod, locals);
         if (!l || !r) return nullptr;
@@ -5745,7 +5749,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             llvm::Value *nv = updateIndexPath(cg, lhs, agg, v, mod, locals);
             if (!nv) return nullptr;
             cg.lvalues[name] = nv;
-            return nv;
+            return v;
         }
 
         /* x op= y where x is a named lvalue. */
@@ -10997,6 +11001,16 @@ extern "C" int mglShaderInterfaceCheck(const char *vs_src, const char *fs_src,
             rc = -1;
         }
         mglGLSLSemanticCheckDestroy(le, lec);
+        if (rc == 0) {
+            le = nullptr;
+            lec = 0;
+            if (mglGLSLUniformLinkCheck(&vs, &fs, &le, &lec)) {
+                if (err_buf && err_cap && le && lec)
+                    snprintf(err_buf, err_cap, "%s", le[0].message);
+                rc = -1;
+            }
+            mglGLSLSemanticCheckDestroy(le, lec);
+        }
     }
     mglGLSLSemanticCheckDestroy(ve, vc);
     mglGLSLSemanticCheckDestroy(fe, fc);

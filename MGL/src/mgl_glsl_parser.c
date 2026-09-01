@@ -556,6 +556,7 @@ static double cur_double(MGLParser *p)
 /* ----------------------------------------------------------------- */
 
 static MGLExpr *parse_expression(MGLParser *p);
+static MGLExpr *parse_assignment(MGLParser *p);
 static MGLStmt *parse_statement(MGLParser *p);
 static MGLDecl *parse_declaration(MGLParser *p);
 static int at_decl_start(MGLParser *p);
@@ -725,7 +726,7 @@ static MGLExpr *parse_primary(MGLParser *p)
                 uint32_t argc = 0;
                 if (!ops_at(p, ")")) {
                     for (;;) {
-                        MGLExpr *arg = parse_expression(p);
+                        MGLExpr *arg = parse_assignment(p);
                         if (!arg) {
                             break;
                         }
@@ -1049,7 +1050,27 @@ static MGLExpr *parse_assignment(MGLParser *p)
 
 static MGLExpr *parse_expression(MGLParser *p)
 {
-    return parse_assignment(p);
+    MGLExpr *lhs = parse_assignment(p);
+    if (!lhs) {
+        return NULL;
+    }
+    while (ops_at(p, ",")) {
+        uint32_t line = lhs->line;
+        advance(p);
+        MGLExpr *rhs = parse_assignment(p);
+        if (!rhs) {
+            return NULL;
+        }
+        MGLExpr *b = expr_alloc(p, MGL_EXPR_BINARY, line);
+        if (!b) {
+            return NULL;
+        }
+        b->u.binary.op = MGL_OP_COMMA;
+        b->u.binary.lhs = lhs;
+        b->u.binary.rhs = rhs;
+        lhs = b;
+    }
+    return lhs;
 }
 
 /* Array extents are integral constant expressions in GLSL.  The AST stores

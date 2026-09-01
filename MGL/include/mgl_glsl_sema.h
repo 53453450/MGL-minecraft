@@ -108,6 +108,13 @@ MGLIRSymbol *mglIRSymbolNew(const char *name, MGLIRType *type);
 int mglGLSLInterfaceCheck(const MGLIRModule *a, const MGLIRModule *b,
                           MGLSemaError **errors, uint32_t *error_count);
 
+/* Link-time uniform / UBO name rules (GLSL 4.60 §4.4.5 / §4.3.5): anonymous
+ * block members enter the global namespace; matched blocks must agree on
+ * whether an instance name is present; the same identifier cannot name both a
+ * plain uniform and an anonymous-block member, nor members of two blocks. */
+int mglGLSLUniformLinkCheck(const MGLIRModule *a, const MGLIRModule *b,
+                            MGLSemaError **errors, uint32_t *error_count);
+
 void mglGLSLSemanticCheckDestroy(MGLSemaError *errors, uint32_t count);
 
 void mglIRModuleDestroy(MGLIRModule *module);

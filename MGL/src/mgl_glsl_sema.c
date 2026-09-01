@@ -2050,6 +2050,9 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                 return NULL;
             }
             return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_BOOL));
+        case MGL_OP_COMMA:
+            check_expr(s, tab, e->u.binary.lhs);
+            return r;
         case MGL_OP_AND: case MGL_OP_OR: case MGL_OP_XOR:
         case MGL_OP_SHL: case MGL_OP_SHR:
             if (!is_numeric(l) || !is_numeric(r) ||
@@ -2865,6 +2868,197 @@ int mglGLSLInterfaceCheck(const MGLIRModule *a, const MGLIRModule *b,
             }
         }
     }
+
+    if (errors) {
+        *errors = s.errors;
+    }
+    if (error_count) {
+        *error_count = s.error_count;
+    }
+    return (int)s.error_count;
+}
+
+static const MGLIRType *sym_uniform_block_type(const MGLIRSymbol *s)
+{
+    if (!s || !(s->qualifiers & MGL_AST_Q_UNIFORM)) {
+        return NULL;
+    }
+    const MGLIRType *t = s->type;
+    while (t && t->kind == MGLIR_TYPE_ARRAY) {
+        t = t->elem_type;
+    }
+    return (t && t->kind == MGLIR_TYPE_STRUCT && t->member_count > 0) ? t
+                                                                      : NULL;
+}
+
+static int sym_is_anonymous_uniform_block(const MGLIRSymbol *s)
+{
+    const MGLIRType *bt = sym_uniform_block_type(s);
+    return bt && s->name && bt->name && strcmp(s->name, bt->name) == 0;
+}
+
+typedef struct {
+    char *name;
+    char *block; /* NULL = plain uniform; else owning block type name */
+} UniformLinkName;
+
+static void uniform_link_names_free(UniformLinkName *entries, uint32_t count)
+{
+    if (!entries) {
+        return;
+    }
+    for (uint32_t i = 0; i < count; i++) {
+        free(entries[i].name);
+        free(entries[i].block);
+    }
+    free(entries);
+}
+
+static int uniform_link_name_add(Sema *s, UniformLinkName **entries,
+                                 uint32_t *count, uint32_t *cap,
+                                 const char *name, const char *block)
+{
+    if (!name) {
+        return 0;
+    }
+    for (uint32_t i = 0; i < *count; i++) {
+        if (strcmp((*entries)[i].name, name) != 0) {
+            continue;
+        }
+        const char *existing = (*entries)[i].block;
+        if ((existing == NULL) != (block == NULL) ||
+            (existing && block && strcmp(existing, block) != 0)) {
+            sema_error(s, 0,
+                       "uniform '%s' declared with conflicting definitions",
+                       name);
+            return -1;
+        }
+        return 0;
+    }
+    if (*count == *cap) {
+        uint32_t ncap = (*cap == 0) ? 8u : (*cap * 2u);
+        UniformLinkName *next = (UniformLinkName *)realloc(
+            *entries, ncap * sizeof(UniformLinkName));
+        if (!next) {
+            return -1;
+        }
+        *entries = next;
+        *cap = ncap;
+    }
+    UniformLinkName *e = &(*entries)[*count];
+    e->name = strdup(name);
+    e->block = block ? strdup(block) : NULL;
+    if (!e->name || (block && !e->block)) {
+        free(e->name);
+        free(e->block);
+        return -1;
+    }
+    (*count)++;
+    return 0;
+}
+
+static int uniform_link_names_collect(Sema *s, const MGLIRModule *mod,
+                                      UniformLinkName **entries,
+                                      uint32_t *count, uint32_t *cap)
+{
+    for (uint32_t i = 0; i < mod->symbol_count; i++) {
+        MGLIRSymbol *sym = mod->symbols[i];
+        if (!sym || sym->is_function || !sym->name) {
+            continue;
+        }
+        if (sym->block_name) {
+            if (!(sym->qualifiers & MGL_AST_Q_UNIFORM)) {
+                continue;
+            }
+            if (uniform_link_name_add(s, entries, count, cap, sym->name,
+                                      sym->block_name) != 0) {
+                return -1;
+            }
+            continue;
+        }
+        if (sym_uniform_block_type(sym)) {
+            continue;
+        }
+        if (!(sym->qualifiers & MGL_AST_Q_UNIFORM)) {
+            continue;
+        }
+        const MGLIRType *t = sym->type;
+        while (t && t->kind == MGLIR_TYPE_ARRAY) {
+            t = t->elem_type;
+        }
+        if (t && (t->kind == MGLIR_TYPE_SAMPLER ||
+                  t->kind == MGLIR_TYPE_IMAGE ||
+                  t->kind == MGLIR_TYPE_ATOMIC_COUNTER)) {
+            continue;
+        }
+        if (uniform_link_name_add(s, entries, count, cap, sym->name,
+                                  NULL) != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static void uniform_block_instances_check(Sema *s, const MGLIRModule *a,
+                                          const MGLIRModule *b)
+{
+    for (uint32_t i = 0; i < a->symbol_count; i++) {
+        MGLIRSymbol *sa = a->symbols[i];
+        const MGLIRType *bta = sym_uniform_block_type(sa);
+        if (!bta || !bta->name) {
+            continue;
+        }
+        for (uint32_t j = 0; j < b->symbol_count; j++) {
+            MGLIRSymbol *sb = b->symbols[j];
+            const MGLIRType *btb = sym_uniform_block_type(sb);
+            if (!btb || !btb->name || strcmp(bta->name, btb->name) != 0) {
+                continue;
+            }
+            if (sym_is_anonymous_uniform_block(sa) !=
+                sym_is_anonymous_uniform_block(sb)) {
+                sema_error(s, 0,
+                           "matched uniform block '%s' has inconsistent "
+                           "instance names across stages",
+                           bta->name);
+            }
+        }
+    }
+}
+
+int mglGLSLUniformLinkCheck(const MGLIRModule *a, const MGLIRModule *b,
+                            MGLSemaError **errors, uint32_t *error_count)
+{
+    Sema s;
+    memset(&s, 0, sizeof(s));
+    UniformLinkName *entries = NULL;
+    uint32_t count = 0;
+    uint32_t cap = 0;
+
+    if (a && uniform_link_names_collect(&s, a, &entries, &count, &cap) != 0) {
+        uniform_link_names_free(entries, count);
+        if (errors) {
+            *errors = s.errors;
+        }
+        if (error_count) {
+            *error_count = s.error_count;
+        }
+        return (int)s.error_count;
+    }
+    if (b && uniform_link_names_collect(&s, b, &entries, &count, &cap) != 0) {
+        uniform_link_names_free(entries, count);
+        if (errors) {
+            *errors = s.errors;
+        }
+        if (error_count) {
+            *error_count = s.error_count;
+        }
+        return (int)s.error_count;
+    }
+    if (a && b) {
+        uniform_block_instances_check(&s, a, b);
+        uniform_block_instances_check(&s, b, a);
+    }
+    uniform_link_names_free(entries, count);
 
     if (errors) {
         *errors = s.errors;
