@@ -8466,6 +8466,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         MGLIRTexKind tk = ts && ts->type->kind == MGLIR_TYPE_SAMPLER
             ? ts->type->tex_kind : MGLIR_TEX_2D;
         llvm::StructType *tt = (tk == MGLIR_TEX_3D) ? texTy3d
+                             : (tk == MGLIR_TEX_2D_ARRAY) ? texTy2dArray
                              : (tk == MGLIR_TEX_BUFFER) ? texTyBuf : texTy2d;
         uint32_t elements = v.type.arr > 0 ? (uint32_t)v.type.arr : 1u;
         for (uint32_t k = 0; k < elements; k++) {
@@ -9047,9 +9048,11 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         for (uint32_t p = 0; p < fs->param_count; p++) {
             const MGLIRType *pt = fs->param_types[p];
             if (pt->kind == MGLIR_TYPE_SAMPLER) {
-                pts.push_back((pt->tex_kind == MGLIR_TEX_3D ? texTy3d
-                                                            : texTy2d)
-                                  ->getPointerTo(1));
+                llvm::StructType *st =
+                    pt->tex_kind == MGLIR_TEX_3D ? texTy3d
+                    : pt->tex_kind == MGLIR_TEX_2D_ARRAY ? texTy2dArray
+                                                         : texTy2d;
+                pts.push_back(st->getPointerTo(1));
             } else {
                 pts.push_back(llvmType(typeFromIR(pt), ctx));
             }
@@ -10101,6 +10104,9 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             bool is3d = samplerType &&
                         samplerType->kind == MGLIR_TYPE_SAMPLER &&
                         samplerType->tex_kind == MGLIR_TEX_3D;
+            bool is2dArray = samplerType &&
+                             samplerType->kind == MGLIR_TYPE_SAMPLER &&
+                             samplerType->tex_kind == MGLIR_TEX_2D_ARRAY;
             const char *texelName = "float";
             if (samplerType && samplerType->kind == MGLIR_TYPE_SAMPLER) {
                 if (samplerType->tex_storage == MGLIR_SCALAR_INT)
@@ -10108,7 +10114,9 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 else if (samplerType->tex_storage == MGLIR_SCALAR_UINT)
                     texelName = "uint";
             }
-            std::string sampledType = is3d ? "texture3d<" : "texture2d<";
+            std::string sampledType = is3d ? "texture3d<"
+                                  : is2dArray ? "texture2d_array<"
+                                              : "texture2d<";
             sampledType += texelName;
             sampledType += ", sample>";
             uint32_t elements = v.type.arr > 0 ? (uint32_t)v.type.arr : 1u;
