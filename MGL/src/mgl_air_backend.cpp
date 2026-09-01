@@ -411,8 +411,15 @@ const MGLIRType *uniformBlockType(const MGLIRType *type) {
 }
 
 uint32_t uniformBlockElementCount(const MGLIRType *type) {
-    return type && type->kind == MGLIR_TYPE_ARRAY && type->array_size > 1u
-        ? type->array_size : 1u;
+    /* `uniform Block { } name[1]` is still an instance array — keep the
+     * declared length so blockC[0].x can index element slots. */
+    if (type && type->kind == MGLIR_TYPE_ARRAY && type->array_size > 0u)
+        return type->array_size;
+    return 1u;
+}
+
+static bool uniformBlockIsInstanceArray(const MGLIRType *type) {
+    return type && type->kind == MGLIR_TYPE_ARRAY && type->array_size > 0u;
 }
 
 /* One implicit buffer holds every plain uniform, packed with std140
@@ -1720,6 +1727,106 @@ llvm::Value *emitMatrixUniform(Codegen &cg, const Uniform &u) {
     return arr;
 }
 
+/* Load a UBO matrix at byte offset `off` from `base`, honouring
+ * matrix_stride and row_major.  LLVM SSA form is always column-major
+ * ([cols x <rows x T>]); row-major memory is gathered into that shape so
+ * GLSL `m[i]` still yields column i (GLSL 4.60 §5.6). */
+static llvm::Value *emitUBOMatrixLoad(Codegen &cg, llvm::Value *base,
+                                      llvm::Value *off, const MGLIRType *ct,
+                                      const MType &vt) {
+    uint32_t stride = ct->layout.matrix_stride;
+    if (stride == 0) {
+        uint32_t vec_comps = ct->row_major ? vt.cols : vt.rows;
+        uint32_t baseBytes = (vec_comps <= 2u ? vec_comps : 4u) * 4u;
+        stride = (baseBytes + 15u) & ~15u;
+    }
+    llvm::Type *elt = llvmScalar(vt.scalar, *cg.ctx);
+    llvm::Type *colTy = llvm::FixedVectorType::get(elt, vt.rows);
+    llvm::Value *v = llvm::UndefValue::get(
+        llvm::ArrayType::get(colTy, vt.cols));
+    if (ct->row_major) {
+        llvm::Type *rowTy = llvm::FixedVectorType::get(elt, vt.cols);
+        llvm::SmallVector<llvm::Value *, 4> rows;
+        for (uint32_t r = 0; r < vt.rows; r++) {
+            llvm::Value *rowOff =
+                cg.b->CreateAdd(off, cg.b->getInt64((uint64_t)r * stride));
+            llvm::Value *rp =
+                cg.b->CreateGEP(cg.b->getInt8Ty(), base, rowOff);
+            rp = cg.b->CreateBitCast(rp, rowTy->getPointerTo(1));
+            rows.push_back(
+                cg.b->CreateAlignedLoad(rowTy, rp, llvm::Align(16)));
+        }
+        for (uint32_t c = 0; c < vt.cols; c++) {
+            llvm::Value *col = llvm::UndefValue::get(colTy);
+            for (uint32_t r = 0; r < vt.rows; r++) {
+                llvm::Value *e = cg.b->CreateExtractElement(
+                    rows[r], cg.b->getInt32(c));
+                col = cg.b->CreateInsertElement(col, e, cg.b->getInt32(r));
+            }
+            v = cg.b->CreateInsertValue(v, col, c);
+        }
+        return v;
+    }
+    for (uint32_t c = 0; c < vt.cols; c++) {
+        llvm::Value *colOff =
+            cg.b->CreateAdd(off, cg.b->getInt64((uint64_t)c * stride));
+        llvm::Value *cp =
+            cg.b->CreateGEP(cg.b->getInt8Ty(), base, colOff);
+        cp = cg.b->CreateBitCast(cp, colTy->getPointerTo(1));
+        llvm::Value *col =
+            cg.b->CreateAlignedLoad(colTy, cp, llvm::Align(16));
+        v = cg.b->CreateInsertValue(v, col, c);
+    }
+    return v;
+}
+
+/* Load a UBO leaf (scalar / vector / matrix / bvec) at byte offset `off`
+ * from `base`.  Contiguous LLVM aggregate loads are wrong for std140:
+ * mat2 columns are 16 bytes apart while `[2 x <2 x float>]` packs at 8,
+ * and float[N] elements are 16 apart while `[N x float]` packs at 4. */
+static llvm::Value *emitUBOLeafLoad(Codegen &cg, llvm::Value *base,
+                                    llvm::Value *off, const MGLIRType *ct,
+                                    const MType &vt) {
+    if (ct && ct->kind == MGLIR_TYPE_MATRIX)
+        return emitUBOMatrixLoad(cg, base, off, ct, vt);
+    llvm::Type *t = llvmType(vt, *cg.ctx);
+    llvm::Value *p =
+        cg.b->CreateGEP(cg.b->getInt8Ty(), base, off);
+    llvm::Align align(16);
+    if (auto *fvt = llvm::dyn_cast<llvm::FixedVectorType>(t)) {
+        uint64_t w = fvt->getElementCount().getFixedValue();
+        if (w == 1) align = llvm::Align(4);
+        else if (w == 2) align = llvm::Align(8);
+    } else if (t->isFloatTy() || t->isIntegerTy(32)) {
+        align = llvm::Align(4);
+    }
+    if (vt.vec && vt.scalar == MGLIR_SCALAR_BOOL) {
+        llvm::Type *wordsTy = llvm::FixedVectorType::get(
+            llvm::Type::getInt32Ty(*cg.ctx), vt.vec);
+        p = cg.b->CreateBitCast(p, wordsTy->getPointerTo(1));
+        llvm::Value *words = cg.b->CreateAlignedLoad(wordsTy, p, align);
+        return cg.b->CreateICmpNE(
+            words, llvm::ConstantAggregateZero::get(wordsTy));
+    }
+    if (vt.scalar == MGLIR_SCALAR_BOOL && !vt.vec && !vt.isMatrix()) {
+        /* std140 bool is a 32-bit word; an i1 load is not defined for
+         * buffer address space on Metal. */
+        llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
+        p = cg.b->CreateBitCast(p, i32->getPointerTo(1));
+        llvm::Value *word =
+            cg.b->CreateAlignedLoad(i32, p, llvm::Align(4));
+        return cg.b->CreateICmpNE(word, cg.b->getInt32(0));
+    }
+    p = cg.b->CreateBitCast(p, t->getPointerTo(1));
+    return cg.b->CreateAlignedLoad(t, p, align);
+}
+
+static llvm::Value *emitUBOLeafLoad(Codegen &cg, llvm::Value *base,
+                                    uint32_t moff, const MGLIRType *ct,
+                                    const MType &vt) {
+    return emitUBOLeafLoad(cg, base, cg.b->getInt64(moff), ct, vt);
+}
+
 llvm::Value *varValue(Codegen &cg, const VarSym &v, const MGLIRModule *mod) {
     if (v.kind == VarSym::BUFFER) {
         /* Anonymous-block member: read from the block's device buffer. */
@@ -1736,19 +1843,9 @@ llvm::Value *varValue(Codegen &cg, const VarSym &v, const MGLIRModule *mod) {
                 uint32_t moff = (blk && blk->type->member_offsets)
                                     ? blk->type->member_offsets[bs->block_member_index]
                                     : 0;
-                llvm::Type *t = llvmType(v.type, *cg.ctx);
-                llvm::Value *p = cg.b->CreateGEP(cg.b->getInt8Ty(), base,
-                                                 cg.b->getInt64(moff));
-                llvm::Align align(16);
-                if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(t)) {
-                    uint64_t w = vt->getElementCount().getFixedValue();
-                    if (w == 1) align = llvm::Align(4);
-                    else if (w == 2) align = llvm::Align(8);
-                } else if (t->isFloatTy() || t->isIntegerTy(32)) {
-                    align = llvm::Align(4);
-                }
-                p = cg.b->CreateBitCast(p, t->getPointerTo(1));
-                return cg.b->CreateAlignedLoad(t, p, align);
+                if (bs->offset != UINT32_MAX)
+                    moff = bs->offset;
+                return emitUBOLeafLoad(cg, base, moff, bs->type, v.type);
             }
         }
         /* Uniform: single value read. */
@@ -3258,8 +3355,16 @@ static const MGLIRSymbol *blockChainRoot(const MGLExpr *e,
     if (n > 0 && chain[n - 1]->kind == MGL_EXPR_INDEX &&
         chain[n - 1]->u.index.object &&
         chain[n - 1]->u.index.object->kind == MGL_EXPR_VAR_REF) {
-        *rootIndex = chain[n - 1];
-        n--;
+        /* Only strip as a block-instance-array selector when the root
+         * symbol is the block itself.  Flattened anonymous members like
+         * `S s[N];` inside `uniform Block { ... }` use the INDEX as a
+         * std140 array step, not a Metal buffer-slot pick. */
+        const MGLIRSymbol *rootSym =
+            findSymbol(mod, chain[n - 1]->u.index.object->u.var_ref.name);
+        if (!rootSym || !rootSym->block_name) {
+            *rootIndex = chain[n - 1];
+            n--;
+        }
     }
     *chain_len = n;
     const MGLIRSymbol *ov = findSymbol(mod, cur->u.var_ref.name);
@@ -3282,7 +3387,10 @@ static const MGLIRType *blockMemberLeafType(const MGLExpr *e,
         return nullptr;
     }
     const MGLIRType *ct = ov->type;
-    if (ct && ct->kind == MGLIR_TYPE_ARRAY) {
+    if (ct && ct->kind == MGLIR_TYPE_ARRAY && !ov->block_name) {
+        /* Block-instance arrays are selected via the stripped rootIndex;
+         * peel so the walk starts at the block struct.  Flattened members
+         * keep their array wrapper so `s[i].f` type-checks. */
         ct = ct->elem_type;
     }
     /* Only descend into a uniform block (struct / array-of-struct).  Plain
@@ -3290,8 +3398,13 @@ static const MGLIRType *blockMemberLeafType(const MGLExpr *e,
      * normal swizzle path in exprType().  Without this guard a plain
      * `uniform vec4 arr[N]; arr[i].xyz` would resolve to the element type
      * (vec4) instead of letting exprType swizzle it to vec3. */
-    if (!ct || ct->kind != MGLIR_TYPE_STRUCT) {
-        return nullptr;
+    {
+        const MGLIRType *gate = ct;
+        while (gate && gate->kind == MGLIR_TYPE_ARRAY)
+            gate = gate->elem_type;
+        if (!gate || gate->kind != MGLIR_TYPE_STRUCT) {
+            return nullptr;
+        }
     }
     /* chain_len already excludes the (possibly stripped) rootIndex node, so
      * walk every remaining member/index step from the block root.  The
@@ -3332,7 +3445,8 @@ static llvm::Value *emitBlockMemberChain(Codegen &cg, const MGLExpr *e,
                                          const char *objName,
                                          const MGLIRModule *mod,
                                          const std::map<std::string, MType>
-                                             &locals) {
+                                             &locals,
+                                         uint32_t startOff = 0) {
     const MGLExpr *chain[16];
     uint32_t chain_len = 0;
     const MGLExpr *rootIndex = nullptr;
@@ -3343,7 +3457,7 @@ static llvm::Value *emitBlockMemberChain(Codegen &cg, const MGLExpr *e,
         return nullptr;
     }
     const MGLIRType *ct = ubStruct;
-    uint64_t soff = 0;
+    uint64_t soff = startOff;
     llvm::Value *dynOff = nullptr;
     llvm::Value *v = nullptr; /* set once the leaf is loaded */
     MType vt;
@@ -3406,29 +3520,32 @@ static llvm::Value *emitBlockMemberChain(Codegen &cg, const MGLExpr *e,
             llvm::Value *off = cg.b->getInt64(soff);
             if (dynOff) off = cg.b->CreateAdd(off, dynOff);
             vt = typeFromIR(ct);
-            llvm::Type *t = llvmType(vt, *cg.ctx);
-            llvm::Value *p = cg.b->CreateGEP(cg.b->getInt8Ty(), base, off);
-            llvm::Align align(16);
-            if (auto *fvt = llvm::dyn_cast<llvm::FixedVectorType>(t)) {
-                uint64_t w = fvt->getElementCount().getFixedValue();
-                if (w == 1) align = llvm::Align(4);
-                else if (w == 2) align = llvm::Align(8);
-            } else if (t->isFloatTy() || t->isIntegerTy(32)) {
-                align = llvm::Align(4);
-            }
-            p = cg.b->CreateBitCast(p, t->getPointerTo(1));
-            if (vt.vec && vt.scalar == MGLIR_SCALAR_BOOL) {
-                /* Same bvecN word-load rule as the final leaf load. */
+            if (ct->kind == MGLIR_TYPE_MATRIX) {
+                v = emitUBOMatrixLoad(cg, base, off, ct, vt);
+            } else if (vt.vec && vt.scalar == MGLIR_SCALAR_BOOL) {
                 llvm::Type *wordsTy = llvm::FixedVectorType::get(
                     llvm::Type::getInt32Ty(*cg.ctx), vt.vec);
+                llvm::Value *p =
+                    cg.b->CreateGEP(cg.b->getInt8Ty(), base, off);
+                llvm::Align align(vt.vec <= 2 ? 8 : 16);
                 p = cg.b->CreateBitCast(p, wordsTy->getPointerTo(1));
                 llvm::Value *words =
                     cg.b->CreateAlignedLoad(wordsTy, p, align);
                 v = cg.b->CreateICmpNE(
                     words, llvm::ConstantAggregateZero::get(wordsTy));
-                /* Fall through: this node (e.g. a trailing .x) still needs
-                 * the post-leaf swizzle/component handling. */
             } else {
+                llvm::Type *t = llvmType(vt, *cg.ctx);
+                llvm::Value *p =
+                    cg.b->CreateGEP(cg.b->getInt8Ty(), base, off);
+                llvm::Align align(16);
+                if (auto *fvt = llvm::dyn_cast<llvm::FixedVectorType>(t)) {
+                    uint64_t w = fvt->getElementCount().getFixedValue();
+                    if (w == 1) align = llvm::Align(4);
+                    else if (w == 2) align = llvm::Align(8);
+                } else if (t->isFloatTy() || t->isIntegerTy(32)) {
+                    align = llvm::Align(4);
+                }
+                p = cg.b->CreateBitCast(p, t->getPointerTo(1));
                 v = cg.b->CreateAlignedLoad(t, p, align);
             }
         }
@@ -3499,6 +3616,8 @@ static llvm::Value *emitBlockMemberChain(Codegen &cg, const MGLExpr *e,
             align = llvm::Align(4);
         }
         p = cg.b->CreateBitCast(p, t->getPointerTo(1));
+        if (ct->kind == MGLIR_TYPE_MATRIX)
+            return emitUBOMatrixLoad(cg, base, off, ct, vt);
         if (vt.vec && vt.scalar == MGLIR_SCALAR_BOOL) {
             /* bvecN members live as 4-byte words in the block (GL 4.6
              * §7.6.2.2 std140 bool packing).  An <N x i1> vector load
@@ -3512,33 +3631,12 @@ static llvm::Value *emitBlockMemberChain(Codegen &cg, const MGLExpr *e,
                 words, llvm::ConstantAggregateZero::get(wordsTy));
             return v;
         }
-        if (ct->kind == MGLIR_TYPE_MATRIX) {
-            /* std140/std430 matrices are arrays of column (or row) vectors
-             * with matrix_stride padding.  A contiguous LLVM array load
-             * would skip the pad and mis-read every column after the first. */
-            uint32_t stride = ct->layout.matrix_stride;
-            if (stride == 0) {
-                /* Nested matrix types sometimes arrive without a filled
-                 * layout (clone before layout_block).  UBO path is std140:
-                 * column stride rounds up to 16. */
-                uint32_t base = (vt.rows <= 2u ? vt.rows : 4u) * 4u;
-                stride = (base + 15u) & ~15u;
-            }
-            uint32_t count = vt.cols;
-            llvm::Type *colTy = llvm::FixedVectorType::get(
-                llvmScalar(vt.scalar, *cg.ctx), vt.rows);
-            v = llvm::UndefValue::get(t);
-            for (uint32_t c = 0; c < count; c++) {
-                llvm::Value *colOff =
-                    cg.b->CreateAdd(off, cg.b->getInt64((uint64_t)c * stride));
-                llvm::Value *cp = cg.b->CreateGEP(cg.b->getInt8Ty(), base,
-                                                  colOff);
-                cp = cg.b->CreateBitCast(cp, colTy->getPointerTo(1));
-                llvm::Value *col =
-                    cg.b->CreateAlignedLoad(colTy, cp, llvm::Align(16));
-                v = cg.b->CreateInsertValue(v, col, c);
-            }
-            return v;
+        if (vt.scalar == MGLIR_SCALAR_BOOL && !vt.vec) {
+            llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
+            p = cg.b->CreateBitCast(p, i32->getPointerTo(1));
+            llvm::Value *word =
+                cg.b->CreateAlignedLoad(i32, p, llvm::Align(4));
+            return cg.b->CreateICmpNE(word, cg.b->getInt32(0));
         }
         v = cg.b->CreateAlignedLoad(t, p, align);
     }
@@ -3862,14 +3960,37 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             const MGLIRSymbol *ov = blockChainRoot(e, chain, &chain_len,
                                                    &rootIndexExpr, mod);
             const char *objName = (ov && ov->name) ? ov->name : nullptr;
-            const MGLIRType *ubStruct =
-                ov && ov->type->kind == MGLIR_TYPE_ARRAY && ov->type->elem_type
-                    ? ov->type->elem_type
-                    : (ov ? ov->type : nullptr);
+            /* Locals / parameters shadow flattened UBO member names. */
+            if (objName && locals.find(objName) != locals.end())
+                ov = nullptr;
+            /* Flattened anonymous-block members carry block_name; the Metal
+             * buffer is keyed by the block, not the member.  Keep array
+             * wrappers on flattened members (`S s[N]`) so `s[i].f` walks
+             * array_stride — only peel arrays for true block-instance
+             * arrays (handled via rootIndex). */
+            const char *bufName =
+                (ov && ov->block_name) ? ov->block_name : objName;
+            const MGLIRType *ubStruct = nullptr;
+            uint32_t startOff = 0u;
+            if (ov) {
+                if (ov->block_name) {
+                    ubStruct = ov->type;
+                    if (ov->offset != UINT32_MAX)
+                        startOff = ov->offset;
+                } else if (ov->type && ov->type->kind == MGLIR_TYPE_ARRAY &&
+                           ov->type->elem_type) {
+                    ubStruct = ov->type->elem_type;
+                } else {
+                    ubStruct = ov->type;
+                }
+            }
+            const MGLIRType *structGate = ubStruct;
+            while (structGate && structGate->kind == MGLIR_TYPE_ARRAY)
+                structGate = structGate->elem_type;
             if (ov && !ov->is_function &&
                 (ov->qualifiers & MGL_AST_Q_UNIFORM) &&
-                ubStruct && ubStruct->kind == MGLIR_TYPE_STRUCT &&
-                ubStruct->member_count > 0) {
+                structGate && structGate->kind == MGLIR_TYPE_STRUCT &&
+                structGate->member_count > 0) {
                 llvm::Value *base = nullptr;
                 if (rootIndexExpr) {
                     /* Instance array: each element binds its own device
@@ -3917,18 +4038,20 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                         llvm::Type::getInt8Ty(*cg.ctx)->getPointerTo(1),
                         gep);
                 } else {
-                    base = cg.uboPtrs.count(objName)
-                               ? cg.uboPtrs[objName]
+                    base = bufName && cg.uboPtrs.count(bufName)
+                               ? cg.uboPtrs[bufName]
                                : nullptr;
                 }
                 if (!base) {
                     cg.err = 1;
                     cg.errmsg = std::string("codegen: uniform block '") +
-                                objName + "' has no device buffer";
+                                (bufName ? bufName : "?") +
+                                "' has no device buffer";
                     return nullptr;
                 }
-                return emitBlockMemberChain(cg, e, base, ubStruct, objName,
-                                            mod, locals);
+                return emitBlockMemberChain(cg, e, base, ubStruct,
+                                            bufName ? bufName : objName, mod,
+                                            locals, startOff);
             }
         }
         /* Swizzle only in M1. */
@@ -3981,14 +4104,31 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             const MGLIRSymbol *ov = blockChainRoot(e, chain, &chain_len,
                                                    &rootIndexExpr, mod);
             const char *objName = (ov && ov->name) ? ov->name : nullptr;
-            const MGLIRType *ubStruct =
-                ov && ov->type->kind == MGLIR_TYPE_ARRAY && ov->type->elem_type
-                    ? ov->type->elem_type
-                    : (ov ? ov->type : nullptr);
+            if (objName && locals.find(objName) != locals.end())
+                ov = nullptr;
+            const char *bufName =
+                (ov && ov->block_name) ? ov->block_name : objName;
+            const MGLIRType *ubStruct = nullptr;
+            uint32_t startOff = 0u;
+            if (ov) {
+                if (ov->block_name) {
+                    ubStruct = ov->type;
+                    if (ov->offset != UINT32_MAX)
+                        startOff = ov->offset;
+                } else if (ov->type && ov->type->kind == MGLIR_TYPE_ARRAY &&
+                           ov->type->elem_type) {
+                    ubStruct = ov->type->elem_type;
+                } else {
+                    ubStruct = ov->type;
+                }
+            }
+            const MGLIRType *structGate = ubStruct;
+            while (structGate && structGate->kind == MGLIR_TYPE_ARRAY)
+                structGate = structGate->elem_type;
             if (ov && !ov->is_function &&
                 (ov->qualifiers & MGL_AST_Q_UNIFORM) &&
-                ubStruct && ubStruct->kind == MGLIR_TYPE_STRUCT &&
-                ubStruct->member_count > 0) {
+                structGate && structGate->kind == MGLIR_TYPE_STRUCT &&
+                structGate->member_count > 0) {
                 llvm::Value *base = nullptr;
                 if (rootIndexExpr) {
                     auto slotIt = cg.uboElemSlot.find(objName);
@@ -4014,18 +4154,84 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                         llvm::Type::getInt8Ty(*cg.ctx)->getPointerTo(1),
                         gep);
                 } else {
-                    base = cg.uboPtrs.count(objName)
-                               ? cg.uboPtrs[objName]
+                    base = bufName && cg.uboPtrs.count(bufName)
+                               ? cg.uboPtrs[bufName]
                                : nullptr;
                 }
                 if (!base) {
                     cg.err = 1;
                     cg.errmsg = std::string("codegen: uniform block '") +
-                                objName + "' has no device buffer";
+                                (bufName ? bufName : "?") +
+                                "' has no device buffer";
                     return nullptr;
                 }
-                return emitBlockMemberChain(cg, e, base, ubStruct, objName,
-                                            mod, locals);
+                return emitBlockMemberChain(cg, e, base, ubStruct,
+                                            bufName ? bufName : objName, mod,
+                                            locals, startOff);
+            }
+        }
+        /* Anonymous UBO member: `var[i]` where `var` was flattened out of
+         * `uniform Block { T var[N]; }`.  Must apply array_stride /
+         * matrix_stride — loading the whole aggregate then ExtractValue
+         * packs float/vec2/mat2 tightly and mis-reads std140.
+         * Skip when the name is a function parameter / local — those
+         * shadow flattened block members (CTS compare_mat*(a,b) vs UBO
+         * members also named a/b). */
+        if (e->u.index.object &&
+            e->u.index.object->kind == MGL_EXPR_VAR_REF) {
+            const char *aname = e->u.index.object->u.var_ref.name;
+            if (locals.find(aname) == locals.end()) {
+            const MGLIRSymbol *bs = findSymbol(mod, aname);
+            if (bs && bs->block_name && !bs->is_function &&
+                (bs->qualifiers & MGL_AST_Q_UNIFORM) && bs->type) {
+                llvm::Value *base = cg.uboPtrs.count(bs->block_name)
+                                        ? cg.uboPtrs[bs->block_name]
+                                        : nullptr;
+                if (!base) {
+                    cg.err = 1;
+                    cg.errmsg = std::string("codegen: uniform block '") +
+                                bs->block_name + "' has no device buffer";
+                    return nullptr;
+                }
+                uint32_t moff = bs->offset != UINT32_MAX ? bs->offset : 0u;
+                llvm::Value *idxVal =
+                    emitExpr(cg, e->u.index.index, mod, locals);
+                if (!idxVal) return nullptr;
+                idxVal = coerceScalar(cg, idxVal, MGLIR_SCALAR_INT);
+                llvm::Value *i64 =
+                    cg.b->CreateSExt(idxVal, cg.b->getInt64Ty());
+                if (bs->type->kind == MGLIR_TYPE_ARRAY &&
+                    bs->type->elem_type) {
+                    uint32_t stride = bs->type->layout.array_stride;
+                    if (stride == 0) {
+                        cg.err = 1;
+                        cg.errmsg =
+                            std::string("codegen: anonymous UBO array '") +
+                            aname + "' has no array_stride";
+                        return nullptr;
+                    }
+                    llvm::Value *byte = cg.b->CreateMul(
+                        i64, cg.b->getInt64(stride));
+                    llvm::Value *off = cg.b->CreateAdd(
+                        cg.b->getInt64(moff), byte);
+                    const MGLIRType *elem = bs->type->elem_type;
+                    return emitUBOLeafLoad(cg, base, off, elem,
+                                           typeFromIR(elem));
+                }
+                if (bs->type->kind == MGLIR_TYPE_MATRIX) {
+                    MType vt = typeFromIR(bs->type);
+                    llvm::Value *mat = emitUBOMatrixLoad(
+                        cg, base, cg.b->getInt64(moff), bs->type, vt);
+                    llvm::Value *col = emitIndexValue(cg, mat, vt, idxVal);
+                    if (!col) {
+                        cg.err = 1;
+                        cg.errmsg =
+                            "codegen: indexing anonymous UBO matrix failed";
+                        return nullptr;
+                    }
+                    return col;
+                }
+            }
             }
         }
         const MGLExpr *idxE = e->u.index.index;
@@ -7621,6 +7827,13 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 continue;
             }
         }
+        /* Anonymous UBO members (block_name set) are not Metal buffer
+         * arguments — nested structs must not become extra UBO slots
+         * (that shifts bindings for the real blocks). */
+        if (s->block_name && (s->qualifiers & MGL_AST_Q_UNIFORM) &&
+            !(s->qualifiers & MGL_AST_Q_BUFFER)) {
+            continue;
+        }
         VarSym v;
         v.name = s->name;
         v.type = typeFromIR(s->type);
@@ -8277,7 +8490,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         const MGLIRSymbol *us = findSymbol(&mod, v.name.c_str());
         uint32_t uelems =
             uniformBlockElementCount(us ? us->type : nullptr);
-        if (uelems == 1u) {
+        if (!uniformBlockIsInstanceArray(us ? us->type : nullptr)) {
             cg.uboPtrs[v.name] = fn->getArg(argSlot++);
             continue;
         }
