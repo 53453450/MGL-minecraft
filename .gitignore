@@ -16,3 +16,8 @@ external/ezxml/
 /mgl-ssbo-20260805b/
 build_asan/
 build-asan-residual/
+# Local scratch / reproduction artifacts (uncommitted by design)
+scratch/
+TestResults.qpa
+# WorkBuddy project-local memory (not source)
+.workbuddy/

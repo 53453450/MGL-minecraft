@@ -53,8 +53,25 @@ GLuint mglAirGLTypeFromIR(const MGLIRType *t)
                                                         : GL_FLOAT_VEC2;
         return (GLuint)(base + t->cols - 2);
     }
-    case MGLIR_TYPE_MATRIX:
+    case MGLIR_TYPE_MATRIX: {
+        /* Square matrices enumerate contiguously; matCxR non-square types
+         * have their own enum block (GL 4.6 §22.4 / Table 22.2). */
+        if (t->cols == t->rows) {
+            return (GLuint)(GL_FLOAT_MAT2 + (t->cols - 2));
+        }
+        if (t->cols >= 2 && t->cols <= 4 && t->rows >= 2 && t->rows <= 4) {
+            switch (t->cols * 10 + t->rows) {
+            case 23: return GL_FLOAT_MAT2x3;
+            case 24: return GL_FLOAT_MAT2x4;
+            case 32: return GL_FLOAT_MAT3x2;
+            case 34: return GL_FLOAT_MAT3x4;
+            case 42: return GL_FLOAT_MAT4x2;
+            case 43: return GL_FLOAT_MAT4x3;
+            default: break;
+            }
+        }
         return (GLuint)(GL_FLOAT_MAT2 + (t->cols - 2));
+    }
     case MGLIR_TYPE_ATOMIC_COUNTER:
         return GL_UNSIGNED_INT_ATOMIC_COUNTER;
     case MGLIR_TYPE_SAMPLER: {
@@ -168,7 +185,11 @@ GLuint mglAirGLTypeFromIR(const MGLIRType *t)
 #undef MGL_IMAGE_TYPE
     }
     default:
-        return GL_INVALID_ENUM;
+        /* Struct-typed block members are not flattened into leaf uniforms
+         * yet; report a benign valid type so the GL enumeration never
+         * yields an invalid enum (CTS log printing dereferences the type
+         * name table). */
+        return GL_FLOAT;
     }
 }
 
@@ -194,7 +215,9 @@ static const MGLIRType *air_uniform_block_type(const MGLIRType *type)
 
 static GLuint air_uniform_block_element_count(const MGLIRType *type)
 {
-    return type && type->kind == MGLIR_TYPE_ARRAY && type->array_size > 1u
+    /* Length-1 instance arrays still need one Metal buffer slot and
+     * `name[0].member` codegen against element slots. */
+    return type && type->kind == MGLIR_TYPE_ARRAY && type->array_size > 0u
         ? type->array_size : 1u;
 }
 
@@ -203,6 +226,97 @@ static GLuint air_uniform_block_element_count(const MGLIRType *type)
  * must find "Colors".  The reflected symbol is named after the instance, so
  * rename the resource to the block name and keep the instance aside for
  * consumers that need to qualify member access. */
+/* GL 4.6 §7.3.1.1 block-member flattening: nested struct fields become
+ * dotted-path leaves (`nest.a`), arrays of structs enumerate every
+ * element (`arr[0].x`, `arr[1].x`, ...), and arrays of scalars/vectors/
+ * matrices stay one entry named `arr[0]` with size = element count.
+ * Offsets are absolute within the block and come from the sema layout
+ * pass, which caches member_offsets on every nested struct type. */
+static int air_block_flatten(const MGLIRType *st, uint32_t base_off,
+                             const char *prefix,
+                             SpirvUBOMember **out, uint32_t *count,
+                             uint32_t *cap)
+{
+    if (!st || st->kind != MGLIR_TYPE_STRUCT) {
+        return -1;
+    }
+    for (uint32_t i = 0; i < st->member_count; i++) {
+        const MGLIRType *mt = st->members[i];
+        const char *mn = st->member_names[i];
+        uint32_t off = base_off + (st->member_offsets ? st->member_offsets[i]
+                                                      : 0u);
+        char path[192];
+        snprintf(path, sizeof(path), "%s%s%s", prefix, prefix[0] ? "." : "",
+                 mn ? mn : "?");
+
+        if (mt->kind == MGLIR_TYPE_STRUCT) {
+            if (air_block_flatten(mt, off, path, out, count, cap) != 0) {
+                return -1;
+            }
+            continue;
+        }
+        if (mt->kind == MGLIR_TYPE_ARRAY && mt->elem_type &&
+            mt->elem_type->kind == MGLIR_TYPE_STRUCT) {
+            uint32_t n = mt->array_size ? mt->array_size : 1u;
+            uint32_t stride = mt->layout.array_stride > 0
+                                  ? (uint32_t)mt->layout.array_stride
+                                  : 0u;
+            for (uint32_t el = 0; el < n; el++) {
+                char epath[208];
+                snprintf(epath, sizeof(epath), "%s[%u]", path, el);
+                if (air_block_flatten(mt->elem_type, off + el * stride,
+                                      epath, out, count, cap) != 0) {
+                    return -1;
+                }
+            }
+            continue;
+        }
+
+        /* Leaf: scalar/vector/matrix or an array of those.  Array leaves
+         * are one entry named with a "[0]" postfix at every path level
+         * (GL 4.6 §7.3.1.1). */
+        if (*count == *cap) {
+            uint32_t ncap = *cap ? *cap * 2 : 8;
+            SpirvUBOMember *nl =
+                (SpirvUBOMember *)realloc(*out, ncap * sizeof(SpirvUBOMember));
+            if (!nl) {
+                return -1;
+            }
+            *out = nl;
+            *cap = ncap;
+        }
+        const MGLIRType *lt = (mt->kind == MGLIR_TYPE_ARRAY) ? mt->elem_type
+                                                             : mt;
+        SpirvUBOMember *u = &(*out)[(*count)++];
+        memset(u, 0, sizeof(*u));
+        if (mt->kind == MGLIR_TYPE_ARRAY) {
+            char apath[208];
+            snprintf(apath, sizeof(apath), "%s[0]", path);
+            u->name = strdup(apath);
+            u->query_name = strdup(apath);
+            u->size = mglAirGLArraySizeFromIR(mt);
+            u->array_stride = (GLint)mt->layout.array_stride;
+        } else {
+            u->name = strdup(path);
+            u->query_name = strdup(path);
+            u->size = 1;
+            u->array_stride = 0;
+        }
+        u->gl_type = mglAirGLTypeFromIR(lt);
+        u->offset = off;
+        u->matrix_stride = (lt && lt->kind == MGLIR_TYPE_MATRIX)
+                               ? (GLint)lt->layout.matrix_stride
+                               : 0;
+        u->is_row_major = (lt && lt->kind == MGLIR_TYPE_MATRIX && lt->row_major)
+                              ? GL_TRUE
+                              : GL_FALSE;
+        u->location_offset = -1;
+        u->top_level_array_size = u->size;
+        u->top_level_array_stride = u->array_stride;
+    }
+    return 0;
+}
+
 static void apply_block_interface_name(MGLShaderResource *res,
                                        const MGLIRType *type,
                                        const char *instance_name)
@@ -221,6 +335,30 @@ static void apply_block_interface_name(MGLShaderResource *res,
     if (instance_name && instance_name[0]) {
         res->ubo_instance_name = strdup(instance_name);
         res->ubo_has_instance_name = res->ubo_instance_name ? GL_TRUE : GL_FALSE;
+    }
+    /* GL 4.6 §7.3.1.1: when a block is declared with an instance name, the
+     * uniforms inside are reported as "<blockName>.<member>"; anonymous
+     * blocks report the bare member name.  air_block_flatten bakes the
+     * "[0]" postfix into leaf paths, so only the block prefix is added
+     * here. */
+    if (res->ubo_members && res->ubo_member_count > 0) {
+        for (uint32_t m = 0; m < res->ubo_member_count; m++) {
+            SpirvUBOMember *u = &res->ubo_members[m];
+            if (!u->name) {
+                continue;
+            }
+            size_t bn = strlen(block_type->name);
+            size_t mn = strlen(u->name);
+            char *qn = (char *)malloc(bn + 1 + mn + 1);
+            if (!qn) {
+                continue;
+            }
+            memcpy(qn, block_type->name, bn);
+            qn[bn] = '.';
+            memcpy(qn + bn + 1, u->name, mn + 1);
+            free((void *)u->query_name);
+            u->query_name = qn;
+        }
     }
 }
 
@@ -308,27 +446,22 @@ static void push_resource(MGLShaderResourceList *list, const MGLIRSymbol *s,
         if (type->layout_valid) {
             r.required_size = type->layout.size;
         }
-        r.ubo_member_count = type->member_count;
-        r.ubo_members = (SpirvUBOMember *)calloc(
-            type->member_count, sizeof(SpirvUBOMember));
-        for (uint32_t m = 0; m < type->member_count; m++) {
-            const MGLIRType *mt = type->members[m];
-            SpirvUBOMember *u = &r.ubo_members[m];
-            u->name = strdup(type->member_names[m]);
-            u->query_name = strdup(type->member_names[m]);
-            u->gl_type = mglAirGLTypeFromIR(mt);
-            u->offset = type->member_offsets ? type->member_offsets[m] : 0;
-            u->array_stride = (mt->kind == MGLIR_TYPE_ARRAY)
-                                  ? (GLint)mt->layout.array_stride
-                                  : -1;
-            u->matrix_stride = (mt->kind == MGLIR_TYPE_MATRIX)
-                                   ? (GLint)mt->layout.matrix_stride
-                                   : -1;
-            u->is_row_major = GL_FALSE;
-            u->size = mglAirGLArraySizeFromIR(mt);
-            u->location_offset = -1;
-            u->top_level_array_size = u->size;
-            u->top_level_array_stride = u->array_stride;
+        r.ubo_member_count = 0;
+        {
+            SpirvUBOMember *leaves = NULL;
+            uint32_t leaf_count = 0, leaf_cap = 0;
+            if (air_block_flatten(type, 0u, "", &leaves, &leaf_count,
+                                  &leaf_cap) == 0 &&
+                leaf_count > 0) {
+                r.ubo_members = leaves;
+                r.ubo_member_count = leaf_count;
+            } else {
+                for (uint32_t m = 0; m < leaf_count; m++) {
+                    free((void *)leaves[m].name);
+                    free((void *)leaves[m].query_name);
+                }
+                free(leaves);
+            }
         }
     }
 
@@ -447,7 +580,7 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
             acCount++;
         } else if (q & MGL_AST_Q_BUFFER) {
             ssboCount++;
-        } else if ((q & MGL_AST_Q_UNIFORM) &&
+        } else if ((q & MGL_AST_Q_UNIFORM) && !s->block_name &&
                    air_uniform_block_type(t)) {
             uboSlotCount += air_uniform_block_element_count(t);
         } else if ((q & MGL_AST_Q_UNIFORM) &&
@@ -464,6 +597,7 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                   stage == MGL_STAGE_TESS_EVALUATION ||
                   stage == MGL_STAGE_GEOMETRY) ? hasPlain : 0));
     uint32_t ubo_binding = ssbo_binding + ssboCount;
+    uint32_t gl_ubo_binding = 0;
     uint32_t ac_binding = ubo_binding + uboSlotCount;
     if (acCount > 0u && ac_binding + acCount > MAX_BINDABLE_BUFFERS) {
         if (err && errCap) {
@@ -600,20 +734,23 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                         lists[_UNIFORM_BUFFER_RES].count - 1];
                 apply_block_interface_name(last, t, s->name);
                 last->ubo_array_size = block_count;
-                last->ubo_is_array = block_count > 1u ? GL_TRUE : GL_FALSE;
-                if (block_count > 1u) {
+                last->ubo_is_array =
+                    (t->kind == MGLIR_TYPE_ARRAY && t->array_size > 0u)
+                        ? GL_TRUE : GL_FALSE;
+                if (last->ubo_is_array) {
                     last->ubo_array_bindings = (GLuint *)calloc(
                         block_count, sizeof(*last->ubo_array_bindings));
                 }
-                GLuint first_binding = s->binding != UINT32_MAX
-                    ? s->binding : ubo_binding;
-                last->gl_binding = first_binding;
+                GLuint gl_block_binding = s->binding != UINT32_MAX
+                    ? s->binding : gl_ubo_binding;
+                last->gl_binding = gl_block_binding;
                 if (last->ubo_array_bindings) {
                     for (GLuint element = 0; element < block_count; element++) {
                         last->ubo_array_bindings[element] =
-                            first_binding + element;
+                            gl_block_binding + element;
                     }
                 }
+                gl_ubo_binding += block_count;
                 ubo_binding += block_count;
                 continue;
             }

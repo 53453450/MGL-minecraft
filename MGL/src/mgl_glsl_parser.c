@@ -556,6 +556,7 @@ static double cur_double(MGLParser *p)
 /* ----------------------------------------------------------------- */
 
 static MGLExpr *parse_expression(MGLParser *p);
+static MGLExpr *parse_assignment(MGLParser *p);
 static MGLStmt *parse_statement(MGLParser *p);
 static MGLDecl *parse_declaration(MGLParser *p);
 static int at_decl_start(MGLParser *p);
@@ -725,7 +726,7 @@ static MGLExpr *parse_primary(MGLParser *p)
                 uint32_t argc = 0;
                 if (!ops_at(p, ")")) {
                     for (;;) {
-                        MGLExpr *arg = parse_expression(p);
+                        MGLExpr *arg = parse_assignment(p);
                         if (!arg) {
                             break;
                         }
@@ -1049,7 +1050,27 @@ static MGLExpr *parse_assignment(MGLParser *p)
 
 static MGLExpr *parse_expression(MGLParser *p)
 {
-    return parse_assignment(p);
+    MGLExpr *lhs = parse_assignment(p);
+    if (!lhs) {
+        return NULL;
+    }
+    while (ops_at(p, ",")) {
+        uint32_t line = lhs->line;
+        advance(p);
+        MGLExpr *rhs = parse_assignment(p);
+        if (!rhs) {
+            return NULL;
+        }
+        MGLExpr *b = expr_alloc(p, MGL_EXPR_BINARY, line);
+        if (!b) {
+            return NULL;
+        }
+        b->u.binary.op = MGL_OP_COMMA;
+        b->u.binary.lhs = lhs;
+        b->u.binary.rhs = rhs;
+        lhs = b;
+    }
+    return lhs;
 }
 
 /* Array extents are integral constant expressions in GLSL.  The AST stores
@@ -1198,20 +1219,30 @@ static MGLStmt *parse_statement(MGLParser *p)
             return NULL;
         }
         expect_punct(p, "(");
-        if (!ops_at(p, ";")) {
-            if (at_decl_start(p)) {
-                s->u.loop.init = parse_decl_stmt(p, line);
-            } else {
-                s->u.loop.init = parse_statement(p);
+        if (ops_at(p, ";")) {
+            advance(p);
+        } else if (at_decl_start(p)) {
+            s->u.loop.init = parse_decl_stmt(p, line);
+        } else {
+            MGLExpr *e = parse_expression(p);
+            expect_punct(p, ";");
+            MGLStmt *init = stmt_alloc(p, MGL_STMT_EXPR, line);
+            if (init) {
+                init->u.expr.expr = e;
             }
+            s->u.loop.init = init;
         }
-        /* skip cond only when the ";" directly precedes ")" */
         if (!ops_at(p, ";")) {
             s->u.loop.cond = parse_expression(p);
         }
         expect_punct(p, ";");
-        if (!ops_at(p, ")") && !ops_at(p, ";")) {
-            s->u.loop.incr = parse_expression(p);
+        if (!ops_at(p, ")")) {
+            if (!ops_at(p, ";")) {
+                s->u.loop.incr = parse_expression(p);
+            }
+            if (ops_at(p, ";")) {
+                advance(p);
+            }
         }
         expect_punct(p, ")");
         s->u.loop.body = parse_statement(p);
@@ -1449,10 +1480,10 @@ more_qualifiers:
                 (n == 6 && memcmp(s, "shared", 6) == 0) ||
                 (n == 6 && memcmp(s, "packed", 6) == 0) ||
                 (n == 9 && memcmp(s, "row_major", 9) == 0) ||
-                (n == 11 && memcmp(s, "column_major", 11) == 0) ||
+                (n == 12 && memcmp(s, "column_major", 12) == 0) ||
                 (n == 8 && memcmp(s, "invariant", 8) == 0) ||
                 (n == 13 && memcmp(s, "push_constant", 13) == 0) ||
-                (n == 17 && memcmp(s, "origin_upper_left", 17) == 0) ||
+                (n == 16 && memcmp(s, "origin_upper_left", 16) == 0) ||
                 (n == 15 && memcmp(s, "local_size_x_id", 15) == 0) ||
                 /* tessellation/geometry layout flags (M3) */
                 (n == 8 && memcmp(s, "isolines", 8) == 0) ||
@@ -1489,7 +1520,7 @@ more_qualifiers:
                 d->layout = MGL_AST_LAYOUT_PACKED;
             } else if (n == 9 && memcmp(s, "row_major", 9) == 0) {
                 d->matrix_major = MGL_AST_MATRIX_ROW_MAJOR;
-            } else if (n == 11 && memcmp(s, "column_major", 11) == 0) {
+            } else if (n == 12 && memcmp(s, "column_major", 12) == 0) {
                 d->matrix_major = MGL_AST_MATRIX_COL_MAJOR;
             } else if (n == 8 && memcmp(s, "isolines", 8) == 0) {
                 d->layout_primitive = MGL_AST_TES_ISOLINES;
@@ -1751,17 +1782,34 @@ more_qualifiers:
             if (!param) {
                 break;
             }
-            if (eat_ident(p, "in")) {
-                param->qualifiers |= MGL_AST_Q_IN;
-            } else if (eat_ident(p, "out")) {
-                param->qualifiers |= MGL_AST_Q_OUT;
-            } else if (eat_ident(p, "inout")) {
-                param->qualifiers |= MGL_AST_Q_IN | MGL_AST_Q_OUT;
+            /* parameter_qualifier + precision_qualifier in either order
+             * (GLSL 4.60 §6.1): `in highp float a` / `highp in float a`. */
+            uint32_t param_prec = MGL_AST_PRECISION_NONE;
+            for (;;) {
+                if (eat_ident(p, "in")) {
+                    param->qualifiers |= MGL_AST_Q_IN;
+                } else if (eat_ident(p, "out")) {
+                    param->qualifiers |= MGL_AST_Q_OUT;
+                } else if (eat_ident(p, "inout")) {
+                    param->qualifiers |= MGL_AST_Q_IN | MGL_AST_Q_OUT;
+                } else if (at_ident(p, "lowp") || at_ident(p, "mediump") ||
+                           at_ident(p, "highp")) {
+                    if (param_prec == MGL_AST_PRECISION_NONE) {
+                        param_prec = eat_precision_qualifier(p);
+                    } else {
+                        (void)eat_precision_qualifier(p);
+                    }
+                } else {
+                    break;
+                }
             }
             param->type = parse_type_spec(p);
             if (!param->type) {
                 free(param);
                 break;
+            }
+            if (param_prec != MGL_AST_PRECISION_NONE) {
+                param->type->precision = param_prec;
             }
             if (at_any_ident(p)) {
                 param->name = dup_current(p);
@@ -1796,9 +1844,57 @@ more_qualifiers:
         return d;
     }
 
-    /* initializer */
-    if (eat_punct(p, "=")) {
-        d->init = parse_expression(p);
+    /* Comma-separated additional declarators share the declaration's
+     * type spec, qualifiers and layout header (GLSL 4.60 §4.1: `int a,
+     * b[2], c = 3;`).  Each node owns its name, array dims and
+     * initializer; the type spec itself stays owned by the first
+     * declarator. */
+    {
+        MGLDecl *tail = d;
+        for (;;) {
+            if (eat_punct(p, "=")) {
+                tail->init = parse_expression(p);
+            }
+            if (!eat_punct(p, ",")) {
+                break;
+            }
+            MGLDecl *nd = (MGLDecl *)calloc(1, sizeof(*nd));
+            if (!nd) {
+                break;
+            }
+            *nd = *tail;
+            nd->next_declarator = NULL;
+            nd->type_shared = 1;       /* type owned by the first node */
+            nd->name = NULL;
+            nd->array_dims = NULL;
+            nd->array_count = 0;
+            nd->init = NULL;
+            nd->body = NULL;
+            nd->params = NULL;
+            nd->param_count = 0;
+            nd->return_type = NULL;
+            nd->struct_members = NULL;
+            nd->struct_member_count = 0;
+            nd->line = tk_line(p);
+            if (!at_any_ident(p)) {
+                parse_error(p, "expected identifier at line %u", tk_line(p));
+                free_decl(nd);
+                break;
+            }
+            nd->name = dup_current(p);
+            advance(p);
+            while (ops_at(p, "[")) {
+                advance(p);
+                uint32_t sz = parse_array_extent(p);
+                expect_punct(p, "]");
+                nd->array_dims = (uint32_t *)realloc(
+                    nd->array_dims,
+                    (nd->array_count + 1) * sizeof(uint32_t));
+                nd->array_dims[nd->array_count++] = sz;
+            }
+            tail->next_declarator = nd;
+            tail = nd;
+        }
     }
 
     expect_punct(p, ";");
@@ -2304,7 +2400,9 @@ static void free_decl(MGLDecl *d)
         return;
     }
     free(d->name);
-    free_type_spec(d->type);
+    if (!d->type_shared) {
+        free_type_spec(d->type);
+    }
     free(d->array_dims);
     free_expr(d->init);
     free_stmt(d->body);
@@ -2317,5 +2415,8 @@ static void free_decl(MGLDecl *d)
         free_decl(d->struct_members[i]);
     }
     free(d->struct_members);
+    /* Comma-separated sibling declarators form a singly linked chain. */
+    MGLDecl *next = d->next_declarator;
     free(d);
+    free_decl(next);
 }

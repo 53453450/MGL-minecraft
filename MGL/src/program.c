@@ -1875,6 +1875,23 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         return;
     }
 
+    if ((pptr->attached_shader_mask & VERTEX_SHADER_MASK_BIT) &&
+        (pptr->attached_shader_mask & FRAGMENT_SHADER_MASK_BIT)) {
+        Shader *vs = pptr->shader_slots[_VERTEX_SHADER];
+        Shader *fs = pptr->shader_slots[_FRAGMENT_SHADER];
+        if (vs && fs && vs->src && fs->src) {
+            char iface_err[512] = {0};
+            if (mglShaderInterfaceCheck(vs->src, fs->src, iface_err,
+                                        sizeof iface_err) != 0) {
+                fprintf(stderr,
+                        "MGL WARNING: mglLinkProgram failed program %u: %s\n",
+                        pptr->name,
+                        iface_err[0] ? iface_err : "stage interface mismatch");
+                return;
+            }
+        }
+    }
+
     pptr->link_success = GL_TRUE;
     pptr->dirty_bits |= DIRTY_PROGRAM;
     /* Cache the legacy clip-plane uniform locations (the translator injects

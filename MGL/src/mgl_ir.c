@@ -125,9 +125,11 @@ static int layout_type(MGLIRType *type, MGLIRLayoutStd layout, uint32_t depth,
         uint32_t base = vector_align(vec_comps, s);
         uint32_t stride = is_std140(layout) ? round_align16(base) : base;
         /* The layout pass stores every vector at the full stride in both
-         * std140 and std430: mat3 std430 = 48. */
+         * std140 and std430: mat3 std430 = 48.
+         * std140/shared: matrix base alignment follows the array-of-vector
+         * rule (GL 4.6 §7.6.2.2 (3)+(4)) — round vector align up to 16. */
         r.size = count * stride;
-        r.alignment = base;
+        r.alignment = is_std140(layout) ? stride : base;
         r.matrix_stride = stride;
         break;
     }

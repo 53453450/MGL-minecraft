@@ -509,6 +509,22 @@ static MGLIRType *ir_type_clone(const MGLIRType *src)
                 return NULL;
             }
         }
+        if (src->member_offsets && src->member_count > 0) {
+            t->member_offsets =
+                (uint32_t *)calloc(src->member_count, sizeof(uint32_t));
+            if (!t->member_offsets) {
+                for (uint32_t j = 0; j < src->member_count; j++) {
+                    mglIRTypeDestroy(t->members[j]);
+                    free(t->member_names[j]);
+                }
+                free(t->member_names);
+                free(t->members);
+                free(t);
+                return NULL;
+            }
+            memcpy(t->member_offsets, src->member_offsets,
+                   src->member_count * sizeof(uint32_t));
+        }
         break;
     }
     default:
@@ -520,17 +536,47 @@ static MGLIRType *ir_type_clone(const MGLIRType *src)
 static MGLIRType *resolve_type_spec(Sema *s, SymTab *tab, const MGLTypeSpec *ts);
 static int builtin_type_spec(const char *name, MGLTypeSpec *ts);
 
-/* Resolve a single declarator (type + array dims) into an IR type. */
-static MGLIRType *resolve_decl_type(Sema *s, SymTab *tab, const MGLDecl *d)
+/* Apply block/member matrix major to every matrix in a (possibly nested)
+ * type tree.  Named struct types are cloned per use, so mutating the
+ * clone does not affect other blocks that share the same struct name. */
+static void apply_matrix_major(MGLIRType *t, uint32_t major)
+{
+    if (!t || (major != MGL_AST_MATRIX_ROW_MAJOR &&
+               major != MGL_AST_MATRIX_COL_MAJOR)) {
+        return;
+    }
+    switch (t->kind) {
+    case MGLIR_TYPE_MATRIX:
+        t->row_major = (major == MGL_AST_MATRIX_ROW_MAJOR) ? 1u : 0u;
+        break;
+    case MGLIR_TYPE_ARRAY:
+        apply_matrix_major(t->elem_type, major);
+        break;
+    case MGLIR_TYPE_STRUCT:
+        for (uint32_t i = 0; i < t->member_count; i++) {
+            apply_matrix_major(t->members[i], major);
+        }
+        break;
+    default:
+        break;
+    }
+}
+
+/* Resolve a single declarator (type + array dims) into an IR type.
+ * `inherited_major` is the enclosing block/struct default
+ * (MGL_AST_MATRIX_*), overridden by an explicit member layout. */
+static MGLIRType *resolve_decl_type_major(Sema *s, SymTab *tab,
+                                          const MGLDecl *d,
+                                          uint32_t inherited_major)
 {
     MGLIRType *t = resolve_type_spec(s, tab, d->type);
     if (!t) {
         return NULL;
     }
-    if (d->matrix_major == MGL_AST_MATRIX_ROW_MAJOR &&
-        t->kind == MGLIR_TYPE_MATRIX) {
-        t->row_major = 1;
-    }
+    uint32_t major = d->matrix_major;
+    if (major == MGL_AST_MATRIX_DEFAULT)
+        major = inherited_major;
+    apply_matrix_major(t, major);
     for (uint32_t i = d->array_count; i > 0; i--) {
         uint32_t sz = d->array_dims[i - 1];
         MGLIRType *arr = mglIRTypeArray(t, sz);
@@ -541,6 +587,11 @@ static MGLIRType *resolve_decl_type(Sema *s, SymTab *tab, const MGLDecl *d)
         t = arr;
     }
     return t;
+}
+
+static MGLIRType *resolve_decl_type(Sema *s, SymTab *tab, const MGLDecl *d)
+{
+    return resolve_decl_type_major(s, tab, d, MGL_AST_MATRIX_DEFAULT);
 }
 
 static MGLIRType *resolve_type_spec(Sema *s, SymTab *tab, const MGLTypeSpec *ts)
@@ -1347,6 +1398,11 @@ static int constructor_components(const MGLIRType *at)
     if (at->kind == MGLIR_TYPE_VECTOR) {
         return (int)at->cols;
     }
+    /* GLSL 4.60 §5.4.2: a matrix argument is a column-major sequence of
+     * components (columns consumed in order). */
+    if (at->kind == MGLIR_TYPE_MATRIX) {
+        return (int)(at->cols * at->rows);
+    }
     return -1;
 }
 
@@ -1360,7 +1416,8 @@ static int constructor_components(const MGLIRType *at)
 static int constructor_scalar_convert(const MGLIRType *from, MGLIRScalar to_sc)
 {
     if (!from || (from->kind != MGLIR_TYPE_SCALAR &&
-                  from->kind != MGLIR_TYPE_VECTOR)) {
+                  from->kind != MGLIR_TYPE_VECTOR &&
+                  from->kind != MGLIR_TYPE_MATRIX)) {
         return 0;
     }
     return from->scalar != MGLIR_SCALAR_VOID && to_sc != MGLIR_SCALAR_VOID;
@@ -1385,21 +1442,13 @@ static int check_constructor(Sema *s, uint32_t line, const char *tname,
     }
     if (t->kind == MGLIR_TYPE_VECTOR) {
         uint32_t n = t->cols;
-        if (argc == 1 && ats[0]) {
-            int c = constructor_components(ats[0]);
-            if (ats[0]->kind == MGLIR_TYPE_SCALAR && c == 1) {
-                /* broadcast: vec2(1.0) */
-                return constructor_scalar_convert(ats[0], t->scalar);
-            }
-            if (c == (int)n) {
-                /* single vector of the right size */
-                return constructor_scalar_convert(ats[0], t->scalar);
-            }
-            sema_error(s, line,
-                       "constructor 'vec%u' cannot take a single %s argument",
-                       n, ir_type_str(ats[0], (char[64]){0}, 64));
-            return 0;
+        if (argc == 1 && ats[0] && ats[0]->kind == MGLIR_TYPE_SCALAR) {
+            /* broadcast: vec2(1.0) */
+            return constructor_scalar_convert(ats[0], t->scalar);
         }
+        /* Consume arguments left to right until every destination component
+         * is initialized. Extra components in the last used argument are
+         * ignored; extra unused arguments are an error (GLSL 4.60 §5.4.2). */
         uint32_t total = 0;
         for (uint32_t i = 0; i < argc; i++) {
             int c = ats[i] ? constructor_components(ats[i]) : -1;
@@ -1409,15 +1458,12 @@ static int check_constructor(Sema *s, uint32_t line, const char *tname,
                            n, ats[i] ? ir_type_str(ats[i], (char[64]){0}, 64) : "?");
                 return 0;
             }
-            total += (uint32_t)c;
-        }
-        if (total != n) {
-            sema_error(s, line,
-                       "constructor 'vec%u' from %u component(s), expected %u",
-                       n, total, n);
-            return 0;
-        }
-        for (uint32_t i = 0; i < argc; i++) {
+            if (total >= n) {
+                sema_error(s, line,
+                           "constructor 'vec%u' has unused extra arguments",
+                           n);
+                return 0;
+            }
             if (!constructor_scalar_convert(ats[i], t->scalar)) {
                 char sa[64], sb[64];
                 sema_error(s, line,
@@ -1427,6 +1473,13 @@ static int check_constructor(Sema *s, uint32_t line, const char *tname,
                            ir_type_str(t, sb, sizeof(sb)));
                 return 0;
             }
+            total += (uint32_t)c;
+        }
+        if (total < n) {
+            sema_error(s, line,
+                       "constructor 'vec%u' from %u component(s), expected %u",
+                       n, total, n);
+            return 0;
         }
         return 1;
     }
@@ -1999,6 +2052,9 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                 return NULL;
             }
             return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_BOOL));
+        case MGL_OP_COMMA:
+            check_expr(s, tab, e->u.binary.lhs);
+            return r;
         case MGL_OP_AND: case MGL_OP_OR: case MGL_OP_XOR:
         case MGL_OP_SHL: case MGL_OP_SHR:
             if (!is_numeric(l) || !is_numeric(r) ||
@@ -2452,8 +2508,12 @@ static void analyze_decl(Sema *s, SymTab *tab, const MGLDecl *d, int global)
     }
     if (d->body || d->params) {
         analyze_function(s, tab, d);
-    } else {
-        analyze_variable(s, tab, d, global);
+        return;
+    }
+    /* Comma-separated declarators (`uniform int a, b;`): every node is a
+     * distinct symbol sharing the first node's type spec. */
+    for (const MGLDecl *cur = d; cur; cur = cur->next_declarator) {
+        analyze_variable(s, tab, cur, global);
     }
 }
 
@@ -2594,7 +2654,11 @@ int mglGLSLSemanticCheck(const MGLTranslationUnit *tu, int stage,
                     int ok = 1;
                     for (uint32_t j = 0; j < n; j++) {
                         MGLDecl *m = d->struct_members[j];
-                        members[j] = resolve_decl_type(&s, &tab, m);
+                        /* Block-level layout(row_major) is the default for
+                         * matrix members (GLSL 4.60 §4.4.5); an explicit
+                         * member layout overrides via resolve_decl_type_major. */
+                        members[j] = resolve_decl_type_major(
+                            &s, &tab, m, d->matrix_major);
                         names[j] = m->name;
                         if (!members[j]) {
                             ok = 0;
@@ -2806,6 +2870,197 @@ int mglGLSLInterfaceCheck(const MGLIRModule *a, const MGLIRModule *b,
             }
         }
     }
+
+    if (errors) {
+        *errors = s.errors;
+    }
+    if (error_count) {
+        *error_count = s.error_count;
+    }
+    return (int)s.error_count;
+}
+
+static const MGLIRType *sym_uniform_block_type(const MGLIRSymbol *s)
+{
+    if (!s || !(s->qualifiers & MGL_AST_Q_UNIFORM)) {
+        return NULL;
+    }
+    const MGLIRType *t = s->type;
+    while (t && t->kind == MGLIR_TYPE_ARRAY) {
+        t = t->elem_type;
+    }
+    return (t && t->kind == MGLIR_TYPE_STRUCT && t->member_count > 0) ? t
+                                                                      : NULL;
+}
+
+static int sym_is_anonymous_uniform_block(const MGLIRSymbol *s)
+{
+    const MGLIRType *bt = sym_uniform_block_type(s);
+    return bt && s->name && bt->name && strcmp(s->name, bt->name) == 0;
+}
+
+typedef struct {
+    char *name;
+    char *block; /* NULL = plain uniform; else owning block type name */
+} UniformLinkName;
+
+static void uniform_link_names_free(UniformLinkName *entries, uint32_t count)
+{
+    if (!entries) {
+        return;
+    }
+    for (uint32_t i = 0; i < count; i++) {
+        free(entries[i].name);
+        free(entries[i].block);
+    }
+    free(entries);
+}
+
+static int uniform_link_name_add(Sema *s, UniformLinkName **entries,
+                                 uint32_t *count, uint32_t *cap,
+                                 const char *name, const char *block)
+{
+    if (!name) {
+        return 0;
+    }
+    for (uint32_t i = 0; i < *count; i++) {
+        if (strcmp((*entries)[i].name, name) != 0) {
+            continue;
+        }
+        const char *existing = (*entries)[i].block;
+        if ((existing == NULL) != (block == NULL) ||
+            (existing && block && strcmp(existing, block) != 0)) {
+            sema_error(s, 0,
+                       "uniform '%s' declared with conflicting definitions",
+                       name);
+            return -1;
+        }
+        return 0;
+    }
+    if (*count == *cap) {
+        uint32_t ncap = (*cap == 0) ? 8u : (*cap * 2u);
+        UniformLinkName *next = (UniformLinkName *)realloc(
+            *entries, ncap * sizeof(UniformLinkName));
+        if (!next) {
+            return -1;
+        }
+        *entries = next;
+        *cap = ncap;
+    }
+    UniformLinkName *e = &(*entries)[*count];
+    e->name = strdup(name);
+    e->block = block ? strdup(block) : NULL;
+    if (!e->name || (block && !e->block)) {
+        free(e->name);
+        free(e->block);
+        return -1;
+    }
+    (*count)++;
+    return 0;
+}
+
+static int uniform_link_names_collect(Sema *s, const MGLIRModule *mod,
+                                      UniformLinkName **entries,
+                                      uint32_t *count, uint32_t *cap)
+{
+    for (uint32_t i = 0; i < mod->symbol_count; i++) {
+        MGLIRSymbol *sym = mod->symbols[i];
+        if (!sym || sym->is_function || !sym->name) {
+            continue;
+        }
+        if (sym->block_name) {
+            if (!(sym->qualifiers & MGL_AST_Q_UNIFORM)) {
+                continue;
+            }
+            if (uniform_link_name_add(s, entries, count, cap, sym->name,
+                                      sym->block_name) != 0) {
+                return -1;
+            }
+            continue;
+        }
+        if (sym_uniform_block_type(sym)) {
+            continue;
+        }
+        if (!(sym->qualifiers & MGL_AST_Q_UNIFORM)) {
+            continue;
+        }
+        const MGLIRType *t = sym->type;
+        while (t && t->kind == MGLIR_TYPE_ARRAY) {
+            t = t->elem_type;
+        }
+        if (t && (t->kind == MGLIR_TYPE_SAMPLER ||
+                  t->kind == MGLIR_TYPE_IMAGE ||
+                  t->kind == MGLIR_TYPE_ATOMIC_COUNTER)) {
+            continue;
+        }
+        if (uniform_link_name_add(s, entries, count, cap, sym->name,
+                                  NULL) != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static void uniform_block_instances_check(Sema *s, const MGLIRModule *a,
+                                          const MGLIRModule *b)
+{
+    for (uint32_t i = 0; i < a->symbol_count; i++) {
+        MGLIRSymbol *sa = a->symbols[i];
+        const MGLIRType *bta = sym_uniform_block_type(sa);
+        if (!bta || !bta->name) {
+            continue;
+        }
+        for (uint32_t j = 0; j < b->symbol_count; j++) {
+            MGLIRSymbol *sb = b->symbols[j];
+            const MGLIRType *btb = sym_uniform_block_type(sb);
+            if (!btb || !btb->name || strcmp(bta->name, btb->name) != 0) {
+                continue;
+            }
+            if (sym_is_anonymous_uniform_block(sa) !=
+                sym_is_anonymous_uniform_block(sb)) {
+                sema_error(s, 0,
+                           "matched uniform block '%s' has inconsistent "
+                           "instance names across stages",
+                           bta->name);
+            }
+        }
+    }
+}
+
+int mglGLSLUniformLinkCheck(const MGLIRModule *a, const MGLIRModule *b,
+                            MGLSemaError **errors, uint32_t *error_count)
+{
+    Sema s;
+    memset(&s, 0, sizeof(s));
+    UniformLinkName *entries = NULL;
+    uint32_t count = 0;
+    uint32_t cap = 0;
+
+    if (a && uniform_link_names_collect(&s, a, &entries, &count, &cap) != 0) {
+        uniform_link_names_free(entries, count);
+        if (errors) {
+            *errors = s.errors;
+        }
+        if (error_count) {
+            *error_count = s.error_count;
+        }
+        return (int)s.error_count;
+    }
+    if (b && uniform_link_names_collect(&s, b, &entries, &count, &cap) != 0) {
+        uniform_link_names_free(entries, count);
+        if (errors) {
+            *errors = s.errors;
+        }
+        if (error_count) {
+            *error_count = s.error_count;
+        }
+        return (int)s.error_count;
+    }
+    if (a && b) {
+        uniform_block_instances_check(&s, a, b);
+        uniform_block_instances_check(&s, b, a);
+    }
+    uniform_link_names_free(entries, count);
 
     if (errors) {
         *errors = s.errors;

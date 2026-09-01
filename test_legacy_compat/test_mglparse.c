@@ -184,6 +184,76 @@ static void test_image_memory_qualifiers(void)
     }
 }
 
+/* GLSL 4.60 §4.1 / §6.1: comma-separated declarators and precision-
+ * qualified function parameters (KHR-GL46.shaders uniform_block/loops
+ * front-door constructs). */
+static void test_declarator_lists_and_param_precision(void)
+{
+    const char *src =
+        "#version 460 core\n"
+        "uniform mediump int ui_zero, ui_one, ui_two;\n"
+        "float pair[2], triple[3];\n"
+        "void main() {\n"
+        "  int a = 1, b = 2, c;\n"
+        "  c = a + b;\n"
+        "  ui_zero = c + ui_one + ui_two;\n"
+        "}\n";
+    MGLTranslationUnit *tu = mglGLSLParse(src, strlen(src));
+    CHECK(tu != NULL, "declarator list TU");
+    CHECK(tu && tu->error == NULL, "comma declarators accepted");
+    if (tu && tu->decl_count >= 2) {
+        MGLDecl *u = tu->decls[0];
+        MGLDecl *g = tu->decls[1];
+        int uniform_count = 0;
+        for (MGLDecl *cur = u; cur; cur = cur->next_declarator)
+            uniform_count++;
+        CHECK(uniform_count == 3, "uniform chain has 3 declarators");
+        CHECK(u->type_shared == 0 && u->next_declarator &&
+              u->next_declarator->type_shared == 1,
+              "chain nodes share the first type spec");
+        CHECK(u->next_declarator && u->next_declarator->name &&
+              strcmp(u->next_declarator->name, "ui_one") == 0,
+              "second uniform declarator named ui_one");
+        CHECK(u->type->precision == MGL_AST_PRECISION_MEDIUMP,
+              "precision qualifier recorded on shared type");
+        CHECK(g->next_declarator != NULL &&
+              g->next_declarator->array_count == 1 &&
+              g->next_declarator->array_dims[0] == 3,
+              "per-declarator array dims (triple[3])");
+    }
+    if (tu) {
+        mglGLSLTranslationUnitDestroy(tu);
+    }
+
+    const char *src2 =
+        "#version 460 core\n"
+        "mediump float compare(highp float a, highp float b) "
+        "{ return a < b ? 1.0 : 0.0; }\n"
+        "float mix2(in highp float x, highp in float y) "
+        "{ return compare(x, y); }\n"
+        "void main() { }\n";
+    MGLTranslationUnit *tu2 = mglGLSLParse(src2, strlen(src2));
+    CHECK(tu2 != NULL, "param precision TU");
+    CHECK(tu2 && tu2->error == NULL, "precision-qualified params accepted");
+    if (tu2 && tu2->decl_count >= 2) {
+        MGLDecl *fn = tu2->decls[0];
+        CHECK(fn->param_count == 2 && fn->params &&
+              fn->params[0]->type->precision == MGL_AST_PRECISION_HIGHP,
+              "param precision recorded (highp float)");
+        MGLDecl *fn2 = tu2->decls[1];
+        CHECK(fn2->param_count == 2 && fn2->params &&
+              (fn2->params[0]->qualifiers & MGL_AST_Q_IN) &&
+              fn2->params[0]->type->precision == MGL_AST_PRECISION_HIGHP,
+              "in highp float accepted");
+        CHECK((fn2->params[1]->qualifiers & MGL_AST_Q_IN) &&
+              fn2->params[1]->type->precision == MGL_AST_PRECISION_HIGHP,
+              "highp in float accepted");
+    }
+    if (tu2) {
+        mglGLSLTranslationUnitDestroy(tu2);
+    }
+}
+
 static void test_error_report(void)
 {
     const char *src = "void main( { }\n"; /* missing ')' */
@@ -237,6 +307,7 @@ int main(void)
     test_expr_path();
     test_precision_statements();
     test_image_memory_qualifiers();
+    test_declarator_lists_and_param_precision();
     test_error_report();
     test_gs_layout_errors();
     printf("\n%d/%d passed\n", tests_passed, tests_run);

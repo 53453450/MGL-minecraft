@@ -55,7 +55,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 91
+#define MAX_TESTS 93
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -14546,6 +14546,1366 @@ cleanup:
     return result;
 }
 
+
+/* Minimal in-renderer repro for the multi-UBO + helper-function PSO crash
+ * (MTLCompilerService XPC interruption -> black frame).  Embeds the exact
+ * CTS-generated shader pair from
+ * KHR-GL46.shaders.uniform_block.multi_nested_struct.single_buffer.std140_both.
+ * The PSO creation is the signal: pre-fix the frame is black (pipeline fell
+ * back), post-fix the fragment writes red = 1. */
+static int test_air_ubo_multi_block_pso(unsigned char *pixels,
+                                        const char *out_path)
+{
+    (void)out_path;
+    static const char *vs =
+        "#version 330\n"
+        "in highp vec4 a_position;\n"
+        "out mediump float v_vtxResult;\n"
+        "\n"
+        "struct S\n"
+        "{\n"
+        "	lowp mat3 a;\n"
+        "	mediump ivec2 b[4];\n"
+        "	highp vec4 c;\n"
+        "};\n"
+        "struct T\n"
+        "{\n"
+        "	mediump uint a; // unused in both shaders\n"
+        "	S b;\n"
+        "	bvec4 c;\n"
+        "};\n"
+        "layout(std140) uniform BlockA\n"
+        "{\n"
+        "	highp float a;\n"
+        "	S b;\n"
+        "	lowp uvec3 c; // unused in both shaders\n"
+        "} blockA;\n"
+        "layout(std140) uniform BlockB\n"
+        "{\n"
+        "	mediump mat2 a;\n"
+        "	T b;\n"
+        "	bvec4 c; // unused in both shaders\n"
+        "	bool d;\n"
+        "} blockB;\n"
+        "\n"
+        "mediump float compare_float    (highp float a, highp float b)  { return abs(a - b) < 0.05 ? 1.0 : 0.0; }\n"
+        "mediump float compare_vec2     (highp vec2 a, highp vec2 b)    { return compare_float(a.x, b.x)*compare_float(a.y, b.y); }\n"
+        "mediump float compare_vec3     (highp vec3 a, highp vec3 b)    { return compare_float(a.x, b.x)*compare_float(a.y, b.y)*compare_float(a.z, b.z); }\n"
+        "mediump float compare_vec4     (highp vec4 a, highp vec4 b)    { return compare_float(a.x, b.x)*compare_float(a.y, b.y)*compare_float(a.z, b.z)*compare_float(a.w, b.w); }\n"
+        "mediump float compare_mat2     (highp mat2 a, highp mat2 b)    { return compare_vec2(a[0], b[0])*compare_vec2(a[1], b[1]); }\n"
+        "mediump float compare_mat2x3   (highp mat2x3 a, highp mat2x3 b){ return compare_vec3(a[0], b[0])*compare_vec3(a[1], b[1]); }\n"
+        "mediump float compare_mat2x4   (highp mat2x4 a, highp mat2x4 b){ return compare_vec4(a[0], b[0])*compare_vec4(a[1], b[1]); }\n"
+        "mediump float compare_mat3x2   (highp mat3x2 a, highp mat3x2 b){ return compare_vec2(a[0], b[0])*compare_vec2(a[1], b[1])*compare_vec2(a[2], b[2]); }\n"
+        "mediump float compare_mat3     (highp mat3 a, highp mat3 b)    { return compare_vec3(a[0], b[0])*compare_vec3(a[1], b[1])*compare_vec3(a[2], b[2]); }\n"
+        "mediump float compare_mat3x4   (highp mat3x4 a, highp mat3x4 b){ return compare_vec4(a[0], b[0])*compare_vec4(a[1], b[1])*compare_vec4(a[2], b[2]); }\n"
+        "mediump float compare_mat4x2   (highp mat4x2 a, highp mat4x2 b){ return compare_vec2(a[0], b[0])*compare_vec2(a[1], b[1])*compare_vec2(a[2], b[2])*compare_vec2(a[3], b[3]); }\n"
+        "mediump float compare_mat4x3   (highp mat4x3 a, highp mat4x3 b){ return compare_vec3(a[0], b[0])*compare_vec3(a[1], b[1])*compare_vec3(a[2], b[2])*compare_vec3(a[3], b[3]); }\n"
+        "mediump float compare_mat4     (highp mat4 a, highp mat4 b)    { return compare_vec4(a[0], b[0])*compare_vec4(a[1], b[1])*compare_vec4(a[2], b[2])*compare_vec4(a[3], b[3]); }\n"
+        "mediump float compare_int      (highp int a, highp int b)      { return a == b ? 1.0 : 0.0; }\n"
+        "mediump float compare_ivec2    (highp ivec2 a, highp ivec2 b)  { return a == b ? 1.0 : 0.0; }\n"
+        "mediump float compare_ivec3    (highp ivec3 a, highp ivec3 b)  { return a == b ? 1.0 : 0.0; }\n"
+        "mediump float compare_ivec4    (highp ivec4 a, highp ivec4 b)  { return a == b ? 1.0 : 0.0; }\n"
+        "mediump float compare_uint     (highp uint a, highp uint b)    { return a == b ? 1.0 : 0.0; }\n"
+        "mediump float compare_uvec2    (highp uvec2 a, highp uvec2 b)  { return a == b ? 1.0 : 0.0; }\n"
+        "mediump float compare_uvec3    (highp uvec3 a, highp uvec3 b)  { return a == b ? 1.0 : 0.0; }\n"
+        "mediump float compare_uvec4    (highp uvec4 a, highp uvec4 b)  { return a == b ? 1.0 : 0.0; }\n"
+        "mediump float compare_bool     (bool a, bool b)                { return a == b ? 1.0 : 0.0; }\n"
+        "mediump float compare_bvec2    (bvec2 a, bvec2 b)              { return a == b ? 1.0 : 0.0; }\n"
+        "mediump float compare_bvec3    (bvec3 a, bvec3 b)              { return a == b ? 1.0 : 0.0; }\n"
+        "mediump float compare_bvec4    (bvec4 a, bvec4 b)              { return a == b ? 1.0 : 0.0; }\n"
+        "\n"
+        "void main (void)\n"
+        "{\n"
+        "    gl_Position = a_position;\n"
+        "    mediump float result = 1.0;\n"
+        "	result *= compare_float(blockA.a, 2.0);\n"
+        "	result *= compare_mat3(blockA.b.a, mat3(0.0, 6.0, 5.0, -6.0, 5.0, 5.0, 8.0, 0.0, -2.0));\n"
+        "	result *= compare_ivec2(blockA.b.b[0], ivec2(0, 2));\n"
+        "	result *= compare_ivec2(blockA.b.b[1], ivec2(9, -1));\n"
+        "	result *= compare_ivec2(blockA.b.b[2], ivec2(-4, -9));\n"
+        "	result *= compare_ivec2(blockA.b.b[3], ivec2(6, 2));\n"
+        "	result *= compare_vec4(blockA.b.c, vec4(-8.0, -2.0, 3.0, 7.0));\n"
+        "	result *= compare_mat2(blockB.a, mat2(3.0, -7.0, -8.0, -4.0));\n"
+        "	result *= compare_mat3(blockB.b.b.a, mat3(5.0, 1.0, 2.0, -2.0, -9.0, -8.0, 8.0, 0.0, 1.0));\n"
+        "	result *= compare_ivec2(blockB.b.b.b[0], ivec2(-7, 4));\n"
+        "	result *= compare_ivec2(blockB.b.b.b[1], ivec2(6, 1));\n"
+        "	result *= compare_ivec2(blockB.b.b.b[2], ivec2(-4, 4));\n"
+        "	result *= compare_ivec2(blockB.b.b.b[3], ivec2(9, -5));\n"
+        "	result *= compare_vec4(blockB.b.b.c, vec4(-3.0, -5.0, 9.0, 2.0));\n"
+        "	result *= compare_bvec4(blockB.b.c, bvec4(false, true, true, false));\n"
+        "	result *= compare_bool(blockB.d, false);\n"
+        "    v_vtxResult = result;\n"
+        "}\n";
+    static const char *fs =
+        "#version 330\n"
+        "in mediump float v_vtxResult;\n"
+        "layout(location = 0) out mediump vec4 dEQP_FragColor;\n"
+        "\n"
+        "struct S\n"
+        "{\n"
+        "	lowp mat3 a;\n"
+        "	mediump ivec2 b[4];\n"
+        "	highp vec4 c;\n"
+        "};\n"
+        "struct T\n"
+        "{\n"
+        "	mediump uint a; // unused in both shaders\n"
+        "	S b;\n"
+        "	bvec4 c;\n"
+        "};\n"
+        "layout(std140) uniform BlockA\n"
+        "{\n"
+        "	highp float a;\n"
+        "	S b;\n"
+        "	lowp uvec3 c; // unused in both shaders\n"
+        "} blockA;\n"
+        "layout(std140) uniform BlockB\n"
+        "{\n"
+        "	mediump mat2 a;\n"
+        "	T b;\n"
+        "	bvec4 c; // unused in both shaders\n"
+        "	bool d;\n"
+        "} blockB;\n"
+        "\n"
+        "mediump float compare_float    (highp float a, highp float b)  { return abs(a - b) < 0.05 ? 1.0 : 0.0; }\n"
+        "mediump float compare_vec2     (highp vec2 a, highp vec2 b)    { return compare_float(a.x, b.x)*compare_float(a.y, b.y); }\n"
+        "mediump float compare_vec3     (highp vec3 a, highp vec3 b)    { return compare_float(a.x, b.x)*compare_float(a.y, b.y)*compare_float(a.z, b.z); }\n"
+        "mediump float compare_vec4     (highp vec4 a, highp vec4 b)    { return compare_float(a.x, b.x)*compare_float(a.y, b.y)*compare_float(a.z, b.z)*compare_float(a.w, b.w); }\n"
+        "mediump float compare_mat2     (highp mat2 a, highp mat2 b)    { return compare_vec2(a[0], b[0])*compare_vec2(a[1], b[1]); }\n"
+        "mediump float compare_mat2x3   (highp mat2x3 a, highp mat2x3 b){ return compare_vec3(a[0], b[0])*compare_vec3(a[1], b[1]); }\n"
+        "mediump float compare_mat2x4   (highp mat2x4 a, highp mat2x4 b){ return compare_vec4(a[0], b[0])*compare_vec4(a[1], b[1]); }\n"
+        "mediump float compare_mat3x2   (highp mat3x2 a, highp mat3x2 b){ return compare_vec2(a[0], b[0])*compare_vec2(a[1], b[1])*compare_vec2(a[2], b[2]); }\n"
+        "mediump float compare_mat3     (highp mat3 a, highp mat3 b)    { return compare_vec3(a[0], b[0])*compare_vec3(a[1], b[1])*compare_vec3(a[2], b[2]); }\n"
+        "mediump float compare_mat3x4   (highp mat3x4 a, highp mat3x4 b){ return compare_vec4(a[0], b[0])*compare_vec4(a[1], b[1])*compare_vec4(a[2], b[2]); }\n"
+        "mediump float compare_mat4x2   (highp mat4x2 a, highp mat4x2 b){ return compare_vec2(a[0], b[0])*compare_vec2(a[1], b[1])*compare_vec2(a[2], b[2])*compare_vec2(a[3], b[3]); }\n"
+        "mediump float compare_mat4x3   (highp mat4x3 a, highp mat4x3 b){ return compare_vec3(a[0], b[0])*compare_vec3(a[1], b[1])*compare_vec3(a[2], b[2])*compare_vec3(a[3], b[3]); }\n"
+        "mediump float compare_mat4     (highp mat4 a, highp mat4 b)    { return compare_vec4(a[0], b[0])*compare_vec4(a[1], b[1])*compare_vec4(a[2], b[2])*compare_vec4(a[3], b[3]); }\n"
+        "mediump float compare_int      (highp int a, highp int b)      { return a == b ? 1.0 : 0.0; }\n"
+        "mediump float compare_ivec2    (highp ivec2 a, highp ivec2 b)  { return a == b ? 1.0 : 0.0; }\n"
+        "mediump float compare_ivec3    (highp ivec3 a, highp ivec3 b)  { return a == b ? 1.0 : 0.0; }\n"
+        "mediump float compare_ivec4    (highp ivec4 a, highp ivec4 b)  { return a == b ? 1.0 : 0.0; }\n"
+        "mediump float compare_uint     (highp uint a, highp uint b)    { return a == b ? 1.0 : 0.0; }\n"
+        "mediump float compare_uvec2    (highp uvec2 a, highp uvec2 b)  { return a == b ? 1.0 : 0.0; }\n"
+        "mediump float compare_uvec3    (highp uvec3 a, highp uvec3 b)  { return a == b ? 1.0 : 0.0; }\n"
+        "mediump float compare_uvec4    (highp uvec4 a, highp uvec4 b)  { return a == b ? 1.0 : 0.0; }\n"
+        "mediump float compare_bool     (bool a, bool b)                { return a == b ? 1.0 : 0.0; }\n"
+        "mediump float compare_bvec2    (bvec2 a, bvec2 b)              { return a == b ? 1.0 : 0.0; }\n"
+        "mediump float compare_bvec3    (bvec3 a, bvec3 b)              { return a == b ? 1.0 : 0.0; }\n"
+        "mediump float compare_bvec4    (bvec4 a, bvec4 b)              { return a == b ? 1.0 : 0.0; }\n"
+        "\n"
+        "void main (void)\n"
+        "{\n"
+        "    mediump float result = 1.0;\n"
+        "	result *= compare_float(blockA.a, 2.0);\n"
+        "	result *= compare_mat3(blockA.b.a, mat3(0.0, 6.0, 5.0, -6.0, 5.0, 5.0, 8.0, 0.0, -2.0));\n"
+        "	result *= compare_ivec2(blockA.b.b[0], ivec2(0, 2));\n"
+        "	result *= compare_ivec2(blockA.b.b[1], ivec2(9, -1));\n"
+        "	result *= compare_ivec2(blockA.b.b[2], ivec2(-4, -9));\n"
+        "	result *= compare_ivec2(blockA.b.b[3], ivec2(6, 2));\n"
+        "	result *= compare_vec4(blockA.b.c, vec4(-8.0, -2.0, 3.0, 7.0));\n"
+        "	result *= compare_mat2(blockB.a, mat2(3.0, -7.0, -8.0, -4.0));\n"
+        "	result *= compare_mat3(blockB.b.b.a, mat3(5.0, 1.0, 2.0, -2.0, -9.0, -8.0, 8.0, 0.0, 1.0));\n"
+        "	result *= compare_ivec2(blockB.b.b.b[0], ivec2(-7, 4));\n"
+        "	result *= compare_ivec2(blockB.b.b.b[1], ivec2(6, 1));\n"
+        "	result *= compare_ivec2(blockB.b.b.b[2], ivec2(-4, 4));\n"
+        "	result *= compare_ivec2(blockB.b.b.b[3], ivec2(9, -5));\n"
+        "	result *= compare_vec4(blockB.b.b.c, vec4(-3.0, -5.0, 9.0, 2.0));\n"
+        "	result *= compare_bvec4(blockB.b.c, bvec4(false, true, true, false));\n"
+        "	result *= compare_bool(blockB.d, false);\n"
+        "    dEQP_FragColor = vec4(1.0, v_vtxResult, result, 1.0);\n"
+        "}\n";
+
+    GLuint fbo, tex;
+    fbo = make_fbo(REG_W, REG_H, &tex);
+    if (!fbo) return 1;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    clear_color(0.0f, 0.0f, 0.0f);
+
+    GLuint prog = link_program(vs, fs);
+    if (!prog) {
+        fprintf(stderr, "air_ubo_multi_block_pso: link failed\n");
+        return 2;
+    }
+    glUseProgram(prog);
+
+    /* Two distinct uniform blocks (BlockA 160B, BlockB 224B per reflection).
+     * Data content is irrelevant: the fragment writes red = 1.0 on every
+     * covered pixel, so black means the pipeline never ran. */
+    GLuint ubos[2];
+    glGenBuffers(2, ubos);
+    static const float zeroes[64] = {0};
+    glBindBuffer(GL_UNIFORM_BUFFER, ubos[0]);
+    glBufferData(GL_UNIFORM_BUFFER, 160, zeroes, GL_STATIC_DRAW);
+    glBindBufferBase(GL_UNIFORM_BUFFER, 0, ubos[0]);
+    glBindBuffer(GL_UNIFORM_BUFFER, ubos[1]);
+    glBufferData(GL_UNIFORM_BUFFER, 224, zeroes, GL_STATIC_DRAW);
+    glBindBufferBase(GL_UNIFORM_BUFFER, 1, ubos[1]);
+
+    static const float verts[] = { -1.0f, -1.0f,  1.0f, -1.0f,  0.0f, 1.0f };
+    GLuint vao;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    GLuint vbo = make_vbo(verts, sizeof(verts));
+    glEnableVertexAttribArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+
+    /* Central pixel must have red = 255 (the FS writes vec4(1.0, ...)). */
+    int result = 0;
+    const unsigned char *px = pixels + (REG_H / 2 * REG_W + REG_W / 2) * 4;
+    if (px[0] < 128) {
+        fprintf(stderr,
+                "air_ubo_multi_block_pso: central pixel r=%u g=%u b=%u "
+                "(pipeline did not run)\n",
+                px[0], px[1], px[2]);
+        result = 1;
+    }
+
+    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+    glDeleteBuffers(2, ubos);
+    glDeleteBuffers(1, &vbo);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(prog);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &tex);
+    return result;
+}
+
+
+/* Bisection harness for the multi-UBO PSO crash: composes shader pairs from
+ * the CTS-generated pieces according to MGL_UBO_PSO_VARIANT and reports
+ * which composition reaches a working pipeline (non-black frame). */
+static int test_air_ubo_pso_bisect(unsigned char *pixels,
+                                   const char *out_path)
+{
+    (void)out_path;
+    const char *variant = getenv("MGL_UBO_PSO_VARIANT");
+    int v = variant ? atoi(variant) : 0;
+    const char *vs = NULL, *fs = NULL;
+    static const char *vs_full =
+    "#version 330\n"
+    "in highp vec4 a_position;\n"
+    "out mediump float v_vtxResult;\n"
+    "\n"
+    "struct S\n"
+    "{\n"
+    "	lowp mat3 a;\n"
+    "	mediump ivec2 b[4];\n"
+    "	highp vec4 c;\n"
+    "};\n"
+    "struct T\n"
+    "{\n"
+    "	mediump uint a; // unused in both shaders\n"
+    "	S b;\n"
+    "	bvec4 c;\n"
+    "};\n"
+    "layout(std140) uniform BlockA\n"
+    "{\n"
+    "	highp float a;\n"
+    "	S b;\n"
+    "	lowp uvec3 c; // unused in both shaders\n"
+    "} blockA;\n"
+    "layout(std140) uniform BlockB\n"
+    "{\n"
+    "	mediump mat2 a;\n"
+    "	T b;\n"
+    "	bvec4 c; // unused in both shaders\n"
+    "	bool d;\n"
+    "} blockB;\n"
+    "\n"
+    "mediump float compare_float    (highp float a, highp float b)  { return abs(a - b) < 0.05 ? 1.0 : 0.0; }\n"
+    "mediump float compare_vec2     (highp vec2 a, highp vec2 b)    { return compare_float(a.x, b.x)*compare_float(a.y, b.y); }\n"
+    "mediump float compare_vec3     (highp vec3 a, highp vec3 b)    { return compare_float(a.x, b.x)*compare_float(a.y, b.y)*compare_float(a.z, b.z); }\n"
+    "mediump float compare_vec4     (highp vec4 a, highp vec4 b)    { return compare_float(a.x, b.x)*compare_float(a.y, b.y)*compare_float(a.z, b.z)*compare_float(a.w, b.w); }\n"
+    "mediump float compare_mat2     (highp mat2 a, highp mat2 b)    { return compare_vec2(a[0], b[0])*compare_vec2(a[1], b[1]); }\n"
+    "mediump float compare_mat2x3   (highp mat2x3 a, highp mat2x3 b){ return compare_vec3(a[0], b[0])*compare_vec3(a[1], b[1]); }\n"
+    "mediump float compare_mat2x4   (highp mat2x4 a, highp mat2x4 b){ return compare_vec4(a[0], b[0])*compare_vec4(a[1], b[1]); }\n"
+    "mediump float compare_mat3x2   (highp mat3x2 a, highp mat3x2 b){ return compare_vec2(a[0], b[0])*compare_vec2(a[1], b[1])*compare_vec2(a[2], b[2]); }\n"
+    "mediump float compare_mat3     (highp mat3 a, highp mat3 b)    { return compare_vec3(a[0], b[0])*compare_vec3(a[1], b[1])*compare_vec3(a[2], b[2]); }\n"
+    "mediump float compare_mat3x4   (highp mat3x4 a, highp mat3x4 b){ return compare_vec4(a[0], b[0])*compare_vec4(a[1], b[1])*compare_vec4(a[2], b[2]); }\n"
+    "mediump float compare_mat4x2   (highp mat4x2 a, highp mat4x2 b){ return compare_vec2(a[0], b[0])*compare_vec2(a[1], b[1])*compare_vec2(a[2], b[2])*compare_vec2(a[3], b[3]); }\n"
+    "mediump float compare_mat4x3   (highp mat4x3 a, highp mat4x3 b){ return compare_vec3(a[0], b[0])*compare_vec3(a[1], b[1])*compare_vec3(a[2], b[2])*compare_vec3(a[3], b[3]); }\n"
+    "mediump float compare_mat4     (highp mat4 a, highp mat4 b)    { return compare_vec4(a[0], b[0])*compare_vec4(a[1], b[1])*compare_vec4(a[2], b[2])*compare_vec4(a[3], b[3]); }\n"
+    "mediump float compare_int      (highp int a, highp int b)      { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_ivec2    (highp ivec2 a, highp ivec2 b)  { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_ivec3    (highp ivec3 a, highp ivec3 b)  { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_ivec4    (highp ivec4 a, highp ivec4 b)  { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_uint     (highp uint a, highp uint b)    { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_uvec2    (highp uvec2 a, highp uvec2 b)  { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_uvec3    (highp uvec3 a, highp uvec3 b)  { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_uvec4    (highp uvec4 a, highp uvec4 b)  { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_bool     (bool a, bool b)                { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_bvec2    (bvec2 a, bvec2 b)              { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_bvec3    (bvec3 a, bvec3 b)              { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_bvec4    (bvec4 a, bvec4 b)              { return a == b ? 1.0 : 0.0; }\n"
+    "\n"
+    "void main (void)\n"
+    "{\n"
+    "    gl_Position = a_position;\n"
+    "    mediump float result = 1.0;\n"
+    "	result *= compare_float(blockA.a, 2.0);\n"
+    "	result *= compare_mat3(blockA.b.a, mat3(0.0, 6.0, 5.0, -6.0, 5.0, 5.0, 8.0, 0.0, -2.0));\n"
+    "	result *= compare_ivec2(blockA.b.b[0], ivec2(0, 2));\n"
+    "	result *= compare_ivec2(blockA.b.b[1], ivec2(9, -1));\n"
+    "	result *= compare_ivec2(blockA.b.b[2], ivec2(-4, -9));\n"
+    "	result *= compare_ivec2(blockA.b.b[3], ivec2(6, 2));\n"
+    "	result *= compare_vec4(blockA.b.c, vec4(-8.0, -2.0, 3.0, 7.0));\n"
+    "	result *= compare_mat2(blockB.a, mat2(3.0, -7.0, -8.0, -4.0));\n"
+    "	result *= compare_mat3(blockB.b.b.a, mat3(5.0, 1.0, 2.0, -2.0, -9.0, -8.0, 8.0, 0.0, 1.0));\n"
+    "	result *= compare_ivec2(blockB.b.b.b[0], ivec2(-7, 4));\n"
+    "	result *= compare_ivec2(blockB.b.b.b[1], ivec2(6, 1));\n"
+    "	result *= compare_ivec2(blockB.b.b.b[2], ivec2(-4, 4));\n"
+    "	result *= compare_ivec2(blockB.b.b.b[3], ivec2(9, -5));\n"
+    "	result *= compare_vec4(blockB.b.b.c, vec4(-3.0, -5.0, 9.0, 2.0));\n"
+    "	result *= compare_bvec4(blockB.b.c, bvec4(false, true, true, false));\n"
+    "	result *= compare_bool(blockB.d, false);\n"
+    "    v_vtxResult = result;\n"
+    "}\n";
+    static const char *fs_full =
+    "#version 330\n"
+    "in mediump float v_vtxResult;\n"
+    "layout(location = 0) out mediump vec4 dEQP_FragColor;\n"
+    "\n"
+    "struct S\n"
+    "{\n"
+    "	lowp mat3 a;\n"
+    "	mediump ivec2 b[4];\n"
+    "	highp vec4 c;\n"
+    "};\n"
+    "struct T\n"
+    "{\n"
+    "	mediump uint a; // unused in both shaders\n"
+    "	S b;\n"
+    "	bvec4 c;\n"
+    "};\n"
+    "layout(std140) uniform BlockA\n"
+    "{\n"
+    "	highp float a;\n"
+    "	S b;\n"
+    "	lowp uvec3 c; // unused in both shaders\n"
+    "} blockA;\n"
+    "layout(std140) uniform BlockB\n"
+    "{\n"
+    "	mediump mat2 a;\n"
+    "	T b;\n"
+    "	bvec4 c; // unused in both shaders\n"
+    "	bool d;\n"
+    "} blockB;\n"
+    "\n"
+    "mediump float compare_float    (highp float a, highp float b)  { return abs(a - b) < 0.05 ? 1.0 : 0.0; }\n"
+    "mediump float compare_vec2     (highp vec2 a, highp vec2 b)    { return compare_float(a.x, b.x)*compare_float(a.y, b.y); }\n"
+    "mediump float compare_vec3     (highp vec3 a, highp vec3 b)    { return compare_float(a.x, b.x)*compare_float(a.y, b.y)*compare_float(a.z, b.z); }\n"
+    "mediump float compare_vec4     (highp vec4 a, highp vec4 b)    { return compare_float(a.x, b.x)*compare_float(a.y, b.y)*compare_float(a.z, b.z)*compare_float(a.w, b.w); }\n"
+    "mediump float compare_mat2     (highp mat2 a, highp mat2 b)    { return compare_vec2(a[0], b[0])*compare_vec2(a[1], b[1]); }\n"
+    "mediump float compare_mat2x3   (highp mat2x3 a, highp mat2x3 b){ return compare_vec3(a[0], b[0])*compare_vec3(a[1], b[1]); }\n"
+    "mediump float compare_mat2x4   (highp mat2x4 a, highp mat2x4 b){ return compare_vec4(a[0], b[0])*compare_vec4(a[1], b[1]); }\n"
+    "mediump float compare_mat3x2   (highp mat3x2 a, highp mat3x2 b){ return compare_vec2(a[0], b[0])*compare_vec2(a[1], b[1])*compare_vec2(a[2], b[2]); }\n"
+    "mediump float compare_mat3     (highp mat3 a, highp mat3 b)    { return compare_vec3(a[0], b[0])*compare_vec3(a[1], b[1])*compare_vec3(a[2], b[2]); }\n"
+    "mediump float compare_mat3x4   (highp mat3x4 a, highp mat3x4 b){ return compare_vec4(a[0], b[0])*compare_vec4(a[1], b[1])*compare_vec4(a[2], b[2]); }\n"
+    "mediump float compare_mat4x2   (highp mat4x2 a, highp mat4x2 b){ return compare_vec2(a[0], b[0])*compare_vec2(a[1], b[1])*compare_vec2(a[2], b[2])*compare_vec2(a[3], b[3]); }\n"
+    "mediump float compare_mat4x3   (highp mat4x3 a, highp mat4x3 b){ return compare_vec3(a[0], b[0])*compare_vec3(a[1], b[1])*compare_vec3(a[2], b[2])*compare_vec3(a[3], b[3]); }\n"
+    "mediump float compare_mat4     (highp mat4 a, highp mat4 b)    { return compare_vec4(a[0], b[0])*compare_vec4(a[1], b[1])*compare_vec4(a[2], b[2])*compare_vec4(a[3], b[3]); }\n"
+    "mediump float compare_int      (highp int a, highp int b)      { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_ivec2    (highp ivec2 a, highp ivec2 b)  { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_ivec3    (highp ivec3 a, highp ivec3 b)  { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_ivec4    (highp ivec4 a, highp ivec4 b)  { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_uint     (highp uint a, highp uint b)    { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_uvec2    (highp uvec2 a, highp uvec2 b)  { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_uvec3    (highp uvec3 a, highp uvec3 b)  { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_uvec4    (highp uvec4 a, highp uvec4 b)  { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_bool     (bool a, bool b)                { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_bvec2    (bvec2 a, bvec2 b)              { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_bvec3    (bvec3 a, bvec3 b)              { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_bvec4    (bvec4 a, bvec4 b)              { return a == b ? 1.0 : 0.0; }\n"
+    "\n"
+    "void main (void)\n"
+    "{\n"
+    "    mediump float result = 1.0;\n"
+    "	result *= compare_float(blockA.a, 2.0);\n"
+    "	result *= compare_mat3(blockA.b.a, mat3(0.0, 6.0, 5.0, -6.0, 5.0, 5.0, 8.0, 0.0, -2.0));\n"
+    "	result *= compare_ivec2(blockA.b.b[0], ivec2(0, 2));\n"
+    "	result *= compare_ivec2(blockA.b.b[1], ivec2(9, -1));\n"
+    "	result *= compare_ivec2(blockA.b.b[2], ivec2(-4, -9));\n"
+    "	result *= compare_ivec2(blockA.b.b[3], ivec2(6, 2));\n"
+    "	result *= compare_vec4(blockA.b.c, vec4(-8.0, -2.0, 3.0, 7.0));\n"
+    "	result *= compare_mat2(blockB.a, mat2(3.0, -7.0, -8.0, -4.0));\n"
+    "	result *= compare_mat3(blockB.b.b.a, mat3(5.0, 1.0, 2.0, -2.0, -9.0, -8.0, 8.0, 0.0, 1.0));\n"
+    "	result *= compare_ivec2(blockB.b.b.b[0], ivec2(-7, 4));\n"
+    "	result *= compare_ivec2(blockB.b.b.b[1], ivec2(6, 1));\n"
+    "	result *= compare_ivec2(blockB.b.b.b[2], ivec2(-4, 4));\n"
+    "	result *= compare_ivec2(blockB.b.b.b[3], ivec2(9, -5));\n"
+    "	result *= compare_vec4(blockB.b.b.c, vec4(-3.0, -5.0, 9.0, 2.0));\n"
+    "	result *= compare_bvec4(blockB.b.c, bvec4(false, true, true, false));\n"
+    "	result *= compare_bool(blockB.d, false);\n"
+    "    dEQP_FragColor = vec4(1.0, v_vtxResult, result, 1.0);\n"
+    "}\n";
+    static const char *preamble =
+    "mediump float compare_float    (highp float a, highp float b)  { return abs(a - b) < 0.05 ? 1.0 : 0.0; }\n"
+    "mediump float compare_vec2     (highp vec2 a, highp vec2 b)    { return compare_float(a.x, b.x)*compare_float(a.y, b.y); }\n"
+    "mediump float compare_vec3     (highp vec3 a, highp vec3 b)    { return compare_float(a.x, b.x)*compare_float(a.y, b.y)*compare_float(a.z, b.z); }\n"
+    "mediump float compare_vec4     (highp vec4 a, highp vec4 b)    { return compare_float(a.x, b.x)*compare_float(a.y, b.y)*compare_float(a.z, b.z)*compare_float(a.w, b.w); }\n"
+    "mediump float compare_mat2     (highp mat2 a, highp mat2 b)    { return compare_vec2(a[0], b[0])*compare_vec2(a[1], b[1]); }\n"
+    "mediump float compare_mat2x3   (highp mat2x3 a, highp mat2x3 b){ return compare_vec3(a[0], b[0])*compare_vec3(a[1], b[1]); }\n"
+    "mediump float compare_mat2x4   (highp mat2x4 a, highp mat2x4 b){ return compare_vec4(a[0], b[0])*compare_vec4(a[1], b[1]); }\n"
+    "mediump float compare_mat3x2   (highp mat3x2 a, highp mat3x2 b){ return compare_vec2(a[0], b[0])*compare_vec2(a[1], b[1])*compare_vec2(a[2], b[2]); }\n"
+    "mediump float compare_mat3     (highp mat3 a, highp mat3 b)    { return compare_vec3(a[0], b[0])*compare_vec3(a[1], b[1])*compare_vec3(a[2], b[2]); }\n"
+    "mediump float compare_mat3x4   (highp mat3x4 a, highp mat3x4 b){ return compare_vec4(a[0], b[0])*compare_vec4(a[1], b[1])*compare_vec4(a[2], b[2]); }\n"
+    "mediump float compare_mat4x2   (highp mat4x2 a, highp mat4x2 b){ return compare_vec2(a[0], b[0])*compare_vec2(a[1], b[1])*compare_vec2(a[2], b[2])*compare_vec2(a[3], b[3]); }\n"
+    "mediump float compare_mat4x3   (highp mat4x3 a, highp mat4x3 b){ return compare_vec3(a[0], b[0])*compare_vec3(a[1], b[1])*compare_vec3(a[2], b[2])*compare_vec3(a[3], b[3]); }\n"
+    "mediump float compare_mat4     (highp mat4 a, highp mat4 b)    { return compare_vec4(a[0], b[0])*compare_vec4(a[1], b[1])*compare_vec4(a[2], b[2])*compare_vec4(a[3], b[3]); }\n"
+    "mediump float compare_int      (highp int a, highp int b)      { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_ivec2    (highp ivec2 a, highp ivec2 b)  { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_ivec3    (highp ivec3 a, highp ivec3 b)  { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_ivec4    (highp ivec4 a, highp ivec4 b)  { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_uint     (highp uint a, highp uint b)    { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_uvec2    (highp uvec2 a, highp uvec2 b)  { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_uvec3    (highp uvec3 a, highp uvec3 b)  { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_uvec4    (highp uvec4 a, highp uvec4 b)  { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_bool     (bool a, bool b)                { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_bvec2    (bvec2 a, bvec2 b)              { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_bvec3    (bvec3 a, bvec3 b)              { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_bvec4    (bvec4 a, bvec4 b)              { return a == b ? 1.0 : 0.0; }\n"
+    "\n"
+    "\n";
+    static const char *blocks_nested =
+    "struct S\n"
+    "{\n"
+    "	lowp mat3 a;\n"
+    "	mediump ivec2 b[4];\n"
+    "	highp vec4 c;\n"
+    "};\n"
+    "struct T\n"
+    "{\n"
+    "	mediump uint a; // unused in both shaders\n"
+    "	S b;\n"
+    "	bvec4 c;\n"
+    "};\n"
+    "layout(std140) uniform BlockA\n"
+    "{\n"
+    "	highp float a;\n"
+    "	S b;\n"
+    "	lowp uvec3 c; // unused in both shaders\n"
+    "} blockA;\n"
+    "layout(std140) uniform BlockB\n"
+    "{\n"
+    "	mediump mat2 a;\n"
+    "	T b;\n"
+    "	bvec4 c; // unused in both shaders\n"
+    "	bool d;\n"
+    "} blockB;\n"
+    "\n"
+    "\n";
+    static const char *main_nested =
+    "void main (void)\n"
+    "{\n"
+    "    gl_Position = a_position;\n"
+    "    mediump float result = 1.0;\n"
+    "	result *= compare_float(blockA.a, 2.0);\n"
+    "	result *= compare_mat3(blockA.b.a, mat3(0.0, 6.0, 5.0, -6.0, 5.0, 5.0, 8.0, 0.0, -2.0));\n"
+    "	result *= compare_ivec2(blockA.b.b[0], ivec2(0, 2));\n"
+    "	result *= compare_ivec2(blockA.b.b[1], ivec2(9, -1));\n"
+    "	result *= compare_ivec2(blockA.b.b[2], ivec2(-4, -9));\n"
+    "	result *= compare_ivec2(blockA.b.b[3], ivec2(6, 2));\n"
+    "	result *= compare_vec4(blockA.b.c, vec4(-8.0, -2.0, 3.0, 7.0));\n"
+    "	result *= compare_mat2(blockB.a, mat2(3.0, -7.0, -8.0, -4.0));\n"
+    "	result *= compare_mat3(blockB.b.b.a, mat3(5.0, 1.0, 2.0, -2.0, -9.0, -8.0, 8.0, 0.0, 1.0));\n"
+    "	result *= compare_ivec2(blockB.b.b.b[0], ivec2(-7, 4));\n"
+    "	result *= compare_ivec2(blockB.b.b.b[1], ivec2(6, 1));\n"
+    "	result *= compare_ivec2(blockB.b.b.b[2], ivec2(-4, 4));\n"
+    "	result *= compare_ivec2(blockB.b.b.b[3], ivec2(9, -5));\n"
+    "	result *= compare_vec4(blockB.b.b.c, vec4(-3.0, -5.0, 9.0, 2.0));\n"
+    "	result *= compare_bvec4(blockB.b.c, bvec4(false, true, true, false));\n"
+    "	result *= compare_bool(blockB.d, false);\n"
+    "    v_vtxResult = result;\n"
+    "}\n";
+    static const char *fs_tail =
+    "struct S\n"
+    "{\n"
+    "	lowp mat3 a;\n"
+    "	mediump ivec2 b[4];\n"
+    "	highp vec4 c;\n"
+    "};\n"
+    "struct T\n"
+    "{\n"
+    "	mediump uint a; // unused in both shaders\n"
+    "	S b;\n"
+    "	bvec4 c;\n"
+    "};\n"
+    "layout(std140) uniform BlockA\n"
+    "{\n"
+    "	highp float a;\n"
+    "	S b;\n"
+    "	lowp uvec3 c; // unused in both shaders\n"
+    "} blockA;\n"
+    "layout(std140) uniform BlockB\n"
+    "{\n"
+    "	mediump mat2 a;\n"
+    "	T b;\n"
+    "	bvec4 c; // unused in both shaders\n"
+    "	bool d;\n"
+    "} blockB;\n"
+    "\n"
+    "mediump float compare_float    (highp float a, highp float b)  { return abs(a - b) < 0.05 ? 1.0 : 0.0; }\n"
+    "mediump float compare_vec2     (highp vec2 a, highp vec2 b)    { return compare_float(a.x, b.x)*compare_float(a.y, b.y); }\n"
+    "mediump float compare_vec3     (highp vec3 a, highp vec3 b)    { return compare_float(a.x, b.x)*compare_float(a.y, b.y)*compare_float(a.z, b.z); }\n"
+    "mediump float compare_vec4     (highp vec4 a, highp vec4 b)    { return compare_float(a.x, b.x)*compare_float(a.y, b.y)*compare_float(a.z, b.z)*compare_float(a.w, b.w); }\n"
+    "mediump float compare_mat2     (highp mat2 a, highp mat2 b)    { return compare_vec2(a[0], b[0])*compare_vec2(a[1], b[1]); }\n"
+    "mediump float compare_mat2x3   (highp mat2x3 a, highp mat2x3 b){ return compare_vec3(a[0], b[0])*compare_vec3(a[1], b[1]); }\n"
+    "mediump float compare_mat2x4   (highp mat2x4 a, highp mat2x4 b){ return compare_vec4(a[0], b[0])*compare_vec4(a[1], b[1]); }\n"
+    "mediump float compare_mat3x2   (highp mat3x2 a, highp mat3x2 b){ return compare_vec2(a[0], b[0])*compare_vec2(a[1], b[1])*compare_vec2(a[2], b[2]); }\n"
+    "mediump float compare_mat3     (highp mat3 a, highp mat3 b)    { return compare_vec3(a[0], b[0])*compare_vec3(a[1], b[1])*compare_vec3(a[2], b[2]); }\n"
+    "mediump float compare_mat3x4   (highp mat3x4 a, highp mat3x4 b){ return compare_vec4(a[0], b[0])*compare_vec4(a[1], b[1])*compare_vec4(a[2], b[2]); }\n"
+    "mediump float compare_mat4x2   (highp mat4x2 a, highp mat4x2 b){ return compare_vec2(a[0], b[0])*compare_vec2(a[1], b[1])*compare_vec2(a[2], b[2])*compare_vec2(a[3], b[3]); }\n"
+    "mediump float compare_mat4x3   (highp mat4x3 a, highp mat4x3 b){ return compare_vec3(a[0], b[0])*compare_vec3(a[1], b[1])*compare_vec3(a[2], b[2])*compare_vec3(a[3], b[3]); }\n"
+    "mediump float compare_mat4     (highp mat4 a, highp mat4 b)    { return compare_vec4(a[0], b[0])*compare_vec4(a[1], b[1])*compare_vec4(a[2], b[2])*compare_vec4(a[3], b[3]); }\n"
+    "mediump float compare_int      (highp int a, highp int b)      { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_ivec2    (highp ivec2 a, highp ivec2 b)  { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_ivec3    (highp ivec3 a, highp ivec3 b)  { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_ivec4    (highp ivec4 a, highp ivec4 b)  { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_uint     (highp uint a, highp uint b)    { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_uvec2    (highp uvec2 a, highp uvec2 b)  { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_uvec3    (highp uvec3 a, highp uvec3 b)  { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_uvec4    (highp uvec4 a, highp uvec4 b)  { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_bool     (bool a, bool b)                { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_bvec2    (bvec2 a, bvec2 b)              { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_bvec3    (bvec3 a, bvec3 b)              { return a == b ? 1.0 : 0.0; }\n"
+    "mediump float compare_bvec4    (bvec4 a, bvec4 b)              { return a == b ? 1.0 : 0.0; }\n"
+    "\n"
+    "void main (void)\n"
+    "{\n"
+    "    mediump float result = 1.0;\n"
+    "	result *= compare_float(blockA.a, 2.0);\n"
+    "	result *= compare_mat3(blockA.b.a, mat3(0.0, 6.0, 5.0, -6.0, 5.0, 5.0, 8.0, 0.0, -2.0));\n"
+    "	result *= compare_ivec2(blockA.b.b[0], ivec2(0, 2));\n"
+    "	result *= compare_ivec2(blockA.b.b[1], ivec2(9, -1));\n"
+    "	result *= compare_ivec2(blockA.b.b[2], ivec2(-4, -9));\n"
+    "	result *= compare_ivec2(blockA.b.b[3], ivec2(6, 2));\n"
+    "	result *= compare_vec4(blockA.b.c, vec4(-8.0, -2.0, 3.0, 7.0));\n"
+    "	result *= compare_mat2(blockB.a, mat2(3.0, -7.0, -8.0, -4.0));\n"
+    "	result *= compare_mat3(blockB.b.b.a, mat3(5.0, 1.0, 2.0, -2.0, -9.0, -8.0, 8.0, 0.0, 1.0));\n"
+    "	result *= compare_ivec2(blockB.b.b.b[0], ivec2(-7, 4));\n"
+    "	result *= compare_ivec2(blockB.b.b.b[1], ivec2(6, 1));\n"
+    "	result *= compare_ivec2(blockB.b.b.b[2], ivec2(-4, 4));\n"
+    "	result *= compare_ivec2(blockB.b.b.b[3], ivec2(9, -5));\n"
+    "	result *= compare_vec4(blockB.b.b.c, vec4(-3.0, -5.0, 9.0, 2.0));\n"
+    "	result *= compare_bvec4(blockB.b.c, bvec4(false, true, true, false));\n"
+    "	result *= compare_bool(blockB.d, false);\n"
+    "    dEQP_FragColor = vec4(1.0, v_vtxResult, result, 1.0);\n"
+    "}\n";
+    static const char *vs_min =
+        "#version 330\n"
+        "in highp vec4 a_position;\n"
+        "out mediump float v_vtxResult;\n"
+        "layout(std140) uniform BlockA { highp float a; };\n"
+        "layout(std140) uniform BlockB { highp float b; };\n"
+        "float helper(float x) { return a + b + x; }\n"
+        "void main()\n"
+        "{\n"
+        "    gl_Position = a_position;\n"
+        "    v_vtxResult = helper(a) > 0.5 ? 1.0 : 0.0;\n"
+        "}\n";
+    static const char *vs_no_fn =
+        "#version 330\n"
+        "in highp vec4 a_position;\n"
+        "out mediump float v_vtxResult;\n"
+    "struct S\n"
+    "{\n"
+    "	lowp mat3 a;\n"
+    "	mediump ivec2 b[4];\n"
+    "	highp vec4 c;\n"
+    "};\n"
+    "struct T\n"
+    "{\n"
+    "	mediump uint a; // unused in both shaders\n"
+    "	S b;\n"
+    "	bvec4 c;\n"
+    "};\n"
+    "layout(std140) uniform BlockA\n"
+    "{\n"
+    "	highp float a;\n"
+    "	S b;\n"
+    "	lowp uvec3 c; // unused in both shaders\n"
+    "} blockA;\n"
+    "layout(std140) uniform BlockB\n"
+    "{\n"
+    "	mediump mat2 a;\n"
+    "	T b;\n"
+    "	bvec4 c; // unused in both shaders\n"
+    "	bool d;\n"
+    "} blockB;\n"
+    "\n"
+    "\n"
+        "void main (void)\n"
+        "{\n"
+        "    gl_Position = a_position;\n"
+        "    float result = 1.0;\n"
+        "    result *= float(blockA.b.a[1].y == blockA.b.a[1].y);\n"
+        "    result *= float(blockA.b.b[1].y == blockA.b.b[1].y);\n"
+        "    result *= float(blockB.b.b.a[1].y == blockB.b.b.a[1].y);\n"
+        "    v_vtxResult = result;\n"
+        "}\n";
+    static const char *fs_min =
+        "#version 330\n"
+        "in mediump float v_vtxResult;\n"
+        "layout(location = 0) out mediump vec4 dEQP_FragColor;\n"
+        "void main (void)\n"
+        "{\n"
+        "    dEQP_FragColor = vec4(1.0, v_vtxResult, 1.0, 1.0);\n"
+        "}\n";
+    static char buf[16384];
+    switch (v) {
+    case 0: vs = vs_full; fs = fs_full; break;
+    case 1: vs = vs_full; fs = fs_min; break;
+    case 2: vs = vs_min;  fs = fs_full; break;
+    case 3:
+        snprintf(buf, sizeof(buf),
+                 "#version 330\n"
+                 "in highp vec4 a_position;\n"
+                 "out mediump float v_vtxResult;\n"
+                 "%s"
+                 "layout(std140) uniform BlockA { highp float a; };\n"
+                 "layout(std140) uniform BlockB { highp float b; };\n"
+                 "void main (void)\n"
+                 "{\n"
+                 "    gl_Position = a_position;\n"
+                 "    float result = compare_float(a, 2.0) * compare_float(b, 1.0);\n"
+                 "    v_vtxResult = result;\n"
+                 "}\n",
+                 preamble);
+        vs = buf;
+        fs = fs_min;
+        break;
+    case 4: vs = vs_no_fn; fs = fs_min; break;
+    case 5:
+        snprintf(buf, sizeof(buf),
+                 "#version 330\n"
+                 "in highp vec4 a_position;\n"
+                 "out mediump float v_vtxResult;\n"
+                 "%s"
+                 "layout(std140) uniform BlockA { highp float a; };\n"
+                 "void main (void)\n"
+                 "{\n"
+                 "    gl_Position = a_position;\n"
+                 "    float result = compare_float(a, 2.0);\n"
+                 "    v_vtxResult = result;\n"
+                 "}\n",
+                 preamble);
+        vs = buf;
+        fs = fs_min;
+        break;
+    case 6: /* two flat blocks, no helpers, no nesting */
+        vs = "#version 330\n"
+             "in highp vec4 a_position;\n"
+             "out mediump float v_vtxResult;\n"
+             "layout(std140) uniform BlockA { highp float a; };\n"
+             "layout(std140) uniform BlockB { highp float b; };\n"
+             "void main (void)\n"
+             "{\n"
+             "    gl_Position = a_position;\n"
+             "    v_vtxResult = a + b;\n"
+             "}\n";
+        fs = fs_min;
+        break;
+    case 7: /* one nested block only, no helpers */
+        vs = "#version 330\n"
+             "in highp vec4 a_position;\n"
+             "out mediump float v_vtxResult;\n"
+             "struct S\n"
+             "{\n"
+             "    lowp mat3 a;\n"
+             "    mediump ivec2 b[4];\n"
+             "    highp vec4 c;\n"
+             "};\n"
+             "layout(std140) uniform BlockA\n"
+             "{\n"
+             "    highp float a;\n"
+             "    S b;\n"
+             "};\n"
+             "void main (void)\n"
+             "{\n"
+             "    gl_Position = a_position;\n"
+             "    v_vtxResult = b.a[1].y == b.a[1].y ? 1.0 : 0.0;\n"
+             "}\n";
+        fs = fs_min;
+        break;
+    case 8: /* one nested block with instance name, no helpers */
+        vs = "#version 330\n"
+             "in highp vec4 a_position;\n"
+             "out mediump float v_vtxResult;\n"
+             "struct S\n"
+             "{\n"
+             "    lowp mat3 a;\n"
+             "    mediump ivec2 b[4];\n"
+             "    highp vec4 c;\n"
+             "};\n"
+             "layout(std140) uniform BlockA\n"
+             "{\n"
+             "    highp float a;\n"
+             "    S b;\n"
+             "} blockA;\n"
+             "void main (void)\n"
+             "{\n"
+             "    gl_Position = a_position;\n"
+             "    v_vtxResult = blockA.b.a[1].y == blockA.b.a[1].y ? 1.0 : 0.0;\n"
+             "}\n";
+        fs = fs_min;
+        break;
+    case 9: /* preamble helpers + one nested block (instance name) */
+        vs = "#version 330\n"
+             "in highp vec4 a_position;\n"
+             "out mediump float v_vtxResult;\n"
+             "struct S\n"
+             "{\n"
+             "    lowp mat3 a;\n"
+             "    mediump ivec2 b[4];\n"
+             "    highp vec4 c;\n"
+             "};\n"
+             "layout(std140) uniform BlockA\n"
+             "{\n"
+             "    highp float a;\n"
+             "    S b;\n"
+             "} blockA;\n"
+             "void main (void)\n"
+             "{\n"
+             "    gl_Position = a_position;\n"
+             "    float result = compare_float(a, 2.0) *\n"
+             "                   compare_float(blockA.b.a[1].y, 1.0);\n"
+             "    v_vtxResult = result;\n"
+             "}\n";
+        fs = fs_min;
+        break;
+    case 10: /* preamble + nested BlockA + flat BlockB (two symbols) */
+        vs = "#version 330\n"
+             "in highp vec4 a_position;\n"
+             "out mediump float v_vtxResult;\n"
+             "struct S\n"
+             "{\n"
+             "    lowp mat3 a;\n"
+             "    mediump ivec2 b[4];\n"
+             "    highp vec4 c;\n"
+             "};\n"
+             "layout(std140) uniform BlockA\n"
+             "{\n"
+             "    highp float a;\n"
+             "    S b;\n"
+             "} blockA;\n"
+             "layout(std140) uniform BlockB\n"
+             "{\n"
+             "    highp float b;\n"
+             "} blockB;\n"
+             "void main (void)\n"
+             "{\n"
+             "    gl_Position = a_position;\n"
+             "    float result = compare_float(a, 2.0) *\n"
+             "                   compare_float(blockB.b, 1.0) *\n"
+             "                   compare_float(blockA.b.a[1].y, 1.0);\n"
+             "    v_vtxResult = result;\n"
+             "}\n";
+        fs = fs_min;
+        break;
+    case 12: /* preamble + nested blocks + full CTS main body */
+        snprintf(buf, sizeof(buf),
+                 "#version 330\n"
+                 "in highp vec4 a_position;\n"
+                 "out mediump float v_vtxResult;\n"
+                 "%s%s%s",
+                 preamble, blocks_nested, main_nested);
+        vs = buf;
+        fs = fs_min;
+        break;
+    case 13: /* preamble + nested blocks, main without mat3 compare calls */
+        snprintf(buf, sizeof(buf),
+                 "#version 330\n"
+                 "in highp vec4 a_position;\n"
+                 "out mediump float v_vtxResult;\n"
+                 "%s%s"
+                 "void main (void)\n"
+                 "{\n"
+                 "    gl_Position = a_position;\n"
+                 "    float result = 1.0;\n"
+                 "    result *= compare_float(blockA.a, 2.0);\n"
+                 "    result *= compare_ivec2(blockA.b.b[0], ivec2(0, 2));\n"
+                 "    result *= compare_vec4(blockA.b.c, vec4(-8.0, -2.0, 3.0, 7.0));\n"
+                 "    result *= compare_uvec3(blockA.c, uvec3(3u, 1u, 4u));\n"
+                 "    result *= compare_mat2(blockB.a, mat2(3.0, -7.0, -8.0, -4.0));\n"
+                 "    result *= compare_uint(blockB.b.a, 7u);\n"
+                 "    result *= compare_ivec2(blockB.b.b.b[0], ivec2(-7, 4));\n"
+                 "    result *= compare_vec4(blockB.b.b.c, vec4(-3.0, -5.0, 9.0, 2.0));\n"
+                 "    result *= compare_bvec4(blockB.b.c, bvec4(false, true, true, false));\n"
+                 "    result *= compare_bool(blockB.d, false);\n"
+                 "    v_vtxResult = result;\n"
+                 "}\n",
+                 preamble, blocks_nested);
+        vs = buf;
+        fs = fs_min;
+        break;
+    case 14: /* preamble + nested blocks, only the block-loaded mat3 compare */
+        snprintf(buf, sizeof(buf),
+                 "#version 330\n"
+                 "in highp vec4 a_position;\n"
+                 "out mediump float v_vtxResult;\n"
+                 "%s%s"
+                 "void main (void)\n"
+                 "{\n"
+                 "    gl_Position = a_position;\n"
+                 "    float result = compare_mat3(blockA.b.a,\n"
+                 "                                mat3(0.0, 6.0, 5.0, -6.0, 5.0, 5.0,\n"
+                 "                                     8.0, 0.0, -2.0));\n"
+                 "    v_vtxResult = result;\n"
+                 "}\n",
+                 preamble, blocks_nested);
+        vs = buf;
+        fs = fs_min;
+        break;
+    case 15: /* only BlockB double-nested member compares */
+        snprintf(buf, sizeof(buf),
+                 "#version 330\n"
+                 "in highp vec4 a_position;\n"
+                 "out mediump float v_vtxResult;\n"
+                 "%s%s"
+                 "void main (void)\n"
+                 "{\n"
+                 "    gl_Position = a_position;\n"
+                 "    float result = 1.0;\n"
+                 "    result *= compare_uint(blockB.b.a, 7u);\n"
+                 "    result *= compare_mat3(blockB.b.b.a, mat3(5.0, 1.0, 2.0, -2.0, -9.0, -8.0, 8.0, 0.0, 1.0));\n"
+                 "    result *= compare_ivec2(blockB.b.b.b[0], ivec2(-7, 4));\n"
+                 "    result *= compare_vec4(blockB.b.b.c, vec4(-3.0, -5.0, 9.0, 2.0));\n"
+                 "    result *= compare_bvec4(blockB.b.c, bvec4(false, true, true, false));\n"
+                 "    result *= compare_bool(blockB.d, false);\n"
+                 "    v_vtxResult = result;\n"
+                 "}\n",
+                 preamble, blocks_nested);
+        vs = buf;
+        fs = fs_min;
+        break;
+    case 16: /* only BlockA member compares */
+        snprintf(buf, sizeof(buf),
+                 "#version 330\n"
+                 "in highp vec4 a_position;\n"
+                 "out mediump float v_vtxResult;\n"
+                 "%s%s"
+                 "void main (void)\n"
+                 "{\n"
+                 "    gl_Position = a_position;\n"
+                 "    float result = 1.0;\n"
+                 "    result *= compare_float(blockA.a, 2.0);\n"
+                 "    result *= compare_mat3(blockA.b.a, mat3(0.0, 6.0, 5.0, -6.0, 5.0, 5.0, 8.0, 0.0, -2.0));\n"
+                 "    result *= compare_ivec2(blockA.b.b[0], ivec2(0, 2));\n"
+                 "    result *= compare_vec4(blockA.b.c, vec4(-8.0, -2.0, 3.0, 7.0));\n"
+                 "    result *= compare_uvec3(blockA.c, uvec3(3u, 1u, 4u));\n"
+                 "    v_vtxResult = result;\n"
+                 "}\n",
+                 preamble, blocks_nested);
+        vs = buf;
+        fs = fs_min;
+        break;
+    case 17: /* one step into T: uint */
+        snprintf(buf, sizeof(buf),
+                 "#version 330\n"
+                 "in highp vec4 a_position;\n"
+                 "out mediump float v_vtxResult;\n"
+                 "%s%s"
+                 "void main (void)\n"
+                 "{\n"
+                 "    gl_Position = a_position;\n"
+                 "    float result = compare_uint(blockB.b.a, 7u);\n"
+                 "    v_vtxResult = result;\n"
+                 "}\n",
+                 preamble, blocks_nested);
+        vs = buf;
+        fs = fs_min;
+        break;
+    case 18: /* two steps: T.b -> S, read mat3 */
+        snprintf(buf, sizeof(buf),
+                 "#version 330\n"
+                 "in highp vec4 a_position;\n"
+                 "out mediump float v_vtxResult;\n"
+                 "%s%s"
+                 "void main (void)\n"
+                 "{\n"
+                 "    gl_Position = a_position;\n"
+                 "    float result = compare_mat3(blockB.b.b.a,\n"
+                 "        mat3(5.0, 1.0, 2.0, -2.0, -9.0, -8.0, 8.0, 0.0, 1.0));\n"
+                 "    v_vtxResult = result;\n"
+                 "}\n",
+                 preamble, blocks_nested);
+        vs = buf;
+        fs = fs_min;
+        break;
+    case 19: /* two steps: S.b ivec2 array element */
+        snprintf(buf, sizeof(buf),
+                 "#version 330\n"
+                 "in highp vec4 a_position;\n"
+                 "out mediump float v_vtxResult;\n"
+                 "%s%s"
+                 "void main (void)\n"
+                 "{\n"
+                 "    gl_Position = a_position;\n"
+                 "    float result = compare_ivec2(blockB.b.b.b[0], ivec2(-7, 4));\n"
+                 "    v_vtxResult = result;\n"
+                 "}\n",
+                 preamble, blocks_nested);
+        vs = buf;
+        fs = fs_min;
+        break;
+    case 20: /* two steps: S.c vec4 */
+        snprintf(buf, sizeof(buf),
+                 "#version 330\n"
+                 "in highp vec4 a_position;\n"
+                 "out mediump float v_vtxResult;\n"
+                 "%s%s"
+                 "void main (void)\n"
+                 "{\n"
+                 "    gl_Position = a_position;\n"
+                 "    float result = compare_vec4(blockB.b.b.c, vec4(-3.0, -5.0, 9.0, 2.0));\n"
+                 "    v_vtxResult = result;\n"
+                 "}\n",
+                 preamble, blocks_nested);
+        vs = buf;
+        fs = fs_min;
+        break;
+    case 21: /* only compare_bvec4 of T.c */
+        snprintf(buf, sizeof(buf),
+                 "#version 330\n"
+                 "in highp vec4 a_position;\n"
+                 "out mediump float v_vtxResult;\n"
+                 "%s%s"
+                 "void main (void)\n"
+                 "{\n"
+                 "    gl_Position = a_position;\n"
+                 "    float result = compare_bvec4(blockB.b.c, bvec4(false, true, true, false));\n"
+                 "    v_vtxResult = result;\n"
+                 "}\n",
+                 preamble, blocks_nested);
+        vs = buf;
+        fs = fs_min;
+        break;
+    case 22: /* only compare_bool of BlockB.d */
+        snprintf(buf, sizeof(buf),
+                 "#version 330\n"
+                 "in highp vec4 a_position;\n"
+                 "out mediump float v_vtxResult;\n"
+                 "%s%s"
+                 "void main (void)\n"
+                 "{\n"
+                 "    gl_Position = a_position;\n"
+                 "    float result = compare_bool(blockB.d, false);\n"
+                 "    v_vtxResult = result;\n"
+                 "}\n",
+                 preamble, blocks_nested);
+        vs = buf;
+        fs = fs_min;
+        break;
+    case 23: /* bvec4(T.c) + bool(d) + uint(T.a) */
+        snprintf(buf, sizeof(buf),
+                 "#version 330\n"
+                 "in highp vec4 a_position;\n"
+                 "out mediump float v_vtxResult;\n"
+                 "%s%s"
+                 "void main (void)\n"
+                 "{\n"
+                 "    gl_Position = a_position;\n"
+                 "    float result = compare_bvec4(blockB.b.c, bvec4(false, true, true, false));\n"
+                 "    result *= compare_bool(blockB.d, false);\n"
+                 "    result *= compare_uint(blockB.b.a, 7u);\n"
+                 "    v_vtxResult = result;\n"
+                 "}\n",
+                 preamble, blocks_nested);
+        vs = buf;
+        fs = fs_min;
+        break;
+    case 24: /* mat3(S.a) + ivec2(S.b[0]) + vec4(S.c) — S members only */
+        snprintf(buf, sizeof(buf),
+                 "#version 330\n"
+                 "in highp vec4 a_position;\n"
+                 "out mediump float v_vtxResult;\n"
+                 "%s%s"
+                 "void main (void)\n"
+                 "{\n"
+                 "    gl_Position = a_position;\n"
+                 "    float result = compare_mat3(blockB.b.b.a, mat3(5.0, 1.0, 2.0, -2.0, -9.0, -8.0, 8.0, 0.0, 1.0));\n"
+                 "    result *= compare_ivec2(blockB.b.b.b[0], ivec2(-7, 4));\n"
+                 "    result *= compare_vec4(blockB.b.b.c, vec4(-3.0, -5.0, 9.0, 2.0));\n"
+                 "    v_vtxResult = result;\n"
+                 "}\n",
+                 preamble, blocks_nested);
+        vs = buf;
+        fs = fs_min;
+        break;
+    case 25: /* bvec4 param, constant args only (no block read) */
+        snprintf(buf, sizeof(buf),
+                 "#version 330\n"
+                 "in highp vec4 a_position;\n"
+                 "out mediump float v_vtxResult;\n"
+                 "%s%s"
+                 "void main (void)\n"
+                 "{\n"
+                 "    float result = compare_bvec4(bvec4(true), bvec4(false, true, true, false));\n"
+                 "    v_vtxResult = result;\n"
+                 "}\n",
+                 preamble, blocks_nested);
+        vs = buf;
+        fs = fs_min;
+        break;
+    case 26: /* inline EQ on block-loaded bvec4, no helper call */
+        snprintf(buf, sizeof(buf),
+                 "#version 330\n"
+                 "in highp vec4 a_position;\n"
+                 "out mediump float v_vtxResult;\n"
+                 "%s%s"
+                 "void main (void)\n"
+                 "{\n"
+                 "    float result = blockB.b.c == bvec4(false, true, true, false) ? 1.0 : 0.0;\n"
+                 "    v_vtxResult = result;\n"
+                 "}\n",
+                 preamble, blocks_nested);
+        vs = buf;
+        fs = fs_min;
+        break;
+    case 27: /* bvec2 param */
+        snprintf(buf, sizeof(buf),
+                 "#version 330\n"
+                 "in highp vec4 a_position;\n"
+                 "out mediump float v_vtxResult;\n"
+                 "%s%s"
+                 "void main (void)\n"
+                 "{\n"
+                 "    float result = compare_bvec2(bvec2(true), bvec2(false, true));\n"
+                 "    v_vtxResult = result;\n"
+                 "}\n",
+                 preamble, blocks_nested);
+        vs = buf;
+        fs = fs_min;
+        break;
+    case 28: /* load + scalar extract only, no EQ */
+        snprintf(buf, sizeof(buf),
+                 "#version 330\n"
+                 "in highp vec4 a_position;\n"
+                 "out mediump float v_vtxResult;\n"
+                 "%s%s"
+                 "void main (void)\n"
+                 "{\n"
+                 "    gl_Position = a_position;\n"
+                 "    float result = blockB.b.c.x && blockB.b.c.y ? 1.0 : 0.0;\n"
+                 "    v_vtxResult = result;\n"
+                 "}\n",
+                 preamble, blocks_nested);
+        vs = buf;
+        fs = fs_min;
+        break;
+    case 29: /* load whole bvec4 into a local, no EQ */
+        snprintf(buf, sizeof(buf),
+                 "#version 330\n"
+                 "in highp vec4 a_position;\n"
+                 "out mediump float v_vtxResult;\n"
+                 "%s%s"
+                 "void main (void)\n"
+                 "{\n"
+                 "    gl_Position = a_position;\n"
+                 "    bvec4 c = blockB.b.c;\n"
+                 "    float result = c.x && c.y ? 1.0 : 0.0;\n"
+                 "    v_vtxResult = result;\n"
+                 "}\n",
+                 preamble, blocks_nested);
+        vs = buf;
+        fs = fs_min;
+        break;
+    case 30: /* EQ on a LOCAL bvec4 only */
+        snprintf(buf, sizeof(buf),
+                 "#version 330\n"
+                 "in highp vec4 a_position;\n"
+                 "out mediump float v_vtxResult;\n"
+                 "%s%s"
+                 "void main (void)\n"
+                 "{\n"
+                 "    gl_Position = a_position;\n"
+                 "    bvec4 c = bvec4(true, false, true, false);\n"
+                 "    float result = c == bvec4(true, false, true, false) ? 1.0 : 0.0;\n"
+                 "    v_vtxResult = result;\n"
+                 "}\n",
+                 preamble, blocks_nested);
+        vs = buf;
+        fs = fs_min;
+        break;
+    case 31: /* only uvec3 member compare */
+        snprintf(buf, sizeof(buf),
+                 "#version 330\n"
+                 "in highp vec4 a_position;\n"
+                 "out mediump float v_vtxResult;\n"
+                 "%s%s"
+                 "void main (void)\n"
+                 "{\n"
+                 "    gl_Position = a_position;\n"
+                 "    float result = compare_uvec3(blockA.c, uvec3(3u, 1u, 4u));\n"
+                 "    v_vtxResult = result;\n"
+                 "}\n",
+                 preamble, blocks_nested);
+        vs = buf;
+        fs = fs_min;
+        break;
+    case 32: /* only mat2 member compare */
+        snprintf(buf, sizeof(buf),
+                 "#version 330\n"
+                 "in highp vec4 a_position;\n"
+                 "out mediump float v_vtxResult;\n"
+                 "%s%s"
+                 "void main (void)\n"
+                 "{\n"
+                 "    gl_Position = a_position;\n"
+                 "    float result = compare_mat2(blockB.a, mat2(3.0, -7.0, -8.0, -4.0));\n"
+                 "    v_vtxResult = result;\n"
+                 "}\n",
+                 preamble, blocks_nested);
+        vs = buf;
+        fs = fs_min;
+        break;
+    case 40: {
+        /* Single-member compare: MGL_UBO_PSO_MEMBER selects the call. */
+        static const char *calls[] = {
+            "compare_float(blockA.a, 2.0)",
+            "compare_mat3(blockA.b.a, mat3(0.0, 6.0, 5.0, -6.0, 5.0, 5.0, 8.0, 0.0, -2.0))",
+            "compare_ivec2(blockA.b.b[0], ivec2(0, 2))",
+            "compare_ivec2(blockA.b.b[1], ivec2(9, -1))",
+            "compare_ivec2(blockA.b.b[2], ivec2(-4, -9))",
+            "compare_ivec2(blockA.b.b[3], ivec2(6, 2))",
+            "compare_vec4(blockA.b.c, vec4(-8.0, -2.0, 3.0, 7.0))",
+            "compare_mat2(blockB.a, mat2(3.0, -7.0, -8.0, -4.0))",
+            "compare_mat3(blockB.b.b.a, mat3(5.0, 1.0, 2.0, -2.0, -9.0, -8.0, 8.0, 0.0, 1.0))",
+            "compare_ivec2(blockB.b.b.b[0], ivec2(-7, 4))",
+            "compare_ivec2(blockB.b.b.b[1], ivec2(6, 1))",
+            "compare_ivec2(blockB.b.b.b[2], ivec2(-4, 4))",
+            "compare_ivec2(blockB.b.b.b[3], ivec2(9, -5))",
+            "compare_vec4(blockB.b.b.c, vec4(-3.0, -5.0, 9.0, 2.0))",
+            "compare_bvec4(blockB.b.c, bvec4(false, true, true, false))",
+            "compare_bool(blockB.d, false)",
+        };
+        int member = 0;
+        const char *m = getenv("MGL_UBO_PSO_MEMBER");
+        if (m) member = atoi(m);
+        if (member < 0 || member >= 16) member = 0;
+        snprintf(buf, sizeof(buf),
+                 "#version 330\n"
+                 "in highp vec4 a_position;\n"
+                 "out mediump float v_vtxResult;\n"
+                 "%s%s"
+                 "void main (void)\n"
+                 "{\n"
+                 "    gl_Position = a_position;\n"
+                 "    float result = %s;\n"
+                 "    v_vtxResult = result;\n"
+                 "}\n",
+                 preamble, blocks_nested, calls[member]);
+        vs = buf;
+        fs = fs_min;
+        fprintf(stderr, "air_ubo_pso_bisect: member %d = %s\n",
+                member, calls[member]);
+        break;
+    }
+    case 33: /* full VS + FS that outputs raw block values for inspection */
+        fs = "#version 330\n"
+             "in mediump float v_vtxResult;\n"
+             "layout(location = 0) out mediump vec4 dEQP_FragColor;\n"
+             "struct S\n"
+             "{\n"
+             "    lowp mat3 a;\n"
+             "    mediump ivec2 b[4];\n"
+             "    highp vec4 c;\n"
+             "};\n"
+             "struct T\n"
+             "{\n"
+             "    mediump uint a;\n"
+             "    S b;\n"
+             "    bvec4 c;\n"
+             "    bool d;\n"
+             "};\n"
+             "layout(std140) uniform BlockA\n"
+             "{\n"
+             "    highp float a;\n"
+             "    S b;\n"
+             "} blockA;\n"
+             "layout(std140) uniform BlockB\n"
+             "{\n"
+             "    mediump mat2 a;\n"
+             "    T b;\n"
+             "    bvec4 c;\n"
+             "    bool d;\n"
+             "} blockB;\n"
+             "void main (void)\n"
+             "{\n"
+             "    dEQP_FragColor = vec4(blockA.a / 2.0, blockB.b.a / 7.0,\n"
+             "                          float(blockB.b.c.x) , 1.0);\n"
+             "}\n";
+        vs = vs_min;
+        break;
+    default: vs = vs_full; fs = fs_full; break;
+    }
+    fprintf(stderr, "air_ubo_pso_bisect: variant %d\n", v);
+    if (getenv("MGL_UBO_PSO_DUMP")) {
+        FILE *f = fopen("/tmp/ub_vs_variant.glsl", "wb");
+        if (f) {
+            fwrite(vs, 1, strlen(vs), f);
+            fclose(f);
+        }
+    }
+
+    GLuint fbo, tex;
+    fbo = make_fbo(REG_W, REG_H, &tex);
+    if (!fbo) return 1;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    clear_color(0.0f, 0.0f, 0.0f);
+
+    GLuint prog = link_program(vs, fs);
+    if (!prog) {
+        fprintf(stderr, "air_ubo_pso_bisect: link failed (variant %d)\n", v);
+        return 2;
+    }
+    glUseProgram(prog);
+
+    if (getenv("MGL_UBO_PSO_DUMP")) {
+        static const GLenum kOffProp[] = { GL_OFFSET };
+        static const char *members[] = {
+            "blockA.a", "blockB.b.a", "blockB.b.c",
+        };
+        for (size_t mi = 0; mi < sizeof(members) / sizeof(members[0]); mi++) {
+            GLuint idx = glGetProgramResourceIndex(
+                prog, GL_BUFFER_VARIABLE, members[mi]);
+            GLint off = -1;
+            if (idx != GL_INVALID_INDEX) {
+                glGetProgramResourceiv(prog, GL_BUFFER_VARIABLE, idx, 1,
+                                       kOffProp, 1, NULL, &off);
+            }
+            fprintf(stderr, "air_ubo_pso_bisect: reflect %s idx=%u offset=%d\n",
+                    members[mi], idx, off);
+        }
+        for (int stage = 0; stage < 2; stage++) {
+            static const GLenum ifc[] = {
+                GL_VERTEX_SHADER, GL_FRAGMENT_SHADER
+            };
+            static const char *blocks[] = { "BlockA", "BlockB" };
+            for (size_t bi = 0; bi < 2; bi++) {
+                GLuint idx = glGetProgramResourceIndex(
+                    prog, GL_UNIFORM_BLOCK, blocks[bi]);
+                if (idx == GL_INVALID_INDEX) continue;
+                static const GLenum props[] = {
+                    GL_BUFFER_BINDING, GL_BUFFER_DATA_SIZE
+                };
+                GLint vals[2];
+                glGetProgramResourceiv(prog, GL_UNIFORM_BLOCK, idx, 2,
+                                       props, 2, NULL, vals);
+                fprintf(stderr,
+                        "air_ubo_pso_bisect: %s %s binding=%d size=%d\n",
+                        stage ? "FS" : "VS", blocks[bi], vals[0], vals[1]);
+            }
+        }
+    }
+
+    GLuint ubos[2];
+    glGenBuffers(2, ubos);
+    /* CTS reference values at the std140 offsets our reflection reports
+     * (BlockA 160B: a@0, b.a@16, b.b[4]@64, b.c@128, c@144;
+     *  BlockB 224B: a@0, b.a@32, b.b.a@48, b.b.b[4]@96, b.b.c@160,
+     *               b.c@176, d@208). */
+    /* Pack UBO blobs as raw uint32 words so int/uint/bvec fields get correct
+     * bit patterns (float[] breaks ivec2/uvec3/uint members). */
+    static const uint32_t blockA_words[40] = {
+        0x40000000u, 0u, 0u, 0u,                           /* a @0        */
+        0u, 0x40c00000u, 0x40a00000u, 0u,                 /* b.a col0    */
+        0xC0c00000u, 0x40a00000u, 0x40a00000u, 0u,        /* b.a col1    */
+        0x41000000u, 0u, 0xC0000000u, 0u,                 /* b.a col2    */
+        0u, 2u, 0u, 0u,                                   /* b.b[0] @64  */
+        9u, 0xFFFFFFFFu, 0u, 0u,                          /* b.b[1] @80  */
+        0xFFFFFFFCu, 0xFFFFFFF7u, 0u, 0u,                 /* b.b[2] @96  */
+        6u, 2u, 0u, 0u,                                    /* b.b[3] @112 */
+        0xC1000000u, 0xC0000000u, 0x40400000u, 0x40E00000u, /* b.c       */
+        3u, 1u, 4u, 0u,                                   /* c uvec3     */
+    };
+    static const uint32_t blockB_words[56] = {
+        0x40400000u, 0xC0E00000u, 0u, 0u,                 /* a mat2 col0 */
+        0xC1000000u, 0xC0800000u, 0u, 0u,                 /* a mat2 col1 */
+        7u, 0u, 0u, 0u,                                    /* b.a @32     */
+        0x40A00000u, 0x3F800000u, 0x40000000u, 0u,        /* b.b.a col0  */
+        0xC0000000u, 0xC1100000u, 0xC1000000u, 0u,        /* b.b.a col1  */
+        0x41000000u, 0u, 0x3F800000u, 0u,                  /* b.b.a col2  */
+        0xFFFFFFF9u, 4u, 0u, 0u,                          /* b.b.b[0]@96 */
+        6u, 1u, 0u, 0u,                                    /* b.b.b[1]@112*/
+        0xFFFFFFFCu, 4u, 0u, 0u,                          /* b.b.b[2]@128*/
+        9u, 0xFFFFFFFBu, 0u, 0u,                          /* b.b.b[3]@144*/
+        0xC0400000u, 0xC0A00000u, 0x41100000u, 0x40000000u, /* b.b.c     */
+        0u, 0x3F800000u, 0x3F800000u, 0u,                 /* b.c @176    */
+        0u, 0u, 0u, 0u,                                    /* d @208      */
+        0u, 0u, 0u, 0u,                                    /* pad to 224B */
+    };
+    glBindBuffer(GL_UNIFORM_BUFFER, ubos[0]);
+    glBufferData(GL_UNIFORM_BUFFER, sizeof(blockA_words), blockA_words,
+                 GL_STATIC_DRAW);
+    glBindBufferBase(GL_UNIFORM_BUFFER, 0, ubos[0]);
+    glBindBuffer(GL_UNIFORM_BUFFER, ubos[1]);
+    glBufferData(GL_UNIFORM_BUFFER, sizeof(blockB_words), blockB_words,
+                 GL_STATIC_DRAW);
+    glBindBufferBase(GL_UNIFORM_BUFFER, 1, ubos[1]);
+
+    if (getenv("MGL_UBO_PSO_DUMP")) {
+        fprintf(stderr, "air_ubo_pso_bisect: blockB cpu word@8=%u (b.a) word@44=%u (b.c.x)\n",
+                blockB_words[8], blockB_words[44]);
+        glBindBuffer(GL_UNIFORM_BUFFER, ubos[1]);
+        const uint32_t *gpu = (const uint32_t *)glMapBufferRange(
+            GL_UNIFORM_BUFFER, 0, sizeof(blockB_words), GL_MAP_READ_BIT);
+        if (gpu) {
+            fprintf(stderr,
+                    "air_ubo_pso_bisect: blockB gpu word@8=%u word@44=%u\n",
+                    gpu[8], gpu[44]);
+            glUnmapBuffer(GL_UNIFORM_BUFFER);
+        }
+    }
+
+    static const float verts[] = { -1.0f, -1.0f,  1.0f, -1.0f,  0.0f, 1.0f };
+    GLuint vao;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    GLuint vbo = make_vbo(verts, sizeof(verts));
+    glEnableVertexAttribArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+
+    int result = 0;
+    const unsigned char *px = pixels + (REG_H / 2 * REG_W + REG_W / 2) * 4;
+    fprintf(stderr, "air_ubo_pso_bisect: variant %d center pixel r=%u g=%u b=%u\n",
+            v, px[0], px[1], px[2]);
+    if (v == 33) {
+        /* Probe outputs float(blockB.b.c.x); reference b.c.x is false. */
+        if (px[0] < 128 || px[1] < 128 || px[2] >= 128) {
+            fprintf(stderr,
+                    "air_ubo_pso_bisect: variant 33 probe failed "
+                    "(r=%u g=%u b=%u)\n",
+                    px[0], px[1], px[2]);
+            result = 1;
+        }
+    } else if (px[0] < 128 || px[1] < 128 || px[2] < 128) {
+        fprintf(stderr,
+                "air_ubo_pso_bisect: variant %d compare failed (r=%u g=%u b=%u)\n",
+                v, px[0], px[1], px[2]);
+        result = 1;
+    }
+
+    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+    glDeleteBuffers(2, ubos);
+    glDeleteBuffers(1, &vbo);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(prog);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &tex);
+    return result;
+}
+
 /* GL 4.6 §7.7.2 / GLSL 4.60 §4.4.6 atomic-counter declaration and link
  * validation (CTS replicas: shader_atomic_counters negative-* cases and the
  * layout_location invalid compute case). */
@@ -14858,6 +16218,10 @@ static const TestCase TESTS[] = {
                     test_air_geometry_atomic_counter),
     SELF_CHECK_TEST("air_atomic_counter_validation",
                     test_air_atomic_counter_validation),
+    SELF_CHECK_TEST("air_ubo_multi_block_pso",
+                    test_air_ubo_multi_block_pso),
+    SELF_CHECK_TEST("air_ubo_pso_bisect",
+                    test_air_ubo_pso_bisect),
     SELF_CHECK_TEST("air_geometry_buffer_slot_conflict",
                     test_air_geometry_buffer_slot_conflict),
     SELF_CHECK_TEST("air_geometry_instancing", test_air_geometry_instancing),

@@ -4355,6 +4355,24 @@ Buffer *getIndirectBuffer(GLMContext ctx)
     }
 
     memset(mglRendererBufferContents(isolated), 0, requiredLength);
+    /* For UBOs, prefer the CPU shadow when present: the Metal backing may
+     * not yet reflect a recent glBufferData before the first draw bind. */
+    if (map->resource_type == _UNIFORM_BUFFER_RES &&
+        map->buf && map->buf->data.buffer_data && map->offset >= 0) {
+        size_t copyLength = mglBufferMapAvailableBackingBytes(
+            map, (size_t)map->buf->size);
+        if (copyLength > requiredLength) {
+            copyLength = requiredLength;
+        }
+        if (copyLength > 0) {
+            memcpy(mglRendererBufferContents(isolated),
+                   ((const uint8_t *)(uintptr_t)map->buf->data.buffer_data) +
+                       (size_t)map->offset,
+                   copyLength);
+            return isolated;
+        }
+    }
+
     if (!source || map->offset < 0 || !mglRendererBufferContents(source)) {
         return isolated;
     }
