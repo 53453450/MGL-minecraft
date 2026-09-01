@@ -509,6 +509,22 @@ static MGLIRType *ir_type_clone(const MGLIRType *src)
                 return NULL;
             }
         }
+        if (src->member_offsets && src->member_count > 0) {
+            t->member_offsets =
+                (uint32_t *)calloc(src->member_count, sizeof(uint32_t));
+            if (!t->member_offsets) {
+                for (uint32_t j = 0; j < src->member_count; j++) {
+                    mglIRTypeDestroy(t->members[j]);
+                    free(t->member_names[j]);
+                }
+                free(t->member_names);
+                free(t->members);
+                free(t);
+                return NULL;
+            }
+            memcpy(t->member_offsets, src->member_offsets,
+                   src->member_count * sizeof(uint32_t));
+        }
         break;
     }
     default:
@@ -520,17 +536,47 @@ static MGLIRType *ir_type_clone(const MGLIRType *src)
 static MGLIRType *resolve_type_spec(Sema *s, SymTab *tab, const MGLTypeSpec *ts);
 static int builtin_type_spec(const char *name, MGLTypeSpec *ts);
 
-/* Resolve a single declarator (type + array dims) into an IR type. */
-static MGLIRType *resolve_decl_type(Sema *s, SymTab *tab, const MGLDecl *d)
+/* Apply block/member matrix major to every matrix in a (possibly nested)
+ * type tree.  Named struct types are cloned per use, so mutating the
+ * clone does not affect other blocks that share the same struct name. */
+static void apply_matrix_major(MGLIRType *t, uint32_t major)
+{
+    if (!t || (major != MGL_AST_MATRIX_ROW_MAJOR &&
+               major != MGL_AST_MATRIX_COL_MAJOR)) {
+        return;
+    }
+    switch (t->kind) {
+    case MGLIR_TYPE_MATRIX:
+        t->row_major = (major == MGL_AST_MATRIX_ROW_MAJOR) ? 1u : 0u;
+        break;
+    case MGLIR_TYPE_ARRAY:
+        apply_matrix_major(t->elem_type, major);
+        break;
+    case MGLIR_TYPE_STRUCT:
+        for (uint32_t i = 0; i < t->member_count; i++) {
+            apply_matrix_major(t->members[i], major);
+        }
+        break;
+    default:
+        break;
+    }
+}
+
+/* Resolve a single declarator (type + array dims) into an IR type.
+ * `inherited_major` is the enclosing block/struct default
+ * (MGL_AST_MATRIX_*), overridden by an explicit member layout. */
+static MGLIRType *resolve_decl_type_major(Sema *s, SymTab *tab,
+                                          const MGLDecl *d,
+                                          uint32_t inherited_major)
 {
     MGLIRType *t = resolve_type_spec(s, tab, d->type);
     if (!t) {
         return NULL;
     }
-    if (d->matrix_major == MGL_AST_MATRIX_ROW_MAJOR &&
-        t->kind == MGLIR_TYPE_MATRIX) {
-        t->row_major = 1;
-    }
+    uint32_t major = d->matrix_major;
+    if (major == MGL_AST_MATRIX_DEFAULT)
+        major = inherited_major;
+    apply_matrix_major(t, major);
     for (uint32_t i = d->array_count; i > 0; i--) {
         uint32_t sz = d->array_dims[i - 1];
         MGLIRType *arr = mglIRTypeArray(t, sz);
@@ -541,6 +587,11 @@ static MGLIRType *resolve_decl_type(Sema *s, SymTab *tab, const MGLDecl *d)
         t = arr;
     }
     return t;
+}
+
+static MGLIRType *resolve_decl_type(Sema *s, SymTab *tab, const MGLDecl *d)
+{
+    return resolve_decl_type_major(s, tab, d, MGL_AST_MATRIX_DEFAULT);
 }
 
 static MGLIRType *resolve_type_spec(Sema *s, SymTab *tab, const MGLTypeSpec *ts)
@@ -2598,7 +2649,11 @@ int mglGLSLSemanticCheck(const MGLTranslationUnit *tu, int stage,
                     int ok = 1;
                     for (uint32_t j = 0; j < n; j++) {
                         MGLDecl *m = d->struct_members[j];
-                        members[j] = resolve_decl_type(&s, &tab, m);
+                        /* Block-level layout(row_major) is the default for
+                         * matrix members (GLSL 4.60 §4.4.5); an explicit
+                         * member layout overrides via resolve_decl_type_major. */
+                        members[j] = resolve_decl_type_major(
+                            &s, &tab, m, d->matrix_major);
                         names[j] = m->name;
                         if (!members[j]) {
                             ok = 0;

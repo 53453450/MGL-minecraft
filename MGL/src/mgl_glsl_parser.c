@@ -1489,7 +1489,7 @@ more_qualifiers:
                 d->layout = MGL_AST_LAYOUT_PACKED;
             } else if (n == 9 && memcmp(s, "row_major", 9) == 0) {
                 d->matrix_major = MGL_AST_MATRIX_ROW_MAJOR;
-            } else if (n == 11 && memcmp(s, "column_major", 11) == 0) {
+            } else if (n == 12 && memcmp(s, "column_major", 12) == 0) {
                 d->matrix_major = MGL_AST_MATRIX_COL_MAJOR;
             } else if (n == 8 && memcmp(s, "isolines", 8) == 0) {
                 d->layout_primitive = MGL_AST_TES_ISOLINES;
