@@ -390,11 +390,17 @@ static int parse_opaque_name(const char *name, size_t n, int is_sampler,
         return -1;
     }
     int dims = 0;
+    int is_rect = 0;
     /* Optional '2D'|'3D'|'Cube'|'1D' */
     if (len >= 2 && (p[0] == '2' && p[1] == 'D')) {
         dims = 2;
         p += 2;
         len -= 2;
+        if (len >= 4 && memcmp(p, "Rect", 4) == 0) {
+            is_rect = 1;
+            p += 4;
+            len -= 4;
+        }
     } else if (len >= 2 && (p[0] == '3' && p[1] == 'D')) {
         dims = 3;
         p += 2;
@@ -431,8 +437,10 @@ static int parse_opaque_name(const char *name, size_t n, int is_sampler,
     }
     switch (dims) {
     case 1:  *kind = is_array ? MGLIR_TEX_1D_ARRAY : MGLIR_TEX_1D; break;
-    case 2:  *kind = is_array ? MGLIR_TEX_2D_ARRAY
-                               : (is_ms ? MGLIR_TEX_2D_MS : MGLIR_TEX_2D); break;
+    case 2:  *kind = is_rect ? MGLIR_TEX_2D_RECT
+                              : (is_array ? MGLIR_TEX_2D_ARRAY
+                                          : (is_ms ? MGLIR_TEX_2D_MS
+                                                   : MGLIR_TEX_2D)); break;
     case 3:  *kind = MGLIR_TEX_3D; break;
     case 4:  *kind = is_array ? MGLIR_TEX_CUBE_ARRAY : MGLIR_TEX_CUBE; break;
     case 5:  *kind = MGLIR_TEX_BUFFER; break;
@@ -1017,12 +1025,18 @@ typedef enum {
     BI_ARG_MAT4,    /* mat4 */
     BI_ARG_S2D,     /* sampler2D */
     BI_ARG_S2DA,    /* sampler2DArray */
+    BI_ARG_S1D,     /* sampler1D */
+    BI_ARG_S1DA,    /* sampler1DArray */
+    BI_ARG_SRECT,   /* sampler2DRect */
     BI_ARG_S3D,     /* sampler3D */
     BI_ARG_SCUBE,   /* samplerCube */
+    BI_ARG_S2DMS,   /* sampler2DMS */
+    BI_ARG_S2DMSA,  /* sampler2DMSArray */
     BI_ARG_SBUF,      /* samplerBuffer */
     BI_ARG_I2D,       /* image2D */
     BI_ARG_I2DA_INT,  /* iimage2DArray */
     BI_ARG_I2DA_UINT, /* uimage2DArray */
+    BI_ARG_IVEC2,     /* ivec2 */
     BI_ARG_IVEC3,     /* ivec3 */
     BI_ARG_IVEC4,     /* ivec4 */
     BI_ARG_UVEC4,     /* uvec4 */
@@ -1061,6 +1075,15 @@ static const BiFn kBuiltins[] = {
     { "texture",    3, { BI_ARG_S3D,   BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_SAMP },
     { "texture",    3, { BI_ARG_SCUBE, BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_SAMP },
     { "texture",    2, { BI_ARG_S2D,   BI_ARG_VEC2 }, BI_RET_SAMP },
+    { "texture",    2, { BI_ARG_S1D,   BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "texture",    3, { BI_ARG_S1D,   BI_ARG_FLOAT, BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "texture",    2, { BI_ARG_S1DA,  BI_ARG_VEC2 }, BI_RET_SAMP },
+    { "texture",    3, { BI_ARG_S1DA,  BI_ARG_VEC2, BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "texture",    2, { BI_ARG_S2DA,  BI_ARG_VEC3 }, BI_RET_SAMP },
+    { "texture",    3, { BI_ARG_S2DA,  BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "texture",    2, { BI_ARG_SRECT, BI_ARG_VEC2 }, BI_RET_SAMP },
+    { "texture",    2, { BI_ARG_S2DMS, BI_ARG_VEC2 }, BI_RET_SAMP },
+    { "texture",    2, { BI_ARG_S2DMSA, BI_ARG_VEC3 }, BI_RET_SAMP },
     { "texture",    2, { BI_ARG_S3D,   BI_ARG_VEC3 }, BI_RET_SAMP },
     { "texture",    2, { BI_ARG_SCUBE, BI_ARG_VEC3 }, BI_RET_SAMP },
     { "textureLod", 3, { BI_ARG_S2D,   BI_ARG_VEC2, BI_ARG_FLOAT }, BI_RET_SAMP },
@@ -1069,10 +1092,22 @@ static const BiFn kBuiltins[] = {
     { "dFdy", 1, { BI_ARG_GENF }, BI_RET_GENF },
     { "textureLod", 3, { BI_ARG_S3D,   BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_SAMP },
     { "textureLod", 3, { BI_ARG_SCUBE, BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "textureLod", 3, { BI_ARG_S1D,   BI_ARG_FLOAT, BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "textureLod", 3, { BI_ARG_S1DA,  BI_ARG_VEC2, BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "textureLod", 3, { BI_ARG_S2DA,  BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "textureLod", 3, { BI_ARG_SRECT, BI_ARG_VEC2, BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "textureLod", 3, { BI_ARG_S2DMS, BI_ARG_VEC2, BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "textureLod", 3, { BI_ARG_S2DMSA, BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_SAMP },
     { "textureSize", 2, { BI_ARG_S2D,   BI_ARG_FLOAT }, BI_RET_IVEC2 },
     { "texelFetch", 3, { BI_ARG_S2D, BI_ARG_GENI, BI_ARG_INT }, BI_RET_SAMP },
+    { "texelFetch", 3, { BI_ARG_S1D, BI_ARG_GENI, BI_ARG_INT }, BI_RET_SAMP },
+    { "texelFetch", 3, { BI_ARG_S1DA, BI_ARG_IVEC2, BI_ARG_INT }, BI_RET_SAMP },
+    { "texelFetch", 2, { BI_ARG_SRECT, BI_ARG_GENI }, BI_RET_SAMP },
     { "texelFetch", 3, { BI_ARG_S2DA, BI_ARG_IVEC3, BI_ARG_INT }, BI_RET_SAMP },
     { "texelFetch", 3, { BI_ARG_S3D, BI_ARG_IVEC3, BI_ARG_INT }, BI_RET_SAMP },
+    { "texelFetch", 3, { BI_ARG_SCUBE, BI_ARG_IVEC3, BI_ARG_INT }, BI_RET_SAMP },
+    { "texelFetch", 3, { BI_ARG_S2DMS, BI_ARG_GENI, BI_ARG_INT }, BI_RET_SAMP },
+    { "texelFetch", 3, { BI_ARG_S2DMSA, BI_ARG_IVEC3, BI_ARG_INT }, BI_RET_SAMP },
     { "texelFetch", 3, { BI_ARG_SBUF, BI_ARG_INT, BI_ARG_INT }, BI_RET_SAMP },
     { "texelFetch", 2, { BI_ARG_SBUF, BI_ARG_INT }, BI_RET_SAMP },
     { "imageLoad", 2, { BI_ARG_I2D, BI_ARG_GENI }, BI_RET_SAMP },
@@ -1281,9 +1316,24 @@ static int bif_arg_matches(const MGLIRType *t, BiArgKind k, uint32_t *gen_dim)
     case BI_ARG_S2D:
         return t->kind == MGLIR_TYPE_SAMPLER && t->tex_kind == MGLIR_TEX_2D &&
                !t->tex_depth;
+    case BI_ARG_S1D:
+        return t->kind == MGLIR_TYPE_SAMPLER && t->tex_kind == MGLIR_TEX_1D &&
+               !t->tex_depth;
+    case BI_ARG_S1DA:
+        return t->kind == MGLIR_TYPE_SAMPLER &&
+               t->tex_kind == MGLIR_TEX_1D_ARRAY && !t->tex_depth;
+    case BI_ARG_SRECT:
+        return t->kind == MGLIR_TYPE_SAMPLER &&
+               t->tex_kind == MGLIR_TEX_2D_RECT && !t->tex_depth;
     case BI_ARG_S2DA:
         return t->kind == MGLIR_TYPE_SAMPLER &&
                t->tex_kind == MGLIR_TEX_2D_ARRAY && !t->tex_depth;
+    case BI_ARG_S2DMS:
+        return t->kind == MGLIR_TYPE_SAMPLER &&
+               t->tex_kind == MGLIR_TEX_2D_MS && !t->tex_depth;
+    case BI_ARG_S2DMSA:
+        return t->kind == MGLIR_TYPE_SAMPLER &&
+               t->tex_kind == MGLIR_TEX_2D_MS_ARRAY && !t->tex_depth;
     case BI_ARG_S3D:
         return t->kind == MGLIR_TYPE_SAMPLER && t->tex_kind == MGLIR_TEX_3D &&
                !t->tex_depth;
@@ -1303,6 +1353,9 @@ static int bif_arg_matches(const MGLIRType *t, BiArgKind k, uint32_t *gen_dim)
         return t->kind == MGLIR_TYPE_IMAGE &&
                t->tex_kind == MGLIR_TEX_2D_ARRAY &&
                t->tex_storage == MGLIR_SCALAR_UINT;
+    case BI_ARG_IVEC2:
+        return t->kind == MGLIR_TYPE_VECTOR && t->cols == 2 &&
+               t->scalar == MGLIR_SCALAR_INT;
     case BI_ARG_IVEC3:
         return t->kind == MGLIR_TYPE_VECTOR && t->cols == 3 &&
                t->scalar == MGLIR_SCALAR_INT;

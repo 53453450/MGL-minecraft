@@ -5370,7 +5370,8 @@ static void mglTextureCopyTextureToBuffer(
               (int)mipmapped);
     }
 
-    if (tex->params.swizzled && !expandsSingleChannelSwizzle)
+    if (tex->params.swizzled && !expandsSingleChannelSwizzle &&
+        !tex->is_render_target)
     {
         [self swizzleTexDesc:&tex_desc forTex:tex];
     }

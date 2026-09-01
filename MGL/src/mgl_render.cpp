@@ -3489,7 +3489,29 @@ int mglRenderSampledTextureViewForBaseLevel(
     if (max_level >= texture_object->mipmap_levels) max_level = texture_object->mipmap_levels - 1u;
     if (max_level >= source->mipmapLevelCount()) max_level = source->mipmapLevelCount() - 1u;
     const uint64_t level_count = static_cast<uint64_t>(max_level - base + 1u);
-    if (level_count == 0u || (base == 0u && level_count >= source->mipmapLevelCount())) {
+    uint64_t slice_count = source->arrayLength();
+    const auto type = source->textureType();
+    if (type == MTL::TextureTypeCube || type == MTL::TextureTypeCubeArray) {
+        slice_count *= 6u;
+    }
+    const uint32_t components =
+        mglRenderStoredColorComponents(texture_object->internalformat);
+    const uint32_t swizzle_red = mglRenderMTLSwizzleForGLSwizzle(
+        texture_object->params.swizzle_r, components);
+    const uint32_t swizzle_green = mglRenderMTLSwizzleForGLSwizzle(
+        texture_object->params.swizzle_g, components);
+    const uint32_t swizzle_blue = mglRenderMTLSwizzleForGLSwizzle(
+        texture_object->params.swizzle_b, components);
+    const uint32_t swizzle_alpha = mglRenderMTLSwizzleForGLSwizzle(
+        texture_object->params.swizzle_a, components);
+    const bool identity =
+        swizzle_red == static_cast<uint32_t>(MTL::TextureSwizzleRed) &&
+        swizzle_green == static_cast<uint32_t>(MTL::TextureSwizzleGreen) &&
+        swizzle_blue == static_cast<uint32_t>(MTL::TextureSwizzleBlue) &&
+        swizzle_alpha == static_cast<uint32_t>(MTL::TextureSwizzleAlpha);
+    if (level_count == 0u ||
+        (base == 0u && level_count >= source->mipmapLevelCount() &&
+         identity)) {
         *view_out = source_texture;
         return 0;
     }
@@ -3501,24 +3523,6 @@ int mglRenderSampledTextureViewForBaseLevel(
         return 0;
     }
 
-    uint64_t slice_count = source->arrayLength();
-    const auto type = source->textureType();
-    if (type == MTL::TextureTypeCube || type == MTL::TextureTypeCubeArray) {
-        slice_count *= 6u;
-    }
-    const uint32_t components = mglRenderStoredColorComponents(texture_object->internalformat);
-    const uint32_t swizzle_red = mglRenderMTLSwizzleForGLSwizzle(
-        texture_object->params.swizzle_r, components);
-    const uint32_t swizzle_green = mglRenderMTLSwizzleForGLSwizzle(
-        texture_object->params.swizzle_g, components);
-    const uint32_t swizzle_blue = mglRenderMTLSwizzleForGLSwizzle(
-        texture_object->params.swizzle_b, components);
-    const uint32_t swizzle_alpha = mglRenderMTLSwizzleForGLSwizzle(
-        texture_object->params.swizzle_a, components);
-    const bool identity = swizzle_red == static_cast<uint32_t>(MTL::TextureSwizzleRed) &&
-                          swizzle_green == static_cast<uint32_t>(MTL::TextureSwizzleGreen) &&
-                          swizzle_blue == static_cast<uint32_t>(MTL::TextureSwizzleBlue) &&
-                          swizzle_alpha == static_cast<uint32_t>(MTL::TextureSwizzleAlpha);
     void *view_handle = nullptr;
     if (mglRenderCreateTextureViewRange(
             source_texture, static_cast<uint32_t>(source->pixelFormat()),
