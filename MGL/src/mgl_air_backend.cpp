@@ -5064,7 +5064,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     cg,
                     readIntrinsic("air.read_texture_2d_array.v4f32").c_str(),
                     retTy,
-                    {tex, rs, coord, layer, lod, cg.b->getInt32(0)});
+                    {tex, coord, layer, lod, cg.b->getInt32(3)});
             } else if (texKind == MGLIR_TEX_3D) {
                 if (coord->getType() != v3i32) {
                     cg.err = 1;

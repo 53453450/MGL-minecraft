@@ -226,6 +226,26 @@ static const char *kFSImage2DArray =
     "    imageStore(array_image, ivec3(1, 2, 3), ivec4(0, 255, 0, 0));\n"
     "}\n";
 
+static const char *kFSTexelFetch2DArray =
+    "#version 460 core\n"
+    "layout(binding = 0) uniform sampler2DArray tex;\n"
+    "layout(std140) uniform UBO { vec4 refcolour; } ubo;\n"
+    "in vec3 texcoords;\n"
+    "out vec4 fragColor;\n"
+    "void main() {\n"
+    "    vec4 colour = texelFetch(tex, ivec3(texcoords), 0);\n"
+    "    fragColor = all(lessThan(abs(colour - ubo.refcolour).rgb,\n"
+    "                               vec3(0.004))) ? vec4(1.0) : colour;\n"
+    "}\n";
+
+static const char *kVSTexelFetch2DArray =
+    "#version 460 core\n"
+    "out vec3 texcoords;\n"
+    "void main() {\n"
+    "    texcoords = vec3(0.0, 0.0, float(gl_VertexID));\n"
+    "    gl_Position = vec4(0.0, 0.0, 0.0, 1.0);\n"
+    "}\n";
+
 static const char *kCS =
     "#version 460 core\n"
     "layout(local_size_x = 1) in;\n"
@@ -615,6 +635,43 @@ int main(int argc, const char *argv[]) {
                 return 1;
             }
             printf("IMAGE2DA_PSO_OK\n");
+        }
+
+        {
+            unsigned char *tfVsBytes = NULL, *tfFsBytes = NULL;
+            size_t tfVsSize = 0, tfFsSize = 0;
+            if (mglShaderCompileGLSL(kVSTexelFetch2DArray, MGL_STAGE_VERTEX,
+                                     &tfVsBytes, &tfVsSize,
+                                     err, sizeof err) != 0 ||
+                mglShaderCompileGLSL(kFSTexelFetch2DArray, MGL_STAGE_FRAGMENT,
+                                     &tfFsBytes, &tfFsSize,
+                                     err, sizeof err) != 0) {
+                fprintf(stderr, "TEXELFETCH2DA_COMPILE_FAIL: %s\n", err);
+                return 1;
+            }
+            id<MTLLibrary> tfVsLib = loadLibrary(
+                dev, tfVsBytes, tfVsSize, "texel2da-vs");
+            id<MTLLibrary> tfFsLib = loadLibrary(
+                dev, tfFsBytes, tfFsSize, "texel2da-fs");
+            mglShaderFree(tfVsBytes);
+            mglShaderFree(tfFsBytes);
+            id<MTLFunction> tfVsFn = [tfVsLib newFunctionWithName:@"main"];
+            id<MTLFunction> tfFsFn = [tfFsLib newFunctionWithName:@"main"];
+            MTLRenderPipelineDescriptor *tfPD =
+                [MTLRenderPipelineDescriptor new];
+            tfPD.vertexFunction = tfVsFn;
+            tfPD.fragmentFunction = tfFsFn;
+            tfPD.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA8Unorm;
+            tfPD.vertexDescriptor = vd;
+            NSError *tfErr = nil;
+            id<MTLRenderPipelineState> tfPSO =
+                [dev newRenderPipelineStateWithDescriptor:tfPD error:&tfErr];
+            if (!tfVsFn || !tfFsFn || !tfPSO) {
+                fprintf(stderr, "TEXELFETCH2DA_PSO_FAIL: %s\n",
+                        tfErr.localizedDescription.UTF8String ?: "?");
+                return 1;
+            }
+            printf("TEXELFETCH2DA_PSO_OK\n");
         }
 
         /* CullDistance uses two hidden vertex buffers (slots 29/28) and
