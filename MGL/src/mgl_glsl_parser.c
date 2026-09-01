@@ -35,6 +35,7 @@
 #include "mgl_glsl_cpp.h"
 
 #include <ctype.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -114,6 +115,14 @@ typedef struct MGLParser {
     MGLTranslationUnit *tu;
     char errbuf[256];
     uint32_t decl_precision;   /* pending precision qualifier */
+    /* Const-int / array-length tables for folding array extents while
+     * parsing (`float[a]`, `float[a+b]`, `float[arr.length()]`). */
+    char const_names[64][64];
+    int64_t const_vals[64];
+    uint32_t const_count;
+    char array_names[64][64];
+    uint32_t array_lens[64];
+    uint32_t array_count;
 } MGLParser;
 
 static unsigned int tk_line(MGLParser *p);
@@ -414,6 +423,85 @@ static MGLTypeSpec *parse_type_spec(MGLParser *p)
 /* Expressions                                                         */
 /* ------------------------------------------------------------------ */
 
+static int eval_const_int(MGLParser *p, const MGLExpr *e, int64_t *value);
+static MGLExpr *parse_expression(MGLParser *p);
+
+static void record_const_int(MGLParser *p, const char *name, int64_t value)
+{
+    if (!p || !name || p->const_count >= 64) return;
+    size_t n = strlen(name);
+    if (n == 0 || n >= 64) return;
+    for (uint32_t i = 0; i < p->const_count; i++) {
+        if (strcmp(p->const_names[i], name) == 0) {
+            p->const_vals[i] = value;
+            return;
+        }
+    }
+    memcpy(p->const_names[p->const_count], name, n + 1);
+    p->const_vals[p->const_count++] = value;
+}
+
+static void record_array_len(MGLParser *p, const char *name, uint32_t len)
+{
+    if (!p || !name || len == 0 || p->array_count >= 64) return;
+    size_t n = strlen(name);
+    if (n == 0 || n >= 64) return;
+    for (uint32_t i = 0; i < p->array_count; i++) {
+        if (strcmp(p->array_names[i], name) == 0) {
+            p->array_lens[i] = len;
+            return;
+        }
+    }
+    memcpy(p->array_names[p->array_count], name, n + 1);
+    p->array_lens[p->array_count++] = len;
+}
+
+static int lookup_const_int(const MGLParser *p, const char *name, int64_t *value)
+{
+    if (!p || !name) return 0;
+    for (uint32_t i = 0; i < p->const_count; i++) {
+        if (strcmp(p->const_names[i], name) == 0) {
+            *value = p->const_vals[i];
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int lookup_array_len(const MGLParser *p, const char *name, uint32_t *len)
+{
+    if (!p || !name) return 0;
+    for (uint32_t i = 0; i < p->array_count; i++) {
+        if (strcmp(p->array_names[i], name) == 0) {
+            *len = p->array_lens[i];
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void record_decl_constants(MGLParser *p, const MGLDecl *d)
+{
+    for (; d; d = d->next_declarator) {
+        if (!d->name) continue;
+        if (d->array_count > 0 && d->array_dims) {
+            /* 1-D size used by `.length()`; multi-dim rejected elsewhere. */
+            uint32_t sz = d->array_dims[0];
+            if (sz > 0) record_array_len(p, d->name, sz);
+        }
+        if (!(d->qualifiers & MGL_AST_Q_CONST) || !d->type || !d->init)
+            continue;
+        if (d->type->vec_size || d->type->mat_cols) continue;
+        if (d->type->base != MGL_AST_TYPE_INT &&
+            d->type->base != MGL_AST_TYPE_UINT &&
+            d->type->base != MGL_AST_TYPE_BOOL)
+            continue;
+        int64_t v = 0;
+        if (eval_const_int(p, d->init, &v))
+            record_const_int(p, d->name, v);
+    }
+}
+
 static MGLExpr *expr_alloc(MGLParser *p, uint32_t kind, uint32_t line)
 {
     (void)p;
@@ -462,15 +550,52 @@ static MGLExpr *parse_primary(MGLParser *p)
             free(name);
             return e;
         }
-        if (ops_at(p, "(") ||
-            (at_peek_punct(p, 0, "[") && at_peek_punct(p, 1, "]"))) {
+        if (ops_at(p, "(") || ops_at(p, "[")) {
+            /* Distinguish `T[N](...)` array ctor from `arr[i]` indexing:
+             * only treat brackets as an array ctor when `(` follows `]`. */
+            int is_arr_ctor = 0;
+            uint32_t ctor_size = 0;
+            if (ops_at(p, "[")) {
+                int saved = p->pos;
+                advance(p); /* [ */
+                if (ops_at(p, "]")) {
+                    ctor_size = 0;
+                } else {
+                    /* Constant extent only; restore on failure so
+                     * postfix indexing can re-parse `arr[expr]`. */
+                    MGLExpr *ext = parse_expression(p);
+                    int64_t value = 0;
+                    int valid = eval_const_int(p, ext, &value);
+                    free_expr(ext);
+                    if (!valid || value < 0 ||
+                        (uint64_t)value > UINT32_MAX || !ops_at(p, "]")) {
+                        p->pos = saved;
+                        /* Fall through to VAR_REF; postfix handles `[`. */
+                        MGLExpr *e = expr_alloc(p, MGL_EXPR_VAR_REF, line);
+                        if (e) {
+                            e->u.var_ref.name = name;
+                        }
+                        return e;
+                    }
+                    ctor_size = (uint32_t)value;
+                }
+                advance(p); /* ] */
+                if (!ops_at(p, "(")) {
+                    p->pos = saved;
+                    MGLExpr *e = expr_alloc(p, MGL_EXPR_VAR_REF, line);
+                    if (e) {
+                        e->u.var_ref.name = name;
+                    }
+                    return e;
+                }
+                is_arr_ctor = 1;
+            }
             MGLExpr *e = expr_alloc(p, MGL_EXPR_CALL, line);
             if (e) {
                 e->u.call.name = name;
-                if (ops_at(p, "[")) {
+                if (is_arr_ctor) {
                     e->u.call.is_array_ctor = 1;
-                    advance(p);   /* [ */
-                    advance(p);   /* ] */
+                    e->u.call.array_ctor_size = ctor_size;
                 }
                 eat_punct(p, "(");
                 uint32_t argc = 0;
@@ -826,58 +951,545 @@ static MGLExpr *parse_expression(MGLParser *p)
 /* Array extents are integral constant expressions in GLSL.  The AST stores
  * only the resulting extent, so evaluate the constant subset while parsing
  * declarations and reject expressions that depend on runtime values. */
-static int eval_const_int(const MGLExpr *e, int64_t *value)
+
+typedef struct MGLConstVal {
+    uint32_t base; /* MGL_AST_TYPE_INT/UINT/BOOL/FLOAT */
+    uint32_t size; /* 1 = scalar, 2-4 = vector */
+    double v[4];
+} MGLConstVal;
+
+static void const_val_scalar(MGLConstVal *cv, uint32_t base, double x)
 {
-    int64_t lhs, rhs;
-    if (!e || !value) return 0;
-    switch (e->kind) {
-    case MGL_EXPR_LITERAL:
-        if (e->u.literal.base != MGL_AST_TYPE_INT &&
-            e->u.literal.base != MGL_AST_TYPE_UINT &&
-            e->u.literal.base != MGL_AST_TYPE_BOOL) {
+    cv->base = base;
+    cv->size = 1;
+    cv->v[0] = x;
+    cv->v[1] = cv->v[2] = cv->v[3] = 0.0;
+}
+
+static void const_val_broadcast(MGLConstVal *cv, uint32_t base, uint32_t size, double x)
+{
+    cv->base = base;
+    cv->size = size;
+    for (uint32_t i = 0; i < 4; i++) {
+        cv->v[i] = (i < size) ? x : 0.0;
+    }
+}
+
+static int const_val_from_int(MGLConstVal *cv, uint32_t base, int64_t x)
+{
+    if (base == MGL_AST_TYPE_BOOL) {
+        const_val_scalar(cv, base, x ? 1.0 : 0.0);
+        return 1;
+    }
+    if (base == MGL_AST_TYPE_UINT) {
+        const_val_scalar(cv, base, (double)(uint32_t)x);
+        return 1;
+    }
+    const_val_scalar(cv, base, (double)x);
+    return 1;
+}
+
+static int64_t const_val_to_int(const MGLConstVal *cv)
+{
+    double x = cv->v[0];
+    if (cv->base == MGL_AST_TYPE_BOOL) {
+        return x != 0.0 ? 1 : 0;
+    }
+    if (cv->base == MGL_AST_TYPE_UINT) {
+        return (int64_t)(uint32_t)x;
+    }
+    return (int64_t)x; /* truncate toward zero */
+}
+
+static int const_type_name(const char *name, uint32_t *base, uint32_t *size)
+{
+    if (!name) {
+        return 0;
+    }
+    struct {
+        const char *n;
+        uint32_t base;
+        uint32_t size;
+    } table[] = {
+        {"bool", MGL_AST_TYPE_BOOL, 1}, {"bvec2", MGL_AST_TYPE_BOOL, 2},
+        {"bvec3", MGL_AST_TYPE_BOOL, 3}, {"bvec4", MGL_AST_TYPE_BOOL, 4},
+        {"int", MGL_AST_TYPE_INT, 1}, {"ivec2", MGL_AST_TYPE_INT, 2},
+        {"ivec3", MGL_AST_TYPE_INT, 3}, {"ivec4", MGL_AST_TYPE_INT, 4},
+        {"uint", MGL_AST_TYPE_UINT, 1}, {"uvec2", MGL_AST_TYPE_UINT, 2},
+        {"uvec3", MGL_AST_TYPE_UINT, 3}, {"uvec4", MGL_AST_TYPE_UINT, 4},
+        {"float", MGL_AST_TYPE_FLOAT, 1}, {"vec2", MGL_AST_TYPE_FLOAT, 2},
+        {"vec3", MGL_AST_TYPE_FLOAT, 3}, {"vec4", MGL_AST_TYPE_FLOAT, 4},
+    };
+    for (size_t i = 0; i < sizeof(table) / sizeof(table[0]); i++) {
+        if (strcmp(name, table[i].n) == 0) {
+            *base = table[i].base;
+            *size = table[i].size;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int member_index(const char *field, uint32_t *idx)
+{
+    if (!field || !field[0] || field[1] != '\0') {
+        return 0;
+    }
+    switch (field[0]) {
+    case 'x':
+    case 'r':
+    case 's': *idx = 0; return 1;
+    case 'y':
+    case 'g':
+    case 't': *idx = 1; return 1;
+    case 'z':
+    case 'b':
+    case 'p': *idx = 2; return 1;
+    case 'w':
+    case 'a':
+    case 'q': *idx = 3; return 1;
+    default: return 0;
+    }
+}
+
+static int eval_const_val(MGLParser *p, const MGLExpr *e, MGLConstVal *out);
+
+static int eval_const_args(MGLParser *p, const MGLExpr *call, MGLConstVal *args, uint32_t max)
+{
+    if (!call || call->kind != MGL_EXPR_CALL || call->u.call.arg_count > max) {
+        return 0;
+    }
+    for (uint32_t i = 0; i < call->u.call.arg_count; i++) {
+        if (!eval_const_val(p, call->u.call.args[i], &args[i])) {
             return 0;
         }
-        *value = (int64_t)e->u.literal.value;
+    }
+    return (int)call->u.call.arg_count;
+}
+
+static int eval_const_promote(MGLConstVal *a, MGLConstVal *b)
+{
+    if (a->size == b->size) {
         return 1;
-    case MGL_EXPR_UNARY:
-        if (!eval_const_int(e->u.unary.operand, &lhs)) return 0;
-        switch (e->u.unary.op) {
-        case MGL_OP_ADD: *value = lhs; return 1;
-        case MGL_OP_SUB: *value = -lhs; return 1;
-        case MGL_OP_NOT: *value = !lhs; return 1;
-        case MGL_OP_BNOT: *value = ~lhs; return 1;
+    }
+    if (a->size == 1 && b->size > 1) {
+        double x = a->v[0];
+        const_val_broadcast(a, a->base, b->size, x);
+        return 1;
+    }
+    if (b->size == 1 && a->size > 1) {
+        double x = b->v[0];
+        const_val_broadcast(b, b->base, a->size, x);
+        return 1;
+    }
+    return 0;
+}
+
+static int eval_const_binary_op(uint32_t op, const MGLConstVal *a,
+                              const MGLConstVal *b, MGLConstVal *out)
+{
+    MGLConstVal lhs = *a;
+    MGLConstVal rhs = *b;
+    if (!eval_const_promote(&lhs, &rhs)) {
+        return 0;
+    }
+    out->base = lhs.base;
+    out->size = lhs.size;
+    for (uint32_t i = 0; i < lhs.size; i++) {
+        double x = lhs.v[i];
+        double y = rhs.v[i];
+        double r = 0.0;
+        switch (op) {
+        case MGL_OP_ADD: r = x + y; break;
+        case MGL_OP_SUB: r = x - y; break;
+        case MGL_OP_MUL: r = x * y; break;
+        case MGL_OP_DIV: if (y == 0.0) return 0; r = x / y; break;
+        case MGL_OP_MOD:
+            if (y == 0.0) return 0;
+            r = x - y * floor(x / y);
+            break;
+        case MGL_OP_EQ: r = (x == y) ? 1.0 : 0.0; break;
+        case MGL_OP_NE: r = (x != y) ? 1.0 : 0.0; break;
+        case MGL_OP_LT: r = (x < y) ? 1.0 : 0.0; break;
+        case MGL_OP_LE: r = (x <= y) ? 1.0 : 0.0; break;
+        case MGL_OP_GT: r = (x > y) ? 1.0 : 0.0; break;
+        case MGL_OP_GE: r = (x >= y) ? 1.0 : 0.0; break;
+        case MGL_OP_AND: r = ((int64_t)x & (int64_t)y); break;
+        case MGL_OP_OR: r = ((int64_t)x | (int64_t)y); break;
+        case MGL_OP_XOR: r = ((int64_t)x ^ (int64_t)y); break;
+        case MGL_OP_SHL:
+            if (y < 0.0 || y >= 64.0) return 0;
+            r = (double)((int64_t)x << (int)y);
+            break;
+        case MGL_OP_SHR:
+            if (y < 0.0 || y >= 64.0) return 0;
+            r = (double)((int64_t)x >> (int)y);
+            break;
         default: return 0;
         }
-    case MGL_EXPR_BINARY:
-        if (!eval_const_int(e->u.binary.lhs, &lhs) ||
-            !eval_const_int(e->u.binary.rhs, &rhs)) return 0;
-        switch (e->u.binary.op) {
-        case MGL_OP_ADD: *value = lhs + rhs; return 1;
-        case MGL_OP_SUB: *value = lhs - rhs; return 1;
-        case MGL_OP_MUL: *value = lhs * rhs; return 1;
-        case MGL_OP_DIV: if (!rhs) return 0; *value = lhs / rhs; return 1;
-        case MGL_OP_MOD: if (!rhs) return 0; *value = lhs % rhs; return 1;
-        case MGL_OP_SHL: if (rhs < 0 || rhs >= 64) return 0; *value = lhs << rhs; return 1;
-        case MGL_OP_SHR: if (rhs < 0 || rhs >= 64) return 0; *value = lhs >> rhs; return 1;
-        case MGL_OP_AND: *value = lhs & rhs; return 1;
-        case MGL_OP_OR: *value = lhs | rhs; return 1;
-        case MGL_OP_XOR: *value = lhs ^ rhs; return 1;
-        case MGL_OP_LAND: *value = lhs && rhs; return 1;
-        case MGL_OP_LOR: *value = lhs || rhs; return 1;
-        case MGL_OP_EQ: *value = lhs == rhs; return 1;
-        case MGL_OP_NE: *value = lhs != rhs; return 1;
-        case MGL_OP_LT: *value = lhs < rhs; return 1;
-        case MGL_OP_LE: *value = lhs <= rhs; return 1;
-        case MGL_OP_GT: *value = lhs > rhs; return 1;
-        case MGL_OP_GE: *value = lhs >= rhs; return 1;
+        out->v[i] = r;
+    }
+    return 1;
+}
+
+static int eval_const_unary_op(uint32_t op, const MGLConstVal *in, MGLConstVal *out)
+{
+    *out = *in;
+    for (uint32_t i = 0; i < in->size; i++) {
+        double x = in->v[i];
+        switch (op) {
+        case MGL_OP_ADD: out->v[i] = x; break;
+        case MGL_OP_SUB: out->v[i] = -x; break;
+        case MGL_OP_NOT: out->v[i] = x ? 0.0 : 1.0; break;
+        case MGL_OP_BNOT: out->v[i] = (double)(~(int64_t)x); break;
         default: return 0;
         }
-    case MGL_EXPR_TERNARY:
-        if (!eval_const_int(e->u.ternary.cond, &lhs)) return 0;
-        return eval_const_int(lhs ? e->u.ternary.then : e->u.ternary.else_, value);
+    }
+    return 1;
+}
+
+static int eval_const_builtin(const char *name, uint32_t argc, MGLConstVal *args,
+                              MGLConstVal *out)
+{
+    if (!name) {
+        return 0;
+    }
+
+#define ARG(i) (args[i])
+#define SCAL(i) (ARG(i).v[0])
+
+    if (strcmp(name, "radians") == 0 && argc == 1) {
+        *out = ARG(0);
+        for (uint32_t i = 0; i < out->size; i++) {
+            out->v[i] = ARG(0).v[i] * (M_PI / 180.0);
+        }
+        return 1;
+    }
+    if (strcmp(name, "degrees") == 0 && argc == 1) {
+        *out = ARG(0);
+        for (uint32_t i = 0; i < out->size; i++) {
+            out->v[i] = ARG(0).v[i] * (180.0 / M_PI);
+        }
+        return 1;
+    }
+    if (strcmp(name, "sin") == 0 && argc == 1) {
+        *out = ARG(0);
+        for (uint32_t i = 0; i < out->size; i++) {
+            out->v[i] = sin(ARG(0).v[i]);
+        }
+        return 1;
+    }
+    if (strcmp(name, "cos") == 0 && argc == 1) {
+        *out = ARG(0);
+        for (uint32_t i = 0; i < out->size; i++) {
+            out->v[i] = cos(ARG(0).v[i]);
+        }
+        return 1;
+    }
+    if (strcmp(name, "asin") == 0 && argc == 1) {
+        *out = ARG(0);
+        for (uint32_t i = 0; i < out->size; i++) {
+            out->v[i] = asin(ARG(0).v[i]);
+        }
+        return 1;
+    }
+    if (strcmp(name, "acos") == 0 && argc == 1) {
+        *out = ARG(0);
+        for (uint32_t i = 0; i < out->size; i++) {
+            out->v[i] = acos(ARG(0).v[i]);
+        }
+        return 1;
+    }
+    if (strcmp(name, "pow") == 0 && argc == 2) {
+        if (!eval_const_promote(&args[0], &args[1])) return 0;
+        *out = args[0];
+        for (uint32_t i = 0; i < out->size; i++) {
+            out->v[i] = pow(args[0].v[i], args[1].v[i]);
+        }
+        return 1;
+    }
+    if (strcmp(name, "exp") == 0 && argc == 1) {
+        *out = ARG(0);
+        for (uint32_t i = 0; i < out->size; i++) out->v[i] = exp(ARG(0).v[i]);
+        return 1;
+    }
+    if (strcmp(name, "log") == 0 && argc == 1) {
+        *out = ARG(0);
+        for (uint32_t i = 0; i < out->size; i++) out->v[i] = log(ARG(0).v[i]);
+        return 1;
+    }
+    if (strcmp(name, "exp2") == 0 && argc == 1) {
+        *out = ARG(0);
+        for (uint32_t i = 0; i < out->size; i++) out->v[i] = pow(2.0, ARG(0).v[i]);
+        return 1;
+    }
+    if (strcmp(name, "log2") == 0 && argc == 1) {
+        *out = ARG(0);
+        for (uint32_t i = 0; i < out->size; i++) out->v[i] = log2(ARG(0).v[i]);
+        return 1;
+    }
+    if (strcmp(name, "sqrt") == 0 && argc == 1) {
+        *out = ARG(0);
+        for (uint32_t i = 0; i < out->size; i++) out->v[i] = sqrt(ARG(0).v[i]);
+        return 1;
+    }
+    if (strcmp(name, "inversesqrt") == 0 && argc == 1) {
+        *out = ARG(0);
+        for (uint32_t i = 0; i < out->size; i++) {
+            out->v[i] = 1.0 / sqrt(ARG(0).v[i]);
+        }
+        return 1;
+    }
+    if (strcmp(name, "abs") == 0 && argc == 1) {
+        *out = ARG(0);
+        for (uint32_t i = 0; i < out->size; i++) {
+            double x = ARG(0).v[i];
+            if (ARG(0).base == MGL_AST_TYPE_FLOAT) {
+                out->v[i] = fabs(x);
+            } else {
+                int64_t iv = (int64_t)x;
+                out->v[i] = (double)(iv < 0 ? -iv : iv);
+            }
+        }
+        return 1;
+    }
+    if (strcmp(name, "sign") == 0 && argc == 1) {
+        *out = ARG(0);
+        for (uint32_t i = 0; i < out->size; i++) {
+            double x = ARG(0).v[i];
+            out->v[i] = (x > 0.0) ? 1.0 : ((x < 0.0) ? -1.0 : 0.0);
+        }
+        return 1;
+    }
+    if (strcmp(name, "floor") == 0 && argc == 1) {
+        *out = ARG(0);
+        for (uint32_t i = 0; i < out->size; i++) out->v[i] = floor(ARG(0).v[i]);
+        return 1;
+    }
+    if (strcmp(name, "trunc") == 0 && argc == 1) {
+        *out = ARG(0);
+        for (uint32_t i = 0; i < out->size; i++) out->v[i] = trunc(ARG(0).v[i]);
+        return 1;
+    }
+    if (strcmp(name, "round") == 0 && argc == 1) {
+        *out = ARG(0);
+        for (uint32_t i = 0; i < out->size; i++) out->v[i] = round(ARG(0).v[i]);
+        return 1;
+    }
+    if (strcmp(name, "ceil") == 0 && argc == 1) {
+        *out = ARG(0);
+        for (uint32_t i = 0; i < out->size; i++) out->v[i] = ceil(ARG(0).v[i]);
+        return 1;
+    }
+    if (strcmp(name, "mod") == 0 && argc == 2) {
+        if (!eval_const_promote(&args[0], &args[1])) return 0;
+        *out = args[0];
+        for (uint32_t i = 0; i < out->size; i++) {
+            double x = args[0].v[i];
+            double y = args[1].v[i];
+            if (y == 0.0) return 0;
+            out->v[i] = x - y * floor(x / y);
+        }
+        return 1;
+    }
+    if (strcmp(name, "min") == 0 && argc == 2) {
+        if (!eval_const_promote(&args[0], &args[1])) return 0;
+        *out = args[0];
+        for (uint32_t i = 0; i < out->size; i++) {
+            out->v[i] = fmin(args[0].v[i], args[1].v[i]);
+        }
+        return 1;
+    }
+    if (strcmp(name, "max") == 0 && argc == 2) {
+        if (!eval_const_promote(&args[0], &args[1])) return 0;
+        *out = args[0];
+        for (uint32_t i = 0; i < out->size; i++) {
+            out->v[i] = fmax(args[0].v[i], args[1].v[i]);
+        }
+        return 1;
+    }
+    if (strcmp(name, "clamp") == 0 && argc == 3) {
+        MGLConstVal tmp = args[0];
+        if (!eval_const_promote(&tmp, &args[1])) return 0;
+        args[0] = tmp;
+        if (!eval_const_promote(&args[0], &args[2])) return 0;
+        *out = args[0];
+        for (uint32_t i = 0; i < out->size; i++) {
+            out->v[i] = fmin(fmax(args[0].v[i], args[1].v[i]), args[2].v[i]);
+        }
+        return 1;
+    }
+    if (strcmp(name, "length") == 0 && argc == 1) {
+        double sum = 0.0;
+        for (uint32_t i = 0; i < ARG(0).size; i++) {
+            sum += ARG(0).v[i] * ARG(0).v[i];
+        }
+        const_val_scalar(out, MGL_AST_TYPE_FLOAT, sqrt(sum));
+        return 1;
+    }
+    if (strcmp(name, "dot") == 0 && argc == 2) {
+        if (!eval_const_promote(&args[0], &args[1])) return 0;
+        double sum = 0.0;
+        for (uint32_t i = 0; i < args[0].size; i++) {
+            sum += args[0].v[i] * args[1].v[i];
+        }
+        const_val_scalar(out, MGL_AST_TYPE_FLOAT, sum);
+        return 1;
+    }
+    if (strcmp(name, "normalize") == 0 && argc == 1) {
+        double sum = 0.0;
+        for (uint32_t i = 0; i < ARG(0).size; i++) {
+            sum += ARG(0).v[i] * ARG(0).v[i];
+        }
+        if (sum == 0.0) {
+            return 0;
+        }
+        double inv = 1.0 / sqrt(sum);
+        *out = ARG(0);
+        for (uint32_t i = 0; i < out->size; i++) {
+            out->v[i] *= inv;
+        }
+        return 1;
+    }
+
+#undef ARG
+#undef SCAL
+    return 0;
+}
+
+static int eval_const_ctor(const char *name, uint32_t argc, MGLConstVal *args,
+                           MGLConstVal *out)
+{
+    uint32_t base = 0;
+    uint32_t size = 0;
+    if (!const_type_name(name, &base, &size)) {
+        return 0;
+    }
+    if (argc == 1 && args[0].size > 1 && size > 1) {
+        if (args[0].size != size) {
+            return 0;
+        }
+        *out = args[0];
+        out->base = base;
+        return 1;
+    }
+    if (argc == 1 && size >= 1) {
+        const_val_broadcast(out, base, size, args[0].v[0]);
+        return 1;
+    }
+    if ((int)argc == (int)size) {
+        out->base = base;
+        out->size = size;
+        for (uint32_t i = 0; i < size; i++) {
+            out->v[i] = args[i].v[0];
+        }
+        return 1;
+    }
+    return 0;
+}
+
+static int eval_const_val(MGLParser *p, const MGLExpr *e, MGLConstVal *out)
+{
+    if (!e || !out) {
+        return 0;
+    }
+    switch (e->kind) {
+    case MGL_EXPR_LITERAL:
+        if (e->u.literal.base == MGL_AST_TYPE_FLOAT) {
+            const_val_scalar(out, MGL_AST_TYPE_FLOAT, e->u.literal.value);
+            return 1;
+        }
+        return const_val_from_int(out, e->u.literal.base, (int64_t)e->u.literal.value);
+    case MGL_EXPR_VAR_REF: {
+        int64_t v = 0;
+        if (!lookup_const_int(p, e->u.var_ref.name, &v)) {
+            return 0;
+        }
+        return const_val_from_int(out, MGL_AST_TYPE_INT, v);
+    }
+    case MGL_EXPR_MEMBER: {
+        MGLConstVal obj;
+        uint32_t idx = 0;
+        if (!eval_const_val(p, e->u.member.object, &obj) ||
+            !member_index(e->u.member.field, &idx) || idx >= obj.size) {
+            return 0;
+        }
+        const_val_scalar(out, obj.base, obj.v[idx]);
+        return 1;
+    }
+    case MGL_EXPR_CALL: {
+        MGLConstVal args[4];
+        int argc = eval_const_args(p, e, args, 4);
+        if (argc < 0) {
+            return 0;
+        }
+        if (e->u.call.name &&
+            strcmp(e->u.call.name, "__mgl_array_length") == 0 &&
+            argc == 1 && e->u.call.args[0] &&
+            e->u.call.args[0]->kind == MGL_EXPR_VAR_REF) {
+            uint32_t len = 0;
+            if (!lookup_array_len(p, e->u.call.args[0]->u.var_ref.name, &len)) {
+                return 0;
+            }
+            return const_val_from_int(out, MGL_AST_TYPE_INT, (int64_t)len);
+        }
+        if (eval_const_ctor(e->u.call.name, (uint32_t)argc, args, out)) {
+            return 1;
+        }
+        return eval_const_builtin(e->u.call.name, (uint32_t)argc, args, out);
+    }
+    case MGL_EXPR_UNARY: {
+        MGLConstVal in;
+        if (!eval_const_val(p, e->u.unary.operand, &in)) {
+            return 0;
+        }
+        return eval_const_unary_op(e->u.unary.op, &in, out);
+    }
+    case MGL_EXPR_BINARY: {
+        MGLConstVal lhs, rhs;
+        if (!eval_const_val(p, e->u.binary.lhs, &lhs) ||
+            !eval_const_val(p, e->u.binary.rhs, &rhs)) {
+            return 0;
+        }
+        if (e->u.binary.op == MGL_OP_LAND || e->u.binary.op == MGL_OP_LOR) {
+            int64_t lv = const_val_to_int(&lhs);
+            if (e->u.binary.op == MGL_OP_LAND && !lv) {
+                return const_val_from_int(out, MGL_AST_TYPE_BOOL, 0);
+            }
+            if (e->u.binary.op == MGL_OP_LOR && lv) {
+                return const_val_from_int(out, MGL_AST_TYPE_BOOL, 1);
+            }
+            MGLConstVal rhs_val;
+            if (!eval_const_val(p, e->u.binary.rhs, &rhs_val)) {
+                return 0;
+            }
+            return const_val_from_int(out, MGL_AST_TYPE_BOOL,
+                                      const_val_to_int(&rhs_val));
+        }
+        return eval_const_binary_op(e->u.binary.op, &lhs, &rhs, out);
+    }
+    case MGL_EXPR_TERNARY: {
+        MGLConstVal cond;
+        if (!eval_const_val(p, e->u.ternary.cond, &cond)) {
+            return 0;
+        }
+        return eval_const_val(p, const_val_to_int(&cond) ? e->u.ternary.then
+                                                        : e->u.ternary.else_,
+                              out);
+    }
     default:
         return 0;
     }
+}
+
+static int eval_const_int(MGLParser *p, const MGLExpr *e, int64_t *value)
+{
+    MGLConstVal cv;
+    if (!eval_const_val(p, e, &cv) || cv.size != 1) {
+        return 0;
+    }
+    *value = const_val_to_int(&cv);
+    return 1;
 }
 
 static uint32_t parse_array_extent(MGLParser *p)
@@ -887,7 +1499,7 @@ static uint32_t parse_array_extent(MGLParser *p)
     }
     MGLExpr *expr = parse_expression(p);
     int64_t value = 0;
-    int valid = eval_const_int(expr, &value);
+    int valid = eval_const_int(p, expr, &value);
     free_expr(expr);
     if (!valid || value < 0 || (uint64_t)value > UINT32_MAX) {
         parse_error(p, "array extent must be a non-negative constant at line %u",
@@ -895,6 +1507,39 @@ static uint32_t parse_array_extent(MGLParser *p)
         return 0;
     }
     return (uint32_t)value;
+}
+
+/* Append one array dimension to a declarator.  GLSL arrays-of-arrays require
+ * version >= 430 (or ES 3.10); earlier versions reject a second dimension. */
+static void append_array_dim(MGLParser *p, MGLDecl *d, uint32_t sz)
+{
+    if (d->array_count >= 1) {
+        uint32_t ver = p->tu ? p->tu->version : 0;
+        if (ver > 0 && ver < 430) {
+            parse_error(p,
+                        "arrays of arrays require GLSL 430+ at line %u",
+                        tk_line(p));
+            return;
+        }
+    }
+    d->array_dims = (uint32_t *)realloc(
+        d->array_dims, (d->array_count + 1) * sizeof(uint32_t));
+    if (!d->array_dims) {
+        d->array_count = 0;
+        return;
+    }
+    d->array_dims[d->array_count++] = sz;
+}
+
+/* Parse zero or more `[N]` / `[]` array_specifier suffixes onto `d`. */
+static void parse_array_specifier_list(MGLParser *p, MGLDecl *d)
+{
+    while (ops_at(p, "[")) {
+        advance(p);
+        uint32_t sz = parse_array_extent(p);
+        expect_punct(p, "]");
+        append_array_dim(p, d, sz);
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -936,6 +1581,7 @@ static MGLStmt *parse_decl_stmt(MGLParser *p, uint32_t line)
     if (!d) {
         return NULL;
     }
+    record_decl_constants(p, d);
     MGLStmt *s = stmt_alloc(p, MGL_STMT_DECL, line);
     if (s) {
         s->u.decl.decl = d;
@@ -1487,25 +2133,17 @@ more_qualifiers:
             advance(p);
             uint32_t sz = parse_array_extent(p);
             expect_punct(p, "]");
-            d->array_dims = (uint32_t *)realloc(
-                d->array_dims, (d->array_count + 1) * sizeof(uint32_t));
-            d->array_dims[d->array_count++] = sz;
+            append_array_dim(p, d, sz);
         }
         expect_punct(p, ";");
         return d;
     }
 
-    /* unsized array suffix on the type, e.g. `const vec3[] vertices`
-     * (array dims before the declarator name) */
-    while (ops_at(p, "[") && at_peek_punct(p, 1, "]")) {
-        advance(p);   /* [ */
-        advance(p);   /* ] */
-        d->array_dims = (uint32_t *)realloc(
-            d->array_dims, (d->array_count + 1) * sizeof(uint32_t));
-        d->array_dims[d->array_count++] = 0;
-    }
+    /* Array specifier on the type before the declarator name, e.g.
+     * `float[3] x`, `float[] y`, `float[3] func(...)`. */
+    parse_array_specifier_list(p, d);
+    uint32_t type_prefix_dims = d->array_count;
 
-    /* declarator name */
     if (!at_any_ident(p)) {
         parse_error(p, "expected identifier at line %u", tk_line(p));
         free_decl(d);
@@ -1514,15 +2152,8 @@ more_qualifiers:
     d->name = dup_current(p);
     advance(p);
 
-    /* array dims */
-    while (ops_at(p, "[")) {
-        advance(p);
-        uint32_t sz = parse_array_extent(p);
-        expect_punct(p, "]");
-        d->array_dims = (uint32_t *)realloc(
-            d->array_dims, (d->array_count + 1) * sizeof(uint32_t));
-        d->array_dims[d->array_count++] = sz;
-    }
+    /* declarator postfix array dims: `float x[3]` / `float[2] x[3]` */
+    parse_array_specifier_list(p, d);
 
     /* function? */
     if (ops_at(p, "(")) {
@@ -1561,18 +2192,14 @@ more_qualifiers:
             if (param_prec != MGL_AST_PRECISION_NONE) {
                 param->type->precision = param_prec;
             }
+            /* Type-prefix arrays: `float[3]` / `float[3] a`. */
+            parse_array_specifier_list(p, param);
             if (at_any_ident(p)) {
                 param->name = dup_current(p);
                 advance(p);
             }
-            while (ops_at(p, "[")) {
-                advance(p);
-                if (!ops_at(p, "]") && at_num(p)) {
-                    advance(p);
-                }
-                expect_punct(p, "]");
-                param->array_count++;
-            }
+            /* Declarator postfix: `float a[3]`. */
+            parse_array_specifier_list(p, param);
             d->params = (MGLDecl **)realloc(
                 d->params, (d->param_count + 1) * sizeof(MGLDecl *));
             d->params[d->param_count++] = param;
@@ -1591,6 +2218,9 @@ more_qualifiers:
         } else {
             expect_punct(p, ";");
         }
+        /* Mark as function even with zero parameters / no body so sema
+         * does not treat `float f();` as a variable. */
+        d->return_type = d->type;
         return d;
     }
 
@@ -1633,15 +2263,12 @@ more_qualifiers:
             }
             nd->name = dup_current(p);
             advance(p);
-            while (ops_at(p, "[")) {
-                advance(p);
-                uint32_t sz = parse_array_extent(p);
-                expect_punct(p, "]");
-                nd->array_dims = (uint32_t *)realloc(
-                    nd->array_dims,
-                    (nd->array_count + 1) * sizeof(uint32_t));
-                nd->array_dims[nd->array_count++] = sz;
+            /* Inherit type-prefix dims (`float[3] a, b`) then allow
+             * per-declarator postfix dims. */
+            for (uint32_t i = 0; i < type_prefix_dims; i++) {
+                append_array_dim(p, nd, d->array_dims[i]);
             }
+            parse_array_specifier_list(p, nd);
             tail->next_declarator = nd;
             tail = nd;
         }
@@ -2009,7 +2636,7 @@ MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
             advance(&p);
             continue;
         }
-        d->return_type = d->type != NULL && d->body != NULL ? d->type : NULL;
+        record_decl_constants(&p, d);
         tu->decls = (MGLDecl **)realloc(
             tu->decls, (tu->decl_count + 1) * sizeof(MGLDecl *));
         tu->decls[tu->decl_count++] = d;

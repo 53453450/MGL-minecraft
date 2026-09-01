@@ -379,6 +379,31 @@ static void test_preprocessor(void)
           "token paste identifier compiles");
 }
 
+static void test_array_type_syntax(void)
+{
+    CHECK(parse_ok("#version 330\n"
+                   "void main() {\n"
+                   "  float[3] x;\n"
+                   "  x = float[3](1.0, 2.0, 3.0);\n"
+                   "  float[] y = float[](1.0, 2.0);\n"
+                   "  int n = x.length();\n"
+                   "}\n"),
+          "T[N] decl, ctor, length");
+    CHECK(parse_ok("#version 330\n"
+                   "float[3] f(float[3] a) { return float[3](a[2], a[0], a[1]); }\n"
+                   "void main() { float[3] x = f(float[3](1.0, 2.0, 3.0)); }\n"),
+          "array return and param");
+    CHECK(parse_ok("#version 330\n"
+                   "float[3] f(float[3]);\n"
+                   "void main() { float[3] a = float[3](1.0, 2.0, 3.0); a = f(a); }\n"
+                   "float[3] f(float[3] a) { return a; }\n"),
+          "unnamed array param prototype");
+    CHECK(parse_fails("#version 330\nvoid main() { float a[5][3]; }\n"),
+          "arrays of arrays rejected in 330");
+    CHECK(parse_fails("#version 330\nvoid main() { float[5] a[3]; }\n"),
+          "type-prefix + postfix arrays rejected in 330");
+}
+
 int main(void)
 {
     printf("MGLGLSL parser skeleton tests\n");
@@ -391,6 +416,7 @@ int main(void)
     test_error_report();
     test_gs_layout_errors();
     test_preprocessor();
+    test_array_type_syntax();
     printf("\n%d/%d passed\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;
 }

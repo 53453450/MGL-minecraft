@@ -1088,7 +1088,20 @@ static const BiFn kBuiltins[] = {
     { "abs",       1, { BI_ARG_GENI }, BI_RET_GENI },
     { "abs",       1, { BI_ARG_GENF }, BI_RET_GENF },
     { "lessThanEqual", 2, { BI_ARG_GENF, BI_ARG_GENF }, BI_RET_BVEC },
+    { "lessThanEqual", 2, { BI_ARG_GENI, BI_ARG_GENI }, BI_RET_BVEC },
+    { "lessThan", 2, { BI_ARG_GENF, BI_ARG_GENF }, BI_RET_BVEC },
+    { "lessThan", 2, { BI_ARG_GENI, BI_ARG_GENI }, BI_RET_BVEC },
+    { "greaterThan", 2, { BI_ARG_GENF, BI_ARG_GENF }, BI_RET_BVEC },
+    { "greaterThan", 2, { BI_ARG_GENI, BI_ARG_GENI }, BI_RET_BVEC },
+    { "greaterThanEqual", 2, { BI_ARG_GENF, BI_ARG_GENF }, BI_RET_BVEC },
+    { "greaterThanEqual", 2, { BI_ARG_GENI, BI_ARG_GENI }, BI_RET_BVEC },
+    { "equal", 2, { BI_ARG_GENF, BI_ARG_GENF }, BI_RET_BVEC },
+    { "equal", 2, { BI_ARG_GENI, BI_ARG_GENI }, BI_RET_BVEC },
+    { "notEqual", 2, { BI_ARG_GENF, BI_ARG_GENF }, BI_RET_BVEC },
+    { "notEqual", 2, { BI_ARG_GENI, BI_ARG_GENI }, BI_RET_BVEC },
     { "all",       1, { BI_ARG_BVEC }, BI_RET_BOOL },
+    { "any",       1, { BI_ARG_BVEC }, BI_RET_BOOL },
+    { "not",       1, { BI_ARG_BVEC }, BI_RET_BVEC },
     { "min",       2, { BI_ARG_GENI, BI_ARG_GENI }, BI_RET_GENI },
     { "min",       2, { BI_ARG_GENI, BI_ARG_INT }, BI_RET_GENI },
     { "min",       2, { BI_ARG_GENF, BI_ARG_GENF }, BI_RET_GENF },
@@ -1452,7 +1465,12 @@ static int check_constructor(Sema *s, uint32_t line, const char *tname,
 {
     int ok = 1;
     if (t->kind == MGLIR_TYPE_SCALAR) {
-        if (argc != 1 || !ats[0] || ats[0]->kind != MGLIR_TYPE_SCALAR) {
+        /* GLSL 4.60 §5.4.2: a scalar constructor takes one argument; if that
+         * argument is a vector or matrix, the first component is used. */
+        if (argc != 1 || !ats[0] ||
+            (ats[0]->kind != MGLIR_TYPE_SCALAR &&
+             ats[0]->kind != MGLIR_TYPE_VECTOR &&
+             ats[0]->kind != MGLIR_TYPE_MATRIX)) {
             ok = 0;
         } else if (!constructor_scalar_convert(ats[0], t->scalar)) {
             ok = 0;
@@ -1939,7 +1957,17 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                         ats[i] = check_expr(s, tab, e->u.call.args[i]);
                     }
                     if (e->u.call.is_array_ctor) {
-                        /* vecN[](a, b, ...): array constructor. */
+                        /* T[](a,b,...) / T[N](a,b,...): array constructor. */
+                        if (e->u.call.array_ctor_size != 0 &&
+                            e->u.call.array_ctor_size != e->u.call.arg_count) {
+                            sema_error(s, e->line,
+                                       "array constructor expects %u "
+                                       "element(s), got %u",
+                                       e->u.call.array_ctor_size,
+                                       e->u.call.arg_count);
+                            free(ats);
+                            return NULL;
+                        }
                         if (!is_struct_ctor && e->u.call.arg_count > 0) {
                             for (uint32_t i = 0; i < e->u.call.arg_count; i++) {
                                 if (!ats[i] ||
@@ -2236,7 +2264,9 @@ static void analyze_function(Sema *s, SymTab *tab, const MGLDecl *d)
             return;
         }
     }
-    sym->ret_type = resolve_type_spec(s, tab, d->return_type);
+    /* Return type includes array dims on the function declarator
+     * (`float[3] f()` → array(float, 3)). */
+    sym->ret_type = resolve_decl_type(s, tab, d);
     for (uint32_t i = 0; i < d->param_count; i++) {
         MGLDecl *pd = d->params[i];
         sym->param_types[i] = resolve_decl_type(s, tab, pd);
@@ -2246,12 +2276,46 @@ static void analyze_function(Sema *s, SymTab *tab, const MGLDecl *d)
         }
     }
     if (symtab_lookup_local(tab, d->name) != NULL) {
-        /* Overloads (same name, different parameter count) are legal. */
+        /* Overloads (same name, different parameter count) are legal.
+         * A matching prototype may be followed by a definition. */
         Sym *prev = symtab_lookup_local(tab, d->name);
         int is_overload = 0;
-        if (prev && prev->kind == SYM_FUNCTION &&
-            prev->param_count != d->param_count) {
-            is_overload = 1;
+        int is_redef = 0;
+        if (prev && prev->kind == SYM_FUNCTION) {
+            if (prev->param_count != d->param_count) {
+                is_overload = 1;
+            } else {
+                int match = ir_type_equal(prev->ret_type, sym->ret_type);
+                for (uint32_t i = 0; match && i < d->param_count; i++) {
+                    if (!ir_type_equal(prev->param_types[i],
+                                      sym->param_types[i])) {
+                        match = 0;
+                    }
+                }
+                if (match) {
+                    is_redef = 1;
+                }
+            }
+        }
+        if (is_redef) {
+            /* Keep the first symbol; analyze the body if this is the
+             * defining declaration. */
+            sym_free(sym);
+            if (d->body) {
+                symtab_push(tab);
+                for (uint32_t i = 0; i < d->param_count; i++) {
+                    Sym *ps = sym_new(
+                        d->params[i]->name ? d->params[i]->name : "");
+                    if (ps) {
+                        ps->kind = SYM_VARIABLE;
+                        ps->type = prev->param_types[i];
+                        symtab_insert(tab, ps);
+                    }
+                }
+                analyze_stmt(s, tab, d->body);
+                symtab_pop(tab);
+            }
+            return;
         }
         if (!is_overload) {
             sema_error(s, d->line, "redeclaration of '%s'", d->name);
@@ -2529,7 +2593,7 @@ static void analyze_decl(Sema *s, SymTab *tab, const MGLDecl *d, int global)
     if (!d) {
         return;
     }
-    if (d->body || d->params) {
+    if (d->body || d->params || d->return_type) {
         analyze_function(s, tab, d);
         return;
     }
