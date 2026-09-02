@@ -4456,6 +4456,9 @@ static GLenum mglPassthroughDeclType(
         for (int i = 0; i < MGL_STATE(ctx)->max_color_attachments; i++) {
             if (fbo->color_attachments[i].texture) {
                 Texture *tex = [self framebufferAttachmentTexture:&fbo->color_attachments[i]];
+                if (tex) {
+                    tex->is_render_target = true;
+                }
                 if (tex && ![self bindMTLTexture:tex]) {
                     NSLog(@"MGL PIPELINE DESC fail: bindMTLTexture failed for color attachment %d tex=%u",
                           i, tex->name);
@@ -4475,6 +4478,9 @@ static GLenum mglPassthroughDeclType(
 
         if (fbo->depth.texture) {
             Texture *tex = [self framebufferAttachmentTexture:&fbo->depth];
+            if (tex) {
+                tex->is_render_target = true;
+            }
             if (tex && ![self bindMTLTexture:tex]) {
                 NSLog(@"MGL PIPELINE DESC fail: bindMTLTexture failed for depth tex=%u", tex->name);
                 return NO;
@@ -4493,6 +4499,9 @@ static GLenum mglPassthroughDeclType(
 
         if (fbo->stencil.texture) {
             Texture *tex = [self framebufferAttachmentTexture:&fbo->stencil];
+            if (tex) {
+                tex->is_render_target = true;
+            }
             if (tex && ![self bindMTLTexture:tex]) {
                 NSLog(@"MGL PIPELINE DESC fail: bindMTLTexture failed for stencil tex=%u", tex->name);
                 return NO;
