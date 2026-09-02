@@ -237,6 +237,15 @@ extern "C" void mglRendererObjCCopyImageSubData(GLMContext, Texture *, int32_t, 
     Texture *, int32_t, int32_t, int32_t, int32_t,
     int32_t, int32_t, int32_t) {}
 
+extern "C" bool mglRendererObjCProcessGLState(GLMContext, bool) {
+    return true;
+}
+
+extern "C" bool mglRendererObjCSyncResourceBindings(
+    GLMContext, const MGLResourceSyncWork *) {
+    return true;
+}
+
 static int smokeCreateBackend(id<MTLDevice> device,
                               GLMContext context,
                               MGLRendererBackendHandle **backendOut) {

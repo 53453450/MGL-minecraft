@@ -624,9 +624,19 @@ test-mcrepro: $(build_dir)/test_mcrepro
 
 # Metal-cpp initialization smoke gate. Device bridging and repeated
 # initialization/shutdown must remain stable.
+MGL_RENDERER_FACADE_CPP := \
+	MGL/src/mgl_renderer_texture.cpp \
+	MGL/src/mgl_renderer_platform.cpp \
+	MGL/src/mgl_renderer_blit.cpp \
+	MGL/src/mgl_renderer_compute.cpp \
+	MGL/src/mgl_renderer_batch.cpp \
+	MGL/src/mgl_renderer_sync.cpp \
+	MGL/src/mgl_renderer_binding.cpp
+
 $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
 	MGL/src/mgl_render.cpp MGL/src/mgl_render.h \
 	MGL/src/mgl_renderer_backend.cpp MGL/src/mgl_renderer_backend.h \
+	$(MGL_RENDERER_FACADE_CPP) \
 	MGL/src/MGLPlatformRendererShell.m MGL/include/MGLPlatformRendererShell.h \
 	MGL/src/mgl_aux_assets.c \
 	MGL/src/mgl_buffer_slots.c \
@@ -636,6 +646,7 @@ $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
 		test_legacy_compat/test_metalcpp_smoke.mm \
 		MGL/src/mgl_render.cpp \
 		MGL/src/mgl_renderer_backend.cpp \
+		$(MGL_RENDERER_FACADE_CPP) \
 		MGL/src/MGLPlatformRendererShell.m \
 		MGL/src/mgl_aux_assets.c \
 		MGL/src/mgl_buffer_slots.c \
