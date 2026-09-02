@@ -779,6 +779,52 @@ static llvm::Value *emitAirSampleOffset(Codegen &cg, llvm::Value *off)
     return llvm::Constant::getNullValue(v2i32);
 }
 
+/* AIR sample_texture_2d_array* passes spatial coords and array layer as
+ * separate arguments; GLSL bundles them into vec3(vec2(P), layer) or
+ * vec2(s, layer) for 1D arrays. */
+static bool splitSampleArrayCoord(Codegen &cg, MGLIRTexKind kind,
+                                  llvm::Value *uv, llvm::Value **outCoord,
+                                  llvm::Value **outLayer) {
+    if (!uv || !outCoord || !outLayer) {
+        return false;
+    }
+    *outCoord = uv;
+    *outLayer = nullptr;
+    llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+    llvm::Type *v2f32 = llvm::FixedVectorType::get(f32, 2);
+    if (kind == MGLIR_TEX_2D_ARRAY || kind == MGLIR_TEX_2D_MS_ARRAY) {
+        auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(uv->getType());
+        if (!vt || vt->getElementCount().getFixedValue() < 3u) {
+            cg.err = 1;
+            cg.errmsg = "codegen: sampler2DArray texture access expects vec3 "
+                        "coordinates";
+            return false;
+        }
+        *outLayer = cg.b->CreateExtractElement(uv, cg.b->getInt32(2));
+        *outCoord = cg.b->CreateShuffleVector(
+            uv, llvm::UndefValue::get(uv->getType()), {0, 1});
+        return true;
+    }
+    if (kind == MGLIR_TEX_1D_ARRAY) {
+        auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(uv->getType());
+        if (!vt || vt->getElementCount().getFixedValue() < 2u) {
+            cg.err = 1;
+            cg.errmsg = "codegen: sampler1DArray texture access expects vec2 "
+                        "coordinates";
+            return false;
+        }
+        llvm::Value *x = cg.b->CreateExtractElement(uv, cg.b->getInt32(0));
+        *outLayer = cg.b->CreateExtractElement(uv, cg.b->getInt32(1));
+        llvm::Value *expanded = llvm::UndefValue::get(v2f32);
+        expanded = cg.b->CreateInsertElement(expanded, x, cg.b->getInt32(0));
+        expanded = cg.b->CreateInsertElement(
+            expanded, llvm::ConstantFP::get(f32, 0.5), cg.b->getInt32(1));
+        *outCoord = expanded;
+        return true;
+    }
+    return true;
+}
+
 static llvm::Value *addTexelOffset(Codegen &cg, llvm::Value *coord,
                                    llvm::Value *off)
 {
@@ -5568,15 +5614,26 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                         sp = callAirFn(cg, "air.get_read_sampler",
                                         smpT->getPointerTo(2), {});
                     }
+                    llvm::Value *sampleCoord = uv;
+                    llvm::Value *arrayLayer = nullptr;
+                    if (!splitSampleArrayCoord(cg, sampleKind, uv, &sampleCoord,
+                                               &arrayLayer)) {
+                        return nullptr;
+                    }
+                    std::vector<llvm::Value *> gradArgs = {
+                        t, sp, sampleCoord, dPdx, dPdy,
+                        llvm::ConstantFP::get(f32, 0.0),
+                        cg.b->getInt1(false),
+                        gradOffset,
+                        cg.b->getInt32(0)};
+                    if (arrayLayer) {
+                        gradArgs.insert(gradArgs.begin() + 3, arrayLayer);
+                    }
                     llvm::Value *r = callAirFn(
                         cg,
                         sampledIntrinsic(gradName).c_str(),
                         sampledRetType(vecTy),
-                        {t, sp, uv, dPdx, dPdy,
-                         llvm::ConstantFP::get(f32, 0.0),
-                         cg.b->getInt1(false),
-                         gradOffset,
-                         cg.b->getInt32(0)});
+                        gradArgs);
                     return cg.b->CreateExtractValue(r, 0);
                 };
                 if (dynamicSamplerArray) {
@@ -5657,14 +5714,25 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     sp = callAirFn(cg, "air.get_read_sampler",
                                     smpT->getPointerTo(2), {});
                 }
+                llvm::Value *sampleCoord = uv;
+                llvm::Value *arrayLayer = nullptr;
+                if (!splitSampleArrayCoord(cg, sampleKind, uv, &sampleCoord,
+                                           &arrayLayer)) {
+                    return nullptr;
+                }
+                std::vector<llvm::Value *> sampleArgs = {
+                    t, sp, sampleCoord, cg.b->getInt1(true),
+                    sampleOffset,
+                    cg.b->getInt1(explicitLod),
+                    lod ? lod : llvm::ConstantFP::get(f32, 0.0),
+                    llvm::ConstantFP::get(f32, 0.0),
+                    cg.b->getInt32(0)};
+                if (arrayLayer) {
+                    sampleArgs.insert(sampleArgs.begin() + 3, arrayLayer);
+                }
                 llvm::Value *r = callAirFn(
                     cg, sampledIntrinsic(baseName).c_str(), retTy,
-                    {t, sp, uv, cg.b->getInt1(true),
-                     sampleOffset,
-                     cg.b->getInt1(explicitLod),
-                     lod ? lod : llvm::ConstantFP::get(f32, 0.0),
-                     llvm::ConstantFP::get(f32, 0.0),
-                     cg.b->getInt32(0)});
+                    sampleArgs);
                 return cg.b->CreateExtractValue(r, 0);
             };
             if (dynamicSamplerArray) {
