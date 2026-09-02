@@ -214,6 +214,8 @@ struct Codegen {
     bool hasFragDepth = false;           /* fragment writes gl_FragDepth */
     bool fragDepthInit = false;          /* gl_FragDepth lvalue initialized */
     bool usesClipDistance = false;       /* vertex writes gl_ClipDistance */
+    uint32_t cullDistancePassthroughCount = 0; /* VS flat outs / FS ins */
+    uint32_t clipDistanceInputCount = 0; /* FS reads gl_ClipDistance */
     bool pointSize = false;              /* vertex: writes gl_PointSize */
     bool layerViewport = false;          /* writes gl_Layer / gl_ViewportIndex */
     bool primitiveIdWritten = false;     /* writes gl_PrimitiveID (GS out) */
@@ -6493,6 +6495,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 uint64_t hidden = cg.uboPtrs.size() + cg.ssboPtrs.size() +
                                   cg.acPtrs.size() +
                                   (cg.bufferSizePtr ? 1u : 0u) +
+                                  (cg.lvalues.count("gl_CullDistance") ? 1u
+                                                                       : 0u) +
+                                  (cg.lvalues.count("gl_ClipDistance") ? 1u
+                                                                       : 0u) +
                                   (cg.isGeometry ? 8u : 0u);
                 if (e->u.call.arg_count + hidden !=
                     fit->second->arg_size()) {
@@ -6534,6 +6540,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     args.push_back(kv.second);
                 if (cg.bufferSizePtr)
                     args.push_back(cg.bufferSizePtr);
+                if (cg.lvalues.count("gl_CullDistance"))
+                    args.push_back(cg.lvalues["gl_CullDistance"]);
+                if (cg.lvalues.count("gl_ClipDistance"))
+                    args.push_back(cg.lvalues["gl_ClipDistance"]);
                 if (cg.isGeometry) {
                     args.push_back(cg.geometryInputPtr);
                     args.push_back(cg.geometryOutputPtr);
@@ -8411,12 +8421,68 @@ llvm::Value *assembleReturn(Codegen &cg) {
                     ri++);
             }
             if (cg.usesClipDistance) {
-                ret = cg.b->CreateInsertValue(
-                    ret,
-                    cg.lvalues.count("gl_ClipDistance")
-                        ? cg.lvalues["gl_ClipDistance"]
-                        : defaultClipDistances(cg),
-                    ri++);
+                llvm::Value *clip = cg.lvalues.count("gl_ClipDistance")
+                    ? cg.lvalues["gl_ClipDistance"]
+                    : defaultClipDistances(cg);
+                ret = cg.b->CreateInsertValue(ret, clip, ri++);
+                for (uint32_t i = 0; i < MGL_MAX_CLIP_DISTANCES; i++) {
+                    ret = cg.b->CreateInsertValue(
+                        ret, cg.b->CreateExtractValue(clip, i), ri++);
+                }
+            }
+            if (cg.cullDistancePassthroughCount > 0) {
+                /* Prefer the exact per-vertex capture buffer (slot 29) when
+                 * present: the same values drive primitive cull emulation.
+                 * Falling back to the SSA gl_CullDistance array covers draws
+                 * that skip the capture pre-pass. */
+                llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+                if (cg.usesCullDistance && cg.cullBuffer && cg.cullParams &&
+                    cg.vertexId) {
+                    llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
+                    llvm::Value *params = cg.b->CreateBitCast(
+                        cg.cullParams, i32->getPointerTo(1));
+                    auto loadParam = [&](uint32_t index) {
+                        return cg.b->CreateAlignedLoad(
+                            i32,
+                            cg.b->CreateGEP(i32, params, cg.b->getInt32(index)),
+                            llvm::Align(4));
+                    };
+                    llvm::Value *distanceOffset = loadParam(1);
+                    llvm::Value *stride = loadParam(2);
+                    llvm::Value *firstInstance = loadParam(10);
+                    llvm::Value *instanceStride = loadParam(11);
+                    llvm::Value *relativeInstance = cg.b->CreateSub(
+                        cg.instanceId ? cg.instanceId : cg.b->getInt32(0),
+                        firstInstance);
+                    llvm::Value *instanceBase = cg.b->CreateMul(
+                        relativeInstance, instanceStride);
+                    llvm::Value *buf = cg.b->CreateBitCast(
+                        cg.cullBuffer, f32->getPointerTo(1));
+                    for (uint32_t i = 0; i < cg.cullDistancePassthroughCount;
+                         i++) {
+                        llvm::Value *byteOffset = cg.b->CreateAdd(
+                            cg.b->CreateMul(
+                                cg.b->CreateAdd(instanceBase, cg.vertexId),
+                                stride),
+                            cg.b->CreateAdd(distanceOffset,
+                                            cg.b->getInt32(i * 4u)));
+                        llvm::Value *floatOffset = cg.b->CreateUDiv(
+                            byteOffset, cg.b->getInt32(4));
+                        llvm::Value *value = cg.b->CreateAlignedLoad(
+                            f32, cg.b->CreateGEP(f32, buf, floatOffset),
+                            llvm::Align(4));
+                        ret = cg.b->CreateInsertValue(ret, value, ri++);
+                    }
+                } else {
+                    llvm::Value *cull = cg.lvalues.count("gl_CullDistance")
+                        ? cg.lvalues["gl_CullDistance"]
+                        : defaultCullDistances(cg);
+                    for (uint32_t i = 0; i < cg.cullDistancePassthroughCount;
+                         i++) {
+                        ret = cg.b->CreateInsertValue(
+                            ret, cg.b->CreateExtractValue(cull, i), ri++);
+                    }
+                }
             }
             if (cg.layerViewport) {
                 /* GLSL 4.60 §7.1.4 / GL 4.6 §13.8.1: unwritten gl_Layer
@@ -9440,6 +9506,46 @@ static char *airPrepareLegacySource(const char *src, int air_stage) {
     return translated;
 }
 
+static uint32_t reflectBuiltinArrayCount(const char *src, const char *name)
+{
+    if (!src || !name) return 0;
+    const size_t nameLen = strlen(name);
+    const char *p = src;
+    uint32_t count = 0;
+    while ((p = strstr(p, name)) != nullptr) {
+        p += nameLen;
+        while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') ++p;
+        if (*p != '[') {
+            count = 8;
+            continue;
+        }
+        ++p;
+        while (*p == ' ' || *p == '\t') ++p;
+        if (*p < '0' || *p > '9') {
+            count = 8;
+            continue;
+        }
+        char *end = nullptr;
+        unsigned long index = strtoul(p, &end, 10);
+        uint32_t reflected = index < 8
+            ? static_cast<uint32_t>(index + 1)
+            : (index == 8 ? 8u : 0u);
+        if (count < reflected) count = reflected;
+        p = end ? end : p;
+    }
+    return count;
+}
+
+static uint32_t reflectCullDistanceCount(const char *src)
+{
+    return reflectBuiltinArrayCount(src, "gl_CullDistance");
+}
+
+static uint32_t reflectClipDistanceCount(const char *src)
+{
+    return reflectBuiltinArrayCount(src, "gl_ClipDistance");
+}
+
 static int compileGLSLImpl(const char *src, int stage, int capture,
                            bool has_gs, const char *const *attrib_names,
                            uint32_t tessPatchVertices,
@@ -9513,12 +9619,30 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     const bool isTESCompute = isTES &&
         (tu->layout_primitive == MGL_AST_TES_ISOLINES ||
          tu->layout_point_mode != 0);
+    const bool isKernel = isCompute || isTCS || isGS || isTESCompute;
     const bool usesCullDistance = isVS && !isCapture &&
                                   sourceUsesCullDistance;
     const bool usesPatchCullDistance =
         isTES && !isTESCompute && !isCapture &&
         sourceUsesCullDistance;
-    const bool isKernel = isCompute || isTCS || isGS || isTESCompute;
+    const uint32_t activeCullCount = sourceUsesCullDistance
+        ? (reflectCullDistanceCount(esrc) > 0
+               ? reflectCullDistanceCount(esrc) : 8u)
+        : 0u;
+    const bool usesCullDistancePassthrough =
+        isVS && !isCapture && sourceUsesCullDistance && activeCullCount > 0;
+    const bool usesFragmentCullDistance =
+        !isVS && !isTES && !isKernel && !isCapture &&
+        sourceUsesCullDistance && activeCullCount > 0;
+    const bool sourceUsesClipDistanceRead =
+        !isVS && !isTES && !isKernel && !isCapture &&
+        strstr(esrc, "gl_ClipDistance") != nullptr;
+    const uint32_t activeClipCount = sourceUsesClipDistanceRead
+        ? (reflectClipDistanceCount(esrc) > 0
+               ? reflectClipDistanceCount(esrc) : 8u)
+        : 0u;
+    const bool usesFragmentClipDistance =
+        sourceUsesClipDistanceRead && activeClipCount > 0;
     const uint32_t runtimeArraySizeBufferIndex =
         (isGS || isTESCompute)
             ? MGL_COMPUTE_ABI_RUNTIME_ARRAY_SIZE_BUFFER_INDEX
@@ -9901,6 +10025,13 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         if (usesClipDistance) {
             retElems.push_back(llvm::ArrayType::get(
                 llvm::Type::getFloatTy(ctx), MGL_MAX_CLIP_DISTANCES));
+            /* Metal FS cannot read clip_distance; also emit flat mirrors. */
+            for (uint32_t i = 0; i < MGL_MAX_CLIP_DISTANCES; i++)
+                retElems.push_back(llvm::Type::getFloatTy(ctx));
+        }
+        if (usesCullDistancePassthrough) {
+            for (uint32_t i = 0; i < activeCullCount; i++)
+                retElems.push_back(llvm::Type::getFloatTy(ctx));
         }
         if (usesLayerViewport) {
             retElems.push_back(llvm::Type::getInt32Ty(ctx));
@@ -10115,6 +10246,14 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             }
         }
     }
+    if (usesFragmentClipDistance) {
+        for (uint32_t i = 0; i < activeClipCount; i++)
+            paramTys.push_back(llvm::Type::getFloatTy(ctx));
+    }
+    if (usesFragmentCullDistance) {
+        for (uint32_t i = 0; i < activeCullCount; i++)
+            paramTys.push_back(llvm::Type::getFloatTy(ctx));
+    }
     if (isVS && isCapture) {
         /* XFB capture variant: attributes trail all buffers (see above). */
         for (VarSym &v : syms) {
@@ -10267,6 +10406,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             for (VarSym &v : syms)
                 if (!isVS && !isTES && !isKernel && v.kind == VarSym::VARYING)
                     bufIdx++;
+            if (usesFragmentClipDistance)
+                bufIdx += activeClipCount;
+            if (usesFragmentCullDistance)
+                bufIdx += activeCullCount;
         }
         fn->addParamAttr(bufIdx, llvm::Attribute::AttrKind::NoAlias);
         if (!isKernel)
@@ -10328,6 +10471,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     cg.isGeometry = isGS;
     cg.isTESCompute = isTESCompute;
     cg.usesPatchCullDistance = usesPatchCullDistance;
+    cg.cullDistancePassthroughCount =
+        usesCullDistancePassthrough ? activeCullCount : 0u;
+    cg.clipDistanceInputCount =
+        usesFragmentClipDistance ? activeClipCount : 0u;
     cg.controlPointGetter = controlPointGetter;
     if (sourceUsesCullDistance) {
         cg.lvalues["gl_CullDistance"] = defaultCullDistances(cg);
@@ -10497,6 +10644,22 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 }
             }
         }
+    }
+    if (usesFragmentClipDistance) {
+        llvm::Type *f32 = llvm::Type::getFloatTy(ctx);
+        llvm::Value *arr = llvm::UndefValue::get(
+            llvm::ArrayType::get(f32, activeClipCount));
+        for (uint32_t i = 0; i < activeClipCount; i++)
+            arr = cg.b->CreateInsertValue(arr, fn->getArg(argSlot++), i);
+        cg.lvalues["gl_ClipDistance"] = arr;
+    }
+    if (usesFragmentCullDistance) {
+        llvm::Type *f32 = llvm::Type::getFloatTy(ctx);
+        llvm::Value *arr = llvm::UndefValue::get(
+            llvm::ArrayType::get(f32, activeCullCount));
+        for (uint32_t i = 0; i < activeCullCount; i++)
+            arr = cg.b->CreateInsertValue(arr, fn->getArg(argSlot++), i);
+        cg.lvalues["gl_CullDistance"] = arr;
     }
     if (isVS && !isCapture) {
         /* VS varyings (out) have no parameter backing; plain writes
@@ -10753,6 +10916,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             pts.push_back(llvm::Type::getInt8PtrTy(ctx, 1));
         if (cg.bufferSizePtr)
             pts.push_back(llvm::Type::getInt32PtrTy(ctx, 2));
+        if (cg.lvalues.count("gl_CullDistance"))
+            pts.push_back(cg.lvalues["gl_CullDistance"]->getType());
+        if (cg.lvalues.count("gl_ClipDistance"))
+            pts.push_back(cg.lvalues["gl_ClipDistance"]->getType());
         if (isGS) {
             for (int hidden = 0; hidden < 5; hidden++)
                 pts.push_back(llvm::Type::getInt8PtrTy(ctx, 1));
@@ -10883,6 +11050,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 fc.acPtrs[kv.first] = f->getArg(hidx++);
             if (cg.bufferSizePtr)
                 fc.bufferSizePtr = f->getArg(hidx++);
+            if (cg.lvalues.count("gl_CullDistance"))
+                fc.lvalues["gl_CullDistance"] = f->getArg(hidx++);
+            if (cg.lvalues.count("gl_ClipDistance"))
+                fc.lvalues["gl_ClipDistance"] = f->getArg(hidx++);
             if (isGS) {
                 fc.geometryInputPtr = f->getArg(hidx++);
                 fc.geometryOutputPtr = f->getArg(hidx++);
@@ -12201,9 +12372,28 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 }
             }
         }
+        if (usesFragmentClipDistance) {
+            MType floatTy;
+            floatTy.scalar = MGLIR_SCALAR_FLOAT;
+            for (uint32_t i = 0; i < activeClipCount; i++) {
+                std::string elName =
+                    "gl_ClipDistance_elm" + std::to_string(i);
+                emitFSVarying(elName, floatTy, mArgSlot++, true);
+            }
+        }
+        if (usesFragmentCullDistance) {
+            MType floatTy;
+            floatTy.scalar = MGLIR_SCALAR_FLOAT;
+            for (uint32_t i = 0; i < activeCullCount; i++) {
+                std::string elName =
+                    "gl_CullDistance_elm" + std::to_string(i);
+                emitFSVarying(elName, floatTy, mArgSlot++, true);
+            }
+        }
         if (usesFragCoord || usesFrontFacing || usesPointCoord ||
             usesPrimitiveId || usesLayer || usesViewportIndex ||
-            usesSampleID) {
+            usesSampleID || usesFragmentCullDistance ||
+            usesFragmentClipDistance) {
             /* Fragment builtins sit after the varyings and the optional
              * uniform buffer in the arg order; skip that slot once. */
             if (hasBuffer) mArgSlot++;
@@ -12394,6 +12584,34 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 llvm::MDString::get(ctx, "float"),
                 llvm::MDString::get(ctx, "air.arg_name"),
                 llvm::MDString::get(ctx, "gl_ClipDistance")}));
+            MType floatTy;
+            floatTy.scalar = MGLIR_SCALAR_FLOAT;
+            for (uint32_t i = 0; i < MGL_MAX_CLIP_DISTANCES; i++) {
+                std::string elName =
+                    "gl_ClipDistance_elm" + std::to_string(i);
+                outNodes.push_back(llvm::MDNode::get(ctx, {
+                    llvm::MDString::get(ctx, "air.vertex_output"),
+                    llvm::MDString::get(ctx, airGenerated(elName, floatTy)),
+                    llvm::MDString::get(ctx, "air.arg_type_name"),
+                    llvm::MDString::get(ctx, "float"),
+                    llvm::MDString::get(ctx, "air.arg_name"),
+                    llvm::MDString::get(ctx, elName)}));
+            }
+        }
+        if (usesCullDistancePassthrough) {
+            MType floatTy;
+            floatTy.scalar = MGLIR_SCALAR_FLOAT;
+            for (uint32_t i = 0; i < activeCullCount; i++) {
+                std::string elName =
+                    "gl_CullDistance_elm" + std::to_string(i);
+                outNodes.push_back(llvm::MDNode::get(ctx, {
+                    llvm::MDString::get(ctx, "air.vertex_output"),
+                    llvm::MDString::get(ctx, airGenerated(elName, floatTy)),
+                    llvm::MDString::get(ctx, "air.arg_type_name"),
+                    llvm::MDString::get(ctx, "float"),
+                    llvm::MDString::get(ctx, "air.arg_name"),
+                    llvm::MDString::get(ctx, elName)}));
+            }
         }
         if (usesLayerViewport) {
             outNodes.push_back(llvm::MDNode::get(ctx, {
@@ -12776,35 +12994,6 @@ extern "C" int mglShaderCompileGLSLCullDistanceCapture(
     return compileGLSLImpl(src, MGL_STAGE_VERTEX, 3, /*has_gs=*/false, nullptr,
                            0u,
                            metallib_out, size_out, err_buf, err_cap);
-}
-
-static uint32_t reflectCullDistanceCount(const char *src)
-{
-    if (!src) return 0;
-    const char *p = src;
-    uint32_t count = 0;
-    while ((p = strstr(p, "gl_CullDistance")) != nullptr) {
-        p += strlen("gl_CullDistance");
-        while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') ++p;
-        if (*p != '[') {
-            count = 8;
-            continue;
-        }
-        ++p;
-        while (*p == ' ' || *p == '\t') ++p;
-        if (*p < '0' || *p > '9') {
-            count = 8;
-            continue;
-        }
-        char *end = nullptr;
-        unsigned long index = strtoul(p, &end, 10);
-        uint32_t reflected = index < 8
-            ? static_cast<uint32_t>(index + 1)
-            : (index == 8 ? 8u : 0u);
-        if (count < reflected) count = reflected;
-        p = end ? end : p;
-    }
-    return count;
 }
 
 static void fillStageInfo(const MGLTranslationUnit *tu,
