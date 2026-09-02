@@ -772,7 +772,7 @@ bool mglProcessDirtyStateDomainsBridge(MGLRenderer *self, bool draw_command,
                [self mglSyncOpsCommandState], work, &ops) != 0;
 }
 
-@implementation MGLRenderer (SyncOpsBridge)
+@implementation MGLRenderer (SyncOpsAccessors)
 
 - (MGLCommandState *)mglSyncOpsCommandState
 {
