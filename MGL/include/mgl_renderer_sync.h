@@ -92,6 +92,32 @@ int mglRenderProcessGLStateTail(
     int draw_command, int trace_process, MGLResourceSyncWork *resource_sync_work,
     const MGLProcessGLStateTailOps *ops);
 
+/* processGLState preamble (metal recovery → CB ensure) before dirty domains. */
+#define MGL_PREAMBLE_FAIL     0
+#define MGL_PREAMBLE_CONTINUE 1
+#define MGL_PREAMBLE_DONE_OK  2
+
+typedef struct MGLProcessGLStatePreambleOps_t {
+    void *renderer;
+    bool (*ensure_metal_objects_ready)(void *renderer);
+    void (*reject_draw_without_vao)(void *renderer, GLMContext context);
+    void (*on_draw_command_begin)(void *renderer, GLMContext context,
+                                  MGLCommandState *command_state);
+    void (*end_render_pass_non_draw)(void *renderer, uint64_t process_call);
+    int (*handle_null_vao_path)(void *renderer, GLMContext context,
+                                int draw_command);
+    bool (*check_program_quarantine)(void *renderer, GLMContext context);
+    bool (*rotate_finalized_command_buffer)(void *renderer, GLMContext context,
+                                            int trace_process);
+    bool (*create_initial_command_buffer)(void *renderer, GLMContext context,
+                                          int trace_process);
+} MGLProcessGLStatePreambleOps;
+
+int mglRenderProcessGLStatePreamble(
+    GLMContext context, MGLCommandState *command_state, int draw_command,
+    uint64_t process_call, int trace_process,
+    const MGLProcessGLStatePreambleOps *ops);
+
 bool mglRendererObjCProcessGLState(GLMContext context, bool draw_command);
 
 #ifdef __cplusplus

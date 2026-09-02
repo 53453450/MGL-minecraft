@@ -74,10 +74,11 @@ draw_command.c / backend
 
 | Module | Header | ObjC bridge prefix | Routes |
 |--------|--------|-------------------|--------|
-| sync | `mgl_renderer_sync.h` | `mglRendererObjCProcessGLState` | dirty-domain orchestration, FBO pass sync (`mglRenderSyncRenderPassForFbo`) |
+| sync | `mgl_renderer_sync.h` | `mglRendererObjCProcessGLState` | preamble, dirty domains, FBO sync, draw tail |
+| pipeline | `mgl_renderer_pipeline.h` | `mglRendererObjCSyncPipeline` | PSO build/cache sync during dirty-domain pass |
 | binding | `mgl_renderer_binding.h` | `mglRendererObjCSyncResourceBindings` | resource rebind before draw |
 | batch | `mgl_renderer_batch.h` | `mglRendererObjCFlushDrawBuffer` | deferred batch flush |
-| draw | `mgl_renderer_draw.h` | `mglRendererObjCDraw*` | draw dispatch (partial) |
+| draw | `mgl_renderer_draw.h` | `mglRendererObjCDraw*` / `mglRendererDraw*` | bind/mipmap/readback/upload + all draw/multi-draw variants |
 | texture | `mgl_renderer_texture.h` | `mglRendererObjC*Texture*` | bind/mipmap/readback/upload |
 | platform | `mgl_renderer_platform.h` | `mglRendererObjCSwap/Clear*` | swap/clear |
 | blit | `mgl_renderer_blit.h` | `mglRendererObjCBlitFramebuffer` | framebuffer blit |

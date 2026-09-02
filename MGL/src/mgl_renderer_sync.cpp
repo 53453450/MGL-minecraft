@@ -197,6 +197,83 @@ extern "C" int mglRenderSyncRenderPassForFbo(
     return 1;
 }
 
+extern "C" int mglRenderProcessGLStatePreamble(
+    GLMContext context, MGLCommandState *command_state, int draw_command,
+    uint64_t process_call, int trace_process,
+    const MGLProcessGLStatePreambleOps *ops)
+{
+    if (!context || !context->active_state || !ops) {
+        return MGL_PREAMBLE_FAIL;
+    }
+
+    GLMState *state = context->active_state;
+
+    if (ops->ensure_metal_objects_ready &&
+        !ops->ensure_metal_objects_ready(ops->renderer)) {
+        return MGL_PREAMBLE_FAIL;
+    }
+
+    if (draw_command && command_state && ops->on_draw_command_begin) {
+        ops->on_draw_command_begin(ops->renderer, context, command_state);
+    }
+
+    if (!draw_command && ops->end_render_pass_non_draw) {
+        ops->end_render_pass_non_draw(ops->renderer, process_call);
+    }
+
+    if (state->vao == NULL) {
+        if (draw_command) {
+            if (ops->reject_draw_without_vao) {
+                ops->reject_draw_without_vao(ops->renderer, context);
+            }
+            return MGL_PREAMBLE_FAIL;
+        }
+        if (ops->handle_null_vao_path) {
+            return ops->handle_null_vao_path(ops->renderer, context,
+                                             draw_command);
+        }
+        return MGL_PREAMBLE_DONE_OK;
+    }
+
+    if (!draw_command) {
+        return MGL_PREAMBLE_DONE_OK;
+    }
+
+    if (ops->check_program_quarantine &&
+        !ops->check_program_quarantine(ops->renderer, context)) {
+        return MGL_PREAMBLE_FAIL;
+    }
+
+    if (command_state) {
+        MGLRenderCommandBufferState process_command_state = {0};
+        const int process_has_command =
+            mglRenderGetCommandBufferOwnerState(
+                command_state->currentCommandBufferOwner,
+                &process_command_state) == 0;
+        if (process_has_command &&
+            mglRenderEncoderOwnerHasCurrent(
+                command_state->currentRenderEncoderOwner) != 1) {
+            const uint32_t pre_status =
+                (uint32_t)process_command_state.status;
+            if (pre_status >= MGLCommandBufferStatusCommitted) {
+                if (!ops->rotate_finalized_command_buffer ||
+                    !ops->rotate_finalized_command_buffer(
+                        ops->renderer, context, trace_process)) {
+                    return MGL_PREAMBLE_FAIL;
+                }
+            }
+        } else if (!process_has_command) {
+            if (!ops->create_initial_command_buffer ||
+                !ops->create_initial_command_buffer(ops->renderer, context,
+                                                  trace_process)) {
+                return MGL_PREAMBLE_FAIL;
+            }
+        }
+    }
+
+    return MGL_PREAMBLE_CONTINUE;
+}
+
 extern "C" int mglRenderProcessGLStateTail(
     GLMContext context, const MGLCommandState *command_state,
     int draw_command, int trace_process,

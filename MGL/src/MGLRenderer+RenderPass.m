@@ -16,7 +16,7 @@
 #include "mgl_air_loader.h"     /* AIR metallib loader. */
 #include "mgl_aux_assets.h"
 #include "mgl_renderer_backend.h"
-#include "mgl_renderer_binding.h"
+#include "mgl_renderer_pipeline.h"
 #include "mgl_renderer_sync.h"
 #include "mgl_env_flag.h"
 #include "mgl_shader_abi.h"
@@ -4920,6 +4920,197 @@ static GLenum mglPassthroughDeclType(
     }
 }
 
+static bool mglProcessGLStatePreambleBridgeEnsureMetal(void *renderer)
+{
+    MGLRenderer *self = (__bridge MGLRenderer *)renderer;
+    static int corruption_recovery_count = 0;
+    static const int max_recovery_attempts = 3;
+
+    if (self->_device && self->_commandQueue &&
+        (uintptr_t)self->_device >= 0x1000 &&
+        (uintptr_t)self->_commandQueue >= 0x1000) {
+        return true;
+    }
+
+    NSLog(@"MGL CRITICAL: Metal state corruption detected in processGLState!");
+    NSLog(@"MGL CRITICAL: device=0x%lx, queue=0x%lx",
+          (uintptr_t)self->_device, (uintptr_t)self->_commandQueue);
+
+    if (corruption_recovery_count >= max_recovery_attempts) {
+        NSLog(@"MGL CRITICAL: Maximum recovery attempts exceeded, permanently disabling Metal operations");
+        return false;
+    }
+
+    NSLog(@"MGL CRITICAL: Attempting Metal state recovery (%d/%d)",
+          corruption_recovery_count + 1, max_recovery_attempts);
+    @try {
+        [self emergencyResetMetalState];
+        corruption_recovery_count++;
+        if (!self->_device || !self->_commandQueue) {
+            NSLog(@"MGL CRITICAL: Metal recovery failed, aborting operation");
+            return false;
+        }
+    } @catch (NSException *exception) {
+        NSLog(@"MGL CRITICAL: Metal recovery failed: %@", exception);
+        return false;
+    }
+    return true;
+}
+
+static void mglProcessGLStatePreambleBridgeRejectDrawNoVao(void *renderer,
+                                                           GLMContext context)
+{
+    (void)renderer;
+    (void)context;
+    NSLog(@"Error: No VAO defined for ctx\n");
+}
+
+static void mglProcessGLStatePreambleBridgeDrawBegin(
+    void *renderer, GLMContext context, MGLCommandState *command_state)
+{
+    (void)renderer;
+    (void)context;
+    mglCmdSetCurrentDrawUsesRTSampledCopy(command_state, NO);
+    MGL_FRAME_INC(g_mglProcessDrawCallsSinceSwap);
+}
+
+static void mglProcessGLStatePreambleBridgeEndRenderPassNonDraw(
+    void *renderer, uint64_t process_call)
+{
+    [(__bridge MGLRenderer *)renderer
+        endRenderPassIfFramebufferChangedForNonDraw:process_call];
+}
+
+static int mglProcessGLStatePreambleBridgeHandleNullVao(void *renderer,
+                                                        GLMContext context,
+                                                        int draw_command)
+{
+    (void)draw_command;
+    MGLRenderer *self = (__bridge MGLRenderer *)renderer;
+    GLMState *state = MGL_STATE(context);
+    if (!(state->dirty_bits & DIRTY_STATE)) {
+        return MGL_PREAMBLE_DONE_OK;
+    }
+    [self endRenderEncodingLocked];
+    if (![self validateMetalObjects]) {
+        NSLog(@"MGL WARNING: GPU throttling active - deferring render encoder creation");
+        state->dirty_bits &= ~DIRTY_STATE;
+        return MGL_PREAMBLE_DONE_OK;
+    }
+    @try {
+        [self newRenderEncoderLockedWithReason:MGL_ENC_REASON_CLEAR];
+    } @catch (NSException *exception) {
+        NSLog(@"MGL ERROR: Render encoder creation failed: %@", exception);
+    }
+    state->dirty_bits &= ~DIRTY_STATE;
+    return MGL_PREAMBLE_DONE_OK;
+}
+
+static bool mglProcessGLStatePreambleBridgeCheckQuarantine(void *renderer,
+                                                           GLMContext context)
+{
+    MGLRenderer *self = (__bridge MGLRenderer *)renderer;
+    GLuint blockedProgramKey = mglCurrentRenderProgramKey(context);
+    if (blockedProgramKey == 0u ||
+        self->_gpuRecovery.interfaceMismatchBlockedProgram == 0 ||
+        blockedProgramKey != self->_gpuRecovery.interfaceMismatchBlockedProgram) {
+        return true;
+    }
+    CFTimeInterval now = CFAbsoluteTimeGetCurrent();
+    if (now >= self->_gpuRecovery.interfaceMismatchBlockedUntil) {
+        return true;
+    }
+    static uint64_t s_quarantineSkipCount = 0;
+    s_quarantineSkipCount++;
+    if (s_quarantineSkipCount <= 16 || (s_quarantineSkipCount % 1000) == 0) {
+        double remaining =
+            self->_gpuRecovery.interfaceMismatchBlockedUntil - now;
+        if (remaining < 0.0) {
+            remaining = 0.0;
+        }
+        NSLog(@"MGL WARNING: Program %u quarantined due to interface mismatch (%.2fs remaining), skipping draw",
+              (unsigned)self->_gpuRecovery.interfaceMismatchBlockedProgram,
+              remaining);
+    }
+    return false;
+}
+
+static bool mglProcessGLStatePreambleBridgeRotateCommandBuffer(
+    void *renderer, GLMContext context, int trace_process)
+{
+    (void)context;
+    MGLRenderer *self = (__bridge MGLRenderer *)renderer;
+    static uint64_t s_rotateFinalizedCount = 0;
+    uint64_t rotateHit = ++s_rotateFinalizedCount;
+    if (rotateHit <= 16ull || (rotateHit % 500ull) == 0ull) {
+        NSLog(@"MGL INFO: processGLState rotating finalized command buffer hit=%llu",
+              (unsigned long long)rotateHit);
+    }
+    if ([self newCommandBufferLocked]) {
+        return true;
+    }
+    NSLog(@"MGL ERROR: processGLState failed to create a fresh command buffer");
+    if (trace_process) {
+        mglLogStateSnapshot("processGLState.fail.new_cb_rotate",
+                            self->ctx,
+                            self->_commandState.currentCommandBufferOwner,
+                            self->_commandState.currentRenderEncoderOwner,
+                            self->_commandState.renderPassStateOwner,
+                            self->_drawable);
+    }
+    return false;
+}
+
+static bool mglProcessGLStatePreambleBridgeCreateCommandBuffer(
+    void *renderer, GLMContext context, int trace_process)
+{
+    (void)context;
+    MGLRenderer *self = (__bridge MGLRenderer *)renderer;
+    if (kMGLVerboseFrameLoopLogs) {
+        NSLog(@"MGL INFO: processGLState found NULL command buffer, creating one");
+    }
+    if ([self newCommandBufferLocked]) {
+        return true;
+    }
+    NSLog(@"MGL ERROR: processGLState could not create initial command buffer");
+    if (trace_process) {
+        mglLogStateSnapshot("processGLState.fail.new_cb_initial",
+                            self->ctx,
+                            self->_commandState.currentCommandBufferOwner,
+                            self->_commandState.currentRenderEncoderOwner,
+                            self->_commandState.renderPassStateOwner,
+                            self->_drawable);
+    }
+    return false;
+}
+
+static int mglProcessGLStatePreambleBridge(MGLRenderer *self, bool draw_command,
+                                           uint64_t process_call,
+                                           bool trace_process)
+{
+    static const MGLProcessGLStatePreambleOps kPreambleOpsTemplate = {
+        .ensure_metal_objects_ready =
+            mglProcessGLStatePreambleBridgeEnsureMetal,
+        .reject_draw_without_vao =
+            mglProcessGLStatePreambleBridgeRejectDrawNoVao,
+        .on_draw_command_begin = mglProcessGLStatePreambleBridgeDrawBegin,
+        .end_render_pass_non_draw =
+            mglProcessGLStatePreambleBridgeEndRenderPassNonDraw,
+        .handle_null_vao_path = mglProcessGLStatePreambleBridgeHandleNullVao,
+        .check_program_quarantine =
+            mglProcessGLStatePreambleBridgeCheckQuarantine,
+        .rotate_finalized_command_buffer =
+            mglProcessGLStatePreambleBridgeRotateCommandBuffer,
+        .create_initial_command_buffer =
+            mglProcessGLStatePreambleBridgeCreateCommandBuffer,
+    };
+    MGLProcessGLStatePreambleOps preambleOps = kPreambleOpsTemplate;
+    preambleOps.renderer = (__bridge void *)self;
+    return mglRenderProcessGLStatePreamble(
+        self->ctx, &self->_commandState, draw_command ? 1 : 0, process_call,
+        trace_process ? 1 : 0, &preambleOps);
+}
+
 static bool mglProcessGLStateTailBridgeRecoverNilEncoder(void *renderer,
                                                          GLMContext context)
 {
@@ -5222,201 +5413,37 @@ static bool mglProcessGLStateTailBridge(MGLRenderer *self, bool draw_command,
         return false;
     }
 
-    if (draw_command) {
-        /*
-         * This flag is derived from the current draw's final fragment sampler
-         * binding.  Clear it before any early render-state refresh so the
-         * previous draw cannot disable culling while DIRTY_VAO/FBO is handled.
-         */
-        mglCmdSetCurrentDrawUsesRTSampledCopy(&_commandState, NO);
-        MGL_FRAME_INC(g_mglProcessDrawCallsSinceSwap);
-    }
-
     uintptr_t earlyCtxAddr = (uintptr_t)ctx;
     if (earlyCtxAddr < 0x1000) {
         NSLog(@"MGL ERROR: Invalid context pointer detected: 0x%lx", earlyCtxAddr);
         return false;
     }
 
-    // REMOVED: Thread synchronization was causing deadlocks
-    // The issue is not thread contention but Metal object corruption
-
-    // ULTIMATE FAILSAFE: Metal state corruption detection and recovery
-    static int corruption_recovery_count = 0;
-    static int max_recovery_attempts = 3;
-
-    // Check for corrupted Metal objects that might cause crashes.
-    // Only reject NULL / obviously invalid low addresses.
-    if (!_device || !_commandQueue || ((uintptr_t)_device < 0x1000) || ((uintptr_t)_commandQueue < 0x1000)) {
-        NSLog(@"MGL CRITICAL: Metal state corruption detected in processGLState!");
-        NSLog(@"MGL CRITICAL: device=0x%lx, queue=0x%lx", (uintptr_t)_device, (uintptr_t)_commandQueue);
-
-        if (corruption_recovery_count < max_recovery_attempts) {
-            NSLog(@"MGL CRITICAL: Attempting Metal state recovery (%d/%d)", corruption_recovery_count + 1, max_recovery_attempts);
-
-            // Force a complete Metal state reset
-            @try {
-                [self emergencyResetMetalState];
-                corruption_recovery_count++;
-
-                // Re-check after recovery
-                if (!_device || !_commandQueue) {
-                    NSLog(@"MGL CRITICAL: Metal recovery failed, aborting operation");
-                    return false;
-                }
-            } @catch (NSException *exception) {
-                NSLog(@"MGL CRITICAL: Metal recovery failed: %@", exception);
-                return false;
-            }
-        } else {
-            NSLog(@"MGL CRITICAL: Maximum recovery attempts exceeded, permanently disabling Metal operations");
-            return false;
-        }
+    int preambleResult = mglProcessGLStatePreambleBridge(
+        self, draw_command, processCall, traceProcess);
+    if (preambleResult == MGL_PREAMBLE_FAIL) {
+        return false;
     }
-
-    //logDirtyBits(ctx);
-
-    if (!draw_command) {
-        [self endRenderPassIfFramebufferChangedForNonDraw:processCall];
-    }
-
-    // since a clear is embedded into a render encoder
-    if (MGL_STATE(ctx)->vao == NULL)
-    {
-        if (draw_command)
-        {
-            NSLog(@"Error: No VAO defined for ctx\n");
-
-            // quietly return if we are not in a draw command with no vao defined
-            // like a clear or init call
-            return false;
-        }
-
-        // for a clear flush sequence...
-        if (MGL_STATE(ctx)->dirty_bits & DIRTY_STATE)
-        {
-            // end encoding on current render encoder
-            [self endRenderEncodingLocked];
-
-            // Use GPU throttling to prevent crashes when creating new render encoder
-            if (![self validateMetalObjects]) {
-                NSLog(@"MGL WARNING: GPU throttling active - deferring render encoder creation");
-                MGL_STATE(ctx)->dirty_bits &= ~DIRTY_STATE;
-                return true;
-            }
-
-            @try {
-                [self newRenderEncoderLockedWithReason:MGL_ENC_REASON_CLEAR];
-            } @catch (NSException *exception) {
-                NSLog(@"MGL ERROR: Render encoder creation failed: %@", exception);
-            }
-
-            // Clear the dirty bit to prevent repeated attempts
-            MGL_STATE(ctx)->dirty_bits &= ~DIRTY_STATE;
-        }
-
-        return true;
-    }
-
-    // only draw commands need a functioning render encoder
-    // this can mess up a transition between compute and rendering on a flush
-    // so just return
-    // we may have to create a blank render encoder to safely run compute and
-    // rendering correctly
-    if (draw_command == false)
-    {
-        return true;
-    }
-
-    // MEMORY SAFETY: Validate context before use
-    if (!ctx) {
-        NSLog(@"MGL ERROR: NULL context detected in processGLState");
+    if (preambleResult == MGL_PREAMBLE_DONE_OK) {
+        double processElapsedUs = (mglTraceClockNS() - processStartNS) / 1000.0;
         if (traceProcess) {
-            mglLogStateSnapshot("processGLState.fail.null_ctx",
+            mglTraceLogNSString(
+                @"MGL TRACE processGLState.end call=%llu draw=%d elapsed=%.1fus",
+                (unsigned long long)processCall, draw_command ? 1 : 0,
+                processElapsedUs);
+            mglLogStateSnapshot("processGLState.exit.ok",
                                 ctx,
                                 _commandState.currentCommandBufferOwner,
                                 _commandState.currentRenderEncoderOwner,
                                 _commandState.renderPassStateOwner,
                                 _drawable);
+        } else if (processElapsedUs >= 25.0) {
+            mglTraceLogNSString(
+                @"MGL TRACE processGLState.slow call=%llu draw=%d elapsed=%.1fus",
+                (unsigned long long)processCall, draw_command ? 1 : 0,
+                processElapsedUs);
         }
-        return false;
-    }
-
-    // Validate context pointer lower bound only (high addresses are valid on macOS/arm64)
-    uintptr_t ctx_addr = (uintptr_t)ctx;
-    if (ctx_addr < 0x1000) {
-        NSLog(@"MGL ERROR: Invalid context pointer detected: 0x%lx", ctx_addr);
-        return false;
-    }
-
-    // Early circuit-breaker: if a program is currently quarantined due to repeated
-    // vertex/fragment interface mismatch, skip draw before creating/rotating buffers.
-    GLuint blockedProgramKey = mglCurrentRenderProgramKey(ctx);
-    if (blockedProgramKey != 0u &&
-        _gpuRecovery.interfaceMismatchBlockedProgram != 0 &&
-        blockedProgramKey == _gpuRecovery.interfaceMismatchBlockedProgram)
-    {
-        CFTimeInterval now = CFAbsoluteTimeGetCurrent();
-        if (now < _gpuRecovery.interfaceMismatchBlockedUntil) {
-            static uint64_t s_quarantineSkipCount = 0;
-            s_quarantineSkipCount++;
-            if (s_quarantineSkipCount <= 16 || (s_quarantineSkipCount % 1000) == 0) {
-                double remaining = _gpuRecovery.interfaceMismatchBlockedUntil - now;
-                if (remaining < 0.0) remaining = 0.0;
-                NSLog(@"MGL WARNING: Program %u quarantined due to interface mismatch (%.2fs remaining), skipping draw",
-                      (unsigned)_gpuRecovery.interfaceMismatchBlockedProgram, remaining);
-            }
-            return false;
-        }
-    }
-
-    // Keep command buffer lifecycle healthy: if the active one is already finalized,
-    // rotate to a fresh buffer before any state processing.
-    MGLRenderCommandBufferState processCommandState = {0};
-    int processHasCommand = mglRenderGetCommandBufferOwnerState(
-        _commandState.currentCommandBufferOwner,
-        &processCommandState) == 0;
-    if (processHasCommand &&
-        mglRenderEncoderOwnerHasCurrent(
-            _commandState.currentRenderEncoderOwner) != 1) {
-        uint32_t preStatus =
-            (uint32_t)processCommandState.status;
-        if (preStatus >= MGLCommandBufferStatusCommitted) {
-            static uint64_t s_rotateFinalizedCount = 0;
-            uint64_t rotateHit = ++s_rotateFinalizedCount;
-            if (rotateHit <= 16ull || (rotateHit % 500ull) == 0ull) {
-                NSLog(@"MGL INFO: processGLState rotating finalized command buffer (status: %ld) hit=%llu",
-                      (long)preStatus, (unsigned long long)rotateHit);
-            }
-            if (![self newCommandBufferLocked]) {
-                NSLog(@"MGL ERROR: processGLState failed to create a fresh command buffer");
-                if (traceProcess) {
-                    mglLogStateSnapshot("processGLState.fail.new_cb_rotate",
-                                        ctx,
-                                        _commandState.currentCommandBufferOwner,
-                                        _commandState.currentRenderEncoderOwner,
-                                        _commandState.renderPassStateOwner,
-                                        _drawable);
-                }
-                return false;
-            }
-        }
-    } else if (!processHasCommand) {
-        if (kMGLVerboseFrameLoopLogs) {
-            NSLog(@"MGL INFO: processGLState found NULL command buffer, creating one");
-        }
-        if (![self newCommandBufferLocked]) {
-            NSLog(@"MGL ERROR: processGLState could not create initial command buffer");
-            if (traceProcess) {
-                mglLogStateSnapshot("processGLState.fail.new_cb_initial",
-                                    ctx,
-                                    _commandState.currentCommandBufferOwner,
-                                    _commandState.currentRenderEncoderOwner,
-                                    _commandState.renderPassStateOwner,
-                                    _drawable);
-            }
-            return false;
-        }
+        return true;
     }
 
     MGLResourceSyncWork resourceSyncWork = {false, false, false};
@@ -5590,11 +5617,10 @@ static bool mglSyncBridgeUpdateRenderEncoder(void *renderer, GLMContext context)
 }
 
 static bool mglSyncBridgeSyncPipeline(void *renderer, GLMContext context,
-                                    int deferred_buffer_map)
+                                      int deferred_buffer_map)
 {
-    (void)context;
-    return [(__bridge MGLRenderer *)renderer
-        syncPipelineStateWithDeferredBufferMap:deferred_buffer_map != 0];
+    (void)renderer;
+    return mglRenderSyncPipeline(context, deferred_buffer_map) != 0;
 }
 
 static bool mglSyncBridgeIncidentalBufferData(void *renderer, GLMContext context)
@@ -6795,6 +6821,15 @@ stencil_format_ok:;
         return NO;
     }
     return YES;
+}
+
+bool mglRendererObjCSyncPipeline(GLMContext context, int deferred_buffer_map)
+{
+    MGLRenderer *renderer = mglRendererForContext(context);
+    if (!renderer) {
+        return false;
+    }
+    return [renderer syncPipelineStateWithDeferredBufferMap:deferred_buffer_map != 0];
 }
 
 bool mglRendererObjCProcessGLState(GLMContext context, bool draw_command)
