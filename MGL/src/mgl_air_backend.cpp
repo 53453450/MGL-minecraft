@@ -251,14 +251,14 @@ bool scalarIsFloat(MGLIRScalar s) {
 }
 
 /* Integer varyings on AGX must ride float carriers: GS expansion already
- * needed this for all integer types; flat signed varyings in plain VS/FS
- * pipelines also misread when carried as raw int stage inputs. */
+ * needed this for all integer types; flat integer varyings in plain VS/FS
+ * pipelines also misread when carried as raw int/uint stage inputs. */
 static bool varyingUsesFloatCarrier(const MType &t, bool has_gs) {
     if (t.scalar == MGLIR_SCALAR_BOOL || scalarIsFloat(t.scalar))
         return false;
     if (has_gs)
         return true;
-    return t.scalar == MGLIR_SCALAR_INT;
+    return t.scalar == MGLIR_SCALAR_INT || t.scalar == MGLIR_SCALAR_UINT;
 }
 
 static llvm::Value *encodeFloatCarrier(Codegen &cg, llvm::Value *value,
