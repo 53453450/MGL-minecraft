@@ -13823,14 +13823,11 @@ static uint64_t mglRenderTargetLayerCount(
 static uint64_t mglRenderPassArrayLength(
     const MGLRenderPassState& state) {
     uint64_t commonArrayLength = 0u;
-    bool hasAttachment = false;
     bool hasLayeredAttachment = false;
-    auto accumulate = [&commonArrayLength, &hasAttachment,
-                       &hasLayeredAttachment](
+    auto accumulate = [&commonArrayLength, &hasLayeredAttachment](
                           const MGLRenderPassAttachmentState& attachment) {
         MTL::Texture* texture = static_cast<MTL::Texture*>(attachment.texture);
         if (!texture) return;
-        hasAttachment = true;
         if (!attachment.layered) return;
         uint64_t layerCount =
             mglRenderTargetLayerCount(texture, attachment.level);
@@ -13845,8 +13842,7 @@ static uint64_t mglRenderPassArrayLength(
     }
     accumulate(state.depth.attachment);
     accumulate(state.stencil.attachment);
-    return hasLayeredAttachment ? commonArrayLength
-                                : (hasAttachment ? 1u : 0u);
+    return hasLayeredAttachment ? commonArrayLength : 0u;
 }
 
 int mglRenderSetRenderPassStateAttachmentTexture(
