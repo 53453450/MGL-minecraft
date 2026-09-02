@@ -7,6 +7,7 @@
 #ifndef MGL_PIPELINE_CACHE_KEY_H
 #define MGL_PIPELINE_CACHE_KEY_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #define MGL_PIPELINE_CACHE_KEY_WORDS 7u
