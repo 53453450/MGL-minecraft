@@ -2372,7 +2372,14 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
 static void layout_block(Sema *s, const MGLDecl *d, MGLIRType *block_type)
 {
     MGLIRLayoutStd std = MGLIR_LAYOUT_NONE;
-    switch (d->layout) {
+    uint32_t layout_qual = d->layout;
+    if (layout_qual == MGL_AST_LAYOUT_DEFAULT && s && s->tu) {
+        if (d->qualifiers & MGL_AST_Q_BUFFER)
+            layout_qual = s->tu->default_buffer_layout;
+        else if (d->qualifiers & MGL_AST_Q_UNIFORM)
+            layout_qual = s->tu->default_uniform_layout;
+    }
+    switch (layout_qual) {
     case MGL_AST_LAYOUT_STD140: std = MGLIR_LAYOUT_STD140; break;
     case MGL_AST_LAYOUT_STD430: std = MGLIR_LAYOUT_STD430; break;
     case MGL_AST_LAYOUT_SHARED: std = MGLIR_LAYOUT_SHARED; break;

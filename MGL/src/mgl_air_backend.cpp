@@ -216,10 +216,12 @@ struct Codegen {
     bool primitiveIdWritten = false;     /* writes gl_PrimitiveID (GS out) */
     std::map<std::string, llvm::Value *> ssboPtrs;  /* SSBO instance -> buffer */
     std::map<std::string, llvm::Value *> acPtrs;  /* atomic_uint -> ACBO */
-    /* UBO instance arrays: element pointers stashed in an entry-block
+    /* UBO/SSBO instance arrays: element pointers stashed in an entry-block
      * alloca so member reads can index by runtime value. */
     std::map<std::string, llvm::Value *> uboElemSlot;
     std::map<std::string, llvm::Type *> uboElemArrTy;
+    std::map<std::string, llvm::Value *> ssboElemSlot;
+    std::map<std::string, llvm::Type *> ssboElemArrTy;
     std::map<std::string, uint32_t> ssboSlots;      /* SSBO instance -> Metal slot */
     std::map<std::string, uint32_t> acSlots;        /* atomic_uint -> Metal slot */
     std::map<std::string, llvm::Value *> uboPtrs;   /* uniform block -> buffer */
@@ -1687,7 +1689,13 @@ const MGLIRType *ssboExprType(const MGLExpr *e, const MGLIRSymbol *sb,
                                           : cur->u.member.object;
     }
     std::reverse(path.begin(), path.end());
+    /* Flattened anonymous-block members start at their static offset in
+     * the owning block (pad + unsized-tail CTS shaders). */
     uint32_t off = 0;
+    if (sb && sb->block_name && sb->block_name[0] &&
+        sb->offset != UINT32_MAX) {
+        off = sb->offset;
+    }
     for (const MGLExpr *pe : path) {
         if (!ty) return nullptr;
         if (pe->kind == MGL_EXPR_MEMBER) {
@@ -1759,6 +1767,45 @@ llvm::Value *ssboAddress(Codegen &cg, const MGLExpr *e,
         return nullptr;
     }
     llvm::Value *base = pit->second;
+    /* Buffer instance arrays: g_ssbo[i].member selects a separate Metal
+     * buffer per element (mirrors UBO instance-array handling). */
+    if (!sb->block_name && uniformBlockIsInstanceArray(sb->type) &&
+        !path.empty() && path[0]->kind == MGL_EXPR_INDEX &&
+        path[0]->u.index.object &&
+        path[0]->u.index.object->kind == MGL_EXPR_VAR_REF &&
+        path[0]->u.index.object->u.var_ref.name &&
+        strcmp(path[0]->u.index.object->u.var_ref.name, sb->name) == 0) {
+        auto slotIt = cg.ssboElemSlot.find(bufName);
+        auto tyIt = cg.ssboElemArrTy.find(bufName);
+        if (slotIt == cg.ssboElemSlot.end() ||
+            tyIt == cg.ssboElemArrTy.end()) {
+            cg.err = 1;
+            cg.errmsg = std::string("codegen: SSBO block array '") +
+                        bufName + "' has no element buffers";
+            return nullptr;
+        }
+        llvm::Value *elemIndex =
+            emitExpr(cg, path[0]->u.index.index, mod, locals);
+        if (!elemIndex) return nullptr;
+        elemIndex = coerceScalar(cg, elemIndex, MGLIR_SCALAR_UINT);
+        uint32_t elemCount = uniformBlockElementCount(sb->type);
+        if (elemCount == 0u) {
+            cg.err = 1;
+            cg.errmsg = "codegen: SSBO block array has zero elements";
+            return nullptr;
+        }
+        elemIndex = cg.b->CreateSelect(
+            cg.b->CreateICmpULT(elemIndex, cg.b->getInt32(elemCount)),
+            elemIndex, cg.b->getInt32(elemCount - 1u));
+        llvm::Type *ptrTy = llvm::Type::getInt8Ty(*cg.ctx)->getPointerTo(1);
+        llvm::Value *elemPtr = cg.b->CreateInBoundsGEP(
+            tyIt->second, slotIt->second,
+            {cg.b->getInt32(0), elemIndex});
+        base = cg.b->CreateLoad(ptrTy, elemPtr);
+        ty = sb->type->elem_type;
+        path.erase(path.begin());
+        off = 0;
+    }
     for (const MGLExpr *pe : path) {
         if (pe->kind == MGL_EXPR_MEMBER) {
             /* A swizzle on a vector-typed element selects one component:
@@ -4693,7 +4740,12 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 }
                 if (array->array_size != 0)
                     return cg.b->getInt32(array->array_size);
-                auto slot = cg.ssboSlots.find(sb->name);
+                /* Anonymous members are keyed by the owning block name in
+                 * ssboSlots/ssboPtrs (same as ssboAddress). */
+                const char *slotName =
+                    (sb->block_name && sb->block_name[0]) ? sb->block_name
+                                                         : sb->name;
+                auto slot = cg.ssboSlots.find(slotName);
                 if (!cg.bufferSizePtr || slot == cg.ssboSlots.end()) {
                     cg.err = 1;
                     cg.errmsg = "codegen: runtime SSBO length requires buffer(25) sizes";
@@ -4707,11 +4759,72 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     cg.errmsg = "codegen: runtime SSBO array has zero stride";
                     return nullptr;
                 }
+                uint32_t sizeSlot = slot->second;
+                /* Buffer instance arrays: g_input23[i].data.length() must
+                 * read the size of element i's bound Metal buffer. */
+                if (uniformBlockIsInstanceArray(sb->type) &&
+                    !sb->block_name) {
+                    const MGLExpr *walk = object;
+                    while (walk && (walk->kind == MGL_EXPR_MEMBER ||
+                                    walk->kind == MGL_EXPR_INDEX)) {
+                        if (walk->kind == MGL_EXPR_INDEX &&
+                            walk->u.index.object &&
+                            walk->u.index.object->kind == MGL_EXPR_VAR_REF &&
+                            walk->u.index.object->u.var_ref.name &&
+                            strcmp(walk->u.index.object->u.var_ref.name,
+                                   sb->name) == 0) {
+                            llvm::Value *iv = emitExpr(
+                                cg, walk->u.index.index, mod, locals);
+                            if (!iv) return nullptr;
+                            if (auto *ci =
+                                    llvm::dyn_cast<llvm::ConstantInt>(iv)) {
+                                uint64_t idx = ci->getZExtValue();
+                                uint32_t n =
+                                    uniformBlockElementCount(sb->type);
+                                if (idx < n) sizeSlot += (uint32_t)idx;
+                            } else {
+                                /* Dynamic instance index: load sizes[base+i]
+                                 * at runtime. */
+                                llvm::Value *sizes = cg.b->CreateBitCast(
+                                    cg.bufferSizePtr,
+                                    llvm::Type::getInt32Ty(*cg.ctx)
+                                        ->getPointerTo(2));
+                                iv = coerceScalar(cg, iv, MGLIR_SCALAR_UINT);
+                                llvm::Value *base =
+                                    cg.b->getInt32(slot->second);
+                                llvm::Value *idx32 = cg.b->CreateAdd(
+                                    base,
+                                    cg.b->CreateZExtOrTrunc(
+                                        iv, cg.b->getInt32Ty()));
+                                llvm::Value *sizePtr = cg.b->CreateGEP(
+                                    cg.b->getInt32Ty(), sizes, idx32);
+                                llvm::Value *boundSize =
+                                    cg.b->CreateAlignedLoad(
+                                        cg.b->getInt32Ty(), sizePtr,
+                                        llvm::Align(4));
+                                llvm::Value *hasTail = cg.b->CreateICmpUGT(
+                                    boundSize, cg.b->getInt32(tailOffset));
+                                llvm::Value *available = cg.b->CreateSelect(
+                                    hasTail,
+                                    cg.b->CreateSub(
+                                        boundSize,
+                                        cg.b->getInt32(tailOffset)),
+                                    cg.b->getInt32(0));
+                                return cg.b->CreateUDiv(
+                                    available, cg.b->getInt32(stride));
+                            }
+                            break;
+                        }
+                        walk = walk->kind == MGL_EXPR_MEMBER
+                                   ? walk->u.member.object
+                                   : walk->u.index.object;
+                    }
+                }
                 llvm::Value *sizes = cg.b->CreateBitCast(
                     cg.bufferSizePtr,
                     llvm::Type::getInt32Ty(*cg.ctx)->getPointerTo(2));
                 llvm::Value *sizePtr = cg.b->CreateGEP(
-                    cg.b->getInt32Ty(), sizes, cg.b->getInt64(slot->second));
+                    cg.b->getInt32Ty(), sizes, cg.b->getInt64(sizeSlot));
                 llvm::Value *boundSize = cg.b->CreateAlignedLoad(
                     cg.b->getInt32Ty(), sizePtr, llvm::Align(4));
                 llvm::Value *hasTail = cg.b->CreateICmpUGT(
@@ -9181,7 +9294,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     uint32_t ssboCount = 0, uboCount = 0, acCount = 0, texCount = 0, imageCount = 0;
     for (VarSym &v : syms) {
         if (v.kind == VarSym::SSBO) {
-            ssboCount++;
+            const MGLIRSymbol *us = findSymbol(&mod, v.name.c_str());
+            ssboCount += uniformBlockElementCount(us ? us->type : nullptr);
         } else if (v.kind == VarSym::UBO) {
             const MGLIRSymbol *us = findSymbol(&mod, v.name.c_str());
             uboCount += uniformBlockElementCount(us ? us->type : nullptr);
@@ -9479,8 +9593,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         if (v.kind == VarSym::SSBO || v.kind == VarSym::UBO ||
             v.kind == VarSym::ATOMIC_COUNTER) {
             const MGLIRSymbol *us = findSymbol(&mod, v.name.c_str());
-            uint32_t uelems = v.kind == VarSym::UBO
-                ? uniformBlockElementCount(us ? us->type : nullptr) : 1u;
+            uint32_t uelems =
+                (v.kind == VarSym::UBO || v.kind == VarSym::SSBO)
+                    ? uniformBlockElementCount(us ? us->type : nullptr)
+                    : 1u;
             for (uint32_t k = 0; k < uelems; k++)
                 paramTys.push_back(
                     llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
@@ -9688,7 +9804,12 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                            ((isVS || isTES || isKernel) ? (hasBuffer ? 1 : 0) : 0);
         for (VarSym &v : syms) {
             if (v.kind != VarSym::SSBO) continue;
-            fn->addParamAttr(ssboIdx++, llvm::Attribute::AttrKind::NoAlias);
+            const MGLIRSymbol *us = findSymbol(&mod, v.name.c_str());
+            uint32_t nelems =
+                uniformBlockElementCount(us ? us->type : nullptr);
+            for (uint32_t k = 0; k < nelems; k++)
+                fn->addParamAttr(ssboIdx++,
+                                 llvm::Attribute::AttrKind::NoAlias);
         }
         for (VarSym &v : syms) {
             if (v.kind != VarSym::UBO) continue;
@@ -9775,7 +9896,25 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         cg.bufferPtr = fn->getArg(argSlot++);
     for (VarSym &v : syms) {
         if (v.kind != VarSym::SSBO) continue;
-        cg.ssboPtrs[v.name] = fn->getArg(argSlot++);
+        const MGLIRSymbol *us = findSymbol(&mod, v.name.c_str());
+        uint32_t nelems =
+            uniformBlockElementCount(us ? us->type : nullptr);
+        if (!uniformBlockIsInstanceArray(us ? us->type : nullptr)) {
+            cg.ssboPtrs[v.name] = fn->getArg(argSlot++);
+            continue;
+        }
+        llvm::Type *ptrTy = llvm::Type::getInt8Ty(ctx)->getPointerTo(1);
+        llvm::ArrayType *arrTy = llvm::ArrayType::get(ptrTy, nelems);
+        llvm::Value *agg = llvm::UndefValue::get(arrTy);
+        for (uint32_t k = 0; k < nelems; k++, argSlot++) {
+            agg = cg.b->CreateInsertValue(agg, fn->getArg(argSlot), k);
+        }
+        llvm::Value *slot =
+            cg.b->CreateAlloca(arrTy, nullptr, v.name + "_elems");
+        cg.b->CreateStore(agg, slot);
+        cg.ssboElemSlot[v.name] = slot;
+        cg.ssboElemArrTy[v.name] = arrTy;
+        cg.ssboPtrs[v.name] = agg; /* unused for arrays; kept non-null */
     }
     for (VarSym &v : syms) {
         if (v.kind != VarSym::UBO) continue;
@@ -9831,7 +9970,11 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             (isCapture ? 0u : attrCount);
         for (VarSym &v : syms) {
             if (v.kind != VarSym::SSBO) continue;
-            cg.ssboSlots[v.name] = location++;
+            const MGLIRSymbol *us = findSymbol(&mod, v.name.c_str());
+            uint32_t nelems =
+                uniformBlockElementCount(us ? us->type : nullptr);
+            cg.ssboSlots[v.name] = location;
+            location += nelems;
         }
         location += uboCount;
         for (VarSym &v : syms) {
@@ -10122,7 +10265,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         for (const auto &kv : cg.uboPtrs)
             pts.push_back(kv.second->getType());
         for (const auto &kv : cg.ssboPtrs)
-            pts.push_back(llvm::Type::getInt8PtrTy(ctx, 1));
+            pts.push_back(kv.second->getType());
         for (const auto &kv : cg.acPtrs)
             pts.push_back(llvm::Type::getInt8PtrTy(ctx, 1));
         if (cg.bufferSizePtr)
@@ -10198,6 +10341,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         fc.pointSize = cg.pointSize;
         fc.ssboPtrs = cg.ssboPtrs;
         fc.ssboSlots = cg.ssboSlots;
+        fc.ssboElemSlot = cg.ssboElemSlot;
+        fc.ssboElemArrTy = cg.ssboElemArrTy;
         fc.acPtrs = cg.acPtrs;
         fc.acSlots = cg.acSlots;
         fc.uboPtrs = cg.uboPtrs;
@@ -10237,8 +10382,18 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     fc.uboElemArrTy[kv.first] = arrTy;
                 }
             }
-            for (const auto &kv : cg.ssboPtrs)
-                fc.ssboPtrs[kv.first] = f->getArg(hidx++);
+            for (const auto &kv : cg.ssboPtrs) {
+                llvm::Value *value = f->getArg(hidx++);
+                fc.ssboPtrs[kv.first] = value;
+                if (auto *arrTy = llvm::dyn_cast<llvm::ArrayType>(
+                        value->getType())) {
+                    llvm::Value *slot = fb.CreateAlloca(
+                        arrTy, nullptr, kv.first + "_elems");
+                    fb.CreateStore(value, slot);
+                    fc.ssboElemSlot[kv.first] = slot;
+                    fc.ssboElemArrTy[kv.first] = arrTy;
+                }
+            }
             for (const auto &kv : cg.acPtrs)
                 fc.acPtrs[kv.first] = f->getArg(hidx++);
             if (cg.bufferSizePtr)
@@ -11041,30 +11196,40 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         for (VarSym &v : syms) {
             if (v.kind != VarSym::SSBO) continue;
             const MGLIRSymbol *sb = findSymbol(&mod, v.name.c_str());
-            uint32_t bsize = sb ? sb->type->layout.size : 0;
-            argNodes.push_back(llvm::MDNode::get(ctx, {
-                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(ctx), ssboArg++)),
-                llvm::MDString::get(ctx, "air.buffer"),
-                llvm::MDString::get(ctx, "air.location_index"),
-                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(ctx), loc++)),
-                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(ctx), 1)),
-                llvm::MDString::get(ctx, "air.read_write"),
-                llvm::MDString::get(ctx, "air.address_space"),
-                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(ctx), 1)),
-                llvm::MDString::get(ctx, "air.arg_type_size"),
-                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(ctx), bsize)),
-                llvm::MDString::get(ctx, "air.arg_type_align_size"),
-                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(ctx), 16)),
-                llvm::MDString::get(ctx, "air.arg_type_name"),
-                llvm::MDString::get(ctx, v.name),
-                llvm::MDString::get(ctx, "air.arg_name"),
-                llvm::MDString::get(ctx, v.name)}));
+            uint32_t nelems =
+                uniformBlockElementCount(sb ? sb->type : nullptr);
+            const MGLIRType *elemTy = sb ? sb->type : nullptr;
+            if (elemTy && elemTy->kind == MGLIR_TYPE_ARRAY)
+                elemTy = elemTy->elem_type;
+            uint32_t bsize = elemTy ? elemTy->layout.size : 0;
+            for (uint32_t k = 0; k < nelems; k++) {
+                std::string argName = v.name;
+                if (nelems > 1u)
+                    argName += "[" + std::to_string(k) + "]";
+                argNodes.push_back(llvm::MDNode::get(ctx, {
+                    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(ctx), ssboArg++)),
+                    llvm::MDString::get(ctx, "air.buffer"),
+                    llvm::MDString::get(ctx, "air.location_index"),
+                    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(ctx), loc++)),
+                    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(ctx), 1)),
+                    llvm::MDString::get(ctx, "air.read_write"),
+                    llvm::MDString::get(ctx, "air.address_space"),
+                    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(ctx), 1)),
+                    llvm::MDString::get(ctx, "air.arg_type_size"),
+                    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(ctx), bsize)),
+                    llvm::MDString::get(ctx, "air.arg_type_align_size"),
+                    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(ctx), 16)),
+                    llvm::MDString::get(ctx, "air.arg_type_name"),
+                    llvm::MDString::get(ctx, argName),
+                    llvm::MDString::get(ctx, "air.arg_name"),
+                    llvm::MDString::get(ctx, argName)}));
+            }
         }
     }
     /* Uniform blocks: independent read-only device buffers. */

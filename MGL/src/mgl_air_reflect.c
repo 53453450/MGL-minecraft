@@ -774,15 +774,36 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
             continue;
         }
         if ((q & MGL_AST_Q_BUFFER) && !s->block_name) {
-            push_resource(&lists[_STORAGE_BUFFER_RES], s, t, location,
-                          ssbo_binding++, stage);
+            /* Mirror UBO instance arrays: one reflected resource with a
+             * per-element binding table so consecutive GL binding points
+             * expand to consecutive Metal buffer arguments. */
+            const MGLIRType *block_type = air_uniform_block_type(t);
+            GLuint block_count = air_uniform_block_element_count(t);
+            const MGLIRType *res_type = block_type ? block_type : t;
+            push_resource(&lists[_STORAGE_BUFFER_RES], s, res_type,
+                          location, ssbo_binding, stage);
             MGLShaderResource *ssbo_last =
                 &lists[_STORAGE_BUFFER_RES].list[
                     lists[_STORAGE_BUFFER_RES].count - 1];
             apply_block_interface_name(ssbo_last, t, s->name);
-            if (s->binding != UINT32_MAX) {
-                ssbo_last->gl_binding = s->binding;
+            ssbo_last->ubo_array_size = block_count;
+            ssbo_last->ubo_is_array =
+                (t->kind == MGLIR_TYPE_ARRAY && t->array_size > 0u)
+                    ? GL_TRUE : GL_FALSE;
+            if (ssbo_last->ubo_is_array) {
+                ssbo_last->ubo_array_bindings = (GLuint *)calloc(
+                    block_count, sizeof(*ssbo_last->ubo_array_bindings));
             }
+            GLuint gl_block_binding = s->binding != UINT32_MAX
+                ? s->binding : ssbo_binding;
+            ssbo_last->gl_binding = gl_block_binding;
+            if (ssbo_last->ubo_array_bindings) {
+                for (GLuint element = 0; element < block_count; element++) {
+                    ssbo_last->ubo_array_bindings[element] =
+                        gl_block_binding + element;
+                }
+            }
+            ssbo_binding += block_count;
         } else if (q & MGL_AST_Q_IN) {
             /* Desired location: explicit bindings, stable names, then
              * declaration order (CLI-style auto-mapped locations). */

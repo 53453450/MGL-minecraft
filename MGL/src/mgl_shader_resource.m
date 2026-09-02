@@ -113,7 +113,8 @@ GLuint mglMetalResourceSlot(const MGLShaderResource *res)
 
 GLuint mglStageBufferResourceElementCount(int resourceType, const MGLShaderResource *res)
 {
-    if (resourceType == _UNIFORM_BUFFER_RES &&
+    if ((resourceType == _UNIFORM_BUFFER_RES ||
+         resourceType == _STORAGE_BUFFER_RES) &&
         res &&
         res->ubo_array_size > 1u) {
         return res->ubo_array_size;
@@ -139,7 +140,8 @@ GLuint mglClientBufferBindingForResourceElement(int resourceType,
 {
     GLuint baseBinding = mglClientBufferBindingForResource(resourceType, res);
 
-    if (resourceType == _UNIFORM_BUFFER_RES &&
+    if ((resourceType == _UNIFORM_BUFFER_RES ||
+         resourceType == _STORAGE_BUFFER_RES) &&
         res &&
         res->ubo_array_bindings &&
         element < res->ubo_array_size) {

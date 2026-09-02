@@ -2054,6 +2054,15 @@ more_qualifiers:
         if (d->layout_winding != MGL_AST_WINDING_DEFAULT)
             tu->layout_winding = d->layout_winding;
         if (d->layout_point_mode)             tu->layout_point_mode = 1;
+        /* `layout(std430) buffer;` / `layout(std140) uniform;` set the
+         * default packing for subsequent blocks that omit an explicit
+         * packing qualifier. */
+        if (d->layout != MGL_AST_LAYOUT_DEFAULT) {
+            if (d->qualifiers & MGL_AST_Q_BUFFER)
+                tu->default_buffer_layout = d->layout;
+            if (d->qualifiers & MGL_AST_Q_UNIFORM)
+                tu->default_uniform_layout = d->layout;
+        }
         free(d);
         return NULL;
     }
