@@ -41,6 +41,7 @@
 #include "mgl_frame_activity.h"
 #include "mgl_renderer_batch.h"
 #include "mgl_sampler_compat.h"
+#include "mgl_trace_log.h"
 
 /* === Task 4: Snapshot Arena (bump allocator) === */
 
