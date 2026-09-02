@@ -1001,11 +1001,22 @@ static GLenum mglPassthroughDeclType(
         &program->shader_resources_list[_TESS_EVALUATION_SHADER][_STAGE_OUTPUT_RES];
     NSUInteger recordStride = mglAIRPerVertexStrideForResources(outputs);
     NSUInteger vec4Stride = recordStride / 16u;
+    Shader *tesShader = program->shader_slots[_TESS_EVALUATION_SHADER];
+    BOOL hasClipDistance = tesShader && tesShader->src &&
+                           strstr(tesShader->src, "gl_ClipDistance") != NULL;
+    /* Isolines rasterize as lines; Metal rejects a vertex stage that writes
+     * point size on a non-point topology. */
+    BOOL writePointSize = program->tess_gen_point_mode != GL_FALSE;
     NSMutableString *source = [NSMutableString stringWithString:
         @"#version 460 core\n"
          "layout(std430, binding = 0) buffer MGLTESOutput {\n"
          "    vec4 records[];\n"
          "} mgl_tes_output;\n"];
+    if (hasClipDistance) {
+        [source appendFormat:
+            @"out float gl_ClipDistance[%u];\n",
+             (unsigned)MGL_AIR_PER_VERTEX_CLIP_DISTANCE_COUNT];
+    }
     for (GLuint i = 0; outputs->list && i < outputs->count; i++) {
         MGLShaderResource *output = &outputs->list[i];
         if (output->is_per_patch) continue;
@@ -1021,11 +1032,30 @@ static GLenum mglPassthroughDeclType(
     [source appendFormat:
         @"void main() {\n"
          "    int mgl_base = gl_VertexID * %lu;\n"
-         "    gl_Position = mgl_tes_output.records[mgl_base];\n"
-         "    vec4 mgl_point_size = "
-         "mgl_tes_output.records[mgl_base + 1];\n"
-         "    gl_PointSize = mgl_point_size.x;\n",
+         "    gl_Position = mgl_tes_output.records[mgl_base];\n",
          (unsigned long)vec4Stride];
+    if (writePointSize) {
+        [source appendString:
+            @"    vec4 mgl_point_size = "
+             "mgl_tes_output.records[mgl_base + 1];\n"
+             "    gl_PointSize = mgl_point_size.x;\n"];
+    }
+    if (hasClipDistance) {
+        unsigned clipSlot =
+            (unsigned)(MGL_AIR_PER_VERTEX_CLIP_DISTANCE_OFFSET / 16u);
+        [source appendFormat:
+            @"    vec4 mgl_clip0 = mgl_tes_output.records[mgl_base + %u];\n"
+             "    vec4 mgl_clip1 = mgl_tes_output.records[mgl_base + %u];\n"
+             "    gl_ClipDistance[0] = mgl_clip0.x;\n"
+             "    gl_ClipDistance[1] = mgl_clip0.y;\n"
+             "    gl_ClipDistance[2] = mgl_clip0.z;\n"
+             "    gl_ClipDistance[3] = mgl_clip0.w;\n"
+             "    gl_ClipDistance[4] = mgl_clip1.x;\n"
+             "    gl_ClipDistance[5] = mgl_clip1.y;\n"
+             "    gl_ClipDistance[6] = mgl_clip1.z;\n"
+             "    gl_ClipDistance[7] = mgl_clip1.w;\n",
+             clipSlot, clipSlot + 1u];
+    }
     if (program->tess_cull_distance_count > 0u) {
 
         if (program->tess_gen_mode == GL_ISOLINES) {
