@@ -2171,8 +2171,12 @@ int mglRenderDispatchComputePlan(
 /*  compute execution plan: ObjC collects the ordered binding operations
  * and keeps temporary Metal objects alive until this call returns. C++ owns
  * encoder creation, pipeline/binding replay, dispatch, and endEncoding. */
-#define MGL_RENDER_COMPUTE_EXECUTION_MAX_OPS 512u
-#define MGL_RENDER_COMPUTE_EXECUTION_MAX_DISPATCHES 128u
+/* Per-patch TES compute expansion emits one dispatch (+ contract bytes
+ * binding) per input patch. Cull-distance isoline grids reach ~144 patches;
+ * other CTS draws can be larger. Keep headroom above the old 128/512 caps
+ * that silently returned GL_INVALID_OPERATION once patchCount exceeded them. */
+#define MGL_RENDER_COMPUTE_EXECUTION_MAX_OPS 2048u
+#define MGL_RENDER_COMPUTE_EXECUTION_MAX_DISPATCHES 512u
 
 typedef struct MGLRenderComputeDispatchEntry_t {
     /* Replay this dispatch after exactly binding_op_count binding operations. */

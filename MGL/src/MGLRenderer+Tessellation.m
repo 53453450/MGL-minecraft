@@ -204,8 +204,12 @@ static bool mglTessAppendComputeResourceOp(
     NSUInteger offset,
     NSUInteger index)
 {
-    if (!plan || kind > 3u ||
-        plan->binding_op_count >= MGL_RENDER_COMPUTE_EXECUTION_MAX_OPS) {
+    if (!plan || kind > 3u) {
+        return false;
+    }
+    if (plan->binding_op_count >= MGL_RENDER_COMPUTE_EXECUTION_MAX_OPS) {
+        NSLog(@"MGL TESS ERROR: compute binding op overflow (%u)",
+              (unsigned)plan->binding_op_count);
         return false;
     }
     plan->binding_ops[plan->binding_op_count++] =
@@ -229,8 +233,12 @@ static bool mglTessAppendComputeBytesOp(
     NSUInteger index)
 {
     if (!plan || !temporaries || !bytes || length == 0u ||
-        length > UINT32_MAX ||
-        plan->binding_op_count >= MGL_RENDER_COMPUTE_EXECUTION_MAX_OPS) {
+        length > UINT32_MAX) {
+        return false;
+    }
+    if (plan->binding_op_count >= MGL_RENDER_COMPUTE_EXECUTION_MAX_OPS) {
+        NSLog(@"MGL TESS ERROR: compute bytes-binding overflow (%u)",
+              (unsigned)plan->binding_op_count);
         return false;
     }
     NSData *storage = [NSData dataWithBytes:bytes length:length];
@@ -320,6 +328,12 @@ static bool mglTessPlanDispatchOrBind(
         .indirect_offset = 0u,
     };
     (void)encoder;
+    if (plan &&
+        plan->dispatch_op_count >= MGL_RENDER_COMPUTE_EXECUTION_MAX_DISPATCHES) {
+        NSLog(@"MGL TESS ERROR: compute dispatch sequence overflow (%u)",
+              (unsigned)plan->dispatch_op_count);
+        return false;
+    }
     return mglRenderAppendComputeDispatchToPlan(
         plan, &dispatch, NULL, 0) == 0;
 }
@@ -2028,6 +2042,13 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
         mglRenderEncoderOwnerHasCurrent(
             _renderPassManager.state->currentRenderEncoderOwner) != 1 ||
         [self currentDrawRasterizationIsEmpty]) {
+        NSLog(@"MGL TESS ERROR: TES compute raster skip program=%u stateReady=%d encoder=%d empty=%d clip0=%d",
+              (unsigned)tesProgram->name,
+              (int)stateReady,
+              mglRenderEncoderOwnerHasCurrent(
+                  _renderPassManager.state->currentRenderEncoderOwner),
+              (int)[self currentDrawRasterizationIsEmpty],
+              ctx && MGL_STATE(ctx)->caps.clip_distances[0] ? 1 : 0);
         _tessellation.tessComputeActive = NO;
         _tessellation.tessComputeProgram = NULL;
         if (xfbActive) {
