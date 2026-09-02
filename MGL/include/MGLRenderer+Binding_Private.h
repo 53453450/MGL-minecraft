@@ -27,6 +27,8 @@
 
 #import "MGLRenderer.h"
 
+bool mglRendererTextureBindLocked(MGLRenderer *self, Texture *tex);
+
 @interface MGLRenderer ()
 
 - (void)bindMTLBuffer:(Buffer *)ptr;

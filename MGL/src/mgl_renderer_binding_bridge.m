@@ -8,11 +8,13 @@
 #import "MGLRenderer+Draw_Private.h"
 #include "mgl_renderer_sync.h"
 
+bool mglRendererTextureBindLocked(MGLRenderer *self, Texture *tex);
+
 void mglRendererObjCBindTexture(GLMContext glm_ctx, Texture *texture)
 {
     MGLRenderer *renderer = mglRendererForContext(glm_ctx);
     if (!renderer || !glm_ctx || !texture) return;
-    (void)[renderer bindMTLTexture:texture];
+    (void)mglRendererTextureBindLocked(renderer, texture);
 }
 
 bool mglRendererObjCSyncResourceBindings(GLMContext glm_ctx,
