@@ -34,12 +34,6 @@
 
 #include "glm_params.h"
 
-#if defined(MGL_GTEST_BUILD)
-/* Linux host gtests never touch Sync objects; avoid _Atomic/C++ layout friction. */
-#else
-#include <stdatomic.h>
-#endif
-
 typedef struct __GLsync {
     GLsizei name;
     void *mtl_event;
@@ -55,8 +49,11 @@ typedef struct __GLsync {
      * - mglDeleteSync sets delete_status and releases; if refcount>0 (wait in
      *   progress), the shell survives until the last release frees it */
 #if defined(MGL_GTEST_BUILD)
+    /* Host gtests never touch Sync objects; plain int avoids C++/atomic macros. */
     int refcount;
 #else
+    /* Prefer the _Atomic keyword — do not include <stdatomic.h> here; its
+     * atomic_* macros collide with libc++ <atomic> in C++ TUs. */
     _Atomic int refcount;
 #endif
     GLboolean delete_status;
