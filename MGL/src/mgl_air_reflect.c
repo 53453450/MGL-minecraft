@@ -796,11 +796,11 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
             }
             push_resource(&lists[_STAGE_INPUT_RES], s, t, location, 0,
                           stage);
-            /* Interface-block array members occupy one location per
-             * element; keep the auto sequence past the span so later
-             * members land beyond them (mirrors the AIR backend). */
-            if (stage == MGL_STAGE_GEOMETRY && s->block_name &&
-                t->kind == MGLIR_TYPE_ARRAY && t->array_size > 1u) {
+            /* Array attributes (and GS interface-block array members)
+             * occupy one location per element so glGetAttribLocation(
+             * "a[i]") == base+i stays aligned with VAO binds and the AIR
+             * vertex_input location_index sequence. */
+            if (t->kind == MGLIR_TYPE_ARRAY && t->array_size > 1u) {
                 gs_input_span_pad += t->array_size - 1u;
             }
         } else if (q & MGL_AST_Q_OUT) {
