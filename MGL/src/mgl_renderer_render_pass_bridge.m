@@ -5060,7 +5060,7 @@ static GLenum mglPassthroughDeclType(
     }
     return true;
 }
-/*
+
 - (bool)validateRenderPassAttachmentsAndPipelineFormatsLocked:(BOOL)traceProcess
 {
     // Guard against invalid render pass state before binding pipeline.
