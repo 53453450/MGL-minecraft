@@ -352,6 +352,8 @@ typedef struct MGLTranslationUnit {
      * explicit packing qualifier (GL 4.6 §4.4.5). */
     uint32_t default_buffer_layout;  /* MGL_AST_LAYOUT_* */
     uint32_t default_uniform_layout; /* MGL_AST_LAYOUT_* */
+    uint32_t default_buffer_matrix_major;  /* MGL_AST_MATRIX_* */
+    uint32_t default_uniform_matrix_major; /* MGL_AST_MATRIX_* */
 } MGLTranslationUnit;
 
 #ifdef __cplusplus

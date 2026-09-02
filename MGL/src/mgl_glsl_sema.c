@@ -2918,9 +2918,20 @@ int mglGLSLSemanticCheck(const MGLTranslationUnit *tu, int stage,
                         MGLDecl *m = d->struct_members[j];
                         /* Block-level layout(row_major) is the default for
                          * matrix members (GLSL 4.60 §4.4.5); an explicit
-                         * member layout overrides via resolve_decl_type_major. */
+                         * member layout overrides via resolve_decl_type_major.
+                         * `layout(std430, row_major) buffer;` also supplies
+                         * the default via the translation unit. */
+                        uint32_t block_major = d->matrix_major;
+                        if (block_major == MGL_AST_MATRIX_DEFAULT && s.tu) {
+                            if (d->qualifiers & MGL_AST_Q_BUFFER)
+                                block_major =
+                                    s.tu->default_buffer_matrix_major;
+                            else if (d->qualifiers & MGL_AST_Q_UNIFORM)
+                                block_major =
+                                    s.tu->default_uniform_matrix_major;
+                        }
                         members[j] = resolve_decl_type_major(
-                            &s, &tab, m, d->matrix_major);
+                            &s, &tab, m, block_major);
                         names[j] = m->name;
                         if (!members[j]) {
                             ok = 0;

@@ -2056,12 +2056,19 @@ more_qualifiers:
         if (d->layout_point_mode)             tu->layout_point_mode = 1;
         /* `layout(std430) buffer;` / `layout(std140) uniform;` set the
          * default packing for subsequent blocks that omit an explicit
-         * packing qualifier. */
-        if (d->layout != MGL_AST_LAYOUT_DEFAULT) {
-            if (d->qualifiers & MGL_AST_Q_BUFFER)
+         * packing qualifier.  Matrix major (row_major/column_major) is
+         * part of the same default (GL 4.6 §4.4.5). */
+        if (d->qualifiers & MGL_AST_Q_BUFFER) {
+            if (d->layout != MGL_AST_LAYOUT_DEFAULT)
                 tu->default_buffer_layout = d->layout;
-            if (d->qualifiers & MGL_AST_Q_UNIFORM)
+            if (d->matrix_major != MGL_AST_MATRIX_DEFAULT)
+                tu->default_buffer_matrix_major = d->matrix_major;
+        }
+        if (d->qualifiers & MGL_AST_Q_UNIFORM) {
+            if (d->layout != MGL_AST_LAYOUT_DEFAULT)
                 tu->default_uniform_layout = d->layout;
+            if (d->matrix_major != MGL_AST_MATRIX_DEFAULT)
+                tu->default_uniform_matrix_major = d->matrix_major;
         }
         free(d);
         return NULL;
