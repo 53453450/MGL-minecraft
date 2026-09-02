@@ -8699,6 +8699,32 @@ int mglRenderTexturePrepareLevelUpload(
     return 0;
 }
 
+static uint32_t mglRenderDepthUint32ToFloatBits(uint32_t raw) {
+    const float depth = (float)((double)raw / 4294967295.0);
+    uint32_t bits = 0u;
+    memcpy(&bits, &depth, sizeof(bits));
+    return bits;
+}
+
+static uint32_t mglRenderDepth24ToFloatBits(const uint8_t* src) {
+    const uint32_t v = (uint32_t)src[0] |
+                       ((uint32_t)src[1] << 8u) |
+                       ((uint32_t)src[2] << 16u);
+    const float depth = (float)((double)v / 16777215.0);
+    uint32_t bits = 0u;
+    memcpy(&bits, &depth, sizeof(bits));
+    return bits;
+}
+
+static uint32_t mglRenderDepth24Stencil8ToFloatBits(const uint8_t* src) {
+    uint32_t packed = 0u;
+    memcpy(&packed, src, sizeof(uint32_t));
+    const float depth = (float)((double)(packed >> 8u) / 16777215.0);
+    uint32_t bits = 0u;
+    memcpy(&bits, &depth, sizeof(bits));
+    return bits;
+}
+
 extern "C"
 uint8_t mglRenderResolveR8SwizzledComponent(uint32_t swizzle, uint8_t red) {
     switch (swizzle) {
@@ -8710,6 +8736,76 @@ uint8_t mglRenderResolveR8SwizzledComponent(uint32_t swizzle, uint8_t red) {
         case GL_ZERO:
         default:
             return 0x00u;
+    }
+}
+
+static uint8_t mglRenderResolveR8SnormSwizzledComponent(uint32_t swizzle,
+                                                        uint8_t red) {
+    switch (swizzle) {
+        case GL_RED: return red;
+        case GL_ALPHA:
+        case GL_ONE: return 0x7fu;
+        case GL_GREEN:
+        case GL_BLUE:
+        case GL_ZERO:
+        default:
+            return 0x00u;
+    }
+}
+
+static uint16_t mglRenderResolveR16UnormSwizzledComponent(uint32_t swizzle,
+                                                          uint16_t red) {
+    switch (swizzle) {
+        case GL_RED: return red;
+        case GL_ALPHA:
+        case GL_ONE: return 65535u;
+        case GL_GREEN:
+        case GL_BLUE:
+        case GL_ZERO:
+        default:
+            return 0u;
+    }
+}
+
+static uint16_t mglRenderResolveR16SnormSwizzledComponent(uint32_t swizzle,
+                                                          int16_t red) {
+    switch (swizzle) {
+        case GL_RED: return static_cast<uint16_t>(red);
+        case GL_ALPHA:
+        case GL_ONE: return 32767;
+        case GL_GREEN:
+        case GL_BLUE:
+        case GL_ZERO:
+        default:
+            return 0;
+    }
+}
+
+static uint16_t mglRenderResolveR16FloatSwizzledComponent(uint32_t swizzle,
+                                                          uint16_t red) {
+    switch (swizzle) {
+        case GL_RED: return red;
+        case GL_ALPHA:
+        case GL_ONE: return 0x3c00u; /* 1.0 in half float */
+        case GL_GREEN:
+        case GL_BLUE:
+        case GL_ZERO:
+        default:
+            return 0u;
+    }
+}
+
+static uint32_t mglRenderResolveR32FloatSwizzledComponent(uint32_t swizzle,
+                                                          uint32_t red) {
+    switch (swizzle) {
+        case GL_RED: return red;
+        case GL_ALPHA:
+        case GL_ONE: return 0x3f800000u;
+        case GL_GREEN:
+        case GL_BLUE:
+        case GL_ZERO:
+        default:
+            return 0u;
     }
 }
 
@@ -8757,13 +8853,24 @@ uint32_t mglRenderSingleChannelSwizzleStoragePixelFormat(
         case GL_R32UI:
             return static_cast<uint32_t>(MTL::PixelFormatRGBA32Uint);
         case GL_R8:
-        case GL_R8_SNORM:
             return static_cast<uint32_t>(MTL::PixelFormatRGBA8Unorm);
+        case GL_R8_SNORM:
+            return static_cast<uint32_t>(MTL::PixelFormatRGBA8Snorm);
         case GL_R16:
-        case GL_R16_SNORM:
-        case GL_R16F:
             return static_cast<uint32_t>(MTL::PixelFormatRGBA16Unorm);
+        case GL_R16_SNORM:
+            return static_cast<uint32_t>(MTL::PixelFormatRGBA16Snorm);
+        case GL_R16F:
+            return static_cast<uint32_t>(MTL::PixelFormatRGBA16Float);
         case GL_R32F:
+            return static_cast<uint32_t>(MTL::PixelFormatRGBA32Float);
+        case GL_DEPTH_COMPONENT16:
+            return static_cast<uint32_t>(MTL::PixelFormatRGBA16Unorm);
+        case GL_DEPTH_COMPONENT24:
+        case GL_DEPTH_COMPONENT32:
+        case GL_DEPTH_COMPONENT32F:
+        case GL_DEPTH24_STENCIL8:
+        case GL_DEPTH32F_STENCIL8:
             return static_cast<uint32_t>(MTL::PixelFormatRGBA32Float);
         default:
             return static_cast<uint32_t>(MTL::PixelFormatInvalid);
@@ -9096,6 +9203,10 @@ int mglRenderTextureUploadNeedsSingleChannelSwizzleBake(
         case GL_R32F:
         case GL_R16UI:
         case GL_R32UI:
+        case GL_DEPTH_COMPONENT16:
+        case GL_DEPTH_COMPONENT24:
+        case GL_DEPTH_COMPONENT32:
+        case GL_DEPTH_COMPONENT32F:
             return 1;
         default:
             return 0;
@@ -9121,6 +9232,10 @@ int mglRenderTextureUploadNeedsSingleChannelSwizzle(uint32_t internal_format,
         case GL_R16UI:
         case GL_R32I:
         case GL_R32UI:
+        case GL_DEPTH_COMPONENT16:
+        case GL_DEPTH_COMPONENT24:
+        case GL_DEPTH_COMPONENT32:
+        case GL_DEPTH_COMPONENT32F:
             return 1;
         default:
             return 0;
@@ -9233,6 +9348,24 @@ uint8_t* mglRenderCreateSingleChannelSwizzledUpload(
             dst_component_bytes = 4u;
             src_component_bytes = 4u;
             break;
+        case GL_DEPTH_COMPONENT16:
+            dst_component_bytes = 2u;
+            src_component_bytes = 2u;
+            break;
+        case GL_DEPTH_COMPONENT24:
+            dst_component_bytes = 4u;
+            src_component_bytes = 3u;
+            break;
+        case GL_DEPTH_COMPONENT32:
+        case GL_DEPTH_COMPONENT32F:
+        case GL_DEPTH24_STENCIL8:
+            dst_component_bytes = 4u;
+            src_component_bytes = 4u;
+            break;
+        case GL_DEPTH32F_STENCIL8:
+            dst_component_bytes = 4u;
+            src_component_bytes = 5u;
+            break;
         default:
             return NULL;
     }
@@ -9258,12 +9391,139 @@ uint8_t* mglRenderCreateSingleChannelSwizzledUpload(
         const uint8_t* src_row = src + row * src_bytes_per_row;
         for (size_t x = 0; x < width; x++) {
             uint8_t* out = dst_row + x * dst_pixel_bytes;
-            if (internal_format == GL_R8 || internal_format == GL_R8_SNORM) {
-                uint8_t red = src_row[x * src_pixel_bytes];
+            if (internal_format == GL_R8) {
+                const uint8_t red = src_row[x * src_pixel_bytes];
                 out[0] = mglRenderResolveR8SwizzledComponent(swizzle_r, red);
                 out[1] = mglRenderResolveR8SwizzledComponent(swizzle_g, red);
                 out[2] = mglRenderResolveR8SwizzledComponent(swizzle_b, red);
                 out[3] = mglRenderResolveR8SwizzledComponent(swizzle_a, red);
+                continue;
+            }
+            if (internal_format == GL_R8_SNORM) {
+                const uint8_t red = src_row[x * src_pixel_bytes];
+                out[0] = mglRenderResolveR8SnormSwizzledComponent(swizzle_r, red);
+                out[1] = mglRenderResolveR8SnormSwizzledComponent(swizzle_g, red);
+                out[2] = mglRenderResolveR8SnormSwizzledComponent(swizzle_b, red);
+                out[3] = mglRenderResolveR8SnormSwizzledComponent(swizzle_a, red);
+                continue;
+            }
+            if (internal_format == GL_R16) {
+                const uint16_t red =
+                    *(const uint16_t*)(const void*)(src_row + x * src_pixel_bytes);
+                *(uint16_t*)(void*)(out + 0) =
+                    mglRenderResolveR16UnormSwizzledComponent(swizzle_r, red);
+                *(uint16_t*)(void*)(out + 2) =
+                    mglRenderResolveR16UnormSwizzledComponent(swizzle_g, red);
+                *(uint16_t*)(void*)(out + 4) =
+                    mglRenderResolveR16UnormSwizzledComponent(swizzle_b, red);
+                *(uint16_t*)(void*)(out + 6) =
+                    mglRenderResolveR16UnormSwizzledComponent(swizzle_a, red);
+                continue;
+            }
+            if (internal_format == GL_R16_SNORM) {
+                const int16_t red =
+                    *(const int16_t*)(const void*)(src_row + x * src_pixel_bytes);
+                *(uint16_t*)(void*)(out + 0) =
+                    mglRenderResolveR16SnormSwizzledComponent(swizzle_r, red);
+                *(uint16_t*)(void*)(out + 2) =
+                    mglRenderResolveR16SnormSwizzledComponent(swizzle_g, red);
+                *(uint16_t*)(void*)(out + 4) =
+                    mglRenderResolveR16SnormSwizzledComponent(swizzle_b, red);
+                *(uint16_t*)(void*)(out + 6) =
+                    mglRenderResolveR16SnormSwizzledComponent(swizzle_a, red);
+                continue;
+            }
+            if (internal_format == GL_R16F) {
+                const uint16_t red =
+                    *(const uint16_t*)(const void*)(src_row + x * src_pixel_bytes);
+                *(uint16_t*)(void*)(out + 0) =
+                    mglRenderResolveR16FloatSwizzledComponent(swizzle_r, red);
+                *(uint16_t*)(void*)(out + 2) =
+                    mglRenderResolveR16FloatSwizzledComponent(swizzle_g, red);
+                *(uint16_t*)(void*)(out + 4) =
+                    mglRenderResolveR16FloatSwizzledComponent(swizzle_b, red);
+                *(uint16_t*)(void*)(out + 6) =
+                    mglRenderResolveR16FloatSwizzledComponent(swizzle_a, red);
+                continue;
+            }
+            if (internal_format == GL_R32F ||
+                internal_format == GL_DEPTH_COMPONENT32F) {
+                const uint32_t red =
+                    *(const uint32_t*)(const void*)(src_row + x * src_pixel_bytes);
+                *(uint32_t*)(void*)(out + 0) =
+                    mglRenderResolveR32FloatSwizzledComponent(swizzle_r, red);
+                *(uint32_t*)(void*)(out + 4) =
+                    mglRenderResolveR32FloatSwizzledComponent(swizzle_g, red);
+                *(uint32_t*)(void*)(out + 8) =
+                    mglRenderResolveR32FloatSwizzledComponent(swizzle_b, red);
+                *(uint32_t*)(void*)(out + 12) =
+                    mglRenderResolveR32FloatSwizzledComponent(swizzle_a, red);
+                continue;
+            }
+            if (internal_format == GL_DEPTH_COMPONENT16) {
+                const uint16_t red =
+                    *(const uint16_t*)(const void*)(src_row + x * src_pixel_bytes);
+                *(uint16_t*)(void*)(out + 0) =
+                    mglRenderResolveR16UnormSwizzledComponent(swizzle_r, red);
+                *(uint16_t*)(void*)(out + 2) =
+                    mglRenderResolveR16UnormSwizzledComponent(swizzle_g, red);
+                *(uint16_t*)(void*)(out + 4) =
+                    mglRenderResolveR16UnormSwizzledComponent(swizzle_b, red);
+                *(uint16_t*)(void*)(out + 6) =
+                    mglRenderResolveR16UnormSwizzledComponent(swizzle_a, red);
+                continue;
+            }
+            if (internal_format == GL_DEPTH_COMPONENT24) {
+                const uint32_t red =
+                    mglRenderDepth24ToFloatBits(src_row + x * src_pixel_bytes);
+                *(uint32_t*)(void*)(out + 0) =
+                    mglRenderResolveR32FloatSwizzledComponent(swizzle_r, red);
+                *(uint32_t*)(void*)(out + 4) =
+                    mglRenderResolveR32FloatSwizzledComponent(swizzle_g, red);
+                *(uint32_t*)(void*)(out + 8) =
+                    mglRenderResolveR32FloatSwizzledComponent(swizzle_b, red);
+                *(uint32_t*)(void*)(out + 12) =
+                    mglRenderResolveR32FloatSwizzledComponent(swizzle_a, red);
+                continue;
+            }
+            if (internal_format == GL_DEPTH_COMPONENT32) {
+                const uint32_t red =
+                    mglRenderDepthUint32ToFloatBits(
+                        *(const uint32_t*)(const void*)(src_row + x * src_pixel_bytes));
+                *(uint32_t*)(void*)(out + 0) =
+                    mglRenderResolveR32FloatSwizzledComponent(swizzle_r, red);
+                *(uint32_t*)(void*)(out + 4) =
+                    mglRenderResolveR32FloatSwizzledComponent(swizzle_g, red);
+                *(uint32_t*)(void*)(out + 8) =
+                    mglRenderResolveR32FloatSwizzledComponent(swizzle_b, red);
+                *(uint32_t*)(void*)(out + 12) =
+                    mglRenderResolveR32FloatSwizzledComponent(swizzle_a, red);
+                continue;
+            }
+            if (internal_format == GL_DEPTH24_STENCIL8) {
+                const uint32_t red =
+                    mglRenderDepth24Stencil8ToFloatBits(src_row + x * src_pixel_bytes);
+                *(uint32_t*)(void*)(out + 0) =
+                    mglRenderResolveR32FloatSwizzledComponent(swizzle_r, red);
+                *(uint32_t*)(void*)(out + 4) =
+                    mglRenderResolveR32FloatSwizzledComponent(swizzle_g, red);
+                *(uint32_t*)(void*)(out + 8) =
+                    mglRenderResolveR32FloatSwizzledComponent(swizzle_b, red);
+                *(uint32_t*)(void*)(out + 12) =
+                    mglRenderResolveR32FloatSwizzledComponent(swizzle_a, red);
+                continue;
+            }
+            if (internal_format == GL_DEPTH32F_STENCIL8) {
+                const uint32_t red =
+                    *(const uint32_t*)(const void*)(src_row + x * src_pixel_bytes);
+                *(uint32_t*)(void*)(out + 0) =
+                    mglRenderResolveR32FloatSwizzledComponent(swizzle_r, red);
+                *(uint32_t*)(void*)(out + 4) =
+                    mglRenderResolveR32FloatSwizzledComponent(swizzle_g, red);
+                *(uint32_t*)(void*)(out + 8) =
+                    mglRenderResolveR32FloatSwizzledComponent(swizzle_b, red);
+                *(uint32_t*)(void*)(out + 12) =
+                    mglRenderResolveR32FloatSwizzledComponent(swizzle_a, red);
                 continue;
             }
             const int64_t red = mglRenderReadIntegerTexelComponent(
