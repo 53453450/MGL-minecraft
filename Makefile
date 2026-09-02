@@ -678,10 +678,14 @@ HOST_GTEST_CXXFLAGS := -std=c++20 -IMGL/include -IMGL/src -IMGL/include/GL
 
 $(build_dir)/test_mgl_state_dirty_gtest: test_legacy_compat/test_mgl_state_dirty_gtest.cpp \
 	MGL/include/mgl_types_state.h MGL/include/mgl_sync_domains.h \
-	MGL/src/mgl_sync_domains.c
+	MGL/src/mgl_sync_domains.c \
+	MGL/include/mgl_pipeline_cache_key.h MGL/src/mgl_pipeline_cache_key.c \
+	MGL/include/mgl_pipeline_recovery.h MGL/src/mgl_pipeline_recovery.c
 	$(HOST_GTEST_CXX) -x c++ $(HOST_GTEST_CXXFLAGS) $(GTEST_CXXFLAGS) \
 		test_legacy_compat/test_mgl_state_dirty_gtest.cpp \
 		MGL/src/mgl_sync_domains.c \
+		MGL/src/mgl_pipeline_cache_key.c \
+		MGL/src/mgl_pipeline_recovery.c \
 		-x none $(GTEST_LIBS) -o $@
 
 test-mgl-state-dirty-gtest: $(build_dir)/test_mgl_state_dirty_gtest

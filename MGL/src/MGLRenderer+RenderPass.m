@@ -18,6 +18,8 @@
 #include "mgl_renderer_backend.h"
 #include "mgl_renderer_pipeline.h"
 #include "mgl_renderer_sync.h"
+#include "mgl_pipeline_cache_key.h"
+#include "mgl_pipeline_recovery.h"
 #include "mgl_env_flag.h"
 #include "mgl_shader_abi.h"
 #include "mgl_program_reflection.h"
@@ -5822,6 +5824,50 @@ stencil_format_ok:;
     return true;
 }
 
+static MGLPipelineRecoveryState mglPipelineRecoveryViewFromGPU(
+    const MGLGPURecoveryState *gpu)
+{
+    MGLPipelineRecoveryState view = {0};
+    if (!gpu) {
+        return view;
+    }
+    view.pipeline_retry_after = gpu->pipelineRetryAfter;
+    view.interface_mismatch_retry_after = gpu->interfaceMismatchRetryAfter;
+    view.program_mismatch_retry_after = gpu->programMismatchRetryAfter;
+    view.interface_mismatch_program_name = gpu->interfaceMismatchProgramName;
+    view.interface_mismatch_color0_format = gpu->interfaceMismatchColor0Format;
+    view.interface_mismatch_depth_format = gpu->interfaceMismatchDepthFormat;
+    view.interface_mismatch_stencil_format = gpu->interfaceMismatchStencilFormat;
+    view.interface_mismatch_streak = gpu->interfaceMismatchStreak;
+    view.program_mismatch_program_name = gpu->programMismatchProgramName;
+    view.program_mismatch_streak = gpu->programMismatchStreak;
+    view.interface_mismatch_blocked_program = gpu->interfaceMismatchBlockedProgram;
+    view.interface_mismatch_blocked_until = gpu->interfaceMismatchBlockedUntil;
+    view.interface_mismatch_blocked_streak = gpu->interfaceMismatchBlockedStreak;
+    return view;
+}
+
+static void mglPipelineRecoveryApplyToGPU(MGLGPURecoveryState *gpu,
+                                          const MGLPipelineRecoveryState *view)
+{
+    if (!gpu || !view) {
+        return;
+    }
+    gpu->pipelineRetryAfter = view->pipeline_retry_after;
+    gpu->interfaceMismatchRetryAfter = view->interface_mismatch_retry_after;
+    gpu->programMismatchRetryAfter = view->program_mismatch_retry_after;
+    gpu->interfaceMismatchProgramName = view->interface_mismatch_program_name;
+    gpu->interfaceMismatchColor0Format = view->interface_mismatch_color0_format;
+    gpu->interfaceMismatchDepthFormat = view->interface_mismatch_depth_format;
+    gpu->interfaceMismatchStencilFormat = view->interface_mismatch_stencil_format;
+    gpu->interfaceMismatchStreak = view->interface_mismatch_streak;
+    gpu->programMismatchProgramName = view->program_mismatch_program_name;
+    gpu->programMismatchStreak = view->program_mismatch_streak;
+    gpu->interfaceMismatchBlockedProgram = view->interface_mismatch_blocked_program;
+    gpu->interfaceMismatchBlockedUntil = view->interface_mismatch_blocked_until;
+    gpu->interfaceMismatchBlockedStreak = view->interface_mismatch_blocked_streak;
+}
+
 /*
  * Pipeline Sync domain (Pipeline Sync domain). PSO build/reuse logic moved verbatim from processGLStateLocked:
  * generates pipeline+vertex descriptor, queries/builds PSO cache, interface-mismatch
@@ -5867,16 +5913,18 @@ stencil_format_ok:;
             Framebuffer *currentFBO = mglRendererGetValidatedFramebuffer(ctx, "processGLState.currentFBO");
             GLuint currentFBOName = currentFBO ? currentFBO->name : 0;
 
+            MGLPipelineRecoveryState recoveryView =
+                mglPipelineRecoveryViewFromGPU(&_gpuRecovery);
+
             // Program-level breaker (independent of render-pass signature) to avoid
             // mismatch storms where color/depth/stencil signatures keep changing.
-            if (_pipelineCacheState.pipelineState != nil &&
-                currentProgramName != 0 &&
-                currentProgramName == _gpuRecovery.programMismatchProgramName &&
-                now < _gpuRecovery.programMismatchRetryAfter) {
+            if (mglPipelineRecoveryShouldAbortForProgramMismatch(
+                    &recoveryView, now, (uint32_t)currentProgramName,
+                    _pipelineCacheState.pipelineState)) {
                 static uint64_t s_programMismatchSkipCount = 0;
                 s_programMismatchSkipCount++;
                 if (s_programMismatchSkipCount <= 16 || (s_programMismatchSkipCount % 1000ull) == 0ull) {
-                    double remaining = _gpuRecovery.programMismatchRetryAfter - now;
+                    double remaining = recoveryView.program_mismatch_retry_after - now;
                     if (remaining < 0.0) remaining = 0.0;
                     NSLog(@"MGL WARNING: Program-level mismatch breaker active (program=%u, %.2fs remaining), skipping draw",
                           (unsigned)currentProgramName,
@@ -5886,34 +5934,23 @@ stencil_format_ok:;
                 return false;
             }
 
-	            if (now < _gpuRecovery.pipelineRetryAfter) {
-	                BOOL retryAppliesToCurrentProgram =
-	                    (currentProgramName != 0 &&
-	                     (currentProgramName == _gpuRecovery.interfaceMismatchProgramName ||
-	                      currentProgramName == _gpuRecovery.programMismatchProgramName ||
-	                      currentProgramName == _gpuRecovery.interfaceMismatchBlockedProgram));
-
-	                if (retryAppliesToCurrentProgram) {
-	                    if (_pipelineCacheState.pipelineState) {
-		                    state->dirty_bits &= ~(DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
-	                    // Keep existing pipeline, but do not early-return before setRenderPipelineState.
-		                    skipPipelineBuild = true;
-	                    } else {
-	                        _gpuRecovery.pipelineRetryAfter = 0.0;
-	                        _gpuRecovery.programMismatchRetryAfter = 0.0;
-	                        _gpuRecovery.interfaceMismatchRetryAfter = 0.0;
-	                    }
-		                } else {
-	                    static uint64_t s_retryBypassCount = 0;
-	                    s_retryBypassCount++;
-	                    if (s_retryBypassCount <= 16 || (s_retryBypassCount % 1000ull) == 0ull) {
-	                        NSLog(@"MGL PIPELINE RETRY bypass global retry for unrelated program=%u mismatchProgram=%u blockedProgram=%u",
-	                              (unsigned)currentProgramName,
-	                              (unsigned)_gpuRecovery.interfaceMismatchProgramName,
-	                              (unsigned)_gpuRecovery.interfaceMismatchBlockedProgram);
-	                    }
-	                }
-	            }
+            if (mglPipelineRecoveryEvaluatePipelineRetry(
+                    &recoveryView, now, (uint32_t)currentProgramName,
+                    _pipelineCacheState.pipelineState, &skipPipelineBuild)) {
+                if (skipPipelineBuild) {
+                    state->dirty_bits &= ~(DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
+                }
+            } else if (now < recoveryView.pipeline_retry_after) {
+                static uint64_t s_retryBypassCount = 0;
+                s_retryBypassCount++;
+                if (s_retryBypassCount <= 16 || (s_retryBypassCount % 1000ull) == 0ull) {
+                    NSLog(@"MGL PIPELINE RETRY bypass global retry for unrelated program=%u mismatchProgram=%u blockedProgram=%u",
+                          (unsigned)currentProgramName,
+                          (unsigned)recoveryView.interface_mismatch_program_name,
+                          (unsigned)recoveryView.interface_mismatch_blocked_program);
+                }
+            }
+            mglPipelineRecoveryApplyToGPU(&_gpuRecovery, &recoveryView);
 
             if (!skipPipelineBuild) {
             // Build the only renderer pipeline representation: C ABI value-state.
@@ -5942,11 +5979,9 @@ stencil_format_ok:;
             builtStencilFormat = psoState.stencil_format;
 
             // Circuit breaker for repeated VS/FS interface mismatch.
-            if (now < _gpuRecovery.interfaceMismatchRetryAfter &&
-                currentProgramName == _gpuRecovery.interfaceMismatchProgramName &&
-                builtColor0Format == _gpuRecovery.interfaceMismatchColor0Format &&
-                builtDepthFormat == _gpuRecovery.interfaceMismatchDepthFormat &&
-                builtStencilFormat == _gpuRecovery.interfaceMismatchStencilFormat) {
+            if (mglPipelineRecoveryShouldAbortForInterfaceMismatch(
+                    &recoveryView, now, (uint32_t)currentProgramName,
+                    builtColor0Format, builtDepthFormat, builtStencilFormat)) {
                 state->dirty_bits &= ~(DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
                 return false;
             }
@@ -5964,32 +5999,28 @@ stencil_format_ok:;
                 pipelineSig = mglPipelineDescriptorSignatureFromState(&psoState);
                 vertexSig = mglVertexDescriptorSignatureFromState(&psoState);
 
-                /* Keep descriptor signatures and linked Program identities
-                 * lossless. GL names can be reused and a Program can relink
-                 * without changing its name. */
-                uint64_t primaryKey = (((uint64_t)currentProgramName << 32)
-                                     | (((uint64_t)state->var.clip_origin & 0xFu) << 28)
-                                     | (((uint64_t)state->var.clip_depth_mode & 0xFu) << 24)
-                                     | (_tessellation.nativeTESActive ? (1ull << 23) : 0ull)
-                                     | (_tessellation.tessVertexCaptureActive ? (1ull << 22) : 0ull)
-                                     | (_geometry.expansionActive ? (1ull << 21) : 0ull)
-                                     | (_tessellation.cullDistanceCaptureActive ? (1ull << 20) : 0ull)
-                                     | (_tessellation.tessComputeActive ? (1ull << 19) : 0ull));
-                uint64_t vertexInstance = currentVertexProgram
-                    ? currentVertexProgram->pipeline_cache_instance_id : 0u;
-                uint64_t vertexGeneration = currentVertexProgram
-                    ? currentVertexProgram->pipeline_cache_generation : 0u;
-                uint64_t fragmentInstance = currentFragmentProgram
-                    ? currentFragmentProgram->pipeline_cache_instance_id : 0u;
-                uint64_t fragmentGeneration = currentFragmentProgram
-                    ? currentFragmentProgram->pipeline_cache_generation : 0u;
-                keyWords[0] = primaryKey;
-                keyWords[1] = vertexInstance;
-                keyWords[2] = vertexGeneration;
-                keyWords[3] = fragmentInstance;
-                keyWords[4] = fragmentGeneration;
-                keyWords[5] = pipelineSig;
-                keyWords[6] = vertexSig;
+                MGLPipelineCacheKeyInputs keyInputs = {
+                    .program_name = currentProgramName,
+                    .clip_origin = state->var.clip_origin,
+                    .clip_depth_mode = state->var.clip_depth_mode,
+                    .tess_flags = mglPipelineCachePackTessFlags(
+                        _tessellation.nativeTESActive,
+                        _tessellation.tessVertexCaptureActive,
+                        _geometry.expansionActive,
+                        _tessellation.cullDistanceCaptureActive,
+                        _tessellation.tessComputeActive),
+                    .vertex_instance_id = currentVertexProgram
+                        ? currentVertexProgram->pipeline_cache_instance_id : 0u,
+                    .vertex_generation = currentVertexProgram
+                        ? currentVertexProgram->pipeline_cache_generation : 0u,
+                    .fragment_instance_id = currentFragmentProgram
+                        ? currentFragmentProgram->pipeline_cache_instance_id : 0u,
+                    .fragment_generation = currentFragmentProgram
+                        ? currentFragmentProgram->pipeline_cache_generation : 0u,
+                    .pipeline_sig = pipelineSig,
+                    .vertex_sig = vertexSig,
+                };
+                mglPipelineCacheBuildLookupKeyWords(&keyInputs, keyWords);
                 /* Hit path uses the reusable zero-alloc query key.  The key
                  * is only valid for lookups; the miss path below allocates a
                  * fresh key for the store/compile path so overwriteWords:
@@ -6043,25 +6074,12 @@ stencil_format_ok:;
                      * reintroducing the per-draw alloc this avoids.  Mirrors
                      * the depth-stencil cache policy. */
 
-	                    // Mirror successful compile-side breaker resets.
-	                    _gpuRecovery.interfaceMismatchStreak = 0;
-	                    _gpuRecovery.interfaceMismatchProgramName = 0;
-	                    _gpuRecovery.interfaceMismatchColor0Format = (uint32_t)MGLPixelFormatInvalid;
-	                    _gpuRecovery.interfaceMismatchDepthFormat = (uint32_t)MGLPixelFormatInvalid;
-	                    _gpuRecovery.interfaceMismatchStencilFormat = (uint32_t)MGLPixelFormatInvalid;
-	                    _gpuRecovery.interfaceMismatchRetryAfter = 0.0;
-	                    if (_gpuRecovery.programMismatchProgramName == currentProgramName) {
-	                        _gpuRecovery.programMismatchProgramName = 0;
-	                        _gpuRecovery.programMismatchRetryAfter = 0.0;
-	                        _gpuRecovery.programMismatchStreak = 0u;
-	                    }
-	                    if (_gpuRecovery.interfaceMismatchBlockedProgram == currentProgramName) {
-                        _gpuRecovery.interfaceMismatchBlockedProgram = 0;
-                        _gpuRecovery.interfaceMismatchBlockedUntil = 0.0;
-                        _gpuRecovery.interfaceMismatchBlockedStreak = 0u;
-                    }
-	                }
-	            }
+                    mglPipelineRecoveryOnCacheHit(
+                        &recoveryView, (uint32_t)currentProgramName,
+                        (uint32_t)MGLPixelFormatInvalid);
+                    mglPipelineRecoveryApplyToGPU(&_gpuRecovery, &recoveryView);
+                }
+            }
 
 	            // PROPER AGX VIRTUALIZATION COMPATIBILITY: Fix root cause while maintaining Metal functionality
             if (!pipelineResolvedFromCache) {
