@@ -1518,9 +1518,17 @@ static GLenum mglCheckFramebufferStatusForObject(GLMContext ctx, Framebuffer *fb
         }
         /* Color attachments must use a color-renderable internal format.
          * Non-renderable formats (SNORM, RGB-only, compressed, luminance,
-         * etc.) cause the framebuffer to be incomplete per GL 4.6 spec. */
+         * etc.) cause the framebuffer to be incomplete per GL 4.6 spec.
+         * Multisample attachments with non-renderable formats return
+         * GL_FRAMEBUFFER_UNSUPPORTED so callers (e.g. CTS texture_swizzle
+         * fillMSTexture) can treat the format/target combo as unsupported
+         * rather than failing on incomplete. */
         GLint ifmt = mglFramebufferAttachmentInternalFormat(ctx, &fbo->color_attachments[i]);
         if (ifmt != 0 && !mglIsColorRenderableInternalFormat(ifmt)) {
+            Texture *tex = mglFramebufferAttachmentTextureObject(ctx, &fbo->color_attachments[i]);
+            if (tex && tex->samples > 1u) {
+                return mglFramebufferStatusReturn(ctx, fbo, GL_FRAMEBUFFER_UNSUPPORTED, "color-not-renderable-ms", i, &fbo->color_attachments[i]);
+            }
             return mglFramebufferStatusReturn(ctx, fbo, GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT, "color-not-renderable", i, &fbo->color_attachments[i]);
         }
     }
