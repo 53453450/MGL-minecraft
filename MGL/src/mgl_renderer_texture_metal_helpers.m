@@ -325,3 +325,18 @@ void mglTextureCopyTextureToBuffer(
             bytesPerImage);
 }
 
+void mglMetalCopyRows(const uint8_t *src,
+                      NSUInteger srcBytesPerRow,
+                      uint8_t *dst,
+                      NSUInteger dstBytesPerRow,
+                      NSUInteger rowBytes,
+                      NSUInteger height,
+                      BOOL flipY)
+{
+    mglRenderCopyRows(
+        src, (uint64_t)srcBytesPerRow,
+        dst, (uint64_t)dstBytesPerRow,
+        (uint64_t)rowBytes, (uint64_t)height,
+        flipY ? 1 : 0);
+}
+

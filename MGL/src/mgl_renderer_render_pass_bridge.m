@@ -56,6 +56,47 @@ static id mglRenderPassCreateTexture(
     return nil;
 }
 
+static id mglRenderPassCreateTextureView(id texture, uint32_t pixelFormat)
+{
+    void *view = NULL;
+    if (mglRenderCreateTextureView(
+            (__bridge void *)texture, pixelFormat, &view) == 0 && view) {
+        return (__bridge_transfer id)view;
+    }
+    return nil;
+}
+
+id mglApplySRGBStateToRenderTarget(id texture, GLMContext ctx)
+{
+    if (!texture || !ctx) return texture;
+
+    uint32_t currentFmt = mglRenderPassTextureInfo(texture).pixel_format;
+    uint32_t desiredFmt;
+
+    if (ctx->active_state->caps.framebuffer_srgb) {
+        desiredFmt = mglSRGBPixelFormat(currentFmt);
+    } else {
+        desiredFmt = mglLinearPixelFormat(currentFmt);
+    }
+
+    if (desiredFmt == currentFmt) {
+        return texture;
+    }
+
+    id view = mglRenderPassCreateTextureView(texture, desiredFmt);
+    if (view) {
+        return view;
+    }
+
+    static uint64_t s_srgbViewFailCount = 0;
+    if (++s_srgbViewFailCount <= 8) {
+        NSLog(@"MGL WARNING: newTextureViewWithPixelFormat failed current=%lu desired=%lu srgb=%d",
+              (unsigned long)currentFmt, (unsigned long)desiredFmt,
+              ctx->active_state->caps.framebuffer_srgb ? 1 : 0);
+    }
+    return texture;
+}
+
 static MGLRendererBackendHandle *mglRenderPassBackend(GLMContext context)
 {
     return context
