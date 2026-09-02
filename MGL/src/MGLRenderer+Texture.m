@@ -4735,10 +4735,27 @@ static void mglTextureCopyTextureToBuffer(
                         if (tex_data && bytesPerRow > 0 && bytesPerImage > 0) {
                             void *srcData = (void *)tex_data;
                             void *expandedUploadData = NULL;
+                            void *swizzledUploadData = NULL;
                             uintptr_t addr = (uintptr_t)srcData;
 
                             NSUInteger effectiveBytesPerRow = bytesPerRow;
                             NSUInteger effectiveBytesPerImage = bytesPerImage;
+                            if (mglTextureUploadNeedsSingleChannelSwizzle(tex)) {
+                                NSUInteger swzBPR = 0;
+                                NSUInteger swzBPI = 0;
+                                swizzledUploadData =
+                                    mglCreateSingleChannelSwizzledUpload(
+                                        tex, (const uint8_t *)srcData, width,
+                                        uploadSliceHeight, bytesPerRow, &swzBPR,
+                                        &swzBPI);
+                                if (swizzledUploadData) {
+                                    srcData = swizzledUploadData;
+                                    effectiveBytesPerRow = swzBPR;
+                                    effectiveBytesPerImage = swzBPI;
+                                    addr = (uintptr_t)srcData;
+                                }
+                            }
+
                             if (mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
                                 NSUInteger expandedBytesPerRow = 0;
                                 NSUInteger expandedBytesPerImage = 0;
@@ -4804,6 +4821,7 @@ static void mglTextureCopyTextureToBuffer(
                                           tex->name,
                                           level,
                                           layer);
+                                    free(swizzledUploadData);
                                     free(expandedUploadData);
                                     continue;
                                 }
@@ -4812,6 +4830,7 @@ static void mglTextureCopyTextureToBuffer(
                                 if (alignedSize == 0 || alignedSize > (512 * 1024 * 1024)) {
                                     NSLog(@"MGL WARNING: Rejecting aligned array upload staging size=%lu (tex=%d level=%d layer=%d)",
                                           (unsigned long)alignedSize, tex->name, level, layer);
+                                    free(swizzledUploadData);
                                     free(expandedUploadData);
                                     continue;
                                 }
@@ -4873,16 +4892,19 @@ static void mglTextureCopyTextureToBuffer(
                             } else {
                                 if (!srcData) {
                                     NSLog(@"MGL SECURITY ERROR: NULL srcData passed to Metal replaceRegion (level %d, layer %d) - SKIPPING to prevent crash", level, layer);
+                                    free(swizzledUploadData);
                                     free(expandedUploadData);
                                     continue;
                                 }
                                 if (effectiveBytesPerRow == 0) {
                                     NSLog(@"MGL SECURITY ERROR: Invalid bytesPerRow (0) passed to Metal replaceRegion (level %d, layer %d) - SKIPPING to prevent crash", level, layer);
+                                    free(swizzledUploadData);
                                     free(expandedUploadData);
                                     continue;
                                 }
                                 if (effectiveBytesPerImage == 0) {
                                     NSLog(@"MGL SECURITY ERROR: Invalid bytesPerImage (0) passed to Metal replaceRegion (level %d, layer %d) - SKIPPING to prevent crash", level, layer);
+                                    free(swizzledUploadData);
                                     free(expandedUploadData);
                                     continue;
                                 }
@@ -4905,6 +4927,7 @@ static void mglTextureCopyTextureToBuffer(
                                     NSLog(@"MGL INFO: Skipping array upload with synthesized data size (level %d, layer %d)", level, layer);
                                 }
                             }
+                            free(swizzledUploadData);
                             free(expandedUploadData);
                         } else {
                             NSLog(@"MGL WARNING: Skipping array texture upload due to invalid data or parameters");
