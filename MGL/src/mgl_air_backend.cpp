@@ -209,6 +209,7 @@ struct Codegen {
     llvm::Value *cullBuffer = nullptr;   /* VS cull-distance source buffer */
     llvm::Value *cullParams = nullptr;   /* VS cull-distance emu parameters */
     bool usesCullDistance = false;
+    bool usesPatchCullDistance = false;  /* native TES: cull from gl_in records */
     llvm::Value *fragPos = nullptr;      /* fragment: [[position]] (gl_FragCoord) */
     bool hasFragDepth = false;           /* fragment writes gl_FragDepth */
     bool fragDepthInit = false;          /* gl_FragDepth lvalue initialized */
@@ -8317,6 +8318,61 @@ static llvm::Value *applyCullDistance(Codegen &cg, llvm::Value *pos)
     return cg.b->CreateSelect(shouldCull, culled, pos);
 }
 
+/* Native post-tessellation vertex stage: primitive cull uses the patch
+ * control-point gl_CullDistance values in the TCS output stream (slot 30).
+ * Slot 28 already carries patch metadata for the same draw. */
+static llvm::Value *applyCullDistanceFromPatchInputs(Codegen &cg,
+                                                     llvm::Value *pos)
+{
+    if (!cg.usesPatchCullDistance || !cg.stageInPtr || !cg.patchId)
+        return pos;
+    llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
+    llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+    llvm::Value *verticesPerPatch = cg.b->getInt32(cg.tcsOutputVertices);
+    if (cg.indirectPtr) {
+        llvm::Value *patchInfo = cg.b->CreateBitCast(
+            cg.indirectPtr, i32->getPointerTo(1));
+        verticesPerPatch = cg.b->CreateAlignedLoad(
+            i32, cg.b->CreateGEP(i32, patchInfo, cg.b->getInt32(1)),
+            llvm::Align(4));
+    }
+    llvm::Value *shouldCull = cg.b->getFalse();
+    for (uint32_t distance = 0;
+         distance < MGL_AIR_PER_VERTEX_CULL_DISTANCE_COUNT; ++distance) {
+        llvm::Value *allNegative = cg.b->getTrue();
+        for (uint32_t vertex = 0; vertex < 32u; ++vertex) {
+            llvm::Value *active = cg.b->CreateICmpULT(
+                cg.b->getInt32(vertex), verticesPerPatch);
+            llvm::Value *recordIdx = cg.b->CreateAdd(
+                cg.b->CreateMul(cg.patchId, verticesPerPatch),
+                cg.b->getInt32(vertex));
+            llvm::Value *off = cg.b->CreateAdd(
+                cg.b->CreateMul(
+                    cg.b->CreateZExt(recordIdx, cg.b->getInt64Ty()),
+                    cg.b->getInt64(cg.stageInStride)),
+                cg.b->getInt64(MGL_AIR_PER_VERTEX_CULL_DISTANCE_OFFSET +
+                               distance * 4u));
+            llvm::Value *p = cg.b->CreateGEP(
+                cg.b->getInt8Ty(), cg.stageInPtr, off);
+            p = cg.b->CreateBitCast(p, f32->getPointerTo(1));
+            llvm::Value *value = cg.b->CreateAlignedLoad(
+                f32, p, llvm::Align(4));
+            llvm::Value *negative = cg.b->CreateFCmpOLT(
+                value, llvm::ConstantFP::get(f32, 0.0));
+            allNegative = cg.b->CreateAnd(
+                allNegative,
+                cg.b->CreateSelect(active, negative, cg.b->getTrue()));
+        }
+        shouldCull = cg.b->CreateOr(shouldCull, allNegative);
+    }
+    llvm::Value *culled = llvm::ConstantVector::get({
+        llvm::ConstantFP::get(f32, 2.0),
+        llvm::ConstantFP::get(f32, 2.0),
+        llvm::ConstantFP::get(f32, 2.0),
+        llvm::ConstantFP::get(f32, 1.0)});
+    return cg.b->CreateSelect(shouldCull, culled, pos);
+}
+
 llvm::Value *assembleReturn(Codegen &cg) {
     if (cg.isVS) {
         if (cg.retTy->isStructTy()) {
@@ -8325,7 +8381,10 @@ llvm::Value *assembleReturn(Codegen &cg) {
                                    ? cg.lvalues["gl_Position"]
                                    : llvm::UndefValue::get(cg.retElems[0]);
             pos = fixClipZ(cg, pos);
-            pos = applyCullDistance(cg, pos);
+            if (cg.usesPatchCullDistance)
+                pos = applyCullDistanceFromPatchInputs(cg, pos);
+            else
+                pos = applyCullDistance(cg, pos);
             ret = cg.b->CreateInsertValue(ret, pos, 0);
             uint32_t ri = 1;
             if (cg.pointSize) {
@@ -8402,7 +8461,12 @@ llvm::Value *assembleReturn(Codegen &cg) {
         llvm::Value *pos = cg.lvalues.count("gl_Position")
                                ? cg.lvalues["gl_Position"]
                                : llvm::UndefValue::get(cg.retTy);
-        return applyCullDistance(cg, fixClipZ(cg, pos));
+        pos = fixClipZ(cg, pos);
+        if (cg.usesPatchCullDistance)
+            pos = applyCullDistanceFromPatchInputs(cg, pos);
+        else
+            pos = applyCullDistance(cg, pos);
+        return pos;
     }
     VarSym *arrayOut = nullptr;
     for (VarSym &v : *cg.auxSyms) {
@@ -9395,8 +9459,6 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
      * return path can reproduce the legacy primitive-cull emulation. */
     const bool sourceUsesCullDistance =
         strstr(esrc, "gl_CullDistance") != nullptr;
-    const bool usesCullDistance = isVS && !isCapture &&
-                                  sourceUsesCullDistance;
     if (isGS && getenv("MGL_GS_DIAG_SOURCE"))
         fprintf(stderr, "MGL GS SOURCE BEGIN\n%s\nMGL GS SOURCE END\n", esrc);
     MGLTranslationUnit *tu = mglGLSLParse(esrc, strlen(esrc));
@@ -9436,6 +9498,11 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     const bool isTESCompute = isTES &&
         (tu->layout_primitive == MGL_AST_TES_ISOLINES ||
          tu->layout_point_mode != 0);
+    const bool usesCullDistance = isVS && !isCapture &&
+                                  sourceUsesCullDistance;
+    const bool usesPatchCullDistance =
+        isTES && !isTESCompute && !isCapture &&
+        sourceUsesCullDistance;
     const bool isKernel = isCompute || isTCS || isGS || isTESCompute;
     const uint32_t runtimeArraySizeBufferIndex =
         (isGS || isTESCompute)
@@ -10088,8 +10155,12 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
         paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
     }
-    if (usesCullDistance) {
+    uint32_t cullBufferArgIdx = UINT32_MAX;
+    uint32_t cullParamsArgIdx = UINT32_MAX;
+    if (usesCullDistance && isVS) {
+        cullBufferArgIdx = (uint32_t)paramTys.size();
         paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
+        cullParamsArgIdx = (uint32_t)paramTys.size();
         paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
     } else if (isCullCapture || isTessCapture) {
         paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
@@ -10241,6 +10312,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     cg.isTessEval = isTES;
     cg.isGeometry = isGS;
     cg.isTESCompute = isTESCompute;
+    cg.usesPatchCullDistance = usesPatchCullDistance;
     cg.controlPointGetter = controlPointGetter;
     if (sourceUsesCullDistance) {
         cg.lvalues["gl_CullDistance"] = defaultCullDistances(cg);
@@ -11069,8 +11141,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         }
         storeGeometryPosition(cg, b.getInt32(0), pos);
         llvm::Value *pointSize = cg.lvalues.count("gl_PointSize")
-            ? cg.lvalues["gl_PointSize"] : llvm::UndefValue::get(
-                llvm::Type::getFloatTy(ctx));
+            ? cg.lvalues["gl_PointSize"]
+            : llvm::ConstantFP::get(llvm::Type::getFloatTy(ctx), 1.0);
         storeGeometryPointSize(cg, b.getInt32(0), pointSize);
         storeTessComputeVaryings(cg, b.getInt32(0));
         /* Post-tess cull distances (GL 4.6 §13.6.1): the TES-written
@@ -12432,10 +12504,11 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         }
     }
 
-    if (usesCullDistance) {
+    if (usesCullDistance && cullBufferArgIdx != UINT32_MAX &&
+        cullParamsArgIdx != UINT32_MAX) {
         llvm::Type *i32 = llvm::Type::getInt32Ty(ctx);
-        uint32_t cullBufferArg = (uint32_t)paramTys.size() - 5u;
-        uint32_t cullParamsArg = cullBufferArg + 1u;
+        uint32_t cullBufferArg = cullBufferArgIdx;
+        uint32_t cullParamsArg = cullParamsArgIdx;
         auto addCullBuffer = [&](uint32_t arg, uint32_t location,
                                  uint32_t size, const char *typeName,
                                  const char *argName) {
