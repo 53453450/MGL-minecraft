@@ -32,8 +32,13 @@
 #ifndef mgl_types_sync_h
 #define mgl_types_sync_h
 
-#include <stdatomic.h>
 #include "glm_params.h"
+
+#if defined(MGL_GTEST_BUILD)
+/* Linux host gtests never touch Sync objects; avoid _Atomic/C++ layout friction. */
+#else
+#include <stdatomic.h>
+#endif
 
 typedef struct __GLsync {
     GLsizei name;
@@ -49,7 +54,11 @@ typedef struct __GLsync {
      *   under the waiter
      * - mglDeleteSync sets delete_status and releases; if refcount>0 (wait in
      *   progress), the shell survives until the last release frees it */
+#if defined(MGL_GTEST_BUILD)
+    int refcount;
+#else
     _Atomic int refcount;
+#endif
     GLboolean delete_status;
 #ifdef __cplusplus
 } Sync;

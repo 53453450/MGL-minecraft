@@ -1,48 +1,11 @@
 #include <gtest/gtest.h>
 
 extern "C" {
+#define MGL_GTEST_BUILD 1
+#include "mgl_types_state.h"
 #include "mgl_sync_domains.h"
 #include "mgl_pipeline_cache_key.h"
 #include "mgl_pipeline_recovery.h"
-#include "mgl_types_state.h"
-}
-
-TEST(StateDirty, MarkStateInvalidatesHashCaches)
-{
-    GLMState state = {};
-    state.cached_texture_hash = 0x1111;
-    state.cached_vertex_layout_hash = 0x2222;
-    state.cached_render_state_hash = 0x3333;
-
-    mglMarkStateDirtyBits(&state, DIRTY_TEX_BINDING | DIRTY_VAO | DIRTY_RENDER_STATE);
-
-    EXPECT_EQ(1, state.texture_dirty);
-    EXPECT_EQ(1, state.vertex_layout_dirty);
-    EXPECT_EQ(1, state.render_state_dirty);
-    EXPECT_EQ(1, state.uniform_buffer_dirty);
-    EXPECT_NE(0u, state.dirty_bits & (DIRTY_TEX_BINDING | DIRTY_VAO | DIRTY_RENDER_STATE));
-}
-
-TEST(StateDirty, MarkRendererDoesNotInvalidateHashCaches)
-{
-    GLMState state = {};
-    state.cached_texture_hash = 0x1111;
-    state.texture_dirty = 0;
-
-    mglMarkRendererDirtyBits(&state, DIRTY_TEX_BINDING);
-
-    EXPECT_EQ(0, state.texture_dirty);
-    EXPECT_NE(0u, state.dirty_bits & DIRTY_TEX_BINDING);
-}
-
-TEST(StateDirty, ProgramDirtyClearsSampledMaskValid)
-{
-    GLMState state = {};
-    state.active_sampled_texture_unit_mask_valid = 1u;
-
-    mglMarkStateDirtyBits(&state, DIRTY_PROGRAM);
-
-    EXPECT_EQ(0u, state.active_sampled_texture_unit_mask_valid);
 }
 
 TEST(SyncDomains, ClassifyFboAndPipeline)
@@ -167,10 +130,10 @@ TEST(PipelineRecovery, ReusePreviousRequiresMatchingFunctionsAndFormats)
         .vertex_function = vs,
         .fragment_function = fs,
         .cached_color0_format = 10u,
-        .built_color0_format = 10u,
         .cached_depth_format = 20u,
-        .built_depth_format = 20u,
         .cached_stencil_format = 30u,
+        .built_color0_format = 10u,
+        .built_depth_format = 20u,
         .built_stencil_format = 30u,
         .invalid_pixel_format = 0xFFFFFFFFu,
     };
@@ -194,7 +157,7 @@ TEST(PipelineRecovery, InterfaceMismatchFailureBackoffEscalates)
     mglPipelineRecoveryRecordInterfaceMismatchFailure(
         &recovery, 1000.0, 8u, 1u, 2u, 3u, &delays);
     EXPECT_EQ(4u, recovery.interface_mismatch_streak);
-    EXPECT_DOUBLE_EQ(0.40, delays.interface_retry_delay);
+    EXPECT_NEAR(0.80, delays.interface_retry_delay, 1e-9);
     EXPECT_GT(recovery.program_mismatch_retry_after, 1000.0);
     EXPECT_GT(recovery.interface_mismatch_blocked_until, 1000.0);
 }

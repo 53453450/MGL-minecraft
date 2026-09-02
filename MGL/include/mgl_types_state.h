@@ -311,15 +311,21 @@ static inline void mglClearStateDirtyBitsPreservingHashInvalidation(GLMState *st
  * those ranges would silently drop data from the snapshot, so lock the
  * layout assumptions into compile errors. */
 
+#if defined(__cplusplus)
+#define MGL_STATIC_ASSERT(cond, msg) static_assert((cond), msg)
+#else
+#define MGL_STATIC_ASSERT(cond, msg) _Static_assert((cond), msg)
+#endif
+
 /* The gap [sync_table, shaders) skipped by region 2 must be exactly the 11
  * embedded HashTables; a hot field inserted there would not be copied. */
-_Static_assert(offsetof(GLMState, shaders) - offsetof(GLMState, sync_table)
+MGL_STATIC_ASSERT(offsetof(GLMState, shaders) - offsetof(GLMState, sync_table)
                == 11 * sizeof(HashTable),
                "GLMState HashTable block changed; revisit mglCopyHotStateFields region boundaries");
 
 /* The gap [buffer_base, pack) skipped between regions 4 and 5 must be exactly
  * buffer_base[_MAX_BUFFER_TYPES]; region 5 assumes pack follows the array. */
-_Static_assert(offsetof(GLMState, pack) - offsetof(GLMState, buffer_base)
+MGL_STATIC_ASSERT(offsetof(GLMState, pack) - offsetof(GLMState, buffer_base)
                == _MAX_BUFFER_TYPES * sizeof(BufferBase),
                "field inserted between buffer_base and pack; revisit mglCopyHotStateFields region 5");
 
@@ -327,7 +333,7 @@ _Static_assert(offsetof(GLMState, pack) - offsetof(GLMState, buffer_base)
  * the X-macros in mgl_types_buffer.h; this checks that together they cover
  * every buffer_base type exactly once, so adding a type without classifying
  * it hot or cold breaks the build. */
-_Static_assert(kMGLSnapshotHotBufferBaseCount + kMGLSnapshotColdBufferBaseCount
+MGL_STATIC_ASSERT(kMGLSnapshotHotBufferBaseCount + kMGLSnapshotColdBufferBaseCount
                == _MAX_BUFFER_TYPES,
                "buffer type added without classifying it hot or cold; update "
                "MGL_SNAPSHOT_HOT/COLD_BUFFER_BASE_TYPES in mgl_types_buffer.h");

@@ -35,6 +35,8 @@
 #include <mach/vm_types.h>
 #include "glm_params.h"
 
+typedef struct GLMContextRec_t *GLMContext;
+
 enum {
     _TEXTURE_BUFFER = 0, // duplicate of _TEXTURE_BUFFER_TARGET
     _ARRAY_BUFFER,

@@ -674,15 +674,17 @@ test-mglair-gtest: $(build_dir)/test_mglair_gtest
 HOST_GTEST_CXX ?= $(shell if command -v g++ >/dev/null 2>&1; then echo g++; \
 	elif [ -n "$(APPLE_CLANG)" ] && [ "$(APPLE_CLANG)" != "x" ]; then echo "$(APPLE_CLANG)"; \
 	else echo c++; fi)
-HOST_GTEST_CXXFLAGS := -std=c++20 -IMGL/include -IMGL/src -IMGL/include/GL
+HOST_GTEST_CXXFLAGS := -std=c++20 -IMGL/include -IMGL/src -IMGL/include/GL -DMGL_GTEST_BUILD
 
 $(build_dir)/test_mgl_state_dirty_gtest: test_legacy_compat/test_mgl_state_dirty_gtest.cpp \
+	test_legacy_compat/test_mgl_state_dirty_mark_gtest.cpp \
 	MGL/include/mgl_types_state.h MGL/include/mgl_sync_domains.h \
 	MGL/src/mgl_sync_domains.c \
 	MGL/include/mgl_pipeline_cache_key.h MGL/src/mgl_pipeline_cache_key.c \
 	MGL/include/mgl_pipeline_recovery.h MGL/src/mgl_pipeline_recovery.c
 	$(HOST_GTEST_CXX) -x c++ $(HOST_GTEST_CXXFLAGS) $(GTEST_CXXFLAGS) \
 		test_legacy_compat/test_mgl_state_dirty_gtest.cpp \
+		test_legacy_compat/test_mgl_state_dirty_mark_gtest.cpp \
 		MGL/src/mgl_sync_domains.c \
 		MGL/src/mgl_pipeline_cache_key.c \
 		MGL/src/mgl_pipeline_recovery.c \
