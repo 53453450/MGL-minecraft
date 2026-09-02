@@ -14,9 +14,12 @@
 
 #include "glm_context.h"
 #include "mgl_frame_activity.h"
-#include "mgl_render_pass_coordinator.h"
 #include "mgl_sync_domains.h"
 #include "mgl_types_framebuffer.h"
+
+/* Forward declare to avoid cycle:
+ * coordinator.h → glm_context.h → backend.h → sync.h → coordinator.h */
+typedef struct MGLCommandState_t MGLCommandState;
 
 #ifdef __cplusplus
 extern "C" {
