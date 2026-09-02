@@ -353,15 +353,23 @@ bool mglProcessGLStateTailBridgeRecoverNilEncoder(void *renderer,
     return true;
 }
 
+static bool mglSyncBridgeSyncPipeline(void *renderer, GLMContext context,
+                                      int deferred_buffer_map);
+
 bool mglProcessGLStateTailBridgePrepareDrawPass(void *renderer,
                                                        GLMContext context)
 {
-    (void)context;
     MGLRenderer *self = (__bridge MGLRenderer *)renderer;
     if (![self ensureCurrentRenderPassMatchesFramebufferForDraw]) {
         return false;
     }
     [self updateCurrentRenderEncoder];
+    /* Rebuild/sync PSO after the render pass is finalized for this draw.
+     * Dirty-domain pipeline sync can run while the encoder still reflects a
+     * previous pass (common for depth-texture FBO binds). */
+    if (!mglSyncBridgeSyncPipeline(renderer, context, 0)) {
+        return false;
+    }
     return true;
 }
 

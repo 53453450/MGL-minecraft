@@ -165,15 +165,7 @@ extern "C" int mglRenderSyncRenderPassForFbo(
         : state->framebuffer;
     const bool binding_dirty =
         framebuffer && (framebuffer->dirty_bits & DIRTY_FBO_BINDING);
-
-    if (command_state &&
-        mglRenderEncoderOwnerHasCurrent(
-            command_state->currentRenderEncoderOwner) == 1 &&
-        !binding_dirty && ops->render_pass_matches_framebuffer &&
-        ops->render_pass_matches_framebuffer(ops->renderer, context)) {
-        state->dirty_bits &= ~DIRTY_FBO;
-        return 1;
-    }
+    (void)command_state;
 
     if (framebuffer && binding_dirty) {
         if (!ops->bind_framebuffer_attachment_textures ||
