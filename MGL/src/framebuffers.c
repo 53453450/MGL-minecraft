@@ -2369,23 +2369,6 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
         stencil_att->clear_color[2] = 0.f;
         stencil_att->clear_color[3] = 0.f;
         stencil_att->buf.tex = tex;
-    } else if (attachment == GL_DEPTH_ATTACHMENT && texture != 0u && tex &&
-               fbo->stencil.texture == 0u) {
-        /* Depth-texture FBOs (GL_DEPTH_ATTACHMENT only) need the stencil
-         * attachment point populated when Metal uses a packed depth-stencil
-         * pixel format — same effective setup as DEPTH_STENCIL RBOs. */
-        FBOAttachment *stencil_att = &fbo->stencil;
-        stencil_att->texture = texture;
-        stencil_att->textarget = effective_textarget;
-        stencil_att->level = level;
-        stencil_att->layer = layer;
-        stencil_att->layered = fbo_attachment_ptr->layered;
-        stencil_att->clear_bitmask = 0;
-        stencil_att->clear_color[0] = 0.f;
-        stencil_att->clear_color[1] = 0.f;
-        stencil_att->clear_color[2] = 0.f;
-        stencil_att->clear_color[3] = 0.f;
-        stencil_att->buf.tex = tex;
     }
 
     fbo->dirty_bits |= DIRTY_FBO_BINDING;

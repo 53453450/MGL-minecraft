@@ -77,20 +77,12 @@ bool mglRendererTextureBindLocked(MGLRenderer *self, Texture *tex)
             ((existingInfo.usage & requiredRenderTargetUsage) != requiredRenderTargetUsage);
         BOOL mipCountMismatch = hasExistingInfo &&
             requiredMipLevels > existingInfo.mipmap_level_count;
-        /* Shared depth/stencil RTs do not depth-test on Paravirtual Metal. */
-        BOOL storageMismatch = hasExistingInfo && depthOrStencilRT &&
-            existingInfo.storage_mode != MGL_TEXTURE_STORAGE_PRIVATE;
-        /* Pure Depth32Float RTs are inert; promote to Depth32Float_Stencil8. */
-        BOOL depthFormatMismatch = hasExistingInfo && depthOrStencilRT &&
-            existingInfo.pixel_format == MGLPixelFormatDepth32Float;
-        if (existingTexture && (usageMismatch || mipCountMismatch ||
-                                storageMismatch || depthFormatMismatch)) {
-            NSLog(@"MGL WARNING: Recreating texture %u for render-target use (old usage=0x%lx oldMips=%lu requiredMips=%lu oldStorage=%lu)",
+        if (existingTexture && (usageMismatch || mipCountMismatch)) {
+            NSLog(@"MGL WARNING: Recreating texture %u for render-target use (old usage=0x%lx oldMips=%lu requiredMips=%lu)",
                   tex->name,
                   (unsigned long)existingInfo.usage,
                   (unsigned long)existingInfo.mipmap_level_count,
-                  (unsigned long)requiredMipLevels,
-                  (unsigned long)existingInfo.storage_mode);
+                  (unsigned long)requiredMipLevels);
 
             // Keep a strong reference to the old texture so we can blit its GPU
             // data to the new one after releasing tex->mtl_data.
@@ -115,9 +107,7 @@ bool mglRendererTextureBindLocked(MGLRenderer *self, Texture *tex)
                 const BOOL packedDepthStencil =
                     tex->internalformat == GL_DEPTH32F_STENCIL8 ||
                     tex->internalformat == GL_DEPTH24_STENCIL8;
-                if (packedDepthStencil || depthFormatMismatch) {
-                    /* Packed or Depth32Float->Depth32Float_Stencil8 promotion:
-                     * blit cannot reliably move depth/stencil planes. Start fresh. */
+                if (packedDepthStencil) {
                     tex->dirty_bits = 0;
                 } else {
                     // Blit GPU data from old texture to new texture to preserve

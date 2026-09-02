@@ -2088,13 +2088,6 @@
 
     // PROPER FIX: Get original texture format and validate for AGX compatibility
     pixelFormat = mtlPixelFormatForGLTex(tex);
-    /* Pure Depth32Float render targets are depth-test-inert on Apple
-     * Paravirtual Metal; Depth32Float_Stencil8 works (stencil RBO path).
-     * Promote depth-only FBO attachments to the packed Metal format. */
-    if (tex->is_render_target &&
-        pixelFormat == MGLPixelFormatDepth32Float) {
-        pixelFormat = MGLPixelFormatDepth32Float_Stencil8;
-    }
     BOOL expandsSingleChannelSwizzle = mglTextureUploadNeedsSingleChannelSwizzle(tex);
     if (expandsSingleChannelSwizzle) {
         pixelFormat = MGLPixelFormatRGBA8Unorm;
@@ -2203,22 +2196,12 @@
 
     // Use shared storage for textures that need CPU upload (blit/replaceRegion).
     // Private storage is only safe for pure GPU render targets on Apple Silicon.
-    //
-    // Depth/stencil FBO attachments MUST be Private — same policy as
-    // newDrawBuffer / transient depth. 818069a forced Shared for all
-    // depth/stencil so CTS replaceRegion uploads work; that still creates
-    // Depth32Float RTs on Apple Paravirtual Metal, but depth test/write are
-    // inert (last draw wins: depth_test / legacy z-control). Keep Shared only
-    // for non-RT depth/stencil that need CPU upload.
     bool hasUploadableCPUData = mglTextureHasUploadableCPUData(tex, num_faces, upload_level_count);
     bool needsCpuUpload = ((tex->dirty_bits & DIRTY_TEXTURE_DATA) != 0) && hasUploadableCPUData;
-    bool isDepthOrStencil = mglMetalPixelFormatIsDepthOrStencil(pixelFormat);
-    if (isDepthOrStencil && tex->is_render_target) {
-        tex_desc.storage_mode = MGL_TEXTURE_STORAGE_PRIVATE;
-    } else {
-        tex_desc.storage_mode =
-            needsCpuUpload ? 0u : MGL_TEXTURE_STORAGE_PRIVATE;
-    }
+    bool preferSharedDepthStencil =
+        mglMetalPixelFormatIsDepthOrStencil(pixelFormat);
+    tex_desc.storage_mode =
+        (needsCpuUpload || preferSharedDepthStencil) ? 0u : MGL_TEXTURE_STORAGE_PRIVATE;
     tex_desc.sample_count = MAX(tex_desc.sample_count, 1u);
     tex_desc.mipmap_level_count = MAX(tex_desc.mipmap_level_count, 1u);
     tex_desc.array_length = MAX(tex_desc.array_length, 1u);

@@ -499,33 +499,6 @@ static void mglRenderPassSetPersistentAttachment(
     }
 }
 
-static BOOL mglRenderPassDepthOnlyAttachmentNeedsMirroredStencil(id depthTexture)
-{
-    if (!depthTexture) {
-        return NO;
-    }
-    return mglMetalPixelFormatIsPackedDepthStencil(
-        mglRenderPassTextureInfo(depthTexture).pixel_format);
-}
-
-static void mglRenderPassMirrorPackedDepthToStencilAttachment(
-    const MGLCommandState *commandState,
-    id depthTexture,
-    const MGLMetalAttachmentSubresource *subresource,
-    BOOL layered)
-{
-    if (!depthTexture || !subresource ||
-        !mglRenderPassDepthOnlyAttachmentNeedsMirroredStencil(depthTexture)) {
-        return;
-    }
-    mglRenderPassSetPersistentAttachment(
-        commandState,
-        MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0,
-        depthTexture,
-        subresource->level, subresource->slice,
-        subresource->depthPlane, layered);
-}
-
 static void mglRenderPassSetPersistentDimensions(
     const MGLCommandState *commandState,
     NSUInteger width,
@@ -1430,9 +1403,6 @@ static GLenum mglPassthroughDeclType(
             }
         }
         expectedStencil = stencilTex ? (__bridge id)(stencilTex->mtl_data) : nil;
-    } else if (expectedDepth &&
-               mglRenderPassDepthOnlyAttachmentNeedsMirroredStencil(expectedDepth)) {
-        expectedStencil = expectedDepth;
     }
     id actualStencil = mglRenderPassTextureFromSnapshot(
         &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0);
@@ -2732,11 +2702,6 @@ static GLenum mglPassthroughDeclType(
                 depthMetal,
                 subresource.level, subresource.slice,
                 subresource.depthPlane, fbo->depth.layered);
-            if (!fbo->stencil.texture) {
-                mglRenderPassMirrorPackedDepthToStencilAttachment(
-                    &_commandState, depthMetal, &subresource,
-                    fbo->depth.layered);
-            }
         }
     }
 
@@ -3139,16 +3104,6 @@ static GLenum mglPassthroughDeclType(
         }
     }
 
-    id sharedDepthStencilTex = nil;
-    {
-        id depthTex = mglRenderPassDepthTextureFor(&_commandState);
-        id stencilTex = mglRenderPassStencilTextureFor(&_commandState);
-        if (depthTex && stencilTex == depthTex) {
-            sharedDepthStencilTex = depthTex;
-        }
-    }
-    BOOL sharedDepthStencilLoadStoreConfigured = NO;
-
     if (fbo->depth.clear_bitmask & GL_DEPTH_BUFFER_BIT) {
         mglRenderPassSetPersistentDepthClear(
             &_commandState, fbo->depth.clear_color[0]);
@@ -3157,14 +3112,6 @@ static GLenum mglPassthroughDeclType(
             MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0,
             MGLLoadActionClear, MGLStoreActionStore);
         fbo->depth.clear_bitmask &= ~GL_DEPTH_BUFFER_BIT;
-        if (sharedDepthStencilTex) {
-            mglRenderPassSetPersistentStencilClear(&_commandState, 0u);
-            mglRenderPassSetPersistentActions(
-                &_commandState,
-                MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0,
-                MGLLoadActionClear, MGLStoreActionStore);
-            sharedDepthStencilLoadStoreConfigured = YES;
-        }
     } else {
         mglRenderPassSetPersistentLoadAction(
             &_commandState,
@@ -3175,17 +3122,6 @@ static GLenum mglPassthroughDeclType(
                 &_commandState,
                 MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0,
                 MGLStoreActionStore);
-        }
-        if (sharedDepthStencilTex) {
-            mglRenderPassSetPersistentLoadAction(
-                &_commandState,
-                MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0,
-                MGLLoadActionLoad);
-            mglRenderPassSetPersistentStoreAction(
-                &_commandState,
-                MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0,
-                MGLStoreActionStore);
-            sharedDepthStencilLoadStoreConfigured = YES;
         }
     }
 
@@ -3198,7 +3134,7 @@ static GLenum mglPassthroughDeclType(
             MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0,
             MGLLoadActionClear, MGLStoreActionStore);
         fbo->stencil.clear_bitmask &= ~GL_STENCIL_BUFFER_BIT;
-    } else if (!sharedDepthStencilLoadStoreConfigured) {
+    } else {
         mglRenderPassSetPersistentLoadAction(
             &_commandState,
             MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0,
@@ -4545,24 +4481,12 @@ static GLenum mglPassthroughDeclType(
                 return NO;
             }
             if (tex && tex->mtl_data) {
-                id depthMetal = (__bridge id)tex->mtl_data;
-                uint32_t depthFormat = mglRenderPassTextureInfo(depthMetal).pixel_format;
+                uint32_t depthFormat = mtlPixelFormatForGLTex(tex);
                 if (depthFormat == MGLPixelFormatInvalid) {
-                    depthFormat = mtlPixelFormatForGLTex(tex);
-                    if (tex->is_render_target &&
-                        depthFormat == MGLPixelFormatDepth32Float) {
-                        depthFormat = MGLPixelFormatDepth32Float_Stencil8;
-                    }
-                }
-                if (depthFormat == MGLPixelFormatInvalid) {
-                    NSLog(@"MGL ERROR: Invalid depth texture format, falling back to Depth32Float_Stencil8");
-                    depthFormat = MGLPixelFormatDepth32Float_Stencil8;
+                    NSLog(@"MGL ERROR: Invalid depth texture format, falling back to Depth32Float");
+                    depthFormat = MGLPixelFormatDepth32Float;
                 }
                 state->depth_format = (uint32_t)depthFormat;
-                if (!fbo->stencil.texture &&
-                    mglMetalPixelFormatIsPackedDepthStencil(depthFormat)) {
-                    state->stencil_format = (uint32_t)depthFormat;
-                }
             } else {
                 state->depth_format = (uint32_t)MGLPixelFormatInvalid;
             }
