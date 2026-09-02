@@ -1097,9 +1097,11 @@ MTL::TextureDescriptor* newTextureDescriptor(
     descriptor->setUsage(static_cast<MTL::TextureUsage>(state->usage));
     descriptor->setCompressionType(
         static_cast<MTL::TextureCompressionType>(state->compression_type));
-    descriptor->setPlacementSparsePageSize(
-        static_cast<MTL::SparsePageSize>(
-            state->placement_sparse_page_size));
+    if (__builtin_available(macOS 15.0, *)) {
+        descriptor->setPlacementSparsePageSize(
+            static_cast<MTL::SparsePageSize>(
+                state->placement_sparse_page_size));
+    }
     descriptor->setAllowGPUOptimizedContents(
         state->allow_gpu_optimized_contents != 0);
     if (state->has_swizzle) {
@@ -3351,8 +3353,12 @@ mglRenderReadTextureDescriptor(MTL::TextureDescriptor* descriptor) {
         static_cast<uint32_t>(descriptor->hazardTrackingMode());
     state.compression_type =
         static_cast<uint32_t>(descriptor->compressionType());
-    state.placement_sparse_page_size =
-        static_cast<uint32_t>(descriptor->placementSparsePageSize());
+    if (__builtin_available(macOS 15.0, *)) {
+        state.placement_sparse_page_size =
+            static_cast<uint32_t>(descriptor->placementSparsePageSize());
+    } else {
+        state.placement_sparse_page_size = 0u;
+    }
     state.allow_gpu_optimized_contents =
         descriptor->allowGPUOptimizedContents() ? 1u : 0u;
     MTL::TextureSwizzleChannels swizzle = descriptor->swizzle();
