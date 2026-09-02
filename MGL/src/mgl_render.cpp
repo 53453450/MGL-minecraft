@@ -8892,7 +8892,7 @@ int mglRenderTextureUploadNeedsIntegerMultiChannelSwizzleBake(
     int is_signed = 0;
     if (mglRenderIntegerFormatLayout(
             internal_format, &components, &component_bytes, &is_signed) != 0 ||
-        !is_signed || components <= 1u) {
+        components <= 1u) {
         return 0;
     }
     return 1;
@@ -8914,6 +8914,18 @@ uint32_t mglRenderIntegerMultiChannelSwizzleStoragePixelFormat(
         case GL_RGB32I:
         case GL_RGBA32I:
             return static_cast<uint32_t>(MTL::PixelFormatRGBA32Sint);
+        case GL_RG8UI:
+        case GL_RGB8UI:
+        case GL_RGBA8UI:
+            return static_cast<uint32_t>(MTL::PixelFormatRGBA8Uint);
+        case GL_RG16UI:
+        case GL_RGB16UI:
+        case GL_RGBA16UI:
+            return static_cast<uint32_t>(MTL::PixelFormatRGBA16Uint);
+        case GL_RG32UI:
+        case GL_RGB32UI:
+        case GL_RGBA32UI:
+            return static_cast<uint32_t>(MTL::PixelFormatRGBA32Uint);
         default:
             return static_cast<uint32_t>(MTL::PixelFormatInvalid);
     }
