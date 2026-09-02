@@ -152,3 +152,49 @@ TEST(PipelineRecovery, InterfaceMismatchAbortMatchesSignature)
     EXPECT_FALSE(mglPipelineRecoveryShouldAbortForInterfaceMismatch(
         &recovery, 50.0, 5u, 11u, 20u, 30u));
 }
+
+TEST(PipelineRecovery, ReusePreviousRequiresMatchingFunctionsAndFormats)
+{
+    const void *prev = reinterpret_cast<const void *>(0x1000);
+    const void *vs = reinterpret_cast<const void *>(0x2000);
+    const void *fs = reinterpret_cast<const void *>(0x3000);
+    MGLPipelineRecoveryReuseInput ok = {
+        .previous_pipeline_state = prev,
+        .current_program_name = 4u,
+        .cached_program_name = 4u,
+        .cached_vertex_function = vs,
+        .cached_fragment_function = fs,
+        .vertex_function = vs,
+        .fragment_function = fs,
+        .cached_color0_format = 10u,
+        .built_color0_format = 10u,
+        .cached_depth_format = 20u,
+        .built_depth_format = 20u,
+        .cached_stencil_format = 30u,
+        .built_stencil_format = 30u,
+        .invalid_pixel_format = 0xFFFFFFFFu,
+    };
+    EXPECT_TRUE(mglPipelineRecoveryCanReusePreviousOnInterfaceMismatch(&ok));
+
+    MGLPipelineRecoveryReuseInput bad_vs = ok;
+    bad_vs.vertex_function = reinterpret_cast<const void *>(0x9999);
+    EXPECT_FALSE(mglPipelineRecoveryCanReusePreviousOnInterfaceMismatch(&bad_vs));
+}
+
+TEST(PipelineRecovery, InterfaceMismatchFailureBackoffEscalates)
+{
+    MGLPipelineRecoveryState recovery = {
+        .interface_mismatch_program_name = 8u,
+        .interface_mismatch_color0_format = 1u,
+        .interface_mismatch_depth_format = 2u,
+        .interface_mismatch_stencil_format = 3u,
+        .interface_mismatch_streak = 3u,
+    };
+    MGLPipelineRecoveryMismatchDelays delays = {};
+    mglPipelineRecoveryRecordInterfaceMismatchFailure(
+        &recovery, 1000.0, 8u, 1u, 2u, 3u, &delays);
+    EXPECT_EQ(4u, recovery.interface_mismatch_streak);
+    EXPECT_DOUBLE_EQ(0.40, delays.interface_retry_delay);
+    EXPECT_GT(recovery.program_mismatch_retry_after, 1000.0);
+    EXPECT_GT(recovery.interface_mismatch_blocked_until, 1000.0);
+}

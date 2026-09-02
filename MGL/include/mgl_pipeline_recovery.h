@@ -47,6 +47,44 @@ void mglPipelineRecoveryOnCacheHit(MGLPipelineRecoveryState *recovery,
                                    uint32_t program_name,
                                    uint32_t invalid_pixel_format);
 
+typedef struct MGLPipelineRecoveryReuseInput_t {
+    const void *previous_pipeline_state;
+    uint32_t current_program_name;
+    uint32_t cached_program_name;
+    const void *cached_vertex_function;
+    const void *cached_fragment_function;
+    const void *vertex_function;
+    const void *fragment_function;
+    uint32_t cached_color0_format;
+    uint32_t cached_depth_format;
+    uint32_t cached_stencil_format;
+    uint32_t built_color0_format;
+    uint32_t built_depth_format;
+    uint32_t built_stencil_format;
+    uint32_t invalid_pixel_format;
+} MGLPipelineRecoveryReuseInput;
+
+bool mglPipelineRecoveryCanReusePreviousOnInterfaceMismatch(
+    const MGLPipelineRecoveryReuseInput *input);
+
+void mglPipelineRecoveryRecordReuseOnInterfaceMismatch(
+    MGLPipelineRecoveryState *recovery, double now, uint32_t program_name,
+    uint32_t color0_format, uint32_t depth_format, uint32_t stencil_format);
+
+typedef struct MGLPipelineRecoveryMismatchDelays_t {
+    double interface_retry_delay;
+    double program_retry_delay;
+    double quarantine_delay;
+    bool log_interface_throttle;
+    bool log_program_breaker;
+    bool log_quarantine;
+} MGLPipelineRecoveryMismatchDelays;
+
+void mglPipelineRecoveryRecordInterfaceMismatchFailure(
+    MGLPipelineRecoveryState *recovery, double now, uint32_t program_name,
+    uint32_t color0_format, uint32_t depth_format, uint32_t stencil_format,
+    MGLPipelineRecoveryMismatchDelays *delays_out);
+
 #ifdef __cplusplus
 }
 #endif

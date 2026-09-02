@@ -6231,111 +6231,68 @@ static void mglPipelineRecoveryApplyToGPU(MGLGPURecoveryState *gpu,
                 } else if (!currentVertexProgram) {
                     mglWriteProgramMSLDump(currentProgram, errDesc);
                 }
-                BOOL sameProgram =
-                (_pipelineCacheState.pipelineProgramName != 0 &&
-                _pipelineCacheState.pipelineProgramName == currentProgramName &&
-                _pipelineCacheState.pipelineVertexFunction == (__bridge void *)vertexFunction &&
-                _pipelineCacheState.pipelineFragmentFunction == (__bridge void *)fragmentFunction);
-                BOOL colorCompatible = (_pipelineCacheState.pipelineColor0Format == MGLPixelFormatInvalid ||
-                builtColor0Format == (uint32_t)MGLPixelFormatInvalid ||
-                (uint32_t)_pipelineCacheState.pipelineColor0Format == builtColor0Format);
-                BOOL depthCompatible = (_pipelineCacheState.pipelineDepthFormat == MGLPixelFormatInvalid ||
-                builtDepthFormat == (uint32_t)MGLPixelFormatInvalid ||
-                (uint32_t)_pipelineCacheState.pipelineDepthFormat == builtDepthFormat);
-                BOOL stencilCompatible = (_pipelineCacheState.pipelineStencilFormat == MGLPixelFormatInvalid ||
-                builtStencilFormat == (uint32_t)MGLPixelFormatInvalid ||
-                (uint32_t)_pipelineCacheState.pipelineStencilFormat == builtStencilFormat);
 
-                if (previousPipelineState && sameProgram && colorCompatible && depthCompatible && stencilCompatible) {
+                MGLPipelineRecoveryState recoveryView =
+                    mglPipelineRecoveryViewFromGPU(&_gpuRecovery);
+                MGLPipelineRecoveryReuseInput reuseInput = {
+                    .previous_pipeline_state = previousPipelineState,
+                    .current_program_name = (uint32_t)currentProgramName,
+                    .cached_program_name = _pipelineCacheState.pipelineProgramName,
+                    .cached_vertex_function = _pipelineCacheState.pipelineVertexFunction,
+                    .cached_fragment_function = _pipelineCacheState.pipelineFragmentFunction,
+                    .vertex_function = (__bridge void *)vertexFunction,
+                    .fragment_function = (__bridge void *)fragmentFunction,
+                    .cached_color0_format =
+                        (uint32_t)_pipelineCacheState.pipelineColor0Format,
+                    .cached_depth_format =
+                        (uint32_t)_pipelineCacheState.pipelineDepthFormat,
+                    .cached_stencil_format =
+                        (uint32_t)_pipelineCacheState.pipelineStencilFormat,
+                    .built_color0_format = builtColor0Format,
+                    .built_depth_format = builtDepthFormat,
+                    .built_stencil_format = builtStencilFormat,
+                    .invalid_pixel_format = (uint32_t)MGLPixelFormatInvalid,
+                };
+
+                if (mglPipelineRecoveryCanReusePreviousOnInterfaceMismatch(
+                        &reuseInput)) {
                     NSLog(@"MGL WARNING: Interface mismatch for program %u; reusing previous compatible pipeline once",
-                    (unsigned)currentProgramName);
+                          (unsigned)currentProgramName);
                     compiledPSO = previousPipelineState;
                     pipelineReusedPrevious = true;
-                    _gpuRecovery.interfaceMismatchProgramName = currentProgramName;
-                    _gpuRecovery.interfaceMismatchColor0Format = builtColor0Format;
-                    _gpuRecovery.interfaceMismatchDepthFormat = builtDepthFormat;
-                    _gpuRecovery.interfaceMismatchStencilFormat = builtStencilFormat;
-                    _gpuRecovery.interfaceMismatchStreak = 1u;
-                    _gpuRecovery.interfaceMismatchRetryAfter = now + 0.10;
-                    _gpuRecovery.pipelineRetryAfter = _gpuRecovery.interfaceMismatchRetryAfter;
+                    mglPipelineRecoveryRecordReuseOnInterfaceMismatch(
+                        &recoveryView, now, (uint32_t)currentProgramName,
+                        builtColor0Format, builtDepthFormat,
+                        builtStencilFormat);
+                    mglPipelineRecoveryApplyToGPU(&_gpuRecovery, &recoveryView);
                 } else {
-                    BOOL sameMismatchSignature =
-                    (currentProgramName == _gpuRecovery.interfaceMismatchProgramName &&
-                    builtColor0Format == _gpuRecovery.interfaceMismatchColor0Format &&
-                    builtDepthFormat == _gpuRecovery.interfaceMismatchDepthFormat &&
-                    builtStencilFormat == _gpuRecovery.interfaceMismatchStencilFormat);
-                    if (sameMismatchSignature) {
-                        if (_gpuRecovery.interfaceMismatchStreak < UINT32_MAX) {
-                            _gpuRecovery.interfaceMismatchStreak++;
-                        }
-                    } else {
-                        _gpuRecovery.interfaceMismatchStreak = 1;
-                        _gpuRecovery.interfaceMismatchProgramName = currentProgramName;
-                        _gpuRecovery.interfaceMismatchColor0Format = builtColor0Format;
-                        _gpuRecovery.interfaceMismatchDepthFormat = builtDepthFormat;
-                        _gpuRecovery.interfaceMismatchStencilFormat = builtStencilFormat;
-                    }
+                    MGLPipelineRecoveryMismatchDelays delays = {0};
+                    mglPipelineRecoveryRecordInterfaceMismatchFailure(
+                        &recoveryView, now, (uint32_t)currentProgramName,
+                        builtColor0Format, builtDepthFormat,
+                        builtStencilFormat, &delays);
+                    mglPipelineRecoveryApplyToGPU(&_gpuRecovery, &recoveryView);
 
-                    // Exponential backoff: 0.10, 0.20, 0.40, 0.80, 1.60, capped at 2.00 sec.
-                    uint32_t cappedShift = (_gpuRecovery.interfaceMismatchStreak > 5u) ? 4u : (_gpuRecovery.interfaceMismatchStreak - 1u);
-                    double retryDelay = 0.10 * (double)(1u << cappedShift);
-                    if (retryDelay > 2.0) {
-                        retryDelay = 2.0;
-                    }
-                    _gpuRecovery.interfaceMismatchRetryAfter = now + retryDelay;
-
-                    if (_gpuRecovery.interfaceMismatchStreak <= 5u || (_gpuRecovery.interfaceMismatchStreak % 200u) == 0u) {
+                    if (delays.log_interface_throttle) {
                         NSLog(@"MGL WARNING: Interface mismatch (program=%u, streak=%u), throttling retries for %.2fs",
-                        (unsigned)currentProgramName,
-                        (unsigned)_gpuRecovery.interfaceMismatchStreak,
-                        retryDelay);
+                              (unsigned)currentProgramName,
+                              (unsigned)recoveryView.interface_mismatch_streak,
+                              delays.interface_retry_delay);
                     }
-
-                    // Program-level breaker update (ignores attachment signature).
-                    if (_gpuRecovery.programMismatchProgramName == currentProgramName) {
-                        if (_gpuRecovery.programMismatchStreak < UINT32_MAX) {
-                            _gpuRecovery.programMismatchStreak++;
-                        }
-                    } else {
-                        _gpuRecovery.programMismatchProgramName = currentProgramName;
-                        _gpuRecovery.programMismatchStreak = 1u;
-                    }
-                    double programDelay = 0.25 * (double)(1u << ((_gpuRecovery.programMismatchStreak > 6u) ? 6u : (_gpuRecovery.programMismatchStreak - 1u)));
-                    if (programDelay > 20.0) {
-                        programDelay = 20.0;
-                    }
-                    _gpuRecovery.programMismatchRetryAfter = now + programDelay;
-                    if (_gpuRecovery.programMismatchStreak <= 8u || (_gpuRecovery.programMismatchStreak % 64u) == 0u) {
+                    if (delays.log_program_breaker) {
                         NSLog(@"MGL WARNING: Program %u mismatch breaker set for %.2fs (streak=%u)",
-                        (unsigned)currentProgramName,
-                        programDelay,
-                        (unsigned)_gpuRecovery.programMismatchStreak);
+                              (unsigned)currentProgramName,
+                              delays.program_retry_delay,
+                              (unsigned)recoveryView.program_mismatch_streak);
                     }
-
-                    // Global quarantine for this program to prevent command-buffer storm.
-                    if (_gpuRecovery.interfaceMismatchBlockedProgram == currentProgramName) {
-                        if (_gpuRecovery.interfaceMismatchBlockedStreak < UINT32_MAX) {
-                            _gpuRecovery.interfaceMismatchBlockedStreak++;
-                        }
-                    } else {
-                        _gpuRecovery.interfaceMismatchBlockedProgram = currentProgramName;
-                        _gpuRecovery.interfaceMismatchBlockedStreak = 1u;
-                    }
-                    double quarantineDelay = retryDelay * 8.0;
-                    if (quarantineDelay < 1.00) quarantineDelay = 1.00;
-                    if (quarantineDelay > 15.00) quarantineDelay = 15.00;
-                    _gpuRecovery.interfaceMismatchBlockedUntil = now + quarantineDelay;
-                    if (_gpuRecovery.interfaceMismatchBlockedStreak <= 6u || (_gpuRecovery.interfaceMismatchBlockedStreak % 64u) == 0u) {
+                    if (delays.log_quarantine) {
                         NSLog(@"MGL WARNING: Program %u quarantined for %.2fs after interface mismatch (streak=%u)",
-                        (unsigned)currentProgramName,
-                        quarantineDelay,
-                        (unsigned)_gpuRecovery.interfaceMismatchBlockedStreak);
+                              (unsigned)currentProgramName,
+                              delays.quarantine_delay,
+                              (unsigned)recoveryView.interface_mismatch_blocked_streak);
                     }
 
                     [self invalidateCurrentPipelineStateForReason:@"interface mismatch pipeline failure"];
-                    _gpuRecovery.pipelineRetryAfter = (_gpuRecovery.interfaceMismatchBlockedUntil > _gpuRecovery.interfaceMismatchRetryAfter)
-                    ? _gpuRecovery.interfaceMismatchBlockedUntil
-                    : _gpuRecovery.interfaceMismatchRetryAfter;
                     state->dirty_bits &= ~(DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
                     return false;
                 }
@@ -6508,13 +6465,12 @@ static void mglPipelineRecoveryApplyToGPU(MGLGPURecoveryState *gpu,
          * re-acquired lock. */
         METAL_LOCK();
         if (!pipelineReusedPrevious && haveSuccessfulState) {
-            // Clear interface-mismatch breaker after a real compile.
-            _gpuRecovery.interfaceMismatchStreak = 0;
-            _gpuRecovery.interfaceMismatchProgramName = 0;
-            _gpuRecovery.interfaceMismatchColor0Format = (uint32_t)MGLPixelFormatInvalid;
-            _gpuRecovery.interfaceMismatchDepthFormat = (uint32_t)MGLPixelFormatInvalid;
-            _gpuRecovery.interfaceMismatchStencilFormat = (uint32_t)MGLPixelFormatInvalid;
-            _gpuRecovery.interfaceMismatchRetryAfter = 0.0;
+            MGLPipelineRecoveryState recoveryView =
+                mglPipelineRecoveryViewFromGPU(&_gpuRecovery);
+            mglPipelineRecoveryOnCacheHit(
+                &recoveryView, (uint32_t)currentProgramName,
+                (uint32_t)MGLPixelFormatInvalid);
+            mglPipelineRecoveryApplyToGPU(&_gpuRecovery, &recoveryView);
             mglPipelineCacheActivatePipelineState(
                 &_pipelineCacheState, &_pipelineCacheOwner,
                 (__bridge void *)_device, _pipelineCacheBinaryArchiveRequested,
@@ -6530,16 +6486,6 @@ static void mglPipelineRecoveryApplyToGPU(MGLGPURecoveryState *gpu,
                                          vertexFunction:vertexFunction
                                        fragmentFunction:fragmentFunction
                                           stateFromCache:stateFromCache];
-            if (_gpuRecovery.programMismatchProgramName == currentProgramName) {
-                _gpuRecovery.programMismatchProgramName = 0;
-                _gpuRecovery.programMismatchRetryAfter = 0.0;
-                _gpuRecovery.programMismatchStreak = 0u;
-            }
-            if (_gpuRecovery.interfaceMismatchBlockedProgram == currentProgramName) {
-                _gpuRecovery.interfaceMismatchBlockedProgram = 0;
-                _gpuRecovery.interfaceMismatchBlockedUntil = 0.0;
-                _gpuRecovery.interfaceMismatchBlockedStreak = 0u;
-            }
         }
         METAL_UNLOCK();
     }
