@@ -123,6 +123,9 @@ int mglRenderProcessGLStatePreamble(
 
 bool mglRendererObjCProcessGLState(GLMContext context, bool draw_command);
 
+/* ObjC bridge entry for syncRenderPassStateForContext:. */
+bool mglSyncBridgeSyncFbo(void *renderer, GLMContext context);
+
 #ifdef __cplusplus
 }
 #endif

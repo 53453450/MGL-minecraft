@@ -5328,12 +5328,18 @@ stencil_format_ok:;
                 id cachedPipeline = nil;
                 id cachedVertexFunction = nil;
                 id cachedFragmentFunction = nil;
+                void *cachedPipelinePtr = NULL;
+                void *cachedVertexFunctionPtr = NULL;
+                void *cachedFragmentFunctionPtr = NULL;
                 BOOL cachedFunctionMetadataPresent = mglPipelineCacheLookupPipeline(
                     &_pipelineCacheState, &_pipelineCacheOwner,
                     (__bridge void *)_device, _pipelineCacheBinaryArchiveRequested,
-                    keyWords, (void **)&cachedPipeline,
-                    (void **)&cachedVertexFunction,
-                    (void **)&cachedFragmentFunction);
+                    keyWords, &cachedPipelinePtr,
+                    &cachedVertexFunctionPtr,
+                    &cachedFragmentFunctionPtr);
+                cachedPipeline = (__bridge id)cachedPipelinePtr;
+                cachedVertexFunction = (__bridge id)cachedVertexFunctionPtr;
+                cachedFragmentFunction = (__bridge id)cachedFragmentFunctionPtr;
                 if (cachedPipeline) {
                     /* PSO cache hit - fastest path */
                     static uint64_t s_pipelineCacheHitCount = 0;
@@ -5529,7 +5535,7 @@ stencil_format_ok:;
                 MGLPipelineRecoveryState recoveryView =
                     mglPipelineRecoveryViewFromGPU(&_gpuRecovery);
                 MGLPipelineRecoveryReuseInput reuseInput = {
-                    .previous_pipeline_state = previousPipelineState,
+                    .previous_pipeline_state = (__bridge const void *)previousPipelineState,
                     .current_program_name = (uint32_t)currentProgramName,
                     .cached_program_name = _pipelineCacheState.pipelineProgramName,
                     .cached_vertex_function = _pipelineCacheState.pipelineVertexFunction,

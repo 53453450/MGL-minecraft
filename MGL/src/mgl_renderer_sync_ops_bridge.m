@@ -568,7 +568,7 @@ static bool mglSyncBridgeBindFramebufferAttachments(void *renderer,
 static bool mglSyncBridgeRotateRenderEncoderForFbo(void *renderer,
                                                    GLMContext context);
 
-static bool mglSyncBridgeSyncFbo(void *renderer, GLMContext context)
+bool mglSyncBridgeSyncFbo(void *renderer, GLMContext context)
 {
     MGLRenderer *self = (__bridge MGLRenderer *)renderer;
     static const MGLRenderPassSyncOps kPassOpsTemplate = {
