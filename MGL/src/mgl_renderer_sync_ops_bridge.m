@@ -23,6 +23,9 @@
 - (bool)ensureCurrentRenderPassMatchesFramebufferForDraw;
 - (bool)validateRenderPassAttachmentsAndPipelineFormatsLocked:(BOOL)traceProcess;
 - (void)updateCurrentRenderEncoder;
+@end
+
+@interface MGLRenderer (SyncOpsAccessors)
 - (MGLCommandState *)mglSyncOpsCommandState;
 - (MGLGPURecoveryState *)mglSyncOpsGPURecovery;
 - (MGLPipelineCacheState *)mglSyncOpsPipelineCacheState;
@@ -565,7 +568,8 @@ bool mglProcessGLStateTailBridge(MGLRenderer *self, bool draw_command,
                trace_process ? 1 : 0, resource_sync_work, &tailOps) != 0;
 }
 
- * Dirty state domain processing — orchestration lives in mgl_renderer_sync.cpp;
+/*
+ * Dirty state domain processing - orchestration lives in mgl_renderer_sync.cpp;
  * ObjC hooks implement platform-specific steps.
  */
 static Framebuffer *mglSyncBridgeGetValidatedFramebuffer(void *renderer,
