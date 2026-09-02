@@ -592,20 +592,7 @@ static bool mglSyncBridgeRotateRenderEncoderForFbo(void *renderer,
 
 bool mglSyncBridgeSyncFbo(void *renderer, GLMContext context)
 {
-    MGLRenderer *self = (__bridge MGLRenderer *)renderer;
-    static const MGLRenderPassSyncOps kPassOpsTemplate = {
-        .get_validated_framebuffer = mglSyncBridgeGetValidatedFramebuffer,
-        .render_pass_matches_framebuffer =
-            mglSyncBridgeRenderPassMatchesFramebuffer,
-        .bind_framebuffer_attachment_textures =
-            mglSyncBridgeBindFramebufferAttachments,
-        .rotate_render_encoder_for_fbo =
-            mglSyncBridgeRotateRenderEncoderForFbo,
-    };
-    MGLRenderPassSyncOps passOps = kPassOpsTemplate;
-    passOps.renderer = renderer;
-    return mglRenderSyncRenderPassForFbo(context, [self mglSyncOpsCommandState],
-                                         &passOps) != 0;
+    return [(__bridge MGLRenderer *)renderer syncRenderPassStateForContext:context];
 }
 
 static Framebuffer *mglSyncBridgeGetValidatedFramebuffer(void *renderer,

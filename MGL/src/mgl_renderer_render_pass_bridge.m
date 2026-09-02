@@ -6087,7 +6087,30 @@ stencil_format_ok:;
 
 - (bool)syncRenderPassStateForContext:(GLMContext)glm_ctx
 {
-    return mglSyncBridgeSyncFbo((__bridge void *)self, glm_ctx);
+    GLMState *state = MGL_STATE(glm_ctx);
+    Framebuffer *framebuffer =
+        mglRendererGetValidatedFramebuffer(glm_ctx, "processGLState.dirtyFBO");
+    BOOL framebufferBindingDirty =
+        framebuffer && (framebuffer->dirty_bits & DIRTY_FBO_BINDING);
+    if (mglRenderEncoderOwnerHasCurrent(
+            _commandState.currentRenderEncoderOwner) == 1 &&
+        !framebufferBindingDirty &&
+        [self currentRenderPassMatchesCurrentFramebuffer]) {
+        state->dirty_bits &= ~DIRTY_FBO;
+        return true;
+    }
+
+    if (framebuffer && framebufferBindingDirty) {
+        RETURN_FALSE_ON_FAILURE([self bindFramebufferAttachmentTextures]);
+        framebuffer = mglRendererGetValidatedFramebuffer(
+            glm_ctx, "processGLState.dirtyFBO.afterBind");
+        if (framebuffer) {
+            framebuffer->dirty_bits &= ~DIRTY_FBO_BINDING;
+        }
+    }
+
+    RETURN_FALSE_ON_FAILURE([self rotateRenderEncoderForCurrentFramebufferLocked]);
+    return true;
 }
 
 
