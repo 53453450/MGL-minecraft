@@ -231,6 +231,7 @@ struct Codegen {
     std::map<std::string, llvm::Value *> lvalues;   /* register values */
     std::vector<VarSym *> varyings;      /* vertex out / fragment in, decl order */
     std::vector<VarSym *> fragOutputs;   /* fragment outputs, return-field order */
+    bool has_gs = false;                 /* fragment fed by GS passthrough VS */
     VarSym position;                     /* gl_Position */
     llvm::Type *retTy = nullptr;         /* stage return type */
     std::vector<llvm::Type *> retElems;  /* VS struct fields (incl. position) */
@@ -249,15 +250,23 @@ bool scalarIsFloat(MGLIRScalar s) {
            s == MGLIR_SCALAR_HALF;
 }
 
-/* GS-expansion fragment stages carry integer varyings through float
- * attributes: the raw int bit patterns do not survive Metal's attribute
- * plumbing (small magnitudes are denormals in float interpretation and
- * the values arrive zeroed / truncated).  Both interface sides instead
- * exchange sitofp-exact floats (|v| < 2^24) and the fragment body
- * converts back once at entry. */
+/* Integer varyings on AGX must ride float carriers: GS expansion already
+ * needed this for all integer types; flat signed varyings in plain VS/FS
+ * pipelines also misread when carried as raw int stage inputs. */
 static bool varyingUsesFloatCarrier(const MType &t, bool has_gs) {
-    return has_gs && !scalarIsFloat(t.scalar) &&
-           t.scalar != MGLIR_SCALAR_BOOL;
+    if (t.scalar == MGLIR_SCALAR_BOOL || scalarIsFloat(t.scalar))
+        return false;
+    if (has_gs)
+        return true;
+    return t.scalar == MGLIR_SCALAR_INT;
+}
+
+static llvm::Value *encodeFloatCarrier(Codegen &cg, llvm::Value *value,
+                                       MGLIRScalar scalar) {
+    llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+    if (scalar == MGLIR_SCALAR_UINT)
+        return cg.b->CreateUIToFP(value, f32);
+    return cg.b->CreateSIToFP(value, f32);
 }
 
 static llvm::Value *decodeFloatCarrier(Codegen &cg, llvm::Value *arg,
@@ -7179,9 +7188,15 @@ llvm::Value *assembleReturn(Codegen &cg) {
                         if (base->getType()->isArrayTy()) {
                             el = cg.b->CreateExtractValue(base, k);
                         }
+                        if (varyingUsesFloatCarrier(var->type, cg.has_gs)) {
+                            el = encodeFloatCarrier(cg, el, var->type.scalar);
+                        }
                         ret = cg.b->CreateInsertValue(ret, el, ri++);
                     }
                 } else {
+                    if (varyingUsesFloatCarrier(var->type, cg.has_gs)) {
+                        base = encodeFloatCarrier(cg, base, var->type.scalar);
+                    }
                     ret = cg.b->CreateInsertValue(ret, base, ri++);
                 }
             }
@@ -8615,10 +8630,15 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     if (v.type.isArray()) {
                         MType el = v.type;
                         el.arr = 0;
+                        if (varyingUsesFloatCarrier(el, has_gs))
+                            el = floatCarrierType(el);
                         for (uint32_t i = 0; i < (uint32_t)v.type.arr; i++)
                             retElems.push_back(llvmType(el, ctx));
                     } else {
-                        retElems.push_back(llvmType(v.type, ctx));
+                        MType outTy = v.type;
+                        if (varyingUsesFloatCarrier(outTy, has_gs))
+                            outTy = floatCarrierType(outTy);
+                        retElems.push_back(llvmType(outTy, ctx));
                     }
                 }
                 varyings.push_back(&v);
@@ -8964,6 +8984,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     cg.fn = fn;
     cg.mod = &module;
     cg.isVS = isVS || isTES;
+    cg.has_gs = has_gs;
     cg.isCompute = isCompute || isTCS || isGS;
     cg.isTessControl = isTCS;
     cg.isTessEval = isTES;
@@ -10923,21 +10944,25 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 for (uint32_t k = 0; k < n; k++) {
                     std::string elName =
                         base + "_elm" + std::to_string(k);
+                    MType outTy = varyingUsesFloatCarrier(el, has_gs)
+                        ? floatCarrierType(el) : el;
                     outNodes.push_back(llvm::MDNode::get(ctx, {
                         llvm::MDString::get(ctx, "air.vertex_output"),
                         llvm::MDString::get(ctx,
-                                            airGenerated(elName, el)),
+                                            airGenerated(elName, outTy)),
                         llvm::MDString::get(ctx, "air.arg_type_name"),
-                        llvm::MDString::get(ctx, mslTypeName(el)),
+                        llvm::MDString::get(ctx, mslTypeName(outTy)),
                         llvm::MDString::get(ctx, "air.arg_name"),
                         llvm::MDString::get(ctx, elName)}));
                 }
             } else {
+                MType outTy = varyingUsesFloatCarrier(v->type, has_gs)
+                    ? floatCarrierType(v->type) : v->type;
                 outNodes.push_back(llvm::MDNode::get(ctx, {
                     llvm::MDString::get(ctx, "air.vertex_output"),
-                    llvm::MDString::get(ctx, airGenerated(v->name, v->type)),
+                    llvm::MDString::get(ctx, airGenerated(v->name, outTy)),
                     llvm::MDString::get(ctx, "air.arg_type_name"),
-                    llvm::MDString::get(ctx, mslTypeName(v->type)),
+                    llvm::MDString::get(ctx, mslTypeName(outTy)),
                     llvm::MDString::get(ctx, "air.arg_name"),
                     llvm::MDString::get(ctx, v->name)}));
             }
