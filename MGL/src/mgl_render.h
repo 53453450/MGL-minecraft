@@ -1503,6 +1503,8 @@ uint32_t mglRenderSingleChannelSwizzleStoragePixelFormat(
  * relying on Metal view swizzle (unreliable for Sint on some paths). */
 int mglRenderTextureUploadNeedsIntegerMultiChannelSwizzleBake(
     uint32_t internal_format, int swizzled);
+uint32_t mglRenderIntegerMultiChannelSwizzleStoragePixelFormat(
+    uint32_t internal_format);
 /* Returns 1 when swizzle was baked at upload for this storage format. */
 int mglRenderTextureSwizzleUsesUploadBake(
     uint32_t internal_format, int swizzled,

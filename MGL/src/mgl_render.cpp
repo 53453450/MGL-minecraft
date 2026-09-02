@@ -8791,6 +8791,27 @@ int mglRenderTextureUploadNeedsIntegerMultiChannelSwizzleBake(
     return 1;
 }
 
+extern "C"
+uint32_t mglRenderIntegerMultiChannelSwizzleStoragePixelFormat(
+    uint32_t internal_format) {
+    switch (internal_format) {
+        case GL_RG8I:
+        case GL_RGB8I:
+        case GL_RGBA8I:
+            return static_cast<uint32_t>(MTL::PixelFormatRGBA8Sint);
+        case GL_RG16I:
+        case GL_RGB16I:
+        case GL_RGBA16I:
+            return static_cast<uint32_t>(MTL::PixelFormatRGBA16Sint);
+        case GL_RG32I:
+        case GL_RGB32I:
+        case GL_RGBA32I:
+            return static_cast<uint32_t>(MTL::PixelFormatRGBA32Sint);
+        default:
+            return static_cast<uint32_t>(MTL::PixelFormatInvalid);
+    }
+}
+
 static int mglRenderPixelFormatMatchesSwizzleBakeStorage(
     uint32_t internal_format, uint32_t storage_pixel_format) {
     const uint32_t expected =
@@ -9041,13 +9062,13 @@ uint8_t* mglRenderCreateIntegerMultiChannelSwizzledUpload(
             };
             const int64_t outv[4] = {
                 mglRenderResolveIntegerSwizzledComponent(
-                    swizzle_r, ch[0], ch[1], ch[2], ch[3], 4u),
+                    swizzle_r, ch[0], ch[1], ch[2], ch[3], components),
                 mglRenderResolveIntegerSwizzledComponent(
-                    swizzle_g, ch[0], ch[1], ch[2], ch[3], 4u),
+                    swizzle_g, ch[0], ch[1], ch[2], ch[3], components),
                 mglRenderResolveIntegerSwizzledComponent(
-                    swizzle_b, ch[0], ch[1], ch[2], ch[3], 4u),
+                    swizzle_b, ch[0], ch[1], ch[2], ch[3], components),
                 mglRenderResolveIntegerSwizzledComponent(
-                    swizzle_a, ch[0], ch[1], ch[2], ch[3], 4u),
+                    swizzle_a, ch[0], ch[1], ch[2], ch[3], components),
             };
             for (uint32_t c = 0; c < 4u; c++) {
                 mglRenderWriteIntegerTexelComponent(

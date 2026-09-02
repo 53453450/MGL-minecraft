@@ -3169,7 +3169,8 @@ static void mglTextureCopyTextureToBuffer(
 
             if (!is3DReupload) {
 
-                if (mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
+                if (!mglTextureUploadNeedsIntegerMultiChannelSwizzleBake(tex) &&
+                    mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
 
                     NSUInteger expandedBytesPerRow = 0;
 
@@ -3199,7 +3200,8 @@ static void mglTextureCopyTextureToBuffer(
 
                     }
 
-                } else if (mglTextureNeedsChannelExpansion(tex->internalformat, pixelFormat)) {
+                } else if (!mglTextureUploadNeedsIntegerMultiChannelSwizzleBake(tex) &&
+                           mglTextureNeedsChannelExpansion(tex->internalformat, pixelFormat)) {
 
                     NSUInteger expandedBytesPerRow = 0;
 
@@ -4033,7 +4035,8 @@ static void mglTextureCopyTextureToBuffer(
                         }
                     }
 
-                    if (mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
+                    if (!mglTextureUploadNeedsIntegerMultiChannelSwizzleBake(tex) &&
+                    mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
 
                         NSUInteger expandedBPR = 0, expandedBPI = 0;
 
@@ -4061,7 +4064,8 @@ static void mglTextureCopyTextureToBuffer(
 
                         }
 
-                    } else if (mglTextureNeedsChannelExpansion(tex->internalformat, pixelFormat)) {
+                    } else if (!mglTextureUploadNeedsIntegerMultiChannelSwizzleBake(tex) &&
+                           mglTextureNeedsChannelExpansion(tex->internalformat, pixelFormat)) {
 
                         NSUInteger expandedBPR = 0, expandedBPI = 0;
 
@@ -4391,7 +4395,8 @@ static void mglTextureCopyTextureToBuffer(
                     }
 
                     uint8_t *expanded3DUploadData = NULL;
-                    if (mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
+                    if (!mglTextureUploadNeedsIntegerMultiChannelSwizzleBake(tex) &&
+                    mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
                         NSUInteger expandedBytesPerRow = 0;
                         NSUInteger expandedBytesPerImagePerSlice = 0;
                         NSUInteger texDepth = MAX((NSUInteger)depth, 1UL);
@@ -4436,7 +4441,8 @@ static void mglTextureCopyTextureToBuffer(
                             }
                             free(firstSlice);
                         }
-                    } else if (mglTextureNeedsChannelExpansion(tex->internalformat, pixelFormat)) {
+                    } else if (!mglTextureUploadNeedsIntegerMultiChannelSwizzleBake(tex) &&
+                           mglTextureNeedsChannelExpansion(tex->internalformat, pixelFormat)) {
                         NSUInteger expandedBytesPerRow = 0;
                         NSUInteger expandedBytesPerImagePerSlice = 0;
                         NSUInteger texDepth = MAX((NSUInteger)depth, 1UL);
@@ -4756,7 +4762,8 @@ static void mglTextureCopyTextureToBuffer(
                                 }
                             }
 
-                            if (mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
+                            if (!mglTextureUploadNeedsIntegerMultiChannelSwizzleBake(tex) &&
+                    mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
                                 NSUInteger expandedBytesPerRow = 0;
                                 NSUInteger expandedBytesPerImage = 0;
                                 expandedUploadData = mglCreateRGBA8ExpandedUpload(tex,
@@ -4772,7 +4779,8 @@ static void mglTextureCopyTextureToBuffer(
                                     effectiveBytesPerImage = expandedBytesPerImage;
                                     addr = (uintptr_t)srcData;
                                 }
-                            } else if (mglTextureNeedsChannelExpansion(tex->internalformat, pixelFormat)) {
+                            } else if (!mglTextureUploadNeedsIntegerMultiChannelSwizzleBake(tex) &&
+                           mglTextureNeedsChannelExpansion(tex->internalformat, pixelFormat)) {
                                 NSUInteger expandedBytesPerRow = 0;
                                 NSUInteger expandedBytesPerImage = 0;
                                 expandedUploadData = mglCreateChannelExpandedUpload(tex,
@@ -4972,6 +4980,7 @@ static void mglTextureCopyTextureToBuffer(
                             }
                         }
                         if (!swizzledUploadData &&
+                            !mglTextureUploadNeedsIntegerMultiChannelSwizzleBake(tex) &&
                             mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
                             NSUInteger expandedBytesPerRow = 0;
                             NSUInteger expandedBytesPerImage = 0;
@@ -4989,6 +4998,7 @@ static void mglTextureCopyTextureToBuffer(
                                 addr = (uintptr_t)srcData;
                             }
                         } else if (!swizzledUploadData &&
+                                   !mglTextureUploadNeedsIntegerMultiChannelSwizzleBake(tex) &&
                                    mglTextureNeedsChannelExpansion(tex->internalformat, pixelFormat)) {
                             NSUInteger expandedBytesPerRow = 0;
                             NSUInteger expandedBytesPerImage = 0;
@@ -5242,6 +5252,13 @@ static void mglTextureCopyTextureToBuffer(
             pixelFormat = swizzleStorageFormat;
         } else {
             pixelFormat = MGLPixelFormatRGBA8Unorm;
+        }
+    } else if (mglTextureUploadNeedsIntegerMultiChannelSwizzleBake(tex)) {
+        uint32_t swizzleStorageFormat =
+            mglRenderIntegerMultiChannelSwizzleStoragePixelFormat(
+                (uint32_t)tex->internalformat);
+        if (swizzleStorageFormat != MGLPixelFormatInvalid) {
+            pixelFormat = swizzleStorageFormat;
         }
     }
 
