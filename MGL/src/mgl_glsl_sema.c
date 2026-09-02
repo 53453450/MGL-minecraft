@@ -1066,7 +1066,7 @@ typedef enum {
 typedef struct {
     const char *name;
     uint32_t argc;
-    const BiArgKind args[4];
+    const BiArgKind args[5];
     BiRetKind ret;
 } BiFn;
 
@@ -1113,19 +1113,19 @@ static const BiFn kBuiltins[] = {
     { "textureLodOffset", 4, { BI_ARG_SRECT, BI_ARG_VEC2, BI_ARG_FLOAT, BI_ARG_IVEC2 }, BI_RET_SAMP },
     { "textureGrad", 4, { BI_ARG_S1D, BI_ARG_FLOAT, BI_ARG_FLOAT, BI_ARG_FLOAT }, BI_RET_SAMP },
     { "textureGrad", 4, { BI_ARG_S1DA, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_VEC2 }, BI_RET_SAMP },
-    { "textureGrad", 4, { BI_ARG_S2DA, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_VEC3 }, BI_RET_SAMP },
+    { "textureGrad", 4, { BI_ARG_S2DA, BI_ARG_VEC3, BI_ARG_VEC2, BI_ARG_VEC2 }, BI_RET_SAMP },
     { "textureGrad", 4, { BI_ARG_S3D, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_VEC3 }, BI_RET_SAMP },
     { "textureGrad", 4, { BI_ARG_SRECT, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_VEC2 }, BI_RET_SAMP },
     { "textureGrad", 4, { BI_ARG_S2DMS, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_VEC2 }, BI_RET_SAMP },
-    { "textureGrad", 4, { BI_ARG_S2DMSA, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_VEC3 }, BI_RET_SAMP },
+    { "textureGrad", 4, { BI_ARG_S2DMSA, BI_ARG_VEC3, BI_ARG_VEC2, BI_ARG_VEC2 }, BI_RET_SAMP },
     { "textureGradOffset", 5, { BI_ARG_S1D, BI_ARG_FLOAT, BI_ARG_FLOAT, BI_ARG_FLOAT, BI_ARG_INT }, BI_RET_SAMP },
     { "textureGradOffset", 5, { BI_ARG_S1DA, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_INT }, BI_RET_SAMP },
     { "textureGradOffset", 5, { BI_ARG_S2D, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_IVEC2 }, BI_RET_SAMP },
-    { "textureGradOffset", 5, { BI_ARG_S2DA, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "textureGradOffset", 5, { BI_ARG_S2DA, BI_ARG_VEC3, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_IVEC2 }, BI_RET_SAMP },
     { "textureGradOffset", 5, { BI_ARG_S3D, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_IVEC3 }, BI_RET_SAMP },
     { "textureGradOffset", 5, { BI_ARG_SRECT, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_IVEC2 }, BI_RET_SAMP },
     { "textureGradOffset", 5, { BI_ARG_S2DMS, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_IVEC2 }, BI_RET_SAMP },
-    { "textureGradOffset", 5, { BI_ARG_S2DMSA, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "textureGradOffset", 5, { BI_ARG_S2DMSA, BI_ARG_VEC3, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_IVEC2 }, BI_RET_SAMP },
     { "textureProj", 2, { BI_ARG_S1D, BI_ARG_VEC4 }, BI_RET_SAMP },
     { "textureProj", 2, { BI_ARG_S3D, BI_ARG_VEC4 }, BI_RET_SAMP },
     { "textureProj", 2, { BI_ARG_SRECT, BI_ARG_VEC4 }, BI_RET_SAMP },
