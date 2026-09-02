@@ -8846,7 +8846,7 @@ int mglRenderTextureSwizzleUsesUploadBake(
     if (!swizzled) {
         return 0;
     }
-    if (mglRenderTextureUploadNeedsSingleChannelSwizzle(
+    if (mglRenderTextureUploadNeedsSingleChannelSwizzleBake(
             internal_format, swizzled) != 0) {
         return mglRenderPixelFormatMatchesSwizzleBakeStorage(
             internal_format, storage_pixel_format);
@@ -9020,7 +9020,7 @@ uint8_t* mglRenderCreateIntegerMultiChannelSwizzledUpload(
         return NULL;
     }
     const uint8_t* src = static_cast<const uint8_t*>(src_data);
-    const int64_t default_alpha = 1;
+    const int64_t default_alpha = 0; /* missing alpha in signed integer texels */
     for (size_t row = 0; row < height; row++) {
         const uint8_t* src_row = src + row * src_bytes_per_row;
         uint8_t* dst_row = dst + row * dst_bytes_per_row;
@@ -9058,6 +9058,27 @@ uint8_t* mglRenderCreateIntegerMultiChannelSwizzledUpload(
     *out_bytes_per_row = dst_bytes_per_row;
     *out_bytes_per_image = dst_bytes_per_image;
     return dst;
+}
+
+extern "C"
+int mglRenderTextureUploadNeedsSingleChannelSwizzleBake(
+    uint32_t internal_format, int swizzled) {
+    if (!swizzled) {
+        return 0;
+    }
+    switch (internal_format) {
+        case GL_R8:
+        case GL_R8_SNORM:
+        case GL_R16:
+        case GL_R16_SNORM:
+        case GL_R16F:
+        case GL_R32F:
+        case GL_R16UI:
+        case GL_R32UI:
+            return 1;
+        default:
+            return 0;
+    }
 }
 
 extern "C"
@@ -9138,6 +9159,9 @@ uint8_t* mglRenderCreateSingleChannelSwizzledUpload(
         return NULL;
     }
     if (mglRenderTextureUploadNeedsSingleChannelSwizzle(internal_format, 1) == 0) {
+        return NULL;
+    }
+    if (mglRenderTextureUploadNeedsSingleChannelSwizzleBake(internal_format, 1) == 0) {
         return NULL;
     }
 

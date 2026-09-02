@@ -71,9 +71,18 @@ bool mglTextureUploadNeedsIntegerMultiChannelSwizzleBake(Texture *tex)
         (uint32_t)tex->internalformat, 1) != 0;
 }
 
+bool mglTextureUploadNeedsSingleChannelSwizzleBake(Texture *tex)
+{
+    if (!tex || !tex->params.swizzled) {
+        return false;
+    }
+    return mglRenderTextureUploadNeedsSingleChannelSwizzleBake(
+        (uint32_t)tex->internalformat, 1) != 0;
+}
+
 bool mglTextureUploadNeedsSwizzleBake(Texture *tex)
 {
-    return mglTextureUploadNeedsSingleChannelSwizzle(tex) ||
+    return mglTextureUploadNeedsSingleChannelSwizzleBake(tex) ||
            mglTextureUploadNeedsIntegerMultiChannelSwizzleBake(tex);
 }
 
@@ -151,9 +160,12 @@ uint8_t *mglCreateSwizzledUpload(Texture *tex,
                                  size_t *outBytesPerRow,
                                  size_t *outBytesPerImage)
 {
-    uint8_t *result = mglCreateSingleChannelSwizzledUpload(
-        tex, srcData, width, height, srcBytesPerRow,
-        outBytesPerRow, outBytesPerImage);
+    uint8_t *result = NULL;
+    if (mglTextureUploadNeedsSingleChannelSwizzleBake(tex)) {
+        result = mglCreateSingleChannelSwizzledUpload(
+            tex, srcData, width, height, srcBytesPerRow,
+            outBytesPerRow, outBytesPerImage);
+    }
     if (result) {
         return result;
     }

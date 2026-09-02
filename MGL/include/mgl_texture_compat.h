@@ -144,6 +144,7 @@ void *mglSampledTextureViewForBaseLevel(Texture *ptr, void *texture);
 size_t mglStoredColorComponentsForTexture(Texture *tex);
 uint32_t mglMTLSwizzleForGLSwizzle(Texture *tex, GLenum swizzle);
 bool mglTextureUploadNeedsSingleChannelSwizzle(Texture *tex);
+bool mglTextureUploadNeedsSingleChannelSwizzleBake(Texture *tex);
 bool mglTextureUploadNeedsIntegerMultiChannelSwizzleBake(Texture *tex);
 bool mglTextureUploadNeedsSwizzleBake(Texture *tex);
 uint8_t mglResolveR8SwizzledComponent(Texture *tex, GLenum swizzle, uint8_t red);

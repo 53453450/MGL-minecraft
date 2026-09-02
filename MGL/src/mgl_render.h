@@ -1493,6 +1493,8 @@ uint8_t mglRenderResolveR8SwizzledComponent(uint32_t swizzle, uint8_t red);
  * otherwise the GL_R* internal-format table.  Returns 1/0. */
 int mglRenderTextureUploadNeedsSingleChannelSwizzle(uint32_t internal_format,
                                                        int swizzled);
+int mglRenderTextureUploadNeedsSingleChannelSwizzleBake(
+    uint32_t internal_format, int swizzled);
 /* Metal pixel format for single-channel swizzle upload expansion.
  * Returns MTLPixelFormatInvalid when the format is not handled. */
 uint32_t mglRenderSingleChannelSwizzleStoragePixelFormat(

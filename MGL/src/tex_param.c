@@ -207,12 +207,19 @@ static void mglMarkTextureParameterDirty(GLMContext ctx, Texture *tex, GLenum pn
     tex->dirty_bits |= DIRTY_TEXTURE_PARAM;
     if (mglTextureParameterAffectsTextureDescriptor(pname)) {
         mglInvalidateTextureBaseLevelView(ctx, tex);
-        if (tex && !tex->is_render_target &&
-            (mglRenderTextureUploadNeedsSingleChannelSwizzle(
-                 (uint32_t)tex->internalformat, 1) != 0 ||
-             mglRenderTextureUploadNeedsIntegerMultiChannelSwizzleBake(
-                 (uint32_t)tex->internalformat, 1) != 0)) {
-            tex->dirty_bits |= (DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_DATA);
+        if (tex && !tex->is_render_target) {
+            if (mglRenderTextureUploadNeedsSingleChannelSwizzleBake(
+                    (uint32_t)tex->internalformat, 1) != 0 ||
+                mglRenderTextureUploadNeedsIntegerMultiChannelSwizzleBake(
+                    (uint32_t)tex->internalformat, 1) != 0) {
+                /* Baked swizzles rewrite CPU texels; keep the Metal texture
+                 * and re-upload. DIRTY_TEXTURE_LEVEL would destroy storage
+                 * after upload and recreate it without baked data. */
+                tex->dirty_bits |= DIRTY_TEXTURE_DATA;
+            } else if (mglRenderTextureUploadNeedsSingleChannelSwizzle(
+                           (uint32_t)tex->internalformat, 1) != 0) {
+                tex->dirty_bits |= (DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_DATA);
+            }
         }
     }
     if (ctx) {
