@@ -107,7 +107,7 @@ bool mglRendererTextureBindLocked(MGLRenderer *self, Texture *tex)
                 const BOOL packedDepthStencil =
                     tex->internalformat == GL_DEPTH32F_STENCIL8 ||
                     tex->internalformat == GL_DEPTH24_STENCIL8;
-                if (packedDepthStencil) {
+                if (packedDepthStencil || depthOrStencilRT) {
                     tex->dirty_bits = 0;
                 } else {
                     // Blit GPU data from old texture to new texture to preserve

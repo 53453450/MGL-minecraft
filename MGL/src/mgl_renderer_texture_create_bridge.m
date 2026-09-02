@@ -2924,10 +2924,6 @@
                 fallbackFormat = MGLPixelFormatRGBA8Unorm;
             }
         }
-        if (tex->is_render_target &&
-            fallbackFormat == MGLPixelFormatDepth32Float) {
-            fallbackFormat = MGLPixelFormatDepth32Float_Stencil8;
-        }
 
         BOOL isDepthOrStencilFormat =
             (fallbackFormat == MGLPixelFormatDepth16Unorm ||
@@ -2947,7 +2943,7 @@
         if (tex->is_render_target || isDepthOrStencilFormat) {
             fallbackDesc.usage |= MGL_TEXTURE_USAGE_RENDER_TARGET;
         }
-        if (isDepthOrStencilFormat) {
+        if (isDepthOrStencilFormat && !tex->is_render_target) {
             fallbackDesc.storage_mode = MGL_TEXTURE_STORAGE_PRIVATE;
         }
 

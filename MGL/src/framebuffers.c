@@ -2344,6 +2344,10 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
             attachment == GL_STENCIL_ATTACHMENT ||
             attachment == GL_DEPTH_STENCIL_ATTACHMENT) {
             tex->is_render_target = GL_TRUE;
+            if (tex->access != GL_READ_WRITE) {
+                tex->access = GL_READ_WRITE;
+                tex->dirty_bits |= DIRTY_TEXTURE_ACCESS;
+            }
         }
         mglClearLastSampled2DTextureIfMatches(ctx, tex);
     }
