@@ -62,25 +62,6 @@ struct MGLGSXFBScatterParams {
     MGLGSXFBFieldDesc  fields[MGL_GS_XFB_MAX_FIELDS];
 };
 
-static void mgl_gs_xfb_copy_fields(
-    constant MGLGSXFBScatterParams &p,
-    device uchar *xfb_out,
-    thread uint base[MGL_GS_XFB_MAX_STREAMS],
-    thread uint consumed[MGL_GS_XFB_MAX_STREAMS],
-    const device uchar *srcRec,
-    uint s) {
-    for (uint f = 0; f < p.field_count; f++) {
-        MGLGSXFBFieldDesc fd = p.fields[f];
-        uint b = fd.buffer_index;
-        if (b >= p.buffer_count || p.buffer_stream[b] != s) continue;
-        device uchar *dst =
-            xfb_out + (ulong)p.buffers[b].capture_base +
-            (ulong)(base[b] + consumed[b]) + fd.dst_offset;
-        const device uchar *src = srcRec + fd.src_offset;
-        for (uint k = 0; k < fd.byte_count; k++) dst[k] = src[k];
-    }
-}
-
 kernel void mgl_gs_xfb_scatter(
     uint gid [[thread_position_in_grid]],
     constant MGLGSXFBScatterParams &p [[buffer(0)]],
@@ -115,6 +96,21 @@ kernel void mgl_gs_xfb_scatter(
         budget[b] = min(visBytes, avail);
     }
 
+    /* Copy one record's fields for the buffers fed by stream `s`.
+     * Caller has already verified the whole primitive fits. */
+    auto copyFields = [&](const device uchar *srcRec, uint s) {
+        for (uint f = 0; f < p.field_count; f++) {
+            MGLGSXFBFieldDesc fd = p.fields[f];
+            uint b = fd.buffer_index;
+            if (b >= p.buffer_count || p.buffer_stream[b] != s) continue;
+            device uchar *dst =
+                xfb_out + (ulong)p.buffers[b].capture_base +
+                (ulong)(base[b] + consumed[b]) + fd.dst_offset;
+            const device uchar *src = srcRec + fd.src_offset;
+            for (uint k = 0; k < fd.byte_count; k++) dst[k] = src[k];
+        }
+    };
+
     /* Stream 0: ascending records, vpp records per primitive.  Ordered
      * truncation: the first non-fitting primitive stops the stream because
      * later primitives need the same bytes. */
@@ -131,8 +127,7 @@ kernel void mgl_gs_xfb_scatter(
             }
             if (!fits) break;
             for (uint v = 0; v < vpp; v++) {
-                mgl_gs_xfb_copy_fields(p, xfb_out, base, consumed,
-                    runBase + (ulong)(prim * vpp + v) * recStride, 0u);
+                copyFields(runBase + (ulong)(prim * vpp + v) * recStride, 0u);
                 for (uint b = 0; b < p.buffer_count; b++) {
                     if (p.buffer_stream[b] == 0u)
                         consumed[b] += p.buffers[b].stride;
@@ -164,7 +159,7 @@ kernel void mgl_gs_xfb_scatter(
             else { fits = false; break; }
         }
         if (!fits) continue;
-        mgl_gs_xfb_copy_fields(p, xfb_out, base, consumed, srcRec, stamp);
+        copyFields(srcRec, stamp);
         for (uint b = 0; b < p.buffer_count; b++) {
             if (p.buffer_stream[b] == stamp)
                 consumed[b] += p.buffers[b].stride;

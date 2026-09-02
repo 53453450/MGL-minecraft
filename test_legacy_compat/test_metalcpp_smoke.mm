@@ -55,14 +55,8 @@ smokeTextureDescriptorState(MTLTextureDescriptor *descriptor)
     state.storage_mode = (uint32_t)descriptor.storageMode;
     state.hazard_tracking_mode = (uint32_t)descriptor.hazardTrackingMode;
     state.compression_type = (uint32_t)descriptor.compressionType;
-    /* placementSparsePageSize is macOS 15+; keep zero on older SDKs. */
-#if defined(__MAC_OS_X_VERSION_MAX_ALLOWED) && \
-    __MAC_OS_X_VERSION_MAX_ALLOWED >= 150000
-    if (@available(macOS 15.0, *)) {
-        state.placement_sparse_page_size =
-            (uint32_t)descriptor.placementSparsePageSize;
-    }
-#endif
+    state.placement_sparse_page_size =
+        (uint32_t)descriptor.placementSparsePageSize;
     state.allow_gpu_optimized_contents =
         descriptor.allowGPUOptimizedContents ? 1u : 0u;
     MTLTextureSwizzleChannels swizzle = descriptor.swizzle;
