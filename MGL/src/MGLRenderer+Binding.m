@@ -15,14 +15,6 @@
 #import "MGLRenderer+Blit_Private.h"
 #include "mgl_render.h"
 
-void mglRendererObjCBindTexture(GLMContext glm_ctx,
-                                  Texture *texture)
-{
-    MGLRenderer *renderer = mglRendererForContext(glm_ctx);
-    if (!renderer || !glm_ctx || !texture) return;
-    (void)[renderer bindMTLTexture:texture];
-}
-
 static id mglBindingCreateDefaultSampler(void)
 {
     void *sampler = NULL;

@@ -1,8 +1,8 @@
 /*
  * SPDX-License-Identifier: LGPL-3.0-only
  *
- * Resource binding orchestration (C++ home). Phase 3+: migrates buffer/texture
- * bind resolution from ObjC categories.
+ * Resource binding orchestration (C++ home). ObjC bridge:
+ * mgl_renderer_binding_bridge.m
  */
 
 #ifndef MGL_RENDERER_BINDING_H

@@ -2,6 +2,7 @@
  * SPDX-License-Identifier: LGPL-3.0-only
  *
  * Non-drawable texture/compute/blit orchestration (C++ home).
+ * ObjC bridge: mgl_renderer_texture_bridge.m
  */
 
 #ifndef MGL_RENDERER_TEXTURE_H

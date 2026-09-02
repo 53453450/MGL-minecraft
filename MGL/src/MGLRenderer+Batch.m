@@ -994,19 +994,6 @@ static void mglBatchExecuteIndirectCommands(
     }
 }
 
-void mglRendererObjCFlushDrawBuffer(GLMContext glm_ctx)
-{
-    MGLRenderer *renderer = mglRendererForContext(glm_ctx);
-    if (!renderer || !glm_ctx) return;
-    @autoreleasepool {
-        @try {
-            [renderer flushDrawBuffer:glm_ctx];
-        } @catch (NSException *exception) {
-            NSLog(@"MGL ERROR: callback flushDrawBuffer exception: %@", exception);
-        }
-    }
-}
-
 - (void)flushDrawBufferLocked:(GLMContext)glm_ctx
 {
     ctx = glm_ctx;
@@ -1994,13 +1981,3 @@ void mglRendererObjCFlushDrawBuffer(GLMContext glm_ctx)
 }
 
 @end
-
-bool mglRendererObjCSyncResourceBindings(GLMContext glm_ctx,
-                                         const MGLResourceSyncWork *done)
-{
-    MGLRenderer *renderer = mglRendererForContext(glm_ctx);
-    if (!renderer) {
-        return false;
-    }
-    return [renderer syncResourceBindingsForContext:glm_ctx alreadyDone:done];
-}

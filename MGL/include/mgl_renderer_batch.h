@@ -2,6 +2,7 @@
  * SPDX-License-Identifier: LGPL-3.0-only
  *
  * Deferred draw-batch flush orchestration (C++ home).
+ * ObjC bridge: mgl_renderer_batch_bridge.m
  */
 
 #ifndef MGL_RENDERER_BATCH_H
