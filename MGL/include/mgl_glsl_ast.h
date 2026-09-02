@@ -308,6 +308,9 @@ struct MGLDecl {
     int32_t  layout_max_vertices;   /* GS: layout(max_vertices=N) */
     int32_t  layout_invocations;    /* GS: layout(invocations=N), 1 if absent */
     int32_t  layout_stream;         /* GS output stream, -1 if unspecified (0) */
+    int32_t  layout_local_size_x;   /* CS: layout(local_size_x=N), -1 absent */
+    int32_t  layout_local_size_y;
+    int32_t  layout_local_size_z;
     uint32_t layout_spacing;        /* TES: MGL_AST_SPACING_* */
     uint32_t layout_winding;        /* TES: MGL_AST_WINDING_* */
     uint32_t layout_point_mode;     /* TES: point_mode flag */
@@ -342,6 +345,9 @@ typedef struct MGLTranslationUnit {
     int32_t  layout_max_vertices;  /* GS: max emitted vertices */
     int32_t  layout_invocations;   /* GS: invocation count (1 default) */
     int32_t  layout_stream;        /* GS default output stream (-1 = 0) */
+    int32_t  layout_local_size_x;  /* CS: local workgroup size (-1 absent) */
+    int32_t  layout_local_size_y;
+    int32_t  layout_local_size_z;
     uint32_t layout_primitive;     /* TES: MGL_AST_TES_* ; GS in: MGL_AST_GS_IN_* */
     uint32_t layout_primitive_out; /* GS out: MGL_AST_GS_OUT_* */
     uint32_t layout_spacing;       /* TES: MGL_AST_SPACING_* */

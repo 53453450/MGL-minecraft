@@ -79,6 +79,10 @@ typedef struct MGLAIRStageInfo {
     uint32_t gs_stream_count;            /* number of streams used (1..4) */
     uint32_t gs_stream_varying_count[4];
     uint32_t gs_stream_xfb_stride[4];
+    /* Compute: layout(local_size_*) — 0 means unspecified (dispatch uses 1). */
+    uint32_t compute_local_size_x;
+    uint32_t compute_local_size_y;
+    uint32_t compute_local_size_z;
 } MGLAIRStageInfo;
 
 /* Fixed inter-stage record shared by VS capture, TCS, TES and the GS compute

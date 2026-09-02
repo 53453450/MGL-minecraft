@@ -1300,8 +1300,15 @@ static const BiFn kBuiltins[] = {
     { "imulExtended", 4, { BI_ARG_GENI, BI_ARG_GENI, BI_ARG_OUT_GENI, BI_ARG_OUT_GENI }, BI_RET_VOID },
     { "frexp", 2, { BI_ARG_GENF, BI_ARG_OUT_GENI }, BI_RET_GENF },
     { "ldexp", 2, { BI_ARG_GENF, BI_ARG_GENI }, BI_RET_GENF },
-    /* atomic (compute) */
+    /* atomic memory (GLSL 4.60 §8.11) — first arg is an lvalue int/uint */
     { "atomicAdd", 2, { BI_ARG_GENI, BI_ARG_GENI }, BI_RET_GENI },
+    { "atomicMin", 2, { BI_ARG_GENI, BI_ARG_GENI }, BI_RET_GENI },
+    { "atomicMax", 2, { BI_ARG_GENI, BI_ARG_GENI }, BI_RET_GENI },
+    { "atomicAnd", 2, { BI_ARG_GENI, BI_ARG_GENI }, BI_RET_GENI },
+    { "atomicOr", 2, { BI_ARG_GENI, BI_ARG_GENI }, BI_RET_GENI },
+    { "atomicXor", 2, { BI_ARG_GENI, BI_ARG_GENI }, BI_RET_GENI },
+    { "atomicExchange", 2, { BI_ARG_GENI, BI_ARG_GENI }, BI_RET_GENI },
+    { "atomicCompSwap", 3, { BI_ARG_GENI, BI_ARG_GENI, BI_ARG_GENI }, BI_RET_GENI },
     { "atomicCounterIncrement", 1, { BI_ARG_ATOMIC }, BI_RET_UINT },
     { "atomicCounterDecrement", 1, { BI_ARG_ATOMIC }, BI_RET_UINT },
     { "atomicCounter", 1, { BI_ARG_ATOMIC }, BI_RET_UINT },
@@ -1764,6 +1771,17 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                  * thread_position_in_grid kernel argument. */
                 return scratch_type(s,
                                     mglIRTypeVector(MGLIR_SCALAR_UINT, 3));
+            }
+            if (strcmp(e->u.var_ref.name, "gl_LocalInvocationID") == 0) {
+                /* Compute built-in; AIR maps to
+                 * thread_position_in_threadgroup. */
+                return scratch_type(s,
+                                    mglIRTypeVector(MGLIR_SCALAR_UINT, 3));
+            }
+            if (strcmp(e->u.var_ref.name, "gl_LocalInvocationIndex") == 0) {
+                /* Flattened local id; derived from LocalInvocationID and
+                 * threads_per_threadgroup. */
+                return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_UINT));
             }
             if (strcmp(e->u.var_ref.name, "gl_WorkGroupID") == 0) {
                 /* Compute built-in; the AIR backend maps it to the

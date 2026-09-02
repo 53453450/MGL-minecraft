@@ -160,6 +160,8 @@ struct Codegen {
     llvm::Value *bufferPtr = nullptr;    /* i8 addrspace(1)* */
     llvm::Value *bufferSizePtr = nullptr; /* constant uint*, buffer(25) */
     llvm::Value *threadPos = nullptr;    /* compute: <3 x i32> grid position */
+    llvm::Value *localInvocationPos = nullptr; /* compute: <3 x i32> local */
+    llvm::Value *localInvocationIndex = nullptr; /* compute: i32 flat local */
     llvm::Value *workGroupPos = nullptr; /* compute: <3 x i32> group position */
     llvm::Value *numWorkGroups = nullptr; /* compute: <3 x i32> dispatch grid */
     llvm::Value *invocationPos = nullptr; /* TCS: <3 x i32> threadgroup position */
@@ -4133,6 +4135,24 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             }
             return cg.threadPos;
         }
+        if (strcmp(e->u.var_ref.name, "gl_LocalInvocationID") == 0) {
+            if (!cg.localInvocationPos) {
+                cg.err = 1;
+                cg.errmsg = "codegen: gl_LocalInvocationID requires a "
+                            "compute stage";
+                return nullptr;
+            }
+            return cg.localInvocationPos;
+        }
+        if (strcmp(e->u.var_ref.name, "gl_LocalInvocationIndex") == 0) {
+            if (!cg.localInvocationIndex) {
+                cg.err = 1;
+                cg.errmsg = "codegen: gl_LocalInvocationIndex requires a "
+                            "compute stage";
+                return nullptr;
+            }
+            return cg.localInvocationIndex;
+        }
         if (strcmp(e->u.var_ref.name, "gl_WorkGroupID") == 0) {
             if (!cg.workGroupPos) {
                 cg.err = 1;
@@ -6137,32 +6157,92 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             load->setAtomic(llvm::AtomicOrdering::Monotonic);
             return load;
         }
-        /* atomicAdd(ssbo_lvalue, value): monotonic RMW on device memory. */
-        if (strcmp(name, "atomicAdd") == 0) {
-            if (e->u.call.arg_count != 2) {
-                cg.err = 1;
-                cg.errmsg = "codegen: atomicAdd expects 2 arguments";
-                return nullptr;
+        /* SSBO atomic* (GLSL 4.60 §8.11): RMW on device memory; every
+         * op returns the original contents of mem before the update. */
+        {
+            llvm::AtomicRMWInst::BinOp rmwOp = llvm::AtomicRMWInst::BAD_BINOP;
+            int isCompSwap = 0;
+            if (strcmp(name, "atomicAdd") == 0)
+                rmwOp = llvm::AtomicRMWInst::Add;
+            else if (strcmp(name, "atomicMin") == 0)
+                rmwOp = llvm::AtomicRMWInst::BAD_BINOP; /* signedness below */
+            else if (strcmp(name, "atomicMax") == 0)
+                rmwOp = llvm::AtomicRMWInst::BAD_BINOP;
+            else if (strcmp(name, "atomicAnd") == 0)
+                rmwOp = llvm::AtomicRMWInst::And;
+            else if (strcmp(name, "atomicOr") == 0)
+                rmwOp = llvm::AtomicRMWInst::Or;
+            else if (strcmp(name, "atomicXor") == 0)
+                rmwOp = llvm::AtomicRMWInst::Xor;
+            else if (strcmp(name, "atomicExchange") == 0)
+                rmwOp = llvm::AtomicRMWInst::Xchg;
+            else if (strcmp(name, "atomicCompSwap") == 0)
+                isCompSwap = 1;
+
+            int isAtomicFamily =
+                isCompSwap || strcmp(name, "atomicAdd") == 0 ||
+                strcmp(name, "atomicMin") == 0 ||
+                strcmp(name, "atomicMax") == 0 ||
+                strcmp(name, "atomicAnd") == 0 ||
+                strcmp(name, "atomicOr") == 0 ||
+                strcmp(name, "atomicXor") == 0 ||
+                strcmp(name, "atomicExchange") == 0;
+
+            if (isAtomicFamily) {
+                uint32_t wantArgs = isCompSwap ? 3u : 2u;
+                if (e->u.call.arg_count != wantArgs) {
+                    cg.err = 1;
+                    cg.errmsg = std::string("codegen: ") + name +
+                                " argument count mismatch";
+                    return nullptr;
+                }
+                const MGLIRSymbol *sb = ssboRootSym(e->u.call.args[0], mod);
+                if (!sb) {
+                    cg.err = 1;
+                    cg.errmsg = std::string("codegen: ") + name +
+                                " target must be an SSBO member";
+                    return nullptr;
+                }
+                const MGLIRType *ty = nullptr;
+                llvm::Value *p = ssboAddress(cg, e->u.call.args[0], sb, mod,
+                                             locals, &ty);
+                if (!p) return nullptr;
+                llvm::Value *data = emitExpr(cg, e->u.call.args[1], mod, locals);
+                if (!data) return nullptr;
+                data = coerceScalar(cg, data,
+                                    ty && ty->scalar == MGLIR_SCALAR_UINT
+                                        ? MGLIR_SCALAR_UINT
+                                        : MGLIR_SCALAR_INT);
+                p = cg.b->CreateBitCast(p, data->getType()->getPointerTo(1));
+                if (isCompSwap) {
+                    llvm::Value *cmp = data;
+                    llvm::Value *neu =
+                        emitExpr(cg, e->u.call.args[2], mod, locals);
+                    if (!neu) return nullptr;
+                    neu = coerceScalar(cg, neu,
+                                       ty && ty->scalar == MGLIR_SCALAR_UINT
+                                           ? MGLIR_SCALAR_UINT
+                                           : MGLIR_SCALAR_INT);
+                    auto *cx = cg.b->CreateAtomicCmpXchg(
+                        p, cmp, neu, llvm::MaybeAlign(),
+                        llvm::AtomicOrdering::Monotonic,
+                        llvm::AtomicOrdering::Monotonic);
+                    /* CmpXchg returns { old, success }; GLSL wants old. */
+                    return cg.b->CreateExtractValue(cx, 0);
+                }
+                if (strcmp(name, "atomicMin") == 0) {
+                    rmwOp = (ty && ty->scalar == MGLIR_SCALAR_UINT)
+                                ? llvm::AtomicRMWInst::UMin
+                                : llvm::AtomicRMWInst::Min;
+                } else if (strcmp(name, "atomicMax") == 0) {
+                    rmwOp = (ty && ty->scalar == MGLIR_SCALAR_UINT)
+                                ? llvm::AtomicRMWInst::UMax
+                                : llvm::AtomicRMWInst::Max;
+                }
+                return cg.b->CreateAtomicRMW(rmwOp, p, data,
+                                             llvm::MaybeAlign(),
+                                             llvm::AtomicOrdering::Monotonic);
             }
-            const MGLIRSymbol *sb = ssboRootSym(e->u.call.args[0], mod);
-            if (!sb) {
-                cg.err = 1;
-                cg.errmsg = "codegen: atomicAdd target must be an SSBO member";
-                return nullptr;
-            }
-            llvm::Value *val = emitExpr(cg, e->u.call.args[1], mod, locals);
-            if (!val) return nullptr;
-            const MGLIRType *ty = nullptr;
-            llvm::Value *p = ssboAddress(cg, e->u.call.args[0], sb, mod,
-                                         locals, &ty);
-            if (!p) return nullptr;
-            p = cg.b->CreateBitCast(p, val->getType()->getPointerTo(1));
-            llvm::Value *old =
-                cg.b->CreateAtomicRMW(llvm::AtomicRMWInst::Add, p, val,
-                                      llvm::MaybeAlign(),
-                                      llvm::AtomicOrdering::Monotonic);
-            /* GLSL 4.60 8.11: atomicAdd returns the new value. */
-            return cg.b->CreateAdd(old, val);
         }
         /* User-defined function call. */
         if (cg.userFns) {
@@ -9487,6 +9567,12 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         isCompute && strstr(esrc, "gl_WorkGroupID") != nullptr;
     const bool usesNumWorkGroups =
         isCompute && strstr(esrc, "gl_NumWorkGroups") != nullptr;
+    const bool usesLocalInvocationID =
+        isCompute && strstr(esrc, "gl_LocalInvocationID") != nullptr;
+    const bool usesLocalInvocationIndex =
+        isCompute && strstr(esrc, "gl_LocalInvocationIndex") != nullptr;
+    const bool usesLocalInvocation =
+        usesLocalInvocationID || usesLocalInvocationIndex;
     const bool usesPointSize =
         (isVS || isTES) && strstr(esrc, "gl_PointSize") != nullptr;
     const bool usesClipDistance =
@@ -9794,6 +9880,13 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     else if (isKernel) {
         paramTys.push_back(llvm::FixedVectorType::get(
             llvm::Type::getInt32Ty(ctx), 3));
+        if (usesLocalInvocation && !isTCS) {
+            if (usesLocalInvocationID)
+                paramTys.push_back(llvm::FixedVectorType::get(
+                    llvm::Type::getInt32Ty(ctx), 3));
+            if (usesLocalInvocationIndex)
+                paramTys.push_back(llvm::Type::getInt32Ty(ctx));
+        }
         if (usesWorkGroupID || isTCS)
             paramTys.push_back(llvm::FixedVectorType::get(
                 llvm::Type::getInt32Ty(ctx), 3));
@@ -10174,6 +10267,12 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         llvm::Value *pos = fn->getArg(argSlot++);
         if (isTCS) cg.invocationPos = pos;
         else cg.threadPos = pos;
+        if (usesLocalInvocation && !isTCS) {
+            if (usesLocalInvocationID)
+                cg.localInvocationPos = fn->getArg(argSlot++);
+            if (usesLocalInvocationIndex)
+                cg.localInvocationIndex = fn->getArg(argSlot++);
+        }
         if (usesWorkGroupID || isTCS)
             cg.workGroupPos = fn->getArg(argSlot++);
         if (usesNumWorkGroups)
@@ -10382,6 +10481,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         fc.isGeometry = cg.isGeometry;
         fc.bufferPtr = cg.bufferPtr;
         fc.threadPos = cg.threadPos;
+        fc.localInvocationPos = cg.localInvocationPos;
+        fc.localInvocationIndex = cg.localInvocationIndex;
         fc.workGroupPos = cg.workGroupPos;
         fc.numWorkGroups = cg.numWorkGroups;
         fc.invocationPos = cg.invocationPos;
@@ -11899,9 +12000,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     }
     if (isKernel) {
         /* Kernel thread position: [[thread_position_in_grid]] as uint3. */
+        uint32_t kSlot = mArgSlot;
         argNodes.push_back(llvm::MDNode::get(ctx, {
             llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                llvm::Type::getInt32Ty(ctx), mArgSlot)),
+                llvm::Type::getInt32Ty(ctx), kSlot++)),
             llvm::MDString::get(ctx, isTCS ? "air.thread_position_in_threadgroup"
                                            : "air.thread_position_in_grid"),
             llvm::MDString::get(ctx, "air.arg_type_name"),
@@ -11909,10 +12011,34 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             llvm::MDString::get(ctx, "air.arg_name"),
             llvm::MDString::get(ctx, isTCS ? "thread_position_in_threadgroup"
                                            : "thread_position_in_grid")}));
+        if (usesLocalInvocation && !isTCS) {
+            if (usesLocalInvocationID) {
+                argNodes.push_back(llvm::MDNode::get(ctx, {
+                    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(ctx), kSlot++)),
+                    llvm::MDString::get(ctx,
+                                        "air.thread_position_in_threadgroup"),
+                    llvm::MDString::get(ctx, "air.arg_type_name"),
+                    llvm::MDString::get(ctx, "uint3"),
+                    llvm::MDString::get(ctx, "air.arg_name"),
+                    llvm::MDString::get(ctx,
+                                        "thread_position_in_threadgroup")}));
+            }
+            if (usesLocalInvocationIndex) {
+                argNodes.push_back(llvm::MDNode::get(ctx, {
+                    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(ctx), kSlot++)),
+                    llvm::MDString::get(ctx, "air.thread_index_in_threadgroup"),
+                    llvm::MDString::get(ctx, "air.arg_type_name"),
+                    llvm::MDString::get(ctx, "uint"),
+                    llvm::MDString::get(ctx, "air.arg_name"),
+                    llvm::MDString::get(ctx, "thread_index_in_threadgroup")}));
+            }
+        }
         if (isTCS || isTESCompute || usesWorkGroupID) {
             argNodes.push_back(llvm::MDNode::get(ctx, {
                 llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(ctx), mArgSlot + 1)),
+                    llvm::Type::getInt32Ty(ctx), kSlot++)),
                 llvm::MDString::get(ctx, "air.threadgroup_position_in_grid"),
                 llvm::MDString::get(ctx, "air.arg_type_name"),
                 llvm::MDString::get(ctx, "uint3"),
@@ -11920,12 +12046,9 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 llvm::MDString::get(ctx, "threadgroup_position_in_grid")}));
         }
         if (usesNumWorkGroups) {
-            uint32_t numWorkGroupsSlot = mArgSlot + 1u;
-            if (isTCS || isTESCompute || usesWorkGroupID)
-                numWorkGroupsSlot++;
             argNodes.push_back(llvm::MDNode::get(ctx, {
                 llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(ctx), numWorkGroupsSlot)),
+                    llvm::Type::getInt32Ty(ctx), kSlot++)),
                 llvm::MDString::get(ctx, "air.threadgroups_per_grid"),
                 llvm::MDString::get(ctx, "air.arg_type_name"),
                 llvm::MDString::get(ctx, "uint3"),
@@ -12463,6 +12586,18 @@ static void fillStageInfo(const MGLTranslationUnit *tu,
             stage_info->gs_stream_varying_count[s] = count[s];
             stage_info->gs_stream_xfb_stride[s] = 16u + count[s] * 16u;
         }
+    }
+    if (stage == MGL_STAGE_COMPUTE) {
+        /* Unspecified axes default to 1 (GLSL 4.60 §4.4.1.4). */
+        stage_info->compute_local_size_x =
+            tu->layout_local_size_x > 0 ? (uint32_t)tu->layout_local_size_x
+                                        : 1u;
+        stage_info->compute_local_size_y =
+            tu->layout_local_size_y > 0 ? (uint32_t)tu->layout_local_size_y
+                                        : 1u;
+        stage_info->compute_local_size_z =
+            tu->layout_local_size_z > 0 ? (uint32_t)tu->layout_local_size_z
+                                        : 1u;
     }
 }
 

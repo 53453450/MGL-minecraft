@@ -1128,6 +1128,17 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
                 pptr->name, stage, err);
         return 0;
     }
+    if (stage == _COMPUTE_SHADER) {
+        pptr->local_workgroup_size.x = stage_info.compute_local_size_x
+                                           ? stage_info.compute_local_size_x
+                                           : 1u;
+        pptr->local_workgroup_size.y = stage_info.compute_local_size_y
+                                           ? stage_info.compute_local_size_y
+                                           : 1u;
+        pptr->local_workgroup_size.z = stage_info.compute_local_size_z
+                                           ? stage_info.compute_local_size_z
+                                           : 1u;
+    }
     pptr->modules[stage].metallib_bytes = bytes;
     pptr->modules[stage].metallib_size = size;
     if (getenv("MGL_DUMP_AIR") && stage == _GEOMETRY_SHADER) {

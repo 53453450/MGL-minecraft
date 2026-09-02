@@ -1801,6 +1801,9 @@ static MGLDecl *parse_declaration(MGLParser *p)
      * overwrite an earlier explicit invocations value with this default. */
     d->layout_invocations = -1;
     d->layout_stream = -1;   /* GS output stream, -1 = unspecified (0) */
+    d->layout_local_size_x = -1;
+    d->layout_local_size_y = -1;
+    d->layout_local_size_z = -1;
     d->layout_primitive = MGL_AST_TES_DEFAULT;      /* TES mode / GS in topology */
     d->layout_primitive_out = MGL_AST_GS_OUT_DEFAULT;
     d->layout_spacing = MGL_AST_SPACING_DEFAULT;
@@ -1987,6 +1990,12 @@ more_qualifiers:
                         }
                     } else if (n == 6 && memcmp(s, "stream", 6) == 0) {
                         d->layout_stream = (int32_t)cur_double(p);
+                    } else if (n == 12 && memcmp(s, "local_size_x", 12) == 0) {
+                        d->layout_local_size_x = (int32_t)cur_double(p);
+                    } else if (n == 12 && memcmp(s, "local_size_y", 12) == 0) {
+                        d->layout_local_size_y = (int32_t)cur_double(p);
+                    } else if (n == 12 && memcmp(s, "local_size_z", 12) == 0) {
+                        d->layout_local_size_z = (int32_t)cur_double(p);
                     }
                     advance(p);
                 } else if (at_any_ident(p)) {
@@ -2054,6 +2063,12 @@ more_qualifiers:
         if (d->layout_winding != MGL_AST_WINDING_DEFAULT)
             tu->layout_winding = d->layout_winding;
         if (d->layout_point_mode)             tu->layout_point_mode = 1;
+        if (d->layout_local_size_x >= 0)
+            tu->layout_local_size_x = d->layout_local_size_x;
+        if (d->layout_local_size_y >= 0)
+            tu->layout_local_size_y = d->layout_local_size_y;
+        if (d->layout_local_size_z >= 0)
+            tu->layout_local_size_z = d->layout_local_size_z;
         /* `layout(std430) buffer;` / `layout(std140) uniform;` set the
          * default packing for subsequent blocks that omit an explicit
          * packing qualifier.  Matrix major (row_major/column_major) is
@@ -2599,6 +2614,9 @@ MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
         }
         etu->layout_stream = -1;
         etu->layout_max_vertices = -1;
+        etu->layout_local_size_x = -1;
+        etu->layout_local_size_y = -1;
+        etu->layout_local_size_z = -1;
         etu->error = strdup(pperr[0] ? pperr : "preprocessor error");
         return etu;
     }
@@ -2616,6 +2634,9 @@ MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
     }
     tu->layout_stream = -1; /* GS default output stream unspecified (0) */
     tu->layout_max_vertices = -1; /* GS: unspecified until layout() */
+    tu->layout_local_size_x = -1;
+    tu->layout_local_size_y = -1;
+    tu->layout_local_size_z = -1;
 
     MGLParser p;
     memset(&p, 0, sizeof(p));

@@ -1915,6 +1915,8 @@ GLint  mglGetUniformLocation(GLMContext ctx, GLuint program, const GLchar *name)
                                     continue;
                                 }
                                 size_t q_len = query_name_len;
+                                /* Member reflected as "arr[0]" with size N;
+                                 * query "arr[k]". */
                                 if (mqn_len >= 3u &&
                                     mqn[mqn_len - 3u] == '[' &&
                                     mqn[mqn_len - 2u] == '0' &&
@@ -1923,8 +1925,24 @@ GLint  mglGetUniformLocation(GLMContext ctx, GLuint program, const GLchar *name)
                                     strncmp(mqn, name, mqn_len - 3u) == 0 &&
                                     name[mqn_len - 3u] == '[' &&
                                     name[q_len - 1u] == ']') {
-                                    size_t sub_len = q_len - mqn_len + 3u - 2u; /* content between [ and ] */
-                                    long parsed = mglParseStrictArraySubscript(name + mqn_len - 2u, sub_len);
+                                    size_t sub_len = q_len - mqn_len + 3u - 2u;
+                                    long parsed = mglParseStrictArraySubscript(
+                                        name + mqn_len - 2u, sub_len);
+                                    if (parsed >= 0 && parsed < member->size) {
+                                        return base_location +
+                                               member->location_offset +
+                                               (GLint)parsed;
+                                    }
+                                }
+                                /* Member reflected as bare "arr" with size N;
+                                 * query "arr[k]" (GL 4.6 §7.6.1). */
+                                if (q_len > mqn_len + 2u &&
+                                    strncmp(mqn, name, mqn_len) == 0 &&
+                                    name[mqn_len] == '[' &&
+                                    name[q_len - 1u] == ']') {
+                                    size_t sub_len = q_len - mqn_len - 2u;
+                                    long parsed = mglParseStrictArraySubscript(
+                                        name + mqn_len + 1u, sub_len);
                                     if (parsed >= 0 && parsed < member->size) {
                                         return base_location +
                                                member->location_offset +
@@ -1939,7 +1957,7 @@ GLint  mglGetUniformLocation(GLMContext ctx, GLuint program, const GLchar *name)
                 GLint array_element = 0;
                 GLboolean name_matches = mglSafeCStringEquals(str, name);
                 if (!name_matches && list[i].gl_array_size > 0 &&
-                    query_name_len > resource_name_len + 2u &&
+                    query_name_len >= resource_name_len + 3u &&
                     strncmp(str, name, resource_name_len) == 0 &&
                     name[resource_name_len] == '[' &&
                     name[query_name_len - 1u] == ']') {
@@ -1951,7 +1969,9 @@ GLint  mglGetUniformLocation(GLMContext ctx, GLuint program, const GLchar *name)
                     }
                 }
                 /* Multi-dimensional array: query "a[2][1]" matches
-                 * resource "a[2][1][0]" (query omits trailing [0]). */
+                 * resource "a[2][1][0]" (query omits trailing [0]).
+                 * Also accepts "arr[0]" for resource "arr" (GL 4.6
+                 * §7.6.1: GetUniformLocation of the first element). */
                 if (!name_matches && mglActiveUniformNamesMatch(str, name)) {
                     name_matches = GL_TRUE;
                 }
