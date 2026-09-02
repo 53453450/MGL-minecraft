@@ -1945,12 +1945,26 @@ llvm::Value *emitAtomicCounterAddress(
         p, llvm::Type::getInt32Ty(*cg.ctx)->getPointerTo(1));
 }
 
+static llvm::Value *emitUBOMatrixLoad(Codegen &cg, llvm::Value *base,
+                                      llvm::Value *off, const MGLIRType *ct,
+                                      const MType &vt);
+static void emitUBOMatrixStore(Codegen &cg, llvm::Value *base,
+                               llvm::Value *off, const MGLIRType *ct,
+                               const MType &vt, llvm::Value *v);
+
 llvm::Value *emitSSBORead(Codegen &cg, const MGLExpr *e,
                           const MGLIRSymbol *sb, const MGLIRModule *mod,
                           const std::map<std::string, MType> &locals) {
     const MGLIRType *ty = nullptr;
     llvm::Value *p = ssboAddress(cg, e, sb, mod, locals, &ty);
     if (!p) return nullptr;
+    /* Matrices need matrix_stride / row_major gathering — a packed LLVM
+     * `[cols x <rows x T>]` load is only correct for tightly packed
+     * column-major mat2 (std430). */
+    if (ty && ty->kind == MGLIR_TYPE_MATRIX) {
+        MType vt = typeFromIR(ty);
+        return emitUBOMatrixLoad(cg, p, cg.b->getInt64(0), ty, vt);
+    }
     llvm::Type *lt = llvmType(typeFromIR(ty), *cg.ctx);
     llvm::Align align(16);
     if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(lt)) {
@@ -1984,6 +1998,11 @@ void emitSSBOWrite(Codegen &cg, const MGLExpr *e, const MGLIRSymbol *sb,
     const MGLIRType *ty = nullptr;
     llvm::Value *p = ssboAddress(cg, e, sb, mod, locals, &ty);
     if (!p) return;
+    if (ty && ty->kind == MGLIR_TYPE_MATRIX) {
+        MType vt = typeFromIR(ty);
+        emitUBOMatrixStore(cg, p, cg.b->getInt64(0), ty, vt, v);
+        return;
+    }
     v = coerceScalar(cg, v, typeFromIR(ty).scalar);
     llvm::Type *lt = llvmType(typeFromIR(ty), *cg.ctx);
     llvm::Align align(16);
@@ -2011,7 +2030,15 @@ llvm::Value *emitMatrixUniform(Codegen &cg, const Uniform &u) {
     return arr;
 }
 
-/* Load a UBO matrix at byte offset `off` from `base`, honouring
+/* Natural alignment for a float/int vector of `comps` components in a
+ * std140/std430 buffer (vec3 shares vec4's 16-byte base align). */
+static llvm::Align matrixVecAlign(uint32_t comps) {
+    if (comps <= 1u) return llvm::Align(4);
+    if (comps == 2u) return llvm::Align(8);
+    return llvm::Align(16);
+}
+
+/* Load a UBO/SSBO matrix at byte offset `off` from `base`, honouring
  * matrix_stride and row_major.  LLVM SSA form is always column-major
  * ([cols x <rows x T>]); row-major memory is gathered into that shape so
  * GLSL `m[i]` still yields column i (GLSL 4.60 §5.6). */
@@ -2030,6 +2057,7 @@ static llvm::Value *emitUBOMatrixLoad(Codegen &cg, llvm::Value *base,
         llvm::ArrayType::get(colTy, vt.cols));
     if (ct->row_major) {
         llvm::Type *rowTy = llvm::FixedVectorType::get(elt, vt.cols);
+        llvm::Align align = matrixVecAlign(vt.cols);
         llvm::SmallVector<llvm::Value *, 4> rows;
         for (uint32_t r = 0; r < vt.rows; r++) {
             llvm::Value *rowOff =
@@ -2037,8 +2065,7 @@ static llvm::Value *emitUBOMatrixLoad(Codegen &cg, llvm::Value *base,
             llvm::Value *rp =
                 cg.b->CreateGEP(cg.b->getInt8Ty(), base, rowOff);
             rp = cg.b->CreateBitCast(rp, rowTy->getPointerTo(1));
-            rows.push_back(
-                cg.b->CreateAlignedLoad(rowTy, rp, llvm::Align(16)));
+            rows.push_back(cg.b->CreateAlignedLoad(rowTy, rp, align));
         }
         for (uint32_t c = 0; c < vt.cols; c++) {
             llvm::Value *col = llvm::UndefValue::get(colTy);
@@ -2051,17 +2078,65 @@ static llvm::Value *emitUBOMatrixLoad(Codegen &cg, llvm::Value *base,
         }
         return v;
     }
+    llvm::Align align = matrixVecAlign(vt.rows);
     for (uint32_t c = 0; c < vt.cols; c++) {
         llvm::Value *colOff =
             cg.b->CreateAdd(off, cg.b->getInt64((uint64_t)c * stride));
         llvm::Value *cp =
             cg.b->CreateGEP(cg.b->getInt8Ty(), base, colOff);
         cp = cg.b->CreateBitCast(cp, colTy->getPointerTo(1));
-        llvm::Value *col =
-            cg.b->CreateAlignedLoad(colTy, cp, llvm::Align(16));
+        llvm::Value *col = cg.b->CreateAlignedLoad(colTy, cp, align);
         v = cg.b->CreateInsertValue(v, col, c);
     }
     return v;
+}
+
+/* Store SSA column-major matrix `v` into UBO/SSBO memory at `off`. */
+static void emitUBOMatrixStore(Codegen &cg, llvm::Value *base,
+                               llvm::Value *off, const MGLIRType *ct,
+                               const MType &vt, llvm::Value *v) {
+    uint32_t stride = ct->layout.matrix_stride;
+    if (stride == 0) {
+        uint32_t vec_comps = ct->row_major ? vt.cols : vt.rows;
+        uint32_t baseBytes = (vec_comps <= 2u ? vec_comps : 4u) * 4u;
+        stride = (baseBytes + 15u) & ~15u;
+    }
+    llvm::Type *elt = llvmScalar(vt.scalar, *cg.ctx);
+    llvm::Type *colTy = llvm::FixedVectorType::get(elt, vt.rows);
+    if (ct->row_major) {
+        llvm::Type *rowTy = llvm::FixedVectorType::get(elt, vt.cols);
+        llvm::Align align = matrixVecAlign(vt.cols);
+        for (uint32_t r = 0; r < vt.rows; r++) {
+            llvm::Value *row = llvm::UndefValue::get(rowTy);
+            for (uint32_t c = 0; c < vt.cols; c++) {
+                llvm::Value *col = cg.b->CreateExtractValue(v, c);
+                if (col->getType() != colTy)
+                    col = cg.b->CreateBitCast(col, colTy);
+                llvm::Value *e = cg.b->CreateExtractElement(
+                    col, cg.b->getInt32(r));
+                row = cg.b->CreateInsertElement(row, e, cg.b->getInt32(c));
+            }
+            llvm::Value *rowOff =
+                cg.b->CreateAdd(off, cg.b->getInt64((uint64_t)r * stride));
+            llvm::Value *rp =
+                cg.b->CreateGEP(cg.b->getInt8Ty(), base, rowOff);
+            rp = cg.b->CreateBitCast(rp, rowTy->getPointerTo(1));
+            cg.b->CreateAlignedStore(row, rp, align);
+        }
+        return;
+    }
+    llvm::Align align = matrixVecAlign(vt.rows);
+    for (uint32_t c = 0; c < vt.cols; c++) {
+        llvm::Value *col = cg.b->CreateExtractValue(v, c);
+        if (col->getType() != colTy)
+            col = cg.b->CreateBitCast(col, colTy);
+        llvm::Value *colOff =
+            cg.b->CreateAdd(off, cg.b->getInt64((uint64_t)c * stride));
+        llvm::Value *cp =
+            cg.b->CreateGEP(cg.b->getInt8Ty(), base, colOff);
+        cp = cg.b->CreateBitCast(cp, colTy->getPointerTo(1));
+        cg.b->CreateAlignedStore(col, cp, align);
+    }
 }
 
 /* Load a UBO leaf (scalar / vector / matrix / bvec) at byte offset `off`
