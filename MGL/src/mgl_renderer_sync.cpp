@@ -9,6 +9,7 @@
 
 #include "mgl_renderer_binding.h"
 #include "mgl_render.h"
+#include "mgl_render_pass_coordinator.h"
 #include "mgl_types_state.h"
 #include "mgl_types_framebuffer.h"
 
