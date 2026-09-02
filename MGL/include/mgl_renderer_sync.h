@@ -72,6 +72,26 @@ int mglRenderSyncRenderPassForFbo(GLMContext context,
                                   const MGLCommandState *command_state,
                                   const MGLRenderPassSyncOps *ops);
 
+/* Post-dirty-domain processGLState tail (encoder recovery → bind → resource sync). */
+typedef struct MGLProcessGLStateTailOps_t {
+    void *renderer;
+    bool (*recover_nil_render_encoder)(void *renderer, GLMContext context);
+    bool (*prepare_draw_pass)(void *renderer, GLMContext context);
+    void (*log_draw_pipeline_lookup)(void *renderer, GLMContext context);
+    bool (*ensure_pipeline_ready)(void *renderer, GLMContext context,
+                                  int trace_process);
+    bool (*validate_render_pass)(void *renderer, GLMContext context,
+                                 int trace_process);
+    bool (*bind_pipeline)(void *renderer, GLMContext context,
+                          int trace_process);
+    bool (*apply_post_bind_draw_state)(void *renderer, GLMContext context);
+} MGLProcessGLStateTailOps;
+
+int mglRenderProcessGLStateTail(
+    GLMContext context, const MGLCommandState *command_state,
+    int draw_command, int trace_process, MGLResourceSyncWork *resource_sync_work,
+    const MGLProcessGLStateTailOps *ops);
+
 bool mglRendererObjCProcessGLState(GLMContext context, bool draw_command);
 
 #ifdef __cplusplus

@@ -45,6 +45,22 @@ extern "C" void mglRendererDrawElementsInstancedBaseVertexBaseInstance(
     GLMContext context, uint32_t mode, int32_t count, uint32_t type,
     const void *indices, int32_t instance_count, int32_t base_vertex,
     uint32_t base_instance);
+extern "C" void mglRendererMultiDrawArrays(
+    GLMContext context, uint32_t mode, const int32_t *firsts,
+    const int32_t *counts, int32_t draw_count);
+extern "C" void mglRendererMultiDrawElements(
+    GLMContext context, uint32_t mode, const int32_t *counts, uint32_t type,
+    const void *const *indices, int32_t draw_count);
+extern "C" void mglRendererMultiDrawElementsBaseVertex(
+    GLMContext context, uint32_t mode, const int32_t *counts, uint32_t type,
+    const void *const *indices, int32_t draw_count,
+    const int32_t *base_vertices);
+extern "C" void mglRendererMultiDrawArraysIndirect(
+    GLMContext context, uint32_t mode, const void *indirect, int32_t draw_count,
+    int32_t stride);
+extern "C" void mglRendererMultiDrawElementsIndirect(
+    GLMContext context, uint32_t mode, uint32_t type, const void *indirect,
+    int32_t draw_count, int32_t stride);
 
 extern "C" bool mglRendererObjCDrawArrays(GLMContext context, GLenum mode,
                                           GLint first, GLsizei count);
@@ -188,6 +204,61 @@ extern "C" void mglRenderDrawElementsInstancedBaseVertexBaseInstance(
     mglRendererDrawElementsInstancedBaseVertexBaseInstance(
         context, mode, count, type, indices, instance_count, base_vertex,
         base_instance);
+}
+
+extern "C" void mglRenderMultiDrawArrays(
+    GLMContext context, uint32_t mode, const int32_t *firsts,
+    const int32_t *counts, int32_t draw_count)
+{
+    if (!context) {
+        return;
+    }
+    mglRendererMultiDrawArrays(context, mode, firsts, counts, draw_count);
+}
+
+extern "C" void mglRenderMultiDrawElements(
+    GLMContext context, uint32_t mode, const int32_t *counts, uint32_t type,
+    const void *const *indices, int32_t draw_count)
+{
+    if (!context) {
+        return;
+    }
+    mglRendererMultiDrawElements(context, mode, counts, type, indices,
+                                 draw_count);
+}
+
+extern "C" void mglRenderMultiDrawElementsBaseVertex(
+    GLMContext context, uint32_t mode, const int32_t *counts, uint32_t type,
+    const void *const *indices, int32_t draw_count,
+    const int32_t *base_vertices)
+{
+    if (!context) {
+        return;
+    }
+    mglRendererMultiDrawElementsBaseVertex(context, mode, counts, type, indices,
+                                           draw_count, base_vertices);
+}
+
+extern "C" void mglRenderMultiDrawArraysIndirect(
+    GLMContext context, uint32_t mode, const void *indirect, int32_t draw_count,
+    int32_t stride)
+{
+    if (!context) {
+        return;
+    }
+    mglRendererMultiDrawArraysIndirect(context, mode, indirect, draw_count,
+                                       stride);
+}
+
+extern "C" void mglRenderMultiDrawElementsIndirect(
+    GLMContext context, uint32_t mode, uint32_t type, const void *indirect,
+    int32_t draw_count, int32_t stride)
+{
+    if (!context) {
+        return;
+    }
+    mglRendererMultiDrawElementsIndirect(context, mode, type, indirect,
+                                         draw_count, stride);
 }
 
 extern "C" bool mglRendererObjCDrawArrays(GLMContext context, GLenum mode,

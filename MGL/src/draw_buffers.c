@@ -2163,7 +2163,7 @@ void mglMultiDrawArrays(GLMContext ctx, GLenum mode, const GLint *first, const G
     if (mglCurrentExpandedGeometryDrawProgram(ctx)) {
         /* GS expansion cannot be replayed as a deferred batch; forward
          * to the renderer which decodes each sub-draw through the GS path. */
-        mglRendererMultiDrawArrays(ctx, mode, first, count, drawcount);
+        mglRenderMultiDrawArrays(ctx, mode, first, count, drawcount);
         return;
     }
 
@@ -2185,7 +2185,7 @@ void mglMultiDrawArrays(GLMContext ctx, GLenum mode, const GLint *first, const G
         return;
     }
 
-    mglRendererMultiDrawArrays(ctx, mode, first, count, drawcount);
+    mglRenderMultiDrawArrays(ctx, mode, first, count, drawcount);
 }
 
 void mglMultiDrawElements(GLMContext ctx, GLenum mode, const GLsizei *count, GLenum type, const void *const*indices, GLsizei drawcount)
@@ -2218,7 +2218,7 @@ void mglMultiDrawElements(GLMContext ctx, GLenum mode, const GLsizei *count, GLe
 
     if (mglCurrentExpandedGeometryDrawProgram(ctx)) {
         /* GS expansion cannot be replayed as a deferred batch. */
-        mglRendererMultiDrawElements(ctx, mode, count, type, indices,
+        mglRenderMultiDrawElements(ctx, mode, count, type, indices,
                                             drawcount);
         return;
     }
@@ -2244,7 +2244,7 @@ void mglMultiDrawElements(GLMContext ctx, GLenum mode, const GLsizei *count, GLe
         return;
     }
 
-    mglRendererMultiDrawElements(ctx, mode, count, type, indices, drawcount);
+    mglRenderMultiDrawElements(ctx, mode, count, type, indices, drawcount);
 }
 
 void mglMultiDrawElementsBaseVertex(GLMContext ctx, GLenum mode, const GLsizei *count, GLenum type, const void *const*indices, GLsizei drawcount, const GLint *basevertex)
@@ -2277,7 +2277,7 @@ void mglMultiDrawElementsBaseVertex(GLMContext ctx, GLenum mode, const GLsizei *
 
     if (mglCurrentExpandedGeometryDrawProgram(ctx)) {
         /* GS expansion cannot be replayed as a deferred batch. */
-        mglRendererMultiDrawElementsBaseVertex(ctx, mode, count, type,
+        mglRenderMultiDrawElementsBaseVertex(ctx, mode, count, type,
                                                       indices, drawcount,
                                                       basevertex);
         return;
@@ -2305,7 +2305,7 @@ void mglMultiDrawElementsBaseVertex(GLMContext ctx, GLenum mode, const GLsizei *
         return;
     }
 
-    mglRendererMultiDrawElementsBaseVertex(ctx, mode, count, type, indices, drawcount, basevertex);
+    mglRenderMultiDrawElementsBaseVertex(ctx, mode, count, type, indices, drawcount, basevertex);
 }
 
 void mglMultiDrawArraysIndirect(GLMContext ctx, GLenum mode, const void *indirect, GLsizei drawcount, GLsizei stride)
@@ -2367,7 +2367,7 @@ void mglMultiDrawArraysIndirect(GLMContext ctx, GLenum mode, const void *indirec
     mglFlushCommandBuffer(ctx);
     mglTraceLogExternal("MULTI_DRAW_ARRAYS_INDIRECT_FRONTEND_DISPATCH mode=0x%x indirect=%p drawcount=%d stride=%d program=%u",
                         (unsigned)mode, indirect, (int)drawcount, (int)stride, (unsigned)mglTraceDrawProgram(ctx));
-    mglRendererMultiDrawArraysIndirect(ctx, mode, indirect, drawcount, stride);
+    mglRenderMultiDrawArraysIndirect(ctx, mode, indirect, drawcount, stride);
 }
 
 void mglMultiDrawElementsIndirect(GLMContext ctx, GLenum mode, GLenum type, const void *indirect, GLsizei drawcount, GLsizei stride)
@@ -2442,5 +2442,5 @@ void mglMultiDrawElementsIndirect(GLMContext ctx, GLenum mode, GLenum type, cons
     mglFlushCommandBuffer(ctx);
     mglTraceLogExternal("MULTI_DRAW_ELEMENTS_INDIRECT_FRONTEND_DISPATCH mode=0x%x type=0x%x indirect=%p drawcount=%d stride=%d program=%u",
                         (unsigned)mode, (unsigned)type, indirect, (int)drawcount, (int)stride, (unsigned)mglTraceDrawProgram(ctx));
-    mglRendererMultiDrawElementsIndirect(ctx, mode, type, indirect, drawcount, stride);
+    mglRenderMultiDrawElementsIndirect(ctx, mode, type, indirect, drawcount, stride);
 }

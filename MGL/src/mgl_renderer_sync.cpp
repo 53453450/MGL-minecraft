@@ -7,6 +7,7 @@
 
 #include "mgl_renderer_sync.h"
 
+#include "mgl_renderer_binding.h"
 #include "mgl_render.h"
 #include "mgl_types_state.h"
 #include "mgl_types_framebuffer.h"
@@ -191,6 +192,57 @@ extern "C" int mglRenderSyncRenderPassForFbo(
 
     if (!ops->rotate_render_encoder_for_fbo ||
         !ops->rotate_render_encoder_for_fbo(ops->renderer, context)) {
+        return 0;
+    }
+    return 1;
+}
+
+extern "C" int mglRenderProcessGLStateTail(
+    GLMContext context, const MGLCommandState *command_state,
+    int draw_command, int trace_process,
+    MGLResourceSyncWork *resource_sync_work,
+    const MGLProcessGLStateTailOps *ops)
+{
+    if (!context || !ops) {
+        return 0;
+    }
+
+    if (command_state &&
+        mglRenderEncoderOwnerHasCurrent(
+            command_state->currentRenderEncoderOwner) != 1) {
+        if (!ops->recover_nil_render_encoder ||
+            !ops->recover_nil_render_encoder(ops->renderer, context)) {
+            return 0;
+        }
+    }
+
+    if (draw_command) {
+        if (!ops->prepare_draw_pass ||
+            !ops->prepare_draw_pass(ops->renderer, context)) {
+            return 0;
+        }
+        if (ops->log_draw_pipeline_lookup) {
+            ops->log_draw_pipeline_lookup(ops->renderer, context);
+        }
+    }
+
+    if (!ops->ensure_pipeline_ready ||
+        !ops->ensure_pipeline_ready(ops->renderer, context, trace_process)) {
+        return 0;
+    }
+    if (!ops->validate_render_pass ||
+        !ops->validate_render_pass(ops->renderer, context, trace_process)) {
+        return 0;
+    }
+    if (!ops->bind_pipeline ||
+        !ops->bind_pipeline(ops->renderer, context, trace_process)) {
+        return 0;
+    }
+    if (!mglRenderSyncResourceBindings(context, resource_sync_work)) {
+        return 0;
+    }
+    if (draw_command && ops->apply_post_bind_draw_state &&
+        !ops->apply_post_bind_draw_state(ops->renderer, context)) {
         return 0;
     }
     return 1;
