@@ -2874,6 +2874,11 @@ static llvm::Value *loadGeometryPointSize(Codegen &cg, uint32_t record)
 static void storeGeometryLayer(Codegen &cg, llvm::Value *record,
                                llvm::Value *layer)
 {
+    /* Offsets 40/44 alias gl_CullDistance[5]/[6].  Only stamp layer when the
+     * shader actually wrote gl_Layer; unconditional zero stores would wipe
+     * high-index cull distances needed for GS primitive culling. */
+    if (!cg.lvalues.count("gl_Layer"))
+        return;
     llvm::Value *p = cg.b->CreateGEP(
         cg.b->getInt8Ty(), geometryRecordPtr(cg, record),
         cg.b->getInt64(MGL_AIR_PER_VERTEX_LAYER_OFFSET));
@@ -2884,6 +2889,8 @@ static void storeGeometryLayer(Codegen &cg, llvm::Value *record,
 static void storeGeometryViewportIndex(Codegen &cg, llvm::Value *record,
                                        llvm::Value *viewportIndex)
 {
+    if (!cg.lvalues.count("gl_ViewportIndex"))
+        return;
     llvm::Value *p = cg.b->CreateGEP(
         cg.b->getInt8Ty(), geometryRecordPtr(cg, record),
         cg.b->getInt64(MGL_AIR_PER_VERTEX_VIEWPORT_INDEX_OFFSET));
