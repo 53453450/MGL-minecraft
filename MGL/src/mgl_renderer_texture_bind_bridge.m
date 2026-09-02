@@ -29,6 +29,10 @@
 - (void)releaseGLSampledRenderTargetCopyForTexture:(Texture *)tex;
 @end
 
+@interface MGLRenderer (TextureBindAccessors)
+- (void *)mglTextureBindCurrentCommandBufferOwner;
+@end
+
 static id mglBindingCreateDefaultSampler(void)
 {
     void *sampler = NULL;
@@ -36,8 +40,6 @@ static id mglBindingCreateDefaultSampler(void)
         return (__bridge_transfer id)sampler;
     }
     return nil;
-}
-
 }
 
 bool mglRendererTextureBindLocked(MGLRenderer *self, Texture *tex)
@@ -135,7 +137,7 @@ bool mglRendererTextureBindLocked(MGLRenderer *self, Texture *tex)
                     [self endRenderEncodingLocked];
                     if ([self ensureWritableCommandBufferLocked:"is_render_target_blit"]) {
                         if (mglRenderCopyMatchingTextureSubresourcesForCommandBufferOwner(
-                                self->_commandState.currentCommandBufferOwner,
+                                [self mglTextureBindCurrentCommandBufferOwner],
                                 (__bridge void *)oldTexture,
                                 (__bridge void *)newTexture) != 0) {
                             NSLog(@"MGL ERROR: Metal-cpp render-target preservation blit failed texture=%u",
@@ -344,4 +346,13 @@ bool mglRendererTextureBindLocked(MGLRenderer *self, Texture *tex)
 
     return true;
 }
+
+@implementation MGLRenderer (TextureBindAccessors)
+
+- (void *)mglTextureBindCurrentCommandBufferOwner
+{
+    return _commandState.currentCommandBufferOwner;
+}
+
+@end
 
