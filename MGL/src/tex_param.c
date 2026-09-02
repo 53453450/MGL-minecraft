@@ -19,6 +19,7 @@
  */
 
 #include "glm_context.h"
+#include "mgl_render.h"
 #include "mgl_trace_log.h"
 #include "mgl_env_flag.h"
 #include "pixel_utils.h"
@@ -206,6 +207,11 @@ static void mglMarkTextureParameterDirty(GLMContext ctx, Texture *tex, GLenum pn
     tex->dirty_bits |= DIRTY_TEXTURE_PARAM;
     if (mglTextureParameterAffectsTextureDescriptor(pname)) {
         mglInvalidateTextureBaseLevelView(ctx, tex);
+        if (tex && !tex->is_render_target &&
+            mglRenderTextureUploadNeedsSingleChannelSwizzle(
+                (uint32_t)tex->internalformat, 1) != 0) {
+            tex->dirty_bits |= (DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_DATA);
+        }
     }
     if (ctx) {
         mglMarkStateDirtyBits(ctx->active_state, DIRTY_TEX_PARAM);

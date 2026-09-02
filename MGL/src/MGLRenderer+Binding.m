@@ -208,7 +208,8 @@ static id mglBindingCreateDefaultSampler(void)
                     MGLRenderTextureInfo metalInfo = {0};
                     if (mglRenderGetTextureInfo((__bridge void *)existingTexture,
                                                    &metalInfo) == 0 &&
-                        metalInfo.texture_type == MGLTextureType2D) {
+                        metalInfo.texture_type == MGLTextureType2D &&
+                        !mglTextureUploadNeedsSingleChannelSwizzle(tex)) {
                         uploadedDirty =
                             [self uploadFullCPUTextureDataIntoTexture:tex
                                                                 metal:existingTexture

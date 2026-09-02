@@ -4013,11 +4013,25 @@ static void mglTextureCopyTextureToBuffer(
                     const void *layerSrcData = (const uint8_t *)tex->faces[face].levels[level].data + offset;
 
                     void *expandedUploadData = NULL;
+                    void *swizzledUploadData = NULL;
 
                     NSUInteger effectiveBytesPerRow = baseBytesPerRow;
 
                     NSUInteger effectiveBytesPerImage = logicalBytesPerImage;
 
+                    if (mglTextureUploadNeedsSingleChannelSwizzle(tex)) {
+                        NSUInteger swzBPR = 0;
+                        NSUInteger swzBPI = 0;
+                        swizzledUploadData = mglCreateSingleChannelSwizzledUpload(
+                            tex, (const uint8_t *)layerSrcData, lvlWidth,
+                            uploadSliceHeight, baseBytesPerRow, &swzBPR,
+                            &swzBPI);
+                        if (swizzledUploadData) {
+                            layerSrcData = swizzledUploadData;
+                            effectiveBytesPerRow = swzBPR;
+                            effectiveBytesPerImage = swzBPI;
+                        }
+                    }
 
                     if (mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
 
@@ -4207,6 +4221,7 @@ static void mglTextureCopyTextureToBuffer(
 
                     }
 
+                    free(swizzledUploadData);
                     free(expandedUploadData);
 
                 }
@@ -4327,6 +4342,53 @@ static void mglTextureCopyTextureToBuffer(
                 if (tex->faces[face].levels[level].data && bytesPerRow > 0 && bytesPerImage > 0) {
                     void *srcData = (void *)tex->faces[face].levels[level].data;
                     uintptr_t addr = (uintptr_t)srcData;
+
+                    uint8_t *swizzled3DUploadData = NULL;
+                    if (level == 0 && face == 0 &&
+                        mglTextureUploadNeedsSingleChannelSwizzle(tex)) {
+                        NSUInteger texDepth = MAX((NSUInteger)depth, 1UL);
+                        NSUInteger texHeight = MAX((NSUInteger)height, 1UL);
+                        NSUInteger swzBPR = 0;
+                        NSUInteger swzBPI = 0;
+                        uint8_t *firstSlice =
+                            mglCreateSingleChannelSwizzledUpload(
+                                tex, (const uint8_t *)srcData, width, texHeight,
+                                bytesPerRow, &swzBPR, &swzBPI);
+                        if (firstSlice) {
+                            NSUInteger totalSize = swzBPI * texDepth;
+                            if (totalSize > 0 &&
+                                totalSize <= (512 * 1024 * 1024)) {
+                                swizzled3DUploadData =
+                                    (uint8_t *)malloc(totalSize);
+                                if (swizzled3DUploadData) {
+                                    memcpy(swizzled3DUploadData, firstSlice,
+                                           swzBPI);
+                                    for (NSUInteger z = 1; z < texDepth; z++) {
+                                        const uint8_t *sliceSrc =
+                                            (const uint8_t *)srcData +
+                                            z * bytesPerImage;
+                                        uint8_t *sliceDst =
+                                            swizzled3DUploadData + z * swzBPI;
+                                        uint8_t *sliceSwz =
+                                            mglCreateSingleChannelSwizzledUpload(
+                                                tex, sliceSrc, width, texHeight,
+                                                bytesPerRow, &swzBPR, &swzBPI);
+                                        if (sliceSwz) {
+                                            memcpy(sliceDst, sliceSwz, swzBPI);
+                                            free(sliceSwz);
+                                        } else {
+                                            memset(sliceDst, 0, swzBPI);
+                                        }
+                                    }
+                                    srcData = swizzled3DUploadData;
+                                    bytesPerRow = swzBPR;
+                                    bytesPerImage = swzBPI;
+                                    addr = (uintptr_t)srcData;
+                                }
+                            }
+                            free(firstSlice);
+                        }
+                    }
 
                     uint8_t *expanded3DUploadData = NULL;
                     if (mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
@@ -4550,6 +4612,7 @@ static void mglTextureCopyTextureToBuffer(
                         }
                     }
                     free(expanded3DUploadData);
+                    free(swizzled3DUploadData);
                 } else {
                     NSLog(@"MGL WARNING: Skipping 3D texture upload due to invalid data or parameters");
                 }
@@ -5442,7 +5505,9 @@ static void mglTextureCopyTextureToBuffer(
         }
     }
 
-    if (cpuUploadRequired && tex->target == GL_TEXTURE_2D && mglTextureInfo(texture).texture_type == MGLTextureType2D) {
+    if (cpuUploadRequired && tex->target == GL_TEXTURE_2D &&
+        mglTextureInfo(texture).texture_type == MGLTextureType2D &&
+        !mglTextureUploadNeedsSingleChannelSwizzle(tex)) {
         BOOL fullCPUUploadVerified = [self uploadFullCPUTextureDataIntoTexture:tex
                                                                            metal:texture
                                                                           reason:"createMTLTexture.cpuData"];

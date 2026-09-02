@@ -227,6 +227,10 @@ typedef struct Texture_t {
     void      *mtl_base_level_view_source;   /* source id<MTLTexture> (weak ref for identity check) */
     GLuint     mtl_base_level_view_base;
     GLuint     mtl_base_level_view_max;
+    GLuint     mtl_base_level_view_swizzle_r;
+    GLuint     mtl_base_level_view_swizzle_g;
+    GLuint     mtl_base_level_view_swizzle_b;
+    GLuint     mtl_base_level_view_swizzle_a;
     char debug_label[128];
 } Texture;
 

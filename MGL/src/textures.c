@@ -1658,6 +1658,10 @@ void mglInvalidateTextureBaseLevelView(GLMContext ctx, Texture *tex)
     tex->mtl_base_level_view_source = NULL;
     tex->mtl_base_level_view_base = 0u;
     tex->mtl_base_level_view_max = 0u;
+    tex->mtl_base_level_view_swizzle_r = 0u;
+    tex->mtl_base_level_view_swizzle_g = 0u;
+    tex->mtl_base_level_view_swizzle_b = 0u;
+    tex->mtl_base_level_view_swizzle_a = 0u;
 }
 
 void invalidateTexture(GLMContext ctx, Texture *tex)
@@ -1716,6 +1720,10 @@ void invalidateTexture(GLMContext ctx, Texture *tex)
         tex->mtl_base_level_view_source = NULL;
         tex->mtl_base_level_view_base = 0u;
         tex->mtl_base_level_view_max = 0u;
+        tex->mtl_base_level_view_swizzle_r = 0u;
+        tex->mtl_base_level_view_swizzle_g = 0u;
+        tex->mtl_base_level_view_swizzle_b = 0u;
+        tex->mtl_base_level_view_swizzle_a = 0u;
     }
 
     for(int face=0; face<_CUBE_MAP_MAX_FACE; face++)

@@ -3533,7 +3533,15 @@ int mglRenderSampledTextureViewForBaseLevel(
     if (texture_object->mtl_base_level_view &&
         texture_object->mtl_base_level_view_source == source_texture &&
         texture_object->mtl_base_level_view_base == base &&
-        texture_object->mtl_base_level_view_max == max_level) {
+        texture_object->mtl_base_level_view_max == max_level &&
+        texture_object->mtl_base_level_view_swizzle_r ==
+            (GLuint)texture_object->params.swizzle_r &&
+        texture_object->mtl_base_level_view_swizzle_g ==
+            (GLuint)texture_object->params.swizzle_g &&
+        texture_object->mtl_base_level_view_swizzle_b ==
+            (GLuint)texture_object->params.swizzle_b &&
+        texture_object->mtl_base_level_view_swizzle_a ==
+            (GLuint)texture_object->params.swizzle_a) {
         *view_out = texture_object->mtl_base_level_view;
         return 0;
     }
@@ -3555,6 +3563,14 @@ int mglRenderSampledTextureViewForBaseLevel(
     texture_object->mtl_base_level_view_source = source_texture;
     texture_object->mtl_base_level_view_base = base;
     texture_object->mtl_base_level_view_max = max_level;
+    texture_object->mtl_base_level_view_swizzle_r =
+        (GLuint)texture_object->params.swizzle_r;
+    texture_object->mtl_base_level_view_swizzle_g =
+        (GLuint)texture_object->params.swizzle_g;
+    texture_object->mtl_base_level_view_swizzle_b =
+        (GLuint)texture_object->params.swizzle_b;
+    texture_object->mtl_base_level_view_swizzle_a =
+        (GLuint)texture_object->params.swizzle_a;
     static_cast<NS::Object *>(view_handle)->release();
     *view_out = texture_object->mtl_base_level_view;
     return 0;
