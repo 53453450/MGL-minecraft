@@ -312,7 +312,7 @@ void mglHint(GLMContext ctx, GLenum target, GLenum mode)
             return;
     }
 
-    mglMarkRendererDirtyBits(&ctx->state,
+    mglMarkStateDirtyBits(&ctx->state,
                              DIRTY_STATE | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE);
 }
 
@@ -372,7 +372,7 @@ void mglScissor(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei height)
     ctx->state.scissor_box_array[0][2] = width;
     ctx->state.scissor_box_array[0][3] = height;
 
-    mglMarkRendererDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 }
 
 void mglLogicOp(GLMContext ctx, GLenum opcode)

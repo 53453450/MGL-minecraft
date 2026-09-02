@@ -201,13 +201,13 @@ static id mglBlitCreateDepthStencilState(
 }
 
 static id mglBlitCreateRenderEncoder(
-    MGLRenderPassManager *renderPassManager,
+    MGLCommandState *commandState,
     const MGLRenderPassState *state)
 {
     if (!state) return nil;
     void *encoder = NULL;
     if (mglRenderCreateRenderEncoderFromCommandBufferOwnerState(
-            renderPassManager.state->currentCommandBufferOwner,
+            commandState->currentCommandBufferOwner,
             state, &encoder) == 0 && encoder) {
         return (__bridge id)encoder;
     }
@@ -732,7 +732,7 @@ static id mglLookupAuxRenderPipeline(
 
     id encoder =
         (__bridge id)mglRenderCreateComputeEncoderBorrowed(
-            _renderPassManager.state->currentCommandBufferOwner);
+            _commandState.currentCommandBufferOwner);
     if (!encoder) {
         NSLog(@"MGL WARN: failed to create MSAA integer resolve encoder for %s",
               reason ? reason : "unknown");
@@ -816,7 +816,7 @@ static id mglLookupAuxRenderPipeline(
     BOOL resolvesDepth =
         mglMetalPixelFormatIsDepthOrStencil(mglBlitTextureInfo(sourceTexture).pixel_format);
     if (mglRenderEncodeMultisampleResolveForCommandBufferOwner(
-            _renderPassManager.state->currentCommandBufferOwner,
+            _commandState.currentCommandBufferOwner,
             resolvesDepth
                 ? MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH
                 : MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
@@ -889,7 +889,7 @@ static id mglLookupAuxRenderPipeline(
         MGLStoreActionStore);
 
     id encoder =
-        mglBlitCreateRenderEncoder(_renderPassManager, &passState);
+        mglBlitCreateRenderEncoder(&_commandState, &passState);
     if (!encoder) {
         mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
         return nil;
@@ -990,7 +990,7 @@ static id mglLookupAuxRenderPipeline(
     /* Stale (or no copy yet): safe to refresh only if the texture is not an
      * attachment of the active render pass.  Reading a render-pass
      * attachment mid-pass is a Metal read-after-write hazard. */
-    if (mglTextureIsAttachmentOfFramebuffer(_renderPassManager.state->renderPassFramebuffer, tex)) {
+    if (mglTextureIsAttachmentOfFramebuffer(_commandState.renderPassFramebuffer, tex)) {
         if (mglTraceLogIsEnabled()) {
             mglTraceLog("RT_SAMPLE_COPY_LAZY_SKIP stage=%s program=%u binding=%u unit=%u tex=%u writeVer=%u rtVer=%u reason=current-pass-attachment",
                         stage ? stage : "",
@@ -1048,7 +1048,7 @@ static id mglLookupAuxRenderPipeline(
         return sampledCopy;
     }
 
-    BOOL isFbAttachment = mglTextureIsAttachmentOfFramebuffer(_renderPassManager.state->renderPassFramebuffer, tex);
+    BOOL isFbAttachment = mglTextureIsAttachmentOfFramebuffer(_commandState.renderPassFramebuffer, tex);
 
     if ([self currentRenderPassUsesTexture:source] && !isFbAttachment) {
         /* The texture is used by the current render pass in a non-attachment
@@ -1086,7 +1086,7 @@ static id mglLookupAuxRenderPipeline(
 
     BOOL hadRenderEncoder =
         mglRenderEncoderOwnerHasCurrent(
-            _renderPassManager.state->currentRenderEncoderOwner) == 1;
+            _commandState.currentRenderEncoderOwner) == 1;
     if (hadRenderEncoder) {
         [self endRenderEncodingLocked];
     }
@@ -1111,7 +1111,7 @@ static id mglLookupAuxRenderPipeline(
 
     if (hadRenderEncoder &&
         mglRenderEncoderOwnerHasCurrent(
-            _renderPassManager.state->currentRenderEncoderOwner) != 1) {
+            _commandState.currentRenderEncoderOwner) != 1) {
         if (![self restoreRenderEncoderAfterTextureUploadForDraw:"sample_gate_miss_repair"]) {
             return nil;
         }
@@ -1288,7 +1288,7 @@ static id mglLookupAuxRenderPipeline(
     if (useComputePath) {
         id computeEncoder =
             (__bridge id)mglRenderCreateComputeEncoderBorrowed(
-                _renderPassManager.state->currentCommandBufferOwner);
+                _commandState.currentCommandBufferOwner);
         if (!computeEncoder) {
             static uint64_t s_computeEncoderFailCount = 0;
             uint64_t hit = ++s_computeEncoderFailCount;
@@ -1400,7 +1400,7 @@ static id mglLookupAuxRenderPipeline(
                 copyState.render_target_height = mglBlitTextureInfo(dstLvl).height;
 
                 id copyEncoder =
-                    mglBlitCreateRenderEncoder(_renderPassManager, &copyState);
+                    mglBlitCreateRenderEncoder(&_commandState, &copyState);
                 if (!copyEncoder) {
                     static uint64_t s_copyEncoderFailCount = 0;
                     uint64_t hit = ++s_copyEncoderFailCount;
@@ -1645,7 +1645,7 @@ static id mglLookupAuxRenderPipeline(
                                 (uint32_t)MGLMultisampleStencilResolveFilterSample0;
                         }
                         id resolveEncoder =
-                            mglBlitCreateRenderEncoder(_renderPassManager,
+                            mglBlitCreateRenderEncoder(&_commandState,
                                                        &resolveState);
                         if (resolveEncoder) {
                             mglBlitEndRenderEncoder(resolveEncoder);
@@ -1710,7 +1710,7 @@ static id mglLookupAuxRenderPipeline(
                             }
                             id depthBlit =
                                 (__bridge id)mglRenderCreateBlitEncoderBorrowed(
-                                    _renderPassManager.state->currentCommandBufferOwner);
+                                    _commandState.currentCommandBufferOwner);
                             if (depthBlit) {
                                 NSUInteger sourceMetalY =
                                     mglBlitTextureInfo(depthReadTexture).height - (NSUInteger)(copySrcY + copyHeight);
@@ -1794,7 +1794,7 @@ static id mglLookupAuxRenderPipeline(
                                 }
 
                                 id depthEncoder =
-                                    mglBlitCreateRenderEncoder(_renderPassManager,
+                                    mglBlitCreateRenderEncoder(&_commandState,
                                                                &scaledDepthState);
                                 if (depthEncoder) {
                                     mglBlitSetRenderPipeline(depthEncoder, depthPipeline);
@@ -2118,7 +2118,7 @@ static id mglLookupAuxRenderPipeline(
 
         BOOL resolveEncoded =
             mglRenderEncodeMultisampleResolveForCommandBufferOwner(
-                _renderPassManager.state->currentCommandBufferOwner,
+                _commandState.currentCommandBufferOwner,
                 MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
                 (__bridge void *)readtexid, readSubresource.level,
                 readSubresource.slice, readSubresource.depthPlane,
@@ -2129,7 +2129,7 @@ static id mglLookupAuxRenderPipeline(
          * read it on a tile-based Apple GPU without stale tile memory. */
         id syncBlit =
             (__bridge id)mglRenderCreateBlitEncoderBorrowed(
-                _renderPassManager.state->currentCommandBufferOwner);
+                _commandState.currentCommandBufferOwner);
         if (syncBlit) {
             mglBlitSynchronizeTexture(syncBlit, resolveTex, 0, 0);
             mglBlitEndBlitEncoder(syncBlit);
@@ -2259,7 +2259,7 @@ static id mglLookupAuxRenderPipeline(
 
         id integerBlit =
             (__bridge id)mglRenderCreateBlitEncoderBorrowed(
-                _renderPassManager.state->currentCommandBufferOwner);
+                _commandState.currentCommandBufferOwner);
         if (!integerBlit) {
             NSLog(@"MGL WARN: mtlBlitFramebuffer failed to create integer direct blit encoder");
             return YES;
@@ -2377,7 +2377,7 @@ static id mglLookupAuxRenderPipeline(
             MGLStoreActionStore);
 
         id encoder =
-            mglBlitCreateRenderEncoder(_renderPassManager, &scaledState);
+            mglBlitCreateRenderEncoder(&_commandState, &scaledState);
         if (!encoder) {
             NSLog(@"MGL WARN: mtlBlitFramebuffer failed to create scaled render encoder");
             return YES;
@@ -2489,7 +2489,7 @@ static id mglLookupAuxRenderPipeline(
     id blitCommandEncoder;
     blitCommandEncoder =
         (__bridge id)mglRenderCreateBlitEncoderBorrowed(
-            _renderPassManager.state->currentCommandBufferOwner);
+            _commandState.currentCommandBufferOwner);
     if (!blitCommandEncoder) {
         NSLog(@"MGL WARN: mtlBlitFramebuffer failed to create blit encoder");
         return;
@@ -2650,7 +2650,7 @@ static id mglLookupAuxRenderPipeline(
         (readFBOAttachment->clear_bitmask & GL_COLOR_BUFFER_BIT)) {
         BOOL clearEncoded =
             mglRenderEncodeColorClearForCommandBufferOwner(
-                _renderPassManager.state->currentCommandBufferOwner,
+                _commandState.currentCommandBufferOwner,
                 (__bridge void *)readtexid, readSubresource.level,
                 readSubresource.slice, readSubresource.depthPlane,
                 readFBOAttachment->clear_color[0],
@@ -3113,7 +3113,7 @@ void mglRendererCompatBlitFramebuffer(GLMContext glm_ctx,
 
     id blitEncoder =
         (__bridge id)mglRenderCreateBlitEncoderBorrowed(
-            _renderPassManager.state->currentCommandBufferOwner);
+            _commandState.currentCommandBufferOwner);
     if (!blitEncoder) {
         mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
         return YES;
@@ -3370,7 +3370,7 @@ void mglRendererCompatBlitFramebuffer(GLMContext glm_ctx,
 
     id readEncoder =
         (__bridge id)mglRenderCreateBlitEncoderBorrowed(
-            _renderPassManager.state->currentCommandBufferOwner);
+            _commandState.currentCommandBufferOwner);
     if (!readEncoder) {
         return NO;
     }
@@ -3395,7 +3395,7 @@ void mglRendererCompatBlitFramebuffer(GLMContext glm_ctx,
 
     [self flushCommandBuffer:YES];
     MGLRenderCommandBufferState readState = {0};
-    if ([_renderPassManager waitForLastSubmittedCommandBuffer:&readState] != 0 ||
+    if (mglCmdWaitForLastSubmittedCommandBuffer(&_commandState, &readState) != 0 ||
         readState.has_error) {
         return NO;
     }
@@ -3622,7 +3622,7 @@ void mglRendererCompatBlitFramebuffer(GLMContext glm_ctx,
                             if (stagingBuf) {
                                 id uploadEncoder =
                                     (__bridge id)mglRenderCreateBlitEncoderBorrowed(
-                                        _renderPassManager.state->currentCommandBufferOwner);
+                                        _commandState.currentCommandBufferOwner);
                                 if (uploadEncoder) {
                                     mglBlitCopyBufferToTexture(
                                         uploadEncoder, stagingBuf, 0,
@@ -4094,7 +4094,7 @@ void mglRendererCompatBlitFramebuffer(GLMContext glm_ctx,
                         }
                         id readEncoder =
                             (__bridge id)mglRenderCreateBlitEncoderBorrowed(
-                                _renderPassManager.state->currentCommandBufferOwner);
+                                _commandState.currentCommandBufferOwner);
                         if (!readEncoder) {
                             free(stagingBytes);
                             mglDispatchError(glm_ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
@@ -4709,7 +4709,7 @@ void mglRendererCompatBlitFramebuffer(GLMContext glm_ctx,
 
     id blitEncoder =
         (__bridge id)mglRenderCreateBlitEncoderBorrowed(
-            _renderPassManager.state->currentCommandBufferOwner);
+            _commandState.currentCommandBufferOwner);
     if (!blitEncoder) {
         NSLog(@"MGL ERROR: mtlCopyImageSubData failed to create blit encoder");
         mglDispatchError(glm_ctx, __FUNCTION__, GL_OUT_OF_MEMORY);

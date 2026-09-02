@@ -527,7 +527,7 @@ typedef struct {
     }
     MGLRenderCommandBufferState commandState = {0};
     if (!mglRenderCommandBufferOwnerHasState(
-            _renderPassManager.state->currentCommandBufferOwner,
+            _commandState.currentCommandBufferOwner,
             &commandState) ||
         commandState.status != MGL_TESS_COMMAND_STATUS_NOT_ENQUEUED) {
         return false;
@@ -549,7 +549,7 @@ typedef struct {
         };
     }
     return mglTessEncodeBufferCopiesForOwner(
-        _renderPassManager.state->currentCommandBufferOwner,
+        _commandState.currentCommandBufferOwner,
         copyEntries, copyEntryCount);
 }
 
@@ -853,7 +853,7 @@ typedef struct {
      * on the same command buffer simultaneously.  End any active render
      * encoder first for the same reason. */
     if (mglRenderEncoderOwnerHasCurrent(
-            _renderPassManager.state->currentRenderEncoderOwner) == 1) {
+            _commandState.currentRenderEncoderOwner) == 1) {
         [self endRenderEncoding];
     }
 
@@ -863,7 +863,7 @@ typedef struct {
      * committed the previous command buffer. */
     MGLRenderCommandBufferState commandState = {0};
     if (!mglRenderCommandBufferOwnerHasState(
-            _renderPassManager.state->currentCommandBufferOwner,
+            _commandState.currentCommandBufferOwner,
             &commandState) ||
         commandState.status >= MGL_TESS_COMMAND_STATUS_COMMITTED) {
         if (![self newCommandBuffer]) {
@@ -1217,7 +1217,7 @@ typedef struct {
         MGLRenderComputeExecutionResult executionResult = {0};
         char executionError[256] = {0};
         if (mglRenderExecuteComputeExecutionPlan(
-                _renderPassManager.state->currentCommandBufferOwner,
+                _commandState.currentCommandBufferOwner,
                 _gpuRecovery.commandRecoveryOwner,
                 &executionPlan, copyBackEntries, copyBackEntryCount, 1u,
                 &executionResult, executionError,
@@ -1448,12 +1448,12 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
 
     /* PASS 1: pre-resolve textures before opening the compute encoder. */
     if (mglRenderEncoderOwnerHasCurrent(
-            _renderPassManager.state->currentRenderEncoderOwner) == 1) {
+            _commandState.currentRenderEncoderOwner) == 1) {
         [self endRenderEncoding];
     }
     MGLRenderCommandBufferState commandState = {0};
     if (!mglRenderCommandBufferOwnerHasState(
-            _renderPassManager.state->currentCommandBufferOwner,
+            _commandState.currentCommandBufferOwner,
             &commandState) ||
         commandState.status >= MGL_TESS_COMMAND_STATUS_COMMITTED) {
         if (![self newCommandBuffer]) {
@@ -1890,7 +1890,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
         MGLRenderComputeExecutionResult executionResult = {0};
         char executionError[256] = {0};
         if (mglRenderExecuteComputeExecutionPlan(
-                _renderPassManager.state->currentCommandBufferOwner,
+                _commandState.currentCommandBufferOwner,
                 _gpuRecovery.commandRecoveryOwner,
                 &executionPlan, copyBackEntries, copyBackEntryCount, 1u,
                 &executionResult, executionError,
@@ -1968,7 +1968,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
         }
         const bool xfbCopyOK = xfbCopyCount == 0u ||
             mglTessEncodeBufferCopiesForOwner(
-                _renderPassManager.state->currentCommandBufferOwner,
+                _commandState.currentCommandBufferOwner,
                 xfbCopies, xfbCopyCount);
         free(xfbCopies);
         if (!xfbCopyOK) {
@@ -2026,7 +2026,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     BOOL stateReady = [self processGLState:true];
     if (!stateReady ||
         mglRenderEncoderOwnerHasCurrent(
-            _renderPassManager.state->currentRenderEncoderOwner) != 1 ||
+            _commandState.currentRenderEncoderOwner) != 1 ||
         [self currentDrawRasterizationIsEmpty]) {
         _tessellation.tessComputeActive = NO;
         _tessellation.tessComputeProgram = NULL;
@@ -2049,10 +2049,10 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
         NSUInteger instanceOffset =
             (NSUInteger)i * (NSUInteger)itemsPerInstanceU * outStride;
         mglTessSetRenderVertexBuffer(
-            encoder, _renderPassManager.state->currentRenderEncoderOwner,
+            encoder, _commandState.currentRenderEncoderOwner,
             outBuffer, instanceOffset, 0u);
         mglTessDrawPrimitives(
-            encoder, _renderPassManager.state->currentRenderEncoderOwner,
+            encoder, _commandState.currentRenderEncoderOwner,
             primType, 0u, (NSUInteger)itemsPerInstanceU, 1u,
             (NSUInteger)baseInstance + (NSUInteger)i);
     }
@@ -2118,14 +2118,14 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     /* PASS 1: Pre-resolve all Metal textures that the TES kernel needs.
      * Must happen before opening any encoder (same reason as TCS). */
     if (mglRenderEncoderOwnerHasCurrent(
-            _renderPassManager.state->currentRenderEncoderOwner) == 1) {
+            _commandState.currentRenderEncoderOwner) == 1) {
         [self endRenderEncoding];
     }
 
     /* Ensure a writable command buffer exists (same reason as TCS). */
     MGLRenderCommandBufferState commandState = {0};
     if (!mglRenderCommandBufferOwnerHasState(
-            _renderPassManager.state->currentCommandBufferOwner,
+            _commandState.currentCommandBufferOwner,
             &commandState) ||
         commandState.status >= MGL_TESS_COMMAND_STATUS_COMMITTED) {
         if (![self newCommandBuffer]) {
@@ -2563,7 +2563,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
         MGLRenderComputeExecutionResult executionResult = {0};
         char executionError[256] = {0};
         if (mglRenderExecuteComputeExecutionPlan(
-                _renderPassManager.state->currentCommandBufferOwner,
+                _commandState.currentCommandBufferOwner,
                 _gpuRecovery.commandRecoveryOwner,
                 &executionPlan, copyBackEntries, copyBackEntryCount, 0u,
                 &executionResult, executionError,
@@ -2589,7 +2589,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
             .length = xfbCopyBytes,
         };
         if (!mglTessEncodeBufferCopiesForOwner(
-                _renderPassManager.state->currentCommandBufferOwner,
+                _commandState.currentCommandBufferOwner,
                 &xfbCopy, 1u)) {
             NSLog(@"MGL TESS XFB: failed to encode bounded copy");
             return false;

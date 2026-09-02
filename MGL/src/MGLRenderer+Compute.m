@@ -1028,7 +1028,7 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
     if (!useExecutionPlan) {
         computeCommandEncoder =
             (__bridge id)mglRenderCreateComputeEncoderBorrowed(
-                _renderPassManager.state->currentCommandBufferOwner);
+                _commandState.currentCommandBufferOwner);
         if (!computeCommandEncoder) {
             NSLog(@"MGL ERROR: Failed to create compute command encoder for %s",
                   reason ? reason : "dispatch");
@@ -1105,7 +1105,7 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
         MGLRenderComputeExecutionResult executionResult = {0};
         char executionError[256] = {0};
         if (mglRenderExecuteComputeExecutionPlan(
-                _renderPassManager.state->currentCommandBufferOwner,
+                _commandState.currentCommandBufferOwner,
                 _gpuRecovery.commandRecoveryOwner,
                 &executionPlan,
                 copyBackEntries,

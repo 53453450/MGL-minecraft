@@ -79,8 +79,8 @@ extern Texture *findTexture(GLMContext ctx, GLuint texture);
 
 /* State container types and independent renderer subsystems. */
 #import "MGLRenderer_State.h"
-#import "MGLPipelineCache.h"
-#import "MGLRenderPassManager.h"
+#include "mgl_pipeline_cache_facade.h"
+#include "mgl_render_pass_coordinator.h"
 
 #ifndef MGL_VALUE_GEOMETRY_TYPES
 #define MGL_VALUE_GEOMETRY_TYPES 1
@@ -191,34 +191,9 @@ static inline double mglTraceNowSeconds(void)
 #define METAL_UNLOCK() do { } while (0)
 
 /* Returns the active GLMState pointer for Metal-layer sync functions.
- *
- * DUAL-PROXY INVARIANT: _activeState (ivar) and ctx->active_state (context
- * pointer) must always refer to the same logical GLMState.  They are two
- * proxies for the same concept:
- *   - ctx->active_state: used by STATE()/STATE_VAR()/VAO() macros in the
- *     C GL layer (glm_context.h)
- *   - _activeState: used by MGL_STATE() in the Metal layer
- *
- * Two valid configurations:
- *   (A) _activeState == NULL  -> MGL_STATE() falls through to ctx->active_state
- *                                (the default / post-teardown mode; both
- *                                conceptually refer to &ctx->state)
- *   (B) _activeState != NULL  -> _activeState MUST equal ctx->active_state
- *                                (the redirected mode used during batch replay)
- *
- * Enforcement: all writes to either proxy MUST go through the centralized
- * helpers declared below this macro:
- *   - mglRestoreLiveActiveStateForContext:     -> config (A)
- *   - mglAssertDualProxyInSyncForContext:      -> debug-mode checkpoint
- * These prevent proxy desync — a caller writing one proxy without the other.
- *
- * Checkpoints (NSCAssert, compiled out in release): flushDrawBuffer entry,
- * restoreStateForBatch entry, teardownBatchReplayForContext entry/exit.
- *
- * A desync causes STATE() and MGL_STATE() to read different GLMState objects,
- * producing wrong binds/dirty bits — intermittent render errors that are
- * extremely hard to debug. */
-#define MGL_STATE(context)  (_activeState ? _activeState : (context)->active_state)
+ * Authoritative state is always ctx->active_state (batch replay retargets
+ * this pointer; no secondary ObjC proxy). */
+#define MGL_STATE(context)  ((context)->active_state)
 
 @interface MGLRenderer () {
     /* Keep this ivar named `ctx`: C GLM macros and older helper code expect
@@ -230,9 +205,11 @@ static inline double mglTraceNowSeconds(void)
      * the host owns. */
     __weak NSWindow *_observedWindow;    MGLRendererCoreState _core;
     MGLGPURecoveryState _gpuRecovery;
-    MGLPipelineCache *_pipelineCache;
+    MGLPipelineCacheState _pipelineCacheState;
+    void *_pipelineCacheOwner;
+    BOOL _pipelineCacheBinaryArchiveRequested;
     void *_queryStateOwner;
-    MGLRenderPassManager *_renderPassManager;
+    MGLCommandState _commandState;
     MGLResourceFallbackState _resourceFallback;
     void *_bindingStateOwner;
     MGLTessellationState _tessellation;
@@ -265,18 +242,8 @@ static inline double mglTraceNowSeconds(void)
 - (bool)flushStageBindingCopyBacks:(MGLStageBindingCopyBackList *)copyBacks
               requireCPUVisibility:(BOOL)requireCPUVisibility;
 
-/* DUAL-PROXY INVARIANT HELPERS: centralize writes to _core.activeState and
- * ctx->active_state to prevent desync.  See the DUAL-PROXY INVARIANT comment
- * above MGL_STATE() for the invariant definition.
- *
- * Use these instead of writing either proxy directly:
- *   - mglRestoreLiveActiveStateForContext:  batch replay teardown (revert to
- *                                          live ctx->state, ivar = NULL)
- *   - mglAssertDualProxyInSyncForContext:   debug-mode checkpoint
- *                                          (NSCAssert compiled out in release)
- */
+/* Active-state helper — batch replay teardown reverts to live ctx->state. */
 - (void)mglRestoreLiveActiveStateForContext:(GLMContext)glm_ctx;
-- (void)mglAssertDualProxyInSyncForContext:(GLMContext)glm_ctx;
 
 /* Locked variant of flushDrawBuffer: — caller must hold METAL_LOCK.
  * Defined in MGLRenderer+Batch.m, called from already-locked callers
@@ -313,7 +280,6 @@ static inline double mglTraceNowSeconds(void)
 #define _view self.view
 #define _layer self.layer
 #define _drawable self.drawable
-#define _activeState _core.activeState
 #define _device ((__bridge id) \
     mglRendererBackendGetDevice(_backend))
 #define _capability _core.capability

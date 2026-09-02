@@ -670,6 +670,15 @@ $(build_dir)/test_mglair_gtest: test_legacy_compat/test_mglair_gtest.cpp \
 test-mglair-gtest: $(build_dir)/test_mglair_gtest
 	$(build_dir)/test_mglair_gtest
 
+$(build_dir)/test_mgl_state_dirty_gtest: test_legacy_compat/test_mgl_state_dirty_gtest.cpp \
+	MGL/include/mgl_types_state.h
+	$(LLVM_CXX) -x c++ $(LLVM_CXXFLAGS) $(GTEST_CXXFLAGS) $(LLVM_LDFLAGS) \
+		test_legacy_compat/test_mgl_state_dirty_gtest.cpp \
+		-x none $(GTEST_LIBS) -o $@
+
+test-mgl-state-dirty-gtest: $(build_dir)/test_mgl_state_dirty_gtest
+	$(build_dir)/test_mgl_state_dirty_gtest
+
 # Standalone test targets may be the first target invoked after `make clean`;
 # keep their output directory an explicit prerequisite instead of relying on a
 # prior library build to create it.
@@ -683,7 +692,8 @@ $(build_dir)/test_mglsema \
 $(build_dir)/test_mglair \
 $(build_dir)/test_mcrepro \
 $(build_dir)/test_metalcpp_smoke \
-$(build_dir)/test_mglair_gtest: | $(build_dir)
+$(build_dir)/test_mglair_gtest \
+$(build_dir)/test_mgl_state_dirty_gtest: | $(build_dir)
 
 $(build_dir):
 	@mkdir -p $@
@@ -712,7 +722,7 @@ test-all:
 .PHONY: default help test dbg core es lib clean install-pkgdeps test-make bench bench-system \
 	build-test-regression test-regression test-dirty-hash test-benchmark \
 	test-legacy-compat test-mglir test-mgllex test-mglparse test-mglsema \
-	test-mglair test-mglair-gtest test-mcrepro test-metalcpp test-frontends \
+	test-mglair test-mglair-gtest test-mgl-state-dirty-gtest test-mcrepro test-metalcpp test-frontends \
 	test-air test-all
 
 -include $(deps)

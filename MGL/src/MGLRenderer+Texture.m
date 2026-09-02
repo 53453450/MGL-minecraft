@@ -131,7 +131,7 @@ void mglRendererCompatGetTexImage(GLMContext glm_ctx, Texture *texture,
                       format:format type:type mipmapLevel:level slice:slice];
 }
 
-void mglRendererCompatGenerateMipmaps(GLMContext glm_ctx, Texture *texture)
+void mglRendererObjCGenerateMipmaps(GLMContext glm_ctx, Texture *texture)
 {
     MGLRenderer *renderer = mglRendererForContext(glm_ctx);
     if (!renderer || !glm_ctx) return;
@@ -624,7 +624,7 @@ static void mglTextureCopyTextureToBuffer(
         }
 
         if (mglRenderEncodeTextureUploadLayersForCommandBufferOwner(
-                _renderPassManager.state->currentCommandBufferOwner,
+                _commandState.currentCommandBufferOwner,
                 (__bridge void *)sourceBuffer, sourceOffset,
                 sourceBytesPerRow, sourceBytesPerImage, sourceLayerStride,
                 sourceSize.width, sourceSize.height, sourceSize.depth,
@@ -1082,7 +1082,7 @@ static void mglTextureCopyTextureToBuffer(
     }
 
     if (mglRenderEncodeColorClearForCommandBufferOwner(
-            _renderPassManager.state->currentCommandBufferOwner,
+            _commandState.currentCommandBufferOwner,
             (__bridge void *)texture, 0, 0, 0,
             ctx->state.default_clear_color[0],
             ctx->state.default_clear_color[1],
@@ -1108,7 +1108,7 @@ static void mglTextureCopyTextureToBuffer(
     MGLMetalAttachmentSubresource subresource =
         mglMetalAttachmentSubresourceForAttachment(attachment);
     if (mglRenderEncodeColorClearForCommandBufferOwner(
-            _renderPassManager.state->currentCommandBufferOwner,
+            _commandState.currentCommandBufferOwner,
             (__bridge void *)texture, subresource.level,
             subresource.slice, subresource.depthPlane,
             attachment->clear_color[0], attachment->clear_color[1],
@@ -1143,7 +1143,7 @@ static void mglTextureCopyTextureToBuffer(
         _device, stagingSize, MGL_TEXTURE_RESOURCE_STORAGE_SHARED);
     id blitEncoder = readBuffer
         ? (__bridge id)mglRenderCreateBlitEncoderBorrowed(
-              _renderPassManager.state->currentCommandBufferOwner)
+              _commandState.currentCommandBufferOwner)
         : nil;
     if (!readBuffer || !blitEncoder) {
         NSLog(@"MGL WARNING: readPixels failed to create %s resources for %s",
@@ -1181,14 +1181,11 @@ static void mglTextureCopyTextureToBuffer(
     }
 
     id readbackCommandBuffer =
-        (__bridge id)[_renderPassManager
-            detachCurrentCommandBufferForSubmission];
+        (__bridge id)mglCmdDetachCurrentCommandBufferForSubmission(&_commandState);
     MGLRenderCommandBufferTransaction readbackTransaction = {0};
-    int readbackTransactionResult = [_renderPassManager
-        commitCommandBufferTransaction:(__bridge void *)readbackCommandBuffer
-        recoveryOwner:_gpuRecovery.commandRecoveryOwner
-        waitForCompletion:YES
-        result:&readbackTransaction];
+    int readbackTransactionResult = mglCmdCommitCommandBufferTransaction(
+        &_commandState, (__bridge void *)readbackCommandBuffer,
+        _gpuRecovery.commandRecoveryOwner, YES, &readbackTransaction);
     if (readbackTransactionResult != 0 || readbackTransaction.has_error) {
         NSLog(@"MGL WARNING: readPixels %s owner transaction failed for %s",
               logKind ? logKind : "readback", reason ? reason : "unknown");
@@ -1211,7 +1208,7 @@ static void mglTextureCopyTextureToBuffer(
         }
     }
 
-    [_renderPassManager releaseDetachedCommandBufferIfOwned:(__bridge void *)readbackCommandBuffer];
+    mglCmdReleaseDetachedCommandBufferIfOwned(&_commandState, (__bridge void *)readbackCommandBuffer);
     [self newCommandBuffer];
     return readBuffer;
 }
@@ -1646,7 +1643,7 @@ static void mglTextureCopyTextureToBuffer(
         _device, stagingSize, MGL_TEXTURE_RESOURCE_STORAGE_SHARED);
     id blit = readBuffer
         ? (__bridge id)mglRenderCreateBlitEncoderBorrowed(
-              _renderPassManager.state->currentCommandBufferOwner)
+              _commandState.currentCommandBufferOwner)
         : nil;
     if (!readBuffer || !blit) {
         mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
@@ -1674,20 +1671,17 @@ static void mglTextureCopyTextureToBuffer(
         0u, srcBytesPerRow, stagingSize);
     mglTextureEndBlitEncoder(blit);
     id integerReadbackCommandBuffer =
-        (__bridge id)[_renderPassManager
-            detachCurrentCommandBufferForSubmission];
+        (__bridge id)mglCmdDetachCurrentCommandBufferForSubmission(&_commandState);
     MGLRenderCommandBufferTransaction integerReadbackTransaction = {0};
-    int integerReadbackResult = [_renderPassManager
-        commitCommandBufferTransaction:(__bridge void *)integerReadbackCommandBuffer
-        recoveryOwner:_gpuRecovery.commandRecoveryOwner
-        waitForCompletion:YES
-        result:&integerReadbackTransaction];
+    int integerReadbackResult = mglCmdCommitCommandBufferTransaction(
+        &_commandState, (__bridge void *)integerReadbackCommandBuffer,
+        _gpuRecovery.commandRecoveryOwner, YES, &integerReadbackTransaction);
     if (integerReadbackResult != 0 || integerReadbackTransaction.has_error) {
         NSLog(@"MGL ERROR: integer texture readback owner transaction failed");
-        [_renderPassManager releaseDetachedCommandBufferIfOwned:(__bridge void *)integerReadbackCommandBuffer];
+        mglCmdReleaseDetachedCommandBufferIfOwned(&_commandState, (__bridge void *)integerReadbackCommandBuffer);
         return NO;
     }
-    [_renderPassManager releaseDetachedCommandBufferIfOwned:(__bridge void *)integerReadbackCommandBuffer];
+    mglCmdReleaseDetachedCommandBufferIfOwned(&_commandState, (__bridge void *)integerReadbackCommandBuffer);
 
     NSUInteger dstX = (NSUInteger)(minX - (NSInteger)region.origin.x);
     NSUInteger dstY = (NSUInteger)(minY - (NSInteger)region.origin.y);
@@ -1736,7 +1730,7 @@ static void mglTextureCopyTextureToBuffer(
     MGLMetalAttachmentSubresource subresource =
         mglMetalAttachmentSubresourceForAttachment(attachment);
     if (mglRenderEncodeDepthClearForCommandBufferOwner(
-            _renderPassManager.state->currentCommandBufferOwner,
+            _commandState.currentCommandBufferOwner,
             (__bridge void *)texture, subresource.level,
             subresource.slice, subresource.depthPlane,
             attachment->clear_color[0]) == 0) {
@@ -1755,7 +1749,7 @@ static void mglTextureCopyTextureToBuffer(
     }
 
     if (mglRenderEncodeDepthClearForCommandBufferOwner(
-            _renderPassManager.state->currentCommandBufferOwner,
+            _commandState.currentCommandBufferOwner,
             (__bridge void *)texture, 0, 0, 0,
             ctx->state.var.depth_clear_value) == 0) {
         ctx->state.default_fbo_clear_bitmask &= ~GL_DEPTH_BUFFER_BIT;
@@ -2134,10 +2128,9 @@ static void mglTextureCopyTextureToBuffer(
      * the blit encoding the upload is still in the uncommitted command buffer. */
     [self endRenderEncoding];
     if (mglRenderCommandBufferOwnerHasCurrent(
-            _renderPassManager.state->currentCommandBufferOwner) == 1) {
+            _commandState.currentCommandBufferOwner) == 1) {
         id pendingCB =
-            (__bridge id)[_renderPassManager
-                detachCurrentCommandBufferForSubmission];
+            (__bridge id)mglCmdDetachCurrentCommandBufferForSubmission(&_commandState);
         @try {
             [self commitCommandBufferWithAGXRecovery:pendingCB];
             mglTextureWaitCommandBuffer(pendingCB);
@@ -2438,7 +2431,7 @@ static void mglTextureCopyTextureToBuffer(
     // start blit encoder
     id blitCommandEncoder;
     blitCommandEncoder = mglTextureCreateCurrentBlitEncoder(
-        _renderPassManager.state->currentCommandBufferOwner);
+        _commandState.currentCommandBufferOwner);
     if (!blitCommandEncoder) {
         NSLog(@"MGL ERROR: Failed to create blit encoder for mipmap generation");
         return;

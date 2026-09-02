@@ -270,8 +270,10 @@ static inline void mglMarkRendererDirtyBits(GLMState *state, GLuint dirty_bits)
     state->dirty_bits |= dirty_bits;
 }
 
-/* State-key input mutations preserve the renderer's legacy dirty bits and
- * also invalidate every cache domain fed by those bits. */
+/* GL API and other state-key inputs must use mglMarkStateDirtyBits so batch
+ * hash caches stay coherent (see MGL_*_HASH_DIRTY_BITS).  Renderer-internal
+ * replay/recovery may use mglMarkRendererDirtyBits when hash invalidation would
+ * be incorrect or redundant. */
 static inline void mglMarkStateDirtyBits(GLMState *state, GLuint dirty_bits)
 {
     mglMarkRendererDirtyBits(state, dirty_bits);

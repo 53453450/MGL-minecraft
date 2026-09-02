@@ -511,11 +511,11 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
     [self applyPolygonOffsetForDrawMode:mode];
     // Additional safety check after processGLState
     if (mglRenderEncoderOwnerHasCurrent(
-            _renderPassManager.state->currentRenderEncoderOwner) != 1) {
+            _commandState.currentRenderEncoderOwner) != 1) {
         // One recovery attempt to avoid persistent "No current render encoder" failure loops.
         [self newRenderEncoderLockedWithReason:MGL_ENC_REASON_DRAW];
         if (mglRenderEncoderOwnerHasCurrent(
-                _renderPassManager.state->currentRenderEncoderOwner) != 1) {
+                _commandState.currentRenderEncoderOwner) != 1) {
             no_render_encoder_count++;
             if (no_render_encoder_count <= 8 || (no_render_encoder_count % 1000) == 0) {
                 NSLog(@"MGL ERROR: mtlDrawArrays - No current render encoder, aborting (occurrence=%llu)",
@@ -529,7 +529,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
             return;
         }
 
-        if (!_pipelineCache.state->pipelineState) {
+        if (!_pipelineCacheState.pipelineState) {
             NSLog(@"MGL ERROR: mtlDrawArrays - No pipeline state after render encoder recovery, aborting draw");
             if (traceLogDraw) {
                 mglTraceLog("DRAW_ARRAYS_SKIP call=%llu program=%u reason=no_pipeline_state",
@@ -548,13 +548,13 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
         MGLRenderPassAttachmentState depthAttachment = {0};
         MGLRenderPassAttachmentState stencilAttachment = {0};
         (void)mglRenderGetRenderPassAttachmentStateOwner(
-            _renderPassManager.state->renderPassStateOwner,
+            _commandState.renderPassStateOwner,
             MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0, &colorAttachment);
         (void)mglRenderGetRenderPassAttachmentStateOwner(
-            _renderPassManager.state->renderPassStateOwner,
+            _commandState.renderPassStateOwner,
             MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0, &depthAttachment);
         (void)mglRenderGetRenderPassAttachmentStateOwner(
-            _renderPassManager.state->renderPassStateOwner,
+            _commandState.renderPassStateOwner,
             MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0, &stencilAttachment);
         id rpColor0 = (__bridge id)colorAttachment.texture;
         id rpDepth = (__bridge id)depthAttachment.texture;
@@ -573,17 +573,17 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
             rpStencilFormat = textureInfo.pixel_format;
         }
 
-        BOOL colorMismatch = (_pipelineCache.state->pipelineColor0Format != 0u &&
+        BOOL colorMismatch = (_pipelineCacheState.pipelineColor0Format != 0u &&
                               rpColor0Format != 0u &&
-                              _pipelineCache.state->pipelineColor0Format != rpColor0Format);
-        BOOL depthMismatch = (_pipelineCache.state->pipelineDepthFormat != rpDepthFormat);
-        BOOL stencilMismatch = (_pipelineCache.state->pipelineStencilFormat != rpStencilFormat);
+                              _pipelineCacheState.pipelineColor0Format != rpColor0Format);
+        BOOL depthMismatch = (_pipelineCacheState.pipelineDepthFormat != rpDepthFormat);
+        BOOL stencilMismatch = (_pipelineCacheState.pipelineStencilFormat != rpStencilFormat);
         if (colorMismatch || depthMismatch || stencilMismatch) {
             NSLog(@"MGL WARNING: mtlDrawArrays recovery skipped pipeline bind due to pass mismatch "
                   "(pipeline c/d/s=%lu/%lu/%lu, pass c/d/s=%lu/%lu/%lu)",
-                  (unsigned long)_pipelineCache.state->pipelineColor0Format,
-                  (unsigned long)_pipelineCache.state->pipelineDepthFormat,
-                  (unsigned long)_pipelineCache.state->pipelineStencilFormat,
+                  (unsigned long)_pipelineCacheState.pipelineColor0Format,
+                  (unsigned long)_pipelineCacheState.pipelineDepthFormat,
+                  (unsigned long)_pipelineCacheState.pipelineStencilFormat,
                   (unsigned long)rpColor0Format,
                   (unsigned long)rpDepthFormat,
                   (unsigned long)rpStencilFormat);
@@ -591,9 +591,9 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
                 mglTraceLog("DRAW_ARRAYS_SKIP call=%llu program=%u reason=pipeline_pass_mismatch pipeline=%lu/%lu/%lu pass=%lu/%lu/%lu",
                             (unsigned long long)drawCall,
                             activeProgram ? (unsigned)activeProgram->name : (unsigned)mglCurrentRenderProgramKey(ctx),
-                            (unsigned long)_pipelineCache.state->pipelineColor0Format,
-                            (unsigned long)_pipelineCache.state->pipelineDepthFormat,
-                            (unsigned long)_pipelineCache.state->pipelineStencilFormat,
+                            (unsigned long)_pipelineCacheState.pipelineColor0Format,
+                            (unsigned long)_pipelineCacheState.pipelineDepthFormat,
+                            (unsigned long)_pipelineCacheState.pipelineStencilFormat,
                             (unsigned long)rpColor0Format,
                             (unsigned long)rpDepthFormat,
                             (unsigned long)rpStencilFormat);
@@ -603,14 +603,14 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
 
         @try {
             if (mglRenderSetRenderPipelineStateForOwner(
-                    _renderPassManager.state->currentRenderEncoderOwner,
-                    _pipelineCache.state->pipelineState) != 0) {
+                    _commandState.currentRenderEncoderOwner,
+                    _pipelineCacheState.pipelineState) != 0) {
                 NSLog(@"MGL ERROR: mtlDrawArrays - C++ pipeline recovery setter failed");
                 return;
             }
             mglRenderBindingSetPipelineState(
                 _bindingStateOwner,
-                _pipelineCache.state->pipelineState);
+                _pipelineCacheState.pipelineState);
             MGL_PERF_INC(g_mglSetRenderPipelineStateCallsSinceSwap);
         } @catch (NSException *exception) {
             NSLog(@"MGL ERROR: mtlDrawArrays - setRenderPipelineState failed after recovery: %@", exception);
@@ -651,13 +651,13 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
                                      baseInstance:0u]) {
         if (![self processGLState:true] ||
             !mglDrawHasActiveEncoder(
-                _renderPassManager.state->currentRenderEncoderOwner)) {
+                _commandState.currentRenderEncoderOwner)) {
             MGL_FRAME_INC(g_mglDrawArraysSkippedSinceSwap);
             return;
         }
     }
     if (polygonModePoint) {
-        if (!mglEncodeArrayPolygonPointForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        if (!mglEncodeArrayPolygonPointForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                         _device,
                                         mode,
                                         first,
@@ -711,7 +711,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
                         (GLuint)first + (GLuint)primitive + 2u,
                     };
                     MGLEncodeContext encCtx = {
-                        .render_encoder_owner = _renderPassManager.state->currentRenderEncoderOwner,
+                        .render_encoder_owner = _commandState.currentRenderEncoderOwner,
                     };
                     [self bindCullDistanceEmulationBuffers:mode
                                                 firstVertex:(GLuint)first
@@ -725,7 +725,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
                 }
             } else {
                 mglDrawIndexedPrimitives(
-                    _renderPassManager.state->currentRenderEncoderOwner,
+                    _commandState.currentRenderEncoderOwner,
                     MGL_DRAW_PRIMITIVE_TRIANGLE, fanIndexCount, MGL_DRAW_INDEX_UINT32,
                     fanIndexBuffer, 0, 1, first, 0);
             }
@@ -776,7 +776,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
                             (GLuint)((primitive + 1u) % (NSUInteger)count),
                     };
                     MGLEncodeContext encCtx = {
-                        .render_encoder_owner = _renderPassManager.state->currentRenderEncoderOwner,
+                        .render_encoder_owner = _commandState.currentRenderEncoderOwner,
                     };
                     [self bindCullDistanceEmulationBuffers:mode
                                                 firstVertex:(GLuint)first
@@ -790,7 +790,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
                 }
             } else {
                 mglDrawIndexedPrimitives(
-                    _renderPassManager.state->currentRenderEncoderOwner,
+                    _commandState.currentRenderEncoderOwner,
                     MGL_DRAW_PRIMITIVE_LINE_STRIP, loopIndexCount,
                     MGL_DRAW_INDEX_UINT32, loopIndexBuffer, 0, 1, 0, 0);
             }
@@ -806,7 +806,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
     } else if (emulateQuads) {
         if (usesCullDistance) {
             MGLEncodeContext encCtx = {
-                .render_encoder_owner = _renderPassManager.state->currentRenderEncoderOwner,
+                .render_encoder_owner = _commandState.currentRenderEncoderOwner,
             };
             [self bindCullDistanceEmulationBuffers:mode
                                         firstVertex:(GLuint)first
@@ -814,7 +814,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
                                  explicitVertexCount:0u
                                       encodeContext:&encCtx];
         }
-        if (!mglEncodeArrayQuadsForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        if (!mglEncodeArrayQuadsForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                  _device,
                                  count,
                                  first,
@@ -849,7 +849,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
     if (usesCullDistance && mode != GL_TRIANGLE_STRIP &&
         mode != GL_LINE_STRIP) {
         MGLEncodeContext encCtx = {
-            .render_encoder_owner = _renderPassManager.state->currentRenderEncoderOwner,
+            .render_encoder_owner = _commandState.currentRenderEncoderOwner,
         };
         [self bindCullDistanceEmulationBuffers:mode
                                     firstVertex:(GLuint)first
@@ -866,8 +866,8 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
                     (int)first,
                     (int)count,
                     mglDrawEncoderTraceToken(
-                        _renderPassManager.state->currentRenderEncoderOwner),
-                    _pipelineCache.state->pipelineState);
+                        _commandState.currentRenderEncoderOwner),
+                    _pipelineCacheState.pipelineState);
         if (usesCullDistance && mode == GL_TRIANGLE_STRIP && count >= 3) {
             NSUInteger stripIndexCount = 0u;
             id stripIndexBuffer =
@@ -887,7 +887,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
                     (GLuint)first + (GLuint)primitive + 2u,
                 };
                 MGLEncodeContext encCtx = {
-                    .render_encoder_owner = _renderPassManager.state->currentRenderEncoderOwner,
+                    .render_encoder_owner = _commandState.currentRenderEncoderOwner,
                 };
                 [self bindCullDistanceEmulationBuffers:mode
                                             firstVertex:(GLuint)first
@@ -902,7 +902,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
         } else if (usesCullDistance && mode == GL_LINE_STRIP && count >= 2) {
             for (GLsizei primitive = 0; primitive + 1 < count; primitive++) {
                 MGLEncodeContext encCtx = {
-                    .render_encoder_owner = _renderPassManager.state->currentRenderEncoderOwner,
+                    .render_encoder_owner = _commandState.currentRenderEncoderOwner,
                 };
                 [self bindCullDistanceEmulationBuffers:mode
                                             firstVertex:(GLuint)(first + primitive)
@@ -913,7 +913,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
                                   first + primitive, 2u, 1u, 0u);
             }
         } else {
-            mglDrawPrimitives(_renderPassManager.state->currentRenderEncoderOwner,
+            mglDrawPrimitives(_commandState.currentRenderEncoderOwner,
                               primitiveType, first, count, 1, 0);
         }
     } @catch (NSException *exception) {
@@ -933,9 +933,9 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
     mglLogDrawWithoutSwapWatchdog("arrays",
                                   drawCall,
                                   ctx,
-                                  _renderPassManager.state->currentCommandBufferOwner,
-                                  _renderPassManager.state->currentRenderEncoderOwner,
-                                  _renderPassManager.state->renderPassStateOwner);
+                                  _commandState.currentCommandBufferOwner,
+                                  _commandState.currentRenderEncoderOwner,
+                                  _commandState.renderPassStateOwner);
 
     double drawElapsedUs = (mglTraceClockNS() - drawStartNS) / 1000.0;
     if (traceDraw || drawElapsedUs >= 16000.0) {
@@ -946,7 +946,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
               (int)count,
               drawElapsedUs,
               mglDrawEncoderTraceToken(
-                  _renderPassManager.state->currentRenderEncoderOwner));
+                  _commandState.currentRenderEncoderOwner));
     }
 }
 
@@ -1378,7 +1378,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
                                        baseInstance:0u]) {
         if (![self processGLStateLocked:true] ||
             !mglDrawHasActiveEncoder(
-                _renderPassManager.state->currentRenderEncoderOwner)) {
+                _commandState.currentRenderEncoderOwner)) {
             MGL_FRAME_INC(g_mglDrawElementsSkippedSinceSwap);
             return;
         }
@@ -1437,8 +1437,8 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
                     (unsigned)minIndexForDraw,
                     (unsigned)maxIndexForDraw,
                     mglDrawEncoderTraceToken(
-                        _renderPassManager.state->currentRenderEncoderOwner),
-                    _pipelineCache.state->pipelineState);
+                        _commandState.currentRenderEncoderOwner),
+                    _pipelineCacheState.pipelineState);
     }
 
     MGL_FRAME_STORE(g_mglLastDrawElementsCall, drawCall);
@@ -1446,9 +1446,9 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
     mglLogDrawWithoutSwapWatchdog("elements",
                                   drawCall,
                                   ctx,
-                                  _renderPassManager.state->currentCommandBufferOwner,
-                                  _renderPassManager.state->currentRenderEncoderOwner,
-                                  _renderPassManager.state->renderPassStateOwner);
+                                  _commandState.currentCommandBufferOwner,
+                                  _commandState.currentRenderEncoderOwner,
+                                  _commandState.renderPassStateOwner);
 
     double drawElapsedUs = (mglTraceClockNS() - drawStartNS) / 1000.0;
     if (traceDraw || drawElapsedUs >= 16000.0) {
@@ -1458,7 +1458,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
               gl_element_buffer->name,
               (unsigned long)indexBufferInfo.length,
               mglDrawEncoderTraceToken(
-                  _renderPassManager.state->currentRenderEncoderOwner));
+                  _commandState.currentRenderEncoderOwner));
     }
 }
 
@@ -1996,7 +1996,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
               submitVAO,
               submitVAO ? (unsigned)submitVAO->enabled_attribs : 0u,
               mglDrawEncoderTraceToken(
-                  _renderPassManager.state->currentRenderEncoderOwner),
+                  _commandState.currentRenderEncoderOwner),
               drawProgramUsesCloudFaces ? 1 : 0);
     }
 }
@@ -2033,12 +2033,12 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
                                  polygonLineMode:mglPolygonModeLineForDrawMode(
                                                      ctx, mode)
                                    encodeContext:&(MGLEncodeContext){
-                                       .render_encoder_owner = _renderPassManager.state->currentRenderEncoderOwner,
+                                       .render_encoder_owner = _commandState.currentRenderEncoderOwner,
                                    }]) {
             return YES;
         }
         MGLPrimitiveRestartEncodeResult restartResult =
-            mglEncodePrimitiveRestartedElementDrawForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+            mglEncodePrimitiveRestartedElementDrawForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                                    _device,
                                                    ctx,
                                                    gl_element_buffer,
@@ -2067,7 +2067,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
         if (restartHandled) {
             // Already emitted as restart-separated Metal draws.
         } else if (polygonModePoint) {
-            if (!mglEncodeElementPolygonPointForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+            if (!mglEncodeElementPolygonPointForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                               _device,
                                               gl_element_buffer,
                                               indexBuffer,
@@ -2123,7 +2123,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
             }
 
             mglDrawIndexedPrimitives(
-                _renderPassManager.state->currentRenderEncoderOwner,
+                _commandState.currentRenderEncoderOwner,
                 MGL_DRAW_PRIMITIVE_TRIANGLE, fanIndexCount, MGL_DRAW_INDEX_UINT32,
                 fanIndexBuffer, 0, 1, 0, 0);
         } else if (emulateLineLoop) {
@@ -2161,11 +2161,11 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
             }
 
             mglDrawIndexedPrimitives(
-                _renderPassManager.state->currentRenderEncoderOwner,
+                _commandState.currentRenderEncoderOwner,
                 MGL_DRAW_PRIMITIVE_LINE_STRIP, loopIndexCount,
                 MGL_DRAW_INDEX_UINT32, loopIndexBuffer, 0, 1, 0, 0);
         } else if (emulateQuads) {
-            if (!mglEncodeElementQuadsForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+            if (!mglEncodeElementQuadsForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                        _device,
                                        gl_element_buffer,
                                        indexBuffer,
@@ -2206,7 +2206,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
                 return NO;
             }
             mglDrawIndexedPrimitives(
-                _renderPassManager.state->currentRenderEncoderOwner,
+                _commandState.currentRenderEncoderOwner,
                 primitiveType, count, drawIndexType, drawIndexBuffer,
                 drawIndexOffset, 1, 0, 0);
         }
@@ -2298,7 +2298,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
         return;
     }
     MGLPrimitiveRestartEncodeResult restartResult =
-        mglEncodePrimitiveRestartedElementDrawForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        mglEncodePrimitiveRestartedElementDrawForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                                _device,
                                                ctx,
                                                gl_element_buffer,
@@ -2321,7 +2321,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
     }
 
     if (polygonModePoint) {
-        if (!mglEncodeElementPolygonPointForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        if (!mglEncodeElementPolygonPointForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                           _device,
                                           gl_element_buffer,
                                           indexBuffer,
@@ -2341,7 +2341,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
     }
 
     if (emulateTriangleFan) {
-        if (!mglEncodeElementTriangleFanForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        if (!mglEncodeElementTriangleFanForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                          _device,
                                          gl_element_buffer,
                                          indexBuffer,
@@ -2358,7 +2358,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
         return;
     }
     if (emulateLineLoop) {
-        if (!mglEncodeElementLineLoopForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        if (!mglEncodeElementLineLoopForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                       _device,
                                       gl_element_buffer,
                                       indexBuffer,
@@ -2375,7 +2375,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
         return;
     }
     if (emulateQuads) {
-        if (!mglEncodeElementQuadsForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        if (!mglEncodeElementQuadsForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                    _device,
                                    gl_element_buffer,
                                    indexBuffer,
@@ -2404,7 +2404,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
         return;
     }
 
-    mglDrawIndexedPrimitives(_renderPassManager.state->currentRenderEncoderOwner,
+    mglDrawIndexedPrimitives(_commandState.currentRenderEncoderOwner,
                              primitiveType, count, drawIndexType,
                              drawIndexBuffer, offset, 1, 0, 0);
     [self recordElementDrawSubmittedMode:mode indexCount:(uint64_t)MAX(count, 0)];
@@ -2464,7 +2464,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
                             instanceCount:instancecount
                              baseInstance:0u
                             encodeContext:&(MGLEncodeContext){
-                                .render_encoder_owner = _renderPassManager.state->currentRenderEncoderOwner,
+                                .render_encoder_owner = _commandState.currentRenderEncoderOwner,
                             }]) {
         [self recordArrayDrawSubmittedMode:mode
                                vertexCount:(uint64_t)MAX(count, 0) *
@@ -2472,7 +2472,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
         return;
     }
     if (polygonModePoint) {
-        if (mglEncodeArrayPolygonPointForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        if (mglEncodeArrayPolygonPointForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                        _device,
                                        mode,
                                        first,
@@ -2486,7 +2486,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
     }
 
     if (mode == GL_TRIANGLE_FAN) {
-        if (mglEncodeArrayTriangleFanForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        if (mglEncodeArrayTriangleFanForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                       _device,
                                       count,
                                       first,
@@ -2498,7 +2498,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
         return;
     }
     if (mode == GL_LINE_LOOP) {
-        if (mglEncodeArrayLineLoopForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        if (mglEncodeArrayLineLoopForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                    glm_ctx,
                                    _device,
                                    count,
@@ -2511,7 +2511,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
         return;
     }
     if (mode == GL_QUADS) {
-        if (mglEncodeArrayQuadsForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        if (mglEncodeArrayQuadsForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                 _device,
                                 count,
                                 first,
@@ -2527,7 +2527,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
     primitiveType = mglPolygonModePointForDrawMode(ctx, mode) ? MGL_DRAW_PRIMITIVE_POINT : mglPrimitiveTypeForGLMode(mode);
     if ((GLuint)primitiveType == 0xFFFFFFFF) { NSLog(@"MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call", mode); return; }
 
-    mglDrawPrimitives(_renderPassManager.state->currentRenderEncoderOwner,
+    mglDrawPrimitives(_commandState.currentRenderEncoderOwner,
                       primitiveType, first, count, instancecount, 0);
     [self recordArrayDrawSubmittedMode:mode vertexCount:(uint64_t)MAX(count, 0) * (uint64_t)MAX(instancecount, 0)];
 }
@@ -2607,7 +2607,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
         return;
     }
     MGLPrimitiveRestartEncodeResult restartResult =
-        mglEncodePrimitiveRestartedElementDrawForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        mglEncodePrimitiveRestartedElementDrawForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                                _device,
                                                ctx,
                                                gl_element_buffer,
@@ -2630,7 +2630,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
     }
 
     if (polygonModePoint) {
-        if (!mglEncodeElementPolygonPointForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        if (!mglEncodeElementPolygonPointForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                           _device,
                                           gl_element_buffer,
                                           indexBuffer,
@@ -2650,7 +2650,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
     }
 
     if (emulateTriangleFan) {
-        if (!mglEncodeElementTriangleFanForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        if (!mglEncodeElementTriangleFanForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                          _device,
                                          gl_element_buffer,
                                          indexBuffer,
@@ -2667,7 +2667,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
         return;
     }
     if (emulateLineLoop) {
-        if (!mglEncodeElementLineLoopForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        if (!mglEncodeElementLineLoopForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                       _device,
                                       gl_element_buffer,
                                       indexBuffer,
@@ -2684,7 +2684,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
         return;
     }
     if (emulateQuads) {
-        if (!mglEncodeElementQuadsForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        if (!mglEncodeElementQuadsForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                    _device,
                                    gl_element_buffer,
                                    indexBuffer,
@@ -2718,7 +2718,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
     // in the future it would be an idea to use temp buffers for large buffers that would wire
     // to much memory down.. like a million point galaxy drawing
     //
-    mglDrawIndexedPrimitives(_renderPassManager.state->currentRenderEncoderOwner,
+    mglDrawIndexedPrimitives(_commandState.currentRenderEncoderOwner,
                              primitiveType, count, drawIndexType,
                              drawIndexBuffer, offset, instancecount, 0, 0);
     [self recordElementDrawSubmittedMode:mode indexCount:(uint64_t)MAX(count, 0) * (uint64_t)MAX(instancecount, 0)];
@@ -2797,7 +2797,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
         return;
     }
     MGLPrimitiveRestartEncodeResult restartResult =
-        mglEncodePrimitiveRestartedElementDrawForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        mglEncodePrimitiveRestartedElementDrawForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                                _device,
                                                ctx,
                                                gl_element_buffer,
@@ -2820,7 +2820,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
     }
 
     if (polygonModePoint) {
-        if (!mglEncodeElementPolygonPointForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        if (!mglEncodeElementPolygonPointForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                           _device,
                                           gl_element_buffer,
                                           indexBuffer,
@@ -2840,7 +2840,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
     }
 
     if (emulateTriangleFan) {
-        if (!mglEncodeElementTriangleFanForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        if (!mglEncodeElementTriangleFanForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                          _device,
                                          gl_element_buffer,
                                          indexBuffer,
@@ -2857,7 +2857,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
         return;
     }
     if (emulateLineLoop) {
-        if (!mglEncodeElementLineLoopForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        if (!mglEncodeElementLineLoopForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                       _device,
                                       gl_element_buffer,
                                       indexBuffer,
@@ -2874,7 +2874,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
         return;
     }
     if (emulateQuads) {
-        if (!mglEncodeElementQuadsForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        if (!mglEncodeElementQuadsForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                    _device,
                                    gl_element_buffer,
                                    indexBuffer,
@@ -2903,7 +2903,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
         return;
     }
 
-    mglDrawIndexedPrimitives(_renderPassManager.state->currentRenderEncoderOwner,
+    mglDrawIndexedPrimitives(_commandState.currentRenderEncoderOwner,
                              primitiveType, count, drawIndexType,
                              drawIndexBuffer, offset, 1, basevertex, 0);
     [self recordElementDrawSubmittedMode:mode indexCount:(uint64_t)MAX(count, 0)];
@@ -2984,7 +2984,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
         return;
     }
     MGLPrimitiveRestartEncodeResult restartResult =
-        mglEncodePrimitiveRestartedElementDrawForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        mglEncodePrimitiveRestartedElementDrawForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                                _device,
                                                ctx,
                                                gl_element_buffer,
@@ -3007,7 +3007,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
     }
 
     if (polygonModePoint) {
-        if (!mglEncodeElementPolygonPointForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        if (!mglEncodeElementPolygonPointForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                           _device,
                                           gl_element_buffer,
                                           indexBuffer,
@@ -3027,7 +3027,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
     }
 
     if (emulateTriangleFan) {
-        if (!mglEncodeElementTriangleFanForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        if (!mglEncodeElementTriangleFanForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                          _device,
                                          gl_element_buffer,
                                          indexBuffer,
@@ -3044,7 +3044,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
         return;
     }
     if (emulateLineLoop) {
-        if (!mglEncodeElementLineLoopForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        if (!mglEncodeElementLineLoopForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                       _device,
                                       gl_element_buffer,
                                       indexBuffer,
@@ -3061,7 +3061,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
         return;
     }
     if (emulateQuads) {
-        if (!mglEncodeElementQuadsForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        if (!mglEncodeElementQuadsForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                    _device,
                                    gl_element_buffer,
                                    indexBuffer,
@@ -3090,7 +3090,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
         return;
     }
 
-    mglDrawIndexedPrimitives(_renderPassManager.state->currentRenderEncoderOwner,
+    mglDrawIndexedPrimitives(_commandState.currentRenderEncoderOwner,
                              primitiveType, count, drawIndexType,
                              drawIndexBuffer, offset, 1, basevertex, 0);
     [self recordElementDrawSubmittedMode:mode indexCount:(uint64_t)MAX(count, 0)];
@@ -3172,7 +3172,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
         return;
     }
     MGLPrimitiveRestartEncodeResult restartResult =
-        mglEncodePrimitiveRestartedElementDrawForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        mglEncodePrimitiveRestartedElementDrawForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                                _device,
                                                ctx,
                                                gl_element_buffer,
@@ -3195,7 +3195,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
     }
 
     if (polygonModePoint) {
-        if (!mglEncodeElementPolygonPointForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        if (!mglEncodeElementPolygonPointForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                           _device,
                                           gl_element_buffer,
                                           indexBuffer,
@@ -3215,7 +3215,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
     }
 
     if (emulateTriangleFan) {
-        if (!mglEncodeElementTriangleFanForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        if (!mglEncodeElementTriangleFanForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                          _device,
                                          gl_element_buffer,
                                          indexBuffer,
@@ -3232,7 +3232,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
         return;
     }
     if (emulateLineLoop) {
-        if (!mglEncodeElementLineLoopForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        if (!mglEncodeElementLineLoopForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                       _device,
                                       gl_element_buffer,
                                       indexBuffer,
@@ -3249,7 +3249,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
         return;
     }
     if (emulateQuads) {
-        if (!mglEncodeElementQuadsForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        if (!mglEncodeElementQuadsForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                    _device,
                                    gl_element_buffer,
                                    indexBuffer,
@@ -3278,7 +3278,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
         return;
     }
 
-    mglDrawIndexedPrimitives(_renderPassManager.state->currentRenderEncoderOwner,
+    mglDrawIndexedPrimitives(_commandState.currentRenderEncoderOwner,
                              primitiveType, count, drawIndexType,
                              drawIndexBuffer, offset, instancecount,
                              basevertex, 0);
@@ -3420,7 +3420,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
 
         BOOL ok = NO;
         if (mode == GL_LINE_LOOP) {
-            ok = mglEncodeArrayLineLoopForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+            ok = mglEncodeArrayLineLoopForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                         glm_ctx,
                                         _device,
                                         (GLsizei)cmd.count,
@@ -3429,7 +3429,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
                                         (NSUInteger)cmd.baseInstance,
                                         "drawArraysIndirect");
         } else if (polygonModePoint) {
-            ok = mglEncodeArrayPolygonPointForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+            ok = mglEncodeArrayPolygonPointForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                             _device,
                                             mode,
                                             (GLint)cmd.first,
@@ -3438,7 +3438,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
                                             (NSUInteger)cmd.baseInstance,
                                             "drawArraysIndirect");
         } else {
-            ok = mglEncodeArrayQuadsForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+            ok = mglEncodeArrayQuadsForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                      _device,
                                      (GLsizei)cmd.count,
                                      (GLint)cmd.first,
@@ -3496,7 +3496,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
     }
 
     mglDrawPrimitivesIndirect(
-        _renderPassManager.state->currentRenderEncoderOwner, primitiveType,
+        _commandState.currentRenderEncoderOwner, primitiveType,
         indirectBuffer, (NSUInteger)(uintptr_t)indirect);
     [self recordArrayDrawSubmittedMode:mode vertexCount:0u];
     mglTraceLog("DRAW_ARRAYS_INDIRECT_MTL_SUBMIT path=native mode=0x%x indirect=%p offset=%lu program=%u",
@@ -3686,7 +3686,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
         NSUInteger elementOffset = (NSUInteger)cmd.first * indexStride;
         BOOL ok = NO;
         if (mode == GL_LINE_LOOP) {
-            ok = mglEncodeElementLineLoopForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+            ok = mglEncodeElementLineLoopForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                           _device,
                                           gl_element_buffer,
                                           indexBuffer,
@@ -3698,7 +3698,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
                                           (NSUInteger)cmd.baseInstance,
                                           "drawElementsIndirect");
         } else if (polygonModePoint) {
-            ok = mglEncodeElementPolygonPointForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+            ok = mglEncodeElementPolygonPointForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                               _device,
                                               gl_element_buffer,
                                               indexBuffer,
@@ -3712,7 +3712,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
                                               (NSUInteger)cmd.baseInstance,
                                               "drawElementsIndirect");
         } else {
-            ok = mglEncodeElementQuadsForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+            ok = mglEncodeElementQuadsForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                        _device,
                                        gl_element_buffer,
                                        indexBuffer,
@@ -3798,7 +3798,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
 
     // draw indexed primitive
     mglDrawIndexedPrimitivesIndirect(
-        _renderPassManager.state->currentRenderEncoderOwner, primitiveType,
+        _commandState.currentRenderEncoderOwner, primitiveType,
         drawIndexType, drawIndexBuffer, indexBufferOffset, indirectBuffer,
         (NSUInteger)(uintptr_t)indirect);
     [self recordElementDrawSubmittedMode:mode indexCount:0u];
@@ -3862,7 +3862,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
                             instanceCount:instancecount
                              baseInstance:baseinstance
                             encodeContext:&(MGLEncodeContext){
-                                .render_encoder_owner = _renderPassManager.state->currentRenderEncoderOwner,
+                                .render_encoder_owner = _commandState.currentRenderEncoderOwner,
                             }]) {
         [self recordArrayDrawSubmittedMode:mode
                                vertexCount:(uint64_t)MAX(count, 0) *
@@ -3870,7 +3870,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
         return;
     }
     if (polygonModePoint) {
-        if (mglEncodeArrayPolygonPointForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        if (mglEncodeArrayPolygonPointForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                        _device,
                                        mode,
                                        first,
@@ -3884,7 +3884,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
     }
 
     if (mode == GL_TRIANGLE_FAN) {
-        if (mglEncodeArrayTriangleFanForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        if (mglEncodeArrayTriangleFanForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                       _device,
                                       count,
                                       first,
@@ -3896,7 +3896,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
         return;
     }
     if (mode == GL_LINE_LOOP) {
-        if (mglEncodeArrayLineLoopForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        if (mglEncodeArrayLineLoopForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                    glm_ctx,
                                    _device,
                                    count,
@@ -3909,7 +3909,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
         return;
     }
     if (mode == GL_QUADS) {
-        if (mglEncodeArrayQuadsForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        if (mglEncodeArrayQuadsForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                 _device,
                                 count,
                                 first,
@@ -3925,7 +3925,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
     primitiveType = mglPolygonModePointForDrawMode(ctx, mode) ? MGL_DRAW_PRIMITIVE_POINT : mglPrimitiveTypeForGLMode(mode);
     if ((GLuint)primitiveType == 0xFFFFFFFF) { NSLog(@"MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call", mode); return; }
 
-    mglDrawPrimitives(_renderPassManager.state->currentRenderEncoderOwner,
+    mglDrawPrimitives(_commandState.currentRenderEncoderOwner,
                       primitiveType, first, count, instancecount,
                       baseinstance);
     [self recordArrayDrawSubmittedMode:mode vertexCount:(uint64_t)MAX(count, 0) * (uint64_t)MAX(instancecount, 0)];
@@ -4006,7 +4006,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
         return;
     }
     MGLPrimitiveRestartEncodeResult restartResult =
-        mglEncodePrimitiveRestartedElementDrawForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        mglEncodePrimitiveRestartedElementDrawForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                                _device,
                                                ctx,
                                                gl_element_buffer,
@@ -4029,7 +4029,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
     }
 
     if (polygonModePoint) {
-        if (!mglEncodeElementPolygonPointForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        if (!mglEncodeElementPolygonPointForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                           _device,
                                           gl_element_buffer,
                                           indexBuffer,
@@ -4049,7 +4049,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
     }
 
     if (emulateTriangleFan) {
-        if (!mglEncodeElementTriangleFanForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        if (!mglEncodeElementTriangleFanForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                          _device,
                                          gl_element_buffer,
                                          indexBuffer,
@@ -4066,7 +4066,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
         return;
     }
     if (emulateLineLoop) {
-        if (!mglEncodeElementLineLoopForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        if (!mglEncodeElementLineLoopForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                       _device,
                                       gl_element_buffer,
                                       indexBuffer,
@@ -4083,7 +4083,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
         return;
     }
     if (emulateQuads) {
-        if (!mglEncodeElementQuadsForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        if (!mglEncodeElementQuadsForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                    _device,
                                    gl_element_buffer,
                                    indexBuffer,
@@ -4117,7 +4117,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
     // in the future it would be an idea to use temp buffers for large buffers that would wire
     // to much memory down.. like a million point galaxy drawing
     //
-    mglDrawIndexedPrimitives(_renderPassManager.state->currentRenderEncoderOwner,
+    mglDrawIndexedPrimitives(_commandState.currentRenderEncoderOwner,
                              primitiveType, count, drawIndexType,
                              drawIndexBuffer, offset, instancecount, 0,
                              baseinstance);
@@ -4200,7 +4200,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
         return;
     }
     MGLPrimitiveRestartEncodeResult restartResult =
-        mglEncodePrimitiveRestartedElementDrawForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        mglEncodePrimitiveRestartedElementDrawForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                                _device,
                                                ctx,
                                                gl_element_buffer,
@@ -4223,7 +4223,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
     }
 
     if (polygonModePoint) {
-        if (!mglEncodeElementPolygonPointForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        if (!mglEncodeElementPolygonPointForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                           _device,
                                           gl_element_buffer,
                                           indexBuffer,
@@ -4243,7 +4243,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
     }
 
     if (emulateTriangleFan) {
-        if (!mglEncodeElementTriangleFanForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        if (!mglEncodeElementTriangleFanForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                          _device,
                                          gl_element_buffer,
                                          indexBuffer,
@@ -4260,7 +4260,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
         return;
     }
     if (emulateLineLoop) {
-        if (!mglEncodeElementLineLoopForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        if (!mglEncodeElementLineLoopForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                       _device,
                                       gl_element_buffer,
                                       indexBuffer,
@@ -4277,7 +4277,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
         return;
     }
     if (emulateQuads) {
-        if (!mglEncodeElementQuadsForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+        if (!mglEncodeElementQuadsForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                    _device,
                                    gl_element_buffer,
                                    indexBuffer,
@@ -4311,7 +4311,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
     // in the future it would be an idea to use temp buffers for large buffers that would wire
     // to much memory down.. like a million point galaxy drawing
     //
-    mglDrawIndexedPrimitives(_renderPassManager.state->currentRenderEncoderOwner,
+    mglDrawIndexedPrimitives(_commandState.currentRenderEncoderOwner,
                              primitiveType, count, drawIndexType,
                              drawIndexBuffer, offset, instancecount,
                              basevertex, baseinstance);
@@ -4403,7 +4403,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
     if (polygonModePoint) {
         uint64_t submittedVertices = 0u;
         for (int i = 0; i < drawcount; i++) {
-            if (mglEncodeArrayPolygonPointForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+            if (mglEncodeArrayPolygonPointForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                            _device,
                                            mode,
                                            first[i],
@@ -4423,7 +4423,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
     if (mode == GL_TRIANGLE_FAN) {
         uint64_t submittedVertices = 0u;
         for (int i = 0; i < drawcount; i++) {
-            if (mglEncodeArrayTriangleFanForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+            if (mglEncodeArrayTriangleFanForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                           _device,
                                           count[i],
                                           first[i],
@@ -4441,7 +4441,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
     if (mode == GL_LINE_LOOP) {
         uint64_t submittedVertices = 0u;
         for (int i = 0; i < drawcount; i++) {
-            if (mglEncodeArrayLineLoopForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+            if (mglEncodeArrayLineLoopForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                        glm_ctx,
                                        _device,
                                        count[i],
@@ -4460,7 +4460,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
     if (mode == GL_QUADS) {
         uint64_t submittedVertices = 0u;
         for (int i = 0; i < drawcount; i++) {
-            if (mglEncodeArrayQuadsForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+            if (mglEncodeArrayQuadsForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                     _device,
                                     count[i],
                                     first[i],
@@ -4483,7 +4483,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
     uint64_t submittedVertices = 0u;
     for(int i=0; i<drawcount; i++)
     {
-         mglDrawPrimitives(_renderPassManager.state->currentRenderEncoderOwner,
+         mglDrawPrimitives(_commandState.currentRenderEncoderOwner,
                            primitiveType, first[i], count[i], 1, 0);
          submittedVertices += (uint64_t)MAX(count[i], 0);
     }
@@ -4598,7 +4598,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
     {
         NSUInteger offset = (NSUInteger)(uintptr_t)indices[i];
         MGLPrimitiveRestartEncodeResult restartResult =
-            mglEncodePrimitiveRestartedElementDrawForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+            mglEncodePrimitiveRestartedElementDrawForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                                    _device,
                                                    ctx,
                                                    gl_element_buffer,
@@ -4621,7 +4621,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
         }
 
         if (polygonModePoint) {
-            if (mglEncodeElementPolygonPointForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+            if (mglEncodeElementPolygonPointForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                              _device,
                                              gl_element_buffer,
                                              indexBuffer,
@@ -4640,7 +4640,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
         }
 
         if (emulateTriangleFan) {
-            if (mglEncodeElementTriangleFanForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+            if (mglEncodeElementTriangleFanForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                             _device,
                                             gl_element_buffer,
                                             indexBuffer,
@@ -4656,7 +4656,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
             continue;
         }
         if (emulateLineLoop) {
-            if (mglEncodeElementLineLoopForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+            if (mglEncodeElementLineLoopForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                          _device,
                                          gl_element_buffer,
                                          indexBuffer,
@@ -4672,7 +4672,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
             continue;
         }
         if (emulateQuads) {
-            if (mglEncodeElementQuadsForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+            if (mglEncodeElementQuadsForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                       _device,
                                       gl_element_buffer,
                                       indexBuffer,
@@ -4700,7 +4700,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
             continue;
         }
 
-        mglDrawIndexedPrimitives(_renderPassManager.state->currentRenderEncoderOwner,
+        mglDrawIndexedPrimitives(_commandState.currentRenderEncoderOwner,
                                  primitiveType, count[i], drawIndexType,
                                  drawIndexBuffer, offset, 1, 0, 0);
         submittedIndices += (uint64_t)MAX(count[i], 0);
@@ -4819,7 +4819,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
     {
         NSUInteger offset = (NSUInteger)(uintptr_t)indices[i];
         MGLPrimitiveRestartEncodeResult restartResult =
-            mglEncodePrimitiveRestartedElementDrawForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+            mglEncodePrimitiveRestartedElementDrawForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                                    _device,
                                                    ctx,
                                                    gl_element_buffer,
@@ -4842,7 +4842,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
         }
 
         if (polygonModePoint) {
-            if (mglEncodeElementPolygonPointForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+            if (mglEncodeElementPolygonPointForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                              _device,
                                              gl_element_buffer,
                                              indexBuffer,
@@ -4861,7 +4861,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
         }
 
         if (emulateTriangleFan) {
-            if (mglEncodeElementTriangleFanForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+            if (mglEncodeElementTriangleFanForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                             _device,
                                             gl_element_buffer,
                                             indexBuffer,
@@ -4877,7 +4877,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
             continue;
         }
         if (emulateLineLoop) {
-            if (mglEncodeElementLineLoopForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+            if (mglEncodeElementLineLoopForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                          _device,
                                          gl_element_buffer,
                                          indexBuffer,
@@ -4893,7 +4893,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
             continue;
         }
         if (emulateQuads) {
-            if (mglEncodeElementQuadsForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+            if (mglEncodeElementQuadsForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                       _device,
                                       gl_element_buffer,
                                       indexBuffer,
@@ -4921,7 +4921,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
             continue;
         }
 
-        mglDrawIndexedPrimitives(_renderPassManager.state->currentRenderEncoderOwner,
+        mglDrawIndexedPrimitives(_commandState.currentRenderEncoderOwner,
                                  primitiveType, count[i], drawIndexType,
                                  drawIndexBuffer, offset, 1, basevertex[i], 0);
         submittedIndices += (uint64_t)MAX(count[i], 0);
@@ -5097,7 +5097,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
 
             BOOL ok = NO;
             if (mode == GL_LINE_LOOP) {
-                ok = mglEncodeArrayLineLoopForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+                ok = mglEncodeArrayLineLoopForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                             glm_ctx,
                                             _device,
                                             (GLsizei)cmd.count,
@@ -5106,7 +5106,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
                                             (NSUInteger)cmd.baseInstance,
                                             "multiDrawArraysIndirect");
             } else if (polygonModePoint) {
-                ok = mglEncodeArrayPolygonPointForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+                ok = mglEncodeArrayPolygonPointForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                                 _device,
                                                 mode,
                                                 (GLint)cmd.first,
@@ -5115,7 +5115,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
                                                 (NSUInteger)cmd.baseInstance,
                                                 "multiDrawArraysIndirect");
             } else {
-                ok = mglEncodeArrayQuadsForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+                ok = mglEncodeArrayQuadsForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                          _device,
                                          (GLsizei)cmd.count,
                                          (GLint)cmd.first,
@@ -5193,7 +5193,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
         }
 
         mglDrawPrimitivesIndirect(
-            _renderPassManager.state->currentRenderEncoderOwner, primitiveType,
+            _commandState.currentRenderEncoderOwner, primitiveType,
             indirectBuffer, offset);
     }
     if (drawcount > 0) {
@@ -5416,7 +5416,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
             NSUInteger elementOffset = (NSUInteger)cmd.first * indexStride;
             BOOL ok = NO;
             if (mode == GL_LINE_LOOP) {
-                ok = mglEncodeElementLineLoopForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+                ok = mglEncodeElementLineLoopForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                               _device,
                                               gl_element_buffer,
                                               indexBuffer,
@@ -5428,7 +5428,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
                                               (NSUInteger)cmd.baseInstance,
                                               "multiDrawElementsIndirect");
             } else if (polygonModePoint) {
-                ok = mglEncodeElementPolygonPointForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+                ok = mglEncodeElementPolygonPointForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                                   _device,
                                                   gl_element_buffer,
                                                   indexBuffer,
@@ -5442,7 +5442,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
                                                   (NSUInteger)cmd.baseInstance,
                                                   "multiDrawElementsIndirect");
             } else {
-                ok = mglEncodeElementQuadsForRenderEncoderOwner(_renderPassManager.state->currentRenderEncoderOwner,
+                ok = mglEncodeElementQuadsForRenderEncoderOwner(_commandState.currentRenderEncoderOwner,
                                            _device,
                                            gl_element_buffer,
                                            indexBuffer,
@@ -5544,7 +5544,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
 
         // draw indexed primitive
         mglDrawIndexedPrimitivesIndirect(
-            _renderPassManager.state->currentRenderEncoderOwner, primitiveType,
+            _commandState.currentRenderEncoderOwner, primitiveType,
             drawIndexType, drawIndexBuffer, indexBufferOffset,
             indirectBuffer, offset);
     }
@@ -5557,3 +5557,17 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
 }
 
 @end
+
+bool mglRendererObjCDrawArrays(GLMContext glm_ctx, GLenum mode, GLint first,
+                               GLsizei count)
+{
+    mglRendererDrawArrays(glm_ctx, (uint32_t)mode, (int32_t)first, (int32_t)count);
+    return glm_ctx && glm_ctx->active_state->error == GL_NO_ERROR;
+}
+
+bool mglRendererObjCDrawElements(GLMContext glm_ctx, GLenum mode, GLsizei count,
+                                 GLenum type, const void *indices)
+{
+    mglRendererDrawElements(glm_ctx, (uint32_t)mode, (int32_t)count, type, indices);
+    return glm_ctx && glm_ctx->active_state->error == GL_NO_ERROR;
+}

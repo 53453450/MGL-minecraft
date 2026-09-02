@@ -2271,7 +2271,7 @@ static bool mglBindingStateFlushResourceBindings(
 static const NSUInteger kMaxFragmentSamplerSlots = 16;
 
 #define MGL_ABORT_TBIND_IF_ENCODER_CLOSED() do { \
-    if (mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) == 0) { \
+    if (mglRenderEncoderOwnerHasCurrent(_commandState.currentRenderEncoderOwner) == 0) { \
         if (ctx) { \
             mglMarkRendererDirtyBits(ctx->active_state, (DIRTY_TEX | DIRTY_TEX_BINDING | DIRTY_RENDER_STATE)); \
         } \
@@ -2315,7 +2315,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                              _resourceFallback.fragmentTextureTraceBindings,
                                              TEXTURE_UNITS,
                                              ctx ? mglCurrentRenderProgramKey(ctx) : 0u,
-                                             _pipelineCache.state->pipelineProgramName);
+                                             _pipelineCacheState.pipelineProgramName);
 
         memset(_resourceFallback.fragmentTextureTraceBindings, 0,
                sizeof(_resourceFallback.fragmentTextureTraceBindings));
@@ -2367,13 +2367,13 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 if ((activeMask[s >> 5] & (1u << (s & 31u))) == 0u) continue;
                 if (!mglBindingStateQueueResourceBinding(
                         useResourceSnapshot, _bindingStateOwner,
-                        _renderPassManager.state->currentRenderEncoderOwner,
+                        _commandState.currentRenderEncoderOwner,
                         &resourceSnapshot, MGL_RENDER_BINDING_STAGE_VERTEX,
                         MGL_RENDER_RESOURCE_BINDING_SAMPLER,
                         (__bridge void *)defaultSampler, (uint32_t)s) ||
                     !mglBindingStateQueueResourceBinding(
                         useResourceSnapshot, _bindingStateOwner,
-                        _renderPassManager.state->currentRenderEncoderOwner,
+                        _commandState.currentRenderEncoderOwner,
                         &resourceSnapshot, MGL_RENDER_BINDING_STAGE_FRAGMENT,
                         MGL_RENDER_RESOURCE_BINDING_SAMPLER,
                         (__bridge void *)defaultSampler, (uint32_t)s)) {
@@ -2384,13 +2384,13 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             for (NSUInteger s = 0; s < warmupCount; s++) {
                 if (!mglBindingStateQueueResourceBinding(
                         useResourceSnapshot, _bindingStateOwner,
-                        _renderPassManager.state->currentRenderEncoderOwner,
+                        _commandState.currentRenderEncoderOwner,
                         &resourceSnapshot, MGL_RENDER_BINDING_STAGE_VERTEX,
                         MGL_RENDER_RESOURCE_BINDING_SAMPLER,
                         (__bridge void *)defaultSampler, (uint32_t)s) ||
                     !mglBindingStateQueueResourceBinding(
                         useResourceSnapshot, _bindingStateOwner,
-                        _renderPassManager.state->currentRenderEncoderOwner,
+                        _commandState.currentRenderEncoderOwner,
                         &resourceSnapshot, MGL_RENDER_BINDING_STAGE_FRAGMENT,
                         MGL_RENDER_RESOURCE_BINDING_SAMPLER,
                         (__bridge void *)defaultSampler, (uint32_t)s)) {
@@ -2403,7 +2403,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     if (useResourceSnapshot &&
         !mglBindingStateFlushResourceBindings(
             _bindingStateOwner,
-            _renderPassManager.state->currentRenderEncoderOwner,
+            _commandState.currentRenderEncoderOwner,
             &resourceSnapshot)) {
         return false;
     }
@@ -2533,13 +2533,13 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
          * MGLShaderResource instead of re-resolving the program per query. When
          * sampledResource is NULL (no program / index OOR), mirror the
          * query-method semantics of returning 0. */
-        GLuint spirvBinding = sampledResource
+        GLuint clientBinding = sampledResource
             ? (GLuint)mglRendererGetProgramBinding(ctx, vertexStage,
                                                    _SAMPLED_IMAGE_RES, (int32_t)i) : 0u;
         GLuint glBinding = sampledResource
             ? (GLuint)mglRendererGetProgramGLBinding(ctx, vertexStage,
                                                      _SAMPLED_IMAGE_RES, (int32_t)i) : 0u;
-        if (spirvBinding >= TEXTURE_UNITS || glBinding >= TEXTURE_UNITS) {
+        if (clientBinding >= TEXTURE_UNITS || glBinding >= TEXTURE_UNITS) {
             continue;
         }
         if (mglShouldSkipStageTextureResource(currentProgram,
@@ -2550,7 +2550,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         }
         GLuint textureUnit = [self textureUnitForSampledResource:sampledResource
                                                         program:currentProgram
-                                                    metalBinding:spirvBinding
+                                                    metalBinding:clientBinding
                                                            stage:vertexStage];
         /* derive texture types/data kind directly from sampledResource
          * via C helpers, skipping per-resource mglResolveProgramForStageFromState. */
@@ -2562,7 +2562,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             mglExpectedTextureDataKindForResource(
                 currentProgram, vertexStage, sampledResource);
         Texture *ptr = [self textureForSampledResource:sampledResource
-                                          metalBinding:spirvBinding
+                                          metalBinding:clientBinding
                                                   stage:vertexStage
                                            expectedType:(lookupType ? lookupType : expectedType)
                                           textureUnit:textureUnit];
@@ -2582,7 +2582,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 uint64_t hit = ++s_vertexTypeMismatchLogCount;
                 if (hit <= 32ull || (hit % 512ull) == 0ull) {
                     NSLog(@"MGL TEX TYPE MISMATCH vertex binding=%u program=%u glTex=%u glTarget=0x%x mtlType=%lu expected=%lu hit=%llu",
-                          (unsigned)spirvBinding,
+                          (unsigned)clientBinding,
                           (unsigned)vertexProgramName,
                           (unsigned)ptr->name,
                           (unsigned)ptr->target,
@@ -2592,7 +2592,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 }
                 Program *dumpProgram = currentProgram;
                 mglWriteProgramMSLDump(dumpProgram,
-                                       [NSString stringWithFormat:@"tex-type-mismatch-vertex-binding-%u", spirvBinding]);
+                                       [NSString stringWithFormat:@"tex-type-mismatch-vertex-binding-%u", clientBinding]);
                 texture = [self fallbackSampledTextureForExpectedType:expectedType dataKind:expectedKind];
                 usedTypeFallback = YES;
             }
@@ -2602,7 +2602,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 uint64_t hit = ++s_vertexDataKindMismatchLogCount;
                 if (hit <= 32ull || (hit % 512ull) == 0ull) {
                     NSLog(@"MGL TEX DATA MISMATCH vertex binding=%u program=%u glTex=%u glTarget=0x%x format=%lu actualKind=%s expectedKind=%s expectedType=%lu hit=%llu",
-                          (unsigned)spirvBinding,
+                          (unsigned)clientBinding,
                           (unsigned)vertexProgramName,
                           (unsigned)ptr->name,
                           (unsigned)ptr->target,
@@ -2614,7 +2614,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 }
                 Program *dumpProgram = currentProgram;
                 mglWriteProgramMSLDump(dumpProgram,
-                                       [NSString stringWithFormat:@"tex-data-mismatch-vertex-binding-%u", spirvBinding]);
+                                       [NSString stringWithFormat:@"tex-data-mismatch-vertex-binding-%u", clientBinding]);
                 texture = [self fallbackSampledTextureForExpectedType:expectedType dataKind:expectedKind];
                 usedTypeFallback = YES;
             }
@@ -2631,7 +2631,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 sampler = (__bridge id)(glSampler->mtl_data);
                 mglTraceLogExternal("VERT_SAMPLER_RESOLVE program=%u binding=%u unit=%u source=glSampler samplerName=%u minFilter=0x%x magFilter=0x%x wrapS=0x%x wrapT=0x%x minLod=%.3f maxLod=%.3f glTex=%u base=%u max=%u texSize=%ux%u boundSize=%lux%lu boundLevels=%lu",
                                     (unsigned)vertexProgramName,
-                                    (unsigned)spirvBinding,
+                                    (unsigned)clientBinding,
                                     (unsigned)textureUnit,
                                     (unsigned)glSampler->name,
                                     (unsigned)glSampler->params.min_filter,
@@ -2652,7 +2652,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 sampler = (__bridge id)(ptr->params.mtl_data);
                 mglTraceLogExternal("VERT_SAMPLER_RESOLVE program=%u binding=%u unit=%u source=texParamsFallback samplerName=0 minFilter=0x%x magFilter=0x%x wrapS=0x%x wrapT=0x%x minLod=%.3f maxLod=%.3f glTex=%u base=%u max=%u texSize=%ux%u boundSize=%lux%lu boundLevels=%lu",
                                     (unsigned)vertexProgramName,
-                                    (unsigned)spirvBinding,
+                                    (unsigned)clientBinding,
                                     (unsigned)textureUnit,
                                     (unsigned)ptr->params.min_filter,
                                     (unsigned)ptr->params.mag_filter,
@@ -2678,7 +2678,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 mglTraceLog("RT_YFLIP_DECISION stage=vertex program=%u name=%s binding=%u unit=%u tex=%u label=\"%s\" decision=%s(%d) authority=0x%x rtVer=%u copyVer=%u hasCopy=%d sampleYFlip=%d",
                             (unsigned)vertexProgramName,
                             sampledName ? sampledName : "",
-                            (unsigned)spirvBinding,
+                            (unsigned)clientBinding,
                             (unsigned)textureUnit,
                             (unsigned)ptr->name,
                             mglTraceTextureLabel(ptr),
@@ -2704,7 +2704,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                             mglTraceLog("RT_SAMPLE_COPY_BIND stage=vertex program=%u name=%s binding=%u unit=%u tex=%u label=\"%s\" original=%p copy=%p size=%lux%lu originalLevels=%lu copyLevels=%lu glLevels=%u mips=%u base=%u max=%u version=%u",
                                         (unsigned)vertexProgramName,
                                         sampledName ? sampledName : "",
-                                        (unsigned)spirvBinding,
+                                        (unsigned)clientBinding,
                                         (unsigned)textureUnit,
                                         (unsigned)ptr->name,
                                         mglTraceTextureLabel(ptr),
@@ -2730,7 +2730,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                                                   source:texture
                                                                    stage:"vertex"
                                                                  program:vertexProgramName
-                                                                 binding:spirvBinding
+                                                                 binding:clientBinding
                                                                     unit:textureUnit
                                                             expectedType:expectedType
                                                             expectedKind:expectedKind];
@@ -2745,7 +2745,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                                            ptr,
                                                            "vertex",
                                                            sampledName,
-                                                           spirvBinding,
+                                                           clientBinding,
                                                            textureUnit,
                                                            "target-gate");
                 } else if (!boundSampledCopy && mglTraceLogIsEnabled()) {
@@ -2755,7 +2755,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                     mglTraceLog("RT_SAMPLE_COPY_GATE_MISS stage=vertex program=%u name=%s binding=%u unit=%u tex=%u label=\"%s\" isRT=%d hasCopy=%d verMatch=%d writeVer=%u rtVer=%u canUse=%d expectedType=%lu",
                                 (unsigned)vertexProgramName,
                                 sampledName ? sampledName : "",
-                                (unsigned)spirvBinding,
+                                (unsigned)clientBinding,
                                 (unsigned)textureUnit,
                                 (unsigned)ptr->name,
                                 mglTraceTextureLabel(ptr),
@@ -2775,7 +2775,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                 (unsigned long long)hit,
                                 (unsigned)vertexProgramName,
                                 sampledName ? sampledName : "",
-                                (unsigned)spirvBinding,
+                                (unsigned)clientBinding,
                                 (unsigned)(ptr ? ptr->name : 0u),
                                 mglTraceTextureLabel(ptr),
                                 mglYFlipDecisionName(yflip),
@@ -2792,7 +2792,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 uint64_t hit = ++s_vertexFallbackLogCount;
                 if (hit <= 32ull || (hit % 512ull) == 0ull) {
                     NSLog(@"MGL TEX FALLBACK vertex sampled binding=%u program=%u name=%s unit=%u glTex=%u kind=%s size=%lux%lu hit=%llu",
-                          (unsigned)spirvBinding,
+                          (unsigned)clientBinding,
                           (unsigned)vertexProgramName,
                           sampledName ? sampledName : "",
                           (unsigned)textureUnit,
@@ -2807,21 +2807,21 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
 
         if (!mglBindingStateQueueResourceBinding(
                 useResourceSnapshot, _bindingStateOwner,
-                _renderPassManager.state->currentRenderEncoderOwner,
+                _commandState.currentRenderEncoderOwner,
                 &resourceSnapshot, MGL_RENDER_BINDING_STAGE_VERTEX,
                 MGL_RENDER_RESOURCE_BINDING_TEXTURE,
-                (__bridge void *)texture, spirvBinding)) {
+                (__bridge void *)texture, clientBinding)) {
             return false;
         }
         GLuint samplerBinding = sampledResource && sampledResource->has_combined_sampler
             ? mglMetalCombinedSamplerSlot(sampledResource)
-            : spirvBinding;
+            : clientBinding;
         if (sampler &&
             (!sampledResource || sampledResource->has_combined_sampler) &&
             samplerBinding < kMaxFragmentSamplerSlots) {
             if (!mglBindingStateQueueResourceBinding(
                     useResourceSnapshot, _bindingStateOwner,
-                    _renderPassManager.state->currentRenderEncoderOwner,
+                    _commandState.currentRenderEncoderOwner,
                     &resourceSnapshot, MGL_RENDER_BINDING_STAGE_VERTEX,
                     MGL_RENDER_RESOURCE_BINDING_SAMPLER,
                     (__bridge void *)sampler, samplerBinding)) {
@@ -2836,7 +2836,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 NSLog(@"MGL TBIND focused stage=vertex program=%u resource=%s metalTextureSlot=%u samplerUnit=%u glTex=%u target=0x%x mtl=%p mtlType=%lu size=%lux%lu level0=%ux%u init(ever=%u full=%u source=%u)",
                       (unsigned)focusedTextureProgram->name,
                       sampledName ? sampledName : "",
-                      (unsigned)spirvBinding,
+                      (unsigned)clientBinding,
                       (unsigned)textureUnit,
                       ptr ? (unsigned)ptr->name : 0u,
                       ptr ? (unsigned)ptr->target : 0u,
@@ -2867,7 +2867,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             mglTraceLog("TBIND stage=vertex program=%u resource=%s metalTextureSlot=%u samplerUnit=%u resUnit=%d explicit=%d glTex=%u target=0x%x fallback=%d expectedType=%lu lookupType=%lu expectedIndex=%d unit(active=%u expected=%u tex2D=%u cube=%u) mtl=%p mtlType=%lu size=%lux%lu level0=%ux%u init(ever=%u full=%u source=%u)",
                         (unsigned)focusedTextureProgram->name,
                         sampledName ? sampledName : "",
-                        (unsigned)spirvBinding,
+                        (unsigned)clientBinding,
                         (unsigned)textureUnit,
                         sampledResource ? (int)sampledResource->sampler_unit : -1,
                         (sampledResource && sampledResource->sampler_unit_explicit) ? 1 : 0,
@@ -2900,7 +2900,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 NSLog(@"MGL TEXBUFFER BIND vertex hit=%llu program=%u binding=%u unit=%u ptrTex=%u active=%u bufferSlot=%u expectedType=%lu lookupType=%lu mtlTex=%p mtlType=%lu size=%lux%lu format=%lu sampler=%p",
                       (unsigned long long)hit,
                       (unsigned)vertexProgramName,
-                      (unsigned)spirvBinding,
+                      (unsigned)clientBinding,
                       (unsigned)textureUnit,
                       (unsigned)ptr->name,
                       mglTraceTextureName(unitActive),
@@ -2946,7 +2946,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                           (unsigned long long)hit,
                           sampleProgramName,
                           sampledName ? sampledName : "",
-                          (unsigned)spirvBinding,
+                          (unsigned)clientBinding,
                           (unsigned)textureUnit,
                           (unsigned long)expectedType,
                           expectedIndex,
@@ -2986,7 +2986,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     if (useResourceSnapshot &&
         !mglBindingStateFlushResourceBindings(
             _bindingStateOwner,
-            _renderPassManager.state->currentRenderEncoderOwner,
+            _commandState.currentRenderEncoderOwner,
             &resourceSnapshot)) {
         return false;
     }
@@ -3038,13 +3038,13 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         }
         /* read binding/gl_binding directly from the already-resolved
          * MGLShaderResource instead of re-resolving the program per query. */
-        GLuint spirvBinding = sampledResource
+        GLuint clientBinding = sampledResource
             ? (GLuint)mglRendererGetProgramBinding(ctx, _FRAGMENT_SHADER,
                                                    _SAMPLED_IMAGE_RES, (int32_t)i) : 0u;
         GLuint glBinding = sampledResource
             ? (GLuint)mglRendererGetProgramGLBinding(ctx, _FRAGMENT_SHADER,
                                                      _SAMPLED_IMAGE_RES, (int32_t)i) : 0u;
-        if (spirvBinding >= TEXTURE_UNITS || glBinding >= TEXTURE_UNITS) {
+        if (clientBinding >= TEXTURE_UNITS || glBinding >= TEXTURE_UNITS) {
             continue;
         }
         if (mglShouldSkipStageTextureResource(sampleProgram,
@@ -3055,7 +3055,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         }
         GLuint textureUnit = [self textureUnitForSampledResource:sampledResource
                                                         program:sampleProgram
-                                                    metalBinding:spirvBinding
+                                                    metalBinding:clientBinding
                                                            stage:_FRAGMENT_SHADER];
 
         /* derive texture types/data kind directly from sampledResource
@@ -3068,7 +3068,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             mglExpectedTextureDataKindForResource(
                 sampleProgram, _FRAGMENT_SHADER, sampledResource);
         Texture *ptr = [self textureForSampledResource:sampledResource
-                                          metalBinding:spirvBinding
+                                          metalBinding:clientBinding
                                                   stage:_FRAGMENT_SHADER
                                            expectedType:(lookupType ? lookupType : expectedType)
                                           textureUnit:textureUnit];
@@ -3084,7 +3084,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             if (![self recoverFragmentSampledDepthTexture:&ptr
                                                    texture:&texture
                                                sampledName:sampledName
-                                              spirvBinding:spirvBinding
+                                              clientBinding:clientBinding
                                                 textureUnit:textureUnit
                                                expectedType:expectedType
                                                expectedKind:expectedKind
@@ -3097,7 +3097,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                                       texture:&texture
                                                       sampler:&sampler
                                                   sampledName:sampledName
-                                                 spirvBinding:spirvBinding
+                                                 clientBinding:clientBinding
                                                    textureUnit:textureUnit
                                                   expectedType:expectedType
                                                   expectedKind:expectedKind
@@ -3125,7 +3125,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 uint64_t hit = ++s_fragmentFallbackLogCount;
                 if (hit <= 32ull || (hit % 512ull) == 0ull) {
                     NSLog(@"MGL TEX FALLBACK fragment sampled binding=%u program=%u glTex=%u hit=%llu",
-                          (unsigned)spirvBinding,
+                          (unsigned)clientBinding,
                           (unsigned)fragmentProgramName,
                           ptr ? (unsigned)ptr->name : 0u,
                           (unsigned long long)hit);
@@ -3136,7 +3136,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             uint64_t hit = ++s_fragmentFallbackSuppressedLogCount;
             if (hit <= 64ull || (hit % 512ull) == 0ull) {
                 NSLog(@"MGL TEX FALLBACK SUPPRESSED fragment sampled binding=%u program=%u name=%s glTex=%u unit=%u reason=insampler-current-target-no-copy hit=%llu",
-                      (unsigned)spirvBinding,
+                      (unsigned)clientBinding,
                       (unsigned)fragmentProgramName,
                       sampledName ? sampledName : "",
                       ptr ? (unsigned)ptr->name : 0u,
@@ -3193,7 +3193,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
 	                      (unsigned long long)hit,
 		                      sampleProgramName,
                           sampledName ? sampledName : "",
-	                      (unsigned)spirvBinding,
+	                      (unsigned)clientBinding,
 	                      (unsigned)textureUnit,
 	                      (unsigned long)expectedType,
 	                      expectedIndex,
@@ -3235,10 +3235,10 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                             Texture *atlasUnit2D = textureUnit < TEXTURE_UNITS ? MGL_STATE(ctx)->texture_units[textureUnit].textures[_TEXTURE_2D] : NULL;
                             Texture *atlasUnitCube = textureUnit < TEXTURE_UNITS ? MGL_STATE(ctx)->texture_units[textureUnit].textures[_TEXTURE_CUBE_MAP] : NULL;
 	                        id rpColor0 = (__bridge id)mglRenderGetRenderPassAttachmentTextureOwner(
-                                _renderPassManager.state->renderPassStateOwner,
+                                _commandState.renderPassStateOwner,
                                 MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0);
 	                        id rpDepth = (__bridge id)mglRenderGetRenderPassAttachmentTextureOwner(
-                                _renderPassManager.state->renderPassStateOwner,
+                                _commandState.renderPassStateOwner,
                                 MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0);
                         mglTraceLog("RT_SAMPLE_COPY_SAMPLE hit=%llu bindCall=%llu program=%u stateProgram=%u current=%u pipeline=%u vs=%u fs=%u pipelineProgram=%u name=%s binding=%u unit=%u "
                                     "rtTex=%u label=\"%s\" fallback=%d useCopy=%d ptr=%p mtl=%p direct=%p copy=%p fmt=%lu type=%lu size=%lux%lu "
@@ -3253,9 +3253,9 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                     (unsigned)(ctx ? MGL_STATE(ctx)->var.program_pipeline_binding : 0u),
                                     (unsigned)vertexProgramName,
                                     (unsigned)fragmentProgramName,
-                                    (unsigned)_pipelineCache.state->pipelineProgramName,
+                                    (unsigned)_pipelineCacheState.pipelineProgramName,
                                     sampledName ? sampledName : "",
-                                    (unsigned)spirvBinding,
+                                    (unsigned)clientBinding,
                                     (unsigned)textureUnit,
                                     (unsigned)mglTraceTextureName(ptr),
                                     mglTraceTextureLabel(ptr),
@@ -3279,7 +3279,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                     sampleLevel0 ? (unsigned)sampleLevel0->last_init_source : 0u,
                                     (unsigned long)(sampleLevel0 ? sampleLevel0->last_upload_size : 0u),
                                     (unsigned)(ctx && MGL_STATE(ctx)->framebuffer ? MGL_STATE(ctx)->framebuffer->name : 0u),
-                                    (unsigned)_renderPassManager.state->renderPassFramebufferName,
+                                    (unsigned)_commandState.renderPassFramebufferName,
                                     rpColor0,
                                     rpDepth,
                                     ctx && MGL_STATE(ctx)->caps.depth_test ? 1 : 0,
@@ -3298,7 +3298,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
 	                                                glTex:ptr
 	                                                level:sampleLevel0
 	                                              program:sampleProgramName
-	                                              binding:spirvBinding
+	                                              binding:clientBinding
 	                                                stage:@"fragment"
 		                                               reason:(sampleLevel0->suspicious_zero_upload ? @"zero-level" :
 		                                                       (!sampleLevel0->ever_written ? @"never-written" : @"not-initialized"))
@@ -3309,18 +3309,18 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
 
         if (!mglBindingStateQueueResourceBinding(
                 useResourceSnapshot, _bindingStateOwner,
-                _renderPassManager.state->currentRenderEncoderOwner,
+                _commandState.currentRenderEncoderOwner,
                 &resourceSnapshot, MGL_RENDER_BINDING_STAGE_FRAGMENT,
                 MGL_RENDER_RESOURCE_BINDING_TEXTURE,
-                (__bridge void *)texture, spirvBinding)) {
+                (__bridge void *)texture, clientBinding)) {
             return false;
         }
-        if (spirvBinding < TEXTURE_UNITS) {
-            MGLFragmentTextureTraceBinding *traceBinding = &_resourceFallback.fragmentTextureTraceBindings[spirvBinding];
+        if (clientBinding < TEXTURE_UNITS) {
+            MGLFragmentTextureTraceBinding *traceBinding = &_resourceFallback.fragmentTextureTraceBindings[clientBinding];
             memset(traceBinding, 0, sizeof(*traceBinding));
             traceBinding->gl_texture_name = ptr ? ptr->name : 0u;
             traceBinding->sampler_unit = textureUnit;
-            traceBinding->metal_binding = spirvBinding;
+            traceBinding->metal_binding = clientBinding;
             traceBinding->program_name = sampleProgramName;
             traceBinding->rt_write_version = ptr ? ptr->mtl_render_target_write_version : 0u;
             traceBinding->sampled_write_version = ptr ? ptr->mtl_gl_sampled_write_version : 0u;
@@ -3343,7 +3343,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 NSLog(@"MGL TBIND focused stage=fragment program=%u resource=%s metalTextureSlot=%u samplerUnit=%u glTex=%u target=0x%x mtl=%p mtlType=%lu size=%lux%lu level0=%ux%u init(ever=%u full=%u source=%u)",
                       (unsigned)focusedTextureProgram->name,
                       sampledName ? sampledName : "",
-                      (unsigned)spirvBinding,
+                      (unsigned)clientBinding,
                       (unsigned)textureUnit,
                       ptr ? (unsigned)ptr->name : 0u,
                       ptr ? (unsigned)ptr->target : 0u,
@@ -3374,7 +3374,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             mglTraceLog("TBIND stage=fragment program=%u resource=%s metalTextureSlot=%u samplerUnit=%u resUnit=%d explicit=%d glTex=%u target=0x%x fallback=%d expectedType=%lu lookupType=%lu expectedIndex=%d unit(active=%u expected=%u tex2D=%u cube=%u) mtl=%p mtlType=%lu size=%lux%lu level0=%ux%u init(ever=%u full=%u source=%u)",
                         (unsigned)focusedTextureProgram->name,
                         sampledName ? sampledName : "",
-                        (unsigned)spirvBinding,
+                        (unsigned)clientBinding,
                         (unsigned)textureUnit,
                         sampledResource ? (int)sampledResource->sampler_unit : -1,
                         (sampledResource && sampledResource->sampler_unit_explicit) ? 1 : 0,
@@ -3408,13 +3408,13 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         }
         GLuint samplerBinding = sampledResource && sampledResource->has_combined_sampler
             ? mglMetalCombinedSamplerSlot(sampledResource)
-            : spirvBinding;
+            : clientBinding;
         if (sampler &&
             (!sampledResource || sampledResource->has_combined_sampler) &&
             samplerBinding < kMaxFragmentSamplerSlots) {
             if (!mglBindingStateQueueResourceBinding(
                     useResourceSnapshot, _bindingStateOwner,
-                    _renderPassManager.state->currentRenderEncoderOwner,
+                    _commandState.currentRenderEncoderOwner,
                     &resourceSnapshot, MGL_RENDER_BINDING_STAGE_FRAGMENT,
                     MGL_RENDER_RESOURCE_BINDING_SAMPLER,
                     (__bridge void *)sampler, samplerBinding)) {
@@ -3442,7 +3442,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                   "mtlTex=%p size=%lux%lu sampler=%p fallback=%d",
                   (unsigned long long)bindCall,
                   (unsigned)i,
-                  (unsigned)spirvBinding,
+                  (unsigned)clientBinding,
                   ptr ? (unsigned)ptr->name : 0u,
                   ptr ? (unsigned)ptr->target : 0u,
                   ptr ? (unsigned)ptr->internalformat : 0u,
@@ -3470,7 +3470,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     if (useResourceSnapshot &&
         !mglBindingStateFlushResourceBindings(
             _bindingStateOwner,
-            _renderPassManager.state->currentRenderEncoderOwner,
+            _commandState.currentRenderEncoderOwner,
             &resourceSnapshot)) {
         return false;
     }
@@ -3484,7 +3484,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
 - (bool)recoverFragmentSampledDepthTexture:(Texture **)ptrPtr
                                     texture:(id *)texturePtr
                                 sampledName:(const char *)sampledName
-                                spirvBinding:(GLuint)spirvBinding
+                                clientBinding:(GLuint)clientBinding
                                   textureUnit:(GLuint)textureUnit
                                  expectedType:(uint32_t)expectedType
                                  expectedKind:(MGLTextureDataKind)expectedKind
@@ -3534,7 +3534,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             if (!pairedColorIsCurrentDrawTarget && pairedMTL) {
                 pairedColorIsCurrentDrawTarget =
                     mglBindingStateRenderPassUsesColorTexture(
-                        _renderPassManager.state->renderPassStateOwner,
+                        _commandState.renderPassStateOwner,
                         (__bridge void *)pairedMTL,
                         &currentAttachmentIndex);
             }
@@ -3547,7 +3547,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 NSLog(@"MGL INSAMPLER DEPTH HISTORY SCAN SUPPRESSED hit=%llu program=%u binding=%u unit=%u fbo=%u colorAttachment=%lu depthTex=%u pairedColor=%u currentDrawTarget=1",
                       (unsigned long long)hit,
                       (unsigned)fragmentProgramName,
-                      (unsigned)spirvBinding,
+                      (unsigned)clientBinding,
                       (unsigned)textureUnit,
                       (unsigned)pairedFboName,
                       (unsigned long)currentAttachmentIndex,
@@ -3577,7 +3577,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                     NSLog(@"MGL INSAMPLER DEPTH CURRENT TARGET NO COPY hit=%llu program=%u binding=%u unit=%u fbo=%u colorAttachment=%lu depthTex=%u colorTex=%u depthFmt=%lu sampledVersion=%u rtVersion=%u",
                           (unsigned long long)noCopyHit,
                           (unsigned)fragmentProgramName,
-                          (unsigned)spirvBinding,
+                          (unsigned)clientBinding,
                           (unsigned)textureUnit,
                           (unsigned)pairedFboName,
                           (unsigned long)currentAttachmentIndex,
@@ -3599,7 +3599,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 NSLog(@"MGL INSAMPLER DEPTH RECOVERY hit=%llu program=%u binding=%u unit=%u fbo=%u depthTex=%u colorTex=%u depthFmt=%lu colorFmt=%lu size=%lux%lu",
                       (unsigned long long)hit,
                       (unsigned)fragmentProgramName,
-                      (unsigned)spirvBinding,
+                      (unsigned)clientBinding,
                       (unsigned)textureUnit,
                       (unsigned)pairedFboName,
                       ptr ? (unsigned)ptr->name : 0u,
@@ -3634,7 +3634,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                                               0u,
                                                               &candidateAttachmentIndex) ||
                     mglBindingStateRenderPassUsesColorTexture(
-                        _renderPassManager.state->renderPassStateOwner,
+                        _commandState.renderPassStateOwner,
                         (__bridge void *)candidateMTL,
                         &candidateAttachmentIndex);
 
@@ -3652,7 +3652,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                                                   0u,
                                                                   &candidateAttachmentIndex) ||
                         mglBindingStateRenderPassUsesColorTexture(
-                            _renderPassManager.state->renderPassStateOwner,
+                            _commandState.renderPassStateOwner,
                             (__bridge void *)candidateMTL,
                             &candidateAttachmentIndex);
                 }
@@ -3698,7 +3698,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 NSLog(@"MGL INSAMPLER DEPTH UNPAIRED hit=%llu program=%u binding=%u unit=%u depthTex=%u fmt=%lu size=%lux%lu",
                       (unsigned long long)hit,
                       (unsigned)fragmentProgramName,
-                      (unsigned)spirvBinding,
+                      (unsigned)clientBinding,
                       (unsigned)textureUnit,
                       ptr ? (unsigned)ptr->name : 0u,
                       (unsigned long)mglBindingStateTexturePixelFormat(texture),
@@ -3715,7 +3715,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                       (unsigned long long)hit,
                       recoverReason,
                       (unsigned)fragmentProgramName,
-                      (unsigned)spirvBinding,
+                      (unsigned)clientBinding,
                       (unsigned)textureUnit,
                       (unsigned)pairedFboName,
                       (unsigned long)recoverAttachmentIndex,
@@ -3763,7 +3763,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             NSUInteger drawAttachmentIndex = MAX_COLOR_ATTACHMENTS;
             BOOL pairedColorIsCurrentDrawTarget =
                 mglBindingStateRenderPassUsesColorTexture(
-                    _renderPassManager.state->renderPassStateOwner,
+                    _commandState.renderPassStateOwner,
                     (__bridge void *)pairedMTL,
                                               &drawAttachmentIndex);
             if (pairedMTL &&
@@ -3781,7 +3781,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                           (unsigned long long)hit,
                           (unsigned)fragmentProgramName,
                           sampledName ? sampledName : "",
-                          (unsigned)spirvBinding,
+                          (unsigned)clientBinding,
                           (unsigned)textureUnit,
                           (unsigned)recoverFboName,
                           (unsigned long)drawAttachmentIndex,
@@ -3800,7 +3800,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                       (unsigned long long)hit,
                       (unsigned)fragmentProgramName,
                       sampledName ? sampledName : "",
-                      (unsigned)spirvBinding,
+                      (unsigned)clientBinding,
                       (unsigned)textureUnit,
                       ptr ? (unsigned)ptr->name : 0u,
                       (unsigned)last2D->name);
@@ -3835,7 +3835,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                           recoverReason,
                           (unsigned)fragmentProgramName,
                           sampledName ? sampledName : "",
-                          (unsigned)spirvBinding,
+                          (unsigned)clientBinding,
                           (unsigned)textureUnit,
                           ptr ? (unsigned)ptr->name : 0u,
                           (unsigned)recoverTexture->name,
@@ -3871,7 +3871,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                           (unsigned long long)hit,
                           (unsigned)fragmentProgramName,
                           sampledName ? sampledName : "",
-                          (unsigned)spirvBinding,
+                          (unsigned)clientBinding,
                           (unsigned)textureUnit,
                           ptr ? (unsigned)ptr->name : 0u,
                           (unsigned long)mglBindingStateTexturePixelFormat(texture),
@@ -3901,7 +3901,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                        texture:(id *)texturePtr
                                        sampler:(id *)samplerPtr
                                    sampledName:(const char *)sampledName
-                                spirvBinding:(GLuint)spirvBinding
+                                clientBinding:(GLuint)clientBinding
                                   textureUnit:(GLuint)textureUnit
                                  expectedType:(uint32_t)expectedType
                                  expectedKind:(MGLTextureDataKind)expectedKind
@@ -3934,9 +3934,9 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                         (unsigned)(ctx ? MGL_STATE(ctx)->var.program_pipeline_binding : 0u),
                         (unsigned)vertexProgramName,
                         (unsigned)fragmentProgramName,
-                        (unsigned)_pipelineCache.state->pipelineProgramName,
+                        (unsigned)_pipelineCacheState.pipelineProgramName,
                         sampledName ? sampledName : "",
-                        (unsigned)spirvBinding,
+                        (unsigned)clientBinding,
                         (unsigned)textureUnit,
                         (unsigned)ptr->name,
                         mglTraceTextureLabel(ptr),
@@ -3969,9 +3969,9 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                     (unsigned)(ctx ? MGL_STATE(ctx)->var.program_pipeline_binding : 0u),
                                     (unsigned)vertexProgramName,
                                     (unsigned)fragmentProgramName,
-                                    (unsigned)_pipelineCache.state->pipelineProgramName,
+                                    (unsigned)_pipelineCacheState.pipelineProgramName,
                                     sampledName ? sampledName : "",
-                                    (unsigned)spirvBinding,
+                                    (unsigned)clientBinding,
                                     (unsigned)textureUnit,
                                     (unsigned)ptr->name,
                                     mglTraceTextureLabel(ptr),
@@ -3989,7 +3989,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                     }
                     mglWriteProgramMSLDump(sampleProgram,
                                            [NSString stringWithFormat:@"tex-rt-sample-copy-fragment-binding-%u-program-%u",
-                                                                      (unsigned)spirvBinding,
+                                                                      (unsigned)clientBinding,
                                                                       (unsigned)(sampleProgram ? sampleProgram->name : fragmentProgramName)]);
                     texture = (__bridge id)mglSampledTextureViewForBaseLevel(ptr, (__bridge void *)sampledCopy);
                     usedSampledCopyForTrace = YES;
@@ -4003,7 +4003,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                                               source:texture
                                                                stage:"fragment"
                                                              program:fragmentProgramName
-                                                             binding:spirvBinding
+                                                             binding:clientBinding
                                                                 unit:textureUnit
                                                         expectedType:expectedType
                                                         expectedKind:expectedKind];
@@ -4018,7 +4018,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                                        ptr,
                                                        "fragment",
                                                        sampledName,
-                                                       spirvBinding,
+                                                       clientBinding,
                                                        textureUnit,
                                                        "target-gate");
             } else if (!boundSampledCopy && mglTraceLogIsEnabled()) {
@@ -4029,7 +4029,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                             (unsigned)fragmentProgramName,
                             (unsigned)(ctx ? MGL_STATE(ctx)->program_name : 0u),
                             sampledName ? sampledName : "",
-                            (unsigned)spirvBinding,
+                            (unsigned)clientBinding,
                             (unsigned)textureUnit,
                             (unsigned)ptr->name,
                             mglTraceTextureLabel(ptr),
@@ -4051,7 +4051,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                             (unsigned long long)hit,
                             (unsigned)fragmentProgramName,
                             sampledName ? sampledName : "",
-                            (unsigned)spirvBinding,
+                            (unsigned)clientBinding,
                             (unsigned)(ptr ? ptr->name : 0u),
                             mglTraceTextureLabel(ptr),
                             mglYFlipDecisionName(yflip),
@@ -4064,7 +4064,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         uint64_t hit = ++s_fragmentTypeMismatchLogCount;
         if (hit <= 32ull || (hit % 512ull) == 0ull) {
             NSLog(@"MGL TEX TYPE MISMATCH fragment binding=%u program=%u glTex=%u glTarget=0x%x mtlType=%lu expected=%lu hit=%llu",
-                  (unsigned)spirvBinding,
+                  (unsigned)clientBinding,
                   (unsigned)fragmentProgramName,
                   (unsigned)ptr->name,
                   (unsigned)ptr->target,
@@ -4074,7 +4074,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         }
         Program *dumpProgram = sampleProgram;
         mglWriteProgramMSLDump(dumpProgram,
-                               [NSString stringWithFormat:@"tex-type-mismatch-fragment-binding-%u", spirvBinding]);
+                               [NSString stringWithFormat:@"tex-type-mismatch-fragment-binding-%u", clientBinding]);
         texture = [self fallbackSampledTextureForExpectedType:expectedType dataKind:expectedKind];
         usedFallbackTexture = YES;
         usedSampledCopyForTrace = NO;
@@ -4085,7 +4085,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         uint64_t hit = ++s_fragmentDataKindMismatchLogCount;
         if (hit <= 32ull || (hit % 512ull) == 0ull) {
             NSLog(@"MGL TEX DATA MISMATCH fragment binding=%u program=%u glTex=%u glTarget=0x%x format=%lu actualKind=%s expectedKind=%s expectedType=%lu hit=%llu",
-                  (unsigned)spirvBinding,
+                  (unsigned)clientBinding,
                   (unsigned)fragmentProgramName,
                   (unsigned)ptr->name,
                   (unsigned)ptr->target,
@@ -4097,7 +4097,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         }
         Program *dumpProgram = sampleProgram;
         mglWriteProgramMSLDump(dumpProgram,
-                               [NSString stringWithFormat:@"tex-data-mismatch-fragment-binding-%u", spirvBinding]);
+                               [NSString stringWithFormat:@"tex-data-mismatch-fragment-binding-%u", clientBinding]);
         texture = [self fallbackSampledTextureForExpectedType:expectedType dataKind:expectedKind];
         usedFallbackTexture = YES;
         usedSampledCopyForTrace = NO;
@@ -4115,7 +4115,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         sampler = (__bridge id)(glSampler->mtl_data);
         mglTraceLogExternal("FRAG_SAMPLER_RESOLVE program=%u binding=%u unit=%u source=glSampler samplerName=%u minFilter=0x%x magFilter=0x%x wrapS=0x%x wrapT=0x%x minLod=%.3f maxLod=%.3f glTex=%u base=%u max=%u texSize=%ux%u boundSize=%lux%lu boundLevels=%lu",
                             (unsigned)fragmentProgramName,
-                            (unsigned)spirvBinding,
+                            (unsigned)clientBinding,
                             (unsigned)textureUnit,
                             (unsigned)glSampler->name,
                             (unsigned)glSampler->params.min_filter,
@@ -4136,7 +4136,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         sampler = (__bridge id)(ptr->params.mtl_data);
         mglTraceLogExternal("FRAG_SAMPLER_RESOLVE program=%u binding=%u unit=%u source=texParamsFallback samplerName=0 minFilter=0x%x magFilter=0x%x wrapS=0x%x wrapT=0x%x minLod=%.3f maxLod=%.3f glTex=%u base=%u max=%u texSize=%ux%u boundSize=%lux%lu boundLevels=%lu",
                             (unsigned)fragmentProgramName,
-                            (unsigned)spirvBinding,
+                            (unsigned)clientBinding,
                             (unsigned)textureUnit,
                             (unsigned)ptr->params.min_filter,
                             (unsigned)ptr->params.mag_filter,
@@ -4182,7 +4182,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                   @"base=%u max=%u glLevels=%u mtlLevels=%lu mtlTex=%p "
                   @"renderTarget=%d viaCopy=%d copyLevels=%u dirtyMips=0x%x rtVer=%u copyVer=%u",
                   (unsigned)textureUnit,
-                  (unsigned)spirvBinding,
+                  (unsigned)clientBinding,
                   (unsigned)fragmentProgramName,
                   (unsigned)ptr->name,
                   glSampler ? "glSampler" : "texParams",
@@ -4247,7 +4247,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         }
     }
     if (mglRenderEncoderOwnerHasCurrent(
-            _renderPassManager.state->currentRenderEncoderOwner) == 0) {
+            _commandState.currentRenderEncoderOwner) == 0) {
         RETURN_FALSE_ON_FAILURE([self restoreRenderEncoderAfterTextureUploadForDraw:"vs-storage-image-bind"]);
     }
     for (GLuint i = 0; i < vertexStorageImageCount; i++)
@@ -4292,7 +4292,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         }
         if (!mglBindingStateQueueResourceBinding(
                 useResourceSnapshot, _bindingStateOwner,
-                _renderPassManager.state->currentRenderEncoderOwner,
+                _commandState.currentRenderEncoderOwner,
                 &resourceSnapshot, MGL_RENDER_BINDING_STAGE_VERTEX,
                 MGL_RENDER_RESOURCE_BINDING_TEXTURE,
                 (__bridge void *)texture, metalSlot)) {
@@ -4330,7 +4330,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
 
     /* Restore render encoder if any pass-1 bindMTLTexture closed it. */
     if (mglRenderEncoderOwnerHasCurrent(
-            _renderPassManager.state->currentRenderEncoderOwner) == 0) {
+            _commandState.currentRenderEncoderOwner) == 0) {
         RETURN_FALSE_ON_FAILURE([self restoreRenderEncoderAfterTextureUploadForDraw:"storage-image-bind"]);
     }
 
@@ -4390,7 +4390,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
 
         if (!mglBindingStateQueueResourceBinding(
                 useResourceSnapshot, _bindingStateOwner,
-                _renderPassManager.state->currentRenderEncoderOwner,
+                _commandState.currentRenderEncoderOwner,
                 &resourceSnapshot, MGL_RENDER_BINDING_STAGE_FRAGMENT,
                 MGL_RENDER_RESOURCE_BINDING_TEXTURE,
                 (__bridge void *)texture, metalSlot)) {
@@ -4400,7 +4400,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     if (useResourceSnapshot &&
         !mglBindingStateFlushResourceBindings(
             _bindingStateOwner,
-            _renderPassManager.state->currentRenderEncoderOwner,
+            _commandState.currentRenderEncoderOwner,
             &resourceSnapshot)) {
         return false;
     }
@@ -4424,9 +4424,9 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     *boundSeparateSamplers = 0;
     for (GLuint i = 0; i < *separateSamplerCount; i++)
     {
-        GLuint spirvBinding = mglRendererGetProgramBinding(ctx, _FRAGMENT_SHADER, _SEPARATE_SAMPLERS_RES, (int)i);
+        GLuint clientBinding = mglRendererGetProgramBinding(ctx, _FRAGMENT_SHADER, _SEPARATE_SAMPLERS_RES, (int)i);
         GLuint glBinding = mglRendererGetProgramGLBinding(ctx, _FRAGMENT_SHADER, _SEPARATE_SAMPLERS_RES, (int)i);
-        if (spirvBinding >= TEXTURE_UNITS || glBinding >= TEXTURE_UNITS) {
+        if (clientBinding >= TEXTURE_UNITS || glBinding >= TEXTURE_UNITS) {
             continue;
         }
         Program *sampleProgram = fragmentProgram;
@@ -4442,7 +4442,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             continue;
         }
         GLuint textureUnit = [self textureUnitForSampledResource:samplerResource
-                                                    metalBinding:spirvBinding
+                                                    metalBinding:clientBinding
                                                            stage:_FRAGMENT_SHADER];
 
         id sampler = nil;
@@ -4461,13 +4461,13 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         if (!sampler) {
             sampler = defaultSampler;
         }
-        if (sampler && spirvBinding < kMaxFragmentSamplerSlots) {
+        if (sampler && clientBinding < kMaxFragmentSamplerSlots) {
             if (!mglBindingStateQueueResourceBinding(
                     useResourceSnapshot, _bindingStateOwner,
-                    _renderPassManager.state->currentRenderEncoderOwner,
+                    _commandState.currentRenderEncoderOwner,
                     &resourceSnapshot, MGL_RENDER_BINDING_STAGE_FRAGMENT,
                     MGL_RENDER_RESOURCE_BINDING_SAMPLER,
-                    (__bridge void *)sampler, spirvBinding)) {
+                    (__bridge void *)sampler, clientBinding)) {
                 return false;
             }
             boundSeparateSamplers++;
@@ -4477,7 +4477,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             mglTraceLogNSString(@"MGL TRACE texbind.separateSampler call=%llu idx=%u binding=%u unit=%u sampler=%p",
                   (unsigned long long)bindCall,
                   (unsigned)i,
-                  (unsigned)spirvBinding,
+                  (unsigned)clientBinding,
                   (unsigned)textureUnit,
                   sampler);
         }
@@ -4546,7 +4546,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 if (arrayStage == _VERTEX_SHADER) {
                     if (!mglBindingStateQueueResourceBinding(
                             useResourceSnapshot, _bindingStateOwner,
-                            _renderPassManager.state->currentRenderEncoderOwner,
+                            _commandState.currentRenderEncoderOwner,
                             &resourceSnapshot,
                             MGL_RENDER_BINDING_STAGE_VERTEX,
                             MGL_RENDER_RESOURCE_BINDING_TEXTURE,
@@ -4557,7 +4557,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                         samplerSlot < kMaxFragmentSamplerSlots) {
                         if (!mglBindingStateQueueResourceBinding(
                                 useResourceSnapshot, _bindingStateOwner,
-                                _renderPassManager.state->currentRenderEncoderOwner,
+                                _commandState.currentRenderEncoderOwner,
                                 &resourceSnapshot,
                                 MGL_RENDER_BINDING_STAGE_VERTEX,
                                 MGL_RENDER_RESOURCE_BINDING_SAMPLER,
@@ -4568,7 +4568,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 } else {
                     if (!mglBindingStateQueueResourceBinding(
                             useResourceSnapshot, _bindingStateOwner,
-                            _renderPassManager.state->currentRenderEncoderOwner,
+                            _commandState.currentRenderEncoderOwner,
                             &resourceSnapshot,
                             MGL_RENDER_BINDING_STAGE_FRAGMENT,
                             MGL_RENDER_RESOURCE_BINDING_TEXTURE,
@@ -4579,7 +4579,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                         samplerSlot < kMaxFragmentSamplerSlots) {
                         if (!mglBindingStateQueueResourceBinding(
                                 useResourceSnapshot, _bindingStateOwner,
-                                _renderPassManager.state->currentRenderEncoderOwner,
+                                _commandState.currentRenderEncoderOwner,
                                 &resourceSnapshot,
                                 MGL_RENDER_BINDING_STAGE_FRAGMENT,
                                 MGL_RENDER_RESOURCE_BINDING_SAMPLER,
@@ -4594,7 +4594,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     if (useResourceSnapshot &&
         !mglBindingStateFlushResourceBindings(
             _bindingStateOwner,
-            _renderPassManager.state->currentRenderEncoderOwner,
+            _commandState.currentRenderEncoderOwner,
             &resourceSnapshot)) {
         return false;
     }

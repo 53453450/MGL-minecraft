@@ -516,26 +516,26 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
         /* ---- Normal binding path ---- */
         for (GLuint element = 0; element < entry->element_count; element++) {
             GLuint metal_binding = mglBufferPlanMetalBindingForElement(entry, element);
-            GLuint spirv_binding = mglBufferPlanClientBindingForElement(entry, resource, element);
-            if (spirv_binding >= MAX_BINDABLE_BUFFERS) {
+            GLuint client_binding = mglBufferPlanClientBindingForElement(entry, resource, element);
+            if (client_binding >= MAX_BINDABLE_BUFFERS) {
                 static uint64_t s_planOverflowHits = 0;
                 uint64_t hit = ++s_planOverflowHits;
                 if (hit <= 16ull || (hit % 4096ull) == 0ull) {
                     NSLog(@"MGL WARNING: mapShaderBufferResourcesViaPlan: stage=%d type=%d binding=%u exceeds MAX_BINDABLE_BUFFERS=%d, skipping (hit=%llu)",
-                          stage, spvc_type, spirv_binding, MAX_BINDABLE_BUFFERS,
+                          stage, spvc_type, client_binding, MAX_BINDABLE_BUFFERS,
                           (unsigned long long)hit);
                 }
                 continue;
             }
 
-            BufferBaseTarget *baseBinding = &buffers[spirv_binding];
+            BufferBaseTarget *baseBinding = &buffers[client_binding];
             bool usedFallbackBinding = false;
             bool allowGlobalFallback =
                 fallbackBuffers &&
                 (spvc_type != _UNIFORM_CONSTANT_RES ||
                  (entry->flags & MGL_BP_FLAG_ALLOW_FALLBACK));
             if (allowGlobalFallback && !baseBinding->buf && baseBinding->buffer == 0) {
-                BufferBaseTarget *fallbackBinding = &fallbackBuffers[spirv_binding];
+                BufferBaseTarget *fallbackBinding = &fallbackBuffers[client_binding];
                 if (fallbackBinding->buf || fallbackBinding->buffer != 0) {
                     baseBinding = fallbackBinding;
                     usedFallbackBinding = true;
@@ -543,21 +543,21 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
             }
             Buffer *buf = mglRendererGetValidatedBuffer(ctx, baseBinding->buf,
                                                         "mapShaderBufferResourcesViaPlan(base)",
-                                                        (NSUInteger)spirv_binding);
+                                                        (NSUInteger)client_binding);
 
             /* Recover from name/object map skew. */
             if (!buf && baseBinding->buffer != 0) {
                 Buffer *resolved = (Buffer *)searchHashTable(&MGL_STATE(ctx)->buffer_table, baseBinding->buffer);
                 resolved = mglRendererGetValidatedBuffer(ctx, resolved,
                                                          "mapShaderBufferResourcesViaPlan(base,recover)",
-                                                         (NSUInteger)spirv_binding);
+                                                         (NSUInteger)client_binding);
                 if (resolved) {
                     baseBinding->buf = resolved;
                     buf = resolved;
                     static unsigned long long s_recoverHits = 0;
                     if ((++s_recoverHits % 64ull) == 1ull) {
                         NSLog(@"MGL BUFFER RECOVER: stage=%d type=%d binding=%u name=%u ptr=%p hit=%llu (plan)",
-                              stage, spvc_type, spirv_binding, baseBinding->buffer, resolved,
+                              stage, spvc_type, client_binding, baseBinding->buffer, resolved,
                               s_recoverHits);
                     }
                 }
@@ -574,7 +574,7 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                 BufferMap *bentry = &buffer_map->buffers[buffer_map->count];
                 bzero(bentry, sizeof(*bentry));
                 bentry->attribute_mask = 0;
-                bentry->buffer_base_index = spirv_binding;
+                bentry->buffer_base_index = client_binding;
                 bentry->resource_type = (GLuint)spvc_type;
                 bentry->resource_index = entry->resource_index;
                 bentry->metal_binding_index = metal_binding;
@@ -599,7 +599,7 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                               mglMGLShaderResourceTypeName(spvc_type),
                               resource->name ? resource->name : "(null)",
                               entry->resource_index,
-                              (unsigned)spirv_binding,
+                              (unsigned)client_binding,
                               (unsigned)metal_binding,
                               (unsigned)buf->name,
                               (long long)baseBinding->offset,
@@ -617,7 +617,7 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                                 mglMGLShaderResourceTypeName(spvc_type),
                                 resource->name ? resource->name : "(null)",
                                 entry->resource_index,
-                                (unsigned)spirv_binding,
+                                (unsigned)client_binding,
                                 (unsigned)metal_binding,
                                 (unsigned)buf->name,
                                 (long long)baseBinding->offset,
@@ -632,7 +632,7 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                     if (mglShouldLogSmallBaseBinding(programName,
                                                      stage,
                                                      spvc_type,
-                                                     spirv_binding,
+                                                     client_binding,
                                                      buf->name,
                                                      baseBinding->size,
                                                      reflectedRequiredSize)) {
@@ -640,7 +640,7 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                               programName,
                               stage,
                               spvc_type,
-                              spirv_binding,
+                              client_binding,
                               buf->name,
                               (long long)baseBinding->size,
                               (unsigned long)reflectedRequiredSize);
@@ -656,7 +656,7 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                               mglMGLShaderResourceTypeName(spvc_type),
                               resource->name ? resource->name : "(null)",
                               entry->resource_index,
-                              (unsigned)spirv_binding,
+                              (unsigned)client_binding,
                               (unsigned)metal_binding,
                               (unsigned)baseBinding->buffer,
                               baseBinding->buf,
@@ -675,7 +675,7 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                                 mglMGLShaderResourceTypeName(spvc_type),
                                 resource->name ? resource->name : "(null)",
                                 entry->resource_index,
-                                (unsigned)spirv_binding,
+                                (unsigned)client_binding,
                                 (unsigned)metal_binding,
                                 (unsigned)baseBinding->buffer,
                                 baseBinding->buf,
@@ -689,7 +689,7 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                     uint64_t hit = ++s_dropInvalidHits;
                     if (hit <= 16ull || (hit % 4096ull) == 0ull) {
                         NSLog(@"MGL WARNING: mapShaderBufferResourcesViaPlan: dropping invalid base buffer binding=%u stage=%d type=%d name=%u ptr=%p offset=%lld size=%lld (hit=%llu)",
-                              spirv_binding, stage, spvc_type,
+                              client_binding, stage, spvc_type,
                               baseBinding->buffer,
                               baseBinding->buf,
                               (long long)baseBinding->offset,
@@ -779,7 +779,7 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
             
             for (int i = 0; i < count; i++)
             {
-                GLuint spirv_binding;
+                GLuint client_binding;
                 Buffer *buf;
                 BufferBaseTarget *baseBinding;
 
@@ -1019,22 +1019,22 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                 GLuint element_count = mglStageBufferResourceElementCount(spvc_type, resource);
                 for (GLuint element = 0; element < element_count; element++) {
                     GLuint metal_binding = mglMetalResourceSlotForElement(resource, element);
-                    spirv_binding = mglClientBufferBindingForResourceElement(spvc_type, resource, element);
-                    if (spirv_binding >= MAX_BINDABLE_BUFFERS)
+                    client_binding = mglClientBufferBindingForResourceElement(spvc_type, resource, element);
+                    if (client_binding >= MAX_BINDABLE_BUFFERS)
                     {
                         NSLog(@"MGL WARNING: mapGLBuffersToMTLBufferMap: stage=%d type=%d binding=%u exceeds MAX_BINDABLE_BUFFERS=%d, skipping",
-                              stage, spvc_type, spirv_binding, MAX_BINDABLE_BUFFERS);
+                              stage, spvc_type, client_binding, MAX_BINDABLE_BUFFERS);
                         continue;
                     }
 
-                baseBinding = &buffers[spirv_binding];
+                baseBinding = &buffers[client_binding];
                 bool usedFallbackBinding = false;
                 bool allowGlobalFallback =
                     fallbackBuffers &&
                     (spvc_type != _UNIFORM_CONSTANT_RES ||
                      mglPlainUniformAllowsGlobalFallback(resource));
                 if (allowGlobalFallback && !baseBinding->buf && baseBinding->buffer == 0) {
-                    BufferBaseTarget *fallbackBinding = &fallbackBuffers[spirv_binding];
+                    BufferBaseTarget *fallbackBinding = &fallbackBuffers[client_binding];
                     if (fallbackBinding->buf || fallbackBinding->buffer != 0) {
                         baseBinding = fallbackBinding;
                         usedFallbackBinding = true;
@@ -1042,21 +1042,21 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                 }
                 buf = mglRendererGetValidatedBuffer(ctx, baseBinding->buf,
                                                     "mapGLBuffersToMTLBufferMap(base)",
-                                                    (NSUInteger)spirv_binding);
+                                                    (NSUInteger)client_binding);
 
                 // Recover from name/object map skew: some paths can preserve GL name while pointer slot is stale.
                 if (!buf && baseBinding->buffer != 0) {
                     Buffer *resolved = (Buffer *)searchHashTable(&MGL_STATE(ctx)->buffer_table, baseBinding->buffer);
                     resolved = mglRendererGetValidatedBuffer(ctx, resolved,
                                                              "mapGLBuffersToMTLBufferMap(base,recover)",
-                                                             (NSUInteger)spirv_binding);
+                                                             (NSUInteger)client_binding);
                     if (resolved) {
                         baseBinding->buf = resolved;
                         buf = resolved;
                         static unsigned long long s_recoverHits = 0;
                         if ((++s_recoverHits % 64ull) == 1ull) {
                             NSLog(@"MGL BUFFER RECOVER: stage=%d type=%d binding=%u name=%u ptr=%p hit=%llu",
-	                              stage, spvc_type, spirv_binding, baseBinding->buffer, resolved,
+	                              stage, spvc_type, client_binding, baseBinding->buffer, resolved,
 	                              s_recoverHits);
                         }
 	                    }
@@ -1078,7 +1078,7 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                     BufferMap *entry = &buffer_map->buffers[buffer_map->count];
                     bzero(entry, sizeof(*entry));
                     entry->attribute_mask = 0; // non attribute.. no bits set
-                    entry->buffer_base_index = spirv_binding;
+                    entry->buffer_base_index = client_binding;
                     entry->resource_type = (GLuint)spvc_type;
                     entry->resource_index = (GLuint)i;
                     entry->metal_binding_index = metal_binding;
@@ -1103,7 +1103,7 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                                   mglMGLShaderResourceTypeName(spvc_type),
                                   resource->name ? resource->name : "(null)",
                                   i,
-                                  (unsigned)spirv_binding,
+                                  (unsigned)client_binding,
                                   (unsigned)metal_binding,
                                   (unsigned)buf->name,
                                   (long long)baseBinding->offset,
@@ -1122,7 +1122,7 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                                     mglMGLShaderResourceTypeName(spvc_type),
                                     resource->name ? resource->name : "(null)",
                                     i,
-                                    (unsigned)spirv_binding,
+                                    (unsigned)client_binding,
                                     (unsigned)metal_binding,
                                     (unsigned)buf->name,
                                     (long long)baseBinding->offset,
@@ -1137,7 +1137,7 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                         if (mglShouldLogSmallBaseBinding(programName,
                                                          stage,
                                                          spvc_type,
-                                                         spirv_binding,
+                                                         client_binding,
                                                          buf->name,
                                                          baseBinding->size,
                                                          reflectedRequiredSize)) {
@@ -1145,14 +1145,14 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                                   programName,
                                   stage,
                                   spvc_type,
-                                  spirv_binding,
+                                  client_binding,
                                   buf->name,
                                   (long long)baseBinding->size,
                                   (unsigned long)reflectedRequiredSize);
                         }
                     }
                     
-                    //DEBUG_PRINT("Found buffer type: %s buffer_base_index: %d\n", mapped_types[type].name, spirv_binding);
+                    //DEBUG_PRINT("Found buffer type: %s buffer_base_index: %d\n", mapped_types[type].name, client_binding);
 	                }
 	                else
 	                {
@@ -1165,7 +1165,7 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                                   mglMGLShaderResourceTypeName(spvc_type),
                                   resource->name ? resource->name : "(null)",
                                   i,
-                                  (unsigned)spirv_binding,
+                                  (unsigned)client_binding,
                                   (unsigned)metal_binding,
                                   (unsigned)baseBinding->buffer,
                                   baseBinding->buf,
@@ -1184,7 +1184,7 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                                     mglMGLShaderResourceTypeName(spvc_type),
                                     resource->name ? resource->name : "(null)",
                                     i,
-                                    (unsigned)spirv_binding,
+                                    (unsigned)client_binding,
                                     (unsigned)metal_binding,
                                     (unsigned)baseBinding->buffer,
                                     baseBinding->buf,
@@ -1195,7 +1195,7 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                     }
 	                    if (baseBinding->buf || baseBinding->buffer != 0 || baseBinding->offset != 0 || baseBinding->size != 0) {
 	                        NSLog(@"MGL WARNING: mapGLBuffersToMTLBufferMap: dropping invalid base buffer binding=%u stage=%d type=%d name=%u ptr=%p offset=%lld size=%lld",
-	                              spirv_binding, stage, spvc_type,
+	                              client_binding, stage, spvc_type,
                               baseBinding->buffer,
                               baseBinding->buf,
                               (long long)baseBinding->offset,
@@ -1411,7 +1411,7 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
             Buffer *drawIndexBuffer = vao->element_array.buffer;
             void *indexBufferMetal = drawIndexBuffer ? drawIndexBuffer->data.mtl_data : NULL;
             NSLog(@"MGL WARNING: mapGLBuffersToMTLBufferMap mismatch (pipeline=%p mapped=%u expected=%u stage=%d hit=%llu indexBuffer=%p vao=%p)",
-                  _pipelineCache.state->pipelineState, mapped_buffers, count, stage, s_map_mismatch_hits, indexBufferMetal, vao);
+                  _pipelineCacheState.pipelineState, mapped_buffers, count, stage, s_map_mismatch_hits, indexBufferMetal, vao);
         }
     }
 

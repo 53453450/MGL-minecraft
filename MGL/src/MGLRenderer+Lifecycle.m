@@ -143,21 +143,20 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         NSLog(@"MGL ERROR: failed to bind platform renderer view");
         return;
     }
-    _renderPassManager = [MGLRenderPassManager new];
-    [_renderPassManager setRuntimeContext:glm_ctx];
+    mglCmdInit(&_commandState);
+    mglCmdSetRuntimeContext(&_commandState, glm_ctx);
 
     /* start the DontCare frame generation at 1 so it never matches a
      * texture's zero-initialized mtl_rt_frame_generation stamp until that
      * texture is actually written this frame. */
-    [_renderPassManager setDontCareFrameGeneration:1u];
+    mglCmdSetDontCareFrameGeneration(&_commandState, 1u);
 
     BOOL psoDedupEnabled = mglEnvFlagEnabledDefaultOn("MGL_PSO_DEDUP");
     BOOL depthStencilCacheEnabled = mglEnvFlagEnabledDefaultOn("MGL_DS_CACHE");
     BOOL binaryArchiveEnabled = mglEnvFlagEnabledDefaultOn("MGL_BINARY_ARCHIVE");
-    _pipelineCache = [[MGLPipelineCache alloc]
-        initWithPSODedupEnabled:psoDedupEnabled
-      depthStencilCacheEnabled:depthStencilCacheEnabled
-           binaryArchiveEnabled:binaryArchiveEnabled];
+    mglPipelineCacheInit(&_pipelineCacheState, psoDedupEnabled,
+                         depthStencilCacheEnabled, binaryArchiveEnabled);
+    _pipelineCacheBinaryArchiveRequested = binaryArchiveEnabled;
     /* Snapshot arena: batch snapshot/commands from bump allocator. */
     _batching.arenaSnapshotEnabled = mglEnvFlagEnabledDefaultOn("MGL_ARENA_SNAPSHOT");
     if (_batching.arenaSnapshotEnabled) {
@@ -179,8 +178,8 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     NSLog(@"MGL INFO: AGX GPU error tracking initialized");
     NSLog(@"MGL INFO: perf gates pso_dedup=%d ds_cache=%d arena=%d "
           "same_key_restore=%d dirty_key_delta=%d (set VAR=0 to disable)",
-          _pipelineCache.state->psoDedupEnabled ? 1 : 0,
-          _pipelineCache.state->dsCacheEnabled ? 1 : 0,
+          _pipelineCacheState.psoDedupEnabled ? 1 : 0,
+          _pipelineCacheState.dsCacheEnabled ? 1 : 0,
           _batching.arenaSnapshotEnabled ? 1 : 0,
           _batching.skipSameKeyRestoreEnabled ? 1 : 0,
           _batching.dirtyKeyDeltaEnabled ? 1 : 0);
@@ -205,8 +204,8 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         // The renderer is left in a PARTIALLY INITIALIZED state:
         //   SET: ctx, AGX GPU error tracking
         //        command recovery owner, _pipeline*Format/
-        //        _pipelineCache.state->pipelineProgramName and
-        //        _pipelineCache.state->pipelineStateCache.
+        //        _pipelineCacheState.pipelineProgramName and
+        //        _pipelineCacheState.pipelineStateCache.
         //   NIL: _device, _commandQueue, _view.
         // Continuing is pointless without a Metal device — every subsequent
         // operation depends on it.
@@ -236,10 +235,12 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     NSLog(@"MGL INFO: Metal-cpp renderer backend ready (%p)", _backend);
     mglRenderAttachRuntimeOwners(
         glm_ctx,
-        _renderPassManager.state->currentCommandBufferOwner,
-        _renderPassManager.state->currentRenderEncoderOwner,
-        _renderPassManager.state->renderPassStateOwner);
-    _pipelineCache.device = _device;
+        _commandState.currentCommandBufferOwner,
+        _commandState.currentRenderEncoderOwner,
+        _commandState.renderPassStateOwner);
+    mglPipelineCacheSetDevice(&_pipelineCacheState, &_pipelineCacheOwner,
+                              (__bridge void *)_device,
+                              _pipelineCacheBinaryArchiveRequested);
 
     /* Initialize AGX Capability Layer (centralized device detection +
      * capability queries + driver bug markers).  Replaces scattered
@@ -276,8 +277,8 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         // Intentional early return on critical Metal initialization failure.
         // The renderer is left in a PARTIALLY INITIALIZED state:
         //   SET: ctx, AGX GPU error tracking
-        //        fields, _pipeline*Format/_pipelineCache.state->pipelineProgramName,
-        //        _pipelineCache.state->pipelineStateCache, _device,
+        //        fields, _pipeline*Format/_pipelineCacheState.pipelineProgramName,
+        //        _pipelineCacheState.pipelineStateCache, _device,
         //        MTL4 compiler (if available), _capability.
         //   NIL: _commandQueue, _view.
         // Continuing is pointless without a command queue — no encoding or
@@ -292,11 +293,19 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
      * The archive is stored in the user's Caches directory and persists
      * compiled PSO binaries across launches, reducing cold-start PSO
      * compile time from ~10s to ~2s on subsequent launches. */
-    if (_pipelineCache.binaryArchiveEnabled) {
+    if (mglPipelineCacheIsBinaryArchiveEnabled(
+            &_pipelineCacheState, _pipelineCacheOwner,
+            _pipelineCacheBinaryArchiveRequested)) {
         if (@available(macOS 11.0, *)) {
-            [_pipelineCache loadBinaryArchive];
+            mglPipelineCacheLoadBinaryArchive(
+                &_pipelineCacheState, &_pipelineCacheOwner,
+                (__bridge void *)_device,
+                &_pipelineCacheBinaryArchiveRequested);
         } else {
-            [_pipelineCache disableBinaryArchive];
+            mglPipelineCacheDisableBinaryArchive(
+                &_pipelineCacheState, &_pipelineCacheOwner,
+                (__bridge void *)_device,
+                &_pipelineCacheBinaryArchiveRequested);
         }
     }
 
@@ -354,10 +363,10 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
 
     // Create initial command buffer for AGX safety
     @try {
-        [_renderPassManager installNewCommandBufferFromQueue:(__bridge void *)_commandQueue];
+        mglCmdInstallNewCommandBufferFromQueue(&_commandState, (__bridge void *)_commandQueue);
         MGLRenderCommandBufferState commandState = {0};
         if (!mglRenderCommandBufferOwnerHasState(
-                _renderPassManager.state->currentCommandBufferOwner,
+                _commandState.currentCommandBufferOwner,
                 &commandState)) {
             NSLog(@"MGL ERROR: Failed to create initial Metal command buffer");
         }
@@ -376,13 +385,13 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
 {
     if (!ctx || !_device || !_backend ||
         mglRendererBackendIsReady(_backend) != 1 ||
-        !_commandQueueOwner || !_commandQueue || !_layer || !_renderPassManager) {
+        !_commandQueueOwner || !_commandQueue || !_layer) {
         return NO;
     }
 
     MGLRenderCommandBufferState commandState = {0};
     return mglRenderCommandBufferOwnerHasState(
-        _renderPassManager.state->currentCommandBufferOwner,
+        _commandState.currentCommandBufferOwner,
         &commandState);
 }
 
@@ -541,16 +550,16 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         // Cleanup command buffer and encoder
         MGLRenderCommandBufferState commandState = {0};
         if (mglRenderCommandBufferOwnerHasState(
-                _renderPassManager.state->currentCommandBufferOwner,
+                _commandState.currentCommandBufferOwner,
                 &commandState)) {
             NSLog(@"MGL INFO: Releasing current command buffer");
-            [_renderPassManager discardCurrentCommandBuffer];
+            mglCmdDiscardCurrentCommandBuffer(&_commandState);
         }
 
         if (mglRenderEncoderOwnerHasCurrent(
-                _renderPassManager.state->currentRenderEncoderOwner) == 1) {
+                _commandState.currentRenderEncoderOwner) == 1) {
             NSLog(@"MGL INFO: Releasing current render encoder");
-            [_renderPassManager clearCurrentRenderEncoder];
+            mglCmdClearCurrentRenderEncoder(&_commandState);
         }
 
         MGLRendererBackendShutdownResult shutdownResult = {0};
@@ -560,20 +569,19 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
                   shutdownResult.last_submission_error_code);
         }
 
-        [_renderPassManager setRuntimeContext:NULL];
-        [_renderPassManager shutdown];
-        _renderPassManager = nil;
+        mglCmdSetRuntimeContext(&_commandState, NULL);
+        mglCmdShutdown(&_commandState);
+        
 
         mglRenderDetachRuntimeOwners(ctx);
 
-        if (_pipelineCache) {
-            if (_pipelineCache.state->pipelineState) {
-                NSLog(@"MGL INFO: Releasing pipeline state");
-            }
-            [_pipelineCache saveBinaryArchive];
-            [_pipelineCache shutdown];
-            _pipelineCache = nil;
+        if (_pipelineCacheState.pipelineState) {
+            NSLog(@"MGL INFO: Releasing pipeline state");
         }
+        mglPipelineCacheSaveBinaryArchive(&_pipelineCacheState,
+                                          _pipelineCacheOwner,
+                                          (__bridge void *)_device);
+        mglPipelineCacheShutdown(&_pipelineCacheState, &_pipelineCacheOwner);
         if (_backend && mglRendererBackendIsDestroying(_backend) != 1) {
             if (ctx && ctx->renderer_backend == _backend) {
                 mglRendererBackendDestroy(

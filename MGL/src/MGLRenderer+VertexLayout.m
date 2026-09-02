@@ -347,14 +347,16 @@ static uint32_t mglTessControlPointFormat(GLenum type)
         if (i == 0 && MGL_STATE(ctx)->framebuffer == NULL) {
             colorMask_i |= 8u;
         }
-        [_pipelineCache setBlendFactorsForAttachment:(NSUInteger)i
-                                        srcRgbFactor:[self blendFactorFromGL:MGL_STATE(ctx)->var.blend_src_rgb[i]]
-                                      srcAlphaFactor:[self blendFactorFromGL:MGL_STATE(ctx)->var.blend_src_alpha[i]]
-                                        dstRgbFactor:[self blendFactorFromGL:MGL_STATE(ctx)->var.blend_dst_rgb[i]]
-                                      dstAlphaFactor:[self blendFactorFromGL:MGL_STATE(ctx)->var.blend_dst_alpha[i]]
-                                        rgbOperation:[self blendOperationFromGL: MGL_STATE(ctx)->var.blend_equation_rgb[i]]
-                                      alphaOperation:[self blendOperationFromGL: MGL_STATE(ctx)->var.blend_equation_alpha[i]]
-                                           colorMask:colorMask_i];
+        mglPipelineCacheSetBlendFactorsForAttachment(
+            &_pipelineCacheState, &_pipelineCacheOwner, (__bridge void *)_device,
+            _pipelineCacheBinaryArchiveRequested, (uint32_t)i,
+            [self blendFactorFromGL:MGL_STATE(ctx)->var.blend_src_rgb[i]],
+            [self blendFactorFromGL:MGL_STATE(ctx)->var.blend_src_alpha[i]],
+            [self blendFactorFromGL:MGL_STATE(ctx)->var.blend_dst_rgb[i]],
+            [self blendFactorFromGL:MGL_STATE(ctx)->var.blend_dst_alpha[i]],
+            [self blendOperationFromGL:MGL_STATE(ctx)->var.blend_equation_rgb[i]],
+            [self blendOperationFromGL:MGL_STATE(ctx)->var.blend_equation_alpha[i]],
+            colorMask_i);
     }
     if (repairedState)
         mglMarkStateDirtyBits(ctx->active_state,

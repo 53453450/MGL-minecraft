@@ -1684,7 +1684,7 @@ static GLboolean mglSetSamplerUniformUnit(GLMContext ctx, GLint location, GLint 
          * would keep using the stale unit set. */
         program->sampled_texture_unit_mask_valid = 0u;
         ctx->state.active_sampled_texture_unit_mask_valid = 0u;
-        mglMarkRendererDirtyBits(&ctx->state,
+        mglMarkStateDirtyBits(&ctx->state,
                                  DIRTY_TEX_BINDING | DIRTY_SAMPLER);
     }
     return GL_TRUE;
@@ -2971,7 +2971,7 @@ void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
         globalSlot->buf != prevGlobalBuf || globalSlot->size != prevGlobalSize) {
         mglMarkStateDirtyBits(&ctx->state, DIRTY_BUFFER_BASE_STATE);
     } else {
-        mglMarkRendererDirtyBits(&ctx->state, DIRTY_BUFFER_BASE_STATE);
+        mglMarkStateDirtyBits(&ctx->state, DIRTY_BUFFER_BASE_STATE);
     }
 }
 

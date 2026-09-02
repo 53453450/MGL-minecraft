@@ -229,10 +229,10 @@ static void mglBatchExecuteIndirectCommands(
                 ? (__bridge id)(rtDepth->mtl_data)
                 : nil;
             id rpColor0 = (__bridge id)mglRenderGetRenderPassAttachmentTextureOwner(
-                _renderPassManager.state->renderPassStateOwner,
+                _commandState.renderPassStateOwner,
                 MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0);
             id rpDepth = (__bridge id)mglRenderGetRenderPassAttachmentTextureOwner(
-                _renderPassManager.state->renderPassStateOwner,
+                _commandState.renderPassStateOwner,
                 MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0);
             MGLRenderTextureInfo colorInfo =
                 mglBatchTextureInfo(colorMTL);
@@ -308,7 +308,7 @@ static void mglBatchExecuteIndirectCommands(
         }
     }
 
-    if (!_renderPassManager.state->renderPassStateOwner) {
+    if (!_commandState.renderPassStateOwner) {
         return;
     }
 
@@ -344,7 +344,7 @@ static void mglBatchExecuteIndirectCommands(
         }
         for (GLuint colorSlot = 0u; colorSlot < MAX_COLOR_ATTACHMENTS; colorSlot++) {
             if ((__bridge id)mglRenderGetRenderPassAttachmentTextureOwner(
-                    _renderPassManager.state->renderPassStateOwner,
+                    _commandState.renderPassStateOwner,
                     MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
                     colorSlot) == mtlTex) {
                 [self markCurrentFramebufferColorAttachmentWrittenAtIndex:attachmentIndex];
@@ -423,36 +423,10 @@ static void mglBatchExecuteIndirectCommands(
     mglRenderBindingInvalidate(_bindingStateOwner);
 }
 
-/* DUAL-PROXY INVARIANT HELPERS: see MGLRenderer_Private.h.
- *
- * These centralize all writes to _core.activeState and ctx->active_state so
- * that the invariant ("MGL_STATE(ctx) and MGL_STATE(ctx)->ctx) return the same
- * GLMState") cannot be broken by a caller forgetting to update one side.
- *
- * Valid invariant configurations:
- *   (A) _activeState == NULL  -> MGL_STATE falls through to ctx->active_state
- *                                (the "deactivated" / default mode)
- *   (B) _activeState != NULL  -> _activeState MUST equal ctx->active_state
- *                                (the "activated" mode used during batch replay)
- *
- * Configuration (A) is the teardown target; (B) is the batch-replay target. */
+/* DUAL-PROXY INVARIANT HELPERS: batch replay retargets ctx->active_state. */
 - (void)mglRestoreLiveActiveStateForContext:(GLMContext)glm_ctx
 {
-    /* Configuration (A): ctx->active_state points to live embedded state,
-     * _activeState is NULL so MGL_STATE() falls through. */
     glm_ctx->active_state = &glm_ctx->state;
-    _core.activeState = NULL;
-}
-
-- (void)mglAssertDualProxyInSyncForContext:(GLMContext)glm_ctx
-{
-    /* Invariant checkpoint.  NSCAssert is compiled out in release builds,
-     * so this is zero-cost in shipping binaries.  In debug builds it catches
-     * desync at the earliest observation point (function entry/exit) instead
-     * of letting it manifest as wrong binds/dirty bits later. */
-    NSCAssert(_core.activeState == NULL || _core.activeState == glm_ctx->active_state,
-              @"DUAL-PROXY DESYNC: _activeState != ctx->active_state — "
-              @"MGL_STATE() and STATE() would read different GLMState objects");
 }
 
 - (void)recordLastBoundVertexBuffer:(id)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index
@@ -481,7 +455,7 @@ static void mglBatchExecuteIndirectCommands(
 
 - (void)setViewportIfNeeded:(MGLViewportValue)viewport
 {
-    void *owner = _renderPassManager.state->currentRenderEncoderOwner;
+    void *owner = _commandState.currentRenderEncoderOwner;
     mglRenderBindingSetViewportForOwner(
         _bindingStateOwner, owner, viewport.origin_x, viewport.origin_y,
         viewport.width, viewport.height, viewport.znear, viewport.zfar);
@@ -489,14 +463,14 @@ static void mglBatchExecuteIndirectCommands(
 
 - (void)setScissorRectIfNeeded:(MGLScissorRectValue)rect
 {
-    void *owner = _renderPassManager.state->currentRenderEncoderOwner;
+    void *owner = _commandState.currentRenderEncoderOwner;
     mglRenderBindingSetScissorForOwner(
         _bindingStateOwner, owner, rect.x, rect.y, rect.width, rect.height);
 }
 
 - (void)setTriangleFillModeIfNeeded:(uint32_t)mode
 {
-    void *owner = _renderPassManager.state->currentRenderEncoderOwner;
+    void *owner = _commandState.currentRenderEncoderOwner;
     mglRenderBindingSetTriangleFillForOwner(
         _bindingStateOwner, owner, (uint32_t)mode);
 }
@@ -513,7 +487,7 @@ static void mglBatchExecuteIndirectCommands(
         RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList:&state->fragment_buffer_map_list]);
     }
     MGLEncodeContext encCtx = {
-        .render_encoder_owner = _renderPassManager.state->currentRenderEncoderOwner,
+        .render_encoder_owner = _commandState.currentRenderEncoderOwner,
     };
     RETURN_FALSE_ON_FAILURE([self bindVertexBuffersToCurrentRenderEncoder:&encCtx]);
     RETURN_FALSE_ON_FAILURE([self bindFragmentBuffersToCurrentRenderEncoder:&encCtx]);
@@ -622,10 +596,10 @@ static void mglBatchExecuteIndirectCommands(
         fboName = fbo->name;
     }
     id rpColor0 = (__bridge id)mglRenderGetRenderPassAttachmentTextureOwner(
-                _renderPassManager.state->renderPassStateOwner,
+                _commandState.renderPassStateOwner,
                 MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0);
     id rpDepth = (__bridge id)mglRenderGetRenderPassAttachmentTextureOwner(
-                _renderPassManager.state->renderPassStateOwner,
+                _commandState.renderPassStateOwner,
                 MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0);
     GLMState *snapshot = batch->state_snapshot ? (GLMState *)batch->state_snapshot : NULL;
     GLuint snapshotFBOName = 0u;
@@ -696,9 +670,9 @@ static void mglBatchExecuteIndirectCommands(
                 (unsigned)MGL_STATE(glm_ctx)->var.cull_face_mode,
                 (unsigned)MGL_STATE(glm_ctx)->var.front_face,
                 (unsigned)MGL_STATE(glm_ctx)->dirty_bits,
-                mglBatchEncoderTraceToken(_renderPassManager.state->currentRenderEncoderOwner),
-                _pipelineCache.state->pipelineState,
-                (unsigned)_renderPassManager.state->renderPassFramebufferName,
+                mglBatchEncoderTraceToken(_commandState.currentRenderEncoderOwner),
+                _pipelineCacheState.pipelineState,
+                (unsigned)_commandState.renderPassFramebufferName,
                 rpColor0,
                 rpDepth);
 }
@@ -758,10 +732,10 @@ static void mglBatchExecuteIndirectCommands(
         fboName = fbo->name;
     }
     id rpColor0 = (__bridge id)mglRenderGetRenderPassAttachmentTextureOwner(
-                _renderPassManager.state->renderPassStateOwner,
+                _commandState.renderPassStateOwner,
                 MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0);
     id rpDepth = (__bridge id)mglRenderGetRenderPassAttachmentTextureOwner(
-                _renderPassManager.state->renderPassStateOwner,
+                _commandState.renderPassStateOwner,
                 MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0);
     MGLRenderTextureInfo rpColorInfo = mglBatchTextureInfo(rpColor0);
     MGLRenderTextureInfo rpDepthInfo = mglBatchTextureInfo(rpDepth);
@@ -831,10 +805,10 @@ static void mglBatchExecuteIndirectCommands(
                 (unsigned)cmd->baseInstance,
                 (unsigned)eboName,
                 ebo,
-                mglBatchEncoderTraceToken(_renderPassManager.state->currentRenderEncoderOwner),
-                _pipelineCache.state->pipelineState,
+                mglBatchEncoderTraceToken(_commandState.currentRenderEncoderOwner),
+                _pipelineCacheState.pipelineState,
                 (unsigned)fboName,
-                (unsigned)_renderPassManager.state->renderPassFramebufferName,
+                (unsigned)_commandState.renderPassFramebufferName,
                 rpColor0,
                 rpDepth,
                 (unsigned long)rpColorInfo.width,
@@ -842,19 +816,19 @@ static void mglBatchExecuteIndirectCommands(
                 (unsigned long)rpDepthInfo.width,
                 (unsigned long)rpDepthInfo.height,
                 mglLoadActionName((uint32_t)mglRenderPassLoadActionForTrace(
-                    _renderPassManager.state->renderPassStateOwner,
+                    _commandState.renderPassStateOwner,
                     MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0,
                     0u)),
                 mglStoreActionName((uint32_t)mglRenderPassStoreActionForTrace(
-                    _renderPassManager.state->renderPassStateOwner,
+                    _commandState.renderPassStateOwner,
                     MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0,
                     0u)),
                 mglLoadActionName((uint32_t)mglRenderPassLoadActionForTrace(
-                    _renderPassManager.state->renderPassStateOwner,
+                    _commandState.renderPassStateOwner,
                     MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0,
                     0u)),
                 mglStoreActionName((uint32_t)mglRenderPassStoreActionForTrace(
-                    _renderPassManager.state->renderPassStateOwner,
+                    _commandState.renderPassStateOwner,
                     MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0,
                     0u)),
                 color0Attachment ? (unsigned)color0Attachment->texture : 0u,
@@ -921,7 +895,7 @@ static void mglBatchExecuteIndirectCommands(
                     (unsigned)mglCurrentRenderProgramKey(glm_ctx),
                     vertexProgram ? (unsigned)vertexProgram->name : 0u,
                     fragmentProgram ? (unsigned)fragmentProgram->name : 0u,
-                    (unsigned)_pipelineCache.state->pipelineProgramName,
+                    (unsigned)_pipelineCacheState.pipelineProgramName,
                     (unsigned)fs0->gl_texture_name,
                     (unsigned)fs0->sampler_unit,
                     (unsigned)fs0->program_name,
@@ -1020,7 +994,7 @@ static void mglBatchExecuteIndirectCommands(
     }
 }
 
-void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
+void mglRendererObjCFlushDrawBuffer(GLMContext glm_ctx)
 {
     MGLRenderer *renderer = mglRendererForContext(glm_ctx);
     if (!renderer || !glm_ctx) return;
@@ -1036,11 +1010,6 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
 - (void)flushDrawBufferLocked:(GLMContext)glm_ctx
 {
     ctx = glm_ctx;
-
-    /* DUAL-PROXY INVARIANT checkpoint: entering flushDrawBuffer.  All
-     * subsequent batch replay / teardown paths assume the proxies start in
-     * sync.  NSCAssert compiled out in release. */
-    [self mglAssertDualProxyInSyncForContext:glm_ctx];
 
     MGLCommandBuffer *cb = &glm_ctx->draw_command_buffer;
     if (cb->batch_count == 0) {
@@ -1106,7 +1075,7 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
                 lastKeyValid &&
                 lastExecuteOk &&
                 !lastWasStreamBatch &&
-                mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 0 &&
+                mglRenderEncoderOwnerHasCurrent(_commandState.currentRenderEncoderOwner) != 0 &&
                 mglBindingStateIsValid(_bindingStateOwner) &&
                 mglStateKeysEqual(&batch->key, &lastKey) &&
                 wantAbsoluteVertexOffsets == _batching.absoluteVertexBindingOffsets &&
@@ -1116,7 +1085,7 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
                        lastKeyValid && lastExecuteOk && !lastWasStreamBatch) {
                 /* Attribute the skip failure to its first breaking condition
                  * (in evaluation order) so Plan-B can target the real cause. */
-                if (mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) == 0) {
+                if (mglRenderEncoderOwnerHasCurrent(_commandState.currentRenderEncoderOwner) == 0) {
                     MGL_PERF_INC(g_mglSkipFailNoEncoderSinceSwap);
                 } else if (!mglBindingStateIsValid(_bindingStateOwner)) {
                     MGL_PERF_INC(g_mglSkipFailBindInvalidSinceSwap);
@@ -1137,15 +1106,6 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
             }
 
             if (canSkipRestore) {
-                /* DUAL-PROXY INVARIANT: both _activeState (ObjC ivar) and
-                 * glm_ctx->active_state (C pointer) must point to the same GLMState.
-                 * After skipping restore, they both still point to ctx->state from
-                 * the previous batch, which is correct. Verify the invariant holds. */
-                if (_activeState != glm_ctx->active_state) {
-                    /* Defensive: sync _activeState to match ctx->active_state if they
-                     * diverged (shouldn't happen, but fail gracefully). */
-                    _activeState = glm_ctx->active_state;
-                }
                 MGL_STATE(glm_ctx)->dirty_bits = 0;
                 MGL_PERF_INC(g_mglSameKeyRestoreSkipsSinceSwap);
             } else {
@@ -1187,7 +1147,7 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
 
             MGLBatchPath scheduledPath = [self scheduleDrawBatch:batch context:glm_ctx];
             MGLEncodeContext encCtx = {
-                .render_encoder_owner = _renderPassManager.state->currentRenderEncoderOwner,
+                .render_encoder_owner = _commandState.currentRenderEncoderOwner,
             };
             switch (scheduledPath) {
                 case MGL_BATCH_PATH_STREAM_MERGE:
@@ -1263,7 +1223,7 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
               skippedCommandCount);
     }
     } @finally {
-        [_renderPassManager setTraceReplayFlushId:0 batchIndex:0];
+        mglCmdSetTraceReplayFlushId(&_commandState, 0, 0);
         [self teardownBatchReplayForContext:glm_ctx savedState:&savedState
                                 savedError:savedError replayError:replayError];
     }
@@ -1338,11 +1298,6 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
              forcedDirtyBits:(GLuint)forcedDirtyBits
 {
     MGL_SIGNPOST_BEGIN(RestoreStateForBatch);
-    /* DUAL-PROXY INVARIANT checkpoint: entering batch replay state restore.
-     * Caller is responsible for having ctx->active_state already pointing
-     * to the desired target (&ctx->state for replay).  We sync _activeState
-     * to match at the end of this function. */
-    [self mglAssertDualProxyInSyncForContext:glm_ctx];
     if (batch->state_snapshot) {
         /* Selective restore: only copy hot fields (~51KB vs 82KB full).
          * Cold fields (HashTables + unused buffer_base types) are restored
@@ -1373,9 +1328,6 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
     } else {
         [self restoreStateFromKey:&batch->key context:glm_ctx];
     }
-    /* Activate snapshot-based state access for sync functions.
-     * _activeState points to ctx->state (which now holds the snapshot data). */
-    _activeState = glm_ctx->active_state;
     MGL_STATE(glm_ctx)->dirty_bits = 0;
 
     static const GLuint kMGLFullReplayDirtyBits =
@@ -1388,7 +1340,7 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
     BOOL prevKeyValid = (prevKey != NULL);
     BOOL canDelta = _batching.dirtyKeyDeltaEnabled &&
                     prevKeyValid &&
-                    mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 0 &&
+                    mglRenderEncoderOwnerHasCurrent(_commandState.currentRenderEncoderOwner) != 0 &&
                     mglBindingStateIsValid(_bindingStateOwner);
 
     if (canDelta) {
@@ -1443,16 +1395,16 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
     Framebuffer *replayFBO = MGL_STATE(glm_ctx)->framebuffer;
     if ((replayFBO && (replayFBO->dirty_bits & DIRTY_FBO_BINDING)) ||
         (prevKeyValid && prevKey->fbo_name != batch->key.fbo_name) ||
-        (mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 0 &&
+        (mglRenderEncoderOwnerHasCurrent(_commandState.currentRenderEncoderOwner) != 0 &&
          ![self currentRenderPassMatchesCurrentFramebuffer])) {
         replayDirtyBits |= DIRTY_FBO;
     }
     /* Empty encoder cannot delta-bind — force full domains. */
-    if (mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) == 0 || !mglBindingStateIsValid(_bindingStateOwner)) {
+    if (mglRenderEncoderOwnerHasCurrent(_commandState.currentRenderEncoderOwner) == 0 || !mglBindingStateIsValid(_bindingStateOwner)) {
         replayDirtyBits = kMGLFullReplayDirtyBits |
                           ((replayDirtyBits & DIRTY_FBO) ? DIRTY_FBO : 0);
         if ((replayFBO && (replayFBO->dirty_bits & DIRTY_FBO_BINDING)) ||
-            (mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 0 &&
+            (mglRenderEncoderOwnerHasCurrent(_commandState.currentRenderEncoderOwner) != 0 &&
              ![self currentRenderPassMatchesCurrentFramebuffer])) {
             replayDirtyBits |= DIRTY_FBO;
         } else if (prevKeyValid && prevKey->fbo_name != batch->key.fbo_name) {
@@ -1468,19 +1420,7 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
                            savedError:(GLenum)savedError
                           replayError:(GLenum)replayError
 {
-    /* DUAL-PROXY INVARIANT checkpoint: entering batch replay teardown.
-     * Pre-teardown, both proxies may be in either config:
-     *   (A) default: _activeState=NULL, ctx->active_state=&ctx->state
-     *   (B) redirected: both point at &ctx->state (snapshot-based replay)
-     * The assert verifies whichever config holds is internally consistent. */
-    [self mglAssertDualProxyInSyncForContext:glm_ctx];
-    /* Deactivate snapshot-based state access — revert to live ctx->state.
-     * DUAL-PROXY INVARIANT: use the helper so both proxies revert atomically
-     * (previously two separate statements: _activeState=nil then ctx reset). */
     [self mglRestoreLiveActiveStateForContext:glm_ctx];
-    /* DUAL-PROXY INVARIANT checkpoint: post-teardown, both proxies must be
-     * in default config (A).  MGL_STATE now falls through to &ctx->state. */
-    [self mglAssertDualProxyInSyncForContext:glm_ctx];
     _batching.absoluteVertexBindingOffsets = NO;
     mglResetCommandBufferForContext(glm_ctx, &glm_ctx->draw_command_buffer);
     /* Task 4: Reset the snapshot arena now that all batch replay is complete
@@ -1508,7 +1448,7 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
                     replayError:(GLenum *)replayError
                 skippedCommands:(uint32_t *)skippedCommands
 {
-    [_renderPassManager setTraceReplayFlushId:flushId batchIndex:batchIndex];
+    mglCmdSetTraceReplayFlushId(&_commandState, flushId, batchIndex);
     [self traceReplayBatch:batch context:glm_ctx flushId:flushId
                 batchIndex:batchIndex phase:"RESTORE"];
 
@@ -1547,7 +1487,7 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
      * once after texture binding so stream-merge, MDI and ICB paths remain
      * available. Only genuinely mixed batches rebind per command. */
     MGLEncodeContext samplerEncCtx = {
-        .render_encoder_owner = _renderPassManager.state->currentRenderEncoderOwner,
+        .render_encoder_owner = _commandState.currentRenderEncoderOwner,
     };
     if (!batch->sampler_snapshots_mixed &&
         batch->sampler_snapshot_id != MGL_INVALID_SAMPLER_SNAPSHOT_ID &&
@@ -1641,8 +1581,8 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
             [self traceReplayCommand:batch
                              command:&batch->commands[0]
                              context:glm_ctx
-                             flushId:_renderPassManager.state->traceReplayFlushId
-                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                             flushId:_commandState.traceReplayFlushId
+                          batchIndex:_commandState.traceReplayBatchIndex
                         commandIndex:0
                                phase:"SKIP"
                               reason:"stream_empty"];
@@ -1655,8 +1595,8 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
             [self traceReplayCommand:batch
                              command:&batch->commands[0]
                              context:glm_ctx
-                             flushId:_renderPassManager.state->traceReplayFlushId
-                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                             flushId:_commandState.traceReplayFlushId
+                          batchIndex:_commandState.traceReplayBatchIndex
                         commandIndex:0
                                phase:"FALLBACK"
                               reason:"stream_unsupported_primitive"];
@@ -1670,8 +1610,8 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
             [self traceReplayCommand:batch
                              command:&batch->commands[0]
                              context:glm_ctx
-                             flushId:_renderPassManager.state->traceReplayFlushId
-                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                             flushId:_commandState.traceReplayFlushId
+                          batchIndex:_commandState.traceReplayBatchIndex
                         commandIndex:0
                                phase:"ISSUE"
                               reason:"stream_merge_to_mdi"];
@@ -1687,8 +1627,8 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
             [self traceReplayCommand:batch
                              command:&batch->commands[0]
                              context:glm_ctx
-                             flushId:_renderPassManager.state->traceReplayFlushId
-                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                             flushId:_commandState.traceReplayFlushId
+                          batchIndex:_commandState.traceReplayBatchIndex
                         commandIndex:0
                                phase:"FALLBACK"
                               reason:"stream_index_buffer"];
@@ -1703,8 +1643,8 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
             [self traceReplayCommand:batch
                              command:&batch->commands[0]
                              context:glm_ctx
-                             flushId:_renderPassManager.state->traceReplayFlushId
-                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                             flushId:_commandState.traceReplayFlushId
+                          batchIndex:_commandState.traceReplayBatchIndex
                         commandIndex:0
                                phase:"FALLBACK"
                               reason:"stream_no_mtl_index"];
@@ -1724,8 +1664,8 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
     [self traceReplayCommand:batch
                      command:firstCmd
                      context:glm_ctx
-                     flushId:_renderPassManager.state->traceReplayFlushId
-                  batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                     flushId:_commandState.traceReplayFlushId
+                  batchIndex:_commandState.traceReplayBatchIndex
                 commandIndex:0
                        phase:"SUBMIT"
                       reason:"stream_direct_merged"];
@@ -1750,8 +1690,8 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
             [self traceReplayCommand:batch
                              command:&batch->commands[0]
                              context:glm_ctx
-                             flushId:_renderPassManager.state->traceReplayFlushId
-                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                             flushId:_commandState.traceReplayFlushId
+                          batchIndex:_commandState.traceReplayBatchIndex
                         commandIndex:0
                                phase:"FALLBACK"
                               reason:"stream_mdi_index_buffer"];
@@ -1765,8 +1705,8 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
             [self traceReplayCommand:batch
                              command:&batch->commands[0]
                              context:glm_ctx
-                             flushId:_renderPassManager.state->traceReplayFlushId
-                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                             flushId:_commandState.traceReplayFlushId
+                          batchIndex:_commandState.traceReplayBatchIndex
                         commandIndex:0
                                phase:"FALLBACK"
                               reason:"stream_mdi_no_mtl_index"];
@@ -1780,8 +1720,8 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
             [self traceReplayCommand:batch
                              command:&batch->commands[0]
                              context:glm_ctx
-                             flushId:_renderPassManager.state->traceReplayFlushId
-                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                             flushId:_commandState.traceReplayFlushId
+                          batchIndex:_commandState.traceReplayBatchIndex
                         commandIndex:0
                                phase:"FALLBACK"
                               reason:"stream_mdi_args_overflow"];
@@ -1799,8 +1739,8 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
             [self traceReplayCommand:batch
                              command:&batch->commands[0]
                              context:glm_ctx
-                             flushId:_renderPassManager.state->traceReplayFlushId
-                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                             flushId:_commandState.traceReplayFlushId
+                          batchIndex:_commandState.traceReplayBatchIndex
                         commandIndex:0
                                phase:"FALLBACK"
                               reason:"stream_mdi_args_alloc"];
@@ -1840,8 +1780,8 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
         [self traceReplayCommand:batch
                          command:cmd
                          context:glm_ctx
-                         flushId:_renderPassManager.state->traceReplayFlushId
-                      batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                         flushId:_commandState.traceReplayFlushId
+                      batchIndex:_commandState.traceReplayBatchIndex
                     commandIndex:i
                            phase:"SUBMIT"
                           reason:"stream_mdi_indexed"];
@@ -1860,8 +1800,8 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
             [self traceReplayCommand:batch
                              command:&batch->commands[0]
                              context:glm_ctx
-                             flushId:_renderPassManager.state->traceReplayFlushId
-                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                             flushId:_commandState.traceReplayFlushId
+                          batchIndex:_commandState.traceReplayBatchIndex
                         commandIndex:0
                                phase:"FALLBACK"
                               reason:"icb_unavailable"];
@@ -1872,8 +1812,8 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
         [self traceReplayCommand:batch
                          command:&batch->commands[0]
                          context:glm_ctx
-                         flushId:_renderPassManager.state->traceReplayFlushId
-                      batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                         flushId:_commandState.traceReplayFlushId
+                      batchIndex:_commandState.traceReplayBatchIndex
                     commandIndex:0
                            phase:"FALLBACK"
                           reason:"icb_unsupported_primitive"];
@@ -1899,8 +1839,8 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
             [self traceReplayCommand:batch
                              command:&batch->commands[0]
                              context:glm_ctx
-                             flushId:_renderPassManager.state->traceReplayFlushId
-                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                             flushId:_commandState.traceReplayFlushId
+                          batchIndex:_commandState.traceReplayBatchIndex
                         commandIndex:0
                                phase:"FALLBACK"
                               reason:"icb_create_exception"];
@@ -1910,8 +1850,8 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
             [self traceReplayCommand:batch
                              command:&batch->commands[0]
                              context:glm_ctx
-                             flushId:_renderPassManager.state->traceReplayFlushId
-                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                             flushId:_commandState.traceReplayFlushId
+                          batchIndex:_commandState.traceReplayBatchIndex
                         commandIndex:0
                                phase:"FALLBACK"
                               reason:"icb_create_nil"];
@@ -1929,8 +1869,8 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
                     [self traceReplayCommand:batch
                                      command:cmd
                                      context:glm_ctx
-                                     flushId:_renderPassManager.state->traceReplayFlushId
-                                  batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                                     flushId:_commandState.traceReplayFlushId
+                                  batchIndex:_commandState.traceReplayBatchIndex
                                 commandIndex:i
                                        phase:"FALLBACK"
                                       reason:"icb_u8_index"];
@@ -1947,8 +1887,8 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
                     [self traceReplayCommand:batch
                                      command:cmd
                                      context:glm_ctx
-                                     flushId:_renderPassManager.state->traceReplayFlushId
-                                  batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                                     flushId:_commandState.traceReplayFlushId
+                                  batchIndex:_commandState.traceReplayBatchIndex
                                 commandIndex:i
                                        phase:"FALLBACK"
                                       reason:"icb_resolve_element"];
@@ -1967,8 +1907,8 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
                     [self traceReplayCommand:batch
                                      command:cmd
                                      context:glm_ctx
-                                     flushId:_renderPassManager.state->traceReplayFlushId
-                                  batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                                     flushId:_commandState.traceReplayFlushId
+                                  batchIndex:_commandState.traceReplayBatchIndex
                                 commandIndex:i
                                        phase:"FALLBACK"
                                       reason:"icb_prepared_index"];
@@ -1981,8 +1921,8 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
                     [self traceReplayCommand:batch
                                      command:cmd
                                      context:glm_ctx
-                                     flushId:_renderPassManager.state->traceReplayFlushId
-                                  batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                                     flushId:_commandState.traceReplayFlushId
+                                  batchIndex:_commandState.traceReplayBatchIndex
                                 commandIndex:i
                                        phase:"FALLBACK"
                                       reason:"icb_command_nil"];
@@ -2009,8 +1949,8 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
                     [self traceReplayCommand:batch
                                      command:cmd
                                      context:glm_ctx
-                                     flushId:_renderPassManager.state->traceReplayFlushId
-                                  batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                                     flushId:_commandState.traceReplayFlushId
+                                  batchIndex:_commandState.traceReplayBatchIndex
                                 commandIndex:i
                                        phase:"FALLBACK"
                                       reason:"icb_command_nil"];
@@ -2034,8 +1974,8 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
             [self traceReplayCommand:batch
                              command:&batch->commands[i]
                              context:glm_ctx
-                             flushId:_renderPassManager.state->traceReplayFlushId
-                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                             flushId:_commandState.traceReplayFlushId
+                          batchIndex:_commandState.traceReplayBatchIndex
                         commandIndex:i
                                phase:"SUBMIT"
                               reason:"icb"];
@@ -2049,10 +1989,18 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
 - (id)mdiArgumentScratchBufferWithLength:(NSUInteger)length
                                              offset:(NSUInteger *)offsetOut
 {
-    return (__bridge id)[_renderPassManager
-        mdiArgumentScratchBufferWithDevice:(__bridge void *)_device
-                                     length:length
-                                     offset:offsetOut];
+    return (__bridge id)mglCmdMdiArgumentScratchBufferWithDevice(
+        &_commandState, (__bridge void *)_device, length, offsetOut);
 }
 
 @end
+
+bool mglRendererObjCSyncResourceBindings(GLMContext glm_ctx,
+                                         const MGLResourceSyncWork *done)
+{
+    MGLRenderer *renderer = mglRendererForContext(glm_ctx);
+    if (!renderer) {
+        return false;
+    }
+    return [renderer syncResourceBindingsForContext:glm_ctx alreadyDone:done];
+}

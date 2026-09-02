@@ -8,6 +8,8 @@
  */
 
 #include "mgl_renderer_backend.h"
+#include "mgl_renderer_batch.h"
+#include "mgl_renderer_texture.h"
 
 #include <algorithm>
 #include <array>
@@ -73,10 +75,10 @@ extern "C" void mglRendererMultiDrawArraysIndirect(GLMContext context, uint32_t 
     const void *indirect, int32_t draw_count, int32_t stride);
 extern "C" void mglRendererMultiDrawElementsIndirect(GLMContext context, uint32_t mode, uint32_t type,
     const void *indirect, int32_t draw_count, int32_t stride);
-extern "C" void mglRendererCompatBindTexture(GLMContext context, Texture *texture);
-extern "C" void mglRendererCompatFlushDrawBuffer(GLMContext context);
+extern "C" void mglRendererObjCBindTexture(GLMContext context, Texture *texture);
+extern "C" void mglRendererObjCFlushDrawBuffer(GLMContext context);
+extern "C" void mglRendererObjCGenerateMipmaps(GLMContext context, Texture *texture);
 extern "C" void mglRendererCompatSwapBuffers(GLMContext context);
-extern "C" void mglRendererCompatClearBuffer(GLMContext context,
     unsigned int type, unsigned int mask);
 extern "C" void mglRendererCompatBlitFramebuffer(GLMContext context,
     int src_x0, int src_y0, int src_x1, int src_y1,
@@ -96,7 +98,6 @@ extern "C" void mglRendererCompatGetTexImage(GLMContext context, Texture *textur
     void *pixel_bytes, uint32_t bytes_per_row, uint32_t bytes_per_image,
     int32_t x, int32_t y, int32_t width, int32_t height,
     uint32_t format, uint32_t type, uint32_t level, uint32_t slice);
-extern "C" void mglRendererCompatGenerateMipmaps(GLMContext context, Texture *texture);
 extern "C" void mglRendererCompatTexSubImage(GLMContext context, Texture *texture, Buffer *buffer,
     size_t source_offset, size_t source_pitch, size_t source_image_size,
     size_t source_size, uint32_t slice, uint32_t level,
@@ -1499,7 +1500,7 @@ extern "C" void mglRendererBindBuffer(GLMContext context, Buffer *buffer)
 extern "C" void mglRendererBindTexture(GLMContext context, Texture *texture)
 {
     void *platform_shell = mglRendererBackendPlatformShell(context);
-    if (platform_shell) mglRendererCompatBindTexture(context, texture);
+    if (platform_shell) mglRenderBindTexture(context, texture);
 }
 
 extern "C" void mglRendererBindProgram(GLMContext context, Program *program)
@@ -1553,7 +1554,12 @@ extern "C" void mglRendererSwapBuffers(GLMContext context)
 extern "C" void mglRendererFlushDrawBuffer(GLMContext context)
 {
     void *platform_shell = mglRendererBackendPlatformShell(context);
-    if (platform_shell) mglRendererCompatFlushDrawBuffer(context);
+    mglRenderFlushDrawBuffer(context);
+}
+
+extern "C" int mglRendererProcessGLState(GLMContext context, int draw_command)
+{
+    return mglRenderProcessGLState(context, draw_command);
 }
 
 extern "C" void mglRendererInvalidateRenderPass(GLMContext context)
@@ -1663,7 +1669,7 @@ extern "C" void mglRendererGenerateMipmaps(
     GLMContext context, Texture *texture)
 {
     void *platform_shell = mglRendererBackendPlatformShell(context);
-    if (platform_shell) mglRendererCompatGenerateMipmaps(context, texture);
+    mglRenderGenerateMipmaps(context, texture);
 }
 
 extern "C" void mglRendererTexSubImage(

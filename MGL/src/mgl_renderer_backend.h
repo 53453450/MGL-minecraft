@@ -15,6 +15,7 @@
 #include <stdint.h>
 
 #include "mgl_render.h"
+#include "mgl_renderer_sync.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -255,6 +256,7 @@ void mglRendererReleaseSync(GLMContext context, Sync *sync);
 void mglRendererFlush(GLMContext context, bool finish);
 void mglRendererSwapBuffers(GLMContext context);
 void mglRendererFlushDrawBuffer(GLMContext context);
+int mglRendererProcessGLState(GLMContext context, int draw_command);
 void mglRendererInvalidateRenderPass(GLMContext context);
 void mglRendererClearBuffer(GLMContext context, uint32_t type, uint32_t mask);
 void mglRendererBlitFramebuffer(GLMContext context,

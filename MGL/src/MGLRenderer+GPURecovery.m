@@ -43,7 +43,7 @@
         // Get current error tracking from command buffer if available
         MGLRenderCommandBufferState currentState = {0};
         BOOL hasCurrentCommandBuffer = mglRenderCommandBufferOwnerHasState(
-            _renderPassManager.state->currentCommandBufferOwner,
+            _commandState.currentCommandBufferOwner,
             &currentState);
         if (hasCurrentCommandBuffer &&
             currentState.has_error) {
@@ -115,7 +115,7 @@
     @try {
         MGLRenderCommandBufferState currentState = {0};
         if (mglRenderCommandBufferOwnerHasState(
-                _renderPassManager.state->currentCommandBufferOwner,
+                _commandState.currentCommandBufferOwner,
                 &currentState)) {
             if (currentState.status == MGL_COMMAND_BUFFER_STATUS_COMMITTED) {
                 // Do not block indefinitely here; cleanup can be invoked on the render thread.
@@ -124,13 +124,13 @@
                     NSLog(@"MGL INFO: cleanupCommandBuffer skipping blocking wait for committed command buffer");
                 }
             }
-            [_renderPassManager discardCurrentCommandBuffer];
+            mglCmdDiscardCurrentCommandBuffer(&_commandState);
         }
 
         if (mglRenderEncoderOwnerHasCurrent(
-                _renderPassManager.state->currentRenderEncoderOwner) == 1) {
-            [_renderPassManager endCurrentRenderEncoder];
-            [_renderPassManager clearCurrentRenderEncoder];
+                _commandState.currentRenderEncoderOwner) == 1) {
+            mglCmdEndCurrentRenderEncoder(&_commandState);
+            mglCmdClearCurrentRenderEncoder(&_commandState);
         }
     } @catch (NSException *exception) {
         NSLog(@"MGL ERROR: Exception during command buffer cleanup: %@", exception);
@@ -162,7 +162,7 @@
         NSLog(@"MGL AGX RECOVERY: Command queue successfully recreated");
     }
 
-    [_pipelineCache resetCaches];
+    mglPipelineCacheResetCaches(&_pipelineCacheState, &_pipelineCacheOwner);
     // Note: _depthStencilState would be an instance variable if it exists
 
     // Clear all cached objects
@@ -205,11 +205,9 @@
     }
     MGLRenderCommandBufferTransaction transaction = {0};
     @try {
-        int transactionResult = [_renderPassManager
-            commitCommandBufferTransaction:(__bridge void *)commandBuffer
-            recoveryOwner:_gpuRecovery.commandRecoveryOwner
-            waitForCompletion:NO
-            result:&transaction];
+        int transactionResult = mglCmdCommitCommandBufferTransaction(
+            &_commandState, (__bridge void *)commandBuffer,
+            _gpuRecovery.commandRecoveryOwner, NO, &transaction);
         if (transaction.result ==
             MGL_RENDER_COMMAND_BUFFER_TRANSACTION_NESTED) {
             NSLog(@"MGL AGX WARNING: Commit already in progress, skipping nested commit");
@@ -270,7 +268,7 @@
         }
     }
     } @finally {
-        [_renderPassManager releaseDetachedCommandBufferIfOwned:(__bridge void *)commandBuffer];
+        mglCmdReleaseDetachedCommandBufferIfOwned(&_commandState, (__bridge void *)commandBuffer);
     }
 }
 
@@ -303,9 +301,9 @@
     // Clear current problematic resources
     MGLRenderCommandBufferState currentState = {0};
     if (mglRenderCommandBufferOwnerHasState(
-            _renderPassManager.state->currentCommandBufferOwner,
+            _commandState.currentCommandBufferOwner,
             &currentState)) {
-        [_renderPassManager discardCurrentCommandBuffer];
+        mglCmdDiscardCurrentCommandBuffer(&_commandState);
     }
 
     // Don't recreate command queue immediately - let it rest

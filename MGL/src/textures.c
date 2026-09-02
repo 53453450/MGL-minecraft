@@ -1225,7 +1225,7 @@ void mglActiveTexture(GLMContext ctx, GLenum texture)
     }
 
     STATE(active_texture) = unit;
-    mglMarkRendererDirtyBits(&ctx->state, DIRTY_TEX_BINDING);
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_TEX_BINDING);
     mglTraceTextureUnitState(ctx, "ActiveTexture", unit, 0, 0, STATE(active_textures[unit]));
 }
 

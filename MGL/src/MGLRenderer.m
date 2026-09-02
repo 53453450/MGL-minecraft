@@ -3304,7 +3304,7 @@ void mglRendererCompatSwapBuffers(GLMContext glm_ctx)
      * written before this point belongs to the previous frame, so its next
      * write this frame is a "first use" that may skip loading prior contents.
      * Skips 0 so a zero-initialized texture stamp never matches. */
-    [_renderPassManager incrementDontCareFrameGenerationWithWrap];
+    mglCmdIncrementDontCareFrameGenerationWithWrap(&_commandState);
     MGL_FRAME_STORE(g_mglLastSwapSeconds, swapStartSeconds);
     if (swapCall <= 20ull || (swapCall % 60ull) == 0ull) {
         mglTraceLog("SWAP_RENDERER_ENTRY call=%llu drawArraysSinceSwap=%llu drawElementsSinceSwap=%llu processDrawCallsSinceSwap=%llu",
@@ -3338,9 +3338,9 @@ void mglRendererCompatSwapBuffers(GLMContext glm_ctx)
               (unsigned long long)swapCall, shouldPresent ? 1 : 0, (unsigned)drawBuffer);
         mglLogStateSnapshot("swap.enter",
                             activeCtx,
-                            _renderPassManager.state->currentCommandBufferOwner,
-                            _renderPassManager.state->currentRenderEncoderOwner,
-                            _renderPassManager.state->renderPassStateOwner,
+                            _commandState.currentCommandBufferOwner,
+                            _commandState.currentRenderEncoderOwner,
+                            _commandState.renderPassStateOwner,
                             _drawable);
     }
 
@@ -3364,9 +3364,9 @@ void mglRendererCompatSwapBuffers(GLMContext glm_ctx)
                 if (traceSwap || (swapCall % 120ull) == 0ull) {
                     mglLogStateSnapshot("mainthread.stall.snapshot",
                                         activeCtx,
-                                        _renderPassManager.state->currentCommandBufferOwner,
-                                        _renderPassManager.state->currentRenderEncoderOwner,
-                                        _renderPassManager.state->renderPassStateOwner,
+                                        _commandState.currentCommandBufferOwner,
+                                        _commandState.currentRenderEncoderOwner,
+                                        _commandState.renderPassStateOwner,
                                         _drawable);
                 }
             } else if (traceSwap) {
@@ -3508,7 +3508,7 @@ void mglRendererCompatSwapBuffers(GLMContext glm_ctx)
         }
 
         id rpColor0 = (__bridge id)mglRenderGetRenderPassAttachmentTextureOwner(
-            _renderPassManager.state->renderPassStateOwner,
+            _commandState.renderPassStateOwner,
             MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0);
         id drawableTexture = mglRendererCurrentDrawableTexture(self);
         [self copyRenderPassColorToDrawableIfNeeded:rpColor0 drawableTexture:drawableTexture swapCall:swapCall traceSwap:traceSwap];
@@ -3522,7 +3522,7 @@ void mglRendererCompatSwapBuffers(GLMContext glm_ctx)
 
         MGLRenderCommandBufferState presentCommandState = {0};
         if (!mglRenderCommandBufferOwnerHasState(
-                _renderPassManager.state->currentCommandBufferOwner,
+                _commandState.currentCommandBufferOwner,
                 &presentCommandState)) {
             NSLog(@"MGL ERROR: No command buffer available for presentation");
             return;
@@ -3540,7 +3540,7 @@ void mglRendererCompatSwapBuffers(GLMContext glm_ctx)
             [self endRenderEncodingLocked];
             [self newCommandBufferLocked];
             if (!mglRenderCommandBufferOwnerHasState(
-                    _renderPassManager.state->currentCommandBufferOwner,
+                    _commandState.currentCommandBufferOwner,
                     &presentCommandState)) {
                 NSLog(@"MGL ERROR: Failed to create new command buffer for presentation");
                 return;
@@ -3568,7 +3568,7 @@ void mglRendererCompatSwapBuffers(GLMContext glm_ctx)
             }
 
             if (mglRenderPresentDrawableForCommandBufferOwner(
-                    _renderPassManager.state->currentCommandBufferOwner,
+                    _commandState.currentCommandBufferOwner,
                     (__bridge void *)_drawable, NULL) != 0) {
                 NSLog(@"MGL ERROR: No command buffer available for drawable presentation");
                 return;
@@ -3576,7 +3576,7 @@ void mglRendererCompatSwapBuffers(GLMContext glm_ctx)
             if (traceSwap) {
                 mglTraceLogNSString(@"MGL TRACE swap.present call=%llu cbOwner=%p drawable=%p",
                       (unsigned long long)swapCall,
-                      _renderPassManager.state->currentCommandBufferOwner,
+                      _commandState.currentCommandBufferOwner,
                       _drawable);
             }
 
@@ -3588,8 +3588,7 @@ void mglRendererCompatSwapBuffers(GLMContext glm_ctx)
         }
 
         id commandBufferToCommit =
-            (__bridge id)[_renderPassManager
-                detachCurrentCommandBufferForSubmission];
+            (__bridge id)mglCmdDetachCurrentCommandBufferForSubmission(&_commandState);
         uint64_t committedGeneration = mglAdvanceFrameGeneration();
         /* Sweep the bound buffer maps so base/attrib/uniform/SSBO buffers that
          * were encoded this frame keep their pool slots pinned for the
@@ -3676,9 +3675,9 @@ void mglRendererCompatSwapBuffers(GLMContext glm_ctx)
                   swapElapsedUs);
             mglLogStateSnapshot("swap.exit.ok",
                                 ctx,
-                                _renderPassManager.state->currentCommandBufferOwner,
-                                _renderPassManager.state->currentRenderEncoderOwner,
-                                _renderPassManager.state->renderPassStateOwner,
+                                _commandState.currentCommandBufferOwner,
+                                _commandState.currentRenderEncoderOwner,
+                                _commandState.renderPassStateOwner,
                                 _drawable);
         } else if (swapElapsedUs >= 25000.0) {
             mglTraceLogNSString(@"MGL TRACE swap.slow call=%llu elapsed=%.1fus",
@@ -3736,7 +3735,7 @@ void mglRendererCompatClearBuffer(GLMContext glm_ctx,
 
         MGLRenderCommandBufferState clearCommandState = {0};
         if (!mglRenderCommandBufferOwnerHasState(
-                _renderPassManager.state->currentCommandBufferOwner,
+                _commandState.currentCommandBufferOwner,
                 &clearCommandState) &&
             ![self newCommandBuffer]) {
             NSLog(@"MGL ERROR: immediate clear failed to create command buffer");
@@ -3984,18 +3983,18 @@ void mglRendererCompatClearBuffer(GLMContext glm_ctx,
             _queryStateOwner, &sampleQueryActive);
     }
     if (mglRenderEncoderOwnerHasCurrent(
-            _renderPassManager.state->currentRenderEncoderOwner) == 1 &&
+            _commandState.currentRenderEncoderOwner) == 1 &&
         [self currentRenderPassMatchesCurrentFramebuffer] &&
         !sampleQueryActive) {
-        if (_renderPassManager.state->renderPassStateOwner) {
+        if (_commandState.renderPassStateOwner) {
             BOOL colorMatches = !wantsColor;
             if (wantsColor) {
                 id rpColor0 = (__bridge id)mglRenderGetRenderPassAttachmentTextureOwner(
-                    _renderPassManager.state->renderPassStateOwner,
+                    _commandState.renderPassStateOwner,
                     MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0);
                 NSUInteger rpLevel = 0u, rpSlice = 0u, rpDepthPlane = 0u;
                 mglRenderGetRenderPassAttachmentSubresourceOwner(
-                    _renderPassManager.state->renderPassStateOwner,
+                    _commandState.renderPassStateOwner,
                     MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0,
                     (uint64_t *)&rpLevel, (uint64_t *)&rpSlice,
                     (uint64_t *)&rpDepthPlane);
@@ -4006,11 +4005,11 @@ void mglRendererCompatClearBuffer(GLMContext glm_ctx,
             BOOL depthMatches = !wantsDepth;
             if (wantsDepth) {
                 id rpDepth = (__bridge id)mglRenderGetRenderPassAttachmentTextureOwner(
-                    _renderPassManager.state->renderPassStateOwner,
+                    _commandState.renderPassStateOwner,
                     MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0);
                 NSUInteger rpLevel = 0u, rpSlice = 0u, rpDepthPlane = 0u;
                 mglRenderGetRenderPassAttachmentSubresourceOwner(
-                    _renderPassManager.state->renderPassStateOwner,
+                    _commandState.renderPassStateOwner,
                     MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0,
                     (uint64_t *)&rpLevel, (uint64_t *)&rpSlice,
                     (uint64_t *)&rpDepthPlane);
@@ -4026,15 +4025,15 @@ void mglRendererCompatClearBuffer(GLMContext glm_ctx,
 
         mglRenderBindingSetViewportForOwner(
             _bindingStateOwner,
-            _renderPassManager.state->currentRenderEncoderOwner,
+            _commandState.currentRenderEncoderOwner,
             viewport.origin_x, viewport.origin_y, viewport.width, viewport.height,
             viewport.znear, viewport.zfar);
         mglRenderBindingSetScissorForOwner(
             _bindingStateOwner,
-            _renderPassManager.state->currentRenderEncoderOwner,
+            _commandState.currentRenderEncoderOwner,
             scissor.x, scissor.y, scissor.width, scissor.height);
         mglRenderSetRenderPipelineStateForOwner(
-            _renderPassManager.state->currentRenderEncoderOwner,
+            _commandState.currentRenderEncoderOwner,
             (__bridge void *)pipeline);
         mglRenderBindingSetPipelineState(
             _bindingStateOwner, (__bridge void *)pipeline);
@@ -4042,20 +4041,20 @@ void mglRendererCompatClearBuffer(GLMContext glm_ctx,
             id depthState = [self clearRectDepthState];
             if (depthState) {
                 mglRenderSetRenderDepthStencilStateForOwner(
-                    _renderPassManager.state->currentRenderEncoderOwner,
+                    _commandState.currentRenderEncoderOwner,
                     (__bridge void *)depthState);
                 mglRenderBindingSetDepthStencilState(
                     _bindingStateOwner, (__bridge void *)depthState);
             }
         }
         mglRenderSetRenderBytesForOwner(
-            _renderPassManager.state->currentRenderEncoderOwner,
+            _commandState.currentRenderEncoderOwner,
             &params, sizeof(params),
             MGL_RENDER_BINDING_STAGE_VERTEX, 0);
         mglRenderBindingInvalidateVertexBuffer(_bindingStateOwner, 0);
         if (wantsColor) {
             mglRenderSetRenderBytesForOwner(
-                _renderPassManager.state->currentRenderEncoderOwner,
+                _commandState.currentRenderEncoderOwner,
                 &params, sizeof(params),
                 MGL_RENDER_BINDING_STAGE_FRAGMENT, 0);
             mglRenderBindingInvalidateFragmentBuffer(_bindingStateOwner, 0);
@@ -4068,7 +4067,7 @@ void mglRendererCompatClearBuffer(GLMContext glm_ctx,
             .instance_count = 1u,
         };
         (void)mglRenderEncodeDrawForRenderEncoderOwner(
-            _renderPassManager.state->currentRenderEncoderOwner,
+            _commandState.currentRenderEncoderOwner,
             &clearDraw, NULL, 0);
 
         if (wantsColor && colorTexObj && colorAttachment) {
@@ -4091,7 +4090,7 @@ void mglRendererCompatClearBuffer(GLMContext glm_ctx,
     [self endRenderEncoding];
     MGLRenderCommandBufferState clearCommandState = {0};
     if (!mglRenderCommandBufferOwnerHasState(
-            _renderPassManager.state->currentCommandBufferOwner,
+            _commandState.currentCommandBufferOwner,
             &clearCommandState) &&
         ![self newCommandBuffer]) {
         NSLog(@"MGL ERROR: scissored clear failed to create command buffer");
@@ -4124,7 +4123,7 @@ void mglRendererCompatClearBuffer(GLMContext glm_ctx,
 
     id clearEncoder =
         (__bridge id)mglRenderCreateRenderEncoderBorrowed(
-            _renderPassManager.state->currentCommandBufferOwner,
+            _commandState.currentCommandBufferOwner,
             &clearState);
     if (!clearEncoder) {
         NSLog(@"MGL ERROR: scissored clear failed to create render encoder");
@@ -4488,7 +4487,7 @@ Buffer *getIndirectBuffer(GLMContext ctx)
     }
     MGLRenderCommandBufferState copyBackCommandState = {0};
     if (!mglRenderCommandBufferOwnerHasState(
-            _renderPassManager.state->currentCommandBufferOwner,
+            _commandState.currentCommandBufferOwner,
             &copyBackCommandState) ||
         copyBackCommandState.status != MGL_RENDERER_CB_NOT_ENQUEUED) {
         [self clearStageBindingCopyBacks:copyBacks];
@@ -4498,7 +4497,7 @@ Buffer *getIndirectBuffer(GLMContext ctx)
     if (hasCopies) {
         id blit =
             (__bridge id)mglRenderCreateBlitEncoderBorrowed(
-                _renderPassManager.state->currentCommandBufferOwner);
+                _commandState.currentCommandBufferOwner);
         if (!blit) {
             [self clearStageBindingCopyBacks:copyBacks];
             return false;
@@ -4516,15 +4515,12 @@ Buffer *getIndirectBuffer(GLMContext ctx)
      * snapshots their destination. TCS also forces this boundary because TES
      * sizing and query accounting currently read its factor buffer on the CPU. */
     id stageCommandBuffer =
-        (__bridge id)[_renderPassManager
-            detachCurrentCommandBufferForSubmission];
+        (__bridge id)mglCmdDetachCurrentCommandBufferForSubmission(&_commandState);
     @try {
         MGLRenderCommandBufferTransaction transaction = {0};
-        int transactionResult = [_renderPassManager
-            commitCommandBufferTransaction:(__bridge void *)stageCommandBuffer
-            recoveryOwner:_gpuRecovery.commandRecoveryOwner
-            waitForCompletion:YES
-            result:&transaction];
+        int transactionResult = mglCmdCommitCommandBufferTransaction(
+            &_commandState, (__bridge void *)stageCommandBuffer,
+            _gpuRecovery.commandRecoveryOwner, YES, &transaction);
         if (transactionResult != 0 || transaction.has_error) {
             NSLog(@"MGL BUFFER RANGE: C++ stage transaction failed before=%u after=%u completion=%u",
                   transaction.before.status, transaction.after.status,
@@ -4533,8 +4529,7 @@ Buffer *getIndirectBuffer(GLMContext ctx)
                 atomic_store_explicit(&_deviceResetRequested, true,
                                       memory_order_release);
             }
-            [_renderPassManager
-                releaseDetachedCommandBufferIfOwned:(__bridge void *)stageCommandBuffer];
+            mglCmdReleaseDetachedCommandBufferIfOwned(&_commandState, (__bridge void *)stageCommandBuffer);
             [self clearStageBindingCopyBacks:copyBacks];
             [self newCommandBufferLocked];
             return false;

@@ -676,7 +676,7 @@ void mglClear(GLMContext ctx, GLbitfield mask)
                 (GLfloat)ctx->state.var.stencil_clear_value;
         }
         ctx->state.clear_bitmask = 0;
-        mglMarkRendererDirtyBits(&ctx->state,
+        mglMarkStateDirtyBits(&ctx->state,
                                  DIRTY_FBO | DIRTY_STATE | DIRTY_RENDER_STATE);
         return;
     }
@@ -784,7 +784,7 @@ clear_stencil:
     }
 
 clear_done:
-    mglMarkRendererDirtyBits(&ctx->state, DIRTY_FBO | DIRTY_STATE);
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_FBO | DIRTY_STATE);
 
     if (mglShouldTraceClearCall(callCount)) {
         mglTraceLogExternal("CLEAR_SET call=%llu mask=0x%x prevMask=0x%x fbo=%u drawBuf=0x%x readBuf=0x%x scissor(test=%d box=%d,%d,%d,%d) clearBits(global=0x%x default=0x%x fboDepth=0x%x) depth(write=%d clear=%.6f) dirty=0x%x",
@@ -926,7 +926,7 @@ void mglClearBufferfv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GLf
             return;
     }
 
-    mglMarkRendererDirtyBits(&ctx->state, DIRTY_FBO | DIRTY_STATE);
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_FBO | DIRTY_STATE);
 
     if (mglShouldTraceClearCall(callCount)) {
         mglTraceLogExternal("CLEAR_BUFFERFV call=%llu buffer=0x%x drawbuffer=%d fbo=%u scissor(test=%d box=%d,%d,%d,%d) value=(%.6f,%.6f,%.6f,%.6f) depthWrite=%d dirty=0x%x",
@@ -1004,7 +1004,7 @@ void mglClearBufferfi(GLMContext ctx, GLenum buffer, GLint drawbuffer, GLfloat d
             return;
     }
 
-    mglMarkRendererDirtyBits(&ctx->state, DIRTY_FBO | DIRTY_STATE);
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_FBO | DIRTY_STATE);
 
     if (mglShouldTraceClearCall(callCount)) {
         mglTraceLogExternal("CLEAR_BUFFERFI call=%llu buffer=0x%x drawbuffer=%d fbo=%u scissor(test=%d box=%d,%d,%d,%d) depth=%.6f stencil=%d depthWrite=%d dirty=0x%x",

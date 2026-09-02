@@ -225,8 +225,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         [self traceReplayCommand:batch
                          command:&batch->commands[0]
                          context:glm_ctx
-                         flushId:_renderPassManager.state->traceReplayFlushId
-                      batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                         flushId:_commandState.traceReplayFlushId
+                      batchIndex:_commandState.traceReplayBatchIndex
                     commandIndex:0
                            phase:"FALLBACK"
                           reason:"mdi_unsupported_primitive"];
@@ -241,8 +241,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         [self traceReplayCommand:batch
                          command:&batch->commands[0]
                          context:glm_ctx
-                         flushId:_renderPassManager.state->traceReplayFlushId
-                      batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                         flushId:_commandState.traceReplayFlushId
+                      batchIndex:_commandState.traceReplayBatchIndex
                     commandIndex:0
                            phase:"FALLBACK"
                           reason:"mdi_args_overflow"];
@@ -260,8 +260,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             [self traceReplayCommand:batch
                              command:&batch->commands[0]
                              context:glm_ctx
-                             flushId:_renderPassManager.state->traceReplayFlushId
-                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                             flushId:_commandState.traceReplayFlushId
+                          batchIndex:_commandState.traceReplayBatchIndex
                         commandIndex:0
                                phase:"FALLBACK"
                               reason:"mdi_args_alloc"];
@@ -294,8 +294,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 [self traceReplayCommand:batch
                                  command:cmd
                                  context:glm_ctx
-                                 flushId:_renderPassManager.state->traceReplayFlushId
-                              batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                                 flushId:_commandState.traceReplayFlushId
+                              batchIndex:_commandState.traceReplayBatchIndex
                             commandIndex:i
                                    phase:"FALLBACK"
                                   reason:"mdi_mixed_index_type"];
@@ -321,8 +321,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 [self traceReplayCommand:batch
                                  command:cmd
                                  context:glm_ctx
-                                 flushId:_renderPassManager.state->traceReplayFlushId
-                              batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                                 flushId:_commandState.traceReplayFlushId
+                              batchIndex:_commandState.traceReplayBatchIndex
                             commandIndex:i
                                    phase:"SKIP"
                                   reason:"mdi_resolve_element"];
@@ -340,8 +340,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 [self traceReplayCommand:batch
                                  command:cmd
                                  context:glm_ctx
-                                 flushId:_renderPassManager.state->traceReplayFlushId
-                              batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                                 flushId:_commandState.traceReplayFlushId
+                              batchIndex:_commandState.traceReplayBatchIndex
                             commandIndex:i
                                    phase:"SKIP"
                                   reason:"mdi_prepared_index"];
@@ -355,8 +355,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             [self traceReplayCommand:batch
                              command:cmd
                              context:glm_ctx
-                             flushId:_renderPassManager.state->traceReplayFlushId
-                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                             flushId:_commandState.traceReplayFlushId
+                          batchIndex:_commandState.traceReplayBatchIndex
                         commandIndex:i
                                phase:"SUBMIT"
                               reason:"mdi_indexed"];
@@ -381,8 +381,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             [self traceReplayCommand:batch
                              command:&batch->commands[i]
                              context:glm_ctx
-                             flushId:_renderPassManager.state->traceReplayFlushId
-                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                             flushId:_commandState.traceReplayFlushId
+                          batchIndex:_commandState.traceReplayBatchIndex
                         commandIndex:i
                                phase:"SUBMIT"
                               reason:"mdi_arrays"];
@@ -918,7 +918,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         return false;
     }
     encCtx->render_encoder_owner =
-        _renderPassManager.state->currentRenderEncoderOwner;
+        _commandState.currentRenderEncoderOwner;
     if (!mglBatchReplayHasActiveEncoder(encCtx)) {
         return false;
     }
@@ -986,22 +986,22 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
          * and reallocated, so refresh the handle before inspecting or using
          * it again. */
         encCtx->render_encoder_owner =
-            _renderPassManager.state->currentRenderEncoderOwner;
+            _commandState.currentRenderEncoderOwner;
         if (!direct_texture_ok) {
             direct_texture_ok = [self bindTexturesToCurrentRenderEncoder:encCtx];
             encCtx->render_encoder_owner =
-                _renderPassManager.state->currentRenderEncoderOwner;
+                _commandState.currentRenderEncoderOwner;
             if (!direct_texture_ok) {
                 direct_texture_ok =
                     [self restoreRenderEncoderAfterTextureUploadForDraw:
                         "dynamic-sampled-texture-bind"];
                 encCtx->render_encoder_owner =
-                    _renderPassManager.state->currentRenderEncoderOwner;
+                    _commandState.currentRenderEncoderOwner;
                 if (direct_texture_ok) {
                     direct_texture_ok =
                         [self bindTexturesToCurrentRenderEncoder:encCtx];
                     encCtx->render_encoder_owner =
-                        _renderPassManager.state->currentRenderEncoderOwner;
+                        _commandState.currentRenderEncoderOwner;
                 }
             }
         }
@@ -1013,7 +1013,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     /* Keep all per-draw buffer overrides on the live encoder after texture
      * materialization or storage-image binding has rotated its owner. */
     encCtx->render_encoder_owner =
-        _renderPassManager.state->currentRenderEncoderOwner;
+        _commandState.currentRenderEncoderOwner;
 
     bool direct_vertex_ok = cmd->dynamic_vertex_binding_count == 0 ||
         [self bindDynamicVertexArrayBuffersDirectly:draw_vao
@@ -1021,11 +1021,11 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                                             context:glm_ctx
                                       encodeContext:encCtx];
     encCtx->render_encoder_owner =
-        _renderPassManager.state->currentRenderEncoderOwner;
+        _commandState.currentRenderEncoderOwner;
     bool direct_uniform_ok = cmd->dynamic_uniform_binding_count == 0 ||
         [self bindDynamicUniformRangesDirectly:cmd context:glm_ctx encodeContext:encCtx];
     encCtx->render_encoder_owner =
-        _renderPassManager.state->currentRenderEncoderOwner;
+        _commandState.currentRenderEncoderOwner;
     if (direct_vertex_ok && direct_uniform_ok) {
         return true;
     }
@@ -1038,15 +1038,15 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         MGL_STATE(glm_ctx)->vao = draw_vao;
     }
     encCtx->render_encoder_owner =
-        _renderPassManager.state->currentRenderEncoderOwner;
+        _commandState.currentRenderEncoderOwner;
     bool fallback_ok = [self mapBuffersToMTL] &&
         [self bindVertexBuffersToCurrentRenderEncoder:encCtx];
     encCtx->render_encoder_owner =
-        _renderPassManager.state->currentRenderEncoderOwner;
+        _commandState.currentRenderEncoderOwner;
     if (fallback_ok && cmd->dynamic_uniform_binding_count > 0) {
         fallback_ok = [self bindFragmentBuffersToCurrentRenderEncoder:encCtx];
         encCtx->render_encoder_owner =
-            _renderPassManager.state->currentRenderEncoderOwner;
+            _commandState.currentRenderEncoderOwner;
     }
     MGL_STATE(glm_ctx)->vao = saved_vao;
     return fallback_ok;
@@ -1157,7 +1157,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
      * encoder, so start from the render-pass manager's live owner. */
     MGLEncodeContext liveEncCtx = *encCtx;
     liveEncCtx.render_encoder_owner =
-        _renderPassManager.state->currentRenderEncoderOwner;
+        _commandState.currentRenderEncoderOwner;
 
     if ([self tryReplaySimpleBatch:batch
                                   context:glm_ctx
@@ -1169,7 +1169,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         /* A previous command may have rotated the render encoder.  Refresh at
          * each command boundary before any replay helper checks the owner. */
         liveEncCtx.render_encoder_owner =
-            _renderPassManager.state->currentRenderEncoderOwner;
+            _commandState.currentRenderEncoderOwner;
         Program *batchProgram =
             mglResolveProgramForStageFromState(glm_ctx, _VERTEX_SHADER);
         BOOL capturedCullDistances = NO;
@@ -1207,12 +1207,12 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         if (capturedCullDistances) {
             if (![self processGLState:true] ||
                 mglRenderEncoderOwnerHasCurrent(
-                    _renderPassManager.state->currentRenderEncoderOwner) == 0) {
+                    _commandState.currentRenderEncoderOwner) == 0) {
                 [self traceReplayCommand:batch
                                  command:cmd
                                  context:glm_ctx
-                                 flushId:_renderPassManager.state->traceReplayFlushId
-                              batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                                 flushId:_commandState.traceReplayFlushId
+                              batchIndex:_commandState.traceReplayBatchIndex
                             commandIndex:i
                                  phase:"SKIP"
                                   reason:"cull_distance_capture_restore"];
@@ -1223,14 +1223,14 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
              * encoder.  Refresh the per-batch context so subsequent draw
              * helpers never query the released owner handle. */
             liveEncCtx.render_encoder_owner =
-                _renderPassManager.state->currentRenderEncoderOwner;
+                _commandState.currentRenderEncoderOwner;
         }
         if (![self applyDynamicBindingsForCommand:cmd context:glm_ctx encodeContext:&liveEncCtx]) {
             [self traceReplayCommand:batch
                              command:cmd
                              context:glm_ctx
-                             flushId:_renderPassManager.state->traceReplayFlushId
-                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                             flushId:_commandState.traceReplayFlushId
+                          batchIndex:_commandState.traceReplayBatchIndex
                         commandIndex:i
                                phase:"SKIP"
                               reason:"dynamic_binding"];
@@ -1242,8 +1242,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             [self traceReplayCommand:batch
                              command:cmd
                              context:glm_ctx
-                             flushId:_renderPassManager.state->traceReplayFlushId
-                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                             flushId:_commandState.traceReplayFlushId
+                          batchIndex:_commandState.traceReplayBatchIndex
                         commandIndex:i
                                phase:"SKIP"
                               reason:"sampler_snapshot"];
@@ -1268,8 +1268,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             [self traceReplayCommand:batch
                              command:cmd
                              context:glm_ctx
-                             flushId:_renderPassManager.state->traceReplayFlushId
-                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                             flushId:_commandState.traceReplayFlushId
+                          batchIndex:_commandState.traceReplayBatchIndex
                         commandIndex:i
                                phase:"SKIP"
                               reason:"direct_unsupported_primitive"];
@@ -1490,8 +1490,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         [self traceReplayCommand:batch
                          command:cmd
                          context:glm_ctx
-                         flushId:_renderPassManager.state->traceReplayFlushId
-                      batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                         flushId:_commandState.traceReplayFlushId
+                      batchIndex:_commandState.traceReplayBatchIndex
                     commandIndex:i
                            phase:"SUBMIT"
                           reason:"direct_arrays_cull_distance_split"];
@@ -1503,8 +1503,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         [self traceReplayCommand:batch
                          command:cmd
                          context:glm_ctx
-                         flushId:_renderPassManager.state->traceReplayFlushId
-                      batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                         flushId:_commandState.traceReplayFlushId
+                      batchIndex:_commandState.traceReplayBatchIndex
                     commandIndex:i
                            phase:"SUBMIT"
                           reason:"direct_arrays_polygon_point"];
@@ -1521,8 +1521,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 [self traceReplayCommand:batch
                                  command:cmd
                                  context:glm_ctx
-                                 flushId:_renderPassManager.state->traceReplayFlushId
-                              batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                                 flushId:_commandState.traceReplayFlushId
+                              batchIndex:_commandState.traceReplayBatchIndex
                             commandIndex:i
                                    phase:"SUBMIT"
                                   reason:"direct_arrays_triangle_fan"];
@@ -1530,8 +1530,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 [self traceReplayCommand:batch
                                  command:cmd
                                  context:glm_ctx
-                                 flushId:_renderPassManager.state->traceReplayFlushId
-                              batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                                 flushId:_commandState.traceReplayFlushId
+                              batchIndex:_commandState.traceReplayBatchIndex
                             commandIndex:i
                                    phase:"SKIP"
                                   reason:"direct_arrays_triangle_fan_buffer"];
@@ -1540,8 +1540,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             [self traceReplayCommand:batch
                              command:cmd
                              context:glm_ctx
-                             flushId:_renderPassManager.state->traceReplayFlushId
-                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                             flushId:_commandState.traceReplayFlushId
+                          batchIndex:_commandState.traceReplayBatchIndex
                         commandIndex:i
                                phase:"SKIP"
                               reason:"direct_arrays_triangle_fan_small"];
@@ -1559,8 +1559,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 [self traceReplayCommand:batch
                                  command:cmd
                                  context:glm_ctx
-                                 flushId:_renderPassManager.state->traceReplayFlushId
-                              batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                                 flushId:_commandState.traceReplayFlushId
+                              batchIndex:_commandState.traceReplayBatchIndex
                             commandIndex:i
                                    phase:"SUBMIT"
                                   reason:"direct_arrays_line_loop"];
@@ -1568,8 +1568,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 [self traceReplayCommand:batch
                                  command:cmd
                                  context:glm_ctx
-                                 flushId:_renderPassManager.state->traceReplayFlushId
-                              batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                                 flushId:_commandState.traceReplayFlushId
+                              batchIndex:_commandState.traceReplayBatchIndex
                             commandIndex:i
                                    phase:"SKIP"
                                   reason:"direct_arrays_line_loop_buffer"];
@@ -1578,8 +1578,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             [self traceReplayCommand:batch
                              command:cmd
                              context:glm_ctx
-                             flushId:_renderPassManager.state->traceReplayFlushId
-                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                             flushId:_commandState.traceReplayFlushId
+                          batchIndex:_commandState.traceReplayBatchIndex
                         commandIndex:i
                                phase:"SKIP"
                               reason:"direct_arrays_line_loop_small"];
@@ -1591,22 +1591,22 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         [self traceReplayCommand:batch
                          command:cmd
                          context:glm_ctx
-                         flushId:_renderPassManager.state->traceReplayFlushId
-                      batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                         flushId:_commandState.traceReplayFlushId
+                      batchIndex:_commandState.traceReplayBatchIndex
                     commandIndex:i
                            phase:(ok && count >= 4 ? "SUBMIT" : "SKIP")
                           reason:(ok ? "direct_arrays_quads" : "direct_arrays_quads_buffer")];
     } else {
         mglTraceLog("DIRECT_BATCH_DRAW_ARRAYS_SUBMIT flush=%llu batch=%u cmd=%u program=%u mode=0x%x first=%d count=%d encoder=%p pipeline=%p",
-                    (unsigned long long)_renderPassManager.state->traceReplayFlushId,
-                    (unsigned)_renderPassManager.state->traceReplayBatchIndex,
+                    (unsigned long long)_commandState.traceReplayFlushId,
+                    (unsigned)_commandState.traceReplayBatchIndex,
                     (unsigned)i,
                     (unsigned)mglCurrentRenderProgramKey(glm_ctx),
                     (unsigned)mode,
                     (int)cmd->first,
                     (int)count,
                     mglBatchReplayEncoderTraceToken(encCtx),
-                    _pipelineCache.state->pipelineState);
+                    _pipelineCacheState.pipelineState);
         /* Cull distance emulation: bind vertex/params buffers before
          * array draw in the deferred batch path. */
         {
@@ -1625,8 +1625,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         [self traceReplayCommand:batch
                          command:cmd
                          context:glm_ctx
-                         flushId:_renderPassManager.state->traceReplayFlushId
-                      batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                         flushId:_commandState.traceReplayFlushId
+                      batchIndex:_commandState.traceReplayBatchIndex
                     commandIndex:i
                            phase:"SUBMIT"
                           reason:"direct_arrays"];
@@ -1657,8 +1657,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         [self traceReplayCommand:batch
                          command:cmd
                          context:glm_ctx
-                         flushId:_renderPassManager.state->traceReplayFlushId
-                      batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                         flushId:_commandState.traceReplayFlushId
+                      batchIndex:_commandState.traceReplayBatchIndex
                     commandIndex:i
                            phase:"SUBMIT"
                           reason:"direct_arrays_instanced_cull_distance_split"];
@@ -1670,8 +1670,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         [self traceReplayCommand:batch
                          command:cmd
                          context:glm_ctx
-                         flushId:_renderPassManager.state->traceReplayFlushId
-                      batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                         flushId:_commandState.traceReplayFlushId
+                      batchIndex:_commandState.traceReplayBatchIndex
                     commandIndex:i
                            phase:"SUBMIT"
                           reason:"direct_arrays_instanced_polygon_point"];
@@ -1689,8 +1689,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 [self traceReplayCommand:batch
                                  command:cmd
                                  context:glm_ctx
-                                 flushId:_renderPassManager.state->traceReplayFlushId
-                              batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                                 flushId:_commandState.traceReplayFlushId
+                              batchIndex:_commandState.traceReplayBatchIndex
                             commandIndex:i
                                    phase:"SUBMIT"
                                   reason:"direct_arrays_instanced_triangle_fan"];
@@ -1698,8 +1698,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 [self traceReplayCommand:batch
                                  command:cmd
                                  context:glm_ctx
-                                 flushId:_renderPassManager.state->traceReplayFlushId
-                              batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                                 flushId:_commandState.traceReplayFlushId
+                              batchIndex:_commandState.traceReplayBatchIndex
                             commandIndex:i
                                    phase:"SKIP"
                                   reason:"direct_arrays_instanced_triangle_fan_buffer"];
@@ -1708,8 +1708,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             [self traceReplayCommand:batch
                              command:cmd
                              context:glm_ctx
-                             flushId:_renderPassManager.state->traceReplayFlushId
-                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                             flushId:_commandState.traceReplayFlushId
+                          batchIndex:_commandState.traceReplayBatchIndex
                         commandIndex:i
                                phase:"SKIP"
                               reason:"direct_arrays_instanced_triangle_fan_small"];
@@ -1727,8 +1727,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 [self traceReplayCommand:batch
                                  command:cmd
                                  context:glm_ctx
-                                 flushId:_renderPassManager.state->traceReplayFlushId
-                              batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                                 flushId:_commandState.traceReplayFlushId
+                              batchIndex:_commandState.traceReplayBatchIndex
                             commandIndex:i
                                    phase:"SUBMIT"
                                   reason:"direct_arrays_instanced_line_loop"];
@@ -1736,8 +1736,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 [self traceReplayCommand:batch
                                  command:cmd
                                  context:glm_ctx
-                                 flushId:_renderPassManager.state->traceReplayFlushId
-                              batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                                 flushId:_commandState.traceReplayFlushId
+                              batchIndex:_commandState.traceReplayBatchIndex
                             commandIndex:i
                                    phase:"SKIP"
                                   reason:"direct_arrays_instanced_line_loop_buffer"];
@@ -1746,8 +1746,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             [self traceReplayCommand:batch
                              command:cmd
                              context:glm_ctx
-                             flushId:_renderPassManager.state->traceReplayFlushId
-                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                             flushId:_commandState.traceReplayFlushId
+                          batchIndex:_commandState.traceReplayBatchIndex
                         commandIndex:i
                                phase:"SKIP"
                               reason:"direct_arrays_instanced_line_loop_small"];
@@ -1759,8 +1759,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         [self traceReplayCommand:batch
                          command:cmd
                          context:glm_ctx
-                         flushId:_renderPassManager.state->traceReplayFlushId
-                      batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                         flushId:_commandState.traceReplayFlushId
+                      batchIndex:_commandState.traceReplayBatchIndex
                     commandIndex:i
                            phase:(ok && count >= 4 ? "SUBMIT" : "SKIP")
                           reason:(ok ? "direct_arrays_instanced_quads" : "direct_arrays_instanced_quads_buffer")];
@@ -1783,8 +1783,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         [self traceReplayCommand:batch
                          command:cmd
                          context:glm_ctx
-                         flushId:_renderPassManager.state->traceReplayFlushId
-                      batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                         flushId:_commandState.traceReplayFlushId
+                      batchIndex:_commandState.traceReplayBatchIndex
                     commandIndex:i
                            phase:"SUBMIT"
                           reason:"direct_arrays_instanced"];
@@ -1815,8 +1815,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         [self traceReplayCommand:batch
                          command:cmd
                          context:glm_ctx
-                         flushId:_renderPassManager.state->traceReplayFlushId
-                      batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                         flushId:_commandState.traceReplayFlushId
+                      batchIndex:_commandState.traceReplayBatchIndex
                     commandIndex:i
                            phase:"SUBMIT"
                           reason:"direct_arrays_base_instance_cull_distance_split"];
@@ -1829,8 +1829,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         [self traceReplayCommand:batch
                          command:cmd
                          context:glm_ctx
-                         flushId:_renderPassManager.state->traceReplayFlushId
-                      batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                         flushId:_commandState.traceReplayFlushId
+                      batchIndex:_commandState.traceReplayBatchIndex
                     commandIndex:i
                            phase:"SUBMIT"
                           reason:"direct_arrays_base_instance_polygon_point"];
@@ -1848,8 +1848,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 [self traceReplayCommand:batch
                                  command:cmd
                                  context:glm_ctx
-                                 flushId:_renderPassManager.state->traceReplayFlushId
-                              batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                                 flushId:_commandState.traceReplayFlushId
+                              batchIndex:_commandState.traceReplayBatchIndex
                             commandIndex:i
                                    phase:"SUBMIT"
                                   reason:"direct_arrays_base_instance_triangle_fan"];
@@ -1857,8 +1857,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 [self traceReplayCommand:batch
                                  command:cmd
                                  context:glm_ctx
-                                 flushId:_renderPassManager.state->traceReplayFlushId
-                              batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                                 flushId:_commandState.traceReplayFlushId
+                              batchIndex:_commandState.traceReplayBatchIndex
                             commandIndex:i
                                    phase:"SKIP"
                                   reason:"direct_arrays_base_instance_triangle_fan_buffer"];
@@ -1867,8 +1867,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             [self traceReplayCommand:batch
                              command:cmd
                              context:glm_ctx
-                             flushId:_renderPassManager.state->traceReplayFlushId
-                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                             flushId:_commandState.traceReplayFlushId
+                          batchIndex:_commandState.traceReplayBatchIndex
                         commandIndex:i
                                phase:"SKIP"
                               reason:"direct_arrays_base_instance_triangle_fan_small"];
@@ -1887,8 +1887,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 [self traceReplayCommand:batch
                                  command:cmd
                                  context:glm_ctx
-                                 flushId:_renderPassManager.state->traceReplayFlushId
-                              batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                                 flushId:_commandState.traceReplayFlushId
+                              batchIndex:_commandState.traceReplayBatchIndex
                             commandIndex:i
                                    phase:"SUBMIT"
                                   reason:"direct_arrays_base_instance_line_loop"];
@@ -1896,8 +1896,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 [self traceReplayCommand:batch
                                  command:cmd
                                  context:glm_ctx
-                                 flushId:_renderPassManager.state->traceReplayFlushId
-                              batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                                 flushId:_commandState.traceReplayFlushId
+                              batchIndex:_commandState.traceReplayBatchIndex
                             commandIndex:i
                                    phase:"SKIP"
                                   reason:"direct_arrays_base_instance_line_loop_buffer"];
@@ -1906,8 +1906,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             [self traceReplayCommand:batch
                              command:cmd
                              context:glm_ctx
-                             flushId:_renderPassManager.state->traceReplayFlushId
-                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                             flushId:_commandState.traceReplayFlushId
+                          batchIndex:_commandState.traceReplayBatchIndex
                         commandIndex:i
                                phase:"SKIP"
                               reason:"direct_arrays_base_instance_line_loop_small"];
@@ -1919,8 +1919,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         [self traceReplayCommand:batch
                          command:cmd
                          context:glm_ctx
-                         flushId:_renderPassManager.state->traceReplayFlushId
-                      batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                         flushId:_commandState.traceReplayFlushId
+                      batchIndex:_commandState.traceReplayBatchIndex
                     commandIndex:i
                            phase:(ok && count >= 4 ? "SUBMIT" : "SKIP")
                           reason:(ok ? "direct_arrays_base_instance_quads" : "direct_arrays_base_instance_quads_buffer")];
@@ -1944,8 +1944,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         [self traceReplayCommand:batch
                          command:cmd
                          context:glm_ctx
-                         flushId:_renderPassManager.state->traceReplayFlushId
-                      batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                         flushId:_commandState.traceReplayFlushId
+                      batchIndex:_commandState.traceReplayBatchIndex
                     commandIndex:i
                            phase:"SUBMIT"
                           reason:"direct_arrays_base_instance"];
@@ -1977,8 +1977,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         [self traceReplayCommand:batch
                          command:cmd
                          context:glm_ctx
-                         flushId:_renderPassManager.state->traceReplayFlushId
-                      batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                         flushId:_commandState.traceReplayFlushId
+                      batchIndex:_commandState.traceReplayBatchIndex
                     commandIndex:i
                            phase:"SKIP"
                           reason:"direct_resolve_element"];
@@ -1990,8 +1990,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         [self traceReplayCommand:batch
                          command:cmd
                          context:glm_ctx
-                         flushId:_renderPassManager.state->traceReplayFlushId
-                      batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                         flushId:_commandState.traceReplayFlushId
+                      batchIndex:_commandState.traceReplayBatchIndex
                     commandIndex:i
                            phase:"SKIP"
                           reason:"direct_index_type"];
@@ -2015,8 +2015,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         [self traceReplayCommand:batch
                          command:cmd
                          context:glm_ctx
-                         flushId:_renderPassManager.state->traceReplayFlushId
-                      batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                         flushId:_commandState.traceReplayFlushId
+                      batchIndex:_commandState.traceReplayBatchIndex
                     commandIndex:i
                            phase:"SUBMIT"
                           reason:"direct_elements_cull_distance_split"];
@@ -2043,8 +2043,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         [self traceReplayCommand:batch
                          command:cmd
                          context:glm_ctx
-                         flushId:_renderPassManager.state->traceReplayFlushId
-                      batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                         flushId:_commandState.traceReplayFlushId
+                      batchIndex:_commandState.traceReplayBatchIndex
                     commandIndex:i
                            phase:(restartResult == MGLPrimitiveRestartEncodeHandled ? "SUBMIT" : "SKIP")
                           reason:"direct_primitive_restart"];
@@ -2059,8 +2059,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         [self traceReplayCommand:batch
                          command:cmd
                          context:glm_ctx
-                         flushId:_renderPassManager.state->traceReplayFlushId
-                      batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                         flushId:_commandState.traceReplayFlushId
+                      batchIndex:_commandState.traceReplayBatchIndex
                     commandIndex:i
                            phase:"SUBMIT"
                           reason:"direct_elements_polygon_point"];
@@ -2071,8 +2071,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         [self traceReplayCommand:batch
                          command:cmd
                          context:glm_ctx
-                         flushId:_renderPassManager.state->traceReplayFlushId
-                      batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                         flushId:_commandState.traceReplayFlushId
+                      batchIndex:_commandState.traceReplayBatchIndex
                     commandIndex:i
                            phase:(count >= 3 ? "SUBMIT" : "SKIP")
                           reason:"direct_elements_triangle_fan"];
@@ -2083,8 +2083,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         [self traceReplayCommand:batch
                          command:cmd
                          context:glm_ctx
-                         flushId:_renderPassManager.state->traceReplayFlushId
-                      batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                         flushId:_commandState.traceReplayFlushId
+                      batchIndex:_commandState.traceReplayBatchIndex
                     commandIndex:i
                          phase:(count >= 2 ? "SUBMIT" : "SKIP")
                           reason:"direct_elements_line_loop"];
@@ -2096,8 +2096,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         [self traceReplayCommand:batch
                          command:cmd
                          context:glm_ctx
-                         flushId:_renderPassManager.state->traceReplayFlushId
-                      batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                         flushId:_commandState.traceReplayFlushId
+                      batchIndex:_commandState.traceReplayBatchIndex
                     commandIndex:i
                            phase:(ok && count >= 4 ? "SUBMIT" : "SKIP")
                           reason:(ok ? "direct_elements_quads" : "direct_elements_quads_buffer")];
@@ -2113,8 +2113,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             [self traceReplayCommand:batch
                              command:cmd
                              context:glm_ctx
-                             flushId:_renderPassManager.state->traceReplayFlushId
-                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                             flushId:_commandState.traceReplayFlushId
+                          batchIndex:_commandState.traceReplayBatchIndex
                         commandIndex:i
                                phase:"SKIP"
                               reason:"direct_prepared_index"];
@@ -2127,8 +2127,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         [self traceReplayCommand:batch
                          command:cmd
                          context:glm_ctx
-                         flushId:_renderPassManager.state->traceReplayFlushId
-                      batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                         flushId:_commandState.traceReplayFlushId
+                      batchIndex:_commandState.traceReplayBatchIndex
                     commandIndex:i
                            phase:"SUBMIT"
                           reason:"direct_elements"];

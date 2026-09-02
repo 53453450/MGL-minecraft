@@ -245,7 +245,7 @@ static void mglSwapDiagnosticsEndBlitEncoder(id encoder)
 
                     id copyEncoder =
                         mglSwapDiagnosticsCreateRenderEncoder(
-                            _renderPassManager.state->currentCommandBufferOwner,
+                            _commandState.currentCommandBufferOwner,
                             drawableTexture);
                     if (copyEncoder) {
                         mglSwapDiagnosticsSetRenderPipeline(copyEncoder, pipeline);
@@ -373,7 +373,7 @@ static void mglSwapDiagnosticsEndBlitEncoder(id encoder)
 
                 id sampleEncoder =
                     mglSwapDiagnosticsCreateBlitEncoder(
-                        _renderPassManager.state->currentCommandBufferOwner);
+                        _commandState.currentCommandBufferOwner);
                 if (!sampleEncoder) {
                     NSLog(@"MGL WARNING: swap.sample.%@ call=%llu failed(create blit encoder)",
                           sampleTag,
@@ -398,7 +398,7 @@ static void mglSwapDiagnosticsEndBlitEncoder(id encoder)
                     (__bridge void *)sampleBuffer,
                     "mgl_swap_sample", 0u, sampleBytesPerImage);
                 mglSwapAddCommandBufferOwnerCompletion(
-                    _renderPassManager.state->currentCommandBufferOwner,
+                    _commandState.currentCommandBufferOwner,
                     ^(const MGLRenderCommandBufferState *sampleState) {
                     NSString *sampleError = sampleState->has_error
                         ? [NSString stringWithFormat:@"%s (domain=%s code=%lld)",

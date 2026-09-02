@@ -2879,7 +2879,7 @@ void mglDepthRangeArrayv(GLMContext ctx, GLuint first, GLsizei count, const GLdo
 		} else if (index < MGL_MAX_VIEWPORTS) {
 			ctx->state.depth_range_array[index][0] = n < 0.0 ? 0.0 : (n > 1.0 ? 1.0 : n);
 			ctx->state.depth_range_array[index][1] = f < 0.0 ? 0.0 : (f > 1.0 ? 1.0 : f);
-			mglMarkRendererDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
+			mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 		}
 	}
 }
@@ -2892,7 +2892,7 @@ void mglDepthRangeIndexed(GLMContext ctx, GLuint index, GLdouble n, GLdouble f)
 	} else if (index < MGL_MAX_VIEWPORTS) {
 		ctx->state.depth_range_array[index][0] = n < 0.0 ? 0.0 : (n > 1.0 ? 1.0 : n);
 		ctx->state.depth_range_array[index][1] = f < 0.0 ? 0.0 : (f > 1.0 ? 1.0 : f);
-		mglMarkRendererDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
+		mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 	}
 }
 
@@ -6274,7 +6274,7 @@ void mglScissorArrayv(GLMContext ctx, GLuint first, GLsizei count, const GLint *
 			ctx->state.scissor_box_array[index][1] = box[1];
 			ctx->state.scissor_box_array[index][2] = box[2];
 			ctx->state.scissor_box_array[index][3] = box[3];
-			mglMarkRendererDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
+			mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 		}
 	}
 }
@@ -6291,7 +6291,7 @@ void mglScissorIndexed(GLMContext ctx, GLuint index, GLint left, GLint bottom, G
 		ctx->state.scissor_box_array[index][1] = bottom;
 		ctx->state.scissor_box_array[index][2] = width;
 		ctx->state.scissor_box_array[index][3] = height;
-		mglMarkRendererDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
+		mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 	}
 }
 
@@ -7099,7 +7099,7 @@ void mglViewportIndexedf(GLMContext ctx, GLuint index, GLfloat x, GLfloat y, GLf
 		ctx->state.viewport_array[index][2] = w;
 		ctx->state.viewport_array[index][3] = h;
 		ctx->state.viewport_array_set = GL_TRUE;
-		mglMarkRendererDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
+		mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 	}
 }
 

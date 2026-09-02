@@ -71,7 +71,6 @@ typedef struct {
 } MGLStageBindingCopyBackList;
 
 typedef struct MGLRendererCoreState_t {
-    GLMState *activeState;
     MGLCapability capability;
     MGLDrawable drawBuffers[_MAX_DRAW_BUFFERS];
     BOOL defaultDrawableWrittenSinceLastSwap;
