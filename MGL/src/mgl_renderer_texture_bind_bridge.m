@@ -10,6 +10,7 @@
 #import "MGLRenderer+Binding_Private.h"
 #include "mgl_render.h"
 #include "mgl_env_flag.h"
+#import "mgl_renderer_texture_metal_helpers.h"
 
 @interface MGLRenderer (TextureBindBridge)
 - (id)createMTLTextureFromGLTexture:(Texture *)tex;
