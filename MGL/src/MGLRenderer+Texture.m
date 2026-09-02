@@ -5234,7 +5234,14 @@ static void mglTextureCopyTextureToBuffer(
     pixelFormat = mtlPixelFormatForGLTex(tex);
     BOOL expandsSingleChannelSwizzle = mglTextureUploadNeedsSingleChannelSwizzle(tex);
     if (expandsSingleChannelSwizzle) {
-        pixelFormat = MGLPixelFormatRGBA8Unorm;
+        uint32_t swizzleStorageFormat =
+            mglRenderSingleChannelSwizzleStoragePixelFormat(
+                (uint32_t)tex->internalformat);
+        if (swizzleStorageFormat != MGLPixelFormatInvalid) {
+            pixelFormat = swizzleStorageFormat;
+        } else {
+            pixelFormat = MGLPixelFormatRGBA8Unorm;
+        }
     }
 
     // Validate format compatibility with AGX, but preserve original intent

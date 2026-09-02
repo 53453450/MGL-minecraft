@@ -3512,7 +3512,9 @@ int mglRenderSampledTextureViewForBaseLevel(
         mglRenderTextureUploadNeedsSingleChannelSwizzle(
             texture_object->internalformat, 1) != 0 &&
         (source->pixelFormat() == MTL::PixelFormatRGBA8Unorm ||
-         source->pixelFormat() == MTL::PixelFormatRGBA8Unorm_sRGB);
+         source->pixelFormat() == MTL::PixelFormatRGBA8Unorm_sRGB ||
+         source->pixelFormat() == MTL::PixelFormatRGBA8Sint ||
+         source->pixelFormat() == MTL::PixelFormatRGBA8Uint);
     if (upload_swizzle_baked) {
         swizzle_red = static_cast<uint32_t>(MTL::TextureSwizzleRed);
         swizzle_green = static_cast<uint32_t>(MTL::TextureSwizzleGreen);
@@ -8715,6 +8717,48 @@ uint8_t mglRenderResolveR8SwizzledComponent(uint32_t swizzle, uint8_t red) {
     }
 }
 
+static int32_t mglRenderResolveR8IntegerSwizzledComponent(
+    uint32_t swizzle, int32_t red, int is_signed) {
+    switch (swizzle) {
+        case GL_RED:
+            return red;
+        case GL_ONE:
+            return 1;
+        case GL_ALPHA:
+            return 1;
+        case GL_ZERO:
+        case GL_GREEN:
+        case GL_BLUE:
+        default:
+            return 0;
+    }
+    (void)is_signed;
+}
+
+extern "C"
+uint32_t mglRenderSingleChannelSwizzleStoragePixelFormat(
+    uint32_t internal_format) {
+    switch (internal_format) {
+        case GL_R8I:
+        case GL_R16I:
+        case GL_R32I:
+            return static_cast<uint32_t>(MTL::PixelFormatRGBA8Sint);
+        case GL_R8UI:
+        case GL_R16UI:
+        case GL_R32UI:
+            return static_cast<uint32_t>(MTL::PixelFormatRGBA8Uint);
+        case GL_R8:
+        case GL_R8_SNORM:
+        case GL_R16:
+        case GL_R16_SNORM:
+        case GL_R16F:
+        case GL_R32F:
+            return static_cast<uint32_t>(MTL::PixelFormatRGBA8Unorm);
+        default:
+            return static_cast<uint32_t>(MTL::PixelFormatInvalid);
+    }
+}
+
 extern "C"
 int mglRenderTextureUploadNeedsSingleChannelSwizzle(uint32_t internal_format,
                                                        int swizzled) {
@@ -8792,7 +8836,11 @@ uint8_t* mglRenderCreateSingleChannelSwizzledUpload(
         !out_bytes_per_row || !out_bytes_per_image) {
         return NULL;
     }
-    if (internal_format != GL_R8) {
+
+    const bool is_r8_unorm = (internal_format == GL_R8);
+    const bool is_r8_sint = (internal_format == GL_R8I);
+    const bool is_r8_uint = (internal_format == GL_R8UI);
+    if (!is_r8_unorm && !is_r8_sint && !is_r8_uint) {
         return NULL;
     }
 
@@ -8813,12 +8861,26 @@ uint8_t* mglRenderCreateSingleChannelSwizzledUpload(
         uint8_t* dst_row = dst + row * dst_bytes_per_row;
         const uint8_t* src_row = src + row * src_bytes_per_row;
         for (size_t x = 0; x < width; x++) {
-            uint8_t red = src_row[x];
             uint8_t* out = dst_row + (x * 4u);
-            out[0] = mglRenderResolveR8SwizzledComponent(swizzle_r, red);
-            out[1] = mglRenderResolveR8SwizzledComponent(swizzle_g, red);
-            out[2] = mglRenderResolveR8SwizzledComponent(swizzle_b, red);
-            out[3] = mglRenderResolveR8SwizzledComponent(swizzle_a, red);
+            if (is_r8_unorm) {
+                uint8_t red = src_row[x];
+                out[0] = mglRenderResolveR8SwizzledComponent(swizzle_r, red);
+                out[1] = mglRenderResolveR8SwizzledComponent(swizzle_g, red);
+                out[2] = mglRenderResolveR8SwizzledComponent(swizzle_b, red);
+                out[3] = mglRenderResolveR8SwizzledComponent(swizzle_a, red);
+            } else {
+                int32_t red = is_r8_sint
+                    ? (int32_t)(int8_t)src_row[x]
+                    : (int32_t)src_row[x];
+                out[0] = (uint8_t)(int8_t)mglRenderResolveR8IntegerSwizzledComponent(
+                    swizzle_r, red, is_r8_sint ? 1 : 0);
+                out[1] = (uint8_t)(int8_t)mglRenderResolveR8IntegerSwizzledComponent(
+                    swizzle_g, red, is_r8_sint ? 1 : 0);
+                out[2] = (uint8_t)(int8_t)mglRenderResolveR8IntegerSwizzledComponent(
+                    swizzle_b, red, is_r8_sint ? 1 : 0);
+                out[3] = (uint8_t)(int8_t)mglRenderResolveR8IntegerSwizzledComponent(
+                    swizzle_a, red, is_r8_sint ? 1 : 0);
+            }
         }
     }
 
