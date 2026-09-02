@@ -34,6 +34,12 @@
 
 #include "glm_params.h"
 
+#if !defined(__cplusplus) && !defined(MGL_GTEST_BUILD)
+/* C/ObjC TUs need atomic_* helpers for Sync refcount. Do not pull this into
+ * C++ — stdatomic macros collide with libc++ <atomic>. */
+#include <stdatomic.h>
+#endif
+
 typedef struct __GLsync {
     GLsizei name;
     void *mtl_event;
@@ -52,8 +58,7 @@ typedef struct __GLsync {
     /* Host gtests never touch Sync objects; plain int avoids C++/atomic macros. */
     int refcount;
 #else
-    /* Prefer the _Atomic keyword — do not include <stdatomic.h> here; its
-     * atomic_* macros collide with libc++ <atomic> in C++ TUs. */
+    /* Prefer the _Atomic keyword — C++ TUs must not include <stdatomic.h>. */
     _Atomic int refcount;
 #endif
     GLboolean delete_status;
