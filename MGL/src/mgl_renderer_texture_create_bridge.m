@@ -2953,6 +2953,9 @@
         if (tex->is_render_target || isDepthOrStencilFormat) {
             fallbackDesc.usage |= MGL_TEXTURE_USAGE_RENDER_TARGET;
         }
+        if (isDepthOrStencilFormat) {
+            fallbackDesc.storage_mode = MGL_TEXTURE_STORAGE_PRIVATE;
+        }
 
         id fallbackTexture =
             mglTextureCreateTexture(_device, &fallbackDesc);
