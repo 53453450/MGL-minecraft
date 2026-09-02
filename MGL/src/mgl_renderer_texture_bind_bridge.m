@@ -13,7 +13,7 @@
 #import "mgl_renderer_texture_metal_helpers.h"
 #include "mgl_render_pass_coordinator.h"
 #include "mgl_types_framebuffer.h"
-#include "state.h"
+#include "mgl_types_state.h"
 
 @interface MGLRenderer (TextureBindBridge)
 - (id)createMTLTextureFromGLTexture:(Texture *)tex;
