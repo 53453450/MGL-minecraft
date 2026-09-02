@@ -8620,11 +8620,26 @@ static int verifyQueryUtilities(id<MTLDevice> device) {
 
     uint64_t cpuTimestamp = 0;
     uint64_t gpuTimestamp = 0;
+    if (mglRenderIsInitialized() != 1) {
+        if (mglRenderInit((__bridge void *)device) != 0) {
+            fprintf(stderr, "FAIL: timestamp facade renderer not initialized\n");
+            mglRenderDestroyQueryStateOwner(&queryOwner);
+            return 1;
+        }
+    }
     if (mglRenderSampleTimestamps(&cpuTimestamp, &gpuTimestamp) != 0 ||
         cpuTimestamp == 0 || gpuTimestamp == 0) {
-        fprintf(stderr, "FAIL: timestamp facade cpu=%llu gpu=%llu\n",
+        uint64_t objcCpu = 0;
+        uint64_t objcGpu = 0;
+        [device sampleTimestamps:&objcCpu gpuTimestamp:&objcGpu];
+        fprintf(stderr,
+                "FAIL: timestamp facade cpu=%llu gpu=%llu "
+                "(objc cpu=%llu gpu=%llu init=%d)\n",
                 (unsigned long long)cpuTimestamp,
-                (unsigned long long)gpuTimestamp);
+                (unsigned long long)gpuTimestamp,
+                (unsigned long long)objcCpu,
+                (unsigned long long)objcGpu,
+                mglRenderIsInitialized());
         mglRenderDestroyQueryStateOwner(&queryOwner);
         return 1;
     }
