@@ -3139,6 +3139,16 @@ static GLenum mglPassthroughDeclType(
         }
     }
 
+    id sharedDepthStencilTex = nil;
+    {
+        id depthTex = mglRenderPassDepthTextureFor(&_commandState);
+        id stencilTex = mglRenderPassStencilTextureFor(&_commandState);
+        if (depthTex && stencilTex == depthTex) {
+            sharedDepthStencilTex = depthTex;
+        }
+    }
+    BOOL sharedDepthStencilLoadStoreConfigured = NO;
+
     if (fbo->depth.clear_bitmask & GL_DEPTH_BUFFER_BIT) {
         mglRenderPassSetPersistentDepthClear(
             &_commandState, fbo->depth.clear_color[0]);
@@ -3147,14 +3157,13 @@ static GLenum mglPassthroughDeclType(
             MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0,
             MGLLoadActionClear, MGLStoreActionStore);
         fbo->depth.clear_bitmask &= ~GL_DEPTH_BUFFER_BIT;
-        id depthTex = mglRenderPassDepthTextureFor(&_commandState);
-        if (!fbo->stencil.texture &&
-            mglRenderPassDepthOnlyAttachmentNeedsMirroredStencil(depthTex)) {
+        if (sharedDepthStencilTex) {
             mglRenderPassSetPersistentStencilClear(&_commandState, 0u);
             mglRenderPassSetPersistentActions(
                 &_commandState,
                 MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0,
                 MGLLoadActionClear, MGLStoreActionStore);
+            sharedDepthStencilLoadStoreConfigured = YES;
         }
     } else {
         mglRenderPassSetPersistentLoadAction(
@@ -3167,6 +3176,17 @@ static GLenum mglPassthroughDeclType(
                 MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0,
                 MGLStoreActionStore);
         }
+        if (sharedDepthStencilTex) {
+            mglRenderPassSetPersistentLoadAction(
+                &_commandState,
+                MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0,
+                MGLLoadActionLoad);
+            mglRenderPassSetPersistentStoreAction(
+                &_commandState,
+                MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0,
+                MGLStoreActionStore);
+            sharedDepthStencilLoadStoreConfigured = YES;
+        }
     }
 
     if (fbo->stencil.clear_bitmask & GL_STENCIL_BUFFER_BIT) {
@@ -3178,7 +3198,7 @@ static GLenum mglPassthroughDeclType(
             MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0,
             MGLLoadActionClear, MGLStoreActionStore);
         fbo->stencil.clear_bitmask &= ~GL_STENCIL_BUFFER_BIT;
-    } else {
+    } else if (!sharedDepthStencilLoadStoreConfigured) {
         mglRenderPassSetPersistentLoadAction(
             &_commandState,
             MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0,

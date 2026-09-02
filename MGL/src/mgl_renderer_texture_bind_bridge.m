@@ -115,32 +115,10 @@ bool mglRendererTextureBindLocked(MGLRenderer *self, Texture *tex)
                 const BOOL packedDepthStencil =
                     tex->internalformat == GL_DEPTH32F_STENCIL8 ||
                     tex->internalformat == GL_DEPTH24_STENCIL8;
-                if (packedDepthStencil) {
-                    const BOOL isArray =
-                        tex->target == GL_TEXTURE_2D_ARRAY ||
-                        tex->target == GL_TEXTURE_CUBE_MAP_ARRAY ||
-                        tex->target == GL_TEXTURE_1D_ARRAY ||
-                        tex->target == GL_TEXTURE_CUBE_MAP ||
-                        tex->target == GL_TEXTURE_3D;
-                    BOOL allLevelsUploaded = YES;
-                    const GLuint levelCount = (GLuint)MIN(
-                        newInfo.mipmap_level_count,
-                        tex->num_levels ? tex->num_levels : 1u);
-                    if ([self uploadDirtyCPUTextureData:tex
-                                                   metal:newTexture
-                                             pixelFormat:(uint32_t)newInfo.pixel_format
-                                               numFaces:1
-                                       uploadLevelCount:levelCount
-                                                isArray:isArray
-                                     texture1DBackedBy2D:NO
-                               texture1DArrayBackedBy2DArray:NO
-                                                texType:(uint32_t)newInfo.texture_type
-                                    outAllLevelsUploaded:&allLevelsUploaded] &&
-                        allLevelsUploaded) {
-                        tex->dirty_bits &= ~DIRTY_TEXTURE_DATA;
-                    } else {
-                        tex->dirty_bits |= DIRTY_TEXTURE_DATA;
-                    }
+                if (packedDepthStencil || depthFormatMismatch) {
+                    /* Packed or Depth32Float->Depth32Float_Stencil8 promotion:
+                     * blit cannot reliably move depth/stencil planes. Start fresh. */
+                    tex->dirty_bits = 0;
                 } else {
                     // Blit GPU data from old texture to new texture to preserve
                     // any writes (e.g. imageStore) that occurred before the
@@ -353,6 +331,12 @@ bool mglRendererTextureBindLocked(MGLRenderer *self, Texture *tex)
                   tex->is_render_target ? 1 : 0,
                   mtlTex);
         }
+    }
+
+    if (tex->is_render_target && !tex->mtl_data) {
+        NSLog(@"MGL ERROR: Failed to create render-target Metal texture %u target=0x%x internal=0x%x",
+              tex->name, tex->target, tex->internalformat);
+        return false;
     }
 
     return true;
