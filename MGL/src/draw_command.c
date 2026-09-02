@@ -39,7 +39,7 @@
 #include "mgl_byte_hash.h"
 #include "mgl_safety.h"
 #include "mgl_frame_activity.h"
-#include "mgl_trace_log.h"
+#include "mgl_renderer_batch.h"
 #include "mgl_sampler_compat.h"
 
 /* === Task 4: Snapshot Arena (bump allocator) === */
@@ -4126,7 +4126,7 @@ void mglAppendDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
  * buffer to Metal
  *
  * Trigger: when batch_count > 0, submit the encoded deferred draws to the
- * Metal backend for execution via mglRendererFlushDrawBuffer(ctx).
+ * Metal backend for execution via mglRenderFlushDrawBuffer(ctx).
  * Guarantee: final rendezvous of every hazard-detection flush; after the call
  * all per-CB read/write tracking arrays are cleared.
  * Overflow degradation: none (this function performs no hazard detection; it
@@ -4140,7 +4140,7 @@ void mglFlushCommandBuffer(GLMContext ctx)
     if (cb->batch_count == 0) return;
 
     MGL_PERF_INC(g_mglFlushTotalSinceSwap);
-    mglRendererFlushDrawBuffer(ctx);
+    mglRenderFlushDrawBuffer(ctx);
 }
 
 /*
