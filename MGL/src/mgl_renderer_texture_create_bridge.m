@@ -2088,6 +2088,12 @@
 
     // PROPER FIX: Get original texture format and validate for AGX compatibility
     pixelFormat = mtlPixelFormatForGLTex(tex);
+    /* Paravirtual Metal needs packed depth-stencil for working depth test on
+     * depth-texture FBOs; keep Shared storage (see preferSharedDepthStencil). */
+    if (tex->is_render_target &&
+        pixelFormat == MGLPixelFormatDepth32Float) {
+        pixelFormat = MGLPixelFormatDepth32Float_Stencil8;
+    }
     BOOL expandsSingleChannelSwizzle = mglTextureUploadNeedsSingleChannelSwizzle(tex);
     if (expandsSingleChannelSwizzle) {
         pixelFormat = MGLPixelFormatRGBA8Unorm;

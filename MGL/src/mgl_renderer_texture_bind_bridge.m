@@ -77,7 +77,11 @@ bool mglRendererTextureBindLocked(MGLRenderer *self, Texture *tex)
             ((existingInfo.usage & requiredRenderTargetUsage) != requiredRenderTargetUsage);
         BOOL mipCountMismatch = hasExistingInfo &&
             requiredMipLevels > existingInfo.mipmap_level_count;
-        if (existingTexture && (usageMismatch || mipCountMismatch)) {
+        BOOL depthFormatMismatch = hasExistingInfo && depthOrStencilRT &&
+            tex->is_render_target &&
+            existingInfo.pixel_format == MGLPixelFormatDepth32Float;
+        if (existingTexture && (usageMismatch || mipCountMismatch ||
+                                depthFormatMismatch)) {
             NSLog(@"MGL WARNING: Recreating texture %u for render-target use (old usage=0x%lx oldMips=%lu requiredMips=%lu)",
                   tex->name,
                   (unsigned long)existingInfo.usage,
