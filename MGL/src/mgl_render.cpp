@@ -3810,8 +3810,10 @@ uint32_t mglRenderTextureTypeForShaderResource(
     if (!has_resource) return 0u;
     switch (image_dim) {
         case MGL_IMAGE_DIM_1D:
+            /* GL 1D/1D-array textures are backed by Metal 2D/2D-array storage
+             * (see mglRenderTextureTargetPlan); AIR lowers sampler1DArray the same way. */
             return static_cast<uint32_t>(
-                image_arrayed ? MTL::TextureType1DArray : MTL::TextureType1D);
+                image_arrayed ? MTL::TextureType2DArray : MTL::TextureType2D);
         case MGL_IMAGE_DIM_2D:
             if (image_multisampled) {
                 return static_cast<uint32_t>(

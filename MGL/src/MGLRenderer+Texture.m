@@ -6604,6 +6604,16 @@ static void mglTextureCopyTextureToBuffer(
             }
         }
 
+        /* AIR lowers sampler1DArray to texture2d_array, so expectedType is
+         * MGLTextureType2DArray while GL binds into the _TEXTURE_1D_ARRAY slot. */
+        if (expectedType == MGLTextureType2DArray) {
+            Texture *activeTexture = MGL_STATE(ctx)->active_textures[textureUnit];
+            if (activeTexture &&
+                activeTexture->target == GL_TEXTURE_1D_ARRAY) {
+                return activeTexture;
+            }
+        }
+
         // Texel-buffer resources must not silently fall back to GL_TEXTURE_2D.
         // Minecraft's CloudFaces is declared with buffer image_dim, and the lowerer
         // lowers it to a 1-row texture2d<int> in MSL. If no GL_TEXTURE_BUFFER

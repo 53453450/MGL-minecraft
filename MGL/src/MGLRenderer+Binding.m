@@ -155,8 +155,8 @@ static id mglBindingCreateDefaultSampler(void)
                                                numFaces:1
                                        uploadLevelCount:levelCount
                                                 isArray:isArray
-                                     texture1DBackedBy2D:NO
-                               texture1DArrayBackedBy2DArray:NO
+                                     texture1DBackedBy2D:(tex->target == GL_TEXTURE_1D)
+                               texture1DArrayBackedBy2DArray:(tex->target == GL_TEXTURE_1D_ARRAY)
                                                 texType:(uint32_t)newInfo.texture_type
                                     outAllLevelsUploaded:&allLevelsUploaded] &&
                         allLevelsUploaded) {
@@ -226,6 +226,10 @@ static id mglBindingCreateDefaultSampler(void)
                             tex->target == GL_TEXTURE_1D_ARRAY ||
                             tex->target == GL_TEXTURE_CUBE_MAP ||
                             tex->target == GL_TEXTURE_3D;
+                        const BOOL texture1DBackedBy2D =
+                            tex->target == GL_TEXTURE_1D;
+                        const BOOL texture1DArrayBackedBy2DArray =
+                            tex->target == GL_TEXTURE_1D_ARRAY;
                         BOOL allLevelsUploaded = YES;
                         const GLuint levelCount = (GLuint)MIN(
                             metalInfo.mipmap_level_count,
@@ -237,8 +241,8 @@ static id mglBindingCreateDefaultSampler(void)
                                                    numFaces:1
                                            uploadLevelCount:levelCount
                                                     isArray:isArray
-                                         texture1DBackedBy2D:NO
-                                   texture1DArrayBackedBy2DArray:NO
+                                         texture1DBackedBy2D:texture1DBackedBy2D
+                                   texture1DArrayBackedBy2DArray:texture1DArrayBackedBy2DArray
                                                     texType:(uint32_t)metalInfo.texture_type
                                         outAllLevelsUploaded:&allLevelsUploaded] &&
                             allLevelsUploaded;
