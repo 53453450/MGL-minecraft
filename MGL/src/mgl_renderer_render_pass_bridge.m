@@ -1219,7 +1219,10 @@ static GLenum mglPassthroughDeclType(
     GLuint fboName = fbo ? fbo->name : 0u;
 
 
-    if (fbo != NULL && fboName != 0u) {
+    /* Depth-texture FBOs (Minecraft-style GL_FRAMEBUFFER_TEXTURE) must not use
+     * the FBO match cache: stale true skips encoder rotation while the Metal
+     * pass lacks a depth attachment, breaking depth test (last draw wins). */
+    if (fbo != NULL && fboName != 0u && !fbo->depth.texture) {
         bool cachedResult = false;
         if (mglCmdProbeFboMatchCache(&_commandState, fboName,
                                      fbo->fbo_attachment_generation,
@@ -4586,12 +4589,20 @@ static GLenum mglPassthroughDeclType(
 
         id rpDepth = mglRenderPassDepthTextureFor(&_commandState);
         id rpStencil = mglRenderPassStencilTextureFor(&_commandState);
-        state->depth_format =
-            rpDepth ? (uint32_t)mglRenderPassTextureInfo(rpDepth).pixel_format
-                    : (uint32_t)MGLPixelFormatInvalid;
-        state->stencil_format =
-            rpStencil ? (uint32_t)mglRenderPassTextureInfo(rpStencil).pixel_format
-                      : (uint32_t)MGLPixelFormatInvalid;
+        if (rpDepth) {
+            state->depth_format =
+                (uint32_t)mglRenderPassTextureInfo(rpDepth).pixel_format;
+        } else if (!MGL_STATE(ctx)->framebuffer ||
+                   !MGL_STATE(ctx)->framebuffer->depth.texture) {
+            state->depth_format = (uint32_t)MGLPixelFormatInvalid;
+        }
+        if (rpStencil) {
+            state->stencil_format =
+                (uint32_t)mglRenderPassTextureInfo(rpStencil).pixel_format;
+        } else if (!MGL_STATE(ctx)->framebuffer ||
+                   !MGL_STATE(ctx)->framebuffer->stencil.texture) {
+            state->stencil_format = (uint32_t)MGLPixelFormatInvalid;
+        }
     }
 
     BOOL color0IsIntentionallyDisabled =

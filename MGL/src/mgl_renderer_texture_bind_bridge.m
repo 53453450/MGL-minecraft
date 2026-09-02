@@ -214,6 +214,9 @@ bool mglRendererTextureBindLocked(MGLRenderer *self, Texture *tex)
             if (textureNeedsRebuild) {
                 mglSafeReleaseMetalObj((void **)&tex->mtl_data);
                 [self releaseGLSampledRenderTargetCopyForTexture:tex];
+                if (tex->is_render_target) {
+                    [self mglTextureBindInvalidateFboMatchForAttachment:tex];
+                }
             }
         }
 
