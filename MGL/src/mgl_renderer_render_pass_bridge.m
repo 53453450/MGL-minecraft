@@ -4480,10 +4480,17 @@ static GLenum mglPassthroughDeclType(
                 return NO;
             }
             if (tex && tex->mtl_data) {
-                uint32_t depthFormat = mtlPixelFormatForGLTex(tex);
+                MGLRenderTextureInfo metalInfo = {0};
+                uint32_t depthFormat = MGLPixelFormatInvalid;
+                if (mglRenderGetTextureInfo((__bridge void *)(tex->mtl_data),
+                                            &metalInfo) == 0) {
+                    depthFormat = metalInfo.pixel_format;
+                } else {
+                    depthFormat = mtlPixelFormatForGLTex(tex);
+                }
                 if (depthFormat == MGLPixelFormatInvalid) {
-                    NSLog(@"MGL ERROR: Invalid depth texture format, falling back to Depth32Float");
-                    depthFormat = MGLPixelFormatDepth32Float;
+                    NSLog(@"MGL ERROR: Invalid depth texture format, falling back to Depth32Float_Stencil8");
+                    depthFormat = MGLPixelFormatDepth32Float_Stencil8;
                 }
                 state->depth_format = (uint32_t)depthFormat;
             } else {
@@ -4498,7 +4505,14 @@ static GLenum mglPassthroughDeclType(
                 return NO;
             }
             if (tex && tex->mtl_data) {
-                uint32_t stencilFormat = mtlPixelFormatForGLTex(tex);
+                MGLRenderTextureInfo metalInfo = {0};
+                uint32_t stencilFormat = MGLPixelFormatInvalid;
+                if (mglRenderGetTextureInfo((__bridge void *)(tex->mtl_data),
+                                            &metalInfo) == 0) {
+                    stencilFormat = metalInfo.pixel_format;
+                } else {
+                    stencilFormat = mtlPixelFormatForGLTex(tex);
+                }
                 if (stencilFormat == MGLPixelFormatInvalid) {
                     NSLog(@"MGL ERROR: Invalid stencil texture format, falling back to Stencil8");
                     stencilFormat = MGLPixelFormatStencil8;
@@ -4552,10 +4566,14 @@ static GLenum mglPassthroughDeclType(
 
         id rpDepth = mglRenderPassDepthTextureFor(&_commandState);
         id rpStencil = mglRenderPassStencilTextureFor(&_commandState);
-        state->depth_format =
-            rpDepth ? (uint32_t)mglRenderPassTextureInfo(rpDepth).pixel_format : (uint32_t)MGLPixelFormatInvalid;
-        state->stencil_format =
-            rpStencil ? (uint32_t)mglRenderPassTextureInfo(rpStencil).pixel_format : (uint32_t)MGLPixelFormatInvalid;
+        if (rpDepth) {
+            state->depth_format =
+                (uint32_t)mglRenderPassTextureInfo(rpDepth).pixel_format;
+        }
+        if (rpStencil) {
+            state->stencil_format =
+                (uint32_t)mglRenderPassTextureInfo(rpStencil).pixel_format;
+        }
     }
 
     BOOL color0IsIntentionallyDisabled =

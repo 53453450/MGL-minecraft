@@ -2739,6 +2739,9 @@ void logDirtyBits(GLMContext ctx)
     MGLRenderTextureDescriptorState state = {0};
     state.texture_type = 2u;
     state.pixel_format = pixelFormat;
+    if (depthStencil && pixelFormat == MGL_RENDERER_DEPTH32_FLOAT) {
+        state.pixel_format = MGLPixelFormatDepth32Float_Stencil8;
+    }
     state.width = (NSUInteger)MAX(1.0, drawableSize.width);
     state.height = (NSUInteger)MAX(1.0, drawableSize.height);
     state.mipmap_level_count = 1u;
@@ -2762,6 +2765,9 @@ void logDirtyBits(GLMContext ctx)
     MGLRenderTextureDescriptorState state = {0};
     state.texture_type = 2u;
     state.pixel_format = pixelFormat;
+    if (depthStencil && pixelFormat == MGL_RENDERER_DEPTH32_FLOAT) {
+        state.pixel_format = MGLPixelFormatDepth32Float_Stencil8;
+    }
     state.width = (NSUInteger)MAX(1.0, size.width);
     state.height = (NSUInteger)MAX(1.0, size.height);
     state.mipmap_level_count = 1u;

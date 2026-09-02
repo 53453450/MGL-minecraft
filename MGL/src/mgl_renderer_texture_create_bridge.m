@@ -2088,6 +2088,13 @@
 
     // PROPER FIX: Get original texture format and validate for AGX compatibility
     pixelFormat = mtlPixelFormatForGLTex(tex);
+    /* Pure Depth32Float render targets are depth-test-inert on Apple
+     * Paravirtual Metal; Depth32Float_Stencil8 works (stencil RBO path).
+     * Promote depth-only FBO attachments to the packed Metal format. */
+    if (tex->is_render_target &&
+        pixelFormat == MGLPixelFormatDepth32Float) {
+        pixelFormat = MGLPixelFormatDepth32Float_Stencil8;
+    }
     BOOL expandsSingleChannelSwizzle = mglTextureUploadNeedsSingleChannelSwizzle(tex);
     if (expandsSingleChannelSwizzle) {
         pixelFormat = MGLPixelFormatRGBA8Unorm;

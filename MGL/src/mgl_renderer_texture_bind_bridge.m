@@ -80,7 +80,11 @@ bool mglRendererTextureBindLocked(MGLRenderer *self, Texture *tex)
         /* Shared depth/stencil RTs do not depth-test on Paravirtual Metal. */
         BOOL storageMismatch = hasExistingInfo && depthOrStencilRT &&
             existingInfo.storage_mode != MGL_TEXTURE_STORAGE_PRIVATE;
-        if (existingTexture && (usageMismatch || mipCountMismatch || storageMismatch)) {
+        /* Pure Depth32Float RTs are inert; promote to Depth32Float_Stencil8. */
+        BOOL depthFormatMismatch = hasExistingInfo && depthOrStencilRT &&
+            existingInfo.pixel_format == MGLPixelFormatDepth32Float;
+        if (existingTexture && (usageMismatch || mipCountMismatch ||
+                                storageMismatch || depthFormatMismatch)) {
             NSLog(@"MGL WARNING: Recreating texture %u for render-target use (old usage=0x%lx oldMips=%lu requiredMips=%lu oldStorage=%lu)",
                   tex->name,
                   (unsigned long)existingInfo.usage,

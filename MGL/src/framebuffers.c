@@ -2340,6 +2340,11 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
     fbo_attachment_ptr->clear_color[3] = 0.f;
     fbo_attachment_ptr->buf.tex = tex;
     if (tex) {
+        if (attachment == GL_DEPTH_ATTACHMENT ||
+            attachment == GL_STENCIL_ATTACHMENT ||
+            attachment == GL_DEPTH_STENCIL_ATTACHMENT) {
+            tex->is_render_target = GL_TRUE;
+        }
         mglClearLastSampled2DTextureIfMatches(ctx, tex);
     }
 
