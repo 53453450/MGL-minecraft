@@ -326,8 +326,33 @@ llvm::Type *llvmScalar(MGLIRScalar s, llvm::LLVMContext &ctx) {
     case MGLIR_SCALAR_BOOL: return llvm::Type::getInt1Ty(ctx);
     case MGLIR_SCALAR_INT:  return llvm::Type::getInt32Ty(ctx);
     case MGLIR_SCALAR_UINT: return llvm::Type::getInt32Ty(ctx);
+    /* Metal has no f64 ALU on AGX; GLSL double is an i64 bit payload so
+     * SSBO/UBO load/store stay bit-preserving without emitting f64 ops. */
+    case MGLIR_SCALAR_DOUBLE: return llvm::Type::getInt64Ty(ctx);
     default:                return llvm::Type::getFloatTy(ctx);
     }
+}
+
+/* Natural align for a buffer leaf load/store of LLVM type `t`. */
+static llvm::Align bufferLeafAlign(llvm::Type *t) {
+    if (auto *fvt = llvm::dyn_cast<llvm::FixedVectorType>(t)) {
+        uint64_t w = fvt->getElementCount().getFixedValue();
+        unsigned es =
+            fvt->getElementType()->getPrimitiveSizeInBits() / 8u;
+        if (es >= 8u) {
+            if (w <= 1u) return llvm::Align(8);
+            if (w == 2u) return llvm::Align(16);
+            return llvm::Align(32); /* dvec3/dvec4 */
+        }
+        if (w == 1) return llvm::Align(4);
+        if (w == 2) return llvm::Align(8);
+        return llvm::Align(16);
+    }
+    if (t->isIntegerTy(64) || t->isDoubleTy())
+        return llvm::Align(8);
+    if (t->isFloatTy() || t->isIntegerTy(32))
+        return llvm::Align(4);
+    return llvm::Align(16);
 }
 
 llvm::Type *llvmType(const MType &t, llvm::LLVMContext &ctx) {
@@ -345,6 +370,30 @@ llvm::Type *llvmType(const MType &t, llvm::LLVMContext &ctx) {
     return s;
 }
 
+MType typeFromIR(const MGLIRType *t); /* defined below */
+
+/* SSA shape for an IR type, including nested structs/arrays.  Buffer
+ * padding lives only in member_offsets / array_stride — the LLVM type
+ * is tightly packed so InsertValue/ExtractValue can address fields. */
+static llvm::Type *llvmTypeFromIR(const MGLIRType *t, llvm::LLVMContext &ctx) {
+    if (!t)
+        return llvm::Type::getFloatTy(ctx);
+    switch (t->kind) {
+    case MGLIR_TYPE_STRUCT: {
+        llvm::SmallVector<llvm::Type *, 8> elts;
+        for (uint32_t i = 0; i < t->member_count; i++)
+            elts.push_back(llvmTypeFromIR(t->members[i], ctx));
+        return llvm::StructType::get(ctx, elts);
+    }
+    case MGLIR_TYPE_ARRAY: {
+        uint32_t n = t->array_size > 0u ? t->array_size : 1u;
+        return llvm::ArrayType::get(llvmTypeFromIR(t->elem_type, ctx), n);
+    }
+    default:
+        return llvmType(typeFromIR(t), ctx);
+    }
+}
+
 /* Implicit GLSL numeric conversion (sema allows any non-void scalar base
  * to convert to any other, GLSL 4.60 4.1.10).  Idempotent; works on
  * scalars and vectors of matching width. */
@@ -352,11 +401,6 @@ llvm::Value *coerceScalar(Codegen &cg, llvm::Value *v, MGLIRScalar want) {
     llvm::Type *cur = v->getType();
     if (!cur->isIntOrIntVectorTy() && !cur->isFPOrFPVectorTy())
         return v;  /* arrays / matrices / aggregates: no scalar cast */
-    bool wantFP = scalarIsFloat(want);
-    bool curFP = cur->isFPOrFPVectorTy();
-    if (curFP == wantFP && want != MGLIR_SCALAR_BOOL &&
-        cur->getScalarSizeInBits() == (want == MGLIR_SCALAR_BOOL ? 1 : 32))
-        return v;
     llvm::LLVMContext &ctx = *cg.ctx;
     auto vt = [&](llvm::Type *elt) -> llvm::Type * {
         if (auto *fv = llvm::dyn_cast<llvm::FixedVectorType>(cur))
@@ -364,6 +408,22 @@ llvm::Value *coerceScalar(Codegen &cg, llvm::Value *v, MGLIRScalar want) {
                 fv->getElementCount().getFixedValue());
         return elt;
     };
+    /* Doubles are i64 payloads — never SIToFP/FPToSI them as float. */
+    if (want == MGLIR_SCALAR_DOUBLE) {
+        if (cur->isIntOrIntVectorTy() && cur->getScalarSizeInBits() == 64)
+            return v;
+        if (cur->isFPOrFPVectorTy() && cur->getScalarSizeInBits() == 64)
+            return cg.b->CreateBitCast(v, vt(llvm::Type::getInt64Ty(ctx)));
+        return v;
+    }
+    if (cur->isIntOrIntVectorTy() && cur->getScalarSizeInBits() == 64 &&
+        want != MGLIR_SCALAR_DOUBLE)
+        return v; /* keep double payload out of float/int coercions */
+    bool wantFP = scalarIsFloat(want);
+    bool curFP = cur->isFPOrFPVectorTy();
+    if (curFP == wantFP && want != MGLIR_SCALAR_BOOL &&
+        cur->getScalarSizeInBits() == (want == MGLIR_SCALAR_BOOL ? 1 : 32))
+        return v;
     if (wantFP) {
         if (cur->getScalarSizeInBits() == 1)
             return cg.b->CreateUIToFP(v, vt(llvm::Type::getFloatTy(ctx)));
@@ -1991,6 +2051,13 @@ static llvm::Value *emitUBOMatrixLoad(Codegen &cg, llvm::Value *base,
 static void emitUBOMatrixStore(Codegen &cg, llvm::Value *base,
                                llvm::Value *off, const MGLIRType *ct,
                                const MType &vt, llvm::Value *v);
+static llvm::Value *emitUBOLeafLoad(Codegen &cg, llvm::Value *base,
+                                    uint32_t moff, const MGLIRType *ct,
+                                    const MType &vt);
+static llvm::Value *emitSSBOAggregateLoad(Codegen &cg, llvm::Value *base,
+                                          const MGLIRType *ty);
+static void emitSSBOAggregateStore(Codegen &cg, llvm::Value *base,
+                                   const MGLIRType *ty, llvm::Value *v);
 
 llvm::Value *emitSSBORead(Codegen &cg, const MGLExpr *e,
                           const MGLIRSymbol *sb, const MGLIRModule *mod,
@@ -2005,15 +2072,12 @@ llvm::Value *emitSSBORead(Codegen &cg, const MGLExpr *e,
         MType vt = typeFromIR(ty);
         return emitUBOMatrixLoad(cg, p, cg.b->getInt64(0), ty, vt);
     }
+    /* Struct/array IR types have scalar==VOID; a contiguous float load
+     * plus coerceScalar(VOID) yields `store i32, float*` — illegal AIR. */
+    if (ty && (ty->kind == MGLIR_TYPE_STRUCT || ty->kind == MGLIR_TYPE_ARRAY))
+        return emitSSBOAggregateLoad(cg, p, ty);
     llvm::Type *lt = llvmType(typeFromIR(ty), *cg.ctx);
-    llvm::Align align(16);
-    if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(lt)) {
-        uint64_t w = vt->getElementCount().getFixedValue();
-        if (w == 1) align = llvm::Align(4);
-        else if (w == 2) align = llvm::Align(8);
-    } else if (lt->isFloatTy() || lt->isIntegerTy(32)) {
-        align = llvm::Align(4);
-    }
+    llvm::Align align = bufferLeafAlign(lt);
     p = cg.b->CreateBitCast(p, lt->getPointerTo(1));
     return cg.b->CreateAlignedLoad(lt, p, align);
 }
@@ -2043,16 +2107,13 @@ void emitSSBOWrite(Codegen &cg, const MGLExpr *e, const MGLIRSymbol *sb,
         emitUBOMatrixStore(cg, p, cg.b->getInt64(0), ty, vt, v);
         return;
     }
+    if (ty && (ty->kind == MGLIR_TYPE_STRUCT || ty->kind == MGLIR_TYPE_ARRAY)) {
+        emitSSBOAggregateStore(cg, p, ty, v);
+        return;
+    }
     v = coerceScalar(cg, v, typeFromIR(ty).scalar);
     llvm::Type *lt = llvmType(typeFromIR(ty), *cg.ctx);
-    llvm::Align align(16);
-    if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(lt)) {
-        uint64_t w = vt->getElementCount().getFixedValue();
-        if (w == 1) align = llvm::Align(4);
-        else if (w == 2) align = llvm::Align(8);
-    } else if (lt->isFloatTy() || lt->isIntegerTy(32)) {
-        align = llvm::Align(4);
-    }
+    llvm::Align align = bufferLeafAlign(lt);
     p = cg.b->CreateBitCast(p, lt->getPointerTo(1));
     cg.b->CreateAlignedStore(v, p, align);
 }
@@ -2191,14 +2252,7 @@ static llvm::Value *emitUBOLeafLoad(Codegen &cg, llvm::Value *base,
     llvm::Type *t = llvmType(vt, *cg.ctx);
     llvm::Value *p =
         cg.b->CreateGEP(cg.b->getInt8Ty(), base, off);
-    llvm::Align align(16);
-    if (auto *fvt = llvm::dyn_cast<llvm::FixedVectorType>(t)) {
-        uint64_t w = fvt->getElementCount().getFixedValue();
-        if (w == 1) align = llvm::Align(4);
-        else if (w == 2) align = llvm::Align(8);
-    } else if (t->isFloatTy() || t->isIntegerTy(32)) {
-        align = llvm::Align(4);
-    }
+    llvm::Align align = bufferLeafAlign(t);
     if (vt.vec && vt.scalar == MGLIR_SCALAR_BOOL) {
         llvm::Type *wordsTy = llvm::FixedVectorType::get(
             llvm::Type::getInt32Ty(*cg.ctx), vt.vec);
@@ -2224,6 +2278,136 @@ static llvm::Value *emitUBOLeafLoad(Codegen &cg, llvm::Value *base,
                                     uint32_t moff, const MGLIRType *ct,
                                     const MType &vt) {
     return emitUBOLeafLoad(cg, base, cg.b->getInt64(moff), ct, vt);
+}
+
+/* Store a scalar/vector/matrix leaf at byte offset 0 from `base`. */
+static void emitUBOLeafStore(Codegen &cg, llvm::Value *base,
+                             const MGLIRType *ct, const MType &vt,
+                             llvm::Value *v) {
+    if (ct && ct->kind == MGLIR_TYPE_MATRIX) {
+        emitUBOMatrixStore(cg, base, cg.b->getInt64(0), ct, vt, v);
+        return;
+    }
+    llvm::Type *t = llvmType(vt, *cg.ctx);
+    llvm::Align align = bufferLeafAlign(t);
+    if (vt.vec && vt.scalar == MGLIR_SCALAR_BOOL) {
+        llvm::Type *wordsTy = llvm::FixedVectorType::get(
+            llvm::Type::getInt32Ty(*cg.ctx), vt.vec);
+        llvm::Value *words = cg.b->CreateZExt(v, wordsTy);
+        llvm::Value *p = cg.b->CreateBitCast(base, wordsTy->getPointerTo(1));
+        cg.b->CreateAlignedStore(words, p, align);
+        return;
+    }
+    if (vt.scalar == MGLIR_SCALAR_BOOL && !vt.vec && !vt.isMatrix()) {
+        llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
+        llvm::Value *word = cg.b->CreateZExt(v, i32);
+        llvm::Value *p = cg.b->CreateBitCast(base, i32->getPointerTo(1));
+        cg.b->CreateAlignedStore(word, p, llvm::Align(4));
+        return;
+    }
+    v = coerceScalar(cg, v, vt.scalar);
+    if (v->getType() != t)
+        v = cg.b->CreateBitCast(v, t);
+    llvm::Value *p = cg.b->CreateBitCast(base, t->getPointerTo(1));
+    cg.b->CreateAlignedStore(v, p, align);
+}
+
+/* Load an SSBO struct/array honouring std140/std430 member_offsets and
+ * array_stride (never a single contiguous LLVM aggregate load). */
+static llvm::Value *emitSSBOAggregateLoad(Codegen &cg, llvm::Value *base,
+                                          const MGLIRType *ty) {
+    if (!ty) return nullptr;
+    if (ty->kind == MGLIR_TYPE_STRUCT) {
+        llvm::Type *st = llvmTypeFromIR(ty, *cg.ctx);
+        llvm::Value *v = llvm::UndefValue::get(st);
+        for (uint32_t i = 0; i < ty->member_count; i++) {
+            uint32_t moff = ty->member_offsets ? ty->member_offsets[i] : 0u;
+            const MGLIRType *mt = ty->members[i];
+            llvm::Value *mp =
+                cg.b->CreateGEP(cg.b->getInt8Ty(), base, cg.b->getInt64(moff));
+            llvm::Value *mv;
+            if (mt->kind == MGLIR_TYPE_STRUCT || mt->kind == MGLIR_TYPE_ARRAY)
+                mv = emitSSBOAggregateLoad(cg, mp, mt);
+            else
+                mv = emitUBOLeafLoad(cg, mp, 0u, mt, typeFromIR(mt));
+            if (!mv) return nullptr;
+            v = cg.b->CreateInsertValue(v, mv, i);
+        }
+        return v;
+    }
+    if (ty->kind == MGLIR_TYPE_ARRAY) {
+        uint32_t n = ty->array_size;
+        if (n == 0u) {
+            cg.err = 1;
+            cg.errmsg =
+                "codegen: cannot load an unsized SSBO array as a value";
+            return nullptr;
+        }
+        llvm::Type *at = llvmTypeFromIR(ty, *cg.ctx);
+        llvm::Value *v = llvm::UndefValue::get(at);
+        uint32_t stride = ty->layout.array_stride;
+        if (!stride && ty->elem_type)
+            stride = ty->elem_type->layout.size;
+        const MGLIRType *et = ty->elem_type;
+        for (uint32_t i = 0; i < n; i++) {
+            llvm::Value *ep = cg.b->CreateGEP(
+                cg.b->getInt8Ty(), base,
+                cg.b->getInt64((uint64_t)i * stride));
+            llvm::Value *ev;
+            if (et->kind == MGLIR_TYPE_STRUCT || et->kind == MGLIR_TYPE_ARRAY)
+                ev = emitSSBOAggregateLoad(cg, ep, et);
+            else
+                ev = emitUBOLeafLoad(cg, ep, 0u, et, typeFromIR(et));
+            if (!ev) return nullptr;
+            v = cg.b->CreateInsertValue(v, ev, i);
+        }
+        return v;
+    }
+    return emitUBOLeafLoad(cg, base, 0u, ty, typeFromIR(ty));
+}
+
+static void emitSSBOAggregateStore(Codegen &cg, llvm::Value *base,
+                                   const MGLIRType *ty, llvm::Value *v) {
+    if (!ty || !v) return;
+    if (ty->kind == MGLIR_TYPE_STRUCT) {
+        for (uint32_t i = 0; i < ty->member_count; i++) {
+            uint32_t moff = ty->member_offsets ? ty->member_offsets[i] : 0u;
+            const MGLIRType *mt = ty->members[i];
+            llvm::Value *mp =
+                cg.b->CreateGEP(cg.b->getInt8Ty(), base, cg.b->getInt64(moff));
+            llvm::Value *mv = cg.b->CreateExtractValue(v, i);
+            if (mt->kind == MGLIR_TYPE_STRUCT || mt->kind == MGLIR_TYPE_ARRAY)
+                emitSSBOAggregateStore(cg, mp, mt, mv);
+            else
+                emitUBOLeafStore(cg, mp, mt, typeFromIR(mt), mv);
+        }
+        return;
+    }
+    if (ty->kind == MGLIR_TYPE_ARRAY) {
+        uint32_t n = ty->array_size;
+        if (n == 0u) {
+            cg.err = 1;
+            cg.errmsg =
+                "codegen: cannot store an unsized SSBO array as a value";
+            return;
+        }
+        uint32_t stride = ty->layout.array_stride;
+        if (!stride && ty->elem_type)
+            stride = ty->elem_type->layout.size;
+        const MGLIRType *et = ty->elem_type;
+        for (uint32_t i = 0; i < n; i++) {
+            llvm::Value *ep = cg.b->CreateGEP(
+                cg.b->getInt8Ty(), base,
+                cg.b->getInt64((uint64_t)i * stride));
+            llvm::Value *ev = cg.b->CreateExtractValue(v, i);
+            if (et->kind == MGLIR_TYPE_STRUCT || et->kind == MGLIR_TYPE_ARRAY)
+                emitSSBOAggregateStore(cg, ep, et, ev);
+            else
+                emitUBOLeafStore(cg, ep, et, typeFromIR(et), ev);
+        }
+        return;
+    }
+    emitUBOLeafStore(cg, base, ty, typeFromIR(ty), v);
 }
 
 llvm::Value *varValue(Codegen &cg, const VarSym &v, const MGLIRModule *mod) {
