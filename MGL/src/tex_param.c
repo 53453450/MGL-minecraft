@@ -208,8 +208,10 @@ static void mglMarkTextureParameterDirty(GLMContext ctx, Texture *tex, GLenum pn
     if (mglTextureParameterAffectsTextureDescriptor(pname)) {
         mglInvalidateTextureBaseLevelView(ctx, tex);
         if (tex && !tex->is_render_target &&
-            mglRenderTextureUploadNeedsSingleChannelSwizzle(
-                (uint32_t)tex->internalformat, 1) != 0) {
+            (mglRenderTextureUploadNeedsSingleChannelSwizzle(
+                 (uint32_t)tex->internalformat, 1) != 0 ||
+             mglRenderTextureUploadNeedsIntegerMultiChannelSwizzleBake(
+                 (uint32_t)tex->internalformat, 1) != 0)) {
             tex->dirty_bits |= (DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_DATA);
         }
     }

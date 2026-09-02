@@ -55,11 +55,26 @@ uint32_t mglMTLSwizzleForGLSwizzle(Texture *tex, GLenum swizzle)
 
 bool mglTextureUploadNeedsSingleChannelSwizzle(Texture *tex)
 {
-    if (!tex) {
+    if (!tex || !tex->params.swizzled) {
         return false;
     }
     return mglRenderTextureUploadNeedsSingleChannelSwizzle(
-        (uint32_t)tex->internalformat, tex->params.swizzled ? 1 : 0) != 0;
+        (uint32_t)tex->internalformat, 1) != 0;
+}
+
+bool mglTextureUploadNeedsIntegerMultiChannelSwizzleBake(Texture *tex)
+{
+    if (!tex || !tex->params.swizzled) {
+        return false;
+    }
+    return mglRenderTextureUploadNeedsIntegerMultiChannelSwizzleBake(
+        (uint32_t)tex->internalformat, 1) != 0;
+}
+
+bool mglTextureUploadNeedsSwizzleBake(Texture *tex)
+{
+    return mglTextureUploadNeedsSingleChannelSwizzle(tex) ||
+           mglTextureUploadNeedsIntegerMultiChannelSwizzleBake(tex);
 }
 
 uint8_t mglResolveR8SwizzledComponent(Texture *tex, GLenum swizzle, uint8_t red)
@@ -97,6 +112,54 @@ uint8_t *mglCreateSingleChannelSwizzledUpload(Texture *tex,
         *outBytesPerImage = outBPI;
     }
     return result;
+}
+
+uint8_t *mglCreateIntegerMultiChannelSwizzledUpload(Texture *tex,
+                                                    const uint8_t *srcData,
+                                                    size_t width,
+                                                    size_t height,
+                                                    size_t srcBytesPerRow,
+                                                    size_t *outBytesPerRow,
+                                                    size_t *outBytesPerImage)
+{
+    if (!tex || !srcData || width == 0 || height == 0 || !outBytesPerRow || !outBytesPerImage) {
+        return NULL;
+    }
+
+    size_t outBPR = 0;
+    size_t outBPI = 0;
+    uint8_t *result = mglRenderCreateIntegerMultiChannelSwizzledUpload(
+        (uint32_t)tex->internalformat,
+        (uint32_t)tex->params.swizzle_r,
+        (uint32_t)tex->params.swizzle_g,
+        (uint32_t)tex->params.swizzle_b,
+        (uint32_t)tex->params.swizzle_a,
+        srcData, (size_t)width, (size_t)height, (size_t)srcBytesPerRow,
+        &outBPR, &outBPI);
+    if (result) {
+        *outBytesPerRow = outBPR;
+        *outBytesPerImage = outBPI;
+    }
+    return result;
+}
+
+uint8_t *mglCreateSwizzledUpload(Texture *tex,
+                                 const uint8_t *srcData,
+                                 size_t width,
+                                 size_t height,
+                                 size_t srcBytesPerRow,
+                                 size_t *outBytesPerRow,
+                                 size_t *outBytesPerImage)
+{
+    uint8_t *result = mglCreateSingleChannelSwizzledUpload(
+        tex, srcData, width, height, srcBytesPerRow,
+        outBytesPerRow, outBytesPerImage);
+    if (result) {
+        return result;
+    }
+    return mglCreateIntegerMultiChannelSwizzledUpload(
+        tex, srcData, width, height, srcBytesPerRow,
+        outBytesPerRow, outBytesPerImage);
 }
 
 bool mglTextureInternalFormatNeedsRGBA8Expansion(GLenum internalformat,

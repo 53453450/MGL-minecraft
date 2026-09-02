@@ -1497,6 +1497,14 @@ int mglRenderTextureUploadNeedsSingleChannelSwizzle(uint32_t internal_format,
  * Returns MTLPixelFormatInvalid when the format is not handled. */
 uint32_t mglRenderSingleChannelSwizzleStoragePixelFormat(
     uint32_t internal_format);
+/* Multi-channel integer formats bake swizzle into CPU texels instead of
+ * relying on Metal view swizzle (unreliable for Sint on some paths). */
+int mglRenderTextureUploadNeedsIntegerMultiChannelSwizzleBake(
+    uint32_t internal_format, int swizzled);
+/* Returns 1 when swizzle was baked at upload for this storage format. */
+int mglRenderTextureSwizzleUsesUploadBake(
+    uint32_t internal_format, int swizzled,
+    uint32_t storage_pixel_format);
 /* stored color-component count for an internal format.
  * Mirrors mglStoredColorComponentsForTexture after the null-tex check
  * (null stays in ObjC and returns 4).  Unknown formats → 4. */
@@ -1506,6 +1514,13 @@ uint32_t mglRenderStoredColorComponents(uint32_t internal_format);
 uint32_t mglRenderMTLSwizzleForGLSwizzle(uint32_t gl_swizzle,
                                             uint32_t components);
 uint8_t *mglRenderCreateSingleChannelSwizzledUpload(
+    uint32_t internal_format,
+    uint32_t swizzle_r, uint32_t swizzle_g,
+    uint32_t swizzle_b, uint32_t swizzle_a,
+    const void *src_data, size_t width, size_t height,
+    size_t src_bytes_per_row,
+    size_t *out_bytes_per_row, size_t *out_bytes_per_image);
+uint8_t *mglRenderCreateIntegerMultiChannelSwizzledUpload(
     uint32_t internal_format,
     uint32_t swizzle_r, uint32_t swizzle_g,
     uint32_t swizzle_b, uint32_t swizzle_a,

@@ -3504,17 +3504,13 @@ int mglRenderSampledTextureViewForBaseLevel(
         texture_object->params.swizzle_b, components);
     uint32_t swizzle_alpha = mglRenderMTLSwizzleForGLSwizzle(
         texture_object->params.swizzle_a, components);
-    /* Single-channel formats may expand to RGBA8 at upload with swizzle baked into
-     * texels; applying Metal view swizzle on that storage would double-apply. */
+    /* Formats expanded/baked at upload must not get Metal view swizzle. */
     const bool upload_swizzle_baked =
         texture_object->params.swizzled &&
         !texture_object->is_render_target &&
-        mglRenderTextureUploadNeedsSingleChannelSwizzle(
-            texture_object->internalformat, 1) != 0 &&
-        (source->pixelFormat() == MTL::PixelFormatRGBA8Unorm ||
-         source->pixelFormat() == MTL::PixelFormatRGBA8Unorm_sRGB ||
-         source->pixelFormat() == MTL::PixelFormatRGBA8Sint ||
-         source->pixelFormat() == MTL::PixelFormatRGBA8Uint);
+        mglRenderTextureSwizzleUsesUploadBake(
+            texture_object->internalformat, 1,
+            static_cast<uint32_t>(source->pixelFormat())) != 0;
     if (upload_swizzle_baked) {
         swizzle_red = static_cast<uint32_t>(MTL::TextureSwizzleRed);
         swizzle_green = static_cast<uint32_t>(MTL::TextureSwizzleGreen);
@@ -8717,22 +8713,31 @@ uint8_t mglRenderResolveR8SwizzledComponent(uint32_t swizzle, uint8_t red) {
     }
 }
 
-static int32_t mglRenderResolveR8IntegerSwizzledComponent(
-    uint32_t swizzle, int32_t red, int is_signed) {
+static int64_t mglRenderResolveIntegerSwizzledComponent(
+    uint32_t swizzle, int64_t red, int64_t green, int64_t blue,
+    int64_t alpha, uint32_t components) {
     switch (swizzle) {
         case GL_RED:
-            return red;
+            return components >= 1u ? red : 0;
+        case GL_GREEN:
+            return components >= 2u ? green : 0;
+        case GL_BLUE:
+            return components >= 3u ? blue : 0;
+        case GL_ALPHA:
+            return components >= 4u ? alpha : 1;
         case GL_ONE:
             return 1;
-        case GL_ALPHA:
-            return 1;
         case GL_ZERO:
-        case GL_GREEN:
-        case GL_BLUE:
         default:
             return 0;
     }
+}
+
+static int32_t mglRenderResolveR8IntegerSwizzledComponent(
+    uint32_t swizzle, int32_t red, int is_signed) {
     (void)is_signed;
+    return (int32_t)mglRenderResolveIntegerSwizzledComponent(
+        swizzle, red, 0, 0, 1, 1u);
 }
 
 extern "C"
@@ -8740,23 +8745,319 @@ uint32_t mglRenderSingleChannelSwizzleStoragePixelFormat(
     uint32_t internal_format) {
     switch (internal_format) {
         case GL_R8I:
-        case GL_R16I:
-        case GL_R32I:
             return static_cast<uint32_t>(MTL::PixelFormatRGBA8Sint);
+        case GL_R16I:
+            return static_cast<uint32_t>(MTL::PixelFormatRGBA16Sint);
+        case GL_R32I:
+            return static_cast<uint32_t>(MTL::PixelFormatRGBA32Sint);
         case GL_R8UI:
-        case GL_R16UI:
-        case GL_R32UI:
             return static_cast<uint32_t>(MTL::PixelFormatRGBA8Uint);
+        case GL_R16UI:
+            return static_cast<uint32_t>(MTL::PixelFormatRGBA16Uint);
+        case GL_R32UI:
+            return static_cast<uint32_t>(MTL::PixelFormatRGBA32Uint);
         case GL_R8:
         case GL_R8_SNORM:
+            return static_cast<uint32_t>(MTL::PixelFormatRGBA8Unorm);
         case GL_R16:
         case GL_R16_SNORM:
         case GL_R16F:
+            return static_cast<uint32_t>(MTL::PixelFormatRGBA16Unorm);
         case GL_R32F:
-            return static_cast<uint32_t>(MTL::PixelFormatRGBA8Unorm);
+            return static_cast<uint32_t>(MTL::PixelFormatRGBA32Float);
         default:
             return static_cast<uint32_t>(MTL::PixelFormatInvalid);
     }
+}
+
+static int mglRenderIntegerFormatLayout(
+    uint32_t internal_format, uint32_t* out_components,
+    uint32_t* out_component_bytes, int* out_signed);
+
+extern "C"
+int mglRenderTextureUploadNeedsIntegerMultiChannelSwizzleBake(
+    uint32_t internal_format, int swizzled) {
+    if (!swizzled) {
+        return 0;
+    }
+    uint32_t components = 0;
+    uint32_t component_bytes = 0;
+    int is_signed = 0;
+    if (mglRenderIntegerFormatLayout(
+            internal_format, &components, &component_bytes, &is_signed) != 0 ||
+        !is_signed || components <= 1u) {
+        return 0;
+    }
+    return 1;
+}
+
+static int mglRenderPixelFormatMatchesSwizzleBakeStorage(
+    uint32_t internal_format, uint32_t storage_pixel_format) {
+    const uint32_t expected =
+        mglRenderSingleChannelSwizzleStoragePixelFormat(internal_format);
+    if (expected != static_cast<uint32_t>(MTL::PixelFormatInvalid) &&
+        expected == storage_pixel_format) {
+        return 1;
+    }
+    if (mglRenderTextureUploadNeedsIntegerMultiChannelSwizzleBake(
+            internal_format, 1) != 0) {
+        /* Multi-channel integer bake keeps the native storage format. */
+        switch (internal_format) {
+            case GL_RG8I:
+            case GL_RGB8I:
+            case GL_RGBA8I:
+                return storage_pixel_format ==
+                    static_cast<uint32_t>(MTL::PixelFormatRGBA8Sint);
+            case GL_RG8UI:
+            case GL_RGB8UI:
+            case GL_RGBA8UI:
+                return storage_pixel_format ==
+                    static_cast<uint32_t>(MTL::PixelFormatRGBA8Uint);
+            case GL_RG16I:
+            case GL_RGB16I:
+            case GL_RGBA16I:
+                return storage_pixel_format ==
+                    static_cast<uint32_t>(MTL::PixelFormatRGBA16Sint);
+            case GL_RG16UI:
+            case GL_RGB16UI:
+            case GL_RGBA16UI:
+                return storage_pixel_format ==
+                    static_cast<uint32_t>(MTL::PixelFormatRGBA16Uint);
+            case GL_RG32I:
+            case GL_RGB32I:
+            case GL_RGBA32I:
+                return storage_pixel_format ==
+                    static_cast<uint32_t>(MTL::PixelFormatRGBA32Sint);
+            case GL_RG32UI:
+            case GL_RGB32UI:
+            case GL_RGBA32UI:
+                return storage_pixel_format ==
+                    static_cast<uint32_t>(MTL::PixelFormatRGBA32Uint);
+            default:
+                break;
+        }
+    }
+    return 0;
+}
+
+extern "C"
+int mglRenderTextureSwizzleUsesUploadBake(
+    uint32_t internal_format, int swizzled, uint32_t storage_pixel_format) {
+    if (!swizzled) {
+        return 0;
+    }
+    if (mglRenderTextureUploadNeedsSingleChannelSwizzle(
+            internal_format, swizzled) != 0) {
+        return mglRenderPixelFormatMatchesSwizzleBakeStorage(
+            internal_format, storage_pixel_format);
+    }
+    if (mglRenderTextureUploadNeedsIntegerMultiChannelSwizzleBake(
+            internal_format, swizzled) != 0) {
+        return mglRenderPixelFormatMatchesSwizzleBakeStorage(
+            internal_format, storage_pixel_format);
+    }
+    return 0;
+}
+
+static int64_t mglRenderReadIntegerTexelComponent(
+    const uint8_t* texel, uint32_t component, uint32_t component_bytes,
+    int is_signed) {
+    const uint8_t* p = texel + component * component_bytes;
+    if (component_bytes == 1u) {
+        return is_signed ? (int64_t)(int8_t)p[0] : (int64_t)p[0];
+    }
+    if (component_bytes == 2u) {
+        if (is_signed) {
+            return (int64_t) * (const int16_t*)(const void*)p;
+        }
+        return (int64_t) * (const uint16_t*)(const void*)p;
+    }
+    if (is_signed) {
+        return (int64_t) * (const int32_t*)(const void*)p;
+    }
+    return (int64_t) * (const uint32_t*)(const void*)p;
+}
+
+static void mglRenderWriteIntegerTexelComponent(
+    uint8_t* texel, uint32_t component, uint32_t component_bytes,
+    int is_signed, int64_t value) {
+    uint8_t* p = texel + component * component_bytes;
+    if (component_bytes == 1u) {
+        if (is_signed) {
+            int32_t clamped = (int32_t)value;
+            if (clamped > 127) clamped = 127;
+            if (clamped < -128) clamped = -128;
+            p[0] = (uint8_t)(int8_t)clamped;
+        } else {
+            uint32_t clamped =
+                value < 0 ? 0u :
+                value > 255 ? 255u : (uint32_t)value;
+            p[0] = (uint8_t)clamped;
+        }
+        return;
+    }
+    if (component_bytes == 2u) {
+        if (is_signed) {
+            int32_t clamped = (int32_t)value;
+            if (clamped > 32767) clamped = 32767;
+            if (clamped < -32768) clamped = -32768;
+            *(int16_t*)(void*)p = (int16_t)clamped;
+        } else {
+            uint32_t clamped =
+                value < 0 ? 0u :
+                value > 65535 ? 65535u : (uint32_t)value;
+            *(uint16_t*)(void*)p = (uint16_t)clamped;
+        }
+        return;
+    }
+    if (is_signed) {
+        *(int32_t*)(void*)p = (int32_t)value;
+    } else {
+        uint64_t clamped =
+            value < 0 ? 0ull :
+            (uint64_t)value > 0xffffffffull ? 0xffffffffull :
+            (uint64_t)value;
+        *(uint32_t*)(void*)p = (uint32_t)clamped;
+    }
+}
+
+static int mglRenderIntegerFormatLayout(
+    uint32_t internal_format, uint32_t* out_components,
+    uint32_t* out_component_bytes, int* out_signed) {
+    if (!out_components || !out_component_bytes || !out_signed) {
+        return -1;
+    }
+    *out_components = 0;
+    *out_component_bytes = 0;
+    *out_signed = 0;
+    switch (internal_format) {
+        case GL_R8I:
+        case GL_RG8I:
+        case GL_RGB8I:
+        case GL_RGBA8I:
+            *out_components = mglRenderStoredColorComponents(internal_format);
+            *out_component_bytes = 1u;
+            *out_signed = 1;
+            return 0;
+        case GL_R8UI:
+        case GL_RG8UI:
+        case GL_RGB8UI:
+        case GL_RGBA8UI:
+            *out_components = mglRenderStoredColorComponents(internal_format);
+            *out_component_bytes = 1u;
+            *out_signed = 0;
+            return 0;
+        case GL_R16I:
+        case GL_RG16I:
+        case GL_RGB16I:
+        case GL_RGBA16I:
+            *out_components = mglRenderStoredColorComponents(internal_format);
+            *out_component_bytes = 2u;
+            *out_signed = 1;
+            return 0;
+        case GL_R16UI:
+        case GL_RG16UI:
+        case GL_RGB16UI:
+        case GL_RGBA16UI:
+            *out_components = mglRenderStoredColorComponents(internal_format);
+            *out_component_bytes = 2u;
+            *out_signed = 0;
+            return 0;
+        case GL_R32I:
+        case GL_RG32I:
+        case GL_RGB32I:
+        case GL_RGBA32I:
+            *out_components = mglRenderStoredColorComponents(internal_format);
+            *out_component_bytes = 4u;
+            *out_signed = 1;
+            return 0;
+        case GL_R32UI:
+        case GL_RG32UI:
+        case GL_RGB32UI:
+        case GL_RGBA32UI:
+            *out_components = mglRenderStoredColorComponents(internal_format);
+            *out_component_bytes = 4u;
+            *out_signed = 0;
+            return 0;
+        default:
+            return -1;
+    }
+}
+
+extern "C"
+uint8_t* mglRenderCreateIntegerMultiChannelSwizzledUpload(
+    uint32_t internal_format,
+    uint32_t swizzle_r, uint32_t swizzle_g,
+    uint32_t swizzle_b, uint32_t swizzle_a,
+    const void* src_data, size_t width, size_t height,
+    size_t src_bytes_per_row,
+    size_t* out_bytes_per_row, size_t* out_bytes_per_image) {
+    if (out_bytes_per_row) *out_bytes_per_row = 0;
+    if (out_bytes_per_image) *out_bytes_per_image = 0;
+    if (!src_data || width == 0 || height == 0 ||
+        !out_bytes_per_row || !out_bytes_per_image) {
+        return NULL;
+    }
+    uint32_t components = 0;
+    uint32_t component_bytes = 0;
+    int is_signed = 0;
+    if (mglRenderIntegerFormatLayout(
+            internal_format, &components, &component_bytes, &is_signed) != 0 ||
+        components < 2u) {
+        return NULL;
+    }
+    const size_t src_pixel_bytes = (size_t)components * component_bytes;
+    const size_t dst_pixel_bytes = 4u * component_bytes;
+    const size_t dst_bytes_per_row = width * dst_pixel_bytes;
+    const size_t dst_bytes_per_image = dst_bytes_per_row * height;
+    if (dst_bytes_per_image == 0 ||
+        dst_bytes_per_image > (512u * 1024u * 1024u) ||
+        src_bytes_per_row < width * src_pixel_bytes) {
+        return NULL;
+    }
+    uint8_t* dst = (uint8_t*)malloc(dst_bytes_per_image);
+    if (!dst) {
+        return NULL;
+    }
+    const uint8_t* src = static_cast<const uint8_t*>(src_data);
+    const int64_t default_alpha = 1;
+    for (size_t row = 0; row < height; row++) {
+        const uint8_t* src_row = src + row * src_bytes_per_row;
+        uint8_t* dst_row = dst + row * dst_bytes_per_row;
+        for (size_t x = 0; x < width; x++) {
+            const uint8_t* in = src_row + x * src_pixel_bytes;
+            uint8_t* out = dst_row + x * dst_pixel_bytes;
+            const int64_t ch[4] = {
+                mglRenderReadIntegerTexelComponent(in, 0u, component_bytes, is_signed),
+                components >= 2u
+                    ? mglRenderReadIntegerTexelComponent(in, 1u, component_bytes, is_signed)
+                    : 0,
+                components >= 3u
+                    ? mglRenderReadIntegerTexelComponent(in, 2u, component_bytes, is_signed)
+                    : 0,
+                components >= 4u
+                    ? mglRenderReadIntegerTexelComponent(in, 3u, component_bytes, is_signed)
+                    : default_alpha,
+            };
+            const int64_t outv[4] = {
+                mglRenderResolveIntegerSwizzledComponent(
+                    swizzle_r, ch[0], ch[1], ch[2], ch[3], 4u),
+                mglRenderResolveIntegerSwizzledComponent(
+                    swizzle_g, ch[0], ch[1], ch[2], ch[3], 4u),
+                mglRenderResolveIntegerSwizzledComponent(
+                    swizzle_b, ch[0], ch[1], ch[2], ch[3], 4u),
+                mglRenderResolveIntegerSwizzledComponent(
+                    swizzle_a, ch[0], ch[1], ch[2], ch[3], 4u),
+            };
+            for (uint32_t c = 0; c < 4u; c++) {
+                mglRenderWriteIntegerTexelComponent(
+                    out, c, component_bytes, is_signed, outv[c]);
+            }
+        }
+    }
+    *out_bytes_per_row = dst_bytes_per_row;
+    *out_bytes_per_image = dst_bytes_per_image;
+    return dst;
 }
 
 extern "C"
@@ -8836,18 +9137,68 @@ uint8_t* mglRenderCreateSingleChannelSwizzledUpload(
         !out_bytes_per_row || !out_bytes_per_image) {
         return NULL;
     }
-
-    const bool is_r8_unorm = (internal_format == GL_R8);
-    const bool is_r8_sint = (internal_format == GL_R8I);
-    const bool is_r8_uint = (internal_format == GL_R8UI);
-    if (!is_r8_unorm && !is_r8_sint && !is_r8_uint) {
+    if (mglRenderTextureUploadNeedsSingleChannelSwizzle(internal_format, 1) == 0) {
         return NULL;
     }
 
-    size_t dst_bytes_per_row = width * 4u;
-    size_t dst_bytes_per_image = dst_bytes_per_row * height;
+    uint32_t dst_component_bytes = 1u;
+    int dst_signed = 0;
+    uint32_t src_component_bytes = 1u;
+    int src_signed = 0;
+    switch (internal_format) {
+        case GL_R8:
+        case GL_R8_SNORM:
+            dst_component_bytes = 1u;
+            src_component_bytes = 1u;
+            break;
+        case GL_R8I:
+            dst_component_bytes = 1u;
+            src_component_bytes = 1u;
+            dst_signed = 1;
+            src_signed = 1;
+            break;
+        case GL_R8UI:
+            dst_component_bytes = 1u;
+            src_component_bytes = 1u;
+            break;
+        case GL_R16:
+        case GL_R16_SNORM:
+        case GL_R16F:
+            dst_component_bytes = 2u;
+            src_component_bytes = 2u;
+            break;
+        case GL_R16I:
+            dst_component_bytes = 2u;
+            src_component_bytes = 2u;
+            dst_signed = 1;
+            src_signed = 1;
+            break;
+        case GL_R16UI:
+            dst_component_bytes = 2u;
+            src_component_bytes = 2u;
+            break;
+        case GL_R32F:
+        case GL_R32I:
+            dst_component_bytes = 4u;
+            src_component_bytes = 4u;
+            dst_signed = (internal_format == GL_R32I);
+            src_signed = dst_signed;
+            break;
+        case GL_R32UI:
+            dst_component_bytes = 4u;
+            src_component_bytes = 4u;
+            break;
+        default:
+            return NULL;
+    }
+
+    const size_t dst_pixel_bytes = 4u * dst_component_bytes;
+    const size_t src_pixel_bytes = src_component_bytes;
+    const size_t dst_bytes_per_row = width * dst_pixel_bytes;
+    const size_t dst_bytes_per_image = dst_bytes_per_row * height;
     if (dst_bytes_per_image == 0 ||
-        dst_bytes_per_image > (512u * 1024u * 1024u)) {
+        dst_bytes_per_image > (512u * 1024u * 1024u) ||
+        src_bytes_per_row < width * src_pixel_bytes) {
         return NULL;
     }
 
@@ -8861,25 +9212,31 @@ uint8_t* mglRenderCreateSingleChannelSwizzledUpload(
         uint8_t* dst_row = dst + row * dst_bytes_per_row;
         const uint8_t* src_row = src + row * src_bytes_per_row;
         for (size_t x = 0; x < width; x++) {
-            uint8_t* out = dst_row + (x * 4u);
-            if (is_r8_unorm) {
-                uint8_t red = src_row[x];
+            uint8_t* out = dst_row + x * dst_pixel_bytes;
+            if (internal_format == GL_R8 || internal_format == GL_R8_SNORM) {
+                uint8_t red = src_row[x * src_pixel_bytes];
                 out[0] = mglRenderResolveR8SwizzledComponent(swizzle_r, red);
                 out[1] = mglRenderResolveR8SwizzledComponent(swizzle_g, red);
                 out[2] = mglRenderResolveR8SwizzledComponent(swizzle_b, red);
                 out[3] = mglRenderResolveR8SwizzledComponent(swizzle_a, red);
-            } else {
-                int32_t red = is_r8_sint
-                    ? (int32_t)(int8_t)src_row[x]
-                    : (int32_t)src_row[x];
-                out[0] = (uint8_t)(int8_t)mglRenderResolveR8IntegerSwizzledComponent(
-                    swizzle_r, red, is_r8_sint ? 1 : 0);
-                out[1] = (uint8_t)(int8_t)mglRenderResolveR8IntegerSwizzledComponent(
-                    swizzle_g, red, is_r8_sint ? 1 : 0);
-                out[2] = (uint8_t)(int8_t)mglRenderResolveR8IntegerSwizzledComponent(
-                    swizzle_b, red, is_r8_sint ? 1 : 0);
-                out[3] = (uint8_t)(int8_t)mglRenderResolveR8IntegerSwizzledComponent(
-                    swizzle_a, red, is_r8_sint ? 1 : 0);
+                continue;
+            }
+            const int64_t red = mglRenderReadIntegerTexelComponent(
+                src_row + x * src_pixel_bytes, 0u, src_component_bytes,
+                src_signed);
+            const int64_t outv[4] = {
+                mglRenderResolveIntegerSwizzledComponent(
+                    swizzle_r, red, 0, 0, 1, 1u),
+                mglRenderResolveIntegerSwizzledComponent(
+                    swizzle_g, red, 0, 0, 1, 1u),
+                mglRenderResolveIntegerSwizzledComponent(
+                    swizzle_b, red, 0, 0, 1, 1u),
+                mglRenderResolveIntegerSwizzledComponent(
+                    swizzle_a, red, 0, 0, 1, 1u),
+            };
+            for (uint32_t c = 0; c < 4u; c++) {
+                mglRenderWriteIntegerTexelComponent(
+                    out, c, dst_component_bytes, dst_signed, outv[c]);
             }
         }
     }

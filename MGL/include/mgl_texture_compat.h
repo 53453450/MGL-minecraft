@@ -144,6 +144,8 @@ void *mglSampledTextureViewForBaseLevel(Texture *ptr, void *texture);
 size_t mglStoredColorComponentsForTexture(Texture *tex);
 uint32_t mglMTLSwizzleForGLSwizzle(Texture *tex, GLenum swizzle);
 bool mglTextureUploadNeedsSingleChannelSwizzle(Texture *tex);
+bool mglTextureUploadNeedsIntegerMultiChannelSwizzleBake(Texture *tex);
+bool mglTextureUploadNeedsSwizzleBake(Texture *tex);
 uint8_t mglResolveR8SwizzledComponent(Texture *tex, GLenum swizzle, uint8_t red);
 uint8_t *mglCreateSingleChannelSwizzledUpload(Texture *tex,
                                               const uint8_t *srcData,
@@ -152,6 +154,20 @@ uint8_t *mglCreateSingleChannelSwizzledUpload(Texture *tex,
                                               size_t srcBytesPerRow,
                                               size_t *outBytesPerRow,
                                               size_t *outBytesPerImage);
+uint8_t *mglCreateIntegerMultiChannelSwizzledUpload(Texture *tex,
+                                                    const uint8_t *srcData,
+                                                    size_t width,
+                                                    size_t height,
+                                                    size_t srcBytesPerRow,
+                                                    size_t *outBytesPerRow,
+                                                    size_t *outBytesPerImage);
+uint8_t *mglCreateSwizzledUpload(Texture *tex,
+                                 const uint8_t *srcData,
+                                 size_t width,
+                                 size_t height,
+                                 size_t srcBytesPerRow,
+                                 size_t *outBytesPerRow,
+                                 size_t *outBytesPerImage);
 
 /* === RGB → RGBA channel expansion ===
  *

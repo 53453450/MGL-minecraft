@@ -4019,10 +4019,10 @@ static void mglTextureCopyTextureToBuffer(
 
                     NSUInteger effectiveBytesPerImage = logicalBytesPerImage;
 
-                    if (mglTextureUploadNeedsSingleChannelSwizzle(tex)) {
+                    if (mglTextureUploadNeedsSwizzleBake(tex)) {
                         NSUInteger swzBPR = 0;
                         NSUInteger swzBPI = 0;
-                        swizzledUploadData = mglCreateSingleChannelSwizzledUpload(
+                        swizzledUploadData = mglCreateSwizzledUpload(
                             tex, (const uint8_t *)layerSrcData, lvlWidth,
                             uploadSliceHeight, baseBytesPerRow, &swzBPR,
                             &swzBPI);
@@ -4345,13 +4345,13 @@ static void mglTextureCopyTextureToBuffer(
 
                     uint8_t *swizzled3DUploadData = NULL;
                     if (level == 0 && face == 0 &&
-                        mglTextureUploadNeedsSingleChannelSwizzle(tex)) {
+                        mglTextureUploadNeedsSwizzleBake(tex)) {
                         NSUInteger texDepth = MAX((NSUInteger)depth, 1UL);
                         NSUInteger texHeight = MAX((NSUInteger)height, 1UL);
                         NSUInteger swzBPR = 0;
                         NSUInteger swzBPI = 0;
                         uint8_t *firstSlice =
-                            mglCreateSingleChannelSwizzledUpload(
+                            mglCreateSwizzledUpload(
                                 tex, (const uint8_t *)srcData, width, texHeight,
                                 bytesPerRow, &swzBPR, &swzBPI);
                         if (firstSlice) {
@@ -4370,7 +4370,7 @@ static void mglTextureCopyTextureToBuffer(
                                         uint8_t *sliceDst =
                                             swizzled3DUploadData + z * swzBPI;
                                         uint8_t *sliceSwz =
-                                            mglCreateSingleChannelSwizzledUpload(
+                                            mglCreateSwizzledUpload(
                                                 tex, sliceSrc, width, texHeight,
                                                 bytesPerRow, &swzBPR, &swzBPI);
                                         if (sliceSwz) {
@@ -4740,11 +4740,11 @@ static void mglTextureCopyTextureToBuffer(
 
                             NSUInteger effectiveBytesPerRow = bytesPerRow;
                             NSUInteger effectiveBytesPerImage = bytesPerImage;
-                            if (mglTextureUploadNeedsSingleChannelSwizzle(tex)) {
+                            if (mglTextureUploadNeedsSwizzleBake(tex)) {
                                 NSUInteger swzBPR = 0;
                                 NSUInteger swzBPI = 0;
                                 swizzledUploadData =
-                                    mglCreateSingleChannelSwizzledUpload(
+                                    mglCreateSwizzledUpload(
                                         tex, (const uint8_t *)srcData, width,
                                         uploadSliceHeight, bytesPerRow, &swzBPR,
                                         &swzBPI);
@@ -4943,10 +4943,10 @@ static void mglTextureCopyTextureToBuffer(
                         void *swizzledUploadData = NULL;
                         void *expandedUploadData = NULL;
                         uintptr_t addr = (uintptr_t)srcData;
-                        if (level == 0 && face == 0 && mglTextureUploadNeedsSingleChannelSwizzle(tex)) {
+                        if (level == 0 && face == 0 && mglTextureUploadNeedsSwizzleBake(tex)) {
                             NSUInteger swizzledBytesPerRow = 0;
                             NSUInteger swizzledBytesPerImage = 0;
-                            swizzledUploadData = mglCreateSingleChannelSwizzledUpload(tex,
+                            swizzledUploadData = mglCreateSwizzledUpload(tex,
                                                                                       (const uint8_t *)srcData,
                                                                                       width,
                                                                                       MAX((NSUInteger)height, 1UL),
@@ -5233,6 +5233,7 @@ static void mglTextureCopyTextureToBuffer(
     // PROPER FIX: Get original texture format and validate for AGX compatibility
     pixelFormat = mtlPixelFormatForGLTex(tex);
     BOOL expandsSingleChannelSwizzle = mglTextureUploadNeedsSingleChannelSwizzle(tex);
+    BOOL usesUploadSwizzleBake = mglTextureUploadNeedsSwizzleBake(tex);
     if (expandsSingleChannelSwizzle) {
         uint32_t swizzleStorageFormat =
             mglRenderSingleChannelSwizzleStoragePixelFormat(
@@ -5463,7 +5464,7 @@ static void mglTextureCopyTextureToBuffer(
               (int)mipmapped);
     }
 
-    if (tex->params.swizzled && !expandsSingleChannelSwizzle &&
+    if (tex->params.swizzled && !usesUploadSwizzleBake &&
         !tex->is_render_target)
     {
         [self swizzleTexDesc:&tex_desc forTex:tex];
@@ -5537,7 +5538,7 @@ static void mglTextureCopyTextureToBuffer(
 
     if (cpuUploadRequired && tex->target == GL_TEXTURE_2D &&
         mglTextureInfo(texture).texture_type == MGLTextureType2D &&
-        !mglTextureUploadNeedsSingleChannelSwizzle(tex)) {
+        !mglTextureUploadNeedsSwizzleBake(tex)) {
         BOOL fullCPUUploadVerified = [self uploadFullCPUTextureDataIntoTexture:tex
                                                                            metal:texture
                                                                           reason:"createMTLTexture.cpuData"];
