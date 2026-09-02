@@ -165,31 +165,11 @@ extern "C" int mglRenderSyncRenderPassForFbo(
         : state->framebuffer;
     const bool binding_dirty =
         framebuffer && (framebuffer->dirty_bits & DIRTY_FBO_BINDING);
-    bool clear_pending = false;
-    if (framebuffer) {
-        if (framebuffer->depth.clear_bitmask & GL_DEPTH_BUFFER_BIT) {
-            clear_pending = true;
-        }
-        if (framebuffer->stencil.clear_bitmask & GL_STENCIL_BUFFER_BIT) {
-            clear_pending = true;
-        }
-        for (GLuint i = 0; i < MAX_COLOR_ATTACHMENTS; ++i) {
-            if (framebuffer->color_attachments[i].clear_bitmask &
-                GL_COLOR_BUFFER_BIT) {
-                clear_pending = true;
-                break;
-            }
-        }
-    } else if (state->default_fbo_clear_bitmask != 0u) {
-        clear_pending = true;
-    }
 
     if (command_state &&
         mglRenderEncoderOwnerHasCurrent(
             command_state->currentRenderEncoderOwner) == 1 &&
-        !binding_dirty && !clear_pending &&
-        !(framebuffer && framebuffer->depth.texture) &&
-        ops->render_pass_matches_framebuffer &&
+        !binding_dirty && ops->render_pass_matches_framebuffer &&
         ops->render_pass_matches_framebuffer(ops->renderer, context)) {
         state->dirty_bits &= ~DIRTY_FBO;
         return 1;

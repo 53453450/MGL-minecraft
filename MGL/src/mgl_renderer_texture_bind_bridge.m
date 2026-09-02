@@ -10,10 +10,6 @@
 #import "MGLRenderer+Binding_Private.h"
 #include "mgl_render.h"
 #include "mgl_env_flag.h"
-#import "mgl_renderer_texture_metal_helpers.h"
-#include "mgl_render_pass_coordinator.h"
-#include "mgl_types_framebuffer.h"
-#include "mgl_types_state.h"
 
 @interface MGLRenderer (TextureBindBridge)
 - (id)createMTLTextureFromGLTexture:(Texture *)tex;
@@ -35,9 +31,6 @@
 
 @interface MGLRenderer (TextureBindAccessors)
 - (void *)mglTextureBindCurrentCommandBufferOwner;
-- (MGLCommandState *)mglTextureBindCommandState;
-- (GLMContext)mglTextureBindContext;
-- (void)mglTextureBindInvalidateFboMatchForAttachment:(Texture *)tex;
 @end
 
 static id mglBindingCreateDefaultSampler(void)
@@ -114,12 +107,35 @@ bool mglRendererTextureBindLocked(MGLRenderer *self, Texture *tex)
                 newInfo.depth == existingInfo.depth;
             if (oldTexture && dimensionsMatch) {
                 tex->mtl_data = (void *)CFBridgingRetain(newTexture);
-                [self mglTextureBindInvalidateFboMatchForAttachment:tex];
                 const BOOL packedDepthStencil =
                     tex->internalformat == GL_DEPTH32F_STENCIL8 ||
                     tex->internalformat == GL_DEPTH24_STENCIL8;
                 if (packedDepthStencil) {
-                    tex->dirty_bits = 0;
+                    const BOOL isArray =
+                        tex->target == GL_TEXTURE_2D_ARRAY ||
+                        tex->target == GL_TEXTURE_CUBE_MAP_ARRAY ||
+                        tex->target == GL_TEXTURE_1D_ARRAY ||
+                        tex->target == GL_TEXTURE_CUBE_MAP ||
+                        tex->target == GL_TEXTURE_3D;
+                    BOOL allLevelsUploaded = YES;
+                    const GLuint levelCount = (GLuint)MIN(
+                        newInfo.mipmap_level_count,
+                        tex->num_levels ? tex->num_levels : 1u);
+                    if ([self uploadDirtyCPUTextureData:tex
+                                                   metal:newTexture
+                                             pixelFormat:(uint32_t)newInfo.pixel_format
+                                               numFaces:1
+                                       uploadLevelCount:levelCount
+                                                isArray:isArray
+                                     texture1DBackedBy2D:NO
+                               texture1DArrayBackedBy2DArray:NO
+                                                texType:(uint32_t)newInfo.texture_type
+                                    outAllLevelsUploaded:&allLevelsUploaded] &&
+                        allLevelsUploaded) {
+                        tex->dirty_bits &= ~DIRTY_TEXTURE_DATA;
+                    } else {
+                        tex->dirty_bits |= DIRTY_TEXTURE_DATA;
+                    }
                 } else {
                     // Blit GPU data from old texture to new texture to preserve
                     // any writes (e.g. imageStore) that occurred before the
@@ -218,9 +234,6 @@ bool mglRendererTextureBindLocked(MGLRenderer *self, Texture *tex)
             if (textureNeedsRebuild) {
                 mglSafeReleaseMetalObj((void **)&tex->mtl_data);
                 [self releaseGLSampledRenderTargetCopyForTexture:tex];
-                if (tex->is_render_target) {
-                    [self mglTextureBindInvalidateFboMatchForAttachment:tex];
-                }
             }
         }
 
@@ -337,12 +350,6 @@ bool mglRendererTextureBindLocked(MGLRenderer *self, Texture *tex)
         }
     }
 
-    if (tex->is_render_target && !tex->mtl_data) {
-        NSLog(@"MGL ERROR: Failed to create render-target Metal texture %u target=0x%x internal=0x%x",
-              tex->name, tex->target, tex->internalformat);
-        return false;
-    }
-
     return true;
 }
 
@@ -351,45 +358,6 @@ bool mglRendererTextureBindLocked(MGLRenderer *self, Texture *tex)
 - (void *)mglTextureBindCurrentCommandBufferOwner
 {
     return _commandState.currentCommandBufferOwner;
-}
-
-- (MGLCommandState *)mglTextureBindCommandState
-{
-    return &_commandState;
-}
-
-- (GLMContext)mglTextureBindContext
-{
-    return ctx;
-}
-
-- (void)mglTextureBindInvalidateFboMatchForAttachment:(Texture *)tex
-{
-    GLMContext glm_ctx = [self mglTextureBindContext];
-    if (!glm_ctx || !tex || !glm_ctx->active_state) {
-        return;
-    }
-    Framebuffer *fbo = glm_ctx->active_state->framebuffer;
-    if (!fbo) {
-        return;
-    }
-    bool attached = false;
-    if (fbo->depth.texture == tex->name || fbo->stencil.texture == tex->name) {
-        attached = true;
-    } else {
-        for (GLuint i = 0; i < MAX_COLOR_ATTACHMENTS; ++i) {
-            if (fbo->color_attachments[i].texture == tex->name) {
-                attached = true;
-                break;
-            }
-        }
-    }
-    if (!attached) {
-        return;
-    }
-    fbo->fbo_attachment_generation++;
-    mglMarkStateDirtyBits(glm_ctx->active_state, DIRTY_FBO);
-    mglCmdClearFboMatchCache([self mglTextureBindCommandState]);
 }
 
 @end

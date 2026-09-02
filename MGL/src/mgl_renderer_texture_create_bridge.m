@@ -2198,8 +2198,11 @@
     // Private storage is only safe for pure GPU render targets on Apple Silicon.
     //
     // Depth/stencil FBO attachments MUST be Private — same policy as
-    // newDrawBuffer / transient depth. Shared Depth32Float RTs on Apple
-    // Paravirtual Metal accept creation but depth test/write are inert.
+    // newDrawBuffer / transient depth. 818069a forced Shared for all
+    // depth/stencil so CTS replaceRegion uploads work; that still creates
+    // Depth32Float RTs on Apple Paravirtual Metal, but depth test/write are
+    // inert (last draw wins: depth_test / legacy z-control). Keep Shared only
+    // for non-RT depth/stencil that need CPU upload.
     bool hasUploadableCPUData = mglTextureHasUploadableCPUData(tex, num_faces, upload_level_count);
     bool needsCpuUpload = ((tex->dirty_bits & DIRTY_TEXTURE_DATA) != 0) && hasUploadableCPUData;
     bool isDepthOrStencil = mglMetalPixelFormatIsDepthOrStencil(pixelFormat);
