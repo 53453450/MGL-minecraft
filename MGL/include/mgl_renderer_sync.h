@@ -2,8 +2,8 @@
  * SPDX-License-Identifier: LGPL-3.0-only
  *
  * C/C++ renderer state-sync facade.  GL→Metal synchronization orchestration
- * lives here (or in mgl_renderer_sync.cpp); ObjC retains platform callbacks
- * during migration.
+ * lives here (or in mgl_renderer_sync.cpp); ObjC hooks in
+ * mgl_renderer_sync_bridge.m and mgl_renderer_sync_ops_bridge.m.
  */
 
 #ifndef MGL_RENDERER_SYNC_H

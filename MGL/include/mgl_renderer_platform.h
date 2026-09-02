@@ -1,7 +1,8 @@
 /*
  * SPDX-License-Identifier: LGPL-3.0-only
  *
- * Platform-shell orchestration (swap/clear). C++ home for drawable lifecycle.
+ * Platform-shell orchestration (swap/clear). ObjC bridge:
+ * mgl_renderer_platform_bridge.m
  */
 
 #ifndef MGL_RENDERER_PLATFORM_H

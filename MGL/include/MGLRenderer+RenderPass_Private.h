@@ -37,6 +37,16 @@
 #define MGLRenderer_RenderPass_Private_h
 
 #import "MGLRenderer.h"
+#import "mgl_renderer_sync.h"
+
+/* processGLState preamble/tail/dirty-domain ObjC hooks — mgl_renderer_sync_ops_bridge.m */
+int mglProcessGLStatePreambleBridge(MGLRenderer *self, bool draw_command,
+                                    uint64_t process_call, bool trace_process);
+bool mglProcessGLStateTailBridge(MGLRenderer *self, bool draw_command,
+                                 bool trace_process,
+                                 MGLResourceSyncWork *resource_sync_work);
+bool mglProcessDirtyStateDomainsBridge(MGLRenderer *self, bool draw_command,
+                                       MGLResourceSyncWork *work);
 
 /* === Diagnostic constants — used by MGLRenderer.m and RenderPass/Query === */
 static const BOOL kMGLDisableSharedEventSync = YES;
