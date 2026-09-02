@@ -83,11 +83,7 @@ bool mglRendererTextureBindLocked(MGLRenderer *self, Texture *tex)
             ((existingInfo.usage & requiredRenderTargetUsage) != requiredRenderTargetUsage);
         BOOL mipCountMismatch = hasExistingInfo &&
             requiredMipLevels > existingInfo.mipmap_level_count;
-        BOOL depthFormatMismatch = hasExistingInfo && depthOrStencilRT &&
-            tex->is_render_target &&
-            existingInfo.pixel_format == MGLPixelFormatDepth32Float;
-        if (existingTexture && (usageMismatch || mipCountMismatch ||
-                                depthFormatMismatch)) {
+        if (existingTexture && (usageMismatch || mipCountMismatch)) {
             NSLog(@"MGL WARNING: Recreating texture %u for render-target use (old usage=0x%lx oldMips=%lu requiredMips=%lu)",
                   tex->name,
                   (unsigned long)existingInfo.usage,
@@ -118,7 +114,7 @@ bool mglRendererTextureBindLocked(MGLRenderer *self, Texture *tex)
                 const BOOL packedDepthStencil =
                     tex->internalformat == GL_DEPTH32F_STENCIL8 ||
                     tex->internalformat == GL_DEPTH24_STENCIL8;
-                if (packedDepthStencil || depthOrStencilRT) {
+                if (packedDepthStencil) {
                     tex->dirty_bits = 0;
                 } else {
                     // Blit GPU data from old texture to new texture to preserve
