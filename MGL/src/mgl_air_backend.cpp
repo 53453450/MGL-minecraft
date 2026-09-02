@@ -1872,6 +1872,44 @@ llvm::Value *ssboAddress(Codegen &cg, const MGLExpr *e,
                 ty = mglIRTypeScalar(ty->scalar);
                 continue;
             }
+            /* GLSL 4.60 §5.6: m[i] selects column i.  Column-major memory
+             * stores columns contiguously at matrix_stride; row-major
+             * columns are not contiguous so only CM (or tightly packed
+             * row-vecs that happen to match) can be addressed as a pointer
+             * here — row-major column writes go through SSA gather/scatter. */
+            if (ty->kind == MGLIR_TYPE_MATRIX) {
+                if (ty->row_major) {
+                    cg.err = 1;
+                    cg.errmsg =
+                        "codegen: indexing a row_major SSBO matrix column "
+                        "as an lvalue is not supported yet";
+                    return nullptr;
+                }
+                uint32_t stride = ty->layout.matrix_stride;
+                if (!stride) {
+                    uint32_t comps = ty->rows;
+                    uint32_t baseBytes =
+                        (comps <= 2u ? comps : 4u) * 4u;
+                    stride = (baseBytes + 15u) & ~15u;
+                }
+                idx = cg.b->CreateSExtOrTrunc(idx, cg.b->getInt64Ty());
+                base = cg.b->CreateGEP(
+                    cg.b->getInt8Ty(), base,
+                    cg.b->CreateAdd(cg.b->getInt64(off),
+                                    cg.b->CreateMul(
+                                        idx, cg.b->getInt64(stride))));
+                off = 0;
+                /* Column is a vector of `rows` components. */
+                MGLIRType *col = mglIRTypeVector(ty->scalar, ty->rows);
+                if (!col) {
+                    cg.err = 1;
+                    cg.errmsg =
+                        "codegen: failed to form SSBO matrix column type";
+                    return nullptr;
+                }
+                ty = col;
+                continue;
+            }
             if (ty->kind != MGLIR_TYPE_ARRAY) {
                 cg.err = 1;
                 cg.errmsg =
