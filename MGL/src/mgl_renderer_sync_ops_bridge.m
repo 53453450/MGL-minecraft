@@ -18,10 +18,20 @@
 #include "mgl_trace_strategy.h"
 #include "mgl_render_pass_coordinator.h"
 
+
 @interface MGLRenderer (SyncOpsBridge)
 - (bool)ensureCurrentRenderPassMatchesFramebufferForDraw;
 - (bool)validateRenderPassAttachmentsAndPipelineFormatsLocked:(BOOL)traceProcess;
 - (void)updateCurrentRenderEncoder;
+- (MGLCommandState *)mglSyncOpsCommandState;
+- (MGLGPURecoveryState *)mglSyncOpsGPURecovery;
+- (MGLPipelineCacheState *)mglSyncOpsPipelineCacheState;
+- (void *)mglSyncOpsBindingStateOwner;
+- (MGLResourceFallbackState *)mglSyncOpsResourceFallback;
+- (GLMContext)mglSyncOpsCtx;
+- (id)mglSyncOpsDevice;
+- (id)mglSyncOpsCommandQueue;
+- (id)mglSyncOpsDrawable;
 @end
 
 static MGLRenderTextureInfo mglSyncOpsBridgeTextureInfo(id texture)
@@ -114,15 +124,15 @@ static bool mglProcessGLStatePreambleBridgeEnsureMetal(void *renderer)
     static int corruption_recovery_count = 0;
     static const int max_recovery_attempts = 3;
 
-    if (self->_device && self->_commandQueue &&
-        (uintptr_t)self->_device >= 0x1000 &&
-        (uintptr_t)self->_commandQueue >= 0x1000) {
+    if ([self mglSyncOpsDevice] && [self mglSyncOpsCommandQueue] &&
+        (uintptr_t)[self mglSyncOpsDevice] >= 0x1000 &&
+        (uintptr_t)[self mglSyncOpsCommandQueue] >= 0x1000) {
         return true;
     }
 
     NSLog(@"MGL CRITICAL: Metal state corruption detected in processGLState!");
     NSLog(@"MGL CRITICAL: device=0x%lx, queue=0x%lx",
-          (uintptr_t)self->_device, (uintptr_t)self->_commandQueue);
+          (uintptr_t)[self mglSyncOpsDevice], (uintptr_t)[self mglSyncOpsCommandQueue]);
 
     if (corruption_recovery_count >= max_recovery_attempts) {
         NSLog(@"MGL CRITICAL: Maximum recovery attempts exceeded, permanently disabling Metal operations");
@@ -134,7 +144,7 @@ static bool mglProcessGLStatePreambleBridgeEnsureMetal(void *renderer)
     @try {
         [self emergencyResetMetalState];
         corruption_recovery_count++;
-        if (!self->_device || !self->_commandQueue) {
+        if (![self mglSyncOpsDevice] || ![self mglSyncOpsCommandQueue]) {
             NSLog(@"MGL CRITICAL: Metal recovery failed, aborting operation");
             return false;
         }
@@ -200,24 +210,24 @@ static bool mglProcessGLStatePreambleBridgeCheckQuarantine(void *renderer,
     MGLRenderer *self = (__bridge MGLRenderer *)renderer;
     GLuint blockedProgramKey = mglCurrentRenderProgramKey(context);
     if (blockedProgramKey == 0u ||
-        self->_gpuRecovery.interfaceMismatchBlockedProgram == 0 ||
-        blockedProgramKey != self->_gpuRecovery.interfaceMismatchBlockedProgram) {
+        [self mglSyncOpsGPURecovery]->interfaceMismatchBlockedProgram == 0 ||
+        blockedProgramKey != [self mglSyncOpsGPURecovery]->interfaceMismatchBlockedProgram) {
         return true;
     }
     CFTimeInterval now = CFAbsoluteTimeGetCurrent();
-    if (now >= self->_gpuRecovery.interfaceMismatchBlockedUntil) {
+    if (now >= [self mglSyncOpsGPURecovery]->interfaceMismatchBlockedUntil) {
         return true;
     }
     static uint64_t s_quarantineSkipCount = 0;
     s_quarantineSkipCount++;
     if (s_quarantineSkipCount <= 16 || (s_quarantineSkipCount % 1000) == 0) {
         double remaining =
-            self->_gpuRecovery.interfaceMismatchBlockedUntil - now;
+            [self mglSyncOpsGPURecovery]->interfaceMismatchBlockedUntil - now;
         if (remaining < 0.0) {
             remaining = 0.0;
         }
         NSLog(@"MGL WARNING: Program %u quarantined due to interface mismatch (%.2fs remaining), skipping draw",
-              (unsigned)self->_gpuRecovery.interfaceMismatchBlockedProgram,
+              (unsigned)[self mglSyncOpsGPURecovery]->interfaceMismatchBlockedProgram,
               remaining);
     }
     return false;
@@ -240,11 +250,11 @@ static bool mglProcessGLStatePreambleBridgeRotateCommandBuffer(
     NSLog(@"MGL ERROR: processGLState failed to create a fresh command buffer");
     if (trace_process) {
         mglLogStateSnapshot("processGLState.fail.new_cb_rotate",
-                            self->ctx,
-                            self->_commandState.currentCommandBufferOwner,
-                            self->_commandState.currentRenderEncoderOwner,
-                            self->_commandState.renderPassStateOwner,
-                            self->_drawable);
+                            [self mglSyncOpsCtx],
+                            [self mglSyncOpsCommandState]->currentCommandBufferOwner,
+                            [self mglSyncOpsCommandState]->currentRenderEncoderOwner,
+                            [self mglSyncOpsCommandState]->renderPassStateOwner,
+                            [self mglSyncOpsDrawable]);
     }
     return false;
 }
@@ -263,11 +273,11 @@ static bool mglProcessGLStatePreambleBridgeCreateCommandBuffer(
     NSLog(@"MGL ERROR: processGLState could not create initial command buffer");
     if (trace_process) {
         mglLogStateSnapshot("processGLState.fail.new_cb_initial",
-                            self->ctx,
-                            self->_commandState.currentCommandBufferOwner,
-                            self->_commandState.currentRenderEncoderOwner,
-                            self->_commandState.renderPassStateOwner,
-                            self->_drawable);
+                            [self mglSyncOpsCtx],
+                            [self mglSyncOpsCommandState]->currentCommandBufferOwner,
+                            [self mglSyncOpsCommandState]->currentRenderEncoderOwner,
+                            [self mglSyncOpsCommandState]->renderPassStateOwner,
+                            [self mglSyncOpsDrawable]);
     }
     return false;
 }
@@ -295,7 +305,7 @@ int mglProcessGLStatePreambleBridge(MGLRenderer *self, bool draw_command,
     MGLProcessGLStatePreambleOps preambleOps = kPreambleOpsTemplate;
     preambleOps.renderer = (__bridge void *)self;
     return mglRenderProcessGLStatePreamble(
-        self->ctx, &self->_commandState, draw_command ? 1 : 0, process_call,
+        [self mglSyncOpsCtx], [self mglSyncOpsCommandState], draw_command ? 1 : 0, process_call,
         trace_process ? 1 : 0, &preambleOps);
 }
 
@@ -311,15 +321,15 @@ bool mglProcessGLStateTailBridgeRecoverNilEncoder(void *renderer,
               (unsigned long long)nilHit);
         mglLogRenderPassLifecycle("nil-encoder-before-recovery",
                                   nilHit,
-                                  self->ctx,
-                                  self->_commandState.currentCommandBufferOwner,
-                                  self->_commandState.currentRenderEncoderOwner,
-                                  self->_commandState.renderPassStateOwner,
-                                  self->_drawable,
-                                  self->_commandState.renderPassFramebuffer,
-                                  self->_commandState.renderPassFramebufferName,
-                                  self->_commandState.renderPassDrawBuffer,
-                                  self->_commandState.renderPassDrawBufferCount);
+                                  [self mglSyncOpsCtx],
+                                  [self mglSyncOpsCommandState]->currentCommandBufferOwner,
+                                  [self mglSyncOpsCommandState]->currentRenderEncoderOwner,
+                                  [self mglSyncOpsCommandState]->renderPassStateOwner,
+                                  [self mglSyncOpsDrawable],
+                                  [self mglSyncOpsCommandState]->renderPassFramebuffer,
+                                  [self mglSyncOpsCommandState]->renderPassFramebufferName,
+                                  [self mglSyncOpsCommandState]->renderPassDrawBuffer,
+                                  [self mglSyncOpsCommandState]->renderPassDrawBufferCount);
     }
     if (![self newRenderEncoderLockedWithReason:MGL_ENC_REASON_NIL]) {
         return false;
@@ -327,15 +337,15 @@ bool mglProcessGLStateTailBridgeRecoverNilEncoder(void *renderer,
     if (nilHit <= 16ull || (nilHit % 2048ull) == 0ull) {
         mglLogRenderPassLifecycle("nil-encoder-after-recovery",
                                   nilHit,
-                                  self->ctx,
-                                  self->_commandState.currentCommandBufferOwner,
-                                  self->_commandState.currentRenderEncoderOwner,
-                                  self->_commandState.renderPassStateOwner,
-                                  self->_drawable,
-                                  self->_commandState.renderPassFramebuffer,
-                                  self->_commandState.renderPassFramebufferName,
-                                  self->_commandState.renderPassDrawBuffer,
-                                  self->_commandState.renderPassDrawBufferCount);
+                                  [self mglSyncOpsCtx],
+                                  [self mglSyncOpsCommandState]->currentCommandBufferOwner,
+                                  [self mglSyncOpsCommandState]->currentRenderEncoderOwner,
+                                  [self mglSyncOpsCommandState]->renderPassStateOwner,
+                                  [self mglSyncOpsDrawable],
+                                  [self mglSyncOpsCommandState]->renderPassFramebuffer,
+                                  [self mglSyncOpsCommandState]->renderPassFramebufferName,
+                                  [self mglSyncOpsCommandState]->renderPassDrawBuffer,
+                                  [self mglSyncOpsCommandState]->renderPassDrawBufferCount);
     }
     return true;
 }
@@ -378,7 +388,7 @@ static void mglProcessGLStateTailBridgeLogDrawPipelineLookup(void *renderer,
             lookupVertexProgram ? (unsigned)lookupVertexProgram->name : 0u,
             lookupFragmentProgram ? (unsigned)lookupFragmentProgram->name : 0u);
     NSLog(@"MGL DRAW pipeline lookup result=%p key=%u vs=%u fs=%u vao=%p fbo=%u",
-          self->_pipelineCacheState.pipelineState,
+          [self mglSyncOpsPipelineCacheState]->pipelineState,
           (unsigned)lookupProgramName,
           lookupVertexProgram ? (unsigned)lookupVertexProgram->name : 0u,
           lookupFragmentProgram ? (unsigned)lookupFragmentProgram->name : 0u,
@@ -389,7 +399,7 @@ bool mglProcessGLStateTailBridgeEnsurePipelineReady(
     void *renderer, GLMContext context, int trace_process)
 {
     MGLRenderer *self = (__bridge MGLRenderer *)renderer;
-    if (self->_pipelineCacheState.pipelineState) {
+    if ([self mglSyncOpsPipelineCacheState]->pipelineState) {
         return true;
     }
     static uint64_t nil_pipeline_count = 0;
@@ -404,11 +414,11 @@ bool mglProcessGLStateTailBridgeEnsurePipelineReady(
                                  DIRTY_RENDER_STATE);
     if (trace_process) {
         mglLogStateSnapshot("processGLState.fail.nil_pipeline",
-                            self->ctx,
-                            self->_commandState.currentCommandBufferOwner,
-                            self->_commandState.currentRenderEncoderOwner,
-                            self->_commandState.renderPassStateOwner,
-                            self->_drawable);
+                            [self mglSyncOpsCtx],
+                            [self mglSyncOpsCommandState]->currentCommandBufferOwner,
+                            [self mglSyncOpsCommandState]->currentRenderEncoderOwner,
+                            [self mglSyncOpsCommandState]->renderPassStateOwner,
+                            [self mglSyncOpsDrawable]);
     }
     return false;
 }
@@ -429,9 +439,9 @@ bool mglProcessGLStateTailBridgeBindPipeline(void *renderer,
     MGLRenderer *self = (__bridge MGLRenderer *)renderer;
     @try {
         if (mglRenderBindingSetPipelineIfNeededForOwner(
-                self->_bindingStateOwner,
-                self->_commandState.currentRenderEncoderOwner,
-                self->_pipelineCacheState.pipelineState) > 0) {
+                [self mglSyncOpsBindingStateOwner],
+                [self mglSyncOpsCommandState]->currentRenderEncoderOwner,
+                [self mglSyncOpsPipelineCacheState]->pipelineState) > 0) {
             MGL_PERF_INC(g_mglSetRenderPipelineStateCallsSinceSwap);
         } else {
             MGL_PERF_INC(g_mglSetRenderPipelineStateSkipsSinceSwap);
@@ -439,16 +449,16 @@ bool mglProcessGLStateTailBridgeBindPipeline(void *renderer,
     } @catch (NSException *exception) {
         NSLog(@"MGL ERROR: processGLState - setRenderPipelineState failed: %@",
               exception.reason);
-        mglMarkRendererDirtyBits(self->ctx->active_state,
+        mglMarkRendererDirtyBits([self mglSyncOpsCtx]->active_state,
                                  DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO |
                                      DIRTY_RENDER_STATE);
         if (trace_process) {
             mglLogStateSnapshot("processGLState.fail.set_pipeline",
-                                self->ctx,
-                                self->_commandState.currentCommandBufferOwner,
-                                self->_commandState.currentRenderEncoderOwner,
-                                self->_commandState.renderPassStateOwner,
-                                self->_drawable);
+                                [self mglSyncOpsCtx],
+                                [self mglSyncOpsCommandState]->currentCommandBufferOwner,
+                                [self mglSyncOpsCommandState]->currentRenderEncoderOwner,
+                                [self mglSyncOpsCommandState]->renderPassStateOwner,
+                                [self mglSyncOpsDrawable]);
         }
         return false;
     }
@@ -463,22 +473,22 @@ bool mglProcessGLStateTailBridgeApplyPostBindDrawState(void *renderer,
         mglResolveProgramForStageFromState(context, _FRAGMENT_SHADER);
     if (fragmentProgram && fragmentProgram->usesFragCoordParams == GL_TRUE) {
         NSUInteger passHeight =
-            mglSyncOpsBridgeRenderTargetHeightFor(&self->_commandState);
+            mglSyncOpsBridgeRenderTargetHeightFor([self mglSyncOpsCommandState]);
         if (passHeight == 0) {
             for (int i = 0; i < MAX_COLOR_ATTACHMENTS && passHeight == 0; i++) {
-                id color = mglSyncOpsBridgeColorTextureFor(&self->_commandState, i);
+                id color = mglSyncOpsBridgeColorTextureFor([self mglSyncOpsCommandState], i);
                 passHeight =
                     color ? mglSyncOpsBridgeTextureInfo(color).height : 0;
             }
             if (passHeight == 0 &&
-                mglSyncOpsBridgeDepthTextureFor(&self->_commandState)) {
+                mglSyncOpsBridgeDepthTextureFor([self mglSyncOpsCommandState])) {
                 passHeight = mglSyncOpsBridgeTextureInfo(
-                    mglSyncOpsBridgeDepthTextureFor(&self->_commandState)).height;
+                    mglSyncOpsBridgeDepthTextureFor([self mglSyncOpsCommandState])).height;
             }
             if (passHeight == 0 &&
-                mglSyncOpsBridgeStencilTextureFor(&self->_commandState)) {
+                mglSyncOpsBridgeStencilTextureFor([self mglSyncOpsCommandState])) {
                 passHeight = mglSyncOpsBridgeTextureInfo(
-                    mglSyncOpsBridgeStencilTextureFor(&self->_commandState)).height;
+                    mglSyncOpsBridgeStencilTextureFor([self mglSyncOpsCommandState])).height;
             }
         }
         vector_float4 fragCoordParams = {
@@ -488,7 +498,7 @@ bool mglProcessGLStateTailBridgeApplyPostBindDrawState(void *renderer,
             0.0f,
             0.0f};
         mglRenderSetRenderBytesForOwner(
-            self->_commandState.currentRenderEncoderOwner, &fragCoordParams,
+            [self mglSyncOpsCommandState]->currentRenderEncoderOwner, &fragCoordParams,
             sizeof(fragCoordParams), MGL_RENDER_BINDING_STAGE_FRAGMENT,
             kMGLFragCoordParamsBufferIndex);
         [self invalidateLastBoundFragmentBufferAtIndex:
@@ -513,20 +523,20 @@ bool mglProcessGLStateTailBridgeApplyPostBindDrawState(void *renderer,
             lodBiasArr[unit] = bias;
         }
         mglRenderSetRenderBytesForOwner(
-            self->_commandState.currentRenderEncoderOwner, lodBiasArr,
+            [self mglSyncOpsCommandState]->currentRenderEncoderOwner, lodBiasArr,
             sizeof(lodBiasArr), MGL_RENDER_BINDING_STAGE_FRAGMENT,
             kMGLLodBiasBufferIndex);
         [self invalidateLastBoundFragmentBufferAtIndex:kMGLLodBiasBufferIndex];
         mglRenderSetRenderBytesForOwner(
-            self->_commandState.currentRenderEncoderOwner, &biasmax,
+            [self mglSyncOpsCommandState]->currentRenderEncoderOwner, &biasmax,
             sizeof(biasmax), MGL_RENDER_BINDING_STAGE_FRAGMENT,
             kMGLLodBiasMaxBufferIndex);
         [self invalidateLastBoundFragmentBufferAtIndex:kMGLLodBiasMaxBufferIndex];
     }
     if (mglFragmentTextureTraceBindingsUseRTSampledCopy(
-            self->_resourceFallback.fragmentTextureTraceBindings,
+            [self mglSyncOpsResourceFallback]->fragmentTextureTraceBindings,
             TEXTURE_UNITS)) {
-        mglCmdSetCurrentDrawUsesRTSampledCopy(&self->_commandState, YES);
+        mglCmdSetCurrentDrawUsesRTSampledCopy([self mglSyncOpsCommandState], YES);
         [self updateCurrentRenderEncoder];
     }
     return true;
@@ -551,7 +561,7 @@ bool mglProcessGLStateTailBridge(MGLRenderer *self, bool draw_command,
     MGLProcessGLStateTailOps tailOps = kTailOpsTemplate;
     tailOps.renderer = (__bridge void *)self;
     return mglRenderProcessGLStateTail(
-               self->ctx, &self->_commandState, draw_command ? 1 : 0,
+               [self mglSyncOpsCtx], [self mglSyncOpsCommandState], draw_command ? 1 : 0,
                trace_process ? 1 : 0, resource_sync_work, &tailOps) != 0;
 }
 
@@ -582,7 +592,7 @@ bool mglSyncBridgeSyncFbo(void *renderer, GLMContext context)
     };
     MGLRenderPassSyncOps passOps = kPassOpsTemplate;
     passOps.renderer = renderer;
-    return mglRenderSyncRenderPassForFbo(context, &self->_commandState,
+    return mglRenderSyncRenderPassForFbo(context, [self mglSyncOpsCommandState],
                                          &passOps) != 0;
 }
 
@@ -646,7 +656,7 @@ static bool mglSyncBridgeShouldDeferBufferMap(void *renderer,
                                               int draw_command)
 {
     MGLRenderer *self = (__bridge MGLRenderer *)renderer;
-    if (!draw_command || self->_pipelineCacheState.pipelineState != nil ||
+    if (!draw_command || [self mglSyncOpsPipelineCacheState]->pipelineState != NULL ||
         !(MGL_STATE(context)->dirty_bits & DIRTY_PROGRAM)) {
         return false;
     }
@@ -712,7 +722,7 @@ static bool mglSyncBridgeIncidentalBufferData(void *renderer, GLMContext context
     MGLRenderer *self = (__bridge MGLRenderer *)renderer;
     GLMState *state = MGL_STATE(context);
     MGLEncodeContext encCtx = {
-        .render_encoder_owner = self->_commandState.currentRenderEncoderOwner,
+        .render_encoder_owner = [self mglSyncOpsCommandState]->currentRenderEncoderOwner,
     };
 
     if ([self checkForDirtyBufferData:&state->vertex_buffer_map_list]) {
@@ -754,6 +764,55 @@ bool mglProcessDirtyStateDomainsBridge(MGLRenderer *self, bool draw_command,
     MGLRendererSyncOps ops = kSyncOpsTemplate;
     ops.renderer = (__bridge void *)self;
     return mglRenderProcessDirtyStateDomains(
-               self->ctx, MGL_SYNC_DOMAIN_ALL, draw_command ? 1 : 0,
-               &self->_commandState, work, &ops) != 0;
+               [self mglSyncOpsCtx], MGL_SYNC_DOMAIN_ALL, draw_command ? 1 : 0,
+               [self mglSyncOpsCommandState], work, &ops) != 0;
 }
+
+@implementation MGLRenderer (SyncOpsBridge)
+
+- (MGLCommandState *)mglSyncOpsCommandState
+{
+    return &_commandState;
+}
+
+- (MGLGPURecoveryState *)mglSyncOpsGPURecovery
+{
+    return &_gpuRecovery;
+}
+
+- (MGLPipelineCacheState *)mglSyncOpsPipelineCacheState
+{
+    return &_pipelineCacheState;
+}
+
+- (void *)mglSyncOpsBindingStateOwner
+{
+    return _bindingStateOwner;
+}
+
+- (MGLResourceFallbackState *)mglSyncOpsResourceFallback
+{
+    return &_resourceFallback;
+}
+
+- (GLMContext)mglSyncOpsCtx
+{
+    return ctx;
+}
+
+- (id)mglSyncOpsDevice
+{
+    return _device;
+}
+
+- (id)mglSyncOpsCommandQueue
+{
+    return _commandQueue;
+}
+
+- (id)mglSyncOpsDrawable
+{
+    return _drawable;
+}
+
+@end
