@@ -4336,7 +4336,7 @@ static GLenum mglPassthroughDeclType(
     state->fragment_program_generation = fragmentProgram
         ? fragmentProgram->pipeline_cache_generation : 0u;
     state->color_count = MAX_COLOR_ATTACHMENTS;
-    state->rasterization_enabled = rasterizerDiscard ? 0 : 1;
+    state->rasterization_enabled = 1;
 
     state->max_tessellation_factor = 64u;
 
@@ -4408,9 +4408,10 @@ static GLenum mglPassthroughDeclType(
     if (tessVertexCapture || cullDistanceCapture) {
         state->rasterization_enabled = 0;
     } else if (rasterizerDiscard) {
-        GLuint vsOutputCount = vertexProgram->shader_resources_list[vertexStage][_STAGE_OUTPUT_RES].count;
-        state->rasterization_enabled =
-            (nativeTES || vsOutputCount > 0) ? 1 : 0;
+        /* AGX drops vertex device-buffer stores when Metal rasterization is
+         * disabled. Keep rasterization on so VS SSBO/XFB writes execute;
+         * color write masks are cleared below to honor GL_RASTERIZER_DISCARD. */
+        state->rasterization_enabled = fragmentProgram ? 1 : 0;
     } else {
         state->rasterization_enabled = 1;
     }
@@ -4616,6 +4617,13 @@ static GLenum mglPassthroughDeclType(
         state->destination_alpha_blend_factor[i] = blend.destination_alpha_factor;
         state->rgb_blend_operation[i] = blend.rgb_operation;
         state->alpha_blend_operation[i] = blend.alpha_operation;
+    }
+
+    if (MGL_STATE(ctx)->caps.rasterizer_discard &&
+        !tessVertexCapture && !cullDistanceCapture) {
+        for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
+            state->color_write_mask[i] = 0u;
+        }
     }
 
 
