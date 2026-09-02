@@ -188,6 +188,7 @@ extern "C" int mglRenderSyncRenderPassForFbo(
         mglRenderEncoderOwnerHasCurrent(
             command_state->currentRenderEncoderOwner) == 1 &&
         !binding_dirty && !clear_pending &&
+        !(framebuffer && framebuffer->depth.texture) &&
         ops->render_pass_matches_framebuffer &&
         ops->render_pass_matches_framebuffer(ops->renderer, context)) {
         state->dirty_bits &= ~DIRTY_FBO;

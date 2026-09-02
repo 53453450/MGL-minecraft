@@ -4589,20 +4589,12 @@ static GLenum mglPassthroughDeclType(
 
         id rpDepth = mglRenderPassDepthTextureFor(&_commandState);
         id rpStencil = mglRenderPassStencilTextureFor(&_commandState);
-        if (rpDepth) {
-            state->depth_format =
-                (uint32_t)mglRenderPassTextureInfo(rpDepth).pixel_format;
-        } else if (!MGL_STATE(ctx)->framebuffer ||
-                   !MGL_STATE(ctx)->framebuffer->depth.texture) {
-            state->depth_format = (uint32_t)MGLPixelFormatInvalid;
-        }
-        if (rpStencil) {
-            state->stencil_format =
-                (uint32_t)mglRenderPassTextureInfo(rpStencil).pixel_format;
-        } else if (!MGL_STATE(ctx)->framebuffer ||
-                   !MGL_STATE(ctx)->framebuffer->stencil.texture) {
-            state->stencil_format = (uint32_t)MGLPixelFormatInvalid;
-        }
+        state->depth_format =
+            rpDepth ? (uint32_t)mglRenderPassTextureInfo(rpDepth).pixel_format
+                    : (uint32_t)MGLPixelFormatInvalid;
+        state->stencil_format =
+            rpStencil ? (uint32_t)mglRenderPassTextureInfo(rpStencil).pixel_format
+                      : (uint32_t)MGLPixelFormatInvalid;
     }
 
     BOOL color0IsIntentionallyDisabled =
