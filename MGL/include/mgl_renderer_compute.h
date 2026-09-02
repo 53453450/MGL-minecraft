@@ -13,9 +13,10 @@
 extern "C" {
 #endif
 
-void mglRenderDispatchCompute(
+/* GLMContext-level compute orchestration (not the encoder API in mgl_render.h). */
+void mglRenderComputeDispatch(
     GLMContext context, uint32_t groups_x, uint32_t groups_y, uint32_t groups_z);
-void mglRenderDispatchComputeIndirect(GLMContext context, intptr_t indirect);
+void mglRenderComputeDispatchIndirect(GLMContext context, intptr_t indirect);
 
 #ifdef __cplusplus
 }

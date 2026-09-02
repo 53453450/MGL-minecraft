@@ -1702,7 +1702,7 @@ extern "C" void mglRendererDispatchCompute(
 {
     void *platform_shell = mglRendererBackendPlatformShell(context);
     if (platform_shell) {
-        mglRenderDispatchCompute(context, groups_x, groups_y, groups_z);
+        mglRenderComputeDispatch(context, groups_x, groups_y, groups_z);
     }
 }
 
@@ -1711,7 +1711,7 @@ extern "C" void mglRendererDispatchComputeIndirect(
 {
     void *platform_shell = mglRendererBackendPlatformShell(context);
     if (platform_shell) {
-        mglRenderDispatchComputeIndirect(context, indirect);
+        mglRenderComputeDispatchIndirect(context, indirect);
     }
 }
 

@@ -27,7 +27,8 @@
  * call, dozens of times per frame.
  *
  * Dependencies: glcorearb.h (GLuint / GLsizei) + stdint.h (uint64_t) +
- * stdatomic.h (_Atomic).
+ * Clang `_Atomic` / `__c11_atomic_*` (do not include <stdatomic.h> here —
+ * its atomic_* macros collide with libc++ <atomic> in C++ TUs).
  */
 
 #ifndef MGL_FRAME_ACTIVITY_H
@@ -36,7 +37,6 @@
 #include "glcorearb.h"
 
 #include <stdint.h>
-#include <stdatomic.h>
 #include <os/signpost.h>
 
 #ifdef __cplusplus
@@ -236,11 +236,11 @@ int mglSignpostEnabled(void);
     if (mglSignpostEnabled()) os_signpost_interval_end(mglSignpostLog, OS_SIGNPOST_ID_EXCLUSIVE, #name)
 
 #define MGL_FRAME_LOAD(var) \
-    atomic_load_explicit(&(var), memory_order_relaxed)
+    __c11_atomic_load(&(var), __ATOMIC_RELAXED)
 #define MGL_FRAME_STORE(var, value) \
-    atomic_store_explicit(&(var), (value), memory_order_relaxed)
+    __c11_atomic_store(&(var), (value), __ATOMIC_RELAXED)
 #define MGL_FRAME_ADD(var, value) \
-    ((void)atomic_fetch_add_explicit(&(var), (value), memory_order_relaxed))
+    ((void)__c11_atomic_fetch_add(&(var), (value), __ATOMIC_RELAXED))
 #define MGL_FRAME_INC(var) \
     MGL_FRAME_ADD((var), 1)
 #define MGL_PERF_ADD(var, value) \

@@ -15210,8 +15210,8 @@ int mglRenderSetRenderViewport(void* render_encoder,
     MTL::RenderCommandEncoder* encoder =
         static_cast<MTL::RenderCommandEncoder*>(render_encoder);
     if (!encoder) return -1;
-    encoder->setViewport(MTL::Viewport(origin_x, origin_y, width, height,
-                                       znear, zfar));
+    MTL::Viewport vp = {origin_x, origin_y, width, height, znear, zfar};
+    encoder->setViewport(vp);
     return 0;
 }
 
@@ -15223,7 +15223,8 @@ int mglRenderSetRenderScissor(void* render_encoder,
     MTL::RenderCommandEncoder* encoder =
         static_cast<MTL::RenderCommandEncoder*>(render_encoder);
     if (!encoder) return -1;
-    encoder->setScissorRect(MTL::ScissorRect(x, y, width, height));
+    MTL::ScissorRect rect = {x, y, width, height};
+    encoder->setScissorRect(rect);
     return 0;
 }
 

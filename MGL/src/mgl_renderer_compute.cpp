@@ -10,7 +10,7 @@ extern "C" void mglRendererObjCDispatchCompute(
 extern "C" void mglRendererObjCDispatchComputeIndirect(
     GLMContext context, intptr_t indirect);
 
-extern "C" void mglRenderDispatchCompute(
+extern "C" void mglRenderComputeDispatch(
     GLMContext context, uint32_t groups_x, uint32_t groups_y, uint32_t groups_z)
 {
     if (!context) {
@@ -19,7 +19,7 @@ extern "C" void mglRenderDispatchCompute(
     mglRendererObjCDispatchCompute(context, groups_x, groups_y, groups_z);
 }
 
-extern "C" void mglRenderDispatchComputeIndirect(
+extern "C" void mglRenderComputeDispatchIndirect(
     GLMContext context, intptr_t indirect)
 {
     if (!context) {
