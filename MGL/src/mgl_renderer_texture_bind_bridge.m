@@ -66,8 +66,10 @@ bool mglRendererTextureBindLocked(MGLRenderer *self, Texture *tex)
             return false;
         }
         const uint64_t requiredRenderTargetUsage = (1ull << 2) | (1ull << 0);
+        const BOOL depthOrStencilRT =
+            mglRendererGLInternalFormatLooksDepthOrStencil(tex->internalformat);
         NSUInteger requiredMipLevels =
-            (tex->target == GL_RENDERBUFFER || tex->samples > 1u)
+            (tex->target == GL_RENDERBUFFER || tex->samples > 1u || depthOrStencilRT)
                 ? 1u
                 : ((tex->mipmap_levels > 1u) ? (NSUInteger)tex->mipmap_levels : 1u);
         BOOL usageMismatch = hasExistingInfo &&

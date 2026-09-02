@@ -2160,6 +2160,16 @@
         tex->mipmapped = false;
     }
 
+    /* Depth/stencil attachments must be single-level Metal textures.
+     * checkTextureCompleteness can set storageMipmapped for color RTs with
+     * mipmap_levels>1; applying that to Depth32Float depth-tex FBOs yields
+     * ineffective depth testing (last draw wins). Mirror RBO policy. */
+    if (mglMetalPixelFormatIsDepthOrStencil(pixelFormat)) {
+        storageMipmapped = NO;
+        effective_mipmap_levels = 1u;
+        tex->mipmapped = false;
+    }
+
     mipmapped = storageMipmapped;
     /* GL may allocate num_levels>1 for a single-base-level image; only walk
      * mips that were actually populated unless the texture is mipmapped. */
@@ -2295,7 +2305,10 @@
 
     // Allow safe same-memory format reinterpretation (e.g. RGBA8 <-> BGRA8)
     // for blit/present paths where OpenGL attachments and drawable formats differ.
-    tex_desc.usage |= MGL_TEXTURE_USAGE_PIXEL_FORMAT_VIEW;
+    // Metal forbids PixelFormatView on depth/stencil formats.
+    if (!mglMetalPixelFormatIsDepthOrStencil(pixelFormat)) {
+        tex_desc.usage |= MGL_TEXTURE_USAGE_PIXEL_FORMAT_VIEW;
+    }
 
     if (tex_desc.texture_type == MGLTextureTypeCube || tex_desc.texture_type == MGLTextureTypeCubeArray) {
         NSLog(@"MGL CUBE DESC tex=%u glTarget=0x%x type=%lu width=%lu height=%lu depth=%lu arrayLength=%lu pixelFormat=%lu usage=%lu storage=%lu mipmapped=%d",
