@@ -3496,14 +3496,29 @@ int mglRenderSampledTextureViewForBaseLevel(
     }
     const uint32_t components =
         mglRenderStoredColorComponents(texture_object->internalformat);
-    const uint32_t swizzle_red = mglRenderMTLSwizzleForGLSwizzle(
+    uint32_t swizzle_red = mglRenderMTLSwizzleForGLSwizzle(
         texture_object->params.swizzle_r, components);
-    const uint32_t swizzle_green = mglRenderMTLSwizzleForGLSwizzle(
+    uint32_t swizzle_green = mglRenderMTLSwizzleForGLSwizzle(
         texture_object->params.swizzle_g, components);
-    const uint32_t swizzle_blue = mglRenderMTLSwizzleForGLSwizzle(
+    uint32_t swizzle_blue = mglRenderMTLSwizzleForGLSwizzle(
         texture_object->params.swizzle_b, components);
-    const uint32_t swizzle_alpha = mglRenderMTLSwizzleForGLSwizzle(
+    uint32_t swizzle_alpha = mglRenderMTLSwizzleForGLSwizzle(
         texture_object->params.swizzle_a, components);
+    /* Single-channel formats may expand to RGBA8 at upload with swizzle baked into
+     * texels; applying Metal view swizzle on that storage would double-apply. */
+    const bool upload_swizzle_baked =
+        texture_object->params.swizzled &&
+        !texture_object->is_render_target &&
+        mglRenderTextureUploadNeedsSingleChannelSwizzle(
+            texture_object->internalformat, 1) != 0 &&
+        (source->pixelFormat() == MTL::PixelFormatRGBA8Unorm ||
+         source->pixelFormat() == MTL::PixelFormatRGBA8Unorm_sRGB);
+    if (upload_swizzle_baked) {
+        swizzle_red = static_cast<uint32_t>(MTL::TextureSwizzleRed);
+        swizzle_green = static_cast<uint32_t>(MTL::TextureSwizzleGreen);
+        swizzle_blue = static_cast<uint32_t>(MTL::TextureSwizzleBlue);
+        swizzle_alpha = static_cast<uint32_t>(MTL::TextureSwizzleAlpha);
+    }
     const bool identity =
         swizzle_red == static_cast<uint32_t>(MTL::TextureSwizzleRed) &&
         swizzle_green == static_cast<uint32_t>(MTL::TextureSwizzleGreen) &&

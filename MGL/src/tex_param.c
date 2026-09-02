@@ -205,6 +205,7 @@ static void mglMarkTextureParameterDirty(GLMContext ctx, Texture *tex, GLenum pn
     }
     tex->dirty_bits |= DIRTY_TEXTURE_PARAM;
     if (mglTextureParameterAffectsTextureDescriptor(pname)) {
+        mglInvalidateTextureBaseLevelView(ctx, tex);
         tex->dirty_bits |= (DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_DATA);
     }
     if (ctx) {

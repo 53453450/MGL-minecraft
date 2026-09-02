@@ -168,6 +168,7 @@ void MGLget(GLMContext ctx, GLenum param, GLuint *data);
 bool pixelConvertToInternalFormat(GLMContext ctx, GLenum internalformat, GLenum format, GLenum type, const void *src, void *dst, size_t len);
 
 bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLboolean is_array, GLint internalformat, GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLenum type, void *pixels, GLboolean proxy);
+void mglInvalidateTextureBaseLevelView(GLMContext ctx, Texture *tex);
 
 Framebuffer *findFrameBuffer(GLMContext ctx, GLuint framebuffer);
 GLboolean mglFramebufferPrimaryColorSize(GLMContext ctx, Framebuffer *fbo, GLuint *outWidth, GLuint *outHeight);

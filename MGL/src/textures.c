@@ -1647,6 +1647,19 @@ void mglGenerateTextureMipmap(GLMContext ctx, GLuint texture)
     generateMipmaps(ctx, texture, 0);
 }
 
+void mglInvalidateTextureBaseLevelView(GLMContext ctx, Texture *tex)
+{
+    if (!tex || !tex->mtl_base_level_view)
+        return;
+
+    if (ctx)
+        mglRendererDeleteMetalObject(ctx, tex->mtl_base_level_view);
+    tex->mtl_base_level_view = NULL;
+    tex->mtl_base_level_view_source = NULL;
+    tex->mtl_base_level_view_base = 0u;
+    tex->mtl_base_level_view_max = 0u;
+}
+
 void invalidateTexture(GLMContext ctx, Texture *tex)
 {
     if (!ctx || !tex)
