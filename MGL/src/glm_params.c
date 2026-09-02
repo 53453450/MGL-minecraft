@@ -40,6 +40,245 @@
 
 typedef struct GLMContextRec_t *GLMContext;
 
+/*
+ * Apply GL 4.6 / MGL capacity defaults when host OpenGL cannot be queried
+ * (macOS 26+ CI / paravirt runners: CGLChoosePixelFormat often fails) or
+ * when host queries return zero/suspicious values. Idempotent: safe after a
+ * successful host query as a repair pass.
+ */
+static void mglApplyFallbackGLDefaults(GLMContext glm_ctx)
+{
+    if (glm_ctx->state.var.max_texture_size < 16384)
+        glm_ctx->state.var.max_texture_size = 16384;
+    if (glm_ctx->state.var.max_3d_texture_size < 2048)
+        glm_ctx->state.var.max_3d_texture_size = 2048;
+    if (glm_ctx->state.var.max_array_texture_layers < 2048)
+        glm_ctx->state.var.max_array_texture_layers = 2048;
+    if (glm_ctx->state.var.max_cube_map_texture_size < 16384)
+        glm_ctx->state.var.max_cube_map_texture_size = 16384;
+    if (glm_ctx->state.var.max_renderbuffer_size < 16384)
+        glm_ctx->state.var.max_renderbuffer_size = 16384;
+    if (glm_ctx->state.var.max_rectangle_texture_size < 16384)
+        glm_ctx->state.var.max_rectangle_texture_size = 16384;
+    if (glm_ctx->state.var.max_texture_buffer_size == 0 ||
+        glm_ctx->state.var.max_texture_buffer_size == 0x01010101 ||
+        glm_ctx->state.var.max_texture_buffer_size > (1u << 28)) {
+        glm_ctx->state.var.max_texture_buffer_size = 1u << 20;
+    }
+    if (glm_ctx->state.var.max_texture_image_units < 16)
+        glm_ctx->state.var.max_texture_image_units = 16;
+    if (glm_ctx->state.var.max_combined_texture_image_units < 80)
+        glm_ctx->state.var.max_combined_texture_image_units = 80;
+    if (glm_ctx->state.var.max_vertex_texture_image_units < 16)
+        glm_ctx->state.var.max_vertex_texture_image_units = 16;
+    if (glm_ctx->state.var.max_geometry_texture_image_units < 16)
+        glm_ctx->state.var.max_geometry_texture_image_units = 16;
+
+    if (glm_ctx->state.max_vertex_attribs == 0 ||
+        glm_ctx->state.max_vertex_attribs > MAX_ATTRIBS) {
+        glm_ctx->state.max_vertex_attribs = MAX_ATTRIBS;
+    }
+    if (glm_ctx->state.var.max_vertex_attribs == 0 ||
+        glm_ctx->state.var.max_vertex_attribs > MAX_ATTRIBS) {
+        glm_ctx->state.var.max_vertex_attribs = MAX_ATTRIBS;
+    }
+    glm_ctx->state.var.max_vertex_attrib_bindings = MGL_MAX_VERTEX_ATTRIB_BINDINGS;
+    if (glm_ctx->state.var.max_vertex_attrib_relative_offset < 2047u ||
+        glm_ctx->state.var.max_vertex_attrib_relative_offset == 0x01010101u) {
+        glm_ctx->state.var.max_vertex_attrib_relative_offset = 2047u;
+    }
+
+    if (glm_ctx->state.var.max_uniform_buffer_bindings < 84)
+        glm_ctx->state.var.max_uniform_buffer_bindings = 84;
+    if (glm_ctx->state.var.max_shader_storage_buffer_bindings == 0 ||
+        glm_ctx->state.var.max_shader_storage_buffer_bindings > MAX_BINDABLE_BUFFERS) {
+        glm_ctx->state.var.max_shader_storage_buffer_bindings = MAX_BINDABLE_BUFFERS;
+    }
+    if (glm_ctx->state.var.max_atomic_counter_buffer_bindings == 0 ||
+        glm_ctx->state.var.max_atomic_counter_buffer_bindings > MAX_BINDABLE_BUFFERS) {
+        glm_ctx->state.var.max_atomic_counter_buffer_bindings = MAX_BINDABLE_BUFFERS;
+    }
+    if (glm_ctx->state.var.max_atomic_counter_buffer_size < 16384)
+        glm_ctx->state.var.max_atomic_counter_buffer_size = 16384;
+
+    if (glm_ctx->state.var.max_vertex_uniform_blocks == 0 ||
+        glm_ctx->state.var.max_vertex_uniform_blocks > MAX_BINDABLE_BUFFERS)
+        glm_ctx->state.var.max_vertex_uniform_blocks = MAX_BINDABLE_BUFFERS;
+    if (glm_ctx->state.var.max_geometry_uniform_blocks == 0 ||
+        glm_ctx->state.var.max_geometry_uniform_blocks > MAX_BINDABLE_BUFFERS)
+        glm_ctx->state.var.max_geometry_uniform_blocks = MAX_BINDABLE_BUFFERS;
+    if (glm_ctx->state.var.max_fragment_uniform_blocks == 0 ||
+        glm_ctx->state.var.max_fragment_uniform_blocks > MAX_BINDABLE_BUFFERS)
+        glm_ctx->state.var.max_fragment_uniform_blocks = MAX_BINDABLE_BUFFERS;
+    if (glm_ctx->state.var.max_combined_uniform_blocks == 0 ||
+        glm_ctx->state.var.max_combined_uniform_blocks > MAX_BINDABLE_BUFFERS)
+        glm_ctx->state.var.max_combined_uniform_blocks = MAX_BINDABLE_BUFFERS;
+    if (glm_ctx->state.var.max_compute_uniform_blocks == 0 ||
+        glm_ctx->state.var.max_compute_uniform_blocks > MAX_BINDABLE_BUFFERS)
+        glm_ctx->state.var.max_compute_uniform_blocks = MAX_BINDABLE_BUFFERS;
+    if (glm_ctx->state.var.max_tess_control_uniform_blocks == 0 ||
+        glm_ctx->state.var.max_tess_control_uniform_blocks > MAX_BINDABLE_BUFFERS)
+        glm_ctx->state.var.max_tess_control_uniform_blocks = MAX_BINDABLE_BUFFERS;
+    if (glm_ctx->state.var.max_tess_evaluation_uniform_blocks == 0 ||
+        glm_ctx->state.var.max_tess_evaluation_uniform_blocks > MAX_BINDABLE_BUFFERS)
+        glm_ctx->state.var.max_tess_evaluation_uniform_blocks = MAX_BINDABLE_BUFFERS;
+
+    if (glm_ctx->state.var.max_uniform_block_size < 16384)
+        glm_ctx->state.var.max_uniform_block_size = 16384;
+    if (glm_ctx->state.var.uniform_buffer_offset_alignment == 0 ||
+        glm_ctx->state.var.uniform_buffer_offset_alignment > 256)
+        glm_ctx->state.var.uniform_buffer_offset_alignment = 256;
+    if (glm_ctx->state.var.shader_storage_buffer_offset_alignment == 0 ||
+        glm_ctx->state.var.shader_storage_buffer_offset_alignment > 4096)
+        glm_ctx->state.var.shader_storage_buffer_offset_alignment = 256;
+    if (glm_ctx->state.var.texture_buffer_offset_alignment == 0 ||
+        glm_ctx->state.var.texture_buffer_offset_alignment == 0x01010101 ||
+        glm_ctx->state.var.texture_buffer_offset_alignment > 4096)
+        glm_ctx->state.var.texture_buffer_offset_alignment = 16;
+
+    if (glm_ctx->state.var.max_vertex_shader_storage_blocks < 8 ||
+        glm_ctx->state.var.max_vertex_shader_storage_blocks > MAX_BINDABLE_BUFFERS)
+        glm_ctx->state.var.max_vertex_shader_storage_blocks = 8;
+    if (glm_ctx->state.var.max_fragment_shader_storage_blocks < 8 ||
+        glm_ctx->state.var.max_fragment_shader_storage_blocks > MAX_BINDABLE_BUFFERS)
+        glm_ctx->state.var.max_fragment_shader_storage_blocks = 8;
+    if (glm_ctx->state.var.max_compute_shader_storage_blocks < 8 ||
+        glm_ctx->state.var.max_compute_shader_storage_blocks > MAX_BINDABLE_BUFFERS)
+        glm_ctx->state.var.max_compute_shader_storage_blocks = 8;
+    if (glm_ctx->state.var.max_tess_control_shader_storage_blocks < 8 ||
+        glm_ctx->state.var.max_tess_control_shader_storage_blocks > MAX_BINDABLE_BUFFERS)
+        glm_ctx->state.var.max_tess_control_shader_storage_blocks = 8;
+    if (glm_ctx->state.var.max_tess_evaluation_shader_storage_blocks < 8 ||
+        glm_ctx->state.var.max_tess_evaluation_shader_storage_blocks > MAX_BINDABLE_BUFFERS)
+        glm_ctx->state.var.max_tess_evaluation_shader_storage_blocks = 8;
+    if (glm_ctx->state.var.max_geometry_shader_storage_blocks < 8 ||
+        glm_ctx->state.var.max_geometry_shader_storage_blocks > MAX_BINDABLE_BUFFERS)
+        glm_ctx->state.var.max_geometry_shader_storage_blocks = 8;
+    if (glm_ctx->state.var.max_combined_shader_storage_blocks < 8 ||
+        glm_ctx->state.var.max_combined_shader_storage_blocks > MAX_BINDABLE_BUFFERS)
+        glm_ctx->state.var.max_combined_shader_storage_blocks = MAX_BINDABLE_BUFFERS;
+
+    if (glm_ctx->state.var.max_viewports == 0 ||
+        glm_ctx->state.var.max_viewports > MGL_MAX_VIEWPORTS)
+        glm_ctx->state.var.max_viewports = MGL_MAX_VIEWPORTS;
+
+    if (glm_ctx->state.var.max_compute_texture_image_units == 0 ||
+        glm_ctx->state.var.max_compute_texture_image_units == 0x01010101u ||
+        glm_ctx->state.var.max_compute_texture_image_units > 16u)
+        glm_ctx->state.var.max_compute_texture_image_units = 16u;
+    if (glm_ctx->state.var.max_combined_compute_uniform_components < 512u)
+        glm_ctx->state.var.max_combined_compute_uniform_components = 512u;
+
+    /* Set limits required by OpenGL 4.6 / CTS that may not be queried from
+     * the system GL or may return 0.  Each value meets or exceeds the
+     * minimum required by the Khronos conformance test suite. */
+    glm_ctx->state.var.max_cull_distances = 8;
+    glm_ctx->state.var.max_combined_clip_and_cull_distances = 8;
+    if (glm_ctx->state.var.max_vertex_output_components < 64)
+        glm_ctx->state.var.max_vertex_output_components = 64;
+    glm_ctx->state.var.max_tess_gen_level = 64;
+    glm_ctx->state.var.max_patch_vertices = 32;
+    glm_ctx->state.var.patch_vertices = 3;
+    glm_ctx->state.var.patch_default_inner_level[0] = 1.0f;
+    glm_ctx->state.var.patch_default_inner_level[1] = 1.0f;
+    glm_ctx->state.var.patch_default_outer_level[0] = 1.0f;
+    glm_ctx->state.var.patch_default_outer_level[1] = 1.0f;
+    glm_ctx->state.var.patch_default_outer_level[2] = 1.0f;
+    glm_ctx->state.var.patch_default_outer_level[3] = 1.0f;
+    glm_ctx->state.var.max_tess_patch_components = 120;
+    glm_ctx->state.var.max_tess_control_input_components = 128;
+    glm_ctx->state.var.max_tess_control_output_components = 128;
+    glm_ctx->state.var.max_tess_control_total_output_components = 4096;
+    glm_ctx->state.var.max_tess_control_uniform_components = 1024;
+    glm_ctx->state.var.max_tess_control_texture_image_units = 16;
+    glm_ctx->state.var.max_tess_evaluation_input_components = 128;
+    glm_ctx->state.var.max_tess_evaluation_output_components = 128;
+    glm_ctx->state.var.max_tess_evaluation_uniform_components = 1024;
+    glm_ctx->state.var.max_tess_evaluation_texture_image_units = 16;
+    glm_ctx->state.var.max_compute_shared_memory_size = 32768;
+    glm_ctx->state.var.max_debug_message_length = 1024;
+    glm_ctx->state.var.max_debug_logged_messages = 1024;
+    glm_ctx->state.var.max_subroutines = 256;
+    glm_ctx->state.var.max_subroutine_uniform_locations = 1024;
+    glm_ctx->state.var.max_vertex_streams = 4;
+    glm_ctx->state.var.max_combined_shader_output_resources = 8;
+    glm_ctx->state.var.max_vertex_atomic_counter_buffers = MAX_BINDABLE_BUFFERS;
+    glm_ctx->state.var.max_tess_control_atomic_counter_buffers = MAX_BINDABLE_BUFFERS;
+    glm_ctx->state.var.max_tess_evaluation_atomic_counter_buffers = MAX_BINDABLE_BUFFERS;
+    if (glm_ctx->state.var.max_geometry_atomic_counter_buffers < 8 ||
+        glm_ctx->state.var.max_geometry_atomic_counter_buffers > MAX_BINDABLE_BUFFERS)
+        glm_ctx->state.var.max_geometry_atomic_counter_buffers = 8;
+    glm_ctx->state.var.max_fragment_atomic_counter_buffers = MAX_BINDABLE_BUFFERS;
+    glm_ctx->state.var.max_combined_atomic_counter_buffers = MAX_BINDABLE_BUFFERS;
+    if (glm_ctx->state.var.max_geometry_atomic_counters < 8)
+        glm_ctx->state.var.max_geometry_atomic_counters = 8;
+    if (glm_ctx->state.var.max_combined_atomic_counters < 8)
+        glm_ctx->state.var.max_combined_atomic_counters = 8;
+    glm_ctx->state.var.max_image_units = 8;
+    glm_ctx->state.var.max_image_samples = 8;
+    glm_ctx->state.var.max_vertex_image_uniforms = 8;
+    glm_ctx->state.var.max_tess_control_image_uniforms = 8;
+    glm_ctx->state.var.max_tess_evaluation_image_uniforms = 8;
+    glm_ctx->state.var.max_geometry_image_uniforms = 8;
+    glm_ctx->state.var.max_fragment_image_uniforms = 8;
+    glm_ctx->state.var.max_combined_image_uniforms = 40;
+    glm_ctx->state.var.max_compute_image_uniforms = 8;
+    glm_ctx->state.var.max_transform_feedback_interleaved_components = 64;
+    glm_ctx->state.var.max_transform_feedback_separate_attribs = 4;
+    glm_ctx->state.var.max_transform_feedback_separate_components = 4;
+    glm_ctx->state.var.max_transform_feedback_buffers = 4;
+    glm_ctx->state.var.max_geometry_output_vertices = 1024;
+    glm_ctx->state.var.max_geometry_total_output_components = 1024;
+    if (glm_ctx->state.var.max_geometry_uniform_components < 1024)
+        glm_ctx->state.var.max_geometry_uniform_components = 1024;
+    glm_ctx->state.var.max_geometry_shader_invocations = 32;
+    glm_ctx->state.var.min_program_texture_gather_offset = (GLuint)-8;
+    glm_ctx->state.var.max_program_texture_gather_offset = 7;
+    glm_ctx->state.var.max_shader_storage_block_size = 134217728;
+    glm_ctx->state.var.max_samples = 4;
+    glm_ctx->state.var.min_fragment_interpolation_offset = -0.5f;
+    glm_ctx->state.var.max_fragment_interpolation_offset = 0.5f;
+    glm_ctx->state.var.fragment_interpolation_offset_bits = 4;
+
+    {
+        const GLuint block_size = 16384;
+        const GLuint min_blocks = 14;
+        glm_ctx->state.var.max_combined_tess_control_uniform_components =
+            min_blocks * block_size / 4 + glm_ctx->state.var.max_tess_control_uniform_components;
+        glm_ctx->state.var.max_combined_tess_evaluation_uniform_components =
+            min_blocks * block_size / 4 + glm_ctx->state.var.max_tess_evaluation_uniform_components;
+    }
+
+    if (glm_ctx->state.var.max_element_index == 0 ||
+        glm_ctx->state.var.max_element_index < 0xFFFFFFFFu)
+        glm_ctx->state.var.max_element_index = 0xFFFFFFFFu;
+    if (glm_ctx->state.var.min_map_buffer_alignment < 64)
+        glm_ctx->state.var.min_map_buffer_alignment = 64;
+    if (glm_ctx->state.var.max_framebuffer_width < 16384)
+        glm_ctx->state.var.max_framebuffer_width = 16384;
+    if (glm_ctx->state.var.max_framebuffer_height < 16384)
+        glm_ctx->state.var.max_framebuffer_height = 16384;
+    if (glm_ctx->state.var.max_framebuffer_layers < 2048)
+        glm_ctx->state.var.max_framebuffer_layers = 2048;
+    if (glm_ctx->state.var.max_framebuffer_samples < 4)
+        glm_ctx->state.var.max_framebuffer_samples = 4;
+    if (glm_ctx->state.var.max_color_texture_samples < 4)
+        glm_ctx->state.var.max_color_texture_samples = 4;
+    if (glm_ctx->state.var.max_depth_texture_samples < 4)
+        glm_ctx->state.var.max_depth_texture_samples = 4;
+    if (glm_ctx->state.var.max_integer_samples < 4)
+        glm_ctx->state.var.max_integer_samples = 4;
+    if (glm_ctx->state.var.max_sample_mask_words < 1)
+        glm_ctx->state.var.max_sample_mask_words = 1;
+
+    if (glm_ctx->state.var.max_varying_floats < 60)
+        glm_ctx->state.var.max_varying_floats = 60;
+    glm_ctx->state.var.max_varying_components = glm_ctx->state.var.max_varying_floats;
+
+    glm_ctx->state.var.context_profile_mask = GL_CONTEXT_CORE_PROFILE_BIT;
+    glm_ctx->state.var.layer_provoking_vertex = GL_UNDEFINED_VERTEX;
+    glm_ctx->state.var.viewport_index_provoking_vertex = GL_UNDEFINED_VERTEX;
+}
 
 void getMacOSDefaults(GLMContext glm_ctx)
 {
@@ -74,6 +313,7 @@ void getMacOSDefaults(GLMContext glm_ctx)
                 libGL);
         if (OpenGL) dlclose(OpenGL);
         if (libGL) dlclose(libGL);
+        mglApplyFallbackGLDefaults(glm_ctx);
         return;
     }
 
@@ -91,6 +331,7 @@ void getMacOSDefaults(GLMContext glm_ctx)
         fprintf(stderr, "MGL WARN: missing system OpenGL symbols, using fallback defaults\n");
         dlclose(OpenGL);
         dlclose(libGL);
+        mglApplyFallbackGLDefaults(glm_ctx);
         return;
     }
 
@@ -101,6 +342,9 @@ void getMacOSDefaults(GLMContext glm_ctx)
     if (errorCode != kCGLNoError || !pix || num <= 0)
     {
         fprintf(stderr, "MGL WARN: CGLChoosePixelFormat failed (%d), using fallback defaults\n", (int)errorCode);
+        dlclose(OpenGL);
+        dlclose(libGL);
+        mglApplyFallbackGLDefaults(glm_ctx);
         return;
     }
     errorCode = CGLCreateContext(pix, NULL, &ctx);
@@ -108,6 +352,9 @@ void getMacOSDefaults(GLMContext glm_ctx)
     {
         fprintf(stderr, "MGL WARN: CGLCreateContext failed (%d), using fallback defaults\n", (int)errorCode);
         CGLDestroyPixelFormat(pix);
+        dlclose(OpenGL);
+        dlclose(libGL);
+        mglApplyFallbackGLDefaults(glm_ctx);
         return;
     }
     CGLDestroyPixelFormat( pix );
@@ -117,6 +364,9 @@ void getMacOSDefaults(GLMContext glm_ctx)
     {
         fprintf(stderr, "MGL WARN: CGLSetCurrentContext failed (%d), using fallback defaults\n", (int)errorCode);
         CGLDestroyContext(ctx);
+        dlclose(OpenGL);
+        dlclose(libGL);
+        mglApplyFallbackGLDefaults(glm_ctx);
         return;
     }
 
@@ -517,146 +767,8 @@ void getMacOSDefaults(GLMContext glm_ctx)
     glGetIntegerv(GL_TEXTURE_BINDING_CUBE_MAP,&glm_ctx->state.var.texture_binding_cube_map);
     glGetIntegerv(GL_TEXTURE_BINDING_RECTANGLE,&glm_ctx->state.var.texture_binding_rectangle);
 
-    /* Set limits required by OpenGL 4.6 / CTS that may not be queried from
-     * the system GL or may return 0.  Each value meets or exceeds the
-     * minimum required by the Khronos conformance test suite. */
-    glm_ctx->state.var.max_cull_distances = 8;
-    glm_ctx->state.var.max_combined_clip_and_cull_distances = 8;
-    if (glm_ctx->state.var.max_vertex_output_components < 64) {
-        glm_ctx->state.var.max_vertex_output_components = 64;
-    }
-    glm_ctx->state.var.max_tess_gen_level = 64;
-    glm_ctx->state.var.max_patch_vertices = 32;
-    glm_ctx->state.var.patch_vertices = 3;
-    /* GL default patch tessellation levels (per ARB_tessellation_shader). */
-    glm_ctx->state.var.patch_default_inner_level[0] = 1.0f;
-    glm_ctx->state.var.patch_default_inner_level[1] = 1.0f;
-    glm_ctx->state.var.patch_default_outer_level[0] = 1.0f;
-    glm_ctx->state.var.patch_default_outer_level[1] = 1.0f;
-    glm_ctx->state.var.patch_default_outer_level[2] = 1.0f;
-    glm_ctx->state.var.patch_default_outer_level[3] = 1.0f;
-    glm_ctx->state.var.max_tess_patch_components = 120;
-    glm_ctx->state.var.max_tess_control_input_components = 128;
-    glm_ctx->state.var.max_tess_control_output_components = 128;
-    glm_ctx->state.var.max_tess_control_total_output_components = 4096;
-    glm_ctx->state.var.max_tess_control_uniform_components = 1024;
-    glm_ctx->state.var.max_tess_control_texture_image_units = 16;
-    glm_ctx->state.var.max_tess_evaluation_input_components = 128;
-    glm_ctx->state.var.max_tess_evaluation_output_components = 128;
-    glm_ctx->state.var.max_tess_evaluation_uniform_components = 1024;
-    glm_ctx->state.var.max_tess_evaluation_texture_image_units = 16;
-    glm_ctx->state.var.max_compute_shared_memory_size = 32768;
-    glm_ctx->state.var.max_debug_message_length = 1024;
-    glm_ctx->state.var.max_debug_logged_messages = 1024;
-    glm_ctx->state.var.max_subroutines = 256;
-    glm_ctx->state.var.max_subroutine_uniform_locations = 1024;
-    glm_ctx->state.var.max_vertex_streams = 4;
-    glm_ctx->state.var.max_combined_shader_output_resources = 8;
-    glm_ctx->state.var.max_vertex_atomic_counter_buffers = MAX_BINDABLE_BUFFERS;
-    glm_ctx->state.var.max_tess_control_atomic_counter_buffers = MAX_BINDABLE_BUFFERS;
-    glm_ctx->state.var.max_tess_evaluation_atomic_counter_buffers = MAX_BINDABLE_BUFFERS;
-    /* Same GS compute path caveat as max_geometry_atomic_counters above. */
-    if (glm_ctx->state.var.max_geometry_atomic_counter_buffers < 8 ||
-        glm_ctx->state.var.max_geometry_atomic_counter_buffers > MAX_BINDABLE_BUFFERS) {
-        glm_ctx->state.var.max_geometry_atomic_counter_buffers = 8;
-    }
-    glm_ctx->state.var.max_fragment_atomic_counter_buffers = MAX_BINDABLE_BUFFERS;
-    glm_ctx->state.var.max_combined_atomic_counter_buffers = MAX_BINDABLE_BUFFERS;
-    glm_ctx->state.var.max_atomic_counter_buffer_bindings = MAX_BINDABLE_BUFFERS;
-    glm_ctx->state.var.max_atomic_counter_buffer_size = 16384;
-    glm_ctx->state.var.max_image_units = 8;
-    glm_ctx->state.var.max_image_samples = 8;
-    glm_ctx->state.var.max_vertex_image_uniforms = 8;
-    glm_ctx->state.var.max_tess_control_image_uniforms = 8;
-    glm_ctx->state.var.max_tess_evaluation_image_uniforms = 8;
-    glm_ctx->state.var.max_geometry_image_uniforms = 8;
-    glm_ctx->state.var.max_fragment_image_uniforms = 8;
-    glm_ctx->state.var.max_combined_image_uniforms = 40;
-    glm_ctx->state.var.max_compute_image_uniforms = 8;
-    glm_ctx->state.var.max_transform_feedback_interleaved_components = 64;
-    glm_ctx->state.var.max_transform_feedback_separate_attribs = 4;
-    glm_ctx->state.var.max_transform_feedback_separate_components = 4;
-    glm_ctx->state.var.max_transform_feedback_buffers = 4;
-    /* GS compute expansion supports the GL minimums and up to the fixed
-     * AIR record budget used by the renderer. */
-    glm_ctx->state.var.max_geometry_output_vertices = 1024;
-    glm_ctx->state.var.max_geometry_total_output_components = 1024;
-    /* Headless CGL can report zero for geometry-stage limits even though the
-     * advertised 4.6 context must expose the GLSL minimums. */
-    if (glm_ctx->state.var.max_geometry_texture_image_units < 16)
-        glm_ctx->state.var.max_geometry_texture_image_units = 16;
-    if (glm_ctx->state.var.max_geometry_uniform_components < 1024)
-        glm_ctx->state.var.max_geometry_uniform_components = 1024;
-    glm_ctx->state.var.max_geometry_shader_invocations = 32;
-    glm_ctx->state.var.min_program_texture_gather_offset = (GLuint)-8; /* -8 as unsigned */
-    glm_ctx->state.var.max_program_texture_gather_offset = 7;
-    glm_ctx->state.var.max_shader_storage_block_size = 134217728; /* 128 MB */
-    glm_ctx->state.var.max_samples = 4;
-    glm_ctx->state.var.min_fragment_interpolation_offset = -0.5f;
-    glm_ctx->state.var.max_fragment_interpolation_offset = 0.5f;
-    glm_ctx->state.var.fragment_interpolation_offset_bits = 4;
-
-    /* Compute combined uniform components: blocks * block_size / 4 + components */
-    {
-        const GLuint block_size = 16384;
-        const GLuint min_blocks = 14;
-        glm_ctx->state.var.max_combined_tess_control_uniform_components =
-            min_blocks * block_size / 4 + glm_ctx->state.var.max_tess_control_uniform_components;
-        glm_ctx->state.var.max_combined_tess_evaluation_uniform_components =
-            min_blocks * block_size / 4 + glm_ctx->state.var.max_tess_evaluation_uniform_components;
-    }
-
-    /* Ensure max_element_index is at least UINT32_MAX */
-    if (glm_ctx->state.var.max_element_index == 0 ||
-        glm_ctx->state.var.max_element_index < 0xFFFFFFFFu) {
-        glm_ctx->state.var.max_element_index = 0xFFFFFFFFu;
-    }
-
-    /* Ensure min_map_buffer_alignment is at least 64 */
-    if (glm_ctx->state.var.min_map_buffer_alignment < 64) {
-        glm_ctx->state.var.min_map_buffer_alignment = 64;
-    }
-
-    /* Ensure framebuffer limits meet minimums */
-    if (glm_ctx->state.var.max_framebuffer_width < 16384) {
-        glm_ctx->state.var.max_framebuffer_width = 16384;
-    }
-    if (glm_ctx->state.var.max_framebuffer_height < 16384) {
-        glm_ctx->state.var.max_framebuffer_height = 16384;
-    }
-    if (glm_ctx->state.var.max_framebuffer_layers < 2048) {
-        glm_ctx->state.var.max_framebuffer_layers = 2048;
-    }
-    if (glm_ctx->state.var.max_framebuffer_samples < 4) {
-        glm_ctx->state.var.max_framebuffer_samples = 4;
-    }
-
-    /* Ensure texture sample limits meet minimums.  Apple Silicon Metal
-     * devices only support sampleCount up to 4 (verified on M4 via
-     * supportsTextureSampleCount:); advertising 8 causes Metal validation
-     * assertion failures when the app actually allocates 8x MSAA textures. */
-    if (glm_ctx->state.var.max_color_texture_samples < 4) {
-        glm_ctx->state.var.max_color_texture_samples = 4;
-    }
-    if (glm_ctx->state.var.max_depth_texture_samples < 4) {
-        glm_ctx->state.var.max_depth_texture_samples = 4;
-    }
-    if (glm_ctx->state.var.max_integer_samples < 4) {
-        glm_ctx->state.var.max_integer_samples = 4;
-    }
-    if (glm_ctx->state.var.max_sample_mask_words < 1) {
-        glm_ctx->state.var.max_sample_mask_words = 1;
-    }
-
-    /* GL_MAX_VARYING_FLOATS and GL_MAX_VARYING_COMPONENTS are aliases
-     * (both 0x8B4B).  Keep the two fields in sync so the value reported
-     * by glGetIntegerv matches the gl_MaxVaryingComponents builtin. */
-    glm_ctx->state.var.max_varying_components = glm_ctx->state.var.max_varying_floats;
-
-    /* Ensure max_uniform_buffer_bindings meets minimum */
-    if (glm_ctx->state.var.max_uniform_buffer_bindings < 84) {
-        glm_ctx->state.var.max_uniform_buffer_bindings = 84;
-    }
+    /* Repair zero/undersized limits after host query (also used when CGL fails). */
+    mglApplyFallbackGLDefaults(glm_ctx);
 
     CGLSetCurrentContext( NULL );
     CGLDestroyContext( ctx );
