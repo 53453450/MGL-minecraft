@@ -109,6 +109,14 @@ static void *mglRendererBufferContents(id buffer)
         ? contents : NULL;
 }
 
+static void mglRecordFrameCommandBufferCompleted(
+    void *context,
+    const MGLRenderCommandBufferState *state)
+{
+    (void)state;
+    mglRecordFrameCompleted((uint64_t)(uintptr_t)context);
+}
+
 /* Env var names are string literals (stable addresses); cache by pointer.
  * Only touched on the GL calling thread. */
 #define MGL_ENV_CACHE_CAPACITY 32
