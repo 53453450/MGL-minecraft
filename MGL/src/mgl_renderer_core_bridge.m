@@ -30,6 +30,95 @@
 #import "mgl_compute_pipeline_cache.h"
 #include "mgl_env_flag.h"
 
+enum {
+    MGL_RENDERER_RESOURCE_STORAGE_SHARED = 0u,
+    MGL_RENDERER_STORAGE_PRIVATE = 2u,
+    MGL_RENDERER_PIXEL_FORMAT_INVALID = 0u,
+    MGL_RENDERER_DEPTH32_FLOAT = 252u,
+    MGL_RENDERER_CB_NOT_ENQUEUED = 0u,
+    MGL_RENDERER_CB_ERROR = 5u,
+    MGL_RENDERER_PRIMITIVE_TRIANGLE_STRIP = 4u,
+    MGL_RENDERER_LOAD_DONT_CARE = 0u,
+    MGL_RENDERER_LOAD_LOAD = 1u,
+    MGL_RENDERER_LOAD_CLEAR = 2u,
+    MGL_RENDERER_STORE_DONT_CARE = 0u,
+    MGL_RENDERER_STORE_STORE = 1u,
+    MGL_RENDERER_TEXTURE_USAGE_RENDER_TARGET = 4u,
+};
+
+typedef struct MGLRendererClearColorValue {
+    double red, green, blue, alpha;
+} MGLRendererClearColorValue;
+
+static MGLRendererClearColorValue mglRendererMakeClearColor(double red,
+                                                            double green,
+                                                            double blue,
+                                                            double alpha)
+{
+    return (MGLRendererClearColorValue){red, green, blue, alpha};
+}
+
+static MGLRenderTextureInfo mglRendererTextureInfo(id texture)
+{
+    MGLRenderTextureInfo info = {0};
+    if (texture) {
+        (void)mglRenderGetTextureInfo((__bridge void *)texture, &info);
+    }
+    return info;
+}
+
+static id mglRendererCurrentDrawableTexture(MGLRenderer *renderer)
+{
+    return renderer ? [renderer mglDrawableTexture] : nil;
+}
+
+static uint64_t mglRendererTextureFieldWidth(id texture)
+{
+    return mglRendererTextureInfo(texture).width;
+}
+static uint64_t mglRendererTextureFieldHeight(id texture)
+{
+    return mglRendererTextureInfo(texture).height;
+}
+static uint32_t mglRendererTextureFieldFormat(id texture)
+{
+    return mglRendererTextureInfo(texture).pixel_format;
+}
+static uint64_t mglRendererTextureFieldUsage(id texture)
+{
+    return mglRendererTextureInfo(texture).usage;
+}
+static uint32_t mglRendererTextureFieldType(id texture)
+{
+    return mglRendererTextureInfo(texture).texture_type;
+}
+
+static uint64_t mglRendererBufferLength(id buffer)
+{
+    MGLRenderBufferInfo info = {0};
+    return buffer && mglRenderGetBufferInfo((__bridge void *)buffer, &info) == 0
+        ? info.length : 0u;
+}
+
+static void *mglRendererBufferContents(id buffer)
+{
+    void *contents = NULL;
+    uint64_t length = 0u;
+    return buffer && mglRenderGetBufferContents((__bridge void *)buffer,
+                                                &contents, &length) == 0
+        ? contents : NULL;
+}
+
+/* Env var names are string literals (stable addresses); cache by pointer.
+ * Only touched on the GL calling thread. */
+#define MGL_ENV_CACHE_CAPACITY 32
+static struct {
+    const char *name;
+    BOOL value;
+    BOOL default_on;
+    BOOL valid;
+} s_mglEnvCache[MGL_ENV_CACHE_CAPACITY];
+
 static BOOL mglEnvFlagEnabledCached(const char *name, BOOL default_on)
 {
     if (!name) {
