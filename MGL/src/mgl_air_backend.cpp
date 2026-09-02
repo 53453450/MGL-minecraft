@@ -2527,6 +2527,21 @@ static llvm::Value *tessStageRecordIndex(Codegen &cg, llvm::Value *index,
         cg.b->CreateMul(patch, verticesPerPatch), index);
 }
 
+/* Native TES per-patch draws: Metal patch_id is always 0; the runtime
+ * stamps the global patch index in mgl_patch_info[2] (slot 28). */
+static llvm::Value *tessPatchIndexForStageIn(Codegen &cg)
+{
+    if (cg.isTessEval && !cg.isTESCompute && cg.indirectPtr) {
+        llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
+        llvm::Value *info = cg.b->CreateBitCast(
+            cg.indirectPtr, i32->getPointerTo(1));
+        return cg.b->CreateAlignedLoad(
+            i32, cg.b->CreateGEP(i32, info, cg.b->getInt32(2)),
+            llvm::Align(4));
+    }
+    return cg.patchId;
+}
+
 static llvm::Value *emitPatchVaryingLoad(Codegen &cg, const VarSym &sym)
 {
     if (!cg.isTessEval || !sym.isPatch || !cg.captureBuf || !cg.patchId ||
@@ -2860,7 +2875,8 @@ static llvm::Value *emitPerVertexLoad(Codegen &cg, const MGLExpr *e,
                 cg.controlPointGetter, {iv, cg.patchControlPtr});
             return cg.b->CreateExtractValue(record, 0);
         }
-        if (!cg.stageInPtr || !cg.indirectPtr || !cg.patchId) {
+        if (!cg.stageInPtr || !cg.indirectPtr ||
+            (cg.isTESCompute && !cg.patchId)) {
             cg.err = 1;
             cg.errmsg = "TES AIR codegen: shared control-point buffer is unavailable";
             return nullptr;
@@ -2872,8 +2888,9 @@ static llvm::Value *emitPerVertexLoad(Codegen &cg, const MGLExpr *e,
             cg.b->CreateGEP(cg.b->getInt32Ty(), patchInfo,
                             cg.b->getInt32(1)),
             llvm::Align(4));
+        llvm::Value *patchIndex = tessPatchIndexForStageIn(cg);
         llvm::Value *flat = cg.b->CreateAdd(
-            cg.b->CreateMul(cg.patchId, verticesPerPatch), iv);
+            cg.b->CreateMul(patchIndex, verticesPerPatch), iv);
         llvm::Value *recordIdx = flat;
         if (cg.isTESCompute && cg.tessGatherPtr && cg.tessGatherParamsPtr) {
             /* Indexed draws: the stage input is a sparse capture stream
@@ -8324,18 +8341,16 @@ static llvm::Value *applyCullDistance(Codegen &cg, llvm::Value *pos)
 static llvm::Value *applyCullDistanceFromPatchInputs(Codegen &cg,
                                                      llvm::Value *pos)
 {
-    if (!cg.usesPatchCullDistance || !cg.stageInPtr || !cg.patchId)
+    if (!cg.usesPatchCullDistance || !cg.stageInPtr || !cg.indirectPtr)
         return pos;
     llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
     llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
-    llvm::Value *verticesPerPatch = cg.b->getInt32(cg.tcsOutputVertices);
-    if (cg.indirectPtr) {
-        llvm::Value *patchInfo = cg.b->CreateBitCast(
-            cg.indirectPtr, i32->getPointerTo(1));
-        verticesPerPatch = cg.b->CreateAlignedLoad(
-            i32, cg.b->CreateGEP(i32, patchInfo, cg.b->getInt32(1)),
-            llvm::Align(4));
-    }
+    llvm::Value *patchInfo = cg.b->CreateBitCast(
+        cg.indirectPtr, i32->getPointerTo(1));
+    llvm::Value *verticesPerPatch = cg.b->CreateAlignedLoad(
+        i32, cg.b->CreateGEP(i32, patchInfo, cg.b->getInt32(1)),
+        llvm::Align(4));
+    llvm::Value *patchIndex = tessPatchIndexForStageIn(cg);
     llvm::Value *shouldCull = cg.b->getFalse();
     for (uint32_t distance = 0;
          distance < MGL_AIR_PER_VERTEX_CULL_DISTANCE_COUNT; ++distance) {
@@ -8344,7 +8359,7 @@ static llvm::Value *applyCullDistanceFromPatchInputs(Codegen &cg,
             llvm::Value *active = cg.b->CreateICmpULT(
                 cg.b->getInt32(vertex), verticesPerPatch);
             llvm::Value *recordIdx = cg.b->CreateAdd(
-                cg.b->CreateMul(cg.patchId, verticesPerPatch),
+                cg.b->CreateMul(patchIndex, verticesPerPatch),
                 cg.b->getInt32(vertex));
             llvm::Value *off = cg.b->CreateAdd(
                 cg.b->CreateMul(
@@ -9865,7 +9880,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     const bool usesPointSize =
         (isVS || isTES) && strstr(esrc, "gl_PointSize") != nullptr;
     const bool usesClipDistance =
-        isVS && !isCapture && !isKernel &&
+        (isVS || (isTES && !isTESCompute)) && !isCapture && !isKernel &&
         strstr(esrc, "gl_ClipDistance") != nullptr;
     const bool usesLayerViewport =
         isVS && (strstr(esrc, "gl_Layer") != nullptr ||
