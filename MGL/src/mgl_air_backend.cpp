@@ -693,6 +693,101 @@ llvm::Value *dotProduct(Codegen &cg, llvm::Value *a, llvm::Value *b) {
     return acc;
 }
 
+static bool isTextureSampleBuiltin(const char *name)
+{
+    return strcmp(name, "texture") == 0 ||
+           strcmp(name, "textureOffset") == 0 ||
+           strcmp(name, "textureLod") == 0 ||
+           strcmp(name, "textureLodOffset") == 0 ||
+           strcmp(name, "textureGrad") == 0 ||
+           strcmp(name, "textureGradOffset") == 0 ||
+           strcmp(name, "textureProj") == 0 ||
+           strcmp(name, "textureProjOffset") == 0 ||
+           strcmp(name, "textureProjLod") == 0 ||
+           strcmp(name, "textureProjLodOffset") == 0 ||
+           strcmp(name, "textureProjGrad") == 0 ||
+           strcmp(name, "textureProjGradOffset") == 0;
+}
+
+static llvm::Value *emitAirSampleOffset(Codegen &cg, llvm::Value *off)
+{
+    llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
+    llvm::Type *v2i32 = llvm::FixedVectorType::get(i32, 2);
+    if (!off) {
+        return llvm::Constant::getNullValue(v2i32);
+    }
+    if (off->getType()->isIntegerTy(32)) {
+        llvm::Value *v = llvm::UndefValue::get(v2i32);
+        v = cg.b->CreateInsertElement(v, off, cg.b->getInt32(0));
+        v = cg.b->CreateInsertElement(v, cg.b->getInt32(0), cg.b->getInt32(1));
+        return v;
+    }
+    if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(off->getType())) {
+        if (vt->getNumElements() == 2) {
+            return off;
+        }
+        if (vt->getNumElements() >= 3) {
+            return cg.b->CreateShuffleVector(
+                off, llvm::UndefValue::get(off->getType()),
+                llvm::ConstantVector::get(
+                    {llvm::ConstantInt::get(i32, 0),
+                     llvm::ConstantInt::get(i32, 1)}));
+        }
+    }
+    return llvm::Constant::getNullValue(v2i32);
+}
+
+static llvm::Value *addTexelOffset(Codegen &cg, llvm::Value *coord,
+                                   llvm::Value *off)
+{
+    if (!off) {
+        return coord;
+    }
+    if (coord->getType()->isIntegerTy() && off->getType()->isIntegerTy()) {
+        return cg.b->CreateAdd(coord, off);
+    }
+    if (auto *cvt = llvm::dyn_cast<llvm::FixedVectorType>(coord->getType())) {
+        if (off->getType()->isIntegerTy() && cvt->getNumElements() >= 2) {
+            llvm::Value *expanded = llvm::UndefValue::get(coord->getType());
+            expanded = cg.b->CreateInsertElement(expanded, off,
+                                                 cg.b->getInt32(0));
+            expanded = cg.b->CreateInsertElement(
+                expanded, llvm::ConstantInt::get(
+                              llvm::Type::getInt32Ty(*cg.ctx), 0),
+                cg.b->getInt32(1));
+            if (cvt->getNumElements() == 3) {
+                expanded = cg.b->CreateInsertElement(
+                    expanded,
+                    cg.b->CreateExtractElement(coord, cg.b->getInt32(2)),
+                    cg.b->getInt32(2));
+            }
+            return cg.b->CreateAdd(coord, expanded);
+        }
+        if (auto *ovt =
+                llvm::dyn_cast<llvm::FixedVectorType>(off->getType())) {
+            if (ovt->getNumElements() == 2 &&
+                cvt->getNumElements() == 3) {
+                llvm::Value *expanded = llvm::UndefValue::get(coord->getType());
+                expanded = cg.b->CreateInsertElement(
+                    expanded, cg.b->CreateExtractElement(off, cg.b->getInt32(0)),
+                    cg.b->getInt32(0));
+                expanded = cg.b->CreateInsertElement(
+                    expanded, cg.b->CreateExtractElement(off, cg.b->getInt32(1)),
+                    cg.b->getInt32(1));
+                expanded = cg.b->CreateInsertElement(
+                    expanded,
+                    cg.b->CreateExtractElement(coord, cg.b->getInt32(2)),
+                    cg.b->getInt32(2));
+                return cg.b->CreateAdd(coord, expanded);
+            }
+            if (ovt->getNumElements() == cvt->getNumElements()) {
+                return cg.b->CreateAdd(coord, off);
+            }
+        }
+    }
+    return coord;
+}
+
 /* Matrix builtins (declared early; defined after emitExpr). */
 llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                       const std::map<std::string, MType> &locals);
@@ -4950,10 +5045,16 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                               cg.b->getInt32(3)});
         }
         /* texelFetch(sampler, ivecP, lod): unfiltered read. */
-        if (strcmp(name, "texelFetch") == 0) {
-            if (e->u.call.arg_count != 3 && e->u.call.arg_count != 2) {
+        if (strcmp(name, "texelFetch") == 0 ||
+            strcmp(name, "texelFetchOffset") == 0) {
+            const bool hasFetchOffset = strcmp(name, "texelFetchOffset") == 0;
+            if ((!hasFetchOffset &&
+                 e->u.call.arg_count != 3 && e->u.call.arg_count != 2) ||
+                (hasFetchOffset && e->u.call.arg_count != 4)) {
                 cg.err = 1;
-                cg.errmsg = "codegen: texelFetch expects 2 or 3 arguments";
+                cg.errmsg = hasFetchOffset
+                                ? "codegen: texelFetchOffset expects 4 arguments"
+                                : "codegen: texelFetch expects 2 or 3 arguments";
                 return nullptr;
             }
             const MGLExpr *sa = e->u.call.args[0];
@@ -5046,7 +5147,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     retTy, {tex, xy, level, cg.b->getInt32(3)});
             };
             bool isRect = texKind == MGLIR_TEX_2D_RECT;
-            if (e->u.call.arg_count == 2 && !isRect) {
+            if (!hasFetchOffset && e->u.call.arg_count == 2 && !isRect) {
                 cg.err = 1;
                 cg.errmsg = "codegen: texelFetch on a sampler expects 2 or 3 "
                             "arguments";
@@ -5056,10 +5157,21 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             if (!coord) return nullptr;
             coord = coerceScalar(cg, coord, MGLIR_SCALAR_INT);
             llvm::Value *lodOrSample = cg.b->getInt32(0);
-            if (e->u.call.arg_count == 3) {
-                lodOrSample = emitExpr(cg, e->u.call.args[2], mod, locals);
+            uint32_t lodArg = 2;
+            if (hasFetchOffset) {
+                lodArg = 2;
+            }
+            if (e->u.call.arg_count >= 3 && (!hasFetchOffset || e->u.call.arg_count == 4)) {
+                lodOrSample = emitExpr(cg, e->u.call.args[lodArg], mod, locals);
                 if (!lodOrSample) return nullptr;
                 lodOrSample = coerceScalar(cg, lodOrSample, MGLIR_SCALAR_INT);
+            }
+            if (hasFetchOffset) {
+                llvm::Value *off =
+                    emitExpr(cg, e->u.call.args[3], mod, locals);
+                if (!off) return nullptr;
+                off = coerceScalar(cg, off, MGLIR_SCALAR_INT);
+                coord = addTexelOffset(cg, coord, off);
             }
             llvm::Type *smp = llvm::StructType::get(
                 *cg.ctx, "struct._sampler_t");
@@ -5178,14 +5290,21 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         }
         /* texture / textureLod / textureSize: the sampler argument maps
          * to paired AIR texture + sampler parameters. */
-        if (strcmp(name, "texture") == 0 || strcmp(name, "textureLod") == 0 ||
-            strcmp(name, "textureSize") == 0 ||
-            strcmp(name, "textureGrad") == 0 ||
-            strcmp(name, "textureProj") == 0) {
-            if (e->u.call.arg_count < 2 || e->u.call.arg_count > 4) {
+        if (isTextureSampleBuiltin(name) || strcmp(name, "textureSize") == 0) {
+            const bool isProj = strstr(name, "Proj") != nullptr;
+            const bool isLod = strstr(name, "Lod") != nullptr;
+            const bool isGrad = strstr(name, "Grad") != nullptr;
+            const bool hasOffset = strstr(name, "Offset") != nullptr;
+            if (strcmp(name, "textureSize") == 0) {
+                if (e->u.call.arg_count != 2) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: textureSize expects 2 arguments";
+                    return nullptr;
+                }
+            } else if (e->u.call.arg_count < 2 || e->u.call.arg_count > 5) {
                 cg.err = 1;
                 cg.errmsg = std::string("codegen: '") + name +
-                            "' expects 2 to 4 arguments";
+                            "' expects 2 to 5 arguments";
                 return nullptr;
             }
             const MGLExpr *sa = e->u.call.args[0];
@@ -5307,7 +5426,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             }
             llvm::Value *uv = emitExpr(cg, e->u.call.args[1], mod, locals);
             if (!uv) return nullptr;
-            if (strcmp(name, "textureProj") == 0) {
+            if (isProj) {
                 /* textureProj(sampler, vec4): sample at uv.xy / uv.w. */
                 if (auto *uvt = llvm::dyn_cast<llvm::FixedVectorType>(
                         uv->getType());
@@ -5363,17 +5482,41 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 }
                 return n;
             };
-            if (strcmp(name, "textureGrad") == 0) {
+            if (isGrad) {
                 llvm::Value *dPdx = emitExpr(cg, e->u.call.args[2], mod,
                                              locals);
                 llvm::Value *dPdy = emitExpr(cg, e->u.call.args[3], mod,
                                              locals);
                 if (!dPdx || !dPdy) return nullptr;
+                llvm::Value *gradOffset = llvm::Constant::getNullValue(
+                    llvm::FixedVectorType::get(i32, 2));
+                if (hasOffset) {
+                    llvm::Value *off =
+                        emitExpr(cg, e->u.call.args[4], mod, locals);
+                    if (!off) return nullptr;
+                    off = coerceScalar(cg, off, MGLIR_SCALAR_INT);
+                    gradOffset = emitAirSampleOffset(cg, off);
+                }
                 llvm::Type *v2i32 = llvm::FixedVectorType::get(i32, 2);
                 llvm::Type *vecTy =
                     texel == MGLIR_SCALAR_FLOAT
                         ? (llvm::Type *)llvm::FixedVectorType::get(f32, 4)
                         : (llvm::Type *)llvm::FixedVectorType::get(i32, 4);
+                const char *gradName = "air.sample_texture_2d_grad.v4f32";
+                if (sampleKind == MGLIR_TEX_3D) {
+                    gradName = "air.sample_texture_3d_grad.v4f32";
+                } else if (sampleKind == MGLIR_TEX_2D_ARRAY ||
+                           sampleKind == MGLIR_TEX_2D_MS_ARRAY ||
+                           sampleKind == MGLIR_TEX_1D_ARRAY) {
+                    gradName = "air.sample_texture_2d_array_grad.v4f32";
+                } else if (sampleKind == MGLIR_TEX_CUBE ||
+                           sampleKind == MGLIR_TEX_CUBE_ARRAY) {
+                    gradName = "air.sample_texture_cube_grad.v4f32";
+                } else if (sampleKind == MGLIR_TEX_2D_MS) {
+                    gradName = "air.sample_texture_2d_ms_grad.v4f32";
+                } else if (sampleKind == MGLIR_TEX_2D_MS_ARRAY) {
+                    gradName = "air.sample_texture_2d_ms_array_grad.v4f32";
+                }
                 auto doGradSampleVec =
                     [&](llvm::Value *t, llvm::Value *s) -> llvm::Value * {
                     llvm::Value *sp = s;
@@ -5385,14 +5528,12 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     }
                     llvm::Value *r = callAirFn(
                         cg,
-                        sampledIntrinsic(
-                            "air.sample_texture_2d_grad.v4f32")
-                            .c_str(),
+                        sampledIntrinsic(gradName).c_str(),
                         sampledRetType(vecTy),
                         {t, sp, uv, dPdx, dPdy,
                          llvm::ConstantFP::get(f32, 0.0),
                          cg.b->getInt1(false),
-                         llvm::Constant::getNullValue(v2i32),
+                         gradOffset,
                          cg.b->getInt32(0)});
                     return cg.b->CreateExtractValue(r, 0);
                 };
@@ -5408,7 +5549,28 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             }
             llvm::Value *lod = nullptr;
             bool explicitLod = false;
-            if (e->u.call.arg_count == 3) {
+            llvm::Value *sampleOffset = llvm::Constant::getNullValue(
+                llvm::FixedVectorType::get(i32, 2));
+            uint32_t argIdx = 2;
+            if (isLod) {
+                lod = emitExpr(cg, e->u.call.args[argIdx++], mod, locals);
+                if (!lod) return nullptr;
+                lod = coerceScalar(cg, lod, MGLIR_SCALAR_FLOAT);
+                explicitLod = true;
+                if (hasOffset) {
+                    llvm::Value *off =
+                        emitExpr(cg, e->u.call.args[argIdx++], mod, locals);
+                    if (!off) return nullptr;
+                    off = coerceScalar(cg, off, MGLIR_SCALAR_INT);
+                    sampleOffset = emitAirSampleOffset(cg, off);
+                }
+            } else if (hasOffset) {
+                llvm::Value *off =
+                    emitExpr(cg, e->u.call.args[argIdx++], mod, locals);
+                if (!off) return nullptr;
+                off = coerceScalar(cg, off, MGLIR_SCALAR_INT);
+                sampleOffset = emitAirSampleOffset(cg, off);
+            } else if (e->u.call.arg_count == 3) {
                 lod = emitExpr(cg, e->u.call.args[2], mod, locals);
                 if (!lod) return nullptr;
                 lod = coerceScalar(cg, lod, MGLIR_SCALAR_FLOAT);
@@ -5456,7 +5618,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 llvm::Value *r = callAirFn(
                     cg, sampledIntrinsic(baseName).c_str(), retTy,
                     {t, sp, uv, cg.b->getInt1(true),
-                     llvm::Constant::getNullValue(v2i32),
+                     sampleOffset,
                      cg.b->getInt1(explicitLod),
                      lod ? lod : llvm::ConstantFP::get(f32, 0.0),
                      llvm::ConstantFP::get(f32, 0.0),

@@ -418,17 +418,17 @@ static int parse_opaque_name(const char *name, size_t n, int is_sampler,
         p += 6;
         len -= 6;
     }
-    int is_array = 0;
-    if (len >= 5 && memcmp(p, "Array", 5) == 0) {
-        is_array = 1;
-        p += 5;
-        len -= 5;
-    }
     int is_ms = 0;
     if (len >= 2 && memcmp(p, "MS", 2) == 0) {
         is_ms = 1;
         p += 2;
         len -= 2;
+    }
+    int is_array = 0;
+    if (len >= 5 && memcmp(p, "Array", 5) == 0) {
+        is_array = 1;
+        p += 5;
+        len -= 5;
     }
     if (len >= 6 && memcmp(p, "Shadow", 6) == 0) {
         is_shadow = 1;
@@ -438,9 +438,10 @@ static int parse_opaque_name(const char *name, size_t n, int is_sampler,
     switch (dims) {
     case 1:  *kind = is_array ? MGLIR_TEX_1D_ARRAY : MGLIR_TEX_1D; break;
     case 2:  *kind = is_rect ? MGLIR_TEX_2D_RECT
-                              : (is_array ? MGLIR_TEX_2D_ARRAY
-                                          : (is_ms ? MGLIR_TEX_2D_MS
-                                                   : MGLIR_TEX_2D)); break;
+                              : (is_ms && is_array ? MGLIR_TEX_2D_MS_ARRAY
+                                  : is_ms ? MGLIR_TEX_2D_MS
+                                  : is_array ? MGLIR_TEX_2D_ARRAY
+                                  : MGLIR_TEX_2D); break;
     case 3:  *kind = MGLIR_TEX_3D; break;
     case 4:  *kind = is_array ? MGLIR_TEX_CUBE_ARRAY : MGLIR_TEX_CUBE; break;
     case 5:  *kind = MGLIR_TEX_BUFFER; break;
@@ -1098,6 +1099,56 @@ static const BiFn kBuiltins[] = {
     { "textureLod", 3, { BI_ARG_SRECT, BI_ARG_VEC2, BI_ARG_FLOAT }, BI_RET_SAMP },
     { "textureLod", 3, { BI_ARG_S2DMS, BI_ARG_VEC2, BI_ARG_FLOAT }, BI_RET_SAMP },
     { "textureLod", 3, { BI_ARG_S2DMSA, BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "textureOffset", 3, { BI_ARG_S1D, BI_ARG_FLOAT, BI_ARG_INT }, BI_RET_SAMP },
+    { "textureOffset", 3, { BI_ARG_S1DA, BI_ARG_VEC2, BI_ARG_INT }, BI_RET_SAMP },
+    { "textureOffset", 3, { BI_ARG_S2D, BI_ARG_VEC2, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "textureOffset", 3, { BI_ARG_S2DA, BI_ARG_VEC3, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "textureOffset", 3, { BI_ARG_S3D, BI_ARG_VEC3, BI_ARG_IVEC3 }, BI_RET_SAMP },
+    { "textureOffset", 3, { BI_ARG_SRECT, BI_ARG_VEC2, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "textureLodOffset", 4, { BI_ARG_S1D, BI_ARG_FLOAT, BI_ARG_FLOAT, BI_ARG_INT }, BI_RET_SAMP },
+    { "textureLodOffset", 4, { BI_ARG_S1DA, BI_ARG_VEC2, BI_ARG_FLOAT, BI_ARG_INT }, BI_RET_SAMP },
+    { "textureLodOffset", 4, { BI_ARG_S2D, BI_ARG_VEC2, BI_ARG_FLOAT, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "textureLodOffset", 4, { BI_ARG_S2DA, BI_ARG_VEC3, BI_ARG_FLOAT, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "textureLodOffset", 4, { BI_ARG_S3D, BI_ARG_VEC3, BI_ARG_FLOAT, BI_ARG_IVEC3 }, BI_RET_SAMP },
+    { "textureLodOffset", 4, { BI_ARG_SRECT, BI_ARG_VEC2, BI_ARG_FLOAT, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "textureGrad", 4, { BI_ARG_S1D, BI_ARG_FLOAT, BI_ARG_FLOAT, BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "textureGrad", 4, { BI_ARG_S1DA, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_VEC2 }, BI_RET_SAMP },
+    { "textureGrad", 4, { BI_ARG_S2DA, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_VEC3 }, BI_RET_SAMP },
+    { "textureGrad", 4, { BI_ARG_S3D, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_VEC3 }, BI_RET_SAMP },
+    { "textureGrad", 4, { BI_ARG_SRECT, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_VEC2 }, BI_RET_SAMP },
+    { "textureGrad", 4, { BI_ARG_S2DMS, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_VEC2 }, BI_RET_SAMP },
+    { "textureGrad", 4, { BI_ARG_S2DMSA, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_VEC3 }, BI_RET_SAMP },
+    { "textureGradOffset", 5, { BI_ARG_S1D, BI_ARG_FLOAT, BI_ARG_FLOAT, BI_ARG_FLOAT, BI_ARG_INT }, BI_RET_SAMP },
+    { "textureGradOffset", 5, { BI_ARG_S1DA, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_INT }, BI_RET_SAMP },
+    { "textureGradOffset", 5, { BI_ARG_S2D, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "textureGradOffset", 5, { BI_ARG_S2DA, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "textureGradOffset", 5, { BI_ARG_S3D, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_IVEC3 }, BI_RET_SAMP },
+    { "textureGradOffset", 5, { BI_ARG_SRECT, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "textureGradOffset", 5, { BI_ARG_S2DMS, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "textureGradOffset", 5, { BI_ARG_S2DMSA, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "textureProj", 2, { BI_ARG_S1D, BI_ARG_VEC4 }, BI_RET_SAMP },
+    { "textureProj", 2, { BI_ARG_S3D, BI_ARG_VEC4 }, BI_RET_SAMP },
+    { "textureProj", 2, { BI_ARG_SRECT, BI_ARG_VEC4 }, BI_RET_SAMP },
+    { "textureProjOffset", 3, { BI_ARG_S1D, BI_ARG_VEC4, BI_ARG_INT }, BI_RET_SAMP },
+    { "textureProjOffset", 3, { BI_ARG_S2D, BI_ARG_VEC4, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "textureProjOffset", 3, { BI_ARG_S3D, BI_ARG_VEC4, BI_ARG_IVEC3 }, BI_RET_SAMP },
+    { "textureProjOffset", 3, { BI_ARG_SRECT, BI_ARG_VEC4, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "textureProjLod", 3, { BI_ARG_S1D, BI_ARG_VEC4, BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "textureProjLod", 3, { BI_ARG_S2D, BI_ARG_VEC4, BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "textureProjLod", 3, { BI_ARG_S3D, BI_ARG_VEC4, BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "textureProjLod", 3, { BI_ARG_SRECT, BI_ARG_VEC4, BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "textureProjLodOffset", 4, { BI_ARG_S1D, BI_ARG_VEC4, BI_ARG_FLOAT, BI_ARG_INT }, BI_RET_SAMP },
+    { "textureProjLodOffset", 4, { BI_ARG_S2D, BI_ARG_VEC4, BI_ARG_FLOAT, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "textureProjLodOffset", 4, { BI_ARG_S3D, BI_ARG_VEC4, BI_ARG_FLOAT, BI_ARG_IVEC3 }, BI_RET_SAMP },
+    { "textureProjLodOffset", 4, { BI_ARG_SRECT, BI_ARG_VEC4, BI_ARG_FLOAT, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "textureProjGrad", 4, { BI_ARG_S1D, BI_ARG_VEC4, BI_ARG_FLOAT, BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "textureProjGrad", 4, { BI_ARG_S2D, BI_ARG_VEC4, BI_ARG_VEC2, BI_ARG_VEC2 }, BI_RET_SAMP },
+    { "textureProjGrad", 4, { BI_ARG_S3D, BI_ARG_VEC4, BI_ARG_VEC3, BI_ARG_VEC3 }, BI_RET_SAMP },
+    { "textureProjGrad", 4, { BI_ARG_SRECT, BI_ARG_VEC4, BI_ARG_VEC2, BI_ARG_VEC2 }, BI_RET_SAMP },
+    { "textureProjGradOffset", 5, { BI_ARG_S1D, BI_ARG_VEC4, BI_ARG_FLOAT, BI_ARG_FLOAT, BI_ARG_INT }, BI_RET_SAMP },
+    { "textureProjGradOffset", 5, { BI_ARG_S2D, BI_ARG_VEC4, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "textureProjGradOffset", 5, { BI_ARG_S3D, BI_ARG_VEC4, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_IVEC3 }, BI_RET_SAMP },
+    { "textureProjGradOffset", 5, { BI_ARG_SRECT, BI_ARG_VEC4, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_IVEC2 }, BI_RET_SAMP },
     { "textureSize", 2, { BI_ARG_S2D,   BI_ARG_FLOAT }, BI_RET_IVEC2 },
     { "texelFetch", 3, { BI_ARG_S2D, BI_ARG_GENI, BI_ARG_INT }, BI_RET_SAMP },
     { "texelFetch", 3, { BI_ARG_S1D, BI_ARG_GENI, BI_ARG_INT }, BI_RET_SAMP },
@@ -1108,6 +1159,12 @@ static const BiFn kBuiltins[] = {
     { "texelFetch", 3, { BI_ARG_SCUBE, BI_ARG_IVEC3, BI_ARG_INT }, BI_RET_SAMP },
     { "texelFetch", 3, { BI_ARG_S2DMS, BI_ARG_GENI, BI_ARG_INT }, BI_RET_SAMP },
     { "texelFetch", 3, { BI_ARG_S2DMSA, BI_ARG_IVEC3, BI_ARG_INT }, BI_RET_SAMP },
+    { "texelFetchOffset", 4, { BI_ARG_S2D, BI_ARG_GENI, BI_ARG_INT, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "texelFetchOffset", 4, { BI_ARG_S1D, BI_ARG_GENI, BI_ARG_INT, BI_ARG_INT }, BI_RET_SAMP },
+    { "texelFetchOffset", 4, { BI_ARG_S1DA, BI_ARG_IVEC2, BI_ARG_INT, BI_ARG_INT }, BI_RET_SAMP },
+    { "texelFetchOffset", 4, { BI_ARG_S2DA, BI_ARG_IVEC3, BI_ARG_INT, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "texelFetchOffset", 4, { BI_ARG_S3D, BI_ARG_IVEC3, BI_ARG_INT, BI_ARG_IVEC3 }, BI_RET_SAMP },
+    { "texelFetchOffset", 4, { BI_ARG_SRECT, BI_ARG_GENI, BI_ARG_INT, BI_ARG_IVEC2 }, BI_RET_SAMP },
     { "texelFetch", 3, { BI_ARG_SBUF, BI_ARG_INT, BI_ARG_INT }, BI_RET_SAMP },
     { "texelFetch", 2, { BI_ARG_SBUF, BI_ARG_INT }, BI_RET_SAMP },
     { "imageLoad", 2, { BI_ARG_I2D, BI_ARG_GENI }, BI_RET_SAMP },
