@@ -65,6 +65,8 @@ jobs:
           fi
       - name: test-mgl-state-dirty-gtest
         run: make test-mgl-state-dirty-gtest
+      - name: Regenerate aux shader assets (macOS 14 SDK)
+        run: make build/aux/aux_assets.stamp
       - name: test-metalcpp
         run: |
           export LLVM_ROOT="$(brew --prefix llvm@15)"
