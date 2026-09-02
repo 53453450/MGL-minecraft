@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 extern "C" {
+#include "mgl_renderer_sync.h"
 #include "mgl_types_state.h"
 }
 
@@ -40,4 +41,19 @@ TEST(StateDirty, ProgramDirtyClearsSampledMaskValid)
     mglMarkStateDirtyBits(&state, DIRTY_PROGRAM);
 
     EXPECT_EQ(0u, state.active_sampled_texture_unit_mask_valid);
+}
+
+TEST(SyncDomains, ClassifyFboAndPipeline)
+{
+    uint32_t domains = mglRenderClassifyDirtySyncDomains(DIRTY_FBO | DIRTY_PROGRAM);
+    EXPECT_NE(0u, domains & MGL_SYNC_DOMAIN_FBO);
+    EXPECT_NE(0u, domains & MGL_SYNC_DOMAIN_PROGRAM_VAO);
+    EXPECT_NE(0u, domains & MGL_SYNC_DOMAIN_PIPELINE);
+}
+
+TEST(SyncDomains, ClassifyTextureDomain)
+{
+    uint32_t domains = mglRenderClassifyDirtySyncDomains(DIRTY_TEX_BINDING);
+    EXPECT_NE(0u, domains & MGL_SYNC_DOMAIN_TEX);
+    EXPECT_EQ(0u, domains & MGL_SYNC_DOMAIN_FBO);
 }

@@ -89,6 +89,14 @@ void mglCmdSetDontCareFrameGeneration(MGLCommandState *state, GLuint generation)
 void mglCmdIncrementDontCareFrameGenerationWithWrap(MGLCommandState *state);
 void mglCmdShutdown(MGLCommandState *state);
 
+int mglCmdGetRenderPassIdentity(const MGLCommandState *state,
+                                MGLRenderPassIdentityState *identity_out);
+int mglCmdGetRenderPassPersistentState(const MGLCommandState *state,
+                                       MGLRenderPassState *state_out);
+/* Returns 1 on cache hit (result written to *result_out), 0 on miss. */
+int mglCmdProbeFboMatchCache(const MGLCommandState *state, GLuint fbo_name,
+                             uint64_t generation, bool *result_out);
+
 #ifdef __cplusplus
 }
 #endif

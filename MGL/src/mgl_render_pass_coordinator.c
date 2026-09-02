@@ -458,3 +458,39 @@ void mglCmdShutdown(MGLCommandState *state)
     mglRenderDestroyPendingEventOwner(&state->pendingEventOwner);
     state->currentDrawUsesRTSampledCopy = false;
 }
+
+int mglCmdGetRenderPassIdentity(const MGLCommandState *state,
+                                MGLRenderPassIdentityState *identity_out)
+{
+    if (!state || !identity_out) return -1;
+    if (state->renderPassIdentityOwner &&
+        mglRenderGetRenderPassIdentity(state->renderPassIdentityOwner,
+                                       identity_out) == 0) {
+        return 0;
+    }
+    return -1;
+}
+
+int mglCmdGetRenderPassPersistentState(const MGLCommandState *state,
+                                       MGLRenderPassState *state_out)
+{
+    if (!state || !state_out || !state->renderPassStateOwner) return -1;
+    return mglRenderGetRenderPassStateOwner(state->renderPassStateOwner,
+                                            state_out);
+}
+
+int mglCmdProbeFboMatchCache(const MGLCommandState *state, GLuint fbo_name,
+                             uint64_t generation, bool *result_out)
+{
+    if (!state || !result_out || fbo_name == 0u ||
+        !state->renderPassIdentityOwner) {
+        return 0;
+    }
+    MGLRenderFboMatchCacheState cache = {0};
+    if (mglRenderGetFboMatchCache(state->renderPassIdentityOwner, &cache) != 0 ||
+        cache.fbo_name != fbo_name || cache.generation != generation) {
+        return 0;
+    }
+    *result_out = cache.result != 0;
+    return 1;
+}

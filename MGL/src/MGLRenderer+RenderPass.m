@@ -16,6 +16,7 @@
 #include "mgl_air_loader.h"     /* AIR metallib loader. */
 #include "mgl_aux_assets.h"
 #include "mgl_renderer_backend.h"
+#include "mgl_renderer_sync.h"
 #include "mgl_env_flag.h"
 #include "mgl_shader_abi.h"
 #include "mgl_program_reflection.h"
@@ -42,11 +43,7 @@ static MGLRenderPassIdentityState mglRenderPassIdentitySnapshot(
     const MGLCommandState *commandState)
 {
     MGLRenderPassIdentityState identity = {0};
-    if (commandState && commandState->renderPassIdentityOwner &&
-        mglRenderGetRenderPassIdentity(
-            commandState->renderPassIdentityOwner, &identity) == 0) {
-        return identity;
-    }
+    (void)mglCmdGetRenderPassIdentity(commandState, &identity);
     return identity;
 }
 
@@ -167,9 +164,8 @@ static bool mglRenderPassGetPersistentState(
     const MGLCommandState *commandState,
     MGLRenderPassState *stateOut)
 {
-    return commandState && stateOut && commandState->renderPassStateOwner &&
-           mglRenderGetRenderPassStateOwner(
-               commandState->renderPassStateOwner, stateOut) == 0;
+    return commandState && stateOut &&
+           mglCmdGetRenderPassPersistentState(commandState, stateOut) == 0;
 }
 
 static bool mglRenderPassGetPersistentAttachmentState(
@@ -1178,14 +1174,11 @@ static GLenum mglPassthroughDeclType(
 
 
     if (fbo != NULL && fboName != 0u) {
-        MGLRenderFboMatchCacheState cache = {0};
-        if (_commandState.renderPassIdentityOwner &&
-            mglRenderGetFboMatchCache(
-                _commandState.renderPassIdentityOwner,
-                &cache) == 0 &&
-            cache.fbo_name == fboName &&
-            cache.generation == fbo->fbo_attachment_generation) {
-            return cache.result != 0;
+        bool cachedResult = false;
+        if (mglCmdProbeFboMatchCache(&_commandState, fboName,
+                                     fbo->fbo_attachment_generation,
+                                     &cachedResult)) {
+            return cachedResult;
         }
     }
 
@@ -5388,190 +5381,155 @@ static GLenum mglPassthroughDeclType(
     return true;
 }
 /*
- * Dirty state domain processing extracted from processGLStateLocked:.
- * Handles all dirty-bits dispatch: DIRTY_FBO, DIRTY_STATE, DIRTY_PROGRAM/
- * VAO/BUFFER_BASE_STATE, DIRTY_TEX, DIRTY_VAO/BUFFER/RENDER_STATE, and the
- * pipeline sync call. Returns false on failure (caller should skip this
- * draw), true on success.
+ * Dirty state domain processing — orchestration lives in mgl_renderer_sync.cpp;
+ * ObjC hooks implement platform-specific steps.
  */
-- (bool)processDirtyStateDomainsLocked:(bool)draw_command
-                                  work:(MGLResourceSyncWork *)work
+static bool mglSyncBridgeSyncFbo(void *renderer, GLMContext context)
 {
-    bool deferredBufferMapForPipelineBuild = false;
-    if (MGL_STATE(ctx)->dirty_bits)
-    {
-        // FBO binding/attachment changes alter the Metal render pass itself. They must
-        // be handled even when no generic DIRTY_STATE bit is present; otherwise the
-        // current render encoder can keep drawing into an old attachment while GL state
-        // already points at a different FBO. RenderPass Sync domain (RenderPass Sync domain).
-        if (MGL_STATE(ctx)->dirty_bits & DIRTY_FBO)
-        {
-            RETURN_FALSE_ON_FAILURE([self syncRenderPassStateForContext:ctx]);
-        }
+    return [(__bridge MGLRenderer *)renderer
+        syncRenderPassStateForContext:context];
+}
 
-        // dirty state covers all rendering attachments and general state
-        if (MGL_STATE(ctx)->dirty_bits & DIRTY_STATE)
-        {
-            if (MGL_STATE(ctx)->dirty_bits & DIRTY_FBO)
-            {
-                // MEMORY SAFETY: Add comprehensive validation to prevent use-after-free crashes
-                Framebuffer *framebuffer = mglRendererGetValidatedFramebuffer(ctx, "processGLState.dirtyStateFBO");
-                if (framebuffer)
-                {
-                    if (framebuffer->dirty_bits & DIRTY_FBO_BINDING)
-                    {
-                        RETURN_FALSE_ON_FAILURE([self bindFramebufferAttachmentTextures]);
-
-                        // Additional validation after binding
-                        framebuffer = mglRendererGetValidatedFramebuffer(ctx, "processGLState.dirtyStateFBO.afterBind");
-                        if (framebuffer) {
-                            framebuffer->dirty_bits &= ~DIRTY_FBO_BINDING;
-                        }
-                    }
-                }
-
-                // dirty FBO state can't be cleared just yet its needed below
-            }
-
-            MGL_STATE(ctx)->dirty_bits &= ~DIRTY_STATE;
-        }
-
-        // check for dirty program and vao
-        // leave program / vao state dirty, buffers need to be mapped before used below
-        // dirty program causes buffers to be remapped
-        // dirty vao causes attributes to be remapped to new buffers
-        // dirty buffer base causes buffers to be remapped to new indexes
-        if (MGL_STATE(ctx)->dirty_bits & (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_BUFFER_BASE_STATE))
-        {
-            // Avoid mapping draw buffers against a nil pipeline during startup/rebuild.
-            // We'll map again after a valid pipeline is bound.
-            bool deferBufferMapForNilPipeline =
-                (draw_command &&
-                 _pipelineCacheState.pipelineState == nil &&
-                 (MGL_STATE(ctx)->dirty_bits & DIRTY_PROGRAM));
-
-            if (deferBufferMapForNilPipeline) {
-                deferredBufferMapForPipelineBuild = true;
-                static uint64_t s_deferredMapCount = 0;
-                s_deferredMapCount++;
-                if (s_deferredMapCount <= 16 || (s_deferredMapCount % 1000ull) == 0ull) {
-                    mglTraceLogNSString(@"MGL DRAW SKIP: pipelineState is nil (deferring buffer mapping, occurrence=%llu)",
-                                  (unsigned long long)s_deferredMapCount);
-                }
-            } else {
-                // programs are now compiled before execution, we shouldn't get here
-                //assert(ctx->state.program->mtl_data); //
-
-                // figure out vertex shader uniforms / buffer mappings
-                RETURN_FALSE_ON_FAILURE([self mapBuffersToMTL]);
-                if (work) work->mappedBuffers = true;
-            }
-
-            MGL_STATE(ctx)->dirty_bits &= ~DIRTY_BUFFER_BASE_STATE;
-        }
-
-        // Texture object uploads can be prepared before pipeline selection, but
-        // sampled-resource binding must wait until after setRenderPipelineState()
-        // so it uses the current program's sampler reflection.
-        if (MGL_STATE(ctx)->dirty_bits & (DIRTY_TEX | DIRTY_TEX_PARAM | DIRTY_TEX_BINDING | DIRTY_SAMPLER))
-        {
-            RETURN_FALSE_ON_FAILURE([self bindActiveTexturesToMTL]);
-            if (work) work->boundActiveTextures = true;
-
-            // textures / active textures and samplers are all handled in bindActiveTexturesToMTL
-            MGL_STATE(ctx)->dirty_bits &= ~(DIRTY_TEX | DIRTY_TEX_PARAM | DIRTY_TEX_BINDING | DIRTY_SAMPLER);
-        }
-
-        // A dirty VAO changes vertex buffer bindings and may require a new
-        // pipeline descriptor, but it does not change the render-pass
-        // attachments. Keep the current encoder alive so GL draw ordering and
-        // depth/load-store continuity are preserved across HUD/hand/UI passes.
-        if (MGL_STATE(ctx)->dirty_bits & DIRTY_VAO)
-        {
-            // updateDirtyBaseBufferList binds new mtl buffers or updates old ones
-            RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList: &MGL_STATE(ctx)->vertex_buffer_map_list]);
-            RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList: &MGL_STATE(ctx)->fragment_buffer_map_list]);
-            if (work) work->updatedBaseLists = true;
-
-            if (mglRenderEncoderOwnerHasCurrent(
-                    _commandState.currentRenderEncoderOwner) != 1) {
-                RETURN_FALSE_ON_FAILURE(
-                    [self newRenderEncoderLockedWithReason:MGL_ENC_REASON_VAO]);
-            }
-
-            [self updateCurrentRenderEncoder];
-
-            // clear dirty render state
-            MGL_STATE(ctx)->dirty_bits &= ~DIRTY_RENDER_STATE;
-        }
-        else if (MGL_STATE(ctx)->dirty_bits & DIRTY_BUFFER)
-        {
-            // updateDirtyBaseBufferList binds new mtl buffers or updates old ones
-            RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList: &MGL_STATE(ctx)->vertex_buffer_map_list]);
-            RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList: &MGL_STATE(ctx)->fragment_buffer_map_list]);
-            if (work) work->updatedBaseLists = true;
-
-            MGL_STATE(ctx)->dirty_bits &= ~DIRTY_BUFFER;
-        }
-        else if (MGL_STATE(ctx)->dirty_bits & DIRTY_RENDER_STATE)
-        {
-            if (mglRenderEncoderOwnerHasCurrent(
-                    _commandState.currentRenderEncoderOwner) != 1)
-            {
-                RETURN_FALSE_ON_FAILURE(
-                    [self newRenderEncoderLockedWithReason:MGL_ENC_REASON_RS]);
-            }
-
-            // a dirty render state may just be something like alpha changes which don't require a new renderbuffer
-
-            // updateCurrentRenderEncoder will update the renderstate outside of creating a new one
-            [self updateCurrentRenderEncoder];
-
-            MGL_STATE(ctx)->dirty_bits &= ~DIRTY_RENDER_STATE;
-        }
-
-        // new pipeline / vertex / renderbuffer and pipelinestate descriptor, should probably make this a single dirty bit
-        // Pipeline Sync domain (Pipeline Sync domain): when program/VAO/FBO/alpha/render-state changes,
-        // rebuild or reuse the PSO. The logic was moved entirely to syncPipelineStateWithDeferredBufferMap:,
-        // only the dispatch remains here; deferredBufferMap is passed as a value parameter (not read after the block).
-        if (MGL_STATE(ctx)->dirty_bits & (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE))
-        {
-            RETURN_FALSE_ON_FAILURE([self syncPipelineStateWithDeferredBufferMap:deferredBufferMapForPipelineBuild]);
-        }
-
-        //if (ctx->state.dirty_bits)
-        //    logDirtyBits(ctx);
-
-        // Unconditionally clear all dirty bits after processing.
-        // All relevant state has been applied to Metal encoders above; any
-        // remaining bits (e.g. DIRTY_DRAWABLE set at init, or bits accumulated
-        // via |= in the defer path without DIRTY_ALL_BIT) are stale and would
-        // cause false-positive rebinds on the next draw.
-        MGL_STATE(ctx)->dirty_bits = 0;
+static bool mglSyncBridgeBindFramebufferInStateBlock(void *renderer,
+                                                       GLMContext context)
+{
+    MGLRenderer *self = (__bridge MGLRenderer *)renderer;
+    Framebuffer *framebuffer =
+        mglRendererGetValidatedFramebuffer(context,
+                                           "processGLState.dirtyStateFBO");
+    if (!framebuffer) {
+        return true;
     }
-    else // if (ctx->state.dirty_bits)
-    {
-        // buffer data can be changed but the bindings remain in place.. so we need to update the data if this is the case
-        // like a uniform or buffer sub data call
-        MGLEncodeContext encCtx = {
-            .render_encoder_owner = _commandState.currentRenderEncoderOwner,
-        };
+    if (!(framebuffer->dirty_bits & DIRTY_FBO_BINDING)) {
+        return true;
+    }
+    if (![self bindFramebufferAttachmentTextures]) {
+        return false;
+    }
+    framebuffer = mglRendererGetValidatedFramebuffer(
+        context, "processGLState.dirtyStateFBO.afterBind");
+    if (framebuffer) {
+        framebuffer->dirty_bits &= ~DIRTY_FBO_BINDING;
+    }
+    return true;
+}
 
-        if( [self checkForDirtyBufferData: &MGL_STATE(ctx)->vertex_buffer_map_list])
-        {
-            RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList: &MGL_STATE(ctx)->vertex_buffer_map_list]);
+static bool mglSyncBridgeShouldDeferBufferMap(void *renderer,
+                                              GLMContext context,
+                                              int draw_command)
+{
+    MGLRenderer *self = (__bridge MGLRenderer *)renderer;
+    if (!draw_command || self->_pipelineCacheState.pipelineState != nil ||
+        !(MGL_STATE(context)->dirty_bits & DIRTY_PROGRAM)) {
+        return false;
+    }
+    static uint64_t s_deferredMapCount = 0;
+    s_deferredMapCount++;
+    if (s_deferredMapCount <= 16 || (s_deferredMapCount % 1000ull) == 0ull) {
+        mglTraceLogNSString(
+            @"MGL DRAW SKIP: pipelineState is nil (deferring buffer mapping, "
+            @"occurrence=%llu)",
+            (unsigned long long)s_deferredMapCount);
+    }
+    return true;
+}
 
-            RETURN_FALSE_ON_FAILURE([self bindVertexBuffersToCurrentRenderEncoder:&encCtx]);
+static bool mglSyncBridgeMapBuffers(void *renderer, GLMContext context)
+{
+    (void)context;
+    return [(__bridge MGLRenderer *)renderer mapBuffersToMTL];
+}
+
+static bool mglSyncBridgeBindActiveTextures(void *renderer, GLMContext context)
+{
+    (void)context;
+    return [(__bridge MGLRenderer *)renderer bindActiveTexturesToMTL];
+}
+
+static bool mglSyncBridgeUpdateBaseBufferLists(void *renderer,
+                                               GLMContext context)
+{
+    MGLRenderer *self = (__bridge MGLRenderer *)renderer;
+    GLMState *state = MGL_STATE(context);
+    if (![self updateDirtyBaseBufferList:&state->vertex_buffer_map_list]) {
+        return false;
+    }
+    return [self updateDirtyBaseBufferList:&state->fragment_buffer_map_list];
+}
+
+static bool mglSyncBridgeEnsureRenderEncoder(void *renderer,
+                                             GLMContext context,
+                                             MGLEncoderCreateReason reason)
+{
+    (void)context;
+    return [(__bridge MGLRenderer *)renderer
+        newRenderEncoderLockedWithReason:reason];
+}
+
+static bool mglSyncBridgeUpdateRenderEncoder(void *renderer, GLMContext context)
+{
+    (void)context;
+    [(__bridge MGLRenderer *)renderer updateCurrentRenderEncoder];
+    return true;
+}
+
+static bool mglSyncBridgeSyncPipeline(void *renderer, GLMContext context,
+                                    int deferred_buffer_map)
+{
+    (void)context;
+    return [(__bridge MGLRenderer *)renderer
+        syncPipelineStateWithDeferredBufferMap:deferred_buffer_map != 0];
+}
+
+static bool mglSyncBridgeIncidentalBufferData(void *renderer, GLMContext context)
+{
+    MGLRenderer *self = (__bridge MGLRenderer *)renderer;
+    GLMState *state = MGL_STATE(context);
+    MGLEncodeContext encCtx = {
+        .render_encoder_owner = self->_commandState.currentRenderEncoderOwner,
+    };
+
+    if ([self checkForDirtyBufferData:&state->vertex_buffer_map_list]) {
+        if (![self updateDirtyBaseBufferList:&state->vertex_buffer_map_list]) {
+            return false;
         }
+        if (![self bindVertexBuffersToCurrentRenderEncoder:&encCtx]) {
+            return false;
+        }
+    }
 
-        if( [self checkForDirtyBufferData: &MGL_STATE(ctx)->fragment_buffer_map_list])
-        {
-            RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList: &MGL_STATE(ctx)->fragment_buffer_map_list]);
-
-            RETURN_FALSE_ON_FAILURE([self bindFragmentBuffersToCurrentRenderEncoder:&encCtx]);
+    if ([self checkForDirtyBufferData:&state->fragment_buffer_map_list]) {
+        if (![self updateDirtyBaseBufferList:&state->fragment_buffer_map_list]) {
+            return false;
+        }
+        if (![self bindFragmentBuffersToCurrentRenderEncoder:&encCtx]) {
+            return false;
         }
     }
     return true;
+}
+
+- (bool)processDirtyStateDomainsLocked:(bool)draw_command
+                                  work:(MGLResourceSyncWork *)work
+{
+    static const MGLRendererSyncOps kSyncOpsTemplate = {
+        .sync_render_pass_for_fbo = mglSyncBridgeSyncFbo,
+        .bind_framebuffer_attachments_in_state_block =
+            mglSyncBridgeBindFramebufferInStateBlock,
+        .should_defer_buffer_map = mglSyncBridgeShouldDeferBufferMap,
+        .map_buffers = mglSyncBridgeMapBuffers,
+        .bind_active_textures = mglSyncBridgeBindActiveTextures,
+        .update_base_buffer_lists = mglSyncBridgeUpdateBaseBufferLists,
+        .ensure_render_encoder = mglSyncBridgeEnsureRenderEncoder,
+        .update_render_encoder = mglSyncBridgeUpdateRenderEncoder,
+        .sync_pipeline = mglSyncBridgeSyncPipeline,
+        .sync_incidental_buffer_data = mglSyncBridgeIncidentalBufferData,
+    };
+    MGLRendererSyncOps ops = kSyncOpsTemplate;
+    ops.renderer = (__bridge void *)self;
+    return mglRenderProcessDirtyStateDomains(
+               ctx, MGL_SYNC_DOMAIN_ALL, draw_command ? 1 : 0, &_commandState,
+               work, &ops) != 0;
 }
 
 /*

@@ -671,9 +671,11 @@ test-mglair-gtest: $(build_dir)/test_mglair_gtest
 	$(build_dir)/test_mglair_gtest
 
 $(build_dir)/test_mgl_state_dirty_gtest: test_legacy_compat/test_mgl_state_dirty_gtest.cpp \
-	MGL/include/mgl_types_state.h
+	MGL/include/mgl_types_state.h MGL/include/mgl_renderer_sync.h \
+	MGL/src/mgl_sync_domains.c
 	$(LLVM_CXX) -x c++ $(LLVM_CXXFLAGS) $(GTEST_CXXFLAGS) $(LLVM_LDFLAGS) \
 		test_legacy_compat/test_mgl_state_dirty_gtest.cpp \
+		MGL/src/mgl_sync_domains.c \
 		-x none $(GTEST_LIBS) -o $@
 
 test-mgl-state-dirty-gtest: $(build_dir)/test_mgl_state_dirty_gtest
