@@ -20,6 +20,7 @@
 #include "mgl_renderer_sync.h"
 #include "mgl_pipeline_cache_key.h"
 #include "mgl_pipeline_recovery.h"
+#include "mgl_renderer_gpu_recovery_bridge.h"
 #include "mgl_env_flag.h"
 #include "mgl_shader_abi.h"
 #include "mgl_program_reflection.h"
@@ -5822,50 +5823,6 @@ depth_format_ok:;
 	    }
 stencil_format_ok:;
     return true;
-}
-
-static MGLPipelineRecoveryState mglPipelineRecoveryViewFromGPU(
-    const MGLGPURecoveryState *gpu)
-{
-    MGLPipelineRecoveryState view = {0};
-    if (!gpu) {
-        return view;
-    }
-    view.pipeline_retry_after = gpu->pipelineRetryAfter;
-    view.interface_mismatch_retry_after = gpu->interfaceMismatchRetryAfter;
-    view.program_mismatch_retry_after = gpu->programMismatchRetryAfter;
-    view.interface_mismatch_program_name = gpu->interfaceMismatchProgramName;
-    view.interface_mismatch_color0_format = gpu->interfaceMismatchColor0Format;
-    view.interface_mismatch_depth_format = gpu->interfaceMismatchDepthFormat;
-    view.interface_mismatch_stencil_format = gpu->interfaceMismatchStencilFormat;
-    view.interface_mismatch_streak = gpu->interfaceMismatchStreak;
-    view.program_mismatch_program_name = gpu->programMismatchProgramName;
-    view.program_mismatch_streak = gpu->programMismatchStreak;
-    view.interface_mismatch_blocked_program = gpu->interfaceMismatchBlockedProgram;
-    view.interface_mismatch_blocked_until = gpu->interfaceMismatchBlockedUntil;
-    view.interface_mismatch_blocked_streak = gpu->interfaceMismatchBlockedStreak;
-    return view;
-}
-
-static void mglPipelineRecoveryApplyToGPU(MGLGPURecoveryState *gpu,
-                                          const MGLPipelineRecoveryState *view)
-{
-    if (!gpu || !view) {
-        return;
-    }
-    gpu->pipelineRetryAfter = view->pipeline_retry_after;
-    gpu->interfaceMismatchRetryAfter = view->interface_mismatch_retry_after;
-    gpu->programMismatchRetryAfter = view->program_mismatch_retry_after;
-    gpu->interfaceMismatchProgramName = view->interface_mismatch_program_name;
-    gpu->interfaceMismatchColor0Format = view->interface_mismatch_color0_format;
-    gpu->interfaceMismatchDepthFormat = view->interface_mismatch_depth_format;
-    gpu->interfaceMismatchStencilFormat = view->interface_mismatch_stencil_format;
-    gpu->interfaceMismatchStreak = view->interface_mismatch_streak;
-    gpu->programMismatchProgramName = view->program_mismatch_program_name;
-    gpu->programMismatchStreak = view->program_mismatch_streak;
-    gpu->interfaceMismatchBlockedProgram = view->interface_mismatch_blocked_program;
-    gpu->interfaceMismatchBlockedUntil = view->interface_mismatch_blocked_until;
-    gpu->interfaceMismatchBlockedStreak = view->interface_mismatch_blocked_streak;
 }
 
 /*
