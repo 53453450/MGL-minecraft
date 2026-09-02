@@ -76,12 +76,16 @@ bool mglRendererTextureBindLocked(MGLRenderer *self, Texture *tex)
             ((existingInfo.usage & requiredRenderTargetUsage) != requiredRenderTargetUsage);
         BOOL mipCountMismatch = hasExistingInfo &&
             requiredMipLevels > existingInfo.mipmap_level_count;
-        if (existingTexture && (usageMismatch || mipCountMismatch)) {
-            NSLog(@"MGL WARNING: Recreating texture %u for render-target use (old usage=0x%lx oldMips=%lu requiredMips=%lu)",
+        /* Shared depth/stencil RTs do not depth-test on Paravirtual Metal. */
+        BOOL storageMismatch = hasExistingInfo && depthOrStencilRT &&
+            existingInfo.storage_mode != MGL_TEXTURE_STORAGE_PRIVATE;
+        if (existingTexture && (usageMismatch || mipCountMismatch || storageMismatch)) {
+            NSLog(@"MGL WARNING: Recreating texture %u for render-target use (old usage=0x%lx oldMips=%lu requiredMips=%lu oldStorage=%lu)",
                   tex->name,
                   (unsigned long)existingInfo.usage,
                   (unsigned long)existingInfo.mipmap_level_count,
-                  (unsigned long)requiredMipLevels);
+                  (unsigned long)requiredMipLevels,
+                  (unsigned long)existingInfo.storage_mode);
 
             // Keep a strong reference to the old texture so we can blit its GPU
             // data to the new one after releasing tex->mtl_data.
