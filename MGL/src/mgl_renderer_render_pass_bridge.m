@@ -66,33 +66,6 @@ static id mglRenderPassCreateTextureView(id texture, uint32_t pixelFormat)
     return nil;
 }
 
-static BOOL mglRenderPassDepthOnlyAttachmentNeedsMirroredStencil(id depthTexture)
-{
-    if (!depthTexture) {
-        return NO;
-    }
-    return mglMetalPixelFormatIsPackedDepthStencil(
-        mglRenderPassTextureInfo(depthTexture).pixel_format);
-}
-
-static void mglRenderPassMirrorPackedDepthToStencilAttachment(
-    const MGLCommandState *commandState,
-    id depthTexture,
-    const MGLMetalAttachmentSubresource *subresource,
-    BOOL layered)
-{
-    if (!depthTexture || !subresource ||
-        !mglRenderPassDepthOnlyAttachmentNeedsMirroredStencil(depthTexture)) {
-        return;
-    }
-    mglRenderPassSetPersistentAttachment(
-        commandState,
-        MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0,
-        depthTexture,
-        subresource->level, subresource->slice,
-        subresource->depthPlane, layered);
-}
-
 id mglApplySRGBStateToRenderTarget(id texture, GLMContext ctx)
 {
     if (!texture || !ctx) return texture;
@@ -524,6 +497,33 @@ static void mglRenderPassSetPersistentAttachment(
             (uint32_t)colorIndex, (__bridge void *)texture,
             level, slice, depthPlane, layered ? 1u : 0u);
     }
+}
+
+static BOOL mglRenderPassDepthOnlyAttachmentNeedsMirroredStencil(id depthTexture)
+{
+    if (!depthTexture) {
+        return NO;
+    }
+    return mglMetalPixelFormatIsPackedDepthStencil(
+        mglRenderPassTextureInfo(depthTexture).pixel_format);
+}
+
+static void mglRenderPassMirrorPackedDepthToStencilAttachment(
+    const MGLCommandState *commandState,
+    id depthTexture,
+    const MGLMetalAttachmentSubresource *subresource,
+    BOOL layered)
+{
+    if (!depthTexture || !subresource ||
+        !mglRenderPassDepthOnlyAttachmentNeedsMirroredStencil(depthTexture)) {
+        return;
+    }
+    mglRenderPassSetPersistentAttachment(
+        commandState,
+        MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0,
+        depthTexture,
+        subresource->level, subresource->slice,
+        subresource->depthPlane, layered);
 }
 
 static void mglRenderPassSetPersistentDimensions(
