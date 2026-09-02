@@ -5173,10 +5173,6 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 off = coerceScalar(cg, off, MGLIR_SCALAR_INT);
                 coord = addTexelOffset(cg, coord, off);
             }
-            llvm::Type *smp = llvm::StructType::get(
-                *cg.ctx, "struct._sampler_t");
-            llvm::Value *rs = callAirFn(cg, "air.get_read_sampler",
-                                        smp->getPointerTo(2), {});
             llvm::Value *r = nullptr;
             if (texKind == MGLIR_TEX_2D_ARRAY) {
                 if (coord->getType() != v3i32) {
@@ -5280,11 +5276,15 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     retTy,
                     {tex, coord, lodOrSample, cg.b->getInt32(3)});
             } else {
-                r = callAirFn(
-                    cg, readIntrinsic("air.read_texture_2d.v4f32").c_str(),
-                    retTy,
-                    {tex, rs, coord, llvm::Constant::getNullValue(v2i32),
-                     lodOrSample, cg.b->getInt32(0)});
+                if (coord->getType()->isIntegerTy()) {
+                    coord = toIvec2XY0(coord);
+                } else if (coord->getType() != v2i32) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: texelFetch on a sampler2D expects "
+                                "ivec2 coordinates";
+                    return nullptr;
+                }
+                r = unsampledRead2d(coord, lodOrSample);
             }
             return cg.b->CreateExtractValue(r, 0);
         }
