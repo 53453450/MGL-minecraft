@@ -1195,11 +1195,13 @@ MTL::RenderPassDescriptor* newRenderPassDescriptor(
         static_cast<NS::UInteger>(state->threadgroup_memory_length));
     descriptor->setTileWidth(static_cast<NS::UInteger>(state->tile_width));
     descriptor->setTileHeight(static_cast<NS::UInteger>(state->tile_height));
-    descriptor->setVisibilityResultType(
-        static_cast<MTL::VisibilityResultType>(
-            state->visibility_result_type));
-    descriptor->setSupportColorAttachmentMapping(
-        state->support_color_attachment_mapping != 0);
+    if (__builtin_available(macOS 15.0, *)) {
+        descriptor->setVisibilityResultType(
+            static_cast<MTL::VisibilityResultType>(
+                state->visibility_result_type));
+        descriptor->setSupportColorAttachmentMapping(
+            state->support_color_attachment_mapping != 0);
+    }
 
     const uint32_t sampleCount = std::min(
         state->sample_position_count,
