@@ -85,4 +85,4 @@ draw_command.c / backend
 | compute | `mgl_renderer_compute.h` | `mglRendererObjCDispatchCompute*` | compute dispatch |
 
 All backend `mglRenderer*` public APIs route through `mglRender*` facades;
-`mglRendererCompat*` dispatch has been removed (Phase 6).
+Legacy dual-proxy ObjC dispatch has been removed (Phase 6).

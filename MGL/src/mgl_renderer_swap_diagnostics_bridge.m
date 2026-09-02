@@ -1,27 +1,15 @@
 /*
- * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
+ * SPDX-License-Identifier: LGPL-3.0-only
  *
- * This file contains material from the Apache-2.0-licensed MGL baseline.
- * Copyrightable modifications made after baseline commit
- * 79d38f666336141d962109a864a6744bf66e438c are licensed under
- * LGPL-3.0-only by their respective copyright holders.
- * See LICENSE-APACHE-2.0, LICENSE, and LICENSING.md.
+ * Extracted from MGLRenderer+SwapDiagnostics.m.
  */
-
-// MGLRenderer+SwapDiagnostics.m
-// Swap-time diagnostic helpers extracted from MGLRenderer.m:
-//   - copyRenderPassColorToDrawableIfNeeded:drawableTexture:swapCall:traceSwap:
-//   - scheduleSwapTextureSampleDiagnostics:drawableTexture:swapCall:
-// These methods run at mtlSwapBuffers time to (1) copy offscreen render-pass
-// color into the drawable when the default framebuffer's blit path was
-// bypassed, and (2) sample both source and destination textures for
-// low-frequency black-screen diagnostics.
 
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+SwapDiagnostics_Private.h"
 #import "MGLRenderer+Blit_Private.h"
 #include "mgl_env_flag.h"
 #include "mgl_render.h"
+
 
 typedef void (^MGLSwapCommandCompletionBlock)(
     const MGLRenderCommandBufferState *state);
@@ -182,7 +170,7 @@ static void mglSwapDiagnosticsEndBlitEncoder(id encoder)
     (void)mglRenderEndBlitEncoder((__bridge void *)encoder);
 }
 
-@implementation MGLRenderer (SwapDiagnostics)
+@implementation MGLRenderer (SwapDiagnosticsBridge)
 
 - (void)copyRenderPassColorToDrawableIfNeeded:(id)rpColor0
                               drawableTexture:(id)drawableTexture
@@ -551,5 +539,6 @@ static void mglSwapDiagnosticsEndBlitEncoder(id encoder)
     }
 
 }
+
 
 @end

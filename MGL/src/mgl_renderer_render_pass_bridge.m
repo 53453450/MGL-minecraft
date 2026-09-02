@@ -1,15 +1,8 @@
 /*
- * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
+ * SPDX-License-Identifier: LGPL-3.0-only
  *
- * This file contains material from the Apache-2.0-licensed MGL baseline.
- * Copyrightable modifications made after baseline commit
- * 79d38f666336141d962109a864a6744bf66e438c are licensed under
- * LGPL-3.0-only by their respective copyright holders.
- * See LICENSE-APACHE-2.0, LICENSE, and LICENSING.md.
+ * Extracted from MGLRenderer+RenderPass.m.
  */
-
-// MGLRenderer+RenderPass.m
-// Render pass lifecycle methods extracted from MGLRenderer.m
 
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+RenderPass_Private.h"
@@ -24,8 +17,8 @@
 #include "mgl_env_flag.h"
 #include "mgl_shader_abi.h"
 #include "mgl_program_reflection.h"
-
 #import <objc/message.h>
+
 
 typedef struct MGLRenderPassClearColorValue {
     double red;
@@ -602,7 +595,7 @@ static bool mglLoadAIRMainFunction(const unsigned char *bytes,
     return true;
 }
 
-@implementation MGLRenderer (RenderPass)
+@implementation MGLRenderer (RenderPassBridge)
 
 static const char *mglGeometryPassthroughType(GLenum type)
 {
@@ -6087,5 +6080,6 @@ stencil_format_ok:;
     }
     return YES;
 }
+
 
 @end

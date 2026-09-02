@@ -1,16 +1,8 @@
 /*
- * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
+ * SPDX-License-Identifier: LGPL-3.0-only
  *
- * This file contains material from the Apache-2.0-licensed MGL baseline.
- * Copyrightable modifications made after baseline commit
- * 79d38f666336141d962109a864a6744bf66e438c are licensed under
- * LGPL-3.0-only by their respective copyright holders.
- * See LICENSE-APACHE-2.0, LICENSE, and LICENSING.md.
+ * Extracted from MGLRenderer+Batch.m.
  */
-
-// MGLRenderer+Batch.m
-// Batch scheduling and execution methods extracted from MGLRenderer+Draw.m.
-// These methods do not depend on any file-scope static functions in Draw.m.
 
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+Draw_Private.h"
@@ -18,6 +10,7 @@
 #import "mgl_sampler_compat.h"
 #include "mgl_env_flag.h"
 #include "mgl_render.h"
+
 
 static BOOL mglBatchHasActiveEncoder(void *owner)
 {
@@ -174,7 +167,7 @@ static void mglBatchExecuteIndirectCommands(
         range.location, range.length);
 }
 
-@implementation MGLRenderer (Batch)
+@implementation MGLRenderer (BatchImplBridge)
 
 - (void)markCurrentFramebufferColorAttachmentWrittenAtIndex:(GLuint)attachmentIndex
 {
@@ -1979,5 +1972,6 @@ static void mglBatchExecuteIndirectCommands(
     return (__bridge id)mglCmdMdiArgumentScratchBufferWithDevice(
         &_commandState, (__bridge void *)_device, length, offsetOut);
 }
+
 
 @end

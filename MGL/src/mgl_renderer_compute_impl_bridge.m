@@ -1,21 +1,14 @@
 /*
- * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
+ * SPDX-License-Identifier: LGPL-3.0-only
  *
- * This file contains material from the Apache-2.0-licensed MGL baseline.
- * Copyrightable modifications made after baseline commit
- * 79d38f666336141d962109a864a6744bf66e438c are licensed under
- * LGPL-3.0-only by their respective copyright holders.
- * See LICENSE-APACHE-2.0, LICENSE, and LICENSING.md.
+ * Extracted from MGLRenderer+Compute.m.
  */
-
-// MGLRenderer+Compute.m
-// Compute dispatch methods extracted from MGLRenderer.m.
-// These methods do not depend on any file-scope static functions in MGLRenderer.m.
 
 #import "MGLRenderer_Private.h"
 #import "mgl_compute_pipeline_cache.h"
 #include "mgl_env_flag.h"
 #include "mgl_render.h"
+
 
 enum {
     MGL_COMPUTE_TEXTURE_TYPE_CUBE = 5u,
@@ -138,7 +131,7 @@ static void mglComputeEndEncoder(id encoder)
                                 indirect:(GLintptr)indirect;
 @end
 
-@implementation MGLRenderer (Compute)
+@implementation MGLRenderer (ComputeImplBridge)
 
 #pragma mark ----- compute utility ---------------------------------------------------------------------
 
@@ -1267,5 +1260,6 @@ static void mglComputeEndEncoder(id encoder)
         return;
     }
 }
+
 
 @end

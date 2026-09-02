@@ -1,21 +1,15 @@
 /*
- * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
+ * SPDX-License-Identifier: LGPL-3.0-only
  *
- * This file contains material from the Apache-2.0-licensed MGL baseline.
- * Copyrightable modifications made after baseline commit
- * 79d38f666336141d962109a864a6744bf66e438c are licensed under
- * LGPL-3.0-only by their respective copyright holders.
- * See LICENSE-APACHE-2.0, LICENSE, and LICENSING.md.
+ * Draw encode implementations — extracted from MGLRenderer+Draw.m.
  */
-
-// MGLRenderer+Draw.m
-// Draw command encoding methods extracted from MGLRenderer.m
 
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+Draw_Private.h"
 #import "mgl_frame_activity.h"
 #include "mgl_env_flag.h"
 #include "mgl_render.h"
+
 
 static BOOL mglDrawHasActiveEncoder(void *owner)
 {
@@ -135,7 +129,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     return false;
 }
 
-@implementation MGLRenderer (Draw)
+@implementation MGLRenderer (DrawImplBridge)
 
 -(void) mtlDrawArrays: (GLMContext) ctx mode:(GLenum) mode first: (GLint) first count: (GLsizei) count
 {
@@ -5319,5 +5313,6 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                 (unsigned)mode, (unsigned)type, indirect, (int)drawcount, (int)stride,
                 (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
 }
+
 
 @end

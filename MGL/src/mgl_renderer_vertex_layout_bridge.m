@@ -1,19 +1,13 @@
 /*
- * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
+ * SPDX-License-Identifier: LGPL-3.0-only
  *
- * This file contains material from the Apache-2.0-licensed MGL baseline.
- * Copyrightable modifications made after baseline commit
- * 79d38f666336141d962109a864a6744bf66e438c are licensed under
- * LGPL-3.0-only by their respective copyright holders.
- * See LICENSE-APACHE-2.0, LICENSE, and LICENSING.md.
+ * Extracted from MGLRenderer+VertexLayout.m.
  */
-
-// MGLRenderer+VertexLayout.m
-// Vertex descriptor and blend-state construction extracted from MGLRenderer+RenderPass.m
 
 #import "MGLRenderer_Private.h"
 #include "mgl_shader_abi.h"
 #include "mgl_air_loader.h"   /* MGLRenderPipelineDescriptorState */
+
 
 /* GL type -> Metal vertex-format value for TES control-point inputs. */
 static uint32_t mglTessControlPointFormat(GLenum type)
@@ -21,7 +15,7 @@ static uint32_t mglTessControlPointFormat(GLenum type)
     return mglRenderTessControlPointFormat((uint64_t)type);
 }
 
-@implementation MGLRenderer (VertexLayout)
+@implementation MGLRenderer (VertexLayoutBridge)
 
 
 
@@ -438,5 +432,6 @@ static uint32_t mglTessControlPointFormat(GLenum type)
 
     return true;
 }
+
 
 @end

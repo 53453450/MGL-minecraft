@@ -1,20 +1,14 @@
 /*
- * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
+ * SPDX-License-Identifier: LGPL-3.0-only
  *
- * This file contains material from the Apache-2.0-licensed MGL baseline.
- * Copyrightable modifications made after baseline commit
- * 79d38f666336141d962109a864a6744bf66e438c are licensed under
- * LGPL-3.0-only by their respective copyright holders.
- * See LICENSE-APACHE-2.0, LICENSE, and LICENSING.md.
+ * Extracted from MGLRenderer+GPURecovery.m.
  */
-
-// MGLRenderer+GPURecovery.m
-// Metal GPU error recovery methods extracted from MGLRenderer+RenderPass.m
 
 #import "MGLRenderer_Private.h"
 #include "mgl_env_flag.h"
 
-@implementation MGLRenderer (GPURecovery)
+
+@implementation MGLRenderer (GPURecoveryImplBridge)
 
 #pragma mark - Metal State Validation and Recovery
 
@@ -343,6 +337,7 @@
     // Using a conservative 64-byte value avoids EINVAL on macOS/arm64 and is safe for texture rows.
     return 64;
 }
+
 
 
 @end

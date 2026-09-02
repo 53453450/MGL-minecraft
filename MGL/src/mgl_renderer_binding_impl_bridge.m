@@ -1,15 +1,8 @@
 /*
- * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
+ * SPDX-License-Identifier: LGPL-3.0-only
  *
- * This file contains material from the Apache-2.0-licensed MGL baseline.
- * Copyrightable modifications made after baseline commit
- * 79d38f666336141d962109a864a6744bf66e438c are licensed under
- * LGPL-3.0-only by their respective copyright holders.
- * See LICENSE-APACHE-2.0, LICENSE, and LICENSING.md.
+ * Thin buffer/texture bind wrappers extracted from MGLRenderer+Binding.m.
  */
-
-// MGLRenderer+Binding.m
-// Buffer/texture Metal object binding — implementation in bridge modules.
 
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+Binding_Private.h"
@@ -17,7 +10,7 @@
 
 bool mglRendererTextureBindLocked(MGLRenderer *self, Texture *tex);
 
-@implementation MGLRenderer (Binding)
+@implementation MGLRenderer (BindingImplBridge)
 
 - (void) bindMTLBuffer:(Buffer *) ptr
 {

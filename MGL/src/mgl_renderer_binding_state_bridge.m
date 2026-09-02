@@ -1,22 +1,15 @@
 /*
- * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
+ * SPDX-License-Identifier: LGPL-3.0-only
  *
- * This file contains material from the Apache-2.0-licensed MGL baseline.
- * Copyrightable modifications made after baseline commit
- * 79d38f666336141d962109a864a6744bf66e438c are licensed under
- * LGPL-3.0-only by their respective copyright holders.
- * See LICENSE-APACHE-2.0, LICENSE, and LICENSING.md.
+ * Extracted from MGLRenderer+BindingState.m.
  */
-
-// MGLRenderer+BindingState.m
-// Vertex/fragment buffer, attribute and texture binding methods
-// extracted from MGLRenderer+Draw.m
 
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+Draw_Private.h"
 #import "mgl_frame_activity.h"
 #include "mgl_env_flag.h"
 #include "mgl_render.h"
+
 
 enum {
     MGL_BINDING_RESOURCE_STORAGE_SHARED = 0u,
@@ -4600,6 +4593,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     }
     return true;
 }
+
 
 
 

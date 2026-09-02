@@ -1,22 +1,15 @@
 /*
- * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
+ * SPDX-License-Identifier: LGPL-3.0-only
  *
- * This file contains material from the Apache-2.0-licensed MGL baseline.
- * Copyrightable modifications made after baseline commit
- * 79d38f666336141d962109a864a6744bf66e438c are licensed under
- * LGPL-3.0-only by their respective copyright holders.
- * See LICENSE-APACHE-2.0, LICENSE, and LICENSING.md.
+ * Extracted from MGLRenderer+Buffer.m.
  */
-
-// MGLRenderer+Buffer.m
-// Buffer/vertex data operations (GL buffer -> Metal mapping, dirty-buffer
-// updates, vertex attribute conversion) extracted from MGLRenderer.m
 
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+Buffer_Private.h"
 #import "mgl_buffer_plan.h"
 #include "mgl_env_flag.h"
 #include "mgl_render.h"
+
 
 static id mglBufferCreateConvertedVertexBuffer(
     Buffer *sourceBuffer,
@@ -56,7 +49,7 @@ static id mglBufferCreateConvertedVertexBuffer(
     return (__bridge_transfer id)convertedBuffer;
 }
 
-@implementation MGLRenderer (Buffer)
+@implementation MGLRenderer (BufferBridge)
 
 - (id)floatVertexBufferForDoubleAttrib:(Buffer *)sourceBuffer
                                          resolved:(const MGLResolvedVertexAttribBinding *)resolved
@@ -1620,5 +1613,6 @@ BOOL mglSnapshotSharedBufferRange(Buffer *ptr,
     NSLog(@"MGL ERROR: No vertex buffer mapping found for attribute %d", attribute);
     return -1;
 }
+
 
 @end

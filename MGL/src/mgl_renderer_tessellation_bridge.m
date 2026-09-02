@@ -1,17 +1,8 @@
 /*
- * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
+ * SPDX-License-Identifier: LGPL-3.0-only
  *
- * This file contains material from the Apache-2.0-licensed MGL baseline.
- * Copyrightable modifications made after baseline commit
- * 79d38f666336141d962109a864a6744bf66e438c are licensed under
- * LGPL-3.0-only by their respective copyright holders.
- * See LICENSE-APACHE-2.0, LICENSE, and LICENSING.md.
+ * Extracted from MGLRenderer+Tessellation.m.
  */
-
-// MGLRenderer+Tessellation.m
-// Tessellation compute path (TCS/TES dispatch) extracted from MGLRenderer.m.
-// GL_PATCHES draws run as consecutive Metal compute encoders: the TCS kernel
-// writes per-patch output plus tess factors, then the TES kernel consumes them.
 
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+Tessellation_Private.h"
@@ -22,6 +13,7 @@
 #include "mgl_shader_abi.h"
 #include "mgl_air_gs_abi.h"
 #include "mgl_air_tess_abi.h"
+
 
 extern void mglRecordActivePrimitiveQueryDraw(GLMContext ctx, GLuint64 generated, GLuint64 written);
 
@@ -339,7 +331,7 @@ static const uint8_t *mglRendererReadableBufferBytes(Buffer *buffer)
     return NULL;
 }
 
-@implementation MGLRenderer (Tessellation)
+@implementation MGLRenderer (TessellationBridge)
 
 typedef struct {
     id __strong buffer;
@@ -2690,5 +2682,6 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
 
     return true;
 }
+
 
 @end

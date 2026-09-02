@@ -1,16 +1,8 @@
 /*
- * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
+ * SPDX-License-Identifier: LGPL-3.0-only
  *
- * This file contains material from the Apache-2.0-licensed MGL baseline.
- * Copyrightable modifications made after baseline commit
- * 79d38f666336141d962109a864a6744bf66e438c are licensed under
- * LGPL-3.0-only by their respective copyright holders.
- * See LICENSE-APACHE-2.0, LICENSE, and LICENSING.md.
+ * Extracted from MGLRenderer+DrawSupport.m.
  */
-
-// MGLRenderer+DrawSupport.m
-// Draw validation, element-buffer resolution and rasterization helper
-// methods extracted from MGLRenderer+Draw.m
 
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+Draw_Private.h"
@@ -22,6 +14,7 @@
 #include "mgl_air_tess_abi.h"
 #include "mgl_aux_assets.h"
 #include "mgl_program_reflection.h"
+
 
 static void *mglDrawSupportBufferContents(id buffer)
 {
@@ -4018,6 +4011,7 @@ after_gs_draws:
     (void)label;
     return YES;
 }
+
 
 
 @end
