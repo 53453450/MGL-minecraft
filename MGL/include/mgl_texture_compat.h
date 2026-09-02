@@ -146,6 +146,8 @@ uint32_t mglMTLSwizzleForGLSwizzle(Texture *tex, GLenum swizzle);
 bool mglTextureUploadNeedsSingleChannelSwizzle(Texture *tex);
 bool mglTextureUploadNeedsSingleChannelSwizzleBake(Texture *tex);
 bool mglTextureUploadNeedsIntegerMultiChannelSwizzleBake(Texture *tex);
+bool mglTextureUploadNeedsStencilSwizzleBake(Texture *tex);
+bool mglTextureUploadNeedsDepthStencilDepthSwizzleBake(Texture *tex);
 bool mglTextureUploadNeedsSwizzleBake(Texture *tex);
 uint8_t mglResolveR8SwizzledComponent(Texture *tex, GLenum swizzle, uint8_t red);
 uint8_t *mglCreateSingleChannelSwizzledUpload(Texture *tex,
@@ -162,6 +164,13 @@ uint8_t *mglCreateIntegerMultiChannelSwizzledUpload(Texture *tex,
                                                     size_t srcBytesPerRow,
                                                     size_t *outBytesPerRow,
                                                     size_t *outBytesPerImage);
+uint8_t *mglCreateStencilSwizzledUpload(Texture *tex,
+                                        const uint8_t *srcData,
+                                        size_t width,
+                                        size_t height,
+                                        size_t srcBytesPerRow,
+                                        size_t *outBytesPerRow,
+                                        size_t *outBytesPerImage);
 uint8_t *mglCreateSwizzledUpload(Texture *tex,
                                  const uint8_t *srcData,
                                  size_t width,

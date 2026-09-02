@@ -1505,6 +1505,11 @@ int mglRenderTextureUploadNeedsIntegerMultiChannelSwizzleBake(
     uint32_t internal_format, int swizzled);
 uint32_t mglRenderIntegerMultiChannelSwizzleStoragePixelFormat(
     uint32_t internal_format);
+int mglRenderTextureUploadNeedsStencilSwizzleBake(
+    uint32_t internal_format, int swizzled, uint32_t depth_stencil_mode);
+int mglRenderTextureUploadNeedsDepthStencilDepthSwizzleBake(
+    uint32_t internal_format, int swizzled, uint32_t depth_stencil_mode);
+uint32_t mglRenderStencilSwizzleStoragePixelFormat(void);
 /* Returns 1 when swizzle was baked at upload for this storage format. */
 int mglRenderTextureSwizzleUsesUploadBake(
     uint32_t internal_format, int swizzled,
@@ -1525,6 +1530,13 @@ uint8_t *mglRenderCreateSingleChannelSwizzledUpload(
     size_t src_bytes_per_row,
     size_t *out_bytes_per_row, size_t *out_bytes_per_image);
 uint8_t *mglRenderCreateIntegerMultiChannelSwizzledUpload(
+    uint32_t internal_format,
+    uint32_t swizzle_r, uint32_t swizzle_g,
+    uint32_t swizzle_b, uint32_t swizzle_a,
+    const void *src_data, size_t width, size_t height,
+    size_t src_bytes_per_row,
+    size_t *out_bytes_per_row, size_t *out_bytes_per_image);
+uint8_t *mglRenderCreateStencilSwizzledUpload(
     uint32_t internal_format,
     uint32_t swizzle_r, uint32_t swizzle_g,
     uint32_t swizzle_b, uint32_t swizzle_a,

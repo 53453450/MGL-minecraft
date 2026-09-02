@@ -8965,6 +8965,16 @@ static int mglRenderPixelFormatMatchesSwizzleBakeStorage(
                 break;
         }
     }
+    switch (internal_format) {
+        case GL_DEPTH24_STENCIL8:
+        case GL_DEPTH32F_STENCIL8:
+            return storage_pixel_format ==
+                       static_cast<uint32_t>(MTL::PixelFormatRGBA8Uint) ||
+                   storage_pixel_format ==
+                       static_cast<uint32_t>(MTL::PixelFormatRGBA32Float);
+        default:
+            break;
+    }
     return 0;
 }
 
@@ -8983,6 +8993,16 @@ int mglRenderTextureSwizzleUsesUploadBake(
             internal_format, swizzled) != 0) {
         return mglRenderPixelFormatMatchesSwizzleBakeStorage(
             internal_format, storage_pixel_format);
+    }
+    switch (internal_format) {
+        case GL_DEPTH24_STENCIL8:
+        case GL_DEPTH32F_STENCIL8:
+            return storage_pixel_format ==
+                       static_cast<uint32_t>(MTL::PixelFormatRGBA8Uint) ||
+                   storage_pixel_format ==
+                       static_cast<uint32_t>(MTL::PixelFormatRGBA32Float);
+        default:
+            break;
     }
     return 0;
 }
@@ -9189,6 +9209,115 @@ uint8_t* mglRenderCreateIntegerMultiChannelSwizzledUpload(
 }
 
 extern "C"
+int mglRenderTextureUploadNeedsDepthStencilDepthSwizzleBake(
+    uint32_t internal_format, int swizzled, uint32_t depth_stencil_mode) {
+    if (!swizzled || depth_stencil_mode != GL_DEPTH_COMPONENT) {
+        return 0;
+    }
+    switch (internal_format) {
+        case GL_DEPTH24_STENCIL8:
+        case GL_DEPTH32F_STENCIL8:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+extern "C"
+int mglRenderTextureUploadNeedsStencilSwizzleBake(
+    uint32_t internal_format, int swizzled, uint32_t depth_stencil_mode) {
+    if (!swizzled || depth_stencil_mode != GL_STENCIL_INDEX) {
+        return 0;
+    }
+    switch (internal_format) {
+        case GL_DEPTH24_STENCIL8:
+        case GL_DEPTH32F_STENCIL8:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+extern "C"
+uint32_t mglRenderStencilSwizzleStoragePixelFormat(void) {
+    return static_cast<uint32_t>(MTL::PixelFormatRGBA8Uint);
+}
+
+extern "C"
+uint8_t* mglRenderCreateStencilSwizzledUpload(
+    uint32_t internal_format,
+    uint32_t swizzle_r, uint32_t swizzle_g,
+    uint32_t swizzle_b, uint32_t swizzle_a,
+    const void* src_data, size_t width, size_t height,
+    size_t src_bytes_per_row,
+    size_t* out_bytes_per_row, size_t* out_bytes_per_image) {
+    if (out_bytes_per_row) *out_bytes_per_row = 0;
+    if (out_bytes_per_image) *out_bytes_per_image = 0;
+    if (!src_data || width == 0 || height == 0 ||
+        !out_bytes_per_row || !out_bytes_per_image) {
+        return NULL;
+    }
+    size_t src_pixel_bytes = 0u;
+    switch (internal_format) {
+        case GL_DEPTH24_STENCIL8:
+            src_pixel_bytes = 4u;
+            break;
+        case GL_DEPTH32F_STENCIL8:
+            src_pixel_bytes = 5u;
+            break;
+        default:
+            return NULL;
+    }
+    const size_t dst_pixel_bytes = 4u;
+    const size_t dst_bytes_per_row = width * dst_pixel_bytes;
+    const size_t dst_bytes_per_image = dst_bytes_per_row * height;
+    if (dst_bytes_per_image == 0 ||
+        dst_bytes_per_image > (512u * 1024u * 1024u) ||
+        src_bytes_per_row < width * src_pixel_bytes) {
+        return NULL;
+    }
+    uint8_t* dst = (uint8_t*)malloc(dst_bytes_per_image);
+    if (!dst) {
+        return NULL;
+    }
+    const uint8_t* src = static_cast<const uint8_t*>(src_data);
+    for (size_t row = 0; row < height; row++) {
+        const uint8_t* src_row = src + row * src_bytes_per_row;
+        uint8_t* dst_row = dst + row * dst_bytes_per_row;
+        for (size_t x = 0; x < width; x++) {
+            const uint8_t* in = src_row + x * src_pixel_bytes;
+            uint8_t* out = dst_row + x * dst_pixel_bytes;
+            uint8_t stencil = 0u;
+            if (internal_format == GL_DEPTH24_STENCIL8) {
+                uint32_t packed = 0u;
+                memcpy(&packed, in, sizeof(uint32_t));
+                stencil = (uint8_t)(packed & 0xffu);
+            } else {
+                stencil = in[4u];
+            }
+            const int64_t red = (int64_t)stencil;
+            const int64_t outv[4] = {
+                mglRenderResolveIntegerSwizzledComponent(
+                    swizzle_r, red, 0, 0, 1, 1u),
+                mglRenderResolveIntegerSwizzledComponent(
+                    swizzle_g, red, 0, 0, 1, 1u),
+                mglRenderResolveIntegerSwizzledComponent(
+                    swizzle_b, red, 0, 0, 1, 1u),
+                mglRenderResolveIntegerSwizzledComponent(
+                    swizzle_a, red, 0, 0, 1, 1u),
+            };
+            for (uint32_t c = 0; c < 4u; c++) {
+                mglRenderWriteIntegerTexelComponent(
+                    out, c, 1u, 0, outv[c]);
+            }
+        }
+    }
+    *out_bytes_per_row = dst_bytes_per_row;
+    *out_bytes_per_image = dst_bytes_per_image;
+    return dst;
+}
+
+extern "C"
 int mglRenderTextureUploadNeedsSingleChannelSwizzleBake(
     uint32_t internal_format, int swizzled) {
     if (!swizzled) {
@@ -9294,10 +9423,14 @@ uint8_t* mglRenderCreateSingleChannelSwizzledUpload(
         !out_bytes_per_row || !out_bytes_per_image) {
         return NULL;
     }
-    if (mglRenderTextureUploadNeedsSingleChannelSwizzle(internal_format, 1) == 0) {
+    if (mglRenderTextureUploadNeedsSingleChannelSwizzle(internal_format, 1) == 0 &&
+        mglRenderTextureUploadNeedsDepthStencilDepthSwizzleBake(
+            internal_format, 1, GL_DEPTH_COMPONENT) == 0) {
         return NULL;
     }
-    if (mglRenderTextureUploadNeedsSingleChannelSwizzleBake(internal_format, 1) == 0) {
+    if (mglRenderTextureUploadNeedsSingleChannelSwizzleBake(internal_format, 1) == 0 &&
+        mglRenderTextureUploadNeedsDepthStencilDepthSwizzleBake(
+            internal_format, 1, GL_DEPTH_COMPONENT) == 0) {
         return NULL;
     }
 

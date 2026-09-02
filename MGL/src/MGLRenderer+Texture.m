@@ -5260,6 +5260,15 @@ static void mglTextureCopyTextureToBuffer(
         if (swizzleStorageFormat != MGLPixelFormatInvalid) {
             pixelFormat = swizzleStorageFormat;
         }
+    } else if (mglTextureUploadNeedsStencilSwizzleBake(tex)) {
+        pixelFormat = mglRenderStencilSwizzleStoragePixelFormat();
+    } else if (mglTextureUploadNeedsDepthStencilDepthSwizzleBake(tex)) {
+        uint32_t swizzleStorageFormat =
+            mglRenderSingleChannelSwizzleStoragePixelFormat(
+                (uint32_t)tex->internalformat);
+        if (swizzleStorageFormat != MGLPixelFormatInvalid) {
+            pixelFormat = swizzleStorageFormat;
+        }
     }
 
     // Validate format compatibility with AGX, but preserve original intent

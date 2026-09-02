@@ -80,10 +80,32 @@ bool mglTextureUploadNeedsSingleChannelSwizzleBake(Texture *tex)
         (uint32_t)tex->internalformat, 1) != 0;
 }
 
+bool mglTextureUploadNeedsStencilSwizzleBake(Texture *tex)
+{
+    if (!tex || !tex->params.swizzled) {
+        return false;
+    }
+    return mglRenderTextureUploadNeedsStencilSwizzleBake(
+        (uint32_t)tex->internalformat, 1,
+        (uint32_t)tex->params.depth_stencil_mode) != 0;
+}
+
+bool mglTextureUploadNeedsDepthStencilDepthSwizzleBake(Texture *tex)
+{
+    if (!tex || !tex->params.swizzled) {
+        return false;
+    }
+    return mglRenderTextureUploadNeedsDepthStencilDepthSwizzleBake(
+        (uint32_t)tex->internalformat, 1,
+        (uint32_t)tex->params.depth_stencil_mode) != 0;
+}
+
 bool mglTextureUploadNeedsSwizzleBake(Texture *tex)
 {
     return mglTextureUploadNeedsSingleChannelSwizzleBake(tex) ||
-           mglTextureUploadNeedsIntegerMultiChannelSwizzleBake(tex);
+           mglTextureUploadNeedsIntegerMultiChannelSwizzleBake(tex) ||
+           mglTextureUploadNeedsStencilSwizzleBake(tex) ||
+           mglTextureUploadNeedsDepthStencilDepthSwizzleBake(tex);
 }
 
 uint8_t mglResolveR8SwizzledComponent(Texture *tex, GLenum swizzle, uint8_t red)
@@ -152,6 +174,35 @@ uint8_t *mglCreateIntegerMultiChannelSwizzledUpload(Texture *tex,
     return result;
 }
 
+uint8_t *mglCreateStencilSwizzledUpload(Texture *tex,
+                                        const uint8_t *srcData,
+                                        size_t width,
+                                        size_t height,
+                                        size_t srcBytesPerRow,
+                                        size_t *outBytesPerRow,
+                                        size_t *outBytesPerImage)
+{
+    if (!tex || !srcData || width == 0 || height == 0 || !outBytesPerRow || !outBytesPerImage) {
+        return NULL;
+    }
+
+    size_t outBPR = 0;
+    size_t outBPI = 0;
+    uint8_t *result = mglRenderCreateStencilSwizzledUpload(
+        (uint32_t)tex->internalformat,
+        (uint32_t)tex->params.swizzle_r,
+        (uint32_t)tex->params.swizzle_g,
+        (uint32_t)tex->params.swizzle_b,
+        (uint32_t)tex->params.swizzle_a,
+        srcData, (size_t)width, (size_t)height, (size_t)srcBytesPerRow,
+        &outBPR, &outBPI);
+    if (result) {
+        *outBytesPerRow = outBPR;
+        *outBytesPerImage = outBPI;
+    }
+    return result;
+}
+
 uint8_t *mglCreateSwizzledUpload(Texture *tex,
                                  const uint8_t *srcData,
                                  size_t width,
@@ -161,6 +212,22 @@ uint8_t *mglCreateSwizzledUpload(Texture *tex,
                                  size_t *outBytesPerImage)
 {
     uint8_t *result = NULL;
+    if (mglTextureUploadNeedsStencilSwizzleBake(tex)) {
+        result = mglCreateStencilSwizzledUpload(
+            tex, srcData, width, height, srcBytesPerRow,
+            outBytesPerRow, outBytesPerImage);
+    }
+    if (result) {
+        return result;
+    }
+    if (mglTextureUploadNeedsDepthStencilDepthSwizzleBake(tex)) {
+        result = mglCreateSingleChannelSwizzledUpload(
+            tex, srcData, width, height, srcBytesPerRow,
+            outBytesPerRow, outBytesPerImage);
+    }
+    if (result) {
+        return result;
+    }
     if (mglTextureUploadNeedsSingleChannelSwizzleBake(tex)) {
         result = mglCreateSingleChannelSwizzledUpload(
             tex, srcData, width, height, srcBytesPerRow,

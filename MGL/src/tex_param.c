@@ -211,7 +211,13 @@ static void mglMarkTextureParameterDirty(GLMContext ctx, Texture *tex, GLenum pn
             if (mglRenderTextureUploadNeedsSingleChannelSwizzleBake(
                     (uint32_t)tex->internalformat, 1) != 0 ||
                 mglRenderTextureUploadNeedsIntegerMultiChannelSwizzleBake(
-                    (uint32_t)tex->internalformat, 1) != 0) {
+                    (uint32_t)tex->internalformat, 1) != 0 ||
+                mglRenderTextureUploadNeedsStencilSwizzleBake(
+                    (uint32_t)tex->internalformat, 1,
+                    (uint32_t)tex->params.depth_stencil_mode) != 0 ||
+                mglRenderTextureUploadNeedsDepthStencilDepthSwizzleBake(
+                    (uint32_t)tex->internalformat, 1,
+                    (uint32_t)tex->params.depth_stencil_mode) != 0) {
                 /* Baked swizzles rewrite CPU texels; keep the Metal texture
                  * and re-upload. DIRTY_TEXTURE_LEVEL would destroy storage
                  * after upload and recreate it without baked data. */
