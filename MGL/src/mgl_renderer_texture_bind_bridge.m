@@ -11,6 +11,9 @@
 #include "mgl_render.h"
 #include "mgl_env_flag.h"
 #import "mgl_renderer_texture_metal_helpers.h"
+#include "mgl_render_pass_coordinator.h"
+#include "mgl_types_framebuffer.h"
+#include "state.h"
 
 @interface MGLRenderer (TextureBindBridge)
 - (id)createMTLTextureFromGLTexture:(Texture *)tex;
@@ -32,6 +35,9 @@
 
 @interface MGLRenderer (TextureBindAccessors)
 - (void *)mglTextureBindCurrentCommandBufferOwner;
+- (MGLCommandState *)mglTextureBindCommandState;
+- (GLMContext)mglTextureBindContext;
+- (void)mglTextureBindInvalidateFboMatchForAttachment:(Texture *)tex;
 @end
 
 static id mglBindingCreateDefaultSampler(void)
@@ -108,6 +114,7 @@ bool mglRendererTextureBindLocked(MGLRenderer *self, Texture *tex)
                 newInfo.depth == existingInfo.depth;
             if (oldTexture && dimensionsMatch) {
                 tex->mtl_data = (void *)CFBridgingRetain(newTexture);
+                [self mglTextureBindInvalidateFboMatchForAttachment:tex];
                 const BOOL packedDepthStencil =
                     tex->internalformat == GL_DEPTH32F_STENCIL8 ||
                     tex->internalformat == GL_DEPTH24_STENCIL8;
@@ -341,6 +348,45 @@ bool mglRendererTextureBindLocked(MGLRenderer *self, Texture *tex)
 - (void *)mglTextureBindCurrentCommandBufferOwner
 {
     return _commandState.currentCommandBufferOwner;
+}
+
+- (MGLCommandState *)mglTextureBindCommandState
+{
+    return &_commandState;
+}
+
+- (GLMContext)mglTextureBindContext
+{
+    return ctx;
+}
+
+- (void)mglTextureBindInvalidateFboMatchForAttachment:(Texture *)tex
+{
+    GLMContext glm_ctx = [self mglTextureBindContext];
+    if (!glm_ctx || !tex || !glm_ctx->active_state) {
+        return;
+    }
+    Framebuffer *fbo = glm_ctx->active_state->framebuffer;
+    if (!fbo) {
+        return;
+    }
+    bool attached = false;
+    if (fbo->depth.texture == tex->name || fbo->stencil.texture == tex->name) {
+        attached = true;
+    } else {
+        for (GLuint i = 0; i < MAX_COLOR_ATTACHMENTS; ++i) {
+            if (fbo->color_attachments[i].texture == tex->name) {
+                attached = true;
+                break;
+            }
+        }
+    }
+    if (!attached) {
+        return;
+    }
+    fbo->fbo_attachment_generation++;
+    mglMarkStateDirtyBits(glm_ctx->active_state, DIRTY_FBO);
+    mglCmdClearFboMatchCache([self mglTextureBindCommandState]);
 }
 
 @end

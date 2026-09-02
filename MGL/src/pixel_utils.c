@@ -3099,11 +3099,6 @@ uint32_t mtlPixelFormatForGLTex(Texture * tex)
         return MGLPixelFormatInvalid;
     }
 
-    if (tex->is_render_target &&
-        mtl_format == MGLPixelFormatDepth32Float) {
-        mtl_format = MGLPixelFormatDepth32Float_Stencil8;
-    }
-
     return mtl_format;
 }
 
