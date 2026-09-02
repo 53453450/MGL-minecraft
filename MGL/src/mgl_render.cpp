@@ -56,6 +56,7 @@
 
 #include <mach/mach.h>
 #include <Block.h>
+#include <objc/message.h>
 #include <objc/runtime.h>
 
 extern "C" void mglMetalCountRelease(int kind);
@@ -10152,7 +10153,15 @@ int mglRenderSampleTimestamps(uint64_t* cpu_timestamp_out,
     mgl::Renderer& renderer = mgl::renderer();
     std::lock_guard<std::mutex> lock(renderer.mutex);
     if (!renderer.device) return -1;
-    renderer.device->sampleTimestamps(cpu_timestamp_out, gpu_timestamp_out);
+    /* Typed objc_msgSend: metal-cpp sendMessage can leave both timestamps
+     * zero on some macOS 26 / Metal hosts. */
+    using SampleTimestampsFn = void (*)(void*, SEL, uint64_t*, uint64_t*);
+    SampleTimestampsFn send =
+        reinterpret_cast<SampleTimestampsFn>(
+            reinterpret_cast<void*>(objc_msgSend));
+    send(static_cast<void*>(renderer.device),
+         sel_registerName("sampleTimestamps:gpuTimestamp:"),
+         cpu_timestamp_out, gpu_timestamp_out);
     return 0;
 }
 
