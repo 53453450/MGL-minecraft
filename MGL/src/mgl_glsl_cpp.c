@@ -1485,6 +1485,14 @@ static int handle_extension(PP *pp, const TokList *tl, const char *raw_line)
         pp_fail(pp, "preprocessor: extra tokens after #extension");
         return -1;
     }
+    /* GLSL 4.60 §3.3: enabling an extension defines a macro with the
+     * extension's name (value 1).  CTS and apps probe this with #ifndef. */
+    if (!ident_eq(&tl->t[0], "all") &&
+        (strcmp(beh, "require") == 0 || strcmp(beh, "enable") == 0 ||
+         strcmp(beh, "warn") == 0)) {
+        if (add_predef(pp, tl->t[0].s, 0, "1", 0) != 0)
+            return -1;
+    }
     out_str(pp, raw_line);
     out_ch(pp, '\n');
     return 0;

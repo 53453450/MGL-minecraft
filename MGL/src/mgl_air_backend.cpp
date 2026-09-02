@@ -2115,6 +2115,7 @@ static bool perVertexPath(const MGLExpr *e, const char **root,
     const char *f = e->u.member.field;
     if (strcmp(f, "gl_Position") != 0 &&
         strcmp(f, "gl_PointSize") != 0 &&
+        strcmp(f, "gl_ClipDistance") != 0 &&
         strcmp(f, "gl_CullDistance") != 0)
         return false;
     if (root) *root = name;
@@ -2129,6 +2130,8 @@ static uint64_t perVertexFieldOffset(const char *field)
         return MGL_AIR_PER_VERTEX_POINT_SIZE_OFFSET;
     if (!strcmp(field, "gl_CullDistance"))
         return MGL_AIR_PER_VERTEX_CULL_DISTANCE_OFFSET;
+    if (!strcmp(field, "gl_ClipDistance"))
+        return MGL_AIR_PER_VERTEX_CLIP_DISTANCE_OFFSET;
     return MGL_AIR_PER_VERTEX_POSITION_OFFSET;
 }
 
@@ -2141,6 +2144,10 @@ static llvm::Type *perVertexFieldType(Codegen &cg, const char *field)
         return llvm::ArrayType::get(
             llvm::Type::getFloatTy(*cg.ctx),
             MGL_AIR_PER_VERTEX_CULL_DISTANCE_COUNT);
+    if (!strcmp(field, "gl_ClipDistance"))
+        return llvm::ArrayType::get(
+            llvm::Type::getFloatTy(*cg.ctx),
+            MGL_AIR_PER_VERTEX_CLIP_DISTANCE_COUNT);
     return llvm::Type::getFloatTy(*cg.ctx);
 }
 
@@ -2833,6 +2840,19 @@ static void storeGeometryCullDistances(Codegen &cg, llvm::Value *record,
     cg.b->CreateAlignedStore(distances, p, llvm::Align(4));
 }
 
+static void storeGeometryClipDistances(Codegen &cg, llvm::Value *record,
+                                       llvm::Value *distances)
+{
+    llvm::Type *arrayTy = llvm::ArrayType::get(
+        llvm::Type::getFloatTy(*cg.ctx),
+        MGL_AIR_PER_VERTEX_CLIP_DISTANCE_COUNT);
+    llvm::Value *p = cg.b->CreateGEP(
+        cg.b->getInt8Ty(), geometryRecordPtr(cg, record),
+        cg.b->getInt64(MGL_AIR_PER_VERTEX_CLIP_DISTANCE_OFFSET));
+    p = cg.b->CreateBitCast(p, arrayTy->getPointerTo(1));
+    cg.b->CreateAlignedStore(distances, p, llvm::Align(4));
+}
+
 static llvm::Value *loadGeometryPosition(Codegen &cg, uint32_t record)
 {
     llvm::Type *v4 = llvm::FixedVectorType::get(
@@ -2966,6 +2986,19 @@ static llvm::Value *loadGeometryCullDistances(Codegen &cg, uint32_t record)
         cg.b->getInt8Ty(),
         geometryRecordPtr(cg, cg.b->getInt32(record)),
         cg.b->getInt64(MGL_AIR_PER_VERTEX_CULL_DISTANCE_OFFSET));
+    p = cg.b->CreateBitCast(p, arrayTy->getPointerTo(1));
+    return cg.b->CreateAlignedLoad(arrayTy, p, llvm::Align(4));
+}
+
+static llvm::Value *loadGeometryClipDistances(Codegen &cg, uint32_t record)
+{
+    llvm::Type *arrayTy = llvm::ArrayType::get(
+        llvm::Type::getFloatTy(*cg.ctx),
+        MGL_AIR_PER_VERTEX_CLIP_DISTANCE_COUNT);
+    llvm::Value *p = cg.b->CreateGEP(
+        cg.b->getInt8Ty(),
+        geometryRecordPtr(cg, cg.b->getInt32(record)),
+        cg.b->getInt64(MGL_AIR_PER_VERTEX_CLIP_DISTANCE_OFFSET));
     p = cg.b->CreateBitCast(p, arrayTy->getPointerTo(1));
     return cg.b->CreateAlignedLoad(arrayTy, p, llvm::Align(4));
 }
@@ -3137,6 +3170,8 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
         : llvm::ConstantFP::get(llvm::Type::getFloatTy(*cg.ctx), 1.0);
     llvm::Value *cullDistances = cg.lvalues.count("gl_CullDistance")
         ? cg.lvalues["gl_CullDistance"] : defaultCullDistances(cg);
+    llvm::Value *clipDistances = cg.lvalues.count("gl_ClipDistance")
+        ? cg.lvalues["gl_ClipDistance"] : defaultClipDistances(cg);
     llvm::Value *layer = cg.lvalues.count("gl_Layer")
         ? cg.lvalues["gl_Layer"] : cg.b->getInt32(0);
     llvm::Value *viewportIndex = cg.lvalues.count("gl_ViewportIndex")
@@ -3170,6 +3205,7 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
         storeGeometryPosition(cg, outputRecord, pos);
         storeGeometryPointSize(cg, outputRecord, pointSize);
         storeGeometryCullDistances(cg, outputRecord, cullDistances);
+        storeGeometryClipDistances(cg, outputRecord, clipDistances);
         storeGeometryVaryings(cg, outputRecord);
         storeGeometryLayer(cg, outputRecord, layer);
         storeGeometryViewportIndex(cg, outputRecord, viewportIndex);
@@ -3207,6 +3243,7 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
         llvm::Value *previous = loadGeometryPosition(cg, 0);
         llvm::Value *previousPoint = loadGeometryPointSize(cg, 0);
         llvm::Value *previousCull = loadGeometryCullDistances(cg, 0);
+        llvm::Value *previousClip = loadGeometryClipDistances(cg, 0);
         llvm::Value *previousLayer = loadGeometryLayer(cg, 0);
         llvm::Value *previousViewport = loadGeometryViewportIndex(cg, 0);
         llvm::Value *outputCount = cg.b->CreateAlignedLoad(
@@ -3216,6 +3253,7 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
         storeGeometryPosition(cg, outputRecord, previous);
         storeGeometryPointSize(cg, outputRecord, previousPoint);
         storeGeometryCullDistances(cg, outputRecord, previousCull);
+        storeGeometryClipDistances(cg, outputRecord, previousClip);
         storeGeometryLayer(cg, outputRecord, previousLayer);
         storeGeometryViewportIndex(cg, outputRecord, previousViewport);
         copyGeometryPrimitiveId(cg, outputRecord, 0);
@@ -3226,6 +3264,8 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
             cg.b->CreateAdd(outputRecord, cg.b->getInt32(1)), pointSize);
         storeGeometryCullDistances(cg,
             cg.b->CreateAdd(outputRecord, cg.b->getInt32(1)), cullDistances);
+        storeGeometryClipDistances(cg,
+            cg.b->CreateAdd(outputRecord, cg.b->getInt32(1)), clipDistances);
         storeGeometryLayer(cg,
             cg.b->CreateAdd(outputRecord, cg.b->getInt32(1)), layer);
         storeGeometryViewportIndex(cg,
@@ -3247,6 +3287,7 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
         storeGeometryPosition(cg, cg.b->getInt32(0), pos);
         storeGeometryPointSize(cg, cg.b->getInt32(0), pointSize);
         storeGeometryCullDistances(cg, cg.b->getInt32(0), cullDistances);
+        storeGeometryClipDistances(cg, cg.b->getInt32(0), clipDistances);
         storeGeometryLayer(cg, cg.b->getInt32(0), layer);
         storeGeometryViewportIndex(cg, cg.b->getInt32(0), viewportIndex);
         storeGeometryPrimitiveId(cg, cg.b->getInt32(0));
@@ -3277,6 +3318,8 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
     llvm::Value *previousPoint1 = loadGeometryPointSize(cg, 1);
     llvm::Value *previousCull0 = loadGeometryCullDistances(cg, 0);
     llvm::Value *previousCull1 = loadGeometryCullDistances(cg, 1);
+    llvm::Value *previousClip0 = loadGeometryClipDistances(cg, 0);
+    llvm::Value *previousClip1 = loadGeometryClipDistances(cg, 1);
     llvm::Value *previousLayer0 = loadGeometryLayer(cg, 0);
     llvm::Value *previousLayer1 = loadGeometryLayer(cg, 1);
     llvm::Value *previousViewport0 = loadGeometryViewportIndex(cg, 0);
@@ -3293,6 +3336,10 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
         odd, previousCull1, previousCull0);
     llvm::Value *secondCull = cg.b->CreateSelect(
         odd, previousCull0, previousCull1);
+    llvm::Value *firstClip = cg.b->CreateSelect(
+        odd, previousClip1, previousClip0);
+    llvm::Value *secondClip = cg.b->CreateSelect(
+        odd, previousClip0, previousClip1);
     llvm::Value *firstLayer = cg.b->CreateSelect(
         odd, previousLayer1, previousLayer0);
     llvm::Value *secondLayer = cg.b->CreateSelect(
@@ -3307,6 +3354,7 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
     storeGeometryPosition(cg, outputRecord, first);
     storeGeometryPointSize(cg, outputRecord, firstPoint);
     storeGeometryCullDistances(cg, outputRecord, firstCull);
+    storeGeometryClipDistances(cg, outputRecord, firstClip);
     storeGeometryLayer(cg, outputRecord, firstLayer);
     storeGeometryViewportIndex(cg, outputRecord, firstViewport);
     copyGeometryPrimitiveIdSelected(cg, outputRecord, 0, 1, odd);
@@ -3317,6 +3365,8 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
         cg.b->CreateAdd(outputRecord, cg.b->getInt32(1)), secondPoint);
     storeGeometryCullDistances(cg,
         cg.b->CreateAdd(outputRecord, cg.b->getInt32(1)), secondCull);
+    storeGeometryClipDistances(cg,
+        cg.b->CreateAdd(outputRecord, cg.b->getInt32(1)), secondClip);
     storeGeometryLayer(cg,
         cg.b->CreateAdd(outputRecord, cg.b->getInt32(1)), secondLayer);
     storeGeometryViewportIndex(cg,
@@ -3331,6 +3381,8 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
         cg.b->CreateAdd(outputRecord, cg.b->getInt32(2)), pointSize);
     storeGeometryCullDistances(cg,
         cg.b->CreateAdd(outputRecord, cg.b->getInt32(2)), cullDistances);
+    storeGeometryClipDistances(cg,
+        cg.b->CreateAdd(outputRecord, cg.b->getInt32(2)), clipDistances);
     storeGeometryLayer(cg,
         cg.b->CreateAdd(outputRecord, cg.b->getInt32(2)), layer);
     storeGeometryViewportIndex(cg,
@@ -3353,11 +3405,13 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
     llvm::Value *previous1ForNext = loadGeometryPosition(cg, 1);
     llvm::Value *previousPoint1ForNext = loadGeometryPointSize(cg, 1);
     llvm::Value *previousCull1ForNext = loadGeometryCullDistances(cg, 1);
+    llvm::Value *previousClip1ForNext = loadGeometryClipDistances(cg, 1);
     llvm::Value *previousLayer1ForNext = loadGeometryLayer(cg, 1);
     llvm::Value *previousViewport1ForNext = loadGeometryViewportIndex(cg, 1);
     storeGeometryPosition(cg, cg.b->getInt32(0), previous1ForNext);
     storeGeometryPointSize(cg, cg.b->getInt32(0), previousPoint1ForNext);
     storeGeometryCullDistances(cg, cg.b->getInt32(0), previousCull1ForNext);
+    storeGeometryClipDistances(cg, cg.b->getInt32(0), previousClip1ForNext);
     storeGeometryLayer(cg, cg.b->getInt32(0), previousLayer1ForNext);
     storeGeometryViewportIndex(cg, cg.b->getInt32(0), previousViewport1ForNext);
     copyGeometryPrimitiveId(cg, cg.b->getInt32(0), 1);
@@ -3365,6 +3419,7 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
     storeGeometryPosition(cg, cg.b->getInt32(1), pos);
     storeGeometryPointSize(cg, cg.b->getInt32(1), pointSize);
     storeGeometryCullDistances(cg, cg.b->getInt32(1), cullDistances);
+    storeGeometryClipDistances(cg, cg.b->getInt32(1), clipDistances);
     storeGeometryLayer(cg, cg.b->getInt32(1), layer);
     storeGeometryViewportIndex(cg, cg.b->getInt32(1), viewportIndex);
     storeGeometryPrimitiveId(cg, cg.b->getInt32(1));
@@ -3923,6 +3978,14 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             return cg.b->getInt32(8);
         if (strcmp(e->u.var_ref.name, "gl_MaxGeometryShaderInvocations") == 0)
             return cg.b->getInt32(32);
+        /* Match glm_params floors / glGet (GLSL 4.60 §7.3). */
+        if (strcmp(e->u.var_ref.name, "gl_MaxClipDistances") == 0)
+            return cg.b->getInt32(MGL_MAX_CLIP_DISTANCES);
+        if (strcmp(e->u.var_ref.name, "gl_MaxCullDistances") == 0)
+            return cg.b->getInt32(MGL_AIR_PER_VERTEX_CULL_DISTANCE_COUNT);
+        if (strcmp(e->u.var_ref.name,
+                   "gl_MaxCombinedClipAndCullDistances") == 0)
+            return cg.b->getInt32(MGL_AIR_PER_VERTEX_CULL_DISTANCE_COUNT);
         if (strcmp(e->u.var_ref.name, "gl_Position") == 0) {
             if (!cg.position.written) {
                 cg.position.name = "gl_Position";
@@ -5184,6 +5247,29 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                  {tex, coord, layer, value,
                                   cg.b->getInt32(0), cg.b->getInt32(3)});
             }
+            /* Prefer the integer write path when the value is already an
+             * int vector (iimage/uimage) or the image storage is integer —
+             * a float write of sitofp(8) leaves R32I readbacks as the
+             * IEEE bit pattern of 8.0 (0x41000000) instead of 8. */
+            if (value->getType()->isIntOrIntVectorTy() ||
+                is->type->tex_storage == MGLIR_SCALAR_INT ||
+                is->type->tex_storage == MGLIR_SCALAR_UINT) {
+                value = coerceScalar(cg, value, MGLIR_SCALAR_INT);
+                if (value->getType() != v4i32) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: imageStore iimage2D/uimage2D value "
+                                "must be ivec4/uvec4";
+                    return nullptr;
+                }
+                const char *intrinsic =
+                    is->type->tex_storage == MGLIR_SCALAR_UINT
+                        ? "air.write_texture_2d.u.v4i32"
+                        : "air.write_texture_2d.s.v4i32";
+                return callAirFn(cg, intrinsic,
+                                 llvm::Type::getVoidTy(*cg.ctx),
+                                 {tex, coord, value, cg.b->getInt32(0),
+                                  cg.b->getInt32(3)});
+            }
             value = coerceScalar(cg, value, MGLIR_SCALAR_FLOAT);
             if (value->getType() != v4f32) {
                 cg.err = 1;
@@ -6125,7 +6211,12 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             const char *pvRoot = nullptr, *pvField = nullptr;
             const MGLExpr *pvVertexIndex = nullptr;
             if (perVertexPath(member, &pvRoot, &pvVertexIndex, &pvField) &&
-                !strcmp(pvField, "gl_CullDistance")) {
+                (!strcmp(pvField, "gl_CullDistance") ||
+                 !strcmp(pvField, "gl_ClipDistance"))) {
+                const uint32_t distanceCount =
+                    !strcmp(pvField, "gl_ClipDistance")
+                        ? MGL_AIR_PER_VERTEX_CLIP_DISTANCE_COUNT
+                        : MGL_AIR_PER_VERTEX_CULL_DISTANCE_COUNT;
                 llvm::Value *array = emitPerVertexLoad(
                     cg, member, mod, locals);
                 llvm::Value *component = emitExpr(
@@ -6135,7 +6226,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 if (e->u.assign.op != MGL_OP_ASSIGN) {
                     MType arrayType;
                     arrayType.scalar = MGLIR_SCALAR_FLOAT;
-                    arrayType.arr = MGL_AIR_PER_VERTEX_CULL_DISTANCE_COUNT;
+                    arrayType.arr = distanceCount;
                     llvm::Value *old = emitIndexValue(
                         cg, array, arrayType, component);
                     uint32_t binop = e->u.assign.op == MGL_OP_ADD_ASSIGN
@@ -6145,7 +6236,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                         ? MGL_OP_DIV : 0u;
                     if (!old || !binop) {
                         cg.err = 1;
-                        cg.errmsg = "codegen: compound gl_out CullDistance "
+                        cg.errmsg = "codegen: compound gl_out distance "
                                     "assignment unsupported";
                         return nullptr;
                     }
@@ -6157,13 +6248,13 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 }
                 MType arrayType;
                 arrayType.scalar = MGLIR_SCALAR_FLOAT;
-                arrayType.arr = MGL_AIR_PER_VERTEX_CULL_DISTANCE_COUNT;
+                arrayType.arr = distanceCount;
                 llvm::Value *updated = insertIndexValue(
                     cg, array, arrayType, component,
                     coerceScalar(cg, v, MGLIR_SCALAR_FLOAT));
                 if (!updated) {
                     cg.err = 1;
-                    cg.errmsg = "codegen: failed to update gl_out CullDistance";
+                    cg.errmsg = "codegen: failed to update gl_out distance";
                     return nullptr;
                 }
                 emitPerVertexStore(cg, member, updated, mod, locals);
@@ -6551,6 +6642,8 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             if (!strcmp(pvField, "gl_Position")) t.vec = 4;
             else if (!strcmp(pvField, "gl_CullDistance"))
                 t.arr = MGL_AIR_PER_VERTEX_CULL_DISTANCE_COUNT;
+            else if (!strcmp(pvField, "gl_ClipDistance"))
+                t.arr = MGL_AIR_PER_VERTEX_CLIP_DISTANCE_COUNT;
             break;
         }
         std::vector<uint32_t> idx;
@@ -10399,6 +10492,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             storeGeometryCullDistances(cg, b.getInt32(0),
                                        cg.lvalues["gl_CullDistance"]);
         }
+        if (cg.lvalues.count("gl_ClipDistance")) {
+            storeGeometryClipDistances(cg, b.getInt32(0),
+                                       cg.lvalues["gl_ClipDistance"]);
+        }
         if (cg.xfbOutPtr) {
             /* Transform-feedback stream (slot 31): one complete stage-out
              * record per work item, same layout/stride as slot 28.  The
@@ -10647,6 +10744,21 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 b.CreateMul(vid, b.getInt64(recStride)));
             p = b.CreateBitCast(p, recTy->getPointerTo(1));
             b.CreateAlignedStore(rec, p, llvm::Align(16));
+            if (isTessCapture && cg.lvalues.count("gl_ClipDistance")) {
+                llvm::Type *clipTy = llvm::ArrayType::get(
+                    llvm::Type::getFloatTy(ctx),
+                    MGL_AIR_PER_VERTEX_CLIP_DISTANCE_COUNT);
+                llvm::Value *recordBase = b.CreateGEP(
+                    b.getInt8Ty(), cg.captureBuf,
+                    b.CreateMul(vid, b.getInt64(recStride)));
+                llvm::Value *clipPtr = b.CreateBitCast(
+                    b.CreateGEP(
+                        b.getInt8Ty(), recordBase,
+                        b.getInt64(MGL_AIR_PER_VERTEX_CLIP_DISTANCE_OFFSET)),
+                    clipTy->getPointerTo(1));
+                b.CreateAlignedStore(cg.lvalues["gl_ClipDistance"], clipPtr,
+                                    llvm::Align(4));
+            }
             if (isTessCapture) {
                 llvm::Value *recordBase = b.CreateGEP(
                     b.getInt8Ty(), cg.captureBuf,

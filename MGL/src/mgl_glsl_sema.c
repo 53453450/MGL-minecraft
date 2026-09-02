@@ -110,7 +110,7 @@ static void scratch_destroy(Sema *s)
 }
 
 /* gl_PerVertex interface struct {vec4 gl_Position; float gl_PointSize;
- * float gl_CullDistance[8];}
+ * float gl_ClipDistance[8]; float gl_CullDistance[8];}
  * used by gl_in[]/gl_out[] in TCS/TES/GS.  Each caller receives a NEW
  * struct (never shared/cached): the array type created by gl_in_out_array
  * owns it, and multiple arrays must not share one struct or the scratch
@@ -119,14 +119,17 @@ static MGLIRType *per_vertex_type(Sema *s)
 {
     MGLIRType *pos = mglIRTypeVector(MGLIR_SCALAR_FLOAT, 4);
     MGLIRType *psz = mglIRTypeScalar(MGLIR_SCALAR_FLOAT);
+    MGLIRType *clip = mglIRTypeArray(
+        mglIRTypeScalar(MGLIR_SCALAR_FLOAT),
+        MGL_AIR_PER_VERTEX_CLIP_DISTANCE_COUNT);
     MGLIRType *cull = mglIRTypeArray(
         mglIRTypeScalar(MGLIR_SCALAR_FLOAT),
         MGL_AIR_PER_VERTEX_CULL_DISTANCE_COUNT);
-    MGLIRType *members[3] = { pos, psz, cull };
-    const char *names[3] = {
-        "gl_Position", "gl_PointSize", "gl_CullDistance"
+    MGLIRType *members[4] = { pos, psz, clip, cull };
+    const char *names[4] = {
+        "gl_Position", "gl_PointSize", "gl_ClipDistance", "gl_CullDistance"
     };
-    MGLIRType *st = mglIRTypeStruct(members, names, 3, "gl_PerVertex");
+    MGLIRType *st = mglIRTypeStruct(members, names, 4, "gl_PerVertex");
     s->per_vertex = st; /* informational only; ownership follows the array */
     return st;
 }
@@ -1034,7 +1037,9 @@ typedef enum {
     BI_ARG_S2DMS,   /* sampler2DMS */
     BI_ARG_S2DMSA,  /* sampler2DMSArray */
     BI_ARG_SBUF,      /* samplerBuffer */
-    BI_ARG_I2D,       /* image2D */
+    BI_ARG_I2D,       /* image2D (any storage) */
+    BI_ARG_I2D_INT,   /* iimage2D */
+    BI_ARG_I2D_UINT,  /* uimage2D */
     BI_ARG_I2DA_INT,  /* iimage2DArray */
     BI_ARG_I2DA_UINT, /* uimage2DArray */
     BI_ARG_IVEC2,     /* ivec2 */
@@ -1171,6 +1176,8 @@ static const BiFn kBuiltins[] = {
     { "texelFetch", 2, { BI_ARG_SBUF, BI_ARG_INT }, BI_RET_SAMP },
     { "imageLoad", 2, { BI_ARG_I2D, BI_ARG_GENI }, BI_RET_SAMP },
     { "imageStore", 3, { BI_ARG_I2D, BI_ARG_GENI, BI_ARG_VEC4 }, BI_RET_VOID },
+    { "imageStore", 3, { BI_ARG_I2D_INT, BI_ARG_GENI, BI_ARG_IVEC4 }, BI_RET_VOID },
+    { "imageStore", 3, { BI_ARG_I2D_UINT, BI_ARG_GENI, BI_ARG_UVEC4 }, BI_RET_VOID },
     { "imageStore", 3, { BI_ARG_I2DA_INT, BI_ARG_IVEC3, BI_ARG_IVEC4 }, BI_RET_VOID },
     { "imageStore", 3, { BI_ARG_I2DA_UINT, BI_ARG_IVEC3, BI_ARG_UVEC4 }, BI_RET_VOID },
     { "imageSize", 1, { BI_ARG_I2D }, BI_RET_IVEC2 },
@@ -1423,6 +1430,12 @@ static int bif_arg_matches(const MGLIRType *t, BiArgKind k, uint32_t *gen_dim)
                !t->tex_depth;
     case BI_ARG_I2D:
         return t->kind == MGLIR_TYPE_IMAGE && t->tex_kind == MGLIR_TEX_2D;
+    case BI_ARG_I2D_INT:
+        return t->kind == MGLIR_TYPE_IMAGE && t->tex_kind == MGLIR_TEX_2D &&
+               t->tex_storage == MGLIR_SCALAR_INT;
+    case BI_ARG_I2D_UINT:
+        return t->kind == MGLIR_TYPE_IMAGE && t->tex_kind == MGLIR_TEX_2D &&
+               t->tex_storage == MGLIR_SCALAR_UINT;
     case BI_ARG_I2DA_INT:
         return t->kind == MGLIR_TYPE_IMAGE &&
                t->tex_kind == MGLIR_TEX_2D_ARRAY &&
@@ -1850,6 +1863,14 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                 /* GS (or vertex) per-primitive output builtins; the AIR
                  * backend maps them to the per-vertex record layer /
                  * viewport-index words and the raster vertex outputs. */
+                return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_INT));
+            }
+            if (strcmp(e->u.var_ref.name, "gl_MaxClipDistances") == 0 ||
+                strcmp(e->u.var_ref.name, "gl_MaxCullDistances") == 0 ||
+                strcmp(e->u.var_ref.name,
+                       "gl_MaxCombinedClipAndCullDistances") == 0) {
+                /* GLSL 4.60 §7.3 / ARB_cull_distance: match glGet values
+                 * from glm_params (all floored at 8). */
                 return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_INT));
             }
             if (strncmp(e->u.var_ref.name, "gl_MaxGeometry", 14) == 0) {

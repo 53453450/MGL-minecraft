@@ -749,6 +749,8 @@ static GLenum mglPassthroughDeclType(
      * at the reserved location below. */
     BOOL hasPrimitiveId = mgl_gs_for_ps && mgl_gs_for_ps->src &&
                           strstr(mgl_gs_for_ps->src, "gl_PrimitiveID") != NULL;
+    BOOL hasClipDistance = mgl_gs_for_ps && mgl_gs_for_ps->src &&
+                           strstr(mgl_gs_for_ps->src, "gl_ClipDistance") != NULL;
     if (hasPrimitiveId) {
         /* Float carrier: the GS kernel stores sitofp(id) and a flat int
          * stage_input that is actually read crashes Apple's AGX compiler
@@ -756,6 +758,11 @@ static GLenum mglPassthroughDeclType(
         [source appendFormat:
             @"layout(location = %u) flat out float mgl_primitive_id;\n",
              (unsigned)MGL_AIR_PRIMITIVE_ID_LOCATION];
+    }
+    if (hasClipDistance) {
+        [source appendFormat:
+            @"out float gl_ClipDistance[%u];\n",
+             (unsigned)MGL_AIR_PER_VERTEX_CLIP_DISTANCE_COUNT];
     }    for (GLuint i = 0; outputs->list && i < outputs->count; i++) {
         MGLShaderResource *output = &outputs->list[i];
         if (output->is_per_patch) continue;
@@ -814,6 +821,23 @@ static GLenum mglPassthroughDeclType(
         [source appendString:
             @"    vec4 mgl_prim_vec = mgl_gs_output.records[mgl_base + 3];\n"
              "    mgl_primitive_id = mgl_prim_vec.y;\n"];
+    }
+    if (hasClipDistance) {
+        /* Clip distances live at byte offset 64 (vec4 slots 4..5). */
+        unsigned clipSlot =
+            (unsigned)(MGL_AIR_PER_VERTEX_CLIP_DISTANCE_OFFSET / 16u);
+        [source appendFormat:
+            @"    vec4 mgl_clip0 = mgl_gs_output.records[mgl_base + %u];\n"
+             "    vec4 mgl_clip1 = mgl_gs_output.records[mgl_base + %u];\n"
+             "    gl_ClipDistance[0] = mgl_clip0.x;\n"
+             "    gl_ClipDistance[1] = mgl_clip0.y;\n"
+             "    gl_ClipDistance[2] = mgl_clip0.z;\n"
+             "    gl_ClipDistance[3] = mgl_clip0.w;\n"
+             "    gl_ClipDistance[4] = mgl_clip1.x;\n"
+             "    gl_ClipDistance[5] = mgl_clip1.y;\n"
+             "    gl_ClipDistance[6] = mgl_clip1.z;\n"
+             "    gl_ClipDistance[7] = mgl_clip1.w;\n",
+             clipSlot, clipSlot + 1u];
     }
     if (getenv("MGL_GS_PROBE")) {
         /* Pixel probe: R = vertex id, G = GPU-read position.y remapped,
