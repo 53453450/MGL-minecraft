@@ -2933,7 +2933,7 @@ static GLenum mglPassthroughDeclType(
                 cachedDepthHeight != depthHeight) {
                 MGLRenderTextureDescriptorState depthDesc = {0};
                 depthDesc.texture_type = MGLTextureType2D;
-                depthDesc.pixel_format = MGLPixelFormatDepth32Float;
+                depthDesc.pixel_format = MGLPixelFormatDepth32Float_Stencil8;
                 depthDesc.width = depthWidth;
                 depthDesc.height = depthHeight;
                 depthDesc.depth = 1;
@@ -4480,12 +4480,9 @@ static GLenum mglPassthroughDeclType(
                 return NO;
             }
             if (tex && tex->mtl_data) {
-                MGLRenderTextureInfo metalInfo = {0};
-                uint32_t depthFormat = MGLPixelFormatInvalid;
-                if (mglRenderGetTextureInfo((__bridge void *)(tex->mtl_data),
-                                            &metalInfo) == 0) {
-                    depthFormat = metalInfo.pixel_format;
-                } else {
+                id depthMetal = (__bridge id)tex->mtl_data;
+                uint32_t depthFormat = mglRenderPassTextureInfo(depthMetal).pixel_format;
+                if (depthFormat == MGLPixelFormatInvalid) {
                     depthFormat = mtlPixelFormatForGLTex(tex);
                 }
                 if (depthFormat == MGLPixelFormatInvalid) {
@@ -4505,12 +4502,9 @@ static GLenum mglPassthroughDeclType(
                 return NO;
             }
             if (tex && tex->mtl_data) {
-                MGLRenderTextureInfo metalInfo = {0};
-                uint32_t stencilFormat = MGLPixelFormatInvalid;
-                if (mglRenderGetTextureInfo((__bridge void *)(tex->mtl_data),
-                                            &metalInfo) == 0) {
-                    stencilFormat = metalInfo.pixel_format;
-                } else {
+                id stencilMetal = (__bridge id)tex->mtl_data;
+                uint32_t stencilFormat = mglRenderPassTextureInfo(stencilMetal).pixel_format;
+                if (stencilFormat == MGLPixelFormatInvalid) {
                     stencilFormat = mtlPixelFormatForGLTex(tex);
                 }
                 if (stencilFormat == MGLPixelFormatInvalid) {
