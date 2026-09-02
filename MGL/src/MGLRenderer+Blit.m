@@ -2965,7 +2965,7 @@ static id mglLookupAuxRenderPipeline(
     [self blitFramebufferDirectColorCopyWithState:&st];
 }
 
-void mglRendererCompatBlitFramebuffer(GLMContext glm_ctx,
+void mglRendererObjCBlitFramebuffer(GLMContext glm_ctx,
                                       int src_x0,
                                       int src_y0,
                                       int src_x1,

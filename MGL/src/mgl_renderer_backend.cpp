@@ -9,6 +9,9 @@
 
 #include "mgl_renderer_backend.h"
 #include "mgl_renderer_batch.h"
+#include "mgl_renderer_blit.h"
+#include "mgl_renderer_compute.h"
+#include "mgl_renderer_platform.h"
 #include "mgl_renderer_texture.h"
 
 #include <algorithm>
@@ -27,9 +30,6 @@ extern "C" Program *mglResolveProgramForStageFromState(
     GLMContext context, int stage);
 extern "C" void mglRendererPlatformBackendWillDestroy(
     void *platform_shell, MGLRendererBackendHandle *backend);
-extern "C" void mglRendererCompatDispatchCompute(GLMContext context,
-    unsigned int groups_x, unsigned int groups_y, unsigned int groups_z);
-extern "C" void mglRendererCompatDispatchComputeIndirect(GLMContext context, intptr_t indirect);
 extern "C" void mglRendererDrawArrays(GLMContext context,
     uint32_t mode, int32_t first, int32_t count);
 extern "C" void mglRendererDrawElements(GLMContext context,
@@ -78,45 +78,6 @@ extern "C" void mglRendererMultiDrawElementsIndirect(GLMContext context, uint32_
 extern "C" void mglRendererObjCBindTexture(GLMContext context, Texture *texture);
 extern "C" void mglRendererObjCFlushDrawBuffer(GLMContext context);
 extern "C" void mglRendererObjCGenerateMipmaps(GLMContext context, Texture *texture);
-extern "C" void mglRendererCompatSwapBuffers(GLMContext context);
-    unsigned int type, unsigned int mask);
-extern "C" void mglRendererCompatBlitFramebuffer(GLMContext context,
-    int src_x0, int src_y0, int src_x1, int src_y1,
-    int dst_x0, int dst_y0, int dst_x1, int dst_y1,
-    unsigned int mask, unsigned int filter);
-extern "C" void mglRendererCompatReadDrawable(GLMContext context, void *pixel_bytes,
-    uint32_t bytes_per_row, uint32_t bytes_per_image,
-    int32_t x, int32_t y, int32_t width, int32_t height);
-extern "C" void mglRendererCompatReadIntegerPixels(GLMContext context, void *pixel_bytes,
-    uint32_t bytes_per_row, uint32_t bytes_per_image,
-    int32_t x, int32_t y, int32_t width, int32_t height,
-    uint32_t format, uint32_t type);
-extern "C" void mglRendererCompatReadDepthPixels(GLMContext context, void *pixel_bytes,
-    uint32_t bytes_per_row, uint32_t bytes_per_image,
-    int32_t x, int32_t y, int32_t width, int32_t height);
-extern "C" void mglRendererCompatGetTexImage(GLMContext context, Texture *texture,
-    void *pixel_bytes, uint32_t bytes_per_row, uint32_t bytes_per_image,
-    int32_t x, int32_t y, int32_t width, int32_t height,
-    uint32_t format, uint32_t type, uint32_t level, uint32_t slice);
-extern "C" void mglRendererCompatTexSubImage(GLMContext context, Texture *texture, Buffer *buffer,
-    size_t source_offset, size_t source_pitch, size_t source_image_size,
-    size_t source_size, uint32_t slice, uint32_t level,
-    size_t width, size_t height, size_t depth,
-    size_t x_offset, size_t y_offset, size_t z_offset);
-extern "C" bool mglRendererCompatTexSubImageBytes(GLMContext context, Texture *texture,
-    const void *bytes, size_t bytes_size,
-    size_t source_offset, size_t source_pitch, size_t source_image_size,
-    uint32_t slice, uint32_t level,
-    size_t width, size_t height, size_t depth,
-    size_t x_offset, size_t y_offset, size_t z_offset);
-extern "C" void mglRendererCompatCopyTexSubImage(GLMContext context, Texture *texture,
-    uint32_t slice, int32_t level, int32_t x_offset, int32_t y_offset,
-    int32_t x, int32_t y, int32_t width, int32_t height);
-extern "C" void mglRendererCompatCopyImageSubData(GLMContext context, Texture *source_texture,
-    int32_t source_level, int32_t source_x, int32_t source_y, int32_t source_z,
-    Texture *destination_texture, int32_t destination_level,
-    int32_t destination_x, int32_t destination_y, int32_t destination_z,
-    int32_t width, int32_t height, int32_t depth);
 
 struct MGLRendererBackendPassthroughCache {
     MTL::Library *library = nullptr;
@@ -1548,7 +1509,7 @@ extern "C" void mglRendererFlush(GLMContext context, bool finish)
 extern "C" void mglRendererSwapBuffers(GLMContext context)
 {
     void *platform_shell = mglRendererBackendPlatformShell(context);
-    if (platform_shell) mglRendererCompatSwapBuffers(context);
+    if (platform_shell) mglRenderSwapBuffers(context);
 }
 
 extern "C" void mglRendererFlushDrawBuffer(GLMContext context)
@@ -1571,7 +1532,7 @@ extern "C" void mglRendererClearBuffer(
     GLMContext context, uint32_t type, uint32_t mask)
 {
     void *platform_shell = mglRendererBackendPlatformShell(context);
-    if (platform_shell) mglRendererCompatClearBuffer(context, type, mask);
+    if (platform_shell) mglRenderClearBuffer(context, type, mask);
 }
 
 extern "C" void mglRendererBlitFramebuffer(
@@ -1582,7 +1543,7 @@ extern "C" void mglRendererBlitFramebuffer(
 {
     void *platform_shell = mglRendererBackendPlatformShell(context);
     if (platform_shell) {
-        mglRendererCompatBlitFramebuffer(context, src_x0, src_y0, src_x1, src_y1,
+        mglRenderBlitFramebuffer(context, src_x0, src_y0, src_x1, src_y1,
             dst_x0, dst_y0, dst_x1, dst_y1, mask, filter);
     }
 }
@@ -1621,7 +1582,7 @@ extern "C" void mglRendererReadDrawable(
 {
     void *platform_shell = mglRendererBackendPlatformShell(context);
     if (platform_shell) {
-        mglRendererCompatReadDrawable(context, pixel_bytes, bytes_per_row, bytes_per_image,
+        mglRenderReadDrawable(context, pixel_bytes, bytes_per_row, bytes_per_image,
             x, y, width, height);
     }
 }
@@ -1634,7 +1595,7 @@ extern "C" void mglRendererReadIntegerPixels(
 {
     void *platform_shell = mglRendererBackendPlatformShell(context);
     if (platform_shell) {
-        mglRendererCompatReadIntegerPixels(context, pixel_bytes, bytes_per_row, bytes_per_image,
+        mglRenderReadIntegerPixels(context, pixel_bytes, bytes_per_row, bytes_per_image,
             x, y, width, height, format, type);
     }
 }
@@ -1646,7 +1607,7 @@ extern "C" void mglRendererReadDepthPixels(
 {
     void *platform_shell = mglRendererBackendPlatformShell(context);
     if (platform_shell) {
-        mglRendererCompatReadDepthPixels(context, pixel_bytes, bytes_per_row, bytes_per_image,
+        mglRenderReadDepthPixels(context, pixel_bytes, bytes_per_row, bytes_per_image,
             x, y, width, height);
     }
 }
@@ -1659,7 +1620,7 @@ extern "C" void mglRendererGetTexImage(
 {
     void *platform_shell = mglRendererBackendPlatformShell(context);
     if (platform_shell) {
-        mglRendererCompatGetTexImage(context, texture, pixel_bytes,
+        mglRenderGetTexImage(context, texture, pixel_bytes,
             bytes_per_row, bytes_per_image, x, y, width, height,
             format, type, level, slice);
     }
@@ -1682,7 +1643,7 @@ extern "C" void mglRendererTexSubImage(
 {
     void *platform_shell = mglRendererBackendPlatformShell(context);
     if (platform_shell) {
-        mglRendererCompatTexSubImage(context, texture, buffer,
+        mglRenderTexSubImage(context, texture, buffer,
             source_offset, source_pitch, source_image_size, source_size,
             slice, level, width, height, depth,
             x_offset, y_offset, z_offset);
@@ -1698,7 +1659,7 @@ extern "C" bool mglRendererTexSubImageBytes(
     size_t x_offset, size_t y_offset, size_t z_offset)
 {
     void *platform_shell = mglRendererBackendPlatformShell(context);
-    return platform_shell && mglRendererCompatTexSubImageBytes(context, texture, bytes, bytes_size,
+    return platform_shell && mglRenderTexSubImageBytes(context, texture, bytes, bytes_size,
         source_offset, source_pitch, source_image_size,
         slice, level, width, height, depth,
         x_offset, y_offset, z_offset);
@@ -1712,7 +1673,7 @@ extern "C" void mglRendererCopyTexSubImage(
 {
     void *platform_shell = mglRendererBackendPlatformShell(context);
     if (platform_shell) {
-        mglRendererCompatCopyTexSubImage(context, texture, slice, level, x_offset, y_offset,
+        mglRenderCopyTexSubImage(context, texture, slice, level, x_offset, y_offset,
             x, y, width, height);
     }
 }
@@ -1727,7 +1688,7 @@ extern "C" void mglRendererCopyImageSubData(
 {
     void *platform_shell = mglRendererBackendPlatformShell(context);
     if (platform_shell) {
-        mglRendererCompatCopyImageSubData(context, source_texture,
+        mglRenderCopyImageSubData(context, source_texture,
             source_level, source_x, source_y, source_z,
             destination_texture, destination_level,
             destination_x, destination_y, destination_z,
@@ -1741,7 +1702,7 @@ extern "C" void mglRendererDispatchCompute(
 {
     void *platform_shell = mglRendererBackendPlatformShell(context);
     if (platform_shell) {
-        mglRendererCompatDispatchCompute(context, groups_x, groups_y, groups_z);
+        mglRenderDispatchCompute(context, groups_x, groups_y, groups_z);
     }
 }
 
@@ -1750,7 +1711,7 @@ extern "C" void mglRendererDispatchComputeIndirect(
 {
     void *platform_shell = mglRendererBackendPlatformShell(context);
     if (platform_shell) {
-        mglRendererCompatDispatchComputeIndirect(context, indirect);
+        mglRenderDispatchComputeIndirect(context, indirect);
     }
 }
 

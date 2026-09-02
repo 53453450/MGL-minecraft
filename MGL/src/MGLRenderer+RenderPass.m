@@ -16,6 +16,7 @@
 #include "mgl_air_loader.h"     /* AIR metallib loader. */
 #include "mgl_aux_assets.h"
 #include "mgl_renderer_backend.h"
+#include "mgl_renderer_binding.h"
 #include "mgl_renderer_sync.h"
 #include "mgl_env_flag.h"
 #include "mgl_shader_abi.h"
@@ -5286,8 +5287,8 @@ static GLenum mglPassthroughDeclType(
     // Resource Sync domain (Resource Sync domain): stability rebind before draw. The logic was moved to
     // syncResourceBindingsForContext:, only the dispatch remains here; steps
     // the dirty-domain pass already ran this invocation are skipped.
-    RETURN_FALSE_ON_FAILURE([self syncResourceBindingsForContext:ctx
-                                                     alreadyDone:&resourceSyncWork]);
+    RETURN_FALSE_ON_FAILURE(
+        mglRenderSyncResourceBindings(ctx, &resourceSyncWork));
 
     Program *fragmentProgram = mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
     BOOL useFragCoordParams =

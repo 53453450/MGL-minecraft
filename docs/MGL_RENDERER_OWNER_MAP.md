@@ -69,3 +69,19 @@ draw_command.c / backend
   → mglRenderProcessGLState (mgl_renderer_sync.cpp)
   → mglRendererObjCProcessGLState (MGLRenderer+RenderPass.m, migrates to C++)
 ```
+
+## C++ renderer modules (Phase 2–6)
+
+| Module | Header | ObjC bridge prefix | Routes |
+|--------|--------|-------------------|--------|
+| sync | `mgl_renderer_sync.h` | `mglRendererObjCProcessGLState` | dirty-domain orchestration |
+| binding | `mgl_renderer_binding.h` | `mglRendererObjCSyncResourceBindings` | resource rebind before draw |
+| batch | `mgl_renderer_batch.h` | `mglRendererObjCFlushDrawBuffer` | deferred batch flush |
+| draw | `mgl_renderer_draw.h` | `mglRendererObjCDraw*` | draw dispatch (partial) |
+| texture | `mgl_renderer_texture.h` | `mglRendererObjC*Texture*` | bind/mipmap/readback/upload |
+| platform | `mgl_renderer_platform.h` | `mglRendererObjCSwap/Clear*` | swap/clear |
+| blit | `mgl_renderer_blit.h` | `mglRendererObjCBlitFramebuffer` | framebuffer blit |
+| compute | `mgl_renderer_compute.h` | `mglRendererObjCDispatchCompute*` | compute dispatch |
+
+All backend `mglRenderer*` public APIs route through `mglRender*` facades;
+`mglRendererCompat*` dispatch has been removed (Phase 6).

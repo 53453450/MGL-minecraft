@@ -61,7 +61,7 @@ static int mglTextureAddCommandBufferCompletion(
     return result;
 }
 
-static MGLRegionValue mglRendererCompatRegion(int32_t x, int32_t y,
+static MGLRegionValue mglRendererObjCRegion(int32_t x, int32_t y,
                                          int32_t width, int32_t height)
 {
     return (MGLRegionValue){
@@ -83,7 +83,7 @@ static MGLRegionValue mglTextureRegion3D(uint64_t x, uint64_t y, uint64_t z,
                                          uint64_t width, uint64_t height, uint64_t depth)
 { return (MGLRegionValue){mglTextureOrigin(x, y, z), mglTextureSize(width, height, depth)}; }
 
-void mglRendererCompatReadDrawable(GLMContext glm_ctx, void *pixel_bytes,
+void mglRendererObjCReadDrawable(GLMContext glm_ctx, void *pixel_bytes,
     uint32_t bytes_per_row, uint32_t bytes_per_image,
     int32_t x, int32_t y, int32_t width, int32_t height)
 {
@@ -91,10 +91,10 @@ void mglRendererCompatReadDrawable(GLMContext glm_ctx, void *pixel_bytes,
     if (!renderer || !glm_ctx) return;
     [renderer mtlReadDrawable:glm_ctx pixelBytes:pixel_bytes
                   bytesPerRow:bytes_per_row bytesPerImage:bytes_per_image
-                   fromRegion:mglRendererCompatRegion(x, y, width, height)];
+                   fromRegion:mglRendererObjCRegion(x, y, width, height)];
 }
 
-void mglRendererCompatReadIntegerPixels(GLMContext glm_ctx, void *pixel_bytes,
+void mglRendererObjCReadIntegerPixels(GLMContext glm_ctx, void *pixel_bytes,
     uint32_t bytes_per_row, uint32_t bytes_per_image,
     int32_t x, int32_t y, int32_t width, int32_t height,
     uint32_t format, uint32_t type)
@@ -103,11 +103,11 @@ void mglRendererCompatReadIntegerPixels(GLMContext glm_ctx, void *pixel_bytes,
     if (!renderer || !glm_ctx) return;
     [renderer mtlReadIntegerPixels:glm_ctx pixelBytes:pixel_bytes
                        bytesPerRow:bytes_per_row bytesPerImage:bytes_per_image
-                        fromRegion:mglRendererCompatRegion(x, y, width, height)
+                        fromRegion:mglRendererObjCRegion(x, y, width, height)
                             format:format type:type];
 }
 
-void mglRendererCompatReadDepthPixels(GLMContext glm_ctx, void *pixel_bytes,
+void mglRendererObjCReadDepthPixels(GLMContext glm_ctx, void *pixel_bytes,
     uint32_t bytes_per_row, uint32_t bytes_per_image,
     int32_t x, int32_t y, int32_t width, int32_t height)
 {
@@ -115,10 +115,10 @@ void mglRendererCompatReadDepthPixels(GLMContext glm_ctx, void *pixel_bytes,
     if (!renderer || !glm_ctx) return;
     [renderer mtlReadDepthPixels:glm_ctx pixelBytes:pixel_bytes
                      bytesPerRow:bytes_per_row bytesPerImage:bytes_per_image
-                      fromRegion:mglRendererCompatRegion(x, y, width, height)];
+                      fromRegion:mglRendererObjCRegion(x, y, width, height)];
 }
 
-void mglRendererCompatGetTexImage(GLMContext glm_ctx, Texture *texture,
+void mglRendererObjCGetTexImage(GLMContext glm_ctx, Texture *texture,
     void *pixel_bytes, uint32_t bytes_per_row, uint32_t bytes_per_image,
     int32_t x, int32_t y, int32_t width, int32_t height,
     uint32_t format, uint32_t type, uint32_t level, uint32_t slice)
@@ -127,7 +127,7 @@ void mglRendererCompatGetTexImage(GLMContext glm_ctx, Texture *texture,
     if (!renderer || !glm_ctx) return;
     [renderer mtlGetTexImage:glm_ctx tex:texture pixelBytes:pixel_bytes
                  bytesPerRow:bytes_per_row bytesPerImage:bytes_per_image
-                  fromRegion:mglRendererCompatRegion(x, y, width, height)
+                  fromRegion:mglRendererObjCRegion(x, y, width, height)
                       format:format type:type mipmapLevel:level slice:slice];
 }
 
@@ -138,7 +138,7 @@ void mglRendererObjCGenerateMipmaps(GLMContext glm_ctx, Texture *texture)
     [renderer mtlGenerateMipmaps:glm_ctx forTexture:texture];
 }
 
-void mglRendererCompatTexSubImage(GLMContext glm_ctx, Texture *texture, Buffer *buffer,
+void mglRendererObjCTexSubImage(GLMContext glm_ctx, Texture *texture, Buffer *buffer,
     size_t source_offset, size_t source_pitch, size_t source_image_size,
     size_t source_size, uint32_t slice, uint32_t level,
     size_t width, size_t height, size_t depth,
@@ -154,7 +154,7 @@ void mglRendererCompatTexSubImage(GLMContext glm_ctx, Texture *texture, Buffer *
                      zoffset:z_offset];
 }
 
-bool mglRendererCompatTexSubImageBytes(GLMContext glm_ctx, Texture *texture,
+bool mglRendererObjCTexSubImageBytes(GLMContext glm_ctx, Texture *texture,
     const void *bytes, size_t bytes_size,
     size_t source_offset, size_t source_pitch, size_t source_image_size,
     uint32_t slice, uint32_t level,
@@ -173,7 +173,7 @@ bool mglRendererCompatTexSubImageBytes(GLMContext glm_ctx, Texture *texture,
                                   zoffset:z_offset];
 }
 
-void mglRendererCompatCopyTexSubImage(GLMContext glm_ctx, Texture *texture,
+void mglRendererObjCCopyTexSubImage(GLMContext glm_ctx, Texture *texture,
     uint32_t slice, int32_t level, int32_t x_offset, int32_t y_offset,
     int32_t x, int32_t y, int32_t width, int32_t height)
 {
@@ -184,7 +184,7 @@ void mglRendererCompatCopyTexSubImage(GLMContext glm_ctx, Texture *texture,
                               x:x y:y width:width height:height];
 }
 
-void mglRendererCompatCopyImageSubData(GLMContext glm_ctx, Texture *source_texture,
+void mglRendererObjCCopyImageSubData(GLMContext glm_ctx, Texture *source_texture,
     int32_t source_level, int32_t source_x, int32_t source_y, int32_t source_z,
     Texture *destination_texture, int32_t destination_level,
     int32_t destination_x, int32_t destination_y, int32_t destination_z,
