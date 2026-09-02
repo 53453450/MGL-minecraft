@@ -74,7 +74,7 @@ draw_command.c / backend
 
 | Module | Header | ObjC bridge prefix | Routes |
 |--------|--------|-------------------|--------|
-| sync | `mgl_renderer_sync.h` | `mglRendererObjCProcessGLState` | dirty-domain orchestration |
+| sync | `mgl_renderer_sync.h` | `mglRendererObjCProcessGLState` | dirty-domain orchestration, FBO pass sync (`mglRenderSyncRenderPassForFbo`) |
 | binding | `mgl_renderer_binding.h` | `mglRendererObjCSyncResourceBindings` | resource rebind before draw |
 | batch | `mgl_renderer_batch.h` | `mglRendererObjCFlushDrawBuffer` | deferred batch flush |
 | draw | `mgl_renderer_draw.h` | `mglRendererObjCDraw*` | draw dispatch (partial) |

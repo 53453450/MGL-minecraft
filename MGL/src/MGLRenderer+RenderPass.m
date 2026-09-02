@@ -5385,10 +5385,63 @@ static GLenum mglPassthroughDeclType(
  * Dirty state domain processing — orchestration lives in mgl_renderer_sync.cpp;
  * ObjC hooks implement platform-specific steps.
  */
+static Framebuffer *mglSyncBridgeGetValidatedFramebuffer(void *renderer,
+                                                         GLMContext context,
+                                                         const char *where);
+static bool mglSyncBridgeRenderPassMatchesFramebuffer(void *renderer,
+                                                      GLMContext context);
+static bool mglSyncBridgeBindFramebufferAttachments(void *renderer,
+                                                    GLMContext context);
+static bool mglSyncBridgeRotateRenderEncoderForFbo(void *renderer,
+                                                   GLMContext context);
+
 static bool mglSyncBridgeSyncFbo(void *renderer, GLMContext context)
 {
+    MGLRenderer *self = (__bridge MGLRenderer *)renderer;
+    static const MGLRenderPassSyncOps kPassOpsTemplate = {
+        .get_validated_framebuffer = mglSyncBridgeGetValidatedFramebuffer,
+        .render_pass_matches_framebuffer =
+            mglSyncBridgeRenderPassMatchesFramebuffer,
+        .bind_framebuffer_attachment_textures =
+            mglSyncBridgeBindFramebufferAttachments,
+        .rotate_render_encoder_for_fbo =
+            mglSyncBridgeRotateRenderEncoderForFbo,
+    };
+    MGLRenderPassSyncOps passOps = kPassOpsTemplate;
+    passOps.renderer = renderer;
+    return mglRenderSyncRenderPassForFbo(context, &self->_commandState,
+                                         &passOps) != 0;
+}
+
+static Framebuffer *mglSyncBridgeGetValidatedFramebuffer(void *renderer,
+                                                         GLMContext context,
+                                                         const char *where)
+{
+    (void)renderer;
+    return mglRendererGetValidatedFramebuffer(context, where);
+}
+
+static bool mglSyncBridgeRenderPassMatchesFramebuffer(void *renderer,
+                                                      GLMContext context)
+{
+    (void)context;
     return [(__bridge MGLRenderer *)renderer
-        syncRenderPassStateForContext:context];
+        currentRenderPassMatchesCurrentFramebuffer];
+}
+
+static bool mglSyncBridgeBindFramebufferAttachments(void *renderer,
+                                                    GLMContext context)
+{
+    (void)context;
+    return [(__bridge MGLRenderer *)renderer bindFramebufferAttachmentTextures];
+}
+
+static bool mglSyncBridgeRotateRenderEncoderForFbo(void *renderer,
+                                                   GLMContext context)
+{
+    (void)context;
+    return [(__bridge MGLRenderer *)renderer
+        rotateRenderEncoderForCurrentFramebufferLocked];
 }
 
 static bool mglSyncBridgeBindFramebufferInStateBlock(void *renderer,
@@ -6641,36 +6694,7 @@ stencil_format_ok:;
 
 - (bool)syncRenderPassStateForContext:(GLMContext)glm_ctx
 {
-    GLMState *state = MGL_STATE(glm_ctx);
-    Framebuffer *framebuffer = mglRendererGetValidatedFramebuffer(glm_ctx, "processGLState.dirtyFBO");
-    BOOL framebufferBindingDirty = framebuffer && (framebuffer->dirty_bits & DIRTY_FBO_BINDING);
-    if (mglRenderEncoderOwnerHasCurrent(
-            _commandState.currentRenderEncoderOwner) == 1 &&
-        !framebufferBindingDirty &&
-        [self currentRenderPassMatchesCurrentFramebuffer]) {
-        state->dirty_bits &= ~DIRTY_FBO;
-        return true;
-    }
-
-    if (framebuffer && framebufferBindingDirty)
-    {
-        RETURN_FALSE_ON_FAILURE([self bindFramebufferAttachmentTextures]);
-        framebuffer = mglRendererGetValidatedFramebuffer(glm_ctx, "processGLState.dirtyFBO.afterBind");
-        if (framebuffer) {
-            framebuffer->dirty_bits &= ~DIRTY_FBO_BINDING;
-        }
-    }
-
-    /* instrumentation: an FBO change forced a real encoder rotation
-     * (the "already matches" fast path above returned early without counting).
-     * newRenderEncoderLocked also bumps g_mglEncoderCreationsSinceSwap, so
-     * fboRot <= new always holds; new-minus-fboRot is non-FBO creation. */
-    /* RenderPass Manager: encoder open/close is owned by the RenderPass Manager
-     * facade (rotateRenderEncoderForCurrentFramebufferLocked), not by this
-     * Sync unit directly. The Sync layer only decides that a rotation is
-     * needed and delegates the lifecycle transition. */
-    RETURN_FALSE_ON_FAILURE([self rotateRenderEncoderForCurrentFramebufferLocked]);
-    return true;
+    return mglSyncBridgeSyncFbo((__bridge void *)self, glm_ctx);
 }
 
 

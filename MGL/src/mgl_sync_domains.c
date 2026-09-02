@@ -4,7 +4,7 @@
  * Pure-C dirty sync domain classification (gtest-friendly, no Metal).
  */
 
-#include "mgl_renderer_sync.h"
+#include "mgl_sync_domains.h"
 #include "mgl_types_state.h"
 
 uint32_t mglRenderClassifyDirtySyncDomains(uint32_t dirty_bits)

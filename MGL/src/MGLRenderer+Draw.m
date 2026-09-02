@@ -5557,17 +5557,3 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
 }
 
 @end
-
-bool mglRendererObjCDrawArrays(GLMContext glm_ctx, GLenum mode, GLint first,
-                               GLsizei count)
-{
-    mglRendererDrawArrays(glm_ctx, (uint32_t)mode, (int32_t)first, (int32_t)count);
-    return glm_ctx && glm_ctx->active_state->error == GL_NO_ERROR;
-}
-
-bool mglRendererObjCDrawElements(GLMContext glm_ctx, GLenum mode, GLsizei count,
-                                 GLenum type, const void *indices)
-{
-    mglRendererDrawElements(glm_ctx, (uint32_t)mode, (int32_t)count, type, indices);
-    return glm_ctx && glm_ctx->active_state->error == GL_NO_ERROR;
-}

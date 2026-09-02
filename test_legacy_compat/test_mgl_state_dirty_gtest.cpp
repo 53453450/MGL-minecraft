@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 
 extern "C" {
-#include "mgl_renderer_sync.h"
+#include "mgl_sync_domains.h"
 #include "mgl_types_state.h"
 }
 

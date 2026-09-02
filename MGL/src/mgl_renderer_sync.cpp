@@ -9,6 +9,7 @@
 
 #include "mgl_render.h"
 #include "mgl_types_state.h"
+#include "mgl_types_framebuffer.h"
 
 extern "C" bool mglRendererObjCProcessGLState(GLMContext context, bool draw_command);
 extern "C" uint32_t mglRenderClassifyDirtySyncDomains(uint32_t dirty_bits);
@@ -144,6 +145,54 @@ extern "C" int mglRenderProcessDirtyStateDomains(
     }
 
     state->dirty_bits = 0;
+    return 1;
+}
+
+extern "C" int mglRenderSyncRenderPassForFbo(
+    GLMContext context, const MGLCommandState *command_state,
+    const MGLRenderPassSyncOps *ops)
+{
+    if (!context || !context->active_state || !ops) {
+        return 0;
+    }
+
+    GLMState *state = context->active_state;
+    Framebuffer *framebuffer = ops->get_validated_framebuffer
+        ? ops->get_validated_framebuffer(ops->renderer, context,
+                                         "processGLState.dirtyFBO")
+        : state->framebuffer;
+    const bool binding_dirty =
+        framebuffer && (framebuffer->dirty_bits & DIRTY_FBO_BINDING);
+
+    if (command_state &&
+        mglRenderEncoderOwnerHasCurrent(
+            command_state->currentRenderEncoderOwner) == 1 &&
+        !binding_dirty && ops->render_pass_matches_framebuffer &&
+        ops->render_pass_matches_framebuffer(ops->renderer, context)) {
+        state->dirty_bits &= ~DIRTY_FBO;
+        return 1;
+    }
+
+    if (framebuffer && binding_dirty) {
+        if (!ops->bind_framebuffer_attachment_textures ||
+            !ops->bind_framebuffer_attachment_textures(ops->renderer,
+                                                       context)) {
+            return 0;
+        }
+        framebuffer = ops->get_validated_framebuffer
+            ? ops->get_validated_framebuffer(
+                  ops->renderer, context,
+                  "processGLState.dirtyFBO.afterBind")
+            : state->framebuffer;
+        if (framebuffer) {
+            framebuffer->dirty_bits &= ~DIRTY_FBO_BINDING;
+        }
+    }
+
+    if (!ops->rotate_render_encoder_for_fbo ||
+        !ops->rotate_render_encoder_for_fbo(ops->renderer, context)) {
+        return 0;
+    }
     return 1;
 }
 

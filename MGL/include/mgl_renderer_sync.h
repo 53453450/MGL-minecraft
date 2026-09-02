@@ -15,6 +15,8 @@
 #include "glm_context.h"
 #include "mgl_frame_activity.h"
 #include "mgl_render_pass_coordinator.h"
+#include "mgl_sync_domains.h"
+#include "mgl_types_framebuffer.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -27,17 +29,6 @@ typedef struct MGLResourceSyncWork_t {
     bool updatedBaseLists;
     bool boundActiveTextures;
 } MGLResourceSyncWork;
-
-/* Dirty-domain masks for incremental sync (mirror processDirtyStateDomains). */
-#define MGL_SYNC_DOMAIN_FBO          (1u << 0)
-#define MGL_SYNC_DOMAIN_STATE        (1u << 1)
-#define MGL_SYNC_DOMAIN_PROGRAM_VAO  (1u << 2)
-#define MGL_SYNC_DOMAIN_TEX          (1u << 3)
-#define MGL_SYNC_DOMAIN_VAO          (1u << 4)
-#define MGL_SYNC_DOMAIN_BUFFER       (1u << 5)
-#define MGL_SYNC_DOMAIN_RENDER_STATE (1u << 6)
-#define MGL_SYNC_DOMAIN_PIPELINE     (1u << 7)
-#define MGL_SYNC_DOMAIN_ALL          0xFFFFFFFFu
 
 /* ObjC/platform hooks invoked by the C++ dirty-domain orchestrator. */
 typedef struct MGLRendererSyncOps_t {
@@ -58,18 +49,29 @@ typedef struct MGLRendererSyncOps_t {
     bool (*sync_incidental_buffer_data)(void *renderer, GLMContext context);
 } MGLRendererSyncOps;
 
-uint32_t mglRenderClassifyDirtySyncDomains(uint32_t dirty_bits);
+/* Platform hooks for FBO/render-pass sync (formerly syncRenderPassStateForContext). */
+typedef struct MGLRenderPassSyncOps_t {
+    void *renderer;
+    Framebuffer *(*get_validated_framebuffer)(void *renderer, GLMContext context,
+                                              const char *where);
+    bool (*render_pass_matches_framebuffer)(void *renderer, GLMContext context);
+    bool (*bind_framebuffer_attachment_textures)(void *renderer,
+                                                   GLMContext context);
+    bool (*rotate_render_encoder_for_fbo)(void *renderer, GLMContext context);
+} MGLRenderPassSyncOps;
 
 int mglRenderProcessGLState(GLMContext context, int draw_command);
 
-/* Orchestrates dirty-bit domain dispatch (formerly processDirtyStateDomains). */
 int mglRenderProcessDirtyStateDomains(GLMContext context,
                                       uint32_t domain_mask, int draw_command,
                                       const MGLCommandState *command_state,
                                       MGLResourceSyncWork *work,
                                       const MGLRendererSyncOps *ops);
 
-/* ObjC renderer bridge — processGLState body until fully migrated. */
+int mglRenderSyncRenderPassForFbo(GLMContext context,
+                                  const MGLCommandState *command_state,
+                                  const MGLRenderPassSyncOps *ops);
+
 bool mglRendererObjCProcessGLState(GLMContext context, bool draw_command);
 
 #ifdef __cplusplus
