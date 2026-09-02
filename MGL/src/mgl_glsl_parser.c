@@ -1722,6 +1722,12 @@ static MGLStmt *parse_statement(MGLParser *p)
         return s;
     }
 
+    /* null / empty statement (GLSL expression_statement with omitted expr) */
+    if (ops_at(p, ";")) {
+        advance(p);
+        return stmt_alloc(p, MGL_STMT_EXPR, line);
+    }
+
     /* Is this a declaration (qualifier or type keyword first)? */
     if (at_decl_start(p)) {
         return parse_decl_stmt(p, line);

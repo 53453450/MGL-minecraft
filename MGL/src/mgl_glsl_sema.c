@@ -1043,6 +1043,7 @@ typedef enum {
     BI_ARG_UVEC4,     /* uvec4 */
     BI_ARG_ATOMIC,    /* atomic_uint */
     BI_ARG_BVEC,      /* bool/bvec2/3/4 */
+    BI_ARG_OUT_GENI,  /* out int/uint genType (lvalue; same match as GENI) */
 } BiArgKind;
 
 typedef enum {
@@ -1051,6 +1052,7 @@ typedef enum {
     BI_RET_BOOL,    /* scalar bool */
     BI_RET_GENF,    /* float genType matching the gen args */
     BI_RET_GENI,    /* int/uint genType matching the gen args */
+    BI_RET_SGENI,   /* always-signed int genType matching gen dim */
     BI_RET_BVEC,    /* bvec matching the gen args */
     BI_RET_VEC2,    /* vec2 */
     BI_RET_VEC3,    /* vec3 */
@@ -1273,7 +1275,24 @@ static const BiFn kBuiltins[] = {
     { "packSnorm2x16",   1, { BI_ARG_VEC2 }, BI_RET_UINT },
     { "unpackSnorm2x16", 1, { BI_ARG_INT }, BI_RET_VEC2 },
     { "packHalf2x16",    1, { BI_ARG_VEC2 }, BI_RET_UINT },
-    { "unpackHalf2x16",  1, { BI_ARG_INT }, BI_RET_VEC2 },
+    { "unpackHalf2x16", 1, { BI_ARG_INT }, BI_RET_VEC2 },
+    { "packUnorm4x8",    1, { BI_ARG_VEC4 }, BI_RET_UINT },
+    { "packSnorm4x8",    1, { BI_ARG_VEC4 }, BI_RET_UINT },
+    { "unpackUnorm4x8",  1, { BI_ARG_INT }, BI_RET_VEC4 },
+    { "unpackSnorm4x8",  1, { BI_ARG_INT }, BI_RET_VEC4 },
+    /* integer / bitfield (GLSL 4.60 §8.8 / §8.3) */
+    { "bitfieldExtract", 3, { BI_ARG_GENI, BI_ARG_INT, BI_ARG_INT }, BI_RET_GENI },
+    { "bitfieldInsert", 4, { BI_ARG_GENI, BI_ARG_GENI, BI_ARG_INT, BI_ARG_INT }, BI_RET_GENI },
+    { "bitfieldReverse", 1, { BI_ARG_GENI }, BI_RET_GENI },
+    { "bitCount", 1, { BI_ARG_GENI }, BI_RET_SGENI },
+    { "findLSB", 1, { BI_ARG_GENI }, BI_RET_SGENI },
+    { "findMSB", 1, { BI_ARG_GENI }, BI_RET_SGENI },
+    { "uaddCarry", 3, { BI_ARG_GENI, BI_ARG_GENI, BI_ARG_OUT_GENI }, BI_RET_GENI },
+    { "usubBorrow", 3, { BI_ARG_GENI, BI_ARG_GENI, BI_ARG_OUT_GENI }, BI_RET_GENI },
+    { "umulExtended", 4, { BI_ARG_GENI, BI_ARG_GENI, BI_ARG_OUT_GENI, BI_ARG_OUT_GENI }, BI_RET_VOID },
+    { "imulExtended", 4, { BI_ARG_GENI, BI_ARG_GENI, BI_ARG_OUT_GENI, BI_ARG_OUT_GENI }, BI_RET_VOID },
+    { "frexp", 2, { BI_ARG_GENF, BI_ARG_OUT_GENI }, BI_RET_GENF },
+    { "ldexp", 2, { BI_ARG_GENF, BI_ARG_GENI }, BI_RET_GENF },
     /* atomic (compute) */
     { "atomicAdd", 2, { BI_ARG_GENI, BI_ARG_GENI }, BI_RET_GENI },
     { "atomicCounterIncrement", 1, { BI_ARG_ATOMIC }, BI_RET_UINT },
@@ -1344,6 +1363,8 @@ static int bif_arg_matches(const MGLIRType *t, BiArgKind k, uint32_t *gen_dim)
     case BI_ARG_GENF:
         return bif_gen_matches(t, gen_dim);
     case BI_ARG_GENI:
+        return bif_geni_matches(t, gen_dim, &bif_geni_unsigned);
+    case BI_ARG_OUT_GENI:
         return bif_geni_matches(t, gen_dim, &bif_geni_unsigned);
     case BI_ARG_FLOAT:
         return t->kind == MGLIR_TYPE_SCALAR &&
@@ -1468,7 +1489,8 @@ static MGLIRType *builtin_call_type(const char *name,
                 ok = 0;
                 break;
             }
-            if (f->args[j] == BI_ARG_GENF || f->args[j] == BI_ARG_GENI) {
+            if (f->args[j] == BI_ARG_GENF || f->args[j] == BI_ARG_GENI ||
+                f->args[j] == BI_ARG_OUT_GENI) {
                 if (gen_dim == 0) {
                     gen_dim = d;
                 } else if (gen_dim != d) {
@@ -1491,6 +1513,9 @@ static MGLIRType *builtin_call_type(const char *name,
                                   gen_dim)
                 : mglIRTypeScalar(bif_geni_unsigned ? MGLIR_SCALAR_UINT
                                                     : MGLIR_SCALAR_INT);
+        case BI_RET_SGENI:
+            return gen_dim > 1 ? mglIRTypeVector(MGLIR_SCALAR_INT, gen_dim)
+                               : mglIRTypeScalar(MGLIR_SCALAR_INT);
         case BI_RET_FLOAT:
             return mglIRTypeScalar(MGLIR_SCALAR_FLOAT);
         case BI_RET_UINT:

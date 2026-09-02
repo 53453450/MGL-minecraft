@@ -578,7 +578,9 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
         } else if ((q & MGL_AST_Q_UNIFORM) &&
                    base_t && base_t->kind == MGLIR_TYPE_ATOMIC_COUNTER) {
             acCount++;
-        } else if (q & MGL_AST_Q_BUFFER) {
+        } else if ((q & MGL_AST_Q_BUFFER) && !s->block_name) {
+            /* Flattened anonymous SSBO members share the owning block's
+             * Metal slot; only the block itself advances ssboCount. */
             ssboCount++;
         } else if ((q & MGL_AST_Q_UNIFORM) && !s->block_name &&
                    air_uniform_block_type(t)) {
@@ -771,7 +773,7 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
             agg_count++;
             continue;
         }
-        if (q & MGL_AST_Q_BUFFER) {
+        if ((q & MGL_AST_Q_BUFFER) && !s->block_name) {
             push_resource(&lists[_STORAGE_BUFFER_RES], s, t, location,
                           ssbo_binding++, stage);
             MGLShaderResource *ssbo_last =
