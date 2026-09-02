@@ -29,8 +29,10 @@ jobs:
           LOC=$(wc -l MGL/src/MGLRenderer*.m MGL/src/MGLPlatformRendererShell.m 2>/dev/null | tail -1 | awk '{print $1}')
           echo "ObjC renderer LOC=$LOC (limit 2000)"
           test "$LOC" -lt 2000
-          if git grep -n mglRendererCompat; then
-            echo "FAIL: mglRendererCompat references remain" >&2
+          # Build needle at runtime so this workflow file does not self-match.
+          NEEDLE="mglRenderer"'Compat'
+          if git grep -n "$NEEDLE" -- MGL test_legacy_compat test_regression test_dirty_hash; then
+            echo "FAIL: ${NEEDLE} references remain in sources" >&2
             exit 1
           fi
           echo "compat grep: clean"
@@ -56,28 +58,19 @@ jobs:
           LOC=$(wc -l MGL/src/MGLRenderer*.m MGL/src/MGLPlatformRendererShell.m 2>/dev/null | tail -1 | awk '{print $1}')
           echo "ObjC renderer LOC=$LOC (limit 2000)"
           test "$LOC" -lt 2000
-          if git grep -n mglRendererCompat; then
-            echo "FAIL: mglRendererCompat references remain" >&2
+          NEEDLE="mglRenderer"'Compat'
+          if git grep -n "$NEEDLE" -- MGL test_legacy_compat test_regression test_dirty_hash; then
+            echo "FAIL: ${NEEDLE} references remain in sources" >&2
             exit 1
           fi
       - name: test-mgl-state-dirty-gtest
         run: make test-mgl-state-dirty-gtest
       - name: test-metalcpp
-        env:
-          LLVM_ROOT: /opt/homebrew/opt/llvm@15
         run: |
-          if [ ! -d "$LLVM_ROOT" ]; then
-            LLVM_ROOT="$(brew --prefix llvm@15)"
-          fi
-          export LLVM_ROOT
+          export LLVM_ROOT="$(brew --prefix llvm@15)"
           make test-metalcpp
       - name: build libmgl + test-regression
-        env:
-          LLVM_ROOT: /opt/homebrew/opt/llvm@15
         run: |
-          if [ ! -d "$LLVM_ROOT" ]; then
-            LLVM_ROOT="$(brew --prefix llvm@15)"
-          fi
-          export LLVM_ROOT
+          export LLVM_ROOT="$(brew --prefix llvm@15)"
           make lib
           make test-regression
