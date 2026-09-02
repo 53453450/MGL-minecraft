@@ -261,6 +261,39 @@ static bool varyingUsesFloatCarrier(const MType &t, bool has_gs) {
     return t.scalar == MGLIR_SCALAR_INT || t.scalar == MGLIR_SCALAR_UINT;
 }
 
+/* Full-range uint flat varyings cannot use a single float carrier: UIToFP
+ * loses bits above float24 and intBitsToFloat produces NaN payloads that
+ * AGX does not preserve.  Split into two exact float16-bit lanes instead. */
+static bool uintUsesSplitFloatCarrier(const MType &t, bool has_gs) {
+    return !has_gs && t.scalar == MGLIR_SCALAR_UINT && !t.isArray();
+}
+
+static void encodeUintSplitFloatCarrier(Codegen &cg, llvm::Value *value,
+                                        llvm::Value **loOut,
+                                        llvm::Value **hiOut) {
+    llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+    llvm::Value *lo16 =
+        cg.b->CreateAnd(value, cg.b->getInt32(0xFFFF));
+    llvm::Value *hi16 = cg.b->CreateLShr(value, 16);
+    *loOut = cg.b->CreateUIToFP(lo16, f32);
+    *hiOut = cg.b->CreateUIToFP(hi16, f32);
+}
+
+static llvm::Value *decodeUintSplitFloatCarrier(Codegen &cg,
+                                                llvm::Value *loF,
+                                                llvm::Value *hiF,
+                                                llvm::Type *destTy) {
+    loF = cg.b->CreateUnaryIntrinsic(llvm::Intrinsic::round, loF);
+    hiF = cg.b->CreateUnaryIntrinsic(llvm::Intrinsic::round, hiF);
+    llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
+    llvm::Value *lo = cg.b->CreateFPToUI(loF, i32);
+    llvm::Value *hi = cg.b->CreateFPToUI(hiF, i32);
+    llvm::Value *u = cg.b->CreateOr(lo, cg.b->CreateShl(hi, 16));
+    if (destTy != i32)
+        u = cg.b->CreateTruncOrBitCast(u, destTy);
+    return u;
+}
+
 static llvm::Value *encodeFloatCarrier(Codegen &cg, llvm::Value *value,
                                        MGLIRScalar scalar) {
     llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
@@ -7188,16 +7221,32 @@ llvm::Value *assembleReturn(Codegen &cg) {
                         if (base->getType()->isArrayTy()) {
                             el = cg.b->CreateExtractValue(base, k);
                         }
-                        if (varyingUsesFloatCarrier(var->type, cg.has_gs)) {
+                        MType elTy = var->type;
+                        elTy.arr = 0;
+                        if (uintUsesSplitFloatCarrier(elTy, cg.has_gs)) {
+                            llvm::Value *lo = nullptr, *hi = nullptr;
+                            encodeUintSplitFloatCarrier(cg, el, &lo, &hi);
+                            ret = cg.b->CreateInsertValue(ret, lo, ri++);
+                            ret = cg.b->CreateInsertValue(ret, hi, ri++);
+                        } else if (varyingUsesFloatCarrier(var->type, cg.has_gs)) {
                             el = encodeFloatCarrier(cg, el, var->type.scalar);
+                            ret = cg.b->CreateInsertValue(ret, el, ri++);
+                        } else {
+                            ret = cg.b->CreateInsertValue(ret, el, ri++);
                         }
-                        ret = cg.b->CreateInsertValue(ret, el, ri++);
                     }
                 } else {
-                    if (varyingUsesFloatCarrier(var->type, cg.has_gs)) {
-                        base = encodeFloatCarrier(cg, base, var->type.scalar);
+                    if (uintUsesSplitFloatCarrier(var->type, cg.has_gs)) {
+                        llvm::Value *lo = nullptr, *hi = nullptr;
+                        encodeUintSplitFloatCarrier(cg, base, &lo, &hi);
+                        ret = cg.b->CreateInsertValue(ret, lo, ri++);
+                        ret = cg.b->CreateInsertValue(ret, hi, ri++);
+                    } else {
+                        if (varyingUsesFloatCarrier(var->type, cg.has_gs)) {
+                            base = encodeFloatCarrier(cg, base, var->type.scalar);
+                        }
+                        ret = cg.b->CreateInsertValue(ret, base, ri++);
                     }
-                    ret = cg.b->CreateInsertValue(ret, base, ri++);
                 }
             }
             return ret;
@@ -8636,9 +8685,14 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                             retElems.push_back(llvmType(el, ctx));
                     } else {
                         MType outTy = v.type;
-                        if (varyingUsesFloatCarrier(outTy, has_gs))
-                            outTy = floatCarrierType(outTy);
-                        retElems.push_back(llvmType(outTy, ctx));
+                        if (uintUsesSplitFloatCarrier(outTy, has_gs)) {
+                            retElems.push_back(llvmType(floatCarrierType(outTy), ctx));
+                            retElems.push_back(llvmType(floatCarrierType(outTy), ctx));
+                        } else {
+                            if (varyingUsesFloatCarrier(outTy, has_gs))
+                                outTy = floatCarrierType(outTy);
+                            retElems.push_back(llvmType(outTy, ctx));
+                        }
                     }
                 }
                 varyings.push_back(&v);
@@ -8796,9 +8850,14 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 for (uint32_t k = 0; k < (uint32_t)v.type.arr; k++)
                     paramTys.push_back(llvmType(iface, ctx));
             } else {
-                paramTys.push_back(llvmType(
-                    varyingUsesFloatCarrier(v.type, has_gs)
-                        ? floatCarrierType(v.type) : v.type, ctx));
+                if (uintUsesSplitFloatCarrier(v.type, has_gs)) {
+                    paramTys.push_back(llvmType(floatCarrierType(v.type), ctx));
+                    paramTys.push_back(llvmType(floatCarrierType(v.type), ctx));
+                } else {
+                    paramTys.push_back(llvmType(
+                        varyingUsesFloatCarrier(v.type, has_gs)
+                            ? floatCarrierType(v.type) : v.type, ctx));
+                }
             }
         }
     }
@@ -9111,12 +9170,19 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 cg.lvalues[v.name] = agg;
                 (void)el;
             } else {
-                llvm::Value *arg = fn->getArg(argSlot++);
-                if (varyingUsesFloatCarrier(v.type, has_gs)) {
-                    arg = decodeFloatCarrier(cg, arg, v.type.scalar,
-                                             llvmType(v.type, ctx));
+                if (uintUsesSplitFloatCarrier(v.type, has_gs)) {
+                    llvm::Value *lo = fn->getArg(argSlot++);
+                    llvm::Value *hi = fn->getArg(argSlot++);
+                    cg.lvalues[v.name] = decodeUintSplitFloatCarrier(
+                        cg, lo, hi, llvmType(v.type, ctx));
+                } else {
+                    llvm::Value *arg = fn->getArg(argSlot++);
+                    if (varyingUsesFloatCarrier(v.type, has_gs)) {
+                        arg = decodeFloatCarrier(cg, arg, v.type.scalar,
+                                                 llvmType(v.type, ctx));
+                    }
+                    cg.lvalues[v.name] = arg;
                 }
-                cg.lvalues[v.name] = arg;
             }
         }
     }
@@ -10705,23 +10771,26 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             llvm::MDString::get(ctx, "patchId")}));
     } else if (!isKernel) {
         auto emitFSVarying = [&](const std::string &tagName,
-                                 const MType &mt, uint32_t argIdx) {
-            bool carrier = varyingUsesFloatCarrier(mt, has_gs);
-            const MType &iface = carrier ? floatCarrierType(mt) : mt;
+                                 const MType &mt, uint32_t argIdx,
+                                 bool forceFlat = false) {
+            const bool flat = forceFlat || varyingUsesFloatCarrier(mt, has_gs) ||
+                                !scalarIsFloat(mt.scalar);
+            MType iface = mt;
+            if (varyingUsesFloatCarrier(mt, has_gs) || forceFlat) {
+                MType src = mt;
+                if (forceFlat && scalarIsFloat(mt.scalar))
+                    src = MType{MGLIR_SCALAR_FLOAT};
+                iface = floatCarrierType(src);
+            }
             std::vector<llvm::Metadata *> elems = {
                 llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                     llvm::Type::getInt32Ty(ctx), argIdx)),
                 llvm::MDString::get(ctx, "air.fragment_input"),
+                llvm::MDString::get(ctx, airGenerated(tagName, iface)),
+                llvm::MDString::get(ctx, flat ? "air.flat" : "air.center"),
                 llvm::MDString::get(ctx,
-                                    airGenerated(tagName, iface)),
-                llvm::MDString::get(ctx,
-                                    carrier || !scalarIsFloat(mt.scalar)
-                                        ? "air.flat"
-                                        : "air.center"),
-                llvm::MDString::get(ctx,
-                                    carrier || !scalarIsFloat(mt.scalar)
-                                        ? "air.no_perspective"
-                                        : "air.perspective"),
+                                    flat ? "air.no_perspective"
+                                         : "air.perspective"),
                 llvm::MDString::get(ctx, "air.arg_type_name"),
                 llvm::MDString::get(ctx, mslTypeName(iface)),
                 llvm::MDString::get(ctx, "air.arg_name"),
@@ -10743,7 +10812,12 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     emitFSVarying(elName, el, mArgSlot++);
                 }
             } else {
-                emitFSVarying(v.name, v.type, mArgSlot++);
+                if (uintUsesSplitFloatCarrier(v.type, has_gs)) {
+                    emitFSVarying(v.name + "_lo", v.type, mArgSlot++, true);
+                    emitFSVarying(v.name + "_hi", v.type, mArgSlot++, true);
+                } else {
+                    emitFSVarying(v.name, v.type, mArgSlot++);
+                }
             }
         }
         if (usesFragCoord || usesFrontFacing || usesPointCoord ||
@@ -10956,15 +11030,35 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                         llvm::MDString::get(ctx, elName)}));
                 }
             } else {
-                MType outTy = varyingUsesFloatCarrier(v->type, has_gs)
-                    ? floatCarrierType(v->type) : v->type;
-                outNodes.push_back(llvm::MDNode::get(ctx, {
-                    llvm::MDString::get(ctx, "air.vertex_output"),
-                    llvm::MDString::get(ctx, airGenerated(v->name, outTy)),
-                    llvm::MDString::get(ctx, "air.arg_type_name"),
-                    llvm::MDString::get(ctx, mslTypeName(outTy)),
-                    llvm::MDString::get(ctx, "air.arg_name"),
-                    llvm::MDString::get(ctx, v->name)}));
+                if (uintUsesSplitFloatCarrier(v->type, has_gs)) {
+                    MType outTy = floatCarrierType(v->type);
+                    outNodes.push_back(llvm::MDNode::get(ctx, {
+                        llvm::MDString::get(ctx, "air.vertex_output"),
+                        llvm::MDString::get(ctx,
+                            airGenerated(v->name + "_lo", outTy)),
+                        llvm::MDString::get(ctx, "air.arg_type_name"),
+                        llvm::MDString::get(ctx, mslTypeName(outTy)),
+                        llvm::MDString::get(ctx, "air.arg_name"),
+                        llvm::MDString::get(ctx, v->name + "_lo")}));
+                    outNodes.push_back(llvm::MDNode::get(ctx, {
+                        llvm::MDString::get(ctx, "air.vertex_output"),
+                        llvm::MDString::get(ctx,
+                            airGenerated(v->name + "_hi", outTy)),
+                        llvm::MDString::get(ctx, "air.arg_type_name"),
+                        llvm::MDString::get(ctx, mslTypeName(outTy)),
+                        llvm::MDString::get(ctx, "air.arg_name"),
+                        llvm::MDString::get(ctx, v->name + "_hi")}));
+                } else {
+                    MType outTy = varyingUsesFloatCarrier(v->type, has_gs)
+                        ? floatCarrierType(v->type) : v->type;
+                    outNodes.push_back(llvm::MDNode::get(ctx, {
+                        llvm::MDString::get(ctx, "air.vertex_output"),
+                        llvm::MDString::get(ctx, airGenerated(v->name, outTy)),
+                        llvm::MDString::get(ctx, "air.arg_type_name"),
+                        llvm::MDString::get(ctx, mslTypeName(outTy)),
+                        llvm::MDString::get(ctx, "air.arg_name"),
+                        llvm::MDString::get(ctx, v->name)}));
+                }
             }
         }
     } else if (!isKernel) {
