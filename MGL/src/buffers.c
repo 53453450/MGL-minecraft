@@ -3703,6 +3703,22 @@ void mglGetBufferSubData(GLMContext ctx, GLenum target, GLintptr offset, GLsizei
      * branch (avoids a double wait). */
     mglRendererFlush(ctx, true);
 
+    /* imageStore to a texture-buffer writes a Metal texture2d copy of the
+     * Buffer.  Pull that back before CPU readback so clients that omit an
+     * explicit BUFFER_UPDATE barrier still observe shader stores
+     * (CTS advanced-sso-atomicCounters). */
+    {
+        GLuint max_units = ctx->state.var.max_image_units;
+        for (GLuint i = 0; i < max_units && i < TEXTURE_UNITS; i++) {
+            Texture *tex = ctx->state.image_units[i].tex;
+            if (tex &&
+                tex->target == GL_TEXTURE_BUFFER &&
+                tex->texture_buffer == ptr) {
+                mglRendererSyncTextureBufferFromImage(ctx, tex);
+            }
+        }
+    }
+
     /* A shader may have written this range (SSBO/XFB); after the GPU wait
      * above, refresh the CPU shadow from the Metal buffer so the read returns
      * the shader results instead of stale shadow bytes. */

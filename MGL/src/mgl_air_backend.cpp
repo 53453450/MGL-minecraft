@@ -122,6 +122,7 @@ struct VarSym {
                 UBO, TEXTURE, IMAGE, ATOMIC_COUNTER, LOCAL } kind = LOCAL;
     uint32_t bufferOffset = 0;
     uint32_t location = UINT32_MAX;
+    bool locationExplicit = false; /* layout(location=N) in source */
     int32_t stream = 0;          /* GS output stream for OUTPUT vars */
     std::string blockName;       /* owning interface block, or empty */
     bool isPatch = false;
@@ -477,6 +478,23 @@ std::string airTypeMangle(const MType &t) {
 std::string airGenerated(const std::string &name, const MType &t) {
     return "generated(" + std::to_string(name.size()) + name +
            airTypeMangle(t) + ")";
+}
+
+/* Metal pairs VS vertex_output / FS fragment_input by air.generated()
+ * identity (name mangling), not by GLSL identifier.  SSO programs often
+ * use different names at the same layout(location=N) (CTS
+ * advanced-sso-atomicCounters: o_color vs i_color).  Prefer a stable
+ * location tag only when the location was explicit in source; auto-
+ * assigned locations are per-stage and must not drive the tag (or
+ * named matchings like vs_color break). */
+static std::string varyingIfaceTag(const VarSym &v, uint32_t elem = 0) {
+    if (v.locationExplicit && v.location != UINT32_MAX) {
+        return "mgl_loc_" + std::to_string(v.location + elem);
+    }
+    if (v.type.isArray() || elem != 0u) {
+        return v.name + "_elm" + std::to_string(elem);
+    }
+    return v.name;
 }
 
 /* GLSL type name used in air.* metadata (MSL naming). */
@@ -10577,6 +10595,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         v.name = s->name;
         v.type = typeFromIR(s->type);
         v.location = s->location;
+        v.locationExplicit = (s->location != UINT32_MAX);
         v.stream = s->stream;
         v.blockName = s->block_name ? s->block_name : "";
         uint32_t q = s->qualifiers;
@@ -13310,18 +13329,17 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 MType el = v.type;
                 el.arr = 0;
                 uint32_t n = (uint32_t)v.type.arr;
-                std::string base = v.name;
                 for (uint32_t k = 0; k < n; k++) {
-                    std::string elName =
-                        base + "_elm" + std::to_string(k);
+                    std::string elName = varyingIfaceTag(v, k);
                     emitFSVarying(elName, el, mArgSlot++);
                 }
             } else {
+                std::string tag = varyingIfaceTag(v);
                 if (uintUsesSplitFloatCarrier(v.type, has_gs)) {
-                    emitFSVarying(v.name + "_lo", v.type, mArgSlot++, true);
-                    emitFSVarying(v.name + "_hi", v.type, mArgSlot++, true);
+                    emitFSVarying(tag + "_lo", v.type, mArgSlot++, true);
+                    emitFSVarying(tag + "_hi", v.type, mArgSlot++, true);
                 } else {
-                    emitFSVarying(v.name, v.type, mArgSlot++);
+                    emitFSVarying(tag, v.type, mArgSlot++);
                 }
             }
         }
@@ -13620,11 +13638,9 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                  * interface name; the FS side emits the identical tags. */
                 MType el = v->type;
                 el.arr = 0;
-                std::string base = v->name;
                 uint32_t n = (uint32_t)v->type.arr;
                 for (uint32_t k = 0; k < n; k++) {
-                    std::string elName =
-                        base + "_elm" + std::to_string(k);
+                    std::string elName = varyingIfaceTag(*v, k);
                     MType outTy = varyingUsesFloatCarrier(el, has_gs)
                         ? floatCarrierType(el) : el;
                     outNodes.push_back(llvm::MDNode::get(ctx, {
@@ -13637,34 +13653,35 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                         llvm::MDString::get(ctx, elName)}));
                 }
             } else {
+                std::string tag = varyingIfaceTag(*v);
                 if (uintUsesSplitFloatCarrier(v->type, has_gs)) {
                     MType outTy = floatCarrierType(v->type);
                     outNodes.push_back(llvm::MDNode::get(ctx, {
                         llvm::MDString::get(ctx, "air.vertex_output"),
                         llvm::MDString::get(ctx,
-                            airGenerated(v->name + "_lo", outTy)),
+                            airGenerated(tag + "_lo", outTy)),
                         llvm::MDString::get(ctx, "air.arg_type_name"),
                         llvm::MDString::get(ctx, mslTypeName(outTy)),
                         llvm::MDString::get(ctx, "air.arg_name"),
-                        llvm::MDString::get(ctx, v->name + "_lo")}));
+                        llvm::MDString::get(ctx, tag + "_lo")}));
                     outNodes.push_back(llvm::MDNode::get(ctx, {
                         llvm::MDString::get(ctx, "air.vertex_output"),
                         llvm::MDString::get(ctx,
-                            airGenerated(v->name + "_hi", outTy)),
+                            airGenerated(tag + "_hi", outTy)),
                         llvm::MDString::get(ctx, "air.arg_type_name"),
                         llvm::MDString::get(ctx, mslTypeName(outTy)),
                         llvm::MDString::get(ctx, "air.arg_name"),
-                        llvm::MDString::get(ctx, v->name + "_hi")}));
+                        llvm::MDString::get(ctx, tag + "_hi")}));
                 } else {
                     MType outTy = varyingUsesFloatCarrier(v->type, has_gs)
                         ? floatCarrierType(v->type) : v->type;
                     outNodes.push_back(llvm::MDNode::get(ctx, {
                         llvm::MDString::get(ctx, "air.vertex_output"),
-                        llvm::MDString::get(ctx, airGenerated(v->name, outTy)),
+                        llvm::MDString::get(ctx, airGenerated(tag, outTy)),
                         llvm::MDString::get(ctx, "air.arg_type_name"),
                         llvm::MDString::get(ctx, mslTypeName(outTy)),
                         llvm::MDString::get(ctx, "air.arg_name"),
-                        llvm::MDString::get(ctx, v->name)}));
+                        llvm::MDString::get(ctx, tag)}));
                 }
             }
         }
