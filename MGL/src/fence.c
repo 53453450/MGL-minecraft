@@ -426,6 +426,7 @@ void mglMemoryBarrier(GLMContext ctx, GLbitfield barriers)
             }
             tex->metal_data_authoritative = GL_TRUE;
             tex->faces[0].levels[iu->level].metal_data_authoritative = GL_TRUE;
+            mglRendererFlushImageUnitSlice(ctx, i);
         }
     }
 }

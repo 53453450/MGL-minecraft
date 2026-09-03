@@ -92,6 +92,8 @@ void mglMetalCopyRows(const uint8_t *src,
 
 // === Texture readback ===
 - (void)syncTextureBufferFromImage:(GLMContext)glm_ctx tex:(Texture *)tex;
+- (void)prepareImageUnitSlice:(GLMContext)glm_ctx unit:(GLuint)unit;
+- (void)flushImageUnitSlice:(GLMContext)glm_ctx unit:(GLuint)unit;
 - (void)mtlReadDrawable:(GLMContext)glm_ctx
              pixelBytes:(void *)pixelBytes
             bytesPerRow:(NSUInteger)bytesPerRow

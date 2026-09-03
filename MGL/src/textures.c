@@ -942,6 +942,7 @@ void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint leve
              * MGL_BIND_NO_FLUSH batch merge; flush so pending draws keep the
              * pre-rebind snapshot (non-layered layer switches). */
             mglFlushPendingDraws(ctx);
+            mglRendererFlushImageUnitSlice(ctx, unit);
         }
         mglResetImageUnit(iu);
         mglMarkStateDirtyBits(&ctx->state, DIRTY_IMAGE_UNIT_STATE);
@@ -1078,6 +1079,7 @@ void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint leve
             /* No per-draw image-unit override in batch merge; always flush.
              * MGL_BIND_NO_FLUSH dynamic texture capture ignores texture_hash. */
             mglFlushPendingDraws(ctx);
+            mglRendererFlushImageUnitSlice(ctx, unit);
         }
     }
 
@@ -1088,6 +1090,7 @@ void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint leve
     ctx->state.image_units[unit] = unit_params;
 
     mglMarkStateDirtyBits(&ctx->state, DIRTY_IMAGE_UNIT_STATE);
+    mglRendererPrepareImageUnitSlice(ctx, unit);
 }
 
 /* Callback for mglHashTableForEach: detach a deleted texture from every FBO

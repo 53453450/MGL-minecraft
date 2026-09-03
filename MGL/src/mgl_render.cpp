@@ -3717,13 +3717,7 @@ int mglRenderTextureTargetPlan(
             plan_out->is_array = 1u;
             return 0;
         case GL_TEXTURE_3D:
-            /* Metal cannot create Type2D views of Type3D depth planes, but
-             * non-layered BindImageTexture + image2D requires one. Back 3D
-             * storage as a 2D array so slice views work (AIR image3D/sampler3D
-             * still need a follow-up remap when those paths bind). */
-            plan_out->texture_type =
-                static_cast<uint32_t>(MTL::TextureType2DArray);
-            plan_out->is_array = 1u;
+            plan_out->texture_type = static_cast<uint32_t>(MTL::TextureType3D);
             return 0;
         case GL_TEXTURE_2D_MULTISAMPLE_ARRAY:
             plan_out->texture_type =

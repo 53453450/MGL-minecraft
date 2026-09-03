@@ -274,6 +274,10 @@ void mglRendererReadBackBuffer(GLMContext context, Buffer *buffer,
  * those texels back into the attached Buffer (CPU + Metal) so subsequent
  * glGetBufferSubData observes the shader writes. */
 void mglRendererSyncTextureBufferFromImage(GLMContext context, Texture *texture);
+/* Non-layered BindImage of GL_TEXTURE_3D: Metal cannot view a depth plane as
+ * Type2D. Prepare a staging 2D texture (and Flush writes it back). */
+void mglRendererPrepareImageUnitSlice(GLMContext context, uint32_t unit);
+void mglRendererFlushImageUnitSlice(GLMContext context, uint32_t unit);
 void mglRendererFlushBufferRange(GLMContext context, Buffer *buffer,
                                  intptr_t offset, intptr_t length);
 void mglRendererReadDrawable(GLMContext context, void *pixel_bytes,

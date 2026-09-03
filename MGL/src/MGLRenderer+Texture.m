@@ -145,6 +145,20 @@ void mglRendererSyncTextureBufferFromImage(GLMContext glm_ctx, Texture *texture)
     [renderer syncTextureBufferFromImage:glm_ctx tex:texture];
 }
 
+void mglRendererPrepareImageUnitSlice(GLMContext glm_ctx, uint32_t unit)
+{
+    MGLRenderer *renderer = mglRendererForContext(glm_ctx);
+    if (!renderer || !glm_ctx) return;
+    [renderer prepareImageUnitSlice:glm_ctx unit:unit];
+}
+
+void mglRendererFlushImageUnitSlice(GLMContext glm_ctx, uint32_t unit)
+{
+    MGLRenderer *renderer = mglRendererForContext(glm_ctx);
+    if (!renderer || !glm_ctx) return;
+    [renderer flushImageUnitSlice:glm_ctx unit:unit];
+}
+
 void mglRendererCompatTexSubImage(GLMContext glm_ctx, Texture *texture, Buffer *buffer,
     size_t source_offset, size_t source_pitch, size_t source_image_size,
     size_t source_size, uint32_t slice, uint32_t level,
@@ -5915,6 +5929,121 @@ static void mglTextureCopyTextureToBuffer(
 
     [self recordGPUSuccess];
     return bufferTexture;
+}
+
+- (void)flushImageUnitSlice:(GLMContext)glm_ctx unit:(GLuint)unit
+{
+    if (!glm_ctx || unit >= glm_ctx->state.var.max_image_units ||
+        unit >= TEXTURE_UNITS) {
+        return;
+    }
+    ImageUnit *iu = &glm_ctx->state.image_units[unit];
+    if (!iu->tex || !iu->mtl_image_view || iu->layered ||
+        iu->tex->target != GL_TEXTURE_3D) {
+        return;
+    }
+    if (iu->access == GL_READ_ONLY) {
+        return;
+    }
+    if (![self bindMTLTexture:iu->tex] || !iu->tex->mtl_data) {
+        return;
+    }
+    id dst3d = (__bridge id)iu->tex->mtl_data;
+    id staging = (__bridge id)iu->mtl_image_view;
+    MGLRenderTextureInfo info = mglTextureInfo(dst3d);
+    if (info.texture_type != MGLTextureType3D || info.width == 0u) {
+        return;
+    }
+    const NSUInteger level = (NSUInteger)iu->level;
+    const NSUInteger layer = (NSUInteger)iu->layer;
+    if (level >= info.mipmap_level_count || layer >= info.depth) {
+        return;
+    }
+
+    [self endRenderEncoding];
+    if (!_renderPassManager.state->currentCommandBufferOwner &&
+        ![self newCommandBufferLocked]) {
+        return;
+    }
+    void *blit = mglRenderCreateBlitEncoderBorrowed(
+        _renderPassManager.state->currentCommandBufferOwner);
+    if (!blit) {
+        return;
+    }
+    (void)mglRenderBlitCopyTexture(
+        blit, (__bridge void *)staging, 0u, 0u, 0u, 0u, 0u,
+        info.width, info.height, 1u,
+        (__bridge void *)dst3d, 0u, level, 0u, 0u, layer);
+    (void)mglRenderEndBlitEncoder(blit);
+    [self flushCommandBuffer:NO];
+}
+
+- (void)prepareImageUnitSlice:(GLMContext)glm_ctx unit:(GLuint)unit
+{
+    if (!glm_ctx || unit >= glm_ctx->state.var.max_image_units ||
+        unit >= TEXTURE_UNITS) {
+        return;
+    }
+    ImageUnit *iu = &glm_ctx->state.image_units[unit];
+    if (!iu->tex || iu->layered || iu->tex->target != GL_TEXTURE_3D) {
+        return;
+    }
+    if (![self bindMTLTexture:iu->tex] || !iu->tex->mtl_data) {
+        return;
+    }
+    id src3d = (__bridge id)iu->tex->mtl_data;
+    MGLRenderTextureInfo info = mglTextureInfo(src3d);
+    if (info.texture_type != MGLTextureType3D || info.width == 0u) {
+        return;
+    }
+    const NSUInteger level = (NSUInteger)iu->level;
+    const NSUInteger layer = (NSUInteger)iu->layer;
+    if (level >= info.mipmap_level_count || layer >= info.depth) {
+        return;
+    }
+
+    if (iu->mtl_image_view) {
+        [self flushImageUnitSlice:glm_ctx unit:unit];
+        mglRenderReleaseMetalObject(iu->mtl_image_view);
+        iu->mtl_image_view = NULL;
+    }
+
+    MGLRenderTextureDescriptorState desc = {
+        .texture_type = MGLTextureType2D,
+        .pixel_format = info.pixel_format,
+        .width = info.width,
+        .height = info.height,
+        .depth = 1u,
+        .mipmap_level_count = 1u,
+        .sample_count = 1u,
+        .array_length = 1u,
+        .usage = MGL_TEXTURE_USAGE_SHADER_READ | MGL_TEXTURE_USAGE_SHADER_WRITE |
+                 MGL_TEXTURE_USAGE_PIXEL_FORMAT_VIEW,
+        .storage_mode = info.storage_mode,
+    };
+    id staging = mglTextureCreateTexture(_device, &desc);
+    if (!staging) {
+        return;
+    }
+
+    [self endRenderEncoding];
+    if (!_renderPassManager.state->currentCommandBufferOwner &&
+        ![self newCommandBufferLocked]) {
+        return;
+    }
+    void *blit = mglRenderCreateBlitEncoderBorrowed(
+        _renderPassManager.state->currentCommandBufferOwner);
+    if (!blit) {
+        return;
+    }
+    (void)mglRenderBlitCopyTexture(
+        blit, (__bridge void *)src3d, 0u, level, 0u, 0u, layer,
+        info.width, info.height, 1u,
+        (__bridge void *)staging, 0u, 0u, 0u, 0u, 0u);
+    (void)mglRenderEndBlitEncoder(blit);
+    [self flushCommandBuffer:NO];
+
+    iu->mtl_image_view = (__bridge_retained void *)staging;
 }
 
 - (void)syncTextureBufferFromImage:(GLMContext)glm_ctx tex:(Texture *)tex
