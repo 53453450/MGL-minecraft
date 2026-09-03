@@ -74,7 +74,14 @@ static id mglBindingCreateDefaultSampler(void)
          tex->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY)) {
         MGLRenderTextureInfo existingInfo = {0};
         if (mglRenderGetTextureInfo(tex->mtl_data, &existingInfo) == 0) {
-            const uint64_t expectedLayers = MAX((uint64_t)tex->depth, 1u);
+            /* Metal cube-array arrayLength is cube count; GL depth is usually
+             * face count (cubes * 6). Comparing raw depth forced a rebuild that
+             * wiped imageStore results on the next bind. */
+            uint64_t expectedLayers = MAX((uint64_t)tex->depth, 1u);
+            if (tex->target == GL_TEXTURE_CUBE_MAP_ARRAY &&
+                expectedLayers >= 6u && (expectedLayers % 6u) == 0u) {
+                expectedLayers /= 6u;
+            }
             if (existingInfo.array_length < expectedLayers ||
                 existingInfo.width != (uint64_t)tex->width ||
                 existingInfo.height != (uint64_t)tex->height) {
@@ -191,19 +198,22 @@ static id mglBindingCreateDefaultSampler(void)
 
     if (tex->dirty_bits)
     {
-        bool textureNeedsRebuild =
-            (tex->dirty_bits & (DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_DATA | DIRTY_TEXTURE_ACCESS)) != 0;
-        bool samplerNeedsRebuild =
-            textureNeedsRebuild || ((tex->dirty_bits & DIRTY_TEXTURE_PARAM) != 0);
-        bool storageShapeChanged =
+        /* LEVEL/ACCESS require a new Metal texture object. DATA-only dirty
+         * should upload in place; destroying an existing texture here wipes
+         * GPU imageStore results when cube-array CPU uploads stay incomplete. */
+        const bool storageShapeChanged =
             (tex->dirty_bits & (DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_ACCESS)) != 0;
+        bool textureNeedsRebuild = storageShapeChanged;
+        bool samplerNeedsRebuild =
+            storageShapeChanged ||
+            ((tex->dirty_bits & (DIRTY_TEXTURE_DATA | DIRTY_TEXTURE_PARAM)) != 0);
 
         if (tex->mtl_data &&
             !storageShapeChanged &&
             (tex->dirty_bits & DIRTY_TEXTURE_DATA) != 0) {
             id existingTexture = (__bridge id)(tex->mtl_data);
             BOOL uploadedDirty = NO;
-            if (existingTexture) {
+            if (existingTexture && !tex->metal_data_authoritative) {
                 if (tex->target == GL_TEXTURE_2D) {
                     MGLRenderTextureInfo metalInfo = {0};
                     if (mglRenderGetTextureInfo((__bridge void *)existingTexture,
@@ -249,13 +259,15 @@ static id mglBindingCreateDefaultSampler(void)
                     }
                 }
             }
-            if (uploadedDirty) {
+            if (uploadedDirty || tex->metal_data_authoritative) {
+                /* Successful CPU upload, or GPU is source of truth after
+                 * imageStore / MemoryBarrier — drop DATA dirty without
+                 * releasing mtl_data. */
                 tex->dirty_bits &= ~DIRTY_TEXTURE_DATA;
-                textureNeedsRebuild =
-                    (tex->dirty_bits & (DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_DATA | DIRTY_TEXTURE_ACCESS)) != 0;
-                samplerNeedsRebuild =
-                    textureNeedsRebuild || ((tex->dirty_bits & DIRTY_TEXTURE_PARAM) != 0);
             }
+            samplerNeedsRebuild =
+                storageShapeChanged ||
+                ((tex->dirty_bits & (DIRTY_TEXTURE_DATA | DIRTY_TEXTURE_PARAM)) != 0);
         }
 
         // Texture parameter changes only affect the Metal sampler object. Do
