@@ -965,30 +965,9 @@ typedef struct {
         id texture = nil;
         if (ptr) {
             texture = (__bridge id)(ptr->mtl_data);
-            GLuint imgLevel = MGL_STATE(ctx)->image_units[glUnit].level;
-            if (imgLevel > 0u && texture) {
-                MGLRenderTextureInfo textureInfo = {0};
-                if (!mglTessTextureInfo(texture, &textureInfo)) {
-                    [self clearStageBindingCopyBacks:&stageCopyBacks];
-                    return false;
-                }
-                if ((NSUInteger)imgLevel >= textureInfo.mipmap_level_count) {
-                    /* Undefined mip: leave unbound (loads → 0). */
-                    texture = nil;
-                } else {
-                NSUInteger sliceCount = textureInfo.array_length;
-                if (textureInfo.texture_type == MGL_TESS_TEXTURE_TYPE_CUBE ||
-                    textureInfo.texture_type == MGL_TESS_TEXTURE_TYPE_CUBE_ARRAY) {
-                    sliceCount = textureInfo.array_length * 6u;
-                }
-                id levelView =
-                    mglTessCreateTextureLevelView(
-                        texture, imgLevel, sliceCount);
-                if (levelView) {
-                    texture = levelView;
-                }
-                }
-            }
+            texture = (__bridge id)mglRendererStorageImageTexture(
+                (__bridge void *)texture,
+                &MGL_STATE(ctx)->image_units[glUnit]);
         }
         if (!mglTessPlanTextureOrBind(
                 &executionPlan,
@@ -1585,6 +1564,11 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
             [self bindMTLTexture:ptr];
         }
         id texture = ptr ? (__bridge id)(ptr->mtl_data) : nil;
+        if (texture) {
+            texture = (__bridge id)mglRendererStorageImageTexture(
+                (__bridge void *)texture,
+                &MGL_STATE(glm_ctx)->image_units[glUnit]);
+        }
         if (!mglTessPlanTextureOrBind(
                 &executionPlan,
                 executionTemporaries, computeEncoder, texture, metalSlot)) {
@@ -2286,30 +2270,9 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
         id texture = nil;
         if (ptr) {
             texture = (__bridge id)(ptr->mtl_data);
-            GLuint imgLevel = MGL_STATE(ctx)->image_units[glUnit].level;
-            if (imgLevel > 0u && texture) {
-                MGLRenderTextureInfo textureInfo = {0};
-                if (!mglTessTextureInfo(texture, &textureInfo)) {
-                    [self clearStageBindingCopyBacks:&stageCopyBacks];
-                    return false;
-                }
-                if ((NSUInteger)imgLevel >= textureInfo.mipmap_level_count) {
-                    /* Undefined mip: leave unbound (loads → 0). */
-                    texture = nil;
-                } else {
-                NSUInteger sliceCount = textureInfo.array_length;
-                if (textureInfo.texture_type == MGL_TESS_TEXTURE_TYPE_CUBE ||
-                    textureInfo.texture_type == MGL_TESS_TEXTURE_TYPE_CUBE_ARRAY) {
-                    sliceCount = textureInfo.array_length * 6u;
-                }
-                id levelView =
-                    mglTessCreateTextureLevelView(
-                        texture, imgLevel, sliceCount);
-                if (levelView) {
-                    texture = levelView;
-                }
-                }
-            }
+            texture = (__bridge id)mglRendererStorageImageTexture(
+                (__bridge void *)texture,
+                &MGL_STATE(ctx)->image_units[glUnit]);
         }
         if (!mglTessPlanTextureOrBind(
                 &executionPlan,

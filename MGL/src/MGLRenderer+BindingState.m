@@ -206,25 +206,30 @@ static uint32_t mglBindingStateImageBindPixelFormat(const ImageUnit *iu,
  * that layer so AIR write/read_texture_2d matches the bound Metal type.
  * Multisample images are intentionally backed as Type2DArray (sample→layer)
  * and must keep that type.  Views are cached on ImageUnit so they outlive
- * the bind call until the unit is rebound/reset. */
-static id mglBindingStateCreateStorageImageView(id texture, ImageUnit *iu)
+ * the bind call until the unit is rebound/reset.
+ *
+ * Also applies BindImageTexture <format> via PixelFormatView so float and
+ * integer imageLoad/Store pack/unpack match the bound internalformat (CTS
+ * multiple-uniforms / advanced-cast). Shared by VS/FS, GS, and TCS/TES. */
+void *mglRendererStorageImageTexture(void *base_texture, ImageUnit *iu)
 {
+    id texture = (__bridge id)base_texture;
     if (!texture || !iu) {
-        return texture;
+        return base_texture;
     }
     if (iu->mtl_image_view) {
-        return (__bridge id)iu->mtl_image_view;
+        return iu->mtl_image_view;
     }
     const MGLRenderTextureInfo info = mglBindingStateTextureInfo(texture);
     if (info.width == 0u) {
-        return texture;
+        return base_texture;
     }
     const NSUInteger level = (NSUInteger)iu->level;
     /* Mutable textures may BindImage a mip that was never defined. Metal
      * rejects views past mipmapLevelCount — leave unbound so loads read 0
      * and stores are ignored (CTS incomplete_textures). */
     if (level >= info.mipmap_level_count) {
-        return nil;
+        return NULL;
     }
     const uint32_t srcType = info.texture_type;
     const uint32_t bindFormat =
@@ -250,11 +255,12 @@ static id mglBindingStateCreateStorageImageView(id texture, ImageUnit *iu)
         if (needsSlice) {
             void *view = NULL;
             int rc = mglRenderCreateTextureViewRange(
-                    (__bridge void *)texture, bindFormat, dstType,
+                    base_texture, bindFormat, dstType,
                     level, 1u, (uint64_t)iu->layer, 1u,
                     0, 0, 0, 0, 0, &view);
             if (rc == 0 && view) {
-                return mglBindingStateCacheImageUnitView(iu, texture, view);
+                return (__bridge void *)mglBindingStateCacheImageUnitView(
+                    iu, texture, view);
             }
         }
     }
@@ -270,13 +276,20 @@ static id mglBindingStateCreateStorageImageView(id texture, ImageUnit *iu)
         }
         void *view = NULL;
         if (mglRenderCreateTextureViewRange(
-                (__bridge void *)texture, bindFormat,
+                base_texture, bindFormat,
                 info.texture_type, level, 1u, 0u, sliceCount,
                 0, 0, 0, 0, 0, &view) == 0 && view) {
-            return mglBindingStateCacheImageUnitView(iu, texture, view);
+            return (__bridge void *)mglBindingStateCacheImageUnitView(
+                iu, texture, view);
         }
     }
-    return texture;
+    return base_texture;
+}
+
+static id mglBindingStateCreateStorageImageView(id texture, ImageUnit *iu)
+{
+    return (__bridge id)mglRendererStorageImageTexture(
+        (__bridge void *)texture, iu);
 }
 
 static void mglBindingStateSetVertexBuffer(

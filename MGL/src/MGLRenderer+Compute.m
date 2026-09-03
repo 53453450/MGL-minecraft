@@ -675,28 +675,12 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
                         continue;
                     }
 
-                    /* For storage images bound to a non-zero mipmap level, create
-                     * a level-specific texture view so imageSize() returns the
-                     * dimensions at the bound level (matches the fragment-stage
-                     * path).  Sampled textures are not affected. */
+                    /* Storage images: BindImage <format>/level/slice views
+                     * (same helper as VS/FS). Cached on ImageUnit. */
                     if (gl_texture_type == _IMAGE_TEXTURE) {
-                        GLuint imgLevel = MGL_STATE(ctx)->image_units[glUnit].level;
-                        if (imgLevel > 0u) {
-                            MGLRenderTextureInfo texInfo = {0};
-                            if (mglRenderGetTextureInfo((__bridge void *)texture,
-                                                           &texInfo) == 0 &&
-                                (uint64_t)imgLevel >= texInfo.mipmap_level_count) {
-                                texture = nil;
-                            } else {
-                            id levelView = mglComputeCreateTextureLevelView(
-                                texture, imgLevel);
-                            if (levelView) {
-                                texture = levelView;
-                                /* Keep the view alive until the end replay. */
-                                MGL_CTEX_RETAIN_TEMP(levelView);
-                            }
-                            }
-                        }
+                        texture = (__bridge id)mglRendererStorageImageTexture(
+                            (__bridge void *)texture,
+                            &MGL_STATE(ctx)->image_units[glUnit]);
                     }
 
                     id sampler;

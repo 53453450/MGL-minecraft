@@ -278,6 +278,10 @@ void mglRendererSyncTextureBufferFromImage(GLMContext context, Texture *texture)
  * Type2D. Prepare a staging 2D texture (and Flush writes it back). */
 void mglRendererPrepareImageUnitSlice(GLMContext context, uint32_t unit);
 void mglRendererFlushImageUnitSlice(GLMContext context, uint32_t unit);
+/* BindImageTexture <format>/level/slice → Metal texture (or cached view).
+ * Borrowed pointer; view lifetime is owned by iu->mtl_image_view. */
+typedef struct ImageUnit_t ImageUnit;
+void *mglRendererStorageImageTexture(void *base_texture, ImageUnit *iu);
 void mglRendererFlushBufferRange(GLMContext context, Buffer *buffer,
                                  intptr_t offset, intptr_t length);
 void mglRendererReadDrawable(GLMContext context, void *pixel_bytes,
