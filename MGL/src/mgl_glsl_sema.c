@@ -2722,6 +2722,8 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
         int flatten_iface =
             is_interface_block &&
             (s->stage == MGL_STAGE_GEOMETRY ||
+             s->stage == MGL_STAGE_TESS_CONTROL ||
+             s->stage == MGL_STAGE_TESS_EVALUATION ||
              (s->stage == MGL_STAGE_VERTEX &&
               (d->qualifiers & MGL_AST_Q_OUT)));
         /* GL 4.6 §11.1.3.9: a geometry shader input interface-block

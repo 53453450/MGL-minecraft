@@ -2514,6 +2514,18 @@ static VarSym *codegenStageSymbol(Codegen &cg, const char *name,
     return nullptr;
 }
 
+/* Flattened interface-block member: match both instance and field name. */
+static VarSym *codegenBlockMember(Codegen &cg, const char *instName,
+                                  const char *field, VarSym::Kind kind)
+{
+    if (!cg.auxSyms || !instName || !field) return nullptr;
+    for (VarSym &v : *cg.auxSyms) {
+        if (v.kind == kind && v.name == field && v.blockName == instName)
+            return &v;
+    }
+    return nullptr;
+}
+
 static llvm::Value *tessStageRecordIndex(Codegen &cg, llvm::Value *index,
                                          bool input)
 {
@@ -2809,6 +2821,130 @@ static bool emitTessStageArrayStore(
     p = cg.b->CreateBitCast(p, ty->getPointerTo(1));
     cg.b->CreateAlignedStore(value, p, llvm::Align(4));
     return true;
+}
+
+/* TCS/TES: instance[i].field — flattened interface-block member. */
+static bool tessBlockMemberPath(const MGLExpr *e, const char **instOut,
+                                const MGLExpr **indexOut, const char **fieldOut)
+{
+    if (!e || e->kind != MGL_EXPR_MEMBER || !e->u.member.object ||
+        e->u.member.object->kind != MGL_EXPR_INDEX)
+        return false;
+    const MGLExpr *idxE = e->u.member.object;
+    if (!idxE->u.index.object ||
+        idxE->u.index.object->kind != MGL_EXPR_VAR_REF)
+        return false;
+    const char *inst = idxE->u.index.object->u.var_ref.name;
+    if (!inst || !strcmp(inst, "gl_in") || !strcmp(inst, "gl_out"))
+        return false;
+    if (instOut) *instOut = inst;
+    if (indexOut) *indexOut = idxE->u.index.index;
+    if (fieldOut) *fieldOut = e->u.member.field;
+    return true;
+}
+
+static bool emitTessBlockMemberStore(
+    Codegen &cg, const MGLExpr *lhs, llvm::Value *value,
+    const MGLIRModule *mod, const std::map<std::string, MType> &locals)
+{
+    const char *inst = nullptr, *field = nullptr;
+    const MGLExpr *indexE = nullptr;
+    if (!cg.isTessControl || !cg.stageOutPtr || !cg.patchPos ||
+        !tessBlockMemberPath(lhs, &inst, &indexE, &field))
+        return false;
+    VarSym *member = codegenBlockMember(cg, inst, field, VarSym::OUTPUT);
+    if (!member || member->location == UINT32_MAX) return false;
+    llvm::Value *index = emitExpr(cg, indexE, mod, locals);
+    if (!index) return true;
+    llvm::Value *record = tessStageRecordIndex(cg, index, false);
+    llvm::Value *off = cg.b->CreateAdd(
+        cg.b->CreateMul(cg.b->CreateZExt(record, cg.b->getInt64Ty()),
+                        cg.b->getInt64(cg.stageOutStride)),
+        cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE + member->location * 16u));
+    llvm::Type *ty = llvmType(member->type, *cg.ctx);
+    if (value->getType() != ty) {
+        if (ty->isIntOrIntVectorTy() && value->getType()->isIntOrIntVectorTy())
+            value = cg.b->CreateBitCast(value, ty);
+        else
+            value = coerceScalar(cg, value, member->type.scalar);
+    }
+    llvm::Value *p = cg.b->CreateGEP(cg.b->getInt8Ty(), cg.stageOutPtr, off);
+    p = cg.b->CreateBitCast(p, ty->getPointerTo(1));
+    cg.b->CreateAlignedStore(value, p, llvm::Align(4));
+    return true;
+}
+
+static llvm::Value *emitTessBlockMemberLoad(
+    Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
+    const std::map<std::string, MType> &locals)
+{
+    const char *inst = nullptr, *field = nullptr;
+    const MGLExpr *indexE = nullptr;
+    if (!tessBlockMemberPath(e, &inst, &indexE, &field))
+        return nullptr;
+    VarSym::Kind kind = VarSym::VARYING;
+    bool input = false;
+    if (cg.isTessControl) {
+        kind = VarSym::VARYING;
+        input = true;
+    } else if (cg.isTessEval) {
+        kind = VarSym::CONTROL_POINT_INPUT;
+        input = true;
+    } else {
+        return nullptr;
+    }
+    VarSym *member = codegenBlockMember(cg, inst, field, kind);
+    if (!member)
+        member = codegenBlockMember(cg, inst, field, VarSym::OUTPUT);
+    if (!member || member->location == UINT32_MAX) return nullptr;
+    llvm::Value *index = emitExpr(cg, indexE, mod, locals);
+    if (!index) return nullptr;
+    if (input && cg.isTessControl) {
+        if (!cg.stageInPtr || !cg.patchPos || !cg.indirectPtr) return nullptr;
+        llvm::Value *record = tessStageRecordIndex(cg, index, true);
+        llvm::Value *off = cg.b->CreateAdd(
+            cg.b->CreateMul(cg.b->CreateZExt(record, cg.b->getInt64Ty()),
+                            cg.b->getInt64(cg.stageInStride)),
+            cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE +
+                           member->location * 16u));
+        llvm::Type *ty = llvmType(member->type, *cg.ctx);
+        llvm::Value *p = cg.b->CreateGEP(cg.b->getInt8Ty(), cg.stageInPtr, off);
+        p = cg.b->CreateBitCast(p, ty->getPointerTo(1));
+        return cg.b->CreateAlignedLoad(ty, p, llvm::Align(4));
+    }
+    if (cg.isTessEval) {
+        if (cg.isTESCompute) {
+            if (!cg.stageInPtr || !cg.indirectPtr || !cg.patchId) return nullptr;
+            llvm::Value *patchInfo = cg.b->CreateBitCast(
+                cg.indirectPtr, cg.b->getInt32Ty()->getPointerTo(1));
+            llvm::Value *verticesPerPatch = cg.b->CreateAlignedLoad(
+                cg.b->getInt32Ty(),
+                cg.b->CreateGEP(cg.b->getInt32Ty(), patchInfo,
+                                cg.b->getInt32(1)),
+                llvm::Align(4));
+            index = coerceScalar(cg, index, MGLIR_SCALAR_UINT);
+            llvm::Value *flat = cg.b->CreateAdd(
+                cg.b->CreateMul(cg.patchId, verticesPerPatch), index);
+            llvm::Value *off = cg.b->CreateAdd(
+                cg.b->CreateMul(cg.b->CreateZExt(flat, cg.b->getInt64Ty()),
+                                cg.b->getInt64(cg.stageInStride)),
+                cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE +
+                               member->location * 16u));
+            llvm::Type *ty = llvmType(member->type, *cg.ctx);
+            llvm::Value *p =
+                cg.b->CreateGEP(cg.b->getInt8Ty(), cg.stageInPtr, off);
+            p = cg.b->CreateBitCast(p, ty->getPointerTo(1));
+            return cg.b->CreateAlignedLoad(ty, p, llvm::Align(4));
+        }
+        if (!cg.controlPointGetter || !cg.patchControlPtr) return nullptr;
+        auto fieldIt = cg.controlPointFields.find(member->name);
+        if (fieldIt == cg.controlPointFields.end()) return nullptr;
+        index = coerceScalar(cg, index, MGLIR_SCALAR_UINT);
+        llvm::Value *record = cg.b->CreateCall(
+            cg.controlPointGetter, {index, cg.patchControlPtr});
+        return cg.b->CreateExtractValue(record, fieldIt->second);
+    }
+    return nullptr;
 }
 
 static llvm::Value *emitPerVertexLoad(Codegen &cg, const MGLExpr *e,
@@ -4690,6 +4826,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             if (llvm::Value *blk =
                     emitGeometryBlockLoad(cg, e, mod, locals))
                 return blk;
+            if (cg.err) return nullptr;
+            if (llvm::Value *tb =
+                    emitTessBlockMemberLoad(cg, e, mod, locals))
+                return tb;
             if (cg.err) return nullptr;
         }
         if (const MGLIRSymbol *sb = ssboRootSym(e, mod)) {
@@ -6858,6 +6998,9 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 emitPerVertexStore(cg, lhs, v, mod, locals);
                 return v;
             }
+            if (e->u.assign.op == MGL_OP_ASSIGN &&
+                emitTessBlockMemberStore(cg, lhs, v, mod, locals))
+                return v;
         }
 
         /* Interface-block member write: instance.field = v (VS/TES out
