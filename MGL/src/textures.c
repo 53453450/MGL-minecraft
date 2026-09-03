@@ -993,18 +993,33 @@ void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint leve
             return;
         }
     } else {
-        if (level >= (GLint)ptr->num_levels) {
-            fprintf(stderr, "MGL Error: mglBindImageTexture: level >= num_levels (%d >= %d)\n", level, ptr->num_levels);
-            ERROR_RETURN(GL_INVALID_VALUE);
-            return;
-        }
-        if (!ptr->faces[0].levels || !ptr->faces[0].levels[level].complete) {
-            fprintf(stderr, "MGL Error: mglBindImageTexture: incomplete level %d for texture %u\n", level, texture);
-            ERROR_RETURN(GL_INVALID_VALUE);
-            return;
+        /* Immutable textures reject level past allocated mip count (GL 4.6
+         * §8.26). Mutable textures may bind any level in [0, MAX_LEVEL] even
+         * when that mip was never defined — image loads return 0 and stores
+         * are ignored (CTS incomplete_textures). */
+        if (ptr->immutable_storage) {
+            if (level >= (GLint)ptr->num_levels) {
+                fprintf(stderr, "MGL Error: mglBindImageTexture: level >= num_levels (%d >= %d)\n", level, ptr->num_levels);
+                ERROR_RETURN(GL_INVALID_VALUE);
+                return;
+            }
+        } else {
+            GLint max_level = (GLint)ptr->params.max_level;
+            if (max_level < 0) {
+                max_level = 1000;
+            }
+            if (level > max_level) {
+                fprintf(stderr, "MGL Error: mglBindImageTexture: level %d > TEXTURE_MAX_LEVEL %d\n",
+                        level, max_level);
+                ERROR_RETURN(GL_INVALID_VALUE);
+                return;
+            }
         }
         if (!layered &&
-            mglTextureTargetUsesImageLayerParameter(ptr->target)) {
+            mglTextureTargetUsesImageLayerParameter(ptr->target) &&
+            ptr->faces[0].levels &&
+            level < (GLint)ptr->num_levels &&
+            ptr->faces[0].levels[level].complete) {
             /* GL_TEXTURE_1D_ARRAY stores its slice count in height (from
              * glTexStorage2D), not depth.  All other array targets use depth. */
             GLuint slice_count = (ptr->target == GL_TEXTURE_1D_ARRAY)

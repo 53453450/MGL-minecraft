@@ -314,6 +314,7 @@ struct MGLDecl {
     uint32_t layout_spacing;        /* TES: MGL_AST_SPACING_* */
     uint32_t layout_winding;        /* TES: MGL_AST_WINDING_* */
     uint32_t layout_point_mode;     /* TES: point_mode flag */
+    uint32_t layout_early_fragment_tests; /* FS: early_fragment_tests */
     uint32_t *array_dims;  /* element counts; NULL = not an array */
     uint32_t array_count;
     MGLExpr *init;         /* initializer or NULL */
@@ -353,6 +354,7 @@ typedef struct MGLTranslationUnit {
     uint32_t layout_spacing;       /* TES: MGL_AST_SPACING_* */
     uint32_t layout_winding;       /* TES: MGL_AST_WINDING_* */
     uint32_t layout_point_mode;    /* TES: point_mode flag */
+    uint32_t layout_early_fragment_tests; /* FS: early_fragment_tests */
     /* Default block packing from `layout(std430) buffer;` /
      * `layout(std140) uniform;` — applied when a later block omits an
      * explicit packing qualifier (GL 4.6 §4.4.5). */

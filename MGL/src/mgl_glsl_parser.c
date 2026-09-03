@@ -1809,6 +1809,7 @@ static MGLDecl *parse_declaration(MGLParser *p)
     d->layout_spacing = MGL_AST_SPACING_DEFAULT;
     d->layout_winding = MGL_AST_WINDING_DEFAULT;
     d->layout_point_mode = 0;
+    d->layout_early_fragment_tests = 0;
 
     /* qualifiers and storage */
 more_qualifiers:
@@ -1906,6 +1907,7 @@ more_qualifiers:
                 (n == 15 && memcmp(s, "lines_adjacency", 15) == 0) ||
                 (n == 14 && memcmp(s, "triangle_strip", 14) == 0) ||
                 (n == 19 && memcmp(s, "triangles_adjacency", 19) == 0) ||
+                (n == 20 && memcmp(s, "early_fragment_tests", 20) == 0) ||
                 is_image_format_layout(s, n);
             int has_value = at_peek_punct(p, 1, "=");
 
@@ -1945,6 +1947,8 @@ more_qualifiers:
                 d->layout_winding = MGL_AST_WINDING_CCW;
             } else if (n == 10 && memcmp(s, "point_mode", 10) == 0) {
                 d->layout_point_mode = 1;
+            } else if (n == 20 && memcmp(s, "early_fragment_tests", 20) == 0) {
+                d->layout_early_fragment_tests = 1;
             } else if (n == 6 && memcmp(s, "points", 6) == 0) {
                 d->layout_primitive = MGL_AST_GS_IN_POINTS;
             } else if (n == 5 && memcmp(s, "lines", 5) == 0) {
@@ -2063,6 +2067,7 @@ more_qualifiers:
         if (d->layout_winding != MGL_AST_WINDING_DEFAULT)
             tu->layout_winding = d->layout_winding;
         if (d->layout_point_mode)             tu->layout_point_mode = 1;
+        if (d->layout_early_fragment_tests)   tu->layout_early_fragment_tests = 1;
         if (d->layout_local_size_x >= 0)
             tu->layout_local_size_x = d->layout_local_size_x;
         if (d->layout_local_size_y >= 0)
