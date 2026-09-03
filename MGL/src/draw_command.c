@@ -1748,6 +1748,25 @@ static uint64_t mglComputeTextureHash(GLMContext ctx)
             }
         }
     }
+
+    /* BindImageTexture layer/level/access change Metal storage views but not
+     * sampled texture bindings. Hash image units so batch same-key restore
+     * skip and merge cannot keep a stale Type2D slice across rebinds. */
+    GLuint max_iu = ctx->active_state->var.max_image_units;
+    if (max_iu > TEXTURE_UNITS)
+        max_iu = TEXTURE_UNITS;
+    for (GLuint i = 0; i < max_iu; i++) {
+        const ImageUnit *iu = &ctx->active_state->image_units[i];
+        uint64_t tex_ptr = iu->tex ? (uint64_t)(uintptr_t)iu->tex : 0;
+        hash ^= mglRotateLeft64(tex_ptr ^ ((uint64_t)iu->texture << 1), (i + 41u) & 63);
+        hash ^= mglRotateLeft64(((uint64_t)iu->level << 32) |
+                                ((uint64_t)(iu->layered ? 1u : 0u) << 31) |
+                                ((uint64_t)(uint32_t)iu->layer),
+                                (i + 53u) & 63);
+        hash ^= mglRotateLeft64((uint64_t)iu->access ^
+                                ((uint64_t)iu->internalformat << 16),
+                                (i + 59u) & 63);
+    }
     return hash;
 }
 

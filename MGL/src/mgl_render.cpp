@@ -3709,11 +3709,21 @@ int mglRenderTextureTargetPlan(
         case GL_TEXTURE_CUBE_MAP_ARRAY:
             plan_out->texture_type =
                 static_cast<uint32_t>(MTL::TextureTypeCubeArray);
-            plan_out->num_faces = 6u;
+            /* GL stores cube-array levels in faces[0] with depth=cubes*6.
+             * Iterating 6 faces during CPU upload marks the create incomplete
+             * (faces 1-5 empty) and leaves DIRTY_TEXTURE_DATA set — later
+             * binds can fight imageStore results. */
+            plan_out->num_faces = 1u;
             plan_out->is_array = 1u;
             return 0;
         case GL_TEXTURE_3D:
-            plan_out->texture_type = static_cast<uint32_t>(MTL::TextureType3D);
+            /* Metal cannot create Type2D views of Type3D depth planes, but
+             * non-layered BindImageTexture + image2D requires one. Back 3D
+             * storage as a 2D array so slice views work (AIR image3D/sampler3D
+             * still need a follow-up remap when those paths bind). */
+            plan_out->texture_type =
+                static_cast<uint32_t>(MTL::TextureType2DArray);
+            plan_out->is_array = 1u;
             return 0;
         case GL_TEXTURE_2D_MULTISAMPLE_ARRAY:
             plan_out->texture_type =

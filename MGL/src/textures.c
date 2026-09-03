@@ -936,7 +936,14 @@ void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint leve
     }
 
     if (texture == 0u) {
-        mglResetImageUnit(&ctx->state.image_units[unit]);
+        ImageUnit *iu = &ctx->state.image_units[unit];
+        if (iu->texture != 0u || iu->tex != NULL) {
+            /* Image-unit rebinds are not covered by dynamic texture capture /
+             * MGL_BIND_NO_FLUSH batch merge; flush so pending draws keep the
+             * pre-rebind snapshot (non-layered layer switches). */
+            mglFlushPendingDraws(ctx);
+        }
+        mglResetImageUnit(iu);
         mglMarkStateDirtyBits(&ctx->state, DIRTY_IMAGE_UNIT_STATE);
         return;
     }
@@ -1056,6 +1063,23 @@ void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint leve
     unit_params.internalformat = internalformat;
     unit_params.tex = ptr;
     unit_params.mtl_image_view = NULL;
+
+    {
+        const ImageUnit *cur = &ctx->state.image_units[unit];
+        const bool binding_changed =
+            cur->texture != unit_params.texture ||
+            cur->level != unit_params.level ||
+            cur->layered != unit_params.layered ||
+            cur->layer != unit_params.layer ||
+            cur->access != unit_params.access ||
+            cur->internalformat != unit_params.internalformat ||
+            cur->tex != unit_params.tex;
+        if (binding_changed) {
+            /* No per-draw image-unit override in batch merge; always flush.
+             * MGL_BIND_NO_FLUSH dynamic texture capture ignores texture_hash. */
+            mglFlushPendingDraws(ctx);
+        }
+    }
 
     if (ctx->state.image_units[unit].mtl_image_view) {
         mglRenderReleaseMetalObject(ctx->state.image_units[unit].mtl_image_view);

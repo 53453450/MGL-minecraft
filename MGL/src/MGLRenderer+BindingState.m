@@ -22,13 +22,15 @@ enum {
     MGL_BINDING_RESOURCE_STORAGE_SHARED = 0u,
     MGL_BINDING_VERTEX_FORMAT_INVALID = 0u,
     MGL_BINDING_PIXEL_FORMAT_INVALID = 0u,
-    MGL_BINDING_TEXTURE_TYPE_1D = 0u,
-    MGL_BINDING_TEXTURE_TYPE_1D_ARRAY = 1u,
-    MGL_BINDING_TEXTURE_TYPE_2D = 2u,
-    MGL_BINDING_TEXTURE_TYPE_2D_ARRAY = 3u,
-    MGL_BINDING_TEXTURE_TYPE_3D = 4u,
-    MGL_BINDING_TEXTURE_TYPE_CUBE = 5u,
-    MGL_BINDING_TEXTURE_TYPE_CUBE_ARRAY = 6u,
+    /* Match MGLTextureType / MTLTextureType values from mgl_render_values.h.
+     * (A prior local enum used 3D=4, which is actually 2DMultisample.) */
+    MGL_BINDING_TEXTURE_TYPE_1D = MGLTextureType1D,
+    MGL_BINDING_TEXTURE_TYPE_1D_ARRAY = MGLTextureType1DArray,
+    MGL_BINDING_TEXTURE_TYPE_2D = MGLTextureType2D,
+    MGL_BINDING_TEXTURE_TYPE_2D_ARRAY = MGLTextureType2DArray,
+    MGL_BINDING_TEXTURE_TYPE_3D = MGLTextureType3D,
+    MGL_BINDING_TEXTURE_TYPE_CUBE = MGLTextureTypeCube,
+    MGL_BINDING_TEXTURE_TYPE_CUBE_ARRAY = MGLTextureTypeCubeArray,
 };
 
 static uint64_t mglBindingStateBufferLength(id buffer)
@@ -227,10 +229,11 @@ static id mglBindingStateCreateStorageImageView(id texture, ImageUnit *iu)
         }
         if (needsSlice) {
             void *view = NULL;
-            if (mglRenderCreateTextureViewRange(
+            int rc = mglRenderCreateTextureViewRange(
                     (__bridge void *)texture, info.pixel_format, dstType,
                     level, 1u, (uint64_t)iu->layer, 1u,
-                    0, 0, 0, 0, 0, &view) == 0 && view) {
+                    0, 0, 0, 0, 0, &view);
+            if (rc == 0 && view) {
                 return mglBindingStateCacheImageUnitView(iu, texture, view);
             }
         }
