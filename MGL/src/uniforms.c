@@ -1563,8 +1563,16 @@ static GLboolean mglSetSamplerUniformUnit(GLMContext ctx, GLint location, GLint 
         return GL_FALSE;
     }
 
-    if (unit < 0 || unit >= TEXTURE_UNITS) {
-        ERROR_RETURN_VALUE(GL_INVALID_VALUE, GL_TRUE);
+    /* Samplers use TEXTURE_UNITS; storage images use MAX_IMAGE_UNITS.
+     * CTS negative-uniform expects INVALID_VALUE when unit >= MAX_IMAGE_UNITS. */
+    {
+        GLint max_units = TEXTURE_UNITS;
+        if (primaryResourceType == _STORAGE_IMAGE_RES) {
+            max_units = (GLint)ctx->state.var.max_image_units;
+        }
+        if (unit < 0 || unit >= max_units) {
+            ERROR_RETURN_VALUE(GL_INVALID_VALUE, GL_TRUE);
+        }
     }
 
     /* Pass 2: collect all resources matching mglSamplerResourceMatchesUniformWrite
@@ -1690,6 +1698,33 @@ static GLboolean mglSetSamplerUniformUnit(GLMContext ctx, GLint location, GLint 
                                  DIRTY_TEX_BINDING | DIRTY_SAMPLER);
     }
     return GL_TRUE;
+}
+
+/* True when <location> names a storage image uniform in the current program. */
+static GLboolean mglUniformLocationIsStorageImage(GLMContext ctx, GLint location)
+{
+    ctx = mglUniformResolveContext(ctx, __FUNCTION__);
+    if (!ctx || location < 0) {
+        return GL_FALSE;
+    }
+    Program *program = mglUniformGetCurrentProgram(ctx, __FUNCTION__);
+    if (!program) {
+        return GL_FALSE;
+    }
+    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+        MGLShaderResourceList *resources =
+            mglUniformSafeResourceList(program, stage, _STORAGE_IMAGE_RES, __FUNCTION__);
+        if (!resources) {
+            continue;
+        }
+        for (GLuint i = 0; i < resources->count; i++) {
+            MGLShaderResource *res = &resources->list[i];
+            if (mglUniformLocationMatchesResource(res, _STORAGE_IMAGE_RES, location)) {
+                return GL_TRUE;
+            }
+        }
+    }
+    return GL_FALSE;
 }
 
 static size_t mglRoundUpUniformBlockSize(size_t value)
@@ -3093,6 +3128,11 @@ void mglUniform1iv(GLMContext ctx, GLint location, GLsizei count, const GLint *v
 
 void mglUniform1ui(GLMContext ctx, GLint location, GLuint v0)
 {
+    /* Spec / CTS negative-uniform: Uniform1ui on an image → INVALID_OPERATION. */
+    if (mglUniformLocationIsStorageImage(ctx, location)) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
     if (v0 <= (GLuint)INT_MAX && mglSetSamplerUniformUnit(ctx, location, (GLint)v0)) {
         return;
     }
@@ -3102,6 +3142,10 @@ void mglUniform1ui(GLMContext ctx, GLint location, GLuint v0)
 
 void mglUniform1uiv(GLMContext ctx, GLint location, GLsizei count, const GLuint *value)
 {
+    if (mglUniformLocationIsStorageImage(ctx, location)) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
     if (count > 0 && value &&
         (mglUniformValueProbeSkipped() || mglPointerRangeIsReadable(value, sizeof(*value))) &&
         value[0] <= (GLuint)INT_MAX &&
@@ -3143,7 +3187,11 @@ void mglUniform2fv(GLMContext ctx, GLint location, GLsizei count, const GLfloat 
 void mglUniform2i(GLMContext ctx, GLint location, GLint v0, GLint v1)
 {
     GLint data[] = {v0, v1};
-    
+
+    if (mglUniformLocationIsStorageImage(ctx, location)) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
     mglUniform(ctx, location, data, 2 * sizeof(GLint));
 }
 

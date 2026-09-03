@@ -861,6 +861,55 @@ static GLboolean mglTextureTargetUsesImageLayerParameter(GLenum target)
     }
 }
 
+/* GL 4.6 Table 8.26 — formats accepted by BindImageTexture <format>. */
+static GLboolean mglIsLegalImageUnitFormat(GLenum format)
+{
+    switch (format) {
+        case GL_RGBA32F:
+        case GL_RGBA16F:
+        case GL_RG32F:
+        case GL_RG16F:
+        case GL_R11F_G11F_B10F:
+        case GL_R32F:
+        case GL_R16F:
+        case GL_RGBA32UI:
+        case GL_RGBA16UI:
+        case GL_RGB10_A2UI:
+        case GL_RGBA8UI:
+        case GL_RG32UI:
+        case GL_RG16UI:
+        case GL_RG8UI:
+        case GL_R32UI:
+        case GL_R16UI:
+        case GL_R8UI:
+        case GL_RGBA32I:
+        case GL_RGBA16I:
+        case GL_RGBA8I:
+        case GL_RG32I:
+        case GL_RG16I:
+        case GL_RG8I:
+        case GL_R32I:
+        case GL_R16I:
+        case GL_R8I:
+        case GL_RGBA16:
+        case GL_RGB10_A2:
+        case GL_RGBA8:
+        case GL_RG16:
+        case GL_RG8:
+        case GL_R16:
+        case GL_R8:
+        case GL_RGBA16_SNORM:
+        case GL_RGBA8_SNORM:
+        case GL_RG16_SNORM:
+        case GL_RG8_SNORM:
+        case GL_R16_SNORM:
+        case GL_R8_SNORM:
+            return GL_TRUE;
+        default:
+            return GL_FALSE;
+    }
+}
+
 void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint level, GLboolean layered, GLint layer, GLenum access, GLenum internalformat)
 {
     Texture *ptr;
@@ -870,6 +919,14 @@ void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint leve
      * GL_MAX_IMAGE_UNITS == 8 (independent of TEXTURE_UNITS == 128). */
     if (unit >= ctx->state.var.max_image_units) {
         fprintf(stderr, "MGL Error: mglBindImageTexture: unit >= max_image_units (%d)\n", unit);
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    /* Format must be validated even when texture==0 (unbind): CTS
+     * negative-bind expects INVALID_VALUE for an illegal <format>. */
+    if (!mglIsLegalImageUnitFormat(internalformat)) {
+        fprintf(stderr, "MGL Error: mglBindImageTexture: illegal format 0x%x\n", internalformat);
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
@@ -911,12 +968,6 @@ void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint leve
             fprintf(stderr, "MGL Error: mglBindImageTexture: invalid access 0x%x\n", access);
             ERROR_RETURN(GL_INVALID_ENUM);
             return;
-    }
-
-    if (!checkInternalFormatForMetal(ctx, internalformat)) {
-        fprintf(stderr, "MGL Error: mglBindImageTexture: invalid internalformat 0x%x\n", internalformat);
-        ERROR_RETURN(GL_INVALID_ENUM);
-        return;
     }
 
     /* Spec: an incompatible <format> vs texture internalformat makes image

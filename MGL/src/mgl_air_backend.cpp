@@ -5797,6 +5797,266 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         }
         /* Storage-image ops: texture handle, no sampler.  GL 1D / 1D_ARRAY
          * are Metal-backed as 2D / 2D_ARRAY (height or y = 0). */
+        if (strcmp(name, "memoryBarrier") == 0 ||
+            strcmp(name, "memoryBarrierAtomicCounter") == 0 ||
+            strcmp(name, "memoryBarrierBuffer") == 0 ||
+            strcmp(name, "memoryBarrierShared") == 0 ||
+            strcmp(name, "memoryBarrierImage") == 0 ||
+            strcmp(name, "groupMemoryBarrier") == 0) {
+            /* Single-invocation texture RMW visibility on Metal does not
+             * need an explicit fence; treat barriers as no-ops. */
+            return cg.b->getInt32(0);
+        }
+        if (strncmp(name, "imageAtomic", 11) == 0) {
+            /* Emulate image atomics as read-modify-write via the same
+             * texture paths as imageLoad/Store.  Sufficient for CTS
+             * per-texel sequential RMW inside one invocation. */
+            const MGLExpr *ia = e->u.call.arg_count > 0
+                ? e->u.call.args[0] : nullptr;
+            if (!ia || ia->kind != MGL_EXPR_VAR_REF) {
+                cg.err = 1;
+                cg.errmsg = "codegen: imageAtomic* first argument must be an image";
+                return nullptr;
+            }
+            const MGLIRSymbol *is = findSymbol(mod, ia->u.var_ref.name);
+            if (!is || is->type->kind != MGLIR_TYPE_IMAGE) {
+                cg.err = 1;
+                cg.errmsg = "codegen: imageAtomic* requires an image variable";
+                return nullptr;
+            }
+            const MGLIRTexKind tk = is->type->tex_kind;
+            llvm::Value *tex = samplerTexValue(cg, ia->u.var_ref.name);
+            if (!tex) {
+                cg.err = 1;
+                cg.errmsg = "codegen: missing image binding for imageAtomic*";
+                return nullptr;
+            }
+            const bool isUint = is->type->tex_storage == MGLIR_SCALAR_UINT;
+            const bool isCompSwap = strcmp(name, "imageAtomicCompSwap") == 0;
+            const bool isMsImage =
+                tk == MGLIR_TEX_2D_MS || tk == MGLIR_TEX_2D_MS_ARRAY;
+            const unsigned wantArgs =
+                isCompSwap ? (isMsImage ? 5u : 4u) : (isMsImage ? 4u : 3u);
+            if (e->u.call.arg_count != wantArgs) {
+                cg.err = 1;
+                cg.errmsg = "codegen: imageAtomic* arity mismatch";
+                return nullptr;
+            }
+            llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
+            llvm::Type *v2i32 = llvm::FixedVectorType::get(i32, 2);
+            llvm::Type *v3i32 = llvm::FixedVectorType::get(i32, 3);
+            llvm::Type *v4i32 = llvm::FixedVectorType::get(i32, 4);
+            llvm::Type *voidTy = llvm::Type::getVoidTy(*cg.ctx);
+            auto toIvec2X0 = [&](llvm::Value *x) -> llvm::Value * {
+                llvm::Value *v = llvm::UndefValue::get(v2i32);
+                v = cg.b->CreateInsertElement(v, x, cg.b->getInt32(0));
+                return cg.b->CreateInsertElement(v, cg.b->getInt32(0),
+                                                 cg.b->getInt32(1));
+            };
+            llvm::Value *coord = emitExpr(cg, e->u.call.args[1], mod, locals);
+            if (!coord) return nullptr;
+            llvm::Value *coord2 = nullptr;
+            llvm::Value *coord3 = nullptr;
+            llvm::Value *layerOrFace = nullptr;
+            switch (tk) {
+            case MGLIR_TEX_1D:
+            case MGLIR_TEX_BUFFER:
+                if (!coord->getType()->isIntegerTy(32)) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: imageAtomic 1D/buffer coord must be int";
+                    return nullptr;
+                }
+                coord2 = toIvec2X0(coord);
+                break;
+            case MGLIR_TEX_2D:
+            case MGLIR_TEX_2D_RECT:
+            case MGLIR_TEX_2D_MS:
+                if (coord->getType() != v2i32) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: imageAtomic 2D coord must be ivec2";
+                    return nullptr;
+                }
+                coord2 = coord;
+                break;
+            case MGLIR_TEX_1D_ARRAY:
+                if (coord->getType() != v2i32) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: imageAtomic 1DArray coord must be ivec2";
+                    return nullptr;
+                }
+                layerOrFace = cg.b->CreateExtractElement(coord, cg.b->getInt32(1));
+                coord2 = toIvec2X0(
+                    cg.b->CreateExtractElement(coord, cg.b->getInt32(0)));
+                break;
+            case MGLIR_TEX_2D_ARRAY:
+            case MGLIR_TEX_CUBE:
+            case MGLIR_TEX_CUBE_ARRAY:
+            case MGLIR_TEX_3D:
+            case MGLIR_TEX_2D_MS_ARRAY:
+                if (coord->getType() != v3i32) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: imageAtomic 3D/cube/array coord must be ivec3";
+                    return nullptr;
+                }
+                if (tk == MGLIR_TEX_3D) {
+                    coord3 = coord;
+                } else {
+                    layerOrFace = cg.b->CreateExtractElement(coord, cg.b->getInt32(2));
+                    coord2 = cg.b->CreateShuffleVector(
+                        coord, llvm::UndefValue::get(coord->getType()), {0, 1});
+                }
+                break;
+            default:
+                cg.err = 1;
+                cg.errmsg = "codegen: imageAtomic unsupported image type";
+                return nullptr;
+            }
+            llvm::Value *msSample = nullptr;
+            unsigned dataArg = 2u;
+            if (isMsImage) {
+                msSample = emitExpr(cg, e->u.call.args[2], mod, locals);
+                if (!msSample) return nullptr;
+                msSample = coerceScalar(cg, msSample, MGLIR_SCALAR_INT);
+                dataArg = 3u;
+            }
+            auto readName = [&](const char *base) -> std::string {
+                return std::string(base) +
+                       (isUint ? ".u.v4i32" : ".s.v4i32");
+            };
+            auto writeName = [&](const char *base) -> std::string {
+                return std::string(base) +
+                       (isUint ? ".u.v4i32" : ".s.v4i32");
+            };
+            auto doRead = [&]() -> llvm::Value * {
+                llvm::Type *retTy = llvm::StructType::get(
+                    *cg.ctx, {v4i32, cg.b->getInt8Ty()});
+                llvm::Value *r = nullptr;
+                if (tk == MGLIR_TEX_3D) {
+                    r = callAirFn(cg, readName("air.read_texture_3d").c_str(),
+                                  retTy, {tex, coord3, cg.b->getInt32(0),
+                                          cg.b->getInt32(3)});
+                } else if (tk == MGLIR_TEX_CUBE) {
+                    r = callAirFn(cg, readName("air.read_texture_cube").c_str(),
+                                  retTy, {tex, coord2, layerOrFace,
+                                          cg.b->getInt32(0), cg.b->getInt32(3)});
+                } else if (tk == MGLIR_TEX_CUBE_ARRAY) {
+                    llvm::Value *face =
+                        cg.b->CreateURem(layerOrFace, cg.b->getInt32(6));
+                    llvm::Value *arrayIdx =
+                        cg.b->CreateUDiv(layerOrFace, cg.b->getInt32(6));
+                    r = callAirFn(
+                        cg, readName("air.read_texture_cube_array").c_str(),
+                        retTy, {tex, coord2, face, arrayIdx,
+                                cg.b->getInt32(0), cg.b->getInt32(3)});
+                } else if (tk == MGLIR_TEX_2D_MS) {
+                    r = callAirFn(cg,
+                                  readName("air.read_texture_2d_array").c_str(),
+                                  retTy, {tex, coord2, msSample,
+                                          cg.b->getInt32(0), cg.b->getInt32(3)});
+                } else if (tk == MGLIR_TEX_2D_MS_ARRAY) {
+                    llvm::Value *flat = cg.b->CreateAdd(
+                        cg.b->CreateMul(layerOrFace, cg.b->getInt32(8)),
+                        msSample);
+                    r = callAirFn(cg,
+                                  readName("air.read_texture_2d_array").c_str(),
+                                  retTy, {tex, coord2, flat,
+                                          cg.b->getInt32(0), cg.b->getInt32(3)});
+                } else if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY) {
+                    r = callAirFn(cg,
+                                  readName("air.read_texture_2d_array").c_str(),
+                                  retTy, {tex, coord2, layerOrFace,
+                                          cg.b->getInt32(0), cg.b->getInt32(3)});
+                } else {
+                    r = callAirFn(cg, readName("air.read_texture_2d").c_str(),
+                                  retTy, {tex, coord2, cg.b->getInt32(0),
+                                          cg.b->getInt32(3)});
+                }
+                return cg.b->CreateExtractValue(r, 0);
+            };
+            auto doWrite = [&](llvm::Value *vec4) {
+                if (tk == MGLIR_TEX_3D) {
+                    callAirFn(cg, writeName("air.write_texture_3d").c_str(),
+                              voidTy, {tex, coord3, vec4, cg.b->getInt32(0),
+                                       cg.b->getInt32(3)});
+                } else if (tk == MGLIR_TEX_CUBE) {
+                    callAirFn(cg, writeName("air.write_texture_cube").c_str(),
+                              voidTy, {tex, coord2, layerOrFace, vec4,
+                                       cg.b->getInt32(0), cg.b->getInt32(3)});
+                } else if (tk == MGLIR_TEX_CUBE_ARRAY) {
+                    llvm::Value *face =
+                        cg.b->CreateURem(layerOrFace, cg.b->getInt32(6));
+                    llvm::Value *arrayIdx =
+                        cg.b->CreateUDiv(layerOrFace, cg.b->getInt32(6));
+                    callAirFn(cg, writeName("air.write_texture_cube_array").c_str(),
+                              voidTy, {tex, coord2, face, arrayIdx, vec4,
+                                       cg.b->getInt32(0), cg.b->getInt32(3)});
+                } else if (tk == MGLIR_TEX_2D_MS) {
+                    callAirFn(cg, writeName("air.write_texture_2d_array").c_str(),
+                              voidTy, {tex, coord2, msSample, vec4,
+                                       cg.b->getInt32(0), cg.b->getInt32(3)});
+                } else if (tk == MGLIR_TEX_2D_MS_ARRAY) {
+                    llvm::Value *flat = cg.b->CreateAdd(
+                        cg.b->CreateMul(layerOrFace, cg.b->getInt32(8)),
+                        msSample);
+                    callAirFn(cg, writeName("air.write_texture_2d_array").c_str(),
+                              voidTy, {tex, coord2, flat, vec4,
+                                       cg.b->getInt32(0), cg.b->getInt32(3)});
+                } else if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY) {
+                    callAirFn(cg, writeName("air.write_texture_2d_array").c_str(),
+                              voidTy, {tex, coord2, layerOrFace, vec4,
+                                       cg.b->getInt32(0), cg.b->getInt32(3)});
+                } else {
+                    callAirFn(cg, writeName("air.write_texture_2d").c_str(),
+                              voidTy, {tex, coord2, vec4, cg.b->getInt32(0),
+                                       cg.b->getInt32(3)});
+                }
+            };
+            llvm::Value *oldVec = doRead();
+            llvm::Value *old =
+                cg.b->CreateExtractElement(oldVec, cg.b->getInt32(0));
+            llvm::Value *data =
+                emitExpr(cg, e->u.call.args[dataArg], mod, locals);
+            if (!data) return nullptr;
+            data = coerceScalar(cg, data,
+                                isUint ? MGLIR_SCALAR_UINT : MGLIR_SCALAR_INT);
+            llvm::Value *neu = nullptr;
+            if (isCompSwap) {
+                llvm::Value *cmp = data;
+                llvm::Value *val =
+                    emitExpr(cg, e->u.call.args[dataArg + 1], mod, locals);
+                if (!val) return nullptr;
+                val = coerceScalar(cg, val,
+                                   isUint ? MGLIR_SCALAR_UINT : MGLIR_SCALAR_INT);
+                llvm::Value *eq = cg.b->CreateICmpEQ(old, cmp);
+                neu = cg.b->CreateSelect(eq, val, old);
+            } else if (strcmp(name, "imageAtomicAdd") == 0) {
+                neu = cg.b->CreateAdd(old, data);
+            } else if (strcmp(name, "imageAtomicMin") == 0) {
+                neu = isUint
+                    ? cg.b->CreateBinaryIntrinsic(llvm::Intrinsic::umin, old, data)
+                    : cg.b->CreateBinaryIntrinsic(llvm::Intrinsic::smin, old, data);
+            } else if (strcmp(name, "imageAtomicMax") == 0) {
+                neu = isUint
+                    ? cg.b->CreateBinaryIntrinsic(llvm::Intrinsic::umax, old, data)
+                    : cg.b->CreateBinaryIntrinsic(llvm::Intrinsic::smax, old, data);
+            } else if (strcmp(name, "imageAtomicAnd") == 0) {
+                neu = cg.b->CreateAnd(old, data);
+            } else if (strcmp(name, "imageAtomicOr") == 0) {
+                neu = cg.b->CreateOr(old, data);
+            } else if (strcmp(name, "imageAtomicXor") == 0) {
+                neu = cg.b->CreateXor(old, data);
+            } else if (strcmp(name, "imageAtomicExchange") == 0) {
+                neu = data;
+            } else {
+                cg.err = 1;
+                cg.errmsg = "codegen: unsupported imageAtomic op";
+                return nullptr;
+            }
+            llvm::Value *newVec =
+                cg.b->CreateInsertElement(oldVec, neu, cg.b->getInt32(0));
+            doWrite(newVec);
+            return old;
+        }
         if (strcmp(name, "imageStore") == 0 ||
             strcmp(name, "imageLoad") == 0 ||
             strcmp(name, "imageSize") == 0) {

@@ -1094,6 +1094,7 @@ typedef enum {
 typedef enum {
     BI_RET_FLOAT,   /* scalar float */
     BI_RET_UINT,    /* scalar uint */
+    BI_RET_INT,     /* scalar int */
     BI_RET_BOOL,    /* scalar bool */
     BI_RET_GENF,    /* float genType matching the gen args */
     BI_RET_GENI,    /* int/uint genType matching the gen args */
@@ -1386,6 +1387,46 @@ static const BiFn kBuiltins[] = {
     { "atomicCounterIncrement", 1, { BI_ARG_ATOMIC }, BI_RET_UINT },
     { "atomicCounterDecrement", 1, { BI_ARG_ATOMIC }, BI_RET_UINT },
     { "atomicCounter", 1, { BI_ARG_ATOMIC }, BI_RET_UINT },
+    /* Shader memory barriers (GLSL 4.60 §8.15). */
+    { "memoryBarrier", 0, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF }, BI_RET_VOID },
+    { "memoryBarrierAtomicCounter", 0, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF }, BI_RET_VOID },
+    { "memoryBarrierBuffer", 0, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF }, BI_RET_VOID },
+    { "memoryBarrierShared", 0, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF }, BI_RET_VOID },
+    { "memoryBarrierImage", 0, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF }, BI_RET_VOID },
+    { "groupMemoryBarrier", 0, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF }, BI_RET_VOID },
+    /* Image atomics (GLSL 4.60 §8.12). */
+    { "imageAtomicAdd", 3, { BI_ARG_IMAGE_INT, BI_ARG_GENI, BI_ARG_INT }, BI_RET_INT },
+    { "imageAtomicAdd", 3, { BI_ARG_IMAGE_UINT, BI_ARG_GENI, BI_ARG_UINT }, BI_RET_UINT },
+    { "imageAtomicAdd", 4, { BI_ARG_IMAGE_INT, BI_ARG_GENI, BI_ARG_INT, BI_ARG_INT }, BI_RET_INT },
+    { "imageAtomicAdd", 4, { BI_ARG_IMAGE_UINT, BI_ARG_GENI, BI_ARG_INT, BI_ARG_UINT }, BI_RET_UINT },
+    { "imageAtomicMin", 3, { BI_ARG_IMAGE_INT, BI_ARG_GENI, BI_ARG_INT }, BI_RET_INT },
+    { "imageAtomicMin", 3, { BI_ARG_IMAGE_UINT, BI_ARG_GENI, BI_ARG_UINT }, BI_RET_UINT },
+    { "imageAtomicMin", 4, { BI_ARG_IMAGE_INT, BI_ARG_GENI, BI_ARG_INT, BI_ARG_INT }, BI_RET_INT },
+    { "imageAtomicMin", 4, { BI_ARG_IMAGE_UINT, BI_ARG_GENI, BI_ARG_INT, BI_ARG_UINT }, BI_RET_UINT },
+    { "imageAtomicMax", 3, { BI_ARG_IMAGE_INT, BI_ARG_GENI, BI_ARG_INT }, BI_RET_INT },
+    { "imageAtomicMax", 3, { BI_ARG_IMAGE_UINT, BI_ARG_GENI, BI_ARG_UINT }, BI_RET_UINT },
+    { "imageAtomicMax", 4, { BI_ARG_IMAGE_INT, BI_ARG_GENI, BI_ARG_INT, BI_ARG_INT }, BI_RET_INT },
+    { "imageAtomicMax", 4, { BI_ARG_IMAGE_UINT, BI_ARG_GENI, BI_ARG_INT, BI_ARG_UINT }, BI_RET_UINT },
+    { "imageAtomicAnd", 3, { BI_ARG_IMAGE_INT, BI_ARG_GENI, BI_ARG_INT }, BI_RET_INT },
+    { "imageAtomicAnd", 3, { BI_ARG_IMAGE_UINT, BI_ARG_GENI, BI_ARG_UINT }, BI_RET_UINT },
+    { "imageAtomicAnd", 4, { BI_ARG_IMAGE_INT, BI_ARG_GENI, BI_ARG_INT, BI_ARG_INT }, BI_RET_INT },
+    { "imageAtomicAnd", 4, { BI_ARG_IMAGE_UINT, BI_ARG_GENI, BI_ARG_INT, BI_ARG_UINT }, BI_RET_UINT },
+    { "imageAtomicOr", 3, { BI_ARG_IMAGE_INT, BI_ARG_GENI, BI_ARG_INT }, BI_RET_INT },
+    { "imageAtomicOr", 3, { BI_ARG_IMAGE_UINT, BI_ARG_GENI, BI_ARG_UINT }, BI_RET_UINT },
+    { "imageAtomicOr", 4, { BI_ARG_IMAGE_INT, BI_ARG_GENI, BI_ARG_INT, BI_ARG_INT }, BI_RET_INT },
+    { "imageAtomicOr", 4, { BI_ARG_IMAGE_UINT, BI_ARG_GENI, BI_ARG_INT, BI_ARG_UINT }, BI_RET_UINT },
+    { "imageAtomicXor", 3, { BI_ARG_IMAGE_INT, BI_ARG_GENI, BI_ARG_INT }, BI_RET_INT },
+    { "imageAtomicXor", 3, { BI_ARG_IMAGE_UINT, BI_ARG_GENI, BI_ARG_UINT }, BI_RET_UINT },
+    { "imageAtomicXor", 4, { BI_ARG_IMAGE_INT, BI_ARG_GENI, BI_ARG_INT, BI_ARG_INT }, BI_RET_INT },
+    { "imageAtomicXor", 4, { BI_ARG_IMAGE_UINT, BI_ARG_GENI, BI_ARG_INT, BI_ARG_UINT }, BI_RET_UINT },
+    { "imageAtomicExchange", 3, { BI_ARG_IMAGE_INT, BI_ARG_GENI, BI_ARG_INT }, BI_RET_INT },
+    { "imageAtomicExchange", 3, { BI_ARG_IMAGE_UINT, BI_ARG_GENI, BI_ARG_UINT }, BI_RET_UINT },
+    { "imageAtomicExchange", 4, { BI_ARG_IMAGE_INT, BI_ARG_GENI, BI_ARG_INT, BI_ARG_INT }, BI_RET_INT },
+    { "imageAtomicExchange", 4, { BI_ARG_IMAGE_UINT, BI_ARG_GENI, BI_ARG_INT, BI_ARG_UINT }, BI_RET_UINT },
+    { "imageAtomicCompSwap", 4, { BI_ARG_IMAGE_INT, BI_ARG_GENI, BI_ARG_INT, BI_ARG_INT }, BI_RET_INT },
+    { "imageAtomicCompSwap", 4, { BI_ARG_IMAGE_UINT, BI_ARG_GENI, BI_ARG_UINT, BI_ARG_UINT }, BI_RET_UINT },
+    { "imageAtomicCompSwap", 5, { BI_ARG_IMAGE_INT, BI_ARG_GENI, BI_ARG_INT, BI_ARG_INT, BI_ARG_INT }, BI_RET_INT },
+    { "imageAtomicCompSwap", 5, { BI_ARG_IMAGE_UINT, BI_ARG_GENI, BI_ARG_INT, BI_ARG_UINT, BI_ARG_UINT }, BI_RET_UINT },
     /* geometry shader (M3): statement-only, void */
     { "EmitVertex",          0, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF }, BI_RET_VOID },
     { "EndPrimitive",        0, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF }, BI_RET_VOID },
@@ -1623,6 +1664,8 @@ static MGLIRType *builtin_call_type(const char *name,
             return mglIRTypeScalar(MGLIR_SCALAR_FLOAT);
         case BI_RET_UINT:
             return mglIRTypeScalar(MGLIR_SCALAR_UINT);
+        case BI_RET_INT:
+            return mglIRTypeScalar(MGLIR_SCALAR_INT);
         case BI_RET_BOOL:
             return mglIRTypeScalar(MGLIR_SCALAR_BOOL);
         case BI_RET_BVEC:
