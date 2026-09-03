@@ -5914,9 +5914,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             case MGLIR_TEX_CUBE:
             case MGLIR_TEX_CUBE_ARRAY:
             case MGLIR_TEX_3D:
+            case MGLIR_TEX_2D_MS_ARRAY:
                 if (coord->getType() != v3i32) {
                     cg.err = 1;
-                    cg.errmsg = "codegen: image3D/cube/2DArray coord must be ivec3";
+                    cg.errmsg = "codegen: image3D/cube/2DArray/2DMSArray coord must be ivec3";
                     return nullptr;
                 }
                 if (tk == MGLIR_TEX_3D) {
@@ -5927,11 +5928,37 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                         coord, llvm::UndefValue::get(coord->getType()), {0, 1});
                 }
                 break;
+            case MGLIR_TEX_2D_MS:
+                if (coord->getType() != v2i32) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: image2DMS coord must be ivec2";
+                    return nullptr;
+                }
+                coord2 = coord;
+                break;
             default:
                 cg.err = 1;
                 cg.errmsg = std::string("codegen: ") + name +
                     " unsupported image type";
                 return nullptr;
+            }
+            /* Multisample imageLoad/Store take an explicit sample index. Metal
+             * cannot write texture2d_ms, so MS images are backed as
+             * texture2d_array with sample (or layer*samples+sample) as layer. */
+            llvm::Value *msSample = nullptr;
+            const bool isMsImage =
+                tk == MGLIR_TEX_2D_MS || tk == MGLIR_TEX_2D_MS_ARRAY;
+            if (isMsImage) {
+                const unsigned expectArgs =
+                    strcmp(name, "imageStore") == 0 ? 4u : 3u;
+                if (e->u.call.arg_count != expectArgs) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: multisample image op arity mismatch";
+                    return nullptr;
+                }
+                msSample = emitExpr(cg, e->u.call.args[2], mod, locals);
+                if (!msSample) return nullptr;
+                msSample = coerceScalar(cg, msSample, MGLIR_SCALAR_INT);
             }
             if (strcmp(name, "imageLoad") == 0) {
                 llvm::Type *vecTy = isInt ? v4i32 : v4f32;
@@ -5962,6 +5989,18 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                   retTy,
                                   {tex, coord2, face, arrayIdx,
                                    cg.b->getInt32(0), cg.b->getInt32(3)});
+                } else if (tk == MGLIR_TEX_2D_MS) {
+                    r = callAirFn(cg, readName("air.read_texture_2d_array").c_str(),
+                                  retTy, {tex, coord2, msSample,
+                                          cg.b->getInt32(0), cg.b->getInt32(3)});
+                } else if (tk == MGLIR_TEX_2D_MS_ARRAY) {
+                    /* texture2d_array planes: flat = layer * 8 + sample. */
+                    llvm::Value *flat = cg.b->CreateAdd(
+                        cg.b->CreateMul(layerOrFace, cg.b->getInt32(8)),
+                        msSample);
+                    r = callAirFn(cg, readName("air.read_texture_2d_array").c_str(),
+                                  retTy, {tex, coord2, flat,
+                                          cg.b->getInt32(0), cg.b->getInt32(3)});
                 } else if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY) {
                     r = callAirFn(cg, readName("air.read_texture_2d_array").c_str(),
                                   retTy, {tex, coord2, layerOrFace,
@@ -5973,7 +6012,9 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 }
                 return cg.b->CreateExtractValue(r, 0);
             }
-            llvm::Value *value = emitExpr(cg, e->u.call.args[2], mod, locals);
+            const MGLExpr *valueArg = isMsImage ? e->u.call.args[3]
+                                                : e->u.call.args[2];
+            llvm::Value *value = emitExpr(cg, valueArg, mod, locals);
             if (!value) return nullptr;
             if (isInt) {
                 value = coerceScalar(cg, value, MGLIR_SCALAR_INT);
@@ -6010,6 +6051,21 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 return callAirFn(
                     cg, writeName("air.write_texture_cube_array").c_str(), voidTy,
                     {tex, coord2, face, arrayIdx, value, cg.b->getInt32(0),
+                     cg.b->getInt32(3)});
+            }
+            if (tk == MGLIR_TEX_2D_MS) {
+                return callAirFn(
+                    cg, writeName("air.write_texture_2d_array").c_str(), voidTy,
+                    {tex, coord2, msSample, value, cg.b->getInt32(0),
+                     cg.b->getInt32(3)});
+            }
+            if (tk == MGLIR_TEX_2D_MS_ARRAY) {
+                llvm::Value *flat = cg.b->CreateAdd(
+                    cg.b->CreateMul(layerOrFace, cg.b->getInt32(8)),
+                    msSample);
+                return callAirFn(
+                    cg, writeName("air.write_texture_2d_array").c_str(), voidTy,
+                    {tex, coord2, flat, value, cg.b->getInt32(0),
                      cg.b->getInt32(3)});
             }
             if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY) {
@@ -6208,11 +6264,13 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                 "expects ivec2 coordinates";
                     return nullptr;
                 }
+                /* Non-RT MS textures are texture2d_array sample planes. */
                 r = callAirFn(
                     cg,
-                    readIntrinsic("air.read_texture_2d_ms.v4f32").c_str(),
+                    readIntrinsic("air.read_texture_2d_array.v4f32").c_str(),
                     retTy,
-                    {tex, coord, lodOrSample, cg.b->getInt32(3)});
+                    {tex, coord, lodOrSample, cg.b->getInt32(0),
+                     cg.b->getInt32(3)});
             } else if (texKind == MGLIR_TEX_2D_MS_ARRAY) {
                 if (coord->getType() != v3i32) {
                     cg.err = 1;
@@ -6225,12 +6283,13 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 coord = cg.b->CreateShuffleVector(
                     coord, llvm::UndefValue::get(coord->getType()),
                     {0, 1});
+                llvm::Value *flat = cg.b->CreateAdd(
+                    cg.b->CreateMul(layer, cg.b->getInt32(8)), lodOrSample);
                 r = callAirFn(
                     cg,
-                    readIntrinsic("air.read_texture_2d_ms_array.v4f32")
-                        .c_str(),
+                    readIntrinsic("air.read_texture_2d_array.v4f32").c_str(),
                     retTy,
-                    {tex, coord, layer, lodOrSample, cg.b->getInt32(3)});
+                    {tex, coord, flat, cg.b->getInt32(0), cg.b->getInt32(3)});
             } else if (texKind == MGLIR_TEX_3D) {
                 if (coord->getType() != v3i32) {
                     cg.err = 1;
@@ -10614,7 +10673,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         MGLIRTexKind tk = ts && ts->type->kind == MGLIR_TYPE_SAMPLER
             ? ts->type->tex_kind : MGLIR_TEX_2D;
         llvm::StructType *tt = (tk == MGLIR_TEX_3D) ? texTy3d
-                             : (tk == MGLIR_TEX_2D_ARRAY) ? texTy2dArray
+                             : (tk == MGLIR_TEX_2D_ARRAY ||
+                                tk == MGLIR_TEX_1D_ARRAY ||
+                                tk == MGLIR_TEX_2D_MS ||
+                                tk == MGLIR_TEX_2D_MS_ARRAY) ? texTy2dArray
                              : (tk == MGLIR_TEX_BUFFER) ? texTyBuf : texTy2d;
         uint32_t elements = v.type.arr > 0 ? (uint32_t)v.type.arr : 1u;
         for (uint32_t k = 0; k < elements; k++) {
@@ -10629,7 +10691,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             ? ts->type->tex_kind : MGLIR_TEX_2D;
         llvm::StructType *tt = texTy2d;
         if (tk == MGLIR_TEX_3D) tt = texTy3d;
-        else if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY)
+        else if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY ||
+                 tk == MGLIR_TEX_2D_MS || tk == MGLIR_TEX_2D_MS_ARRAY)
             tt = texTy2dArray;
         else if (tk == MGLIR_TEX_CUBE) tt = texTyCube;
         else if (tk == MGLIR_TEX_CUBE_ARRAY) tt = texTyCubeArray;
@@ -12502,7 +12565,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                         samplerType->tex_kind == MGLIR_TEX_3D;
             bool is2dArray = samplerType &&
                              samplerType->kind == MGLIR_TYPE_SAMPLER &&
-                             samplerType->tex_kind == MGLIR_TEX_2D_ARRAY;
+                             (samplerType->tex_kind == MGLIR_TEX_2D_ARRAY ||
+                              samplerType->tex_kind == MGLIR_TEX_1D_ARRAY ||
+                              samplerType->tex_kind == MGLIR_TEX_2D_MS ||
+                              samplerType->tex_kind == MGLIR_TEX_2D_MS_ARRAY);
             const char *texelName = "float";
             if (samplerType && samplerType->kind == MGLIR_TYPE_SAMPLER) {
                 if (samplerType->tex_storage == MGLIR_SCALAR_INT)
@@ -12562,7 +12628,11 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             switch (itk) {
             case MGLIR_TEX_3D: dimTy = "texture3d"; break;
             case MGLIR_TEX_2D_ARRAY:
-            case MGLIR_TEX_1D_ARRAY: dimTy = "texture2d_array"; break;
+            case MGLIR_TEX_1D_ARRAY:
+            case MGLIR_TEX_2D_MS:
+            case MGLIR_TEX_2D_MS_ARRAY:
+                dimTy = "texture2d_array";
+                break;
             case MGLIR_TEX_CUBE: dimTy = "texturecube"; break;
             case MGLIR_TEX_CUBE_ARRAY: dimTy = "texturecube_array"; break;
             case MGLIR_TEX_BUFFER:

@@ -5367,12 +5367,35 @@ static void mglTextureCopyTextureToBuffer(
     tex_desc.width = width;
     tex_desc.height = (tex_type == MGLTextureType1D ||
                        tex_type == MGLTextureType1DArray) ? 1 : height;
+    bool msEmulatedAsArray = false;
     if (tex_type == MGLTextureType2DMultisample ||
         tex_type == MGLTextureType2DMultisampleArray) {
 
         NSUInteger samples = MAX((NSUInteger)2u, (NSUInteger)tex->samples);
         samples = MGLCapabilityClampSampleCount(&_capability, samples);
-        tex_desc.sample_count = samples;
+        /* Metal cannot shader-write true MSAA textures. Non-render-target MS
+         * images (image2DMS / image2DMSArray) are stored as texture2d_array
+         * sample planes so imageStore works; texelFetch uses the same planes. */
+        if (!tex->is_render_target) {
+            const NSUInteger kMsPlaneStride = 8u;
+            msEmulatedAsArray = true;
+            if (tex_type == MGLTextureType2DMultisample) {
+                tex_type = MGLTextureType2DArray;
+                tex_desc.texture_type = tex_type;
+                tex_desc.sample_count = 1u;
+                tex_desc.array_length = MAX(samples, 1u);
+                tex_desc.depth = 1u;
+            } else {
+                tex_type = MGLTextureType2DArray;
+                tex_desc.texture_type = tex_type;
+                tex_desc.sample_count = 1u;
+                NSUInteger layers = MAX((NSUInteger)depth, 1u);
+                tex_desc.array_length = layers * kMsPlaneStride;
+                tex_desc.depth = 1u;
+            }
+        } else {
+            tex_desc.sample_count = samples;
+        }
     }
 
     // CONSERVATIVE: Use only Metal API patterns that work reliably with AGX driver
@@ -5421,10 +5444,10 @@ static void mglTextureCopyTextureToBuffer(
     } else if (tex_type == MGLTextureType1DArray) {
         tex_desc.array_length = MAX((NSUInteger)1, height);
         tex_desc.depth = 1;
-    } else if (is_array) {
+    } else if (is_array && !msEmulatedAsArray) {
         tex_desc.array_length = MAX((NSUInteger)1, depth);
         tex_desc.depth = 1;
-    } else {
+    } else if (!msEmulatedAsArray) {
         /* For 3D and other non-array textures, arrayLength must be 1.
          * Some Metal drivers report getNumSlices()==0 when arrayLength
          * is left at its default, causing "slice OOB" assertions. */
@@ -6713,12 +6736,14 @@ static void mglTextureCopyTextureToBuffer(
             }
         }
 
-        /* AIR lowers sampler1DArray to texture2d_array, so expectedType is
-         * MGLTextureType2DArray while GL binds into the _TEXTURE_1D_ARRAY slot. */
+        /* AIR lowers sampler1DArray / sampler2DMS* to texture2d_array, while GL
+         * binds into _TEXTURE_1D_ARRAY / _TEXTURE_2D_MULTISAMPLE[_ARRAY]. */
         if (expectedType == MGLTextureType2DArray) {
             Texture *activeTexture = MGL_STATE(ctx)->active_textures[textureUnit];
             if (activeTexture &&
-                activeTexture->target == GL_TEXTURE_1D_ARRAY) {
+                (activeTexture->target == GL_TEXTURE_1D_ARRAY ||
+                 activeTexture->target == GL_TEXTURE_2D_MULTISAMPLE ||
+                 activeTexture->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY)) {
                 return activeTexture;
             }
         }

@@ -695,6 +695,14 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                 if (s->binding != UINT32_MAX) {
                     last->gl_binding = s->binding;
                 }
+                /* Same synthetic location namespace as samplers so
+                 * glGetUniformLocation + glUniform1i can set the image unit
+                 * when layout(binding=) is omitted (e.g. CTS WriteMS). */
+                last->uniform_location =
+                    (s->location != UINT32_MAX)
+                        ? (GLint)s->location
+                        : mglSyntheticSamplerUniformLocation(
+                              stage, _STORAGE_IMAGE_RES, texture_binding);
                 GLuint elements = mglAirGLArraySizeFromIR(t);
                 if (elements < 1u) elements = 1u;
                 texture_binding += elements;

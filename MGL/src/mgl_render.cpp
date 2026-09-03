@@ -3814,9 +3814,13 @@ uint32_t mglRenderTextureTypeForShaderResource(
                 image_arrayed ? MTL::TextureType2DArray : MTL::TextureType2D);
         case MGL_IMAGE_DIM_2D:
             if (image_multisampled) {
-                return static_cast<uint32_t>(
-                    image_arrayed ? MTL::TextureType2DMultisampleArray
-                                  : MTL::TextureType2DMultisample);
+                /* Metal cannot shader-write texture2d_ms. Non-RT MS images and
+                 * sampler2DMS* are backed as texture2d_array sample planes, and
+                 * AIR always declares texture2d_array for MS. Match that type
+                 * here so binding does not replace the real texture with a
+                 * Multisample fallback (CTS shader_image_load_store WriteMS). */
+                (void)image_arrayed;
+                return static_cast<uint32_t>(MTL::TextureType2DArray);
             }
             return static_cast<uint32_t>(
                 image_arrayed ? MTL::TextureType2DArray : MTL::TextureType2D);
