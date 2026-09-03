@@ -983,13 +983,11 @@ static bool mglCPUFeedbackIsPassthroughProgram(Program *program)
             return false;
         }
 
-        /* The captured output must trace to a VS input at the same location
-         * and with the same GL type. Try location first, then name. */
+        /* True passthrough only: an input with the same name as the captured
+         * output.  Matching by location is wrong — VS in/out location spaces
+         * are independent, so out "result" @0 must not bind to in "a_0" @0. */
         MGLShaderResource *input =
-            mglCPUFeedbackFindVertexInputAtLocation(program, output->location);
-        if (!input) {
-            input = mglCPUFeedbackFindVertexInputByName(program, base_name);
-        }
+            mglCPUFeedbackFindVertexInputByName(program, base_name);
         if (!input || input->gl_type != output->gl_type) {
             return false;
         }
@@ -1058,6 +1056,7 @@ static void mglCPUFeedbackFlushAndCount(GLMContext ctx,
                                  (size_t)dstOffset,
                                  (size_t)writeSize,
                                  (uint8_t *)(uintptr_t)xfb->data.buffer_data + dstOffset);
+        xfb->cpu_shadow_pending = GL_TRUE;
         xfb->data.dirty_bits |= DIRTY_BUFFER_DATA;
         xfb->ever_written = GL_TRUE;
         xfb->has_initialized_data = GL_TRUE;
@@ -1190,10 +1189,7 @@ static void mglCPUFeedbackCaptureVertex(GLMContext ctx,
 
         MGLShaderResource *output = mglCPUFeedbackFindVertexOutput(program, base_name);
         MGLShaderResource *input =
-            output ? mglCPUFeedbackFindVertexInputAtLocation(program, output->location) : NULL;
-        if (!input && output) {
-            input = mglCPUFeedbackFindVertexInputByName(program, base_name);
-        }
+            output ? mglCPUFeedbackFindVertexInputByName(program, base_name) : NULL;
         if (!input) {
             continue;
         }

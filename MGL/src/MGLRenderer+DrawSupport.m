@@ -1399,6 +1399,30 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         hasSource[varying] = YES;
     }
 
+    /* Capture VS emits float carriers for every user varying slot; integer
+     * XFB outputs must be converted when packing (GL stores ints as ints). */
+    GLenum varyingGlType[MAX_ATTRIBS];
+    memset(varyingGlType, 0, sizeof(varyingGlType));
+    for (GLsizei varying = 0;
+         varying < program->transform_feedback_varying_count;
+         varying++) {
+        if (!hasSource[varying]) continue;
+        const char *name = program->transform_feedback_varying_names[varying];
+        if (!name || !name[0]) continue;
+        char baseName[96];
+        strncpy(baseName, name, sizeof(baseName) - 1);
+        baseName[sizeof(baseName) - 1] = '\0';
+        char *bracket = strchr(baseName, '[');
+        if (bracket) *bracket = '\0';
+        for (GLuint i = 0u; outputs->list && i < outputs->count; i++) {
+            if (outputs->list[i].name &&
+                strcmp(outputs->list[i].name, baseName) == 0) {
+                varyingGlType[varying] = outputs->list[i].gl_type;
+                break;
+            }
+        }
+    }
+
     NSUInteger captureOffset = 0u;
     id capture = [self captureAIRVertexPositionsForTessellation:drawCtx
                                                           first:first
@@ -1476,9 +1500,34 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
                 if (plan->buffer_index != buffer || !hasSource[varying]) {
                     continue;
                 }
-                memcpy(dstRecord + (NSUInteger)plan->component_offset * 4u,
-                       srcRecord + sourceOffset[varying],
-                       (NSUInteger)plan->component_count * 4u);
+                uint8_t *dstField =
+                    dstRecord + (NSUInteger)plan->component_offset * 4u;
+                const uint8_t *srcField = srcRecord + sourceOffset[varying];
+                GLuint comps = plan->component_count;
+                GLenum glType = varyingGlType[varying];
+                /* AIR capture slots are float carriers; convert for integer
+                 * XFB outputs. Floating types copy bits as-is. */
+                if (glType == GL_INT || glType == GL_INT_VEC2 ||
+                    glType == GL_INT_VEC3 || glType == GL_INT_VEC4) {
+                    for (GLuint c = 0u; c < comps && c < 4u; c++) {
+                        float f = 0.f;
+                        memcpy(&f, srcField + c * 4u, sizeof(f));
+                        GLint iv = (GLint)f;
+                        memcpy(dstField + c * 4u, &iv, sizeof(iv));
+                    }
+                } else if (glType == GL_UNSIGNED_INT ||
+                           glType == GL_UNSIGNED_INT_VEC2 ||
+                           glType == GL_UNSIGNED_INT_VEC3 ||
+                           glType == GL_UNSIGNED_INT_VEC4) {
+                    for (GLuint c = 0u; c < comps && c < 4u; c++) {
+                        float f = 0.f;
+                        memcpy(&f, srcField + c * 4u, sizeof(f));
+                        GLuint uv = (GLuint)f;
+                        memcpy(dstField + c * 4u, &uv, sizeof(uv));
+                    }
+                } else {
+                    memcpy(dstField, srcField, (NSUInteger)comps * 4u);
+                }
             }
         }
         NSUInteger destinationOffset = (NSUInteger)slot->offset + sessionOffset;
@@ -1511,10 +1560,15 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
             memcpy((uint8_t *)slot->buf->data.buffer_data + destinationOffset,
                    packed, writtenBytes);
         }
+        /* CPU pack is authoritative: do not mark gpu_write_target (flush
+         * readback would clobber the shadow with the untouched Metal image)
+         * and keep cpu_shadow_pending so MapBuffer skips Metal→CPU sync. */
+        slot->buf->cpu_shadow_pending = GL_TRUE;
+        slot->buf->gpu_write_target = GL_FALSE;
+        slot->buf->data.dirty_bits |= DIRTY_BUFFER_DATA;
         free(packed);
         slot->buf->ever_written = GL_TRUE;
         slot->buf->has_initialized_data = GL_TRUE;
-        slot->buf->gpu_write_target = GL_TRUE;
         slot->buf->last_init_source = kInitMapWrite;
         slot->buf->last_write_offset = (GLintptr)destinationOffset;
         slot->buf->last_write_size = (GLsizeiptr)writtenBytes;
