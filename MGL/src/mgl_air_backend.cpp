@@ -337,9 +337,13 @@ static llvm::Value *decodeUintSplitFloatCarrier(Codegen &cg,
 static llvm::Value *encodeFloatCarrier(Codegen &cg, llvm::Value *value,
                                        MGLIRScalar scalar) {
     llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+    llvm::Type *dst = f32;
+    if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(value->getType()))
+        dst = llvm::FixedVectorType::get(
+            f32, vt->getElementCount().getFixedValue());
     if (scalar == MGLIR_SCALAR_UINT)
-        return cg.b->CreateUIToFP(value, f32);
-    return cg.b->CreateSIToFP(value, f32);
+        return cg.b->CreateUIToFP(value, dst);
+    return cg.b->CreateSIToFP(value, dst);
 }
 
 static llvm::Value *decodeFloatCarrier(Codegen &cg, llvm::Value *arg,
@@ -355,6 +359,26 @@ static MType floatCarrierType(const MType &t) {
     MType f = t;
     f.scalar = MGLIR_SCALAR_FLOAT;
     return f;
+}
+
+/* Metal rejects matrix stage_in / stage_out attribute types
+ * ("Unsupported attribute type").  Flatten to one vector per column. */
+static MType matrixColumnType(const MType &t)
+{
+    MType c;
+    c.scalar = t.scalar;
+    c.vec = t.rows > 0 ? t.rows : 1u;
+    return c;
+}
+
+/* Stage-out records are float-oriented (passthrough VS reads vec4 slots).
+ * Integer varyings must use SIToFP/UIToFP carriers — bitcasting small uint
+ * values yields AGX-flushable denormals, and floatBitsToUint then returns 0. */
+static bool varyingNeedsFloatRecordCarrier(const MType &t)
+{
+    if (t.isMatrix() || t.isArray()) return false;
+    return t.scalar == MGLIR_SCALAR_INT || t.scalar == MGLIR_SCALAR_UINT ||
+           t.scalar == MGLIR_SCALAR_BOOL;
 }
 
 llvm::Type *llvmScalar(MGLIRScalar s, llvm::LLVMContext &ctx) {
@@ -2989,9 +3013,15 @@ static llvm::Value *loadGeometryInputVarying(Codegen &cg,
     MType elemType = sym.type;
     elemType.arr = 0;
     llvm::Type *ty = llvmType(elemType, *cg.ctx);
+    llvm::Type *loadTy = ty;
+    if (varyingNeedsFloatRecordCarrier(elemType))
+        loadTy = llvmType(floatCarrierType(elemType), *cg.ctx);
     llvm::Value *p = cg.b->CreateGEP(cg.b->getInt8Ty(), base, off);
-    p = cg.b->CreateBitCast(p, ty->getPointerTo(1));
-    return cg.b->CreateAlignedLoad(ty, p, llvm::Align(4));
+    p = cg.b->CreateBitCast(p, loadTy->getPointerTo(1));
+    llvm::Value *v = cg.b->CreateAlignedLoad(loadTy, p, llvm::Align(4));
+    if (varyingNeedsFloatRecordCarrier(elemType))
+        v = decodeFloatCarrier(cg, v, elemType.scalar, ty);
+    return v;
 }
 
 /* Interface-block GS input member: instance[k].field (or instance.field).
@@ -3032,6 +3062,27 @@ static llvm::Value *emitGeometryBlockLoad(
     vertexIndex = coerceScalar(cg, vertexIndex, MGLIR_SCALAR_UINT);
     llvm::Value *record = geometryInputRecordIndex(cg, vertexIndex);
     if (!record) return nullptr;
+    /* Matrices occupy one location per column; assemble the aggregate. */
+    if (member->type.isMatrix() && member->type.cols > 0) {
+        llvm::Type *ty = llvmType(member->type, *cg.ctx);
+        llvm::Type *colTy = llvm::FixedVectorType::get(
+            llvmScalar(member->type.scalar, *cg.ctx), member->type.rows);
+        llvm::Value *agg = llvm::UndefValue::get(ty);
+        MType colSymType = matrixColumnType(member->type);
+        for (uint32_t c = 0; c < member->type.cols; c++) {
+            VarSym colSym = *member;
+            colSym.type = colSymType;
+            colSym.location = member->location + c;
+            llvm::Value *col = loadGeometryInputVarying(
+                cg, colSym, cg.b->getInt32(colSym.location), record,
+                cg.geometryInputPtr);
+            if (!col) return nullptr;
+            if (col->getType() != colTy)
+                col = cg.b->CreateBitCast(col, colTy);
+            agg = cg.b->CreateInsertValue(agg, col, c);
+        }
+        return agg;
+    }
     return loadGeometryInputVarying(
         cg, *member, cg.b->getInt32(member->location), record,
         cg.geometryInputPtr);
@@ -3069,15 +3120,19 @@ static llvm::Value *emitGeometryBlockArrayLoad(
     }
     VarSym *member = codegenBlockMember(
         cg, instName, memberE->u.member.field, VarSym::VARYING);
-    if (!member || member->location == UINT32_MAX || !member->type.isArray()) {
+    /* Arrays and matrices both consume one location per element/column. */
+    if (!member || member->location == UINT32_MAX ||
+        (!member->type.isArray() && !member->type.isMatrix())) {
         return nullptr;
     }
     llvm::Value *element = emitExpr(cg, indexExpr->u.index.index,
                                     mod, locals);
     if (!element) return nullptr;
     element = coerceScalar(cg, element, MGLIR_SCALAR_UINT);
+    uint32_t span = member->type.isMatrix() ? member->type.cols
+                                            : (uint32_t)member->type.arr;
     if (auto *ci = llvm::dyn_cast<llvm::ConstantInt>(element)) {
-        if (ci->getZExtValue() >= member->type.arr) {
+        if (ci->getZExtValue() >= span) {
             cg.err = 1;
             cg.errmsg = "codegen: interface-block array index out of range";
             return nullptr;
@@ -3088,7 +3143,13 @@ static llvm::Value *emitGeometryBlockArrayLoad(
     if (!record) return nullptr;
     llvm::Value *slot = cg.b->CreateAdd(
         cg.b->getInt32(member->location), element);
-    return loadGeometryInputVarying(cg, *member, slot, record,
+    VarSym elemSym = *member;
+    if (member->type.isMatrix())
+        elemSym.type = matrixColumnType(member->type);
+    else {
+        elemSym.type.arr = 0;
+    }
+    return loadGeometryInputVarying(cg, elemSym, slot, record,
                                     cg.geometryInputPtr);
 }
 
@@ -3125,9 +3186,15 @@ static llvm::Value *emitTessStageArrayLoad(
                         cg.b->getInt64(cg.stageInStride)),
         cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE + sym->location * 16u));
     llvm::Type *ty = llvmType(sym->type, *cg.ctx);
+    llvm::Type *loadTy = ty;
+    if (varyingNeedsFloatRecordCarrier(sym->type))
+        loadTy = llvmType(floatCarrierType(sym->type), *cg.ctx);
     llvm::Value *p = cg.b->CreateGEP(cg.b->getInt8Ty(), base, off);
-    p = cg.b->CreateBitCast(p, ty->getPointerTo(1));
-    return cg.b->CreateAlignedLoad(ty, p, llvm::Align(4));
+    p = cg.b->CreateBitCast(p, loadTy->getPointerTo(1));
+    llvm::Value *v = cg.b->CreateAlignedLoad(loadTy, p, llvm::Align(4));
+    if (varyingNeedsFloatRecordCarrier(sym->type))
+        v = decodeFloatCarrier(cg, v, sym->type.scalar, ty);
+    return v;
 }
 
 static bool emitTessStageArrayStore(
@@ -3149,11 +3216,17 @@ static bool emitTessStageArrayStore(
                         cg.b->getInt64(cg.stageOutStride)),
         cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE + sym->location * 16u));
     llvm::Type *ty = llvmType(sym->type, *cg.ctx);
-    if (value->getType() != ty)
-        value = coerceScalar(cg, value, sym->type.scalar);
+    llvm::Value *storeVal = value;
+    llvm::Type *storeTy = ty;
+    if (varyingNeedsFloatRecordCarrier(sym->type)) {
+        storeVal = encodeFloatCarrier(cg, value, sym->type.scalar);
+        storeTy = storeVal->getType();
+    } else if (value->getType() != ty) {
+        storeVal = coerceScalar(cg, value, sym->type.scalar);
+    }
     llvm::Value *p = cg.b->CreateGEP(cg.b->getInt8Ty(), cg.stageOutPtr, off);
-    p = cg.b->CreateBitCast(p, ty->getPointerTo(1));
-    cg.b->CreateAlignedStore(value, p, llvm::Align(4));
+    p = cg.b->CreateBitCast(p, storeTy->getPointerTo(1));
+    cg.b->CreateAlignedStore(storeVal, p, llvm::Align(4));
     return true;
 }
 
@@ -3191,20 +3264,43 @@ static bool emitTessBlockMemberStore(
     llvm::Value *index = emitExpr(cg, indexE, mod, locals);
     if (!index) return true;
     llvm::Value *record = tessStageRecordIndex(cg, index, false);
+    llvm::Type *ty = llvmType(member->type, *cg.ctx);
+    if (member->type.isMatrix() && member->type.cols > 0) {
+        llvm::Type *colTy = llvm::FixedVectorType::get(
+            llvmScalar(member->type.scalar, *cg.ctx), member->type.rows);
+        for (uint32_t c = 0; c < member->type.cols; c++) {
+            llvm::Value *col = cg.b->CreateExtractValue(value, c);
+            llvm::Value *off = cg.b->CreateAdd(
+                cg.b->CreateMul(cg.b->CreateZExt(record, cg.b->getInt64Ty()),
+                                cg.b->getInt64(cg.stageOutStride)),
+                cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE +
+                               (member->location + c) * 16u));
+            llvm::Value *p =
+                cg.b->CreateGEP(cg.b->getInt8Ty(), cg.stageOutPtr, off);
+            p = cg.b->CreateBitCast(p, colTy->getPointerTo(1));
+            cg.b->CreateAlignedStore(col, p, llvm::Align(4));
+        }
+        return true;
+    }
+    llvm::Value *storeVal = value;
+    llvm::Type *storeTy = ty;
+    if (varyingNeedsFloatRecordCarrier(member->type)) {
+        storeVal = encodeFloatCarrier(cg, value, member->type.scalar);
+        storeTy = storeVal->getType();
+    } else if (value->getType() != ty) {
+        if (ty->isIntOrIntVectorTy() && value->getType()->isIntOrIntVectorTy())
+            storeVal = cg.b->CreateBitCast(value, ty);
+        else
+            storeVal = coerceScalar(cg, value, member->type.scalar);
+    }
     llvm::Value *off = cg.b->CreateAdd(
         cg.b->CreateMul(cg.b->CreateZExt(record, cg.b->getInt64Ty()),
                         cg.b->getInt64(cg.stageOutStride)),
         cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE + member->location * 16u));
-    llvm::Type *ty = llvmType(member->type, *cg.ctx);
-    if (value->getType() != ty) {
-        if (ty->isIntOrIntVectorTy() && value->getType()->isIntOrIntVectorTy())
-            value = cg.b->CreateBitCast(value, ty);
-        else
-            value = coerceScalar(cg, value, member->type.scalar);
-    }
-    llvm::Value *p = cg.b->CreateGEP(cg.b->getInt8Ty(), cg.stageOutPtr, off);
-    p = cg.b->CreateBitCast(p, ty->getPointerTo(1));
-    cg.b->CreateAlignedStore(value, p, llvm::Align(4));
+    llvm::Value *p =
+        cg.b->CreateGEP(cg.b->getInt8Ty(), cg.stageOutPtr, off);
+    p = cg.b->CreateBitCast(p, storeTy->getPointerTo(1));
+    cg.b->CreateAlignedStore(storeVal, p, llvm::Align(4));
     return true;
 }
 
@@ -3233,18 +3329,49 @@ static llvm::Value *emitTessBlockMemberLoad(
     if (!member || member->location == UINT32_MAX) return nullptr;
     llvm::Value *index = emitExpr(cg, indexE, mod, locals);
     if (!index) return nullptr;
+    auto loadFromStageIn = [&](llvm::Value *base, uint64_t stride,
+                               llvm::Value *record) -> llvm::Value * {
+        llvm::Type *ty = llvmType(member->type, *cg.ctx);
+        if (member->type.isMatrix() && member->type.cols > 0) {
+            llvm::Type *colTy = llvm::FixedVectorType::get(
+                llvmScalar(member->type.scalar, *cg.ctx), member->type.rows);
+            llvm::Value *agg = llvm::UndefValue::get(ty);
+            for (uint32_t c = 0; c < member->type.cols; c++) {
+                llvm::Value *off = cg.b->CreateAdd(
+                    cg.b->CreateMul(
+                        cg.b->CreateZExt(record, cg.b->getInt64Ty()),
+                        cg.b->getInt64(stride)),
+                    cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE +
+                                   (member->location + c) * 16u));
+                llvm::Value *p =
+                    cg.b->CreateGEP(cg.b->getInt8Ty(), base, off);
+                p = cg.b->CreateBitCast(p, colTy->getPointerTo(1));
+                llvm::Value *col =
+                    cg.b->CreateAlignedLoad(colTy, p, llvm::Align(4));
+                agg = cg.b->CreateInsertValue(agg, col, c);
+            }
+            return agg;
+        }
+        llvm::Type *loadTy = ty;
+        if (varyingNeedsFloatRecordCarrier(member->type))
+            loadTy = llvmType(floatCarrierType(member->type), *cg.ctx);
+        llvm::Value *off = cg.b->CreateAdd(
+            cg.b->CreateMul(cg.b->CreateZExt(record, cg.b->getInt64Ty()),
+                            cg.b->getInt64(stride)),
+            cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE +
+                           member->location * 16u));
+        llvm::Value *p = cg.b->CreateGEP(cg.b->getInt8Ty(), base, off);
+        p = cg.b->CreateBitCast(p, loadTy->getPointerTo(1));
+        llvm::Value *v =
+            cg.b->CreateAlignedLoad(loadTy, p, llvm::Align(4));
+        if (varyingNeedsFloatRecordCarrier(member->type))
+            v = decodeFloatCarrier(cg, v, member->type.scalar, ty);
+        return v;
+    };
     if (input && cg.isTessControl) {
         if (!cg.stageInPtr || !cg.patchPos || !cg.indirectPtr) return nullptr;
         llvm::Value *record = tessStageRecordIndex(cg, index, true);
-        llvm::Value *off = cg.b->CreateAdd(
-            cg.b->CreateMul(cg.b->CreateZExt(record, cg.b->getInt64Ty()),
-                            cg.b->getInt64(cg.stageInStride)),
-            cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE +
-                           member->location * 16u));
-        llvm::Type *ty = llvmType(member->type, *cg.ctx);
-        llvm::Value *p = cg.b->CreateGEP(cg.b->getInt8Ty(), cg.stageInPtr, off);
-        p = cg.b->CreateBitCast(p, ty->getPointerTo(1));
-        return cg.b->CreateAlignedLoad(ty, p, llvm::Align(4));
+        return loadFromStageIn(cg.stageInPtr, cg.stageInStride, record);
     }
     if (cg.isTessEval) {
         if (cg.isTESCompute) {
@@ -3259,16 +3386,7 @@ static llvm::Value *emitTessBlockMemberLoad(
             index = coerceScalar(cg, index, MGLIR_SCALAR_UINT);
             llvm::Value *flat = cg.b->CreateAdd(
                 cg.b->CreateMul(cg.patchId, verticesPerPatch), index);
-            llvm::Value *off = cg.b->CreateAdd(
-                cg.b->CreateMul(cg.b->CreateZExt(flat, cg.b->getInt64Ty()),
-                                cg.b->getInt64(cg.stageInStride)),
-                cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE +
-                               member->location * 16u));
-            llvm::Type *ty = llvmType(member->type, *cg.ctx);
-            llvm::Value *p =
-                cg.b->CreateGEP(cg.b->getInt8Ty(), cg.stageInPtr, off);
-            p = cg.b->CreateBitCast(p, ty->getPointerTo(1));
-            return cg.b->CreateAlignedLoad(ty, p, llvm::Align(4));
+            return loadFromStageIn(cg.stageInPtr, cg.stageInStride, flat);
         }
         if (!cg.controlPointGetter || !cg.patchControlPtr) return nullptr;
         auto fieldIt = cg.controlPointFields.find(member->name);
@@ -3883,16 +4001,6 @@ static uint32_t varyingLocationSpan(const MType &t)
     return elem;
 }
 
-/* Metal rejects matrix stage_in / stage_out attribute types
- * ("Unsupported attribute type").  Flatten to one vector per column. */
-static MType matrixColumnType(const MType &t)
-{
-    MType c;
-    c.scalar = t.scalar;
-    c.vec = t.rows > 0 ? t.rows : 1u;
-    return c;
-}
-
 static void storeVaryingValueAtLocation(Codegen &cg, llvm::Value *record,
                                         const VarSym &varying,
                                         llvm::Value *value)
@@ -3913,10 +4021,15 @@ static void storeVaryingValueAtLocation(Codegen &cg, llvm::Value *record,
         }
         return;
     }
+    llvm::Type *storeTy = ty;
+    if (varyingNeedsFloatRecordCarrier(varying.type)) {
+        value = encodeFloatCarrier(cg, value, varying.type.scalar);
+        storeTy = value->getType();
+    }
     llvm::Value *p = cg.b->CreateGEP(
         cg.b->getInt8Ty(), geometryRecordPtr(cg, record),
         cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE + varying.location * 16u));
-    p = cg.b->CreateBitCast(p, ty->getPointerTo(1));
+    p = cg.b->CreateBitCast(p, storeTy->getPointerTo(1));
     cg.b->CreateAlignedStore(value, p, llvm::Align(4));
 }
 
@@ -3940,11 +4053,17 @@ static llvm::Value *loadVaryingValueAtLocation(Codegen &cg, llvm::Value *record,
         }
         return agg;
     }
+    llvm::Type *loadTy = ty;
+    if (varyingNeedsFloatRecordCarrier(varying.type))
+        loadTy = llvmType(floatCarrierType(varying.type), *cg.ctx);
     llvm::Value *p = cg.b->CreateGEP(
         cg.b->getInt8Ty(), geometryRecordPtr(cg, record),
         cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE + varying.location * 16u));
-    p = cg.b->CreateBitCast(p, ty->getPointerTo(1));
-    return cg.b->CreateAlignedLoad(ty, p, llvm::Align(4));
+    p = cg.b->CreateBitCast(p, loadTy->getPointerTo(1));
+    llvm::Value *v = cg.b->CreateAlignedLoad(loadTy, p, llvm::Align(4));
+    if (varyingNeedsFloatRecordCarrier(varying.type))
+        v = decodeFloatCarrier(cg, v, varying.type.scalar, ty);
+    return v;
 }
 
 static void storeGeometryVaryings(Codegen &cg, llvm::Value *record)
@@ -12481,21 +12600,26 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     agg = cg.b->CreateInsertValue(agg, arg, c);
                 }
                 cg.lvalues[v.name] = agg;
-            } else {
-                if (uintUsesSplitFloatCarrier(v.type, has_gs)) {
-                    llvm::Value *lo = fn->getArg(argSlot++);
-                    llvm::Value *hi = fn->getArg(argSlot++);
-                    cg.lvalues[v.name] = decodeUintSplitFloatCarrier(
-                        cg, lo, hi, llvmType(v.type, ctx));
                 } else {
-                    llvm::Value *arg = fn->getArg(argSlot++);
-                    if (varyingUsesFloatCarrier(v.type, has_gs)) {
-                        arg = decodeFloatCarrier(cg, arg, v.type.scalar,
-                                                 llvmType(v.type, ctx));
+                    if (uintUsesSplitFloatCarrier(v.type, has_gs)) {
+                        llvm::Value *lo = fn->getArg(argSlot++);
+                        llvm::Value *hi = fn->getArg(argSlot++);
+                        cg.lvalues[v.name] = decodeUintSplitFloatCarrier(
+                            cg, lo, hi, llvmType(v.type, ctx));
+                    } else {
+                        llvm::Value *arg = fn->getArg(argSlot++);
+                        /* Vertex ATTR values arrive as raw ints from Metal;
+                         * float-carrier decode is only for FS stage_in
+                         * varyings (SIToFP/UIToFP).  Applying FPToUI to an
+                         * i32 1 reinterprets it as a denormal → 0. */
+                        if (v.kind == VarSym::VARYING &&
+                            varyingUsesFloatCarrier(v.type, has_gs)) {
+                            arg = decodeFloatCarrier(cg, arg, v.type.scalar,
+                                                     llvmType(v.type, ctx));
+                        }
+                        cg.lvalues[v.name] = arg;
                     }
-                    cg.lvalues[v.name] = arg;
                 }
-            }
         }
     }
     if (usesFragmentClipDistance) {
@@ -13724,19 +13848,42 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 llvm::Value *recordBase = b.CreateGEP(
                     b.getInt8Ty(), cg.captureBuf,
                     b.CreateMul(vid, b.getInt64(recStride)));
+                auto storeRecordSlot = [&](uint32_t loc, MType slotTy,
+                                           llvm::Value *slotVal) {
+                    if (varyingNeedsFloatRecordCarrier(slotTy)) {
+                        slotVal = encodeFloatCarrier(cg, slotVal,
+                                                     slotTy.scalar);
+                        slotTy = floatCarrierType(slotTy);
+                    }
+                    llvm::Type *storeTy = llvmType(slotTy, ctx);
+                    if (slotVal->getType() != storeTy) {
+                        if (storeTy->isIntOrIntVectorTy() &&
+                            slotVal->getType()->isIntOrIntVectorTy())
+                            slotVal = b.CreateBitCast(slotVal, storeTy);
+                        else
+                            slotVal = coerceScalar(cg, slotVal,
+                                                   slotTy.scalar);
+                    }
+                    llvm::Value *vp = b.CreateGEP(
+                        b.getInt8Ty(), recordBase,
+                        b.getInt64(MGL_AIR_PER_VERTEX_STRIDE + loc * 16u));
+                    vp = b.CreateBitCast(vp, storeTy->getPointerTo(1));
+                    b.CreateAlignedStore(slotVal, vp, llvm::Align(4));
+                };
                 for (VarSym *varying : cg.varyings) {
                     if (!varying || varying->location == UINT32_MAX) continue;
                     /* Plain stage-in arrays index by primitive vertex, so
                      * each per-vertex record stores element 0 only.
                      * Interface-block array members carry one distinct
                      * value per element: store each element in its own
-                     * consecutive location slot. */
+                     * consecutive location slot.  Matrices are one column
+                     * per location (GL 4.6 §4.4.1) — packing <2 x float>
+                     * columns into a single 16B slot breaks column loads. */
                     MType mt = varying->type;
                     const bool wasArray = mt.isArray() && mt.arr > 0;
                     const bool blockArray =
                         wasArray && !varying->blockName.empty();
                     if (wasArray) mt.arr = 0;
-                    llvm::Type *varyingTy = llvmType(mt, ctx);
                     llvm::Value *value = cg.lvalues.count(varying->name)
                         ? cg.lvalues[varying->name]
                         : llvm::UndefValue::get(llvmType(varying->type, ctx));
@@ -13749,22 +13896,23 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                                 value->getType()->isArrayTy()
                                     ? b.CreateExtractValue(value, ei)
                                     : value;
-                            llvm::Value *vp = b.CreateGEP(
-                                b.getInt8Ty(), recordBase,
-                                b.getInt64(MGL_AIR_PER_VERTEX_STRIDE +
-                                           (varying->location + ei) * 16u));
-                            vp = b.CreateBitCast(
-                                vp, varyingTy->getPointerTo(1));
-                            b.CreateAlignedStore(elem, vp, llvm::Align(4));
+                            storeRecordSlot(varying->location + ei, mt, elem);
                         }
                         continue;
                     }
-                    llvm::Value *vp = b.CreateGEP(
-                        b.getInt8Ty(), recordBase,
-                        b.getInt64(MGL_AIR_PER_VERTEX_STRIDE +
-                                   varying->location * 16u));
-                    vp = b.CreateBitCast(vp, varyingTy->getPointerTo(1));
-                    b.CreateAlignedStore(value, vp, llvm::Align(4));
+                    if (mt.isMatrix() && mt.cols > 0) {
+                        MType colTy = matrixColumnType(mt);
+                        for (uint32_t c = 0; c < mt.cols; c++) {
+                            llvm::Value *col =
+                                value->getType()->isArrayTy()
+                                    ? b.CreateExtractValue(value, c)
+                                    : value;
+                            storeRecordSlot(varying->location + c, colTy,
+                                            col);
+                        }
+                        continue;
+                    }
+                    storeRecordSlot(varying->location, mt, value);
                 }
             }
             b.CreateRetVoid();

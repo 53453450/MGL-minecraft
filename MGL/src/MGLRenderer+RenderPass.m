@@ -753,28 +753,26 @@ static const char *mglGeometryPassthroughFloatType(GLenum type)
     }
 }
 
-/* Read-back conversion for integer varyings: the stage-out record stores
- * raw bits, so integer components need floatBitsToInt/Uint; float varyings
- * need none.  GLSL also requires the `flat` qualifier on integer
- * varyings. */
-static const char *mglGeometryPassthroughConversion(GLenum type)
+/* Integer varyings are stored as SIToFP/UIToFP float carriers in the
+ * stage-out record (see air backend).  The passthrough VS therefore
+ * declares float attributes and forwards the float swizzle as-is; the
+ * fragment stage converts with fptosi/fptoui.  GLSL still requires the
+ * `flat` qualifier on integer varyings. */
+static bool mglGeometryPassthroughNeedsFlat(GLenum type)
 {
     switch (type) {
         case GL_INT:
         case GL_INT_VEC2:
         case GL_INT_VEC3:
-        case GL_INT_VEC4: return "floatBitsToInt";
+        case GL_INT_VEC4:
         case GL_UNSIGNED_INT:
         case GL_UNSIGNED_INT_VEC2:
         case GL_UNSIGNED_INT_VEC3:
-        case GL_UNSIGNED_INT_VEC4: return "floatBitsToUint";
-        default: return NULL;
+        case GL_UNSIGNED_INT_VEC4:
+            return true;
+        default:
+            return false;
     }
-}
-
-static bool mglGeometryPassthroughNeedsFlat(GLenum type)
-{
-    return mglGeometryPassthroughConversion(type) != NULL;
 }
 
 /* The stage-out record stores every varying as a full vec4 slot, so a GS
@@ -900,7 +898,7 @@ static GLenum mglPassthroughDeclType(
          * this with an fptosi at the fragment entry; raw int attributes do
          * not survive the GS-expansion pipeline plumbing). */
         const char *type =
-            mglGeometryPassthroughConversion(declType)
+            mglGeometryPassthroughNeedsFlat(declType)
                 ? mglGeometryPassthroughFloatType(declType)
                 : mglGeometryPassthroughType(declType);
         if (!type || !output->name) {
@@ -1051,28 +1049,16 @@ static GLenum mglPassthroughDeclType(
          }
          const char *swizzle = mglGeometryPassthroughSwizzle(declType);
          if (!swizzle || !output->name) return NO;
-         const char *convert =
-             mglGeometryPassthroughConversion(output->gl_type);
-         if (convert) {
-             const char *carrierType =
-                 mglGeometryPassthroughFloatType(declType);
-             [source appendFormat:
-                 @"    vec4 mgl_slot_%u = "
-                  "mgl_gs_output.records[mgl_base + %u];\n"
-                  "    %s = %s(%s(mgl_slot_%u%s));\n",
-                 (unsigned)i,
-                 (unsigned)(MGL_AIR_PER_VERTEX_STRIDE / 16u + output->location),
-                 output->name, carrierType, convert, (unsigned)i, swizzle];
-         } else {
-             [source appendFormat:
-                 @"    vec4 mgl_slot_%u = "
-                  "mgl_gs_output.records[mgl_base + %u];\n"
-                  "    %s = mgl_slot_%u%s;\n",
-                 (unsigned)i,
-                 (unsigned)(MGL_AIR_PER_VERTEX_STRIDE / 16u + output->location),
-                 output->name, (unsigned)i,
-                 swizzle];
-         }
+         /* Integer records already hold SIToFP/UIToFP float carriers —
+          * forward the float swizzle; do not floatBitsTo*. */
+         [source appendFormat:
+             @"    vec4 mgl_slot_%u = "
+              "mgl_gs_output.records[mgl_base + %u];\n"
+              "    %s = mgl_slot_%u%s;\n",
+             (unsigned)i,
+             (unsigned)(MGL_AIR_PER_VERTEX_STRIDE / 16u + output->location),
+             output->name, (unsigned)i,
+             swizzle];
     }
     [source appendString:@"}\n"];
     if (getenv("MGL_GS_DIAG")) {
@@ -1156,9 +1142,9 @@ static GLenum mglPassthroughDeclType(
     for (GLuint i = 0; outputs->list && i < outputs->count; i++) {
         MGLShaderResource *output = &outputs->list[i];
         if (output->is_per_patch) continue;
-        /* Integer varyings are stored as float bit carriers in the TES
-         * record (same ABI as GS expansion); declare the true int/uint
-         * type and bitcast on load below. */
+        /* Integer varyings are stored as float carriers in the TES
+         * record (same ABI as GS expansion); declare float attributes and
+         * forward the swizzle — FS converts with fptosi/fptoui. */
         unsigned matCols =
             mglGeometryPassthroughMatrixCols(output->gl_type);
         unsigned matRows =
@@ -1178,7 +1164,10 @@ static GLenum mglPassthroughDeclType(
             }
             continue;
         }
-        const char *type = mglGeometryPassthroughType(output->gl_type);
+        const char *type =
+            mglGeometryPassthroughNeedsFlat(output->gl_type)
+                ? mglGeometryPassthroughFloatType(output->gl_type)
+                : mglGeometryPassthroughType(output->gl_type);
         if (!type || !output->name) {
             NSLog(@"MGL TESS ERROR: unsupported passthrough varying type 0x%x",
                   (unsigned)output->gl_type);
@@ -1282,26 +1271,14 @@ static GLenum mglPassthroughDeclType(
         }
         const char *swizzle = mglGeometryPassthroughSwizzle(output->gl_type);
         if (!swizzle || !output->name) return NO;
-        const char *convert =
-            mglGeometryPassthroughConversion(output->gl_type);
-        if (convert) {
-            [source appendFormat:
-                @"    vec4 mgl_slot_%u = "
-                 "mgl_tes_output.records[mgl_base + %u];\n"
-                 "    %s = %s(mgl_slot_%u%s);\n",
-                (unsigned)i,
-                (unsigned)(MGL_AIR_PER_VERTEX_STRIDE / 16u + output->location),
-                output->name, convert, (unsigned)i, swizzle];
-        } else {
-            [source appendFormat:
-                @"    vec4 mgl_slot_%u = "
-                 "mgl_tes_output.records[mgl_base + %u];\n"
-                 "    %s = mgl_slot_%u%s;\n",
-                (unsigned)i,
-                (unsigned)(MGL_AIR_PER_VERTEX_STRIDE / 16u + output->location),
-                output->name, (unsigned)i,
-                swizzle];
-        }
+        [source appendFormat:
+            @"    vec4 mgl_slot_%u = "
+             "mgl_tes_output.records[mgl_base + %u];\n"
+             "    %s = mgl_slot_%u%s;\n",
+            (unsigned)i,
+            (unsigned)(MGL_AIR_PER_VERTEX_STRIDE / 16u + output->location),
+            output->name, (unsigned)i,
+            swizzle];
     }
     [source appendString:@"}\n"];
     if (getenv("MGL_GS_DIAG")) {
