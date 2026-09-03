@@ -152,6 +152,7 @@ typedef enum MGLExprKind {
     MGL_EXPR_BINARY,        /* x op y */
     MGL_EXPR_ASSIGN,        /* x = y, x += y, ... */
     MGL_EXPR_TERNARY,       /* c ? a : b */
+    MGL_EXPR_INIT_LIST,     /* { a, b, ... } (GLSL 4.20 / ARB_shading_language_420pack) */
 } MGLExprKind;
 
 typedef enum MGLExprOp {
@@ -211,6 +212,10 @@ struct MGLExpr {
         struct {
             MGLExpr *cond, *then, *else_;
         } ternary;
+        struct {
+            MGLExpr **args;
+            uint32_t arg_count;
+        } init_list;
     } u;
 };
 

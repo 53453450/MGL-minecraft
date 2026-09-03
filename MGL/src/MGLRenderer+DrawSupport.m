@@ -3669,6 +3669,16 @@ after_gs_draws:
     const BOOL airTES = tesProgram &&
         tesProgram->modules[_TESS_EVALUATION_SHADER].metallib_bytes != NULL;
     BOOL nativeTES = mglNativeTESInterfaceSupported(tcsProgram, tesProgram);
+    /* Native Metal post-tess wires TES→FS.  When a GS is present it must
+     * run between them via the AIR TES compute → handleGeometryDrawIfNeeded
+     * handoff (see dispatchAIRTessEvalCompute). */
+    {
+        Program *gsProgram =
+            mglResolveProgramForStageFromState(drawCtx, _GEOMETRY_SHADER);
+        if (gsProgram && gsProgram->shader_slots[_GEOMETRY_SHADER]) {
+            nativeTES = NO;
+        }
+    }
 
     GLuint patchVertices = MAX(1u, (GLuint)MGL_STATE(drawCtx)->var.patch_vertices);
     GLuint patchCount = (GLuint)count / patchVertices;

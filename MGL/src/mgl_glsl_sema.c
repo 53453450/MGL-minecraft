@@ -748,6 +748,213 @@ static MGLIRType *resolve_type_spec(Sema *s, SymTab *tab, const MGLTypeSpec *ts)
 
 static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e);
 
+/* Constructor name for desugaring `{...}` initializer lists into T(...) /
+ * T[](...) calls that the existing sema/codegen paths already handle. */
+static char *ctor_name_for_type(const MGLIRType *t)
+{
+    char buf[64];
+    if (!t) {
+        return NULL;
+    }
+    switch (t->kind) {
+    case MGLIR_TYPE_SCALAR:
+        switch (t->scalar) {
+        case MGLIR_SCALAR_BOOL: return strdup("bool");
+        case MGLIR_SCALAR_INT: return strdup("int");
+        case MGLIR_SCALAR_UINT: return strdup("uint");
+        case MGLIR_SCALAR_FLOAT: return strdup("float");
+        case MGLIR_SCALAR_DOUBLE: return strdup("double");
+        default: return NULL;
+        }
+    case MGLIR_TYPE_VECTOR: {
+        const char *pfx = "vec";
+        if (t->scalar == MGLIR_SCALAR_INT) {
+            pfx = "ivec";
+        } else if (t->scalar == MGLIR_SCALAR_UINT) {
+            pfx = "uvec";
+        } else if (t->scalar == MGLIR_SCALAR_BOOL) {
+            pfx = "bvec";
+        } else if (t->scalar == MGLIR_SCALAR_DOUBLE) {
+            pfx = "dvec";
+        }
+        snprintf(buf, sizeof(buf), "%s%u", pfx, t->cols);
+        return strdup(buf);
+    }
+    case MGLIR_TYPE_MATRIX:
+        if (t->cols == t->rows) {
+            snprintf(buf, sizeof(buf), "mat%u", t->cols);
+        } else {
+            snprintf(buf, sizeof(buf), "mat%ux%u", t->cols, t->rows);
+        }
+        return strdup(buf);
+    case MGLIR_TYPE_STRUCT:
+        return t->name ? strdup(t->name) : NULL;
+    default:
+        return NULL;
+    }
+}
+
+/* Rewrite a curly-brace initializer list into a typed constructor call.
+ * Nested lists are rewritten against the expected element/column/member
+ * type.  Non-list expressions are returned unchanged. */
+static MGLExpr *rewrite_initializer(Sema *s, SymTab *tab, MGLExpr *e,
+                                    MGLIRType *expected)
+{
+    uint32_t i;
+    MGLExpr *call;
+    char *cname;
+    (void)tab;
+    if (!e || !expected) {
+        return e;
+    }
+    if (e->kind != MGL_EXPR_INIT_LIST) {
+        return e;
+    }
+
+    if (expected->kind == MGLIR_TYPE_ARRAY) {
+        MGLIRType *elem = expected->elem_type;
+        if (!elem) {
+            sema_error(s, e->line, "invalid array type for initializer list");
+            return e;
+        }
+        if (expected->array_size != 0 &&
+            expected->array_size != e->u.init_list.arg_count) {
+            sema_error(s, e->line,
+                       "initializer list has %u element(s), expected %u",
+                       e->u.init_list.arg_count, expected->array_size);
+            return e;
+        }
+        for (i = 0; i < e->u.init_list.arg_count; i++) {
+            e->u.init_list.args[i] =
+                rewrite_initializer(s, tab, e->u.init_list.args[i], elem);
+        }
+        cname = ctor_name_for_type(elem);
+        if (!cname) {
+            sema_error(s, e->line,
+                       "cannot form constructor for array initializer list");
+            return e;
+        }
+        call = (MGLExpr *)calloc(1, sizeof(*call));
+        if (!call) {
+            free(cname);
+            return e;
+        }
+        call->kind = MGL_EXPR_CALL;
+        call->line = e->line;
+        call->u.call.name = cname;
+        call->u.call.is_array_ctor = 1;
+        call->u.call.array_ctor_size = expected->array_size;
+        call->u.call.args = e->u.init_list.args;
+        call->u.call.arg_count = e->u.init_list.arg_count;
+        e->u.init_list.args = NULL;
+        e->u.init_list.arg_count = 0;
+        free(e);
+        return call;
+    }
+
+    if (expected->kind == MGLIR_TYPE_MATRIX) {
+        uint32_t ncols = expected->cols;
+        uint32_t nrows = expected->rows;
+        uint32_t argc = e->u.init_list.arg_count;
+        if (argc == ncols) {
+            MGLIRType *col =
+                scratch_type(s, mglIRTypeVector(expected->scalar, nrows));
+            for (i = 0; i < argc; i++) {
+                e->u.init_list.args[i] = rewrite_initializer(
+                    s, tab, e->u.init_list.args[i], col);
+            }
+        } else if (argc != ncols * nrows) {
+            sema_error(s, e->line,
+                       "matrix initializer list has %u element(s), "
+                       "expected %u columns or %u scalars",
+                       argc, ncols, ncols * nrows);
+            return e;
+        }
+        /* argc == ncols * nrows: leave scalars for mat(C*R) constructor. */
+        cname = ctor_name_for_type(expected);
+        if (!cname) {
+            return e;
+        }
+        call = (MGLExpr *)calloc(1, sizeof(*call));
+        if (!call) {
+            free(cname);
+            return e;
+        }
+        call->kind = MGL_EXPR_CALL;
+        call->line = e->line;
+        call->u.call.name = cname;
+        call->u.call.args = e->u.init_list.args;
+        call->u.call.arg_count = argc;
+        e->u.init_list.args = NULL;
+        e->u.init_list.arg_count = 0;
+        free(e);
+        return call;
+    }
+
+    if (expected->kind == MGLIR_TYPE_VECTOR ||
+        expected->kind == MGLIR_TYPE_SCALAR) {
+        /* Nested lists inside a vector/scalar fill are not rewritten
+         * further; constructors accept component streams. */
+        cname = ctor_name_for_type(expected);
+        if (!cname) {
+            return e;
+        }
+        call = (MGLExpr *)calloc(1, sizeof(*call));
+        if (!call) {
+            free(cname);
+            return e;
+        }
+        call->kind = MGL_EXPR_CALL;
+        call->line = e->line;
+        call->u.call.name = cname;
+        call->u.call.args = e->u.init_list.args;
+        call->u.call.arg_count = e->u.init_list.arg_count;
+        e->u.init_list.args = NULL;
+        e->u.init_list.arg_count = 0;
+        free(e);
+        return call;
+    }
+
+    if (expected->kind == MGLIR_TYPE_STRUCT) {
+        if (expected->member_count != e->u.init_list.arg_count) {
+            sema_error(s, e->line,
+                       "struct initializer list has %u element(s), "
+                       "expected %u",
+                       e->u.init_list.arg_count, expected->member_count);
+            return e;
+        }
+        for (i = 0; i < e->u.init_list.arg_count; i++) {
+            if (expected->members && expected->members[i]) {
+                e->u.init_list.args[i] = rewrite_initializer(
+                    s, tab, e->u.init_list.args[i], expected->members[i]);
+            }
+        }
+        cname = ctor_name_for_type(expected);
+        if (!cname) {
+            sema_error(s, e->line,
+                       "cannot form constructor for struct initializer list");
+            return e;
+        }
+        call = (MGLExpr *)calloc(1, sizeof(*call));
+        if (!call) {
+            free(cname);
+            return e;
+        }
+        call->kind = MGL_EXPR_CALL;
+        call->line = e->line;
+        call->u.call.name = cname;
+        call->u.call.args = e->u.init_list.args;
+        call->u.call.arg_count = e->u.init_list.arg_count;
+        e->u.init_list.args = NULL;
+        e->u.init_list.arg_count = 0;
+        free(e);
+        return call;
+    }
+
+    sema_error(s, e->line, "initializer list not applicable to this type");
+    return e;
+}
+
 /* Strict interface matching (GLSL 4.60 §4.3.9.5): structs compare
  * member names, types and order; arrays compare dimensions recursively. */
 static int ir_type_interface_equal(const MGLIRType *a, const MGLIRType *b)
@@ -1874,6 +2081,10 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
     }
     char ta[64], tb[64];
     switch (e->kind) {
+    case MGL_EXPR_INIT_LIST:
+        sema_error(s, e->line,
+                   "initializer list requires a typed declaration context");
+        return NULL;
     case MGL_EXPR_LITERAL: {
         MGLIRScalar sc = ast_base_to_ir(e->u.literal.base);
         if (e->u.literal.base == MGL_AST_TYPE_FLOAT) {
@@ -3122,6 +3333,10 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
         }
     }
     if (d->init) {
+        /* GLSL 4.20 pack: desugar `{...}` into typed constructors so the
+         * existing check_expr / codegen paths apply. */
+        MGLDecl *mut = (MGLDecl *)d;
+        mut->init = rewrite_initializer(s, tab, mut->init, t);
         MGLIRType *it = check_expr(s, tab, d->init);
         if (it && !check_assign_op(t, it)) {
             sema_error(s, d->line, "initializer type mismatch in declaration of '%s'",
@@ -3135,6 +3350,10 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
         if (t->kind == MGLIR_TYPE_ARRAY && t->array_size == 0 &&
             it && it->kind == MGLIR_TYPE_ARRAY && it->array_size > 0) {
             t->array_size = it->array_size;
+            /* Keep AST array dims in sync for local STMT_DECL codegen. */
+            if (mut->array_count > 0 && mut->array_dims) {
+                mut->array_dims[0] = it->array_size;
+            }
         }
     }
 }

@@ -123,6 +123,10 @@ typedef struct MGLParser {
     char array_names[64][64];
     uint32_t array_lens[64];
     uint32_t array_count;
+    /* User struct type names (`struct S { ... };`) so local declarations
+     * like `S x = { ... };` are recognised as decl statements. */
+    char struct_names[64][64];
+    uint32_t struct_count;
 } MGLParser;
 
 static unsigned int tk_line(MGLParser *p);
@@ -320,6 +324,7 @@ static double cur_double(MGLParser *p)
 
 static MGLExpr *parse_expression(MGLParser *p);
 static MGLExpr *parse_assignment(MGLParser *p);
+static MGLExpr *parse_initializer(MGLParser *p);
 static MGLStmt *parse_statement(MGLParser *p);
 static MGLDecl *parse_declaration(MGLParser *p);
 static int at_decl_start(MGLParser *p);
@@ -458,6 +463,31 @@ static void record_array_len(MGLParser *p, const char *name, uint32_t len)
     }
     memcpy(p->array_names[p->array_count], name, n + 1);
     p->array_lens[p->array_count++] = len;
+}
+
+static void record_struct_name(MGLParser *p, const char *name)
+{
+    if (!p || !name || p->struct_count >= 64) return;
+    size_t n = strlen(name);
+    if (n == 0 || n >= 64) return;
+    for (uint32_t i = 0; i < p->struct_count; i++) {
+        if (strcmp(p->struct_names[i], name) == 0) {
+            return;
+        }
+    }
+    memcpy(p->struct_names[p->struct_count], name, n + 1);
+    p->struct_count++;
+}
+
+static int is_struct_type_name(MGLParser *p, const char *name)
+{
+    if (!p || !name) return 0;
+    for (uint32_t i = 0; i < p->struct_count; i++) {
+        if (strcmp(p->struct_names[i], name) == 0) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 static int lookup_builtin_const_int(const char *name, int64_t *value)
@@ -955,6 +985,51 @@ static MGLExpr *parse_assignment(MGLParser *p)
         return t;
     }
     return lhs;
+}
+
+/* GLSL 4.20 / ARB_shading_language_420pack curly-brace initializer list.
+ * Allowed as a declaration initializer (and nested inside another list). */
+static MGLExpr *parse_init_list(MGLParser *p)
+{
+    uint32_t line = tk_line(p);
+    eat_punct(p, "{");
+    MGLExpr *e = expr_alloc(p, MGL_EXPR_INIT_LIST, line);
+    if (!e) {
+        return NULL;
+    }
+    uint32_t argc = 0;
+    if (!ops_at(p, "}")) {
+        for (;;) {
+            MGLExpr *arg = parse_initializer(p);
+            if (!arg) {
+                break;
+            }
+            e->u.init_list.args = (MGLExpr **)realloc(
+                e->u.init_list.args, (argc + 1) * sizeof(MGLExpr *));
+            if (!e->u.init_list.args) {
+                free_expr(arg);
+                break;
+            }
+            e->u.init_list.args[argc++] = arg;
+            if (!eat_punct(p, ",")) {
+                break;
+            }
+            if (ops_at(p, "}")) {
+                break; /* trailing comma */
+            }
+        }
+    }
+    e->u.init_list.arg_count = argc;
+    expect_punct(p, "}");
+    return e;
+}
+
+static MGLExpr *parse_initializer(MGLParser *p)
+{
+    if (ops_at(p, "{")) {
+        return parse_init_list(p);
+    }
+    return parse_assignment(p);
 }
 
 static MGLExpr *parse_expression(MGLParser *p)
@@ -1800,6 +1875,15 @@ static int at_decl_start(MGLParser *p)
             return 1;
         }
     }
+    /* Previously defined user struct type name. */
+    if (at_any_ident(p)) {
+        char *name = dup_current(p);
+        int hit = name && is_struct_type_name(p, name);
+        free(name);
+        if (hit) {
+            return 1;
+        }
+    }
     return 0;
 }
 
@@ -2142,6 +2226,7 @@ more_qualifiers:
             }
             d->type->base = MGL_AST_TYPE_STRUCT;
             d->type->name = dup_current(p);
+            record_struct_name(p, d->type->name);
             advance(p);
         }
         if (ops_at(p, "{")) {
@@ -2327,7 +2412,7 @@ more_qualifiers:
         MGLDecl *tail = d;
         for (;;) {
             if (eat_punct(p, "=")) {
-                tail->init = parse_expression(p);
+                tail->init = parse_initializer(p);
             }
             if (!eat_punct(p, ",")) {
                 break;
@@ -2801,6 +2886,14 @@ static void free_expr(MGLExpr *e)
         }
         free(e->u.call.args);
         free(e->u.call.name);
+        break;
+    }
+    case MGL_EXPR_INIT_LIST: {
+        unsigned i;
+        for (i = 0; i < e->u.init_list.arg_count; i++) {
+            free_expr(e->u.init_list.args[i]);
+        }
+        free(e->u.init_list.args);
         break;
     }
     case MGL_EXPR_UNARY:

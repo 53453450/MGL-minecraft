@@ -1662,8 +1662,10 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
      * records. The renderer gathers selected varyings into the compact GL XFB
      * layout and copies only the prefix containing complete primitives. */
     TransformFeedback *xfbState = MGL_STATE(glm_ctx)->transform_feedback;
+    Program *gsProgram =
+        mglResolveProgramForStageFromState(glm_ctx, _GEOMETRY_SHADER);
     const bool hasGeometryStage =
-        tesProgram->shader_slots[_GEOMETRY_SHADER] != NULL;
+        gsProgram && gsProgram->shader_slots[_GEOMETRY_SHADER] != NULL;
     /* XFB varyings come from the last pre-raster stage.  When a GS follows
      * this TES compute expansion, the GS path owns transform feedback. */
     const bool xfbActive =

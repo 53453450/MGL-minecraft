@@ -486,9 +486,18 @@ std::string airGenerated(const std::string &name, const MType &t) {
  * advanced-sso-atomicCounters: o_color vs i_color).  Prefer a stable
  * location tag only when the location was explicit in source; auto-
  * assigned locations are per-stage and must not drive the tag (or
- * named matchings like vs_color break). */
-static std::string varyingIfaceTag(const VarSym &v, uint32_t elem = 0) {
-    if (v.locationExplicit && v.location != UINT32_MAX) {
+ * named matchings like vs_color break).
+ *
+ * Exception: the GS-expansion passthrough VS always emits
+ * layout(location=N) (see ensureAIRGeometryPassthroughFunctionForProgram),
+ * so its outputs are tagged mgl_loc_N.  When has_gs is set the FS must
+ * use the same location tags even if the fragment inputs were only
+ * auto-assigned — otherwise Metal rejects the pipeline with
+ * "Fragment input(s) `name` ... not written by vertex shader". */
+static std::string varyingIfaceTag(const VarSym &v, uint32_t elem = 0,
+                                   bool forceLocationTag = false) {
+    if (v.location != UINT32_MAX &&
+        (v.locationExplicit || forceLocationTag)) {
         return "mgl_loc_" + std::to_string(v.location + elem);
     }
     if (v.type.isArray() || elem != 0u) {
@@ -1580,6 +1589,20 @@ static llvm::Value *sampleArrayElementBySwitch(
  * component.  `idx` must be an integer value. */
 static llvm::Value *emitIndexValue(Codegen &cg, llvm::Value *obj,
                                    const MType &bt, llvm::Value *idx) {
+    /* Arrays-of-matrices: arr takes precedence (same as llvmType). */
+    if (bt.isArray() || (!bt.isMatrix() && obj->getType()->isArrayTy())) {
+        auto *arr = llvm::dyn_cast<llvm::ArrayType>(obj->getType());
+        if (!arr) return nullptr;
+        uint32_t C = (uint32_t)arr->getNumElements();
+        llvm::Value *res = nullptr;
+        for (uint32_t i = 0; i < C; i++) {
+            llvm::Value *el = cg.b->CreateExtractValue(obj, i);
+            llvm::Value *eq = cg.b->CreateICmpEQ(
+                idx, llvm::ConstantInt::get(idx->getType(), i));
+            res = res ? cg.b->CreateSelect(eq, el, res) : el;
+        }
+        return res;
+    }
     if (bt.isMatrix()) {
         auto *arr = llvm::dyn_cast<llvm::ArrayType>(obj->getType());
         if (!arr) return nullptr;
@@ -1593,19 +1616,6 @@ static llvm::Value *emitIndexValue(Codegen &cg, llvm::Value *obj,
         }
         return res;
     }
-    if (bt.isArray() || obj->getType()->isArrayTy()) {
-        auto *arr = llvm::dyn_cast<llvm::ArrayType>(obj->getType());
-        if (!arr) return nullptr;
-        uint32_t C = (uint32_t)arr->getNumElements();
-        llvm::Value *res = nullptr;
-        for (uint32_t i = 0; i < C; i++) {
-            llvm::Value *el = cg.b->CreateExtractValue(obj, i);
-            llvm::Value *eq = cg.b->CreateICmpEQ(
-                idx, llvm::ConstantInt::get(idx->getType(), i));
-            res = res ? cg.b->CreateSelect(eq, el, res) : el;
-        }
-        return res;
-    }
     if (obj->getType()->isVectorTy())
         return cg.b->CreateExtractElement(obj, idx);
     return nullptr;
@@ -1615,6 +1625,21 @@ static llvm::Value *emitIndexValue(Codegen &cg, llvm::Value *obj,
 static llvm::Value *insertIndexValue(Codegen &cg, llvm::Value *obj,
                                      const MType &bt, llvm::Value *idx,
                                      llvm::Value *val) {
+    /* Arrays-of-matrices: arr takes precedence (same as llvmType). */
+    if (bt.isArray() || (!bt.isMatrix() && obj->getType()->isArrayTy())) {
+        auto *arr = llvm::dyn_cast<llvm::ArrayType>(obj->getType());
+        if (!arr) return nullptr;
+        uint32_t n = (uint32_t)arr->getNumElements();
+        llvm::Value *out = llvm::UndefValue::get(obj->getType());
+        for (uint32_t i = 0; i < n; i++) {
+            llvm::Value *el = cg.b->CreateExtractValue(obj, i);
+            llvm::Value *eq = cg.b->CreateICmpEQ(
+                idx, llvm::ConstantInt::get(idx->getType(), i));
+            llvm::Value *ne = cg.b->CreateSelect(eq, val, el);
+            out = cg.b->CreateInsertValue(out, ne, i);
+        }
+        return out;
+    }
     if (bt.isMatrix()) {
         auto *arr = llvm::dyn_cast<llvm::ArrayType>(obj->getType());
         if (!arr) return nullptr;
@@ -1626,20 +1651,6 @@ static llvm::Value *insertIndexValue(Codegen &cg, llvm::Value *obj,
                 idx, llvm::ConstantInt::get(idx->getType(), i));
             llvm::Value *nc = cg.b->CreateSelect(eq, val, col);
             out = cg.b->CreateInsertValue(out, nc, i);
-        }
-        return out;
-    }
-    if (bt.isArray() || obj->getType()->isArrayTy()) {
-        auto *arr = llvm::dyn_cast<llvm::ArrayType>(obj->getType());
-        if (!arr) return nullptr;
-        uint32_t n = (uint32_t)arr->getNumElements();
-        llvm::Value *out = llvm::UndefValue::get(obj->getType());
-        for (uint32_t i = 0; i < n; i++) {
-            llvm::Value *el = cg.b->CreateExtractValue(obj, i);
-            llvm::Value *eq = cg.b->CreateICmpEQ(
-                idx, llvm::ConstantInt::get(idx->getType(), i));
-            llvm::Value *ne = cg.b->CreateSelect(eq, val, el);
-            out = cg.b->CreateInsertValue(out, ne, i);
         }
         return out;
     }
@@ -5315,20 +5326,20 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         if (!obj) return nullptr;
         if (constIdx) {
             uint32_t i = (uint32_t)idxE->u.literal.value;
-            if (bt.isMatrix()) {
-                if (i >= bt.cols || !obj->getType()->isArrayTy()) {
-                    cg.err = 1;
-                    cg.errmsg = std::string("codegen: column index ") +
-                                std::to_string(i) + " out of range";
-                    return nullptr;
-                }
-                return cg.b->CreateExtractValue(obj, i);
-            }
             if (bt.isArray()) {
                 auto *arrayTy = llvm::dyn_cast<llvm::ArrayType>(obj->getType());
                 if (!arrayTy || i >= arrayTy->getNumElements()) {
                     cg.err = 1;
                     cg.errmsg = std::string("codegen: array index ") +
+                                std::to_string(i) + " out of range";
+                    return nullptr;
+                }
+                return cg.b->CreateExtractValue(obj, i);
+            }
+            if (bt.isMatrix()) {
+                if (i >= bt.cols || !obj->getType()->isArrayTy()) {
+                    cg.err = 1;
+                    cg.errmsg = std::string("codegen: column index ") +
                                 std::to_string(i) + " out of range";
                     return nullptr;
                 }
@@ -7987,14 +7998,15 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
     }
     case MGL_EXPR_INDEX: {
         MType base = exprType(cg, e->u.index.object, mod, locals);
-        if (base.isMatrix()) {
+        if (base.isArray()) {
+            /* Array[i] yields the element type.  Check before isMatrix()
+             * so matCxR[N] indexes as an array of matrices. */
+            t = base;
+            t.arr = 0;
+        } else if (base.isMatrix()) {
             /* Matrix[i] yields a column vector. */
             t.scalar = base.scalar;
             t.vec = base.rows;
-        } else if (base.isArray()) {
-            /* Array[i] yields the element type. */
-            t = base;
-            t.arr = 0;
         } else if (base.vec) {
             /* Vector[i] yields a scalar component. */
             t = base;
@@ -8049,6 +8061,8 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 t.cols = (uint32_t)(m[0] - '0');
                 t.rows = (uint32_t)(m[2] - '0');
             }
+            if (e->u.call.is_array_ctor)
+                t.arr = e->u.call.arg_count;
         } else if (strcmp(name, "normalize") == 0 ||
                    strcmp(name, "abs") == 0 ||
                    strcmp(name, "clamp") == 0 ||
@@ -10502,12 +10516,14 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
      * isolines patch type, no point output topology).  isolines and
      * point-mode TES compile to a compute kernel that enumerates the
      * expanded line/point stream instead (see the isTESCompute paths).
-     * XFB also forces this path: native post-tess cannot feed transform
-     * feedback, so triangles/quads with XFB share the same compute ABI. */
+     * XFB and a following geometry shader also force this path: native
+     * post-tess feeds FS directly and cannot insert GS or capture XFB,
+     * so triangles/quads with either share the same compute ABI. */
     const bool isTESCompute = isTES &&
         (tu->layout_primitive == MGL_AST_TES_ISOLINES ||
          tu->layout_point_mode != 0 ||
-         force_tes_compute);
+         force_tes_compute ||
+         has_gs);
     const bool isKernel = isCompute || isTCS || isGS || isTESCompute;
     const bool usesCullDistance = isVS && !isCapture &&
                                   sourceUsesCullDistance;
@@ -10746,7 +10762,12 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         uint32_t nextPatchOutputLocation = 0;
         for (VarSym &v : syms) {
             bool input = ((isTCS || isGS) && v.kind == VarSym::VARYING) ||
-                         (isTES && v.kind == VarSym::CONTROL_POINT_INPUT);
+                         (isTES && v.kind == VarSym::CONTROL_POINT_INPUT) ||
+                         /* Fragment inputs are VARYING on the FS; assign
+                          * locations so has_gs location tags (mgl_loc_N)
+                          * can pair with the GS passthrough VS. */
+                         (!isVS && !isTES && !isTCS && !isGS && !isKernel &&
+                          v.kind == VarSym::VARYING);
             bool output = ((isVS || isTES) && v.kind == VarSym::VARYING) ||
                           ((isTCS || isGS) && v.kind == VarSym::OUTPUT) ||
                           (!isVS && !isTES && !isKernel &&
@@ -13453,11 +13474,11 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 el.arr = 0;
                 uint32_t n = (uint32_t)v.type.arr;
                 for (uint32_t k = 0; k < n; k++) {
-                    std::string elName = varyingIfaceTag(v, k);
+                    std::string elName = varyingIfaceTag(v, k, has_gs);
                     emitFSVarying(elName, el, mArgSlot++);
                 }
             } else {
-                std::string tag = varyingIfaceTag(v);
+                std::string tag = varyingIfaceTag(v, 0, has_gs);
                 if (uintUsesSplitFloatCarrier(v.type, has_gs)) {
                     emitFSVarying(tag + "_lo", v.type, mArgSlot++, true);
                     emitFSVarying(tag + "_hi", v.type, mArgSlot++, true);
