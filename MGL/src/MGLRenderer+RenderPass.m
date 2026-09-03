@@ -3110,6 +3110,27 @@ static GLenum mglPassthroughDeclType(
                 MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, colorSlot,
                 MGLLoadActionClear, MGLStoreActionStore);
 
+            /* MS textures are texture2d_array sample planes; LoadActionClear
+             * only hits the attached base slice. Clear the other sample
+             * planes so imageLoad(sample) sees the same clear value. */
+            if (attachmentTextureForClear &&
+                attachmentTextureForClear->mtl_data &&
+                (attachmentTextureForClear->target == GL_TEXTURE_2D_MULTISAMPLE ||
+                 attachmentTextureForClear->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY)) {
+                MGLMetalAttachmentSubresource sub =
+                    mglMetalAttachmentSubresourceForAttachment(att);
+                NSUInteger samples =
+                    MAX((NSUInteger)attachmentTextureForClear->samples, 1u);
+                for (NSUInteger s = 1u; s < samples; s++) {
+                    (void)mglRenderEncodeColorClearForCommandBufferOwner(
+                        _renderPassManager.state->currentCommandBufferOwner,
+                        attachmentTextureForClear->mtl_data,
+                        sub.level, sub.slice + s, sub.depthPlane,
+                        att->clear_color[0], att->clear_color[1],
+                        att->clear_color[2], att->clear_color[3]);
+                }
+            }
+
             att->clear_bitmask &= ~GL_COLOR_BUFFER_BIT;
             mglMarkTextureLevelRenderTargetWritten(attachmentTextureForClear, att->level);
 

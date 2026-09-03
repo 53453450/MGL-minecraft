@@ -1111,11 +1111,17 @@ void mglDeleteFramebuffers(GLMContext ctx, GLsizei n, const GLuint *framebuffers
         if (!fbo)
             continue;
             
-        // Unbind if currently bound
-        if (ctx->state.framebuffer == fbo)
+        // Unbind if currently bound; restore default draw/read buffer state.
+        // Without Load*Buffer, read_buffer stays GL_COLOR_ATTACHMENT0 and
+        // subsequent default-framebuffer ReadPixels returns zeros (CTS load-ms).
+        if (ctx->state.framebuffer == fbo) {
             ctx->state.framebuffer = NULL;
-        if (ctx->state.readbuffer == fbo)
+            mglFramebufferLoadDrawBuffer(ctx, NULL);
+        }
+        if (ctx->state.readbuffer == fbo) {
             ctx->state.readbuffer = NULL;
+            mglFramebufferLoadReadBuffer(ctx, NULL);
+        }
         mglFramebufferSyncBindingNames(ctx);
             
         // Remove from hash table

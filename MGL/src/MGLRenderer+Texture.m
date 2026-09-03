@@ -5373,28 +5373,25 @@ static void mglTextureCopyTextureToBuffer(
 
         NSUInteger samples = MAX((NSUInteger)2u, (NSUInteger)tex->samples);
         samples = MGLCapabilityClampSampleCount(&_capability, samples);
-        /* Metal cannot shader-write true MSAA textures. Non-render-target MS
-         * images (image2DMS / image2DMSArray) are stored as texture2d_array
-         * sample planes so imageStore works; texelFetch uses the same planes. */
-        if (!tex->is_render_target) {
-            const NSUInteger kMsPlaneStride = 8u;
-            msEmulatedAsArray = true;
-            if (tex_type == MGLTextureType2DMultisample) {
-                tex_type = MGLTextureType2DArray;
-                tex_desc.texture_type = tex_type;
-                tex_desc.sample_count = 1u;
-                tex_desc.array_length = MAX(samples, 1u);
-                tex_desc.depth = 1u;
-            } else {
-                tex_type = MGLTextureType2DArray;
-                tex_desc.texture_type = tex_type;
-                tex_desc.sample_count = 1u;
-                NSUInteger layers = MAX((NSUInteger)depth, 1u);
-                tex_desc.array_length = layers * kMsPlaneStride;
-                tex_desc.depth = 1u;
-            }
+        /* Metal cannot shader-write texture2d_ms, and AIR always lowers
+         * image2DMS / sampler2DMS* to texture2d_array. Emulate all MS
+         * textures (including FBO attachments) as array sample planes so
+         * ClearBuffer → imageLoad (CTS load-ms) shares one backing. */
+        const NSUInteger kMsPlaneStride = 8u;
+        msEmulatedAsArray = true;
+        if (tex_type == MGLTextureType2DMultisample) {
+            tex_type = MGLTextureType2DArray;
+            tex_desc.texture_type = tex_type;
+            tex_desc.sample_count = 1u;
+            tex_desc.array_length = MAX(samples, 1u);
+            tex_desc.depth = 1u;
         } else {
-            tex_desc.sample_count = samples;
+            tex_type = MGLTextureType2DArray;
+            tex_desc.texture_type = tex_type;
+            tex_desc.sample_count = 1u;
+            NSUInteger layers = MAX((NSUInteger)depth, 1u);
+            tex_desc.array_length = layers * kMsPlaneStride;
+            tex_desc.depth = 1u;
         }
     }
 

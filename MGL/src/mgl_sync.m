@@ -78,9 +78,14 @@ MGLMetalAttachmentSubresource mglMetalAttachmentSubresourceForAttachment(const F
 
         case GL_TEXTURE_1D_ARRAY:
         case GL_TEXTURE_2D_ARRAY:
-        case GL_TEXTURE_2D_MULTISAMPLE_ARRAY:
         case GL_TEXTURE_CUBE_MAP_ARRAY:
             subresource.slice = attachment->layer;
+            break;
+
+        case GL_TEXTURE_2D_MULTISAMPLE_ARRAY:
+            /* Emulated as texture2d_array with flat = layer * 8 + sample.
+             * FBO attaches one GL layer at the base sample plane. */
+            subresource.slice = (uint32_t)attachment->layer * 8u;
             break;
 
         case GL_TEXTURE_3D:
