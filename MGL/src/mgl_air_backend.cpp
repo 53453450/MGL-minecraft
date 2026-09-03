@@ -5795,9 +5795,8 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 return cg.b->CreateBitCast(a0, dst);
             }
         }
-        /* Storage-image operations use the texture handle table but have no
-         * sampler parameter.  image2D keeps the original float path; the
-         * array write path below mirrors Metal's texture2d_array integer ABI. */
+        /* Storage-image ops: texture handle, no sampler.  GL 1D / 1D_ARRAY
+         * are Metal-backed as 2D / 2D_ARRAY (height or y = 0). */
         if (strcmp(name, "imageStore") == 0 ||
             strcmp(name, "imageLoad") == 0 ||
             strcmp(name, "imageSize") == 0) {
@@ -5810,15 +5809,13 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 return nullptr;
             }
             const MGLIRSymbol *is = findSymbol(mod, ia->u.var_ref.name);
-            bool is2DArray = is && is->type->kind == MGLIR_TYPE_IMAGE &&
-                             is->type->tex_kind == MGLIR_TEX_2D_ARRAY;
-            if (!is || is->type->kind != MGLIR_TYPE_IMAGE ||
-                (is->type->tex_kind != MGLIR_TEX_2D && !is2DArray)) {
+            if (!is || is->type->kind != MGLIR_TYPE_IMAGE) {
                 cg.err = 1;
                 cg.errmsg = std::string("codegen: ") + name +
-                    " currently requires image2D or image2DArray";
+                    " requires an image variable";
                 return nullptr;
             }
+            const MGLIRTexKind tk = is->type->tex_kind;
             llvm::Value *tex = samplerTexValue(cg, ia->u.var_ref.name);
             if (!tex) {
                 cg.err = 1;
@@ -5832,17 +5829,45 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             llvm::Type *v3i32 = llvm::FixedVectorType::get(i32, 3);
             llvm::Type *v4f32 = llvm::FixedVectorType::get(f32, 4);
             llvm::Type *v4i32 = llvm::FixedVectorType::get(i32, 4);
-            if (is2DArray && strcmp(name, "imageStore") != 0) {
-                cg.err = 1;
-                cg.errmsg = std::string("codegen: ") + name +
-                    " image2DArray is not implemented yet";
-                return nullptr;
-            }
+            const MGLIRScalar storage = is->type->tex_storage;
+            const bool isInt =
+                storage == MGLIR_SCALAR_INT || storage == MGLIR_SCALAR_UINT;
+            auto writeName = [&](const char *base) -> std::string {
+                if (!isInt) return std::string(base) + ".v4f32";
+                return std::string(base) +
+                       (storage == MGLIR_SCALAR_UINT ? ".u.v4i32" : ".s.v4i32");
+            };
+            auto readName = [&](const char *base) -> std::string {
+                if (!isInt) return std::string(base) + ".v4f32";
+                return std::string(base) +
+                       (storage == MGLIR_SCALAR_UINT ? ".u.v4i32" : ".s.v4i32");
+            };
+            auto toIvec2X0 = [&](llvm::Value *x) -> llvm::Value * {
+                llvm::Value *v = llvm::UndefValue::get(v2i32);
+                v = cg.b->CreateInsertElement(v, x, cg.b->getInt32(0));
+                return cg.b->CreateInsertElement(v, cg.b->getInt32(0),
+                                                 cg.b->getInt32(1));
+            };
             if (strcmp(name, "imageSize") == 0) {
-                llvm::Value *w = callAirFn(cg, "air.get_width_texture_2d",
-                                           i32, {tex, cg.b->getInt32(0)});
-                llvm::Value *h = callAirFn(cg, "air.get_height_texture_2d",
-                                           i32, {tex, cg.b->getInt32(0)});
+                /* Enough for current CTS; return ivec2(width, height-or-1). */
+                const char *wFn = "air.get_width_texture_2d";
+                const char *hFn = "air.get_height_texture_2d";
+                if (tk == MGLIR_TEX_3D) {
+                    wFn = "air.get_width_texture_3d";
+                    hFn = "air.get_height_texture_3d";
+                } else if (tk == MGLIR_TEX_2D_ARRAY ||
+                           tk == MGLIR_TEX_1D_ARRAY) {
+                    wFn = "air.get_width_texture_2d_array";
+                    hFn = "air.get_height_texture_2d_array";
+                } else if (tk == MGLIR_TEX_CUBE ||
+                           tk == MGLIR_TEX_CUBE_ARRAY) {
+                    wFn = "air.get_width_texture_cube";
+                    hFn = "air.get_height_texture_cube";
+                }
+                llvm::Value *w = callAirFn(cg, wFn, i32, {tex, cg.b->getInt32(0)});
+                llvm::Value *h = (tk == MGLIR_TEX_1D || tk == MGLIR_TEX_BUFFER)
+                    ? cg.b->getInt32(1)
+                    : callAirFn(cg, hFn, i32, {tex, cg.b->getInt32(0)});
                 llvm::Value *size = llvm::UndefValue::get(v2i32);
                 size = cg.b->CreateInsertElement(size, w, cg.b->getInt32(0));
                 return cg.b->CreateInsertElement(size, h, cg.b->getInt32(1));
@@ -5850,96 +5875,148 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             llvm::Value *coord = emitExpr(cg, e->u.call.args[1], mod, locals);
             if (!coord) return nullptr;
             coord = coerceScalar(cg, coord, MGLIR_SCALAR_INT);
-            llvm::Value *layer = nullptr;
-            if (is2DArray) {
-                if (coord->getType() != v3i32) {
+            llvm::Value *layerOrFace = nullptr;
+            llvm::Value *coord2 = nullptr;
+            llvm::Value *coord3 = nullptr;
+            /* Normalize GLSL coords to the Metal texture backing. */
+            switch (tk) {
+            case MGLIR_TEX_1D:
+            case MGLIR_TEX_BUFFER:
+                if (!coord->getType()->isIntegerTy(32)) {
                     cg.err = 1;
-                    cg.errmsg = "codegen: image2DArray coordinate must be ivec3";
+                    cg.errmsg = "codegen: image1D/imageBuffer coord must be int";
                     return nullptr;
                 }
-                layer = cg.b->CreateExtractElement(coord, cg.b->getInt32(2));
-                coord = cg.b->CreateShuffleVector(
-                    coord, llvm::UndefValue::get(coord->getType()), {0, 1});
-            } else if (coord->getType() != v2i32) {
+                if (tk == MGLIR_TEX_1D)
+                    coord2 = toIvec2X0(coord);
+                break;
+            case MGLIR_TEX_2D:
+            case MGLIR_TEX_2D_RECT:
+                if (coord->getType() != v2i32) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: image2D/image2DRect coord must be ivec2";
+                    return nullptr;
+                }
+                coord2 = coord;
+                break;
+            case MGLIR_TEX_1D_ARRAY:
+                if (coord->getType() != v2i32) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: image1DArray coord must be ivec2";
+                    return nullptr;
+                }
+                layerOrFace = cg.b->CreateExtractElement(coord, cg.b->getInt32(1));
+                coord2 = toIvec2X0(
+                    cg.b->CreateExtractElement(coord, cg.b->getInt32(0)));
+                break;
+            case MGLIR_TEX_2D_ARRAY:
+            case MGLIR_TEX_CUBE:
+            case MGLIR_TEX_CUBE_ARRAY:
+            case MGLIR_TEX_3D:
+                if (coord->getType() != v3i32) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: image3D/cube/2DArray coord must be ivec3";
+                    return nullptr;
+                }
+                if (tk == MGLIR_TEX_3D) {
+                    coord3 = coord;
+                } else {
+                    layerOrFace = cg.b->CreateExtractElement(coord, cg.b->getInt32(2));
+                    coord2 = cg.b->CreateShuffleVector(
+                        coord, llvm::UndefValue::get(coord->getType()), {0, 1});
+                }
+                break;
+            default:
                 cg.err = 1;
                 cg.errmsg = std::string("codegen: ") + name +
-                    " image2D coordinate must be ivec2";
+                    " unsupported image type";
                 return nullptr;
             }
             if (strcmp(name, "imageLoad") == 0) {
-                MGLIRScalar storage = is->type->tex_storage;
-                if (storage == MGLIR_SCALAR_INT ||
-                    storage == MGLIR_SCALAR_UINT) {
-                    llvm::Type *v4i32 = llvm::FixedVectorType::get(i32, 4);
-                    llvm::Type *retTy = llvm::StructType::get(
-                        *cg.ctx, {v4i32, cg.b->getInt8Ty()});
-                    const char *intrinsic =
-                        storage == MGLIR_SCALAR_UINT
-                            ? "air.read_texture_2d.u.v4i32"
-                            : "air.read_texture_2d.s.v4i32";
-                    llvm::Value *r = callAirFn(cg, intrinsic, retTy,
-                        {tex, coord, cg.b->getInt32(0),
-                         cg.b->getInt32(3)});
-                    return cg.b->CreateExtractValue(r, 0);
-                }
+                llvm::Type *vecTy = isInt ? v4i32 : v4f32;
                 llvm::Type *retTy = llvm::StructType::get(
-                    *cg.ctx, {v4f32, cg.b->getInt8Ty()});
-                llvm::Value *r = callAirFn(cg, "air.read_texture_2d.v4f32",
-                    retTy, {tex, coord, cg.b->getInt32(0),
-                            cg.b->getInt32(3)});
+                    *cg.ctx, {vecTy, cg.b->getInt8Ty()});
+                llvm::Value *r = nullptr;
+                if (tk == MGLIR_TEX_BUFFER) {
+                    llvm::Type *smp = llvm::StructType::get(
+                        *cg.ctx, "struct._sampler_t");
+                    llvm::Value *rs = callAirFn(cg, "air.get_read_sampler",
+                                                smp->getPointerTo(2), {});
+                    r = callAirFn(cg, readName("air.read_texture_buffer_1d").c_str(),
+                                  retTy, {tex, rs, coord, cg.b->getInt32(1)});
+                } else if (tk == MGLIR_TEX_3D) {
+                    r = callAirFn(cg, readName("air.read_texture_3d").c_str(),
+                                  retTy, {tex, coord3, cg.b->getInt32(0),
+                                          cg.b->getInt32(3)});
+                } else if (tk == MGLIR_TEX_CUBE || tk == MGLIR_TEX_CUBE_ARRAY) {
+                    const char *base = tk == MGLIR_TEX_CUBE_ARRAY
+                        ? "air.read_texture_cube_array" : "air.read_texture_cube";
+                    if (tk == MGLIR_TEX_CUBE_ARRAY) {
+                        r = callAirFn(cg, readName(base).c_str(), retTy,
+                                      {tex, coord2, layerOrFace, cg.b->getInt32(0),
+                                       cg.b->getInt32(3)});
+                    } else {
+                        r = callAirFn(cg, readName(base).c_str(), retTy,
+                                      {tex, coord2, layerOrFace, cg.b->getInt32(0),
+                                       cg.b->getInt32(3)});
+                    }
+                } else if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY) {
+                    r = callAirFn(cg, readName("air.read_texture_2d_array").c_str(),
+                                  retTy, {tex, coord2, layerOrFace,
+                                          cg.b->getInt32(0), cg.b->getInt32(3)});
+                } else {
+                    r = callAirFn(cg, readName("air.read_texture_2d").c_str(),
+                                  retTy, {tex, coord2, cg.b->getInt32(0),
+                                          cg.b->getInt32(3)});
+                }
                 return cg.b->CreateExtractValue(r, 0);
             }
             llvm::Value *value = emitExpr(cg, e->u.call.args[2], mod, locals);
             if (!value) return nullptr;
-            if (is2DArray) {
-                if (value->getType() != v4i32 ||
-                    (is->type->tex_storage != MGLIR_SCALAR_INT &&
-                     is->type->tex_storage != MGLIR_SCALAR_UINT)) {
-                    cg.err = 1;
-                    cg.errmsg = "codegen: integer image2DArray store requires ivec4/uvec4";
-                    return nullptr;
-                }
-                const char *intrinsic = is->type->tex_storage == MGLIR_SCALAR_UINT
-                    ? "air.write_texture_2d_array.u.v4i32"
-                    : "air.write_texture_2d_array.s.v4i32";
-                return callAirFn(cg, intrinsic,
-                                 llvm::Type::getVoidTy(*cg.ctx),
-                                 {tex, coord, layer, value,
-                                  cg.b->getInt32(0), cg.b->getInt32(3)});
-            }
-            /* Prefer the integer write path when the value is already an
-             * int vector (iimage/uimage) or the image storage is integer —
-             * a float write of sitofp(8) leaves R32I readbacks as the
-             * IEEE bit pattern of 8.0 (0x41000000) instead of 8. */
-            if (value->getType()->isIntOrIntVectorTy() ||
-                is->type->tex_storage == MGLIR_SCALAR_INT ||
-                is->type->tex_storage == MGLIR_SCALAR_UINT) {
+            if (isInt) {
                 value = coerceScalar(cg, value, MGLIR_SCALAR_INT);
                 if (value->getType() != v4i32) {
                     cg.err = 1;
-                    cg.errmsg = "codegen: imageStore iimage2D/uimage2D value "
-                                "must be ivec4/uvec4";
+                    cg.errmsg = "codegen: integer imageStore value must be ivec4/uvec4";
                     return nullptr;
                 }
-                const char *intrinsic =
-                    is->type->tex_storage == MGLIR_SCALAR_UINT
-                        ? "air.write_texture_2d.u.v4i32"
-                        : "air.write_texture_2d.s.v4i32";
-                return callAirFn(cg, intrinsic,
-                                 llvm::Type::getVoidTy(*cg.ctx),
-                                 {tex, coord, value, cg.b->getInt32(0),
-                                  cg.b->getInt32(3)});
+            } else {
+                value = coerceScalar(cg, value, MGLIR_SCALAR_FLOAT);
+                if (value->getType() != v4f32) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: imageStore value must be vec4";
+                    return nullptr;
+                }
             }
-            value = coerceScalar(cg, value, MGLIR_SCALAR_FLOAT);
-            if (value->getType() != v4f32) {
-                cg.err = 1;
-                cg.errmsg = "codegen: imageStore image2D value must be vec4";
-                return nullptr;
+            llvm::Type *voidTy = llvm::Type::getVoidTy(*cg.ctx);
+            if (tk == MGLIR_TEX_BUFFER) {
+                return callAirFn(cg, writeName("air.write_texture_buffer_1d").c_str(),
+                                 voidTy, {tex, coord, value});
             }
-            return callAirFn(cg, "air.write_texture_2d.v4f32",
-                             llvm::Type::getVoidTy(*cg.ctx),
-                             {tex, coord, value, cg.b->getInt32(0),
-                              cg.b->getInt32(3)});
+            if (tk == MGLIR_TEX_3D) {
+                return callAirFn(cg, writeName("air.write_texture_3d").c_str(),
+                                 voidTy, {tex, coord3, value, cg.b->getInt32(0),
+                                          cg.b->getInt32(3)});
+            }
+            if (tk == MGLIR_TEX_CUBE) {
+                return callAirFn(cg, writeName("air.write_texture_cube").c_str(),
+                                 voidTy, {tex, coord2, layerOrFace, value,
+                                          cg.b->getInt32(0), cg.b->getInt32(3)});
+            }
+            if (tk == MGLIR_TEX_CUBE_ARRAY) {
+                return callAirFn(cg, writeName("air.write_texture_cube_array").c_str(),
+                                 voidTy, {tex, coord2, layerOrFace, value,
+                                          cg.b->getInt32(0), cg.b->getInt32(3)});
+            }
+            if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY) {
+                return callAirFn(cg, writeName("air.write_texture_2d_array").c_str(),
+                                 voidTy, {tex, coord2, layerOrFace, value,
+                                          cg.b->getInt32(0), cg.b->getInt32(3)});
+            }
+            /* 1D (as 2D), 2D, 2DRect */
+            return callAirFn(cg, writeName("air.write_texture_2d").c_str(),
+                             voidTy, {tex, coord2, value, cg.b->getInt32(0),
+                                      cg.b->getInt32(3)});
         }
         /* texelFetch(sampler, ivecP, lod): unfiltered read. */
         if (strcmp(name, "texelFetch") == 0 ||
@@ -10479,6 +10556,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         llvm::StructType::create(ctx, "struct._texture_2d_array_t");
     llvm::StructType *texTy3d =
         llvm::StructType::create(ctx, "struct._texture_3d_t");
+    llvm::StructType *texTyCube =
+        llvm::StructType::create(ctx, "struct._texture_cube_t");
+    llvm::StructType *texTyCubeArray =
+        llvm::StructType::create(ctx, "struct._texture_cube_array_t");
     llvm::StructType *texTyBuf =
         llvm::StructType::create(ctx, "struct._texture_buffer_1d_t");
     llvm::StructType *smpTy =
@@ -10542,9 +10623,13 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         const MGLIRSymbol *ts = findSymbol(&mod, v.name.c_str());
         MGLIRTexKind tk = ts && ts->type->kind == MGLIR_TYPE_IMAGE
             ? ts->type->tex_kind : MGLIR_TEX_2D;
-        llvm::StructType *tt = (tk == MGLIR_TEX_3D) ? texTy3d
-                             : (tk == MGLIR_TEX_2D_ARRAY) ? texTy2dArray
-                             : texTy2d;
+        llvm::StructType *tt = texTy2d;
+        if (tk == MGLIR_TEX_3D) tt = texTy3d;
+        else if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY)
+            tt = texTy2dArray;
+        else if (tk == MGLIR_TEX_CUBE) tt = texTyCube;
+        else if (tk == MGLIR_TEX_CUBE_ARRAY) tt = texTyCubeArray;
+        else if (tk == MGLIR_TEX_BUFFER) tt = texTyBuf;
         paramTys.push_back(tt->getPointerTo(1));
     }
     for (VarSym &v : syms) {
@@ -12463,24 +12548,32 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         for (VarSym &v : syms) {
             if (v.kind != VarSym::IMAGE) continue;
             const MGLIRSymbol *iss = findSymbol(&mod, v.name.c_str());
-            bool is3d = iss && iss->type->kind == MGLIR_TYPE_IMAGE &&
-                        iss->type->tex_kind == MGLIR_TEX_3D;
-            bool is2dArray = iss && iss->type->kind == MGLIR_TYPE_IMAGE &&
-                             iss->type->tex_kind == MGLIR_TEX_2D_ARRAY;
-            const char *imageType = is3d
-                ? "texture3d<float, access::read_write>"
-                : "texture2d<float, access::read_write>";
-            if (is2dArray) {
-                imageType = iss->type->tex_storage == MGLIR_SCALAR_INT
-                    ? "texture2d_array<int, access::read_write>"
-                    : iss->type->tex_storage == MGLIR_SCALAR_UINT
-                        ? "texture2d_array<uint, access::read_write>"
-                        : "texture2d_array<float, access::read_write>";
-            } else if (!is3d && iss) {
-                if (iss->type->tex_storage == MGLIR_SCALAR_INT)
-                    imageType = "texture2d<int, access::read_write>";
-                else if (iss->type->tex_storage == MGLIR_SCALAR_UINT)
-                    imageType = "texture2d<uint, access::read_write>";
+            MGLIRTexKind itk = iss && iss->type->kind == MGLIR_TYPE_IMAGE
+                ? iss->type->tex_kind : MGLIR_TEX_2D;
+            MGLIRScalar ist = iss ? iss->type->tex_storage : MGLIR_SCALAR_FLOAT;
+            const char *accessTy = "float";
+            if (ist == MGLIR_SCALAR_INT) accessTy = "int";
+            else if (ist == MGLIR_SCALAR_UINT) accessTy = "uint";
+            const char *dimTy = "texture2d";
+            switch (itk) {
+            case MGLIR_TEX_3D: dimTy = "texture3d"; break;
+            case MGLIR_TEX_2D_ARRAY:
+            case MGLIR_TEX_1D_ARRAY: dimTy = "texture2d_array"; break;
+            case MGLIR_TEX_CUBE: dimTy = "texturecube"; break;
+            case MGLIR_TEX_CUBE_ARRAY: dimTy = "texturecube_array"; break;
+            case MGLIR_TEX_BUFFER: dimTy = "texture_buffer"; break;
+            case MGLIR_TEX_1D:
+            case MGLIR_TEX_2D:
+            case MGLIR_TEX_2D_RECT:
+            default: dimTy = "texture2d"; break;
+            }
+            char imageType[96];
+            if (itk == MGLIR_TEX_BUFFER) {
+                snprintf(imageType, sizeof(imageType),
+                         "texture_buffer<%s, access::read_write>", accessTy);
+            } else {
+                snprintf(imageType, sizeof(imageType),
+                         "%s<%s, access::read_write>", dimTy, accessTy);
             }
             argNodes.push_back(llvm::MDNode::get(ctx, {
                 llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(

@@ -1079,6 +1079,9 @@ typedef enum {
     BI_ARG_I2D_UINT,  /* uimage2D */
     BI_ARG_I2DA_INT,  /* iimage2DArray */
     BI_ARG_I2DA_UINT, /* uimage2DArray */
+    BI_ARG_IMAGE,     /* any *image* with float storage */
+    BI_ARG_IMAGE_INT, /* any *iimage* */
+    BI_ARG_IMAGE_UINT,/* any *uimage* */
     BI_ARG_IVEC2,     /* ivec2 */
     BI_ARG_IVEC3,     /* ivec3 */
     BI_ARG_IVEC4,     /* ivec4 */
@@ -1212,12 +1215,33 @@ static const BiFn kBuiltins[] = {
     { "texelFetch", 3, { BI_ARG_SBUF, BI_ARG_INT, BI_ARG_INT }, BI_RET_SAMP },
     { "texelFetch", 2, { BI_ARG_SBUF, BI_ARG_INT }, BI_RET_SAMP },
     { "imageLoad", 2, { BI_ARG_I2D, BI_ARG_GENI }, BI_RET_SAMP },
+    { "imageLoad", 2, { BI_ARG_IMAGE, BI_ARG_INT }, BI_RET_SAMP },
+    { "imageLoad", 2, { BI_ARG_IMAGE, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "imageLoad", 2, { BI_ARG_IMAGE, BI_ARG_IVEC3 }, BI_RET_SAMP },
+    { "imageLoad", 2, { BI_ARG_IMAGE_INT, BI_ARG_INT }, BI_RET_SAMP },
+    { "imageLoad", 2, { BI_ARG_IMAGE_INT, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "imageLoad", 2, { BI_ARG_IMAGE_INT, BI_ARG_IVEC3 }, BI_RET_SAMP },
+    { "imageLoad", 2, { BI_ARG_IMAGE_UINT, BI_ARG_INT }, BI_RET_SAMP },
+    { "imageLoad", 2, { BI_ARG_IMAGE_UINT, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "imageLoad", 2, { BI_ARG_IMAGE_UINT, BI_ARG_IVEC3 }, BI_RET_SAMP },
     { "imageStore", 3, { BI_ARG_I2D, BI_ARG_GENI, BI_ARG_VEC4 }, BI_RET_VOID },
     { "imageStore", 3, { BI_ARG_I2D_INT, BI_ARG_GENI, BI_ARG_IVEC4 }, BI_RET_VOID },
     { "imageStore", 3, { BI_ARG_I2D_UINT, BI_ARG_GENI, BI_ARG_UVEC4 }, BI_RET_VOID },
     { "imageStore", 3, { BI_ARG_I2DA_INT, BI_ARG_IVEC3, BI_ARG_IVEC4 }, BI_RET_VOID },
     { "imageStore", 3, { BI_ARG_I2DA_UINT, BI_ARG_IVEC3, BI_ARG_UVEC4 }, BI_RET_VOID },
+    { "imageStore", 3, { BI_ARG_IMAGE, BI_ARG_INT, BI_ARG_VEC4 }, BI_RET_VOID },
+    { "imageStore", 3, { BI_ARG_IMAGE, BI_ARG_IVEC2, BI_ARG_VEC4 }, BI_RET_VOID },
+    { "imageStore", 3, { BI_ARG_IMAGE, BI_ARG_IVEC3, BI_ARG_VEC4 }, BI_RET_VOID },
+    { "imageStore", 3, { BI_ARG_IMAGE_INT, BI_ARG_INT, BI_ARG_IVEC4 }, BI_RET_VOID },
+    { "imageStore", 3, { BI_ARG_IMAGE_INT, BI_ARG_IVEC2, BI_ARG_IVEC4 }, BI_RET_VOID },
+    { "imageStore", 3, { BI_ARG_IMAGE_INT, BI_ARG_IVEC3, BI_ARG_IVEC4 }, BI_RET_VOID },
+    { "imageStore", 3, { BI_ARG_IMAGE_UINT, BI_ARG_INT, BI_ARG_UVEC4 }, BI_RET_VOID },
+    { "imageStore", 3, { BI_ARG_IMAGE_UINT, BI_ARG_IVEC2, BI_ARG_UVEC4 }, BI_RET_VOID },
+    { "imageStore", 3, { BI_ARG_IMAGE_UINT, BI_ARG_IVEC3, BI_ARG_UVEC4 }, BI_RET_VOID },
     { "imageSize", 1, { BI_ARG_I2D }, BI_RET_IVEC2 },
+    { "imageSize", 1, { BI_ARG_IMAGE }, BI_RET_IVEC2 },
+    { "imageSize", 1, { BI_ARG_IMAGE_INT }, BI_RET_IVEC2 },
+    { "imageSize", 1, { BI_ARG_IMAGE_UINT }, BI_RET_IVEC2 },
     { "textureSize", 2, { BI_ARG_S3D,   BI_ARG_FLOAT }, BI_RET_IVEC2 },
     { "textureSize", 2, { BI_ARG_SCUBE, BI_ARG_FLOAT }, BI_RET_IVEC2 },
     { "normalize", 1, { BI_ARG_GENF }, BI_RET_GENF },
@@ -1487,6 +1511,15 @@ static int bif_arg_matches(const MGLIRType *t, BiArgKind k, uint32_t *gen_dim)
     case BI_ARG_I2DA_UINT:
         return t->kind == MGLIR_TYPE_IMAGE &&
                t->tex_kind == MGLIR_TEX_2D_ARRAY &&
+               t->tex_storage == MGLIR_SCALAR_UINT;
+    case BI_ARG_IMAGE:
+        return t->kind == MGLIR_TYPE_IMAGE &&
+               t->tex_storage == MGLIR_SCALAR_FLOAT;
+    case BI_ARG_IMAGE_INT:
+        return t->kind == MGLIR_TYPE_IMAGE &&
+               t->tex_storage == MGLIR_SCALAR_INT;
+    case BI_ARG_IMAGE_UINT:
+        return t->kind == MGLIR_TYPE_IMAGE &&
                t->tex_storage == MGLIR_SCALAR_UINT;
     case BI_ARG_IVEC2:
         return t->kind == MGLIR_TYPE_VECTOR && t->cols == 2 &&
