@@ -193,17 +193,10 @@ void mglGenVertexArrays(GLMContext ctx, GLsizei n, GLuint *arrays)
     ERROR_CHECK_RETURN(arrays, GL_INVALID_VALUE);
     ERROR_CHECK_RETURN(n >= 0, GL_INVALID_VALUE);
 
+    /* Gen only reserves names; IsVertexArray stays FALSE until Bind/Create. */
     while (n--)
     {
-        GLuint name;
-        VertexArray *ptr;
-
-        name = getNewName(&STATE(vao_table));
-        *arrays++ = name;
-        ptr = newVAO(ctx, name);
-        if (!ptr)
-            return;
-        insertHashElement(&STATE(vao_table), name, ptr);
+        *arrays++ = getNewName(&STATE(vao_table));
     }
 }
 
@@ -218,7 +211,22 @@ void mglBindVertexArray(GLMContext ctx, GLuint array)
     else
     {
         ptr = getVAO(ctx, array);
-        ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
+        if (!ptr)
+        {
+            /* First bind of a GenVertexArrays name creates the object. */
+            if (array <= STATE(vao_table).current_name)
+            {
+                ptr = newVAO(ctx, array);
+                if (!ptr)
+                    return;
+                insertHashElement(&STATE(vao_table), array, ptr);
+            }
+            else
+            {
+                ERROR_RETURN(GL_INVALID_OPERATION);
+                return;
+            }
+        }
     }
 
     if (STATE(vao) != ptr)
@@ -801,8 +809,17 @@ names in arrays, each representing a new vertex array object initialized to the 
 void mglCreateVertexArrays(GLMContext ctx, GLsizei n, GLuint *arrays)
 {
     ERROR_CHECK_RETURN(arrays, GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(n >= 0, GL_INVALID_VALUE);
 
-    mglGenVertexArrays(ctx, n, arrays);
+    while (n--)
+    {
+        GLuint name = getNewName(&STATE(vao_table));
+        VertexArray *ptr = newVAO(ctx, name);
+        if (!ptr)
+            return;
+        insertHashElement(&STATE(vao_table), name, ptr);
+        *arrays++ = name;
+    }
 }
 
 /*
