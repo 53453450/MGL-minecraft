@@ -5435,10 +5435,17 @@ static GLenum mglPassthroughDeclType(
             }
         }
         if (useSampleParams && !useFragCoordParams) {
-            uint32_t params[2] = {numSamples, sampleBuffers};
+            /* Still use the float4 layout so AIR can share one slot-30
+             * loader: {height=0, lower_left=0, ns_bits, sb_bits}. */
+            float zAsFloat, wAsFloat;
+            memcpy(&zAsFloat, &numSamples, sizeof(zAsFloat));
+            memcpy(&wAsFloat, &sampleBuffers, sizeof(wAsFloat));
+            vector_float4 fragCoordParams = {
+                0.0f, 0.0f, zAsFloat, wAsFloat
+            };
             mglRenderSetRenderBytesForOwner(
                 _renderPassManager.state->currentRenderEncoderOwner,
-                params, sizeof(params),
+                &fragCoordParams, sizeof(fragCoordParams),
                 MGL_RENDER_BINDING_STAGE_FRAGMENT,
                 kMGLFragCoordParamsBufferIndex);
         } else {

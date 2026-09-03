@@ -2115,6 +2115,11 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         }
         pptr->vertexAttribUsageMask = attr_mask;
         pptr->usesFragCoordParams = GL_FALSE;
+        {
+            Shader *fs = pptr->shader_slots[_FRAGMENT_SHADER];
+            if (fs && fs->src && strstr(fs->src, "gl_FragCoord"))
+                pptr->usesFragCoordParams = GL_TRUE;
+        }
         pptr->uses_point_size_params = GL_FALSE;
         pptr->uses_lod_bias = GL_FALSE;
     }

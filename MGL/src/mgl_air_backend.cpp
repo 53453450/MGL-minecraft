@@ -4493,6 +4493,25 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             return cg.b->getInt32(8);
         if (strcmp(e->u.var_ref.name, "gl_MaxGeometryShaderInvocations") == 0)
             return cg.b->getInt32(32);
+        /* Image limits must match glm_params / glGet (GLSL 4.60 §7.3). */
+        if (strcmp(e->u.var_ref.name, "gl_MaxImageUnits") == 0)
+            return cg.b->getInt32(8);
+        if (strcmp(e->u.var_ref.name, "gl_MaxImageSamples") == 0)
+            return cg.b->getInt32(8);
+        if (strcmp(e->u.var_ref.name, "gl_MaxVertexImageUniforms") == 0 ||
+            strcmp(e->u.var_ref.name, "gl_MaxTessControlImageUniforms") == 0 ||
+            strcmp(e->u.var_ref.name,
+                   "gl_MaxTessEvaluationImageUniforms") == 0 ||
+            strcmp(e->u.var_ref.name, "gl_MaxFragmentImageUniforms") == 0 ||
+            strcmp(e->u.var_ref.name, "gl_MaxComputeImageUniforms") == 0)
+            return cg.b->getInt32(8);
+        if (strcmp(e->u.var_ref.name, "gl_MaxCombinedImageUniforms") == 0)
+            return cg.b->getInt32(40);
+        if (strcmp(e->u.var_ref.name,
+                   "gl_MaxCombinedShaderOutputResources") == 0 ||
+            strcmp(e->u.var_ref.name,
+                   "gl_MaxCombinedImageUnitsAndFragmentOutputs") == 0)
+            return cg.b->getInt32(8);
         /* Match glm_params floors / glGet (GLSL 4.60 §7.3). */
         if (strcmp(e->u.var_ref.name, "gl_MaxClipDistances") == 0)
             return cg.b->getInt32(MGL_MAX_CLIP_DISTANCES);
@@ -10286,6 +10305,11 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     const bool needSampleID = usesSampleID || usesSamplePosition;
     const bool needSampleParams =
         usesNumSamples || usesSampleMask || usesSamplePosition;
+    /* Metal [[position]] is top-left; GL gl_FragCoord is bottom-left.  Slot 30
+     * carries {height, lower_left, num_samples, sample_buffers} so the FS can
+     * flip Y (see RenderPass fragCoordParams). */
+    const bool needFragCoordParams = usesFragCoord;
+    const bool needParamsBuffer = needFragCoordParams || needSampleParams;
     const bool usesWorkGroupID =
         isCompute && strstr(esrc, "gl_WorkGroupID") != nullptr;
     const bool usesNumWorkGroups =
@@ -10669,8 +10693,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             paramTys.push_back(llvm::Type::getInt32Ty(ctx));
         if (usesSampleMaskIn)
             paramTys.push_back(llvm::Type::getInt32Ty(ctx));
-        /* Slot 30 carries {num_samples, sample_buffers}. */
-        if (needSampleParams)
+        /* Slot 30: FragCoord Y-fixup and/or sample params. */
+        if (needParamsBuffer)
             paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
     }
     if (isTESCompute)
@@ -11115,21 +11139,48 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 arr, cg.b->CreateBitCast(mask, i32), 0);
             cg.lvalues["gl_SampleMaskIn"] = arr;
         }
-        if (needSampleParams) {
+        if (needParamsBuffer) {
             llvm::Value *buf = fn->getArg(argSlot++);
             cg.fragSampleParams = buf;
-            llvm::Value *ptr = cg.b->CreateBitCast(
-                buf, cg.b->getInt32Ty()->getPointerTo(1));
-            llvm::Value *ns = cg.b->CreateAlignedLoad(
-                cg.b->getInt32Ty(), ptr, llvm::Align(4));
-            if (usesNumSamples)
-                cg.lvalues["gl_NumSamples"] = ns;
-            if (usesSamplePosition) {
-                llvm::Value *sid = cg.lvalues.count("__mgl_sample_id_for_pos")
-                    ? cg.lvalues["__mgl_sample_id_for_pos"]
-                    : cg.b->getInt32(0);
-                cg.lvalues["gl_SamplePosition"] =
-                    emitSamplePositionFromId(cg, sid, ns);
+            /* float4 layout from RenderPass when FragCoord and/or sample
+             * params are requested: {height, lower_left, ns_bits, sb_bits}. */
+            llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+            llvm::Value *fptr = cg.b->CreateBitCast(
+                buf, f32->getPointerTo(1));
+            if (needFragCoordParams && cg.fragPos) {
+                llvm::Value *height = cg.b->CreateAlignedLoad(
+                    f32, fptr, llvm::Align(4));
+                llvm::Value *lowerLeft = cg.b->CreateAlignedLoad(
+                    f32,
+                    cg.b->CreateGEP(f32, fptr, cg.b->getInt32(1)),
+                    llvm::Align(4));
+                llvm::Value *y = cg.b->CreateExtractElement(
+                    cg.fragPos, cg.b->getInt32(1));
+                llvm::Value *flipped = cg.b->CreateFSub(height, y);
+                llvm::Value *useFlip = cg.b->CreateFCmpOGT(
+                    lowerLeft, llvm::ConstantFP::get(f32, 0.5));
+                llvm::Value *newY =
+                    cg.b->CreateSelect(useFlip, flipped, y);
+                cg.fragPos = cg.b->CreateInsertElement(
+                    cg.fragPos, newY, cg.b->getInt32(1));
+            }
+            if (needSampleParams) {
+                llvm::Value *nsBits = cg.b->CreateAlignedLoad(
+                    f32,
+                    cg.b->CreateGEP(f32, fptr, cg.b->getInt32(2)),
+                    llvm::Align(4));
+                llvm::Value *ns = cg.b->CreateBitCast(
+                    nsBits, cg.b->getInt32Ty());
+                if (usesNumSamples)
+                    cg.lvalues["gl_NumSamples"] = ns;
+                if (usesSamplePosition) {
+                    llvm::Value *sid =
+                        cg.lvalues.count("__mgl_sample_id_for_pos")
+                            ? cg.lvalues["__mgl_sample_id_for_pos"]
+                            : cg.b->getInt32(0);
+                    cg.lvalues["gl_SamplePosition"] =
+                        emitSamplePositionFromId(cg, sid, ns);
+                }
             }
         }
     }
@@ -12421,10 +12472,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 : "texture2d<float, access::read_write>";
             if (is2dArray) {
                 imageType = iss->type->tex_storage == MGLIR_SCALAR_INT
-                    ? "texture2d_array<int, read_write>"
+                    ? "texture2d_array<int, access::read_write>"
                     : iss->type->tex_storage == MGLIR_SCALAR_UINT
-                        ? "texture2d_array<uint, read_write>"
-                        : "texture2d_array<float, read_write>";
+                        ? "texture2d_array<uint, access::read_write>"
+                        : "texture2d_array<float, access::read_write>";
             } else if (!is3d && iss) {
                 if (iss->type->tex_storage == MGLIR_SCALAR_INT)
                     imageType = "texture2d<int, access::read_write>";
@@ -12740,7 +12791,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         if (usesFragCoord || usesFrontFacing || usesPointCoord ||
             usesPrimitiveId || usesLayer || usesViewportIndex ||
             usesSampleID || usesSamplePosition || usesSampleMaskIn ||
-            needSampleParams || usesFragmentCullDistance ||
+            needParamsBuffer || usesFragmentCullDistance ||
             usesFragmentClipDistance) {
             /* Fragment builtins sit after the varyings and the optional
              * uniform buffer in the arg order; skip that slot once. */
@@ -12854,7 +12905,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 llvm::MDString::get(ctx, "air.arg_name"),
                 llvm::MDString::get(ctx, "gl_SampleMaskIn")}));
         }
-        if (needSampleParams) {
+        if (needParamsBuffer) {
             llvm::Type *i32 = llvm::Type::getInt32Ty(ctx);
             argNodes.push_back(llvm::MDNode::get(ctx, {
                 llvm::ConstantAsMetadata::get(
@@ -12872,7 +12923,9 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 llvm::MDString::get(ctx, "air.arg_type_name"),
                 llvm::MDString::get(ctx, "device uchar*"),
                 llvm::MDString::get(ctx, "air.arg_name"),
-                llvm::MDString::get(ctx, "mgl_sample_params")}));
+                llvm::MDString::get(ctx, needFragCoordParams
+                                            ? "mgl_fragcoord_params"
+                                            : "mgl_sample_params")}));
         }
     }
     if (isKernel) {

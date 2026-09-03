@@ -1945,6 +1945,24 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                  * from glm_params (all floored at 8). */
                 return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_INT));
             }
+            /* GLSL 4.60 §7.3 image limits — values from glm_params. */
+            if (strcmp(e->u.var_ref.name, "gl_MaxImageUnits") == 0 ||
+                strcmp(e->u.var_ref.name, "gl_MaxImageSamples") == 0 ||
+                strcmp(e->u.var_ref.name, "gl_MaxVertexImageUniforms") == 0 ||
+                strcmp(e->u.var_ref.name,
+                       "gl_MaxTessControlImageUniforms") == 0 ||
+                strcmp(e->u.var_ref.name,
+                       "gl_MaxTessEvaluationImageUniforms") == 0 ||
+                strcmp(e->u.var_ref.name, "gl_MaxGeometryImageUniforms") == 0 ||
+                strcmp(e->u.var_ref.name, "gl_MaxFragmentImageUniforms") == 0 ||
+                strcmp(e->u.var_ref.name, "gl_MaxCombinedImageUniforms") == 0 ||
+                strcmp(e->u.var_ref.name, "gl_MaxComputeImageUniforms") == 0 ||
+                strcmp(e->u.var_ref.name,
+                       "gl_MaxCombinedShaderOutputResources") == 0 ||
+                strcmp(e->u.var_ref.name,
+                       "gl_MaxCombinedImageUnitsAndFragmentOutputs") == 0) {
+                return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_INT));
+            }
             if (strncmp(e->u.var_ref.name, "gl_MaxGeometry", 14) == 0) {
                 /* Geometry limits are compile-time integer constants in
                  * GLSL.  Keep them scalar ints for expression typing; the

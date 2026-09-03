@@ -5450,11 +5450,16 @@ static void mglTextureCopyTextureToBuffer(
      * only governs the image binding, NOT the texture's overall capabilities.
      * A texture bound as a write-only image may still be sampled from via
      * sampler2D in the same shader.  Metal requires MGL_TEXTURE_USAGE_SHADER_READ
-     * for sampling, so always include it alongside the image write flag. */
+     * for sampling, so always include it alongside the image write flag.
+     *
+     * AIR always declares storage images as access::read_write (see
+     * mgl_air_backend.cpp).  Binding a ShaderRead-only texture to that slot
+     * yields zeroed imageLoad results on AGX, so READ_ONLY also needs
+     * ShaderWrite even though GLSL/GL mark the binding readonly. */
     switch(tex->access)
     {
         case GL_READ_ONLY:
-            tex_desc.usage = MGL_TEXTURE_USAGE_SHADER_READ; break;
+            tex_desc.usage = MGL_TEXTURE_USAGE_SHADER_READ | MGL_TEXTURE_USAGE_SHADER_WRITE; break;
         case GL_WRITE_ONLY:
             tex_desc.usage = MGL_TEXTURE_USAGE_SHADER_READ | MGL_TEXTURE_USAGE_SHADER_WRITE; break;
         case GL_READ_WRITE:
