@@ -784,7 +784,8 @@ static int ir_type_interface_equal(const MGLIRType *a, const MGLIRType *b)
         return 1;
     case MGLIR_TYPE_SAMPLER:
     case MGLIR_TYPE_IMAGE:
-        return a->tex_kind == b->tex_kind && a->tex_depth == b->tex_depth;
+        return a->tex_kind == b->tex_kind && a->tex_depth == b->tex_depth &&
+               a->tex_storage == b->tex_storage;
     default:
         return 0;
     }
@@ -2987,6 +2988,7 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
             isym->qualifiers = d->qualifiers;
             isym->layout = d->layout;
             isym->matrix_major = d->matrix_major;
+            isym->image_format = d->layout_image_format;
             isym->offset = UINT32_MAX;
             isym->binding = (d->layout_binding >= 0)
                                 ? (uint32_t)d->layout_binding
@@ -3694,6 +3696,64 @@ static void uniform_block_instances_check(Sema *s, const MGLIRModule *a,
     }
 }
 
+/* GLSL 4.60 §4.3.5 / §4.4.6.2: the same uniform name in multiple stages
+ * must agree in type (and for images, layout format). */
+static void uniform_image_link_check(Sema *s, const MGLIRModule *a,
+                                     const MGLIRModule *b)
+{
+    if (!a || !b) {
+        return;
+    }
+    for (uint32_t i = 0; i < a->symbol_count; i++) {
+        MGLIRSymbol *sa = a->symbols[i];
+        if (!sa || sa->is_function || !sa->name || !sa->type ||
+            !(sa->qualifiers & MGL_AST_Q_UNIFORM) || sa->block_name) {
+            continue;
+        }
+        const MGLIRType *ta = sa->type;
+        while (ta && ta->kind == MGLIR_TYPE_ARRAY) {
+            ta = ta->elem_type;
+        }
+        if (!ta || ta->kind != MGLIR_TYPE_IMAGE) {
+            continue;
+        }
+        for (uint32_t j = 0; j < b->symbol_count; j++) {
+            MGLIRSymbol *sb = b->symbols[j];
+            if (!sb || sb->is_function || !sb->name || !sb->type ||
+                !(sb->qualifiers & MGL_AST_Q_UNIFORM) || sb->block_name ||
+                strcmp(sa->name, sb->name) != 0) {
+                continue;
+            }
+            const MGLIRType *tb = sb->type;
+            while (tb && tb->kind == MGLIR_TYPE_ARRAY) {
+                tb = tb->elem_type;
+            }
+            if (!tb || tb->kind != MGLIR_TYPE_IMAGE) {
+                sema_error(s, 0,
+                           "uniform '%s' has conflicting types across stages",
+                           sa->name);
+                continue;
+            }
+            if (!ir_type_interface_equal(sa->type, sb->type)) {
+                sema_error(s, 0,
+                           "image uniform '%s' type mismatch across stages",
+                           sa->name);
+                continue;
+            }
+            const char *fa = sa->image_format ? sa->image_format : "";
+            const char *fb = sb->image_format ? sb->image_format : "";
+            if (strcmp(fa, fb) != 0) {
+                sema_error(s, 0,
+                           "image uniform '%s' format mismatch across stages "
+                           "(%s vs %s)",
+                           sa->name,
+                           fa[0] ? fa : "(none)",
+                           fb[0] ? fb : "(none)");
+            }
+        }
+    }
+}
+
 int mglGLSLUniformLinkCheck(const MGLIRModule *a, const MGLIRModule *b,
                             MGLSemaError **errors, uint32_t *error_count)
 {
@@ -3726,6 +3786,7 @@ int mglGLSLUniformLinkCheck(const MGLIRModule *a, const MGLIRModule *b,
     if (a && b) {
         uniform_block_instances_check(&s, a, b);
         uniform_block_instances_check(&s, b, a);
+        uniform_image_link_check(&s, a, b);
     }
     uniform_link_names_free(entries, count);
 
