@@ -6881,6 +6881,27 @@ static void mglTextureCopyTextureToBuffer(
             return activeTexture;
         }
     }
+    /* AIR lowers sampler2DMS* to texture2d_array. Prefer the MS typed
+     * binding even if BindTextureUnit later pointed the unit's "active"
+     * texture at a non-MS object (CTS StorageMultisampleTest does
+     * bindTexture(MS) then bindTextureUnit(unit, nonMS)). */
+    if (sampledResource && sampledResource->image_multisampled) {
+        GLuint msIndex = sampledResource->image_arrayed
+            ? (GLuint)_TEXTURE_2D_MULTISAMPLE_ARRAY
+            : (GLuint)_TEXTURE_2D_MULTISAMPLE;
+        Texture *msTexture =
+            MGL_STATE(ctx)->texture_units[textureUnit].textures[msIndex];
+        if (msTexture && msTexture->name != TEX_OBJ_RES_NAME) {
+            return msTexture;
+        }
+        Texture *activeTexture = MGL_STATE(ctx)->active_textures[textureUnit];
+        if (activeTexture &&
+            (activeTexture->target == GL_TEXTURE_2D_MULTISAMPLE ||
+             activeTexture->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY) &&
+            activeTexture->name != TEX_OBJ_RES_NAME) {
+            return activeTexture;
+        }
+    }
 
     int textureIndex = [self textureIndexForExpectedMetalType:expectedType];
     if (textureIndex >= 0 && textureIndex < _MAX_TEXTURE_TYPES) {
