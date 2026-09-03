@@ -5768,6 +5768,35 @@ void mglGetTexImage(GLMContext ctx, GLenum target, GLint level, GLenum format, G
         tex->metal_data_authoritative ||
         lvl->metal_data_authoritative;
 
+    /* FS imageStore updates Metal storage but leaves CPU lvl->data stale until
+     * MemoryBarrier. Several CTS cases (e.g. single-byte_data_alignment) omit
+     * the barrier and call GetTexImage while the texture is still bound to a
+     * writable image unit. Mirror the barrier's authoritative mark + finish so
+     * we observe GPU image writes instead of the stale CPU upload. */
+    if (!render_target_needs_readback) {
+        GLuint max_units = ctx->state.var.max_image_units;
+        for (GLuint i = 0; i < max_units && i < TEXTURE_UNITS; i++) {
+            ImageUnit *iu = &ctx->state.image_units[i];
+            if (iu->tex != tex) {
+                continue;
+            }
+            if (iu->access != GL_WRITE_ONLY && iu->access != GL_READ_WRITE) {
+                continue;
+            }
+            mglFlushCommandBuffer(ctx);
+            mglRendererFlush(ctx, true);
+            tex->metal_data_authoritative = GL_TRUE;
+            if (tex->faces[0].levels &&
+                iu->level >= 0 &&
+                iu->level < (GLint)tex->num_levels) {
+                tex->faces[0].levels[iu->level].metal_data_authoritative = GL_TRUE;
+            }
+            mglRendererFlushImageUnitSlice(ctx, i);
+            render_target_needs_readback = true;
+            break;
+        }
+    }
+
     if (!render_target_needs_readback &&
         mglCopyTextureLevelToPackBuffer(lvl, tex->internalformat, width, height, depth, format, type, &pack_layout, pixels, ctx->state.pack.swap_bytes == GL_TRUE)) {
         return;
