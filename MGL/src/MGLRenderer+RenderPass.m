@@ -5374,7 +5374,18 @@ static GLenum mglPassthroughDeclType(
     Program *fragmentProgram = mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
     BOOL useFragCoordParams =
         fragmentProgram && fragmentProgram->usesFragCoordParams == GL_TRUE;
-    if (useFragCoordParams) {
+    /* AIR FS slot 30: {num_samples, sample_buffers} for gl_NumSamples /
+     * gl_SampleMask (ignore mask when SAMPLE_BUFFERS==0). */
+    BOOL useSampleParams = NO;
+    if (fragmentProgram) {
+        Shader *fs = fragmentProgram->shader_slots[_FRAGMENT_SHADER];
+        if (fs && fs->src &&
+            (strstr(fs->src, "gl_NumSamples") ||
+             strstr(fs->src, "gl_SampleMask") ||
+             strstr(fs->src, "gl_SamplePosition")))
+            useSampleParams = YES;
+    }
+    if (useFragCoordParams || useSampleParams) {
         NSUInteger passHeight = mglRenderPassRenderTargetHeightFor(_renderPassManager.state);
         if (passHeight == 0) {
             for (int i = 0; i < MAX_COLOR_ATTACHMENTS && passHeight == 0; i++) {
@@ -5389,17 +5400,66 @@ static GLenum mglPassthroughDeclType(
             }
         }
 
-        vector_float4 fragCoordParams = {
-            (float)passHeight,
-            MGL_STATE(ctx)->var.clip_origin == GL_LOWER_LEFT ? 1.0f : 0.0f,
-            0.0f,
-            0.0f
-        };
-        mglRenderSetRenderBytesForOwner(
-            _renderPassManager.state->currentRenderEncoderOwner,
-            &fragCoordParams, sizeof(fragCoordParams),
-            MGL_RENDER_BINDING_STAGE_FRAGMENT,
-            kMGLFragCoordParamsBufferIndex);
+        uint32_t numSamples = 1;
+        uint32_t sampleBuffers = 0;
+        Framebuffer *fbo = MGL_STATE(ctx)->framebuffer;
+        if (fbo && (fbo->color_attachment_bitfield & 1u)) {
+            FBOAttachment *att = &fbo->color_attachments[0];
+            Texture *tex = NULL;
+            if (att->textarget == GL_RENDERBUFFER && att->buf.rbo)
+                tex = att->buf.rbo->tex;
+            else
+                tex = att->buf.tex;
+            if (tex) {
+                if (tex->target == GL_TEXTURE_2D_MULTISAMPLE ||
+                    tex->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY ||
+                    tex->target == GL_RENDERBUFFER) {
+                    /* Multisample storage (including samples==1) has a
+                     * sample buffer; plain TEXTURE_2D does not. */
+                    if (tex->samples > 0 ||
+                        tex->target == GL_TEXTURE_2D_MULTISAMPLE ||
+                        tex->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY) {
+                        sampleBuffers = 1;
+                        numSamples = tex->samples > 0 ? (uint32_t)tex->samples : 1u;
+                    }
+                }
+            }
+        } else {
+            id rpColor0 = mglRenderPassColorTextureFor(_renderPassManager.state, 0);
+            if (rpColor0) {
+                NSUInteger sc = mglRenderPassTextureInfo(rpColor0).sample_count;
+                if (sc > 1) {
+                    sampleBuffers = 1;
+                    numSamples = (uint32_t)sc;
+                }
+            }
+        }
+        if (useSampleParams && !useFragCoordParams) {
+            uint32_t params[2] = {numSamples, sampleBuffers};
+            mglRenderSetRenderBytesForOwner(
+                _renderPassManager.state->currentRenderEncoderOwner,
+                params, sizeof(params),
+                MGL_RENDER_BINDING_STAGE_FRAGMENT,
+                kMGLFragCoordParamsBufferIndex);
+        } else {
+            uint32_t zBits = numSamples;
+            float zAsFloat;
+            memcpy(&zAsFloat, &zBits, sizeof(zAsFloat));
+            uint32_t wBits = sampleBuffers;
+            float wAsFloat;
+            memcpy(&wAsFloat, &wBits, sizeof(wAsFloat));
+            vector_float4 fragCoordParams = {
+                (float)passHeight,
+                MGL_STATE(ctx)->var.clip_origin == GL_LOWER_LEFT ? 1.0f : 0.0f,
+                useSampleParams ? zAsFloat : 0.0f,
+                useSampleParams ? wAsFloat : 0.0f
+            };
+            mglRenderSetRenderBytesForOwner(
+                _renderPassManager.state->currentRenderEncoderOwner,
+                &fragCoordParams, sizeof(fragCoordParams),
+                MGL_RENDER_BINDING_STAGE_FRAGMENT,
+                kMGLFragCoordParamsBufferIndex);
+        }
         [self invalidateLastBoundFragmentBufferAtIndex:kMGLFragCoordParamsBufferIndex];
     }
 

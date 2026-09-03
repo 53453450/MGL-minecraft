@@ -213,6 +213,10 @@ struct Codegen {
     llvm::Value *fragPos = nullptr;      /* fragment: [[position]] (gl_FragCoord) */
     bool hasFragDepth = false;           /* fragment writes gl_FragDepth */
     bool fragDepthInit = false;          /* gl_FragDepth lvalue initialized */
+    bool hasSampleMask = false;          /* fragment writes gl_SampleMask */
+    /* Slot 30: {num_samples, sample_buffers}. sample_buffers==0 means
+     * non-MSAA FB; GL ignores gl_SampleMask writes in that case. */
+    llvm::Value *fragSampleParams = nullptr;
     bool usesClipDistance = false;       /* vertex writes gl_ClipDistance */
     uint32_t cullDistancePassthroughCount = 0; /* VS flat outs / FS ins */
     uint32_t clipDistanceInputCount = 0; /* FS reads gl_ClipDistance */
@@ -4475,6 +4479,44 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             }
             return cg.lvalues["gl_SampleID"];
         }
+        if (strcmp(e->u.var_ref.name, "gl_MaxSamples") == 0)
+            return cg.b->getInt32(4);
+        if (strcmp(e->u.var_ref.name, "gl_NumSamples") == 0) {
+            if (!cg.lvalues.count("gl_NumSamples")) {
+                /* Non-MSAA default; the fragment params path overwrites. */
+                return cg.b->getInt32(1);
+            }
+            return cg.lvalues["gl_NumSamples"];
+        }
+        if (strcmp(e->u.var_ref.name, "gl_SamplePosition") == 0) {
+            if (!cg.lvalues.count("gl_SamplePosition")) {
+                cg.err = 1;
+                cg.errmsg =
+                    "codegen: gl_SamplePosition requires a fragment stage";
+                return nullptr;
+            }
+            return cg.lvalues["gl_SamplePosition"];
+        }
+        if (strcmp(e->u.var_ref.name, "gl_SampleMaskIn") == 0) {
+            if (!cg.lvalues.count("gl_SampleMaskIn")) {
+                llvm::Type *i32 = cg.b->getInt32Ty();
+                llvm::Value *arr = llvm::UndefValue::get(
+                    llvm::ArrayType::get(i32, 1));
+                arr = cg.b->CreateInsertValue(arr, cg.b->getInt32(~0), 0);
+                cg.lvalues["gl_SampleMaskIn"] = arr;
+            }
+            return cg.lvalues["gl_SampleMaskIn"];
+        }
+        if (strcmp(e->u.var_ref.name, "gl_SampleMask") == 0) {
+            if (!cg.lvalues.count("gl_SampleMask")) {
+                llvm::Type *i32 = cg.b->getInt32Ty();
+                llvm::Value *arr = llvm::UndefValue::get(
+                    llvm::ArrayType::get(i32, 1));
+                arr = cg.b->CreateInsertValue(arr, cg.b->getInt32(~0), 0);
+                cg.lvalues["gl_SampleMask"] = arr;
+            }
+            return cg.lvalues["gl_SampleMask"];
+        }
 
         if (strcmp(e->u.var_ref.name, "gl_PointSize") == 0) {
             if (!cg.pointSize) {
@@ -8398,6 +8440,64 @@ static llvm::Value *applyCullDistanceFromPatchInputs(Codegen &cg,
     return cg.b->CreateSelect(shouldCull, culled, pos);
 }
 
+/* GL ignores gl_SampleMask when SAMPLE_BUFFERS==0; Metal still honours
+ * [[sample_mask]], so force full coverage for non-MSAA targets. */
+static llvm::Value *resolveSampleMaskOut(Codegen &cg) {
+    llvm::Value *maskArr = cg.lvalues.count("gl_SampleMask")
+        ? cg.lvalues["gl_SampleMask"]
+        : llvm::ConstantInt::get(cg.b->getInt32Ty(), ~0u);
+    llvm::Value *mask = maskArr->getType()->isArrayTy()
+        ? cg.b->CreateExtractValue(maskArr, 0)
+        : maskArr;
+    if (!cg.fragSampleParams)
+        return mask;
+    llvm::Type *i32 = cg.b->getInt32Ty();
+    llvm::Value *ptr = cg.b->CreateBitCast(
+        cg.fragSampleParams, i32->getPointerTo(1));
+    llvm::Value *sbPtr = cg.b->CreateConstInBoundsGEP1_32(i32, ptr, 1);
+    llvm::Value *sampleBuffers =
+        cg.b->CreateAlignedLoad(i32, sbPtr, llvm::Align(4));
+    llvm::Value *nonMS = cg.b->CreateICmpEQ(sampleBuffers, cg.b->getInt32(0));
+    return cg.b->CreateSelect(nonMS, cg.b->getInt32(~0), mask);
+}
+
+/* Software gl_SamplePosition matching mglGetMultisamplefv tables.
+ * Avoids Metal [[sample_position]], which crashes the AGX compiler. */
+static llvm::Value *emitSamplePositionFromId(Codegen &cg, llvm::Value *sampleId,
+                                             llvm::Value *numSamples) {
+    llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+    auto *f2 = llvm::FixedVectorType::get(f32, 2);
+    auto v2 = [&](float x, float y) -> llvm::Value * {
+        return llvm::ConstantVector::get(
+            {llvm::ConstantFP::get(f32, x), llvm::ConstantFP::get(f32, y)});
+    };
+    llvm::Value *center = v2(0.5f, 0.5f);
+    llvm::Value *sid = sampleId
+        ? cg.b->CreateBitCast(sampleId, cg.b->getInt32Ty())
+        : cg.b->getInt32(0);
+    llvm::Value *ns = numSamples ? numSamples : cg.b->getInt32(1);
+
+    /* 2x Metal standard positions. */
+    llvm::Value *p2 = cg.b->CreateSelect(
+        cg.b->CreateICmpEQ(sid, cg.b->getInt32(0)),
+        v2(0.25f, 0.25f), v2(0.75f, 0.75f));
+
+    /* 4x Metal standard positions. */
+    llvm::Value *p4 = v2(0.625f, 0.625f);
+    p4 = cg.b->CreateSelect(cg.b->CreateICmpEQ(sid, cg.b->getInt32(2)),
+                            v2(0.125f, 0.875f), p4);
+    p4 = cg.b->CreateSelect(cg.b->CreateICmpEQ(sid, cg.b->getInt32(1)),
+                            v2(0.875f, 0.375f), p4);
+    p4 = cg.b->CreateSelect(cg.b->CreateICmpEQ(sid, cg.b->getInt32(0)),
+                            v2(0.375f, 0.125f), p4);
+
+    llvm::Value *pos = center;
+    pos = cg.b->CreateSelect(cg.b->CreateICmpEQ(ns, cg.b->getInt32(4)), p4, pos);
+    pos = cg.b->CreateSelect(cg.b->CreateICmpEQ(ns, cg.b->getInt32(2)), p2, pos);
+    (void)f2;
+    return pos;
+}
+
 llvm::Value *assembleReturn(Codegen &cg) {
     if (cg.isVS) {
         if (cg.retTy->isStructTy()) {
@@ -8571,9 +8671,14 @@ llvm::Value *assembleReturn(Codegen &cg) {
                 : llvm::ConstantFP::get(llvm::Type::getFloatTy(*cg.ctx), 1.0);
             ret = cg.b->CreateInsertValue(ret, depth, arrayOut->type.arr);
         }
+        if (cg.hasSampleMask) {
+            uint32_t field = (uint32_t)arrayOut->type.arr +
+                             (cg.hasFragDepth ? 1u : 0u);
+            ret = cg.b->CreateInsertValue(ret, resolveSampleMaskOut(cg), field);
+        }
         return ret;
     }
-    if (cg.fragOutputs.size() > 1u || cg.hasFragDepth) {
+    if (cg.fragOutputs.size() > 1u || cg.hasFragDepth || cg.hasSampleMask) {
         llvm::Value *ret = llvm::UndefValue::get(cg.retTy);
         uint32_t field = 0u;
         for (VarSym *out : cg.fragOutputs) {
@@ -8587,11 +8692,29 @@ llvm::Value *assembleReturn(Codegen &cg) {
             llvm::Value *depth = cg.lvalues.count("gl_FragDepth")
                 ? cg.lvalues["gl_FragDepth"]
                 : llvm::ConstantFP::get(llvm::Type::getFloatTy(*cg.ctx), 1.0);
-            ret = cg.b->CreateInsertValue(ret, depth, field);
+            ret = cg.b->CreateInsertValue(ret, depth, field++);
+        }
+        if (cg.hasSampleMask) {
+            ret = cg.b->CreateInsertValue(ret, resolveSampleMaskOut(cg), field);
         }
         return ret;
     }
     VarSym *out = cg.fragOutputs.empty() ? nullptr : cg.fragOutputs[0];
+    if (cg.hasSampleMask) {
+        llvm::Value *ret = llvm::UndefValue::get(cg.retTy);
+        llvm::Value *color = (out && cg.lvalues.count(out->name))
+            ? cg.lvalues[out->name]
+            : llvm::UndefValue::get(cg.retElems.empty()
+                  ? llvm::FixedVectorType::get(
+                        llvm::Type::getFloatTy(*cg.ctx), 4)
+                  : cg.retElems[0]);
+        /* Single color + sample_mask: promote to struct return. */
+        if (cg.retTy->isStructTy()) {
+            ret = cg.b->CreateInsertValue(ret, color, 0);
+            ret = cg.b->CreateInsertValue(ret, resolveSampleMaskOut(cg), 1);
+            return ret;
+        }
+    }
     return (out && cg.lvalues.count(out->name))
         ? cg.lvalues[out->name] : llvm::UndefValue::get(cg.retTy);
 }
@@ -9991,6 +10114,24 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     const bool usesSampleID =
         !isVS && !isTES && !isKernel &&
         strstr(esrc, "gl_SampleID") != nullptr;
+    const bool usesSamplePosition =
+        !isVS && !isTES && !isKernel &&
+        strstr(esrc, "gl_SamplePosition") != nullptr;
+    const bool usesSampleMaskIn =
+        !isVS && !isTES && !isKernel &&
+        strstr(esrc, "gl_SampleMaskIn") != nullptr;
+    const bool usesSampleMask =
+        !isVS && !isTES && !isKernel &&
+        (strstr(esrc, "gl_SampleMask[") != nullptr ||
+         strstr(esrc, "gl_SampleMask =") != nullptr);
+    const bool usesNumSamples =
+        !isVS && !isTES && !isKernel &&
+        strstr(esrc, "gl_NumSamples") != nullptr;
+    /* SamplePosition is synthesized from sample_id + num_samples (no
+     * air.sample_position — AGX Metal crashes on that attribute). */
+    const bool needSampleID = usesSampleID || usesSamplePosition;
+    const bool needSampleParams =
+        usesNumSamples || usesSampleMask || usesSamplePosition;
     const bool usesWorkGroupID =
         isCompute && strstr(esrc, "gl_WorkGroupID") != nullptr;
     const bool usesNumWorkGroups =
@@ -10106,8 +10247,11 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     llvm::Type::getFloatTy(ctx), 4));
             if (usesFragDepth)
                 fields.push_back(llvm::Type::getFloatTy(ctx));
+            if (usesSampleMask)
+                fields.push_back(llvm::Type::getInt32Ty(ctx));
             retTy = llvm::StructType::get(ctx, fields);
-        } else if (fragOutputs.size() > 1u || usesFragDepth) {
+        } else if (fragOutputs.size() > 1u || usesFragDepth ||
+                   usesSampleMask) {
             std::vector<llvm::Type *> fields;
             for (VarSym *out : fragOutputs)
                 fields.push_back(llvmType(out->type, ctx));
@@ -10116,6 +10260,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     llvm::Type::getFloatTy(ctx), 4));
             if (usesFragDepth)
                 fields.push_back(llvm::Type::getFloatTy(ctx));
+            if (usesSampleMask)
+                fields.push_back(llvm::Type::getInt32Ty(ctx));
             retTy = llvm::StructType::get(ctx, fields);
         } else {
             retTy = !fragOutputs.empty()
@@ -10365,8 +10511,13 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             paramTys.push_back(llvm::Type::getInt32Ty(ctx));
         if (usesViewportIndex)
             paramTys.push_back(llvm::Type::getInt32Ty(ctx));
-        if (usesSampleID)
+        if (needSampleID)
             paramTys.push_back(llvm::Type::getInt32Ty(ctx));
+        if (usesSampleMaskIn)
+            paramTys.push_back(llvm::Type::getInt32Ty(ctx));
+        /* Slot 30 carries {num_samples, sample_buffers}. */
+        if (needSampleParams)
+            paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
     }
     if (isTESCompute)
         paramTys.push_back(llvm::FixedVectorType::get(
@@ -10792,11 +10943,53 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             cg.lvalues["gl_Layer"] = fn->getArg(argSlot++);
         if (usesViewportIndex)
             cg.lvalues["gl_ViewportIndex"] = fn->getArg(argSlot++);
-        if (usesSampleID)
-            cg.lvalues["gl_SampleID"] = fn->getArg(argSlot++);
+        if (needSampleID) {
+            llvm::Value *sid = fn->getArg(argSlot++);
+            if (usesSampleID)
+                cg.lvalues["gl_SampleID"] = sid;
+            if (usesSamplePosition) {
+                /* Defer until num_samples is loaded below. */
+                cg.lvalues["__mgl_sample_id_for_pos"] = sid;
+            }
+        }
+        if (usesSampleMaskIn) {
+            llvm::Value *mask = fn->getArg(argSlot++);
+            llvm::Type *i32 = cg.b->getInt32Ty();
+            llvm::Value *arr =
+                llvm::UndefValue::get(llvm::ArrayType::get(i32, 1));
+            arr = cg.b->CreateInsertValue(
+                arr, cg.b->CreateBitCast(mask, i32), 0);
+            cg.lvalues["gl_SampleMaskIn"] = arr;
+        }
+        if (needSampleParams) {
+            llvm::Value *buf = fn->getArg(argSlot++);
+            cg.fragSampleParams = buf;
+            llvm::Value *ptr = cg.b->CreateBitCast(
+                buf, cg.b->getInt32Ty()->getPointerTo(1));
+            llvm::Value *ns = cg.b->CreateAlignedLoad(
+                cg.b->getInt32Ty(), ptr, llvm::Align(4));
+            if (usesNumSamples)
+                cg.lvalues["gl_NumSamples"] = ns;
+            if (usesSamplePosition) {
+                llvm::Value *sid = cg.lvalues.count("__mgl_sample_id_for_pos")
+                    ? cg.lvalues["__mgl_sample_id_for_pos"]
+                    : cg.b->getInt32(0);
+                cg.lvalues["gl_SamplePosition"] =
+                    emitSamplePositionFromId(cg, sid, ns);
+            }
+        }
     }
     if (usesFragDepth)
         cg.hasFragDepth = true;
+    if (usesSampleMask) {
+        cg.hasSampleMask = true;
+        llvm::Type *i32 = cg.b->getInt32Ty();
+        llvm::Value *arr =
+            llvm::UndefValue::get(llvm::ArrayType::get(i32, 1));
+        /* Default coverage: all bits set; shader writes replace this. */
+        arr = cg.b->CreateInsertValue(arr, cg.b->getInt32(~0), 0);
+        cg.lvalues["gl_SampleMask"] = arr;
+    }
     if (usesClipDistance) {
         cg.usesClipDistance = true;
         /* Indexed writes (gl_ClipDistance[i] = v) need the aggregate
@@ -12392,7 +12585,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         }
         if (usesFragCoord || usesFrontFacing || usesPointCoord ||
             usesPrimitiveId || usesLayer || usesViewportIndex ||
-            usesSampleID || usesFragmentCullDistance ||
+            usesSampleID || usesSamplePosition || usesSampleMaskIn ||
+            needSampleParams || usesFragmentCullDistance ||
             usesFragmentClipDistance) {
             /* Fragment builtins sit after the varyings and the optional
              * uniform buffer in the arg order; skip that slot once. */
@@ -12486,7 +12680,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 llvm::MDString::get(ctx, "air.arg_name"),
                 llvm::MDString::get(ctx, "gl_ViewportIndex")}));
         }
-        if (usesSampleID) {
+        if (needSampleID) {
             argNodes.push_back(llvm::MDNode::get(ctx, {
                 llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                     llvm::Type::getInt32Ty(ctx), mArgSlot++)),
@@ -12495,6 +12689,36 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 llvm::MDString::get(ctx, "uint"),
                 llvm::MDString::get(ctx, "air.arg_name"),
                 llvm::MDString::get(ctx, "gl_SampleID")}));
+        }
+        if (usesSampleMaskIn) {
+            argNodes.push_back(llvm::MDNode::get(ctx, {
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), mArgSlot++)),
+                llvm::MDString::get(ctx, "air.sample_mask"),
+                llvm::MDString::get(ctx, "air.arg_type_name"),
+                llvm::MDString::get(ctx, "uint"),
+                llvm::MDString::get(ctx, "air.arg_name"),
+                llvm::MDString::get(ctx, "gl_SampleMaskIn")}));
+        }
+        if (needSampleParams) {
+            llvm::Type *i32 = llvm::Type::getInt32Ty(ctx);
+            argNodes.push_back(llvm::MDNode::get(ctx, {
+                llvm::ConstantAsMetadata::get(
+                    llvm::ConstantInt::get(i32, mArgSlot++)),
+                llvm::MDString::get(ctx, "air.buffer"),
+                llvm::MDString::get(ctx, "air.location_index"),
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    i32, kMGLFragCoordParamsBufferIndex)),
+                llvm::ConstantAsMetadata::get(
+                    llvm::ConstantInt::get(i32, 1)),
+                llvm::MDString::get(ctx, "air.read"),
+                llvm::MDString::get(ctx, "air.address_space"),
+                llvm::ConstantAsMetadata::get(
+                    llvm::ConstantInt::get(i32, 1)),
+                llvm::MDString::get(ctx, "air.arg_type_name"),
+                llvm::MDString::get(ctx, "device uchar*"),
+                llvm::MDString::get(ctx, "air.arg_name"),
+                llvm::MDString::get(ctx, "mgl_sample_params")}));
         }
     }
     if (isKernel) {
@@ -12734,6 +12958,14 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 llvm::MDString::get(ctx, "float"),
                 llvm::MDString::get(ctx, "air.arg_name"),
                 llvm::MDString::get(ctx, "depth")}));
+        }
+        if (usesSampleMask) {
+            outNodes.push_back(llvm::MDNode::get(ctx, {
+                llvm::MDString::get(ctx, "air.sample_mask"),
+                llvm::MDString::get(ctx, "air.arg_type_name"),
+                llvm::MDString::get(ctx, "uint"),
+                llvm::MDString::get(ctx, "air.arg_name"),
+                llvm::MDString::get(ctx, "gl_SampleMask")}));
         }
     }
 

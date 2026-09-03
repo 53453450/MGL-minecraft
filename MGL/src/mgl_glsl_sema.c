@@ -1831,6 +1831,23 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                  * to the sample_id fragment argument. */
                 return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_INT));
             }
+            if (strcmp(e->u.var_ref.name, "gl_NumSamples") == 0 ||
+                strcmp(e->u.var_ref.name, "gl_MaxSamples") == 0) {
+                /* GLSL 4.60 §7.1 / §7.3: fragment sample-count builtins. */
+                return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_INT));
+            }
+            if (strcmp(e->u.var_ref.name, "gl_SamplePosition") == 0) {
+                /* Fragment built-in sample location in [0,1]^2. */
+                return scratch_type(s,
+                                    mglIRTypeVector(MGLIR_SCALAR_FLOAT, 2));
+            }
+            if (strcmp(e->u.var_ref.name, "gl_SampleMask") == 0 ||
+                strcmp(e->u.var_ref.name, "gl_SampleMaskIn") == 0) {
+                /* Coverage mask words: ceil(gl_MaxSamples/32) ints.
+                 * MGL advertises MAX_SAMPLES=4 so one word suffices. */
+                return scratch_type(s, mglIRTypeArray(
+                    mglIRTypeScalar(MGLIR_SCALAR_INT), 1));
+            }
             if (strcmp(e->u.var_ref.name, "gl_PointSize") == 0) {
                 /* Vertex built-in point size; the AIR backend maps it to
                  * the air.point_size output member. */
