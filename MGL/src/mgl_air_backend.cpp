@@ -10919,8 +10919,21 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         isCompute && strstr(esrc, "gl_LocalInvocationIndex") != nullptr;
     const bool usesLocalInvocation =
         usesLocalInvocationID || usesLocalInvocationIndex;
+    /* Always emit [[point_size]] for ordinary VS.  After a GS-expanded
+     * triangle draw, Metal Point-topology PSOs whose VS omit point_size can
+     * silently drop subsequent GL_POINTS draws (CTS multiple-uniforms after
+     * early-fragment-tests).  Default 1.0 matches GL's initial point size
+     * when the shader does not write gl_PointSize.
+     *
+     * Skip generated GS/TES passthrough VS: those rasterize with an explicit
+     * Triangle/Line topology, and Metal rejects point_size on that class.
+     * Capture / TES stages keep the historical "only if written" gate. */
+    const bool isStagePassthrough =
+        isVS && (strstr(esrc, "mgl_gs_output") != nullptr ||
+                 strstr(esrc, "mgl_tes_output") != nullptr);
     const bool usesPointSize =
-        (isVS || isTES) && strstr(esrc, "gl_PointSize") != nullptr;
+        (isVS && !isCapture && !isStagePassthrough) ||
+        ((isVS || isTES) && strstr(esrc, "gl_PointSize") != nullptr);
     const bool usesClipDistance =
         (isVS || (isTES && !isTESCompute)) && !isCapture && !isKernel &&
         strstr(esrc, "gl_ClipDistance") != nullptr;
@@ -11406,6 +11419,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     cg.fn = fn;
     cg.mod = &module;
     cg.isVS = isVS || isTES;
+    cg.pointSize = usesPointSize;
     cg.has_gs = has_gs;
     cg.isCompute = isCompute || isTCS || isGS;
     cg.isTessControl = isTCS;
