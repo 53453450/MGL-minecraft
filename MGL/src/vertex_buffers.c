@@ -40,6 +40,13 @@ static GLuint mglVertexAttribBindingLimit(GLMContext ctx)
     return limit;
 }
 
+/* Matches get.c GL_MAX_VERTEX_ATTRIB_STRIDE (no GLMParams field yet). */
+static GLuint mglVertexAttribStrideLimit(GLMContext ctx)
+{
+    (void)ctx;
+    return 2048u;
+}
+
 bool bindVertexBuffer(GLMContext ctx, GLuint vaobj, GLuint bindingindex, GLuint buffer, GLintptr offset, GLsizei stride)
 {
     VertexArray *vao;
@@ -48,26 +55,26 @@ bool bindVertexBuffer(GLMContext ctx, GLuint vaobj, GLuint bindingindex, GLuint 
     {
         vao = getVAO(ctx, vaobj);
         // no such vao
-        ERROR_CHECK_RETURN_VALUE(vao, GL_INVALID_VALUE, false);
+        ERROR_CHECK_RETURN_VALUE(vao, GL_INVALID_OPERATION, false);
     }
     else
     {
         vao = ctx->state.vao;
         // no vao bound
-        ERROR_CHECK_RETURN_VALUE(vao, GL_INVALID_VALUE, false);
+        ERROR_CHECK_RETURN_VALUE(vao, GL_INVALID_OPERATION, false);
     }
 
     ERROR_CHECK_RETURN_VALUE(offset >= 0, GL_INVALID_VALUE, false);
     ERROR_CHECK_RETURN_VALUE(stride >= 0, GL_INVALID_VALUE, false);
+    ERROR_CHECK_RETURN_VALUE(
+        (GLuint)stride <= mglVertexAttribStrideLimit(ctx), GL_INVALID_VALUE, false);
 
     Buffer *buf = NULL;
     if (buffer != 0)
     {
+        /* DSA VertexArrayVertexBuffer does not create buffer objects;
+         * buffer must already exist (IsBuffer). */
         buf = findBuffer(ctx, buffer);
-        if (!buf)
-        {
-            buf = getBuffer(ctx, GL_ARRAY_BUFFER, buffer);
-        }
         ERROR_CHECK_RETURN_VALUE(buf, GL_INVALID_OPERATION, false);
     }
 
@@ -211,14 +218,9 @@ void mglVertexArrayVertexBuffers(GLMContext ctx, GLuint vaobj, GLuint first, GLs
     }
     ERROR_CHECK_RETURN(count >= 0, GL_INVALID_VALUE);
     GLuint limit = mglVertexAttribBindingLimit(ctx);
-    /* Per ARB_multi_bind spec:
-     * - GL_INVALID_VALUE if first >= MAX_VERTEX_ATTRIB_BINDINGS
-     * - GL_INVALID_OPERATION if first + count > MAX_VERTEX_ATTRIB_BINDINGS */
-    if (first >= limit) {
-        ERROR_RETURN(GL_INVALID_VALUE);
-        return;
-    }
-    if ((GLuint)count > limit - first) {
+    /* GL 4.6 / ARB_multi_bind: INVALID_OPERATION if first+count >
+     * MAX_VERTEX_ATTRIB_BINDINGS (covers first >= limit when count > 0). */
+    if ((GLuint)count > 0u && first > limit - (GLuint)count) {
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
@@ -230,7 +232,7 @@ void mglVertexArrayVertexBuffers(GLMContext ctx, GLuint vaobj, GLuint first, GLs
 
     /* Pre-validate all entries before binding any (atomic per spec):
      * - GL_INVALID_OPERATION if any buffer is not zero or existing
-     * - GL_INVALID_VALUE if any offset or stride is negative */
+     * - GL_INVALID_VALUE if any offset or stride is negative / too large */
     if (buffers)
     {
         for (int i = 0; i < count; i++)
@@ -245,6 +247,10 @@ void mglVertexArrayVertexBuffers(GLMContext ctx, GLuint vaobj, GLuint first, GLs
                 return;
             }
             if (strides[i] < 0) {
+                ERROR_RETURN(GL_INVALID_VALUE);
+                return;
+            }
+            if ((GLuint)strides[i] > mglVertexAttribStrideLimit(ctx)) {
                 ERROR_RETURN(GL_INVALID_VALUE);
                 return;
             }

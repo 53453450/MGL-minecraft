@@ -510,11 +510,15 @@ void setVertexAttrib(GLMContext ctx,
     VertexArray *vao;
     Buffer *array_buffer;
     GLintptr relativeoffset;
+    GLsizei api_stride = stride;
+    GLsizei fetch_stride = stride;
 
-    if (stride == 0)
-        stride = genStrideFromTypeSize(type, size);
+    /* Queryable VERTEX_ATTRIB_ARRAY_STRIDE keeps the API value (including 0).
+     * Binding-table stride used for fetch expands 0 to tightly-packed size. */
+    if (fetch_stride == 0)
+        fetch_stride = genStrideFromTypeSize(type, size);
 
-    ERROR_CHECK_RETURN(stride, GL_INVALID_ENUM);
+    ERROR_CHECK_RETURN(fetch_stride, GL_INVALID_ENUM);
     vao = mglGetSafeCurrentVAO(ctx, __FUNCTION__);
     ERROR_CHECK_RETURN(vao, GL_INVALID_OPERATION);
     array_buffer = STATE(buffers[_ARRAY_BUFFER]);
@@ -527,14 +531,14 @@ void setVertexAttrib(GLMContext ctx,
         attrib->normalized == (GLuint)normalized &&
         attrib->integer == integer &&
         attrib->long_attribute == long_attribute &&
-        attrib->stride == (GLuint)stride &&
+        attrib->stride == (GLuint)api_stride &&
         attrib->binding_offset == relativeoffset &&
         attrib->buffer_bindingindex == index &&
         attrib->buffer == array_buffer &&
         (index >= MGL_MAX_VERTEX_ATTRIB_BINDINGS ||
          (vao->bindings[index].buffer == array_buffer &&
           vao->bindings[index].offset == relativeoffset &&
-          vao->bindings[index].stride == stride)))
+          vao->bindings[index].stride == fetch_stride)))
     {
         return;
     }
@@ -546,7 +550,7 @@ void setVertexAttrib(GLMContext ctx,
     attrib->normalized = normalized;
     attrib->integer = integer;
     attrib->long_attribute = long_attribute;
-    attrib->stride = stride;
+    attrib->stride = api_stride;
     attrib->relativeoffset = 0;
     attrib->binding_offset = relativeoffset;
     attrib->buffer_bindingindex = index;
@@ -554,7 +558,7 @@ void setVertexAttrib(GLMContext ctx,
     if (index < MGL_MAX_VERTEX_ATTRIB_BINDINGS) {
         vao->bindings[index].buffer = array_buffer;
         vao->bindings[index].offset = relativeoffset;
-        vao->bindings[index].stride = stride;
+        vao->bindings[index].stride = fetch_stride;
     }
 
     vao->dirty_bits |= DIRTY_VAO_ATTRIB;
@@ -853,7 +857,9 @@ void mglVertexArrayElementBuffer(GLMContext ctx, GLuint vaobj, GLuint buffer)
     }
 
     buf_ptr = findBuffer(ctx, buffer);
-    ERROR_CHECK_RETURN(buf_ptr, GL_INVALID_VALUE);
+    /* GL 4.6: INVALID_OPERATION if buffer is not zero and not an existing
+     * buffer object (IsBuffer). */
+    ERROR_CHECK_RETURN(buf_ptr, GL_INVALID_OPERATION);
 
     if (ptr->element_array.buffer != buf_ptr) {
         mglFlushPendingDrawsForVertexArray(ctx, ptr);
@@ -917,29 +923,42 @@ void setAttribFormat(GLMContext ctx, VertexArray *vao, GLuint attribindex, GLint
     ERROR_CHECK_RETURN(attribindex < MAX_ATTRIBS, GL_INVALID_VALUE);
     ERROR_CHECK_RETURN(relativeoffset <= ctx->state.var.max_vertex_attrib_relative_offset, GL_INVALID_VALUE);
 
-    switch(type)
-    {
-        case GL_INT_2_10_10_10_REV:
-        case GL_UNSIGNED_INT_2_10_10_10_REV:
-        case GL_UNSIGNED_INT_10F_11F_11F_REV:
-            ERROR_CHECK_RETURN(size == 1, GL_INVALID_VALUE);
-            break;
+    /* GL_BGRA is an allowed size for certain packed types (INVALID_OPERATION
+     * when mismatched — not INVALID_VALUE). */
+    if (size == GL_BGRA) {
+        ERROR_CHECK_RETURN(normalized == GL_TRUE, GL_INVALID_OPERATION);
+        ERROR_CHECK_RETURN(type == GL_UNSIGNED_BYTE ||
+                           type == GL_INT_2_10_10_10_REV ||
+                           type == GL_UNSIGNED_INT_2_10_10_10_REV,
+                           GL_INVALID_OPERATION);
+    } else {
+        switch (type)
+        {
+            case GL_INT_2_10_10_10_REV:
+            case GL_UNSIGNED_INT_2_10_10_10_REV:
+                ERROR_CHECK_RETURN(size == 4, GL_INVALID_OPERATION);
+                break;
 
-        case GL_BYTE:
-        case GL_UNSIGNED_BYTE:
-        case GL_SHORT:
-        case GL_UNSIGNED_SHORT:
-        case GL_INT:
-        case GL_UNSIGNED_INT:
-        case GL_FIXED:
-        case GL_FLOAT:
-        case GL_HALF_FLOAT:
-        case GL_DOUBLE:
-            ERROR_CHECK_RETURN((size >= 1 && size <=4), GL_INVALID_VALUE);
-            break;
+            case GL_UNSIGNED_INT_10F_11F_11F_REV:
+                ERROR_CHECK_RETURN(size == 3, GL_INVALID_OPERATION);
+                break;
 
-        default:
-            ERROR_RETURN(GL_INVALID_ENUM);
+            case GL_BYTE:
+            case GL_UNSIGNED_BYTE:
+            case GL_SHORT:
+            case GL_UNSIGNED_SHORT:
+            case GL_INT:
+            case GL_UNSIGNED_INT:
+            case GL_FIXED:
+            case GL_FLOAT:
+            case GL_HALF_FLOAT:
+            case GL_DOUBLE:
+                ERROR_CHECK_RETURN((size >= 1 && size <= 4), GL_INVALID_VALUE);
+                break;
+
+            default:
+                ERROR_RETURN(GL_INVALID_ENUM);
+        }
     }
 
     VertexAttrib *attrib = &vao->attrib[attribindex];
@@ -1252,7 +1271,7 @@ void mglGetVertexArrayIndexediv(GLMContext ctx, GLuint vaobj, GLuint index, GLen
         case GL_VERTEX_BINDING_OFFSET:
         case GL_VERTEX_BINDING_STRIDE:
         case GL_VERTEX_BINDING_DIVISOR:
-            if (index >= MAX_ATTRIBS) {
+            if (index >= MGL_MAX_VERTEX_ATTRIB_BINDINGS) {
                 ERROR_RETURN(GL_INVALID_VALUE);
                 return;
             }
@@ -1341,22 +1360,22 @@ void mglGetVertexArrayIndexed64iv(GLMContext ctx, GLuint vaobj, GLuint index, GL
         return;
     }
 
-    if (pname == GL_VERTEX_BINDING_OFFSET) {
-        VertexArray *ptr = getVAO(ctx, vaobj);
-        if (vaobj == 0u || !ptr) {
-            ERROR_RETURN(GL_INVALID_OPERATION);
-            return;
-        }
-        if (index >= MAX_ATTRIBS) {
-            ERROR_RETURN(GL_INVALID_VALUE);
-            return;
-        }
-
-        *param = (GLint64)ptr->bindings[index].offset;
+    /* Spec: only VERTEX_BINDING_OFFSET is accepted; all other pnames are
+     * INVALID_ENUM (do not forward to Indexediv — OFFSET+1 is BINDING_STRIDE). */
+    if (pname != GL_VERTEX_BINDING_OFFSET) {
+        ERROR_RETURN(GL_INVALID_ENUM);
         return;
     }
 
-    GLint value = 0;
-    mglGetVertexArrayIndexediv(ctx, vaobj, index, pname, &value);
-    *param = (GLint64)value;
+    VertexArray *ptr = getVAO(ctx, vaobj);
+    if (vaobj == 0u || !ptr) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+    if (index >= MGL_MAX_VERTEX_ATTRIB_BINDINGS) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    *param = (GLint64)ptr->bindings[index].offset;
 }
