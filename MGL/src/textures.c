@@ -67,6 +67,18 @@ extern bool getParam(GLMContext ctx, TextureParameter *tex_params, GLenum pname,
 extern GLint mglTexLevelCanonicalInternalFormat(GLint internalformat);
 extern bool mglTexLevelInternalFormatCompressed(GLint internalformat);
 extern GLint mglCompressedInternalFormatToSizedUncompressed(GLint internalformat);
+
+/* Spec default image-unit state: name=0, level=0, layered=FALSE, layer=0,
+ * access=GL_READ_ONLY, format=GL_R8. */
+static void mglResetImageUnit(ImageUnit *iu)
+{
+    if (!iu) {
+        return;
+    }
+    bzero(iu, sizeof(*iu));
+    iu->access = GL_READ_ONLY;
+    iu->internalformat = GL_R8;
+}
 extern GLint mglTexLevelComponentBits(GLint internalformat, GLenum pname);
 extern GLint mglTexLevelComponentType(GLint internalformat, GLenum pname);
 extern size_t mglPixelTypeDatumBytes(GLenum type);
@@ -863,7 +875,7 @@ void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint leve
     }
 
     if (texture == 0u) {
-        bzero(&ctx->state.image_units[unit], sizeof(ImageUnit));
+        mglResetImageUnit(&ctx->state.image_units[unit]);
         mglMarkStateDirtyBits(&ctx->state, DIRTY_IMAGE_UNIT_STATE);
         return;
     }
@@ -907,11 +919,10 @@ void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint leve
         return;
     }
 
-    if (ptr->internalformat != internalformat) {
-        fprintf(stderr, "MGL Error: mglBindImageTexture: internalformat mismatch (tex=0x%x req=0x%x)\n", ptr->internalformat, internalformat);
-        ERROR_RETURN(GL_INVALID_VALUE);
-        return;
-    }
+    /* Spec: an incompatible <format> vs texture internalformat makes image
+     * loads/stores undefined; it is not a BindImageTexture error. CTS
+     * basic-api-bind intentionally rebinds one R32F texture with RGBA8/RG16/
+     * R32I image formats. Keep the requested format on the image unit. */
 
     /* GL_TEXTURE_BUFFER has no mipmap faces/levels array; completeness is
      * tracked on tex->complete itself and only level==0 is valid per spec. */
@@ -1058,7 +1069,7 @@ void mglDeleteTextures(GLMContext ctx, GLsizei n, const GLuint *textures)
             {
                 if(ctx->state.image_units[i].texture == name)
                 {
-                    bzero(&ctx->state.image_units[i], sizeof(ImageUnit));
+                    mglResetImageUnit(&ctx->state.image_units[i]);
 
                     mglMarkStateDirtyBits(&ctx->state, DIRTY_IMAGE_UNIT_STATE);
                 }
@@ -1174,7 +1185,7 @@ void mglBindImageTextures(GLMContext ctx, GLuint first, GLsizei count, const GLu
     for (GLsizei i = 0; i < count; i++) {
         GLuint tex_name = textures ? textures[i] : 0u;
         if (tex_name == 0u) {
-            bzero(&ctx->state.image_units[first + i], sizeof(ImageUnit));
+            mglResetImageUnit(&ctx->state.image_units[first + i]);
             continue;
         }
 

@@ -1099,8 +1099,10 @@ static GLint mglSamplerUniformGLType(const MGLShaderResource *res, int res_type)
     }
 
     if (res_type == _STORAGE_IMAGE_RES) {
-        return (res->image_dim == MGL_IMAGE_DIM_BUFFER)
-            ? GL_INT_IMAGE_BUFFER : GL_INT_IMAGE_2D;
+        /* Prefer reflected gl_type (image1D / image2DMS / iimage2D / ...).
+         * Returning 0 lets mglProgramActiveUniformGLType use res->gl_type.
+         * Hardcoding INT_IMAGE_2D broke CTS GetActiveUniform for float images. */
+        return 0;
     }
 
     if (res_type == _SEPARATE_SAMPLERS_RES) {
