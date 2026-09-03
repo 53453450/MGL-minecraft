@@ -94,7 +94,6 @@ static uint32_t mglTessControlPointFormat(GLenum type)
 
 
     NSUInteger layoutStride[31] = {0};
-    bool attribsEnabledByApp = (vao->enabled_attribs != 0u);
     for (GLuint i = 0; i < maxAttribs; i++)
     {
         if (!mglRendererProgramUsesVertexAttrib(activeProgram, i)) {

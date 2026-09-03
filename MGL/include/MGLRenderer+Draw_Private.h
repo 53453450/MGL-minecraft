@@ -328,6 +328,8 @@ typedef struct {
                            alreadyDone:(const MGLResourceSyncWork *)done;
 - (bool)bindVertexBuffersToCurrentRenderEncoder:(const MGLEncodeContext *)encCtx;
 - (bool)bindFragmentBuffersToCurrentRenderEncoder:(const MGLEncodeContext *)encCtx;
+- (bool)bindStorageImagesForVertexProgram:(Program *)vertexProgram
+                          fragmentProgram:(Program *)fragmentProgram;
 - (bool)bindActiveTexturesToMTL;
 
 // === Dedup state management ===

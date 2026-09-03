@@ -1939,6 +1939,8 @@ int mglRenderBindingClearVertexBuffer(void *binding_state,
                                          uint32_t index);
 int mglRenderBindingClearFragmentBuffer(void *binding_state,
                                            uint32_t index);
+int mglRenderBindingClearFragmentTexture(void *binding_state,
+                                            uint32_t index);
 int mglRenderBindingGetBuffer(void *binding_state,
                                  uint32_t stage,
                                  uint32_t index,

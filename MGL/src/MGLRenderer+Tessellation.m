@@ -2480,7 +2480,14 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
             }
             if (primPerPatch == 0u) primPerPatch = 1u;
             if (pointMode) {
-                vertsPerPatch = primPerPatch;
+                /* GL point_mode: one point per tessellated vertex.  For
+                 * triangles with inner level 1 that is 3 corners, not the
+                 * 1×1 grid-cell count used for higher inner levels. */
+                if (genMode == GL_TRIANGLES && primPerPatch == 1u) {
+                    vertsPerPatch = 3u;
+                } else {
+                    vertsPerPatch = primPerPatch;
+                }
             } else if (genMode == GL_ISOLINES) {
                 vertsPerPatch = primPerPatch * 2u;
             } else {

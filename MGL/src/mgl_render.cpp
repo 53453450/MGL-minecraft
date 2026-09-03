@@ -8549,7 +8549,6 @@ uint32_t mglRenderTessEvalItemsPerPatch(
             return 0u;
         }
     }
-    (void)point_mode;
     if (gen_mode == GL_ISOLINES) {
         float e0 = *(const __fp16*)&tf->edge[0];
         float e1 = *(const __fp16*)&tf->edge[1];
@@ -8559,7 +8558,11 @@ uint32_t mglRenderTessEvalItemsPerPatch(
     }
     /* Quads/triangles compute expansion (point_mode and XFB-forced): one
      * work item per inner-grid cell.  Must match mgl_air_backend.cpp
-     * isTESCompute TessCoord decomposition. */
+     * isTESCompute TessCoord decomposition.
+     *
+     * GL 4.6 §11.2.2: triangles with all levels == 1 generate a single
+     * triangle (3 vertices).  point_mode emits each vertex as a point, so
+     * n==1 must produce 3 items (corners), not 1×1 grid centroid. */
     float i0 = *(const __fp16*)&tf->inside[0];
     if (i0 < 1.0f) i0 = 1.0f;
     if (gen_mode == GL_QUADS) {
@@ -8571,6 +8574,9 @@ uint32_t mglRenderTessEvalItemsPerPatch(
     {
         const uint32_t n =
             mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(i0));
+        if (point_mode && n == 1u) {
+            return 3u;
+        }
         return n * n;
     }
 }
@@ -11959,6 +11965,15 @@ int mglRenderBindingClearFragmentBuffer(void* binding_state,
     mgl::BindingState* state = static_cast<mgl::BindingState*>(binding_state);
     return state ? clearBufferSlot(state->fragmentBuffers,
                                    state->fragmentBufferOffsets, index, 0) : -1;
+}
+
+int mglRenderBindingClearFragmentTexture(void* binding_state,
+                                            uint32_t index) {
+    mgl::BindingState* state = static_cast<mgl::BindingState*>(binding_state);
+    if (!state || index >= state->fragmentTextures.size()) return -1;
+    mgl::BindingState::replaceObject(
+        state->fragmentTextures[index], static_cast<MTL::Texture*>(nullptr));
+    return 0;
 }
 
 int mglRenderBindingGetBuffer(void* binding_state,

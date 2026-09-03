@@ -2715,19 +2715,33 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     /* The GS compute dispatch ended the render encoder and processGLState
      * rebuilt it, but the dirty-domain resource sync may have been marked
      * done for the *previous* encoder. Rebind fragment-stage buffers
-     * (plain uniforms etc.) on the fresh encoder before the indirect
-     * draws, or the fragment shader reads unbound slots. */
+     * (plain uniforms etc.) and storage images on the fresh encoder before
+     * the indirect draws, or the fragment shader reads unbound slots. */
     if (!getenv("MGL_ABLATE_GS_REBIND")) {
         /* The binding-state dedup still reflects the pre-compute encoder;
-         * clear the fragment table so the rebind below is not skipped. */
+         * clear the fragment tables so the rebind below is not skipped. */
         for (uint32_t slot = 0u; slot < 31u; slot++)
             mglRenderBindingClearFragmentBuffer(_bindingStateOwner, slot);
+        const uint32_t texSlots = (uint32_t)TEXTURE_UNITS;
+        for (uint32_t slot = 0u; slot < texSlots; slot++)
+            mglRenderBindingClearFragmentTexture(_bindingStateOwner, slot);
         MGLEncodeContext gsEncCtx = {
             .render_encoder_owner =
                 _renderPassManager.state->currentRenderEncoderOwner,
         };
         [self bindFragmentBuffersToCurrentRenderEncoder:&gsEncCtx];
         [self bindBufferSizeConstantsForRenderEncoder];
+        Program *gsVertexProgram = mglResolveProgramForStageFromState(
+            drawCtx, _VERTEX_SHADER);
+        Program *gsFragmentProgram = mglResolveProgramForStageFromState(
+            drawCtx, _FRAGMENT_SHADER);
+        if (![self bindStorageImagesForVertexProgram:gsVertexProgram
+                                     fragmentProgram:gsFragmentProgram]) {
+            _geometry.expansionActive = NO;
+            _geometry.program = NULL;
+            drawCtx->state.dirty_bits = DIRTY_ALL;
+            return YES;
+        }
     }
     [self applyPolygonOffsetForDrawMode:gsOutputMode];
     if (getenv("MGL_SYNC_AFTER_GS")) {
@@ -3720,10 +3734,114 @@ after_gs_draws:
     if (nativeTES || airTES) {
         const BOOL indexedDraw = (indexType != 0u);
         if (indexedDraw && tcsProgram) {
-            /* TCS consumes the VS capture with continuous per-patch
-             * addressing; indexed (sparse) input needs a gather path in the
-             * TCS kernel, which is a separate follow-up. */
+            /* TCS reads continuous [patch][control_point] records.  Capture
+             * the VS into a sparse [vertex_id] buffer (runs VS atomics /
+             * transforms), then compact into patch order for the TCS kernel.
+             * Falling back to newTCSStageInBufferForContext would pack raw
+             * attributes and skip the VS entirely. */
             nativeTES = NO;
+            Buffer *ebo = getElementBuffer(drawCtx);
+            if (ebo && [self processBuffer:ebo] && ebo->data.mtl_data) {
+                id eboMetal = (__bridge id)ebo->data.mtl_data;
+                const NSUInteger indexOffsetBytes =
+                    (NSUInteger)(uintptr_t)indices;
+                const uint8_t *indexBytes = mglElementIndexSourceForDraw(
+                    ebo, eboMetal, indexType, indexOffsetBytes, count);
+                uint32_t *gatherArray = NULL;
+                uint32_t gatherCount = 0u;
+                uint32_t gatherPrimitives = 0u;
+                uint32_t gatherMaxIndex = 0u;
+                if (indexBytes &&
+                    mglGeometryGatherIndices(indexBytes, indexType, count,
+                                             baseVertex, restartEnabled,
+                                             restartIndex, patchVertices,
+                                             &gatherArray, &gatherCount,
+                                             &gatherPrimitives,
+                                             &gatherMaxIndex) &&
+                    gatherCount > 0u && gatherPrimitives > 0u) {
+                    NSUInteger captureOffset = 0u;
+                    id sparseCapture = [self
+                        captureAIRVertexPositionsForGeometryIndexed:drawCtx
+                                                        indexBuffer:eboMetal
+                                                          indexType:indexType
+                                                        indexOffset:indexOffsetBytes
+                                                              count:count
+                                                          baseVertex:baseVertex
+                                                       instanceCount:instanceCount
+                                                        baseInstance:baseInstance
+                                                           maxIndex:gatherMaxIndex
+                                                          outOffset:&captureOffset];
+                    Program *captureVS = mglResolveProgramForStageFromState(
+                        drawCtx, _VERTEX_SHADER);
+                    NSUInteger captureStride = captureVS
+                        ? mglAIRPerVertexStrideForResources(
+                              &captureVS->shader_resources_list[_VERTEX_SHADER]
+                                                               [_STAGE_OUTPUT_RES])
+                        : MGL_AIR_PER_VERTEX_STRIDE;
+                    if (captureStride < MGL_AIR_PER_VERTEX_STRIDE) {
+                        captureStride = MGL_AIR_PER_VERTEX_STRIDE;
+                    }
+                    const NSUInteger sparseRecords =
+                        (NSUInteger)gatherMaxIndex + 1u;
+                    const GLsizei instCount =
+                        instanceCount > 0 ? instanceCount : 1;
+                    NSUInteger continuousSize = 0u;
+                    NSUInteger continuousOffset = 0u;
+                    if (sparseCapture &&
+                        mglCheckedTessCaptureSize((GLsizei)gatherCount,
+                                                  instCount, captureStride,
+                                                  &continuousSize,
+                                                  &continuousOffset)) {
+                        (void)continuousOffset;
+                        _currentCBHasWork = YES;
+                        [self flushCommandBuffer:YES];
+                        const uint8_t *sparseBytes =
+                            (const uint8_t *)mglDrawSupportBufferContents(
+                                sparseCapture);
+                        id continuous = mglDrawSupportCreateBuffer(
+                            _device, continuousSize, 0u);
+                        uint8_t *continuousBytes = continuous
+                            ? (uint8_t *)mglDrawSupportBufferContents(
+                                  continuous)
+                            : NULL;
+                        if (sparseBytes && continuousBytes) {
+                            memset(continuousBytes, 0, continuousSize);
+                            for (GLsizei inst = 0; inst < instCount; inst++) {
+                                const NSUInteger sparseInstBase =
+                                    captureOffset +
+                                    (NSUInteger)inst * sparseRecords *
+                                        captureStride;
+                                const NSUInteger contInstBase =
+                                    (NSUInteger)inst * (NSUInteger)gatherCount *
+                                    captureStride;
+                                for (uint32_t gi = 0u; gi < gatherCount; gi++) {
+                                    const uint32_t vid = gatherArray[gi];
+                                    if ((NSUInteger)vid >= sparseRecords) {
+                                        continue;
+                                    }
+                                    memcpy(continuousBytes + contInstBase +
+                                               (NSUInteger)gi * captureStride,
+                                           sparseBytes + sparseInstBase +
+                                               (NSUInteger)vid * captureStride,
+                                           captureStride);
+                                }
+                            }
+                            (void)mglRendererBackendSetTessVertexCaptureBuffer(
+                                _backend, (__bridge void *)continuous);
+                            _tessellation.tessVertexCaptureOffset = 0u;
+                            _tessellation.tessIndexedDraw = NO;
+                            _tessellation.tessInstanceRecords =
+                                (NSUInteger)gatherCount;
+                            patchCount = gatherPrimitives;
+                            contract.patch_count = patchCount;
+                            contract.vertex_count = gatherCount;
+                        }
+                    }
+                    free(gatherArray);
+                } else {
+                    free(gatherArray);
+                }
+            }
         } else if (indexedDraw) {
             /* Indexed native TES (no TCS): capture the VS once into sparse
              * per-vertex records [instance][vertex_id] and let the CPU

@@ -5898,9 +5898,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             return cg.b->getInt32(0);
         }
         if (strncmp(name, "imageAtomic", 11) == 0) {
-            /* Emulate image atomics as read-modify-write via the same
-             * texture paths as imageLoad/Store.  Sufficient for CTS
-             * per-texel sequential RMW inside one invocation. */
+            /* Metal 3.1 texture atomics (air.atomic_fetch_*_explicit_texture_*).
+             * Emulated RMW races under parallel TES/GS/FS, so native atomics
+             * are required for multi-invocation CTS (advanced-allStages).
+             * CompSwap and multisample keep the RMW fallback. */
             const MGLExpr *ia = e->u.call.arg_count > 0
                 ? e->u.call.args[0] : nullptr;
             const MGLIRType *imgTy = nullptr;
@@ -5995,6 +5996,81 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 msSample = coerceScalar(cg, msSample, MGLIR_SCALAR_INT);
                 dataArg = 3u;
             }
+            llvm::Value *data =
+                emitExpr(cg, e->u.call.args[dataArg], mod, locals);
+            if (!data) return nullptr;
+            data = coerceScalar(cg, data,
+                                isUint ? MGLIR_SCALAR_UINT : MGLIR_SCALAR_INT);
+
+            /* Native Metal texture atomics exist for 1D/2D/3D/array/buffer;
+             * cube is unsupported on this GPU (falls back to RMW). MS and
+             * CompSwap also stay on the RMW path. */
+            const bool useNative =
+                !isCompSwap && !isMsImage &&
+                (tk == MGLIR_TEX_1D || tk == MGLIR_TEX_BUFFER ||
+                 tk == MGLIR_TEX_2D || tk == MGLIR_TEX_2D_RECT ||
+                 tk == MGLIR_TEX_1D_ARRAY || tk == MGLIR_TEX_2D_ARRAY ||
+                 tk == MGLIR_TEX_3D);
+            if (useNative) {
+                const char *opStem = nullptr;
+                if (strcmp(name, "imageAtomicAdd") == 0)
+                    opStem = "atomic_fetch_add";
+                else if (strcmp(name, "imageAtomicMin") == 0)
+                    opStem = "atomic_fetch_min";
+                else if (strcmp(name, "imageAtomicMax") == 0)
+                    opStem = "atomic_fetch_max";
+                else if (strcmp(name, "imageAtomicAnd") == 0)
+                    opStem = "atomic_fetch_and";
+                else if (strcmp(name, "imageAtomicOr") == 0)
+                    opStem = "atomic_fetch_or";
+                else if (strcmp(name, "imageAtomicXor") == 0)
+                    opStem = "atomic_fetch_xor";
+                else if (strcmp(name, "imageAtomicExchange") == 0)
+                    opStem = "atomic_exchange";
+                else {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: unsupported imageAtomic op";
+                    return nullptr;
+                }
+                llvm::Value *dataV4 = llvm::UndefValue::get(v4i32);
+                dataV4 = cg.b->CreateInsertElement(dataV4, data,
+                                                   cg.b->getInt32(0));
+                dataV4 = cg.b->CreateInsertElement(dataV4, cg.b->getInt32(0),
+                                                   cg.b->getInt32(1));
+                dataV4 = cg.b->CreateInsertElement(dataV4, cg.b->getInt32(0),
+                                                   cg.b->getInt32(2));
+                dataV4 = cg.b->CreateInsertElement(dataV4, cg.b->getInt32(0),
+                                                   cg.b->getInt32(3));
+                llvm::Value *zero2 = llvm::ConstantVector::get(
+                    {cg.b->getInt32(0), cg.b->getInt32(0)});
+                llvm::Value *zero3 = llvm::ConstantVector::get(
+                    {cg.b->getInt32(0), cg.b->getInt32(0), cg.b->getInt32(0)});
+                /* memory_order_relaxed=0, access::read_write=3 */
+                llvm::Value *order = cg.b->getInt32(0);
+                llvm::Value *access = cg.b->getInt32(3);
+                auto airName = [&](const char *dim) -> std::string {
+                    return std::string("air.") + opStem + "_explicit_" + dim +
+                           (isUint ? ".u.v4i32" : ".s.v4i32");
+                };
+                llvm::Value *oldV4 = nullptr;
+                if (tk == MGLIR_TEX_3D) {
+                    oldV4 = callAirFn(cg, airName("texture_3d").c_str(), v4i32,
+                                      {tex, coord3, zero3, dataV4, order,
+                                       access});
+                } else if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY) {
+                    oldV4 = callAirFn(
+                        cg, airName("texture_2d_array").c_str(), v4i32,
+                        {tex, coord2, layerOrFace, zero2, dataV4, order,
+                         access});
+                } else {
+                    /* 1D / buffer / 2D / rect — Metal 2D backing. */
+                    oldV4 = callAirFn(cg, airName("texture_2d").c_str(), v4i32,
+                                      {tex, coord2, zero2, dataV4, order,
+                                       access});
+                }
+                return cg.b->CreateExtractElement(oldV4, cg.b->getInt32(0));
+            }
+
             auto readName = [&](const char *base) -> std::string {
                 return std::string(base) +
                        (isUint ? ".u.v4i32" : ".s.v4i32");
@@ -6106,11 +6182,6 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             llvm::Value *oldVec = doRead();
             llvm::Value *old =
                 cg.b->CreateExtractElement(oldVec, cg.b->getInt32(0));
-            llvm::Value *data =
-                emitExpr(cg, e->u.call.args[dataArg], mod, locals);
-            if (!data) return nullptr;
-            data = coerceScalar(cg, data,
-                                isUint ? MGLIR_SCALAR_UINT : MGLIR_SCALAR_INT);
             llvm::Value *neu = nullptr;
             if (isCompSwap) {
                 llvm::Value *cmp = data;
@@ -12182,17 +12253,55 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 toF(ny));
         } else {
             /* point_mode triangles: one point per inner grid cell (n*n
-             * cells), at the up-triangle centroid. */
+             * cells), at the up-triangle centroid.  Exception: n==1 matches
+             * GL (single triangle → 3 corner points) so items={0,1,2} map
+             * to barycentric corners; see mglRenderTessEvalItemsPerPatch. */
             llvm::Value *n = roundLevel(ceilClamp(loadHalf(4), 1.0f));
-            llvm::Value *i = b.CreateURem(innerId, n);
-            llvm::Value *j = b.CreateUDiv(innerId, n);
-            llvm::Value *three = b.getInt32(3);
-            u = b.CreateFDiv(
-                toF(b.CreateAdd(b.CreateMul(three, i), b.getInt32(1))),
-                toF(b.CreateMul(three, n)));
-            v = b.CreateFDiv(
-                toF(b.CreateAdd(b.CreateMul(three, j), b.getInt32(1))),
-                toF(b.CreateMul(three, n)));
+            llvm::Value *isN1 = b.CreateICmpEQ(n, b.getInt32(1));
+            llvm::BasicBlock *triN1BB = llvm::BasicBlock::Create(
+                ctx, "tesk_tri_n1", kfn);
+            llvm::BasicBlock *triGridBB = llvm::BasicBlock::Create(
+                ctx, "tesk_tri_grid", kfn);
+            llvm::BasicBlock *triDoneBB = llvm::BasicBlock::Create(
+                ctx, "tesk_tri_uv", kfn);
+            b.CreateCondBr(isN1, triN1BB, triGridBB);
+            llvm::Value *uN1 = nullptr, *vN1 = nullptr;
+            llvm::Value *uGrid = nullptr, *vGrid = nullptr;
+            {
+                b.SetInsertPoint(triN1BB);
+                /* corners: (1,0,0), (0,1,0), (0,0,1) */
+                llvm::Value *c0 = b.CreateICmpEQ(innerId, b.getInt32(0));
+                llvm::Value *c1 = b.CreateICmpEQ(innerId, b.getInt32(1));
+                uN1 = b.CreateSelect(
+                    c0, llvm::ConstantFP::get(f32, 1.0),
+                    llvm::ConstantFP::get(f32, 0.0));
+                vN1 = b.CreateSelect(
+                    c1, llvm::ConstantFP::get(f32, 1.0),
+                    llvm::ConstantFP::get(f32, 0.0));
+                b.CreateBr(triDoneBB);
+            }
+            {
+                b.SetInsertPoint(triGridBB);
+                llvm::Value *i = b.CreateURem(innerId, n);
+                llvm::Value *j = b.CreateUDiv(innerId, n);
+                llvm::Value *three = b.getInt32(3);
+                uGrid = b.CreateFDiv(
+                    toF(b.CreateAdd(b.CreateMul(three, i), b.getInt32(1))),
+                    toF(b.CreateMul(three, n)));
+                vGrid = b.CreateFDiv(
+                    toF(b.CreateAdd(b.CreateMul(three, j), b.getInt32(1))),
+                    toF(b.CreateMul(three, n)));
+                b.CreateBr(triDoneBB);
+            }
+            b.SetInsertPoint(triDoneBB);
+            llvm::PHINode *uPhi = b.CreatePHI(f32, 2, "tesk_u");
+            llvm::PHINode *vPhi = b.CreatePHI(f32, 2, "tesk_v");
+            uPhi->addIncoming(uN1, triN1BB);
+            uPhi->addIncoming(uGrid, triGridBB);
+            vPhi->addIncoming(vN1, triN1BB);
+            vPhi->addIncoming(vGrid, triGridBB);
+            u = uPhi;
+            v = vPhi;
         }
         llvm::Value *uv = llvm::UndefValue::get(llvm::FixedVectorType::get(
             f32, 3));

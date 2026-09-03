@@ -23,6 +23,8 @@ enum {
     MGL_TEXTURE_CPU_CACHE_WRITE_COMBINED = 1u,
     MGL_TEXTURE_USAGE_SHADER_READ = 1u,
     MGL_TEXTURE_USAGE_SHADER_WRITE = 2u,
+    /* Matches MTLTextureUsageShaderAtomic (macOS 14+ / Metal 3.1). */
+    MGL_TEXTURE_USAGE_SHADER_ATOMIC = 0x20u,
     MGL_TEXTURE_USAGE_RENDER_TARGET = 4u,
     MGL_TEXTURE_USAGE_PIXEL_FORMAT_VIEW = 16u,
 };
@@ -5523,6 +5525,12 @@ static void mglTextureCopyTextureToBuffer(
             return nil;
     }
 
+    /* Metal 3.1 imageAtomic* requires ShaderAtomic on R32{U,S}int textures. */
+    if (pixelFormat == MGLPixelFormatR32Uint ||
+        pixelFormat == MGLPixelFormatR32Sint) {
+        tex_desc.usage |= MGL_TEXTURE_USAGE_SHADER_ATOMIC;
+    }
+
     if (tex->is_render_target)
     {
         tex_desc.usage |= MGL_TEXTURE_USAGE_RENDER_TARGET | MGL_TEXTURE_USAGE_SHADER_READ;
@@ -5854,13 +5862,20 @@ static void mglTextureCopyTextureToBuffer(
     mglTraceFormatBytes(sourceBytes, (size_t)MIN((NSUInteger)tex->texture_buffer_size, (NSUInteger)64), sourceHead, sizeof(sourceHead));
     mglTraceFormatBytes(uploadBytes, (size_t)MIN(packedBytes, (NSUInteger)64), uploadHead, sizeof(uploadHead));
 
+    uint64_t bufferUsage =
+        MGL_TEXTURE_USAGE_SHADER_READ | MGL_TEXTURE_USAGE_SHADER_WRITE;
+    /* imageAtomic* on iimageBuffer needs ShaderAtomic (R32I/R32UI). */
+    if (bufferPixelFormat == MGLPixelFormatR32Uint ||
+        bufferPixelFormat == MGLPixelFormatR32Sint) {
+        bufferUsage |= MGL_TEXTURE_USAGE_SHADER_ATOMIC;
+    }
     MGLRenderTextureDescriptorState bufferDesc = {
         .texture_type = MGLTextureType2D,
         .pixel_format = bufferPixelFormat,
         .width = texWidth, .height = texHeight, .depth = 1u,
         .mipmap_level_count = 1u, .sample_count = 1u, .array_length = 1u,
         /* imageStore requires ShaderWrite; sampling still needs ShaderRead. */
-        .usage = MGL_TEXTURE_USAGE_SHADER_READ | MGL_TEXTURE_USAGE_SHADER_WRITE,
+        .usage = bufferUsage,
     };
 
     id bufferTexture = nil;
