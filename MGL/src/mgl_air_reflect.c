@@ -610,10 +610,73 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
         return -1;
     }
 
-    /* Sampler bindings increment per sampler, matching the AIR metadata
-     * texture location indices. */
+    /* Sampler / image Metal texture slots must match AIR metadata order
+     * (sampled textures first, then storage images) — not GLSL declaration
+     * order.  CTS shaders often declare `image2D` before `sampler2D`; a
+     * single declaration-order walk swapped those slots and left
+     * texelFetch reading the image texture (black). */
     uint32_t texture_binding = 0;
     uint32_t sampler_binding = 0;
+    for (uint32_t pass = 0; pass < 2; pass++) {
+        for (uint32_t i = 0; i < mod->symbol_count; i++) {
+            const MGLIRSymbol *s = mod->symbols[i];
+            if (!s || s->is_function || !(s->qualifiers & MGL_AST_Q_UNIFORM))
+                continue;
+            if (s->name && strncmp(s->name, "gl_", 3) == 0 &&
+                s->location == UINT32_MAX)
+                continue;
+            const MGLIRType *t = s->type;
+            const MGLIRType *base_t = t;
+            while (base_t && base_t->kind == MGLIR_TYPE_ARRAY)
+                base_t = base_t->elem_type;
+            if (pass == 0) {
+                if (!base_t || base_t->kind != MGLIR_TYPE_SAMPLER)
+                    continue;
+                GLuint location =
+                    s->location != UINT32_MAX ? s->location : UINT32_MAX;
+                push_resource(&lists[_SAMPLED_IMAGE_RES], s, t, location,
+                              texture_binding, stage);
+                MGLShaderResource *last =
+                    &lists[_SAMPLED_IMAGE_RES]
+                         .list[lists[_SAMPLED_IMAGE_RES].count - 1];
+                if (s->binding != UINT32_MAX)
+                    last->gl_binding = s->binding;
+                last->resource_active = GL_TRUE;
+                last->has_combined_sampler = GL_TRUE;
+                last->combined_sampler_binding = sampler_binding;
+                last->uniform_location =
+                    (s->location != UINT32_MAX)
+                        ? (GLint)s->location
+                        : mglSyntheticSamplerUniformLocation(
+                              stage, _SAMPLED_IMAGE_RES, sampler_binding);
+                GLuint elements = mglAirGLArraySizeFromIR(t);
+                if (elements < 1u) elements = 1u;
+                texture_binding += elements;
+                sampler_binding += elements;
+            } else {
+                if (!base_t || base_t->kind != MGLIR_TYPE_IMAGE)
+                    continue;
+                GLuint location =
+                    s->location != UINT32_MAX ? s->location : UINT32_MAX;
+                push_resource(&lists[_STORAGE_IMAGE_RES], s, t, location,
+                              texture_binding, stage);
+                MGLShaderResource *last =
+                    &lists[_STORAGE_IMAGE_RES]
+                         .list[lists[_STORAGE_IMAGE_RES].count - 1];
+                last->sampler_unit = -1;
+                if (s->binding != UINT32_MAX)
+                    last->gl_binding = s->binding;
+                last->uniform_location =
+                    (s->location != UINT32_MAX)
+                        ? (GLint)s->location
+                        : mglSyntheticSamplerUniformLocation(
+                              stage, _STORAGE_IMAGE_RES, texture_binding);
+                GLuint elements = mglAirGLArraySizeFromIR(t);
+                if (elements < 1u) elements = 1u;
+                texture_binding += elements;
+            }
+        }
+    }
     /* Extra auto-location stride consumed by interface-block array
      * members (one location per element, see the Q_IN branch below). */
     uint32_t gs_input_span_pad = 0;
@@ -656,58 +719,10 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
         }
 
         if (q & MGL_AST_Q_UNIFORM) {
-            if (base_t && base_t->kind == MGLIR_TYPE_SAMPLER) {
-                push_resource(&lists[_SAMPLED_IMAGE_RES], s, t, location,
-                              texture_binding, stage);
-                MGLShaderResource *last =
-                    &lists[_SAMPLED_IMAGE_RES].list[
-                        lists[_SAMPLED_IMAGE_RES].count - 1];
-                if (s->binding != UINT32_MAX) {
-                    last->gl_binding = s->binding;
-                }
-                last->resource_active = GL_TRUE;
-                last->has_combined_sampler = GL_TRUE;
-                last->combined_sampler_binding = sampler_binding;
-                /* Sampler GL uniform locations live in the synthetic
-                 * namespace (mirrors the SPIRV-Cross-era path in
-                 * mglSamplerUniformLocationFromReflection) unless the GLSL
-                 * declares an explicit layout(location=N); otherwise MC's
-                 * glGetUniformLocation/glUniform1i sampler-unit setup
-                 * cannot target this resource. */
-                last->uniform_location =
-                    (s->location != UINT32_MAX)
-                        ? (GLint)s->location
-                        : mglSyntheticSamplerUniformLocation(
-                              stage, _SAMPLED_IMAGE_RES, sampler_binding);
-                GLuint elements = mglAirGLArraySizeFromIR(t);
-                if (elements < 1u) elements = 1u;
-                texture_binding += elements;
-                sampler_binding += elements;
+            /* Samplers / images already pushed above (AIR slot order). */
+            if (base_t && (base_t->kind == MGLIR_TYPE_SAMPLER ||
+                           base_t->kind == MGLIR_TYPE_IMAGE))
                 continue;
-            }
-            if (base_t && base_t->kind == MGLIR_TYPE_IMAGE) {
-                push_resource(&lists[_STORAGE_IMAGE_RES], s, t, location,
-                              texture_binding, stage);
-                MGLShaderResource *last =
-                    &lists[_STORAGE_IMAGE_RES].list[
-                        lists[_STORAGE_IMAGE_RES].count - 1];
-                last->sampler_unit = -1;
-                if (s->binding != UINT32_MAX) {
-                    last->gl_binding = s->binding;
-                }
-                /* Same synthetic location namespace as samplers so
-                 * glGetUniformLocation + glUniform1i can set the image unit
-                 * when layout(binding=) is omitted (e.g. CTS WriteMS). */
-                last->uniform_location =
-                    (s->location != UINT32_MAX)
-                        ? (GLint)s->location
-                        : mglSyntheticSamplerUniformLocation(
-                              stage, _STORAGE_IMAGE_RES, texture_binding);
-                GLuint elements = mglAirGLArraySizeFromIR(t);
-                if (elements < 1u) elements = 1u;
-                texture_binding += elements;
-                continue;
-            }
             if (base_t && base_t->kind == MGLIR_TYPE_ATOMIC_COUNTER) {
                 push_resource(&lists[_ATOMIC_COUNTER_RES], s, t, location,
                               ac_binding++, stage);

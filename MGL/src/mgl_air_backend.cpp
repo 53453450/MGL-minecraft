@@ -239,6 +239,9 @@ struct Codegen {
     std::map<std::string, llvm::Value *> smpValues;  /* sampler name -> sampler */
     std::map<std::string, std::vector<llvm::Value *>> texArrayValues;
     std::map<std::string, std::vector<llvm::Value *>> smpArrayValues;
+    /* Stage outputs living in entry-block allocas so user functions can
+     * write them through hidden pointer args (SET_RESULT→helper pattern). */
+    std::map<std::string, llvm::Value *> outPtrs;
     std::map<std::string, uint32_t> bufferOffsets;  /* uniform name -> byte offset */
     std::map<std::string, llvm::Value *> lvalues;   /* register values */
     std::vector<VarSym *> varyings;      /* vertex out / fragment in, decl order */
@@ -249,6 +252,10 @@ struct Codegen {
     std::vector<llvm::Type *> retElems;  /* VS struct fields (incl. position) */
     std::vector<VarSym> *auxSyms = nullptr;  /* all stage symbols (frag output) */
     std::map<std::string, llvm::Function *> *userFns = nullptr;
+    std::map<std::string, uint32_t> *userFnHidden = nullptr;
+    std::map<std::string, MGLDecl *> *userFnDecls = nullptr;
+    bool userFnPassCull = false;
+    bool userFnPassClip = false;
     /* Named user struct types from the TU (`struct S { … };`), used for
      * S(...) / S[](...) constructors and local member ExtractValue. */
     std::map<std::string, MGLIRType *> structTypes;
@@ -261,6 +268,16 @@ struct Codegen {
 };
 
 /* ---- type helpers ---------------------------------------------------- */
+
+/* Persist a stage-output write into the entry-block alloca (if any) so
+ * subsequent user-function calls and assembleReturn observe it. */
+static void storeStageOut(Codegen &cg, const char *name, llvm::Value *v)
+{
+    if (!name || !v) return;
+    auto it = cg.outPtrs.find(name);
+    if (it == cg.outPtrs.end()) return;
+    cg.b->CreateStore(v, it->second);
+}
 
 bool scalarIsFloat(MGLIRScalar s) {
     return s == MGLIR_SCALAR_FLOAT || s == MGLIR_SCALAR_DOUBLE ||
@@ -346,6 +363,14 @@ llvm::Type *llvmScalar(MGLIRScalar s, llvm::LLVMContext &ctx) {
     case MGLIR_SCALAR_DOUBLE: return llvm::Type::getInt64Ty(ctx);
     default:                return llvm::Type::getFloatTy(ctx);
     }
+}
+
+/* Sema stores void returns as a non-NULL SCALAR_VOID type, not a null
+ * pointer — callers must not treat "return_type != NULL" as non-void. */
+static bool irTypeIsVoid(const MGLIRType *t)
+{
+    return !t || (t->kind == MGLIR_TYPE_SCALAR &&
+                  t->scalar == MGLIR_SCALAR_VOID);
 }
 
 /* Natural align for a buffer leaf load/store of LLVM type `t`. */
@@ -4721,6 +4746,9 @@ static llvm::Value *emitBlockMemberChain(Codegen &cg, const MGLExpr *e,
     return v;
 }
 
+void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
+              std::map<std::string, MType> *locals);
+
 llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                       const std::map<std::string, MType> &locals) {
     switch (e->kind) {
@@ -7544,19 +7572,74 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             }
         }
         /* User-defined function call. */
-        if (cg.userFns) {
+        if (cg.userFns || cg.userFnDecls) {
             std::string key = std::string(name) + "#" +
                               std::to_string(e->u.call.arg_count);
+            /* GS/TCS/compute void helpers are inlined into the caller so
+             * out/image writes share the caller's resource bindings. */
+            if ((cg.isGeometry || cg.isCompute || cg.isTessControl) &&
+                cg.userFnDecls) {
+                auto dit = cg.userFnDecls->find(key);
+                if (dit != cg.userFnDecls->end() && dit->second &&
+                    dit->second->body) {
+                    /* Prefer LLVM call for non-void helpers. */
+                    if (!(cg.userFns && cg.userFns->count(key))) {
+                    MGLDecl *fd = dit->second;
+                    std::map<std::string, MType> ilocals = locals;
+                    std::map<std::string, llvm::Value *> saved;
+                    for (uint32_t a = 0; a < fd->param_count &&
+                                        a < e->u.call.arg_count; a++) {
+                        MGLDecl *pd = fd->params[a];
+                        if (!pd || !pd->name) continue;
+                        llvm::Value *av =
+                            emitExpr(cg, e->u.call.args[a], mod, locals);
+                        if (!av) return nullptr;
+                        MType pt;
+                        pt.scalar = (MGLIRScalar)(pd->type ? pd->type->base
+                                                           : MGL_AST_TYPE_FLOAT);
+                        if (pd->type && pd->type->vec_size)
+                            pt.vec = pd->type->vec_size;
+                        if (pd->type && pd->type->mat_cols > 1) {
+                            pt.cols = pd->type->mat_cols;
+                            pt.rows = pd->type->mat_rows;
+                        }
+                        av = coerceScalar(cg, av, pt.scalar);
+                        if (cg.lvalues.count(pd->name))
+                            saved[pd->name] = cg.lvalues[pd->name];
+                        cg.lvalues[pd->name] = av;
+                        ilocals[pd->name] = pt;
+                    }
+                    emitStmt(cg, fd->body, mod, &ilocals);
+                    for (uint32_t a = 0; a < fd->param_count; a++) {
+                        MGLDecl *pd = fd->params[a];
+                        if (!pd || !pd->name) continue;
+                        auto sit = saved.find(pd->name);
+                        if (sit != saved.end())
+                            cg.lvalues[pd->name] = sit->second;
+                        else
+                            cg.lvalues.erase(pd->name);
+                    }
+                    if (cg.err == 1) return nullptr;
+                    /* Inlined void call: no useful return value. */
+                    return llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(*cg.ctx), 0);
+                    }
+                }
+            }
+            if (!cg.userFns) {
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: call to '") + name +
+                            "' not implemented in M1";
+                return nullptr;
+            }
             auto fit = cg.userFns->find(key);
             if (fit != cg.userFns->end()) {
-                uint64_t hidden = cg.uboPtrs.size() + cg.ssboPtrs.size() +
-                                  cg.acPtrs.size() +
-                                  (cg.bufferSizePtr ? 1u : 0u) +
-                                  (cg.lvalues.count("gl_CullDistance") ? 1u
-                                                                       : 0u) +
-                                  (cg.lvalues.count("gl_ClipDistance") ? 1u
-                                                                       : 0u) +
-                                  (cg.isGeometry ? 8u : 0u);
+                uint64_t hidden = 0;
+                if (cg.userFnHidden) {
+                    auto hit = cg.userFnHidden->find(key);
+                    if (hit != cg.userFnHidden->end())
+                        hidden = hit->second;
+                }
                 if (e->u.call.arg_count + hidden !=
                     fit->second->arg_size()) {
                     cg.err = 1;
@@ -7597,9 +7680,9 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     args.push_back(kv.second);
                 if (cg.bufferSizePtr)
                     args.push_back(cg.bufferSizePtr);
-                if (cg.lvalues.count("gl_CullDistance"))
+                if (cg.userFnPassCull)
                     args.push_back(cg.lvalues["gl_CullDistance"]);
-                if (cg.lvalues.count("gl_ClipDistance"))
+                if (cg.userFnPassClip)
                     args.push_back(cg.lvalues["gl_ClipDistance"]);
                 if (cg.isGeometry) {
                     args.push_back(cg.geometryInputPtr);
@@ -7611,7 +7694,42 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     args.push_back(cg.geometryPrimitiveId);
                     args.push_back(cg.geometryInvocationId);
                 }
-                return cg.b->CreateCall(fit->second, args);
+                if (cg.isTessControl) {
+                    args.push_back(cg.stageInPtr);
+                    args.push_back(cg.tessFactorPtr);
+                    args.push_back(cg.stageOutPtr);
+                    args.push_back(cg.indirectPtr);
+                    args.push_back(cg.invocationPos);
+                    args.push_back(cg.patchPos);
+                }
+                if (cg.isCompute && cg.threadPos)
+                    args.push_back(cg.threadPos);
+                if (!cg.isGeometry && !cg.isTessControl) {
+                    for (const auto &kv : cg.texValues)
+                        args.push_back(kv.second);
+                    for (const auto &kv : cg.smpValues)
+                        args.push_back(kv.second);
+                    for (const auto &kv : cg.texArrayValues)
+                        for (llvm::Value *tv : kv.second)
+                            args.push_back(tv);
+                    for (const auto &kv : cg.smpArrayValues)
+                        for (llvm::Value *sv : kv.second)
+                            args.push_back(sv);
+                }
+                if (cg.bufferPtr)
+                    args.push_back(cg.bufferPtr);
+                for (const auto &kv : cg.outPtrs)
+                    args.push_back(kv.second);
+                llvm::Value *call = cg.b->CreateCall(fit->second, args);
+                /* Pull stage outputs written by the callee back into the
+                 * caller's SSA map. */
+                for (const auto &kv : cg.outPtrs) {
+                    auto *ai = llvm::dyn_cast<llvm::AllocaInst>(kv.second);
+                    if (!ai) continue;
+                    cg.lvalues[kv.first] =
+                        cg.b->CreateLoad(ai->getAllocatedType(), kv.second);
+                }
+                return call;
             }
         }
         cg.err = 1;
@@ -8095,6 +8213,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             }
             cg.position.written = true;
             cg.lvalues[name] = v;
+            storeStageOut(cg, name, v);
             if (diagAssign)
                 fprintf(stderr, "MGL GS ASSIGN gl_Position rhs=%s typeId=%u block=%s\n",
                         v->getName().str().c_str(),
@@ -8105,6 +8224,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         if (strcmp(name, "gl_PointSize") == 0) {
             cg.pointSize = true;
             cg.lvalues[name] = coerceScalar(cg, v, MGLIR_SCALAR_FLOAT);
+            storeStageOut(cg, name, cg.lvalues[name]);
             return v;
         }
         if (strcmp(name, "gl_PrimitiveID") == 0) {
@@ -8114,18 +8234,21 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             }
             cg.primitiveIdWritten = true;
             cg.lvalues[name] = coerceScalar(cg, v, MGLIR_SCALAR_INT);
+            storeStageOut(cg, name, cg.lvalues[name]);
             return v;
         }
         if (strcmp(name, "gl_Layer") == 0 ||
             strcmp(name, "gl_ViewportIndex") == 0) {
             cg.layerViewport = true;
             cg.lvalues[name] = coerceScalar(cg, v, MGLIR_SCALAR_INT);
+            storeStageOut(cg, name, cg.lvalues[name]);
             return v;
         }
         if (strcmp(name, "gl_FragDepth") == 0) {
             /* Fragment depth output; carried in the struct return (see
              * assembleReturn).  Unwritten paths keep 1.0. */
             cg.lvalues[name] = coerceScalar(cg, v, MGLIR_SCALAR_FLOAT);
+            storeStageOut(cg, name, cg.lvalues[name]);
             return v;
         }
         auto lit = locals.find(name);
@@ -8147,6 +8270,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             return v;
         }
         cg.lvalues[name] = v;
+        storeStageOut(cg, name, v);
         return v;
     }
     case MGL_EXPR_TERNARY: {
@@ -12212,13 +12336,63 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     cg.fragOutputs = fragOutputs;
     cg.auxSyms = &syms;
 
+    /* Stage-output allocas in main's entry so helpers can write them. */
+    {
+        auto addOut = [&](const std::string &name, const MType &ty) {
+            if (name.empty() || cg.outPtrs.count(name)) return;
+            cg.outPtrs[name] =
+                cg.b->CreateAlloca(llvmType(ty, ctx), nullptr, name + ".out");
+        };
+        for (VarSym &v : syms) {
+            /* TCS per-vertex outs go through stageOutPtr.
+             * GS compute kernels reject alloca pointers as callee args
+             * (materializeAll); GS helpers write outs via geometry ABI
+             * only when called from main after inlining would be needed.
+             * Prefer SSA outPtrs for raster stages. */
+            if (isTCS && v.kind == VarSym::OUTPUT) continue;
+            if (isGS && v.kind == VarSym::OUTPUT) continue;
+            bool isStageOut =
+                ((isVS || isTES) && v.kind == VarSym::VARYING) ||
+                (!isVS && !isTES && !isTCS && !isGS && !isKernel &&
+                 v.kind == VarSym::OUTPUT);
+            if (isStageOut) addOut(v.name, v.type);
+        }
+        if ((isVS || isTES || isTESCompute) && !isGS) {
+            MType pos;
+            pos.scalar = MGLIR_SCALAR_FLOAT;
+            pos.vec = 4;
+            addOut("gl_Position", pos);
+        }
+        if (usesFragDepth) {
+            MType d;
+            d.scalar = MGLIR_SCALAR_FLOAT;
+            addOut("gl_FragDepth", d);
+        }
+    }
+
+    /* Freeze which builtins are threaded into user functions so call
+     * sites cannot drift from the signature if main later materializes
+     * extra lvalues. */
+    cg.userFnPassCull = cg.lvalues.count("gl_CullDistance") != 0;
+    cg.userFnPassClip = cg.lvalues.count("gl_ClipDistance") != 0;
+
     /* User-defined functions (fog helpers etc.): create the LLVM
      * functions first so calls (including recursion) resolve, then emit
      * their bodies. */
     std::map<std::string, llvm::Function *> userFns;
+    std::map<std::string, uint32_t> userFnHidden;
+    std::map<std::string, MGLDecl *> userFnDecls;
     for (uint32_t i = 0; i < tu->decl_count; i++) {
         MGLDecl *d = tu->decls[i];
         if (!d->name || !d->body || strcmp(d->name, "main") == 0) continue;
+        /* GS/TCS/compute void helpers are inlined at call sites (Metal
+         * rejects some texture/alloca/stage-buffer calling conventions on
+         * compute callees).  Non-void helpers still get an LLVM function. */
+        if (isGS || isCompute || isTCS) {
+            std::string key = std::string(d->name) + "#" +
+                              std::to_string(d->param_count);
+            userFnDecls[key] = d;
+        }
         const MGLIRSymbol *fs = nullptr;
         for (uint32_t k = 0; k < mod.symbol_count; k++) {
             if (mod.symbols[k]->is_function &&
@@ -12229,9 +12403,12 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             }
         }
         if (!fs) continue;
-        llvm::Type *rt = fs->return_type
-            ? llvmType(typeFromIR(fs->return_type), ctx)
-            : llvm::Type::getVoidTy(ctx);
+        /* Void GS/TCS/compute helpers: inline only (no LLVM callee). */
+        if ((isGS || isCompute || isTCS) && irTypeIsVoid(fs->return_type))
+            continue;
+        llvm::Type *rt = irTypeIsVoid(fs->return_type)
+            ? llvm::Type::getVoidTy(ctx)
+            : llvmType(typeFromIR(fs->return_type), ctx);
         std::vector<llvm::Type *> pts;
         for (uint32_t p = 0; p < fs->param_count; p++) {
             const MGLIRType *pt = fs->param_types[p];
@@ -12245,6 +12422,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 pts.push_back(llvmType(typeFromIR(pt), ctx));
             }
         }
+        const uint32_t nExplicit = (uint32_t)pts.size();
         /* Hidden trailing arguments: UBO values (a pointer for a scalar block,
          * an aggregate of pointers for an instance array) and SSBO pointers,
          * so user functions can read global blocks of their own. */
@@ -12256,9 +12434,9 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             pts.push_back(llvm::Type::getInt8PtrTy(ctx, 1));
         if (cg.bufferSizePtr)
             pts.push_back(llvm::Type::getInt32PtrTy(ctx, 2));
-        if (cg.lvalues.count("gl_CullDistance"))
+        if (cg.userFnPassCull)
             pts.push_back(cg.lvalues["gl_CullDistance"]->getType());
-        if (cg.lvalues.count("gl_ClipDistance"))
+        if (cg.userFnPassClip)
             pts.push_back(cg.lvalues["gl_ClipDistance"]->getType());
         if (isGS) {
             for (int hidden = 0; hidden < 5; hidden++)
@@ -12266,14 +12444,46 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             for (int hidden = 0; hidden < 3; hidden++)
                 pts.push_back(llvm::Type::getInt32Ty(ctx));
         }
+        if (isTCS) {
+            /* stage_in, tess factors, stage_out, indirect, invocation, patch */
+            for (int hidden = 0; hidden < 4; hidden++)
+                pts.push_back(llvm::Type::getInt8PtrTy(ctx, 1));
+            pts.push_back(llvm::FixedVectorType::get(
+                llvm::Type::getInt32Ty(ctx), 3));
+            pts.push_back(llvm::FixedVectorType::get(
+                llvm::Type::getInt32Ty(ctx), 3));
+        }
+        if (isCompute && cg.threadPos)
+            pts.push_back(cg.threadPos->getType());
+        /* Texture/sampler handles as non-entry args are rejected by the
+         * Metal GS/TCS compute pipeline loader (materializeAll).  Regular
+         * compute and raster stages accept them. */
+        if (!isGS && !isTCS) {
+            for (const auto &kv : cg.texValues)
+                pts.push_back(kv.second->getType());
+            for (const auto &kv : cg.smpValues)
+                pts.push_back(kv.second->getType());
+            for (const auto &kv : cg.texArrayValues)
+                for (llvm::Value *tv : kv.second)
+                    pts.push_back(tv->getType());
+            for (const auto &kv : cg.smpArrayValues)
+                for (llvm::Value *sv : kv.second)
+                    pts.push_back(sv->getType());
+        }
+        if (cg.bufferPtr)
+            pts.push_back(cg.bufferPtr->getType());
+        for (const auto &kv : cg.outPtrs)
+            pts.push_back(kv.second->getType());
+        std::string key = std::string(d->name) + "#" +
+                          std::to_string(fs->param_count);
+        userFnHidden[key] = (uint32_t)pts.size() - nExplicit;
         llvm::Function *f = llvm::Function::Create(
             llvm::FunctionType::get(rt, pts, false),
             llvm::Function::ExternalLinkage,
             (std::string("mgl_fn_") + d->name + "_" +
              std::to_string(fs->param_count)),
             &module);
-        userFns[std::string(d->name) + "#" + std::to_string(fs->param_count)] =
-            f;
+        userFns[key] = f;
     }
     for (uint32_t i = 0; i < tu->decl_count; i++) {
         MGLDecl *d = tu->decls[i];
@@ -12338,11 +12548,15 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         fc.acPtrs = cg.acPtrs;
         fc.acSlots = cg.acSlots;
         fc.uboPtrs = cg.uboPtrs;
-        fc.texValues = cg.texValues;
-        fc.smpValues = cg.smpValues;
+        /* tex/smp/outPtrs rebound from hidden args below — do not copy
+         * main's Argument* values (illegal cross-function use). */
         fc.bufferOffsets = cg.bufferOffsets;
         fc.position = cg.position;
         fc.userFns = &userFns;
+        fc.userFnHidden = &userFnHidden;
+        fc.userFnDecls = &userFnDecls;
+        fc.userFnPassCull = cg.userFnPassCull;
+        fc.userFnPassClip = cg.userFnPassClip;
         std::map<std::string, MType> flocals;
         for (uint32_t p = 0; p < d->param_count; p++) {
             MGLDecl *pd = d->params[p];
@@ -12390,9 +12604,9 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 fc.acPtrs[kv.first] = f->getArg(hidx++);
             if (cg.bufferSizePtr)
                 fc.bufferSizePtr = f->getArg(hidx++);
-            if (cg.lvalues.count("gl_CullDistance"))
+            if (cg.userFnPassCull)
                 fc.lvalues["gl_CullDistance"] = f->getArg(hidx++);
-            if (cg.lvalues.count("gl_ClipDistance"))
+            if (cg.userFnPassClip)
                 fc.lvalues["gl_ClipDistance"] = f->getArg(hidx++);
             if (isGS) {
                 fc.geometryInputPtr = f->getArg(hidx++);
@@ -12404,6 +12618,43 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 fc.geometryPrimitiveId = f->getArg(hidx++);
                 fc.geometryInvocationId = f->getArg(hidx++);
             }
+            if (isTCS) {
+                fc.stageInPtr = f->getArg(hidx++);
+                fc.tessFactorPtr = f->getArg(hidx++);
+                fc.stageOutPtr = f->getArg(hidx++);
+                fc.indirectPtr = f->getArg(hidx++);
+                fc.invocationPos = f->getArg(hidx++);
+                fc.patchPos = f->getArg(hidx++);
+            }
+            if (isCompute && cg.threadPos)
+                fc.threadPos = f->getArg(hidx++);
+            fc.texValues.clear();
+            fc.smpValues.clear();
+            fc.texArrayValues.clear();
+            fc.smpArrayValues.clear();
+            if (!isGS && !isTCS) {
+                for (const auto &kv : cg.texValues)
+                    fc.texValues[kv.first] = f->getArg(hidx++);
+                for (const auto &kv : cg.smpValues)
+                    fc.smpValues[kv.first] = f->getArg(hidx++);
+                for (const auto &kv : cg.texArrayValues) {
+                    std::vector<llvm::Value *> texes;
+                    for (size_t ti = 0; ti < kv.second.size(); ti++)
+                        texes.push_back(f->getArg(hidx++));
+                    fc.texArrayValues[kv.first] = std::move(texes);
+                }
+                for (const auto &kv : cg.smpArrayValues) {
+                    std::vector<llvm::Value *> smps;
+                    for (size_t si = 0; si < kv.second.size(); si++)
+                        smps.push_back(f->getArg(hidx++));
+                    fc.smpArrayValues[kv.first] = std::move(smps);
+                }
+            }
+            if (cg.bufferPtr)
+                fc.bufferPtr = f->getArg(hidx++);
+            fc.outPtrs.clear();
+            for (const auto &kv : cg.outPtrs)
+                fc.outPtrs[kv.first] = f->getArg(hidx++);
         }
         emitStmt(fc, d->body, &mod, &flocals);
         if (fc.err == 1) {
@@ -12425,6 +12676,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     }
 
     cg.userFns = &userFns;
+    cg.userFnHidden = &userFnHidden;
+    cg.userFnDecls = &userFnDecls;
     std::map<std::string, MType> locals;
     /* Global initializers (const arrays/scalars, default-block uniforms with
      * constant initializers such as `uniform vec4 g = vec4(1);`, and other

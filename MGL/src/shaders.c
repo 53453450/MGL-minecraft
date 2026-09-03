@@ -275,15 +275,27 @@ void mglShaderSource(GLMContext ctx, GLuint shader, GLsizei count, const GLchar 
     else
     {
         ERROR_CHECK_RETURN(string, GL_INVALID_VALUE);
+        ERROR_CHECK_RETURN(string[0], GL_INVALID_VALUE);
 
-        src = strdup(*string);
-        if (!src) {
-            mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
-            return;
+        /* Honor length[0] when provided (including for a single string).
+         * CTS line_continuation NON_NULL cases append ignored trailing
+         * text and pass an explicit length that excludes it. */
+        if (length && length[0] >= 0) {
+            len = (size_t)length[0];
+            ERROR_CHECK_RETURN(len, GL_INVALID_VALUE);
+            src = (GLchar *)malloc(len + 1);
+            ERROR_CHECK_RETURN(src, GL_OUT_OF_MEMORY);
+            memcpy(src, string[0], len);
+            src[len] = '\0';
+        } else {
+            src = strdup(string[0]);
+            if (!src) {
+                mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
+                return;
+            }
+            len = strlen(src);
+            ERROR_CHECK_RETURN(len, GL_INVALID_VALUE);
         }
-        len = strlen(src);
-
-        ERROR_CHECK_RETURN(len, GL_INVALID_VALUE);
     }
 
     ptr->src_len = len;
