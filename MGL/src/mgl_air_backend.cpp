@@ -7428,9 +7428,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                        sampleKind == MGLIR_TEX_2D_MS_ARRAY ||
                        sampleKind == MGLIR_TEX_1D_ARRAY) {
                 baseName = "air.sample_texture_2d_array.v4f32";
-            } else if (sampleKind == MGLIR_TEX_CUBE ||
-                       sampleKind == MGLIR_TEX_CUBE_ARRAY) {
+            } else if (sampleKind == MGLIR_TEX_CUBE) {
                 baseName = "air.sample_texture_cube.v4f32";
+            } else if (sampleKind == MGLIR_TEX_CUBE_ARRAY) {
+                baseName = "air.sample_texture_cube_array.v4f32";
             } else if (sampleKind == MGLIR_TEX_2D_MS) {
                 baseName = "air.sample_texture_2d_ms.v4f32";
             } else if (sampleKind == MGLIR_TEX_1D) {
@@ -7445,6 +7446,37 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                         cg.b->getInt32(1));
                     uv = expanded;
                 }
+            }
+            /* CTS (and some apps) pass vec3(0) into texture(samplerCube).
+             * Metal's cube sample of a zero direction returns black; pick +X. */
+            if ((sampleKind == MGLIR_TEX_CUBE ||
+                 sampleKind == MGLIR_TEX_CUBE_ARRAY) &&
+                uv->getType()->isVectorTy() &&
+                llvm::cast<llvm::FixedVectorType>(uv->getType())
+                        ->getNumElements() >= 3) {
+                llvm::Value *x =
+                    cg.b->CreateExtractElement(uv, cg.b->getInt32(0));
+                llvm::Value *y =
+                    cg.b->CreateExtractElement(uv, cg.b->getInt32(1));
+                llvm::Value *z =
+                    cg.b->CreateExtractElement(uv, cg.b->getInt32(2));
+                llvm::Value *len2 = cg.b->CreateFAdd(
+                    cg.b->CreateFMul(x, x),
+                    cg.b->CreateFAdd(cg.b->CreateFMul(y, y),
+                                     cg.b->CreateFMul(z, z)));
+                llvm::Value *isZero = cg.b->CreateFCmpOEQ(
+                    len2, llvm::ConstantFP::get(f32, 0.0));
+                llvm::Value *fallback = llvm::UndefValue::get(uv->getType());
+                fallback = cg.b->CreateInsertElement(
+                    fallback, llvm::ConstantFP::get(f32, 1.0),
+                    cg.b->getInt32(0));
+                fallback = cg.b->CreateInsertElement(
+                    fallback, llvm::ConstantFP::get(f32, 0.0),
+                    cg.b->getInt32(1));
+                fallback = cg.b->CreateInsertElement(
+                    fallback, llvm::ConstantFP::get(f32, 0.0),
+                    cg.b->getInt32(2));
+                uv = cg.b->CreateSelect(isZero, fallback, uv);
             }
             auto doSampleVec =
                 [&](llvm::Value *t, llvm::Value *s) -> llvm::Value * {
@@ -7461,13 +7493,29 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                            &arrayLayer)) {
                     return nullptr;
                 }
-                std::vector<llvm::Value *> sampleArgs = {
-                    t, sp, sampleCoord, cg.b->getInt1(true),
-                    sampleOffset,
-                    cg.b->getInt1(explicitLod),
-                    lod ? lod : llvm::ConstantFP::get(f32, 0.0),
-                    llvm::ConstantFP::get(f32, 0.0),
-                    cg.b->getInt32(0)};
+                /* Cube sample has no offset in AIR/MSL (texturecube.sample
+                 * takes coord + lod/bias only). Passing the 2D offset pair
+                 * makes Metal's PSO compiler abort. */
+                const bool cubeSample =
+                    sampleKind == MGLIR_TEX_CUBE ||
+                    sampleKind == MGLIR_TEX_CUBE_ARRAY;
+                std::vector<llvm::Value *> sampleArgs;
+                if (cubeSample) {
+                    sampleArgs = {
+                        t, sp, sampleCoord,
+                        cg.b->getInt1(explicitLod),
+                        lod ? lod : llvm::ConstantFP::get(f32, 0.0),
+                        llvm::ConstantFP::get(f32, 0.0),
+                        cg.b->getInt32(0)};
+                } else {
+                    sampleArgs = {
+                        t, sp, sampleCoord, cg.b->getInt1(true),
+                        sampleOffset,
+                        cg.b->getInt1(explicitLod),
+                        lod ? lod : llvm::ConstantFP::get(f32, 0.0),
+                        llvm::ConstantFP::get(f32, 0.0),
+                        cg.b->getInt32(0)};
+                }
                 if (arrayLayer) {
                     sampleArgs.insert(sampleArgs.begin() + 3, arrayLayer);
                 }
@@ -10224,6 +10272,54 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
     case MGL_STMT_WHILE:
     case MGL_STMT_FOR:
     case MGL_STMT_DO_WHILE: {
+        /* Unroll tiny constant for-loops of the form
+         *   for (T i = 0; i < N; ++i) ...
+         * with N <= 16.  CTS 420pack binding_*_array uses this pattern to
+         * index sampler/image arrays; keeping the loop makes Metal's
+         * compiler crash on TCS (nested switch+phi of samples inside SSA
+         * loop phis).  Unrolling yields constant indices → direct binds. */
+        if (st->kind == MGL_STMT_FOR && st->u.loop.cond && st->u.loop.body &&
+            st->u.loop.init && st->u.loop.init->kind == MGL_STMT_DECL &&
+            st->u.loop.init->u.decl.decl &&
+            st->u.loop.init->u.decl.decl->name &&
+            st->u.loop.init->u.decl.decl->init &&
+            st->u.loop.init->u.decl.decl->init->kind == MGL_EXPR_LITERAL &&
+            st->u.loop.init->u.decl.decl->init->u.literal.value == 0.0 &&
+            st->u.loop.cond->kind == MGL_EXPR_BINARY &&
+            st->u.loop.cond->u.binary.op == MGL_OP_LT &&
+            st->u.loop.cond->u.binary.lhs &&
+            st->u.loop.cond->u.binary.lhs->kind == MGL_EXPR_VAR_REF &&
+            st->u.loop.cond->u.binary.lhs->u.var_ref.name &&
+            strcmp(st->u.loop.cond->u.binary.lhs->u.var_ref.name,
+                   st->u.loop.init->u.decl.decl->name) == 0 &&
+            st->u.loop.cond->u.binary.rhs &&
+            st->u.loop.cond->u.binary.rhs->kind == MGL_EXPR_LITERAL) {
+            uint32_t trip =
+                (uint32_t)st->u.loop.cond->u.binary.rhs->u.literal.value;
+            const char *indName = st->u.loop.init->u.decl.decl->name;
+            bool incrOk = false;
+            if (st->u.loop.incr && st->u.loop.incr->kind == MGL_EXPR_UNARY &&
+                st->u.loop.incr->u.unary.op == MGL_OP_INC &&
+                st->u.loop.incr->u.unary.operand &&
+                st->u.loop.incr->u.unary.operand->kind == MGL_EXPR_VAR_REF &&
+                st->u.loop.incr->u.unary.operand->u.var_ref.name &&
+                strcmp(st->u.loop.incr->u.unary.operand->u.var_ref.name,
+                       indName) == 0) {
+                incrOk = true;
+            }
+            if (incrOk && trip > 0u && trip <= 16u) {
+                emitStmt(cg, st->u.loop.init, mod, locals);
+                if (cg.err) return;
+                MType indTy = (*locals)[indName];
+                for (uint32_t k = 0; k < trip; k++) {
+                    cg.lvalues[indName] = llvm::ConstantInt::get(
+                        llvmType(indTy, *cg.ctx), k, /*isSigned=*/true);
+                    emitStmt(cg, st->u.loop.body, mod, locals);
+                    if (cg.err) return;
+                }
+                break;
+            }
+        }
         /* SSA loop lowering: a phi for every live value is placed at the
          * condition block (while/for) or the body head (do-while); the
          * back-edge operand is filled in after the body/incr is emitted.
@@ -11723,14 +11819,18 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     for (VarSym &v : syms) {
         if (v.kind != VarSym::TEXTURE) continue;
         const MGLIRSymbol *ts = findSymbol(&mod, v.name.c_str());
-        MGLIRTexKind tk = ts && ts->type->kind == MGLIR_TYPE_SAMPLER
-            ? ts->type->tex_kind : MGLIR_TEX_2D;
-        llvm::StructType *tt = (tk == MGLIR_TEX_3D) ? texTy3d
-                             : (tk == MGLIR_TEX_2D_ARRAY ||
-                                tk == MGLIR_TEX_1D_ARRAY ||
-                                tk == MGLIR_TEX_2D_MS ||
-                                tk == MGLIR_TEX_2D_MS_ARRAY) ? texTy2dArray
-                             : texTy2d; /* TEX_BUFFER uses texture2d fallback */
+        const MGLIRType *st = ts ? ts->type : nullptr;
+        while (st && st->kind == MGLIR_TYPE_ARRAY)
+            st = st->elem_type;
+        MGLIRTexKind tk = st && st->kind == MGLIR_TYPE_SAMPLER
+            ? st->tex_kind : MGLIR_TEX_2D;
+        llvm::StructType *tt = texTy2d; /* TEX_BUFFER / 1D use texture2d */
+        if (tk == MGLIR_TEX_3D) tt = texTy3d;
+        else if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY ||
+                 tk == MGLIR_TEX_2D_MS || tk == MGLIR_TEX_2D_MS_ARRAY)
+            tt = texTy2dArray;
+        else if (tk == MGLIR_TEX_CUBE) tt = texTyCube;
+        else if (tk == MGLIR_TEX_CUBE_ARRAY) tt = texTyCubeArray;
         uint32_t elements = v.type.arr > 0 ? (uint32_t)v.type.arr : 1u;
         for (uint32_t k = 0; k < elements; k++) {
             paramTys.push_back(tt->getPointerTo(1));
@@ -13834,6 +13934,12 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                               samplerType->tex_kind == MGLIR_TEX_1D_ARRAY ||
                               samplerType->tex_kind == MGLIR_TEX_2D_MS ||
                               samplerType->tex_kind == MGLIR_TEX_2D_MS_ARRAY);
+            bool isCube = samplerType &&
+                          samplerType->kind == MGLIR_TYPE_SAMPLER &&
+                          samplerType->tex_kind == MGLIR_TEX_CUBE;
+            bool isCubeArray = samplerType &&
+                               samplerType->kind == MGLIR_TYPE_SAMPLER &&
+                               samplerType->tex_kind == MGLIR_TEX_CUBE_ARRAY;
             const char *texelName = "float";
             if (samplerType && samplerType->kind == MGLIR_TYPE_SAMPLER) {
                 if (samplerType->tex_storage == MGLIR_SCALAR_INT)
@@ -13841,8 +13947,12 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 else if (samplerType->tex_storage == MGLIR_SCALAR_UINT)
                     texelName = "uint";
             }
+            /* Match IMAGE metadata / sample_texture_cube*: samplerCube must
+             * be texturecube, not texture2d (else Metal PSO compile fails). */
             std::string sampledType = is3d ? "texture3d<"
                                   : is2dArray ? "texture2d_array<"
+                                  : isCubeArray ? "texturecube_array<"
+                                  : isCube ? "texturecube<"
                                               : "texture2d<";
             sampledType += texelName;
             sampledType += ", sample>";

@@ -5714,9 +5714,10 @@ static void mglTextureCopyTextureToBuffer(
         return nil;
     }
 
-    uint32_t bufferPixelFormat = (tex->internalformat == GL_RGBA8)
-        ? MGLPixelFormatRGBA8Uint
-        : mtlPixelFormatForGLTex(tex);
+    /* GL_RGBA8 is normalized (float-sampleable).  Forcing RGBA8Uint here made
+     * samplerBuffer + layout(binding) CTS reject the real texture as
+     * actualKind=uint vs expectedKind=float and substitute a 1x1 fallback. */
+    uint32_t bufferPixelFormat = mtlPixelFormatForGLTex(tex);
     if (bufferPixelFormat == MGLPixelFormatInvalid || bufferPixelFormat == 0) {
         NSLog(@"MGL TEXBUFFER ERROR: invalid Metal format for tex=%u internal=0x%x",
               tex->name,
@@ -6848,6 +6849,37 @@ static void mglTextureCopyTextureToBuffer(
 
     if (expectedType == 0) {
         return MGL_STATE(ctx)->active_textures[textureUnit];
+    }
+
+    /* AIR lowers sampler1D / samplerBuffer to texture2d, so expectedType is
+     * often MGLTextureType2D. Prefer the GL target slot that matches the
+     * reflected image_dim before trusting a leftover _TEXTURE_2D binding. */
+    if (sampledResource &&
+        sampledResource->image_dim == MGL_IMAGE_DIM_1D &&
+        !sampledResource->image_arrayed) {
+        Texture *tex1D =
+            MGL_STATE(ctx)->texture_units[textureUnit].textures[_TEXTURE_1D];
+        if (tex1D && tex1D->name != TEX_OBJ_RES_NAME) {
+            return tex1D;
+        }
+        Texture *activeTexture = MGL_STATE(ctx)->active_textures[textureUnit];
+        if (activeTexture && activeTexture->target == GL_TEXTURE_1D &&
+            activeTexture->name != TEX_OBJ_RES_NAME) {
+            return activeTexture;
+        }
+    }
+    if (sampledResource &&
+        sampledResource->image_dim == MGL_IMAGE_DIM_BUFFER) {
+        Texture *bufferTexture =
+            MGL_STATE(ctx)->texture_units[textureUnit].textures[_TEXTURE_BUFFER];
+        if (bufferTexture && bufferTexture->name != TEX_OBJ_RES_NAME) {
+            return bufferTexture;
+        }
+        Texture *activeTexture = MGL_STATE(ctx)->active_textures[textureUnit];
+        if (activeTexture && activeTexture->target == GL_TEXTURE_BUFFER &&
+            activeTexture->name != TEX_OBJ_RES_NAME) {
+            return activeTexture;
+        }
     }
 
     int textureIndex = [self textureIndexForExpectedMetalType:expectedType];
