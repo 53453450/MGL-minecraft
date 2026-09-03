@@ -7067,36 +7067,6 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     ? sampleType->tex_storage
                     : MGLIR_SCALAR_FLOAT;
             bool isBuf = texKind == MGLIR_TEX_BUFFER;
-            if (isBuf) {
-                if (e->u.call.arg_count != 2) {
-                    cg.err = 1;
-                    cg.errmsg = "codegen: texelFetch on a samplerBuffer "
-                                "expects 2 arguments";
-                    return nullptr;
-                }
-                llvm::Value *coord = emitExpr(cg, e->u.call.args[1], mod,
-                                              locals);
-                if (!coord) return nullptr;
-                coord = coerceScalar(cg, coord, MGLIR_SCALAR_INT);
-                /* TEXTURE_BUFFER is backed as texture2d (same packing as
-                 * imageBuffer imageStore/Load).  Keep texelFetch on that
-                 * path so imageLoad == texelFetch after COMMAND/FETCH
-                 * barriers (CTS advanced-sync-imageAccess). */
-                llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
-                llvm::Type *v2i32 = llvm::FixedVectorType::get(i32, 2);
-                llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
-                llvm::Type *v4f32 = llvm::FixedVectorType::get(f32, 4);
-                llvm::Type *retTy = llvm::StructType::get(
-                    *cg.ctx, {v4f32, cg.b->getInt8Ty()});
-                llvm::Value *xy = llvm::UndefValue::get(v2i32);
-                xy = cg.b->CreateInsertElement(xy, coord, cg.b->getInt32(0));
-                xy = cg.b->CreateInsertElement(xy, cg.b->getInt32(0),
-                                               cg.b->getInt32(1));
-                llvm::Value *r = callAirFn(
-                    cg, "air.read_texture_2d.v4f32", retTy,
-                    {tex, xy, cg.b->getInt32(0), cg.b->getInt32(3)});
-                return cg.b->CreateExtractValue(r, 0);
-            }
             llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
             llvm::Type *v2i32 = llvm::FixedVectorType::get(i32, 2);
             llvm::Type *v3i32 = llvm::FixedVectorType::get(i32, 3);
@@ -7121,6 +7091,33 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 }
                 return n;
             };
+            if (isBuf) {
+                if (e->u.call.arg_count != 2) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: texelFetch on a samplerBuffer "
+                                "expects 2 arguments";
+                    return nullptr;
+                }
+                llvm::Value *coord = emitExpr(cg, e->u.call.args[1], mod,
+                                              locals);
+                if (!coord) return nullptr;
+                coord = coerceScalar(cg, coord, MGLIR_SCALAR_INT);
+                /* TEXTURE_BUFFER is backed as texture2d (same packing as
+                 * imageBuffer imageStore/Load).  Keep texelFetch on that
+                 * path so imageLoad == texelFetch after COMMAND/FETCH
+                 * barriers (CTS advanced-sync-imageAccess).  Integer
+                 * usamplerBuffer/isamplerBuffer must use .u/.s reads —
+                 * always-float was returning 0 for integer formats. */
+                llvm::Value *xy = llvm::UndefValue::get(v2i32);
+                xy = cg.b->CreateInsertElement(xy, coord, cg.b->getInt32(0));
+                xy = cg.b->CreateInsertElement(xy, cg.b->getInt32(0),
+                                               cg.b->getInt32(1));
+                llvm::Value *r = callAirFn(
+                    cg, readIntrinsic("air.read_texture_2d.v4f32").c_str(),
+                    retTy,
+                    {tex, xy, cg.b->getInt32(0), cg.b->getInt32(3)});
+                return cg.b->CreateExtractValue(r, 0);
+            }
             auto toIvec2XY0 = [&](llvm::Value *x) -> llvm::Value * {
                 llvm::Value *v = llvm::UndefValue::get(v2i32);
                 v = cg.b->CreateInsertElement(v, x, cg.b->getInt32(0));
