@@ -1397,6 +1397,136 @@ static bool mglValidateAtomicCounterOffsetOverlap(Program *pptr)
     return true;
 }
 
+/* GLSL 4.60 §7.1 / ARB_cull_distance: sum of gl_ClipDistance and
+ * gl_CullDistance sizes across a linked program must not exceed
+ * MAX_COMBINED_CLIP_AND_CULL_DISTANCES.  Size is the declared array length
+ * when redeclared, else max(static_index+1, for-loop upper bound).
+ * Mentions only inside #define bodies (unused macros) are ignored. */
+static GLuint mglDistanceArraySizeFromSource(const char *src, const char *name)
+{
+    if (!src || !name) return 0u;
+    const size_t nameLen = strlen(name);
+    GLuint size = 0u;
+    const char *p = src;
+    while ((p = strstr(p, name)) != NULL) {
+        const char *nameStart = p;
+        /* Skip occurrences that sit on a #define line — CTS functional
+         * shaders keep unused ASSIGN_* macros that name both builtins. */
+        const char *line = nameStart;
+        while (line > src && line[-1] != '\n')
+            --line;
+        while (*line == ' ' || *line == '\t')
+            ++line;
+        if (*line == '#') {
+            p = nameStart + nameLen;
+            continue;
+        }
+
+        p += nameLen;
+        while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') ++p;
+        if (*p != '[') continue;
+        ++p;
+        while (*p == ' ' || *p == '\t') ++p;
+
+        /* Look back past whitespace for a preceding "float" → declaration. */
+        const char *q = nameStart;
+        while (q > src && (q[-1] == ' ' || q[-1] == '\t' ||
+                           q[-1] == '\r' || q[-1] == '\n'))
+            --q;
+        int isDecl = 0;
+        if (q >= src + 5) {
+            const char *f = q - 5;
+            if (strncmp(f, "float", 5) == 0 &&
+                (f == src ||
+                 f[-1] == ' ' || f[-1] == '\t' || f[-1] == '\n' ||
+                 f[-1] == '\r' || f[-1] == ';'))
+                isDecl = 1;
+        }
+
+        if (*p >= '0' && *p <= '9') {
+            char *end = NULL;
+            unsigned long n = strtoul(p, &end, 10);
+            GLuint need = isDecl ? (GLuint)n : (GLuint)(n + 1u);
+            if (need > size) size = need;
+            p = end ? end : p;
+            continue;
+        }
+
+        /* Dynamic index: IDENT.  Prefer a for-loop upper bound IDENT < N. */
+        if ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+            *p == '_') {
+            const char *idStart = p;
+            while ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+                   (*p >= '0' && *p <= '9') || *p == '_')
+                ++p;
+            size_t idLen = (size_t)(p - idStart);
+            if (idLen == 0u || idLen >= 64u) continue;
+            char id[64];
+            memcpy(id, idStart, idLen);
+            id[idLen] = '\0';
+            const char *scan = src;
+            while ((scan = strstr(scan, id)) != NULL) {
+                const char *after = scan + idLen;
+                while (*after == ' ' || *after == '\t') ++after;
+                if (*after == '<') {
+                    ++after;
+                    while (*after == ' ' || *after == '\t') ++after;
+                    if (*after >= '0' && *after <= '9') {
+                        unsigned long bound = strtoul(after, NULL, 10);
+                        if ((GLuint)bound > size) size = (GLuint)bound;
+                    }
+                }
+                scan += idLen;
+            }
+            continue;
+        }
+    }
+    return size;
+}
+
+static bool mglValidateCombinedClipAndCullDistances(GLMContext ctx,
+                                                    Program *pptr)
+{
+    GLuint maxCombined =
+        ctx && ctx->state.var.max_combined_clip_and_cull_distances
+            ? ctx->state.var.max_combined_clip_and_cull_distances
+            : 8u;
+    GLuint clipSize = 0u;
+    GLuint cullSize = 0u;
+
+    for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
+        if (stage == _FRAGMENT_SHADER || stage == _COMPUTE_SHADER)
+            continue;
+        GLuint attached_count =
+            mglProgramAttachedShaderCount(pptr, (GLuint)stage);
+        for (GLuint attached = 0u; attached < attached_count; attached++) {
+            Shader *shader = (pptr->attached_shader_counts[stage] > 0u)
+                ? pptr->attached_shader_slots[stage][attached]
+                : pptr->shader_slots[stage];
+            if (!shader || !shader->src) continue;
+            GLuint sClip =
+                mglDistanceArraySizeFromSource(shader->src,
+                                               "gl_ClipDistance");
+            GLuint sCull =
+                mglDistanceArraySizeFromSource(shader->src,
+                                               "gl_CullDistance");
+            if (sClip > clipSize) clipSize = sClip;
+            if (sCull > cullSize) cullSize = sCull;
+        }
+    }
+
+    /* Only sizes proven by declaration or indexed use participate. */
+    if (clipSize == 0u || cullSize == 0u) return true;
+    if (clipSize + cullSize <= maxCombined) return true;
+
+    fprintf(stderr,
+            "MGL WARNING: mglLinkProgram failed program %u: "
+            "gl_ClipDistance[%u] + gl_CullDistance[%u] exceeds "
+            "MAX_COMBINED_CLIP_AND_CULL_DISTANCES (%u)\n",
+            pptr->name, clipSize, cullSize, maxCombined);
+    return false;
+}
+
 void mglLinkProgram(GLMContext ctx, GLuint program)
 {
     Program *pptr;
@@ -1513,6 +1643,10 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
     }
 
     if (!link_ok) {
+        return;
+    }
+
+    if (!mglValidateCombinedClipAndCullDistances(ctx, pptr)) {
         return;
     }
 

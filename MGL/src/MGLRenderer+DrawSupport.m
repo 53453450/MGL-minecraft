@@ -1729,10 +1729,23 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     }
 
     /* Run the real VS once into the shared per-vertex records used by the AIR GS
-     * kernel.  This helper closes the render encoder before compute begins. */
+     * kernel.  This helper closes the render encoder before compute begins.
+     * Isolines/point-mode TES may already have expanded records; consume those
+     * instead of re-capturing the (empty) VS attributes. */
     NSUInteger inputOffset = 0u;
     id input = nil;
-    if (indexedDraw) {
+    Program *captureVS = mglResolveProgramForStageFromState(drawCtx, _VERTEX_SHADER);
+    Program *captureTES = NULL;
+    if (_tessellation.pendingGSInputActive && _tessellation.pendingGSInput) {
+        input = (__bridge id)_tessellation.pendingGSInput;
+        inputOffset = _tessellation.pendingGSInputOffset;
+        captureTES = mglResolveProgramForStageFromState(
+            drawCtx, _TESS_EVALUATION_SHADER);
+        if (_tessellation.pendingGSInputStride > 0u) {
+            gparams.stage_in_stride =
+                (uint32_t)_tessellation.pendingGSInputStride;
+        }
+    } else if (indexedDraw) {
         input = [self captureAIRVertexPositionsForGeometryIndexed:drawCtx
                                                       indexBuffer:eboMetal
                                                         indexType:indexType
@@ -1764,8 +1777,12 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
      * can be wider than what this GS declares as inputs (e.g. a flat
      * instance_id the GS never reads).  A stride mismatch made every
      * gl_in[N>0] read land inside the wrong record. */
-    Program *captureVS = mglResolveProgramForStageFromState(drawCtx, _VERTEX_SHADER);
-    if (captureVS) {
+    if (gparams.stage_in_stride == 0u && captureTES) {
+        gparams.stage_in_stride =
+            mglAIRPerVertexStrideForResources(
+                &captureTES->shader_resources_list[_TESS_EVALUATION_SHADER]
+                                                   [_STAGE_OUTPUT_RES]);
+    } else if (gparams.stage_in_stride == 0u && captureVS) {
         gparams.stage_in_stride =
             mglAIRPerVertexStrideForResources(
                 &captureVS->shader_resources_list[_VERTEX_SHADER]
@@ -1784,10 +1801,14 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         memset(gparams.loc_map, 0, sizeof(gparams.loc_map));
         const MGLShaderResourceList *gsInputs =
             &program->shader_resources_list[_GEOMETRY_SHADER][_STAGE_INPUT_RES];
-        const MGLShaderResourceList *vsOutputs =
-            captureVS ? &captureVS->shader_resources_list[_VERTEX_SHADER]
-                                                        [_STAGE_OUTPUT_RES]
-                      : NULL;
+        const MGLShaderResourceList *vsOutputs = NULL;
+        if (captureTES) {
+            vsOutputs = &captureTES->shader_resources_list[_TESS_EVALUATION_SHADER]
+                                                         [_STAGE_OUTPUT_RES];
+        } else if (captureVS) {
+            vsOutputs = &captureVS->shader_resources_list[_VERTEX_SHADER]
+                                                        [_STAGE_OUTPUT_RES];
+        }
         for (GLuint gi = 0u;
              gsInputs && vsOutputs && gsInputs->list && gi < gsInputs->count;
              gi++) {
@@ -2529,6 +2550,8 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
          * its GL XFB target and advance the session write offset. */
         if (xfbTemporary) {
             id xfbBlit = nil;
+            const uint8_t *xfbTempBytes =
+                (const uint8_t *)mglDrawSupportBufferContents(xfbTemporary);
             for (uint32_t b = 0u; b < xfbBufferCount; b++) {
                 if (!bufferDstMTL[b] || scatterParams.buffers[b].stride == 0u)
                     continue;
@@ -2553,7 +2576,39 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
                                              bufferDstOffset[b], copyBytes);
                 BufferBaseTarget *slot = &MGL_STATE(drawCtx)
                     ->buffer_base[_TRANSFORM_FEEDBACK_BUFFER].buffers[b];
-                if (slot->buf) slot->buf->ever_written = GL_TRUE;
+                if (slot->buf) {
+                    slot->buf->ever_written = GL_TRUE;
+                    /* glMapBufferRange serves the CPU shadow; mirror the
+                     * scatter result there (same contract as the VS CPU
+                     * XFB path) so a subsequent map sees the captured
+                     * bytes without waiting on the Metal blit. */
+                    if (xfbTempBytes && slot->buf->data.buffer_data &&
+                        (size_t)slot->buf->size >=
+                            bufferDstOffset[b] + copyBytes) {
+                        memcpy((uint8_t *)slot->buf->data.buffer_data +
+                                   bufferDstOffset[b],
+                               xfbTempBytes + bufferPhysBase[b], copyBytes);
+                        slot->buf->has_initialized_data = GL_TRUE;
+                        slot->buf->gpu_write_target = GL_TRUE;
+                        slot->buf->last_init_source = kInitMapWrite;
+                        slot->buf->last_write_offset =
+                            (GLintptr)bufferDstOffset[b];
+                        slot->buf->last_write_size = (GLsizeiptr)copyBytes;
+                    }
+                    uint8_t *liveBase = (uint8_t *)mglDrawSupportBufferContents(
+                        bufferDstMTL[b]);
+                    if (xfbTempBytes && liveBase) {
+                        MGLRenderBufferInfo liveInfo = {0};
+                        if (mglRenderGetBufferInfo(
+                                (__bridge void *)bufferDstMTL[b],
+                                &liveInfo) == 0 &&
+                            bufferDstOffset[b] + copyBytes <= liveInfo.length) {
+                            memcpy(liveBase + bufferDstOffset[b],
+                                   xfbTempBytes + bufferPhysBase[b],
+                                   copyBytes);
+                        }
+                    }
+                }
                 const GLuint64 currentOffset =
                     xfbState->buffer_write_offsets[b];
                 xfbState->buffer_write_offsets[b] =

@@ -1652,7 +1652,12 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
      * records. The renderer gathers selected varyings into the compact GL XFB
      * layout and copies only the prefix containing complete primitives. */
     TransformFeedback *xfbState = MGL_STATE(glm_ctx)->transform_feedback;
+    const bool hasGeometryStage =
+        tesProgram->shader_slots[_GEOMETRY_SHADER] != NULL;
+    /* XFB varyings come from the last pre-raster stage.  When a GS follows
+     * this TES compute expansion, the GS path owns transform feedback. */
     const bool xfbActive =
+        !hasGeometryStage &&
         xfbState && xfbState->active && !xfbState->paused;
     id xfbTemporary = nil;
     id xfbCopyDestination = nil;
@@ -2001,13 +2006,49 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
                 : currentOffset + (GLuint64)xfbWrittenBytes;
     }
 
-    /* Rasterize through the passthrough vertex stage. */
+    /* Rasterize through the passthrough vertex stage, or hand the expanded
+     * records to a following geometry shader (coverage VS+TC+TE+GS path). */
     const GLenum genMode = tesProgram->tess_gen_mode;
     const GLboolean pointMode = tesProgram->tess_gen_point_mode;
     const uint64_t primitivesPerInstance =
         pointMode ? itemsPerInstanceU
                   : (genMode == GL_ISOLINES ? itemsPerInstanceU / 2u
                                             : itemsPerInstanceU / 3u);
+    if (hasGeometryStage) {
+        GLenum gsMode = pointMode ? GL_POINTS
+            : (genMode == GL_ISOLINES ? GL_LINES : GL_TRIANGLES);
+        GLsizei gsCount =
+            (GLsizei)((uint64_t)itemsPerInstanceU * (uint64_t)instanceCountU);
+        if (gsCount <= 0) {
+            NSLog(@"MGL TESS ERROR: TES→GS empty expansion program=%u",
+                  (unsigned)tesProgram->name);
+            return false;
+        }
+        _tessellation.pendingGSInputActive = YES;
+        _tessellation.pendingGSInput = (__bridge_retained void *)outBuffer;
+        _tessellation.pendingGSInputOffset = 0u;
+        _tessellation.pendingGSInputStride = outStride;
+        _tessellation.pendingGSVertexCount = gsCount;
+        const BOOL gsOK = [self handleGeometryDrawIfNeeded:glm_ctx
+                                                      mode:gsMode
+                                                     first:0
+                                                     count:gsCount
+                                                 indexType:0
+                                                   indices:NULL
+                                                baseVertex:0
+                                             instanceCount:1
+                                              baseInstance:baseInstance
+                                                     label:"tessEvalToGeometry"];
+        if (_tessellation.pendingGSInput) {
+            (void)CFBridgingRelease(_tessellation.pendingGSInput);
+            _tessellation.pendingGSInput = NULL;
+        }
+        _tessellation.pendingGSInputActive = NO;
+        _tessellation.pendingGSInputOffset = 0u;
+        _tessellation.pendingGSInputStride = 0u;
+        _tessellation.pendingGSVertexCount = 0;
+        return gsOK;
+    }
     if (MGL_STATE(glm_ctx)->caps.rasterizer_discard) {
         /* GL_RASTERIZER_DISCARD: no pixels by definition, so skip the
          * passthrough draw entirely, but the compute expansion already ran
