@@ -6860,6 +6860,23 @@ static void mglTextureCopyTextureToBuffer(
                 activeTexture->target == GL_TEXTURE_1D) {
                 return activeTexture;
             }
+            /* AIR packs samplerBuffer as texture2d; the GL binding lives in
+             * the TEXTURE_BUFFER slot. Prefer that over a missing 2D binding
+             * when the reflected resource is a buffer sampler/image. */
+            if (sampledResource &&
+                sampledResource->image_dim == MGL_IMAGE_DIM_BUFFER) {
+                Texture *bufferTexture =
+                    MGL_STATE(ctx)->texture_units[textureUnit].textures[_TEXTURE_BUFFER];
+                if (bufferTexture &&
+                    bufferTexture->name != TEX_OBJ_RES_NAME) {
+                    return bufferTexture;
+                }
+                if (activeTexture &&
+                    activeTexture->target == GL_TEXTURE_BUFFER &&
+                    activeTexture->name != TEX_OBJ_RES_NAME) {
+                    return activeTexture;
+                }
+            }
         }
 
         /* AIR lowers sampler1DArray / sampler2DMS* to texture2d_array, while GL

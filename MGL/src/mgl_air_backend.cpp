@@ -6491,17 +6491,23 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                               locals);
                 if (!coord) return nullptr;
                 coord = coerceScalar(cg, coord, MGLIR_SCALAR_INT);
-                llvm::Type *smp = llvm::StructType::get(
-                    *cg.ctx, "struct._sampler_t");
-                llvm::Value *rs = callAirFn(cg, "air.get_read_sampler",
-                                            smp->getPointerTo(2), {});
-                llvm::Type *v4f32 = llvm::FixedVectorType::get(
-                    llvm::Type::getFloatTy(*cg.ctx), 4);
+                /* TEXTURE_BUFFER is backed as texture2d (same packing as
+                 * imageBuffer imageStore/Load).  Keep texelFetch on that
+                 * path so imageLoad == texelFetch after COMMAND/FETCH
+                 * barriers (CTS advanced-sync-imageAccess). */
+                llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
+                llvm::Type *v2i32 = llvm::FixedVectorType::get(i32, 2);
+                llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+                llvm::Type *v4f32 = llvm::FixedVectorType::get(f32, 4);
                 llvm::Type *retTy = llvm::StructType::get(
                     *cg.ctx, {v4f32, cg.b->getInt8Ty()});
+                llvm::Value *xy = llvm::UndefValue::get(v2i32);
+                xy = cg.b->CreateInsertElement(xy, coord, cg.b->getInt32(0));
+                xy = cg.b->CreateInsertElement(xy, cg.b->getInt32(0),
+                                               cg.b->getInt32(1));
                 llvm::Value *r = callAirFn(
-                    cg, "air.read_texture_buffer_1d.v4f32", retTy,
-                    {tex, rs, coord, cg.b->getInt32(1)});
+                    cg, "air.read_texture_2d.v4f32", retTy,
+                    {tex, xy, cg.b->getInt32(0), cg.b->getInt32(3)});
                 return cg.b->CreateExtractValue(r, 0);
             }
             llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
@@ -11040,7 +11046,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                                 tk == MGLIR_TEX_1D_ARRAY ||
                                 tk == MGLIR_TEX_2D_MS ||
                                 tk == MGLIR_TEX_2D_MS_ARRAY) ? texTy2dArray
-                             : (tk == MGLIR_TEX_BUFFER) ? texTyBuf : texTy2d;
+                             : texTy2d; /* TEX_BUFFER uses texture2d fallback */
         uint32_t elements = v.type.arr > 0 ? (uint32_t)v.type.arr : 1u;
         for (uint32_t k = 0; k < elements; k++) {
             paramTys.push_back(tt->getPointerTo(1));

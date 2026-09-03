@@ -3841,7 +3841,12 @@ uint32_t mglRenderTextureTypeForShaderResource(
                 image_arrayed ? MTL::TextureTypeCubeArray
                               : MTL::TextureTypeCube);
         case MGL_IMAGE_DIM_BUFFER:
-            return static_cast<uint32_t>(MTL::TextureTypeTextureBuffer);
+            /* TEXTURE_BUFFER / samplerBuffer / imageBuffer are packed as
+             * texture2d (createMTLTexelBufferTexture + AIR imageBuffer path).
+             * Advertising TextureBuffer here makes the binder reject the real
+             * texture2d and substitute the 64-texel fallback, so
+             * imageLoad != texelFetch (CTS advanced-sync-imageAccess). */
+            return static_cast<uint32_t>(MTL::TextureType2D);
         default:
             return 0u;
     }
