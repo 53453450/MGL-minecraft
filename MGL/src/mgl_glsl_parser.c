@@ -134,8 +134,8 @@ static const MGLGLSLToken *tk(MGLParser *p, int offset);
 static int is_image_format_layout(const char *s, size_t n)
 {
     static const char *const formats[] = {
-        "r8", "r16", "r32f", "rg8", "rg16", "rg32f",
-        "rgba8", "rgba16", "rgba32f", "rgba8_snorm",
+        "r8", "r16", "r32f", "r16f", "rg8", "rg16", "rg32f", "rg16f",
+        "rgba8", "rgba16", "rgba32f", "rgba16f", "rgba8_snorm",
         "rgba16_snorm", "rg8_snorm", "rg16_snorm", "r8_snorm",
         "r16_snorm", "r11f_g11f_b10f", "rgb10_a2",
         "r8i", "r16i", "r32i", "rg8i", "rg16i", "rg32i",
