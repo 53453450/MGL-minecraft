@@ -8509,6 +8509,7 @@ uint32_t mglRenderTessEvalItemsPerPatch(
             return 0u;
         }
     }
+    (void)point_mode;
     if (gen_mode == GL_ISOLINES) {
         float e0 = *(const __fp16*)&tf->edge[0];
         float e1 = *(const __fp16*)&tf->edge[1];
@@ -8516,20 +8517,22 @@ uint32_t mglRenderTessEvalItemsPerPatch(
         if (e1 < 1.0f) e1 = 1.0f;
         return (uint32_t)ceilf(e0) * (uint32_t)ceilf(e1) * 2u;
     }
+    /* Quads/triangles compute expansion (point_mode and XFB-forced): one
+     * work item per inner-grid cell.  Must match mgl_air_backend.cpp
+     * isTESCompute TessCoord decomposition. */
     float i0 = *(const __fp16*)&tf->inside[0];
     if (i0 < 1.0f) i0 = 1.0f;
-    if (point_mode && gen_mode == GL_QUADS) {
+    if (gen_mode == GL_QUADS) {
         float i1 = *(const __fp16*)&tf->inside[1];
         if (i1 < 1.0f) i1 = 1.0f;
         return mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(i0)) *
                mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(i1));
     }
-    if (point_mode) {
+    {
         const uint32_t n =
             mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(i0));
         return n * n;
     }
-    return 0u;
 }
 
 extern "C"

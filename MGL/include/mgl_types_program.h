@@ -296,6 +296,9 @@ typedef struct Program_t {
     GLenum tess_gen_spacing;     /* GL_EQUAL / GL_FRACTIONAL_EVEN / GL_FRACTIONAL_ODD */
     GLenum tess_gen_vertex_order;/* GL_CW / GL_CCW */
     GLboolean tess_gen_point_mode;/* GL_TRUE / GL_FALSE */
+    /* TES compiled as AIR compute expansion (isolines, point_mode, or
+     * forced for XFB).  Draw/bind paths must use the compute ABI. */
+    GLboolean tess_eval_compute;
     GLint sampler_units[TEXTURE_UNITS];
     GLint sampler_units_by_stage[_MAX_SHADER_TYPES][TEXTURE_UNITS];
     GLboolean sampler_units_explicit[TEXTURE_UNITS];

@@ -9813,7 +9813,8 @@ static uint32_t reflectClipDistanceCount(const char *src)
 }
 
 static int compileGLSLImpl(const char *src, int stage, int capture,
-                           bool has_gs, const char *const *attrib_names,
+                           bool has_gs, bool force_tes_compute,
+                           const char *const *attrib_names,
                            uint32_t tessPatchVertices,
                            unsigned char **metallib_out, size_t *size_out,
                            char *err_buf, size_t err_cap) {
@@ -9881,10 +9882,13 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     /* Metal post-tessellation only supports triangle/quad patches (no
      * isolines patch type, no point output topology).  isolines and
      * point-mode TES compile to a compute kernel that enumerates the
-     * expanded line/point stream instead (see the isTESCompute paths). */
+     * expanded line/point stream instead (see the isTESCompute paths).
+     * XFB also forces this path: native post-tess cannot feed transform
+     * feedback, so triangles/quads with XFB share the same compute ABI. */
     const bool isTESCompute = isTES &&
         (tu->layout_primitive == MGL_AST_TES_ISOLINES ||
-         tu->layout_point_mode != 0);
+         tu->layout_point_mode != 0 ||
+         force_tes_compute);
     const bool isKernel = isCompute || isTCS || isGS || isTESCompute;
     const bool usesCullDistance = isVS && !isCapture &&
                                   sourceUsesCullDistance;
@@ -13337,7 +13341,8 @@ extern "C" int mglShaderCompileGLSL(const char *src, int stage,
                                     unsigned char **metallib_out,
                                     size_t *size_out, char *err_buf,
                                     size_t err_cap) {
-    return compileGLSLImpl(src, stage, 0, /*has_gs=*/false, nullptr, 0u,
+    return compileGLSLImpl(src, stage, 0, /*has_gs=*/false,
+                           /*force_tes_compute=*/false, nullptr, 0u,
                            metallib_out,
                            size_out, err_buf, err_cap);
 }
@@ -13350,7 +13355,8 @@ extern "C" int mglShaderCompileGLSLCapture(const char *src,
                                            unsigned char **metallib_out,
                                            size_t *size_out, char *err_buf,
                                            size_t err_cap) {
-    return compileGLSLImpl(src, MGL_STAGE_VERTEX, 1, /*has_gs=*/false, nullptr,
+    return compileGLSLImpl(src, MGL_STAGE_VERTEX, 1, /*has_gs=*/false,
+                           /*force_tes_compute=*/false, nullptr,
                            0u,
                            metallib_out, size_out, err_buf, err_cap);
 }
@@ -13358,7 +13364,8 @@ extern "C" int mglShaderCompileGLSLCapture(const char *src,
 extern "C" int mglShaderCompileGLSLTessCapture(
     const char *src, unsigned char **metallib_out, size_t *size_out,
     char *err_buf, size_t err_cap) {
-    return compileGLSLImpl(src, MGL_STAGE_VERTEX, 2, /*has_gs=*/false, nullptr,
+    return compileGLSLImpl(src, MGL_STAGE_VERTEX, 2, /*has_gs=*/false,
+                           /*force_tes_compute=*/false, nullptr,
                            0u,
                            metallib_out, size_out, err_buf, err_cap);
 }
@@ -13366,7 +13373,8 @@ extern "C" int mglShaderCompileGLSLTessCapture(
 extern "C" int mglShaderCompileGLSLCullDistanceCapture(
     const char *src, unsigned char **metallib_out, size_t *size_out,
     char *err_buf, size_t err_cap) {
-    return compileGLSLImpl(src, MGL_STAGE_VERTEX, 3, /*has_gs=*/false, nullptr,
+    return compileGLSLImpl(src, MGL_STAGE_VERTEX, 3, /*has_gs=*/false,
+                           /*force_tes_compute=*/false, nullptr,
                            0u,
                            metallib_out, size_out, err_buf, err_cap);
 }
@@ -13522,6 +13530,8 @@ extern "C" int mglAirCompileGLSLWithReflectInfoEx(
     MGLShaderResourceList lists[MGL_MAX_SHADER_RESOURCES], MGLAIRStageInfo *stage_info,
     uint32_t flags, char *err_buf, size_t err_cap) {
     bool has_gs = (flags & MGL_AIR_COMPILE_HAS_GEOMETRY_SHADER) != 0;
+    bool force_tes_compute =
+        (flags & MGL_AIR_COMPILE_FORCE_TES_COMPUTE) != 0;
     if (!src || !metallib_out || !size_out) {
         if (err_buf && err_cap) snprintf(err_buf, err_cap, "bad args");
         return -1;
@@ -13568,8 +13578,8 @@ extern "C" int mglAirCompileGLSLWithReflectInfoEx(
     mglIRModuleDestroy(&mod);
     mglGLSLTranslationUnitDestroy(tu);
 
-    return compileGLSLImpl(esrc, stage, 0, has_gs, attrib_names,
-                           tessPatchVertices,
+    return compileGLSLImpl(esrc, stage, 0, has_gs, force_tes_compute,
+                           attrib_names, tessPatchVertices,
                            metallib_out, size_out, err_buf, err_cap);
 }
 

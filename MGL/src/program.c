@@ -1115,6 +1115,13 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
     }
     uint32_t air_flags =
         pptr->shader_slots[_GEOMETRY_SHADER] ? MGL_AIR_COMPILE_HAS_GEOMETRY_SHADER : 0u;
+    /* Native post-tessellation cannot feed transform feedback.  When the
+     * program captures TES outputs via XFB, force the compute expansion
+     * path for triangles/quads as well as isolines/point_mode. */
+    if (stage == _TESS_EVALUATION_SHADER &&
+        pptr->transform_feedback_varying_count > 0) {
+        air_flags |= MGL_AIR_COMPILE_FORCE_TES_COMPUTE;
+    }
     int air_rc = mglAirCompileGLSLWithReflectInfoEx(
         shader->src, air_stage, attrib_snapshot, &bytes, &size,
         pptr->shader_resources_list[stage], &stage_info, air_flags,
@@ -1234,6 +1241,11 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
         pptr->tess_gen_vertex_order = stage_info.tess_gen_vertex_order;
         pptr->tess_gen_point_mode =
             stage_info.tess_gen_point_mode ? GL_TRUE : GL_FALSE;
+        pptr->tess_eval_compute =
+            (pptr->tess_gen_mode == GL_ISOLINES ||
+             pptr->tess_gen_point_mode ||
+             pptr->transform_feedback_varying_count > 0)
+                ? GL_TRUE : GL_FALSE;
         pptr->tess_uses_cull_distance =
             stage_info.uses_cull_distance ? GL_TRUE : GL_FALSE;
         pptr->tess_cull_distance_count = stage_info.cull_distance_count;

@@ -4024,12 +4024,10 @@ after_gs_draws:
     }
 
     if (airTES) {
-        /* Isolines and layout(point_mode) have no Metal-native equivalent
-         * (MTLPatchType is triangle/quad only and patch draws have no output
-         * primitive type), so those programs run as an AIR compute kernel
-         * expansion + passthrough vertex (line/point rasterization). */
-        if (tesProgram && (tesProgram->tess_gen_point_mode ||
-                           tesProgram->tess_gen_mode == GL_ISOLINES)) {
+        /* Isolines / point_mode have no Metal-native equivalent; XFB also
+         * forces compute (native post-tess cannot feed transform feedback).
+         * tess_eval_compute is set at link to match the compiled ABI. */
+        if (tesProgram && tesProgram->tess_eval_compute) {
             const BOOL dispatched =
                 [self dispatchAIRTessEvalCompute:drawCtx
                                         program:tesProgram

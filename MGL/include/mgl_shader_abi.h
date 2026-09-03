@@ -245,6 +245,10 @@ int mglAirCompileGLSLWithReflectInfo(
 /* mglAirCompileGLSLWithReflectInfoEx flags */
 enum {
     MGL_AIR_COMPILE_HAS_GEOMETRY_SHADER = 1u << 0,
+    /* Force TES to the isolines/point-mode compute expansion even for
+     * triangles/quads.  Used when the linked program captures TES outputs
+     * via transform feedback (native post-tessellation cannot feed XFB). */
+    MGL_AIR_COMPILE_FORCE_TES_COMPUTE = 1u << 1,
 };
 
 /* Same as above plus stage-composition flags (bit0: a geometry shader is
