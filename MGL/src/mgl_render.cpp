@@ -3425,6 +3425,12 @@ int mglRenderCreateTextureView(void* texture,
     return 0;
 }
 
+void mglRenderReleaseMetalObject(void* object) {
+    if (object) {
+        static_cast<NS::Object*>(object)->release();
+    }
+}
+
 int mglRenderCreateTextureViewRange(
     void* texture,
     uint32_t pixel_format,

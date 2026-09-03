@@ -75,6 +75,10 @@ static void mglResetImageUnit(ImageUnit *iu)
     if (!iu) {
         return;
     }
+    if (iu->mtl_image_view) {
+        mglRenderReleaseMetalObject(iu->mtl_image_view);
+        iu->mtl_image_view = NULL;
+    }
     bzero(iu, sizeof(*iu));
     iu->access = GL_READ_ONLY;
     iu->internalformat = GL_R8;
@@ -1031,7 +1035,12 @@ void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint leve
     unit_params.access = access;
     unit_params.internalformat = internalformat;
     unit_params.tex = ptr;
+    unit_params.mtl_image_view = NULL;
 
+    if (ctx->state.image_units[unit].mtl_image_view) {
+        mglRenderReleaseMetalObject(ctx->state.image_units[unit].mtl_image_view);
+        ctx->state.image_units[unit].mtl_image_view = NULL;
+    }
     ctx->state.image_units[unit] = unit_params;
 
     mglMarkStateDirtyBits(&ctx->state, DIRTY_IMAGE_UNIT_STATE);

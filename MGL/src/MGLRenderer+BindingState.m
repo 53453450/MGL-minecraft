@@ -22,6 +22,11 @@ enum {
     MGL_BINDING_RESOURCE_STORAGE_SHARED = 0u,
     MGL_BINDING_VERTEX_FORMAT_INVALID = 0u,
     MGL_BINDING_PIXEL_FORMAT_INVALID = 0u,
+    MGL_BINDING_TEXTURE_TYPE_1D = 0u,
+    MGL_BINDING_TEXTURE_TYPE_1D_ARRAY = 1u,
+    MGL_BINDING_TEXTURE_TYPE_2D = 2u,
+    MGL_BINDING_TEXTURE_TYPE_2D_ARRAY = 3u,
+    MGL_BINDING_TEXTURE_TYPE_3D = 4u,
     MGL_BINDING_TEXTURE_TYPE_CUBE = 5u,
     MGL_BINDING_TEXTURE_TYPE_CUBE_ARRAY = 6u,
 };
@@ -161,6 +166,88 @@ static id mglBindingStateCreateTextureLevelView(
         return (__bridge_transfer id)view;
     }
     return nil;
+}
+
+static id mglBindingStateCacheImageUnitView(ImageUnit *iu, id fallback, void *view)
+{
+    if (!view) {
+        return fallback;
+    }
+    if (iu->mtl_image_view) {
+        mglRenderReleaseMetalObject(iu->mtl_image_view);
+        iu->mtl_image_view = NULL;
+    }
+    iu->mtl_image_view = view; /* +1 from newTextureView */
+    return (__bridge id)iu->mtl_image_view;
+}
+
+/* For non-layered BindImageTexture on array/3D/cube textures, GLSL image2D
+ * (etc.) expects a single 2D (or 1D) slice.  Create a Type2D/Type1D view of
+ * that layer so AIR write/read_texture_2d matches the bound Metal type.
+ * Multisample images are intentionally backed as Type2DArray (sample→layer)
+ * and must keep that type.  Views are cached on ImageUnit so they outlive
+ * the bind call until the unit is rebound/reset. */
+static id mglBindingStateCreateStorageImageView(id texture, ImageUnit *iu)
+{
+    if (!texture || !iu) {
+        return texture;
+    }
+    if (iu->mtl_image_view) {
+        return (__bridge id)iu->mtl_image_view;
+    }
+    const MGLRenderTextureInfo info = mglBindingStateTextureInfo(texture);
+    if (info.width == 0u) {
+        return texture;
+    }
+    const NSUInteger level = (NSUInteger)iu->level;
+    const uint32_t srcType = info.texture_type;
+    const GLenum glTarget = iu->tex ? iu->tex->target : (GLenum)0;
+    const GLboolean isMsTarget =
+        (glTarget == GL_TEXTURE_2D_MULTISAMPLE ||
+         glTarget == GL_TEXTURE_2D_MULTISAMPLE_ARRAY) ? GL_TRUE : GL_FALSE;
+
+    if (!iu->layered && !isMsTarget) {
+        uint32_t dstType = 0u;
+        GLboolean needsSlice = GL_FALSE;
+        if (srcType == MGL_BINDING_TEXTURE_TYPE_2D_ARRAY ||
+            srcType == MGL_BINDING_TEXTURE_TYPE_3D ||
+            srcType == MGL_BINDING_TEXTURE_TYPE_CUBE ||
+            srcType == MGL_BINDING_TEXTURE_TYPE_CUBE_ARRAY) {
+            dstType = MGL_BINDING_TEXTURE_TYPE_2D;
+            needsSlice = GL_TRUE;
+        } else if (srcType == MGL_BINDING_TEXTURE_TYPE_1D_ARRAY) {
+            dstType = MGL_BINDING_TEXTURE_TYPE_1D;
+            needsSlice = GL_TRUE;
+        }
+        if (needsSlice) {
+            void *view = NULL;
+            if (mglRenderCreateTextureViewRange(
+                    (__bridge void *)texture, info.pixel_format, dstType,
+                    level, 1u, (uint64_t)iu->layer, 1u,
+                    0, 0, 0, 0, 0, &view) == 0 && view) {
+                return mglBindingStateCacheImageUnitView(iu, texture, view);
+            }
+        }
+    }
+
+    if (level > 0u) {
+        NSUInteger sliceCount = mglBindingStateTextureArrayLength(texture);
+        if (srcType == MGL_BINDING_TEXTURE_TYPE_CUBE ||
+            srcType == MGL_BINDING_TEXTURE_TYPE_CUBE_ARRAY) {
+            sliceCount = mglBindingStateTextureArrayLength(texture) * 6u;
+        }
+        if (sliceCount < 1u) {
+            sliceCount = 1u;
+        }
+        void *view = NULL;
+        if (mglRenderCreateTextureViewRange(
+                (__bridge void *)texture, info.pixel_format,
+                info.texture_type, level, 1u, 0u, sliceCount,
+                0, 0, 0, 0, 0, &view) == 0 && view) {
+            return mglBindingStateCacheImageUnitView(iu, texture, view);
+        }
+    }
+    return texture;
 }
 
 static void mglBindingStateSetVertexBuffer(
@@ -4275,20 +4362,8 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         if (ptr) {
             MGL_ABORT_TBIND_IF_ENCODER_CLOSED();
             texture = (__bridge id)(ptr->mtl_data);
-            GLuint imgLevel = MGL_STATE(ctx)->image_units[glUnit].level;
-            if (imgLevel > 0u && texture) {
-                NSUInteger sliceCount = mglBindingStateTextureArrayLength(texture);
-                if (mglBindingStateTextureType(texture) == MGL_BINDING_TEXTURE_TYPE_CUBE ||
-                    mglBindingStateTextureType(texture) == MGL_BINDING_TEXTURE_TYPE_CUBE_ARRAY) {
-                    sliceCount = mglBindingStateTextureArrayLength(texture) * 6u;
-                }
-                id levelView =
-                    mglBindingStateCreateTextureLevelView(
-                        texture, imgLevel, sliceCount);
-                if (levelView) {
-                    texture = levelView;
-                }
-            }
+            texture = mglBindingStateCreateStorageImageView(
+                texture, &MGL_STATE(ctx)->image_units[glUnit]);
         }
         if (!mglBindingStateQueueResourceBinding(
                 useResourceSnapshot, _bindingStateOwner,
@@ -4362,30 +4437,10 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             MGL_ABORT_TBIND_IF_ENCODER_CLOSED();
             texture = (__bridge id)(ptr->mtl_data);
 
-            /* Create a mipmap-level-specific texture view so that imageSize()
-             * in the shader returns the dimensions at the bound level, not
-             * level 0.  Metal's get_width()/get_height() on a view created
-             * with levels={N,1} returns the size at level N (the view's
-             * level 0 maps to the original's level N).  Without this view,
-             * glBindImageTexture's <level> parameter is silently ignored
-             * and all imageSize queries return level-0 dimensions. */
-            GLuint imgLevel = MGL_STATE(ctx)->image_units[glUnit].level;
-            if (imgLevel > 0u && texture) {
-                /* Cube and cube-array textures pack 6 face-slices per cube;
-                 * the view's slice count must be a multiple of 6 for these
-                 * types.  Other types use arrayLength directly. */
-                NSUInteger sliceCount = mglBindingStateTextureArrayLength(texture);
-                if (mglBindingStateTextureType(texture) == MGL_BINDING_TEXTURE_TYPE_CUBE ||
-                    mglBindingStateTextureType(texture) == MGL_BINDING_TEXTURE_TYPE_CUBE_ARRAY) {
-                    sliceCount = mglBindingStateTextureArrayLength(texture) * 6u;
-                }
-                id levelView =
-                    mglBindingStateCreateTextureLevelView(
-                        texture, imgLevel, sliceCount);
-                if (levelView) {
-                    texture = levelView;
-                }
-            }
+            /* Non-layered array/3D/cube bindings and mip levels become
+             * Metal texture views so AIR image2D load/store type-matches. */
+            texture = mglBindingStateCreateStorageImageView(
+                texture, &MGL_STATE(ctx)->image_units[glUnit]);
         }
 
         if (!mglBindingStateQueueResourceBinding(

@@ -249,6 +249,9 @@ typedef struct ImageUnit_t {
     GLenum access;
     GLenum internalformat;
     Texture *tex;
+    /* Retained Metal texture view for non-layered / mip binds.  Released on
+     * rebind or reset so the GPU can finish using the previous view. */
+    void *mtl_image_view;
 } ImageUnit;
 
 typedef struct ProxyTextureQueryState_t {

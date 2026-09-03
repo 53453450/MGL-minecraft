@@ -6010,6 +6010,22 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                               voidTy, {tex, coord2, vec4, cg.b->getInt32(0),
                                        cg.b->getInt32(3)});
                 }
+                const char *fenceFn = "air.fence_texture_2d";
+                switch (tk) {
+                case MGLIR_TEX_3D: fenceFn = "air.fence_texture_3d"; break;
+                case MGLIR_TEX_CUBE: fenceFn = "air.fence_texture_cube"; break;
+                case MGLIR_TEX_CUBE_ARRAY:
+                    fenceFn = "air.fence_texture_cube_array";
+                    break;
+                case MGLIR_TEX_2D_ARRAY:
+                case MGLIR_TEX_1D_ARRAY:
+                case MGLIR_TEX_2D_MS:
+                case MGLIR_TEX_2D_MS_ARRAY:
+                    fenceFn = "air.fence_texture_2d_array";
+                    break;
+                default: break;
+                }
+                callAirFn(cg, fenceFn, voidTy, {tex});
             };
             llvm::Value *oldVec = doRead();
             llvm::Value *old =
@@ -6292,15 +6308,46 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 }
             }
             llvm::Type *voidTy = llvm::Type::getVoidTy(*cg.ctx);
+            auto fenceAfterImageWrite = [&](llvm::Value *texH, MGLIRTexKind kind) {
+                /* Metal requires texture.fence() between write and a later
+                 * read of the same texture in one invocation (CTS
+                 * basic-glsl-misc / image atomics). */
+                const char *fn = "air.fence_texture_2d";
+                switch (kind) {
+                case MGLIR_TEX_3D:
+                    fn = "air.fence_texture_3d";
+                    break;
+                case MGLIR_TEX_CUBE:
+                    fn = "air.fence_texture_cube";
+                    break;
+                case MGLIR_TEX_CUBE_ARRAY:
+                    fn = "air.fence_texture_cube_array";
+                    break;
+                case MGLIR_TEX_2D_ARRAY:
+                case MGLIR_TEX_1D_ARRAY:
+                case MGLIR_TEX_2D_MS:
+                case MGLIR_TEX_2D_MS_ARRAY:
+                    fn = "air.fence_texture_2d_array";
+                    break;
+                default:
+                    break;
+                }
+                callAirFn(cg, fn, voidTy, {texH});
+            };
             if (tk == MGLIR_TEX_3D) {
-                return callAirFn(cg, writeName("air.write_texture_3d").c_str(),
-                                 voidTy, {tex, coord3, value, cg.b->getInt32(0),
-                                          cg.b->getInt32(3)});
+                llvm::Value *w = callAirFn(
+                    cg, writeName("air.write_texture_3d").c_str(), voidTy,
+                    {tex, coord3, value, cg.b->getInt32(0), cg.b->getInt32(3)});
+                fenceAfterImageWrite(tex, tk);
+                return w;
             }
             if (tk == MGLIR_TEX_CUBE) {
-                return callAirFn(cg, writeName("air.write_texture_cube").c_str(),
-                                 voidTy, {tex, coord2, layerOrFace, value,
-                                          cg.b->getInt32(0), cg.b->getInt32(3)});
+                llvm::Value *w = callAirFn(
+                    cg, writeName("air.write_texture_cube").c_str(), voidTy,
+                    {tex, coord2, layerOrFace, value, cg.b->getInt32(0),
+                     cg.b->getInt32(3)});
+                fenceAfterImageWrite(tex, tk);
+                return w;
             }
             if (tk == MGLIR_TEX_CUBE_ARRAY) {
                 /* MSL: write(color, uint2 coord, uint face, uint array). */
@@ -6308,35 +6355,48 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     cg.b->CreateURem(layerOrFace, cg.b->getInt32(6));
                 llvm::Value *arrayIdx =
                     cg.b->CreateUDiv(layerOrFace, cg.b->getInt32(6));
-                return callAirFn(
+                llvm::Value *w = callAirFn(
                     cg, writeName("air.write_texture_cube_array").c_str(), voidTy,
                     {tex, coord2, face, arrayIdx, value, cg.b->getInt32(0),
                      cg.b->getInt32(3)});
+                fenceAfterImageWrite(tex, tk);
+                return w;
             }
             if (tk == MGLIR_TEX_2D_MS) {
-                return callAirFn(
+                llvm::Value *w = callAirFn(
                     cg, writeName("air.write_texture_2d_array").c_str(), voidTy,
                     {tex, coord2, msSample, value, cg.b->getInt32(0),
                      cg.b->getInt32(3)});
+                fenceAfterImageWrite(tex, tk);
+                return w;
             }
             if (tk == MGLIR_TEX_2D_MS_ARRAY) {
                 llvm::Value *flat = cg.b->CreateAdd(
                     cg.b->CreateMul(layerOrFace, cg.b->getInt32(8)),
                     msSample);
-                return callAirFn(
+                llvm::Value *w = callAirFn(
                     cg, writeName("air.write_texture_2d_array").c_str(), voidTy,
                     {tex, coord2, flat, value, cg.b->getInt32(0),
                      cg.b->getInt32(3)});
+                fenceAfterImageWrite(tex, tk);
+                return w;
             }
             if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY) {
-                return callAirFn(cg, writeName("air.write_texture_2d_array").c_str(),
-                                 voidTy, {tex, coord2, layerOrFace, value,
-                                          cg.b->getInt32(0), cg.b->getInt32(3)});
+                llvm::Value *w = callAirFn(
+                    cg, writeName("air.write_texture_2d_array").c_str(), voidTy,
+                    {tex, coord2, layerOrFace, value, cg.b->getInt32(0),
+                     cg.b->getInt32(3)});
+                fenceAfterImageWrite(tex, tk);
+                return w;
             }
             /* 1D / buffer (as 2D), 2D, 2DRect */
-            return callAirFn(cg, writeName("air.write_texture_2d").c_str(),
-                             voidTy, {tex, coord2, value, cg.b->getInt32(0),
-                                      cg.b->getInt32(3)});
+            {
+                llvm::Value *w = callAirFn(
+                    cg, writeName("air.write_texture_2d").c_str(), voidTy,
+                    {tex, coord2, value, cg.b->getInt32(0), cg.b->getInt32(3)});
+                fenceAfterImageWrite(tex, tk);
+                return w;
+            }
         }
         /* texelFetch(sampler, ivecP, lod): unfiltered read. */
         if (strcmp(name, "texelFetch") == 0 ||

@@ -361,6 +361,7 @@ int mglRenderCreateBufferTextureFromDescriptor(
 int mglRenderCreateTextureView(void *texture,
                                   uint32_t pixel_format,
                                   void **texture_view_out);
+void mglRenderReleaseMetalObject(void *object);
 int mglRenderCreateTextureViewRange(
     void *texture,
     uint32_t pixel_format,
