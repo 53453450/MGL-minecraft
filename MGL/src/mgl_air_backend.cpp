@@ -249,6 +249,11 @@ struct Codegen {
     std::vector<llvm::Type *> retElems;  /* VS struct fields (incl. position) */
     std::vector<VarSym> *auxSyms = nullptr;  /* all stage symbols (frag output) */
     std::map<std::string, llvm::Function *> *userFns = nullptr;
+    /* Named user struct types from the TU (`struct S { … };`), used for
+     * S(...) / S[](...) constructors and local member ExtractValue. */
+    std::map<std::string, MGLIRType *> structTypes;
+    std::vector<MGLIRType *> *ownedIRTypes = nullptr;
+    std::map<std::string, const MGLIRType *> localIRTypes;
     int err = 0;
     std::string errmsg;                  /* specific diagnostic when set */
     std::vector<LoopCtx *> loopStack;    /* innermost loop is last */
@@ -655,6 +660,175 @@ MType swizzleType(const MType &base, size_t lanes) {
     /* GLSL 4.60 5.5: single-component swizzle yields a scalar. */
     t.vec = lanes == 1 ? 0 : (uint32_t)lanes;
     return t;
+}
+
+static MGLIRScalar astBaseToIRScalar(uint32_t base) {
+    switch (base) {
+    case MGL_AST_TYPE_BOOL: return MGLIR_SCALAR_BOOL;
+    case MGL_AST_TYPE_INT: return MGLIR_SCALAR_INT;
+    case MGL_AST_TYPE_UINT: return MGLIR_SCALAR_UINT;
+    case MGL_AST_TYPE_DOUBLE: return MGLIR_SCALAR_DOUBLE;
+    case MGL_AST_TYPE_FLOAT:
+    default: return MGLIR_SCALAR_FLOAT;
+    }
+}
+
+static MGLIRType *cloneIRType(const MGLIRType *src) {
+    if (!src) return nullptr;
+    switch (src->kind) {
+    case MGLIR_TYPE_SCALAR:
+        return mglIRTypeScalar(src->scalar);
+    case MGLIR_TYPE_VECTOR:
+        return mglIRTypeVector(src->scalar, src->cols);
+    case MGLIR_TYPE_MATRIX:
+        return mglIRTypeMatrix(src->scalar, src->cols, src->rows);
+    case MGLIR_TYPE_ARRAY: {
+        MGLIRType *el = cloneIRType(src->elem_type);
+        if (!el) return nullptr;
+        return mglIRTypeArray(el, src->array_size);
+    }
+    case MGLIR_TYPE_STRUCT: {
+        std::vector<MGLIRType *> members(src->member_count);
+        std::vector<const char *> names(src->member_count);
+        for (uint32_t i = 0; i < src->member_count; i++) {
+            members[i] = cloneIRType(src->members[i]);
+            names[i] = src->member_names[i];
+            if (!members[i]) {
+                for (uint32_t j = 0; j < i; j++)
+                    mglIRTypeDestroy(members[j]);
+                return nullptr;
+            }
+        }
+        return mglIRTypeStruct(members.data(), names.data(),
+                               src->member_count, src->name);
+    }
+    default:
+        return nullptr;
+    }
+}
+
+/* Resolve a declarator's type to IR (scalars/vectors/matrices/named
+ * structs + array dims).  Named struct members clone the registered type. */
+static MGLIRType *astDeclToIRType(Codegen &cg, const MGLDecl *d) {
+    if (!d || !d->type) return nullptr;
+    const MGLTypeSpec *ts = d->type;
+    MGLIRType *base = nullptr;
+    if (ts->base == MGL_AST_TYPE_STRUCT) {
+        if (!ts->name) return nullptr;
+        auto it = cg.structTypes.find(ts->name);
+        if (it == cg.structTypes.end()) return nullptr;
+        base = cloneIRType(it->second);
+    } else if (ts->mat_cols > 1) {
+        base = mglIRTypeMatrix(astBaseToIRScalar(ts->base),
+                               (uint32_t)ts->mat_cols,
+                               (uint32_t)(ts->mat_rows > 0 ? ts->mat_rows
+                                                           : ts->mat_cols));
+    } else if (ts->vec_size > 1) {
+        base = mglIRTypeVector(astBaseToIRScalar(ts->base),
+                               (uint32_t)ts->vec_size);
+    } else if (ts->base <= MGL_AST_TYPE_DOUBLE) {
+        base = mglIRTypeScalar(astBaseToIRScalar(ts->base));
+    }
+    if (!base) return nullptr;
+    if (d->array_count > 0 && d->array_dims) {
+        for (int i = (int)d->array_count - 1; i >= 0; i--) {
+            MGLIRType *arr = mglIRTypeArray(base, d->array_dims[i]);
+            if (!arr) {
+                mglIRTypeDestroy(base);
+                return nullptr;
+            }
+            base = arr;
+        }
+    }
+    return base;
+}
+
+static void collectStructTypes(Codegen &cg, const MGLTranslationUnit *tu) {
+    if (!tu) return;
+    for (uint32_t i = 0; i < tu->decl_count; i++) {
+        MGLDecl *d = tu->decls[i];
+        if (!d || !d->type || d->type->base != MGL_AST_TYPE_STRUCT ||
+            !d->type->name || !d->struct_members ||
+            d->struct_member_count == 0)
+            continue;
+        if (cg.structTypes.count(d->type->name))
+            continue;
+        std::vector<MGLIRType *> members(d->struct_member_count);
+        std::vector<const char *> names(d->struct_member_count);
+        int ok = 1;
+        for (uint32_t j = 0; j < d->struct_member_count; j++) {
+            MGLDecl *m = d->struct_members[j];
+            members[j] = astDeclToIRType(cg, m);
+            names[j] = m && m->name ? m->name : "";
+            if (!members[j]) {
+                ok = 0;
+                break;
+            }
+        }
+        if (!ok) {
+            for (uint32_t j = 0; j < d->struct_member_count; j++)
+                if (members[j]) mglIRTypeDestroy(members[j]);
+            continue;
+        }
+        MGLIRType *st = mglIRTypeStruct(members.data(), names.data(),
+                                        d->struct_member_count, d->type->name);
+        if (!st) {
+            for (uint32_t j = 0; j < d->struct_member_count; j++)
+                mglIRTypeDestroy(members[j]);
+            continue;
+        }
+        cg.structTypes[d->type->name] = st;
+        if (cg.ownedIRTypes)
+            cg.ownedIRTypes->push_back(st);
+    }
+}
+
+static const MGLIRType *exprIRType(
+    Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
+    const std::map<std::string, MType> &locals) {
+    (void)locals;
+    if (!e) return nullptr;
+    switch (e->kind) {
+    case MGL_EXPR_VAR_REF: {
+        auto it = cg.localIRTypes.find(e->u.var_ref.name);
+        if (it != cg.localIRTypes.end())
+            return it->second;
+        const MGLIRSymbol *s = findSymbol(mod, e->u.var_ref.name);
+        return s ? s->type : nullptr;
+    }
+    case MGL_EXPR_MEMBER: {
+        const MGLIRType *ot =
+            exprIRType(cg, e->u.member.object, mod, locals);
+        if (!ot) return nullptr;
+        while (ot->kind == MGLIR_TYPE_ARRAY && ot->elem_type)
+            ot = ot->elem_type;
+        if (ot->kind != MGLIR_TYPE_STRUCT) return nullptr;
+        for (uint32_t i = 0; i < ot->member_count; i++) {
+            if (ot->member_names[i] &&
+                strcmp(ot->member_names[i], e->u.member.field) == 0)
+                return ot->members[i];
+        }
+        return nullptr;
+    }
+    case MGL_EXPR_INDEX: {
+        const MGLIRType *ot =
+            exprIRType(cg, e->u.index.object, mod, locals);
+        if (!ot) return nullptr;
+        if (ot->kind == MGLIR_TYPE_ARRAY)
+            return ot->elem_type;
+        return nullptr;
+    }
+    case MGL_EXPR_CALL: {
+        auto it = cg.structTypes.find(e->u.call.name);
+        if (it == cg.structTypes.end())
+            return nullptr;
+        /* Array-of-struct constructors register the array type on the
+         * declaring local; the call itself yields the element struct. */
+        return it->second;
+    }
+    default:
+        return nullptr;
+    }
 }
 
 MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
@@ -5085,6 +5259,29 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                             locals, startOff);
             }
         }
+        /* Local / temporary struct field access (e.g. S.member after an
+         * initializer-list desugar to S(...)). */
+        if (const MGLIRType *objTy =
+                exprIRType(cg, e->u.member.object, mod, locals)) {
+            while (objTy->kind == MGLIR_TYPE_ARRAY && objTy->elem_type)
+                objTy = objTy->elem_type;
+            if (objTy->kind == MGLIR_TYPE_STRUCT) {
+                for (uint32_t i = 0; i < objTy->member_count; i++) {
+                    if (objTy->member_names[i] &&
+                        strcmp(objTy->member_names[i],
+                               e->u.member.field) == 0) {
+                        llvm::Value *obj =
+                            emitExpr(cg, e->u.member.object, mod, locals);
+                        if (!obj) return nullptr;
+                        return cg.b->CreateExtractValue(obj, i);
+                    }
+                }
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: unknown member '") +
+                            e->u.member.field + "'";
+                return nullptr;
+            }
+        }
         /* Swizzle only in M1. */
         std::vector<uint32_t> idx;
         if (!swizzleIndices(e->u.member.field, &idx)) { cg.err = 1; return nullptr; }
@@ -5326,7 +5523,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         if (!obj) return nullptr;
         if (constIdx) {
             uint32_t i = (uint32_t)idxE->u.literal.value;
-            if (bt.isArray()) {
+            if (bt.isArray() || obj->getType()->isArrayTy()) {
                 auto *arrayTy = llvm::dyn_cast<llvm::ArrayType>(obj->getType());
                 if (!arrayTy || i >= arrayTy->getNumElements()) {
                     cg.err = 1;
@@ -5582,6 +5779,56 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                      geometryCounterPtr(cg, 1),
                                      llvm::Align(4));
             return llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), 0);
+        }
+        /* User struct constructors: S(a,b,...) and S[](…).  Must run before
+         * the generic array-ctor path so element type stays a struct. */
+        {
+            auto sit = cg.structTypes.find(name);
+            if (sit != cg.structTypes.end()) {
+                const MGLIRType *st = sit->second;
+                if (e->u.call.is_array_ctor) {
+                    uint32_t n = e->u.call.arg_count;
+                    llvm::Type *eltTy = llvmTypeFromIR(st, *cg.ctx);
+                    llvm::Value *res = llvm::UndefValue::get(
+                        llvm::ArrayType::get(eltTy, n ? n : 1u));
+                    for (uint32_t a = 0; a < n; a++) {
+                        llvm::Value *arg =
+                            emitExpr(cg, e->u.call.args[a], mod, locals);
+                        if (!arg) return nullptr;
+                        if (arg->getType() != eltTy)
+                            arg = cg.b->CreateBitCast(arg, eltTy);
+                        res = cg.b->CreateInsertValue(res, arg, a);
+                    }
+                    return res;
+                }
+                if (e->u.call.arg_count != st->member_count) {
+                    cg.err = 1;
+                    cg.errmsg = std::string("codegen: constructor '") + name +
+                                "' expects " +
+                                std::to_string(st->member_count) +
+                                " argument(s)";
+                    return nullptr;
+                }
+                llvm::Type *sty = llvmTypeFromIR(st, *cg.ctx);
+                llvm::Value *res = llvm::UndefValue::get(sty);
+                for (uint32_t a = 0; a < e->u.call.arg_count; a++) {
+                    llvm::Value *arg =
+                        emitExpr(cg, e->u.call.args[a], mod, locals);
+                    if (!arg) return nullptr;
+                    llvm::Type *want =
+                        llvmTypeFromIR(st->members[a], *cg.ctx);
+                    if (arg->getType() != want) {
+                        if (arg->getType()->isIntOrIntVectorTy() ||
+                            arg->getType()->isFPOrFPVectorTy())
+                            arg = coerceScalar(
+                                cg, arg, typeFromIR(st->members[a]).scalar);
+                        else
+                            arg = cg.b->CreateBitCast(arg, want);
+                    }
+                    res = cg.b->CreateInsertValue(res, arg, a);
+                }
+                return res;
+            }
         }
         /* Array constructors: int[](a,b,...) / vecN[](...). Must run before
          * scalar `int`/`float` constructors — those share the same callee
@@ -8063,6 +8310,9 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             }
             if (e->u.call.is_array_ctor)
                 t.arr = e->u.call.arg_count;
+        } else if (cg.structTypes.count(name)) {
+            if (e->u.call.is_array_ctor)
+                t.arr = e->u.call.arg_count;
         } else if (strcmp(name, "normalize") == 0 ||
                    strcmp(name, "abs") == 0 ||
                    strcmp(name, "clamp") == 0 ||
@@ -9540,6 +9790,33 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
             cg.lvalues[d->name] = v;
         }
         (*locals)[d->name] = t;
+        /* Track IR type for local structs so member ExtractValue can
+         * resolve field indices (MType cannot represent structs). */
+        if (d->name && d->type && d->type->base == MGL_AST_TYPE_STRUCT &&
+            d->type->name) {
+            auto sit = cg.structTypes.find(d->type->name);
+            if (sit != cg.structTypes.end()) {
+                const MGLIRType *base = sit->second;
+                uint32_t n = 0;
+                if (d->array_count > 0 && d->array_dims)
+                    n = d->array_dims[0];
+                else if (d->init && d->init->kind == MGL_EXPR_CALL &&
+                         d->init->u.call.is_array_ctor)
+                    n = d->init->u.call.arg_count;
+                else if (t.arr)
+                    n = t.arr;
+                if (n > 0) {
+                    MGLIRType *arr =
+                        mglIRTypeArray(cloneIRType(base), n);
+                    if (arr && cg.ownedIRTypes) {
+                        cg.ownedIRTypes->push_back(arr);
+                        cg.localIRTypes[d->name] = arr;
+                    }
+                } else {
+                    cg.localIRTypes[d->name] = base;
+                }
+            }
+        }
         }
         break;
     }
@@ -11453,6 +11730,15 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     cg.clipDistanceInputCount =
         usesFragmentClipDistance ? activeClipCount : 0u;
     cg.controlPointGetter = controlPointGetter;
+    struct OwnedIRTypes {
+        std::vector<MGLIRType *> v;
+        ~OwnedIRTypes() {
+            for (MGLIRType *t : v)
+                mglIRTypeDestroy(t);
+        }
+    } ownedIR;
+    cg.ownedIRTypes = &ownedIR.v;
+    collectStructTypes(cg, tu);
     if (sourceUsesCullDistance) {
         cg.lvalues["gl_CullDistance"] = defaultCullDistances(cg);
     }
