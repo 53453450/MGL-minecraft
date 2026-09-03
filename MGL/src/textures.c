@@ -1020,11 +1020,17 @@ void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint leve
             ptr->faces[0].levels &&
             level < (GLint)ptr->num_levels &&
             ptr->faces[0].levels[level].complete) {
-            /* GL_TEXTURE_1D_ARRAY stores its slice count in height (from
-             * glTexStorage2D), not depth.  All other array targets use depth. */
-            GLuint slice_count = (ptr->target == GL_TEXTURE_1D_ARRAY)
-                ? ptr->faces[0].levels[level].height
-                : ptr->faces[0].levels[level].depth;
+            /* GL_TEXTURE_1D_ARRAY stores slice count in height. Cube maps
+             * store each face as a separate 2D level (depth==1); layer still
+             * selects the face. Cube arrays / 2D arrays / 3D use depth. */
+            GLuint slice_count;
+            if (ptr->target == GL_TEXTURE_1D_ARRAY) {
+                slice_count = ptr->faces[0].levels[level].height;
+            } else if (ptr->target == GL_TEXTURE_CUBE_MAP) {
+                slice_count = 6u;
+            } else {
+                slice_count = ptr->faces[0].levels[level].depth;
+            }
             if (layer >= (GLint)slice_count) {
                 fprintf(stderr, "MGL Error: mglBindImageTexture: layer %d out of range (slices=%u)\n",
                         layer, slice_count);
