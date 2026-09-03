@@ -2210,25 +2210,11 @@ static void mglTextureCopyTextureToBuffer(
         }
         readSlice = 0u;
     }
-    /* Render target textures are stored top-to-bottom in Metal, but OpenGL
-     * readPixels expects bottom-to-top order. Flip Y for render targets to
-     * match OpenGL semantics. This mirrors the Y flip already done in
-     * mglReadColorTextureAsBGRA8 (metalSrcY = levelHeight - glMaxY). */
-    BOOL flipRenderTargetRows = tex->is_render_target;
-    if (flipRenderTargetRows && region.size.height > 0u) {
-        NSUInteger levelHeight = MAX((NSUInteger)1u, mglTextureInfo(texture).height >> level);
-        if (region.origin.y > levelHeight ||
-            region.size.height > levelHeight - region.origin.y) {
-            NSLog(@"MGL ERROR: mtlGetTexImage invalid render-target read region tex=%u y=%lu h=%lu levelHeight=%lu",
-                  tex->name,
-                  (unsigned long)region.origin.y,
-                  (unsigned long)region.size.height,
-                  (unsigned long)levelHeight);
-            mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_VALUE);
-            return;
-        }
-        readRegion.origin.y = levelHeight - (region.origin.y + region.size.height);
-    }
+    /* MGL color render targets are stored in GL row order (Metal y=0 =
+     * GL y=0 / bottom).  The integer getTexImage path already returns that
+     * order without a CPU Y-flip for full-image reads; applying an extra
+     * flip here inverted DSA multisample float/unorm results. */
+    BOOL flipRenderTargetRows = NO;
 
     /* Integer texture readback path: when the source texture is an integer
      * format and the output format is GL_*_INTEGER, use the dedicated integer
