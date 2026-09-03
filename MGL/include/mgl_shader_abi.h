@@ -64,6 +64,8 @@ typedef struct MGLAIRStageInfo {
     uint32_t tess_gen_spacing;
     uint32_t tess_gen_vertex_order;
     uint32_t tess_gen_point_mode;
+    /* 1 if TES source declared triangles/quads/isolines (link requires it). */
+    uint32_t tess_gen_mode_specified;
     uint32_t geometry_input_type;
     uint32_t geometry_output_type;
     uint32_t geometry_vertices_out;

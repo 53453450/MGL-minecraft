@@ -299,6 +299,8 @@ typedef struct Program_t {
     /* TES compiled as AIR compute expansion (isolines, point_mode, or
      * forced for XFB).  Draw/bind paths must use the compute ABI. */
     GLboolean tess_eval_compute;
+    /* 1 if the TES compilation unit declared an input primitive mode. */
+    GLboolean tess_gen_mode_specified;
     GLint sampler_units[TEXTURE_UNITS];
     GLint sampler_units_by_stage[_MAX_SHADER_TYPES][TEXTURE_UNITS];
     GLboolean sampler_units_explicit[TEXTURE_UNITS];

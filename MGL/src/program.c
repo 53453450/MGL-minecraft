@@ -1241,6 +1241,8 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
         pptr->tess_gen_vertex_order = stage_info.tess_gen_vertex_order;
         pptr->tess_gen_point_mode =
             stage_info.tess_gen_point_mode ? GL_TRUE : GL_FALSE;
+        pptr->tess_gen_mode_specified =
+            stage_info.tess_gen_mode_specified ? GL_TRUE : GL_FALSE;
         pptr->tess_eval_compute =
             (pptr->tess_gen_mode == GL_ISOLINES ||
              pptr->tess_gen_point_mode ||
@@ -1694,6 +1696,18 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         fprintf(stderr,
                 "MGL WARNING: mglLinkProgram failed program %u: "
                 "geometry shader missing layout(max_vertices)\n",
+                pptr->name);
+        return;
+    }
+
+    /* GLSL 4.60 §4.4.1 / GL 4.6 §11.2.1.2: TES must declare an input
+     * primitive mode; missing mode is a link failure (compile may still
+     * succeed — CTS te_lacking_primitive_mode_declaration). */
+    if ((pptr->attached_shader_mask & (1u << _TESS_EVALUATION_SHADER)) &&
+        !pptr->tess_gen_mode_specified) {
+        fprintf(stderr,
+                "MGL WARNING: mglLinkProgram failed program %u: "
+                "tessellation evaluation shader missing input primitive mode\n",
                 pptr->name);
         return;
     }

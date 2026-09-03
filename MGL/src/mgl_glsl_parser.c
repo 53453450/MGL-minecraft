@@ -2118,62 +2118,77 @@ more_qualifiers:
             expect_punct(p, "}");
             d->struct_members = members;
             d->struct_member_count = mcount;
+            if (!d->type) {
+                /* Anonymous struct type used as a declarator type:
+                 * `out struct { int a; } name[];` */
+                d->type = (MGLTypeSpec *)calloc(1, sizeof(MGLTypeSpec));
+                if (!d->type) {
+                    free_decl(d);
+                    return NULL;
+                }
+                d->type->base = MGL_AST_TYPE_STRUCT;
+            }
+            /* Type-only definition: `struct S { … };` */
+            if (ops_at(p, ";")) {
+                expect_punct(p, ";");
+                return d;
+            }
+            /* Inline `struct { … } name` — continue to declarator below. */
+        } else if (!d->type) {
+            free(d);
+            return NULL;
+        } else {
             return d;
         }
+    } else {
+        /* ordinary type */
+        d->type = parse_type_spec(p);
         if (!d->type) {
             free(d);
             return NULL;
         }
-        return d;
-    }
-
-    /* ordinary type */
-    d->type = parse_type_spec(p);
-    if (!d->type) {
-        free(d);
-        return NULL;
-    }
-    if (p->decl_precision) {
-        d->type->precision = p->decl_precision;
-        p->decl_precision = 0;
-    }
-
-    /* block definition:  type { ... } instance;  (UBO/SSBO) */
-    if (ops_at(p, "{")) {
-        advance(p);
-        MGLDecl **members = NULL;
-        uint32_t mcount = 0;
-        while (!ops_at(p, "}") && tk(p, 0)->kind != MGLGLSL_TOK_END) {
-            MGLDecl *m = parse_declaration(p);
-            if (!m) {
-                break;
-            }
-            members = (MGLDecl **)realloc(
-                members, (mcount + 1) * sizeof(MGLDecl *));
-            members[mcount++] = m;
+        if (p->decl_precision) {
+            d->type->precision = p->decl_precision;
+            p->decl_precision = 0;
         }
-        expect_punct(p, "}");
-        d->struct_members = members;
-        d->struct_member_count = mcount;
-        /* instance name */
-        if (at_any_ident(p)) {
-            d->name = dup_current(p);
+
+        /* block definition:  type { ... } instance;  (UBO/SSBO) */
+        if (ops_at(p, "{")) {
             advance(p);
-        }
-        if (!ops_at(p, ";")) {
+            MGLDecl **members = NULL;
+            uint32_t mcount = 0;
+            while (!ops_at(p, "}") && tk(p, 0)->kind != MGLGLSL_TOK_END) {
+                MGLDecl *m = parse_declaration(p);
+                if (!m) {
+                    break;
+                }
+                members = (MGLDecl **)realloc(
+                    members, (mcount + 1) * sizeof(MGLDecl *));
+                members[mcount++] = m;
+            }
+            expect_punct(p, "}");
+            d->struct_members = members;
+            d->struct_member_count = mcount;
+            /* instance name */
             if (at_any_ident(p)) {
                 d->name = dup_current(p);
                 advance(p);
             }
+            if (!ops_at(p, ";")) {
+                if (at_any_ident(p)) {
+                    d->name = dup_current(p);
+                    advance(p);
+                }
+            }
+            while (ops_at(p, "[")) {
+                advance(p);
+                uint32_t sz = parse_array_extent(p);
+                expect_punct(p, "]");
+                append_array_dim(p, d, sz);
+            }
+            expect_punct(p, ";");
+            return d;
         }
-        while (ops_at(p, "[")) {
-            advance(p);
-            uint32_t sz = parse_array_extent(p);
-            expect_punct(p, "]");
-            append_array_dim(p, d, sz);
-        }
-        expect_punct(p, ";");
-        return d;
     }
 
     /* Array specifier on the type before the declarator name, e.g.

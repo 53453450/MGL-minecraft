@@ -546,6 +546,7 @@ static MGLIRType *ir_type_clone(const MGLIRType *src)
 }
 
 static MGLIRType *resolve_type_spec(Sema *s, SymTab *tab, const MGLTypeSpec *ts);
+static MGLIRType *resolve_decl_type(Sema *s, SymTab *tab, const MGLDecl *d);
 static int builtin_type_spec(const char *name, MGLTypeSpec *ts);
 
 /* Apply block/member matrix major to every matrix in a (possibly nested)
@@ -581,9 +582,44 @@ static MGLIRType *resolve_decl_type_major(Sema *s, SymTab *tab,
                                           const MGLDecl *d,
                                           uint32_t inherited_major)
 {
-    MGLIRType *t = resolve_type_spec(s, tab, d->type);
-    if (!t) {
-        return NULL;
+    MGLIRType *t = NULL;
+    /* Anonymous inline struct type: `out struct { … } name;` — members
+     * are on the declarator; TypeSpec has no name / struct_def. */
+    if (d->type && d->type->base == MGL_AST_TYPE_STRUCT &&
+        !d->type->name && !d->type->struct_def &&
+        d->struct_members && d->struct_member_count > 0) {
+        uint32_t n = d->struct_member_count;
+        MGLIRType **members = (MGLIRType **)calloc(n, sizeof(MGLIRType *));
+        const char **names = (const char **)calloc(n, sizeof(char *));
+        if (!members || !names) {
+            free(members);
+            free(names);
+            return NULL;
+        }
+        for (uint32_t i = 0; i < n; i++) {
+            MGLDecl *m = d->struct_members[i];
+            members[i] = resolve_decl_type(s, tab, m);
+            names[i] = m->name;
+            if (!members[i]) {
+                for (uint32_t j = 0; j < i; j++) {
+                    mglIRTypeDestroy(members[j]);
+                }
+                free(members);
+                free(names);
+                return NULL;
+            }
+        }
+        t = mglIRTypeStruct(members, names, n, NULL);
+        free(members);
+        free(names);
+        if (!t) {
+            return NULL;
+        }
+    } else {
+        t = resolve_type_spec(s, tab, d->type);
+        if (!t) {
+            return NULL;
+        }
     }
     uint32_t major = d->matrix_major;
     if (major == MGL_AST_MATRIX_DEFAULT)
@@ -2943,11 +2979,14 @@ int mglGLSLSemanticCheck(const MGLTranslationUnit *tu, int stage,
         return -1;
     }
 
-    /* struct declarations first (they may be referenced by later decls) */
+    /* struct declarations first (they may be referenced by later decls).
+     * Only named type definitions (`struct S { … };`); anonymous inline
+     * types (`out struct { … } name;`) resolve via type->struct_def. */
     for (uint32_t i = 0; i < tu->decl_count; i++) {
         MGLDecl *d = tu->decls[i];
         if (d->type && d->type->base == MGL_AST_TYPE_STRUCT &&
-            d->struct_members && d->struct_member_count > 0) {
+            d->type->name && d->struct_members &&
+            d->struct_member_count > 0) {
             /* register struct name */
             Sym *sym = sym_new(d->type->name ? d->type->name : d->name);
             if (sym) {

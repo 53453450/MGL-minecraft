@@ -274,9 +274,11 @@ static bool varyingUsesFloatCarrier(const MType &t, bool has_gs) {
 
 /* Full-range uint flat varyings cannot use a single float carrier: UIToFP
  * loses bits above float24 and intBitsToFloat produces NaN payloads that
- * AGX does not preserve.  Split into two exact float16-bit lanes instead. */
+ * AGX does not preserve.  Split into two exact float16-bit lanes instead.
+ * Vectors keep the ordinary float carrier (per-component bitcast). */
 static bool uintUsesSplitFloatCarrier(const MType &t, bool has_gs) {
-    return !has_gs && t.scalar == MGLIR_SCALAR_UINT && !t.isArray();
+    return !has_gs && t.scalar == MGLIR_SCALAR_UINT && !t.vec &&
+           !t.isArray() && !t.isMatrix();
 }
 
 static void encodeUintSplitFloatCarrier(Codegen &cg, llvm::Value *value,
@@ -9974,9 +9976,14 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         }
     }
     if (isTES) {
-        if (tu->layout_primitive != MGL_AST_TES_TRIANGLES &&
-            tu->layout_primitive != MGL_AST_TES_QUADS &&
-            tu->layout_primitive != MGL_AST_TES_ISOLINES) {
+        /* GLSL requires an input primitive mode, but a missing mode is a
+         * link error (CTS te_lacking_primitive_mode_declaration): compile
+         * must still succeed.  Codegen treats DEFAULT as triangles. */
+        if (tu->layout_primitive == MGL_AST_TES_DEFAULT) {
+            tu->layout_primitive = MGL_AST_TES_TRIANGLES;
+        } else if (tu->layout_primitive != MGL_AST_TES_TRIANGLES &&
+                   tu->layout_primitive != MGL_AST_TES_QUADS &&
+                   tu->layout_primitive != MGL_AST_TES_ISOLINES) {
             if (err_buf && err_cap)
                 snprintf(err_buf, err_cap,
                          "TES AIR codegen: only layout(triangles/quads/"
@@ -13396,6 +13403,11 @@ static void fillStageInfo(const MGLTranslationUnit *tu,
         stage_info->tess_control_output_vertices =
             static_cast<uint32_t>(tu->layout_vertices);
     if (stage == MGL_STAGE_TESS_EVALUATION) {
+        stage_info->tess_gen_mode_specified =
+            (tu->layout_primitive == MGL_AST_TES_TRIANGLES ||
+             tu->layout_primitive == MGL_AST_TES_QUADS ||
+             tu->layout_primitive == MGL_AST_TES_ISOLINES)
+                ? 1u : 0u;
         stage_info->tess_gen_mode =
             tu->layout_primitive == MGL_AST_TES_QUADS ? GL_QUADS :
             tu->layout_primitive == MGL_AST_TES_ISOLINES ? GL_ISOLINES :
