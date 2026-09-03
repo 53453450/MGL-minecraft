@@ -1022,11 +1022,10 @@ void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint leve
     
     ImageUnit unit_params;
 
-    if (ptr->access != access)
-    {
-        ptr->dirty_bits |= DIRTY_TEXTURE_ACCESS;
-        ptr->access = access;
-    }
+    /* Image-unit access is per-binding, not a texture-object property.
+     * Mutating tex->access here used to set DIRTY_TEXTURE_ACCESS and
+     * recreate the Metal texture (wiping prior imageStore contents) when
+     * CTS rebound WRITE_ONLY → READ_ONLY between store and load draws. */
 
     unit_params.texture = texture;
     unit_params.level = level;
