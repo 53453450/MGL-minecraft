@@ -13794,6 +13794,14 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                 llvm::Type::getInt32Ty(ctx), 0))}));
     }
+    /* GLSL layout(early_fragment_tests) → Metal [[early_fragment_tests]].
+     * Apple's AIR puts a bare MDString "early_fragment_tests" (no "air."
+     * prefix) as the 4th !air.fragment operand — not a nested MDNode.
+     * Confirmed via llvm-bcanalyzer on metalfe metallibs. */
+    if (!isKernel && !isVS && !isTES && tu->layout_early_fragment_tests) {
+        stageElems.push_back(
+            llvm::MDString::get(ctx, "early_fragment_tests"));
+    }
     llvm::NamedMDNode *air = module.getOrInsertNamedMetadata(
         isKernel ? "air.kernel"
                  : ((isVS || isTES) ? "air.vertex" : "air.fragment"));
