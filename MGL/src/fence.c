@@ -395,16 +395,30 @@ void mglMemoryBarrier(GLMContext ctx, GLbitfield barriers)
      * and GL_TEXTURE_UPDATE_BARRIER_BIT both guarantee that later texture reads
      * observe prior shader image writes, so flip the authoritative flag on
      * every currently-bound image unit's texture here.  The flag is cleared
-     * again by any subsequent CPU-side texture upload (glTexSubImage/glTexImage). */
+     * again by any subsequent CPU-side texture upload (glTexSubImage/glTexImage).
+     *
+     * TEXTURE_BUFFER has no mip faces; imageStores write a texture2d copy of the
+     * buffer. BUFFER_UPDATE / TEXTURE_UPDATE therefore also require copying
+     * those texels back into the attached Buffer so glGetBufferSubData sees them. */
     GLbitfield image_relevant_bits =
-        GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_UPDATE_BARRIER_BIT;
+        GL_SHADER_IMAGE_ACCESS_BARRIER_BIT |
+        GL_TEXTURE_UPDATE_BARRIER_BIT |
+        GL_BUFFER_UPDATE_BARRIER_BIT;
     if (barriers == GL_ALL_BARRIER_BITS || (barriers & image_relevant_bits))
     {
         GLuint max_units = ctx->state.var.max_image_units;
         for (GLuint i = 0; i < max_units && i < TEXTURE_UNITS; i++) {
             ImageUnit *iu = &ctx->state.image_units[i];
             Texture *tex = iu->tex;
-            if (!tex || !tex->faces[0].levels) {
+            if (!tex) {
+                continue;
+            }
+            if (tex->target == GL_TEXTURE_BUFFER) {
+                tex->metal_data_authoritative = GL_TRUE;
+                mglRendererSyncTextureBufferFromImage(ctx, tex);
+                continue;
+            }
+            if (!tex->faces[0].levels) {
                 continue;
             }
             if (iu->level >= (GLint)tex->num_levels) {

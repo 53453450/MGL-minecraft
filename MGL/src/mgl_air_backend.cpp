@@ -5882,13 +5882,14 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             switch (tk) {
             case MGLIR_TEX_1D:
             case MGLIR_TEX_BUFFER:
+                /* Buffer images are uploaded as a width×1 texture2d fallback
+                 * (see TEXBUFFER CREATE … as=texture2d), same as 1D. */
                 if (!coord->getType()->isIntegerTy(32)) {
                     cg.err = 1;
                     cg.errmsg = "codegen: image1D/imageBuffer coord must be int";
                     return nullptr;
                 }
-                if (tk == MGLIR_TEX_1D)
-                    coord2 = toIvec2X0(coord);
+                coord2 = toIvec2X0(coord);
                 break;
             case MGLIR_TEX_2D:
             case MGLIR_TEX_2D_RECT:
@@ -5938,28 +5939,29 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     *cg.ctx, {vecTy, cg.b->getInt8Ty()});
                 llvm::Value *r = nullptr;
                 if (tk == MGLIR_TEX_BUFFER) {
-                    llvm::Type *smp = llvm::StructType::get(
-                        *cg.ctx, "struct._sampler_t");
-                    llvm::Value *rs = callAirFn(cg, "air.get_read_sampler",
-                                                smp->getPointerTo(2), {});
-                    r = callAirFn(cg, readName("air.read_texture_buffer_1d").c_str(),
-                                  retTy, {tex, rs, coord, cg.b->getInt32(1)});
+                    r = callAirFn(cg, readName("air.read_texture_2d").c_str(),
+                                  retTy, {tex, coord2, cg.b->getInt32(0),
+                                          cg.b->getInt32(3)});
                 } else if (tk == MGLIR_TEX_3D) {
                     r = callAirFn(cg, readName("air.read_texture_3d").c_str(),
                                   retTy, {tex, coord3, cg.b->getInt32(0),
                                           cg.b->getInt32(3)});
-                } else if (tk == MGLIR_TEX_CUBE || tk == MGLIR_TEX_CUBE_ARRAY) {
-                    const char *base = tk == MGLIR_TEX_CUBE_ARRAY
-                        ? "air.read_texture_cube_array" : "air.read_texture_cube";
-                    if (tk == MGLIR_TEX_CUBE_ARRAY) {
-                        r = callAirFn(cg, readName(base).c_str(), retTy,
-                                      {tex, coord2, layerOrFace, cg.b->getInt32(0),
-                                       cg.b->getInt32(3)});
-                    } else {
-                        r = callAirFn(cg, readName(base).c_str(), retTy,
-                                      {tex, coord2, layerOrFace, cg.b->getInt32(0),
-                                       cg.b->getInt32(3)});
-                    }
+                } else if (tk == MGLIR_TEX_CUBE) {
+                    r = callAirFn(cg, readName("air.read_texture_cube").c_str(),
+                                  retTy, {tex, coord2, layerOrFace,
+                                          cg.b->getInt32(0), cg.b->getInt32(3)});
+                } else if (tk == MGLIR_TEX_CUBE_ARRAY) {
+                    /* MSL texturecube_array.read(coord, face, array). GLSL
+                     * imageCubeArray uses a flat layer-face index. */
+                    llvm::Value *face =
+                        cg.b->CreateURem(layerOrFace, cg.b->getInt32(6));
+                    llvm::Value *arrayIdx =
+                        cg.b->CreateUDiv(layerOrFace, cg.b->getInt32(6));
+                    r = callAirFn(cg,
+                                  readName("air.read_texture_cube_array").c_str(),
+                                  retTy,
+                                  {tex, coord2, face, arrayIdx,
+                                   cg.b->getInt32(0), cg.b->getInt32(3)});
                 } else if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY) {
                     r = callAirFn(cg, readName("air.read_texture_2d_array").c_str(),
                                   retTy, {tex, coord2, layerOrFace,
@@ -5989,10 +5991,6 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 }
             }
             llvm::Type *voidTy = llvm::Type::getVoidTy(*cg.ctx);
-            if (tk == MGLIR_TEX_BUFFER) {
-                return callAirFn(cg, writeName("air.write_texture_buffer_1d").c_str(),
-                                 voidTy, {tex, coord, value});
-            }
             if (tk == MGLIR_TEX_3D) {
                 return callAirFn(cg, writeName("air.write_texture_3d").c_str(),
                                  voidTy, {tex, coord3, value, cg.b->getInt32(0),
@@ -6004,16 +6002,22 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                           cg.b->getInt32(0), cg.b->getInt32(3)});
             }
             if (tk == MGLIR_TEX_CUBE_ARRAY) {
-                return callAirFn(cg, writeName("air.write_texture_cube_array").c_str(),
-                                 voidTy, {tex, coord2, layerOrFace, value,
-                                          cg.b->getInt32(0), cg.b->getInt32(3)});
+                /* MSL: write(color, uint2 coord, uint face, uint array). */
+                llvm::Value *face =
+                    cg.b->CreateURem(layerOrFace, cg.b->getInt32(6));
+                llvm::Value *arrayIdx =
+                    cg.b->CreateUDiv(layerOrFace, cg.b->getInt32(6));
+                return callAirFn(
+                    cg, writeName("air.write_texture_cube_array").c_str(), voidTy,
+                    {tex, coord2, face, arrayIdx, value, cg.b->getInt32(0),
+                     cg.b->getInt32(3)});
             }
             if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY) {
                 return callAirFn(cg, writeName("air.write_texture_2d_array").c_str(),
                                  voidTy, {tex, coord2, layerOrFace, value,
                                           cg.b->getInt32(0), cg.b->getInt32(3)});
             }
-            /* 1D (as 2D), 2D, 2DRect */
+            /* 1D / buffer (as 2D), 2D, 2DRect */
             return callAirFn(cg, writeName("air.write_texture_2d").c_str(),
                              voidTy, {tex, coord2, value, cg.b->getInt32(0),
                                       cg.b->getInt32(3)});
@@ -10629,7 +10633,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             tt = texTy2dArray;
         else if (tk == MGLIR_TEX_CUBE) tt = texTyCube;
         else if (tk == MGLIR_TEX_CUBE_ARRAY) tt = texTyCubeArray;
-        else if (tk == MGLIR_TEX_BUFFER) tt = texTyBuf;
+        else if (tk == MGLIR_TEX_BUFFER) tt = texTy2d;
         paramTys.push_back(tt->getPointerTo(1));
     }
     for (VarSym &v : syms) {
@@ -12561,20 +12565,18 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             case MGLIR_TEX_1D_ARRAY: dimTy = "texture2d_array"; break;
             case MGLIR_TEX_CUBE: dimTy = "texturecube"; break;
             case MGLIR_TEX_CUBE_ARRAY: dimTy = "texturecube_array"; break;
-            case MGLIR_TEX_BUFFER: dimTy = "texture_buffer"; break;
+            case MGLIR_TEX_BUFFER:
+                /* Matches TEXBUFFER CREATE fallback (packed as texture2d). */
+                dimTy = "texture2d";
+                break;
             case MGLIR_TEX_1D:
             case MGLIR_TEX_2D:
             case MGLIR_TEX_2D_RECT:
             default: dimTy = "texture2d"; break;
             }
             char imageType[96];
-            if (itk == MGLIR_TEX_BUFFER) {
-                snprintf(imageType, sizeof(imageType),
-                         "texture_buffer<%s, access::read_write>", accessTy);
-            } else {
-                snprintf(imageType, sizeof(imageType),
-                         "%s<%s, access::read_write>", dimTy, accessTy);
-            }
+            snprintf(imageType, sizeof(imageType),
+                     "%s<%s, access::read_write>", dimTy, accessTy);
             argNodes.push_back(llvm::MDNode::get(ctx, {
                 llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                     llvm::Type::getInt32Ty(ctx), texArg++)),

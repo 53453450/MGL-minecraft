@@ -5667,16 +5667,35 @@ void mglGetTexImage(GLMContext ctx, GLenum target, GLint level, GLenum format, G
 
             mglFlushCommandBuffer(ctx);
             uint8_t *dst_base = (uint8_t *)pixels + pack_layout.skip_offset_bytes;
-            for (GLsizei z = 0; z < depth; z++) {
+            /* GL_TEXTURE_1D_ARRAY stores layer count in height; each Metal
+             * slice is 1 texel tall (2D-array backing). */
+            GLsizei layer_count = (target == GL_TEXTURE_1D_ARRAY)
+                ? height
+                : depth;
+            GLsizei slice_height = (target == GL_TEXTURE_1D_ARRAY) ? 1 : height;
+            size_t slice_image_size = (target == GL_TEXTURE_1D_ARRAY)
+                ? ((size_t)width * pixel_size)
+                : pack_layout.dst_image_size;
+            if (target == GL_TEXTURE_1D_ARRAY) {
+                /* Recompute tightly-packed layer stride for 1D array. */
+                MGLTexturePackLayout layer_layout;
+                if (!mglComputeTexturePackLayout(ctx, width, 1, 1, pixel_size,
+                                                 "glGetTexImage",
+                                                 &layer_layout)) {
+                    return;
+                }
+                slice_image_size = layer_layout.dst_image_size;
+            }
+            for (GLsizei z = 0; z < layer_count; z++) {
                 mglRendererGetTexImage(ctx,
                                               tex,
-                                              dst_base + ((size_t)z * pack_layout.dst_image_size),
+                                              dst_base + ((size_t)z * slice_image_size),
                                               (GLuint)pack_layout.dst_pitch,
-                                              (GLuint)pack_layout.dst_image_size,
+                                              (GLuint)slice_image_size,
                                               0,
                                               0,
                                               width,
-                                              height,
+                                              slice_height,
                                               format,
                                               type,
                                               level,

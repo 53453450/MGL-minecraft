@@ -138,6 +138,13 @@ void mglRendererCompatGenerateMipmaps(GLMContext glm_ctx, Texture *texture)
     [renderer mtlGenerateMipmaps:glm_ctx forTexture:texture];
 }
 
+void mglRendererSyncTextureBufferFromImage(GLMContext glm_ctx, Texture *texture)
+{
+    MGLRenderer *renderer = mglRendererForContext(glm_ctx);
+    if (!renderer || !glm_ctx || !texture) return;
+    [renderer syncTextureBufferFromImage:glm_ctx tex:texture];
+}
+
 void mglRendererCompatTexSubImage(GLMContext glm_ctx, Texture *texture, Buffer *buffer,
     size_t source_offset, size_t source_pitch, size_t source_image_size,
     size_t source_size, uint32_t slice, uint32_t level,
@@ -2176,6 +2183,17 @@ static void mglTextureCopyTextureToBuffer(
     }
 
     MGLRegionValue readRegion = region;
+    NSUInteger readSlice = slice;
+    /* TextureType3D uses origin.z for depth planes; arrayLength is always 1.
+     * Callers pass the depth index via `slice` (see mglGetTexImage's layer
+     * loop). Remap so blit uses slice=0 and origin.z = depth plane. */
+    if (mglTextureInfo(texture).texture_type == MGLTextureType3D) {
+        readRegion.origin.z = slice;
+        if (readRegion.size.depth < 1u) {
+            readRegion.size.depth = 1u;
+        }
+        readSlice = 0u;
+    }
     /* Render target textures are stored top-to-bottom in Metal, but OpenGL
      * readPixels expects bottom-to-top order. Flip Y for render targets to
      * match OpenGL semantics. This mirrors the Y flip already done in
@@ -2214,13 +2232,13 @@ static void mglTextureCopyTextureToBuffer(
                                 pixelBytes:pixelBytes
                                bytesPerRow:bytesPerRow
                              bytesPerImage:bytesPerImage
-                                fromRegion:region
+                                fromRegion:readRegion
                           outputComponents:(NSUInteger)classify.output_components
                        outputComponentBytes:(NSUInteger)classify.output_component_bytes
                               componentMap:classify.component_map
                                packedType:type
                               mipmapLevel:level
-                                    slice:slice
+                                    slice:readSlice
                           isRenderTarget:(BOOL)tex->is_render_target];
         return;
     }
@@ -2283,7 +2301,7 @@ static void mglTextureCopyTextureToBuffer(
         }
 
         mglTextureCopyTextureToBuffer(
-            blitEncoder, texture, slice, level, readRegion.origin,
+            blitEncoder, texture, readSlice, level, readRegion.origin,
             readRegion.size, stagingBuffer, 0, rowBytes, imageBytes);
 
         mglTextureEndBlitEncoder(blitEncoder);
@@ -2383,7 +2401,7 @@ static void mglTextureCopyTextureToBuffer(
             }
             mglTextureGetBytes(
                 texture, readback.mutableBytes, rowBytes, bytesPerImage,
-                readRegion, level, slice, YES);
+                readRegion, level, readSlice, YES);
             if (useBGRA8Conversion) {
                 if (!mglMetalCopyBGRA8CompatibleTextureBytesToGL((const uint8_t *)readback.bytes,
                                                                  rowBytes,
@@ -2413,7 +2431,7 @@ static void mglTextureCopyTextureToBuffer(
         } else {
             mglTextureGetBytes(
                 texture, pixelBytes, bytesPerRow, bytesPerImage,
-                readRegion, level, slice, YES);
+                readRegion, level, readSlice, YES);
         }
     } @catch (NSException *exception) {
         NSLog(@"MGL ERROR: mtlGetTexImage texture read failed for texture %u: %@",
@@ -5807,7 +5825,8 @@ static void mglTextureCopyTextureToBuffer(
         .pixel_format = bufferPixelFormat,
         .width = texWidth, .height = texHeight, .depth = 1u,
         .mipmap_level_count = 1u, .sample_count = 1u, .array_length = 1u,
-        .usage = MGL_TEXTURE_USAGE_SHADER_READ,
+        /* imageStore requires ShaderWrite; sampling still needs ShaderRead. */
+        .usage = MGL_TEXTURE_USAGE_SHADER_READ | MGL_TEXTURE_USAGE_SHADER_WRITE,
     };
 
     id bufferTexture = nil;
@@ -5876,6 +5895,57 @@ static void mglTextureCopyTextureToBuffer(
 
     [self recordGPUSuccess];
     return bufferTexture;
+}
+
+- (void)syncTextureBufferFromImage:(GLMContext)glm_ctx tex:(Texture *)tex
+{
+    if (!glm_ctx || !tex || tex->target != GL_TEXTURE_BUFFER ||
+        !tex->mtl_data || !tex->texture_buffer || tex->texture_buffer_size <= 0) {
+        return;
+    }
+
+    Buffer *sourceBuffer = tex->texture_buffer;
+    id texture = (__bridge id)(tex->mtl_data);
+    MGLRenderTextureInfo info = mglTextureInfo(texture);
+    if (info.width == 0u || info.height == 0u) {
+        return;
+    }
+
+    NSUInteger bytesPerTexel = [self bytesPerPixelForFormat:tex->internalformat];
+    if (bytesPerTexel == 0u) {
+        bytesPerTexel = (NSUInteger)sizeForInternalFormat(tex->internalformat, 0, 0);
+    }
+    if (bytesPerTexel == 0u) {
+        return;
+    }
+
+    NSUInteger bytesPerRow = (NSUInteger)info.width * bytesPerTexel;
+    NSUInteger packedBytes = bytesPerRow * (NSUInteger)info.height;
+    if (packedBytes == 0u ||
+        (size_t)tex->texture_buffer_size > packedBytes) {
+        return;
+    }
+
+    NSMutableData *packedData = [NSMutableData dataWithLength:packedBytes];
+    if (!packedData.mutableBytes) {
+        return;
+    }
+
+    @try {
+        mglTextureGetBytes(
+            texture, packedData.mutableBytes, bytesPerRow, 0,
+            mglTextureRegion2D(0, 0, info.width, info.height), 0, 0, NO);
+    } @catch (NSException *exception) {
+        NSLog(@"MGL TEXBUFFER SYNC ERROR: getBytes failed tex=%u buffer=%u: %@",
+              tex->name, sourceBuffer->name, exception);
+        return;
+    }
+
+    mglRendererBufferSubData(
+        glm_ctx, sourceBuffer,
+        (size_t)tex->texture_buffer_offset,
+        (size_t)tex->texture_buffer_size,
+        packedData.bytes);
 }
 
 - (BOOL)checkTextureCompleteness:(Texture *)tex

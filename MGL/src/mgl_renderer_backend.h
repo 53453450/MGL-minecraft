@@ -270,6 +270,10 @@ void *mglRendererMapUnmapBuffer(GLMContext context, Buffer *buffer,
                                 uint32_t access, bool map);
 void mglRendererReadBackBuffer(GLMContext context, Buffer *buffer,
                                size_t offset, size_t size);
+/* imageStore on GL_TEXTURE_BUFFER writes a Metal texture2d fallback; copy
+ * those texels back into the attached Buffer (CPU + Metal) so subsequent
+ * glGetBufferSubData observes the shader writes. */
+void mglRendererSyncTextureBufferFromImage(GLMContext context, Texture *texture);
 void mglRendererFlushBufferRange(GLMContext context, Buffer *buffer,
                                  intptr_t offset, intptr_t length);
 void mglRendererReadDrawable(GLMContext context, void *pixel_bytes,
