@@ -113,8 +113,11 @@ bool mglRendererVertexAttribIsColorInput(Program *program, GLuint attribute)
 
 BOOL mglRendererVertexAttribUsesCurrentValue(VertexArray *vao, GLuint attribute)
 {
+    /* GL: a disabled generic attribute (including when no arrays are
+     * enabled at all) feeds the current vertex attrib value.  An empty
+     * VAO (enabled_attribs==0) used with DrawArrays is the attribless-
+     * looking CTS path that still has `in` attributes in the VS. */
     return vao &&
            attribute < MAX_ATTRIBS &&
-           vao->enabled_attribs != 0u &&
            (vao->enabled_attribs & (0x1u << attribute)) == 0u;
 }

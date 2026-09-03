@@ -107,7 +107,7 @@ static uint32_t mglTessControlPointFormat(GLenum type)
                                                                       i,
                                                                       __FUNCTION__,
                                                                       &resolved);
-        if (!attribsEnabledByApp && !hasAttribBinding) {
+        if (!usesCurrentValue && !hasAttribBinding) {
             continue;
         }
 

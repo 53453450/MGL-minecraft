@@ -1025,9 +1025,8 @@ static bool mglBindingStateFlushResourceBindings(
                                                                       attrib,
                                                                       __FUNCTION__,
                                                                       &resolved);
-        // When enabled_attribs tracking is empty but the program uses this attribute,
-        // fall through and bind if a valid buffer exists (Sodium DSA path compatibility).
-        if (!attribsEnabledByApp && !hasAttribBinding) {
+        /* Disabled (or never-enabled) attribs use the current generic value. */
+        if (!usesCurrentValue && !hasAttribBinding) {
             continue;
         }
 
