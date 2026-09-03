@@ -587,10 +587,13 @@ static MGLIRType *resolve_decl_type_major(Sema *s, SymTab *tab,
                                           uint32_t inherited_major)
 {
     MGLIRType *t = NULL;
-    /* Anonymous inline struct type: `out struct { … } name;` — members
-     * are on the declarator; TypeSpec has no name / struct_def. */
+    /* Inline / interface-block struct body on the declarator:
+     * `out struct { … } name;`, `in Block { … } inst;`, or a second
+     * `out Block { … }` that reuses the block name with different
+     * members (GLSL allows in/out blocks to share a name). Prefer the
+     * declarator's members over a prior SYM_STRUCT of the same name. */
     if (d->type && d->type->base == MGL_AST_TYPE_STRUCT &&
-        !d->type->name && !d->type->struct_def &&
+        !d->type->struct_def &&
         d->struct_members && d->struct_member_count > 0) {
         uint32_t n = d->struct_member_count;
         MGLIRType **members = (MGLIRType **)calloc(n, sizeof(MGLIRType *));
@@ -3272,6 +3275,7 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
             (s->stage == MGL_STAGE_GEOMETRY ||
              s->stage == MGL_STAGE_TESS_CONTROL ||
              s->stage == MGL_STAGE_TESS_EVALUATION ||
+             s->stage == MGL_STAGE_FRAGMENT ||
              (s->stage == MGL_STAGE_VERTEX &&
               (d->qualifiers & MGL_AST_Q_OUT)));
         /* GL 4.6 §11.1.3.9: a geometry shader input interface-block
@@ -3516,7 +3520,10 @@ int mglGLSLSemanticCheck(const MGLTranslationUnit *tu, int stage,
         MGLDecl *d = tu->decls[i];
         if (d->type && d->type->base == MGL_AST_TYPE_STRUCT &&
             d->type->name && d->struct_members &&
-            d->struct_member_count > 0) {
+            d->struct_member_count > 0 &&
+            /* in/out interface blocks may reuse a block name with different
+             * members; do not publish them as a shared SYM_STRUCT. */
+            !(d->qualifiers & (MGL_AST_Q_IN | MGL_AST_Q_OUT))) {
             /* register struct name */
             Sym *sym = sym_new(d->type->name ? d->type->name : d->name);
             if (sym) {

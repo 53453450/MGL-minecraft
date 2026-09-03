@@ -2342,16 +2342,22 @@ more_qualifiers:
             if (!param) {
                 break;
             }
-            /* parameter_qualifier + precision_qualifier in either order
-             * (GLSL 4.60 §6.1): `in highp float a` / `highp in float a`. */
+            /* Parameter type_qualifier in any order (GLSL 4.60 §4.3 /
+             * ARB_shading_language_420pack): storage, precision, const,
+             * and precise may appear interleaved, e.g.
+             * `const highp precise in float a`. */
             uint32_t param_prec = MGL_AST_PRECISION_NONE;
             for (;;) {
-                if (eat_ident(p, "in")) {
+                if (eat_ident(p, "const")) {
+                    param->qualifiers |= MGL_AST_Q_CONST;
+                } else if (eat_ident(p, "in")) {
                     param->qualifiers |= MGL_AST_Q_IN;
                 } else if (eat_ident(p, "out")) {
                     param->qualifiers |= MGL_AST_Q_OUT;
                 } else if (eat_ident(p, "inout")) {
                     param->qualifiers |= MGL_AST_Q_IN | MGL_AST_Q_OUT;
+                } else if (eat_ident(p, "precise")) {
+                    param->qualifiers |= MGL_AST_Q_PRECISE;
                 } else if (at_ident(p, "lowp") || at_ident(p, "mediump") ||
                            at_ident(p, "highp")) {
                     if (param_prec == MGL_AST_PRECISION_NONE) {

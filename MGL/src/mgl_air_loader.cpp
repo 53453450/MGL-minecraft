@@ -141,20 +141,54 @@ MTL::RenderPipelineDescriptor* buildRenderPipelineDescriptor(
 
     if (desc->attrib_count > 0) {
         MTL::VertexDescriptor* vd = MTL::VertexDescriptor::alloc()->init();
+        /* Sparse GL locations leave Invalid holes (e.g. only location=1
+         * enabled).  Some AGX PSO validates every referenced
+         * [[attribute(N)]] including holes left at lower indices when
+         * the runtime falls back to argument order.  Fill Invalid slots
+         * below attrib_count with a copy of the first valid attribute so
+         * the descriptor defines every index in [0, attrib_count). */
+        uint32_t fillFmt = 0, fillOff = 0, fillBuf = 0, fillStride = 0;
+        uint32_t fillStep = 1, fillRate = 1;
         for (uint32_t i = 0; i < desc->attrib_count && i < 32; i++) {
-            const uint32_t bufIdx = desc->attrib_buffer_index[i];
+            if (desc->attrib_format[i] ==
+                static_cast<uint32_t>(MTL::VertexFormatInvalid))
+                continue;
+            fillFmt = desc->attrib_format[i];
+            fillOff = desc->attrib_offset[i];
+            fillBuf = desc->attrib_buffer_index[i];
+            fillStride = desc->attrib_stride[i];
+            fillStep = desc->attrib_step_function[i];
+            fillRate = desc->attrib_step_rate[i];
+            break;
+        }
+        for (uint32_t i = 0; i < desc->attrib_count && i < 32; i++) {
+            uint32_t fmt = desc->attrib_format[i];
+            uint32_t off = desc->attrib_offset[i];
+            uint32_t bufIdx = desc->attrib_buffer_index[i];
+            uint32_t stride = desc->attrib_stride[i];
+            uint32_t step = desc->attrib_step_function[i];
+            uint32_t rate = desc->attrib_step_rate[i];
+            if (fmt == static_cast<uint32_t>(MTL::VertexFormatInvalid) &&
+                fillFmt != 0) {
+                fmt = fillFmt;
+                off = fillOff;
+                bufIdx = fillBuf;
+                stride = fillStride;
+                step = fillStep;
+                rate = fillRate;
+            }
             vd->attributes()->object(i)->setFormat(
-                (MTL::VertexFormat)desc->attrib_format[i]);
-            vd->attributes()->object(i)->setOffset(desc->attrib_offset[i]);
+                (MTL::VertexFormat)fmt);
+            vd->attributes()->object(i)->setOffset(off);
             vd->attributes()->object(i)->setBufferIndex(bufIdx);
             /* Only valid attributes write a layout. Unused attributes must not
              * overwrite an existing stride or step rate with zero. */
-            if (desc->attrib_format[i] !=
+            if (fmt !=
                 static_cast<uint32_t>(MTL::VertexFormatInvalid)) {
-                vd->layouts()->object(bufIdx)->setStride(desc->attrib_stride[i]);
+                vd->layouts()->object(bufIdx)->setStride(stride);
                 vd->layouts()->object(bufIdx)->setStepFunction(
-                    (MTL::VertexStepFunction)desc->attrib_step_function[i]);
-                vd->layouts()->object(bufIdx)->setStepRate(desc->attrib_step_rate[i]);
+                    (MTL::VertexStepFunction)step);
+                vd->layouts()->object(bufIdx)->setStepRate(rate);
             }
         }
         rpd->setVertexDescriptor(vd);

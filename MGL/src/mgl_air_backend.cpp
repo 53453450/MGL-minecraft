@@ -5188,6 +5188,22 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 return tb;
             if (cg.err) return nullptr;
         }
+        /* Non-arrayed named interface-block member: `input_block.field`
+         * (FS in / VS·TES out). Sema flattens these to per-member
+         * VARYING symbols keyed by blockName. */
+        if (e->u.member.object &&
+            e->u.member.object->kind == MGL_EXPR_VAR_REF) {
+            const char *inst = e->u.member.object->u.var_ref.name;
+            VarSym *member = codegenStageSymbol(
+                cg, e->u.member.field, VarSym::VARYING);
+            if (!member)
+                member = codegenStageSymbol(
+                    cg, e->u.member.field, VarSym::OUTPUT);
+            if (member && member->location != UINT32_MAX &&
+                member->blockName == inst && !member->type.isArray()) {
+                return varValue(cg, *member, mod);
+            }
+        }
         if (const MGLIRSymbol *sb = ssboRootSym(e, mod)) {
             /* Multi-component swizzles (`.xy`) cannot be addressed as one
              * contiguous scalar in the SSBO; load the parent vector and
@@ -7609,11 +7625,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         if (cg.userFns || cg.userFnDecls) {
             std::string key = std::string(name) + "#" +
                               std::to_string(e->u.call.arg_count);
-            /* GS/TCS/compute helpers are inlined into the caller so
-             * resource bindings and Metal compute calling conventions
-             * stay valid (non-void callees also trip materializeAll). */
-            if ((cg.isGeometry || cg.isCompute || cg.isTessControl) &&
-                cg.userFnDecls) {
+            /* Prefer inlining when a decl is registered in userFnDecls
+             * (GS/TCS/compute always; any stage when a param is out/inout
+             * so by-value LLVM calls cannot lose write-back). */
+            if (cg.userFnDecls) {
                 auto dit = cg.userFnDecls->find(key);
                 if (dit != cg.userFnDecls->end() && dit->second &&
                     dit->second->body) {
@@ -7652,6 +7667,21 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     llvm::Value *ret = cg.inlineRetVal;
                     cg.inliningHelper = savedInline;
                     cg.inlineRetVal = savedRet;
+                    /* GLSL out/inout: write the final param value back to
+                     * the caller's lvalue argument before unshadowing. */
+                    for (uint32_t a = 0; a < fd->param_count &&
+                                        a < e->u.call.arg_count; a++) {
+                        MGLDecl *pd = fd->params[a];
+                        if (!pd || !pd->name) continue;
+                        if (!(pd->qualifiers & MGL_AST_Q_OUT)) continue;
+                        const MGLExpr *arg = e->u.call.args[a];
+                        if (!arg || arg->kind != MGL_EXPR_VAR_REF ||
+                            !arg->u.var_ref.name)
+                            continue;
+                        auto pit = cg.lvalues.find(pd->name);
+                        if (pit != cg.lvalues.end())
+                            cg.lvalues[arg->u.var_ref.name] = pit->second;
+                    }
                     for (uint32_t a = 0; a < fd->param_count; a++) {
                         MGLDecl *pd = fd->params[a];
                         if (!pd || !pd->name) continue;
@@ -8052,16 +8082,20 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 return v;
         }
 
-        /* Interface-block member write: instance.field = v (VS/TES out
+        /* Interface-block member write: instance.field = v (VS/TES/GS out
          * blocks flatten to per-member VARYING symbols, so this is an
-         * ordinary varying lvalue store keyed by the member name). */
+         * ordinary varying lvalue store keyed by the member name).  TCS
+         * arrayed outs use emitTessBlockMemberStore above. */
         if (lhs->kind == MGL_EXPR_MEMBER &&
             lhs->u.member.object &&
             lhs->u.member.object->kind == MGL_EXPR_VAR_REF) {
             const char *instName = lhs->u.member.object->u.var_ref.name;
             VarSym *member = codegenStageSymbol(
                 cg, lhs->u.member.field, VarSym::VARYING);
-            if (member && !cg.isGeometry && !cg.isTessControl &&
+            if (!member)
+                member = codegenStageSymbol(
+                    cg, lhs->u.member.field, VarSym::OUTPUT);
+            if (member && !cg.isTessControl &&
                 member->location != UINT32_MAX &&
                 member->blockName == instName) {
                 if (e->u.assign.op != MGL_OP_ASSIGN) {
@@ -12488,11 +12522,23 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         if (!d->name || !d->body || strcmp(d->name, "main") == 0) continue;
         /* GS/TCS/compute helpers are inlined at call sites (Metal rejects
          * some texture/alloca/stage-buffer calling conventions on compute
-         * callees — including non-void helpers). */
-        if (isGS || isCompute || isTCS) {
-            std::string key = std::string(d->name) + "#" +
-                              std::to_string(d->param_count);
-            userFnDecls[key] = d;
+         * callees — including non-void helpers).  Helpers with out/inout
+         * params are also registered for inlining on every stage: LLVM
+         * by-value calls cannot write results back to the caller. */
+        {
+            int has_out_param = 0;
+            for (uint32_t p = 0; p < d->param_count; p++) {
+                if (d->params[p] &&
+                    (d->params[p]->qualifiers & MGL_AST_Q_OUT)) {
+                    has_out_param = 1;
+                    break;
+                }
+            }
+            if (isGS || isCompute || isTCS || has_out_param) {
+                std::string key = std::string(d->name) + "#" +
+                                  std::to_string(d->param_count);
+                userFnDecls[key] = d;
+            }
         }
         const MGLIRSymbol *fs = nullptr;
         for (uint32_t k = 0; k < mod.symbol_count; k++) {
