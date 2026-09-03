@@ -460,6 +460,36 @@ static void record_array_len(MGLParser *p, const char *name, uint32_t len)
     p->array_lens[p->array_count++] = len;
 }
 
+static int lookup_builtin_const_int(const char *name, int64_t *value)
+{
+    /* GLSL §7.3 implementation-dependent constants used in array extents.
+     * Values must match glm_params / glGet / AIR builtin folding. */
+    static const struct {
+        const char *name;
+        int64_t value;
+    } builtins[] = {
+        { "gl_MaxImageUnits", 8 },
+        { "gl_MaxImageSamples", 8 },
+        { "gl_MaxVertexImageUniforms", 8 },
+        { "gl_MaxTessControlImageUniforms", 8 },
+        { "gl_MaxTessEvaluationImageUniforms", 8 },
+        { "gl_MaxGeometryImageUniforms", 8 },
+        { "gl_MaxFragmentImageUniforms", 8 },
+        { "gl_MaxComputeImageUniforms", 8 },
+        { "gl_MaxCombinedImageUniforms", 40 },
+        { "gl_MaxCombinedShaderOutputResources", 8 },
+        { "gl_MaxCombinedImageUnitsAndFragmentOutputs", 8 },
+    };
+    if (!name || !value) return 0;
+    for (size_t i = 0; i < sizeof(builtins) / sizeof(builtins[0]); i++) {
+        if (strcmp(name, builtins[i].name) == 0) {
+            *value = builtins[i].value;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int lookup_const_int(const MGLParser *p, const char *name, int64_t *value)
 {
     if (!p || !name) return 0;
@@ -469,7 +499,7 @@ static int lookup_const_int(const MGLParser *p, const char *name, int64_t *value
             return 1;
         }
     }
-    return 0;
+    return lookup_builtin_const_int(name, value);
 }
 
 static int lookup_array_len(const MGLParser *p, const char *name, uint32_t *len)

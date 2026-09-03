@@ -1919,6 +1919,48 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
                 }
             }
 
+            /* Active image uniforms per stage (GLSL §4.4.6.2 / ARB_shader_image_load_store). */
+            if (!binding_error) {
+                MGLShaderResourceList *rl =
+                    &pptr->shader_resources_list[stage][_STORAGE_IMAGE_RES];
+                GLuint image_count = 0u;
+                for (GLuint i = 0; i < rl->count; i++) {
+                    GLuint elems = rl->list[i].gl_array_size > 0
+                        ? (GLuint)rl->list[i].gl_array_size : 1u;
+                    image_count += elems;
+                }
+                GLuint stage_max = 0u;
+                switch (stage) {
+                case _VERTEX_SHADER:
+                    stage_max = ctx->state.var.max_vertex_image_uniforms;
+                    break;
+                case _TESS_CONTROL_SHADER:
+                    stage_max = ctx->state.var.max_tess_control_image_uniforms;
+                    break;
+                case _TESS_EVALUATION_SHADER:
+                    stage_max = ctx->state.var.max_tess_evaluation_image_uniforms;
+                    break;
+                case _GEOMETRY_SHADER:
+                    stage_max = ctx->state.var.max_geometry_image_uniforms;
+                    break;
+                case _FRAGMENT_SHADER:
+                    stage_max = ctx->state.var.max_fragment_image_uniforms;
+                    break;
+                case _COMPUTE_SHADER:
+                    stage_max = ctx->state.var.max_compute_image_uniforms;
+                    break;
+                default:
+                    break;
+                }
+                if (stage_max > 0u && image_count > stage_max) {
+                    fprintf(stderr,
+                            "MGL LINK ERROR: program %u stage %d has %u active image "
+                            "uniforms; exceeds stage limit (%u)\n",
+                            pptr->name, stage, image_count, stage_max);
+                    binding_error = true;
+                }
+            }
+
             /* Atomic counters: GL_MAX_ATOMIC_COUNTER_BUFFER_BINDINGS */
             if (!binding_error) {
                 MGLShaderResourceList *rl =
@@ -1937,6 +1979,30 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
                         break;
                     }
                 }
+            }
+        }
+
+        if (!binding_error) {
+            GLuint combined_images = 0u;
+            for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
+                if ((pptr->attached_shader_mask & (1u << stage)) == 0u) {
+                    continue;
+                }
+                MGLShaderResourceList *rl =
+                    &pptr->shader_resources_list[stage][_STORAGE_IMAGE_RES];
+                for (GLuint i = 0; i < rl->count; i++) {
+                    GLuint elems = rl->list[i].gl_array_size > 0
+                        ? (GLuint)rl->list[i].gl_array_size : 1u;
+                    combined_images += elems;
+                }
+            }
+            if (combined_images > ctx->state.var.max_combined_image_uniforms) {
+                fprintf(stderr,
+                        "MGL LINK ERROR: program %u has %u combined active image "
+                        "uniforms; exceeds GL_MAX_COMBINED_IMAGE_UNIFORMS (%u)\n",
+                        pptr->name, combined_images,
+                        ctx->state.var.max_combined_image_uniforms);
+                binding_error = true;
             }
         }
 
