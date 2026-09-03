@@ -593,7 +593,8 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
                     i >= 0) {
                     MGLShaderResourceList *resourceList =
                         &computeProgram->shader_resources_list[stage][spvc_type];
-                    if (spvc_type == _SAMPLED_IMAGE_RES) {
+                    if (spvc_type == _SAMPLED_IMAGE_RES ||
+                        spvc_type == _STORAGE_IMAGE_RES) {
                         GLuint ordinal = (GLuint)i;
                         for (GLuint ri = 0; ri < resourceList->count; ri++) {
                             MGLShaderResource *candidate = &resourceList->list[ri];
@@ -637,8 +638,19 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
                                                       ctx, stage, spvc_type, i)];
                         break;
                     case _IMAGE_TEXTURE:
-                        glUnit = resource ? (resource->sampler_unit >= 0 ? (GLuint)resource->sampler_unit : resource->gl_binding)
-                                          : mglRendererGetProgramGLBinding(ctx, stage, spvc_type, i);
+                        if (computeProgram && metalBinding < TEXTURE_UNITS &&
+                            computeProgram->sampler_units_explicit_by_stage[stage][metalBinding]) {
+                            glUnit = (GLuint)computeProgram
+                                         ->sampler_units_by_stage[stage][metalBinding];
+                        } else if (resource) {
+                            GLuint base = resource->sampler_unit >= 0
+                                ? (GLuint)resource->sampler_unit
+                                : resource->gl_binding;
+                            glUnit = base + resourceElement;
+                        } else {
+                            glUnit = (GLuint)mglRendererGetProgramGLBinding(
+                                ctx, stage, spvc_type, i);
+                        }
                         if (glUnit >= TEXTURE_UNITS) {
                             continue;
                         }
@@ -813,64 +825,6 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
             }
         }
     }
-
-    /* Bind additional array elements for storage image arrays.
-     * The AIR backend emits `array<texture2d<T, access::read_write>, N> image [[texture(B)]]`
-     * which occupies consecutive Metal texture slots B..B+N-1.  The main
-     * loop above only binds element 0; bind elements 1..N-1 here. */
-    if (computeProgram) {
-        MGLShaderResourceList *storageArrayResources =
-            &computeProgram->shader_resources_list[stage][_STORAGE_IMAGE_RES];
-        for (GLuint resourceIndex = 0; storageArrayResources->list && resourceIndex < storageArrayResources->count; resourceIndex++) {
-            MGLShaderResource *resource = &storageArrayResources->list[resourceIndex];
-            if (resource->gl_array_size <= 1) {
-                continue;
-            }
-
-            for (GLint element = 1; element < resource->gl_array_size; element++) {
-                GLuint metalSlot = resource->binding + (GLuint)element;
-                if (metalSlot >= TEXTURE_UNITS) {
-                    break;
-                }
-
-                GLuint glUnit = (resource->sampler_unit >= 0 ? (GLuint)resource->sampler_unit : resource->gl_binding) + (GLuint)element;
-                if (glUnit >= TEXTURE_UNITS) {
-                    continue;
-                }
-
-                Texture *ptr = MGL_STATE(ctx)->image_units[glUnit].tex;
-                if (!ptr || ![self bindMTLTexture:ptr] || !ptr->mtl_data) {
-                    continue;
-                }
-
-                id texture = (__bridge id)(ptr->mtl_data);
-
-                /* For storage images bound to a non-zero mipmap level, create
-                 * a level-specific texture view (matches element 0 path). */
-                GLuint imgLevel = MGL_STATE(ctx)->image_units[glUnit].level;
-                if (imgLevel > 0u) {
-                    MGLRenderTextureInfo texInfo = {0};
-                    if (mglRenderGetTextureInfo((__bridge void *)texture,
-                                                   &texInfo) == 0 &&
-                        (uint64_t)imgLevel >= texInfo.mipmap_level_count) {
-                        texture = nil;
-                    } else {
-                    id levelView = mglComputeCreateTextureLevelView(
-                        texture, imgLevel);
-                    if (levelView) {
-                        texture = levelView;
-                        /* Keep the view alive until the end replay. */
-                        MGL_CTEX_RETAIN_TEMP(levelView);
-                    }
-                    }
-                }
-
-                MGL_CTEX_EMIT_TEXTURE(metalSlot,
-                                      (__bridge void *)texture);
-            }
-        }
-    }
-
 
     MGL_CTEX_FLUSH_SNAPSHOT();
 #undef MGL_CTEX_EMIT_TEXTURE

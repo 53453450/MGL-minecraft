@@ -1427,6 +1427,74 @@ static llvm::Value *selectArrayElement(Codegen &cg, llvm::Value *index,
     return phi;
 }
 
+/* Peel to the IMAGE element type of a (possibly array) image uniform. */
+static const MGLIRType *imageElementType(const MGLIRSymbol *s) {
+    if (!s || !s->type) return nullptr;
+    const MGLIRType *t = s->type;
+    while (t && t->kind == MGLIR_TYPE_ARRAY)
+        t = t->elem_type;
+    return (t && t->kind == MGLIR_TYPE_IMAGE) ? t : nullptr;
+}
+
+/* Resolve imageLoad/Store/Atomic/Size first arg: image or image[i]. */
+static llvm::Value *resolveImageTex(
+    Codegen &cg, const MGLExpr *ia, const MGLIRModule *mod,
+    const std::map<std::string, MType> &locals, const MGLIRType **outImgTy) {
+    if (!ia) {
+        cg.err = 1;
+        cg.errmsg = "codegen: missing image argument";
+        return nullptr;
+    }
+    const char *imageName = nullptr;
+    const MGLExpr *indexExpr = nullptr;
+    if (ia->kind == MGL_EXPR_VAR_REF) {
+        imageName = ia->u.var_ref.name;
+    } else if (ia->kind == MGL_EXPR_INDEX && ia->u.index.object &&
+               ia->u.index.object->kind == MGL_EXPR_VAR_REF) {
+        imageName = ia->u.index.object->u.var_ref.name;
+        indexExpr = ia->u.index.index;
+    } else {
+        cg.err = 1;
+        cg.errmsg =
+            "codegen: image first argument must be an image variable";
+        return nullptr;
+    }
+    const MGLIRType *imgTy = imageElementType(findSymbol(mod, imageName));
+    if (!imgTy) {
+        cg.err = 1;
+        cg.errmsg = "codegen: requires an image variable";
+        return nullptr;
+    }
+    if (outImgTy) *outImgTy = imgTy;
+    if (indexExpr) {
+        llvm::Value *index = emitExpr(cg, indexExpr, mod, locals);
+        if (!index) return nullptr;
+        index = coerceScalar(cg, index, MGLIR_SCALAR_INT);
+        auto ti = cg.texArrayValues.find(imageName);
+        if (ti == cg.texArrayValues.end()) {
+            cg.err = 1;
+            cg.errmsg = "codegen: missing image array binding";
+            return nullptr;
+        }
+        if (auto *ci = llvm::dyn_cast<llvm::ConstantInt>(index)) {
+            uint32_t k = (uint32_t)ci->getZExtValue();
+            if (k < ti->second.size()) return ti->second[k];
+            if (!ti->second.empty()) return ti->second.back();
+            cg.err = 1;
+            cg.errmsg = "codegen: empty image array binding";
+            return nullptr;
+        }
+        return selectArrayElement(cg, index, ti->second);
+    }
+    llvm::Value *tex = samplerTexValue(cg, imageName);
+    if (!tex) {
+        cg.err = 1;
+        cg.errmsg =
+            std::string("codegen: missing image binding for ") + imageName;
+    }
+    return tex;
+}
+
 /* Sample from a sampler array by index without phi-selecting texture or
  * sampler pointers (Metal's compiler crashes on those inside loops).
  * One switch case performs exactly one sample; each texel component then
@@ -5817,25 +5885,11 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
              * per-texel sequential RMW inside one invocation. */
             const MGLExpr *ia = e->u.call.arg_count > 0
                 ? e->u.call.args[0] : nullptr;
-            if (!ia || ia->kind != MGL_EXPR_VAR_REF) {
-                cg.err = 1;
-                cg.errmsg = "codegen: imageAtomic* first argument must be an image";
-                return nullptr;
-            }
-            const MGLIRSymbol *is = findSymbol(mod, ia->u.var_ref.name);
-            if (!is || is->type->kind != MGLIR_TYPE_IMAGE) {
-                cg.err = 1;
-                cg.errmsg = "codegen: imageAtomic* requires an image variable";
-                return nullptr;
-            }
-            const MGLIRTexKind tk = is->type->tex_kind;
-            llvm::Value *tex = samplerTexValue(cg, ia->u.var_ref.name);
-            if (!tex) {
-                cg.err = 1;
-                cg.errmsg = "codegen: missing image binding for imageAtomic*";
-                return nullptr;
-            }
-            const bool isUint = is->type->tex_storage == MGLIR_SCALAR_UINT;
+            const MGLIRType *imgTy = nullptr;
+            llvm::Value *tex = resolveImageTex(cg, ia, mod, locals, &imgTy);
+            if (!tex) return nullptr;
+            const MGLIRTexKind tk = imgTy->tex_kind;
+            const bool isUint = imgTy->tex_storage == MGLIR_SCALAR_UINT;
             const bool isCompSwap = strcmp(name, "imageAtomicCompSwap") == 0;
             const bool isMsImage =
                 tk == MGLIR_TEX_2D_MS || tk == MGLIR_TEX_2D_MS_ARRAY;
@@ -6082,34 +6136,17 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             strcmp(name, "imageSize") == 0) {
             const MGLExpr *ia = e->u.call.arg_count > 0
                 ? e->u.call.args[0] : nullptr;
-            if (!ia || ia->kind != MGL_EXPR_VAR_REF) {
-                cg.err = 1;
-                cg.errmsg = std::string("codegen: ") + name +
-                    " first argument must be an image variable";
-                return nullptr;
-            }
-            const MGLIRSymbol *is = findSymbol(mod, ia->u.var_ref.name);
-            if (!is || is->type->kind != MGLIR_TYPE_IMAGE) {
-                cg.err = 1;
-                cg.errmsg = std::string("codegen: ") + name +
-                    " requires an image variable";
-                return nullptr;
-            }
-            const MGLIRTexKind tk = is->type->tex_kind;
-            llvm::Value *tex = samplerTexValue(cg, ia->u.var_ref.name);
-            if (!tex) {
-                cg.err = 1;
-                cg.errmsg = std::string("codegen: missing image binding for ") +
-                    ia->u.var_ref.name;
-                return nullptr;
-            }
+            const MGLIRType *imgTy = nullptr;
+            llvm::Value *tex = resolveImageTex(cg, ia, mod, locals, &imgTy);
+            if (!tex) return nullptr;
+            const MGLIRTexKind tk = imgTy->tex_kind;
             llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
             llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
             llvm::Type *v2i32 = llvm::FixedVectorType::get(i32, 2);
             llvm::Type *v3i32 = llvm::FixedVectorType::get(i32, 3);
             llvm::Type *v4f32 = llvm::FixedVectorType::get(f32, 4);
             llvm::Type *v4i32 = llvm::FixedVectorType::get(i32, 4);
-            const MGLIRScalar storage = is->type->tex_storage;
+            const MGLIRScalar storage = imgTy->tex_storage;
             const bool isInt =
                 storage == MGLIR_SCALAR_INT || storage == MGLIR_SCALAR_UINT;
             auto writeName = [&](const char *base) -> std::string {
@@ -10649,7 +10686,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         } else if (v.kind == VarSym::TEXTURE) {
             texCount += v.type.arr > 0 ? (uint32_t)v.type.arr : 1u;
         } else if (v.kind == VarSym::IMAGE) {
-            imageCount++;
+            imageCount += v.type.arr > 0 ? (uint32_t)v.type.arr : 1u;
         }
     }
     auto recordStrideFor = [&](VarSym::Kind kind) -> uint32_t {
@@ -11012,9 +11049,9 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     }
     for (VarSym &v : syms) {
         if (v.kind != VarSym::IMAGE) continue;
-        const MGLIRSymbol *ts = findSymbol(&mod, v.name.c_str());
-        MGLIRTexKind tk = ts && ts->type->kind == MGLIR_TYPE_IMAGE
-            ? ts->type->tex_kind : MGLIR_TEX_2D;
+        const MGLIRType *imgTy =
+            imageElementType(findSymbol(&mod, v.name.c_str()));
+        MGLIRTexKind tk = imgTy ? imgTy->tex_kind : MGLIR_TEX_2D;
         llvm::StructType *tt = texTy2d;
         if (tk == MGLIR_TEX_3D) tt = texTy3d;
         else if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY ||
@@ -11023,7 +11060,9 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         else if (tk == MGLIR_TEX_CUBE) tt = texTyCube;
         else if (tk == MGLIR_TEX_CUBE_ARRAY) tt = texTyCubeArray;
         else if (tk == MGLIR_TEX_BUFFER) tt = texTy2d;
-        paramTys.push_back(tt->getPointerTo(1));
+        uint32_t elements = v.type.arr > 0 ? (uint32_t)v.type.arr : 1u;
+        for (uint32_t k = 0; k < elements; k++)
+            paramTys.push_back(tt->getPointerTo(1));
     }
     for (VarSym &v : syms) {
         if (!isVS && !isTES && !isKernel && v.kind == VarSym::VARYING) {
@@ -11393,7 +11432,15 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     }
     for (VarSym &v : syms) {
         if (v.kind != VarSym::IMAGE) continue;
-        cg.texValues[v.name] = fn->getArg(argSlot++);
+        uint32_t elements = v.type.arr > 0 ? (uint32_t)v.type.arr : 1u;
+        if (elements == 1u) {
+            cg.texValues[v.name] = fn->getArg(argSlot++);
+        } else {
+            std::vector<llvm::Value *> texes;
+            for (uint32_t k = 0; k < elements; k++)
+                texes.push_back(fn->getArg(argSlot++));
+            cg.texArrayValues[v.name] = std::move(texes);
+        }
     }
     {
         uint32_t location = (isCapture ? 1u : 0u) +
@@ -12675,9 +12722,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     idx += 2u * elements;
                 }
             }
-            for (VarSym &v : syms)
+            for (VarSym &v : syms) {
                 if (v.kind == VarSym::IMAGE)
-                    idx++;
+                    idx += v.type.arr > 0 ? (uint32_t)v.type.arr : 1u;
+            }
             for (VarSym &v : syms) {
                 if (isVS || isTES || isKernel || v.kind != VarSym::VARYING)
                     continue;
@@ -12946,10 +12994,11 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         }
         for (VarSym &v : syms) {
             if (v.kind != VarSym::IMAGE) continue;
-            const MGLIRSymbol *iss = findSymbol(&mod, v.name.c_str());
-            MGLIRTexKind itk = iss && iss->type->kind == MGLIR_TYPE_IMAGE
-                ? iss->type->tex_kind : MGLIR_TEX_2D;
-            MGLIRScalar ist = iss ? iss->type->tex_storage : MGLIR_SCALAR_FLOAT;
+            const MGLIRType *imgTy =
+                imageElementType(findSymbol(&mod, v.name.c_str()));
+            MGLIRTexKind itk = imgTy ? imgTy->tex_kind : MGLIR_TEX_2D;
+            MGLIRScalar ist =
+                imgTy ? imgTy->tex_storage : MGLIR_SCALAR_FLOAT;
             const char *accessTy = "float";
             if (ist == MGLIR_SCALAR_INT) accessTy = "int";
             else if (ist == MGLIR_SCALAR_UINT) accessTy = "uint";
@@ -12976,20 +13025,26 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             char imageType[96];
             snprintf(imageType, sizeof(imageType),
                      "%s<%s, access::read_write>", dimTy, accessTy);
-            argNodes.push_back(llvm::MDNode::get(ctx, {
-                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(ctx), texArg++)),
-                llvm::MDString::get(ctx, "air.texture"),
-                llvm::MDString::get(ctx, "air.location_index"),
-                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(ctx), texLoc++)),
-                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(ctx), 1)),
-                llvm::MDString::get(ctx, "air.read_write"),
-                llvm::MDString::get(ctx, "air.arg_type_name"),
-                llvm::MDString::get(ctx, imageType),
-                llvm::MDString::get(ctx, "air.arg_name"),
-                llvm::MDString::get(ctx, v.name)}));
+            uint32_t elements = v.type.arr > 0 ? (uint32_t)v.type.arr : 1u;
+            for (uint32_t element = 0; element < elements; element++) {
+                std::string elementName = v.name;
+                if (elements > 1u)
+                    elementName += "[" + std::to_string(element) + "]";
+                argNodes.push_back(llvm::MDNode::get(ctx, {
+                    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(ctx), texArg++)),
+                    llvm::MDString::get(ctx, "air.texture"),
+                    llvm::MDString::get(ctx, "air.location_index"),
+                    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(ctx), texLoc++)),
+                    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(ctx), 1)),
+                    llvm::MDString::get(ctx, "air.read_write"),
+                    llvm::MDString::get(ctx, "air.arg_type_name"),
+                    llvm::MDString::get(ctx, imageType),
+                    llvm::MDString::get(ctx, "air.arg_name"),
+                    llvm::MDString::get(ctx, elementName)}));
+            }
         }
     }
     if (isVS && isCapture) {

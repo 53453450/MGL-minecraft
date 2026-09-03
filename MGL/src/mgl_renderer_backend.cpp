@@ -1813,7 +1813,7 @@ MGLShaderResource *mglRendererProgramResource(GLMContext context,
     if (!program) return nullptr;
     MGLShaderResourceList *list = &program->shader_resources_list[stage][type];
     if (index < 0) return nullptr;
-    if (type == _SAMPLED_IMAGE_RES) {
+    if (type == _SAMPLED_IMAGE_RES || type == _STORAGE_IMAGE_RES) {
         int32_t ordinal = index;
         for (GLuint i = 0; i < list->count; i++) {
             MGLShaderResource *resource = &list->list[i];
@@ -1874,7 +1874,8 @@ extern "C" int32_t mglRendererGetProgramBindingCount(
     Program *program = mglResolveProgramForStageFromState(context, stage);
     if (!program) return 0;
     MGLShaderResourceList *list = &program->shader_resources_list[stage][type];
-    if (type != _SAMPLED_IMAGE_RES) return static_cast<int32_t>(list->count);
+    if (type != _SAMPLED_IMAGE_RES && type != _STORAGE_IMAGE_RES)
+        return static_cast<int32_t>(list->count);
     int32_t total = 0;
     for (GLuint i = 0; i < list->count; i++)
         total += list->list[i].gl_array_size > 1 ? list->list[i].gl_array_size : 1;
@@ -1888,7 +1889,7 @@ extern "C" int32_t mglRendererGetProgramBinding(
     MGLShaderResource *resource = mglRendererProgramResource(
         context, stage, type, index, nullptr);
     if (!resource) return 0;
-    if (type == _SAMPLED_IMAGE_RES) {
+    if (type == _SAMPLED_IMAGE_RES || type == _STORAGE_IMAGE_RES) {
         Program *program = nullptr;
         MGLShaderResource *base = mglRendererProgramResource(context, stage, type, index, &program);
         if (base && program) {
@@ -1912,7 +1913,7 @@ extern "C" int32_t mglRendererGetProgramGLBinding(
     MGLShaderResource *resource = mglRendererProgramResource(
         context, stage, type, index, nullptr);
     if (!resource) return 0;
-    if (type == _SAMPLED_IMAGE_RES) {
+    if (type == _SAMPLED_IMAGE_RES || type == _STORAGE_IMAGE_RES) {
         Program *program = nullptr;
         MGLShaderResource *base = mglRendererProgramResource(context, stage, type, index, &program);
         if (base && program) {
