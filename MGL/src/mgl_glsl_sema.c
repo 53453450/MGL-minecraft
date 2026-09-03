@@ -2429,11 +2429,22 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
         case MGL_OP_EQ:
         case MGL_OP_NE:
             if (!ir_type_equal(l, r)) {
-                sema_error(s, e->line, "operands of '%s' must have identical types (%s vs %s)",
-                           op_name(e->u.binary.op),
-                           ir_type_str(l, ta, sizeof(ta)),
-                           ir_type_str(r, tb, sizeof(tb)));
-                return NULL;
+                /* Unsuffixed integer literals are int; CTS compares
+                 * uimageAtomic* results to 0 without a 'u' suffix. */
+                GLboolean int_uint_mix =
+                    l->kind == MGLIR_TYPE_SCALAR &&
+                    r->kind == MGLIR_TYPE_SCALAR &&
+                    (l->scalar == MGLIR_SCALAR_INT ||
+                     l->scalar == MGLIR_SCALAR_UINT) &&
+                    (r->scalar == MGLIR_SCALAR_INT ||
+                     r->scalar == MGLIR_SCALAR_UINT);
+                if (!int_uint_mix) {
+                    sema_error(s, e->line, "operands of '%s' must have identical types (%s vs %s)",
+                               op_name(e->u.binary.op),
+                               ir_type_str(l, ta, sizeof(ta)),
+                               ir_type_str(r, tb, sizeof(tb)));
+                    return NULL;
+                }
             }
             return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_BOOL));
         case MGL_OP_LT: case MGL_OP_LE: case MGL_OP_GT: case MGL_OP_GE:
