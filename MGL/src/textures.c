@@ -6724,6 +6724,13 @@ void mglGetTexParameterIiv(GLMContext ctx, GLenum target, GLenum pname, GLint *p
     if (!tex)
         return;
 
+    if (pname == GL_IMAGE_FORMAT_COMPATIBILITY_TYPE) {
+        *params = tex->immutable_storage
+            ? (GLint)GL_IMAGE_FORMAT_COMPATIBILITY_BY_CLASS
+            : (GLint)GL_IMAGE_FORMAT_COMPATIBILITY_BY_SIZE;
+        return;
+    }
+
     if (mglTextureParameterGetIiv(&tex->params, pname, params))
         return;
 
@@ -6741,6 +6748,13 @@ void mglGetTexParameterIuiv(GLMContext ctx, GLenum target, GLenum pname, GLuint 
     Texture *tex = getTex(ctx, 0, target);
     if (!tex)
         return;
+
+    if (pname == GL_IMAGE_FORMAT_COMPATIBILITY_TYPE) {
+        *params = tex->immutable_storage
+            ? (GLuint)GL_IMAGE_FORMAT_COMPATIBILITY_BY_CLASS
+            : (GLuint)GL_IMAGE_FORMAT_COMPATIBILITY_BY_SIZE;
+        return;
+    }
 
     if (mglTextureParameterGetIuiv(&tex->params, pname, params))
         return;

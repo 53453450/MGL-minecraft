@@ -1515,6 +1515,13 @@ void mglGetTexParameterfv(GLMContext ctx, GLenum target, GLenum pname, GLfloat *
         *params = (GLfloat)tex->num_levels;
         return;
     }
+    if (pname == GL_IMAGE_FORMAT_COMPATIBILITY_TYPE) {
+        /* Immutable (TexStorage*) → BY_CLASS; mutable (TexImage*) → BY_SIZE. */
+        *params = (GLfloat)(tex->immutable_storage
+            ? GL_IMAGE_FORMAT_COMPATIBILITY_BY_CLASS
+            : GL_IMAGE_FORMAT_COMPATIBILITY_BY_SIZE);
+        return;
+    }
 
     GLint iparam;
     iparam = 0;
@@ -1543,6 +1550,12 @@ void mglGetTexParameteriv(GLMContext ctx, GLenum target, GLenum pname, GLint *pa
     }
     if (pname == GL_TEXTURE_IMMUTABLE_LEVELS) {
         *params = (GLint)tex->num_levels;
+        return;
+    }
+    if (pname == GL_IMAGE_FORMAT_COMPATIBILITY_TYPE) {
+        *params = tex->immutable_storage
+            ? (GLint)GL_IMAGE_FORMAT_COMPATIBILITY_BY_CLASS
+            : (GLint)GL_IMAGE_FORMAT_COMPATIBILITY_BY_SIZE;
         return;
     }
 
