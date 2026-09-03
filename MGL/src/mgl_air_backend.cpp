@@ -10985,6 +10985,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                            bool has_gs, bool force_tes_compute,
                            const char *const *attrib_names,
                            uint32_t tessPatchVertices,
+                           const MGLShaderResourceList *iface_location_peers,
                            unsigned char **metallib_out, size_t *size_out,
                            char *err_buf, size_t err_cap) {
     if (!src || !metallib_out || !size_out) {
@@ -11323,6 +11324,29 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     ? nextPatchOutputLocation : nextOutputLocation;
                 if (v.location == UINT32_MAX) v.location = next;
                 next = std::max(next, v.location + 1u);
+            }
+        }
+        /* GS-expansion passthrough VS tags outputs as mgl_loc_N using the
+         * GS reflection locations.  FS with has_gs must use the same N for
+         * each varying; declaration-order auto-assign can disagree when GS
+         * and FS list the same names in different order (CTS utf8_characters
+         * gs_fs_tex_coord before/after gs_fs_result).  Remap by name. */
+        if (has_gs && stage == MGL_STAGE_FRAGMENT && iface_location_peers &&
+            iface_location_peers->list) {
+            for (VarSym &v : syms) {
+                if (v.kind != VarSym::VARYING || v.locationExplicit)
+                    continue;
+                for (GLuint i = 0; i < iface_location_peers->count; i++) {
+                    const MGLShaderResource *peer =
+                        &iface_location_peers->list[i];
+                    if (!peer->name || peer->is_per_patch)
+                        continue;
+                    if (strcmp(peer->name, v.name.c_str()) != 0)
+                        continue;
+                    if (peer->location != UINT32_MAX)
+                        v.location = peer->location;
+                    break;
+                }
             }
         }
     }
@@ -13625,9 +13649,11 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     /* SSBO buffers: independent writable device buffers (air.read_write),
      * one parameter per instance. */
     {
-        uint32_t loc = (isCapture ? 1 : 0) +
-                       ((isVS || isTES || isKernel) ? (hasBuffer ? 1 : 0) : 0) +
-                       (isCapture ? 0 : attrCount) + userBufferLocationBase;
+        /* location_index matches reflection (attrs always reserved).
+         * LLVM arg index still skips attrs for capture (attrs are last). */
+        uint32_t loc =
+            ((isVS || isTES || isKernel) ? (hasBuffer ? 1 : 0) : 0) +
+            attrCount + userBufferLocationBase;
         uint32_t ssboArg = (isCapture ? 1 : 0) +
                            ((isVS || isTES || isKernel) ? (hasBuffer ? 1 : 0) : 0) +
                            (isCapture ? 0 : attrCount);
@@ -13672,11 +13698,17 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     }
     /* Uniform blocks: independent read-only device buffers. */
     {
-        uint32_t loc = (isCapture ? 1 : 0) +
-                       ((isVS || isTES || isKernel) ? (hasBuffer ? 1 : 0) : 0) +
-                       ssboCount + (isCapture ? 0 : attrCount) +
-                       userBufferLocationBase;
-        uint32_t uboArg = loc;
+        /* location_index must match mglAirReflectModule (attrs reserved).
+         * Capture used to set loc=1 when attrCount==0, so the draw path
+         * bound the UBO at reflected slot 0 while the tess-capture
+         * metallib read slot 1 — VS UBO reads failed whenever GS/tess
+         * capture ran without vertex attributes (420pack binding_uniform). */
+        uint32_t loc =
+            ((isVS || isTES || isKernel) ? (hasBuffer ? 1 : 0) : 0) +
+            ssboCount + attrCount + userBufferLocationBase;
+        uint32_t uboArg = (isCapture ? 1 : 0) +
+                          ((isVS || isTES || isKernel) ? (hasBuffer ? 1 : 0) : 0) +
+                          ssboCount + (isCapture ? 0 : attrCount);
         for (VarSym &v : syms) {
             if (v.kind != VarSym::UBO) continue;
             const MGLIRSymbol *sb = findSymbol(&mod, v.name.c_str());
@@ -13717,11 +13749,12 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     }
     /* Atomic counter buffers: one device buffer per atomic_uint instance. */
     {
-        uint32_t loc = (isCapture ? 1 : 0) +
-                       ((isVS || isTES || isKernel) ? (hasBuffer ? 1 : 0) : 0) +
-                       ssboCount + uboCount + (isCapture ? 0 : attrCount) +
-                       userBufferLocationBase;
-        uint32_t acArg = loc;
+        uint32_t loc =
+            ((isVS || isTES || isKernel) ? (hasBuffer ? 1 : 0) : 0) +
+            ssboCount + uboCount + attrCount + userBufferLocationBase;
+        uint32_t acArg = (isCapture ? 1 : 0) +
+                         ((isVS || isTES || isKernel) ? (hasBuffer ? 1 : 0) : 0) +
+                         ssboCount + uboCount + (isCapture ? 0 : attrCount);
         for (VarSym &v : syms) {
             if (v.kind != VarSym::ATOMIC_COUNTER) continue;
             const MGLIRSymbol *ac = findSymbol(&mod, v.name.c_str());
@@ -14813,7 +14846,7 @@ extern "C" int mglShaderCompileGLSL(const char *src, int stage,
                                     size_t err_cap) {
     return compileGLSLImpl(src, stage, 0, /*has_gs=*/false,
                            /*force_tes_compute=*/false, nullptr, 0u,
-                           metallib_out,
+                           /*iface_location_peers=*/nullptr, metallib_out,
                            size_out, err_buf, err_cap);
 }
 
@@ -14827,7 +14860,7 @@ extern "C" int mglShaderCompileGLSLCapture(const char *src,
                                            size_t err_cap) {
     return compileGLSLImpl(src, MGL_STAGE_VERTEX, 1, /*has_gs=*/false,
                            /*force_tes_compute=*/false, nullptr,
-                           0u,
+                           0u, /*iface_location_peers=*/nullptr,
                            metallib_out, size_out, err_buf, err_cap);
 }
 
@@ -14836,7 +14869,7 @@ extern "C" int mglShaderCompileGLSLTessCapture(
     char *err_buf, size_t err_cap) {
     return compileGLSLImpl(src, MGL_STAGE_VERTEX, 2, /*has_gs=*/false,
                            /*force_tes_compute=*/false, nullptr,
-                           0u,
+                           0u, /*iface_location_peers=*/nullptr,
                            metallib_out, size_out, err_buf, err_cap);
 }
 
@@ -14845,7 +14878,7 @@ extern "C" int mglShaderCompileGLSLCullDistanceCapture(
     char *err_buf, size_t err_cap) {
     return compileGLSLImpl(src, MGL_STAGE_VERTEX, 3, /*has_gs=*/false,
                            /*force_tes_compute=*/false, nullptr,
-                           0u,
+                           0u, /*iface_location_peers=*/nullptr,
                            metallib_out, size_out, err_buf, err_cap);
 }
 
@@ -15003,7 +15036,8 @@ extern "C" int mglAirCompileGLSLWithReflectInfoEx(
     const char *src, int stage, const char *const *attrib_names,
     unsigned char **metallib_out, size_t *size_out,
     MGLShaderResourceList lists[MGL_MAX_SHADER_RESOURCES], MGLAIRStageInfo *stage_info,
-    uint32_t flags, char *err_buf, size_t err_cap) {
+    uint32_t flags, const MGLShaderResourceList *iface_location_peers,
+    char *err_buf, size_t err_cap) {
     bool has_gs = (flags & MGL_AIR_COMPILE_HAS_GEOMETRY_SHADER) != 0;
     bool force_tes_compute =
         (flags & MGL_AIR_COMPILE_FORCE_TES_COMPUTE) != 0;
@@ -15055,7 +15089,8 @@ extern "C" int mglAirCompileGLSLWithReflectInfoEx(
 
     return compileGLSLImpl(esrc, stage, 0, has_gs, force_tes_compute,
                            attrib_names, tessPatchVertices,
-                           metallib_out, size_out, err_buf, err_cap);
+                           iface_location_peers, metallib_out, size_out,
+                           err_buf, err_cap);
 }
 
 extern "C" int mglAirCompileGLSLWithReflectInfo(
@@ -15065,7 +15100,7 @@ extern "C" int mglAirCompileGLSLWithReflectInfo(
     char *err_buf, size_t err_cap) {
     return mglAirCompileGLSLWithReflectInfoEx(
         src, stage, attrib_names, metallib_out, size_out, lists,
-        stage_info, 0u, err_buf, err_cap);
+        stage_info, 0u, /*iface_location_peers=*/nullptr, err_buf, err_cap);
 }
 
 extern "C" int mglAirCompileGLSLWithReflect(

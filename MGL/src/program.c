@@ -1124,10 +1124,17 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
          pptr->shader_slots[_GEOMETRY_SHADER])) {
         air_flags |= MGL_AIR_COMPILE_FORCE_TES_COMPUTE;
     }
+    /* When a GS is present, FS mgl_loc_N tags must follow GS output
+     * locations (passthrough VS).  Remap by name at compile time. */
+    const MGLShaderResourceList *iface_peers = NULL;
+    if (stage == _FRAGMENT_SHADER && pptr->shader_slots[_GEOMETRY_SHADER]) {
+        iface_peers =
+            &pptr->shader_resources_list[_GEOMETRY_SHADER][_STAGE_OUTPUT_RES];
+    }
     int air_rc = mglAirCompileGLSLWithReflectInfoEx(
         shader->src, air_stage, attrib_snapshot, &bytes, &size,
         pptr->shader_resources_list[stage], &stage_info, air_flags,
-        err, sizeof err);
+        iface_peers, err, sizeof err);
     for (int ai = 0; ai < MAX_ATTRIBS; ai++) {
         free((void *)attrib_snapshot[ai]);
     }
