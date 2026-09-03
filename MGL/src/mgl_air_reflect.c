@@ -639,8 +639,13 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                 MGLShaderResource *last =
                     &lists[_SAMPLED_IMAGE_RES]
                          .list[lists[_SAMPLED_IMAGE_RES].count - 1];
-                if (s->binding != UINT32_MAX)
+                if (s->binding != UINT32_MAX) {
                     last->gl_binding = s->binding;
+                    /* layout(binding=N) sets the sampler uniform's initial
+                     * texture-unit value (queried via GetUniformiv).  Array
+                     * elements take N, N+1, … from sampler_unit + ordinal. */
+                    last->sampler_unit = (GLint)s->binding;
+                }
                 last->resource_active = GL_TRUE;
                 last->has_combined_sampler = GL_TRUE;
                 last->combined_sampler_binding = sampler_binding;
@@ -664,8 +669,12 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                     &lists[_STORAGE_IMAGE_RES]
                          .list[lists[_STORAGE_IMAGE_RES].count - 1];
                 last->sampler_unit = -1;
-                if (s->binding != UINT32_MAX)
+                if (s->binding != UINT32_MAX) {
                     last->gl_binding = s->binding;
+                    /* Same as samplers: layout(binding=N) is the image-unit
+                     * initial value for GetUniformiv / array expansion. */
+                    last->sampler_unit = (GLint)s->binding;
+                }
                 last->uniform_location =
                     (s->location != UINT32_MAX)
                         ? (GLint)s->location

@@ -2031,6 +2031,16 @@ more_qualifiers:
             int has_value = at_peek_punct(p, 1, "=");
 
             if (!is_flag && !has_value) {
+                /* `layout(binding)` without `=` is illegal (420pack binding
+                 * tests). Other bare idents (e.g. trailing `in`) are left
+                 * for the caller. */
+                if (n == 7 && memcmp(s, "binding", 7) == 0) {
+                    advance(p);
+                    parse_error(p,
+                        "layout(binding) requires an integer constant at line %u",
+                        tk_line(p));
+                    continue;
+                }
                 /* e.g. `in`, `out` after `)` — leave it for the caller */
                 break;
             }
@@ -2091,6 +2101,11 @@ more_qualifiers:
                         d->layout_location = (int32_t)cur_double(p);
                     } else if (n == 7 && memcmp(s, "binding", 7) == 0) {
                         d->layout_binding = (int32_t)cur_double(p);
+                        if (d->layout_binding < 0) {
+                            parse_error(p,
+                                "layout(binding) must be >= 0 at line %u",
+                                tk_line(p));
+                        }
                     } else if (n == 6 && memcmp(s, "offset", 6) == 0) {
                         /* GLSL 4.60 §4.4.2.3: explicit atomic-counter
                          * buffer offset. */
@@ -2123,7 +2138,25 @@ more_qualifiers:
                         d->layout_local_size_z = (int32_t)cur_double(p);
                     }
                     advance(p);
+                } else if (n == 7 && memcmp(s, "binding", 7) == 0 &&
+                           ops_at(p, "-")) {
+                    /* `binding = -1` tokenizes as '-' + number. */
+                    parse_error(p,
+                        "layout(binding) must be >= 0 at line %u",
+                        tk_line(p));
+                    advance(p);
+                    if (at_num(p)) {
+                        advance(p);
+                    }
                 } else if (at_any_ident(p)) {
+                    /* 420pack: binding/location/offset require integer
+                     * constants — `binding = goku` / `binding = std140`
+                     * must fail compile. */
+                    if (n == 7 && memcmp(s, "binding", 7) == 0) {
+                        parse_error(p,
+                            "layout(binding) requires an integer constant at line %u",
+                            tk_line(p));
+                    }
                     advance(p);
                 } else {
                     parse_error(p, "expected value in layout() at line %u",

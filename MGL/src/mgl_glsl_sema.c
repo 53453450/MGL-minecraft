@@ -616,7 +616,9 @@ static MGLIRType *resolve_decl_type_major(Sema *s, SymTab *tab,
                 return NULL;
             }
         }
-        t = mglIRTypeStruct(members, names, n, NULL);
+        /* Keep the interface-block type name (`uniform GOKU {…} goku;`) so
+         * reflection can report GL block names via GetUniformBlockIndex. */
+        t = mglIRTypeStruct(members, names, n, d->type->name);
         free(members);
         free(names);
         if (!t) {
@@ -2684,16 +2686,21 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
         case MGL_OP_EQ:
         case MGL_OP_NE:
             if (!ir_type_equal(l, r)) {
-                /* Unsuffixed integer literals are int; CTS compares
-                 * uimageAtomic* results to 0 without a 'u' suffix. */
-                GLboolean int_uint_mix =
-                    l->kind == MGLIR_TYPE_SCALAR &&
-                    r->kind == MGLIR_TYPE_SCALAR &&
-                    (l->scalar == MGLIR_SCALAR_INT ||
-                     l->scalar == MGLIR_SCALAR_UINT) &&
-                    (r->scalar == MGLIR_SCALAR_INT ||
-                     r->scalar == MGLIR_SCALAR_UINT);
-                if (!int_uint_mix) {
+                /* GLSL 4.20+ / 420pack: allow implicit numeric conversions
+                 * before equality (e.g. uvec2 == vec2 from
+                 * gl_GlobalInvocationID.xy == vec2(0,0)). */
+                int convertible = 0;
+                if (l->kind == MGLIR_TYPE_SCALAR &&
+                    r->kind == MGLIR_TYPE_SCALAR) {
+                    convertible = implicit_convert(l, r) ||
+                                  implicit_convert(r, l);
+                } else if (l->kind == MGLIR_TYPE_VECTOR &&
+                           r->kind == MGLIR_TYPE_VECTOR &&
+                           l->cols == r->cols) {
+                    convertible = implicit_convert(l, r) ||
+                                  implicit_convert(r, l);
+                }
+                if (!convertible) {
                     sema_error(s, e->line, "operands of '%s' must have identical types (%s vs %s)",
                                op_name(e->u.binary.op),
                                ir_type_str(l, ta, sizeof(ta)),
@@ -3079,6 +3086,30 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
      * readonly+writeonly is illegal; format scalar must match image* /
      * iimage* / uimage*. */
     check_image_decl(s, d, t);
+    /* GLSL 4.60 §4.4.5 / ARB_shading_language_420pack: layout(binding)
+     * applies only to opaque uniforms (sampler/image/atomic_uint) and to
+     * uniform / shader-storage blocks — not to plain uniforms. */
+    if (d->layout_binding >= 0) {
+        const MGLIRType *bt = t;
+        while (bt && bt->kind == MGLIR_TYPE_ARRAY)
+            bt = bt->elem_type;
+        int binding_ok = 0;
+        if (bt) {
+            if (bt->kind == MGLIR_TYPE_SAMPLER ||
+                bt->kind == MGLIR_TYPE_IMAGE ||
+                bt->kind == MGLIR_TYPE_ATOMIC_COUNTER) {
+                binding_ok = 1;
+            } else if (bt->kind == MGLIR_TYPE_STRUCT &&
+                       d->struct_members && d->struct_member_count > 0 &&
+                       (d->qualifiers & (MGL_AST_Q_UNIFORM | MGL_AST_Q_BUFFER))) {
+                binding_ok = 1;
+            }
+        }
+        if (!binding_ok) {
+            sema_error(s, d->line,
+                       "layout(binding) is not allowed on this declaration");
+        }
+    }
     /* Anonymous blocks (uniform DrawColor { ... }; with no instance name)
      * take their interface name from the block type name; their members
      * are registered as block-scoped uniform symbols so the body can
