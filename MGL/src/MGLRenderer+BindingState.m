@@ -17,6 +17,7 @@
 #import "mgl_frame_activity.h"
 #include "mgl_env_flag.h"
 #include "mgl_render.h"
+#include "pixel_utils.h"
 
 enum {
     MGL_BINDING_RESOURCE_STORAGE_SHARED = 0u,
@@ -183,6 +184,23 @@ static id mglBindingStateCacheImageUnitView(ImageUnit *iu, id fallback, void *vi
     return (__bridge id)iu->mtl_image_view;
 }
 
+/* Metal pixel format for BindImageTexture <format>.  Same-size reinterprets
+ * (e.g. RGBA8 storage bound as R32I/R32UI) require a PixelFormatView so AIR
+ * integer atomics/load/store hit the intended layout (CTS advanced-cast). */
+static uint32_t mglBindingStateImageBindPixelFormat(const ImageUnit *iu,
+                                                    uint32_t native_format)
+{
+    if (!iu || iu->internalformat == 0u) {
+        return native_format;
+    }
+    const uint32_t bind_format =
+        mtlFormatForGLInternalFormat(iu->internalformat);
+    if (bind_format == MGLPixelFormatInvalid || bind_format == 0u) {
+        return native_format;
+    }
+    return bind_format;
+}
+
 /* For non-layered BindImageTexture on array/3D/cube textures, GLSL image2D
  * (etc.) expects a single 2D (or 1D) slice.  Create a Type2D/Type1D view of
  * that layer so AIR write/read_texture_2d matches the bound Metal type.
@@ -209,6 +227,8 @@ static id mglBindingStateCreateStorageImageView(id texture, ImageUnit *iu)
         return nil;
     }
     const uint32_t srcType = info.texture_type;
+    const uint32_t bindFormat =
+        mglBindingStateImageBindPixelFormat(iu, info.pixel_format);
     const GLenum glTarget = iu->tex ? iu->tex->target : (GLenum)0;
     const GLboolean isMsTarget =
         (glTarget == GL_TEXTURE_2D_MULTISAMPLE ||
@@ -230,7 +250,7 @@ static id mglBindingStateCreateStorageImageView(id texture, ImageUnit *iu)
         if (needsSlice) {
             void *view = NULL;
             int rc = mglRenderCreateTextureViewRange(
-                    (__bridge void *)texture, info.pixel_format, dstType,
+                    (__bridge void *)texture, bindFormat, dstType,
                     level, 1u, (uint64_t)iu->layer, 1u,
                     0, 0, 0, 0, 0, &view);
             if (rc == 0 && view) {
@@ -239,7 +259,7 @@ static id mglBindingStateCreateStorageImageView(id texture, ImageUnit *iu)
         }
     }
 
-    if (level > 0u) {
+    if (level > 0u || bindFormat != info.pixel_format) {
         NSUInteger sliceCount = mglBindingStateTextureArrayLength(texture);
         if (srcType == MGL_BINDING_TEXTURE_TYPE_CUBE ||
             srcType == MGL_BINDING_TEXTURE_TYPE_CUBE_ARRAY) {
@@ -250,7 +270,7 @@ static id mglBindingStateCreateStorageImageView(id texture, ImageUnit *iu)
         }
         void *view = NULL;
         if (mglRenderCreateTextureViewRange(
-                (__bridge void *)texture, info.pixel_format,
+                (__bridge void *)texture, bindFormat,
                 info.texture_type, level, 1u, 0u, sliceCount,
                 0, 0, 0, 0, 0, &view) == 0 && view) {
             return mglBindingStateCacheImageUnitView(iu, texture, view);
