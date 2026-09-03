@@ -2328,6 +2328,7 @@ more_qualifiers:
                 (n == 8 && memcmp(s, "invariant", 8) == 0) ||
                 (n == 13 && memcmp(s, "push_constant", 13) == 0) ||
                 (n == 16 && memcmp(s, "origin_upper_left", 16) == 0) ||
+                (n == 20 && memcmp(s, "pixel_center_integer", 20) == 0) ||
                 (n == 15 && memcmp(s, "local_size_x_id", 15) == 0) ||
                 /* tessellation/geometry layout flags (M3) */
                 (n == 8 && memcmp(s, "isolines", 8) == 0) ||
