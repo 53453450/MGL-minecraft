@@ -398,12 +398,17 @@ void mglMemoryBarrier(GLMContext ctx, GLbitfield barriers)
      * again by any subsequent CPU-side texture upload (glTexSubImage/glTexImage).
      *
      * TEXTURE_BUFFER has no mip faces; imageStores write a texture2d copy of the
-     * buffer. BUFFER_UPDATE / TEXTURE_UPDATE therefore also require copying
-     * those texels back into the attached Buffer so glGetBufferSubData sees them. */
+     * buffer. Barriers that later consume that buffer as draw-indirect commands,
+     * vertex/element arrays, or client/GPU buffer reads therefore also require
+     * copying those texels back into the attached Buffer. */
     GLbitfield image_relevant_bits =
         GL_SHADER_IMAGE_ACCESS_BARRIER_BIT |
         GL_TEXTURE_UPDATE_BARRIER_BIT |
-        GL_BUFFER_UPDATE_BARRIER_BIT;
+        GL_BUFFER_UPDATE_BARRIER_BIT |
+        GL_COMMAND_BARRIER_BIT |
+        GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT |
+        GL_ELEMENT_ARRAY_BARRIER_BIT |
+        GL_TEXTURE_FETCH_BARRIER_BIT;
     if (barriers == GL_ALL_BARRIER_BITS || (barriers & image_relevant_bits))
     {
         GLuint max_units = ctx->state.var.max_image_units;
