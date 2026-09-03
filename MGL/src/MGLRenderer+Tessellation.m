@@ -25,6 +25,21 @@
 
 extern void mglRecordActivePrimitiveQueryDraw(GLMContext ctx, GLuint64 generated, GLuint64 written);
 
+/* glUniform1i for samplers/images writes sampler_unit; gl_binding is only the
+ * layout(binding=N) default. Match the VS/FS bind path so TCS/TES compute
+ * kernels see the units CTS set via Uniform1i. */
+static GLuint mglTessResourceGLUnit(const MGLShaderResource *resource,
+                                    GLuint fallback)
+{
+    if (!resource) {
+        return fallback;
+    }
+    if (resource->sampler_unit >= 0) {
+        return (GLuint)resource->sampler_unit;
+    }
+    return resource->gl_binding;
+}
+
 typedef enum MGLTCSStageInBaseType {
     MGLTCSStageInBaseFloat = 0,
     MGLTCSStageInBaseInt,
@@ -899,8 +914,9 @@ typedef struct {
                                               resource)) {
             continue;
         }
-        GLuint glUnit = resource ? resource->gl_binding
-                                 : mglRendererGetProgramGLBinding(ctx, _TESS_CONTROL_SHADER, _STORAGE_IMAGE_RES, (int)i);
+        GLuint glUnit = mglTessResourceGLUnit(
+            resource,
+            mglRendererGetProgramGLBinding(ctx, _TESS_CONTROL_SHADER, _STORAGE_IMAGE_RES, (int)i));
         if (glUnit >= TEXTURE_UNITS) {
             continue;
         }
@@ -939,8 +955,9 @@ typedef struct {
         }
         GLuint metalSlot = resource ? mglMetalResourceSlot(resource)
                                     : mglRendererGetProgramBinding(ctx, _TESS_CONTROL_SHADER, _STORAGE_IMAGE_RES, (int)i);
-        GLuint glUnit = resource ? resource->gl_binding
-                                 : mglRendererGetProgramGLBinding(ctx, _TESS_CONTROL_SHADER, _STORAGE_IMAGE_RES, (int)i);
+        GLuint glUnit = mglTessResourceGLUnit(
+            resource,
+            mglRendererGetProgramGLBinding(ctx, _TESS_CONTROL_SHADER, _STORAGE_IMAGE_RES, (int)i));
         if (metalSlot >= TEXTURE_UNITS || glUnit >= TEXTURE_UNITS) {
             continue;
         }
@@ -992,8 +1009,9 @@ typedef struct {
         }
         GLuint metalSlot = resource ? mglMetalResourceSlot(resource)
                                     : mglRendererGetProgramBinding(ctx, _TESS_CONTROL_SHADER, _SAMPLED_IMAGE_RES, (int)i);
-        GLuint glUnit = resource ? resource->gl_binding
-                                 : mglRendererGetProgramGLBinding(ctx, _TESS_CONTROL_SHADER, _SAMPLED_IMAGE_RES, (int)i);
+        GLuint glUnit = mglTessResourceGLUnit(
+            resource,
+            mglRendererGetProgramGLBinding(ctx, _TESS_CONTROL_SHADER, _SAMPLED_IMAGE_RES, (int)i));
         if (metalSlot >= TEXTURE_UNITS || glUnit >= TEXTURE_UNITS) {
             continue;
         }
@@ -1490,8 +1508,9 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
                                               resource)) {
             continue;
         }
-        GLuint glUnit = resource ? resource->gl_binding
-                                 : mglRendererGetProgramGLBinding(ctx, _TESS_EVALUATION_SHADER, _STORAGE_IMAGE_RES, (int)i);
+        GLuint glUnit = mglTessResourceGLUnit(
+            resource,
+            mglRendererGetProgramGLBinding(ctx, _TESS_EVALUATION_SHADER, _STORAGE_IMAGE_RES, (int)i));
         if (glUnit >= TEXTURE_UNITS) {
             continue;
         }
@@ -1550,8 +1569,9 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
         }
         GLuint metalSlot = resource ? mglMetalResourceSlot(resource)
                                     : mglRendererGetProgramBinding(ctx, _TESS_EVALUATION_SHADER, _STORAGE_IMAGE_RES, (int)i);
-        GLuint glUnit = resource ? resource->gl_binding
-                                 : mglRendererGetProgramGLBinding(ctx, _TESS_EVALUATION_SHADER, _STORAGE_IMAGE_RES, (int)i);
+        GLuint glUnit = mglTessResourceGLUnit(
+            resource,
+            mglRendererGetProgramGLBinding(ctx, _TESS_EVALUATION_SHADER, _STORAGE_IMAGE_RES, (int)i));
         if (metalSlot >= TEXTURE_UNITS || glUnit >= TEXTURE_UNITS) {
             continue;
         }
@@ -1585,8 +1605,9 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
         }
         GLuint metalSlot = resource ? mglMetalResourceSlot(resource)
                                     : mglRendererGetProgramBinding(ctx, _TESS_EVALUATION_SHADER, _SAMPLED_IMAGE_RES, (int)i);
-        GLuint glUnit = resource ? resource->gl_binding
-                                 : mglRendererGetProgramGLBinding(ctx, _TESS_EVALUATION_SHADER, _SAMPLED_IMAGE_RES, (int)i);
+        GLuint glUnit = mglTessResourceGLUnit(
+            resource,
+            mglRendererGetProgramGLBinding(ctx, _TESS_EVALUATION_SHADER, _SAMPLED_IMAGE_RES, (int)i));
         if (metalSlot >= TEXTURE_UNITS || glUnit >= TEXTURE_UNITS) {
             continue;
         }
@@ -2209,8 +2230,9 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
                                               resource)) {
             continue;
         }
-        GLuint glUnit = resource ? resource->gl_binding
-                                 : mglRendererGetProgramGLBinding(ctx, _TESS_EVALUATION_SHADER, _STORAGE_IMAGE_RES, (int)i);
+        GLuint glUnit = mglTessResourceGLUnit(
+            resource,
+            mglRendererGetProgramGLBinding(ctx, _TESS_EVALUATION_SHADER, _STORAGE_IMAGE_RES, (int)i));
         if (glUnit >= TEXTURE_UNITS) {
             continue;
         }
@@ -2249,8 +2271,9 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
         }
         GLuint metalSlot = resource ? mglMetalResourceSlot(resource)
                                     : mglRendererGetProgramBinding(ctx, _TESS_EVALUATION_SHADER, _STORAGE_IMAGE_RES, (int)i);
-        GLuint glUnit = resource ? resource->gl_binding
-                                 : mglRendererGetProgramGLBinding(ctx, _TESS_EVALUATION_SHADER, _STORAGE_IMAGE_RES, (int)i);
+        GLuint glUnit = mglTessResourceGLUnit(
+            resource,
+            mglRendererGetProgramGLBinding(ctx, _TESS_EVALUATION_SHADER, _STORAGE_IMAGE_RES, (int)i));
         if (metalSlot >= TEXTURE_UNITS || glUnit >= TEXTURE_UNITS) {
             continue;
         }
@@ -2302,8 +2325,9 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
         }
         GLuint metalSlot = resource ? mglMetalResourceSlot(resource)
                                     : mglRendererGetProgramBinding(ctx, _TESS_EVALUATION_SHADER, _SAMPLED_IMAGE_RES, (int)i);
-        GLuint glUnit = resource ? resource->gl_binding
-                                 : mglRendererGetProgramGLBinding(ctx, _TESS_EVALUATION_SHADER, _SAMPLED_IMAGE_RES, (int)i);
+        GLuint glUnit = mglTessResourceGLUnit(
+            resource,
+            mglRendererGetProgramGLBinding(ctx, _TESS_EVALUATION_SHADER, _SAMPLED_IMAGE_RES, (int)i));
         if (metalSlot >= TEXTURE_UNITS || glUnit >= TEXTURE_UNITS) {
             continue;
         }
