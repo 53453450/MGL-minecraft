@@ -256,6 +256,10 @@ struct Codegen {
     std::map<std::string, MGLDecl *> *userFnDecls = nullptr;
     bool userFnPassCull = false;
     bool userFnPassClip = false;
+    /* When true, STMT_RETURN captures into inlineRetVal instead of
+     * emitting CreateRet (GS/TCS/compute helper inlining). */
+    bool inliningHelper = false;
+    llvm::Value *inlineRetVal = nullptr;
     /* Named user struct types from the TU (`struct S { … };`), used for
      * S(...) / S[](...) constructors and local member ExtractValue. */
     std::map<std::string, MGLIRType *> structTypes;
@@ -448,7 +452,10 @@ llvm::Value *coerceScalar(Codegen &cg, llvm::Value *v, MGLIRScalar want) {
                 fv->getElementCount().getFixedValue());
         return elt;
     };
-    /* Doubles are i64 payloads — never SIToFP/FPToSI them as float. */
+    /* Doubles are i64 payloads — never SIToFP/FPToSI them as float.
+     * Numeric int/float→double conversion would emit f64 ALU that AGX
+     * metallibs reject; bit-identical payloads from matching paths still
+     * compare equal for CTS equality checks. */
     if (want == MGLIR_SCALAR_DOUBLE) {
         if (cur->isIntOrIntVectorTy() && cur->getScalarSizeInBits() == 64)
             return v;
@@ -1580,6 +1587,33 @@ llvm::Value *emitMatrixBinOp(Codegen &cg, uint32_t op, llvm::Value *l,
             out = cg.b->CreateInsertValue(out, m, c);
         }
         return out;
+    }
+    if ((op == MGL_OP_EQ || op == MGL_OP_NE) && larr && rarr) {
+        /* GLSL 4.60 §5.9: mat == / != → scalar bool (all elements). */
+        uint32_t cols = colCount(larr);
+        if (cols != colCount(rarr) || rowCount(larr) != rowCount(rarr))
+            return nullptr;
+        llvm::Type *colTy = larr->getElementType();
+        bool fp = colTy->isFPOrFPVectorTy() ||
+                  (llvm::isa<llvm::FixedVectorType>(colTy) &&
+                   llvm::cast<llvm::FixedVectorType>(colTy)
+                       ->getElementType()
+                       ->isFloatingPointTy());
+        llvm::Value *acc = nullptr;
+        for (uint32_t c = 0; c < cols; c++) {
+            llvm::Value *lc = cg.b->CreateExtractValue(l, c);
+            llvm::Value *rc = cg.b->CreateExtractValue(r, c);
+            llvm::Value *cmp =
+                fp ? (op == MGL_OP_EQ ? cg.b->CreateFCmpOEQ(lc, rc)
+                                      : cg.b->CreateFCmpONE(lc, rc))
+                   : (op == MGL_OP_EQ ? cg.b->CreateICmpEQ(lc, rc)
+                                      : cg.b->CreateICmpNE(lc, rc));
+            cmp = scalarizeBoolCompare(cg, op, cmp);
+            acc = !acc ? cmp
+                       : (op == MGL_OP_EQ ? cg.b->CreateAnd(acc, cmp)
+                                          : cg.b->CreateOr(acc, cmp));
+        }
+        return acc;
     }
     return nullptr;
 }
@@ -7575,15 +7609,14 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         if (cg.userFns || cg.userFnDecls) {
             std::string key = std::string(name) + "#" +
                               std::to_string(e->u.call.arg_count);
-            /* GS/TCS/compute void helpers are inlined into the caller so
-             * out/image writes share the caller's resource bindings. */
+            /* GS/TCS/compute helpers are inlined into the caller so
+             * resource bindings and Metal compute calling conventions
+             * stay valid (non-void callees also trip materializeAll). */
             if ((cg.isGeometry || cg.isCompute || cg.isTessControl) &&
                 cg.userFnDecls) {
                 auto dit = cg.userFnDecls->find(key);
                 if (dit != cg.userFnDecls->end() && dit->second &&
                     dit->second->body) {
-                    /* Prefer LLVM call for non-void helpers. */
-                    if (!(cg.userFns && cg.userFns->count(key))) {
                     MGLDecl *fd = dit->second;
                     std::map<std::string, MType> ilocals = locals;
                     std::map<std::string, llvm::Value *> saved;
@@ -7609,7 +7642,16 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                         cg.lvalues[pd->name] = av;
                         ilocals[pd->name] = pt;
                     }
+                    int savedErr = cg.err;
+                    bool savedInline = cg.inliningHelper;
+                    llvm::Value *savedRet = cg.inlineRetVal;
+                    cg.inliningHelper = true;
+                    cg.inlineRetVal = nullptr;
+                    cg.err = 0;
                     emitStmt(cg, fd->body, mod, &ilocals);
+                    llvm::Value *ret = cg.inlineRetVal;
+                    cg.inliningHelper = savedInline;
+                    cg.inlineRetVal = savedRet;
                     for (uint32_t a = 0; a < fd->param_count; a++) {
                         MGLDecl *pd = fd->params[a];
                         if (!pd || !pd->name) continue;
@@ -7620,10 +7662,24 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                             cg.lvalues.erase(pd->name);
                     }
                     if (cg.err == 1) return nullptr;
-                    /* Inlined void call: no useful return value. */
+                    /* Helper return ends the inlined body, not the caller. */
+                    if (cg.err == 2) cg.err = savedErr;
+                    MType rt;
+                    rt.scalar = (MGLIRScalar)(fd->type ? fd->type->base
+                                                       : MGL_AST_TYPE_FLOAT);
+                    if (fd->type && fd->type->vec_size)
+                        rt.vec = fd->type->vec_size;
+                    if (fd->type && fd->type->mat_cols > 1) {
+                        rt.cols = fd->type->mat_cols;
+                        rt.rows = fd->type->mat_rows;
+                    }
+                    if (ret) {
+                        if (!rt.isMatrix() && !rt.isArray())
+                            ret = coerceScalar(cg, ret, rt.scalar);
+                        return ret;
+                    }
                     return llvm::ConstantInt::get(
                         llvm::Type::getInt32Ty(*cg.ctx), 0);
-                    }
                 }
             }
             if (!cg.userFns) {
@@ -9945,9 +10001,54 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
         break;
     }
     case MGL_STMT_RETURN: {
+        if (cg.inliningHelper) {
+            /* Capture return for inlined GS/TCS/compute helpers; do not
+             * terminate the enclosing stage function. */
+            if (st->u.ret.value) {
+                llvm::Value *v = emitExpr(cg, st->u.ret.value, mod, *locals);
+                if (!v) return;
+                cg.inlineRetVal = v;
+            }
+            cg.err = 2;
+            break;
+        }
         if (st->u.ret.value) {
             llvm::Value *v = emitExpr(cg, st->u.ret.value, mod, *locals);
             if (!v) return;
+            /* Coerce to the LLVM function return type when shapes differ.
+             * Doubles are i64 payloads on AGX — never emit f64 ALU; widen
+             * int results with sext so RetInst types match. */
+            llvm::Type *wantTy = cg.fn->getReturnType();
+            if (!wantTy->isVoidTy() && v->getType() != wantTy) {
+                if (wantTy->isFPOrFPVectorTy()) {
+                    v = coerceScalar(cg, v, MGLIR_SCALAR_FLOAT);
+                } else if (wantTy->isIntegerTy(64) &&
+                           v->getType()->isIntegerTy(32)) {
+                    v = cg.b->CreateSExt(v, wantTy);
+                } else if (wantTy->isVectorTy() &&
+                           v->getType()->isVectorTy()) {
+                    auto *wvt = llvm::cast<llvm::FixedVectorType>(wantTy);
+                    auto *vvt = llvm::cast<llvm::FixedVectorType>(v->getType());
+                    if (wvt->getElementCount() == vvt->getElementCount() &&
+                        wvt->getElementType()->isIntegerTy(64) &&
+                        vvt->getElementType()->isIntegerTy(32))
+                        v = cg.b->CreateSExt(v, wantTy);
+                    else if (wvt->getElementType()->isFloatingPointTy())
+                        v = coerceScalar(cg, v, MGLIR_SCALAR_FLOAT);
+                } else if (wantTy->isIntOrIntVectorTy() &&
+                           wantTy->getScalarSizeInBits() == 32) {
+                    v = coerceScalar(cg, v, MGLIR_SCALAR_INT);
+                }
+                if (v->getType() != wantTy &&
+                    v->getType()->getPrimitiveSizeInBits() ==
+                        wantTy->getPrimitiveSizeInBits())
+                    v = cg.b->CreateBitCast(v, wantTy);
+            }
+            if (v->getType() != wantTy && !wantTy->isVoidTy()) {
+                cg.err = 1;
+                cg.errmsg = "codegen: return type mismatch after coercion";
+                return;
+            }
             cg.b->CreateRet(v);
         } else if (cg.fn->getReturnType()->isVoidTy()) {
             cg.b->CreateRetVoid();
@@ -12385,9 +12486,9 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     for (uint32_t i = 0; i < tu->decl_count; i++) {
         MGLDecl *d = tu->decls[i];
         if (!d->name || !d->body || strcmp(d->name, "main") == 0) continue;
-        /* GS/TCS/compute void helpers are inlined at call sites (Metal
-         * rejects some texture/alloca/stage-buffer calling conventions on
-         * compute callees).  Non-void helpers still get an LLVM function. */
+        /* GS/TCS/compute helpers are inlined at call sites (Metal rejects
+         * some texture/alloca/stage-buffer calling conventions on compute
+         * callees — including non-void helpers). */
         if (isGS || isCompute || isTCS) {
             std::string key = std::string(d->name) + "#" +
                               std::to_string(d->param_count);
@@ -12403,8 +12504,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             }
         }
         if (!fs) continue;
-        /* Void GS/TCS/compute helpers: inline only (no LLVM callee). */
-        if ((isGS || isCompute || isTCS) && irTypeIsVoid(fs->return_type))
+        /* GS/TCS/compute: inline only (no LLVM callee). */
+        if (isGS || isCompute || isTCS)
             continue;
         llvm::Type *rt = irTypeIsVoid(fs->return_type)
             ? llvm::Type::getVoidTy(ctx)

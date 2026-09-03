@@ -2910,6 +2910,81 @@ static GLboolean mglPlainUniformNeedsMetalMat3Packing(GLMContext ctx, GLint loca
         ? GL_TRUE : GL_FALSE;
 }
 
+void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size);
+
+/* Plain uniforms live in an implicit std140 buffer: each matrix column is
+ * a 16-byte slot.  glUniformMatrix*fv supplies tightly packed columns
+ * (cols*rows floats); expand into cols*4 floats when rows < 4. */
+static void mglUploadPlainUniformMatrixStd140(GLMContext ctx,
+                                              GLint location,
+                                              GLsizei count,
+                                              GLboolean transpose,
+                                              GLuint cols,
+                                              GLuint rows,
+                                              const GLfloat *value)
+{
+    const GLuint srcWords = cols * rows;
+    const GLuint dstWords = cols * 4u;
+    GLsizeiptr sourceBytes = 0;
+    if (!checkUniformUploadParams(ctx, location, value, count,
+                                  (GLsizeiptr)(srcWords * sizeof(GLfloat)),
+                                  &sourceBytes)) {
+        return;
+    }
+    if (count == 0) {
+        mglUniform(ctx, location, NULL, 0);
+        return;
+    }
+    /* rows==4: already matches std140 column size; optional transpose only. */
+    if (rows == 4u && !transpose) {
+        mglUniform(ctx, location, (void *)value, sourceBytes);
+        return;
+    }
+    if (rows == 4u && transpose) {
+        /* Fall through to pack loop (identity size, swap indices). */
+    } else if (rows >= 4u) {
+        mglUniform(ctx, location, (void *)value, sourceBytes);
+        return;
+    }
+
+    if ((size_t)count > SIZE_MAX / (dstWords * sizeof(GLfloat))) {
+        ctx = mglUniformResolveContext(ctx, __FUNCTION__);
+        mglUniformSetError(ctx, GL_OUT_OF_MEMORY);
+        return;
+    }
+    size_t packedFloats = (size_t)count * dstWords;
+    GLfloat stackValues[64];
+    GLfloat *packed =
+        (packedFloats <= (sizeof(stackValues) / sizeof(stackValues[0])))
+            ? stackValues
+            : (GLfloat *)malloc(packedFloats * sizeof(GLfloat));
+    if (!packed) {
+        ctx = mglUniformResolveContext(ctx, __FUNCTION__);
+        mglUniformSetError(ctx, GL_OUT_OF_MEMORY);
+        return;
+    }
+    for (GLsizei m = 0; m < count; m++) {
+        const GLfloat *src = value + (size_t)m * srcWords;
+        GLfloat *dst = packed + (size_t)m * dstWords;
+        for (GLuint col = 0; col < cols; col++) {
+            for (GLuint row = 0; row < 4u; row++) {
+                if (row < rows) {
+                    dst[col * 4u + row] =
+                        transpose ? src[row * cols + col]
+                                  : src[col * rows + row];
+                } else {
+                    dst[col * 4u + row] = 0.0f;
+                }
+            }
+        }
+    }
+    mglUniform(ctx, location, packed,
+               (GLsizeiptr)(packedFloats * sizeof(GLfloat)));
+    if (packed != stackValues) {
+        free(packed);
+    }
+}
+
 static void mglUploadPlainUniformMat3fv(GLMContext ctx,
                                         GLint location,
                                         GLsizei count,
@@ -3379,12 +3454,7 @@ DEFINE_TRANSPOSE_FUNC(GLfloat, 2, 2, Mat2x2fv, Mat2x2fvTrans)
 
 void mglUniformMatrix2fv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value)
 {
-    HANDLE_MATRIX_TRANSPOSE(
-                            GLfloat,        // Element type
-                            Mat2x2fv,          // Source matrix type
-                            Mat2x2fvTrans,     // Destination matrix type
-                            Mat2x2fvTranspose  // Transpose function
-        );
+    mglUploadPlainUniformMatrixStd140(ctx, location, count, transpose, 2u, 2u, value);
 }
 
 DEFINE_MATRIX_TYPE(GLdouble, 3, 2, Mat2x3dv)
@@ -3407,12 +3477,7 @@ DEFINE_TRANSPOSE_FUNC(GLfloat, 3, 2, Mat2x3fv, Mat2x3fvTrans)
 
 void mglUniformMatrix2x3fv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value)
 {
-    HANDLE_MATRIX_TRANSPOSE(
-                            GLfloat,        // Element type
-                            Mat2x3fv,          // Source matrix type
-                            Mat2x3fvTrans,     // Destination matrix type
-                            Mat2x3fvTranspose  // Transpose function
-        );
+    mglUploadPlainUniformMatrixStd140(ctx, location, count, transpose, 2u, 3u, value);
 }
 
 DEFINE_MATRIX_TYPE(GLdouble, 4, 2, Mat2x4dv)
@@ -3435,12 +3500,7 @@ DEFINE_TRANSPOSE_FUNC(GLfloat, 4, 2, Mat2x4fv, Mat2x4fvTrans)
 
 void mglUniformMatrix2x4fv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value)
 {
-    HANDLE_MATRIX_TRANSPOSE(
-                            GLfloat,        // Element type
-                            Mat2x4fv,          // Source matrix type
-                            Mat2x4fvTrans,     // Destination matrix type
-                            Mat2x4fvTranspose  // Transpose function
-        );
+    mglUploadPlainUniformMatrixStd140(ctx, location, count, transpose, 2u, 4u, value);
 }
 
 DEFINE_MATRIX_TYPE(GLdouble, 3, 3, Mat3x3dv)       // 3x3 matrix type
@@ -3605,12 +3665,7 @@ DEFINE_TRANSPOSE_FUNC(GLfloat, 2, 3, Mat3x2fv, Mat3x2fvTrans)
 
 void mglUniformMatrix3x2fv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value)
 {
-    HANDLE_MATRIX_TRANSPOSE(
-                            GLfloat,        // Element type
-                            Mat3x2fv,          // Source matrix type
-                            Mat3x2fvTrans,     // Destination matrix type
-                            Mat3x2fvTranspose  // Transpose function
-        );
+    mglUploadPlainUniformMatrixStd140(ctx, location, count, transpose, 3u, 2u, value);
 }
 
 DEFINE_MATRIX_TYPE(GLdouble, 4, 3, Mat3x4dv)
@@ -3689,12 +3744,7 @@ DEFINE_TRANSPOSE_FUNC(GLfloat, 2, 4, Mat4x2fv, Mat4x2fvTrans)
 
 void mglUniformMatrix4x2fv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value)
 {
-    HANDLE_MATRIX_TRANSPOSE(
-                            GLfloat,        // Element type
-                            Mat4x2fv,          // Source matrix type
-                            Mat4x2fvTrans,     // Destination matrix type
-                            Mat4x2fvTranspose  // Transpose function
-        );
+    mglUploadPlainUniformMatrixStd140(ctx, location, count, transpose, 4u, 2u, value);
 }
 
 DEFINE_MATRIX_TYPE(GLdouble, 3, 4, Mat4x3dv)
@@ -3717,12 +3767,7 @@ DEFINE_TRANSPOSE_FUNC(GLfloat, 3, 4, Mat4x3fv, Mat4x3fvTrans)
 
 void mglUniformMatrix4x3fv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value)
 {
-    HANDLE_MATRIX_TRANSPOSE(
-                            GLfloat,        // Element type
-                            Mat4x3fv,          // Source matrix type
-                            Mat4x3fvTrans,     // Destination matrix type
-                            Mat4x3fvTranspose  // Transpose function
-        );
+    mglUploadPlainUniformMatrixStd140(ctx, location, count, transpose, 4u, 3u, value);
 }
 
 /* Legacy fixed-function clip-plane derivation state (glClipPlane +

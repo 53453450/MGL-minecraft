@@ -69,6 +69,8 @@ typedef struct Sema {
      * enforced by the spec, so indices beyond this table keep the counter
      * at its explicit offset only). */
     uint32_t ac_default_offset[128];
+    /* Non-owning: active function return type while analyzing a body. */
+    MGLIRType *cur_ret_type;
 } Sema;
 
 static MGLIRType *scratch_type(Sema *s, MGLIRType *t)
@@ -3056,7 +3058,10 @@ static void analyze_function(Sema *s, SymTab *tab, const MGLDecl *d)
                 symtab_insert(tab, ps);
             }
         }
+        MGLIRType *saved_ret = s->cur_ret_type;
+        s->cur_ret_type = sym->ret_type;
         analyze_stmt(s, tab, d->body);
+        s->cur_ret_type = saved_ret;
         symtab_pop(tab);
     }
 }
@@ -3460,7 +3465,17 @@ static void analyze_stmt(Sema *s, SymTab *tab, const MGLStmt *st)
         break;
     case MGL_STMT_RETURN:
         if (st->u.ret.value) {
-            check_expr(s, tab, st->u.ret.value);
+            MGLIRType *rt = check_expr(s, tab, st->u.ret.value);
+            /* GLSL 4.60 §6.1.1: return expression must convert to the
+             * function's return type (rejects uint→int etc.). */
+            if (rt && s->cur_ret_type &&
+                !check_assign_op(s->cur_ret_type, rt)) {
+                char ta[64], tb[64];
+                sema_error(s, st->line,
+                           "cannot convert return value from %s to %s",
+                           ir_type_str(rt, ta, sizeof(ta)),
+                           ir_type_str(s->cur_ret_type, tb, sizeof(tb)));
+            }
         }
         break;
     default:
