@@ -5069,6 +5069,13 @@ static int mglReadbackFormatChannelMap(uint32_t format, int* slots,
     }
 }
 
+/* OpenGL GetTexImage / transfer: missing R/G/B → 0, missing A → 1.
+ * Do not replicate the last stored channel (that yields RG→(R,G,G,G)). */
+static float mglReadbackMissingChannelFloat(int src_channel_idx)
+{
+    return (src_channel_idx == 3) ? 1.0f : 0.0f;
+}
+
 
 static uint32_t mglSizeForType(uint32_t type) {
     switch (type) {
@@ -5310,9 +5317,12 @@ int mglRenderCopySnorm8TextureBytesToGL(
             uint8_t* dp = dst_row + (x * dst_pixel_bytes);
             for (int c = 0; c < slots; ++c) {
                 int idx = src_idx[c];
-                if (idx >= src_channels) idx = src_channels - 1;
-                int8_t sv = s[idx];
-                float fv = mglRenderSnorm8ToFloat(sv);
+                float fv;
+                if (idx >= src_channels) {
+                    fv = mglReadbackMissingChannelFloat(idx);
+                } else {
+                    fv = mglRenderSnorm8ToFloat(s[idx]);
+                }
                 uint8_t* out = dp + (uint64_t)c * (uint64_t)comp_bytes;
                 if (type == GL_BYTE) {
                     int32_t iv = (int32_t)lroundf(fv * 127.0f);
@@ -5822,9 +5832,12 @@ int mglRenderCopy16or32TextureBytesToGL(
                 float fvals[4] = {0.0f, 0.0f, 0.0f, 0.0f};
                 for (int c = 0; c < slots; ++c) {
                     int idx = src_idx[c];
-                    if (idx >= src_channels) idx = src_channels - 1;
-                    fvals[c] = mglRead16or32SourceFloat(
-                        s, idx, is16u, is16s, is16f);
+                    if (idx >= src_channels) {
+                        fvals[c] = mglReadbackMissingChannelFloat(idx);
+                    } else {
+                        fvals[c] = mglRead16or32SourceFloat(
+                            s, idx, is16u, is16s, is16f);
+                    }
                 }
                 if (slots < 4) {
                     const int needs_alpha =
@@ -5969,9 +5982,13 @@ int mglRenderCopy16or32TextureBytesToGL(
 
             for (int c = 0; c < slots; ++c) {
                 int idx = src_idx[c];
-                if (idx >= src_channels) idx = src_channels - 1;
-                float fv = mglRead16or32SourceFloat(
-                    s, idx, is16u, is16s, is16f);
+                float fv;
+                if (idx >= src_channels) {
+                    fv = mglReadbackMissingChannelFloat(idx);
+                } else {
+                    fv = mglRead16or32SourceFloat(
+                        s, idx, is16u, is16s, is16f);
+                }
                 uint8_t* out = dp + (uint64_t)c * (uint64_t)comp_bytes;
                 if (type == GL_UNSIGNED_BYTE) {
                     float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
@@ -6746,6 +6763,8 @@ int mglRenderConvertIntegerReadback(
                     uint32_t val = 0u;
                     if (srcIdx >= 0 && (uint32_t)srcIdx < p->source_component_count) {
                         val = srcValues[srcIdx];
+                    } else if (c == 3u) {
+                        val = 1u; /* missing alpha → 1 */
                     }
                     /* Clamp to bit width (not mask). */
                     uint32_t maxVal = (p->packed_bit_widths[c] >= 32u) ? 0xFFFFFFFFu : ((1u << p->packed_bit_widths[c]) - 1u);
@@ -6767,6 +6786,8 @@ int mglRenderConvertIntegerReadback(
                     uint32_t value = 0u;
                     if (srcIdx >= 0 && (uint32_t)srcIdx < p->source_component_count) {
                         value = srcValues[srcIdx];
+                    } else if (c == 3u) {
+                        value = 1u; /* missing alpha → 1 */
                     }
                     if (p->output_component_bytes == 1u) {
                         if (p->packed_type == GL_BYTE) {
