@@ -4788,8 +4788,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                             mod);
         const MGLIRSymbol *s = findSymbol(mod, e->u.var_ref.name);
         if (!s) { cg.err = 1; return nullptr; }
-        if ((s->qualifiers & MGL_AST_Q_CONST) &&
+        if (((s->qualifiers & MGL_AST_Q_CONST) ||
+             (s->qualifiers & MGL_AST_Q_UNIFORM)) &&
             cg.lvalues.count(e->u.var_ref.name)) {
+            /* Const values and uniform default initializers folded above. */
             return cg.lvalues[e->u.var_ref.name];
         }
         if (s->qualifiers & MGL_AST_Q_BUFFER)
@@ -5484,24 +5486,9 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                      llvm::Align(4));
             return llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), 0);
         }
-        /* Scalar constructors / conversions. */
-        if (strcmp(name, "float") == 0 || strcmp(name, "int") == 0 ||
-            strcmp(name, "uint") == 0 || strcmp(name, "bool") == 0) {
-            if (e->u.call.arg_count != 1) {
-                cg.err = 1;
-                cg.errmsg = std::string("codegen: constructor '") + name +
-                            "' expects 1 argument";
-                return nullptr;
-            }
-            llvm::Value *arg = emitExpr(cg, e->u.call.args[0], mod, locals);
-            if (!arg) return nullptr;
-            MGLIRScalar want = name[0] == 'f' ? MGLIR_SCALAR_FLOAT
-                             : name[0] == 'u' ? MGLIR_SCALAR_UINT
-                             : name[0] == 'b' ? MGLIR_SCALAR_BOOL
-                                              : MGLIR_SCALAR_INT;
-            return coerceScalar(cg, arg, want);
-        }
-        /* Array constructors: vecN[](a, b, ...). */
+        /* Array constructors: int[](a,b,...) / vecN[](...). Must run before
+         * scalar `int`/`float` constructors — those share the same callee
+         * name and would reject multi-arg array forms. */
         if (e->u.call.is_array_ctor) {
             llvm::Value *res = llvm::UndefValue::get(llvmType(
                 exprType(cg, e, mod, locals), *cg.ctx));
@@ -5522,6 +5509,23 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 res = cg.b->CreateInsertValue(res, arg, a);
             }
             return res;
+        }
+        /* Scalar constructors / conversions. */
+        if (strcmp(name, "float") == 0 || strcmp(name, "int") == 0 ||
+            strcmp(name, "uint") == 0 || strcmp(name, "bool") == 0) {
+            if (e->u.call.arg_count != 1) {
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: constructor '") + name +
+                            "' expects 1 argument";
+                return nullptr;
+            }
+            llvm::Value *arg = emitExpr(cg, e->u.call.args[0], mod, locals);
+            if (!arg) return nullptr;
+            MGLIRScalar want = name[0] == 'f' ? MGLIR_SCALAR_FLOAT
+                             : name[0] == 'u' ? MGLIR_SCALAR_UINT
+                             : name[0] == 'b' ? MGLIR_SCALAR_BOOL
+                                              : MGLIR_SCALAR_INT;
+            return coerceScalar(cg, arg, want);
         }
         /* Vector constructors: [i]uvec/bvec/vec2..4. */
         const char *vn = name;
@@ -7880,6 +7884,8 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                      : name[0] == 'u' ? MGLIR_SCALAR_UINT
                      : name[0] == 'b' ? MGLIR_SCALAR_BOOL
                                       : MGLIR_SCALAR_INT;
+            if (e->u.call.is_array_ctor)
+                t.arr = e->u.call.arg_count;
             break;
         }
         const char *vn = name;
@@ -11956,23 +11962,26 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
 
     cg.userFns = &userFns;
     std::map<std::string, MType> locals;
-    /* Global initializers (const arrays/scalars and other file-scope
-     * variables with constant initializers such as `int counter = 0;`):
-     * evaluate into cg.lvalues before main so references fold to SSA
-     * values instead of reading undef/unbound slots. */
+    /* Global initializers (const arrays/scalars, default-block uniforms with
+     * constant initializers such as `uniform vec4 g = vec4(1);`, and other
+     * file-scope variables): evaluate into cg.lvalues before main so
+     * references fold to SSA values instead of reading undef/unbound slots.
+     * Uniform defaults are also required for CTS shaders that never call
+     * glUniform* for those variables (plain slots otherwise stay zero). */
     for (uint32_t i = 0; i < tu->decl_count; i++) {
         MGLDecl *d = tu->decls[i];
         if (!d || !d->name || d->body || !d->init) continue;
         const MGLIRSymbol *gs = findSymbol(&mod, d->name);
         if (!gs || gs->is_function) continue;
-        if (gs->qualifiers & (MGL_AST_Q_UNIFORM | MGL_AST_Q_BUFFER |
+        if (gs->qualifiers & (MGL_AST_Q_BUFFER |
                               MGL_AST_Q_IN | MGL_AST_Q_OUT |
                               MGL_AST_Q_INOUT | MGL_AST_Q_SHARED)) {
             continue;
         }
         MType gt = typeFromIR(gs->type);
         const bool isConst = (gs->qualifiers & MGL_AST_Q_CONST) != 0;
-        if (gt.isArray() && !isConst) continue;
+        const bool isUniform = (gs->qualifiers & MGL_AST_Q_UNIFORM) != 0;
+        if (gt.isArray() && !isConst && !isUniform) continue;
         llvm::Value *gv = emitExpr(cg, d->init, &mod, locals);
         if (!gv) break;
         cg.lvalues[d->name] = gv;

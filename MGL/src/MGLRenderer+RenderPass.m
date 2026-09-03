@@ -69,6 +69,38 @@ static MGLRendererBackendHandle *mglRenderPassBackend(GLMContext context)
         : NULL;
 }
 
+/* VS-only + GL_RASTERIZER_DISCARD cannot leave Metal rasterization disabled:
+ * AGX drops vertex texture/SSBO stores. A no-op fragment keeps rasterization
+ * on while color write masks stay cleared (see below). */
+static id mglRasterizerDiscardStubFragmentFunction(void)
+{
+    static id s_fs = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        const MGLAuxShaderAsset *safe = mglAuxShaderAssetFind("safe_fallback");
+        void *vs = NULL;
+        void *fs = NULL;
+        char err[256] = {0};
+        if (!safe || !safe->data || safe->size == 0 ||
+            mglRenderCreateAuxFunctions(
+                safe->data, safe->size, safe->hash,
+                "mgl_safe_fallback_vs", "mgl_safe_fallback_fs",
+                &vs, &fs, err, sizeof(err)) != 0 || !fs) {
+            NSLog(@"MGL ERROR: discard stub FS unavailable: %s",
+                  err[0] ? err : "asset missing");
+            if (vs) {
+                (void)(__bridge_transfer id)vs;
+            }
+            return;
+        }
+        if (vs) {
+            (void)(__bridge_transfer id)vs;
+        }
+        s_fs = (__bridge_transfer id)fs;
+    });
+    return s_fs;
+}
+
 static id mglRenderPassDefaultDrawBufferAttachment(
     MGLRendererBackendHandle *backend, GLuint drawBufferIndex,
     MGLRendererBackendDefaultDrawBufferAttachmentKind kind)
@@ -4405,6 +4437,10 @@ static GLenum mglPassthroughDeclType(
     id fragmentFunction = fragmentProgram
         ? (__bridge id)fragmentProgram->modules[_FRAGMENT_SHADER].mtl_function
         : nil;
+    if (!fragmentFunction && rasterizerDiscard &&
+        !tessVertexCapture && !cullDistanceCapture) {
+        fragmentFunction = mglRasterizerDiscardStubFragmentFunction();
+    }
     if (kMGLVerbosePipelineLogs) {
         NSLog(@"MGL PIPELINE DESC vs=%p fs=%p",
               vertexFunction, fragmentFunction);
@@ -4501,10 +4537,10 @@ static GLenum mglPassthroughDeclType(
     if (tessVertexCapture || cullDistanceCapture) {
         state->rasterization_enabled = 0;
     } else if (rasterizerDiscard) {
-        /* AGX drops vertex device-buffer stores when Metal rasterization is
-         * disabled. Keep rasterization on so VS SSBO/XFB writes execute;
-         * color write masks are cleared below to honor GL_RASTERIZER_DISCARD. */
-        state->rasterization_enabled = fragmentProgram ? 1 : 0;
+        /* AGX drops vertex texture/SSBO stores when Metal rasterization is
+         * disabled. Keep rasterization on (real FS or discard stub above) so
+         * VS image/SSBO writes execute; color write masks are cleared below. */
+        state->rasterization_enabled = fragmentFunction ? 1 : 0;
     } else {
         state->rasterization_enabled = 1;
     }
