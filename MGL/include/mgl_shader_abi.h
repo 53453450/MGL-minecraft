@@ -271,6 +271,10 @@ void mglShaderFree(void *bytes);
 int mglShaderInterfaceCheck(const char *vs_src, const char *fs_src,
                             char *err_buf, size_t err_cap);
 
+/* Compare TCS outputs with TES inputs (including patch varyings). */
+int mglShaderTessInterfaceCheck(const char *tcs_src, const char *tes_src,
+                                char *err_buf, size_t err_cap);
+
 #ifdef __cplusplus
 }
 #endif

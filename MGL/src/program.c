@@ -2063,6 +2063,24 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         }
     }
 
+    if ((pptr->attached_shader_mask & (1u << _TESS_CONTROL_SHADER)) &&
+        (pptr->attached_shader_mask & (1u << _TESS_EVALUATION_SHADER))) {
+        Shader *tcs = pptr->shader_slots[_TESS_CONTROL_SHADER];
+        Shader *tes = pptr->shader_slots[_TESS_EVALUATION_SHADER];
+        if (tcs && tes && tcs->src && tes->src) {
+            char iface_err[512] = {0};
+            if (mglShaderTessInterfaceCheck(tcs->src, tes->src, iface_err,
+                                            sizeof iface_err) != 0) {
+                fprintf(stderr,
+                        "MGL WARNING: mglLinkProgram failed program %u: %s\n",
+                        pptr->name,
+                        iface_err[0] ? iface_err
+                                     : "tessellation stage interface mismatch");
+                return;
+            }
+        }
+    }
+
     pptr->link_success = GL_TRUE;
     pptr->dirty_bits |= DIRTY_PROGRAM;
     /* Cache the legacy clip-plane uniform locations (the translator injects

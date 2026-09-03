@@ -43,6 +43,7 @@
  * must enforce without a context handle, so the value is mirrored here.
  * Keep the two in sync. */
 #define MGL_SEMA_MAX_ATOMIC_COUNTER_BUFFER_SIZE 16384u
+#define MGL_SEMA_MAX_PATCH_VERTICES 32u
 
 /* ------------------------------------------------------------------ */
 /* Diagnostics                                                         */
@@ -2399,6 +2400,44 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
         }
     }
     case MGL_EXPR_ASSIGN: {
+        /* GLSL 4.60 §11.2.1.2.3: TCS may only write per-vertex outputs at
+         * gl_InvocationID (CTS tc_invalid_write_operation…). */
+        if (s->stage == MGL_STAGE_TESS_CONTROL && e->u.assign.lhs) {
+            const MGLExpr *lhs = e->u.assign.lhs;
+            const MGLExpr *indexed = NULL;
+            if (lhs->kind == MGL_EXPR_MEMBER && lhs->u.member.object &&
+                lhs->u.member.object->kind == MGL_EXPR_INDEX) {
+                indexed = lhs->u.member.object;
+            } else if (lhs->kind == MGL_EXPR_INDEX) {
+                indexed = lhs;
+            }
+            if (indexed && indexed->u.index.object &&
+                indexed->u.index.object->kind == MGL_EXPR_VAR_REF) {
+                const char *base = indexed->u.index.object->u.var_ref.name;
+                const MGLExpr *ix = indexed->u.index.index;
+                /* Patch-wide builtins (tess levels) and inputs are exempt;
+                 * only gl_out / per-vertex user outputs are restricted. */
+                int per_vertex_out = 0;
+                if (base && strcmp(base, "gl_out") == 0) {
+                    per_vertex_out = 1;
+                } else if (base) {
+                    Sym *sym = symtab_lookup(tab, base);
+                    if (sym && sym->kind == SYM_VARIABLE && sym->type &&
+                        (sym->qualifiers & MGL_AST_Q_OUT) &&
+                        !(sym->qualifiers & MGL_AST_Q_PATCH) &&
+                        sym->type->kind == MGLIR_TYPE_ARRAY) {
+                        per_vertex_out = 1;
+                    }
+                }
+                if (per_vertex_out && ix &&
+                    !(ix->kind == MGL_EXPR_VAR_REF && ix->u.var_ref.name &&
+                      strcmp(ix->u.var_ref.name, "gl_InvocationID") == 0)) {
+                    sema_error(s, e->line,
+                               "tessellation control per-vertex outputs may "
+                               "only be written at gl_InvocationID");
+                }
+            }
+        }
         MGLIRType *l = check_expr(s, tab, e->u.assign.lhs);
         MGLIRType *r = check_expr(s, tab, e->u.assign.rhs);
         if (!l || !r) {
@@ -2634,6 +2673,60 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
     if (!var_name) {
         mglIRTypeDestroy(t);
         return;
+    }
+    /* GLSL 4.60 §4.3.8–§4.3.9: TCS/TES per-vertex in/out must be arrays;
+     * patch in is illegal in TCS; patch out is illegal in TES.  Explicitly
+     * sized input arrays must equal gl_MaxPatchVertices; sized TCS outputs
+     * must equal layout(vertices = N). */
+    if (global &&
+        (s->stage == MGL_STAGE_TESS_CONTROL ||
+         s->stage == MGL_STAGE_TESS_EVALUATION) &&
+        (d->qualifiers & (MGL_AST_Q_IN | MGL_AST_Q_OUT)) &&
+        !(d->qualifiers & (MGL_AST_Q_UNIFORM | MGL_AST_Q_BUFFER))) {
+        const int is_patch = (d->qualifiers & MGL_AST_Q_PATCH) != 0;
+        if (is_patch) {
+            if (s->stage == MGL_STAGE_TESS_CONTROL &&
+                (d->qualifiers & MGL_AST_Q_IN)) {
+                sema_error(s, d->line,
+                           "patch inputs are not allowed in tessellation "
+                           "control shaders");
+            }
+            if (s->stage == MGL_STAGE_TESS_EVALUATION &&
+                (d->qualifiers & MGL_AST_Q_OUT)) {
+                sema_error(s, d->line,
+                           "patch outputs are not allowed in tessellation "
+                           "evaluation shaders");
+            }
+        } else if (d->array_count == 0) {
+            /* TES outputs are ordinary per-vertex varyings (like VS outs),
+             * not patch-vertex arrays. */
+            if (!(s->stage == MGL_STAGE_TESS_EVALUATION &&
+                  (d->qualifiers & MGL_AST_Q_OUT))) {
+                sema_error(s, d->line,
+                           "per-vertex tessellation %s '%s' must be declared "
+                           "as an array",
+                           (d->qualifiers & MGL_AST_Q_IN) ? "input" : "output",
+                           var_name);
+            }
+        } else if (d->array_dims && d->array_dims[0] > 0u) {
+            const uint32_t sz = d->array_dims[0];
+            if (d->qualifiers & MGL_AST_Q_IN) {
+                if (sz != MGL_SEMA_MAX_PATCH_VERTICES) {
+                    sema_error(s, d->line,
+                               "sized tessellation input array '%s' must "
+                               "match gl_MaxPatchVertices (%u)",
+                               var_name, MGL_SEMA_MAX_PATCH_VERTICES);
+                }
+            } else if (s->stage == MGL_STAGE_TESS_CONTROL &&
+                       (d->qualifiers & MGL_AST_Q_OUT) && s->tu &&
+                       s->tu->layout_vertices > 0 &&
+                       sz != (uint32_t)s->tu->layout_vertices) {
+                sema_error(s, d->line,
+                           "sized tessellation control output array '%s' "
+                           "must match layout(vertices = %d)",
+                           var_name, s->tu->layout_vertices);
+            }
+        }
     }
     /* GL 4.6 §7.7.2 / GLSL 4.60 §4.4.6: atomic counters live at global
      * scope only, cannot carry layout(location), and an explicit offset
@@ -3059,6 +3152,23 @@ int mglGLSLSemanticCheck(const MGLTranslationUnit *tu, int stage,
 
     for (uint32_t i = 0; i < tu->decl_count; i++) {
         analyze_decl(&s, &tab, tu->decls[i], 1);
+    }
+
+    /* GLSL 4.60 §4.4.1.3: TCS must declare layout(vertices = N) with
+     * 1 ≤ N ≤ gl_MaxPatchVertices. */
+    if (stage == MGL_STAGE_TESS_CONTROL) {
+        if (tu->layout_vertices < 0) {
+            sema_error(&s, 0,
+                       "tessellation control shader must declare "
+                       "layout(vertices = N)");
+        } else if (tu->layout_vertices == 0 ||
+                   (uint32_t)tu->layout_vertices >
+                       MGL_SEMA_MAX_PATCH_VERTICES) {
+            sema_error(&s, 0,
+                       "layout(vertices = %d) is outside the valid range "
+                       "[1, %u]",
+                       tu->layout_vertices, MGL_SEMA_MAX_PATCH_VERTICES);
+        }
     }
 
     if (errors) {

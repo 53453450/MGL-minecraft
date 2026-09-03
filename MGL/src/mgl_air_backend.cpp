@@ -13680,3 +13680,58 @@ extern "C" int mglShaderInterfaceCheck(const char *vs_src, const char *fs_src,
     mglGLSLTranslationUnitDestroy(ftu);
     return rc;
 }
+
+extern "C" int mglShaderTessInterfaceCheck(const char *tcs_src,
+                                           const char *tes_src,
+                                           char *err_buf, size_t err_cap) {
+    if (!tcs_src || !tes_src) return -1;
+    std::unique_ptr<char[]> tcs_legacy(
+        airPrepareLegacySource(tcs_src, MGL_STAGE_TESS_CONTROL));
+    std::unique_ptr<char[]> tes_legacy(
+        airPrepareLegacySource(tes_src, MGL_STAGE_TESS_EVALUATION));
+    const char *csrc = tcs_legacy ? tcs_legacy.get() : tcs_src;
+    const char *esrc = tes_legacy ? tes_legacy.get() : tes_src;
+    MGLTranslationUnit *ctu = mglGLSLParse(csrc, strlen(csrc));
+    MGLTranslationUnit *etu = mglGLSLParse(esrc, strlen(esrc));
+    if (!ctu || !etu) {
+        if (err_buf && err_cap) snprintf(err_buf, err_cap, "parse failed");
+        mglGLSLTranslationUnitDestroy(ctu);
+        mglGLSLTranslationUnitDestroy(etu);
+        return -1;
+    }
+    MGLIRModule tcs, tes;
+    memset(&tcs, 0, sizeof tcs);
+    memset(&tes, 0, sizeof tes);
+    MGLSemaError *ce = nullptr, *ee = nullptr;
+    uint32_t cc = 0, ec = 0;
+    int chard = mglGLSLSemanticCheck(ctu, MGL_STAGE_TESS_CONTROL, &tcs, &ce, &cc);
+    int ehard = mglGLSLSemanticCheck(etu, MGL_STAGE_TESS_EVALUATION, &tes, &ee, &ec);
+    int rc = 0;
+    if (chard || ehard) {
+        /* Declaration-level errors are reported at compile; still treat a
+         * surviving type mismatch as a link failure when both compile. */
+        if (err_buf && err_cap) {
+            const char *msg = (chard && ce && cc)
+                ? ce[0].message : (ee && ec) ? ee[0].message
+                                             : "tess semantic check failed";
+            snprintf(err_buf, err_cap, "%s", msg);
+        }
+        rc = -1;
+    } else {
+        MGLSemaError *le = nullptr;
+        uint32_t lec = 0;
+        if (mglGLSLInterfaceCheck(&tcs, &tes, &le, &lec)) {
+            if (err_buf && err_cap && le && lec)
+                snprintf(err_buf, err_cap, "%s", le[0].message);
+            rc = -1;
+        }
+        mglGLSLSemanticCheckDestroy(le, lec);
+    }
+    mglGLSLSemanticCheckDestroy(ce, cc);
+    mglGLSLSemanticCheckDestroy(ee, ec);
+    mglIRModuleDestroy(&tcs);
+    mglIRModuleDestroy(&tes);
+    mglGLSLTranslationUnitDestroy(ctu);
+    mglGLSLTranslationUnitDestroy(etu);
+    return rc;
+}
