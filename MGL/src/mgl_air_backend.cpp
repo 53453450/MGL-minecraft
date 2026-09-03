@@ -10190,12 +10190,6 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
             t.scalar = MGLIR_SCALAR_FLOAT;
             if (d->type && d->type->vec_size) t.vec = d->type->vec_size;
         }
-        if (d->init) {
-            llvm::Value *v = emitExpr(cg, d->init, mod, *locals);
-            if (!v) return;
-            v = coerceScalar(cg, v, t.scalar);
-            cg.lvalues[d->name] = v;
-        }
         (*locals)[d->name] = t;
         /* Track IR type for local structs so member ExtractValue can
          * resolve field indices (MType cannot represent structs). */
@@ -10223,6 +10217,26 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
                     cg.localIRTypes[d->name] = base;
                 }
             }
+        }
+        if (d->init) {
+            llvm::Value *v = emitExpr(cg, d->init, mod, *locals);
+            if (!v) return;
+            v = coerceScalar(cg, v, t.scalar);
+            cg.lvalues[d->name] = v;
+        } else if (d->name) {
+            /* Uninitialized locals must still occupy an SSA slot before
+             * any loop.  Lazy Undef on the first indexed store inside a
+             * for-body is not in the loop phi set, so each iteration
+             * rebuilds from Undef and leaves select(..., undef) values
+             * that crash MTLCompilerService (XPC) when later read. */
+            llvm::Type *ty = nullptr;
+            auto irit = cg.localIRTypes.find(d->name);
+            if (irit != cg.localIRTypes.end())
+                ty = llvmTypeFromIR(irit->second, *cg.ctx);
+            else
+                ty = llvmType(t, *cg.ctx);
+            if (ty)
+                cg.lvalues[d->name] = llvm::UndefValue::get(ty);
         }
         }
         break;
