@@ -2752,13 +2752,20 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
                 if (!ms) break;
                 ms->name = strdup(bt->member_names[m]);
                 ms->type = ir_type_clone(bt->members[m]);
-                Sym *msym = sym_new(bt->member_names[m]);
-                if (msym) {
-                    msym->kind = SYM_VARIABLE;
-                    msym->type = ms->type;
-                    msym->type_owned = 0;
-                    msym->qualifiers = d->qualifiers;
-                    symtab_insert(tab, msym);
+                /* Anonymous blocks put members in the global namespace.
+                 * Named instances keep members under instance.field — do
+                 * not insert them into the global symbol table, or a later
+                 * freestanding in/out of the same name is a false
+                 * redeclaration (CTS data_pass_through). */
+                if (is_anon_block) {
+                    Sym *msym = sym_new(bt->member_names[m]);
+                    if (msym) {
+                        msym->kind = SYM_VARIABLE;
+                        msym->type = ms->type;
+                        msym->type_owned = 0;
+                        msym->qualifiers = d->qualifiers;
+                        symtab_insert(tab, msym);
+                    }
                 }
                 ms->qualifiers = d->qualifiers;
                 ms->layout = d->layout;
