@@ -972,6 +972,10 @@ typedef struct {
                     [self clearStageBindingCopyBacks:&stageCopyBacks];
                     return false;
                 }
+                if ((NSUInteger)imgLevel >= textureInfo.mipmap_level_count) {
+                    /* Undefined mip: leave unbound (loads → 0). */
+                    texture = nil;
+                } else {
                 NSUInteger sliceCount = textureInfo.array_length;
                 if (textureInfo.texture_type == MGL_TESS_TEXTURE_TYPE_CUBE ||
                     textureInfo.texture_type == MGL_TESS_TEXTURE_TYPE_CUBE_ARRAY) {
@@ -982,6 +986,7 @@ typedef struct {
                         texture, imgLevel, sliceCount);
                 if (levelView) {
                     texture = levelView;
+                }
                 }
             }
         }
@@ -2288,6 +2293,10 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
                     [self clearStageBindingCopyBacks:&stageCopyBacks];
                     return false;
                 }
+                if ((NSUInteger)imgLevel >= textureInfo.mipmap_level_count) {
+                    /* Undefined mip: leave unbound (loads → 0). */
+                    texture = nil;
+                } else {
                 NSUInteger sliceCount = textureInfo.array_length;
                 if (textureInfo.texture_type == MGL_TESS_TEXTURE_TYPE_CUBE ||
                     textureInfo.texture_type == MGL_TESS_TEXTURE_TYPE_CUBE_ARRAY) {
@@ -2298,6 +2307,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
                         texture, imgLevel, sliceCount);
                 if (levelView) {
                     texture = levelView;
+                }
                 }
             }
         }

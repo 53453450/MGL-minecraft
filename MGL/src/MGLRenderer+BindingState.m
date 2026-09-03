@@ -200,6 +200,12 @@ static id mglBindingStateCreateStorageImageView(id texture, ImageUnit *iu)
         return texture;
     }
     const NSUInteger level = (NSUInteger)iu->level;
+    /* Mutable textures may BindImage a mip that was never defined. Metal
+     * rejects views past mipmapLevelCount — leave unbound so loads read 0
+     * and stores are ignored (CTS incomplete_textures). */
+    if (level >= info.mipmap_level_count) {
+        return nil;
+    }
     const uint32_t srcType = info.texture_type;
     const GLenum glTarget = iu->tex ? iu->tex->target : (GLenum)0;
     const GLboolean isMsTarget =

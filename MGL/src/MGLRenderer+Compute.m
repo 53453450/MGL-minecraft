@@ -50,6 +50,9 @@ static id mglComputeCreateTextureLevelView(id texture, NSUInteger level)
     if (mglRenderGetTextureInfo((__bridge void *)texture, &info) != 0) {
         return nil;
     }
+    if (level >= info.mipmap_level_count) {
+        return nil;
+    }
     uint64_t sliceCount = info.array_length;
     if (info.texture_type == MGL_COMPUTE_TEXTURE_TYPE_CUBE ||
         info.texture_type == MGL_COMPUTE_TEXTURE_TYPE_CUBE_ARRAY) {
@@ -667,12 +670,19 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
                     if (gl_texture_type == _IMAGE_TEXTURE) {
                         GLuint imgLevel = MGL_STATE(ctx)->image_units[glUnit].level;
                         if (imgLevel > 0u) {
+                            MGLRenderTextureInfo texInfo = {0};
+                            if (mglRenderGetTextureInfo((__bridge void *)texture,
+                                                           &texInfo) == 0 &&
+                                (uint64_t)imgLevel >= texInfo.mipmap_level_count) {
+                                texture = nil;
+                            } else {
                             id levelView = mglComputeCreateTextureLevelView(
                                 texture, imgLevel);
                             if (levelView) {
                                 texture = levelView;
                                 /* Keep the view alive until the end replay. */
                                 MGL_CTEX_RETAIN_TEMP(levelView);
+                            }
                             }
                         }
                     }
@@ -839,12 +849,19 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
                  * a level-specific texture view (matches element 0 path). */
                 GLuint imgLevel = MGL_STATE(ctx)->image_units[glUnit].level;
                 if (imgLevel > 0u) {
+                    MGLRenderTextureInfo texInfo = {0};
+                    if (mglRenderGetTextureInfo((__bridge void *)texture,
+                                                   &texInfo) == 0 &&
+                        (uint64_t)imgLevel >= texInfo.mipmap_level_count) {
+                        texture = nil;
+                    } else {
                     id levelView = mglComputeCreateTextureLevelView(
                         texture, imgLevel);
                     if (levelView) {
                         texture = levelView;
                         /* Keep the view alive until the end replay. */
                         MGL_CTEX_RETAIN_TEMP(levelView);
+                    }
                     }
                 }
 
