@@ -849,12 +849,14 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
             }
             push_resource(&lists[_STAGE_INPUT_RES], s, t, location, 0,
                           stage);
-            /* Array attributes (and GS interface-block array members)
-             * occupy one location per element so glGetAttribLocation(
-             * "a[i]") == base+i stays aligned with VAO binds and the AIR
-             * vertex_input location_index sequence. */
+            /* Array / matrix attributes occupy one location per element or
+             * column so glGetAttribLocation("a[i]") == base+i stays aligned
+             * with VAO binds and the AIR vertex_input location_index
+             * sequence (GL 4.6 §4.4.1). */
             if (t->kind == MGLIR_TYPE_ARRAY && t->array_size > 1u) {
                 gs_input_span_pad += t->array_size - 1u;
+            } else if (t->kind == MGLIR_TYPE_MATRIX && t->cols > 1u) {
+                gs_input_span_pad += t->cols - 1u;
             }
         } else if (q & MGL_AST_Q_OUT) {
             if (location == UINT32_MAX) {

@@ -171,6 +171,35 @@ MGL_AIR_VA_STATIC_ASSERT(offsetof(MGLAIRPerVertexRecord, clip_distance) ==
 MGL_AIR_VA_STATIC_ASSERT(sizeof(MGLAIRPerVertexRecord) == MGL_AIR_PER_VERTEX_STRIDE,
               "record size drift");
 
+static inline uint32_t mglAIRVaryingLocationSpan(GLuint gl_type,
+                                                 GLint array_size)
+{
+    /* GL 4.6 §4.4.1: matrices consume one location per column. */
+    uint32_t cols = 1u;
+    switch (gl_type) {
+        case GL_FLOAT_MAT2:
+        case GL_FLOAT_MAT2x3:
+        case GL_FLOAT_MAT2x4:
+            cols = 2u;
+            break;
+        case GL_FLOAT_MAT3:
+        case GL_FLOAT_MAT3x2:
+        case GL_FLOAT_MAT3x4:
+            cols = 3u;
+            break;
+        case GL_FLOAT_MAT4:
+        case GL_FLOAT_MAT4x2:
+        case GL_FLOAT_MAT4x3:
+            cols = 4u;
+            break;
+        default:
+            cols = 1u;
+            break;
+    }
+    uint32_t elems = (array_size > 0) ? (uint32_t)array_size : 1u;
+    return cols * elems;
+}
+
 static inline uint32_t mglAIRPerVertexStrideForResources(
     const MGLShaderResourceList *resources)
 {
@@ -180,8 +209,10 @@ static inline uint32_t mglAIRPerVertexStrideForResources(
         const MGLShaderResource *resource = &resources->list[i];
         if (resource->is_per_patch || resource->location >= 0x0fffffffu)
             continue;
+        uint32_t span = mglAIRVaryingLocationSpan(resource->gl_type,
+                                                  resource->gl_array_size);
         uint32_t end = MGL_AIR_PER_VERTEX_STRIDE +
-                       (resource->location + 1u) * 16u;
+                       (resource->location + span) * 16u;
         if (end > stride) stride = end;
     }
     return stride;

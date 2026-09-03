@@ -127,6 +127,20 @@ typedef struct MGLParser {
      * like `S x = { ... };` are recognised as decl statements. */
     char struct_names[64][64];
     uint32_t struct_count;
+    /* Variable types for folding `.length()` on vectors/matrices and
+     * type-derived array extents such as `(matA * matB).length()`. */
+    struct {
+        char name[64];
+        int vec_size;
+        int mat_cols, mat_rows;
+        char struct_type[64];
+    } var_types[128];
+    uint32_t var_type_count;
+    char member_paths[128][96];
+    int member_vec[128];
+    int member_mat_cols[128];
+    int member_mat_rows[128];
+    uint32_t member_type_count;
 } MGLParser;
 
 static unsigned int tk_line(MGLParser *p);
@@ -433,6 +447,8 @@ static MGLTypeSpec *parse_type_spec(MGLParser *p)
 /* ------------------------------------------------------------------ */
 
 static int eval_const_int(MGLParser *p, const MGLExpr *e, int64_t *value);
+static int eval_type_length(MGLParser *p, const MGLExpr *e, uint32_t *len);
+static int lookup_array_len(const MGLParser *p, const char *name, uint32_t *len);
 static MGLExpr *parse_expression(MGLParser *p);
 
 static void record_const_int(MGLParser *p, const char *name, int64_t value)
@@ -448,6 +464,280 @@ static void record_const_int(MGLParser *p, const char *name, int64_t value)
     }
     memcpy(p->const_names[p->const_count], name, n + 1);
     p->const_vals[p->const_count++] = value;
+}
+
+static void record_var_type(MGLParser *p, const char *name,
+                            const MGLTypeSpec *t, const char *struct_type)
+{
+    if (!p || !name || !t || p->var_type_count >= 128) return;
+    size_t n = strlen(name);
+    if (n == 0 || n >= 64) return;
+    for (uint32_t i = 0; i < p->var_type_count; i++) {
+        if (strcmp(p->var_types[i].name, name) == 0) {
+            p->var_types[i].vec_size = t->vec_size;
+            p->var_types[i].mat_cols = t->mat_cols;
+            p->var_types[i].mat_rows = t->mat_rows;
+            if (struct_type) {
+                strncpy(p->var_types[i].struct_type, struct_type,
+                        sizeof(p->var_types[i].struct_type) - 1);
+            } else {
+                p->var_types[i].struct_type[0] = '\0';
+            }
+            return;
+        }
+    }
+    memcpy(p->var_types[p->var_type_count].name, name, n + 1);
+    p->var_types[p->var_type_count].vec_size = t->vec_size;
+    p->var_types[p->var_type_count].mat_cols = t->mat_cols;
+    p->var_types[p->var_type_count].mat_rows = t->mat_rows;
+    if (struct_type) {
+        strncpy(p->var_types[p->var_type_count].struct_type, struct_type,
+                sizeof(p->var_types[p->var_type_count].struct_type) - 1);
+    } else {
+        p->var_types[p->var_type_count].struct_type[0] = '\0';
+    }
+    p->var_type_count++;
+}
+
+static void record_member_type(MGLParser *p, const char *path,
+                               const MGLTypeSpec *t)
+{
+    if (!p || !path || !t || p->member_type_count >= 128) return;
+    size_t n = strlen(path);
+    if (n == 0 || n >= 96) return;
+    for (uint32_t i = 0; i < p->member_type_count; i++) {
+        if (strcmp(p->member_paths[i], path) == 0) {
+            p->member_vec[i] = t->vec_size;
+            p->member_mat_cols[i] = t->mat_cols;
+            p->member_mat_rows[i] = t->mat_rows;
+            return;
+        }
+    }
+    memcpy(p->member_paths[p->member_type_count], path, n + 1);
+    p->member_vec[p->member_type_count] = t->vec_size;
+    p->member_mat_cols[p->member_type_count] = t->mat_cols;
+    p->member_mat_rows[p->member_type_count] = t->mat_rows;
+    p->member_type_count++;
+}
+
+static int lookup_member_type(const MGLParser *p, const char *path,
+                              int *vec_size, int *mat_cols, int *mat_rows)
+{
+    if (!p || !path) return 0;
+    for (uint32_t i = 0; i < p->member_type_count; i++) {
+        if (strcmp(p->member_paths[i], path) == 0) {
+            if (vec_size) *vec_size = p->member_vec[i];
+            if (mat_cols) *mat_cols = p->member_mat_cols[i];
+            if (mat_rows) *mat_rows = p->member_mat_rows[i];
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void record_struct_member_lens(MGLParser *p, const char *prefix,
+                                      MGLDecl **members, uint32_t count)
+{
+    if (!p || !prefix || !members) return;
+    for (uint32_t i = 0; i < count; i++) {
+        MGLDecl *m = members[i];
+        if (!m || !m->name || !m->type) continue;
+        char path[96];
+        snprintf(path, sizeof(path), "%s.%s", prefix, m->name);
+        record_member_type(p, path, m->type);
+    }
+}
+
+static int lookup_var_type(const MGLParser *p, const char *name,
+                           int *vec_size, int *mat_cols, int *mat_rows,
+                           char struct_type[64])
+{
+    if (!p || !name) return 0;
+    for (uint32_t i = 0; i < p->var_type_count; i++) {
+        if (strcmp(p->var_types[i].name, name) == 0) {
+            if (vec_size) *vec_size = p->var_types[i].vec_size;
+            if (mat_cols) *mat_cols = p->var_types[i].mat_cols;
+            if (mat_rows) *mat_rows = p->var_types[i].mat_rows;
+            if (struct_type) {
+                strncpy(struct_type, p->var_types[i].struct_type, 63);
+                struct_type[63] = '\0';
+            }
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int lookup_member_len(const MGLParser *p, const char *path, uint32_t *len)
+{
+    int vc = 0, mc = 0, mr = 0;
+    if (!lookup_member_type(p, path, &vc, &mc, &mr) || !len) return 0;
+    if (mc > 0) { *len = (uint32_t)mc; return 1; }
+    if (vc > 0) { *len = (uint32_t)vc; return 1; }
+    return 0;
+}
+
+static uint32_t swizzle_component_count(const char *field)
+{
+    if (!field || !field[0]) return 0;
+    if (field[0] >= '0' && field[0] <= '3') {
+        uint32_t n = 0;
+        for (const char *c = field; *c >= '0' && *c <= '3'; c++) n++;
+        return n;
+    }
+    uint32_t n = 0;
+    for (const char *c = field; *c; c++) {
+        if (*c == 'x' || *c == 'y' || *c == 'z' || *c == 'w' ||
+            *c == 'r' || *c == 'g' || *c == 'b' || *c == 'a' ||
+            *c == 's' || *c == 't' || *c == 'p' || *c == 'q')
+            n++;
+        else
+            return 0;
+    }
+    return n;
+}
+
+static int expr_var_type(const MGLParser *p, const MGLExpr *e,
+                         int *vec_size, int *mat_cols, int *mat_rows)
+{
+    if (!p || !e) return 0;
+    switch (e->kind) {
+    case MGL_EXPR_VAR_REF: {
+        char st[64] = {0};
+        if (!lookup_var_type(p, e->u.var_ref.name, vec_size, mat_cols, mat_rows, st))
+            return 0;
+        if (mat_cols && *mat_cols > 0) return 1;
+        if (vec_size && *vec_size > 0) return 1;
+        return 0;
+    }
+    case MGL_EXPR_MEMBER: {
+        if (!e->u.member.field) return 0;
+        uint32_t swz = swizzle_component_count(e->u.member.field);
+        if (swz) {
+            if (vec_size) *vec_size = (int)swz;
+            if (mat_cols) *mat_cols = 0;
+            if (mat_rows) *mat_rows = 0;
+            return 1;
+        }
+        char path[96];
+        const MGLExpr *root = e->u.member.object;
+        if (root && root->kind == MGL_EXPR_INDEX &&
+            root->u.index.object &&
+            root->u.index.object->kind == MGL_EXPR_VAR_REF) {
+            root = root->u.index.object;
+        }
+        if (root && root->kind == MGL_EXPR_VAR_REF) {
+            char st[64] = {0};
+            lookup_var_type(p, root->u.var_ref.name,
+                            NULL, NULL, NULL, st);
+            if (st[0]) {
+                snprintf(path, sizeof(path), "%s.%s", st, e->u.member.field);
+                if (lookup_member_type(p, path, vec_size, mat_cols, mat_rows))
+                    return 1;
+            }
+            snprintf(path, sizeof(path), "%s.%s",
+                     root->u.var_ref.name, e->u.member.field);
+            if (lookup_member_type(p, path, vec_size, mat_cols, mat_rows))
+                return 1;
+        }
+        return 0;
+    }
+    case MGL_EXPR_INDEX: {
+        int vc = 0, mc = 0, mr = 0;
+        if (!expr_var_type(p, e->u.index.object, &vc, &mc, &mr)) return 0;
+        if (mc > 0) {
+            if (vec_size) *vec_size = mr;
+            if (mat_cols) *mat_cols = 0;
+            if (mat_rows) *mat_rows = 0;
+            return 1;
+        }
+        if (vc > 0) {
+            if (vec_size) *vec_size = 1;
+            if (mat_cols) *mat_cols = 0;
+            if (mat_rows) *mat_rows = 0;
+            return 1;
+        }
+        return 0;
+    }
+    case MGL_EXPR_BINARY:
+        if (e->u.binary.op != MGL_OP_MUL) return 0;
+        {
+            int lvc = 0, lmc = 0, lmr = 0;
+            int rvc = 0, rmc = 0, rmr = 0;
+            if (!expr_var_type(p, e->u.binary.lhs, &lvc, &lmc, &lmr) ||
+                !expr_var_type(p, e->u.binary.rhs, &rvc, &rmc, &rmr))
+                return 0;
+            if (lmc > 0 && rmc > 0 && lmc == rmr) {
+                if (vec_size) *vec_size = 0;
+                if (mat_cols) *mat_cols = rmc;
+                if (mat_rows) *mat_rows = lmr;
+                return 1;
+            }
+            if (lvc > 0 && rvc > 0) {
+                if (vec_size) *vec_size = lvc;
+                if (mat_cols) *mat_cols = 0;
+                if (mat_rows) *mat_rows = 0;
+                return 1;
+            }
+            return 0;
+        }
+    case MGL_EXPR_CALL: {
+        if (!e->u.call.name) return 0;
+        if (strcmp(e->u.call.name, "outerProduct") == 0 &&
+            e->u.call.arg_count == 2) {
+            int lvc = 0, rvc = 0;
+            if (!expr_var_type(p, e->u.call.args[0], &lvc, NULL, NULL) ||
+                !expr_var_type(p, e->u.call.args[1], &rvc, NULL, NULL) ||
+                lvc <= 0 || rvc <= 0)
+                return 0;
+            if (vec_size) *vec_size = 0;
+            if (mat_cols) *mat_cols = lvc;
+            if (mat_rows) *mat_rows = rvc;
+            return 1;
+        }
+        return 0;
+    }
+    default:
+        return 0;
+    }
+}
+
+static int eval_type_length(MGLParser *p, const MGLExpr *e, uint32_t *len)
+{
+    if (!p || !e || !len) return 0;
+    const MGLExpr *target = e;
+    if (e->kind == MGL_EXPR_CALL && e->u.call.name &&
+        strcmp(e->u.call.name, "__mgl_array_length") == 0 &&
+        e->u.call.arg_count == 1) {
+        target = e->u.call.args[0];
+    }
+    if (target->kind == MGL_EXPR_VAR_REF) {
+        uint32_t alen = 0;
+        if (lookup_array_len(p, target->u.var_ref.name, &alen)) {
+            *len = alen;
+            return 1;
+        }
+        if (strcmp(target->u.var_ref.name, "gl_Position") == 0 ||
+            strcmp(target->u.var_ref.name, "gl_ClipDistance") == 0 ||
+            strcmp(target->u.var_ref.name, "gl_CullDistance") == 0) {
+            *len = 4; return 1;
+        }
+        if (strcmp(target->u.var_ref.name, "gl_PointCoord") == 0) {
+            *len = 2; return 1;
+        }
+        if (strcmp(target->u.var_ref.name, "gl_TessCoord") == 0) {
+            *len = 3; return 1;
+        }
+        if (strcmp(target->u.var_ref.name, "gl_SamplePosition") == 0) {
+            *len = 2; return 1;
+        }
+    }
+    int vc = 0, mc = 0, mr = 0;
+    if (expr_var_type(p, target, &vc, &mc, &mr)) {
+        if (mc > 0) { *len = (uint32_t)mc; return 1; }
+        if (vc > 0) { *len = (uint32_t)vc; return 1; }
+    }
+    return 0;
 }
 
 static void record_array_len(MGLParser *p, const char *name, uint32_t len)
@@ -547,7 +837,23 @@ static int lookup_array_len(const MGLParser *p, const char *name, uint32_t *len)
 static void record_decl_constants(MGLParser *p, const MGLDecl *d)
 {
     for (; d; d = d->next_declarator) {
+        if (d->type && d->type->base == MGL_AST_TYPE_STRUCT &&
+            d->type->name && d->struct_members) {
+            record_struct_member_lens(p, d->type->name,
+                                      d->struct_members,
+                                      d->struct_member_count);
+        }
         if (!d->name) continue;
+        if (d->type) {
+            if (d->struct_members) {
+                record_struct_member_lens(p, d->name,
+                                          d->struct_members,
+                                          d->struct_member_count);
+            }
+            const char *st = (d->type->base == MGL_AST_TYPE_STRUCT &&
+                              d->type->name) ? d->type->name : NULL;
+            record_var_type(p, d->name, d->type, st);
+        }
         if (d->array_count > 0 && d->array_dims) {
             /* 1-D size used by `.length()`; multi-dim rejected elsewhere. */
             uint32_t sz = d->array_dims[0];
@@ -1534,13 +1840,19 @@ static int eval_const_val(MGLParser *p, const MGLExpr *e, MGLConstVal *out)
         }
         if (e->u.call.name &&
             strcmp(e->u.call.name, "__mgl_array_length") == 0 &&
-            argc == 1 && e->u.call.args[0] &&
-            e->u.call.args[0]->kind == MGL_EXPR_VAR_REF) {
+            argc == 1) {
             uint32_t len = 0;
-            if (!lookup_array_len(p, e->u.call.args[0]->u.var_ref.name, &len)) {
-                return 0;
+            if (eval_type_length(p, e, &len)) {
+                return const_val_from_int(out, MGL_AST_TYPE_INT, (int64_t)len);
             }
-            return const_val_from_int(out, MGL_AST_TYPE_INT, (int64_t)len);
+            if (e->u.call.args[0] &&
+                e->u.call.args[0]->kind == MGL_EXPR_VAR_REF) {
+                uint32_t alen = 0;
+                if (lookup_array_len(p, e->u.call.args[0]->u.var_ref.name, &alen)) {
+                    return const_val_from_int(out, MGL_AST_TYPE_INT, (int64_t)alen);
+                }
+            }
+            return 0;
         }
         if (eval_const_ctor(e->u.call.name, (uint32_t)argc, args, out)) {
             return 1;
@@ -1609,6 +1921,13 @@ static uint32_t parse_array_extent(MGLParser *p)
     MGLExpr *expr = parse_expression(p);
     int64_t value = 0;
     int valid = eval_const_int(p, expr, &value);
+    if (!valid) {
+        uint32_t tlen = 0;
+        if (eval_type_length(p, expr, &tlen)) {
+            value = (int64_t)tlen;
+            valid = 1;
+        }
+    }
     free_expr(expr);
     if (!valid || value < 0 || (uint64_t)value > UINT32_MAX) {
         parse_error(p, "array extent must be a non-negative constant at line %u",

@@ -3534,9 +3534,11 @@ after_gs_draws:
                     attrName = res->name;
                     break;
                 }
-                if (res->gl_array_size > 1 &&
+                GLuint span = mglAIRVaryingLocationSpan(res->gl_type,
+                                                        res->gl_array_size);
+                if (span > 1u &&
                     attrib >= res->location &&
-                    attrib < res->location + (GLuint)res->gl_array_size) {
+                    attrib < res->location + span) {
                     attrName = res->name;
                     break;
                 }

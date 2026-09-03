@@ -643,6 +643,15 @@ static const char *mglGeometryPassthroughType(GLenum type)
         case GL_FLOAT_VEC2: return "vec2";
         case GL_FLOAT_VEC3: return "vec3";
         case GL_FLOAT_VEC4: return "vec4";
+        case GL_FLOAT_MAT2: return "mat2";
+        case GL_FLOAT_MAT3: return "mat3";
+        case GL_FLOAT_MAT4: return "mat4";
+        case GL_FLOAT_MAT2x3: return "mat2x3";
+        case GL_FLOAT_MAT2x4: return "mat2x4";
+        case GL_FLOAT_MAT3x2: return "mat3x2";
+        case GL_FLOAT_MAT3x4: return "mat3x4";
+        case GL_FLOAT_MAT4x2: return "mat4x2";
+        case GL_FLOAT_MAT4x3: return "mat4x3";
         case GL_INT: return "int";
         case GL_INT_VEC2: return "ivec2";
         case GL_INT_VEC3: return "ivec3";
@@ -651,6 +660,61 @@ static const char *mglGeometryPassthroughType(GLenum type)
         case GL_UNSIGNED_INT_VEC2: return "uvec2";
         case GL_UNSIGNED_INT_VEC3: return "uvec3";
         case GL_UNSIGNED_INT_VEC4: return "uvec4";
+        default: return NULL;
+    }
+}
+
+/* Matrix column count / row count for stage-out record layout (GL 4.6
+ * §4.4.1: one location per column).  Returns 0 for non-matrix types. */
+static unsigned mglGeometryPassthroughMatrixCols(GLenum type)
+{
+    switch (type) {
+        case GL_FLOAT_MAT2:
+        case GL_FLOAT_MAT2x3:
+        case GL_FLOAT_MAT2x4: return 2u;
+        case GL_FLOAT_MAT3:
+        case GL_FLOAT_MAT3x2:
+        case GL_FLOAT_MAT3x4: return 3u;
+        case GL_FLOAT_MAT4:
+        case GL_FLOAT_MAT4x2:
+        case GL_FLOAT_MAT4x3: return 4u;
+        default: return 0u;
+    }
+}
+
+static unsigned mglGeometryPassthroughMatrixRows(GLenum type)
+{
+    switch (type) {
+        case GL_FLOAT_MAT2:
+        case GL_FLOAT_MAT3x2:
+        case GL_FLOAT_MAT4x2: return 2u;
+        case GL_FLOAT_MAT3:
+        case GL_FLOAT_MAT2x3:
+        case GL_FLOAT_MAT4x3: return 3u;
+        case GL_FLOAT_MAT4:
+        case GL_FLOAT_MAT2x4:
+        case GL_FLOAT_MAT3x4: return 4u;
+        default: return 0u;
+    }
+}
+
+static const char *mglGeometryPassthroughColumnSwizzle(unsigned rows)
+{
+    switch (rows) {
+        case 2u: return ".xy";
+        case 3u: return ".xyz";
+        case 4u: return "";
+        default: return NULL;
+    }
+}
+
+static const char *mglGeometryPassthroughColumnType(unsigned rows)
+{
+    switch (rows) {
+        case 1u: return "float";
+        case 2u: return "vec2";
+        case 3u: return "vec3";
+        case 4u: return "vec4";
         default: return NULL;
     }
 }
@@ -813,6 +877,25 @@ static GLenum mglPassthroughDeclType(
                     (unsigned)output->gl_type,
                     (unsigned)output->location);
         GLenum declType = mglPassthroughDeclType(fsInputs, output);
+        unsigned matCols = mglGeometryPassthroughMatrixCols(declType);
+        unsigned matRows = mglGeometryPassthroughMatrixRows(declType);
+        if (matCols > 0u) {
+            /* Metal rejects matrix stage-out attributes; emit one vector
+             * output per column at consecutive locations (GL 4.6 §4.4.1). */
+            const char *colType = mglGeometryPassthroughColumnType(matRows);
+            if (!colType || !output->name) {
+                NSLog(@"MGL GS ERROR: unsupported passthrough matrix type 0x%x",
+                      (unsigned)output->gl_type);
+                return NO;
+            }
+            for (unsigned c = 0; c < matCols; c++) {
+                [source appendFormat:
+                    @"layout(location = %u) out %s %s_c%u;\n",
+                    (unsigned)(output->location + c), colType,
+                    output->name, c];
+            }
+            continue;
+        }
         /* Integer varyings ride as float carriers (the AIR backend pairs
          * this with an fptosi at the fragment entry; raw int attributes do
          * not survive the GS-expansion pipeline plumbing). */
@@ -945,6 +1028,27 @@ static GLenum mglPassthroughDeclType(
          if (output->is_per_patch) continue;
          if (output->stream > 0) continue;
          GLenum declType = mglPassthroughDeclType(fsInputs, output);
+         unsigned matCols = mglGeometryPassthroughMatrixCols(declType);
+         unsigned matRows = mglGeometryPassthroughMatrixRows(declType);
+         if (matCols > 0u) {
+             /* Stage-out stores one column per location slot (GL 4.6
+              * §4.4.1).  Forward each column as its own vector varying. */
+             const char *colSwizzle =
+                 mglGeometryPassthroughColumnSwizzle(matRows);
+             if (!colSwizzle || !output->name) return NO;
+             unsigned baseSlot =
+                 (unsigned)(MGL_AIR_PER_VERTEX_STRIDE / 16u +
+                            output->location);
+             for (unsigned c = 0; c < matCols; c++) {
+                 [source appendFormat:
+                     @"    vec4 mgl_slot_%u_%u = "
+                      "mgl_gs_output.records[mgl_base + %u];\n"
+                      "    %s_c%u = mgl_slot_%u_%u%s;\n",
+                     (unsigned)i, c, baseSlot + c,
+                     output->name, c, (unsigned)i, c, colSwizzle];
+             }
+             continue;
+         }
          const char *swizzle = mglGeometryPassthroughSwizzle(declType);
          if (!swizzle || !output->name) return NO;
          const char *convert =
@@ -1055,6 +1159,25 @@ static GLenum mglPassthroughDeclType(
         /* Integer varyings are stored as float bit carriers in the TES
          * record (same ABI as GS expansion); declare the true int/uint
          * type and bitcast on load below. */
+        unsigned matCols =
+            mglGeometryPassthroughMatrixCols(output->gl_type);
+        unsigned matRows =
+            mglGeometryPassthroughMatrixRows(output->gl_type);
+        if (matCols > 0u) {
+            const char *colType = mglGeometryPassthroughColumnType(matRows);
+            if (!colType || !output->name) {
+                NSLog(@"MGL TESS ERROR: unsupported passthrough matrix type 0x%x",
+                      (unsigned)output->gl_type);
+                return NO;
+            }
+            for (unsigned c = 0; c < matCols; c++) {
+                [source appendFormat:
+                    @"layout(location = %u) out %s %s_c%u;\n",
+                    (unsigned)(output->location + c), colType,
+                    output->name, c];
+            }
+            continue;
+        }
         const char *type = mglGeometryPassthroughType(output->gl_type);
         if (!type || !output->name) {
             NSLog(@"MGL TESS ERROR: unsupported passthrough varying type 0x%x",
@@ -1136,6 +1259,27 @@ static GLenum mglPassthroughDeclType(
     for (GLuint i = 0; outputs->list && i < outputs->count; i++) {
         MGLShaderResource *output = &outputs->list[i];
         if (output->is_per_patch) continue;
+        unsigned matCols =
+            mglGeometryPassthroughMatrixCols(output->gl_type);
+        unsigned matRows =
+            mglGeometryPassthroughMatrixRows(output->gl_type);
+        if (matCols > 0u) {
+            const char *colSwizzle =
+                mglGeometryPassthroughColumnSwizzle(matRows);
+            if (!colSwizzle || !output->name) return NO;
+            unsigned baseSlot =
+                (unsigned)(MGL_AIR_PER_VERTEX_STRIDE / 16u +
+                           output->location);
+            for (unsigned c = 0; c < matCols; c++) {
+                [source appendFormat:
+                    @"    vec4 mgl_slot_%u_%u = "
+                     "mgl_tes_output.records[mgl_base + %u];\n"
+                     "    %s_c%u = mgl_slot_%u_%u%s;\n",
+                    (unsigned)i, c, baseSlot + c,
+                    output->name, c, (unsigned)i, c, colSwizzle];
+            }
+            continue;
+        }
         const char *swizzle = mglGeometryPassthroughSwizzle(output->gl_type);
         if (!swizzle || !output->name) return NO;
         const char *convert =

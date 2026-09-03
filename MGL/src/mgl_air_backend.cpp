@@ -537,7 +537,7 @@ static std::string varyingIfaceTag(const VarSym &v, uint32_t elem = 0,
         (v.locationExplicit || forceLocationTag)) {
         return "mgl_loc_" + std::to_string(v.location + elem);
     }
-    if (v.type.isArray() || elem != 0u) {
+    if (v.type.isArray() || v.type.isMatrix() || elem != 0u) {
         return v.name + "_elm" + std::to_string(elem);
     }
     return v.name;
@@ -865,6 +865,10 @@ static const MGLIRType *exprIRType(
 
 MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                const std::map<std::string, MType> &locals);
+
+static llvm::Value *emitGLSLTypeLength(
+    Codegen &cg, const MGLExpr *object, const MGLIRModule *mod,
+    const std::map<std::string, MType> &locals);
 
 /* Broadcast a scalar to the lane type of a vector type. */
 llvm::Value *broadcastTo(Codegen &cg, llvm::Value *v, llvm::Type *vecTy);
@@ -3018,10 +3022,9 @@ static llvm::Value *emitGeometryBlockLoad(
     } else {
         return nullptr;
     }
-    VarSym *member =
-        codegenStageSymbol(cg, e->u.member.field, VarSym::VARYING);
-    if (!member || member->location == UINT32_MAX ||
-        member->blockName != instName || member->type.isArray()) {
+    VarSym *member = codegenBlockMember(
+        cg, instName, e->u.member.field, VarSym::VARYING);
+    if (!member || member->location == UINT32_MAX || member->type.isArray()) {
         /* Array members are handled by the INDEX case so the trailing
          * element index selects the record slot. */
         return nullptr;
@@ -3064,10 +3067,9 @@ static llvm::Value *emitGeometryBlockArrayLoad(
     } else {
         return nullptr;
     }
-    VarSym *member =
-        codegenStageSymbol(cg, memberE->u.member.field, VarSym::VARYING);
-    /* Stage-level info for return assembly. */    if (!member || member->location == UINT32_MAX ||
-        member->blockName != instName || !member->type.isArray()) {
+    VarSym *member = codegenBlockMember(
+        cg, instName, memberE->u.member.field, VarSym::VARYING);
+    if (!member || member->location == UINT32_MAX || !member->type.isArray()) {
         return nullptr;
     }
     llvm::Value *element = emitExpr(cg, indexExpr->u.index.index,
@@ -3867,6 +3869,84 @@ static llvm::Value *geometryPrimitiveCulled(
     return culled;
 }
 
+/* GLSL matrix varyings consume one location per column (GL 4.6 §4.4.1).
+ * Stage-out records store each column in its own 16-byte slot so the
+ * GS/TES passthrough VS can rebuild `matCxR` without Metal matrix
+ * attribute types. */
+static uint32_t varyingLocationSpan(const MType &t)
+{
+    /* GL 4.6 §4.4.1: a matrix consumes one location per column; an array
+     * of matrices consumes cols*N.  Non-matrix arrays consume one per
+     * element (each element is one location / record slot). */
+    uint32_t elem = (t.isMatrix() && t.cols > 0) ? t.cols : 1u;
+    if (t.isArray() && t.arr > 0) return elem * (uint32_t)t.arr;
+    return elem;
+}
+
+/* Metal rejects matrix stage_in / stage_out attribute types
+ * ("Unsupported attribute type").  Flatten to one vector per column. */
+static MType matrixColumnType(const MType &t)
+{
+    MType c;
+    c.scalar = t.scalar;
+    c.vec = t.rows > 0 ? t.rows : 1u;
+    return c;
+}
+
+static void storeVaryingValueAtLocation(Codegen &cg, llvm::Value *record,
+                                        const VarSym &varying,
+                                        llvm::Value *value)
+{
+    llvm::Type *ty = llvmType(varying.type, *cg.ctx);
+    if (!value) value = llvm::UndefValue::get(ty);
+    if (varying.type.isMatrix() && varying.type.cols > 0) {
+        llvm::Type *colTy = llvm::FixedVectorType::get(
+            llvmScalar(varying.type.scalar, *cg.ctx), varying.type.rows);
+        for (uint32_t c = 0; c < varying.type.cols; c++) {
+            llvm::Value *col = cg.b->CreateExtractValue(value, c);
+            llvm::Value *p = cg.b->CreateGEP(
+                cg.b->getInt8Ty(), geometryRecordPtr(cg, record),
+                cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE +
+                               (varying.location + c) * 16u));
+            p = cg.b->CreateBitCast(p, colTy->getPointerTo(1));
+            cg.b->CreateAlignedStore(col, p, llvm::Align(4));
+        }
+        return;
+    }
+    llvm::Value *p = cg.b->CreateGEP(
+        cg.b->getInt8Ty(), geometryRecordPtr(cg, record),
+        cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE + varying.location * 16u));
+    p = cg.b->CreateBitCast(p, ty->getPointerTo(1));
+    cg.b->CreateAlignedStore(value, p, llvm::Align(4));
+}
+
+static llvm::Value *loadVaryingValueAtLocation(Codegen &cg, llvm::Value *record,
+                                               const VarSym &varying)
+{
+    llvm::Type *ty = llvmType(varying.type, *cg.ctx);
+    if (varying.type.isMatrix() && varying.type.cols > 0) {
+        llvm::Type *colTy = llvm::FixedVectorType::get(
+            llvmScalar(varying.type.scalar, *cg.ctx), varying.type.rows);
+        llvm::Value *agg = llvm::UndefValue::get(ty);
+        for (uint32_t c = 0; c < varying.type.cols; c++) {
+            llvm::Value *p = cg.b->CreateGEP(
+                cg.b->getInt8Ty(), geometryRecordPtr(cg, record),
+                cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE +
+                               (varying.location + c) * 16u));
+            p = cg.b->CreateBitCast(p, colTy->getPointerTo(1));
+            llvm::Value *col =
+                cg.b->CreateAlignedLoad(colTy, p, llvm::Align(4));
+            agg = cg.b->CreateInsertValue(agg, col, c);
+        }
+        return agg;
+    }
+    llvm::Value *p = cg.b->CreateGEP(
+        cg.b->getInt8Ty(), geometryRecordPtr(cg, record),
+        cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE + varying.location * 16u));
+    p = cg.b->CreateBitCast(p, ty->getPointerTo(1));
+    return cg.b->CreateAlignedLoad(ty, p, llvm::Align(4));
+}
+
 static void storeGeometryVaryings(Codegen &cg, llvm::Value *record)
 {
     if (!cg.auxSyms) return;
@@ -3882,12 +3962,7 @@ static void storeGeometryVaryings(Codegen &cg, llvm::Value *record)
         llvm::Type *ty = llvmType(varying.type, *cg.ctx);
         llvm::Value *value = cg.lvalues.count(varying.name)
             ? cg.lvalues[varying.name] : llvm::UndefValue::get(ty);
-        llvm::Value *p = cg.b->CreateGEP(
-            cg.b->getInt8Ty(), geometryRecordPtr(cg, record),
-            cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE +
-                           varying.location * 16u));
-        p = cg.b->CreateBitCast(p, ty->getPointerTo(1));
-        cg.b->CreateAlignedStore(value, p, llvm::Align(4));
+        storeVaryingValueAtLocation(cg, record, varying, value);
     }
 }
 
@@ -3903,12 +3978,7 @@ static void storeTessComputeVaryings(Codegen &cg, llvm::Value *record)
         llvm::Type *ty = llvmType(varying.type, *cg.ctx);
         llvm::Value *value = cg.lvalues.count(varying.name)
             ? cg.lvalues[varying.name] : llvm::UndefValue::get(ty);
-        llvm::Value *p = cg.b->CreateGEP(
-            cg.b->getInt8Ty(), geometryRecordPtr(cg, record),
-            cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE +
-                           varying.location * 16u));
-        p = cg.b->CreateBitCast(p, ty->getPointerTo(1));
-        cg.b->CreateAlignedStore(value, p, llvm::Align(4));
+        storeVaryingValueAtLocation(cg, record, varying, value);
     }
 }
 
@@ -3920,20 +3990,9 @@ static void copyGeometryVaryings(Codegen &cg, llvm::Value *dst,
         if (varying.kind != VarSym::OUTPUT ||
             varying.location == UINT32_MAX) continue;
         if (varying.stream != 0) continue;
-        llvm::Type *ty = llvmType(varying.type, *cg.ctx);
-        uint64_t fieldOffset = MGL_AIR_PER_VERTEX_STRIDE +
-                               varying.location * 16u;
-        llvm::Value *src = cg.b->CreateGEP(
-            cg.b->getInt8Ty(),
-            geometryRecordPtr(cg, cg.b->getInt32(sourceRecord)),
-            cg.b->getInt64(fieldOffset));
-        src = cg.b->CreateBitCast(src, ty->getPointerTo(1));
-        llvm::Value *value = cg.b->CreateAlignedLoad(ty, src, llvm::Align(4));
-        llvm::Value *out = cg.b->CreateGEP(
-            cg.b->getInt8Ty(), geometryRecordPtr(cg, dst),
-            cg.b->getInt64(fieldOffset));
-        out = cg.b->CreateBitCast(out, ty->getPointerTo(1));
-        cg.b->CreateAlignedStore(value, out, llvm::Align(4));
+        llvm::Value *value = loadVaryingValueAtLocation(
+            cg, cg.b->getInt32(sourceRecord), varying);
+        storeVaryingValueAtLocation(cg, dst, varying, value);
     }
 }
 
@@ -3947,24 +4006,13 @@ static void copyGeometryVaryingsSelected(Codegen &cg, llvm::Value *dst,
         if (varying.kind != VarSym::OUTPUT ||
             varying.location == UINT32_MAX) continue;
         if (varying.stream != 0) continue;
-        llvm::Type *ty = llvmType(varying.type, *cg.ctx);
-        uint64_t fieldOffset = MGL_AIR_PER_VERTEX_STRIDE +
-                               varying.location * 16u;
-        auto load = [&](uint32_t source) {
-            llvm::Value *p = cg.b->CreateGEP(
-                cg.b->getInt8Ty(),
-                geometryRecordPtr(cg, cg.b->getInt32(source)),
-                cg.b->getInt64(fieldOffset));
-            p = cg.b->CreateBitCast(p, ty->getPointerTo(1));
-            return cg.b->CreateAlignedLoad(ty, p, llvm::Align(4));
-        };
-        llvm::Value *value = cg.b->CreateSelect(
-            condition, load(trueRecord), load(falseRecord));
-        llvm::Value *out = cg.b->CreateGEP(
-            cg.b->getInt8Ty(), geometryRecordPtr(cg, dst),
-            cg.b->getInt64(fieldOffset));
-        out = cg.b->CreateBitCast(out, ty->getPointerTo(1));
-        cg.b->CreateAlignedStore(value, out, llvm::Align(4));
+        llvm::Value *falseValue = loadVaryingValueAtLocation(
+            cg, cg.b->getInt32(falseRecord), varying);
+        llvm::Value *trueValue = loadVaryingValueAtLocation(
+            cg, cg.b->getInt32(trueRecord), varying);
+        llvm::Value *value =
+            cg.b->CreateSelect(condition, trueValue, falseValue);
+        storeVaryingValueAtLocation(cg, dst, varying, value);
     }
 }
 
@@ -4296,11 +4344,7 @@ static void storeGeometryStageOutStreamVaryings(Codegen &cg,
         llvm::Type *ty = llvmType(v.type, *cg.ctx);
         llvm::Value *value = cg.lvalues.count(v.name)
             ? cg.lvalues[v.name] : llvm::UndefValue::get(ty);
-        llvm::Value *p = cg.b->CreateGEP(
-            cg.b->getInt8Ty(), geometryRecordPtr(cg, record),
-            cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE + v.location * 16u));
-        p = cg.b->CreateBitCast(p, ty->getPointerTo(1));
-        cg.b->CreateAlignedStore(value, p, llvm::Align(4));
+        storeVaryingValueAtLocation(cg, record, v, value);
     }
 }
 
@@ -5194,13 +5238,13 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         if (e->u.member.object &&
             e->u.member.object->kind == MGL_EXPR_VAR_REF) {
             const char *inst = e->u.member.object->u.var_ref.name;
-            VarSym *member = codegenStageSymbol(
-                cg, e->u.member.field, VarSym::VARYING);
+            VarSym *member = codegenBlockMember(
+                cg, inst, e->u.member.field, VarSym::VARYING);
             if (!member)
-                member = codegenStageSymbol(
-                    cg, e->u.member.field, VarSym::OUTPUT);
+                member = codegenBlockMember(
+                    cg, inst, e->u.member.field, VarSym::OUTPUT);
             if (member && member->location != UINT32_MAX &&
-                member->blockName == inst && !member->type.isArray()) {
+                !member->type.isArray()) {
                 return varValue(cg, *member, mod);
             }
         }
@@ -5754,11 +5798,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 cg.isGeometry) {
                 return cg.b->getInt32(cg.geometryInputVertices);
             }
-            MType array = exprType(cg, object, mod, locals);
-            if (array.arr != 0)
-                return cg.b->getInt32(array.arr);
+            if (llvm::Value *len = emitGLSLTypeLength(cg, object, mod, locals))
+                return len;
             cg.err = 1;
-            cg.errmsg = "codegen: length() requires an array expression";
+            cg.errmsg = "codegen: length() requires an array, vector, or matrix expression";
             return nullptr;
         }
         if (strcmp(name, "EmitVertex") == 0 ||
@@ -8138,14 +8181,13 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             lhs->u.member.object &&
             lhs->u.member.object->kind == MGL_EXPR_VAR_REF) {
             const char *instName = lhs->u.member.object->u.var_ref.name;
-            VarSym *member = codegenStageSymbol(
-                cg, lhs->u.member.field, VarSym::VARYING);
+            VarSym *member = codegenBlockMember(
+                cg, instName, lhs->u.member.field, VarSym::OUTPUT);
             if (!member)
-                member = codegenStageSymbol(
-                    cg, lhs->u.member.field, VarSym::OUTPUT);
+                member = codegenBlockMember(
+                    cg, instName, lhs->u.member.field, VarSym::VARYING);
             if (member && !cg.isTessControl &&
-                member->location != UINT32_MAX &&
-                member->blockName == instName) {
+                member->location != UINT32_MAX) {
                 if (e->u.assign.op != MGL_OP_ASSIGN) {
                     cg.err = 1;
                     cg.errmsg = "codegen: compound interface-block member "
@@ -8500,6 +8542,10 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             t = typeFromIR(leaf);
             break;
         }
+        if (const MGLIRType *leaf = exprIRType(cg, e, mod, locals)) {
+            t = typeFromIR(leaf);
+            break;
+        }
         MType base = exprType(cg, e->u.member.object, mod, locals);
         if (swizzleIndices(e->u.member.field, &idx))
             t = swizzleType(base, idx.size());
@@ -8622,6 +8668,95 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         break;
     }
     return t;
+}
+
+static uint32_t mtypeLength(const MType &t)
+{
+    if (t.isMatrix()) return t.cols;
+    if (t.vec) return t.vec;
+    if (t.isArray() && t.arr) return t.arr;
+    return 0;
+}
+
+static uint32_t lengthFromLLVMType(llvm::Type *ty)
+{
+    if (!ty) return 0;
+    if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(ty))
+        return vt->getNumElements();
+    if (ty->isArrayTy()) {
+        llvm::Type *el = ty->getArrayElementType();
+        if (el->isVectorTy() || el->isArrayTy())
+            return ty->getArrayNumElements();
+        return ty->getArrayNumElements();
+    }
+    return 0;
+}
+
+static llvm::Value *emitGLSLTypeLength(
+    Codegen &cg, const MGLExpr *object, const MGLIRModule *mod,
+    const std::map<std::string, MType> &locals)
+{
+    if (!object) return nullptr;
+    if (const MGLIRType *leaf = blockMemberLeafType(object, mod)) {
+        uint32_t n = mtypeLength(typeFromIR(leaf));
+        if (n) return cg.b->getInt32(n);
+    }
+    if (const MGLIRType *ir = exprIRType(cg, object, mod, locals)) {
+        uint32_t n = mtypeLength(typeFromIR(ir));
+        if (n) return cg.b->getInt32(n);
+    }
+    if (object->kind == MGL_EXPR_MEMBER) {
+        const MGLExpr *root = object->u.member.object;
+        if (root && root->kind == MGL_EXPR_INDEX &&
+            root->u.index.object &&
+            root->u.index.object->kind == MGL_EXPR_VAR_REF) {
+            root = root->u.index.object;
+        }
+        if (root && root->kind == MGL_EXPR_VAR_REF) {
+            VarSym *sym = codegenBlockMember(
+                cg, root->u.var_ref.name, object->u.member.field,
+                VarSym::VARYING);
+            if (!sym)
+                sym = codegenBlockMember(
+                    cg, root->u.var_ref.name, object->u.member.field,
+                    VarSym::OUTPUT);
+            if (sym) {
+                uint32_t n = mtypeLength(sym->type);
+                if (n) return cg.b->getInt32(n);
+            }
+        }
+    }
+    if (object->kind == MGL_EXPR_VAR_REF) {
+        auto lit = cg.lvalues.find(object->u.var_ref.name);
+        if (lit != cg.lvalues.end()) {
+            uint32_t n = lengthFromLLVMType(lit->second->getType());
+            if (n) return cg.b->getInt32(n);
+        }
+    }
+    if (object->kind == MGL_EXPR_BINARY &&
+        object->u.binary.op == MGL_OP_MUL) {
+        MType l = exprType(cg, object->u.binary.lhs, mod, locals);
+        MType r = exprType(cg, object->u.binary.rhs, mod, locals);
+        if (l.isMatrix() && r.isMatrix() && l.cols == r.rows)
+            return cg.b->getInt32(r.cols);
+        if (l.vec && r.vec)
+            return cg.b->getInt32(l.vec);
+    }
+    if (object->kind == MGL_EXPR_INDEX) {
+        MType base = exprType(cg, object->u.index.object, mod, locals);
+        if (base.isMatrix()) return cg.b->getInt32(base.rows);
+        if (base.vec) return cg.b->getInt32(1u);
+    }
+    if (object->kind == MGL_EXPR_CALL && object->u.call.name &&
+        strcmp(object->u.call.name, "outerProduct") == 0 &&
+        object->u.call.arg_count == 2) {
+        MType l = exprType(cg, object->u.call.args[0], mod, locals);
+        if (l.vec) return cg.b->getInt32(l.vec);
+    }
+    MType mt = exprType(cg, object, mod, locals);
+    uint32_t n = mtypeLength(mt);
+    if (n) return cg.b->getInt32(n);
+    return nullptr;
 }
 
 /* ---- math builtins ----------------------------------------------------- */
@@ -9911,6 +10046,16 @@ llvm::Value *assembleReturn(Codegen &cg) {
                             ret = cg.b->CreateInsertValue(ret, el, ri++);
                         }
                     }
+                } else if (var->type.isMatrix()) {
+                    MType colTy = matrixColumnType(var->type);
+                    for (uint32_t c = 0; c < var->type.cols; c++) {
+                        llvm::Value *col = base;
+                        if (base->getType()->isArrayTy())
+                            col = cg.b->CreateExtractValue(base, c);
+                        if (varyingUsesFloatCarrier(colTy, cg.has_gs))
+                            col = encodeFloatCarrier(cg, col, colTy.scalar);
+                        ret = cg.b->CreateInsertValue(ret, col, ri++);
+                    }
                 } else {
                     if (uintUsesSplitFloatCarrier(var->type, cg.has_gs)) {
                         llvm::Value *lo = nullptr, *hi = nullptr;
@@ -10031,10 +10176,10 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
         MType t;
         if (d->type && d->type->base <= MGL_AST_TYPE_DOUBLE) {
             t.scalar = (MGLIRScalar)d->type->base;
-            if (d->type->mat_cols > 1) {
+            if (d->type->mat_cols > 0 && d->type->mat_rows > 0) {
                 t.cols = d->type->mat_cols;
                 t.rows = d->type->mat_rows;
-            } else {
+            } else if (d->type->vec_size > 0) {
                 t.vec = d->type->vec_size;
             }
             if (d->array_count > 0 && d->array_dims)
@@ -11409,17 +11554,13 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 uint32_t &next = v.isPatch
                     ? nextPatchInputLocation : nextInputLocation;
                 if (v.location == UINT32_MAX) v.location = next;
-                /* Interface-block array members span one location per
-                 * element (each element is its own record slot). */
-                uint32_t span = (!v.blockName.empty() && v.type.isArray())
-                    ? v.type.arr : 1u;
-                next = std::max(next, v.location + span);
+                next = std::max(next, v.location + varyingLocationSpan(v.type));
             }
             if (output) {
                 uint32_t &next = v.isPatch
                     ? nextPatchOutputLocation : nextOutputLocation;
                 if (v.location == UINT32_MAX) v.location = next;
-                next = std::max(next, v.location + 1u);
+                next = std::max(next, v.location + varyingLocationSpan(v.type));
             }
         }
         /* GS-expansion passthrough VS tags outputs as mgl_loc_N using the
@@ -11468,7 +11609,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             if (v.kind != kind || v.isPatch ||
                 v.location == UINT32_MAX) continue;
             uint64_t end = (uint64_t)MGL_AIR_PER_VERTEX_STRIDE +
-                           ((uint64_t)v.location + 1u) * 16u;
+                           ((uint64_t)v.location +
+                            varyingLocationSpan(v.type)) * 16u;
             if (end > UINT32_MAX) return 0u;
             stride = std::max(stride, (uint32_t)end);
         }
@@ -11479,7 +11621,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         for (const VarSym &v : syms) {
             if (v.kind != kind || !v.isPatch ||
                 v.location == UINT32_MAX) continue;
-            uint64_t end = ((uint64_t)v.location + 1u) * 16u;
+            uint64_t end = ((uint64_t)v.location +
+                            varyingLocationSpan(v.type)) * 16u;
             if (end > UINT32_MAX) return 0u;
             stride = std::max(stride, (uint32_t)end);
         }
@@ -11661,6 +11804,14 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                             el = floatCarrierType(el);
                         for (uint32_t i = 0; i < (uint32_t)v.type.arr; i++)
                             retElems.push_back(llvmType(el, ctx));
+                    } else if (v.type.isMatrix()) {
+                        /* Metal forbids matrix stage-out members; emit one
+                         * vector field per column (GL location = base+c). */
+                        MType col = matrixColumnType(v.type);
+                        if (varyingUsesFloatCarrier(col, has_gs))
+                            col = floatCarrierType(col);
+                        for (uint32_t c = 0; c < v.type.cols; c++)
+                            retElems.push_back(llvmType(col, ctx));
                     } else {
                         MType outTy = v.type;
                         if (uintUsesSplitFloatCarrier(outTy, has_gs)) {
@@ -11757,10 +11908,9 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     uint32_t attrCount = 0;
     for (VarSym &v : syms) {
         if (!(isVS && v.kind == VarSym::ATTR)) continue;
-        /* Array attributes occupy one Metal/GL location per element so
-         * glGetAttribLocation("a[i]") == base+i matches the VAO binds. */
-        attrCount += v.type.isArray() && v.type.arr > 0
-            ? (uint32_t)v.type.arr : 1u;
+        /* Array / matrix attributes occupy one Metal/GL location per
+         * element or column so glVertexAttribPointer(base+i) matches. */
+        attrCount += varyingLocationSpan(v.type);
     }
     llvm::StructType *texTy2d =
         llvm::StructType::create(ctx, "struct._texture_2d_t");
@@ -11795,6 +11945,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 el.arr = 0;
                 for (uint32_t k = 0; k < (uint32_t)v.type.arr; k++)
                     paramTys.push_back(llvmType(el, ctx));
+            } else if (v.type.isMatrix()) {
+                MType col = matrixColumnType(v.type);
+                for (uint32_t c = 0; c < v.type.cols; c++)
+                    paramTys.push_back(llvmType(col, ctx));
             } else {
                 paramTys.push_back(llvmType(v.type, ctx));
             }
@@ -11865,6 +12019,12 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     ? floatCarrierType(el) : el;
                 for (uint32_t k = 0; k < (uint32_t)v.type.arr; k++)
                     paramTys.push_back(llvmType(iface, ctx));
+            } else if (v.type.isMatrix()) {
+                MType col = matrixColumnType(v.type);
+                if (varyingUsesFloatCarrier(col, has_gs))
+                    col = floatCarrierType(col);
+                for (uint32_t c = 0; c < v.type.cols; c++)
+                    paramTys.push_back(llvmType(col, ctx));
             } else {
                 if (uintUsesSplitFloatCarrier(v.type, has_gs)) {
                     paramTys.push_back(llvmType(floatCarrierType(v.type), ctx));
@@ -11894,6 +12054,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 el.arr = 0;
                 for (uint32_t k = 0; k < (uint32_t)v.type.arr; k++)
                     paramTys.push_back(llvmType(el, ctx));
+            } else if (v.type.isMatrix()) {
+                MType col = matrixColumnType(v.type);
+                for (uint32_t c = 0; c < v.type.cols; c++)
+                    paramTys.push_back(llvmType(col, ctx));
             } else {
                 paramTys.push_back(llvmType(v.type, ctx));
             }
@@ -12157,6 +12321,13 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     agg = cg.b->CreateInsertValue(agg, fn->getArg(argSlot++),
                                                   k);
                 cg.lvalues[v.name] = agg;
+            } else if (v.type.isMatrix()) {
+                llvm::Type *aggTy = llvmType(v.type, ctx);
+                llvm::Value *agg = llvm::UndefValue::get(aggTy);
+                for (uint32_t c = 0; c < v.type.cols; c++)
+                    agg = cg.b->CreateInsertValue(agg, fn->getArg(argSlot++),
+                                                  c);
+                cg.lvalues[v.name] = agg;
             } else {
                 cg.lvalues[v.name] = fn->getArg(argSlot++);
             }
@@ -12280,6 +12451,20 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                                                  llvmType(el, ctx));
                     }
                     agg = cg.b->CreateInsertValue(agg, arg, k);
+                }
+                cg.lvalues[v.name] = agg;
+            } else if (v.type.isMatrix()) {
+                MType colTy = matrixColumnType(v.type);
+                llvm::Type *aggTy = llvmType(v.type, ctx);
+                llvm::Value *agg = llvm::UndefValue::get(aggTy);
+                for (uint32_t c = 0; c < v.type.cols; c++) {
+                    llvm::Value *arg = fn->getArg(argSlot++);
+                    if (v.kind == VarSym::VARYING &&
+                        varyingUsesFloatCarrier(colTy, has_gs)) {
+                        arg = decodeFloatCarrier(cg, arg, colTy.scalar,
+                                                 llvmType(colTy, ctx));
+                    }
+                    agg = cg.b->CreateInsertValue(agg, arg, c);
                 }
                 cg.lvalues[v.name] = agg;
             } else {
@@ -13452,6 +13637,13 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                                     el = b.CreateExtractValue(base, k);
                                 rec = b.CreateInsertValue(rec, el, ri++);
                             }
+                        } else if (var->type.isMatrix()) {
+                            for (uint32_t c = 0; c < var->type.cols; c++) {
+                                llvm::Value *col = base;
+                                if (base->getType()->isArrayTy())
+                                    col = b.CreateExtractValue(base, c);
+                                rec = b.CreateInsertValue(rec, col, ri++);
+                            }
                         } else {
                             rec = b.CreateInsertValue(rec, base, ri++);
                         }
@@ -13596,11 +13788,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                                                   attrib_names);
                 attrLoc = (want != UINT32_MAX) ? want : nextFreeAttrLoc;
             }
-            const uint32_t n =
-                (v.type.isArray() && v.type.arr > 0) ? (uint32_t)v.type.arr
-                                                     : 1u;
+            const uint32_t n = varyingLocationSpan(v.type);
             MType el = v.type;
-            if (n > 1u) el.arr = 0;
+            if (v.type.isArray() && v.type.arr > 0) el.arr = 0;
+            else if (v.type.isMatrix()) el = matrixColumnType(v.type);
             for (uint32_t k = 0; k < n; k++) {
                 std::string argName = n > 1u
                     ? v.name + "[" + std::to_string(k) + "]"
@@ -14059,11 +14250,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             if (v.kind != VarSym::ATTR) continue;
             uint32_t want = airAttribLocation(v.name.c_str(), attrib_names);
             if (want != UINT32_MAX) attrLoc = want;
-            const uint32_t n =
-                (v.type.isArray() && v.type.arr > 0) ? (uint32_t)v.type.arr
-                                                     : 1u;
+            const uint32_t n = varyingLocationSpan(v.type);
             MType el = v.type;
-            if (n > 1u) el.arr = 0;
+            if (v.type.isArray() && v.type.arr > 0) el.arr = 0;
+            else if (v.type.isMatrix()) el = matrixColumnType(v.type);
             for (uint32_t k = 0; k < n; k++) {
                 std::string argName = n > 1u
                     ? v.name + "[" + std::to_string(k) + "]"
@@ -14305,6 +14495,12 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 for (uint32_t k = 0; k < n; k++) {
                     std::string elName = varyingIfaceTag(v, k, has_gs);
                     emitFSVarying(elName, el, mArgSlot++);
+                }
+            } else if (v.type.isMatrix()) {
+                MType col = matrixColumnType(v.type);
+                for (uint32_t c = 0; c < v.type.cols; c++) {
+                    std::string colName = varyingIfaceTag(v, c, has_gs);
+                    emitFSVarying(colName, col, mArgSlot++);
                 }
             } else {
                 std::string tag = varyingIfaceTag(v, 0, has_gs);
@@ -14613,7 +14809,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 el.arr = 0;
                 uint32_t n = (uint32_t)v->type.arr;
                 for (uint32_t k = 0; k < n; k++) {
-                    std::string elName = varyingIfaceTag(*v, k);
+                    std::string elName = varyingIfaceTag(*v, k, has_gs);
                     MType outTy = varyingUsesFloatCarrier(el, has_gs)
                         ? floatCarrierType(el) : el;
                     outNodes.push_back(llvm::MDNode::get(ctx, {
@@ -14625,8 +14821,23 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                         llvm::MDString::get(ctx, "air.arg_name"),
                         llvm::MDString::get(ctx, elName)}));
                 }
+            } else if (v->type.isMatrix()) {
+                MType col = matrixColumnType(v->type);
+                for (uint32_t c = 0; c < v->type.cols; c++) {
+                    std::string colName = varyingIfaceTag(*v, c, has_gs);
+                    MType outTy = varyingUsesFloatCarrier(col, has_gs)
+                        ? floatCarrierType(col) : col;
+                    outNodes.push_back(llvm::MDNode::get(ctx, {
+                        llvm::MDString::get(ctx, "air.vertex_output"),
+                        llvm::MDString::get(ctx,
+                                            airGenerated(colName, outTy)),
+                        llvm::MDString::get(ctx, "air.arg_type_name"),
+                        llvm::MDString::get(ctx, mslTypeName(outTy)),
+                        llvm::MDString::get(ctx, "air.arg_name"),
+                        llvm::MDString::get(ctx, colName)}));
+                }
             } else {
-                std::string tag = varyingIfaceTag(*v);
+                std::string tag = varyingIfaceTag(*v, 0, has_gs);
                 if (uintUsesSplitFloatCarrier(v->type, has_gs)) {
                     MType outTy = floatCarrierType(v->type);
                     outNodes.push_back(llvm::MDNode::get(ctx, {

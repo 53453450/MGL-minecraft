@@ -2399,13 +2399,21 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                 sema_error(s, e->line, "array length() takes no arguments");
                 return NULL;
             }
-            MGLIRType *array = check_expr(s, tab, e->u.call.args[0]);
-            if (!array || array->kind != MGLIR_TYPE_ARRAY) {
-                sema_error(s, e->line,
-                           "length() requires an array expression");
+            MGLIRType *obj = check_expr(s, tab, e->u.call.args[0]);
+            if (!obj) {
                 return NULL;
             }
-            if (array->array_size == 0) {
+            if (obj->kind == MGLIR_TYPE_VECTOR ||
+                obj->kind == MGLIR_TYPE_MATRIX) {
+                return scratch_type(s,
+                                    mglIRTypeScalar(MGLIR_SCALAR_INT));
+            }
+            if (obj->kind != MGLIR_TYPE_ARRAY) {
+                sema_error(s, e->line,
+                           "length() requires an array, vector, or matrix expression");
+                return NULL;
+            }
+            if (obj->array_size == 0) {
                 const MGLExpr *root = e->u.call.args[0];
                 while (root && (root->kind == MGL_EXPR_MEMBER ||
                                 root->kind == MGL_EXPR_INDEX)) {

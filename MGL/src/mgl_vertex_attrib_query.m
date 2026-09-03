@@ -22,8 +22,14 @@
 
 #import "mgl_vertex_attrib_query.h"
 
-
+#include "mgl_shader_abi.h"
 #include <strings.h>        /* strcasecmp */
+
+static GLuint mglAttribLocationSpan(const MGLShaderResource *res)
+{
+    if (!res) return 1u;
+    return mglAIRVaryingLocationSpan(res->gl_type, res->gl_array_size);
+}
 
 BOOL mglRendererProgramUsesVertexAttrib(Program *program, GLuint attribute)
 {
@@ -46,13 +52,14 @@ BOOL mglRendererProgramUsesVertexAttrib(Program *program, GLuint attribute)
             return YES;
         }
 
-        /* Array stage inputs occupy consecutive locations.  The AIR frontend
-         * reflects only the base location, but the generated MSL flattens
-         * the array into individual [[attribute(N)]] inputs at locations
-         * [base, base + array_size - 1]. */
-        if (inputs->list[i].gl_array_size > 1 &&
+        /* Array / matrix stage inputs occupy consecutive locations.  The
+         * AIR frontend reflects only the base location, but the generated
+         * metallib flattens them into individual [[attribute(N)]] inputs
+         * at [base, base + span - 1] (GL 4.6 §4.4.1). */
+        GLuint span = mglAttribLocationSpan(&inputs->list[i]);
+        if (span > 1u &&
             attribute >= location &&
-            attribute < location + (GLuint)inputs->list[i].gl_array_size) {
+            attribute < location + span) {
             return YES;
         }
 
@@ -82,11 +89,10 @@ MGLShaderResource *mglRendererProgramVertexAttribResource(Program *program, GLui
             return &inputs->list[i];
         }
 
-        /* Array stage inputs span consecutive locations (see
-         * mglRendererProgramUsesVertexAttrib). */
-        if (inputs->list[i].gl_array_size > 1 &&
+        GLuint span = mglAttribLocationSpan(&inputs->list[i]);
+        if (span > 1u &&
             attribute >= location &&
-            attribute < location + (GLuint)inputs->list[i].gl_array_size) {
+            attribute < location + span) {
             return &inputs->list[i];
         }
 
