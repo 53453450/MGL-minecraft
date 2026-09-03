@@ -54,6 +54,8 @@ enum {
     MGL_AST_Q_FLAT          = 0x1000,
     MGL_AST_Q_SMOOTH        = 0x2000,
     MGL_AST_Q_NOPERSPECTIVE = 0x4000,
+    MGL_AST_Q_READONLY      = 0x8000,  /* image/buffer memory qualifier */
+    MGL_AST_Q_WRITEONLY     = 0x10000, /* image/buffer memory qualifier */
 };
 
 /* Block layout qualifiers (GLSL 4.60 §4.3.9). */
@@ -315,6 +317,9 @@ struct MGLDecl {
     uint32_t layout_winding;        /* TES: MGL_AST_WINDING_* */
     uint32_t layout_point_mode;     /* TES: point_mode flag */
     uint32_t layout_early_fragment_tests; /* FS: early_fragment_tests */
+    /* Image format layout qualifier (e.g. "rgba32f"); NULL if absent.
+     * Points at a static string from the parser format table. */
+    const char *layout_image_format;
     uint32_t *array_dims;  /* element counts; NULL = not an array */
     uint32_t array_count;
     MGLExpr *init;         /* initializer or NULL */

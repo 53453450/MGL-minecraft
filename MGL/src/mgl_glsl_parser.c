@@ -128,10 +128,9 @@ typedef struct MGLParser {
 static unsigned int tk_line(MGLParser *p);
 static const MGLGLSLToken *tk(MGLParser *p, int offset);
 
-/* Image formats are layout qualifiers, not declaration qualifiers.  The
- * AIR type carries the image's element scalar kind; Metal obtains the actual
- * pixel format from the bound texture, so no extra AST field is needed. */
-static int is_image_format_layout(const char *s, size_t n)
+/* Image formats are layout qualifiers.  Returns the static format string
+ * when `s` matches, otherwise NULL. */
+static const char *match_image_format_layout(const char *s, size_t n)
 {
     static const char *const formats[] = {
         "r8", "r16", "r32f", "r16f", "rg8", "rg16", "rg32f", "rg16f",
@@ -145,10 +144,15 @@ static int is_image_format_layout(const char *s, size_t n)
     };
     for (size_t i = 0; i < sizeof(formats) / sizeof(formats[0]); i++) {
         if (strlen(formats[i]) == n && memcmp(s, formats[i], n) == 0) {
-            return 1;
+            return formats[i];
         }
     }
-    return 0;
+    return NULL;
+}
+
+static int is_image_format_layout(const char *s, size_t n)
+{
+    return match_image_format_layout(s, n) != NULL;
 }
 
 static void parse_error(MGLParser *p, const char *fmt, ...)
@@ -1844,13 +1848,14 @@ more_qualifiers:
             d->qualifiers |= MGL_AST_Q_INVARIANT;
         } else if (eat_ident(p, "precise")) {
             d->qualifiers |= MGL_AST_Q_PRECISE;
-        } else if (eat_ident(p, "readonly") ||
-                   eat_ident(p, "writeonly") ||
-                   eat_ident(p, "coherent") ||
+        } else if (eat_ident(p, "readonly")) {
+            d->qualifiers |= MGL_AST_Q_READONLY;
+        } else if (eat_ident(p, "writeonly")) {
+            d->qualifiers |= MGL_AST_Q_WRITEONLY;
+        } else if (eat_ident(p, "coherent") ||
                    eat_ident(p, "volatile") ||
                    eat_ident(p, "restrict")) {
-            /* Image memory qualifiers constrain legal shader access but do
-             * not change the declaration's storage or interface shape. */
+            /* Memory coherency qualifiers; access legality is unchanged. */
         } else if (at_ident(p, "lowp") || at_ident(p, "mediump") ||
                    at_ident(p, "highp")) {
             /* precision qualifier consumed; recorded on the type later */
@@ -1949,6 +1954,8 @@ more_qualifiers:
                 d->layout_point_mode = 1;
             } else if (n == 20 && memcmp(s, "early_fragment_tests", 20) == 0) {
                 d->layout_early_fragment_tests = 1;
+            } else if (match_image_format_layout(s, n)) {
+                d->layout_image_format = match_image_format_layout(s, n);
             } else if (n == 6 && memcmp(s, "points", 6) == 0) {
                 d->layout_primitive = MGL_AST_GS_IN_POINTS;
             } else if (n == 5 && memcmp(s, "lines", 5) == 0) {

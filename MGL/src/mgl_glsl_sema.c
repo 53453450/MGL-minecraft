@@ -184,6 +184,7 @@ typedef struct Sym {
     uint32_t param_count;
     MGLIRType **param_types; /* owned copies */
     uint32_t qualifiers;     /* MGL_AST_Q_* */
+    const char *image_format; /* static; image layout format or NULL */
     struct Sym *next;        /* scope chain link */
     struct Sym *next_all;    /* global teardown chain link */
 } Sym;
@@ -2350,6 +2351,43 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
             MGLIRType *bt = builtin_call_type(e->u.call.name,
                                               (const MGLIRType *const *)atb,
                                               e->u.call.arg_count, &bknown);
+            if (bknown && bt && e->u.call.arg_count > 0) {
+                /* Memory-qualifier and atomic-format checks for image ops. */
+                const char *bn = e->u.call.name;
+                int is_load = strcmp(bn, "imageLoad") == 0;
+                int is_store = strcmp(bn, "imageStore") == 0;
+                int is_atomic = strncmp(bn, "imageAtomic", 11) == 0;
+                if (is_load || is_store || is_atomic) {
+                    const MGLExpr *img_e = e->u.call.args[0];
+                    Sym *img = NULL;
+                    if (img_e && img_e->kind == MGL_EXPR_VAR_REF) {
+                        img = symtab_lookup(tab, img_e->u.var_ref.name);
+                    }
+                    if (img && img->kind == SYM_VARIABLE) {
+                        if (is_load &&
+                            (img->qualifiers & MGL_AST_Q_WRITEONLY)) {
+                            sema_error(s, e->line,
+                                       "imageLoad of writeonly image");
+                        }
+                        if ((is_store || is_atomic) &&
+                            (img->qualifiers & MGL_AST_Q_READONLY)) {
+                            sema_error(s, e->line,
+                                       "%s of readonly image", bn);
+                        }
+                        if (is_atomic) {
+                            const char *fmt = img->image_format;
+                            if (!fmt ||
+                                (strcmp(fmt, "r32i") != 0 &&
+                                 strcmp(fmt, "r32ui") != 0 &&
+                                 strcmp(fmt, "r32f") != 0)) {
+                                sema_error(s, e->line,
+                                           "image atomic requires r32i, r32ui, "
+                                           "or r32f format");
+                            }
+                        }
+                    }
+                }
+            }
             free(atb);
             if (bknown) {
                 if (bt) {
@@ -2651,6 +2689,41 @@ static void layout_block(Sema *s, const MGLDecl *d, MGLIRType *block_type)
 static void analyze_decl(Sema *s, SymTab *tab, const MGLDecl *d, int global);
 static void analyze_stmt(Sema *s, SymTab *tab, const MGLStmt *st);
 
+static void check_image_decl(Sema *s, const MGLDecl *d, const MGLIRType *t)
+{
+    if (!t || t->kind != MGLIR_TYPE_IMAGE) {
+        return;
+    }
+    const int ro = (d->qualifiers & MGL_AST_Q_READONLY) != 0;
+    const int wo = (d->qualifiers & MGL_AST_Q_WRITEONLY) != 0;
+    if (ro && wo) {
+        sema_error(s, d->line,
+                   "image cannot be both readonly and writeonly");
+    }
+    if (!d->layout_image_format && !wo) {
+        sema_error(s, d->line,
+                   "image declaration requires a format layout qualifier");
+    }
+    if (d->layout_image_format) {
+        const char *fmt = d->layout_image_format;
+        size_t n = strlen(fmt);
+        int fmt_uint = (n >= 2 && fmt[n - 2] == 'u' && fmt[n - 1] == 'i');
+        int fmt_int = (!fmt_uint && n >= 1 && fmt[n - 1] == 'i');
+        if (fmt_uint && t->tex_storage != MGLIR_SCALAR_UINT) {
+            sema_error(s, d->line,
+                       "image format '%s' requires a uimage type", fmt);
+        } else if (fmt_int && t->tex_storage != MGLIR_SCALAR_INT) {
+            sema_error(s, d->line,
+                       "image format '%s' requires an iimage type", fmt);
+        } else if (!fmt_uint && !fmt_int &&
+                   t->tex_storage != MGLIR_SCALAR_FLOAT) {
+            sema_error(s, d->line,
+                       "image format '%s' requires a floating-point image type",
+                       fmt);
+        }
+    }
+}
+
 static void analyze_function(Sema *s, SymTab *tab, const MGLDecl *d)
 {
     Sym *sym = sym_new(d->name);
@@ -2677,6 +2750,7 @@ static void analyze_function(Sema *s, SymTab *tab, const MGLDecl *d)
             sym_free(sym);
             return;
         }
+        check_image_decl(s, pd, sym->param_types[i]);
     }
     if (symtab_lookup_local(tab, d->name) != NULL) {
         /* Overloads (same name, different parameter count) are legal.
@@ -2712,6 +2786,8 @@ static void analyze_function(Sema *s, SymTab *tab, const MGLDecl *d)
                     if (ps) {
                         ps->kind = SYM_VARIABLE;
                         ps->type = prev->param_types[i];
+                        ps->qualifiers = d->params[i]->qualifiers;
+                        ps->image_format = d->params[i]->layout_image_format;
                         symtab_insert(tab, ps);
                     }
                 }
@@ -2763,6 +2839,8 @@ static void analyze_function(Sema *s, SymTab *tab, const MGLDecl *d)
             if (ps) {
                 ps->kind = SYM_VARIABLE;
                 ps->type = sym->param_types[i];
+                ps->qualifiers = d->params[i]->qualifiers;
+                ps->image_format = d->params[i]->layout_image_format;
                 symtab_insert(tab, ps);
             }
         }
@@ -2777,6 +2855,10 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
     if (!t) {
         return;
     }
+    /* GLSL image uniforms: format layout required unless writeonly-only;
+     * readonly+writeonly is illegal; format scalar must match image* /
+     * iimage* / uimage*. */
+    check_image_decl(s, d, t);
     /* Anonymous blocks (uniform DrawColor { ... }; with no instance name)
      * take their interface name from the block type name; their members
      * are registered as block-scoped uniform symbols so the body can
@@ -2894,6 +2976,7 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
     sym->type = t;
     sym->type_owned = 1;
     sym->qualifiers = d->qualifiers;
+    sym->image_format = d->layout_image_format;
     symtab_insert(tab, sym);
 
     if (global) {
