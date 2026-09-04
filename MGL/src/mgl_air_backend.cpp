@@ -14287,13 +14287,17 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         auto toF = [&](llvm::Value *i) -> llvm::Value * {
             return b.CreateSIToFP(i, f32);
         };
-        /* GL 4.6 §11.2.2.2: the subdivision count honours the TES layout
-         * spacing declaration — integer keeps ceil(level), fractional_even
-         * rounds up to the next even (min 2), fractional_odd to the next
-         * odd.  isolines are exempt (spacing applies only to triangles and
-         * quads). */
+        /* GL 4.6 §11.2.2.2: clamp then round.  MAX_TESS_GEN_LEVEL is 64.
+         * fractional_even clamps to [2,max]; fractional_odd to [1,max-1]. */
         auto roundLevel = [&](llvm::Value *ceilVal) -> llvm::Value * {
+            const unsigned maxLevel = 64u;
             if (tu->layout_spacing == MGL_AST_SPACING_FRACTIONAL_EVEN) {
+                ceilVal = b.CreateSelect(
+                    b.CreateICmpULT(ceilVal, b.getInt32(2)),
+                    b.getInt32(2), ceilVal);
+                ceilVal = b.CreateSelect(
+                    b.CreateICmpUGT(ceilVal, b.getInt32(maxLevel)),
+                    b.getInt32(maxLevel), ceilVal);
                 llvm::Value *odd = b.CreateAnd(ceilVal, b.getInt32(1));
                 llvm::Value *even = b.CreateAdd(
                     ceilVal,
@@ -14304,49 +14308,190 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     even);
             }
             if (tu->layout_spacing == MGL_AST_SPACING_FRACTIONAL_ODD) {
+                ceilVal = b.CreateSelect(
+                    b.CreateICmpULT(ceilVal, b.getInt32(1)),
+                    b.getInt32(1), ceilVal);
+                ceilVal = b.CreateSelect(
+                    b.CreateICmpUGT(ceilVal, b.getInt32(maxLevel - 1u)),
+                    b.getInt32(maxLevel - 1u), ceilVal);
                 llvm::Value *odd = b.CreateAnd(ceilVal, b.getInt32(1));
                 return b.CreateAdd(
                     ceilVal,
                     b.CreateSelect(b.CreateICmpEQ(odd, b.getInt32(0)),
                                    b.getInt32(1), b.getInt32(0)));
             }
-            return ceilVal; /* integer / default */
+            ceilVal = b.CreateSelect(
+                b.CreateICmpULT(ceilVal, b.getInt32(1)),
+                b.getInt32(1), ceilVal);
+            return b.CreateSelect(
+                b.CreateICmpUGT(ceilVal, b.getInt32(maxLevel)),
+                b.getInt32(maxLevel), ceilVal);
         };
         llvm::Value *u = nullptr, *v = nullptr;
         if (tu->layout_primitive == MGL_AST_TES_ISOLINES) {
-            /* GL 4.6 §11.2.2.3: outer[0] selects the number of isolines n
-             * at v = {0, 1/n, ..., (n-1)/n}; outer[1] selects the m
-             * segments per row.  Each segment is emitted as one line
-             * primitive with two vertices at u = {seg/m, (seg+1)/m}, so
-             * each row contributes 2*m vertices. */
-            llvm::Value *n = ceilClamp(loadHalf(0), 1.0f);
-            llvm::Value *m = ceilClamp(loadHalf(1), 1.0f);
-            llvm::Value *perLine = b.CreateMul(m, b.getInt32(2));
-            llvm::Value *lineIdx = b.CreateUDiv(innerId, perLine);
-            llvm::Value *t = b.CreateURem(innerId, perLine);
-            llvm::Value *seg = b.CreateUDiv(t, b.getInt32(2));
-            llvm::Value *vtx = b.CreateURem(t, b.getInt32(2));
-            u = b.CreateFDiv(toF(b.CreateAdd(seg, vtx)), toF(m));
-            v = b.CreateFDiv(toF(lineIdx), toF(n));
+            /* GL 4.6 §11.2.2.3: outer[0]=n isolines at v=i/n; outer[1]=m
+             * segments along each.  Line mode emits 2*m verts/row (segment
+             * endpoints).  point_mode emits the unique m+1 samples/row so
+             * adjacent points are not duplicated (CTS vertex_spacing). */
+            llvm::Value *n = roundLevel(ceilClamp(loadHalf(0), 1.0f));
+            llvm::Value *m = roundLevel(ceilClamp(loadHalf(1), 1.0f));
+            if (tu->layout_point_mode) {
+                llvm::Value *perLine = b.CreateAdd(m, b.getInt32(1));
+                llvm::Value *lineIdx = b.CreateUDiv(innerId, perLine);
+                llvm::Value *pt = b.CreateURem(innerId, perLine);
+                u = b.CreateFDiv(toF(pt), toF(m));
+                v = b.CreateFDiv(toF(lineIdx), toF(n));
+            } else {
+                llvm::Value *perLine = b.CreateMul(m, b.getInt32(2));
+                llvm::Value *lineIdx = b.CreateUDiv(innerId, perLine);
+                llvm::Value *t = b.CreateURem(innerId, perLine);
+                llvm::Value *seg = b.CreateUDiv(t, b.getInt32(2));
+                llvm::Value *vtx = b.CreateURem(t, b.getInt32(2));
+                u = b.CreateFDiv(toF(b.CreateAdd(seg, vtx)), toF(m));
+                v = b.CreateFDiv(toF(lineIdx), toF(n));
+            }
         } else if (tu->layout_primitive == MGL_AST_TES_QUADS) {
-            /* point_mode quads: one point at each inner grid cell centre. */
             llvm::Value *nx = roundLevel(ceilClamp(loadHalf(4), 1.0f));
             llvm::Value *ny = roundLevel(ceilClamp(loadHalf(5), 1.0f));
-            llvm::Value *i = b.CreateURem(innerId, nx);
-            llvm::Value *j = b.CreateUDiv(innerId, nx);
-            u = b.CreateFDiv(
-                b.CreateFAdd(toF(i), llvm::ConstantFP::get(f32, 0.5)),
-                toF(nx));
-            v = b.CreateFDiv(
-                b.CreateFAdd(toF(j), llvm::ConstantFP::get(f32, 0.5)),
-                toF(ny));
+            if (tu->layout_point_mode) {
+                /* When any outer > 1, emit outer-edge perimeter
+                 * (GL §11.2.2: outer[0..3] = u=0, v=0, u=1, v=1). */
+                llvm::Value *n0 = roundLevel(ceilClamp(loadHalf(0), 1.0f));
+                llvm::Value *n1 = roundLevel(ceilClamp(loadHalf(1), 1.0f));
+                llvm::Value *n2 = roundLevel(ceilClamp(loadHalf(2), 1.0f));
+                llvm::Value *n3 = roundLevel(ceilClamp(loadHalf(3), 1.0f));
+                llvm::Value *anyOuter = b.CreateOr(
+                    b.CreateICmpUGT(n0, b.getInt32(1)),
+                    b.CreateOr(
+                        b.CreateICmpUGT(n1, b.getInt32(1)),
+                        b.CreateOr(b.CreateICmpUGT(n2, b.getInt32(1)),
+                                   b.CreateICmpUGT(n3, b.getInt32(1)))));
+                llvm::Value *off1 = n0;
+                llvm::Value *off2 = b.CreateAdd(n0, n1);
+                llvm::Value *off3 = b.CreateAdd(off2, n2);
+                llvm::Value *onE0 = b.CreateICmpULT(innerId, off1);
+                llvm::Value *onE1 = b.CreateICmpULT(innerId, off2);
+                llvm::Value *onE2 = b.CreateICmpULT(innerId, off3);
+                llvm::Value *i1 = b.CreateSub(innerId, off1);
+                llvm::Value *i2 = b.CreateSub(innerId, off2);
+                llvm::Value *i3 = b.CreateSub(innerId, off3);
+                llvm::Value *t0 = b.CreateFDiv(toF(innerId), toF(n0));
+                llvm::Value *t1 = b.CreateFDiv(toF(i1), toF(n1));
+                llvm::Value *t2 = b.CreateFDiv(toF(i2), toF(n2));
+                llvm::Value *t3 = b.CreateFDiv(toF(i3), toF(n3));
+                /* edge0 (0,1)→(0,0); edge1 (0,0)→(1,0);
+                 * edge2 (1,0)→(1,1); edge3 (1,1)→(0,1). */
+                llvm::Value *uE0 = llvm::ConstantFP::get(f32, 0.0);
+                llvm::Value *vE0 = b.CreateFSub(
+                    llvm::ConstantFP::get(f32, 1.0), t0);
+                llvm::Value *uE1 = t1;
+                llvm::Value *vE1 = llvm::ConstantFP::get(f32, 0.0);
+                llvm::Value *uE2 = llvm::ConstantFP::get(f32, 1.0);
+                llvm::Value *vE2 = t2;
+                llvm::Value *uE3 = b.CreateFSub(
+                    llvm::ConstantFP::get(f32, 1.0), t3);
+                llvm::Value *vE3 = llvm::ConstantFP::get(f32, 1.0);
+                llvm::Value *uPerim = b.CreateSelect(
+                    onE0, uE0,
+                    b.CreateSelect(onE1, uE1,
+                                   b.CreateSelect(onE2, uE2, uE3)));
+                llvm::Value *vPerim = b.CreateSelect(
+                    onE0, vE0,
+                    b.CreateSelect(onE1, vE1,
+                                   b.CreateSelect(onE2, vE2, vE3)));
+                llvm::Value *i = b.CreateURem(innerId, nx);
+                llvm::Value *j = b.CreateUDiv(innerId, nx);
+                llvm::Value *uGrid = b.CreateFDiv(
+                    b.CreateFAdd(toF(i), llvm::ConstantFP::get(f32, 0.5)),
+                    toF(nx));
+                llvm::Value *vGrid = b.CreateFDiv(
+                    b.CreateFAdd(toF(j), llvm::ConstantFP::get(f32, 0.5)),
+                    toF(ny));
+                u = b.CreateSelect(anyOuter, uPerim, uGrid);
+                v = b.CreateSelect(anyOuter, vPerim, vGrid);
+            } else {
+                llvm::Value *i = b.CreateURem(innerId, nx);
+                llvm::Value *j = b.CreateUDiv(innerId, nx);
+                u = b.CreateFDiv(
+                    b.CreateFAdd(toF(i), llvm::ConstantFP::get(f32, 0.5)),
+                    toF(nx));
+                v = b.CreateFDiv(
+                    b.CreateFAdd(toF(j), llvm::ConstantFP::get(f32, 0.5)),
+                    toF(ny));
+            }
         } else {
-            /* point_mode triangles: one point per inner grid cell (n*n
-             * cells), at the up-triangle centroid.  Exception: n==1 matches
-             * GL (single triangle → 3 corner points) so items={0,1,2} map
-             * to barycentric corners; see mglRenderTessEvalItemsPerPatch. */
-            llvm::Value *n = roundLevel(ceilClamp(loadHalf(4), 1.0f));
-            llvm::Value *isN1 = b.CreateICmpEQ(n, b.getInt32(1));
+            /* Triangles (point_mode / XFB-forced compute). */
+            llvm::Value *nIn = roundLevel(ceilClamp(loadHalf(4), 1.0f));
+            llvm::Value *uPerim = nullptr, *vPerim = nullptr;
+            llvm::Value *anyOuter = b.getFalse();
+            if (tu->layout_point_mode) {
+                /* When any outer > 1, emit outer-edge perimeter
+                 * (GL §11.2.2: u==0/v==0/w==0 ← outer[0]/[1]/[2]).
+                 * fractional_odd with inner≈1 bumps inner to 3: also emit
+                 * one concentric inner triangle (CTS vertex_spacing peel).
+                 * High inner + asymmetric outer still needs full rings
+                 * (tracked separately). */
+                llvm::Value *n0 = roundLevel(ceilClamp(loadHalf(0), 1.0f));
+                llvm::Value *n1 = roundLevel(ceilClamp(loadHalf(1), 1.0f));
+                llvm::Value *n2 = roundLevel(ceilClamp(loadHalf(2), 1.0f));
+                anyOuter = b.CreateOr(
+                    b.CreateICmpUGT(n0, b.getInt32(1)),
+                    b.CreateOr(b.CreateICmpUGT(n1, b.getInt32(1)),
+                               b.CreateICmpUGT(n2, b.getInt32(1))));
+                llvm::Value *perimCount = b.CreateAdd(n0, b.CreateAdd(n1, n2));
+                llvm::Value *onPerim = b.CreateICmpULT(innerId, perimCount);
+                llvm::Value *off2 = b.CreateAdd(n0, n1);
+                llvm::Value *onE0 = b.CreateICmpULT(innerId, n0);
+                llvm::Value *onE1 = b.CreateICmpULT(innerId, off2);
+                llvm::Value *i1 = b.CreateSub(innerId, n0);
+                llvm::Value *i2 = b.CreateSub(innerId, off2);
+                llvm::Value *t0 = b.CreateFDiv(toF(innerId), toF(n0));
+                llvm::Value *t1 = b.CreateFDiv(toF(i1), toF(n1));
+                llvm::Value *t2 = b.CreateFDiv(toF(i2), toF(n2));
+                llvm::Value *uE0 = llvm::ConstantFP::get(f32, 0.0);
+                llvm::Value *vE0 = b.CreateFSub(
+                    llvm::ConstantFP::get(f32, 1.0), t0);
+                llvm::Value *uE1 = t1;
+                llvm::Value *vE1 = llvm::ConstantFP::get(f32, 0.0);
+                llvm::Value *uE2 = b.CreateFSub(
+                    llvm::ConstantFP::get(f32, 1.0), t2);
+                llvm::Value *vE2 = t2;
+                llvm::Value *uEdge = b.CreateSelect(
+                    onE0, uE0, b.CreateSelect(onE1, uE1, uE2));
+                llvm::Value *vEdge = b.CreateSelect(
+                    onE0, vE0, b.CreateSelect(onE1, vE1, vE2));
+                /* fractional_odd bumps inner≈1 → 3: append one inner
+                 * triangle only when pre-round inner ceil is ≤1. */
+                llvm::Value *nInCeil = ceilClamp(loadHalf(4), 1.0f);
+                llvm::Value *k = b.CreateSub(innerId, perimCount);
+                llvm::Value *c0 = b.CreateICmpEQ(k, b.getInt32(0));
+                llvm::Value *c1 = b.CreateICmpEQ(k, b.getInt32(1));
+                llvm::Value *uI0 = llvm::ConstantFP::get(f32, 5.0 / 9.0);
+                llvm::Value *vI0 = llvm::ConstantFP::get(f32, 2.0 / 9.0);
+                llvm::Value *uI1 = llvm::ConstantFP::get(f32, 2.0 / 9.0);
+                llvm::Value *vI1 = llvm::ConstantFP::get(f32, 5.0 / 9.0);
+                llvm::Value *uI2 = llvm::ConstantFP::get(f32, 2.0 / 9.0);
+                llvm::Value *vI2 = llvm::ConstantFP::get(f32, 2.0 / 9.0);
+                llvm::Value *uInner3 = b.CreateSelect(
+                    c0, uI0, b.CreateSelect(c1, uI1, uI2));
+                llvm::Value *vInner3 = b.CreateSelect(
+                    c0, vI0, b.CreateSelect(c1, vI1, vI2));
+                const bool oddSpacing =
+                    tu->layout_spacing == MGL_AST_SPACING_FRACTIONAL_ODD;
+                if (oddSpacing) {
+                    llvm::Value *doBump = b.CreateAnd(
+                        b.CreateNot(onPerim),
+                        b.CreateICmpULE(nInCeil, b.getInt32(1)));
+                    uPerim = b.CreateSelect(onPerim, uEdge,
+                        b.CreateSelect(doBump, uInner3, uEdge));
+                    vPerim = b.CreateSelect(onPerim, vEdge,
+                        b.CreateSelect(doBump, vInner3, vEdge));
+                } else {
+                    uPerim = uEdge;
+                    vPerim = vEdge;
+                }
+            }
+            llvm::Value *isN1 = b.CreateICmpEQ(nIn, b.getInt32(1));
             llvm::BasicBlock *triN1BB = llvm::BasicBlock::Create(
                 ctx, "tesk_tri_n1", kfn);
             llvm::BasicBlock *triGridBB = llvm::BasicBlock::Create(
@@ -14358,7 +14503,6 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             llvm::Value *uGrid = nullptr, *vGrid = nullptr;
             {
                 b.SetInsertPoint(triN1BB);
-                /* corners: (1,0,0), (0,1,0), (0,0,1) */
                 llvm::Value *c0 = b.CreateICmpEQ(innerId, b.getInt32(0));
                 llvm::Value *c1 = b.CreateICmpEQ(innerId, b.getInt32(1));
                 uN1 = b.CreateSelect(
@@ -14371,26 +14515,31 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             }
             {
                 b.SetInsertPoint(triGridBB);
-                llvm::Value *i = b.CreateURem(innerId, n);
-                llvm::Value *j = b.CreateUDiv(innerId, n);
+                llvm::Value *i = b.CreateURem(innerId, nIn);
+                llvm::Value *j = b.CreateUDiv(innerId, nIn);
                 llvm::Value *three = b.getInt32(3);
                 uGrid = b.CreateFDiv(
                     toF(b.CreateAdd(b.CreateMul(three, i), b.getInt32(1))),
-                    toF(b.CreateMul(three, n)));
+                    toF(b.CreateMul(three, nIn)));
                 vGrid = b.CreateFDiv(
                     toF(b.CreateAdd(b.CreateMul(three, j), b.getInt32(1))),
-                    toF(b.CreateMul(three, n)));
+                    toF(b.CreateMul(three, nIn)));
                 b.CreateBr(triDoneBB);
             }
             b.SetInsertPoint(triDoneBB);
-            llvm::PHINode *uPhi = b.CreatePHI(f32, 2, "tesk_u");
-            llvm::PHINode *vPhi = b.CreatePHI(f32, 2, "tesk_v");
-            uPhi->addIncoming(uN1, triN1BB);
-            uPhi->addIncoming(uGrid, triGridBB);
-            vPhi->addIncoming(vN1, triN1BB);
-            vPhi->addIncoming(vGrid, triGridBB);
-            u = uPhi;
-            v = vPhi;
+            llvm::PHINode *uIn = b.CreatePHI(f32, 2, "tesk_u_in");
+            llvm::PHINode *vIn = b.CreatePHI(f32, 2, "tesk_v_in");
+            uIn->addIncoming(uN1, triN1BB);
+            uIn->addIncoming(uGrid, triGridBB);
+            vIn->addIncoming(vN1, triN1BB);
+            vIn->addIncoming(vGrid, triGridBB);
+            if (uPerim) {
+                u = b.CreateSelect(anyOuter, uPerim, uIn);
+                v = b.CreateSelect(anyOuter, vPerim, vIn);
+            } else {
+                u = uIn;
+                v = vIn;
+            }
         }
         llvm::Value *uv = llvm::UndefValue::get(llvm::FixedVectorType::get(
             f32, 3));

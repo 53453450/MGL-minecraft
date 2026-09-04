@@ -6878,6 +6878,10 @@ bool mglRenderTessFactorsDiscardPatch(uint32_t gen_mode,
     if (!edge || !inside) {
         return true;
     }
+    /* GL §11.2.3: only outer levels ≤ 0 discard the patch.  Inner levels
+     * are clamped (negative → min) and must not discard — CTS vertex_spacing
+     * intentionally passes inner=-1. */
+    (void)inside;
     switch (gen_mode) {
         case GL_ISOLINES:
             return edge[0] <= 0.0f || edge[1] <= 0.0f ||
@@ -6885,15 +6889,13 @@ bool mglRenderTessFactorsDiscardPatch(uint32_t gen_mode,
         case GL_QUADS:
             return edge[0] <= 0.0f || edge[1] <= 0.0f ||
                    edge[2] <= 0.0f || edge[3] <= 0.0f ||
-                   inside[0] <= 0.0f || inside[1] <= 0.0f ||
                    isnan(edge[0]) || isnan(edge[1]) ||
-                   isnan(edge[2]) || isnan(edge[3]) ||
-                   isnan(inside[0]) || isnan(inside[1]);
+                   isnan(edge[2]) || isnan(edge[3]);
         default: /* GL_TRIANGLES */
             return edge[0] <= 0.0f || edge[1] <= 0.0f ||
-                   edge[2] <= 0.0f || inside[0] <= 0.0f ||
+                   edge[2] <= 0.0f ||
                    isnan(edge[0]) || isnan(edge[1]) ||
-                   isnan(edge[2]) || isnan(inside[0]);
+                   isnan(edge[2]);
     }
 }
 
@@ -8353,13 +8355,22 @@ int mglRenderBlitFramebufferPlan(
 extern "C"
 uint32_t mglRenderTessRoundLevelForSpacing(uint32_t spacing,
                                               uint32_t ceil_level) {
+    /* GL_MAX_TESS_GEN_LEVEL is 64 (glm_params).  Fractional modes clamp
+     * before rounding per GL §11.2.2.2 / EXT_tessellation_shader. */
+    const uint32_t max_level = 64u;
     if (spacing == GL_FRACTIONAL_EVEN) {
+        if (ceil_level < 2u) ceil_level = 2u;
+        if (ceil_level > max_level) ceil_level = max_level;
         const uint32_t r = (ceil_level & 1u) ? ceil_level + 1u : ceil_level;
         return r > 2u ? r : 2u;
     }
     if (spacing == GL_FRACTIONAL_ODD) {
+        if (ceil_level < 1u) ceil_level = 1u;
+        if (ceil_level > max_level - 1u) ceil_level = max_level - 1u;
         return (ceil_level & 1u) ? ceil_level : ceil_level + 1u;
     }
+    if (ceil_level < 1u) ceil_level = 1u;
+    if (ceil_level > max_level) ceil_level = max_level;
     return ceil_level;
 }
 
@@ -8554,22 +8565,71 @@ uint32_t mglRenderTessEvalItemsPerPatch(
         float e1 = *(const __fp16*)&tf->edge[1];
         if (e0 < 1.0f) e0 = 1.0f;
         if (e1 < 1.0f) e1 = 1.0f;
-        return (uint32_t)ceilf(e0) * (uint32_t)ceilf(e1) * 2u;
+        const uint32_t n =
+            mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(e0));
+        const uint32_t m =
+            mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(e1));
+        /* point_mode: unique samples per isoline (m+1); else line endpoints. */
+        if (point_mode)
+            return n * (m + 1u);
+        return n * m * 2u;
     }
-    /* Quads/triangles compute expansion (point_mode and XFB-forced): one
-     * work item per inner-grid cell.  Must match mgl_air_backend.cpp
-     * isTESCompute TessCoord decomposition.
+    /* Quads/triangles compute expansion (point_mode and XFB-forced): must
+     * match mgl_air_backend.cpp isTESCompute TessCoord decomposition.
      *
-     * GL 4.6 §11.2.2: triangles with all levels == 1 generate a single
-     * triangle (3 vertices).  point_mode emits each vertex as a point, so
-     * n==1 must produce 3 items (corners), not 1×1 grid centroid. */
+     * Triangles point_mode with any outer > 1: outer-edge perimeter
+     * (n0+n1+n2 exclusive-end samples).  Otherwise inner-grid / n==1
+     * corners (GL single triangle → 3 vertices). */
     float i0 = *(const __fp16*)&tf->inside[0];
     if (i0 < 1.0f) i0 = 1.0f;
     if (gen_mode == GL_QUADS) {
+        if (point_mode) {
+            float e0 = *(const __fp16*)&tf->edge[0];
+            float e1 = *(const __fp16*)&tf->edge[1];
+            float e2 = *(const __fp16*)&tf->edge[2];
+            float e3 = *(const __fp16*)&tf->edge[3];
+            if (e0 < 1.0f) e0 = 1.0f;
+            if (e1 < 1.0f) e1 = 1.0f;
+            if (e2 < 1.0f) e2 = 1.0f;
+            if (e3 < 1.0f) e3 = 1.0f;
+            const uint32_t n0 =
+                mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(e0));
+            const uint32_t n1 =
+                mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(e1));
+            const uint32_t n2 =
+                mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(e2));
+            const uint32_t n3 =
+                mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(e3));
+            if (n0 > 1u || n1 > 1u || n2 > 1u || n3 > 1u)
+                return n0 + n1 + n2 + n3;
+        }
         float i1 = *(const __fp16*)&tf->inside[1];
         if (i1 < 1.0f) i1 = 1.0f;
         return mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(i0)) *
                mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(i1));
+    }
+    if (point_mode) {
+        float e0 = *(const __fp16*)&tf->edge[0];
+        float e1 = *(const __fp16*)&tf->edge[1];
+        float e2 = *(const __fp16*)&tf->edge[2];
+        if (e0 < 1.0f) e0 = 1.0f;
+        if (e1 < 1.0f) e1 = 1.0f;
+        if (e2 < 1.0f) e2 = 1.0f;
+        const uint32_t n0 =
+            mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(e0));
+        const uint32_t n1 =
+            mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(e1));
+        const uint32_t n2 =
+            mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(e2));
+        if (n0 > 1u || n1 > 1u || n2 > 1u) {
+            uint32_t n = n0 + n1 + n2;
+            float i0raw = *(const __fp16*)&tf->inside[0];
+            if (i0raw < 1.0f) i0raw = 1.0f;
+            /* fractional_odd bumps inner≈1 → 3 only when pre-round inner ≤1. */
+            if (spacing == GL_FRACTIONAL_ODD && (uint32_t)ceilf(i0raw) <= 1u)
+                n += 3u;
+            return n;
+        }
     }
     {
         const uint32_t n =
