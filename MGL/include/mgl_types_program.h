@@ -409,6 +409,18 @@ typedef struct Program_t {
 GLint mglProgramActiveUniformCount(Program *program);
 GLint mglProgramActiveUniformMaxNameLength(Program *program);
 MGLShaderResource *mglProgramActiveUniformAt(Program *program, GLuint index, int *stage_out, int *res_type_out);
+#ifdef __cplusplus
+extern "C" {
+#endif
+/* Resolve a glTransformFeedbackVaryings name against stage outputs.
+ * Accepts bare member names and BlockType.member for named interface
+ * blocks (GL 4.6 §11.1.2.1); reflection keeps bare Metal identifiers. */
+MGLShaderResource *mglProgramFindStageOutputForXFBName(Program *program,
+                                                       int stage,
+                                                       const char *xfb_name);
+#ifdef __cplusplus
+}
+#endif
 /* Build the deduplicated active-uniform cache.  Called at link end.
  * Frees any previous cache.  After this, mglProgramActiveUniformCount /
  * mglProgramActiveUniformAt / mglProgramActiveUniformIndexByName /

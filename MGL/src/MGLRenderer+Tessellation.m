@@ -1692,7 +1692,9 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     Program *gsProgram =
         mglResolveProgramForStageFromState(glm_ctx, _GEOMETRY_SHADER);
     const bool hasGeometryStage =
-        gsProgram && gsProgram->shader_slots[_GEOMETRY_SHADER] != NULL;
+        gsProgram &&
+        (gsProgram->attached_shader_mask & GEOMETRY_SHADER_MASK_BIT) != 0u &&
+        gsProgram->shader_slots[_GEOMETRY_SHADER] != NULL;
     /* XFB varyings come from the last pre-raster stage.  When a GS follows
      * this TES compute expansion, the GS path owns transform feedback. */
     const bool xfbActive =
@@ -1972,9 +1974,6 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     }
 
     if (xfbWrittenBytes > 0u && xfbTemporary && xfbDestination) {
-        const MGLShaderResourceList *outputs =
-            &tesProgram->shader_resources_list[_TESS_EVALUATION_SHADER]
-                                                [_STAGE_OUTPUT_RES];
         const uint8_t *srcBase =
             (const uint8_t *)mglTessBufferContents(xfbTemporary);
         if (!srcBase) {
@@ -1993,15 +1992,9 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
                 }
                 const char *name =
                     tesProgram->transform_feedback_varying_names[varying];
-                const MGLShaderResource *output = NULL;
-                for (GLuint i = 0u; name && outputs->list && i < outputs->count;
-                     i++) {
-                    if (outputs->list[i].name &&
-                        strcmp(outputs->list[i].name, name) == 0) {
-                        output = &outputs->list[i];
-                        break;
-                    }
-                }
+                const MGLShaderResource *output =
+                    mglProgramFindStageOutputForXFBName(
+                        tesProgram, _TESS_EVALUATION_SHADER, name);
                 NSUInteger fieldBytes =
                     output ? mglTESXFBFieldByteSize(output->gl_type) : 0u;
                 if (!output || fieldBytes == 0u) {
@@ -2116,15 +2109,9 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
                  varying++) {
                 const char *name =
                     tesProgram->transform_feedback_varying_names[varying];
-                const MGLShaderResource *output = NULL;
-                for (GLuint i = 0u; name && outputs->list && i < outputs->count;
-                     i++) {
-                    if (outputs->list[i].name &&
-                        strcmp(outputs->list[i].name, name) == 0) {
-                        output = &outputs->list[i];
-                        break;
-                    }
-                }
+                const MGLShaderResource *output =
+                    mglProgramFindStageOutputForXFBName(
+                        tesProgram, _TESS_EVALUATION_SHADER, name);
                 NSUInteger fieldBytes =
                     output ? mglTESXFBFieldByteSize(output->gl_type) : 0u;
                 if (!output || fieldBytes == 0u) {

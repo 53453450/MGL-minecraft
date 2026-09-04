@@ -8517,26 +8517,19 @@ uint32_t mglRenderTessControlPointFormat(uint64_t gl_type) {
 
 
 extern "C"
+extern "C"
 uint64_t mglRenderTESXFBVertexStride(const void* program_v) {
     const Program* program = (const Program*)program_v;
     if (!program || program->transform_feedback_varying_count <= 0) {
         return 0u;
     }
-    const MGLShaderResourceList* outputs =
-        &program->shader_resources_list[_TESS_EVALUATION_SHADER]
-                                        [_STAGE_OUTPUT_RES];
     uint64_t stride = 0u;
     for (GLsizei varying = 0;
          varying < program->transform_feedback_varying_count;
          varying++) {
         const char* name = program->transform_feedback_varying_names[varying];
-        const MGLShaderResource* output = NULL;
-        for (GLuint i = 0; name && outputs->list && i < outputs->count; i++) {
-            if (outputs->list[i].name && strcmp(outputs->list[i].name, name) == 0) {
-                output = &outputs->list[i];
-                break;
-            }
-        }
+        const MGLShaderResource* output = mglProgramFindStageOutputForXFBName(
+            const_cast<Program*>(program), _TESS_EVALUATION_SHADER, name);
         const uint64_t field_bytes =
             output ? mglRenderTESXFBFieldByteSize(output->gl_type) : 0u;
         if (field_bytes == 0u || stride > UINT64_MAX - field_bytes) {

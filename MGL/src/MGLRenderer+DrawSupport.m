@@ -87,13 +87,9 @@ static void mglXFBDecodeIntCarriersInBytes(uint8_t *bytes, NSUInteger nbytes,
             char *bracket = strchr(baseName, '[');
             if (bracket) *bracket = '\0';
             GLenum glType = 0;
-            for (GLuint j = 0u; outputs->list && j < outputs->count; j++) {
-                if (outputs->list[j].name &&
-                    strcmp(outputs->list[j].name, baseName) == 0) {
-                    glType = outputs->list[j].gl_type;
-                    break;
-                }
-            }
+            MGLShaderResource *outRes =
+                mglProgramFindStageOutputForXFBName(program, (int)stage, name);
+            if (outRes) glType = outRes->gl_type;
             if (!glType) continue;
             NSUInteger fieldOff = (NSUInteger)plan->component_offset * 4u;
             NSUInteger fieldBytes = (NSUInteger)plan->component_count * 4u;
@@ -2161,9 +2157,6 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
          * validation keeps one feeding stream per buffer, so no regrouping
          * is needed; the loop only bakes the buffer->stream map the pass-2
          * scatter uses to attribute stage-out records to streams. */
-        MGLShaderResourceList *gsOutputs =
-            &program->shader_resources_list[_GEOMETRY_SHADER]
-                                           [_STAGE_OUTPUT_RES];
         uint32_t fieldCount = 0u;
         for (uint32_t s = 0u; s < MGL_AIR_GS_MAX_STREAMS; s++) {
             for (GLsizei vi = 0;
@@ -2184,13 +2177,10 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
                 char *bracket = strchr(baseName, '[');
                 if (bracket) *bracket = '\0';
                 GLuint location = UINT32_MAX;
-                for (GLuint j = 0u; j < gsOutputs->count; j++) {
-                    if (gsOutputs->list[j].name &&
-                        strcmp(gsOutputs->list[j].name, baseName) == 0) {
-                        location = gsOutputs->list[j].location;
-                        break;
-                    }
-                }
+                MGLShaderResource *gsOut = mglProgramFindStageOutputForXFBName(
+                    program, _GEOMETRY_SHADER, name);
+                if (gsOut)
+                    location = gsOut->location;
                 /* Built-in per-vertex outputs copy from the record's
                  * fixed per-vertex slots instead of a varying slot. */
                 NSUInteger srcOffset;
@@ -3850,6 +3840,13 @@ after_gs_draws:
     if (!tcsProgram && !tesProgram) {
         return NO;
     }
+    /* GL 4.6 §10.5: TCS active without TES → Draw* INVALID_OPERATION
+     * (CTS xfb_captures negative case: {VS, TCS, FS}). */
+    if (tcsProgram && !tesProgram) {
+        mglDispatchError(drawCtx, label ? label : "tessellationDraw",
+                         GL_INVALID_OPERATION);
+        return YES;
+    }
 
     if (instanceCount <= 0) {
         return YES;
@@ -3876,7 +3873,9 @@ after_gs_draws:
     {
         Program *gsProgram =
             mglResolveProgramForStageFromState(drawCtx, _GEOMETRY_SHADER);
-        if (gsProgram && gsProgram->shader_slots[_GEOMETRY_SHADER]) {
+        if (gsProgram &&
+            (gsProgram->attached_shader_mask & GEOMETRY_SHADER_MASK_BIT) &&
+            gsProgram->shader_slots[_GEOMETRY_SHADER]) {
             nativeTES = NO;
         }
     }

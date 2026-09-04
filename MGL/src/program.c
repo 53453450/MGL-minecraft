@@ -842,6 +842,42 @@ static bool mglTransformFeedbackArrayElement(const char *name,
     return true;
 }
 
+MGLShaderResource *mglProgramFindStageOutputForXFBName(Program *program,
+                                                       int stage,
+                                                       const char *xfb_name)
+{
+    if (!program || !xfb_name || !xfb_name[0] ||
+        stage < 0 || stage >= _MAX_SHADER_TYPES)
+        return NULL;
+    char baseName[96];
+    if (!mglTransformFeedbackBaseName(xfb_name, baseName))
+        return NULL;
+    MGLShaderResourceList *outputs =
+        &program->shader_resources_list[stage][_STAGE_OUTPUT_RES];
+    for (GLuint j = 0u; j < outputs->count; j++) {
+        if (outputs->list[j].name &&
+            strcmp(outputs->list[j].name, baseName) == 0)
+            return &outputs->list[j];
+    }
+    /* Named interface-block members: XFB name is BlockType.member while
+     * reflection stores the bare member for Metal identifiers. */
+    const char *dot = strrchr(baseName, '.');
+    if (!dot || dot == baseName || dot[1] == '\0' ||
+        strchr(dot + 1, '.') != NULL)
+        return NULL;
+    const char *member = dot + 1;
+    MGLShaderResource *match = NULL;
+    GLuint matches = 0u;
+    for (GLuint j = 0u; j < outputs->count; j++) {
+        MGLShaderResource *cand = &outputs->list[j];
+        if (!cand->name || strcmp(cand->name, member) != 0)
+            continue;
+        match = cand;
+        matches++;
+    }
+    return matches == 1u ? match : NULL;
+}
+
 /* Build the link-time XFB scatter plan and validate the ARB_transform_feedback3
  * control entries.  Execution still deliberately gates GS SEPARATE_ATTRIBS
  * elsewhere, but every accepted program now has one authoritative binding,
@@ -862,19 +898,20 @@ static bool mglValidateTransformFeedbackVaryings(GLMContext ctx, Program *pptr)
     }
 
     /* Determine the last active stage before fragment (the stage that
-     * provides transform feedback outputs). */
+     * provides transform feedback outputs).  GL desktop also allows
+     * capturing from a tessellation control–only separable program. */
     int feedback_stage = -1;
     if (pptr->attached_shader_mask & GEOMETRY_SHADER_MASK_BIT)
         feedback_stage = _GEOMETRY_SHADER;
     else if (pptr->attached_shader_mask & TESS_EVALUATION_SHADER_MASK_BIT)
         feedback_stage = _TESS_EVALUATION_SHADER;
+    else if (pptr->attached_shader_mask & TESS_CONTROL_SHADER_MASK_BIT)
+        feedback_stage = _TESS_CONTROL_SHADER;
     else if (pptr->attached_shader_mask & VERTEX_SHADER_MASK_BIT)
         feedback_stage = _VERTEX_SHADER;
     if (feedback_stage < 0)
         return false;
 
-    MGLShaderResourceList *outputs =
-        &pptr->shader_resources_list[feedback_stage][_STAGE_OUTPUT_RES];
     const GLuint maxInterleaved = ctx
         ? ctx->state.var.max_transform_feedback_interleaved_components : 64u;
     const GLuint maxSeparateComponents = ctx
@@ -988,14 +1025,8 @@ static bool mglValidateTransformFeedbackVaryings(GLMContext ctx, Program *pptr)
             continue;
         }
 
-        MGLShaderResource *output = NULL;
-        for (GLuint j = 0u; j < outputs->count; j++) {
-            if (outputs->list[j].name &&
-                strcmp(outputs->list[j].name, baseName) == 0) {
-                output = &outputs->list[j];
-                break;
-            }
-        }
+        MGLShaderResource *output =
+            mglProgramFindStageOutputForXFBName(pptr, feedback_stage, name);
         if (!output)
             return false;
 
@@ -1589,6 +1620,20 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
     pptr->link_success = GL_FALSE;
 
     mglFlushPendingDraws(ctx);
+
+    /* Re-link must use only currently attached shaders.  A prior successful
+     * link leaves shader_slots populated after detach (GL executable
+     * retention); without this sync, a detached GS still compiles and
+     * bindAIRProgram sees GS + gs_route=NONE (xfb_captures / stage re-link). */
+    for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
+        if (pptr->attached_shader_counts[stage] > 0u) {
+            pptr->shader_slots[stage] =
+                pptr->attached_shader_slots[stage][0];
+        } else {
+            pptr->shader_slots[stage] = NULL;
+            clearStageCompileState(pptr, stage);
+        }
+    }
 
     /* C++ compute PSOs retain functions from the previous link generation.
      * Drop them before stage objects and metallib libraries are replaced. */
