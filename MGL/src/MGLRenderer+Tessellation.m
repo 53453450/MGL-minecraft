@@ -145,6 +145,38 @@ static void *mglTessBufferContents(id buffer)
         ? contents : NULL;
 }
 
+/* AIR TES stage-out slots store integer varyings as SIToFP/UIToFP float
+ * carriers (same ABI as GS records).  GL transform-feedback expects native
+ * int/uint bits — convert here when gathering the compact XFB stream. */
+static void mglTESXFBPackFieldFromCarrier(GLenum glType,
+                                          const uint8_t *src,
+                                          uint8_t *dst,
+                                          NSUInteger fieldBytes)
+{
+    const GLuint comps = (GLuint)(fieldBytes / sizeof(uint32_t));
+    if (glType == GL_INT || glType == GL_INT_VEC2 ||
+        glType == GL_INT_VEC3 || glType == GL_INT_VEC4) {
+        for (GLuint c = 0u; c < comps && c < 4u; c++) {
+            float f = 0.f;
+            memcpy(&f, src + c * 4u, sizeof(f));
+            GLint iv = (GLint)f;
+            memcpy(dst + c * 4u, &iv, sizeof(iv));
+        }
+        return;
+    }
+    if (glType == GL_UNSIGNED_INT || glType == GL_UNSIGNED_INT_VEC2 ||
+        glType == GL_UNSIGNED_INT_VEC3 || glType == GL_UNSIGNED_INT_VEC4) {
+        for (GLuint c = 0u; c < comps && c < 4u; c++) {
+            float f = 0.f;
+            memcpy(&f, src + c * 4u, sizeof(f));
+            GLuint uv = (GLuint)f;
+            memcpy(dst + c * 4u, &uv, sizeof(uv));
+        }
+        return;
+    }
+    memcpy(dst, src, fieldBytes);
+}
+
 static bool mglTessTextureInfo(id texture, MGLRenderTextureInfo *info)
 {
     return texture && info &&
@@ -1938,29 +1970,18 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
         [self clearStageBindingCopyBacks:&stageCopyBacks];
     }
 
-    if (xfbWrittenBytes > 0u && xfbTemporary && xfbCopyDestination) {
+    if (xfbWrittenBytes > 0u && xfbTemporary && xfbDestination) {
         const MGLShaderResourceList *outputs =
             &tesProgram->shader_resources_list[_TESS_EVALUATION_SHADER]
                                                 [_STAGE_OUTPUT_RES];
-        const NSUInteger varyingCount =
-            (NSUInteger)MAX(tesProgram->transform_feedback_varying_count, 0);
-        NSUInteger copyCapacity = 0u;
-        if (!mglCheckedNSUIntegerProduct(xfbCopiedVertices, varyingCount,
-                                         &copyCapacity) ||
-            copyCapacity > UINT32_MAX ||
-            copyCapacity > SIZE_MAX / sizeof(MGLRenderBufferCopyEntry)) {
-            NSLog(@"MGL TESS XFB: copy plan size overflow");
+        const uint8_t *srcBase =
+            (const uint8_t *)mglTessBufferContents(xfbTemporary);
+        uint8_t *packed = (uint8_t *)calloc(1u, xfbWrittenBytes);
+        if (!srcBase || !packed) {
+            free(packed);
+            NSLog(@"MGL TESS XFB: missing temporary contents or OOM");
             return false;
         }
-        MGLRenderBufferCopyEntry *xfbCopies = copyCapacity
-            ? (MGLRenderBufferCopyEntry *)calloc(
-                  copyCapacity, sizeof(MGLRenderBufferCopyEntry))
-            : NULL;
-        if (copyCapacity && !xfbCopies) {
-            NSLog(@"MGL TESS XFB: copy plan allocation failed");
-            return false;
-        }
-        uint32_t xfbCopyCount = 0u;
         for (NSUInteger vertex = 0u; vertex < xfbCopiedVertices; vertex++) {
             NSUInteger compactOffset = 0u;
             for (GLsizei varying = 0;
@@ -1985,30 +2006,51 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
                 NSUInteger sourceOffset = vertex * outStride +
                     MGL_AIR_PER_VERTEX_STRIDE +
                     (NSUInteger)output->location * 16u;
-                NSUInteger destinationOffset = xfbCopyDestinationOffset +
-                    vertex * xfbCompactStride + compactOffset;
-                xfbCopies[xfbCopyCount++] = (MGLRenderBufferCopyEntry){
-                    .source_buffer = (__bridge void *)xfbTemporary,
-                    .source_offset = sourceOffset,
-                    .destination_buffer = (__bridge void *)xfbCopyDestination,
-                    .destination_offset = destinationOffset,
-                    .length = fieldBytes,
-                };
+                mglTESXFBPackFieldFromCarrier(
+                    output->gl_type, srcBase + sourceOffset,
+                    packed + vertex * xfbCompactStride + compactOffset,
+                    fieldBytes);
                 compactOffset += fieldBytes;
             }
         }
-        const bool xfbCopyOK = xfbCopyCount == 0u ||
-            mglTessEncodeBufferCopiesForOwner(
-                _renderPassManager.state->currentCommandBufferOwner,
-                xfbCopies, xfbCopyCount);
-        free(xfbCopies);
-        if (!xfbCopyOK) {
-            NSLog(@"MGL TESS XFB: failed to encode bounded copies");
-            return false;
+        mglRendererBufferSubData(glm_ctx, xfbDestination,
+                                 xfbCopyDestinationOffset, xfbWrittenBytes,
+                                 packed);
+        /* Mirror into the live Metal allocation: SubData may land in a
+         * snapshot while glMapBufferRange serves the CPU shadow. */
+        if (xfbCopyDestination) {
+            uint8_t *live = (uint8_t *)mglTessBufferContents(xfbCopyDestination);
+            if (live) {
+                memcpy(live + xfbCopyDestinationOffset, packed,
+                       xfbWrittenBytes);
+            }
         }
-        if (xfbDestination) {
-            xfbDestination->ever_written = GL_TRUE;
+        if (xfbDestination->data.buffer_data &&
+            (size_t)xfbDestination->size >=
+                xfbCopyDestinationOffset + xfbWrittenBytes) {
+            memcpy((uint8_t *)xfbDestination->data.buffer_data +
+                       xfbCopyDestinationOffset,
+                   packed, xfbWrittenBytes);
         }
+        xfbDestination->ever_written = GL_TRUE;
+        xfbDestination->has_initialized_data = GL_TRUE;
+        xfbDestination->cpu_shadow_pending = GL_TRUE;
+        xfbDestination->gpu_write_target = GL_FALSE;
+        xfbDestination->data.dirty_bits |= DIRTY_BUFFER_DATA;
+        xfbDestination->last_write_offset =
+            (GLintptr)xfbCopyDestinationOffset;
+        xfbDestination->last_write_size = (GLsizeiptr)xfbWrittenBytes;
+        if (xfbDestination->written_min < 0 ||
+            (GLintptr)xfbCopyDestinationOffset < xfbDestination->written_min) {
+            xfbDestination->written_min = (GLintptr)xfbCopyDestinationOffset;
+        }
+        GLintptr writeEnd =
+            (GLintptr)(xfbCopyDestinationOffset + xfbWrittenBytes);
+        if (xfbDestination->written_max < 0 ||
+            writeEnd > xfbDestination->written_max) {
+            xfbDestination->written_max = writeEnd;
+        }
+        free(packed);
     }
     if (xfbActive && xfbWrittenBytes > 0u) {
         const GLuint64 currentOffset = xfbState->buffer_write_offsets[0];

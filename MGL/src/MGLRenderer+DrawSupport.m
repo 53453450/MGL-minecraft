@@ -34,6 +34,76 @@ static void *mglDrawSupportBufferContents(id buffer)
     return contents;
 }
 
+/* AIR stage-out / GS scatter slots carry integers as SIToFP/UIToFP floats.
+ * GL transform-feedback stores native int/uint bits — decode before the
+ * compact XFB image is published to the GL buffer / CPU shadow. */
+static void mglXFBDecodeIntCarrierField(GLenum glType, uint8_t *field,
+                                        GLuint comps)
+{
+    if (glType == GL_INT || glType == GL_INT_VEC2 ||
+        glType == GL_INT_VEC3 || glType == GL_INT_VEC4) {
+        for (GLuint c = 0u; c < comps && c < 4u; c++) {
+            float f = 0.f;
+            memcpy(&f, field + c * 4u, sizeof(f));
+            GLint iv = (GLint)f;
+            memcpy(field + c * 4u, &iv, sizeof(iv));
+        }
+        return;
+    }
+    if (glType == GL_UNSIGNED_INT || glType == GL_UNSIGNED_INT_VEC2 ||
+        glType == GL_UNSIGNED_INT_VEC3 || glType == GL_UNSIGNED_INT_VEC4) {
+        for (GLuint c = 0u; c < comps && c < 4u; c++) {
+            float f = 0.f;
+            memcpy(&f, field + c * 4u, sizeof(f));
+            GLuint uv = (GLuint)f;
+            memcpy(field + c * 4u, &uv, sizeof(uv));
+        }
+    }
+}
+
+static void mglXFBDecodeIntCarriersInBytes(uint8_t *bytes, NSUInteger nbytes,
+                                          NSUInteger stride, Program *program,
+                                          GLuint bufferIndex, GLuint stage)
+{
+    if (!bytes || !program || stride == 0u || nbytes < stride) return;
+    const MGLShaderResourceList *outputs =
+        &program->shader_resources_list[stage][_STAGE_OUTPUT_RES];
+    for (NSUInteger off = 0u; off + stride <= nbytes; off += stride) {
+        uint8_t *record = bytes + off;
+        for (GLsizei vi = 0;
+             vi < program->transform_feedback_varying_count; vi++) {
+            const MGLTransformFeedbackVaryingPlan *plan =
+                &program->transform_feedback_layout[vi];
+            if (plan->buffer_index != bufferIndex ||
+                plan->component_count == 0u) {
+                continue;
+            }
+            const char *name =
+                program->transform_feedback_varying_names[vi];
+            if (!name || !name[0]) continue;
+            char baseName[96];
+            strncpy(baseName, name, sizeof(baseName) - 1);
+            baseName[sizeof(baseName) - 1] = '\0';
+            char *bracket = strchr(baseName, '[');
+            if (bracket) *bracket = '\0';
+            GLenum glType = 0;
+            for (GLuint j = 0u; outputs->list && j < outputs->count; j++) {
+                if (outputs->list[j].name &&
+                    strcmp(outputs->list[j].name, baseName) == 0) {
+                    glType = outputs->list[j].gl_type;
+                    break;
+                }
+            }
+            if (!glType) continue;
+            NSUInteger fieldOff = (NSUInteger)plan->component_offset * 4u;
+            NSUInteger fieldBytes = (NSUInteger)plan->component_count * 4u;
+            if (fieldOff + fieldBytes > stride) continue;
+            mglXFBDecodeIntCarrierField(glType, record + fieldOff,
+                                        plan->component_count);
+        }
+    }
+}
+
 static uint64_t mglDrawSupportBufferLength(id buffer)
 {
     MGLRenderBufferInfo info = {0};
@@ -2642,8 +2712,21 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
          * its GL XFB target and advance the session write offset. */
         if (xfbTemporary) {
             id xfbBlit = nil;
-            const uint8_t *xfbTempBytes =
-                (const uint8_t *)mglDrawSupportBufferContents(xfbTemporary);
+            uint8_t *xfbTempBytes =
+                (uint8_t *)mglDrawSupportBufferContents(xfbTemporary);
+            /* Decode integer float-carriers in the compact temporary before
+             * the GPU blit / CPU shadow mirror (same contract as VS XFB). */
+            if (xfbTempBytes) {
+                for (uint32_t b = 0u; b < xfbBufferCount; b++) {
+                    if (scatterParams.buffers[b].stride == 0u) continue;
+                    NSUInteger region = bufferWritten[b];
+                    if (region == 0u) continue;
+                    mglXFBDecodeIntCarriersInBytes(
+                        xfbTempBytes + bufferPhysBase[b], region,
+                        scatterParams.buffers[b].stride, program, b,
+                        _GEOMETRY_SHADER);
+                }
+            }
             for (uint32_t b = 0u; b < xfbBufferCount; b++) {
                 if (!bufferDstMTL[b] || scatterParams.buffers[b].stride == 0u)
                     continue;
@@ -2681,7 +2764,8 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
                                    bufferDstOffset[b],
                                xfbTempBytes + bufferPhysBase[b], copyBytes);
                         slot->buf->has_initialized_data = GL_TRUE;
-                        slot->buf->gpu_write_target = GL_TRUE;
+                        slot->buf->cpu_shadow_pending = GL_TRUE;
+                        slot->buf->gpu_write_target = GL_FALSE;
                         slot->buf->last_init_source = kInitMapWrite;
                         slot->buf->last_write_offset =
                             (GLintptr)bufferDstOffset[b];
