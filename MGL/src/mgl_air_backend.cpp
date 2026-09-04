@@ -128,6 +128,7 @@ struct VarSym {
     bool isPatch = false;
     bool isSample = false;       /* `sample in` / `sample out` qualifier */
     bool written = false;
+    const MGLIRType *opaqueType = nullptr; /* nested sampler/image leaf */
 };
 
 struct LoopCtx {
@@ -240,6 +241,7 @@ struct Codegen {
     std::map<std::string, llvm::Value *> smpValues;  /* sampler name -> sampler */
     std::map<std::string, std::vector<llvm::Value *>> texArrayValues;
     std::map<std::string, std::vector<llvm::Value *>> smpArrayValues;
+    std::map<std::string, const MGLIRType *> samplerIRTypes;
     /* Stage outputs living in entry-block allocas so user functions can
      * write them through hidden pointer args (SET_RESULT→helper pattern). */
     std::map<std::string, llvm::Value *> outPtrs;
@@ -754,6 +756,97 @@ int collectUniforms(const MGLIRModule *mod, std::vector<Uniform> *out,
     }
     *bufferSize = off;
     return 0;
+}
+
+/* Flatten sampler/image leaves inside named struct uniforms into TEXTURE /
+ * IMAGE VarSyms (`s.c`, `s[0].c`, `s.b.a`) so Metal args and texture()
+ * lookups match GL reflection names. */
+static void appendOpaqueUniformLeaves(std::vector<VarSym> &syms,
+                                      const MGLIRType *t,
+                                      const std::string &prefix)
+{
+    if (!t || prefix.empty())
+        return;
+    if (t->kind == MGLIR_TYPE_STRUCT) {
+        for (uint32_t i = 0; i < t->member_count; i++) {
+            const char *mn = t->member_names ? t->member_names[i] : nullptr;
+            appendOpaqueUniformLeaves(
+                syms, t->members[i],
+                prefix + "." + (mn ? mn : "?"));
+        }
+        return;
+    }
+    if (t->kind == MGLIR_TYPE_ARRAY && t->elem_type &&
+        t->elem_type->kind == MGLIR_TYPE_STRUCT) {
+        uint32_t n = t->array_size ? t->array_size : 1u;
+        for (uint32_t el = 0; el < n; el++) {
+            appendOpaqueUniformLeaves(syms, t->elem_type,
+                                      prefix + "[" + std::to_string(el) + "]");
+        }
+        return;
+    }
+    const MGLIRType *base = t;
+    while (base && base->kind == MGLIR_TYPE_ARRAY)
+        base = base->elem_type;
+    if (!base)
+        return;
+    if (base->kind != MGLIR_TYPE_SAMPLER && base->kind != MGLIR_TYPE_IMAGE)
+        return;
+    VarSym ov;
+    ov.name = prefix;
+    ov.type = typeFromIR(t);
+    ov.kind = base->kind == MGLIR_TYPE_SAMPLER ? VarSym::TEXTURE
+                                               : VarSym::IMAGE;
+    ov.opaqueType = t;
+    syms.push_back(ov);
+}
+
+/* Resolve texture()/texelFetch sampler argument to a flattened uniform name
+ * (`tex`, `s.c`, `s[1].c`).  Only constant indices are supported. */
+static bool resolveSamplerAccessName(const MGLExpr *e, std::string *out)
+{
+    if (!e || !out)
+        return false;
+    struct Piece {
+        enum { Field, Index } kind;
+        std::string field;
+        int64_t index;
+    };
+    std::vector<Piece> pieces;
+    const MGLExpr *cur = e;
+    while (cur) {
+        if (cur->kind == MGL_EXPR_MEMBER) {
+            if (!cur->u.member.field)
+                return false;
+            pieces.push_back({Piece::Field, cur->u.member.field, 0});
+            cur = cur->u.member.object;
+            continue;
+        }
+        if (cur->kind == MGL_EXPR_INDEX) {
+            const MGLExpr *ix = cur->u.index.index;
+            if (!ix || ix->kind != MGL_EXPR_LITERAL)
+                return false;
+            pieces.push_back(
+                {Piece::Index, "", (int64_t)ix->u.literal.value});
+            cur = cur->u.index.object;
+            continue;
+        }
+        if (cur->kind == MGL_EXPR_VAR_REF) {
+            if (!cur->u.var_ref.name)
+                return false;
+            std::string path = cur->u.var_ref.name;
+            for (auto it = pieces.rbegin(); it != pieces.rend(); ++it) {
+                if (it->kind == Piece::Field)
+                    path += "." + it->field;
+                else
+                    path += "[" + std::to_string(it->index) + "]";
+            }
+            *out = std::move(path);
+            return true;
+        }
+        return false;
+    }
+    return false;
 }
 
 /* ---- expression codegen ----------------------------------------------- */
@@ -7276,21 +7369,29 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 return nullptr;
             }
             const MGLExpr *sa = e->u.call.args[0];
-            if (sa->kind != MGL_EXPR_VAR_REF) {
+            std::string samplerPath;
+            if (!resolveSamplerAccessName(sa, &samplerPath)) {
                 cg.err = 1;
                 cg.errmsg = "codegen: texelFetch first argument must be a "
                             "sampler variable";
                 return nullptr;
             }
-            llvm::Value *tex = samplerTexValue(cg, sa->u.var_ref.name);
+            const char *samplerName = samplerPath.c_str();
+            llvm::Value *tex = samplerTexValue(cg, samplerName);
             if (!tex) {
                 cg.err = 1;
                 cg.errmsg = "codegen: texelFetch first argument must be a "
                             "sampler variable";
                 return nullptr;
             }
-            const MGLIRSymbol *ts = findSymbol(mod, sa->u.var_ref.name);
-            const MGLIRType *sampleType = ts ? ts->type : nullptr;
+            const MGLIRType *sampleType = nullptr;
+            auto sti = cg.samplerIRTypes.find(samplerName);
+            if (sti != cg.samplerIRTypes.end())
+                sampleType = sti->second;
+            else {
+                const MGLIRSymbol *ts = findSymbol(mod, samplerName);
+                sampleType = ts ? ts->type : nullptr;
+            }
             if (sampleType && sampleType->kind == MGLIR_TYPE_ARRAY &&
                 sampleType->elem_type)
                 sampleType = sampleType->elem_type;
@@ -7532,27 +7633,19 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 return nullptr;
             }
             const MGLExpr *sa = e->u.call.args[0];
+            std::string samplerPath;
             const char *samplerName = nullptr;
-            if (sa->kind == MGL_EXPR_VAR_REF) {
-                samplerName = sa->u.var_ref.name;
-            } else if (sa->kind == MGL_EXPR_INDEX &&
-                       sa->u.index.object &&
-                       sa->u.index.object->kind == MGL_EXPR_VAR_REF) {
-                samplerName = sa->u.index.object->u.var_ref.name;
-            }
-            if (!samplerName) {
-                cg.err = 1;
-                cg.errmsg = "codegen: texture argument must be a sampler2D "
-                            "variable";
-                return nullptr;
-            }
             llvm::Value *tex = nullptr;
             llvm::Value *smp = nullptr;
             bool dynamicSamplerArray = false;
             llvm::Value *arrayIndex = nullptr;
             const std::vector<llvm::Value *> *texArray = nullptr;
             const std::vector<llvm::Value *> *smpArray = nullptr;
-            if (sa->kind == MGL_EXPR_INDEX) {
+            const bool topLevelSamplerArray =
+                sa->kind == MGL_EXPR_INDEX && sa->u.index.object &&
+                sa->u.index.object->kind == MGL_EXPR_VAR_REF;
+            if (topLevelSamplerArray) {
+                samplerName = sa->u.index.object->u.var_ref.name;
                 llvm::Value *index = emitExpr(cg, sa->u.index.index, mod, locals);
                 if (!index) return nullptr;
                 index = coerceScalar(cg, index, MGLIR_SCALAR_INT);
@@ -7584,10 +7677,16 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     if (si != cg.smpArrayValues.end())
                         smpArray = &si->second;
                 }
-            } else {
+            } else if (resolveSamplerAccessName(sa, &samplerPath)) {
+                samplerName = samplerPath.c_str();
                 tex = samplerTexValue(cg, samplerName);
                 auto si = cg.smpValues.find(samplerName);
                 if (si != cg.smpValues.end()) smp = si->second;
+            } else {
+                cg.err = 1;
+                cg.errmsg = "codegen: texture argument must be a sampler2D "
+                            "variable";
+                return nullptr;
             }
             if (!dynamicSamplerArray && !tex) {
                 cg.err = 1;
@@ -7603,8 +7702,16 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 smp = callAirFn(cg, "air.get_read_sampler",
                                 smpT->getPointerTo(2), {});
             }
-            const MGLIRSymbol *tss = findSymbol(mod, samplerName);
-            const MGLIRType *sampleTypeForDim = tss ? tss->type : nullptr;
+            const MGLIRType *sampleTypeForDim = nullptr;
+            {
+                auto sti = cg.samplerIRTypes.find(samplerName);
+                if (sti != cg.samplerIRTypes.end())
+                    sampleTypeForDim = sti->second;
+                else {
+                    const MGLIRSymbol *tss = findSymbol(mod, samplerName);
+                    sampleTypeForDim = tss ? tss->type : nullptr;
+                }
+            }
             if (sampleTypeForDim && sampleTypeForDim->kind == MGLIR_TYPE_ARRAY &&
                 sampleTypeForDim->elem_type)
                 sampleTypeForDim = sampleTypeForDim->elem_type;
@@ -12032,6 +12139,14 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             v.kind = VarSym::OUTPUT;
         }
         syms.push_back(v);
+        if (v.kind == VarSym::BUFFER && (q & MGL_AST_Q_UNIFORM)) {
+            const MGLIRType *bt = s->type;
+            const MGLIRType *base = bt;
+            while (base && base->kind == MGLIR_TYPE_ARRAY)
+                base = base->elem_type;
+            if (base && base->kind == MGLIR_TYPE_STRUCT)
+                appendOpaqueUniformLeaves(syms, bt, s->name);
+        }
     }
     {
         uint32_t nextInputLocation = 0;
@@ -12498,8 +12613,11 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         paramTys.push_back(llvm::Type::getInt32Ty(ctx)->getPointerTo(2));
     for (VarSym &v : syms) {
         if (v.kind != VarSym::TEXTURE) continue;
-        const MGLIRSymbol *ts = findSymbol(&mod, v.name.c_str());
-        const MGLIRType *st = ts ? ts->type : nullptr;
+        const MGLIRType *st = v.opaqueType;
+        if (!st) {
+            const MGLIRSymbol *ts = findSymbol(&mod, v.name.c_str());
+            st = ts ? ts->type : nullptr;
+        }
         while (st && st->kind == MGLIR_TYPE_ARRAY)
             st = st->elem_type;
         MGLIRTexKind tk = st && st->kind == MGLIR_TYPE_SAMPLER
@@ -12918,6 +13036,12 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     for (VarSym &v : syms) {
         if (v.kind != VarSym::TEXTURE) continue;
         uint32_t elements = v.type.arr > 0 ? (uint32_t)v.type.arr : 1u;
+        if (v.opaqueType)
+            cg.samplerIRTypes[v.name] = v.opaqueType;
+        else {
+            const MGLIRSymbol *ts = findSymbol(&mod, v.name.c_str());
+            if (ts) cg.samplerIRTypes[v.name] = ts->type;
+        }
         if (elements == 1u) {
             cg.texValues[v.name] = fn->getArg(argSlot++);
             cg.smpValues[v.name] = fn->getArg(argSlot++);
@@ -14789,8 +14913,11 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                           (isCapture ? 0 : attrCount);
         for (VarSym &v : syms) {
             if (v.kind != VarSym::TEXTURE) continue;
-            const MGLIRSymbol *tss = findSymbol(&mod, v.name.c_str());
-            const MGLIRType *samplerType = tss ? tss->type : nullptr;
+            const MGLIRType *samplerType = v.opaqueType;
+            if (!samplerType) {
+                const MGLIRSymbol *tss = findSymbol(&mod, v.name.c_str());
+                samplerType = tss ? tss->type : nullptr;
+            }
             while (samplerType && samplerType->kind == MGLIR_TYPE_ARRAY)
                 samplerType = samplerType->elem_type;
             bool is3d = samplerType &&

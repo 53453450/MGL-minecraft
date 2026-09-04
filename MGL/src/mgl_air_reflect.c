@@ -284,6 +284,15 @@ static int air_block_flatten(const MGLIRType *st, uint32_t base_off,
             continue;
         }
 
+        /* Opaque members are separate sampler/image uniforms, not default-
+         * block buffer leaves (GL 4.6 §4.1.7 / §7.6). */
+        if (mt->kind == MGLIR_TYPE_SAMPLER || mt->kind == MGLIR_TYPE_IMAGE)
+            continue;
+        if (mt->kind == MGLIR_TYPE_ARRAY && mt->elem_type &&
+            (mt->elem_type->kind == MGLIR_TYPE_SAMPLER ||
+             mt->elem_type->kind == MGLIR_TYPE_IMAGE))
+            continue;
+
         /* Leaf: scalar/vector/matrix or an array of those.  Array leaves
          * are one entry named with a "[0]" postfix at every path level
          * (GL 4.6 §7.3.1.1). */
@@ -486,6 +495,91 @@ static void push_resource(MGLShaderResourceList *list, const MGLIRSymbol *s,
     list->list[list->count++] = r;
 }
 
+/* Emit sampler/image leaves nested in a named struct uniform as standalone
+ * resources (`s.c`, `s[0].c`, `s.b.a`).  Opaque types are not default-block
+ * buffer members; CTS binds them via glUniform1i on the flattened path. */
+static void air_push_opaque_leaves(MGLShaderResourceList *list,
+                                   const MGLIRSymbol *owner,
+                                   const MGLIRType *t, const char *prefix,
+                                   uint32_t *texture_binding,
+                                   uint32_t *sampler_binding, int stage,
+                                   int want_image)
+{
+    if (!list || !owner || !t || !prefix || !texture_binding)
+        return;
+    if (t->kind == MGLIR_TYPE_STRUCT) {
+        for (uint32_t i = 0; i < t->member_count; i++) {
+            const MGLIRType *mt = t->members[i];
+            const char *mn = t->member_names[i];
+            char path[208];
+            snprintf(path, sizeof(path), "%s.%s", prefix, mn ? mn : "?");
+            air_push_opaque_leaves(list, owner, mt, path, texture_binding,
+                                   sampler_binding, stage, want_image);
+        }
+        return;
+    }
+    if (t->kind == MGLIR_TYPE_ARRAY && t->elem_type &&
+        t->elem_type->kind == MGLIR_TYPE_STRUCT) {
+        uint32_t n = t->array_size ? t->array_size : 1u;
+        for (uint32_t el = 0; el < n; el++) {
+            char epath[208];
+            snprintf(epath, sizeof(epath), "%s[%u]", prefix, el);
+            air_push_opaque_leaves(list, owner, t->elem_type, epath,
+                                   texture_binding, sampler_binding, stage,
+                                   want_image);
+        }
+        return;
+    }
+    const MGLIRType *base = t;
+    while (base && base->kind == MGLIR_TYPE_ARRAY)
+        base = base->elem_type;
+    if (!base)
+        return;
+    if (want_image) {
+        if (base->kind != MGLIR_TYPE_IMAGE)
+            return;
+    } else if (base->kind != MGLIR_TYPE_SAMPLER) {
+        return;
+    }
+    push_resource(list, owner, t, UINT32_MAX, *texture_binding, stage);
+    if (list->count == 0)
+        return;
+    MGLShaderResource *last = &list->list[list->count - 1];
+    free((void *)last->name);
+    last->name = strdup(prefix);
+    if (!want_image) {
+        last->resource_active = GL_TRUE;
+        last->has_combined_sampler = GL_TRUE;
+        last->combined_sampler_binding =
+            sampler_binding ? *sampler_binding : 0u;
+        last->uniform_location = mglSyntheticSamplerUniformLocation(
+            stage, _SAMPLED_IMAGE_RES,
+            sampler_binding ? *sampler_binding : 0u);
+        if (owner->binding != UINT32_MAX) {
+            last->gl_binding = owner->binding;
+            last->sampler_unit = (GLint)owner->binding;
+        }
+        GLuint elements = mglAirGLArraySizeFromIR(t);
+        if (elements < 1u)
+            elements = 1u;
+        *texture_binding += elements;
+        if (sampler_binding)
+            *sampler_binding += elements;
+    } else {
+        last->sampler_unit = -1;
+        if (owner->binding != UINT32_MAX) {
+            last->gl_binding = owner->binding;
+            last->sampler_unit = (GLint)owner->binding;
+        }
+        last->uniform_location = mglSyntheticSamplerUniformLocation(
+            stage, _STORAGE_IMAGE_RES, *texture_binding);
+        GLuint elements = mglAirGLArraySizeFromIR(t);
+        if (elements < 1u)
+            elements = 1u;
+        *texture_binding += elements;
+    }
+}
+
 static void destroy_list(MGLShaderResourceList *list)
 {
     for (GLuint i = 0; i < list->count; i++) {
@@ -642,59 +736,69 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
             while (base_t && base_t->kind == MGLIR_TYPE_ARRAY)
                 base_t = base_t->elem_type;
             if (pass == 0) {
-                if (!base_t || base_t->kind != MGLIR_TYPE_SAMPLER)
-                    continue;
-                GLuint location =
-                    s->location != UINT32_MAX ? s->location : UINT32_MAX;
-                push_resource(&lists[_SAMPLED_IMAGE_RES], s, t, location,
-                              texture_binding, stage);
-                MGLShaderResource *last =
-                    &lists[_SAMPLED_IMAGE_RES]
-                         .list[lists[_SAMPLED_IMAGE_RES].count - 1];
-                if (s->binding != UINT32_MAX) {
-                    last->gl_binding = s->binding;
-                    /* layout(binding=N) sets the sampler uniform's initial
-                     * texture-unit value (queried via GetUniformiv).  Array
-                     * elements take N, N+1, … from sampler_unit + ordinal. */
-                    last->sampler_unit = (GLint)s->binding;
+                if (base_t && base_t->kind == MGLIR_TYPE_SAMPLER) {
+                    GLuint location =
+                        s->location != UINT32_MAX ? s->location : UINT32_MAX;
+                    push_resource(&lists[_SAMPLED_IMAGE_RES], s, t, location,
+                                  texture_binding, stage);
+                    MGLShaderResource *last =
+                        &lists[_SAMPLED_IMAGE_RES]
+                             .list[lists[_SAMPLED_IMAGE_RES].count - 1];
+                    if (s->binding != UINT32_MAX) {
+                        last->gl_binding = s->binding;
+                        /* layout(binding=N) sets the sampler uniform's initial
+                         * texture-unit value (queried via GetUniformiv).  Array
+                         * elements take N, N+1, … from sampler_unit + ordinal. */
+                        last->sampler_unit = (GLint)s->binding;
+                    }
+                    last->resource_active = GL_TRUE;
+                    last->has_combined_sampler = GL_TRUE;
+                    last->combined_sampler_binding = sampler_binding;
+                    last->uniform_location =
+                        (s->location != UINT32_MAX)
+                            ? (GLint)s->location
+                            : mglSyntheticSamplerUniformLocation(
+                                  stage, _SAMPLED_IMAGE_RES, sampler_binding);
+                    GLuint elements = mglAirGLArraySizeFromIR(t);
+                    if (elements < 1u) elements = 1u;
+                    texture_binding += elements;
+                    sampler_binding += elements;
+                } else if (base_t && base_t->kind == MGLIR_TYPE_STRUCT &&
+                           !s->is_interface_block && !s->block_name) {
+                    air_push_opaque_leaves(&lists[_SAMPLED_IMAGE_RES], s, t,
+                                           s->name, &texture_binding,
+                                           &sampler_binding, stage, 0);
                 }
-                last->resource_active = GL_TRUE;
-                last->has_combined_sampler = GL_TRUE;
-                last->combined_sampler_binding = sampler_binding;
-                last->uniform_location =
-                    (s->location != UINT32_MAX)
-                        ? (GLint)s->location
-                        : mglSyntheticSamplerUniformLocation(
-                              stage, _SAMPLED_IMAGE_RES, sampler_binding);
-                GLuint elements = mglAirGLArraySizeFromIR(t);
-                if (elements < 1u) elements = 1u;
-                texture_binding += elements;
-                sampler_binding += elements;
             } else {
-                if (!base_t || base_t->kind != MGLIR_TYPE_IMAGE)
-                    continue;
-                GLuint location =
-                    s->location != UINT32_MAX ? s->location : UINT32_MAX;
-                push_resource(&lists[_STORAGE_IMAGE_RES], s, t, location,
-                              texture_binding, stage);
-                MGLShaderResource *last =
-                    &lists[_STORAGE_IMAGE_RES]
-                         .list[lists[_STORAGE_IMAGE_RES].count - 1];
-                last->sampler_unit = -1;
-                if (s->binding != UINT32_MAX) {
-                    last->gl_binding = s->binding;
-                    /* Same as samplers: layout(binding=N) is the image-unit
-                     * initial value for GetUniformiv / array expansion. */
-                    last->sampler_unit = (GLint)s->binding;
+                if (base_t && base_t->kind == MGLIR_TYPE_IMAGE) {
+                    GLuint location =
+                        s->location != UINT32_MAX ? s->location : UINT32_MAX;
+                    push_resource(&lists[_STORAGE_IMAGE_RES], s, t, location,
+                                  texture_binding, stage);
+                    MGLShaderResource *last =
+                        &lists[_STORAGE_IMAGE_RES]
+                             .list[lists[_STORAGE_IMAGE_RES].count - 1];
+                    last->sampler_unit = -1;
+                    if (s->binding != UINT32_MAX) {
+                        last->gl_binding = s->binding;
+                        /* Same as samplers: layout(binding=N) is the image-unit
+                         * initial value for GetUniformiv / array expansion. */
+                        last->sampler_unit = (GLint)s->binding;
+                    }
+                    last->uniform_location =
+                        (s->location != UINT32_MAX)
+                            ? (GLint)s->location
+                            : mglSyntheticSamplerUniformLocation(
+                                  stage, _STORAGE_IMAGE_RES, texture_binding);
+                    GLuint elements = mglAirGLArraySizeFromIR(t);
+                    if (elements < 1u) elements = 1u;
+                    texture_binding += elements;
+                } else if (base_t && base_t->kind == MGLIR_TYPE_STRUCT &&
+                           !s->is_interface_block && !s->block_name) {
+                    air_push_opaque_leaves(&lists[_STORAGE_IMAGE_RES], s, t,
+                                           s->name, &texture_binding,
+                                           NULL, stage, 1);
                 }
-                last->uniform_location =
-                    (s->location != UINT32_MAX)
-                        ? (GLint)s->location
-                        : mglSyntheticSamplerUniformLocation(
-                              stage, _STORAGE_IMAGE_RES, texture_binding);
-                GLuint elements = mglAirGLArraySizeFromIR(t);
-                if (elements < 1u) elements = 1u;
-                texture_binding += elements;
             }
         }
     }

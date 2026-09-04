@@ -394,6 +394,9 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
 
                     if (sm->is_array_member) {
                         GLuint elem_stride = sm->member_array_stride;
+                        GLuint src_stride = sm->member_src_stride
+                                                ? sm->member_src_stride
+                                                : elem_stride;
                         for (GLint ai = 0; ai < (GLint)sm->member_size; ai++) {
                             GLint elem_loc = member_loc + ai;
                             if (elem_loc < 0 || elem_loc >= (GLint)MAX_BINDABLE_BUFFERS) {
@@ -416,20 +419,41 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                             }
                             if (ai == 0 &&
                                 (size_t)mbuf->size >=
-                                    (size_t)sm->member_size * elem_stride) {
-                                size_t copy_size = (size_t)mbuf->size;
-                                if ((size_t)member_offset + copy_size > struct_size)
-                                    copy_size = struct_size - (size_t)member_offset;
-                                if (copy_size > 0) {
-                                    memcpy(packed + member_offset,
-                                           (const void *)(uintptr_t)mbuf->data.buffer_data,
-                                           copy_size);
+                                    (size_t)sm->member_size * src_stride) {
+                                if (elem_stride == src_stride) {
+                                    size_t copy_size = (size_t)mbuf->size;
+                                    if ((size_t)member_offset + copy_size > struct_size)
+                                        copy_size = struct_size - (size_t)member_offset;
+                                    if (copy_size > 0) {
+                                        memcpy(packed + member_offset,
+                                               (const void *)(uintptr_t)mbuf->data.buffer_data,
+                                               copy_size);
+                                    }
+                                } else {
+                                    const uint8_t *src =
+                                        (const uint8_t *)(uintptr_t)
+                                            mbuf->data.buffer_data;
+                                    for (GLint sj = 0; sj < (GLint)sm->member_size;
+                                         sj++) {
+                                        GLuint dest_off =
+                                            member_offset +
+                                            (GLuint)(sj * elem_stride);
+                                        size_t copy_size = src_stride;
+                                        if ((size_t)dest_off + copy_size >
+                                            struct_size)
+                                            copy_size =
+                                                struct_size - (size_t)dest_off;
+                                        if (copy_size > 0)
+                                            memcpy(packed + dest_off,
+                                                   src + (size_t)sj * src_stride,
+                                                   copy_size);
+                                    }
                                 }
                                 break;
                             }
                             size_t copy_size = (size_t)mbuf->size;
-                            if (copy_size > (size_t)elem_stride) {
-                                copy_size = (size_t)elem_stride;
+                            if (copy_size > (size_t)src_stride) {
+                                copy_size = (size_t)src_stride;
                             }
                             GLuint dest_off = member_offset +
                                 (GLuint)(ai * elem_stride);
@@ -875,21 +899,23 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                             }
 
                             if (member->size > 1) {
-                                /* Array member: each element stored at a
-                                 * separate location (CTS convention: 1
-                                 * location per leaf element).  The AIR
-                                 * backend packs plain-uniform arrays at the
-                                 * element byte size (LLVM whole-array loads,
-                                 * e.g. a float[8] member is read at
-                                 * base + 4*i), so the per-leaf stride must be
-                                 * the element size — the std140 ArrayStride
-                                 * (16 for float) would scatter the leaves and
-                                 * the shader would read stale bytes. */
-                                GLuint elem_stride =
+                                /* Array member: each element at its own
+                                 * location (CTS).  Nested struct paths use
+                                 * std140 ArrayStride; top-level plain arrays
+                                 * stay tightly packed for LLVM loads. */
+                                GLuint src_stride =
                                     mglGLTypeElementByteSize(member->gl_type);
-                                if (elem_stride == 0) {
+                                GLuint elem_stride = src_stride;
+                                if (member->name && strchr(member->name, '.') &&
+                                    member->array_stride > (GLint)src_stride &&
+                                    member->array_stride > 0) {
                                     elem_stride = (GLuint)member->array_stride;
+                                } else if (elem_stride == 0) {
+                                    elem_stride = (GLuint)member->array_stride;
+                                    src_stride = elem_stride ? elem_stride : 4u;
                                 }
+                                if (src_stride == 0)
+                                    src_stride = 4u;
                                 for (GLint ai = 0; ai < member->size; ai++) {
                                     GLint elem_loc = member_loc + ai;
                                     if (elem_loc < 0 || elem_loc >= (GLint)MAX_BINDABLE_BUFFERS) {
@@ -911,20 +937,48 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                                         continue;
                                     }
                                     /* glUniform*iv/fv uploads an entire array
-                                     * to the base location in one buffer.  In
-                                     * that form, copy the contiguous payload
-                                     * once instead of treating it as only the
-                                     * first leaf and zeroing the suffix. */
+                                     * to the base location in one buffer.  Copy
+                                     * once when source and dest strides match;
+                                     * otherwise scatter leaf elements into the
+                                     * std140 layout. */
                                     if (ai == 0 &&
                                         (size_t)mbuf->size >=
-                                            (size_t)member->size * elem_stride) {
-                                        size_t copy_size = (size_t)mbuf->size;
-                                        if ((size_t)member_offset + copy_size > struct_size)
-                                            copy_size = struct_size - (size_t)member_offset;
-                                        if (copy_size > 0) {
-                                            memcpy(packed + member_offset,
-                                                   (const void *)(uintptr_t)mbuf->data.buffer_data,
-                                                   copy_size);
+                                            (size_t)member->size * src_stride) {
+                                        if (elem_stride == src_stride) {
+                                            size_t copy_size = (size_t)mbuf->size;
+                                            if ((size_t)member_offset + copy_size >
+                                                struct_size)
+                                                copy_size =
+                                                    struct_size -
+                                                    (size_t)member_offset;
+                                            if (copy_size > 0) {
+                                                memcpy(packed + member_offset,
+                                                       (const void *)(uintptr_t)
+                                                           mbuf->data.buffer_data,
+                                                       copy_size);
+                                            }
+                                        } else {
+                                            const uint8_t *src =
+                                                (const uint8_t *)(uintptr_t)
+                                                    mbuf->data.buffer_data;
+                                            for (GLint sj = 0; sj < member->size;
+                                                 sj++) {
+                                                GLuint dest_off =
+                                                    member_offset +
+                                                    (GLuint)(sj * elem_stride);
+                                                size_t copy_size = src_stride;
+                                                if ((size_t)dest_off + copy_size >
+                                                    struct_size)
+                                                    copy_size =
+                                                        struct_size -
+                                                        (size_t)dest_off;
+                                                if (copy_size > 0)
+                                                    memcpy(packed + dest_off,
+                                                           src +
+                                                               (size_t)sj *
+                                                                   src_stride,
+                                                           copy_size);
+                                            }
                                         }
                                         break;
                                     }

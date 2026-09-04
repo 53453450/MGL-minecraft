@@ -163,14 +163,17 @@ static void mglBuildPlanEntry(MGLBufferPlanEntry *entry,
                     dst->member_offset_in_elem = member_offset;
 
                     dst->member_size = (GLuint)src->size;
-                    /* The AIR backend packs plain-uniform arrays at the
-                     * element byte size (LLVM whole-array loads), so the
-                     * per-leaf stride must be the element size; the std140
-                     * ArrayStride (16 for float) would scatter the leaves
-                     * and the shader would read stale bytes. */
-                    dst->member_array_stride =
+                    /* Nested struct-member arrays use std140 ArrayStride in
+                     * AIR; top-level plain arrays stay tightly packed. */
+                    dst->member_src_stride =
                         mglGLTypeElementByteSize(src->gl_type);
-                    if (dst->member_array_stride == 0) {
+                    if (dst->member_src_stride == 0 && src->array_stride > 0)
+                        dst->member_src_stride = (GLuint)src->array_stride;
+                    if (dst->member_src_stride == 0)
+                        dst->member_src_stride = 4u;
+                    dst->member_array_stride = dst->member_src_stride;
+                    if (src->name && strchr(src->name, '.') &&
+                        src->array_stride > (GLint)dst->member_src_stride) {
                         dst->member_array_stride = (GLuint)src->array_stride;
                     }
                     dst->member_loc = base_loc + (GLint)src->location_offset;
