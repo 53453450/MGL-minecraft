@@ -1179,11 +1179,10 @@ typedef struct {
     }
 
     /* Create tessellation factor buffer (buffer 26).
-     * The compute path always uses the quad-half layout: 4 edge + 2 inner
-     * half-floats = 12 bytes/patch (MGL_AIR_TESS_FACTOR_QUAD_HALF_BYTES). */
+     * RECORD_BYTES/patch: Metal half factors + exact float32 levels. */
     const GLuint patchCount = MAX(1u, contract->patch_count);
     NSUInteger tessFactorSize =
-        (NSUInteger)patchCount * MGL_AIR_TESS_FACTOR_QUAD_HALF_BYTES;
+        (NSUInteger)patchCount * MGL_AIR_TESS_FACTOR_RECORD_BYTES;
     id tessFactorBuf = mglTessCreateBuffer(
         _device, tessFactorSize, MGL_TESS_RESOURCE_STORAGE_SHARED);
     void *tessFactorContents = mglTessBufferContents(tessFactorBuf);
@@ -1439,7 +1438,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     const uint16_t *factorBytes =
         (const uint16_t *)mglTessBufferContents(tessFactorBuffer);
     NSUInteger factorByteCount =
-        (NSUInteger)patchCount * MGL_AIR_TESS_FACTOR_QUAD_HALF_BYTES;
+        (NSUInteger)patchCount * MGL_AIR_TESS_FACTOR_RECORD_BYTES;
     if (!factorBytes || mglTessBufferLength(tessFactorBuffer) < factorByteCount) {
         NSLog(@"MGL TESS ERROR: factor buffer too small for %u patches",
               (unsigned)patchCount);
@@ -1451,7 +1450,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
         const void *record =
             (const void *)((const uint8_t *)factorBytes +
                            (NSUInteger)p *
-                               MGL_AIR_TESS_FACTOR_QUAD_HALF_BYTES);
+                               MGL_AIR_TESS_FACTOR_RECORD_BYTES);
         GLuint items = mglAIRTessEvalItemsPerPatch(tesProgram, record);
         if (items == 0u) items = 1u;
         itemsPerInstance += (uint64_t)items;
@@ -1856,7 +1855,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
             const void *record =
                 (const void *)((const uint8_t *)factorBytes +
                                (NSUInteger)p *
-                                   MGL_AIR_TESS_FACTOR_QUAD_HALF_BYTES);
+                                   MGL_AIR_TESS_FACTOR_RECORD_BYTES);
             GLuint items = mglAIRTessEvalItemsPerPatch(tesProgram, record);
             if (items == 0u) items = 1u;
             base += items;
@@ -1892,6 +1891,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
                     &executionPlan,
                     executionTemporaries, computeEncoder, gatherBuffer, 0u,
                     MGL_AIR_TESS_SLOT_GATHER_INDEX)) {
+
                 free(patchBases);
                 [self clearStageBindingCopyBacks:&stageCopyBacks];
                 return false;
@@ -1915,7 +1915,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
             const void *record =
                 (const void *)((const uint8_t *)factorBytes +
                                (NSUInteger)p *
-                                   MGL_AIR_TESS_FACTOR_QUAD_HALF_BYTES);
+                                   MGL_AIR_TESS_FACTOR_RECORD_BYTES);
             GLuint items = mglAIRTessEvalItemsPerPatch(tesProgram, record);
             if (items == 0u) items = 1u;
             contractWords[0] = p;
@@ -2605,17 +2605,15 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
      * CTS counter program expects (primitive count * vertices-per-primitive). */
     GLuint vertsPerPatch = 1;
     if (tessFactorBuffer) {
-        const struct {
-            uint16_t edge[4];
-            uint16_t inside[2];
-        } __attribute__((packed)) *tf =
-            (const void *)mglTessBufferContents(tessFactorBuffer);
+        const uint8_t *tfBase =
+            (const uint8_t *)mglTessBufferContents(tessFactorBuffer);
         GLenum genMode = tesProgram ? tesProgram->tess_gen_mode : GL_TRIANGLES;
         GLboolean pointMode = tesProgram ? tesProgram->tess_gen_point_mode : GL_FALSE;
-        if (patchCount > 0) {
-            float edge0 = *(const __fp16 *)&tf[0].edge[0];
-            float inside0 = *(const __fp16 *)&tf[0].inside[0];
-            float inside1 = *(const __fp16 *)&tf[0].inside[1];
+        if (patchCount > 0 && tfBase) {
+            const uint16_t *halfs = (const uint16_t *)tfBase;
+            float edge0 = *(const __fp16 *)&halfs[0];
+            float inside0 = *(const __fp16 *)&halfs[4];
+            float inside1 = *(const __fp16 *)&halfs[5];
             if (edge0 < 1.0f) edge0 = 1.0f;
             if (inside0 < 1.0f) inside0 = 1.0f;
             if (inside1 < 1.0f) inside1 = 1.0f;
@@ -2863,11 +2861,8 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
 
 
     if (tessFactorBuffer) {
-        const struct {
-            uint16_t edge[4];
-            uint16_t inside[2];
-        } __attribute__((packed)) *tessFactors =
-            (const void *)mglTessBufferContents(tessFactorBuffer);
+        const uint8_t *tfBase =
+            (const uint8_t *)mglTessBufferContents(tessFactorBuffer);
 
         GLenum genMode = tesProgram ? tesProgram->tess_gen_mode : GL_TRIANGLES;
         GLboolean pointMode = tesProgram ? tesProgram->tess_gen_point_mode : GL_FALSE;
@@ -2876,13 +2871,18 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
 
         GLuint64 totalPrimitives = 0;
         for (GLuint p = 0; p < patchCount; p++) {
-            /* Tessellation factors are half-floats.  Convert to float. */
+            /* Tessellation factors are half-floats at the head of each
+             * RECORD_BYTES patch record.  Convert to float. */
+            const uint16_t *halfs =
+                (const uint16_t *)(tfBase +
+                                   (NSUInteger)p *
+                                       MGL_AIR_TESS_FACTOR_RECORD_BYTES);
             float edge[4], inside[2];
             for (int i = 0; i < 4; i++) {
-                edge[i] = *(const __fp16 *)&tessFactors[p].edge[i];
+                edge[i] = *(const __fp16 *)&halfs[i];
             }
             for (int i = 0; i < 2; i++) {
-                inside[i] = *(const __fp16 *)&tessFactors[p].inside[i];
+                inside[i] = *(const __fp16 *)&halfs[4 + i];
             }
 
             if (mglRenderTessFactorsDiscardPatch(

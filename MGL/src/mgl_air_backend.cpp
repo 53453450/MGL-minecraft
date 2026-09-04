@@ -14580,7 +14580,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         llvm::Value *factorBase = b.CreateGEP(
             b.getInt8Ty(), cg.tessFactorPtr,
             b.CreateMul(b.CreateZExt(patchId, b.getInt64Ty()),
-                        b.getInt64(12)));
+                        b.getInt64(MGL_AIR_TESS_FACTOR_RECORD_BYTES)));
         llvm::Type *halfTy = llvm::Type::getHalfTy(ctx);
         auto loadHalf = [&](unsigned i) -> llvm::Value * {
             llvm::Value *p = b.CreateBitCast(
@@ -14589,6 +14589,36 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             return b.CreateFPExt(
                 b.CreateAlignedLoad(halfTy, p, llvm::Align(2)), f32);
         };
+        /* GL TES inputs: gl_TessLevel* must be the exact levels (TCS outs
+         * or glPatchParameterfv), not the Metal half factors — half
+         * round-trip fails CTS 1e-5 (gl_tessLevel). */
+        {
+            llvm::Type *arr4 = llvm::ArrayType::get(f32, 4);
+            llvm::Type *arr2 = llvm::ArrayType::get(f32, 2);
+            llvm::Value *outer = llvm::UndefValue::get(arr4);
+            llvm::Value *inner = llvm::UndefValue::get(arr2);
+            llvm::Value *exactBase = b.CreateGEP(
+                b.getInt8Ty(), factorBase,
+                b.getInt64(MGL_AIR_TESS_FACTOR_EXACT_FLOAT_OFFSET));
+            for (unsigned i = 0; i < 4; i++) {
+                llvm::Value *p = b.CreateBitCast(
+                    b.CreateGEP(b.getInt8Ty(), exactBase,
+                                b.getInt64(4 * i)),
+                    f32->getPointerTo(1));
+                outer = b.CreateInsertValue(
+                    outer, b.CreateAlignedLoad(f32, p, llvm::Align(4)), i);
+            }
+            for (unsigned i = 0; i < 2; i++) {
+                llvm::Value *p = b.CreateBitCast(
+                    b.CreateGEP(b.getInt8Ty(), exactBase,
+                                b.getInt64(16 + 4 * i)),
+                    f32->getPointerTo(1));
+                inner = b.CreateInsertValue(
+                    inner, b.CreateAlignedLoad(f32, p, llvm::Align(4)), i);
+            }
+            cg.lvalues["gl_TessLevelOuter"] = outer;
+            cg.lvalues["gl_TessLevelInner"] = inner;
+        }
         auto ceilClamp = [&](llvm::Value *v, float fallback) -> llvm::Value * {
             llvm::Value *fb = llvm::ConstantFP::get(f32, fallback);
             llvm::Value *use = b.CreateSelect(
@@ -14938,36 +14968,50 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 ? cg.b->CreateExtractElement(cg.workGroupPos, cg.b->getInt32(0))
                 : cg.b->CreateExtractElement(cg.patchPos, cg.b->getInt32(0));
         llvm::Value *factorOff = b.CreateMul(
-            b.CreateZExt(patch, b.getInt64Ty()), b.getInt64(12));
+            b.CreateZExt(patch, b.getInt64Ty()),
+            b.getInt64(MGL_AIR_TESS_FACTOR_RECORD_BYTES));
         llvm::Value *factorBase = b.CreateGEP(
             b.getInt8Ty(), cg.tessFactorPtr, factorOff);
         llvm::Type *halfTy = llvm::Type::getHalfTy(ctx);
+        llvm::Type *f32Ty = llvm::Type::getFloatTy(ctx);
         auto factor = [&](const char *name, unsigned count, unsigned index,
                           float fallback) {
             llvm::Value *arr = cg.lvalues.count(name)
                 ? cg.lvalues[name]
                 : llvm::UndefValue::get(llvm::ArrayType::get(
-                      llvm::Type::getFloatTy(ctx), count));
+                      f32Ty, count));
             llvm::Value *v = b.CreateExtractValue(arr, index);
             if (llvm::isa<llvm::UndefValue>(v))
-                v = llvm::ConstantFP::get(llvm::Type::getFloatTy(ctx), fallback);
+                v = llvm::ConstantFP::get(f32Ty, fallback);
             return v;
         };
         for (unsigned i = 0; i < 4; i++) {
+            llvm::Value *fv = factor("gl_TessLevelOuter", 4, i, 1.0f);
             llvm::Value *p = b.CreateGEP(b.getInt8Ty(), factorBase,
                                          b.getInt64(i * 2));
             p = b.CreateBitCast(p, halfTy->getPointerTo(1));
-            b.CreateAlignedStore(b.CreateFPTrunc(
-                factor("gl_TessLevelOuter", 4, i, 1.0f), halfTy), p,
+            b.CreateAlignedStore(b.CreateFPTrunc(fv, halfTy), p,
                 llvm::Align(2));
+            llvm::Value *ep = b.CreateBitCast(
+                b.CreateGEP(b.getInt8Ty(), factorBase,
+                            b.getInt64(MGL_AIR_TESS_FACTOR_EXACT_FLOAT_OFFSET +
+                                       i * 4)),
+                f32Ty->getPointerTo(1));
+            b.CreateAlignedStore(fv, ep, llvm::Align(4));
         }
         for (unsigned i = 0; i < 2; i++) {
+            llvm::Value *fv = factor("gl_TessLevelInner", 2, i, 1.0f);
             llvm::Value *p = b.CreateGEP(b.getInt8Ty(), factorBase,
                                          b.getInt64(8 + i * 2));
             p = b.CreateBitCast(p, halfTy->getPointerTo(1));
-            b.CreateAlignedStore(b.CreateFPTrunc(
-                factor("gl_TessLevelInner", 2, i, 1.0f), halfTy), p,
+            b.CreateAlignedStore(b.CreateFPTrunc(fv, halfTy), p,
                 llvm::Align(2));
+            llvm::Value *ep = b.CreateBitCast(
+                b.CreateGEP(b.getInt8Ty(), factorBase,
+                            b.getInt64(MGL_AIR_TESS_FACTOR_EXACT_FLOAT_OFFSET +
+                                       16 + i * 4)),
+                f32Ty->getPointerTo(1));
+            b.CreateAlignedStore(fv, ep, llvm::Align(4));
         }
         b.CreateBr(doneBB);
         b.SetInsertPoint(doneBB);

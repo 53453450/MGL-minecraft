@@ -22,6 +22,7 @@
 #include "mgl_render.h"
 #include "mgl_renderer_backend.h"
 #include "mgl_air_loader.h"
+#include "mgl_air_tess_abi.h"
 #include "mgl_aux_assets.h"
 #include "mgl_compute_pipeline_cache.h"
 #include "mgl_env_flag.h"
@@ -6904,18 +6905,23 @@ int mglRenderFillDefaultTessFactorBuffer(
     void* dst, uint64_t dst_bytes,
     const float* outer_levels, const float* inner_levels,
     uint32_t patch_count) {
-    const uint64_t stride = 12u;
+    const uint64_t stride = MGL_AIR_TESS_FACTOR_RECORD_BYTES;
     if (!dst || !outer_levels || !inner_levels || patch_count == 0u ||
         dst_bytes < (uint64_t)patch_count * stride) {
         return -1;
     }
-    __fp16* out = (__fp16*)dst;
+    uint8_t* base = (uint8_t*)dst;
     for (uint32_t patch = 0u; patch < patch_count; patch++) {
+        __fp16* halfs = (__fp16*)(base + (uint64_t)patch * stride);
+        float* exact = (float*)(base + (uint64_t)patch * stride +
+                                MGL_AIR_TESS_FACTOR_EXACT_FLOAT_OFFSET);
         for (uint32_t i = 0u; i < 4u; i++) {
-            out[patch * 6u + i] = (__fp16)outer_levels[i];
+            halfs[i] = (__fp16)outer_levels[i];
+            exact[i] = outer_levels[i];
         }
         for (uint32_t i = 0u; i < 2u; i++) {
-            out[patch * 6u + 4u + i] = (__fp16)inner_levels[i];
+            halfs[4u + i] = (__fp16)inner_levels[i];
+            exact[4u + i] = inner_levels[i];
         }
     }
     return 0;
@@ -6926,17 +6932,18 @@ int mglRenderRepackTessFactorTriangles(
     const void* src, uint64_t src_bytes,
     void* dst, uint64_t dst_bytes,
     uint32_t patch_count) {
-    const uint64_t canonical_stride = 12u;
-    const uint64_t triangle_stride = 8u;
+    const uint64_t canonical_stride = MGL_AIR_TESS_FACTOR_RECORD_BYTES;
+    const uint64_t triangle_stride = MGL_AIR_TESS_FACTOR_TRI_HALF_BYTES;
     if (!src || !dst || patch_count == 0u ||
         src_bytes < (uint64_t)patch_count * canonical_stride ||
         dst_bytes < (uint64_t)patch_count * triangle_stride) {
         return -1;
     }
-    const uint16_t* in_all = (const uint16_t*)src;
+    const uint8_t* in_base = (const uint8_t*)src;
     uint16_t* out_all = (uint16_t*)dst;
     for (uint32_t patch = 0u; patch < patch_count; patch++) {
-        const uint16_t* in = in_all + patch * 6u;
+        const uint16_t* in =
+            (const uint16_t*)(in_base + (uint64_t)patch * canonical_stride);
         uint16_t* out = out_all + patch * 4u;
         out[0] = in[0];
         out[1] = in[1];
@@ -6952,13 +6959,15 @@ uint64_t mglRenderTessPrimitiveCount(
     uint32_t patch_count, uint32_t tess_gen_mode,
     uint32_t instance_count) {
     if (!factors || patch_count == 0u ||
-        bytes < (uint64_t)patch_count * 12u) {
+        bytes < (uint64_t)patch_count * MGL_AIR_TESS_FACTOR_RECORD_BYTES) {
         return 0u;
     }
-    const uint16_t* recs = (const uint16_t*)factors;
+    const uint8_t* base = (const uint8_t*)factors;
     uint64_t total = 0u;
     for (uint32_t patch = 0u; patch < patch_count; patch++) {
-        const uint16_t* record = recs + patch * 6u;
+        const uint16_t* record =
+            (const uint16_t*)(base +
+                              (uint64_t)patch * MGL_AIR_TESS_FACTOR_RECORD_BYTES);
         float edge[4], inside[2];
         for (int i = 0; i < 4; i++) {
             edge[i] = *(const __fp16*)&record[i];

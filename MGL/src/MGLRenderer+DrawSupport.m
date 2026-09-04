@@ -737,7 +737,7 @@ static id mglDefaultTessFactorBuffer(id device,
                                                 GLuint patchCount)
 {
     if (!device || !state || patchCount == 0u) return nil;
-    const NSUInteger stride = 12u;
+    const NSUInteger stride = MGL_AIR_TESS_FACTOR_RECORD_BYTES;
     if ((NSUInteger)patchCount > NSUIntegerMax / stride) return nil;
     id buffer = mglDrawSupportCreateBuffer(
         device, (NSUInteger)patchCount * stride,
@@ -790,7 +790,7 @@ static id mglNativeTessFactorBuffer(id device,
                                                 GLenum mode,
                                                 GLuint patchCount)
 {
-    const NSUInteger canonicalStride = 12u;
+    const NSUInteger canonicalStride = MGL_AIR_TESS_FACTOR_RECORD_BYTES;
     if (!device || !canonical || !mglDrawSupportBufferContents(canonical) || patchCount == 0u ||
         mglDrawSupportBufferLength(canonical) < (NSUInteger)patchCount * canonicalStride) {
         return nil;
@@ -802,7 +802,7 @@ static id mglNativeTessFactorBuffer(id device,
         return nil;
     }
 
-    const NSUInteger triangleStride = 8u;
+    const NSUInteger triangleStride = MGL_AIR_TESS_FACTOR_TRI_HALF_BYTES;
     id result = mglDrawSupportCreateBuffer(
         device, (NSUInteger)patchCount * triangleStride,
         0u);
@@ -3910,7 +3910,7 @@ after_gs_draws:
     contract.base_vertex = baseVertex;
     contract.primitive_restart = restartEnabled ? 1u : 0u;
     contract.restart_index = restartIndex;
-    contract.tess_factor_bytes_per_patch = MGL_AIR_TESS_FACTOR_QUAD_HALF_BYTES;
+    contract.tess_factor_bytes_per_patch = MGL_AIR_TESS_FACTOR_RECORD_BYTES;
     contract.tess_gen_mode = tesProgram
         ? (uint32_t)tesProgram->tess_gen_mode : (uint32_t)GL_TRIANGLES;
     contract.point_mode = tesProgram
@@ -4233,7 +4233,10 @@ after_gs_draws:
             const NSUInteger instanceStrideBytes =
                 instanceRecords * _tessellation.tcsOutputStride;
             mglDrawSupportSetTessellationFactors(
-                _renderPassManager.state->currentRenderEncoderOwner, nativeFactors, 0u, 0u);
+                _renderPassManager.state->currentRenderEncoderOwner, nativeFactors, 0u,
+                tesProgram->tess_gen_mode == GL_QUADS
+                    ? MGL_AIR_TESS_FACTOR_RECORD_BYTES
+                    : MGL_AIR_TESS_FACTOR_TRI_HALF_BYTES);
             for (GLsizei i = 0; i < instanceCount; i++) {
                 const NSUInteger instanceOffset =
                     _tessellation.tessVertexCaptureOffset +
@@ -4259,7 +4262,9 @@ after_gs_draws:
                         mglRendererBackendGetTcsPatchOutBuffer(_backend);
                 const BOOL perPatchNativeResources = (tcsPatchOutBuffer != nil);
                 const NSUInteger nativeFactorStride =
-                    tesProgram->tess_gen_mode == GL_QUADS ? 12u : 8u;
+                    tesProgram->tess_gen_mode == GL_QUADS
+                        ? MGL_AIR_TESS_FACTOR_RECORD_BYTES
+                        : MGL_AIR_TESS_FACTOR_TRI_HALF_BYTES;
                 NSUInteger patchOutStride = 16u;
                 if (perPatchNativeResources && tcsProgram) {
                     patchOutStride = mglAIRPatchVaryingStride(
