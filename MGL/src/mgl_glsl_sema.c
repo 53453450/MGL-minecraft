@@ -2985,6 +2985,180 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
 /* Block layout computation                                            */
 /* ------------------------------------------------------------------ */
 
+/* CTS basic-syntax accepts non-final unsized SSBO members
+ * (e.g. `vec4 a[]; vec4 b;` / `vec4 a[]; vec4 b[];`).  Spec §4.3.9 only
+ * allows a trailing runtime array; size non-final unsized members from
+ * constant indices in the TU so subsequent members get correct offsets. */
+static void expr_gather_member_const_index(const MGLExpr *e,
+                                          const char *inst_name,
+                                          const char *member_name,
+                                          uint32_t *max_idx,
+                                          int *found)
+{
+    if (!e || !member_name || !max_idx || !found) return;
+    switch (e->kind) {
+    case MGL_EXPR_INDEX: {
+        const MGLExpr *obj = e->u.index.object;
+        const MGLExpr *ix = e->u.index.index;
+        int match = 0;
+        if (obj && obj->kind == MGL_EXPR_MEMBER && obj->u.member.field &&
+            strcmp(obj->u.member.field, member_name) == 0) {
+            /* Size from any `*.member[const]` — instance name may be the
+             * block type or the instance id depending on the declarator. */
+            (void)inst_name;
+            match = 1;
+        } else if (obj && obj->kind == MGL_EXPR_VAR_REF &&
+                   obj->u.var_ref.name &&
+                   strcmp(obj->u.var_ref.name, member_name) == 0) {
+            /* Anonymous block: member promoted to global name. */
+            match = 1;
+        }
+        if (match && ix && ix->kind == MGL_EXPR_LITERAL) {
+            double v = ix->u.literal.value;
+            if (v >= 0.0 && v < 65536.0) {
+                uint32_t idx = (uint32_t)v;
+                if (!*found || idx > *max_idx) *max_idx = idx;
+                *found = 1;
+            }
+        }
+        expr_gather_member_const_index(obj, inst_name, member_name,
+                                       max_idx, found);
+        expr_gather_member_const_index(ix, inst_name, member_name,
+                                       max_idx, found);
+        break;
+    }
+    case MGL_EXPR_MEMBER:
+        expr_gather_member_const_index(e->u.member.object, inst_name,
+                                       member_name, max_idx, found);
+        break;
+    case MGL_EXPR_UNARY:
+        expr_gather_member_const_index(e->u.unary.operand, inst_name,
+                                       member_name, max_idx, found);
+        break;
+    case MGL_EXPR_BINARY:
+        expr_gather_member_const_index(e->u.binary.lhs, inst_name,
+                                       member_name, max_idx, found);
+        expr_gather_member_const_index(e->u.binary.rhs, inst_name,
+                                       member_name, max_idx, found);
+        break;
+    case MGL_EXPR_ASSIGN:
+        expr_gather_member_const_index(e->u.assign.lhs, inst_name,
+                                       member_name, max_idx, found);
+        expr_gather_member_const_index(e->u.assign.rhs, inst_name,
+                                       member_name, max_idx, found);
+        break;
+    case MGL_EXPR_TERNARY:
+        expr_gather_member_const_index(e->u.ternary.cond, inst_name,
+                                       member_name, max_idx, found);
+        expr_gather_member_const_index(e->u.ternary.then, inst_name,
+                                       member_name, max_idx, found);
+        expr_gather_member_const_index(e->u.ternary.else_, inst_name,
+                                       member_name, max_idx, found);
+        break;
+    case MGL_EXPR_CALL:
+        for (uint32_t i = 0; i < e->u.call.arg_count; i++)
+            expr_gather_member_const_index(e->u.call.args[i], inst_name,
+                                           member_name, max_idx, found);
+        break;
+    case MGL_EXPR_INIT_LIST:
+        for (uint32_t i = 0; i < e->u.init_list.arg_count; i++)
+            expr_gather_member_const_index(e->u.init_list.args[i], inst_name,
+                                           member_name, max_idx, found);
+        break;
+    default:
+        break;
+    }
+}
+
+static void stmt_gather_member_const_index(const MGLStmt *st,
+                                          const char *inst_name,
+                                          const char *member_name,
+                                          uint32_t *max_idx,
+                                          int *found)
+{
+    if (!st) return;
+    switch (st->kind) {
+    case MGL_STMT_COMPOUND:
+        for (uint32_t i = 0; i < st->u.compound.count; i++)
+            stmt_gather_member_const_index(st->u.compound.stmts[i], inst_name,
+                                           member_name, max_idx, found);
+        break;
+    case MGL_STMT_EXPR:
+        expr_gather_member_const_index(st->u.expr.expr, inst_name, member_name,
+                                       max_idx, found);
+        break;
+    case MGL_STMT_IF:
+        expr_gather_member_const_index(st->u.ifs.cond, inst_name, member_name,
+                                       max_idx, found);
+        stmt_gather_member_const_index(st->u.ifs.then, inst_name, member_name,
+                                       max_idx, found);
+        stmt_gather_member_const_index(st->u.ifs.else_, inst_name, member_name,
+                                       max_idx, found);
+        break;
+    case MGL_STMT_WHILE:
+        expr_gather_member_const_index(st->u.whilex.cond, inst_name,
+                                       member_name, max_idx, found);
+        stmt_gather_member_const_index(st->u.whilex.body, inst_name,
+                                       member_name, max_idx, found);
+        break;
+    case MGL_STMT_DO_WHILE:
+        stmt_gather_member_const_index(st->u.whilex.body, inst_name,
+                                       member_name, max_idx, found);
+        expr_gather_member_const_index(st->u.whilex.cond, inst_name,
+                                       member_name, max_idx, found);
+        break;
+    case MGL_STMT_FOR:
+        stmt_gather_member_const_index(st->u.loop.init, inst_name, member_name,
+                                       max_idx, found);
+        expr_gather_member_const_index(st->u.loop.cond, inst_name, member_name,
+                                       max_idx, found);
+        expr_gather_member_const_index(st->u.loop.incr, inst_name, member_name,
+                                       max_idx, found);
+        stmt_gather_member_const_index(st->u.loop.body, inst_name, member_name,
+                                       max_idx, found);
+        break;
+    case MGL_STMT_SWITCH:
+        expr_gather_member_const_index(st->u.switchx.cond, inst_name,
+                                       member_name, max_idx, found);
+        stmt_gather_member_const_index(st->u.switchx.body, inst_name,
+                                       member_name, max_idx, found);
+        break;
+    case MGL_STMT_CASE:
+        /* Case labels carry no index expr; body statements follow as
+         * siblings inside the switch compound (already walked). */
+        break;
+    case MGL_STMT_DEFAULT:
+        break;
+    case MGL_STMT_RETURN:
+        expr_gather_member_const_index(st->u.ret.value, inst_name,
+                                       member_name, max_idx, found);
+        break;
+    case MGL_STMT_DECL:
+        if (st->u.decl.decl && st->u.decl.decl->init)
+            expr_gather_member_const_index(st->u.decl.decl->init, inst_name,
+                                           member_name, max_idx, found);
+        break;
+    default:
+        break;
+    }
+}
+
+static uint32_t ssbo_unsized_member_size_from_ast(const Sema *s,
+                                                 const char *inst_name,
+                                                 const char *member_name)
+{
+    uint32_t max_idx = 0;
+    int found = 0;
+    if (!s || !s->tu || !member_name) return 1u;
+    for (uint32_t i = 0; i < s->tu->decl_count; i++) {
+        const MGLDecl *d = s->tu->decls[i];
+        if (!d || !d->body) continue;
+        stmt_gather_member_const_index(d->body, inst_name, member_name,
+                                       &max_idx, &found);
+    }
+    return found ? (max_idx + 1u) : 1u;
+}
+
 static void layout_block(Sema *s, const MGLDecl *d, MGLIRType *block_type)
 {
     MGLIRType *root = block_type;
@@ -3009,6 +3183,7 @@ static void layout_block(Sema *s, const MGLDecl *d, MGLIRType *block_type)
     case MGL_AST_LAYOUT_PACKED: std = MGLIR_LAYOUT_PACKED; break;
     default: std = MGLIR_LAYOUT_STD140; break;
     }
+    const int is_ssbo = (d->qualifiers & MGL_AST_Q_BUFFER) != 0;
     for (uint32_t i = 0; i < block_type->member_count; i++) {
         MGLIRType *member = block_type->members[i];
         /* GL 4.6 §7.7.2: atomic counters may only be declared at global
@@ -3023,12 +3198,18 @@ static void layout_block(Sema *s, const MGLDecl *d, MGLIRType *block_type)
                            ? block_type->member_names[i] : "?");
         }
         if (member && member->kind == MGLIR_TYPE_ARRAY &&
-            member->array_size == 0 &&
-            (!(d->qualifiers & MGL_AST_Q_BUFFER) ||
-             i + 1 != block_type->member_count)) {
-            sema_error(s, d->line,
-                       "runtime array '%s' must be the final member of a shader storage block",
-                       block_type->member_names[i]);
+            member->array_size == 0) {
+            const int is_last = (i + 1 == block_type->member_count);
+            if (is_ssbo && !is_last) {
+                /* Non-final unsized SSBO member (CTS basic-syntax): size from
+                 * constant indices so later members lay out correctly. */
+                member->array_size = ssbo_unsized_member_size_from_ast(
+                    s, d->name, block_type->member_names[i]);
+            } else if (!is_ssbo || !is_last) {
+                sema_error(s, d->line,
+                           "runtime array '%s' must be the final member of a shader storage block",
+                           block_type->member_names[i]);
+            }
         }
     }
     uint32_t size = 0;
