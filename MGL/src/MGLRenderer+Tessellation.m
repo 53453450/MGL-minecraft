@@ -1517,8 +1517,13 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
         GLuint items = mglAIRTessEvalItemsPerPatch(tesProgram, record);
         itemsPerInstance += (uint64_t)items;
     }
-    if (itemsPerInstance == 0u ||
-        itemsPerInstance > 0xffffffffull) {
+    if (itemsPerInstance == 0u) {
+        /* Every patch discarded (outer ≤ 0, e.g. CTS isolines with
+         * outer=-1).  Empty expansion is success — do not raise
+         * GL_INVALID_OPERATION. */
+        return true;
+    }
+    if (itemsPerInstance > 0xffffffffull) {
         NSLog(@"MGL TESS ERROR: TES compute item count overflow program=%u",
               (unsigned)tesProgram->name);
         return false;
