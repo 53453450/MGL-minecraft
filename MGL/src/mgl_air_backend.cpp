@@ -245,6 +245,12 @@ struct Codegen {
     /* Stage outputs living in entry-block allocas so user functions can
      * write them through hidden pointer args (SET_RESULT→helper pattern). */
     std::map<std::string, llvm::Value *> outPtrs;
+    /* Local/varying scalar arrays in entry-block memory.  Combined with
+     * scalar(vec) peeling in constructors, this avoids illegal
+     * store <N x float>, float* and keeps dynamic float[] indexing off
+     * SSA select-of-float paths that Metal materializeAll rejects. */
+    std::map<std::string, llvm::Value *> arrayMem;
+    std::map<std::string, llvm::Type *> arrayMemTypes;
     std::map<std::string, uint32_t> bufferOffsets;  /* uniform name -> byte offset */
     std::map<std::string, llvm::Value *> lvalues;   /* register values */
     std::vector<VarSym *> varyings;      /* vertex out / fragment in, decl order */
@@ -505,6 +511,36 @@ llvm::Type *llvmType(const MType &t, llvm::LLVMContext &ctx) {
     if (t.vec)
         return llvm::FixedVectorType::get(s, t.vec);
     return s;
+}
+
+/* Scalar arrays that Metal cannot keep in SSA aggregates. */
+static bool needsArrayMem(const MType &t) {
+    return t.isArray() && !t.isMatrix() && t.vec == 0 && t.arr > 0;
+}
+
+static llvm::Value *ensureArrayMem(Codegen &cg, const std::string &name,
+                                   const MType &t) {
+    auto it = cg.arrayMem.find(name);
+    if (it != cg.arrayMem.end())
+        return it->second;
+    llvm::Type *arrTy = llvmType(t, *cg.ctx);
+    llvm::BasicBlock *savedBB = cg.b->GetInsertBlock();
+    auto savedPt = cg.b->GetInsertPoint();
+    llvm::BasicBlock &entry = cg.fn->getEntryBlock();
+    cg.b->SetInsertPoint(&entry, entry.begin());
+    llvm::Value *slot = cg.b->CreateAlloca(arrTy, nullptr, name + ".amem");
+    cg.b->SetInsertPoint(savedBB, savedPt);
+    cg.arrayMem[name] = slot;
+    cg.arrayMemTypes[name] = arrTy;
+    return slot;
+}
+
+static llvm::Value *arrayMemGEP(Codegen &cg, const std::string &name,
+                                llvm::Value *slot, llvm::Value *idx) {
+    llvm::Type *arrTy = cg.arrayMemTypes[name];
+    idx = cg.b->CreateZExtOrTrunc(idx, cg.b->getInt64Ty());
+    return cg.b->CreateInBoundsGEP(arrTy, slot,
+                                   {cg.b->getInt64(0), idx});
 }
 
 MType typeFromIR(const MGLIRType *t); /* defined below */
@@ -6081,6 +6117,21 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                         (idxE->u.literal.base == MGL_AST_TYPE_INT ||
                          idxE->u.literal.base == MGL_AST_TYPE_UINT);
         MType bt = exprType(cg, e->u.index.object, mod, locals);
+        /* Memory-backed scalar arrays: GEP + load (avoid SSA [N x float]). */
+        if (e->u.index.object->kind == MGL_EXPR_VAR_REF) {
+            const char *an = e->u.index.object->u.var_ref.name;
+            auto amit = cg.arrayMem.find(an ? an : "");
+            if (amit != cg.arrayMem.end()) {
+                llvm::Value *idx = emitExpr(cg, idxE, mod, locals);
+                if (!idx) return nullptr;
+                llvm::Value *ep =
+                    arrayMemGEP(cg, an, amit->second, idx);
+                llvm::Type *arrTy = cg.arrayMemTypes[an];
+                auto *aty = llvm::cast<llvm::ArrayType>(arrTy);
+                return cg.b->CreateAlignedLoad(aty->getElementType(), ep,
+                                               llvm::Align(4));
+            }
+        }
         llvm::Value *obj = emitExpr(cg, e->u.index.object, mod, locals);
         if (!obj) return nullptr;
         if (constIdx) {
@@ -6426,6 +6477,27 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             }
             llvm::Value *arg = emitExpr(cg, e->u.call.args[0], mod, locals);
             if (!arg) return nullptr;
+            /* GLSL 4.60 §5.4.2: scalar(vec) / scalar(mat) take the first
+             * component.  coerceScalar preserves vector shape, so peel
+             * here — otherwise float(vec4) stays <4 x float> and a later
+             * store into float* fails Metal materializeAll. */
+            if (auto *fvt = llvm::dyn_cast<llvm::FixedVectorType>(
+                    arg->getType())) {
+                (void)fvt;
+                arg = cg.b->CreateExtractElement(
+                    arg, llvm::ConstantInt::get(
+                             llvm::Type::getInt32Ty(*cg.ctx), 0));
+            } else if (auto *arrTy = llvm::dyn_cast<llvm::ArrayType>(
+                           arg->getType())) {
+                llvm::Value *col0 = cg.b->CreateExtractValue(arg, 0);
+                if (col0->getType()->isVectorTy())
+                    arg = cg.b->CreateExtractElement(
+                        col0, llvm::ConstantInt::get(
+                                  llvm::Type::getInt32Ty(*cg.ctx), 0));
+                else
+                    arg = col0;
+                (void)arrTy;
+            }
             MGLIRScalar want = name[0] == 'f' ? MGLIR_SCALAR_FLOAT
                              : name[0] == 'u' ? MGLIR_SCALAR_UINT
                              : name[0] == 'b' ? MGLIR_SCALAR_BOOL
@@ -8730,6 +8802,45 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 return nullptr;
             }
             const char *name = rootE->u.var_ref.name;
+            /* Memory-backed scalar array: store through GEP. */
+            if (name && cg.arrayMem.count(name)) {
+                if (lhs->kind != MGL_EXPR_INDEX ||
+                    lhs->u.index.object->kind != MGL_EXPR_VAR_REF) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: nested store into arrayMem not "
+                                "supported";
+                    return nullptr;
+                }
+                if (e->u.assign.op != MGL_OP_ASSIGN) {
+                    llvm::Value *old = emitExpr(cg, lhs, mod, locals);
+                    if (!old) return nullptr;
+                    uint32_t binop = 0;
+                    switch (e->u.assign.op) {
+                    case MGL_OP_ADD_ASSIGN: binop = MGL_OP_ADD; break;
+                    case MGL_OP_SUB_ASSIGN: binop = MGL_OP_SUB; break;
+                    case MGL_OP_MUL_ASSIGN: binop = MGL_OP_MUL; break;
+                    case MGL_OP_DIV_ASSIGN: binop = MGL_OP_DIV; break;
+                    default: break;
+                    }
+                    if (!binop) {
+                        cg.err = 1;
+                        cg.errmsg = "codegen: compound arrayMem assign not "
+                                    "implemented";
+                        return nullptr;
+                    }
+                    v = emitNumericBinOp(cg, binop, old, rhsV,
+                        exprType(cg, lhs, mod, locals),
+                        exprType(cg, e->u.assign.rhs, mod, locals));
+                    if (!v) return nullptr;
+                }
+                llvm::Value *idx =
+                    emitExpr(cg, lhs->u.index.index, mod, locals);
+                if (!idx) return nullptr;
+                llvm::Value *ep =
+                    arrayMemGEP(cg, name, cg.arrayMem[name], idx);
+                cg.b->CreateAlignedStore(v, ep, llvm::Align(4));
+                return v;
+            }
             if (!cg.lvalues.count(name)) {
                 /* First write through a member/index path to a name that
                  * has not been materialized yet (e.g. "out vec4 result;"
@@ -10612,6 +10723,33 @@ llvm::Value *assembleReturn(Codegen &cg) {
             }
             for (uint32_t i = 0; i < cg.varyings.size(); i++) {
                 VarSym *var = cg.varyings[i];
+                if (var->type.isArray() && cg.arrayMem.count(var->name)) {
+                    uint32_t n = (uint32_t)var->type.arr;
+                    llvm::Value *slot = cg.arrayMem[var->name];
+                    for (uint32_t k = 0; k < n; k++) {
+                        llvm::Value *ep = arrayMemGEP(
+                            cg, var->name, slot, cg.b->getInt32(k));
+                        llvm::Type *arrTy = cg.arrayMemTypes[var->name];
+                        auto *aty = llvm::cast<llvm::ArrayType>(arrTy);
+                        llvm::Value *el = cg.b->CreateAlignedLoad(
+                            aty->getElementType(), ep, llvm::Align(4));
+                        MType elTy = var->type;
+                        elTy.arr = 0;
+                        if (uintUsesSplitFloatCarrier(elTy, cg.has_gs)) {
+                            llvm::Value *lo = nullptr, *hi = nullptr;
+                            encodeUintSplitFloatCarrier(cg, el, &lo, &hi);
+                            ret = cg.b->CreateInsertValue(ret, lo, ri++);
+                            ret = cg.b->CreateInsertValue(ret, hi, ri++);
+                        } else if (varyingUsesFloatCarrier(var->type,
+                                                           cg.has_gs)) {
+                            el = encodeFloatCarrier(cg, el, var->type.scalar);
+                            ret = cg.b->CreateInsertValue(ret, el, ri++);
+                        } else {
+                            ret = cg.b->CreateInsertValue(ret, el, ri++);
+                        }
+                    }
+                    continue;
+                }
                 llvm::Value *base = cg.lvalues.count(var->name)
                     ? cg.lvalues[var->name]
                     : llvm::UndefValue::get(llvmType(var->type, *cg.ctx));
@@ -10813,21 +10951,30 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
             llvm::Value *v = emitExpr(cg, d->init, mod, *locals);
             if (!v) return;
             v = coerceScalar(cg, v, t.scalar);
-            cg.lvalues[d->name] = v;
+            if (needsArrayMem(t) && d->name) {
+                llvm::Value *slot = ensureArrayMem(cg, d->name, t);
+                cg.b->CreateAlignedStore(v, slot, llvm::Align(4));
+            } else {
+                cg.lvalues[d->name] = v;
+            }
         } else if (d->name) {
             /* Uninitialized locals must still occupy an SSA slot before
              * any loop.  Lazy Undef on the first indexed store inside a
              * for-body is not in the loop phi set, so each iteration
              * rebuilds from Undef and leaves select(..., undef) values
              * that crash MTLCompilerService (XPC) when later read. */
-            llvm::Type *ty = nullptr;
-            auto irit = cg.localIRTypes.find(d->name);
-            if (irit != cg.localIRTypes.end())
-                ty = llvmTypeFromIR(irit->second, *cg.ctx);
-            else
-                ty = llvmType(t, *cg.ctx);
-            if (ty)
-                cg.lvalues[d->name] = llvm::UndefValue::get(ty);
+            if (needsArrayMem(t)) {
+                ensureArrayMem(cg, d->name, t);
+            } else {
+                llvm::Type *ty = nullptr;
+                auto irit = cg.localIRTypes.find(d->name);
+                if (irit != cg.localIRTypes.end())
+                    ty = llvmTypeFromIR(irit->second, *cg.ctx);
+                else
+                    ty = llvmType(t, *cg.ctx);
+                if (ty)
+                    cg.lvalues[d->name] = llvm::UndefValue::get(ty);
+            }
         }
         }
         break;
@@ -13096,19 +13243,34 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 el.arr = 0;
                 MType aggType = (v.kind == VarSym::ATTR)
                     ? attrMetalIfaceType(v.type) : v.type;
-                llvm::Type *aggTy = llvmType(aggType, ctx);
-                llvm::Value *agg = llvm::UndefValue::get(aggTy);
                 uint32_t n = (uint32_t)v.type.arr;
-                for (uint32_t k = 0; k < n; k++) {
-                    llvm::Value *arg = fn->getArg(argSlot++);
-                    if (v.kind == VarSym::VARYING &&
-                        varyingUsesFloatCarrier(el, has_gs)) {
-                        arg = decodeFloatCarrier(cg, arg, el.scalar,
-                                                 llvmType(el, ctx));
+                if (needsArrayMem(aggType)) {
+                    llvm::Value *slot = ensureArrayMem(cg, v.name, aggType);
+                    for (uint32_t k = 0; k < n; k++) {
+                        llvm::Value *arg = fn->getArg(argSlot++);
+                        if (v.kind == VarSym::VARYING &&
+                            varyingUsesFloatCarrier(el, has_gs)) {
+                            arg = decodeFloatCarrier(cg, arg, el.scalar,
+                                                     llvmType(el, ctx));
+                        }
+                        llvm::Value *ep = arrayMemGEP(
+                            cg, v.name, slot, cg.b->getInt32(k));
+                        cg.b->CreateAlignedStore(arg, ep, llvm::Align(4));
                     }
-                    agg = cg.b->CreateInsertValue(agg, arg, k);
+                } else {
+                    llvm::Type *aggTy = llvmType(aggType, ctx);
+                    llvm::Value *agg = llvm::UndefValue::get(aggTy);
+                    for (uint32_t k = 0; k < n; k++) {
+                        llvm::Value *arg = fn->getArg(argSlot++);
+                        if (v.kind == VarSym::VARYING &&
+                            varyingUsesFloatCarrier(el, has_gs)) {
+                            arg = decodeFloatCarrier(cg, arg, el.scalar,
+                                                     llvmType(el, ctx));
+                        }
+                        agg = cg.b->CreateInsertValue(agg, arg, k);
+                    }
+                    cg.lvalues[v.name] = agg;
                 }
-                cg.lvalues[v.name] = agg;
             } else if (v.type.isMatrix()) {
                 MType colTy = matrixColumnType(v.type);
                 MType matIface = v.type;
@@ -13178,8 +13340,11 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
          * the final value. */
         for (VarSym &v : syms) {
             if (v.kind != VarSym::VARYING) continue;
-            cg.lvalues[v.name] =
-                llvm::UndefValue::get(llvmType(v.type, ctx));
+            if (needsArrayMem(v.type))
+                ensureArrayMem(cg, v.name, v.type);
+            else
+                cg.lvalues[v.name] =
+                    llvm::UndefValue::get(llvmType(v.type, ctx));
         }
     }
     if (isVS && isCapture) {
@@ -13188,8 +13353,11 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
          * pre-registered undef aggregate as the non-capture path. */
         for (VarSym &v : syms) {
             if (v.kind != VarSym::VARYING) continue;
-            cg.lvalues[v.name] =
-                llvm::UndefValue::get(llvmType(v.type, ctx));
+            if (needsArrayMem(v.type))
+                ensureArrayMem(cg, v.name, v.type);
+            else
+                cg.lvalues[v.name] =
+                    llvm::UndefValue::get(llvmType(v.type, ctx));
         }
     }
     if (isTES && !isTESCompute) {
