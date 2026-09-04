@@ -1210,6 +1210,18 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     };
     mglDrawSupportSetVertexBytes(
         _renderPassManager.state->currentRenderEncoderOwner, captureParams, sizeof(captureParams), 28u);
+    /* Re-apply GL bindings after installing the capture buffers at 28/29.
+     * The first capture draw in a context otherwise left VS SSBO/UBO slots
+     * unbound (probe: first GS+SSBO write is 0, second is correct). */
+    drawCtx->state.dirty_bits = DIRTY_ALL;
+    if (![self processGLState:true] ||
+        mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 1) {
+        _tessellation.tessVertexCaptureActive = NO;
+        return nil;
+    }
+    mglDrawSupportSetVertexBuffer(_renderPassManager.state->currentRenderEncoderOwner, capture, 0u, 29u);
+    mglDrawSupportSetVertexBytes(
+        _renderPassManager.state->currentRenderEncoderOwner, captureParams, sizeof(captureParams), 28u);
     if (getenv("MGL_GS_DIAG")) {
         NSLog(@"MGL GS DIAG capture-draw POINT first=%d count=%d instances=%d baseInst=%u stride=%lu size=%lu",
               (int)first, (int)count, (int)instanceCount, baseInstance,
@@ -1276,6 +1288,17 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     const uint32_t captureParams[3] = {
         0u, (uint32_t)recordsPerInstance, baseInstance,
     };
+    mglDrawSupportSetVertexBytes(
+        _renderPassManager.state->currentRenderEncoderOwner, captureParams, sizeof(captureParams), 28u);
+    /* Same re-bind as the non-indexed capture path: first capture draw
+     * otherwise left VS SSBO slots unbound. */
+    drawCtx->state.dirty_bits = DIRTY_ALL;
+    if (![self processGLState:true] ||
+        mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 1) {
+        _tessellation.tessVertexCaptureActive = NO;
+        return nil;
+    }
+    mglDrawSupportSetVertexBuffer(_renderPassManager.state->currentRenderEncoderOwner, capture, 0u, 29u);
     mglDrawSupportSetVertexBytes(
         _renderPassManager.state->currentRenderEncoderOwner, captureParams, sizeof(captureParams), 28u);
     /* The capture kernel indexes records by raw vertex_id with no bounds

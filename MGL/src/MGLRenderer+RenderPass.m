@@ -4564,8 +4564,10 @@ static GLenum mglPassthroughDeclType(
     id fragmentFunction = fragmentProgram
         ? (__bridge id)fragmentProgram->modules[_FRAGMENT_SHADER].mtl_function
         : nil;
-    if (!fragmentFunction && rasterizerDiscard &&
-        !tessVertexCapture && !cullDistanceCapture) {
+    /* Tess/cull VS capture also needs a real FS: AGX drops vertex device-
+     * buffer stores when Metal rasterization is off (same as
+     * GL_RASTERIZER_DISCARD). Stub FS + cleared color masks below. */
+    if (!fragmentFunction && rasterizerDiscard) {
         fragmentFunction = mglRasterizerDiscardStubFragmentFunction();
     }
     if (kMGLVerbosePipelineLogs) {
@@ -4661,12 +4663,10 @@ static GLenum mglPassthroughDeclType(
     }
 
 
-    if (tessVertexCapture || cullDistanceCapture) {
-        state->rasterization_enabled = 0;
-    } else if (rasterizerDiscard) {
+    if (rasterizerDiscard) {
         /* AGX drops vertex texture/SSBO stores when Metal rasterization is
-         * disabled. Keep rasterization on (real FS or discard stub above) so
-         * VS image/SSBO writes execute; color write masks are cleared below. */
+         * disabled — including tess/cull VS capture draws. Keep rasterization
+         * on (real FS or discard stub above); color write masks cleared below. */
         state->rasterization_enabled = fragmentFunction ? 1 : 0;
     } else {
         state->rasterization_enabled = 1;
@@ -4875,8 +4875,8 @@ static GLenum mglPassthroughDeclType(
         state->alpha_blend_operation[i] = blend.alpha_operation;
     }
 
-    if (MGL_STATE(ctx)->caps.rasterizer_discard &&
-        !tessVertexCapture && !cullDistanceCapture) {
+    if (MGL_STATE(ctx)->caps.rasterizer_discard ||
+        tessVertexCapture || cullDistanceCapture) {
         for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
             state->color_write_mask[i] = 0u;
         }

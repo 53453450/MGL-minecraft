@@ -9025,9 +9025,40 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 emitPerVertexStore(cg, lhs, v, mod, locals);
                 return v;
             }
-            if (e->u.assign.op == MGL_OP_ASSIGN &&
-                emitTessBlockMemberStore(cg, lhs, v, mod, locals))
-                return v;
+            /* Named interface-block member: outVertex[i].field (=|+=|…) */
+            {
+                const char *inst = nullptr, *field = nullptr;
+                const MGLExpr *indexE = nullptr;
+                if (tessBlockMemberPath(lhs, &inst, &indexE, &field)) {
+                    if (e->u.assign.op != MGL_OP_ASSIGN) {
+                        llvm::Value *old =
+                            emitTessBlockMemberLoad(cg, lhs, mod, locals);
+                        if (!old) return nullptr;
+                        uint32_t binop = 0;
+                        switch (e->u.assign.op) {
+                        case MGL_OP_ADD_ASSIGN: binop = MGL_OP_ADD; break;
+                        case MGL_OP_SUB_ASSIGN: binop = MGL_OP_SUB; break;
+                        case MGL_OP_MUL_ASSIGN: binop = MGL_OP_MUL; break;
+                        case MGL_OP_DIV_ASSIGN: binop = MGL_OP_DIV; break;
+                        default: break;
+                        }
+                        if (!binop) {
+                            cg.err = 1;
+                            cg.errmsg =
+                                "codegen: compound TCS interface-block "
+                                "member assignment is not implemented";
+                            return nullptr;
+                        }
+                        v = emitNumericBinOp(
+                            cg, binop, old, rhsV,
+                            exprType(cg, lhs, mod, locals),
+                            exprType(cg, e->u.assign.rhs, mod, locals));
+                        if (!v) return nullptr;
+                    }
+                    if (emitTessBlockMemberStore(cg, lhs, v, mod, locals))
+                        return v;
+                }
+            }
         }
 
         /* Interface-block member write: instance.field = v (VS/TES/GS out
@@ -11470,6 +11501,8 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
                     auto it = elseL.find(kv.first);
                     if (it == elseL.end()) continue; /* then-only decl */
                     if (kv.second == it->second) continue;
+                    if (kv.second->getType() != it->second->getType())
+                        continue;
                     llvm::PHINode *phi =
                         cg.b->CreatePHI(kv.second->getType(), 2, kv.first);
                     phi->addIncoming(kv.second, thenTail);
@@ -11489,14 +11522,15 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
             for (auto &kv : thenL) {
                 auto it = snap.find(kv.first);
                 if (it != snap.end() && it->second == kv.second) continue;
+                llvm::Value *fall =
+                    (it != snap.end() &&
+                     it->second->getType() == kv.second->getType())
+                        ? it->second
+                        : llvm::UndefValue::get(kv.second->getType());
                 llvm::PHINode *phi =
                     cg.b->CreatePHI(kv.second->getType(), 2, kv.first);
                 phi->addIncoming(kv.second, thenTail);
-                phi->addIncoming(it != snap.end()
-                                     ? it->second
-                                     : llvm::UndefValue::get(
-                                           kv.second->getType()),
-                                 condBB);
+                phi->addIncoming(fall, condBB);
                 cg.lvalues[kv.first] = phi;
             }
         }
@@ -12081,31 +12115,6 @@ static uint32_t airAttribLocation(const char *name,
     return UINT32_MAX;
 }
 
-static bool stmtContainsReturn(const MGLStmt *st) {
-    if (!st) return false;
-    switch (st->kind) {
-    case MGL_STMT_RETURN:
-        return true;
-    case MGL_STMT_COMPOUND:
-        for (uint32_t i = 0; i < st->u.compound.count; i++)
-            if (stmtContainsReturn(st->u.compound.stmts[i])) return true;
-        return false;
-    case MGL_STMT_IF:
-        return stmtContainsReturn(st->u.ifs.then) ||
-               stmtContainsReturn(st->u.ifs.else_);
-    case MGL_STMT_FOR:
-        return stmtContainsReturn(st->u.loop.init) ||
-               stmtContainsReturn(st->u.loop.body);
-    case MGL_STMT_WHILE:
-    case MGL_STMT_DO_WHILE:
-        return stmtContainsReturn(st->u.whilex.body);
-    case MGL_STMT_SWITCH:
-        return stmtContainsReturn(st->u.switchx.body);
-    default:
-        return false;
-    }
-}
-
 static bool exprUsesRuntimeArrayLength(const MGLExpr *e,
                                        const MGLIRModule *mod) {
     if (!e) return false;
@@ -12458,25 +12467,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         }
     }
 
-    if (isTCS || isTESCompute) {
-        for (uint32_t i = 0; i < tu->decl_count; i++) {
-            MGLDecl *d = tu->decls[i];
-            if (!d || !d->body || !d->name || strcmp(d->name, "main") != 0)
-                continue;
-            if (stmtContainsReturn(d->body)) {
-                if (err_buf && err_cap)
-                    snprintf(err_buf, err_cap,
-                             isTCS ? "TCS AIR codegen: explicit return is not "
-                                    "implemented yet"
-                                   : "TES AIR codegen: explicit return in "
-                                     "isolines/point-mode TES is not "
-                                     "implemented yet");
-                mglIRModuleDestroy(&mod);
-                mglGLSLTranslationUnitDestroy(tu);
-                return -1;
-            }
-        }
-    }
+    /* TCS / isolines·point-mode TES: early `return;` is handled by
+     * STMT_RETURN (CreateRetVoid + err=2).  Previously rejected here,
+     * which blocked CTS basic-atomic-case2. */
+
     if (isTES) {
         /* GLSL requires an input primitive mode, but a missing mode is a
          * link error (CTS te_lacking_primitive_mode_declaration): compile
@@ -12976,7 +12970,13 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 varyings.push_back(&v);
             }
         }
-        if (isKernel || isCapture) {
+        if (isTessCapture) {
+            /* AGX rejects RasterizationEnabled + void VS. Tess capture must
+             * return position so GS/tess pre-pass can keep rasterization on
+             * (stub FS + zero color masks) and still execute VS SSBO stores. */
+            retTy = llvm::FixedVectorType::get(
+                llvm::Type::getFloatTy(ctx), 4);
+        } else if (isKernel || isCapture) {
             retTy = llvm::Type::getVoidTy(ctx);
         } else if (isTES) {
             /* Apple's post-tessellation ABI returns a packed output record,
@@ -15284,7 +15284,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     storeRecordSlot(varying->location, mt, value);
                 }
             }
-            b.CreateRetVoid();
+            if (isTessCapture)
+                b.CreateRet(assembleReturn(cg));
+            else
+                b.CreateRetVoid();
         } else {
             b.CreateRet(assembleReturn(cg));
         }
@@ -16281,7 +16284,14 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     }
 
     std::vector<llvm::Metadata *> outNodes;   /* outputs / render targets */
-    if ((isVS || (isTES && !isTESCompute)) && !isCapture) {
+    if (isTessCapture) {
+        outNodes.push_back(llvm::MDNode::get(ctx, {
+            llvm::MDString::get(ctx, "air.position"),
+            llvm::MDString::get(ctx, "air.arg_type_name"),
+            llvm::MDString::get(ctx, "float4"),
+            llvm::MDString::get(ctx, "air.arg_name"),
+            llvm::MDString::get(ctx, "position")}));
+    } else if ((isVS || (isTES && !isTESCompute)) && !isCapture) {
         outNodes.push_back(llvm::MDNode::get(ctx, {
             llvm::MDString::get(ctx, "air.position"),
             llvm::MDString::get(ctx, "air.arg_type_name"),
