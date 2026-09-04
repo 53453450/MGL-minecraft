@@ -1093,14 +1093,23 @@ static void collectStructTypes(Codegen &cg, const MGLTranslationUnit *tu) {
 static const MGLIRType *exprIRType(
     Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
     const std::map<std::string, MType> &locals) {
-    (void)locals;
     if (!e) return nullptr;
     switch (e->kind) {
     case MGL_EXPR_VAR_REF: {
-        auto it = cg.localIRTypes.find(e->u.var_ref.name);
+        const char *n = e->u.var_ref.name;
+        if (!n) return nullptr;
+        /* Locals/params shadow anonymous-block uniforms of the same name
+         * (CTS uniform_block.random: compare_vec2(a,b) vs BlockB { sA a; }). */
+        if (locals.count(n)) {
+            auto it = cg.localIRTypes.find(n);
+            if (it != cg.localIRTypes.end())
+                return it->second;
+            return nullptr;
+        }
+        auto it = cg.localIRTypes.find(n);
         if (it != cg.localIRTypes.end())
             return it->second;
-        const MGLIRSymbol *s = findSymbol(mod, e->u.var_ref.name);
+        const MGLIRSymbol *s = findSymbol(mod, n);
         return s ? s->type : nullptr;
     }
     case MGL_EXPR_MEMBER: {
@@ -5789,11 +5798,12 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 (ov->qualifiers & MGL_AST_Q_UNIFORM) &&
                 structGate && structGate->kind == MGLIR_TYPE_STRUCT &&
                 structGate->member_count > 0) {
-                /* Interface blocks → dedicated UBO Metal buffers.
-                 * Named struct uniforms → plain pack at bufferOffsets. */
+                /* Interface blocks / anonymous-block members → UBO Metal
+                 * buffers (keyed by block_name). Named struct uniforms →
+                 * plain pack at bufferOffsets. */
                 llvm::Value *base = nullptr;
                 uint32_t plainOff = startOff;
-                if (ov->is_interface_block) {
+                if (ov->is_interface_block || ov->block_name) {
                 if (rootIndexExpr) {
                     /* Instance array: each element binds its own device
                      * buffer; pick it through the entry alloca. */
@@ -5987,7 +5997,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 structGate->member_count > 0) {
                 llvm::Value *base = nullptr;
                 uint32_t plainOff = startOff;
-                if (ov->is_interface_block) {
+                if (ov->is_interface_block || ov->block_name) {
                 if (rootIndexExpr) {
                     auto slotIt = cg.uboElemSlot.find(objName);
                     auto tyIt = cg.uboElemArrTy.find(objName);
