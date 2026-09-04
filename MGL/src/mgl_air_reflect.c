@@ -40,37 +40,42 @@ GLuint mglAirGLTypeFromIR(const MGLIRType *t)
     switch (t->kind) {
     case MGLIR_TYPE_SCALAR:
         switch (t->scalar) {
-        case MGLIR_SCALAR_FLOAT: return GL_FLOAT;
-        case MGLIR_SCALAR_INT:   return GL_INT;
-        case MGLIR_SCALAR_UINT:  return GL_UNSIGNED_INT;
-        case MGLIR_SCALAR_BOOL:  return GL_BOOL;
-        default:                 return GL_FLOAT;
+        case MGLIR_SCALAR_FLOAT:  return GL_FLOAT;
+        case MGLIR_SCALAR_DOUBLE: return GL_DOUBLE;
+        case MGLIR_SCALAR_INT:    return GL_INT;
+        case MGLIR_SCALAR_UINT:   return GL_UNSIGNED_INT;
+        case MGLIR_SCALAR_BOOL:   return GL_BOOL;
+        default:                  return GL_FLOAT;
         }
     case MGLIR_TYPE_VECTOR: {
-        GLuint base = (t->scalar == MGLIR_SCALAR_INT)   ? GL_INT_VEC2
-                    : (t->scalar == MGLIR_SCALAR_UINT)  ? GL_UNSIGNED_INT_VEC2
-                    : (t->scalar == MGLIR_SCALAR_BOOL)  ? GL_BOOL_VEC2
+        GLuint base = (t->scalar == MGLIR_SCALAR_INT)    ? GL_INT_VEC2
+                    : (t->scalar == MGLIR_SCALAR_UINT)   ? GL_UNSIGNED_INT_VEC2
+                    : (t->scalar == MGLIR_SCALAR_BOOL)   ? GL_BOOL_VEC2
+                    : (t->scalar == MGLIR_SCALAR_DOUBLE) ? GL_DOUBLE_VEC2
                                                         : GL_FLOAT_VEC2;
         return (GLuint)(base + t->cols - 2);
     }
     case MGLIR_TYPE_MATRIX: {
         /* Square matrices enumerate contiguously; matCxR non-square types
          * have their own enum block (GL 4.6 §22.4 / Table 22.2). */
+        const GLboolean is_double = (t->scalar == MGLIR_SCALAR_DOUBLE);
         if (t->cols == t->rows) {
-            return (GLuint)(GL_FLOAT_MAT2 + (t->cols - 2));
+            return (GLuint)((is_double ? GL_DOUBLE_MAT2 : GL_FLOAT_MAT2) +
+                            (t->cols - 2));
         }
         if (t->cols >= 2 && t->cols <= 4 && t->rows >= 2 && t->rows <= 4) {
             switch (t->cols * 10 + t->rows) {
-            case 23: return GL_FLOAT_MAT2x3;
-            case 24: return GL_FLOAT_MAT2x4;
-            case 32: return GL_FLOAT_MAT3x2;
-            case 34: return GL_FLOAT_MAT3x4;
-            case 42: return GL_FLOAT_MAT4x2;
-            case 43: return GL_FLOAT_MAT4x3;
+            case 23: return is_double ? GL_DOUBLE_MAT2x3 : GL_FLOAT_MAT2x3;
+            case 24: return is_double ? GL_DOUBLE_MAT2x4 : GL_FLOAT_MAT2x4;
+            case 32: return is_double ? GL_DOUBLE_MAT3x2 : GL_FLOAT_MAT3x2;
+            case 34: return is_double ? GL_DOUBLE_MAT3x4 : GL_FLOAT_MAT3x4;
+            case 42: return is_double ? GL_DOUBLE_MAT4x2 : GL_FLOAT_MAT4x2;
+            case 43: return is_double ? GL_DOUBLE_MAT4x3 : GL_FLOAT_MAT4x3;
             default: break;
             }
         }
-        return (GLuint)(GL_FLOAT_MAT2 + (t->cols - 2));
+        return (GLuint)((is_double ? GL_DOUBLE_MAT2 : GL_FLOAT_MAT2) +
+                        (t->cols - 2));
     }
     case MGLIR_TYPE_ATOMIC_COUNTER:
         return GL_UNSIGNED_INT_ATOMIC_COUNTER;

@@ -341,6 +341,58 @@ static llvm::Value *encodeFloatCarrier(Codegen &cg, llvm::Value *value,
     if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(value->getType()))
         dst = llvm::FixedVectorType::get(
             f32, vt->getElementCount().getFixedValue());
+    if (scalar == MGLIR_SCALAR_DOUBLE) {
+        /* ATTR/VS already produced f32; keep bits. i64 double payloads from
+         * SSBO paths soft-truncate IEEE754 binary64→binary32 without f64 ALU. */
+        if (value->getType()->isFPOrFPVectorTy() &&
+            value->getType()->getScalarSizeInBits() == 32)
+            return value;
+        if (value->getType()->isIntOrIntVectorTy() &&
+            value->getType()->getScalarSizeInBits() == 64) {
+            auto conv1 = [&](llvm::Value *bits) -> llvm::Value * {
+                llvm::Value *hi = cg.b->CreateLShr(bits, 32);
+                hi = cg.b->CreateTrunc(hi, cg.b->getInt32Ty());
+                llvm::Value *lo = cg.b->CreateTrunc(bits, cg.b->getInt32Ty());
+                /* Approximate: take high 32 bits of the double payload when
+                 * it was a float promoted into the high half; otherwise
+                 * rebuild a float from sign/exp/mant of the i64. */
+                llvm::Value *sign = cg.b->CreateAnd(
+                    cg.b->CreateLShr(hi, 31), cg.b->getInt32(1));
+                llvm::Value *exp = cg.b->CreateAnd(
+                    cg.b->CreateLShr(hi, 20), cg.b->getInt32(0x7FF));
+                llvm::Value *mantHi = cg.b->CreateAnd(hi, cg.b->getInt32(0xFFFFF));
+                llvm::Value *mant = cg.b->CreateOr(
+                    cg.b->CreateShl(mantHi, 3),
+                    cg.b->CreateLShr(lo, 29));
+                llvm::Value *exp32 = cg.b->CreateSub(exp, cg.b->getInt32(1023 - 127));
+                llvm::Value *under = cg.b->CreateICmpSLT(exp32, cg.b->getInt32(1));
+                llvm::Value *over = cg.b->CreateICmpSGT(exp32, cg.b->getInt32(254));
+                llvm::Value *fbits = cg.b->CreateOr(
+                    cg.b->CreateShl(sign, 31),
+                    cg.b->CreateOr(cg.b->CreateShl(
+                        cg.b->CreateAnd(exp32, cg.b->getInt32(0xFF)), 23),
+                        cg.b->CreateAnd(mant, cg.b->getInt32(0x7FFFFF))));
+                fbits = cg.b->CreateSelect(under, cg.b->CreateShl(sign, 31), fbits);
+                fbits = cg.b->CreateSelect(
+                    over,
+                    cg.b->CreateOr(cg.b->CreateShl(sign, 31),
+                                   cg.b->getInt32(0x7F800000)),
+                    fbits);
+                return cg.b->CreateBitCast(fbits, f32);
+            };
+            if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(value->getType())) {
+                unsigned n = vt->getElementCount().getFixedValue();
+                llvm::Value *out = llvm::UndefValue::get(dst);
+                for (unsigned i = 0; i < n; i++) {
+                    llvm::Value *el = cg.b->CreateExtractElement(value, i);
+                    out = cg.b->CreateInsertElement(out, conv1(el), i);
+                }
+                return out;
+            }
+            return conv1(value);
+        }
+        return llvm::Constant::getNullValue(dst);
+    }
     if (scalar == MGLIR_SCALAR_UINT)
         return cg.b->CreateUIToFP(value, dst);
     return cg.b->CreateSIToFP(value, dst);
@@ -373,12 +425,26 @@ static MType matrixColumnType(const MType &t)
 
 /* Stage-out records are float-oriented (passthrough VS reads vec4 slots).
  * Integer varyings must use SIToFP/UIToFP carriers — bitcasting small uint
- * values yields AGX-flushable denormals, and floatBitsToUint then returns 0. */
+ * values yields AGX-flushable denormals, and floatBitsToUint then returns 0.
+ * DOUBLE is the same float carrier: VertexLayout converts GL_DOUBLE ATTR to
+ * float, VS math stays f32 on AGX, and XFB pack expands float→GLdouble. */
 static bool varyingNeedsFloatRecordCarrier(const MType &t)
 {
     if (t.isMatrix() || t.isArray()) return false;
     return t.scalar == MGLIR_SCALAR_INT || t.scalar == MGLIR_SCALAR_UINT ||
-           t.scalar == MGLIR_SCALAR_BOOL;
+           t.scalar == MGLIR_SCALAR_BOOL || t.scalar == MGLIR_SCALAR_DOUBLE;
+}
+
+/* Vertex ATTR ABI must match VertexLayout: GL_DOUBLE is CPU-converted to
+ * MTL Float*, so stage_in is floatN — never i64 (Metal reports i64 ATTR as
+ * int1 and rejects Float→int1). */
+static MType attrMetalIfaceType(const MType &t)
+{
+    if (t.scalar != MGLIR_SCALAR_DOUBLE)
+        return t;
+    MType f = t;
+    f.scalar = MGLIR_SCALAR_FLOAT;
+    return f;
 }
 
 llvm::Type *llvmScalar(MGLIRScalar s, llvm::LLVMContext &ctx) {
@@ -12071,16 +12137,16 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         for (VarSym &v : syms) {
             if (v.kind != VarSym::ATTR) continue;
             if (v.type.isArray() && v.type.arr > 0) {
-                MType el = v.type;
+                MType el = attrMetalIfaceType(v.type);
                 el.arr = 0;
                 for (uint32_t k = 0; k < (uint32_t)v.type.arr; k++)
                     paramTys.push_back(llvmType(el, ctx));
             } else if (v.type.isMatrix()) {
-                MType col = matrixColumnType(v.type);
+                MType col = attrMetalIfaceType(matrixColumnType(v.type));
                 for (uint32_t c = 0; c < v.type.cols; c++)
                     paramTys.push_back(llvmType(col, ctx));
             } else {
-                paramTys.push_back(llvmType(v.type, ctx));
+                paramTys.push_back(llvmType(attrMetalIfaceType(v.type), ctx));
             }
         }
     }
@@ -12180,16 +12246,16 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         for (VarSym &v : syms) {
             if (v.kind != VarSym::ATTR) continue;
             if (v.type.isArray() && v.type.arr > 0) {
-                MType el = v.type;
+                MType el = attrMetalIfaceType(v.type);
                 el.arr = 0;
                 for (uint32_t k = 0; k < (uint32_t)v.type.arr; k++)
                     paramTys.push_back(llvmType(el, ctx));
             } else if (v.type.isMatrix()) {
-                MType col = matrixColumnType(v.type);
+                MType col = attrMetalIfaceType(matrixColumnType(v.type));
                 for (uint32_t c = 0; c < v.type.cols; c++)
                     paramTys.push_back(llvmType(col, ctx));
             } else {
-                paramTys.push_back(llvmType(v.type, ctx));
+                paramTys.push_back(llvmType(attrMetalIfaceType(v.type), ctx));
             }
         }
     }
@@ -12442,17 +12508,21 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     if (isVS && !isCapture) {
         for (VarSym &v : syms) {
             if (v.kind != VarSym::ATTR) continue;
+            MType iface = attrMetalIfaceType(v.type);
             if (v.type.isArray() && v.type.arr > 0) {
                 /* Assemble float[N] from N scalar stage_in args so
                  * gl_CullDistance/ClipDistance loads keep working. */
-                llvm::Type *aggTy = llvmType(v.type, ctx);
+                llvm::Type *aggTy = llvmType(iface, ctx);
                 llvm::Value *agg = llvm::UndefValue::get(aggTy);
                 for (uint32_t k = 0; k < (uint32_t)v.type.arr; k++)
                     agg = cg.b->CreateInsertValue(agg, fn->getArg(argSlot++),
                                                   k);
                 cg.lvalues[v.name] = agg;
             } else if (v.type.isMatrix()) {
-                llvm::Type *aggTy = llvmType(v.type, ctx);
+                MType colIface = attrMetalIfaceType(matrixColumnType(v.type));
+                MType matIface = v.type;
+                matIface.scalar = colIface.scalar;
+                llvm::Type *aggTy = llvmType(matIface, ctx);
                 llvm::Value *agg = llvm::UndefValue::get(aggTy);
                 for (uint32_t c = 0; c < v.type.cols; c++)
                     agg = cg.b->CreateInsertValue(agg, fn->getArg(argSlot++),
@@ -12570,7 +12640,9 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                  * / swizzles) keep working unchanged. */
                 MType el = v.type;
                 el.arr = 0;
-                llvm::Type *aggTy = llvmType(v.type, ctx);
+                MType aggType = (v.kind == VarSym::ATTR)
+                    ? attrMetalIfaceType(v.type) : v.type;
+                llvm::Type *aggTy = llvmType(aggType, ctx);
                 llvm::Value *agg = llvm::UndefValue::get(aggTy);
                 uint32_t n = (uint32_t)v.type.arr;
                 for (uint32_t k = 0; k < n; k++) {
@@ -12585,14 +12657,21 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 cg.lvalues[v.name] = agg;
             } else if (v.type.isMatrix()) {
                 MType colTy = matrixColumnType(v.type);
-                llvm::Type *aggTy = llvmType(v.type, ctx);
+                MType matIface = v.type;
+                if (v.kind == VarSym::ATTR) {
+                    colTy = attrMetalIfaceType(colTy);
+                    matIface.scalar = colTy.scalar;
+                }
+                llvm::Type *aggTy = llvmType(matIface, ctx);
                 llvm::Value *agg = llvm::UndefValue::get(aggTy);
                 for (uint32_t c = 0; c < v.type.cols; c++) {
                     llvm::Value *arg = fn->getArg(argSlot++);
                     if (v.kind == VarSym::VARYING &&
-                        varyingUsesFloatCarrier(colTy, has_gs)) {
-                        arg = decodeFloatCarrier(cg, arg, colTy.scalar,
-                                                 llvmType(colTy, ctx));
+                        varyingUsesFloatCarrier(matrixColumnType(v.type),
+                                                has_gs)) {
+                        arg = decodeFloatCarrier(
+                            cg, arg, matrixColumnType(v.type).scalar,
+                            llvmType(matrixColumnType(v.type), ctx));
                     }
                     agg = cg.b->CreateInsertValue(agg, arg, c);
                 }
@@ -12608,7 +12687,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                         /* Vertex ATTR values arrive as raw ints from Metal;
                          * float-carrier decode is only for FS stage_in
                          * varyings (SIToFP/UIToFP).  Applying FPToUI to an
-                         * i32 1 reinterprets it as a denormal → 0. */
+                         * i32 1 reinterprets it as a denormal → 0.
+                         * DOUBLE ATTR arrives as float (VertexLayout). */
                         if (v.kind == VarSym::VARYING &&
                             varyingUsesFloatCarrier(v.type, has_gs)) {
                             arg = decodeFloatCarrier(cg, arg, v.type.scalar,
@@ -13951,6 +14031,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             MType el = v.type;
             if (v.type.isArray() && v.type.arr > 0) el.arr = 0;
             else if (v.type.isMatrix()) el = matrixColumnType(v.type);
+            el = attrMetalIfaceType(el);
             for (uint32_t k = 0; k < n; k++) {
                 std::string argName = n > 1u
                     ? v.name + "[" + std::to_string(k) + "]"
@@ -14407,12 +14488,17 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         uint32_t attrLoc = 0;
         for (VarSym &v : syms) {
             if (v.kind != VarSym::ATTR) continue;
-            uint32_t want = airAttribLocation(v.name.c_str(), attrib_names);
+            /* Match non-capture location priority so capture [[attribute(N)]]
+             * agrees with the reflected locations the vertex descriptor uses. */
+            uint32_t want = v.location;
+            if (want == UINT32_MAX)
+                want = airAttribLocation(v.name.c_str(), attrib_names);
             if (want != UINT32_MAX) attrLoc = want;
             const uint32_t n = varyingLocationSpan(v.type);
             MType el = v.type;
             if (v.type.isArray() && v.type.arr > 0) el.arr = 0;
             else if (v.type.isMatrix()) el = matrixColumnType(v.type);
+            el = attrMetalIfaceType(el);
             for (uint32_t k = 0; k < n; k++) {
                 std::string argName = n > 1u
                     ? v.name + "[" + std::to_string(k) + "]"

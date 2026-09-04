@@ -1328,8 +1328,31 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
             plan->component_count > 4u) {
             return NO;
         }
+        /* Resolve gl_type early so double components size the stride at
+         * 8 bytes (GL XFB packs GLdouble, not float). */
+        GLenum earlyType = 0;
+        const char *earlyName =
+            program->transform_feedback_varying_names[varying];
+        if (earlyName && earlyName[0]) {
+            char baseName[96];
+            strncpy(baseName, earlyName, sizeof(baseName) - 1);
+            baseName[sizeof(baseName) - 1] = '\0';
+            char *bracket = strchr(baseName, '[');
+            if (bracket) *bracket = '\0';
+            for (GLuint i = 0u; outputs->list && i < outputs->count; i++) {
+                if (outputs->list[i].name &&
+                    strcmp(outputs->list[i].name, baseName) == 0) {
+                    earlyType = outputs->list[i].gl_type;
+                    break;
+                }
+            }
+        }
+        NSUInteger compBytes = sizeof(uint32_t);
+        if (earlyType == GL_DOUBLE || earlyType == GL_DOUBLE_VEC2 ||
+            earlyType == GL_DOUBLE_VEC3 || earlyType == GL_DOUBLE_VEC4)
+            compBytes = sizeof(GLdouble);
         NSUInteger end = ((NSUInteger)plan->component_offset +
-                          (NSUInteger)plan->component_count) * sizeof(uint32_t);
+                          (NSUInteger)plan->component_count) * compBytes;
         if (end > bufferStride[plan->buffer_index]) {
             bufferStride[plan->buffer_index] = end;
         }
@@ -1500,13 +1523,18 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
                 if (plan->buffer_index != buffer || !hasSource[varying]) {
                     continue;
                 }
-                uint8_t *dstField =
-                    dstRecord + (NSUInteger)plan->component_offset * 4u;
-                const uint8_t *srcField = srcRecord + sourceOffset[varying];
                 GLuint comps = plan->component_count;
                 GLenum glType = varyingGlType[varying];
+                NSUInteger dstCompBytes =
+                    (glType == GL_DOUBLE || glType == GL_DOUBLE_VEC2 ||
+                     glType == GL_DOUBLE_VEC3 || glType == GL_DOUBLE_VEC4)
+                        ? sizeof(GLdouble)
+                        : sizeof(uint32_t);
+                uint8_t *dstField =
+                    dstRecord + (NSUInteger)plan->component_offset * dstCompBytes;
+                const uint8_t *srcField = srcRecord + sourceOffset[varying];
                 /* AIR capture slots are float carriers; convert for integer
-                 * XFB outputs. Floating types copy bits as-is. */
+                 * / double XFB outputs. Floating types copy bits as-is. */
                 if (glType == GL_INT || glType == GL_INT_VEC2 ||
                     glType == GL_INT_VEC3 || glType == GL_INT_VEC4) {
                     for (GLuint c = 0u; c < comps && c < 4u; c++) {
@@ -1524,6 +1552,16 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
                         memcpy(&f, srcField + c * 4u, sizeof(f));
                         GLuint uv = (GLuint)f;
                         memcpy(dstField + c * 4u, &uv, sizeof(uv));
+                    }
+                } else if (glType == GL_DOUBLE || glType == GL_DOUBLE_VEC2 ||
+                           glType == GL_DOUBLE_VEC3 ||
+                           glType == GL_DOUBLE_VEC4) {
+                    for (GLuint c = 0u; c < comps && c < 4u; c++) {
+                        float f = 0.f;
+                        memcpy(&f, srcField + c * 4u, sizeof(f));
+                        GLdouble dv = (GLdouble)f;
+                        memcpy(dstField + c * sizeof(GLdouble), &dv,
+                               sizeof(dv));
                     }
                 } else {
                     memcpy(dstField, srcField, (NSUInteger)comps * 4u);
