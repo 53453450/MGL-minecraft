@@ -174,7 +174,67 @@ static void mglTESXFBPackFieldFromCarrier(GLenum glType,
         }
         return;
     }
+    /* Matrices occupy one vec4 slot per column in the TES record; XFB wants
+     * tightly packed columns (mat2 → 4 floats). */
+    if (glType == GL_FLOAT_MAT2) {
+        memcpy(dst + 0u, src + 0u, 8u);
+        memcpy(dst + 8u, src + 16u, 8u);
+        return;
+    }
+    if (glType == GL_FLOAT_MAT3) {
+        memcpy(dst + 0u, src + 0u, 12u);
+        memcpy(dst + 12u, src + 16u, 12u);
+        memcpy(dst + 24u, src + 32u, 12u);
+        return;
+    }
+    if (glType == GL_FLOAT_MAT4) {
+        memcpy(dst + 0u, src + 0u, 16u);
+        memcpy(dst + 16u, src + 16u, 16u);
+        memcpy(dst + 32u, src + 32u, 16u);
+        memcpy(dst + 48u, src + 48u, 16u);
+        return;
+    }
     memcpy(dst, src, fieldBytes);
+}
+
+/* Resolve TES-compute record byte offset + size for one XFB varying name. */
+static BOOL mglTESXFBResolveSource(const Program *program,
+                                   const char *name,
+                                   NSUInteger *outOffsetInRecord,
+                                   GLenum *outType,
+                                   NSUInteger *outFieldBytes)
+{
+    if (!program || !name || !outOffsetInRecord || !outType || !outFieldBytes) {
+        return NO;
+    }
+    if (strcmp(name, "gl_Position") == 0) {
+        *outOffsetInRecord = 0u;
+        *outType = GL_FLOAT_VEC4;
+        *outFieldBytes = 16u;
+        return YES;
+    }
+    if (strcmp(name, "gl_PointSize") == 0) {
+        *outOffsetInRecord = 16u;
+        *outType = GL_FLOAT;
+        *outFieldBytes = 4u;
+        return YES;
+    }
+    const MGLShaderResource *output =
+        mglProgramFindStageOutputForXFBName(
+            (Program *)program, _TESS_EVALUATION_SHADER, name);
+    if (!output) {
+        return NO;
+    }
+    NSUInteger fieldBytes =
+        (NSUInteger)mglRenderTESXFBFieldByteSize((uint64_t)output->gl_type);
+    if (fieldBytes == 0u) {
+        return NO;
+    }
+    *outOffsetInRecord =
+        MGL_AIR_PER_VERTEX_STRIDE + (NSUInteger)output->location * 16u;
+    *outType = output->gl_type;
+    *outFieldBytes = fieldBytes;
+    return YES;
 }
 
 static bool mglTessTextureInfo(id texture, MGLRenderTextureInfo *info)
@@ -1992,12 +2052,11 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
                 }
                 const char *name =
                     tesProgram->transform_feedback_varying_names[varying];
-                const MGLShaderResource *output =
-                    mglProgramFindStageOutputForXFBName(
-                        tesProgram, _TESS_EVALUATION_SHADER, name);
-                NSUInteger fieldBytes =
-                    output ? mglTESXFBFieldByteSize(output->gl_type) : 0u;
-                if (!output || fieldBytes == 0u) {
+                NSUInteger recordOffset = 0u;
+                GLenum fieldType = GL_NONE;
+                NSUInteger fieldBytes = 0u;
+                if (!mglTESXFBResolveSource(tesProgram, name, &recordOffset,
+                                            &fieldType, &fieldBytes)) {
                     continue;
                 }
                 BufferBaseTarget *slot =
@@ -2057,11 +2116,10 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
                     return false;
                 }
                 for (NSUInteger vertex = 0u; vertex < maxVerts; vertex++) {
-                    NSUInteger sourceOffset = vertex * outStride +
-                        MGL_AIR_PER_VERTEX_STRIDE +
-                        (NSUInteger)output->location * 16u;
+                    NSUInteger sourceOffset =
+                        vertex * outStride + recordOffset;
                     mglTESXFBPackFieldFromCarrier(
-                        output->gl_type, srcBase + sourceOffset,
+                        fieldType, srcBase + sourceOffset,
                         packed + vertex * fieldBytes, fieldBytes);
                 }
                 mglRendererBufferSubData(glm_ctx, destBuf, (GLintptr)destOffset,
@@ -2109,19 +2167,17 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
                  varying++) {
                 const char *name =
                     tesProgram->transform_feedback_varying_names[varying];
-                const MGLShaderResource *output =
-                    mglProgramFindStageOutputForXFBName(
-                        tesProgram, _TESS_EVALUATION_SHADER, name);
-                NSUInteger fieldBytes =
-                    output ? mglTESXFBFieldByteSize(output->gl_type) : 0u;
-                if (!output || fieldBytes == 0u) {
+                NSUInteger recordOffset = 0u;
+                GLenum fieldType = GL_NONE;
+                NSUInteger fieldBytes = 0u;
+                if (!mglTESXFBResolveSource(tesProgram, name, &recordOffset,
+                                            &fieldType, &fieldBytes)) {
                     continue;
                 }
-                NSUInteger sourceOffset = vertex * outStride +
-                    MGL_AIR_PER_VERTEX_STRIDE +
-                    (NSUInteger)output->location * 16u;
+                NSUInteger sourceOffset =
+                    vertex * outStride + recordOffset;
                 mglTESXFBPackFieldFromCarrier(
-                    output->gl_type, srcBase + sourceOffset,
+                    fieldType, srcBase + sourceOffset,
                     packed + vertex * xfbCompactStride + compactOffset,
                     fieldBytes);
                 compactOffset += fieldBytes;

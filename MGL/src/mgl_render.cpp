@@ -8406,6 +8406,27 @@ uint64_t mglRenderTESXFBFieldByteSize(uint64_t gl_type) {
         case GL_INT_VEC4:
         case GL_UNSIGNED_INT_VEC4:
             return 16u;
+        /* XFB packs matrix columns tightly (GL 4.6 §11.1.2.1): mat2 is
+         * 4 floats.  Without these sizes, TES XFB stride collapses to 0
+         * and gl_in / points capture stay zero (CTS TCTE.gl_in). */
+        case GL_FLOAT_MAT2:
+            return 16u;
+        case GL_FLOAT_MAT2x3:
+            return 24u;
+        case GL_FLOAT_MAT2x4:
+            return 32u;
+        case GL_FLOAT_MAT3x2:
+            return 24u;
+        case GL_FLOAT_MAT3:
+            return 36u;
+        case GL_FLOAT_MAT3x4:
+            return 48u;
+        case GL_FLOAT_MAT4x2:
+            return 32u;
+        case GL_FLOAT_MAT4x3:
+            return 48u;
+        case GL_FLOAT_MAT4:
+            return 64u;
         default:
             return 0u;
     }
@@ -8517,7 +8538,6 @@ uint32_t mglRenderTessControlPointFormat(uint64_t gl_type) {
 
 
 extern "C"
-extern "C"
 uint64_t mglRenderTESXFBVertexStride(const void* program_v) {
     const Program* program = (const Program*)program_v;
     if (!program || program->transform_feedback_varying_count <= 0) {
@@ -8528,10 +8548,21 @@ uint64_t mglRenderTESXFBVertexStride(const void* program_v) {
          varying < program->transform_feedback_varying_count;
          varying++) {
         const char* name = program->transform_feedback_varying_names[varying];
-        const MGLShaderResource* output = mglProgramFindStageOutputForXFBName(
-            const_cast<Program*>(program), _TESS_EVALUATION_SHADER, name);
-        const uint64_t field_bytes =
-            output ? mglRenderTESXFBFieldByteSize(output->gl_type) : 0u;
+        uint64_t field_bytes = 0u;
+        /* Builtins are not in the reflected user-output list; they live at
+         * fixed offsets in the TES compute record (pos @0, point size @16). */
+        if (name && strcmp(name, "gl_Position") == 0) {
+            field_bytes = 16u;
+        } else if (name && strcmp(name, "gl_PointSize") == 0) {
+            field_bytes = 4u;
+        } else {
+            const MGLShaderResource* output =
+                mglProgramFindStageOutputForXFBName(
+                    const_cast<Program*>(program), _TESS_EVALUATION_SHADER,
+                    name);
+            field_bytes =
+                output ? mglRenderTESXFBFieldByteSize(output->gl_type) : 0u;
+        }
         if (field_bytes == 0u || stride > UINT64_MAX - field_bytes) {
             return 0u;
         }
