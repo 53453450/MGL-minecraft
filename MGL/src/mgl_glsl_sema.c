@@ -1300,6 +1300,7 @@ typedef enum {
     BI_ARG_MAT2,    /* mat2 */
     BI_ARG_MAT3,    /* mat3 */
     BI_ARG_MAT4,    /* mat4 */
+    BI_ARG_MATF,    /* any float matrix (incl. non-square) */
     BI_ARG_S2D,     /* sampler2D */
     BI_ARG_S2DA,    /* sampler2DArray */
     BI_ARG_S1D,     /* sampler1D */
@@ -1344,6 +1345,8 @@ typedef enum {
     BI_RET_MAT2,    /* mat2 */
     BI_RET_MAT3,    /* mat3 */
     BI_RET_MAT4,    /* mat4 */
+    BI_RET_MATF,    /* float matrix matching arg0 */
+    BI_RET_TRANSPOSE, /* float matrix with rows/cols swapped from arg0 */
     BI_RET_VOID,    /* statement-only builtin (EmitVertex/EndPrimitive, M3) */
 } BiRetKind;
 
@@ -1572,9 +1575,11 @@ static const BiFn kBuiltins[] = {
     { "transpose", 1, { BI_ARG_MAT2 }, BI_RET_MAT2 },
     { "transpose", 1, { BI_ARG_MAT3 }, BI_RET_MAT3 },
     { "transpose", 1, { BI_ARG_MAT4 }, BI_RET_MAT4 },
+    { "transpose", 1, { BI_ARG_MATF }, BI_RET_TRANSPOSE },
     { "matrixCompMult", 2, { BI_ARG_MAT2, BI_ARG_MAT2 }, BI_RET_MAT2 },
     { "matrixCompMult", 2, { BI_ARG_MAT3, BI_ARG_MAT3 }, BI_RET_MAT3 },
     { "matrixCompMult", 2, { BI_ARG_MAT4, BI_ARG_MAT4 }, BI_RET_MAT4 },
+    { "matrixCompMult", 2, { BI_ARG_MATF, BI_ARG_MATF }, BI_RET_MATF },
     { "determinant", 1, { BI_ARG_MAT2 }, BI_RET_FLOAT },
     { "determinant", 1, { BI_ARG_MAT3 }, BI_RET_FLOAT },
     { "determinant", 1, { BI_ARG_MAT4 }, BI_RET_FLOAT },
@@ -1762,6 +1767,10 @@ static int bif_arg_matches(const MGLIRType *t, BiArgKind k, uint32_t *gen_dim)
     case BI_ARG_MAT4:
         return t->kind == MGLIR_TYPE_MATRIX && t->cols == 4 && t->rows == 4 &&
                t->scalar == MGLIR_SCALAR_FLOAT;
+    case BI_ARG_MATF:
+        return t->kind == MGLIR_TYPE_MATRIX &&
+               t->scalar == MGLIR_SCALAR_FLOAT &&
+               t->cols >= 2 && t->cols <= 4 && t->rows >= 2 && t->rows <= 4;
     case BI_ARG_S2D:
         return t->kind == MGLIR_TYPE_SAMPLER && t->tex_kind == MGLIR_TEX_2D &&
                !t->tex_depth;
@@ -1867,6 +1876,7 @@ static MGLIRType *builtin_call_type(const char *name,
             continue;
         }
         uint32_t gen_dim = 0;
+        uint32_t mat_cols = 0, mat_rows = 0;
         bif_geni_unsigned = 0;
         int ok = 1;
         for (uint32_t j = 0; j < argc; j++) {
@@ -1880,6 +1890,16 @@ static MGLIRType *builtin_call_type(const char *name,
                 if (gen_dim == 0) {
                     gen_dim = d;
                 } else if (gen_dim != d) {
+                    ok = 0;
+                    break;
+                }
+            }
+            if (f->args[j] == BI_ARG_MATF && arg_types[j]) {
+                if (mat_cols == 0) {
+                    mat_cols = arg_types[j]->cols;
+                    mat_rows = arg_types[j]->rows;
+                } else if (mat_cols != arg_types[j]->cols ||
+                           mat_rows != arg_types[j]->rows) {
                     ok = 0;
                     break;
                 }
@@ -1939,6 +1959,20 @@ static MGLIRType *builtin_call_type(const char *name,
             return mglIRTypeMatrix(MGLIR_SCALAR_FLOAT, 3, 3);
         case BI_RET_MAT4:
             return mglIRTypeMatrix(MGLIR_SCALAR_FLOAT, 4, 4);
+        case BI_RET_MATF:
+            if (argc >= 1 && arg_types[0] &&
+                arg_types[0]->kind == MGLIR_TYPE_MATRIX)
+                return mglIRTypeMatrix(MGLIR_SCALAR_FLOAT,
+                                       arg_types[0]->cols,
+                                       arg_types[0]->rows);
+            return NULL;
+        case BI_RET_TRANSPOSE:
+            if (argc >= 1 && arg_types[0] &&
+                arg_types[0]->kind == MGLIR_TYPE_MATRIX)
+                return mglIRTypeMatrix(MGLIR_SCALAR_FLOAT,
+                                       arg_types[0]->rows,
+                                       arg_types[0]->cols);
+            return NULL;
         case BI_RET_VOID:
             return mglIRTypeScalar(MGLIR_SCALAR_VOID);
         }
@@ -3945,9 +3979,28 @@ static const MGLIRType *sym_uniform_block_type(const MGLIRSymbol *s)
                                                                       : NULL;
 }
 
+static const MGLIRType *sym_buffer_block_type(const MGLIRSymbol *s)
+{
+    if (!s || !(s->qualifiers & MGL_AST_Q_BUFFER)) {
+        return NULL;
+    }
+    const MGLIRType *t = s->type;
+    while (t && t->kind == MGLIR_TYPE_ARRAY) {
+        t = t->elem_type;
+    }
+    return (t && t->kind == MGLIR_TYPE_STRUCT && t->member_count > 0) ? t
+                                                                      : NULL;
+}
+
 static int sym_is_anonymous_uniform_block(const MGLIRSymbol *s)
 {
     const MGLIRType *bt = sym_uniform_block_type(s);
+    return bt && s->name && bt->name && strcmp(s->name, bt->name) == 0;
+}
+
+static int sym_is_anonymous_buffer_block(const MGLIRSymbol *s)
+{
+    const MGLIRType *bt = sym_buffer_block_type(s);
     return bt && s->name && bt->name && strcmp(s->name, bt->name) == 0;
 }
 
@@ -4079,6 +4132,34 @@ static void uniform_block_instances_check(Sema *s, const MGLIRModule *a,
     }
 }
 
+/* GLSL §4.3.9: matching buffer blocks must agree on whether an instance
+ * name is present (instance names themselves may differ). */
+static void buffer_block_instances_check(Sema *s, const MGLIRModule *a,
+                                         const MGLIRModule *b)
+{
+    for (uint32_t i = 0; i < a->symbol_count; i++) {
+        MGLIRSymbol *sa = a->symbols[i];
+        const MGLIRType *bta = sym_buffer_block_type(sa);
+        if (!bta || !bta->name) {
+            continue;
+        }
+        for (uint32_t j = 0; j < b->symbol_count; j++) {
+            MGLIRSymbol *sb = b->symbols[j];
+            const MGLIRType *btb = sym_buffer_block_type(sb);
+            if (!btb || !btb->name || strcmp(bta->name, btb->name) != 0) {
+                continue;
+            }
+            if (sym_is_anonymous_buffer_block(sa) !=
+                sym_is_anonymous_buffer_block(sb)) {
+                sema_error(s, 0,
+                           "matched buffer block '%s' has inconsistent "
+                           "instance names across stages",
+                           bta->name);
+            }
+        }
+    }
+}
+
 /* GLSL 4.60 §4.3.5 / §4.4.6.2: the same uniform name in multiple stages
  * must agree in type (and for images, layout format). */
 static void uniform_image_link_check(Sema *s, const MGLIRModule *a,
@@ -4169,6 +4250,8 @@ int mglGLSLUniformLinkCheck(const MGLIRModule *a, const MGLIRModule *b,
     if (a && b) {
         uniform_block_instances_check(&s, a, b);
         uniform_block_instances_check(&s, b, a);
+        buffer_block_instances_check(&s, a, b);
+        buffer_block_instances_check(&s, b, a);
         uniform_image_link_check(&s, a, b);
     }
     uniform_link_names_free(entries, count);

@@ -289,6 +289,11 @@ GLuint mglCreateProgram(GLMContext ctx)
     GLuint program;
 
     program = getNewName(&STATE(program_table));
+    /* GL §7.1: shader and program objects share one name space. */
+    while (program != 0 &&
+           searchHashTable(&STATE(shader_table), program) != NULL) {
+        program = getNewName(&STATE(program_table));
+    }
 
     if (!getProgram(ctx, program))
         return 0;

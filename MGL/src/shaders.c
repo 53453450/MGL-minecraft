@@ -116,10 +116,9 @@ int isShader(GLMContext ctx, GLuint shader)
 
     ptr = (Shader *)searchHashTable(&STATE(shader_table), shader);
 
-    if (ptr && !ptr->delete_status)
-        return 1;
-
-    return 0;
+    /* GL §7.1: IsShader is TRUE for existing shader objects, including
+     * those flagged for deletion but still attached to a program. */
+    return ptr ? 1 : 0;
 }
 
 Shader *findShader(GLMContext ctx, GLuint shader)
@@ -150,6 +149,11 @@ GLuint mglCreateShader(GLMContext ctx, GLenum type)
     }
 
     shader = getNewName(&STATE(shader_table));
+    /* GL §7.1: shader and program objects share one name space. */
+    while (shader != 0 &&
+           searchHashTable(&STATE(program_table), shader) != NULL) {
+        shader = getNewName(&STATE(shader_table));
+    }
 
     getShader(ctx, type, shader);
 
