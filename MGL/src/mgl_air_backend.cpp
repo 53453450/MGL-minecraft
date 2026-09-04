@@ -991,6 +991,10 @@ llvm::Value *tryFoldConst(Codegen &cg, uint32_t op, llvm::Value *l,
     auto *rc = llvm::dyn_cast<llvm::Constant>(r);
     if (!lc || !rc) return nullptr;
     if (l->getType() != r->getType()) return nullptr;
+    /* Aggregate ==/!= must walk members; ConstantExpr::getCompare on
+     * struct/array constants infinite-recurses in LLVM's folder. */
+    if (l->getType()->isStructTy() || l->getType()->isArrayTy())
+        return nullptr;
     bool fp = l->getType()->isFPOrFPVectorTy();
     if (op == MGL_OP_LAND || op == MGL_OP_LOR) {
         if (!l->getType()->isIntegerTy(1)) return nullptr;
@@ -1105,6 +1109,39 @@ llvm::Value *emitNumericBinOp(Codegen &cg, uint32_t op, llvm::Value *l,
     }
     return scalarizeBoolCompare(
         cg, op, fp ? cg.b->CreateFCmp(pred, l, r) : cg.b->CreateICmp(pred, l, r));
+}
+
+/* GLSL 4.60 §5.9: struct/array == and != are element-wise, yielding a
+ * scalar bool.  Vectors still go through emitNumericBinOp. */
+static llvm::Value *emitAggregateCompare(Codegen &cg, uint32_t op,
+                                         llvm::Value *l, llvm::Value *r) {
+    if (op != MGL_OP_EQ && op != MGL_OP_NE) return nullptr;
+    if (!l || !r || l->getType() != r->getType()) return nullptr;
+    llvm::Type *ty = l->getType();
+    if (ty->isStructTy() || ty->isArrayTy()) {
+        unsigned n = ty->isStructTy()
+                         ? ty->getStructNumElements()
+                         : (unsigned)ty->getArrayNumElements();
+        llvm::Value *acc = nullptr;
+        for (unsigned i = 0; i < n; i++) {
+            llvm::Value *lv = cg.b->CreateExtractValue(l, i);
+            llvm::Value *rv = cg.b->CreateExtractValue(r, i);
+            llvm::Value *cmp = emitAggregateCompare(cg, op, lv, rv);
+            if (!cmp) {
+                MType dummy;
+                dummy.scalar = MGLIR_SCALAR_INT;
+                cmp = emitNumericBinOp(cg, op, lv, rv, dummy, dummy);
+            }
+            if (!cmp) return nullptr;
+            acc = !acc ? cmp
+                       : (op == MGL_OP_EQ ? cg.b->CreateAnd(acc, cmp)
+                                          : cg.b->CreateOr(acc, cmp));
+        }
+        return acc ? acc
+                   : llvm::ConstantInt::get(cg.b->getInt1Ty(),
+                                            op == MGL_OP_EQ);
+    }
+    return nullptr;
 }
 
 /* Broadcast a scalar to a vector type; identity if already matching. */
@@ -2034,8 +2071,8 @@ static llvm::Value *insertSwizzleValue(Codegen &cg, llvm::Value *obj,
     return out;
 }
 
-/* Read an index chain (x[i][j]) from the root value without re-emitting
- * the object expression. */
+/* Read an index chain (x[i][j] / s.member.yz) from the root value without
+ * re-emitting the object expression. */
 static llvm::Value *readIndexChain(Codegen &cg, const MGLExpr *e,
                                    llvm::Value *rootVal,
                                    const MGLIRModule *mod,
@@ -2045,10 +2082,35 @@ static llvm::Value *readIndexChain(Codegen &cg, const MGLExpr *e,
         llvm::Value *obj = readIndexChain(cg, e->u.member.object, rootVal, mod,
                                           locals);
         if (!obj) return nullptr;
+        /* Struct field before swizzle: member names like `a` collide with
+         * the rgba swizzle alphabet (CTS local-struct `s.a = …`). */
+        if (const MGLIRType *objTy =
+                exprIRType(cg, e->u.member.object, mod, locals)) {
+            while (objTy->kind == MGLIR_TYPE_ARRAY && objTy->elem_type)
+                objTy = objTy->elem_type;
+            if (objTy->kind == MGLIR_TYPE_STRUCT) {
+                for (uint32_t i = 0; i < objTy->member_count; i++) {
+                    if (objTy->member_names[i] &&
+                        strcmp(objTy->member_names[i],
+                               e->u.member.field) == 0)
+                        return cg.b->CreateExtractValue(obj, i);
+                }
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: unknown member '") +
+                            e->u.member.field + "'";
+                return nullptr;
+            }
+        }
         std::vector<uint32_t> idx;
         if (!swizzleIndices(e->u.member.field, &idx)) {
             cg.err = 1;
             cg.errmsg = "codegen: invalid swizzle";
+            return nullptr;
+        }
+        if (!obj->getType()->isVectorTy()) {
+            cg.err = 1;
+            cg.errmsg = std::string("codegen: member '") + e->u.member.field +
+                        "' of a non-vector value is not supported";
             return nullptr;
         }
         if (idx.size() == 1)
@@ -2094,10 +2156,38 @@ static llvm::Value *updateIndexPath(Codegen &cg, const MGLExpr *lhs,
             objVal = readIndexChain(cg, objE, rootVal, mod, locals);
             if (!objVal) return nullptr;
         }
+        if (const MGLIRType *objTy = exprIRType(cg, objE, mod, locals)) {
+            while (objTy->kind == MGLIR_TYPE_ARRAY && objTy->elem_type)
+                objTy = objTy->elem_type;
+            if (objTy->kind == MGLIR_TYPE_STRUCT) {
+                for (uint32_t i = 0; i < objTy->member_count; i++) {
+                    if (objTy->member_names[i] &&
+                        strcmp(objTy->member_names[i],
+                               lhs->u.member.field) == 0) {
+                        llvm::Value *newObj =
+                            cg.b->CreateInsertValue(objVal, val, i);
+                        if (objE->kind == MGL_EXPR_VAR_REF) return newObj;
+                        return updateIndexPath(cg, objE, rootVal, newObj, mod,
+                                               locals);
+                    }
+                }
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: unknown member '") +
+                            lhs->u.member.field + "'";
+                return nullptr;
+            }
+        }
         std::vector<uint32_t> idx;
         if (!swizzleIndices(lhs->u.member.field, &idx)) {
             cg.err = 1;
             cg.errmsg = "codegen: invalid swizzle";
+            return nullptr;
+        }
+        if (!objVal->getType()->isVectorTy()) {
+            cg.err = 1;
+            cg.errmsg = std::string("codegen: member '") +
+                        lhs->u.member.field +
+                        "' of a non-vector value is not supported";
             return nullptr;
         }
         llvm::Value *newObj = insertSwizzleValue(cg, objVal, idx, val);
@@ -2110,7 +2200,7 @@ static llvm::Value *updateIndexPath(Codegen &cg, const MGLExpr *lhs,
     llvm::Value *objVal;
     if (objE->kind == MGL_EXPR_VAR_REF) {
         objVal = rootVal;
-    } else if (objE->kind == MGL_EXPR_INDEX) {
+    } else if (objE->kind == MGL_EXPR_INDEX || objE->kind == MGL_EXPR_MEMBER) {
         objVal = readIndexChain(cg, objE, rootVal, mod, locals);
         if (!objVal) return nullptr;
     } else {
@@ -7920,6 +8010,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     MGLDecl *fd = dit->second;
                     std::map<std::string, MType> ilocals = locals;
                     std::map<std::string, llvm::Value *> saved;
+                    std::map<std::string, const MGLIRType *> savedIR;
                     for (uint32_t a = 0; a < fd->param_count &&
                                         a < e->u.call.arg_count; a++) {
                         MGLDecl *pd = fd->params[a];
@@ -7936,11 +8027,26 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                             pt.cols = pd->type->mat_cols;
                             pt.rows = pd->type->mat_rows;
                         }
-                        av = coerceScalar(cg, av, pt.scalar);
+                        if (pd->type &&
+                            pd->type->base != MGL_AST_TYPE_STRUCT)
+                            av = coerceScalar(cg, av, pt.scalar);
                         if (cg.lvalues.count(pd->name))
                             saved[pd->name] = cg.lvalues[pd->name];
                         cg.lvalues[pd->name] = av;
                         ilocals[pd->name] = pt;
+                        if (pd->type &&
+                            pd->type->base == MGL_AST_TYPE_STRUCT &&
+                            pd->type->name) {
+                            auto sit =
+                                cg.structTypes.find(pd->type->name);
+                            if (sit != cg.structTypes.end()) {
+                                auto irit =
+                                    cg.localIRTypes.find(pd->name);
+                                if (irit != cg.localIRTypes.end())
+                                    savedIR[pd->name] = irit->second;
+                                cg.localIRTypes[pd->name] = sit->second;
+                            }
+                        }
                     }
                     int savedErr = cg.err;
                     bool savedInline = cg.inliningHelper;
@@ -7975,6 +8081,12 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                             cg.lvalues[pd->name] = sit->second;
                         else
                             cg.lvalues.erase(pd->name);
+                        auto iit = savedIR.find(pd->name);
+                        if (iit != savedIR.end())
+                            cg.localIRTypes[pd->name] = iit->second;
+                        else if (pd->type &&
+                                 pd->type->base == MGL_AST_TYPE_STRUCT)
+                            cg.localIRTypes.erase(pd->name);
                     }
                     if (cg.err == 1) return nullptr;
                     /* Helper return ends the inlined body, not the caller. */
@@ -7989,7 +8101,9 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                         rt.rows = fd->type->mat_rows;
                     }
                     if (ret) {
-                        if (!rt.isMatrix() && !rt.isArray())
+                        if (!rt.isMatrix() && !rt.isArray() &&
+                            !(fd->type &&
+                              fd->type->base == MGL_AST_TYPE_STRUCT))
                             ret = coerceScalar(cg, ret, rt.scalar);
                         return ret;
                     }
@@ -8211,6 +8325,9 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         if (!l || !r) return nullptr;
         llvm::Value *mres = emitMatrixBinOp(cg, e->u.binary.op, l, r);
         if (mres) return mres;
+        if (llvm::Value *agg =
+                emitAggregateCompare(cg, e->u.binary.op, l, r))
+            return agg;
         MType lt = exprType(cg, e->u.binary.lhs, mod, locals);
         MType rt = exprType(cg, e->u.binary.rhs, mod, locals);
         llvm::Value *folded =
@@ -13276,15 +13393,24 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
          * params are also registered for inlining on every stage: LLVM
          * by-value calls cannot write results back to the caller. */
         {
-            int has_out_param = 0;
+            int force_inline = 0;
             for (uint32_t p = 0; p < d->param_count; p++) {
                 if (d->params[p] &&
                     (d->params[p]->qualifiers & MGL_AST_Q_OUT)) {
-                    has_out_param = 1;
+                    force_inline = 1;
                     break;
                 }
             }
-            if (isGS || isCompute || isTCS || has_out_param) {
+            /* Metal helper ABI mishandles aggregate returns; also keep
+             * struct params on the SSA-inline path for member access. */
+            if (d->type && d->type->base == MGL_AST_TYPE_STRUCT)
+                force_inline = 1;
+            for (uint32_t p = 0; !force_inline && p < d->param_count; p++) {
+                if (d->params[p] && d->params[p]->type &&
+                    d->params[p]->type->base == MGL_AST_TYPE_STRUCT)
+                    force_inline = 1;
+            }
+            if (isGS || isCompute || isTCS || force_inline) {
                 std::string key = std::string(d->name) + "#" +
                                   std::to_string(d->param_count);
                 userFnDecls[key] = d;
@@ -13300,12 +13426,14 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             }
         }
         if (!fs) continue;
-        /* GS/TCS/compute: inline only (no LLVM callee). */
+        /* GS/TCS/compute, or helpers with aggregate return: inline only. */
         if (isGS || isCompute || isTCS)
+            continue;
+        if (d->type && d->type->base == MGL_AST_TYPE_STRUCT)
             continue;
         llvm::Type *rt = irTypeIsVoid(fs->return_type)
             ? llvm::Type::getVoidTy(ctx)
-            : llvmType(typeFromIR(fs->return_type), ctx);
+            : llvmTypeFromIR(fs->return_type, ctx);
         std::vector<llvm::Type *> pts;
         for (uint32_t p = 0; p < fs->param_count; p++) {
             const MGLIRType *pt = fs->param_types[p];
@@ -13316,7 +13444,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                                                          : texTy2d;
                 pts.push_back(st->getPointerTo(1));
             } else {
-                pts.push_back(llvmType(typeFromIR(pt), ctx));
+                pts.push_back(llvmTypeFromIR(pt, ctx));
             }
         }
         const uint32_t nExplicit = (uint32_t)pts.size();
@@ -13454,6 +13582,9 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         fc.userFnDecls = &userFnDecls;
         fc.userFnPassCull = cg.userFnPassCull;
         fc.userFnPassClip = cg.userFnPassClip;
+        /* Struct ctors / localIRTypes resolve through these maps. */
+        fc.structTypes = cg.structTypes;
+        fc.ownedIRTypes = cg.ownedIRTypes;
         std::map<std::string, MType> flocals;
         for (uint32_t p = 0; p < d->param_count; p++) {
             MGLDecl *pd = d->params[p];
@@ -13470,6 +13601,12 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             }
             flocals[pd->name] = pt;
             fc.lvalues[pd->name] = f->getArg(p);
+            if (pd->type && pd->type->base == MGL_AST_TYPE_STRUCT &&
+                pd->type->name) {
+                auto sit = cg.structTypes.find(pd->type->name);
+                if (sit != cg.structTypes.end())
+                    fc.localIRTypes[pd->name] = sit->second;
+            }
         }
         {
             uint32_t hidx = (uint32_t)d->param_count;

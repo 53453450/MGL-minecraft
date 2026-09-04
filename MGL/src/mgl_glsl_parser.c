@@ -2746,6 +2746,15 @@ more_qualifiers:
             }
         }
         expect_punct(p, ")");
+        /* GLSL `f(void)` is an empty parameter list, not one void param. */
+        if (d->param_count == 1 && d->params[0] && d->params[0]->type &&
+            d->params[0]->type->base == MGL_AST_TYPE_VOID &&
+            !d->params[0]->name) {
+            free_decl(d->params[0]);
+            free(d->params);
+            d->params = NULL;
+            d->param_count = 0;
+        }
         if (ops_at(p, "{")) {
             MGLStmt *body = parse_block(p);
             if (!body) {
