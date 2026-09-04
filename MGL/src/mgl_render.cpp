@@ -8383,6 +8383,25 @@ uint32_t mglRenderTessRoundLevelForSpacing(uint32_t spacing,
     return ceil_level;
 }
 
+/* GL 4.6 §11.2.2.1 / Vulkan: if a clamped inner level is 1 but the patch
+ * is not the all-levels-1 degenerate case, treat that inner as 1+ε before
+ * spacing round (equal→2, FO→3).  CTS inner_tessellation_level_rounding. */
+static uint32_t mglRenderTessRoundInnerLevel(uint32_t spacing,
+                                             uint32_t ceil_inner,
+                                             int all_levels_one)
+{
+    if (ceil_inner == 1u && !all_levels_one)
+        ceil_inner = 2u;
+    return mglRenderTessRoundLevelForSpacing(spacing, ceil_inner);
+}
+
+static uint32_t mglRenderTessCeilLevel1(float v)
+{
+    if (v < 1.0f)
+        v = 1.0f;
+    return (uint32_t)ceilf(v);
+}
+
 /* TES XFB field byte size for a GL type (FLOAT/INT/UINT + vec2/3/4; 0 for
  * unsupported).  Matches the ObjC mglTESXFBFieldByteSize and the packed-write
  * stride contract injected by mglFixMSLTesAsComputeKernel: a zero result
@@ -8640,10 +8659,23 @@ uint32_t mglRenderTessEvalItemsPerPatch(
         float i1 = *(const __fp16*)&tf->inside[1];
         if (i1 < 1.0f) i1 = 1.0f;
         {
+            float e0 = *(const __fp16*)&tf->edge[0];
+            float e1 = *(const __fp16*)&tf->edge[1];
+            float e2 = *(const __fp16*)&tf->edge[2];
+            float e3 = *(const __fp16*)&tf->edge[3];
+            const uint32_t cI0 = mglRenderTessCeilLevel1(i0);
+            const uint32_t cI1 = mglRenderTessCeilLevel1(i1);
+            const uint32_t cO0 = mglRenderTessCeilLevel1(e0);
+            const uint32_t cO1 = mglRenderTessCeilLevel1(e1);
+            const uint32_t cO2 = mglRenderTessCeilLevel1(e2);
+            const uint32_t cO3 = mglRenderTessCeilLevel1(e3);
+            const int allOne =
+                (cI0 == 1u && cI1 == 1u && cO0 == 1u && cO1 == 1u &&
+                 cO2 == 1u && cO3 == 1u);
             const uint32_t nx =
-                mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(i0));
+                mglRenderTessRoundInnerLevel(spacing, cI0, allOne);
             const uint32_t ny =
-                mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(i1));
+                mglRenderTessRoundInnerLevel(spacing, cI1, allOne);
             /* Level-1 non-point: 2 triangles = 6 verts so items/3 != 0. */
             if (!point_mode && nx == 1u && ny == 1u)
                 return 6u;
@@ -8688,8 +8720,17 @@ uint32_t mglRenderTessEvalItemsPerPatch(
         }
     }
     {
+        const uint32_t cI0 = mglRenderTessCeilLevel1(i0);
+        float e0 = *(const __fp16*)&tf->edge[0];
+        float e1 = *(const __fp16*)&tf->edge[1];
+        float e2 = *(const __fp16*)&tf->edge[2];
+        const uint32_t cO0 = mglRenderTessCeilLevel1(e0);
+        const uint32_t cO1 = mglRenderTessCeilLevel1(e1);
+        const uint32_t cO2 = mglRenderTessCeilLevel1(e2);
+        const int allOne =
+            (cI0 == 1u && cO0 == 1u && cO1 == 1u && cO2 == 1u);
         const uint32_t n =
-            mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(i0));
+            mglRenderTessRoundInnerLevel(spacing, cI0, allOne);
         /* Single triangle (inner==1): 3 corner TessCoords for both point and
          * non-point; TES compute already expands n==1 to corners. */
         if (n == 1u)

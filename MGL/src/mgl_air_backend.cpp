@@ -14723,8 +14723,32 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 v = b.CreateFDiv(toF(lineIdx), toF(n));
             }
         } else if (tu->layout_primitive == MGL_AST_TES_QUADS) {
-            llvm::Value *nx = roundLevel(ceilClamp(loadHalf(4), 1.0f));
-            llvm::Value *ny = roundLevel(ceilClamp(loadHalf(5), 1.0f));
+            /* GL §11.2.2.1: clamped inner==1 (and not all-levels-1) is
+             * treated as 1+ε before spacing round (CTS inner rounding). */
+            llvm::Value *cI0 = ceilClamp(loadHalf(4), 1.0f);
+            llvm::Value *cI1 = ceilClamp(loadHalf(5), 1.0f);
+            llvm::Value *cO0 = ceilClamp(loadHalf(0), 1.0f);
+            llvm::Value *cO1 = ceilClamp(loadHalf(1), 1.0f);
+            llvm::Value *cO2 = ceilClamp(loadHalf(2), 1.0f);
+            llvm::Value *cO3 = ceilClamp(loadHalf(3), 1.0f);
+            llvm::Value *allOne = b.CreateAnd(
+                b.CreateICmpEQ(cI0, b.getInt32(1)),
+                b.CreateAnd(
+                    b.CreateICmpEQ(cI1, b.getInt32(1)),
+                    b.CreateAnd(
+                        b.CreateICmpEQ(cO0, b.getInt32(1)),
+                        b.CreateAnd(
+                            b.CreateICmpEQ(cO1, b.getInt32(1)),
+                            b.CreateAnd(b.CreateICmpEQ(cO2, b.getInt32(1)),
+                                        b.CreateICmpEQ(cO3, b.getInt32(1)))))));
+            llvm::Value *bump0 = b.CreateAnd(
+                b.CreateICmpEQ(cI0, b.getInt32(1)), b.CreateNot(allOne));
+            llvm::Value *bump1 = b.CreateAnd(
+                b.CreateICmpEQ(cI1, b.getInt32(1)), b.CreateNot(allOne));
+            llvm::Value *nx = roundLevel(
+                b.CreateSelect(bump0, b.getInt32(2), cI0));
+            llvm::Value *ny = roundLevel(
+                b.CreateSelect(bump1, b.getInt32(2), cI1));
             if (tu->layout_point_mode) {
                 /* Outer perimeter when any outer > 1.  Interior rings for
                  * high inner are not yet implemented (points_verification
@@ -14866,7 +14890,20 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             }
         } else {
             /* Triangles (point_mode / XFB-forced compute). */
-            llvm::Value *nIn = roundLevel(ceilClamp(loadHalf(4), 1.0f));
+            llvm::Value *cI0 = ceilClamp(loadHalf(4), 1.0f);
+            llvm::Value *cO0 = ceilClamp(loadHalf(0), 1.0f);
+            llvm::Value *cO1 = ceilClamp(loadHalf(1), 1.0f);
+            llvm::Value *cO2 = ceilClamp(loadHalf(2), 1.0f);
+            llvm::Value *allOne = b.CreateAnd(
+                b.CreateICmpEQ(cI0, b.getInt32(1)),
+                b.CreateAnd(
+                    b.CreateICmpEQ(cO0, b.getInt32(1)),
+                    b.CreateAnd(b.CreateICmpEQ(cO1, b.getInt32(1)),
+                                b.CreateICmpEQ(cO2, b.getInt32(1)))));
+            llvm::Value *bumpIn = b.CreateAnd(
+                b.CreateICmpEQ(cI0, b.getInt32(1)), b.CreateNot(allOne));
+            llvm::Value *nIn = roundLevel(
+                b.CreateSelect(bumpIn, b.getInt32(2), cI0));
             llvm::Value *uPerim = nullptr, *vPerim = nullptr;
             llvm::Value *anyOuter = b.getFalse();
             if (tu->layout_point_mode) {
