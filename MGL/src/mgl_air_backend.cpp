@@ -12805,6 +12805,15 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
      * compute = [buffer, ssbo..., tex/smp..., thread_position_in_grid]. */
     std::vector<llvm::Type *> paramTys;
     bool hasBuffer = !uniforms.empty();
+    /* Metal buffer slots reserved by the packed plain-uniform buffer.
+     * Must match mglAirReflectModule ssbo_binding for every stage that
+     * emits the pack (VS/TES/CS/GS/TCS via isKernel, plus FS).  LLVM
+     * argument indices still use the VS/TES/kernel-only skip below —
+     * on FS the pack is a trailing arg, not a leading one. */
+    const uint32_t plainBufMetalSlots =
+        hasBuffer && (isVS || isTES || isKernel ||
+                      stage == MGL_STAGE_FRAGMENT)
+            ? 1u : 0u;
     uint32_t attrCount = 0;
     for (VarSym &v : syms) {
         if (!(isVS && v.kind == VarSym::ATTR)) continue;
@@ -13327,8 +13336,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         }
     }
     {
-        uint32_t location = (isCapture ? 1u : 0u) +
-            (((isVS || isTES || isKernel) && hasBuffer) ? 1u : 0u) +
+        uint32_t location = (isCapture ? 1u : 0u) + plainBufMetalSlots +
             (isCapture ? 0u : attrCount);
         for (VarSym &v : syms) {
             if (v.kind != VarSym::SSBO) continue;
@@ -14397,7 +14405,6 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             w, b.getInt32(2));
     }
     emitStmt(cg, mainDecl->body, &mod, &locals);
-
     if (isTCS && cg.tessFactorPtr && cg.invocationPos && cg.patchPos &&
         !b.GetInsertBlock()->getTerminator()) {
         /* Metal's tessellation-factor record is six half values: four edge
@@ -15021,11 +15028,11 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     /* SSBO buffers: independent writable device buffers (air.read_write),
      * one parameter per instance. */
     {
-        /* location_index matches reflection (attrs always reserved).
-         * LLVM arg index still skips attrs for capture (attrs are last). */
+        /* location_index matches reflection (attrs + plain pack reserved).
+         * LLVM arg index still skips attrs/pack only on VS/TES/kernel —
+         * FS keeps SSBOs as leading args. */
         uint32_t loc =
-            ((isVS || isTES || isKernel) ? (hasBuffer ? 1 : 0) : 0) +
-            attrCount + userBufferLocationBase;
+            plainBufMetalSlots + attrCount + userBufferLocationBase;
         uint32_t ssboArg = (isCapture ? 1 : 0) +
                            ((isVS || isTES || isKernel) ? (hasBuffer ? 1 : 0) : 0) +
                            (isCapture ? 0 : attrCount);
@@ -15076,7 +15083,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
          * metallib read slot 1 — VS UBO reads failed whenever GS/tess
          * capture ran without vertex attributes (420pack binding_uniform). */
         uint32_t loc =
-            ((isVS || isTES || isKernel) ? (hasBuffer ? 1 : 0) : 0) +
+            plainBufMetalSlots +
             ssboCount + attrCount + userBufferLocationBase;
         uint32_t uboArg = (isCapture ? 1 : 0) +
                           ((isVS || isTES || isKernel) ? (hasBuffer ? 1 : 0) : 0) +
@@ -15122,7 +15129,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     /* Atomic counter buffers: one device buffer per atomic_uint instance. */
     {
         uint32_t loc =
-            ((isVS || isTES || isKernel) ? (hasBuffer ? 1 : 0) : 0) +
+            plainBufMetalSlots +
             ssboCount + uboCount + attrCount + userBufferLocationBase;
         uint32_t acArg = (isCapture ? 1 : 0) +
                          ((isVS || isTES || isKernel) ? (hasBuffer ? 1 : 0) : 0) +
@@ -15669,21 +15676,23 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         if (usesPrimitiveId) {
             if (stage == MGL_STAGE_FRAGMENT && has_gs) {
                 /* GS expansion path: the id arrives as a flat float carrier
-                 * written by the passthrough vertex function, which declares
-                 * its output as vertex_output + generated(<name>f).  The FS
-                 * input must pair with that exact generated() name — a
-                 * location-indexed stage_input here crashes Apple's compiler
-                 * once the input is actually read. */
-                /* Base name must match the passthrough vertex function's
-                 * output variable ("mgl_primitive_id", see
-                 * MGLRenderer+RenderPass.m) so the generated() names pair. */
+                 * from the passthrough VS, which declares
+                 *   layout(location = MGL_AIR_PRIMITIVE_ID_LOCATION)
+                 *   flat out float mgl_primitive_id;
+                 * Per varyingIfaceTag(), that output is tagged mgl_loc_N —
+                 * not the GLSL name — so the FS must use the same location
+                 * tag (see the has_gs forceLocationTag comment above). */
                 MType carrierType;
+                carrierType.scalar = MGLIR_SCALAR_FLOAT;
+                const std::string primTag =
+                    "mgl_loc_" +
+                    std::to_string((unsigned)MGL_AIR_PRIMITIVE_ID_LOCATION);
                 argNodes.push_back(llvm::MDNode::get(ctx, {
                     llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                         llvm::Type::getInt32Ty(ctx), mArgSlot++)),
                     llvm::MDString::get(ctx, "air.fragment_input"),
                     llvm::MDString::get(
-                        ctx, airGenerated("mgl_primitive_id", carrierType)),
+                        ctx, airGenerated(primTag, carrierType)),
                     llvm::MDString::get(ctx, "air.flat"),
                     llvm::MDString::get(ctx, "air.arg_type_name"),
                     llvm::MDString::get(ctx, "float"),

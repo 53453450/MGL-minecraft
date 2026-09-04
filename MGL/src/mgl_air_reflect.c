@@ -699,11 +699,16 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
             hasPlain = 1;
         }
     }
+    /* Plain-uniform pack occupies one Metal buffer slot ahead of SSBOs
+     * on every stage that emits hasBuffer (VS/FS/CS/TES/GS).  Fragment
+     * used to start SSBOs at 0 while the pack also claimed slot 0, so
+     * FS SSBO stores silently hit the wrong buffer. */
     uint32_t ssbo_binding = user_buffer_base +
         (isVS ? (hasPlain + attrCount)
               : ((stage == MGL_STAGE_COMPUTE ||
                   stage == MGL_STAGE_TESS_EVALUATION ||
-                  stage == MGL_STAGE_GEOMETRY) ? hasPlain : 0));
+                  stage == MGL_STAGE_GEOMETRY ||
+                  stage == MGL_STAGE_FRAGMENT) ? hasPlain : 0));
     uint32_t ubo_binding = ssbo_binding + ssboCount;
     uint32_t gl_ubo_binding = 0;
     uint32_t ac_binding = ubo_binding + uboSlotCount;
