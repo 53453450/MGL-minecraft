@@ -2176,10 +2176,11 @@ int mglRenderDispatchComputePlan(
  * encoder creation, pipeline/binding replay, dispatch, and endEncoding. */
 /* Per-patch TES compute expansion emits one dispatch (+ contract bytes
  * binding) per input patch. Cull-distance isoline grids reach ~144 patches;
- * other CTS draws can be larger. Keep headroom above the old 128/512 caps
- * that silently returned GL_INVALID_OPERATION once patchCount exceeded them. */
-#define MGL_RENDER_COMPUTE_EXECUTION_MAX_OPS 2048u
-#define MGL_RENDER_COMPUTE_EXECUTION_MAX_DISPATCHES 512u
+ * barrier CTS uses 1024 patches (2048 result verts). Keep headroom above
+ * the old 128/512 caps that returned GL_INVALID_OPERATION once patchCount
+ * exceeded them. */
+#define MGL_RENDER_COMPUTE_EXECUTION_MAX_OPS 4096u
+#define MGL_RENDER_COMPUTE_EXECUTION_MAX_DISPATCHES 2048u
 
 typedef struct MGLRenderComputeDispatchEntry_t {
     /* Replay this dispatch after exactly binding_op_count binding operations. */

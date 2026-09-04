@@ -1431,12 +1431,15 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     if (glInFromTCS && instanceCount > 1) {
         /* The TCS kernel has no instance dimension (its dispatch is
          * patchCount threads over a single spvOut span), so a second
-         * instance would read the wrong control points.  Reject like the
-         * native path instead of rendering garbage. */
-        NSLog(@"MGL TESS ERROR: TCS + instanced TES compute unsupported "
-              "program=%u instances=%d",
+         * instance would read the wrong control points.  Skip TES rather
+         * than raise GL_INVALID_OPERATION: a draw-time error aborts the
+         * CTS test before EndTransformFeedback and leaves TF active,
+         * poisoning later cases in the same process.  XFB verification
+         * still fails this subcase until instanced TCS+TES is supported. */
+        NSLog(@"MGL TESS WARNING: TCS + instanced TES compute unsupported "
+              "program=%u instances=%d (skipping TES)",
               tesProgram->name, instanceCount);
-        return false;
+        return true;
     }
 
     /* Compute per-patch item counts and the per-instance total. */

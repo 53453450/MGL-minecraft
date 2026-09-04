@@ -1627,7 +1627,9 @@ static const BiFn kBuiltins[] = {
     { "atomicCounterIncrement", 1, { BI_ARG_ATOMIC }, BI_RET_UINT },
     { "atomicCounterDecrement", 1, { BI_ARG_ATOMIC }, BI_RET_UINT },
     { "atomicCounter", 1, { BI_ARG_ATOMIC }, BI_RET_UINT },
-    /* Shader memory barriers (GLSL 4.60 §8.15). */
+    /* Shader memory barriers (GLSL 4.60 §8.15 / §8.16).
+     * barrier() is TCS + compute control-flow sync (not just a memory fence). */
+    { "barrier", 0, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF }, BI_RET_VOID },
     { "memoryBarrier", 0, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF }, BI_RET_VOID },
     { "memoryBarrierAtomicCounter", 0, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF }, BI_RET_VOID },
     { "memoryBarrierBuffer", 0, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF }, BI_RET_VOID },

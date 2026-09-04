@@ -3283,13 +3283,26 @@ static llvm::Value *tessPatchIndexForStageIn(Codegen &cg)
 
 static llvm::Value *emitPatchVaryingLoad(Codegen &cg, const VarSym &sym)
 {
-    if (!cg.isTessEval || !sym.isPatch || !cg.captureBuf || !cg.patchId ||
-        sym.location == UINT32_MAX) {
+    if (!sym.isPatch || sym.location == UINT32_MAX || !cg.captureBuf)
+        return nullptr;
+    llvm::Value *patchIdx = nullptr;
+    uint64_t stride = 0;
+    if (cg.isTessEval) {
+        if (!cg.patchId) return nullptr;
+        patchIdx = cg.patchId;
+        stride = cg.patchInStride;
+    } else if (cg.isTessControl) {
+        /* TCS must reload patch outs from the shared patch-out buffer so
+         * barrier()-guarded cross-invocation writes are visible. */
+        if (!cg.patchPos) return nullptr;
+        patchIdx = cg.b->CreateExtractElement(cg.patchPos, cg.b->getInt32(0));
+        stride = cg.patchOutStride;
+    } else {
         return nullptr;
     }
     llvm::Value *off = cg.b->CreateAdd(
-        cg.b->CreateMul(cg.b->CreateZExt(cg.patchId, cg.b->getInt64Ty()),
-                        cg.b->getInt64(cg.patchInStride)),
+        cg.b->CreateMul(cg.b->CreateZExt(patchIdx, cg.b->getInt64Ty()),
+                        cg.b->getInt64(stride)),
         cg.b->getInt64(sym.location * 16u));
     llvm::Type *ty = llvmType(sym.type, *cg.ctx);
     llvm::Value *p = cg.b->CreateGEP(cg.b->getInt8Ty(), cg.captureBuf, off);
@@ -3313,6 +3326,70 @@ static bool emitPatchVaryingStore(Codegen &cg, const VarSym &sym,
     llvm::Type *ty = llvmType(sym.type, *cg.ctx);
     if (value->getType() != ty)
         value = coerceScalar(cg, value, sym.type.scalar);
+    llvm::Value *p = cg.b->CreateGEP(cg.b->getInt8Ty(), cg.captureBuf, off);
+    p = cg.b->CreateBitCast(p, ty->getPointerTo(1));
+    cg.b->CreateAlignedStore(value, p, llvm::Align(4));
+    return true;
+}
+
+/* Indexed patch out/in: patch out T arr[N]; arr[i] = … / TES patch in. */
+static llvm::Value *emitPatchArrayElementLoad(
+    Codegen &cg, const VarSym &sym, llvm::Value *index)
+{
+    if (!sym.isPatch || !sym.type.isArray() || sym.location == UINT32_MAX ||
+        !cg.captureBuf)
+        return nullptr;
+    index = coerceScalar(cg, index, MGLIR_SCALAR_UINT);
+    llvm::Value *patchIdx = nullptr;
+    uint64_t stride = 0;
+    if (cg.isTessControl) {
+        if (!cg.patchPos) return nullptr;
+        patchIdx = cg.b->CreateExtractElement(cg.patchPos, cg.b->getInt32(0));
+        stride = cg.patchOutStride;
+    } else if (cg.isTessEval) {
+        if (!cg.patchId) return nullptr;
+        patchIdx = cg.patchId;
+        stride = cg.patchInStride;
+    } else {
+        return nullptr;
+    }
+    MType elem = sym.type;
+    elem.arr = 0;
+    llvm::Value *slot = cg.b->CreateAdd(
+        cg.b->getInt32(sym.location), index);
+    llvm::Value *off = cg.b->CreateAdd(
+        cg.b->CreateMul(cg.b->CreateZExt(patchIdx, cg.b->getInt64Ty()),
+                        cg.b->getInt64(stride)),
+        cg.b->CreateMul(cg.b->CreateZExt(slot, cg.b->getInt64Ty()),
+                        cg.b->getInt64(16)));
+    llvm::Type *ty = llvmType(elem, *cg.ctx);
+    llvm::Value *p = cg.b->CreateGEP(cg.b->getInt8Ty(), cg.captureBuf, off);
+    p = cg.b->CreateBitCast(p, ty->getPointerTo(1));
+    return cg.b->CreateAlignedLoad(ty, p, llvm::Align(4));
+}
+
+static bool emitPatchArrayElementStore(Codegen &cg, const VarSym &sym,
+                                       llvm::Value *index,
+                                       llvm::Value *value)
+{
+    if (!cg.isTessControl || !sym.isPatch || !sym.type.isArray() ||
+        sym.location == UINT32_MAX || !cg.captureBuf || !cg.patchPos)
+        return false;
+    index = coerceScalar(cg, index, MGLIR_SCALAR_UINT);
+    llvm::Value *patch = cg.b->CreateExtractElement(
+        cg.patchPos, cg.b->getInt32(0));
+    MType elem = sym.type;
+    elem.arr = 0;
+    llvm::Value *slot = cg.b->CreateAdd(
+        cg.b->getInt32(sym.location), index);
+    llvm::Value *off = cg.b->CreateAdd(
+        cg.b->CreateMul(cg.b->CreateZExt(patch, cg.b->getInt64Ty()),
+                        cg.b->getInt64(cg.patchOutStride)),
+        cg.b->CreateMul(cg.b->CreateZExt(slot, cg.b->getInt64Ty()),
+                        cg.b->getInt64(16)));
+    llvm::Type *ty = llvmType(elem, *cg.ctx);
+    if (value->getType() != ty)
+        value = coerceScalar(cg, value, elem.scalar);
     llvm::Value *p = cg.b->CreateGEP(cg.b->getInt8Ty(), cg.captureBuf, off);
     p = cg.b->CreateBitCast(p, ty->getPointerTo(1));
     cg.b->CreateAlignedStore(value, p, llvm::Align(4));
@@ -3522,21 +3599,41 @@ static llvm::Value *emitTessStageArrayLoad(
         e->kind != MGL_EXPR_INDEX || !e->u.index.object ||
         e->u.index.object->kind != MGL_EXPR_VAR_REF) return nullptr;
     const char *name = e->u.index.object->u.var_ref.name;
-    VarSym *sym = codegenStageSymbol(cg, name, VarSym::VARYING);
+    /* TCS may read per-vertex outs written by other invocations (after
+     * barrier()). Prefer OUTPUT/stageOut; fall back to stage-in varyings. */
+    VarSym *sym = nullptr;
+    bool fromOutput = false;
+    if (cg.isTessControl) {
+        sym = codegenStageSymbol(cg, name, VarSym::OUTPUT);
+        if (sym && sym->location != UINT32_MAX) {
+            fromOutput = true;
+        } else {
+            sym = codegenStageSymbol(cg, name, VarSym::VARYING);
+        }
+    } else {
+        sym = codegenStageSymbol(cg, name, VarSym::VARYING);
+    }
     if (!sym || sym->location == UINT32_MAX) return nullptr;
     llvm::Value *index = emitExpr(cg, e->u.index.index, mod, locals);
     if (!index) return nullptr;
     llvm::Value *record = nullptr;
     llvm::Value *base = nullptr;
+    uint64_t stride = 0;
     if (cg.isGeometry) {
         if (!cg.geometryInputPtr || !cg.geometryPrimitiveId) return nullptr;
         index = coerceScalar(cg, index, MGLIR_SCALAR_UINT);
         record = geometryInputRecordIndex(cg, index);
         base = cg.geometryInputPtr;
+    } else if (fromOutput) {
+        if (!cg.stageOutPtr || !cg.patchPos) return nullptr;
+        record = tessStageRecordIndex(cg, index, false);
+        base = cg.stageOutPtr;
+        stride = cg.stageOutStride;
     } else {
         if (!cg.stageInPtr || !cg.patchPos || !cg.indirectPtr) return nullptr;
         record = tessStageRecordIndex(cg, index, true);
         base = cg.stageInPtr;
+        stride = cg.stageInStride;
     }
     if (cg.isGeometry) {
         return loadGeometryInputVarying(cg, *sym, cg.b->getInt32(sym->location),
@@ -3544,7 +3641,7 @@ static llvm::Value *emitTessStageArrayLoad(
     }
     llvm::Value *off = cg.b->CreateAdd(
         cg.b->CreateMul(cg.b->CreateZExt(record, cg.b->getInt64Ty()),
-                        cg.b->getInt64(cg.stageInStride)),
+                        cg.b->getInt64(stride)),
         cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE + sym->location * 16u));
     llvm::Type *ty = llvmType(sym->type, *cg.ctx);
     llvm::Type *loadTy = ty;
@@ -3591,7 +3688,8 @@ static bool emitTessStageArrayStore(
     return true;
 }
 
-/* TCS/TES: instance[i].field — flattened interface-block member. */
+/* TCS/TES: instance[i].field — flattened interface-block member.
+ * Reject swizzle fields (`.xyz`) so they take the vector swizzle path. */
 static bool tessBlockMemberPath(const MGLExpr *e, const char **instOut,
                                 const MGLExpr **indexOut, const char **fieldOut)
 {
@@ -3605,9 +3703,15 @@ static bool tessBlockMemberPath(const MGLExpr *e, const char **instOut,
     const char *inst = idxE->u.index.object->u.var_ref.name;
     if (!inst || !strcmp(inst, "gl_in") || !strcmp(inst, "gl_out"))
         return false;
+    const char *field = e->u.member.field;
+    if (field) {
+        std::vector<uint32_t> swz;
+        if (swizzleIndices(field, &swz))
+            return false;
+    }
     if (instOut) *instOut = inst;
     if (indexOut) *indexOut = idxE->u.index.index;
-    if (fieldOut) *fieldOut = e->u.member.field;
+    if (fieldOut) *fieldOut = field;
     return true;
 }
 
@@ -5665,6 +5769,21 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             }
             return loaded;
         }
+        if (cg.isTessControl && (s->qualifiers & MGL_AST_Q_PATCH) &&
+            (s->qualifiers & MGL_AST_Q_OUT)) {
+            /* Reload from patch-out buffer — SSA cache would hide other
+             * invocations' barrier-ordered writes. */
+            VarSym *patch = codegenStageSymbol(
+                cg, e->u.var_ref.name, VarSym::OUTPUT);
+            llvm::Value *loaded = patch
+                ? emitPatchVaryingLoad(cg, *patch) : nullptr;
+            if (!loaded) {
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: unavailable TCS patch output '") +
+                            e->u.var_ref.name + "'";
+            }
+            return loaded;
+        }
         VarSym v;
         v.name = s->name;
         v.type = typeFromIR(s->type);
@@ -5953,6 +6072,27 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 emitGeometryBlockArrayLoad(cg, e, mod, locals))
             return blockElem;
         if (cg.err) return nullptr;
+        if (e->u.index.object && e->u.index.object->kind == MGL_EXPR_VAR_REF) {
+            const char *an = e->u.index.object->u.var_ref.name;
+            VarSym *patchArr = nullptr;
+            if (cg.isTessControl)
+                patchArr = codegenStageSymbol(cg, an, VarSym::OUTPUT);
+            else if (cg.isTessEval)
+                patchArr = codegenStageSymbol(
+                    cg, an, VarSym::CONTROL_POINT_INPUT);
+            if (patchArr && patchArr->isPatch && patchArr->type.isArray()) {
+                llvm::Value *idx =
+                    emitExpr(cg, e->u.index.index, mod, locals);
+                if (!idx) return nullptr;
+                llvm::Value *loaded =
+                    emitPatchArrayElementLoad(cg, *patchArr, idx);
+                if (!loaded) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: unavailable patch array element load";
+                }
+                return loaded;
+            }
+        }
         if (llvm::Value *stageValue =
                 emitTessStageArrayLoad(cg, e, mod, locals))
             return stageValue;
@@ -6858,6 +6998,23 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         }
         /* Storage-image ops: texture handle, no sampler.  GL 1D / 1D_ARRAY
          * are Metal-backed as 2D / 2D_ARRAY (height or y = 0). */
+        if (strcmp(name, "barrier") == 0) {
+            /* GLSL barrier(): TCS patch invocations / CS workgroup threads.
+             * TCS dispatch is one Metal threadgroup per patch, so map to
+             * threadgroup_barrier(mem_device | mem_threadgroup) —
+             * air.wg.barrier(flags, scope) with flags=1|2 (device|TG). */
+            if (e->u.call.arg_count != 0) {
+                cg.err = 1;
+                cg.errmsg = "codegen: barrier() takes no arguments";
+                return nullptr;
+            }
+            llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
+            llvm::Type *voidTy = llvm::Type::getVoidTy(*cg.ctx);
+            callAirFn(cg, "air.wg.barrier", voidTy,
+                      {llvm::ConstantInt::get(i32, 3),
+                       llvm::ConstantInt::get(i32, 1)});
+            return cg.b->getInt32(0);
+        }
         if (strcmp(name, "memoryBarrier") == 0 ||
             strcmp(name, "memoryBarrierAtomicCounter") == 0 ||
             strcmp(name, "memoryBarrierBuffer") == 0 ||
@@ -8698,17 +8855,60 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
 
         if (cg.isTessControl && lhs && lhs->kind == MGL_EXPR_INDEX &&
             lhs->u.index.object &&
-            lhs->u.index.object->kind == MGL_EXPR_VAR_REF &&
-            codegenStageSymbol(
-                cg, lhs->u.index.object->u.var_ref.name, VarSym::OUTPUT)) {
-            if (e->u.assign.op != MGL_OP_ASSIGN) {
-                cg.err = 1;
-                cg.errmsg = "codegen: compound TCS stage output assignment "
-                            "is not implemented";
-                return nullptr;
+            lhs->u.index.object->kind == MGL_EXPR_VAR_REF) {
+            VarSym *outSym = codegenStageSymbol(
+                cg, lhs->u.index.object->u.var_ref.name, VarSym::OUTPUT);
+            if (outSym) {
+                auto compoundInto = [&](llvm::Value *old) -> llvm::Value * {
+                    if (!old) return nullptr;
+                    uint32_t binop = 0;
+                    switch (e->u.assign.op) {
+                    case MGL_OP_ADD_ASSIGN: binop = MGL_OP_ADD; break;
+                    case MGL_OP_SUB_ASSIGN: binop = MGL_OP_SUB; break;
+                    case MGL_OP_MUL_ASSIGN: binop = MGL_OP_MUL; break;
+                    case MGL_OP_DIV_ASSIGN: binop = MGL_OP_DIV; break;
+                    default: break;
+                    }
+                    if (!binop) {
+                        cg.err = 1;
+                        cg.errmsg = "codegen: compound TCS stage output "
+                                    "assignment is not implemented";
+                        return nullptr;
+                    }
+                    return emitNumericBinOp(
+                        cg, binop, old, rhsV,
+                        exprType(cg, lhs, mod, locals),
+                        exprType(cg, e->u.assign.rhs, mod, locals));
+                };
+                if (outSym->isPatch && outSym->type.isArray()) {
+                    llvm::Value *idx =
+                        emitExpr(cg, lhs->u.index.index, mod, locals);
+                    if (!idx) return nullptr;
+                    if (e->u.assign.op != MGL_OP_ASSIGN) {
+                        llvm::Value *old =
+                            emitPatchArrayElementLoad(cg, *outSym, idx);
+                        v = compoundInto(old);
+                        if (!v) return nullptr;
+                    }
+                    if (!emitPatchArrayElementStore(cg, *outSym, idx, v)) {
+                        cg.err = 1;
+                        cg.errmsg = "codegen: unavailable TCS patch array "
+                                    "output store";
+                        return nullptr;
+                    }
+                    return v;
+                }
+                if (!outSym->isPatch) {
+                    if (e->u.assign.op != MGL_OP_ASSIGN) {
+                        llvm::Value *old =
+                            emitTessStageArrayLoad(cg, lhs, mod, locals);
+                        v = compoundInto(old);
+                        if (!v) return nullptr;
+                    }
+                    emitTessStageArrayStore(cg, lhs, v, mod, locals);
+                    return v;
+                }
             }
-            emitTessStageArrayStore(cg, lhs, v, mod, locals);
-            return v;
         }
 
         if (cg.isTessControl && lhs && lhs->kind == MGL_EXPR_INDEX &&
