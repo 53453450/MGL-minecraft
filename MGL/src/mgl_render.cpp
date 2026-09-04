@@ -8604,8 +8604,16 @@ uint32_t mglRenderTessEvalItemsPerPatch(
         }
         float i1 = *(const __fp16*)&tf->inside[1];
         if (i1 < 1.0f) i1 = 1.0f;
-        return mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(i0)) *
-               mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(i1));
+        {
+            const uint32_t nx =
+                mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(i0));
+            const uint32_t ny =
+                mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(i1));
+            /* Level-1 non-point: 2 triangles = 6 verts so items/3 != 0. */
+            if (!point_mode && nx == 1u && ny == 1u)
+                return 6u;
+            return nx * ny;
+        }
     }
     if (point_mode) {
         float e0 = *(const __fp16*)&tf->edge[0];
@@ -8638,9 +8646,10 @@ uint32_t mglRenderTessEvalItemsPerPatch(
     {
         const uint32_t n =
             mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(i0));
-        if (point_mode && n == 1u) {
+        /* Single triangle (inner==1): 3 corner TessCoords for both point and
+         * non-point; TES compute already expands n==1 to corners. */
+        if (n == 1u)
             return 3u;
-        }
         return n * n;
     }
 }

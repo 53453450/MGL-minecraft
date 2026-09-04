@@ -14627,14 +14627,61 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 u = b.CreateSelect(anyOuter, uPerim, uGrid);
                 v = b.CreateSelect(anyOuter, vPerim, vGrid);
             } else {
-                llvm::Value *i = b.CreateURem(innerId, nx);
-                llvm::Value *j = b.CreateUDiv(innerId, nx);
-                u = b.CreateFDiv(
-                    b.CreateFAdd(toF(i), llvm::ConstantFP::get(f32, 0.5)),
-                    toF(nx));
-                v = b.CreateFDiv(
-                    b.CreateFAdd(toF(j), llvm::ConstantFP::get(f32, 0.5)),
-                    toF(ny));
+                /* Level-1: 2 CCW triangles (6 verts). Higher levels: cell centres
+                 * (incomplete vs GL edge subdivision; preserves prior CTS passes). */
+                llvm::Value *isN1 = b.CreateAnd(
+                    b.CreateICmpEQ(nx, b.getInt32(1)),
+                    b.CreateICmpEQ(ny, b.getInt32(1)));
+                llvm::BasicBlock *quadN1BB = llvm::BasicBlock::Create(
+                    ctx, "tesk_quad_n1", kfn);
+                llvm::BasicBlock *quadGridBB = llvm::BasicBlock::Create(
+                    ctx, "tesk_quad_grid", kfn);
+                llvm::BasicBlock *quadDoneBB = llvm::BasicBlock::Create(
+                    ctx, "tesk_quad_uv", kfn);
+                b.CreateCondBr(isN1, quadN1BB, quadGridBB);
+                llvm::Value *uN1 = nullptr, *vN1 = nullptr;
+                llvm::Value *uGrid = nullptr, *vGrid = nullptr;
+                {
+                    b.SetInsertPoint(quadN1BB);
+                    static const float uCorners[6] = {
+                        0.f, 1.f, 1.f, 0.f, 1.f, 0.f};
+                    static const float vCorners[6] = {
+                        0.f, 0.f, 1.f, 0.f, 1.f, 1.f};
+                    uN1 = llvm::ConstantFP::get(f32, 0.0);
+                    vN1 = llvm::ConstantFP::get(f32, 0.0);
+                    for (int vi = 5; vi >= 0; --vi) {
+                        llvm::Value *match =
+                            b.CreateICmpEQ(innerId, b.getInt32(vi));
+                        uN1 = b.CreateSelect(
+                            match, llvm::ConstantFP::get(f32, uCorners[vi]),
+                            uN1);
+                        vN1 = b.CreateSelect(
+                            match, llvm::ConstantFP::get(f32, vCorners[vi]),
+                            vN1);
+                    }
+                    b.CreateBr(quadDoneBB);
+                }
+                {
+                    b.SetInsertPoint(quadGridBB);
+                    llvm::Value *i = b.CreateURem(innerId, nx);
+                    llvm::Value *j = b.CreateUDiv(innerId, nx);
+                    uGrid = b.CreateFDiv(
+                        b.CreateFAdd(toF(i), llvm::ConstantFP::get(f32, 0.5)),
+                        toF(nx));
+                    vGrid = b.CreateFDiv(
+                        b.CreateFAdd(toF(j), llvm::ConstantFP::get(f32, 0.5)),
+                        toF(ny));
+                    b.CreateBr(quadDoneBB);
+                }
+                b.SetInsertPoint(quadDoneBB);
+                llvm::PHINode *uPhi = b.CreatePHI(f32, 2, "tesk_quad_u");
+                llvm::PHINode *vPhi = b.CreatePHI(f32, 2, "tesk_quad_v");
+                uPhi->addIncoming(uN1, quadN1BB);
+                uPhi->addIncoming(uGrid, quadGridBB);
+                vPhi->addIncoming(vN1, quadN1BB);
+                vPhi->addIncoming(vGrid, quadGridBB);
+                u = uPhi;
+                v = vPhi;
             }
         } else {
             /* Triangles (point_mode / XFB-forced compute). */
