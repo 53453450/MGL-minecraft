@@ -8634,6 +8634,8 @@ uint32_t mglRenderTessEvalItemsPerPatch(
                 mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(e3));
             if (n0 > 1u || n1 > 1u || n2 > 1u || n3 > 1u)
                 return n0 + n1 + n2 + n3;
+            /* All outer ≤1: four unit-quad corners (matches TES compute). */
+            return 4u;
         }
         float i1 = *(const __fp16*)&tf->inside[1];
         if (i1 < 1.0f) i1 = 1.0f;

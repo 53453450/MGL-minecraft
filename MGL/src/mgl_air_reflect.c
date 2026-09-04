@@ -700,12 +700,16 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
         }
     }
     /* Plain-uniform pack occupies one Metal buffer slot ahead of SSBOs
-     * on every stage that emits hasBuffer (VS/FS/CS/TES/GS).  Fragment
+     * on every stage that emits hasBuffer (VS/FS/CS/TCS/TES/GS).  Fragment
      * used to start SSBOs at 0 while the pack also claimed slot 0, so
-     * FS SSBO stores silently hit the wrong buffer. */
+     * FS SSBO stores silently hit the wrong buffer.  TCS is isKernel and
+     * also emits the pack (mgl_air_backend plainBufMetalSlots); omitting
+     * it here left CTS basic-atomic-case2 writing SSBO at reflected
+     * slot 0 while the metallib read/wrote slot 1. */
     uint32_t ssbo_binding = user_buffer_base +
         (isVS ? (hasPlain + attrCount)
               : ((stage == MGL_STAGE_COMPUTE ||
+                  stage == MGL_STAGE_TESS_CONTROL ||
                   stage == MGL_STAGE_TESS_EVALUATION ||
                   stage == MGL_STAGE_GEOMETRY ||
                   stage == MGL_STAGE_FRAGMENT) ? hasPlain : 0));

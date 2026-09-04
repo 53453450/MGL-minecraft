@@ -14749,8 +14749,34 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 llvm::Value *vGrid = b.CreateFDiv(
                     b.CreateFAdd(toF(j), llvm::ConstantFP::get(f32, 0.5)),
                     toF(ny));
-                u = b.CreateSelect(anyOuter, uPerim, uGrid);
-                v = b.CreateSelect(anyOuter, vPerim, vGrid);
+                /* Level-1 with all outer ≤1: GL point_mode emits the unit
+                 * quad's four corners (not the cell centre).  Centre
+                 * (0.5,0.5) is rejected by CTS filters such as
+                 * basic-atomic-case2 (`TessCoord.x/y >= 0.5 → return`). */
+                llvm::Value *isN1 = b.CreateAnd(
+                    b.CreateICmpEQ(nx, b.getInt32(1)),
+                    b.CreateICmpEQ(ny, b.getInt32(1)));
+                llvm::Value *c0 = b.CreateICmpEQ(innerId, b.getInt32(0));
+                llvm::Value *c1 = b.CreateICmpEQ(innerId, b.getInt32(1));
+                llvm::Value *c2 = b.CreateICmpEQ(innerId, b.getInt32(2));
+                llvm::Value *uN1 = b.CreateSelect(
+                    c0, llvm::ConstantFP::get(f32, 0.0),
+                    b.CreateSelect(
+                        c1, llvm::ConstantFP::get(f32, 1.0),
+                        b.CreateSelect(c2, llvm::ConstantFP::get(f32, 1.0),
+                                       llvm::ConstantFP::get(f32, 0.0))));
+                llvm::Value *vN1 = b.CreateSelect(
+                    c0, llvm::ConstantFP::get(f32, 0.0),
+                    b.CreateSelect(
+                        c1, llvm::ConstantFP::get(f32, 0.0),
+                        b.CreateSelect(c2, llvm::ConstantFP::get(f32, 1.0),
+                                       llvm::ConstantFP::get(f32, 1.0))));
+                llvm::Value *uInner =
+                    b.CreateSelect(isN1, uN1, uGrid);
+                llvm::Value *vInner =
+                    b.CreateSelect(isN1, vN1, vGrid);
+                u = b.CreateSelect(anyOuter, uPerim, uInner);
+                v = b.CreateSelect(anyOuter, vPerim, vInner);
             } else {
                 /* Level-1: 2 CCW triangles (6 verts). Higher levels: cell centres
                  * (incomplete vs GL edge subdivision; preserves prior CTS passes). */
