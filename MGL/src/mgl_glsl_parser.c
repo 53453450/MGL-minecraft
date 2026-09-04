@@ -540,11 +540,12 @@ static void record_struct_member_lens(MGLParser *p, const char *prefix,
 {
     if (!p || !prefix || !members) return;
     for (uint32_t i = 0; i < count; i++) {
-        MGLDecl *m = members[i];
-        if (!m || !m->name || !m->type) continue;
-        char path[96];
-        snprintf(path, sizeof(path), "%s.%s", prefix, m->name);
-        record_member_type(p, path, m->type);
+        for (MGLDecl *m = members[i]; m; m = m->next_declarator) {
+            if (!m->name || !m->type) continue;
+            char path[96];
+            snprintf(path, sizeof(path), "%s.%s", prefix, m->name);
+            record_member_type(p, path, m->type);
+        }
     }
 }
 

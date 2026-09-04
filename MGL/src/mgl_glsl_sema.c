@@ -46,6 +46,34 @@
 #define MGL_SEMA_MAX_ATOMIC_COUNTER_BUFFER_SIZE 16384u
 #define MGL_SEMA_MAX_PATCH_VERTICES 32u
 
+/* Comma-separated declarators (`int a, b;`) share one AST node chain via
+ * next_declarator.  Struct / interface-block member lists store only the
+ * head of each declaration; expand the chain when building IR types so
+ * every name becomes a distinct member (CTS advanced-usage-sync). */
+static uint32_t count_expanded_members(MGLDecl *const *members, uint32_t count)
+{
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < count; i++) {
+        for (const MGLDecl *m = members[i]; m; m = m->next_declarator)
+            n++;
+    }
+    return n;
+}
+
+static const MGLDecl *nth_expanded_member(MGLDecl *const *members,
+                                          uint32_t count, uint32_t idx)
+{
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < count; i++) {
+        for (const MGLDecl *m = members[i]; m; m = m->next_declarator) {
+            if (n == idx)
+                return m;
+            n++;
+        }
+    }
+    return NULL;
+}
+
 /* ------------------------------------------------------------------ */
 /* Diagnostics                                                         */
 /* ------------------------------------------------------------------ */
@@ -596,7 +624,8 @@ static MGLIRType *resolve_decl_type_major(Sema *s, SymTab *tab,
     if (d->type && d->type->base == MGL_AST_TYPE_STRUCT &&
         !d->type->struct_def &&
         d->struct_members && d->struct_member_count > 0) {
-        uint32_t n = d->struct_member_count;
+        uint32_t n =
+            count_expanded_members(d->struct_members, d->struct_member_count);
         MGLIRType **members = (MGLIRType **)calloc(n, sizeof(MGLIRType *));
         const char **names = (const char **)calloc(n, sizeof(char *));
         if (!members || !names) {
@@ -611,7 +640,15 @@ static MGLIRType *resolve_decl_type_major(Sema *s, SymTab *tab,
         if (block_major == MGL_AST_MATRIX_DEFAULT)
             block_major = inherited_major;
         for (uint32_t i = 0; i < n; i++) {
-            MGLDecl *m = d->struct_members[i];
+            const MGLDecl *m = nth_expanded_member(
+                d->struct_members, d->struct_member_count, i);
+            if (!m) {
+                for (uint32_t j = 0; j < i; j++)
+                    mglIRTypeDestroy(members[j]);
+                free(members);
+                free(names);
+                return NULL;
+            }
             members[i] = resolve_decl_type_major(s, tab, m, block_major);
             names[i] = m->name;
             if (!members[i]) {
@@ -706,7 +743,9 @@ static MGLIRType *resolve_type_spec(Sema *s, SymTab *tab, const MGLTypeSpec *ts)
     case MGL_AST_TYPE_STRUCT: {
         if (ts->struct_def) {
             /* inline struct definition */
-            uint32_t n = ts->struct_def->struct_member_count;
+            uint32_t n = count_expanded_members(
+                ts->struct_def->struct_members,
+                ts->struct_def->struct_member_count);
             MGLIRType **members = (MGLIRType **)calloc(n, sizeof(MGLIRType *));
             const char **names = (const char **)calloc(n, sizeof(char *));
             if (!members || !names) {
@@ -715,7 +754,16 @@ static MGLIRType *resolve_type_spec(Sema *s, SymTab *tab, const MGLTypeSpec *ts)
                 return NULL;
             }
             for (uint32_t i = 0; i < n; i++) {
-                MGLDecl *m = ts->struct_def->struct_members[i];
+                const MGLDecl *m = nth_expanded_member(
+                    ts->struct_def->struct_members,
+                    ts->struct_def->struct_member_count, i);
+                if (!m) {
+                    for (uint32_t j = 0; j < i; j++)
+                        mglIRTypeDestroy(members[j]);
+                    free(members);
+                    free(names);
+                    return NULL;
+                }
                 members[i] = resolve_decl_type(s, tab, m);
                 names[i] = m->name;
                 if (!members[i]) {
@@ -2190,6 +2238,11 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                  * threads_per_threadgroup. */
                 return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_UINT));
             }
+            if (strcmp(e->u.var_ref.name, "gl_WorkGroupSize") == 0) {
+                /* Compute built-in constant uvec3 from layout(local_size_*). */
+                return scratch_type(s,
+                                    mglIRTypeVector(MGLIR_SCALAR_UINT, 3));
+            }
             if (strcmp(e->u.var_ref.name, "gl_WorkGroupID") == 0) {
                 /* Compute built-in; the AIR backend maps it to the
                  * threadgroup_position_in_grid kernel argument. */
@@ -3433,8 +3486,11 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
      * are block-level only; member memory quals must not fight the block. */
     if (d->struct_members && d->struct_member_count > 0 &&
         (d->qualifiers & (MGL_AST_Q_UNIFORM | MGL_AST_Q_BUFFER))) {
-        for (uint32_t mi = 0; mi < d->struct_member_count; mi++) {
-            const MGLDecl *m = d->struct_members[mi];
+        uint32_t nexp = count_expanded_members(d->struct_members,
+                                               d->struct_member_count);
+        for (uint32_t mi = 0; mi < nexp; mi++) {
+            const MGLDecl *m = nth_expanded_member(
+                d->struct_members, d->struct_member_count, mi);
             if (!m) continue;
             if (m->init) {
                 sema_error(s, m->line,
@@ -3817,21 +3873,25 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
                         msym->qualifiers = d->qualifiers;
                         /* Member-level memory quals (readonly/writeonly)
                          * augment the block's. */
-                        if (d->struct_members && m < d->struct_member_count &&
-                            d->struct_members[m]) {
+                        const MGLDecl *mdecl = nth_expanded_member(
+                            d->struct_members, d->struct_member_count, m);
+                        if (mdecl) {
                             msym->qualifiers |=
-                                d->struct_members[m]->qualifiers &
+                                mdecl->qualifiers &
                                 (MGL_AST_Q_READONLY | MGL_AST_Q_WRITEONLY);
                         }
                         symtab_insert(tab, msym);
                     }
                 }
                 ms->qualifiers = d->qualifiers;
-                if (d->struct_members && m < d->struct_member_count &&
-                    d->struct_members[m]) {
-                    ms->qualifiers |=
-                        d->struct_members[m]->qualifiers &
-                        (MGL_AST_Q_READONLY | MGL_AST_Q_WRITEONLY);
+                {
+                    const MGLDecl *mdecl = nth_expanded_member(
+                        d->struct_members, d->struct_member_count, m);
+                    if (mdecl) {
+                        ms->qualifiers |=
+                            mdecl->qualifiers &
+                            (MGL_AST_Q_READONLY | MGL_AST_Q_WRITEONLY);
+                    }
                 }
                 ms->layout = d->layout;
                 ms->binding = isym->binding;
@@ -4042,13 +4102,19 @@ int mglGLSLSemanticCheck(const MGLTranslationUnit *tu, int stage,
             if (sym) {
                 sym->kind = SYM_STRUCT;
                 /* build IR struct type */
-                uint32_t n = d->struct_member_count;
+                uint32_t n = count_expanded_members(d->struct_members,
+                                                    d->struct_member_count);
                 MGLIRType **members = (MGLIRType **)calloc(n, sizeof(MGLIRType *));
                 const char **names = (const char **)calloc(n, sizeof(char *));
                 if (members && names) {
                     int ok = 1;
                     for (uint32_t j = 0; j < n; j++) {
-                        MGLDecl *m = d->struct_members[j];
+                        const MGLDecl *m = nth_expanded_member(
+                            d->struct_members, d->struct_member_count, j);
+                        if (!m) {
+                            ok = 0;
+                            break;
+                        }
                         /* Block-level layout(row_major) is the default for
                          * matrix members (GLSL 4.60 §4.4.5); an explicit
                          * member layout overrides via resolve_decl_type_major.

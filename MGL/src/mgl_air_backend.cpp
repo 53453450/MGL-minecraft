@@ -167,6 +167,11 @@ struct Codegen {
     llvm::Value *localInvocationIndex = nullptr; /* compute: i32 flat local */
     llvm::Value *workGroupPos = nullptr; /* compute: <3 x i32> group position */
     llvm::Value *numWorkGroups = nullptr; /* compute: <3 x i32> dispatch grid */
+    /* gl_WorkGroupSize: constant from layout(local_size_*); axes default to 1. */
+    uint32_t workGroupSizeX = 1;
+    uint32_t workGroupSizeY = 1;
+    uint32_t workGroupSizeZ = 1;
+    bool hasWorkGroupSize = false;
     llvm::Value *invocationPos = nullptr; /* TCS: <3 x i32> threadgroup position */
     llvm::Value *patchPos = nullptr;      /* TCS: <3 x i32> threadgroup grid position */
     llvm::Value *stageInPtr = nullptr;   /* TCS gl_in replacement, buffer(24) */
@@ -5527,6 +5532,19 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 return nullptr;
             }
             return cg.localInvocationIndex;
+        }
+        if (strcmp(e->u.var_ref.name, "gl_WorkGroupSize") == 0) {
+            if (!cg.hasWorkGroupSize) {
+                cg.err = 1;
+                cg.errmsg = "codegen: gl_WorkGroupSize requires a compute "
+                            "stage";
+                return nullptr;
+            }
+            llvm::Type *i32 = cg.b->getInt32Ty();
+            return llvm::ConstantVector::get(
+                {llvm::ConstantInt::get(i32, cg.workGroupSizeX),
+                 llvm::ConstantInt::get(i32, cg.workGroupSizeY),
+                 llvm::ConstantInt::get(i32, cg.workGroupSizeZ)});
         }
         if (strcmp(e->u.var_ref.name, "gl_WorkGroupID") == 0) {
             if (!cg.workGroupPos) {
@@ -13496,6 +13514,18 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     cg.isTessEval = isTES;
     cg.isGeometry = isGS;
     cg.isTESCompute = isTESCompute;
+    if (isCompute && tu) {
+        cg.hasWorkGroupSize = true;
+        cg.workGroupSizeX =
+            tu->layout_local_size_x > 0 ? (uint32_t)tu->layout_local_size_x
+                                        : 1u;
+        cg.workGroupSizeY =
+            tu->layout_local_size_y > 0 ? (uint32_t)tu->layout_local_size_y
+                                        : 1u;
+        cg.workGroupSizeZ =
+            tu->layout_local_size_z > 0 ? (uint32_t)tu->layout_local_size_z
+                                        : 1u;
+    }
     cg.usesPatchCullDistance = usesPatchCullDistance;
     cg.cullDistancePassthroughCount =
         usesCullDistancePassthrough ? activeCullCount : 0u;
