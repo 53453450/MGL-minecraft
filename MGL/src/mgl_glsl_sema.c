@@ -2873,6 +2873,13 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
 
 static void layout_block(Sema *s, const MGLDecl *d, MGLIRType *block_type)
 {
+    MGLIRType *root = block_type;
+    while (block_type && block_type->kind == MGLIR_TYPE_ARRAY &&
+           block_type->elem_type)
+        block_type = block_type->elem_type;
+    if (!block_type || block_type->kind != MGLIR_TYPE_STRUCT ||
+        block_type->member_count == 0)
+        return;
     MGLIRLayoutStd std = MGLIR_LAYOUT_NONE;
     uint32_t layout_qual = d->layout;
     if (layout_qual == MGL_AST_LAYOUT_DEFAULT && s && s->tu) {
@@ -2911,7 +2918,9 @@ static void layout_block(Sema *s, const MGLDecl *d, MGLIRType *block_type)
         }
     }
     uint32_t size = 0;
-    if (mglIRComputeLayout(block_type, std, &size) != 0) {
+    /* Layout the declared type (array-of-block or bare block) so
+     * member_offsets and array_stride are both populated. */
+    if (mglIRComputeLayout(root, std, &size) != 0) {
         sema_error(s, d->line, "failed to compute layout for block '%s'",
                    d->name ? d->name : "?");
     }
@@ -3284,9 +3293,31 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
                                  ? (uint32_t)d->layout_location
                                  : UINT32_MAX;
             isym->stream = d->layout_stream;
+            /* Interface blocks (`uniform Block { ... }`) vs named struct
+             * uniforms (`struct S{...}; uniform S s`) — only the former
+             * become Metal UBO arguments. */
+            if (d->struct_members && d->struct_member_count > 0 &&
+                (d->qualifiers & (MGL_AST_Q_UNIFORM | MGL_AST_Q_BUFFER))) {
+                isym->is_interface_block = 1;
+            }
             /* layout block: compute offsets on the block type */
             if (d->struct_members && d->struct_member_count > 0) {
                 layout_block(s, d, t);
+            } else if ((d->qualifiers &
+                        (MGL_AST_Q_UNIFORM | MGL_AST_Q_BUFFER)) &&
+                       !(d->qualifiers &
+                         (MGL_AST_Q_IN | MGL_AST_Q_OUT))) {
+                /* Named struct uniforms (`struct S {...}; uniform S s;`)
+                 * are not interface-block decls, but Metal loads and
+                 * glUniform member writes still need std140 offsets. */
+                MGLIRType *gate = t;
+                while (gate && gate->kind == MGLIR_TYPE_ARRAY &&
+                       gate->elem_type)
+                    gate = gate->elem_type;
+                if (gate && gate->kind == MGLIR_TYPE_STRUCT &&
+                    gate->member_count > 0 && !t->layout_valid) {
+                    layout_block(s, d, t);
+                }
             }
             s->module->symbols = (MGLIRSymbol **)realloc(
                 s->module->symbols,

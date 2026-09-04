@@ -218,6 +218,13 @@ static const MGLIRType *air_uniform_block_type(const MGLIRType *type)
         ? type : NULL;
 }
 
+/* True interface blocks (`uniform Block { ... }`) — not named struct
+ * uniforms in the default block (`struct S{...}; uniform S s;`). */
+static int air_symbol_is_ubo(const MGLIRSymbol *s)
+{
+    return s && s->is_interface_block && air_uniform_block_type(s->type);
+}
+
 static GLuint air_uniform_block_element_count(const MGLIRType *type)
 {
     /* Length-1 instance arrays still need one Metal buffer slot and
@@ -588,13 +595,13 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
              * Metal slot; only the block itself advances ssboCount. */
             ssboCount++;
         } else if ((q & MGL_AST_Q_UNIFORM) && !s->block_name &&
-                   air_uniform_block_type(t)) {
+                   air_symbol_is_ubo(s)) {
             uboSlotCount += air_uniform_block_element_count(t);
         } else if ((q & MGL_AST_Q_UNIFORM) &&
                    base_t && base_t->kind != MGLIR_TYPE_SAMPLER &&
                    base_t && base_t->kind != MGLIR_TYPE_IMAGE &&
                    base_t->kind != MGLIR_TYPE_ATOMIC_COUNTER && !s->block_name &&
-                   !air_uniform_block_type(t)) {
+                   !air_symbol_is_ubo(s)) {
             hasPlain = 1;
         }
     }
@@ -760,7 +767,7 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                 continue;   /* block member: covered by the block resource */
             }
             const MGLIRType *block_type = air_uniform_block_type(t);
-            if (block_type) {
+            if (block_type && s->is_interface_block) {
                 /* A block instance array is one GL block per element, backed
                  * by consecutive Metal buffer arguments.  Keep one reflected
                  * resource with per-element binding metadata so the common
@@ -793,7 +800,9 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                 ubo_binding += block_count;
                 continue;
             }
-            /* Plain uniform: collect into the packed aggregate. */
+            /* Plain uniform (including named struct uniforms): collect into
+             * the packed aggregate.  Struct/array-of-struct are expanded to
+             * GL leaf names (`s.a`, `s[0].b`) below when emitting agg. */
             MGLIRType **nt = (MGLIRType **)realloc(
                 agg_types, (agg_count + 1) * sizeof(MGLIRType *));
             const char **nn = (const char **)realloc(
@@ -873,48 +882,114 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
     }
 
     if (agg_count > 0) {
-        /* std140 layout, mirroring the AIR backend's collectUniforms. */
+        /* std140 layout, mirroring the AIR backend's collectUniforms.
+         * Named struct uniforms expand to leaf paths (`s.a`, `s[0].b`) so
+         * glGetUniformLocation / glUniform match the GL default-block
+         * contract; the AIR pack still stores one contiguous region per
+         * top-level symbol (codegen uses bufferOffsets[symbol]). */
+        SpirvUBOMember *leaves = NULL;
+        uint32_t leaf_count = 0, leaf_cap = 0;
         uint32_t off = 0;
-        agg.ubo_members = (SpirvUBOMember *)calloc(
-            agg_count, sizeof(SpirvUBOMember));
-        if (!agg.ubo_members) {
-            free(agg_types);
-            free(agg_names);
-            mglAirReflectDestroy(lists);
-            if (err && errCap) snprintf(err, errCap, "out of memory");
-            return -1;
-        }
-        agg.ubo_member_count = agg_count;
         for (uint32_t m = 0; m < agg_count; m++) {
+            MGLIRType *ty = agg_types[m];
+            const char *nm = agg_names[m];
             uint32_t size = 0;
-            if (mglIRComputeLayout(agg_types[m], MGLIR_LAYOUT_STD140, &size) != 0) {
+            if (mglIRComputeLayout(ty, MGLIR_LAYOUT_STD140, &size) != 0) {
                 size = 4;
             }
-            off = (off + agg_types[m]->layout.alignment - 1) &
-                  ~(agg_types[m]->layout.alignment - 1);
-            SpirvUBOMember *u = &agg.ubo_members[m];
-            u->name = strdup(agg_names[m]);
-            u->query_name = strdup(agg_names[m]);
-            u->gl_type = mglAirGLTypeFromIR(agg_types[m]);
-            u->offset = off;
-            u->array_stride = (agg_types[m]->kind == MGLIR_TYPE_ARRAY)
-                                  ? (GLint)agg_types[m]->layout.array_stride
-                                  : -1;
-            u->matrix_stride = (agg_types[m]->kind == MGLIR_TYPE_MATRIX)
-                                   ? (GLint)agg_types[m]->layout.matrix_stride
-                                   : -1;
-            u->is_row_major = GL_FALSE;
-            u->size = mglAirGLArraySizeFromIR(agg_types[m]);
-            u->location_offset = (GLint)m;
-            u->top_level_array_size = u->size;
-            u->top_level_array_stride = u->array_stride;
+            off = (off + ty->layout.alignment - 1) &
+                  ~(ty->layout.alignment - 1);
+            const MGLIRType *st = air_uniform_block_type(ty);
+            if (st) {
+                if (ty->kind == MGLIR_TYPE_ARRAY && ty->elem_type) {
+                    uint32_t n = ty->array_size ? ty->array_size : 1u;
+                    uint32_t stride = ty->layout.array_stride > 0
+                                          ? (uint32_t)ty->layout.array_stride
+                                          : size / (n ? n : 1u);
+                    for (uint32_t el = 0; el < n; el++) {
+                        char epath[192];
+                        snprintf(epath, sizeof(epath), "%s[%u]",
+                                 nm ? nm : "?", el);
+                        if (air_block_flatten(ty->elem_type,
+                                              off + el * stride, epath,
+                                              &leaves, &leaf_count,
+                                              &leaf_cap) != 0) {
+                            for (uint32_t i = 0; i < leaf_count; i++) {
+                                free((void *)leaves[i].name);
+                                free(leaves[i].query_name);
+                            }
+                            free(leaves);
+                            free(agg_types);
+                            free(agg_names);
+                            mglAirReflectDestroy(lists);
+                            if (err && errCap)
+                                snprintf(err, errCap, "out of memory");
+                            return -1;
+                        }
+                    }
+                } else if (air_block_flatten(st, off, nm ? nm : "?",
+                                             &leaves, &leaf_count,
+                                             &leaf_cap) != 0) {
+                    for (uint32_t i = 0; i < leaf_count; i++) {
+                        free((void *)leaves[i].name);
+                        free(leaves[i].query_name);
+                    }
+                    free(leaves);
+                    free(agg_types);
+                    free(agg_names);
+                    mglAirReflectDestroy(lists);
+                    if (err && errCap)
+                        snprintf(err, errCap, "out of memory");
+                    return -1;
+                }
+            } else {
+                if (leaf_count == leaf_cap) {
+                    uint32_t ncap = leaf_cap ? leaf_cap * 2 : 8;
+                    SpirvUBOMember *nl = (SpirvUBOMember *)realloc(
+                        leaves, ncap * sizeof(SpirvUBOMember));
+                    if (!nl) {
+                        for (uint32_t i = 0; i < leaf_count; i++) {
+                            free((void *)leaves[i].name);
+                            free(leaves[i].query_name);
+                        }
+                        free(leaves);
+                        free(agg_types);
+                        free(agg_names);
+                        mglAirReflectDestroy(lists);
+                        if (err && errCap)
+                            snprintf(err, errCap, "out of memory");
+                        return -1;
+                    }
+                    leaves = nl;
+                    leaf_cap = ncap;
+                }
+                SpirvUBOMember *u = &leaves[leaf_count++];
+                memset(u, 0, sizeof(*u));
+                u->name = strdup(nm);
+                u->query_name = strdup(nm);
+                u->gl_type = mglAirGLTypeFromIR(ty);
+                u->offset = off;
+                u->array_stride = (ty->kind == MGLIR_TYPE_ARRAY)
+                                      ? (GLint)ty->layout.array_stride
+                                      : -1;
+                u->matrix_stride = (ty->kind == MGLIR_TYPE_MATRIX)
+                                       ? (GLint)ty->layout.matrix_stride
+                                       : -1;
+                u->is_row_major = GL_FALSE;
+                u->size = mglAirGLArraySizeFromIR(ty);
+                u->top_level_array_size = u->size;
+                u->top_level_array_stride = u->array_stride;
+            }
             off += size;
         }
+        for (uint32_t m = 0; m < leaf_count; m++)
+            leaves[m].location_offset = (GLint)m;
         agg_size = off;
         char agg_name[64];
         snprintf(agg_name, sizeof(agg_name), "air_uniforms_s%d", stage);
         agg.name = strdup(agg_name);
-        agg.ubo_member_count = agg_count;
+        agg.ubo_members = leaves;
+        agg.ubo_member_count = leaf_count;
         agg.required_size = agg_size;
         agg.uniform_location = -1;   /* assigned by the link pass per stage */
         agg.location = UINT32_MAX;   /* let the link pass assign locations */
@@ -926,6 +1001,12 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
         if (nl) {
             l->list = nl;
             l->list[l->count++] = agg;
+        } else {
+            for (uint32_t i = 0; i < leaf_count; i++) {
+                free((void *)leaves[i].name);
+                free(leaves[i].query_name);
+            }
+            free(leaves);
         }
         free(agg_types);
         free(agg_names);

@@ -1936,7 +1936,8 @@ GLint  mglGetUniformLocation(GLMContext ctx, GLuint program, const GLchar *name)
                         for (GLuint m = 0; m < list[i].ubo_member_count; m++) {
                             const SpirvUBOMember *member = &list[i].ubo_members[m];
                             const char *mqn = member->query_name ? member->query_name : member->name;
-                            if (mglSafeCStringEquals(mqn, name)) {
+                            if (mglSafeCStringEquals(mqn, name) ||
+                                mglActiveUniformNamesMatch(mqn, name)) {
                                 return base_location + member->location_offset;
                             }
                             /* Handle array-element queries like "u0[0].m1[1]"

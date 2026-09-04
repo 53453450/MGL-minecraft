@@ -731,10 +731,11 @@ int collectUniforms(const MGLIRModule *mod, std::vector<Uniform> *out,
                          * AIR args; packing them into the plain uniform blob
                          * would desync reflection offsets. */
         }
-        /* Uniform blocks (struct types, including instance arrays) and their
-         * anonymous-block members are independent device buffers, not part
-         * of the plain uniform pack. */
-        if (s->block_name || uniformBlockType(s->type))
+        /* Uniform blocks (interface-block structs) and their anonymous-block
+         * members are independent device buffers, not part of the plain
+         * uniform pack.  Named struct uniforms (`uniform S s`) stay here. */
+        if (s->block_name ||
+            (s->is_interface_block && uniformBlockType(s->type)))
             continue;
         uint32_t size = 0;
         if (mglIRComputeLayout(s->type, MGLIR_LAYOUT_STD140, &size) != 0) {
@@ -5597,7 +5598,11 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 (ov->qualifiers & MGL_AST_Q_UNIFORM) &&
                 structGate && structGate->kind == MGLIR_TYPE_STRUCT &&
                 structGate->member_count > 0) {
+                /* Interface blocks → dedicated UBO Metal buffers.
+                 * Named struct uniforms → plain pack at bufferOffsets. */
                 llvm::Value *base = nullptr;
+                uint32_t plainOff = startOff;
+                if (ov->is_interface_block) {
                 if (rootIndexExpr) {
                     /* Instance array: each element binds its own device
                      * buffer; pick it through the entry alloca. */
@@ -5655,9 +5660,40 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                 "' has no device buffer";
                     return nullptr;
                 }
+                } else {
+                    if (!cg.bufferPtr || !objName ||
+                        !cg.bufferOffsets.count(objName)) {
+                        cg.err = 1;
+                        cg.errmsg =
+                            std::string("codegen: plain uniform struct '") +
+                            (objName ? objName : "?") +
+                            "' has no packed offset";
+                        return nullptr;
+                    }
+                    base = cg.bufferPtr;
+                    plainOff = cg.bufferOffsets[objName] + startOff;
+                    if (rootIndexExpr) {
+                        /* Array of named struct uniforms in the plain pack. */
+                        llvm::Value *elemIndex =
+                            emitExpr(cg, rootIndexExpr->u.index.index, mod,
+                                     locals);
+                        if (!elemIndex) return nullptr;
+                        elemIndex = coerceScalar(cg, elemIndex,
+                                                 MGLIR_SCALAR_INT);
+                        uint32_t stride =
+                            ov->type->kind == MGLIR_TYPE_ARRAY
+                                ? (uint32_t)ov->type->layout.array_stride
+                                : 0u;
+                        llvm::Value *byte = cg.b->CreateMul(
+                            cg.b->CreateSExt(elemIndex, cg.b->getInt64Ty()),
+                            cg.b->getInt64(stride));
+                        base = cg.b->CreateGEP(cg.b->getInt8Ty(), base,
+                                               byte);
+                    }
+                }
                 return emitBlockMemberChain(cg, e, base, ubStruct,
                                             bufName ? bufName : objName, mod,
-                                            locals, startOff);
+                                            locals, plainOff);
             }
         }
         /* Local / temporary struct field access (e.g. S.member after an
@@ -5759,6 +5795,8 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 structGate && structGate->kind == MGLIR_TYPE_STRUCT &&
                 structGate->member_count > 0) {
                 llvm::Value *base = nullptr;
+                uint32_t plainOff = startOff;
+                if (ov->is_interface_block) {
                 if (rootIndexExpr) {
                     auto slotIt = cg.uboElemSlot.find(objName);
                     auto tyIt = cg.uboElemArrTy.find(objName);
@@ -5794,9 +5832,39 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                 "' has no device buffer";
                     return nullptr;
                 }
+                } else {
+                    if (!cg.bufferPtr || !objName ||
+                        !cg.bufferOffsets.count(objName)) {
+                        cg.err = 1;
+                        cg.errmsg =
+                            std::string("codegen: plain uniform struct '") +
+                            (objName ? objName : "?") +
+                            "' has no packed offset";
+                        return nullptr;
+                    }
+                    base = cg.bufferPtr;
+                    plainOff = cg.bufferOffsets[objName] + startOff;
+                    if (rootIndexExpr) {
+                        llvm::Value *elemIndex =
+                            emitExpr(cg, rootIndexExpr->u.index.index, mod,
+                                     locals);
+                        if (!elemIndex) return nullptr;
+                        elemIndex = coerceScalar(cg, elemIndex,
+                                                 MGLIR_SCALAR_INT);
+                        uint32_t stride =
+                            ov->type->kind == MGLIR_TYPE_ARRAY
+                                ? (uint32_t)ov->type->layout.array_stride
+                                : 0u;
+                        llvm::Value *byte = cg.b->CreateMul(
+                            cg.b->CreateSExt(elemIndex, cg.b->getInt64Ty()),
+                            cg.b->getInt64(stride));
+                        base = cg.b->CreateGEP(cg.b->getInt8Ty(), base,
+                                               byte);
+                    }
+                }
                 return emitBlockMemberChain(cg, e, base, ubStruct,
                                             bufName ? bufName : objName, mod,
-                                            locals, startOff);
+                                            locals, plainOff);
             }
         }
         /* Anonymous UBO member: `var[i]` where `var` was flattened out of
@@ -11909,7 +11977,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                         ut->elem_type->kind == MGLIR_TYPE_ATOMIC_COUNTER)) {
                 v.kind = VarSym::ATOMIC_COUNTER;
             } else if (ut->kind == MGLIR_TYPE_STRUCT &&
-                       ut->member_count > 0) {
+                       ut->member_count > 0 &&
+                       s->is_interface_block) {
                 v.kind = VarSym::UBO;
             } else {
                 v.kind = VarSym::BUFFER;
