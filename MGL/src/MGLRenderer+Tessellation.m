@@ -1736,8 +1736,9 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
         NSUInteger destinationOffset = 0u;
         bool destinationOffsetOK = false;
         if (xfbSlot->buf) {
-            if (xfbSlot->buf->data.dirty_bits &
-                (DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR)) {
+            if (xfbSlot->buf->size > 0 &&
+                (xfbSlot->buf->data.dirty_bits &
+                 (DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR))) {
                 /* Consume CPU initialization before the XFB blit writes the
                  * same backing. Otherwise a later map can upload the stale
                  * shadow over the captured GPU data. */
@@ -1745,6 +1746,10 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
                     [self clearStageBindingCopyBacks:&stageCopyBacks];
                     return false;
                 }
+            } else if (xfbSlot->buf->size == 0) {
+                /* glBufferData(..., 0, NULL) is legal; nothing to upload. */
+                xfbSlot->buf->data.dirty_bits &=
+                    ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
             }
             if (!xfbSlot->buf->data.mtl_data) {
                 [self bindMTLBuffer:xfbSlot->buf];
@@ -2124,6 +2129,17 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     if (![self ensureAIRTessEvalPassthroughFunctionForProgram:tesProgram]) {
         NSLog(@"MGL TESS ERROR: TES passthrough vertex unavailable program=%u",
               (unsigned)tesProgram->name);
+        /* XFB capture already completed above; do not fail the draw and
+         * leave transform feedback active when the test only needed feedback. */
+        if (xfbActive) {
+            const GLuint64 vpp = pointMode ? 1u
+                : (genMode == GL_ISOLINES ? 2u : 3u);
+            GLuint64 prims = (GLuint64)instanceCount * primitivesPerInstance;
+            GLuint64 written = MIN(prims,
+                xfbWrittenBytes / ((GLuint64)MAX(xfbCompactStride, 1u) * vpp));
+            mglRecordActivePrimitiveQueryDraw(glm_ctx, prims, written);
+            return YES;
+        }
         return false;
     }
     uint32_t primType = pointMode ? MGL_TESS_PRIMITIVE_POINT
@@ -2151,8 +2167,11 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
                 : (genMode == GL_ISOLINES ? 2u : 3u);
             GLuint64 prims = (GLuint64)instanceCount * primitivesPerInstance;
             GLuint64 written = MIN(prims,
-                xfbWrittenBytes / ((GLuint64)xfbCompactStride * vpp));
+                xfbWrittenBytes / ((GLuint64)MAX(xfbCompactStride, 1u) * vpp));
             mglRecordActivePrimitiveQueryDraw(glm_ctx, prims, written);
+            /* Feedback already landed; returning NO would raise
+             * INVALID_OPERATION and skip the test's EndTransformFeedback. */
+            return YES;
         }
         return NO;
     }
