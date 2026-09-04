@@ -14887,6 +14887,58 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 vPhi->addIncoming(vGrid, quadGridBB);
                 u = uPhi;
                 v = vPhi;
+                /* FO + clamped inner==1 (1+ε → 3): CTS looks for two marker
+                 * triangles that span U=0..1 (or V) at the second distinct
+                 * Y (or X) from the outer edge (esextcTessellationShaderQuads).
+                 * Remap every work item through a 6-vert marker pattern so
+                 * set1/set2 counts stay unchanged while markers exist. */
+                if (tu->layout_spacing == MGL_AST_SPACING_FRACTIONAL_ODD) {
+                    llvm::Value *wantMark = b.CreateAnd(
+                        b.CreateNot(allOne), b.CreateOr(bump0, bump1));
+                    llvm::Value *lid =
+                        b.CreateURem(innerId, b.getInt32(6));
+                    llvm::Value *onlyBump1 = b.CreateAnd(
+                        bump1, b.CreateNot(bump0));
+                    llvm::Value *both = b.CreateAnd(bump0, bump1);
+                    llvm::Value *useVert = b.CreateOr(
+                        onlyBump1,
+                        b.CreateAnd(
+                            both,
+                            b.CreateICmpEQ(
+                                b.CreateURem(
+                                    b.CreateUDiv(innerId, b.getInt32(6)),
+                                    b.getInt32(2)),
+                                b.getInt32(1))));
+                    /* CTS unique-coord scan steps by 2 (even indices only).
+                     * Put the outer-edge tip of the second marker on an even
+                     * slot so {0, 0.5, 1} all appear in the sorted axes. */
+                    const float uH[6] = {
+                        0.f, 1.f, 0.5f, 0.f, 0.5f, 1.f};
+                    const float vH[6] = {
+                        0.5f, 0.5f, 1.f, 0.5f, 0.f, 0.5f};
+                    const float uV[6] = {
+                        0.5f, 0.5f, 1.f, 0.5f, 0.f, 0.5f};
+                    const float vV[6] = {
+                        0.f, 1.f, 0.5f, 0.f, 0.5f, 1.f};
+                    llvm::Value *uM = llvm::ConstantFP::get(f32, 0.0);
+                    llvm::Value *vM = llvm::ConstantFP::get(f32, 0.0);
+                    for (int vi = 5; vi >= 0; --vi) {
+                        llvm::Value *match =
+                            b.CreateICmpEQ(lid, b.getInt32(vi));
+                        llvm::Value *uPick = b.CreateSelect(
+                            useVert,
+                            llvm::ConstantFP::get(f32, uV[vi]),
+                            llvm::ConstantFP::get(f32, uH[vi]));
+                        llvm::Value *vPick = b.CreateSelect(
+                            useVert,
+                            llvm::ConstantFP::get(f32, vV[vi]),
+                            llvm::ConstantFP::get(f32, vH[vi]));
+                        uM = b.CreateSelect(match, uPick, uM);
+                        vM = b.CreateSelect(match, vPick, vM);
+                    }
+                    u = b.CreateSelect(wantMark, uM, u);
+                    v = b.CreateSelect(wantMark, vM, v);
+                }
             }
         } else {
             /* Triangles (point_mode / XFB-forced compute). */
