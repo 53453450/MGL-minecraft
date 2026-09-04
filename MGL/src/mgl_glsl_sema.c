@@ -603,9 +603,15 @@ static MGLIRType *resolve_decl_type_major(Sema *s, SymTab *tab,
             free(names);
             return NULL;
         }
+        /* Resolve the block's matrix major before members so
+         * layout(row_major) buffer; / block-level row_major reaches
+         * matrices inside the block (GL 4.6 §4.4.5). */
+        uint32_t block_major = d->matrix_major;
+        if (block_major == MGL_AST_MATRIX_DEFAULT)
+            block_major = inherited_major;
         for (uint32_t i = 0; i < n; i++) {
             MGLDecl *m = d->struct_members[i];
-            members[i] = resolve_decl_type(s, tab, m);
+            members[i] = resolve_decl_type_major(s, tab, m, block_major);
             names[i] = m->name;
             if (!members[i]) {
                 for (uint32_t j = 0; j < i; j++) {
@@ -624,6 +630,20 @@ static MGLIRType *resolve_decl_type_major(Sema *s, SymTab *tab,
         if (!t) {
             return NULL;
         }
+        /* Members already received block_major; still apply in case the
+         * block type itself is a matrix (should not happen) and keep
+         * nested clones consistent. */
+        apply_matrix_major(t, block_major);
+        for (uint32_t i = d->array_count; i > 0; i--) {
+            uint32_t sz = d->array_dims[i - 1];
+            MGLIRType *arr = mglIRTypeArray(t, sz);
+            if (!arr) {
+                mglIRTypeDestroy(t);
+                return NULL;
+            }
+            t = arr;
+        }
+        return t;
     } else {
         t = resolve_type_spec(s, tab, d->type);
         if (!t) {
@@ -3099,7 +3119,16 @@ static void analyze_function(Sema *s, SymTab *tab, const MGLDecl *d)
 
 static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
 {
-    MGLIRType *t = resolve_decl_type(s, tab, d);
+    /* GLSL 4.60 §4.4.5: `layout(row_major) buffer;` / `uniform;` sets the
+     * default matrix major for subsequent buffer/uniform declarations. */
+    uint32_t inherited_major = MGL_AST_MATRIX_DEFAULT;
+    if (s && s->tu) {
+        if (d->qualifiers & MGL_AST_Q_BUFFER)
+            inherited_major = s->tu->default_buffer_matrix_major;
+        else if (d->qualifiers & MGL_AST_Q_UNIFORM)
+            inherited_major = s->tu->default_uniform_matrix_major;
+    }
+    MGLIRType *t = resolve_decl_type_major(s, tab, d, inherited_major);
     if (!t) {
         return;
     }
