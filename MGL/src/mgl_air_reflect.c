@@ -810,6 +810,12 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
     /* Extra auto-location stride consumed by interface-block array
      * members (one location per element, see the Q_IN branch below). */
     uint32_t gs_input_span_pad = 0;
+    /* TCS/TES: patch and per-vertex I/O use separate location spaces
+     * (matches mgl_air_backend.cpp).  Reflection used to share one counter,
+     * so TES←TCS name remapping picked the wrong slot when a TES omitted
+     * earlier per-vertex outs or when patch outs preceded them. */
+    uint32_t tess_next_vertex_out = 0;
+    uint32_t tess_next_patch_out = 0;
     for (uint32_t i = 0; i < mod->symbol_count; i++) {
         const MGLIRSymbol *s = mod->symbols[i];
         /* gl_-prefixed symbols are backend builtins (stage I/O like
@@ -983,7 +989,40 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
             }
         } else if (q & MGL_AST_Q_OUT) {
             if (location == UINT32_MAX) {
-                location = lists[_STAGE_OUTPUT_RES].count;
+                if (stage == MGL_STAGE_TESS_CONTROL ||
+                    stage == MGL_STAGE_TESS_EVALUATION) {
+                    const MGLIRType *span_t = t;
+                    /* Per-vertex TCS/TES arrays are sized by patch vertices;
+                     * codegen strips that dimension before assigning slots. */
+                    if (!(q & MGL_AST_Q_PATCH) &&
+                        span_t->kind == MGLIR_TYPE_ARRAY &&
+                        span_t->elem_type) {
+                        span_t = span_t->elem_type;
+                    }
+                    uint32_t span = 1u;
+                    if (span_t->kind == MGLIR_TYPE_MATRIX &&
+                        span_t->cols > 0u) {
+                        span = span_t->cols;
+                    } else if (span_t->kind == MGLIR_TYPE_ARRAY &&
+                               span_t->array_size > 0u) {
+                        uint32_t elem = 1u;
+                        if (span_t->elem_type &&
+                            span_t->elem_type->kind == MGLIR_TYPE_MATRIX &&
+                            span_t->elem_type->cols > 0u) {
+                            elem = span_t->elem_type->cols;
+                        }
+                        span = elem * span_t->array_size;
+                    }
+                    if (q & MGL_AST_Q_PATCH) {
+                        location = tess_next_patch_out;
+                        tess_next_patch_out += span;
+                    } else {
+                        location = tess_next_vertex_out;
+                        tess_next_vertex_out += span;
+                    }
+                } else {
+                    location = lists[_STAGE_OUTPUT_RES].count;
+                }
             }
             push_resource(&lists[_STAGE_OUTPUT_RES], s, t, location, 0,
                           stage);

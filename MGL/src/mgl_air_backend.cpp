@@ -6317,8 +6317,16 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     llvm::Value *p = cg.b->CreateGEP(
                         cg.b->getInt8Ty(), cg.stageInPtr, off);
                     llvm::Type *ty = llvmType(sym->type, *cg.ctx);
-                    p = cg.b->CreateBitCast(p, ty->getPointerTo(1));
-                    return cg.b->CreateAlignedLoad(ty, p, llvm::Align(4));
+                    llvm::Type *loadTy = ty;
+                    if (varyingNeedsFloatRecordCarrier(sym->type))
+                        loadTy = llvmType(floatCarrierType(sym->type),
+                                          *cg.ctx);
+                    p = cg.b->CreateBitCast(p, loadTy->getPointerTo(1));
+                    llvm::Value *v =
+                        cg.b->CreateAlignedLoad(loadTy, p, llvm::Align(4));
+                    if (varyingNeedsFloatRecordCarrier(sym->type))
+                        v = decodeFloatCarrier(cg, v, sym->type.scalar, ty);
+                    return v;
                 }
                 llvm::Value *record = cg.b->CreateCall(
                     cg.controlPointGetter, {idx, cg.patchControlPtr});
@@ -12653,16 +12661,26 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
          * GS reflection locations.  FS with has_gs must use the same N for
          * each varying; declaration-order auto-assign can disagree when GS
          * and FS list the same names in different order (CTS utf8_characters
-         * gs_fs_tex_coord before/after gs_fs_result).  Remap by name. */
-        if (has_gs && stage == MGL_STAGE_FRAGMENT && iface_location_peers &&
-            iface_location_peers->list) {
+         * gs_fs_tex_coord before/after gs_fs_result).  Remap by name.
+         * TES←TCS uses the same peer list: a TES that omits some TCS outs
+         * (e.g. only `test_vector2`) must still read the producer location. */
+        if (iface_location_peers && iface_location_peers->list &&
+            ((has_gs && stage == MGL_STAGE_FRAGMENT) ||
+             stage == MGL_STAGE_TESS_EVALUATION)) {
             for (VarSym &v : syms) {
-                if (v.kind != VarSym::VARYING || v.locationExplicit)
+                const bool fsVarying =
+                    stage == MGL_STAGE_FRAGMENT && v.kind == VarSym::VARYING;
+                const bool tesCpIn =
+                    stage == MGL_STAGE_TESS_EVALUATION &&
+                    v.kind == VarSym::CONTROL_POINT_INPUT;
+                if ((!fsVarying && !tesCpIn) || v.locationExplicit)
                     continue;
                 for (GLuint i = 0; i < iface_location_peers->count; i++) {
                     const MGLShaderResource *peer =
                         &iface_location_peers->list[i];
-                    if (!peer->name || peer->is_per_patch)
+                    if (!peer->name)
+                        continue;
+                    if ((peer->is_per_patch != GL_FALSE) != v.isPatch)
                         continue;
                     if (strcmp(peer->name, v.name.c_str()) != 0)
                         continue;

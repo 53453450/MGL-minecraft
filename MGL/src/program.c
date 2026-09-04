@@ -1125,11 +1125,17 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
         air_flags |= MGL_AIR_COMPILE_FORCE_TES_COMPUTE;
     }
     /* When a GS is present, FS mgl_loc_N tags must follow GS output
-     * locations (passthrough VS).  Remap by name at compile time. */
+     * locations (passthrough VS).  Remap by name at compile time.
+     * Same for TES←TCS: declaration-order locations diverge when the TES
+     * omits some TCS per-vertex outs (barrier_guarded_read_calls). */
     const MGLShaderResourceList *iface_peers = NULL;
     if (stage == _FRAGMENT_SHADER && pptr->shader_slots[_GEOMETRY_SHADER]) {
         iface_peers =
             &pptr->shader_resources_list[_GEOMETRY_SHADER][_STAGE_OUTPUT_RES];
+    } else if (stage == _TESS_EVALUATION_SHADER &&
+               pptr->shader_slots[_TESS_CONTROL_SHADER]) {
+        iface_peers =
+            &pptr->shader_resources_list[_TESS_CONTROL_SHADER][_STAGE_OUTPUT_RES];
     }
     int air_rc = mglAirCompileGLSLWithReflectInfoEx(
         shader->src, air_stage, attrib_snapshot, &bytes, &size,
