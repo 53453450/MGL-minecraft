@@ -10887,6 +10887,34 @@ void emitCompound(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
         emitStmt(cg, st->u.compound.stmts[i], mod, locals);
 }
 
+/* Tiny for-unroll must not erase loopStack/breakStack targets. */
+static bool stmtContainsBreakOrContinue(const MGLStmt *st) {
+    if (!st) return false;
+    switch (st->kind) {
+    case MGL_STMT_BREAK:
+    case MGL_STMT_CONTINUE:
+        return true;
+    case MGL_STMT_COMPOUND:
+        for (uint32_t i = 0; i < st->u.compound.count; i++)
+            if (stmtContainsBreakOrContinue(st->u.compound.stmts[i]))
+                return true;
+        return false;
+    case MGL_STMT_IF:
+        return stmtContainsBreakOrContinue(st->u.ifs.then) ||
+               stmtContainsBreakOrContinue(st->u.ifs.else_);
+    case MGL_STMT_FOR:
+        return stmtContainsBreakOrContinue(st->u.loop.init) ||
+               stmtContainsBreakOrContinue(st->u.loop.body);
+    case MGL_STMT_WHILE:
+    case MGL_STMT_DO_WHILE:
+        return stmtContainsBreakOrContinue(st->u.whilex.body);
+    case MGL_STMT_SWITCH:
+        return stmtContainsBreakOrContinue(st->u.switchx.body);
+    default:
+        return false;
+    }
+}
+
 void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
               std::map<std::string, MType> *locals) {
     if (cg.err) return;
@@ -11204,7 +11232,8 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
                        indName) == 0) {
                 incrOk = true;
             }
-            if (incrOk && trip > 0u && trip <= 16u) {
+            if (incrOk && trip > 0u && trip <= 16u &&
+                !stmtContainsBreakOrContinue(st->u.loop.body)) {
                 emitStmt(cg, st->u.loop.init, mod, locals);
                 if (cg.err) return;
                 MType indTy = (*locals)[indName];
