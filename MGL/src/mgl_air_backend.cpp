@@ -14558,7 +14558,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         const bool isUniform = (gs->qualifiers & MGL_AST_Q_UNIFORM) != 0;
         if (gt.isArray() && !isConst && !isUniform) continue;
         if (isUniform && !isConst)
-            continue; /* pack load; CPU seed TODO for GLSL defaults */
+            continue; /* pack load; defaults seeded at link (program.c) */
         llvm::Value *gv = emitExpr(cg, d->init, &mod, locals);
         if (!gv) break;
         cg.lvalues[d->name] = gv;
