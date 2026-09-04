@@ -1492,7 +1492,7 @@ int main(int argc, const char *argv[]) {
                 "}\n";
             unsigned char *xBytes = NULL;
             size_t xSize = 0;
-            if (mglShaderCompileGLSLCapture(kVSX, &xBytes, &xSize,
+            if (mglShaderCompileGLSLCapture(kVSX, nullptr, &xBytes, &xSize,
                                             err, sizeof err) != 0) {
                 fprintf(stderr, "capture compile FAIL: %s\n", err);
                 return 1;

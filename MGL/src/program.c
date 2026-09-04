@@ -1135,14 +1135,75 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
         shader->src, air_stage, attrib_snapshot, &bytes, &size,
         pptr->shader_resources_list[stage], &stage_info, air_flags,
         iface_peers, err, sizeof err);
-    for (int ai = 0; ai < MAX_ATTRIBS; ai++) {
-        free((void *)attrib_snapshot[ai]);
-    }
     if (air_rc != 0) {
+        for (int ai = 0; ai < MAX_ATTRIBS; ai++) {
+            free((void *)attrib_snapshot[ai]);
+        }
         fprintf(stderr,
                 "MGL WARNING: AIR compile failed program %u stage %d: %s\n",
                 pptr->name, stage, err);
         return 0;
+    }
+    /* Capture variants must see the same bindAttribLocation map as the
+     * reflected VS, or sparse locations (CTS enable_disable) misalign
+     * [[attribute(N)]] with the vertex descriptor. */
+    if (stage == _VERTEX_SHADER) {
+        pptr->uses_cull_distance = stage_info.uses_cull_distance
+            ? GL_TRUE : GL_FALSE;
+        pptr->cull_distance_count = stage_info.cull_distance_count;
+        pptr->ir_uses_cull_distance = pptr->uses_cull_distance;
+        unsigned char *capture_bytes = NULL;
+        size_t capture_size = 0;
+        char capture_err[512] = {0};
+        if (mglShaderCompileGLSLTessCapture(
+                shader->src, attrib_snapshot, &capture_bytes, &capture_size,
+                capture_err, sizeof capture_err) == 0) {
+            pptr->modules[stage].metallib_tess_capture_bytes = capture_bytes;
+            pptr->modules[stage].metallib_tess_capture_size = capture_size;
+            if (getenv("MGL_DUMP_AIR")) {
+                FILE *f = fopen("/tmp/poison_capvar.air", "wb");
+                if (f) {
+                    fwrite(capture_bytes, 1, capture_size, f);
+                    fclose(f);
+                    FILE *fsrc =
+                        fopen("/tmp/poison_capvar_src.glsl", "wb");
+                    if (fsrc) {
+                        fwrite(shader->src, 1, strlen(shader->src), fsrc);
+                        fclose(fsrc);
+                    }
+                    fprintf(stderr,
+                            "MGL DUMP: capvar.air %zu bytes\n",
+                            capture_size);
+                }
+            }
+        } else {
+            fprintf(stderr,
+                    "MGL WARNING: AIR tess VS capture compile failed "
+                    "program %u: %s\n",
+                    pptr->name, capture_err);
+        }
+        if (stage_info.uses_cull_distance) {
+            unsigned char *cull_capture_bytes = NULL;
+            size_t cull_capture_size = 0;
+            char cull_capture_err[512] = {0};
+            if (mglShaderCompileGLSLCullDistanceCapture(
+                    shader->src, attrib_snapshot, &cull_capture_bytes,
+                    &cull_capture_size, cull_capture_err,
+                    sizeof cull_capture_err) == 0) {
+                pptr->modules[stage].metallib_cull_capture_bytes =
+                    cull_capture_bytes;
+                pptr->modules[stage].metallib_cull_capture_size =
+                    cull_capture_size;
+            } else {
+                fprintf(stderr,
+                        "MGL WARNING: AIR cull-distance capture compile failed "
+                        "program %u: %s\n",
+                        pptr->name, cull_capture_err);
+            }
+        }
+    }
+    for (int ai = 0; ai < MAX_ATTRIBS; ai++) {
+        free((void *)attrib_snapshot[ai]);
     }
     if (stage == _COMPUTE_SHADER) {
         pptr->local_workgroup_size.x = stage_info.compute_local_size_x
@@ -1183,60 +1244,6 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
     }
     pptr->modules[stage].needs_runtime_array_size_buffer =
         stage_info.needs_runtime_array_size_buffer ? GL_TRUE : GL_FALSE;
-    if (stage == _VERTEX_SHADER) {
-        pptr->uses_cull_distance = stage_info.uses_cull_distance
-            ? GL_TRUE : GL_FALSE;
-        pptr->cull_distance_count = stage_info.cull_distance_count;
-        pptr->ir_uses_cull_distance = pptr->uses_cull_distance;
-        unsigned char *capture_bytes = NULL;
-        size_t capture_size = 0;
-        char capture_err[512] = {0};
-        if (mglShaderCompileGLSLTessCapture(
-                shader->src, &capture_bytes, &capture_size,
-                capture_err, sizeof capture_err) == 0) {
-            pptr->modules[stage].metallib_tess_capture_bytes = capture_bytes;
-            pptr->modules[stage].metallib_tess_capture_size = capture_size;
-            if (getenv("MGL_DUMP_AIR")) {
-                FILE *f = fopen("/tmp/poison_capvar.air", "wb");
-                if (f) {
-                    fwrite(capture_bytes, 1, capture_size, f);
-                    fclose(f);
-                    FILE *fsrc =
-                        fopen("/tmp/poison_capvar_src.glsl", "wb");
-                    if (fsrc) {
-                        fwrite(shader->src, 1, strlen(shader->src), fsrc);
-                        fclose(fsrc);
-                    }
-                    fprintf(stderr,
-                            "MGL DUMP: capvar.air %zu bytes\n",
-                            capture_size);
-                }
-            }
-        } else {
-            fprintf(stderr,
-                    "MGL WARNING: AIR tess VS capture compile failed "
-                    "program %u: %s\n",
-                    pptr->name, capture_err);
-        }
-        if (stage_info.uses_cull_distance) {
-            unsigned char *cull_capture_bytes = NULL;
-            size_t cull_capture_size = 0;
-            char cull_capture_err[512] = {0};
-            if (mglShaderCompileGLSLCullDistanceCapture(
-                    shader->src, &cull_capture_bytes, &cull_capture_size,
-                    cull_capture_err, sizeof cull_capture_err) == 0) {
-                pptr->modules[stage].metallib_cull_capture_bytes =
-                    cull_capture_bytes;
-                pptr->modules[stage].metallib_cull_capture_size =
-                    cull_capture_size;
-            } else {
-                fprintf(stderr,
-                        "MGL WARNING: AIR cull-distance capture compile failed "
-                        "program %u: %s\n",
-                        pptr->name, cull_capture_err);
-            }
-        }
-    }
     if (pptr->modules[stage].entry_point) {
         free(pptr->modules[stage].entry_point);
     }

@@ -69,7 +69,7 @@ CompileResult compileCapture(const char *src) {
     unsigned char *out = nullptr;
     size_t size = 0;
     char err[512] = {0};
-    int rc = mglShaderCompileGLSLCapture(src, &out, &size, err, sizeof(err));
+    int rc = mglShaderCompileGLSLCapture(src, nullptr, &out, &size, err, sizeof(err));
     CompileResult r;
     r.rc = rc;
     if (out) {
@@ -261,8 +261,7 @@ TEST(Metallib, TessVertexCaptureVariant) {
     unsigned char *bytes = nullptr;
     size_t size = 0;
     char err[512] = {0};
-    ASSERT_EQ(0, mglShaderCompileGLSLTessCapture(
-        kVSX, &bytes, &size, err, sizeof(err))) << err;
+    ASSERT_EQ(0, mglShaderCompileGLSLTessCapture(kVSX, nullptr, &bytes, &size, err, sizeof(err))) << err;
     ASSERT_NE(nullptr, bytes);
     ASSERT_GE(size, 4u);
     EXPECT_EQ(0, memcmp(bytes, "MTLB", 4));
@@ -405,8 +404,7 @@ TEST(Metallib, CullDistanceCaptureVariant) {
     unsigned char *bytes = nullptr;
     size_t size = 0;
     char err[512] = {0};
-    ASSERT_EQ(0, mglShaderCompileGLSLCullDistanceCapture(
-        kVSCullDistance, &bytes, &size, err, sizeof(err))) << err;
+    ASSERT_EQ(0, mglShaderCompileGLSLCullDistanceCapture(kVSCullDistance, nullptr, &bytes, &size, err, sizeof(err))) << err;
     ASSERT_NE(nullptr, bytes);
     ASSERT_GE(size, 4u);
     EXPECT_EQ(0, memcmp(bytes, "MTLB", 4));
@@ -832,7 +830,7 @@ TEST(Metallib, RejectsUnsupportedStage) {
 
 TEST(Metallib, NullArgumentsRejected) {
     EXPECT_NE(0, mglShaderCompileGLSL(nullptr, MGL_STAGE_VERTEX, nullptr,
-                                      nullptr, nullptr, 0));
+                                      nullptr, 0));
 }
 
 TEST(Interface, MatchingStagesAccepted) {

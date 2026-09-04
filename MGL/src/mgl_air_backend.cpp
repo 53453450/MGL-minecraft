@@ -11749,6 +11749,18 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             if (input) {
                 uint32_t &next = v.isPatch
                     ? nextPatchInputLocation : nextInputLocation;
+                /* VS ATTR: prefer glBindAttribLocation (attrib_names) over
+                 * declaration-order auto-assign, matching mgl_air_reflect.c.
+                 * Sparse binds (CTS enable_disable even/odd locations) must
+                 * put [[attribute(N)]] at the bound N; the vertex descriptor
+                 * is driven by reflection of those same binds. */
+                if (isVS && v.kind == VarSym::ATTR && !v.locationExplicit &&
+                    attrib_names) {
+                    uint32_t want =
+                        airAttribLocation(v.name.c_str(), attrib_names);
+                    if (want != UINT32_MAX)
+                        v.location = want;
+                }
                 if (v.location == UINT32_MAX) v.location = next;
                 next = std::max(next, v.location + varyingLocationSpan(v.type));
             }
@@ -14022,10 +14034,15 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
              * explicit attribute locations (the reflector said N, the
              * metallib read [[attribute(k)]]). */
             uint32_t attrLoc = v.location;
-            if (attrLoc == UINT32_MAX) {
+            if (!v.locationExplicit) {
                 uint32_t want = airAttribLocation(v.name.c_str(),
                                                   attrib_names);
-                attrLoc = (want != UINT32_MAX) ? want : nextFreeAttrLoc;
+                if (want != UINT32_MAX)
+                    attrLoc = want;
+                else if (attrLoc == UINT32_MAX)
+                    attrLoc = nextFreeAttrLoc;
+            } else if (attrLoc == UINT32_MAX) {
+                attrLoc = nextFreeAttrLoc;
             }
             const uint32_t n = varyingLocationSpan(v.type);
             MType el = v.type;
@@ -14486,14 +14503,17 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                             (needsBufferSizeBuffer ? 1 : 0) + 2 * texCount +
                             imageCount;
         uint32_t attrLoc = 0;
+        uint32_t nextFreeAttrLoc = 0;
         for (VarSym &v : syms) {
             if (v.kind != VarSym::ATTR) continue;
-            /* Match non-capture location priority so capture [[attribute(N)]]
-             * agrees with the reflected locations the vertex descriptor uses. */
-            uint32_t want = v.location;
+            /* Prefer bindAttribLocation, then explicit/IR location, then
+             * declaration order — same priority as non-capture + reflector. */
+            uint32_t want = airAttribLocation(v.name.c_str(), attrib_names);
             if (want == UINT32_MAX)
-                want = airAttribLocation(v.name.c_str(), attrib_names);
-            if (want != UINT32_MAX) attrLoc = want;
+                want = v.location;
+            if (want == UINT32_MAX)
+                want = nextFreeAttrLoc;
+            attrLoc = want;
             const uint32_t n = varyingLocationSpan(v.type);
             MType el = v.type;
             if (v.type.isArray() && v.type.arr > 0) el.arr = 0;
@@ -14518,6 +14538,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     llvm::MDString::get(ctx, argName)};
                 argNodes.push_back(llvm::MDNode::get(ctx, elems));
             }
+            nextFreeAttrLoc = std::max(nextFreeAttrLoc, attrLoc);
         }
     }
     if (isTCS) {
@@ -15419,31 +15440,34 @@ extern "C" int mglShaderCompileGLSL(const char *src, int stage,
 /* XFB capture variant: the vertex stage writes its full output record
  * (position + varyings) into a device buffer at location 29 with
  * rasterization disabled (the capture variant of the mglShaderCompileGLSL
- * compile entry). */
+ * compile entry). attrib_names is optional (glBindAttribLocation map). */
 extern "C" int mglShaderCompileGLSLCapture(const char *src,
+                                           const char *const *attrib_names,
                                            unsigned char **metallib_out,
                                            size_t *size_out, char *err_buf,
                                            size_t err_cap) {
     return compileGLSLImpl(src, MGL_STAGE_VERTEX, 1, /*has_gs=*/false,
-                           /*force_tes_compute=*/false, nullptr,
+                           /*force_tes_compute=*/false, attrib_names,
                            0u, /*iface_location_peers=*/nullptr,
                            metallib_out, size_out, err_buf, err_cap);
 }
 
 extern "C" int mglShaderCompileGLSLTessCapture(
-    const char *src, unsigned char **metallib_out, size_t *size_out,
+    const char *src, const char *const *attrib_names,
+    unsigned char **metallib_out, size_t *size_out,
     char *err_buf, size_t err_cap) {
     return compileGLSLImpl(src, MGL_STAGE_VERTEX, 2, /*has_gs=*/false,
-                           /*force_tes_compute=*/false, nullptr,
+                           /*force_tes_compute=*/false, attrib_names,
                            0u, /*iface_location_peers=*/nullptr,
                            metallib_out, size_out, err_buf, err_cap);
 }
 
 extern "C" int mglShaderCompileGLSLCullDistanceCapture(
-    const char *src, unsigned char **metallib_out, size_t *size_out,
+    const char *src, const char *const *attrib_names,
+    unsigned char **metallib_out, size_t *size_out,
     char *err_buf, size_t err_cap) {
     return compileGLSLImpl(src, MGL_STAGE_VERTEX, 3, /*has_gs=*/false,
-                           /*force_tes_compute=*/false, nullptr,
+                           /*force_tes_compute=*/false, attrib_names,
                            0u, /*iface_location_peers=*/nullptr,
                            metallib_out, size_out, err_buf, err_cap);
 }

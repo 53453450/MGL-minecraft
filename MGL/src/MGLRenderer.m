@@ -2006,6 +2006,42 @@ void mglLogSkippedGLSampledRenderTargetCopy(GLMContext glctx,
     }
 }
 
+/* CPU-converted vertex streams bind a fresh Metal buffer per attribute
+ * (DOUBLE→float, INT→float, FIXED/packed unpack, integer signedness fix).
+ * Those must keep distinct Metal slots when binding_offset differs; plain
+ * shared-VBO attributes can share one slot and encode offsets in the
+ * vertex descriptor instead (CTS enable_disable: 15 attrs on one VBO). */
+static BOOL mglVertexAttribNeedsConvertedMetalStream(Program *program,
+                                                     VertexArray *vao,
+                                                     GLuint attrib)
+{
+    if (!vao || attrib >= MAX_ATTRIBS) {
+        return NO;
+    }
+    VertexAttrib *a = &vao->attrib[attrib];
+    if (a->type == GL_DOUBLE) {
+        return YES;
+    }
+    if (a->integer == 0 &&
+        (a->type == GL_INT || a->type == GL_UNSIGNED_INT)) {
+        return YES;
+    }
+    if (a->type == GL_FIXED ||
+        a->type == GL_UNSIGNED_INT_10_10_10_2 ||
+        a->type == GL_UNSIGNED_INT_10F_11F_11F_REV) {
+        return YES;
+    }
+    if (a->integer == 1 && program) {
+        MGLShaderResource *attrRes =
+            mglRendererProgramVertexAttribResource(program, attrib);
+        GLuint shaderGlType = attrRes ? attrRes->gl_type : 0u;
+        if (mglIntegerAttribNeedsConversion(a->type, shaderGlType, a->size, NULL)) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
 int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
                                                  VertexArray *vao,
                                                  GLuint attribute,
@@ -2025,6 +2061,7 @@ int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
     GLuint seenStrides[MAX_ATTRIBS] = {0};
     GLuint seenDivisors[MAX_ATTRIBS] = {0};
     BOOL seenCurrentAttribs[MAX_ATTRIBS] = {NO};
+    BOOL seenNeedsConverted[MAX_ATTRIBS] = {NO};
     GLuint seenCount = 0;
     GLuint maxAttribs = MAX_ATTRIBS;
 
@@ -2053,6 +2090,7 @@ int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
                 seenOffsets[seenCount] = (GLintptr)i;
                 seenStrides[seenCount] = 16u;
                 seenDivisors[seenCount] = 0u;
+                seenNeedsConverted[seenCount] = NO;
                 slot = (int)seenCount;
                 seenCount++;
             }
@@ -2067,20 +2105,37 @@ int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
             return -1;
         }
         Buffer *attribBuffer = resolved.buffer;
+        BOOL curNeedsConverted =
+            mglVertexAttribNeedsConvertedMetalStream(activeProgram, vao, i);
 
         for (GLuint s = 0; s < seenCount; s++) {
             if (seenCurrentAttribs[s]) {
                 continue;
             }
             Buffer *known = seenBuffers[s];
-            if (mglRendererSameVertexStream(known,
-                                            seenOffsets[s],
-                                            seenStrides[s],
-                                            seenDivisors[s],
-                                            attribBuffer,
-                                            resolved.binding_offset,
-                                            resolved.stride,
-                                            resolved.divisor)) {
+            BOOL sameStream = NO;
+            if (curNeedsConverted || seenNeedsConverted[s]) {
+                /* Converted clones start at each attrib's binding_offset;
+                 * sharing a Metal slot would overwrite the prior bind. */
+                sameStream = mglRendererSameVertexStream(known,
+                                                         seenOffsets[s],
+                                                         seenStrides[s],
+                                                         seenDivisors[s],
+                                                         attribBuffer,
+                                                         resolved.binding_offset,
+                                                         resolved.stride,
+                                                         resolved.divisor);
+            } else if (known && attribBuffer &&
+                       seenStrides[s] == resolved.stride &&
+                       seenDivisors[s] == resolved.divisor &&
+                       (known == attribBuffer ||
+                        (known->name == attribBuffer->name &&
+                         known->target == attribBuffer->target))) {
+                /* Plain shared VBO: one Metal slot; descriptor holds
+                 * binding_offset + relativeoffset per attribute. */
+                sameStream = YES;
+            }
+            if (sameStream) {
                 slot = (int)s;
                 break;
             }
@@ -2097,6 +2152,7 @@ int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
             seenOffsets[seenCount] = resolved.binding_offset;
             seenStrides[seenCount] = resolved.stride;
             seenDivisors[seenCount] = resolved.divisor;
+            seenNeedsConverted[seenCount] = curNeedsConverted;
             slot = (int)seenCount;
             seenCount++;
         }

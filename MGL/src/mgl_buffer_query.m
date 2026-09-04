@@ -21,14 +21,11 @@ BOOL mglRendererSameVertexStream(Buffer *lhsBuffer,
                                         GLuint rhsStride,
                                         GLuint rhsDivisor)
 {
-    /* Compare offsets as well: attributes that share the same buffer/stride/
-     * divisor but have different binding offsets (e.g. interleaved vertex
-     * arrays submitted via a single VBO with per-attribute glVertexAttribPointer
-     * offsets) must get separate Metal buffer slots. This is required for
-     * CPU-converted attribs (GL_DOUBLE, GL_INT→float, integer signedness
-     * mismatch), where each attrib produces its own converted buffer starting
-     * at its binding_offset. If they shared a slot, the second binding would
-     * overwrite the first. */
+    /* Offset-strict: used for CPU-converted attribs (GL_DOUBLE, GL_INT→float,
+     * FIXED/packed, integer signedness mismatch). Each converted Metal buffer
+     * starts at that attrib's binding_offset; sharing a slot would overwrite
+     * the prior bind. Plain shared-VBO streams coalesce in
+     * mglRendererResolveVertexAttributeBufferIndex instead. */
     if (!lhsBuffer || !rhsBuffer ||
         lhsOffset != rhsOffset ||
         lhsStride != rhsStride ||

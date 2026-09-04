@@ -238,7 +238,13 @@ int mglShaderCompileGLSL(const char *src, int stage,
 /* XFB capture variant of a vertex shader: the full output record
  * (position + varyings) is written to a device buffer at Metal buffer
  * index 29 with rasterization disabled.  Returns 0 on success. */
-int mglShaderCompileGLSLCapture(const char *src, unsigned char **metallib_out,
+/* XFB / rasterization-disabled vertex capture.  Writes the VS output
+ * record to Metal buffer index 29.  attrib_names is an optional
+ * MAX_ATTRIBS-sized glBindAttribLocation map (same contract as
+ * mglAirCompileGLSLWithReflect); pass NULL for declaration-order locations. */
+int mglShaderCompileGLSLCapture(const char *src,
+                                const char *const *attrib_names,
+                                unsigned char **metallib_out,
                                 size_t *size_out, char *err_buf,
                                 size_t err_cap);
 
@@ -246,6 +252,7 @@ int mglShaderCompileGLSLCapture(const char *src, unsigned char **metallib_out,
  * rasterization-disabled vertex function and writes MGLAIRPerVertexRecord at
  * Metal buffer index 29. */
 int mglShaderCompileGLSLTessCapture(const char *src,
+                                    const char *const *attrib_names,
                                     unsigned char **metallib_out,
                                     size_t *size_out, char *err_buf,
                                     size_t err_cap);
@@ -254,7 +261,8 @@ int mglShaderCompileGLSLTessCapture(const char *src,
  * evaluation. The capture record contains the normal vertex outputs followed
  * by float[8] cull distances and is written to buffer index 29. */
 int mglShaderCompileGLSLCullDistanceCapture(
-    const char *src, unsigned char **metallib_out, size_t *size_out,
+    const char *src, const char *const *attrib_names,
+    unsigned char **metallib_out, size_t *size_out,
     char *err_buf, size_t err_cap);
 
 /* Compile one stage through the self-hosted frontend + AIR backend and
