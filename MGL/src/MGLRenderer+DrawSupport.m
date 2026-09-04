@@ -4327,6 +4327,7 @@ after_gs_draws:
     const char *src = fs->src;
     return strstr(src, "gl_SampleID") != NULL ||
            strstr(src, "gl_SamplePosition") != NULL ||
+           strstr(src, "gl_SampleMask") != NULL ||
            strstr(src, "interpolateAtSample") != NULL ||
            strstr(src, "interpolateAtOffset") != NULL ||
            strstr(src, "sample in") != NULL;

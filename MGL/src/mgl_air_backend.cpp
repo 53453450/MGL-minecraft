@@ -10058,7 +10058,10 @@ static llvm::Value *applyCullDistanceFromPatchInputs(Codegen &cg,
 }
 
 /* GL ignores gl_SampleMask when SAMPLE_BUFFERS==0; Metal still honours
- * [[sample_mask]], so force full coverage for non-MSAA targets. */
+ * [[sample_mask]], so force full coverage for non-MSAA targets.
+ * Params float4 is {height, lower_left, ns_bits, sb_bits}; when emulating
+ * MS sample planes, sb_bits may carry 0x80000000 | (forced_sid << 8) and
+ * Metal only has one coverage bit — map GL bit[forced_sid] onto it. */
 static llvm::Value *resolveSampleMaskOut(Codegen &cg) {
     llvm::Value *maskArr = cg.lvalues.count("gl_SampleMask")
         ? cg.lvalues["gl_SampleMask"]
@@ -10069,13 +10072,26 @@ static llvm::Value *resolveSampleMaskOut(Codegen &cg) {
     if (!cg.fragSampleParams)
         return mask;
     llvm::Type *i32 = cg.b->getInt32Ty();
-    llvm::Value *ptr = cg.b->CreateBitCast(
-        cg.fragSampleParams, i32->getPointerTo(1));
-    llvm::Value *sbPtr = cg.b->CreateConstInBoundsGEP1_32(i32, ptr, 1);
-    llvm::Value *sampleBuffers =
-        cg.b->CreateAlignedLoad(i32, sbPtr, llvm::Align(4));
-    llvm::Value *nonMS = cg.b->CreateICmpEQ(sampleBuffers, cg.b->getInt32(0));
-    return cg.b->CreateSelect(nonMS, cg.b->getInt32(~0), mask);
+    llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+    llvm::Value *fptr = cg.b->CreateBitCast(
+        cg.fragSampleParams, f32->getPointerTo(1));
+    llvm::Value *sbBits = cg.b->CreateAlignedLoad(
+        f32, cg.b->CreateGEP(f32, fptr, cg.b->getInt32(3)), llvm::Align(4));
+    llvm::Value *sb = cg.b->CreateBitCast(sbBits, i32);
+    llvm::Value *forceMask = cg.b->CreateAnd(sb, cg.b->getInt32(0x80000000u));
+    llvm::Value *force = cg.b->CreateICmpNE(forceMask, cg.b->getInt32(0));
+    llvm::Value *forcedSid = cg.b->CreateAnd(
+        cg.b->CreateLShr(sb, 8), cg.b->getInt32(0xff));
+    llvm::Value *bit = cg.b->CreateAnd(
+        cg.b->CreateLShr(mask, forcedSid), cg.b->getInt32(1));
+    llvm::Value *forcedCover = cg.b->CreateSelect(
+        cg.b->CreateICmpNE(bit, cg.b->getInt32(0)),
+        cg.b->getInt32(~0), cg.b->getInt32(0));
+    llvm::Value *sampleBuffers = cg.b->CreateAnd(sb, cg.b->getInt32(1));
+    llvm::Value *nonMS =
+        cg.b->CreateICmpEQ(sampleBuffers, cg.b->getInt32(0));
+    llvm::Value *msMask = cg.b->CreateSelect(force, forcedCover, mask);
+    return cg.b->CreateSelect(nonMS, cg.b->getInt32(~0), msMask);
 }
 
 /* Software gl_SamplePosition matching mglGetMultisamplefv tables.
@@ -13057,6 +13073,32 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     hasSampleVarying) {
                     cg.lvalues["gl_SamplePosition"] =
                         emitSamplePositionFromId(cg, sid, ns);
+                }
+                if (usesSampleMaskIn) {
+                    /* Hardware [[sample_mask]] is a single bit when the
+                     * metal target is non-MSAA (array-plane emulation).
+                     * Under forced SampleID, expose full GL coverage so
+                     * `u_sampleMask & gl_SampleMaskIn` keeps all bits. */
+                    llvm::Type *i32t = cg.b->getInt32Ty();
+                    llvm::Value *hwIn = cg.lvalues.count("gl_SampleMaskIn")
+                        ? cg.b->CreateExtractValue(
+                              cg.lvalues["gl_SampleMaskIn"], 0)
+                        : cg.b->getInt32(~0);
+                    llvm::Value *ge32 = cg.b->CreateICmpUGE(
+                        ns, cg.b->getInt32(32));
+                    llvm::Value *shiftAmt = cg.b->CreateSelect(
+                        ge32, cg.b->getInt32(0), ns);
+                    llvm::Value *full = cg.b->CreateSelect(
+                        ge32, cg.b->getInt32(~0),
+                        cg.b->CreateSub(
+                            cg.b->CreateShl(cg.b->getInt32(1), shiftAmt),
+                            cg.b->getInt32(1)));
+                    llvm::Value *inMask =
+                        cg.b->CreateSelect(force, full, hwIn);
+                    llvm::Value *arr =
+                        llvm::UndefValue::get(llvm::ArrayType::get(i32t, 1));
+                    cg.lvalues["gl_SampleMaskIn"] =
+                        cg.b->CreateInsertValue(arr, inMask, 0);
                 }
             }
         }
