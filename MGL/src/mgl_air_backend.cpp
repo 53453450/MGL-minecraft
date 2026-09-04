@@ -8793,6 +8793,40 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             const char *name = e->u.unary.operand->u.var_ref.name;
             auto it = cg.lvalues.find(name);
             if (it == cg.lvalues.end()) {
+                /* Flattened anonymous SSBO members (`buffer B { int g_o0; };`
+                 * → global `g_o0`) are VAR_REFs with BUFFER quals, not SSA
+                 * locals.  RMW through the device pointer like member ++. */
+                if (const MGLIRSymbol *sb =
+                        ssboRootSym(e->u.unary.operand, mod)) {
+                    const MGLIRType *sty = nullptr;
+                    llvm::Value *sp = ssboAddress(cg, e->u.unary.operand, sb,
+                                                  mod, locals, &sty);
+                    if (!sp) return nullptr;
+                    llvm::Type *slt = llvmType(typeFromIR(sty), *cg.ctx);
+                    llvm::Align salign(16);
+                    if (auto *vt =
+                            llvm::dyn_cast<llvm::FixedVectorType>(slt)) {
+                        uint64_t w = vt->getElementCount().getFixedValue();
+                        if (w == 1) salign = llvm::Align(4);
+                        else if (w == 2) salign = llvm::Align(8);
+                    } else if (slt->isFloatTy() || slt->isIntegerTy(32)) {
+                        salign = llvm::Align(4);
+                    }
+                    sp = cg.b->CreateBitCast(sp, slt->getPointerTo(1));
+                    llvm::Value *cur =
+                        cg.b->CreateAlignedLoad(slt, sp, salign);
+                    bool sfp = slt->isFPOrFPVectorTy();
+                    llvm::Constant *sone = sfp
+                        ? llvm::ConstantFP::get(slt, 1.0)
+                        : llvm::ConstantInt::get(slt, 1);
+                    llvm::Value *nv = (e->u.unary.op == MGL_OP_INC)
+                        ? (sfp ? cg.b->CreateFAdd(cur, sone)
+                               : cg.b->CreateAdd(cur, sone))
+                        : (sfp ? cg.b->CreateFSub(cur, sone)
+                               : cg.b->CreateSub(cur, sone));
+                    cg.b->CreateAlignedStore(nv, sp, salign);
+                    return e->u.unary.prefix ? nv : cur;
+                }
                 cg.err = 1;
                 cg.errmsg = std::string("codegen: ++/-- on unknown variable '") +
                             name + "'";
@@ -9120,6 +9154,12 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     case MGL_OP_SUB_ASSIGN: binop = MGL_OP_SUB; break;
                     case MGL_OP_MUL_ASSIGN: binop = MGL_OP_MUL; break;
                     case MGL_OP_DIV_ASSIGN: binop = MGL_OP_DIV; break;
+                    case MGL_OP_MOD_ASSIGN: binop = MGL_OP_MOD; break;
+                    case MGL_OP_SHL_ASSIGN: binop = MGL_OP_SHL; break;
+                    case MGL_OP_SHR_ASSIGN: binop = MGL_OP_SHR; break;
+                    case MGL_OP_AND_ASSIGN: binop = MGL_OP_AND; break;
+                    case MGL_OP_OR_ASSIGN:  binop = MGL_OP_OR; break;
+                    case MGL_OP_XOR_ASSIGN: binop = MGL_OP_XOR; break;
                     default: break;
                     }
                     if (!binop) {
@@ -9312,12 +9352,18 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                         "implemented in M1");
                 return nullptr;
             }
-            llvm::Value *cur = cg.lvalues.count(name)
-                ? cg.lvalues[name]
-                : ((sym->qualifiers & MGL_AST_Q_UNIFORM)
-                       ? bufferLoad(cg, cg.bufferOffsets[name],
-                                    llvmType(t, *cg.ctx))
-                       : llvm::UndefValue::get(llvmType(t, *cg.ctx)));
+            llvm::Value *cur = nullptr;
+            if (cg.lvalues.count(name)) {
+                cur = cg.lvalues[name];
+            } else if (sym && (sym->qualifiers & MGL_AST_Q_BUFFER)) {
+                cur = emitSSBORead(cg, lhs, sym, mod, locals);
+                if (!cur) return nullptr;
+            } else if (sym && (sym->qualifiers & MGL_AST_Q_UNIFORM)) {
+                cur = bufferLoad(cg, cg.bufferOffsets[name],
+                                 llvmType(t, *cg.ctx));
+            } else {
+                cur = llvm::UndefValue::get(llvmType(t, *cg.ctx));
+            }
             v = emitMatrixBinOp(cg, binop, cur, v);
             if (!v)
                 v = emitNumericBinOp(cg, binop, cur, rhsV, t,
