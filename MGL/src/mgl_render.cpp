@@ -8612,7 +8612,16 @@ uint32_t mglRenderTessEvalItemsPerPatch(
             /* Level-1 non-point: 2 triangles = 6 verts so items/3 != 0. */
             if (!point_mode && nx == 1u && ny == 1u)
                 return 6u;
-            return nx * ny;
+            uint32_t items = nx * ny;
+            /* Non-point XFB/raster treat the stream as a triangle list.
+             * Drop a trailing incomplete primitive so multi-patch captures
+             * keep patch boundaries on 3-vertex edges (CTS PrimitiveID). */
+            if (!point_mode) {
+                items = (items / 3u) * 3u;
+                if (items == 0u)
+                    items = 3u;
+            }
+            return items;
         }
     }
     if (point_mode) {
@@ -8650,7 +8659,13 @@ uint32_t mglRenderTessEvalItemsPerPatch(
          * non-point; TES compute already expands n==1 to corners. */
         if (n == 1u)
             return 3u;
-        return n * n;
+        uint32_t items = n * n;
+        if (!point_mode) {
+            items = (items / 3u) * 3u;
+            if (items == 0u)
+                items = 3u;
+        }
+        return items;
     }
 }
 

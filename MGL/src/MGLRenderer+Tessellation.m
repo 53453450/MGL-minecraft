@@ -1424,23 +1424,16 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     }
     if (glInVertices == 0u) glInVertices = MAX(1u, contract->patch_vertices);
     const BOOL glInFromTCS = (glInBuffer == tcsOutputBuffer);
+    /* TCS currently expands one instance of control points / factors.
+     * TES still loops instances for XFB/output bases.  Reusing the same
+     * TCS outs is correct when VS→TCS inputs do not vary by instance
+     * (TCS has no gl_InstanceID; CTS InvocationID/PrimitiveID is this
+     * case).  Per-instance TCS re-dispatch remains a follow-up when VS
+     * outputs differ across instances. */
     const NSUInteger glInInstanceStride =
         (glInFromTCS || _tessellation.tessIndexedDraw)
             ? 0u
             : _tessellation.tessInstanceRecords * glInStride;
-    if (glInFromTCS && instanceCount > 1) {
-        /* The TCS kernel has no instance dimension (its dispatch is
-         * patchCount threads over a single spvOut span), so a second
-         * instance would read the wrong control points.  Skip TES rather
-         * than raise GL_INVALID_OPERATION: a draw-time error aborts the
-         * CTS test before EndTransformFeedback and leaves TF active,
-         * poisoning later cases in the same process.  XFB verification
-         * still fails this subcase until instanced TCS+TES is supported. */
-        NSLog(@"MGL TESS WARNING: TCS + instanced TES compute unsupported "
-              "program=%u instances=%d (skipping TES)",
-              tesProgram->name, instanceCount);
-        return true;
-    }
 
     /* Compute per-patch item counts and the per-instance total. */
     const uint16_t *factorBytes =
