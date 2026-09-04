@@ -14937,11 +14937,31 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         }
         llvm::Value *uv = llvm::UndefValue::get(llvm::FixedVectorType::get(
             f32, 3));
-        llvm::Value *w = (tu->layout_primitive == MGL_AST_TES_TRIANGLES)
-            ? b.CreateFSub(
-                  llvm::ConstantFP::get(f32, 1.0),
-                  b.CreateFAdd(u, v))
-            : llvm::ConstantFP::get(f32, 0.0);
+        llvm::Value *w = nullptr;
+        if (tu->layout_primitive == MGL_AST_TES_TRIANGLES) {
+            /* XFB-forced triangle compute uses a rectangular n×n probe that
+             * can land outside the simplex (u+v>1 → w<0).  CTS gl_TessCoord
+             * only requires U,V,W ∈ [0,1] and U+V+W=1 — project overflow
+             * onto the opposite edge. */
+            llvm::Value *zero = llvm::ConstantFP::get(f32, 0.0);
+            llvm::Value *one = llvm::ConstantFP::get(f32, 1.0);
+            u = b.CreateSelect(b.CreateFCmpOLT(u, zero), zero, u);
+            v = b.CreateSelect(b.CreateFCmpOLT(v, zero), zero, v);
+            llvm::Value *sum = b.CreateFAdd(u, v);
+            llvm::Value *overflow = b.CreateFCmpOGT(sum, one);
+            llvm::Value *inv = b.CreateFDiv(one, sum);
+            llvm::Value *scale =
+                b.CreateSelect(overflow, inv, one);
+            u = b.CreateFMul(u, scale);
+            v = b.CreateFMul(v, scale);
+            w = b.CreateFSub(one, b.CreateFAdd(u, v));
+            /* 1-(u+v) can be a tiny negative from float rounding when the
+             * point sits on the hypotenuse after projection. */
+            w = b.CreateSelect(b.CreateFCmpOLT(w, zero), zero, w);
+            w = b.CreateSelect(b.CreateFCmpOGT(w, one), one, w);
+        } else {
+            w = llvm::ConstantFP::get(f32, 0.0);
+        }
         cg.tessCoord = b.CreateInsertElement(
             b.CreateInsertElement(
                 b.CreateInsertElement(uv, u, b.getInt32(0)), v, b.getInt32(1)),
