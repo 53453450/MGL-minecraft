@@ -3466,6 +3466,13 @@ static bool mglPrepareStreamMergeCandidate(GLMContext ctx,
         vertexBuffer->size <= 0) {
         return false;
     }
+    /* Stream merge copies the CPU shadow into a transient VBO.  Buffers that
+     * shaders may have written (SSBO/XFB/atomic) can hold newer bytes only in
+     * Metal — merging from the shadow drops those stores (CTS
+     * advanced-write-geometry phase2). */
+    if (vertexBuffer->gpu_write_target) {
+        return false;
+    }
     if (bindingOffset < 0 || vertexStride == 0u ||
         ((size_t)bindingOffset % vertexStride) != 0u ||
         ((size_t)vertexBuffer->size % vertexStride) != 0u) {

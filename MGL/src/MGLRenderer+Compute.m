@@ -307,14 +307,26 @@ void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
         }
         if (!ptr->data.mtl_data) {
             [self bindMTLBuffer:ptr];
-        } else if (ptr->data.dirty_bits & (DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR)) {
-            /* A plain uniform slot can first be materialized for a smaller
-             * stage (for example the vertex shader) and later grow when the
-             * geometry shader uploads a large array.  Refresh the Metal
-             * backing before checking its visible length; otherwise the
-             * undersized old buffer is isolated and the newly uploaded suffix
-             * is silently read as zero. */
-            [self bindMTLBuffer:ptr];
+        }
+        if (ptr->data.dirty_bits & (DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR)) {
+            /* Push pending CPU shadow into Metal.  bindMTLBuffer alone does
+             * not clear dirty_bits; leaving them set lets a later VBO bind
+             * CoW-overlay the CPU shadow and wipe shader SSBO stores
+             * (CTS advanced-write-geometry). */
+            if (![self updateDirtyBuffer:ptr]) {
+                NSLog(@"MGL COMPUTE ERROR: dirty buffer update failed buffer=%u",
+                      (unsigned)ptr->name);
+                MGL_CBIND_FLUSH_SNAPSHOT();
+                return false;
+            }
+        }
+        /* After this encode, Metal is authoritative for writable SSBOs /
+         * atomics — drop CPU written_min/max so a later dirty CoW cannot
+         * re-apply stale BufferData zeros over GPU stores. */
+        if (map->resource_type == _STORAGE_BUFFER_RES ||
+            map->resource_type == _ATOMIC_COUNTER_RES) {
+            ptr->written_min = -1;
+            ptr->written_max = -1;
         }
         id buffer = ptr->data.mtl_data
             ? (__bridge id)(ptr->data.mtl_data)

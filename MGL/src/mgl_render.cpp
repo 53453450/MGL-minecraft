@@ -2020,6 +2020,10 @@ int mglRenderUpdateDirtyBuffer(Buffer* buffer,
             buffer->data.dirty_bits &=
                 ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
             buffer->cpu_shadow_pending = GL_FALSE;
+            /* CPU range was absorbed into Metal; do not re-apply it on a
+             * later gpu_write_target CoW after shaders overwrite Metal. */
+            buffer->written_min = -1;
+            buffer->written_max = -1;
         }
         return MGL_RENDER_BUFFER_OPERATION_HANDLED;
     }
@@ -2089,6 +2093,9 @@ int mglRenderUpdateDirtyBuffer(Buffer* buffer,
         }
         buffer->data.dirty_bits = 0;
         buffer->cpu_shadow_pending = GL_FALSE;
+        /* Same as the <4096 path: CPU range absorbed; avoid stale overlay. */
+        buffer->written_min = -1;
+        buffer->written_max = -1;
     }
     return MGL_RENDER_BUFFER_OPERATION_HANDLED;
 }
