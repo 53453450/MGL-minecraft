@@ -8701,6 +8701,25 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 return call;
             }
         }
+        /* GLSL separate compilation: a call may target a function declared
+         * here and defined in another compilation unit of the same stage.
+         * CompileShader must succeed; link resolves (or fails) later. */
+        if (mod) {
+            for (uint32_t si = 0; si < mod->symbol_count; si++) {
+                const MGLIRSymbol *fs = mod->symbols[si];
+                if (!fs || !fs->is_function || !fs->name ||
+                    strcmp(fs->name, name) != 0 ||
+                    fs->param_count != e->u.call.arg_count)
+                    continue;
+                if (fs->return_type && !irTypeIsVoid(fs->return_type)) {
+                    MType rt = typeFromIR(fs->return_type);
+                    return llvm::Constant::getNullValue(
+                        llvmType(rt, *cg.ctx));
+                }
+                return llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(*cg.ctx), 0);
+            }
+        }
         cg.err = 1;
         cg.errmsg = std::string("codegen: call to '") + name +
                     "' not implemented in M1";
@@ -12754,10 +12773,22 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         }
     }
     if (!mainDecl) {
-        snprintf(err_buf, err_cap, "no main function");
+        /* GLSL §3.6: a compilation unit need not define main — helpers
+         * defined here are linked with another unit that provides the
+         * entry point (CTS negative-glsl-linkTime / SSO).  CompileShader
+         * only requires a successful parse+sema; discard codegen. */
+        *metallib_out = (unsigned char *)malloc(1);
+        *size_out = 0;
+        if (!*metallib_out) {
+            if (err_buf && err_cap)
+                snprintf(err_buf, err_cap, "out of memory");
+            mglIRModuleDestroy(&mod);
+            mglGLSLTranslationUnitDestroy(tu);
+            return -1;
+        }
         mglIRModuleDestroy(&mod);
         mglGLSLTranslationUnitDestroy(tu);
-        return -1;
+        return 0;
     }
     /* Patch uniform offsets into var syms. */
     for (VarSym &v : syms) {

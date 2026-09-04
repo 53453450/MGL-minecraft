@@ -2499,6 +2499,14 @@ more_qualifiers:
      * layout is recorded on the translation unit for sema + backend. */
     if (ops_at(p, ";")) {
         MGLTranslationUnit *tu = p->tu;
+        /* GLSL §4.4.5: `layout(binding=N) buffer;` is illegal — binding
+         * applies to a block declaration, not a default layout qualifier. */
+        if ((d->qualifiers & MGL_AST_Q_BUFFER) && d->layout_binding >= 0) {
+            parse_error(p,
+                        "layout(binding) is not allowed on a default buffer "
+                        "layout qualifier at line %u",
+                        tk_line(p));
+        }
         /* `points` is valid on both sides of a geometry stage declaration.
          * The layout parser sees the token before it sees the trailing
          * storage qualifier, so classify it here once `in`/`out` is known. */

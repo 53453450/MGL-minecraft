@@ -31,6 +31,7 @@
 #include "mgl_glsl_sema.h"
 #include "mgl_glsl_ast.h"
 #include "mgl_shader_abi.h"
+#include "mgl_types_buffer.h" /* MAX_BINDABLE_BUFFERS */
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -2439,6 +2440,29 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
             sema_error(s, e->line, "array index must be an integer");
             return NULL;
         }
+        /* ESSL 3.10: indexing an *array of shader storage blocks* requires
+         * a constant expression.  Arrays that are members of a single block
+         * are not covered (CTS basic-atomic / length()). */
+        if (s->tu && s->tu->version_profile &&
+            strcmp(s->tu->version_profile, "es") == 0 &&
+            e->u.index.object &&
+            e->u.index.object->kind == MGL_EXPR_VAR_REF &&
+            e->u.index.object->u.var_ref.name) {
+            Sym *bs = symtab_lookup(tab, e->u.index.object->u.var_ref.name);
+            if (bs && (bs->qualifiers & MGL_AST_Q_BUFFER) &&
+                bs->type && bs->type->kind == MGLIR_TYPE_ARRAY &&
+                bs->type->elem_type &&
+                bs->type->elem_type->kind == MGLIR_TYPE_STRUCT) {
+                const MGLExpr *ix = e->u.index.index;
+                int is_const = ix && ix->kind == MGL_EXPR_LITERAL;
+                if (!is_const) {
+                    sema_error(s, e->line,
+                               "ESSL does not allow non-constant indexing of "
+                               "shader storage block arrays");
+                    return NULL;
+                }
+            }
+        }
         if (obj->kind == MGLIR_TYPE_ARRAY) {
             return obj->elem_type;
         }
@@ -2891,6 +2915,40 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
         if (!l || !r) {
             return NULL;
         }
+        /* Buffer/image memory quals: no write to readonly, no read of
+         * writeonly (GLSL §4.10). */
+        {
+            const MGLExpr *lhs = e->u.assign.lhs;
+            while (lhs && (lhs->kind == MGL_EXPR_MEMBER ||
+                           lhs->kind == MGL_EXPR_INDEX)) {
+                lhs = lhs->kind == MGL_EXPR_MEMBER ? lhs->u.member.object
+                                                   : lhs->u.index.object;
+            }
+            if (lhs && lhs->kind == MGL_EXPR_VAR_REF && lhs->u.var_ref.name) {
+                Sym *ls = symtab_lookup(tab, lhs->u.var_ref.name);
+                if (ls && (ls->qualifiers & MGL_AST_Q_READONLY)) {
+                    sema_error(s, e->line,
+                               "cannot write to readonly variable '%s'",
+                               lhs->u.var_ref.name);
+                    return NULL;
+                }
+            }
+            const MGLExpr *rhs = e->u.assign.rhs;
+            while (rhs && (rhs->kind == MGL_EXPR_MEMBER ||
+                           rhs->kind == MGL_EXPR_INDEX)) {
+                rhs = rhs->kind == MGL_EXPR_MEMBER ? rhs->u.member.object
+                                                   : rhs->u.index.object;
+            }
+            if (rhs && rhs->kind == MGL_EXPR_VAR_REF && rhs->u.var_ref.name) {
+                Sym *rs = symtab_lookup(tab, rhs->u.var_ref.name);
+                if (rs && (rs->qualifiers & MGL_AST_Q_WRITEONLY)) {
+                    sema_error(s, e->line,
+                               "cannot read writeonly variable '%s'",
+                               rhs->u.var_ref.name);
+                    return NULL;
+                }
+            }
+        }
         if (!check_assign_op(l, r)) {
             sema_error(s, e->line, "cannot assign %s to %s",
                        ir_type_str(r, ta, sizeof(ta)),
@@ -3163,6 +3221,90 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
             inherited_major = s->tu->default_buffer_matrix_major;
         else if (d->qualifiers & MGL_AST_Q_UNIFORM)
             inherited_major = s->tu->default_uniform_matrix_major;
+    }
+    /* GLSL §4.3.7 / §4.3.9: buffer variables must be interface-block
+     * members (or the block itself), never freestanding globals. */
+    if (global && (d->qualifiers & MGL_AST_Q_BUFFER) &&
+        !(d->struct_members && d->struct_member_count > 0)) {
+        sema_error(s, d->line,
+                   "buffer variable '%s' must be declared inside a shader "
+                   "storage block",
+                   d->name ? d->name : "?");
+        return;
+    }
+    /* std430 is only valid on buffer blocks, not uniform blocks. */
+    if ((d->qualifiers & MGL_AST_Q_UNIFORM) &&
+        d->struct_members && d->struct_member_count > 0 &&
+        d->layout == MGL_AST_LAYOUT_STD430) {
+        sema_error(s, d->line,
+                   "layout specifier 'std430' is incompatible with uniform "
+                   "blocks");
+    }
+    /* Memory qualifier conflicts on buffer declarations (images report
+     * this in check_image_decl). */
+    if ((d->qualifiers & MGL_AST_Q_BUFFER) &&
+        (d->qualifiers & MGL_AST_Q_READONLY) &&
+        (d->qualifiers & MGL_AST_Q_WRITEONLY)) {
+        sema_error(s, d->line,
+                   "cannot declare both readonly and writeonly");
+    }
+    /* Interface-block members: no initializers; packing/binding layouts
+     * are block-level only; member memory quals must not fight the block. */
+    if (d->struct_members && d->struct_member_count > 0 &&
+        (d->qualifiers & (MGL_AST_Q_UNIFORM | MGL_AST_Q_BUFFER))) {
+        for (uint32_t mi = 0; mi < d->struct_member_count; mi++) {
+            const MGLDecl *m = d->struct_members[mi];
+            if (!m) continue;
+            if (m->init) {
+                sema_error(s, m->line,
+                           "initialization of buffer/uniform block member "
+                           "'%s' is not allowed",
+                           m->name ? m->name : "?");
+            }
+            if (m->layout != MGL_AST_LAYOUT_DEFAULT) {
+                sema_error(s, m->line,
+                           "unknown layout specifier on block member '%s'",
+                           m->name ? m->name : "?");
+            }
+            if (m->layout_binding >= 0) {
+                sema_error(s, m->line,
+                           "layout(binding) is not allowed on block member "
+                           "'%s'",
+                           m->name ? m->name : "?");
+            }
+            uint32_t mq = m->qualifiers;
+            /* Member may be `readonly writeonly` (length()-only).  A
+             * conflict with the enclosing block's memory quals is still
+             * illegal (CTS negative-glsl-compileTime). */
+            if ((d->qualifiers & MGL_AST_Q_READONLY) &&
+                (mq & MGL_AST_Q_WRITEONLY)) {
+                sema_error(s, m->line,
+                           "cannot declare both readonly and writeonly on "
+                           "'%s'",
+                           m->name ? m->name : "?");
+            }
+            if ((d->qualifiers & MGL_AST_Q_WRITEONLY) &&
+                (mq & MGL_AST_Q_READONLY)) {
+                sema_error(s, m->line,
+                           "cannot declare both readonly and writeonly on "
+                           "'%s'",
+                           m->name ? m->name : "?");
+            }
+        }
+    }
+    /* layout(binding) range for SSBOs (and SSBO instance arrays). */
+    if ((d->qualifiers & MGL_AST_Q_BUFFER) && d->layout_binding >= 0 &&
+        d->struct_members && d->struct_member_count > 0) {
+        uint32_t n = 1u;
+        if (d->array_count > 0 && d->array_dims && d->array_dims[0] > 0)
+            n = d->array_dims[0];
+        if ((uint32_t)d->layout_binding >= MAX_BINDABLE_BUFFERS ||
+            (uint64_t)(uint32_t)d->layout_binding + (uint64_t)n >
+                (uint64_t)MAX_BINDABLE_BUFFERS) {
+            sema_error(s, d->line,
+                       "invalid value %d for layout specifier 'binding'",
+                       d->layout_binding);
+        }
     }
     MGLIRType *t = resolve_decl_type_major(s, tab, d, inherited_major);
     if (!t) {
@@ -3492,10 +3634,24 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
                         msym->type = ms->type;
                         msym->type_owned = 0;
                         msym->qualifiers = d->qualifiers;
+                        /* Member-level memory quals (readonly/writeonly)
+                         * augment the block's. */
+                        if (d->struct_members && m < d->struct_member_count &&
+                            d->struct_members[m]) {
+                            msym->qualifiers |=
+                                d->struct_members[m]->qualifiers &
+                                (MGL_AST_Q_READONLY | MGL_AST_Q_WRITEONLY);
+                        }
                         symtab_insert(tab, msym);
                     }
                 }
                 ms->qualifiers = d->qualifiers;
+                if (d->struct_members && m < d->struct_member_count &&
+                    d->struct_members[m]) {
+                    ms->qualifiers |=
+                        d->struct_members[m]->qualifiers &
+                        (MGL_AST_Q_READONLY | MGL_AST_Q_WRITEONLY);
+                }
                 ms->layout = d->layout;
                 ms->binding = isym->binding;
                 ms->location = UINT32_MAX;
@@ -4133,7 +4289,8 @@ static void uniform_block_instances_check(Sema *s, const MGLIRModule *a,
 }
 
 /* GLSL §4.3.9: matching buffer blocks must agree on whether an instance
- * name is present (instance names themselves may differ). */
+ * name is present (instance names themselves may differ) and on member
+ * types / array sizes. */
 static void buffer_block_instances_check(Sema *s, const MGLIRModule *a,
                                          const MGLIRModule *b)
 {
@@ -4154,6 +4311,13 @@ static void buffer_block_instances_check(Sema *s, const MGLIRModule *a,
                 sema_error(s, 0,
                            "matched buffer block '%s' has inconsistent "
                            "instance names across stages",
+                           bta->name);
+            }
+            /* Full type of the symbol (includes instance-array size). */
+            if (!ir_type_interface_equal(sa->type, sb->type)) {
+                sema_error(s, 0,
+                           "matched buffer block '%s' type mismatch across "
+                           "stages",
                            bta->name);
             }
         }
