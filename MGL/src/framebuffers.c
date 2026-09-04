@@ -2341,6 +2341,18 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
     fbo_attachment_ptr->buf.tex = tex;
     if (tex) {
         mglClearLastSampled2DTextureIfMatches(ctx, tex);
+        /* Depth/stencil texture attachments must be RenderTargets before the
+         * first Metal create. Deferred promotion in configure/bind can leave
+         * a Shared/non-RT Depth32Float that is inert on Paravirtual Metal
+         * (last draw wins). Mirror RBO storage policy. */
+        if (attachment == GL_DEPTH_ATTACHMENT ||
+            attachment == GL_STENCIL_ATTACHMENT ||
+            attachment == GL_DEPTH_STENCIL_ATTACHMENT) {
+            tex->is_render_target = true;
+            if (tex->access == GL_READ_ONLY) {
+                tex->access = GL_READ_WRITE;
+            }
+        }
     }
 
     /* GL_DEPTH_STENCIL_ATTACHMENT binds the same image to both the depth and

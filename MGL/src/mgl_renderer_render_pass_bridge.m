@@ -1211,7 +1211,15 @@ static GLenum mglPassthroughDeclType(
     GLuint fboName = fbo ? fbo->name : 0u;
 
 
-    if (fbo != NULL && fboName != 0u) {
+    /* Depth/stencil FBOs must not use the generation-only match cache.
+     * Cache keys ignore Metal texture pointer identity; after an RT recreate
+     * (Shared→Private / usage promotion) the pass can keep a stale depth
+     * attachment while the cache still returns true — depth test becomes
+     * inert (last draw wins). Seen on CI Paravirtual Metal for depth-tex. */
+    const bool hasDepthOrStencilAttachment =
+        fbo && (fbo->depth.texture != 0u || fbo->stencil.texture != 0u);
+
+    if (fbo != NULL && fboName != 0u && !hasDepthOrStencilAttachment) {
         bool cachedResult = false;
         if (mglCmdProbeFboMatchCache(&_commandState, fboName,
                                      fbo->fbo_attachment_generation,
@@ -1222,8 +1230,8 @@ static GLenum mglPassthroughDeclType(
 
     bool result = [self mglRenderPassMatchesFramebufferImpl:fbo name:fboName];
 
-    /* store cache for non-default FBOs only. */
-    if (fbo != NULL && fboName != 0u) {
+    /* store cache for non-default FBOs only (color-only). */
+    if (fbo != NULL && fboName != 0u && !hasDepthOrStencilAttachment) {
         mglCmdSetFboMatchCacheResult(&_commandState, result, fboName,
                                      fbo->fbo_attachment_generation);
     }
@@ -1370,13 +1378,18 @@ static GLenum mglPassthroughDeclType(
     id expectedDepth = nil;
     if (fbo->depth.texture) {
         Texture *depthTex = [self framebufferAttachmentTexture:&fbo->depth];
-        if (depthTex && !depthTex->mtl_data) {
+        /* Always promote + bind: depth may already have mtl_data from a
+         * non-RT / Shared create; skipping bind leaves an inert attachment. */
+        if (depthTex) {
             depthTex->is_render_target = true;
-            if (![self bindMTLTexture:depthTex]) {
+            if (![self bindMTLTexture:depthTex] || !depthTex->mtl_data) {
                 return false;
             }
         }
         expectedDepth = depthTex ? (__bridge id)(depthTex->mtl_data) : nil;
+        if (!expectedDepth) {
+            return false;
+        }
     }
     id actualDepth = mglRenderPassTextureFromSnapshot(
         &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0);
@@ -1396,13 +1409,16 @@ static GLenum mglPassthroughDeclType(
     id expectedStencil = nil;
     if (fbo->stencil.texture) {
         Texture *stencilTex = [self framebufferAttachmentTexture:&fbo->stencil];
-        if (stencilTex && !stencilTex->mtl_data) {
+        if (stencilTex) {
             stencilTex->is_render_target = true;
-            if (![self bindMTLTexture:stencilTex]) {
+            if (![self bindMTLTexture:stencilTex] || !stencilTex->mtl_data) {
                 return false;
             }
         }
         expectedStencil = stencilTex ? (__bridge id)(stencilTex->mtl_data) : nil;
+        if (!expectedStencil) {
+            return false;
+        }
     }
     id actualStencil = mglRenderPassTextureFromSnapshot(
         &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0);
@@ -2692,7 +2708,12 @@ static GLenum mglPassthroughDeclType(
             tex->is_render_target = true;
             RETURN_FALSE_ON_FAILURE([self bindMTLTextureLocked: tex]);
         }
-        if (tex && tex->mtl_data) {
+        if (!tex || !tex->mtl_data) {
+            NSLog(@"MGL ERROR: configureUserFBO depth bind produced no Metal texture fbo=%u glDepth=%u",
+                  (unsigned)fbo->name, (unsigned)fbo->depth.texture);
+            return false;
+        }
+        {
             MGLMetalAttachmentSubresource subresource =
                 mglMetalAttachmentSubresourceForAttachment(&fbo->depth);
             mglRenderPassSetPersistentAttachment(
@@ -2714,7 +2735,12 @@ static GLenum mglPassthroughDeclType(
             tex->is_render_target = true;
             RETURN_FALSE_ON_FAILURE([self bindMTLTextureLocked: tex]);
         }
-        if (tex && tex->mtl_data) {
+        if (!tex || !tex->mtl_data) {
+            NSLog(@"MGL ERROR: configureUserFBO stencil bind produced no Metal texture fbo=%u glStencil=%u",
+                  (unsigned)fbo->name, (unsigned)fbo->stencil.texture);
+            return false;
+        }
+        {
             MGLMetalAttachmentSubresource subresource =
                 mglMetalAttachmentSubresourceForAttachment(&fbo->stencil);
             mglRenderPassSetPersistentAttachment(

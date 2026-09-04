@@ -351,6 +351,16 @@ bool mglRendererTextureBindLocked(MGLRenderer *self, Texture *tex)
         }
     }
 
+    /* Depth/stencil render targets must materialize; soft-success with a NULL
+     * mtl_data lets configure attach nothing and then disable depth testing. */
+    if (tex->is_render_target &&
+        mglRendererGLInternalFormatLooksDepthOrStencil(tex->internalformat) &&
+        tex->mtl_data == NULL) {
+        NSLog(@"MGL ERROR: depth/stencil RT bind left mtl_data NULL tex=%u fmt=0x%x",
+              (unsigned)tex->name, (unsigned)tex->internalformat);
+        return false;
+    }
+
     return true;
 }
 
