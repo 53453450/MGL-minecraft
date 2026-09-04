@@ -1511,8 +1511,10 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
             (const void *)((const uint8_t *)factorBytes +
                            (NSUInteger)p *
                                MGL_AIR_TESS_FACTOR_RECORD_BYTES);
+        /* items==0: patch discarded (outer ≤ 0).  Do not coerce to 1 —
+         * that re-emitted discarded patches with PrimitiveID 0 and broke
+         * CTS input_patch_discard (expected IDs 1,3). */
         GLuint items = mglAIRTessEvalItemsPerPatch(tesProgram, record);
-        if (items == 0u) items = 1u;
         itemsPerInstance += (uint64_t)items;
     }
     if (itemsPerInstance == 0u ||
@@ -1919,7 +1921,6 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
                                (NSUInteger)p *
                                    MGL_AIR_TESS_FACTOR_RECORD_BYTES);
             GLuint items = mglAIRTessEvalItemsPerPatch(tesProgram, record);
-            if (items == 0u) items = 1u;
             base += items;
         }
         patchBases[patchCount] = base;
@@ -1979,7 +1980,8 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
                                (NSUInteger)p *
                                    MGL_AIR_TESS_FACTOR_RECORD_BYTES);
             GLuint items = mglAIRTessEvalItemsPerPatch(tesProgram, record);
-            if (items == 0u) items = 1u;
+            if (items == 0u)
+                continue; /* discarded patch: no TES / XFB output */
             contractWords[0] = p;
             contractWords[2] = items;
             contractWords[3] = inst * itemsPerInstanceU + patchBases[p];
