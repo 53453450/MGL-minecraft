@@ -513,9 +513,25 @@ llvm::Type *llvmType(const MType &t, llvm::LLVMContext &ctx) {
     return s;
 }
 
-/* Scalar arrays that Metal cannot keep in SSA aggregates. */
-static bool needsArrayMem(const MType &t) {
-    return t.isArray() && !t.isMatrix() && t.vec == 0 && t.arr > 0;
+/* Scalar arrays that Metal cannot keep in SSA aggregates.  Struct/matrix
+ * arrays stay as SSA InsertValue aggregates (MType cannot tell them apart
+ * from float[], so consult localIRTypes when present). */
+static bool needsArrayMem(Codegen &cg, const std::string &name,
+                          const MType &t) {
+    if (!t.isArray() || t.isMatrix() || t.vec != 0 || t.arr == 0)
+        return false;
+    if (!name.empty()) {
+        auto it = cg.localIRTypes.find(name);
+        if (it != cg.localIRTypes.end()) {
+            const MGLIRType *e = it->second;
+            while (e && e->kind == MGLIR_TYPE_ARRAY && e->elem_type)
+                e = e->elem_type;
+            if (e && (e->kind == MGLIR_TYPE_STRUCT ||
+                      e->kind == MGLIR_TYPE_MATRIX))
+                return false;
+        }
+    }
+    return true;
 }
 
 static llvm::Value *ensureArrayMem(Codegen &cg, const std::string &name,
@@ -996,43 +1012,81 @@ static MGLIRType *astDeclToIRType(Codegen &cg, const MGLDecl *d) {
     return base;
 }
 
+static void registerStructTypeDecl(Codegen &cg, const MGLDecl *d) {
+    if (!d || !d->type || d->type->base != MGL_AST_TYPE_STRUCT ||
+        !d->type->name || !d->struct_members ||
+        d->struct_member_count == 0)
+        return;
+    if (cg.structTypes.count(d->type->name))
+        return;
+    std::vector<MGLIRType *> members(d->struct_member_count);
+    std::vector<const char *> names(d->struct_member_count);
+    int ok = 1;
+    for (uint32_t j = 0; j < d->struct_member_count; j++) {
+        MGLDecl *m = d->struct_members[j];
+        members[j] = astDeclToIRType(cg, m);
+        names[j] = m && m->name ? m->name : "";
+        if (!members[j]) {
+            ok = 0;
+            break;
+        }
+    }
+    if (!ok) {
+        for (uint32_t j = 0; j < d->struct_member_count; j++)
+            if (members[j]) mglIRTypeDestroy(members[j]);
+        return;
+    }
+    MGLIRType *st = mglIRTypeStruct(members.data(), names.data(),
+                                    d->struct_member_count, d->type->name);
+    if (!st) {
+        for (uint32_t j = 0; j < d->struct_member_count; j++)
+            mglIRTypeDestroy(members[j]);
+        return;
+    }
+    cg.structTypes[d->type->name] = st;
+    if (cg.ownedIRTypes)
+        cg.ownedIRTypes->push_back(st);
+}
+
+static void collectStructTypesFromStmt(Codegen &cg, const MGLStmt *st) {
+    if (!st) return;
+    switch (st->kind) {
+    case MGL_STMT_COMPOUND:
+        for (uint32_t i = 0; i < st->u.compound.count; i++)
+            collectStructTypesFromStmt(cg, st->u.compound.stmts[i]);
+        break;
+    case MGL_STMT_DECL:
+        for (const MGLDecl *d = st->u.decl.decl; d; d = d->next_declarator)
+            registerStructTypeDecl(cg, d);
+        break;
+    case MGL_STMT_IF:
+        collectStructTypesFromStmt(cg, st->u.ifs.then);
+        collectStructTypesFromStmt(cg, st->u.ifs.else_);
+        break;
+    case MGL_STMT_FOR:
+        collectStructTypesFromStmt(cg, st->u.loop.init);
+        collectStructTypesFromStmt(cg, st->u.loop.body);
+        break;
+    case MGL_STMT_WHILE:
+    case MGL_STMT_DO_WHILE:
+        collectStructTypesFromStmt(cg, st->u.whilex.body);
+        break;
+    case MGL_STMT_SWITCH:
+        collectStructTypesFromStmt(cg, st->u.switchx.body);
+        break;
+    default:
+        break;
+    }
+}
+
 static void collectStructTypes(Codegen &cg, const MGLTranslationUnit *tu) {
     if (!tu) return;
     for (uint32_t i = 0; i < tu->decl_count; i++) {
         MGLDecl *d = tu->decls[i];
-        if (!d || !d->type || d->type->base != MGL_AST_TYPE_STRUCT ||
-            !d->type->name || !d->struct_members ||
-            d->struct_member_count == 0)
-            continue;
-        if (cg.structTypes.count(d->type->name))
-            continue;
-        std::vector<MGLIRType *> members(d->struct_member_count);
-        std::vector<const char *> names(d->struct_member_count);
-        int ok = 1;
-        for (uint32_t j = 0; j < d->struct_member_count; j++) {
-            MGLDecl *m = d->struct_members[j];
-            members[j] = astDeclToIRType(cg, m);
-            names[j] = m && m->name ? m->name : "";
-            if (!members[j]) {
-                ok = 0;
-                break;
-            }
-        }
-        if (!ok) {
-            for (uint32_t j = 0; j < d->struct_member_count; j++)
-                if (members[j]) mglIRTypeDestroy(members[j]);
-            continue;
-        }
-        MGLIRType *st = mglIRTypeStruct(members.data(), names.data(),
-                                        d->struct_member_count, d->type->name);
-        if (!st) {
-            for (uint32_t j = 0; j < d->struct_member_count; j++)
-                mglIRTypeDestroy(members[j]);
-            continue;
-        }
-        cg.structTypes[d->type->name] = st;
-        if (cg.ownedIRTypes)
-            cg.ownedIRTypes->push_back(st);
+        registerStructTypeDecl(cg, d);
+        /* Local `struct S { … };` inside functions are not TU decls. */
+        if (d && d->body)
+            collectStructTypesFromStmt(cg, d->body);
     }
 }
 
@@ -3089,11 +3143,19 @@ llvm::Value *varValue(Codegen &cg, const VarSym &v, const MGLIRModule *mod) {
             }
         }
         /* Uniform: single value read. */
-        llvm::Type *t = llvmType(v.type, *cg.ctx);
         uint32_t off = cg.bufferOffsets.count(v.name) ? cg.bufferOffsets[v.name] : 0;
         if (v.type.isMatrix())
             return emitMatrixUniform(cg, Uniform{v.name, v.type, off, 0});
-        return bufferLoad(cg, off, t);
+        /* Default-block uniforms use the same std140 leaf rules as named
+         * UBOs (bool/bvec as 32-bit words — never packed <N x i1>). */
+        const MGLIRSymbol *us = findSymbol(mod, v.name.c_str());
+        return emitUBOLeafLoad(cg, cg.bufferPtr, off,
+                               us ? us->type : nullptr, v.type);
+    }
+    auto amit = cg.arrayMem.find(v.name);
+    if (amit != cg.arrayMem.end()) {
+        llvm::Type *arrTy = cg.arrayMemTypes[v.name];
+        return cg.b->CreateAlignedLoad(arrTy, amit->second, llvm::Align(4));
     }
     auto it = cg.lvalues.find(v.name);
     if (it != cg.lvalues.end())
@@ -9031,7 +9093,15 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         auto lit = locals.find(name);
         if (lit != locals.end()) {
             v = coerceScalar(cg, v, lit->second.scalar);
-            cg.lvalues[name] = v;
+            /* Memory-backed scalar arrays: whole-array assign must store
+             * into the alloca; INDEX reads only from arrayMem. */
+            auto amit = cg.arrayMem.find(name);
+            if (amit != cg.arrayMem.end()) {
+                cg.b->CreateAlignedStore(v, amit->second, llvm::Align(4));
+                cg.lvalues.erase(name);
+            } else {
+                cg.lvalues[name] = v;
+            }
             return v;
         }
         const MGLIRSymbol *sym = findSymbol(mod, name);
@@ -10930,6 +11000,9 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
         /* Comma-separated declarators (`int a = 0, b = 1;`): every node
          * declares its own local. */
         for (MGLDecl *d = st->u.decl.decl; d; d = d->next_declarator) {
+        /* Type-only `struct S { … };` — already in cg.structTypes. */
+        if (!d->name)
+            continue;
         MType t;
         if (d->type && d->type->base <= MGL_AST_TYPE_DOUBLE) {
             t.scalar = (MGLIRScalar)d->type->base;
@@ -10979,7 +11052,7 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
             llvm::Value *v = emitExpr(cg, d->init, mod, *locals);
             if (!v) return;
             v = coerceScalar(cg, v, t.scalar);
-            if (needsArrayMem(t) && d->name) {
+            if (needsArrayMem(cg, d->name ? d->name : "", t) && d->name) {
                 llvm::Value *slot = ensureArrayMem(cg, d->name, t);
                 cg.b->CreateAlignedStore(v, slot, llvm::Align(4));
             } else {
@@ -10991,7 +11064,7 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
              * for-body is not in the loop phi set, so each iteration
              * rebuilds from Undef and leaves select(..., undef) values
              * that crash MTLCompilerService (XPC) when later read. */
-            if (needsArrayMem(t)) {
+            if (needsArrayMem(cg, d->name, t)) {
                 ensureArrayMem(cg, d->name, t);
             } else {
                 llvm::Type *ty = nullptr;
@@ -13273,7 +13346,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 MType aggType = (v.kind == VarSym::ATTR)
                     ? attrMetalIfaceType(v.type) : v.type;
                 uint32_t n = (uint32_t)v.type.arr;
-                if (needsArrayMem(aggType)) {
+                if (needsArrayMem(cg, v.name, aggType)) {
                     llvm::Value *slot = ensureArrayMem(cg, v.name, aggType);
                     for (uint32_t k = 0; k < n; k++) {
                         llvm::Value *arg = fn->getArg(argSlot++);
@@ -13369,7 +13442,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
          * the final value. */
         for (VarSym &v : syms) {
             if (v.kind != VarSym::VARYING) continue;
-            if (needsArrayMem(v.type))
+            if (needsArrayMem(cg, v.name, v.type))
                 ensureArrayMem(cg, v.name, v.type);
             else
                 cg.lvalues[v.name] =
@@ -13382,7 +13455,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
          * pre-registered undef aggregate as the non-capture path. */
         for (VarSym &v : syms) {
             if (v.kind != VarSym::VARYING) continue;
-            if (needsArrayMem(v.type))
+            if (needsArrayMem(cg, v.name, v.type))
                 ensureArrayMem(cg, v.name, v.type);
             else
                 cg.lvalues[v.name] =

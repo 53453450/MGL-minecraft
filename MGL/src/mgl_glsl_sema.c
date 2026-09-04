@@ -3142,6 +3142,43 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
         var_name = d->type->name;
         is_anon_block = 1;
     }
+    /* Local `struct S { … };` (and `struct S { … } v;`) must publish
+     * SYM_STRUCT so later `S(...)` / `S[N](...)` constructors resolve.
+     * Global type-only defs are registered in the TU pre-pass; locals
+     * only reach analyze_variable. */
+    if (d->type && d->type->base == MGL_AST_TYPE_STRUCT && d->type->name &&
+        d->struct_members && d->struct_member_count > 0 &&
+        !(d->qualifiers &
+          (MGL_AST_Q_IN | MGL_AST_Q_OUT | MGL_AST_Q_UNIFORM |
+           MGL_AST_Q_BUFFER))) {
+        Sym *existing = symtab_lookup(tab, d->type->name);
+        if (!existing || existing->kind != SYM_STRUCT) {
+            const MGLIRType *st = t;
+            while (st && st->kind == MGLIR_TYPE_ARRAY && st->elem_type)
+                st = st->elem_type;
+            if (st && st->kind == MGLIR_TYPE_STRUCT) {
+                Sym *ss = sym_new(d->type->name);
+                if (ss) {
+                    ss->kind = SYM_STRUCT;
+                    ss->type = ir_type_clone(st);
+                    ss->type_owned = ss->type ? 1 : 0;
+                    if (ss->type)
+                        symtab_insert(tab, ss);
+                    else {
+                        free(ss->name);
+                        free(ss);
+                    }
+                }
+            }
+        }
+        /* Type-only definition: no variable to declare. */
+        if (!d->name) {
+            mglIRTypeDestroy(t);
+            return;
+        }
+        is_anon_block = 0;
+        var_name = d->name;
+    }
     if (!var_name) {
         mglIRTypeDestroy(t);
         return;
