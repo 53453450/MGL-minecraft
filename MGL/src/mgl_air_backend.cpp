@@ -5785,10 +5785,11 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                             mod);
         const MGLIRSymbol *s = findSymbol(mod, e->u.var_ref.name);
         if (!s) { cg.err = 1; return nullptr; }
-        if (((s->qualifiers & MGL_AST_Q_CONST) ||
-             (s->qualifiers & MGL_AST_Q_UNIFORM)) &&
+        if ((s->qualifiers & MGL_AST_Q_CONST) &&
             cg.lvalues.count(e->u.var_ref.name)) {
-            /* Const values and uniform default initializers folded above. */
+            /* Const values folded from global initializers above.  Non-const
+             * uniforms must load from the plain pack so glUniform* updates
+             * are visible (CTS indirectAddressing-case2). */
             return cg.lvalues[e->u.var_ref.name];
         }
         if (s->qualifiers & MGL_AST_Q_BUFFER)
@@ -14537,12 +14538,11 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     cg.userFnHidden = &userFnHidden;
     cg.userFnDecls = &userFnDecls;
     std::map<std::string, MType> locals;
-    /* Global initializers (const arrays/scalars, default-block uniforms with
-     * constant initializers such as `uniform vec4 g = vec4(1);`, and other
-     * file-scope variables): evaluate into cg.lvalues before main so
-     * references fold to SSA values instead of reading undef/unbound slots.
-     * Uniform defaults are also required for CTS shaders that never call
-     * glUniform* for those variables (plain slots otherwise stay zero). */
+    /* Global initializers: const arrays/scalars fold to SSA.  Non-const
+     * uniforms must not be SSA-folded — loads go through the plain pack so
+     * glUniform* is visible.  (GLSL default initializers still need CPU-side
+     * seeding at link; do not bufferStore here or every invocation would
+     * overwrite glUniform uploads.) */
     for (uint32_t i = 0; i < tu->decl_count; i++) {
         MGLDecl *d = tu->decls[i];
         if (!d || !d->name || d->body || !d->init) continue;
@@ -14557,6 +14557,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         const bool isConst = (gs->qualifiers & MGL_AST_Q_CONST) != 0;
         const bool isUniform = (gs->qualifiers & MGL_AST_Q_UNIFORM) != 0;
         if (gt.isArray() && !isConst && !isUniform) continue;
+        if (isUniform && !isConst)
+            continue; /* pack load; CPU seed TODO for GLSL defaults */
         llvm::Value *gv = emitExpr(cg, d->init, &mod, locals);
         if (!gv) break;
         cg.lvalues[d->name] = gv;

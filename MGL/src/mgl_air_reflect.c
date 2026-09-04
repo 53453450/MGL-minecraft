@@ -686,8 +686,11 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
             acCount++;
         } else if ((q & MGL_AST_Q_BUFFER) && !s->block_name) {
             /* Flattened anonymous SSBO members share the owning block's
-             * Metal slot; only the block itself advances ssboCount. */
-            ssboCount++;
+             * Metal slot; only the block itself advances ssboCount.
+             * Instance arrays (`buffer B {…} name[N]`) need N consecutive
+             * Metal slots — match air_uniform_block_element_count used when
+             * emitting the resources below (and AIR codegen). */
+            ssboCount += air_uniform_block_element_count(t);
         } else if ((q & MGL_AST_Q_UNIFORM) && !s->block_name &&
                    air_symbol_is_ubo(s)) {
             uboSlotCount += air_uniform_block_element_count(t);
