@@ -715,6 +715,7 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                   stage == MGL_STAGE_FRAGMENT) ? hasPlain : 0));
     uint32_t ubo_binding = ssbo_binding + ssboCount;
     uint32_t gl_ubo_binding = 0;
+    uint32_t gl_ssbo_binding = 0;
     uint32_t ac_binding = ubo_binding + uboSlotCount;
     if (acCount > 0u && ac_binding + acCount > MAX_BINDABLE_BUFFERS) {
         if (err && errCap) {
@@ -960,7 +961,7 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                     block_count, sizeof(*ssbo_last->ubo_array_bindings));
             }
             GLuint gl_block_binding = s->binding != UINT32_MAX
-                ? s->binding : ssbo_binding;
+                ? s->binding : gl_ssbo_binding;
             ssbo_last->gl_binding = gl_block_binding;
             if (ssbo_last->ubo_array_bindings) {
                 for (GLuint element = 0; element < block_count; element++) {
@@ -968,6 +969,12 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                         gl_block_binding + element;
                 }
             }
+            /* Metal slot advances independently of the GL binding point.
+             * Defaulting gl_binding to the Metal slot (hasPlain+…) made
+             * anonymous `layout(std430) buffer B {…}` land on binding 1
+             * whenever plain uniforms packed slot 0, so BindBufferBase(0)
+             * missed the shader (CTS advanced-matrix-cs). */
+            gl_ssbo_binding += block_count;
             ssbo_binding += block_count;
         } else if (q & MGL_AST_Q_IN) {
             /* Desired location: explicit bindings, stable names, then
