@@ -1160,14 +1160,30 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
          pptr->shader_slots[_GEOMETRY_SHADER])) {
         air_flags |= MGL_AIR_COMPILE_FORCE_TES_COMPUTE;
     }
+    /* TES-compute passthrough VS (isolines / point_mode) also tags outs as
+     * mgl_loc_N — same ABI as the GS passthrough.  Without this flag the FS
+     * keeps name tags and Metal rejects the pipeline
+     * (point_rendering: result_color).  Stages compile VS→…→TES→GS→FS, so
+     * tess_eval_compute is already known when the FS is compiled. */
+    if (stage == _FRAGMENT_SHADER &&
+        !pptr->shader_slots[_GEOMETRY_SHADER] &&
+        pptr->tess_eval_compute) {
+        air_flags |= MGL_AIR_COMPILE_HAS_GEOMETRY_SHADER;
+    }
     /* When a GS is present, FS mgl_loc_N tags must follow GS output
      * locations (passthrough VS).  Remap by name at compile time.
+     * TES-compute (no GS) remaps FS inputs to TES outs the same way.
      * Same for TES←TCS: declaration-order locations diverge when the TES
      * omits some TCS per-vertex outs (barrier_guarded_read_calls). */
     const MGLShaderResourceList *iface_peers = NULL;
     if (stage == _FRAGMENT_SHADER && pptr->shader_slots[_GEOMETRY_SHADER]) {
         iface_peers =
             &pptr->shader_resources_list[_GEOMETRY_SHADER][_STAGE_OUTPUT_RES];
+    } else if (stage == _FRAGMENT_SHADER && pptr->tess_eval_compute &&
+               pptr->shader_slots[_TESS_EVALUATION_SHADER]) {
+        iface_peers =
+            &pptr->shader_resources_list[_TESS_EVALUATION_SHADER]
+                                       [_STAGE_OUTPUT_RES];
     } else if (stage == _TESS_EVALUATION_SHADER &&
                pptr->shader_slots[_TESS_CONTROL_SHADER]) {
         iface_peers =

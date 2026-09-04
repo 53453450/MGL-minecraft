@@ -670,10 +670,10 @@ std::string airGenerated(const std::string &name, const MType &t) {
  * assigned locations are per-stage and must not drive the tag (or
  * named matchings like vs_color break).
  *
- * Exception: the GS-expansion passthrough VS always emits
- * layout(location=N) (see ensureAIRGeometryPassthroughFunctionForProgram),
- * so its outputs are tagged mgl_loc_N.  When has_gs is set the FS must
- * use the same location tags even if the fragment inputs were only
+ * Exception: GS / TES-compute passthrough VS always emit
+ * layout(location=N) (ensureAIRGeometryPassthrough /
+ * ensureAIRTessEvalPassthrough), so outs are tagged mgl_loc_N.  When
+ * has_gs is set the FS must use the same tags even if inputs were only
  * auto-assigned — otherwise Metal rejects the pipeline with
  * "Fragment input(s) `name` ... not written by vertex shader". */
 static std::string varyingIfaceTag(const VarSym &v, uint32_t elem = 0,
