@@ -3777,25 +3777,31 @@ static llvm::Value *emitTessBlockMemberLoad(
     const MGLExpr *indexE = nullptr;
     if (!tessBlockMemberPath(e, &inst, &indexE, &field))
         return nullptr;
-    VarSym::Kind kind = VarSym::VARYING;
-    bool input = false;
+    /* TCS compound assigns (outVertex[i].x += …) must reload OUTPUT from
+     * stage_out.  Treating every TCS block load as an input made += re-read
+     * stage_in and collapse the accumulation loop to ~in[inv]+in[last]. */
+    VarSym *member = nullptr;
+    bool fromOutput = false;
     if (cg.isTessControl) {
-        kind = VarSym::VARYING;
-        input = true;
+        member = codegenBlockMember(cg, inst, field, VarSym::OUTPUT);
+        if (member && member->location != UINT32_MAX) {
+            fromOutput = true;
+        } else {
+            member = codegenBlockMember(cg, inst, field, VarSym::VARYING);
+        }
     } else if (cg.isTessEval) {
-        kind = VarSym::CONTROL_POINT_INPUT;
-        input = true;
+        member = codegenBlockMember(cg, inst, field,
+                                    VarSym::CONTROL_POINT_INPUT);
+        if (!member)
+            member = codegenBlockMember(cg, inst, field, VarSym::OUTPUT);
     } else {
         return nullptr;
     }
-    VarSym *member = codegenBlockMember(cg, inst, field, kind);
-    if (!member)
-        member = codegenBlockMember(cg, inst, field, VarSym::OUTPUT);
     if (!member || member->location == UINT32_MAX) return nullptr;
     llvm::Value *index = emitExpr(cg, indexE, mod, locals);
     if (!index) return nullptr;
-    auto loadFromStageIn = [&](llvm::Value *base, uint64_t stride,
-                               llvm::Value *record) -> llvm::Value * {
+    auto loadFromRecord = [&](llvm::Value *base, uint64_t stride,
+                              llvm::Value *record) -> llvm::Value * {
         llvm::Type *ty = llvmType(member->type, *cg.ctx);
         if (member->type.isMatrix() && member->type.cols > 0) {
             llvm::Type *colTy = llvm::FixedVectorType::get(
@@ -3833,10 +3839,15 @@ static llvm::Value *emitTessBlockMemberLoad(
             v = decodeFloatCarrier(cg, v, member->type.scalar, ty);
         return v;
     };
-    if (input && cg.isTessControl) {
+    if (cg.isTessControl) {
+        if (fromOutput) {
+            if (!cg.stageOutPtr || !cg.patchPos) return nullptr;
+            llvm::Value *record = tessStageRecordIndex(cg, index, false);
+            return loadFromRecord(cg.stageOutPtr, cg.stageOutStride, record);
+        }
         if (!cg.stageInPtr || !cg.patchPos || !cg.indirectPtr) return nullptr;
         llvm::Value *record = tessStageRecordIndex(cg, index, true);
-        return loadFromStageIn(cg.stageInPtr, cg.stageInStride, record);
+        return loadFromRecord(cg.stageInPtr, cg.stageInStride, record);
     }
     if (cg.isTessEval) {
         if (cg.isTESCompute) {
@@ -3851,7 +3862,7 @@ static llvm::Value *emitTessBlockMemberLoad(
             index = coerceScalar(cg, index, MGLIR_SCALAR_UINT);
             llvm::Value *flat = cg.b->CreateAdd(
                 cg.b->CreateMul(cg.patchId, verticesPerPatch), index);
-            return loadFromStageIn(cg.stageInPtr, cg.stageInStride, flat);
+            return loadFromRecord(cg.stageInPtr, cg.stageInStride, flat);
         }
         if (!cg.controlPointGetter || !cg.patchControlPtr) return nullptr;
         auto fieldIt = cg.controlPointFields.find(member->name);
@@ -5691,13 +5702,20 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         if (strcmp(e->u.var_ref.name, "gl_PatchVerticesIn") == 0) {
             if (!cg.indirectPtr) {
                 cg.err = 1;
-                cg.errmsg = "codegen: gl_PatchVerticesIn requires a TCS stage";
+                cg.errmsg = "codegen: gl_PatchVerticesIn requires a tessellation stage";
                 return nullptr;
             }
+            /* TCS indirect: {patch_vertices, instance_count} → word0.
+             * TES compute contract: {patch_id, gl_in_vertices, …} → word1.
+             * Native TES patch_info: {draw_patch_vertices, tcs_out} → word1
+             * (word1 falls back to draw size when there is no TCS). */
+            const unsigned word = cg.isTessEval ? 1u : 0u;
             llvm::Value *p = cg.b->CreateBitCast(
                 cg.indirectPtr, cg.b->getInt32Ty()->getPointerTo(1));
-            return cg.b->CreateAlignedLoad(cg.b->getInt32Ty(), p,
-                                            llvm::Align(4));
+            return cg.b->CreateAlignedLoad(
+                cg.b->getInt32Ty(),
+                cg.b->CreateGEP(cg.b->getInt32Ty(), p, cg.b->getInt32(word)),
+                llvm::Align(4));
         }
         if (strcmp(e->u.var_ref.name, "gl_PrimitiveID") == 0) {
             if (cg.lvalues.count("gl_PrimitiveID"))

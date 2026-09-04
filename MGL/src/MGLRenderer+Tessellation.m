@@ -1984,9 +1984,135 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
                                                 [_STAGE_OUTPUT_RES];
         const uint8_t *srcBase =
             (const uint8_t *)mglTessBufferContents(xfbTemporary);
+        if (!srcBase) {
+            NSLog(@"MGL TESS XFB: missing temporary contents");
+            return false;
+        }
+        const bool separateAttribs =
+            tesProgram->transform_feedback_buffer_mode == GL_SEPARATE_ATTRIBS;
+        if (separateAttribs) {
+            /* One GL buffer binding per varying (GL 4.6 §11.1.3.2). */
+            for (GLsizei varying = 0;
+                 varying < tesProgram->transform_feedback_varying_count;
+                 varying++) {
+                if ((GLuint)varying >= MGL_MAX_TRANSFORM_FEEDBACK_BUFFERS) {
+                    break;
+                }
+                const char *name =
+                    tesProgram->transform_feedback_varying_names[varying];
+                const MGLShaderResource *output = NULL;
+                for (GLuint i = 0u; name && outputs->list && i < outputs->count;
+                     i++) {
+                    if (outputs->list[i].name &&
+                        strcmp(outputs->list[i].name, name) == 0) {
+                        output = &outputs->list[i];
+                        break;
+                    }
+                }
+                NSUInteger fieldBytes =
+                    output ? mglTESXFBFieldByteSize(output->gl_type) : 0u;
+                if (!output || fieldBytes == 0u) {
+                    continue;
+                }
+                BufferBaseTarget *slot =
+                    &MGL_STATE(glm_ctx)
+                         ->buffer_base[_TRANSFORM_FEEDBACK_BUFFER]
+                         .buffers[varying];
+                Buffer *destBuf = slot->buf;
+                if (!destBuf) {
+                    continue;
+                }
+                if (destBuf->size > 0 &&
+                    (destBuf->data.dirty_bits &
+                     (DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR))) {
+                    if (![self updateDirtyBuffer:destBuf]) {
+                        return false;
+                    }
+                }
+                if (!destBuf->data.mtl_data) {
+                    [self bindMTLBuffer:destBuf];
+                }
+                id destMTL = (__bridge id)(destBuf->data.mtl_data);
+                const bool sessionOffsetOK =
+                    xfbState->buffer_write_offsets[varying] <=
+                    (GLuint64)NSUIntegerMax;
+                const NSUInteger sessionOffset =
+                    sessionOffsetOK
+                        ? (NSUInteger)xfbState->buffer_write_offsets[varying]
+                        : 0u;
+                NSUInteger destOffset = 0u;
+                NSUInteger maxVerts = xfbCopiedVertices;
+                if (destMTL && slot->offset >= 0) {
+                    BufferMap xfbMap = {0};
+                    xfbMap.buf = destBuf;
+                    xfbMap.offset = slot->offset;
+                    xfbMap.size = slot->size;
+                    NSUInteger visible = mglBufferMapVisibleBackingBytes(
+                        &xfbMap, (size_t)mglTessBufferLength(destMTL));
+                    if (sessionOffset <= visible &&
+                        (NSUInteger)slot->offset <=
+                            NSUIntegerMax - sessionOffset) {
+                        destOffset =
+                            (NSUInteger)slot->offset + sessionOffset;
+                        NSUInteger remain = visible - sessionOffset;
+                        maxVerts = MIN(maxVerts, remain / fieldBytes);
+                    } else {
+                        maxVerts = 0u;
+                    }
+                }
+                if (maxVerts == 0u) {
+                    continue;
+                }
+                NSUInteger written = maxVerts * fieldBytes;
+                uint8_t *packed = (uint8_t *)calloc(1u, written);
+                if (!packed) {
+                    NSLog(@"MGL TESS XFB: OOM packing separate attrib %d",
+                          (int)varying);
+                    return false;
+                }
+                for (NSUInteger vertex = 0u; vertex < maxVerts; vertex++) {
+                    NSUInteger sourceOffset = vertex * outStride +
+                        MGL_AIR_PER_VERTEX_STRIDE +
+                        (NSUInteger)output->location * 16u;
+                    mglTESXFBPackFieldFromCarrier(
+                        output->gl_type, srcBase + sourceOffset,
+                        packed + vertex * fieldBytes, fieldBytes);
+                }
+                mglRendererBufferSubData(glm_ctx, destBuf, (GLintptr)destOffset,
+                                         (GLsizeiptr)written, packed);
+                if (destMTL) {
+                    uint8_t *live =
+                        (uint8_t *)mglTessBufferContents(destMTL);
+                    if (live) {
+                        memcpy(live + destOffset, packed, written);
+                    }
+                }
+                if (destBuf->data.buffer_data &&
+                    (size_t)destBuf->size >= destOffset + written) {
+                    memcpy((uint8_t *)destBuf->data.buffer_data + destOffset,
+                           packed, written);
+                }
+                destBuf->ever_written = GL_TRUE;
+                destBuf->has_initialized_data = GL_TRUE;
+                destBuf->cpu_shadow_pending = GL_TRUE;
+                destBuf->gpu_write_target = GL_FALSE;
+                destBuf->data.dirty_bits |= DIRTY_BUFFER_DATA;
+                destBuf->last_write_offset = (GLintptr)destOffset;
+                destBuf->last_write_size = (GLsizeiptr)written;
+                if (destBuf->written_min < 0 ||
+                    (GLintptr)destOffset < destBuf->written_min) {
+                    destBuf->written_min = (GLintptr)destOffset;
+                }
+                GLintptr writeEnd = (GLintptr)(destOffset + written);
+                if (destBuf->written_max < 0 ||
+                    writeEnd > destBuf->written_max) {
+                    destBuf->written_max = writeEnd;
+                }
+                free(packed);
+            }
+        } else {
         uint8_t *packed = (uint8_t *)calloc(1u, xfbWrittenBytes);
-        if (!srcBase || !packed) {
-            free(packed);
+        if (!packed) {
             NSLog(@"MGL TESS XFB: missing temporary contents or OOM");
             return false;
         }
@@ -2059,6 +2185,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
             xfbDestination->written_max = writeEnd;
         }
         free(packed);
+        }
     }
     if (xfbActive && xfbWrittenBytes > 0u) {
         const GLuint64 currentOffset = xfbState->buffer_write_offsets[0];
