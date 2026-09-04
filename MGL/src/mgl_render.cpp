@@ -8639,10 +8639,12 @@ uint32_t mglRenderTessEvalItemsPerPatch(
             float e1 = *(const __fp16*)&tf->edge[1];
             float e2 = *(const __fp16*)&tf->edge[2];
             float e3 = *(const __fp16*)&tf->edge[3];
+            float i1 = *(const __fp16*)&tf->inside[1];
             if (e0 < 1.0f) e0 = 1.0f;
             if (e1 < 1.0f) e1 = 1.0f;
             if (e2 < 1.0f) e2 = 1.0f;
             if (e3 < 1.0f) e3 = 1.0f;
+            if (i1 < 1.0f) i1 = 1.0f;
             const uint32_t n0 =
                 mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(e0));
             const uint32_t n1 =
@@ -8651,10 +8653,25 @@ uint32_t mglRenderTessEvalItemsPerPatch(
                 mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(e2));
             const uint32_t n3 =
                 mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(e3));
-            if (n0 > 1u || n1 > 1u || n2 > 1u || n3 > 1u)
-                return n0 + n1 + n2 + n3;
-            /* All outer ≤1: four unit-quad corners (matches TES compute). */
-            return 4u;
+            /* CTS points_verification: perimeter sum(outer) +
+             * (inner0-1)*(inner1-1) interior samples. */
+            const uint32_t cI0 = mglRenderTessCeilLevel1(i0);
+            const uint32_t cI1 = mglRenderTessCeilLevel1(i1);
+            const uint32_t cO0 = mglRenderTessCeilLevel1(e0);
+            const uint32_t cO1 = mglRenderTessCeilLevel1(e1);
+            const uint32_t cO2 = mglRenderTessCeilLevel1(e2);
+            const uint32_t cO3 = mglRenderTessCeilLevel1(e3);
+            const int allOne =
+                (cI0 == 1u && cI1 == 1u && cO0 == 1u && cO1 == 1u &&
+                 cO2 == 1u && cO3 == 1u);
+            const uint32_t nx =
+                mglRenderTessRoundInnerLevel(spacing, cI0, allOne);
+            const uint32_t ny =
+                mglRenderTessRoundInnerLevel(spacing, cI1, allOne);
+            const uint32_t perim = n0 + n1 + n2 + n3;
+            const uint32_t innerPts =
+                (nx > 1u && ny > 1u) ? (nx - 1u) * (ny - 1u) : 0u;
+            return perim + innerPts;
         }
         float i1 = *(const __fp16*)&tf->inside[1];
         if (i1 < 1.0f) i1 = 1.0f;
@@ -8708,13 +8725,30 @@ uint32_t mglRenderTessEvalItemsPerPatch(
             uint32_t n = n0 + n1 + n2;
             float i0raw = *(const __fp16*)&tf->inside[0];
             if (i0raw < 1.0f) i0raw = 1.0f;
-            if ((uint32_t)ceilf(i0raw) <= 1u) {
-                /* Inner≈1 + any outer>1: bump. FO → 3-segment triangle (+3);
-                 * equal/FE → degenerate centre (+1). */
-                if (spacing == GL_FRACTIONAL_ODD)
-                    n += 3u;
-                else
+            const uint32_t cI0 = mglRenderTessCeilLevel1(i0raw);
+            const uint32_t cO0 = mglRenderTessCeilLevel1(e0);
+            const uint32_t cO1 = mglRenderTessCeilLevel1(e1);
+            const uint32_t cO2 = mglRenderTessCeilLevel1(e2);
+            const int allOne =
+                (cI0 == 1u && cO0 == 1u && cO1 == 1u && cO2 == 1u);
+            const uint32_t nIn =
+                mglRenderTessRoundInnerLevel(spacing, cI0, allOne);
+            /* Concentric inner rings (CTS points_verification triangles). */
+            for (int k = (int)nIn; k >= 0; k -= 2) {
+                if (k == 2) {
                     n += 1u;
+                    break;
+                }
+                if (k == 3) {
+                    n += 3u;
+                    break;
+                }
+                if (k >= 2)
+                    n += (uint32_t)(k - 2) * 3u;
+                else {
+                    n += 1u;
+                    break;
+                }
             }
             return n;
         }

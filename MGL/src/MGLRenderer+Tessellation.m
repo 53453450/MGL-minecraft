@@ -2948,54 +2948,12 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
 
             GLuint perPatch = 0;
             if (pointMode) {
-                /* Point mode: 1 primitive per tessellated point.  Keep in
-                 * sync with mglRenderTessEvalItemsPerPatch. */
-                if (genMode == GL_QUADS) {
-                    const GLuint n0 = mglTessRoundLevelForSpacing(
-                        spacing, (GLuint)ceilf(edge[0]));
-                    const GLuint n1 = mglTessRoundLevelForSpacing(
-                        spacing, (GLuint)ceilf(edge[1]));
-                    const GLuint n2 = mglTessRoundLevelForSpacing(
-                        spacing, (GLuint)ceilf(edge[2]));
-                    const GLuint n3 = mglTessRoundLevelForSpacing(
-                        spacing, (GLuint)ceilf(edge[3]));
-                    if (n0 > 1u || n1 > 1u || n2 > 1u || n3 > 1u) {
-                        perPatch = n0 + n1 + n2 + n3;
-                    } else {
-                        perPatch =
-                            mglTessRoundLevelForSpacing(
-                                spacing, (GLuint)ceilf(inside[0])) *
-                            mglTessRoundLevelForSpacing(
-                                spacing, (GLuint)ceilf(inside[1]));
-                    }
-                } else if (genMode == GL_TRIANGLES) {
-                    const GLuint n0 = mglTessRoundLevelForSpacing(
-                        spacing, (GLuint)ceilf(edge[0]));
-                    const GLuint n1 = mglTessRoundLevelForSpacing(
-                        spacing, (GLuint)ceilf(edge[1]));
-                    const GLuint n2 = mglTessRoundLevelForSpacing(
-                        spacing, (GLuint)ceilf(edge[2]));
-                    if (n0 > 1u || n1 > 1u || n2 > 1u) {
-                        perPatch = n0 + n1 + n2;
-                        float i0raw = inside[0];
-                        if (i0raw < 1.0f) i0raw = 1.0f;
-                        if ((GLuint)ceilf(i0raw) <= 1u) {
-                            if (spacing == GL_FRACTIONAL_ODD)
-                                perPatch += 3u;
-                            else
-                                perPatch += 1u;
-                        }
-                    } else {
-                        const GLuint n = mglTessRoundLevelForSpacing(
-                            spacing, (GLuint)ceilf(inside[0]));
-                        perPatch = (n == 1u) ? 3u : (n * n);
-                    }
-                } else { /* GL_ISOLINES */
-                    const GLuint n = (GLuint)ceilf(edge[0]); /* equal */
-                    const GLuint m = mglTessRoundLevelForSpacing(
-                        spacing, (GLuint)ceilf(edge[1]));
-                    perPatch = n * (m + 1u);
-                }
+                /* Point mode: 1 primitive per tessellated point.  Delegate to
+                 * mglRenderTessEvalItemsPerPatch so quads/triangles interior
+                 * rings stay in sync with TES compute. */
+                perPatch = (GLuint)mglRenderTessEvalItemsPerPatch(
+                    tfBase + (NSUInteger)p * MGL_AIR_TESS_FACTOR_RECORD_BYTES,
+                    (uint32_t)genMode, (uint32_t)spacing, 1u);
             } else {
                 if (genMode == GL_QUADS) {
                     /* Each quad splits into 2 triangles. */

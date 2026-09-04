@@ -14750,23 +14750,18 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             llvm::Value *ny = roundLevel(
                 b.CreateSelect(bump1, b.getInt32(2), cI1));
             if (tu->layout_point_mode) {
-                /* Outer perimeter when any outer > 1.  Interior rings for
-                 * high inner are not yet implemented (points_verification
-                 * quads still incomplete); perimeter alone matches
-                 * vertex_spacing which only checks outer edges. */
+                /* Perimeter sum(outer) + (nx-1)*(ny-1) interior (CTS
+                 * points_verification).  Outer edges use exclusive-end
+                 * samples so corners are not double-counted. */
                 llvm::Value *n0 = roundLevel(ceilClamp(loadHalf(0), 1.0f));
                 llvm::Value *n1 = roundLevel(ceilClamp(loadHalf(1), 1.0f));
                 llvm::Value *n2 = roundLevel(ceilClamp(loadHalf(2), 1.0f));
                 llvm::Value *n3 = roundLevel(ceilClamp(loadHalf(3), 1.0f));
-                llvm::Value *anyOuter = b.CreateOr(
-                    b.CreateICmpUGT(n0, b.getInt32(1)),
-                    b.CreateOr(
-                        b.CreateICmpUGT(n1, b.getInt32(1)),
-                        b.CreateOr(b.CreateICmpUGT(n2, b.getInt32(1)),
-                                   b.CreateICmpUGT(n3, b.getInt32(1)))));
                 llvm::Value *off1 = n0;
                 llvm::Value *off2 = b.CreateAdd(n0, n1);
                 llvm::Value *off3 = b.CreateAdd(off2, n2);
+                llvm::Value *perimN = b.CreateAdd(off3, n3);
+                llvm::Value *onPerim = b.CreateICmpULT(innerId, perimN);
                 llvm::Value *onE0 = b.CreateICmpULT(innerId, off1);
                 llvm::Value *onE1 = b.CreateICmpULT(innerId, off2);
                 llvm::Value *onE2 = b.CreateICmpULT(innerId, off3);
@@ -14795,42 +14790,120 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     onE0, vE0,
                     b.CreateSelect(onE1, vE1,
                                    b.CreateSelect(onE2, vE2, vE3)));
-                llvm::Value *i = b.CreateURem(innerId, nx);
-                llvm::Value *j = b.CreateUDiv(innerId, nx);
-                llvm::Value *uGrid = b.CreateFDiv(
-                    b.CreateFAdd(toF(i), llvm::ConstantFP::get(f32, 0.5)),
-                    toF(nx));
-                llvm::Value *vGrid = b.CreateFDiv(
-                    b.CreateFAdd(toF(j), llvm::ConstantFP::get(f32, 0.5)),
-                    toF(ny));
-                /* Level-1 with all outer ≤1: GL point_mode emits the unit
-                 * quad's four corners (not the cell centre).  Centre
-                 * (0.5,0.5) is rejected by CTS filters such as
-                 * basic-atomic-case2 (`TessCoord.x/y >= 0.5 → return`). */
-                llvm::Value *isN1 = b.CreateAnd(
-                    b.CreateICmpEQ(nx, b.getInt32(1)),
-                    b.CreateICmpEQ(ny, b.getInt32(1)));
-                llvm::Value *c0 = b.CreateICmpEQ(innerId, b.getInt32(0));
-                llvm::Value *c1 = b.CreateICmpEQ(innerId, b.getInt32(1));
-                llvm::Value *c2 = b.CreateICmpEQ(innerId, b.getInt32(2));
-                llvm::Value *uN1 = b.CreateSelect(
-                    c0, llvm::ConstantFP::get(f32, 0.0),
-                    b.CreateSelect(
-                        c1, llvm::ConstantFP::get(f32, 1.0),
-                        b.CreateSelect(c2, llvm::ConstantFP::get(f32, 1.0),
-                                       llvm::ConstantFP::get(f32, 0.0))));
-                llvm::Value *vN1 = b.CreateSelect(
-                    c0, llvm::ConstantFP::get(f32, 0.0),
-                    b.CreateSelect(
-                        c1, llvm::ConstantFP::get(f32, 0.0),
-                        b.CreateSelect(c2, llvm::ConstantFP::get(f32, 1.0),
-                                       llvm::ConstantFP::get(f32, 1.0))));
-                llvm::Value *uInner =
-                    b.CreateSelect(isN1, uN1, uGrid);
-                llvm::Value *vInner =
-                    b.CreateSelect(isN1, vN1, vGrid);
-                u = b.CreateSelect(anyOuter, uPerim, uInner);
-                v = b.CreateSelect(anyOuter, vPerim, vInner);
+                llvm::Value *iid = b.CreateSub(innerId, perimN);
+                /* Inner rectangle grid sized to FO/equal segment counts
+                 * (CTS vertex_spacing), plus centre fill for the rest of
+                 * (nx-1)*(ny-1).  Skip the grid when it would exceed the
+                 * interior budget or collapse (nx/ny ≤ 2). */
+                llvm::Value *preU = b.CreateSelect(
+                    b.CreateICmpUGT(cI0, b.getInt32(2)),
+                    b.CreateSub(cI0, b.getInt32(2)), b.getInt32(1));
+                llvm::Value *preV = b.CreateSelect(
+                    b.CreateICmpUGT(cI1, b.getInt32(2)),
+                    b.CreateSub(cI1, b.getInt32(2)), b.getInt32(1));
+                llvm::Value *segsU = roundLevel(preU);
+                llvm::Value *segsV = roundLevel(preV);
+                if (tu->layout_spacing == MGL_AST_SPACING_FRACTIONAL_ODD) {
+                    segsU = b.CreateSelect(
+                        b.CreateICmpUGT(segsU, b.getInt32(2)),
+                        b.CreateSub(segsU, b.getInt32(2)), segsU);
+                    segsV = b.CreateSelect(
+                        b.CreateICmpUGT(segsV, b.getInt32(2)),
+                        b.CreateSub(segsV, b.getInt32(2)), segsV);
+                }
+                segsU = b.CreateSelect(
+                    b.CreateICmpEQ(segsU, b.getInt32(0)), b.getInt32(1),
+                    segsU);
+                segsV = b.CreateSelect(
+                    b.CreateICmpEQ(segsV, b.getInt32(0)), b.getInt32(1),
+                    segsV);
+                llvm::Value *ptsU = b.CreateAdd(segsU, b.getInt32(1));
+                llvm::Value *ptsV = b.CreateAdd(segsV, b.getInt32(1));
+                llvm::Value *gridN = b.CreateMul(ptsU, ptsV);
+                llvm::Value *innerN = b.CreateMul(
+                    b.CreateSub(nx, b.getInt32(1)),
+                    b.CreateSub(ny, b.getInt32(1)));
+                llvm::Value *useGrid = b.CreateAnd(
+                    b.CreateAnd(b.CreateICmpUGT(nx, b.getInt32(2)),
+                                b.CreateICmpUGT(ny, b.getInt32(2))),
+                    b.CreateICmpULE(gridN, innerN));
+                llvm::Value *u0 = b.CreateFDiv(
+                    llvm::ConstantFP::get(f32, 1.0), toF(nx));
+                llvm::Value *v0 = b.CreateFDiv(
+                    llvm::ConstantFP::get(f32, 1.0), toF(ny));
+                llvm::Value *u1 = b.CreateFSub(
+                    llvm::ConstantFP::get(f32, 1.0), u0);
+                llvm::Value *v1 = b.CreateFSub(
+                    llvm::ConstantFP::get(f32, 1.0), v0);
+                llvm::Value *onGrid = b.CreateAnd(
+                    useGrid, b.CreateICmpULT(iid, gridN));
+                llvm::Value *gi = b.CreateURem(iid, ptsU);
+                llvm::Value *gj = b.CreateUDiv(iid, ptsU);
+                llvm::Value *uGrid = b.CreateFAdd(
+                    u0,
+                    b.CreateFMul(b.CreateFDiv(toF(gi), toF(segsU)),
+                                 b.CreateFSub(u1, u0)));
+                llvm::Value *vGrid = b.CreateFAdd(
+                    v0,
+                    b.CreateFMul(b.CreateFDiv(toF(gj), toF(segsV)),
+                                 b.CreateFSub(v1, v0)));
+                llvm::Value *fid = b.CreateSelect(
+                    onGrid, iid,
+                    b.CreateSub(iid, b.CreateSelect(useGrid, gridN,
+                                                    b.getInt32(0))));
+                /* ny≤2 / nx≤2: CTS still runs an inner-quad pass when
+                 * inner[0]>1.  Put all interior samples on one equal-spaced
+                 * line so segment deltas match round(inner-2). */
+                llvm::Value *den = b.CreateSelect(
+                    b.CreateICmpUGT(innerN, b.getInt32(1)),
+                    b.CreateSub(innerN, b.getInt32(1)), b.getInt32(1));
+                llvm::Value *uLine = b.CreateFAdd(
+                    u0,
+                    b.CreateFMul(b.CreateFDiv(toF(iid), toF(den)),
+                                 b.CreateFSub(u1, u0)));
+                llvm::Value *vLine = b.CreateFAdd(
+                    v0,
+                    b.CreateFMul(b.CreateFDiv(toF(iid), toF(den)),
+                                 b.CreateFSub(v1, v0)));
+                llvm::Value *uFlat = b.CreateSelect(
+                    b.CreateICmpULE(ny, b.getInt32(2)), uLine,
+                    llvm::ConstantFP::get(f32, 0.5));
+                llvm::Value *vFlat = b.CreateSelect(
+                    b.CreateICmpULE(ny, b.getInt32(2)),
+                    llvm::ConstantFP::get(f32, 0.5), vLine);
+                llvm::Value *cols = b.CreateSub(nx, b.getInt32(1));
+                cols = b.CreateSelect(
+                    b.CreateICmpEQ(cols, b.getInt32(0)), b.getInt32(1),
+                    cols);
+                llvm::Value *ii = b.CreateURem(fid, cols);
+                llvm::Value *jj = b.CreateUDiv(fid, cols);
+                llvm::Value *uLat = b.CreateFDiv(
+                    toF(b.CreateAdd(ii, b.getInt32(1))), toF(nx));
+                llvm::Value *vLat = b.CreateFDiv(
+                    toF(b.CreateAdd(jj, b.getInt32(1))), toF(ny));
+                /* Extra samples after the segment grid: keep them near the
+                 * centre so they cannot sit on the grid's AABB edges. */
+                llvm::Value *uCtr = b.CreateFAdd(
+                    llvm::ConstantFP::get(f32, 0.5),
+                    b.CreateFMul(
+                        llvm::ConstantFP::get(f32, 0.001),
+                        toF(b.CreateAdd(fid, b.getInt32(1)))));
+                llvm::Value *vCtr = b.CreateFAdd(
+                    llvm::ConstantFP::get(f32, 0.5),
+                    b.CreateFMul(
+                        llvm::ConstantFP::get(f32, 0.0007),
+                        toF(b.CreateAdd(fid, b.getInt32(1)))));
+                llvm::Value *thin = b.CreateOr(
+                    b.CreateICmpULE(nx, b.getInt32(2)),
+                    b.CreateICmpULE(ny, b.getInt32(2)));
+                llvm::Value *uFill = b.CreateSelect(
+                    thin, uFlat, b.CreateSelect(useGrid, uCtr, uLat));
+                llvm::Value *vFill = b.CreateSelect(
+                    thin, vFlat, b.CreateSelect(useGrid, vCtr, vLat));
+                llvm::Value *uIn = b.CreateSelect(onGrid, uGrid, uFill);
+                llvm::Value *vIn = b.CreateSelect(onGrid, vGrid, vFill);
+                u = b.CreateSelect(onPerim, uPerim, uIn);
+                v = b.CreateSelect(onPerim, vPerim, vIn);
             } else {
                 /* Level-1: 2 CCW triangles (6 verts). Higher levels: cell centres
                  * (incomplete vs GL edge subdivision; preserves prior CTS passes). */
@@ -14994,41 +15067,105 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     onE0, uE0, b.CreateSelect(onE1, uE1, uE2));
                 llvm::Value *vEdge = b.CreateSelect(
                     onE0, vE0, b.CreateSelect(onE1, vE1, vE2));
-                /* fractional_odd bumps inner≈1 → 3: append one inner
-                 * triangle only when pre-round inner ceil is ≤1. */
-                llvm::Value *nInCeil = ceilClamp(loadHalf(4), 1.0f);
+                /* Inner samples after the perimeter: concentric rings for
+                 * high nIn (CTS points_verification), or the inner≈1 bump
+                 * peel (vertex_spacing).  Ring points use inset barycentric
+                 * edges so duplicates stay off the outer perimeter. */
                 llvm::Value *k = b.CreateSub(innerId, perimCount);
-                llvm::Value *c0 = b.CreateICmpEQ(k, b.getInt32(0));
-                llvm::Value *c1 = b.CreateICmpEQ(k, b.getInt32(1));
-                llvm::Value *uI0 = llvm::ConstantFP::get(f32, 5.0 / 9.0);
-                llvm::Value *vI0 = llvm::ConstantFP::get(f32, 2.0 / 9.0);
-                llvm::Value *uI1 = llvm::ConstantFP::get(f32, 2.0 / 9.0);
-                llvm::Value *vI1 = llvm::ConstantFP::get(f32, 5.0 / 9.0);
-                llvm::Value *uI2 = llvm::ConstantFP::get(f32, 2.0 / 9.0);
-                llvm::Value *vI2 = llvm::ConstantFP::get(f32, 2.0 / 9.0);
-                llvm::Value *uInner3 = b.CreateSelect(
-                    c0, uI0, b.CreateSelect(c1, uI1, uI2));
-                llvm::Value *vInner3 = b.CreateSelect(
-                    c0, vI0, b.CreateSelect(c1, vI1, vI2));
-                const bool oddSpacing =
-                    tu->layout_spacing == MGL_AST_SPACING_FRACTIONAL_ODD;
-                llvm::Value *doBump = b.CreateAnd(
-                    b.CreateNot(onPerim),
-                    b.CreateICmpULE(nInCeil, b.getInt32(1)));
-                if (oddSpacing) {
-                    uPerim = b.CreateSelect(onPerim, uEdge,
-                        b.CreateSelect(doBump, uInner3, uEdge));
-                    vPerim = b.CreateSelect(onPerim, vEdge,
-                        b.CreateSelect(doBump, vInner3, vEdge));
-                } else {
-                    /* equal / fractional_even bump → degenerate centre. */
-                    llvm::Value *uC = llvm::ConstantFP::get(f32, 1.0 / 3.0);
-                    llvm::Value *vC = llvm::ConstantFP::get(f32, 1.0 / 3.0);
-                    uPerim = b.CreateSelect(onPerim, uEdge,
-                        b.CreateSelect(doBump, uC, uEdge));
-                    vPerim = b.CreateSelect(onPerim, vEdge,
-                        b.CreateSelect(doBump, vC, vEdge));
+                llvm::Value *uC = llvm::ConstantFP::get(f32, 1.0 / 3.0);
+                llvm::Value *vC = llvm::ConstantFP::get(f32, 1.0 / 3.0);
+                /* Walk rings nIn, nIn-2, ... in a fixed peel (max level 64). */
+                llvm::Value *rem = k;
+                llvm::Value *ringN = nIn;
+                llvm::Value *uRing = uC;
+                llvm::Value *vRing = vC;
+                for (int peel = 0; peel < 32; peel++) {
+                    llvm::Value *is2 = b.CreateICmpEQ(ringN, b.getInt32(2));
+                    llvm::Value *is3 = b.CreateICmpEQ(ringN, b.getInt32(3));
+                    llvm::Value *segs = b.CreateSub(ringN, b.getInt32(2));
+                    llvm::Value *ringCnt = b.CreateMul(segs, b.getInt32(3));
+                    ringCnt = b.CreateSelect(is2, b.getInt32(1), ringCnt);
+                    ringCnt = b.CreateSelect(is3, b.getInt32(3), ringCnt);
+                    llvm::Value *inRing = b.CreateICmpULT(rem, ringCnt);
+                    /* Inset t = ringN / (nIn + 1) toward corners from centre. */
+                    llvm::Value *t = b.CreateFDiv(
+                        toF(ringN),
+                        b.CreateFAdd(toF(nIn), llvm::ConstantFP::get(f32, 1.0)));
+                    llvm::Value *oMt = b.CreateFSub(
+                        llvm::ConstantFP::get(f32, 1.0), t);
+                    /* Corners of concentric triangle. */
+                    llvm::Value *uA = b.CreateFAdd(
+                        b.CreateFMul(oMt, uC),
+                        b.CreateFMul(t, llvm::ConstantFP::get(f32, 1.0)));
+                    llvm::Value *vA = b.CreateFAdd(
+                        b.CreateFMul(oMt, vC),
+                        b.CreateFMul(t, llvm::ConstantFP::get(f32, 0.0)));
+                    llvm::Value *uB = b.CreateFAdd(
+                        b.CreateFMul(oMt, uC),
+                        b.CreateFMul(t, llvm::ConstantFP::get(f32, 0.0)));
+                    llvm::Value *vB = b.CreateFAdd(
+                        b.CreateFMul(oMt, vC),
+                        b.CreateFMul(t, llvm::ConstantFP::get(f32, 1.0)));
+                    llvm::Value *uCc = b.CreateFAdd(
+                        b.CreateFMul(oMt, uC),
+                        b.CreateFMul(t, llvm::ConstantFP::get(f32, 0.0)));
+                    llvm::Value *vCc = b.CreateFAdd(
+                        b.CreateFMul(oMt, vC),
+                        b.CreateFMul(t, llvm::ConstantFP::get(f32, 0.0)));
+                    llvm::Value *edge = b.CreateUDiv(
+                        rem,
+                        b.CreateSelect(
+                            b.CreateICmpEQ(segs, b.getInt32(0)),
+                            b.getInt32(1), segs));
+                    llvm::Value *slot = b.CreateURem(
+                        rem,
+                        b.CreateSelect(
+                            b.CreateICmpEQ(segs, b.getInt32(0)),
+                            b.getInt32(1), segs));
+                    llvm::Value *ft = b.CreateFDiv(toF(slot), toF(
+                        b.CreateSelect(b.CreateICmpEQ(segs, b.getInt32(0)),
+                                       b.getInt32(1), segs)));
+                    llvm::Value *u0 = b.CreateSelect(
+                        b.CreateICmpEQ(edge, b.getInt32(0)), uA,
+                        b.CreateSelect(b.CreateICmpEQ(edge, b.getInt32(1)),
+                                       uB, uCc));
+                    llvm::Value *v0 = b.CreateSelect(
+                        b.CreateICmpEQ(edge, b.getInt32(0)), vA,
+                        b.CreateSelect(b.CreateICmpEQ(edge, b.getInt32(1)),
+                                       vB, vCc));
+                    llvm::Value *u1 = b.CreateSelect(
+                        b.CreateICmpEQ(edge, b.getInt32(0)), uB,
+                        b.CreateSelect(b.CreateICmpEQ(edge, b.getInt32(1)),
+                                       uCc, uA));
+                    llvm::Value *v1 = b.CreateSelect(
+                        b.CreateICmpEQ(edge, b.getInt32(0)), vB,
+                        b.CreateSelect(b.CreateICmpEQ(edge, b.getInt32(1)),
+                                       vCc, vA));
+                    llvm::Value *uE = b.CreateFAdd(
+                        u0, b.CreateFMul(ft, b.CreateFSub(u1, u0)));
+                    llvm::Value *vE = b.CreateFAdd(
+                        v0, b.CreateFMul(ft, b.CreateFSub(v1, v0)));
+                    /* n==3: three corners; n==2: centre. */
+                    llvm::Value *u3 = b.CreateSelect(
+                        b.CreateICmpEQ(rem, b.getInt32(0)), uA,
+                        b.CreateSelect(b.CreateICmpEQ(rem, b.getInt32(1)),
+                                       uB, uCc));
+                    llvm::Value *v3 = b.CreateSelect(
+                        b.CreateICmpEQ(rem, b.getInt32(0)), vA,
+                        b.CreateSelect(b.CreateICmpEQ(rem, b.getInt32(1)),
+                                       vB, vCc));
+                    llvm::Value *uPick = b.CreateSelect(
+                        is2, uC, b.CreateSelect(is3, u3, uE));
+                    llvm::Value *vPick = b.CreateSelect(
+                        is2, vC, b.CreateSelect(is3, v3, vE));
+                    uRing = b.CreateSelect(inRing, uPick, uRing);
+                    vRing = b.CreateSelect(inRing, vPick, vRing);
+                    rem = b.CreateSelect(inRing, rem, b.CreateSub(rem, ringCnt));
+                    ringN = b.CreateSelect(
+                        inRing, ringN, b.CreateSub(ringN, b.getInt32(2)));
                 }
+                uPerim = b.CreateSelect(onPerim, uEdge, uRing);
+                vPerim = b.CreateSelect(onPerim, vEdge, vRing);
             }
             llvm::Value *isN1 = b.CreateICmpEQ(nIn, b.getInt32(1));
             llvm::BasicBlock *triN1BB = llvm::BasicBlock::Create(
