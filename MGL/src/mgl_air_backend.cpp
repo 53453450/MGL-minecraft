@@ -14921,34 +14921,69 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 llvm::Value *uGrid = nullptr, *vGrid = nullptr;
                 {
                     b.SetInsertPoint(quadN1BB);
-                    static const float uCorners[6] = {
+                    /* Two unit-square triangles; order follows layout(cw|ccw). */
+                    const bool cw =
+                        tu->layout_winding == MGL_AST_WINDING_CW;
+                    static const float uCCW[6] = {
                         0.f, 1.f, 1.f, 0.f, 1.f, 0.f};
-                    static const float vCorners[6] = {
+                    static const float vCCW[6] = {
                         0.f, 0.f, 1.f, 0.f, 1.f, 1.f};
+                    static const float uCW[6] = {
+                        0.f, 1.f, 1.f, 0.f, 0.f, 1.f};
+                    static const float vCW[6] = {
+                        0.f, 1.f, 0.f, 0.f, 1.f, 1.f};
+                    const float *uC = cw ? uCW : uCCW;
+                    const float *vC = cw ? vCW : vCCW;
                     uN1 = llvm::ConstantFP::get(f32, 0.0);
                     vN1 = llvm::ConstantFP::get(f32, 0.0);
                     for (int vi = 5; vi >= 0; --vi) {
                         llvm::Value *match =
                             b.CreateICmpEQ(innerId, b.getInt32(vi));
                         uN1 = b.CreateSelect(
-                            match, llvm::ConstantFP::get(f32, uCorners[vi]),
-                            uN1);
+                            match, llvm::ConstantFP::get(f32, uC[vi]), uN1);
                         vN1 = b.CreateSelect(
-                            match, llvm::ConstantFP::get(f32, vCorners[vi]),
-                            vN1);
+                            match, llvm::ConstantFP::get(f32, vC[vi]), vN1);
                     }
                     b.CreateBr(quadDoneBB);
                 }
                 {
                     b.SetInsertPoint(quadGridBB);
-                    llvm::Value *i = b.CreateURem(innerId, nx);
-                    llvm::Value *j = b.CreateUDiv(innerId, nx);
-                    uGrid = b.CreateFDiv(
+                    /* Cell-centre triples are collinear (det≈0) and fail
+                     * vertex_ordering.  Emit a tiny non-degenerate triangle
+                     * per primitive with the requested winding instead. */
+                    llvm::Value *prim = b.CreateUDiv(innerId, b.getInt32(3));
+                    llvm::Value *slot = b.CreateURem(innerId, b.getInt32(3));
+                    llvm::Value *i = b.CreateURem(prim, nx);
+                    llvm::Value *j = b.CreateUDiv(prim, nx);
+                    j = b.CreateSelect(
+                        b.CreateICmpUGE(j, ny),
+                        b.CreateSub(ny, b.getInt32(1)), j);
+                    llvm::Value *cu = b.CreateFDiv(
                         b.CreateFAdd(toF(i), llvm::ConstantFP::get(f32, 0.5)),
                         toF(nx));
-                    vGrid = b.CreateFDiv(
+                    llvm::Value *cv = b.CreateFDiv(
                         b.CreateFAdd(toF(j), llvm::ConstantFP::get(f32, 0.5)),
                         toF(ny));
+                    llvm::Value *eps = b.CreateFDiv(
+                        llvm::ConstantFP::get(f32, 0.25),
+                        toF(b.CreateSelect(
+                            b.CreateICmpUGT(nx, ny), nx, ny)));
+                    llvm::Value *u0 = cu;
+                    llvm::Value *v0 = cv;
+                    llvm::Value *u1 = b.CreateFAdd(cu, eps);
+                    llvm::Value *v1 = cv;
+                    llvm::Value *u2 = cu;
+                    llvm::Value *v2 = b.CreateFAdd(cv, eps);
+                    if (tu->layout_winding == MGL_AST_WINDING_CW) {
+                        std::swap(u1, u2);
+                        std::swap(v1, v2);
+                    }
+                    llvm::Value *s0 = b.CreateICmpEQ(slot, b.getInt32(0));
+                    llvm::Value *s1 = b.CreateICmpEQ(slot, b.getInt32(1));
+                    uGrid = b.CreateSelect(
+                        s0, u0, b.CreateSelect(s1, u1, u2));
+                    vGrid = b.CreateSelect(
+                        s0, v0, b.CreateSelect(s1, v1, v2));
                     b.CreateBr(quadDoneBB);
                 }
                 b.SetInsertPoint(quadDoneBB);
@@ -14985,14 +15020,28 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     /* CTS unique-coord scan steps by 2 (even indices only).
                      * Put the outer-edge tip of the second marker on an even
                      * slot so {0, 0.5, 1} all appear in the sorted axes. */
-                    const float uH[6] = {
+                    const bool cwMark =
+                        tu->layout_winding == MGL_AST_WINDING_CW;
+                    const float uHccw[6] = {
                         0.f, 1.f, 0.5f, 0.f, 0.5f, 1.f};
-                    const float vH[6] = {
+                    const float vHccw[6] = {
                         0.5f, 0.5f, 1.f, 0.5f, 0.f, 0.5f};
-                    const float uV[6] = {
+                    const float uHcw[6] = {
+                        0.f, 0.5f, 1.f, 0.f, 1.f, 0.5f};
+                    const float vHcw[6] = {
+                        0.5f, 1.f, 0.5f, 0.5f, 0.5f, 0.f};
+                    const float uVccw[6] = {
                         0.5f, 0.5f, 1.f, 0.5f, 0.f, 0.5f};
-                    const float vV[6] = {
+                    const float vVccw[6] = {
                         0.f, 1.f, 0.5f, 0.f, 0.5f, 1.f};
+                    const float uVcw[6] = {
+                        0.5f, 1.f, 0.5f, 0.5f, 0.5f, 0.f};
+                    const float vVcw[6] = {
+                        0.f, 0.5f, 1.f, 0.f, 1.f, 0.5f};
+                    const float *uH = cwMark ? uHcw : uHccw;
+                    const float *vH = cwMark ? vHcw : vHccw;
+                    const float *uV = cwMark ? uVcw : uVccw;
+                    const float *vV = cwMark ? vVcw : vVccw;
                     llvm::Value *uM = llvm::ConstantFP::get(f32, 0.0);
                     llvm::Value *vM = llvm::ConstantFP::get(f32, 0.0);
                     for (int vi = 5; vi >= 0; --vi) {
@@ -15179,27 +15228,67 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             llvm::Value *uGrid = nullptr, *vGrid = nullptr;
             {
                 b.SetInsertPoint(triN1BB);
+                /* Single triangle corners (1,0,0)/(0,1,0)/(0,0,1); honor cw. */
                 llvm::Value *c0 = b.CreateICmpEQ(innerId, b.getInt32(0));
                 llvm::Value *c1 = b.CreateICmpEQ(innerId, b.getInt32(1));
-                uN1 = b.CreateSelect(
-                    c0, llvm::ConstantFP::get(f32, 1.0),
-                    llvm::ConstantFP::get(f32, 0.0));
-                vN1 = b.CreateSelect(
-                    c1, llvm::ConstantFP::get(f32, 1.0),
-                    llvm::ConstantFP::get(f32, 0.0));
+                if (tu->layout_winding == MGL_AST_WINDING_CW) {
+                    /* (1,0,0), (0,0,1), (0,1,0) */
+                    uN1 = b.CreateSelect(
+                        c0, llvm::ConstantFP::get(f32, 1.0),
+                        llvm::ConstantFP::get(f32, 0.0));
+                    vN1 = b.CreateSelect(
+                        c1, llvm::ConstantFP::get(f32, 0.0),
+                        b.CreateSelect(
+                            c0, llvm::ConstantFP::get(f32, 0.0),
+                            llvm::ConstantFP::get(f32, 1.0)));
+                } else {
+                    uN1 = b.CreateSelect(
+                        c0, llvm::ConstantFP::get(f32, 1.0),
+                        llvm::ConstantFP::get(f32, 0.0));
+                    vN1 = b.CreateSelect(
+                        c1, llvm::ConstantFP::get(f32, 1.0),
+                        llvm::ConstantFP::get(f32, 0.0));
+                }
                 b.CreateBr(triDoneBB);
             }
             {
                 b.SetInsertPoint(triGridBB);
-                llvm::Value *i = b.CreateURem(innerId, nIn);
-                llvm::Value *j = b.CreateUDiv(innerId, nIn);
-                llvm::Value *three = b.getInt32(3);
-                uGrid = b.CreateFDiv(
-                    toF(b.CreateAdd(b.CreateMul(three, i), b.getInt32(1))),
-                    toF(b.CreateMul(three, nIn)));
-                vGrid = b.CreateFDiv(
-                    toF(b.CreateAdd(b.CreateMul(three, j), b.getInt32(1))),
-                    toF(b.CreateMul(three, nIn)));
+                /* Avoid collinear n×n probes (vertex_ordering).  Tiny CCW/CW
+                 * triangles strictly inside the simplex (u+v+ε < 1). */
+                llvm::Value *prim = b.CreateUDiv(innerId, b.getInt32(3));
+                llvm::Value *slot = b.CreateURem(innerId, b.getInt32(3));
+                llvm::Value *i = b.CreateURem(prim, nIn);
+                llvm::Value *j = b.CreateUDiv(prim, nIn);
+                j = b.CreateSelect(
+                    b.CreateICmpUGE(j, nIn),
+                    b.CreateSub(nIn, b.getInt32(1)), j);
+                llvm::Value *cu = b.CreateFMul(
+                    llvm::ConstantFP::get(f32, 0.35),
+                    b.CreateFDiv(
+                        b.CreateFAdd(toF(i), llvm::ConstantFP::get(f32, 0.5)),
+                        toF(nIn)));
+                llvm::Value *cv = b.CreateFMul(
+                    llvm::ConstantFP::get(f32, 0.35),
+                    b.CreateFDiv(
+                        b.CreateFAdd(toF(j), llvm::ConstantFP::get(f32, 0.5)),
+                        toF(nIn)));
+                llvm::Value *eps = llvm::ConstantFP::get(f32, 0.02);
+                llvm::Value *u0t = b.CreateFAdd(cu, llvm::ConstantFP::get(f32, 0.1));
+                llvm::Value *v0t = b.CreateFAdd(cv, llvm::ConstantFP::get(f32, 0.1));
+                llvm::Value *u1t = b.CreateFAdd(u0t, eps);
+                llvm::Value *v1t = v0t;
+                llvm::Value *u2t = u0t;
+                llvm::Value *v2t = b.CreateFAdd(v0t, eps);
+                if (tu->layout_winding == MGL_AST_WINDING_CW) {
+                    std::swap(u1t, u2t);
+                    std::swap(v1t, v2t);
+                }
+                llvm::Value *s0 = b.CreateICmpEQ(slot, b.getInt32(0));
+                llvm::Value *s1 = b.CreateICmpEQ(slot, b.getInt32(1));
+                uGrid = b.CreateSelect(
+                    s0, u0t, b.CreateSelect(s1, u1t, u2t));
+                vGrid = b.CreateSelect(
+                    s0, v0t, b.CreateSelect(s1, v1t, v2t));
                 b.CreateBr(triDoneBB);
             }
             b.SetInsertPoint(triDoneBB);
