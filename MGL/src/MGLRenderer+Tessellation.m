@@ -2806,17 +2806,19 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
                         perPatch = n0 + n1 + n2;
                         float i0raw = inside[0];
                         if (i0raw < 1.0f) i0raw = 1.0f;
-                        if (spacing == GL_FRACTIONAL_ODD &&
-                            (GLuint)ceilf(i0raw) <= 1u)
-                            perPatch += 3u;
+                        if ((GLuint)ceilf(i0raw) <= 1u) {
+                            if (spacing == GL_FRACTIONAL_ODD)
+                                perPatch += 3u;
+                            else
+                                perPatch += 1u;
+                        }
                     } else {
                         const GLuint n = mglTessRoundLevelForSpacing(
                             spacing, (GLuint)ceilf(inside[0]));
                         perPatch = (n == 1u) ? 3u : (n * n);
                     }
                 } else { /* GL_ISOLINES */
-                    const GLuint n = mglTessRoundLevelForSpacing(
-                        spacing, (GLuint)ceilf(edge[0]));
+                    const GLuint n = (GLuint)ceilf(edge[0]); /* equal */
                     const GLuint m = mglTessRoundLevelForSpacing(
                         spacing, (GLuint)ceilf(edge[1]));
                     perPatch = n * (m + 1u);

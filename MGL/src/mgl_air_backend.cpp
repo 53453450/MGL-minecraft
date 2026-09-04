@@ -14329,11 +14329,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         };
         llvm::Value *u = nullptr, *v = nullptr;
         if (tu->layout_primitive == MGL_AST_TES_ISOLINES) {
-            /* GL 4.6 §11.2.2.3: outer[0]=n isolines at v=i/n; outer[1]=m
-             * segments along each.  Line mode emits 2*m verts/row (segment
-             * endpoints).  point_mode emits the unique m+1 samples/row so
-             * adjacent points are not duplicated (CTS vertex_spacing). */
-            llvm::Value *n = roundLevel(ceilClamp(loadHalf(0), 1.0f));
+            /* GL 4.6 §11.2.2.3: outer[0]=n isolines — always equal_spacing;
+             * outer[1]=m segments — honours TES spacing.  point_mode emits
+             * m+1 unique samples/row (CTS vertex_spacing / points). */
+            llvm::Value *n = ceilClamp(loadHalf(0), 1.0f); /* equal only */
             llvm::Value *m = roundLevel(ceilClamp(loadHalf(1), 1.0f));
             if (tu->layout_point_mode) {
                 llvm::Value *perLine = b.CreateAdd(m, b.getInt32(1));
@@ -14354,8 +14353,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             llvm::Value *nx = roundLevel(ceilClamp(loadHalf(4), 1.0f));
             llvm::Value *ny = roundLevel(ceilClamp(loadHalf(5), 1.0f));
             if (tu->layout_point_mode) {
-                /* When any outer > 1, emit outer-edge perimeter
-                 * (GL §11.2.2: outer[0..3] = u=0, v=0, u=1, v=1). */
+                /* Outer perimeter when any outer > 1.  Interior rings for
+                 * high inner are not yet implemented (points_verification
+                 * quads still incomplete); perimeter alone matches
+                 * vertex_spacing which only checks outer edges. */
                 llvm::Value *n0 = roundLevel(ceilClamp(loadHalf(0), 1.0f));
                 llvm::Value *n1 = roundLevel(ceilClamp(loadHalf(1), 1.0f));
                 llvm::Value *n2 = roundLevel(ceilClamp(loadHalf(2), 1.0f));
@@ -14379,8 +14380,6 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 llvm::Value *t1 = b.CreateFDiv(toF(i1), toF(n1));
                 llvm::Value *t2 = b.CreateFDiv(toF(i2), toF(n2));
                 llvm::Value *t3 = b.CreateFDiv(toF(i3), toF(n3));
-                /* edge0 (0,1)→(0,0); edge1 (0,0)→(1,0);
-                 * edge2 (1,0)→(1,1); edge3 (1,1)→(0,1). */
                 llvm::Value *uE0 = llvm::ConstantFP::get(f32, 0.0);
                 llvm::Value *vE0 = b.CreateFSub(
                     llvm::ConstantFP::get(f32, 1.0), t0);
@@ -14478,17 +14477,22 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     c0, vI0, b.CreateSelect(c1, vI1, vI2));
                 const bool oddSpacing =
                     tu->layout_spacing == MGL_AST_SPACING_FRACTIONAL_ODD;
+                llvm::Value *doBump = b.CreateAnd(
+                    b.CreateNot(onPerim),
+                    b.CreateICmpULE(nInCeil, b.getInt32(1)));
                 if (oddSpacing) {
-                    llvm::Value *doBump = b.CreateAnd(
-                        b.CreateNot(onPerim),
-                        b.CreateICmpULE(nInCeil, b.getInt32(1)));
                     uPerim = b.CreateSelect(onPerim, uEdge,
                         b.CreateSelect(doBump, uInner3, uEdge));
                     vPerim = b.CreateSelect(onPerim, vEdge,
                         b.CreateSelect(doBump, vInner3, vEdge));
                 } else {
-                    uPerim = uEdge;
-                    vPerim = vEdge;
+                    /* equal / fractional_even bump → degenerate centre. */
+                    llvm::Value *uC = llvm::ConstantFP::get(f32, 1.0 / 3.0);
+                    llvm::Value *vC = llvm::ConstantFP::get(f32, 1.0 / 3.0);
+                    uPerim = b.CreateSelect(onPerim, uEdge,
+                        b.CreateSelect(doBump, uC, uEdge));
+                    vPerim = b.CreateSelect(onPerim, vEdge,
+                        b.CreateSelect(doBump, vC, vEdge));
                 }
             }
             llvm::Value *isN1 = b.CreateICmpEQ(nIn, b.getInt32(1));

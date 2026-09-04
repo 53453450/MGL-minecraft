@@ -8565,11 +8565,10 @@ uint32_t mglRenderTessEvalItemsPerPatch(
         float e1 = *(const __fp16*)&tf->edge[1];
         if (e0 < 1.0f) e0 = 1.0f;
         if (e1 < 1.0f) e1 = 1.0f;
-        const uint32_t n =
-            mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(e0));
+        /* outer[0] always equal_spacing; outer[1] uses TES spacing. */
+        const uint32_t n = (uint32_t)ceilf(e0);
         const uint32_t m =
             mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(e1));
-        /* point_mode: unique samples per isoline (m+1); else line endpoints. */
         if (point_mode)
             return n * (m + 1u);
         return n * m * 2u;
@@ -8625,9 +8624,14 @@ uint32_t mglRenderTessEvalItemsPerPatch(
             uint32_t n = n0 + n1 + n2;
             float i0raw = *(const __fp16*)&tf->inside[0];
             if (i0raw < 1.0f) i0raw = 1.0f;
-            /* fractional_odd bumps inner≈1 → 3 only when pre-round inner ≤1. */
-            if (spacing == GL_FRACTIONAL_ODD && (uint32_t)ceilf(i0raw) <= 1u)
-                n += 3u;
+            if ((uint32_t)ceilf(i0raw) <= 1u) {
+                /* Inner≈1 + any outer>1: bump. FO → 3-segment triangle (+3);
+                 * equal/FE → degenerate centre (+1). */
+                if (spacing == GL_FRACTIONAL_ODD)
+                    n += 3u;
+                else
+                    n += 1u;
+            }
             return n;
         }
     }
