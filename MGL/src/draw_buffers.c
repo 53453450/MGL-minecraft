@@ -1778,7 +1778,30 @@ static void mglDrawDispatch(GLMContext ctx, const MGLDrawCommand *cmd)
                        vs_prog->transform_feedback_layout_valid &&
                        vs_prog->transform_feedback_varying_count > 0;
     }
-    if (ctx->draw_defer_enabled && !xfbImmediate) {
+    /* Emulated MS color targets (texture2d_array sample planes) need the
+     * immediate draw path so the renderer can broadcast planes or redraw
+     * per-sample. Batch replay encodes draws without those hooks. */
+    bool msImmediate = false;
+    {
+        Framebuffer *fbo = ctx->state.framebuffer;
+        if (fbo && (fbo->color_attachment_bitfield & 1u)) {
+            FBOAttachment *att = &fbo->color_attachments[0];
+            Texture *tex = NULL;
+            if (att->textarget == GL_RENDERBUFFER && att->buf.rbo)
+                tex = att->buf.rbo->tex;
+            else
+                tex = att->buf.tex;
+            if (tex &&
+                (tex->target == GL_TEXTURE_2D_MULTISAMPLE ||
+                 tex->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY) &&
+                tex->samples > 1) {
+                msImmediate = true;
+                if (ctx->draw_command_buffer.batch_count > 0u)
+                    mglFlushCommandBuffer(ctx);
+            }
+        }
+    }
+    if (ctx->draw_defer_enabled && !xfbImmediate && !msImmediate) {
         mglTraceLogExternal("DRAW_DISPATCH_FRONTEND type=%u mode=0x%x first=%d count=%d "
                             "inst=%d bv=%d bi=%u program=%u defer=1",
                             (unsigned)cmd->type, (unsigned)cmd->mode, (int)cmd->first,

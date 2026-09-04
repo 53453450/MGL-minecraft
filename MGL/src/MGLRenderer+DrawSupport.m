@@ -4294,5 +4294,109 @@ after_gs_draws:
     return YES;
 }
 
+- (Texture *)emulatedMSColor0TextureForContext:(GLMContext)glm_ctx
+{
+    if (!glm_ctx) return NULL;
+    Framebuffer *fbo = MGL_STATE(glm_ctx)->framebuffer;
+    if (!fbo || (fbo->color_attachment_bitfield & 1u) == 0u) return NULL;
+    FBOAttachment *att = &fbo->color_attachments[0];
+    Texture *tex = [self framebufferAttachmentTexture:att];
+    if (!tex) return NULL;
+    if (tex->target != GL_TEXTURE_2D_MULTISAMPLE &&
+        tex->target != GL_TEXTURE_2D_MULTISAMPLE_ARRAY) {
+        return NULL;
+    }
+    if (tex->samples <= 1) return NULL;
+    /* Metal backing is created during processGLState; before the first draw
+     * mtl_data may still be nil. All MS textures are emulated as array
+     * sample planes, so the GL target/samples check is sufficient. */
+    if (tex->mtl_data) {
+        MGLRenderTextureInfo info = {0};
+        (void)mglRenderGetTextureInfo(tex->mtl_data, &info);
+        if (info.texture_type != MGLTextureType2DArray) return NULL;
+    }
+    return tex;
+}
+
+- (BOOL)fragmentNeedsPerSampleMSValuesForContext:(GLMContext)glm_ctx
+{
+    Program *fp = mglResolveProgramForStageFromState(glm_ctx, _FRAGMENT_SHADER);
+    if (!fp) return NO;
+    Shader *fs = fp->shader_slots[_FRAGMENT_SHADER];
+    if (!fs || !fs->src) return NO;
+    const char *src = fs->src;
+    return strstr(src, "gl_SampleID") != NULL ||
+           strstr(src, "gl_SamplePosition") != NULL ||
+           strstr(src, "interpolateAtSample") != NULL ||
+           strstr(src, "interpolateAtOffset") != NULL ||
+           strstr(src, "sample in") != NULL;
+}
+
+- (BOOL)runEmulatedMSSampleDrawLoopIfNeeded:(GLMContext)glm_ctx
+                                   drawOnce:(void (^)(void))drawOnce
+{
+    if (_mglInMSSampleDrawLoop || !drawOnce) return NO;
+    Texture *tex = [self emulatedMSColor0TextureForContext:glm_ctx];
+    if (!tex) return NO;
+    if (![self fragmentNeedsPerSampleMSValuesForContext:glm_ctx]) return NO;
+
+    const GLint samples = (GLint)MAX(tex->samples, 1);
+    _mglInMSSampleDrawLoop = YES;
+    for (GLint s = 0; s < samples; s++) {
+        _mglForcedMSSampleId = s;
+        _mglMSSamplePlaneOffset = s;
+        [self endRenderEncodingLocked];
+        mglMarkStateDirtyBits(MGL_STATE(glm_ctx), DIRTY_FBO);
+        Framebuffer *fbo = MGL_STATE(glm_ctx)->framebuffer;
+        if (fbo) {
+            fbo->dirty_bits |= DIRTY_FBO_BINDING;
+        }
+        drawOnce();
+    }
+    _mglForcedMSSampleId = 0;
+    _mglMSSamplePlaneOffset = 0;
+    _mglInMSSampleDrawLoop = NO;
+    return YES;
+}
+
+- (void)broadcastEmulatedMSSamplePlanesAfterDrawIfNeeded:(GLMContext)glm_ctx
+{
+    if (_mglInMSSampleDrawLoop) return;
+    Texture *tex = [self emulatedMSColor0TextureForContext:glm_ctx];
+    if (!tex || !tex->mtl_data) return;
+    if ([self fragmentNeedsPerSampleMSValuesForContext:glm_ctx]) {
+        /* Per-sample draws already filled each plane. */
+        return;
+    }
+
+    const NSUInteger samples = MAX((NSUInteger)tex->samples, 1u);
+    if (samples <= 1u) return;
+
+    MGLMetalAttachmentSubresource sub =
+        mglMetalAttachmentSubresourceForAttachment(
+            &MGL_STATE(glm_ctx)->framebuffer->color_attachments[0]);
+    const NSUInteger baseSlice = sub.slice;
+    const NSUInteger level = sub.level;
+    MGLRenderTextureInfo info = {0};
+    (void)mglRenderGetTextureInfo(tex->mtl_data, &info);
+    if (info.width == 0u || info.height == 0u) return;
+    if (baseSlice + samples > info.array_length) return;
+
+    [self endRenderEncodingLocked];
+    if (!_renderPassManager.state->currentCommandBufferOwner &&
+        ![self newCommandBufferLocked]) {
+        return;
+    }
+    void *blit = mglRenderCreateBlitEncoderBorrowed(
+        _renderPassManager.state->currentCommandBufferOwner);
+    if (!blit) return;
+    for (NSUInteger s = 1u; s < samples; s++) {
+        (void)mglRenderBlitCopyTexture(
+            blit, tex->mtl_data, baseSlice, level, 0u, 0u, 0u,
+            info.width, info.height, 1u,
+            tex->mtl_data, baseSlice + s, level, 0u, 0u, 0u);
+    }
+    (void)mglRenderEndBlitEncoder(blit);
+}
 
 @end

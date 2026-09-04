@@ -241,6 +241,13 @@ static inline double mglTraceNowSeconds(void)
      * derive MTLRenderPipelineDescriptor.inputPrimitiveTopology (required by
      * Metal when the VS writes [[render_target_array_index]]). */
     GLenum _lastDrawPrimitiveMode;
+    /* Emulated MS textures are texture2d_array sample planes. When drawing
+     * per-sample (SampleID / sample qualify / interpolateAtSample), these
+     * select the attached plane and force FS SampleID to match. Active only
+     * while _mglInMSSampleDrawLoop is YES. */
+    GLint _mglForcedMSSampleId;
+    GLint _mglMSSamplePlaneOffset;
+    BOOL _mglInMSSampleDrawLoop;
     MGLBatchingState _batching;
     /* Track whether the current command buffer has encoded work. The C++
      * CommandBufferOwner retains the most recent submission for glFinish. */

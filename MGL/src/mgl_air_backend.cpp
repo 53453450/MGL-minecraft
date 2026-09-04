@@ -126,6 +126,7 @@ struct VarSym {
     int32_t stream = 0;          /* GS output stream for OUTPUT vars */
     std::string blockName;       /* owning interface block, or empty */
     bool isPatch = false;
+    bool isSample = false;       /* `sample in` / `sample out` qualifier */
     bool written = false;
 };
 
@@ -1279,6 +1280,9 @@ static llvm::Value *addTexelOffset(Codegen &cg, llvm::Value *coord,
 /* Matrix builtins (declared early; defined after emitExpr). */
 llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                       const std::map<std::string, MType> &locals);
+static llvm::Value *emitInterpolateAtBuiltin(
+    Codegen &cg, const MGLExpr *e, const char *name, const MGLIRModule *mod,
+    const std::map<std::string, MType> &locals);
 static llvm::Value *emitMatrixBuiltin(Codegen &cg, const MGLExpr *e,
                                       const char *name, const MGLIRModule *mod,
                                       const std::map<std::string, MType> &locals);
@@ -6410,6 +6414,14 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                          : "air.dfdy.f32",
                                  et, {v});
             }
+            if (strcmp(name, "interpolateAtCentroid") == 0 ||
+                strcmp(name, "interpolateAtSample") == 0 ||
+                strcmp(name, "interpolateAtOffset") == 0) {
+                llvm::Value *interp = emitInterpolateAtBuiltin(cg, e, name, mod,
+                                                               locals);
+                if (interp || cg.err)
+                    return interp;
+            }
             llvm::Value *mb = emitMatrixBuiltin(cg, e, name, mod, locals);
             if (mb) return mb;
         }
@@ -10069,6 +10081,95 @@ static llvm::Value *resolveSampleMaskOut(Codegen &cg) {
 /* Software gl_SamplePosition matching mglGetMultisamplefv tables.
  * Avoids Metal [[sample_position]], which crashes the AGX compiler. */
 static llvm::Value *emitSamplePositionFromId(Codegen &cg, llvm::Value *sampleId,
+                                             llvm::Value *numSamples);
+
+/* Evaluate interpolant at pixel-relative offset using fine derivatives:
+ *   v + dFdx(v) * ox + dFdy(v) * oy
+ * Matches GLSL interpolateAtOffset / interpolateAtSample approximation when
+ * hardware sample shading is unavailable (MS textures as array planes). */
+static llvm::Value *emitInterpolateAtOffsetValue(Codegen &cg, llvm::Value *v,
+                                                 llvm::Value *offsetXY) {
+    if (!v || !offsetXY) return nullptr;
+    llvm::Type *et = v->getType();
+    llvm::Value *dx = nullptr;
+    llvm::Value *dy = nullptr;
+    if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(et)) {
+        uint32_t n = (uint32_t)vt->getNumElements();
+        std::string dxn = std::string("air.dfdx.v") + std::to_string(n) + "f32";
+        std::string dyn = std::string("air.dfdy.v") + std::to_string(n) + "f32";
+        dx = callAirFn(cg, dxn.c_str(), et, {v});
+        dy = callAirFn(cg, dyn.c_str(), et, {v});
+    } else {
+        dx = callAirFn(cg, "air.dfdx.f32", et, {v});
+        dy = callAirFn(cg, "air.dfdy.f32", et, {v});
+    }
+    if (!dx || !dy) return nullptr;
+    llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+    llvm::Value *ox = cg.b->CreateExtractElement(offsetXY, cg.b->getInt32(0));
+    llvm::Value *oy = cg.b->CreateExtractElement(offsetXY, cg.b->getInt32(1));
+    if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(et)) {
+        uint32_t n = (uint32_t)vt->getNumElements();
+        llvm::Value *oxv = llvm::UndefValue::get(et);
+        llvm::Value *oyv = llvm::UndefValue::get(et);
+        for (uint32_t i = 0; i < n; i++) {
+            oxv = cg.b->CreateInsertElement(oxv, ox, i);
+            oyv = cg.b->CreateInsertElement(oyv, oy, i);
+        }
+        ox = oxv;
+        oy = oyv;
+    } else if (et != f32) {
+        /* Non-float scalars are not valid GENF interpolants. */
+        return v;
+    }
+    llvm::Value *termX = cg.b->CreateFMul(dx, ox);
+    llvm::Value *termY = cg.b->CreateFMul(dy, oy);
+    return cg.b->CreateFAdd(v, cg.b->CreateFAdd(termX, termY));
+}
+
+static llvm::Value *emitInterpolateAtBuiltin(
+    Codegen &cg, const MGLExpr *e, const char *name, const MGLIRModule *mod,
+    const std::map<std::string, MType> &locals) {
+    const bool isCentroid = strcmp(name, "interpolateAtCentroid") == 0;
+    const bool isSample = strcmp(name, "interpolateAtSample") == 0;
+    const bool isOffset = strcmp(name, "interpolateAtOffset") == 0;
+    const unsigned expectArgs = isCentroid ? 1u : 2u;
+    if (e->u.call.arg_count != expectArgs) {
+        cg.err = 1;
+        cg.errmsg = std::string("codegen: '") + name + "' expects " +
+                    std::to_string(expectArgs) + " argument(s)";
+        return nullptr;
+    }
+    llvm::Value *v = emitExpr(cg, e->u.call.args[0], mod, locals);
+    if (!v) return nullptr;
+    if (isCentroid) {
+        /* Pixel-center interpolant is a stable centroid approximation when
+         * MSAA coverage is full-quad (CTS MSI unique=false cases). */
+        return v;
+    }
+    llvm::Value *offset = nullptr;
+    if (isOffset) {
+        offset = emitExpr(cg, e->u.call.args[1], mod, locals);
+        if (!offset) return nullptr;
+    } else if (isSample) {
+        llvm::Value *sid = emitExpr(cg, e->u.call.args[1], mod, locals);
+        if (!sid) return nullptr;
+        llvm::Value *ns = cg.lvalues.count("gl_NumSamples")
+                              ? cg.lvalues["gl_NumSamples"]
+                              : cg.b->getInt32(1);
+        llvm::Value *sp = emitSamplePositionFromId(cg, sid, ns);
+        llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+        llvm::Value *half = llvm::ConstantFP::get(f32, 0.5);
+        llvm::Value *half2 = llvm::ConstantVector::get(
+            {llvm::cast<llvm::Constant>(half),
+             llvm::cast<llvm::Constant>(half)});
+        offset = cg.b->CreateFSub(sp, half2);
+    }
+    return emitInterpolateAtOffsetValue(cg, v, offset);
+}
+
+/* Software gl_SamplePosition matching mglGetMultisamplefv tables.
+ * Avoids Metal [[sample_position]], which crashes the AGX compiler. */
+static llvm::Value *emitSamplePositionFromId(Codegen &cg, llvm::Value *sampleId,
                                              llvm::Value *numSamples) {
     llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
     auto *f2 = llvm::FixedVectorType::get(f32, 2);
@@ -11661,6 +11762,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         v.blockName = s->block_name ? s->block_name : "";
         uint32_t q = s->qualifiers;
         v.isPatch = (q & MGL_AST_Q_PATCH) != 0;
+        v.isSample = (q & MGL_AST_Q_SAMPLE) != 0;
         if (q & MGL_AST_Q_UNIFORM) {
             const MGLIRType *ut = s->type;
             if (ut->kind == MGLIR_TYPE_ARRAY && ut->elem_type)
@@ -11927,11 +12029,25 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     const bool usesNumSamples =
         !isVS && !isTES && !isKernel &&
         strstr(esrc, "gl_NumSamples") != nullptr;
+    const bool usesInterpolateAtSample =
+        !isVS && !isTES && !isKernel &&
+        strstr(esrc, "interpolateAtSample") != nullptr;
+    bool hasSampleVarying = false;
+    if (!isVS && !isTES && !isKernel) {
+        for (const VarSym &v : syms) {
+            if (v.kind == VarSym::VARYING && v.isSample) {
+                hasSampleVarying = true;
+                break;
+            }
+        }
+    }
     /* SamplePosition is synthesized from sample_id + num_samples (no
      * air.sample_position — AGX Metal crashes on that attribute). */
-    const bool needSampleID = usesSampleID || usesSamplePosition;
+    const bool needSampleID = usesSampleID || usesSamplePosition ||
+                              usesInterpolateAtSample || hasSampleVarying;
     const bool needSampleParams =
-        usesNumSamples || usesSampleMask || usesSamplePosition;
+        usesNumSamples || usesSampleMask || usesSamplePosition ||
+        usesSampleID || usesInterpolateAtSample || hasSampleVarying;
     /* Metal [[position]] is top-left; GL gl_FragCoord is bottom-left.  Slot 30
      * carries {height, lower_left, num_samples, sample_buffers} so the FS can
      * flip Y (see RenderPass fragCoordParams). */
@@ -12862,10 +12978,12 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             llvm::Value *sid = fn->getArg(argSlot++);
             if (usesSampleID)
                 cg.lvalues["gl_SampleID"] = sid;
-            if (usesSamplePosition) {
+            if (usesSamplePosition || usesInterpolateAtSample) {
                 /* Defer until num_samples is loaded below. */
                 cg.lvalues["__mgl_sample_id_for_pos"] = sid;
             }
+            /* Keep hardware id so forced-sample override can replace it. */
+            cg.lvalues["__mgl_hw_sample_id"] = sid;
         }
         if (usesSampleMaskIn) {
             llvm::Value *mask = fn->getArg(argSlot++);
@@ -12880,7 +12998,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             llvm::Value *buf = fn->getArg(argSlot++);
             cg.fragSampleParams = buf;
             /* float4 layout from RenderPass when FragCoord and/or sample
-             * params are requested: {height, lower_left, ns_bits, sb_bits}. */
+             * params are requested: {height, lower_left, ns_bits, sb_bits}.
+             * When emulating MS sample planes, sb_bits may carry
+             * 0x80000000 | (forced_sample_id << 8) so SampleID / position
+             * track the attached array slice. */
             llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
             llvm::Value *fptr = cg.b->CreateBitCast(
                 buf, f32->getPointerTo(1));
@@ -12908,17 +13029,68 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     llvm::Align(4));
                 llvm::Value *ns = cg.b->CreateBitCast(
                     nsBits, cg.b->getInt32Ty());
-                if (usesNumSamples)
+                if (usesNumSamples || usesInterpolateAtSample ||
+                    hasSampleVarying)
                     cg.lvalues["gl_NumSamples"] = ns;
-                if (usesSamplePosition) {
-                    llvm::Value *sid =
-                        cg.lvalues.count("__mgl_sample_id_for_pos")
-                            ? cg.lvalues["__mgl_sample_id_for_pos"]
-                            : cg.b->getInt32(0);
+                llvm::Value *sbBits = cg.b->CreateAlignedLoad(
+                    f32,
+                    cg.b->CreateGEP(f32, fptr, cg.b->getInt32(3)),
+                    llvm::Align(4));
+                llvm::Value *sb = cg.b->CreateBitCast(
+                    sbBits, cg.b->getInt32Ty());
+                llvm::Value *forceMask = cg.b->CreateAnd(
+                    sb, cg.b->getInt32(0x80000000u));
+                llvm::Value *force = cg.b->CreateICmpNE(
+                    forceMask, cg.b->getInt32(0));
+                llvm::Value *forcedSid = cg.b->CreateAnd(
+                    cg.b->CreateLShr(sb, 8), cg.b->getInt32(0xff));
+                llvm::Value *hwSid =
+                    cg.lvalues.count("__mgl_hw_sample_id")
+                        ? cg.lvalues["__mgl_hw_sample_id"]
+                        : cg.b->getInt32(0);
+                llvm::Value *sid =
+                    cg.b->CreateSelect(force, forcedSid, hwSid);
+                if (usesSampleID)
+                    cg.lvalues["gl_SampleID"] = sid;
+                cg.lvalues["__mgl_sample_id_for_pos"] = sid;
+                if (usesSamplePosition || usesInterpolateAtSample ||
+                    hasSampleVarying) {
                     cg.lvalues["gl_SamplePosition"] =
                         emitSamplePositionFromId(cg, sid, ns);
                 }
             }
+        }
+    }
+    if (hasSampleVarying && !isVS && !isTES && !isKernel) {
+        /* With raster_sample_count==1 (MS array emulation), Metal only
+         * delivers center interpolants. Rewrite `sample in` to the
+         * software sample-offset formula using forced/hardware SampleID. */
+        llvm::Value *sid =
+            cg.lvalues.count("gl_SampleID")
+                ? cg.lvalues["gl_SampleID"]
+                : (cg.lvalues.count("__mgl_sample_id_for_pos")
+                       ? cg.lvalues["__mgl_sample_id_for_pos"]
+                       : cg.b->getInt32(0));
+        llvm::Value *ns = cg.lvalues.count("gl_NumSamples")
+                              ? cg.lvalues["gl_NumSamples"]
+                              : cg.b->getInt32(1);
+        llvm::Value *sp =
+            cg.lvalues.count("gl_SamplePosition")
+                ? cg.lvalues["gl_SamplePosition"]
+                : emitSamplePositionFromId(cg, sid, ns);
+        llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+        llvm::Value *half = llvm::ConstantFP::get(f32, 0.5);
+        llvm::Value *off =
+            cg.b->CreateFSub(sp, llvm::ConstantVector::get(
+                                     {llvm::cast<llvm::Constant>(half),
+                                      llvm::cast<llvm::Constant>(half)}));
+        for (VarSym &v : syms) {
+            if (v.kind != VarSym::VARYING || !v.isSample) continue;
+            auto it = cg.lvalues.find(v.name);
+            if (it == cg.lvalues.end() || !it->second) continue;
+            llvm::Value *adj =
+                emitInterpolateAtOffsetValue(cg, it->second, off);
+            if (adj) it->second = adj;
         }
     }
     if (usesFragDepth)

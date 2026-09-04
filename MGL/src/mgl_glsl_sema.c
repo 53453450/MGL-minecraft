@@ -1355,6 +1355,10 @@ static const BiFn kBuiltins[] = {
     { "textureGrad", 4, { BI_ARG_S2D, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_VEC2 }, BI_RET_SAMP },
     { "dFdx", 1, { BI_ARG_GENF }, BI_RET_GENF },
     { "dFdy", 1, { BI_ARG_GENF }, BI_RET_GENF },
+    /* ARB_gpu_shader5 / GL 4.0 multisample interpolation. */
+    { "interpolateAtCentroid", 1, { BI_ARG_GENF }, BI_RET_GENF },
+    { "interpolateAtSample", 2, { BI_ARG_GENF, BI_ARG_INT }, BI_RET_GENF },
+    { "interpolateAtOffset", 2, { BI_ARG_GENF, BI_ARG_VEC2 }, BI_RET_GENF },
     { "textureLod", 3, { BI_ARG_S3D,   BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_SAMP },
     { "textureLod", 3, { BI_ARG_SCUBE, BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_SAMP },
     { "textureLod", 3, { BI_ARG_S1D,   BI_ARG_FLOAT, BI_ARG_FLOAT }, BI_RET_SAMP },

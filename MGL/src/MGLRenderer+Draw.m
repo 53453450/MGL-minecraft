@@ -378,7 +378,14 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
     self->_lastDrawPrimitiveMode = mode;
 
     METAL_LOCK();
+    if ([self runEmulatedMSSampleDrawLoopIfNeeded:ctx drawOnce:^{
+            [self mtlDrawArraysLocked:ctx mode:mode first:first count:count];
+        }]) {
+        METAL_UNLOCK();
+        return;
+    }
     [self mtlDrawArraysLocked:ctx mode:mode first:first count:count];
+    [self broadcastEmulatedMSSamplePlanesAfterDrawIfNeeded:ctx];
     METAL_UNLOCK();
 }
 
@@ -955,7 +962,15 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
     self->_lastDrawPrimitiveMode = mode;
 
     METAL_LOCK();
+    if ([self runEmulatedMSSampleDrawLoopIfNeeded:glm_ctx drawOnce:^{
+            [self mtlDrawElementsLocked:glm_ctx mode:mode count:count type:type
+                                indices:indices];
+        }]) {
+        METAL_UNLOCK();
+        return;
+    }
     [self mtlDrawElementsLocked:glm_ctx mode:mode count:count type:type indices:indices];
+    [self broadcastEmulatedMSSamplePlanesAfterDrawIfNeeded:glm_ctx];
     METAL_UNLOCK();
 }
 

@@ -524,6 +524,13 @@ typedef struct {
                         executionPlan:(MGLRenderComputeExecutionPlan *)executionPlan
                          temporaries:(NSMutableArray *)temporaries;
 
+/* Emulated MS (texture2d_array sample planes): per-sample redraw + broadcast. */
+- (Texture *)emulatedMSColor0TextureForContext:(GLMContext)glm_ctx;
+- (BOOL)fragmentNeedsPerSampleMSValuesForContext:(GLMContext)glm_ctx;
+- (BOOL)runEmulatedMSSampleDrawLoopIfNeeded:(GLMContext)glm_ctx
+                                   drawOnce:(void (^)(void))drawOnce;
+- (void)broadcastEmulatedMSSamplePlanesAfterDrawIfNeeded:(GLMContext)glm_ctx;
+
 @end
 
 #endif /* MGLRenderer_Draw_Private_h */

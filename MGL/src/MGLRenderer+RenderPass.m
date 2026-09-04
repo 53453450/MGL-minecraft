@@ -2821,6 +2821,12 @@ static GLenum mglPassthroughDeclType(
 
             MGLMetalAttachmentSubresource subresource =
                 mglMetalAttachmentSubresourceForAttachment(&fbo->color_attachments[attachmentIndex]);
+            if (_mglInMSSampleDrawLoop &&
+                (tex->target == GL_TEXTURE_2D_MULTISAMPLE ||
+                 tex->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY) &&
+                _mglMSSamplePlaneOffset > 0) {
+                subresource.slice += (uint32_t)_mglMSSamplePlaneOffset;
+            }
             mglRenderPassSetPersistentAttachment(
                 _renderPassManager.state,
                 MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, colorSlot,
@@ -5560,9 +5566,14 @@ static GLenum mglPassthroughDeclType(
         if (fs && fs->src &&
             (strstr(fs->src, "gl_NumSamples") ||
              strstr(fs->src, "gl_SampleMask") ||
-             strstr(fs->src, "gl_SamplePosition")))
+             strstr(fs->src, "gl_SamplePosition") ||
+             strstr(fs->src, "gl_SampleID") ||
+             strstr(fs->src, "interpolateAtSample") ||
+             strstr(fs->src, "sample in")))
             useSampleParams = YES;
     }
+    if (_mglInMSSampleDrawLoop)
+        useSampleParams = YES;
     if (useFragCoordParams || useSampleParams) {
         NSUInteger passHeight = mglRenderPassRenderTargetHeightFor(_renderPassManager.state);
         if (passHeight == 0) {
@@ -5614,10 +5625,16 @@ static GLenum mglPassthroughDeclType(
         }
         if (useSampleParams && !useFragCoordParams) {
             /* Still use the float4 layout so AIR can share one slot-30
-             * loader: {height=0, lower_left=0, ns_bits, sb_bits}. */
+             * loader: {height=0, lower_left=0, ns_bits, sb_bits}.
+             * sb_bits may include 0x80000000 | (forced_sid << 8). */
             float zAsFloat, wAsFloat;
             memcpy(&zAsFloat, &numSamples, sizeof(zAsFloat));
-            memcpy(&wAsFloat, &sampleBuffers, sizeof(wAsFloat));
+            uint32_t sbBits = sampleBuffers;
+            if (_mglInMSSampleDrawLoop) {
+                sbBits = 1u | 0x80000000u |
+                         (((uint32_t)_mglForcedMSSampleId & 0xffu) << 8);
+            }
+            memcpy(&wAsFloat, &sbBits, sizeof(wAsFloat));
             vector_float4 fragCoordParams = {
                 0.0f, 0.0f, zAsFloat, wAsFloat
             };
@@ -5631,6 +5648,10 @@ static GLenum mglPassthroughDeclType(
             float zAsFloat;
             memcpy(&zAsFloat, &zBits, sizeof(zAsFloat));
             uint32_t wBits = sampleBuffers;
+            if (_mglInMSSampleDrawLoop) {
+                wBits = 1u | 0x80000000u |
+                        (((uint32_t)_mglForcedMSSampleId & 0xffu) << 8);
+            }
             float wAsFloat;
             memcpy(&wAsFloat, &wBits, sizeof(wAsFloat));
             vector_float4 fragCoordParams = {
