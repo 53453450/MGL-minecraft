@@ -1509,6 +1509,34 @@ static void mglBufferNoteIndexedBindTarget(Buffer *ptr, GLenum target)
     }
 }
 
+static GLuint mglMaxIndexedBindings(GLMContext ctx, GLenum target)
+{
+    GLuint max_bind = MAX_BINDABLE_BUFFERS;
+    switch (target) {
+    case GL_UNIFORM_BUFFER:
+        if (STATE_VAR(max_uniform_buffer_bindings))
+            max_bind = STATE_VAR(max_uniform_buffer_bindings);
+        break;
+    case GL_SHADER_STORAGE_BUFFER:
+        if (STATE_VAR(max_shader_storage_buffer_bindings))
+            max_bind = STATE_VAR(max_shader_storage_buffer_bindings);
+        break;
+    case GL_ATOMIC_COUNTER_BUFFER:
+        if (STATE_VAR(max_atomic_counter_buffer_bindings))
+            max_bind = STATE_VAR(max_atomic_counter_buffer_bindings);
+        break;
+    case GL_TRANSFORM_FEEDBACK_BUFFER:
+        if (STATE_VAR(max_transform_feedback_buffers))
+            max_bind = STATE_VAR(max_transform_feedback_buffers);
+        break;
+    default:
+        break;
+    }
+    if (max_bind == 0u || max_bind > MAX_BINDABLE_BUFFERS)
+        max_bind = MAX_BINDABLE_BUFFERS;
+    return max_bind;
+}
+
 void mglBindBufferBase(GLMContext ctx, GLenum target, GLuint index, GLuint buffer)
 {
     Buffer  *ptr;
@@ -1527,7 +1555,7 @@ void mglBindBufferBase(GLMContext ctx, GLenum target, GLuint index, GLuint buffe
     }
 
     ERROR_CHECK_RETURN(index >= 0, GL_INVALID_VALUE);
-    ERROR_CHECK_RETURN(index < MAX_BINDABLE_BUFFERS, GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(index < mglMaxIndexedBindings(ctx, target), GL_INVALID_VALUE);
 
     buffer_index = bufferIndexFromTarget(ctx, target);
 
@@ -1671,11 +1699,43 @@ void mglBindBufferRange(GLMContext ctx, GLenum target, GLuint index, GLuint buff
     }
 
     ERROR_CHECK_RETURN(index >= 0, GL_INVALID_VALUE);
-    ERROR_CHECK_RETURN(index < MAX_BINDABLE_BUFFERS, GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(index < mglMaxIndexedBindings(ctx, target), GL_INVALID_VALUE);
 
     buffer_index = bufferIndexFromTarget(ctx, target);
 
     BufferBaseTarget *base_slot = &ctx->state.buffer_base[buffer_index].buffers[index];
+
+    /* Offset alignment is validated even for buffer=0 (unbind): CTS
+     * negative-api-bind uses BindBufferRange(buf=0, offset=align-1, size=0).
+     * size<=0 is only an error when binding a real buffer; buffer=0 ignores
+     * size so BindBufferRange(buf=0, 0, 0) remains a valid unbind. */
+    if (offset < 0) {
+        fprintf(stderr, "MGL Error: mglBindBufferRange: offset < 0 (%ld)\n", offset);
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    GLuint offset_alignment = 1u;
+    switch (target) {
+        case GL_UNIFORM_BUFFER:
+            offset_alignment = STATE_VAR(uniform_buffer_offset_alignment)
+                ? STATE_VAR(uniform_buffer_offset_alignment) : 1u;
+            break;
+        case GL_SHADER_STORAGE_BUFFER:
+            offset_alignment = STATE_VAR(shader_storage_buffer_offset_alignment)
+                ? STATE_VAR(shader_storage_buffer_offset_alignment) : 1u;
+            break;
+        case GL_ATOMIC_COUNTER_BUFFER:
+        case GL_TRANSFORM_FEEDBACK_BUFFER:
+            offset_alignment = 4u;
+            break;
+        default:
+            break;
+    }
+    if (((GLuint64)offset % offset_alignment) != 0u) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
 
     if (!buffer)
     {
@@ -1701,39 +1761,13 @@ void mglBindBufferRange(GLMContext ctx, GLenum target, GLuint index, GLuint buff
         return;
     }
 
-    // ERROR_CHECK_RETURN(offset >= 0, GL_INVALID_VALUE);
-    if (offset < 0) {
-        fprintf(stderr, "MGL Error: mglBindBufferRange: offset < 0 (%ld)\n", offset);
-        ERROR_RETURN(GL_INVALID_VALUE);
-        return;
-    }
-
-    // ERROR_CHECK_RETURN(size > 0, GL_INVALID_VALUE);
     if (size <= 0) {
         fprintf(stderr, "MGL Error: mglBindBufferRange: size <= 0 (%ld)\n", size);
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
 
-    GLuint offset_alignment = 1u;
-    switch (target) {
-        case GL_UNIFORM_BUFFER:
-            offset_alignment = STATE_VAR(uniform_buffer_offset_alignment)
-                ? STATE_VAR(uniform_buffer_offset_alignment) : 1u;
-            break;
-        case GL_SHADER_STORAGE_BUFFER:
-            offset_alignment = STATE_VAR(shader_storage_buffer_offset_alignment)
-                ? STATE_VAR(shader_storage_buffer_offset_alignment) : 1u;
-            break;
-        case GL_ATOMIC_COUNTER_BUFFER:
-        case GL_TRANSFORM_FEEDBACK_BUFFER:
-            offset_alignment = 4u;
-            break;
-        default:
-            break;
-    }
-    if (((GLuint64)offset % offset_alignment) != 0u ||
-        (target == GL_TRANSFORM_FEEDBACK_BUFFER && ((GLuint64)size % 4u) != 0u)) {
+    if (target == GL_TRANSFORM_FEEDBACK_BUFFER && ((GLuint64)size % 4u) != 0u) {
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
