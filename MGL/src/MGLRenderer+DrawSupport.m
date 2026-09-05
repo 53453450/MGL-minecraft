@@ -3950,6 +3950,7 @@ after_gs_draws:
              * Falling back to newTCSStageInBufferForContext would pack raw
              * attributes and skip the VS entirely. */
             nativeTES = NO;
+            BOOL sparseCompactOk = NO;
             Buffer *ebo = getElementBuffer(drawCtx);
             if (ebo && [self processBuffer:ebo] && ebo->data.mtl_data) {
                 id eboMetal = (__bridge id)ebo->data.mtl_data;
@@ -4045,12 +4046,25 @@ after_gs_draws:
                             patchCount = gatherPrimitives;
                             contract.patch_count = patchCount;
                             contract.vertex_count = gatherCount;
+                            sparseCompactOk = YES;
                         }
                     }
                     free(gatherArray);
                 } else {
                     free(gatherArray);
                 }
+            }
+            if (!sparseCompactOk) {
+                NSLog(@"MGL TESS ERROR: indexed TCS sparse capture failed");
+                mglDispatchError(drawCtx, label ? label : "tessellationDraw",
+                                 GL_INVALID_OPERATION);
+                (void)mglRendererBackendSetTessVertexCaptureBuffer(_backend,
+                                                                   NULL);
+                _tessellation.tessVertexCaptureOffset = 0u;
+                _tessellation.tessIndexedDraw = NO;
+                _tessellation.tessInstanceRecords = 0u;
+                drawCtx->state.dirty_bits = DIRTY_ALL;
+                return YES;
             }
         } else if (indexedDraw) {
             /* Indexed native TES (no TCS): capture the VS once into sparse

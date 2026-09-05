@@ -1484,11 +1484,23 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     if (glInVertices == 0u) glInVertices = MAX(1u, contract->patch_vertices);
     const BOOL glInFromTCS = (glInBuffer == tcsOutputBuffer);
     /* TCS currently expands one instance of control points / factors.
-     * TES still loops instances for XFB/output bases.  Reusing the same
-     * TCS outs is correct when VS→TCS inputs do not vary by instance
-     * (TCS has no gl_InstanceID; CTS InvocationID/PrimitiveID is this
-     * case).  Per-instance TCS re-dispatch remains a follow-up when VS
-     * outputs differ across instances. */
+     * TES still loops instances for XFB/output bases.  Reusing instance-0
+     * TCS outs is wrong when VS outputs vary by gl_InstanceID.  Until
+     * per-instance TCS re-dispatch exists: one-shot log, and hard-fail when
+     * MGL_TESS_MULTI_INSTANCE_ERROR is set. */
+    if (glInFromTCS && instanceCount > 1) {
+        static BOOL s_multiInstanceTCSLogged = NO;
+        if (!s_multiInstanceTCSLogged) {
+            NSLog(@"MGL TESS ERROR: multi-instance TES with TCS reuses "
+                  "instance-0 control points (program=%u instances=%d); "
+                  "set MGL_TESS_MULTI_INSTANCE_ERROR=1 to fail the draw",
+                  (unsigned)tesProgram->name, (int)instanceCount);
+            s_multiInstanceTCSLogged = YES;
+        }
+        if (mglEnvFlagEnabled("MGL_TESS_MULTI_INSTANCE_ERROR")) {
+            return false;
+        }
+    }
     const NSUInteger glInInstanceStride =
         (glInFromTCS || _tessellation.tessIndexedDraw)
             ? 0u

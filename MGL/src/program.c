@@ -199,6 +199,12 @@ static uint32_t mglEvalConstUniformInit(const MGLExpr *e, uint32_t words[16],
             } else {
                 words[i] = tmp[0];
             }
+            if (expect_base == MGL_AST_TYPE_BOOL) {
+                GLint bv;
+                memcpy(&bv, &words[i], sizeof(bv));
+                bv = bv ? 1 : 0;
+                memcpy(&words[i], &bv, sizeof(bv));
+            }
         }
         return expect_comps;
     }
@@ -249,6 +255,15 @@ static void mglSeedUniformInitializers(GLMContext ctx, Program *pptr)
                 uint32_t base = 0u;
                 uint32_t n = mglEvalConstUniformInit(d->init, words, &base);
                 if (n == 0u) {
+                    static int s_seedFailLogged;
+                    if (!s_seedFailLogged) {
+                        fprintf(stderr,
+                                "MGL WARNING: uniform initializer seeding "
+                                "failed (first: '%s' program=%u); defaults "
+                                "may be zero\n",
+                                d->name, (unsigned)pptr->name);
+                        s_seedFailLogged = 1;
+                    }
                     continue;
                 }
                 GLint loc = mglGetUniformLocation(ctx, pptr->name, d->name);

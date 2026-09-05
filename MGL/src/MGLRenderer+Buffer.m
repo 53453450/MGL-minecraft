@@ -435,14 +435,15 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                                             mbuf->data.buffer_data;
                                     for (GLint sj = 0; sj < (GLint)sm->member_size;
                                          sj++) {
-                                        GLuint dest_off =
-                                            member_offset +
-                                            (GLuint)(sj * elem_stride);
+                                        size_t dest_off =
+                                            (size_t)member_offset +
+                                            (size_t)sj * (size_t)elem_stride;
+                                        if (dest_off >= struct_size)
+                                            break;
                                         size_t copy_size = src_stride;
-                                        if ((size_t)dest_off + copy_size >
-                                            struct_size)
+                                        if (dest_off + copy_size > struct_size)
                                             copy_size =
-                                                struct_size - (size_t)dest_off;
+                                                struct_size - dest_off;
                                         if (copy_size > 0)
                                             memcpy(packed + dest_off,
                                                    src + (size_t)sj * src_stride,
@@ -455,10 +456,13 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                             if (copy_size > (size_t)src_stride) {
                                 copy_size = (size_t)src_stride;
                             }
-                            GLuint dest_off = member_offset +
-                                (GLuint)(ai * elem_stride);
-                            if ((size_t)dest_off + copy_size > struct_size) {
-                                copy_size = struct_size - (size_t)dest_off;
+                            size_t dest_off = (size_t)member_offset +
+                                (size_t)ai * (size_t)elem_stride;
+                            if (dest_off >= struct_size) {
+                                continue;
+                            }
+                            if (dest_off + copy_size > struct_size) {
+                                copy_size = struct_size - dest_off;
                             }
                             if (copy_size > 0) {
                                 memcpy(packed + dest_off,
@@ -963,15 +967,18 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                                                     mbuf->data.buffer_data;
                                             for (GLint sj = 0; sj < member->size;
                                                  sj++) {
-                                                GLuint dest_off =
-                                                    member_offset +
-                                                    (GLuint)(sj * elem_stride);
+                                                size_t dest_off =
+                                                    (size_t)member_offset +
+                                                    (size_t)sj *
+                                                        (size_t)elem_stride;
+                                                if (dest_off >= struct_size)
+                                                    break;
                                                 size_t copy_size = src_stride;
-                                                if ((size_t)dest_off + copy_size >
+                                                if (dest_off + copy_size >
                                                     struct_size)
                                                     copy_size =
                                                         struct_size -
-                                                        (size_t)dest_off;
+                                                        dest_off;
                                                 if (copy_size > 0)
                                                     memcpy(packed + dest_off,
                                                            src +
@@ -986,10 +993,13 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                                     if (copy_size > (size_t)elem_stride) {
                                         copy_size = (size_t)elem_stride;
                                     }
-                                    GLuint dest_off = member_offset +
-                                        (GLuint)(ai * elem_stride);
-                                    if ((size_t)dest_off + copy_size > struct_size) {
-                                        copy_size = struct_size - (size_t)dest_off;
+                                    size_t dest_off = (size_t)member_offset +
+                                        (size_t)ai * (size_t)elem_stride;
+                                    if (dest_off >= struct_size) {
+                                        continue;
+                                    }
+                                    if (dest_off + copy_size > struct_size) {
+                                        copy_size = struct_size - dest_off;
                                     }
                                     if (copy_size > 0) {
                                         memcpy(packed + dest_off,

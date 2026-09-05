@@ -2150,6 +2150,17 @@ static GLenum mglPassthroughDeclType(
             dsDesc.depth_write_enabled = state->var.depth_writemask ? 1u : 0u;
         }
 
+        /* GL_RASTERIZER_DISCARD / VS capture: no fragment is produced, so
+         * depth/stencil writes must not mutate attachments (color masks are
+         * cleared separately in the pipeline descriptor path). */
+        const BOOL suppressDepthStencilWrites =
+            state->caps.rasterizer_discard ||
+            _tessellation.tessVertexCaptureActive ||
+            _tessellation.cullDistanceCaptureActive;
+        if (suppressDepthStencilWrites) {
+            dsDesc.depth_write_enabled = 0u;
+        }
+
         if (useStencilState)
         {
             if (mglTraceLogIsEnabled()) {
@@ -2186,7 +2197,9 @@ static GLenum mglPassthroughDeclType(
                     [self mtlStencilOpForGLOp:state->var.stencil_pass_depth_fail];
                 dsDesc.front.depth_stencil_pass_operation =
                     [self mtlStencilOpForGLOp:state->var.stencil_pass_depth_pass];
-                dsDesc.front.write_mask = state->var.stencil_writemask;
+                dsDesc.front.write_mask =
+                    suppressDepthStencilWrites ? 0u
+                                               : state->var.stencil_writemask;
                 dsDesc.front.read_mask = state->var.stencil_value_mask;
             }
 
@@ -2211,7 +2224,10 @@ static GLenum mglPassthroughDeclType(
                     [self mtlStencilOpForGLOp:state->var.stencil_back_pass_depth_fail];
                 dsDesc.back.depth_stencil_pass_operation =
                     [self mtlStencilOpForGLOp:state->var.stencil_back_pass_depth_pass];
-                dsDesc.back.write_mask = state->var.stencil_back_writemask;
+                dsDesc.back.write_mask =
+                    suppressDepthStencilWrites
+                        ? 0u
+                        : state->var.stencil_back_writemask;
                 dsDesc.back.read_mask = state->var.stencil_back_value_mask;
             }
         }
