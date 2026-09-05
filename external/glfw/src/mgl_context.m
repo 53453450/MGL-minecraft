@@ -61,7 +61,12 @@ static void swapBuffersMGL(_GLFWwindow* window)
 
 static void swapIntervalMGL(int interval)
 {
-
+    @autoreleasepool {
+        _GLFWwindow* window = _glfwPlatformGetTls(&_glfw.contextSlot);
+        if (window && window->context.mgl.renderer) {
+            [window->context.mgl.renderer mglSetSwapInterval:interval];
+        }
+    }
 }
 
 static int extensionSupportedMGL(const char* extension)

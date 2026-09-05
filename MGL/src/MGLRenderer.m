@@ -3002,8 +3002,10 @@ void logDirtyBits(GLMContext ctx)
     state.pixel_format = pixelFormat;
     state.width = (NSUInteger)MAX(1.0, drawableSize.width);
     state.height = (NSUInteger)MAX(1.0, drawableSize.height);
+    state.depth = 1u;
     state.mipmap_level_count = 1u;
     state.sample_count = 1u;
+    state.array_length = 1u;
     state.usage = MGL_RENDERER_TEXTURE_USAGE_RENDER_TARGET;
     state.storage_mode = depthStencil ? MGL_RENDERER_STORAGE_PRIVATE : 0u;
     id texture = mglRendererCreateTextureFromState(&state);
@@ -3025,8 +3027,10 @@ void logDirtyBits(GLMContext ctx)
     state.pixel_format = pixelFormat;
     state.width = (NSUInteger)MAX(1.0, size.width);
     state.height = (NSUInteger)MAX(1.0, size.height);
+    state.depth = 1u;
     state.mipmap_level_count = 1u;
     state.sample_count = 1u;
+    state.array_length = 1u;
     state.usage = MGL_RENDERER_TEXTURE_USAGE_RENDER_TARGET;
     state.storage_mode = depthStencil ? MGL_RENDERER_STORAGE_PRIVATE : 0u;
     id texture = mglRendererCreateTextureFromState(&state);
@@ -3530,6 +3534,10 @@ void mglRendererCompatSwapBuffers(GLMContext glm_ctx)
             return;
         }
 
+        const int swapInterval = [self mglSwapInterval];
+        const BOOL skipPresent =
+            (swapInterval == 0) && [self mglShouldSkipPresentForUnlockedSwap];
+
         if (_drawable == NULL)
         {
             if (traceSwap) {
@@ -3574,9 +3582,11 @@ void mglRendererCompatSwapBuffers(GLMContext glm_ctx)
             _renderPassManager.state->renderPassStateOwner,
             MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0);
         id drawableTexture = mglRendererCurrentDrawableTexture(self);
-        [self copyRenderPassColorToDrawableIfNeeded:rpColor0 drawableTexture:drawableTexture swapCall:swapCall traceSwap:traceSwap];
+        if (!skipPresent) {
+            [self copyRenderPassColorToDrawableIfNeeded:rpColor0 drawableTexture:drawableTexture swapCall:swapCall traceSwap:traceSwap];
 
-        [self scheduleSwapTextureSampleDiagnostics:rpColor0 drawableTexture:drawableTexture swapCall:swapCall];
+            [self scheduleSwapTextureSampleDiagnostics:rpColor0 drawableTexture:drawableTexture swapCall:swapCall];
+        }
 
         if (_layer == NULL) {
             NSLog(@"MGL ERROR: Metal layer is NULL, cannot present drawable");
@@ -3611,36 +3621,41 @@ void mglRendererCompatSwapBuffers(GLMContext glm_ctx)
         }
 
         @try {
-            if (mglRendererCurrentDrawableTexture(self) == NULL) {
-                NSLog(@"MGL ERROR: Drawable texture is NULL, cannot present");
-                return;
-            }
+            if (!skipPresent) {
+                if (mglRendererCurrentDrawableTexture(self) == NULL) {
+                    NSLog(@"MGL ERROR: Drawable texture is NULL, cannot present");
+                    return;
+                }
 
-            id currentDrawableTexture = mglRendererCurrentDrawableTexture(self);
-            MGLRenderTextureInfo currentDrawableInfo = mglRendererTextureInfo(currentDrawableTexture);
-            if (currentDrawableInfo.width == 0 || currentDrawableInfo.height == 0) {
-                NSLog(@"MGL ERROR: Drawable has invalid dimensions: %dx%d",
-                      (int)currentDrawableInfo.width, (int)currentDrawableInfo.height);
-                return;
-            }
+                id currentDrawableTexture = mglRendererCurrentDrawableTexture(self);
+                MGLRenderTextureInfo currentDrawableInfo = mglRendererTextureInfo(currentDrawableTexture);
+                if (currentDrawableInfo.width == 0 || currentDrawableInfo.height == 0) {
+                    NSLog(@"MGL ERROR: Drawable has invalid dimensions: %dx%d",
+                          (int)currentDrawableInfo.width, (int)currentDrawableInfo.height);
+                    return;
+                }
 
-            if (kMGLVerboseFrameLoopLogs) {
-                NSLog(@"MGL INFO: Presenting drawable with texture: %dx%d, format: %lu",
-                      (int)currentDrawableInfo.width, (int)currentDrawableInfo.height,
-                      (unsigned long)currentDrawableInfo.pixel_format);
-            }
+                if (kMGLVerboseFrameLoopLogs) {
+                    NSLog(@"MGL INFO: Presenting drawable with texture: %dx%d, format: %lu",
+                          (int)currentDrawableInfo.width, (int)currentDrawableInfo.height,
+                          (unsigned long)currentDrawableInfo.pixel_format);
+                }
 
-            if (mglRenderPresentDrawableForCommandBufferOwner(
-                    _renderPassManager.state->currentCommandBufferOwner,
-                    (__bridge void *)_drawable, NULL) != 0) {
-                NSLog(@"MGL ERROR: No command buffer available for drawable presentation");
-                return;
-            }
-            if (traceSwap) {
-                mglTraceLogNSString(@"MGL TRACE swap.present call=%llu cbOwner=%p drawable=%p",
-                      (unsigned long long)swapCall,
-                      _renderPassManager.state->currentCommandBufferOwner,
-                      _drawable);
+                if (mglRenderPresentDrawableForCommandBufferOwner(
+                        _renderPassManager.state->currentCommandBufferOwner,
+                        (__bridge void *)_drawable, NULL) != 0) {
+                    NSLog(@"MGL ERROR: No command buffer available for drawable presentation");
+                    return;
+                }
+                if (traceSwap) {
+                    mglTraceLogNSString(@"MGL TRACE swap.present call=%llu cbOwner=%p drawable=%p",
+                          (unsigned long long)swapCall,
+                          _renderPassManager.state->currentCommandBufferOwner,
+                          _drawable);
+                }
+            } else if (traceSwap) {
+                mglTraceLogNSString(@"MGL TRACE swap.present.skipped call=%llu reason=unlocked_hidden",
+                      (unsigned long long)swapCall);
             }
 
         } @catch (NSException *exception) {
@@ -3710,21 +3725,36 @@ void mglRendererCompatSwapBuffers(GLMContext glm_ctx)
         if (traceSwap) {
             mglTraceLogNSString(@"MGL TRACE swap.nextDrawable.begin call=%llu stage=post_commit", (unsigned long long)swapCall);
         }
-        _drawable = [self mglNextDrawable];
-        if (traceSwap) {
-            id tex = mglRendererCurrentDrawableTexture(self);
-            mglTraceLogNSString(@"MGL TRACE swap.nextDrawable.end call=%llu stage=post_commit drawable=%p tex=%p size=%lux%lu",
-                  (unsigned long long)swapCall,
-                  _drawable,
-                  tex,
-                  (unsigned long)(tex ? mglRendererTextureFieldWidth(tex) : 0),
-                  (unsigned long)(tex ? mglRendererTextureFieldHeight(tex) : 0));
+        if (skipPresent) {
+            /* Keep the current drawable: nothing was presented, so the surface
+             * remains a valid render target for the next frame. */
+            if (traceSwap) {
+                mglTraceLogNSString(@"MGL TRACE swap.nextDrawable.reuse call=%llu stage=post_commit",
+                      (unsigned long long)swapCall);
+            }
+        } else if (swapInterval == 0) {
+            /* Visible unlocked: defer acquisition off the critical path. */
+            _drawable = nil;
+            if (traceSwap) {
+                mglTraceLogNSString(@"MGL TRACE swap.nextDrawable.deferred call=%llu stage=post_commit",
+                      (unsigned long long)swapCall);
+            }
+        } else {
+            _drawable = [self mglNextDrawable];
+            if (traceSwap) {
+                id tex = mglRendererCurrentDrawableTexture(self);
+                mglTraceLogNSString(@"MGL TRACE swap.nextDrawable.end call=%llu stage=post_commit drawable=%p tex=%p size=%lux%lu",
+                      (unsigned long long)swapCall,
+                      _drawable,
+                      tex,
+                      (unsigned long)(tex ? mglRendererTextureFieldWidth(tex) : 0),
+                      (unsigned long)(tex ? mglRendererTextureFieldHeight(tex) : 0));
+            }
+            if (_drawable == NULL) {
+                NSLog(@"MGL WARNING: Failed to get next drawable in mtlSwapBuffers");
+                return;
+            }
         }
-        if (_drawable == NULL) {
-            NSLog(@"MGL WARNING: Failed to get next drawable in mtlSwapBuffers");
-            return;
-        }
-
         if (![self newCommandBufferLocked]) {
             NSLog(@"MGL ERROR: Failed to create post-swap command buffer");
             return;
