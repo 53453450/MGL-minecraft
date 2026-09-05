@@ -29,6 +29,11 @@ extern "C" int mglAirLoadLibrary(const void *, const unsigned char *, size_t,
 extern "C" int mglAirCreateRenderPipelineWithArchive(
     const void *, void *, void *, const MGLRenderPipelineDescriptorState *,
     void *, void **, char *, size_t) { return -1; }
+extern "C" MGLShaderResource *mglProgramFindStageOutputForXFBName(
+    Program *, int, const char *)
+{
+    return NULL;
+}
 static uint64_t s_metalReleaseCount = 0;
 static uint64_t s_metalCreateCount = 0;
 extern "C" void mglMetalCountRelease(int) { ++s_metalReleaseCount; }
