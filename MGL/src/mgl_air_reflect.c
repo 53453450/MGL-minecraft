@@ -383,9 +383,10 @@ static void apply_block_interface_name(MGLShaderResource *res,
     }
 }
 
-static void push_resource(MGLShaderResourceList *list, const MGLIRSymbol *s,
-                          const MGLIRType *type, GLuint location,
-                          GLuint binding, int stage)
+/* Returns 1 on success, 0 on realloc failure (partial `r` is freed). */
+static int push_resource(MGLShaderResourceList *list, const MGLIRSymbol *s,
+                         const MGLIRType *type, GLuint location,
+                         GLuint binding, int stage)
 {
     MGLShaderResource r;
     memset(&r, 0, sizeof(r));
@@ -489,34 +490,46 @@ static void push_resource(MGLShaderResourceList *list, const MGLIRSymbol *s,
     MGLShaderResource *nl = (MGLShaderResource *)realloc(
         list->list, (list->count + 1) * sizeof(MGLShaderResource));
     if (!nl) {
-        return;
+        free((void *)r.name);
+        if (r.ubo_members) {
+            for (GLuint m = 0; m < r.ubo_member_count; m++) {
+                free((void *)r.ubo_members[m].name);
+                free(r.ubo_members[m].query_name);
+            }
+            free(r.ubo_members);
+        }
+        free(r.ubo_array_bindings);
+        return 0;
     }
     list->list = nl;
     list->list[list->count++] = r;
+    return 1;
 }
 
 /* Emit sampler/image leaves nested in a named struct uniform as standalone
  * resources (`s.c`, `s[0].c`, `s.b.a`).  Opaque types are not default-block
- * buffer members; CTS binds them via glUniform1i on the flattened path. */
-static void air_push_opaque_leaves(MGLShaderResourceList *list,
-                                   const MGLIRSymbol *owner,
-                                   const MGLIRType *t, const char *prefix,
-                                   uint32_t *texture_binding,
-                                   uint32_t *sampler_binding, int stage,
-                                   int want_image)
+ * buffer members; CTS binds them via glUniform1i on the flattened path.
+ * Returns 0 on allocation failure. */
+static int air_push_opaque_leaves(MGLShaderResourceList *list,
+                                  const MGLIRSymbol *owner,
+                                  const MGLIRType *t, const char *prefix,
+                                  uint32_t *texture_binding,
+                                  uint32_t *sampler_binding, int stage,
+                                  int want_image)
 {
     if (!list || !owner || !t || !prefix || !texture_binding)
-        return;
+        return 1;
     if (t->kind == MGLIR_TYPE_STRUCT) {
         for (uint32_t i = 0; i < t->member_count; i++) {
             const MGLIRType *mt = t->members[i];
             const char *mn = t->member_names[i];
             char path[208];
             snprintf(path, sizeof(path), "%s.%s", prefix, mn ? mn : "?");
-            air_push_opaque_leaves(list, owner, mt, path, texture_binding,
-                                   sampler_binding, stage, want_image);
+            if (!air_push_opaque_leaves(list, owner, mt, path, texture_binding,
+                                        sampler_binding, stage, want_image))
+                return 0;
         }
-        return;
+        return 1;
     }
     if (t->kind == MGLIR_TYPE_ARRAY && t->elem_type &&
         t->elem_type->kind == MGLIR_TYPE_STRUCT) {
@@ -524,26 +537,28 @@ static void air_push_opaque_leaves(MGLShaderResourceList *list,
         for (uint32_t el = 0; el < n; el++) {
             char epath[208];
             snprintf(epath, sizeof(epath), "%s[%u]", prefix, el);
-            air_push_opaque_leaves(list, owner, t->elem_type, epath,
-                                   texture_binding, sampler_binding, stage,
-                                   want_image);
+            if (!air_push_opaque_leaves(list, owner, t->elem_type, epath,
+                                        texture_binding, sampler_binding, stage,
+                                        want_image))
+                return 0;
         }
-        return;
+        return 1;
     }
     const MGLIRType *base = t;
     while (base && base->kind == MGLIR_TYPE_ARRAY)
         base = base->elem_type;
     if (!base)
-        return;
+        return 1;
     if (want_image) {
         if (base->kind != MGLIR_TYPE_IMAGE)
-            return;
+            return 1;
     } else if (base->kind != MGLIR_TYPE_SAMPLER) {
-        return;
+        return 1;
     }
-    push_resource(list, owner, t, UINT32_MAX, *texture_binding, stage);
+    if (!push_resource(list, owner, t, UINT32_MAX, *texture_binding, stage))
+        return 0;
     if (list->count == 0)
-        return;
+        return 0;
     MGLShaderResource *last = &list->list[list->count - 1];
     free((void *)last->name);
     last->name = strdup(prefix);
@@ -578,6 +593,7 @@ static void air_push_opaque_leaves(MGLShaderResourceList *list,
             elements = 1u;
         *texture_binding += elements;
     }
+    return 1;
 }
 
 static void destroy_list(MGLShaderResourceList *list)
@@ -752,8 +768,15 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                 if (base_t && base_t->kind == MGLIR_TYPE_SAMPLER) {
                     GLuint location =
                         s->location != UINT32_MAX ? s->location : UINT32_MAX;
-                    push_resource(&lists[_SAMPLED_IMAGE_RES], s, t, location,
-                                  texture_binding, stage);
+                    if (!push_resource(&lists[_SAMPLED_IMAGE_RES], s, t, location,
+                                       texture_binding, stage)) {
+                        if (err && errCap)
+                            snprintf(err, errCap, "out of memory");
+                        mglAirReflectDestroy(lists);
+                        return -1;
+                    }
+                    if (lists[_SAMPLED_IMAGE_RES].count == 0)
+                        continue;
                     MGLShaderResource *last =
                         &lists[_SAMPLED_IMAGE_RES]
                              .list[lists[_SAMPLED_IMAGE_RES].count - 1];
@@ -778,16 +801,28 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                     sampler_binding += elements;
                 } else if (base_t && base_t->kind == MGLIR_TYPE_STRUCT &&
                            !s->is_interface_block && !s->block_name) {
-                    air_push_opaque_leaves(&lists[_SAMPLED_IMAGE_RES], s, t,
-                                           s->name, &texture_binding,
-                                           &sampler_binding, stage, 0);
+                    if (!air_push_opaque_leaves(&lists[_SAMPLED_IMAGE_RES], s, t,
+                                                s->name, &texture_binding,
+                                                &sampler_binding, stage, 0)) {
+                        if (err && errCap)
+                            snprintf(err, errCap, "out of memory");
+                        mglAirReflectDestroy(lists);
+                        return -1;
+                    }
                 }
             } else {
                 if (base_t && base_t->kind == MGLIR_TYPE_IMAGE) {
                     GLuint location =
                         s->location != UINT32_MAX ? s->location : UINT32_MAX;
-                    push_resource(&lists[_STORAGE_IMAGE_RES], s, t, location,
-                                  texture_binding, stage);
+                    if (!push_resource(&lists[_STORAGE_IMAGE_RES], s, t, location,
+                                       texture_binding, stage)) {
+                        if (err && errCap)
+                            snprintf(err, errCap, "out of memory");
+                        mglAirReflectDestroy(lists);
+                        return -1;
+                    }
+                    if (lists[_STORAGE_IMAGE_RES].count == 0)
+                        continue;
                     MGLShaderResource *last =
                         &lists[_STORAGE_IMAGE_RES]
                              .list[lists[_STORAGE_IMAGE_RES].count - 1];
@@ -808,9 +843,14 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                     texture_binding += elements;
                 } else if (base_t && base_t->kind == MGLIR_TYPE_STRUCT &&
                            !s->is_interface_block && !s->block_name) {
-                    air_push_opaque_leaves(&lists[_STORAGE_IMAGE_RES], s, t,
-                                           s->name, &texture_binding,
-                                           NULL, stage, 1);
+                    if (!air_push_opaque_leaves(&lists[_STORAGE_IMAGE_RES], s, t,
+                                                s->name, &texture_binding,
+                                                NULL, stage, 1)) {
+                        if (err && errCap)
+                            snprintf(err, errCap, "out of memory");
+                        mglAirReflectDestroy(lists);
+                        return -1;
+                    }
                 }
             }
         }
@@ -868,8 +908,17 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                            base_t->kind == MGLIR_TYPE_IMAGE))
                 continue;
             if (base_t && base_t->kind == MGLIR_TYPE_ATOMIC_COUNTER) {
-                push_resource(&lists[_ATOMIC_COUNTER_RES], s, t, location,
-                              ac_binding++, stage);
+                if (!push_resource(&lists[_ATOMIC_COUNTER_RES], s, t, location,
+                                   ac_binding++, stage)) {
+                    if (err && errCap)
+                        snprintf(err, errCap, "out of memory");
+                    free(agg_types);
+                    free(agg_names);
+                    mglAirReflectDestroy(lists);
+                    return -1;
+                }
+                if (lists[_ATOMIC_COUNTER_RES].count == 0)
+                    continue;
                 MGLShaderResource *last =
                     &lists[_ATOMIC_COUNTER_RES].list[
                         lists[_ATOMIC_COUNTER_RES].count - 1];
@@ -896,8 +945,17 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                  * resource with per-element binding metadata so the common
                  * buffer mapper expands it at draw time. */
                 GLuint block_count = air_uniform_block_element_count(t);
-                push_resource(&lists[_UNIFORM_BUFFER_RES], s, block_type,
-                              location, ubo_binding, stage);
+                if (!push_resource(&lists[_UNIFORM_BUFFER_RES], s, block_type,
+                                   location, ubo_binding, stage)) {
+                    if (err && errCap)
+                        snprintf(err, errCap, "out of memory");
+                    free(agg_types);
+                    free(agg_names);
+                    mglAirReflectDestroy(lists);
+                    return -1;
+                }
+                if (lists[_UNIFORM_BUFFER_RES].count == 0)
+                    continue;
                 MGLShaderResource *last =
                     &lists[_UNIFORM_BUFFER_RES].list[
                         lists[_UNIFORM_BUFFER_RES].count - 1];
@@ -949,8 +1007,17 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
             const MGLIRType *block_type = air_uniform_block_type(t);
             GLuint block_count = air_uniform_block_element_count(t);
             const MGLIRType *res_type = block_type ? block_type : t;
-            push_resource(&lists[_STORAGE_BUFFER_RES], s, res_type,
-                          location, ssbo_binding, stage);
+            if (!push_resource(&lists[_STORAGE_BUFFER_RES], s, res_type,
+                               location, ssbo_binding, stage)) {
+                if (err && errCap)
+                    snprintf(err, errCap, "out of memory");
+                free(agg_types);
+                free(agg_names);
+                mglAirReflectDestroy(lists);
+                return -1;
+            }
+            if (lists[_STORAGE_BUFFER_RES].count == 0)
+                continue;
             MGLShaderResource *ssbo_last =
                 &lists[_STORAGE_BUFFER_RES].list[
                     lists[_STORAGE_BUFFER_RES].count - 1];
@@ -990,8 +1057,15 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                 location = lists[_STAGE_INPUT_RES].count +
                            gs_input_span_pad;
             }
-            push_resource(&lists[_STAGE_INPUT_RES], s, t, location, 0,
-                          stage);
+            if (!push_resource(&lists[_STAGE_INPUT_RES], s, t, location, 0,
+                               stage)) {
+                if (err && errCap)
+                    snprintf(err, errCap, "out of memory");
+                free(agg_types);
+                free(agg_names);
+                mglAirReflectDestroy(lists);
+                return -1;
+            }
             /* Array / matrix attributes occupy one location per element or
              * column so glGetAttribLocation("a[i]") == base+i stays aligned
              * with VAO binds and the AIR vertex_input location_index
@@ -1038,8 +1112,15 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                     location = lists[_STAGE_OUTPUT_RES].count;
                 }
             }
-            push_resource(&lists[_STAGE_OUTPUT_RES], s, t, location, 0,
-                          stage);
+            if (!push_resource(&lists[_STAGE_OUTPUT_RES], s, t, location, 0,
+                               stage)) {
+                if (err && errCap)
+                    snprintf(err, errCap, "out of memory");
+                free(agg_types);
+                free(agg_names);
+                mglAirReflectDestroy(lists);
+                return -1;
+            }
         }
     }
 

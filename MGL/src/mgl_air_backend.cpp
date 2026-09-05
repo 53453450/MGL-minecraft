@@ -7080,8 +7080,30 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             strcmp(name, "memoryBarrierShared") == 0 ||
             strcmp(name, "memoryBarrierImage") == 0 ||
             strcmp(name, "groupMemoryBarrier") == 0) {
-            /* Single-invocation texture RMW visibility on Metal does not
-             * need an explicit fence; treat barriers as no-ops. */
+            /* Map GLSL memoryBarrier* to air.wg.barrier mem flags:
+             * 1=device, 2=threadgroup, 4=texture (MSL mem_flags). */
+            if (e->u.call.arg_count != 0) {
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: '") + name +
+                            "' takes no arguments";
+                return nullptr;
+            }
+            unsigned flags = 0u;
+            if (strcmp(name, "memoryBarrierShared") == 0 ||
+                strcmp(name, "groupMemoryBarrier") == 0)
+                flags = 2u;
+            else if (strcmp(name, "memoryBarrierBuffer") == 0 ||
+                     strcmp(name, "memoryBarrierAtomicCounter") == 0)
+                flags = 1u;
+            else if (strcmp(name, "memoryBarrierImage") == 0)
+                flags = 4u;
+            else
+                flags = 1u | 2u | 4u;
+            llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
+            llvm::Type *voidTy = llvm::Type::getVoidTy(*cg.ctx);
+            callAirFn(cg, "air.wg.barrier", voidTy,
+                      {llvm::ConstantInt::get(i32, flags),
+                       llvm::ConstantInt::get(i32, 1)});
             return cg.b->getInt32(0);
         }
         if (strncmp(name, "imageAtomic", 11) == 0) {
@@ -8601,12 +8623,43 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                         if (!pd || !pd->name) continue;
                         if (!(pd->qualifiers & MGL_AST_Q_OUT)) continue;
                         const MGLExpr *arg = e->u.call.args[a];
-                        if (!arg || arg->kind != MGL_EXPR_VAR_REF ||
-                            !arg->u.var_ref.name)
-                            continue;
+                        if (!arg) continue;
                         auto pit = cg.lvalues.find(pd->name);
-                        if (pit != cg.lvalues.end())
+                        if (pit == cg.lvalues.end()) continue;
+                        if (arg->kind == MGL_EXPR_VAR_REF &&
+                            arg->u.var_ref.name) {
                             cg.lvalues[arg->u.var_ref.name] = pit->second;
+                            continue;
+                        }
+                        const MGLExpr *rootE = arg;
+                        while (rootE &&
+                               (rootE->kind == MGL_EXPR_INDEX ||
+                                rootE->kind == MGL_EXPR_MEMBER)) {
+                            rootE = (rootE->kind == MGL_EXPR_INDEX)
+                                ? rootE->u.index.object
+                                : rootE->u.member.object;
+                        }
+                        if (!rootE || rootE->kind != MGL_EXPR_VAR_REF ||
+                            !rootE->u.var_ref.name ||
+                            !cg.lvalues.count(rootE->u.var_ref.name)) {
+                            cg.err = 1;
+                            cg.errmsg =
+                                "codegen: out/inout argument writeback "
+                                "unsupported for this lvalue";
+                            break;
+                        }
+                        llvm::Value *nv = updateIndexPath(
+                            cg, arg, cg.lvalues[rootE->u.var_ref.name],
+                            pit->second, mod, locals);
+                        if (!nv) {
+                            cg.err = 1;
+                            if (cg.errmsg.empty())
+                                cg.errmsg =
+                                    "codegen: out/inout argument "
+                                    "writeback failed";
+                            break;
+                        }
+                        cg.lvalues[rootE->u.var_ref.name] = nv;
                     }
                     for (uint32_t a = 0; a < fd->param_count; a++) {
                         MGLDecl *pd = fd->params[a];
@@ -8752,9 +8805,9 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 return call;
             }
         }
-        /* GLSL separate compilation: a call may target a function declared
-         * here and defined in another compilation unit of the same stage.
-         * CompileShader must succeed; link resolves (or fails) later. */
+        /* Declaration-only call with no inlined/local body: emitting a
+         * zero stub would silently run with wrong results. Fail codegen
+         * until true cross-TU linking exists. */
         if (mod) {
             for (uint32_t si = 0; si < mod->symbol_count; si++) {
                 const MGLIRSymbol *fs = mod->symbols[si];
@@ -8762,13 +8815,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     strcmp(fs->name, name) != 0 ||
                     fs->param_count != e->u.call.arg_count)
                     continue;
-                if (fs->return_type && !irTypeIsVoid(fs->return_type)) {
-                    MType rt = typeFromIR(fs->return_type);
-                    return llvm::Constant::getNullValue(
-                        llvmType(rt, *cg.ctx));
-                }
-                return llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(*cg.ctx), 0);
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: call to '") + name +
+                            "' has no definition in this compilation unit";
+                return nullptr;
             }
         }
         cg.err = 1;
