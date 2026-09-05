@@ -2287,6 +2287,13 @@ static llvm::Value *readIndexChain(Codegen &cg, const MGLExpr *e,
             while (objTy->kind == MGLIR_TYPE_ARRAY && objTy->elem_type)
                 objTy = objTy->elem_type;
             if (objTy->kind == MGLIR_TYPE_STRUCT) {
+                if (!obj->getType()->isStructTy()) {
+                    /* AST says struct but the materialized root holds a
+                     * different LLVM shape (e.g. a flattened block member
+                     * lvalue) — fall back to the swizzle/error path rather
+                     * than emitting an invalid extractvalue. */
+                    objTy = nullptr;
+                } else {
                 for (uint32_t i = 0; i < objTy->member_count; i++) {
                     if (objTy->member_names[i] &&
                         strcmp(objTy->member_names[i],
@@ -2297,6 +2304,7 @@ static llvm::Value *readIndexChain(Codegen &cg, const MGLExpr *e,
                 cg.errmsg = std::string("codegen: unknown member '") +
                             e->u.member.field + "'";
                 return nullptr;
+                }
             }
         }
         std::vector<uint32_t> idx;
@@ -2358,6 +2366,11 @@ static llvm::Value *updateIndexPath(Codegen &cg, const MGLExpr *lhs,
             while (objTy->kind == MGLIR_TYPE_ARRAY && objTy->elem_type)
                 objTy = objTy->elem_type;
             if (objTy->kind == MGLIR_TYPE_STRUCT) {
+                if (!objVal->getType()->isStructTy()) {
+                    /* Mirror the read-side guard: only take the value
+                     * path when the root really is a struct aggregate. */
+                    objTy = nullptr;
+                } else {
                 for (uint32_t i = 0; i < objTy->member_count; i++) {
                     if (objTy->member_names[i] &&
                         strcmp(objTy->member_names[i],
@@ -2373,6 +2386,7 @@ static llvm::Value *updateIndexPath(Codegen &cg, const MGLExpr *lhs,
                 cg.errmsg = std::string("codegen: unknown member '") +
                             lhs->u.member.field + "'";
                 return nullptr;
+                }
             }
         }
         std::vector<uint32_t> idx;
@@ -9209,6 +9223,61 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 return nullptr;
             }
             const char *name = rootE->u.var_ref.name;
+            /* Interface-block array member: `B.member[i] = v`.  The member
+             * VarSym is flattened under its own field name (blockName=B)
+             * and arrayMem-backed, so the store must go through
+             * arrayMemGEP under the member key — the block instance name
+             * has no storage of its own (extractvalue on the lazily
+             * materialized instance lvalue asserted in LLVM). */
+            if (lhs->kind == MGL_EXPR_INDEX &&
+                lhs->u.index.object->kind == MGL_EXPR_MEMBER &&
+                lhs->u.index.object->u.member.object &&
+                lhs->u.index.object->u.member.object->kind ==
+                    MGL_EXPR_VAR_REF) {
+                const char *inst =
+                    lhs->u.index.object->u.member.object->u.var_ref.name;
+                const char *field = lhs->u.index.object->u.member.field;
+                VarSym *bmem = codegenBlockMember(cg, inst, field,
+                                                  VarSym::VARYING);
+                if (!bmem)
+                    bmem = codegenBlockMember(cg, inst, field,
+                                              VarSym::OUTPUT);
+                if (bmem && bmem->type.isArray()) {
+                    if (e->u.assign.op != MGL_OP_ASSIGN) {
+                        cg.err = 1;
+                        cg.errmsg = "codegen: compound assign into block "
+                                    "array member not supported";
+                        return nullptr;
+                    }
+                    llvm::Value *idx =
+                        emitExpr(cg, lhs->u.index.index, mod, locals);
+                    if (!idx) return nullptr;
+                    if (cg.arrayMem.count(bmem->name)) {
+                        llvm::Value *ep = arrayMemGEP(cg, bmem->name,
+                                                      cg.arrayMem[bmem->name],
+                                                      idx);
+                        cg.b->CreateAlignedStore(v, ep, llvm::Align(4));
+                        return v;
+                    }
+                    /* Value-semantics fallback: member aggregate lives in
+                     * lvalues (assembled into the stage-out record at
+                     * return). */
+                    if (!cg.lvalues.count(bmem->name))
+                        cg.lvalues[bmem->name] = llvm::UndefValue::get(
+                            llvmType(bmem->type, *cg.ctx));
+                    llvm::Value *agg = cg.lvalues[bmem->name];
+                    llvm::Value *nv = insertIndexValue(cg, agg, bmem->type,
+                                                       idx, v);
+                    if (!nv) {
+                        cg.err = 1;
+                        cg.errmsg = "codegen: cannot index block array "
+                                    "member lvalue";
+                        return nullptr;
+                    }
+                    cg.lvalues[bmem->name] = nv;
+                    return v;
+                }
+            }
             /* Memory-backed scalar array: store through GEP. */
             if (name && cg.arrayMem.count(name)) {
                 if (lhs->kind != MGL_EXPR_INDEX ||
