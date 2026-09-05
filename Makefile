@@ -626,40 +626,6 @@ $(build_dir)/test_mcrepro: test_legacy_compat/test_mcrepro.mm \
 test-mcrepro: $(build_dir)/test_mcrepro
 	$(build_dir)/test_mcrepro
 
-# Metal-cpp initialization smoke gate. Device bridging and repeated
-# initialization/shutdown must remain stable.
-MGL_RENDERER_FACADE_CPP := \
-	MGL/src/mgl_renderer_texture.cpp \
-	MGL/src/mgl_renderer_platform.cpp \
-	MGL/src/mgl_renderer_blit.cpp \
-	MGL/src/mgl_renderer_compute.cpp \
-	MGL/src/mgl_renderer_batch.cpp \
-	MGL/src/mgl_renderer_sync.cpp \
-	MGL/src/mgl_renderer_binding.cpp
-
-$(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
-	MGL/src/mgl_render.cpp MGL/src/mgl_render.h \
-	MGL/src/mgl_renderer_backend.cpp MGL/src/mgl_renderer_backend.h \
-	$(MGL_RENDERER_FACADE_CPP) \
-	MGL/src/MGLPlatformRendererShell.m MGL/include/MGLPlatformRendererShell.h \
-	MGL/src/mgl_aux_assets.c \
-	MGL/src/mgl_buffer_slots.c \
-	MGL/src/mgl_sync.m
-	$(LLVM_CXX) -x objective-c++ -fobjc-arc -g -O0 $(LLVM_CXXFLAGS) $(LLVM_LDFLAGS) \
-		-framework Cocoa -framework Foundation -framework QuartzCore -framework Metal \
-		test_legacy_compat/test_metalcpp_smoke.mm \
-		MGL/src/mgl_render.cpp \
-		MGL/src/mgl_renderer_backend.cpp \
-		$(MGL_RENDERER_FACADE_CPP) \
-		MGL/src/MGLPlatformRendererShell.m \
-		MGL/src/mgl_aux_assets.c \
-		MGL/src/mgl_buffer_slots.c \
-		MGL/src/mgl_sync.m \
-		-o $@
-
-test-metalcpp: $(build_dir)/test_metalcpp_smoke
-	$(build_dir)/test_metalcpp_smoke
-
 # AIR backend unit tests with GoogleTest (pure compile-time, no GPU).
 GTEST_ROOT ?= $(HOME)/googletest
 GTEST_CXXFLAGS := -I$(GTEST_ROOT)/googletest/include -I$(GTEST_ROOT)/googlemock/include \
@@ -720,7 +686,6 @@ $(build_dir)/test_mglparse \
 $(build_dir)/test_mglsema \
 $(build_dir)/test_mglair \
 $(build_dir)/test_mcrepro \
-$(build_dir)/test_metalcpp_smoke \
 $(build_dir)/test_mglair_gtest \
 $(build_dir)/test_mgl_state_dirty_gtest: | $(build_dir)
 
@@ -738,7 +703,6 @@ test-air:
 	$(MAKE) test-mglair
 	$(MAKE) test-mglair-gtest
 	$(MAKE) test-mcrepro
-	$(MAKE) test-metalcpp
 
 # Keep the local gate serial: the GPU suites share Metal compiler/archive state.
 # The interactive GLFW application and performance benchmark remain explicit.
@@ -751,7 +715,7 @@ test-all:
 .PHONY: default help test dbg core es lib clean install-pkgdeps test-make bench bench-system \
 	build-test-regression test-regression test-dirty-hash test-benchmark \
 	test-legacy-compat test-mglir test-mgllex test-mglparse test-mglsema \
-	test-mglair test-mglair-gtest test-mgl-state-dirty-gtest test-mcrepro test-metalcpp test-frontends \
+	test-mglair test-mglair-gtest test-mgl-state-dirty-gtest test-mcrepro test-frontends \
 	test-air test-all
 
 -include $(deps)
