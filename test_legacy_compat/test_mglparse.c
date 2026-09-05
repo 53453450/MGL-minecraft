@@ -404,6 +404,29 @@ static void test_array_type_syntax(void)
           "type-prefix + postfix arrays rejected in 330");
 }
 
+static void test_int_mod_truncated(void)
+{
+    /* GLSL `%` on int is truncated remainder (C `%`): -7 % 3 == -1.
+     * Floor-style mod would yield 2, making a+2 == 4. */
+    const char *src =
+        "#version 450 core\n"
+        "const int a = -7 % 3;\n"
+        "float x[a + 2];\n"
+        "void main() {}\n";
+    MGLTranslationUnit *tu = mglGLSLParse(src, strlen(src));
+    CHECK(tu != NULL && tu->error == NULL, "int % truncated parse ok");
+    int ok = 0;
+    if (tu && tu->decl_count >= 2) {
+        MGLDecl *x = tu->decls[1];
+        ok = x && x->name && strcmp(x->name, "x") == 0 &&
+             x->array_count == 1 && x->array_dims &&
+             x->array_dims[0] == 1u;
+    }
+    CHECK(ok, "const int a = -7 % 3 folds to -1 (x[a+2] size 1)");
+    if (tu)
+        mglGLSLTranslationUnitDestroy(tu);
+}
+
 int main(void)
 {
     printf("MGLGLSL parser skeleton tests\n");
@@ -417,6 +440,7 @@ int main(void)
     test_gs_layout_errors();
     test_preprocessor();
     test_array_type_syntax();
+    test_int_mod_truncated();
     printf("\n%d/%d passed\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;
 }

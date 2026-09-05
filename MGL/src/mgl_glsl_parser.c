@@ -1522,7 +1522,13 @@ static int eval_const_binary_op(uint32_t op, const MGLConstVal *a,
         case MGL_OP_DIV: if (y == 0.0) return 0; r = x / y; break;
         case MGL_OP_MOD:
             if (y == 0.0) return 0;
-            r = x - y * floor(x / y);
+            /* GLSL `%` on int/uint/bool is truncated remainder (C `%`);
+             * float uses the floor form of `mod()`. */
+            if (lhs.base == MGL_AST_TYPE_FLOAT) {
+                r = x - y * floor(x / y);
+            } else {
+                r = (double)((int64_t)x % (int64_t)y);
+            }
             break;
         case MGL_OP_EQ: r = (x == y) ? 1.0 : 0.0; break;
         case MGL_OP_NE: r = (x != y) ? 1.0 : 0.0; break;

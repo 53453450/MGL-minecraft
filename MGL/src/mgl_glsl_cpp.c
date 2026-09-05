@@ -35,7 +35,7 @@ typedef struct {
     int reserved_gl;
 } Macro;
 
-enum { COND_MAX = 64, HIDE_MAX = 64 };
+enum { COND_MAX = 64, HIDE_MAX = 64, EXPAND_MAX = 256 };
 
 typedef struct {
     int parent;
@@ -55,6 +55,7 @@ typedef struct {
     int failed;
     int if_mode;
     int saw_content;
+    int expand_depth; /* nest depth of expand_macro/expand_list */
     char err[256];
     char *out;
     size_t olen, ocap;
@@ -401,10 +402,15 @@ static int hidden(char *const *hide, int nh, const char *name)
 static int canon_repl(const TokList *tl, char *buf, size_t cap)
 {
     size_t i, o = 0;
+    if (!buf || cap == 0) {
+        return -1;
+    }
     buf[0] = 0;
     for (i = 0; i < tl->n; i++) {
         size_t k = strlen(tl->t[i].s);
         if (o + k + 2 >= cap) {
+            /* Keep a terminated prefix so callers may still strcmp safely. */
+            buf[o < cap ? o : cap - 1] = 0;
             return -1;
         }
         if (i && tl->t[i].spaced) {
@@ -412,8 +418,8 @@ static int canon_repl(const TokList *tl, char *buf, size_t cap)
         }
         memcpy(buf + o, tl->t[i].s, k);
         o += k;
+        buf[o] = 0;
     }
-    buf[o] = 0;
     return 0;
 }
 
@@ -611,24 +617,37 @@ static int expand_macro(PP *pp, Macro *m, TokList *args, int nargs,
     int i, j;
     char *nhide[HIDE_MAX];
     int nnh;
+    int rc;
     memset(&subst, 0, sizeof(subst));
+    if (pp->expand_depth >= EXPAND_MAX) {
+        pp_fail(pp, "preprocessor: macro expansion nesting too deep");
+        return -1;
+    }
+    pp->expand_depth++;
     if (m->special == 1) {
         char buf[32];
         snprintf(buf, sizeof(buf), "%ld", line);
-        return toklist_push(out, TK_NUM, buf);
+        rc = toklist_push(out, TK_NUM, buf);
+        pp->expand_depth--;
+        return rc;
     }
     if (m->special == 2) {
         char buf[32];
         snprintf(buf, sizeof(buf), "%d", pp->file_no);
-        return toklist_push(out, TK_NUM, buf);
+        rc = toklist_push(out, TK_NUM, buf);
+        pp->expand_depth--;
+        return rc;
     }
     if (m->special == 3) {
         char buf[32];
         snprintf(buf, sizeof(buf), "%d", pp->version);
-        return toklist_push(out, TK_NUM, buf);
+        rc = toklist_push(out, TK_NUM, buf);
+        pp->expand_depth--;
+        return rc;
     }
     if (m->function_like && nargs != m->nparams) {
         pp_fail(pp, "preprocessor: macro argument count mismatch");
+        pp->expand_depth--;
         return -1;
     }
     for (i = 0; i < (int)m->body.n; i++) {
@@ -654,6 +673,7 @@ static int expand_macro(PP *pp, Macro *m, TokList *args, int nargs,
         if (t->kind == TK_PUNCT && strcmp(t->s, "#") == 0) {
             pp_fail(pp, "preprocessor: stringification is not supported");
             toklist_free(&subst);
+            pp->expand_depth--;
             return -1;
         }
         if (param >= 0) {
@@ -672,6 +692,7 @@ static int expand_macro(PP *pp, Macro *m, TokList *args, int nargs,
                 if (expand_list(pp, &args[param], hide, nh, &exp, line) != 0) {
                     toklist_free(&exp);
                     toklist_free(&subst);
+                    pp->expand_depth--;
                     return -1;
                 }
                 {
@@ -688,29 +709,45 @@ static int expand_macro(PP *pp, Macro *m, TokList *args, int nargs,
     }
     if (paste_list(pp, &subst) != 0) {
         toklist_free(&subst);
+        pp->expand_depth--;
         return -1;
     }
     nnh = nh;
     for (i = 0; i < nh; i++) {
         nhide[i] = hide[i];
     }
-    if (nnh < HIDE_MAX) {
-        nhide[nnh++] = m->name;
-    }
-    {
-        int rc = expand_list(pp, &subst, nhide, nnh, out, line);
+    if (nnh >= HIDE_MAX) {
+        /* Hide-set overflow would drop this macro from the hide set and allow
+         * self-referential macros to recurse without bound (C1). */
+        pp_fail(pp, "preprocessor: macro hide-set overflow");
         toklist_free(&subst);
-        return rc;
+        pp->expand_depth--;
+        return -1;
     }
+    nhide[nnh++] = m->name;
+    rc = expand_list(pp, &subst, nhide, nnh, out, line);
+    toklist_free(&subst);
+    pp->expand_depth--;
+    return rc;
 }
 
 static int expand_list(PP *pp, const TokList *in, char **hide, int nh,
                        TokList *out, long line)
 {
     size_t i = 0;
+    int rc = 0;
+    if (pp->expand_depth >= EXPAND_MAX) {
+        pp_fail(pp, "preprocessor: macro expansion nesting too deep");
+        return -1;
+    }
+    pp->expand_depth++;
     while (i < in->n) {
         Tok *t = &in->t[i];
         Macro *m;
+        if (pp->failed) {
+            rc = -1;
+            break;
+        }
         if (pp->if_mode && t->kind == TK_ID && strcmp(t->s, "defined") == 0) {
             const char *id = NULL;
             int on;
@@ -720,14 +757,16 @@ static int expand_list(PP *pp, const TokList *in, char **hide, int nh,
                 i++;
                 if (i >= in->n || in->t[i].kind != TK_ID) {
                     pp_fail(pp, "preprocessor: defined() expects identifier");
-                    return -1;
+                    rc = -1;
+                    break;
                 }
                 id = in->t[i].s;
                 i++;
                 if (i >= in->n || in->t[i].kind != TK_PUNCT ||
                     strcmp(in->t[i].s, ")") != 0) {
                     pp_fail(pp, "preprocessor: defined() missing ')'");
-                    return -1;
+                    rc = -1;
+                    break;
                 }
                 i++;
             } else if (i < in->n && in->t[i].kind == TK_ID) {
@@ -735,18 +774,21 @@ static int expand_list(PP *pp, const TokList *in, char **hide, int nh,
                 i++;
             } else {
                 pp_fail(pp, "preprocessor: defined expects identifier");
-                return -1;
+                rc = -1;
+                break;
             }
             on = find_macro(pp, id) != NULL;
             if (toklist_push(out, TK_NUM, on ? "1" : "0") != 0) {
-                return -1;
+                rc = -1;
+                break;
             }
             continue;
         }
         if (t->kind != TK_ID || hidden(hide, nh, t->s) ||
             (m = find_macro(pp, t->s)) == NULL) {
             if (toklist_push_dup(out, t) != 0) {
-                return -1;
+                rc = -1;
+                break;
             }
             i++;
             continue;
@@ -759,7 +801,8 @@ static int expand_list(PP *pp, const TokList *in, char **hide, int nh,
             if (j >= in->n || in->t[j].kind != TK_PUNCT ||
                 strcmp(in->t[j].s, "(") != 0) {
                 if (toklist_push_dup(out, t) != 0) {
-                    return -1;
+                    rc = -1;
+                    break;
                 }
                 i++;
                 continue;
@@ -767,14 +810,16 @@ static int expand_list(PP *pp, const TokList *in, char **hide, int nh,
             i = j;
             if (collect_args(in, &i, &args, &nargs, m->nparams) != 0) {
                 pp_fail(pp, "preprocessor: unterminated macro invocation");
-                return -1;
+                rc = -1;
+                break;
             }
             if (expand_macro(pp, m, args, nargs, hide, nh, out, line) != 0) {
                 for (k = 0; k < nargs; k++) {
                     toklist_free(&args[k]);
                 }
                 free(args);
-                return -1;
+                rc = -1;
+                break;
             }
             for (k = 0; k < nargs; k++) {
                 toklist_free(&args[k]);
@@ -783,11 +828,13 @@ static int expand_list(PP *pp, const TokList *in, char **hide, int nh,
             continue;
         }
         if (expand_macro(pp, m, NULL, 0, hide, nh, out, line) != 0) {
-            return -1;
+            rc = -1;
+            break;
         }
         i++;
     }
-    return 0;
+    pp->expand_depth--;
+    return rc;
 }
 
 typedef struct {
@@ -1325,9 +1372,17 @@ static int define_from_raw(PP *pp, const char *rest)
         macro_clear(&tmp);
         return -1;
     }
-    canon_repl(&tmp.body, canon_new, sizeof(canon_new));
+    if (canon_repl(&tmp.body, canon_new, sizeof(canon_new)) != 0) {
+        pp_fail(pp, "preprocessor: macro replacement too long");
+        macro_clear(&tmp);
+        return -1;
+    }
     if (exist) {
-        canon_repl(&exist->body, canon_old, sizeof(canon_old));
+        if (canon_repl(&exist->body, canon_old, sizeof(canon_old)) != 0) {
+            pp_fail(pp, "preprocessor: macro replacement too long");
+            macro_clear(&tmp);
+            return -1;
+        }
         if (exist->function_like != tmp.function_like ||
             exist->nparams != tmp.nparams || strcmp(canon_new, canon_old) != 0) {
             pp_fail(pp, "preprocessor: illegal macro redefinition");
