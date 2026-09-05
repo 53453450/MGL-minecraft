@@ -2455,6 +2455,14 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
                                                  label:"drawArraysInstanced"]) {
         return;
     }
+    if ([self handleVertexTransformFeedbackDrawIfNeeded:glm_ctx
+                                                   mode:mode
+                                                  first:first
+                                                   count:count
+                                           instanceCount:instancecount
+                                            baseInstance:0u]) {
+        return;
+    }
 
     [self captureAIRCullDistancesForArrayDraw:glm_ctx
                                          first:first
@@ -3851,6 +3859,14 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
                                                  instanceCount:instancecount
                                                  baseInstance:baseinstance
                                                  label:"drawArraysInstancedBaseInstance"]) {
+        return;
+    }
+    if ([self handleVertexTransformFeedbackDrawIfNeeded:glm_ctx
+                                                   mode:mode
+                                                  first:first
+                                                   count:count
+                                           instanceCount:instancecount
+                                            baseInstance:baseinstance]) {
         return;
     }
 
