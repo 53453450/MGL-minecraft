@@ -2210,11 +2210,15 @@ static void mglTextureCopyTextureToBuffer(
         }
         readSlice = 0u;
     }
-    /* MGL color render targets are stored in GL row order (Metal y=0 =
-     * GL y=0 / bottom).  The integer getTexImage path already returns that
-     * order without a CPU Y-flip for full-image reads; applying an extra
-     * flip here inverted DSA multisample float/unorm results. */
-    BOOL flipRenderTargetRows = NO;
+    /* MGL render targets rendered by a Metal render pass are stored
+     * top-row-first (Metal NDC y=-1 lands at the high row addresses), so
+     * readPixels/getTexImage must flip rows to satisfy GL's bottom-up
+     * order.  Reverted 3a8cb5c: turning the flip off un-mirrored DSA
+     * multisample float/unorm readbacks (whose data path differs) but
+     * Y-mirrored every pass-rendered render target, breaking
+     * cull_distance / constant_expressions checkpoint comparisons
+     * (504-pixel pattern verified identical, bottom rows -> top rows). */
+    BOOL flipRenderTargetRows = tex->is_render_target;
 
     /* Integer texture readback path: when the source texture is an integer
      * format and the output format is GL_*_INTEGER, use the dedicated integer
