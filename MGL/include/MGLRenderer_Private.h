@@ -335,6 +335,21 @@ static inline double mglTraceNowSeconds(void)
 #define _pendingDrawableH _core.pendingDrawableH
 #define _drawableSizeDirty _core.drawableSizeDirty
 
+/* === Packed current-value vertex-attribute pool ===
+ * ALL current-value attribs (glVertexAttrib4f-style generics with no
+ * vertex buffer) share ONE Metal vertex-buffer slot.  The shared buffer
+ * is laid out [attrib][iteration]: attrib a's 16B block repeats
+ * kMGLCurrentAttribRepeatCount times starting at
+ * a * kMGLCurrentAttribPoolStride, so the vertex descriptor addresses
+ * attrib a at offset a*kMGLCurrentAttribPoolStride with stride 16.
+ * Without packing, a 16-element attrib array driven entirely by
+ * glVertexAttrib4f needs slots 16..31 and overflows the 31-slot Metal
+ * vertex-buffer budget at attribute 15. */
+#define kMGLCurrentAttribRepeatCount 4096u
+#define kMGLCurrentAttribValueBytes  16u
+#define kMGLCurrentAttribPoolStride \
+    ((uint32_t)kMGLCurrentAttribRepeatCount * kMGLCurrentAttribValueBytes)
+
 /* === Aggregate imports of per-category private headers ===
  * These headers declare ObjC methods and C helpers implemented in each
  * category file.  They import MGLRenderer.h (interface + glm_context types)

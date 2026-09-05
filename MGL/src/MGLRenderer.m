@@ -2074,8 +2074,15 @@ int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
         BOOL usesCurrentValue = mglRendererVertexAttribUsesCurrentValue(vao, i);
         int slot = -1;
         if (usesCurrentValue) {
+            /* Packed current-value pool: ALL current-value attribs share
+             * ONE Metal slot.  Per-attrib data is addressed by the vertex
+             * descriptor offset (attrib index × pool stride), so N
+             * current-value attribs cost one slot instead of N — a
+             * 16-element attrib array driven entirely by glVertexAttrib4f
+             * would otherwise need slots 16..31 and overflow the 31-slot
+             * Metal vertex-buffer budget at attribute 15. */
             for (GLuint s = 0; s < seenCount; s++) {
-                if (seenCurrentAttribs[s] && seenOffsets[s] == (GLintptr)i) {
+                if (seenCurrentAttribs[s]) {
                     slot = (int)s;
                     break;
                 }
@@ -2087,8 +2094,8 @@ int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
                     return -1;
                 }
                 seenCurrentAttribs[seenCount] = YES;
-                seenOffsets[seenCount] = (GLintptr)i;
-                seenStrides[seenCount] = 16u;
+                seenOffsets[seenCount] = (GLintptr)-1;
+                seenStrides[seenCount] = 0u;
                 seenDivisors[seenCount] = 0u;
                 seenNeedsConverted[seenCount] = NO;
                 slot = (int)seenCount;

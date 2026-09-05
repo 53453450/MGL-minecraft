@@ -138,6 +138,17 @@ void *mglRendererBackendGetCurrentAttribBuffer(
 int mglRendererBackendSetCurrentAttribBuffer(
     MGLRendererBackendHandle *backend, uint32_t attrib,
     const void *bytes, uint32_t byte_count, uint64_t stride, void *buffer);
+/* Packed current-value attribute pool: ONE shared Metal buffer holding
+ * `repeat_count` copies of a MAX_ATTRIBS×16B value block, laid out as
+ * [attrib][iteration] so a vertex descriptor addresses attrib `a` at
+ * offset a*repeat_count*16 with stride 16.  Returns a borrowed buffer
+ * when every packed byte and the repeat count match the cached pool. */
+void *mglRendererBackendGetPackedCurrentAttribBuffer(
+    const MGLRendererBackendHandle *backend, const void *bytes,
+    uint32_t byte_count, uint32_t repeat_count);
+int mglRendererBackendSetPackedCurrentAttribBuffer(
+    MGLRendererBackendHandle *backend, const void *bytes,
+    uint32_t byte_count, uint32_t repeat_count, void *buffer);
 /* Size-constant cache getters return borrowed buffers owned by the backend. */
 void *mglRendererBackendGetSizeConstantsBuffer(
     const MGLRendererBackendHandle *backend,

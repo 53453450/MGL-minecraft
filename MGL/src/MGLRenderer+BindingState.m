@@ -1051,47 +1051,65 @@ static bool mglBindingStateFlushResourceBindings(
 
         bindingIndex = (NSUInteger)mappedIndex;
         if (usesCurrentValue) {
-            uint8_t attribBytes[16];
-            NSUInteger attribStride = mglRendererBuildCurrentVertexAttribBytes(ctx,
-                                                                               attrib,
-                                                                               &vao->attrib[attrib],
-                                                                               attribBytes);
-            if (attribStride == 0u) {
-                NSLog(@"MGL VBIND skip attrib=%u: failed to build current vertex attrib bytes", attrib);
-                continue;
+            /* Packed current-value pool: ALL current-value attribs share
+             * one Metal buffer + one slot (see kMGLCurrentAttribPoolStride
+             * in MGLRenderer_Private.h).  Attrib i's 16B generic value
+             * repeats at pool offset i*kMGLCurrentAttribPoolStride; the
+             * vertex descriptor supplies the per-attrib offset. */
+            uint8_t poolValues[MAX_ATTRIBS][16];
+            memset(poolValues, 0, sizeof(poolValues));
+            for (GLuint a = 0; a < (GLuint)MAX_ATTRIBS; a++) {
+                uint8_t tmp[16] = {0};
+                NSUInteger built = mglRendererBuildCurrentVertexAttribBytes(
+                    ctx, a, &vao->attrib[a], tmp);
+                if (built == 0u || built > 16u) {
+                    /* Unusable combination: keep the zero-filled block so
+                     * one bad attrib does not poison the shared pool. */
+                    continue;
+                }
+                memcpy(poolValues[a], tmp, 16u);
             }
-            static const NSUInteger kMGLCurrentAttribRepeatCount = 4096u;
-            NSUInteger totalByteCount = kMGLCurrentAttribRepeatCount * attribStride;
-
 
             id currentAttribBuffer = (__bridge id)
-                mglRendererBackendGetCurrentAttribBuffer(
-                    _backend, attrib, attribBytes, (uint32_t)attribStride,
-                    (uint64_t)attribStride);
+                mglRendererBackendGetPackedCurrentAttribBuffer(
+                    _backend, poolValues, (uint32_t)sizeof(poolValues),
+                    kMGLCurrentAttribRepeatCount);
 
             if (currentAttribBuffer == nil) {
-
-                NSMutableData *repeated = [NSMutableData dataWithLength:totalByteCount];
-                if (!repeated) {
-                    NSLog(@"MGL VBIND skip attrib=%u: failed to allocate current vertex attrib stream", attrib);
+                NSUInteger poolBytes = (NSUInteger)MAX_ATTRIBS *
+                                       kMGLCurrentAttribPoolStride;
+                NSMutableData *pool = [NSMutableData dataWithLength:poolBytes];
+                if (!pool) {
+                    NSLog(@"MGL VBIND skip attrib=%u: failed to allocate packed "
+                          @"current vertex attrib pool", attrib);
                     continue;
                 }
-                uint8_t *dst = (uint8_t *)repeated.mutableBytes;
-                for (NSUInteger v = 0; v < kMGLCurrentAttribRepeatCount; v++) {
-                    memcpy(dst + v * attribStride, attribBytes, MIN((NSUInteger)16u, attribStride));
+                uint8_t *dst = (uint8_t *)pool.mutableBytes;
+                for (GLuint a = 0; a < (GLuint)MAX_ATTRIBS; a++) {
+                    uint8_t *seg = dst + (NSUInteger)a *
+                                           kMGLCurrentAttribPoolStride;
+                    for (NSUInteger vI = 0;
+                         vI < kMGLCurrentAttribRepeatCount; vI++) {
+                        memcpy(seg + vI * kMGLCurrentAttribValueBytes,
+                               poolValues[a],
+                               MIN((NSUInteger)16u,
+                                   kMGLCurrentAttribValueBytes));
+                    }
                 }
                 currentAttribBuffer = mglBindingStateCreateBufferWithBytes(
-                    _device, repeated.bytes, repeated.length,
+                    _device, pool.bytes, pool.length,
                     MGL_BINDING_RESOURCE_STORAGE_SHARED);
                 if (!currentAttribBuffer) {
-                    NSLog(@"MGL VBIND skip attrib=%u: failed to allocate current vertex attrib Metal buffer", attrib);
+                    NSLog(@"MGL VBIND skip attrib=%u: failed to allocate packed "
+                          @"current vertex attrib Metal buffer", attrib);
                     continue;
                 }
-                if (mglRendererBackendSetCurrentAttribBuffer(
-                        _backend, attrib, attribBytes, (uint32_t)attribStride,
-                        (uint64_t)attribStride,
+                if (mglRendererBackendSetPackedCurrentAttribBuffer(
+                        _backend, poolValues, (uint32_t)sizeof(poolValues),
+                        kMGLCurrentAttribRepeatCount,
                         (__bridge void *)currentAttribBuffer) != 0) {
-                    NSLog(@"MGL VBIND skip attrib=%u: failed to retain current vertex attrib cache buffer", attrib);
+                    NSLog(@"MGL VBIND skip attrib=%u: failed to retain packed "
+                          @"current vertex attrib cache buffer", attrib);
                     continue;
                 }
             }
@@ -1113,19 +1131,14 @@ static bool mglBindingStateFlushResourceBindings(
             if (mglProgramNeedsTraceLog(activeProgram) &&
                 mglShouldLogTraceFileBindingForProgram(activeProgram, &s_traceFileCurrentAttribBindLogs)) {
                 MGLShaderResource *resource = mglRendererProgramVertexAttribResource(activeProgram, attrib);
-                mglTraceLog("VATTR_BIND_CURRENT program=%u attrib=%u resource=%s loc=%u metalSlot=%lu stride=%lu size=%u type=0x%x valueI=(%d,%d,%d,%d) valueF=(%.6f,%.6f,%.6f,%.6f)",
+                mglTraceLog("VATTR_BIND_CURRENT_PACKED program=%u attrib=%u resource=%s loc=%u metalSlot=%lu poolOffset=%lu valueF=(%.6f,%.6f,%.6f,%.6f)",
                             activeProgram ? (unsigned)activeProgram->name : 0u,
                             (unsigned)attrib,
                             resource && resource->name ? resource->name : "(unknown)",
                             resource ? (unsigned)resource->location : 0xffffffffu,
                             (unsigned long)bindingIndex,
-                            (unsigned long)attribStride,
-                            (unsigned)vao->attrib[attrib].size,
-                            (unsigned)vao->attrib[attrib].type,
-                            (int)MGL_STATE(ctx)->current_vertex_attrib[attrib].i[0],
-                            (int)MGL_STATE(ctx)->current_vertex_attrib[attrib].i[1],
-                            (int)MGL_STATE(ctx)->current_vertex_attrib[attrib].i[2],
-                            (int)MGL_STATE(ctx)->current_vertex_attrib[attrib].i[3],
+                            (unsigned long)((NSUInteger)attrib *
+                                            kMGLCurrentAttribPoolStride),
                             MGL_STATE(ctx)->current_vertex_attrib[attrib].f[0],
                             MGL_STATE(ctx)->current_vertex_attrib[attrib].f[1],
                             MGL_STATE(ctx)->current_vertex_attrib[attrib].f[2],
