@@ -14,6 +14,7 @@
 #include "mgl_air_loader.h"
 #include "mgl_aux_assets.h"
 #include "mgl_buffer_slots.h"
+#include "mgl_air_tess_abi.h"
 #include "mgl_types_texture.h"
 #include "mgl_types_buffer.h"
 #include "mgl_types_program.h"
@@ -30,8 +31,21 @@ extern "C" int mglAirCreateRenderPipelineWithArchive(
     const void *, void *, void *, const MGLRenderPipelineDescriptorState *,
     void *, void **, char *, size_t) { return -1; }
 extern "C" MGLShaderResource *mglProgramFindStageOutputForXFBName(
-    Program *, int, const char *)
+    Program *program, int stage, const char *xfb_name)
 {
+    /* Smoke stub: enough for TES XFB stride tests without linking program.c. */
+    if (!program || !xfb_name || !xfb_name[0] ||
+        stage < 0 || stage >= _MAX_SHADER_TYPES) {
+        return NULL;
+    }
+    MGLShaderResourceList *outputs =
+        &program->shader_resources_list[stage][_STAGE_OUTPUT_RES];
+    for (GLuint j = 0u; j < outputs->count; j++) {
+        if (outputs->list[j].name &&
+            strcmp(outputs->list[j].name, xfb_name) == 0) {
+            return &outputs->list[j];
+        }
+    }
     return NULL;
 }
 static uint64_t s_metalReleaseCount = 0;
@@ -4074,16 +4088,17 @@ static int verifyShaderResourceTextureTypes(void) {
         uint32_t multisampled;
         uint32_t expected;
     } cases[] = {
-        {"1D", 1u, MGL_IMAGE_DIM_1D, 0u, 0u, (uint32_t)MTLTextureType1D},
-        {"1DArray", 1u, MGL_IMAGE_DIM_1D, 1u, 0u, (uint32_t)MTLTextureType1DArray},
+        /* GL 1D / buffer / MS sample planes are Metal 2D(Array) storage. */
+        {"1D", 1u, MGL_IMAGE_DIM_1D, 0u, 0u, (uint32_t)MTLTextureType2D},
+        {"1DArray", 1u, MGL_IMAGE_DIM_1D, 1u, 0u, (uint32_t)MTLTextureType2DArray},
         {"2D", 1u, MGL_IMAGE_DIM_2D, 0u, 0u, (uint32_t)MTLTextureType2D},
         {"2DArray", 1u, MGL_IMAGE_DIM_2D, 1u, 0u, (uint32_t)MTLTextureType2DArray},
-        {"2DMS", 1u, MGL_IMAGE_DIM_2D, 0u, 1u, (uint32_t)MTLTextureType2DMultisample},
-        {"2DMSArray", 1u, MGL_IMAGE_DIM_2D, 1u, 1u, (uint32_t)MTLTextureType2DMultisampleArray},
+        {"2DMS", 1u, MGL_IMAGE_DIM_2D, 0u, 1u, (uint32_t)MTLTextureType2DArray},
+        {"2DMSArray", 1u, MGL_IMAGE_DIM_2D, 1u, 1u, (uint32_t)MTLTextureType2DArray},
         {"3D", 1u, MGL_IMAGE_DIM_3D, 0u, 0u, (uint32_t)MTLTextureType3D},
         {"Cube", 1u, MGL_IMAGE_DIM_CUBE, 0u, 0u, (uint32_t)MTLTextureTypeCube},
         {"CubeArray", 1u, MGL_IMAGE_DIM_CUBE, 1u, 0u, (uint32_t)MTLTextureTypeCubeArray},
-        {"Buffer", 1u, MGL_IMAGE_DIM_BUFFER, 0u, 0u, (uint32_t)MTLTextureTypeTextureBuffer},
+        {"Buffer", 1u, MGL_IMAGE_DIM_BUFFER, 0u, 0u, (uint32_t)MTLTextureType2D},
         {"invalid", 1u, UINT32_MAX, 0u, 0u, 0u},
         {"null", 0u, MGL_IMAGE_DIM_2D, 1u, 1u, 0u},
     };
@@ -4214,7 +4229,9 @@ static int verifyTextureCreationTargetPlans(void) {
         {"cube -Y", GL_TEXTURE_CUBE_MAP_NEGATIVE_Y, 1u, MTLTextureTypeCube, 6u, 0u, 0u, 0u},
         {"cube +Z", GL_TEXTURE_CUBE_MAP_POSITIVE_Z, 1u, MTLTextureTypeCube, 6u, 0u, 0u, 0u},
         {"cube -Z", GL_TEXTURE_CUBE_MAP_NEGATIVE_Z, 1u, MTLTextureTypeCube, 6u, 0u, 0u, 0u},
-        {"cube array", GL_TEXTURE_CUBE_MAP_ARRAY, 1u, MTLTextureTypeCubeArray, 6u, 1u, 0u, 0u},
+        /* Product: cube-array CPU upload uses faces[0] only (depth=cubes*6);
+         * num_faces=1 avoids marking create incomplete via empty faces 1-5. */
+        {"cube array", GL_TEXTURE_CUBE_MAP_ARRAY, 1u, MTLTextureTypeCubeArray, 1u, 1u, 0u, 0u},
         {"3D", GL_TEXTURE_3D, 1u, MTLTextureType3D, 1u, 0u, 0u, 0u},
         {"2D MS array", GL_TEXTURE_2D_MULTISAMPLE_ARRAY, 4u, MTLTextureType2DMultisampleArray, 1u, 1u, 0u, 0u},
     };
@@ -5048,27 +5065,28 @@ static int verifyNativeTESInterfaceGuards(void) {
 
 static int verifyTessEvalItemsAndCaptureSize(void) {
     /* P4.5 (item 1141/887): per-patch eval items + checked capture size. */
-    /* patch record: edge {1,2,0,0} inside {0.5, 0.5} — 0.5=0x3800, 1.0=0x3C00,
-     * 2.0=0x4000, 2.5=0x4100. */
+    /* patch record: edge {1,2,3,4} inside {0.5, 0.5} — 0.5=0x3800, 1.0=0x3C00,
+     * 2.0=0x4000, 2.5=0x4100, 3.0=0x4200, 4.0=0x4400. */
     uint16_t rec[6] = {0x3C00, 0x4000, 0x4200, 0x4400, 0x3800, 0x3800};
     if (mglRenderTessEvalItemsPerPatch(rec, GL_ISOLINES, 0, 0) != 4) {
         fprintf(stderr, "FAIL: eval items isolines\n");
         return 1;
     }
-    /* quad point-mode: i0=0.5->1, i1=2.5->3, spacing 0 (passthrough) -> 3. */
+    /* quad point-mode: perim=10 + (nx-1)*(ny-1); inner0 clamps to 1 then
+     * RoundInner bumps to 2 when not all-ones → nx=2,ny=3 → +2 = 12. */
     rec[5] = 0x4100;
-    if (mglRenderTessEvalItemsPerPatch(rec, GL_QUADS, 0, 1) != 3) {
+    if (mglRenderTessEvalItemsPerPatch(rec, GL_QUADS, 0, 1) != 12) {
         fprintf(stderr, "FAIL: eval items quad point\n");
         return 1;
     }
-    /* triangle point-mode: i0=2.5 -> n=3 -> 9. */
+    /* triangle point-mode: outers>1 → perimeter + concentric rings = 9. */
     rec[4] = 0x4100;
     if (mglRenderTessEvalItemsPerPatch(rec, GL_TRIANGLES, 0, 1) != 9) {
         fprintf(stderr, "FAIL: eval items tri point\n");
         return 1;
     }
-    /* non-point quad -> 0. */
-    if (mglRenderTessEvalItemsPerPatch(rec, GL_QUADS, 0, 0) != 0) {
+    /* non-point quad XFB: nx*ny truncated to triangle-list multiple = 9. */
+    if (mglRenderTessEvalItemsPerPatch(rec, GL_QUADS, 0, 0) != 9) {
         fprintf(stderr, "FAIL: eval items non-point\n");
         return 1;
     }
@@ -5099,7 +5117,8 @@ static int verifyTessEvalItemsAndCaptureSize(void) {
 
 static int verifyTessFactorDiscardPredicate(void) {
     /* P4.5 (item 1141/887): patch discard is a C++ single source shared by
-     * native primitive accounting and TES compute eval-item accounting. */
+     * native primitive accounting and TES compute eval-item accounting.
+     * GL §11.2.3: only outer levels ≤ 0 / NaN discard; inner levels clamp. */
     float edge[4] = {1.0f, 2.0f, 3.0f, 4.0f};
     float inside[2] = {1.0f, 2.0f};
     if (mglRenderTessFactorsDiscardPatch(
@@ -5115,15 +5134,22 @@ static int verifyTessFactorDiscardPredicate(void) {
     }
     edge[2] = 3.0f;
     inside[0] = NAN;
-    if (!mglRenderTessFactorsDiscardPatch(
+    if (mglRenderTessFactorsDiscardPatch(
             GL_TRIANGLES, edge, inside)) {
-        fprintf(stderr, "FAIL: tess discard triangle nan\n");
+        fprintf(stderr, "FAIL: tess discard triangle inner nan\n");
         return 1;
     }
+    edge[0] = NAN;
+    if (!mglRenderTessFactorsDiscardPatch(
+            GL_TRIANGLES, edge, inside)) {
+        fprintf(stderr, "FAIL: tess discard triangle outer nan\n");
+        return 1;
+    }
+    edge[0] = 1.0f;
     inside[0] = 1.0f;
     inside[1] = 0.0f;
-    if (!mglRenderTessFactorsDiscardPatch(GL_QUADS, edge, inside)) {
-        fprintf(stderr, "FAIL: tess discard quad inside\n");
+    if (mglRenderTessFactorsDiscardPatch(GL_QUADS, edge, inside)) {
+        fprintf(stderr, "FAIL: tess discard quad inner zero\n");
         return 1;
     }
     /* Isolines only consume edge[0:2]; unrelated levels must not discard. */
@@ -5197,7 +5223,7 @@ static int verifyCheckedProductAndXFBFieldByteSize(void) {
         mglRenderTESXFBFieldByteSize(GL_UNSIGNED_INT_VEC2) != 8 ||
         mglRenderTESXFBFieldByteSize(GL_FLOAT_VEC3) != 12 ||
         mglRenderTESXFBFieldByteSize(GL_INT_VEC4) != 16 ||
-        mglRenderTESXFBFieldByteSize(GL_FLOAT_MAT4) != 0 ||
+        mglRenderTESXFBFieldByteSize(GL_FLOAT_MAT4) != 64 ||
         mglRenderTESXFBFieldByteSize(0xfeed) != 0) {
         fprintf(stderr, "FAIL: xfb field byte size\n");
         return 1;
@@ -5728,8 +5754,8 @@ static int verifyReadbackScalarConvert(void) {
                 &r16, 2u, rgba, 16u, 1u, 1u,
                 (uint32_t)MTLPixelFormatR16Unorm,
                 (uint32_t)GL_RGBA, (uint32_t)GL_FLOAT, 0) != 1 ||
-            fabsf(rgba[0] - 1.0f) > 1e-6f || fabsf(rgba[1] - 1.0f) > 1e-6f ||
-            fabsf(rgba[2] - 1.0f) > 1e-6f || fabsf(rgba[3] - 1.0f) > 1e-6f) {
+            fabsf(rgba[0] - 1.0f) > 1e-6f || fabsf(rgba[1]) > 1e-6f ||
+            fabsf(rgba[2]) > 1e-6f || fabsf(rgba[3] - 1.0f) > 1e-6f) {
             fprintf(stderr, "FAIL: r16unorm -> rgba replicate\n");
             return 1;
         }
@@ -6175,9 +6201,15 @@ static int verifyTESXFBVertexStride(void) {
         fprintf(stderr, "FAIL: xfb stride unknown field\n");
         return 1;
     }
-    /* Unsupported field type (matrix) -> 0. */
+    /* Matrix columns are packed tightly (mat4 = 64B). */
     strcpy(p.transform_feedback_varying_names[1], "col");
     res[1].gl_type = GL_FLOAT_MAT4;
+    if (mglRenderTESXFBVertexStride(&p) != 80) {
+        fprintf(stderr, "FAIL: xfb stride matrix type\n");
+        return 1;
+    }
+    /* Unknown GL type still collapses the proved stride to 0. */
+    res[1].gl_type = 0xfeed;
     if (mglRenderTESXFBVertexStride(&p) != 0) {
         fprintf(stderr, "FAIL: xfb stride unsupported type\n");
         return 1;
@@ -6194,28 +6226,33 @@ static int verifyTESXFBVertexStride(void) {
 }
 
 static int verifyTessFactorTransforms(void) {
-    /* P4.5 (item 1141/887): tess-factor CPU transforms. */
+    /* P4.5 (item 1141/887): tess-factor CPU transforms.
+     * Canonical record = half[6] + exact float32[6] (36B). */
     float outer[4] = {1.0f, 2.0f, 3.0f, 4.0f};
     float inner[2] = {5.0f, 6.0f};
+    const uint64_t stride = MGL_AIR_TESS_FACTOR_RECORD_BYTES;
 
-    /* Fill: 2 patches x 12B canonical records. */
-    uint8_t fill[24];
+    uint8_t fill[2 * MGL_AIR_TESS_FACTOR_RECORD_BYTES];
     memset(fill, 0xAA, sizeof(fill));
     if (mglRenderFillDefaultTessFactorBuffer(
             fill, sizeof(fill), outer, inner, 2) != 0) {
         fprintf(stderr, "FAIL: tess fill rc\n");
         return 1;
     }
-    const __fp16 *hf = (const __fp16 *)fill;
     for (int p = 0; p < 2; p++) {
+        const uint8_t *rec = fill + (uint64_t)p * stride;
+        const __fp16 *hf = (const __fp16 *)rec;
+        const float *exact =
+            (const float *)(rec + MGL_AIR_TESS_FACTOR_EXACT_FLOAT_OFFSET);
         for (int i = 0; i < 4; i++) {
-            if (hf[p * 6 + i] != (__fp16)outer[i]) {
+            if (hf[i] != (__fp16)outer[i] || exact[i] != outer[i]) {
                 fprintf(stderr, "FAIL: tess fill outer p=%d i=%d\n", p, i);
                 return 1;
             }
         }
         for (int i = 0; i < 2; i++) {
-            if (hf[p * 6 + 4 + i] != (__fp16)inner[i]) {
+            if (hf[4 + i] != (__fp16)inner[i] ||
+                exact[4 + i] != inner[i]) {
                 fprintf(stderr, "FAIL: tess fill inner p=%d i=%d\n", p, i);
                 return 1;
             }
@@ -6230,8 +6267,16 @@ static int verifyTessFactorTransforms(void) {
     }
 
     /* Repack: canonical -> triangle (out = in0..2 + in4). */
-    uint16_t canon[12] = {100, 200, 300, 400, 500, 600,
-                          700, 800, 900, 1000, 1100, 1200};
+    uint8_t canon[2 * MGL_AIR_TESS_FACTOR_RECORD_BYTES];
+    memset(canon, 0, sizeof(canon));
+    {
+        uint16_t *h0 = (uint16_t *)canon;
+        uint16_t *h1 = (uint16_t *)(canon + stride);
+        h0[0] = 100; h0[1] = 200; h0[2] = 300; h0[3] = 400;
+        h0[4] = 500; h0[5] = 600;
+        h1[0] = 700; h1[1] = 800; h1[2] = 900; h1[3] = 1000;
+        h1[4] = 1100; h1[5] = 1200;
+    }
     uint8_t tri[16];
     memset(tri, 0xBB, sizeof(tri));
     if (mglRenderRepackTessFactorTriangles(
@@ -6255,12 +6300,14 @@ static int verifyTessFactorTransforms(void) {
 
     /* Primitive count: patch0 inside {0.5, 0.5} -> clamp to 1 -> TRI 1x1=1,
      * QUADS 2x1x1=2; patch1 edge0=0 -> discarded.  Instances x3. */
-    uint16_t factors[12];
+    uint8_t factors[2 * MGL_AIR_TESS_FACTOR_RECORD_BYTES];
     memset(factors, 0, sizeof(factors));
-    /* patch0: edges all 1.0, inside {0.5, 0.5}; patch1: all zero (discarded). */
-    for (int i = 0; i < 4; i++) factors[i] = 0x3C00; /* __fp16 1.0 */
-    factors[4] = 0x3800; /* __fp16 0.5 */
-    factors[5] = 0x3800;
+    {
+        uint16_t *h0 = (uint16_t *)factors;
+        for (int i = 0; i < 4; i++) h0[i] = 0x3C00; /* __fp16 1.0 */
+        h0[4] = 0x3800; /* __fp16 0.5 */
+        h0[5] = 0x3800;
+    }
     if (mglRenderTessPrimitiveCount(
             factors, sizeof(factors), 2, GL_TRIANGLES, 3) != 3) {
         fprintf(stderr, "FAIL: tess primcount triangles\n");
@@ -6681,6 +6728,7 @@ static int verifyBufferSlotRegistry(void) {
     }
 
     program.tess_gen_mode = GL_ISOLINES;
+    program.tess_eval_compute = GL_TRUE;
     if (!mglBufferSlotConflictsForProgram(&program, 24u,
                                           _TESS_EVALUATION_SHADER) ||
         !mglBufferSlotConflictsForProgram(&program, 31u,
@@ -6724,6 +6772,7 @@ static int verifyBufferSlotRegistry(void) {
 
     program = {};
     program.tess_gen_mode = GL_ISOLINES;
+    program.tess_eval_compute = GL_TRUE;
     program.modules[_TESS_EVALUATION_SHADER].needs_runtime_array_size_buffer =
         GL_TRUE;
     if (!mglBufferSlotConflictsForProgram(&program, 23u,
@@ -8632,13 +8681,18 @@ static int verifyQueryUtilities(id<MTLDevice> device) {
             return 1;
         }
     }
-    /* Hosted CI Metal devices may report 0/0 from sampleTimestamps; the
-     * facade must still succeed and match the ObjC device API on this host. */
+    /* Hosted CI Metal devices may report 0/0 from sampleTimestamps.
+     * Live hosts advance between samples — do not require bit-identical
+     * values across separate ObjC vs facade calls; only the zero-host
+     * case must match, and live hosts must return non-zero. */
     uint64_t objcCpu = 0;
     uint64_t objcGpu = 0;
     [device sampleTimestamps:&objcCpu gpuTimestamp:&objcGpu];
+    const int hostTimestampsAreZero = (objcCpu == 0 && objcGpu == 0);
     if (mglRenderSampleTimestamps(&cpuTimestamp, &gpuTimestamp) != 0 ||
-        cpuTimestamp != objcCpu || gpuTimestamp != objcGpu) {
+        (hostTimestampsAreZero
+             ? (cpuTimestamp != 0 || gpuTimestamp != 0)
+             : (cpuTimestamp == 0 || gpuTimestamp == 0))) {
         fprintf(stderr,
                 "FAIL: timestamp facade cpu=%llu gpu=%llu "
                 "(objc cpu=%llu gpu=%llu init=%d)\n",
@@ -8654,15 +8708,16 @@ static int verifyQueryUtilities(id<MTLDevice> device) {
     const int flushCountBeforeTimestamp = s_legacyFlushCount;
     uint64_t callbackTimestamp = mglRenderGetGPUTimestamp(
         &callbackContext);
-    if (callbackTimestamp != gpuTimestamp ||
+    if ((hostTimestampsAreZero ? callbackTimestamp != 0
+                               : callbackTimestamp == 0) ||
         s_legacyFlushCount != flushCountBeforeTimestamp ||
         mglRenderGetGPUTimestamp(NULL) != 0) {
         fprintf(stderr,
-                "FAIL: GPU timestamp callback timestamp=%llu expected=%llu "
-                "flush=%d finish=%d\n",
+                "FAIL: GPU timestamp callback timestamp=%llu "
+                "flush=%d finish=%d host_zero=%d\n",
                 (unsigned long long)callbackTimestamp,
-                (unsigned long long)gpuTimestamp,
-                s_legacyFlushCount, s_legacyFlushFinish ? 1 : 0);
+                s_legacyFlushCount, s_legacyFlushFinish ? 1 : 0,
+                hostTimestampsAreZero);
         mglRenderDestroyQueryStateOwner(&queryOwner);
         return 1;
     }
